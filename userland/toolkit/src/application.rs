@@ -5,8 +5,13 @@
 use crate::canvas::Canvas;
 use crate::damage::Damage;
 use crate::input::{self, Input, RECORD_SIZE};
+use crate::tree::ROOT_ELEMENT;
 use crate::tree::{PointerShape, Response, WidgetTree};
-use crate::window::{Window, now_ms};
+use crate::window::{Window, WindowServer, now_ms};
+use eggos_element_tree::{
+    Action, Bounds, Element, MAX_TEXT_BYTES, MAX_TREE_BYTES, Outcome, Query, Role, TreeWriter,
+    query_kind, tree_answer,
+};
 use eggos_runtime::errno::Errno;
 
 const RECORDS_READ: usize = 16;
@@ -31,6 +36,12 @@ pub trait Application<const N: usize> {
     /// Called when the window gets the keyboard focus, after its widgets saw it: the moment to
     /// pick up what changed outside the program meanwhile.
     fn focused(&mut self, _now_ms: u32) {}
+
+    /// Whether the window shows something for the person's eyes only now, such as a pairing
+    /// code: while it does, no agent may capture its pixels (`PERSON_VIEW_ONLY`, D193).
+    fn person_view_only(&self) -> bool {
+        false
+    }
 }
 
 fn draw(window: &mut Window, view: &mut impl View, everything: bool) -> Result<(), Errno> {
@@ -51,6 +62,37 @@ fn draw(window: &mut Window, view: &mut impl View, everything: bool) -> Result<(
         }
     }
     window.commit(&damage, everything)
+}
+
+fn answer(window: &Window, view: &mut impl View, query: &Query) {
+    let server = window.server();
+    if query.kind == query_kind::TREE {
+        let mut bytes = [0u8; MAX_TREE_BYTES];
+        let mut tree = TreeWriter::new(&mut bytes);
+        let scale = window.scale().max(1);
+        let (width, height) = window.size();
+        let content = Bounds::new(0, 0, (width / scale) as i32, (height / scale) as i32);
+        tree.push(&Element::new(ROOT_ELEMENT, 0, Role::Window, content));
+        let (outcome, tree) = match view.describe(&mut tree) {
+            true => (tree_answer::TREE, tree.bytes()),
+            false => (tree_answer::PIXELS_ONLY, &[][..]),
+        };
+        let _ = server.answer_query(query.serial, outcome, tree);
+        return;
+    }
+    let outcome = match query.action() {
+        Some(action) => {
+            let mut text = [0u8; MAX_TEXT_BYTES];
+            let length = match action {
+                Action::SetText => server.query_text(query.serial, &mut text).unwrap_or(0),
+                _ => 0,
+            };
+            let text = core::str::from_utf8(&text[..length]).unwrap_or("");
+            view.act(query.element, action, text, now_ms())
+        }
+        None => Outcome::NotSupported,
+    };
+    let _ = server.answer_query(query.serial, outcome.value(), &[]);
 }
 
 fn soonest(first: Option<u32>, second: Option<u32>, now: u32) -> Option<u32> {
@@ -79,6 +121,11 @@ fn in_scale_1(input: Input, scale: i32) -> Input {
             pressed,
         },
         Input::Wheel { x, y, notches } => Input::Wheel {
+            x: x.div_euclid(scale),
+            y: y.div_euclid(scale),
+            notches,
+        },
+        Input::SidewaysWheel { x, y, notches } => Input::SidewaysWheel {
             x: x.div_euclid(scale),
             y: y.div_euclid(scale),
             notches,
@@ -126,9 +173,75 @@ pub trait View {
     fn take_title(&mut self) -> Option<&str> {
         None
     }
+
+    /// Writes the content's elements below [`ROOT_ELEMENT`] for an agent (D161, `wm show`);
+    /// `false` when the view describes none, so the agent sees pixels only.
+    fn describe(&mut self, _tree: &mut TreeWriter<'_>) -> bool {
+        false
+    }
+
+    /// Does `action` to element `element` for an agent (D161, `wm act`), with `text` for
+    /// [`Action::SetText`], at `time_ms`.
+    fn act(&mut self, _element: u32, _action: Action, _text: &str, _time_ms: u32) -> Outcome {
+        Outcome::NoSuchElement
+    }
+
+    /// A descriptor the loop also waits on, such as a terminal's pseudo-terminal (D187).
+    fn watched_descriptor(&self) -> Option<usize> {
+        None
+    }
+
+    /// The watched descriptor has something to read or hung up, at `time_ms`; `false` once the
+    /// window should close.
+    fn descriptor_ready(&mut self, _time_ms: u32) -> bool {
+        true
+    }
+
+    /// Whether the content shows something for the person's eyes only now: the loop keeps
+    /// the window's pixels from agents from before it is drawn until after it is gone
+    /// (`PERSON_VIEW_ONLY`, D193).
+    fn person_view_only(&mut self) -> bool {
+        false
+    }
 }
 
-struct Tree<'a, A, const N: usize>(&'a mut A);
+struct Tree<'a, A, const N: usize>(&'a mut A, Option<WindowServer>);
+
+/// Answers a text field's clipboard response through the clipboard every app shares (D197,
+/// docs/ux/toolkit-v0.4.md section 4.4): a copy or a cut gives [`WidgetTree::copied`] to the
+/// server, a paste fetches its text into the field. What the program then sees: `Nothing` for
+/// a copy, `Edited` for a cut, [`WidgetTree::paste`]'s answer for a paste; any other response
+/// as it was.
+pub fn answer_clipboard<const N: usize>(
+    tree: &mut WidgetTree<N>,
+    server: Option<&WindowServer>,
+    response: Response,
+    now_ms: u32,
+) -> Response {
+    match response {
+        Response::Copied(_) | Response::Cut(_) => {
+            if let Some(server) = server {
+                let _ = server.set_clipboard(tree.copied());
+            }
+            match response {
+                Response::Cut(id) => Response::Edited(id),
+                _ => Response::Nothing,
+            }
+        }
+        Response::PasteWanted(id) => {
+            let mut bytes = [0u8; 255];
+            let length = server
+                .and_then(|server| server.clipboard(0, &mut bytes).ok())
+                .map_or(0, |(length, _)| length.min(bytes.len()));
+            let text = match core::str::from_utf8(&bytes[..length]) {
+                Ok(text) => text,
+                Err(error) => core::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap_or(""),
+            };
+            tree.paste(id, text, now_ms)
+        }
+        other => other,
+    }
+}
 
 impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
     fn resize(&mut self, width: i32, height: i32) {
@@ -137,6 +250,7 @@ impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
 
     fn handle(&mut self, input: Input, time_ms: u32) -> bool {
         let response = self.0.tree().handle(input, time_ms);
+        let response = answer_clipboard(self.0.tree(), self.1.as_ref(), response, time_ms);
         self.0.respond(response, time_ms);
         if input == Input::FocusIn {
             self.0.focused(time_ms);
@@ -156,9 +270,25 @@ impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
         self.0.tree().pointer_shape()
     }
 
+    fn describe(&mut self, tree: &mut TreeWriter<'_>) -> bool {
+        self.0.tree().describe(tree);
+        true
+    }
+
+    fn act(&mut self, element: u32, action: Action, text: &str, time_ms: u32) -> Outcome {
+        let (outcome, response) = self.0.tree().act(element, action, text, time_ms);
+        let response = answer_clipboard(self.0.tree(), self.1.as_ref(), response, time_ms);
+        self.0.respond(response, time_ms);
+        outcome
+    }
+
     fn deadline(&mut self, now_ms: u32) -> Option<u32> {
         let tree = self.0.tree().next_deadline(now_ms);
         soonest(tree, self.0.deadline(now_ms), now_ms)
+    }
+
+    fn person_view_only(&mut self) -> bool {
+        self.0.person_view_only()
     }
 
     fn tick(&mut self, now_ms: u32) {
@@ -179,7 +309,7 @@ pub fn run<const N: usize>(
     window: &mut Window,
     application: &mut impl Application<N>,
 ) -> Result<(), Errno> {
-    run_view(window, &mut Tree(application))
+    run_view(window, &mut Tree(application, WindowServer::open().ok()))
 }
 
 /// Shows `window` with `view` drawn in it and serves it until the user asks to close it or
@@ -190,20 +320,37 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
     view.resize((width / scale) as i32, (height / scale) as i32);
     let mut everything = true;
     let mut records = [0u8; RECORD_SIZE * RECORDS_READ];
+    let mut view_only = false;
     loop {
         if let Some(title) = view.take_title() {
             window.set_title(title)?;
         }
+        let wanted = view.person_view_only();
+        if wanted && !view_only {
+            window.set_person_view_only(true)?;
+            view_only = true;
+        }
         draw(window, view, everything)?;
+        if view_only && !wanted && window.set_person_view_only(false).is_ok() {
+            view_only = false;
+        }
         everything = false;
         let shape = view.pointer_shape();
         window.set_pointer(shape)?;
         let now = now_ms();
         let deadline = view.deadline(now);
         let timeout = deadline.map(|deadline| (deadline.wrapping_sub(now) as i32).max(0) as u32);
-        let read = window.read_events(&mut records, timeout)?;
+        let watched = view.watched_descriptor();
+        let (read, watched_ready) = window.read_events_or(&mut records, timeout, watched)?;
         view.tick(now_ms());
+        if watched_ready && !view.descriptor_ready(now_ms()) {
+            return Ok(());
+        }
         for record in records[..read].as_chunks::<RECORD_SIZE>().0 {
+            if let Some(query) = Query::from_record(record) {
+                answer(window, view, &query);
+                continue;
+            }
             let Some(event) = input::decode(record) else {
                 continue;
             };

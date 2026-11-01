@@ -218,3 +218,98 @@ reads `Hello`); `Clear` clicked (the view empty); `Info` pressed (the alert cent
 window, `OK` focused, the titles `text.dim`); Esc (the alert gone); the `File` menu opened by
 a click on its title (the popup at (192, 32), `Cmd+K` and `Cmd+W` at its right); Esc; then
 Cmd+Q: the window gone, the dock without the app, the process ended with status 0.
+
+## 8. The standard About panel
+
+`-[NSApplication orderFrontStandardAboutPanel:]` and `orderFrontStandardAboutPanelWithOptions:`
+show the layer's own window, drawn by the layer like section 4's alert, never by the app. The
+app menu's first item (`About CocoaGame`, section 5) is its usual caller.
+
+- **Window.** A `Normal` `FIXED_SIZE` window (Apple's panel blocks nothing, so not a `Dialog`),
+  content **288 wide**, `140 + 20n` tall for `n` body lines (160 with the version line, 180
+  with version and copyright), placed by `SetPosition` at the centre of the work area
+  (`GetWorkArea`), as the Windows message box without an owner, not cascaded. Title `About
+  <name>` (the name the panel shows; cut at 64 bytes on a character). The server draws its
+  three controls with the maximise circle `button.inactive`; minimise works; it has its own
+  window-list entry, matched to the app as its other windows are. It gets the app's main menu
+  (`SET_MENU`, as `setMainMenu:` sends every window of the app), so the titles stay in the bar
+  while it is focused; an item chosen then sends its `action` to its `target`, a `nil` target
+  to `NSApp` and the app's delegate (the panel has no responders). The close control, the
+  server's close shortcut (Cmd+W) and **Esc** destroy it; the app's delegate is not asked
+  (`windowShouldClose:` is for the app's windows; the panel is not in `NSApp.windows`). Enter,
+  Space, Tab and every other key do nothing; nothing in it takes focus, no ring is drawn, a
+  click does nothing beyond the server's raise, the pointer is `Arrow`. **One per app**:
+  `About` chosen while it is open destroys it and creates it again at the same place, so it
+  comes to the top, focused (a client cannot raise a window in 0.3.0). It is not one of the
+  app's windows: it does not keep the app running (the app still exits when its last window
+  closes, section 6, and the panel goes with the descriptor), and closing it never exits the
+  app. Every profile shows the same window.
+- **Content.** The alert's surface: `menu.bg`, a 1 px `menu.border` outline inside the
+  content's edge, `INSET_R6` corners over the `window.bg` the content is filled with first
+  (`window.bg` carries no text, so it is not the surface). Everything is centred on the
+  content's width, `x = (288 - width) / 2` rounded down, `width` the drawn (cut) width;
+  Apple centres everything too. Body lines from row 128 at pitch 20, the version line first
+  when there is one, then the copyright line; a missing line moves the next up.
+
+| Element | Rule |
+|---|---|
+| icon | 48x48 at (120, 16): the installed app's own icon's 48 image (`app-icons-v0.3.md` section 3), `app.icon` in the folder holding the `.app` (its bundle's parent; a bare executable's own folder), read once when the panel opens, exactly 13 312 bytes or it is no icon; channels clamped to the alpha, blended over `menu.bg` with section 3's formula; never scaled (the dock's pixels at the dock's size) |
+| no icon | the generic tile of `desktop-v0.3-gui.md` section 7 with the macOS badge, at (120, 16): r6 `0,0,48,48` `icon.tile`, 1 px `icon.tile.border`, the name's first ASCII letter or digit upper-cased (else `?`) at 2x at (8, 6) in `text`, the badge r4 `30,26,16,20` `icon.mac` with `M` at 1x at (34, 28) in `icon.dark` |
+| name | the app's name at 2x (the heading), cell rows 80..111, `text`, end-ellipsised at 256 (`fit` at 128, then doubled) |
+| version | `Version <short> (<build>)` at 1x in `text.dim`, cell rows 128..143, end-ellipsised at 256; `Version <short>` when the two are equal or only one exists (then that one); no line when neither |
+| copyright | the copyright up to its first `\n` or `\r`, at 1x in `text.dim`, the next line (rows 148..163 after a version line, 128..143 without), end-ellipsised at 256; no line when there is none |
+
+- **Where the parts come from.** The name is `CFBundleName`, else the executable's file name
+  (section 1's rule); `<short>` is `CFBundleShortVersionString`, `<build>` `CFBundleVersion`,
+  the copyright `NSHumanReadableCopyright`, all from the bundle's XML `Info.plist` (no bundle:
+  none of them). The options dictionary overrides them: `ApplicationName` the name, `Version`
+  `<short>`, `ApplicationVersion` `<build>`, `Copyright` the copyright; a string value
+  replaces, an empty string removes the line (the name falls back), a value that is not a
+  string and an unknown key are ignored. `ApplicationIcon` and `Credits` are ignored (listed
+  gap). `orderFrontStandardAboutPanel:` is the call with no options.
+- **What agents see** (D161, `wm show`): the layer answers for this window, its first element
+  tree (the NSView tree stays a listed gap). Ids in drawing order, so a missing line gives its
+  id to the next; no flags; no element takes an action (`element_cannot`).
+
+| Id | Parent | Role | Rect | Name | Value |
+|---|---|---|---|---|---|
+| 1 | 0 | `window` | `0,0,288,h` | the title | |
+| 2 | 1 | `graphic` | `120,16,48,48` | the app's name | `own` or `generic` |
+| 3 | 1 | `label` | the name's drawn cell (`x,80,width,32`) | the full name, uncut | |
+| 4 | 1 | `label` | the version's drawn cell (`x,128,width,16`) | the full version line | |
+| 5 | 1 | `label` | the copyright's drawn cell (`x,y,width,16`) | the full copyright line | |
+
+- **Worked example A, CocoaGame** (`CFBundleName` `CocoaGame`, `1.0.0`, `1`, no copyright):
+  content 288x160, outside 290x190, title `About CocoaGame`; icon (120, 16, 48, 48);
+  `CocoaGame` at 2x, 112 wide, (88, 80, 112, 32); `Version 1.0.0 (1)`, 81 wide,
+  (103, 128, 81, 16). Tree: 1 `window` `About CocoaGame`; 2 `graphic` `CocoaGame` = `own`
+  (`generic` when run from outside `/Applications`: then the tile's `C` at (128, 22), its `M`
+  badge at (150, 42)); 3 `label` `CocoaGame` at 88,80 112x32; 4 `label` `Version 1.0.0 (1)`
+  at 103,128 81x16.
+- **Worked example B, mac-paint** (section 7's app, its `Info.plist` gaining
+  `CFBundleShortVersionString` `0.3.0`, `CFBundleVersion` `0.3.0` and `NSHumanReadableCopyright`
+  `© 2026 EggOS`): content 288x180, outside 290x210, title `About mac-paint`; icon
+  (120, 16, 48, 48); `mac-paint` at 2x, 96 wide, (96, 80, 96, 32); `Version 0.3.0`, 65 wide,
+  (111, 128, 65, 16); `© 2026 EggOS`, 71 wide, (108, 148, 71, 16). Tree ids 1 to 5, the labels
+  `mac-paint`, `Version 0.3.0`, `© 2026 EggOS`.
+- **Scale 2x**: every number doubles and the 48 icon is pixel-doubled, as the dock's is.
+- **Tests.** Host tests (`about.rs` beside `alert.rs`): the version rule (`1.0.0`/`1` gives
+  `Version 1.0.0 (1)`; `0.3.0`/`0.3.0` `Version 0.3.0`; `1.0`/none `Version 1.0`; none/`7`
+  `Version 7`; none/none no line and a 140 content, 160 with a copyright); the name fallback
+  to the executable's file name; each options key overriding its part, an empty `Copyright`
+  removing the line, a number ignored; the copyright cut at its first newline; the sizes and
+  every rect of A and B; a 30-letter name cut with `...` at 256 (`fit` at 128); the render of
+  A with the generic tile and of B with `app-icons-v0.3.md` test 2's synthetic 48 icon, hashed,
+  with the pixels (0, 0) `window.bg`, (4, 0) `menu.border`, (144, 70) `menu.bg`, (121, 40)
+  `icon.tile` and (152, 44) `icon.mac` in A; an `app.icon` of 13 311 bytes giving the generic tile
+  and a channel above its alpha drawn as the alpha; the tree of A and B (ids, roles, rects,
+  names, values) and `element_cannot` for every action; Esc and `CloseRequest` closing, Enter,
+  Space and Tab doing nothing, a second `About` making one window, not two. The QEMU boot test
+  (section 7) gains, after the `File` menu's Esc: the `mac-paint` title clicked and `About
+  mac-paint` chosen: the panel at the work area's centre, focused, titled `About mac-paint`,
+  the three menu titles still `text`, the frame compared with the host's render of B (its icon
+  the installed `app.icon`'s 48 image); `wm show` on it listing the five elements; Esc: the
+  panel gone, the main window focused; then Cmd+Q as before. The CocoaGame check chooses
+  `About CocoaGame`, compares the frame with A (its own icon), and closes it with Cmd+W.
+- **Later**: `ApplicationIcon` and `Credits` (scrolling rich text), raising the existing panel
+  instead of re-creating it, `CFBundleGetInfoString`, the panel in `NSApp.windows`.

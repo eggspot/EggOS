@@ -42,6 +42,22 @@ pub mod number {
     pub const UNLINKAT: usize = 263;
     pub const FACCESSAT: usize = 269;
     pub const GETRANDOM: usize = 318;
+    pub const RT_SIGPROCMASK: usize = 14;
+    pub const EXECVE: usize = 59;
+    pub const WAIT4: usize = 61;
+    pub const FCHDIR: usize = 81;
+    pub const GETGID: usize = 104;
+    pub const SETPGID: usize = 109;
+    pub const SETSID: usize = 112;
+    pub const SETRESUID: usize = 117;
+    pub const SETRESGID: usize = 119;
+    pub const RT_SIGPENDING: usize = 127;
+    pub const RT_SIGSUSPEND: usize = 130;
+    pub const SIGALTSTACK: usize = 131;
+    pub const TGKILL: usize = 234;
+    pub const DUP3: usize = 292;
+    pub const PIPE2: usize = 293;
+    pub const CLOSE_RANGE: usize = 436;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -82,6 +98,22 @@ pub mod number {
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
     pub const GETRANDOM: usize = 278;
+    pub const DUP3: usize = 24;
+    pub const FCHDIR: usize = 50;
+    pub const PIPE2: usize = 59;
+    pub const TGKILL: usize = 131;
+    pub const SIGALTSTACK: usize = 132;
+    pub const RT_SIGSUSPEND: usize = 133;
+    pub const RT_SIGPROCMASK: usize = 135;
+    pub const RT_SIGPENDING: usize = 136;
+    pub const SETRESUID: usize = 147;
+    pub const SETRESGID: usize = 149;
+    pub const SETPGID: usize = 154;
+    pub const SETSID: usize = 157;
+    pub const GETGID: usize = 176;
+    pub const EXECVE: usize = 221;
+    pub const WAIT4: usize = 260;
+    pub const CLOSE_RANGE: usize = 436;
 }
 
 pub const PAGE_SIZE: usize = 4096;

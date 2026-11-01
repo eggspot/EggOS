@@ -1,8 +1,8 @@
 # Drivers and the driver model
 
 How EggOS finds devices and binds drivers to them (M5, D110), how the virtio core works (M8,
-D111), the display (D112), input (D113), disks and the host folder (D130), and how to add a
-driver.
+D111), device interrupts (D184), the display (D112), input (D113), disks and the host folder
+(D130), how users list devices (D184), and how to add a driver.
 
 ## The pieces
 
@@ -14,6 +14,8 @@ driver.
 | `kernel/src/devices.rs` | The model: descriptors, matching, the device table, probe passes, the `devices` capability |
 | `kernel/src/devices/fdt_bus.rs`, `pci_bus.rs` | Discovery: the device-tree platform bus, PCI Express through the MCFG |
 | `kernel/src/devices/window.rs` | Device windows: device registers mapped into the kernel |
+| `kernel/src/devices/interrupts.rs` | Device interrupts: each device line's handler, and `DeviceEvents`, what a driver's thread waits on |
+| `hal/src/interrupt.rs`, `hal/src/arch/*/` | `Interrupt::Device`, `DeviceLine`, and routing per architecture: GIC SPIs (aarch64), PLIC sources (riscv64), MSI-X vectors 0x33-0x52 (x86_64) |
 | `kernel/src/devices/dma.rs` | DMA regions |
 | `kernel/src/devices/virtio.rs` | virtio-mmio and virtio-pci as bus drivers, virtio-rng, virtio-gpu, virtio-input and virtio-blk on top |
 | `kernel/src/block.rs` | Disks: the `BlockDevice` drivers install and file systems take |
@@ -42,9 +44,23 @@ other CPU starts.
   kept; nothing is reassigned.
 
 The table (`DeviceTable`) is on the heap, as large as what was found, in discovery order,
-children after their parents. `devices::for_each` is the `devices` capability: the GUI, CLI
-and MCP front-ends (D22) come with the MCP server (M10). The boot log prints the count and
-each device a bus found or a driver refused.
+children after their parents. `devices::for_each` is the `devices` capability; the boot log
+prints the count and each device a bus found or a driver refused.
+
+## Listing devices (D184)
+
+`/proc/driver/devices` (`devices::devices_text`) has one line per device, its fields separated
+by tabs: id, parent's id or `-`, bus (`devicetree`, `pci`, `virtio`), class (`display`,
+`input`, `disk`, `network`, `console`, `entropy`, `clock`, `serial`, `interrupt-controller`,
+`bus`, `other`), name, description, driver or `-`, state (`bound`, `unbound`, `refused`),
+delivery (`interrupts`, `polled`, `-`) and the refusal's reason or `-`. Its front-ends (D22):
+
+- CLI: `device list` (the devices a person recognises that are no other device's parent, and
+  every refused one, sorted by kind, then id), `device list -a` (every device), `--json`
+  (records with `null` for `-`); docs/coreutils.md.
+- MCP: `device_list`, `device list --json` with `all` for `-a`; docs/mcp.md.
+- GUI: Settings' About pane, designed in docs/ux/devices-v0.3.md; not built yet (it needs the
+  toolkit's `Table`).
 
 ## Drivers
 
@@ -88,6 +104,10 @@ pub static RNG_DRIVER: DriverDescriptor = DriverDescriptor {
   reuses their window.
 - `pci_config()`: PCI configuration space, if discovery found one.
 - `deadline(ms)`: a point on the platform clock to poll a device until.
+- `route_interrupt(specifier)` and `message_interrupt()`: a device line for a device-tree
+  interrupt or an MSI-X message (`Platform::route_device_interrupt`,
+  `Platform::message_interrupt`); `devices::virtio::connect_interrupt` uses them for a virtio
+  device on either transport.
 
 For DMA, a driver takes a `DmaRegion` (`DmaRegion::allocate(bytes)`): zeroed, physically
 contiguous whole frames, reached through the direct map, implementing `DmaMemory`. It goes back
@@ -109,7 +129,8 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   reached only through raw volatile or atomic accesses. A release fence before the available
   index is published, a full fence before the used ring's notification flag is read, an
   acquire load of the used index. The free list costs nothing to build (a never-used counter
-  plus freed descriptors). Polled for now: interrupts are issue #97's slice 3.
+  plus freed descriptors). A driver that waits for interrupts asks for them
+  (`SplitQueue::enable_used_notifications`) and looks at the used ring once after.
 - **virtio-rng.** One request queue of 8 entries and a 1 KiB request buffer in one 4 KiB
   region; `devices::virtio::read_random` fills a buffer, polling until a deadline.
 - **Polled queues.** Every polled driver sets the available ring's `VIRTQ_AVAIL_F_NO_INTERRUPT`
@@ -125,6 +146,14 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   `SET_SCANOUT`; then the driver is the kernel's display. Every command is fenced, and a flush
   sends each damaged rectangle's `TRANSFER_TO_HOST_2D`, waits for their answers, then sends
   their `RESOURCE_FLUSH`: the spec promises neither order nor completion of unfenced commands.
+  The cursor queue (D186): queue 1, up to 4 entries, in the same 4 KiB region; at probe a
+  64x64 `B8G8R8A8_UNORM` resource (id 2) whose backing is 16 KiB of its own, which draws the
+  desktop's pointer. A new shape is written into it, transferred and shown by
+  `UPDATE_CURSOR` with its hotspot; a move is one `MOVE_CURSOR`, and redraws nothing; hiding is
+  an `UPDATE_CURSOR` with no resource. One cursor command is in flight at a time, one
+  device-readable descriptor, and the driver waits for the device to give it back (QEMU writes
+  no answer). A device without the queue, or without memory for the image, keeps the pointer
+  drawn in software.
 
 - **virtio-input** (D113). One event queue of up to 64 entries and 64 event buffers of 8 bytes
   (type, code, value, little-endian) in one 4 KiB region, every buffer always posted: `poll`
@@ -144,20 +173,49 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   answered. A request not answered by its deadline stays posted and the next waits for it.
   The driver installs the disk with `block::install`.
 
+## Device interrupts (D184)
+
+Issue #97's slice 3. The HAL hands out 32 device lines (`DeviceLine`) per machine, each routed
+to the boot CPU:
+
+- **aarch64**: a device-tree specifier of the GIC binding (an SPI, its trigger from the flags)
+  routed with priority 0xc0, below the timer, wake-ups and the console; the IRQ path sends every
+  shared interrupt (id 32 and up) to one out-of-line function that hands UART0's to the console
+  and a routed SPI to its line, then ends it.
+- **riscv64**: a PLIC source (one cell) enabled with priority 1 in the boot hart's
+  supervisor-mode context, which the device tree names; the claim handler hands it to its line
+  and completes it after.
+- **x86_64**: an MSI-X message: address `0xFEE00000 | boot APIC id << 12`, data the line's
+  vector (0x33 to 0x52, fixed, edge), ended at the local APIC after.
+
+The kernel keeps a handler per line (`devices::interrupts::connect`): it quiets the device
+(`virtio::mmio::acknowledge_interrupt` reads and acknowledges the slot's interrupt status until
+it reads 0, so an edge-triggered line falls before it can rise again; nothing for MSI-X) and
+raises the device's `DeviceEvents`, which unparks the one thread waiting on them. Interrupts are
+taken only at preemption points, in idle and in user mode (D37), so a handler never finds a lock
+held on its own CPU. virtio-pci: MSI-X entry 0 of the function's table (mapped from its BAR,
+`pci::msix`) for the configuration and every enabled queue (`PciTransport::route_interrupts_to`),
+then MSI-X turned on. virtio-mmio: the slot's first device-tree interrupt.
+
 ## Input
 
 `kernel/src/input.rs` (D113) is what keyboards and pointers feed:
 
 - A driver implements `input::InputDevice` (its `Capabilities`, a `poll` with a budget) and
   calls `input::install` (at most `MAX_DEVICES`, 4).
-- `input::poll::<P>()` polls every device in rounds of at most 16 events, so a round's key bytes
-  (8 at most per key) fit 128 bytes, which go to the console's line discipline between rounds
-  (`console::receive_from_keyboard`, the UART's path), at most 8 rounds (`MAX_POLL_ROUNDS`, so
-  a device that never runs dry cannot keep the poller awake), and sends the held key's repeat
-  when it is due. It returns when to poll next. The release kernel's poller thread
-  (`input::start_polling`, started by init's boot only with an input device) sleeps until then:
-  8 ms while a key or button is held or for 1 s after the last event, 32 ms otherwise, never
-  later than the next repeat. An idle device costs one load of its used ring's index.
+- `input::poll::<P>()` takes every device's events in rounds of at most 16 events, so a round's
+  key bytes (8 at most per key) fit 128 bytes, which go to the console's line discipline between
+  rounds (`console::receive_from_keyboard`, the UART's path), at most 8 rounds
+  (`MAX_POLL_ROUNDS`, so a device that never runs dry cannot keep the thread awake), and sends
+  the held key's repeat when it is due. It returns when to poll next.
+- The release kernel's input thread (`input::start`, started by init's boot only with an input
+  device; the boot log says `input: on interrupts` or `input: polled`): when every device was
+  installed with `install_interrupting` (its interrupt connected, D184), it sleeps on
+  `input::DEVICE_EVENTS` until a device interrupts or the held key's next repeat is due, so an
+  idle machine never wakes it. Otherwise it polls: 8 ms while a key or button is held or for
+  1 s after the last event, 32 ms otherwise, never later than the next repeat, an idle device
+  costing one load of its used ring's index. The desktop's clock then ticks from its own thread
+  (`terminal::start_clock`), as without input.
 - Keys: the US keymap (`eggos_drivers::input::keymap`, the terminal design's table): characters
   with Shift, Caps Lock (letters only), Ctrl (control characters) and Alt (an `ESC` before
   them), Enter, Backspace (`DEL`; Ctrl, `BS`), Tab and Shift+Tab, Esc, the cursor, editing and
@@ -237,9 +295,18 @@ folder, the disk and the channel uses all 8.
 - `display::flush::<P>()` shows the damage (at most 8 rectangles, overlapping ones merged; a
   ninth merges where the union grows least) and nothing else; nothing reaches the device while
   nothing is damaged. A failed flush keeps the damage for the next.
-- At boot the kernel draws the first frame (the whole screen in `wallpaper.top`, `#0E1726`)
-  and prints `boot: display 1280x800`, or `boot: no display` without one.
-- A display driver implements `display::Scanout` and calls `display::install`.
+- At boot the kernel draws the first frame, the boot screen (D186, docs/ux/desktop-v0.3.md
+  section 1, docs/ux/desktop-polish-v0.3.md section 3: the egg, `EggOS`, the version and four
+  progress segments on `#0E1726`, in three tiers by the display's size; a display below 32x8 is
+  all `#0E1726`), and prints `boot: display 1280x800`, or `boot: no display` without one. The
+  second segment lights once the input devices were looked for (`boot: input ...`), the third
+  as init starts (`boot: init`); the desktop replaces the boot screen in one frame when the
+  first program waits to read the console, or 1 s after init started.
+  `display::boot_screen_hash()` hashes the boot screen a row at a time for the self-test.
+- A display driver implements `display::Scanout` and calls `display::install`. A display that
+  draws the pointer itself (the GPU's cursor) answers `draws_pointer`, lends its image
+  (`pointer_image`) and shows, moves and hides it; `display::show_pointer` sends a new image
+  only when the shape changed.
 
 ## The graphical terminal
 
@@ -258,10 +325,19 @@ folder, the disk and the channel uses all 8.
   `\r\n` (the engine's `set_onlcr`); otherwise it is the UART's write after one load. The
   kernel's own messages (`PlatformConsole`, panics) stay on the serial console.
 - Feeding only updates cells. The drawing thread (`terminal::start_drawing`) renders the cells
-  that changed into the framebuffer under the display's lock, then the terminal's, and flushes
-  the damage after letting the terminal's lock go, at most once every 16 ms and at once after an
-  idle frame; a scroll moves pixels and draws only the new line. Replies programs asked for
-  (`CSI 6 n`, `CSI c`) go to the console's input from that thread.
+  that changed into the terminal's own buffer under the terminal's lock alone, then composes
+  the desktop under the display's and the screen's locks and flushes, at most once every 16 ms
+  and at once after an idle frame; a console write waits at most for the terminal's render,
+  never for the desktop's repaint (D186). A scroll moves pixels and draws only the new line.
+  Replies programs asked for (`CSI 6 n`, `CSI c`) go to the console's input from that thread.
+- The cursor blinks 500 ms shown, 500 ms hidden, from the last byte in or out, while the
+  terminal is focused and the program has not asked for a steady (`CSI ? 12 l`) or hidden
+  (`CSI ? 25 l`) cursor; without focus it is a 1 px outline of its cell (D186). The thread
+  that looks at the clock each second also wakes at the blink's next change.
+- A display too small for the desktop (below about 658x458) gets the full-screen console
+  (docs/ux/desktop-polish-v0.3.md section 2): the terminal on the whole display, its grid
+  inside an 8 px padding from 320x240 up, on every pixel below; no bar, chrome, pointer or
+  window server (`/dev/window` requests fail); the wheel scrolls the scrollback.
 
 ## Adding a driver
 
@@ -279,14 +355,29 @@ folder, the disk and the channel uses all 8.
    QEMU arguments in `xtask` (`ARCHES`). A hot path gets a gated benchmark (D27).
 5. Record the decision in `docs/decisions.md` and the driver in the roadmap's support matrix.
 
+## Keyboard layouts and Caps Lock's light (D185)
+
+The input layer (`kernel/src/input.rs`) turns key presses into characters through the chosen
+layout (`drivers/src/input/layout.rs`: 14 layouts, four levels per key of the main block: plain,
+Shift, the third level and the third level with Shift), then into UTF-8 for the console and a
+`character` in each `Key` event for the desktop. A dead key's accent waits for the next key:
+it combines into a Latin-1 letter, or types alone after Space or itself, or before a key it
+does not combine with (that accent then reaches windows as a `Key` record of code 0);
+Backspace takes it back. Right Alt is AltGr (the `ALT_GRAPH` modifier, 32) on layouts with a
+third level, and either Alt is Option in the macOS profile. Caps Lock capitalises letters
+only, accented ones included. A virtio keyboard that reports `LED_CAPSL` in its `EV_LED` bits
+gets its status queue (queue 1, 4 entries) set up, and the driver writes one `EV_LED` event
+whenever Caps Lock changes.
+
 ## Not yet
 
-Device interrupts for drivers (issue #97, slice 3: GICv2 SPIs, the PLIC, MSI-X; then input
-needs no poller), keyboard layouts other than US and the keyboard's LEDs, the virtio GPU's
-cursor queue, display events (a mode change), several requests in flight and interrupts on
-virtio-blk, modes whose buffer is larger than one DMA
+Interrupts for the other virtio drivers (block, console and the agent channel, GPU, network,
+entropy: they still poll until an answer comes), the I/O APIC for device lines and a line per
+queue, keyboard layouts beyond D185's 14 and the Num and Scroll Lock lights, display events (a mode
+change), several requests in flight on virtio-blk,
+virtio-console input as a console, reseeding the kernel's generator from virtio-rng, the About
+pane's device list, modes whose buffer is larger than one DMA
 region (4 MiB), and a display lock that sleeps instead of spinning, DMA cache
 maintenance for non-coherent devices, `ranges` translation in the device tree, PCI on Arm and
 RISC-V (a BAR allocator), ACPI devices beyond the `MCFG` (AML, M13), unmapping windows and
-unbinding drivers (with cross-CPU TLB shootdown for kernel mappings), an IOMMU, and the
-`devices` capability's CLI and MCP front-ends (M10).
+unbinding drivers (with cross-CPU TLB shootdown for kernel mappings), and an IOMMU.

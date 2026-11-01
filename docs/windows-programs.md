@@ -17,8 +17,10 @@ listing; part 2b (D124) brings all of it to ARM64 programs on aarch64; GUI progr
 gets the mouse and keyboard as Win32 messages and shows message boxes. Programs on MSVC's C
 runtime (D146) run too: C programs built with `/MD` import `vcruntime140.dll` and the
 Universal C Runtime (`ucrtbase.dll`, through the `api-ms-win-crt-*` API sets), which the layer
-provides as well. Programs that need C++ exceptions, MinGW's `msvcrt.dll` or Rust's standard
-library import more than this and are refused with the name of the first missing function.
+provides as well, with structured exception handling and C++ exceptions (D177). Programs on
+the C++ standard library's DLL (`msvcp140.dll`) import more than this and are refused with
+the name of the first missing function; programs on MinGW's `msvcrt.dll` and on Rust's
+standard library run (D189, below).
 
 ## Add a program to the image
 
@@ -29,24 +31,39 @@ cargo xtask run --arch aarch64 --add path/to/hello-arm64.exe
 ```
 
 `--add` works as for [Linux programs](linux-programs.md): the file goes to `/bin/hello.exe`.
-Adding a Windows program (a file that starts with `MZ`) also installs the Windows layer in an
-x86_64 or aarch64 image; an image without one does not carry the layer at all (D18). At the prompt, type
+The x86_64 and aarch64 release images carry the Windows layer at `/usr/lib/eggos/windows`
+(D152), with or without added files, so a program in the host folder (`--apps`) runs too
+(`/media/host/hello.exe`). At the prompt, type
 `hello.exe` (or its path) and its arguments; the shell reports its exit code's low 8 bits in
 `$?`, as for any program (`ExitProcess(300)` shows `44`).
 
 | Program | x86_64 | aarch64 | riscv64 |
 |---------|--------|---------|---------|
-| x64 (machine `0x8664`) | runs | refused by the layer, status 126 | `Exec format error`, 126 |
+| x64 (machine `0x8664`) | runs | runs translated (D191) | `Exec format error`, 126 |
 | ARM64 (machine `0xAA64`) | refused by the layer, status 126 | runs | `Exec format error`, 126 |
 
-The layer names the reason for the other CPU's program (`windows: /bin/x.exe: an x64 program,
-and this computer runs ARM64 programs (EggOS does not translate x64 programs for Arm yet)`).
-Without the layer, and on riscv64, a Windows program is refused with `Exec format error` and
-status 126.
+The layer names the reason for an ARM64 program on x86_64 (`windows: /bin/x.exe: an ARM64
+program, and this computer runs x64 programs`). On aarch64 an x64 program runs translated
+ahead of time into AArch64 code (D191, [Translation](translation.md)): the first launch
+translates it and keeps the result in `/var/cache/eggos/translate/<key>.tx`, later launches
+map it from there. Its calls into Windows go through generated bridges to the layer's own
+functions, and the layer's callbacks (window procedures, thread start routines, TLS
+callbacks) come back through the translation's entry trampoline. A function the program finds
+with `GetProcAddress` comes back as the address of a stub of the translated code whose
+bridge is made on its first use (64 functions at most; past them the program gets the native
+address, which its translated code cannot call). `app install` accepts an x64 program on
+aarch64; its first launch translates it. An instruction EggOS does
+not translate, or a jump to code the translator did not find, ends the program with a line
+that names its address (`the program uses an instruction EggOS does not translate yet, at
+...`); a fault in translated code ends it too, with the exception's status, since its own
+exception handlers do not run yet.
+
+On riscv64, whose image carries no Windows layer, a Windows program is refused with `Exec
+format error` and status 126.
 
 ## Install a program as an app
 
-On an image with the layer, `app install /media/host/hello.exe` installs a program from the
+On x86_64 and aarch64, `app install /media/host/hello.exe` installs a program from the
 host share (or anywhere) into `/Applications/hello/`, with a launcher row and a desktop icon;
 a double-click opens it (a GUI program's window appears, a console program runs in the
 terminal) and `app uninstall hello` removes it. `--window` shows the installer's dialogs.
@@ -112,6 +129,142 @@ the macOS layer's (`eggos-c-format`), with Windows' rules: `%ld` is 32-bit, `%I6
 `%ls` and `%S` for wide strings, and in the wide functions `%s` is wide. Streams are in text
 mode unless opened with `b`: a written `\n` becomes `\r\n` in the file, and reading turns it
 back.
+
+## Exceptions: `__try`, C++ and faults
+
+Programs that handle exceptions run as on Windows (D177), x64 on x86_64 and ARM64 on aarch64:
+
+```
+cl /O2 /MD /EHsc app.cpp                                   :: C++ with try, throw and catch
+cl /O2 /MD seh.c                                           :: C with __try and __except
+```
+
+- **C++ exceptions.** `throw` and `catch` work as the compiler arranged them, with
+  `__CxxFrameHandler4` (x64's default) or `__CxxFrameHandler3` (`/d2FH4-`, and older
+  compilers): catching by type, through a base class, by value (the copy constructor runs) or
+  by reference, `catch (...)`, `throw;`, a throw from inside a catch block, the destructors of
+  every frame left, `noexcept` functions ending the program, and `std::exception` and its
+  standard subclasses from the headers. An exception nothing catches ends the program
+  through `terminate`, with status 3.
+- **Structured exceptions.** `__try`/`__except` with filters (`GetExceptionCode()`,
+  `GetExceptionInformation()`, `EXCEPTION_CONTINUE_EXECUTION`), `__try`/`__finally`
+  (`AbnormalTermination()`), `__leave`, `RaiseException`, vectored exception and continue
+  handlers, `SetUnhandledExceptionFilter`, and `RtlCaptureContext`, `RtlLookupFunctionEntry`,
+  `RtlVirtualUnwind` and `RtlUnwindEx` for programs that walk their own stack.
+- **Faults are exceptions.** A fault in the program's code reaches its handlers as the
+  exception Windows raises: an access violation (`0xC0000005`, with read, write or execute and
+  the address), an integer division by zero (`0xC0000094`; on ARM64 MSVC's own check raises
+  it), other arithmetic errors, an illegal instruction (`0xC000001D`), a breakpoint
+  (`__debugbreak()`) and a misalignment. `__fastfail` ends the program at once with
+  `0xC0000409`. A fault nothing handles ends the program as before, after a line on standard
+  error naming it and its address as the program's module and offset (D151); an exception the
+  program raised and nothing handled ends it with the exception's code as its status, after a
+  line naming the code.
+- **C signals.** `signal` and `raise`, and MSVC's startup giving an unhandled access
+  violation, illegal instruction or arithmetic error to the `SIGSEGV`, `SIGILL` or `SIGFPE`
+  handler a program set.
+
+`tests/windows-crt/eggcpp.cpp` is our own example, which the Windows C runtime boot test runs
+in CI (`cargo xtask windows-crt`).
+
+## Programs built on Rust's standard library
+
+A Windows program written in Rust and built for `x86_64-pc-windows-msvc` or
+`aarch64-pc-windows-msvc` runs as it is (D189): printing, `std::process::Command` (`output`,
+`spawn` with piped standard streams, `wait`, exit codes), files (`fs::write`, `read_to_string`,
+`set_len`, `metadata`, `remove_file`), threads with `Mutex`, `Condvar` and thread-locals,
+`thread::sleep`, `Instant` and `SystemTime`, `HashMap` (seeded by `ProcessPrng`), and panics,
+printed on standard error with exit code 101. The layer implements what std imports for
+them: ntdll's `NtReadFile`, `NtWriteFile`, `NtOpenFile` and `NtCreateNamedPipeFile` (std's
+anonymous pipes), overlapped reads on pipes, `ReadFileEx`, `WriteFileEx` and alertable waits,
+`GetFileInformationByHandleEx`, `SetFileInformationByHandle`, `ProcessPrng` and
+`GetUserProfileDirectoryW`; `NUL` is `/dev/null`. Not yet: `fs::copy`, `fs::canonicalize`,
+links, `File::lock`, `fs::remove_dir_all`, networking and the process attribute-list API
+(such a program does not start, and the message names the missing function).
+
+## Programs built with MinGW
+
+A C program built by MinGW-w64 (GCC or llvm-mingw) against its default C runtime, the old
+`msvcrt.dll`, runs as it is on x86_64 and aarch64 (D189): MinGW's startup (`__getmainargs`,
+`atexit`, `_fmode`, the TLS callbacks and pseudo-relocations, which use `VirtualQuery`),
+MinGW's own `printf` (which locks the streams through `_lock` and writes them with `fputc`)
+and the old runtime's `printf` family (`printf`, `fprintf`, `sprintf`, `_snprintf`,
+`_scprintf`, `wprintf` and their `v` forms, with `%I64d`), `stdout` and `stderr` through
+`__iob_func`, `setvbuf`, the heap, strings, `qsort`, `getenv`, `signal` and `raise`,
+`strerror`, `localeconv`, `_setmode` and `exit`. The layer gives `msvcrt.dll` the same
+functions as the Universal C Runtime where the two agree; a program built with `_dowildcard`
+gets its wildcard arguments expanded (see below). Not yet: MinGW DLLs (`__dllonexit`),
+`_putenv`, `setlocale`, the old runtime's `swprintf` and line-ending translation in text mode.
+
+`tests/windows-mingw/eggmingw.c` is our own example: CI builds it with llvm-mingw for x64 and
+ARM64, and the Windows C runtime boot test runs it (`cargo xtask windows-crt`).
+
+## APCs, abandoned mutexes, ordinals and wildcards
+
+`QueueUserAPC` queues a call for a thread, which runs it in its next alertable wait:
+`SleepEx`, `WaitForSingleObjectEx`, `WaitForMultipleObjectsEx` and
+`MsgWaitForMultipleObjectsEx` with `MWMO_ALERTABLE` run every queued call and return
+`WAIT_IO_COMPLETION`, and a call queued while the thread already waits wakes it. A thread that
+ends while it owns a mutex abandons it: the next wait takes it with `WAIT_ABANDONED` (D189).
+`MsgWaitForMultipleObjects` also wakes for a message in the thread's queue. Programs linked
+with the SDK's `ws2_32.lib` import Winsock by ordinal from `ws2_32.dll`, whose numbers differ
+from `wsock32.dll`'s in three places; both work, and `GetProcAddress` with an ordinal agrees.
+`FindFirstFileW` matches names with DOS's rules: `*.*` is everything, `*.` names without an
+extension, `?` one character or none before a dot or the end, and `<`, `>` and `"` as Windows'
+file systems match them. `tests/windows-crt/eggsync.c` is our own example, in the same boot
+test.
+
+## Named objects, file mappings and wildcard arguments
+
+A mutex, event, semaphore or file mapping created with a name is shared with every Windows
+program that opens the name (`OpenMutexW`, `OpenEventW`, `OpenSemaphoreW`,
+`OpenFileMappingW`, and the `Create` functions, which then answer `ERROR_ALREADY_EXISTS`).
+Names follow Windows' rules: `Global\` and `Local\` in either case, a bare name in `Local\`,
+one namespace for every kind (another kind's name is `ERROR_INVALID_HANDLE`, a missing one
+`ERROR_FILE_NOT_FOUND`), and a mutex whose owner ended comes back `WAIT_ABANDONED`. A wait for
+one sees another program's change within 10 ms. `CreateFileMappingW` maps a file or, with
+`INVALID_HANDLE_VALUE`, memory of its own; `MapViewOfFile(Ex)` gives views that read, write
+(`FILE_MAP_WRITE` reaches the file and every other view), copy on write (`FILE_MAP_COPY`) or
+run, `FlushViewOfFile` writes a view back and `UnmapViewOfFile` removes it.
+`SignalObjectAndWait` signals one object and waits for another. A program built with
+`setargv.obj` (MSVC) or `_dowildcard` (MinGW) gets each argument with `*` or `?` in its last
+part replaced by the matching names, sorted, with the folder as written; a pattern that
+matches nothing stays as it is. `tests/windows-crt/eggnamed.c` is our own example, in the same
+boot test: it starts a copy of itself with `*.txt` and shares a mutex, an event, a semaphore
+and a mapping with it (D189).
+
+## Programs that start other programs
+
+A Windows program can start another program, Windows or Linux, and read its output (D178,
+D189):
+
+- **`CreateProcessW` and `CreateProcessA`** find the program from a path or a name (the
+  program's own folder, then the working folder, then `PATH`; `.exe` is added to a name
+  without an extension), and give it its command line (split and quoted back exactly as the C
+  runtime parses it), a working folder, and the caller's environment or the block it passes
+  (ANSI, or UTF-16 with `CREATE_UNICODE_ENVIRONMENT`). `PROCESS_INFORMATION`'s process handle
+  waits (`WaitForSingleObject`, `WaitForMultipleObjects`), gives the exit code
+  (`GetExitCodeProcess`, `STILL_ACTIVE` while it runs) and ends the child
+  (`TerminateProcess`); its thread handle waits for the same end.
+- **Pipes.** `CreatePipe` makes an anonymous pipe. `ReadFile` at its end (all writers closed)
+  fails with `ERROR_BROKEN_PIPE`, and `WriteFile` to a pipe nobody reads with
+  `ERROR_NO_DATA`. `PeekNamedPipe` tells how many bytes wait and copies the first ones without
+  taking them: `ReadFile` still gets them.
+- **Inherited handles.** As on Windows, a child gets the handles marked inheritable when it
+  is started with `bInheritHandles` TRUE, with the same values, and none but its standard
+  ones otherwise: `SECURITY_ATTRIBUTES.bInheritHandle` (`CreatePipe`, `CreateFileW`/`A`),
+  `SetHandleInformation` and `GetHandleInformation` (`HANDLE_FLAG_INHERIT`,
+  `HANDLE_FLAG_PROTECT_FROM_CLOSE`) and `DuplicateHandle` set and read it. With
+  `STARTF_USESTDHANDLES` the child's standard input, output and error are the handles
+  `STARTUPINFO` names. Events, mutexes, semaphores and process handles are never inherited.
+- **Creation flags.** `CREATE_SUSPENDED` starts the child at once; `ResumeThread` on its
+  thread handle answers 1, then 0, as if it had waited. `CREATE_NEW_CONSOLE`,
+  `CREATE_NO_WINDOW` and `DETACHED_PROCESS` change nothing: the child shares the terminal.
+  `CREATE_NEW_PROCESS_GROUP` gives it a process group of its own.
+
+`tests/windows-crt/eggspawn.c` is our own example: it starts a copy of itself with its output
+through a pipe, then others to terminate and to resume; the Windows C runtime boot test runs
+it in CI.
 
 ## GUI programs
 
@@ -179,6 +332,7 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
 | Files | `CreateFileW`/`A`, `ReadFile`, `WriteFile`, `CloseHandle`, `GetFileSize`, `GetFileSizeEx`, `SetFilePointer`, `SetFilePointerEx`, `GetFileType`, `FlushFileBuffers` |
 | Memory | `GetProcessHeap`, `HeapAlloc`, `HeapFree`, `HeapReAlloc`, `HeapSize`, `HeapCreate`, `HeapDestroy`, `VirtualAlloc`, `VirtualFree`, `VirtualProtect`; ntdll's `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `__chkstk` |
 | Process | `GetCommandLineW`/`A`, `ExitProcess`, `TerminateProcess` (itself), `GetCurrentProcess`, `GetCurrentProcessId`, `GetCurrentThread`, `GetCurrentThreadId` |
+| Other processes and pipes (D178, D189) | `CreateProcessW`/`A`, `OpenProcess`, `GetProcessId`, `GetExitCodeProcess`, `TerminateProcess`, `CreatePipe`, `PeekNamedPipe`, `SetHandleInformation`, `GetHandleInformation`, `DuplicateHandle` (files, pipes, objects, the caller's process), `ResumeThread` on a child's thread handle |
 | Environment | `GetEnvironmentVariableW`/`A`, `GetEnvironmentStrings`, `GetEnvironmentStringsW`/`A`, `FreeEnvironmentStringsW`/`A` |
 | Time | `GetTickCount`, `GetTickCount64`, `QueryPerformanceCounter`, `QueryPerformanceFrequency` (10 MHz), `GetSystemTimeAsFileTime`, `GetSystemTimePreciseAsFileTime`, `Sleep`, `SleepEx` |
 | Errors and TLS | `GetLastError`, `SetLastError`, `TlsAlloc`, `TlsFree`, `TlsGetValue`, `TlsSetValue`, and a program's static TLS (its TLS directory and callbacks) |
@@ -201,7 +355,10 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
 | C runtime: heap | `malloc`, `calloc`, `realloc`, `_recalloc`, `free`, `_msize` (the process heap) |
 | C runtime: strings and characters | `strlen`, `strnlen`, `strcmp`, `strncmp`, `_stricmp`, `_strnicmp`, `strcpy`, `strncpy`, `strcat`, `strncat`, `_strdup`, `strcpy_s`, `strcat_s`, `wcslen`, `wcsnlen`, `wcscmp`, `wcsncmp`, `_wcsicmp`, `wcscpy`, `wcsncpy`, `wcscat`, `_wcsdup`, `wcscpy_s`, `wcscat_s`, `isalpha`, `isdigit`, `isalnum`, `isspace`, `isupper`, `islower`, `isxdigit`, `ispunct`, `iscntrl`, `isprint`, `tolower`, `toupper`, `towlower`, `towupper`, `iswspace`, `iswalpha`, `iswdigit`, `strtol`, `strtoul`, `strtoll`, `strtoull`, `atoi`, `atol`, `atoll`, `wcstol`, `wcstoul`, `_wtoi`, `_wtol` (the "C" locale) |
 | C runtime: streams | `__acrt_iob_func` (`stdin`, `stdout`, `stderr`), `fopen`, `_wfopen`, `fopen_s`, `_wfopen_s`, `fclose`, `fread`, `fwrite`, `fgetc`, `getc`, `fputc`, `putc`, `ungetc`, `fgets`, `fputs`, `puts`, `fflush`, `fseek`, `_fseeki64`, `ftell`, `_ftelli64`, `rewind`, `fgetpos`, `fsetpos`, `feof`, `ferror`, `clearerr`, `_fileno`, `remove`, `_wremove`; `printf`'s family through `__stdio_common_vfprintf`(`_s`), `__stdio_common_vfwprintf`(`_s`), `__stdio_common_vsprintf`, `__stdio_common_vsprintf_s`, `__stdio_common_vsnprintf_s`, `__stdio_common_vswprintf`, `__stdio_common_vswprintf_s`, `__stdio_common_vsnwprintf_s` (`%e`, `%f` and `%g` too) |
+| C runtime: low-level I/O (D179) | `_open`, `_wopen`, `_sopen_s`, `_wsopen_s` (Windows paths; `_O_TEMPORARY` removes the name at once; sharing modes checked, files always shared), `_close`, `_read`, `_write`, `_lseek`, `_lseeki64` on the descriptors `_fileno`, `_fdopen` and `_open_osfhandle` use; bytes as they are, in text mode too |
 | C runtime: utility and time | `rand`, `srand` (our own generator), `abs`, `labs`, `llabs`, `_abs64`, `qsort`, `bsearch`, `_time64` |
+| Classic Win32 apps (D174) | ANSI windows: `RegisterClassA`/`ExA`, `CreateWindowExA`, `DefWindowProcA`, `SendMessageA`, `SetWindowTextA`, `GetWindowTextA`, `GetWindowTextLengthA`, `SendDlgItemMessageA`, `GetDlgItemTextA`, `SetDlgItemTextA`, `MessageBoxA`, `AppendMenuA`, `IsDialogMessageA`, and the `A` names of `GetMessage`, `PeekMessage`, `DispatchMessage`, `PostMessage`, `GetWindowLong`(`Ptr`), `SetWindowLong`(`Ptr`), `LoadCursor`, `LoadIcon` (a window of a class `RegisterClassA` made gets its messages' text as UTF-8, the ANSI code page); `DefDlgProcW`/`A` (dialogs a program builds, owned `WS_POPUP` windows shown as the server's dialogs of their owner), `CheckDlgButton`, `IsDlgButtonChecked`; the `COMBOBOX` drop-down list (`CB_ADDSTRING`, `CB_INSERTSTRING`, `CB_DELETESTRING`, `CB_RESETCONTENT`, `CB_GETCOUNT`, `CB_GETCURSEL`, `CB_SETCURSEL`, `CB_GETLBTEXT`(`LEN`), `CB_FINDSTRING`(`EXACT`), `CB_SELECTSTRING`, `CB_SHOWDROPDOWN`, `CB_GETDROPPEDSTATE`, `CB_GETITEMHEIGHT`; `CBN_*`); `CheckMenuItem`, `EnableMenuItem`, `GetMenuState`, `GetMenuItemRect`; `GetWindowRect`, `ClientToScreen`, `ScreenToClient`, `SetWindowPos` and `MoveWindow` on any window; `SetRect`, `SetRectEmpty`, `CopyRect`, `OffsetRect`, `InflateRect`, `IntersectRect`, `UnionRect`, `IsRectEmpty`, `EqualRect`, `PtInRect`; `SystemParametersInfoA`/`W` (`SPI_GETWORKAREA`), `GetKeyboardState`, `GetKeyState`, `GetAsyncKeyState`, `SetForegroundWindow`, `GetForegroundWindow`, `MessageBeep`, `WinHelpA`/`W` (no help viewer: fails), `GetDialogBaseUnits`, the clipboard (`OpenClipboard`, `EmptyClipboard`, `SetClipboardData`, `GetClipboardData`, `IsClipboardFormatAvailable`, `CountClipboardFormats`, `CloseClipboard`; the program's own), `WM_LBUTTONDBLCLK` for `CS_DBLCLKS` classes; gdi32's `CreateCompatibleDC`, `DeleteDC`, `CreateCompatibleBitmap`, `BitBlt` and `PatBlt` (every raster operation), `Polygon`, `Polyline`, `IntersectClipRect`, `SelectClipRgn`, `CreateRectRgn`(`Indirect`), `CreateFontW`/`A`, `CreateFontIndirectW`/`A`, `GetTextMetricsW`/`A` (Egg Mono's metrics for every font), `GetTextExtentPoint32A`, `ExtTextOutW`/`A`, `TextOutA`, `GetDeviceCaps`, `SetMapMode` (`MM_TEXT`), `CreateHatchBrush` (drawn solid), `StartDocW`/`A`, `EndDoc`, `StartPage`, `EndPage`, `AbortDoc` (no printers: they fail); comdlg32's `GetOpenFileNameA`, `GetSaveFileNameA`, `PrintDlgW`/`A` (`PDERR_NODEFAULTPRN`); comctl32's `InitCommonControls` (also by its ordinal 17) and `InitCommonControlsEx` (the standard classes); kernel32's `CreateDirectoryA`, `DeleteFileA`, `RemoveDirectoryA`, `MoveFileW`/`A`, `MoveFileExW`/`A`, `GetModuleFileNameA`, `FormatMessageA`, `MulDiv`, `GlobalAlloc` moveable blocks with `GlobalLock`, `GlobalUnlock`, `GlobalSize` (and their `Local` names); the C runtime's `getenv`, `atof`, `strtod`, `strspn`, `strcspn`, `sqrtf`, `_wassert`, `_fdopen`, `_open_osfhandle` and `scanf`'s family through `__stdio_common_vsscanf` (`_s` forms included) |
+| Common controls, GDI+ and COM (D178) | comctl32's `msctls_statusbar32` (`SB_*`, `CreateStatusWindowW`), `msctls_progress32` (`PBM_*`), `SysTabControl32` (`TCM_*`, `TCN_*`), `SysListView32` in report view with its `SysHeader32` (`LVM_*`, `HDM_*`, `LVN_*`, `NM_*`), `SysTreeView32` (`TVM_*`, `TVN_*`), `ToolbarWindow32` (`TB_*`, `WM_COMMAND`), `ImageList_*`, `InitCommonControlsEx` for every class; STATIC `SS_BITMAP`/`SS_ICON` with `STM_SETIMAGE`; subclassing controls (`GWLP_WNDPROC`, `CallWindowProcW`); `DialogBoxParamW`, `CreateDialogIndirectParamW`, `EndDialog`, `MapDialogRect`; `LoadAcceleratorsW`, `TranslateAcceleratorW`; `InsertMenuItemW`, `SetMenuItemInfoW`, `GetMenuItemInfoW`, `TrackPopupMenuEx`; window properties, `RegisterWindowMessageW`, `EnumWindows`, `GetWindow`, `GetAncestor`, the US keyboard layout (`ToUnicodeEx`, `VkKeyScanExW`, `MapVirtualKeyW`), `SendInput` to the program's own windows; gdi32's `CreateDIBSection`, `GetDIBits`, `GetObjectW`, `GetPixel`, pattern brushes; `CreateIconIndirect`, `CreateIconFromResourceEx`, `GetIconInfo`, `DrawIconEx`, `CopyImage`, `LoadImageW`; `FindResourceW`, `LoadResource`, `LockResource`, `SizeofResource`, `EnumResourceNamesW`; GDI+'s `GdiplusStartup`, `GdipCreateBitmapFromFile` (PNG, BMP), `GdipCreateHBITMAPFromBitmap` and the image functions; ole32's `CoInitialize`(`Ex`), `CoCreateInstance` (in-process: `Scripting.Dictionary`), `CLSIDFromProgID`, `CreateStreamOnHGlobal`; oleaut32's BSTRs, VARIANTs and SAFEARRAYs; advapi32 (an empty, read-only registry), wsock32, WinINet (HTTP), version resources, `StrCmpLogicalW`, shell32's folders, file operations and `ShellExecuteExW` of programs; kernel32's locale functions (en-US), `.ini` files, `CreateProcessW` and Toolhelp snapshots |
 | Strings | `MultiByteToWideChar`, `WideCharToMultiByte` (`CP_UTF8`, and `CP_ACP`/`CP_OEMCP`, which are UTF-8 too; `MB_ERR_INVALID_CHARS`, `WC_ERR_INVALID_CHARS`), `lstrlenW`/`A`, `lstrcmpW`, `lstrcmpiW`, `CompareStringOrdinal`, `CompareStringW`/`Ex` (ordinal, `NORM_IGNORECASE`), `FormatMessageW` (system messages, `FORMAT_MESSAGE_ALLOCATE_BUFFER`), user32's `CharUpperW` and `CharLowerW`, shell32's `CommandLineToArgvW` |
 | Environment, more | `SetEnvironmentVariableW`/`A`; `GetEnvironmentStrings*` return a copy that reflects changes |
 | System and time, more | `GetSystemInfo`, `GetNativeSystemInfo` (`PROCESSOR_ARCHITECTURE_AMD64`, 9, on x86_64; `PROCESSOR_ARCHITECTURE_ARM64`, 12, on aarch64), `GetVersionExW`, `GetVersion`, ntdll's `RtlGetVersion` (Windows 11: 10.0, build 26100), `GetSystemTime`, `GetLocalTime` (UTC), `FileTimeToSystemTime`, `SystemTimeToFileTime`, `FileTimeToLocalFileTime`, `LocalFileTimeToFileTime`, `LocalAlloc`/`LocalFree`, `GlobalAlloc`/`GlobalFree` (fixed blocks) |
@@ -226,46 +383,54 @@ size needed, as each function documents.
 
 ## What does not work yet
 
-- **Programs on a C++ runtime, on MinGW's `msvcrt.dll` or on Rust's std**: they import more
-  (C++ exception handling, `ProcessPrng`, more of the C library), which later parts add. The
-  layer names the first function it lacks. Of MSVC's C runtime, `scanf`'s family, `getenv`,
-  `setlocale`, `signal`, `setjmp`, the math library, wide streams, low-level I/O (`_open`),
-  `rename`, `tmpfile` and `_set_invalid_parameter_handler` are missing (D146's "Not yet"); a
+- **Programs on the C++ standard library's DLL (`msvcp140.dll`) and the rest of Rust's std**:
+  they import more (iostreams, `CopyFileExW`, more of the C library), which later parts add. The layer names the first function it lacks. C++'s `std::exception_ptr`,
+  `dynamic_cast` and `typeid` are missing too (D177's "Not yet"). Of MSVC's C runtime,
+  `setlocale`, `setjmp`, the math library beyond `sqrtf`, wide streams, low-level I/O's line
+  ending translation and permission modes (`_open` itself works, D179), `rename`, `tmpfile` and `_set_invalid_parameter_handler` are missing (D146's "Not yet"); a
   function given an invalid parameter returns its documented error instead of ending the
   program, and one lock serialises all of stdio (a thread blocked reading `stdin` holds up
   the others' stdio calls).
-- **Other processes** (`CreateProcessW`, pipes) and **UTF-16 console polish** (line endings as
-  `\r\n`, `ReadConsoleW` across multi-byte input): a later part.
+- **Named pipes** (`CreateNamedPipeW`, `ConnectNamedPipe`; overlapped reads and writes work on
+  anonymous pipes and files), handles duplicated into another process, a child that really waits
+  suspended (`CREATE_SUSPENDED` starts it at once), job objects, and the C runtime's
+  `_spawn*`, `system` and `_popen` (D189's "Not yet"); **UTF-16 console polish** (line endings
+  as `\r\n`, `ReadConsoleW` across multi-byte input): a later part.
 - **x64 programs on aarch64** (and ARM64 programs on x86_64): an x64 program on Arm needs its
-  code translated ahead of time (D17), which EggOS does not do yet; ARM64EC and ARM64X hybrid
+  code translated ahead of time (D17), which EggOS does not do yet (designed in D191,
+  [translation](translation.md); only the decoder exists so far); ARM64EC and ARM64X hybrid
   images run only as plain ARM64 code (their x64 parts are not supported).
 - **DOS wildcard special cases** (`a?` matching `a`, `*.` matching names without an
   extension); `lstrcmpW` and `lstrcmpiW` compare ordinally, not by locale;
   `DuplicateHandle(GetCurrentThread())` is refused.
-- **Abandoned mutexes** (`WAIT_ABANDONED`), `SuspendThread`, `TerminateThread`, named objects,
-  alertable waits and APCs, `FlsFree` and `TlsFree` clearing other threads' slots (only the
-  caller's), the TLS expansion slots (64 TLS and 64 FLS slots per thread).
+- `SuspendThread`, `TerminateThread`, `FlsFree` and `TlsFree` clearing other threads' slots
+  (only the caller's), the TLS expansion slots (64 TLS and 64 FLS slots per thread); opening a
+  named mapping of a file from another program, and `Local\` names per user (D189's "Not
+  yet").
 - **Creating and removing** files and directories: the file system is read-only, so
   `CreateDirectoryW`, `DeleteFileW` and `RemoveDirectoryW` on a path that exists (or could)
   fail with `ERROR_ACCESS_DENIED`.
 - **Time zones**: local time is UTC.
-- **Structured exception handling**: a fault ends the program as a signal would end a Linux
-  one, after a line on standard error naming the fault and its address as the program's
-  module and offset (D151); no `__try`/`__except`, no vectored handlers, no unwinding. The one
-  exception: on ARM64, a read of `CurrentEL`, which MSVC's atomics helpers make once and step
-  over in their own handler, reads exception level 0 and the program goes on.
+- **Exceptions through the layer's own code** (D177's "Not yet"): a fault inside a Windows
+  function the program called ends the program, as does an exception thrown out of a window
+  procedure through `DispatchMessage`, or one raised inside a filter or `__finally` block and
+  caught outside its function. A stack overflow is not an exception yet, and on ARM64 a
+  context resumed after a fault loses `x16`. On ARM64 a read of `CurrentEL`, which MSVC's
+  atomics helpers make once, still reads exception level 0 without an exception (D151).
 - **`KUSER_SHARED_DATA`**: the page at `0x7ffe0000` holds only `ProcessorFeatures`; its clocks,
   version numbers and the rest read as zero.
-- **DLLs**: only the layer's own kernel32, ntdll, shell32 (`CommandLineToArgvW`), user32,
-  gdi32, comdlg32, vcruntime140 and the Universal C Runtime (what the tables above list); a program that imports another DLL (comctl32, ws2_32, its
-  own) or a function they lack is refused. Imports by ordinal are refused.
+- **DLLs**: only the layer's own kernel32, ntdll, shell32, user32, gdi32, comdlg32, comctl32,
+  vcruntime140, the Universal C Runtime, gdiplus, ole32, oleaut32, advapi32, wsock32, winmm,
+  version, psapi, wininet, shlwapi, uxtheme and dwmapi (what the tables above list); a program
+  that imports another DLL (ws2_32, its own) or a function they lack is refused, and the layer
+  names it. Imports by ordinal work for comctl32, oleaut32 and wsock32.
 - **GUI programs beyond parts 1 and 2** (D129, D145): multi-line edits, selection and the
   clipboard in edits, `ES_PASSWORD` and `ES_NUMBER`, radio buttons and group boxes, combo
-  boxes, scroll bars, common controls, owner-drawn controls, subclassing a control,
+  boxes, scroll bars, owner-drawn controls,
   `WM_CTLCOLOR*` (controls draw Windows' default colours), hover looks, per-control pointers,
-  double clicks, menu keys (F10, Alt and mnemonics), submenus, `TrackPopupMenu`, accelerators,
+  double clicks, menu keys (F10, Alt and mnemonics), submenus,
   `EnableMenuItem` and `CheckMenuItem`, the picker's overwrite and not-found questions and its
-  filter choice, dialogs from resources, `GetTextMetricsW`, fonts other
+  filter choice, `GetTextMetricsW`, fonts other
   than Egg Mono and text
   beyond ASCII (drawn as `?`), double-click messages, screen coordinates in `MSG.pt` and
   `WM_MOUSEWHEEL` (client coordinates today), `SetCursor`, `GetWindowRect` and moving windows

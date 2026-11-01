@@ -1,3 +1,4 @@
+use crate::zone::Rule;
 use crate::{DateTime, FIRST_SETTABLE_YEAR, LAST_SETTABLE_YEAR};
 
 /// Why a text cannot set the clock.
@@ -21,11 +22,43 @@ pub enum ParseError {
 /// [`FIRST_SETTABLE_YEAR`] to [`LAST_SETTABLE_YEAR`], which every real-time clock EggOS writes
 /// can hold.
 pub fn parse_setting(text: &str, now: i64) -> Result<i64, ParseError> {
+    let (text, _) = without_utc_mark(text);
+    settable(moment_named(text, now)?)
+}
+
+/// The moment `text` names, as [`parse_setting`] reads it, but read as local time in the zone
+/// `rule` gives (D194, docs/ux/date-time-v0.3.md section 8.5): a time alone keeps the local
+/// date of `now`, a trailing `Z` or ` UTC` still means UTC, and the year range applies to the
+/// instant, not to the local reading.
+pub fn parse_local_setting(text: &str, now: i64, rule: &Rule) -> Result<i64, ParseError> {
+    let (bare, marked_utc) = without_utc_mark(text);
+    if marked_utc {
+        return parse_setting(text, now);
+    }
+    let local = moment_named(bare, now + rule.at(now).offset)?;
+    settable(rule.to_utc(local))
+}
+
+fn without_utc_mark(text: &str) -> (&str, bool) {
     let text = text.trim_matches(' ');
-    let text = match text.strip_suffix('Z') {
-        Some(rest) => rest,
-        None => text.strip_suffix(" UTC").unwrap_or(text),
-    };
+    match text.strip_suffix('Z') {
+        Some(rest) => (rest, true),
+        None => match text.strip_suffix(" UTC") {
+            Some(rest) => (rest, true),
+            None => (text, false),
+        },
+    }
+}
+
+fn settable(seconds: i64) -> Result<i64, ParseError> {
+    let year = DateTime::from_unix(seconds).year;
+    match (FIRST_SETTABLE_YEAR..=LAST_SETTABLE_YEAR).contains(&year) {
+        true => Ok(seconds),
+        false => Err(ParseError::YearOutOfRange),
+    }
+}
+
+fn moment_named(text: &str, now: i64) -> Result<i64, ParseError> {
     let bytes = text.as_bytes();
     let (date, time) = match bytes.len() {
         5 | 8 => (None, bytes),
@@ -51,11 +84,7 @@ pub fn parse_setting(text: &str, now: i64) -> Result<i64, ParseError> {
         minute,
         second,
     };
-    let seconds = moment.to_unix().ok_or(ParseError::NotADateAndTime)?;
-    match (FIRST_SETTABLE_YEAR..=LAST_SETTABLE_YEAR).contains(&year) {
-        true => Ok(seconds),
-        false => Err(ParseError::YearOutOfRange),
-    }
+    moment.to_unix().ok_or(ParseError::NotADateAndTime)
 }
 
 /// The time a `/proc/driver/rtc` text says the real-time clock reads, in seconds since the
@@ -178,6 +207,30 @@ mod tests {
             None
         );
         assert_eq!(parse_proc_driver_rtc(b""), None);
+    }
+
+    #[test]
+    fn a_local_setting_is_read_in_the_zone_unless_marked_utc() {
+        let paris = crate::zone::zone("Europe/Paris").unwrap();
+        for (text, expected) in [
+            ("2026-10-29 15:05", Ok(1_793_282_700)),
+            ("2026-10-29 15:05 UTC", Ok(1_793_286_300)),
+            ("15:05:30", Ok(1_793_282_730)),
+            ("2026-03-29 02:30", Ok(1_774_747_800)),
+            ("2000-01-01 00:30", Err(ParseError::YearOutOfRange)),
+        ] {
+            assert_eq!(parse_local_setting(text, NOW, &paris), expected, "{text}");
+        }
+        let new_york = crate::zone::zone("America/New_York").unwrap();
+        assert_eq!(
+            parse_local_setting("2099-12-31 23:30", NOW, &new_york),
+            Err(ParseError::YearOutOfRange)
+        );
+        let utc = crate::zone::zone("UTC").unwrap();
+        assert_eq!(
+            parse_local_setting("2026-10-29 14:05:09", NOW, &utc),
+            Ok(NOW)
+        );
     }
 
     #[test]

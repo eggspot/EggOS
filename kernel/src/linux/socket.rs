@@ -1,7 +1,10 @@
 //! The socket calls (D138): `socket`, `socketpair`, `bind`, `listen`, `accept`, `accept4`,
 //! `connect`, `sendto`, `sendmsg`, `recvfrom`, `recvmsg`, `getsockname`, `getpeername`,
 //! `shutdown`, `setsockopt` and `getsockopt`, and `read`, `write` and their vector forms on a
-//! socket, for `AF_UNIX` stream sockets ([`super::unix_socket`]).
+//! socket, for `AF_UNIX` stream sockets ([`super::unix_socket`]); `AF_UNIX` datagram sockets
+//! have their own module ([`unix_datagram`], D188), and `AF_INET` sockets have their
+//! own modules, datagrams [`inet`] (D157) and streams [`tcp`] (D158), which [`call`] hands
+//! their calls to.
 //!
 //! The calls read their arguments as Linux's ABI lays them out on the three architectures:
 //! `struct sockaddr_un` (a family and up to 108 bytes of path), `struct msghdr` and
@@ -15,18 +18,17 @@
 use super::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
 use super::file_changes::{UMASK, now, parent_and_name, refused};
 use super::files::{starting_points, walk_error};
-use super::poll::deadline_in;
+use super::poll::{self, deadline_in};
 use super::signals::{self, Interrupted};
-use super::terminal::{Waited, wait_for_input};
+use super::terminal::Waited;
 use super::thread::LinuxThread;
 use super::unix_socket::{
     self, Address, BindingKey, Connection, NotConnected, OutgoingRights, PeerCredentials, Side,
-    Taken, UnixSocket,
+    Taken, TakenPacket, UnixSocket,
 };
 use super::{
     Errno, Iovecs, MAX_IOVECS, MAX_RW_COUNT, credentials, ends_in_user_space, iovec, number,
 };
-use crate::console;
 use crate::process::Process;
 use crate::vfs::{self, Node, NodeKind, Refused};
 use alloc::sync::Arc;
@@ -36,11 +38,18 @@ use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
 
-/// The only address family: local sockets (`AF_UNIX`, `PF_UNIX`).
+pub mod inet;
+pub mod tcp;
+pub mod unix_datagram;
+
+/// Local sockets (`AF_UNIX`, `PF_UNIX`).
 pub const AF_UNIX: u32 = 1;
 
-/// The only socket type: a stream (`SOCK_STREAM`).
+/// Stream sockets (`SOCK_STREAM`).
 pub const SOCK_STREAM: u32 = 1;
+
+/// Connected sockets that keep each send apart (`SOCK_SEQPACKET`).
+pub const SOCK_SEQPACKET: u32 = 5;
 
 const SOCK_TYPE_MASK: u32 = 0xf;
 
@@ -56,6 +65,9 @@ pub mod message {
     pub const PEEK: u32 = 0x2;
     /// The control buffer was too small (returned).
     pub const CTRUNC: u32 = 0x8;
+    /// A packet was longer than the buffer (returned); asked for, a receive returns the
+    /// packet's whole length.
+    pub const TRUNC: u32 = 0x20;
     /// Do not wait.
     pub const DONTWAIT: u32 = 0x40;
     /// Wait until the whole buffer is read.
@@ -120,10 +132,6 @@ const MICROSECONDS_PER_SECOND: u64 = 1_000_000;
 )))]
 compile_error!("check Linux's socket constants and struct msghdr for this architecture");
 
-fn wake<P: Platform>() {
-    console::wake_input_waiters::<P>();
-}
-
 fn credentials_of<P: Platform>(process: &Process<P>) -> PeerCredentials {
     use credentials::Kind::{Group, User};
     PeerCredentials {
@@ -153,7 +161,22 @@ pub fn call<P: Platform>(
     context: &mut UserContext,
 ) -> ControlFlow<()> {
     let [first, second, third, fourth, fifth, sixth] = context.syscall_arguments();
+    if number != number::SOCKET
+        && number != number::SOCKETPAIR
+        && let Some((file, socket)) = inet::socket_at(thread, first)
+    {
+        return inet::call(process, thread, number, context, file, socket);
+    }
+    if number != number::SOCKET
+        && number != number::SOCKETPAIR
+        && let Some((file, socket)) = unix_datagram::socket_at(thread, first)
+    {
+        return unix_datagram::call(process, thread, number, context, file, socket);
+    }
     let result = match number {
+        number::SOCKET if first as u32 == inet::AF_INET => {
+            inet::socket(process, thread, second, third)
+        }
         number::SOCKET => socket::<P>(process, thread, first, second, third),
         number::SOCKETPAIR => socketpair::<P>(process, thread, first, second, third, fourth),
         number::BIND => bind::<P>(process, thread, first, second, third),
@@ -220,7 +243,7 @@ fn deadline<P: Platform>(timeout: u64) -> u64 {
     }
 }
 
-fn checked_type(domain: u64, kind: u64, protocol: u64) -> Result<u32, Errno> {
+fn checked_type(domain: u64, kind: u64, protocol: u64) -> Result<(u32, u32), Errno> {
     let kind = kind as u32;
     let flags = kind & SOCKET_FLAGS;
     let base = kind & !SOCKET_FLAGS;
@@ -233,10 +256,13 @@ fn checked_type(domain: u64, kind: u64, protocol: u64) -> Result<u32, Errno> {
     if !matches!(protocol as u32, 0 | AF_UNIX) {
         return Err(Errno::EPROTONOSUPPORT);
     }
-    if base != SOCK_STREAM {
+    if !matches!(
+        base,
+        SOCK_STREAM | SOCK_SEQPACKET | unix_datagram::SOCK_DGRAM
+    ) {
         return Err(Errno::ESOCKTNOSUPPORT);
     }
-    Ok(flags)
+    Ok((flags, base))
 }
 
 fn open_socket(socket: Arc<UnixSocket>, flags: u32) -> Arc<OpenFile> {
@@ -246,8 +272,8 @@ fn open_socket(socket: Arc<UnixSocket>, flags: u32) -> Arc<OpenFile> {
     ))
 }
 
-/// `socket(domain, type, protocol)`: a new open `AF_UNIX` stream socket's descriptor.
-/// `EINVAL` for unknown type bits, `EAFNOSUPPORT` for another family, `EPROTONOSUPPORT` for a
+/// `socket(domain, type, protocol)`: a new open `AF_UNIX` stream, packet or datagram socket's
+/// descriptor. `EINVAL` for unknown type bits, `EAFNOSUPPORT` for another family, `EPROTONOSUPPORT` for a
 /// protocol, `ESOCKTNOSUPPORT` for another type, `EMFILE` without a free descriptor.
 pub fn socket<P: Platform>(
     process: &Process<P>,
@@ -256,8 +282,13 @@ pub fn socket<P: Platform>(
     kind: u64,
     protocol: u64,
 ) -> Result<u64, Errno> {
-    let flags = checked_type(domain, kind, protocol)?;
-    let file = open_socket(UnixSocket::new(wake::<P>), flags);
+    let (flags, base) = checked_type(domain, kind, protocol)?;
+    let socket = match base {
+        unix_datagram::SOCK_DGRAM => UnixSocket::new_datagram(),
+        SOCK_SEQPACKET => UnixSocket::new_seqpacket(),
+        _ => UnixSocket::new(),
+    };
+    let file = open_socket(socket, flags);
     let limit = open_file_limit(process);
     let opened =
         thread
@@ -278,8 +309,12 @@ pub fn socketpair<P: Platform>(
     protocol: u64,
     pair: u64,
 ) -> Result<u64, Errno> {
-    let flags = checked_type(domain, kind, protocol)?;
-    let (first, second) = UnixSocket::pair(credentials_of(process), wake::<P>);
+    let (flags, base) = checked_type(domain, kind, protocol)?;
+    let (first, second) = match base {
+        unix_datagram::SOCK_DGRAM => unix_datagram::pair(),
+        SOCK_SEQPACKET => UnixSocket::seqpacket_pair(credentials_of(process)),
+        _ => UnixSocket::pair(credentials_of(process)),
+    };
     let close_on_exec = flags & open_flag::CLOEXEC != 0;
     let limit = open_file_limit(process);
     let files = thread.files();
@@ -433,7 +468,7 @@ pub fn bind<P: Platform>(
             (Address::Abstract(name), key)
         }
         Address::Path(path) => {
-            let node = make_socket_file::<P>(thread, &path)?;
+            let node = make_socket_file::<P>(process.id().get(), thread, &path)?;
             let key = BindingKey::Node(node);
             unix_socket::register(key.clone(), &socket)?;
             (Address::Path(path), key)
@@ -446,10 +481,14 @@ pub fn bind<P: Platform>(
     Ok(0)
 }
 
-fn make_socket_file<P: Platform>(thread: &LinuxThread, path: &[u8]) -> Result<Node, Errno> {
+fn make_socket_file<P: Platform>(
+    caller: u32,
+    thread: &LinuxThread,
+    path: &[u8],
+) -> Result<Node, Errno> {
     let (root, start) = starting_points(thread, super::stat::at::FDCWD as u64, path)?;
     let (directory, name) =
-        parent_and_name(root, start, path, false).map_err(|error| match error {
+        parent_and_name(root, start, path, false, caller).map_err(|error| match error {
             Errno::EBUSY => Errno::EADDRINUSE,
             error => error,
         })?;
@@ -473,7 +512,7 @@ fn make_socket_file<P: Platform>(thread: &LinuxThread, path: &[u8]) -> Result<No
             Refused::InvalidArgument => Errno::EPERM,
             error => refused(error),
         })?;
-    vfs::resolve(root, directory, name)
+    vfs::resolve_as(root, directory, name, caller, false)
         .map_err(walk_error)
         .and_then(|node| match node.id() == id {
             true => Ok(node),
@@ -660,7 +699,11 @@ pub fn getsockopt<P: Platform>(
         (bytes, 4)
     };
     let (bytes, size) = match name as u32 {
-        option::TYPE => int(SOCK_STREAM),
+        option::TYPE => int(match (socket.is_datagram(), socket.is_seqpacket()) {
+            (true, _) => unix_datagram::SOCK_DGRAM,
+            (false, true) => SOCK_SEQPACKET,
+            (false, false) => SOCK_STREAM,
+        }),
         option::DOMAIN => int(AF_UNIX),
         option::PROTOCOL => int(0),
         option::ERROR => {
@@ -718,11 +761,13 @@ pub fn ioctl<P: Platform>(
     if request != super::terminal::request::FIONREAD && request != TIOCOUTQ {
         return None;
     }
-    let count = match socket.connected() {
-        Ok((connection, side)) if request == TIOCOUTQ => connection.unread_sent(side),
-        Ok((connection, side)) => connection.available(side),
-        Err(NotConnected::Listening) => return Some(Err(Errno::EINVAL)),
-        Err(NotConnected::Open) => 0,
+    let count = match (socket.datagrams(), socket.connected()) {
+        (Some(_), _) if request == TIOCOUTQ => 0,
+        (Some(datagrams), _) => datagrams.next_length(),
+        (None, Ok((connection, side))) if request == TIOCOUTQ => connection.unread_sent(side),
+        (None, Ok((connection, side))) => connection.available(side),
+        (None, Err(NotConnected::Listening)) => return Some(Err(Errno::EINVAL)),
+        (None, Err(NotConnected::Open)) => 0,
     };
     let count = i32::try_from(count).unwrap_or(i32::MAX);
     Some(
@@ -761,15 +806,19 @@ fn accept<P: Platform>(
                 );
             }
             Ok(None) if file.is_nonblocking() => break Err(Errno::EAGAIN),
-            Ok(None) => match wait_for_input(process, thread, deadline, || socket.can_accept())? {
-                Waited::Ready => {}
-                Waited::TimedOut => break Err(Errno::EAGAIN),
-                Waited::Signalled => {
-                    if signals::deliver_interrupting(process, thread, context, interrupted)? {
-                        return ControlFlow::Continue(());
+            Ok(None) => {
+                match poll::wait_for(process, thread, &[socket.wake_list()], deadline, || {
+                    socket.can_accept()
+                })? {
+                    Waited::Ready => {}
+                    Waited::TimedOut => break Err(Errno::EAGAIN),
+                    Waited::Signalled => {
+                        if signals::deliver_interrupting(process, thread, context, interrupted)? {
+                            return ControlFlow::Continue(());
+                        }
                     }
                 }
-            },
+            }
         }
     };
     finish(process, thread, context, result)
@@ -785,7 +834,7 @@ fn install_accepted<P: Platform>(
     flags: u32,
 ) -> Result<u64, Errno> {
     let peer = connection.address(Side::First);
-    let accepted = UnixSocket::accepted(connection, wake::<P>);
+    let accepted = UnixSocket::accepted(connection);
     let file = open_socket(Arc::clone(&accepted), flags);
     let limit = open_file_limit(process);
     let opened =
@@ -814,20 +863,29 @@ fn install_accepted<P: Platform>(
     Ok(u64::from(fd))
 }
 
-fn find_target(thread: &LinuxThread, address: &Address) -> Result<Arc<UnixSocket>, Errno> {
+fn find_target(
+    caller: u32,
+    thread: &LinuxThread,
+    address: &Address,
+    seqpacket: bool,
+) -> Result<Arc<UnixSocket>, Errno> {
     let key = match address {
         Address::Unnamed => return Err(Errno::EINVAL),
         Address::Abstract(name) => BindingKey::Abstract(Arc::clone(name)),
         Address::Path(path) => {
             let (root, start) = starting_points(thread, super::stat::at::FDCWD as u64, path)?;
-            let node = vfs::resolve(root, start, path).map_err(walk_error)?;
+            let node = vfs::resolve_as(root, start, path, caller, true).map_err(walk_error)?;
             if node.kind() != NodeKind::Socket {
                 return Err(Errno::ECONNREFUSED);
             }
             BindingKey::Node(node)
         }
     };
-    unix_socket::find(&key).ok_or(Errno::ECONNREFUSED)
+    let socket = unix_socket::find(&key).ok_or(Errno::ECONNREFUSED)?;
+    match socket.is_datagram() || socket.is_seqpacket() != seqpacket {
+        true => Err(Errno::EPROTOTYPE),
+        false => Ok(socket),
+    }
 }
 
 fn connect<P: Platform>(
@@ -840,7 +898,7 @@ fn connect<P: Platform>(
 ) -> ControlFlow<()> {
     let prepared = socket_of(thread, fd).and_then(|(file, socket)| {
         let target = read_address(process, address, length)?;
-        let target = find_target(thread, &target)?;
+        let target = find_target(process.id().get(), thread, &target, socket.is_seqpacket())?;
         let own = socket.begin_connect()?;
         Ok((file, socket, own, target))
     });
@@ -848,7 +906,7 @@ fn connect<P: Platform>(
         Ok(prepared) => prepared,
         Err(error) => return finish(process, thread, context, Err(error)),
     };
-    let connection = Connection::new(own, credentials_of(&**process));
+    let connection = socket.new_connection(own, credentials_of(&**process));
     let outcome = queue_connection(
         process,
         thread,
@@ -905,15 +963,19 @@ fn queue_connection<P: Platform>(
             Ok(false) if file.is_nonblocking() => {
                 return ControlFlow::Continue(Some(Err(Errno::EAGAIN)));
             }
-            Ok(false) => match wait_for_input(process, thread, deadline, || target.can_queue())? {
-                Waited::Ready => {}
-                Waited::TimedOut => return ControlFlow::Continue(Some(Err(Errno::EAGAIN))),
-                Waited::Signalled => {
-                    if signals::deliver_interrupting(process, thread, context, interrupted)? {
-                        return ControlFlow::Continue(None);
+            Ok(false) => {
+                match poll::wait_for(process, thread, &[target.wake_list()], deadline, || {
+                    target.can_queue()
+                })? {
+                    Waited::Ready => {}
+                    Waited::TimedOut => return ControlFlow::Continue(Some(Err(Errno::EAGAIN))),
+                    Waited::Signalled => {
+                        if signals::deliver_interrupting(process, thread, context, interrupted)? {
+                            return ControlFlow::Continue(None);
+                        }
                     }
                 }
-            },
+            }
         }
     }
 }
@@ -952,7 +1014,7 @@ fn sendto<P: Platform>(
 }
 
 fn check_destination(socket: &UnixSocket, named: bool) -> Result<(), Errno> {
-    if !named {
+    if !named || socket.is_seqpacket() {
         return Ok(());
     }
     match socket.connected() {
@@ -1102,6 +1164,9 @@ pub(super) fn write<P: Platform>(
     socket: &Arc<UnixSocket>,
     buffers: Iovecs,
 ) -> ControlFlow<()> {
+    if socket.is_datagram() {
+        return unix_datagram::write(process, thread, context, file, socket, buffers);
+    }
     let send = Send {
         file: Arc::clone(file),
         socket: Arc::clone(socket),
@@ -1159,6 +1224,9 @@ fn send_or_wait<P: Platform>(
     if connection.write_shut(side) {
         return ControlFlow::Continue(Some(Err(Errno::EPIPE)));
     }
+    if connection.is_seqpacket() {
+        return send_packet_or_wait(process, thread, send, &connection, side, deadline);
+    }
     let total = send.buffers.total().min(MAX_RW_COUNT);
     if total == 0 {
         return ControlFlow::Continue(Some(Ok(0)));
@@ -1190,7 +1258,7 @@ fn send_or_wait<P: Platform>(
                         Err(error) => return ControlFlow::Continue(Some(partial(written, error))),
                     };
                 if pushed > 0 {
-                    send.socket.changed();
+                    connection.changed();
                     sent += pushed;
                     written += pushed as u64;
                     continue;
@@ -1198,7 +1266,10 @@ fn send_or_wait<P: Platform>(
                 if nonblocking {
                     return ControlFlow::Continue(Some(partial(written, Errno::EAGAIN)));
                 }
-                match wait_for_input(process, thread, deadline, || connection.can_send(side))? {
+                let lists = [send.socket.wake_list()];
+                match poll::wait_for(process, thread, &lists, deadline, || {
+                    connection.can_send(side)
+                })? {
                     Waited::Ready => {}
                     Waited::TimedOut => {
                         return ControlFlow::Continue(Some(partial(written, Errno::EAGAIN)));
@@ -1217,12 +1288,66 @@ fn send_or_wait<P: Platform>(
     ControlFlow::Continue(Some(Ok(written)))
 }
 
+fn send_packet_or_wait<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    send: &mut Send,
+    connection: &Connection,
+    side: Side,
+    deadline: u64,
+) -> ControlFlow<(), Option<Result<u64, Errno>>> {
+    let total = send.buffers.total();
+    if total > unix_socket::QUEUE_CAPACITY as u64 {
+        return ControlFlow::Continue(Some(Err(Errno::EMSGSIZE)));
+    }
+    let total = total as usize;
+    let mut bytes = Vec::new();
+    if bytes.try_reserve_exact(total).is_err() {
+        return ControlFlow::Continue(Some(Err(Errno::ENOMEM)));
+    }
+    bytes.resize(total, 0);
+    let mut filled = 0;
+    for entry in send.buffers.entries() {
+        let (base, length) = iovec(entry);
+        let length = (length as usize).min(total - filled);
+        if process
+            .read_user_memory(base, &mut bytes[filled..filled + length])
+            .is_err()
+        {
+            return ControlFlow::Continue(Some(Err(Errno::EFAULT)));
+        }
+        filled += length;
+    }
+    let nonblocking = send.file.is_nonblocking() || send.flags & message::DONTWAIT != 0;
+    loop {
+        match connection.send_packet(side, &bytes, &mut send.rights) {
+            Err(error) => return ControlFlow::Continue(Some(Err(error))),
+            Ok(true) => {
+                connection.changed();
+                return ControlFlow::Continue(Some(Ok(total as u64)));
+            }
+            Ok(false) if nonblocking => return ControlFlow::Continue(Some(Err(Errno::EAGAIN))),
+            Ok(false) => {
+                let lists = [send.socket.wake_list()];
+                match poll::wait_for(process, thread, &lists, deadline, || {
+                    connection.can_send_packet(side, total)
+                })? {
+                    Waited::Ready => {}
+                    Waited::TimedOut => return ControlFlow::Continue(Some(Err(Errno::EAGAIN))),
+                    Waited::Signalled => return ControlFlow::Continue(None),
+                }
+            }
+        }
+    }
+}
+
 struct Receive {
     file: Arc<OpenFile>,
     socket: Arc<UnixSocket>,
     buffers: Iovecs,
     flags: u32,
     rights: Option<Vec<Arc<OpenFile>>>,
+    truncated: bool,
 }
 
 fn recvfrom<P: Platform>(
@@ -1241,6 +1366,7 @@ fn recvfrom<P: Platform>(
             buffers: Iovecs::one(buffer, length),
             flags: flags as u32,
             rights: None,
+            truncated: false,
         })
     });
     let mut receive = match prepared {
@@ -1270,12 +1396,16 @@ pub(super) fn read<P: Platform>(
     socket: &Arc<UnixSocket>,
     buffers: Iovecs,
 ) -> ControlFlow<()> {
+    if socket.is_datagram() {
+        return unix_datagram::read(process, thread, context, file, socket, buffers);
+    }
     let mut receive = Receive {
         file: Arc::clone(file),
         socket: Arc::clone(socket),
         buffers,
         flags: 0,
         rights: None,
+        truncated: false,
     };
     let result = match receive_message(process, thread, context, &mut receive)? {
         Some(result) => result,
@@ -1307,6 +1437,7 @@ fn recvmsg<P: Platform>(
                 buffers,
                 flags: flags as u32,
                 rights: None,
+                truncated: false,
             },
         ))
     });
@@ -1319,17 +1450,7 @@ fn recvmsg<P: Platform>(
         None => return ControlFlow::Continue(()),
     };
     let result = result.and_then(|count| {
-        let rights = receive.rights.take().unwrap_or_default();
-        let close_on_exec = receive.flags & message::CMSG_CLOEXEC != 0;
-        complete_header(
-            process,
-            thread,
-            &receive.socket,
-            header_at,
-            &header,
-            rights,
-            close_on_exec,
-        )?;
+        complete_header(process, thread, header_at, &header, &mut receive)?;
         Ok(count)
     });
     unix_socket::release_rights(receive.rights.take().unwrap_or_default());
@@ -1411,12 +1532,14 @@ pub fn install_rights<P: Platform>(
 fn complete_header<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
-    socket: &UnixSocket,
     header_at: u64,
     header: &MessageHeader,
-    rights: Vec<Arc<OpenFile>>,
-    close_on_exec: bool,
+    receive: &mut Receive,
 ) -> Result<(), Errno> {
+    let rights = receive.rights.take().unwrap_or_default();
+    let close_on_exec = receive.flags & message::CMSG_CLOEXEC != 0;
+    let socket = &receive.socket;
+    let truncated = receive.truncated;
     let had_rights = !rights.is_empty();
     let installed = match had_rights {
         true => install_rights(
@@ -1471,6 +1594,9 @@ fn complete_header<P: Platform>(
     let flags = match installed.truncated {
         true => message::CTRUNC,
         false => 0,
+    } | match truncated {
+        true => message::TRUNC,
+        false => 0,
     };
     written[8..12].copy_from_slice(&name_length.to_ne_bytes());
     written[40..48].copy_from_slice(&installed.used.to_ne_bytes());
@@ -1521,6 +1647,9 @@ fn receive_or_wait<P: Platform>(
         Err(NotConnected::Listening) => return ControlFlow::Continue(Some(Err(Errno::EINVAL))),
         Err(NotConnected::Open) => return ControlFlow::Continue(Some(Err(Errno::ENOTCONN))),
     };
+    if connection.is_seqpacket() {
+        return receive_packet_or_wait(process, thread, receive, &connection, side, deadline);
+    }
     let count = receive.buffers.total().min(MAX_RW_COUNT);
     if count == 0 {
         return ControlFlow::Continue(Some(Ok(0)));
@@ -1547,7 +1676,7 @@ fn receive_or_wait<P: Platform>(
                         receive.rights = Some(rights);
                     }
                     if !peek {
-                        receive.socket.changed();
+                        connection.changed();
                     }
                     count
                 }
@@ -1563,7 +1692,8 @@ fn receive_or_wait<P: Platform>(
                             _ => Ok(copied),
                         }));
                     }
-                    match wait_for_input(process, thread, deadline, || {
+                    let lists = [receive.socket.wake_list()];
+                    match poll::wait_for(process, thread, &lists, deadline, || {
                         connection.can_receive(side)
                     })? {
                         Waited::Ready => continue,
@@ -1599,6 +1729,78 @@ fn receive_or_wait<P: Platform>(
         }
     }
     ControlFlow::Continue(Some(Ok(copied)))
+}
+
+fn receive_packet_or_wait<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    receive: &mut Receive,
+    connection: &Connection,
+    side: Side,
+    deadline: u64,
+) -> ControlFlow<(), Option<Result<u64, Errno>>> {
+    let wanted = receive
+        .buffers
+        .total()
+        .min(MAX_RW_COUNT)
+        .min(unix_socket::QUEUE_CAPACITY as u64) as usize;
+    let peek = receive.flags & message::PEEK != 0;
+    let nonblocking = receive.file.is_nonblocking() || receive.flags & message::DONTWAIT != 0;
+    loop {
+        let taken = match connection.receive_packet(side, wanted, peek) {
+            Ok(taken) => taken,
+            Err(error) => return ControlFlow::Continue(Some(Err(error))),
+        };
+        let (bytes, length) = match taken {
+            TakenPacket::Packet {
+                bytes,
+                length,
+                rights,
+            } => {
+                if !peek {
+                    connection.changed();
+                }
+                receive.rights = rights;
+                (bytes, length)
+            }
+            TakenPacket::Ended => return ControlFlow::Continue(Some(Ok(0))),
+            TakenPacket::Reset => return ControlFlow::Continue(Some(Err(Errno::ECONNRESET))),
+            TakenPacket::Empty if nonblocking => {
+                return ControlFlow::Continue(Some(Err(Errno::EAGAIN)));
+            }
+            TakenPacket::Empty => {
+                let lists = [receive.socket.wake_list()];
+                match poll::wait_for(process, thread, &lists, deadline, || {
+                    connection.can_receive(side)
+                })? {
+                    Waited::Ready => continue,
+                    Waited::TimedOut => return ControlFlow::Continue(Some(Err(Errno::EAGAIN))),
+                    Waited::Signalled => return ControlFlow::Continue(None),
+                }
+            }
+        };
+        receive.truncated = bytes.len() < length;
+        let mut copied = 0;
+        for entry in receive.buffers.entries() {
+            if copied == bytes.len() {
+                break;
+            }
+            let (base, room) = iovec(entry);
+            let count = (room as usize).min(bytes.len() - copied);
+            if process
+                .write_user_memory(base, &bytes[copied..copied + count])
+                .is_err()
+            {
+                return ControlFlow::Continue(Some(Err(Errno::EFAULT)));
+            }
+            copied += count;
+        }
+        let result = match receive.flags & message::TRUNC != 0 {
+            true => length,
+            false => copied,
+        };
+        return ControlFlow::Continue(Some(Ok(result as u64)));
+    }
 }
 
 #[cfg(test)]

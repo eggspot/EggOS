@@ -491,7 +491,9 @@ fn fill(class: &ClassObject, sel: Sel, imp: Imp) {
 
 /// What the slow path of a send finds for `sel` on `class` (the receiver's class, or the
 /// superclass a super send starts at): the class realized and initialized first, the cache
-/// filled once the class is initialized; `None` if no class in the chain has the method.
+/// filled once the class is initialized; `None` if no class in the chain has the method. A
+/// translated program's method comes back as the native thunk that calls it, which is what the
+/// cache holds, so `objc_msgSend` never branches to a guest address.
 pub fn lookup(class: *mut ClassObject, sel: Sel) -> Option<Imp> {
     let record = record_of(class)?;
     RUNTIME.with(|runtime| realize(runtime, record));
@@ -502,7 +504,7 @@ pub fn lookup(class: *mut ClassObject, sel: Sel) -> Option<Imp> {
     };
     initialize(target);
     RUNTIME.with(|_| {
-        let imp = find_method(record, sel)?;
+        let imp = crate::callback::native_callable(find_method(record, sel)?);
         if target.state.load(Ordering::Acquire) == INITIALIZED {
             // SAFETY: as in `record_of`.
             fill(unsafe { &*class }, sel, imp);

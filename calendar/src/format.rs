@@ -1,5 +1,6 @@
 //! The texts a moment is shown in (D150), written to any [`core::fmt::Write`].
 
+use crate::zone::Local;
 use crate::{DateTime, MONTHS, WEEKDAYS};
 use core::fmt::{self, Write};
 
@@ -44,6 +45,41 @@ pub fn sentence(out: &mut impl Write, seconds: i64) -> fmt::Result {
         moment.minute,
         moment.second
     )
+}
+
+/// An offset east of UTC as Settings writes it (D194): `UTC+01:00`, `UTC-03:30`, `UTC+00:00`.
+pub fn utc_offset(out: &mut impl Write, offset: i64) -> fmt::Result {
+    let sign = if offset < 0 { '-' } else { '+' };
+    let minutes = offset.abs() / 60;
+    write!(out, "UTC{sign}{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+/// Whether a zone's abbreviation is only its offset (`-03`, `+0530`), which Settings shows as
+/// [`utc_offset`] instead.
+pub fn is_numeric_abbreviation(abbreviation: &str) -> bool {
+    abbreviation.starts_with(['+', '-'])
+}
+
+/// Settings' `Now` line in a zone (docs/ux/date-time-v0.3.md section 8.1): the local time at
+/// `seconds` and the zone's abbreviation, or its [`utc_offset`] when the abbreviation is
+/// numeric: `Thursday 29 October 2026, 15:05:09 CET`.
+pub fn sentence_in(out: &mut impl Write, seconds: i64, local: &Local) -> fmt::Result {
+    let moment = DateTime::from_unix(seconds + local.offset);
+    write!(
+        out,
+        "{} {} {} {}, {:02}:{:02}:{:02} ",
+        WEEKDAYS[moment.weekday()],
+        moment.day,
+        MONTHS[moment.month as usize - 1],
+        moment.year,
+        moment.hour,
+        moment.minute,
+        moment.second
+    )?;
+    match is_numeric_abbreviation(local.abbreviation.as_str()) {
+        true => utc_offset(out, local.offset),
+        false => out.write_str(local.abbreviation.as_str()),
+    }
 }
 
 /// `/proc/driver/rtc`'s text for a real-time clock reading `seconds`, in Linux's layout (its
@@ -91,5 +127,31 @@ mod tests {
             crate::parse_proc_driver_rtc(proc.as_bytes()),
             Some(1_793_282_709)
         );
+    }
+
+    #[test]
+    fn a_zone_s_now_line_ends_in_its_abbreviation_or_its_offset() {
+        let line = |zone: &str| {
+            let rule = crate::zone::zone(zone).unwrap();
+            let mut out = String::new();
+            sentence_in(&mut out, 1_793_282_709, &rule.at(1_793_282_709)).unwrap();
+            out
+        };
+        assert_eq!(
+            line("Europe/Paris"),
+            "Thursday 29 October 2026, 15:05:09 CET"
+        );
+        assert_eq!(
+            line("Australia/Sydney"),
+            "Friday 30 October 2026, 01:05:09 AEDT"
+        );
+        assert_eq!(
+            line("America/Argentina/Buenos_Aires"),
+            "Thursday 29 October 2026, 11:05:09 UTC-03:00"
+        );
+        assert_eq!(line("UTC"), "Thursday 29 October 2026, 14:05:09 UTC");
+        let mut offset = String::new();
+        utc_offset(&mut offset, -12_600).unwrap();
+        assert_eq!(offset, "UTC-03:30");
     }
 }

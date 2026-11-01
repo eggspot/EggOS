@@ -457,7 +457,7 @@ fn requests_check_the_window_s_owner_role_flags_and_the_limits() {
         Err(WindowError::Invalid)
     );
     assert_eq!(
-        desktop.create(CLIENT, 0, 0, 10, 10, 4),
+        desktop.create(CLIENT, 0, 0, 10, 10, protocol::flags::KNOWN + 1),
         Err(WindowError::Invalid)
     );
     let ids: Vec<_> = (0..MAX_WINDOWS_PER_CLIENT)
@@ -492,7 +492,7 @@ fn requests_check_the_window_s_owner_role_flags_and_the_limits() {
         Err(WindowError::Invalid)
     );
     assert_eq!(
-        desktop.set_pointer(CLIENT, window, 6, &mut damage),
+        desktop.set_pointer(CLIENT, window, 9, &mut damage),
         Err(WindowError::Invalid)
     );
     assert_eq!(desktop.set_pointer(CLIENT, window, 1, &mut damage), Ok(()));
@@ -885,5 +885,107 @@ fn a_started_resize_follows_the_pointer_with_resize_events() {
             .0
             .iter()
             .all(|(_, record)| record.kind != event::BUTTON)
+    );
+}
+
+#[test]
+fn a_client_reads_its_own_window_s_placement_and_no_one_else_s() {
+    assert_eq!(request::GET_PLACEMENT, 0xc014_771c);
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, CLIENT, 400, 300);
+    let outside = desktop.window_rect(window).unwrap();
+    assert_eq!(desktop.placement(CLIENT, u32::from(window)), Ok(outside));
+    assert_eq!(
+        desktop.placement(OTHER, u32::from(window)),
+        Err(WindowError::Invalid)
+    );
+    desktop
+        .set_position(CLIENT, u32::from(window), 10, 20, &mut Damage::new())
+        .unwrap();
+    let moved = desktop.placement(CLIENT, u32::from(window)).unwrap();
+    let work = desktop.work_area();
+    assert_eq!((moved.x, moved.y), (work.x + 10, work.y + 20));
+    let mut bytes = [0u8; size::GET_PLACEMENT];
+    bytes[..4].copy_from_slice(&u32::from(window).to_ne_bytes());
+    assert_eq!(
+        Request::parse(request::GET_PLACEMENT, &bytes),
+        Some(Request::GetPlacement {
+            window: u32::from(window)
+        })
+    );
+}
+
+#[test]
+fn the_keyboard_layout_requests_have_their_numbers_and_arguments() {
+    assert_eq!(request::GET_KEYBOARD_LAYOUT, 0x8008_771d);
+    assert_eq!(request::SET_KEYBOARD_LAYOUT, 0x4004_771e);
+    assert_eq!(
+        Request::parse(request::GET_KEYBOARD_LAYOUT, &[0; 8]),
+        Some(Request::GetKeyboardLayout)
+    );
+    assert_eq!(
+        Request::parse(request::SET_KEYBOARD_LAYOUT, &8u32.to_ne_bytes()),
+        Some(Request::SetKeyboardLayout { layout: 8 })
+    );
+    assert_eq!(key_modifiers(Modifiers::ALT_GRAPH), modifier::ALT_GRAPH);
+}
+
+#[test]
+fn the_requests_other_programs_hard_code_keep_their_numbers() {
+    assert_eq!(request::LIST_WINDOW, 0xc060_770b);
+    assert_eq!(request::MANAGE_WINDOW, 0x4010_770c);
+    assert_eq!(request::SET_CLIPBOARD, 0x4010_7720);
+    assert_eq!(request::GET_CLIPBOARD, 0xc020_7721);
+    assert_eq!(request::LIST_DESKTOPS, 0x8010_7722);
+    assert_eq!(request::DESKTOP_ACTION, 0xc010_7723);
+    assert_eq!(request::SET_KEY_ACCESSIBILITY, 0x400c_7724);
+}
+
+#[test]
+fn the_input_preferences_request_carries_five_words() {
+    assert_eq!(request::SET_INPUT_PREFERENCES, 0x4014_771f);
+    let mut bytes = [0u8; 20];
+    for (place, word) in bytes
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip([1u32, 0, 8, 600, 30])
+    {
+        *place = word.to_ne_bytes();
+    }
+    assert_eq!(
+        Request::parse(request::SET_INPUT_PREFERENCES, &bytes),
+        Some(Request::SetInputPreferences {
+            left_handed: 1,
+            natural_scrolling: 0,
+            pointer_speed: 8,
+            repeat_delay_ms: 600,
+            repeat_rate: 30,
+        })
+    );
+}
+
+#[test]
+fn a_key_typed_through_a_layout_carries_its_character_to_the_focused_window() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, CLIENT, 400, 300);
+    let mut events = Recorded::default();
+    desktop.key_typing(
+        18,
+        true,
+        Modifiers::ALT_GRAPH,
+        u32::from('€'),
+        &mut Damage::new(),
+        &mut events,
+    );
+    let key = events
+        .0
+        .iter()
+        .map(|(_, record)| *record)
+        .find(|record| record.kind == event::KEY)
+        .unwrap();
+    assert_eq!(
+        (key.window, key.a, key.b, key.c, key.d),
+        (window, 18, 1, modifier::ALT_GRAPH, 0x20ac)
     );
 }

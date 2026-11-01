@@ -150,6 +150,21 @@ fn inside(object: Id, event: Id) -> bool {
         .contains(location_in(object, event))
 }
 
+/// Whether the control `object` takes clicks and typing (it is not disabled).
+pub fn is_enabled_control(object: Id) -> bool {
+    !control(object).disabled
+}
+
+/// Runs `work` with the title of the button `object`.
+pub fn with_title<R>(object: Id, work: impl FnOnce(&str) -> R) -> R {
+    with_text(button(object).title, work)
+}
+
+/// Runs `work` with the text of the text field `object`.
+pub fn with_field_text<R>(object: Id, work: impl FnOnce(&str) -> R) -> R {
+    work(text_field(object).text.as_str())
+}
+
 /// Whether `object` is a button whose key equivalent is Return: its window's default button.
 pub fn is_default_button(object: Id) -> bool {
     is(object, &NSBUTTON) && with_text(button(object).key_equivalent, |key| key == RETURN)
@@ -288,6 +303,7 @@ fn field_of(fields: &TextFieldFields) -> Field {
     Field {
         text: fields.text,
         caret: fields.caret,
+        anchor: fields.caret,
         scroll: fields.scroll,
         placeholder: placeholder_text(fields),
         escape: Escape::Clear,
@@ -448,7 +464,8 @@ extern "C" fn field_mouse_down(this: Id, _: Sel, event: Id) {
     let location = event::fields(event).location;
     let (x, _) = eggos_macos_gui::geometry::pixel_of_point(location, height as i32);
     let mut field = field_of(text_field(this));
-    field.caret = widget::caret_at(&field, rect, x);
+    let at = widget::caret_at(&field, rect, x);
+    field.place_caret(at);
     widget::keep_caret_visible(&mut field, rect);
     keep_field(this, &field);
     changed(this);
@@ -460,8 +477,7 @@ extern "C" fn field_key_down(this: Id, _: Sel, event: Id) {
     }
     let fields_of_event = event::fields(event);
     let code = fields_of_event.linux_code;
-    let command =
-        fields_of_event.flags & (modifier::COMMAND | modifier::CONTROL | modifier::OPTION) != 0;
+    let command = fields_of_event.flags & (modifier::COMMAND | modifier::CONTROL) != 0;
     if code == key::ENTER && !command {
         send_action(this);
         return;
@@ -478,7 +494,7 @@ extern "C" fn field_key_down(this: Id, _: Sel, event: Id) {
         command,
         &before,
     ) {
-        FieldKey::Unused => {}
+        FieldKey::Unused | FieldKey::Copied | FieldKey::Cut | FieldKey::PasteWanted => {}
         FieldKey::Moved | FieldKey::Changed => {
             widget::keep_caret_visible(&mut field, control_rect(this));
             keep_field(this, &field);

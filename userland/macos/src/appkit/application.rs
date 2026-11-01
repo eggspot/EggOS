@@ -1,17 +1,23 @@
 //! NSApplication and `NSApp`: the delegate's launch and termination, the event loop over the
 //! window server's records (each made an NSEvent and sent through `sendEvent:`, the main menu's
-//! key equivalents first, Cmd+Q always quitting), the app's windows, and actions sent to their
-//! target or along the responder chain.
+//! key equivalents first, Cmd+Q always quitting; agents' queries answered with element trees;
+//! the About panel's records to it), the app's windows, and actions sent to their target or
+//! along the responder chain.
 
 use super::event::{self, kind};
-use super::{NSAPPLICATION, NSAPPLICATION_META, NSRESPONDER, menu, responds, server, view, window};
-use crate::foundation::{NSARRAY, class_pointer, info_string};
+use super::{
+    NSAPPLICATION, NSAPPLICATION_META, NSRESPONDER, about, elements, menu, responds, server, view,
+    window,
+};
+use crate::foundation::{self, NSARRAY, class_pointer, info_string};
 use crate::libsystem::{Exclusive, write_error};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{objc_release, objc_retain};
 use crate::objc::{Runtime, autorelease, methods, sel, send, send_bool, send1, send2};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use eggos_element_tree::Query;
+use eggos_macos_gui::clicks::ClickCounter;
 use eggos_macos_gui::geometry::point_of_pixel;
 use eggos_macos_gui::keys::modifier;
 use eggos_macos_gui::menu::Chosen;
@@ -30,6 +36,7 @@ static LAUNCHED: AtomicBool = AtomicBool::new(false);
 static LEFT_HELD: AtomicBool = AtomicBool::new(false);
 static REPORTED: AtomicBool = AtomicBool::new(false);
 static WINDOWS: Exclusive<Buffer<Id>> = Exclusive::new(Buffer::new());
+static CLICKS: Exclusive<ClickCounter> = Exclusive::new(ClickCounter::new());
 
 /// The NSApplication instance, nil before `sharedApplication`.
 pub fn application() -> Id {
@@ -231,8 +238,14 @@ fn mouse(window: Id, event_kind: usize, x: i32, y: i32, button: isize, delta: f6
 
 /// Handles one of the window server's records outside a modal alert.
 pub fn dispatch(record: &[u8; RECORD_SIZE]) {
+    if let Some(query) = Query::from_record(record) {
+        elements::answer(&query);
+        return;
+    }
     if let Some(chosen) = Chosen::from_record(record) {
-        if let Some(window) = window_with_server_id(chosen.window) {
+        if about::is_panel(chosen.window) {
+            about::chosen(chosen.menu, chosen.entry);
+        } else if let Some(window) = window_with_server_id(chosen.window) {
             menu::chosen(window, chosen.menu, chosen.entry);
         }
         return;
@@ -240,6 +253,10 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
     let Some(decoded) = input::decode(record) else {
         return;
     };
+    if about::is_panel(u32::from(decoded.window)) {
+        about::input(decoded.input, decoded.time_ms);
+        return;
+    }
     let Some(window) = window_with_server_id(u32::from(decoded.window)) else {
         return;
     };
@@ -264,12 +281,33 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
                 (MouseButton::Left, false) => (kind::LEFT_MOUSE_UP, 0),
                 (MouseButton::Right, true) => (kind::RIGHT_MOUSE_DOWN, 1),
                 (MouseButton::Right, false) => (kind::RIGHT_MOUSE_UP, 1),
-                (MouseButton::Middle, _) => return,
+                (MouseButton::Middle, pressed) => {
+                    if pressed {
+                        CLICKS.with(|clicks| clicks.other_press());
+                    }
+                    return;
+                }
             };
             if button == MouseButton::Left {
                 LEFT_HELD.store(pressed, Ordering::Relaxed);
             }
-            mouse(window, event_kind, x, y, number, 0.0, time);
+            let clicks = match (button, pressed) {
+                (MouseButton::Left, true) => {
+                    CLICKS.with(|clicks| clicks.press(time, window as usize, x, y))
+                }
+                (MouseButton::Left, false) => CLICKS.with(|clicks| clicks.release()),
+                (_, true) => {
+                    CLICKS.with(|clicks| clicks.other_press());
+                    1
+                }
+                _ => 1,
+            };
+            let location = point_of_pixel(x, y, content_height(window));
+            let event = event::mouse(event_kind, window, location, number, 0.0, time);
+            if !event.is_null() {
+                event::fields(event).clicks = clicks;
+            }
+            deliver(event);
         }
         Input::Wheel { x, y, notches } => {
             mouse(
@@ -281,6 +319,14 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
                 f64::from(notches),
                 time,
             );
+        }
+        Input::SidewaysWheel { x, y, notches } => {
+            let location = point_of_pixel(x, y, content_height(window));
+            let event = event::mouse(kind::SCROLL_WHEEL, window, location, 0, 0.0, time);
+            if !event.is_null() {
+                event::fields(event).delta_x = -f64::from(notches);
+            }
+            deliver(event);
         }
         Input::Key {
             code,
@@ -328,7 +374,14 @@ fn run() {
         let pool = autorelease::push();
         menu::send_if_changed();
         display_all();
-        read_records(&mut |record| dispatch(record));
+        let waiting = match foundation::next_due_in_ms() {
+            Some(due) => server::wait_for_events(due),
+            None => true,
+        };
+        if waiting {
+            read_records(&mut |record| dispatch(record));
+        }
+        foundation::fire_due();
         autorelease::pop(pool);
     }
 }
@@ -452,6 +505,14 @@ extern "C" fn nil(_: Id, _: Sel) -> Id {
 
 extern "C" fn ignore_object(_: Id, _: Sel, _: Id) {}
 
+extern "C" fn order_front_about_panel(_: Id, _: Sel, _: Id) {
+    about::show(core::ptr::null_mut());
+}
+
+extern "C" fn order_front_about_panel_with_options(_: Id, _: Sel, options: Id) {
+    about::show(options);
+}
+
 extern "C" fn application_main(_: i32, _: usize) -> i32 {
     if [&b"NSMainNibFile"[..], &b"NSMainStoryboardFile"[..]]
         .into_iter()
@@ -502,7 +563,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "sendAction:to:from:" => send_action_method,
         "sendEvent:" => send_event,
         "isRunning" => is_running,
-        "orderFrontStandardAboutPanel:" => ignore_object,
+        "orderFrontStandardAboutPanel:" => order_front_about_panel,
+        "orderFrontStandardAboutPanelWithOptions:" => order_front_about_panel_with_options,
         "hide:" => ignore_object,
         "unhide:" => ignore_object,
         "arrangeInFront:" => ignore_object,

@@ -4,6 +4,7 @@
 //! `rand`).
 
 use super::{Exclusive, c_string, errno_from, heap, set_errno, stdio};
+use crate::callback;
 use crate::darwin::{self, EINVAL};
 use crate::linux;
 use core::ffi::{c_char, c_int, c_long, c_longlong, c_uint, c_ulong, c_ulonglong, c_void};
@@ -22,6 +23,21 @@ static ENVIRONMENT_CAPACITY: Exclusive<usize> = Exclusive::new(0);
 
 /// The stack protector's guard, `__stack_chk_guard`, set once before the program starts.
 pub static mut STACK_GUARD: usize = 0;
+
+/// The program's argument count and vector, as `main` got them.
+pub fn arguments() -> (usize, *mut *mut c_char) {
+    // SAFETY: set once before the program runs and only read since; this reads a copy.
+    let count = unsafe { ARGUMENT_COUNT };
+    // SAFETY: as above.
+    let vector = unsafe { ARGUMENTS };
+    (count.max(0) as usize, vector)
+}
+
+/// The program's name, the last part of `argv[0]`, NUL-terminated; null before it is set.
+pub fn program_name() -> *const c_char {
+    // SAFETY: as above.
+    unsafe { PROGRAM_NAME }
+}
 
 /// Records what `_NSGetArgc`, `_NSGetArgv`, `_NSGetEnviron` and `_NSGetProgname` return.
 ///
@@ -103,6 +119,7 @@ pub extern "C" fn exit(status: c_int) -> ! {
             })
         });
         let Some(handler) = handler else { break };
+        let handler = callback::native_callable(handler);
         // SAFETY: `atexit` stored a function that takes nothing.
         let handler: extern "C" fn() = unsafe { core::mem::transmute(handler) };
         handler();
@@ -137,6 +154,64 @@ pub fn fail(message: &[u8]) -> ! {
     abort()
 }
 
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".text",
+    ".p2align 2",
+    ".globl eggos_macos_chkstk_darwin",
+    ".hidden eggos_macos_chkstk_darwin",
+    "eggos_macos_chkstk_darwin:",
+    "mov x16, sp",
+    "subs x17, x16, x9",
+    "csel x17, xzr, x17, lo",
+    "and x16, x16, #-4096",
+    "2:",
+    "cmp x16, x17",
+    "b.ls 3f",
+    "sub x16, x16, #4096",
+    "ldrb wzr, [x16]",
+    "b 2b",
+    "3:",
+    "ret",
+);
+
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".text",
+    ".p2align 4",
+    ".globl eggos_macos_chkstk_darwin",
+    ".hidden eggos_macos_chkstk_darwin",
+    "eggos_macos_chkstk_darwin:",
+    "push rcx",
+    "push rax",
+    "lea rcx, [rsp + 24]",
+    "sub rcx, rax",
+    "jae 2f",
+    "xor ecx, ecx",
+    "2:",
+    "lea rax, [rsp + 24]",
+    "and rax, -4096",
+    "3:",
+    "cmp rax, rcx",
+    "jbe 4f",
+    "sub rax, 4096",
+    "test byte ptr [rax], 0",
+    "jmp 3b",
+    "4:",
+    "pop rax",
+    "pop rcx",
+    "ret",
+);
+
+unsafe extern "C" {
+    /// `___chkstk_darwin`, the stack probe Apple's compilers call before a frame of a page or
+    /// more (size in bytes in `x9` on arm64, `rax` on x86_64): it touches every page from the
+    /// stack pointer down to the new frame's bottom, so a frame larger than a thread's guard
+    /// page faults on the guard instead of landing in the mapping below. It keeps every
+    /// register but `x16`, `x17` and the flags on arm64 and the flags on x86_64 (D208).
+    pub fn eggos_macos_chkstk_darwin();
+}
+
 pub extern "C" fn stack_chk_fail() -> ! {
     fail(b"stack buffer overflow detected")
 }
@@ -146,7 +221,23 @@ pub extern "C" fn raise(signal: c_int) -> c_int {
         set_errno(EINVAL);
         return -1;
     };
-    kill_self(linux_signal).map_or_else(|errno| errno_from(errno, -1), |_| 0)
+    let thread = super::thread::current_id() as usize;
+    // SAFETY: `tgkill` touches no memory; the signal arrives on this thread before it returns.
+    unsafe {
+        linux::syscall(
+            linux::number::TGKILL,
+            [linux::process_id(), thread, linux_signal, 0, 0, 0],
+        )
+    }
+    .map_or_else(|errno| errno_from(errno, -1), |_| 0)
+}
+
+pub extern "C" fn killpg(group: c_int, signal: c_int) -> c_int {
+    if group < 0 {
+        set_errno(EINVAL);
+        return -1;
+    }
+    kill(group.wrapping_neg(), signal)
 }
 
 pub extern "C" fn kill(pid: c_int, signal: c_int) -> c_int {
@@ -668,12 +759,19 @@ pub extern "C" fn arc4random_uniform(bound: u32) -> u32 {
 
 type Compare = unsafe extern "C" fn(*const c_void, *const c_void) -> c_int;
 
+fn native_compare(compare: Compare) -> Compare {
+    let native = callback::native_callable(compare as usize);
+    // SAFETY: the comparator, or the thunk that calls it with the same arguments.
+    unsafe { core::mem::transmute::<usize, Compare>(native) }
+}
+
 /// # Safety
 /// `base` must hold `count` elements of `size` bytes, and `compare` must compare two of them.
 pub unsafe extern "C" fn qsort(base: *mut c_void, count: usize, size: usize, compare: Compare) {
     if size == 0 || count < 2 {
         return;
     }
+    let compare = native_compare(compare);
     let element = |index: usize| base.cast::<u8>().wrapping_add(index * size);
     let sift_down = |mut root: usize, end: usize| loop {
         let mut child = 2 * root + 1;
@@ -713,6 +811,7 @@ pub unsafe extern "C" fn bsearch(
     size: usize,
     compare: Compare,
 ) -> *mut c_void {
+    let compare = native_compare(compare);
     let (mut low, mut high) = (0, count);
     while low < high {
         let middle = low + (high - low) / 2;

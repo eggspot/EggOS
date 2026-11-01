@@ -4,7 +4,7 @@
 use super::abi::{ClassObject, Id, Imp, Sel};
 use super::class::{self, ClassRecord};
 use super::selector::name_bytes;
-use super::{RUNTIME, root, selector_named, terminate_uncaught};
+use super::{RUNTIME, root, selector_named};
 use core::ffi::c_char;
 use core::sync::atomic::Ordering;
 
@@ -195,17 +195,6 @@ extern "C" fn sel_is_equal(left: Sel, right: Sel) -> u8 {
     u8::from(left == right)
 }
 
-extern "C" fn objc_exception_throw(exception: Id) -> ! {
-    terminate_uncaught(
-        root::class_name(exception),
-        &[b"an Objective-C exception (no unwinder yet)"],
-    )
-}
-
-extern "C" fn objc_terminate() -> ! {
-    crate::libsystem::abort()
-}
-
 pub fn resolve(name: &[u8]) -> Option<u64> {
     let address = match name {
         b"_objc_getClass" | b"_objc_lookUpClass" | b"_objc_getRequiredClass" => {
@@ -227,8 +216,6 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_sel_registerName" | b"_sel_getUid" => sel_register_name as *const () as usize,
         b"_sel_getName" => sel_get_name as *const () as usize,
         b"_sel_isEqual" => sel_is_equal as *const () as usize,
-        b"_objc_exception_throw" => objc_exception_throw as *const () as usize,
-        b"_objc_terminate" => objc_terminate as *const () as usize,
         _ => return None,
     };
     Some(address as u64)

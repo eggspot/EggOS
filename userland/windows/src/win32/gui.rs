@@ -13,30 +13,65 @@
 //! window: its pointer input goes to the child under the pointer (or the one holding the
 //! capture) and its keys to the focused one, while the menu bar and an open drop-down take what
 //! falls on them; timers fire after the paints, and a thread with a timer sleeps until it is
-//! due.
+//! due. A system control a program subclassed gets its messages through the program's
+//! procedure, and the hot keys the program registered are taken from the keys its windows get
+//! (D178); the tables only some programs use are one more heap block, made at first use.
 
 use super::window_device::{self, Buffer, Device};
 use super::{SpinLock, call_program, error, error_for, heap, thread_environment};
+use crate::gui::accelerators::{self, AcceleratorTables};
+use crate::gui::atoms::AtomTable;
 use crate::gui::classes::ClassTable;
-use crate::gui::input::{Event, InputState, RECORD_SIZE, Record};
+use crate::gui::drawn::DrawnTexts;
+use crate::gui::input::{Event, InputState, KEY_STATES, RECORD_SIZE, Record};
 use crate::gui::message::{self, point_parameter};
 use crate::gui::objects::{self, ContextTable, ObjectTable};
+use crate::gui::properties::PropertyTable;
 use crate::gui::queue::{Filter, Message, Queue};
 use crate::gui::timers::Timers;
 use crate::gui::windows::{self, Pixels, Procedure, WindowTable};
 use crate::linux;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use eggos_element_tree::QUERY_EVENT;
 use eggos_runtime::futex::WakeCount;
 
 const PENDING_CHARACTERS: usize = 8;
 const RECORDS_PER_READ: usize = 16;
 const NO_DESCRIPTOR: usize = usize::MAX;
 const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
+const CS_DBLCLKS: u32 = 0x8;
+const DOUBLE_CLICK_MS: u32 = 400;
+const DOUBLE_CLICK_DISTANCE: i32 = 4;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct PendingCharacter {
     key: Message,
     character: u32,
+}
+
+/// The most hot keys a program registers.
+pub const MAX_HOT_KEYS: usize = 16;
+const MOD_KEYS: u32 = 0xf;
+
+/// A hot key `RegisterHotKey` made: the window (0 for the thread) and thread its `WM_HOTKEY`
+/// goes to, its id, its `MOD_` modifiers and its virtual key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HotKey {
+    pub window: usize,
+    pub thread: u32,
+    pub id: i32,
+    pub modifiers: u32,
+    pub key: u32,
+}
+
+/// The tables only some programs use (D178): registered names, window properties, accelerator
+/// tables and hot keys.
+#[derive(Debug)]
+pub struct Extras {
+    pub atoms: AtomTable,
+    pub properties: PropertyTable,
+    pub accelerators: AcceleratorTables,
+    pub hot_keys: [Option<HotKey>; MAX_HOT_KEYS],
 }
 
 /// Everything the GUI functions share.
@@ -51,11 +86,21 @@ pub struct Gui {
     pub timers: Timers,
     pub menus: usize,
     pub tracking: Option<super::menu::Tracking>,
+    pub combo: Option<super::combo_box::Tracking>,
     pub active_root: usize,
-    input: InputState,
+    pub drawn: DrawnTexts,
+    /// The item a context menu (`TrackPopupMenuEx`) closed with, 0 for none, until taken.
+    pub menu_choice: Option<usize>,
+    /// The tick count of the last input from the window server or the program itself.
+    pub last_input: u32,
+    /// The `QS_` bits `GetQueueStatus` last reported.
+    pub queue_reported: u32,
+    pub input: InputState,
+    last_click: Option<(usize, u32, (i32, i32))>,
     characters: [PendingCharacter; PENDING_CHARACTERS],
     next_character: usize,
     wake: Option<(usize, usize)>,
+    extras: usize,
 }
 
 impl Gui {
@@ -70,15 +115,98 @@ impl Gui {
             timers: Timers::new(),
             menus: 0,
             tracking: None,
+            combo: None,
             active_root: 0,
+            drawn: DrawnTexts::new(),
+            menu_choice: None,
+            last_input: super::user32::now_ms(),
+            queue_reported: 0,
             input: InputState::default(),
+            last_click: None,
             characters: [PendingCharacter::default(); PENDING_CHARACTERS],
             next_character: 0,
             wake: None,
+            extras: 0,
         }
     }
 
-    /// The character `TranslateMessage` makes of key press `key`, once.
+    /// The tables only some programs use, made now if they were not.
+    pub fn extras(&mut self) -> Option<&mut Extras> {
+        if self.extras == 0 {
+            let block = heap::allocate(core::mem::size_of::<Extras>()).cast::<Extras>();
+            if block.is_null() {
+                return None;
+            }
+            // SAFETY: a new, 16-byte aligned heap block the size of the tables.
+            unsafe {
+                block.write(Extras {
+                    atoms: AtomTable::new(),
+                    properties: PropertyTable::new(),
+                    accelerators: accelerators::new_tables(),
+                    hot_keys: [None; MAX_HOT_KEYS],
+                })
+            };
+            self.extras = block as usize;
+        }
+        self.made_extras_mut()
+    }
+
+    /// The tables only some programs use, if they were made.
+    pub fn made_extras(&self) -> Option<&Extras> {
+        // SAFETY: a published block is the one `extras` made and never frees, reached only
+        // under the state's lock, which the caller holds through `self`.
+        (self.extras != 0).then(|| unsafe { &*(self.extras as *const Extras) })
+    }
+
+    /// As [`Self::made_extras`], to change them.
+    pub fn made_extras_mut(&mut self) -> Option<&mut Extras> {
+        // SAFETY: as `made_extras`, and `&mut self` makes this the only reference.
+        (self.extras != 0).then(|| unsafe { &mut *(self.extras as *mut Extras) })
+    }
+
+    /// Posts a message for `window` (0 for the thread itself) to `thread`'s queue;
+    /// `ERROR_NOT_ENOUGH_QUOTA` when it is full. The caller wakes the threads after the lock.
+    pub fn post(
+        &mut self,
+        window: usize,
+        thread: u32,
+        number: u32,
+        wparam: usize,
+        lparam: usize,
+    ) -> Result<(), u32> {
+        let message = Message {
+            window,
+            message: number,
+            wparam,
+            lparam,
+            time: super::user32::now_ms(),
+            point: (0, 0),
+            thread,
+        };
+        match self.queue.post(message) {
+            true => Ok(()),
+            false => Err(error::NOT_ENOUGH_QUOTA),
+        }
+    }
+
+    fn hot_key_for(&self, number: u32, wparam: usize) -> Option<HotKey> {
+        if !matches!(number, message::KEY_DOWN | message::SYS_KEY_DOWN) {
+            return None;
+        }
+        let modifiers = self.input.hot_key_modifiers();
+        self.made_extras()?
+            .hot_keys
+            .iter()
+            .flatten()
+            .find(|hot_key| {
+                hot_key.key as usize == wparam && hot_key.modifiers & MOD_KEYS == modifiers
+            })
+            .copied()
+    }
+
+    /// The character `TranslateMessage` makes of key press `key`, once: the one remembered for
+    /// that very message, else for the same window and virtual key (D174: programs pass
+    /// `TranslateMessage` a `MSG` of their own making, with a changed `lParam`).
     pub fn take_character(&mut self, key: &Message) -> Option<u32> {
         let same = |pending: &PendingCharacter| {
             let other = &pending.key;
@@ -91,8 +219,18 @@ impl Gui {
                     other.time,
                 ) == (key.window, key.message, key.wparam, key.lparam, key.time)
         };
-        let pending = self.characters.iter_mut().find(|pending| same(pending))?;
-        Some(core::mem::take(&mut pending.character))
+        let same_key = |pending: &PendingCharacter| {
+            let other = &pending.key;
+            pending.character != 0
+                && (other.window, other.message, other.wparam)
+                    == (key.window, key.message, key.wparam)
+        };
+        let index = self
+            .characters
+            .iter()
+            .position(same)
+            .or_else(|| self.characters.iter().position(same_key))?;
+        Some(core::mem::take(&mut self.characters[index].character))
     }
 
     fn remember_character(&mut self, key: Message, character: u32) {
@@ -123,6 +261,41 @@ impl Gui {
     /// Whether Shift is held, by the last input the server sent.
     pub fn shift_held(&self) -> bool {
         self.input.shift_held()
+    }
+
+    /// The keys and buttons held, by the last input the server sent, as `GetKeyboardState`
+    /// reports them (D174).
+    pub fn keyboard_state(&self) -> [u8; KEY_STATES] {
+        self.input.keyboard_state()
+    }
+
+    /// A left button press as `WM_LBUTTONDBLCLK` when it is the second within 400 ms and 4
+    /// pixels on the same window of a program's class with `CS_DBLCLKS` (D174, design section
+    /// 17); every other press is kept as it is and remembered as a first one.
+    pub fn double_click(&mut self, press: Message) -> Message {
+        let takes_double_clicks = self.windows.get(press.window).is_some_and(|window| {
+            window.class_style & CS_DBLCLKS != 0
+                && matches!(window.procedure, Procedure::Program(_))
+        });
+        let second = self.last_click.is_some_and(|(window, time, (x, y))| {
+            window == press.window
+                && press.time.wrapping_sub(time) <= DOUBLE_CLICK_MS
+                && (x - press.point.0).abs() <= DOUBLE_CLICK_DISTANCE
+                && (y - press.point.1).abs() <= DOUBLE_CLICK_DISTANCE
+        });
+        match takes_double_clicks && second {
+            true => {
+                self.last_click = None;
+                Message {
+                    message: message::LEFT_BUTTON_DOUBLE_CLICK,
+                    ..press
+                }
+            }
+            false => {
+                self.last_click = Some((press.window, press.time, press.point));
+                press
+            }
+        }
     }
 
     /// The window keys of `root`'s tree go to: its focused window while that is still in the
@@ -211,11 +384,29 @@ pub fn wake() {
     }
 }
 
-/// Calls the window procedure of `window` with a message and returns its result; 0 for a
-/// window that is gone or answered by the layer.
+/// Calls the window procedure of `window` with a message and returns its result (the program's
+/// procedure that subclassed a system control first); 0 for a window that is gone or answered
+/// by the layer.
 pub fn send(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
-    let procedure = with(|gui| gui.windows.get(window).map(|window| window.procedure)).flatten();
+    let found = with(|gui| {
+        gui.windows
+            .get(window)
+            .map(|window| (window.procedure, window.ansi, window.subclass))
+    })
+    .flatten();
+    let (procedure, ansi) = match found {
+        Some((_, _, subclass)) if subclass != 0 => {
+            // SAFETY: the address is the procedure the program put in place of the control's
+            // with `SetWindowLongPtrW`, which Windows calls with these four arguments.
+            return unsafe { call_program(subclass, [window, number as usize, wparam, lparam]) };
+        }
+        Some((procedure, ansi, _)) => (Some(procedure), ansi),
+        None => (None, false),
+    };
     match procedure {
+        Some(Procedure::Program(address)) if address != 0 && ansi => {
+            super::ansi::call_procedure(address, window, number, wparam, lparam)
+        }
         Some(Procedure::Program(address)) if address != 0 => {
             // SAFETY: the address is the window procedure the program gave for this window,
             // which Windows calls with these four arguments.
@@ -250,7 +441,9 @@ const NO_DELIVERY: Delivery = Delivery {
     lparam: 0,
 };
 
-fn deliver(delivery: &Delivery, thread: u32) {
+/// Calls `delivery`'s window procedure when thread `thread` owns the window, else posts it to
+/// the window's thread.
+pub fn deliver(delivery: &Delivery, thread: u32) {
     if delivery.thread == thread {
         send(
             delivery.window,
@@ -276,6 +469,20 @@ fn deliver(delivery: &Delivery, thread: u32) {
     }
 }
 
+/// Posts a message to `window`'s thread (`PostMessageW`), or to the calling thread's own queue
+/// when `window` is 0.
+pub fn post(window: usize, number: u32, wparam: usize, lparam: usize) -> Result<(), u32> {
+    try_with(|gui| {
+        let thread = match window {
+            0 => thread_environment::thread_id(),
+            handle => gui.window(handle)?.thread,
+        };
+        gui.post(window, thread, number, wparam, lparam)
+    })?;
+    wake();
+    Ok(())
+}
+
 fn read_events(thread: u32) {
     let Some(Some(device)) = with(|gui| gui.device) else {
         return;
@@ -291,8 +498,14 @@ fn read_events(thread: u32) {
         let read = device.read_events(&mut records).unwrap_or(0);
         let mut deliveries = [NO_DELIVERY; RECORDS_PER_READ];
         let mut count = 0;
+        let mut queries = [None; RECORDS_PER_READ];
+        let mut asked = 0;
         for record in records[..read].as_chunks::<RECORD_SIZE>().0 {
-            if let Some(delivery) = handle_event(&device, &Record::parse(record)) {
+            let record = Record::parse(record);
+            if record.kind == QUERY_EVENT {
+                queries[asked] = Some(record);
+                asked += 1;
+            } else if let Some(delivery) = handle_event(&device, &record) {
                 deliveries[count] = delivery;
                 count += 1;
             }
@@ -303,6 +516,9 @@ fn read_events(thread: u32) {
         }
         for delivery in &deliveries[..count] {
             deliver(delivery, thread);
+        }
+        for query in queries[..asked].iter().flatten() {
+            super::elements::answer(&device, query, thread);
         }
         if read < records.len() {
             return;
@@ -337,27 +553,15 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
             point,
             character,
         } => {
-            let routed = with(|gui| {
-                if let Some(effect) = super::menu::input(gui, handle, number, wparam, point) {
-                    return Routed::Menu(effect);
-                }
-                match route_input(gui, handle, number, wparam, lparam, point, record.time) {
-                    Some(message) => {
-                        gui.queue.post_input(message);
-                        if let Some(character) = character {
-                            gui.remember_character(message, character);
-                        }
-                        Routed::Queued
-                    }
-                    None => Routed::Dropped,
-                }
-            });
-            match routed {
-                Some(Routed::Menu(effect)) => {
-                    super::menu::finish_input(device, handle, thread, effect)
-                }
-                _ => None,
-            }
+            let input = Input {
+                number,
+                wparam,
+                lparam,
+                point,
+                character,
+                time: record.time,
+            };
+            input_event(device, handle, thread, &input)
         }
         Event::Resize { width, height } => resize(device, handle, width, height)
             .map(|(size_kind, size)| to_window(message::SIZE, size_kind, size)),
@@ -382,8 +586,84 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
 
 enum Routed {
     Menu(super::menu::Effect),
+    Combo(super::combo_box::Effect),
     Queued,
     Dropped,
+}
+
+/// One key or pointer input for a top-level window's tree, the point in its content.
+#[derive(Debug, Clone, Copy)]
+pub struct Input {
+    pub number: u32,
+    pub wparam: usize,
+    pub lparam: usize,
+    pub point: (i32, i32),
+    pub character: Option<u32>,
+    pub time: u32,
+}
+
+fn input_event(device: &Device, root: usize, thread: u32, input: &Input) -> Option<Delivery> {
+    let routed = with(|gui| {
+        gui.last_input = super::user32::now_ms();
+        let (number, wparam, point) = (input.number, input.wparam, input.point);
+        if let Some(hot_key) = gui.hot_key_for(number, wparam) {
+            let lparam = message::word_pair(hot_key.modifiers as usize, hot_key.key as usize);
+            let posted = gui.post(
+                hot_key.window,
+                hot_key.thread,
+                message::HOT_KEY,
+                hot_key.id as isize as usize,
+                lparam,
+            );
+            return match posted {
+                Ok(()) => Routed::Queued,
+                Err(_) => Routed::Dropped,
+            };
+        }
+        let combo = super::combo_box::input(gui, root, number, wparam, point, input.character);
+        if let Some(effect) = combo {
+            return Routed::Combo(effect);
+        }
+        if let Some(effect) = super::menu::input(gui, root, number, wparam, point) {
+            return Routed::Menu(effect);
+        }
+        match route_input(gui, root, number, wparam, input.lparam, point, input.time) {
+            Some(message) => {
+                let message = match message.message {
+                    message::LEFT_BUTTON_DOWN => gui.double_click(message),
+                    _ => message,
+                };
+                gui.queue.post_input(message);
+                if let Some(character) = input.character {
+                    gui.remember_character(message, character);
+                }
+                Routed::Queued
+            }
+            None => Routed::Dropped,
+        }
+    });
+    match routed {
+        Some(Routed::Menu(effect)) => super::menu::finish_input(device, root, thread, effect),
+        Some(Routed::Combo(effect)) => super::combo_box::finish_input(device, root, effect),
+        _ => None,
+    }
+}
+
+/// Input the program sends itself (`SendInput`, `keybd_event`, `mouse_event`, D178) for
+/// top-level window `root`'s tree: through its hot keys, combo list and menus to the window
+/// the window server's input would reach, as if it had come from the server.
+pub fn inject(root: usize, input: &Input) {
+    let Ok(device) = device() else {
+        return;
+    };
+    let Some(owner) = with(|gui| gui.windows.get(root).map(|window| window.thread)).flatten()
+    else {
+        return;
+    };
+    if let Some(delivery) = input_event(&device, root, owner, input) {
+        deliver(&delivery, thread_environment::thread_id());
+    }
+    wake();
 }
 
 fn is_mouse(number: u32) -> bool {
@@ -400,7 +680,7 @@ fn route_input(
     time: u32,
 ) -> Option<Message> {
     let top = gui.windows.get(root)?;
-    if !top.enabled || top.modal_disabled {
+    if !top.enabled() || top.modal_disabled {
         return None;
     }
     let message = |window: usize, lparam: usize, point: (i32, i32)| {
@@ -437,13 +717,18 @@ fn route_input(
         point.1.saturating_sub(origin.1),
     );
     let lparam = match number {
-        message::MOUSE_WHEEL => lparam,
+        message::MOUSE_WHEEL | message::MOUSE_HORIZONTAL_WHEEL => lparam,
         _ => point_parameter(local.0, local.1),
     };
     Some(message(target, lparam, local))
 }
 
-fn resize(device: &Device, handle: usize, width: u32, height: u32) -> Option<(usize, usize)> {
+pub(super) fn resize(
+    device: &Device,
+    handle: usize,
+    width: u32,
+    height: u32,
+) -> Option<(usize, usize)> {
     let (server, size_kind) = with(|gui| {
         let window = gui.windows.get(handle)?;
         Some((window.server, window.size_kind))
@@ -545,6 +830,18 @@ pub fn wait_for(filter: Filter, remove: bool, wait: bool, done: &dyn Fn(&Gui) ->
             None => return Next::Nothing,
         }
     }
+}
+
+/// Whether the calling thread has a message waiting, without taking it and without starting
+/// the GUI's state in a program that has none.
+pub fn has_message() -> bool {
+    let any = Filter {
+        window: 0,
+        first: 0,
+        last: 0,
+        thread: 0,
+    };
+    !GUI.load(Ordering::Acquire).is_null() && next_message(any, false, false).is_some()
 }
 
 /// The calling thread's next message `filter` accepts: [`wait_for`] with nothing else to wait

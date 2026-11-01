@@ -4,7 +4,7 @@
 
 use crate::client::ClientSlot;
 use eggos_runtime::errno::Errno;
-use eggos_wayland::blit::Rect;
+use eggos_wayland::blit::{Placement, Rect};
 
 /// A file descriptor.
 pub type Fd = i32;
@@ -76,6 +76,16 @@ pub trait System {
     /// Copies `rect` of a client's buffer into the same place of `window`'s buffer, every
     /// pixel made opaque; the parts outside the pool's mapping or the window are left out.
     fn copy_rows(&mut self, from: PoolPixels, window: WindowBuffer, rect: Rect);
+    /// Draws a client's buffer of `size` pixels into `window` as `placement` says (D172):
+    /// scaled, offset, clipped and blended; the parts outside the pool's mapping or the window
+    /// are left out.
+    fn place(
+        &mut self,
+        from: PoolPixels,
+        size: (u32, u32),
+        window: WindowBuffer,
+        placement: Placement,
+    );
     /// A new memory file holding the keyboard map and its NUL, sealed against changes of size:
     /// its descriptor and size.
     fn keymap(&mut self) -> Result<(Fd, u32), Errno>;
@@ -103,6 +113,18 @@ pub trait System {
     fn destroy_window(&mut self, device: Fd, window: WindowBuffer);
     /// Sets `window`'s title, at most 64 bytes of UTF-8.
     fn set_title(&mut self, device: Fd, window: u32, title: &[u8]) -> Result<(), Errno>;
+    /// Answers the window server's query `serial` (D161, `ANSWER_QUERY`) with `outcome` and,
+    /// for a tree query, the element tree `tree`.
+    fn answer_query(
+        &mut self,
+        device: Fd,
+        serial: u32,
+        outcome: u32,
+        tree: &[u8],
+    ) -> Result<(), Errno>;
+    /// Sets the pointer shape `SET_POINTER` draws over the window's content: 0 arrow to 5 the
+    /// diagonal resize, 6 none, 7 the hand, 8 busy.
+    fn set_pointer(&mut self, device: Fd, window: u32, shape: u32) -> Result<(), Errno>;
     /// Sets the smallest content the window may be resized to.
     fn set_minimum_size(
         &mut self,
@@ -113,6 +135,9 @@ pub trait System {
     ) -> Result<(), Errno>;
     /// Asks for state 0 (normal), 1 (minimised) or 2 (maximised).
     fn set_state(&mut self, device: Fd, window: u32, state: u32) -> Result<(), Errno>;
+    /// Raises and focuses `window`, restoring it if it is minimised, as when the user picks it
+    /// (`MANAGE_WINDOW`'s focus action; D176, `xdg_activation_v1`).
+    fn focus_window(&mut self, device: Fd, window: u32) -> Result<(), Errno>;
     /// Hands the press `window` holds to the server's move (`kind` 0) or resize by `edges`
     /// (`kind` 1).
     fn start_move_or_resize(
@@ -129,4 +154,6 @@ pub trait System {
     fn work_area(&mut self) -> (u32, u32);
     /// Reads event records from `device` without waiting; how many bytes.
     fn read_events(&mut self, device: Fd, records: &mut [u8]) -> Result<usize, Errno>;
+    /// Eight bytes from the kernel's random source; `None` when it cannot give all eight.
+    fn random(&mut self) -> Option<u64>;
 }

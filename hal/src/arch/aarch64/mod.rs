@@ -101,7 +101,8 @@ _start:
 
     mov     x0, #{cpacr_fp_el1_only}
     msr     cpacr_el1, x0
-    msr     cntkctl_el1, xzr
+    mov     x0, #{cntkctl_user_virtual_counter}
+    msr     cntkctl_el1, x0
     msr     tpidrro_el0, xzr
 
     // Exception vectors, before any Rust code runs, then the timer and interrupt controller.
@@ -161,7 +162,8 @@ eggos_secondary_start:
     mov     sp, x0
     mov     x0, #{cpacr_fp_el1_only}
     msr     cpacr_el1, x0
-    msr     cntkctl_el1, xzr
+    mov     x0, #{cntkctl_user_virtual_counter}
+    msr     cntkctl_el1, x0
     msr     tpidrro_el0, xzr
     adrp    x0, exception_vectors
     add     x0, x0, :lo12:exception_vectors
@@ -176,6 +178,7 @@ eggos_secondary_start:
     secondary_main = sym secondary_main,
     start_stack_top = const core::mem::offset_of!(CpuStart, stack_top),
     cpacr_fp_el1_only = const fp::CPACR_FP_EL1_ONLY,
+    cntkctl_user_virtual_counter = const timer::CNTKCTL_USER_VIRTUAL_COUNTER,
     init_timer = sym timer::init,
     l0_low = sym BOOT_L0_LOW,
     l1_low = sym BOOT_L1_LOW,
@@ -193,7 +196,7 @@ eggos_secondary_start:
     tcr = const TCR,
     ips_max = const TCR_IPS_MAX,
     ips_shift = const TCR_IPS_SHIFT,
-    sctlr_enable = const SCTLR_MMU_AND_CACHES,
+    sctlr_enable = const SCTLR_MMU_AND_CACHES | SCTLR_USER_CACHE_TYPE_AND_MAINTENANCE,
 );
 
 /// The image's virtual address minus its physical address: the kernel links at
@@ -271,6 +274,7 @@ const TCR_IPS_SHIFT: u32 = 32;
 const TCR_IPS_MAX: u64 = 0b101;
 /// `SCTLR_EL1`: M (MMU on), C (data cache), I (instruction cache).
 const SCTLR_MMU_AND_CACHES: u64 = (1 << 0) | (1 << 2) | (1 << 12);
+const SCTLR_USER_CACHE_TYPE_AND_MAINTENANCE: u64 = (1 << 15) | (1 << 26);
 
 /// PSCI 0.2+ `SYSTEM_OFF` and 64-bit `CPU_ON` function IDs (Arm DEN 0022, 5.1).
 const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
@@ -357,6 +361,14 @@ impl Platform for Aarch64 {
         uart0().enable_receive_interrupt();
         timer::route_console_input();
         Ok(())
+    }
+
+    fn route_device_interrupt(
+        specifier: &crate::fdt::InterruptSpecifier,
+    ) -> Result<crate::DeviceLine, &'static str> {
+        let (id, trigger) =
+            eggos_drivers::interrupt::gicv2::shared_interrupt_of_specifier(specifier.cells())?;
+        timer::route_device_interrupt(id, trigger)
     }
 
     fn exit(_status: ExitStatus) -> ! {

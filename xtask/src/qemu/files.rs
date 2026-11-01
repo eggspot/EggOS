@@ -34,6 +34,7 @@ use eggos_toolkit::input::{Input, Modifiers as Held, MouseButton};
 /// The text file the host folder holds for this test: its name and contents.
 pub const HOST_TEXT_FILE: (&str, &str) = ("notes.txt", "Notes from the host folder.\n");
 
+const SHELL_HISTORY_NAME: &str = ".eggsh_history";
 const TEST_DISK_BYTES: u64 = 64 << 20;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(20);
 const WINDOW_TIMEOUT: Duration = Duration::from_secs(40);
@@ -87,6 +88,9 @@ fn guest_disk(arch: &Arch, folder: &Path) -> Result<MemoryFiles, String> {
     }
     if runs_windows_programs(arch.name) {
         disk.file("/usr/lib/eggos/windows", b"\x7fELF layer", 0);
+    }
+    if crate::macos::layer_runs_on(arch.name) {
+        disk.file("/usr/lib/eggos/macos", b"\x7fELF layer", 0);
     }
     disk.device("/home", 1)
         .device("/Applications", 2)
@@ -149,6 +153,7 @@ impl FilesTest<'_> {
             windows.push((*id, WindowContent::Pixels { width, pixels }));
             if let Some(content) = self.shell.screen.desktop.content_rect(*id) {
                 masks.push(to_screen(content, files.time_column()));
+                masks.push(to_screen(content, files.free_space_area()));
             }
         }
         if let Some((id, dialog)) = &self.installer {
@@ -462,7 +467,7 @@ fn check_the_image(arch: &Arch, image: &Path) -> Result<(), String> {
     let mut volume = image_volume(image).map_err(fail)?;
     let mut home = entries_at(&mut volume, "home/root").map_err(fail)?;
     home.sort();
-    if home != [".local", FOLDER_NAME] {
+    if home != [SHELL_HISTORY_NAME, ".local", FOLDER_NAME] {
         return Err(fail(format!("/home/root holds {home:?}")));
     }
     let work = entries_at(&mut volume, "home/root/work").map_err(fail)?;

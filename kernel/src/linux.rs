@@ -40,39 +40,62 @@
 //! powered off, halted or reset with `reboot` ([`reboot`], D106), and changes put on the
 //! disk with `sync`, `syncfs`, `fsync` and `fdatasync` ([`file_changes`], D131), and `AF_UNIX`
 //! stream sockets with `SCM_RIGHTS` ([`socket`], [`unix_socket`], D138), and memory files
-//! with `memfd_create`, `fallocate` and their shared mappings ([`memfd`], D139). Every
+//! with `memfd_create`, `fallocate` and their shared mappings ([`memfd`], D139), and, for
+//! real programs, `/proc/<pid>` and `/proc/self` ([`proc`]), the memory devices `/dev/null`,
+//! `/dev/zero`, `/dev/full`, `/dev/random` and `/dev/urandom` ([`memory_devices`]),
+//! `readlink` and `readlinkat` ([`files`]), `access`, `faccessat` and `faccessat2`
+//! ([`stat`]), and `sethostname` and `setdomainname` ([`identity`]) (D168), and symbolic and
+//! hard links with `symlinkat`, `linkat` and `openat2`'s `RESOLVE_NO_SYMLINKS`, and
+//! permissions with `fchmodat`, `fchmodat2` and `fchmod` ([`file_changes`], [`files`], D170),
+//! and `sysinfo` ([`sysinfo`]) and `fadvise64` ([`files`]) for GTK apps (D176), and
+//! `inotify_init`, `inotify_init1`, `inotify_add_watch` and `inotify_rm_watch` ([`inotify`],
+//! D179) for file watchers such as Qt's and GLib's. Every
 //! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
 
 pub mod agent_channel;
+pub mod android_log;
 pub mod credentials;
 pub mod descriptors;
+pub mod epoll;
+pub mod eventfd;
 pub mod exec;
 pub mod fault;
 pub mod file_changes;
+pub mod file_locks;
 pub mod files;
 pub mod fork;
 pub mod futex;
 pub mod identity;
+pub mod inotify;
 pub mod job_control;
 pub mod limits;
 pub mod memfd;
 pub mod memory;
+pub mod memory_devices;
 pub mod pipe;
 pub mod poll;
 pub mod proc;
+pub mod process_ids;
 pub mod process_table;
+pub mod properties;
+pub mod pseudo_terminal;
 pub mod random;
 pub mod reboot;
+pub mod rtc_device;
 pub mod signal_frame;
+pub mod signalfd;
 pub mod signals;
 pub mod socket;
 pub mod stat;
+pub mod statfs;
+pub mod sysinfo;
 pub mod terminal;
 pub mod thread;
 pub mod thread_pointer;
 pub mod time;
+pub mod timerfd;
 pub mod trampoline;
 pub mod unix_socket;
 pub mod wait;
@@ -117,6 +140,7 @@ pub mod number {
         pub const WRITEV: u64 = 20;
         pub const SCHED_YIELD: u64 = 24;
         pub const MREMAP: u64 = 25;
+        pub const MSYNC: u64 = 26;
         pub const MADVISE: u64 = 28;
         pub const DUP: u64 = 32;
         pub const DUP2: u64 = 33;
@@ -193,6 +217,9 @@ pub mod number {
         pub const SCHED_GETPARAM: u64 = 143;
         pub const SCHED_GETSCHEDULER: u64 = 145;
         pub const SCHED_GETAFFINITY: u64 = 204;
+        pub const SCHED_SETAFFINITY: u64 = 203;
+        pub const GETRUSAGE: u64 = 98;
+        pub const TIMES: u64 = 100;
         pub const DUP3: u64 = 292;
         pub const PIPE: u64 = 22;
         pub const PIPE2: u64 = 293;
@@ -233,8 +260,48 @@ pub mod number {
         pub const ACCEPT4: u64 = 288;
         pub const FALLOCATE: u64 = 285;
         pub const MEMFD_CREATE: u64 = 319;
+        pub const ACCESS: u64 = 21;
+        pub const READLINK: u64 = 89;
+        pub const SETHOSTNAME: u64 = 170;
+        pub const SETDOMAINNAME: u64 = 171;
+        pub const READLINKAT: u64 = 267;
+        pub const FACCESSAT: u64 = 269;
+        pub const FACCESSAT2: u64 = 439;
+        pub const SELECT: u64 = 23;
+        pub const PSELECT6: u64 = 270;
+        pub const EPOLL_CREATE: u64 = 213;
+        pub const EPOLL_WAIT: u64 = 232;
+        pub const EPOLL_CTL: u64 = 233;
+        pub const EPOLL_PWAIT: u64 = 281;
+        pub const EPOLL_CREATE1: u64 = 291;
+        pub const EPOLL_PWAIT2: u64 = 441;
+        pub const SIGNALFD: u64 = 282;
+        pub const TIMERFD_CREATE: u64 = 283;
+        pub const EVENTFD: u64 = 284;
+        pub const TIMERFD_SETTIME: u64 = 286;
+        pub const TIMERFD_GETTIME: u64 = 287;
+        pub const SIGNALFD4: u64 = 289;
+        pub const EVENTFD2: u64 = 290;
+        pub const INOTIFY_INIT: u64 = 253;
+        pub const INOTIFY_ADD_WATCH: u64 = 254;
+        pub const INOTIFY_RM_WATCH: u64 = 255;
+        pub const INOTIFY_INIT1: u64 = 294;
+        pub const LINK: u64 = 86;
+        pub const SYMLINK: u64 = 88;
+        pub const CHMOD: u64 = 90;
+        pub const FCHMOD: u64 = 91;
+        pub const LINKAT: u64 = 265;
+        pub const SYMLINKAT: u64 = 266;
+        pub const FCHMODAT: u64 = 268;
+        pub const OPENAT2: u64 = 437;
+        pub const FCHMODAT2: u64 = 452;
+        pub const FLOCK: u64 = 73;
+        pub const STATFS: u64 = 137;
+        pub const FSTATFS: u64 = 138;
+        pub const SYSINFO: u64 = 99;
+        pub const FADVISE64: u64 = 221;
         /// The highest number above.
-        pub const LAST: u64 = CLOSE_RANGE;
+        pub const LAST: u64 = FCHMODAT2;
     }
     #[cfg(not(target_arch = "x86_64"))]
     mod table {
@@ -318,7 +385,10 @@ pub mod number {
         pub const GETCPU: u64 = 168;
         pub const SCHED_GETSCHEDULER: u64 = 120;
         pub const SCHED_GETPARAM: u64 = 121;
+        pub const SCHED_SETAFFINITY: u64 = 122;
         pub const SCHED_GETAFFINITY: u64 = 123;
+        pub const TIMES: u64 = 153;
+        pub const GETRUSAGE: u64 = 165;
         pub const GETTIMEOFDAY: u64 = 169;
         pub const SETTIMEOFDAY: u64 = 170;
         pub const GETPID: u64 = 172;
@@ -335,6 +405,7 @@ pub mod number {
         pub const MREMAP: u64 = 216;
         pub const MMAP: u64 = 222;
         pub const MPROTECT: u64 = 226;
+        pub const MSYNC: u64 = 227;
         pub const MADVISE: u64 = 233;
         pub const RT_TGSIGQUEUEINFO: u64 = 240;
         pub const WAIT4: u64 = 260;
@@ -361,8 +432,37 @@ pub mod number {
         pub const ACCEPT4: u64 = 242;
         pub const FALLOCATE: u64 = 47;
         pub const MEMFD_CREATE: u64 = 279;
+        pub const FACCESSAT: u64 = 48;
+        pub const READLINKAT: u64 = 78;
+        pub const SETHOSTNAME: u64 = 161;
+        pub const SETDOMAINNAME: u64 = 162;
+        pub const FACCESSAT2: u64 = 439;
+        pub const EVENTFD2: u64 = 19;
+        pub const INOTIFY_INIT1: u64 = 26;
+        pub const INOTIFY_ADD_WATCH: u64 = 27;
+        pub const INOTIFY_RM_WATCH: u64 = 28;
+        pub const EPOLL_CREATE1: u64 = 20;
+        pub const EPOLL_CTL: u64 = 21;
+        pub const EPOLL_PWAIT: u64 = 22;
+        pub const PSELECT6: u64 = 72;
+        pub const SIGNALFD4: u64 = 74;
+        pub const TIMERFD_CREATE: u64 = 85;
+        pub const TIMERFD_SETTIME: u64 = 86;
+        pub const TIMERFD_GETTIME: u64 = 87;
+        pub const EPOLL_PWAIT2: u64 = 441;
+        pub const SYMLINKAT: u64 = 36;
+        pub const LINKAT: u64 = 37;
+        pub const FCHMOD: u64 = 52;
+        pub const FCHMODAT: u64 = 53;
+        pub const OPENAT2: u64 = 437;
+        pub const FCHMODAT2: u64 = 452;
+        pub const FLOCK: u64 = 32;
+        pub const STATFS: u64 = 43;
+        pub const FSTATFS: u64 = 44;
+        pub const SYSINFO: u64 = 179;
+        pub const FADVISE64: u64 = 223;
         /// The highest number above.
-        pub const LAST: u64 = CLOSE_RANGE;
+        pub const LAST: u64 = FCHMODAT2;
     }
     pub use table::*;
 
@@ -424,6 +524,7 @@ pub mod number {
             MUNMAP,
             MPROTECT,
             MREMAP,
+            MSYNC,
             MADVISE,
             GETPID,
             GETPPID,
@@ -437,6 +538,9 @@ pub mod number {
             SCHED_GETSCHEDULER,
             SCHED_GETPARAM,
             SCHED_GETAFFINITY,
+            SCHED_SETAFFINITY,
+            GETRUSAGE,
+            TIMES,
             #[cfg(target_arch = "x86_64")]
             ARCH_PRCTL,
             GETRANDOM,
@@ -511,6 +615,57 @@ pub mod number {
             GETSOCKOPT,
             FALLOCATE,
             MEMFD_CREATE,
+            #[cfg(target_arch = "x86_64")]
+            ACCESS,
+            #[cfg(target_arch = "x86_64")]
+            READLINK,
+            READLINKAT,
+            FACCESSAT,
+            FACCESSAT2,
+            SETHOSTNAME,
+            SETDOMAINNAME,
+            #[cfg(target_arch = "x86_64")]
+            SELECT,
+            PSELECT6,
+            #[cfg(target_arch = "x86_64")]
+            EPOLL_CREATE,
+            EPOLL_CREATE1,
+            EPOLL_CTL,
+            #[cfg(target_arch = "x86_64")]
+            EPOLL_WAIT,
+            EPOLL_PWAIT,
+            EPOLL_PWAIT2,
+            #[cfg(target_arch = "x86_64")]
+            EVENTFD,
+            EVENTFD2,
+            TIMERFD_CREATE,
+            TIMERFD_SETTIME,
+            TIMERFD_GETTIME,
+            #[cfg(target_arch = "x86_64")]
+            SIGNALFD,
+            SIGNALFD4,
+            #[cfg(target_arch = "x86_64")]
+            INOTIFY_INIT,
+            INOTIFY_INIT1,
+            INOTIFY_ADD_WATCH,
+            INOTIFY_RM_WATCH,
+            #[cfg(target_arch = "x86_64")]
+            LINK,
+            #[cfg(target_arch = "x86_64")]
+            SYMLINK,
+            #[cfg(target_arch = "x86_64")]
+            CHMOD,
+            FCHMOD,
+            LINKAT,
+            SYMLINKAT,
+            FCHMODAT,
+            OPENAT2,
+            FCHMODAT2,
+            FLOCK,
+            STATFS,
+            FSTATFS,
+            SYSINFO,
+            FADVISE64,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -554,6 +709,9 @@ impl Errno {
     pub const E2BIG: Self = Self(7);
     /// Not a program the kernel can run (`execve`).
     pub const ENOEXEC: Self = Self(8);
+    /// A program's interpreter (its dynamic loader) is not one the kernel can run (`execve`,
+    /// D167).
+    pub const ELIBBAD: Self = Self(80);
     /// Bad file descriptor: one that is not open, or not open for what the call does (D101),
     /// or a target above the open-file limit (`dup2`, `dup3`).
     pub const EBADF: Self = Self(9);
@@ -607,8 +765,10 @@ impl Errno {
     pub const EPIPE: Self = Self(32);
     /// Busy: here, a rename of `.` or `..`, or a mount point removed.
     pub const EBUSY: Self = Self(16);
-    /// A rename across file systems.
+    /// A rename or a hard link across file systems.
     pub const EXDEV: Self = Self(18);
+    /// Too many links: a file that has as many names as it may have (`linkat`, D170).
+    pub const EMLINK: Self = Self(31);
     /// A file larger than the largest offset.
     pub const EFBIG: Self = Self(27);
     /// A file system's memory is used up.
@@ -617,6 +777,8 @@ impl Errno {
     pub const ENOTEMPTY: Self = Self(39);
     /// A path longer than `PATH_MAX`, or a component longer than `NAME_MAX`.
     pub const ENAMETOOLONG: Self = Self(36);
+    /// A walk met too many symbolic links, or `O_NOFOLLOW` met one at the end (D168).
+    pub const ELOOP: Self = Self(40);
     /// No such system call.
     pub const ENOSYS: Self = Self(38);
     /// Timed out: a wait's deadline came first (`futex`).
@@ -653,10 +815,29 @@ impl Errno {
     pub const ECONNREFUSED: Self = Self(111);
     /// Another call is connecting the socket already (`connect`).
     pub const EALREADY: Self = Self(114);
+    /// A non-blocking connection is being made (`connect`, D158).
+    pub const EINPROGRESS: Self = Self(115);
     /// Too many buffers for one message (`sendmsg`, `recvmsg`).
     pub const EMSGSIZE: Self = Self(90);
-    /// A mapping that would end past the largest offset (`mmap` of a memfd).
+    /// A socket of the wrong type at the address: a stream socket's for a datagram, or the
+    /// other way round (`connect`, `sendto`, D188).
+    pub const EPROTOTYPE: Self = Self(91);
+    /// A mapping that would end past the largest offset (`mmap` of a memfd), or a lock's range
+    /// past it (`fcntl`, D171).
     pub const EOVERFLOW: Self = Self(75);
+    /// No memory left for one more file lock (`flock`, `fcntl`, D171).
+    pub const ENOLCK: Self = Self(37);
+    /// A record lock's wait would never end: its holder waits for the caller (`fcntl`'s
+    /// `F_SETLKW`, D173).
+    pub const EDEADLK: Self = Self(35);
+    /// A datagram socket with no destination (`send` unconnected, D157).
+    pub const EDESTADDRREQ: Self = Self(89);
+    /// An address this machine does not have (`bind`, D157).
+    pub const EADDRNOTAVAIL: Self = Self(99);
+    /// The network is down: no cable (`sendto`, D157).
+    pub const ENETDOWN: Self = Self(100);
+    /// No route to the network (`sendto`, D157).
+    pub const ENETUNREACH: Self = Self(101);
 
     /// The value the program sees in its result register: `-errno`.
     pub fn result(self) -> u64 {
@@ -732,12 +913,16 @@ pub fn spawn<P: Platform>(
 /// loop and handed to [`handle`] with each exit from user mode. The state is boxed: the loop
 /// keeps one pointer to it, and its own variables stay in registers (in the loop's closure
 /// with them, the system calls taking its address kept them in memory: +3 to +5% on the
-/// system-call round trip).
+/// system-call round trip). [`SpawnError::OutOfMemory`] when its stack would take the free
+/// frames below the reserve programs leave the kernel (D155).
 pub(crate) fn spawn_thread<P: Platform>(
     process: Arc<Process<P>>,
     thread: LinuxThread,
     context: UserContext,
 ) -> Result<JoinHandle, SpawnError> {
+    if !crate::heap::may_grow_for_user(crate::thread::STACK_SIZE) {
+        return Err(SpawnError::OutOfMemory);
+    }
     let mut thread = Box::new(thread);
     process.add_thread();
     let counted = Arc::clone(&process);
@@ -805,6 +990,11 @@ fn user_exception<P: Platform>(
     match process.resolve_page_fault(address, page_fault) {
         Ok(()) => ControlFlow::Continue(()),
         Err(UnresolvedFault::NotAllowed) => signal_fault(process, thread, context),
+        Err(UnresolvedFault::BusError) => {
+            let exception = context.last_exception();
+            let fault = fault::bus_error(process, &exception, context.stack());
+            signals::deliver_fault(process, thread, context, &fault)
+        }
         Err(UnresolvedFault::OutOfMemory) => end_process(
             process,
             ProcessExit::Killed {
@@ -944,9 +1134,14 @@ fn out_of_line_call<P: Platform>(
         number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, thread, context),
         number::FUTEX => futex::futex::<P>(process, thread, context),
         number::EXECVE => exec::execve(process, thread, context),
+        number::IOCTL => ioctl_call::<P>(process, thread, context),
         number::WAIT4 => wait::wait4(process, thread, context),
         number::WAITID => wait::waitid(process, thread, context),
         number::EXECVEAT => exec::execveat(process, thread, context),
+        number::FLOCK => file_locks::flock(process, thread, context),
+        number::FCNTL if file_locks::is_lock_command(context.syscall_arguments()[1]) => {
+            file_locks::fcntl(process, thread, context)
+        }
         number::SOCKET
         | number::SOCKETPAIR
         | number::BIND
@@ -963,6 +1158,26 @@ fn out_of_line_call<P: Platform>(
         | number::SHUTDOWN
         | number::SETSOCKOPT
         | number::GETSOCKOPT => socket::call(process, thread, number, context),
+        number::PSELECT6
+        | number::EPOLL_CREATE1
+        | number::EPOLL_CTL
+        | number::EPOLL_PWAIT
+        | number::EPOLL_PWAIT2
+        | number::EVENTFD2
+        | number::TIMERFD_CREATE
+        | number::TIMERFD_SETTIME
+        | number::TIMERFD_GETTIME
+        | number::SIGNALFD4
+        | number::INOTIFY_INIT1
+        | number::INOTIFY_ADD_WATCH
+        | number::INOTIFY_RM_WATCH => poll::call(process, thread, number, context),
+        #[cfg(target_arch = "x86_64")]
+        number::SELECT
+        | number::EPOLL_CREATE
+        | number::EPOLL_WAIT
+        | number::EVENTFD
+        | number::SIGNALFD
+        | number::INOTIFY_INIT => poll::call(process, thread, number, context),
         _ => {
             let result = match number {
                 number::CLONE => {
@@ -1043,7 +1258,7 @@ fn out_of_line_result<P: Platform>(
     use credentials::Kind::{Group, User};
     let [first, second, third, fourth, fifth, _] = context.syscall_arguments();
     match number {
-        number::CLOSE => descriptors::close(thread.files(), first),
+        number::CLOSE => file_locks::close(process.id().get(), thread.files(), first),
         number::DUP => descriptors::dup(process, thread.files(), first),
         #[cfg(target_arch = "x86_64")]
         number::DUP2 => descriptors::dup2(process, thread.files(), first, second),
@@ -1080,7 +1295,8 @@ fn out_of_line_result<P: Platform>(
         #[cfg(target_arch = "x86_64")]
         number::PIPE => pipe::pipe2::<P>(process, thread, first, 0),
         number::CLOSE_RANGE => {
-            let own = descriptors::close_range(thread.files(), first, second, third)?;
+            let own =
+                descriptors::close_range(process.id().get(), thread.files(), first, second, third)?;
             if let Some(own) = own {
                 thread.set_files(own);
             }
@@ -1103,6 +1319,9 @@ fn out_of_line_result<P: Platform>(
         number::GET_ROBUST_LIST => identity::get_robust_list(process, thread, first, second, third),
         number::GETRANDOM => random::getrandom::<P>(process, first, second, third),
         number::GETCPU => identity::getcpu(process, first, second),
+        number::SCHED_SETAFFINITY => {
+            identity::sched_setaffinity(process, thread, first, second, third)
+        }
         number::SCHED_GETAFFINITY => {
             identity::sched_getaffinity(process, thread, first, second, third)
         }
@@ -1134,14 +1353,19 @@ fn out_of_line_result<P: Platform>(
         }
         number::CLOCK_GETTIME => time::clock_gettime(process, first, second),
         number::CLOCK_GETRES => time::clock_getres(process, first, second),
+        number::GETRUSAGE => time::getrusage(process, first, second),
+        number::TIMES => time::times(process, first),
         number::GETTIMEOFDAY => time::gettimeofday(process, first, second),
         #[cfg(target_arch = "x86_64")]
         number::TIME => time::time(process, first),
         number::CLOCK_SETTIME => time::clock_settime(process, first, second),
         number::SETTIMEOFDAY => time::settimeofday(process, first, second),
-        number::IOCTL => ioctl::<P>(process, thread.files(), first, second, third),
         number::LSEEK => lseek(thread.files(), first, second, third),
         number::FSTAT => stat::fstat(process, thread.files(), first, second),
+        number::STATFS => statfs::statfs(process, thread, first, second),
+        number::FSTATFS => statfs::fstatfs(process, thread.files(), first, second),
+        number::SYSINFO => sysinfo::sysinfo(process, first),
+        number::FADVISE64 => files::fadvise64(thread.files(), first, third, fourth),
         number::NEWFSTATAT => stat::newfstatat(process, thread, first, second, third, fourth),
         number::STATX => stat::statx(process, thread, first, second, third, fourth, fifth),
         number::OPENAT => files::openat(process, thread, first, second, third, fourth),
@@ -1163,6 +1387,29 @@ fn out_of_line_result<P: Platform>(
             files::getdents64(process, &*thread.files().file(first)?, second, third)
         }
         number::GETCWD => files::getcwd(process, thread, first, second),
+        number::READLINKAT => files::readlinkat(process, thread, first, second, third, fourth),
+        #[cfg(target_arch = "x86_64")]
+        number::READLINK => files::readlinkat(process, thread, CWD, first, second, third),
+        number::FACCESSAT => stat::faccessat2(process, thread, first, second, third, 0),
+        number::FACCESSAT2 => stat::faccessat2(process, thread, first, second, third, fourth),
+        #[cfg(target_arch = "x86_64")]
+        number::ACCESS => stat::faccessat2(process, thread, CWD, first, second, 0),
+        number::SYMLINKAT => file_changes::symlinkat(process, thread, first, second, third),
+        #[cfg(target_arch = "x86_64")]
+        number::SYMLINK => file_changes::symlinkat(process, thread, first, CWD, second),
+        number::LINKAT => {
+            file_changes::linkat(process, thread, first, second, third, fourth, fifth)
+        }
+        #[cfg(target_arch = "x86_64")]
+        number::LINK => file_changes::linkat(process, thread, CWD, first, CWD, second, 0),
+        number::FCHMODAT => file_changes::fchmodat2(process, thread, first, second, third, 0),
+        number::FCHMODAT2 => file_changes::fchmodat2(process, thread, first, second, third, fourth),
+        #[cfg(target_arch = "x86_64")]
+        number::CHMOD => file_changes::fchmodat2(process, thread, CWD, first, second, 0),
+        number::FCHMOD => file_changes::fchmod(process, thread, first, second),
+        number::OPENAT2 => files::openat2(process, thread, first, second, third, fourth),
+        number::SETHOSTNAME => identity::sethostname(process, first, second),
+        number::SETDOMAINNAME => identity::setdomainname(process, first, second),
         number::CHDIR => files::chdir(process, thread, first),
         number::FCHDIR => files::fchdir(thread, first),
         number::GETUID => Ok(credentials::get_real(process, User)),
@@ -1191,6 +1438,7 @@ fn out_of_line_result<P: Platform>(
         number::SETGROUPS => credentials::setgroups(process, first, second),
         number::MREMAP => memory::mremap::<P>(process, first, second, third, fourth, fifth),
         number::MADVISE => memory::madvise::<P>(process, first, second, third),
+        number::MSYNC => memory::msync::<P>(process, first, second, third),
         number::SCHED_YIELD => {
             crate::thread::yield_now::<P>();
             Ok(0)
@@ -1291,6 +1539,7 @@ pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> Co
         return ControlFlow::Break(());
     }
     fork::release_vfork_parent::<P>(process);
+    file_locks::process_ended(process.id().get());
     wait::process_ended::<P>(process, how);
     if others {
         futex::wake_space::<P>(process.futex_space());
@@ -1315,15 +1564,8 @@ fn write<P: Platform>(
     let count = count.min(MAX_RW_COUNT);
     let written = match file.kind() {
         FileKind::Console => write_to_console(process, buffer, count),
-        FileKind::Pipe(_)
-        | FileKind::Regular(_)
-        | FileKind::AgentChannel(_)
-        | FileKind::Socket(_)
-        | FileKind::MemoryFile(_) => {
-            return Err(NOT_THE_CONSOLE);
-        }
         FileKind::Window(_) => return Err(Errno::EINVAL),
-        _ => return Err(Errno::EBADF),
+        _ => return Err(NOT_THE_CONSOLE),
     };
     if written == 0 && count > 0 {
         Err(Errno::EFAULT)
@@ -1363,7 +1605,6 @@ fn write_iovecs_to_console<P: Platform>(
 
 const NOT_THE_CONSOLE: Errno = Errno(u16::MAX);
 
-#[cfg(target_arch = "x86_64")]
 const CWD: u64 = stat::at::FDCWD as u64;
 
 #[inline(never)]
@@ -1395,6 +1636,15 @@ fn write_out_of_line<P: Platform>(
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
             }
+            FileKind::MemoryDevice(device, _) => {
+                let buffers = iovecs.entries().iter().map(iovec);
+                let result = memory_devices::write(process, *device, buffers);
+                context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
+            }
+            FileKind::PseudoTerminal(end) => {
+                pseudo_terminal::write(process, thread, context, &file, end, &iovecs)
+            }
             FileKind::Console => {
                 let result = write_iovecs_to_console(process, &iovecs);
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -1409,6 +1659,12 @@ fn write_out_of_line<P: Platform>(
             }
             FileKind::Socket(socket) => {
                 socket::write(process, thread, context, &file, socket, iovecs)
+            }
+            FileKind::InetSocket(socket) => {
+                socket::inet::write(process, thread, context, socket, iovecs)
+            }
+            FileKind::Event(event) => {
+                poll::write_event(process, thread, context, &file, event, &iovecs)
             }
             _ => {
                 context.set_syscall_result(Errno::EBADF.result());
@@ -1449,8 +1705,13 @@ fn read<P: Platform>(
     });
     match prepared {
         Ok((file, iovecs)) => match file.kind() {
-            FileKind::Console => terminal::read(process, thread, context, &file, &iovecs),
+            FileKind::Console => {
+                terminal::read(process, thread, context, &file, &terminal::Console, &iovecs)
+            }
             FileKind::Pipe(end) => pipe::read(process, thread, context, &file, end, &iovecs),
+            FileKind::PseudoTerminal(end) => {
+                pseudo_terminal::read(process, thread, context, &file, end, &iovecs)
+            }
             FileKind::Window(connection) => {
                 window::read(process, thread, context, &file, connection, &iovecs)
             }
@@ -1460,10 +1721,23 @@ fn read<P: Platform>(
             FileKind::Socket(socket) => {
                 socket::read(process, thread, context, &file, socket, iovecs)
             }
+            FileKind::InetSocket(socket) => {
+                socket::inet::read(process, thread, context, &file, socket, iovecs)
+            }
             FileKind::MemoryFile(memory) => {
                 let result = memfd::read(process, &file, memory, &iovecs);
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
+            }
+            FileKind::MemoryDevice(device, _) => {
+                let nonblocking = file.status_flags() & descriptors::open_flag::NONBLOCK != 0;
+                let buffers = iovecs.entries().iter().map(iovec);
+                let result = memory_devices::read(process, *device, nonblocking, buffers);
+                context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
+            }
+            FileKind::Event(event) => {
+                poll::read_event(process, thread, context, &file, event, &iovecs)
             }
             kind => {
                 let result = match files::Contents::of(kind) {
@@ -1484,32 +1758,82 @@ fn read<P: Platform>(
     }
 }
 
+fn ioctl_call<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    let [fd, request, argument, ..] = context.syscall_arguments();
+    let result = ioctl::<P>(process, thread, fd, request, argument);
+    if result == Err(job_control::SIGNALLED) {
+        return job_control::restart_after_signal(process, thread, context);
+    }
+    context.set_syscall_result(result.unwrap_or_else(Errno::result));
+    ControlFlow::Continue(())
+}
+
 fn ioctl<P: Platform>(
     process: &Process<P>,
-    files: &Descriptors,
+    thread: &mut LinuxThread,
     fd: u64,
     request: u64,
     argument: u64,
 ) -> Result<u64, Errno> {
-    let file = files.file(fd)?;
+    let file = thread.files().file(fd)?;
     if file.is_location_only() {
         return Err(Errno::EBADF);
     }
     if let Some(result) =
-        descriptors::descriptor_ioctl(process, files, &file, fd, request, argument)
+        descriptors::descriptor_ioctl(process, thread.files(), &file, fd, request, argument)
     {
         return result;
     }
     match file.kind() {
-        FileKind::Console => terminal::ioctl(process, request, argument),
-        FileKind::Window(connection) => window::ioctl(process, connection, request, argument),
+        FileKind::Console if terminal::changes_the_terminal(request) => {
+            let console = process_table::Terminal::Console;
+            match job_control::terminal_access(process, thread, console, signal::SIGTTOU) {
+                job_control::Access::Allowed => {
+                    terminal::ioctl(process, &terminal::Console, request, argument)
+                }
+                job_control::Access::Refused => Err(Errno::EIO),
+                job_control::Access::Signalled => Err(job_control::SIGNALLED),
+            }
+        }
+        FileKind::Console => terminal::ioctl(process, &terminal::Console, request, argument),
+        FileKind::PseudoTerminal(end) => {
+            pseudo_terminal::ioctl(process, thread, end, request, argument)
+        }
+        FileKind::Window(connection) => {
+            window::ioctl(process, thread, connection, request, argument)
+        }
         FileKind::Socket(socket) => {
             socket::ioctl(process, socket, request, argument).unwrap_or(Err(Errno::ENOTTY))
+        }
+        FileKind::InetSocket(socket) => {
+            socket::inet::ioctl(process, socket, request, argument).unwrap_or(Err(Errno::ENOTTY))
+        }
+        FileKind::Regular(node) if crate::vfs::devfs::is_property_area(*node) => {
+            properties::ioctl(process, request, argument)
+        }
+        FileKind::Regular(node) if crate::vfs::devfs::is_android_log(*node) => {
+            android_log::ioctl(process, request, argument)
+        }
+        FileKind::Regular(node) if crate::vfs::devfs::is_rtc(*node) => {
+            rtc_device::ioctl(process, request, argument)
         }
         FileKind::Pipe(end) if request as u32 == terminal::request::FIONREAD => {
             let available = i32::try_from(end.available()).unwrap_or(i32::MAX);
             process
                 .write_user_memory(argument, &available.to_ne_bytes())
+                .map(|()| 0)
+                .map_err(|_| Errno::EFAULT)
+        }
+        FileKind::Event(descriptors::EventFile::Inotify(instance))
+            if request as u32 == terminal::request::FIONREAD =>
+        {
+            let queued = i32::try_from(instance.queued_bytes()).unwrap_or(i32::MAX);
+            process
+                .write_user_memory(argument, &queued.to_ne_bytes())
                 .map(|()| 0)
                 .map_err(|_| Errno::EFAULT)
         }
@@ -1521,10 +1845,14 @@ fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, 
     let file = files.file(fd)?;
     match file.kind() {
         FileKind::Console
+        | FileKind::PseudoTerminal(_)
         | FileKind::Pipe(_)
         | FileKind::Window(_)
         | FileKind::AgentChannel(_)
-        | FileKind::Socket(_) => terminal::lseek(whence),
+        | FileKind::Socket(_)
+        | FileKind::InetSocket(_)
+        | FileKind::Event(_) => terminal::lseek(whence),
+        FileKind::MemoryDevice(..) => Ok(0),
         _ => files::lseek_node(&file, offset, whence),
     }
 }
@@ -3538,12 +3866,7 @@ mod tests {
         }
         let group_of_none = u64::from(i32::MIN as u32);
         let no_process = u64::from(i32::MAX as u32);
-        for target in [
-            no_process,
-            u64::MAX,
-            group_of_none,
-            no_process.wrapping_neg(),
-        ] {
+        for target in [no_process, group_of_none, no_process.wrapping_neg()] {
             assert_eq!(
                 call(&process, number::KILL, [target, 65, 0, 0, 0, 0]),
                 esrch
@@ -3811,6 +4134,9 @@ mod tests {
                     .map_new_page(top - page * FRAME_SIZE, Attributes::USER_READ_WRITE, &[])
                     .unwrap();
             }
+            process
+                .add_region(top - 3 * FRAME_SIZE, top, Attributes::USER_READ_WRITE)
+                .unwrap();
         }
         process
             .add_region(
@@ -3895,6 +4221,63 @@ mod tests {
         context.set_registers(&registers);
         context.simulate_syscall(number::RT_SIGRETURN, [0; 6], to + 4);
         handle_first(process, context, UserExit::Syscall)
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    #[test]
+    fn the_return_trampoline_never_fills_a_hole_the_program_made() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let anywhere = crate::process::Placement::Anywhere {
+            hint: None,
+            floor: super::exec::MINIMUM_ADDRESS,
+            top: super::memory::mmap_top::<P>(),
+        };
+        let hole = process
+            .map_region(anywhere, FRAME_SIZE, Some(Attributes::USER_READ_WRITE))
+            .unwrap();
+        process.unmap_range(hole, hole + FRAME_SIZE).unwrap();
+        let entry = super::trampoline::address(&process).unwrap();
+        let stack_gap_bottom = super::memory::mmap_top::<P>();
+        assert_eq!(entry, stack_gap_bottom + 4);
+        assert_eq!(
+            process.region(stack_gap_bottom).unwrap().attributes,
+            Some(Attributes::USER_TEXT)
+        );
+        assert!(process.region(hole).is_none());
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    #[test]
+    fn the_return_trampoline_takes_the_next_gap_page_and_never_one_below_the_gap() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let stack_gap_bottom = super::memory::mmap_top::<P>();
+        let anywhere = crate::process::Placement::Anywhere {
+            hint: None,
+            floor: super::exec::MINIMUM_ADDRESS,
+            top: stack_gap_bottom,
+        };
+        let hole = process
+            .map_region(anywhere, FRAME_SIZE, Some(Attributes::USER_READ_WRITE))
+            .unwrap();
+        process.unmap_range(hole, hole + FRAME_SIZE).unwrap();
+        process
+            .map_region(
+                crate::process::Placement::Exactly(stack_gap_bottom),
+                FRAME_SIZE,
+                Some(Attributes::USER_READ_WRITE),
+            )
+            .unwrap();
+        let sigusr1 = 10;
+        set_handler(&process, sigusr1, 0, 0);
+        let entry = super::trampoline::address(&process).unwrap();
+        assert_eq!(entry, stack_gap_bottom + FRAME_SIZE + 4);
+        assert_eq!(super::trampoline::address(&process), Some(entry));
+        assert!(process.region(hole).is_none());
+        assert!(process.region(stack_gap_bottom + 2 * FRAME_SIZE).is_none());
     }
 
     #[test]
@@ -5013,16 +5396,20 @@ mod tests {
                 );
             }
         }
-        for id in [
-            clock::PROCESS_CPUTIME_ID,
-            clock::THREAD_CPUTIME_ID,
-            clock::REALTIME_ALARM,
-            clock::BOOTTIME_ALARM,
-            10,
-            12,
-            -2,
-            -6,
-        ] {
+        for id in [clock::PROCESS_CPUTIME_ID, clock::THREAD_CPUTIME_ID] {
+            let id = 0xffff_ffff_0000_0000 | u64::from(id as u32);
+            assert_eq!(
+                call(&process, number::CLOCK_GETTIME, [id, tp, 0, 0, 0, 0]),
+                0
+            );
+            assert!(read_timespec(&process, tp).1 < 1_000_000_000);
+            assert_eq!(call(&process, number::CLOCK_GETRES, [id, 0, 0, 0, 0, 0]), 0);
+            assert_eq!(
+                call(&process, number::CLOCK_GETTIME, [id, UNMAPPED, 0, 0, 0, 0]),
+                Errno::EFAULT.result()
+            );
+        }
+        for id in [clock::REALTIME_ALARM, clock::BOOTTIME_ALARM, 10, 12, -2, -6] {
             let id = 0xffff_ffff_0000_0000 | u64::from(id as u32);
             for call_number in [number::CLOCK_GETTIME, number::CLOCK_GETRES] {
                 assert_eq!(
@@ -5678,7 +6065,10 @@ mod tests {
             (b"/etc", Errno::EACCES),
             (b"/etc/hostname", Errno::EACCES),
             (b"/etc/hostname/program", Errno::ENOTDIR),
-            (b"/usr/libexec/script", Errno::ENOEXEC),
+            (b"/usr/libexec/script", Errno::ENOENT),
+            (b"/usr/libexec/bare", Errno::ENOEXEC),
+            (b"/usr/libexec/loop", Errno::ELOOP),
+            (b"/usr/libexec/to-text", Errno::EACCES),
             (b"/usr/libexec/text", Errno::ENOEXEC),
         ] {
             assert_eq!(execve(path, 0), error.result(), "{path:?}");
@@ -5774,6 +6164,63 @@ mod tests {
         );
         let current = process.take_handed_over(&context).unwrap();
         (context, current)
+    }
+
+    #[test]
+    fn a_script_runs_its_interpreter_with_the_line_s_argument_and_its_own_path() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let path = at_path(&process, b"/usr/libexec/runs");
+        let arguments = argument_list(&process, &[b"runs", b"arg"]);
+        let mut thread = take_first_thread(&process);
+        let (_, current) = exec_in(
+            &process,
+            &mut thread,
+            number::EXECVE,
+            [path, arguments, 0, 0, 0, 0],
+        );
+        let (start, end) = current.image_layout().arguments;
+        let mut strings = alloc::vec![0u8; (end - start) as usize];
+        current.read_user_memory(start, &mut strings).unwrap();
+        assert_eq!(
+            strings,
+            b"/usr/libexec/program\0-x\0/usr/libexec/runs\0arg\0"
+        );
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(current.id().get(), thread);
+    }
+
+    #[test]
+    fn a_setgid_process_reaches_its_own_descriptors_but_not_another_s_with_its_ids() {
+        use credentials::{Ids, Kind};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let setgid = |process: &Process<P>| {
+            let mut locked = process.credentials_and_limits().lock();
+            let user = Ids {
+                real: 1000,
+                effective: 1000,
+                saved: 1000,
+                filesystem: 1000,
+            };
+            let group = Ids {
+                real: 1000,
+                effective: 50,
+                saved: 50,
+                filesystem: 50,
+            };
+            locked.credentials.set_ids(Kind::User, user).unwrap();
+            locked.credentials.set_ids(Kind::Group, group).unwrap();
+        };
+        let process = process_for_status(&kernel);
+        let other = process_for_status(&kernel);
+        setgid(&process);
+        setgid(&other);
+        assert!(proc::may_reach_descriptors::<P>(&process, &process));
+        assert!(!proc::may_reach_descriptors::<P>(&process, &other));
     }
 
     #[test]
@@ -6197,7 +6644,7 @@ mod tests {
         clear_child_tid: u64,
     ) -> LinuxThread {
         process.add_thread();
-        let id = process::allocate_thread_id().unwrap();
+        let id = process::allocate_thread_id::<P>().unwrap();
         let second = first.new_thread(
             id,
             clear_child_tid,
@@ -6289,16 +6736,17 @@ mod tests {
     }
 
     #[test]
-    fn a_fork_of_memory_with_shared_anonymous_memory_is_enosys() {
+    fn a_fork_of_memory_with_inaccessible_shared_anonymous_memory_is_enosys() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (process, _) = process_with_stacks(&kernel);
         let fork = || call(&process, number::CLONE, [17, 0, 0, 0, 0, 0]);
         let private = crate::linux::memory::map::PRIVATE | crate::linux::memory::map::ANONYMOUS;
         let shared = crate::linux::memory::map::SHARED | crate::linux::memory::map::ANONYMOUS;
-        let mmap = |flags| call(&process, number::MMAP, [0, 4096, 3, flags, u64::MAX, 0]);
-        assert!(mmap(private) < Errno::EINVAL.result());
-        assert!(mmap(shared) < Errno::EINVAL.result());
+        let mmap = |prot, flags| call(&process, number::MMAP, [0, 4096, prot, flags, u64::MAX, 0]);
+        assert!(mmap(3, private) < Errno::EINVAL.result());
+        assert!(mmap(3, shared) < Errno::EINVAL.result());
+        assert!(mmap(0, shared) < Errno::EINVAL.result());
         assert_eq!(fork(), Errno::ENOSYS.result());
         assert!(!has_children(&process));
     }
@@ -6840,6 +7288,48 @@ mod tests {
         assert_eq!(param(negative, SCRATCH), Errno::EINVAL.result());
         assert_eq!(param(other, SCRATCH), Errno::ESRCH.result());
         assert_eq!(param(0, u64::MAX - 1), Errno::EFAULT.result());
+    }
+
+    #[test]
+    fn the_cpu_time_calls_answer_and_refuse_what_linux_refuses() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        for clock_id in [2, 3] {
+            assert_eq!(
+                call(
+                    &process,
+                    number::CLOCK_GETTIME,
+                    [clock_id, SCRATCH, 0, 0, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(
+                call(&process, number::CLOCK_GETRES, [clock_id, 0, 0, 0, 0, 0]),
+                0
+            );
+        }
+        for who in [0, 1, u64::MAX] {
+            assert_eq!(
+                call(&process, number::GETRUSAGE, [who, SCRATCH, 0, 0, 0, 0]),
+                0
+            );
+        }
+        assert_eq!(
+            call(&process, number::GETRUSAGE, [7, SCRATCH, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            call(&process, number::GETRUSAGE, [0, 0, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        let mut children = [0xffu8; 16];
+        process.read_user_memory(SCRATCH, &mut children).unwrap();
+        assert_eq!(children, [0; 16]);
+        assert_ne!(
+            call(&process, number::TIMES, [SCRATCH, 0, 0, 0, 0, 0]),
+            u64::MAX
+        );
     }
 
     #[test]
@@ -7656,5 +8146,742 @@ mod tests {
         );
         assert_eq!(first.signal_state().pending, 1 << (sigusr1 - 1));
         assert_eq!(process.signals().lock().left_for(0), 0);
+    }
+    #[test]
+    fn readlink_reads_only_links() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let readlink = |path: &[u8], size| {
+            let path = at_path(&process, path);
+            call(
+                &process,
+                number::READLINKAT,
+                [FDCWD, path, READ_BUFFER, size, 0, 0],
+            )
+        };
+        assert_eq!(readlink(b"/etc/hostname", 100), Errno::EINVAL.result());
+        assert_eq!(readlink(b"/etc", 100), Errno::EINVAL.result());
+        assert_eq!(readlink(b"/nowhere", 100), Errno::ENOENT.result());
+        assert_eq!(readlink(b"", 100), Errno::ENOENT.result());
+        assert_eq!(readlink(b"/etc/hostname", 0), Errno::EINVAL.result());
+        assert_eq!(readlink(b"/etc/hostname", u64::MAX), Errno::EINVAL.result());
+        let path = at_path(&process, b"/etc/hostname/x");
+        assert_eq!(
+            call(
+                &process,
+                number::READLINKAT,
+                [FDCWD, path, READ_BUFFER, 100, 0, 0]
+            ),
+            Errno::ENOTDIR.result()
+        );
+    }
+
+    #[test]
+    fn access_checks_that_a_file_is_there_and_may_be_used() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let access = |path: &[u8], mode, flags| {
+            let path = at_path(&process, path);
+            call(
+                &process,
+                number::FACCESSAT2,
+                [FDCWD, path, mode, flags, 0, 0],
+            )
+        };
+        use stat::access_mode::{EXECUTE, READ, WRITE};
+        let (read, write, execute) = (u64::from(READ), u64::from(WRITE), u64::from(EXECUTE));
+        assert_eq!(access(b"/etc/hostname", 0, 0), 0);
+        assert_eq!(access(b"/etc/hostname", read, 0), 0);
+        assert_eq!(access(b"/etc", read | execute, 0), 0);
+        assert_eq!(access(b"/etc/hostname", write, 0), Errno::EROFS.result());
+        assert_eq!(access(b"/nowhere", 0, 0), Errno::ENOENT.result());
+        assert_eq!(access(b"/etc/hostname", 8, 0), Errno::EINVAL.result());
+        assert_eq!(access(b"/etc/hostname", read, 1), Errno::EINVAL.result());
+        assert_eq!(access(b"", 0, 0), Errno::ENOENT.result());
+        assert_eq!(access(b"", 0, stat::at::EMPTY_PATH), 0);
+        assert_eq!(
+            access(
+                b"/etc/hostname",
+                read,
+                stat::AT_EACCESS | stat::at::SYMLINK_NOFOLLOW
+            ),
+            0
+        );
+        let path = at_path(&process, b"/etc/hostname");
+        assert_eq!(
+            call(&process, number::FACCESSAT, [FDCWD, path, read, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::FACCESSAT2,
+                [1, EMPTY, execute, stat::at::EMPTY_PATH, 0, 0]
+            ),
+            Errno::EACCES.result()
+        );
+    }
+
+    #[test]
+    fn statfs_and_fstatfs_describe_the_file_system_a_path_or_descriptor_is_on() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let word = |at: usize| {
+            let bytes = read_bytes(&process, READ_BUFFER + at as u64, 8);
+            u64::from_ne_bytes(bytes.try_into().unwrap())
+        };
+        let path = at_path(&process, b"/etc");
+        assert_eq!(
+            call(&process, number::STATFS, [path, READ_BUFFER, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(word(0), crate::vfs::magic::RAMFS);
+        assert_eq!(word(64), 255);
+        assert_eq!(word(80), statfs::flag::VALID | statfs::flag::RDONLY);
+        let missing = at_path(&process, b"/nowhere");
+        assert_eq!(
+            call(&process, number::STATFS, [missing, READ_BUFFER, 0, 0, 0, 0]),
+            Errno::ENOENT.result()
+        );
+        let path = at_path(&process, b"/etc");
+        assert_eq!(
+            call(&process, number::STATFS, [path, 0, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(
+            call(&process, number::FSTATFS, [1, READ_BUFFER, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(word(0), crate::vfs::magic::TMPFS);
+        assert_eq!(
+            call(&process, number::FSTATFS, [99, READ_BUFFER, 0, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+    }
+
+    #[test]
+    fn sysinfo_reports_memory_in_bytes_and_fadvise_takes_valid_advice_on_files() {
+        use descriptors::open_flag;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let word = |at: usize| {
+            let bytes = read_bytes(&process, READ_BUFFER + at as u64, 8);
+            u64::from_ne_bytes(bytes.try_into().unwrap())
+        };
+        assert_eq!(
+            call(&process, number::SYSINFO, [READ_BUFFER, 0, 0, 0, 0, 0]),
+            0
+        );
+        assert!(
+            word(32) >= word(40),
+            "total memory is at least the free memory"
+        );
+        assert_eq!(word(104) & 0xffff_ffff, 1, "mem_unit is one byte");
+        assert_eq!(
+            call(&process, number::SYSINFO, [0, 0, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        let fd = open_at(&process, FDCWD, b"/etc/hostname", open_flag::CLOEXEC);
+        let fadvise = |fd: u64, length: u64, advice: u64| {
+            call(&process, number::FADVISE64, [fd, 0, length, advice, 0, 0])
+        };
+        for advice in 0..=files::advice::NOREUSE {
+            assert_eq!(fadvise(fd, 0, advice), 0, "{advice}");
+        }
+        assert_eq!(fadvise(fd, 0, 6), Errno::EINVAL.result());
+        assert_eq!(fadvise(fd, u64::MAX, 0), Errno::EINVAL.result());
+        assert_eq!(fadvise(99, 0, 0), Errno::EBADF.result());
+    }
+
+    #[test]
+    fn flock_takes_and_lets_go_of_a_whole_file_lock() {
+        use file_locks::operation::{EXCLUSIVE, NONBLOCK, SHARED, UNLOCK};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let flock = |fd: u64, operation: u32| {
+            call(
+                &process,
+                number::FLOCK,
+                [fd, u64::from(operation), 0, 0, 0, 0],
+            )
+        };
+        assert_eq!(flock(1, EXCLUSIVE | NONBLOCK), 0);
+        assert_eq!(
+            flock(2, SHARED | NONBLOCK),
+            0,
+            "the same description converts"
+        );
+        assert_eq!(flock(1, UNLOCK), 0);
+        assert_eq!(flock(1, 99), Errno::EINVAL.result());
+        assert_eq!(flock(1, SHARED | EXCLUSIVE), Errno::EINVAL.result());
+        assert_eq!(flock(77, SHARED), Errno::EBADF.result());
+        let mut described = [0u8; file_locks::FLOCK_SIZE];
+        described[0..2].copy_from_slice(&file_locks::lock_type::WRITE.to_ne_bytes());
+        process.write_user_memory(READ_BUFFER, &described).unwrap();
+        let fcntl = |command: u32| {
+            call(
+                &process,
+                number::FCNTL,
+                [1, u64::from(command), READ_BUFFER, 0, 0, 0],
+            )
+        };
+        assert_eq!(fcntl(file_locks::command::SETLK), 0);
+        assert_eq!(fcntl(file_locks::command::GETLK), 0);
+        assert_eq!(
+            read_bytes(&process, READ_BUFFER, 2),
+            file_locks::lock_type::UNLOCK.to_ne_bytes(),
+            "a process's own lock is not in its way"
+        );
+        assert_eq!(
+            call(&process, number::CLOSE, [3, 0, 0, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+    }
+
+    #[test]
+    fn a_privileged_caller_renames_the_machine_for_uname() {
+        let _frames = frames_for_test();
+        let _names = identity::tests::NAMES_TEST.lock().unwrap();
+        identity::forget_changed_names();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let name = at_path(&process, b"eggbox");
+        assert_eq!(
+            call(&process, number::SETHOSTNAME, [name, 6, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            call(&process, number::UNAME, [READ_BUFFER, 0, 0, 0, 0, 0]),
+            0
+        );
+        let field = identity::utsname::FIELD as u64;
+        assert_eq!(read_bytes(&process, READ_BUFFER + field, 7), b"eggbox\0");
+        assert_eq!(
+            call(&process, number::SETDOMAINNAME, [name, 3, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            call(&process, number::UNAME, [READ_BUFFER, 0, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(read_bytes(&process, READ_BUFFER + 5 * field, 4), b"egg\0");
+        for length in [65, u64::MAX] {
+            assert_eq!(
+                call(&process, number::SETHOSTNAME, [name, length, 0, 0, 0, 0]),
+                Errno::EINVAL.result()
+            );
+        }
+        assert_eq!(
+            call(&process, number::SETHOSTNAME, [UNMAPPED, 4, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(call(&process, number::SETUID, [1000, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            call(&process, number::SETHOSTNAME, [name, 6, 0, 0, 0, 0]),
+            Errno::EPERM.result()
+        );
+        identity::forget_changed_names();
+    }
+
+    #[test]
+    fn proc_describes_a_running_program_and_self_names_its_directory() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let id = process.id().get();
+        let mut thread = take_first_thread(&process);
+        wait::record_running(&process, &thread, |_, _| {});
+        let path = at_path(&process, b"/usr/libexec/program");
+        let (_, current) = exec_in(&process, &mut thread, number::EXECVE, [path, 0, 0, 0, 0, 0]);
+        let proc: &'static proc::Proc<P> = Box::leak(Box::new(proc::Proc::new()));
+        let root = crate::vfs::Node::root_of(proc);
+        let walk = |path: &[u8], follow| crate::vfs::resolve_as(root, root, path, id, follow);
+        let text = |path: &[u8]| {
+            let bytes = walk(path, true).unwrap().generate().unwrap().unwrap();
+            alloc::string::String::from_utf8(bytes).unwrap()
+        };
+        let status = text(b"self/status");
+        assert!(status.starts_with("Name:\tprogram\n"), "{status}");
+        assert!(
+            status.contains(&alloc::format!("\nPid:\t{id}\n")),
+            "{status}"
+        );
+        assert!(status.contains("\nUid:\t0\t0\t0\t0\n"), "{status}");
+        assert!(status.contains("\nThreads:\t1\n"), "{status}");
+        assert_eq!(text(b"self/cmdline"), "\0");
+        let exe = walk(b"self/exe", false).unwrap();
+        assert_eq!(exe.kind(), crate::vfs::NodeKind::SymbolicLink);
+        assert_eq!(
+            exe.link_target(id).as_deref(),
+            Some(&b"/usr/libexec/program"[..])
+        );
+        let maps = text(b"self/maps");
+        assert!(
+            maps.lines()
+                .any(|line| line.ends_with(" /usr/libexec/program")),
+            "{maps}"
+        );
+        assert!(
+            maps.lines().any(|line| line.ends_with(" [stack]")),
+            "{maps}"
+        );
+        let stat = text(alloc::format!("{id}/stat").as_bytes());
+        assert!(
+            stat.starts_with(&alloc::format!("{id} (program) R ")),
+            "{stat}"
+        );
+        assert_eq!(stat.trim_end().split(' ').count(), 52, "{stat}");
+        let descriptors = walk(b"self/fd", true).unwrap();
+        let names: alloc::vec::Vec<alloc::vec::Vec<u8>> = (0..)
+            .map_while(|position| descriptors.entry(position))
+            .map(|(name, _, _)| name.as_bytes().to_vec())
+            .collect();
+        assert_eq!(names, [&b"0"[..], b"1", b"2"]);
+        let standard_output = walk(b"self/fd/1", false).unwrap();
+        assert_eq!(
+            standard_output.link_target(id).as_deref(),
+            Some(&b"/dev/console"[..])
+        );
+        assert_eq!(walk(b"self/fd/3", false), Err(crate::vfs::Error::NotFound));
+        assert_eq!(
+            crate::vfs::resolve(root, root, b"self/status"),
+            Err(crate::vfs::Error::NotFound),
+            "the kernel has no directory of its own"
+        );
+        let listed = (0..)
+            .map_while(|position| root.entry(position))
+            .any(|(name, _, _)| name.as_bytes() == alloc::format!("{id}").as_bytes());
+        assert!(listed);
+        drop(current);
+    }
+
+    struct EventProcess {
+        process: Arc<Process<P>>,
+        writable: u64,
+    }
+
+    impl EventProcess {
+        fn call(&self, number: u64, arguments: [u64; 6]) -> u64 {
+            call(&self.process, number, arguments)
+        }
+
+        fn put(&self, offset: u64, bytes: &[u8]) {
+            self.process
+                .write_user_memory(self.writable + offset, bytes)
+                .unwrap();
+        }
+
+        fn get(&self, offset: u64, length: usize) -> alloc::vec::Vec<u8> {
+            read_bytes(&self.process, self.writable + offset, length)
+        }
+
+        fn word(&self, offset: u64) -> u64 {
+            u64::from_ne_bytes(self.get(offset, 8).try_into().unwrap())
+        }
+
+        fn read(&self, fd: u64, offset: u64, count: u64) -> u64 {
+            self.call(number::READ, [fd, self.writable + offset, count, 0, 0, 0])
+        }
+
+        fn write_word(&self, fd: u64, value: u64) -> u64 {
+            self.put(0, &value.to_ne_bytes());
+            self.call(number::WRITE, [fd, self.writable, 8, 0, 0, 0])
+        }
+
+        fn epoll_ctl(&self, epfd: u64, op: u32, fd: u64, events: u32, data: u64) -> u64 {
+            let mut event = [0u8; epoll::EVENT_SIZE];
+            event[..4].copy_from_slice(&events.to_ne_bytes());
+            event[epoll::EVENT_SIZE - 8..].copy_from_slice(&data.to_ne_bytes());
+            self.put(EPOLL_EVENT, &event);
+            let event = self.writable + EPOLL_EVENT;
+            self.call(number::EPOLL_CTL, [epfd, u64::from(op), fd, event, 0, 0])
+        }
+
+        fn epoll_pwait(&self, epfd: u64, max: u64, timeout: i32) -> u64 {
+            let events = self.writable + EVENTS_OUT;
+            let timeout = u64::from(timeout as u32);
+            self.call(number::EPOLL_PWAIT, [epfd, events, max, timeout, 0, 0])
+        }
+
+        fn reported(&self, index: u64) -> (u32, u64) {
+            let at = EVENTS_OUT + index * epoll::EVENT_SIZE as u64;
+            let event = self.get(at, epoll::EVENT_SIZE);
+            (
+                u32::from_ne_bytes(event[..4].try_into().unwrap()),
+                u64::from_ne_bytes(event[epoll::EVENT_SIZE - 8..].try_into().unwrap()),
+            )
+        }
+    }
+
+    const EPOLL_EVENT: u64 = 64;
+    const ITIMERSPEC: u64 = 128;
+    const SIGSET: u64 = 192;
+    const EVENTS_OUT: u64 = 256;
+    const PIPE_FDS: u64 = 512;
+    const FD_SETS: u64 = 528;
+    const TIMESPEC: u64 = 560;
+    const SIGSET_ARGUMENTS: u64 = 600;
+    const RECORD: u64 = 1024;
+
+    fn event_process(kernel: &PageTables<<P as Platform>::PageTableFormat>) -> EventProcess {
+        EventProcess {
+            process: process_with_iovecs(kernel, b"", &[]),
+            writable: DATA + 4096,
+        }
+    }
+
+    #[test]
+    fn eventfd_counts_writes_and_takes_them_whole_or_one_at_a_time() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let nonblocking = u64::from(eventfd::flag::NONBLOCK);
+        let counter = test.call(number::EVENTFD2, [0, nonblocking, 0, 0, 0, 0]);
+        assert!(counter < 1024, "{counter:#x}");
+        assert_eq!(test.read(counter, 8, 8), Errno::EAGAIN.result());
+        assert_eq!(test.write_word(counter, 3), 8);
+        assert_eq!(test.write_word(counter, 4), 8);
+        assert_eq!(test.write_word(counter, u64::MAX), Errno::EINVAL.result());
+        assert_eq!(
+            test.call(number::WRITE, [counter, test.writable, 7, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(test.read(counter, 8, 7), Errno::EINVAL.result());
+        assert_eq!(test.read(counter, 8, 64), 8);
+        assert_eq!(test.word(8), 7);
+        assert_eq!(test.read(counter, 8, 8), Errno::EAGAIN.result());
+        assert_eq!(test.write_word(counter, eventfd::MAX_VALUE), 8);
+        assert_eq!(test.write_word(counter, 1), Errno::EAGAIN.result());
+        let semaphore = u64::from(eventfd::flag::SEMAPHORE | eventfd::flag::NONBLOCK);
+        let tokens = test.call(number::EVENTFD2, [2, semaphore, 0, 0, 0, 0]);
+        assert_eq!(test.read(tokens, 8, 8), 8);
+        assert_eq!(test.word(8), 1);
+        assert_eq!(test.read(tokens, 8, 8), 8);
+        assert_eq!(test.read(tokens, 8, 8), Errno::EAGAIN.result());
+        assert_eq!(
+            test.call(number::EVENTFD2, [0, 4, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::LSEEK, [counter, 0, 0, 0, 0, 0]),
+            Errno::ESPIPE.result()
+        );
+    }
+
+    #[test]
+    fn epoll_reports_an_eventfd_level_and_edge_triggered_and_checks_its_arguments() {
+        use epoll::{event, op};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let epfd = test.call(number::EPOLL_CREATE1, [0, 0, 0, 0, 0, 0]);
+        let nonblocking = u64::from(eventfd::flag::NONBLOCK);
+        let counter = test.call(number::EVENTFD2, [0, nonblocking, 0, 0, 0, 0]);
+        assert_eq!(
+            test.call(number::EPOLL_CREATE1, [1, 0, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(test.epoll_ctl(epfd, op::ADD, counter, event::IN, 0x1234), 0);
+        let errors = [
+            (epfd, op::ADD, counter, event::IN, Errno::EEXIST),
+            (epfd, op::MOD, 1, event::IN, Errno::ENOENT),
+            (epfd, op::DEL, 1, 0, Errno::ENOENT),
+            (counter, op::ADD, 1, event::IN, Errno::EINVAL),
+            (epfd, op::ADD, epfd, event::IN, Errno::EINVAL),
+            (epfd, op::ADD, 99, event::IN, Errno::EBADF),
+            (99, op::ADD, counter, event::IN, Errno::EBADF),
+            (epfd, 7, counter, event::IN, Errno::EINVAL),
+            (
+                epfd,
+                op::ADD,
+                1,
+                event::EXCLUSIVE | event::ONESHOT,
+                Errno::EINVAL,
+            ),
+            (
+                epfd,
+                op::MOD,
+                counter,
+                event::EXCLUSIVE | event::IN,
+                Errno::EINVAL,
+            ),
+        ];
+        for (epoll, operation, fd, events, errno) in errors {
+            assert_eq!(
+                test.epoll_ctl(epoll, operation, fd, events, 0),
+                errno.result(),
+                "{operation} {fd} {events:#x}"
+            );
+        }
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 0);
+        assert_eq!(test.write_word(counter, 1), 8);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 1);
+        assert_eq!(test.reported(0), (event::IN, 0x1234));
+        assert_eq!(test.epoll_pwait(epfd, 4, -1), 1);
+        assert_eq!(test.epoll_pwait(epfd, 0, 0), Errno::EINVAL.result());
+        assert_eq!(test.epoll_pwait(counter, 4, 0), Errno::EINVAL.result());
+        assert_eq!(test.epoll_pwait(99, 4, 0), Errno::EBADF.result());
+        let read_only = DATA;
+        assert_eq!(
+            test.call(number::EPOLL_PWAIT, [epfd, read_only, 4, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        let edge = event::IN | event::ET;
+        assert_eq!(test.epoll_ctl(epfd, op::MOD, counter, edge, 7), 0);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 1);
+        assert_eq!(test.reported(0), (event::IN, 7));
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 0);
+        assert_eq!(test.write_word(counter, 1), 8);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 1);
+        assert_eq!(test.epoll_ctl(epfd, op::DEL, counter, 0, 0), 0);
+        assert_eq!(test.write_word(counter, 1), 8);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 0);
+        let started = <P as Platform>::clock_ticks();
+        assert_eq!(test.epoll_pwait(epfd, 4, 2), 0);
+        let waited = <P as Platform>::clock_ticks() - started;
+        assert!(
+            waited >= <P as Platform>::clock_frequency() / 500,
+            "{waited}"
+        );
+    }
+
+    #[test]
+    fn epoll_instances_nest_without_loops_and_poll_reports_them_readable() {
+        use epoll::{event, op};
+        use poll::event::IN;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let outer = test.call(number::EPOLL_CREATE1, [0, 0, 0, 0, 0, 0]);
+        let inner = test.call(number::EPOLL_CREATE1, [0, 0, 0, 0, 0, 0]);
+        let nonblocking = u64::from(eventfd::flag::NONBLOCK);
+        let counter = test.call(number::EVENTFD2, [0, nonblocking, 0, 0, 0, 0]);
+        assert_eq!(test.epoll_ctl(inner, op::ADD, counter, event::IN, 1), 0);
+        assert_eq!(test.epoll_ctl(outer, op::ADD, inner, event::IN, 2), 0);
+        assert_eq!(
+            test.epoll_ctl(inner, op::ADD, outer, event::IN, 3),
+            Errno::ELOOP.result()
+        );
+        assert_eq!(
+            test.epoll_ctl(outer, op::ADD, inner, event::IN | event::EXCLUSIVE, 3),
+            Errno::EINVAL.result()
+        );
+        let fds = test.writable + 640;
+        test.put(640, &pollfds(&[(outer as i32, IN)]));
+        let timeout = test.writable + TIMESPEC;
+        test.put(TIMESPEC, &[0; 16]);
+        assert_eq!(test.call(number::PPOLL, [fds, 1, timeout, 0, 0, 0]), 0);
+        assert_eq!(test.write_word(counter, 5), 8);
+        assert_eq!(test.call(number::PPOLL, [fds, 1, timeout, 0, 0, 0]), 1);
+        assert_eq!(test.epoll_pwait(outer, 4, 0), 1);
+        assert_eq!(test.reported(0), (event::IN, 2));
+        assert_eq!(test.epoll_pwait(inner, 4, 0), 1);
+        assert_eq!(test.reported(0), (event::IN, 1));
+    }
+
+    #[test]
+    fn timerfd_expires_on_time_and_reports_its_setting() {
+        use epoll::{event, op};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let nonblocking = u64::from(timerfd::flag::NONBLOCK);
+        let monotonic = time::clock::MONOTONIC as u64;
+        let timer = test.call(number::TIMERFD_CREATE, [monotonic, nonblocking, 0, 0, 0, 0]);
+        assert_eq!(
+            test.call(number::TIMERFD_CREATE, [99, 0, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::TIMERFD_CREATE, [monotonic, 1, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        let two_milliseconds = 2_000_000u64;
+        let fifty_milliseconds = 50_000_000u64;
+        let mut setting = [0u8; 32];
+        setting[8..16].copy_from_slice(&two_milliseconds.to_ne_bytes());
+        setting[24..32].copy_from_slice(&fifty_milliseconds.to_ne_bytes());
+        test.put(ITIMERSPEC, &setting);
+        let new_value = test.writable + ITIMERSPEC;
+        let settime = |flags: u64, old: u64| {
+            test.call(
+                number::TIMERFD_SETTIME,
+                [timer, flags, new_value, old, 0, 0],
+            )
+        };
+        assert_eq!(settime(2, 0), Errno::EINVAL.result());
+        assert_eq!(settime(4, 0), Errno::EINVAL.result());
+        assert_eq!(settime(0, 0), 0);
+        assert_eq!(test.read(timer, 8, 8), Errno::EAGAIN.result());
+        let epfd = test.call(number::EPOLL_CREATE1, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(test.epoll_ctl(epfd, op::ADD, timer, event::IN, 9), 0);
+        assert_eq!(test.epoll_pwait(epfd, 4, 1000), 1);
+        assert_eq!(test.reported(0), (event::IN, 9));
+        assert_eq!(test.read(timer, 8, 8), 8);
+        assert!(test.word(8) >= 1);
+        let current = test.writable + ITIMERSPEC + 32;
+        assert_eq!(
+            test.call(number::TIMERFD_GETTIME, [timer, current, 0, 0, 0, 0]),
+            0
+        );
+        let reported = test.get(ITIMERSPEC + 32, 32);
+        assert_eq!(&reported[8..16], &two_milliseconds.to_ne_bytes());
+        test.put(ITIMERSPEC, &[0; 32]);
+        assert_eq!(settime(0, current), 0);
+        assert_eq!(
+            &test.get(ITIMERSPEC + 32, 16)[8..],
+            &two_milliseconds.to_ne_bytes()
+        );
+        assert_eq!(test.read(timer, 8, 8), Errno::EAGAIN.result());
+        assert_eq!(test.epoll_pwait(epfd, 4, 3), 0);
+        assert_eq!(
+            test.call(number::TIMERFD_GETTIME, [epfd, current, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::TIMERFD_GETTIME, [99, current, 0, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+    }
+
+    #[test]
+    fn signalfd_reads_a_blocked_signal_and_poll_and_epoll_see_it_pending() {
+        use epoll::{event, op};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let sigusr1 = u64::from(signal::SIGUSR1);
+        test.put(SIGSET, &(1u64 << (sigusr1 - 1)).to_ne_bytes());
+        let set = test.writable + SIGSET;
+        assert_eq!(test.call(number::RT_SIGPROCMASK, [0, set, 0, 8, 0, 0]), 0);
+        let nonblocking = u64::from(signalfd::flag::NONBLOCK);
+        let minus_one = u64::from(u32::MAX);
+        let signal_file = test.call(number::SIGNALFD4, [minus_one, set, 8, nonblocking, 0, 0]);
+        assert!(signal_file < 1024, "{signal_file:#x}");
+        assert_eq!(
+            test.call(number::SIGNALFD4, [minus_one, set, 7, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::SIGNALFD4, [minus_one, set, 8, 1, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::SIGNALFD4, [1, set, 8, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::SIGNALFD4, [signal_file, set, 8, 0, 0, 0]),
+            signal_file
+        );
+        assert_eq!(test.read(signal_file, RECORD, 128), Errno::EAGAIN.result());
+        assert_eq!(test.read(signal_file, RECORD, 127), Errno::EINVAL.result());
+        let epfd = test.call(number::EPOLL_CREATE1, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(test.epoll_ctl(epfd, op::ADD, signal_file, event::IN, 3), 0);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 0);
+        let pid = u64::from(test.process.id().get());
+        assert_eq!(test.call(number::KILL, [pid, sigusr1, 0, 0, 0, 0]), 0);
+        assert_eq!(test.process.exit_status(), None);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 1);
+        assert_eq!(test.reported(0), (event::IN, 3));
+        assert_eq!(test.read(signal_file, RECORD, 256), 128);
+        let record = test.get(RECORD, 128);
+        assert_eq!(&record[..4], &signal::SIGUSR1.to_ne_bytes());
+        assert_eq!(&record[8..12], &signals::code::USER.to_ne_bytes());
+        assert_eq!(&record[12..16], &test.process.id().get().to_ne_bytes());
+        assert_eq!(test.read(signal_file, RECORD, 128), Errno::EAGAIN.result());
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 0);
+    }
+
+    fn fd_set(fds: &[u64]) -> [u8; 8] {
+        fds.iter().fold(0u64, |set, fd| set | 1 << fd).to_ne_bytes()
+    }
+
+    #[test]
+    fn pselect6_reports_a_pipe_s_ends_and_writes_the_time_left_back() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let pipe_fds = test.writable + PIPE_FDS;
+        assert_eq!(test.call(number::PIPE2, [pipe_fds, 0, 0, 0, 0, 0]), 0);
+        let fds = test.get(PIPE_FDS, 8);
+        let reading = u64::from(u32::from_ne_bytes(fds[..4].try_into().unwrap()));
+        let writing = u64::from(u32::from_ne_bytes(fds[4..].try_into().unwrap()));
+        let nfds = reading.max(writing) + 1;
+        let (read_set, write_set) = (test.writable + FD_SETS, test.writable + FD_SETS + 8);
+        let timeout = test.writable + TIMESPEC;
+        let pselect6 = |read: &[u64], write: &[u64], seconds: i64, nanoseconds: i64| {
+            test.put(FD_SETS, &fd_set(read));
+            test.put(FD_SETS + 8, &fd_set(write));
+            let mut time = [0u8; 16];
+            time[..8].copy_from_slice(&seconds.to_ne_bytes());
+            time[8..].copy_from_slice(&nanoseconds.to_ne_bytes());
+            test.put(TIMESPEC, &time);
+            let sets = [nfds, read_set, write_set, 0, timeout, 0];
+            (
+                test.call(number::PSELECT6, sets),
+                test.get(FD_SETS, 8),
+                test.get(FD_SETS + 8, 8),
+            )
+        };
+        let (ready, read, write) = pselect6(&[reading], &[writing], 0, 0);
+        assert_eq!(ready, 1);
+        assert_eq!(read, fd_set(&[]));
+        assert_eq!(write, fd_set(&[writing]));
+        assert_eq!(test.write_word(writing, 0x41), 8);
+        let (ready, read, write) = pselect6(&[reading], &[writing], 0, 0);
+        assert_eq!(ready, 2);
+        assert_eq!(read, fd_set(&[reading]));
+        assert_eq!(write, fd_set(&[writing]));
+        assert_eq!(test.read(reading, 8, 8), 8);
+        let (ready, read, _) = pselect6(&[reading], &[], 0, 2_000_000);
+        assert_eq!(ready, 0);
+        assert_eq!(read, fd_set(&[]));
+        assert_eq!(test.get(TIMESPEC, 16), [0u8; 16]);
+        let not_open = 50;
+        test.put(FD_SETS, &fd_set(&[not_open]));
+        assert_eq!(
+            test.call(number::PSELECT6, [not_open + 1, read_set, 0, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+        assert_eq!(
+            test.call(
+                number::PSELECT6,
+                [u64::from(u32::MAX), read_set, 0, 0, 0, 0]
+            ),
+            Errno::EINVAL.result()
+        );
+        let mut arguments = [0u8; 16];
+        arguments[..8].copy_from_slice(&(test.writable + SIGSET).to_ne_bytes());
+        arguments[8..].copy_from_slice(&7u64.to_ne_bytes());
+        test.put(SIGSET_ARGUMENTS, &arguments);
+        let sig = test.writable + SIGSET_ARGUMENTS;
+        assert_eq!(
+            test.call(number::PSELECT6, [nfds, read_set, 0, 0, timeout, sig]),
+            Errno::EINVAL.result()
+        );
+        #[cfg(target_arch = "x86_64")]
+        {
+            test.put(FD_SETS, &fd_set(&[reading]));
+            let mut time = [0u8; 16];
+            time[8..].copy_from_slice(&1_500i64.to_ne_bytes());
+            test.put(TIMESPEC, &time);
+            assert_eq!(
+                test.call(number::SELECT, [nfds, read_set, 0, 0, timeout, 0]),
+                0
+            );
+            assert_eq!(test.get(TIMESPEC, 16), [0u8; 16]);
+            time[8..].copy_from_slice(&(-1i64).to_ne_bytes());
+            test.put(TIMESPEC, &time);
+            assert_eq!(
+                test.call(number::SELECT, [nfds, read_set, 0, 0, timeout, 0]),
+                Errno::EINVAL.result()
+            );
+        }
     }
 }

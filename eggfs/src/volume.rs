@@ -1,11 +1,18 @@
 use crate::cache::Cache;
+use crate::index::{
+    DirectoryIndex, DirectoryIndexes, DirectoryKey, INDEXED_ABOVE_BLOCKS, MAX_CANDIDATES,
+    MAX_INDEXED_ENTRIES, name_hash,
+};
 use crate::layout::{
     BITS_PER_BLOCK, BLOCK_SIZE, Block, DIRECT_POINTERS, FIRST_FREE_INODE, Geometry, Inode,
-    InodeKind, MAX_DIRECTORY_BLOCKS, MAX_NAME, POINTERS_PER_BLOCK, ROOT_INODE, put_u32, record_at,
-    record_length, records_end, remove_record, u32_at, write_record, zeroed_block,
+    InodeKind, MAX_DIRECTORY_BLOCKS, MAX_LINK_TARGET, MAX_LINKS, MAX_NAME, POINTERS_PER_BLOCK,
+    ROOT_INODE, VERSION, put_u32, record_at, record_length, records_end, remove_record, u32_at,
+    write_record, zeroed_block,
 };
-use crate::{Disk, Error, Kind, generation_of, inode_of, kind_of, node_number};
+use crate::{Disk, Error, GENERATION_MASK, Kind, generation_of, inode_of, kind_of, node_number};
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 pub const OPERATION_RESERVE: usize = 32;
 
@@ -38,13 +45,14 @@ pub struct Attributes {
     pub permissions: u32,
     /// Its inode number.
     pub inode: u32,
-    /// Its links: 1 for a file, 2 plus its subdirectories for a directory.
+    /// Its links: its names for a file or a symbolic link (0 once it has none and is only held
+    /// open), 2 plus its subdirectories for a directory.
     pub links: u32,
     /// Its owner's user id.
     pub owner: u32,
     /// Its group id.
     pub group: u32,
-    /// Its size in bytes; a directory's is its blocks'.
+    /// Its size in bytes; a directory's is its blocks', a symbolic link's its target's length.
     pub size: u64,
     /// When its contents last changed, in seconds since the Unix epoch.
     pub modified: u64,
@@ -78,7 +86,7 @@ struct Listing {
 #[derive(Debug, Clone, Copy)]
 struct Found {
     inode: u32,
-    directory: bool,
+    kind: InodeKind,
     block: u32,
     offset: usize,
     length: usize,
@@ -106,6 +114,8 @@ pub struct Volume<D: Disk> {
     data: Option<DataCache>,
     listing: Option<Listing>,
     changes: u64,
+    holds: BTreeMap<u32, u32>,
+    pub(crate) indexes: DirectoryIndexes,
 }
 
 impl<D: Disk> core::fmt::Debug for Volume<D> {
@@ -128,18 +138,40 @@ fn check_new_name(name: &[u8]) -> Result<(), Error> {
     }
 }
 
+fn kind_for(kind: InodeKind) -> Kind {
+    match kind {
+        InodeKind::Directory => Kind::Directory,
+        InodeKind::SymbolicLink => Kind::SymbolicLink,
+        InodeKind::Regular | InodeKind::Free => Kind::Regular,
+    }
+}
+
+fn inode_kind_for(kind: Kind) -> InodeKind {
+    match kind {
+        Kind::Directory => InodeKind::Directory,
+        Kind::Regular => InodeKind::Regular,
+        Kind::SymbolicLink => InodeKind::SymbolicLink,
+    }
+}
+
 fn kind_matches(inode: &Inode, kind: Kind) -> bool {
-    matches!(
-        (inode.kind, kind),
-        (InodeKind::Directory, Kind::Directory) | (InodeKind::Regular, Kind::Regular)
-    )
+    inode.kind != InodeKind::Free && kind_for(inode.kind) == kind
 }
 
 fn kind_of_inode(inode: &Inode) -> Kind {
+    kind_for(inode.kind)
+}
+
+fn writable_contents(inode: &Inode) -> Result<(), Error> {
     match inode.kind {
-        InodeKind::Directory => Kind::Directory,
-        _ => Kind::Regular,
+        InodeKind::Regular => Ok(()),
+        InodeKind::SymbolicLink => Err(Error::InvalidArgument),
+        InodeKind::Directory | InodeKind::Free => Err(Error::IsDirectory),
     }
+}
+
+fn valid_link_target(target: &[u8]) -> bool {
+    !target.is_empty() && target.len() <= MAX_LINK_TARGET && !target.contains(&0)
 }
 
 impl<D: Disk> Volume<D> {
@@ -160,6 +192,8 @@ impl<D: Disk> Volume<D> {
             data: None,
             listing: None,
             changes: 0,
+            holds: BTreeMap::new(),
+            indexes: DirectoryIndexes::new(),
         }
     }
 
@@ -198,6 +232,21 @@ impl<D: Disk> Volume<D> {
         self.commits
     }
 
+    /// The on-disk format version the superblock names now: 1 until a change needs version 2.
+    pub fn version(&self) -> u32 {
+        self.geometry.version
+    }
+
+    /// The volume's name as [`crate::format_with`] wrote it, empty for none.
+    pub fn label(&self) -> &[u8] {
+        let label = &self.geometry.label;
+        let length = label
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(label.len());
+        &label[..length]
+    }
+
     pub(crate) fn inode(&mut self, number: u32) -> Result<Inode, Error> {
         if number == 0 || number >= self.geometry.inodes {
             return Err(Error::Corrupt);
@@ -207,7 +256,7 @@ impl<D: Disk> Volume<D> {
         Inode::decode(number, &data[at..]).ok_or(Error::Corrupt)
     }
 
-    fn write_inode(&mut self, number: u32, inode: &Inode) -> Result<(), Error> {
+    pub(crate) fn write_inode(&mut self, number: u32, inode: &Inode) -> Result<(), Error> {
         let (block, at) = self.geometry.inode_location(number);
         let data = self.cache.get_mut(&mut self.disk, block, false)?;
         inode.encode(number, &mut data[at..]);
@@ -221,7 +270,7 @@ impl<D: Disk> Volume<D> {
         }
         let inode = self.inode(number)?;
         if !kind_matches(&inode, kind_of(node))
-            || inode.generation & 0x7fff_ffff != generation_of(node)
+            || inode.generation & GENERATION_MASK != generation_of(node)
         {
             return Err(Error::NotFound);
         }
@@ -253,7 +302,7 @@ impl<D: Disk> Volume<D> {
             || (self.freed_waiting > 0 && allocatable < LOW_SPACE_BLOCKS)
     }
 
-    fn ensure_room(&mut self) -> Result<(), Error> {
+    pub(crate) fn ensure_room(&mut self) -> Result<(), Error> {
         if self.needs_commit() {
             self.commit()?;
         }
@@ -302,7 +351,7 @@ impl<D: Disk> Volume<D> {
         }
     }
 
-    fn allocate_block(&mut self) -> Result<u32, Error> {
+    pub(crate) fn allocate_block(&mut self) -> Result<u32, Error> {
         let bitmaps = self.geometry.block_bitmap_blocks;
         let cursor = self.block_cursor.min(self.geometry.blocks - 1);
         let first = cursor / BITS_PER_BLOCK;
@@ -338,6 +387,10 @@ impl<D: Disk> Volume<D> {
 
     fn free_block(&mut self, block: u32) -> Result<(), Error> {
         if !self.geometry.is_data_block(block) {
+            return Err(Error::Corrupt);
+        }
+        let (bitmap, byte, mask) = Self::bit_location(self.geometry.block_bitmap, block);
+        if self.cache.get(&mut self.disk, bitmap)?[byte] & mask == 0 {
             return Err(Error::Corrupt);
         }
         if !self.is_fresh(block) {
@@ -434,7 +487,12 @@ impl<D: Disk> Volume<D> {
         Ok(block)
     }
 
-    fn set_mapping(&mut self, inode: &mut Inode, index: u64, value: u32) -> Result<u32, Error> {
+    pub(crate) fn set_mapping(
+        &mut self,
+        inode: &mut Inode,
+        index: u64,
+        value: u32,
+    ) -> Result<u32, Error> {
         let (level, within) = Self::path(index)?;
         if level == usize::MAX {
             let previous = inode.direct[within as usize];
@@ -535,7 +593,7 @@ impl<D: Disk> Volume<D> {
         Ok(())
     }
 
-    fn read_data_block(&mut self, block: u32) -> Result<&Block, Error> {
+    pub(crate) fn read_data_block(&mut self, block: u32) -> Result<&Block, Error> {
         if !self
             .data
             .as_ref()
@@ -567,7 +625,8 @@ impl<D: Disk> Volume<D> {
             inode: number,
             links: match kind {
                 Kind::Directory => inode.child_directories.saturating_add(2),
-                Kind::Regular => 1,
+                _ if inode.orphan => 0,
+                _ => inode.more_names.saturating_add(1),
             },
             owner: inode.owner,
             group: inode.group,
@@ -592,21 +651,114 @@ impl<D: Disk> Volume<D> {
         }
     }
 
+    fn find_in_block(
+        &mut self,
+        directory: &Inode,
+        index: u64,
+        name: &[u8],
+        inode: Option<u32>,
+    ) -> Result<Option<Found>, Error> {
+        let block = self.directory_block(directory, index)?;
+        let data = self.cache.get(&mut self.disk, block)?;
+        let mut offset = 0;
+        while let Some(record) = record_at(&data[..], offset).map_err(|()| Error::Corrupt)? {
+            if record.name == name && inode.is_none_or(|wanted| wanted == record.inode) {
+                return Ok(Some(Found {
+                    inode: record.inode,
+                    kind: record.kind,
+                    block,
+                    offset,
+                    length: record.length,
+                }));
+            }
+            offset += record.length;
+        }
+        Ok(None)
+    }
+
+    fn build_index(
+        &mut self,
+        key: DirectoryKey,
+        directory: &Inode,
+        blocks: u64,
+    ) -> Result<(), Error> {
+        let mut index = DirectoryIndex::for_entries(key, directory.entries as usize);
+        for block_index in 0..blocks {
+            let block = self.directory_block(directory, block_index)?;
+            let data = self.cache.get(&mut self.disk, block)?;
+            let mut offset = 0;
+            while let Some(record) = record_at(&data[..], offset).map_err(|()| Error::Corrupt)? {
+                if !index.insert(name_hash(record.name), block_index) {
+                    return Ok(());
+                }
+                offset += record.length;
+            }
+        }
+        self.indexes.keep(index);
+        Ok(())
+    }
+
+    fn indexed_candidates(
+        &mut self,
+        number: u32,
+        directory: &Inode,
+        blocks: u64,
+        name: &[u8],
+        out: &mut [u64; MAX_CANDIDATES],
+    ) -> Result<Option<usize>, Error> {
+        if blocks <= INDEXED_ABOVE_BLOCKS || directory.entries > MAX_INDEXED_ENTRIES {
+            return Ok(None);
+        }
+        let key = DirectoryKey {
+            inode: number,
+            generation: directory.generation,
+        };
+        if self.indexes.find(key).is_none() {
+            self.build_index(key, directory, blocks)?;
+        }
+        Ok(self
+            .indexes
+            .find(key)
+            .and_then(|index| index.candidates(name_hash(name), &mut out[..])))
+    }
+
     fn find_entry(
         &mut self,
+        number: u32,
         directory: &Inode,
         name: &[u8],
         inode: Option<u32>,
     ) -> Result<Option<Found>, Error> {
+        let blocks = Self::directory_blocks(directory)?;
+        let mut candidates = [0u64; MAX_CANDIDATES];
+        if let Some(count) =
+            self.indexed_candidates(number, directory, blocks, name, &mut candidates)?
+        {
+            for &index in candidates[..count].iter().filter(|&&index| index < blocks) {
+                if let Some(found) = self.find_in_block(directory, index, name, inode)? {
+                    return Ok(Some(found));
+                }
+            }
+            return Ok(None);
+        }
+        for index in 0..blocks {
+            if let Some(found) = self.find_in_block(directory, index, name, inode)? {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
+    }
+
+    fn record_of(&mut self, directory: &Inode, number: u32) -> Result<Option<Found>, Error> {
         for index in 0..Self::directory_blocks(directory)? {
             let block = self.directory_block(directory, index)?;
             let data = self.cache.get(&mut self.disk, block)?;
             let mut offset = 0;
             while let Some(record) = record_at(&data[..], offset).map_err(|()| Error::Corrupt)? {
-                if record.name == name && inode.is_none_or(|wanted| wanted == record.inode) {
+                if record.inode == number {
                     return Ok(Some(Found {
-                        inode: record.inode,
-                        directory: record.directory,
+                        inode: number,
+                        kind: record.kind,
                         block,
                         offset,
                         length: record.length,
@@ -618,22 +770,68 @@ impl<D: Disk> Volume<D> {
         Ok(None)
     }
 
+    fn directory_holding(&mut self, number: u32, first_tried: u32) -> Result<u32, Error> {
+        let tried = self.inode(first_tried)?;
+        if tried.kind == InodeKind::Directory && self.record_of(&tried, number)?.is_some() {
+            return Ok(first_tried);
+        }
+        let mut pending = alloc::vec![ROOT_INODE];
+        let mut visited = 0u32;
+        while let Some(directory) = pending.pop() {
+            visited += 1;
+            if visited > self.geometry.inodes {
+                return Err(Error::Corrupt);
+            }
+            let inode = self.inode(directory)?;
+            if inode.kind != InodeKind::Directory {
+                return Err(Error::Corrupt);
+            }
+            for index in 0..Self::directory_blocks(&inode)? {
+                let block = self.directory_block(&inode, index)?;
+                let data = self.cache.get(&mut self.disk, block)?;
+                let mut offset = 0;
+                while let Some(record) =
+                    record_at(&data[..], offset).map_err(|()| Error::Corrupt)?
+                {
+                    if record.inode == number {
+                        return Ok(directory);
+                    }
+                    if record.kind == InodeKind::Directory {
+                        pending.push(record.inode);
+                    }
+                    offset += record.length;
+                }
+            }
+        }
+        Err(Error::Corrupt)
+    }
+
     fn add_entry(
         &mut self,
+        number: u32,
         directory: &mut Inode,
         name: &[u8],
         inode: u32,
-        is_directory: bool,
+        kind: InodeKind,
     ) -> Result<(), Error> {
+        let key = DirectoryKey {
+            inode: number,
+            generation: directory.generation,
+        };
         let needed = record_length(name);
         let blocks = Self::directory_blocks(directory)?;
-        for index in 0..blocks {
+        let last_first = blocks
+            .checked_sub(1)
+            .into_iter()
+            .chain(0..blocks.saturating_sub(1));
+        for index in last_first {
             let block = self.directory_block(directory, index)?;
             let end = records_end(&self.cache.get(&mut self.disk, block)?[..])
                 .map_err(|()| Error::Corrupt)?;
             if end + needed <= BLOCK_SIZE {
                 let data = self.cache.get_mut(&mut self.disk, block, false)?;
-                write_record(&mut data[..], end, inode, is_directory, name);
+                write_record(&mut data[..], end, inode, kind, name);
+                self.indexes.note_entry(key, name, index);
                 self.changes += 1;
                 return Ok(());
             }
@@ -643,14 +841,48 @@ impl<D: Disk> Volume<D> {
         }
         let block = self.new_pointer_block()?;
         let data = self.cache.insert_zeroed(block);
-        write_record(&mut data[..], 0, inode, is_directory, name);
+        write_record(&mut data[..], 0, inode, kind, name);
         if let Err(error) = self.set_mapping(directory, blocks, block) {
             self.free_block(block)?;
             return Err(error);
         }
         directory.size += BLOCK_SIZE as u64;
+        self.indexes.note_entry(key, name, blocks);
         self.changes += 1;
         Ok(())
+    }
+
+    pub(crate) fn adopt(
+        &mut self,
+        directory: u32,
+        name: &[u8],
+        number: u32,
+        now: u64,
+    ) -> Result<(), Error> {
+        self.ensure_room()?;
+        let mut parent = self.inode(directory)?;
+        let mut child = self.inode(number)?;
+        if parent.kind != InodeKind::Directory || child.kind == InodeKind::Free {
+            return Err(Error::Corrupt);
+        }
+        if self.find_entry(directory, &parent, name, None)?.is_some() {
+            return Err(Error::Exists);
+        }
+        let added = self.add_entry(directory, &mut parent, name, number, child.kind);
+        if added.is_ok() {
+            parent.entries = parent.entries.saturating_add(1);
+            if child.kind == InodeKind::Directory {
+                parent.child_directories = parent.child_directories.saturating_add(1);
+            }
+            parent.modified = now;
+        }
+        self.write_inode(directory, &parent)?;
+        added?;
+        child.parent = directory;
+        child.more_names = 0;
+        child.orphan = false;
+        child.next_orphan = 0;
+        self.write_inode(number, &child)
     }
 
     fn remove_found(&mut self, found: Found) -> Result<(), Error> {
@@ -664,9 +896,10 @@ impl<D: Disk> Volume<D> {
         Ok(())
     }
 
-    fn point_record(&mut self, found: Found, inode: u32) -> Result<(), Error> {
+    fn point_record(&mut self, found: Found, inode: u32, kind: InodeKind) -> Result<(), Error> {
         let data = self.cache.get_mut(&mut self.disk, found.block, false)?;
         put_u32(&mut data[..], found.offset, inode);
+        data[found.offset + 4] = kind.code();
         self.changes += 1;
         Ok(())
     }
@@ -676,11 +909,7 @@ impl<D: Disk> Volume<D> {
             return Err(Error::Corrupt);
         }
         let child = self.inode(found.inode)?;
-        let expected = match found.directory {
-            true => Kind::Directory,
-            false => Kind::Regular,
-        };
-        if !kind_matches(&child, expected) {
+        if child.kind != found.kind || child.orphan {
             return Err(Error::Corrupt);
         }
         Ok(Self::node(found.inode, &child))
@@ -688,8 +917,8 @@ impl<D: Disk> Volume<D> {
 
     /// The node `name` names in `directory`, if there is one.
     pub fn lookup(&mut self, directory: u64, name: &[u8]) -> Result<Option<u64>, Error> {
-        let (_, inode) = self.live_directory(directory)?;
-        match self.find_entry(&inode, name, None)? {
+        let (number, inode) = self.live_directory(directory)?;
+        match self.find_entry(number, &inode, name, None)? {
             Some(found) => self.child_node(&found).map(Some),
             None => Ok(None),
         }
@@ -701,6 +930,9 @@ impl<D: Disk> Volume<D> {
         if number == ROOT_INODE {
             return Ok(self.root());
         }
+        if inode.orphan {
+            return Err(Error::NotFound);
+        }
         let parent = self.inode(inode.parent)?;
         if parent.kind != InodeKind::Directory {
             return Err(Error::Corrupt);
@@ -708,30 +940,28 @@ impl<D: Disk> Volume<D> {
         Ok(Self::node(inode.parent, &parent))
     }
 
-    /// Copies the name `node` has in its parent into `out` and returns its length: 0 for the
-    /// root.
+    /// Copies the name `node` has in its parent ([`Volume::parent`]; one of its names for a
+    /// file with several) into `out` and returns its length: 0 for the root.
+    /// [`Error::NotFound`] for a file that has no name left and is only held open.
     pub fn name(&mut self, node: u64, out: &mut [u8; MAX_NAME]) -> Result<usize, Error> {
         let (number, inode) = self.live(node)?;
         if number == ROOT_INODE {
             return Ok(0);
         }
+        if inode.orphan {
+            return Err(Error::NotFound);
+        }
         let parent = self.inode(inode.parent)?;
         if parent.kind != InodeKind::Directory {
             return Err(Error::Corrupt);
         }
-        for index in 0..Self::directory_blocks(&parent)? {
-            let block = self.directory_block(&parent, index)?;
-            let data = self.cache.get(&mut self.disk, block)?;
-            let mut offset = 0;
-            while let Some(record) = record_at(&data[..], offset).map_err(|()| Error::Corrupt)? {
-                if record.inode == number {
-                    out[..record.name.len()].copy_from_slice(record.name);
-                    return Ok(record.name.len());
-                }
-                offset += record.length;
-            }
-        }
-        Err(Error::Corrupt)
+        let found = self.record_of(&parent, number)?.ok_or(Error::Corrupt)?;
+        let data = self.cache.get(&mut self.disk, found.block)?;
+        let record = record_at(&data[..], found.offset)
+            .map_err(|()| Error::Corrupt)?
+            .ok_or(Error::Corrupt)?;
+        out[..record.name.len()].copy_from_slice(record.name);
+        Ok(record.name.len())
     }
 
     /// Entry `position` of `directory`, in the order the directory keeps them.
@@ -771,7 +1001,7 @@ impl<D: Disk> Volume<D> {
             let length = record.name.len() as u8;
             let found = Found {
                 inode: record.inode,
-                directory: record.directory,
+                kind: record.kind,
                 block,
                 offset,
                 length: record.length,
@@ -789,12 +1019,12 @@ impl<D: Disk> Volume<D> {
         Ok(None)
     }
 
-    /// Copies regular file `node`'s contents from `offset` into `buffer`: how many bytes, 0 at
-    /// its end. Whole blocks that lie in a row on the disk go in one read, partial ones through
-    /// a one-block cache.
+    /// Copies regular file `node`'s contents (a symbolic link's target) from `offset` into
+    /// `buffer`: how many bytes, 0 at its end. Whole blocks that lie in a row on the disk go in
+    /// one read, partial ones through a one-block cache.
     pub fn read(&mut self, node: u64, offset: u64, buffer: &mut [u8]) -> Result<usize, Error> {
         let (_, inode) = self.live(node)?;
-        if inode.kind != InodeKind::Regular {
+        if inode.kind == InodeKind::Directory {
             return Err(Error::IsDirectory);
         }
         if offset >= inode.size || buffer.is_empty() {
@@ -833,43 +1063,88 @@ impl<D: Disk> Volume<D> {
         Ok(length)
     }
 
-    fn create_changing(
+    pub(crate) fn upgrade(&mut self) -> Result<(), Error> {
+        if self.geometry.version >= VERSION {
+            return Ok(());
+        }
+        let upgraded = Geometry {
+            version: VERSION,
+            ..self.geometry
+        };
+        let superblock = self.cache.get_mut(&mut self.disk, 0, false)?;
+        superblock.copy_from_slice(&upgraded.encode()[..]);
+        self.geometry = upgraded;
+        Ok(())
+    }
+
+    fn contents_block(&mut self, contents: &[u8]) -> Result<u32, Error> {
+        let block = self.allocate_block()?;
+        let mut buffer = zeroed_block();
+        buffer[..contents.len()].copy_from_slice(contents);
+        if self.disk.write(u64::from(block), &buffer[..]).is_err() {
+            self.free_block(block)?;
+            return Err(Error::Io);
+        }
+        Ok(block)
+    }
+
+    fn make_changing(
         &mut self,
         directory: u64,
         name: &[u8],
-        kind: Kind,
+        kind: InodeKind,
         permissions: u32,
+        contents: &[u8],
         now: u64,
     ) -> Result<u64, Error> {
         check_new_name(name)?;
         self.writable()?;
         self.ensure_room()?;
         let (parent_number, mut parent) = self.live_directory(directory)?;
-        if self.find_entry(&parent, name, None)?.is_some() {
+        if self
+            .find_entry(parent_number, &parent, name, None)?
+            .is_some()
+        {
             return Err(Error::Exists);
         }
-        let number = self.allocate_inode()?;
+        let first_block = match contents.is_empty() {
+            true => 0,
+            false => self.contents_block(contents)?,
+        };
+        let number = match self.allocate_inode() {
+            Ok(number) => number,
+            Err(error) => {
+                if first_block != 0 {
+                    self.free_block(first_block)?;
+                }
+                return Err(error);
+            }
+        };
         let generation = match self.inode(number) {
             Ok(previous) => previous.generation.wrapping_add(1),
             Err(_) => 1,
         };
-        let is_directory = kind == Kind::Directory;
-        if let Err(error) = self.add_entry(&mut parent, name, number, is_directory) {
+        let is_directory = kind == InodeKind::Directory;
+        if let Err(error) = self.add_entry(parent_number, &mut parent, name, number, kind) {
             self.release_inode_number(number)?;
+            if first_block != 0 {
+                self.free_block(first_block)?;
+            }
             self.write_inode(parent_number, &parent)?;
             return Err(error);
         }
-        let inode_kind = match kind {
-            Kind::Directory => InodeKind::Directory,
-            Kind::Regular => InodeKind::Regular,
-        };
-        let inode = Inode::new(
-            inode_kind,
+        if kind == InodeKind::SymbolicLink {
+            self.upgrade()?;
+        }
+        let mut inode = Inode::new(
+            kind,
             (permissions & 0o7777) as u16,
             parent_number,
             generation,
             now,
         );
+        inode.direct[0] = first_block;
+        inode.size = contents.len() as u64;
         self.write_inode(number, &inode)?;
         parent.entries = parent.entries.saturating_add(1);
         if is_directory {
@@ -878,6 +1153,76 @@ impl<D: Disk> Volume<D> {
         parent.modified = now;
         self.write_inode(parent_number, &parent)?;
         Ok(Self::node(number, &inode))
+    }
+
+    fn symlink_changing(
+        &mut self,
+        directory: u64,
+        name: &[u8],
+        target: &[u8],
+        now: u64,
+    ) -> Result<u64, Error> {
+        if !valid_link_target(target) {
+            return Err(Error::InvalidArgument);
+        }
+        let kind = InodeKind::SymbolicLink;
+        self.make_changing(directory, name, kind, 0o777, target, now)
+    }
+
+    fn link_changing(
+        &mut self,
+        node: u64,
+        directory: u64,
+        name: &[u8],
+        now: u64,
+    ) -> Result<(), Error> {
+        check_new_name(name)?;
+        self.writable()?;
+        self.ensure_room()?;
+        if kind_of(node) == Kind::Directory {
+            return Err(Error::IsDirectory);
+        }
+        let (number, mut inode) = self.live(node)?;
+        if inode.orphan {
+            return Err(Error::NotFound);
+        }
+        let (parent_number, mut parent) = self.live_directory(directory)?;
+        if self
+            .find_entry(parent_number, &parent, name, None)?
+            .is_some()
+        {
+            return Err(Error::Exists);
+        }
+        if inode.more_names.saturating_add(1) >= MAX_LINKS {
+            return Err(Error::TooManyLinks);
+        }
+        if let Err(error) = self.add_entry(parent_number, &mut parent, name, number, inode.kind) {
+            self.write_inode(parent_number, &parent)?;
+            return Err(error);
+        }
+        self.upgrade()?;
+        parent.entries = parent.entries.saturating_add(1);
+        parent.modified = now;
+        self.write_inode(parent_number, &parent)?;
+        inode.more_names += 1;
+        self.write_inode(number, &inode)
+    }
+
+    fn link_target_of(&mut self, node: u64) -> Result<Vec<u8>, Error> {
+        let (_, inode) = self.live(node)?;
+        if inode.kind != InodeKind::SymbolicLink {
+            return Err(Error::InvalidArgument);
+        }
+        let length = usize::try_from(inode.size)
+            .ok()
+            .filter(|&length| (1..=MAX_LINK_TARGET).contains(&length))
+            .ok_or(Error::Corrupt)?;
+        let block = match self.locate(&inode, 0)? {
+            0 => return Err(Error::Corrupt),
+            block => block,
+        };
+        let data = self.read_data_block(block)?;
+        Ok(data[..length].to_vec())
     }
 
     fn write_block(
@@ -946,9 +1291,7 @@ impl<D: Disk> Volume<D> {
         self.writable()?;
         self.ensure_room()?;
         let (number, mut inode) = self.live(node)?;
-        if inode.kind != InodeKind::Regular {
-            return Err(Error::IsDirectory);
-        }
+        writable_contents(&inode)?;
         let offset = offset.unwrap_or(inode.size);
         offset
             .checked_add(bytes.len() as u64)
@@ -994,9 +1337,7 @@ impl<D: Disk> Volume<D> {
         self.writable()?;
         self.ensure_room()?;
         let (number, mut inode) = self.live(node)?;
-        if inode.kind != InodeKind::Regular {
-            return Err(Error::IsDirectory);
-        }
+        writable_contents(&inode)?;
         if length > MAX_FILE_BYTES {
             return Err(Error::TooBig);
         }
@@ -1017,6 +1358,17 @@ impl<D: Disk> Volume<D> {
         self.write_inode(number, &inode)
     }
 
+    fn set_permissions_changing(&mut self, node: u64, permissions: u32) -> Result<(), Error> {
+        self.writable()?;
+        self.ensure_room()?;
+        let (number, mut inode) = self.live(node)?;
+        if inode.kind == InodeKind::SymbolicLink {
+            return Err(Error::InvalidArgument);
+        }
+        inode.permissions = (permissions & 0o7777) as u16;
+        self.write_inode(number, &inode)
+    }
+
     fn set_modified_changing(&mut self, node: u64, time: u64) -> Result<(), Error> {
         self.writable()?;
         self.ensure_room()?;
@@ -1032,9 +1384,121 @@ impl<D: Disk> Volume<D> {
         inode.size = 0;
         inode.entries = 0;
         inode.child_directories = 0;
+        inode.more_names = 0;
+        inode.orphan = false;
+        inode.next_orphan = 0;
         inode.generation = inode.generation.wrapping_add(1);
         self.write_inode(number, &inode)?;
         self.release_inode_number(number)
+    }
+
+    fn is_held(&self, number: u32) -> bool {
+        self.holds.contains_key(&number)
+    }
+
+    fn frees_with_last_name(&self, number: u32, inode: &Inode) -> bool {
+        inode.kind == InodeKind::Directory || (inode.more_names == 0 && !self.is_held(number))
+    }
+
+    fn release_contents(&mut self, number: u32) -> Result<(), Error> {
+        let mut inode = self.inode(number)?;
+        self.release_from(number, &mut inode, 0)?;
+        inode.size = 0;
+        self.write_inode(number, &inode)
+    }
+
+    fn orphan(&mut self, number: u32) -> Result<(), Error> {
+        self.upgrade()?;
+        let mut root = self.inode(ROOT_INODE)?;
+        let mut inode = self.inode(number)?;
+        inode.orphan = true;
+        inode.parent = 0;
+        inode.next_orphan = root.next_orphan;
+        root.next_orphan = number;
+        self.write_inode(number, &inode)?;
+        self.write_inode(ROOT_INODE, &root)
+    }
+
+    fn drop_name(&mut self, number: u32, directory: u32) -> Result<(), Error> {
+        let mut inode = self.inode(number)?;
+        if inode.more_names > 0 {
+            inode.more_names -= 1;
+            if inode.parent == directory {
+                inode.parent = self.directory_holding(number, directory)?;
+            }
+            return self.write_inode(number, &inode);
+        }
+        match self.is_held(number) {
+            true => self.orphan(number),
+            false => self.discard_inode(number),
+        }
+    }
+
+    fn unchain_orphan(&mut self, number: u32, next: u32) -> Result<(), Error> {
+        let mut previous = ROOT_INODE;
+        for _ in 0..self.geometry.inodes {
+            let mut inode = self.inode(previous)?;
+            if inode.next_orphan == number {
+                inode.next_orphan = next;
+                return self.write_inode(previous, &inode);
+            }
+            previous = inode.next_orphan;
+            if previous == 0 {
+                break;
+            }
+        }
+        Err(Error::Corrupt)
+    }
+
+    fn free_orphan(&mut self, number: u32) -> Result<(), Error> {
+        let inode = self.inode(number)?;
+        if !inode.orphan || !matches!(inode.kind, InodeKind::Regular | InodeKind::SymbolicLink) {
+            return Err(Error::Corrupt);
+        }
+        self.release_contents(number)?;
+        self.unchain_orphan(number, inode.next_orphan)?;
+        self.discard_inode(number)
+    }
+
+    pub(crate) fn free_left_orphans(&mut self) -> Result<u32, Error> {
+        let mut freed = 0u32;
+        loop {
+            let head = self.inode(ROOT_INODE)?.next_orphan;
+            if head == 0 {
+                break;
+            }
+            if freed >= self.geometry.inodes {
+                return Err(Error::Corrupt);
+            }
+            self.ensure_room()?;
+            self.free_orphan(head)?;
+            freed += 1;
+        }
+        if freed > 0 {
+            self.commit()?;
+        }
+        Ok(freed)
+    }
+
+    fn release_changing(&mut self, node: u64) -> Result<(), Error> {
+        let (number, inode) = self.live(node)?;
+        if inode.kind == InodeKind::Directory {
+            return Ok(());
+        }
+        let Some(count) = self.holds.get_mut(&number) else {
+            return Ok(());
+        };
+        *count -= 1;
+        if *count > 0 {
+            return Ok(());
+        }
+        self.holds.remove(&number);
+        if !inode.orphan {
+            return Ok(());
+        }
+        self.writable()?;
+        self.ensure_room()?;
+        self.free_orphan(number)
     }
 
     fn remove_changing(
@@ -1048,28 +1512,32 @@ impl<D: Disk> Volume<D> {
         self.ensure_room()?;
         let (parent_number, parent) = self.live_directory(directory)?;
         let found = self
-            .find_entry(&parent, name, None)?
+            .find_entry(parent_number, &parent, name, None)?
             .ok_or(Error::NotFound)?;
         self.child_node(&found)?;
-        match (found.directory, directories) {
+        let is_directory = found.kind == InodeKind::Directory;
+        match (is_directory, directories) {
             (true, false) => return Err(Error::IsDirectory),
             (false, true) => return Err(Error::NotDirectory),
             (true, true) if self.inode(found.inode)?.entries > 0 => return Err(Error::NotEmpty),
             _ => {}
         }
-        let mut child = self.inode(found.inode)?;
-        self.release_from(found.inode, &mut child, 0)?;
-        child.size = 0;
-        self.write_inode(found.inode, &child)?;
+        let child = self.inode(found.inode)?;
+        if self.frees_with_last_name(found.inode, &child) {
+            self.release_contents(found.inode)?;
+        }
         self.remove_found(found)?;
         let mut parent = self.inode(parent_number)?;
         parent.entries = parent.entries.saturating_sub(1);
-        if found.directory {
+        if is_directory {
             parent.child_directories = parent.child_directories.saturating_sub(1);
         }
         parent.modified = now;
         self.write_inode(parent_number, &parent)?;
-        self.discard_inode(found.inode)
+        match is_directory {
+            true => self.discard_inode(found.inode),
+            false => self.drop_name(found.inode, parent_number),
+        }
     }
 
     fn is_ancestor(&mut self, ancestor: u32, mut inode: u32) -> Result<bool, Error> {
@@ -1102,14 +1570,15 @@ impl<D: Disk> Volume<D> {
         self.ensure_room()?;
         let (from_number, from_inode) = self.live_directory(from)?;
         let moved = self
-            .find_entry(&from_inode, from_name, None)?
+            .find_entry(from_number, &from_inode, from_name, None)?
             .ok_or(Error::NotFound)?;
         self.child_node(&moved)?;
+        let moved_directory = moved.kind == InodeKind::Directory;
         let (to_number, to_inode) = self.live_directory(to)?;
-        if moved.directory && self.is_ancestor(moved.inode, to_number)? {
+        if moved_directory && self.is_ancestor(moved.inode, to_number)? {
             return Err(Error::InvalidArgument);
         }
-        let replaced = self.find_entry(&to_inode, to_name, None)?;
+        let replaced = self.find_entry(to_number, &to_inode, to_name, None)?;
         if let Some(replaced) = replaced {
             if replaced.inode == moved.inode {
                 return Ok(());
@@ -1118,7 +1587,8 @@ impl<D: Disk> Volume<D> {
                 return Err(Error::Exists);
             }
             self.child_node(&replaced)?;
-            match (moved.directory, replaced.directory) {
+            let replaced_directory = replaced.kind == InodeKind::Directory;
+            match (moved_directory, replaced_directory) {
                 (true, false) => return Err(Error::NotDirectory),
                 (false, true) => return Err(Error::IsDirectory),
                 (true, true) if self.inode(replaced.inode)?.entries > 0 => {
@@ -1129,25 +1599,26 @@ impl<D: Disk> Volume<D> {
         }
         match replaced {
             Some(replaced) => {
-                let mut victim = self.inode(replaced.inode)?;
-                self.release_from(replaced.inode, &mut victim, 0)?;
-                victim.size = 0;
-                self.write_inode(replaced.inode, &victim)?;
+                let victim = self.inode(replaced.inode)?;
+                if self.frees_with_last_name(replaced.inode, &victim) {
+                    self.release_contents(replaced.inode)?;
+                }
                 let to_inode = self.inode(to_number)?;
                 let entry = self
-                    .find_entry(&to_inode, to_name, Some(replaced.inode))?
+                    .find_entry(to_number, &to_inode, to_name, Some(replaced.inode))?
                     .ok_or(Error::Corrupt)?;
-                self.point_record(entry, moved.inode)?;
+                self.point_record(entry, moved.inode, moved.kind)?;
             }
             None => {
                 let mut to_inode = to_inode;
-                let added = self.add_entry(&mut to_inode, to_name, moved.inode, moved.directory);
+                let added =
+                    self.add_entry(to_number, &mut to_inode, to_name, moved.inode, moved.kind);
                 if let Err(error) = added {
                     self.write_inode(to_number, &to_inode)?;
                     return Err(error);
                 }
                 to_inode.entries = to_inode.entries.saturating_add(1);
-                if moved.directory {
+                if moved_directory {
                     to_inode.child_directories = to_inode.child_directories.saturating_add(1);
                 }
                 self.write_inode(to_number, &to_inode)?;
@@ -1158,25 +1629,29 @@ impl<D: Disk> Volume<D> {
         self.write_inode(to_number, &to_inode)?;
         let from_inode = self.inode(from_number)?;
         let old = self
-            .find_entry(&from_inode, from_name, Some(moved.inode))?
+            .find_entry(from_number, &from_inode, from_name, Some(moved.inode))?
             .ok_or(Error::Corrupt)?;
         self.remove_found(old)?;
         let mut from_inode = self.inode(from_number)?;
         from_inode.entries = from_inode.entries.saturating_sub(1);
-        if moved.directory {
+        if moved_directory {
             from_inode.child_directories = from_inode.child_directories.saturating_sub(1);
         }
         from_inode.modified = now;
         self.write_inode(from_number, &from_inode)?;
         if let Some(replaced) = replaced {
-            self.discard_inode(replaced.inode)?;
+            match replaced.kind == InodeKind::Directory {
+                true => self.discard_inode(replaced.inode)?,
+                false => self.drop_name(replaced.inode, to_number)?,
+            }
         }
         let mut moved_inode = self.inode(moved.inode)?;
         moved_inode.parent = to_number;
         self.write_inode(moved.inode, &moved_inode)
     }
 
-    /// Makes an empty `kind` named `name` in `directory` with `permissions` at time `now`.
+    /// Makes an empty `kind` named `name` in `directory` with `permissions` at time `now`;
+    /// [`Error::InvalidArgument`] for a symbolic link, which [`Volume::symlink`] makes.
     pub fn create(
         &mut self,
         directory: u64,
@@ -1185,7 +1660,61 @@ impl<D: Disk> Volume<D> {
         permissions: u32,
         now: u64,
     ) -> Result<u64, Error> {
-        let result = self.create_changing(directory, name, kind, permissions, now);
+        if kind == Kind::SymbolicLink {
+            return Err(Error::InvalidArgument);
+        }
+        let kind = inode_kind_for(kind);
+        let result = self.make_changing(directory, name, kind, permissions, &[], now);
+        self.mark_broken_on_failure(result)
+    }
+
+    /// Makes a symbolic link named `name` in `directory` to `target` (1 to
+    /// [`crate::MAX_LINK_TARGET`] bytes, no NUL, else [`Error::InvalidArgument`]) at time `now`,
+    /// permissions 0777; the name's rules and errors are [`Volume::create`]'s. The target never
+    /// changes. Upgrades a version 1 volume.
+    pub fn symlink(
+        &mut self,
+        directory: u64,
+        name: &[u8],
+        target: &[u8],
+        now: u64,
+    ) -> Result<u64, Error> {
+        let result = self.symlink_changing(directory, name, target, now);
+        self.mark_broken_on_failure(result)
+    }
+
+    /// The target of symbolic link `node`: [`Error::NotFound`] if it is gone,
+    /// [`Error::InvalidArgument`] if it is not a symbolic link.
+    pub fn link_target(&mut self, node: u64) -> Result<Vec<u8>, Error> {
+        self.link_target_of(node)
+    }
+
+    /// Gives regular file or symbolic link `node` another name, `name` in `directory`, at time
+    /// `now` (the directory's modification time): [`Error::IsDirectory`] for a directory,
+    /// [`Error::NotFound`] for a node that is gone or has no name left,
+    /// [`Error::TooManyLinks`] at [`crate::MAX_LINKS`] names, and [`Volume::create`]'s errors
+    /// for the name. Upgrades a version 1 volume.
+    pub fn link(&mut self, node: u64, directory: u64, name: &[u8], now: u64) -> Result<(), Error> {
+        let result = self.link_changing(node, directory, name, now);
+        self.mark_broken_on_failure(result)
+    }
+
+    /// Holds `node` open: while it is held, removing its last name keeps it, nameless, until
+    /// the last [`Volume::release`]. Holds are counted in memory, never on disk; holding a
+    /// directory does nothing.
+    pub fn hold(&mut self, node: u64) -> Result<(), Error> {
+        let (number, inode) = self.live(node)?;
+        if inode.kind != InodeKind::Directory {
+            let count = self.holds.entry(number).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    /// Lets go of one [`Volume::hold`] of `node`; the last one frees a file that has no name
+    /// left. Releasing a node not held does nothing.
+    pub fn release(&mut self, node: u64) -> Result<(), Error> {
+        let result = self.release_changing(node);
         self.mark_broken_on_failure(result)
     }
 
@@ -1214,8 +1743,16 @@ impl<D: Disk> Volume<D> {
         self.mark_broken_on_failure(result)
     }
 
+    /// Sets `node`'s permission bits to `permissions & 0o7777`, leaving its modification time:
+    /// [`Error::InvalidArgument`] for a symbolic link, whose permissions are always 0777.
+    pub fn set_permissions(&mut self, node: u64, permissions: u32) -> Result<(), Error> {
+        let result = self.set_permissions_changing(node, permissions);
+        self.mark_broken_on_failure(result)
+    }
+
     /// Removes `name` from `directory` at time `now`: an empty directory if `directories`,
-    /// else a file.
+    /// else a file or a symbolic link, which is freed with its last name unless it is held
+    /// ([`Volume::hold`]).
     pub fn remove(
         &mut self,
         directory: u64,

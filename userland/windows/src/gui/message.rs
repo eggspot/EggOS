@@ -28,14 +28,19 @@ pub const SYS_CHAR: u32 = 0x0106;
 pub const COMMAND: u32 = 0x0111;
 pub const SYS_COMMAND: u32 = 0x0112;
 pub const TIMER: u32 = 0x0113;
+pub const INIT_DIALOG: u32 = 0x0110;
+pub const HOT_KEY: u32 = 0x0312;
+pub const CLIPBOARD_UPDATE: u32 = 0x031d;
 pub const MOUSE_MOVE: u32 = 0x0200;
 pub const LEFT_BUTTON_DOWN: u32 = 0x0201;
 pub const LEFT_BUTTON_UP: u32 = 0x0202;
+pub const LEFT_BUTTON_DOUBLE_CLICK: u32 = 0x0203;
 pub const RIGHT_BUTTON_DOWN: u32 = 0x0204;
 pub const RIGHT_BUTTON_UP: u32 = 0x0205;
 pub const MIDDLE_BUTTON_DOWN: u32 = 0x0207;
 pub const MIDDLE_BUTTON_UP: u32 = 0x0208;
 pub const MOUSE_WHEEL: u32 = 0x020a;
+pub const MOUSE_HORIZONTAL_WHEEL: u32 = 0x020e;
 
 pub const SIZE_RESTORED: usize = 0;
 pub const SIZE_MINIMIZED: usize = 1;
@@ -47,7 +52,7 @@ pub const ID_CANCEL: usize = 2;
 
 /// The first and last mouse message numbers.
 pub const FIRST_MOUSE: u32 = MOUSE_MOVE;
-pub const LAST_MOUSE: u32 = MOUSE_WHEEL;
+pub const LAST_MOUSE: u32 = MOUSE_HORIZONTAL_WHEEL;
 
 /// `wParam` holding a low and a high 16-bit word, as `MAKEWPARAM` packs them.
 pub fn word_pair(low: usize, high: usize) -> usize {

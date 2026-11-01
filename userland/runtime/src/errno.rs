@@ -13,6 +13,8 @@ impl Errno {
     pub const ESRCH: Self = Self(3);
     /// `EINTR`.
     pub const EINTR: Self = Self(4);
+    /// `ECHILD`.
+    pub const ECHILD: Self = Self(10);
     /// `EIO`.
     pub const EIO: Self = Self(5);
     /// `ENXIO`.
@@ -55,8 +57,26 @@ impl Errno {
     pub const ENODEV: Self = Self(19);
     /// `EOPNOTSUPP`.
     pub const EOPNOTSUPP: Self = Self(95);
+    /// `ENETDOWN`.
+    pub const ENETDOWN: Self = Self(100);
+    /// `ENETUNREACH`.
+    pub const ENETUNREACH: Self = Self(101);
+    /// `ECONNRESET`.
+    pub const ECONNRESET: Self = Self(104);
+    /// `ETIMEDOUT`.
+    pub const ETIMEDOUT: Self = Self(110);
     /// `ECONNREFUSED`.
     pub const ECONNREFUSED: Self = Self(111);
+    /// `EHOSTUNREACH`.
+    pub const EHOSTUNREACH: Self = Self(113);
+    /// `EINPROGRESS`.
+    pub const EINPROGRESS: Self = Self(115);
+    /// `EMLINK`.
+    pub const EMLINK: Self = Self(31);
+    /// `ELOOP`.
+    pub const ELOOP: Self = Self(40);
+    /// `ENOSYS`: no such system call.
+    pub const ENOSYS: Self = Self(38);
 
     /// A system call's result: the non-negative value it returned, or the error of a negative
     /// one.
@@ -97,6 +117,7 @@ impl Errno {
             28 => b"No space left on device",
             29 => b"Illegal seek",
             30 => b"Read-only file system",
+            31 => b"Too many links",
             32 => b"Broken pipe",
             34 => b"Numerical result out of range",
             36 => b"File name too long",
@@ -105,7 +126,13 @@ impl Errno {
             40 => b"Too many levels of symbolic links",
             75 => b"Value too large for defined data type",
             95 => b"Operation not supported",
+            100 => b"Network is down",
+            101 => b"Network is unreachable",
+            104 => b"Connection reset by peer",
+            110 => b"Connection timed out",
             111 => b"Connection refused",
+            113 => b"No route to host",
+            115 => b"Operation now in progress",
             _ => b"Unknown error",
         }
     }

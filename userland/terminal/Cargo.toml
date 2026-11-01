@@ -1,0 +1,16 @@
+[package]
+name = "eggos-terminal-window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eggos-element-tree = { path = "../element-tree" }
+eggos-font = { path = "../../font" }
+eggos-runtime = { path = "../runtime" }
+eggos-terminal = { path = "../../terminal" }
+eggos-toolkit = { path = "../toolkit" }
+
+[lints]
+workspace = true

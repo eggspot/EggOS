@@ -1,21 +1,34 @@
-//! The compositor (D140): every client's requests checked against `wayland.xml` and
-//! `xdg-shell.xml` and carried out, each `xdg_toplevel` a window on `/dev/window`, the window
-//! server's input turned into seat and shell events, and frame callbacks paced at 60 Hz. A
-//! client that breaks the protocol gets `wl_display.error` and is disconnected; nothing a
-//! client sends can make the compositor panic or hold more than its fixed limits.
+//! The compositor (D140, D172, D176, D179): every client's requests checked against `wayland.xml`,
+//! `xdg-shell.xml`, `xdg-decoration-unstable-v1.xml`, `cursor-shape-v1.xml`, `viewporter.xml`,
+//! `primary-selection-unstable-v1.xml`, `xdg-activation-v1.xml`, `text-input-unstable-v3.xml`,
+//! `fractional-scale-v1.xml` and KDE's `server-decoration.xml` and carried out, each
+//! `xdg_toplevel` a window on `/dev/window` with its subsurfaces and popups drawn into it, the
+//! window server's input turned into seat and shell events for the surface under the pointer, and frame callbacks paced at 60 Hz. A client that
+//! breaks the protocol gets `wl_display.error` and is disconnected; nothing a client sends can
+//! make the compositor panic or hold more than its fixed limits.
 
+use crate::activation;
 use crate::client::{
     Attach, Buffer, ClientSlot, INPUT_CAPACITY, MAX_BUFFERS, MAX_FRAMES, MAX_IN_DESCRIPTORS,
-    MAX_OBJECTS, MAX_OUT_DESCRIPTORS, MAX_POOLS, MAX_SURFACES, OUTPUT_CAPACITY, Pool, Surface,
-    TITLE_CAPACITY,
+    MAX_OBJECTS, MAX_OUT_DESCRIPTORS, MAX_POOLS, MAX_POSITIONERS, MAX_SURFACES, OUTPUT_CAPACITY,
+    Pool, Role, Surface, TITLE_CAPACITY, ViewportState,
 };
+use crate::selection::{self, Delivery, Selections};
 use crate::system::{Fd, PoolPixels, Received, System, WindowBuffer};
+use crate::text_input;
+use eggos_element_tree::{
+    Bounds, Element, HEADER_BYTES, Outcome, Query, Role as ElementRole, TreeWriter,
+    flags as element_flags, query_kind, tree_answer,
+};
 use eggos_runtime::errno::Errno;
-use eggos_wayland::blit::Rect;
+use eggos_wayland::blit::{Placement, Rect};
 use eggos_wayland::keymap;
+use eggos_wayland::positioner::{Area, Positioner};
 use eggos_wayland::protocol::{
-    self, Interface, SERVER_ID_START, buffer, callback, display, keyboard, output, pointer,
-    registry, seat, shm, surface, xdg_popup, xdg_surface, xdg_toplevel, xdg_wm_base,
+    self, Interface, SERVER_ID_START, buffer, callback, cursor_shape, decoration, display,
+    fractional_scale, keyboard, output, pointer, registry, seat, server_decoration, shm,
+    subsurface, surface, viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel,
+    xdg_wm_base,
 };
 use eggos_wayland::wire::{self, Header, MAX_ARGUMENTS, MAX_MESSAGE_SIZE, Value};
 
@@ -36,6 +49,8 @@ pub const MAX_BUFFER_BYTES: usize = 4 << 20;
 /// The most descriptors one read takes: libwayland's most per message batch.
 pub const MAX_RECEIVE_DESCRIPTORS: usize = 28;
 const ANSWER_ROOM: usize = 4096;
+const ROOT_ELEMENT: u32 = 1;
+const TEXT_FIELD_ELEMENT: u32 = 2;
 
 const FIXED_SIZE: u32 = 1;
 /// `/dev/window`'s event record size.
@@ -45,6 +60,13 @@ const WHEEL_STEP: i32 = 10;
 const REFRESH_MILLIHERTZ: i32 = 60_000;
 const REPEAT_RATE: i32 = 25;
 const REPEAT_DELAY_MS: i32 = 600;
+const OUTPUT_NAME: &[u8] = b"DISPLAY-1";
+const OUTPUT_DESCRIPTION: &[u8] = b"EggOS display";
+const PREFERRED_SCALE: u32 = fractional_scale::DENOMINATOR;
+const WM_CAPABILITIES: [u32; 2] = [
+    xdg_toplevel::CAPABILITY_MAXIMIZE,
+    xdg_toplevel::CAPABILITY_MINIMIZE,
+];
 
 mod record {
     pub const POINTER_ENTER: u16 = 1;
@@ -58,6 +80,18 @@ mod record {
     pub const CLOSE_REQUEST: u16 = 9;
     pub const RESIZE: u16 = 10;
     pub const STATE_CHANGED: u16 = 11;
+}
+
+mod pointer_shape {
+    pub const ARROW: u32 = 0;
+    pub const I_BEAM: u32 = 1;
+    pub const NORTH_SOUTH: u32 = 2;
+    pub const EAST_WEST: u32 = 3;
+    pub const NORTH_WEST_SOUTH_EAST: u32 = 4;
+    pub const NORTH_EAST_SOUTH_WEST: u32 = 5;
+    pub const HIDDEN: u32 = 6;
+    pub const HAND: u32 = 7;
+    pub const BUSY: u32 = 8;
 }
 
 mod window_state {
@@ -87,15 +121,27 @@ pub struct Watch {
     pub device: Option<Fd>,
 }
 
+/// What every client shares: serials, the pool memory mapped, the selections, the activation
+/// tokens, which client has the keyboard focus and the work area's size, the bounds new
+/// toplevels are told to fit.
 #[derive(Debug, Default)]
-struct Shared {
+pub(crate) struct Shared {
     serial: u32,
     pool_bytes: usize,
+    bounds: (u32, u32),
+    pub(crate) selections: Selections,
+    pub(crate) activation: activation::Activation,
+    /// The index of the client whose window has the keyboard focus.
+    pub(crate) keyboard_client: Option<u8>,
 }
 
 impl Shared {
-    fn next_serial(&mut self) -> u32 {
+    pub(crate) fn next_serial(&mut self) -> u32 {
         self.serial = self.serial.wrapping_add(1).max(1);
+        self.serial
+    }
+
+    pub(crate) fn last_serial(&self) -> u32 {
         self.serial
     }
 }
@@ -109,22 +155,24 @@ pub struct Compositor {
 
 type Values<'a> = [Value<'a>; MAX_ARGUMENTS];
 
-struct Message<'a> {
-    object: u32,
-    interface: Interface,
-    version: u32,
-    index: u16,
-    opcode: u16,
-    values: Values<'a>,
-    descriptors: [Fd; 2],
+/// One request, decoded: its object, that object's interface, version and index, its opcode,
+/// arguments and descriptors.
+pub(crate) struct Message<'a> {
+    pub(crate) object: u32,
+    pub(crate) interface: Interface,
+    pub(crate) version: u32,
+    pub(crate) index: u16,
+    pub(crate) opcode: u16,
+    pub(crate) values: Values<'a>,
+    pub(crate) descriptors: [Fd; 2],
 }
 
 impl Message<'_> {
-    fn uint(&self, at: usize) -> u32 {
+    pub(crate) fn uint(&self, at: usize) -> u32 {
         self.values[at].uint()
     }
 
-    fn int(&self, at: usize) -> i32 {
+    pub(crate) fn int(&self, at: usize) -> i32 {
         self.values[at].int()
     }
 }
@@ -169,7 +217,9 @@ impl Compositor {
             system.close(socket);
             return false;
         };
+        client.index = free as u8;
         self.clients[free] = Some(client);
+        self.shared.bounds = system.work_area();
         true
     }
 
@@ -197,6 +247,7 @@ impl Compositor {
         if !alive {
             self.disconnect(system, index);
         }
+        self.deliver(system);
     }
 
     /// Client `index`'s socket has room: sends what waits.
@@ -217,6 +268,7 @@ impl Compositor {
         {
             handle_requests(client, &mut self.shared, system);
         }
+        self.deliver(system);
     }
 
     /// Whether client `index` holds whole requests it has not handled yet (the per-wake limit
@@ -251,13 +303,18 @@ impl Compositor {
                 break;
             };
             for record in records[..length].as_chunks::<RECORD_SIZE>().0 {
-                window_event(client, &mut self.shared, record);
+                if Query::from_record(record).is_some() {
+                    answer_query(client, system, device, record);
+                    continue;
+                }
+                window_event(client, &mut self.shared, system, record);
             }
             if length < records.len() {
                 break;
             }
         }
         flush_motion(client, &mut self.shared);
+        self.deliver(system);
     }
 
     /// Sends the frame callbacks that are due at `now`, then every client's events; clients
@@ -296,6 +353,45 @@ impl Compositor {
                     .saturating_sub(now)
             })
             .min()
+    }
+
+    fn deliver<S: System>(&mut self, system: &mut S) {
+        let Self { clients, shared } = self;
+        for _ in 0..selection::MAX_DELIVERIES * 2 {
+            let Some(delivery) = shared.selections.take_delivery() else {
+                return;
+            };
+            match delivery {
+                Delivery::Announce { kind } => {
+                    if let Some(index) = shared.keyboard_client
+                        && let Some(client) = client_at(clients, index)
+                    {
+                        selection::announce(client, &shared.selections, kind);
+                    }
+                }
+                Delivery::Cancel {
+                    owner,
+                    source,
+                    kind,
+                } => {
+                    if let Some(client) = client_at(clients, owner) {
+                        selection::cancel(client, source, kind);
+                    }
+                }
+                Delivery::Send {
+                    owner,
+                    source,
+                    kind,
+                    mime_type,
+                    descriptor,
+                } => match client_at(clients, owner) {
+                    Some(client) => {
+                        selection::send(client, system, source, kind, &mime_type, descriptor)
+                    }
+                    None => system.close(descriptor),
+                },
+            }
+        }
     }
 
     fn flush_client<S: System>(&mut self, system: &mut S, index: usize) {
@@ -339,10 +435,25 @@ impl Compositor {
             system.close(descriptor);
         }
         system.free_client(client);
+        let gone = index as u8;
+        if self.shared.keyboard_client == Some(gone) {
+            self.shared.keyboard_client = None;
+        }
+        self.shared.selections.forget_client(system, gone);
+        self.deliver(system);
     }
 }
 
-fn flush<S: System>(client: &mut ClientSlot, system: &mut S) -> bool {
+fn client_at<'a>(
+    clients: &'a mut [Option<&'static mut ClientSlot>],
+    index: u8,
+) -> Option<&'a mut ClientSlot> {
+    clients
+        .get_mut(usize::from(index))
+        .and_then(|slot| slot.as_deref_mut())
+}
+
+pub(crate) fn flush<S: System>(client: &mut ClientSlot, system: &mut S) -> bool {
     if client.output_length == 0 {
         return true;
     }
@@ -509,7 +620,7 @@ fn destroy_object(client: &mut ClientSlot, id: u32) {
     }
 }
 
-fn new_object(
+pub(crate) fn new_object(
     client: &mut ClientSlot,
     id: u32,
     interface: Interface,
@@ -528,7 +639,7 @@ fn new_object(
     true
 }
 
-fn object_index(client: &mut ClientSlot, id: u32, interface: Interface) -> Option<u16> {
+pub(crate) fn object_index(client: &mut ClientSlot, id: u32, interface: Interface) -> Option<u16> {
     match client.object(id) {
         Some(object) if object.interface == Some(interface) && !object.inert => Some(object.index),
         _ => {
@@ -554,16 +665,44 @@ fn handle<S: System>(
         Interface::Surface => surface_request(client, shared, system, message),
         Interface::Seat => seat_request(client, shared, system, message),
         Interface::XdgWmBase => wm_base_request(client, message),
-        Interface::XdgSurface => xdg_surface_request(client, message),
+        Interface::XdgSurface => xdg_surface_request(client, shared, message),
         Interface::XdgToplevel => toplevel_request(client, system, message),
+        Interface::XdgPositioner => positioner_request(client, message),
+        Interface::XdgPopup => popup_request(client, shared, system, message),
+        Interface::Pointer => pointer_request(client, system, message),
+        Interface::Subcompositor => subcompositor_request(client, message),
+        Interface::Subsurface => subsurface_request(client, system, message),
+        Interface::DecorationManager => decoration_manager_request(client, shared, message),
+        Interface::ToplevelDecoration => decoration_request(client, shared, message),
+        Interface::CursorShapeManager => cursor_shape_manager_request(client, message),
+        Interface::CursorShapeDevice => cursor_shape_request(client, system, message),
+        Interface::Viewporter => viewporter_request(client, message),
+        Interface::Viewport => viewport_request(client, message),
+        Interface::DataDeviceManager | Interface::PrimarySelectionDeviceManager => {
+            selection::manager_request(client, shared, message)
+        }
+        Interface::DataSource | Interface::PrimarySelectionSource => {
+            selection::source_request(client, shared, message)
+        }
+        Interface::DataDevice | Interface::PrimarySelectionDevice => {
+            selection::device_request(client, shared, system, message)
+        }
+        Interface::DataOffer | Interface::PrimarySelectionOffer => {
+            selection::offer_request(client, shared, system, message)
+        }
+        Interface::Activation => activation::activation_request(client, shared, system, message),
+        Interface::ActivationToken => activation::token_request(client, shared, system, message),
+        Interface::TextInputManager => text_input::manager_request(client, message),
+        Interface::TextInput => text_input::request(client, message),
+        Interface::ServerDecorationManager => server_decoration_manager_request(client, message),
+        Interface::ServerDecoration => server_decoration_request(client, message),
+        Interface::FractionalScaleManager => fractional_scale_manager_request(client, message),
+        Interface::FractionalScale => fractional_scale_request(client, message),
         Interface::Region
         | Interface::Callback
-        | Interface::Pointer
         | Interface::Keyboard
         | Interface::Touch
-        | Interface::Output
-        | Interface::XdgPositioner
-        | Interface::XdgPopup => {}
+        | Interface::Output => {}
     }
 }
 
@@ -630,6 +769,13 @@ fn bind<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
             );
             client.post(id, version, seat::NAME, &[Value::String(b"seat0")]);
         }
+        Interface::Subcompositor | Interface::Viewporter => client.composes = true,
+        Interface::ServerDecorationManager => client.post(
+            id,
+            version,
+            server_decoration::DEFAULT_MODE,
+            &[Value::Uint(server_decoration::SERVER)],
+        ),
         Interface::Output => {
             let (width, height) = system.work_area();
             send_output(client, id, version, width, height);
@@ -673,6 +819,13 @@ fn send_output(client: &mut ClientSlot, id: u32, version: u32, width: u32, heigh
         ],
     );
     client.post(id, version, output::SCALE, &[Value::Int(1)]);
+    client.post(id, version, output::NAME, &[Value::String(OUTPUT_NAME)]);
+    client.post(
+        id,
+        version,
+        output::DESCRIPTION,
+        &[Value::String(OUTPUT_DESCRIPTION)],
+    );
     client.post(id, version, output::DONE, &[]);
 }
 
@@ -874,6 +1027,7 @@ fn create_buffer(client: &mut ClientSlot, message: &Message, pool: Pool) {
             width,
             height,
             stride,
+            alpha: format == shm::ARGB8888,
         });
         if let Some(pool) = client.pools[usize::from(message.index)].as_mut() {
             pool.buffers += 1;
@@ -893,6 +1047,12 @@ fn destroy_buffer<S: System>(
     for surface in client.surfaces.iter_mut().flatten() {
         if surface.attach == Attach::Buffer(index) {
             surface.attach = Attach::Unchanged;
+        }
+        if surface.held == Some(index) {
+            surface.held = None;
+        }
+        if surface.cached == Some(Attach::Buffer(index)) {
+            surface.cached = None;
         }
     }
     let pool = usize::from(buffer.pool);
@@ -982,11 +1142,15 @@ fn fire_frames(client: &mut ClientSlot, index: u16, now: u64) {
 }
 
 fn destroy_surface<S: System>(client: &mut ClientSlot, system: &mut S, index: u16) {
+    let root = root_of(client, index).filter(|&root| root != index);
     let Some(surface) = client.surfaces[usize::from(index)].take() else {
         return;
     };
     if let (Some(window), Some(device)) = (surface.window, client.device) {
         system.destroy_window(device, window);
+    }
+    if let Some(held) = surface.held {
+        release_buffer(client, held);
     }
     let pending = &surface.pending_frames[..surface.pending_frame_count];
     for &id in surface.frames[..surface.frame_count].iter().chain(pending) {
@@ -996,13 +1160,36 @@ fn destroy_surface<S: System>(client: &mut ClientSlot, system: &mut S, index: u1
     for object in client.objects.iter_mut() {
         let role = matches!(
             object.interface,
-            Some(Interface::XdgSurface | Interface::XdgToplevel | Interface::XdgPopup)
+            Some(
+                Interface::XdgSurface
+                    | Interface::XdgToplevel
+                    | Interface::XdgPopup
+                    | Interface::Subsurface
+                    | Interface::Viewport
+                    | Interface::ToplevelDecoration
+                    | Interface::ServerDecoration
+                    | Interface::FractionalScale
+            )
         );
         if role && object.index == index {
             object.inert = true;
         }
     }
+    for child in 0..MAX_SURFACES as u16 {
+        if peek(client, child).is_some_and(|child| child.parent == Some(index)) {
+            let_go(client, child);
+            if let Some(slot) = client.surface(child) {
+                slot.parent = None;
+                slot.cached = None;
+                slot.dismissed = slot.popup != 0;
+            }
+        }
+    }
     forget_focus(client, index);
+    text_input::forget_surface(client, index);
+    if let Some(root) = root {
+        recompose(client, system, root);
+    }
 }
 
 fn forget_focus(client: &mut ClientSlot, index: u16) {
@@ -1052,20 +1239,34 @@ fn commit<S: System>(client: &mut ClientSlot, shared: &mut Shared, system: &mut 
     let damage = surface.damage;
     surface.attach = Attach::Unchanged;
     surface.damage = Rect::default();
-    if attach != Attach::Unchanged {
-        surface.ever_attached = true;
+    surface.viewport_current = surface.viewport_pending;
+    match attach {
+        Attach::Unchanged => {}
+        Attach::Null => surface.has_buffer = false,
+        Attach::Buffer(_) => surface.has_buffer = true,
     }
     if let Some(slot) = client.surface(index) {
         *slot = surface;
     }
-    if surface.toplevel == 0 {
-        if let Attach::Buffer(buffer) = attach {
+    let attached = match (attach, surface.cached) {
+        (Attach::Buffer(buffer), _) | (Attach::Unchanged, Some(Attach::Buffer(buffer))) => {
+            Some(buffer)
+        }
+        _ => None,
+    };
+    if !viewport_fits(client, index, attached) {
+        return;
+    }
+    if surface.role == Role::Cursor || (surface.toplevel == 0 && surface.popup == 0) {
+        if surface.role == Role::Subsurface {
+            subsurface_commit(client, system, index, attach);
+        } else if let Some(buffer) = attached {
             release_buffer(client, buffer);
         }
         return;
     }
     if !surface.initial_configure_sent || !surface.acked {
-        if matches!(attach, Attach::Buffer(_)) {
+        if attached.is_some() {
             client.protocol_error(
                 surface.xdg_surface,
                 xdg_surface::UNCONFIGURED_BUFFER,
@@ -1073,7 +1274,7 @@ fn commit<S: System>(client: &mut ClientSlot, shared: &mut Shared, system: &mut 
             );
             return;
         }
-        if !surface.initial_configure_sent {
+        if !surface.initial_configure_sent && surface.toplevel != 0 {
             if let Some(slot) = client.surface(index) {
                 slot.initial_configure_sent = true;
             }
@@ -1081,12 +1282,21 @@ fn commit<S: System>(client: &mut ClientSlot, shared: &mut Shared, system: &mut 
         }
         return;
     }
+    if surface.popup != 0 {
+        popup_commit(client, system, index, attach);
+        return;
+    }
     match attach {
-        Attach::Unchanged => {}
+        Attach::Unchanged => {
+            if apply_children(client, index, 0) {
+                recompose(client, system, index);
+            }
+        }
         Attach::Null => {
             if let (Some(window), Some(device)) = (surface.window, client.device) {
                 system.destroy_window(device, window);
             }
+            let_go(client, index);
             if let Some(slot) = client.surface(index) {
                 slot.window = None;
                 slot.asked_size = (0, 0);
@@ -1094,9 +1304,54 @@ fn commit<S: System>(client: &mut ClientSlot, shared: &mut Shared, system: &mut 
             forget_focus(client, index);
         }
         Attach::Buffer(buffer) => {
-            present(client, shared, system, index, buffer, damage);
+            let composed = client.composes || surface.viewport_current.is_active();
+            apply_children(client, index, 0);
+            present(client, shared, system, index, buffer, damage, composed);
+            if !composed {
+                release_buffer(client, buffer);
+            }
+        }
+    }
+}
+
+fn subsurface_commit<S: System>(
+    client: &mut ClientSlot,
+    system: &mut S,
+    index: u16,
+    attach: Attach,
+) {
+    if effectively_synced(client, index) {
+        if attach == Attach::Unchanged {
+            return;
+        }
+        let replaced = client
+            .surface(index)
+            .and_then(|slot| slot.cached.replace(attach));
+        if let Some(Attach::Buffer(old)) = replaced
+            && Attach::Buffer(old) != attach
+        {
+            release_buffer(client, old);
+        }
+        return;
+    }
+    let mut changed = apply_attach(client, index, attach);
+    changed |= apply_children(client, index, 0);
+    if changed && let Some(root) = root_of(client, index) {
+        recompose(client, system, root);
+    }
+}
+
+fn popup_commit<S: System>(client: &mut ClientSlot, system: &mut S, index: u16, attach: Attach) {
+    if peek(client, index).is_some_and(|surface| surface.dismissed) {
+        if let Attach::Buffer(buffer) = attach {
             release_buffer(client, buffer);
         }
+        return;
+    }
+    let mut changed = apply_attach(client, index, attach);
+    changed |= apply_children(client, index, 0);
+    if changed && let Some(root) = root_of(client, index) {
+        recompose(client, system, root);
     }
 }
 
@@ -1107,14 +1362,15 @@ fn present<S: System>(
     index: u16,
     buffer: u16,
     damage: Rect,
+    composed: bool,
 ) {
-    let (Some(surface), Some(buffer)) = (
+    let (Some(surface), Some(attached)) = (
         client.surface(index).copied(),
         client.buffers[usize::from(buffer)],
     ) else {
         return;
     };
-    let Some(pool) = client.pools[usize::from(buffer.pool)] else {
+    let Some(pool) = client.pools[usize::from(attached.pool)] else {
         return;
     };
     let device = match client.device {
@@ -1133,10 +1389,10 @@ fn present<S: System>(
     let pixels = PoolPixels {
         address: pool.address,
         length: pool.length,
-        offset: buffer.offset,
-        stride: buffer.stride,
+        offset: attached.offset,
+        stride: attached.stride,
     };
-    let size = (buffer.width, buffer.height);
+    let size = shown_size(&surface, &attached);
     let (window, everything) = match surface.window {
         None => {
             let fixed = surface.minimum == surface.maximum
@@ -1172,26 +1428,31 @@ fn present<S: System>(
         }
         Some(window) => (window, false),
     };
-    let visible = (size.0.min(window.width), size.1.min(window.height));
-    let rect = match everything {
-        true => Rect::new(0, 0, visible.0, visible.1),
-        false => damage.clipped(visible.0, visible.1),
-    };
-    if !rect.is_empty() {
-        system.copy_rows(pixels, window, rect);
-    }
-    let rects: &[Rect] = match everything {
-        true => &[],
-        false => core::slice::from_ref(&rect),
-    };
-    if everything || !rect.is_empty() {
-        let _ = system.commit(device, window.id, rects);
-    }
-    let created = surface.window.is_none();
     if let Some(slot) = client.surface(index) {
         slot.window = Some(window);
         slot.asked_size = size;
     }
+    if composed {
+        hold(client, index, buffer);
+        recompose(client, system, index);
+    } else {
+        let visible = (size.0.min(window.width), size.1.min(window.height));
+        let rect = match everything {
+            true => Rect::new(0, 0, visible.0, visible.1),
+            false => damage.clipped(visible.0, visible.1),
+        };
+        if !rect.is_empty() {
+            system.copy_rows(pixels, window, rect);
+        }
+        let rects: &[Rect] = match everything {
+            true => &[],
+            false => core::slice::from_ref(&rect),
+        };
+        if everything || !rect.is_empty() {
+            let _ = system.commit(device, window.id, rects);
+        }
+    }
+    let created = surface.window.is_none();
     if created {
         if surface.wants_maximized {
             let _ = system.set_state(device, window.id, window_state::MAXIMISED);
@@ -1239,6 +1500,15 @@ fn configure(client: &mut ClientSlot, shared: &mut Shared, index: u16, size: (u3
         }
     }
     let version = client.object(toplevel).map_or(1, |object| object.version);
+    let (width, height) = shared.bounds;
+    if width > 0 && height > 0 {
+        client.post(
+            toplevel,
+            version,
+            xdg_toplevel::CONFIGURE_BOUNDS,
+            &[Value::Int(width as i32), Value::Int(height as i32)],
+        );
+    }
     client.post(
         toplevel,
         version,
@@ -1277,6 +1547,7 @@ fn seat_request<S: System>(
                 let surface = surface.id;
                 let (x, y) = client.pointer_at;
                 let serial = shared.next_serial();
+                client.pointer_enter_serial = serial;
                 client.post(
                     id,
                     message.version,
@@ -1380,13 +1651,21 @@ fn wm_base_request(client: &mut ClientSlot, message: &Message) {
             }
         }
         1 => {
-            new_object(
+            let id = message.uint(0);
+            let Some(free) = client.positioners.iter().position(Option::is_none) else {
+                client.protocol_error(id, display::NO_MEMORY, b"too many positioners");
+                return;
+            };
+            if new_object(
                 client,
-                message.uint(0),
+                id,
                 Interface::XdgPositioner,
                 message.version,
-                0,
-            );
+                free as u16,
+            ) {
+                client.positioners[free] = Some(Positioner::default());
+                client.composes = true;
+            }
         }
         2 => {
             let (id, surface_id) = (message.uint(0), message.uint(1));
@@ -1396,11 +1675,11 @@ fn wm_base_request(client: &mut ClientSlot, message: &Message) {
             let Some(surface) = client.surface(index).copied() else {
                 return;
             };
-            if surface.xdg_surface != 0 {
+            if surface.xdg_surface != 0 || surface.role != Role::None {
                 client.protocol_error(message.object, xdg_wm_base::ROLE, b"surface has a role");
                 return;
             }
-            if surface.ever_attached {
+            if surface.has_buffer || matches!(surface.attach, Attach::Buffer(_)) {
                 client.protocol_error(
                     message.object,
                     xdg_wm_base::INVALID_SURFACE_STATE,
@@ -1418,18 +1697,18 @@ fn wm_base_request(client: &mut ClientSlot, message: &Message) {
     }
 }
 
-fn xdg_surface_request(client: &mut ClientSlot, message: &Message) {
+fn xdg_surface_request(client: &mut ClientSlot, shared: &mut Shared, message: &Message) {
     let index = message.index;
     let Some(surface) = client.surface(index).copied() else {
         return;
     };
     match message.opcode {
         0 => {
-            if surface.toplevel != 0 {
+            if surface.toplevel != 0 || surface.popup != 0 {
                 client.protocol_error(
                     message.object,
                     xdg_surface::DEFUNCT_ROLE_OBJECT,
-                    b"toplevel still alive",
+                    b"role object still alive",
                 );
             } else if let Some(surface) = client.surface(index) {
                 surface.xdg_surface = 0;
@@ -1437,7 +1716,7 @@ fn xdg_surface_request(client: &mut ClientSlot, message: &Message) {
         }
         1 => {
             let id = message.uint(0);
-            if surface.toplevel != 0 {
+            if surface.toplevel != 0 || surface.popup != 0 {
                 client.protocol_error(
                     message.object,
                     xdg_surface::ALREADY_CONSTRUCTED,
@@ -1449,23 +1728,27 @@ fn xdg_surface_request(client: &mut ClientSlot, message: &Message) {
                 && let Some(surface) = client.surface(index)
             {
                 surface.toplevel = id;
+                let capabilities = WM_CAPABILITIES.map(u32::to_ne_bytes);
+                client.post(
+                    id,
+                    message.version,
+                    xdg_toplevel::WM_CAPABILITIES,
+                    &[Value::Array(capabilities.as_flattened())],
+                );
             }
         }
-        2 => {
-            let (id, parent, positioner) = (message.uint(0), message.uint(1), message.uint(2));
-            if parent != 0 && object_index(client, parent, Interface::XdgSurface).is_none() {
-                return;
-            }
-            if object_index(client, positioner, Interface::XdgPositioner).is_none() {
-                return;
-            }
-            if new_object(client, id, Interface::XdgPopup, message.version, index) {
-                client.post(id, message.version, xdg_popup::POPUP_DONE, &[]);
-            }
-        }
+        2 => get_popup(client, shared, message, surface),
         3 => {
-            if message.int(2) <= 0 || message.int(3) <= 0 {
+            let (x, y, width, height) = (
+                message.int(0),
+                message.int(1),
+                message.int(2),
+                message.int(3),
+            );
+            if width <= 0 || height <= 0 {
                 client.protocol_error(message.object, xdg_surface::INVALID_SIZE, b"bad geometry");
+            } else if let Some(surface) = client.surface(index) {
+                surface.geometry = Some((x, y, width, height));
             }
         }
         _ => {
@@ -1519,6 +1802,7 @@ fn toplevel_request<S: System>(client: &mut ClientSlot, system: &mut S, message:
             if let (Some(window), Some(device)) = (surface.window, device) {
                 system.destroy_window(device, window);
             }
+            let_go(client, index);
             if let Some(surface) = client.surface(index) {
                 surface.reset_toplevel();
             }
@@ -1533,6 +1817,13 @@ fn toplevel_request<S: System>(client: &mut ClientSlot, system: &mut S, message:
             on_window(system, &mut |system, device, window| {
                 let _ = system.set_title(device, window, title);
             });
+        }
+        3 => {
+            let app_id = title_prefix(message.values[0].bytes());
+            if let Some(surface) = client.surface(index) {
+                surface.app_id[..app_id.len()].copy_from_slice(app_id);
+                surface.app_id_length = app_id.len();
+            }
         }
         5 | 6 => {
             let (seat, serial) = (message.uint(0), message.uint(1));
@@ -1630,7 +1921,7 @@ fn word(record: &[u8], offset: usize) -> u32 {
     ])
 }
 
-fn each_of(
+pub(crate) fn each_of(
     client: &mut ClientSlot,
     interface: Interface,
     mut post: impl FnMut(&mut ClientSlot, u32, u32),
@@ -1676,7 +1967,73 @@ fn flush_motion(client: &mut ClientSlot, _shared: &mut Shared) {
     pointer_frame(client);
 }
 
-fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
+fn answer_query<S: System>(
+    client: &mut ClientSlot,
+    system: &mut S,
+    device: Fd,
+    record: &[u8; RECORD_SIZE],
+) {
+    let Some(query) = Query::from_record(record) else {
+        return;
+    };
+    let surface = u16::try_from(query.window)
+        .ok()
+        .and_then(|window| surface_of_window(client, window))
+        .and_then(|index| client.surface(index).copied());
+    let Some(surface) = surface.filter(|_| query.kind == query_kind::TREE) else {
+        let outcome = match query.kind {
+            query_kind::TREE => tree_answer::PIXELS_ONLY,
+            _ => Outcome::NotSupported.value(),
+        };
+        let _ = system.answer_query(device, query.serial, outcome, &[]);
+        return;
+    };
+    let (width, height) = current_size(&surface);
+    let mut bytes =
+        [0u8; 2 * HEADER_BYTES + 2 * TITLE_CAPACITY + text_input::SURROUNDING_CAPACITY + 16];
+    let mut tree = TreeWriter::new(&mut bytes);
+    let bounds = Bounds::new(0, 0, width as i32, height as i32);
+    tree.push(
+        &Element::new(ROOT_ELEMENT, 0, ElementRole::Window, bounds)
+            .named(&surface.title[..surface.title_length])
+            .valued(&surface.app_id[..surface.app_id_length]),
+    );
+    let root = u16::try_from(query.window)
+        .ok()
+        .and_then(|window| surface_of_window(client, window));
+    let field = root.and_then(|root| {
+        text_input::focused_field(client, |entered| root_of(client, entered) == Some(root))
+    });
+    if let (Some(root), Some((entered, field))) = (root, field) {
+        let (offset_x, offset_y) = offset_of(client, entered);
+        let (origin_x, origin_y) = origin_of(peek(client, root));
+        let (x, y, width, height) = field.cursor_rectangle;
+        let at = Bounds::new(
+            x.saturating_add(offset_x).saturating_sub(origin_x),
+            y.saturating_add(offset_y).saturating_sub(origin_y),
+            width,
+            height,
+        );
+        let text = match field.is_concealed() {
+            true => &[][..],
+            false => field.surrounding(),
+        };
+        tree.push(
+            &Element::new(TEXT_FIELD_ELEMENT, ROOT_ELEMENT, ElementRole::TextField, at)
+                .named(field.kind_name().as_bytes())
+                .valued(text)
+                .flagged(element_flags::FOCUSED | element_flags::FOCUSABLE),
+        );
+    }
+    let _ = system.answer_query(device, query.serial, tree_answer::TREE, tree.bytes());
+}
+
+fn window_event<S: System>(
+    client: &mut ClientSlot,
+    shared: &mut Shared,
+    system: &mut S,
+    record: &[u8],
+) {
     let kind = u16::from_ne_bytes([record[0], record[1]]);
     let window = u16::from_ne_bytes([record[2], record[3]]);
     let (time, a, b, c, d) = (
@@ -1696,33 +2053,26 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
         flush_motion(client, shared);
     }
     match kind {
-        record::POINTER_ENTER => {
-            client.pointer_focus = Some(index);
-            client.pointer_at = (a, b);
-            let serial = shared.next_serial();
-            each_of(client, Interface::Pointer, |client, id, version| {
-                client.post(
-                    id,
-                    version,
-                    pointer::ENTER,
-                    &[
-                        Value::Uint(serial),
-                        Value::Object(surface.id),
-                        Value::Fixed(wire::fixed(a)),
-                        Value::Fixed(wire::fixed(b)),
-                    ],
-                );
-            });
-            pointer_frame(client);
-        }
-        record::POINTER_MOVE => {
-            if client.pointer_focus == Some(index) {
-                client.pending_motion = Some((index, time, a, b));
-                client.pointer_at = (a, b);
+        record::POINTER_ENTER | record::POINTER_MOVE => {
+            let entered = client
+                .pointer_focus
+                .is_some_and(|focus| root_of(client, focus) == Some(index));
+            if kind == record::POINTER_MOVE && !entered {
+                return;
             }
+            let (target, x, y) = surface_at(client, index, a, b);
+            client.pointer_at = (x, y);
+            if kind == record::POINTER_MOVE && client.pointer_focus == Some(target) {
+                client.pending_motion = Some((target, time, x, y));
+                return;
+            }
+            point_at(client, shared, target, x, y);
         }
         record::POINTER_LEAVE => {
-            if client.pointer_focus == Some(index) {
+            let focus = client
+                .pointer_focus
+                .filter(|&focus| root_of(client, focus) == Some(index));
+            if let Some(left) = focus.and_then(|focus| peek(client, focus)) {
                 client.pointer_focus = None;
                 let serial = shared.next_serial();
                 each_of(client, Interface::Pointer, |client, id, version| {
@@ -1730,15 +2080,25 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
                         id,
                         version,
                         pointer::LEAVE,
-                        &[Value::Uint(serial), Value::Object(surface.id)],
+                        &[Value::Uint(serial), Value::Object(left.id)],
                     );
                 });
                 pointer_frame(client);
             }
         }
         record::BUTTON => {
+            let pressed = d == 1;
+            let outside_grab = topmost_grab(client, index).is_some()
+                && !client
+                    .pointer_focus
+                    .is_some_and(|focus| in_popup(client, focus));
+            if pressed && outside_grab {
+                dismiss_popups(client, shared, system, index);
+                return;
+            }
             let serial = shared.next_serial();
-            let state = if d == 1 {
+            client.input_serial = serial;
+            let state = if pressed {
                 pointer::PRESSED
             } else {
                 pointer::RELEASED
@@ -1765,16 +2125,16 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
             if client.output_room() < OUTPUT_CAPACITY / 2 {
                 return;
             }
-            let notches = d as i32;
+            let (axis, steps) = match d {
+                0 => (pointer::HORIZONTAL_SCROLL, c as i32),
+                vertical => (pointer::VERTICAL_SCROLL, (vertical as i32).saturating_neg()),
+            };
             each_of(client, Interface::Pointer, |client, id, version| {
                 let _ = client.queue(
                     id,
                     version,
                     pointer::AXIS_DISCRETE,
-                    &[
-                        Value::Uint(pointer::VERTICAL_SCROLL),
-                        Value::Int(notches.saturating_neg()),
-                    ],
+                    &[Value::Uint(axis), Value::Int(steps)],
                 );
                 let _ = client.queue(
                     id,
@@ -1782,10 +2142,8 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
                     pointer::AXIS,
                     &[
                         Value::Uint(time),
-                        Value::Uint(pointer::VERTICAL_SCROLL),
-                        Value::Fixed(wire::fixed(
-                            notches.saturating_neg().saturating_mul(WHEEL_STEP),
-                        )),
+                        Value::Uint(axis),
+                        Value::Fixed(wire::fixed(steps.saturating_mul(WHEEL_STEP))),
                     ],
                 );
             });
@@ -1794,6 +2152,7 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
         record::KEY => {
             send_modifiers(client, shared, c);
             let serial = shared.next_serial();
+            client.input_serial = serial;
             let state = if b == 1 {
                 keyboard::PRESSED
             } else {
@@ -1814,38 +2173,42 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
             });
         }
         record::FOCUS_IN => {
-            client.keyboard_focus = Some(index);
-            let serial = shared.next_serial();
-            each_of(client, Interface::Keyboard, |client, id, version| {
-                client.post(
-                    id,
-                    version,
-                    keyboard::ENTER,
-                    &[
-                        Value::Uint(serial),
-                        Value::Object(surface.id),
-                        Value::Array(&[]),
-                    ],
-                );
-            });
-            let modifiers = client.modifiers;
-            post_modifiers(client, shared, modifiers);
+            let focus = topmost_grab(client, index).unwrap_or(index);
+            if shared.keyboard_client != Some(client.index) {
+                shared.keyboard_client = Some(client.index);
+                client.focus_serial = shared.last_serial();
+                for kind in [selection::Kind::Clipboard, selection::Kind::Primary] {
+                    selection::announce(client, &shared.selections, kind);
+                }
+            }
+            client.keyboard_focus = None;
+            set_keyboard_focus(client, shared, Some(focus));
             if let Some(slot) = client.surface(index) {
                 slot.activated = true;
             }
             configure(client, shared, index, current_size(&surface));
         }
         record::FOCUS_OUT => {
-            if client.keyboard_focus == Some(index) {
+            let focus = client
+                .keyboard_focus
+                .filter(|&focus| root_of(client, focus) == Some(index));
+            if focus.is_some() {
                 client.keyboard_focus = None;
+                text_input::focus_moved(client, None);
             }
+            if shared.keyboard_client == Some(client.index) {
+                shared.keyboard_client = None;
+            }
+            let left = focus
+                .and_then(|focus| peek(client, focus))
+                .unwrap_or(surface);
             let serial = shared.next_serial();
             each_of(client, Interface::Keyboard, |client, id, version| {
                 client.post(
                     id,
                     version,
                     keyboard::LEAVE,
-                    &[Value::Uint(serial), Value::Object(surface.id)],
+                    &[Value::Uint(serial), Value::Object(left.id)],
                 );
             });
             if let Some(slot) = client.surface(index) {
@@ -1905,9 +2268,1147 @@ fn post_modifiers(client: &mut ClientSlot, shared: &mut Shared, (depressed, lock
     });
 }
 
+fn peek(client: &ClientSlot, index: u16) -> Option<Surface> {
+    client.surfaces.get(usize::from(index)).copied().flatten()
+}
+
+pub(crate) fn root_of(client: &ClientSlot, index: u16) -> Option<u16> {
+    let mut at = index;
+    for _ in 0..MAX_SURFACES {
+        let surface = peek(client, at)?;
+        match surface.parent {
+            Some(parent) => at = parent,
+            None => return (surface.toplevel != 0).then_some(at),
+        }
+    }
+    None
+}
+
+fn is_ancestor(client: &ClientSlot, ancestor: u16, of: u16) -> bool {
+    let mut at = of;
+    for _ in 0..MAX_SURFACES {
+        let Some(parent) = peek(client, at).and_then(|surface| surface.parent) else {
+            return false;
+        };
+        if parent == ancestor {
+            return true;
+        }
+        at = parent;
+    }
+    false
+}
+
+fn effectively_synced(client: &ClientSlot, index: u16) -> bool {
+    let mut at = index;
+    for _ in 0..MAX_SURFACES {
+        let Some(surface) = peek(client, at) else {
+            return false;
+        };
+        if surface.role != Role::Subsurface {
+            return false;
+        }
+        if surface.synced {
+            return true;
+        }
+        match surface.parent {
+            Some(parent) => at = parent,
+            None => return false,
+        }
+    }
+    false
+}
+
+fn in_popup(client: &ClientSlot, index: u16) -> bool {
+    let mut at = index;
+    for _ in 0..MAX_SURFACES {
+        let Some(surface) = peek(client, at) else {
+            return false;
+        };
+        if surface.popup != 0 {
+            return true;
+        }
+        match surface.parent {
+            Some(parent) => at = parent,
+            None => return false,
+        }
+    }
+    false
+}
+
+fn origin_of(surface: Option<Surface>) -> (i32, i32) {
+    surface
+        .and_then(|surface| surface.geometry)
+        .map_or((0, 0), |(x, y, _, _)| (x, y))
+}
+
+fn offset_of(client: &ClientSlot, index: u16) -> (i32, i32) {
+    let (mut x, mut y) = (0i32, 0i32);
+    let mut at = index;
+    for _ in 0..MAX_SURFACES {
+        let Some(surface) = peek(client, at) else {
+            break;
+        };
+        let Some(parent) = surface.parent else {
+            break;
+        };
+        let (mut dx, mut dy) = surface.position;
+        if surface.popup != 0 {
+            let (parent_x, parent_y) = origin_of(peek(client, parent));
+            let (own_x, own_y) = origin_of(Some(surface));
+            dx = dx.saturating_add(parent_x).saturating_sub(own_x);
+            dy = dy.saturating_add(parent_y).saturating_sub(own_y);
+        }
+        x = x.saturating_add(dx);
+        y = y.saturating_add(dy);
+        at = parent;
+    }
+    (x, y)
+}
+
+fn shown_size(surface: &Surface, buffer: &Buffer) -> (u32, u32) {
+    let state = surface.viewport_current;
+    if let Some((width, height)) = state.destination {
+        return (width.max(1) as u32, height.max(1) as u32);
+    }
+    if let Some([_, _, width, height]) = state.source {
+        return ((width >> 8).max(1) as u32, (height >> 8).max(1) as u32);
+    }
+    (buffer.width, buffer.height)
+}
+
+fn source_rect(surface: &Surface, buffer: &Buffer) -> Rect {
+    match surface.viewport_current.source {
+        Some([x, y, width, height]) => Rect::new(
+            (x >> 8).max(0) as u32,
+            (y >> 8).max(0) as u32,
+            (width.saturating_add(255) >> 8).max(1) as u32,
+            (height.saturating_add(255) >> 8).max(1) as u32,
+        )
+        .clipped(buffer.width, buffer.height),
+        None => Rect::new(0, 0, buffer.width, buffer.height),
+    }
+}
+
+fn viewport_fits(client: &mut ClientSlot, index: u16, attached: Option<u16>) -> bool {
+    let Some(surface) = peek(client, index) else {
+        return true;
+    };
+    let Some([x, y, width, height]) = surface.viewport_current.source else {
+        return true;
+    };
+    let Some(buffer) = attached
+        .or(surface.held)
+        .and_then(|buffer| client.buffers[usize::from(buffer)])
+    else {
+        return true;
+    };
+    let right = i64::from(x) + i64::from(width);
+    let bottom = i64::from(y) + i64::from(height);
+    if right > i64::from(buffer.width) << 8 || bottom > i64::from(buffer.height) << 8 {
+        client.protocol_error(
+            surface.viewport,
+            viewport::OUT_OF_BUFFER,
+            b"source outside the buffer",
+        );
+        return false;
+    }
+    if surface.viewport_current.destination.is_none() && (width & 0xff != 0 || height & 0xff != 0) {
+        client.protocol_error(surface.viewport, viewport::BAD_SIZE, b"fractional size");
+        return false;
+    }
+    true
+}
+
+fn hold(client: &mut ClientSlot, index: u16, buffer: u16) {
+    let Some(surface) = client.surface(index) else {
+        return;
+    };
+    let old = surface.held.replace(buffer);
+    if let Some(old) = old.filter(|&old| old != buffer) {
+        release_buffer(client, old);
+    }
+}
+
+fn let_go(client: &mut ClientSlot, index: u16) {
+    if let Some(old) = client
+        .surface(index)
+        .and_then(|surface| surface.held.take())
+    {
+        release_buffer(client, old);
+    }
+}
+
+fn apply_attach(client: &mut ClientSlot, index: u16, attach: Attach) -> bool {
+    match attach {
+        Attach::Unchanged => false,
+        Attach::Null => {
+            let_go(client, index);
+            true
+        }
+        Attach::Buffer(buffer) => {
+            hold(client, index, buffer);
+            true
+        }
+    }
+}
+
+fn apply_children(client: &mut ClientSlot, parent: u16, depth: usize) -> bool {
+    if depth >= MAX_SURFACES {
+        return false;
+    }
+    let mut changed = false;
+    for child in 0..MAX_SURFACES as u16 {
+        let is_child = peek(client, child).is_some_and(|surface| {
+            surface.role == Role::Subsurface && surface.parent == Some(parent)
+        });
+        if !is_child {
+            continue;
+        }
+        if let Some(slot) = client.surface(child)
+            && let Some(position) = slot.pending_position.take()
+        {
+            slot.position = position;
+            changed = true;
+        }
+        if effectively_synced(client, child)
+            && let Some(attach) = client.surface(child).and_then(|slot| slot.cached.take())
+        {
+            changed |= apply_attach(client, child, attach);
+            changed |= apply_children(client, child, depth + 1);
+        }
+    }
+    changed
+}
+
+fn push_subsurfaces(
+    client: &ClientSlot,
+    parent: u16,
+    order: &mut [u16; MAX_SURFACES],
+    count: &mut usize,
+    depth: usize,
+) {
+    if depth >= MAX_SURFACES {
+        return;
+    }
+    let mut children = [(0i32, 0u16); MAX_SURFACES];
+    let mut found = 0;
+    for (index, surface) in client.surfaces.iter().enumerate() {
+        if let Some(surface) = surface
+            && surface.role == Role::Subsurface
+            && surface.parent == Some(parent)
+            && surface.order > 0
+        {
+            children[found] = (surface.order, index as u16);
+            found += 1;
+        }
+    }
+    children[..found].sort_unstable();
+    for &(_, child) in &children[..found] {
+        if *count < MAX_SURFACES {
+            order[*count] = child;
+            *count += 1;
+        }
+        push_subsurfaces(client, child, order, count, depth + 1);
+    }
+}
+
+fn stack(client: &ClientSlot, root: u16) -> ([u16; MAX_SURFACES], usize) {
+    let mut order = [0u16; MAX_SURFACES];
+    let mut count = 0;
+    push_subsurfaces(client, root, &mut order, &mut count, 0);
+    let mut popups = [(0i32, 0u16); MAX_SURFACES];
+    let mut found = 0;
+    for index in 0..MAX_SURFACES as u16 {
+        if let Some(surface) = peek(client, index)
+            && surface.popup != 0
+            && !surface.dismissed
+            && surface.parent.is_some()
+            && root_of(client, index) == Some(root)
+        {
+            popups[found] = (surface.order, index);
+            found += 1;
+        }
+    }
+    popups[..found].sort_unstable();
+    for &(_, popup) in &popups[..found] {
+        if count < MAX_SURFACES {
+            order[count] = popup;
+            count += 1;
+        }
+        push_subsurfaces(client, popup, &mut order, &mut count, 1);
+    }
+    (order, count)
+}
+
+fn draw_surface<S: System>(
+    client: &ClientSlot,
+    system: &mut S,
+    window: WindowBuffer,
+    index: u16,
+    at: (i32, i32),
+    blend: bool,
+) {
+    let Some(surface) = peek(client, index) else {
+        return;
+    };
+    let Some(buffer) = surface
+        .held
+        .and_then(|buffer| client.buffers[usize::from(buffer)])
+    else {
+        return;
+    };
+    let Some(pool) = client.pools[usize::from(buffer.pool)] else {
+        return;
+    };
+    let pixels = PoolPixels {
+        address: pool.address,
+        length: pool.length,
+        offset: buffer.offset,
+        stride: buffer.stride,
+    };
+    let placement = Placement {
+        source: source_rect(&surface, &buffer),
+        at,
+        size: shown_size(&surface, &buffer),
+        clip: Rect::new(0, 0, window.width, window.height),
+        blend: blend && buffer.alpha,
+    };
+    system.place(pixels, (buffer.width, buffer.height), window, placement);
+}
+
+fn recompose<S: System>(client: &mut ClientSlot, system: &mut S, root: u16) {
+    let Some(surface) = peek(client, root) else {
+        return;
+    };
+    let (Some(window), Some(device)) = (surface.window, client.device) else {
+        return;
+    };
+    draw_surface(client, system, window, root, (0, 0), false);
+    let (order, count) = stack(client, root);
+    for &index in &order[..count] {
+        let at = offset_of(client, index);
+        draw_surface(client, system, window, index, at, true);
+    }
+    let _ = system.commit(device, window.id, &[]);
+}
+
+fn surface_at(client: &ClientSlot, root: u16, x: i32, y: i32) -> (u16, i32, i32) {
+    let (order, count) = stack(client, root);
+    for &index in order[..count].iter().rev() {
+        let Some(surface) = peek(client, index) else {
+            continue;
+        };
+        let Some(buffer) = surface
+            .held
+            .and_then(|buffer| client.buffers[usize::from(buffer)])
+        else {
+            continue;
+        };
+        let (width, height) = shown_size(&surface, &buffer);
+        let (left, top) = offset_of(client, index);
+        let (local_x, local_y) = (x.saturating_sub(left), y.saturating_sub(top));
+        if local_x >= 0 && local_y >= 0 && (local_x as u32) < width && (local_y as u32) < height {
+            return (index, local_x, local_y);
+        }
+    }
+    (root, x, y)
+}
+
+fn point_at(client: &mut ClientSlot, shared: &mut Shared, target: u16, x: i32, y: i32) {
+    client.pending_motion = None;
+    if let Some(old) = client.pointer_focus.filter(|&old| old != target)
+        && let Some(left) = peek(client, old)
+    {
+        let serial = shared.next_serial();
+        each_of(client, Interface::Pointer, |client, id, version| {
+            client.post(
+                id,
+                version,
+                pointer::LEAVE,
+                &[Value::Uint(serial), Value::Object(left.id)],
+            );
+        });
+    }
+    let Some(entered) = peek(client, target) else {
+        return;
+    };
+    client.pointer_focus = Some(target);
+    let serial = shared.next_serial();
+    client.pointer_enter_serial = serial;
+    each_of(client, Interface::Pointer, |client, id, version| {
+        client.post(
+            id,
+            version,
+            pointer::ENTER,
+            &[
+                Value::Uint(serial),
+                Value::Object(entered.id),
+                Value::Fixed(wire::fixed(x)),
+                Value::Fixed(wire::fixed(y)),
+            ],
+        );
+    });
+    pointer_frame(client);
+}
+
+fn set_keyboard_focus(client: &mut ClientSlot, shared: &mut Shared, focus: Option<u16>) {
+    if client.keyboard_focus == focus {
+        return;
+    }
+    if let Some(left) = client.keyboard_focus.and_then(|old| peek(client, old)) {
+        let serial = shared.next_serial();
+        each_of(client, Interface::Keyboard, |client, id, version| {
+            client.post(
+                id,
+                version,
+                keyboard::LEAVE,
+                &[Value::Uint(serial), Value::Object(left.id)],
+            );
+        });
+    }
+    client.keyboard_focus = focus;
+    if let Some(entered) = focus.and_then(|new| peek(client, new)) {
+        let serial = shared.next_serial();
+        client.input_serial = serial;
+        each_of(client, Interface::Keyboard, |client, id, version| {
+            client.post(
+                id,
+                version,
+                keyboard::ENTER,
+                &[
+                    Value::Uint(serial),
+                    Value::Object(entered.id),
+                    Value::Array(&[]),
+                ],
+            );
+        });
+        let modifiers = client.modifiers;
+        post_modifiers(client, shared, modifiers);
+    }
+    text_input::focus_moved(client, focus);
+}
+
+fn topmost_grab(client: &ClientSlot, root: u16) -> Option<u16> {
+    let (order, count) = stack(client, root);
+    order[..count].iter().rev().copied().find(|&index| {
+        peek(client, index).is_some_and(|surface| surface.popup != 0 && surface.grabbed)
+    })
+}
+
+fn dismiss_popups<S: System>(
+    client: &mut ClientSlot,
+    shared: &mut Shared,
+    system: &mut S,
+    root: u16,
+) {
+    let (order, count) = stack(client, root);
+    for &index in order[..count].iter().rev() {
+        let Some(surface) = peek(client, index) else {
+            continue;
+        };
+        if surface.popup == 0 {
+            continue;
+        }
+        let version = client
+            .object(surface.popup)
+            .map_or(1, |object| object.version);
+        client.post(surface.popup, version, xdg_popup::POPUP_DONE, &[]);
+        let_go(client, index);
+        if let Some(slot) = client.surface(index) {
+            slot.dismissed = true;
+            slot.grabbed = false;
+        }
+    }
+    if client
+        .keyboard_focus
+        .is_some_and(|focus| in_popup(client, focus))
+    {
+        set_keyboard_focus(client, shared, Some(root));
+    }
+    recompose(client, system, root);
+}
+
+fn place_popup(
+    client: &mut ClientSlot,
+    shared: &mut Shared,
+    index: u16,
+    placer: Positioner,
+    token: Option<u32>,
+) {
+    let Some(surface) = peek(client, index) else {
+        return;
+    };
+    let (Some(parent), Some(root)) = (surface.parent, root_of(client, index)) else {
+        return;
+    };
+    let root_size = peek(client, root).map_or((0, 0), |root| current_size(&root));
+    let parent_offset = offset_of(client, parent);
+    let parent_origin = origin_of(peek(client, parent));
+    let origin = (
+        parent_offset.0.saturating_add(parent_origin.0),
+        parent_offset.1.saturating_add(parent_origin.1),
+    );
+    let bounds = Area::new(
+        origin.0.saturating_neg(),
+        origin.1.saturating_neg(),
+        root_size.0.min(i32::MAX as u32) as i32,
+        root_size.1.min(i32::MAX as u32) as i32,
+    );
+    let placed = placer.place(bounds);
+    let size = (placed.width.max(1) as u32, placed.height.max(1) as u32);
+    let serial = shared.next_serial();
+    if let Some(slot) = client.surface(index) {
+        slot.position = (placed.x, placed.y);
+        slot.popup_size = size;
+        slot.configure_size = size;
+        slot.last_serial = serial;
+        slot.initial_configure_sent = true;
+    }
+    let version = client
+        .object(surface.popup)
+        .map_or(1, |object| object.version);
+    if let Some(token) = token {
+        client.post(
+            surface.popup,
+            version,
+            xdg_popup::REPOSITIONED,
+            &[Value::Uint(token)],
+        );
+    }
+    client.post(
+        surface.popup,
+        version,
+        xdg_popup::CONFIGURE,
+        &[
+            Value::Int(placed.x),
+            Value::Int(placed.y),
+            Value::Int(size.0 as i32),
+            Value::Int(size.1 as i32),
+        ],
+    );
+    client.post(
+        surface.xdg_surface,
+        version,
+        xdg_surface::CONFIGURE,
+        &[Value::Uint(serial)],
+    );
+}
+
+fn wm_base_of(client: &ClientSlot) -> u32 {
+    client
+        .ids_of(Interface::XdgWmBase)
+        .next()
+        .map_or(1, |(id, _)| id)
+}
+
+fn positioner_request(client: &mut ClientSlot, message: &Message) {
+    let slot = usize::from(message.index);
+    let Some(mut placer) = client.positioners.get(slot).copied().flatten() else {
+        return;
+    };
+    let invalid = |client: &mut ClientSlot| {
+        client.protocol_error(
+            message.object,
+            xdg_positioner::INVALID_INPUT,
+            b"bad positioner value",
+        );
+    };
+    match message.opcode {
+        0 => {
+            client.positioners[slot] = None;
+            return;
+        }
+        1 => {
+            let (width, height) = (message.int(0), message.int(1));
+            if width <= 0 || height <= 0 {
+                return invalid(client);
+            }
+            placer.size = (width, height);
+        }
+        2 => {
+            let rect = Area::new(
+                message.int(0),
+                message.int(1),
+                message.int(2),
+                message.int(3),
+            );
+            if rect.width < 0 || rect.height < 0 {
+                return invalid(client);
+            }
+            placer.anchor_rect = Some(rect);
+        }
+        3 | 4 => {
+            let edge = message.uint(0);
+            if edge > xdg_positioner::BOTTOM_RIGHT {
+                return invalid(client);
+            }
+            match message.opcode {
+                3 => placer.anchor = edge,
+                _ => placer.gravity = edge,
+            }
+        }
+        5 => placer.adjustment = message.uint(0),
+        6 => placer.offset = (message.int(0), message.int(1)),
+        _ => {}
+    }
+    client.positioners[slot] = Some(placer);
+}
+
+fn popup_request<S: System>(
+    client: &mut ClientSlot,
+    shared: &mut Shared,
+    system: &mut S,
+    message: &Message,
+) {
+    let index = message.index;
+    let Some(surface) = peek(client, index) else {
+        return;
+    };
+    match message.opcode {
+        0 => {
+            let root = root_of(client, index);
+            let_go(client, index);
+            if surface.grabbed
+                && client.keyboard_focus == Some(index)
+                && let Some(parent) = surface.parent
+            {
+                set_keyboard_focus(client, shared, Some(parent));
+            }
+            if let Some(slot) = client.surface(index) {
+                slot.reset_toplevel();
+            }
+            forget_focus(client, index);
+            if let Some(root) = root {
+                recompose(client, system, root);
+            }
+        }
+        1 => {
+            if object_index(client, message.uint(0), Interface::Seat).is_none() || surface.dismissed
+            {
+                return;
+            }
+            if let Some(slot) = client.surface(index) {
+                slot.grabbed = true;
+            }
+            set_keyboard_focus(client, shared, Some(index));
+        }
+        _ => {
+            let Some(slot) = object_index(client, message.uint(0), Interface::XdgPositioner) else {
+                return;
+            };
+            let Some(placer) = client.positioners[usize::from(slot)] else {
+                return;
+            };
+            if !placer.is_complete() {
+                let wm_base = wm_base_of(client);
+                client.protocol_error(
+                    wm_base,
+                    xdg_wm_base::INVALID_POSITIONER,
+                    b"incomplete positioner",
+                );
+                return;
+            }
+            place_popup(client, shared, index, placer, Some(message.uint(1)));
+            if let Some(root) = root_of(client, index) {
+                recompose(client, system, root);
+            }
+        }
+    }
+}
+
+fn get_popup(client: &mut ClientSlot, shared: &mut Shared, message: &Message, surface: Surface) {
+    let index = message.index;
+    let (id, parent, positioner) = (message.uint(0), message.uint(1), message.uint(2));
+    if surface.toplevel != 0 || surface.popup != 0 {
+        client.protocol_error(
+            message.object,
+            xdg_surface::ALREADY_CONSTRUCTED,
+            b"has a role",
+        );
+        return;
+    }
+    let parent = match parent {
+        0 => None,
+        parent => match object_index(client, parent, Interface::XdgSurface) {
+            Some(parent) => Some(parent),
+            None => return,
+        },
+    };
+    let Some(slot) = object_index(client, positioner, Interface::XdgPositioner) else {
+        return;
+    };
+    let Some(placer) = client.positioners[usize::from(slot)] else {
+        return;
+    };
+    if !placer.is_complete() {
+        let wm_base = wm_base_of(client);
+        client.protocol_error(
+            wm_base,
+            xdg_wm_base::INVALID_POSITIONER,
+            b"incomplete positioner",
+        );
+        return;
+    }
+    if !new_object(client, id, Interface::XdgPopup, message.version, index) {
+        return;
+    }
+    client.next_order = client.next_order.saturating_add(1);
+    let order = client.next_order;
+    let rooted = parent.is_some_and(|parent| root_of(client, parent).is_some());
+    if let Some(slot) = client.surface(index) {
+        slot.popup = id;
+        slot.order = order;
+        slot.parent = parent.filter(|_| rooted);
+        slot.dismissed = !rooted;
+    }
+    match rooted {
+        true => place_popup(client, shared, index, placer, None),
+        false => client.post(id, message.version, xdg_popup::POPUP_DONE, &[]),
+    }
+}
+
+fn pointer_shape_of(shape: u32) -> u32 {
+    match shape {
+        cursor_shape::TEXT | cursor_shape::VERTICAL_TEXT => pointer_shape::I_BEAM,
+        cursor_shape::N_RESIZE
+        | cursor_shape::S_RESIZE
+        | cursor_shape::NS_RESIZE
+        | cursor_shape::ROW_RESIZE => pointer_shape::NORTH_SOUTH,
+        cursor_shape::E_RESIZE
+        | cursor_shape::W_RESIZE
+        | cursor_shape::EW_RESIZE
+        | cursor_shape::COL_RESIZE => pointer_shape::EAST_WEST,
+        cursor_shape::NW_RESIZE | cursor_shape::SE_RESIZE | cursor_shape::NWSE_RESIZE => {
+            pointer_shape::NORTH_WEST_SOUTH_EAST
+        }
+        cursor_shape::NE_RESIZE | cursor_shape::SW_RESIZE | cursor_shape::NESW_RESIZE => {
+            pointer_shape::NORTH_EAST_SOUTH_WEST
+        }
+        cursor_shape::POINTER => pointer_shape::HAND,
+        cursor_shape::WAIT => pointer_shape::BUSY,
+        _ => pointer_shape::ARROW,
+    }
+}
+
+fn show_pointer<S: System>(client: &mut ClientSlot, system: &mut S, shape: u32) {
+    let window = client
+        .pointer_focus
+        .and_then(|focus| root_of(client, focus))
+        .and_then(|root| peek(client, root))
+        .and_then(|root| root.window);
+    if let (Some(window), Some(device)) = (window, client.device) {
+        let _ = system.set_pointer(device, window.id, shape);
+    }
+}
+
+fn pointer_request<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
+    if message.opcode != 0 {
+        return;
+    }
+    let surface_id = message.uint(1);
+    if surface_id == 0 {
+        show_pointer(client, system, pointer_shape::HIDDEN);
+        return;
+    }
+    let Some(index) = object_index(client, surface_id, Interface::Surface) else {
+        return;
+    };
+    let Some(surface) = peek(client, index) else {
+        return;
+    };
+    if surface.xdg_surface != 0 || surface.role == Role::Subsurface {
+        client.protocol_error(message.object, pointer::ROLE, b"surface has another role");
+        return;
+    }
+    if let Some(slot) = client.surface(index) {
+        slot.role = Role::Cursor;
+    }
+    show_pointer(client, system, pointer_shape::ARROW);
+}
+
+fn cursor_shape_manager_request(client: &mut ClientSlot, message: &Message) {
+    let (id, device) = (message.uint(0), message.uint(1));
+    let known = match message.opcode {
+        1 => object_index(client, device, Interface::Pointer).is_some(),
+        2 => {
+            client.protocol_error(device, display::INVALID_OBJECT, b"no tablet tools");
+            false
+        }
+        _ => false,
+    };
+    if known {
+        new_object(client, id, Interface::CursorShapeDevice, message.version, 0);
+    }
+}
+
+fn cursor_shape_request<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
+    if message.opcode != 1 {
+        return;
+    }
+    let shape = message.uint(1);
+    if !(cursor_shape::DEFAULT..=cursor_shape::LAST).contains(&shape) {
+        client.protocol_error(message.object, cursor_shape::INVALID_SHAPE, b"bad shape");
+        return;
+    }
+    show_pointer(client, system, pointer_shape_of(shape));
+}
+
+fn subcompositor_request(client: &mut ClientSlot, message: &Message) {
+    if message.opcode != 1 {
+        return;
+    }
+    let (id, surface_id, parent_id) = (message.uint(0), message.uint(1), message.uint(2));
+    let Some(index) = object_index(client, surface_id, Interface::Surface) else {
+        return;
+    };
+    let Some(parent) = object_index(client, parent_id, Interface::Surface) else {
+        return;
+    };
+    let Some(surface) = peek(client, index) else {
+        return;
+    };
+    let taken = surface.xdg_surface != 0
+        || surface.role == Role::Cursor
+        || (surface.role == Role::Subsurface
+            && (surface.parent.is_some() || surface.subsurface != 0));
+    if taken {
+        client.protocol_error(
+            message.object,
+            subsurface::BAD_SURFACE,
+            b"surface has a role",
+        );
+        return;
+    }
+    if index == parent || is_ancestor(client, index, parent) {
+        client.protocol_error(message.object, subsurface::BAD_PARENT, b"bad parent");
+        return;
+    }
+    if !new_object(client, id, Interface::Subsurface, message.version, index) {
+        return;
+    }
+    client.next_order = client.next_order.saturating_add(1);
+    let order = client.next_order;
+    if let Some(slot) = client.surface(index) {
+        slot.role = Role::Subsurface;
+        slot.subsurface = id;
+        slot.parent = Some(parent);
+        slot.synced = true;
+        slot.order = order;
+        slot.position = (0, 0);
+        slot.pending_position = None;
+    }
+}
+
+fn restack(client: &mut ClientSlot, message: &Message, index: u16, parent: u16) {
+    let Some(sibling) = object_index(client, message.uint(0), Interface::Surface) else {
+        return;
+    };
+    let above = message.opcode == 2;
+    let sibling_order = peek(client, sibling)
+        .filter(|other| {
+            sibling != index && other.role == Role::Subsurface && other.parent == Some(parent)
+        })
+        .map(|other| other.order);
+    let wanted = match (sibling == parent, sibling_order) {
+        (true, _) if above => 1,
+        (true, _) => -1,
+        (false, Some(order)) if above => order.saturating_add(1),
+        (false, Some(order)) => order,
+        (false, None) => {
+            client.protocol_error(message.object, subsurface::BAD_SURFACE, b"not a sibling");
+            return;
+        }
+    };
+    if wanted > 0 {
+        for (other, surface) in client.surfaces.iter_mut().enumerate() {
+            if let Some(surface) = surface
+                && other != usize::from(index)
+                && surface.role == Role::Subsurface
+                && surface.parent == Some(parent)
+                && surface.order >= wanted
+            {
+                surface.order = surface.order.saturating_add(1);
+            }
+        }
+    }
+    if let Some(slot) = client.surface(index) {
+        slot.order = wanted;
+    }
+}
+
+fn subsurface_request<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
+    let index = message.index;
+    let Some(surface) = peek(client, index).filter(|surface| surface.subsurface == message.object)
+    else {
+        return;
+    };
+    match message.opcode {
+        0 => {
+            let root = root_of(client, index);
+            let_go(client, index);
+            if let Some(slot) = client.surface(index) {
+                slot.subsurface = 0;
+                slot.parent = None;
+                slot.cached = None;
+                slot.pending_position = None;
+            }
+            if let Some(root) = root {
+                recompose(client, system, root);
+            }
+        }
+        1 => {
+            if let Some(slot) = client.surface(index) {
+                slot.pending_position = Some((message.int(0), message.int(1)));
+            }
+        }
+        2 | 3 => {
+            if let Some(parent) = surface.parent {
+                restack(client, message, index, parent);
+            }
+        }
+        4 => {
+            if let Some(slot) = client.surface(index) {
+                slot.synced = true;
+            }
+        }
+        _ => {
+            if let Some(slot) = client.surface(index) {
+                slot.synced = false;
+            }
+            if !effectively_synced(client, index)
+                && let Some(attach) = client.surface(index).and_then(|slot| slot.cached.take())
+                && apply_attach(client, index, attach)
+                && let Some(root) = root_of(client, index)
+            {
+                recompose(client, system, root);
+            }
+        }
+    }
+}
+
+fn announce_decoration(client: &mut ClientSlot, shared: &mut Shared, index: u16) {
+    let Some(surface) = peek(client, index) else {
+        return;
+    };
+    client.post(
+        surface.decoration,
+        1,
+        decoration::CONFIGURE,
+        &[Value::Uint(decoration::SERVER_SIDE)],
+    );
+    if surface.initial_configure_sent {
+        configure(client, shared, index, current_size(&surface));
+    }
+}
+
+fn decoration_manager_request(client: &mut ClientSlot, shared: &mut Shared, message: &Message) {
+    if message.opcode != 1 {
+        return;
+    }
+    let (id, toplevel) = (message.uint(0), message.uint(1));
+    let Some(index) = object_index(client, toplevel, Interface::XdgToplevel) else {
+        return;
+    };
+    let Some(surface) = peek(client, index) else {
+        return;
+    };
+    if surface.decoration != 0 {
+        client.protocol_error(
+            message.object,
+            decoration::ALREADY_CONSTRUCTED,
+            b"toplevel has a decoration",
+        );
+        return;
+    }
+    if surface.window.is_some() {
+        client.protocol_error(
+            message.object,
+            decoration::UNCONFIGURED_BUFFER,
+            b"toplevel has a buffer",
+        );
+        return;
+    }
+    if !new_object(
+        client,
+        id,
+        Interface::ToplevelDecoration,
+        message.version,
+        index,
+    ) {
+        return;
+    }
+    if let Some(slot) = client.surface(index) {
+        slot.decoration = id;
+    }
+    announce_decoration(client, shared, index);
+}
+
+fn decoration_request(client: &mut ClientSlot, shared: &mut Shared, message: &Message) {
+    let index = message.index;
+    let current = peek(client, index).is_some_and(|surface| surface.decoration == message.object);
+    match message.opcode {
+        0 => {
+            if current && let Some(slot) = client.surface(index) {
+                slot.decoration = 0;
+            }
+        }
+        1 if ![decoration::CLIENT_SIDE, decoration::SERVER_SIDE].contains(&message.uint(0)) => {
+            client.protocol_error(message.object, display::INVALID_METHOD, b"bad mode");
+        }
+        _ if current => announce_decoration(client, shared, index),
+        _ => {}
+    }
+}
+
+fn server_decoration_manager_request(client: &mut ClientSlot, message: &Message) {
+    let (id, surface) = (message.uint(0), message.uint(1));
+    let Some(index) = object_index(client, surface, Interface::Surface) else {
+        return;
+    };
+    if new_object(
+        client,
+        id,
+        Interface::ServerDecoration,
+        message.version,
+        index,
+    ) {
+        client.post(
+            id,
+            message.version,
+            server_decoration::MODE,
+            &[Value::Uint(server_decoration::SERVER)],
+        );
+    }
+}
+
+fn server_decoration_request(client: &mut ClientSlot, message: &Message) {
+    if message.opcode != 1 {
+        return;
+    }
+    if message.uint(0) > server_decoration::SERVER {
+        client.protocol_error(message.object, display::INVALID_METHOD, b"bad mode");
+        return;
+    }
+    client.post(
+        message.object,
+        message.version,
+        server_decoration::MODE,
+        &[Value::Uint(server_decoration::SERVER)],
+    );
+}
+
+fn viewporter_request(client: &mut ClientSlot, message: &Message) {
+    if message.opcode != 1 {
+        return;
+    }
+    let (id, surface_id) = (message.uint(0), message.uint(1));
+    let Some(index) = object_index(client, surface_id, Interface::Surface) else {
+        return;
+    };
+    if peek(client, index).is_some_and(|surface| surface.viewport != 0) {
+        client.protocol_error(
+            message.object,
+            viewport::VIEWPORT_EXISTS,
+            b"surface has a viewport",
+        );
+        return;
+    }
+    if new_object(client, id, Interface::Viewport, message.version, index)
+        && let Some(slot) = client.surface(index)
+    {
+        slot.viewport = id;
+    }
+}
+
+fn viewport_request(client: &mut ClientSlot, message: &Message) {
+    let index = message.index;
+    match message.opcode {
+        0 => {
+            if let Some(slot) = client.surface(index) {
+                slot.viewport = 0;
+                slot.viewport_pending = ViewportState::default();
+            }
+        }
+        1 => {
+            let values = [
+                message.int(0),
+                message.int(1),
+                message.int(2),
+                message.int(3),
+            ];
+            let unset = values.iter().all(|&value| value == wire::fixed(-1));
+            if !unset && (values[0] < 0 || values[1] < 0 || values[2] <= 0 || values[3] <= 0) {
+                client.protocol_error(message.object, viewport::BAD_VALUE, b"bad source");
+                return;
+            }
+            if let Some(slot) = client.surface(index) {
+                slot.viewport_pending.source = (!unset).then_some(values);
+            }
+        }
+        _ => {
+            let (width, height) = (message.int(0), message.int(1));
+            let unset = width == -1 && height == -1;
+            if !unset && (width <= 0 || height <= 0) {
+                client.protocol_error(message.object, viewport::BAD_VALUE, b"bad destination");
+                return;
+            }
+            if let Some(slot) = client.surface(index) {
+                slot.viewport_pending.destination = (!unset).then_some((width, height));
+            }
+        }
+    }
+}
+
+fn fractional_scale_manager_request(client: &mut ClientSlot, message: &Message) {
+    if message.opcode != 1 {
+        return;
+    }
+    let (id, surface_id) = (message.uint(0), message.uint(1));
+    let Some(index) = object_index(client, surface_id, Interface::Surface) else {
+        return;
+    };
+    if peek(client, index).is_some_and(|surface| surface.fractional_scale != 0) {
+        client.protocol_error(
+            message.object,
+            fractional_scale::FRACTIONAL_SCALE_EXISTS,
+            b"surface has a fractional scale",
+        );
+        return;
+    }
+    if new_object(
+        client,
+        id,
+        Interface::FractionalScale,
+        message.version,
+        index,
+    ) && let Some(slot) = client.surface(index)
+    {
+        slot.fractional_scale = id;
+        client.post(
+            id,
+            message.version,
+            fractional_scale::PREFERRED_SCALE,
+            &[Value::Uint(PREFERRED_SCALE)],
+        );
+    }
+}
+
+fn fractional_scale_request(client: &mut ClientSlot, message: &Message) {
+    if let Some(slot) = client
+        .surface(message.index)
+        .filter(|slot| slot.fractional_scale == message.object)
+    {
+        slot.fractional_scale = 0;
+    }
+}
+
 /// The size of a `WindowBuffer`'s pixels in bytes.
 pub fn buffer_bytes(window: &WindowBuffer) -> usize {
     window.width as usize * window.height as usize * 4
 }
 
-const _: () = assert!(MAX_POOLS <= u8::MAX as usize && MAX_BUFFERS <= u16::MAX as usize);
+const _: () = assert!(
+    MAX_POOLS <= u8::MAX as usize
+        && MAX_BUFFERS <= u16::MAX as usize
+        && MAX_POSITIONERS <= u16::MAX as usize
+);

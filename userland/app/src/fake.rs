@@ -5,6 +5,7 @@ use eggos_runtime::errno::Errno;
 pub enum Node {
     File(Vec<u8>, u32),
     Directory,
+    Link(Vec<u8>),
     Other,
 }
 
@@ -12,6 +13,7 @@ pub enum Node {
 pub enum Operation {
     Create(String),
     MakeDirectory(String),
+    MakeLink(String, String),
     RemoveFile(String),
     RemoveDirectory(String),
     Rename(String, String),
@@ -26,6 +28,8 @@ pub struct FakeFiles {
     pub log: Vec<Operation>,
     open: Vec<Option<(Vec<u8>, usize, bool)>>,
 }
+
+const MAX_LINK_HOPS: usize = 40;
 
 fn text(path: &[u8]) -> String {
     String::from_utf8_lossy(path).into_owned()
@@ -65,6 +69,63 @@ impl FakeFiles {
 
     pub fn other(&mut self, path: &str) {
         self.nodes.push((path.as_bytes().to_vec(), Node::Other));
+    }
+
+    pub fn link(&mut self, path: &str, target: &str) {
+        self.nodes.push((
+            path.as_bytes().to_vec(),
+            Node::Link(target.as_bytes().to_vec()),
+        ));
+    }
+
+    fn resolved(&self, path: &[u8]) -> Result<Vec<u8>, Errno> {
+        let mut done: Vec<u8> = Vec::new();
+        let mut rest: Vec<Vec<u8>> = path
+            .split(|&byte| byte == b'/')
+            .filter(|part| !part.is_empty())
+            .rev()
+            .map(<[u8]>::to_vec)
+            .collect();
+        let mut hops = 0;
+        while let Some(part) = rest.pop() {
+            match part.as_slice() {
+                b"." => continue,
+                b".." => {
+                    let cut = done.iter().rposition(|&byte| byte == b'/').unwrap_or(0);
+                    done.truncate(cut);
+                    continue;
+                }
+                _ => {}
+            }
+            let mut next = done.clone();
+            next.push(b'/');
+            next.extend_from_slice(&part);
+            match self.node(&next) {
+                Some(Node::Link(target)) => {
+                    hops += 1;
+                    if hops > MAX_LINK_HOPS {
+                        return Err(Errno::ELOOP);
+                    }
+                    if target.first() == Some(&b'/') {
+                        done.clear();
+                    }
+                    rest.extend(
+                        target
+                            .split(|&byte| byte == b'/')
+                            .filter(|piece| !piece.is_empty())
+                            .rev()
+                            .map(<[u8]>::to_vec),
+                    );
+                }
+                Some(_) => done = next,
+                None if rest.is_empty() => done = next,
+                None => return Err(Errno::ENOENT),
+            }
+        }
+        match done.is_empty() {
+            true => Ok(b"/".to_vec()),
+            false => Ok(done),
+        }
     }
 
     pub fn find(&self, path: &str) -> Option<&Node> {
@@ -139,6 +200,13 @@ impl Files for FakeFiles {
                 modified: 0,
                 device: 0,
             }),
+            Node::Link(target) => Ok(Status {
+                kind: Kind::Link,
+                size: target.len() as u64,
+                permissions: 0o777,
+                modified: 0,
+                device: 0,
+            }),
             Node::Other => Ok(Status {
                 kind: Kind::Other,
                 size: 0,
@@ -149,20 +217,47 @@ impl Files for FakeFiles {
         }
     }
 
+    fn status_following(&mut self, path: &[u8]) -> Result<Status, Errno> {
+        let resolved = self.resolved(path)?;
+        self.status(&resolved)
+    }
+
+    fn read_link(&mut self, path: &[u8], target: &mut [u8]) -> Result<usize, Errno> {
+        match self.node(path).ok_or(Errno::ENOENT)? {
+            Node::Link(text) => {
+                let place = target.get_mut(..text.len()).ok_or(Errno::ENAMETOOLONG)?;
+                place.copy_from_slice(text);
+                Ok(text.len())
+            }
+            _ => Err(Errno::EINVAL),
+        }
+    }
+
+    fn make_link(&mut self, target: &[u8], path: &[u8]) -> Result<(), Errno> {
+        if target.is_empty() {
+            return Err(Errno::ENOENT);
+        }
+        self.new_node(path, Node::Link(target.to_vec()))?;
+        let made = Operation::MakeLink(text(target), text(path));
+        self.log.push(made);
+        Ok(())
+    }
+
     fn entry(
         &mut self,
         directory: &[u8],
         index: usize,
         name: &mut [u8; 256],
     ) -> Result<Option<usize>, Errno> {
-        match self.node(directory).ok_or(Errno::ENOENT)? {
+        let directory = self.resolved(directory)?;
+        match self.node(&directory).ok_or(Errno::ENOENT)? {
             Node::Directory => {}
             _ => return Err(Errno::ENOTDIR),
         }
         let child = self
             .nodes
             .iter()
-            .filter(|(path, _)| path.as_slice() != b"/" && parent(path) == directory)
+            .filter(|(path, _)| path.as_slice() != b"/" && parent(path) == directory.as_slice())
             .nth(index);
         Ok(child.map(|(path, _)| {
             let start = path.iter().rposition(|&byte| byte == b'/').unwrap_or(0) + 1;
@@ -173,11 +268,12 @@ impl Files for FakeFiles {
     }
 
     fn open(&mut self, path: &[u8]) -> Result<Handle, Errno> {
-        match self.node(path).ok_or(Errno::ENOENT)? {
+        let path = self.resolved(path)?;
+        match self.node(&path).ok_or(Errno::ENOENT)? {
             Node::File(..) => {}
             _ => return Err(Errno::EISDIR),
         }
-        self.open.push(Some((path.to_vec(), 0, false)));
+        self.open.push(Some((path, 0, false)));
         Ok(self.open.len() - 1)
     }
 

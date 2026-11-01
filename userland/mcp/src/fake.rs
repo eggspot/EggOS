@@ -1,6 +1,6 @@
 use crate::arguments::{MAX_CONTENT_BYTES, WORDS_BYTES};
 use crate::audit::RECORD_BYTES;
-use crate::grants::Grants;
+use crate::grants::{Grants, STORE_PATH};
 use crate::paths::MAX_PATH_BYTES;
 use crate::server::{
     ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server,
@@ -17,6 +17,7 @@ pub struct FakeSystem {
     pub links: Vec<String>,
     pub outputs: HashMap<String, (Vec<u8>, Vec<u8>, Ended)>,
     pub runs: Vec<Vec<String>>,
+    pub refusing_links: Vec<bool>,
     pub inputs: Vec<Vec<u8>>,
     pub time_limits: Vec<u64>,
     pub stdin_taken_at_most: Option<usize>,
@@ -32,6 +33,10 @@ pub struct FakeSystem {
     pub capture_read_fails_after: Option<usize>,
     pub capture_events: Vec<String>,
     pub capture_open: Option<(Vec<u8>, usize)>,
+    pub screen: bool,
+    pub prompt_fails: Option<Errno>,
+    pub prompts: Vec<Vec<u8>>,
+    pub prompts_ended: usize,
 }
 
 impl System for FakeSystem {
@@ -48,6 +53,7 @@ impl System for FakeSystem {
             words.push(operand.into());
         }
         self.runs.push(words);
+        self.refusing_links.push(invocation.no_symlinks);
         self.time_limits.push(invocation.time_limit_ms);
         let input = invocation.stdin.unwrap_or_default();
         let taken = self
@@ -197,6 +203,28 @@ impl System for FakeSystem {
         Ok(())
     }
 
+    fn read_grant_store(&mut self, out: &mut [u8]) -> Result<usize, Errno> {
+        let file = self.files.get(STORE_PATH).ok_or(Errno::ENOENT)?;
+        let length = file.len().min(out.len());
+        out[..length].copy_from_slice(&file[..length]);
+        Ok(length)
+    }
+
+    fn start_grant_prompt(&mut self, question: &[u8]) -> Result<(), Errno> {
+        if !self.screen {
+            return Err(Errno::ENXIO);
+        }
+        if let Some(errno) = self.prompt_fails {
+            return Err(errno);
+        }
+        self.prompts.push(question.to_vec());
+        Ok(())
+    }
+
+    fn end_grant_prompt(&mut self) {
+        self.prompts_ended += 1;
+    }
+
     fn now(&mut self) -> u64 {
         self.clock += 1;
         self.clock
@@ -310,6 +338,17 @@ impl Harness {
         let length = self
             .server
             .expire(now_ms, &mut self.system, &mut scratch, response);
+        split(&response[..length])
+    }
+
+    pub fn prompt_answered(
+        &mut self,
+        answer: Option<crate::grant_prompt::PromptAnswer>,
+    ) -> Vec<String> {
+        let (mut scratch, response) = self.buffers.scratch();
+        let length = self
+            .server
+            .prompt_answered(answer, &mut self.system, &mut scratch, response);
         split(&response[..length])
     }
 

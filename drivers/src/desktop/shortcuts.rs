@@ -89,6 +89,17 @@ pub enum Shortcut {
     PowerMenu,
     /// Open the launcher, or close it.
     Launcher,
+    /// Open the Task Manager, or focus it (D200): Ctrl+Shift+Esc, and the Mac habit
+    /// Cmd+Option+Esc, in every profile.
+    TaskManager,
+    /// Show the next desktop, or the previous (D204).
+    SwitchDesktop { next: bool },
+    /// Make a desktop and show it.
+    NewDesktop,
+    /// Close the shown desktop.
+    CloseDesktop,
+    /// Move the focused window to the next desktop, or the previous, and follow it.
+    MoveToDesktop { next: bool },
 }
 
 /// The shortcut key `code` pressed with `modifiers` is in `profile`, if it is one; Ctrl
@@ -105,6 +116,7 @@ pub fn shortcut(
     let only = |wanted: Modifiers| held == wanted;
     let alt = Modifiers::ALT;
     let super_key = Modifiers::SUPER;
+    let ctrl_super = Modifiers::from_bits(Modifiers::CTRL.bits() | Modifiers::SUPER.bits());
     Some(match code {
         key::TAB if without_shift == alt => Shortcut::Switch {
             back: shift,
@@ -114,7 +126,41 @@ pub fn shortcut(
             back: shift,
             held: Held::Super,
         },
+        key::ESC
+            if held == Modifiers::from_bits(Modifiers::CTRL.bits() | Modifiers::SHIFT.bits())
+                || held
+                    == Modifiers::from_bits(Modifiers::SUPER.bits() | Modifiers::ALT.bits()) =>
+        {
+            Shortcut::TaskManager
+        }
         key::ESC if without_shift == alt => Shortcut::Cycle { back: shift },
+        key::LEFT | key::RIGHT if without_shift == ctrl_super => match shift {
+            true => Shortcut::MoveToDesktop {
+                next: code == key::RIGHT,
+            },
+            false => Shortcut::SwitchDesktop {
+                next: code == key::RIGHT,
+            },
+        },
+        key::LEFT | key::RIGHT if only(Modifiers::CTRL) && profile == Profile::Macos => {
+            Shortcut::SwitchDesktop {
+                next: code == key::RIGHT,
+            }
+        }
+        key::PAGE_UP | key::PAGE_DOWN
+            if without_shift == super_key && profile == Profile::Linux =>
+        {
+            match shift {
+                true => Shortcut::MoveToDesktop {
+                    next: code == key::PAGE_DOWN,
+                },
+                false => Shortcut::SwitchDesktop {
+                    next: code == key::PAGE_DOWN,
+                },
+            }
+        }
+        key::D if only(ctrl_super) => Shortcut::NewDesktop,
+        key::F4 if only(ctrl_super) => Shortcut::CloseDesktop,
         key::F4 if only(alt) => Shortcut::Close,
         key::W if only(super_key) && profile == Profile::Macos => Shortcut::Close,
         key::W if only(Modifiers::CTRL) && profile != Profile::Macos && !takes_ctrl_keys => {
@@ -128,6 +174,7 @@ pub fn shortcut(
         key::M if only(super_key) && profile == Profile::Macos => Shortcut::Minimise,
         key::H if only(super_key) && profile == Profile::Linux => Shortcut::Minimise,
         key::D if only(super_key) => Shortcut::ShowDesktop,
+        key::F11 if only(Modifiers::NONE) && profile == Profile::Macos => Shortcut::ShowDesktop,
         key::X if only(super_key) => Shortcut::PowerMenu,
         key::SPACE if only(super_key) && profile == Profile::Macos => Shortcut::Launcher,
         _ => return None,

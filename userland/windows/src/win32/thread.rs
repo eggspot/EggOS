@@ -173,6 +173,7 @@ extern "C" fn thread_main(object: usize) -> ! {
 /// Ends the calling thread with exit code `code`, as `ExitThread` does: the process ends,
 /// with that code, when it was its last thread.
 pub fn finish(code: u32) -> ! {
+    super::overlapped::forget_queued_calls();
     thread_environment::leave();
     let object = thread_environment::thread_object() as *mut Object;
     if !object.is_null() {
@@ -213,11 +214,14 @@ extern "efiapi" fn get_thread_id(handle: usize) -> u32 {
 
 extern "efiapi" fn resume_thread(handle: usize) -> u32 {
     let run = sync::change(handle, |kind| match kind {
-        Kind::Thread(thread) => (thread.run.as_ptr() as usize, false),
-        _ => (0, false),
+        Kind::Thread(thread) => (Ok(thread.run.as_ptr() as usize), false),
+        Kind::Process(process) => (Err(process.resume()), false),
+        _ => (Ok(0), false),
     });
-    let Some(run) = run.filter(|run| *run != 0) else {
-        return fail(error::INVALID_HANDLE, u32::MAX);
+    let run = match run {
+        Some(Ok(run)) if run != 0 => run,
+        Some(Err(previous_count)) => return previous_count,
+        _ => return fail(error::INVALID_HANDLE, u32::MAX),
     };
     // SAFETY: the run word lives in the thread's object, which the caller's handle keeps alive.
     let word = unsafe { AtomicU32::from_ptr(run as *mut u32) };
@@ -251,8 +255,34 @@ extern "efiapi" fn set_thread_description(_handle: usize, _description: *const u
     0
 }
 
+unsafe extern "efiapi" fn set_thread_stack_guarantee(size: *mut u32) -> Bool {
+    if size.is_null() {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    let field = (thread_environment::current() + thread_environment::teb::GUARANTEED_STACK_BYTES)
+        as *mut u32;
+    // SAFETY: the field is inside the calling thread's TEB, 4-byte aligned, and only this
+    // thread writes it.
+    let previous = unsafe { field.read() };
+    // SAFETY: `SetThreadStackGuarantee`'s contract: a readable and writable size.
+    let requested = unsafe { size.read() };
+    if requested > previous {
+        // SAFETY: as the read of the field above.
+        unsafe { field.write(requested) };
+    }
+    // SAFETY: as the read of the size above.
+    unsafe { size.write(previous) };
+    TRUE
+}
+
+extern "efiapi" fn is_thread_a_fiber() -> Bool {
+    FALSE
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"CreateThread" => create_thread,
+    b"SetThreadStackGuarantee" => set_thread_stack_guarantee,
+    b"IsThreadAFiber" => is_thread_a_fiber,
     b"ExitThread" => exit_thread,
     b"GetExitCodeThread" => get_exit_code_thread,
     b"GetThreadId" => get_thread_id,

@@ -1,12 +1,13 @@
-//! `eggmcpd`'s system calls: the agent channel's loop, the grants from `/proc/cmdline`,
-//! running a CLI twin with its input given and its output captured, in a process group of its
-//! own that is stopped whole, the checks of what is at a path, `wm_capture`'s file in `/run`,
-//! the audit log on `/var/log` and the clocks.
+//! `eggmcpd`'s system calls: the agent channel's loop, the grants from `/proc/cmdline` and
+//! the agents' grants file, running a CLI twin with its input given and its output captured,
+//! in a process group of its own that is stopped whole, the checks of what is at a path,
+//! `wm_capture`'s file in `/run`, the audit log on `/var/log` and the clocks.
 
 use crate::arguments::{MAX_CONTENT_BYTES, WORDS_BYTES};
 use crate::audit::{GENERATIONS, LOG_FOLDER, LOG_PATH, RECORD_BYTES, ROTATE_BYTES, ROTATED_PATHS};
 use crate::framing::{Line, LineReader};
-use crate::grants::{self, COMMAND_LINE_PATH, Grant};
+use crate::grant_prompt::{ANSWER_BYTES, PROMPT_OPTION, PROMPT_PROGRAM, PromptAnswer};
+use crate::grants::{self, COMMAND_LINE_PATH, ChannelAgent, Grant, Grants, STORE_PATH};
 use crate::paths::{HOME, MAX_PATH_BYTES};
 use crate::server::{
     ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server,
@@ -15,10 +16,13 @@ use crate::system::{
     CaptureFile, Ended, FileState, Invocation, MAX_COMMAND_WORDS, RunOutcome, System,
 };
 use core::ffi::CStr;
+use eggos_commands::tools::NO_SYMLINKS_ENVIRONMENT;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::process::{ChildStack, Spawn, spawn};
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
+
+pub mod network;
 
 /// The longest message taken, in bytes; a longer line is dropped and answered with an error.
 pub const MAX_MESSAGE_BYTES: usize = 1 << 20;
@@ -28,6 +32,7 @@ pub const WORKING_DIRECTORY: &CStr = c"/home";
 pub const REAP_GRACE_MS: u64 = 1000;
 
 const CHANNEL: &CStr = c"/dev/agent";
+const WINDOW_DEVICE: &CStr = c"/dev/window";
 const RESTARTED: &[u8] = b"--restarted";
 const AT_FDCWD: usize = -100isize as usize;
 const O_RDONLY: usize = 0;
@@ -158,15 +163,14 @@ fn now_ms() -> u64 {
     time[0] as u64 * 1000 + time[1] as u64 / 1_000_000
 }
 
-fn read_grants(server: &mut Server) {
+fn read_command_line(line: &mut [u8; COMMAND_LINE_BYTES]) -> usize {
     let mut path = [0u8; 32];
     let Some(path) = c_path(COMMAND_LINE_PATH, &mut path) else {
-        return;
+        return 0;
     };
     let Ok(file) = open(path, O_RDONLY, 0) else {
-        return;
+        return 0;
     };
-    let mut line = [0u8; COMMAND_LINE_BYTES];
     let mut length = 0;
     while let Some(free) = line.get_mut(length..).filter(|free| !free.is_empty()) {
         match call(
@@ -180,34 +184,70 @@ fn read_grants(server: &mut Server) {
         }
     }
     close(file);
-    let (grants, unknown) = grants::from_command_line(line.get(..length).unwrap_or_default());
-    server.set_grants(grants, unknown);
+    length
 }
 
-fn wait_for_channel(channel: usize, deadline_ms: u64) -> bool {
+fn screen_has_a_person() -> bool {
+    let mut line = [0u8; COMMAND_LINE_BYTES];
+    let length = read_command_line(&mut line);
+    !grants::display_is_offscreen(line.get(..length).unwrap_or_default())
+}
+
+fn read_grants(server: &mut Server) {
+    let mut line = [0u8; COMMAND_LINE_BYTES];
+    let length = read_command_line(&mut line);
+    let words = line.get(..length).unwrap_or_default();
+    let (grants, unknown) = grants::from_command_line(words);
+    match grants::agent_from_command_line(words) {
+        ChannelAgent::Local => server.set_grants(grants, unknown),
+        ChannelAgent::Pinned(agent) => {
+            server.set_grants(grants, unknown);
+            server.set_agent(agent);
+        }
+        ChannelAgent::Invalid => server.set_grants(Grants::NONE, unknown),
+    }
+}
+
+enum Woke {
+    Channel,
+    Prompt,
+    Timeout,
+}
+
+fn wait_for_channel(channel: usize, prompt: Option<usize>, deadline_ms: u64) -> Woke {
     let left = deadline_ms.saturating_sub(now_ms());
     if left == 0 {
-        return false;
+        return Woke::Timeout;
     }
-    let mut watched = [PollDescriptor {
-        descriptor: channel as i32,
+    let mut watched = [channel, prompt.unwrap_or(channel)].map(|descriptor| PollDescriptor {
+        descriptor: descriptor as i32,
         events: POLLIN,
         returned_events: 0,
-    }];
+    });
+    let count = match prompt {
+        Some(_) => 2,
+        None => 1,
+    };
     let timeout = [(left / 1000) as i64, (left % 1000 * 1_000_000) as i64];
-    match call(
+    let polled = call(
         number::PPOLL,
         [
             watched.as_mut_ptr() as usize,
-            1,
+            count,
             timeout.as_ptr() as usize,
             0,
             8,
             0,
         ],
-    ) {
-        Ok(ready) => ready > 0,
-        Err(_) => true,
+    );
+    let prompt_ready = prompt.is_some()
+        && watched
+            .get(1)
+            .is_some_and(|ready| ready.returned_events != 0);
+    match polled {
+        Ok(0) => Woke::Timeout,
+        Ok(_) if prompt_ready => Woke::Prompt,
+        Ok(_) | Err(_) => Woke::Channel,
     }
 }
 
@@ -225,9 +265,27 @@ fn send(channel: usize, answer: &[u8]) {
     }
 }
 
+fn make_log_folder() {
+    let mut folder = [0u8; 16];
+    if let Some(folder) = c_path(LOG_FOLDER, &mut folder) {
+        let _ = call(
+            number::MKDIRAT,
+            [AT_FDCWD, folder.as_ptr() as usize, 0o755, 0, 0, 0],
+        );
+    }
+}
+
 /// Opens the channel, reads the grants, records the start and answers messages until the
-/// machine stops.
+/// machine stops; with `--network`, the server for agents on the network, which writes the
+/// same audit log.
 pub fn run(startup: &Startup) -> i32 {
+    make_log_folder();
+    if startup
+        .arguments()
+        .any(|argument| argument.to_bytes() == network::NETWORK_OPTION)
+    {
+        return network::run();
+    }
     let restarted = startup
         .arguments()
         .any(|argument| argument.to_bytes() == RESTARTED);
@@ -238,13 +296,6 @@ pub fn run(startup: &Startup) -> i32 {
             return 1;
         }
     };
-    let mut folder = [0u8; 16];
-    if let Some(folder) = c_path(LOG_FOLDER, &mut folder) {
-        let _ = call(
-            number::MKDIRAT,
-            [AT_FDCWD, folder.as_ptr() as usize, 0o755, 0, 0, 0],
-        );
-    }
     // SAFETY: the program has one thread and takes the buffers once, here, so no other
     // reference to them exists while these live.
     let Some(buffers) = (unsafe { (&raw mut BUFFERS).as_mut() }) else {
@@ -281,6 +332,8 @@ pub fn run(startup: &Startup) -> i32 {
     let mut system = Linux {
         child_stack,
         command_words,
+        prompt: None,
+        prompts_on_screen: screen_has_a_person(),
     };
     let mut server = match restarted {
         true => Server::restarted(),
@@ -300,12 +353,19 @@ pub fn run(startup: &Startup) -> i32 {
     server.start(restarted, &mut system, &mut scratch);
     let mut reader = LineReader::new(input);
     loop {
-        if let Some(deadline) = server.waiting_until()
-            && !wait_for_channel(channel, deadline)
-        {
-            let length = server.expire(now_ms(), &mut system, &mut scratch, response);
-            send(channel, response.get(..length).unwrap_or_default());
-            continue;
+        if let Some(deadline) = server.waiting_until() {
+            let length = match wait_for_channel(channel, system.prompt_answer(), deadline) {
+                Woke::Channel => None,
+                Woke::Prompt => {
+                    let answer = system.read_prompt_answer();
+                    Some(server.prompt_answered(answer, &mut system, &mut scratch, response))
+                }
+                Woke::Timeout => Some(server.expire(now_ms(), &mut system, &mut scratch, response)),
+            };
+            if let Some(length) = length {
+                send(channel, response.get(..length).unwrap_or_default());
+                continue;
+            }
         }
         let space = reader.free_space();
         let read = call(
@@ -345,6 +405,41 @@ pub fn run(startup: &Startup) -> i32 {
 struct Linux {
     child_stack: &'static mut ChildStack,
     command_words: &'static mut [u8; MAX_WORD_BYTES],
+    prompt: Option<Prompt>,
+    prompts_on_screen: bool,
+}
+
+struct Prompt {
+    child: usize,
+    answer: usize,
+}
+
+impl Linux {
+    fn prompt_answer(&self) -> Option<usize> {
+        self.prompt.as_ref().map(|prompt| prompt.answer)
+    }
+
+    fn read_prompt_answer(&self) -> Option<PromptAnswer> {
+        let prompt = self.prompt.as_ref()?;
+        let mut line = [0u8; ANSWER_BYTES];
+        let read = loop {
+            match call(
+                number::READ,
+                [
+                    prompt.answer,
+                    line.as_mut_ptr() as usize,
+                    line.len(),
+                    0,
+                    0,
+                    0,
+                ],
+            ) {
+                Err(Errno::EINTR) => continue,
+                other => break other,
+            }
+        };
+        PromptAnswer::from_line(line.get(..read.ok()?)?)
+    }
 }
 
 #[repr(C)]
@@ -563,9 +658,12 @@ impl Linux {
             return Err(Errno::E2BIG);
         }
         pointers[count] = core::ptr::null();
-        let mut environment = [core::ptr::null::<u8>(); ENVIRONMENT.len() + 1];
+        let mut environment = [core::ptr::null::<u8>(); ENVIRONMENT.len() + 2];
         for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
             *slot = variable.as_ptr().cast();
+        }
+        if invocation.no_symlinks {
+            environment[ENVIRONMENT.len()] = NO_SYMLINKS_ENVIRONMENT.as_ptr().cast();
         }
         let input = pipe()?;
         let output = pipe().inspect_err(|_| {
@@ -868,6 +966,93 @@ impl System for Linux {
             (false, _) => Err(Errno::EIO),
             (true, Err(error)) => Err(error),
         }
+    }
+
+    fn start_grant_prompt(&mut self, question: &[u8]) -> Result<(), Errno> {
+        self.end_grant_prompt();
+        if !self.prompts_on_screen {
+            return Err(Errno::ENODEV);
+        }
+        close(open(WINDOW_DEVICE, O_RDWR | O_CLOEXEC, 0)?);
+        let mut program = [0u8; 32];
+        let program = c_path(PROMPT_PROGRAM, &mut program).ok_or(Errno::EINVAL)?;
+        let mut option = [0u8; 32];
+        let option = c_path(PROMPT_OPTION, &mut option).ok_or(Errno::EINVAL)?;
+        let arguments = [
+            program.as_ptr().cast::<u8>(),
+            option.as_ptr().cast(),
+            core::ptr::null(),
+        ];
+        let mut environment = [core::ptr::null::<u8>(); ENVIRONMENT.len() + 1];
+        for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
+            *slot = variable.as_ptr().cast();
+        }
+        let input = pipe()?;
+        let output = pipe().inspect_err(|_| {
+            close(input[0]);
+            close(input[1]);
+        })?;
+        let request = Spawn::new(
+            program,
+            &arguments,
+            &environment,
+            [input[0], output[1], CONSOLE],
+        )
+        .in_directory(WORKING_DIRECTORY)
+        .in_own_process_group();
+        let started = spawn(self.child_stack, &request);
+        close(input[0]);
+        close(output[1]);
+        let child = started.inspect_err(|_| {
+            close(input[1]);
+            close(output[0]);
+        })?;
+        let written = syscall::write_all(input[1], question);
+        close(input[1]);
+        self.prompt = Some(Prompt {
+            child,
+            answer: output[0],
+        });
+        if !written {
+            self.end_grant_prompt();
+            return Err(Errno::EPIPE);
+        }
+        Ok(())
+    }
+
+    fn end_grant_prompt(&mut self) {
+        let Some(prompt) = self.prompt.take() else {
+            return;
+        };
+        close(prompt.answer);
+        if wait_until(prompt.child, now_ms()).is_none() {
+            let _ = stop_group(prompt.child);
+            let _ = wait_until(prompt.child, now_ms().saturating_add(REAP_GRACE_MS));
+        }
+    }
+
+    fn read_grant_store(&mut self, out: &mut [u8]) -> Result<usize, Errno> {
+        let mut buffer = [0u8; 64];
+        let path = c_path(STORE_PATH, &mut buffer).ok_or(Errno::EINVAL)?;
+        let file = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK, 0)?;
+        let mut length = 0;
+        let mut result = Ok(());
+        while let Some(free) = out.get_mut(length..).filter(|free| !free.is_empty()) {
+            match call(
+                number::READ,
+                [file, free.as_mut_ptr() as usize, free.len(), 0, 0, 0],
+            ) {
+                Ok(0) => break,
+                Ok(count) => length += count,
+                Err(Errno::EINTR) => continue,
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+        }
+        close(file);
+        result.map(|()| length)
     }
 
     fn now(&mut self) -> u64 {

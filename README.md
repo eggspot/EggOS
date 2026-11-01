@@ -14,13 +14,15 @@ AI-native operating system written from scratch in Rust, with its own kernel (no
 EggOS is open source and open for funding. If you want to help build it, [sponsor EggOS on GitHub Sponsors](https://github.com/sponsors/eggspot).
 
 ## Try EggOS
-EggOS is pre-alpha: it boots in QEMU only, to a shell on a minimal desktop. These steps apply
-from v0.3.0, the first release with the desktop, `SHA256SUMS` and the run scripts.
+EggOS is pre-alpha: it boots in QEMU only, to a shell on a minimal desktop, in about a quarter
+of a second. These steps apply from v0.3.0, the first release with the desktop, `SHA256SUMS` and
+the run scripts.
 
 ![The EggOS desktop: the top bar, the wallpaper and the shell in a terminal window](docs/images/desktop.png)
 
-1. Install [QEMU](https://www.qemu.org/download/) (macOS: `brew install qemu`; Debian or Ubuntu:
-   `sudo apt install qemu-system`; Windows: the QEMU installer, with its folder on `PATH`).
+1. Install [QEMU](https://www.qemu.org/download/), QEMU 8.2 or later (macOS: `brew install qemu`;
+   Debian or Ubuntu 24.04 or later: `sudo apt install qemu-system`; Windows: the QEMU installer,
+   with its folder on `PATH`). QEMU emulates the CPU (no acceleration), on every host.
 2. From the [latest release](https://github.com/eggspot/EggOS/releases/latest) (v0.3.0 or later), download into one
    folder the image for your machine (`eggos-<version>-aarch64.elf`, `-riscv64.elf` or
    `-x86_64.elf`), `SHA256SUMS`, and `run-eggos.sh` (macOS, Linux) or `run-eggos.ps1` (Windows).
@@ -50,35 +52,48 @@ cargo xtask run --arch aarch64 --apps ~/eggos-apps    # from a checkout
 ```
 
 To let Claude Code, or any MCP client, work with EggOS through its built-in MCP server (read
-files in `/home` and `/media/host`, list processes, windows and apps; with the grants you give,
+files in `/home`, `/media/host` and `/work`, list processes, windows and apps; with the grants you give,
 also write and trash files, run programs and install apps; every call is logged and `agentlog`
 shows it), add the script as a server ([docs/mcp.md](docs/mcp.md)):
 
 ```
-claude mcp add eggos -- /path/to/run-eggos.sh --mcp
-claude mcp add eggos -- /path/to/run-eggos.sh --mcp --mcp-allow write,install
+claude mcp add eggos -- sh /path/to/run-eggos.sh --mcp
+claude mcp add eggos -- sh /path/to/run-eggos.sh --mcp --mcp-allow write,install
+claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\run-eggos.ps1 -Mcp
 ```
 
-`run` (`--mcp-allow run`) lets the agent run any program, which is full control of the machine.
+`run` (`--mcp-allow run`) lets the agent run any program, which is full control of the machine. So does `install`: an app the agent installs and opens runs as you.
 
 The window shows the desktop: the top bar with the time (UTC) and a power menu, and the `eggsh`
 shell in a terminal window you can move, focus and minimise with the mouse. Type at the
 `eggsh:/#` prompt there or on the terminal the script runs in: `ls`, `cat`, `echo`, `uname`,
 `grep`, `wc`, `head`, `tail`, `ps`, `free`, `uptime`, `date`, pipes such as `ls /bin | grep s | wc -l`,
 files in `/tmp` and `/home` (`echo hi > /tmp/x`, `cp`, `mv`, `rm`, `mkdir`, `touch`), the up
-arrow for the last lines, and `poweroff` or `reboot` (the [shell](docs/shell.md) and the
-[core utilities](docs/coreutils.md)). What you keep in `/home` and `/Applications` survives
+arrow for the last lines, `poweroff` (which ends QEMU) and `reboot` (which restarts EggOS in
+the same window) (the [shell](docs/shell.md) and the [core utilities](docs/coreutils.md)). What you keep in `/home` and `/Applications` survives
 a reboot: the script creates `eggos-<arch>-disk.img` next to the image (1 GiB, sparse) and
 EggOS formats it with [EggFS](docs/eggfs.md), its own journaled file system, the first time;
 `sync` writes changes at once, and they are written within 5 s anyway. `--disk <image>` uses
 another image, `--no-disk` none (then `/home` is in memory and nothing is kept), and
-`--format-disk` erases the image (`-Disk`, `-NoDisk` and `-FormatDisk` in PowerShell). Type
+`--format-disk` erases the image (`-Disk`, `-NoDisk` and `-FormatDisk` in PowerShell).
+EggOS is on your computer's network through QEMU and gets its address by DHCP: `ip addr`,
+`ping 10.0.2.2` (your computer) and `nslookup` work ([docs/network.md](docs/network.md));
+`--no-network` (`-NoNetwork`) starts it without. Type
 `settings` to open [Settings](docs/settings.md) and pick the Windows, macOS or Linux layout
 profile (where the window controls are and which shortcuts work); it is kept on the disk.
 Type `edit notes.txt` (or double-click a text file in Files) to open it in the Text Editor
 ([docs/apps.md](docs/apps.md#the-text-editor-edit)).
 Quit with Ctrl-A then X on that terminal, or close the
 window. What does not work yet: [docs/limitations.md](docs/limitations.md).
+
+### Install an app
+Put a program in the folder you pass with `--apps`, then type `app install /media/host/<file>`
+at the prompt, or choose `Install from host share...` in the launcher: Windows `.exe` files on
+x86_64 and aarch64, macOS tools, `.app` bundles and `.zip` archives of them on aarch64 and
+x86_64, and static Linux programs everywhere. The app gets an icon on the desktop and a row in
+the launcher, and stays on the disk; `app list` lists your apps and `app uninstall <name>`
+removes one. To get some to try, `cargo xtask sample-apps --arch <arch>` builds ours from a
+checkout ([docs/apps.md](docs/apps.md#what-you-can-install-today-and-apps-to-try)).
 
 ### Run your own Linux programs
 Static Linux programs run unmodified. From a checkout, add yours to the image and boot it, then
@@ -94,10 +109,12 @@ own title bars, through `eggway`, EggOS's Wayland server (D140); GTK, Qt and oth
 need more first ([docs/linux-programs.md](docs/linux-programs.md#gui-programs-wayland)).
 
 ### Run Windows programs
-On x86_64 (x64 programs) and aarch64 (ARM64 programs), Windows console programs and simple GUI
+On x86_64 (x64 programs) and aarch64 (ARM64 programs), Windows console programs and GUI
 programs run natively through EggOS's own Windows layer, threads, waits, directory listing,
-windows, GDI painting and message boxes included
-([docs/windows-programs.md](docs/windows-programs.md) lists what they may use):
+windows, GDI painting, the system's controls, menus, dialogs and MSVC's C runtime included
+([docs/windows-programs.md](docs/windows-programs.md) lists what they may use). The release
+images for both carry the layer, so you can install one from the folder you pass with `--apps`
+(`app install /media/host/hello.exe`), or add it to an image from a checkout:
 
 ```
 cargo xtask run --arch x86_64 --add path/to/hello.exe  # boots with /bin/hello.exe
@@ -113,11 +130,13 @@ what works):
 cargo xtask run --arch aarch64 --add path/to/hello     # boots with /bin/hello and /system/bin/sh
 ```
 
-### Run macOS console programs
+### Run macOS programs
 On aarch64 (arm64 programs) and x86_64 (x86_64 programs), macOS console programs that link
-libSystem, and Objective-C programs that use the core of Foundation, run natively through
-EggOS's own macOS layer and Objective-C runtime
-([docs/macos-programs.md](docs/macos-programs.md) lists what they may use):
+libSystem, Objective-C programs that use the core of Foundation, and AppKit apps built in code
+run natively through EggOS's own macOS layer and Objective-C runtime
+([docs/macos-programs.md](docs/macos-programs.md) lists what they may use). The release images
+for both carry the layer, so you can install a tool, an `.app` or a `.zip` of one from the
+folder you pass with `--apps` (`app install /media/host/Paint.zip`), or add it from a checkout:
 
 ```
 cargo xtask run --arch aarch64 --add path/to/hello     # a thin or fat Mach-O file

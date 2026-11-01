@@ -1,5 +1,7 @@
-//! The virtio GPU device (virtio 1.2, 5.7), 2D and polled: the control queue only, one scanout
-//! showing one resource whose backing is the driver's framebuffer in guest memory.
+//! The virtio GPU device (virtio 1.2, 5.7), 2D and polled: the control queue, one scanout
+//! showing one resource whose backing is the driver's framebuffer in guest memory, and the cursor
+//! queue, which shows a 64x64 cursor image over the scanout and moves it without any redraw
+//! (D186).
 //!
 //! Every command is fenced (`VIRTIO_GPU_FLAG_FENCE`), so its answer means the device finished
 //! it: the spec lets a device answer an unfenced command before processing it and does not
@@ -24,8 +26,23 @@ pub const MEMORY_BYTES: usize = 4096;
 pub const FORMAT_B8G8R8X8_UNORM: u32 = 2;
 /// The mode the spec suggests when the device reports no display.
 pub const FALLBACK_MODE: Mode = Mode::new(1024, 768);
+/// Entries of the cursor queue the driver sets up, at most: one command is in flight at a time.
+pub const CURSOR_QUEUE_SIZE: u16 = 4;
+/// The side of the square cursor image, in pixels.
+pub const CURSOR_SIDE: u32 = 64;
+/// The DMA memory the cursor's image needs ([`VirtioGpu::attach_cursor`]).
+pub const CURSOR_BYTES: usize =
+    CURSOR_SIDE as usize * CURSOR_SIDE as usize * BYTES_PER_PIXEL as usize;
+/// `VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM`: bytes `B, G, R, A` per pixel, a little-endian
+/// `0xAARRGGBB`.
+pub const FORMAT_B8G8R8A8_UNORM: u32 = 1;
 
 const CONTROL_QUEUE: u16 = 0;
+const CURSOR_QUEUE: u16 = 1;
+const CURSOR_RING: usize = 3072;
+const CURSOR_REQUEST: usize = 3584;
+const CURSOR_RESOURCE_ID: u32 = 2;
+const NO_RESOURCE: u32 = 0;
 const REQUESTS: usize = 1024;
 const REQUEST_SLOT: usize = 64;
 const RESPONSES: usize = 2048;
@@ -44,11 +61,15 @@ const ATTACH_BACKING_BYTES: usize = 48;
 const SET_SCANOUT_BYTES: usize = 48;
 const TRANSFER_TO_HOST_2D_BYTES: usize = 56;
 const RESOURCE_FLUSH_BYTES: usize = 48;
+const UPDATE_CURSOR_BYTES: usize = 56;
 
 const _: () = assert!(super::queue::memory_size(QUEUE_SIZE) <= REQUESTS);
 const _: () = assert!(RESPONSES + MAX_BATCH * RESPONSE_SLOT <= DISPLAY_INFO);
 const _: () = assert!(DISPLAY_INFO + DISPLAY_INFO_BYTES <= MEMORY_BYTES);
 const _: () = assert!(TRANSFER_TO_HOST_2D_BYTES <= REQUEST_SLOT);
+const _: () = assert!(DISPLAY_INFO + DISPLAY_INFO_BYTES <= CURSOR_RING);
+const _: () = assert!(CURSOR_RING + super::queue::memory_size(CURSOR_QUEUE_SIZE) <= CURSOR_REQUEST);
+const _: () = assert!(CURSOR_REQUEST + UPDATE_CURSOR_BYTES <= MEMORY_BYTES);
 
 mod command {
     pub const GET_DISPLAY_INFO: u32 = 0x0100;
@@ -57,6 +78,8 @@ mod command {
     pub const RESOURCE_FLUSH: u32 = 0x0104;
     pub const TRANSFER_TO_HOST_2D: u32 = 0x0105;
     pub const RESOURCE_ATTACH_BACKING: u32 = 0x0106;
+    pub const UPDATE_CURSOR: u32 = 0x0300;
+    pub const MOVE_CURSOR: u32 = 0x0301;
 }
 
 mod response {
@@ -72,6 +95,8 @@ pub struct Released<T, M> {
     pub control: M,
     /// The framebuffer, if one was attached.
     pub framebuffer: Option<M>,
+    /// The cursor's image, if one was attached.
+    pub cursor: Option<M>,
     pub reset: ResetDone,
 }
 
@@ -82,14 +107,22 @@ struct Scanout<M> {
     shown: bool,
 }
 
+#[derive(Debug)]
+struct Cursor<M> {
+    image: M,
+    attached: bool,
+}
+
 /// A virtio GPU device, set up and polled.
 #[derive(Debug)]
 pub struct VirtioGpu<T: Transport, M: DmaMemory> {
     transport: T,
     control: M,
     queue: SplitQueue,
+    cursor_queue: Option<SplitQueue>,
     display: Mode,
     scanout: Option<Scanout<M>>,
+    cursor: Option<Cursor<M>>,
     fence_id: u64,
     unanswered: bool,
 }
@@ -144,13 +177,16 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             };
             return Err((error, transport, control));
         }
+        let cursor_queue = cursor_queue_of(&transport, &control);
         super::driver_ok(&transport);
         let mut gpu = Self {
             transport,
             control,
             queue,
+            cursor_queue,
             display: FALLBACK_MODE,
             scanout: None,
+            cursor: None,
             fence_id: 0,
             unanswered: false,
         };
@@ -248,6 +284,180 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         Ok(())
     }
 
+    /// Whether the device has a cursor queue the driver set up, so [`Self::attach_cursor`] can
+    /// work.
+    pub fn has_cursor_queue(&self) -> bool {
+        self.cursor_queue.is_some()
+    }
+
+    /// Makes `image` ([`CURSOR_BYTES`] or more) the backing of a [`CURSOR_SIDE`]-square resource
+    /// in [`FORMAT_B8G8R8A8_UNORM`], the cursor [`Self::show_cursor`] shows. Refused with the
+    /// memory handed back when the device has no cursor queue, a cursor is attached already or
+    /// the memory is too small; once the device was given the memory, it stays with the driver
+    /// even on an error, as a framebuffer does, and comes back from [`Self::reset`].
+    pub fn attach_cursor(
+        &mut self,
+        image: M,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), (Error, Option<M>)> {
+        if self.unanswered {
+            return Err((Error::TimedOut, Some(image)));
+        }
+        if self.cursor_queue.is_none() || self.cursor.is_some() {
+            return Err((Error::NoCursor, Some(image)));
+        }
+        if image.len() < CURSOR_BYTES {
+            return Err((Error::MemoryTooSmall, Some(image)));
+        }
+        let request = self.header(0, command::RESOURCE_CREATE_2D);
+        self.put32(request + 24, CURSOR_RESOURCE_ID);
+        self.put32(request + 28, FORMAT_B8G8R8A8_UNORM);
+        self.put32(request + 32, CURSOR_SIDE);
+        self.put32(request + 36, CURSOR_SIDE);
+        if let Err(error) = self.run(1, CREATE_2D_BYTES, keep_waiting) {
+            return Err((error, Some(image)));
+        }
+        let request = self.header(0, command::RESOURCE_ATTACH_BACKING);
+        self.put32(request + 24, CURSOR_RESOURCE_ID);
+        self.put32(request + 28, 1);
+        self.put64(request + 32, image.dma_addr().get());
+        self.put32(request + 40, CURSOR_BYTES as u32);
+        self.put32(request + 44, 0);
+        self.cursor = Some(Cursor {
+            image,
+            attached: false,
+        });
+        self.run(1, ATTACH_BACKING_BYTES, keep_waiting)
+            .map_err(|error| (error, None))?;
+        if let Some(cursor) = self.cursor.as_mut() {
+            cursor.attached = true;
+        }
+        Ok(())
+    }
+
+    /// The cursor image's pixels, [`CURSOR_SIDE`] rows of [`CURSOR_SIDE`], each a `0xAARRGGBB`
+    /// (alpha 0 is transparent); `None` before [`Self::attach_cursor`]. What is written here
+    /// shows at the next [`Self::show_cursor`].
+    pub fn cursor_pixels(&mut self) -> Option<&mut [u32]> {
+        let cursor = self.cursor.as_mut().filter(|cursor| cursor.attached)?;
+        let pixels = CURSOR_BYTES / BYTES_PER_PIXEL as usize;
+        // SAFETY: the image holds at least `CURSOR_BYTES` (checked when attached), 4096-aligned
+        // so aligned for `u32`, owned by this driver while it lives; the device reads it only
+        // during the transfer inside `show_cursor`, which takes `&mut self`, so never while this
+        // borrow lives.
+        Some(unsafe {
+            core::slice::from_raw_parts_mut(cursor.image.as_mut_ptr().cast::<u32>(), pixels)
+        })
+    }
+
+    /// Shows the cursor image as it is now with its hotspot (`hotspot` pixels into the image)
+    /// at `at` on scanout 0: the image's transfer to the device, then the cursor queue's
+    /// `UPDATE_CURSOR`, polling while `keep_waiting` says to.
+    pub fn show_cursor(
+        &mut self,
+        hotspot: (u32, u32),
+        at: (u32, u32),
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        if self.cursor.as_ref().is_none_or(|cursor| !cursor.attached) {
+            return Err(Error::NoCursor);
+        }
+        let request = self.header(0, command::TRANSFER_TO_HOST_2D);
+        self.put_rect(request + 24, Rect::new(0, 0, CURSOR_SIDE, CURSOR_SIDE));
+        self.put64(request + 40, 0);
+        self.put32(request + 48, CURSOR_RESOURCE_ID);
+        self.put32(request + 52, 0);
+        self.run(1, TRANSFER_TO_HOST_2D_BYTES, keep_waiting)?;
+        self.send_cursor(
+            command::UPDATE_CURSOR,
+            CURSOR_RESOURCE_ID,
+            hotspot,
+            at,
+            keep_waiting,
+        )
+    }
+
+    /// Moves the shown cursor's hotspot to `at`: one `MOVE_CURSOR`, nothing redrawn.
+    pub fn move_cursor(
+        &mut self,
+        at: (u32, u32),
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        self.send_cursor(
+            command::MOVE_CURSOR,
+            CURSOR_RESOURCE_ID,
+            (0, 0),
+            at,
+            keep_waiting,
+        )
+    }
+
+    /// Hides the cursor: an `UPDATE_CURSOR` with no resource.
+    pub fn hide_cursor(&mut self, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+        self.send_cursor(
+            command::UPDATE_CURSOR,
+            NO_RESOURCE,
+            (0, 0),
+            (0, 0),
+            keep_waiting,
+        )
+    }
+
+    fn send_cursor(
+        &mut self,
+        command: u32,
+        resource: u32,
+        hotspot: (u32, u32),
+        at: (u32, u32),
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        if self.unanswered {
+            return Err(Error::TimedOut);
+        }
+        if self.cursor.as_ref().is_none_or(|cursor| !cursor.attached) {
+            return Err(Error::NoCursor);
+        }
+        let fields = [
+            (0, command),
+            (4, 0),
+            (16, 0),
+            (20, 0),
+            (24, SCANOUT_ID),
+            (28, at.0),
+            (32, at.1),
+            (36, 0),
+            (40, resource),
+            (44, hotspot.0),
+            (48, hotspot.1),
+            (52, 0),
+        ];
+        for (offset, value) in fields {
+            self.put32(CURSOR_REQUEST + offset, value);
+        }
+        self.put64(CURSOR_REQUEST + 8, 0);
+        let addr = self
+            .control
+            .dma_addr()
+            .checked_add(CURSOR_REQUEST as u64)
+            .ok_or(Error::MemoryTooSmall)?;
+        let queue = self.cursor_queue.as_mut().ok_or(Error::NoCursor)?;
+        queue.submit(&[Buffer {
+            addr,
+            len: UPDATE_CURSOR_BYTES as u32,
+            device_writes: false,
+        }])?;
+        if queue.should_notify() {
+            self.transport.notify(CURSOR_QUEUE);
+        }
+        while queue.pop_used().is_none() {
+            if !keep_waiting() {
+                self.unanswered = true;
+                return Err(Error::TimedOut);
+            }
+        }
+        Ok(())
+    }
+
     /// The framebuffer's pixels, row after row, each a `0x00RRGGBB`; `None` before
     /// [`Self::attach_framebuffer`]. What is drawn shows once [`Self::flush`]ed.
     pub fn pixels(&mut self) -> Option<&mut [u32]> {
@@ -320,19 +530,23 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             transport,
             control,
             scanout,
+            cursor,
             ..
         } = self;
         let framebuffer = scanout.map(|scanout| scanout.framebuffer);
+        let cursor = cursor.map(|cursor| cursor.image);
         match super::reset(&transport, keep_waiting) {
             Ok(reset) => Ok(Released {
                 transport,
                 control,
                 framebuffer,
+                cursor,
                 reset,
             }),
             Err(error) => {
                 core::mem::forget(control);
                 core::mem::forget(framebuffer);
+                core::mem::forget(cursor);
                 Err((error, transport))
             }
         }
@@ -470,4 +684,26 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         // handed back.
         u32::from_le(unsafe { field.read_volatile() })
     }
+}
+
+fn cursor_queue_of<T: Transport, M: DmaMemory>(transport: &T, control: &M) -> Option<SplitQueue> {
+    let max = transport
+        .max_queue_size(CURSOR_QUEUE)
+        .min(CURSOR_QUEUE_SIZE);
+    if max == 0 {
+        return None;
+    }
+    let size = 1 << max.ilog2();
+    let memory = control.as_mut_ptr().wrapping_add(CURSOR_RING);
+    let dma = control.dma_addr().checked_add(CURSOR_RING as u64)?;
+    // SAFETY: the control memory holds at least `MEMORY_BYTES`, so the bytes from `CURSOR_RING`
+    // hold the queue's `memory_size(CURSOR_QUEUE_SIZE)` before `CURSOR_REQUEST`, 16-byte aligned
+    // (`CURSOR_RING` is a multiple of 16 of 4096-aligned memory); the driver keeps the memory for
+    // as long as the queue lives and nothing else uses those bytes.
+    let mut queue = unsafe { SplitQueue::new(memory, dma, size) }.ok()?;
+    queue.disable_used_notifications();
+    transport
+        .set_up_queue(CURSOR_QUEUE, size, &queue.addresses())
+        .ok()?;
+    Some(queue)
 }

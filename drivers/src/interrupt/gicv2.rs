@@ -41,6 +41,32 @@ pub enum Trigger {
     Edge,
 }
 
+/// The shared peripheral interrupt a device-tree interrupt specifier of the GIC binding names
+/// (`arm,gic.yaml`: three cells, the type, 0 for an SPI, the SPI's number from 0, and flags whose
+/// low four bits are the trigger, 1 or 2 an edge, 4 or 8 a level), as its interrupt id and
+/// trigger. Private (PPI) interrupts and other cell counts are refused.
+pub fn shared_interrupt_of_specifier(cells: &[u32]) -> Result<(u32, Trigger), &'static str> {
+    const SPI: u32 = 0;
+    const EDGE_TRIGGERS: u32 = 0b0011;
+    const TRIGGER_MASK: u32 = 0xf;
+    let &[kind, number, flags] = cells else {
+        return Err("not a GIC interrupt specifier (three cells)");
+    };
+    if kind != SPI {
+        return Err("not a shared peripheral interrupt");
+    }
+    let id = number
+        .checked_add(FIRST_SPI_ID)
+        .filter(|id| *id <= MAX_INTERRUPT_ID)
+        .ok_or("the shared peripheral interrupt's number is out of range")?;
+    let trigger = if flags & TRIGGER_MASK & EDGE_TRIGGERS != 0 {
+        Trigger::Edge
+    } else {
+        Trigger::Level
+    };
+    Ok((id, trigger))
+}
+
 /// Size of the distributor's register block in bytes.
 pub const DISTRIBUTOR_BLOCK_SIZE: usize = 0x1000;
 /// Size of the CPU interface's register block in bytes.
@@ -270,6 +296,21 @@ mod tests {
         assert_eq!(interrupt.id(), 5);
         gicc.end_of_interrupt(interrupt);
         assert_eq!(gicc.regs.writes(), vec![(GICC_EOIR, sgi_5_from_cpu_2)]);
+    }
+
+    #[test]
+    fn a_device_tree_spi_becomes_its_interrupt_id_with_its_trigger() {
+        assert_eq!(
+            shared_interrupt_of_specifier(&[0, 16, 1]),
+            Ok((48, Trigger::Edge))
+        );
+        assert_eq!(
+            shared_interrupt_of_specifier(&[0, 1, 4]),
+            Ok((33, Trigger::Level))
+        );
+        assert!(shared_interrupt_of_specifier(&[1, 14, 4]).is_err());
+        assert!(shared_interrupt_of_specifier(&[0, 988, 4]).is_err());
+        assert!(shared_interrupt_of_specifier(&[0, 16]).is_err());
     }
 
     #[test]

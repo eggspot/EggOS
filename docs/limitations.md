@@ -8,38 +8,78 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 ## Where it runs
 - **QEMU only.** The images boot on QEMU's `virt` machines (aarch64 with a Cortex-A72 and GICv2,
   riscv64 through OpenSBI) and `q35` (x86_64), with 128 MiB of memory and 4 CPUs, as the run
-  scripts start them. No real hardware, no other hypervisor, no UEFI or bootable disk image yet.
-- **No acceleration.** QEMU emulates the CPU (TCG), so the system runs slower than it will on
-  hardware; boot to the prompt still takes about a tenth of a second.
-- **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse,
-  virtio-blk (polled, for the host folder), the real-time clock (x86_64 CMOS, AArch64 PL031,
-  RISC-V Goldfish, D150) and on test kernels virtio-rng. Nothing else is driven: no network,
-  no sound, no USB (D110-D113, D130).
+  scripts start them (`--memory`/`-Memory` gives more, such as `4G`; on x86_64 the memory QEMU
+  puts above 4 GiB is used too, D171); they need QEMU 8.2 or later (CI tests with Ubuntu 24.04's 8.2.2). No real
+  hardware, no other hypervisor, no UEFI or bootable disk image yet.
+- **No acceleration.** QEMU emulates the CPU (TCG) on every host, so the system runs slower than
+  it will on hardware; boot to the prompt still takes about a quarter of a second (120 ms on
+  aarch64, 161 ms on riscv64 and 261 ms on x86_64 from QEMU's start, on CI's machines on
+  2026-10-29; the release notes give each image's own figure).
+- **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse
+  (on interrupts, D184), virtio-blk (polled, one request at a time, for the host folder), the
+  real-time clock (x86_64 CMOS, AArch64 PL031, RISC-V Goldfish, D150), virtio-net (polled, the
+  first adapter only, D157) and on test kernels virtio-rng. Nothing else is driven: no Wi-Fi,
+  no sound, no USB (D110-D113, D130). `device list` and `device_list` show the devices as of
+  boot (no hot-plug); Settings' About does not list them yet; two virtio input devices read
+  alike; the console UART and the interrupt controller, set up before the driver model, read
+  `No driver`. A display mode change (QEMU's window resized) is not followed, virtio-console
+  input is not a console, and the kernel's random generator is not reseeded from virtio-rng.
+- **Network, parts 1 and 2** (D157, D158, [network.md](network.md)). IPv4 over one wired
+  adapter with an address from DHCP, UDP, ping and TCP for programs, DNS through
+  `/etc/resolv.conf`, `lo`; `ip`, `ping`, `nslookup`, `fetch` (downloads over `http://` and
+  `https://`, TLS 1.3 with certificates checked against the roots you give in
+  `/etc/ssl/roots.pem`: EggOS ships none, D159) and the MCP tools `net_status`, `net_ping`,
+  `net_lookup` and `fetch`; TLS offers only X25519, has no resumption, client certificates or
+  revocation checks; TCP has no window scaling (64 KiB windows), no selective
+  acknowledgments, keep-alive or urgent data, drops segments that arrive out of order (they
+  are sent again), and on a machine without an adapter its timers run only when a program
+  makes a socket call. No downloads window in the GUI yet. No IPv6, no fragment reassembly, no static addresses or second adapter, no
+  multicast, no reverse lookups, no netlink (iproute2 and `getifaddrs` fail; `ip` reads
+  `/proc/net`). Settings has no Network pane and the bar no network indicator yet (designed in
+  docs/ux/network-v0.3.md). The adapter is polled (50 wakeups a second when idle) until drivers
+  run on interrupts. On riscv64, `--mcp --apps` with a disk and the network takes more than
+  the machine's eight virtio slots: add `--no-network` there.
 
 ## What the system can do
-- **Agents, under grants for the whole boot.** The built-in MCP server (D136, D137,
-  docs/mcp.md) lets an MCP client read files in `/home` and `/media/host` and list processes,
+- **Agents, under the grants the user gives.** The built-in MCP server (D136, D137,
+  docs/mcp.md) lets an MCP client read files in `/home`, `/media/host` and `/work` and list processes,
   windows and installed apps; with grants given when starting EggOS (`--mcp-allow
   view,write,run,install`) it also sees what app windows show (`view`), writes and trashes
   files below `/home/root`, runs programs, clicks and types in windows, and installs, opens and
-  uninstalls apps. Grants hold for the whole machine and boot: no per-agent grants, no revoking
-  them while EggOS runs; `run` is full control, the audit log included. Agents see windows as
-  pixels for now (D143); windows as structured data come after the release (item 48).
-  Commands run as root (file permissions are not enforced yet). Reached only through the run
-  scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB.
-- **One disk, and no network.** The root file system is the read-only initramfs inside the
+  uninstalls apps. Each agent has its own grants, read again before every call and capped by the
+  boot's grants (D193), which the user gives and takes back with `agent grant` and `agent
+  revoke`; a client names its agent in `initialize` or the boot pins it (`--mcp-agent`), and on
+  the local channel that name is the client's own word, while agents on other machines pair with a one-time code and prove who they are with a token over HTTPS (`agent pair`, `agent network on`, from the next start; one connection at a time, no OAuth sign-in or event stream yet, a certificate made once for the addresses the machine had, pairing from the CLI or Settings' Agents pane), and Settings' Agents pane sets them too and browses the audit log (its Activity view lists the newest 32 calls that match; older ones through narrower filters or `agentlog`); with the desktop installed every question is asked on EggOS's own screen (the grant prompt, whose window refuses injected input), without it through the client's elicitation; the prompt opens where a new window opens (not centred and kept on top yet) and has no phone layout yet; `run` is full control, the audit log included, and `install` is too (an app it installs and opens runs as you). Agents read toolkit and Wayland
+  windows as element trees and act on their controls by id (D161), Windows programs too, with
+  the text they draw (D162), and macOS apps' windows, their views and the About panel (D175;
+  a macOS alert is pixels only); a Windows list box's items and a check box's state are not in
+  the tree yet.
+  Commands run as root (file permissions are not enforced yet). Reached through the run
+  scripts' `--mcp`, or over HTTPS from another machine once the user turns it on and pairs the
+  agent (D193, docs/mcp.md). The audit log keeps at least 3.5 MiB. The desktop shows
+  an `Agent` chip while a client is connected and marks what it drives for a second (D156);
+  the first boot does not ask "Where are you coming from?" yet.
+- **One disk.** The root file system is the read-only initramfs inside the
   image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
-  `/usr/share/eggos/about`. `/home`, `/Applications` and `/var` live on the disk image the run
+  `/usr/share/eggos/about`, `/etc/hosts` and `/etc/resolv.conf` (the DHCP lease's DNS servers,
+  D157). `/home`, `/Applications` and `/var` live on the disk image the run
   scripts attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
   with `--no-disk` (together at most half of the memory), and `/proc` has `cmdline`, `meminfo`,
-  `uptime`, `ps` and `driver/rtc` (D125, D137, D150). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
-  window or a power cut loses the last seconds' changes, never the file system. EggFS has no
-  hard or symbolic links, access times or repair tool yet, searches directories linearly,
+  `uptime`, `ps`, `version`, `mounts` (D171), `sys/kernel`, `net/interfaces`, `net/route`, `net/arp`, `net/unix`,
+  `driver/rtc`, `self` and a folder per process (D125, D137, D150, D157, D168). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
+  window or a power cut loses the last seconds' changes, never the file system. EggFS
+  (on-disk version 2, D170) holds symbolic and hard links (at most 65 000 names per file, no
+  hard links to folders), but has no access times and no online check (an unmounted disk is checked and repaired with
+  `disk repair`, D192), gives every link's
+  target a block of its own (no inline targets), frees a file removed while open at its last
+  close only at the next commit, and one left open at power-off at the next mount; removing
+  the name in the folder a multiply named file was made in walks the whole tree for another;
+  version 1 disks mount and become version 2 at their first link. It searches directories linearly,
   and keeps one request to the disk in flight; moving a file between `/home` and
   `/Applications` fails (`EXDEV`) as between two disks. A disk holding anything but EggFS or
   FAT is left alone: `--format-disk` erases the image. On Windows the image takes its full 1
   GiB when QEMU's `qemu-img` is missing, and nothing stops two QEMUs sharing one image (macOS
-  and Linux refuse the second). A file removed while a program has it open is gone at once. A Linux program run from `/tmp`, `/home` or `/media/host` is read into
+  and Linux refuse the second). A Linux program run from `/tmp`, `/home` or `/media/host` is read into
   memory whole first, so it must be smaller than 4 MiB (D130).
 - **The host folder is read-only and limited by QEMU.** The run scripts' `--apps <folder>`
   shows a folder of your computer at `/media/host` through QEMU's `vvfat` driver (D130): it
@@ -47,13 +87,35 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   level holds fewer than about 250 names (QEMU refuses to start with "Too many entries in root
   directory" beyond), files of 2 GB or more are refused, names are compared without case for
   ASCII letters only, file times are your computer's local time shown as UTC, and changes made
-  on your computer while EggOS runs are not seen. Only one folder can be attached. A Windows or
-  macOS program in it runs only on an image that has its layer, which the release images do not
-  carry yet (`cargo xtask run --add` adds it with a program; D118, D120).
+  on your computer while EggOS runs are not seen. Only one folder can be attached. The x86_64
+  and aarch64 release images carry the Windows and macOS layers, so Windows and macOS programs
+  in it run and install there; the riscv64 image carries neither, as neither layer runs on
+  riscv64 (D152).
+- **A work disk is a copy, packed before the boot and unpacked after it** (D166). `cargo
+  xtask run --work <folder>` (and `cargo xtask work pack`, for the run scripts' `--work
+  <image>`) copies a folder into an EggFS image that EggOS mounts writable at `/work`; what
+  EggOS writes there comes back only when QEMU has ended, into a new folder (`<folder>.out`
+  or `--work-out`'s), never into the folder itself, and files removed in EggOS are simply
+  absent from it. Changes made on your computer while EggOS runs are not seen. The folder's
+  top-level `.git` and `target` are left out, with a warning for each; symbolic links and hard
+  links travel both ways (D170), except on a Windows host, where every file is packed as one
+  name and making a symbolic link when unpacking needs Developer Mode or the privilege (it is
+  skipped with a warning otherwise). Unpacking never writes or links outside the output
+  folder: a symbolic link comes back only when its target is relative and stays inside the
+  folder, else it is left out with a warning, an entry already at a name stops the unpack, and
+  the setuid, setgid and sticky bits are dropped; names must be valid Unicode and at most 255 bytes. The run scripts
+  cannot pack or unpack a folder themselves: that needs `cargo xtask` in an EggOS checkout.
+  Only one work disk can be attached. The image is sized once, when it is packed (the folder
+  plus a thirty-second plus 1 GiB, or `--room`'s size instead of the gibibyte, D171): a build
+  that writes more fills it (`No space left on device`); it does not grow. `df /work` shows how
+  much is left. Unpacking reads the whole image's metadata and checks it first, so a damaged image
+  gives nothing back. Agents read `/work` without a grant, as `/media/host`; the write tools
+  still reach only `/home/root`.
 - **The clock is UTC, with no time zones** (D150). The kernel reads the real-time clock once
-  at boot (QEMU's follows the host's clock) and keeps time from it; there is no network time
-  (NTP), so a clock that drifts stays off until `date -s`, Settings or `clock_set` sets it,
-  which also sets the real-time clock. Local time is UTC everywhere: the desktop's clock,
+  at boot (QEMU's follows the host's clock) and keeps time from it; the network time is
+  set by hand (`date --sync`, MCP `clock_sync`; D159), not at boot or by Settings, so a clock
+  that drifts stays off until one of those, `date -s`, Settings or `clock_set` sets it, which
+  also sets the real-time clock. Local time is UTC everywhere: the desktop's clock,
   `date`, file times and the Windows and macOS layers' local-time calls; there is no time zone
   setting or database. Only a privileged process (root) may set the clock. An absolute sleep or
   wait on `CLOCK_REALTIME` ends at the time the clock pointed to when it started, even if the
@@ -62,114 +124,345 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   services. Without a real-time clock the wall clock starts at 1970 at boot and the desktop's
   clock shows the uptime until the clock is set (D73). `/proc/driver/rtc` reads the hardware
   clock at most once a second and may be up to a second behind it in between.
-- **Linux programs: static ones only.** The kernel runs static Linux programs through its own
-  Linux system-call layer; `cargo xtask image --add` builds them into an image, and nothing
-  can be added to a running system yet ([Linux programs](linux-programs.md), D117). No
-  dynamic linking, only a minimal `/proc` (`cmdline`, `meminfo`, `uptime`, `driver/rtc` and EggOS's own `ps`, no
-  `/proc/self` or `/proc/<pid>`), `/dev` holds only `window` and `agent`, no `mmap` of files but memfds, no copy-on-write `fork`
-  (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
-  with every pipe, socket and console change. Local sockets work (D138): `AF_UNIX` stream
-  sockets only (no datagrams or sequenced packets, no networking), socket files only in the
+- **Memory has firm limits, and no swap** (D155). The kernel keeps a reserve for itself, a
+  thirty-second of memory (4 MiB at the run scripts' 128 MiB, at least 2 and at most 16 MiB),
+  that programs never get: `free` shows it on its `Reserve:` line and `/proc/meminfo` as
+  `KernelReserve`. A program that touches more memory than is left is ended with `SIGKILL`
+  (whichever program faulted, not the largest, as Linux's out-of-memory killer would choose);
+  a memory file, a window buffer, a pipe, a file in `/tmp`, a new thread or a socket's queue
+  that would take the reserve fails with `ENOMEM` (`ENOSPC` for writes to memory files and
+  `/tmp`). Window buffers hold at most 32 MiB per program and a quarter of memory for all
+  programs; local socket queues at most an eighth of memory together (a full queue makes its
+  writer wait for the reader; an empty one that cannot grow is `ENOMEM`). Disks are read
+  defensively: a damaged EggFS disk or a FAT volume whose cluster chain loops gives I/O errors
+  instead of hanging or crashing EggOS. EggFS disks can be listed, checked, repaired and
+  formatted (D192: `disk`, the MCP tools `disk_list`, `disk_check`, `disk_repair` and
+  `disk_format`, and Settings' Storage pane), but only while unmounted: the boot mounts the first
+  EggFS disk at `/home`, and there is no `mount` or `umount` system call yet, so a freshly
+  formatted second disk stays unmounted until a later version can mount it; at most 4 disks,
+  no partitions from the pane, no progress for a long check, and no hot-plug (the pane reads
+  the disks when it is shown and after each action). A mounted disk's label is not shown. A
+  damaged superblock cannot be repaired (EggFS keeps no copy of it), and a directory's name
+  index lives in memory only, so the first lookup after mounting still reads the whole
+  directory.
+- **Linux programs: static ones, and dynamic ones with their own libraries.** The kernel runs
+  Linux programs through its own Linux system-call layer, from the host folder (`--apps`),
+  installed as apps (`app install`), or built into an image by `cargo xtask image --add`
+  ([Linux programs](linux-programs.md), D117, D130, D134); static glibc programs and static
+  PIEs run on all three architectures (D188), with no `rseq`, `clone3` or `riscv_hwprobe`
+  (glibc falls back from each). Dynamically linked programs run
+  with glibc's or musl's loader (D167), but EggOS ships no C library: the loader and libraries
+  go into the image with the program; no vDSO (`AT_SYSINFO_EHDR`), and `execve` still reads a
+  program and its loader whole into memory and copies their segments at once (pages mapped
+  from files are read only when first touched). `/proc/self` and `/proc/<pid>` hold `cmdline`,
+  `exe`, `fd`, `maps`, `stat` and `status` only (no `task`, `environ`, `cwd`, `mountinfo` or
+  `/proc/thread-self`; `stat`'s times and fault counts are 0, `status` has no signal or memory
+  lines but `VmSize`, links in `fd` to sockets cannot be opened (to pipes they can, D173), and
+  every file is root's), and there is no `/sys` (D168); `/dev` holds the memory devices, `tty`, `console`, the
+  standard streams' links, `window`, `agent`, `shm` (a memory file system for `shm_open`,
+  D169) and the pseudo-terminals `ptmx` and `pts` (D187: at most 64 at once, no packet mode,
+  `TIOCGPTPEER`, `TIOCSTI` or `TIOCPKT`, a controlling side that never waits and drops what its
+  line discipline cannot hold, and a background write that never stops a program), but no
+  block devices;
+  symbolic links work on `/tmp`, `/home`, the work disk and the initramfs, and hard links on
+  `/tmp`, `/home` and the work disk (D170), but `O_CREAT` through a link that names nothing
+  is `EEXIST` rather than creating its target; `openat2` answers `RESOLVE_NO_SYMLINKS` and
+  `RESOLVE_NO_MAGICLINKS` only (`RESOLVE_BENEATH`, `RESOLVE_IN_ROOT` and `RESOLVE_NO_XDEV` are
+  `EINVAL`, `RESOLVE_CACHED` `EAGAIN`); a file removed while open stays until its last close,
+  but one removed while only a shared writable mapping holds it is not kept, and a working
+  directory removed is not kept either; `#!` scripts run (one interpreter argument, four
+  scripts deep), and `chmod` sets permissions, though there is no umask per process (022) and
+  permissions change only for root and the owner, with no other checks yet; `mmap` of files is private
+  or shared (D167, D169): a writable shared mapping, or any shared mapping of a file another
+  one maps so, shares the file's pages, which are all read when it is made and written back
+  where they changed by `msync`, `fsync`, `sync` and the last unmap; past the file's end they
+  read as zeros instead of raising `SIGBUS`, and such a mapping cannot be moved (`mremap`),
+  discarded, or made inaccessible or executable; a read-only shared mapping of a file nobody
+  maps writable does not see later writes; a file page is read under the process's memory
+  lock, so its other threads wait for a disk read. `fork` is copy on write (D169);
+  `MAP_SHARED` anonymous memory takes all its frames when it is mapped, and one with no access
+  or executable still makes `fork` fail with `ENOSYS`. Pipes work (D125); `epoll`, `eventfd`,
+  `timerfd`, `signalfd`, `select` and `pselect6` work (D169), with pipes, local sockets and
+  the event files waking only who waits for them, but the console, windows, network sockets
+  and `/dev/agent` still wake every waiter when they change; `TFD_TIMER_CANCEL_ON_SET` is
+  refused, `EPOLLEXCLUSIVE` wakes every waiter, and one `epoll_wait` returns at most 64
+  events. Local sockets work (D138): `AF_UNIX` stream
+  sockets only (no datagrams or sequenced packets); `AF_INET` datagram sockets work for UDP
+  and ping (D157), stream sockets for TCP (D158); socket files only in the
   memory file systems (`/tmp`, `/run`, `/var` and `/home` without a disk; `bind` on the disk
   is refused), descriptors passed with `SCM_RIGHTS` but never a socket that carries sockets
-  itself, and at most 4096 descriptors in flight in all; no `epoll`, `eventfd`, `timerfd` or
-  `signalfd` yet, which most graphical Linux toolkits need. Shared memory works through
-  `memfd_create` (D139): `MAP_SHARED`, or `MAP_PRIVATE` read-only, of a memfd; not of other
-  files (`ENODEV`), no `shm_open` or `/dev/shm`, no writable private mapping of a memfd, no
+  itself, and at most 4096 descriptors in flight in all. Shared memory works through
+  `memfd_create` (D139), `shm_open` on `/dev/shm` and `MAP_SHARED` anonymous memory (D169):
+  `MAP_SHARED`, or `MAP_PRIVATE` read-only, of a memfd; no writable private mapping of a memfd, no
   executable or `PROT_NONE` mapping of one (`EPERM`), no `F_SEAL_WRITE` or
   `F_SEAL_FUTURE_WRITE`, no `SIGBUS` past the end (those pages read as zeros), `fallocate`
-  with mode 0 only, a write, `fallocate` or mapping at a gigabyte-scale offset fails
-  (`ENOSPC`, `ENOMEM`), and a process that maps one cannot `fork` (`posix_spawn` and `vfork`
-  work).
-- **Linux GUI programs: static Wayland clients only.** `eggway` (D140) shows a static program's
-  `xdg_toplevel`s as desktop windows; GTK, Qt, SDL and browsers need dynamic linking, `epoll`,
-  `eventfd` and `timerfd` and protocols eggway does not serve yet ([Linux
-  programs](linux-programs.md) lists them). It serves one seat and one output (whose mode is the
-  work area's size, at scale 1), shows surfaces opaque and ignores buffer scale and transform,
-  window geometry and the window menu request; popups close at once, and there is no clipboard,
-  subsurfaces, touch or cursor surfaces; at most 16 clients, 16 surfaces and 8 pools each, pools
-  of 32 MiB at most and 48 MiB for all clients, and the terminal waits while a Wayland program
-  opened from it runs.
+  with mode 0 only, and a write, `fallocate` or mapping at a gigabyte-scale offset fails
+  (`ENOSPC`, `ENOMEM`). File locks work (D171): `flock` and `fcntl`'s record and
+  open-file-description locks, waiting or not; a record lock's wait that would deadlock fails
+  with `EDEADLK` (D173; chains of at most ten waiting processes are followed, as on Linux),
+  and a process's record locks go with `close`, `close_range`, a `dup2` or `dup3` over the
+  descriptor, `execve`'s close-on-exec and its end; no leases (`F_SETLEASE`) or mandatory
+  locks. `statfs` and `fstatfs` work (D171), from what each file
+  system keeps in memory: the read-only host share and the initramfs report no free blocks,
+  `/proc` and `/dev` none at all, and `/tmp` its share of memory.
+- **cargo builds inside EggOS, in CI** (D171). CI's `hello-crate` job hands EggOS the official
+  toolchain's `rustc` and `cargo` (glibc builds, 1.99.1, test data) with the musl target's
+  standard library on a work disk, and `cargo build` and `cargo run` a hello-world crate,
+  linked by the toolchain's `rust-lld` with musl's self-contained files; the program must print
+  what it prints on Linux. CI's `workspace-build` job (D173) builds a multi-crate workspace of
+  ours with a job per CPU (cargo's jobserver, a `rustc` per CPU) inside EggOS and inside Linux
+  booted in the same QEMU machine, and reports each phase's time against Linux's in the job
+  summary; the times are reported, not gated, and the gaps go into the roadmap once the job has
+  run. EggOS ships no toolchain, C compiler or linker: programs for the glibc targets (whose
+  linker is a C compiler) do not link inside it yet. A `/proc/<pid>/fd` link to an end of a
+  pipe opens that pipe again (D173), as jobserver clients do; links to sockets, event files
+  and memory files cannot be opened, and a pipe cannot be opened for reading and writing at
+  once (`EINVAL`).
+- **Linux GUI programs: Wayland clients, SDL apps and GTK 3 apps, not Qt yet.** `eggway` (D140,
+  D172, D176) shows a program's `xdg_toplevel`s as desktop windows with their subsurfaces and
+  popups drawn in, and an SDL app or a GTK 3 app installed from a `.zip` with its loader and
+  libraries runs (Brogue CE and Mousepad, [compatibility](compatibility.md)); Qt, GTK 4 and
+  browsers need protocols and libraries eggway does not serve yet ([Linux programs](linux-programs.md) lists them). It serves one
+  seat and one output (whose mode is the work area's size, at scale 1), shows toplevels opaque
+  and ignores buffer scale and transform and the window menu request; popups stay inside their
+  toplevel's window, input regions are not used for hit-testing, and a subsurface's restacking
+  takes effect at once instead of on its parent's commit; a cursor surface shows the arrow (its
+  own image is not drawn) and the cursor shapes EggOS has no drawing for (a hand, busy) show the
+  arrow; copy and paste works through the clipboard and the primary selection, but not drag
+  and drop, and a selection offered as more than 12 MIME types offers the first 12; tokens of
+  `xdg-activation` work once, for ten seconds, and only from the app with the keyboard focus;
+  `text-input` has no input method behind it, so no composed text comes from EggOS (keys still
+  do), and only the text around the cursor (240 bytes) joins the element tree; there is no
+  touch; GTK apps' images and icons are blank (gdk-pixbuf 2.44 loads them through glycin's
+  sandboxed loaders, which EggOS does not ship), and there is no D-Bus (accessibility, portals,
+  single-instance apps) or `chown`; `inotify` reports names made, moved and removed in a
+  watched folder and a watched file's own changes, but a folder's watch is not told of its
+  files' writes, opens and closes, and a file's last name removed is `IN_DELETE_SELF` at once,
+  even while it is open (D179); Qt apps run with Qt Widgets only: EggOS's `libEGL.so.1`,
+  `libGL.so.1` and `libGLESv2.so.2` report no display, so Qt Quick and OpenGL widgets do not
+  start, and every output's scale is 1, its physical size unknown; at most 16 clients, 16
+  surfaces, 8 pools, 8 positioners, 8 selection sources and 4 text inputs each, pools of 32
+  MiB at most and 48 MiB for all clients, and the terminal waits while a Wayland program opened
+  from it runs, which also writes its files into the terminal's current folder.
 - **Windows: console programs and simple GUI programs on x86_64 and aarch64 only.** Windows
   programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer
-  provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, added with
-  `cargo xtask image --add` ([Windows programs](windows-programs.md), D118, D121, D124, D129):
+  provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, and x64
+  programs on aarch64 run translated ahead of time (D191; a fault in translated code ends the
+  program instead of reaching its exception handlers, and at most 64 functions found
+  with `GetProcAddress` can be called from it; `app install` translates them right away,
+  the installer's window leaves it to the first launch), from the host folder or installed as apps;
+  the layer is in the base of those images until the component manager makes it optional
+  (D152) ([Windows programs](windows-programs.md), D118, D121, D124, D129):
   threads, waits, locks, directory listing and UTF-16 strings work, GUI programs open
   windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
-  programs built by MSVC on its C runtime (`/MD`) run (D146). Programs on a C++ runtime,
-  MinGW's or Rust's std, `scanf`, locales, the math library, other processes, other DLLs, structured exception handling,
-  the system's controls (buttons, edits), menus, dialogs from resources, timers, fonts other
-  than Egg Mono and text beyond ASCII, x64 programs on Arm (and ARM64 programs on x86_64) and
-  riscv64 do not run yet; names are case-sensitive and local time is UTC.
-- **Android: static console programs only, on aarch64 and x86_64.** Programs built with the
-  Android NDK and linked statically against bionic run natively through the Linux layer
-  ([Android programs](android-programs.md), D119). No apps (`.apk`), no dynamic linking, no
-  system properties (all read as unset), no `logd` or binder, no riscv64.
+  programs built by MSVC on its C runtime (`/MD`) run (D146), ANSI programs and classic Win32
+  apps such as Pegs from Simon Tatham's Puzzles too, with their own dialogs, drop-down list
+  combo boxes, off-screen bitmaps and `BitBlt` (D174, [compatibility](compatibility.md)),
+  apps on comctl32's common controls, GDI+ and COM such as AutoHotkey v2 (D178: status bars,
+  progress bars, tabs, list and tree views, toolbars, image lists, GDI+ images, in-process COM
+  with `Scripting.Dictionary`, dialogs from resources, accelerators, subclassing), and
+  structured exception handling and C++ exceptions work (D177): `__try`, `__except`,
+  `__finally`, vectored handlers, faults as Windows exceptions, `throw` and `catch`, `signal`.
+  Programs start other programs and read their output (D189): `CreateProcessW` and
+  `CreateProcessA`, anonymous pipes, `PeekNamedPipe`, inherited, duplicated and protected
+  handles, waits, exit codes and `TerminateProcess` on children; named pipes,
+  objects inherited into a child, a really suspended child (`CREATE_SUSPENDED` starts it at
+  once) and job objects do not.
+  Programs built on Rust's standard library run (D189, slice 37b): `Command`, files, threads,
+  locks, clocks and panics; `fs::copy`, `fs::canonicalize`, links, `File::lock`,
+  `fs::remove_dir_all`, networking and waitable timers do not yet.
+  Programs linked to MinGW's `msvcrt.dll` run (D189, slice 37b2): its startup, `printf` (MinGW's
+  own and the old runtime's variadic one), streams, the heap, strings, `qsort`, `getenv`,
+  `signal`, `atexit`; MinGW DLLs (`__dllonexit`), wide `swprintf`, `_putenv`, `setlocale`
+  and line-ending translation do not yet.
+  APCs (`QueueUserAPC`, alertable `SleepEx` and waits, `MsgWaitForMultipleObjectsEx`),
+  abandoned mutexes (`WAIT_ABANDONED`), ws2_32's ordinal imports and DOS wildcards in
+  `FindFirstFileW` work (D189, slice 37c). Named mutexes, events, semaphores and file mappings
+  shared between processes, file mappings and their views, `SignalObjectAndWait` and wildcard
+  arguments (`setargv.obj`, `_dowildcard`) work (D189, slice 37d); a wait sees another
+  process's change within 10 ms, at most 128 named objects exist at once (names up to 120
+  characters, 16 processes each), a named mapping of a file cannot be opened by name, `Local\`
+  names are not per user, quotes do not stop an argument's expansion, and `VirtualQuery` does
+  not describe views.
+  An exception cannot yet pass through the layer's own frames (a fault inside a Windows
+  function, a throw out of a window procedure), a stack overflow is not an exception, and on
+  aarch64 a context resumed after a fault loses `x16`.
+  Programs on the C++ standard library's DLL (msvcp140: iostreams, `std::thread`),
+  `std::exception_ptr`, `dynamic_cast` and `typeid`, the rest of Rust's std, `setjmp`,
+  locales, most of the math library, wide streams, low-level I/O's text mode (`_open` works but
+  never translates line endings, D179), other
+  DLLs than the layer's own, multi-line edits or selection, radio keys, editable combo boxes
+  and menu keys (D145, D174), the common controls' hover looks, tooltips, custom drawing and
+  label editing, GDI+ beyond images (JPEG, GIF and TIFF too), out-of-process COM and COM
+  classes other than `Scripting.Dictionary`, a registry with keys (it is empty and read-only),
+  global keyboard and mouse hooks, global hot keys, the tray, HTTPS in WinINet (D178),
+  printing (no printers), hatched brushes (drawn solid), fonts other than Egg Mono
+  and text beyond ASCII, ARM64 programs on x86_64 and riscv64 do not run yet; the shared clipboard (D197) carries text only (`CF_UNICODETEXT`); names are
+  case-sensitive and local time is UTC.
+- **Android: console programs only, on aarch64 and x86_64.** Programs built with the Android
+  NDK, linked statically against bionic or dynamically (Android's `linker64` with the runtime
+  module's `libc.so`, `libm.so` and `libdl.so`, D188), run natively through the Linux layer
+  ([Android programs](android-programs.md), D119). No apps (`.apk`), no system properties set
+  by programs themselves (`setprop` sets them, D188), no `liblog.so` or other platform
+  libraries (programs log by sending its datagram to `/dev/socket/logdw` themselves;
+  `logcat` shows main, system and crash entries only, no binary buffers, D188), no binder, no
+  riscv64 (bionic's riscv64 string functions need the vector extension, which the kernel does
+  not enable yet, D188).
 - **macOS: console programs and programmatic AppKit apps, on aarch64 and x86_64 only.**
-  Mach-O console programs (thin or fat, built for macOS 13 or later) that link libSystem,
+  Mach-O console programs (thin or fat, with chained fixups or `LC_DYLD_INFO`, down to Mac OS
+  X 10.6 on x86_64 and macOS 11 on arm64) that link libSystem,
   Objective-C programs that use the core of Foundation, and Objective-C GUI apps built in code
   (no nib or storyboard) on AppKit's core run natively, arm64 programs on aarch64 and x86_64
-  programs on x86_64 ([macOS programs](macos-programs.md), D120, D123, D142, D147). AppKit
-  covers windows, views drawn with `drawRect:` (rects, lines and ovals 1 px wide, one font, no
-  alpha), push buttons, text fields, labels, alerts and the main menu in the macOS profile's
-  top bar (at most 6 menus in 248 bytes of labels; `wm menu` and the MCP tools list and choose
-  its items, except while the app shows an alert); scroll views, tables, images, timers, panels, Auto Layout, Swift, Objective-C blocks,
-  `__weak` and exceptions, most of Foundation, signal handlers, other frameworks and riscv64
-  do not run yet.
+  programs on x86_64 (and x86_64 programs on aarch64 translated ahead of time, callbacks
+  included; callbacks with floating-point arguments or results or more than six arguments,
+  Swift programs and exceptions through translated frames not yet; `app install` translates
+  them right away, except from the installer's window, where the first launch does, D191),
+  from the
+  host folder or installed as apps (a real one, CocoaGame, is
+  checked in CI: [Real apps](compatibility.md)); the layer is in the base of those images until
+  the component manager makes it optional (D152)
+  ([macOS programs](macos-programs.md), D120, D123, D142, D147, D175). AppKit covers windows,
+  views drawn with `drawRect:` (rects, lines and ovals 1 px wide, one font, no alpha), push
+  buttons, text fields, labels, alerts, the standard About panel, timers and the main menu in
+  the macOS profile's top bar (at most 6 menus in 248 bytes of labels; `wm menu` and the MCP
+  tools list and choose its items, except while the app shows an alert); Objective-C has
+  blocks, `__weak` and exceptions (frames only DWARF describes, and exceptions passing through
+  the layer's own code, end the program as uncaught). Nibs and storyboards, scroll views,
+  tables, images, Auto Layout, Swift apps, most of Foundation beyond its core (no NSFileManager
+  or NSNotification), a signal handler's `ucontext_t` (D190), locales other than C, POSIX,
+  C.UTF-8, en_US.UTF-8 and UTF-8, character classes above U+00FF (D190), other frameworks and
+  riscv64 do not run yet; programs handle signals and start other programs (`fork`, `exec`,
+  `posix_spawn`, pipes, `popen`, `system`; D190), read input with `scanf`, and choose the
+  UTF-8 and en_US locales, with UTF-8 multibyte functions and `strptime` (D190). Swift
+  console programs run on the layer's own Swift runtime (D180) without Foundation's Swift
+  overlay, the Dispatch and CoreGraphics overlays, casts to protocols, the program's own
+  generic types named in metadata and printing beyond strings, `Bool` and numbers; strings
+  compare and hash by their UTF-8 bytes (no Unicode normalization), characters and
+  `lowercased()` know only the scripts D180 lists; Swift's failures end with status 134 where
+  a Mac traps with 133; the
+  stack probe `___chkstk_darwin` touches nothing, so a single frame over 1 MiB could pass the
+  stack's guard gap unnoticed.
 - **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any
-  app window's content as a PNG and `wm click`, `type`, `press` and `scroll` operate it, but
-  the terminal's window can't be captured, takes no pointer input, and drag, double-click,
-  sideways scrolling and non-ASCII typing are not in yet; input goes to the window named even
-  when a dialog of it is open; a minimised Wayland app does not repaint after input (eggway
+  app window's content as a PNG and `wm click`, `drag`, `type`, `press` and `scroll` operate it,
+  terminal windows included (D187), but the console's window can't be captured, takes no
+  pointer input or sideways scrolling, and
+  characters no US key types reach apps as characters of their own (code 0, D185), which a
+  program that reads keys rather than characters does not see; clicks, drags and scrolling aimed at a window with a dialog
+  open are refused (keys go to the dialog: D162); Windows programs get `WM_LBUTTONDBLCLK`
+  only in windows of their own classes with `CS_DBLCLKS` (the system's controls still see two
+  presses, D174), and no mouse sends a sideways wheel yet (only
+  `wm scroll` and agents do); a minimised Wayland app does not repaint after input (eggway
   sends no frame callbacks to minimised surfaces) until it is restored; every process is root
   until users come (M10), so any program can capture and send input; agents get it only
   through the MCP server's grants (`view` to see, `run` to operate, D143). Input to a window
   whose program stopped reading its events is retried for 3 s, then fails.
 - **iOS apps are not in yet** (D17).
-- **No MCP server, no components.** The built-in MCP server (D21), the CLI and MCP front-ends
-  of every capability (D22) and the component manager (D18) come later.
+- **No components yet.** The component manager (D18) comes later (M14): for v0.3.0 the
+  desktop and the Windows and macOS layers are in the base and cannot be left out (D109,
+  D152). The built-in MCP server is in (D136, docs/mcp.md), but not every capability has its
+  three front-ends yet (D22): Settings and the device list have no MCP tools, and Files'
+  copy, move and new folder have none either (an agent with `run` uses `cp`, `mv` and
+  `mkdir`), and `chmod` has only its CLI until users and permissions come (M10, D170). Window focus, move, size, minimise, maximise, restore and close have theirs
+  (D160).
 - **One user, root.** Processes start as root; there are no logins or permissions to manage
   (D75).
 
 ## The shell and the core utilities
 - `eggsh` runs commands with arguments, quoting, variables, `cd`, `exit`, `.` and scripts,
-  pipelines and the `<`, `>` and `>>` redirections, with a history of recent lines on the
-  arrows, but refuses `&&`, `||`, background jobs, subshells and command substitution, and has
-  no wildcards, `if`, `while`, `for`, `case`, functions or `2>` ([shell](shell.md)).
+  pipelines, `&&`, `||`, background jobs with `jobs`, `fg`, `bg`, `wait`, `kill` and `^Z`, the
+  `<`, `>`, `>>`, `2>`, `2>&1` and `<<` redirections, line editing and a history kept in
+  `~/.eggsh_history` (D181), and the POSIX language: wildcards, `$(...)`, subshells,
+  `${NAME:-word}` and the other operators, `$@`, `if`, `while`, `until`, `for`, `case`,
+  functions with `local`, and `test`, `read`, `eval`, `shift`, `set -e` (D182). It has no
+  arithmetic (`$((...))`), `printf`, `trap`, `getopts`, `set -u` or `set -x` yet, a `case`
+  pattern inside `$(...)` needs its leading `(`, a here-document cannot be inside `$(...)` or
+  follow a function definition's line, `read` and `wait` cannot be interrupted with `^C`, and
+  only descriptors 0 to 2 can be redirected ([shell](shell.md)).
+- Job control follows Linux, but a background write to the terminal never stops a program
+  (`TOSTOP` is not acted on), `wait` cannot be interrupted with `^C`, and line editing redraws
+  a line longer than the terminal is wide wrongly once the cursor moves back across its end
+  (D181).
+- **Powering off goes through init (D183).** `poweroff`, `reboot`, `halt` and the desktop's
+  power menu ask init, which sends every program `SIGTERM` at once (there are no services to
+  stop in order), then `SIGKILL` to those left after 3 s; the waits are fixed, and there is no
+  `shutdown` with a delay or a message to users. `ls` writes columns on a terminal, counting a
+  wide character (CJK, emoji) as one column. Process ids are reused once all 4194303 have been
+  given out, from 300 up and never one still in use, but each `fork` and `execve` still takes
+  a futex space that is never reused, so about two billion of them in one boot use those up.
+  `/proc/<pid>` names an id, so a descriptor opened in it before its process ended shows the
+  next process given that id.
 - The core utilities are `cat`, `cp`, `echo`, `false`, `free`, `grep`, `halt`, `head`, `ls`,
   `mkdir`, `mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `sync`, `tail`, `touch`, `true`,
   `uname`, `uptime`, `wc` and `wm`, each with the common options only ([core utilities](coreutils.md));
   they are command-line only, with no GUI or MCP front-end yet (`wm` is the window
   capability's CLI; its GUI is the desktop's own chrome and keys).
-- The keyboard layout is US only (D113).
+- **The command model, slices 1 to 3 (D160, D163, D164, docs/ux/command-model.md).** Every command
+  is in the registry, but `eggsh`'s built-ins are only named there (the shell does not link it).
+  `--json` exists where a command's output is records or an object (`ls`, `ps`, `wm list`, `wm
+  show`, `app list`, `agentlog`, `help`, `wc`, `free`, `uptime`, `uname`, `settings list` and
+  `get`, `ip -j`); `grep`, `head`, `date`, `ping`, `fetch` and the other text or content
+  commands have none, so their errors are coded only in the text's wording. `date`, `hwclock`,
+  `ip`, `nslookup`, `fetch`, `trash`, `agentlog` and `wm`'s verbs but `list` keep their own
+  option parsers (D165); `app install|open|uninstall` write text errors only. Examples exist
+  for the commands a fake can show, `date` and `wm list` included (not for the network,
+  `hwclock` or apps). Pages
+  (`--limit`, `--after`) exist for `ls`, `ps`, `wm list` and `app list` and their tools, not
+  for `agentlog`, `settings list`, `help` or `trash -l`; `--dry-run` for `trash`, `app
+  uninstall` and `settings set` (and MCP `tee`), not for `fetch`, `date -s`, `app install`,
+  `cp`, `mv` or `rm`, whose previews would not be exact. Names inside text error lines are
+  written as they are, control characters included.
+  An MCP tool whose command fails (rather than being refused) still returns that command's
+  text error without a code: the twins run in text mode.
+- Keyboard layouts (D185): 14 of them (US, US international, UK, Dvorak, Colemak, Danish,
+  Finnish, French, German, Italian, Norwegian, Brazilian, Spanish, Swedish); no others yet, one
+  at a time, no switch key. Dead keys combine into Latin-1 only (diaeresis and Y types `¨Y`).
+  Without a display the layout set with `settings set` applies from the next boot. Wayland
+  apps get the US keymap whatever the layout; Windows programs' `ToUnicode`,
+  `MapVirtualKey` and `GetKeyState` still answer for the US layout and AltGr is not reported
+  as Ctrl+Alt; Mac apps see Option but no Mac-specific Option layouts. The fonts cover ASCII,
+  Latin-1 and `€`: other characters show as `?`. Only Caps Lock's light is set, on virtio
+  keyboards.
 
 ## The desktop
 The desktop is minimal (D115, D127, D128): wallpaper, a top bar with the uptime and a power
-menu, the shell in an 80x24 terminal window, and the windows programs open through
+menu, the shell in an 80x24 console window, terminal windows (D187) and the windows programs
+open through
 `/dev/window` ([windows from programs](windows.md)). You can focus any window by clicking it or
 with Alt+Tab, drag it by its title bar, resize it from its edges and corners, maximise and
 restore it (its green control, a double-click on the title bar, Super+Up and Super+Down), snap
 it to a half (Super+Left and Super+Right), minimise it to a chip in the bar, open its window
 menu (Alt+Space) and ask it to close (its close control, Alt+F4, Cmd+W); the pointer is drawn
-on screen, in the shape of a resize zone or of what a program asks for. Settings
-(`settings`, [Settings](settings.md), D132) picks the layout profile, Windows, macOS or Linux
-habits (the controls' side and the shortcuts), kept on the disk across reboots. Not yet:
-- a boot screen with the logo and progress (the plain wallpaper shows until init starts);
-- the pressed look of the window controls, and the `Hand` and `Busy` pointer shapes (the
-  panels' items have hover and pressed looks since D133);
-- dragging a window partly off screen;
-- resizing or maximising the terminal: its grid stays 80x24 until terminals are user programs;
-- F11; the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
+by the GPU's cursor (D186), in the shape of a resize zone or of what a program asks for, the
+hand and the hourglass included. A boot screen shows the boot's progress until the first
+prompt; a window dragged by its title bar may hang off the right and bottom edges; F11 shows
+the desktop in the macOS profile; a display smaller than about 658x458 shows the terminal on
+the whole screen instead of the desktop. Settings (`settings`, [Settings](settings.md), D132)
+picks the layout profile, Windows, macOS or Linux habits (the controls' side and the
+shortcuts), kept on the disk across reboots. Not yet:
+- dragging a window partly off the left edge (window positions are unsigned); a window the
+  desktop moves for itself (a restore, a new size) is put back wholly inside the work area;
+- the server's `Busy` pointer shows only over a window that left a close request unread for
+  0.5 s, not over every window that stops reading its events; the boot screen's serial lines
+  are `boot: display`, `boot: input` and `boot: init` (no `boot: desktop <ms>` line yet); the
+  composite arrow-and-hourglass pointer; Mac apps choose no pointer shape (no `NSCursor`);
+- a display that changes size while EggOS runs (the GPU's mode change events) keeps its first
+  layout;
+- resizing the console's window: its grid stays 80x24 (terminal windows resize, D187); a
+  terminal window reflows nothing (cells cut by a narrower window do not come back) and has no
+  selection, copy and paste, tabs or `terminal -e`;
+- the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
   blink in the launcher's search field and keyboard focus in the Linux launcher's dash (D133);
-- installing a missing Windows or macOS layer, `app install --force` and the MCP tools
-  `app_install`, `app_uninstall` and `app_list` (with the MCP server): `app install` refuses a program whose layer is not in the image (D134, docs/apps.md);
-- `.app` bundles that hold symbolic links (a framework's `Versions/Current`, for example):
-  `app install` refuses them, as EggFS stores no symbolic links (D131, D134); the installer's
+- removing or installing the Windows or macOS layer on its own (the component manager, D18,
+  D152), and `app install --force`: `app install` refuses a program whose layer is not in the
+  image, which on the release images happens only on riscv64 (D134, docs/apps.md);
+- `.app` bundles and `.zip` files whose symbolic links are absolute or climb out of their
+  folder: `app install` refuses them (D170; links that stay inside, such as a framework's
+  `Versions/Current`, install as links); the installer's
   chooser lists at most four programs and leaves out names longer than 64 bytes (`app install
   <path>` installs any);
 - archives other than `.zip` (`.dmg`, `.pkg`, `.tar`, `.7z`, `.msi`), ZIP64 (archives or
   entries past 4 GiB or 65 535 entries), encrypted entries, methods other than stored and
-  deflate, symbolic links in a `.zip`, and names longer than 255 bytes (D148); a `.zip` whose
+  deflate, and names longer than 255 bytes (D148); a `.zip` whose
   files would take more than 4 GiB once extracted, or holding a file named `app.manifest`,
   `app.manifest.tmp` or `app.icon` at its top, is refused (as is a program of one of those
   names); the window's chooser for a `.zip` with several programs lists four (`app install
@@ -185,13 +478,15 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   generic tile; a native EggOS app cannot name its own icon in its manifest yet beyond `icon=`
   pointing at an `app.icon` it ships; `app icon` (writing an app's icon as a PNG) and the MCP
   tool `app_icon` from `docs/ux/app-icons-v0.3.md` section 7 are not built yet;
-- closing the terminal (its close control is disabled) and a second terminal: launching
-  Terminal focuses the one console terminal, and installed console apps are typed into it, so
+- closing the console's window (its close control is disabled; terminal windows close, D187),
+  and console apps in their own terminal window: installed console apps are typed into the
+  console, so
   they reach whatever reads the console at that moment (docs/apps.md);
 - Settings, the installer's window (`app --window`, D134) and Files (`/bin/files`, D135),
   all served by the same program, are the programs with a window in the image (the window tests' `hello-window`
-  and `win-paint.exe` are added only to their own images); Settings' Mouse and Components panes,
-  key repeat and 2x come later; Windows GUI programs (D129), Linux Wayland apps (D140) and
+  and `win-paint.exe` are added only to their own images); Settings' Components pane comes
+  later, and 2x (D195) takes a reboot, doubles pixels rather than drawing finer and has no
+  fractional scales; Windows GUI programs (D129), Linux Wayland apps (D140) and
   macOS AppKit apps (D147) open windows;
 - 3D graphics;
 - a terminal on a display smaller than 658x530 (the macOS profile's top bar and dock take 100
@@ -200,23 +495,33 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
 - Files (D135, docs/ux/desktop-v0.3-gui.md section 8.1) selects one item at a time (no
   multiple selection, dragging or drop), has one list view (no icons, thumbnails or columns
   to sort by), hides names starting with `.`, shows at most 512 entries (32 KiB of names) of
-  a folder, and shows no free space in its status bar (no `statfs` yet); its clipboard holds
+  a folder, and reads the free space in its status bar only when it shows a folder (F5 reads it
+  again, D171); its clipboard holds
   one item inside the Files process, shared with no other program and lost when Files
   closes; a text file opens in the Text Editor (D149), or with `cat` in the Terminal window
   in an image without it; each click on the desktop's `Host share` opens another Files window; folders nest at
-  most 32 levels deep in a copy, a move across file systems or a delete; the MCP tools for
-  files come with the MCP server (item 28, after the release);
+  most 32 levels deep in a copy, a move across file systems or a delete; agents read, write
+  and trash files through the MCP tools `ls`, `cat`, `tee` and `trash` (docs/mcp.md), and copy,
+  move or make folders only through `run`; links (D170, docs/ux/files-links-v0.3.md) show the
+  arrow badge in the list only (not on desktop icons or in the launcher), `Make Link` always
+  stores an absolute target, a broken link cannot be re-pointed, there is no `Paste link`,
+  and hard links look like ordinary files (no count anywhere);
 - the Trash holds only what is on the home folder's file system (`/home`): an item in `/tmp`
   or `/Applications` is deleted for good after a question, and the read-only host share's are
   neither trashed nor changed;
 - the Text Editor (D149) edits UTF-8 text of up to 4 MiB in Egg Mono, so a character beyond
-  ASCII and the font's box and arrow glyphs shows as `?`; it has no word wrap, no replace, no
+  ASCII, Latin-1, `€` and the font's box and arrow glyphs shows as `?`; it has no word wrap, no replace, no
   go-to-line, no syntax colouring and no file picker (Open and Save As take a typed path); its
-  clipboard is its own, shared with no other program; a file that is not text is refused, not
+  clipboard is the text clipboard every app shares (D197), which it gives the text of a copy or
+  cut and checks for a newer copy before each key press or click; a file that is not text is refused, not
   shown read-only; opening a file twice gives two windows; with no desktop `edit` cannot open
   it and there is no terminal editor; a file with mixed line endings is saved all CRLF once it
   holds one `\r\n`; saving replaces a symbolic link by a regular file and breaks hard links;
   a save cut short (power lost, the editor killed) leaves its hidden `.<name>.saving` beside the
   file, which later saves leave alone (they write `.<name>.<n>.saving` instead);
-  Alt and Option with a letter type nothing (the keymap has no Option or AltGr layer yet);
+  Alt with a letter types nothing (AltGr and, in the macOS profile, Option type the layout's
+  third level, D185);
 - copy and paste of text, and scaling for high-density displays.
+- Time zones (D194): a zone is its current rule, so times before its last change of rules show
+  with today's rule; the desktop's clock and Settings' Date & time pane still show UTC, and
+  `date -s` takes UTC; reading `/dev/rtc0` to wait for its alarm is not answered yet.

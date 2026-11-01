@@ -148,6 +148,636 @@ jobs:
           path: target
           key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.run_id }}
 
+  dynamic-linking:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, riscv64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Install the glibc target and cross compilers (test data only, never shipped)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu libc6-dev-arm64-cross libc6-dev-riscv64-cross
+          rustup target add ${{ matrix.arch == 'riscv64' && 'riscv64gc' || matrix.arch }}-unknown-linux-gnu
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: Dynamically linked glibc and musl programs boot
+        run: cargo xtask dynamic-linking --arch ${{ matrix.arch }}
+
+  static-glibc:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, riscv64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Install the glibc target and cross compilers (test data only, never shipped)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends libc6-dev gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu libc6-dev-arm64-cross libc6-dev-riscv64-cross
+          rustup target add ${{ matrix.arch == 'riscv64' && 'riscv64gc' || matrix.arch }}-unknown-linux-gnu
+
+      - name: Install a RISC-V glibc with static PIE (glibc 2.41 from Debian 13; Ubuntu 24.04's 2.39 has no rcrt1.o there)
+        if: matrix.arch == 'riscv64'
+        working-directory: ${{ runner.temp }}
+        run: |
+          snapshot=https://snapshot.debian.org/archive/debian/20251101T000000Z/pool/main/c/cross-toolchain-base
+          curl -sSfLO --retry 5 --retry-all-errors "$snapshot/libc6-riscv64-cross_2.41-11cross1_all.deb"
+          curl -sSfLO --retry 5 --retry-all-errors "$snapshot/libc6-dev-riscv64-cross_2.41-11cross1_all.deb"
+          printf '%s\n' \
+            'd91109b719920cb503ec5146abd2cc4ba838da5bac4c8c84f698b86b779613eb  libc6-riscv64-cross_2.41-11cross1_all.deb' \
+            'b76e06ca31dba05b94f0b648c4896c0e74bf6c50dc35a2fe4328fd7971dc802f  libc6-dev-riscv64-cross_2.41-11cross1_all.deb' \
+            | sha256sum -c
+          dpkg -i libc6-riscv64-cross_2.41-11cross1_all.deb libc6-dev-riscv64-cross_2.41-11cross1_all.deb
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: Static glibc programs and static PIEs boot
+        run: cargo xtask static-glibc --arch ${{ matrix.arch }}
+
+  android-dynamic:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      volumes:
+        - /usr/local/lib/android/sdk/ndk:/usr/local/lib/android/sdk/ndk:ro
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      ANDROID_HOME: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: Dynamically linked Android programs boot
+        run: cargo xtask android-dynamic --arch ${{ matrix.arch }}
+
+  rustc-version:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Install xz and the aarch64 C library (test data only, never shipped)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends xz-utils gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+
+      - name: Install the arm64 libraries rustc may load (test data only, never shipped)
+        if: matrix.arch == 'aarch64'
+        run: |
+          dpkg --add-architecture arm64
+          sed -i '/^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          printf 'Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports\nSuites: noble noble-updates\nComponents: main\nArchitectures: arm64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' > /etc/apt/sources.list.d/arm64.sources
+          apt-get update
+          apt-get install -y --no-install-recommends zlib1g:arm64 libgcc-s1:arm64
+
+      - uses: actions/cache@v6
+        with:
+          path: target/rustc-version/downloads
+          key: rustc-version-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'xtask/src/rustc_version.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: The official rustc runs rustc --version inside EggOS
+        run: cargo xtask rustc-version --arch ${{ matrix.arch }}
+
+  hello-crate:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Install xz, the aarch64 C library and Linux's user-mode QEMU (test data and tools only, never shipped)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends xz-utils gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+
+      - name: Install the arm64 libraries the toolchain may load (test data only, never shipped)
+        if: matrix.arch == 'aarch64'
+        run: |
+          dpkg --add-architecture arm64
+          sed -i '/^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          printf 'Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports\nSuites: noble noble-updates\nComponents: main\nArchitectures: arm64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' > /etc/apt/sources.list.d/arm64.sources
+          apt-get update
+          apt-get install -y --no-install-recommends zlib1g:arm64 libgcc-s1:arm64
+
+      - uses: actions/cache@v6
+        with:
+          path: target/hello-crate/downloads
+          key: hello-crate-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'xtask/src/rustc_version.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: cargo builds and runs a hello-world crate inside EggOS, printing what it prints on Linux
+        run: cargo xtask hello-crate --arch ${{ matrix.arch }}
+
+  workspace-build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 50
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Install xz and the aarch64 C library (test data and tools only, never shipped)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends xz-utils gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+
+      - name: Install the arm64 libraries the toolchain may load (test data only, never shipped)
+        if: matrix.arch == 'aarch64'
+        run: |
+          dpkg --add-architecture arm64
+          sed -i '/^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          printf 'Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports\nSuites: noble noble-updates\nComponents: main\nArchitectures: arm64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' > /etc/apt/sources.list.d/arm64.sources
+          apt-get update
+          apt-get install -y --no-install-recommends zlib1g:arm64 libgcc-s1:arm64
+
+      - uses: actions/cache@v6
+        with:
+          path: target/workspace-build/downloads
+          key: workspace-build-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'xtask/src/rustc_version.rs', 'xtask/src/workspace_build.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: cargo builds a multi-crate workspace inside EggOS and inside Linux in the same QEMU machine, timed against each other in the job summary
+        run: cargo xtask workspace-build --arch ${{ matrix.arch }}
+
+  sdl3:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: target/sdl-app/sdl3-${{ matrix.arch }}
+          key: sdl3-${{ matrix.arch }}-${{ hashFiles('xtask/src/sdl_app.rs') }}
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: rustup toolchain install
+
+      - name: Build SDL's pinned commit for Alpine's musl in an alpine:3.24 container on this CPU (test data only, never shipped)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: cargo xtask sdl3 --arch ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdl3-${{ matrix.arch }}
+          path: target/sdl-app/sdl3-${{ matrix.arch }}
+          retention-days: 1
+
+  sdl-app:
+    needs: [changes, sdl3]
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v6
+        with:
+          path: target/sdl-app/downloads-${{ matrix.arch }}
+          key: sdl-app-${{ matrix.arch }}-${{ hashFiles('xtask/src/sdl_app.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: sdl3-${{ matrix.arch }}
+          path: target/sdl-app/sdl3-${{ matrix.arch }}
+
+      - name: A real SDL app, Brogue CE, installs, opens, plays a few turns, saves and closes inside EggOS
+        run: cargo xtask sdl-app --arch ${{ matrix.arch }}
+
+      - name: Keep the SDL app test's screenshots when it fails
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sdl-app-screenshots-${{ matrix.arch }}
+          path: target/screendump-${{ matrix.arch }}-sdl-app*.ppm
+          retention-days: 7
+          if-no-files-found: ignore
+
+  win32-app:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v6
+        with:
+          path: target/win32-app
+          key: win32-app-${{ hashFiles('xtask/src/win32_app.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-x86_64-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-x86_64-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: A real classic Win32 app, Pegs from Simon Tatham's Puzzles, installs, opens, plays, undoes, changes its board, opens its dialogs and quits inside EggOS (x64 only, the app ships no ARM64 build)
+        run: cargo xtask win32-app --arch x86_64
+
+  autohotkey:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v6
+        with:
+          path: target/autohotkey
+          key: autohotkey-${{ hashFiles('xtask/src/autohotkey.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-x86_64-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-x86_64-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: A real Win32 app on common controls, GDI+ and COM, AutoHotkey v2, installs, runs our script's window, drives its list, toolbar, tabs and tree, shows its element tree and closes inside EggOS (x64 only, the app ships no ARM64 build)
+        run: cargo xtask autohotkey --arch x86_64
+
+  cocoa-app:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v6
+        with:
+          path: target/cocoa-app
+          key: cocoa-app-${{ matrix.arch }}-${{ hashFiles('xtask/src/cocoa_app.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: A real Objective-C Mac app, CocoaGame, installs from its .zip, opens, plays, shows its element tree and About panel, and quits inside EggOS
+        run: cargo xtask cocoa-app --arch ${{ matrix.arch }}
+
+  gtk-app:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 75
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v6
+        with:
+          path: target/gtk-app/downloads-${{ matrix.arch }}
+          key: gtk-app-${{ matrix.arch }}-${{ hashFiles('xtask/src/gtk_app.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: A real GTK app, Mousepad, installs from its .zip with its environment and fonts, opens, edits, copies and pastes, saves and quits inside EggOS
+        run: cargo xtask gtk-app --arch ${{ matrix.arch }}
+
+  qt-app:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 75
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v6
+        with:
+          path: target/qt-app/downloads-${{ matrix.arch }}
+          key: qt-app-${{ matrix.arch }}-${{ hashFiles('xtask/src/qt_app.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: A real Qt app, CorePad, installs from its .zip with its environment, plugins and fonts, opens, edits, copies and pastes, saves as through its file dialog and quits inside EggOS
+        run: cargo xtask qt-app --arch ${{ matrix.arch }}
+
   bench:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -273,7 +903,16 @@ jobs:
       - name: Install pinned toolchain (rust-toolchain.toml)
         if: steps.changes.outputs.code == 'true'
         run: rustup toolchain install
-      - name: Build the C runtime test programs with MSVC
+      - name: Install llvm-mingw's msvcrt toolchain (test data only, never shipped)
+        if: steps.changes.outputs.code == 'true'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+          Invoke-WebRequest -Uri 'https://github.com/mstorsjo/llvm-mingw/releases/download/20261020/llvm-mingw-20261020-msvcrt-x86_64.zip' -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '52a3e3f584a74c3cde8ceb0c6960549683178e03b36818cb02b7ed109a68ff67') { throw 'llvm-mingw: SHA-256 mismatch' }
+          tar -xf $archive -C $env:RUNNER_TEMP
+          "EGGOS_LLVM_MINGW=$(Join-Path $env:RUNNER_TEMP 'llvm-mingw-20261020-msvcrt-x86_64')" >> $env:GITHUB_ENV
+      - name: Build the C runtime test programs with MSVC and llvm-mingw
         if: steps.changes.outputs.code == 'true'
         run: cargo xtask windows-programs
       - uses: actions/upload-artifact@v7
@@ -309,9 +948,44 @@ jobs:
         shell: bash
         run: for arch in aarch64 riscv64 x86_64; do cargo xtask build --arch "$arch"; done
 
+  run-scripts-windows:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Detect run script and MCP channel changes
+        id: scripts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=$(gh api --paginate repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files --jq ".[].filename")
+          if echo "$files" | grep -qE '^(xtask/src/release\.rs|xtask/src/qemu|userland/mcp/|kernel/src/agent_channel\.rs|\.github/workflows/ci\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "No change to the run scripts or the MCP channel: run-eggos.ps1 not booted."
+          fi
+      - uses: actions/checkout@v7
+        if: steps.scripts.outputs.run == 'true'
+        with:
+          fetch-depth: 1
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        if: steps.scripts.outputs.run == 'true'
+        run: rustup toolchain install
+      - name: Install QEMU
+        if: steps.scripts.outputs.run == 'true'
+        run: choco install qemu --version 2026.8.11 --no-progress -y
+      - name: Boot the release image through run-eggos.ps1 (serial, host folder, MCP)
+        if: steps.scripts.outputs.run == 'true'
+        run: cargo xtask run-scripts --arch x86_64
+
   check:
     if: always()
-    needs: [changes, fast, qemu, bench, macos-programs, windows-programs, hosts]
+    needs: [changes, fast, qemu, dynamic-linking, static-glibc, android-dynamic, rustc-version, hello-crate, workspace-build, sdl3, sdl-app, win32-app, autohotkey, cocoa-app, gtk-app, qt-app, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -9,7 +9,10 @@
 //! and starts it again when it ends (`agent_server.rs`, D136). When a display exists, it also
 //! starts the Wayland server, `eggway`, and starts it again when it ends (`display_server.rs`,
 //! D140); every program it starts finds the Wayland socket through `XDG_RUNTIME_DIR` and
-//! `WAYLAND_DISPLAY`.
+//! `WAYLAND_DISPLAY`. Asked to power off, restart or halt (`poweroff`, `reboot`, `halt`, the
+//! desktop's power menu), or when the login program ends and the configuration says to, init
+//! ends every other process, `SIGTERM` first and `SIGKILL` for those left, then takes the
+//! machine down (`shutdown.rs`, D183).
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 
@@ -21,6 +24,8 @@ mod backoff;
 mod config;
 #[cfg(any(test, target_env = "musl"))]
 mod display_server;
+#[cfg(any(test, target_env = "musl"))]
+mod shutdown;
 #[cfg(target_env = "musl")]
 mod system;
 

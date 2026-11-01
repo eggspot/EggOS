@@ -109,6 +109,11 @@ pub(super) struct Window {
     pub not_responding: bool,
     pub focus_serial: u32,
     pub hidden_by_show_desktop: bool,
+    /// The virtual desktop a normal window is on, from 0 (D204).
+    pub desktop: u8,
+    /// How many times [`flags::PERSON_VIEW_ONLY`] has turned on, so a capture that copied
+    /// while it was off can tell it turned on meanwhile (D193).
+    pub view_only_turns: u32,
 }
 
 impl Window {
@@ -142,6 +147,8 @@ impl Window {
             not_responding: false,
             focus_serial: 0,
             hidden_by_show_desktop: false,
+            desktop: 0,
+            view_only_turns: 0,
         }
     }
 
@@ -204,6 +211,14 @@ impl Window {
 
     pub fn takes_ctrl_keys(&self) -> bool {
         self.flags & flags::TAKES_CTRL_KEYS != 0
+    }
+
+    pub fn takes_person_input_only(&self) -> bool {
+        self.flags & flags::PERSON_INPUT_ONLY != 0
+    }
+
+    pub fn is_person_view_only(&self) -> bool {
+        self.flags & flags::PERSON_VIEW_ONLY != 0
     }
 
     pub fn is_resizable(&self) -> bool {

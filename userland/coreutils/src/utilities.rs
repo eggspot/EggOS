@@ -1,17 +1,32 @@
+use crate::agent::agent;
 use crate::agentlog::agentlog;
 use crate::cat::cat;
+use crate::chmod::chmod;
+use crate::clip::clip;
 use crate::date::date;
+use crate::device::device;
+use crate::df::df;
 use crate::echo::echo;
+use crate::fetch::fetch;
 use crate::file_changes::{cp, mkdir, mv, rm, touch};
 use crate::grep::grep;
 use crate::head::{head, tail};
+use crate::help::help;
 use crate::hwclock::hwclock;
+use crate::ip::ip;
+use crate::kill::kill;
+use crate::links::{ln, readlink};
+use crate::logcat::logcat;
 use crate::ls::{Listing, ls};
+use crate::nslookup::nslookup;
 use crate::output::{FAILURE, Output};
+use crate::ping::ping;
 use crate::power::{HALT, POWER_OFF, RESTART, power, sync};
 use crate::processes::{free, ps, uptime};
+use crate::properties::{getprop, setprop};
 use crate::sleep::sleep;
 use crate::system::{STANDARD_ERROR, STANDARD_OUTPUT, System};
+use crate::taskset::taskset;
 use crate::tee::tee;
 use crate::trash::trash;
 use crate::uname::uname;
@@ -27,27 +42,44 @@ const UTILITY_NOT_FOUND: i32 = 127;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Utility {
+    Agent,
     Agentlog,
     Cat,
+    Chmod,
+    Clip,
     Cp,
     Date,
+    Device,
+    Df,
     Echo,
     False,
+    Fetch,
     Free,
+    Getprop,
     Grep,
     Halt,
     Head,
+    Help,
     Hwclock,
+    Ip,
+    Kill,
+    Ln,
+    Logcat,
     Ls,
     Mkdir,
     Mv,
+    Nslookup,
+    Ping,
     Poweroff,
     Ps,
+    Readlink,
     Reboot,
     Rm,
+    Setprop,
     Sleep,
     Sync,
     Tail,
+    Taskset,
     Tee,
     Touch,
     Trash,
@@ -59,28 +91,45 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 46] = [
+        Self::Agent,
         Self::Agentlog,
         Self::Cat,
+        Self::Chmod,
+        Self::Clip,
         Self::Cp,
         Self::Date,
+        Self::Device,
+        Self::Df,
         Self::Echo,
         Self::False,
+        Self::Fetch,
         Self::Free,
+        Self::Getprop,
         Self::Grep,
         Self::Halt,
         Self::Head,
+        Self::Help,
         Self::Hwclock,
+        Self::Ip,
+        Self::Kill,
+        Self::Ln,
+        Self::Logcat,
         Self::Ls,
         Self::Mkdir,
         Self::Mv,
+        Self::Nslookup,
+        Self::Ping,
         Self::Poweroff,
         Self::Ps,
+        Self::Readlink,
         Self::Reboot,
         Self::Rm,
+        Self::Setprop,
         Self::Sleep,
         Self::Sync,
         Self::Tail,
+        Self::Taskset,
         Self::Tee,
         Self::Touch,
         Self::Trash,
@@ -93,27 +142,44 @@ impl Utility {
 
     pub fn name(self) -> &'static [u8] {
         match self {
+            Self::Agent => b"agent",
             Self::Agentlog => b"agentlog",
             Self::Cat => b"cat",
+            Self::Chmod => b"chmod",
+            Self::Clip => b"clip",
             Self::Cp => b"cp",
             Self::Date => b"date",
+            Self::Device => b"device",
+            Self::Df => b"df",
             Self::Echo => b"echo",
             Self::False => b"false",
+            Self::Fetch => b"fetch",
             Self::Free => b"free",
+            Self::Getprop => b"getprop",
             Self::Grep => b"grep",
             Self::Halt => b"halt",
             Self::Head => b"head",
+            Self::Help => b"help",
             Self::Hwclock => b"hwclock",
+            Self::Ip => b"ip",
+            Self::Kill => b"kill",
+            Self::Ln => b"ln",
+            Self::Logcat => b"logcat",
             Self::Ls => b"ls",
             Self::Mkdir => b"mkdir",
             Self::Mv => b"mv",
+            Self::Nslookup => b"nslookup",
+            Self::Ping => b"ping",
             Self::Poweroff => b"poweroff",
             Self::Ps => b"ps",
+            Self::Readlink => b"readlink",
             Self::Reboot => b"reboot",
             Self::Rm => b"rm",
+            Self::Setprop => b"setprop",
             Self::Sleep => b"sleep",
             Self::Sync => b"sync",
             Self::Tail => b"tail",
+            Self::Taskset => b"taskset",
             Self::Tee => b"tee",
             Self::Touch => b"touch",
             Self::Trash => b"trash",
@@ -131,27 +197,44 @@ impl Utility {
 
     fn run<S: System>(self, output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         match self {
+            Self::Agent => agent(output, arguments),
             Self::Agentlog => agentlog(output, arguments),
             Self::Cat => cat(output, arguments),
+            Self::Chmod => chmod(output, arguments),
+            Self::Clip => clip(output, arguments),
             Self::Cp => cp(output, arguments),
             Self::Date => date(output, arguments),
+            Self::Device => device(output, arguments),
+            Self::Df => df(output, arguments),
             Self::Echo => echo(output, arguments),
             Self::False => FAILURE,
+            Self::Fetch => fetch(output, arguments),
             Self::Free => free(output, arguments),
+            Self::Getprop => getprop(output, arguments),
             Self::Grep => grep(output, arguments),
             Self::Halt => power(output, arguments, HALT),
             Self::Head => head(output, arguments),
+            Self::Help => help(output, arguments),
             Self::Hwclock => hwclock(output, arguments),
+            Self::Ip => ip(output, arguments),
+            Self::Kill => kill(output, arguments),
+            Self::Ln => ln(output, arguments),
+            Self::Logcat => logcat(output, arguments),
             Self::Ls => ls(output, &mut Listing::new(), arguments),
             Self::Mkdir => mkdir(output, arguments),
             Self::Mv => mv(output, arguments),
+            Self::Nslookup => nslookup(output, arguments),
+            Self::Ping => ping(output, arguments),
             Self::Poweroff => power(output, arguments, POWER_OFF),
             Self::Ps => ps(output, arguments),
+            Self::Readlink => readlink(output, arguments),
             Self::Reboot => power(output, arguments, RESTART),
             Self::Rm => rm(output, arguments),
+            Self::Setprop => setprop(output, arguments),
             Self::Sleep => sleep(output, arguments),
             Self::Sync => sync(output, arguments),
             Self::Tail => tail(output, arguments),
+            Self::Taskset => taskset(output, arguments),
             Self::Tee => tee(output, arguments),
             Self::Touch => touch(output, arguments),
             Self::Trash => trash(output, arguments),

@@ -426,6 +426,30 @@ impl<F: Format> PageTables<F> {
         })
     }
 
+    /// For a user address space's tables (copy-on-write `fork`, D169): hands every 4 KiB page
+    /// of user space that is mapped, or kept ([`Entry::Kept`]), to `page` in address order, as
+    /// [`Self::for_each_mapped_user_page`] does, and gives a mapped page the attributes `page`
+    /// returns, if any, keeping its frame. The tables may be in use: the caller drops what CPUs
+    /// cached of the entries it changed. An error from `page` stops the walk.
+    pub fn fork_user_pages(
+        &mut self,
+        mut page: impl FnMut(u64, u64, Option<Attributes>) -> Result<Option<Attributes>, MapError>,
+    ) -> Result<(), MapError> {
+        if !self.user_half_only {
+            return Err(MapError::NotUser);
+        }
+        self.for_each_user_page(0, F::USER_END, |virt, entry, frame, attributes| {
+            match page(virt, frame, attributes)? {
+                Some(changed) if changed.user && attributes.is_some() => {
+                    entry.write(F::leaf(frame, 0, changed));
+                }
+                Some(_) => return Err(MapError::NotUser),
+                None => {}
+            }
+            Ok(())
+        })
+    }
+
     /// For a user address space's tables: maps the 4 KiB page at user address `virt` to
     /// `frame` with `attributes`, a user mapping, or keeps `frame` there with no access if
     /// `attributes` is `None` ([`Entry::Kept`]). Tables it lacks come from `frames`. Nothing may
@@ -905,7 +929,8 @@ pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'stati
     if overlaps_early_devices::<P>(free_memory) {
         return Err("free memory overlaps an early device's registers");
     }
-    let mut frames = FrameAllocator::new(free_memory, P::physical_memory_offset());
+    let (reachable, beyond) = split_at(free_memory, P::boot_direct_map_end());
+    let mut frames = FrameAllocator::new(&reachable, P::physical_memory_offset());
     let mut page_tables =
         kernel_page_tables::<P>(&mut frames, &direct_map).map_err(MapError::description)?;
     // SAFETY: `kernel_page_tables` built tables in `P`'s format mapping the kernel image at
@@ -916,9 +941,43 @@ pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'stati
     // through the direct map, as the boot page tables already had it.
     unsafe { P::activate_page_tables(page_tables.roots()) };
     page_tables.mark_active();
+    let mut frames = with_memory_beyond(frames, &beyond, P::physical_memory_offset());
     memory::record_total_frames(frames.free_frames());
+    frames.set_user_reserve(memory::user_reserve_for(frames.free_frames()));
     *memory::FRAMES.lock() = Some(frames);
     Ok(Memory { page_tables })
+}
+
+fn split_at(memory: &MemoryMap, end: u64) -> (MemoryMap, MemoryMap) {
+    let mut below = memory.clone();
+    below.retain_within(PhysicalRange { start: 0, end });
+    let mut beyond = memory.clone();
+    beyond.retain_within(PhysicalRange {
+        start: end,
+        end: u64::MAX,
+    });
+    (below, beyond)
+}
+
+fn with_memory_beyond(
+    frames: FrameAllocator,
+    beyond: &MemoryMap,
+    physical_memory_offset: usize,
+) -> FrameAllocator {
+    if beyond.ranges().is_empty() {
+        return frames;
+    }
+    let Some(mut all) = frames.untouched_memory() else {
+        return frames;
+    };
+    let before = all.total() + beyond.total();
+    for range in beyond.ranges() {
+        all.add_ram(*range);
+    }
+    if all.total() != before {
+        return frames;
+    }
+    FrameAllocator::new(&all, physical_memory_offset)
 }
 
 #[cfg(test)]
@@ -930,6 +989,29 @@ mod tests {
     use eggos_hal::paging::{MemoryType, leaf_size};
 
     const K: u64 = FRAME_SIZE;
+
+    #[test]
+    fn free_memory_is_split_where_the_boot_direct_map_ends() {
+        let gib = 1 << 30;
+        let mut memory = MemoryMap::new();
+        memory.add_ram(PhysicalRange::from_start_length(K, 2 * gib));
+        memory.add_ram(PhysicalRange::from_start_length(4 * gib, 2 * gib));
+        let (below, beyond) = split_at(&memory, 4 * gib);
+        assert_eq!(
+            below.ranges(),
+            [PhysicalRange::from_start_length(K, 2 * gib)]
+        );
+        assert_eq!(
+            beyond.ranges(),
+            [PhysicalRange::from_start_length(4 * gib, 2 * gib)]
+        );
+        let (all, none) = split_at(&memory, u64::MAX);
+        assert_eq!(all.ranges(), memory.ranges());
+        assert!(none.ranges().is_empty());
+        let (low, high) = split_at(&memory, gib);
+        assert_eq!(low.ranges(), [PhysicalRange { start: K, end: gib }]);
+        assert_eq!(high.total(), memory.total() - (gib - K));
+    }
 
     /// Host memory standing in for `frames` frames of RAM at physical 0x10_0000, and an
     /// allocator over them.

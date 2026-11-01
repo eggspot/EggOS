@@ -17,18 +17,24 @@ Must-have, in order:
    reads (D101).
 4. **done** — VFS core and a read-only initramfs (cpio, embedded by xtask): `openat`, `read`,
    `pread64`, `lseek`, `getdents64`, `fstat`/`newfstatat`/`statx` on files, `getcwd`, `chdir`,
-   `fchdir` (D102). Later slices of issue #94: tmpfs, devfs, symbolic links, the dentry cache.
+   `fchdir` (D102). Later slices of issue #94: tmpfs, devfs, symbolic links (D168, D170), the
+   dentry cache.
 5. **done** — `execve` and `execveat` from a file: a new process with the caller's id, handlers
    reset, close-on-exec descriptors closed, other threads ended (D103).
 6. **done** — process creation: `clone` without `CLONE_THREAD`, `fork` and `vfork`, the
-   memory copied at once or shared with `CLONE_VM`, the parent sleeping until a `vfork` child
-   execs or ends, children's exit records kept for `wait4` (D104). Follow-up: copy-on-write,
-   and with it shared anonymous memory across `fork` (refused with `ENOSYS` until then).
+   memory copied (copy on write since D169) or shared with `CLONE_VM`, the parent sleeping until a `vfork` child
+   execs or ends, children's exit records kept for `wait4` (D104). (Copy on write, shared
+   anonymous memory across `fork`, `MADV_DONTFORK` and `MADV_WIPEONFORK`: checked in QEMU,
+   D169.)
 7. **done** — `wait4` and `waitid`, zombies kept in a process table until reaped, orphans
    reparented (nearest subreaper, then init, then the kernel), `SIGCHLD`, `setpgid`,
    `getpgid`, `setsid`, `getsid`, `TIOCSCTTY`/`TIOCGPGRP`/`TIOCSPGRP`/`TIOCGSID`, `^C` to the
-   console's foreground group (D105). Follow-ups: stop and continue (`WUNTRACED`, `SIGTTIN`,
-   `SIGTTOU`), `kill` to other processes and groups (init is named as pid 1 by item 8).
+   console's foreground group (D105). Since then: users can stop and continue programs (D181):
+   the stop signals stop a whole process until `SIGCONT`, `^Z` sends `SIGTSTP`, `WUNTRACED` and
+   `WCONTINUED` report it to the parent with `CLD_STOPPED` and `CLD_CONTINUED`, a background
+   group gets `SIGTTIN` and `SIGTTOU` at the console, an orphaned group with stopped members is
+   hung up, and programs get `SIGWINCH`; `kill` reaches other processes and groups. Next:
+   `TOSTOP`, `SIGCONT` across users within a session.
 8. **done** — init as pid 1: the release kernel starts every CPU and runs `/init` from the
    initramfs as process 1, the process orphans go to, instead of halting; `userland/init`
    starts the login program from `/etc/eggos/init.conf` (default `/bin/eggsh`, a banner and
@@ -36,8 +42,13 @@ Must-have, in order:
    respawns it with a back-off or takes the machine down as configured; `reboot(2)` powers
    off, halts and resets through the HAL on all three, parking the other CPUs first; a QEMU
    test per architecture boots the release kernel into a test init that powers off, and
-   another that resets (D106). Follow-ups: init's shutdown signals once `kill` reaches other
-   processes, a protected init (`SIGKILL` and default actions not delivered to pid 1).
+   another that resets (D106). Since then: init cannot be killed (D137), and the machine goes
+   down through init (D183): `poweroff`, `reboot`, `halt` and the desktop's power menu ask it
+   with systemd's signals, and it sends every other program `SIGTERM` (and `SIGCONT`), then
+   `SIGKILL` to those left after 3 s, before `sync` and `reboot(2)`, as it does when the login
+   program ends and its configuration says to; `kill(-1)` reaches every process but the caller
+   and init; process ids are reused once all 4194303 have been given out, never one still in
+   use. Next: `shutdown` with a delay and a message to users, and futex spaces reused too.
 9. **done** — the `eggsh` shell (`userland/eggsh`, at `/bin/eggsh` in the release kernel's
    initramfs, which init starts): a prompt, quoting, `$` expansion, assignments and an
    environment prefix, `;` and comments, `PATH` search, the builtins `cd`, `pwd`, `exit`,
@@ -46,16 +57,21 @@ Must-have, in order:
    process group of its own that has the console, so `^C` reaches only it, and `^C` at the
    prompt a fresh prompt; pipes, redirections, `&&`, `||`, `&` refused as not supported yet
    (item 16); a QEMU test per architecture drives a session on the serial console (D107,
-   docs/shell.md). Follow-ups: globbing, `$(...)`, functions and control flow, line editing
-   and history.
+   docs/shell.md). Since then: users can run `a && b`, `a || b` and background jobs `a &`, and
+   use `jobs`, `fg`, `bg`, `wait`, `kill` and `^Z`, `2>` and `2>&1`, move the cursor within a
+   line and keep their history across sessions (D181); and write scripts in the POSIX
+   language: wildcards, `$(...)`, here-documents, subshells, `${NAME:-word}` and the other
+   operators, `$@`, `if`, `while`, `until`, `for`, `case`, functions with `local`, and `test`,
+   `read`, `eval`, `shift` and `set -e` (D182). Next: arithmetic `$((...))`, `printf`, `trap`
+   and `getopts`.
 10. **done** — the core utilities as one multi-call program (`userland/coreutils`, at
     `/bin/coreutils` with `cat`, `echo`, `false`, `halt`, `ls`, `poweroff`, `reboot`, `sleep`,
     `true` and `uname` as hard links to it, which the initramfs now supports: one copy of the
     data), and a boot-to-prompt QEMU test on all three architectures in CI: the release kernel
     boots to the shell's prompt, the test runs each utility and powers off with `poweroff`, and
-    reports the time to the first prompt (D108, docs/coreutils.md). Follow-ups: `ls` in
-    columns on a terminal and with user names, more utilities (`mkdir`, `rm`, `cp` once there
-    is a writable file system), `poweroff` through init.
+    reports the time to the first prompt (D108, docs/coreutils.md). Since then: many more
+    utilities, `ls` in columns on a terminal (`-C`, `-1`), and `poweroff` through init (D183).
+    Next: `ls` with user names.
 11. **done** — design done (D109): UI design (Claude Fable, D16) for the boot screen,
     the terminal and a minimal desktop is in `docs/ux/desktop-v0.3.md` (with `terminal-v0.3.md`
     and the font `font-8x16.txt`), including the rendering plan and the acceptance criteria for
@@ -77,9 +93,14 @@ Must-have, in order:
     buttons and the wheel go into a lock-free input event queue of 256 for the desktop;
     `boot: input keyboard pointer`. The boot-to-prompt test types two of its lines on the
     virtio keyboard through QMP `input-send-event`, and a self-test checks the pointer,
-    button, wheel and key events QMP sends. Polled from a thread that exists only with an
-    input device (8 ms while active, 32 ms idle) until device interrupts (issue #97 slice 3).
-    Follow-ups: device interrupts, the keyboard layout setting, LEDs (the status queue).
+    button, wheel and key events QMP sends. On device interrupts since D184 (batch part 32):
+    the input thread sleeps until a device interrupts or a held key repeats (`input: on
+    interrupts` in the boot log, checked by the boot-to-prompt test on all three), polling
+    only when a device's interrupt cannot be routed. Keyboard layouts since D185 (batch part
+    33): 14 layouts with dead keys and the AltGr/Option layer, chosen with `keyboard.layout`
+    (Settings' Keyboard pane, `settings set`, MCP `settings_set`), Caps Lock's light through
+    the status queue; the boot-to-prompt test types `é` with the German layout's dead acute
+    through QMP and checks the frame. Follow-ups: D185's "Not yet".
 13. **done** — graphical terminal (D114, docs/drivers.md): the Egg Mono 8x16 font (the design
     file's 95 ASCII glyphs, checked by a host test, and the box drawing, block, shape and arrow
     extras) and the terminal emulator of `terminal-v0.3.md` in `eggos-drivers` (cell grid,
@@ -103,13 +124,21 @@ Must-have, in order:
     alongside, and `TIOCGWINSZ` is 80x24 like the serial side; `boot: terminal 80x24`. The
     boot-to-prompt test compares QEMU's `screendump` pixel for pixel with the host's render of
     the desktop and the serial bytes at the first prompt, then minimises, restores and drags
-    the window through QMP and checks each frame, on all three architectures. Next, as user
-    capabilities: users can double-click the title bar to maximise the terminal; users see a
-    pointer drawn by the GPU's cursor queue and hover highlights on the bar and controls;
-    users see a boot screen with the logo and progress before the desktop; users can drag a
-    window partly off screen; users see the wall clock once an RTC driver sets it (done, D150); users with a display smaller than
-    658x458 get a full-screen terminal; console output never waits for the desktop's repaint
-    (D115's review follow-ups).
+    the window through QMP and checks each frame, on all three architectures. Since then
+    (D186): users see a boot screen with the logo, `EggOS`, the version and a four-stage
+    progress until the first prompt; the pointer is drawn by the GPU's cursor queue (moving it
+    redraws nothing); the `Hand` and `Busy` pointers (the server's `Busy` over a window that
+    does not answer); windows dragged partly off the right and bottom edges; F11 shows the
+    desktop in the macOS profile; a display smaller than the desktop gets a full-screen
+    terminal; the cursor blinks, and is an outline while the terminal is unfocused; console
+    output never waits for the desktop's repaint; `TERM=xterm` in init's environment; the
+    window controls' pressed look came with D156; the wall clock with D150. Since D187: users
+    open as many terminal windows as they like (the launcher's Terminal, `terminal`, Ctrl+Shift+N
+    or Cmd+N in a terminal), resize, maximise and close them, programs set their titles, and
+    agents capture, read and type into them like any window; the kernel's window is now titled
+    `Console`. Next, as user capabilities: users can drag a window partly off the left edge; the
+    display follows a window resized by the host (display mode change events); users can copy
+    and paste in terminals and run installed console apps in a terminal window of their own.
 15. **done** — users can now download one image per architecture, `SHA256SUMS` and a run
     script, run it, and boot EggOS in a QEMU window with its desktop and terminal, or on the
     serial console alone with `--serial`, at an `eggsh` prompt (D116): `cargo xtask release`
@@ -133,11 +162,13 @@ Must-have, in order:
     standard musl toolchain as a static executable and with `relocation-model=pie` (a static PIE on
     x86_64), and runs it at the prompt, by name and by path: arguments, environment, standard
     output and error, a file, a directory listing, the clocks, a `HashMap`, threads, the CPU count,
-    exit statuses and an aborting panic. Next, as user capabilities: users' programs can start
-    other programs (`std::process::Command`, `posix_spawn`, `system`, `popen`) once pipes exist;
-    users can run static glibc programs, tested in CI; users can choose a program's CPUs
-    (`sched_setaffinity`); users can add programs to a running system once there is a writable file
-    system; static PIEs built for aarch64 and riscv64 are tested too.
+    exit statuses and an aborting panic. Users can run static glibc programs, static
+    executables and static PIEs, on all three architectures, and static PIEs built for aarch64
+    and riscv64 are tested too: CI's `static-glibc` job boots the same program linked against
+    glibc both ways (D188, with `AT_PLATFORM`). Next, as user capabilities: users' programs can
+    start other programs (`std::process::Command`, `posix_spawn`, `system`, `popen`) once pipes
+    exist; users can choose a program's CPUs (`sched_setaffinity`); users can add programs to a
+    running system once there is a writable file system.
 17. **done** — Android: users can now run Android console programs from `eggsh` on aarch64 and
     x86_64 (D119, docs/android-programs.md): a static program built with the Android NDK, with
     bionic's own start-up code and C library, runs natively through the Linux layer, which
@@ -148,9 +179,19 @@ Must-have, in order:
     System properties all read as unset (no property area). A QEMU test on aarch64 and x86_64,
     run in CI with the runner's NDK, links a program from our own source against bionic and
     checks stdio, files, directories, the heap, clocks, threads, properties, `getauxval`,
-    `arc4random`, `system()`, exit statuses and `abort`. Next, as user capabilities: users'
-    programs can read system properties (a property service); users can run Android programs
-    on riscv64 and dynamically linked ones; then apps (`.apk`).
+    `arc4random`, `system()`, exit statuses and `abort`. Users' programs now read system
+    properties (D188): the kernel's property service keeps them in bionic's property area at
+    `/dev/__properties__`, sets `/system/build.prop`'s at boot, and `getprop` and `setprop`
+    (CLI and MCP tools) read and set them. Users can read their programs' logs (D188): the kernel
+    takes liblog's datagrams on `/dev/socket/logdw` (`AF_UNIX` datagram sockets) and keeps a
+    64 KiB log that `logcat` (CLI and MCP tool) prints and clears. Users can run dynamically
+    linked Android programs on aarch64 and x86_64 (D188): Android's own `linker64` and
+    bionic's `libc.so`, `libm.so` and `libdl.so` from AOSP's runtime module, which
+    `cargo xtask image --add` puts under `/system` with a linker configuration for an image
+    with such a program; a QEMU test in CI runs the test program linked dynamically. Next, as
+    user capabilities: users can run Android programs on riscv64 (the kernel first runs the
+    vector extension, which bionic's riscv64 string functions use) and programs that use
+    `liblog.so` and the other platform libraries; then apps (`.apk`).
 18. **done** — Windows, part 1: users can now run Windows console programs from `eggsh` on
     x86_64 (D118, docs/windows-programs.md): an unmodified PE32+ console program runs
     natively through the Windows layer, an optional component at `/usr/lib/eggos/windows` that
@@ -183,9 +224,30 @@ Must-have, in order:
     the layer and before every call into the program, per-thread TEBs in `tpidr_el0`, an
     aarch64 thread start and `__chkstk`. A QEMU test on all three runs part 1's program and
     `windows-tools.exe` built for `aarch64-pc-windows-msvc` on aarch64 with the same lines and
-    exit codes as on x86_64. Next, as user capabilities: other processes (`CreateProcessW`,
-    pipes), programs built on Rust's std or a C runtime (MSVC's, MinGW's), x64 programs on Arm
-    through ahead-of-time translation (D121's and D124's "Not yet").
+    exit codes as on x86_64. Users can now run Windows programs that start other programs and
+    read their output (D189): `CreateProcessW` and `CreateProcessA`, anonymous pipes with
+    `PeekNamedPipe`, inherited, duplicated and protected handles, and waits, exit codes and
+    `TerminateProcess` on children, checked by `eggspawn.exe` from our own C source in the
+    Windows C runtime boot test on x86_64 and aarch64. Users can now run Windows programs
+    built on Rust's standard library (D189, slice 37b): `Command` with piped output, files,
+    threads, locks, clocks and panics, checked by `eggrust.exe` from our own Rust source in the
+    same boot test. Users can now run C programs built by MinGW against `msvcrt.dll` (D189,
+    slice 37b2): MinGW's startup and `printf`, the old runtime's variadic `printf` family,
+    streams, the heap, `qsort`, `getenv`, `signal` and `atexit`, checked by `eggmingw.exe`
+    from our own C source, built by llvm-mingw in CI, in the same boot test. Next, as user
+    capabilities: the rest of std (`fs::copy`, links, `File::lock`, networking) and MinGW
+    DLLs; users can now run programs that queue APCs and wait alertably, see abandoned mutexes,
+    import ws2_32 by ordinal and search with DOS wildcards (D189, slice 37c, checked by
+    `eggsync.exe`); users can now run programs that share named mutexes, events, semaphores
+    and file mappings with other programs, map files and memory into views, call
+    `SignalObjectAndWait` and get wildcard arguments expanded (D189, slice 37d, checked by
+    `eggnamed.exe`); then x64 programs on Arm through ahead-of-time translation (D121's and
+    D124's "Not yet"): designed in D191 (docs/translation.md), with its x86-64 decoder in the
+    new `translate/` crate (slice 39a); x64 Windows programs run translated on aarch64 and install
+    as apps (39b-39e1), and so do x86_64 macOS programs, callbacks included (39e2a-39e2c);
+    users can now install them translated at once, with the refused count, see the refused
+    sites with `app show` (and the MCP tool `app_show`), and uninstall them with their cache
+    (39e2d); the translated-loop benchmark is D191's "Not yet".
 20. **done** — macOS, part 1: users can now run macOS console programs from `eggsh` on aarch64
     (arm64 programs) and x86_64 (x86_64 programs), thin or fat (D120,
     docs/macos-programs.md): an optional macOS layer at `/usr/lib/eggos/macos`, which
@@ -198,6 +260,10 @@ Must-have, in order:
     name (126). The kernel's `execve` starts the layer for Mach-O and fat files (not Java
     class files) on aarch64 and x86_64; riscv64 refuses them with `ENOEXEC`. A QEMU test on all
     three boots programs built from our own source by Apple's linker (on CI's macOS runner).
+    Programs without chained fixups run too (D190, slice 38c): `LC_DYLD_INFO` rebase, bind
+    and lazy-bind opcodes, lazy pointers bound at load, and x86_64 programs for Mac OS X 10.7
+    and earlier that start at `LC_UNIXTHREAD`, checked by `macos-legacy`, built for 10.7
+    without chained fixups (macOS 11 on arm64).
 21. **done** — macOS, part 2: users can now run small real macOS console tools from `eggsh`:
     `getopt`/`getopt_long`, directory listing, calendar time (`gmtime_r`, `localtime_r`,
     `timegm`, `strftime`, in UTC), `errno` per thread with `strerror`, C-locale `setlocale`,
@@ -205,24 +271,43 @@ Must-have, in order:
     directories, `std::thread`, `Mutex`, `thread_local!`) on aarch64 and x86_64 (D123,
     docs/macos-programs.md): threads with their own control blocks behind the thread pointer,
     Mach-O thread-local variables, pthread keys, mutexes, condition variables and once,
-    libdispatch semaphores, `mmap`, `fcntl`, `writev` and `dlsym`. Signal handlers are recorded
-    but not delivered, and the unwinder, time zones, other locales, programs without chained
-    fixups, other dylibs and frameworks, and x86_64 programs on Arm come later (D123's "Not
-    yet").
+    libdispatch semaphores, `mmap`, `fcntl`, `writev` and `dlsym`. The unwinder, time zones,
+    other locales, programs without chained fixups, other dylibs and frameworks, and x86_64
+    programs on Arm come later (D123's "Not yet"; x86_64 programs on Arm are designed in D191,
+    docs/translation.md, which they share with Windows; users can now run x86_64 macOS console
+    programs on aarch64, translated ahead of time, with the layer calling their handlers,
+    comparators, threads, blocks and Objective-C methods through native thunks, D191 slices
+    39e2a-39e2c, checked by the macOS programs boot test on aarch64, and translated at install,
+    39e2d). Users can now run macOS programs that handle
+    signals and start other programs (D190, slice 38a): handlers with Darwin's numbers and
+    `siginfo_t`, masks, `sigsuspend`, `sigpending` and alternate stacks; `fork`, the `exec`
+    family, `posix_spawn` and `posix_spawnp` with file actions and attributes, pipes, `dup2`,
+    `waitpid` and `wait4`, and `popen` and `system` through EggOS's shell, checked by
+    `macos-process` from our own C source, built by Apple's clang in CI, in the macOS programs
+    boot test on aarch64 and x86_64. Slice 38b: `scanf`, `fscanf`, `sscanf` and their
+    `va_list` forms on the scanner the Windows layer now shares, with Darwin's sizes and
+    what a number does not use put back, and `strspn`, `strcspn` and `strpbrk`, checked by
+    `macos-text`. Slice 38b2: locales other than C: `setlocale` per category with C.UTF-8,
+    en_US.UTF-8 and UTF-8, names from the environment and composite names, en_US's
+    `nl_langinfo`, `localeconv` and `%x`, UTF-8 `mbrtowc` and its family, `isalpha` and
+    `towupper` over Latin-1 through `__DefaultRuneLocale` and `___maskrune`, `strptime`, and
+    wide `scanf` fields as UTF-8, checked by `macos-text`. Slice 38c: `getopt_long` and
+    `getopt_long_only` reorder words as a Mac does (`+`, `-` and `POSIXLY_CORRECT` included),
+    with a Mac's messages, checked by `macos-legacy`. Next: D190's "Not yet".
 22. **done** — users can now pipe commands and redirect input and output from `eggsh` (D125,
     docs/shell.md): `a | b | c` runs its programs at the same time, piped, in one process
     group that `^C` reaches, with the last one's status; `<`, `>` and `>>` on builtins and
     programs; the kernel's pipes (`pipe`, `pipe2`, blocking and non-blocking reads and writes,
     end of file, `EPIPE` and `SIGPIPE`, `poll`); a history of the last lines on the up and down
     arrows, on the serial and graphical terminals; `grep`, `wc`, `head` and `tail`; and `ps`,
-    `free` and `uptime` from a minimal `/proc` (`meminfo`, `uptime`, `ps`). Next, as user
-    capabilities: `2>` and `2>&1`; moving the cursor within a line; `/proc/self` and
-    `/proc/<pid>`; the utilities' GUI and MCP front-ends (M14).
+    `free` and `uptime` from a minimal `/proc` (`meminfo`, `uptime`, `ps`). Since then:
+    `2>` and `2>&1`, moving the cursor within a line and a history kept across sessions (D181),
+    `/proc/self` and `/proc/<pid>` (D168). Next: the utilities' GUI and MCP front-ends (M14).
 23. **done** — users can now create and change files from `eggsh` (D125, docs/coreutils.md):
     `/tmp` and `/home` are writable file systems in memory (files and directories, at most
     half of the memory together, `ENOSPC` past it), with `cp`, `mv`, `rm` (`-r`, `-f`), `mkdir`
-    (`-p`) and `touch`. Nothing survives a reboot. Next, as user capabilities: a file removed
-    while open stays readable until its last close; `cp -r`; files that survive a reboot (a disk driver and a disk file system).
+    (`-p`) and `touch`. Nothing survives a reboot. Since then: a file removed while open stays
+    readable until its last close (D170), files survive a reboot (D131). Next: `cp -r`.
 
 The GUI block (owner, 2026-10-27, D126): v0.3.0 must install and open Windows, macOS and Linux
 apps in windows on the desktop; console programs alone are not enough. In this order, after
@@ -238,8 +323,9 @@ D16):
     control, a double-click on the title bar, Super+Up/Down), snap to halves, the drawn pointer
     and its shapes, Alt+Tab and the switcher, Alt+F4 and Cmd+W, the window menu (Alt+Space),
     show desktop, the 2 s rule for a program that does not answer a close request, and the
-    `wm` command. Next: windows partly off screen, a profile setting (item 34), `wm`'s MCP
-    tools (with the MCP server).
+    `wm` command. Since then: a profile setting (item 34), `wm`'s MCP tools, windows partly off
+    the right and bottom edges, F11, the `Hand` and `Busy` pointers (D186). Next: windows
+    partly off the left edge.
 32. **done** — users can now run Windows GUI programs from `eggsh` and see their windows on
     the desktop (D129, docs/windows-programs.md): x64 on x86_64 and ARM64 on aarch64, the
     layer's own user32 and gdi32 over `/dev/window`: window classes, windows with EggOS's
@@ -262,8 +348,15 @@ D16):
     `/Applications` on it; disks are told apart by what they hold; virtio-blk writes and
     flushes; `sync`, `syncfs`, `fsync`, `fdatasync`, the `sync` utility and a sync before
     power-off; a committer every 5 s; host crash tests at every write and a QEMU power cut.
-    Next: a repair tool, links, a format command in EggOS with its three front-ends, several
-    requests in flight.
+    Since then: symbolic and hard links, on-disk version 2 (D170); a checker and repairer for
+    unmounted disks (read-only or repairing, `lost+found`, idempotent), formatting part of a
+    disk with a label, and an in-memory name index so directories of thousands of entries look
+    names up in one block (D192); then the disks as `/dev/vda` to `/dev/vdd` and
+    `/proc/driver/disks`, and listing, checking, repairing and formatting an unmounted disk
+    from the `disk` command, the MCP tools `disk_list`, `disk_check`, `disk_repair` and
+    `disk_format` and Settings' Storage pane (Claude Fable's docs/ux/storage-v0.3.md), with a
+    QEMU test that formats a second disk and repairs a damaged one (D192). Next: mounting a
+    disk from userland (a `mount` system call), several requests in flight.
 34. **done** — users can now open Settings, pick the Windows, macOS or Linux profile and keep
     it across reboots (D132, docs/settings.md): `userland/toolkit`, a native toolkit with no
     heap (a retained widget tree with layout, labels, buttons, checkboxes, radio groups, cards,
@@ -274,7 +367,11 @@ D16):
     the shortcuts live, and the kernel reads the saved profile from
     `/home/root/.config/eggos/settings` before the desktop's first frame. Next: the shell's
     panels per profile and a launcher entry (item 35), the MCP tools, 2x, the Mouse and
-    Components panes.
+    Components panes. 2x and the mouse and key preferences (D195, written, unchecked):
+    `display.scale=2` doubles everything from the next boot; `mouse.buttons`,
+    `mouse.scrolling`, `mouse.speed` and key repeat apply at once through the window server;
+    Settings' Display and Mouse panes and the Keyboard pane's repeat rows (Claude Fable's
+    design) set them.
 35. **done** — users can now use the desktop like the system they came from (D133,
     docs/apps.md): the taskbar with Start, the windows and the clock (Windows profile), the
     top bar and the dock (macOS), the top bar with `Activities` (Linux), all laid out by one
@@ -303,8 +400,9 @@ D16):
     dialog; new folders, rename in place, Properties; a real Trash in the freedesktop.org layout
     (`Move to Trash`, Restore, `Empty Trash`, permanent delete after a question); and the same
     on the command line: `cp -r`, `mv` of folders across file systems, and `trash` with
-    `-l`, `-r` and `-e`; `TYPE_IN_TERMINAL`. Next: the MCP tools with the MCP server, free
-    space (`statfs`), multiple selection, a shared clipboard, the Text Editor (item 46).
+    `-l`, `-r` and `-e`; `TYPE_IN_TERMINAL`; the free space of the folder's file system in the
+    status bar (D171, `df` and the MCP tool `df` beside it). Next: the MCP tools with the MCP
+    server, multiple selection, a shared clipboard, the Text Editor (item 46).
 28. **Done** — users can now connect Claude Code or any MCP client to EggOS and let it work
     with files, programs and apps under the grants they set (D136, D137, docs/mcp.md):
     `run-eggos.sh --mcp` (`run-eggos.ps1 -Mcp`, `--no-window` with no screen, D144) wires a named
@@ -315,22 +413,36 @@ D16):
     `app_uninstall` manage apps; destructive calls ask the user through elicitation or need
     `confirm: true`; every call goes to `/var/log/agent-audit.log` (seven generations, a budget
     per run, content never logged), which `agentlog` shows; `kill` reaches other processes and
-    groups, init excepted. Next: per-agent grants, network MCP, the log in Settings.
+    groups, init excepted; each agent has its own grants, checked before every call, with
+    time limits and ask-each-time, and the log names the agent (D193); clients name their agent in `initialize` (or
+    `--mcp-agent`), `agent grant|revoke|list|show|forget` changes and shows grants, `agent_list`
+    and `agent_show` read them, and `agentlog` filters by agent, tool, outcome and time; Settings' Agents pane lists the
+    agents and sets, revokes and forgets their grants, its controls person-only, and its
+    Activity view browses the audit log by agent, tool, result and time; with the desktop
+    installed EggOS asks on its own screen (the grant prompt: once, this session, always or
+    deny, 90 s, its window refusing injected input); agents on other machines connect over
+    HTTPS once the person turns it on (`agent network on`) and pairs them with a one-time code
+    (`agent pair`), each with its own token and a certificate the client pins (written,
+    unchecked, D193); clients get prompts and resources, and the stateless 2026-07-28 protocol
+    beside `initialize`'s versions (written, unchecked). Settings' Agents pane pairs them too (its `Network`
+    view). Next: OAuth, `input_required`.
 38. **done** — users can now run Linux programs that talk over local stream sockets, pass
     descriptors and share memory (D138, D139): `AF_UNIX` stream sockets, `socketpair`,
     `SCM_RIGHTS` and `poll` readiness (38a); `memfd_create`, `ftruncate`, `fallocate`, seals
     and `MAP_SHARED` of memfds (38b). The item's "`MAP_SHARED` of files" is narrowed to
-    memfds, which is what Wayland's shared buffers use; tmpfs and EggFS files come later. Next:
-    the Wayland server (item 39, done), then `epoll`, `eventfd`, `timerfd` and `signalfd`.
+    memfds, which is what Wayland's shared buffers use (writable `MAP_SHARED` of tmpfs and
+    EggFS files, `shm_open` on `/dev/shm`: checked in QEMU, D169). Next: the Wayland server
+    (item 39, done), then (`epoll`, `eventfd`, `timerfd` and `signalfd`: checked in QEMU,
+    D169).
 39. **done** — users can now run Linux programs that open their windows through Wayland
     (D140, docs/linux-programs.md): `eggway`, our own Wayland server from the public protocol
     specifications, started by init when a display exists, on `/run/user/0/wayland-0`;
     `wl_compositor`, `wl_shm`, `wl_surface`, `wl_seat` with a US keymap, `wl_output`,
     `xdg_wm_base`, `xdg_surface` and `xdg_toplevel`; each toplevel a desktop window with
     EggOS's chrome, its input as Wayland events, frame callbacks at 60 Hz; `xdg_toplevel.move`
-    and `resize` through the new `/dev/window` request `START_MOVE_OR_RESIZE`. Next: `epoll`,
-    `eventfd`, `timerfd` and `signalfd`, dynamic linking, then the toolkits' protocols
-    (subcompositor, decorations, popups, the clipboard).
+    and `resize` through the new `/dev/window` request `START_MOVE_OR_RESIZE`. Next: (`epoll`,
+    `eventfd`, `timerfd` and `signalfd`: checked in QEMU, D169; dynamic linking: done,
+    D167), then the toolkits' protocols (subcompositor, decorations, popups, the clipboard).
 40. **done** — users can now run macOS Objective-C console programs from `eggsh` on aarch64
     and x86_64 (D142, docs/macos-programs.md): our own Objective-C runtime in the macOS layer
     (`objc_msgSend` and `objc_msgSendSuper2` in arm64 and x86_64 assembly with lock-free method
@@ -340,7 +452,8 @@ D16):
     mutable forms, NSNumber, the compiler's literals, NSBundle's main bundle, `NSLog` and `%@`).
     A QEMU test runs an Objective-C program from our own source, built by clang on CI's macOS
     runner, with the same lines as on a Mac. Next: blocks, `__weak`, exceptions, more of
-    Foundation (D142's "Not yet").
+    Foundation (D142's "Not yet"). Older programs, built without chained fixups or for Mac OS X
+    10.7 on x86_64, load through `LC_DYLD_INFO` and `LC_UNIXTHREAD` (D190, slice 38c).
 47a. **done** — users can now let an AI agent see and operate any app's window. Part 1, the
     command line (D141, docs/windows.md): `CAPTURE_WINDOW` copies a window's content from its
     own buffer (covered or minimised too), `SEND_INPUT` sends clicks, keys, characters and the
@@ -388,7 +501,9 @@ D16):
     controls, NSAlert's `runModal` in a dialog, and the main menu in the macOS profile's top bar
     (the window server's new `SET_MENU` and `MenuChosen`), with key equivalents and Cmd+Q. The
     same test types into a field, presses buttons, answers an alert, opens the `File` menu and
-    quits with Cmd+Q. Next: nibs, Swift, scroll views, images, timers (D147's "Not yet").
+    quits with Cmd+Q. Next: nibs, Swift apps, scroll views, images (D147's and D175's "Not
+    yet"; timers, blocks, weak references and exceptions came with D175; Swift console programs
+    with D180).
 45. **done** — users can now install an app from a `.zip` and see its own icon (D148,
     docs/apps.md, Claude Fable's docs/ux/app-icons-v0.3.md): `app install <file>.zip` (and
     Files and the installer's window, and the MCP tool `app_install`) extracts the archive's
@@ -421,12 +536,269 @@ D16):
     `clock_set` read and set it; setting the clock writes the hardware clock too. All UTC. A
     QEMU test checks on all three architectures that `date`, a new file's time and `hwclock`
     are within minutes of the host's clock and that `date -s` reaches the hardware clock.
-    Next: time zones, network time, `/dev/rtc0`, alarms.
+    Time zones (D194, written, unchecked): `TZ` and `settings set time.zone` choose one of the
+    419 IANA zones, which `date`, `ls -l` and the Windows and macOS layers' local-time calls
+    follow; `/dev/rtc0`'s time and alarm `ioctl`s; the alarm clocks; absolute wall-clock sleeps
+    re-measured when the clock is set; Settings' zone picker (Claude Fable's design), with
+    `Set to` in local time. Next: the desktop's clock in local time, `date -s` in local time,
+    waiting for the alarm on `/dev/rtc0`.
+
+The release path (the release-path review's issues #141-#145, after the items above):
+- #141 **done** — users who download the release can install and open Windows and macOS apps
+  (D152, docs/apps.md): the x86_64 and aarch64 release images carry the Windows and macOS
+  layers, a v0.3.0 exception to D18 until the component manager; the install, Files, MCP and
+  macOS GUI boot tests boot the release artifact itself, with no `--add`; `cargo xtask
+  sample-apps` builds our own apps to try. Next: the layers as optional components (M14).
+- #142 **partly done** — switchers feel at home in their first minute and see when an agent
+  drives (D156, docs/ux/desktop-v0.3-gui.md section 14): the `Agent` chip while an MCP client
+  is connected (yellow while it acts, a click runs `agentlog`), ` (agent)` on the driven
+  window's title and a yellow arrow where its pointer input went; tooltips `Apps  Super`,
+  `Activities  Super` and `Start  Super`, the launcher's footer of keys, the Mac host line in
+  `run-eggos.sh` and the release notes; `/etc/motd` and eggsh starting in `/home/root`; window
+  controls that darken while pressed and act on release. Next: first boot asks "Where are you
+  coming from?", init's line on the serial console only, the screendump checks.
+- #143 **done** — a program that uses up memory, or a damaged disk, can't crash EggOS (D155):
+  programs' pages, memory files, window buffers, pipes, `/tmp` files, threads and socket
+  queues stop at a kernel reserve (a thirty-second of memory, 2 to 16 MiB, shown by `free` and
+  `/proc/meminfo`), window buffers at a quarter of memory and socket queues at an eighth; the
+  Linux programs boot test's `linux-memory` uses memory up four ways on every architecture and
+  the shell answers after; EggFS is tested with hostile inodes whose checksums are valid, and
+  a looping FAT cluster chain is an I/O error. Next: per-user limits once users exist (M10).
+- #144 **done** — users can follow the README, docs and release notes as written (D153):
+  `sh run-eggos.sh --mcp` everywhere, `reboot` restarts EggOS in the run scripts (a QEMU check
+  on every architecture), QEMU 8.2 or later and no acceleration stated, one measured boot time,
+  one-line PowerShell usage errors with status 2, the docs reconciled with the MCP server, and
+  release notes whose "What's new" comes from the merged pull requests.
+- #145 **done** — Windows users' `run-eggos.ps1` is booted by CI (D154): `cargo xtask
+  run-scripts` drives the release's own script, serial with a host folder, the disk lock and
+  `-Mcp` over piped standard input and output, through `run-eggos.ps1` in a new
+  `run-scripts-windows` job and through `run-eggos.sh` in the `qemu` jobs.
+- Old item 26, networking part 1 **partly done** — EggOS is on the network (D157,
+  docs/network.md): a polled virtio-net driver, `eggos-net` (Ethernet, ARP, IPv4, ICMP echo,
+  UDP, a DHCP client, DNS messages), `lo`, `/etc/resolv.conf` from the lease, `AF_INET` UDP and
+  ping sockets for Linux programs, `ip`, `ping` and `nslookup`, the MCP tool `net_status`; the
+  run scripts attach QEMU's user networking (`--no-network`: none); a QEMU check on all three
+  architectures gets the lease, pings the host, looks a name up and talks UDP through
+  `std::net`. Next: the GUI front-end Fable designed (Settings' `Network` pane, the bar's
+  indicator, docs/ux/network-v0.3.md).
+- Old item 27, networking part 2 **partly done** — TCP and downloads over HTTP (D158,
+  docs/network.md): TCP of our own in `eggos-net` (handshake, segment size, windows,
+  retransmission on a measured timeout, fast retransmission, window probes, FIN, `TIME-WAIT`,
+  resets) and HTTP/1.1 downloads (redirects, chunked bodies); `AF_INET` stream sockets for
+  Linux programs (`connect`, `listen`, `accept`, `poll`, `shutdown`); `fetch` in the core
+  utilities; the MCP tools `net_ping`, `net_lookup` and `fetch`; the QEMU check downloads a file
+  from the host and runs `std::net` TCP over `lo` and with the host. Next: the GUI front-ends
+  (the Network pane and indicator above, a downloads window by a Fable design). HTTPS and the
+  network clock (part 3, D159): our own `crypto/` (SHA-2, HMAC, HKDF, AES-GCM,
+  ChaCha20-Poly1305, X25519, ECDSA and RSA checks) and `tls/` (a TLS 1.3 client with X.509
+  path validation), `fetch https://` against the roots the user gives in `/etc/ssl/roots.pem`,
+  `date --sync` and MCP `clock_sync` by SNTP. Next: the Date & time pane's "Set
+  automatically" (a Fable addition to date-time-v0.3.md first), syncing at boot, a QEMU check
+  of `fetch https://` against a TLS test server.
+- After v0.3.0, first: the Egg command model (owner's approved design, 2026-10-28), slice 1
+  **done** — JSON and clear errors from the commands agents use (D160,
+  docs/ux/command-model.md): the registry `userland/commands` (`eggos-commands`) holds every
+  command the MCP tools run and every tool; `ls`, `ps`, `wm list`, `app list` and `agentlog`
+  take `--json` (JSON lines), long options come from the definitions, errors carry a code and
+  a shared category (`  try: <command>` in text, `{"error":{...}}` in JSON and in every MCP
+  refusal's `structuredContent`); `help` and `help --json` describe the registry; the MCP
+  server's schemas, annotations and `instructions` are generated from it; new tools
+  `wm_focus`, `wm_move`, `wm_size`, `wm_minimise`, `wm_maximise`, `wm_restore`, `wm_close`.
+  Then item 48 **partly done** — agents read any toolkit or Wayland window as structure and act
+  on its controls by name (D161, docs/windows.md "Element trees"): `GET_TREE`,
+  `ACT_ON_ELEMENT`, `READ_QUERY`, `ANSWER_QUERY` and the `Query` record in the window server
+  (the app answers within 500 ms, else pixels only), `userland/element-tree`, the toolkit's
+  widget trees (Settings, the installer's dialogs) and Files' entries as list items, `eggway`'s
+  title and app id, `wm show [--json]`, `wm act`, and MCP `wm_show` (`view`) and `wm_act`
+  (`run`); the MCP boot reads Settings' tree and invokes its macOS card by id. Then agents
+  drag, double-click and scroll sideways **done** (D162): `SEND_INPUT` kinds 5 (a
+  double-click in one step) and 6 (a drag: press, 8 moves, release), the wheel's sideways
+  axis (`Wheel` records' `c`; the toolkit's `SidewaysWheel`, the Text Editor, Win32's
+  `WM_MOUSEHWHEEL`, AppKit's `deltaX`, Wayland's horizontal axis) and AppKit's `clickCount`;
+  input aimed at a window with a dialog open reaches the dialog (keys) or is refused with
+  `dialog_open` (points); `wm drag`, `wm click --double`, `wm scroll <dx>`, MCP `wm_drag` and
+  the `double` and `dx` arguments; the MCP boot opens a folder in Files with a double-click
+  found through `wm_show`, the Text Editor's text as a text field that a drag and typing
+  replace, Files' path field taking `set-text`, and the Windows layer's HWND tree with the text
+  a program draws (win-paint's text in `wm_show`). Then slice 2 **done** — JSON, the shared
+  errors and `help --json` from every command (D163): the registry defines all 59 commands
+  (every utility, `app`, `wm`, `edit`, `settings` and its verbs) with examples that run as
+  tests against the fakes, `help` shows them; `wc`, `free`, `uptime`, `uname` and `settings
+  list|get` take `--json`; the utilities read their options from the registry; `settings`
+  gives coded errors (`no_such_setting`, `setting_read_only`, `invalid_value`, `not_applied`);
+  MCP `settings_list`, `settings_get` and `settings_set` (`run`), which the MCP boot uses.
+  Then slice 3 **done** — agents and scripts page lists and preview changes (D164): `ls` (a
+  folder of any size), `ps`, `wm list` and `app list` take `--limit` and `--after`, ending a
+  page with `more: --after <cursor>`; the MCP tools `ls`, `ps`, `wm_list` and `app_list` take
+  `limit` and `after` and answer `next_cursor`; `trash`, `app uninstall` and `settings set`
+  take `--dry-run`, MCP `tee`, `trash` and `app_uninstall` answer `dry_run` from what the
+  server checked, `settings_set` through its twin; one confirmation rule in the registry; a
+  security review; the MCP boot pages `ls` and dry-runs `trash`. Slice 2's leftovers **partly
+  done** (D165): `sleep`, `sync`, the power commands, `cat` and `tee` on the registry's option
+  parsing, `eggsh`'s built-ins defined, examples for `date` and `wm list`. Next: the rest of
+  slice 2's leftovers (D165 "Not yet"), the macOS layer's NSView tree, slice 4 (apps' own
+  actions).
+- After v0.3.0: EggOS builds our code in CI (owner, 2026-10-26; the CI track, D166): a
+  GitHub-hosted Linux runner boots EggOS in QEMU, hands it a repository as a disk and runs
+  `cargo build` and `cargo test` inside it; alternating with the Real apps track. Stages: (1)
+  the repository as a disk; (2) Linux toolchain compatibility, in three milestones, each
+  measured against Linux: `rustc --version` runs, a hello-world crate builds and runs, a
+  multi-crate workspace builds; (3) EggOS builds EggDB (an `eggos-ci` issue in that repo); (4)
+  an `eggos-ci` workflow here, non-blocking first; (5) EggOS the main build environment, with
+  a design brief for a .NET runtime. Stage 1 **done** (D166): `cargo xtask run --work
+  <folder>` packs a folder (without `.git` and `target`) into an EggFS work disk on the host,
+  EggOS mounts it writable at `/work` (told from the `/home` disk by a marker in its root),
+  and when QEMU ends xtask unpacks `/work` into `<folder>.out`; `cargo xtask work pack|unpack`
+  and the run scripts' `--work <image>`; Files' `Work disk` place, `ls /work`, and MCP `ls`
+  and `cat` reach `/work`; a QEMU check on all three architectures. Stage 2, milestone 1,
+  part 1 **done** (D167): dynamically linked programs run with glibc's and musl's loaders,
+  and files map into memory (`MAP_PRIVATE`, read-only `MAP_SHARED`, `SIGBUS` past the end,
+  `MADV_DONTNEED` rereads, `msync`); CI's `dynamic-linking` job builds our dynamic hello
+  against both and boots it. Stage 2, milestone 1, part 2 **written, unchecked** (D168):
+  `/proc/self` and `/proc/<pid>` (`exe`, `maps`, `fd`, `status`, `cmdline`, `stat`),
+  `/proc/version` and `/proc/sys/kernel/{osrelease,ostype,hostname}`, the memory devices
+  (`/dev/null`, `zero`, `full`, `random`, `urandom`), `/dev/tty`, `/dev/console`, `/dev/fd`
+  and the standard streams, symbolic links in walks with `readlink`, `access` and
+  `faccessat2`, `sethostname` and `setdomainname`; CI's `rustc-version` job downloads the
+  official toolchain's `rustc` (1.99.1, glibc, test data) and runs `rustc --version` from a
+  work disk on x86_64 and aarch64. Gaps against Linux found so far (D168): `/proc/<pid>/task`,
+  `environ`, `cwd`, `root`, `mountinfo` and `/proc/thread-self`; `/proc/<pid>/stat`'s times,
+  fault counts, resident pages and code bounds are 0; `status` lacks the signal and memory
+  lines but `VmSize`; `/proc/<pid>/fd` links to pipes and sockets cannot be opened; files are
+  owned by root; no `/sys` (jemalloc and glibc read `/sys/devices/system/cpu/online` and the
+  transparent huge page settings, and fall back); no `/proc/sys/vm/overcommit_memory`; no
+  vDSO; `clone3` and `rseq` are `ENOSYS` (glibc falls back). Stage 2, milestone 2 **written,
+  unchecked** (D171): `flock` and `fcntl`'s record and open-file-description locks (waits that
+  a signal restarts), `statfs` and `fstatfs` from every file system with `/proc/mounts`, the
+  `df` utility, the MCP tool `df` and Files' free space in its status bar (Claude Fable's
+  docs/ux/files-free-space-v0.3.md), RAM above 4 GiB on x86_64, `--memory` for `cargo xtask
+  run` and both run scripts, `--room` for a work disk's spare space, and CI's `hello-crate`
+  job: the official `rustc` and `cargo` with the musl target's standard library on a work disk,
+  `cargo build` and `cargo run` of `tests/hello-crate` inside EggOS with 4 GiB, linked by the
+  toolchain's `rust-lld` (decided by research), its output compared with the same build run on
+  Linux. Gaps against Linux recorded once the job has run. Stage 2, milestone 3 **written,
+  unchecked** (D173): cargo runs a job per CPU (D171's one job lifted); a record lock's wait
+  that would deadlock fails with `EDEADLK`; record locks go with `close_range`, `dup2`/`dup3`
+  over a descriptor and `execve`'s close-on-exec; `/proc/<pid>/fd` links to pipe ends open the
+  pipe again (jobserver clients reopen theirs); CI's `workspace-build` job builds
+  `tests/multi-crate` (six crates) with the build timer (`tests/build-timer`) inside EggOS and
+  inside Linux 6.18 (Alpine's `linux-virt`, test data) booted in the same QEMU machine (4 CPUs,
+  4 GiB, multi-threaded TCG; Linux from RAM with `mitigations=off`, decided by research), and
+  reports `rustc --version`, the build, the no-op rebuild and `cargo run` against Linux in the
+  job summary, with the runner's own build as a reference on x86_64. Gaps against Linux, and
+  the times, recorded once the job has run. Next: stage 3, EggOS builds EggDB (another
+  repository's).
+- After v0.3.0, the Real apps track (alternating with the CI track): real Linux, Windows and
+  macOS apps install and run, each to be listed in a new docs/compatibility.md. Its first step,
+  event loops, copy-on-write `fork` and POSIX shared memory, **checked in QEMU** (D169): `epoll`,
+  `eventfd`, `timerfd`, `signalfd`, `select` and `pselect6`, with wake lists per file for
+  pipes, local sockets and the event files; `fork` copy on write with shared memory kept
+  shared, `MADV_DONTFORK` and `MADV_WIPEONFORK`; `MAP_SHARED` anonymous memory as lent
+  frames; writable `MAP_SHARED` of tmpfs, EggFS and FAT files through shared pages written
+  back by `msync`, `fsync`, `sync` and the last unmap; `/dev/shm` for `shm_open`; the
+  `linux-events` QEMU check and the `linux_fork_touch` and `linux_epoll_wake` benchmarks.
+  Its second step, symbolic and hard links, `#!` scripts and files removed while open,
+  **written, unchecked** (D170): EggFS on-disk version 2 (symbolic links, link counts, orphans
+  freed at the last close or the next mount; version 1 disks still mount), links and holds in
+  tmpfs, symbolic links in the initramfs, `symlinkat`, `linkat`, `openat2` with
+  `RESOLVE_NO_SYMLINKS`, `fchmodat`, `fchmodat2` and `fchmod`, `#!` scripts in `execve`, `ln`,
+  `readlink` and `chmod`, the MCP tool `ln` and its path twins opening with
+  `RESOLVE_NO_SYMLINKS`, `.app` bundles with their links, work disks carrying links both ways,
+  and Files marking, following and making links (Claude Fable's
+  docs/ux/files-links-v0.3.md). Its third step, a real SDL app installs and runs, **written,
+  unchecked** (D172): Brogue CE 1.15.1 (chosen by research; Alpine's build on `sdl2-compat`,
+  with SDL 3 built from the commit that added Wayland's `wl_shm` framebuffer, since EggOS has no
+  GPU stack yet), listed in the new docs/compatibility.md; eggway's `wl_subcompositor`,
+  `xdg_popup` placement, `zxdg_decoration_manager_v1`, cursor surfaces and
+  `wp_cursor_shape_manager_v1`, and `wp_viewporter`; the window server's hidden pointer shape;
+  dynamically linked Linux programs installed from a `.zip` with their loader and libraries,
+  the manifest's `loader`, `libraries` and `arguments`, `app install --arguments` and
+  `app_install`'s `arguments`; CI's `sdl3` and `sdl-app` jobs install it, open it, play turns,
+  save and close it on x86_64 and aarch64. Its fourth step, a real classic Win32 app installs
+  and runs, **written, unchecked** (D174): Pegs from Simon Tatham's Portable Puzzle Collection
+  (chosen by research; its official x64 build only, so x86_64 only), listed in
+  docs/compatibility.md; ANSI windows and the user32 functions that take ANSI text, `DefDlgProc`
+  dialogs owned by a window (a window server dialog), the drop-down list combo box (Claude
+  Fable's docs/ux/windows-controls-v0.3.md sections 10-19), `CheckMenuItem`,
+  `EnableMenuItem`, `GetMenuItemRect`, `GetWindowRect` from the new `GET_PLACEMENT` request,
+  `SetWindowPos` and `MoveWindow` on top-level windows, memory device contexts, bitmaps and
+  `BitBlt` with every raster operation, polygons, clip rectangles, honest font metrics, the
+  keyboard state, double clicks, the process's own clipboard, comctl32's
+  `InitCommonControls` by ordinal, `scanf`, `atof`, `getenv` and `sqrtf`; CI's `win32-app` job
+  plays it, undoes and redoes, changes its board from its menu, opens its dialogs and compares
+  the frames. Its fifth step, a real Objective-C Mac app installs and runs, **written,
+  unchecked** (D175): CocoaGame 1.0.0 (chosen by research; a universal binary from the author's
+  `.zip`, so aarch64 and x86_64), listed in docs/compatibility.md; the Cocoa umbrella,
+  `viewWillMoveToWindow:` and `viewDidMoveToWindow`, the standard About panel (Claude Fable's
+  docs/ux/macos-gui-v0.3.md section 8), AppKit windows as element trees for `wm show` and
+  `wm act`, NSTimer and NSRunLoop with the event loop waiting until the next timer, the
+  Objective-C runtime's blocks, `__weak` references and exceptions (`@try`, `@catch`,
+  `@finally`, rethrow, `raise:format:`) with a two-phase unwinder over the image's compact
+  unwind information, and NSProcessInfo, NSDate, NSError, NSData, NSSet and `rangeOfString:`;
+  CI's `cocoa-app` job moves its player, eats the food, opens its About panel, reads its element
+  trees, quits with Cmd+Q and compares the frames, and the macOS programs test runs the new
+  Objective-C `language` and `uncaught` cases. Its sixth step, a real GTK app installs and
+  runs, **written, unchecked** (D176): Mousepad 0.7.0 on GTK 3.24.52 (chosen by research; GTK 3
+  draws with cairo into `wl_shm` buffers, so it needs no GPU; Alpine's builds for x86_64 and
+  aarch64), listed in docs/compatibility.md; eggway's `wl_data_device_manager` and
+  `zwp_primary_selection_device_manager_v1` (copy and paste between and inside apps, through
+  the source's pipe), `xdg_activation_v1` (a token from the focused app raises a window once),
+  `zwp_text_input_manager_v3` (the focused text field in the window's element tree, a
+  password's text left out) and KDE's server decorations (GTK 3 then draws no title bar of
+  its own); an app's environment (`environment=`, `app install --environment`, `app_install`'s
+  `environment`), `/etc/fonts/fonts.conf` in the base and the installer linking the fonts an
+  app carries into `/Applications/.fonts`; `sysinfo` and `fadvise64`; CI's `gtk-app` job
+  compiles its schemas inside EggOS, types, copies and pastes, saves and quits, and reads the
+  note back. Windows programs with C++ and structured exception handling, **written,
+  unchecked** (D177, docs/windows-programs.md): an unwinder over the image's `.pdata` and
+  `.xdata` for x64 and ARM64, exception dispatch with vectored handlers and the
+  unhandled-exception filter, access violations, divisions by zero, illegal instructions and
+  breakpoints delivered to the program as Windows exceptions, `__try`/`__except`/`__finally`,
+  C++ `throw` and `catch` through `__CxxFrameHandler3` and `__CxxFrameHandler4` (destructors,
+  rethrow, throws from catch blocks), `signal` and `raise`; the Windows C runtime boot test runs
+  `eggcpp.exe`, our own C++ program built by MSVC in CI, on x86_64 and aarch64. Next: the rest
+  of the Windows C runtime (`setjmp`, locales, the math library, wide streams; `_open` and
+  low-level I/O done in D179) and
+  msvcp140 (D177's "Not yet"); nib loading for apps like UDCalc (D175's "Not yet"). Its
+  seventh step, a real Win32 app on common controls, GDI+ and COM installs
+  and runs, **written, unchecked** (D178): AutoHotkey v2.0.31 (chosen by research; its x64
+  build, so x86_64 only), listed in docs/compatibility.md, running our script's window of Claude
+  Fable's design (docs/ux/windows-controls-v0.3.md sections 20-31); comctl32's status bar,
+  progress bar, tab control, list view with its header, tree view, toolbar and image lists,
+  STATIC pictures, the element tree's rows, items and tabs with the new `expanded` flag; DIB
+  sections, icons and PE resources; GDI+ images; COM with `Scripting.Dictionary`, BSTRs,
+  VARIANTs and SAFEARRAYs; dialogs from templates, accelerators, menu items, subclassing; and
+  advapi32, wsock32, WinINet, version, psapi, shlwapi, uxtheme, dwmapi and more of kernel32,
+  user32 and shell32; CI's `autohotkey` job drives the list, the toolbar, the tabs and the tree,
+  reads the element tree and compares the frames. Its eighth step, a real Qt app installs and
+  runs, **written, unchecked** (D179): CorePad 5.0.0 on Qt 6.11.1 Widgets (chosen by research;
+  Qt's raster engine draws into `wl_shm` buffers; Alpine's builds for x86_64 and aarch64),
+  listed in docs/compatibility.md, carrying Qt's Wayland plugins, ICU's data and EggOS's own
+  `libEGL.so.1`, `libGL.so.1` and `libGLESv2.so.2`, which answer that there is no display (Alpine's
+  Qt is linked against Mesa's); eggway's `wl_output` 4 (the output's name and description),
+  `xdg_wm_base` 5 (each toplevel's bounds, the window manager's capabilities) and
+  `wp_fractional_scale_v1` (a preferred scale of 1); `inotify` in the kernel (names made, moved
+  and removed in a watched folder, a watched file's changes, through `poll`, `epoll` and
+  `FIONREAD`; the linux-events program checks it); `/etc/passwd` and `/etc/group` in the base;
+  CI's `qt-app` job types, copies and pastes, saves as through Qt's file dialog and quits, and
+  reads the saved file back. Next: Qt Quick and OpenGL widgets (a GPU stack, part 67), D-Bus,
+  icon themes, scales other than 1 (part 43), a folder's watch told of its files' writes. Its
+  ninth step, a real Swift app, **written in part, unchecked** (D180): Swift's runtime,
+  `libswiftCore`, in the macOS layer (native objects and their counts, metadata and value
+  witnesses, `Optional`, existentials, `String`, `Hasher`, `Array` and `Dictionary` storage,
+  mangled type names, `print`, exclusivity checks; then witness tables of the program's own
+  conformances, dynamic casts with NSNumber and NSString bridging, weak references,
+  `String`'s characters, `_typeName`, `fatalError` and the overlays' runtime parts), checked by
+  `macos-swift`, our own Swift program built by `swiftc` in CI, in the macOS programs test on
+  aarch64 and x86_64; the app, Minesweeper 1.0.0 (chosen by research; universal, Swift on
+  AppKit built in code), is listed in docs/compatibility.md as chosen. Next: Foundation's Swift
+  overlay, the Dispatch and CoreGraphics overlays, Swift subclasses of AppKit's classes,
+  CoreGraphics drawing, then `cargo xtask swift-app` and its CI job (D180's "Not yet").
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
 Editor (done, D149, replacing the terminal's `edit`); 29 an RTC driver for `date` (done, D150). Moved after
-the release: networking; the MCP server is back in the release (owner, 2026-10-28; item 28, D136). The graphical terminal stays the owner's priority: nothing above may break it.
+the release: networking (part 1 done after it: D157, below); the MCP server is back in the release (owner, 2026-10-28; item 28, D136). The graphical terminal stays the owner's priority: nothing above may break it.
 
 ## Milestones
 
@@ -437,12 +809,12 @@ the release: networking; the MCP server is back in the release (owner, 2026-10-2
 | M2 | Memory management: physical frames, paging, kernel heap | **done** (0.2.0) — memory map from the device tree / PVH and a frame allocator on aarch64, riscv64, x86_64 (D28); kernel page tables: a direct map in the high half, W^X kernel sections and a boot-stack guard page on aarch64, riscv64, x86_64 (D29), with the image's direct-map alias keeping its protections (D32); kernel heap: `alloc` works, size classes up to 2 KiB (D30); buddy allocator: contiguous, aligned blocks of up to 4 MiB, so heap allocations up to 4 MiB work (D31); the kernel runs in the top 2 GiB with boot page tables built before any Rust code, and the low half is empty (D33) |
 | M3 | Interrupts and timers | **done** (released with v0.3.0, D99) — exception vectors (D25); monotonic clock and one-shot timer interrupts through GICv2, SBI and the local APIC on aarch64, riscv64, x86_64 (D26); device interrupt routing: GICv2 SPIs, a PLIC driver with the boot hart's context from the device tree, an I/O APIC driver with the MADT's overrides, and the console UART's receive interrupt on all three, its bytes queued in the kernel (D98); GICv3, AIA and MSI-X come with the driver model (M5) |
 | M4 | Scheduler, processes and threads (SMP-ready) | **in progress** — kernel threads with a context switch on aarch64, riscv64, x86_64 and a cooperative round-robin scheduler on one CPU, 16 KiB stacks with an overflow canary (D35); voluntary preemption: a 10 ms timer tick ends time slices and threads switch at preemption points, the scheduler's lock handed over across the switch (D37); sleeping and wait queues: an idle thread, `sleep`, `WaitQueue`, a blocking `join`, threads linked through themselves, and one timer shared by the tick and the sleepers with no tick while one thread is runnable (D39); secondary CPUs: discovered from the device tree / MADT, started (PSCI, SBI HSM, INIT-SIPI with a real-mode trampoline) on the kernel's page tables, each with a per-CPU block behind its per-CPU register, reporting in and parking (D40); every CPU takes its own interrupts: per-CPU timer and interrupt controller setup, wake-up interrupts between CPUs (GICv2 SGI, SBI IPI, local APIC fixed IPI), per-CPU interrupt counts, and a one-load per-CPU read for hot paths (D41); every CPU runs threads: per-CPU run queues, sleepers and idle threads, new threads placed on idle CPUs first, threads woken from any CPU onto their own with the wake-up interrupt or a reschedule request, one scheduler lock for now (D43); load balancing: an idle CPU takes ready threads from busy ones, and a slice that ends with threads ready wakes an idle CPU (D44); user address spaces: a low half of their own with the kernel half shared, user mappings on aarch64, riscv64, x86_64, switching with the CPU's user translations dropped, and kernel access to user pages only in a window (D45); user mode: the kernel runs a program in EL0, U-mode or ring 3 until a system call (`svc`, `ecall`, `syscall`), an interrupt or an exception brings the CPU back, with the program's registers in a `UserContext` and Linux's system-call registers; a per-CPU GDT and TSS on x86_64; a system-call round trip in about 106 (aarch64), 148 (riscv64) and 107 (x86_64) instructions (D47); processes: threads that run their program in a loop and hand each exit to a handler, address spaces loaded lazily per CPU at the point of use and kept until another is needed, preemption on return to user mode, processes on every CPU (D48); review of D47–D48: user programs get no FP/SIMD, vector unit or timer access whatever firmware left, `int3` after x86 returns, speculation mitigations per CPU with recorded triggers (D49); next: the Linux system calls (M6); per-CPU and per-wait-queue locks wait for a workload that shows contention (D45) |
-| M5 | Common driver model (bus enumeration, device tree / ACPI discovery) | **in progress** — the driver model: static driver descriptors from cargo features with match tables ranked by specificity, probe passes (interrupt controllers, buses, devices), a device table on the heap and the `devices` capability (front-ends with M10); discovery from the device tree (aarch64, riscv64) and from the MCFG with PCI ECAM enumeration and BAR sizing (x86_64); device windows mapped into the live kernel tables below a root entry made in advance, ECAM kept out of the direct map; DMA regions (D110); next: device interrupts for drivers (GICv2 SPIs, the PLIC, MSI-X; issue #97 slice 3), the GIC and UART addresses from discovery instead of D12's, `ranges` translation, PCI on aarch64 and riscv64, AML (M13) |
+| M5 | Common driver model (bus enumeration, device tree / ACPI discovery) | **in progress** — the driver model: static driver descriptors from cargo features with match tables ranked by specificity, probe passes (interrupt controllers, buses, devices), a device table on the heap and the `devices` capability (front-ends with M10); discovery from the device tree (aarch64, riscv64) and from the MCFG with PCI ECAM enumeration and BAR sizing (x86_64); device windows mapped into the live kernel tables below a root entry made in advance, ECAM kept out of the direct map; DMA regions (D110); device interrupts for drivers: GIC SPIs, PLIC sources and MSI-X messages as 32 device lines, a handler per line that quiets the device and wakes its driver's thread, and users list the devices with `device list` and the MCP tool `device_list` from `/proc/driver/devices` (D184; Settings' About list designed, not built); next: the other virtio drivers on interrupts, the GIC and UART addresses from discovery instead of D12's, `ranges` translation, PCI on aarch64 and riscv64, AML (M13) |
 | M6 | Linux syscall ABI: what a static hello-world needs (`write`, `exit_group`, `brk`, `mmap`, ...) | **in progress** — the Linux system-call layer: dispatch by Linux number per architecture, `write` to the console, `exit` and `exit_group`, `ENOSYS` for the rest, exceptions end the process with Linux's signal, user memory copied after a table walk (D50); programs start from ELF images: a checked ELF parser, executables and static PIEs mapped page by page with W^X and a 0x10000 floor, Linux's initial stack with `argv`, `envp` and the auxiliary vector, Linux's `execve` errors (D51); demand paging: processes have regions (Linux's mappings), a page is mapped with a zeroed frame when the program first touches it, the stack is one 8 MiB region mapped as it grows, kernel copies map untouched pages, and live address spaces gain mappings (D52); the memory calls: `brk`, anonymous `mmap`, `munmap` and `mprotect` on the regions with Linux's checks and errors, top-down placement, `PROT_NONE` pages keeping their frame in an invalid entry, and other CPUs that keep a changed address space loaded marked stale so they switch again before using it (D53); FP/SIMD registers per thread: given on first use, saved on every switch away and loaded again only when the CPU no longer holds them, cleared before a program that has none runs (LazyFP), the RISC-V kernel soft-float (D54); the first startup calls: `writev`, `getpid`, `getppid`, `gettid`, `uname` (Linux 6.1.0-eggos), `set_tid_address` and `set_robust_list`, and process ids (D55); the kernel's random number generator (BLAKE2s input, ChaCha20 with fast key erasure and per-CPU keys, seeded from the device tree's `rng-seed` and `RDSEED`/`RDRAND`), `AT_RANDOM` from it and `getrandom`, with frames and page tables zeroed a line at a time (`linux_exec_load` −27%, −18%, −1%) (D56); the thread pointer in each thread's user context, loaded on every way into user mode (`TPIDR_EL0` saved and loaded, `tp`, the FS base written only when it changed), x86_64's `arch_prctl` and `sched_yield`, with no cost on the thread switch and the system-call round trips slightly faster (D57); review of D55–D57: empty ranges past user space `EFAULT` as on Linux, `writev`'s count an `unsigned int`, BLAKE2s wiped with volatile stores (D58); resource limits: `getrlimit`, `setrlimit` and `prlimit64` on per-process limits with a current distribution's defaults, copied on a process's first change, no hard limit raised until processes have credentials, not yet enforced (D59); signal state: `rt_sigaction`, `rt_sigprocmask` and `sigaltstack` with Linux's rules, actions per process copied on first change, the blocked mask and alternate stack per thread, handlers accepted but nothing delivered yet (D60); the standard descriptors: 0, 1 and 2 are the console, open for reading and writing as Linux starts `init`; `poll` (x86_64) and `ppoll` with Linux's checks, the console always writable and never readable, waits that sleep out their timeout and write back the remaining time; the console's `ioctl`s: `TCGETS` and `TCGETS2` with a Linux serial console's settings, `TIOCGWINSZ` and `TIOCSWINSZ`, `FIONREAD`, `ENOTTY` for the rest (D61); review of D59–D61: `linux_exec_load` loads only the code up to the end of `linux_start`, so new HAL test programs no longer grow it, `writev` checks its entries in order as Linux does, and `ppoll` writes the time not slept back for every timeout that is not zero (D62); signals sent and delivered, part 1: `kill`, `tkill` and `tgkill` to the caller (its own group for 0 and minus its id), `rt_sigpending`, a pending set per thread, and delivery by the default action or `SIG_IGN` before the call that made a signal due returns (Term and Core end the process with the signal, so `abort()` ends with `SIGABRT`; the terminal's stop signals are discarded in an orphaned process group; `SIGSTOP` stops for good; `SIGCONT` and the stop signals cancel each other), with nothing added to the system-call path (D63); signal handlers: Linux's signal frames on each architecture (`siginfo_t`, `ucontext_t`, FP/SIMD parts in Linux's shape holding the initial state), `rt_sigreturn` restoring every register, the mask and the alternate stack, `SA_SIGINFO`, `SA_ONSTACK` with `SS_AUTODISARM`, `SA_NODEFER`, `SA_RESETHAND`, one frame per due signal stacked as on Linux, `SIGSEGV` for a frame that cannot be written or read, and a return trampoline mapped on first use for AArch64 and RISC-V handlers without a restorer, with nothing added to the hot paths (D64); faults delivered to signal handlers: the signal, `si_code` and `si_addr` Linux gives for each exception on each architecture (`SEGV_MAPERR` or `SEGV_ACCERR` by the process's regions), x86_64's `err`, `trapno` and `cr2` and AArch64's `fault_address` and `esr_context` in the frame, sanitized for addresses outside user space, forced as on Linux (a blocked or ignored fault signal ends the process), new HAL kinds for `#DE`, `#DB`, `#NP` and `#SS` (D65); review of D63–D65: synchronous signals delivered before others, those the kernel raised first, so a failed frame's `SIGSEGV` is not overtaken, and AArch64 frames of `brk` and undefined instructions with no fault address or `esr_context`, as on Linux (D67); real-time signals queued with their `siginfo_t` (each instance in send order, a standard signal keeping its first info), `RLIMIT_SIGPENDING` enforced with Linux's exceptions, `rt_sigqueueinfo`, `rt_tgsigqueueinfo` and `rt_sigtimedwait`, nothing added to the hot paths (D68); waiting for a signal: `rt_sigsuspend` with its mask in place until a handler starts (the frame saving the mask from before), then `EINTR`, and x86_64's `pause` (D70); `ppoll`'s signal mask applied during the call, a signal it unblocks interrupting a wait that finds nothing ready (`EINTR` once a handler starts, its frame saving the thread's mask) (D71); review of D68–D71: `ppoll` interrupted by an ignored signal fails with `EINTR` when its timeout cannot be written back, `rt_sigtimedwait` takes synchronous signals by number, kernel-raised ones delivered in the order raised, a drained signal queue shrunk (D72); clocks and sleeping: `clock_gettime`, `clock_getres`, `gettimeofday`, x86_64's `time`, `nanosleep` and `clock_nanosleep` (relative and absolute, never early) on the realtime, monotonic, boot-time and TAI clocks, the wall clock starting at the epoch until a real-time clock driver sets it, the CPU-time clocks `EINVAL` until there is CPU time, `clock_settime` and `settimeofday` `EPERM` until processes have credentials (D73); the console's status: `fstat`, `newfstatat` and `statx` on descriptors 0 to 2 report `/dev/console`'s character device 5:1 (root, `0600`, epoch times, `statx` with the basic fields), with Linux's path lookup and errors (a null path with `AT_EMPTY_PATH` accepted, other paths `ENOENT`, `ENOTDIR` or `EBADF` until there are files), and `lseek` refused with `ESPIPE` (D74); credentials: real, effective, saved and file system user and group ids and supplementary groups, starting as root, with `getuid`, `geteuid`, `getgid`, `getegid`, `getresuid`, `getresgid`, `getgroups`, `setuid`, `setgid`, `setreuid`, `setregid`, `setresuid`, `setresgid`, `setfsuid`, `setfsgid` and `setgroups` on Linux's rules, privilege as effective uid 0 (exact until capabilities exist), root raising hard limits, the auxiliary vector's ids and `AT_SECURE` from them, `si_uid` the sender's (D75); review of D73–D75: `setgroups` refuses group id -1 in list order, a `setresuid` or `setresgid` that changes nothing keeps the file system id, `newfstatat` takes `statx`'s synchronisation flags (D76); the memory calls allocators make at run time: `madvise` (`DONTNEED`, `DONTNEED_LOCKED` and `FREE` free the pages' frames and leave zeros, `POPULATE_WRITE` maps frames up front, `POPULATE_READ` checks, the advice about paging, merging, huge pages, dumps and `fork` accepted, `REMOVE` and `COLLAPSE` `EINVAL`, `HWPOISON` and `SOFT_OFFLINE` `EPERM` unprivileged) and `mremap` (shrinking, growing in place below the stack's guard gap, moving with `MREMAP_MAYMOVE` by relinking each page's entry so frames and contents go along and the pages go back if tables run out, `MREMAP_FIXED`, `MREMAP_DONTUNMAP`), Linux's checks in Linux's order (D77); signal frames hold the thread's FP/SIMD registers and `rt_sigreturn` loads them with Linux's checks (x86_64's handlers start with the initial state, a null `fpstate` is the initial state, a misaligned one or reserved `MXCSR` bits `SIGSEGV`; a thread without registers gets them when its frame holds other values) (D82); review of D54, D77 and D82: x86_64 clears `CR4.OSXSAVE`, `PKE`, `CET` and `UINTR` whatever firmware left, so no program sees AVX, protection-key, shadow-stack or user-interrupt state that is never switched, `mremap` with `MREMAP_FIXED` checks the old range's end before it moves anything, `MADV_POPULATE_WRITE` leaves mapped pages alone (D83); the official `*-unknown-linux-musl` targets pinned for test programs built from our own Rust source with std (D84); a first program built from our own Rust source runs in the QEMU self-tests on aarch64, riscv64 and x86_64, on a runtime of our own with no C library (`userland/runtime`: `_start`, a static PIE relocating itself, `PT_GNU_RELRO` protected, raw system calls), checking 17 start-up calls a C library and std make (D85); a program on Rust's standard library, statically linked with musl, runs in the QEMU self-tests on all three: musl's and std's start-up, a `HashMap` with random keys, the heap, clocks, sleeping and standard output, loaded as a static PIE on x86_64 and a fixed-address executable on AArch64 and RISC-V (D86); `AT_MINSIGSTKSZ` in the auxiliary vector, our `MINSIGSTKSZ`, checked at compile time to hold the largest signal frame at any alignment (D87); review of D84–D87: user programs build whatever `RUSTFLAGS` holds, relocation tables checked whole, exit statuses read per program (D88); `futex`: `FUTEX_WAIT`, `FUTEX_WAKE` and their bitset forms, private and shared kept apart, Linux's checks in Linux's order, FIFO waiters on the waiting threads' stacks in 256 buckets, on a new timed park in the scheduler (`thread::Parker`) (D89); `FUTEX_REQUEUE` and `FUTEX_CMP_REQUEUE` with Linux's counts, order and errors, for musl's condition variables (D90); threads: `clone` with `pthread_create`'s flags (`CLONE_SETTLS`, the id words, `CLONE_CHILD_CLEARTID`'s clear and shared wake), each thread's own id, blocked mask, pending signals and alternate stack, `set_tid_address` remembered, `exit` ending one thread and `exit_group`, fatal signals and the out-of-memory kill ending every thread (other CPUs asked to look, futex waits woken), the first thread's status when all end alone, Linux's `EINVAL`s and `ENOSYS` for new processes; Rust's `std::thread`, `Mutex` and `Condvar` run in the QEMU self-tests; a process's threads stay on one CPU until changed mappings are shot down on others (D91); review of D89–D91: every Linux sleep (`nanosleep`, `ppoll`, `rt_sigsuspend`, `pause`, `rt_sigtimedwait`, a stop) waits in the futex table, so a process's end wakes it and its thread ends, and `Parker::unpark` takes a pointer, since the parked thread may drop its `Parker` before the call returns (D92); robust futex lists: `set_robust_list` remembered, `get_robust_list` for the caller, and a thread's exit releasing the locks on its list that it holds (owner-died bit, waiters bit kept, one shared wake, 2048 entries at most, the pending entry last) before its tid word is cleared (D93); a process's threads run in parallel on every CPU: a TLB shootdown (each CPU holding the address space asked to drop its user translations, the wake-up interrupt, a wait for each, served on wake-ups, in the wait itself and while waiting for any lock but a leaf one), pages unmapped in two steps so no CPU writes a frame after it is reused, futex words read and robust locks released with atomics on user memory, `getcpu`, and no thread pinned any more (D94); signals between a process's threads: `tkill`, `tgkill` and `rt_tgsigqueueinfo` reach every thread of the caller's process (Linux's `ESRCH`, an exited first thread taking signals it never delivers, `SIGKILL` included), `SIGKILL` ends the process at once, any other signal waits in the process's signal state until its thread takes it in, as if sent then: woken from its sleep (a futex word per thread), interrupted on another CPU, interrupting its own CPU when switched back in, or on its way back from an interrupt, `sched_yield`, `futex`, a sleep or before its own signal calls; `SIG_IGN` discards every thread's pending instances in order with what was sent; `rt_sigtimedwait`, `rt_sigsuspend`, `pause`, `poll` and `ppoll` (with or without a mask) are woken and interrupted by them, `nanosleep` sleeps out its time and delivers after; Rust's std program handles a signal sent to a thread waiting in `sigsuspend` and to one that keeps running; nothing added to the system-call round trip (D95); signals sent to the process (`kill`, `rt_sigqueueinfo`) taken by the caller or, if it blocks them, by the first thread that does not, woken or interrupted to look, a thread that unblocks one later or waits for it in `rt_sigtimedwait` taking it, `rt_sigpending` reporting them; Rust's std program handles a `kill` to itself in a thread that does not block it (D96); signals interrupt `futex` waits and sleeps as on Linux: `nanosleep` and `clock_nanosleep` write the time left and fail with `EINTR`, an untimed `futex` wait restarts after an `SA_RESTART` handler and fails with `EINTR` otherwise, a timed one fails with `EINTR`, calls restarted by the HAL's `restart_syscall`, the sender reaching the waiter through its thread's wait slot in one futex bucket, a stopped thread leaving the process's signals to the others (D97); the console's line discipline: `read` from descriptors 0 to 2 in canonical mode (echo, erase with delete and backspace, word erase, kill, end of file, `^C` and `^\` discarding the input and signalling the console's foreground, the last thread that read it or polled it) and non-canonical mode (`VMIN`, `VTIME`), restarted after an `SA_RESTART` handler, `TCSETS`, `TCSETSW`, `TCSETSF` and their `termios2` forms, `TCFLSH`, `FIONREAD`, and `poll`/`ppoll` reporting `POLLIN` and woken by input (D100); a descriptor table per process shared by its threads (`close`, `dup`, `dup2`, `dup3`, `fcntl`, `close_range`, `FIONBIO`, `FIOCLEX`, `FIONCLEX`), the console an open file description on descriptors 0 to 2, `readv` and `O_NONBLOCK` reads (D101); children's ends: a process table (parent, exit signal, group, session, zombie), `wait4` and `waitid` (interruptible, `WNOHANG`, `WNOWAIT`, `__WCLONE`, `__WALL`), `SIGCHLD` with `CLD_EXITED`/`CLD_KILLED`, ignored `SIGCHLD` and `SA_NOCLDWAIT` reaping at once, orphans to the nearest `PR_SET_CHILD_SUBREAPER` ancestor, init or the kernel, `setpgid`, `getpgid`, `getpgrp`, `setsid`, `getsid`, the console a session's controlling terminal with a foreground group (`TIOCSCTTY`, `TIOCGPGRP`, `TIOCSPGRP`, `TIOCGSID`) that `^C` and `^\` signal, its leader's end hanging it up (D105); next: interrupting only the target's CPU; a process-wide completion for launchers, with `wait4`; C programs linked with musl; the SWAPGS fence before programs can set GS or map low pages (D49) |
-| M7 | VFS and a first file system | **in progress** — the VFS core (a `FileSystem` trait, nodes, Linux's path walk), a read-only initramfs built by xtask from `initramfs/` as a `newc` cpio archive, embedded in the kernel and mounted as `/`, served in place; `openat`, `read`, `pread64`, `lseek`, `getdents64`, `fstat`/`newfstatat`/`statx` on files, `getcwd`, `chdir`, `fchdir`, a working directory per process (D102); `execve` and `execveat` from a file of the initramfs, loaded into a new process with the caller's id and exit record, with Linux's checks and errors before the point of no return, signal actions reset, close-on-exec descriptors closed, other threads ended, and the test kernels' programs in `usr/libexec/` (D103); next: tmpfs, devfs, `#!` scripts, setuid on exec (issue #94) |
-| M8 | virtio drivers (console, block, net, rng, input) | **in progress** — the polled virtio core: virtio-mmio version 2 and modern virtio-pci behind one `Transport`, the reset, feature and status handshake, the split virtqueue with the spec's barriers, DMA regions freed only after the device's reset reads back 0; virtio-rng returns bytes on aarch64, riscv64 and x86_64 (D111); the doorbell ordered after the ring's writes for devices, virtio-gpu 2D on all three (D112), virtio-input keyboard, tablet and mouse on all three (D113), virtio-blk (polled, read and write) with disks in the driver model on all three (D130); next: interrupts instead of polling, virtio-console and virtio-net, the kernel's generator reseeded from virtio-rng |
+| M7 | VFS and a first file system | **in progress** — the VFS core (a `FileSystem` trait, nodes, Linux's path walk), a read-only initramfs built by xtask from `initramfs/` as a `newc` cpio archive, embedded in the kernel and mounted as `/`, served in place; `openat`, `read`, `pread64`, `lseek`, `getdents64`, `fstat`/`newfstatat`/`statx` on files, `getcwd`, `chdir`, `fchdir`, a working directory per process (D102); `execve` and `execveat` from a file of the initramfs, loaded into a new process with the caller's id and exit record, with Linux's checks and errors before the point of no return, signal actions reset, close-on-exec descriptors closed, other threads ended, and the test kernels' programs in `usr/libexec/` (D103); next: tmpfs, devfs, `#!` scripts (D170), setuid on exec (issue #94) |
+| M8 | virtio drivers (console, block, net, rng, input) | **in progress** — the polled virtio core: virtio-mmio version 2 and modern virtio-pci behind one `Transport`, the reset, feature and status handshake, the split virtqueue with the spec's barriers, DMA regions freed only after the device's reset reads back 0; virtio-rng returns bytes on aarch64, riscv64 and x86_64 (D111); the doorbell ordered after the ring's writes for devices, virtio-gpu 2D on all three (D112), virtio-input keyboard, tablet and mouse on all three (D113), virtio-blk (polled, read and write) with disks in the driver model on all three (D130); virtio-console's agent channel (D136); virtio-net with an IPv4 stack of our own, DHCP, UDP and ping sockets, `ip`, `ping`, `nslookup` and `net_status` on all three (D157, networking part 1); TCP stream sockets, `fetch` over HTTP and the MCP tools `net_ping`, `net_lookup` and `fetch` (D158, networking part 2); HTTPS with a TLS 1.3 client and cryptography of our own, and the network clock by SNTP (D159, networking part 3); virtio-input on interrupts through virtio-mmio slots' lines and virtio-pci MSI-X (D184); next: the block, console, GPU, network and entropy drivers on interrupts with several disk requests in flight, display mode changes, virtio-console input as a console, the kernel's generator reseeded from virtio-rng |
 | M9 | More architectures through the HAL | |
-| M10 | Userland: init, shell, core utilities, and the built-in MCP server with its permission model (default deny, local only): every command is also an MCP tool (D21, D22); first size/memory/boot budgets (D24); the first installer: a compressed base image that downloads and installs in seconds, with download size, install time and first-boot time measured (D69) | **in progress** — init as pid 1, started by the release kernel, with `reboot(2)` (D106); next: the `eggsh` shell and the core utilities |
+| M10 | Userland: init, shell, core utilities, and the built-in MCP server with its permission model (default deny, local only): every command is also an MCP tool (D21, D22); first size/memory/boot budgets (D24); the first installer: a compressed base image that downloads and installs in seconds, with download size, install time and first-boot time measured (D69) | **in progress** — init as pid 1, started by the release kernel, with `reboot(2)` (D106); next: the `eggsh` shell and the core utilities; the command model's registry, `--json`, coded errors and `help` for every command (D160, D163), pages and previews (D164) |
 | M11 | Graphics stack (virtio-gpu first) and compositor | **in progress** — the polled virtio-gpu 2D driver and the kernel's display API: a framebuffer on scanout 0, damage, fenced transfers and flushes (D112); the Egg Mono font and the graphical terminal, the console's session on the display (D114); the minimal desktop with the terminal's window (D115); next: the cursor queue, display events, interrupts instead of polling, 3D (virgl, Venus), a userland compositor |
 | M12 | Adaptive shell, designed by Claude Fable from `docs/ux/` (D16, D23): desktop first, then phone/tablet and TV | |
 | M13 | Real hardware and vendor GPU drivers | |
@@ -455,7 +827,7 @@ leaves instead of measuring, TSC-deadline mode, and the ACPI PM timer or HPET as
 reference clocks when there is no 8254; `stimecmp` directly when RISC-V Sstc is present; GICv3; device-tree timebase and GIC
 addresses (M5).
 
-Paging follow-ups (D29, D33): a separate exception stack (x86 IST, AArch64/RISC-V stack switch) so a guard-page hit is reported; TLB maintenance for changing live tables (M4; user address spaces need none yet, D45); honour device-tree `no-map` reservations (M5); AArch64 data-cache maintenance for memory written with the MMU off, the boot tables included, and a boot direct map built from the device tree instead of QEMU `virt`'s fixed device/RAM split (real hardware, M13); secondary CPUs start on the kernel's tables, global kernel pages and PCID (M4); a device window behind a mapping call instead of the direct map's (done for drivers, D110: the early devices still use the direct map's); unmapping device windows, with cross-CPU TLB shootdown for kernel mappings (M5); RAM above 4 GiB on x86_64; on x86_64, map ACPI tables on demand and reserved PVH ranges uncached instead of direct-mapping them cached (M5; early device pages and the MCFG's ECAM are already left out, D38, D110); keep the PVH start info and memory map in `physical_memory` even when a loader map has more than 62 disjoint entries; hardware probes in the boot self-tests that the low half, the image's direct-map alias and the stack guard page really fault (they check the tables in software today); 1 GiB pages on x86_64 (CPUID); Sv48/Sv57 chosen at boot on RISC-V when Sv39's 256 GiB is not enough; Svpbmt.
+Paging follow-ups (D29, D33): a separate exception stack (x86 IST, AArch64/RISC-V stack switch) so a guard-page hit is reported; TLB maintenance for changing live tables (M4; user address spaces need none yet, D45); honour device-tree `no-map` reservations (M5); AArch64 data-cache maintenance for memory written with the MMU off, the boot tables included, and a boot direct map built from the device tree instead of QEMU `virt`'s fixed device/RAM split (real hardware, M13); secondary CPUs start on the kernel's tables, global kernel pages and PCID (M4); a device window behind a mapping call instead of the direct map's (done for drivers, D110: the early devices still use the direct map's); unmapping device windows, with cross-CPU TLB shootdown for kernel mappings (M5); RAM above 4 GiB on x86_64 (done, D171: the page tables are built from memory below 4 GiB, then the rest is handed out); on x86_64, map ACPI tables on demand and reserved PVH ranges uncached instead of direct-mapping them cached (M5; early device pages and the MCFG's ECAM are already left out, D38, D110); keep the PVH start info and memory map in `physical_memory` even when a loader map has more than 62 disjoint entries; hardware probes in the boot self-tests that the low half, the image's direct-map alias and the stack guard page really fault (they check the tables in software today); 1 GiB pages on x86_64 (CPUID); Sv48/Sv57 chosen at boot on RISC-V when Sv39's 256 GiB is not enough; Svpbmt.
 
 Address-space follow-ups (D45): (threads that carry an address space, switched only when it
 differs: done, lazily at the point of use, D48; the first trip to user mode and back: done, D47);
@@ -500,10 +872,11 @@ Fault follow-ups (D65): `AT_MINSIGSTKSZ` in the auxiliary vector (Rust's std siz
 alternate stacks from it); `#MF` and `#XM` with their `FPE_*` codes and `trapno`, and AArch64's
 trapped FP exceptions, with D54; AArch64's top byte cleared from `si_addr` unless
 `SA_EXPOSE_TAGBITS`, if TBI is turned on for programs; RISC-V misaligned accesses emulated
-as Linux does (QEMU's harts do them in hardware); `SIGBUS` `BUS_ADRERR` past the end of a
-file mapping (M7); `TRAP_TRACE` and `TRAP_HWBKPT` with single-step and debug registers
-(`ptrace`); `/proc/self/maps` and `RLIMIT_STACK` for glibc's `pthread_getattr_np`, so Rust's
-std finds the main thread's guard page and reports an overflow by name. From PR #58's
+as Linux does (QEMU's harts do them in hardware); (`SIGBUS` `BUS_ADRERR` past the end of a
+file mapping: done, D167); `TRAP_TRACE` and `TRAP_HWBKPT` with single-step and debug registers
+(`ptrace`); (`/proc/self/maps` with `[stack]` and `RLIMIT_STACK` for glibc's
+`pthread_getattr_np`, so Rust's std finds the main thread's guard page and reports an
+overflow by name: done, D168). From PR #58's
 independent review: RISC-V's `si_addr` (`sepc` or `stval`) and `si_code` for access faults
 and misaligned accesses checked against a real Linux under QEMU; `TRAP_TRACE` for a single
 step a program set with `popf`; a non-canonical `rip` (only through `rt_sigreturn`) reported
@@ -533,8 +906,10 @@ Exec follow-ups (D51): (a kernel random number generator for `AT_RANDOM`, and `g
 done, D56); layout randomization
 of the PIE base, stack and `mmap` area; (demand paging, so the stack grows into its 8 MiB
 reserve and its pages cost frames only when touched: done, D52); `execve` itself, with the image read from
-a file (M7) and the process's old address space replaced; dynamically linked programs, with
-the interpreter loaded at its own base and `AT_BASE` set (M7); `AT_SYSINFO_EHDR` with a vDSO
+a file (M7) and the process's old address space replaced; (dynamically linked programs, with
+the interpreter loaded at its own base and `AT_BASE` set: done, D167); segments mapped lazily
+from the file instead of read whole and copied (D167 records them as file ranges already);
+`AT_SYSINFO_EHDR` with a vDSO
 (fast clock reads), `AT_MINSIGSTKSZ` with signal frames; `AT_HWCAP` recomputed when FP/SIMD
 state is saved per thread; RWX segments or a JIT path only if a real binary needs one; a
 (faster zeroing of frames and page tables: done, D56); pre-zeroed frames; before `execve`
@@ -559,7 +934,10 @@ Memory-call follow-ups (D53, D77): a "shared" mark on `MAP_SHARED` anonymous reg
 to yet); a shared zero frame for `MADV_POPULATE_READ` and read faults; (`madvise` and
 `mremap`: done, D77); a `mremap` benchmark once `realloc` of large blocks shows in a real
 workload; `MAP_POPULATE` and `MAP_GROWSDOWN` when a program needs them;
-`PROT_BTI` enforced (the `GP` bit) once BTI is reported in `AT_HWCAP2`; file mappings (M7);
+`PROT_BTI` enforced (the `GP` bit) once BTI is reported in `AT_HWCAP2`; (private file
+mappings and read-only shared ones: done, D167); writable `MAP_SHARED` of tmpfs and EggFS
+files, with the file's pages shared and written back (part 17 brings tmpfs pages as frames);
+file pages read without holding the process's regions lock;
 `RLIMIT_DATA` and `RLIMIT_AS` for `brk` and `mmap`; randomized `mmap` base and break with the
 random number generator; from PR #45's independent review: (`munmap` and a shrinking `brk`
 free their frames after the translations are dropped, taking the frame allocator's lock once:
@@ -567,7 +945,8 @@ done, PR #46), and anonymous `MAP_SHARED_VALIDATE` and `MAP_SHARED | MAP_GROWSDO
 checked against Linux's observed behaviour (`EINVAL` there, possibly, where we accept or say
 `EOPNOTSUPP`). From the D83 review: regions that know what backs them (M7), so
 `MADV_DONTNEED` on a program's ELF segments reads the file's contents again, `MADV_FREE` there
-is `EINVAL`, and moving the signal trampoline's page moves its recorded address too.
+is `EINVAL` (both done, D167), and moving the signal trampoline's page moves its recorded
+address too.
 
 Clock follow-ups (D73): real-time clock drivers (PL031, Goldfish, CMOS) setting the wall
 clock at boot, after M5; a vDSO for clock reads without a system call, with the counter
@@ -584,8 +963,9 @@ or copies itself under the signals lock before it reaches `RLIMIT_SIGPENDING`.
 Startup-call follow-ups (D55): process ids reused after `wait4` reaps them (the process table
 exists, D105);
 `set_tid_address`'s word cleared and woken and the robust list released at thread exit, with
-`clone` and futexes; (parents for `getppid` with `fork`: done, D104, reparenting D105); `sethostname` and `setdomainname`; the
-same release in `/proc/sys/kernel/osrelease` and `/proc/version` (procfs); a `writev`
+`clone` and futexes; (parents for `getppid` with `fork`: done, D104, reparenting D105);
+(`sethostname` and `setdomainname`; the same release in `/proc/sys/kernel/osrelease` and
+`/proc/version`: done, D168); a `writev`
 benchmark once a sink faster than the console's UART exists (M7), and `getpid`'s round trip
 as the cheapest real call; (`writev`'s two edge cases from PR #48's review checked against
 Linux: done, D58); (`writev` with a partly unreadable array whose readable entries hold a
@@ -603,8 +983,8 @@ follow-ups (D101): `F_SETFL`'s `O_ASYNC`, `O_DIRECT` and `O_NOATIME`, record loc
 flow control, output flags that the UART driver obeys, tab erase from the column the output
 left (output column tracking), virtio-console input (M8); `SIGWINCH` on
 `TIOCSWINSZ`; sessions
-and job control (`TIOCGPGRP`, `TIOCSPGRP`, `TIOCSCTTY`) with `setsid` (M10); `select`,
-`pselect6` and `epoll` (M7); `poll` arrays copied in pieces with preemption points
+and job control (`TIOCGPGRP`, `TIOCSPGRP`, `TIOCSCTTY`) with `setsid` (M10); (`select`,
+`pselect6` and `epoll`: checked in QEMU, D169); `poll` arrays copied in pieces with preemption points
 between them, once programs poll many thousands of descriptors; checked by observation on a
 real Linux: the order of `ppoll`'s checks, whether `sigsetsize` is checked with no mask,
 `CLOCAL` on a serial console, whether current glibc reads settings with `TCGETS2`, and whether `poll`
@@ -723,22 +1103,25 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | Arm generic timer (EL1 virtual timer) | **done** |
 | RISC-V SBI timer and IPI | **done** |
 | x86 local APIC (xAPIC), on every CPU: its timer, INIT/start-up IPIs and fixed IPIs; 8259 PICs (remapped and masked); 8254 PIT (frequency measurement) | **done** (x2APIC, HPET: planned) |
-| x86 I/O APIC (lines routed by the MADT's overrides) | **done** (MSI-X: planned, M5) |
-| virtio core: virtio-mmio (version 2), modern virtio-pci, the split virtqueue, polled (D111) | **done** (interrupts: planned, issue #97 slice 3) |
+| x86 I/O APIC (lines routed by the MADT's overrides) | **done** (device lines through it: planned, M5) |
+| PCI MSI-X (the capability, the table in a BAR, entries masked while written) | **done** on x86_64 (D184) |
+| virtio core: virtio-mmio (version 2), modern virtio-pci, the split virtqueue (D111); interrupts through the slot's line or MSI-X (D184) | **done** (interrupts for block, console, GPU, network and entropy: planned) |
 | virtio-rng (polled) | **done** (D111) |
 | virtio-gpu 2D (polled): display mode, framebuffer on scanout 0, transfers and flushes of damaged rectangles (D112) | **done** (cursor queue, interrupts: planned) |
-| virtio-input (polled): keyboard, tablet and mouse, capabilities from the device's configuration, the US keymap and key repeat, the input event queue (D113) | **done** (interrupts, LEDs, keyboard layouts: planned) |
+| virtio-input: keyboard, tablet and mouse, capabilities from the device's configuration, keyboard layouts with dead keys and AltGr, key repeat, Caps Lock's light, the input event queue (D113, D184, D185) | **done** (more layouts, Num and Scroll Lock lights: planned) |
 | Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114) | **done** (cursor blink, 2x scale: planned) |
 | virtio-blk (polled): capacity, read-only disks, reads, writes and flushes of 512-byte sectors, one request at a time; a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** (several requests in flight, interrupts: planned) |
-| EggFS, our own journaled disk file system: `/home` and `/Applications` on a disk image, metadata journal, copy-on-write data, CRC-checked commits, crash recovery at mount, `sync`/`fsync` (D131, docs/eggfs.md) | **done** (repair tool, links, several requests in flight: planned) |
-| virtio (console, net) | planned (M8) |
+| EggFS, our own journaled disk file system: `/home` and `/Applications` on a disk image, metadata journal, copy-on-write data, CRC-checked commits, crash recovery at mount, `sync`/`fsync`, symbolic and hard links (D170), an offline check and repair (D192) (D131, docs/eggfs.md) | **done** (several requests in flight, access times: planned) |
+| virtio-console (the agent channel's named port, D136) | **done** |
+| virtio-net (polled): hardware address, link state and MTU from the configuration, 16 receive and 16 transmit buffers (D157) | **done** (interrupts, offloads, several adapters: planned) |
 
 ## Toward "better than macOS, Windows and Linux"
 
 Rough estimate: **~3%**. The kernel boots on three architectures (x86_64, aarch64, riscv64) to
 a desktop with windows; static Linux programs, Windows console and GUI programs (part 1), and
 Android and macOS console programs run natively; files in `/home` survive reboots on an EggFS
-disk (D131); no network or real hardware yet.
+disk (D131); a polled virtio-net network with DHCP, DNS, TCP and TLS 1.3 works (D157 to D159);
+no real hardware yet.
 
 | Area | Missing |
 |------|---------|

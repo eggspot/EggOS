@@ -201,6 +201,8 @@ const SHIFTED_KEYS: [(char, char); 21] = [
     ('?', '/'),
 ];
 
+const ACUTE_E: char = '\u{e9}';
+
 const LETTERS: &str = "abcdefghijklmnopqrstuvwxyz";
 const DIGITS: &str = "0123456789";
 
@@ -218,8 +220,16 @@ fn unshifted_key(character: char) -> Option<&'static str> {
 }
 
 /// The report that types `character` on a US keyboard: its key pressed and released, inside
-/// Shift for the characters that need it.
+/// Shift for the characters that need it. `é`, which no US key types, is the German layout's
+/// dead acute (the key US keyboards have `=` on) then E (D185): the boot test types it after
+/// choosing that layout.
 pub fn typing(character: char) -> Result<Vec<InputEvent>, String> {
+    if character == ACUTE_E {
+        return Ok(["equal", "e"]
+            .into_iter()
+            .flat_map(|qcode| [true, false].map(|down| InputEvent::Key { qcode, down }))
+            .collect());
+    }
     let unshifted = SHIFTED_KEYS
         .iter()
         .find(|(shifted, _)| *shifted == character)
@@ -419,7 +429,11 @@ mod tests {
         for character in (' '..='~').chain(['\r', '\t']) {
             assert!(typing(character).is_ok(), "{character:?}");
         }
-        assert!(typing('\u{e9}').is_err());
+        assert!(typing('\u{e8}').is_err());
+        assert_eq!(
+            keys('\u{e9}'),
+            [("equal", true), ("equal", false), ("e", true), ("e", false)]
+        );
     }
 
     #[test]

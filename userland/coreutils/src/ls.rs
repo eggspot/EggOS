@@ -1,7 +1,12 @@
-use crate::output::{FAILURE, Output};
-use crate::system::{DIRECTORY, FILE_TYPE, Status, SymbolicLinks, System};
+use crate::options::{Refused, parse_defined};
+use crate::output::{FAILURE, Output, error_for};
+use crate::page::Page;
+use crate::system::{DIRECTORY, FILE_TYPE, STANDARD_OUTPUT, Status, SymbolicLinks, System};
 use crate::utilities::MAX_ARGUMENTS;
 use core::ffi::CStr;
+use eggos_commands::page::MAX_KEY_BYTES;
+use eggos_commands::{commands, errors};
+use eggos_mcp::json::JsonWriter;
 
 pub const NAMES_CAPACITY: usize = 32 * 1024;
 pub const MAX_ENTRIES: usize = 1024;
@@ -13,6 +18,19 @@ const RECORD_NAME_OFFSET: usize = 19;
 const SECONDS_PER_DAY: i64 = 86_400;
 const EARLIEST_TIME_SHOWN: i64 = -62_167_219_200;
 const LATEST_TIME_SHOWN: i64 = 253_402_300_799;
+const RECORD_BYTES: usize = 8 * 1024;
+const RECORD_PATH_BYTES: usize = 1024;
+const COLUMN_GAP: usize = 2;
+const DEFAULT_LINE_WIDTH: usize = 80;
+const SPACES: [u8; 32] = [b' '; 32];
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Layout {
+    #[default]
+    ColumnsOnATerminal,
+    Lines,
+    Columns,
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Options {
@@ -20,6 +38,10 @@ struct Options {
     almost_all: bool,
     long: bool,
     directories_as_files: bool,
+    json: bool,
+    layout: Layout,
+    line_width: Option<usize>,
+    zone: Option<eggos_calendar::zone::Rule>,
 }
 
 impl Options {
@@ -51,6 +73,8 @@ pub struct Listing {
     used: usize,
     entries: [Entry; MAX_ENTRIES],
     count: usize,
+    threshold: Option<Entry>,
+    dropped: bool,
 }
 
 impl Listing {
@@ -60,12 +84,41 @@ impl Listing {
             used: 0,
             entries: [Entry::default(); MAX_ENTRIES],
             count: 0,
+            threshold: None,
+            dropped: false,
         }
     }
 
     fn clear(&mut self) {
         self.used = 0;
         self.count = 0;
+        self.threshold = None;
+        self.dropped = false;
+    }
+
+    fn rejects(&self, name: &[u8]) -> bool {
+        self.threshold.is_some_and(|entry| name > self.name(&entry))
+    }
+
+    fn keep_smallest(&mut self, keep: usize) {
+        self.sort();
+        let keep = keep.min(self.count);
+        let names = &mut self.names;
+        let kept = &mut self.entries[..keep];
+        kept.sort_unstable_by_key(|entry| entry.start);
+        let mut used = 0;
+        for entry in kept.iter_mut() {
+            let start = entry.start as usize;
+            let length = usize::from(entry.length) + 1;
+            names.copy_within(start..start + length, used);
+            entry.start = used as u32;
+            used += length;
+        }
+        self.dropped |= keep < self.count;
+        self.used = used;
+        self.count = keep;
+        self.sort();
+        self.threshold = self.entries[..self.count].last().copied();
     }
 
     fn push(&mut self, name: &[u8]) -> bool {
@@ -130,56 +183,138 @@ fn digits(value: u64) -> usize {
     value.checked_ilog10().map_or(1, |log| log as usize + 1)
 }
 
+fn line_width<S: System>(output: &mut Output<S>, options: Options) -> Option<usize> {
+    if options.long || options.json || options.layout == Layout::Lines {
+        return None;
+    }
+    let terminal = output.system.terminal_columns(STANDARD_OUTPUT);
+    if terminal.is_none() && options.layout == Layout::ColumnsOnATerminal {
+        return None;
+    }
+    match terminal {
+        Some(columns @ 1..) => Some(usize::from(columns)),
+        _ => Some(DEFAULT_LINE_WIDTH),
+    }
+}
+
+fn display_width(name: &[u8]) -> usize {
+    name.iter()
+        .filter(|&&byte| !(0x80..0xc0).contains(&byte))
+        .count()
+}
+
+fn column_width(
+    width_of: &impl Fn(usize) -> usize,
+    count: usize,
+    rows: usize,
+    column: usize,
+) -> usize {
+    (column * rows..count.min((column + 1) * rows))
+        .map(width_of)
+        .max()
+        .unwrap_or(0)
+}
+
+fn rows_for(count: usize, line_width: usize, width_of: &impl Fn(usize) -> usize) -> usize {
+    let most_columns = (line_width + COLUMN_GAP) / (1 + COLUMN_GAP);
+    let mut rows = count.div_ceil(most_columns.max(1)).max(1);
+    while rows < count {
+        let columns = count.div_ceil(rows);
+        let names: usize = (0..columns)
+            .map(|column| column_width(width_of, count, rows, column))
+            .sum();
+        if names + COLUMN_GAP * (columns - 1) < line_width {
+            return rows;
+        }
+        rows += 1;
+    }
+    count
+}
+
+fn write_spaces<S: System>(output: &mut Output<S>, mut count: usize) {
+    while count > 0 {
+        let piece = count.min(SPACES.len());
+        output.write(&SPACES[..piece]);
+        count -= piece;
+    }
+}
+
+fn write_columns<'a, S: System>(
+    output: &mut Output<S>,
+    line_width: usize,
+    count: usize,
+    name: impl Fn(usize) -> &'a [u8],
+) {
+    let width_of = |index: usize| display_width(name(index));
+    let rows = rows_for(count, line_width, &width_of);
+    for row in 0..rows.min(count) {
+        let mut index = row;
+        let mut column = 0;
+        while index < count {
+            output.write(name(index));
+            if index + rows < count {
+                let width = column_width(&width_of, count, rows, column);
+                write_spaces(output, width - width_of(index) + COLUMN_GAP);
+            }
+            index += rows;
+            column += 1;
+        }
+        output.write(b"\n");
+    }
+}
+
 pub fn ls<S: System>(output: &mut Output<S>, listing: &mut Listing, arguments: &[&CStr]) -> i32 {
     let mut options = Options::default();
-    let mut operands = [None::<&CStr>; MAX_ARGUMENTS];
-    let mut operand_count = 0;
-    let mut options_end = false;
-    for &argument in arguments {
-        let bytes = argument.to_bytes();
-        if options_end || bytes.len() < 2 || bytes[0] != b'-' {
-            if operand_count == MAX_ARGUMENTS {
-                output.error(&[b"too many operands"]);
-                return SERIOUS_TROUBLE;
-            }
-            operands[operand_count] = Some(argument);
-            operand_count += 1;
-            continue;
+    let mut page = Page::default();
+    let parsed = parse_defined(output, arguments, &commands::LS, |output, given| {
+        if page.take(output, given)? {
+            return Ok::<(), Refused>(());
         }
-        if bytes == b"--" {
-            options_end = true;
-            continue;
+        match given.option.short {
+            Some(b'a') => options.all = true,
+            Some(b'A') => options.almost_all = true,
+            Some(b'l') => options.long = true,
+            Some(b'd') => options.directories_as_files = true,
+            Some(b'1') => options.layout = Layout::Lines,
+            Some(b'C') => options.layout = Layout::Columns,
+            _ => options.json |= given.is_long("json"),
         }
-        if bytes.starts_with(b"--") {
-            output.invalid_option(bytes);
-            return SERIOUS_TROUBLE;
-        }
-        for &letter in &bytes[1..] {
-            match letter {
-                b'a' => options.all = true,
-                b'A' => options.almost_all = true,
-                b'l' => options.long = true,
-                b'd' => options.directories_as_files = true,
-                b'1' => {}
-                _ => {
-                    output.invalid_option(&[b'-', letter]);
-                    return SERIOUS_TROUBLE;
-                }
-            }
-        }
+        Ok(())
+    });
+    let Ok(operands) = parsed else {
+        return SERIOUS_TROUBLE;
+    };
+    options.line_width = line_width(output, options);
+    if options.long && !options.json {
+        options.zone = Some(crate::zone::local_zone(&mut output.system));
     }
-    if operand_count == 0 {
-        operands[0] = Some(c".");
-        operand_count = 1;
+    let operands = match operands.all() {
+        [] => &[c"."][..],
+        given => given,
+    };
+    if page.is_paged() && (operands.len() > 1 || options.directories_as_files) {
+        output.coded(
+            &errors::USAGE,
+            &[b"--limit and --after page the entries of one folder"],
+        );
+        return SERIOUS_TROUBLE;
     }
-    let operands = operands[..operand_count].iter().flatten().copied();
-    list_operands(output, listing, options, operands, operand_count > 1)
+    let headers = operands.len() > 1 && !options.json;
+    list_operands(
+        output,
+        listing,
+        options,
+        &page,
+        operands.iter().copied(),
+        headers,
+    )
 }
 
 fn list_operands<'a, S: System>(
     output: &mut Output<S>,
     listing: &mut Listing,
     options: Options,
+    page: &Page,
     operands: impl Iterator<Item = &'a CStr>,
     headers: bool,
 ) -> i32 {
@@ -209,22 +344,37 @@ fn list_operands<'a, S: System>(
                 file_count += 1;
             }
             Err(errno) => {
-                output.error(&[b"cannot access '", path.to_bytes(), b"': ", errno.message()]);
+                output.coded(
+                    error_for(errno),
+                    &[b"cannot access '", path.to_bytes(), b"': ", errno.message()],
+                );
                 status = SERIOUS_TROUBLE;
             }
         }
     }
     let files = &mut files[..file_count];
     files.sort_unstable_by(|a, b| a.path.cmp(b.path));
-    let widths = Widths::of(files.iter().map(|file| &file.status));
-    for file in files.iter() {
-        write_entry(output, options, file.path.to_bytes(), &file.status, widths);
+    match options.line_width {
+        Some(line_width) => {
+            write_columns(output, line_width, files.len(), |index| {
+                files[index].path.to_bytes()
+            });
+        }
+        None => {
+            let widths = Widths::of(files.iter().map(|file| &file.status));
+            for file in files.iter() {
+                let path = file.path.to_bytes();
+                if !write_entry(output, options, None, path, &file.status, widths) {
+                    status = status.max(FAILURE);
+                }
+            }
+        }
     }
     let mut printed = !files.is_empty();
     let directories = &mut directories[..directory_count];
     directories.sort_unstable_by(|a, b| a.path.cmp(b.path));
     for directory in directories.iter() {
-        if printed {
+        if printed && !options.json {
             output.write(b"\n");
         }
         if headers {
@@ -232,7 +382,13 @@ fn list_operands<'a, S: System>(
             output.write(b":\n");
         }
         printed = true;
-        status = status.max(list_directory(output, listing, options, directory.path));
+        status = status.max(list_directory(
+            output,
+            listing,
+            options,
+            page,
+            directory.path,
+        ));
     }
     status
 }
@@ -241,24 +397,44 @@ fn list_directory<S: System>(
     output: &mut Output<S>,
     listing: &mut Listing,
     options: Options,
+    page: &Page,
     path: &CStr,
 ) -> i32 {
     let descriptor = match output.system.open(path) {
         Ok(descriptor) => descriptor,
         Err(errno) => {
-            output.error(&[
-                b"cannot open directory '",
-                path.to_bytes(),
-                b"': ",
-                errno.message(),
-            ]);
+            output.coded(
+                error_for(errno),
+                &[
+                    b"cannot open directory '",
+                    path.to_bytes(),
+                    b"': ",
+                    errno.message(),
+                ],
+            );
             return SERIOUS_TROUBLE;
         }
     };
-    let mut status = read_directory(output, listing, options, path, descriptor);
+    let mut status = read_directory(output, listing, options, page, path, descriptor);
     listing.sort();
-    if options.long {
+    let mut last = [0u8; MAX_KEY_BYTES];
+    let mut last_length = None;
+    if let Some(limit) = page.limit {
+        let shown = listing.count.min(limit as usize);
+        let more = listing.dropped || listing.count > shown;
+        if more && let Some(entry) = shown.checked_sub(1).map(|at| listing.entries[at]) {
+            let name = listing.name(&entry);
+            if let Some(place) = last.get_mut(..name.len()) {
+                place.copy_from_slice(name);
+                last_length = Some(name.len());
+            }
+        }
+        listing.count = shown;
+    }
+    if options.long || options.json {
         status = status.max(read_statuses(output, listing, path, descriptor));
+    }
+    if options.long && !options.json {
         let total = listing.entries[..listing.count]
             .iter()
             .fold(0u64, |sum, entry| sum.saturating_add(entry.status.blocks));
@@ -267,10 +443,30 @@ fn list_directory<S: System>(
         output.write(b"\n");
     }
     output.system.close(descriptor);
+    let listing: &Listing = listing;
     let entries = &listing.entries[..listing.count];
-    let widths = Widths::of(entries.iter().map(|entry| &entry.status));
-    for entry in entries {
-        write_entry(output, options, listing.name(entry), &entry.status, widths);
+    if let Some(line_width) = options.line_width {
+        write_columns(output, line_width, entries.len(), |index| {
+            listing.name(&entries[index])
+        });
+    } else {
+        let widths = Widths::of(entries.iter().map(|entry| &entry.status));
+        for entry in entries {
+            let name = listing.name(entry);
+            if !write_entry(
+                output,
+                options,
+                Some(path.to_bytes()),
+                name,
+                &entry.status,
+                widths,
+            ) {
+                status = status.max(FAILURE);
+            }
+        }
+    }
+    if let Some(length) = last_length {
+        output.more(&last[..length]);
     }
     status
 }
@@ -279,6 +475,7 @@ fn read_directory<S: System>(
     output: &mut Output<S>,
     listing: &mut Listing,
     options: Options,
+    page: &Page,
     path: &CStr,
     descriptor: usize,
 ) -> i32 {
@@ -289,24 +486,39 @@ fn read_directory<S: System>(
             Ok(0) => return 0,
             Ok(length) => length,
             Err(errno) => {
-                output.error(&[
-                    b"reading directory '",
-                    path.to_bytes(),
-                    b"': ",
-                    errno.message(),
-                ]);
+                output.coded(
+                    error_for(errno),
+                    &[
+                        b"reading directory '",
+                        path.to_bytes(),
+                        b"': ",
+                        errno.message(),
+                    ],
+                );
                 return SERIOUS_TROUBLE;
             }
         };
         for name in record_names(&chunk[..length]) {
-            if options.shows(name) && !listing.push(name) {
-                output.error(&[
+            let before = page.after().is_some_and(|after| name <= after);
+            if !options.shows(name) || before || listing.rejects(name) || listing.push(name) {
+                continue;
+            }
+            if let Some(limit) = page.limit {
+                let keep = (limit as usize + 1).min(listing.count / 2).max(1);
+                listing.keep_smallest(keep);
+                if listing.rejects(name) || listing.push(name) {
+                    continue;
+                }
+            }
+            output.coded(
+                &errors::TOO_MANY_ENTRIES,
+                &[
                     b"cannot list all of '",
                     path.to_bytes(),
-                    b"': too many entries",
-                ]);
-                return FAILURE;
-            }
+                    b"': too many entries; list it a page at a time with --limit",
+                ],
+            );
+            return FAILURE;
         }
     }
 }
@@ -334,14 +546,17 @@ fn read_statuses<S: System>(
                 kept += 1;
             }
             Err(errno) => {
-                output.error(&[
-                    b"cannot access '",
-                    path.to_bytes(),
-                    b"/",
-                    name.to_bytes(),
-                    b"': ",
-                    errno.message(),
-                ]);
+                output.coded(
+                    error_for(errno),
+                    &[
+                        b"cannot access '",
+                        path.to_bytes(),
+                        b"/",
+                        name.to_bytes(),
+                        b"': ",
+                        errno.message(),
+                    ],
+                );
                 status = FAILURE;
             }
         }
@@ -369,10 +584,14 @@ pub fn record_names(records: &[u8]) -> impl Iterator<Item = &[u8]> {
 fn write_entry<S: System>(
     output: &mut Output<S>,
     options: Options,
+    folder: Option<&[u8]>,
     name: &[u8],
     status: &Status,
     widths: Widths,
-) {
+) -> bool {
+    if options.json {
+        return write_record(output, folder, name, status);
+    }
     if options.long {
         output.write(&mode_string(status.mode));
         output.write(b" ");
@@ -384,14 +603,80 @@ fn write_entry<S: System>(
         output.write(b" ");
         output.write_number(status.size, widths.size);
         output.write(b" ");
-        output.write(&time_string(status.modified));
+        let shown = options.zone.map_or(status.modified, |zone| {
+            crate::zone::local_seconds(&zone, status.modified)
+        });
+        output.write(&time_string(shown));
         output.write(b" ");
     }
     output.write(name);
     output.write(b"\n");
+    true
 }
 
-fn mode_string(mode: u32) -> [u8; 10] {
+fn type_name(mode: u32) -> &'static str {
+    match mode & FILE_TYPE {
+        DIRECTORY => "folder",
+        0o100_000 => "file",
+        0o120_000 => "link",
+        0o020_000 => "character_device",
+        0o060_000 => "block_device",
+        0o010_000 => "fifo",
+        0o140_000 => "socket",
+        _ => "unknown",
+    }
+}
+
+fn write_record<S: System>(
+    output: &mut Output<S>,
+    folder: Option<&[u8]>,
+    name: &[u8],
+    status: &Status,
+) -> bool {
+    let mut buffer = [0u8; RECORD_BYTES];
+    let mut out = JsonWriter::new(&mut buffer);
+    out.begin_object();
+    out.key("name");
+    out.string_lossy(name);
+    out.key("path");
+    out.begin_string();
+    if let Some(folder) = folder {
+        out.string_piece_lossy(folder.get(..RECORD_PATH_BYTES).unwrap_or(folder));
+        if !folder.ends_with(b"/") {
+            out.string_piece("/");
+        }
+    }
+    out.string_piece_lossy(name.get(..RECORD_PATH_BYTES).unwrap_or(name));
+    out.end_string();
+    out.key("type");
+    out.string(type_name(status.mode));
+    out.key("permissions");
+    out.string_lossy(&mode_string(status.mode)[1..]);
+    for (key, value) in [
+        ("links", u64::from(status.links)),
+        ("owner", u64::from(status.owner)),
+        ("group", u64::from(status.group)),
+        ("size_bytes", status.size),
+    ] {
+        out.key(key);
+        out.u64(value);
+    }
+    out.key("modified_at");
+    match eggos_calendar::rfc3339(status.modified) {
+        Some(text) => out.string_lossy(&text),
+        None => out.null(),
+    }
+    out.end_object();
+    out.end_line();
+    if out.overflowed() {
+        output.error(&[b"cannot write '", name, b"' as JSON: its path is too long"]);
+        return false;
+    }
+    output.write(out.as_bytes());
+    true
+}
+
+pub fn mode_string(mode: u32) -> [u8; 10] {
     let kind = match mode & FILE_TYPE {
         DIRECTORY => b'd',
         0o100_000 => b'-',
@@ -607,9 +892,186 @@ mod tests {
         assert_eq!(status, 1);
         assert_eq!(
             fake.errors(),
-            "ls: cannot list all of '/many': too many entries\n"
+            "ls: cannot list all of '/many': too many entries; list it a page at a time with \
+             --limit\n"
         );
         assert_eq!(fake.output().lines().count(), MAX_ENTRIES);
+    }
+
+    fn many(count: usize) -> Fake {
+        let mut fake = tree();
+        for index in (0..count).rev() {
+            fake = fake.with_file(&format!("/many/{index:05}"), 0o644, b"", 0);
+        }
+        fake.with_directory("/many", 0)
+    }
+
+    #[test]
+    fn limit_and_after_page_through_a_folder_larger_than_the_listing() {
+        let total = MAX_ENTRIES * 2 + 7;
+        let mut seen = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let mut arguments = vec![c"--limit".to_owned(), c"500".to_owned()];
+            if let Some(cursor) = &after {
+                arguments.push(c"--after".to_owned());
+                arguments.push(std::ffi::CString::new(cursor.as_str()).unwrap());
+            }
+            arguments.push(c"/many".to_owned());
+            let borrowed: Vec<&CStr> = arguments.iter().map(|word| word.as_c_str()).collect();
+            let (status, fake) = run(many(total), &borrowed);
+            assert_eq!(status, 0, "{}", fake.errors());
+            let page: Vec<String> = fake.output().lines().map(str::to_owned).collect();
+            assert!(!page.is_empty() && page.len() <= 500);
+            seen.extend(page);
+            match fake.errors().strip_prefix("more: --after ") {
+                Some(cursor) => after = Some(cursor.trim_end().to_owned()),
+                None => {
+                    assert_eq!(fake.errors(), "");
+                    break;
+                }
+            }
+        }
+        let expected: Vec<String> = (0..total).map(|index| format!("{index:05}")).collect();
+        assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn a_page_is_sorted_cut_at_its_limit_and_names_its_last_entry() {
+        let (status, fake) = run(tree(), &[c"--limit", c"1", c"-a", c"/etc"]);
+        assert_eq!(status, 0);
+        assert_eq!(fake.output(), ".\n");
+        assert_eq!(fake.errors(), "more: --after .\n");
+        let (_, fake) = run(tree(), &[c"--limit=2", c"--after", c".", c"-a", c"/etc"]);
+        assert_eq!(fake.output(), "..\n.hidden\n");
+        assert_eq!(fake.errors(), "more: --after .hidden\n");
+        let (_, fake) = run(tree(), &[c"--after", c"hostname", c"/etc"]);
+        assert_eq!(
+            (fake.output().as_str(), fake.errors().as_str()),
+            ("motd\n", "")
+        );
+        let (_, fake) = run(tree(), &[c"--limit", c"2", c"/etc"]);
+        assert_eq!(
+            (fake.output().as_str(), fake.errors().as_str()),
+            ("hostname\nmotd\n", "")
+        );
+        let (status, fake) = run(tree(), &[c"--limit", c"1", c"-l", c"--json", c"/etc"]);
+        assert_eq!(status, 0);
+        assert_eq!(fake.output().lines().count(), 1);
+        assert!(fake.output().starts_with("{\"name\":\"hostname\""));
+        assert_eq!(
+            fake.errors(),
+            "{\"page\":{\"truncated\":true,\"truncated_by\":\"limit\",\"next_cursor\":\"hostname\"}}\n"
+        );
+        let fake = tree().with_file("/etc/my notes", 0o644, b"", 0);
+        let (_, fake) = run(fake, &[c"--limit", c"1", c"/etc"]);
+        assert_eq!(fake.errors(), "more: --after hostname\n");
+        let fake = tree().with_file("/etc/a b", 0o644, b"", 0);
+        let (_, fake) = run(fake, &[c"--limit", c"1", c"/etc"]);
+        assert_eq!(
+            (fake.output().as_str(), fake.errors().as_str()),
+            ("a b\n", "more: --after a%20b\n")
+        );
+        let fake = tree().with_file("/etc/a b", 0o644, b"", 0);
+        let (_, fake) = run(fake, &[c"--after", c"a%20b", c"--limit", c"1", c"/etc"]);
+        assert_eq!(fake.output(), "hostname\n");
+    }
+
+    #[test]
+    fn a_page_lists_one_folder_and_a_bad_cursor_is_refused() {
+        let (status, fake) = run(tree(), &[c"--limit", c"1", c"/etc", c"/bin"]);
+        assert_eq!(status, 2);
+        assert_eq!(
+            fake.errors(),
+            "ls: --limit and --after page the entries of one folder\n"
+        );
+        let (status, _) = run(tree(), &[c"--after", c"x", c"-d", c"/etc"]);
+        assert_eq!(status, 2);
+        let (status, fake) = run(tree(), &[c"--after", c"-x", c"/etc"]);
+        assert_eq!(status, 2);
+        assert_eq!(
+            fake.errors(),
+            "ls: invalid cursor '-x': not one a page ended with\n"
+        );
+        let (status, fake) = run(tree(), &[c"--limit", c"501", c"/etc"]);
+        assert_eq!(status, 2);
+        assert!(fake.errors().contains("1 to 500"), "{}", fake.errors());
+    }
+
+    fn columns_tree(terminal_width: Option<u16>) -> Fake {
+        let mut fake = tree();
+        for name in ["a", "bb", "ccc", "dddd", "eeeee", "f", "gg"] {
+            fake = fake.with_file(&format!("/c/{name}"), 0o644, b"", 0);
+        }
+        fake = fake.with_directory("/c", 0);
+        fake.terminal_width = terminal_width;
+        fake
+    }
+
+    #[test]
+    fn a_terminal_gets_the_names_in_as_few_rows_as_fit_sorted_down_each_column() {
+        let (status, fake) = run(columns_tree(Some(80)), &[c"/c"]);
+        assert_eq!(status, 0);
+        assert_eq!(fake.output(), "a  bb  ccc  dddd  eeeee  f  gg\n");
+        let (_, fake) = run(columns_tree(Some(30)), &[c"/c"]);
+        assert_eq!(fake.output(), "a   ccc   eeeee  gg\nbb  dddd  f\n");
+        let (_, fake) = run(columns_tree(Some(10)), &[c"/c"]);
+        assert_eq!(fake.output(), "a      f\nbb     gg\nccc\ndddd\neeeee\n");
+        let (_, fake) = run(columns_tree(Some(1)), &[c"/c"]);
+        assert_eq!(fake.output(), "a\nbb\nccc\ndddd\neeeee\nf\ngg\n");
+    }
+
+    #[test]
+    fn a_line_exactly_as_wide_as_the_terminal_wraps_into_more_rows() {
+        let (_, fake) = run(columns_tree(Some(31)), &[c"/c"]);
+        assert_eq!(fake.output(), "a  bb  ccc  dddd  eeeee  f  gg\n");
+        let (_, fake) = run(columns_tree(Some(30)), &[c"/c"]);
+        assert_eq!(fake.output().lines().count(), 2);
+    }
+
+    #[test]
+    fn a_pipe_gets_one_name_a_line_and_dash_one_and_dash_capital_c_choose() {
+        let (_, fake) = run(columns_tree(None), &[c"/c"]);
+        assert_eq!(fake.output(), "a\nbb\nccc\ndddd\neeeee\nf\ngg\n");
+        let (_, fake) = run(columns_tree(Some(80)), &[c"-1", c"/c"]);
+        assert_eq!(fake.output(), "a\nbb\nccc\ndddd\neeeee\nf\ngg\n");
+        let (_, fake) = run(columns_tree(None), &[c"-C", c"/c"]);
+        assert_eq!(fake.output(), "a  bb  ccc  dddd  eeeee  f  gg\n");
+        let (_, fake) = run(columns_tree(Some(0)), &[c"/c"]);
+        assert_eq!(fake.output(), "a  bb  ccc  dddd  eeeee  f  gg\n");
+        let (_, fake) = run(columns_tree(Some(80)), &[c"-C", c"-1", c"/c"]);
+        assert_eq!(fake.output().lines().count(), 7);
+    }
+
+    #[test]
+    fn the_long_format_and_json_stay_one_entry_a_line_on_a_terminal() {
+        let (_, fake) = run(columns_tree(Some(80)), &[c"-l", c"/bin"]);
+        assert_eq!(
+            fake.output(),
+            "total 2\n-rwxr-xr-x 1 0 0 2000 1971-01-01 00:00 ls\n"
+        );
+        let (_, fake) = run(columns_tree(Some(80)), &[c"--json", c"/c"]);
+        assert_eq!(fake.output().lines().count(), 7);
+    }
+
+    #[test]
+    fn file_operands_and_each_folder_get_columns_of_their_own() {
+        let (status, fake) = run(
+            columns_tree(Some(80)),
+            &[c"/etc/motd", c"/bin/ls", c"/etc", c"/c"],
+        );
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "/bin/ls  /etc/motd\n\n/c:\na  bb  ccc  dddd  eeeee  f  gg\n\n/etc:\nhostname  motd\n"
+        );
+    }
+
+    #[test]
+    fn a_name_s_width_counts_characters_not_bytes() {
+        assert_eq!(display_width(b"plain"), 5);
+        assert_eq!(display_width("caf\u{e9}".as_bytes()), 4);
+        assert_eq!(display_width("\u{1f95a}".as_bytes()), 1);
     }
 
     #[test]
@@ -645,5 +1107,45 @@ mod tests {
         assert_eq!(&time_string(-60), b"1969-12-31 23:59");
         assert_eq!(&time_string(i64::MAX), b"9999-12-31 23:59");
         assert_eq!(&time_string(i64::MIN), b"0000-01-01 00:00");
+    }
+
+    #[test]
+    fn json_writes_a_record_per_entry_with_every_field() {
+        let (status, fake) = run(tree(), &[c"--json", c"/bin", c"/etc/motd"]);
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "{\"name\":\"/etc/motd\",\"path\":\"/etc/motd\",\"type\":\"file\",\
+             \"permissions\":\"rw-r--r--\",\"links\":1,\"owner\":0,\"group\":0,\
+             \"size_bytes\":18,\"modified_at\":\"2023-11-14T22:13:20Z\"}\n\
+             {\"name\":\"ls\",\"path\":\"/bin/ls\",\"type\":\"file\",\
+             \"permissions\":\"rwxr-xr-x\",\"links\":1,\"owner\":0,\"group\":0,\
+             \"size_bytes\":2000,\"modified_at\":\"1971-01-01T00:00:00Z\"}\n"
+        );
+        let (status, fake) = run(tree(), &[c"/", c"--json"]);
+        assert_eq!(status, 0);
+        assert!(
+            fake.output()
+                .starts_with("{\"name\":\"bin\",\"path\":\"/bin\",\"type\":\"folder\"")
+        );
+        assert_eq!(fake.output().lines().count(), 2);
+    }
+
+    #[test]
+    fn json_errors_are_coded_records_on_standard_error() {
+        let (status, fake) = run(tree(), &[c"--json", c"/nope"]);
+        assert_eq!(status, 2);
+        assert_eq!(fake.output(), "");
+        assert!(
+            fake.errors().starts_with(
+                "{\"error\":{\"code\":\"no_such_file\",\"category\":\"not_found\",\
+                 \"message\":\"cannot access '/nope': No such file or directory\""
+            ),
+            "{}",
+            fake.errors()
+        );
+        let (status, fake) = run(tree(), &[c"--jsn"]);
+        assert_eq!(status, 2);
+        assert_eq!(fake.errors(), "ls: unrecognized option '--jsn'\n");
     }
 }

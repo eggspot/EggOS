@@ -2,8 +2,9 @@
 //! a program reads it, as POSIX's general terminal interface describes (termios(3)). In
 //! canonical mode ([`local::ICANON`]) input is edited a line at a time and a read returns at
 //! most one line; otherwise bytes are readable as they arrive, as `VMIN` and `VTIME` say. Typed
-//! bytes are echoed, `VINTR` and `VQUIT` raise signals ([`Received`]), and the settings are a
-//! `struct termios` ([`Termios`]) with Linux's flag values, the kernel's native ABI (D1).
+//! bytes are echoed, `VINTR`, `VQUIT` and `VSUSP` raise signals ([`Received`]), and the
+//! settings are a `struct termios` ([`Termios`]) with Linux's flag values, the kernel's native
+//! ABI (D1).
 //!
 //! Pure logic: the console feeds it from its receive interrupt and echoes through a closure, so
 //! host tests drive it without hardware.
@@ -59,7 +60,7 @@ pub mod control {
 
 /// The local flags (`c_lflag`) the discipline acts on.
 pub mod local {
-    /// `VINTR` and `VQUIT` raise their signals.
+    /// `VINTR`, `VQUIT` and `VSUSP` raise their signals.
     pub const ISIG: u32 = 0o1;
     /// Canonical mode: input is edited and read a line at a time.
     pub const ICANON: u32 = 0o2;
@@ -223,6 +224,8 @@ pub struct Received {
     pub interrupt: bool,
     /// `VQUIT` was typed: the foreground program is sent `SIGQUIT`.
     pub quit: bool,
+    /// `VSUSP` was typed: the foreground program is sent `SIGTSTP` (D181).
+    pub suspend: bool,
 }
 
 impl core::ops::BitOrAssign for Received {
@@ -230,6 +233,7 @@ impl core::ops::BitOrAssign for Received {
         self.readable |= other.readable;
         self.interrupt |= other.interrupt;
         self.quit |= other.quit;
+        self.suspend |= other.suspend;
     }
 }
 
@@ -422,8 +426,9 @@ impl LineDiscipline {
 
     /// Takes in `input`, as the console received it, echoing through `echo` with
     /// [`local::ECHO`] (control characters as `^X` with [`local::ECHOCTL`]). The input flags
-    /// map carriage return and newline first. With [`local::ISIG`], `VINTR` and `VQUIT` discard
-    /// the input (unless [`local::NOFLSH`]), echo as themselves (`^C`, `^\`), and are reported.
+    /// map carriage return and newline first. With [`local::ISIG`], `VINTR`, `VQUIT` and
+    /// `VSUSP` discard the input (unless [`local::NOFLSH`]), echo as themselves (`^C`, `^\`,
+    /// `^Z`), and are reported.
     /// In canonical mode `VERASE` and [`BACKSPACE`] remove the last character (a UTF-8 one with
     /// [`input::IUTF8`]), rubbing it out with [`local::ECHOE`], `VKILL` the line (rubbed out
     /// with [`local::ECHOE`], [`local::ECHOK`] and [`local::ECHOKE`], else echoed, with a
@@ -464,7 +469,8 @@ impl LineDiscipline {
         if settings.has(local::ISIG) {
             let interrupt = settings.is(byte, index::VINTR);
             let quit = settings.is(byte, index::VQUIT);
-            if interrupt || quit {
+            let suspend = settings.is(byte, index::VSUSP);
+            if interrupt || quit || suspend {
                 if !settings.has(local::NOFLSH) {
                     self.flush();
                 }
@@ -475,6 +481,7 @@ impl LineDiscipline {
                     readable: false,
                     interrupt,
                     quit,
+                    suspend,
                 };
             }
         }
@@ -889,7 +896,8 @@ mod tests {
             Received {
                 readable: false,
                 interrupt: true,
-                quit: false
+                quit: false,
+                suspend: false
             }
         );
         assert_eq!(console.echo(), b"unread\ndoomed^C");
@@ -906,6 +914,16 @@ mod tests {
         console.types(b"kept\n");
         assert!(console.types(b"\x1c").quit);
         assert_eq!(console.read(64), b"kept\n");
+    }
+
+    #[test]
+    fn suspend_raises_sigtstp_echoes_and_discards_the_line() {
+        let mut console = Console::new();
+        let received = console.types(b"half\x1a");
+        assert!(received.suspend && !received.interrupt && !received.quit);
+        assert_eq!(console.echo(), b"half^Z");
+        console.types(b"next\r");
+        assert_eq!(console.read(64), b"next\n");
     }
 
     #[test]

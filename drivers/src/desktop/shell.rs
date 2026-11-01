@@ -49,6 +49,8 @@ const DOCK_SEPARATOR_ROOM: u32 = 2 * DOCK_GAP + 1;
 const DOCK_SEPARATOR_INSET: u32 = 8;
 const DOCK_PINNED: [AppId; 3] = [AppId::Terminal, AppId::Files, AppId::Settings];
 const TEXT_EDITOR_TITLE_SUFFIX: &str = " - Text Editor";
+const TERMINAL_TITLE: &str = "Terminal";
+const TERMINAL_TITLE_SUFFIX: &str = " - Terminal";
 const DOCK_CAPACITY: usize = DOCK_PINNED.len() + MAX_WINDOWS;
 const STARTING_MS: u32 = 2000;
 const TOOLTIP_HEIGHT: u32 = 24;
@@ -56,7 +58,9 @@ const TOOLTIP_PADDING: u32 = 8;
 const TOOLTIP_GAP: u32 = 4;
 const TOOLTIP_TEXT_Y: u32 = 4;
 const TOOLTIP_SCREEN_MARGIN: u32 = 8;
-const START_TOOLTIP: &str = "Start";
+const START_TOOLTIP: &str = "Start  Super";
+const APPS_TOOLTIP: &str = "Apps  Super";
+const ACTIVITIES_TOOLTIP: &str = "Activities  Super";
 const POWER_TOOLTIP: &str = "Power";
 
 /// A thing on a panel that a click acts on.
@@ -79,6 +83,8 @@ pub(super) enum PanelItem {
     DockWindow(u8),
     /// The macOS top bar's title of this menu of the main menu it shows.
     MenuTitle(u8),
+    /// The `Agent` chip, while an MCP client is connected (14.1).
+    Agent,
 }
 
 /// The panels' pointer state: the item under the pointer and since when, the one pressed,
@@ -257,19 +263,23 @@ impl Desktop {
             .any(|panel| contains(panel, x, y))
     }
 
-    /// The app window `slot` belongs to, if the catalogue knows it: the terminal's window is
-    /// Terminal's; a window whose title ends with ` - Text Editor` the Text Editor's (D149);
-    /// another window (a dialog: its parent) is the app its title names.
+    /// The app window `slot` belongs to, if the catalogue knows it: the console terminal's
+    /// window, and a window titled `Terminal` or ending with ` - Terminal` (the terminal
+    /// program's, D187), are Terminal's; a window whose title ends with ` - Text Editor` the
+    /// Text Editor's (D149); another window (a dialog: its parent) is the app its title names.
     pub(super) fn app_of(&self, slot: usize) -> Option<AppId> {
         let slot = self.window_at(slot).parent.map_or(slot, usize::from);
-        if slot == TERMINAL_SLOT {
+        let title = self.window_at(slot).title();
+        if slot == TERMINAL_SLOT
+            || title == TERMINAL_TITLE
+            || title.ends_with(TERMINAL_TITLE_SUFFIX)
+        {
             return Some(AppId::Terminal);
         }
-        let title = self.window_at(slot).title();
         if title.ends_with(TEXT_EDITOR_TITLE_SUFFIX) {
             return Some(AppId::TextEditor);
         }
-        [AppId::Files, AppId::Settings]
+        [AppId::Files, AppId::Settings, AppId::TaskManager]
             .into_iter()
             .find(|&app| self.catalogue.name(app) == title)
             .or_else(|| self.catalogue.installed_named(title))
@@ -356,10 +366,11 @@ impl Desktop {
         };
         let count = 1 + self.listed_windows().count() as u32;
         let group = count * (TASKBAR_ITEM + TASKBAR_GAP) - TASKBAR_GAP;
-        let limit = self
-            .clock_rect()
-            .x
-            .saturating_sub(TASKBAR_ROOM_BEFORE_CLOCK);
+        let limit = match self.agent_chip() {
+            Some(chip) => chip.x,
+            None => self.clock_rect().x,
+        }
+        .saturating_sub(TASKBAR_ROOM_BEFORE_CLOCK);
         let centred = self.width.saturating_sub(group) / 2;
         let mut x = match centred >= TASKBAR_MARGIN && centred + group <= limit {
             true => centred,
@@ -391,6 +402,9 @@ impl Desktop {
             });
         }
         self.for_each_chip(|slot, rect| item(PanelItem::Chip(slot as u8), rect));
+        if let Some(chip) = self.agent_chip() {
+            item(PanelItem::Agent, chip);
+        }
         self.for_each_taskbar_item(&mut item);
         self.for_each_dock_item(&mut item);
     }
@@ -518,8 +532,9 @@ impl Desktop {
         Action::None
     }
 
-    /// Launches `app` (docs/ux/desktop-v0.3-gui.md, section 6.2): Terminal focuses the
-    /// terminal's window; Settings and Files focus their window if they have one, else ask the
+    /// Launches `app` (docs/ux/desktop-v0.3-gui.md, section 6.2): Terminal starts the terminal
+    /// program, a new window each time (D187), and without it focuses the console terminal's
+    /// window; Settings and Files focus their window if they have one, else ask the
     /// kernel to start them (Files says it is not installed when it is not), as
     /// `Install from host share...` asks to start the installer and the host share Files on
     /// it; the Text Editor starts a new window each time, as Notepad does (D149); installed
@@ -537,6 +552,13 @@ impl Desktop {
         }
     }
 
+    /// Focuses the console terminal's window, restoring it if it is minimised, as the kernel
+    /// does before it types a line in it (`TYPE_IN_TERMINAL`, D135), whether or not the terminal
+    /// program is there.
+    pub fn focus_console(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {
+        self.activate(TERMINAL_SLOT, damage, events);
+    }
+
     fn launch_new(
         &mut self,
         app: AppId,
@@ -547,7 +569,7 @@ impl Desktop {
             return Action::None;
         }
         match app {
-            AppId::Terminal => {
+            AppId::Terminal if !self.catalogue.terminal_present() => {
                 self.activate(TERMINAL_SLOT, damage, events);
                 Action::None
             }
@@ -563,9 +585,11 @@ impl Desktop {
                 self.activate(TERMINAL_SLOT, damage, events);
                 Action::Type(app)
             }
-            AppId::Files
+            AppId::Terminal
+            | AppId::Files
             | AppId::Settings
             | AppId::TextEditor
+            | AppId::TaskManager
             | AppId::InstallFromHostShare
             | AppId::HostShare => {
                 let starting = self.panels.starting.is_some_and(|(pending, at)| {
@@ -627,6 +651,10 @@ impl Desktop {
             PanelItem::MenuTitle(menu) => {
                 self.press_menu_title(usize::from(menu), damage, events);
                 Action::None
+            }
+            PanelItem::Agent => {
+                self.activate(super::TERMINAL_SLOT, damage, events);
+                Action::ShowAgentLog
             }
         }
     }
@@ -742,6 +770,9 @@ impl Desktop {
     fn tooltip_text(&self, item: PanelItem) -> Option<&str> {
         match (item, self.profile) {
             (PanelItem::Start, _) => Some(START_TOOLTIP),
+            (PanelItem::System, Profile::Macos) => Some(APPS_TOOLTIP),
+            (PanelItem::System, Profile::Linux) => Some(ACTIVITIES_TOOLTIP),
+            (PanelItem::Agent, _) => Some(super::AGENT_TOOLTIP),
             (PanelItem::Power, Profile::Windows) => Some(POWER_TOOLTIP),
             (PanelItem::DockApp(app), _) => Some(self.catalogue.name(app)),
             (PanelItem::TaskbarWindow(slot) | PanelItem::DockWindow(slot), _) => self
@@ -762,17 +793,17 @@ impl Desktop {
         let item = self.panels.tooltip?;
         let text = self.tooltip_text(item)?;
         let anchor = self.panel_item_rect(item)?;
-        let panel_top = match (self.layout.taskbar, self.dock_rect()) {
-            (Some(bar), _) => bar.y,
-            (None, Some(dock)) => dock.y,
-            (None, None) => return None,
+        let y = match (self.layout.top_bar, self.layout.taskbar, self.dock_rect()) {
+            (Some(bar), _, _) if anchor.y < bar.bottom() => bar.bottom() + TOOLTIP_GAP,
+            (_, Some(bar), _) => bar.y.saturating_sub(TOOLTIP_GAP + TOOLTIP_HEIGHT),
+            (_, None, Some(dock)) => dock.y.saturating_sub(TOOLTIP_GAP + TOOLTIP_HEIGHT),
+            (_, None, None) => return None,
         };
         let width = text.chars().count() as u32 * GLYPH_WIDTH as u32 + 2 * TOOLTIP_PADDING;
         let centred = (anchor.x + anchor.width / 2).saturating_sub(width / 2);
         let x = centred
             .min(self.width.saturating_sub(TOOLTIP_SCREEN_MARGIN + width))
             .max(TOOLTIP_SCREEN_MARGIN);
-        let y = panel_top.saturating_sub(TOOLTIP_GAP + TOOLTIP_HEIGHT);
         Some(Rect::new(x, y, width, TOOLTIP_HEIGHT))
     }
 
@@ -903,7 +934,12 @@ impl Desktop {
         });
         self.draw_menu_titles(canvas);
         self.draw_clock(canvas);
+        self.draw_agent_chip(canvas, self.agent_chip_hovered());
         self.draw_power(canvas, bar);
+    }
+
+    fn agent_chip_hovered(&self) -> bool {
+        self.panels.hover == Some(PanelItem::Agent) || self.panels.pressed == Some(PanelItem::Agent)
     }
 
     fn draw_clock(&self, canvas: &mut Canvas<'_>) {
@@ -978,6 +1014,7 @@ impl Desktop {
             }
         });
         self.draw_clock(canvas);
+        self.draw_agent_chip(canvas, self.agent_chip_hovered());
         self.draw_power(canvas, bar);
     }
 

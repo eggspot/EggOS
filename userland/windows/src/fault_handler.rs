@@ -1,11 +1,20 @@
-//! The layer's handler for a Windows program's hardware faults (D151). On aarch64 it completes
-//! a read of `CurrentEL`, which user code cannot make, as reading exception level 0, so MSVC's
-//! atomics helpers go on as their own handler lets them on Windows. Any other fault is written
-//! to standard error with its address as the program's module and offset, then ends the
-//! process by the signal's default action, as before.
+//! The layer's handler for a Windows program's hardware faults (D151, D177). On aarch64 it
+//! completes a read of `CurrentEL`, which user code cannot make, as reading exception level 0,
+//! so MSVC's atomics helpers go on as their own handler lets them on Windows. Any other fault
+//! the CPU raised in the program's code, or in code the program made, becomes the Windows
+//! exception its cause stands for (`fault::delivery`), which the program's vectored and frame
+//! handlers get (`win32::deliver_fault`); `__fastfail` ends the program at once. A fetch from
+//! or a write to memory the program made writable and executable flips its page to what the
+//! access needs and resumes it (`win32::flip_write_execute_page`), except a write to the page
+//! the faulting instruction runs from, which becomes an access violation (D213). A fault in the
+//! layer's own code, or one no handler took, is written to standard error with its address as
+//! the program's module and offset, and ends the process by the signal's default action. A
+//! trap or fault in the translated code of an x64 program on ARM64 (D191) ends the program with
+//! a line that names its guest address, and the Windows status of its cause.
 
-use crate::fault::{self, Fault, Image};
+use crate::fault::{self, Delivery, Fault, Image, Signalled};
 use crate::linux;
+use crate::win32;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 const STANDARD_ERROR: usize = 2;
@@ -15,10 +24,21 @@ const SIGINFO_ADDRESS: usize = 16;
 const UCONTEXT_REGISTERS: usize = 184;
 #[cfg(target_arch = "aarch64")]
 const UCONTEXT_PC: usize = 440;
+#[cfg(target_arch = "aarch64")]
+const UCONTEXT_ESR_RECORD: usize = 992;
+#[cfg(target_arch = "aarch64")]
+const ESR_MAGIC: u32 = 0x4553_5201;
 #[cfg(target_arch = "x86_64")]
 const UCONTEXT_PC: usize = 168;
+#[cfg(target_arch = "x86_64")]
+const UCONTEXT_ERR: usize = 192;
+#[cfg(target_arch = "x86_64")]
+const UCONTEXT_TRAPNO: usize = 200;
+#[cfg(target_arch = "x86_64")]
+const PAGE_FAULT: u64 = 14;
 #[cfg(target_arch = "aarch64")]
 const INSTRUCTION_SIZE: u64 = 4;
+const SIGNAL_STATUS_BASE: u32 = 128;
 
 static PROGRAM: AtomicUsize = AtomicUsize::new(0);
 static PROGRAM_LENGTH: AtomicUsize = AtomicUsize::new(0);
@@ -54,6 +74,12 @@ fn word(context: *mut u8, offset: usize) -> *mut u64 {
     context.wrapping_add(offset).cast::<u64>()
 }
 
+fn in_image(pc: u64) -> bool {
+    let image = image();
+    pc.checked_sub(image.base)
+        .is_some_and(|offset| offset < image.size)
+}
+
 #[cfg(target_arch = "aarch64")]
 fn completed_current_el_read(pc: u64, context: *mut u8) -> bool {
     let image = image();
@@ -86,6 +112,56 @@ fn completed_current_el_read(_pc: u64, _context: *mut u8) -> bool {
     false
 }
 
+#[cfg(target_arch = "x86_64")]
+fn access(context: *mut u8) -> u64 {
+    // SAFETY: the kernel's `ucontext_t` for a fault holds `err` and `trapno`.
+    let error = unsafe { word(context, UCONTEXT_ERR).read_unaligned() };
+    // SAFETY: as above.
+    let trap = unsafe { word(context, UCONTEXT_TRAPNO).read_unaligned() };
+    match trap {
+        PAGE_FAULT if error & 0x10 != 0 => fault::access::EXECUTE,
+        PAGE_FAULT if error & 0x02 != 0 => fault::access::WRITE,
+        _ => fault::access::READ,
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn access(context: *mut u8) -> u64 {
+    let record = context.wrapping_add(UCONTEXT_ESR_RECORD);
+    // SAFETY: the `ucontext_t`'s reserved area, after the FP/SIMD record, holds the fault's
+    // `esr_context` when its magic number is there.
+    let magic = unsafe { record.cast::<u32>().read_unaligned() };
+    if magic != ESR_MAGIC {
+        return fault::access::READ;
+    }
+    // SAFETY: as above; the syndrome follows the record's header.
+    let syndrome = unsafe { record.wrapping_add(8).cast::<u64>().read_unaligned() };
+    match syndrome >> 26 & 0x3f {
+        0x20 | 0x21 => fault::access::EXECUTE,
+        0x24 | 0x25 if syndrome & 1 << 6 != 0 => fault::access::WRITE,
+        _ => fault::access::READ,
+    }
+}
+
+fn dispatches(pc: u64) -> bool {
+    in_image(pc) || !win32::in_layer_code(pc)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn completed_misaligned_access(pc: u64, context: *mut u8) -> bool {
+    let registers = word(context, UCONTEXT_REGISTERS).cast::<[u64; 32]>();
+    // SAFETY: the kernel's `ucontext_t` for this signal holds `x0` to `x30` and then `sp`,
+    // 8-byte aligned, which `rt_sigreturn` loads back; nothing else uses them meanwhile.
+    let registers = unsafe { &mut *registers };
+    // SAFETY: they are the faulting thread's registers at `pc`.
+    if !unsafe { crate::translation::complete_misaligned_access(pc, registers) } {
+        return false;
+    }
+    // SAFETY: as above, for the `pc` it holds: the program resumes at the next instruction.
+    unsafe { word(context, UCONTEXT_PC).write(pc + INSTRUCTION_SIZE) };
+    true
+}
+
 extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
     // SAFETY: the kernel calls this handler (`SA_SIGINFO`) with its `siginfo_t`, whose
     // `si_code` is the third 32-bit word.
@@ -95,8 +171,57 @@ extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
     // SAFETY: and with its `ucontext_t` for the signal, which holds the interrupted `pc`.
     let pc = unsafe { word(context, UCONTEXT_PC).read() };
     let from_the_processor = code > 0;
+    if from_the_processor
+        && signal == fault::SIGSEGV
+        && win32::flip_write_execute_page(address as usize, access(context), pc as usize)
+    {
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if signal == fault::SIGBUS
+        && code == fault::BUS_ADRALN
+        && completed_misaligned_access(pc, context)
+    {
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if from_the_processor {
+        // SAFETY: the `ucontext_t` holds `x0` to `x30`; `x16` is the ninth pair's first.
+        let x16 = unsafe { word(context, UCONTEXT_REGISTERS + 16 * 8).read() };
+        if let Some((cause, guest)) = crate::translation::guest_fault(signal, pc, x16) {
+            end_translated(signal, cause, guest);
+        }
+    }
     if from_the_processor && signal == fault::SIGILL && completed_current_el_read(pc, context) {
         return;
+    }
+    if from_the_processor && dispatches(pc) {
+        let fetching = matches!(signal, fault::SIGSEGV | fault::SIGBUS) && address == pc;
+        let instruction = match fetching {
+            true => 0,
+            false => instruction_word(pc),
+        };
+        let byte_before = match signal == fault::SIGTRAP && cfg!(target_arch = "x86_64") {
+            // SAFETY: as above: an `int3` that trapped ended just before `pc`.
+            true => unsafe { (pc.wrapping_sub(1) as *const u8).read() },
+            false => 0,
+        };
+        let signalled = Signalled {
+            signal,
+            code,
+            pc,
+            address,
+            access: access(context),
+            instruction,
+            byte_before,
+        };
+        match fault::delivery(&signalled, cfg!(target_arch = "aarch64")) {
+            Delivery::Exception(exception) => {
+                win32::deliver_fault(context, info.cast_mut(), &exception, signal);
+                return;
+            }
+            Delivery::FailFast => end_fail_fast(pc),
+        }
     }
     if from_the_processor {
         let fault = Fault {
@@ -109,4 +234,60 @@ extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
     }
     let _ = linux::default_signal_action(signal);
     let _ = linux::signal_this_thread(signal);
+}
+
+fn instruction_word(pc: u64) -> u32 {
+    let to_page_end = linux::PAGE_SIZE as u64 - pc % linux::PAGE_SIZE as u64;
+    let mut bytes = [0u8; 4];
+    for (index, byte) in bytes
+        .iter_mut()
+        .enumerate()
+        .take(to_page_end.min(4) as usize)
+    {
+        // SAFETY: the instruction at `pc` ran (or was decoded), so the page it starts on is
+        // mapped and readable, as the program's code and the code it maps are; only bytes of
+        // that page are read.
+        *byte = unsafe { (pc.wrapping_add(index as u64) as *const u8).read() };
+    }
+    u32::from_le_bytes(bytes)
+}
+
+/// Ends the process for a fault no handler took: the line that names it, then the signal's
+/// default action, as for a fault the layer does not dispatch.
+pub fn end_with_fault(signal: i32, pc: u64, address: u64) -> ! {
+    let fault = Fault {
+        signal,
+        pc,
+        address,
+    };
+    let line = fault::report(program(), image(), fault);
+    let _ = linux::write_all(STANDARD_ERROR, line.as_bytes());
+    let _ = linux::default_signal_action(signal);
+    let _ = linux::signal_this_thread(signal);
+    linux::exit(SIGNAL_STATUS_BASE + signal as u32)
+}
+
+/// Ends the process for an exception the program raised and no handler took, with the
+/// exception's code as its status, as Windows does.
+pub fn end_with_exception(code: u32, pc: u64) -> ! {
+    let line = fault::report_exception(program(), image(), code, pc);
+    let _ = linux::write_all(STANDARD_ERROR, line.as_bytes());
+    linux::exit(code)
+}
+
+fn end_fail_fast(pc: u64) -> ! {
+    let line = fault::report_fail_fast(program(), image(), pc);
+    let _ = linux::write_all(STANDARD_ERROR, line.as_bytes());
+    linux::exit(fault::status::STACK_BUFFER_OVERRUN)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn end_translated(signal: i32, cause: Option<crate::translated::TrapCause>, guest: u64) -> ! {
+    let line = crate::translated::report(program(), image(), cause, guest);
+    let _ = linux::write_all(STANDARD_ERROR, line.as_bytes());
+    let status = cause.map_or(
+        crate::translated::fault_status(signal),
+        crate::translated::trap_status,
+    );
+    linux::exit(status)
 }

@@ -12,10 +12,12 @@
 //! clocks wait for per-thread CPU time; until then they are invalid, as Linux's are for a
 //! process that does not exist, and `clock()` reports that it cannot tell.
 
+use super::futex;
 use super::signals::{self, Interrupted};
 use super::thread::{self, LinuxThread};
 use super::{Errno, poll};
 use crate::process::Process;
+use crate::sync::LeafSpinLock;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::Platform;
@@ -78,6 +80,8 @@ fn clock(id: u64) -> Option<Clock> {
     let (can_sleep, wall) = match id as u32 as i32 {
         clock::REALTIME | clock::TAI => (true, true),
         clock::MONOTONIC | clock::BOOTTIME => (true, false),
+        clock::REALTIME_ALARM if crate::wall_clock::has_clock() => (true, true),
+        clock::BOOTTIME_ALARM if crate::wall_clock::has_clock() => (true, false),
         clock::REALTIME_COARSE => (false, true),
         clock::MONOTONIC_RAW | clock::MONOTONIC_COARSE => (false, false),
         _ => return None,
@@ -89,7 +93,12 @@ fn clock(id: u64) -> Option<Clock> {
 /// use; 0 until then.
 static NANOSECONDS_PER_TICK: AtomicU64 = AtomicU64::new(0);
 
+const HOST_TEST_PLATFORMS_HAVE_THEIR_OWN_CLOCKS: bool = cfg!(test);
+
 fn nanoseconds_per_tick<P: Platform>() -> u64 {
+    if HOST_TEST_PLATFORMS_HAVE_THEIR_OWN_CLOCKS {
+        return ratio_ceil(NANOSECONDS_PER_SECOND, P::clock_frequency());
+    }
     match NANOSECONDS_PER_TICK.load(Ordering::Relaxed) {
         0 => {
             let ratio = ratio_ceil(NANOSECONDS_PER_SECOND, P::clock_frequency());
@@ -117,6 +126,12 @@ fn nanoseconds_at(ticks: u64, per_tick: u64) -> u64 {
 /// deadline never early.
 fn first_tick_at(nanoseconds: u64, per_tick: u64) -> u64 {
     mul_div_ceil(nanoseconds, 1 << 32, per_tick)
+}
+
+/// The first clock tick at which the monotonic clock reads `nanoseconds`: a deadline never
+/// early.
+pub fn tick_at<P: Platform>(nanoseconds: u64) -> u64 {
+    first_tick_at(nanoseconds, nanoseconds_per_tick::<P>())
 }
 
 /// The clock tick a wait for the `struct timespec` timeout at `address` ends at, measured
@@ -209,9 +224,59 @@ pub fn clock_gettime<P: Platform>(
     clock_id: u64,
     tp: u64,
 ) -> Result<u64, Errno> {
+    if let Some(spent) = cpu_clock(process, clock_id) {
+        write(process, tp, &timespec(spent))?;
+        return Ok(0);
+    }
     let clock = clock(clock_id).ok_or(Errno::EINVAL)?;
     write(process, tp, &timespec(clock.now::<P>()))?;
     Ok(0)
+}
+
+fn cpu_clock<P: Platform>(process: &Process<P>, clock_id: u64) -> Option<u64> {
+    let ticks = match clock_id as u32 as i32 {
+        clock::PROCESS_CPUTIME_ID => process.cpu_ticks(true),
+        clock::THREAD_CPUTIME_ID => crate::thread::running_thread_ticks::<P>(),
+        _ => return None,
+    };
+    Some(nanoseconds_at(ticks, nanoseconds_per_tick::<P>()))
+}
+
+const RUSAGE_SELF: i64 = 0;
+const RUSAGE_CHILDREN: i64 = -1;
+const RUSAGE_THREAD: i64 = 1;
+const RUSAGE_SIZE: usize = 144;
+const USER_HZ: u64 = 100;
+
+/// `getrusage(who, usage)` (D198): the calling process's (`RUSAGE_SELF`) or thread's
+/// (`RUSAGE_THREAD`) CPU time as user time in the `struct rusage` at `usage`, every other field
+/// 0; `RUSAGE_CHILDREN` reads all 0, as the time of waited-for children is not kept yet.
+/// `EINVAL` for another `who`, `EFAULT` for `usage` not the program's writable memory.
+pub fn getrusage<P: Platform>(process: &Process<P>, who: u64, usage: u64) -> Result<u64, Errno> {
+    let nanoseconds = match who as i64 as i32 as i64 {
+        RUSAGE_SELF => cpu_clock(process, clock::PROCESS_CPUTIME_ID as u64).unwrap_or(0),
+        RUSAGE_THREAD => cpu_clock(process, clock::THREAD_CPUTIME_ID as u64).unwrap_or(0),
+        RUSAGE_CHILDREN => 0,
+        _ => return Err(Errno::EINVAL),
+    };
+    let mut bytes = [0u8; RUSAGE_SIZE];
+    bytes[..8].copy_from_slice(&(nanoseconds / NANOSECONDS_PER_SECOND).to_ne_bytes());
+    bytes[8..16].copy_from_slice(&(nanoseconds % NANOSECONDS_PER_SECOND / 1000).to_ne_bytes());
+    write(process, usage, &bytes)?;
+    Ok(0)
+}
+
+/// `times(buf)` (D198): writes the calling process's CPU time as user time in the `struct tms`
+/// at `buf` (unless null), in `USER_HZ` (100) ticks, its system time and its children's 0;
+/// returns the ticks since boot.
+pub fn times<P: Platform>(process: &Process<P>, buf: u64) -> Result<u64, Errno> {
+    if buf != 0 {
+        let spent = cpu_clock(process, clock::PROCESS_CPUTIME_ID as u64).unwrap_or(0);
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&(spent / (NANOSECONDS_PER_SECOND / USER_HZ)).to_ne_bytes());
+        write(process, buf, &bytes)?;
+    }
+    Ok(monotonic_nanoseconds::<P>() / (NANOSECONDS_PER_SECOND / USER_HZ))
 }
 
 /// `clock_getres(clock, res)`: writes clock `clock`'s resolution, 1 ns for each, to the
@@ -223,7 +288,9 @@ pub fn clock_getres<P: Platform>(
     clock_id: u64,
     res: u64,
 ) -> Result<u64, Errno> {
-    clock(clock_id).ok_or(Errno::EINVAL)?;
+    if clock(clock_id).is_none() && cpu_clock(process, clock_id).is_none() {
+        return Err(Errno::EINVAL);
+    }
     if res != 0 {
         write(process, res, &timespec(1))?;
     }
@@ -277,20 +344,32 @@ pub fn clock_settime<P: Platform>(
         .filter(|nanoseconds| nanoseconds / NANOSECONDS_PER_SECOND < UNSETTABLE_SECONDS_FROM as u64)
         .ok_or(Errno::EINVAL)?;
     may_set_the_clock(process)?;
-    crate::wall_clock::set::<P>(nanoseconds);
+    set_wall_clock::<P>(nanoseconds);
     Ok(0)
 }
 
+/// Sets the wall clock, and the real-time clock with it, to `nanoseconds` since the epoch, and
+/// wakes the sleeps until a wall-clock time to measure their deadlines again (D194).
+pub fn set_wall_clock<P: Platform>(nanoseconds: u64) {
+    crate::wall_clock::set::<P>(nanoseconds);
+    wake_wall_sleepers::<P>();
+}
+
 fn may_set_the_clock<P: Platform>(process: &Process<P>) -> Result<(), Errno> {
-    let privileged = process
-        .credentials_and_limits()
-        .lock()
-        .credentials
-        .is_privileged();
-    match privileged {
+    match is_privileged(process) {
         true => Ok(()),
         false => Err(Errno::EPERM),
     }
+}
+
+/// Whether `process` is privileged (an effective user id of 0, D75): it may set the clock
+/// and use the alarm clocks.
+pub fn is_privileged<P: Platform>(process: &Process<P>) -> bool {
+    process
+        .credentials_and_limits()
+        .lock()
+        .credentials
+        .is_privileged()
 }
 
 /// `settimeofday(tv, tz)`: sets the wall clock to the `struct timeval` at `tv` as
@@ -328,7 +407,7 @@ pub fn settimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Resu
     may_set_the_clock(process)?;
     if let Some((seconds, microseconds)) = seconds_and_microseconds {
         let nanoseconds = seconds as u64 * NANOSECONDS_PER_SECOND + microseconds as u64 * 1000;
-        crate::wall_clock::set::<P>(nanoseconds);
+        set_wall_clock::<P>(nanoseconds);
     }
     Ok(0)
 }
@@ -350,15 +429,16 @@ pub fn nanosleep<P: Platform>(
 
 /// `clock_nanosleep(clock, flags, req, rem)`, with the program's registers `context`: sleeps
 /// on clock `clock` for the `struct timespec` at `req`, or, with [`TIMER_ABSTIME`] in
-/// `flags`, until the clock reads it (at once if it has; on the realtime and TAI clocks, as the
-/// wall clock is set when the sleep starts: setting it later does not move the wake-up); its
-/// other bits are ignored, as on Linux. It never wakes early, and a sleep too long to count
+/// `flags`, until the clock reads it (at once if it has; on the realtime, TAI and realtime alarm
+/// clocks the deadline is measured again each time the wall clock is set, as on Linux, D194);
+/// its other bits are ignored, as on Linux. The alarm clocks are their plain clocks, as EggOS
+/// never suspends, for a privileged process on a machine with a real-time clock. It never wakes early, and a sleep too long to count
 /// lasts for good. As Linux:
 /// `EINVAL` for a clock it does not answer for, `EOPNOTSUPP` for one it cannot sleep on (the
 /// raw, coarse and thread CPU-time ones), then `EFAULT` if `req` is not the program's memory,
-/// then `EINVAL` for negative seconds or nanoseconds outside 0 to 999999999; the alarm clocks,
-/// which need a real-time clock device, are `EOPNOTSUPP` after those checks, as on Linux
-/// without one. A signal that is due during the sleep interrupts it, as on Linux: a relative
+/// then `EINVAL` for negative seconds or nanoseconds outside 0 to 999999999; the alarm clocks
+/// are `EOPNOTSUPP` after those checks without a real-time clock device, as on Linux without
+/// one, and `EPERM` for a process that is not privileged. A signal that is due during the sleep interrupts it, as on Linux: a relative
 /// sleep writes the time left to `rem`, unless it is null (`EFAULT`, the sleep over, if it
 /// cannot), and the call fails with `EINTR` if a handler starts, whatever its
 /// [`super::signals::flag::RESTART`]; if none starts, the sleep goes on. Sets the call's
@@ -370,6 +450,16 @@ pub fn clock_nanosleep<P: Platform>(
 ) -> ControlFlow<()> {
     let [clock_id, flags, req, rem, ..] = context.syscall_arguments();
     let relative = flags & TIMER_ABSTIME == 0;
+    if !relative
+        && let Ok(clock) = clock_for_sleep(process, clock_id, req)
+        && clock.wall
+    {
+        return match poll::read_timeout(process, req) {
+            Ok(Some(time)) => sleep_until_wall::<P>(process, thread, context, time),
+            Ok(None) => sleep_until_nanoseconds::<P>(process, thread, context, u64::MAX, None),
+            Err(errno) => fail(context, errno),
+        };
+    }
     let deadline = clock_for_sleep(process, clock_id, req).and_then(|clock| match relative {
         true => deadline_after_request::<P>(process, req),
         false => {
@@ -385,6 +475,66 @@ pub fn clock_nanosleep<P: Platform>(
     }
 }
 
+const MAX_WALL_SLEEPERS: usize = 64;
+
+static WALL_SLEEPERS: LeafSpinLock<[Option<futex::Key>; MAX_WALL_SLEEPERS]> =
+    LeafSpinLock::new_leaf([None; MAX_WALL_SLEEPERS]);
+
+fn hold_wall_sleeper(key: futex::Key) -> Option<usize> {
+    let mut sleepers = WALL_SLEEPERS.lock();
+    let slot = sleepers.iter().position(Option::is_none)?;
+    sleepers[slot] = Some(key);
+    Some(slot)
+}
+
+fn release_wall_sleeper(slot: Option<usize>) {
+    if let Some(slot) = slot {
+        WALL_SLEEPERS.lock()[slot] = None;
+    }
+}
+
+fn wake_wall_sleepers<P: Platform>() {
+    let sleepers = *WALL_SLEEPERS.lock();
+    for key in sleepers.into_iter().flatten() {
+        futex::wake::<P>(key, u32::MAX, 1);
+    }
+}
+
+fn sleep_until_wall<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+    time: u64,
+) -> ControlFlow<()> {
+    let slot = hold_wall_sleeper(thread::sleep_key_of(process, thread));
+    let per_tick = nanoseconds_per_tick::<P>();
+    let outcome = loop {
+        let deadline_tick = first_tick_at(crate::wall_clock::monotonic_at(time), per_tick);
+        if P::clock_ticks() >= deadline_tick {
+            break ControlFlow::Continue(true);
+        }
+        if thread::sleep_once_until::<P>(process, thread, deadline_tick).is_break() {
+            break ControlFlow::Break(());
+        }
+        if signals::is_due(thread) {
+            match signals::deliver_interrupting(process, thread, context, Interrupted::Fails) {
+                ControlFlow::Break(()) => break ControlFlow::Break(()),
+                ControlFlow::Continue(true) => break ControlFlow::Continue(false),
+                ControlFlow::Continue(false) => {}
+            }
+        }
+    };
+    release_wall_sleeper(slot);
+    match outcome {
+        ControlFlow::Break(()) => ControlFlow::Break(()),
+        ControlFlow::Continue(false) => ControlFlow::Continue(()),
+        ControlFlow::Continue(true) => {
+            context.set_syscall_result(0);
+            signals::deliver(process, thread, context)
+        }
+    }
+}
+
 fn clock_for_sleep<P: Platform>(
     process: &Process<P>,
     clock_id: u64,
@@ -392,9 +542,13 @@ fn clock_for_sleep<P: Platform>(
 ) -> Result<Clock, Errno> {
     let clock = match clock_id as u32 as i32 {
         clock::THREAD_CPUTIME_ID => return Err(Errno::EOPNOTSUPP),
-        clock::REALTIME_ALARM | clock::BOOTTIME_ALARM => {
+        clock::REALTIME_ALARM | clock::BOOTTIME_ALARM if !crate::wall_clock::has_clock() => {
             poll::read_timeout(process, req)?;
             return Err(Errno::EOPNOTSUPP);
+        }
+        clock::REALTIME_ALARM | clock::BOOTTIME_ALARM if !is_privileged(process) => {
+            poll::read_timeout(process, req)?;
+            return Err(Errno::EPERM);
         }
         _ => clock(clock_id).ok_or(Errno::EINVAL)?,
     };

@@ -31,6 +31,16 @@ pub const fn context_offset(context: usize) -> usize {
 /// Size of one context's register page.
 pub const CONTEXT_BLOCK_SIZE: usize = CONTEXT_STRIDE;
 
+/// The source a device-tree interrupt specifier of the PLIC binding names
+/// (`sifive,plic-1.0.0.yaml`: one cell, the source, 1 to 1023).
+pub fn source_of_specifier(cells: &[u32]) -> Result<u32, &'static str> {
+    match *cells {
+        [source] if (1..=MAX_SOURCE).contains(&source) => Ok(source),
+        [_] => Err("the PLIC source is out of range"),
+        _ => Err("not a PLIC interrupt specifier (one cell)"),
+    }
+}
+
 /// One hart context's view of the PLIC.
 #[derive(Debug)]
 pub struct Plic<R: RegisterIo> {
@@ -88,6 +98,15 @@ impl<R: RegisterIo> Plic<R> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_device_tree_source_is_its_one_cell() {
+        assert_eq!(source_of_specifier(&[1]), Ok(1));
+        assert_eq!(source_of_specifier(&[1023]), Ok(1023));
+        assert!(source_of_specifier(&[0]).is_err());
+        assert!(source_of_specifier(&[1024]).is_err());
+        assert!(source_of_specifier(&[1, 4]).is_err());
+    }
+
     use super::*;
     use crate::io::fake::FakeRegs;
 

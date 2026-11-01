@@ -22,6 +22,30 @@ const TEXT_EDITOR_SYNONYMS: [&str; 6] = ["Notepad", "TextEdit", "gedit", "Kate",
 const SETTINGS_PROGRAM: &str = "/bin/settings";
 const FILES_PROGRAM: &str = "/bin/files";
 const TEXT_EDITOR_PROGRAM: &str = "/bin/text-editor";
+const TASK_MANAGER_PROGRAM: &str = "/bin/task-manager";
+const TASK_MANAGER_SYNONYMS: [&str; 20] = [
+    "Activity Monitor",
+    "System Monitor",
+    "Force Quit",
+    "taskmgr",
+    "processes",
+    "process",
+    "tasks",
+    "kill",
+    "end task",
+    "top",
+    "htop",
+    "ps",
+    "CPU",
+    "memory",
+    "RAM",
+    "monitor",
+    "performance",
+    "not responding",
+    "frozen",
+    "hung",
+];
+const TERMINAL_PROGRAM: &str = "/bin/terminal";
 const HOST_SHARE_LISTING: &str = "ls /media/host";
 const HOST_SHARE: &str = "/media/host";
 const PLAIN_PATH_BYTES: &[u8] = b"/._-+";
@@ -34,17 +58,19 @@ pub const INSTALLER_PROGRAM: &str = "/usr/libexec/app-window";
 /// What separates a started program's path and its arguments in a [`Command`].
 pub const ARGUMENT_SEPARATOR: u8 = 0;
 
-const BUILT_INS: [AppId; 4] = [
+const BUILT_INS: [AppId; 5] = [
     AppId::Terminal,
     AppId::Files,
     AppId::Settings,
     AppId::TextEditor,
+    AppId::TaskManager,
 ];
 
 /// An app the shell can launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AppId {
-    /// The console terminal's window.
+    /// The terminal: the terminal program's windows (`/bin/terminal`, D187) when the build has
+    /// it, and the console terminal's.
     Terminal,
     /// The Files app (`/bin/files`), when the build has it.
     Files,
@@ -52,6 +78,8 @@ pub enum AppId {
     Settings,
     /// The Text Editor (`/bin/text-editor`, D149), when the build has it.
     TextEditor,
+    /// The Task Manager (`/bin/task-manager`, D200), when the build has it.
+    TaskManager,
     /// The host's shared folder at `/media/host`.
     HostShare,
     /// The launcher's row that opens the installer on the host's shared folder.
@@ -139,6 +167,7 @@ struct InstalledApp {
     name_length: u8,
     source: Source,
     program: Command,
+    line: Command,
     synonyms: [u8; SYNONYMS_CAPACITY],
     synonyms_length: u8,
     icon: Option<IconPixels>,
@@ -168,6 +197,71 @@ impl InstalledApp {
     }
 }
 
+fn push_word(line: &mut Command, path: &[u8]) -> bool {
+    let plain = path
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || PLAIN_PATH_BYTES.contains(byte));
+    match plain {
+        true => line.push(path),
+        false => line.push(b"'") && line.push(path) && line.push(b"'"),
+    }
+}
+
+fn push_in_folder(line: &mut Command, name: &str, relative: &str) -> bool {
+    [
+        manifest::DIRECTORY.as_bytes(),
+        b"/",
+        name.as_bytes(),
+        b"/",
+        relative.as_bytes(),
+    ]
+    .iter()
+    .all(|part| line.push(part))
+}
+
+fn launch_line(app: &manifest::Manifest<'_>, program: &Command) -> Option<Command> {
+    let mut line = Command::new();
+    if let Some(environment) = app.environment
+        && (!line.push(environment.as_bytes()) || !line.push(b" "))
+    {
+        return None;
+    }
+    if let Some(loader) = app.loader {
+        let mut path = Command::new();
+        if !push_in_folder(&mut path, app.name, loader)
+            || !push_word(&mut line, path.as_bytes())
+            || !line.push(b" ")
+        {
+            return None;
+        }
+        if let Some(libraries) = app.libraries {
+            let mut folders = Command::new();
+            for (at, folder) in libraries.split(':').enumerate() {
+                if (at > 0 && !folders.push(b":"))
+                    || !push_in_folder(&mut folders, app.name, folder)
+                {
+                    return None;
+                }
+            }
+            if !line.push(b"--library-path ")
+                || !push_word(&mut line, folders.as_bytes())
+                || !line.push(b" ")
+            {
+                return None;
+            }
+        }
+    }
+    if !push_word(&mut line, program.as_bytes()) {
+        return None;
+    }
+    if let Some(arguments) = app.arguments
+        && (!line.push(b" ") || !line.push(arguments.as_bytes()))
+    {
+        return None;
+    }
+    Some(line)
+}
+
 /// The catalogue. See the module documentation.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Catalogue {
@@ -175,6 +269,8 @@ pub struct Catalogue {
     host_share: bool,
     files_present: bool,
     text_editor_present: bool,
+    task_manager_present: bool,
+    terminal_present: bool,
 }
 
 fn contains_ignoring_case(text: &str, query: &str) -> bool {
@@ -236,7 +332,11 @@ impl Catalogue {
             Ok(_) => return false,
             Err(at) => at,
         };
-        if !resolved || self.installed.try_reserve(1).is_err() {
+        let line = launch_line(&app, &program);
+        let Some(line) = line.filter(|_| resolved) else {
+            return false;
+        };
+        if self.installed.try_reserve(1).is_err() {
             return false;
         }
         let mut entry = InstalledApp {
@@ -244,6 +344,7 @@ impl Catalogue {
             name_length: app.name.len() as u8,
             source: app.source,
             program,
+            line,
             synonyms: [0; SYNONYMS_CAPACITY],
             synonyms_length: app.synonyms.len() as u8,
             icon: None,
@@ -289,6 +390,16 @@ impl Catalogue {
     }
 
     /// Records whether the build has the Text Editor.
+    /// Records whether the build has the Task Manager (`/bin/task-manager`, D200).
+    pub fn set_task_manager_present(&mut self, present: bool) {
+        self.task_manager_present = present;
+    }
+
+    /// Whether the build has the Task Manager.
+    pub fn task_manager_present(&self) -> bool {
+        self.task_manager_present
+    }
+
     pub fn set_text_editor_present(&mut self, present: bool) {
         self.text_editor_present = present;
     }
@@ -296,6 +407,16 @@ impl Catalogue {
     /// Whether the build has the Text Editor.
     pub fn text_editor_present(&self) -> bool {
         self.text_editor_present
+    }
+
+    /// Records whether the build has the terminal program (D187).
+    pub fn set_terminal_present(&mut self, present: bool) {
+        self.terminal_present = present;
+    }
+
+    /// Whether the build has the terminal program.
+    pub fn terminal_present(&self) -> bool {
+        self.terminal_present
     }
 
     /// How many apps are installed.
@@ -313,6 +434,7 @@ impl Catalogue {
             AppId::HostShare | AppId::InstallFromHostShare => self.host_share,
             AppId::Installed(index) => self.installed(index).is_some(),
             AppId::Terminal | AppId::Files | AppId::Settings | AppId::TextEditor => true,
+            AppId::TaskManager => self.task_manager_present,
         }
     }
 
@@ -340,6 +462,7 @@ impl Catalogue {
             AppId::Files => "Files",
             AppId::Settings => "Settings",
             AppId::TextEditor => "Text Editor",
+            AppId::TaskManager => "Task Manager",
             AppId::HostShare => "Host share",
             AppId::InstallFromHostShare => INSTALL_FROM_HOST_SHARE,
             AppId::Installed(index) => self.installed(index).map_or("", InstalledApp::name),
@@ -361,6 +484,7 @@ impl Catalogue {
             AppId::Files => Icon::Files,
             AppId::Settings => Icon::Settings,
             AppId::TextEditor => Icon::TextEditor,
+            AppId::TaskManager => Icon::TaskManager,
             AppId::HostShare | AppId::InstallFromHostShare => Icon::HostShare,
             AppId::Installed(index) => {
                 match self.installed(index).and_then(|app| app.icon.as_ref()) {
@@ -377,10 +501,12 @@ impl Catalogue {
         [
             AppId::Files,
             AppId::Settings,
+            AppId::TaskManager,
             AppId::Terminal,
             AppId::TextEditor,
         ]
         .into_iter()
+        .filter(|&app| app != AppId::TaskManager || self.task_manager_present)
         .chain((0..self.installed.len()).map(|index| AppId::Installed(index as u8)))
         .chain(self.host_share.then_some(AppId::InstallFromHostShare))
     }
@@ -405,6 +531,7 @@ impl Catalogue {
             AppId::Files => &FILES_SYNONYMS,
             AppId::Settings => &SETTINGS_SYNONYMS,
             AppId::TextEditor => &TEXT_EDITOR_SYNONYMS,
+            AppId::TaskManager => &TASK_MANAGER_SYNONYMS,
             AppId::HostShare | AppId::InstallFromHostShare | AppId::Installed(_) => &[],
         };
         if built_in
@@ -428,14 +555,21 @@ impl Catalogue {
     /// programs, `Install from host share...` the installer on the share, and the host share
     /// Files on it (D135); without Files the share's listing and installed apps are typed in
     /// the terminal (the program's path, single-quoted when it holds more than letters, digits
-    /// and `/._-+`), after Ctrl-U so a half-typed line does not run with it; the terminal is
-    /// only focused, which the desktop does itself.
+    /// and `/._-+`; for a Linux program carrying its own dynamic loader, the loader first with
+    /// `--library-path` and its library folders; then the app's arguments, D172), after Ctrl-U
+    /// so a half-typed line does not run with it; Terminal starts the terminal program, a new
+    /// window each time (D187), and without it the console terminal is only focused, which the
+    /// desktop does itself.
     pub fn launch(&self, app: AppId) -> Option<Launch> {
         match app {
+            AppId::Terminal if self.terminal_present => {
+                Some(Launch::Start(Command::from(TERMINAL_PROGRAM)))
+            }
             AppId::Terminal => None,
             AppId::Files => Some(Launch::Start(Command::from(FILES_PROGRAM))),
             AppId::Settings => Some(Launch::Start(Command::from(SETTINGS_PROGRAM))),
             AppId::TextEditor => Some(Launch::Start(Command::from(TEXT_EDITOR_PROGRAM))),
+            AppId::TaskManager => Some(Launch::Start(Command::from(TASK_MANAGER_PROGRAM))),
             AppId::InstallFromHostShare => {
                 Command::program(INSTALLER_PROGRAM, &[b"install", HOST_SHARE.as_bytes()])
                     .map(Launch::Start)
@@ -451,18 +585,10 @@ impl Catalogue {
                 typed.then_some(Launch::Type(line))
             }
             AppId::Installed(index) => {
-                let path = self.installed(index)?.program;
-                let plain = path
-                    .as_bytes()
-                    .iter()
-                    .all(|byte| byte.is_ascii_alphanumeric() || PLAIN_PATH_BYTES.contains(byte));
+                let typed = self.installed(index)?.line;
                 let mut line = Command::new();
-                let typed = line.push(KILL_LINE)
-                    && match plain {
-                        true => line.push(path.as_bytes()) && line.push(b"\r"),
-                        false => line.push(b"'") && line.push(path.as_bytes()) && line.push(b"'\r"),
-                    };
-                typed.then_some(Launch::Type(line))
+                let fits = line.push(KILL_LINE) && line.push(typed.as_bytes()) && line.push(b"\r");
+                fits.then_some(Launch::Type(line))
             }
         }
     }
@@ -503,6 +629,32 @@ mod tests {
 
     fn names(catalogue: &Catalogue, apps: impl Iterator<Item = AppId>) -> Vec<String> {
         apps.map(|app| catalogue.name(app).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_task_manager_is_listed_and_found_only_when_the_build_has_it() {
+        let mut catalogue = Catalogue::new();
+        assert!(
+            !catalogue
+                .launcher_apps()
+                .any(|app| app == AppId::TaskManager)
+        );
+        catalogue.set_task_manager_present(true);
+        assert!(
+            catalogue
+                .launcher_apps()
+                .any(|app| app == AppId::TaskManager)
+        );
+        assert!(catalogue.matches(AppId::TaskManager, "force quit"));
+        assert!(catalogue.matches(AppId::TaskManager, "htop"));
+        assert_eq!(
+            catalogue.launch(AppId::TaskManager),
+            Some(Launch::Start(Command::from("/bin/task-manager")))
+        );
+        assert_eq!(
+            catalogue.app_named("Task Manager"),
+            Some(AppId::TaskManager)
+        );
     }
 
     #[test]
@@ -642,6 +794,53 @@ mod tests {
             Some(Launch::Start(command)) => {
                 assert_eq!(command.as_bytes(), b"/bin/files\0/media/host")
             }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_program_with_its_own_loader_opens_through_it_with_its_arguments() {
+        let mut catalogue = Catalogue::new();
+        let file = b"eggos-app 1\nname=brogue\nsource=linux\nrun=brogue\n\
+                     loader=lib/ld-musl-x86_64.so.1\nlibraries=lib:usr/lib\n\
+                     arguments=--data-dir /Applications/brogue/share/brogue\n";
+        assert!(catalogue.add_installed(b"brogue", file));
+        let brogue = catalogue.installed_named("brogue").unwrap();
+        match catalogue.launch(brogue) {
+            Some(Launch::Type(line)) => assert_eq!(
+                line.as_bytes(),
+                b"\x15/Applications/brogue/lib/ld-musl-x86_64.so.1 --library-path \
+                  '/Applications/brogue/lib:/Applications/brogue/usr/lib' \
+                  /Applications/brogue/brogue --data-dir /Applications/brogue/share/brogue\r"
+            ),
+            other => panic!("{other:?}"),
+        }
+        let long = format!(
+            "eggos-app 1\nname=long\nsource=linux\nrun={}\nloader={}\narguments={}\n",
+            "p".repeat(150),
+            "l".repeat(100),
+            "a".repeat(100)
+        );
+        assert!(!catalogue.add_installed(b"long", long.as_bytes()));
+    }
+
+    #[test]
+    fn an_app_s_environment_comes_first_on_its_launch_line() {
+        let mut catalogue = Catalogue::new();
+        let file = b"eggos-app 1\nname=mousepad\nsource=linux\nrun=mousepad\n\
+                     loader=lib/ld-musl-aarch64.so.1\nlibraries=lib\n\
+                     arguments=--disable-server /tmp/note.txt\n\
+                     environment=XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1\n";
+        assert!(catalogue.add_installed(b"mousepad", file));
+        let mousepad = catalogue.installed_named("mousepad").unwrap();
+        match catalogue.launch(mousepad) {
+            Some(Launch::Type(line)) => assert_eq!(
+                line.as_bytes(),
+                b"\x15XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1 \
+                  /Applications/mousepad/lib/ld-musl-aarch64.so.1 --library-path \
+                  /Applications/mousepad/lib /Applications/mousepad/mousepad \
+                  --disable-server /tmp/note.txt\r"
+            ),
             other => panic!("{other:?}"),
         }
     }

@@ -1,0 +1,328 @@
+# The Egg command model
+
+The one way to work with EggOS and EggDB, for people and AI agents: how commands are named,
+described and made safe, how they answer and how they fail. This file is the canonical copy of
+the shared spec (the owner's approved design of 2026-10-28; EggOS D160); EggDB's
+`docs/ux/command-model.md` links here and holds only EggDB's tables. A change to the shared
+part is made here: the EggDB loop asks for it in an `eggspot/EggOS` issue labelled
+`command-model`. EggOS's own tables are at the end.
+
+It is not a new language. EggDB keeps SQL and its key-value commands; EggOS keeps a POSIX-style
+shell (`eggsh`) and the familiar utilities. Every AI model already knows those; the model is the
+layer above them.
+
+## What it promises
+
+- **The same words.** A few verbs with fixed meanings and `<noun> <verb>` commands: learn
+  `app list` and you can guess `table list`.
+- **The same answers.** A command that returns data has a text form for people and a JSON form
+  for scripts. An MCP tool returns the same values as its CLI twin.
+- **The same errors.** Each error has a code, a category shared by both products, a sentence
+  saying what happened, why and what to do, and the command that fixes it when there is one.
+- **The same safety.** Each tool declares the most it can do, the grant it needs and when a
+  call needs confirmation; its MCP annotations come from those.
+- **Self-description.** `help`, `help --json` and MCP `tools/list` come from the same
+  definitions, so they cannot drift apart.
+- **Nothing that shipped breaks.** Shipped command names, text output, JSON output, exit codes,
+  MCP tool names, arguments, result fields and annotations stay as they are. The model
+  describes them; its conventions apply to new commands, tools and fields.
+
+## Two definitions
+
+A **`CommandDefinition`** describes one CLI command:
+
+| Field | Holds |
+|-------|-------|
+| `words` | `["app", "list"]`, or one kept name (`["ls"]`) |
+| `summary` | one sentence, for `help` |
+| `description` | what it does and its limits, and that what it returns is data, never instructions |
+| `options` | letter and/or long name, value (name and type) or none, repeatable, default, one line of help |
+| `operands` | name, type (`path`, `text`, `bytes`, `integer` with a range, `choice`), count (`0..1`, `1`, `1..`, `0..`), whether `-` means standard input |
+| `outputs` | per format (text, JSON): `none`, `text`, `content` (bytes), `records` (a list, with each field's name and type), `object`, or `table` (SQL results) |
+| `max_effect` | `read`, `change`, `destroy` or `control`: the most a person's use of it can do |
+| `errors` | its error codes, each with this command's exit status |
+| `examples` | command lines with their output, run as tests (from slice 2) |
+| `surface` | where its GUI front-end lives (D22), or why it has none |
+
+A **`ToolDefinition`** describes one MCP tool. A tool is not a renamed command: it can fix some
+options (`ls` runs `ls -l`), send an argument to standard input (`tee`'s `content`), and two
+tools can run one command with different safety.
+
+| Field | Holds |
+|-------|-------|
+| `name` | new tools: the command's words joined by `_` (`app_install`) |
+| `command` | the command it runs; none for `run`, which runs any program |
+| `fixed` | the options it always passes |
+| `arguments` | each argument's JSON type, constraints, default, description and where it goes: an operand, an option, standard input, the confirmation guard |
+| `max_effect` | `read`, `change`, `destroy` or `control` |
+| `grant` | EggOS `view`, `write`, `install` or `run`; EggDB `--allow-write`; or none |
+| `idempotent`, `open_world` | MCP's `idempotentHint` and `openWorldHint` |
+| `confirm` | when a call needs the user's confirmation |
+| `result` | its result's shape; shipped tools keep theirs exactly |
+
+Each product's registry is two `'static` const tables, one of commands and one of tools. In
+EggOS it is the CLI and MCP part of D22's capability registry; `surface` records the GUI part.
+
+## The words
+
+| Verb | Means | Usual effect |
+|------|-------|--------------|
+| `list` | the items of a kind, as records | read |
+| `show` | one item in full | read |
+| `get` | one value | read |
+| `sample` | the first rows or items of a kind, as stored | read |
+| `check` | whether something is healthy, with what to do | read |
+| `explain` | what a statement would do, without doing it | read |
+| `export` | items written out to a file or standard output | read |
+| `create` | a new store made (a database file) | change |
+| `add` | a new item created | change |
+| `set` | a value replaced | change |
+| `import` | items read in from a file or standard input | change |
+| `restore` | items brought back (from a dump, from the Trash, a window to its size) | change |
+| `move`, `copy` | an item moved or copied | change |
+| `open`, `close` | an app or window opened or closed | change |
+| `install` | an app installed | change |
+| `delete` | an item removed, to the Trash where the product has one | destroy |
+| `uninstall` | an app removed | destroy |
+| `run` | any program or any statement | control |
+
+`restore` keeps one meaning, "bring back", in its three uses.
+
+- New commands are `<noun> <verb>`, a singular noun and a core verb.
+- A product's top-level commands act on its implied noun (EggDB's database file).
+- A noun may add its own verbs by a decision (EggOS's `wm`, below).
+- No noun may hide a familiar program (no `/bin/file`, no `/bin/install`).
+- Kept names keep their name and exact behavior and still get a full definition.
+- Shipped MCP tool names stay; the registry test allows them only from a recorded list.
+
+## Answers
+
+- **Text stays as it is**, the default.
+- **JSON:** records are JSON lines, one per item; an object is one JSON value. EggOS adds
+  `--json` to the commands whose output is records or an object; commands whose output is
+  `none` or `content` (`cat`, `echo`, `true`) have none. EggDB keeps `--format` (`-F`), with
+  `--json` as its alias.
+- **New field names** are `snake_case`; sizes are integers in bytes (`size_bytes`), times RFC
+  3339 in UTC (`modified_at`), durations integers in milliseconds (`..._ms`). Shipped fields
+  keep their names.
+- **Pages (slice 3):** list commands take `--limit <n>` and `--after <cursor>`; a page holds
+  the next items by their key (a name, an id) after the cursor. A cursor is the page's last
+  key with every byte outside letters, digits and `._~@+,=:-`, and a leading `-`, written as
+  `%XX`: one word that never reads as an option. When more follow, the command's last line
+  on standard error is `more: --after <cursor>`; with `--json` it is
+  `{"page":{"truncated":true,"truncated_by":"limit","next_cursor":"<cursor>"}}`, so standard
+  output stays records. More to come is not an error: the exit status is 0. A cursor that is
+  not one is the product's usage-category code (EggOS `bad_cursor`). New list tools answer
+  `{"items": [...], "truncated": ..., "truncated_by": "limit"|"bytes", "next_cursor": "..."}`.
+  Shipped tools keep their own arguments and fields; one that gains `limit` and `after` keeps
+  its result and adds `structuredContent` `{"truncated", "truncated_by", "next_cursor"}` when
+  the call paged (`"bytes"` when its output was cut before the page's end).
+- What goes around results stays: EggOS's data notice before each result, EggDB's per-call
+  limits.
+- `outputSchema`, where a tool declares one, covers its result and its error result
+  (`oneOf`); shipped tools declare what they did.
+- **MCP `instructions`** are generated: the verbs and what each effect means, the session's
+  grants, the error categories, and that `fix_command` is the way out of an error.
+
+## Errors
+
+- **Codes are per product** (`snake_case`, stable once shipped).
+- **Every code has a shared category**: `usage`, `not_found`, `exists`, `busy`, `read_only`,
+  `needs_grant`, `needs_confirmation`, `declined`, `refused`, `too_large`, `timeout`,
+  `damaged`, `failed`. Scripts and agents rely on the category.
+- **Message:** `<what happened>: <why>. <what to do>`.
+- **Text:** the message, then `  try: <command>` when one command fixes it.
+- **JSON and MCP:** `{"error":{"code":"...","category":"...","message":"...","fix":"...",
+  "fix_command":"..."}}` (`fix_command` only when there is one). A product may add fields. Over
+  MCP the result has `isError: true`.
+- **Exit statuses are per command**, declared with each code; POSIX meanings stay (`grep`
+  exits 1 when nothing matches).
+
+## Effects and safety (MCP tools)
+
+| `max_effect` | Annotations | Confirmation |
+|--------------|-------------|--------------|
+| `read` | `readOnlyHint: true` | never |
+| `change` | `readOnlyHint: false`, `destructiveHint: false` | never |
+| `destroy` | `destructiveHint: true` | when `confirm` says so |
+| `control` | `destructiveHint: true` | when `confirm` says so |
+
+`idempotentHint` and `openWorldHint` come from the tool's fields, the grant from `grant`.
+Confirmation is MCP elicitation where the client supports it, otherwise a `confirm: true`
+argument, refused with `needs_confirmation` when missing; a decline is `declined_by_user`, a
+client failure `confirmation_failed`. Grants and flags are for agents only: a person at the CLI
+has the system's own permissions. `--dry-run` only where it is exact: it checks what the
+command would check, says what it would do ("would ...") and changes nothing. A dry run needs
+the tool's grant but never confirmation, since nothing changes; a tool that asks for
+confirmation has its dry runs answered by the server from what it checked, never by its
+command, so a command that ignored `--dry-run` could not change anything unasked. Whether a
+call needs a yes is one rule over the registry's `confirm` (never, when it would replace
+something, always) and the dry run. The registry states the safety; the products' existing
+checks still enforce it.
+
+## Tests
+
+- **Registry test:** every command and tool has the fields its slice requires; every command
+  is a kept name or `<noun> <verb>` with a core or recorded verb; new tool names follow the `_`
+  rule and shipped names come from the recorded list (as do the decided names above); annotations, grants and confirmation
+  agree; every option a tool passes exists on its command.
+- **Parity test:** each tool's twin runs its command's words and fixed options, its schema is
+  the one it shipped with, and its annotations are the shipped ones.
+- **Help test:** `help --json` lists exactly the registry.
+- **Examples as tests** (slice 2), against the fakes.
+- What stays green: EggOS's QEMU MCP session on three architectures, EggDB's MCP fuzz target,
+  every existing CLI and MCP test.
+
+## Slices
+
+1. JSON and clear errors from the commands agents use (EggOS D160).
+2. JSON, the shared errors, examples and `help --json` from every command (EggOS D163).
+3. Previews and pages: `--limit`, `--after`, `confirm` checks, `--dry-run` where exact, a
+   security review (EggOS D164).
+4. Apps' own actions (M14) and `tools.listChanged`.
+
+Between slices 1 and 2, EggOS item 48: windows as an element tree (`wm show`, `wm act`).
+
+---
+
+## EggOS's tables (slices 1 to 3, D160, D163 and D164)
+
+The registry is `userland/commands` (`eggos-commands`, `no_std`, no allocator):
+`COMMANDS`, `TOOLS`, `errors`, `CORE_VERBS`, `NOUN_VERBS`, `KEPT_NAMES`, `SHELL_BUILTINS`. The
+core utilities read their options, `help` and examples from it, `app` its JSON form, `settings`
+its verbs' errors, and the MCP server its tools, schemas, annotations, refusal codes and
+`instructions`. `eggsh` does not link it. The registry test fails on a kept name without a
+definition (D163), and each example runs as a test against the fakes of the program that runs
+it (the core utilities' fake system with a home folder holding `notes.txt`; Settings' example
+facts).
+
+**Kept names:** `agent` (D193), `agentlog`, `app`, `cat`, `chmod` (D170), `clip` (D197), `cp`, `date`, `device` (D184), `df` (D171), `disk` (D192), `echo`, `edit`, `false`, `fetch`,
+`free`, `getprop` (D188), `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `kill` (D200), `ln` (D170), `logcat` (D188), `ls`, `mkdir`, `mv`, `nslookup`,
+`ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `setprop` (D188), `settings`, `sleep`, `sync`, `tail`, `taskset` (D198), `tee`, `terminal` (D187), `touch`,
+`trash`, `true`, `uname`, `uptime`, `wc`, `wm`; and `eggsh`'s built-ins `.`, `:`, `[`, `bg`,
+`break`, `cd`, `continue`, `echo`, `eval`, `exit`, `export`, `false`, `fg`, `help`, `jobs`,
+`kill`, `local`, `pwd`, `read`, `return`, `set`, `shift`, `test`, `true`, `type`, `unset`,
+`wait` (CLI only; defined in `eggos_commands::shell::SHELL_COMMANDS` for the docs and the
+tests, D165, D181, D182).
+
+**`wm`'s own verbs:** `focus`, `minimise`, `maximise`, `size`, `move`, `restore`, `close`
+(D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147), `act` (D161,
+item 48; `show` is a core verb), `drag` (D162); `wm desktop`'s `switch` and `new` (D204; `list`
+is a core verb, `close` and `move` are `wm`'s own).
+
+**`agent`'s own verbs** (D193): `grant`, `revoke`, `forget` (`list` and `show` are core
+verbs). Its MCP tools are `agent_list` (`view`) and `agent_show`, which shows the calling
+agent's own grants; no tool changes grants.
+
+**Other noun verbs:** `app icon` (D196), `disk format` and `disk repair` (D192), `agent pair` and
+`agent network` (D193).
+
+**Tool names a decision chose over `<noun>_<verb>`:** `clipboard_get` and `clipboard_set` (D197),
+named by the word agents know rather than `clip`'s (`DECIDED_NAMES`, which the registry test
+allows beside the shipped names).
+
+**Commands in the registry** (90, D163, D170, D171, D188, D193, D197, D200, D204: every command EggOS ships): `agent forget|grant|list|network|pair|revoke|show`, `agentlog`, `app icon|install|list|open|show|uninstall`, `cat`, `chmod`, `clip get|set`, `cp`, `date`, `device list`, `df`, `disk check|format|list|repair`, `echo`, `edit`, `false`,
+`fetch`, `free`, `getprop`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `kill`, `ln`, `logcat`, `ls`, `mkdir`, `mv`,
+`nslookup`, `ping`, `poweroff`, `ps`, `readlink`, `reboot`, `rm`, `setprop`, `settings` (the window), `settings
+get|list|set`, `sleep`, `sync`, `tail`, `taskset`, `tee`, `terminal`, `touch`, `trash`, `true`, `uname`, `uptime`,
+`wc`, and `wm act|capture|click|close|drag|focus|list|maximise|menu|minimise|move|press|restore|scroll|show|size|type` and `wm desktop close|list|move|new|switch`.
+`echo`, `true` and `false` take any words and declare no usage error.
+
+**JSON forms** (errors as one JSON line on standard error):
+
+| Command | Records |
+|---------|---------|
+| `ls --json` | `name`, `path`, `type` (`file`, `folder`, `link`, `character_device`, `block_device`, `fifo`, `socket`, `unknown`), `permissions` (`rwxr-xr-x`), `links`, `owner`, `group`, `size_bytes`, `modified_at` |
+| `ps --json` | `pid`, `parent_pid`, `group_id`, `session_id`, `state`, `name` |
+| `wm list --json` | `id`, `state`, `x`, `y`, `width`, `height`, `client_pid` (`null` for the kernel's windows), `title` |
+| `wm show --json` | `id`, `parent` (`null` for the root), `role`, `x`, `y`, `width`, `height`, `flags` (list), `name`, `value`: one element of the window's tree (D161) |
+| `app list --json` | `name`, `source`, `architecture` (or `null`), `program`, `icon` (or `null`) |
+| `agent list --json`, `agent show --json` | `id`, `name`, `view`, `view_ends_at`, `write`, `write_ends_at`, `install`, `install_ends_at`, `run`, `run_ends_at` (each grant `allow`, `ask` or `deny`; `null` for never): one per agent, or one object (D193) |
+| `agentlog --json` | `called_at`, `call`, `agent` (D193), `client`, `tool`, `result`, `arguments`, `detail`, one per line of the log (`--agent`, `--tool`, `--outcome` and `--since` keep the matching ones) |
+| `help --json` | `words`, `summary`, `description`, `options`, `operands`, `outputs`, `max_effect`, `errors`, `examples` (D163), `surface`, one per command |
+| `wc --json` | `path` (`null` for standard input), `lines`, `words`, `size_bytes`, one per input (D163) |
+| `readlink --json` | `path`, `target`, one per link (D170) |
+| `df --json` | `file_system`, `type`, `mounted_on`, `size_bytes`, `used_bytes`, `available_bytes`, `read_only`, one per file system (D171) |
+| `free --json` | one object: `total_bytes`, `used_bytes`, `free_bytes`, `available_bytes`, `reserve_bytes` (or `null`) (D163) |
+| `uptime --json` | one object: `uptime_ms` (D163) |
+| `uname --json` | one object: `kernel_name`, `node_name`, `kernel_release`, `kernel_version`, `machine`, `operating_system` (D163) |
+| `settings list --json`, `settings get --json` | `key`, `value`, `settable`: one per setting, or one object (D163) |
+| `ip -j` | one object: `state`, `adapters` (D157, as shipped) |
+
+**Pages and previews** (D164): `ls` (at most 500 a page, one folder however many entries it
+holds), `ps`, `wm list` and `app list` (at most 100) take `--limit` and `--after`, keyed by
+name, process id, window id and app name; `ps` lists by id, `wm list` and `app list` keep their
+own order within a page. `trash`, `app uninstall` and `settings set` take `--dry-run`.
+
+**Error codes:**
+
+| Code | Category | Where | Fix command |
+|------|----------|-------|-------------|
+| `usage` | usage | every command (exit 2, or 1 where the command always used 1) | |
+| `no_such_file` | not_found | ENOENT | |
+| `permission_denied` | refused | EACCES, EPERM | |
+| `already_exists` | exists | EEXIST, ENOTEMPTY | |
+| `is_a_folder`, `not_a_folder` | usage | EISDIR, ENOTDIR | |
+| `read_only` | read_only | EROFS | |
+| `no_space` | too_large | ENOSPC | |
+| `busy` | busy | EBUSY, EAGAIN | |
+| `timed_out` | timeout | ETIMEDOUT | |
+| `io_error` | damaged | EIO | |
+| `out_of_memory` | too_large | ENOMEM | |
+| `failed` | failed | anything else | |
+| `too_many_entries` | too_large | `ls` without `--limit` (exit 1) | |
+| `bad_cursor` | usage | `--after` of `ls`, `wm list`, `app list` (exit 2) and `ps` (exit 1) (D164) | |
+| `no_such_window` | not_found | `wm` (exit 1) | `wm list` |
+| `person_active` | busy | `wm` (exit 75) | |
+| `no_window_server` | not_found | `wm` (exit 1) | |
+| `no_such_menu_item` | not_found | `wm menu` | |
+| `pixels_only` | not_found | `wm show`, `wm act`: the app gives no element tree (D161) | `wm capture` |
+| `no_such_element` | not_found | `wm act`: no element of that id now | `wm show` |
+| `element_cannot` | usage | `wm act`: the element's role does not take the action | |
+| `element_disabled` | refused | `wm act`: the element is disabled | `wm show` |
+| `dialog_open` | busy | `wm click`, `wm drag`, `wm scroll`: the window has a dialog open, which the message names (D162) | `wm capture` |
+| `no_such_app`, `app_exists`, `not_an_app` | not_found, exists, usage | `app` | `app list` for the first |
+| `not_in_trash` | not_found | `trash -r` | `trash -l` |
+| `not_a_link` | usage | `readlink`: the path is not a symbolic link (D170) | |
+| `no_such_command` | not_found | `help` | `help` |
+| `no_such_setting` | not_found | `settings get`, `settings set` (exit 1; D163) | `settings list` |
+| `setting_read_only` | read_only | `settings set`: the key reports a fact (exit 1) | `settings list` |
+| `invalid_value` | usage | `settings set`: a value the setting does not take, which the message lists (exit 2) | |
+| `not_applied` | failed | `settings set`: saved, but the desktop did not take it now (exit 1) | |
+| `path_not_allowed`, `needs_grant`, `needs_confirmation`, `declined_by_user`, `confirmation_failed`, `confirmation_timed_out`, `question_pending`, `target_changed`, `audit_failed`, `audit_full`, `request_id_too_long`, `capture_failed` | refused, needs_grant, needs_confirmation, declined, failed, timeout, busy, busy, failed, too_large, usage, failed | the MCP server's refusals, in `structuredContent.error` | |
+
+**Tools:** the 26 shipped tools keep their names, arguments, results and annotations (the
+parity test compares each schema byte for byte with the shipped one), and D160 adds `wm_focus`,
+`wm_move` (`x`, `y`), `wm_size` (`width`, `height`), `wm_minimise`, `wm_maximise`,
+`wm_restore` and `wm_close`: effect `change`, grant `run`, idempotent but for `wm_close`. D163
+adds `settings_list` and `settings_get` (`key`; effect `read`, no grant) and `settings_set`
+(`key`, `value`; effect `change`, grant `run`, idempotent, no confirmation: decided by
+research). D161
+adds `wm_show` (effect `read`, grant `view`) and `wm_act` (`element`, `action`, `text`;
+effect `control`, grant `run`). D170 adds `ln` (`target`, `link`, `symbolic`, `true` by
+default; effect `change`, grant `write`, not idempotent, no confirmation: it runs `ln -T` without
+`-f`, so it never replaces anything; its command `ln` is `destroy` because of `-f`). D162 adds `wm_drag` (`x`, `y`, `to_x`, `to_y`, `button`;
+effect `control`, grant `run`) and two optional arguments to shipped tools, `wm_click`'s
+`double` and `wm_scroll`'s `dx`, so their schemas grew by those (old calls are unchanged). Their
+effects: `read` for the reading tools, `wm_capture` and `wm_menu_list`; `change` for
+`clock_sync`, `app_install`, `app_open`, `edit_open` and the seven new `wm` tools; `destroy` for
+`tee`, `trash`, `fetch`, `clock_set` and `app_uninstall`; `control` for `run`, the input tools
+and `wm_menu_choose`. No tool is `openWorldHint` yet, as shipped. D164 appends optional
+arguments to shipped schemas (old calls are unchanged): `limit` and `after` to `ls` (`limit`
+1 to 500), `ps`, `wm_list` and `app_list` (1 to 100), `dry_run` to `tee`, `trash` and
+`app_uninstall`, which the server answers itself, and to `settings_set`, whose twin runs `settings
+set --dry-run`; `settings_set`'s result says `Set <key> to <value>.`. The confirming tools are
+exactly the `destroy` tools, each with a `confirm` argument; `run` and the input tools, though
+`control`, ask for none (their `run` grant is the user's consent).
+
+**GUI surfaces** (D22): each command's `surface` names its GUI (Files for `ls`, the Text
+Editor for `cat` and `tee`, the title bar's buttons for `wm`'s verbs, the launcher for `app`,
+the Agent chip for `agentlog`), or why there is none (`agent` waits for Settings' Agents pane, D193
+slice 41c; `ps` waits for a task manager; `wm
+capture` and the input verbs are for agents, people use the window itself; `wm show` and `wm
+act` likewise; `help` describes the
+command line). D163's commands name theirs too: Files for `cp`, `mv`, `rm` and `mkdir`, Settings'
+About for `free`, `uptime` and `uname`, Date & time for `date` and `hwclock`, the Text Editor
+for `head`, `tail`, `grep` and `edit`, Settings' panes for `settings`, the desktop's Power off
+and Restart; the network commands wait for the designed Network pane, and `echo`, `true`,
+`false`, `sleep`, `sync`, `touch`, `wc` and `halt` are for scripts.

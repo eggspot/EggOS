@@ -43,6 +43,8 @@ pub enum Fault {
     InvalidParameter,
     /// `ERANGE`: `_snprintf` with a buffer and a count of zero.
     Range,
+    /// `EOVERFLOW`: more output than an `int` counts.
+    Overflow,
 }
 
 /// What a counted `printf` call does once its output is formatted.
@@ -57,7 +59,24 @@ pub struct Ending {
 /// The ending of a call whose whole output is `produced` units, into a buffer of `count` units
 /// (`has_buffer` false for a null buffer, which only measures when `count` is 0).
 pub fn ending(convention: Convention, produced: usize, count: usize, has_buffer: bool) -> Ending {
-    let length = produced as i32;
+    let ending = ending_counted(convention, produced, count, has_buffer);
+    match i32::try_from(produced) {
+        Ok(_) => ending,
+        Err(_) => Ending {
+            result: -1,
+            fault: Some(Fault::Overflow),
+            ..ending
+        },
+    }
+}
+
+fn ending_counted(
+    convention: Convention,
+    produced: usize,
+    count: usize,
+    has_buffer: bool,
+) -> Ending {
+    let length = produced.min(i32::MAX as usize) as i32;
     let end = |terminator_at, result, fault| Ending {
         terminator_at,
         result,
@@ -151,5 +170,16 @@ mod tests {
                 at(None, -1, Some(Fault::InvalidParameter))
             );
         }
+    }
+
+    #[test]
+    fn more_output_than_an_int_counts_fails_with_overflow() {
+        let produced = i32::MAX as usize + 1;
+        let measured = ending(Convention::Standard, produced, 0, false);
+        assert_eq!(measured, at(None, -1, Some(Fault::Overflow)));
+        let cut = ending(Convention::Iso, produced, 16, true);
+        assert_eq!(cut, at(Some(15), -1, Some(Fault::Overflow)));
+        let fits = ending(Convention::Standard, i32::MAX as usize, 0, false);
+        assert_eq!(fits, at(None, i32::MAX, None));
     }
 }

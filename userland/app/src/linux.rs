@@ -3,8 +3,9 @@
 //! the standard output and error, and starting the installer's window.
 
 use crate::architecture::Architecture;
-use crate::files::{Files, Handle, Kind, PATH_CAPACITY, Path, Status};
+use crate::files::{Files, Handle, Kind, PATH_CAPACITY, Path, Space, Status};
 use core::ffi::CStr;
+use eggos_app_manifest::translation::LAYER_OPTION;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
@@ -27,9 +28,17 @@ const STATX_FILE_SIZE: usize = 40;
 const STATX_MODIFIED: usize = 112;
 const STATX_DEVICE_MAJOR: usize = 136;
 const STATX_DEVICE_MINOR: usize = 140;
+const STATFS_SIZE: usize = 120;
+const STATFS_BLOCK_SIZE: usize = 8;
+const STATFS_BLOCKS: usize = 16;
+const STATFS_AVAILABLE: usize = 32;
+const STATFS_FRAGMENT_SIZE: usize = 72;
+const STATFS_FLAGS: usize = 80;
+const STATFS_READ_ONLY: u64 = 0x1;
 const FILE_TYPE: u32 = 0o170_000;
 const REGULAR: u32 = 0o100_000;
 const DIRECTORY: u32 = 0o040_000;
+const SYMBOLIC_LINK: u32 = 0o120_000;
 const UTSNAME_FIELD: usize = 65;
 const UTSNAME_MACHINE: usize = 4;
 const DIRENT_LENGTH: usize = 16;
@@ -41,6 +50,8 @@ const OPEN_APP: usize = 0x4044_7710;
 const OPEN_APP_SIZE: usize = 68;
 const BAD_DESCRIPTOR: Errno = Errno(9);
 const MAX_ARGUMENTS: usize = 16;
+const SIGCHLD: usize = 17;
+const EXEC_FAILED: i32 = 127;
 
 /// The standard output.
 pub const STANDARD_OUTPUT: usize = 1;
@@ -172,6 +183,85 @@ pub fn start_window(startup: &Startup, arguments: &[&CStr]) -> Errno {
     }
 }
 
+fn close_descriptor(descriptor: usize) {
+    let _ = call(number::CLOSE, [descriptor, 0, 0, 0, 0, 0]);
+}
+
+/// Runs `layer --translate program` (D191) with its standard output read into `output`: how
+/// many bytes it printed that fit (the rest is read and dropped), and whether it exited with
+/// status 0. Its standard error stays the installer's.
+pub fn run_translation(
+    layer: &[u8],
+    program: &[u8],
+    output: &mut [u8],
+) -> Result<(usize, bool), Errno> {
+    let layer = CPath::new(layer)?;
+    let option = CPath::new(LAYER_OPTION.as_bytes())?;
+    let program = CPath::new(program)?;
+    let arguments = [layer.pointer(), option.pointer(), program.pointer(), 0];
+    let environment = [0usize];
+    let mut ends = [0i32; 2];
+    call(
+        number::PIPE2,
+        [ends.as_mut_ptr() as usize, O_CLOEXEC, 0, 0, 0, 0],
+    )?;
+    let (reading, writing) = (ends[0] as usize, ends[1] as usize);
+    let child = match call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]) {
+        Ok(child) => child,
+        Err(error) => {
+            close_descriptor(reading);
+            close_descriptor(writing);
+            return Err(error);
+        }
+    };
+    if child == 0 {
+        let _ = call(number::DUP3, [writing, STANDARD_OUTPUT, 0, 0, 0, 0]);
+        let _ = call(
+            number::EXECVE,
+            [
+                layer.pointer(),
+                arguments.as_ptr() as usize,
+                environment.as_ptr() as usize,
+                0,
+                0,
+                0,
+            ],
+        );
+        syscall::exit(EXEC_FAILED);
+    }
+    close_descriptor(writing);
+    let mut filled = 0;
+    let mut dropped = [0u8; 256];
+    loop {
+        let fits = filled < output.len();
+        let room: &mut [u8] = match fits {
+            true => &mut output[filled..],
+            false => &mut dropped,
+        };
+        match call(
+            number::READ,
+            [reading, room.as_mut_ptr() as usize, room.len(), 0, 0, 0],
+        ) {
+            Ok(0) => break,
+            Ok(count) if fits => filled += count,
+            Ok(_) | Err(Errno::EINTR) => {}
+            Err(_) => break,
+        }
+    }
+    close_descriptor(reading);
+    let mut status = 0i32;
+    loop {
+        match call(
+            number::WAIT4,
+            [child, (&raw mut status) as usize, 0, 0, 0, 0],
+        ) {
+            Ok(_) => return Ok((filled, status == 0)),
+            Err(Errno::EINTR) => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 struct Cursor {
     directory: Path,
     fd: usize,
@@ -297,41 +387,106 @@ impl Drop for LinuxFiles {
     }
 }
 
+fn space_of(record: &[u8; STATFS_SIZE]) -> Space {
+    let word = |at: usize| {
+        let mut value = [0u8; 8];
+        value.copy_from_slice(&record[at..at + 8]);
+        u64::from_ne_bytes(value)
+    };
+    let block = match word(STATFS_FRAGMENT_SIZE) {
+        0 => word(STATFS_BLOCK_SIZE),
+        fragment => fragment,
+    };
+    Space {
+        total: word(STATFS_BLOCKS).saturating_mul(block),
+        available: word(STATFS_AVAILABLE).saturating_mul(block),
+        read_only: word(STATFS_FLAGS) & STATFS_READ_ONLY != 0,
+    }
+}
+
+fn status_with(path: &[u8], flags: usize) -> Result<Status, Errno> {
+    let path = CPath::new(path)?;
+    let mut record = [0u8; STATX_SIZE];
+    call(
+        number::STATX,
+        [
+            AT_FDCWD,
+            path.pointer(),
+            flags,
+            STATX_BASIC_STATS,
+            record.as_mut_ptr() as usize,
+            0,
+        ],
+    )?;
+    let mode = u32::from(u16::from_ne_bytes([
+        record[STATX_MODE],
+        record[STATX_MODE + 1],
+    ]));
+    let double_word =
+        |at: usize| u64::from_ne_bytes(record[at..at + 8].try_into().unwrap_or([0; 8]));
+    let word = |at: usize| u32::from_ne_bytes(record[at..at + 4].try_into().unwrap_or([0; 4]));
+    let size = double_word(STATX_FILE_SIZE);
+    let kind = match mode & FILE_TYPE {
+        REGULAR => Kind::File,
+        DIRECTORY => Kind::Directory,
+        SYMBOLIC_LINK => Kind::Link,
+        _ => Kind::Other,
+    };
+    Ok(Status {
+        kind,
+        size,
+        permissions: mode & 0o7777,
+        modified: double_word(STATX_MODIFIED).min(i64::MAX as u64),
+        device: u64::from(word(STATX_DEVICE_MAJOR)) << 32 | u64::from(word(STATX_DEVICE_MINOR)),
+    })
+}
+
 impl Files for LinuxFiles {
     fn status(&mut self, path: &[u8]) -> Result<Status, Errno> {
+        status_with(path, AT_SYMLINK_NOFOLLOW)
+    }
+
+    fn space(&mut self, path: &[u8]) -> Result<Space, Errno> {
         let path = CPath::new(path)?;
-        let mut record = [0u8; STATX_SIZE];
+        let mut record = [0u8; STATFS_SIZE];
         call(
-            number::STATX,
+            number::STATFS,
+            [path.pointer(), record.as_mut_ptr() as usize, 0, 0, 0, 0],
+        )?;
+        Ok(space_of(&record))
+    }
+
+    fn status_following(&mut self, path: &[u8]) -> Result<Status, Errno> {
+        status_with(path, 0)
+    }
+
+    fn read_link(&mut self, path: &[u8], target: &mut [u8]) -> Result<usize, Errno> {
+        let path = CPath::new(path)?;
+        let length = call(
+            number::READLINKAT,
             [
                 AT_FDCWD,
                 path.pointer(),
-                AT_SYMLINK_NOFOLLOW,
-                STATX_BASIC_STATS,
-                record.as_mut_ptr() as usize,
+                target.as_mut_ptr() as usize,
+                target.len(),
+                0,
                 0,
             ],
         )?;
-        let mode = u32::from(u16::from_ne_bytes([
-            record[STATX_MODE],
-            record[STATX_MODE + 1],
-        ]));
-        let double_word =
-            |at: usize| u64::from_ne_bytes(record[at..at + 8].try_into().unwrap_or([0; 8]));
-        let word = |at: usize| u32::from_ne_bytes(record[at..at + 4].try_into().unwrap_or([0; 4]));
-        let size = double_word(STATX_FILE_SIZE);
-        let kind = match mode & FILE_TYPE {
-            REGULAR => Kind::File,
-            DIRECTORY => Kind::Directory,
-            _ => Kind::Other,
-        };
-        Ok(Status {
-            kind,
-            size,
-            permissions: mode & 0o7777,
-            modified: double_word(STATX_MODIFIED).min(i64::MAX as u64),
-            device: u64::from(word(STATX_DEVICE_MAJOR)) << 32 | u64::from(word(STATX_DEVICE_MINOR)),
-        })
+        match length < target.len() {
+            true => Ok(length),
+            false => Err(Errno::ENAMETOOLONG),
+        }
+    }
+
+    fn make_link(&mut self, target: &[u8], path: &[u8]) -> Result<(), Errno> {
+        self.forget_cursor_under(path);
+        let (target, path) = (CPath::new(target)?, CPath::new(path)?);
+        call(
+            number::SYMLINKAT,
+            [target.pointer(), AT_FDCWD, path.pointer(), 0, 0, 0],
+        )
+        .map(|_| ())
     }
 
     fn entry(

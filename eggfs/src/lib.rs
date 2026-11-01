@@ -4,7 +4,8 @@
 //! - **Blocks** of [`BLOCK_SIZE`] bytes: a superblock, a block bitmap, an inode bitmap, the
 //!   journal, the inode table, then data. Files and directories map their contents through 12
 //!   direct pointers and single, double and triple indirect blocks; a directory's contents are
-//!   packed records of an inode number, a kind and a name.
+//!   packed records of an inode number, a kind and a name. A symbolic link keeps its target
+//!   as its contents; a regular file or a symbolic link may have several names (hard links).
 //! - **Crash safety.** Metadata (bitmaps, inodes, directory and indirect blocks) changes in a
 //!   cache and reaches the disk only through the journal, one transaction at a time: the
 //!   blocks are written to the journal, flushed, a commit record holding the transaction's
@@ -18,6 +19,18 @@
 //!   [`Volume::mount`] mounts one, and a [`Volume`]'s methods read and change it; changes are
 //!   committed by [`Volume::commit`] and, before an operation, when the journal would not hold
 //!   more. [`Volume::check`] verifies everything a mounted volume holds.
+//! - **Checking and formatting disks** (D192): [`check_disk`] checks an unmounted volume and
+//!   finds every problem, read-only or repairing what is safe; [`format_with`] formats part
+//!   of a disk with a label, which [`Volume::label`] reads back.
+//! - **Big directories.** A directory of more than four blocks gets an index in memory,
+//!   built at its first lookup, so looking a name up reads one block, not all of them.
+//! - **Files removed while open.** [`Volume::hold`] keeps a file from being freed when its
+//!   last name goes: it becomes an orphan, still usable through its node until
+//!   [`Volume::release`] lets go of its last hold; mounting frees the orphans a crash left.
+//! - **Versions.** [`format`] writes version [`VERSION`]; a version 1 volume mounts and is
+//!   upgraded, in the same transaction, by the first change that needs version 2.
+//! - **Work disks** (D166): [`make_work_disk`] marks a volume as a host's folder for `/work`,
+//!   [`is_work_disk`] tells one apart and [`work_folder`] finds its folder.
 //!
 //! A `Volume` is not shared: whoever owns it serialises its use.
 
@@ -28,18 +41,25 @@ extern crate alloc;
 mod cache;
 mod check;
 mod checksum;
+mod index;
 mod journal;
 mod layout;
 pub mod memory;
+mod repair;
 mod volume;
+mod work_disk;
 
+#[cfg(test)]
+mod repair_tests;
 #[cfg(test)]
 mod tests;
 
 pub use check::{CheckReport, Inconsistency};
-pub use journal::{Contents, FormatError, format, probe};
-pub use layout::{BLOCK_SIZE, MAX_NAME};
+pub use journal::{Contents, FormatError, FormatOptions, format, format_with, probe};
+pub use layout::{BLOCK_SIZE, MAX_LABEL, MAX_LINK_TARGET, MAX_LINKS, MAX_NAME, VERSION};
+pub use repair::{CheckError, CheckMode, DiskCheck, Finding, Outcome, Problem, check_disk};
 pub use volume::{Attributes, DirectoryEntry, Volume};
+pub use work_disk::{WORK_DISK_MARKER, WORK_FOLDER, is_work_disk, make_work_disk, work_folder};
 
 /// What a node is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,25 +68,33 @@ pub enum Kind {
     Directory,
     /// A regular file.
     Regular,
+    /// A symbolic link, whose contents are its target.
+    SymbolicLink,
 }
 
 const DIRECTORY_BIT: u64 = 1 << 32;
-const GENERATION_SHIFT: u32 = 33;
+const SYMBOLIC_LINK_BIT: u64 = 1 << 33;
+const GENERATION_SHIFT: u32 = 34;
+pub(crate) const GENERATION_MASK: u32 = 0x3fff_ffff;
 
 /// The kind of node `node` numbers, which its number holds.
 pub fn kind_of(node: u64) -> Kind {
-    match node & DIRECTORY_BIT != 0 {
-        true => Kind::Directory,
-        false => Kind::Regular,
+    if node & DIRECTORY_BIT != 0 {
+        Kind::Directory
+    } else if node & SYMBOLIC_LINK_BIT != 0 {
+        Kind::SymbolicLink
+    } else {
+        Kind::Regular
     }
 }
 
 fn node_number(inode: u32, generation: u32, kind: Kind) -> u64 {
-    let directory = match kind {
+    let kind_bits = match kind {
         Kind::Directory => DIRECTORY_BIT,
+        Kind::SymbolicLink => SYMBOLIC_LINK_BIT,
         Kind::Regular => 0,
     };
-    u64::from(generation & 0x7fff_ffff) << GENERATION_SHIFT | directory | u64::from(inode)
+    u64::from(generation & GENERATION_MASK) << GENERATION_SHIFT | kind_bits | u64::from(inode)
 }
 
 fn inode_of(node: u64) -> u32 {
@@ -110,7 +138,8 @@ pub enum Error {
     NoSpace,
     /// The name is longer than [`MAX_NAME`] bytes.
     NameTooLong,
-    /// The change makes no sense: a name with `/` or NUL, a directory moved into itself.
+    /// The change makes no sense: a name with `/` or NUL, a directory moved into itself, a
+    /// symbolic link's target that is empty, too long or holds NUL, a write to a symbolic link.
     InvalidArgument,
     /// The file would be larger than the format allows.
     TooBig,
@@ -120,6 +149,8 @@ pub enum Error {
     Corrupt,
     /// The disk failed, now or in an earlier commit (the volume then refuses every change).
     Io,
+    /// The file already has [`MAX_LINKS`] names.
+    TooManyLinks,
 }
 
 /// Why [`Volume::mount`] refused a disk.
@@ -149,4 +180,6 @@ impl MountError {
 pub struct Mounted {
     /// Blocks a committed transaction had not put in place, which the journal restored.
     pub recovered_blocks: u32,
+    /// Files removed while open that a crash or a power-off left behind, which mounting freed.
+    pub freed_orphans: u32,
 }

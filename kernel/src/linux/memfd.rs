@@ -121,14 +121,14 @@ fn pages_for(size: u64) -> usize {
 }
 
 fn allocate_frame() -> Option<u64> {
-    FRAMES.lock().as_mut()?.allocate()
+    FRAMES.lock().as_mut()?.allocate_for_user()
 }
 
 fn frames_free_for(count: u64) -> bool {
     FRAMES
         .lock()
         .as_ref()
-        .is_some_and(|frames| frames.free_frames() >= count)
+        .is_some_and(|frames| frames.user_may_take(count))
 }
 
 impl MemoryFile {
@@ -237,6 +237,10 @@ impl MemoryFile {
 
     fn frame_for(&self, pages: &mut MemoryPages, page: usize) -> Option<u64> {
         if page >= pages.frames.len() {
+            let added = page + 1 - pages.frames.len();
+            if !crate::heap::may_grow_for_user(added.saturating_mul(size_of::<u64>())) {
+                return None;
+            }
             pages
                 .frames
                 .try_reserve(page + 1 - pages.frames.len())

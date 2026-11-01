@@ -52,6 +52,12 @@ exactly by default (what `cargo xtask ci` and the weekly performance pass run), 
   translations dropped, then the range unmapped without freeing the frames and the mapping's
   hold on the file let go. Compare with `linux_mmap_munmap`, whose pages are mapped on first
   touch. Without the trap from user mode.
+- `linux_file_map_read_unmap`: a private `mmap` of 16 pages of a file in the initramfs (the
+  runtime's self-test program), each page then read once as a kernel copy reads it, then
+  `munmap` (D167): the descriptor looked up, a region and a file range added, then per page a
+  frame taken, the file's 4 KiB copied in from the archive and the page mapped (a file page's
+  fault without the trap), then the range unmapped and the 16 frames freed. What a dynamic
+  loader's library pages cost. Without the trap from user mode.
 - `linux_execve`: `execve` of a small static program from the initramfs, per call (D103): the
   runtime's self-test program (`/usr/libexec/eggos-selftest`, a static PIE), started with
   `exec-loop <n>`, runs its start-up and execs itself with one less until 0, so each iteration
@@ -60,17 +66,26 @@ exactly by default (what `cargo xtask ci` and the weekly performance pass run), 
   program's start-up up to its next `execve` (relocation, `PT_GNU_RELRO`). The first process's
   load and its exit are spread over the iterations. Only test kernels hold the program; the
   benchmark measures nothing elsewhere.
-- `linux_fork`: a process creation with an eager copy and the child's end, per call (D104):
+- `linux_fork`: a process creation copy on write and the child's end, per call (D104, D169):
   the runtime's self-test program, started with `fork-loop <n>`, calls
-  `clone(CLONE_VFORK | SIGCHLD)` `n` times; each child (a copy of every page the program has
-  mapped, its regions, descriptors, credentials and signal actions, and a thread) calls
-  `exit_group` at once, and the parent goes on when it has ended. The children's exit records
-  stay with the parent until it ends (no `wait4` yet). Only test kernels hold the program.
+  `clone(CLONE_VFORK | SIGCHLD)` `n` times; each child (every page the program has mapped
+  shared read-only with it, its regions, descriptors, credentials and signal actions, and a
+  thread) calls `exit_group` at once, and the parent goes on when it has ended, taking back
+  the pages it then writes (its stack) with one fault each. The children's exit records stay
+  with the parent until it ends (no `wait4` yet). Only test kernels hold the program.
+- `linux_fork_touch`: `linux_fork` with one write in each child (D169): started with
+  `fork-touch-loop <n>`, each child adds one to a word of the program's data before it ends,
+  so a page the parent maps is copied on write; the difference from `linux_fork` is the price
+  of one copy-on-write fault.
 - `linux_vfork_exec`: `posix_spawn`'s path, per call (D104): the same program, started with
   `spawn-loop <n>`, calls `clone(CLONE_VM | CLONE_VFORK | SIGCHLD)` `n` times; each child,
   on the parent's memory, `execve`s the program with `exec-loop 0`, which runs its start-up
   and exits, and the parent goes on at the child's point of no return. Includes the children's
   start-ups and exits, the last ones waited for after the parent ends.
+- `linux_epoll_wake`: an event loop's wake-up, per call (D169): one `eventfd` add that makes a
+  level-triggered `epoll` item ready (its wake list queues it on the instance's ready list), one
+  `epoll_wait` that finds it without sleeping, and the read that takes the count, through the
+  Linux layer's functions on a test program's descriptors, without the trap.
 
 ## Drivers
 
@@ -126,6 +141,24 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   nodes): the header checked, the token stream read, each node's context and the properties
   discovery uses decoded, and the enabled nodes with a `compatible` counted. About what the
   device-tree platform bus pays per walk at boot (it walks twice, D110).
+
+## Translation
+
+- `translate_block_16`: the x86-64 translator (D191) decoding, forming and lowering one block
+  of fifteen register `add`, `sub` and `xor` instructions and a `jnz` back, with every flag
+  live and atomics on (FEAT_LSE), per iteration: a sixteenth of it is the cost of translating
+  one instruction. It measures the translator on every architecture, not translated code;
+  translated programs' own run-time benchmarks are reported apart from native ones.
+- `translate_install_bytes` (aarch64 only, the one architecture that translates; a size, gated
+  exactly like `release_image_bytes`: any growth fails): the bytes of the translation cache
+  file per byte of x86_64 code, for a fixed image of 256 small loop functions (`add`, `xor`,
+  `dec`, `jnz` back, `ret`) translated by `cargo xtask bench` on the host as `app install`
+  translates on aarch64 (D191, slice 39e2d). It shows what installing a translated program
+  costs on the disk; it appears as a "no baseline" line until the baseline is updated.
+- `translated_loop_ratio` (planned, D191's "Not yet"): a fixed x86_64 loop translated and run
+  on the CPU against the same loop as native aarch64 code, run by a user program on aarch64
+  through the shared translation loader; the ratio is the translated code's cost against
+  native, reported apart from native benchmarks.
 
 ## Release kernel
 

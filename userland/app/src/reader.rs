@@ -90,15 +90,15 @@ impl<F: Files> Reader for FileReader<'_, F> {
     }
 }
 
-/// Opens the regular file at `path`, calls `body` with a reader of it and closes it; `None`
-/// when it is no regular file or cannot be opened.
+/// Opens the regular file at `path`, through symbolic links, calls `body` with a reader of it
+/// and closes it; `None` when it is no regular file or cannot be opened.
 pub fn read_file<F: Files, T>(
     files: &mut F,
     path: &[u8],
     body: impl FnOnce(&mut FileReader<'_, F>) -> T,
 ) -> Option<T> {
     let status = files
-        .status(path)
+        .status_following(path)
         .ok()
         .filter(|status| status.kind == Kind::File)?;
     let file = files.open(path).ok()?;

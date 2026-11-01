@@ -17,12 +17,18 @@ fn parsed(answer: &str) -> Value<'_> {
 }
 
 fn error_code(answer: &str) -> i64 {
-    let code = parsed(answer).get("error").unwrap().get("code").unwrap();
+    let code = parsed(answer)
+        .get("error")
+        .unwrap_or_else(|| panic!("{answer}"))
+        .get("code")
+        .unwrap();
     std::str::from_utf8(code.raw()).unwrap().parse().unwrap()
 }
 
 fn texts(answer: &str) -> Vec<String> {
-    let result = parsed(answer).get("result").unwrap();
+    let result = parsed(answer)
+        .get("result")
+        .unwrap_or_else(|| panic!("{answer}"));
     let Some(Value::Array(content)) = result.get("content") else {
         panic!("content is an array: {answer}");
     };
@@ -34,7 +40,11 @@ fn texts(answer: &str) -> Vec<String> {
 }
 
 fn is_error(answer: &str) -> bool {
-    parsed(answer).get("result").unwrap().get("isError") == Some(Value::Bool(true))
+    parsed(answer)
+        .get("result")
+        .unwrap_or_else(|| panic!("{answer}"))
+        .get("isError")
+        == Some(Value::Bool(true))
 }
 
 fn outcomes(system: &FakeSystem) -> Vec<(String, String, String)> {
@@ -119,7 +129,7 @@ fn initialize_answers_the_client_s_version_or_the_newest_and_records_the_client(
 fn unknown_methods_are_not_found_before_the_session_is_checked() {
     let mut harness = Harness::new();
     let answer = harness
-        .send(r#"{"jsonrpc":"2.0","id":"d","method":"server/discover","params":{}}"#)
+        .send(r#"{"jsonrpc":"2.0","id":"d","method":"server/frobnicate","params":{}}"#)
         .unwrap();
     assert_eq!(error_code(&answer), rpc::METHOD_NOT_FOUND);
     assert_eq!(parsed(&answer).get("id").unwrap().raw(), b"\"d\"");
@@ -176,10 +186,15 @@ fn the_tools_are_listed_once_initialized() {
             "wm_list",
             "app_list",
             "clock_get",
+            "net_status",
+            "net_ping",
+            "net_lookup",
             "tee",
             "trash",
+            "fetch",
             "run",
             "clock_set",
+            "clock_sync",
             "app_install",
             "app_open",
             "edit_open",
@@ -190,7 +205,39 @@ fn the_tools_are_listed_once_initialized() {
             "wm_press",
             "wm_scroll",
             "wm_menu_list",
-            "wm_menu_choose"
+            "wm_menu_choose",
+            "wm_focus",
+            "wm_move",
+            "wm_size",
+            "wm_minimise",
+            "wm_maximise",
+            "wm_restore",
+            "wm_close",
+            "wm_show",
+            "wm_act",
+            "wm_drag",
+            "settings_list",
+            "settings_get",
+            "settings_set",
+            "ln",
+            "df",
+            "device_list",
+            "getprop",
+            "setprop",
+            "logcat",
+            "app_show",
+            "disk_list",
+            "disk_check",
+            "disk_repair",
+            "disk_format",
+            "agent_list",
+            "agent_show",
+            "app_icon",
+            "clipboard_get",
+            "clipboard_set",
+            "kill",
+            "wm_desktop_list",
+            "wm_desktop_new"
         ]
     );
 }
@@ -273,7 +320,7 @@ fn paths_outside_the_roots_are_refused_after_decoding_and_resolution() {
     ] {
         let answer = harness.call(id, "cat", &format!(r#"{{"path":{path}}}"#));
         assert!(is_error(&answer), "{path}");
-        assert!(texts(&answer)[0].contains("outside /home and /media/host"));
+        assert!(texts(&answer)[0].contains("outside /home, /media/host and /work"));
     }
     let answer = harness.call(5, "cat", r#"{"path":"/home/a\u0000b"}"#);
     assert!(is_error(&answer));
@@ -546,7 +593,7 @@ fn a_hostile_client_name_is_escaped_in_the_log() {
     harness.send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"a\u001b[31m\u202eb\tc","version":"1"}}}"#);
     let record = harness.system.audit.last().unwrap();
     assert!(record.contains("a\\e[31m\\u{202e}b\\tc"));
-    assert_eq!(record.matches('\t').count(), 6);
+    assert_eq!(record.matches('\t').count(), 7);
 }
 
 #[test]
@@ -1646,6 +1693,24 @@ fn input_tools_run_wm_with_options_then_two_dashes_then_their_words() {
             r#"{"window":129,"x":5,"y":6,"dy":16}"#,
         ),
         (
+            "wm_scroll",
+            r#"{"window":129,"dy":0,"dx":-2}"#,
+            "scroll -- 129 -2 0",
+            r#"{"window":129,"dy":0,"dx":-2}"#,
+        ),
+        (
+            "wm_click",
+            r#"{"window":129,"x":10,"y":20,"double":true}"#,
+            "click --button left --double -- 129 10 20",
+            r#"{"window":129,"x":10,"y":20,"button":"left","double":true}"#,
+        ),
+        (
+            "wm_drag",
+            r#"{"window":129,"x":1,"y":2,"to_x":30,"to_y":40}"#,
+            "drag --button left -- 129 1 2 30 40",
+            r#"{"window":129,"x":1,"y":2,"to_x":30,"to_y":40,"button":"left"}"#,
+        ),
+        (
             "wm_menu_list",
             r#"{"window":129}"#,
             "menu -- 129",
@@ -1719,18 +1784,9 @@ fn hostile_window_arguments_are_refused_before_wm_runs() {
             r#"{"window":1,"x":1,"y":1,"button":"Left"}"#,
             "button",
         ),
-        ("wm_type", r#"{"window":1,"text":""}"#, "printable ASCII"),
-        (
-            "wm_type",
-            r#"{"window":1,"text":"a\nb"}"#,
-            "printable ASCII",
-        ),
-        (
-            "wm_type",
-            r#"{"window":1,"text":"café"}"#,
-            "printable ASCII",
-        ),
-        ("wm_type", long_text.as_str(), "printable ASCII"),
+        ("wm_type", r#"{"window":1,"text":""}"#, "printable text"),
+        ("wm_type", r#"{"window":1,"text":"a\nb"}"#, "printable text"),
+        ("wm_type", long_text.as_str(), "printable text"),
         (
             "wm_press",
             r#"{"window":1,"keys":"ctrl s"}"#,
@@ -1765,7 +1821,7 @@ fn hostile_window_arguments_are_refused_before_wm_runs() {
         ("wm_menu_list", r#"{"window":1,"menu":0}"#, "does not take"),
         (
             "wm_scroll",
-            r#"{"window":1,"dx":1,"dy":1}"#,
+            r#"{"window":1,"dy":1,"button":"left"}"#,
             "does not take",
         ),
     ] {
@@ -2049,10 +2105,1662 @@ fn a_clock_set_question_names_the_time() {
         ..Checked::default()
     };
     let mut out = [0u8; 256];
-    let length = question_text(tool, &checked, FileState::Missing, "", &mut out);
+    let length = question_text(
+        tool,
+        &checked,
+        FileState::Missing,
+        "",
+        &AgentId::LOCAL,
+        &mut out,
+    );
     assert_eq!(
         core::str::from_utf8(&out[..length]).unwrap(),
         "An agent asks to set the machine's clock to 2030-01-02T03:04:05Z (UTC). Allow it? \
          (EggOS, tool clock_set)"
     );
+}
+
+fn error_message(answer: &str) -> String {
+    parsed(answer)
+        .get("error")
+        .unwrap()
+        .get("message")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .chars()
+        .collect()
+}
+
+#[test]
+fn net_ping_and_net_lookup_run_ping_and_nslookup_with_the_host_last() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "net_ping", r#"{"host":"10.0.2.2","count":2}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ping", "-W", "1", "-c", "2", "10.0.2.2"]
+    );
+    assert_eq!(
+        *harness.system.time_limits.last().unwrap(),
+        NETWORK_TIME_LIMIT_MS
+    );
+    assert_eq!(last_record(&harness).2, r#"{"host":"10.0.2.2","count":2}"#);
+    harness.call(2, "net_ping", r#"{"host":"example.com"}"#);
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ping", "-W", "1", "-c", "4", "example.com"]
+    );
+    harness.call(3, "net_lookup", r#"{"host":"eggos.test"}"#);
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/nslookup", "eggos.test"]
+    );
+    let runs = harness.system.runs.len();
+    for (tool, arguments, words) in [
+        ("net_ping", r#"{"host":"-c"}"#, "host must be"),
+        ("net_ping", r#"{"host":"a b"}"#, "host must be"),
+        ("net_ping", r#"{"host":".x"}"#, "host must be"),
+        ("net_ping", r#"{"host":"h","count":0}"#, "count must be"),
+        ("net_ping", r#"{"host":"h","count":6}"#, "count must be"),
+        ("net_ping", r#"{}"#, "host is required"),
+        ("net_lookup", r#"{"host":7}"#, "host must be"),
+        ("net_lookup", r#"{"host":"h","count":1}"#, "does not take"),
+    ] {
+        let answer = harness.call(4, tool, arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{tool} {arguments}");
+        let message = error_message(&answer);
+        assert!(message.contains(words), "{tool} {arguments}: {message}");
+    }
+    assert_eq!(harness.system.runs.len(), runs);
+}
+
+#[test]
+fn fetch_needs_the_write_grant_an_http_url_and_confirm_to_replace() {
+    let mut reader = Harness::initialized();
+    let answer = reader.call(
+        1,
+        "fetch",
+        r#"{"url":"http://10.0.2.2/a.txt","path":"/home/root/a.txt"}"#,
+    );
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("needs the write grant"),
+        "{answer}"
+    );
+    let mut harness = writer();
+    let answer = harness.call(
+        2,
+        "fetch",
+        r#"{"url":"http://10.0.2.2:8080/a.txt","path":"/home/root/a.txt"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/fetch",
+            "http://10.0.2.2:8080/a.txt",
+            "--",
+            "/home/root/a.txt"
+        ]
+    );
+    assert_eq!(
+        *harness.system.time_limits.last().unwrap(),
+        FETCH_TIME_LIMIT_MS
+    );
+    assert_eq!(
+        last_record(&harness).2,
+        r#"{"path":"/home/root/a.txt","url":"http://10.0.2.2:8080/a.txt","confirm":false}"#
+    );
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"old".to_vec());
+    let answer = harness.call(
+        3,
+        "fetch",
+        r#"{"url":"http://10.0.2.2/a.txt","path":"/home/root/a.txt"}"#,
+    );
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("fetch would replace an existing file"));
+    let runs = harness.system.runs.len();
+    for (arguments, words) in [
+        (r#"{"url":"ftp://h/","path":"/home/root/b"}"#, "url must be"),
+        (
+            r#"{"url":"http://h/a b","path":"/home/root/b"}"#,
+            "url must be",
+        ),
+        (r#"{"path":"/home/root/b"}"#, "url is required"),
+    ] {
+        let answer = harness.call(4, "fetch", arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{arguments}");
+        let message = error_message(&answer);
+        assert!(message.contains(words), "{arguments}: {message}");
+    }
+    let answer = harness.call(5, "fetch", r#"{"url":"http://h/","path":"/etc/passwd"}"#);
+    assert!(is_error(&answer));
+    assert_eq!(harness.system.runs.len(), runs);
+}
+
+#[test]
+fn clock_sync_needs_the_run_grant_and_runs_date_sync() {
+    let mut reader = Harness::initialized();
+    let answer = reader.call(1, "clock_sync", "{}");
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("needs the run grant"),
+        "{answer}"
+    );
+    let mut harness = granted_only(&[crate::grants::Grant::Run]);
+    let answer = harness.call(2, "clock_sync", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/date", "-u", "--sync"]
+    );
+    assert_eq!(
+        *harness.system.time_limits.last().unwrap(),
+        NETWORK_TIME_LIMIT_MS
+    );
+}
+
+#[test]
+fn fetch_takes_https_urls() {
+    let mut harness = writer();
+    let answer = harness.call(
+        1,
+        "fetch",
+        r#"{"url":"https://example.com/a.txt","path":"/home/root/a.txt"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/fetch",
+            "https://example.com/a.txt",
+            "--",
+            "/home/root/a.txt"
+        ]
+    );
+}
+
+#[test]
+fn the_window_management_tools_run_wm_s_verbs_and_say_what_they_did() {
+    let mut harness = granted_only(&[crate::grants::Grant::Run]);
+    for (tool, arguments, command, logged, said) in [
+        (
+            "wm_focus",
+            r#"{"window":129}"#,
+            "focus -- 129",
+            r#"{"window":129}"#,
+            "Brought to the front: window 129.",
+        ),
+        (
+            "wm_move",
+            r#"{"window":129,"x":40,"y":0}"#,
+            "move -- 129 40 0",
+            r#"{"window":129,"x":40,"y":0}"#,
+            "Moved window 129.",
+        ),
+        (
+            "wm_size",
+            r#"{"window":7,"width":640,"height":480}"#,
+            "size -- 7 640 480",
+            r#"{"window":7,"width":640,"height":480}"#,
+            "Resized window 7.",
+        ),
+        (
+            "wm_minimise",
+            r#"{"window":129}"#,
+            "minimise -- 129",
+            r#"{"window":129}"#,
+            "Minimised window 129.",
+        ),
+        (
+            "wm_maximise",
+            r#"{"window":129}"#,
+            "maximise -- 129",
+            r#"{"window":129}"#,
+            "Maximised window 129.",
+        ),
+        (
+            "wm_restore",
+            r#"{"window":129}"#,
+            "restore -- 129",
+            r#"{"window":129}"#,
+            "Restored window 129.",
+        ),
+        (
+            "wm_close",
+            r#"{"window":129}"#,
+            "close -- 129",
+            r#"{"window":129}"#,
+            "Asked to close window 129.",
+        ),
+        (
+            "wm_act",
+            r#"{"window":129,"element":302,"action":"set-text","text":"Egg"}"#,
+            "act -- 129 302 set-text Egg",
+            r#"{"window":129,"element":302,"action":"set-text","text":"Egg"}"#,
+            "Acted on an element of window 129.",
+        ),
+        (
+            "wm_act",
+            r#"{"window":129,"element":4294967295,"action":"select"}"#,
+            "act -- 129 4294967295 select",
+            r#"{"window":129,"element":4294967295,"action":"select"}"#,
+            "Acted on an element of window 129.",
+        ),
+    ] {
+        let answer = harness.call(1, tool, arguments);
+        assert!(!is_error(&answer), "{tool}: {answer}");
+        assert_eq!(
+            harness.system.runs.last().unwrap().join(" "),
+            format!("/bin/wm {command}"),
+            "{tool}"
+        );
+        assert!(texts(&answer).iter().any(|text| text == said), "{answer}");
+        let (_, outcome, shown, _) = last_record(&harness);
+        assert_eq!(outcome, "ok", "{tool}");
+        assert_eq!(shown, logged, "{tool}");
+    }
+    for (tool, arguments, words) in [
+        ("wm_move", r#"{"window":1,"x":1}"#, "x and y"),
+        ("wm_move", r#"{"window":1}"#, "x and y are required"),
+        (
+            "wm_size",
+            r#"{"window":1,"width":0,"height":5}"#,
+            "width and height",
+        ),
+        ("wm_size", r#"{"window":1,"width":5}"#, "width and height"),
+        (
+            "wm_size",
+            r#"{"window":1}"#,
+            "width and height are required",
+        ),
+        ("wm_close", r#"{"window":1,"x":1}"#, "does not take"),
+    ] {
+        let runs = harness.system.runs.len();
+        let answer = harness.call(2, tool, arguments);
+        assert!(answer.contains(words), "{tool} {arguments}: {answer}");
+        assert_eq!(harness.system.runs.len(), runs, "{tool}");
+    }
+    let mut reader = Harness::initialized();
+    let answer = reader.call(3, "wm_focus", r#"{"window":129}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("needs the run grant"),
+        "{answer}"
+    );
+}
+
+#[test]
+fn refusals_carry_the_command_model_s_error_code_and_category() {
+    let mut reader = Harness::initialized();
+    let answer = reader.call(1, "tee", r#"{"path":"/home/root/a","content":"x"}"#);
+    let error = parsed(&answer)
+        .get("result")
+        .unwrap()
+        .get("structuredContent")
+        .unwrap()
+        .get("error")
+        .unwrap();
+    assert!(
+        error
+            .get("code")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("needs_grant")
+    );
+    assert!(
+        error
+            .get("category")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("needs_grant")
+    );
+    let message: String = error
+        .get("message")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .chars()
+        .collect();
+    assert_eq!(message, texts(&answer)[0]);
+    assert!(error.get("fix").is_some());
+    let answer = reader.call(2, "ls", r#"{"path":"/etc"}"#);
+    let error = parsed(&answer)
+        .get("result")
+        .unwrap()
+        .get("structuredContent")
+        .unwrap()
+        .get("error")
+        .unwrap();
+    assert!(
+        error
+            .get("code")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("path_not_allowed")
+    );
+    assert!(
+        error
+            .get("category")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("refused")
+    );
+    assert!(error.get("fix_command").is_none());
+}
+
+#[test]
+fn the_instructions_teach_the_verbs_effects_and_error_categories() {
+    let mut harness = Harness::new();
+    let answer = harness
+        .send(r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#)
+        .unwrap();
+    for verb in eggos_commands::CORE_VERBS {
+        assert!(answer.contains(verb), "{verb}");
+    }
+    for category in eggos_commands::Category::ALL {
+        assert!(answer.contains(category.name()), "{}", category.name());
+    }
+    assert!(answer.contains("fix_command"));
+    assert!(answer.contains("destructiveHint"));
+}
+
+#[test]
+fn the_settings_tools_run_settings_with_the_key_after_a_double_dash() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "settings_list", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/settings", "list"]
+    );
+    let answer = harness.call(2, "settings_get", r#"{"key":"shell.profile"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/settings", "get", "--", "shell.profile"]
+    );
+    assert_eq!(last_record(&harness).2, r#"{"key":"shell.profile"}"#);
+    let answer = harness.call(
+        3,
+        "settings_set",
+        r#"{"key":"shell.profile","value":"linux"}"#,
+    );
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("needs the run grant"),
+        "{answer}"
+    );
+    let runs = harness.system.runs.len();
+    for (tool, arguments, words) in [
+        ("settings_get", r#"{}"#, "key is required"),
+        ("settings_get", r#"{"key":"-x"}"#, "key must be"),
+        ("settings_get", r#"{"key":"Shell"}"#, "key must be"),
+        ("settings_get", r#"{"key":"a b"}"#, "key must be"),
+        ("settings_list", r#"{"key":"a"}"#, "does not take"),
+    ] {
+        let answer = harness.call(4, tool, arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{tool} {arguments}");
+        let message = error_message(&answer);
+        assert!(message.contains(words), "{tool} {arguments}: {message}");
+    }
+    assert_eq!(harness.system.runs.len(), runs);
+    let mut granted = granted_only(&[crate::grants::Grant::Run]);
+    let answer = granted.call(
+        5,
+        "settings_set",
+        r#"{"value":"windows","key":"shell.profile"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        granted.system.runs.last().unwrap(),
+        &["/bin/settings", "set", "--", "shell.profile", "windows"]
+    );
+    assert_eq!(
+        last_record(&granted).2,
+        r#"{"key":"shell.profile","value":"windows"}"#
+    );
+    let answer = granted.call(6, "settings_set", r#"{"key":"shell.profile"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+    assert!(error_message(&answer).contains("value is required"));
+    let answer = granted.call(7, "settings_set", "{\"key\":\"a\",\"value\":\"x\\ny\"}");
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+}
+
+#[test]
+fn the_property_tools_run_getprop_and_setprop_with_the_name_after_a_double_dash() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "getprop", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.last().unwrap(), &["/bin/getprop"]);
+    let answer = harness.call(2, "getprop", r#"{"name":"ro.build.version.sdk"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/getprop", "--", "ro.build.version.sdk"]
+    );
+    let answer = harness.call(3, "setprop", r#"{"name":"debug.level","value":"1"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("needs the write grant"),
+        "{answer}"
+    );
+    let runs = harness.system.runs.len();
+    for (tool, arguments, words) in [
+        ("getprop", r#"{"name":"a..b"}"#, "name must be"),
+        ("getprop", r#"{"name":".a"}"#, "name must be"),
+        ("getprop", r#"{"name":"a b"}"#, "name must be"),
+    ] {
+        let answer = harness.call(4, tool, arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{tool} {arguments}");
+        let message = error_message(&answer);
+        assert!(message.contains(words), "{tool} {arguments}: {message}");
+    }
+    assert_eq!(harness.system.runs.len(), runs);
+    let mut granted = granted_only(&[crate::grants::Grant::Write]);
+    let answer = granted.call(
+        5,
+        "setprop",
+        r#"{"name":"persist.sys.locale","value":"en-US"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        granted.system.runs.last().unwrap(),
+        &["/bin/setprop", "--", "persist.sys.locale", "en-US"]
+    );
+    let answer = granted.call(6, "setprop", r#"{"name":"a"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+    assert!(error_message(&answer).contains("value is required"));
+    let answer = granted.call(7, "setprop", r#"{"value":"1"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+    assert!(error_message(&answer).contains("name is required"));
+}
+
+#[test]
+fn the_logcat_tool_dumps_the_log_and_hides_other_tags_for_a_tag() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "logcat", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/logcat", "-d", "-v", "threadtime"]
+    );
+    let answer = harness.call(2, "logcat", r#"{"tag":"ActivityManager"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/logcat",
+            "-d",
+            "-v",
+            "threadtime",
+            "-s",
+            "--",
+            "ActivityManager"
+        ]
+    );
+    let runs = harness.system.runs.len();
+    for arguments in [
+        r#"{"tag":"a b"}"#,
+        r#"{"tag":"a:I"}"#,
+        r#"{"tag":"*"}"#,
+        r#"{"tag":""}"#,
+    ] {
+        let answer = harness.call(3, "logcat", arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{arguments}");
+        assert!(
+            error_message(&answer).contains("tag must be"),
+            "{arguments}"
+        );
+    }
+    assert_eq!(harness.system.runs.len(), runs);
+}
+
+fn page_of(answer: &str) -> Option<Value<'_>> {
+    parsed(answer)
+        .get("result")
+        .unwrap()
+        .get("structuredContent")
+}
+
+#[test]
+fn a_list_tool_pages_through_its_twin_and_names_the_next_cursor() {
+    let mut harness = Harness::initialized();
+    harness.system.outputs.insert(
+        "/bin/ls".into(),
+        (
+            b"total 0\n-rw-r--r-- 1 0 0 0 2026-01-01 00:00 a b\n".to_vec(),
+            b"more: --after a%20b\n".to_vec(),
+            Ended::Exited(0),
+        ),
+    );
+    let answer = harness.call(1, "ls", r#"{"path":"/home/root","limit":1}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ls", "-l", "--limit", "1", "--", "/home/root"]
+    );
+    let page = page_of(&answer).unwrap();
+    assert_eq!(page.get("truncated"), Some(Value::Bool(true)));
+    assert!(
+        page.get("truncated_by")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("limit")
+    );
+    assert!(
+        page.get("next_cursor")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("a%20b")
+    );
+    assert!(
+        texts(&answer)
+            .last()
+            .unwrap()
+            .contains(r#"call ls again with after: "a%20b" and the same limit"#),
+        "{answer}"
+    );
+    assert_eq!(
+        last_record(&harness).2,
+        r#"{"path":"/home/root","limit":1}"#
+    );
+    harness.system.outputs.insert(
+        "/bin/ls".into(),
+        (b"total 0\n".to_vec(), Vec::new(), Ended::Exited(0)),
+    );
+    let answer = harness.call(
+        2,
+        "ls",
+        r#"{"path":"/home/root","limit":1,"after":"a%20b"}"#,
+    );
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/ls",
+            "-l",
+            "--limit",
+            "1",
+            "--after",
+            "a%20b",
+            "--",
+            "/home/root"
+        ]
+    );
+    let page = page_of(&answer).unwrap();
+    assert_eq!(page.get("truncated"), Some(Value::Bool(false)));
+    assert!(page.get("next_cursor").is_none());
+    assert_eq!(
+        last_record(&harness).2,
+        r#"{"path":"/home/root","limit":1,"after":"a%20b"}"#
+    );
+    let answer = harness.call(3, "ls", r#"{"path":"/home/root"}"#);
+    assert!(page_of(&answer).is_none(), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ls", "-l", "--", "/home/root"]
+    );
+}
+
+#[test]
+fn only_the_twin_s_last_line_of_errors_names_a_next_page() {
+    let mut harness = Harness::initialized();
+    for (id, errors, cursor) in [
+        (1, &b"more: --after 7\nps: oops\n"[..], None),
+        (2, b"more: --after -rf\n", None),
+        (3, b"more: --after 7\n", Some("7")),
+    ] {
+        harness.system.outputs.insert(
+            "/bin/ps".into(),
+            (b"  PID\n".to_vec(), errors.to_vec(), Ended::Exited(0)),
+        );
+        let answer = harness.call(id, "ps", r#"{"limit":1}"#);
+        let page = page_of(&answer).unwrap();
+        assert_eq!(
+            page.get("truncated"),
+            Some(Value::Bool(cursor.is_some())),
+            "{answer}"
+        );
+        if let Some(cursor) = cursor {
+            assert!(
+                page.get("next_cursor")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .equals(cursor)
+            );
+        }
+    }
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ps", "--limit", "1"]
+    );
+    harness.system.outputs.insert(
+        "/bin/wm".into(),
+        (Vec::new(), b"more: --after 3\n".to_vec(), Ended::Exited(1)),
+    );
+    let answer = harness.call(4, "wm_list", r#"{"limit":2,"after":"1"}"#);
+    assert!(is_error(&answer));
+    assert!(page_of(&answer).is_none(), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/wm", "list", "--limit", "2", "--after", "1"]
+    );
+    harness.system.outputs.insert(
+        "/bin/ps".into(),
+        (
+            b"  PID\n".to_vec(),
+            vec![b'x'; ERROR_OUTPUT_LIMIT + 10],
+            Ended::Exited(0),
+        ),
+    );
+    let answer = harness.call(5, "ps", r#"{"limit":1}"#);
+    let page = page_of(&answer).unwrap();
+    assert_eq!(page.get("truncated"), Some(Value::Bool(true)));
+    assert!(
+        page.get("truncated_by")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("bytes")
+    );
+    assert!(page.get("next_cursor").is_none());
+    assert!(texts(&answer).last().unwrap().contains("smaller limit"));
+    let answer = harness.call(6, "app_list", r#"{"limit":101}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+    assert!(error_message(&answer).contains("limit must be"));
+}
+
+#[test]
+fn a_dry_run_is_answered_by_the_server_without_asking_or_running_the_twin() {
+    let mut harness = asking();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    harness.system.folders.push("/Applications/Paint".into());
+    for (id, tool, arguments, would) in [
+        (
+            1,
+            "trash",
+            r#"{"path":"/home/root/a.txt","dry_run":true}"#,
+            "Dry run: trash would move /home/root/a.txt (3 bytes) to the Trash.",
+        ),
+        (
+            2,
+            "tee",
+            r#"{"path":"/home/root/a.txt","content":"hello","dry_run":true}"#,
+            "Dry run: tee would replace /home/root/a.txt (3 bytes) with 5 bytes.",
+        ),
+        (
+            3,
+            "tee",
+            r#"{"path":"/home/root/new.txt","content":"hi","dry_run":true}"#,
+            "Dry run: tee would create /home/root/new.txt with 2 bytes.",
+        ),
+        (
+            4,
+            "tee",
+            r#"{"path":"/home/root/a.txt","content":"hi","append":true,"dry_run":true}"#,
+            "Dry run: tee would add 2 bytes to the end of /home/root/a.txt (3 bytes).",
+        ),
+        (
+            5,
+            "app_uninstall",
+            r#"{"name":"Paint","dry_run":true}"#,
+            "Dry run: app_uninstall would uninstall the app Paint, removing /Applications/Paint \
+             and everything in it.",
+        ),
+    ] {
+        let lines = harness.call_lines(id, tool, arguments);
+        assert_eq!(lines.len(), 1, "{tool}: {lines:?}");
+        let answer = &lines[0];
+        assert!(!is_error(answer), "{answer}");
+        assert!(texts(answer)[1].starts_with(would), "{answer}");
+        assert!(texts(answer)[1].contains("Nothing was changed"));
+        let (logged_tool, outcome, logged, detail) = last_record(&harness);
+        assert_eq!((logged_tool.as_str(), outcome.as_str()), (tool, "ok"));
+        assert!(logged.contains(r#""dry_run":true"#), "{logged}");
+        assert!(detail.ends_with(DRY_RUN_DETAIL), "{detail}");
+        assert_eq!(
+            detail.starts_with("/home/root/"),
+            tool != "app_uninstall",
+            "{detail}"
+        );
+    }
+    assert!(harness.system.runs.is_empty());
+    assert_eq!(harness.system.files["/home/root/a.txt"], b"aaa");
+    assert!(!harness.system.files.contains_key("/home/root/new.txt"));
+    let answer = harness.call(6, "trash", r#"{"path":"/home/root/gone","dry_run":true}"#);
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("nothing is there"));
+    let answer = harness.call(7, "app_uninstall", r#"{"name":"Nope","dry_run":true}"#);
+    assert!(answer.contains("\"code\":\"no_such_app\""), "{answer}");
+    let mut reader = Harness::initialized();
+    let answer = reader.call(8, "trash", r#"{"path":"/home/root/a.txt","dry_run":true}"#);
+    assert!(texts(&answer)[0].contains("needs the write grant"));
+    assert!(reader.system.runs.is_empty());
+}
+
+#[test]
+fn a_dry_run_of_a_tool_that_never_asks_runs_its_twin_with_dry_run() {
+    let mut granted = granted_only(&[crate::grants::Grant::Run]);
+    granted.system.outputs.insert(
+        "/bin/settings".into(),
+        (
+            b"would set shell.profile from macos to windows\n".to_vec(),
+            Vec::new(),
+            Ended::Exited(0),
+        ),
+    );
+    let answer = granted.call(
+        1,
+        "settings_set",
+        r#"{"key":"shell.profile","value":"windows","dry_run":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        granted.system.runs.last().unwrap(),
+        &[
+            "/bin/settings",
+            "set",
+            "--dry-run",
+            "--",
+            "shell.profile",
+            "windows"
+        ]
+    );
+    assert_eq!(
+        texts(&answer)[1],
+        "would set shell.profile from macos to windows\n"
+    );
+    assert_eq!(
+        last_record(&granted).2,
+        r#"{"key":"shell.profile","value":"windows","dry_run":true}"#
+    );
+    granted.system.outputs.insert(
+        "/bin/settings".into(),
+        (Vec::new(), Vec::new(), Ended::Exited(0)),
+    );
+    let answer = granted.call(
+        2,
+        "settings_set",
+        r#"{"key":"shell.profile","value":"linux"}"#,
+    );
+    assert_eq!(texts(&answer)[1], "Set shell.profile to linux.");
+}
+
+#[test]
+fn confirmation_texts_name_the_tool_whatever_it_is() {
+    let tool = tools::find("app_uninstall").unwrap();
+    let mut out = [0u8; 320];
+    let length = confirmation_needed(tool, &mut out);
+    assert!(text_prefix(&out, length).contains("app_uninstall removes the app"));
+    let tool = tools::find("settings_set").unwrap();
+    let length = confirmation_needed(tool, &mut out);
+    assert!(text_prefix(&out, length).contains("settings_set needs the user's yes"));
+    let mut question = [0u8; 512];
+    let length = question_text(
+        tool,
+        &Checked::default(),
+        FileState::Missing,
+        "",
+        &AgentId::LOCAL,
+        &mut question,
+    );
+    assert_eq!(
+        text_prefix(&question, length),
+        "An agent asks to run settings_set. Allow it? (EggOS, tool settings_set)"
+    );
+}
+
+#[test]
+fn ln_makes_a_symbolic_link_with_the_target_s_text_as_given() {
+    let mut harness = writer();
+    let answer = harness.call(1, "ln", r#"{"target":"notes.txt","link":"/home/root/./l"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        texts(&answer)[1],
+        "Made the symbolic link /home/root/l to notes.txt."
+    );
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ln", "-T", "-s", "notes.txt", "--", "/home/root/l"]
+    );
+    assert_eq!(harness.system.refusing_links.last(), Some(&true));
+    let (tool, outcome, logged, _) = last_record(&harness);
+    assert_eq!((tool.as_str(), outcome.as_str()), ("ln", "ok"));
+    assert_eq!(
+        logged,
+        r#"{"link":"/home/root/./l","target":"notes.txt","symbolic":true}"#
+    );
+    let answer = harness.call(2, "ln", r#"{"target":"/etc/x","link":"/home/root/s"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ln", "-T", "-s", "/etc/x", "--", "/home/root/s"]
+    );
+}
+
+#[test]
+fn ln_makes_a_hard_link_only_to_a_file_the_write_tools_reach() {
+    let mut harness = writer();
+    harness.system.links.push("/home/root/linked".into());
+    let arguments =
+        r#"{"target":"/home/root/a/../notes.txt","link":"/home/root/h","symbolic":false}"#;
+    let answer = harness.call(1, "ln", arguments);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        texts(&answer)[1],
+        "Made the hard link /home/root/h to /home/root/notes.txt."
+    );
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/ln",
+            "-T",
+            "/home/root/notes.txt",
+            "--",
+            "/home/root/h"
+        ]
+    );
+    let runs = harness.system.runs.len();
+    for (id, target, words) in [
+        (
+            2,
+            "/etc/passwd",
+            "hard link's target must be below /home/root",
+        ),
+        (3, "/home/root/linked/x", "symbolic link"),
+        (4, "/home/root", "names /home/root itself"),
+        (5, "/home/root/.local/share/Trash/files/x", "in the Trash"),
+        (6, "notes.txt", "absolute"),
+    ] {
+        let arguments =
+            format!(r#"{{"target":"{target}","link":"/home/root/h{id}","symbolic":false}}"#);
+        let answer = harness.call(id, "ln", &arguments);
+        assert!(is_error(&answer), "{target}");
+        assert!(texts(&answer)[0].contains(words), "{target}: {answer}");
+        assert_eq!(last_record(&harness).1, "refused", "{target}");
+    }
+    for (id, link, words) in [
+        (7, "/etc/l", "outside /home/root"),
+        (8, "/home/root/linked/l", "symbolic link"),
+        (9, "/home/root/.local/share/Trash/l", "in the Trash"),
+    ] {
+        let arguments = format!(r#"{{"target":"x","link":"{link}"}}"#);
+        let answer = harness.call(id, "ln", &arguments);
+        assert!(is_error(&answer), "{link}");
+        assert!(texts(&answer)[0].contains(words), "{link}: {answer}");
+    }
+    assert_eq!(harness.system.runs.len(), runs);
+}
+
+#[test]
+fn only_the_twins_of_path_tools_refuse_symbolic_links() {
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/home/root/a".into(), b"a".to_vec());
+    for (id, tool, arguments) in [
+        (1, "cat", r#"{"path":"/home/root/a"}"#),
+        (2, "ls", "{}"),
+        (3, "tee", r#"{"path":"/home/root/b","content":"x"}"#),
+        (
+            4,
+            "run",
+            r#"{"program":"/bin/cat","arguments":["/home/root/a"]}"#,
+        ),
+        (5, "ps", "{}"),
+        (6, "app_open", r#"{"name":"Files"}"#),
+    ] {
+        let answer = harness.call(id, tool, arguments);
+        assert!(!is_error(&answer), "{tool}: {answer}");
+    }
+    assert_eq!(
+        harness.system.refusing_links,
+        [true, true, true, false, false, false]
+    );
+}
+
+fn store_file(agent: &str, grants: &[(Grant, crate::grants::Permission)]) -> Vec<u8> {
+    let mut store = crate::grants::GrantStore::new();
+    let entry = store
+        .add(
+            AgentId::stored(agent.as_bytes()).unwrap(),
+            crate::grants::AgentName::new(agent.as_bytes()).unwrap(),
+        )
+        .unwrap();
+    for &(grant, permission) in grants {
+        entry.set(grant, permission, None);
+    }
+    let mut out = [0u8; STORE_BYTES];
+    let length = store.encode(&mut out).unwrap();
+    out[..length].to_vec()
+}
+
+#[test]
+fn the_user_takes_a_grant_back_and_the_next_call_is_refused() {
+    use crate::grants::Permission;
+    let mut harness = writer();
+    let answer = harness.call(1, "tee", r#"{"path":"/home/root/a.txt","content":"one"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file(
+            "local",
+            &[
+                (Grant::View, Permission::Allow),
+                (Grant::Install, Permission::Allow),
+            ],
+        ),
+    );
+    let answer = harness.call(2, "tee", r#"{"path":"/home/root/b.txt","content":"two"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0]
+            .contains("tee needs the write grant, which the user has not given this agent"),
+        "{answer}"
+    );
+    let (tool, outcome, _, _) = last_record(&harness);
+    assert_eq!((tool.as_str(), outcome.as_str()), ("tee", "refused"));
+    assert_eq!(harness.system.runs.len(), 1);
+    let answer = harness.call(3, "cat", r#"{"path":"/home/root/a.txt"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    harness.system.files.remove(STORE_PATH);
+    let answer = harness.call(4, "tee", r#"{"path":"/home/root/b.txt","content":"two"}"#);
+    assert!(!is_error(&answer), "{answer}");
+}
+
+#[test]
+fn the_store_never_gives_the_local_agent_more_than_eggos_was_started_with() {
+    use crate::grants::Permission;
+    let mut harness = Harness::initialized();
+    harness.system.folders.push("/home/root".into());
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("local", &[(Grant::Run, Permission::Allow)]),
+    );
+    let answer = harness.call(1, "tee", r#"{"path":"/home/root/a.txt","content":"x"}"#);
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("--mcp-allow write"), "{answer}");
+    assert!(harness.system.runs.is_empty());
+}
+
+#[test]
+fn an_agent_the_user_never_added_cannot_even_read_and_is_logged_under_its_id() {
+    use crate::grants::Permission;
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.server.set_agent(AgentId::new(b"stranger").unwrap());
+    harness.initialize("{}");
+    harness
+        .system
+        .files
+        .insert("/home/a.txt".into(), b"a".to_vec());
+    let answer = harness.call(1, "cat", r#"{"path":"/home/a.txt"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("EggOS does not know this agent"),
+        "{answer}"
+    );
+    let record = parse_line(harness.system.audit.last().unwrap().as_bytes()).unwrap();
+    assert_eq!(record.agent, b"stranger");
+    assert_eq!(record.outcome, Outcome::Refused);
+    assert!(harness.system.runs.is_empty());
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("stranger", &[(Grant::Write, Permission::Allow)]),
+    );
+    let answer = harness.call(2, "cat", r#"{"path":"/home/a.txt"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    let answer = harness.call(3, "run", r#"{"program":"/bin/uname"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("run needs the run grant, which the user has not given"),
+        "{answer}"
+    );
+}
+
+#[test]
+fn a_grant_set_to_ask_asks_the_user_even_for_a_call_that_needs_no_confirmation() {
+    use crate::grants::Permission;
+    let ask = store_file("local", &[(Grant::Write, Permission::Ask)]);
+    let mut harness = asking();
+    harness.system.files.insert(STORE_PATH.into(), ask.clone());
+    let lines = harness.call_lines(1, "tee", r#"{"path":"/home/root/new.txt","content":"x"}"#);
+    assert_eq!(lines.len(), 1);
+    let question = question_of(&lines[0]);
+    assert!(harness.system.runs.is_empty());
+    assert_eq!(last_record(&harness).1, "asked");
+    let lines = reply(
+        &mut harness,
+        &question,
+        r#"{"action":"accept","content":{"confirm":true}}"#,
+    );
+    assert!(!is_error(lines.last().unwrap()), "{lines:?}");
+    assert_eq!(harness.system.runs.len(), 1);
+    let mut plain = writer();
+    plain.system.files.insert(STORE_PATH.into(), ask);
+    let answer = plain.call(2, "tee", r#"{"path":"/home/root/new.txt","content":"x"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("this client cannot ask the user"),
+        "{answer}"
+    );
+    assert!(plain.system.runs.is_empty());
+}
+
+#[test]
+fn a_grant_taken_back_while_the_user_is_asked_stops_the_call() {
+    let mut harness = asking();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    let lines = harness.call_lines(7, "trash", r#"{"path":"/home/root/a.txt"}"#);
+    let question = question_of(&lines[0]);
+    harness
+        .system
+        .files
+        .insert(STORE_PATH.into(), store_file("local", &[]));
+    let lines = reply(
+        &mut harness,
+        &question,
+        r#"{"action":"accept","content":{"confirm":true}}"#,
+    );
+    assert_eq!(lines.len(), 1);
+    assert!(is_error(&lines[0]));
+    assert!(
+        texts(&lines[0])[0].contains("trash needs the write grant"),
+        "{lines:?}"
+    );
+    assert!(harness.system.runs.is_empty());
+    let (tool, outcome, _, detail) = last_record(&harness);
+    assert_eq!(
+        (tool.as_str(), outcome.as_str(), detail.as_str()),
+        (
+            "trash",
+            "refused",
+            "the grant was taken back while the user was asked"
+        )
+    );
+}
+
+#[test]
+fn an_unreadable_store_leaves_the_local_agent_reading_and_the_instructions_show_the_grants() {
+    use crate::grants::Permission;
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    let mut broken = store_file("local", &[(Grant::Write, Permission::Allow)]);
+    broken[0] = b'E';
+    harness.system.files.insert(STORE_PATH.into(), broken);
+    let answer = harness.call(1, "tee", r#"{"path":"/home/root/b.txt","content":"x"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("cannot be trusted: it is not a grants file this version knows"),
+        "{answer}"
+    );
+    let answer = harness.call(2, "cat", r#"{"path":"/home/root/a.txt"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    let mut lowered = Harness::with_grants(Grants::ALL);
+    lowered.system.files.insert(
+        STORE_PATH.into(),
+        store_file("local", &[(Grant::View, Permission::Allow)]),
+    );
+    let answer = lowered
+        .send(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0"}}}"#)
+        .unwrap();
+    assert!(
+        answer.contains("Grants on this machine: read,view."),
+        "{answer}"
+    );
+}
+
+#[test]
+fn no_tool_short_of_run_can_write_where_the_grants_are_kept() {
+    for tool in &tools::TOOLS {
+        if !matches!(tool.grant, Some(Grant::Write | Grant::Install)) {
+            continue;
+        }
+        let tools::Operand::Path(argument) = &tool.twin.operand else {
+            continue;
+        };
+        for root in argument.roots {
+            assert!(
+                !STORE_PATH.starts_with(root),
+                "{} reaches {root}",
+                tool.name
+            );
+        }
+    }
+}
+
+#[test]
+fn a_question_names_an_agent_other_than_the_local_one() {
+    use crate::grants::Permission;
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.server.set_agent(AgentId::new(b"phone").unwrap());
+    harness.initialize(r#"{"elicitation":{}}"#);
+    harness.system.folders.push("/home/root".into());
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("phone", &[(Grant::Write, Permission::Allow)]),
+    );
+    let lines = harness.call_lines(1, "trash", r#"{"path":"/home/root/a.txt"}"#);
+    assert_eq!(lines.len(), 1);
+    question_of(&lines[0]);
+    assert!(
+        lines[0].contains("(EggOS, agent phone, tool trash)"),
+        "{}",
+        lines[0]
+    );
+}
+
+fn initialize_as(harness: &mut Harness, id: u64, agent: &str) -> String {
+    harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"initialize","params":{{"protocolVersion":"2025-11-25","capabilities":{{}},"clientInfo":{{"name":"test-client","version":"1.0"}},"_meta":{{"org.eggos/agent":{agent}}}}}}}"#
+        ))
+        .unwrap()
+}
+
+#[test]
+fn a_client_names_its_agent_in_initialize_and_keeps_it_for_the_connection() {
+    use crate::grants::Permission;
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("phone", &[(Grant::Write, Permission::Allow)]),
+    );
+    let answer = initialize_as(&mut harness, 1, r#"{"id":"phone","name":"Phone"}"#);
+    assert!(parsed(&answer).get("result").is_some(), "{answer}");
+    assert_eq!(harness.server.agent(), AgentId::new(b"phone").unwrap());
+    harness.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+    let answer = harness.call(2, "run", r#"{"program":"/bin/uname"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("run needs the run grant, which the user has not given"),
+        "{answer}"
+    );
+    let record = parse_line(harness.system.audit.last().unwrap().as_bytes()).unwrap();
+    assert_eq!(record.agent, b"phone");
+    let answer = initialize_as(&mut harness, 3, r#"{"id":"tablet"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+    assert!(
+        answer.contains("this connection speaks for agent phone"),
+        "{answer}"
+    );
+    assert_eq!(harness.server.agent(), AgentId::new(b"phone").unwrap());
+}
+
+#[test]
+fn a_bad_agent_in_initialize_is_refused_and_no_agent_is_the_local_one() {
+    for agent in [
+        r#"{"id":"local"}"#,
+        r#"{"id":"two words"}"#,
+        r#"{"id":""}"#,
+        r#"{"name":"Phone"}"#,
+        r#""phone""#,
+    ] {
+        let mut harness = Harness::with_grants(Grants::ALL);
+        let answer = initialize_as(&mut harness, 1, agent);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{agent}: {answer}");
+        assert!(harness.server.agent().is_local(), "{agent}");
+    }
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.initialize("{}");
+    assert!(harness.server.agent().is_local());
+}
+
+#[test]
+fn an_agent_without_grants_lists_no_tools_and_is_told_how_to_get_them() {
+    use crate::grants::Permission;
+    let mut harness = Harness::with_grants(Grants::ALL);
+    let answer = initialize_as(&mut harness, 1, r#"{"id":"stranger"}"#);
+    assert!(answer.contains("agent grant stranger view"), "{answer}");
+    let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+    let answer = harness.send(list).unwrap();
+    let Some(Value::Array(tools)) = parsed(&answer).get("result").unwrap().get("tools") else {
+        panic!("tools: {answer}");
+    };
+    assert_eq!(tools.elements().count(), 0, "{answer}");
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("stranger", &[(Grant::View, Permission::Allow)]),
+    );
+    let answer = harness.send(list).unwrap();
+    let Some(Value::Array(tools)) = parsed(&answer).get("result").unwrap().get("tools") else {
+        panic!("tools: {answer}");
+    };
+    assert_eq!(tools.elements().count(), tools::TOOLS.len(), "{answer}");
+}
+
+#[test]
+fn agent_show_shows_the_calling_agent_s_own_grants_and_agent_list_needs_view() {
+    use crate::grants::Permission;
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.system.outputs.insert(
+        "/bin/agent".into(),
+        (
+            b"{\"id\":\"phone\"}\n".to_vec(),
+            Vec::new(),
+            Ended::Exited(0),
+        ),
+    );
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("phone", &[(Grant::Write, Permission::Allow)]),
+    );
+    initialize_as(&mut harness, 1, r#"{"id":"phone"}"#);
+    let answer = harness.call(2, "agent_show", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/agent", "show", "--json", "--", "phone"]
+    );
+    let answer = harness.call(3, "agent_show", r#"{"id":"local"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS, "{answer}");
+    let answer = harness.call(4, "agent_list", "{}");
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("agent_list needs the view grant"),
+        "{answer}"
+    );
+    assert_eq!(harness.system.runs.len(), 1);
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "agent_show", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/agent", "show", "--json", "--", "local"]
+    );
+    let answer = harness.call(2, "agent_list", "{}");
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("--mcp-allow view"), "{answer}");
+}
+
+fn on_screen(capabilities: &str) -> Harness {
+    use crate::grants::Permission;
+    let mut harness = Harness::granted(Grants::ALL, capabilities);
+    harness.system.folders.push("/home/root".into());
+    harness.system.screen = true;
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("local", &[(Grant::Write, Permission::Ask)]),
+    );
+    harness
+}
+
+const NEW_FILE: &str = r#"{"path":"/home/root/new.txt","content":"x"}"#;
+
+#[test]
+fn the_screen_asks_the_person_and_once_runs_the_call() {
+    let mut harness = on_screen("{}");
+    let lines = harness.call_lines(1, "tee", NEW_FILE);
+    assert!(lines.is_empty(), "{lines:?}");
+    assert!(harness.system.runs.is_empty());
+    assert_eq!(last_record(&harness).1, "asked");
+    assert_eq!(harness.system.prompts.len(), 1);
+    let question = crate::grant_prompt::read_question(&harness.system.prompts[0]).unwrap();
+    assert!(question.agent.equals("local"));
+    assert!(question.tool.equals("tee"));
+    assert_eq!(question.class, Some(Grant::Write));
+    assert!(!question.destructive);
+    assert_eq!(question.timeout_s, 90);
+    assert!(
+        question
+            .arguments
+            .get("path")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("/home/root/new.txt")
+    );
+    let lines = harness.prompt_answered(Some(PromptAnswer::Once));
+    assert_eq!(lines.len(), 1);
+    assert_eq!(parsed(&lines[0]).get("id").unwrap().raw(), b"1");
+    assert!(!is_error(&lines[0]), "{}", lines[0]);
+    assert_eq!(harness.system.runs.len(), 1);
+    let started =
+        parse_line(harness.system.audit[harness.system.audit.len() - 2].as_bytes()).unwrap();
+    assert_eq!(started.outcome, Outcome::Started);
+    assert!(
+        std::str::from_utf8(started.detail)
+            .unwrap()
+            .ends_with("allowed once by the user on EggOS's screen")
+    );
+    assert_eq!(harness.system.prompts_ended, 1);
+    assert_eq!(harness.server.waiting_until(), None);
+    assert!(harness.prompt_answered(Some(PromptAnswer::Once)).is_empty());
+    assert!(harness.call_lines(2, "tee", NEW_FILE).is_empty());
+    assert_eq!(harness.system.prompts.len(), 2);
+}
+
+#[test]
+fn a_session_answer_keeps_the_class_until_the_client_disconnects() {
+    let mut harness = on_screen("{}");
+    assert!(harness.call_lines(1, "tee", NEW_FILE).is_empty());
+    let lines = harness.prompt_answered(Some(PromptAnswer::Session));
+    assert!(!is_error(&lines[0]), "{}", lines[0]);
+    let answer = harness.call(
+        2,
+        "tee",
+        r#"{"path":"/home/root/second.txt","content":"x"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.len(), 2);
+    assert_eq!(harness.system.prompts.len(), 1);
+    let started =
+        parse_line(harness.system.audit[harness.system.audit.len() - 2].as_bytes()).unwrap();
+    assert_eq!(started.outcome, Outcome::Started);
+    assert!(
+        std::str::from_utf8(started.detail)
+            .unwrap()
+            .ends_with("allowed for this session by the user")
+    );
+    {
+        let (mut scratch, _) = harness.buffers.scratch();
+        harness
+            .server
+            .disconnected(&mut harness.system, &mut scratch);
+    }
+    harness.initialize("{}");
+    assert!(
+        harness
+            .call_lines(3, "tee", r#"{"path":"/home/root/third.txt","content":"x"}"#)
+            .is_empty()
+    );
+    assert_eq!(harness.system.prompts.len(), 2);
+}
+
+#[test]
+fn deny_no_answer_and_a_closed_prompt_refuse_the_call() {
+    for (answer, detail) in [
+        (Some(PromptAnswer::Deny), "denied by the user"),
+        (Some(PromptAnswer::Timeout), "no answer in 90 s"),
+        (None, "the grant prompt ended without an answer"),
+    ] {
+        let mut harness = on_screen("{}");
+        assert!(harness.call_lines(1, "tee", NEW_FILE).is_empty());
+        let lines = harness.prompt_answered(answer);
+        assert_eq!(lines.len(), 1);
+        assert!(is_error(&lines[0]), "{}", lines[0]);
+        assert!(harness.system.runs.is_empty());
+        let (_, outcome, _, logged) = last_record(&harness);
+        assert_eq!((outcome.as_str(), logged.as_str()), ("refused", detail));
+        assert_eq!(harness.server.waiting_until(), None);
+    }
+}
+
+#[test]
+fn the_client_cannot_answer_a_question_shown_on_the_screen() {
+    let mut harness = on_screen(r#"{"elicitation":{}}"#);
+    assert!(harness.call_lines(1, "tee", NEW_FILE).is_empty());
+    assert_eq!(harness.system.prompts.len(), 1);
+    let lines = reply(
+        &mut harness,
+        "eggos-elicit-0-1",
+        r#"{"action":"accept","content":{"confirm":true}}"#,
+    );
+    assert!(lines.iter().all(|line| is_error(line)), "{lines:?}");
+    assert!(harness.system.runs.is_empty());
+    assert!(harness.server.waiting_until().is_some());
+    let lines = harness.expire(ELICITATION_TIMEOUT_MS);
+    assert_eq!(
+        lines.len(),
+        1,
+        "no cancellation is sent for a screen question: {lines:?}"
+    );
+    assert!(is_error(&lines[0]));
+    assert_eq!(harness.system.prompts_ended, 1);
+}
+
+#[test]
+fn arguments_too_long_for_the_log_are_cut_and_still_asked_on_the_screen() {
+    let mut harness = on_screen(r#"{"elicitation":{}}"#);
+    let path = format!("/home/root/{}x", "./".repeat(600));
+    let call = format!(r#"{{"path":"{path}","content":"x"}}"#);
+    let lines = harness.call_lines(1, "tee", &call);
+    assert!(lines.is_empty(), "no elicitation is sent: {lines:?}");
+    assert_eq!(harness.system.prompts.len(), 1);
+    let question = crate::grant_prompt::read_question(&harness.system.prompts[0]).unwrap();
+    let shown = question.arguments.get("path").unwrap().as_str().unwrap();
+    assert!(shown.equals(&format!("{}...", &path[..64])));
+    assert_eq!(question.arguments.get("cut").unwrap().raw(), b"true");
+    let lines = reply(
+        &mut harness,
+        "eggos-elicit-0-1",
+        r#"{"action":"accept","content":{"confirm":true}}"#,
+    );
+    assert!(lines.iter().all(|line| is_error(line)), "{lines:?}");
+    assert!(harness.system.runs.is_empty());
+}
+
+#[test]
+fn a_prompt_that_fails_on_a_running_desktop_refuses_instead_of_asking_the_client() {
+    let mut harness = on_screen(r#"{"elicitation":{}}"#);
+    harness.system.prompt_fails = Some(eggos_runtime::errno::Errno::ENOMEM);
+    let answer = harness.call(1, "tee", NEW_FILE);
+    assert!(is_error(&answer), "{answer}");
+    assert!(answer.contains("confirmation_failed"), "{answer}");
+    assert!(!answer.contains("elicitation/create"), "{answer}");
+    assert!(harness.system.runs.is_empty());
+    assert_eq!(harness.server.waiting_until(), None);
+    for errno in [
+        eggos_runtime::errno::Errno::ENODEV,
+        eggos_runtime::errno::Errno::ENXIO,
+        eggos_runtime::errno::Errno::ENOENT,
+    ] {
+        let mut harness = on_screen(r#"{"elicitation":{}}"#);
+        harness.system.prompt_fails = Some(errno);
+        let lines = harness.call_lines(1, "tee", NEW_FILE);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("elicitation/create"), "{}", lines[0]);
+    }
+}
+
+#[test]
+fn a_destructive_call_is_asked_on_the_screen_without_always() {
+    let mut harness = on_screen("{}");
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    assert!(
+        harness
+            .call_lines(1, "trash", r#"{"path":"/home/root/a.txt"}"#)
+            .is_empty()
+    );
+    let question = crate::grant_prompt::read_question(&harness.system.prompts[0]).unwrap();
+    assert!(question.destructive);
+    assert!(!crate::grant_prompt::offers_always(
+        question.class,
+        question.destructive
+    ));
+}
+
+#[test]
+fn a_transport_without_requests_of_its_own_never_asks_through_elicitation() {
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.server.set_answers_only();
+    harness.initialize(r#"{"elicitation":{}}"#);
+    assert!(!harness.server.session().elicits());
+    harness
+        .system
+        .files
+        .insert("/home/root/a".into(), b"a".to_vec());
+    harness.system.folders.push("/home/root".into());
+    let lines = harness.call_lines(4, "trash", r#"{"path":"/home/root/a"}"#);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(!lines[0].contains("elicitation/create"), "{}", lines[0]);
+    assert_eq!(harness.server.waiting_until(), None);
+}
+
+#[test]
+fn prompts_and_resources_are_listed_and_given() {
+    let mut harness = Harness::granted(Grants::ALL, "{}");
+    let initialized = harness
+        .send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{}}}"#)
+        .unwrap();
+    let capabilities = parsed(&initialized)
+        .get("result")
+        .unwrap()
+        .get("capabilities")
+        .unwrap();
+    assert!(capabilities.get("prompts").is_some());
+    assert_eq!(
+        capabilities.get("resources").unwrap().get("subscribe"),
+        Some(Value::Bool(false))
+    );
+    let listed = harness
+        .send(r#"{"jsonrpc":"2.0","id":2,"method":"prompts/list"}"#)
+        .unwrap();
+    assert!(listed.contains("\"name\":\"look-at-window\""), "{listed}");
+    let got = harness
+        .send(r#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"look-at-window","arguments":{"window":"3"}}}"#)
+        .unwrap();
+    assert!(got.contains("Show me window 3"), "{got}");
+    let missing = harness
+        .send(
+            r#"{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"look-at-window"}}"#,
+        )
+        .unwrap();
+    assert!(
+        missing.contains("-32602") && missing.contains("window"),
+        "{missing}"
+    );
+    let unknown = harness
+        .send(r#"{"jsonrpc":"2.0","id":5,"method":"prompts/get","params":{"name":"x"}}"#)
+        .unwrap();
+    assert!(unknown.contains("no such prompt"), "{unknown}");
+
+    let resources = harness
+        .send(r#"{"jsonrpc":"2.0","id":6,"method":"resources/list"}"#)
+        .unwrap();
+    assert!(resources.contains("eggos://instructions") && resources.contains("eggos://grants"));
+    let grants = harness
+        .send(r#"{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"eggos://grants"}}"#)
+        .unwrap();
+    assert!(grants.contains("\"uri\":\"eggos://grants\""), "{grants}");
+    assert!(grants.contains("\\\"agent\\\":\\\"local\\\""), "{grants}");
+    let instructions = harness
+        .send(r#"{"jsonrpc":"2.0","id":8,"method":"resources/read","params":{"uri":"eggos://instructions"}}"#)
+        .unwrap();
+    assert!(
+        instructions.contains("EggOS's built-in MCP server"),
+        "{instructions}"
+    );
+    let nothing = harness
+        .send(r#"{"jsonrpc":"2.0","id":9,"method":"resources/read","params":{"uri":"eggos://nothing"}}"#)
+        .unwrap();
+    assert!(nothing.contains("-32002"), "{nothing}");
+    let templates = harness
+        .send(r#"{"jsonrpc":"2.0","id":10,"method":"resources/templates/list"}"#)
+        .unwrap();
+    assert!(
+        templates.contains("\"resourceTemplates\":[]"),
+        "{templates}"
+    );
+}
+
+const MODERN_META: &str = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"elicitation":{}},"io.modelcontextprotocol/clientInfo":{"name":"modern-client","version":"2.0"}}"#;
+
+#[test]
+fn a_stateless_client_discovers_the_server_and_is_answered_without_initialize() {
+    let mut harness = Harness::with_grants(Grants::ALL);
+    let discovered = harness
+        .send(r#"{"jsonrpc":"2.0","id":"d","method":"server/discover","params":{}}"#)
+        .unwrap();
+    let result = parsed(&discovered).get("result").unwrap();
+    assert!(
+        result
+            .get("resultType")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("complete")
+    );
+    assert!(
+        discovered.contains(r#""supportedVersions":["2026-07-28","2025-11-25","2025-06-18"]"#),
+        "{discovered}"
+    );
+    assert!(discovered.contains(r#""cacheScope":"private""#));
+    assert!(discovered.contains(r#""io.modelcontextprotocol/serverInfo":{"name":"eggos""#));
+
+    let listed = harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{{{MODERN_META}}}}}"#
+        ))
+        .unwrap();
+    let result = parsed(&listed).get("result").unwrap();
+    assert!(result.get("tools").is_some(), "{listed}");
+    assert!(
+        result
+            .get("resultType")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("complete")
+    );
+    assert_eq!(result.get("ttlMs").map(Value::raw), Some(&b"0"[..]));
+    assert!(harness.server.session().is_stateless());
+    assert!(!harness.server.session().elicits());
+    assert_eq!(harness.server.session().client_name(), "modern-client");
+
+    let missing = harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{{"uri":"eggos://none",{MODERN_META}}}}}"#
+        ))
+        .unwrap();
+    assert!(
+        missing.contains("-32602") && missing.contains(r#""uri":"eggos://none""#),
+        "{missing}"
+    );
+}
+
+#[test]
+fn stateless_requests_need_their_capabilities_and_a_known_version() {
+    let mut harness = Harness::with_grants(Grants::ALL);
+    let old = harness
+        .send(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"1900-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
+        .unwrap();
+    assert!(
+        old.contains("-32022") && old.contains(r#""requested":"1900-01-01""#),
+        "{old}"
+    );
+    let bare = harness
+        .send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#)
+        .unwrap();
+    assert!(
+        bare.contains("-32602") && bare.contains("capabilities"),
+        "{bare}"
+    );
+    let initialize = harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"initialize","params":{{"protocolVersion":"2026-07-28",{MODERN_META}}}}}"#
+        ))
+        .unwrap();
+    assert!(initialize.contains("-32601"), "{initialize}");
+    let legacy = harness
+        .send(r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#)
+        .unwrap();
+    assert!(legacy.contains("initialize first"), "{legacy}");
 }

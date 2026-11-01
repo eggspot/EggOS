@@ -1,6 +1,7 @@
 //! An ordinary Linux console program, built from our own source with Rust's standard library
 //! and linked statically with musl by the standard toolchain, that the Linux programs boot
-//! test adds to the image with `cargo xtask image --add` and runs from `eggsh` (D117). It
+//! test adds to the image with `cargo xtask image --add` and runs from `eggsh` (D117); the
+//! static glibc boot test links it statically against glibc instead (D188). It
 //! uses what typical console programs use and writes one `LINUX-STATIC` line for each:
 //! its arguments, the environment, a file, a directory listing, the clocks, a `HashMap`
 //! with random keys, threads, the CPUs it may use and standard error, then exits with 0.

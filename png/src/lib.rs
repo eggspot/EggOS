@@ -1,5 +1,6 @@
 //! PNG images without an allocator (D141, D148): a streaming encoder ([`Encoder`]) that takes one
-//! row of `0x00RRGGBB` pixels at a time and writes an 8-bit RGB PNG to a [`PngSink`] as it goes,
+//! row of `0x00RRGGBB` pixels at a time and writes an 8-bit RGB PNG to a [`PngSink`] as it goes
+//! (or rows of straight-alpha `0xAARRGGBB` as an 8-bit RGBA PNG, [`Encoder::new_rgba`], D196),
 //! each row filtered with PNG's Sub filter and compressed by DEFLATE with LZ77 matches over a
 //! 32 KiB window and the fixed Huffman codes (RFC 1951) in one zlib stream (RFC 1950), cut into
 //! IDAT chunks of [`IDAT_BYTES`]; a box downscaler for its rows ([`scale`]); our own inflate
@@ -46,7 +47,8 @@ const HASH_SLOTS: usize = 1 << HASH_BITS;
 const MIN_MATCH: usize = 3;
 const MAX_MATCH: usize = 258;
 const END_OF_BLOCK: u32 = 256;
-const BYTES_PER_PIXEL: u64 = 3;
+const RGB: usize = 3;
+const RGBA: usize = 4;
 const SUB_FILTER: u8 = 1;
 
 pub(crate) const LENGTH_BASES: [u16; 29] = [
@@ -130,6 +132,7 @@ pub struct Encoder<'w, S: PngSink> {
     work: &'w mut EncoderWorkspace,
     width: u32,
     height: u32,
+    channels: usize,
     rows: u32,
     bits: u64,
     bit_count: u32,
@@ -159,9 +162,29 @@ impl<'w, S: PngSink> Encoder<'w, S> {
         width: u32,
         height: u32,
         work: &'w mut EncoderWorkspace,
-        mut sink: S,
+        sink: S,
     ) -> Result<Self, EncodeError<S::Error>> {
-        let filtered = (1 + u64::from(width) * BYTES_PER_PIXEL) * u64::from(height);
+        Self::start(width, height, work, sink, RGB)
+    }
+
+    /// Starts a `width` by `height` RGBA image, whose rows are straight-alpha `0xAARRGGBB`.
+    pub fn new_rgba(
+        width: u32,
+        height: u32,
+        work: &'w mut EncoderWorkspace,
+        sink: S,
+    ) -> Result<Self, EncodeError<S::Error>> {
+        Self::start(width, height, work, sink, RGBA)
+    }
+
+    fn start(
+        width: u32,
+        height: u32,
+        work: &'w mut EncoderWorkspace,
+        mut sink: S,
+        channels: usize,
+    ) -> Result<Self, EncodeError<S::Error>> {
+        let filtered = (1 + u64::from(width) * channels as u64) * u64::from(height);
         if width == 0 || height == 0 || filtered > MAX_FILTERED_BYTES {
             return Err(EncodeError::BadSize);
         }
@@ -169,7 +192,11 @@ impl<'w, S: PngSink> Encoder<'w, S> {
         let mut header = [0u8; 13];
         header[..4].copy_from_slice(&width.to_be_bytes());
         header[4..8].copy_from_slice(&height.to_be_bytes());
-        header[8..].copy_from_slice(&[8, 2, 0, 0, 0]);
+        let colour_type = match channels {
+            RGBA => 6,
+            _ => 2,
+        };
+        header[8..].copy_from_slice(&[8, colour_type, 0, 0, 0]);
         sink.write(&SIGNATURE).map_err(EncodeError::Sink)?;
         write_chunk(&mut sink, b"IHDR", &header).map_err(EncodeError::Sink)?;
         let mut encoder = Self {
@@ -177,6 +204,7 @@ impl<'w, S: PngSink> Encoder<'w, S> {
             work,
             width,
             height,
+            channels,
             rows: 0,
             bits: 0,
             bit_count: 0,
@@ -204,13 +232,18 @@ impl<'w, S: PngSink> Encoder<'w, S> {
         }
         self.rows += 1;
         self.push(SUB_FILTER);
-        let mut left = [0u8; 3];
+        let mut left = [0u8; RGBA];
         for &pixel in row {
-            let rgb = [(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8];
-            for channel in 0..3 {
-                self.push(rgb[channel].wrapping_sub(left[channel]));
+            let bytes = [
+                (pixel >> 16) as u8,
+                (pixel >> 8) as u8,
+                pixel as u8,
+                (pixel >> 24) as u8,
+            ];
+            for channel in 0..self.channels {
+                self.push(bytes[channel].wrapping_sub(left[channel]));
             }
-            left = rgb;
+            left = bytes;
         }
         self.take_error()
     }

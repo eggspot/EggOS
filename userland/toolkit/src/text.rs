@@ -77,6 +77,8 @@ impl<const N: usize> PartialEq for Text<N> {
     }
 }
 
+impl<const N: usize> Eq for Text<N> {}
+
 impl<const N: usize> Text<N> {
     /// The empty string.
     pub const fn new() -> Self {

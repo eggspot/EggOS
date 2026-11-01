@@ -103,8 +103,10 @@ pub const CHILD_STACK_BYTES: usize = 16 * 1024;
 
 const SIGCHLD: usize = 17;
 const SIGPIPE: usize = 13;
+const TIOCSCTTY: usize = 0x540e;
 const SIGNAL_SET_BYTES: usize = 8;
 const NOT_RUN: i32 = 127;
+const FIRST_OTHER_DESCRIPTOR: usize = 3;
 
 /// The stack a child started by [`spawn`] runs on until its `execve`. [`spawn`] borrows it
 /// mutably, so one child at a time uses it.
@@ -146,6 +148,8 @@ pub struct Spawn<'a> {
     directory: Option<&'a CStr>,
     own_group: bool,
     own_session: bool,
+    controlling_terminal: bool,
+    only_streams: bool,
     exec_error: AtomicIsize,
 }
 
@@ -166,6 +170,8 @@ impl<'a> Spawn<'a> {
             directory: None,
             own_group: false,
             own_session: false,
+            controlling_terminal: false,
+            only_streams: false,
             exec_error: AtomicIsize::new(0),
         }
     }
@@ -193,6 +199,27 @@ impl<'a> Spawn<'a> {
     pub fn in_own_session(self) -> Self {
         Self {
             own_session: true,
+            ..self
+        }
+    }
+
+    /// The same request, with the child leading a session of its own whose controlling
+    /// terminal is the terminal its standard input names (`setsid`, then `TIOCSCTTY`), as a
+    /// terminal program starts its shell on a pseudo-terminal (D187).
+    pub fn with_controlling_terminal(self) -> Self {
+        Self {
+            own_session: true,
+            controlling_terminal: true,
+            ..self
+        }
+    }
+
+    /// The same request, with the child keeping only its three standard streams: every other
+    /// descriptor is closed before its `execve`, even those not marked to close on `execve`,
+    /// as a Windows program's child starts when it inherits no handles (D189).
+    pub fn inheriting_only_streams(self) -> Self {
+        Self {
+            only_streams: true,
             ..self
         }
     }
@@ -258,6 +285,10 @@ extern "C" fn start_child(request: usize) -> ! {
     if request.own_session {
         // SAFETY: `setsid` touches no memory.
         unsafe { syscall::call(number::SETSID, [0, 0, 0, 0, 0, 0]) };
+        if request.controlling_terminal {
+            // SAFETY: `TIOCSCTTY` takes its argument as a number and touches no memory.
+            unsafe { syscall::call(number::IOCTL, [request.streams[0], TIOCSCTTY, 0, 0, 0, 0]) };
+        }
     } else if request.own_group {
         // SAFETY: `setpgid` touches no memory.
         unsafe { syscall::call(number::SETPGID, [0, 0, 0, 0, 0, 0]) };
@@ -277,6 +308,16 @@ extern "C" fn start_child(request: usize) -> ! {
             // SAFETY: `dup3` touches no memory.
             unsafe { syscall::call(number::DUP3, [from, target, 0, 0, 0, 0]) };
         }
+    }
+    if request.only_streams {
+        // SAFETY: `close_range` touches no memory and closes only this child's descriptors
+        // (no `CLONE_FILES`), after the standard streams took their copies.
+        unsafe {
+            syscall::call(
+                number::CLOSE_RANGE,
+                [FIRST_OTHER_DESCRIPTOR, u32::MAX as usize, 0, 0, 0, 0],
+            )
+        };
     }
     // SAFETY: `execve` reads the C string and the null-ended pointer arrays `request` names,
     // which stay in place while the parent sleeps.

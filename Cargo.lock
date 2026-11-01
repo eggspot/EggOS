@@ -7,10 +7,20 @@ name = "eggos-android-console"
 version = "0.2.0"
 
 [[package]]
+name = "eggos-android-log"
+version = "0.2.0"
+
+[[package]]
+name = "eggos-android-properties"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-app"
 version = "0.2.0"
 dependencies = [
  "eggos-app-manifest",
+ "eggos-commands",
+ "eggos-mcp",
  "eggos-png",
  "eggos-runtime",
  "eggos-toolkit",
@@ -18,6 +28,10 @@ dependencies = [
 
 [[package]]
 name = "eggos-app-manifest"
+version = "0.2.0"
+
+[[package]]
+name = "eggos-build-timer"
 version = "0.2.0"
 
 [[package]]
@@ -29,17 +43,32 @@ name = "eggos-calendar"
 version = "0.2.0"
 
 [[package]]
+name = "eggos-commands"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-coreutils"
 version = "0.2.0"
 dependencies = [
+ "eggos-android-log",
+ "eggos-android-properties",
  "eggos-app",
  "eggos-calendar",
+ "eggos-commands",
  "eggos-drivers",
+ "eggos-element-tree",
  "eggos-files",
  "eggos-mcp",
+ "eggos-net",
  "eggos-png",
  "eggos-runtime",
+ "eggos-settings-file",
+ "eggos-tls",
 ]
+
+[[package]]
+name = "eggos-crypto"
+version = "0.2.0"
 
 [[package]]
 name = "eggos-drivers"
@@ -48,6 +77,7 @@ dependencies = [
  "eggos-app-manifest",
  "eggos-calendar",
  "eggos-font",
+ "eggos-terminal",
 ]
 
 [[package]]
@@ -76,9 +106,14 @@ dependencies = [
 name = "eggos-eggway"
 version = "0.2.0"
 dependencies = [
+ "eggos-element-tree",
  "eggos-runtime",
  "eggos-wayland",
 ]
+
+[[package]]
+name = "eggos-element-tree"
+version = "0.2.0"
 
 [[package]]
 name = "eggos-files"
@@ -86,6 +121,7 @@ version = "0.2.0"
 dependencies = [
  "eggos-app",
  "eggos-app-manifest",
+ "eggos-eggfs",
  "eggos-runtime",
  "eggos-toolkit",
 ]
@@ -119,14 +155,26 @@ dependencies = [
 name = "eggos-kernel"
 version = "0.2.0"
 dependencies = [
+ "eggos-android-log",
+ "eggos-android-properties",
  "eggos-app-manifest",
  "eggos-calendar",
  "eggos-drivers",
  "eggos-eggfs",
  "eggos-hal",
+ "eggos-net",
  "eggos-settings-file",
+ "eggos-translate",
  "eggos-wayland",
 ]
+
+[[package]]
+name = "eggos-linux-dynamic"
+version = "0.2.0"
+
+[[package]]
+name = "eggos-linux-events"
+version = "0.2.0"
 
 [[package]]
 name = "eggos-linux-gui-tests"
@@ -134,6 +182,14 @@ version = "0.2.0"
 dependencies = [
  "eggos-wayland",
 ]
+
+[[package]]
+name = "eggos-linux-mappings"
+version = "0.2.0"
+
+[[package]]
+name = "eggos-linux-memory"
+version = "0.2.0"
 
 [[package]]
 name = "eggos-linux-sockets"
@@ -144,13 +200,26 @@ name = "eggos-linux-static"
 version = "0.2.0"
 
 [[package]]
+name = "eggos-linux-tcp"
+version = "0.2.0"
+
+[[package]]
+name = "eggos-linux-udp"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-macos"
 version = "0.2.0"
 dependencies = [
  "eggos-c-format",
+ "eggos-calendar",
+ "eggos-element-tree",
  "eggos-macos-gui",
  "eggos-runtime",
+ "eggos-settings-file",
  "eggos-toolkit",
+ "eggos-translate",
+ "eggos-translation-loader",
 ]
 
 [[package]]
@@ -176,8 +245,16 @@ dependencies = [
 name = "eggos-mcp"
 version = "0.2.0"
 dependencies = [
+ "eggos-commands",
+ "eggos-crypto",
+ "eggos-net",
  "eggos-runtime",
+ "eggos-tls",
 ]
+
+[[package]]
+name = "eggos-net"
+version = "0.2.0"
 
 [[package]]
 name = "eggos-png"
@@ -200,10 +277,14 @@ version = "0.2.0"
 dependencies = [
  "eggos-app",
  "eggos-calendar",
+ "eggos-commands",
  "eggos-editor",
+ "eggos-eggfs",
  "eggos-files",
+ "eggos-mcp",
  "eggos-runtime",
  "eggos-settings-file",
+ "eggos-terminal-window",
  "eggos-toolkit",
 ]
 
@@ -216,11 +297,53 @@ name = "eggos-std-selftest"
 version = "0.2.0"
 
 [[package]]
-name = "eggos-toolkit"
+name = "eggos-terminal"
 version = "0.2.0"
 dependencies = [
  "eggos-font",
+]
+
+[[package]]
+name = "eggos-terminal-window"
+version = "0.2.0"
+dependencies = [
+ "eggos-element-tree",
+ "eggos-font",
  "eggos-runtime",
+ "eggos-terminal",
+ "eggos-toolkit",
+]
+
+[[package]]
+name = "eggos-tls"
+version = "0.2.0"
+dependencies = [
+ "eggos-crypto",
+]
+
+[[package]]
+name = "eggos-toolkit"
+version = "0.2.0"
+dependencies = [
+ "eggos-element-tree",
+ "eggos-font",
+ "eggos-runtime",
+]
+
+[[package]]
+name = "eggos-translate"
+version = "0.2.0"
+dependencies = [
+ "eggos-crypto",
+]
+
+[[package]]
+name = "eggos-translation-loader"
+version = "0.2.0"
+dependencies = [
+ "eggos-app-manifest",
+ "eggos-runtime",
+ "eggos-translate",
 ]
 
 [[package]]
@@ -232,7 +355,14 @@ name = "eggos-windows"
 version = "0.2.0"
 dependencies = [
  "eggos-c-format",
+ "eggos-calendar",
+ "eggos-element-tree",
+ "eggos-net",
+ "eggos-png",
  "eggos-runtime",
+ "eggos-settings-file",
+ "eggos-translate",
+ "eggos-translation-loader",
  "eggos-windows-gui",
 ]
 
@@ -264,12 +394,16 @@ dependencies = [
  "eggos-eggway",
  "eggos-files",
  "eggos-linux-gui-tests",
+ "eggos-macos-gui",
  "eggos-macos-gui-tests",
  "eggos-mcp",
+ "eggos-net",
  "eggos-png",
  "eggos-settings",
  "eggos-settings-file",
+ "eggos-tls",
  "eggos-toolkit",
+ "eggos-translate",
  "eggos-wayland",
  "eggos-windows-gui",
  "eggos-windows-gui-tests",

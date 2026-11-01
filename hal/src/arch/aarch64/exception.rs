@@ -871,8 +871,7 @@ aarch64_user_test_linux_clock:
     add     x1, sp, #16
     mov     x8, #113
     svc     #0
-    cmn     x0, #22
-    b.ne    9f
+    cbnz    x0, 9f
     mov     x0, #0
     mov     x8, #94
     svc     #0
@@ -1294,9 +1293,6 @@ pub(super) fn user_test_program() -> TestProgram {
 
 /// Takes the pending interrupt from the GIC and handles it. The timer's and the wake-up's are
 /// ended before the kernel sees them: the kernel may not return here soon (later, a context
-/// switch), and `PSTATE.I` keeps this CPU from taking another one meanwhile. UART0's is ended
-/// after the kernel has read the UART, which then no longer asserts it, so the GIC does not
-/// raise it again for bytes already taken.
 // Inlined into both callers, as when the kernel's vectors were its only one: the kernel's
 // trap path keeps its length (D47).
 #[inline(always)]
@@ -1309,9 +1305,9 @@ fn irq(pc: u64) {
     if timer_fired {
         timer::disarm();
     }
-    if id == timer::UART0_INTERRUPT {
+    if id >= timer::FIRST_SHARED_INTERRUPT {
         core::hint::cold_path();
-        return console_input(interrupt);
+        return shared_interrupt(interrupt, pc);
     }
     timer::end_of_interrupt(interrupt);
     match id {
@@ -1332,13 +1328,28 @@ fn irq(pc: u64) {
     }
 }
 
-/// Hands UART0's interrupt to the kernel, then ends it. Out of line, so the trap paths that
-/// inline [`irq`] keep their length.
 #[cold]
 #[inline(never)]
-fn console_input(interrupt: timer::Acknowledged) {
-    crate::interrupt::deliver(Interrupt::ConsoleInput);
+fn shared_interrupt(interrupt: timer::Acknowledged, pc: u64) {
+    let id = interrupt.id();
+    let delivered = if id == timer::UART0_INTERRUPT {
+        Some(Interrupt::ConsoleInput)
+    } else {
+        timer::DEVICE_LINES.line_of(id).map(Interrupt::Device)
+    };
+    if let Some(delivered) = delivered {
+        crate::interrupt::deliver(delivered);
+        timer::end_of_interrupt(interrupt);
+        return;
+    }
     timer::end_of_interrupt(interrupt);
+    deliver(&Exception {
+        kind: ExceptionKind::Interrupt,
+        name: "unexpected IRQ",
+        code: id.into(),
+        pc,
+        address: None,
+    });
 }
 
 fn without_user_tag(address: u64) -> u64 {

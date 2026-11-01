@@ -54,8 +54,10 @@ pub struct Thread {
     exit_handlers: usize,
     exit_handler_count: usize,
     exit_handler_capacity: usize,
-    pub alternate_stack: [usize; 3],
     pub autorelease_pools: usize,
+    pub caught_exceptions: usize,
+    pub swift_accesses: usize,
+    pub translated_thread: usize,
     values: [usize; KEYS],
 }
 
@@ -78,8 +80,10 @@ impl Thread {
         exit_handlers: 0,
         exit_handler_count: 0,
         exit_handler_capacity: 0,
-        alternate_stack: [0; 3],
         autorelease_pools: 0,
+        caught_exceptions: 0,
+        swift_accesses: 0,
+        translated_thread: 0,
         values: [0; KEYS],
     };
 }
@@ -90,6 +94,14 @@ static KEY_IN_USE: [AtomicU32; KEYS] = [const { AtomicU32::new(0) }; KEYS];
 static KEY_DESTRUCTORS: [AtomicUsize; KEYS] = [const { AtomicUsize::new(0) }; KEYS];
 static BURIED: super::Exclusive<[usize; BURIED_THREADS]> =
     super::Exclusive::new([0; BURIED_THREADS]);
+
+/// The calling thread's `pthread_key_t` values, where translated x86_64 code finds its GS
+/// base: Darwin keeps a thread's specific data at `gs:[8 * key]`.
+#[cfg(all(target_env = "musl", target_arch = "aarch64"))]
+pub fn specific_values() -> usize {
+    // SAFETY: every thread's control block lives as long as the thread.
+    unsafe { (&raw const (*current()).values) as usize }
+}
 
 /// The calling thread's control block.
 #[inline(always)]
@@ -120,6 +132,12 @@ pub fn current() -> *mut Thread {
 pub fn current_id() -> u32 {
     // SAFETY: the control block lives as long as its thread.
     unsafe { &(*current()).id }.load(Ordering::Relaxed)
+}
+
+/// Gives the calling thread, the only one in a child `fork` just made, the child's thread id.
+pub fn adopt_after_fork() {
+    // SAFETY: the control block lives as long as its thread.
+    unsafe { &(*current()).id }.store(linux::thread_id(), Ordering::Relaxed);
 }
 
 /// Where the calling thread's `errno` is.
@@ -239,6 +257,7 @@ fn run_exit_handlers(thread: *mut Thread) {
             (block.exit_handlers as *const [usize; 2]).wrapping_add(block.exit_handler_count);
         // SAFETY: a pair `tlv_atexit` stored.
         let [destructor, object] = unsafe { slot.read() };
+        let destructor = crate::callback::native_callable(destructor);
         // SAFETY: `tlv_atexit`'s contract.
         let destructor: extern "C" fn(usize) = unsafe { core::mem::transmute(destructor) };
         destructor(object);
@@ -251,6 +270,7 @@ fn run_exit_handlers(thread: *mut Thread) {
             let value = unsafe { &mut (*thread).values[key] };
             if destructor != 0 && *value != 0 {
                 let argument = core::mem::take(value);
+                let destructor = crate::callback::native_callable(destructor);
                 // SAFETY: `pthread_key_create`'s contract: a function that takes the value.
                 let destructor: extern "C" fn(usize) = unsafe { core::mem::transmute(destructor) };
                 destructor(argument);
@@ -432,6 +452,7 @@ pub unsafe extern "C" fn pthread_create(
     start: usize,
     argument: usize,
 ) -> c_int {
+    let start = crate::callback::native_callable(start);
     reap();
     let (stack_size, detach_state) = if attributes.is_null() {
         (DEFAULT_STACK, CREATE_JOINABLE)

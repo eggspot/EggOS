@@ -23,11 +23,17 @@ pub const WORDS_BYTES: usize = 4096;
 pub const MAX_NAME_BYTES: usize = 64;
 /// The longest path inside a `.zip` `app_install`'s `entry` takes (a `.zip` entry's name).
 pub const MAX_ARCHIVE_ENTRY_BYTES: usize = 255;
+/// The longest `arguments` `app_install` takes (D172): a manifest's `arguments`.
+pub const MAX_APP_ARGUMENTS_BYTES: usize = 128;
+const APP_ARGUMENTS_AT: usize = MAX_ARCHIVE_ENTRY_BYTES + 1;
+/// The longest `environment` `app_install` takes (D176): a manifest's `environment`.
+pub const MAX_APP_ENVIRONMENT_BYTES: usize = 128;
+const APP_ENVIRONMENT_AT: usize = APP_ARGUMENTS_AT + MAX_APP_ARGUMENTS_BYTES;
 /// `run`'s time limit when the agent gives none.
 pub const DEFAULT_TIME_LIMIT_MS: u64 = 10_000;
 /// `run`'s longest time limit, in seconds.
 pub const MAX_TIMEOUT_SECONDS: u64 = 60;
-/// The most bytes `wm_type` types in a call, printable ASCII only: the audit record escapes
+/// The most bytes `wm_type` types in a call, printable UTF-8 only (D185): the audit record escapes
 /// the logged arguments again, up to four bytes for a `\` or `"`, and its field keeps 512
 /// bytes, so the whole text is always logged.
 pub const MAX_TYPED_TEXT_BYTES: usize = 96;
@@ -46,11 +52,42 @@ pub const MAX_ENTRY_INDEX: u64 = 15;
 /// The most bytes of `wm_menu_choose`'s `label`, so the audit record keeps it whole as it keeps
 /// `wm_type`'s text.
 pub const MAX_MENU_LABEL_BYTES: usize = 64;
+/// The most bytes of `wm_act`'s `text`: what `ACT_ON_ELEMENT` carries (D161).
+pub const MAX_ELEMENT_TEXT_BYTES: usize = 232;
+/// `wm_act`'s actions, as `wm act` takes them (D161).
+pub const ELEMENT_ACTIONS: [&str; 4] = ["invoke", "focus", "set-text", "select"];
 
 /// The length of `clock_set`'s `time`: `YYYY-MM-DDTHH:MM:SSZ` (D150).
 pub const TIME_BYTES: usize = 20;
+/// The longest host name `net_ping` and `net_lookup` take (D158).
+pub const MAX_HOST_BYTES: usize = 253;
+/// The most echo requests `net_ping` sends.
+pub const MAX_PING_COUNT: u64 = 5;
+/// The echo requests `net_ping` sends when the agent names no `count`.
+pub const DEFAULT_PING_COUNT: u32 = 4;
+/// The longest URL `fetch` takes (D158).
+pub const MAX_URL_BYTES: usize = 2048;
+/// The longest key `settings_get` and `settings_set` take (D163).
+pub const MAX_SETTING_KEY_BYTES: usize = 64;
+/// The longest value `settings_set` takes, kept in the words buffer after the key (D163).
+pub const MAX_SETTING_VALUE_BYTES: usize = 64;
+/// The longest value `setprop` takes, kept where a setting's value is (D188).
+pub const MAX_PROPERTY_VALUE_BYTES: usize = 91;
+/// The longest tag `logcat` takes, kept where a setting's key is (D188).
+pub const MAX_LOG_TAG_BYTES: usize = 64;
+/// The longest label `disk_format` takes, in bytes (EggFS's, D192).
+pub const MAX_LABEL_BYTES: usize = 64;
+/// The longest `after` a list tool takes: a cursor (D164).
+pub const MAX_CURSOR_BYTES: usize = eggos_commands::page::MAX_CURSOR_BYTES;
+/// The longest `target` `ln` takes (D170).
+pub const MAX_LINK_TARGET_BYTES: usize = eggos_commands::tools::MAX_LINK_TARGET_BYTES as usize;
 
 const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
+
+/// The signals MCP's `kill` sends, `TERM` its default (D200).
+pub const SIGNAL_NAMES: [&str; 9] = [
+    "TERM", "KILL", "INT", "HUP", "QUIT", "STOP", "CONT", "USR1", "USR2",
+];
 
 /// Why a call's arguments are refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +116,12 @@ pub enum ArgumentProblem {
     /// `app_install`'s `entry` is not a string of 1 to [`MAX_ARCHIVE_ENTRY_BYTES`] bytes
     /// without NUL.
     BadArchiveEntry,
+    /// `app_install`'s `arguments` is not a string of 1 to [`MAX_APP_ARGUMENTS_BYTES`] bytes
+    /// without NUL.
+    BadAppArguments,
+    /// `app_install`'s `environment` is not a string of 1 to [`MAX_APP_ENVIRONMENT_BYTES`]
+    /// bytes without NUL.
+    BadAppEnvironment,
     /// Too many arguments for `run`, too long, or one holds a NUL.
     BadWords,
     /// `timeout_seconds` is not 1 to 60.
@@ -89,12 +132,12 @@ pub enum ArgumentProblem {
     BadPoint,
     /// `button` is not `left`, `right` or `middle`.
     BadButton,
-    /// `text` is empty, longer than [`MAX_TYPED_TEXT_BYTES`] or not printable ASCII.
+    /// `text` is empty, longer than [`MAX_TYPED_TEXT_BYTES`] or holds a control character.
     BadText,
     /// `keys` is empty, longer than [`MAX_KEYS_BYTES`] or holds more than letters, digits
     /// and `+`.
     BadKeys,
-    /// `dy` is 0 or more than [`MAX_NOTCHES`] either way.
+    /// `dy` or `dx` is more than [`MAX_NOTCHES`] either way, or both are 0.
     BadNotches,
     /// `max_width` is outside [`MIN_IMAGE_WIDTH`] to [`MAX_IMAGE_WIDTH`].
     BadImageWidth,
@@ -104,6 +147,53 @@ pub enum ArgumentProblem {
     BadMenuItem,
     /// `label` is longer than [`MAX_MENU_LABEL_BYTES`] or holds a control character.
     BadMenuLabel,
+    /// `host` is not 1 to [`MAX_HOST_BYTES`] letters, digits, dots, hyphens and underscores,
+    /// or starts with a dot or a hyphen.
+    BadHost,
+    /// `count` is not 1 to [`MAX_PING_COUNT`].
+    BadCount,
+    /// `url` is not an `http://` URL of at most [`MAX_URL_BYTES`] bytes without spaces or
+    /// control characters.
+    BadUrl,
+    /// `width` or `height` is not a whole number from 1 to [`MAX_COORDINATE`], or only one is
+    /// given (D160).
+    BadSize,
+    /// `element` is not a whole number from 1 to 4294967295 (D161).
+    BadElement,
+    /// `action` is not invoke, focus, set-text or select, or `text` comes with an action other
+    /// than set-text or is missing for it (D161).
+    BadAction,
+    /// `text` for set-text is longer than [`MAX_ELEMENT_TEXT_BYTES`] or holds a control
+    /// character (D161).
+    BadElementText,
+    /// `key` is not 1 to [`MAX_SETTING_KEY_BYTES`] lowercase letters, digits, dots and
+    /// underscores starting with a letter (D163).
+    BadSettingKey,
+    /// `value` is not 1 to [`MAX_SETTING_VALUE_BYTES`] bytes without control characters (D163).
+    BadSettingValue,
+    /// `name` is not 1 to [`MAX_SETTING_KEY_BYTES`] bytes of parts of letters, digits, `_`, `-`,
+    /// `:` and `@` between dots (D188).
+    BadPropertyName,
+    /// `value` is not 1 to [`MAX_PROPERTY_VALUE_BYTES`] bytes without control characters (D188).
+    BadPropertyValue,
+    /// `tag` is not 1 to [`MAX_LOG_TAG_BYTES`] bytes without spaces, control characters, `:` and
+    /// `*` (D188).
+    BadLogTag,
+    /// `limit` is not a whole number from 1 to the tool's page size (D164).
+    BadLimit,
+    /// `kill`'s `pid` is not a whole number from 1 (D200).
+    BadPid,
+    /// `kill`'s `signal` is not one of [`SIGNAL_NAMES`] (D200).
+    BadSignal,
+    /// `after` is not a cursor a page ended with (D164).
+    BadCursor,
+    /// `ln`'s `target` is empty, longer than [`MAX_LINK_TARGET_BYTES`], holds a NUL or starts
+    /// with `-` (D170).
+    BadLinkTarget,
+    /// `device` is not /dev/vda to /dev/vdd (D192).
+    BadDevice,
+    /// `label` is longer than 64 bytes or holds a control character (D192).
+    BadLabel,
 }
 
 impl ArgumentProblem {
@@ -118,6 +208,8 @@ impl ArgumentProblem {
             ArgumentProblem::Missing("name") => "name is required",
             ArgumentProblem::Missing("window") => "window is required: an id wm_list shows",
             ArgumentProblem::Missing("x") => "x and y are required",
+            ArgumentProblem::Missing("to_x") => "to_x and to_y are required: where the drag ends",
+            ArgumentProblem::Missing("width") => "width and height are required",
             ArgumentProblem::Missing("text") => "text is required",
             ArgumentProblem::Missing("keys") => "keys is required",
             ArgumentProblem::Missing("dy") => "dy is required",
@@ -125,10 +217,21 @@ impl ArgumentProblem {
                 "menu and entry are required: the numbers wm_menu_list shows"
             }
             ArgumentProblem::Missing("time") => "time is required: YYYY-MM-DDTHH:MM:SSZ, in UTC",
+            ArgumentProblem::Missing("host") => "host is required: an IPv4 address or a host name",
+            ArgumentProblem::Missing("url") => "url is required: an http:// URL",
+            ArgumentProblem::Missing("element") => {
+                "element and action are required: an id wm_show shows and what to do"
+            }
+            ArgumentProblem::Missing("key") => "key is required: a key settings_list shows",
+            ArgumentProblem::Missing("link") => "link is required: the path of the link to make",
+            ArgumentProblem::Missing("target") => "target is required: what the link points to",
+            ArgumentProblem::Missing("value") => "value is required: the new value",
             ArgumentProblem::Missing(_) => "a required argument is missing",
             ArgumentProblem::WrongType("path") => "path must be a string",
             ArgumentProblem::WrongType("arguments") => "arguments must be an array of strings",
             ArgumentProblem::WrongType("append" | "confirm") => "append and confirm are booleans",
+            ArgumentProblem::WrongType("dry_run") => "dry_run is a boolean",
+            ArgumentProblem::WrongType("symbolic") => "symbolic is a boolean",
             ArgumentProblem::WrongType(_) => "an argument has the wrong type",
             ArgumentProblem::BadPath => "the path is longer than 4095 bytes",
             ArgumentProblem::BothContents => "give content or content_base64, not both",
@@ -142,6 +245,8 @@ impl ArgumentProblem {
             ArgumentProblem::BadArchiveEntry => {
                 "entry must be a path inside the .zip of 1 to 255 bytes, without NUL"
             }
+            ArgumentProblem::BadAppArguments => "arguments must be 1 to 128 bytes, without NUL",
+            ArgumentProblem::BadAppEnvironment => "environment must be 1 to 128 bytes, without NUL",
             ArgumentProblem::BadWords => {
                 "at most 32 arguments, 4096 bytes in all, none holding a NUL"
             }
@@ -153,17 +258,20 @@ impl ArgumentProblem {
             ArgumentProblem::BadPoint => {
                 "x and y are whole numbers of window pixels from 0 to 65535, given together"
             }
+            ArgumentProblem::BadSize => {
+                "width and height are whole numbers of pixels from 1 to 65535, given together"
+            }
             ArgumentProblem::BadButton => "button is left, right or middle",
             ArgumentProblem::BadText => {
-                "text must be 1 to 96 printable ASCII characters; press Enter and other keys \
-                 with wm_press"
+                "text must be 1 to 96 bytes of printable text, no control characters; press Enter \
+                 and other keys with wm_press"
             }
             ArgumentProblem::BadKeys => {
                 "keys must be one key after any of ctrl+, shift+, alt+ and super+, such as \
                  ctrl+s: 1 to 32 letters, digits and +"
             }
             ArgumentProblem::BadNotches => {
-                "dy must be a whole number of notches from -16 to 16, not 0"
+                "dy must be a whole number of notches from -16 to 16, as dx, and not both 0"
             }
             ArgumentProblem::BadImageWidth => "max_width must be a whole number from 16 to 1568",
             ArgumentProblem::BadTime => {
@@ -176,6 +284,61 @@ impl ArgumentProblem {
             ArgumentProblem::BadMenuLabel => {
                 "label is the item's label as wm_menu_list shows it: at most 64 bytes, without \
                  control characters"
+            }
+            ArgumentProblem::BadHost => {
+                "host must be an IPv4 address or a host name: 1 to 253 letters, digits, dots, \
+                 hyphens and underscores, not starting with a dot or a hyphen"
+            }
+            ArgumentProblem::BadCount => "count must be a whole number from 1 to 5",
+            ArgumentProblem::BadUrl => {
+                "url must be an http:// or https:// URL of at most 2048 bytes without spaces"
+            }
+            ArgumentProblem::BadElement => {
+                "element must be an element id as wm_show shows it: a whole number from 1 to \
+                 4294967295"
+            }
+            ArgumentProblem::BadAction => {
+                "action is invoke, focus, set-text or select; text goes with set-text and only \
+                 with it"
+            }
+            ArgumentProblem::BadElementText => {
+                "text must be at most 232 bytes of UTF-8 without control characters"
+            }
+            ArgumentProblem::BadSettingKey => {
+                "key must be a key settings_list shows, such as shell.profile: 1 to 64 lowercase \
+                 letters, digits, dots and underscores"
+            }
+            ArgumentProblem::BadSettingValue => {
+                "value must be 1 to 64 bytes without control characters"
+            }
+            ArgumentProblem::BadPropertyName => {
+                "name must be a property's name, such as ro.build.version.sdk: 1 to 64 bytes of \
+                 letters, digits, _ - : and @ in parts between dots"
+            }
+            ArgumentProblem::BadPropertyValue => {
+                "value must be 1 to 91 bytes without control characters"
+            }
+            ArgumentProblem::BadLogTag => {
+                "tag must be 1 to 64 bytes without spaces, control characters, : and *"
+            }
+            ArgumentProblem::BadPid => "pid must be a process id from ps, a whole number from 1",
+            ArgumentProblem::BadSignal => {
+                "signal must be one of TERM, KILL, INT, HUP, QUIT, STOP, CONT, USR1 and USR2"
+            }
+            ArgumentProblem::BadLimit => {
+                "limit must be a whole number from 1 to the most a page holds: 500 for ls, 100 \
+                 for the other lists"
+            }
+            ArgumentProblem::BadCursor => {
+                "after must be the next_cursor a page ended with, as it was given: leave it out \
+                 to start again"
+            }
+            ArgumentProblem::BadLinkTarget => {
+                "target must be 1 to 4095 bytes without NUL, not starting with - (write ./-name)"
+            }
+            ArgumentProblem::BadDevice => "device must be a disk's file: /dev/vda to /dev/vdd",
+            ArgumentProblem::BadLabel => {
+                "label must be at most 64 bytes without control characters"
             }
         }
     }
@@ -207,6 +370,37 @@ impl TimeText {
     /// The time's text.
     pub fn as_str(&self) -> &str {
         core::str::from_utf8(&self.0).unwrap_or("")
+    }
+}
+
+/// `disk_format`'s label, kept whole: at most [`MAX_LABEL_BYTES`] bytes without control
+/// characters (D192).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelText {
+    bytes: [u8; MAX_LABEL_BYTES],
+    length: usize,
+}
+
+impl LabelText {
+    /// `text` as a label, if it fits.
+    pub fn of(text: &[u8]) -> Result<Self, ArgumentProblem> {
+        if text.len() > MAX_LABEL_BYTES || text.iter().any(u8::is_ascii_control) {
+            return Err(ArgumentProblem::BadLabel);
+        }
+        let mut bytes = [0u8; MAX_LABEL_BYTES];
+        bytes
+            .get_mut(..text.len())
+            .ok_or(ArgumentProblem::BadLabel)?
+            .copy_from_slice(text);
+        Ok(Self {
+            bytes,
+            length: text.len(),
+        })
+    }
+
+    /// The label's text.
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(self.bytes.get(..self.length).unwrap_or_default()).unwrap_or("")
     }
 }
 
@@ -322,6 +516,10 @@ pub struct Checked {
     pub name: Option<AppName>,
     /// `app_install`'s entry's length, in the words buffer.
     pub archive_entry: Option<usize>,
+    /// `app_install`'s arguments' length, in the words buffer after the entry's room.
+    pub app_arguments: Option<usize>,
+    /// `app_install`'s environment's length, in the words buffer after the arguments' room.
+    pub app_environment: Option<usize>,
     /// `append`.
     pub append: bool,
     /// `confirm`.
@@ -334,6 +532,8 @@ pub struct Checked {
     pub window: Option<u32>,
     /// A point in the window's content, in window pixels (`x`, `y`).
     pub point: Option<(u32, u32)>,
+    /// `wm_size`'s width and height (D160).
+    pub size: Option<(u32, u32)>,
     /// `wm_click`'s button.
     pub button: Option<Button>,
     /// `wm_press`'s keys' length, in the words buffer.
@@ -342,6 +542,12 @@ pub struct Checked {
     pub text: Option<usize>,
     /// `wm_scroll`'s notches (`dy`), up when positive.
     pub notches: Option<i32>,
+    /// `wm_scroll`'s sideways notches (`dx`), right when positive (D162).
+    pub sideways: Option<i32>,
+    /// `wm_click`'s `double` (D162).
+    pub double: bool,
+    /// `wm_drag`'s end point, in window pixels (`to_x`, `to_y`) (D162).
+    pub to_point: Option<(u32, u32)>,
     /// `wm_capture`'s widest image, in pixels.
     pub max_width: Option<u32>,
     /// `clock_set`'s time.
@@ -350,6 +556,37 @@ pub struct Checked {
     pub menu_item: Option<(u32, u32)>,
     /// `wm_menu_choose`'s label's length, in the words buffer.
     pub menu_label: Option<usize>,
+    /// `net_ping`'s and `net_lookup`'s host's length, in the words buffer.
+    pub host: Option<usize>,
+    /// `net_ping`'s count of echo requests.
+    pub count: Option<u32>,
+    /// `kill`'s process id (D200).
+    pub pid: Option<u32>,
+    /// `kill`'s signal: its index in [`SIGNAL_NAMES`].
+    pub signal: Option<usize>,
+    /// `fetch`'s URL's length, in the content buffer.
+    pub url: Option<usize>,
+    /// `wm_act`'s element id (D161).
+    pub element: Option<u32>,
+    /// `wm_act`'s action, as `wm act` takes it (D161).
+    pub action: Option<&'static str>,
+    /// `settings_get`'s and `settings_set`'s key's length, in the words buffer (D163).
+    pub setting_key: Option<usize>,
+    /// `settings_set`'s value's length, in the words buffer after
+    /// [`MAX_SETTING_KEY_BYTES`] (D163).
+    pub setting_value: Option<usize>,
+    /// A list tool's `limit` (D164).
+    pub limit: Option<u32>,
+    /// A list tool's `after`'s length, in the words buffer (D164).
+    pub after: Option<usize>,
+    /// `dry_run` (D164).
+    pub dry_run: bool,
+    /// `ln`'s target's length, in the content buffer (D170).
+    pub link_target: Option<usize>,
+    /// `ln`'s `symbolic`, true unless the agent says false (D170).
+    pub symbolic: bool,
+    /// `disk_format`'s label (D192).
+    pub label: Option<LabelText>,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -379,9 +616,13 @@ pub fn check(
         Some(_) => return Err(ArgumentProblem::NotAnObject),
     };
     if let Some(arguments) = arguments
-        && arguments
-            .members()
-            .any(|(name, _)| !tool.arguments.iter().any(|known| name.equals(known)))
+        && arguments.members().any(|(name, _)| {
+            !tool
+                .definition
+                .arguments
+                .iter()
+                .any(|known| name.equals(known.name))
+        })
     {
         return Err(ArgumentProblem::Unknown);
     }
@@ -392,6 +633,28 @@ pub fn check(
     };
     checked.append = flag(get("append"), "append")?;
     checked.confirm = flag(get("confirm"), "confirm")?;
+    checked.dry_run = flag(get("dry_run"), "dry_run")?;
+    if let Some(most) = tool.definition.page_limit() {
+        checked.limit = match whole(get("limit"), most as u64, ArgumentProblem::BadLimit)? {
+            Some(0) => return Err(ArgumentProblem::BadLimit),
+            limit => limit.map(|limit| limit as u32),
+        };
+        if get("after").is_some() {
+            let length = short_text(
+                get("after"),
+                "after",
+                decoded.words,
+                MAX_CURSOR_BYTES,
+                |byte| byte == b'%' || eggos_commands::page::is_cursor_byte(byte),
+                ArgumentProblem::BadCursor,
+            )?;
+            let cursor = decoded.words.get(..length).unwrap_or_default();
+            if !eggos_commands::page::is_cursor(cursor) {
+                return Err(ArgumentProblem::BadCursor);
+            }
+            checked.after = Some(length);
+        }
+    }
     let path_argument = match (tool.kind, tool.twin.operand) {
         (Kind::Run, _) => Some(("program", None)),
         (_, Operand::Path(path)) => Some((path.name, path.default)),
@@ -416,7 +679,7 @@ pub fn check(
         };
         checked.path = Some(length);
     }
-    if tool.kind == Kind::Tee {
+    if matches!(tool.kind, Kind::Tee | Kind::ClipboardSet) {
         checked.content = Some(content(
             get("content"),
             get("content_base64"),
@@ -432,6 +695,8 @@ pub fn check(
     }
     if tool.kind == Kind::AppInstall {
         checked.archive_entry = archive_entry(get("entry"), decoded.words)?;
+        checked.app_arguments = app_arguments(get("arguments"), decoded.words)?;
+        checked.app_environment = app_environment(get("environment"), decoded.words)?;
     }
     if tool.kind == Kind::Run {
         checked.words = words(get("arguments"), decoded.words)?;
@@ -461,7 +726,233 @@ pub fn check(
             None => return Err(ArgumentProblem::Missing("time")),
         });
     }
+    if matches!(tool.kind, Kind::NetPing | Kind::NetLookup) {
+        let length = short_text(
+            get("host"),
+            "host",
+            decoded.words,
+            MAX_HOST_BYTES,
+            is_host_byte,
+            ArgumentProblem::BadHost,
+        )?;
+        let first = decoded.words.first().copied();
+        if matches!(first, Some(b'-' | b'.')) {
+            return Err(ArgumentProblem::BadHost);
+        }
+        checked.host = Some(length);
+    }
+    if tool.kind == Kind::NetPing {
+        let count = whole(get("count"), MAX_PING_COUNT, ArgumentProblem::BadCount)?;
+        checked.count = Some(match count {
+            None => DEFAULT_PING_COUNT,
+            Some(0) => return Err(ArgumentProblem::BadCount),
+            Some(count) => count as u32,
+        });
+    }
+    if matches!(tool.kind, Kind::SettingsGet | Kind::SettingsSet) {
+        let length = short_text(
+            get("key"),
+            "key",
+            decoded.words,
+            MAX_SETTING_KEY_BYTES,
+            is_setting_key_byte,
+            ArgumentProblem::BadSettingKey,
+        )?;
+        if !decoded.words.first().is_some_and(u8::is_ascii_lowercase) {
+            return Err(ArgumentProblem::BadSettingKey);
+        }
+        checked.setting_key = Some(length);
+    }
+    if matches!(tool.kind, Kind::Getprop | Kind::Setprop)
+        && (tool.kind == Kind::Setprop || get("name").is_some())
+    {
+        let length = short_text(
+            get("name"),
+            "name",
+            decoded.words,
+            MAX_SETTING_KEY_BYTES,
+            is_property_name_byte,
+            ArgumentProblem::BadPropertyName,
+        )?;
+        let name = decoded.words.get(..length).unwrap_or_default();
+        if name.split(|&byte| byte == b'.').any(<[u8]>::is_empty) {
+            return Err(ArgumentProblem::BadPropertyName);
+        }
+        checked.setting_key = Some(length);
+    }
+    if tool.kind == Kind::Logcat && get("tag").is_some() {
+        checked.setting_key = Some(short_text(
+            get("tag"),
+            "tag",
+            decoded.words,
+            MAX_LOG_TAG_BYTES,
+            is_log_tag_byte,
+            ArgumentProblem::BadLogTag,
+        )?);
+    }
+    if tool.kind == Kind::Setprop {
+        let room = decoded
+            .words
+            .get_mut(MAX_SETTING_KEY_BYTES..)
+            .ok_or(ArgumentProblem::BadPropertyValue)?;
+        checked.setting_value = Some(short_text(
+            get("value"),
+            "value",
+            room,
+            MAX_PROPERTY_VALUE_BYTES,
+            |byte| !byte.is_ascii_control(),
+            ArgumentProblem::BadPropertyValue,
+        )?);
+    }
+    if tool.kind == Kind::SettingsSet {
+        let room = decoded
+            .words
+            .get_mut(MAX_SETTING_KEY_BYTES..)
+            .ok_or(ArgumentProblem::BadSettingValue)?;
+        let length = short_text(
+            get("value"),
+            "value",
+            room,
+            MAX_SETTING_VALUE_BYTES,
+            |byte| !byte.is_ascii_control(),
+            ArgumentProblem::BadSettingValue,
+        )?;
+        let value = decoded
+            .words
+            .get(MAX_SETTING_KEY_BYTES..MAX_SETTING_KEY_BYTES + length)
+            .and_then(|value| core::str::from_utf8(value).ok())
+            .ok_or(ArgumentProblem::BadSettingValue)?;
+        if value.chars().any(char::is_control) {
+            return Err(ArgumentProblem::BadSettingValue);
+        }
+        checked.setting_value = Some(length);
+    }
+    if tool.kind == Kind::Ln {
+        checked.symbolic = match get("symbolic") {
+            None => true,
+            given => flag(given, "symbolic")?,
+        };
+        let length = short_text(
+            get("target"),
+            "target",
+            decoded.content,
+            MAX_LINK_TARGET_BYTES,
+            |byte| byte != 0,
+            ArgumentProblem::BadLinkTarget,
+        )?;
+        if decoded.content.first() == Some(&b'-') {
+            return Err(ArgumentProblem::BadLinkTarget);
+        }
+        checked.link_target = Some(length);
+    }
+    if matches!(
+        tool.kind,
+        Kind::DiskCheck | Kind::DiskRepair | Kind::DiskFormat
+    ) {
+        let device = checked
+            .path
+            .and_then(|length| decoded.path.get(..length))
+            .unwrap_or_default();
+        if !is_disk_device(device) {
+            return Err(ArgumentProblem::BadDevice);
+        }
+    }
+    if tool.kind == Kind::Kill {
+        checked.pid = Some(
+            whole(get("pid"), i32::MAX as u64, ArgumentProblem::BadPid)?
+                .filter(|&pid| pid > 0)
+                .ok_or(ArgumentProblem::BadPid)? as u32,
+        );
+        checked.signal = Some(match get("signal") {
+            None => 0,
+            Some(Value::Str(text)) => {
+                let mut bytes = [0u8; 8];
+                let decoded = text
+                    .decode_into(&mut bytes)
+                    .ok_or(ArgumentProblem::BadSignal)?;
+                SIGNAL_NAMES
+                    .iter()
+                    .position(|name| name.eq_ignore_ascii_case(decoded))
+                    .ok_or(ArgumentProblem::BadSignal)?
+            }
+            Some(_) => return Err(ArgumentProblem::BadSignal),
+        });
+    }
+    if tool.kind == Kind::DiskFormat {
+        checked.label = match get("label") {
+            None => None,
+            Some(Value::Str(text)) => {
+                let mut bytes = [0u8; MAX_LABEL_BYTES];
+                let decoded = text
+                    .decode_into(&mut bytes)
+                    .ok_or(ArgumentProblem::BadLabel)?;
+                Some(LabelText::of(decoded.as_bytes())?)
+            }
+            Some(_) => return Err(ArgumentProblem::BadLabel),
+        };
+    }
+    if tool.kind == Kind::Fetch {
+        let length = short_text(
+            get("url"),
+            "url",
+            decoded.content,
+            MAX_URL_BYTES,
+            |byte| byte > b' ' && byte != 0x7f,
+            ArgumentProblem::BadUrl,
+        )?;
+        let starts = |scheme: &[u8]| {
+            decoded
+                .content
+                .get(..scheme.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+        };
+        if !starts(b"http://") && !starts(b"https://") {
+            return Err(ArgumentProblem::BadUrl);
+        }
+        checked.url = Some(length);
+    }
     Ok(checked)
+}
+
+fn is_setting_key_byte(byte: u8) -> bool {
+    byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_')
+}
+
+fn is_log_tag_byte(byte: u8) -> bool {
+    byte > b' ' && !matches!(byte, b':' | b'*' | 0x7f)
+}
+
+fn is_property_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':' | b'@')
+}
+
+/// `settings_get`'s and `settings_set`'s key in `buffer`, the words buffer, that
+/// [`Checked::setting_key`] measures (D163).
+pub fn setting_key_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.setting_key?)?).ok()
+}
+
+/// `settings_set`'s value in `buffer`, the words buffer, that [`Checked::setting_value`]
+/// measures (D163).
+pub fn setting_value_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    let end = MAX_SETTING_KEY_BYTES.checked_add(checked.setting_value?)?;
+    core::str::from_utf8(buffer.get(MAX_SETTING_KEY_BYTES..end)?).ok()
+}
+
+fn is_host_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')
+}
+
+/// `net_ping`'s and `net_lookup`'s host in `buffer`, the words buffer, that [`Checked::host`]
+/// measures.
+pub fn host_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.host?)?).ok()
+}
+
+/// `fetch`'s URL in `buffer`, the content buffer (which only calls that need a grant fill, so
+/// it lasts while the call waits for the user), that [`Checked::url`] measures.
+pub fn url_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.url?)?).ok()
 }
 
 fn archive_entry(
@@ -482,6 +973,48 @@ fn archive_entry(
     match !entry.is_empty() && !entry.contains('\0') {
         true => Ok(Some(entry.len())),
         false => Err(ArgumentProblem::BadArchiveEntry),
+    }
+}
+
+fn app_arguments(
+    value: Option<Value<'_>>,
+    words: &mut [u8],
+) -> Result<Option<usize>, ArgumentProblem> {
+    let text = match value {
+        None => return Ok(None),
+        Some(Value::Str(text)) => text,
+        Some(_) => return Err(ArgumentProblem::BadAppArguments),
+    };
+    let room = words
+        .get_mut(APP_ARGUMENTS_AT..APP_ARGUMENTS_AT + MAX_APP_ARGUMENTS_BYTES)
+        .ok_or(ArgumentProblem::BadAppArguments)?;
+    let arguments = text
+        .decode_into(room)
+        .ok_or(ArgumentProblem::BadAppArguments)?;
+    match !arguments.is_empty() && !arguments.contains('\0') {
+        true => Ok(Some(arguments.len())),
+        false => Err(ArgumentProblem::BadAppArguments),
+    }
+}
+
+fn app_environment(
+    value: Option<Value<'_>>,
+    words: &mut [u8],
+) -> Result<Option<usize>, ArgumentProblem> {
+    let text = match value {
+        None => return Ok(None),
+        Some(Value::Str(text)) => text,
+        Some(_) => return Err(ArgumentProblem::BadAppEnvironment),
+    };
+    let room = words
+        .get_mut(APP_ENVIRONMENT_AT..APP_ENVIRONMENT_AT + MAX_APP_ENVIRONMENT_BYTES)
+        .ok_or(ArgumentProblem::BadAppEnvironment)?;
+    let environment = text
+        .decode_into(room)
+        .ok_or(ArgumentProblem::BadAppEnvironment)?;
+    match !environment.is_empty() && !environment.contains('\0') {
+        true => Ok(Some(environment.len())),
+        false => Err(ArgumentProblem::BadAppEnvironment),
     }
 }
 
@@ -557,7 +1090,7 @@ fn window_arguments<'a>(
             }
             checked.max_width = Some(width as u32);
         }
-        Kind::WmClick => {
+        Kind::WmClick | Kind::WmDrag => {
             checked.point = Some(point(get("x"), get("y"))?.ok_or(ArgumentProblem::Missing("x"))?);
             checked.button = Some(match get("button") {
                 None => Button::Left,
@@ -567,6 +1100,14 @@ fn window_arguments<'a>(
                     .ok_or(ArgumentProblem::BadButton)?,
                 Some(_) => return Err(ArgumentProblem::BadButton),
             });
+            match kind {
+                Kind::WmDrag => {
+                    checked.to_point = Some(
+                        point(get("to_x"), get("to_y"))?.ok_or(ArgumentProblem::Missing("to_x"))?,
+                    );
+                }
+                _ => checked.double = flag(get("double"), "double")?,
+            }
         }
         Kind::WmType => {
             checked.text = Some(short_text(
@@ -574,7 +1115,7 @@ fn window_arguments<'a>(
                 "text",
                 words,
                 MAX_TYPED_TEXT_BYTES,
-                |byte| (b' '..=b'~').contains(&byte),
+                |byte| (b' '..=b'~').contains(&byte) || byte >= 0x80,
                 ArgumentProblem::BadText,
             )?);
         }
@@ -589,16 +1130,35 @@ fn window_arguments<'a>(
             )?);
         }
         Kind::WmScroll => {
-            let notches = match get("dy") {
-                None => return Err(ArgumentProblem::Missing("dy")),
+            let notches = |value: Option<Value<'a>>| match value {
+                None => Ok(0),
                 Some(Value::Number(number)) => number
                     .as_i64()
-                    .filter(|notches| *notches != 0 && notches.unsigned_abs() <= MAX_NOTCHES)
-                    .ok_or(ArgumentProblem::BadNotches)?,
-                Some(_) => return Err(ArgumentProblem::BadNotches),
+                    .filter(|notches| notches.unsigned_abs() <= MAX_NOTCHES)
+                    .ok_or(ArgumentProblem::BadNotches),
+                Some(_) => Err(ArgumentProblem::BadNotches),
             };
-            checked.notches = Some(notches as i32);
+            let dy = get("dy").ok_or(ArgumentProblem::Missing("dy"))?;
+            let (dy, dx) = (notches(Some(dy))?, notches(get("dx"))?);
+            if dy == 0 && dx == 0 {
+                return Err(ArgumentProblem::BadNotches);
+            }
+            checked.notches = Some(dy as i32);
+            checked.sideways = Some(dx as i32);
             checked.point = point(get("x"), get("y"))?;
+        }
+        Kind::WmMove => {
+            checked.point = Some(point(get("x"), get("y"))?.ok_or(ArgumentProblem::Missing("x"))?);
+        }
+        Kind::WmSize => {
+            let width = whole(get("width"), MAX_COORDINATE, ArgumentProblem::BadSize)?;
+            let height = whole(get("height"), MAX_COORDINATE, ArgumentProblem::BadSize)?;
+            checked.size = match (width, height) {
+                (Some(0), _) | (_, Some(0)) => return Err(ArgumentProblem::BadSize),
+                (Some(width), Some(height)) => Some((width as u32, height as u32)),
+                (None, None) => return Err(ArgumentProblem::Missing("width")),
+                _ => return Err(ArgumentProblem::BadSize),
+            };
         }
         Kind::WmMenuChoose => {
             let menu = whole(get("menu"), MAX_MENU_INDEX, ArgumentProblem::BadMenuItem)?;
@@ -609,9 +1169,53 @@ fn window_arguments<'a>(
             checked.menu_item = Some((menu as u32, entry as u32));
             checked.menu_label = menu_label(get("label"), words)?;
         }
+        Kind::WmAct => {
+            let element = whole(
+                get("element"),
+                u64::from(u32::MAX),
+                ArgumentProblem::BadElement,
+            )?
+            .ok_or(ArgumentProblem::Missing("element"))?;
+            if element == 0 {
+                return Err(ArgumentProblem::BadElement);
+            }
+            checked.element = Some(element as u32);
+            let action = match get("action") {
+                None => return Err(ArgumentProblem::Missing("element")),
+                Some(Value::Str(name)) => ELEMENT_ACTIONS
+                    .into_iter()
+                    .find(|action| name.equals(action))
+                    .ok_or(ArgumentProblem::BadAction)?,
+                Some(_) => return Err(ArgumentProblem::BadAction),
+            };
+            checked.action = Some(action);
+            checked.text = element_text(get("text"), action == "set-text", words)?;
+        }
         _ => {}
     }
     Ok(())
+}
+
+fn element_text(
+    value: Option<Value<'_>>,
+    wanted: bool,
+    words: &mut [u8],
+) -> Result<Option<usize>, ArgumentProblem> {
+    let text = match (value, wanted) {
+        (None, false) => return Ok(None),
+        (Some(Value::Str(text)), true) => text,
+        _ => return Err(ArgumentProblem::BadAction),
+    };
+    let room = words
+        .get_mut(..MAX_ELEMENT_TEXT_BYTES)
+        .ok_or(ArgumentProblem::BadElementText)?;
+    let text = text
+        .decode_into(room)
+        .ok_or(ArgumentProblem::BadElementText)?;
+    match text.chars().any(char::is_control) {
+        true => Err(ArgumentProblem::BadElementText),
+        false => Ok(Some(text.len())),
+    }
 }
 
 fn menu_label(
@@ -798,6 +1402,38 @@ pub fn keys_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
 /// measures.
 pub fn archive_entry_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.archive_entry?)?).ok()
+}
+
+/// `app_install`'s arguments in `buffer`, the words buffer, that [`Checked::app_arguments`]
+/// measures (D172).
+pub fn app_arguments_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    let end = APP_ARGUMENTS_AT.checked_add(checked.app_arguments?)?;
+    core::str::from_utf8(buffer.get(APP_ARGUMENTS_AT..end)?).ok()
+}
+
+/// `app_install`'s environment in `buffer`, the words buffer, that
+/// [`Checked::app_environment`] measures (D176).
+pub fn app_environment_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    let end = APP_ENVIRONMENT_AT.checked_add(checked.app_environment?)?;
+    core::str::from_utf8(buffer.get(APP_ENVIRONMENT_AT..end)?).ok()
+}
+
+/// A list tool's `after` in `buffer`, the words buffer, that [`Checked::after`] measures (D164).
+pub fn after_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.after?)?).ok()
+}
+
+/// `ln`'s target in `buffer`, the content buffer, that [`Checked::link_target`] measures
+/// (D170).
+pub fn link_target_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.link_target?)?).ok()
+}
+
+fn is_disk_device(device: &[u8]) -> bool {
+    matches!(
+        device,
+        [b'/', b'd', b'e', b'v', b'/', b'v', b'd', b'a'..=b'd']
+    )
 }
 
 /// The path or program in `buffer` that [`Checked::path`] measures.
@@ -1028,6 +1664,46 @@ mod tests {
         );
         let (result, _) = checked("app_install", r#"{"path":"/media/host/x.exe"}"#);
         assert_eq!(result.unwrap().archive_entry, None);
+        let (result, buffers) = checked(
+            "app_install",
+            r#"{"path":"/media/host/brogue.zip","entry":"brogue","arguments":"-n --size 4"}"#,
+        );
+        let result = result.unwrap();
+        assert_eq!(archive_entry_text(&result, &buffers.words), Some("brogue"));
+        assert_eq!(
+            app_arguments_text(&result, &buffers.words),
+            Some("-n --size 4")
+        );
+        let (result, buffers) = checked(
+            "app_install",
+            r#"{"path":"/media/host/m.zip","arguments":"-n","environment":"A=1 B=2"}"#,
+        );
+        let result = result.unwrap();
+        assert_eq!(app_arguments_text(&result, &buffers.words), Some("-n"));
+        assert_eq!(
+            app_environment_text(&result, &buffers.words),
+            Some("A=1 B=2")
+        );
+        for environment in [
+            r#"{"path":"/media/host/t.zip","environment":""}"#,
+            r#"{"path":"/media/host/t.zip","environment":{"A":"1"}}"#,
+        ] {
+            assert_eq!(
+                checked("app_install", environment).0,
+                Err(ArgumentProblem::BadAppEnvironment),
+                "{environment}"
+            );
+        }
+        for arguments in [
+            r#"{"path":"/media/host/t.zip","arguments":""}"#,
+            r#"{"path":"/media/host/t.zip","arguments":["-n"]}"#,
+        ] {
+            assert_eq!(
+                checked("app_install", arguments).0,
+                Err(ArgumentProblem::BadAppArguments),
+                "{arguments}"
+            );
+        }
         let long = format!(
             r#"{{"path":"/media/host/t.zip","entry":"{}"}}"#,
             "e".repeat(MAX_ARCHIVE_ENTRY_BYTES + 1)
@@ -1072,6 +1748,58 @@ mod tests {
         assert_eq!(result.point, None);
         let (result, _) = checked("wm_scroll", r#"{"window":5,"dy":1,"x":3,"y":4}"#);
         assert_eq!(result.unwrap().point, Some((3, 4)));
+        let (result, _) = checked("wm_scroll", r#"{"window":5,"dy":0,"dx":-3}"#);
+        let result = result.unwrap();
+        assert_eq!((result.notches, result.sideways), (Some(0), Some(-3)));
+        let (result, _) = checked("wm_click", r#"{"window":5,"x":1,"y":2,"double":true}"#);
+        assert!(result.unwrap().double);
+        let (result, _) = checked(
+            "wm_drag",
+            r#"{"window":5,"x":1,"y":2,"to_x":30,"to_y":40,"button":"right"}"#,
+        );
+        let result = result.unwrap();
+        assert_eq!(
+            (result.point, result.to_point, result.button),
+            (Some((1, 2)), Some((30, 40)), Some(Button::Right))
+        );
+        for (tool, arguments, problem) in [
+            (
+                "wm_scroll",
+                r#"{"window":1,"dy":0}"#,
+                ArgumentProblem::BadNotches,
+            ),
+            (
+                "wm_scroll",
+                r#"{"window":1,"dy":0,"dx":17}"#,
+                ArgumentProblem::BadNotches,
+            ),
+            (
+                "wm_click",
+                r#"{"window":1,"x":1,"y":1,"double":1}"#,
+                ArgumentProblem::WrongType("double"),
+            ),
+            (
+                "wm_drag",
+                r#"{"window":1,"x":1,"y":1}"#,
+                ArgumentProblem::Missing("to_x"),
+            ),
+            (
+                "wm_drag",
+                r#"{"window":1,"x":1,"y":1,"to_x":2}"#,
+                ArgumentProblem::BadPoint,
+            ),
+            (
+                "wm_drag",
+                r#"{"window":1,"x":1,"y":1,"to_x":2,"to_y":3,"double":true}"#,
+                ArgumentProblem::Unknown,
+            ),
+        ] {
+            assert_eq!(
+                checked(tool, arguments).0.err(),
+                Some(problem),
+                "{tool} {arguments}"
+            );
+        }
         for (tool, arguments, problem) in [
             ("wm_capture", r#"{"window":999999999}"#, None),
             (
@@ -1228,5 +1956,181 @@ mod tests {
         assert_eq!(shown(r#""secret""#), r#""<unparsed 8 bytes>""#);
         let long = format!(r#"{{"{}":1}}"#, "k".repeat(100));
         assert_eq!(shown(&long), format!(r#"["{}"]"#, "k".repeat(32)));
+    }
+
+    #[test]
+    fn list_tools_take_a_limit_up_to_their_page_and_a_cursor() {
+        let (result, buffers) =
+            checked("ls", r#"{"path":"/home","limit":500,"after":"my%20notes"}"#);
+        let result = result.unwrap();
+        assert_eq!(result.limit, Some(500));
+        assert_eq!(after_text(&result, &buffers.words), Some("my%20notes"));
+        let (result, _) = checked("ps", "{}");
+        let result = result.unwrap();
+        assert_eq!((result.limit, result.after), (None, None));
+        let (result, buffers) = checked("wm_list", r#"{"after":"129"}"#);
+        assert_eq!(after_text(&result.unwrap(), &buffers.words), Some("129"));
+        for (tool, arguments, problem) in [
+            ("ps", r#"{"limit":101}"#, ArgumentProblem::BadLimit),
+            ("app_list", r#"{"limit":0}"#, ArgumentProblem::BadLimit),
+            ("ls", r#"{"limit":501}"#, ArgumentProblem::BadLimit),
+            ("ls", r#"{"limit":"5"}"#, ArgumentProblem::BadLimit),
+            ("ls", r#"{"after":""}"#, ArgumentProblem::BadCursor),
+            ("ls", r#"{"after":"-rf"}"#, ArgumentProblem::BadCursor),
+            ("ls", r#"{"after":"a b"}"#, ArgumentProblem::BadCursor),
+            ("ls", r#"{"after":"a\nb"}"#, ArgumentProblem::BadCursor),
+            ("ls", r#"{"after":7}"#, ArgumentProblem::BadCursor),
+            (
+                "cat",
+                r#"{"path":"/home/a","limit":1}"#,
+                ArgumentProblem::Unknown,
+            ),
+            ("clock_get", r#"{"after":"x"}"#, ArgumentProblem::Unknown),
+        ] {
+            assert_eq!(
+                checked(tool, arguments).0,
+                Err(problem),
+                "{tool} {arguments}"
+            );
+        }
+        let long = format!(r#"{{"after":"{}"}}"#, "a".repeat(MAX_CURSOR_BYTES + 1));
+        assert_eq!(checked("ls", &long).0, Err(ArgumentProblem::BadCursor));
+    }
+
+    #[test]
+    fn a_setting_value_with_any_control_character_is_refused() {
+        for value in [r"lin\u0085ux", r"lin\u009bux", r"lin\u0007ux"] {
+            let arguments = format!(r#"{{"key":"shell.profile","value":"{value}"}}"#);
+            assert_eq!(
+                checked("settings_set", &arguments).0.err(),
+                Some(ArgumentProblem::BadSettingValue),
+                "{value}"
+            );
+        }
+        let (result, _) = checked("settings_set", r#"{"key":"shell.profile","value":"lïnux"}"#);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn dry_run_is_a_boolean_of_the_tools_that_change_something() {
+        let (result, _) = checked("trash", r#"{"path":"/home/root/a","dry_run":true}"#);
+        let result = result.unwrap();
+        assert!(result.dry_run && !result.confirm);
+        let (result, _) = checked("settings_set", r#"{"key":"shell.profile","value":"linux"}"#);
+        assert!(!result.unwrap().dry_run);
+        assert_eq!(
+            checked("tee", r#"{"path":"/home/root/a","dry_run":"yes"}"#).0,
+            Err(ArgumentProblem::WrongType("dry_run"))
+        );
+        for tool in ["run", "fetch", "clock_set", "wm_click", "ls"] {
+            assert_eq!(
+                checked(tool, r#"{"dry_run":true}"#).0,
+                Err(ArgumentProblem::Unknown),
+                "{tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn disk_tools_take_a_disk_s_file_and_format_a_label_of_64_bytes() {
+        let (result, buffers) = checked("disk_check", r#"{"device":"/dev/vdb"}"#);
+        assert_eq!(path_text(&result.unwrap(), &buffers.path), Some("/dev/vdb"));
+        for device in [
+            "/dev/vde",
+            "/dev/vdb/x",
+            "/dev/../dev/vdb",
+            "/home/root/a",
+            "vdb",
+        ] {
+            let arguments = format!(r#"{{"device":"{device}"}}"#);
+            assert_eq!(
+                checked("disk_repair", &arguments).0,
+                Err(ArgumentProblem::BadDevice),
+                "{device}"
+            );
+        }
+        let (result, _) = checked(
+            "disk_format",
+            r#"{"device":"/dev/vdc","label":"scratch","confirm":true}"#,
+        );
+        let result = result.unwrap();
+        assert_eq!(
+            result.label.map(|label| label.as_str() == "scratch"),
+            Some(true)
+        );
+        assert!(result.confirm);
+        assert_eq!(
+            checked("disk_format", r#"{"device":"/dev/vdc"}"#)
+                .0
+                .unwrap()
+                .label,
+            None
+        );
+        let long = format!(r#"{{"device":"/dev/vdc","label":"{}"}}"#, "x".repeat(65));
+        assert_eq!(
+            checked("disk_format", &long).0,
+            Err(ArgumentProblem::BadLabel)
+        );
+        let control = r#"{"device":"/dev/vdc","label":"a\nb"}"#;
+        assert_eq!(
+            checked("disk_format", control).0,
+            Err(ArgumentProblem::BadLabel)
+        );
+        assert_eq!(
+            checked("disk_check", r#"{"device":"/dev/vdb","label":"x"}"#).0,
+            Err(ArgumentProblem::Unknown)
+        );
+    }
+
+    #[test]
+    fn ln_takes_a_link_path_a_target_text_and_symbolic_true_by_default() {
+        let (result, buffers) = checked("ln", r#"{"target":"notes.txt","link":"/home/root/l"}"#);
+        let result = result.unwrap();
+        assert_eq!(path_text(&result, &buffers.path), Some("/home/root/l"));
+        assert_eq!(
+            link_target_text(&result, &buffers.content),
+            Some("notes.txt")
+        );
+        assert!(result.symbolic);
+        let arguments = r#"{"target":"/home/root/a","link":"/home/root/b","symbolic":false}"#;
+        assert!(!checked("ln", arguments).0.unwrap().symbolic);
+        let long = format!(
+            r#"{{"target":"{}","link":"/home/root/l"}}"#,
+            "a".repeat(MAX_LINK_TARGET_BYTES + 1)
+        );
+        assert_eq!(checked("ln", &long).0, Err(ArgumentProblem::BadLinkTarget));
+        for (arguments, problem) in [
+            (r#"{"target":"a"}"#, ArgumentProblem::Missing("link")),
+            (
+                r#"{"link":"/home/root/l"}"#,
+                ArgumentProblem::Missing("target"),
+            ),
+            (
+                r#"{"target":"","link":"/home/root/l"}"#,
+                ArgumentProblem::BadLinkTarget,
+            ),
+            (
+                r#"{"target":"-rf","link":"/home/root/l"}"#,
+                ArgumentProblem::BadLinkTarget,
+            ),
+            (
+                r#"{"target":"a\u0000b","link":"/home/root/l"}"#,
+                ArgumentProblem::BadLinkTarget,
+            ),
+            (
+                r#"{"target":7,"link":"/home/root/l"}"#,
+                ArgumentProblem::BadLinkTarget,
+            ),
+            (
+                r#"{"target":"a","link":"/home/root/l","symbolic":"no"}"#,
+                ArgumentProblem::WrongType("symbolic"),
+            ),
+            (
+                r#"{"target":"a","link":"/home/root/l","force":true}"#,
+                ArgumentProblem::Unknown,
+            ),
+        ] {
+            assert_eq!(checked("ln", arguments).0, Err(problem), "{arguments}");
+        }
     }
 }

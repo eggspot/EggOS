@@ -1,24 +1,32 @@
-//! Input (D113): the keyboards and pointers drivers install ([`install`]), polled until devices
-//! interrupt (issue #97). A keyboard's keys become bytes through the US keymap
-//! ([`eggos_drivers::input::keymap`]) and enter the console's line discipline as the UART's do
-//! ([`console::receive_from_keyboard`]); every key, pointer motion, button and wheel notch also
-//! goes into the input event queue ([`next_event`]) once a reader subscribed ([`subscribe`]),
-//! and the scrollback keys and the wheel move the graphical terminal's view
-//! ([`crate::terminal`]).
+//! Input (D113): the keyboards and pointers drivers install ([`install`], or
+//! [`install_interrupting`] for one whose interrupts raise [`DEVICE_EVENTS`], D184). A keyboard's
+//! keys become characters through the chosen keyboard layout, its dead keys and third level
+//! ([`eggos_drivers::input::layout`], [`set_layout`], D185), then bytes, and enter the
+//! console's line discipline as the UART's do ([`console::receive_from_keyboard`]); every key,
+//! pointer motion, button and wheel notch also goes into the input event queue
+//! ([`next_event`]) once a reader subscribed ([`subscribe`]), and the scrollback keys and the
+//! wheel move the graphical terminal's view ([`crate::terminal`]). Caps Lock's light follows
+//! the keyboard's state on keyboards that have one.
 //!
-//! Polling costs nothing without an input device. With one, the release kernel's poller thread
-//! ([`start_polling`]) polls every [`ACTIVE_POLL_MS`] while a key or button is held and for
-//! [`ACTIVE_WINDOW_MS`] after the last event, every [`IDLE_POLL_MS`] otherwise, and at each key
-//! repeat ([`REPEAT_DELAY_MS`], then every [`REPEAT_INTERVAL_MS`]). An idle device costs one load
-//! of its used ring's index per poll.
+//! Nothing runs without an input device. With them, the release kernel's input thread
+//! ([`start`]) takes their events: when every device interrupts, it sleeps until one does or the
+//! held key's next repeat ([`REPEAT_DELAY_MS`], then every [`REPEAT_INTERVAL_MS`]), so an idle
+//! machine never wakes it; otherwise it polls every [`ACTIVE_POLL_MS`] while a key or button is
+//! held and for [`ACTIVE_WINDOW_MS`] after the last event, every [`IDLE_POLL_MS`] otherwise, and
+//! at each repeat, an idle device costing one load of its used ring's index per poll.
 
 use crate::console;
+use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
 use crate::terminal::{self, ViewMove};
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use eggos_drivers::desktop::Profile;
 use eggos_drivers::input::key;
-use eggos_drivers::input::keymap::{self, CursorKeys, KeyBytes, KeyChange, KeyRepeat, Keyboard};
+use eggos_drivers::input::keymap::{
+    CursorKeys, KeyBytes, KeyChange, KeyRepeat, Keyboard, ThirdLevelKeys,
+};
+use eggos_drivers::input::layout::{self, Press, Typist};
 use eggos_drivers::input::{
     Capabilities, RawEvent, SYN_REPORT, absolute, button, event_type, relative, scale_to_screen,
 };
@@ -56,6 +64,11 @@ pub trait InputDevice: Send {
     /// Hands `event` the device's new events, oldest first, at most `budget`; returns how many
     /// it took from the device.
     fn poll(&mut self, budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize;
+    /// Lights the Caps Lock light, or puts it out, on a keyboard that has one (D185): `false`
+    /// when the device could not take the change now, so it is asked again at the next poll.
+    fn set_caps_lock_light(&mut self, _on: bool) -> bool {
+        true
+    }
 }
 
 /// A pointer button.
@@ -76,11 +89,14 @@ const BUTTONS: [(Button, u16); 3] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
     /// Key `code` (a Linux input key code) was pressed or released; `modifiers` are those in
-    /// effect after it.
+    /// effect after it; `character` is what it typed under the keyboard layout (D185), 0 for
+    /// none. Code 0 is a character typed with no key of its own: a dead key's accent before a
+    /// character it does not combine with.
     Key {
         code: u16,
         pressed: bool,
         modifiers: Modifiers,
+        character: u32,
     },
     /// The pointer moved to (`x`, `y`) on the display, in pixels from its top-left corner.
     PointerMove { x: u32, y: u32 },
@@ -95,6 +111,7 @@ const POINTER_MOVE: u64 = 2;
 const BUTTON: u64 = 3;
 const WHEEL: u64 = 4;
 const COORDINATE_MASK: u32 = 0x00ff_ffff;
+const CHARACTER_MASK: u32 = 0x00ff_ffff;
 
 const fn field(word: u64, shift: u32, mask: u64) -> u64 {
     (word >> shift) & mask
@@ -108,8 +125,12 @@ impl InputEvent {
                 code,
                 pressed,
                 modifiers,
+                character,
             } => {
-                KEY | (code as u64) << 8 | (pressed as u64) << 24 | (modifiers.bits() as u64) << 32
+                KEY | (code as u64) << 8
+                    | (pressed as u64) << 24
+                    | (modifiers.bits() as u64) << 32
+                    | ((character & CHARACTER_MASK) as u64) << 40
             }
             InputEvent::PointerMove { x, y } => {
                 let x = if x > COORDINATE_MASK {
@@ -138,6 +159,7 @@ impl InputEvent {
                 code: field(word, 8, 0xffff) as u16,
                 pressed: field(word, 24, 1) != 0,
                 modifiers: Modifiers::from_bits(field(word, 32, 0xff) as u8),
+                character: field(word, 40, CHARACTER_MASK as u64) as u32,
             },
             POINTER_MOVE => InputEvent::PointerMove {
                 x: field(word, 8, COORDINATE_MASK as u64) as u32,
@@ -319,14 +341,20 @@ struct Source {
     device: Box<dyn InputDevice>,
     capabilities: Capabilities,
     report: PendingReport,
+    interrupting: bool,
 }
 
-/// What the input layer keeps across polls, apart from its devices: the keyboard, the key
-/// repeat, the pointer, and when the last event came.
+/// What the input layer keeps across polls, apart from its devices: the keyboard, its layout
+/// and waiting dead key, the key repeat, the pointer, and when the last event came.
 #[derive(Debug)]
 pub struct InputState {
     keyboard: Keyboard,
+    typist: Typist,
     repeat: KeyRepeat,
+    repeat_press: (Press, Modifiers),
+    taken_back: u16,
+    sticky: Sticky,
+    slow: Option<(u16, u64)>,
     cursor_keys: CursorKeys,
     pointer: (u32, u32),
     buttons_held: u8,
@@ -348,18 +376,193 @@ pub struct Timing {
     pub repeat_delay: u64,
     /// [`REPEAT_INTERVAL_MS`] in ticks.
     pub repeat_interval: u64,
+    /// How long a key must be held before it counts, in ticks, while slow keys are on; 0 off
+    /// (D205).
+    pub slow_keys: u64,
 }
 
 impl Timing {
-    /// The timing on platform `P`'s clock, now.
+    /// The timing on platform `P`'s clock, now, with the repeat the preferences ask for
+    /// ([`set_preferences`]).
     pub fn now<P: Platform>() -> Self {
         let frequency = P::clock_frequency();
+        let delay = u64::from(REPEAT_DELAY.load(Ordering::Relaxed));
+        let rate = u64::from(REPEAT_RATE.load(Ordering::Relaxed)).max(1);
         Self {
             now: P::clock_ticks(),
-            repeat_delay: mul_div_ceil(REPEAT_DELAY_MS, frequency, 1000),
-            repeat_interval: mul_div_ceil(REPEAT_INTERVAL_MS, frequency, 1000),
+            repeat_delay: mul_div_ceil(delay, frequency, 1000),
+            repeat_interval: mul_div_ceil(1000, frequency, 1000 * rate),
+            slow_keys: mul_div_ceil(
+                u64::from(SLOW_KEYS_MS.load(Ordering::Relaxed)),
+                frequency,
+                1000,
+            ),
         }
     }
+}
+
+static STICKY_KEYS: AtomicBool = AtomicBool::new(false);
+static SLOW_KEYS_MS: AtomicU32 = AtomicU32::new(0);
+
+/// The accessibility of the keys (D205): sticky keys latch a tapped modifier for the next key
+/// (a second tap locks it); slow keys count a key only once it is held `slow_keys_ms` (`None`
+/// off, else 100 to 1000). `false`, and nothing changed, for a delay out of range.
+pub fn set_key_accessibility(sticky_keys: bool, slow_keys_ms: Option<u32>) -> bool {
+    if slow_keys_ms.is_some_and(|delay| !(100..=1000).contains(&delay)) {
+        return false;
+    }
+    STICKY_KEYS.store(sticky_keys, Ordering::Relaxed);
+    SLOW_KEYS_MS.store(slow_keys_ms.unwrap_or(0), Ordering::Relaxed);
+    true
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Sticky {
+    latched: u8,
+    locked: u8,
+    tapping: Option<(u16, u8)>,
+    using: Option<u16>,
+}
+
+impl Sticky {
+    const fn new() -> Self {
+        Self {
+            latched: 0,
+            locked: 0,
+            tapping: None,
+            using: None,
+        }
+    }
+
+    fn apply(&mut self, code: u16, change: KeyChange, held: Modifiers, added: u8) -> Modifiers {
+        let extra = self.latched | self.locked;
+        let with_extra = Modifiers::from_bits(held.bits() | extra);
+        match change {
+            KeyChange::Released => {
+                if let Some((_, bits)) = self.tapping.take_if(|(tapped, _)| *tapped == code) {
+                    if self.locked & bits != 0 {
+                        self.locked &= !bits;
+                    } else if self.latched & bits != 0 {
+                        self.latched &= !bits;
+                        self.locked |= bits;
+                    } else {
+                        self.latched |= bits;
+                    }
+                    return held;
+                }
+                if self.using == Some(code) {
+                    self.using = None;
+                    self.latched = 0;
+                    return with_extra;
+                }
+                held
+            }
+            _ if added != 0 => {
+                self.tapping = Some((code, added));
+                held
+            }
+            _ => {
+                self.tapping = None;
+                if self.latched != 0 {
+                    self.using = Some(code);
+                }
+                with_extra
+            }
+        }
+    }
+}
+
+/// How a person likes the mouse and the keys (D195): which hand the buttons are for, which
+/// way the wheel scrolls, how far a mouse's move takes the pointer, and how keys repeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Preferences {
+    /// The left and right buttons swapped.
+    pub left_handed: bool,
+    /// The wheel scrolls the content the way the fingers move, as on a touchpad.
+    pub natural_scrolling: bool,
+    /// 1 to 10; 5 moves the pointer as far as the mouse reports.
+    pub pointer_speed: u32,
+    /// Milliseconds before a held key repeats, 150 to 2000.
+    pub repeat_delay_ms: u32,
+    /// Repeats a second, 2 to 60.
+    pub repeat_rate: u32,
+}
+
+/// The preferences EggOS starts with.
+pub const DEFAULT_PREFERENCES: Preferences = Preferences {
+    left_handed: false,
+    natural_scrolling: false,
+    pointer_speed: 5,
+    repeat_delay_ms: REPEAT_DELAY_MS as u32,
+    repeat_rate: 25,
+};
+
+static LEFT_HANDED: AtomicBool = AtomicBool::new(false);
+static NATURAL_SCROLLING: AtomicBool = AtomicBool::new(false);
+static POINTER_SPEED: Preference<5> = Preference::new();
+static REPEAT_DELAY: Preference<{ REPEAT_DELAY_MS as u32 }> = Preference::new();
+static REPEAT_RATE: Preference<25> = Preference::new();
+
+struct Preference<const DEFAULT: u32> {
+    changed: AtomicU32,
+}
+
+impl<const DEFAULT: u32> Preference<DEFAULT> {
+    const fn new() -> Self {
+        Self {
+            changed: AtomicU32::new(0),
+        }
+    }
+
+    fn load(&self, ordering: Ordering) -> u32 {
+        self.changed.load(ordering) ^ DEFAULT
+    }
+
+    fn store(&self, value: u32, ordering: Ordering) {
+        self.changed.store(value ^ DEFAULT, ordering);
+    }
+}
+
+/// Uses `preferences` from the next event on; `false`, and nothing changed, when one is out
+/// of its range.
+pub fn set_preferences(preferences: Preferences) -> bool {
+    let in_range = (1..=10).contains(&preferences.pointer_speed)
+        && (150..=2000).contains(&preferences.repeat_delay_ms)
+        && (2..=60).contains(&preferences.repeat_rate);
+    if !in_range {
+        return false;
+    }
+    LEFT_HANDED.store(preferences.left_handed, Ordering::Relaxed);
+    NATURAL_SCROLLING.store(preferences.natural_scrolling, Ordering::Relaxed);
+    POINTER_SPEED.store(preferences.pointer_speed, Ordering::Relaxed);
+    REPEAT_DELAY.store(preferences.repeat_delay_ms, Ordering::Relaxed);
+    REPEAT_RATE.store(preferences.repeat_rate, Ordering::Relaxed);
+    true
+}
+
+/// The preferences in use.
+pub fn preferences() -> Preferences {
+    Preferences {
+        left_handed: LEFT_HANDED.load(Ordering::Relaxed),
+        natural_scrolling: NATURAL_SCROLLING.load(Ordering::Relaxed),
+        pointer_speed: POINTER_SPEED.load(Ordering::Relaxed),
+        repeat_delay_ms: REPEAT_DELAY.load(Ordering::Relaxed),
+        repeat_rate: REPEAT_RATE.load(Ordering::Relaxed),
+    }
+}
+
+/// `button` as the person's hand uses it: left and right swapped when left-handed.
+pub fn handed(button: Button, left_handed: bool) -> Button {
+    match (button, left_handed) {
+        (Button::Left, true) => Button::Right,
+        (Button::Right, true) => Button::Left,
+        (button, _) => button,
+    }
+}
+
+/// A relative move of `delta` at pointer speed `speed` (1 to 10, 5 as reported).
+pub fn sped(delta: i32, speed: u32) -> i32 {
+    (i64::from(delta) * i64::from(speed.clamp(1, 10)) / 5) as i32
 }
 
 /// Where translated input goes: bytes for the console, events for the queue, moves of the
@@ -397,12 +600,43 @@ impl InputState {
     pub const fn new() -> Self {
         Self {
             keyboard: Keyboard::new(),
+            typist: Typist::new(),
             repeat: KeyRepeat::new(),
+            repeat_press: (Press::Other, Modifiers::from_bits(0)),
+            taken_back: 0,
+            sticky: Sticky::new(),
+            slow: None,
             cursor_keys: CursorKeys::Normal,
             pointer: (0, 0),
             buttons_held: 0,
             last_event: 0,
         }
+    }
+
+    /// Types with keyboard layout `number` ([`layout::LAYOUTS`]) from now on, in desktop
+    /// `profile`: a waiting accent is dropped, and the Alt keys reach the layout's third level
+    /// as the profile has them (Right Alt as AltGr, or either Alt as Option in the macOS
+    /// profile).
+    pub fn set_layout(&mut self, number: usize, profile: Profile) {
+        if number != self.typist.layout_number() {
+            self.typist.set_layout(number);
+        }
+        let keys = match (self.typist.layout().has_third_level(), profile) {
+            (false, _) => ThirdLevelKeys::None,
+            (true, Profile::Macos) => ThirdLevelKeys::EitherAlt,
+            (true, _) => ThirdLevelKeys::RightAlt,
+        };
+        self.keyboard.set_third_level_keys(keys);
+    }
+
+    /// The keyboard layout's number.
+    pub fn layout(&self) -> usize {
+        self.typist.layout_number()
+    }
+
+    /// Whether Caps Lock is on.
+    pub fn caps_lock(&self) -> bool {
+        self.keyboard.caps_lock()
     }
 
     /// Whether a key or a pointer button is held.
@@ -415,9 +649,37 @@ impl InputState {
         self.last_event
     }
 
-    /// When the held key repeats next, if one does.
+    /// When the held key repeats next, if one does, or a key held under slow keys counts.
     pub fn next_repeat(&self) -> Option<u64> {
-        self.repeat.next()
+        match (self.repeat.next(), self.slow.map(|(_, at)| at)) {
+            (Some(repeat), Some(slow)) => Some(repeat.min(slow)),
+            (repeat, slow) => repeat.or(slow),
+        }
+    }
+
+    fn accept_slow_key(&mut self, timing: Timing, sink: &mut dyn InputSink) {
+        let Some((code, at)) = self.slow else {
+            return;
+        };
+        if timing.now < at {
+            return;
+        }
+        self.slow = None;
+        let mut report = PendingReport::default();
+        let accepted = Timing {
+            slow_keys: 0,
+            ..timing
+        };
+        self.key(
+            RawEvent {
+                kind: event_type::KEY,
+                code,
+                value: 1,
+            },
+            &mut report,
+            accepted,
+            sink,
+        );
     }
 
     /// Has the arrow keys send `mode`'s forms, as the terminal's program asked.
@@ -425,6 +687,7 @@ impl InputState {
         self.cursor_keys = mode;
     }
 
+    #[inline(never)]
     fn key(
         &mut self,
         event: RawEvent,
@@ -447,41 +710,153 @@ impl InputState {
         if event.code >= button::FIRST {
             return;
         }
+        if timing.slow_keys > 0 && self.held_back_slowly(event, timing) {
+            return;
+        }
+        let sticky_keys = STICKY_KEYS.load(Ordering::Relaxed);
+        let before = match sticky_keys {
+            true => self.keyboard.modifiers(),
+            false => Modifiers::NONE,
+        };
         let Some(change) = self.keyboard.key(event.code, event.value) else {
             return;
         };
-        let modifiers = self.keyboard.modifiers();
-        let pressed = change == KeyChange::Pressed;
-        if pressed && terminal::takes_from_terminal(event.code, modifiers) {
-            self.repeat
-                .pressed(event.code, false, timing.now, timing.repeat_delay);
-        } else if pressed {
-            let bytes = match self.cursor_keys {
-                CursorKeys::Normal => keymap::encode(event.code, modifiers, CursorKeys::Normal),
-                CursorKeys::Application => {
-                    keymap::encode(event.code, modifiers, CursorKeys::Application)
-                }
-            };
-            if bytes.is_empty() {
-                move_view_with_key(event.code, modifiers, sink);
+        let held = self.keyboard.modifiers();
+        let modifiers = match sticky_keys {
+            true => self.sticky_modifiers(event.code, change, before, held),
+            false => {
+                self.sticky = Sticky::new();
+                held
             }
-            sink.bytes(bytes.as_bytes());
-            self.repeat.pressed(
-                event.code,
-                !bytes.is_empty(),
-                timing.now,
-                timing.repeat_delay,
-            );
-        } else {
-            self.repeat.released(event.code);
+        };
+        let code = event.code;
+        if change == KeyChange::Released {
+            self.repeat.released(code);
+            if self.taken_back == code {
+                self.taken_back = 0;
+                return;
+            }
+            let character = self.typist.character_of(code, modifiers);
+            return sink.event(InputEvent::Key {
+                code,
+                pressed: false,
+                modifiers,
+                character,
+            });
         }
+        if terminal::takes_from_terminal(code, modifiers) {
+            self.repeat
+                .pressed(code, false, timing.now, timing.repeat_delay);
+            let character = self.typist.character_of(code, modifiers);
+            return sink.event(InputEvent::Key {
+                code,
+                pressed: true,
+                modifiers,
+                character,
+            });
+        }
+        if let Some(character) = self.typist.plain_character(code, modifiers) {
+            return self.typed_character(code, modifiers, character, timing, sink);
+        }
+        let press = self.typist.press(code, modifiers);
+        if press == Press::Cancelled {
+            self.taken_back = code;
+            self.repeat
+                .pressed(code, false, timing.now, timing.repeat_delay);
+            return;
+        }
+        self.typed(code, modifiers, press, timing, sink);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn held_back_slowly(&mut self, event: RawEvent, timing: Timing) -> bool {
+        match (event.value, self.slow) {
+            (1, _) => {
+                self.slow = Some((event.code, timing.now + timing.slow_keys));
+                true
+            }
+            (2, Some((code, _))) if code == event.code => true,
+            (0, Some((code, _))) if code == event.code => {
+                self.slow = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn sticky_modifiers(
+        &mut self,
+        code: u16,
+        change: KeyChange,
+        before: Modifiers,
+        held: Modifiers,
+    ) -> Modifiers {
+        let added = held.bits() & !before.bits() & !Modifiers::CAPS_LOCK.bits();
+        self.sticky.apply(code, change, held, added)
+    }
+
+    fn typed_character(
+        &mut self,
+        code: u16,
+        modifiers: Modifiers,
+        character: char,
+        timing: Timing,
+        sink: &mut dyn InputSink,
+    ) {
+        let mut encoded = [0u8; 4];
+        sink.bytes(character.encode_utf8(&mut encoded).as_bytes());
+        self.repeat_press = (Press::typed(character), modifiers);
+        self.repeat
+            .pressed(code, true, timing.now, timing.repeat_delay);
         sink.event(InputEvent::Key {
-            code: event.code,
-            pressed,
+            code,
+            pressed: true,
             modifiers,
+            character: u32::from(character),
         });
     }
 
+    #[inline(never)]
+    fn typed(
+        &mut self,
+        code: u16,
+        modifiers: Modifiers,
+        press: Press,
+        timing: Timing,
+        sink: &mut dyn InputSink,
+    ) {
+        let bytes = press.terminal_bytes(code, modifiers, self.cursor_keys);
+        if bytes.is_empty() {
+            move_view_with_key(code, modifiers, sink);
+        }
+        sink.bytes(bytes.as_bytes());
+        self.repeat_press = (press, modifiers);
+        self.repeat
+            .pressed(code, !bytes.is_empty(), timing.now, timing.repeat_delay);
+        if let Press::Typed { typed, .. } = press
+            && let Some(accent) = typed.before_last()
+        {
+            for pressed in [true, false] {
+                sink.event(InputEvent::Key {
+                    code: 0,
+                    pressed,
+                    modifiers,
+                    character: u32::from(accent),
+                });
+            }
+        }
+        sink.event(InputEvent::Key {
+            code,
+            pressed: true,
+            modifiers,
+            character: press.character(code, modifiers),
+        });
+    }
+
+    #[inline(never)]
     fn end_report(
         &mut self,
         capabilities: &Capabilities,
@@ -502,40 +877,45 @@ impl InputState {
             }
             let moved =
                 |at: u32, delta: i32, size: u32| at.saturating_add_signed(delta).min(size - 1);
-            x = moved(x, report.dx, width);
-            y = moved(y, report.dy, height);
+            let speed = POINTER_SPEED.load(Ordering::Relaxed);
+            x = moved(x, sped(report.dx, speed), width);
+            y = moved(y, sped(report.dy, speed), height);
             if (x, y) != self.pointer {
                 self.pointer = (x, y);
                 sink.event(InputEvent::PointerMove { x, y });
             }
         }
+        let left_handed = LEFT_HANDED.load(Ordering::Relaxed);
         for (index, (button, _)) in BUTTONS.iter().enumerate() {
             let bit = 1 << index;
+            let button = handed(*button, left_handed);
             if report.presses & bit != 0 {
                 self.buttons_held |= bit;
                 sink.event(InputEvent::Button {
-                    button: *button,
+                    button,
                     pressed: true,
                 });
             }
             if report.releases & bit != 0 {
                 self.buttons_held &= !bit;
                 sink.event(InputEvent::Button {
-                    button: *button,
+                    button,
                     pressed: false,
                 });
             }
         }
-        if report.wheel != 0 {
-            let lines = report.wheel.unsigned_abs() as usize * WHEEL_LINES;
-            sink.view(if report.wheel > 0 {
+        let wheel = match NATURAL_SCROLLING.load(Ordering::Relaxed) {
+            true => report.wheel.saturating_neg(),
+            false => report.wheel,
+        };
+        if wheel != 0 {
+            let lines = wheel.unsigned_abs() as usize * WHEEL_LINES;
+            sink.view(if wheel > 0 {
                 ViewMove::Back(lines)
             } else {
                 ViewMove::Forward(lines)
             });
-            sink.event(InputEvent::Wheel {
-                delta: report.wheel,
-            });
+            sink.event(InputEvent::Wheel { delta: wheel });
         }
     }
 
@@ -583,12 +963,14 @@ impl InputState {
     /// Sends the held key's bytes again if its repeat is due and `sink` has room for them
     /// whole; without room the repeat stays due for the next poll.
     pub fn repeat_key(&mut self, timing: Timing, sink: &mut dyn InputSink) {
+        self.accept_slow_key(timing, sink);
         if sink.room() < KeyBytes::CAPACITY {
             return;
         }
         if let Some(code) = self.repeat.due(timing.now, timing.repeat_interval) {
-            let modifiers = self.keyboard.modifiers();
-            sink.bytes(keymap::encode(code, modifiers, self.cursor_keys).as_bytes());
+            let (press, modifiers) = self.repeat_press;
+            let bytes = press.terminal_bytes(code, modifiers, self.cursor_keys);
+            sink.bytes(bytes.as_bytes());
         }
     }
 }
@@ -596,18 +978,83 @@ impl InputState {
 struct Input {
     sources: [Option<Source>; MAX_DEVICES],
     state: InputState,
+    caps_lock_shown: bool,
+    events_left: bool,
+}
+
+impl Input {
+    fn show_caps_lock(&mut self) {
+        let on = self.state.caps_lock();
+        if on == self.caps_lock_shown {
+            return;
+        }
+        CAPS_LOCK.store(on, Ordering::Relaxed);
+        let mut every_light_took_it = true;
+        for source in self.sources.iter_mut().flatten() {
+            every_light_took_it &= source.device.set_caps_lock_light(on);
+        }
+        if every_light_took_it {
+            self.caps_lock_shown = on;
+        }
+    }
+}
+
+static LAYOUT: AtomicU8 = AtomicU8::new(layout::US_LAYOUT as u8);
+
+static CAPS_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// Types with keyboard layout `number` (its index in [`layout::LAYOUTS`], D185) on every
+/// keyboard from the next poll on, a waiting accent dropped; `false`, and nothing changed, for
+/// a number that is no layout.
+pub fn set_layout(number: usize) -> bool {
+    let Ok(number) = u8::try_from(number) else {
+        return false;
+    };
+    if usize::from(number) >= layout::LAYOUTS.len() {
+        return false;
+    }
+    LAYOUT.store(number, Ordering::Relaxed);
+    true
+}
+
+/// The keyboard layout's number (its index in [`layout::LAYOUTS`]).
+pub fn layout_number() -> usize {
+    usize::from(LAYOUT.load(Ordering::Relaxed))
+}
+
+/// Whether Caps Lock is on, as the last poll left it.
+pub fn caps_lock() -> bool {
+    CAPS_LOCK.load(Ordering::Relaxed)
 }
 
 static INPUT: LeafSpinLock<Option<Box<Input>>> = LeafSpinLock::new_leaf(None);
 
-/// Makes `device` one of the kernel's input devices. Refused, and handed back, when
-/// [`MAX_DEVICES`] are installed already.
+/// What the input devices' interrupts raise: the input thread waits on it ([`start`]).
+pub static DEVICE_EVENTS: DeviceEvents = DeviceEvents::new();
+
+/// Makes `device`, which the input thread polls, one of the kernel's input devices. Refused, and
+/// handed back, when [`MAX_DEVICES`] are installed already.
 pub fn install(device: Box<dyn InputDevice>) -> Result<(), Box<dyn InputDevice>> {
+    install_source(device, false)
+}
+
+/// Makes `device`, whose interrupts raise [`DEVICE_EVENTS`], one of the kernel's input devices.
+/// Refused, and handed back, when [`MAX_DEVICES`] are installed already.
+pub fn install_interrupting(device: Box<dyn InputDevice>) -> Result<(), Box<dyn InputDevice>> {
+    install_source(device, true)
+}
+
+fn install_source(
+    device: Box<dyn InputDevice>,
+    interrupting: bool,
+) -> Result<(), Box<dyn InputDevice>> {
     let capabilities = device.capabilities();
     let fresh = INPUT.lock().is_none().then(|| {
         Box::new(Input {
             sources: [const { None }; MAX_DEVICES],
             state: InputState::new(),
+            caps_lock_shown: false,
+            events_left: false,
         })
     });
     let queue = events()
@@ -635,6 +1082,7 @@ pub fn install(device: Box<dyn InputDevice>) -> Result<(), Box<dyn InputDevice>>
         device,
         capabilities,
         report: PendingReport::default(),
+        interrupting,
     });
     Ok(())
 }
@@ -721,8 +1169,8 @@ impl InputSink for PollSink {
 
 /// Polls every input device: in rounds of at most 16 events each, the console fed between
 /// rounds, until the devices have nothing more or [`MAX_POLL_ROUNDS`] rounds ran; then sends the
-/// held key's repeat if it is due, and returns the clock tick to poll again at. `None` without
-/// input devices.
+/// held key's repeat if it is due, and returns the clock tick to poll again at, which an input
+/// thread woken by interrupts also keeps when events were left. `None` without input devices.
 pub fn poll<P: Platform>() -> Option<u64> {
     poll_devices::<P>(&INPUT, subscribed_events(), screen(), Timing::now::<P>())
 }
@@ -765,6 +1213,10 @@ fn poll_devices<P: Platform>(
                 } else {
                     CursorKeys::Normal
                 });
+            input.state.set_layout(
+                usize::from(LAYOUT.load(Ordering::Relaxed)),
+                terminal::desktop_profile(),
+            );
             let mut more = false;
             for source in input.sources.iter_mut().flatten() {
                 let budget = (POLL_BUDGET_BYTES - sink.length) / KeyBytes::CAPACITY;
@@ -772,6 +1224,7 @@ fn poll_devices<P: Platform>(
                     device,
                     capabilities,
                     report,
+                    ..
                 } = source;
                 let state = &mut input.state;
                 let taken = device.poll(budget, &mut |event| {
@@ -782,7 +1235,9 @@ fn poll_devices<P: Platform>(
             let last = !more || round == MAX_POLL_ROUNDS;
             if last {
                 input.state.repeat_key(timing, &mut sink);
+                input.events_left = more;
             }
+            input.show_caps_lock();
             PERSON_HOLDS_INPUT.store(input.state.anything_held(), Ordering::Relaxed);
             let next = next_poll(&input.state, timing.now, P::clock_frequency());
             (last, next)
@@ -810,18 +1265,58 @@ pub fn next_poll(state: &InputState, now: u64, frequency: u64) -> u64 {
     state.next_repeat().map_or(next, |repeat| next.min(repeat))
 }
 
-/// Starts the thread that polls the input devices if there are any; `Ok(false)` when there are
-/// none, so nothing needs polling.
-pub fn start_polling<P: Platform>() -> Result<bool, crate::thread::SpawnError> {
-    if INPUT.lock().is_none() {
-        return Ok(false);
-    }
-    crate::thread::spawn::<P, _>(|| {
+/// How the input thread hears from the devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Watching {
+    /// Every device interrupts: the thread sleeps until one does or a held key repeats.
+    Interrupts,
+    /// A device must be polled: the thread looks at them all at intervals.
+    Polling,
+}
+
+/// How the input thread would hear from the devices installed now; `None` without any.
+pub fn watching() -> Option<Watching> {
+    let input = INPUT.lock();
+    let mut sources = input.as_ref()?.sources.iter().flatten().peekable();
+    sources.peek()?;
+    Some(if sources.all(|source| source.interrupting) {
+        Watching::Interrupts
+    } else {
+        Watching::Polling
+    })
+}
+
+fn next_repeat() -> Option<u64> {
+    INPUT.lock().as_ref()?.state.next_repeat()
+}
+
+fn events_left() -> bool {
+    INPUT.lock().as_ref().is_some_and(|input| input.events_left)
+}
+
+/// Starts the input thread if there are input devices, and says how it hears from them;
+/// `Ok(None)` without any, so nothing runs.
+pub fn start<P: Platform>() -> Result<Option<Watching>, crate::thread::SpawnError> {
+    let Some(watching) = watching() else {
+        return Ok(None);
+    };
+    crate::thread::spawn::<P, _>(move || {
+        let mut seen = DEVICE_EVENTS.raised();
         while let Some(next) = poll::<P>() {
-            crate::thread::sleep_until::<P>(next);
+            match watching {
+                Watching::Polling => crate::thread::sleep_until::<P>(next),
+                Watching::Interrupts => {
+                    let poll_again = match events_left() {
+                        true => next,
+                        false => u64::MAX,
+                    };
+                    let deadline = next_repeat().unwrap_or(u64::MAX).min(poll_again);
+                    seen = DEVICE_EVENTS.wait::<P>(seen, deadline);
+                }
+            }
         }
     })
-    .map(|_| true)
+    .map(|_| Some(watching))
 }
 
 #[cfg(test)]

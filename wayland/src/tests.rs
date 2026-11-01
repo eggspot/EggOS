@@ -1,4 +1,4 @@
-use crate::blit::{OPAQUE_MASK, Rect, copy_opaque_rows};
+use crate::blit::{OPAQUE_MASK, Placement, Rect, WindowPixels, blend_over, copy_opaque_rows};
 use crate::keymap::{self, US_KEYMAP};
 use crate::protocol::{self, Interface};
 use crate::wire::{self, Arg, Header, MAX_ARGUMENTS, Value, WireError, decode, encode};
@@ -218,6 +218,30 @@ fn every_request_table_is_ordered_and_bounded() {
         Interface::XdgSurface,
         Interface::XdgToplevel,
         Interface::XdgPopup,
+        Interface::Subcompositor,
+        Interface::Subsurface,
+        Interface::DecorationManager,
+        Interface::ToplevelDecoration,
+        Interface::CursorShapeManager,
+        Interface::CursorShapeDevice,
+        Interface::Viewporter,
+        Interface::Viewport,
+        Interface::DataDeviceManager,
+        Interface::DataSource,
+        Interface::DataDevice,
+        Interface::DataOffer,
+        Interface::PrimarySelectionDeviceManager,
+        Interface::PrimarySelectionDevice,
+        Interface::PrimarySelectionOffer,
+        Interface::PrimarySelectionSource,
+        Interface::Activation,
+        Interface::ActivationToken,
+        Interface::TextInputManager,
+        Interface::TextInput,
+        Interface::ServerDecorationManager,
+        Interface::ServerDecoration,
+        Interface::FractionalScaleManager,
+        Interface::FractionalScale,
     ] {
         for request in protocol::requests(interface) {
             assert!(request.signature.len() <= MAX_ARGUMENTS, "{}", request.name);
@@ -244,9 +268,135 @@ fn every_request_table_is_ordered_and_bounded() {
             ("wl_compositor", 4),
             ("wl_shm", 1),
             ("wl_seat", 5),
-            ("wl_output", 3),
-            ("xdg_wm_base", 3)
+            ("wl_output", 4),
+            ("xdg_wm_base", 5),
+            ("wl_subcompositor", 1),
+            ("zxdg_decoration_manager_v1", 1),
+            ("wp_cursor_shape_manager_v1", 1),
+            ("wp_viewporter", 1),
+            ("wl_data_device_manager", 3),
+            ("zwp_primary_selection_device_manager_v1", 1),
+            ("xdg_activation_v1", 1),
+            ("zwp_text_input_manager_v3", 1),
+            ("org_kde_kwin_server_decoration_manager", 1),
+            ("wp_fractional_scale_manager_v1", 1)
         ]
+    );
+    assert_eq!(
+        protocol::request_of(Interface::Viewport, 1, 1).map(|request| request.signature.len()),
+        Some(4)
+    );
+    assert_eq!(
+        protocol::request_of(Interface::Subsurface, 1, 5).map(|request| request.name),
+        Some("set_desync")
+    );
+    assert_eq!(
+        protocol::GLOBALS.map(|global| global.name),
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    );
+}
+
+#[test]
+fn the_selection_activation_text_input_and_decoration_tables_follow_their_specifications() {
+    let name = |interface, version, opcode| {
+        protocol::request_of(interface, version, opcode).map(|request| request.name)
+    };
+    assert_eq!(name(Interface::DataSource, 2, 2), None);
+    assert_eq!(name(Interface::DataSource, 3, 2), Some("set_actions"));
+    assert_eq!(name(Interface::DataDevice, 1, 1), Some("set_selection"));
+    assert_eq!(name(Interface::DataDevice, 1, 2), None);
+    assert_eq!(name(Interface::DataDevice, 2, 2), Some("release"));
+    assert_eq!(name(Interface::DataOffer, 3, 1), Some("receive"));
+    assert_eq!(
+        protocol::request_of(Interface::DataOffer, 1, 1).map(|request| request.signature),
+        Some(&[Arg::String, Arg::Fd][..])
+    );
+    assert_eq!(
+        name(Interface::PrimarySelectionDevice, 1, 0),
+        Some("set_selection")
+    );
+    assert_eq!(
+        name(Interface::PrimarySelectionSource, 1, 1),
+        Some("destroy")
+    );
+    assert_eq!(name(Interface::Activation, 1, 2), Some("activate"));
+    assert_eq!(name(Interface::ActivationToken, 1, 3), Some("commit"));
+    assert_eq!(
+        name(Interface::TextInput, 1, 3),
+        Some("set_surrounding_text")
+    );
+    assert_eq!(name(Interface::TextInput, 1, 7), Some("commit"));
+    assert_eq!(
+        name(Interface::ServerDecoration, 1, 1),
+        Some("request_mode")
+    );
+    assert_eq!(
+        protocol::text_input::PURPOSES[protocol::text_input::PURPOSE_PASSWORD as usize],
+        "password"
+    );
+    assert_eq!(
+        protocol::event_signature(Interface::DataSource, 1),
+        Some(&[Arg::String, Arg::Fd][..])
+    );
+}
+
+#[test]
+fn the_fractional_scale_output_name_and_toplevel_bounds_tables_follow_their_specifications() {
+    let name = |interface, version, opcode| {
+        protocol::request_of(interface, version, opcode).map(|request| request.name)
+    };
+    assert_eq!(
+        name(Interface::FractionalScaleManager, 1, 1),
+        Some("get_fractional_scale")
+    );
+    assert_eq!(name(Interface::FractionalScale, 1, 0), Some("destroy"));
+    assert_eq!(name(Interface::FractionalScale, 1, 1), None);
+    assert_eq!(
+        protocol::event_signature(Interface::FractionalScale, 0),
+        Some(&[Arg::Uint][..])
+    );
+    assert_eq!(protocol::output::NAME.since, 4);
+    assert_eq!(protocol::output::DESCRIPTION.opcode, 5);
+    assert_eq!(
+        protocol::event_signature(Interface::Output, 4),
+        Some(&[Arg::String][..])
+    );
+    assert_eq!(protocol::xdg_toplevel::CONFIGURE_BOUNDS.since, 4);
+    assert_eq!(protocol::xdg_toplevel::WM_CAPABILITIES.since, 5);
+    assert_eq!(
+        protocol::event_signature(Interface::XdgToplevel, 3),
+        Some(&[Arg::Array][..])
+    );
+    assert_eq!(protocol::fractional_scale::DENOMINATOR, 120);
+    assert_eq!(name(Interface::XdgToplevel, 5, 13), Some("set_minimized"));
+}
+
+#[test]
+fn a_nullable_string_is_null_for_a_length_of_zero_and_a_string_otherwise() {
+    let null = words(&[7, 0]);
+    let (values, descriptors) = decoded(&null, &[Arg::Uint, Arg::NullableString]).unwrap();
+    assert_eq!(
+        (values[0], values[1], descriptors),
+        (Value::Uint(7), Value::None, 0)
+    );
+    let mut out = [0u8; 64];
+    let size = encode(
+        &mut out,
+        1,
+        0,
+        &[Value::Uint(7), Value::String(b"text/plain")],
+    )
+    .unwrap();
+    let (values, _) = decoded(&out[8..size], &[Arg::Uint, Arg::NullableString]).unwrap();
+    assert_eq!(values[1], Value::String(b"text/plain"));
+    let unterminated = [&words(&[7, 4])[..], b"text"].concat();
+    assert_eq!(
+        decoded(&unterminated, &[Arg::Uint, Arg::NullableString]).map(|(_, count)| count),
+        Err(WireError::BadString)
+    );
+    assert_eq!(
+        decoded(&words(&[7]), &[Arg::Uint, Arg::NullableString]).map(|(_, count)| count),
+        Err(WireError::Truncated)
     );
 }
 
@@ -315,4 +465,53 @@ fn rectangles_from_clients_are_clipped_and_joined() {
     assert_eq!(Rect::default().union(&joined), joined);
     assert_eq!(joined.clipped(6, 4), Rect::new(2, 0, 4, 4));
     assert!(joined.clipped(1, 1).is_empty());
+}
+
+struct Pixels {
+    pixels: Vec<u32>,
+    width: u32,
+}
+
+impl WindowPixels for Pixels {
+    fn get(&mut self, x: u32, y: u32) -> u32 {
+        self.pixels[(y * self.width + x) as usize]
+    }
+
+    fn set(&mut self, x: u32, y: u32, pixel: u32) {
+        self.pixels[(y * self.width + x) as usize] = pixel;
+    }
+}
+
+#[test]
+fn a_placement_scales_offsets_clips_and_blends() {
+    let source: Vec<u32> = (0..16).map(|pixel| 0xff00_0000 | pixel).collect();
+    let read = |x: u32, y: u32| source.get((y * 4 + x) as usize).copied();
+    let mut window = Pixels {
+        pixels: vec![7; 64],
+        width: 8,
+    };
+    let doubled = Placement {
+        source: Rect::new(0, 0, 4, 4),
+        at: (-2, 1),
+        size: (8, 8),
+        clip: Rect::new(0, 0, 8, 8),
+        blend: false,
+    };
+    assert_eq!(doubled.written(), Rect::new(0, 1, 6, 7));
+    doubled.draw(read, &mut window);
+    assert_eq!(window.pixels[0], 7);
+    assert_eq!(window.pixels[8], 1);
+    assert_eq!(window.pixels[8 + 5], 3);
+    assert_eq!(window.pixels[7 * 8], 4 * 3 + 1);
+    assert_eq!(window.pixels[8 + 6], 7);
+    let half = blend_over(0x8040_4040, 0x00ff_ffff);
+    assert_eq!(half, 0x00bf_bfbf);
+    assert_eq!(blend_over(0xff12_3456, 0x0000_0000), 0x0012_3456);
+    assert_eq!(blend_over(0x0000_0000, 0x0012_3456), 0x0012_3456);
+    let outside = Placement {
+        at: (20, 20),
+        size: (4, 4),
+        ..doubled
+    };
+    assert!(outside.written().is_empty());
 }

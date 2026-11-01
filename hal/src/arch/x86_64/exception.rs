@@ -3,9 +3,10 @@
 //!
 //! The IDT has a gate for each of the 32 architecture-defined exception vectors and for each
 //! interrupt vector in use (the legacy PICs' 0x20-0x2f, the APIC timer's 0x30, the wake-up
-//! interrupt's 0x31, the console input's 0x32 and the APIC's spurious vector 0xff, see
-//! [`super::timer`]). Each points at a 16-byte stub that pushes the vector number (and a 0 error
-//! code for the vectors where the CPU pushes none), so every exception and interrupt reaches
+//! interrupt's 0x31, the console input's 0x32, the device lines' 0x33-0x52 and the APIC's
+//! spurious vector 0xff, see [`super::timer`] and [`super::message_interrupts`]). Each points at
+//! a 16-byte stub that pushes the vector number (and a 0 error code for the vectors where the
+//! CPU pushes none), so every exception and interrupt reaches
 //! `exception_common` with the same frame. From the kernel, that saves the registers a call may
 //! change (the handler keeps the others itself), calls [`x86_64_exception`] with the frame, and
 //! restores them and `iretq`s if it returns. From ring 3 (D47), the CPU has switched to this CPU's
@@ -21,9 +22,10 @@
 //! stacks for double faults, NMIs and machine checks are needed before untrusted programs run
 //! (D47): `syscall` and `sysretq` leave a moment in ring 0 on the program's stack.
 
+use super::message_interrupts::{self, FIRST_DEVICE_VECTOR, LAST_DEVICE_VECTOR};
 use super::timer::{
-    self, APIC_SPURIOUS_VECTOR, CONSOLE_INPUT_VECTOR, LEGACY_PIC_VECTORS, TIMER_VECTOR,
-    WAKEUP_VECTOR,
+    self, APIC_SPURIOUS_VECTOR, CONSOLE_INPUT_VECTOR, LEGACY_PIC_VECTORS, POWER_BUTTON_VECTOR,
+    TIMER_VECTOR, WAKEUP_VECTOR,
 };
 use crate::cpu::{
     GDT_ENTRIES, HalCpuLocal, SEGMENT_BASES_ID_OFFSET, TSS_RSP0_OFFSET, Tss, USER_RSP_OFFSET,
@@ -87,9 +89,15 @@ exception_stubs:
     EXCEPTION_STUB_WITH_ERROR_CODE 29
     EXCEPTION_STUB_WITH_ERROR_CODE 30
     EXCEPTION_STUB 31
-    // Interrupts 0x20-0x32 (legacy PIC inputs 0-15, APIC timer, wake-up, console input); the
-    // CPU pushes no error code.
+    // Interrupts 0x20-0x53 (legacy PIC inputs 0-15, APIC timer, wake-up, console input, device
+    // lines, the power button); the CPU pushes no error code.
     .irp vector, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50
+    EXCEPTION_STUB \vector
+    .endr
+    .irp vector, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66
+    EXCEPTION_STUB \vector
+    .endr
+    .irp vector, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83
     EXCEPTION_STUB \vector
     .endr
     .balign 16                      // so the label is the stub, not the padding before it
@@ -975,7 +983,7 @@ x86_64_user_test_linux_clock:
     leaq    16(%rsp), %rsi
     movl    $228, %eax
     syscall
-    cmpq    $-22, %rax
+    testq   %rax, %rax
     jne     9f
     xorl    %edi, %edi
     movl    $231, %eax
@@ -1249,10 +1257,11 @@ x86_64_user_test_end:
 /// Every vector the IDT can hold.
 const VECTORS: usize = 256;
 /// The vectors with a stub at `exception_stubs + vector * STUB_SIZE`: the exceptions 0-31 and
-/// the interrupts up to the console input interrupt's.
-const CONTIGUOUS_STUBS: usize = CONSOLE_INPUT_VECTOR as usize + 1;
+const CONTIGUOUS_STUBS: usize = POWER_BUTTON_VECTOR as usize + 1;
+const _: () = assert!(POWER_BUTTON_VECTOR as usize == LAST_DEVICE_VECTOR as usize + 1);
 const _: () = assert!(TIMER_VECTOR < WAKEUP_VECTOR && WAKEUP_VECTOR < CONSOLE_INPUT_VECTOR);
-const _: () = assert!(CONSOLE_INPUT_VECTOR == 50);
+const _: () = assert!(CONSOLE_INPUT_VECTOR == 50 && FIRST_DEVICE_VECTOR == 51);
+const _: () = assert!(LAST_DEVICE_VECTOR == 82);
 /// Vectors below this are the architecture's exceptions.
 const FIRST_INTERRUPT_VECTOR: u64 = 32;
 /// Every stub starts on a 16-byte boundary.
@@ -1430,6 +1439,17 @@ fn interrupt(vector: u64) -> bool {
             super::console_input::interrupt();
             true
         }
+        vector if vector == u64::from(POWER_BUTTON_VECTOR) => {
+            super::power_button::interrupt();
+            true
+        }
+        vector
+            if (u64::from(FIRST_DEVICE_VECTOR)..=u64::from(LAST_DEVICE_VECTOR))
+                .contains(&vector) =>
+        {
+            message_interrupts::interrupt(vector);
+            true
+        }
         // Spurious: the APIC needs no end of interrupt for it.
         vector if vector == u64::from(APIC_SPURIOUS_VECTOR) => true,
         vector => LEGACY_PIC_VECTORS.contains(&vector) && timer::legacy_pic_interrupt(vector),
@@ -1502,6 +1522,8 @@ const CR4_DENIED_TO_PROGRAMS: u64 = CR4_FSGSBASE | CR4_OSXSAVE | CR4_PKE | CR4_C
 /// CR4 bits for SSE (D54): the OS saves SSE state with `FXSAVE`, and handles #XM.
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
+const CR4_SMEP: u64 = 1 << 20;
+const CPUID_SMEP: u32 = 1 << 7;
 const RFLAGS_INTERRUPTS: u64 = 1 << 9;
 /// `rflags` bit 1, always set.
 const RFLAGS_FIXED: u64 = 1 << 1;
@@ -1624,6 +1646,24 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
             set = in(reg) CR0_MP | CR0_TS | CR0_NE,
             options(nomem, nostack),
         );
+    }
+    let has_smep = core::arch::x86_64::__cpuid(0).eax >= 7
+        && core::arch::x86_64::__cpuid_count(7, 0).ebx & CPUID_SMEP != 0;
+    if has_smep {
+        // SAFETY: with SMEP the CPU refuses to run, in ring 0, an instruction from a page user
+        // mode may reach, which the kernel never does: its code is in the kernel half, mapped
+        // for the kernel alone. A kernel bug that jumps into a program's memory then faults
+        // instead of running what the program put there.
+        unsafe {
+            core::arch::asm!(
+                "mov {tmp}, cr4",
+                "or {tmp}, {set}",
+                "mov cr4, {tmp}",
+                tmp = out(reg) _,
+                set = in(reg) CR4_SMEP,
+                options(nomem, nostack),
+            );
+        }
     }
     // SAFETY: the `syscall` MSRs are architectural. EFER.SCE enables `syscall`, whose MSRs are
     // all set below before anything runs in ring 3.

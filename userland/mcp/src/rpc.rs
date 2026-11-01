@@ -21,6 +21,10 @@ pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
 /// The server failed.
 pub const INTERNAL_ERROR: i64 = -32603;
+/// A request's HTTP headers do not match its body (MCP 2026-07-28).
+pub const HEADER_MISMATCH: i64 = -32020;
+/// A request names a protocol version the server does not speak (MCP 2026-07-28).
+pub const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
 
 /// The longest request id echoed back, in bytes as written.
 pub const MAX_ID_BYTES: usize = 256;

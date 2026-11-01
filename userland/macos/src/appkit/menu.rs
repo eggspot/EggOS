@@ -116,7 +116,11 @@ fn build_pool() -> Pool {
 
 /// Sends the main menu to `window`'s server window.
 pub fn send_to(window: Id) {
-    let id = window::server_id(window);
+    send_to_server(window::server_id(window));
+}
+
+/// Sends the main menu to the server window `id` (one of the app's or the About panel).
+pub fn send_to_server(id: u32) {
     if id == 0 || main_menu().is_null() {
         return;
     }
@@ -131,6 +135,7 @@ fn refresh() {
         send_to(window);
         index += 1;
     }
+    send_to_server(super::about::server_id());
 }
 
 /// Sends the main menu to the app's windows again if it changed since it was last sent: the

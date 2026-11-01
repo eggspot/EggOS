@@ -564,9 +564,10 @@ fn library() -> Result<(), &'static str> {
         if gdi32 == 0 || GetProcAddress(gdi32, c"Ellipse".as_ptr().cast()).is_null() {
             return Err("gdi32's Ellipse was not found");
         }
-        if LoadLibraryA(c"ws2_32.dll".as_ptr().cast()) != 0 || GetLastError() != ERROR_MOD_NOT_FOUND
+        if LoadLibraryA(c"eggos-absent.dll".as_ptr().cast()) != 0
+            || GetLastError() != ERROR_MOD_NOT_FOUND
         {
-            return Err("LoadLibraryA(ws2_32) did not fail with ERROR_MOD_NOT_FOUND");
+            return Err("LoadLibraryA(eggos-absent) did not fail with ERROR_MOD_NOT_FOUND");
         }
     }
     Ok(())

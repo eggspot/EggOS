@@ -10,6 +10,8 @@ use eggos_font::egg_sans::{self, HEIGHT as GLYPH_HEIGHT};
 pub const INSET_R6: [i32; 6] = [4, 2, 1, 1, 0, 0];
 /// The corner of radius 4.
 pub const INSET_R4: [i32; 4] = [2, 1, 0, 0];
+/// A 4 px tall bar's rounded ends: the slider's track (docs/ux/toolkit-v0.4.md section 1).
+pub const INSET_R2: [i32; 2] = [1, 0];
 /// The circle of diameter 16 (the radio button), top half.
 pub const INSET_R8: [i32; 8] = [5, 3, 2, 1, 1, 0, 0, 0];
 /// The circle of diameter 6 (the radio button's dot), top half.
@@ -144,6 +146,31 @@ impl<'a> Canvas<'a> {
         let rect = rect.intersection(&clip);
         for row in rect.y..rect.bottom() {
             self.row(row, rect.x, rect.right(), colour);
+        }
+    }
+
+    /// Copies `image`, rows `image_width` pixels apart at scale 1 with its top-left at the
+    /// content's, into the clipped part of the canvas, each pixel a scale by scale square: how a
+    /// program that renders its content itself (the terminal, D187) shows it.
+    pub fn blit(&mut self, image: &[u32], image_width: usize) {
+        let scale = self.scale as usize;
+        let clip = self.clip;
+        if clip.is_empty() || image_width == 0 {
+            return;
+        }
+        for row in clip.y.max(0)..clip.bottom() {
+            let image_row = row as usize / scale;
+            let Some(line) = image.get(image_row * image_width..(image_row + 1) * image_width)
+            else {
+                break;
+            };
+            let start = row as usize * self.width as usize;
+            for column in clip.x.max(0)..clip.right() {
+                let Some(&pixel) = line.get(column as usize / scale) else {
+                    break;
+                };
+                self.pixels[start + column as usize] = pixel;
+            }
         }
     }
 

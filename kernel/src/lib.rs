@@ -16,6 +16,7 @@ pub mod bench;
 pub mod block;
 #[cfg(feature = "qemu-boot-clock")]
 pub mod boot_clock;
+pub mod clipboard;
 pub mod console;
 pub mod cpu;
 pub mod devices;
@@ -28,11 +29,13 @@ pub mod input;
 pub mod interrupt;
 pub mod linux;
 pub mod memory;
+pub mod net;
 pub mod paging;
 pub mod process;
 pub mod random;
 pub mod regions;
 pub mod selftest;
+pub mod shared_frames;
 pub mod sync;
 pub mod terminal;
 pub mod thread;
@@ -103,16 +106,25 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 }
                 report_display(console, display::show_first_frame::<P>())?;
                 report_input(console, input::summary())?;
+                let _ = display::light_boot_stages::<P>(display::BOOT_STAGE_INPUT);
                 match console::enable_input::<P>() {
                     Ok(()) => writeln!(console, "{}", console::INPUT_READY_LINE)?,
                     Err(reason) => writeln!(console, "console: no input: {reason}")?,
+                }
+                if BOOT_MODE == BootMode::Init {
+                    match P::enable_power_button() {
+                        Ok(()) => writeln!(console, "power button: ready")?,
+                        Err(reason) => writeln!(console, "power button: {reason}")?,
+                    }
                 }
                 if let Some(report) = vfs::mount_embedded_initramfs() {
                     report_root(console, report)?;
                 }
                 mount_disks::<P>(console)?;
                 mount_system_file_systems::<P>();
+                linux::properties::load_build_properties();
                 if BOOT_MODE == BootMode::Init {
+                    net::start::<P>(console)?;
                     init::run(console, &mut memory)?;
                     return Ok(false);
                 }
@@ -136,12 +148,15 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     }
 }
 
-const MEMORY_FILE_SYSTEMS: [(&[u8], (u32, u32)); 4] = [
+const MEMORY_FILE_SYSTEMS: [(&[u8], (u32, u32)); 5] = [
     (b"/tmp", (0, 30)),
     (b"/home", (0, 31)),
     (b"/var", (0, 32)),
     (b"/run", (0, 33)),
+    (b"/dev/shm", (0, 34)),
 ];
+
+const SHARED_BY_EVERYONE: [&[u8]; 2] = [b"/tmp", b"/dev/shm"];
 
 fn mount_system_file_systems<P: Platform>() {
     use alloc::boxed::Box;
@@ -166,7 +181,10 @@ fn mount_system_file_systems<P: Platform>() {
         if !exists(path) || vfs::is_mount_point(path) {
             continue;
         }
-        let permissions = if path == b"/tmp" { 0o1777 } else { 0o755 };
+        let permissions = match SHARED_BY_EVERYONE.contains(&path) {
+            true => 0o1777,
+            false => 0o755,
+        };
         if let Some(file_system) = vfs::tmpfs::Tmpfs::new(budget, device, permissions) {
             let _ = vfs::mount(path, Box::leak(Box::new(file_system)));
         }
@@ -174,6 +192,12 @@ fn mount_system_file_systems<P: Platform>() {
 }
 
 const HOST_FOLDER: &[u8] = b"/media/host";
+
+const HOST_FOLDER_PLACE: &str = "/media/host";
+
+const PERSISTENT_PLACE: &str = "/home";
+
+const WORK_PLACE: &str = "/work";
 
 const HOST_FOLDER_DEVICE: (u32, u32) = (254, 0);
 
@@ -185,36 +209,69 @@ const PERSISTENT_FOLDERS: [(&[u8], &[u8]); 3] = [
     (b"var", b"/var"),
 ];
 
+const WORK_FOLDER_PATH: &[u8] = b"/work";
+
+const WORK_DEVICE: (u32, u32) = (254, 2);
+
+type BlockVolume = eggos_eggfs::Volume<vfs::eggfs::BlockDisk>;
+
+type MountedEggFs = vfs::eggfs::EggFs<vfs::eggfs::BlockDisk>;
+
 fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     let mut persistent = false;
+    let mut work = false;
     let mut host_folder = false;
-    for device in block::take_all().into_iter().flatten() {
+    block::set_deadline(devices::Deadline::after::<P>);
+    let taken = block::take_all().into_iter().enumerate();
+    for (index, device) in taken.filter_map(|(index, device)| Some((index, device?))) {
         let mut disk = vfs::eggfs::BlockDisk::new(device, devices::Deadline::after::<P>);
         let contents = eggos_eggfs::probe(&mut disk);
+        let eggfs = contents == Ok(eggos_eggfs::Contents::EggFs);
         let blank_writable = contents == Ok(eggos_eggfs::Contents::Blank) && !disk.is_read_only();
-        let ours = contents == Ok(eggos_eggfs::Contents::EggFs) || blank_writable;
-        if ours && !persistent {
-            match mount_persistent::<P, _>(disk, blank_writable, console)? {
-                Ok(()) => persistent = true,
-                Err(disk) => {
-                    let _ = block::install(disk.into_device());
+        let ours = eggfs || blank_writable;
+        let wanted = (eggfs && !(persistent && work)) || (blank_writable && !persistent);
+        if wanted {
+            match mount_eggfs::<P, _>(disk, blank_writable, console)? {
+                Ok(mut volume) => {
+                    let is_work = eggos_eggfs::is_work_disk(&mut volume) == Ok(true);
+                    let placed = match (is_work, work, persistent) {
+                        (true, false, _) => attach_work::<P, _>(volume, console)?,
+                        (false, _, false) => {
+                            attach_persistent::<P, _>(volume, console)?.map(|()| WorkDisk::Mounted)
+                        }
+                        _ => Err(volume),
+                    };
+                    match placed {
+                        Ok(WorkDisk::TakenButNotMounted) => {}
+                        Ok(WorkDisk::Mounted) if is_work => {
+                            work = true;
+                            block::mark_mounted(index, WORK_PLACE);
+                        }
+                        Ok(WorkDisk::Mounted) => {
+                            persistent = true;
+                            block::mark_mounted(index, PERSISTENT_PLACE);
+                        }
+                        Err(volume) => block::put_back(index, volume.into_disk().into_device()),
+                    }
                 }
+                Err(disk) => block::put_back(index, disk.into_device()),
             }
             continue;
         }
         let device = disk.into_device();
         if ours || host_folder {
-            let _ = block::install(device);
+            block::put_back(index, device);
             continue;
         }
         match mount_host_folder::<P>(device) {
             Ok(fat) => {
                 host_folder = true;
+                block::mark_mounted(index, HOST_FOLDER_PLACE);
                 report_host_folder(console, fat)?;
             }
             Err((reason, device)) => {
                 if let Some(device) = device {
-                    let _ = block::install(device);
+                    block::put_back(index, device);
                 }
                 match contents {
                     Ok(eggos_eggfs::Contents::Blank) => {
@@ -232,14 +289,13 @@ fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     Ok(())
 }
 
-fn mount_persistent<P: Platform, W: Write>(
+fn mount_eggfs<P: Platform, W: Write>(
     mut disk: vfs::eggfs::BlockDisk,
     blank: bool,
     console: &mut W,
-) -> Result<Result<(), vfs::eggfs::BlockDisk>, core::fmt::Error> {
-    use alloc::boxed::Box;
-    let now = linux::file_changes::now::<P>();
+) -> Result<Result<BlockVolume, vfs::eggfs::BlockDisk>, core::fmt::Error> {
     if blank {
+        let now = linux::file_changes::now::<P>();
         if let Err(error) = eggos_eggfs::format(&mut disk, now) {
             writeln!(
                 console,
@@ -267,11 +323,33 @@ fn mount_persistent<P: Platform, W: Write>(
             mounted.recovered_blocks
         )?;
     }
+    if mounted.freed_orphans > 0 {
+        writeln!(
+            console,
+            "vfs: EggFS freed {} files removed while open before the last power-off",
+            mounted.freed_orphans
+        )?;
+    }
+    Ok(Ok(volume))
+}
+
+fn mebibytes(blocks: u64) -> u64 {
+    (blocks * eggos_eggfs::BLOCK_SIZE as u64) >> 20
+}
+
+fn attach_persistent<P: Platform, W: Write>(
+    volume: BlockVolume,
+    console: &mut W,
+) -> Result<Result<(), BlockVolume>, core::fmt::Error> {
+    use alloc::boxed::Box;
+    let now = linux::file_changes::now::<P>();
     let (blocks, free) = volume.space();
     let sleeping = sync::Sleeping::on::<P>();
-    let eggfs: &'static vfs::eggfs::EggFs<vfs::eggfs::BlockDisk> = Box::leak(Box::new(
-        vfs::eggfs::EggFs::new(volume, PERSISTENT_DEVICE, sleeping),
-    ));
+    let eggfs: &'static MountedEggFs = Box::leak(Box::new(vfs::eggfs::EggFs::new(
+        volume,
+        PERSISTENT_DEVICE,
+        sleeping,
+    )));
     let root = vfs::root();
     for (name, path) in PERSISTENT_FOLDERS {
         if !vfs::resolve(root, root, path).is_ok_and(|node| node.is_directory()) {
@@ -288,19 +366,90 @@ fn mount_persistent<P: Platform, W: Write>(
             )?,
         }
     }
-    let mebibytes = |blocks: u64| (blocks * eggos_eggfs::BLOCK_SIZE as u64) >> 20;
     writeln!(
         console,
         "vfs: EggFS disk mounted at /home, /Applications and /var ({} MiB, {} MiB free)",
         mebibytes(blocks),
         mebibytes(free)
     )?;
+    start_committer::<P, _>(
+        eggfs,
+        "vfs: EggFS could not commit to the disk: changes are refused until the next boot",
+        console,
+    )?;
+    Ok(Ok(()))
+}
+
+enum WorkDisk {
+    Mounted,
+    TakenButNotMounted,
+}
+
+fn attach_work<P: Platform, W: Write>(
+    mut volume: BlockVolume,
+    console: &mut W,
+) -> Result<Result<WorkDisk, BlockVolume>, core::fmt::Error> {
+    use alloc::boxed::Box;
+    let root = vfs::root();
+    if !vfs::resolve(root, root, WORK_FOLDER_PATH).is_ok_and(|node| node.is_directory()) {
+        writeln!(
+            console,
+            "vfs: the work disk was not mounted: there is no /work to mount it on"
+        )?;
+        return Ok(Err(volume));
+    }
+    if let Err(error) = eggos_eggfs::work_folder(&mut volume) {
+        writeln!(
+            console,
+            "vfs: the work disk was not mounted: its work folder is missing ({error:?})"
+        )?;
+        return Ok(Err(volume));
+    }
+    let now = linux::file_changes::now::<P>();
+    let (blocks, free) = volume.space();
+    let sleeping = sync::Sleeping::on::<P>();
+    let eggfs: &'static MountedEggFs = Box::leak(Box::new(vfs::eggfs::EggFs::new(
+        volume,
+        WORK_DEVICE,
+        sleeping,
+    )));
+    match eggfs.folder(eggos_eggfs::WORK_FOLDER, now) {
+        Ok(folder) => {
+            if vfs::mount(WORK_FOLDER_PATH, Box::leak(Box::new(folder))).is_err() {
+                writeln!(
+                    console,
+                    "vfs: the work disk was not mounted: no room for another mount"
+                )?;
+                return Ok(Ok(WorkDisk::TakenButNotMounted));
+            }
+        }
+        Err(error) => {
+            writeln!(console, "vfs: the work disk was not mounted: {error:?}")?;
+            return Ok(Ok(WorkDisk::TakenButNotMounted));
+        }
+    }
+    writeln!(
+        console,
+        "vfs: work disk mounted at /work ({} MiB, {} MiB free)",
+        mebibytes(blocks),
+        mebibytes(free)
+    )?;
+    start_committer::<P, _>(
+        eggfs,
+        "vfs: the work disk could not commit: changes to /work are refused until the next boot",
+        console,
+    )?;
+    Ok(Ok(WorkDisk::Mounted))
+}
+
+fn start_committer<P: Platform, W: Write>(
+    eggfs: &'static MountedEggFs,
+    failure: &'static str,
+    console: &mut W,
+) -> core::fmt::Result {
     let committer = thread::spawn::<P, _>(move || {
         eggfs.commit_changes(&|| thread::sleep::<P>(vfs::eggfs::COMMIT_DELAY), &|| {
-            let _ = writeln!(
-                console::PlatformConsole::<P>::new(),
-                "vfs: EggFS could not commit to the disk: changes are refused until the next boot"
-            );
+            let _ = writeln!(console::PlatformConsole::<P>::new(), "{failure}");
         })
     });
     if committer.is_err() {
@@ -309,7 +458,7 @@ fn mount_persistent<P: Platform, W: Write>(
             "vfs: no committer for EggFS: changes reach the disk at sync and power-off"
         )?;
     }
-    Ok(Ok(()))
+    Ok(())
 }
 
 type Disk = alloc::boxed::Box<dyn block::BlockDevice>;
@@ -1435,7 +1584,7 @@ pub(crate) mod tests {
         context: &mut eggos_hal::user::UserContext,
         start: u64,
     ) -> eggos_hal::user::UserExit {
-        use crate::linux::{Errno, number};
+        use crate::linux::number;
         use eggos_hal::user::UserExit;
         let pc = context.pc();
         if pc == start {
@@ -1459,7 +1608,7 @@ pub(crate) mod tests {
                 result == 0
                     && nanoseconds(second) - nanoseconds(first) >= TestProgram::LINUX_CLOCK_WAIT_NS
             }
-            _ => result == Errno::EINVAL.result(),
+            _ => result == 0,
         };
         let (number, arguments) = match step {
             _ if !passed => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),

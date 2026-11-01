@@ -15,8 +15,11 @@ pub mod number {
     pub const MUNMAP: usize = 11;
     pub const RT_SIGACTION: usize = 13;
     pub const IOCTL: usize = 16;
+    pub const PREAD64: usize = 17;
+    pub const PWRITE64: usize = 18;
     pub const SCHED_YIELD: usize = 24;
     pub const MADVISE: usize = 28;
+    pub const MSYNC: usize = 26;
     pub const GETPID: usize = 39;
     pub const CLONE: usize = 56;
     pub const EXIT: usize = 60;
@@ -36,7 +39,21 @@ pub mod number {
     pub const NEWFSTATAT: usize = 262;
     pub const UNLINKAT: usize = 263;
     pub const PPOLL: usize = 271;
+    pub const GETRANDOM: usize = 318;
     pub const PIPE2: usize = 293;
+    pub const RENAMEAT2: usize = 316;
+    pub const SOCKET: usize = 41;
+    pub const CONNECT: usize = 42;
+    pub const SENDTO: usize = 44;
+    pub const RECVFROM: usize = 45;
+    pub const SHUTDOWN: usize = 48;
+    pub const WAIT4: usize = 61;
+    pub const KILL: usize = 62;
+    pub const FCNTL: usize = 72;
+    pub const FTRUNCATE: usize = 77;
+    pub const STATFS: usize = 137;
+    pub const FCHMODAT: usize = 268;
+    pub const UTIMENSAT: usize = 280;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -54,11 +71,14 @@ pub mod number {
     pub const READ: usize = 63;
     pub const WRITE: usize = 64;
     pub const PPOLL: usize = 73;
+    pub const PREAD64: usize = 67;
+    pub const PWRITE64: usize = 68;
     pub const NEWFSTATAT: usize = 79;
     pub const FSTAT: usize = 80;
     pub const EXIT: usize = 93;
     pub const EXIT_GROUP: usize = 94;
     pub const FUTEX: usize = 98;
+    pub const GETRANDOM: usize = 278;
     pub const CLOCK_GETTIME: usize = 113;
     pub const CLOCK_NANOSLEEP: usize = 115;
     pub const SCHED_GETAFFINITY: usize = 123;
@@ -72,6 +92,20 @@ pub mod number {
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
     pub const MADVISE: usize = 233;
+    pub const MSYNC: usize = 227;
+    pub const RENAMEAT2: usize = 276;
+    pub const FCNTL: usize = 25;
+    pub const STATFS: usize = 43;
+    pub const FTRUNCATE: usize = 46;
+    pub const FCHMODAT: usize = 53;
+    pub const UTIMENSAT: usize = 88;
+    pub const KILL: usize = 129;
+    pub const SOCKET: usize = 198;
+    pub const CONNECT: usize = 203;
+    pub const SENDTO: usize = 206;
+    pub const RECVFROM: usize = 207;
+    pub const SHUTDOWN: usize = 210;
+    pub const WAIT4: usize = 260;
 }
 
 pub const PAGE_SIZE: usize = 4096;
@@ -100,6 +134,7 @@ pub const MAP_PRIVATE: usize = 0x02;
 pub const MAP_ANONYMOUS: usize = 0x20;
 pub const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
 pub const MADV_DONTNEED: usize = 4;
+pub const MS_SYNC: usize = 4;
 #[cfg(target_arch = "x86_64")]
 pub const ARCH_SET_GS: usize = 0x1001;
 pub const CLOCK_REALTIME: usize = 0;
@@ -113,6 +148,7 @@ pub const STAT_INODE_WORD: usize = 1;
 pub const STAT_ACCESS_TIME_WORD: usize = 9;
 pub const STAT_MODIFY_TIME_WORD: usize = 11;
 pub const STAT_CHANGE_TIME_WORD: usize = 13;
+pub const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 pub const FILE_TYPE: u32 = 0o170_000;
 pub const DIRECTORY: u32 = 0o040_000;
 pub const REGULAR_FILE: u32 = 0o100_000;
@@ -241,27 +277,72 @@ pub fn map_shared(fd: usize, length: usize, offset: usize) -> Result<usize, Errn
     }
 }
 
+/// Maps `length` bytes of `fd` at `offset` with `protection` and `flags` (`MAP_SHARED` or
+/// `MAP_PRIVATE`, and `MAP_FIXED_NOREPLACE` to place it at `hint` or fail), at `hint` if free.
+pub fn map_file(
+    hint: usize,
+    length: usize,
+    protection: usize,
+    flags: usize,
+    fd: usize,
+    offset: u64,
+) -> Result<usize, Errno> {
+    if flags & !(MAP_SHARED | MAP_PRIVATE | MAP_FIXED_NOREPLACE) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: a file mapping that replaces nothing (no `MAP_FIXED`) changes no memory the
+    // program uses.
+    unsafe {
+        syscall(
+            number::MMAP,
+            [hint, length, protection, flags, fd, offset as usize],
+        )
+    }
+}
+
+/// Writes the pages of the shared file mapping at `address` (`length` bytes) back to its file.
+pub fn sync_mapping(address: usize, length: usize) -> Result<usize, Errno> {
+    // SAFETY: `msync` reads the mapping's pages and changes no memory.
+    unsafe { syscall(number::MSYNC, [address, length, MS_SYNC, 0, 0, 0]) }
+}
+
 /// A pipe whose ends do not block and close on `execve`: its read end, then its write end.
 pub fn pipe() -> Result<(usize, usize), Errno> {
+    pipe_with(O_NONBLOCK | O_CLOEXEC)
+}
+
+/// A pipe whose ends have `flags` (`O_NONBLOCK`, `O_CLOEXEC`): its read end, then its write
+/// end.
+pub fn pipe_with(flags: usize) -> Result<(usize, usize), Errno> {
     let mut ends = [0i32; 2];
     // SAFETY: `pipe2` writes two descriptors into the borrowed array.
     unsafe {
         syscall(
             number::PIPE2,
-            [
-                ends.as_mut_ptr() as usize,
-                O_NONBLOCK | O_CLOEXEC,
-                0,
-                0,
-                0,
-                0,
-            ],
+            [ends.as_mut_ptr() as usize, flags, 0, 0, 0, 0],
         )
     }?;
     Ok((ends[0] as usize, ends[1] as usize))
 }
 
 const POLLIN: u16 = 1;
+
+/// The `poll` events `fd` reports at once: `POLLIN` when bytes wait, and the `POLLHUP`,
+/// `POLLERR` and `POLLNVAL` Linux always reports.
+pub fn events_now(fd: usize) -> Result<u16, Errno> {
+    let mut entry = u64::from(fd as u32) | (u64::from(POLLIN) << 32);
+    let time = [0i64; 2];
+    // SAFETY: `ppoll` reads and writes one borrowed `struct pollfd` (an `int` and two
+    // `short`s, as the `u64` lays them out in the machine's little-endian order), reads one
+    // `struct timespec` from the borrowed local and takes no signal mask.
+    unsafe {
+        syscall(
+            number::PPOLL,
+            [&raw mut entry as usize, 1, time.as_ptr() as usize, 0, 0, 0],
+        )
+    }?;
+    Ok((entry >> 48) as u16)
+}
 
 /// Sleeps until one of `fds` can be read (a negative one is left out), a signal, an error or,
 /// with a `timeout` in nanoseconds, the time running out.
@@ -393,6 +474,7 @@ pub fn thread_id() -> u32 {
 pub type SignalHandler = extern "C" fn(i32, *const u8, *mut u8);
 
 const SIGNAL_DEFAULT: usize = 0;
+const SIGNAL_IGNORE: usize = 1;
 const SA_SIGINFO: u64 = 4;
 #[cfg(target_arch = "x86_64")]
 const SA_RESTORER: u64 = 0x0400_0000;
@@ -434,6 +516,11 @@ pub fn default_signal_action(signal: i32) -> Result<usize, Errno> {
     set_signal_action(signal, SIGNAL_DEFAULT, 0)
 }
 
+/// Has the process ignore `signal`.
+pub fn ignore_signal(signal: i32) -> Result<usize, Errno> {
+    set_signal_action(signal, SIGNAL_IGNORE, 0)
+}
+
 /// Sends `signal` to the calling thread.
 pub fn signal_this_thread(signal: i32) -> Result<usize, Errno> {
     // SAFETY: `tgkill` touches no memory.
@@ -473,6 +560,20 @@ pub unsafe fn set_thread_environment_block(address: usize) -> Result<(), Errno> 
 /// The `stat` words of the NUL-terminated `path`, relative to directory `directory_fd`
 /// ([`AT_FDCWD`] for the working directory).
 pub fn stat_at(directory_fd: usize, path: &[u8]) -> Result<[u64; STAT_WORDS], Errno> {
+    stat_with_flags(directory_fd, path, 0)
+}
+
+/// The `stat` words of the NUL-terminated `path` itself, relative to directory `directory_fd`:
+/// a symbolic link's own, never its target's.
+pub fn link_stat_at(directory_fd: usize, path: &[u8]) -> Result<[u64; STAT_WORDS], Errno> {
+    stat_with_flags(directory_fd, path, AT_SYMLINK_NOFOLLOW)
+}
+
+fn stat_with_flags(
+    directory_fd: usize,
+    path: &[u8],
+    flags: usize,
+) -> Result<[u64; STAT_WORDS], Errno> {
     if path.last() != Some(&0) {
         return Err(Errno::EINVAL);
     }
@@ -486,7 +587,7 @@ pub fn stat_at(directory_fd: usize, path: &[u8]) -> Result<[u64; STAT_WORDS], Er
                 directory_fd,
                 path.as_ptr() as usize,
                 words.as_mut_ptr() as usize,
-                0,
+                flags,
                 0,
                 0,
             ],
@@ -550,6 +651,28 @@ pub fn remove(path: &[u8], flags: usize) -> Result<usize, Errno> {
         syscall(
             number::UNLINKAT,
             [AT_FDCWD, path.as_ptr() as usize, flags, 0, 0, 0],
+        )
+    }
+}
+
+/// Moves the name `from` to `to` (both NUL-terminated), replacing what `to` names unless
+/// `no_replace` (`renameat2`'s `RENAME_NOREPLACE`).
+pub fn rename(from: &[u8], to: &[u8], no_replace: bool) -> Result<usize, Errno> {
+    if from.last() != Some(&0) || to.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: `renameat2` reads the two NUL-terminated paths.
+    unsafe {
+        syscall(
+            number::RENAMEAT2,
+            [
+                AT_FDCWD,
+                from.as_ptr() as usize,
+                AT_FDCWD,
+                to.as_ptr() as usize,
+                usize::from(no_replace),
+                0,
+            ],
         )
     }
 }
@@ -691,6 +814,252 @@ pub fn exit(status: u32) -> ! {
         // SAFETY: `exit_group` ends the process.
         let _ = unsafe { syscall(number::EXIT_GROUP, [status as usize, 0, 0, 0, 0, 0]) };
     }
+}
+
+pub const AF_INET: usize = 2;
+pub const MSG_NOSIGNAL: usize = 0x4000;
+pub const F_DUPFD: usize = 0;
+pub const F_GETFD: usize = 1;
+pub const F_SETFD: usize = 2;
+pub const F_GETFL: usize = 3;
+pub const F_SETFL: usize = 4;
+pub const F_DUPFD_CLOEXEC: usize = 1030;
+pub const SIGKILL: i32 = 9;
+pub const SIGPIPE: i32 = 13;
+pub const STATFS_WORDS: usize = 15;
+pub const UTIME_OMIT: i64 = (1 << 30) - 2;
+const FIONREAD: usize = 0x541b;
+const WNOHANG: usize = 1;
+
+/// A new socket of `family`, `kind` and `protocol` that closes on `execve`.
+pub fn socket(family: usize, kind: usize, protocol: usize) -> Result<usize, Errno> {
+    // SAFETY: `socket` touches no memory.
+    unsafe {
+        syscall(
+            number::SOCKET,
+            [family, kind | O_CLOEXEC, protocol, 0, 0, 0],
+        )
+    }
+}
+
+/// Connects socket `fd` to `address`, a `struct sockaddr`'s bytes.
+pub fn connect(fd: usize, address: &[u8]) -> Result<usize, Errno> {
+    // SAFETY: `connect` reads the borrowed address.
+    unsafe {
+        syscall(
+            number::CONNECT,
+            [fd, address.as_ptr() as usize, address.len(), 0, 0, 0],
+        )
+    }
+}
+
+/// Sends `bytes` on the connected socket `fd` with the `MSG_*` `flags`.
+pub fn send(fd: usize, bytes: &[u8], flags: usize) -> Result<usize, Errno> {
+    // SAFETY: `sendto` without an address reads only the borrowed bytes.
+    unsafe {
+        syscall(
+            number::SENDTO,
+            [fd, bytes.as_ptr() as usize, bytes.len(), flags, 0, 0],
+        )
+    }
+}
+
+/// Receives into `buffer` from socket `fd` with the `MSG_*` `flags`.
+pub fn receive(fd: usize, buffer: &mut [u8], flags: usize) -> Result<usize, Errno> {
+    // SAFETY: `recvfrom` without an address writes at most `buffer.len()` bytes into the
+    // borrowed buffer.
+    unsafe {
+        syscall(
+            number::RECVFROM,
+            [fd, buffer.as_mut_ptr() as usize, buffer.len(), flags, 0, 0],
+        )
+    }
+}
+
+/// Shuts down receiving (0), sending (1) or both (2) on socket `fd`.
+pub fn shutdown(fd: usize, how: usize) -> Result<usize, Errno> {
+    // SAFETY: `shutdown` touches no memory.
+    unsafe { syscall(number::SHUTDOWN, [fd, how, 0, 0, 0, 0]) }
+}
+
+/// `fcntl` with an integer argument (`F_GETFL`, `F_SETFL`).
+pub fn control(fd: usize, command: usize, argument: usize) -> Result<usize, Errno> {
+    // SAFETY: the integer commands touch no memory.
+    unsafe { syscall(number::FCNTL, [fd, command, argument, 0, 0, 0]) }
+}
+
+/// How many bytes socket or pipe `fd` holds to read (`FIONREAD`).
+pub fn bytes_to_read(fd: usize) -> Result<usize, Errno> {
+    let mut count = 0i32;
+    // SAFETY: `FIONREAD` writes one `int` into the borrowed local.
+    unsafe {
+        syscall(
+            number::IOCTL,
+            [fd, FIONREAD, &raw mut count as usize, 0, 0, 0],
+        )
+    }?;
+    Ok(count.max(0) as usize)
+}
+
+/// Reads up to `buffer.len()` bytes of file `fd` from byte `offset`, leaving its position.
+pub fn read_at(fd: usize, buffer: &mut [u8], offset: u64) -> Result<usize, Errno> {
+    // SAFETY: `pread64` writes at most `buffer.len()` bytes into the borrowed buffer.
+    unsafe {
+        syscall(
+            number::PREAD64,
+            [
+                fd,
+                buffer.as_mut_ptr() as usize,
+                buffer.len(),
+                offset as usize,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+/// Writes all of `bytes` to file `fd` from byte `offset` on, leaving its position.
+pub fn write_all_at(fd: usize, mut bytes: &[u8], mut offset: u64) -> Result<(), Errno> {
+    while !bytes.is_empty() {
+        // SAFETY: `pwrite64` reads at most `bytes.len()` bytes from the borrowed slice.
+        let written = unsafe {
+            syscall(
+                number::PWRITE64,
+                [
+                    fd,
+                    bytes.as_ptr() as usize,
+                    bytes.len(),
+                    offset as usize,
+                    0,
+                    0,
+                ],
+            )
+        };
+        match written {
+            Ok(0) => return Err(Errno::EIO),
+            Ok(count) => {
+                bytes = &bytes[count..];
+                offset += count as u64;
+            }
+            Err(Errno::EINTR) => {}
+            Err(errno) => return Err(errno),
+        }
+    }
+    Ok(())
+}
+
+/// Fills `buffer` with random bytes from the kernel's generator (`getrandom`).
+pub fn random_bytes(buffer: &mut [u8]) -> Result<(), Errno> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        let rest = &mut buffer[filled..];
+        // SAFETY: `getrandom` writes at most `rest.len()` bytes into the borrowed slice.
+        let read = unsafe {
+            syscall(
+                number::GETRANDOM,
+                [rest.as_mut_ptr() as usize, rest.len(), 0, 0, 0, 0],
+            )
+        };
+        match read {
+            Ok(0) => return Err(Errno::EIO),
+            Ok(count) => filled += count,
+            Err(Errno::EINTR) => {}
+            Err(errno) => return Err(errno),
+        }
+    }
+    Ok(())
+}
+
+/// Sets the length of file `fd` to `length` bytes.
+pub fn truncate(fd: usize, length: u64) -> Result<usize, Errno> {
+    // SAFETY: `ftruncate` touches no memory.
+    unsafe { syscall(number::FTRUNCATE, [fd, length as usize, 0, 0, 0, 0]) }
+}
+
+/// The `statfs` words of the file system holding the NUL-terminated `path`: its type, block
+/// size, blocks, free blocks, blocks free to programs, files, free files, id, longest name,
+/// fragment size and mount flags, in that order.
+pub fn file_system(path: &[u8]) -> Result<[u64; STATFS_WORDS], Errno> {
+    if path.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    let mut words = [0u64; STATFS_WORDS];
+    // SAFETY: `statfs` reads the NUL-terminated path and writes one 120-byte `struct statfs`
+    // into the borrowed words.
+    unsafe {
+        syscall(
+            number::STATFS,
+            [
+                path.as_ptr() as usize,
+                words.as_mut_ptr() as usize,
+                0,
+                0,
+                0,
+                0,
+            ],
+        )
+    }?;
+    Ok(words)
+}
+
+/// Sets the permission bits of the file at the NUL-terminated `path` to `mode`.
+pub fn change_mode(path: &[u8], mode: u32) -> Result<usize, Errno> {
+    if path.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: `fchmodat` reads the NUL-terminated path.
+    unsafe {
+        syscall(
+            number::FCHMODAT,
+            [AT_FDCWD, path.as_ptr() as usize, mode as usize, 0, 0, 0],
+        )
+    }
+}
+
+/// Sets file `fd`'s access and modification times, each seconds and nanoseconds since 1970
+/// ([`UTIME_OMIT`] as the nanoseconds leaves one as it is).
+pub fn set_file_times(fd: usize, times: &[[i64; 2]; 2]) -> Result<usize, Errno> {
+    // SAFETY: `utimensat` with a null path reads the two borrowed `struct timespec`s and
+    // changes the file `fd` names.
+    unsafe { syscall(number::UTIMENSAT, [fd, 0, times.as_ptr() as usize, 0, 0, 0]) }
+}
+
+/// The wait status of child `id` if it ended, which reaps it; `None` while it runs.
+pub fn reap(id: u32) -> Result<Option<u32>, Errno> {
+    let mut status = 0i32;
+    // SAFETY: `wait4` writes one `int` status into the borrowed local and no usage record.
+    let found = unsafe {
+        syscall(
+            number::WAIT4,
+            [id as usize, &raw mut status as usize, WNOHANG, 0, 0, 0],
+        )
+    }?;
+    Ok((found != 0).then_some(status as u32))
+}
+
+/// Sends `signal` to process `id` (0 only checks that it exists).
+pub fn kill(id: u32, signal: i32) -> Result<usize, Errno> {
+    // SAFETY: `kill` touches no memory.
+    unsafe { syscall(number::KILL, [id as usize, signal as usize, 0, 0, 0, 0]) }
+}
+
+/// Reads the file at the NUL-terminated `path` into `buffer`, as much as fits; the bytes read.
+pub fn read_file(path: &[u8], buffer: &mut [u8]) -> Result<usize, Errno> {
+    let fd = open(path, O_RDONLY)?;
+    let mut filled = 0;
+    let result = loop {
+        if filled == buffer.len() {
+            break Ok(filled);
+        }
+        match read(fd, &mut buffer[filled..]) {
+            Ok(0) => break Ok(filled),
+            Ok(count) => filled += count,
+            Err(errno) => break Err(errno),
+        }
+    };
+    let _ = close(fd);
+    result
 }
 
 /// The CPU features Linux's auxiliary vector reports, which compiler-builtins' aarch64 atomics

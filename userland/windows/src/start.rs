@@ -4,26 +4,35 @@
 //! protects each section, maps the page Windows shares with every process, handles the
 //! program's faults (D151), builds the TEB and PEB, points the thread's TEB register at the TEB
 //! (GS on x86_64; `tpidr_el0` on aarch64, from which `x18` is loaded for the program's code) and
-//! calls the entry point, whose return value is the exit code.
+//! calls the entry point, whose return value is the exit code. Exception handling (D177) learns
+//! where the image's exception directory is and where the layer's own code lies. An x64
+//! program on aarch64 runs translated (D191): its translation comes from the cache or is made
+//! before relocation, and is mapped after its imports are bound; its own sections are not
+//! executable.
 
 use crate::fault::Image;
 use crate::fault_handler;
 use crate::image::{self, BindError};
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
-use crate::pe::{InvalidPe, Machine, Pe, Subsystem};
+use crate::pe::{InvalidPe, Machine, Pe, Subsystem, directory};
 use crate::user_shared_data;
 use crate::win32::{self, thread_environment};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::{Startup, auxv};
+#[cfg(target_arch = "aarch64")]
+use eggos_translation_loader::install_record::LAYER_OPTION;
 
 const STANDARD_ERROR: usize = 2;
 const CANNOT_EXECUTE: i32 = 126;
 const STACK_RESERVE: usize = 8 << 20;
 const DLL_PROCESS_ATTACH: u32 = 1;
+const PROGRAM_HEADER_SIZE: usize = 56;
 #[cfg(target_arch = "x86_64")]
 const THIS_COMPUTER: Machine = Machine::X64;
 #[cfg(target_arch = "aarch64")]
 const THIS_COMPUTER: Machine = Machine::Arm64;
+#[cfg(target_arch = "aarch64")]
+const STANDARD_OUTPUT: usize = 1;
 
 enum Failure {
     Usage,
@@ -32,6 +41,8 @@ enum Failure {
     Invalid(InvalidPe),
     Unresolved(BindError),
     Memory,
+    #[cfg(target_arch = "aarch64")]
+    Translation(&'static str),
 }
 
 pub fn run(startup: &Startup) -> i32 {
@@ -40,6 +51,10 @@ pub fn run(startup: &Startup) -> i32 {
     let program = arguments
         .next()
         .map_or(&b"windows"[..], |path| path.to_bytes());
+    #[cfg(target_arch = "aarch64")]
+    if program == LAYER_OPTION.as_bytes() {
+        return translate_ahead(startup);
+    }
     let failure = match start(*startup) {
         Ok(never) => match never {},
         Err(failure) => failure,
@@ -80,6 +95,8 @@ fn report(program: &[u8], failure: Failure) {
             message.push(b", which EggOS does not provide yet");
         }
         Failure::Memory => message.push(b"out of memory"),
+        #[cfg(target_arch = "aarch64")]
+        Failure::Translation(reason) => message.push(reason.as_bytes()),
     }
     message.push(b"\n");
     message.write();
@@ -131,6 +148,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     if let Some(refusal) = pe.machine.refusal_on(THIS_COMPUTER) {
         return Err(Failure::Invalid(refusal));
     }
+    let translated = pe.machine.translated_on(THIS_COMPUTER);
     if pe.subsystem == Subsystem::Gui {
         win32::set_gui_program();
     }
@@ -144,12 +162,25 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     // until the program runs.
     let image = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, size) };
     image::copy_sections(&pe, image);
+    #[cfg(target_arch = "aarch64")]
+    let translation = match translated {
+        true => {
+            let capabilities = startup.auxiliary_value(auxv::HWCAP).unwrap_or(0) as u64;
+            let prepared = crate::translation::prepare(file, &pe, image, capabilities);
+            Some(prepared.map_err(Failure::Translation)?)
+        }
+        false => None,
+    };
     image::relocate(&pe, image, base as u64).map_err(Failure::Invalid)?;
     image::bind_imports(&pe, image, |library, import| match import {
         image::Import::Name(function) => win32::resolve(library, function),
-        image::Import::Ordinal(_) => None,
+        image::Import::Ordinal(ordinal) => win32::resolve_ordinal(library, ordinal),
     })
     .map_err(Failure::Unresolved)?;
+    #[cfg(target_arch = "aarch64")]
+    if let Some(translation) = translation {
+        crate::translation::install(&pe, image, base, translation).map_err(Failure::Translation)?;
+    }
     let tls = image::thread_local_storage(&pe, image, base as u64).map_err(Failure::Invalid)?;
     let heap = win32::process_heap();
     win32::set_process(startup, base as u64).ok_or(Failure::Memory)?;
@@ -184,8 +215,15 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         unsafe { thread_environment::set_thread_local_storage(teb, slots) };
     }
     let entry = base + pe.entry as usize;
-    protect(&pe, base)?;
+    protect(&pe, base, translated)?;
     share_user_data(startup);
+    let exceptions = pe.directory(directory::EXCEPTION);
+    win32::set_exception_image(
+        base as u64,
+        size as u64,
+        (exceptions.address, exceptions.size),
+        layer_code(&startup),
+    );
     fault_handler::install(
         path.to_bytes(),
         Image {
@@ -193,6 +231,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
             size: size as u64,
         },
     );
+    let _ = linux::ignore_signal(linux::SIGPIPE);
     // SAFETY: the file's copy is not used after this: the image holds everything it needs.
     let _ = unsafe { linux::unmap(file.as_ptr() as usize, file.len().max(1)) };
     // SAFETY: the thread's TEB register gets the TEB this process's Win32 functions read
@@ -204,6 +243,45 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     // that returns the exit code.
     let code = unsafe { win32::call_program(entry, [0; 4]) };
     win32::end_thread(code as u32)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn translate_ahead(startup: &Startup) -> i32 {
+    let shown = startup
+        .arguments()
+        .nth(2)
+        .map_or(&b"windows"[..], |path| path.to_bytes());
+    match translation_record(*startup) {
+        Ok(record) => {
+            let _ = linux::write_all(STANDARD_OUTPUT, &record);
+            0
+        }
+        Err(failure) => {
+            report(shown, failure);
+            CANNOT_EXECUTE
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn translation_record(startup: Startup) -> Result<alloc::vec::Vec<u8>, Failure> {
+    let path = startup.arguments().nth(2).ok_or(Failure::Usage)?;
+    let file = read_file(path.to_bytes_with_nul())?;
+    let pe = Pe::parse(file).map_err(Failure::Invalid)?;
+    if !pe.machine.translated_on(THIS_COMPUTER) {
+        return Err(Failure::Translation(
+            "runs natively on this computer, so there is nothing to translate",
+        ));
+    }
+    let size = pe.mapped_size() as usize;
+    let base = linux::map_anonymous(0, size, PROT_READ | PROT_WRITE, false)
+        .map_err(|_| Failure::Memory)?;
+    // SAFETY: `base` is a new private mapping of `size` zeroed bytes that only this function
+    // uses, and the process ends after it.
+    let image = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, size) };
+    image::copy_sections(&pe, image);
+    let capabilities = startup.auxiliary_value(auxv::HWCAP).unwrap_or(0) as u64;
+    crate::translation::install_record(file, &pe, image, capabilities).map_err(Failure::Translation)
 }
 
 fn read_file(path: &[u8]) -> Result<&'static [u8], Failure> {
@@ -247,20 +325,35 @@ fn share_user_data(startup: Startup) {
     let _ = unsafe { linux::protect(page, user_shared_data::SIZE, PROT_READ) };
 }
 
+fn layer_code(startup: &Startup) -> (u64, u64) {
+    let headers = startup.auxiliary_value(auxv::PHDR).unwrap_or(0);
+    let count = startup.auxiliary_value(auxv::PHNUM).unwrap_or(0);
+    let size = startup.auxiliary_value(auxv::PHENT).unwrap_or(0);
+    if headers == 0 || size != PROGRAM_HEADER_SIZE {
+        return (0, 0);
+    }
+    // SAFETY: the kernel maps the layer's program headers where `AT_PHDR` says, for the
+    // process's life.
+    let bytes = unsafe { core::slice::from_raw_parts(headers as *const u8, count * size) };
+    eggos_translation_loader::executable_range(bytes, headers as u64).unwrap_or((0, 0))
+}
+
 fn stack_top() -> usize {
     let marker = 0u8;
     (&raw const marker as usize).next_multiple_of(linux::PAGE_SIZE)
 }
 
-fn protect(pe: &Pe<'_>, base: usize) -> Result<(), Failure> {
+fn protect(pe: &Pe<'_>, base: usize, translated: bool) -> Result<(), Failure> {
     let headers = (pe.headers_size as usize).next_multiple_of(linux::PAGE_SIZE);
     // SAFETY: the headers are read-only from now on, as on Windows.
     unsafe { linux::protect(base, headers, PROT_READ) }.map_err(|_| Failure::Memory)?;
     for (start, end, protection) in image::section_protections(pe) {
         let flags = if protection.read { PROT_READ } else { 0 }
             | if protection.write { PROT_WRITE } else { 0 }
-            | if protection.execute {
+            | if protection.execute && !translated {
                 PROT_EXEC | PROT_READ
+            } else if protection.execute {
+                PROT_READ
             } else {
                 0
             };

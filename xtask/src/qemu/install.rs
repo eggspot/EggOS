@@ -1,6 +1,6 @@
-//! The install boot test (D134): two boots of the release kernel with the Windows layer, on a
-//! blank disk, with a host folder holding `win-paint.exe` (our own Windows GUI program) and our
-//! static Linux program, each frame of the second boot compared with the desktop the host
+//! The install boot test (D134): two boots of the release image `cargo xtask release` ships,
+//! which carries the Windows layer (D152), on a blank disk, with a host folder holding
+//! `win-paint.exe` (our own Windows GUI program) and our static Linux program, each frame of the second boot compared with the desktop the host
 //! renders from the same input, and the disk image read back with `eggos-eggfs` after each.
 //!
 //! 1. `app install /media/host/win-paint.exe` installs it into `/Applications/win-paint/`
@@ -75,6 +75,10 @@ fn manifest_of(arch: &Arch, app: &TestApp) -> Vec<u8> {
         architecture: Some(arch.name),
         synonyms: "",
         icon: None,
+        loader: None,
+        libraries: None,
+        arguments: None,
+        environment: None,
     };
     let mut file = [0u8; manifest::LARGEST];
     let length = manifest::write(&entry, &mut file).expect("the test app's manifest is valid");
@@ -83,6 +87,7 @@ fn manifest_of(arch: &Arch, app: &TestApp) -> Vec<u8> {
 
 fn catalogue(arch: &Arch, app: Option<&TestApp>) -> Catalogue {
     let mut catalogue = Catalogue::new();
+    catalogue.set_task_manager_present(true);
     catalogue.set_host_share(true);
     if let Some(app) = app {
         catalogue.add_installed(app.name.as_bytes(), &manifest_of(arch, app));
@@ -547,9 +552,9 @@ fn open_and_uninstall_boot(
     Ok(())
 }
 
-/// Runs the install boot test (see the module documentation) on `kernel`, a release kernel for
-/// `arch` with the Windows layer where it runs, with `folder` (the host folder holding
-/// [`WINDOWS_PROGRAM`] and [`LINUX_PROGRAM`]) attached.
+/// Runs the install boot test (see the module documentation) on `kernel`, the release image
+/// for `arch` (with the Windows layer where it runs, D152), with `folder` (the host folder
+/// holding [`WINDOWS_PROGRAM`] and [`LINUX_PROGRAM`]) attached.
 pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     let app = test_app(arch);
     let directory = crate::target_directory().join("qemu-disks");

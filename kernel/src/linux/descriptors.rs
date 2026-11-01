@@ -22,7 +22,7 @@ use super::{Errno, limits};
 use crate::process::Process;
 use crate::sync::{LeafSpinLock, LeafSpinLockGuard};
 use crate::vfs::Node;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use eggos_hal::Platform;
@@ -44,6 +44,8 @@ pub mod open_flag {
     pub const NONBLOCK: u32 = 0o4000;
     /// The new descriptor is closed by `execve` (`dup3`, `open`).
     pub const CLOEXEC: u32 = 0o2_000_000;
+    /// Opening a terminal does not make it the caller's controlling terminal.
+    pub const NOCTTY: u32 = 0o400;
     /// Create the file if it does not exist.
     pub const CREAT: u32 = 0o100;
     /// With [`CREAT`], fail if the file exists.
@@ -118,13 +120,16 @@ pub mod request {
     pub const FIOASYNC: u32 = 0x5452;
 }
 
-/// What an open file description names: the console, a node of the file system (D102), an
-/// end of a pipe (D125), a client of the window server (D127), the agent channel (D136), or a
-/// socket (D138), or a memory file (D139).
+/// What an open file description names: the console, a side of a pseudo-terminal (D187), a
+/// node of the file system (D102), an
+/// end of a pipe (D125), a client of the window server (D127), the agent channel (D136), a
+/// socket (D138, D157), a memory file (D139), a memory device (D168) or an event file.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FileKind {
     /// The console's terminal (D100), Linux's `/dev/console`.
     Console,
+    /// One side of a pseudo-terminal (D187): `/dev/ptmx`'s or `/dev/pts/<n>`.
+    PseudoTerminal(super::pseudo_terminal::PseudoTerminalEnd),
     /// A regular file.
     Regular(Node),
     /// A directory, read with `getdents64`.
@@ -141,9 +146,69 @@ pub enum FileKind {
     AgentChannel(super::agent_channel::AgentChannelEnd),
     /// An `AF_UNIX` stream socket (D138).
     Socket(Arc<super::unix_socket::UnixSocket>),
+    /// An `AF_INET` datagram socket: UDP or ping (D157).
+    InetSocket(Arc<super::socket::inet::InetSocket>),
     /// A memory file (`memfd_create`, D139).
     MemoryFile(Arc<super::memfd::MemoryFile>),
+    /// A memory device (`/dev/null`, `/dev/zero`, ..., D168) and its node in `/dev`.
+    MemoryDevice(super::memory_devices::MemoryDevice, Node),
+    /// An event file: an `eventfd`, a `timerfd`, a `signalfd` or an `epoll` instance.
+    Event(EventFile),
 }
+
+/// An event file, which has no node: Linux's anonymous inodes.
+#[derive(Debug)]
+pub enum EventFile {
+    /// A counter (`eventfd`, [`super::eventfd`]).
+    EventFd(Arc<super::eventfd::EventFd>),
+    /// A timer (`timerfd_create`, [`super::timerfd`]).
+    TimerFd(Arc<super::timerfd::TimerFd>),
+    /// Signals read as records (`signalfd`, [`super::signalfd`]).
+    SignalFd(Arc<super::signalfd::SignalFd>),
+    /// An `epoll` instance ([`super::epoll`]).
+    Epoll(Arc<super::epoll::Epoll>),
+    /// An `inotify` instance ([`super::inotify`], D179).
+    Inotify(Arc<super::inotify::Inotify>),
+}
+
+impl EventFile {
+    /// What `/proc/<pid>/fd/<fd>` names it as, Linux's anonymous inode names.
+    pub fn link_name(&self) -> &'static [u8] {
+        match self {
+            Self::EventFd(_) => b"anon_inode:[eventfd]",
+            Self::TimerFd(_) => b"anon_inode:[timerfd]",
+            Self::SignalFd(_) => b"anon_inode:[signalfd]",
+            Self::Epoll(_) => b"anon_inode:[eventpoll]",
+            Self::Inotify(_) => b"anon_inode:inotify",
+        }
+    }
+
+    /// The list of the threads and `epoll` instances that wait for it.
+    pub fn wake_list(&self) -> &Arc<super::poll::WakeList> {
+        match self {
+            Self::EventFd(counter) => counter.wake_list(),
+            Self::TimerFd(timer) => timer.wake_list(),
+            Self::SignalFd(signals) => signals.wake_list(),
+            Self::Epoll(epoll) => epoll.wake_list(),
+            Self::Inotify(instance) => instance.wake_list(),
+        }
+    }
+}
+
+impl PartialEq for EventFile {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::EventFd(this), Self::EventFd(that)) => Arc::ptr_eq(this, that),
+            (Self::TimerFd(this), Self::TimerFd(that)) => Arc::ptr_eq(this, that),
+            (Self::SignalFd(this), Self::SignalFd(that)) => Arc::ptr_eq(this, that),
+            (Self::Epoll(this), Self::Epoll(that)) => Arc::ptr_eq(this, that),
+            (Self::Inotify(this), Self::Inotify(that)) => Arc::ptr_eq(this, that),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for EventFile {}
 
 /// A regular file's contents as they were made when it was opened ([`crate::vfs::Node::generate`]).
 #[derive(Debug, PartialEq, Eq)]
@@ -159,11 +224,15 @@ impl FileKind {
     pub fn node(&self) -> Option<Node> {
         match self {
             Self::Console
+            | Self::PseudoTerminal(_)
             | Self::Pipe(_)
             | Self::Window(_)
             | Self::AgentChannel(_)
             | Self::Socket(_)
-            | Self::MemoryFile(_) => None,
+            | Self::InetSocket(_)
+            | Self::MemoryFile(_)
+            | Self::MemoryDevice(..)
+            | Self::Event(_) => None,
             Self::Regular(node) | Self::Directory(node) | Self::Path(node) => Some(*node),
             Self::Snapshot(snapshot) => Some(snapshot.node),
         }
@@ -171,7 +240,9 @@ impl FileKind {
 }
 
 /// An open file description: what was opened, how, and where reads and writes go next.
-/// Shared by every descriptor duplicated from the one that opened it.
+/// Shared by every descriptor duplicated from the one that opened it. The node it names is
+/// held while it is open ([`Node::hold`]), so a file removed while open stays until its last
+/// close (D170).
 #[derive(Debug)]
 pub struct OpenFile {
     kind: FileKind,
@@ -183,6 +254,9 @@ impl OpenFile {
     /// A description of `kind` opened with `flags`, of which it keeps the access mode and the
     /// status flags ([`open_flag::STATUS`]), at offset 0.
     pub fn new(kind: FileKind, flags: u32) -> Self {
+        if let Some(node) = kind.node() {
+            node.hold();
+        }
         Self {
             kind,
             status: AtomicU32::new(
@@ -266,6 +340,18 @@ impl OpenFile {
     }
 }
 
+impl Drop for OpenFile {
+    fn drop(&mut self) {
+        super::file_locks::description_closed(self);
+        if let FileKind::Regular(node) = &self.kind {
+            super::inotify::closed(*node, self.is_writable());
+        }
+        if let Some(node) = self.kind.node() {
+            node.release();
+        }
+    }
+}
+
 /// An open descriptor: the open file description it names, and its own close-on-exec flag.
 #[derive(Debug, Clone)]
 pub struct Descriptor {
@@ -304,6 +390,19 @@ impl DescriptorTable {
             slots,
             first_maybe_free: 3,
         }
+    }
+
+    /// Each open descriptor and its number, lowest first.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &Descriptor)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(fd, slot)| Some((fd as u32, slot.as_ref()?)))
+    }
+
+    /// How many descriptors it has room for without growing (`FDSize` in `/proc/<pid>/status`).
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
     }
 
     /// Descriptor `fd`, if it is open.
@@ -486,6 +585,44 @@ impl DescriptorTable {
     }
 }
 
+/// A descriptor table as `/proc/<pid>/fd` reaches it (D168): it does not keep the table, which
+/// goes with the last thread that holds it.
+#[derive(Debug, Clone, Default)]
+pub struct WeakDescriptors(Weak<LeafSpinLock<DescriptorTable>>);
+
+impl WeakDescriptors {
+    /// Each open descriptor, lowest first, with the description it names, while the table is
+    /// there; `None` once it is gone or without memory for the list.
+    pub fn open_files(&self) -> Option<Vec<(u32, Arc<OpenFile>)>> {
+        let table = self.0.upgrade()?;
+        let count = table.lock().iter().count();
+        let mut open = Vec::new();
+        open.try_reserve_exact(count).ok()?;
+        open.extend(
+            table
+                .lock()
+                .iter()
+                .take(count)
+                .map(|(fd, descriptor)| (fd, Arc::clone(&descriptor.file))),
+        );
+        Some(open)
+    }
+
+    /// How many descriptors the table has room for, while it is there.
+    pub fn slot_count(&self) -> Option<usize> {
+        Some(self.0.upgrade()?.lock().slot_count())
+    }
+
+    /// The description descriptor `fd` names, if the table is there and `fd` is open.
+    pub fn file(&self, fd: u32) -> Option<Arc<OpenFile>> {
+        let table = self.0.upgrade()?;
+        table
+            .lock()
+            .get(fd)
+            .map(|descriptor| Arc::clone(&descriptor.file))
+    }
+}
+
 /// A thread's descriptor table, which the threads that share it each hold. See the module
 /// documentation.
 #[derive(Debug)]
@@ -518,6 +655,11 @@ impl Descriptors {
     /// Whether another thread shares the table.
     pub fn is_shared(&self) -> bool {
         Arc::strong_count(&self.0) > 1
+    }
+
+    /// A handle that does not keep the table, for `/proc/<pid>/fd` (D168).
+    pub fn downgrade(&self) -> WeakDescriptors {
+        WeakDescriptors(Arc::downgrade(&self.0))
     }
 
     /// The open file description descriptor `fd` names, `EBADF` if it is not open. `fd` is an
@@ -611,6 +753,9 @@ fn duplicate_to<P: Platform>(
         return Err(Errno::EBADF);
     }
     let replaced = files.lock().duplicate_to(old, new, close_on_exec, limit)?;
+    if let Some(closed) = &replaced {
+        super::file_locks::descriptor_closed(process.id().get(), &closed.file);
+    }
     drop(replaced);
     Ok(u64::from(new))
 }
@@ -696,13 +841,15 @@ pub fn fcntl<P: Platform>(
     }
 }
 
-/// `close_range(first, last, flags)`, by the thread whose table is `files`: closes every open
-/// descriptor from `first` to `last`, or with `CLOSE_RANGE_CLOEXEC` marks them close-on-exec;
+/// `close_range(first, last, flags)`, by the thread of process `pid` whose table is `files`:
+/// closes every open descriptor from `first` to `last`, letting go of the record locks `pid`
+/// holds on their files (D173), or with `CLOSE_RANGE_CLOEXEC` marks them close-on-exec;
 /// with `CLOSE_RANGE_UNSHARE`, the caller first gets a table of its own if it shares one, which
 /// it is given back to keep. Descriptors not open in the range are skipped. As Linux: `EINVAL`
 /// for another flag or `first` above `last`, `ENOMEM` without memory for the copy. All three
 /// arguments are 32-bit.
 pub fn close_range(
+    pid: u32,
     files: &Descriptors,
     first: u64,
     last: u64,
@@ -728,6 +875,7 @@ pub fn close_range(
         let Some((fd, descriptor)) = closed else {
             break;
         };
+        super::file_locks::descriptor_closed(pid, &descriptor.file);
         drop(descriptor);
         if fd == last {
             break;
@@ -790,6 +938,8 @@ mod tests {
     }
 
     const LIMIT: u64 = 1024;
+
+    const TEST_PID: u32 = u32::MAX;
 
     #[test]
     fn a_new_table_has_the_standard_streams_on_one_description() {
@@ -992,23 +1142,31 @@ mod tests {
         const CLOEXEC: u64 = close_range_flag::CLOEXEC as u64;
         let files = Descriptors::with_console_streams();
         assert_eq!(
-            close_range(&files, 0, 2, 1).map(|own| own.is_some()),
+            close_range(TEST_PID, &files, 0, 2, 1).map(|own| own.is_some()),
             Err(Errno::EINVAL)
         );
         assert_eq!(
-            close_range(&files, 3, 2, 0).map(|own| own.is_some()),
+            close_range(TEST_PID, &files, 3, 2, 0).map(|own| own.is_some()),
             Err(Errno::EINVAL)
         );
         let shared = files.share();
-        let own = close_range(&shared, 1, u64::from(u32::MAX), UNSHARE)
+        let own = close_range(TEST_PID, &shared, 1, u64::from(u32::MAX), UNSHARE)
             .unwrap()
             .unwrap();
         assert_eq!(open(&own.lock()), [0]);
         assert_eq!(open(&files.lock()), [0, 1, 2]);
         drop(shared);
-        assert!(close_range(&files, 0, 0, UNSHARE).unwrap().is_none());
+        assert!(
+            close_range(TEST_PID, &files, 0, 0, UNSHARE)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(open(&files.lock()), [1, 2]);
-        assert!(close_range(&files, 0, 9, CLOEXEC).unwrap().is_none());
+        assert!(
+            close_range(TEST_PID, &files, 0, 9, CLOEXEC)
+                .unwrap()
+                .is_none()
+        );
         assert!(files.lock().get(2).unwrap().close_on_exec);
     }
 }

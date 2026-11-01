@@ -4,9 +4,12 @@
 //! [`Editor`] and [`Files`], so host tests and the QEMU test's expected frames run the same
 //! code the program shows.
 
+mod elements;
 mod paint;
 #[cfg(test)]
 mod tests;
+
+pub use elements::TEXT_ELEMENT;
 
 use crate::columns::{byte_nearest, byte_under, view_width};
 use crate::document::{Full, TEXT_CAPACITY};
@@ -52,8 +55,10 @@ pub const CELL_WIDTH: i32 = 8;
 pub(crate) const TOOLBAR_HEIGHT: i32 = 32;
 pub(crate) const BAR_HEIGHT: i32 = 32;
 pub(crate) const STATUS_HEIGHT: i32 = 24;
-pub(crate) const TEXT_TOP: i32 = 4;
-pub(crate) const TEXT_LEFT: i32 = 8;
+/// The gap above the first row of text in the text view, in pixels.
+pub const TEXT_TOP: i32 = 4;
+/// The gap between the text view's left edge and the first column, in pixels.
+pub const TEXT_LEFT: i32 = 8;
 pub(crate) const TOOL_WIDTH: i32 = 64;
 pub(crate) const TOOL_HEIGHT: i32 = 28;
 const TOOL_PITCH: i32 = 68;
@@ -240,6 +245,7 @@ pub struct EditorWindow<'a> {
     caret_shown: bool,
     drag_scrolled_at: u32,
     now_ms: u32,
+    copied: bool,
     title: Text<64>,
     title_changed: bool,
     closing: bool,
@@ -250,6 +256,7 @@ fn field(placeholder: &'static str) -> Field {
     Field {
         text: Text::new(),
         caret: 0,
+        anchor: 0,
         scroll: 0,
         placeholder,
         escape: Escape::Clear,
@@ -342,6 +349,7 @@ impl<'a> EditorWindow<'a> {
             caret_shown: true,
             drag_scrolled_at: now_ms,
             now_ms,
+            copied: false,
             title: Text::new(),
             title_changed: true,
             closing: false,
@@ -358,6 +366,18 @@ impl<'a> EditorWindow<'a> {
     /// The editing.
     pub fn editor(&self) -> &Editor<'a> {
         &self.editor
+    }
+
+    /// The text copied or cut since the last call, for the clipboard every app shares (D197).
+    pub fn take_copied(&mut self) -> Option<&[u8]> {
+        let copied = core::mem::take(&mut self.copied);
+        (copied && self.editor.can_paste()).then(|| self.editor.copied())
+    }
+
+    /// Takes the clipboard every app shares as what Paste inserts
+    /// ([`Editor::take_shared_clipboard`]).
+    pub fn take_shared_clipboard(&mut self, fill: impl FnOnce(&mut [u8]) -> Option<usize>) {
+        self.editor.take_shared_clipboard(fill);
     }
 
     /// The document's path, if it has one.
@@ -998,7 +1018,7 @@ impl<'a> EditorWindow<'a> {
         match bar {
             Bar::Find => {
                 self.focus = Focus::FindField;
-                self.find_field.caret = self.find_field.text.len();
+                self.find_field.place_caret(self.find_field.text.len());
             }
             Bar::Open | Bar::SaveAs => {
                 let mut text = Line::new();
@@ -1013,8 +1033,7 @@ impl<'a> EditorWindow<'a> {
                 if bar == Bar::Open && !text.as_str().ends_with('/') {
                     let _ = text.write_str("/");
                 }
-                self.path_field.text.set(text.as_str());
-                self.path_field.caret = self.path_field.text.len();
+                self.path_field.set_text(text.as_str());
                 self.path_field.scroll = 0;
                 let rect = self.path_field_rect();
                 widget::keep_caret_visible(&mut self.path_field, rect);
@@ -1209,6 +1228,9 @@ impl<'a> EditorWindow<'a> {
             Input::Wheel { x, y, notches } if self.area().contains(x, y) => {
                 self.wheel(notches, self.shift_held);
             }
+            Input::SidewaysWheel { x, y, notches } if self.area().contains(x, y) => {
+                self.wheel(-notches, true);
+            }
             _ => {}
         }
         !self.closing
@@ -1389,9 +1411,13 @@ impl<'a> EditorWindow<'a> {
             }
             item::CUT => {
                 self.editor.cut();
+                self.copied = true;
                 self.changed();
             }
-            item::COPY => self.editor.copy(),
+            item::COPY => {
+                self.editor.copy();
+                self.copied = true;
+            }
             item::PASTE => {
                 let pasted = self.editor.paste();
                 self.edited(pasted);
@@ -1521,6 +1547,7 @@ impl<'a> EditorWindow<'a> {
         let ctrl = held & Modifiers::CTRL != 0;
         let command = held & Modifiers::SUPER != 0;
         let alt = held & Modifiers::ALT != 0;
+        let typing_alt = alt && held & Modifiers::ALT_GRAPH == 0;
         let primary = ctrl || command;
         let shift = modifiers.shift();
         let motion = match code {
@@ -1576,7 +1603,7 @@ impl<'a> EditorWindow<'a> {
                 let typed = self.editor.type_character('\t');
                 self.edited(typed);
             }
-            _ if !primary && !alt => {
+            _ if !primary && !typing_alt => {
                 let Some(typed) = char::from_u32(character).filter(|typed| !typed.is_control())
                 else {
                     return;
@@ -1782,15 +1809,16 @@ impl<'a> EditorWindow<'a> {
         match self.bar {
             Bar::Find if FIND_FIELD.contains(x, y) => {
                 self.focus = Focus::FindField;
-                self.find_field.caret = widget::caret_at(&self.find_field, FIND_FIELD, x);
+                let at = widget::caret_at(&self.find_field, FIND_FIELD, x);
+                self.find_field.place_caret(at);
                 self.restart_caret();
                 self.damage_all();
                 return;
             }
             Bar::Open | Bar::SaveAs if self.path_field_rect().contains(x, y) => {
                 self.focus = Focus::PathField;
-                self.path_field.caret =
-                    widget::caret_at(&self.path_field, self.path_field_rect(), x);
+                let at = widget::caret_at(&self.path_field, self.path_field_rect(), x);
+                self.path_field.place_caret(at);
                 self.restart_caret();
                 self.damage_all();
                 return;

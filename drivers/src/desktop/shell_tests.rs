@@ -610,11 +610,11 @@ fn the_shell_s_pictures_are_pinned_in_each_profile() {
 const PINNED: [(Profile, u64, u64); 3] = [
     (
         Profile::Windows,
-        0xbe80_b6eb_c2ea_f968,
-        0x4db2_a5f4_bd53_8c26,
+        0x1422_a675_8e05_fca9,
+        0x1bc2_6652_da64_77bb,
     ),
-    (Profile::Macos, 0x3a28_a52e_3978_2474, 0x831a_a2a2_f8a4_7503),
-    (Profile::Linux, 0x6966_c9e4_12d0_ae5f, 0x60c2_f140_bf00_28b9),
+    (Profile::Macos, 0x1ab2_a83a_3182_0789, 0x04b2_d38b_ae0b_0542),
+    (Profile::Linux, 0x8541_1cbc_9afc_227e, 0x6013_1d84_897c_fa88),
 ];
 
 #[test]
@@ -863,4 +863,71 @@ fn a_second_click_while_an_app_starts_does_not_start_it_twice() {
         click_in(&mut desktop, settings),
         Action::Start(AppId::Settings)
     );
+}
+
+#[test]
+fn the_agent_chip_shows_while_an_agent_is_connected_and_lights_up_when_it_acts() {
+    let mut desktop = desktop(Profile::Macos);
+    let mut damage = Damage::new();
+    assert_eq!(desktop.agent_chip(), None);
+    desktop.set_agent_connected(true, &mut damage);
+    let chip = Rect::new(1180, 4, 56, 20);
+    assert_eq!(desktop.agent_chip(), Some(chip));
+    let pixels = painted(&desktop);
+    assert_eq!(
+        super::tests::at(&pixels, chip.x + 20, chip.y + 1),
+        colour::BAR_HOVER
+    );
+    assert!(!desktop.agent_acting());
+    desktop.note_agent_action(&mut damage);
+    assert!(desktop.agent_acting());
+    let pixels = painted(&desktop);
+    assert_eq!(
+        super::tests::at(&pixels, chip.x + 20, chip.y + 1),
+        colour::ACCENT
+    );
+    desktop.tick(AGENT_ACTING_MS, &mut damage, &mut DiscardEvents);
+    assert!(!desktop.agent_acting());
+    assert_eq!(click_in(&mut desktop, chip), Action::ShowAgentLog);
+    desktop.set_profile(Profile::Windows, &mut damage, &mut DiscardEvents);
+    let chip = desktop.agent_chip().unwrap();
+    assert_eq!(chip, Rect::new(1072, 770, 56, 20));
+    assert_eq!(chip.right() + 16, desktop.clock_rect().x);
+    desktop.set_agent_connected(false, &mut damage);
+    assert_eq!(desktop.agent_chip(), None);
+}
+
+#[test]
+fn a_window_the_agent_drives_says_so_in_its_title_for_a_second() {
+    let mut desktop = desktop(Profile::Macos);
+    let mut damage = Damage::new();
+    desktop.set_agent_connected(true, &mut damage);
+    let id = window(&mut desktop, "Test");
+    let slot = desktop.find(id).unwrap();
+    desktop.note_agent_input(
+        u32::from(id),
+        InjectedInput::Click {
+            x: 10,
+            y: 10,
+            button: crate::input::button::LEFT,
+        },
+        &mut damage,
+    );
+    assert!(desktop.agent_drives(slot));
+    assert!(desktop.agent_acting());
+    desktop.tick(AGENT_ACTING_MS + 1, &mut damage, &mut DiscardEvents);
+    assert!(!desktop.agent_drives(slot));
+    assert!(!desktop.agent_acting());
+}
+
+#[test]
+fn the_top_bar_s_system_item_names_its_key_below_the_bar() {
+    let mut desktop = desktop(Profile::Macos);
+    let system = desktop.system_item().unwrap();
+    let mut damage = Damage::new();
+    desktop.pointer_moved(system.x + 4, system.y + 4, &mut damage, &mut DiscardEvents);
+    desktop.tick(TOOLTIP_DELAY_MS + 1, &mut damage, &mut DiscardEvents);
+    let tooltip = desktop.tooltip_rect().unwrap();
+    assert_eq!(tooltip.y, desktop.layout().top_bar.unwrap().bottom() + 4);
+    assert_eq!(tooltip.width, "Apps  Super".len() as u32 * 8 + 16);
 }

@@ -1,0 +1,421 @@
+use super::*;
+
+#[test]
+fn if_runs_the_first_branch_whose_condition_succeeds() {
+    let shell = run("if true; then echo yes; else echo no; fi\n\
+         if false; then echo a; elif true; then echo b; fi\n\
+         if false; then echo c; fi; echo $?\n\
+         if fail; then echo d; else echo e $?; fi");
+    assert_eq!(output(&shell), "yes\nb\n0\ne 3\n");
+    assert_eq!(errors(&shell), "");
+}
+
+#[test]
+fn while_until_and_for_loop() {
+    let shell = run(
+        "set -- a b c; while [ $# -gt 0 ]; do echo $1; shift; done\n\
+         until true; do echo never; done; echo until $?\n\
+         for word in x 'y z'; do echo \"[$word]\"; done\n\
+         for each; do echo $each; done\n\
+         set -- p q; for each do echo $each; done",
+    );
+    assert_eq!(output(&shell), "a\nb\nc\nuntil 0\n[x]\n[y z]\np\nq\n");
+    assert_eq!(errors(&shell), "");
+}
+
+#[test]
+fn break_and_continue_leave_or_go_round_their_loops() {
+    let shell = run(
+        "for i in 1 2 3; do if [ $i = 2 ]; then continue; fi; echo $i; done\n\
+         for i in a b; do for j in 1 2; do echo $i$j; break 2; done; done\n\
+         break; echo $?",
+    );
+    assert_eq!(output(&shell), "1\n3\na1\n0\n");
+    assert_eq!(errors(&shell), "eggsh: break: only meaningful in a loop\n");
+}
+
+#[test]
+fn case_runs_the_first_item_whose_pattern_matches() {
+    let shell = run(
+        "for x in apple Berry 'a*' ''; do case $x in a*) echo A $x;; \
+         [Bb]*|z) echo B;; \"\") echo empty;; (*) echo other;; esac; done\n\
+         case none in x) echo x;; esac; echo $?\n\
+         case '*' in \"*\") echo star;; *) echo any;; esac",
+    );
+    assert_eq!(output(&shell), "A apple\nB\nA a*\nempty\n0\nstar\n");
+}
+
+#[test]
+fn functions_take_arguments_return_a_status_and_keep_locals() {
+    let shell = run("greet() { echo hello $1 $#; return 3; echo never; }\n\
+         greet world two; echo $?\n\
+         X=outer; scoped() { local X=inner; echo $X; }; scoped; echo $X\n\
+         type greet\n\
+         down() { if [ $# -gt 0 ]; then echo $1; shift; down \"$@\"; fi; }; down a b c\n\
+         echo $1");
+    assert_eq!(
+        output(&shell),
+        "hello world 2\n3\ninner\nouter\ngreet is a function\na\nb\nc\none\n"
+    );
+    assert_eq!(errors(&shell), "");
+}
+
+#[test]
+fn functions_cannot_nest_without_end() {
+    let checked = std::thread::Builder::new()
+        .stack_size(PROGRAM_STACK_BYTES)
+        .spawn(|| {
+            let shell = run("forever() { forever; }; forever; echo $?");
+            (output(&shell), errors(&shell))
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(checked.0, "1\n");
+    assert_eq!(checked.1, "eggsh: forever: functions nested too deeply\n");
+}
+
+#[test]
+fn a_brace_group_takes_redirections_and_compound_commands_in_a_pipeline_are_forked() {
+    let mut shell = shell(false);
+    shell.run_text(
+        b"{ echo a; echo b; } > /tmp/out; (echo sub); { echo piped; } | tool\n\
+          f() { echo x; }; f | ls",
+    );
+    let out = shell.system.redirected[0].2;
+    assert_eq!(shell.system.written.get(&out).unwrap(), b"a\nb\n");
+    assert_eq!(shell.system.forks, [Group::Shell; 3]);
+    assert_eq!(shell.system.ran[0].program, "/usr/bin/tool");
+    assert_eq!(shell.system.ran[0].streams.input, shell.system.pipes[0].0);
+    assert_eq!(shell.system.waited, [500, 501, 100, 502, 101]);
+    assert_eq!(output(&shell), "");
+    all_closed(&shell);
+}
+
+#[test]
+fn a_subshell_runs_in_a_copy_that_ends_with_its_status() {
+    let mut shell = shell(false);
+    shell.system.fork_as_child = true;
+    shell.run_text(b"(echo inside; exit 4); echo never");
+    assert_eq!(output(&shell), "inside\n");
+    assert_eq!(shell.system.ended_subshells, [4]);
+    assert_eq!(shell.exit_status(), 4);
+}
+
+#[test]
+fn command_substitution_reads_the_copy_s_output() {
+    let mut shell = shell(false);
+    shell
+        .system
+        .substitution_outputs
+        .push_back(b"out put\n\n".to_vec());
+    shell.system.fork_statuses.insert(500, 3 << 8);
+    shell.run_text(b"X=$(anything); echo \"[$X]\" $?");
+    assert_eq!(output(&shell), "[out put] 3\n");
+    all_closed(&shell);
+    let mut child = shell_for_child();
+    child.run_text(b"echo $(echo inner)");
+    let write = child.system.pipes[0].1;
+    assert_eq!(child.system.written.get(&write).unwrap(), b"inner\n");
+    assert_eq!(child.system.ended_subshells, [0]);
+    assert_eq!(output(&child), "");
+}
+
+fn shell_for_child() -> Shell<'static, FakeSystem> {
+    let mut shell = shell(false);
+    shell.system.fork_as_child = true;
+    shell
+}
+
+#[test]
+fn here_documents_give_their_lines_to_standard_input() {
+    let mut shell = shell(false);
+    shell.run_text(
+        b"X=value\nls <<EOF; ls <<'RAW'\nhello $X\nEOF\nnot $X\nRAW\n\
+          ls <<-END\n\tindented\n\tEND\necho after",
+    );
+    assert_eq!(
+        shell.system.documents,
+        [
+            b"hello value\n".to_vec(),
+            b"not $X\n".to_vec(),
+            b"indented\n".to_vec()
+        ]
+    );
+    assert_eq!(output(&shell), "after\n");
+    assert_ne!(shell.system.ran[0].streams.input, 0);
+    all_closed(&shell);
+}
+
+#[test]
+fn a_here_document_at_the_prompt_asks_for_its_lines() {
+    let mut shell = shell_with_input(true, &["ls <<EOF\n", "line\n", "EOF\n", "echo done\n"]);
+    shell.run_descriptor(0, true);
+    assert_eq!(shell.system.documents, [b"line\n".to_vec()]);
+    assert_eq!(output(&shell), "done\n");
+    assert!(errors(&shell).contains("> > "));
+}
+
+#[test]
+fn wildcards_become_the_sorted_names_they_match() {
+    let shell = run("echo /bin/* /bin/l? /nothing/* '/bin/*' /bin/[fh]*");
+    assert_eq!(
+        output(&shell),
+        "/bin/fail /bin/help /bin/ls /bin/notes /bin/ls /nothing/* /bin/* /bin/fail /bin/help\n"
+    );
+}
+
+#[test]
+fn read_splits_a_line_into_variables() {
+    let mut shell = shell(false);
+    shell
+        .system
+        .contents
+        .insert("/in".to_owned(), b"one  two three\nsecond\n".to_vec());
+    shell.run_text(
+        b"read a b < /in; echo \"[$a][$b]\" $?; { read x; read y; } < /in; echo $x $y\n\
+          read z < /missing; echo $?",
+    );
+    assert_eq!(
+        output(&shell),
+        "[one][two three] 0\none two three second\n1\n"
+    );
+    assert_eq!(
+        errors(&shell),
+        "eggsh: /missing: No such file or directory\n"
+    );
+    all_closed(&shell);
+}
+
+#[test]
+fn test_and_brackets_check_files_strings_and_numbers() {
+    let shell = run(
+        "[ -d /bin ] && echo dir; test -x /bin/notes || echo plain\n\
+         [ 3 -gt 2 ]; echo $?; [ a = b ]; echo $?; [ x; echo $?; test 1 -eq x; echo $?",
+    );
+    assert_eq!(output(&shell), "dir\nplain\n0\n1\n2\n2\n");
+    assert_eq!(
+        errors(&shell),
+        "eggsh: [: missing `]`\neggsh: test: x: integer expression expected\n"
+    );
+}
+
+#[test]
+fn parameter_operators_and_positional_parameters_expand() {
+    let shell = run(
+        "echo ${U:-d} ${#HOME} ${HOME#/}; echo ${U:=set} $U; echo ${U:?gone}\n\
+         set -- 'a b' c; for x in \"$@\"; do echo \"[$x]\"; done; echo $# \"$*\"; shift; echo $1\n\
+         echo ${V:?missing}; echo never",
+    );
+    assert_eq!(
+        output(&shell),
+        "d 5 home\nset set\nset\n[a b]\n[c]\n2 a b c\nc\n"
+    );
+    assert_eq!(errors(&shell), "eggsh: V: missing\n");
+    assert_eq!(shell.exit_status(), 1);
+}
+
+#[test]
+fn eval_runs_its_words_and_set_e_ends_on_a_failure() {
+    let shell = run("eval 'Y=1; echo $Y' two");
+    assert_eq!(output(&shell), "1 two\n");
+    let shell = run(
+        "set -e; false || echo ok; if false; then :; fi; ! true; echo still\n\
+         false\necho never",
+    );
+    assert_eq!(output(&shell), "ok\nstill\n");
+    assert_eq!(shell.exit_status(), 1);
+}
+
+#[test]
+fn set_e_is_ignored_inside_what_runs_before_and_or_or_after_a_bang() {
+    let shell = run("set -e; f() { false; echo after; }; f || echo handled\n\
+         { false; true; } && echo brace\n\
+         ! f\n\
+         { false; echo inner; } || true\n\
+         echo still\n\
+         f\n\
+         echo never");
+    assert_eq!(output(&shell), "after\nbrace\nafter\ninner\nstill\n");
+    assert_eq!(shell.exit_status(), 1);
+}
+
+#[test]
+fn a_list_in_the_background_runs_in_a_copy() {
+    let mut shell = shell(false);
+    shell.run_text(b"true && ls &\necho $!");
+    assert_eq!(shell.system.forks, [Group::Shell]);
+    assert_eq!(output(&shell), "500\n");
+    let mut interactive = shell_with_input(true, &["false || ls &\n"]);
+    interactive.run_descriptor(0, true);
+    assert_eq!(interactive.system.forks, [Group::Background]);
+    assert!(errors(&interactive).contains("[1] 500\n"));
+}
+
+#[test]
+fn a_command_after_and_or_or_a_pipe_may_be_on_the_next_line() {
+    let mut shell = shell_with_input(true, &["false ||\n", "echo yes\n", "echo a |\n", "ls\n"]);
+    shell.run_descriptor(0, true);
+    assert_eq!(output(&shell), "yes\n");
+    assert_eq!(shell.system.ran[0].program, "/bin/ls");
+    assert_eq!(shell.system.ran[0].streams.input, shell.system.pipes[0].0);
+    assert!(errors(&shell).contains("> "));
+    let shell = run("true &&\n\n  # a comment\n  echo next");
+    assert_eq!(output(&shell), "next\n");
+}
+
+#[test]
+fn a_compound_command_typed_over_several_lines_runs_once_complete() {
+    let mut shell = shell_with_input(true, &["for i in 1 2\n", "do\n", "echo $i\n", "done\n"]);
+    shell.run_descriptor(0, true);
+    assert_eq!(output(&shell), "1\n2\n");
+    assert!(errors(&shell).contains("> > > "));
+}
+
+#[test]
+fn grammar_errors_are_reported() {
+    for (script, message) in [
+        (
+            "if true; then echo",
+            "syntax error: unexpected end of file, looking for `fi`",
+        ),
+        ("fi", "syntax error near unexpected token `fi`"),
+        (
+            "for 1 in x; do :; done",
+            "syntax error: `for` needs a variable's name",
+        ),
+        (
+            "{ echo a; } b",
+            "syntax error: a word after a compound command",
+        ),
+        (
+            "case x in a) echo",
+            "syntax error: unexpected end of file, looking for `esac`",
+        ),
+        (
+            "while true; done",
+            "syntax error near unexpected token `done`",
+        ),
+        (
+            "echo $(echo",
+            "syntax error: unexpected end of file, looking for the closing `)`",
+        ),
+        ("a | )", "syntax error near unexpected token `)`"),
+    ] {
+        let shell = run(script);
+        assert_eq!(errors(&shell), format!("eggsh: {message}\n"), "{script}");
+        assert_eq!(shell.exit_status(), USAGE, "{script}");
+        assert!(shell.system.ran.is_empty(), "{script}");
+    }
+}
+
+const PROGRAM_STACK_BYTES: usize = 8 << 20;
+
+fn on_the_program_stack(interactive: bool, script: String) -> (String, String, i32) {
+    std::thread::Builder::new()
+        .stack_size(PROGRAM_STACK_BYTES)
+        .spawn(move || {
+            let mut shell = shell(interactive);
+            shell.run_text(script.as_bytes());
+            (output(&shell), errors(&shell), shell.exit_status())
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+const TOO_DEEP: &str = "eggsh: syntax error: nested too deeply\n";
+
+#[test]
+fn eval_that_runs_itself_stops_at_the_nesting_limit() {
+    let script = String::from("x='eval \"$x\"'; eval \"$x\"; echo after $?");
+    let (written, said, status) = on_the_program_stack(false, script.clone());
+    assert_eq!((written.as_str(), said.as_str(), status), ("", TOO_DEEP, 2));
+    let (written, said, _) = on_the_program_stack(true, script);
+    assert_eq!((written.as_str(), said.as_str()), ("after 2\n", TOO_DEEP));
+}
+
+#[test]
+fn compound_commands_nested_past_the_limit_are_refused_before_running() {
+    let nested = |depth: usize| {
+        format!(
+            "{}echo deep; {}echo after",
+            "for i in 1; do ".repeat(depth),
+            "done; ".repeat(depth)
+        )
+    };
+    let within = usize::from(MAX_NESTING);
+    let (written, said, status) = on_the_program_stack(false, nested(within));
+    assert_eq!(
+        (written.as_str(), said.as_str(), status),
+        ("deep\nafter\n", "", 0)
+    );
+    let (written, said, status) = on_the_program_stack(false, nested(600));
+    assert_eq!((written.as_str(), said.as_str(), status), ("", TOO_DEEP, 2));
+    let (written, said, status) = on_the_program_stack(false, "(".repeat(100_000));
+    assert_eq!((written.as_str(), said.as_str(), status), ("", TOO_DEEP, 2));
+    for opening in ["$(", "\"$("] {
+        let script = format!("echo {}", opening.repeat(200_000));
+        let (written, said, status) = on_the_program_stack(false, script);
+        assert_eq!(
+            (written.as_str(), said.as_str(), status),
+            ("", TOO_DEEP, 2),
+            "{opening}"
+        );
+    }
+    let braced = format!("echo ${{a:-{}}}", "$(".repeat(200_000));
+    let (written, said, status) = on_the_program_stack(false, braced);
+    assert_eq!((written.as_str(), said.as_str(), status), ("", TOO_DEEP, 2));
+    let braces = format!("{}echo in{}", "{ ".repeat(300), "; }".repeat(300));
+    let (written, said, _) = on_the_program_stack(false, braces);
+    assert_eq!((written.as_str(), said.as_str()), ("", TOO_DEEP));
+}
+
+#[test]
+fn nested_defaults_stop_at_the_expansion_limit() {
+    let nested = |depth: usize| format!("echo {}x{}", "${a:-".repeat(depth), "}".repeat(depth));
+    let within = usize::from(crate::syntax::MAX_EXPANSION_DEPTH);
+    let (written, said, status) = on_the_program_stack(false, nested(within));
+    assert_eq!((written.as_str(), said.as_str(), status), ("x\n", "", 0));
+    let (written, said, status) = on_the_program_stack(false, nested(2000));
+    assert_eq!((written.as_str(), said.as_str(), status), ("", TOO_DEEP, 2));
+}
+
+#[test]
+fn a_command_substitution_past_the_nesting_limit_is_refused_in_the_copy() {
+    let mut child = shell_for_child();
+    child.nesting = MAX_NESTING;
+    child.run_text(b"echo $(echo inner)");
+    assert_eq!(errors(&child), TOO_DEEP);
+    assert_eq!(child.system.ended_subshells, [2]);
+    assert_eq!(child.nesting, MAX_NESTING);
+}
+
+#[test]
+fn a_here_document_past_the_nesting_limit_is_refused() {
+    let mut shell = shell(false);
+    shell.nesting = MAX_NESTING;
+    shell.run_text(b"cat <<A\nx\nA\n");
+    assert_eq!(errors(&shell), TOO_DEEP);
+    assert!(shell.system.ran.is_empty());
+    assert_eq!(shell.nesting, MAX_NESTING);
+}
+
+#[test]
+fn a_long_plain_path_before_a_pattern_stays_as_it_is() {
+    let word = format!("{}*", "a/".repeat(900));
+    let shell = run(&format!("echo {word}"));
+    assert_eq!(output(&shell), format!("{word}\n"));
+    assert_eq!(errors(&shell), "");
+}
+
+#[test]
+fn unquoted_star_makes_each_parameter_its_own_field_before_splitting() {
+    let shell = run(
+        "IFS=; set -- 'a b' c; for w in $*; do echo \"[$w]\"; done\n\
+         unset IFS; set -- 'x y' z; for w in $*; do echo \"<$w>\"; done\n\
+         IFS=:; set -- p q; echo \"$*\"",
+    );
+    assert_eq!(output(&shell), "[a b]\n[c]\n<x>\n<y>\n<z>\np:q\n");
+    assert_eq!(errors(&shell), "");
+}

@@ -53,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 56] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 62] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -109,6 +109,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 56] {
         ("eggfs_read_4k", |_, n| eggfs_read_4k::<P>(n)),
         ("eggfs_create", |_, n| eggfs_create::<P>(n)),
         ("eggfs_commit", |_, n| eggfs_commit::<P>(n)),
+        ("eggfs_lookup_10k", |_, n| eggfs_lookup_10k::<P>(n)),
         ("input_key_to_bytes", |_, n| input_key_to_bytes(n)),
         ("input_event_queue_push_pop", |_, n| {
             input_event_queue_push_pop(n)
@@ -118,6 +119,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 56] {
             linux_unix_stream_send_recv(n)
         }),
         ("wayland_blit_rows", |_, n| wayland_blit_rows(n)),
+        ("translate_block_16", |_, n| translate_block_16(n)),
         ("syscall_round_trip", syscall_round_trip::<P>),
         (
             "process_syscall_round_trip",
@@ -134,12 +136,16 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 56] {
         ("linux_page_fault", linux_page_fault::<P>),
         ("linux_mmap_munmap", linux_mmap_munmap::<P>),
         ("linux_memfd_map_unmap", linux_memfd_map_unmap::<P>),
+        ("linux_file_map_read_unmap", linux_file_map_read_unmap::<P>),
         ("linux_dup3_close", linux_dup3_close::<P>),
+        ("linux_dup3_replace", linux_dup3_replace::<P>),
         ("linux_descriptor_lookup", |_, n| linux_descriptor_lookup(n)),
         ("linux_openat_close", linux_openat_close::<P>),
         ("linux_file_read", linux_file_read::<P>),
         ("linux_fork", linux_fork::<P>),
+        ("linux_fork_touch", linux_fork_touch::<P>),
         ("linux_vfork_exec", linux_vfork_exec::<P>),
+        ("linux_epoll_wake", linux_epoll_wake::<P>),
         ("gfx_glyph_cell", |_, n| gfx_glyph_cell(n)),
         ("gfx_terminal_line", |_, n| gfx_terminal_line(n)),
         ("term_feed_line", |_, n| term_feed_line(n)),
@@ -761,6 +767,65 @@ fn eggfs_commit<P: Platform>(n: u64) {
     }
 }
 
+const EGGFS_BIG_DIRECTORY_NAMES: u64 = 10_000;
+
+static EGGFS_BIG_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+fn eggfs_entry_name(index: u64, out: &mut [u8; 8]) -> &[u8] {
+    let mut digits = [0u8; 7];
+    let mut length = 0;
+    let mut value = index;
+    loop {
+        digits[length] = b'0' + (value % 10) as u8;
+        length += 1;
+        value /= 10;
+        if value == 0 || length == digits.len() {
+            break;
+        }
+    }
+    out[0] = b'n';
+    for (position, digit) in digits[..length].iter().rev().enumerate() {
+        out[1 + position] = *digit;
+    }
+    &out[..=length]
+}
+
+fn eggfs_big_directory<P: Platform>() -> u64 {
+    use crate::vfs::{FileSystem, NodeKind};
+    let made = EGGFS_BIG_DIRECTORY.load(Ordering::Acquire);
+    if made != 0 {
+        return made;
+    }
+    let (folder, file) = eggfs_folder::<P>();
+    let Ok(directory) = folder.create(folder.root(), b"big", NodeKind::Directory, 0o755, 0) else {
+        panic!("eggfs: the big directory could not be made");
+    };
+    let mut buffer = [0u8; 8];
+    for index in 0..EGGFS_BIG_DIRECTORY_NAMES {
+        let name = eggfs_entry_name(index, &mut buffer);
+        if folder.link(*file, directory, name, 0).is_err() {
+            panic!("eggfs: the big directory could not be filled");
+        }
+    }
+    if folder.sync().is_err() {
+        panic!("eggfs: the big directory could not be committed");
+    }
+    EGGFS_BIG_DIRECTORY.store(directory, Ordering::Release);
+    directory
+}
+
+fn eggfs_lookup_10k<P: Platform>(n: u64) {
+    use crate::vfs::FileSystem;
+    let (folder, _) = eggfs_folder::<P>();
+    let directory = eggfs_big_directory::<P>();
+    let mut buffer = [0u8; 8];
+    for i in 0..n {
+        let index = i.wrapping_mul(7919) % EGGFS_BIG_DIRECTORY_NAMES;
+        let name = eggfs_entry_name(index, &mut buffer);
+        black_box(folder.lookup(directory, black_box(name)));
+    }
+}
+
 struct DiscardingSink;
 
 impl input::InputSink for DiscardingSink {
@@ -789,6 +854,7 @@ fn input_key_to_bytes(n: u64) {
         now: 0,
         repeat_delay: 400,
         repeat_interval: 40,
+        slow_keys: 0,
     };
     let syn = RawEvent::new(event_type::SYN, SYN_REPORT, 0);
     for i in 0..n {
@@ -965,6 +1031,41 @@ fn wayland_blit_rows(n: u64) {
             WIDTH,
             band,
         );
+    }
+}
+
+const TRANSLATE_BENCH_PATTERN: [[u8; 3]; 3] =
+    [[0x48, 0x01, 0xd8], [0x48, 0x29, 0xca], [0x48, 0x31, 0xf7]];
+const TRANSLATE_BENCH_ARITHMETIC: usize = 15;
+const TRANSLATE_BENCH_BACK_BRANCH: [u8; 6] = [0x0f, 0x85, 0xcd, 0xff, 0xff, 0xff];
+const TRANSLATE_BENCH_BYTES: usize = 3 * TRANSLATE_BENCH_ARITHMETIC + 6 + 1;
+const TRANSLATE_BENCH_ADDRESS: u64 = 0x1_4000_1000;
+
+fn translate_bench_code() -> [u8; TRANSLATE_BENCH_BYTES] {
+    let mut code = [0u8; TRANSLATE_BENCH_BYTES];
+    for index in 0..TRANSLATE_BENCH_ARITHMETIC {
+        code[3 * index..3 * index + 3].copy_from_slice(&TRANSLATE_BENCH_PATTERN[index % 3]);
+    }
+    let branch = 3 * TRANSLATE_BENCH_ARITHMETIC;
+    code[branch..branch + 6].copy_from_slice(&TRANSLATE_BENCH_BACK_BRANCH);
+    code[branch + 6] = 0xc3;
+    code
+}
+
+fn translate_block_16(n: u64) {
+    use eggos_translate::codegen::{CodegenMode, Flags, form_block, translate_block};
+    let code = translate_bench_code();
+    let mode = CodegenMode {
+        lse: true,
+        ..CodegenMode::default()
+    };
+    for _ in 0..n {
+        let block = form_block(
+            black_box(&code),
+            TRANSLATE_BENCH_ADDRESS,
+            TRANSLATE_BENCH_ADDRESS,
+        );
+        let _ = black_box(translate_block(&block, mode, Flags::ALL));
     }
 }
 
@@ -1353,6 +1454,10 @@ fn linux_fork<P: Platform>(memory: &mut Memory<P>, n: u64) {
     run_process_loop(memory, b"fork-loop", n);
 }
 
+fn linux_fork_touch<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    run_process_loop(memory, b"fork-touch-loop", n);
+}
+
 fn linux_vfork_exec<P: Platform>(memory: &mut Memory<P>, n: u64) {
     run_process_loop(memory, b"spawn-loop", n);
 }
@@ -1393,6 +1498,36 @@ fn run_process_loop<P: Platform>(memory: &mut Memory<P>, mode: &[u8], n: u64) {
         Some(process::ProcessExit::Exited(0)),
         "the process loop ran to its end"
     );
+}
+
+fn linux_epoll_wake<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::descriptors::{EventFile, FileKind};
+    use linux::{epoll, eventfd};
+    // SAFETY: as in `process_syscall_round_trip`.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let mut thread = linux::thread::LinuxThread::first(&program);
+    let nonblocking = u64::from(eventfd::flag::NONBLOCK);
+    let counter_fd =
+        eventfd::eventfd2(&program, &thread, 0, nonblocking).expect("a descriptor is free");
+    let epoll_fd = epoll::epoll_create1(&program, &thread, 0).expect("a descriptor is free");
+    let counter_file = thread.files().file(counter_fd).expect("it was just opened");
+    let epoll_file = thread.files().file(epoll_fd).expect("it was just opened");
+    let (FileKind::Event(EventFile::EventFd(counter)), FileKind::Event(EventFile::Epoll(epoll))) =
+        (counter_file.kind(), epoll_file.kind())
+    else {
+        unreachable!("eventfd2 and epoll_create1 open these")
+    };
+    epoll
+        .add(&counter_file, counter_fd as u32, epoll::event::IN, 1)
+        .expect("there is memory for the item");
+    let program = Arc::new(program);
+    let mut events = [(0u32, 0u64); 4];
+    for _ in 0..n {
+        black_box(counter.add(black_box(1)));
+        let polled = epoll::wait::<P>(&program, &mut thread, epoll, &mut events, None);
+        black_box((polled, counter.take()));
+    }
 }
 
 /// The pages a Linux program's page faults map, in chunks of this many per process.
@@ -1445,8 +1580,7 @@ fn linux_mmap_munmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
 
 fn linux_unix_stream_send_recv(n: u64) {
     use linux::unix_socket::{PeerCredentials, Taken, UnixSocket};
-    fn no_wake() {}
-    let (first, second) = UnixSocket::pair(PeerCredentials::NONE, no_wake);
+    let (first, second) = UnixSocket::pair(PeerCredentials::NONE);
     let (sending, side) = first.connected().expect("a pair is connected");
     let (receiving, other) = second.connected().expect("a pair is connected");
     let message = [0x5a_u8; 64];
@@ -1498,6 +1632,49 @@ fn linux_memfd_map_unmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
     });
 }
 
+fn linux_file_map_read_unmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::descriptors::{Descriptors, FileKind, OpenFile, open_flag};
+    use linux::memory::{MappedFile, map, prot};
+    const PROGRAM: &[u8] = b"/usr/libexec/eggos-selftest";
+    const PAGES: u64 = 16;
+    let Ok(node) = crate::vfs::resolve(crate::vfs::root(), crate::vfs::root(), PROGRAM) else {
+        return;
+    };
+    let length = (node.attributes().size / FRAME_SIZE).min(PAGES) * FRAME_SIZE;
+    if length == 0 {
+        return;
+    }
+    // SAFETY: as in `process_syscall_round_trip`.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let files = Descriptors::with_console_streams();
+    let open = alloc::sync::Arc::new(OpenFile::new(FileKind::Regular(node), open_flag::RDONLY));
+    let fd = files
+        .lock()
+        .open(open, false, 64)
+        .expect("descriptor 3 is free");
+    let mapped = MappedFile {
+        files: &files,
+        fd: u64::from(fd),
+    };
+    let mut word = [0u8; 8];
+    program.with_active(|| {
+        for _ in 0..n {
+            let start =
+                linux::memory::mmap_file(&program, 0, length, prot::READ, map::PRIVATE, mapped, 0)
+                    .expect("16 pages fit");
+            for page in (start..start + length).step_by(FRAME_SIZE as usize) {
+                program
+                    .read_user_memory(page, &mut word)
+                    .expect("the file's pages are read");
+            }
+            black_box(word);
+            linux::memory::munmap(&program, black_box(start), length)
+                .expect("the pages were just mapped");
+        }
+    });
+}
+
 fn linux_descriptor_lookup(n: u64) {
     let files = linux::descriptors::Descriptors::with_console_streams();
     for _ in 0..n {
@@ -1519,6 +1696,19 @@ fn linux_dup3_close<P: Platform>(memory: &mut Memory<P>, n: u64) {
         let fd = descriptors::dup3(&program, &files, 1, black_box(3), flags)
             .expect("descriptor 1 is open and 3 below the limit");
         descriptors::close(&files, black_box(fd)).expect("descriptor 3 was just opened");
+    }
+}
+
+fn linux_dup3_replace<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::descriptors::{self, Descriptors};
+    // SAFETY: as in `process_syscall_round_trip`.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let files = Descriptors::with_console_streams();
+    for _ in 0..n {
+        let fd = descriptors::dup3(&program, &files, 0, black_box(1), 0)
+            .expect("descriptor 0 is open and 1 below the limit");
+        black_box(fd);
     }
 }
 
@@ -1812,8 +2002,8 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (machine_only, terminal) = all[all.len() - 23..].split_at(16);
-        let benchmarks = &[&all[..all.len() - 23], terminal].concat()[..];
+        let (machine_only, terminal) = all[all.len() - 27..].split_at(20);
+        let benchmarks = &[&all[..all.len() - 27], terminal].concat()[..];
         let [
             (syscall, _),
             (process_syscall, _),
@@ -1825,12 +2015,16 @@ mod tests {
             (linux_page_fault, _),
             (linux_mmap_munmap, _),
             (linux_memfd_map_unmap, _),
+            (linux_file_map_read_unmap, _),
             (linux_dup3_close, _),
+            (linux_dup3_replace, _),
             (linux_descriptor_lookup, _),
             (linux_openat_close, _),
             (linux_file_read, _),
             (linux_fork, _),
+            (linux_fork_touch, _),
             (linux_vfork_exec, _),
+            (linux_epoll_wake, _),
         ] = machine_only
         else {
             unreachable!()
@@ -1859,12 +2053,16 @@ mod tests {
                 *linux_page_fault,
                 *linux_mmap_munmap,
                 *linux_memfd_map_unmap,
+                *linux_file_map_read_unmap,
                 *linux_dup3_close,
+                *linux_dup3_replace,
                 *linux_descriptor_lookup,
                 *linux_openat_close,
                 *linux_file_read,
                 *linux_fork,
-                *linux_vfork_exec
+                *linux_fork_touch,
+                *linux_vfork_exec,
+                *linux_epoll_wake
             ],
             [
                 "syscall_round_trip",
@@ -1877,12 +2075,16 @@ mod tests {
                 "linux_page_fault",
                 "linux_mmap_munmap",
                 "linux_memfd_map_unmap",
+                "linux_file_map_read_unmap",
                 "linux_dup3_close",
+                "linux_dup3_replace",
                 "linux_descriptor_lookup",
                 "linux_openat_close",
                 "linux_file_read",
                 "linux_fork",
-                "linux_vfork_exec"
+                "linux_fork_touch",
+                "linux_vfork_exec",
+                "linux_epoll_wake"
             ]
         );
         assert_eq!(

@@ -10,12 +10,19 @@ name = "coreutils"
 path = "src/main.rs"
 
 [dependencies]
+eggos-android-log = { path = "../../android-log" }
+eggos-android-properties = { path = "../../android-properties" }
 eggos-app = { path = "../app" }
 eggos-calendar = { path = "../../calendar" }
+eggos-commands = { path = "../commands" }
+eggos-element-tree = { path = "../element-tree" }
 eggos-files = { path = "../files" }
 eggos-mcp = { path = "../mcp" }
+eggos-net = { path = "../../net" }
 eggos-png = { path = "../../png" }
 eggos-runtime = { path = "../runtime" }
+eggos-settings-file = { path = "../../settings-file" }
+eggos-tls = { path = "../../tls" }
 
 [dev-dependencies]
 eggos-drivers = { path = "../../drivers" }

@@ -1,10 +1,10 @@
 use crate::architecture::Architecture::{self, Aarch64, Riscv64, X86_64};
-use crate::archive::samples::{deflate_fixed_literals, deflated, stored, zip};
+use crate::archive::samples::{Member, deflate_fixed_literals, deflated, stored, zip};
 use crate::fake::{FakeFiles, Node, Operation};
-use crate::files::Path;
+use crate::files::{Files, Kind, Path};
 use crate::installer::*;
 use crate::program::NotRunnable;
-use crate::program::samples::{linux_program, mach_o, windows_program};
+use crate::program::samples::{dynamic_program, linux_program, mach_o, windows_program};
 use eggos_app_manifest::Source;
 
 fn host_with(path: &str, bytes: &[u8]) -> FakeFiles {
@@ -357,8 +357,123 @@ fn uninstall_removes_the_manifest_first_then_everything_else() {
     assert_eq!(uninstall(&mut files, b"Stray"), Err(Problem::NotInstalled));
 }
 
+fn framework_bundle() -> FakeFiles {
+    let mut files = FakeFiles::new();
+    let framework = "/media/host/Tool.app/Contents/Frameworks/Kit.framework";
+    let versions = format!("{framework}/Versions");
+    let version = format!("{framework}/Versions/A");
+    for folder in [
+        "/media/host/Tool.app",
+        "/media/host/Tool.app/Contents",
+        "/media/host/Tool.app/Contents/MacOS",
+        "/media/host/Tool.app/Contents/Frameworks",
+        framework,
+        versions.as_str(),
+        version.as_str(),
+    ] {
+        files.directory(folder);
+    }
+    files.file(
+        "/media/host/Tool.app/Contents/MacOS/Tool",
+        &mach_o(0x0100_0007, 2),
+    );
+    files.file(&format!("{framework}/Versions/A/Kit"), &[9; 40]);
+    files.link(&format!("{framework}/Versions/Current"), "A");
+    files.link(&format!("{framework}/Kit"), "Versions/Current/Kit");
+    files.link(
+        "/media/host/Tool.app/Contents/MacOS/Kit",
+        "../Frameworks/Kit.framework/Kit",
+    );
+    files
+}
+
 #[test]
-fn a_bundle_with_a_link_or_too_deep_is_refused() {
+fn a_bundle_s_symbolic_links_are_made_again_as_links() {
+    let mut files = framework_bundle();
+    let plan = planned(&mut files, "/media/host/Tool.app", X86_64);
+    assert_eq!(plan.total_bytes(), 64 + 40);
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    let framework = "/Applications/Tool/Tool.app/Contents/Frameworks/Kit.framework";
+    assert_eq!(
+        files.find(&format!("{framework}/Versions/Current")),
+        Some(&Node::Link(b"A".to_vec()))
+    );
+    assert_eq!(
+        files.find(&format!("{framework}/Kit")),
+        Some(&Node::Link(b"Versions/Current/Kit".to_vec()))
+    );
+    assert_eq!(
+        files.find("/Applications/Tool/Tool.app/Contents/MacOS/Kit"),
+        Some(&Node::Link(b"../Frameworks/Kit.framework/Kit".to_vec()))
+    );
+    assert!(files.log.contains(&Operation::MakeLink(
+        "A".into(),
+        format!("{framework}/Versions/Current")
+    )));
+    let mut target = [0u8; 64];
+    let through = files
+        .status_following(format!("{framework}/Kit").as_bytes())
+        .unwrap();
+    assert_eq!((through.kind, through.size), (Kind::File, 40));
+    assert_eq!(
+        files.read_link(format!("{framework}/Kit").as_bytes(), &mut target),
+        Ok(20)
+    );
+    assert!(manifest_of(&files, "Tool").contains("run=Tool.app/Contents/MacOS/Tool\n"));
+    uninstall(&mut files, b"Tool").unwrap();
+    assert!(files.paths_under("/Applications/").is_empty());
+}
+
+#[test]
+fn a_bundle_s_link_that_could_lead_outside_it_is_refused() {
+    for target in [
+        "/etc/passwd",
+        "../../../../../etc",
+        "../../../..",
+        "Versions/../../..",
+        "A/../A",
+        "",
+    ] {
+        let mut files = framework_bundle();
+        files.link(
+            "/media/host/Tool.app/Contents/Frameworks/Kit.framework/Escape",
+            target,
+        );
+        assert_eq!(
+            refused(&mut files, "/media/host/Tool.app", X86_64),
+            Problem::UnsafeLink,
+            "{target}"
+        );
+        assert!(files.paths_under("/Applications/").is_empty());
+    }
+}
+
+#[test]
+fn a_link_stays_inside_when_its_climbs_come_first_and_stop_at_its_folder() {
+    for (link, target, inside) in [
+        ("Current", "A", true),
+        ("Kit.framework/Kit", "Versions/Current/Kit", true),
+        ("Contents/MacOS/Kit", "../Frameworks/Kit", true),
+        ("Contents/MacOS/Kit", "../../Contents", true),
+        ("Contents/MacOS/Kit", "../../..", false),
+        ("Kit", "..", false),
+        ("Kit", ".", true),
+        ("Kit", "./A//B/", true),
+        ("a/b/c", "../../x/../y", false),
+        ("a/b", "/a", false),
+        ("a/b", "", false),
+        ("a/b", "x\0y", false),
+    ] {
+        assert_eq!(
+            link_stays_inside(link.as_bytes(), target.as_bytes()),
+            inside,
+            "{link} -> {target}"
+        );
+    }
+}
+
+#[test]
+fn a_bundle_with_a_device_or_too_deep_is_refused() {
     let mut files = FakeFiles::new();
     files.directory("/media/host/Link.app");
     files.directory("/media/host/Link.app/Contents");
@@ -481,6 +596,78 @@ fn a_zip_s_one_program_installs_with_everything_beside_it_and_no_mac_metadata() 
     );
     assert!(manifest_of(&files, "win-paint").contains("run=bin/win-paint.exe\n"));
     assert_eq!(files.open_count(), 0);
+}
+
+fn link_member(name: &str, target: &str) -> Member<'static> {
+    Member {
+        mode: Some(0o120_777),
+        ..stored(name, target.as_bytes())
+    }
+}
+
+#[test]
+fn a_zip_s_symbolic_links_are_made_as_links_when_they_stay_inside() {
+    let zip = zip(&[
+        stored(
+            "mac-tool.app/Contents/MacOS/mac-tool",
+            &mach_o(0x0100_000c, 2),
+        ),
+        stored(
+            "mac-tool.app/Contents/Frameworks/Kit.framework/Versions/A/Kit",
+            b"kit",
+        ),
+        link_member(
+            "mac-tool.app/Contents/Frameworks/Kit.framework/Versions/Current",
+            "A",
+        ),
+        link_member(
+            "mac-tool.app/Contents/Frameworks/Kit.framework/Kit",
+            "Versions/Current/Kit",
+        ),
+    ]);
+    let mut files = host_with("/media/host/mac-tool.zip", &zip);
+    let plan = planned(&mut files, "/media/host/mac-tool.zip", Aarch64);
+    assert_eq!(plan.run(), b"mac-tool.app/Contents/MacOS/mac-tool");
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    let framework = "/Applications/mac-tool/mac-tool.app/Contents/Frameworks/Kit.framework";
+    assert_eq!(
+        files.find(&format!("{framework}/Versions/Current")),
+        Some(&Node::Link(b"A".to_vec()))
+    );
+    assert_eq!(
+        files.find(&format!("{framework}/Kit")),
+        Some(&Node::Link(b"Versions/Current/Kit".to_vec()))
+    );
+    uninstall(&mut files, b"mac-tool").unwrap();
+    assert!(files.paths_under("/Applications/").is_empty());
+}
+
+#[test]
+fn a_zip_s_link_that_leads_out_or_that_an_entry_goes_through_is_refused() {
+    let program = windows_program(0x8664);
+    for (members, problem) in [
+        (
+            vec![stored("tool.exe", &program), link_member("up", "..")],
+            Problem::UnsafeLink,
+        ),
+        (
+            vec![stored("tool.exe", &program), link_member("etc", "/etc")],
+            Problem::UnsafeLink,
+        ),
+        (
+            vec![
+                stored("tool.exe", &program),
+                link_member("here", "."),
+                stored("here/inner/x", b"x"),
+            ],
+            Problem::Archive(crate::archive::ArchiveError::UnsafeName),
+        ),
+    ] {
+        let mut files = host_with("/media/host/tool.zip", &zip(&members));
+        let plan = planned(&mut files, "/media/host/tool.zip", X86_64);
+        assert_eq!(install(&mut files, plan, &mut [0u8; 64]), Err(problem));
+        assert!(files.paths_under("/Applications/").is_empty());
+    }
 }
 
 #[test]
@@ -915,4 +1102,206 @@ fn extracting_checks_reserved_names_and_the_size_again() {
     );
     assert!(files.paths_under("/Applications/").is_empty());
     assert_eq!(files.open_count(), 0);
+}
+
+fn with_apps(names: &[&str]) -> FakeFiles {
+    let mut files = FakeFiles::new();
+    for name in names {
+        files.directory(&format!("/Applications/{name}"));
+        files.file(
+            &format!("/Applications/{name}/app.manifest"),
+            format!("eggos-app 1\nname={name}\nsource=linux\nrun={name}\n").as_bytes(),
+        );
+    }
+    files
+}
+
+fn page_of(
+    files: &mut FakeFiles,
+    limit: Option<usize>,
+    after: Option<&str>,
+) -> (Vec<String>, Option<String>) {
+    let mut names = Vec::new();
+    let next = for_each_installed_page(files, limit, after.map(str::as_bytes), |app| {
+        names.push(app.name.to_owned())
+    })
+    .unwrap();
+    (names, next.map(|name| name.as_str().to_owned()))
+}
+
+#[test]
+fn installed_apps_page_by_name_in_the_folder_s_order() {
+    let mut files = with_apps(&["pear", "apple", "fig", "kiwi"]);
+    assert_eq!(
+        page_of(&mut files, Some(2), None),
+        (
+            vec!["apple".to_owned(), "fig".to_owned()],
+            Some("fig".to_owned())
+        )
+    );
+    assert_eq!(
+        page_of(&mut files, Some(2), Some("fig")),
+        (vec!["pear".to_owned(), "kiwi".to_owned()], None)
+    );
+    assert_eq!(
+        page_of(&mut files, None, Some("kiwi")),
+        (vec!["pear".to_owned()], None)
+    );
+    assert_eq!(
+        page_of(&mut files, Some(9), Some("pear")),
+        (Vec::new(), None)
+    );
+    assert_eq!(page_of(&mut files, None, None).0.len(), 4);
+}
+
+#[test]
+fn a_dynamically_linked_program_installs_with_the_loader_and_libraries_its_zip_holds() {
+    let program = dynamic_program(62, b"/lib/ld-musl-x86_64.so.1");
+    let archive = zip(&[
+        stored("brogue", &program),
+        stored("lib/ld-musl-x86_64.so.1", &linux_program(62)),
+        stored("lib/libSDL3.so.0", b"library"),
+        stored("share/brogue/keymap.txt", b"keys"),
+    ]);
+    let mut files = host_with("/media/host/brogue.zip", &archive);
+    let plan = planned(&mut files, "/media/host/brogue.zip", X86_64)
+        .with_arguments(b"-n --data-dir /Applications/brogue/share/brogue")
+        .unwrap();
+    assert_eq!(plan.name(), "brogue");
+    assert_eq!(
+        plan.loader().map(|loader| loader.path.as_bytes()),
+        Some(&b"lib/ld-musl-x86_64.so.1"[..])
+    );
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    let manifest = manifest_of(&files, "brogue");
+    assert!(
+        manifest.contains(
+            "run=brogue\narchitecture=x86_64\nloader=lib/ld-musl-x86_64.so.1\nlibraries=lib\n\
+             arguments=-n --data-dir /Applications/brogue/share/brogue\n"
+        ),
+        "{manifest}"
+    );
+    let alone = zip(&[
+        stored("brogue", &program),
+        stored("lib/libSDL3.so.0", b"library"),
+    ]);
+    let mut files = host_with("/media/host/brogue.zip", &alone);
+    assert_eq!(
+        refused(&mut files, "/media/host/brogue.zip", X86_64),
+        Problem::NotRunnable(NotRunnable::NeedsDynamicLoader)
+    );
+    let mut files = host_with("/media/host/brogue.zip", &archive);
+    let unsafe_words = planned(&mut files, "/media/host/brogue.zip", X86_64)
+        .with_arguments(b"-n; reboot")
+        .unwrap_err();
+    assert_eq!(unsafe_words.problem, Problem::InvalidArguments);
+    let mut files = host_with("/media/host/brogue", &program);
+    assert_eq!(
+        refused(&mut files, "/media/host/brogue", X86_64),
+        Problem::NotRunnable(NotRunnable::NeedsDynamicLoader)
+    );
+}
+
+#[test]
+fn plugin_folders_stay_off_the_library_path_when_the_zip_holds_versioned_libraries() {
+    let program = dynamic_program(62, b"/lib/ld-musl-x86_64.so.1");
+    let archive = zip(&[
+        stored("corepad", &program),
+        stored("lib/ld-musl-x86_64.so.1", &linux_program(62)),
+        stored("lib/libQt6Core.so.6", b"library"),
+        stored(
+            "plugins/platforminputcontexts/libcomposeplatforminputcontextplugin.so",
+            b"plugin",
+        ),
+        stored("plugins/platforms/libqwayland.so", b"plugin"),
+        stored(
+            "plugins/wayland-decoration-client/libbradient.so",
+            b"plugin",
+        ),
+        stored(
+            "plugins/wayland-shell-integration/libxdg-shell.so",
+            b"plugin",
+        ),
+    ]);
+    let mut files = host_with("/media/host/corepad.zip", &archive);
+    let plan = planned(&mut files, "/media/host/corepad.zip", X86_64);
+    assert_eq!(
+        plan.loader().map(|loader| loader.libraries.as_bytes()),
+        Some(&b"lib"[..])
+    );
+
+    let program = dynamic_program(62, b"/lib/ld-eggos.so");
+    let unversioned = zip(&[
+        stored("player", &program),
+        stored("lib/ld-eggos.so", &linux_program(62)),
+        stored("lib/libplayer.so", b"library"),
+        stored("codecs/libffmpeg.so", b"library"),
+    ]);
+    let mut files = host_with("/media/host/player.zip", &unversioned);
+    let plan = planned(&mut files, "/media/host/player.zip", X86_64);
+    assert_eq!(
+        plan.loader().map(|loader| loader.libraries.as_bytes()),
+        Some(&b"lib:codecs"[..])
+    );
+}
+
+#[test]
+fn an_app_s_environment_is_written_and_its_fonts_are_linked_where_fontconfig_looks() {
+    let program = dynamic_program(183, b"/lib/ld-musl-aarch64.so.1");
+    let archive = zip(&[
+        stored("mousepad", &program),
+        stored("lib/ld-musl-aarch64.so.1", &linux_program(183)),
+        stored("lib/libgtk-3.so.0", b"library"),
+        stored("share/fonts/DejaVuSans.ttf", b"font"),
+    ]);
+    let mut files = host_with("/media/host/mousepad.zip", &archive);
+    let plan = planned(&mut files, "/media/host/mousepad.zip", Aarch64)
+        .with_environment(b"XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1")
+        .unwrap();
+    assert_eq!(
+        plan.environment(),
+        Some(&b"XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1"[..])
+    );
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    let manifest = manifest_of(&files, "mousepad");
+    assert!(
+        manifest
+            .contains("environment=XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1\n"),
+        "{manifest}"
+    );
+    assert_eq!(
+        files.find("/Applications/.fonts/mousepad"),
+        Some(&Node::Link(b"/Applications/mousepad/share/fonts".to_vec()))
+    );
+    assert!(
+        installed_names(&mut files)
+            .iter()
+            .all(|name| name != ".fonts")
+    );
+    uninstall(&mut files, b"mousepad").unwrap();
+    assert!(files.paths_under("/Applications/").is_empty());
+
+    let mut files = host_with("/media/host/mousepad.zip", &archive);
+    let unsafe_words = planned(&mut files, "/media/host/mousepad.zip", Aarch64)
+        .with_environment(b"PATH=$(reboot)")
+        .unwrap_err();
+    assert_eq!(unsafe_words.problem, Problem::InvalidEnvironment);
+    let taken = plan_entry(
+        &mut files,
+        b"/media/host/mousepad.zip",
+        Some(FONTS_FOLDER),
+        None,
+        Aarch64,
+    )
+    .unwrap_err();
+    assert_eq!(taken.problem, Problem::InvalidName);
+
+    let without = zip(&[
+        stored("mousepad", &program),
+        stored("lib/ld-musl-aarch64.so.1", &linux_program(183)),
+    ]);
+    let mut files = host_with("/media/host/mousepad.zip", &without);
+    let plan = planned(&mut files, "/media/host/mousepad.zip", Aarch64);
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    assert_eq!(files.find("/Applications/.fonts"), None);
 }

@@ -1,9 +1,13 @@
 //! The interfaces EggOS's Wayland server serves, with their requests' signatures and their
-//! events' opcodes, errors and enums, from `wayland.xml` and `xdg-shell.xml`. Request tables are
-//! indexed by opcode; a request whose `since` is above the object's version is no request of
-//! that object's.
+//! events' opcodes, errors and enums, from `wayland.xml`, `xdg-shell.xml`,
+//! `xdg-decoration-unstable-v1.xml`, `cursor-shape-v1.xml`, `viewporter.xml`,
+//! `primary-selection-unstable-v1.xml`, `xdg-activation-v1.xml`, `text-input-unstable-v3.xml`,
+//! `fractional-scale-v1.xml` and KDE's `server-decoration.xml`. Request tables are indexed by opcode; a request whose
+//! `since` is above the object's version is no request of that object's.
 
-use crate::wire::Arg::{self, Array, Fd, Fixed, Int, NewId, NullableObject, Object, String, Uint};
+use crate::wire::Arg::{
+    self, Array, Fd, Fixed, Int, NewId, NullableObject, NullableString, Object, String, Uint,
+};
 
 /// The interfaces the server knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +31,30 @@ pub enum Interface {
     XdgSurface,
     XdgToplevel,
     XdgPopup,
+    Subcompositor,
+    Subsurface,
+    DecorationManager,
+    ToplevelDecoration,
+    CursorShapeManager,
+    CursorShapeDevice,
+    Viewporter,
+    Viewport,
+    DataDeviceManager,
+    DataSource,
+    DataDevice,
+    DataOffer,
+    PrimarySelectionDeviceManager,
+    PrimarySelectionDevice,
+    PrimarySelectionOffer,
+    PrimarySelectionSource,
+    Activation,
+    ActivationToken,
+    TextInputManager,
+    TextInput,
+    ServerDecorationManager,
+    ServerDecoration,
+    FractionalScaleManager,
+    FractionalScale,
 }
 
 impl Interface {
@@ -52,6 +80,30 @@ impl Interface {
             Self::XdgSurface => "xdg_surface",
             Self::XdgToplevel => "xdg_toplevel",
             Self::XdgPopup => "xdg_popup",
+            Self::Subcompositor => "wl_subcompositor",
+            Self::Subsurface => "wl_subsurface",
+            Self::DecorationManager => "zxdg_decoration_manager_v1",
+            Self::ToplevelDecoration => "zxdg_toplevel_decoration_v1",
+            Self::CursorShapeManager => "wp_cursor_shape_manager_v1",
+            Self::CursorShapeDevice => "wp_cursor_shape_device_v1",
+            Self::Viewporter => "wp_viewporter",
+            Self::Viewport => "wp_viewport",
+            Self::DataDeviceManager => "wl_data_device_manager",
+            Self::DataSource => "wl_data_source",
+            Self::DataDevice => "wl_data_device",
+            Self::DataOffer => "wl_data_offer",
+            Self::PrimarySelectionDeviceManager => "zwp_primary_selection_device_manager_v1",
+            Self::PrimarySelectionDevice => "zwp_primary_selection_device_v1",
+            Self::PrimarySelectionOffer => "zwp_primary_selection_offer_v1",
+            Self::PrimarySelectionSource => "zwp_primary_selection_source_v1",
+            Self::Activation => "xdg_activation_v1",
+            Self::ActivationToken => "xdg_activation_token_v1",
+            Self::TextInputManager => "zwp_text_input_manager_v3",
+            Self::TextInput => "zwp_text_input_v3",
+            Self::ServerDecorationManager => "org_kde_kwin_server_decoration_manager",
+            Self::ServerDecoration => "org_kde_kwin_server_decoration",
+            Self::FractionalScaleManager => "wp_fractional_scale_manager_v1",
+            Self::FractionalScale => "wp_fractional_scale_v1",
         }
     }
 }
@@ -182,6 +234,121 @@ const XDG_POPUP: &[Request] = &[
     request("grab", 1, &[Object, Uint]),
     request("reposition", 3, &[Object, Uint]),
 ];
+const SUBCOMPOSITOR: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_subsurface", 1, &[NewId, Object, Object]),
+];
+const SUBSURFACE: &[Request] = &[
+    destructor("destroy", 1),
+    request("set_position", 1, &[Int, Int]),
+    request("place_above", 1, &[Object]),
+    request("place_below", 1, &[Object]),
+    request("set_sync", 1, &[]),
+    request("set_desync", 1, &[]),
+];
+const DECORATION_MANAGER: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_toplevel_decoration", 1, &[NewId, Object]),
+];
+const TOPLEVEL_DECORATION: &[Request] = &[
+    destructor("destroy", 1),
+    request("set_mode", 1, &[Uint]),
+    request("unset_mode", 1, &[]),
+];
+const CURSOR_SHAPE_MANAGER: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_pointer", 1, &[NewId, Object]),
+    request("get_tablet_tool_v2", 1, &[NewId, Object]),
+];
+const CURSOR_SHAPE_DEVICE: &[Request] = &[
+    destructor("destroy", 1),
+    request("set_shape", 1, &[Uint, Uint]),
+];
+const VIEWPORTER: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_viewport", 1, &[NewId, Object]),
+];
+const VIEWPORT: &[Request] = &[
+    destructor("destroy", 1),
+    request("set_source", 1, &[Fixed, Fixed, Fixed, Fixed]),
+    request("set_destination", 1, &[Int, Int]),
+];
+const DATA_DEVICE_MANAGER: &[Request] = &[
+    request("create_data_source", 1, &[NewId]),
+    request("get_data_device", 1, &[NewId, Object]),
+];
+const DATA_SOURCE: &[Request] = &[
+    request("offer", 1, &[String]),
+    destructor("destroy", 1),
+    request("set_actions", 3, &[Uint]),
+];
+const DATA_DEVICE: &[Request] = &[
+    request(
+        "start_drag",
+        1,
+        &[NullableObject, Object, NullableObject, Uint],
+    ),
+    request("set_selection", 1, &[NullableObject, Uint]),
+    destructor("release", 2),
+];
+const DATA_OFFER: &[Request] = &[
+    request("accept", 1, &[Uint, NullableString]),
+    request("receive", 1, &[String, Fd]),
+    destructor("destroy", 1),
+    request("finish", 3, &[]),
+    request("set_actions", 3, &[Uint, Uint]),
+];
+const PRIMARY_SELECTION_DEVICE_MANAGER: &[Request] = &[
+    request("create_source", 1, &[NewId]),
+    request("get_device", 1, &[NewId, Object]),
+    destructor("destroy", 1),
+];
+const PRIMARY_SELECTION_DEVICE: &[Request] = &[
+    request("set_selection", 1, &[NullableObject, Uint]),
+    destructor("destroy", 1),
+];
+const PRIMARY_SELECTION_OFFER: &[Request] = &[
+    request("receive", 1, &[String, Fd]),
+    destructor("destroy", 1),
+];
+const PRIMARY_SELECTION_SOURCE: &[Request] =
+    &[request("offer", 1, &[String]), destructor("destroy", 1)];
+const ACTIVATION: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_activation_token", 1, &[NewId]),
+    request("activate", 1, &[String, Object]),
+];
+const ACTIVATION_TOKEN: &[Request] = &[
+    request("set_serial", 1, &[Uint, Object]),
+    request("set_app_id", 1, &[String]),
+    request("set_surface", 1, &[Object]),
+    request("commit", 1, &[]),
+    destructor("destroy", 1),
+];
+const TEXT_INPUT_MANAGER: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_text_input", 1, &[NewId, Object]),
+];
+const TEXT_INPUT: &[Request] = &[
+    destructor("destroy", 1),
+    request("enable", 1, &[]),
+    request("disable", 1, &[]),
+    request("set_surrounding_text", 1, &[String, Int, Int]),
+    request("set_text_change_cause", 1, &[Uint]),
+    request("set_content_type", 1, &[Uint, Uint]),
+    request("set_cursor_rectangle", 1, RECT),
+    request("commit", 1, &[]),
+];
+const SERVER_DECORATION_MANAGER: &[Request] = &[request("create", 1, &[NewId, Object])];
+const SERVER_DECORATION: &[Request] = &[
+    destructor("release", 1),
+    request("request_mode", 1, &[Uint]),
+];
+const FRACTIONAL_SCALE_MANAGER: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_fractional_scale", 1, &[NewId, Object]),
+];
+const FRACTIONAL_SCALE: &[Request] = &[destructor("destroy", 1)];
 
 /// `interface`'s requests, indexed by opcode.
 pub const fn requests(interface: Interface) -> &'static [Request] {
@@ -205,6 +372,30 @@ pub const fn requests(interface: Interface) -> &'static [Request] {
         Interface::XdgSurface => XDG_SURFACE,
         Interface::XdgToplevel => XDG_TOPLEVEL,
         Interface::XdgPopup => XDG_POPUP,
+        Interface::Subcompositor => SUBCOMPOSITOR,
+        Interface::Subsurface => SUBSURFACE,
+        Interface::DecorationManager => DECORATION_MANAGER,
+        Interface::ToplevelDecoration => TOPLEVEL_DECORATION,
+        Interface::CursorShapeManager => CURSOR_SHAPE_MANAGER,
+        Interface::CursorShapeDevice => CURSOR_SHAPE_DEVICE,
+        Interface::Viewporter => VIEWPORTER,
+        Interface::Viewport => VIEWPORT,
+        Interface::DataDeviceManager => DATA_DEVICE_MANAGER,
+        Interface::DataSource => DATA_SOURCE,
+        Interface::DataDevice => DATA_DEVICE,
+        Interface::DataOffer => DATA_OFFER,
+        Interface::PrimarySelectionDeviceManager => PRIMARY_SELECTION_DEVICE_MANAGER,
+        Interface::PrimarySelectionDevice => PRIMARY_SELECTION_DEVICE,
+        Interface::PrimarySelectionOffer => PRIMARY_SELECTION_OFFER,
+        Interface::PrimarySelectionSource => PRIMARY_SELECTION_SOURCE,
+        Interface::Activation => ACTIVATION,
+        Interface::ActivationToken => ACTIVATION_TOKEN,
+        Interface::TextInputManager => TEXT_INPUT_MANAGER,
+        Interface::TextInput => TEXT_INPUT,
+        Interface::ServerDecorationManager => SERVER_DECORATION_MANAGER,
+        Interface::ServerDecoration => SERVER_DECORATION,
+        Interface::FractionalScaleManager => FRACTIONAL_SCALE_MANAGER,
+        Interface::FractionalScale => FRACTIONAL_SCALE,
     }
 }
 
@@ -224,7 +415,7 @@ pub struct Global {
 }
 
 /// Every global, in the order the registry announces them.
-pub const GLOBALS: [Global; 5] = [
+pub const GLOBALS: [Global; 15] = [
     Global {
         name: 1,
         interface: Interface::Compositor,
@@ -243,12 +434,62 @@ pub const GLOBALS: [Global; 5] = [
     Global {
         name: 4,
         interface: Interface::Output,
-        version: 3,
+        version: 4,
     },
     Global {
         name: 5,
         interface: Interface::XdgWmBase,
+        version: 5,
+    },
+    Global {
+        name: 6,
+        interface: Interface::Subcompositor,
+        version: 1,
+    },
+    Global {
+        name: 7,
+        interface: Interface::DecorationManager,
+        version: 1,
+    },
+    Global {
+        name: 8,
+        interface: Interface::CursorShapeManager,
+        version: 1,
+    },
+    Global {
+        name: 9,
+        interface: Interface::Viewporter,
+        version: 1,
+    },
+    Global {
+        name: 10,
+        interface: Interface::DataDeviceManager,
         version: 3,
+    },
+    Global {
+        name: 11,
+        interface: Interface::PrimarySelectionDeviceManager,
+        version: 1,
+    },
+    Global {
+        name: 12,
+        interface: Interface::Activation,
+        version: 1,
+    },
+    Global {
+        name: 13,
+        interface: Interface::TextInputManager,
+        version: 1,
+    },
+    Global {
+        name: 14,
+        interface: Interface::ServerDecorationManager,
+        version: 1,
+    },
+    Global {
+        name: 15,
+        interface: Interface::FractionalScaleManager,
+        version: 1,
     },
 ];
 
@@ -348,6 +589,7 @@ pub mod pointer {
     pub const RELEASED: u32 = 0;
     pub const PRESSED: u32 = 1;
     pub const VERTICAL_SCROLL: u32 = 0;
+    pub const HORIZONTAL_SCROLL: u32 = 1;
     pub const ROLE: u32 = 0;
 }
 
@@ -372,6 +614,8 @@ pub mod output {
     pub const MODE: Event = event(1, 1);
     pub const DONE: Event = event(2, 2);
     pub const SCALE: Event = event(3, 2);
+    pub const NAME: Event = event(4, 4);
+    pub const DESCRIPTION: Event = event(5, 4);
     pub const SUBPIXEL_UNKNOWN: i32 = 0;
     pub const TRANSFORM_NORMAL: i32 = 0;
     pub const MODE_CURRENT: u32 = 1;
@@ -407,6 +651,8 @@ pub mod xdg_toplevel {
     use super::{Event, event};
     pub const CONFIGURE: Event = event(0, 1);
     pub const CLOSE: Event = event(1, 1);
+    pub const CONFIGURE_BOUNDS: Event = event(2, 4);
+    pub const WM_CAPABILITIES: Event = event(3, 5);
     pub const INVALID_RESIZE_EDGE: u32 = 0;
     pub const INVALID_PARENT: u32 = 1;
     pub const INVALID_SIZE: u32 = 2;
@@ -423,13 +669,191 @@ pub mod xdg_toplevel {
     pub const EDGE_RIGHT: u32 = 8;
     pub const EDGE_TOP_RIGHT: u32 = 9;
     pub const EDGE_BOTTOM_RIGHT: u32 = 10;
+    pub const CAPABILITY_WINDOW_MENU: u32 = 1;
+    pub const CAPABILITY_MAXIMIZE: u32 = 2;
+    pub const CAPABILITY_FULLSCREEN: u32 = 3;
+    pub const CAPABILITY_MINIMIZE: u32 = 4;
 }
 
-/// `xdg_popup`'s events.
+/// `xdg_popup`'s events and errors.
 pub mod xdg_popup {
     use super::{Event, event};
     pub const CONFIGURE: Event = event(0, 1);
     pub const POPUP_DONE: Event = event(1, 1);
+    pub const REPOSITIONED: Event = event(2, 3);
+    pub const INVALID_GRAB: u32 = 0;
+}
+
+/// `xdg_positioner`'s errors and enums: anchors and gravities share their numbers.
+pub mod xdg_positioner {
+    pub const INVALID_INPUT: u32 = 0;
+    pub const NONE: u32 = 0;
+    pub const TOP: u32 = 1;
+    pub const BOTTOM: u32 = 2;
+    pub const LEFT: u32 = 3;
+    pub const RIGHT: u32 = 4;
+    pub const TOP_LEFT: u32 = 5;
+    pub const BOTTOM_LEFT: u32 = 6;
+    pub const TOP_RIGHT: u32 = 7;
+    pub const BOTTOM_RIGHT: u32 = 8;
+    pub const SLIDE_X: u32 = 1;
+    pub const SLIDE_Y: u32 = 2;
+    pub const FLIP_X: u32 = 4;
+    pub const FLIP_Y: u32 = 8;
+    pub const RESIZE_X: u32 = 16;
+    pub const RESIZE_Y: u32 = 32;
+}
+
+/// `wl_subcompositor`'s and `wl_subsurface`'s errors.
+pub mod subsurface {
+    pub const BAD_SURFACE: u32 = 0;
+    pub const BAD_PARENT: u32 = 1;
+}
+
+/// `zxdg_toplevel_decoration_v1`'s events, errors and modes.
+pub mod decoration {
+    use super::{Event, event};
+    pub const CONFIGURE: Event = event(0, 1);
+    pub const UNCONFIGURED_BUFFER: u32 = 0;
+    pub const ALREADY_CONSTRUCTED: u32 = 1;
+    pub const ORPHANED: u32 = 2;
+    pub const CLIENT_SIDE: u32 = 1;
+    pub const SERVER_SIDE: u32 = 2;
+}
+
+/// `wp_cursor_shape_device_v1`'s errors and shapes (version 1's, 1 to 34).
+pub mod cursor_shape {
+    pub const INVALID_SHAPE: u32 = 1;
+    pub const DEFAULT: u32 = 1;
+    pub const POINTER: u32 = 4;
+    pub const PROGRESS: u32 = 5;
+    pub const WAIT: u32 = 6;
+    pub const TEXT: u32 = 9;
+    pub const VERTICAL_TEXT: u32 = 10;
+    pub const E_RESIZE: u32 = 18;
+    pub const N_RESIZE: u32 = 19;
+    pub const NE_RESIZE: u32 = 20;
+    pub const NW_RESIZE: u32 = 21;
+    pub const S_RESIZE: u32 = 22;
+    pub const SE_RESIZE: u32 = 23;
+    pub const SW_RESIZE: u32 = 24;
+    pub const W_RESIZE: u32 = 25;
+    pub const EW_RESIZE: u32 = 26;
+    pub const NS_RESIZE: u32 = 27;
+    pub const NESW_RESIZE: u32 = 28;
+    pub const NWSE_RESIZE: u32 = 29;
+    pub const COL_RESIZE: u32 = 30;
+    pub const ROW_RESIZE: u32 = 31;
+    pub const LAST: u32 = 34;
+}
+
+/// `wp_viewporter`'s and `wp_viewport`'s errors.
+pub mod viewport {
+    pub const VIEWPORT_EXISTS: u32 = 0;
+    pub const BAD_VALUE: u32 = 0;
+    pub const BAD_SIZE: u32 = 1;
+    pub const OUT_OF_BUFFER: u32 = 2;
+    pub const NO_SURFACE: u32 = 3;
+}
+
+/// `wl_data_source`'s events and errors.
+pub mod data_source {
+    use super::{Event, event};
+    pub const TARGET: Event = event(0, 1);
+    pub const SEND: Event = event(1, 1);
+    pub const CANCELLED: Event = event(2, 1);
+    pub const INVALID_ACTION_MASK: u32 = 0;
+    pub const INVALID_SOURCE: u32 = 1;
+}
+
+/// `wl_data_device`'s events and errors.
+pub mod data_device {
+    use super::{Event, event};
+    pub const DATA_OFFER: Event = event(0, 1);
+    pub const SELECTION: Event = event(5, 1);
+    pub const ROLE: u32 = 0;
+    pub const USED_SOURCE: u32 = 1;
+}
+
+/// `wl_data_offer`'s events and errors.
+pub mod data_offer {
+    use super::{Event, event};
+    pub const OFFER: Event = event(0, 1);
+    pub const INVALID_FINISH: u32 = 0;
+    pub const INVALID_OFFER: u32 = 3;
+}
+
+/// `zwp_primary_selection_device_v1`'s events.
+pub mod primary_selection_device {
+    use super::{Event, event};
+    pub const DATA_OFFER: Event = event(0, 1);
+    pub const SELECTION: Event = event(1, 1);
+}
+
+/// `zwp_primary_selection_offer_v1`'s events.
+pub mod primary_selection_offer {
+    use super::{Event, event};
+    pub const OFFER: Event = event(0, 1);
+}
+
+/// `zwp_primary_selection_source_v1`'s events.
+pub mod primary_selection_source {
+    use super::{Event, event};
+    pub const SEND: Event = event(0, 1);
+    pub const CANCELLED: Event = event(1, 1);
+}
+
+/// `xdg_activation_token_v1`'s events and errors.
+pub mod activation_token {
+    use super::{Event, event};
+    pub const DONE: Event = event(0, 1);
+    pub const ALREADY_USED: u32 = 0;
+}
+
+/// `zwp_text_input_v3`'s events and enums.
+pub mod text_input {
+    use super::{Event, event};
+    pub const ENTER: Event = event(0, 1);
+    pub const LEAVE: Event = event(1, 1);
+    pub const PREEDIT_STRING: Event = event(2, 1);
+    pub const COMMIT_STRING: Event = event(3, 1);
+    pub const DELETE_SURROUNDING_TEXT: Event = event(4, 1);
+    pub const DONE: Event = event(5, 1);
+    /// `content_hint`: the text is hidden as typed (a password field's dots).
+    pub const HINT_HIDDEN_TEXT: u32 = 0x40;
+    /// `content_hint`: the text is sensitive and must not be kept or shown elsewhere.
+    pub const HINT_SENSITIVE_DATA: u32 = 0x80;
+    /// `content_hint`: the field takes several lines.
+    pub const HINT_MULTILINE: u32 = 0x200;
+    /// `content_purpose`: a password.
+    pub const PURPOSE_PASSWORD: u32 = 8;
+    /// `content_purpose`: a PIN.
+    pub const PURPOSE_PIN: u32 = 9;
+    /// Every `content_purpose`'s name, by its number.
+    pub const PURPOSES: [&str; 14] = [
+        "normal", "alpha", "digits", "number", "phone", "url", "email", "name", "password", "pin",
+        "date", "time", "datetime", "terminal",
+    ];
+}
+
+/// `org_kde_kwin_server_decoration_manager`'s and `org_kde_kwin_server_decoration`'s events
+/// and modes.
+pub mod server_decoration {
+    use super::{Event, event};
+    pub const DEFAULT_MODE: Event = event(0, 1);
+    pub const MODE: Event = event(0, 1);
+    pub const NONE: u32 = 0;
+    pub const CLIENT: u32 = 1;
+    pub const SERVER: u32 = 2;
+}
+
+/// `wp_fractional_scale_manager_v1`'s and `wp_fractional_scale_v1`'s events and errors.
+pub mod fractional_scale {
+    use super::{Event, event};
+    pub const PREFERRED_SCALE: Event = event(0, 1);
+    pub const FRACTIONAL_SCALE_EXISTS: u32 = 0;
+    /// The denominator of a preferred scale: 120 is a scale of 1.
+    pub const DENOMINATOR: u32 = 120;
 }
 
 /// The signatures of the events the test client decodes, by the interface and opcode.
@@ -462,12 +886,37 @@ pub const fn event_signature(interface: Interface, opcode: u16) -> Option<&'stat
         (Interface::Output, 1) => &[Uint, Int, Int, Int],
         (Interface::Output, 2) => &[],
         (Interface::Output, 3) => &[Int],
+        (Interface::Output, 4 | 5) => &[String],
         (Interface::XdgWmBase, 0) => &[Uint],
         (Interface::XdgSurface, 0) => &[Uint],
         (Interface::XdgToplevel, 0) => &[Int, Int, Array],
         (Interface::XdgToplevel, 1) => &[],
+        (Interface::XdgToplevel, 2) => &[Int, Int],
+        (Interface::XdgToplevel, 3) => &[Array],
         (Interface::XdgPopup, 0) => &[Int, Int, Int, Int],
         (Interface::XdgPopup, 1) => &[],
+        (Interface::XdgPopup, 2) => &[Uint],
+        (Interface::ToplevelDecoration, 0) => &[Uint],
+        (Interface::DataSource, 0) => &[NullableString],
+        (Interface::DataSource, 1) => &[String, Fd],
+        (Interface::DataSource, 2) => &[],
+        (Interface::DataDevice, 0) => &[NewId],
+        (Interface::DataDevice, 5) => &[NullableObject],
+        (Interface::DataOffer, 0) => &[String],
+        (Interface::PrimarySelectionDevice, 0) => &[NewId],
+        (Interface::PrimarySelectionDevice, 1) => &[NullableObject],
+        (Interface::PrimarySelectionOffer, 0) => &[String],
+        (Interface::PrimarySelectionSource, 0) => &[String, Fd],
+        (Interface::PrimarySelectionSource, 1) => &[],
+        (Interface::ActivationToken, 0) => &[String],
+        (Interface::TextInput, 0 | 1) => &[Object],
+        (Interface::TextInput, 2) => &[NullableString, Int, Int],
+        (Interface::TextInput, 3) => &[NullableString],
+        (Interface::TextInput, 4) => &[Uint, Uint],
+        (Interface::TextInput, 5) => &[Uint],
+        (Interface::ServerDecorationManager, 0) => &[Uint],
+        (Interface::ServerDecoration, 0) => &[Uint],
+        (Interface::FractionalScale, 0) => &[Uint],
         _ => return None,
     })
 }

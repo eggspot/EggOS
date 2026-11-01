@@ -1,9 +1,12 @@
 //! virtio in the driver model (D110): the virtio-mmio and modern virtio-pci transports as bus
-//! drivers, each adding the virtio device it finds as a child, and the polled virtio entropy
-//! device, GPU (D112), input devices (D113), block device (D130) and console device (D136) on
-//! top of either.
+//! drivers, each adding the virtio device it finds as a child, and the virtio entropy device,
+//! GPU (D112), input devices (D113, on interrupts since D184), block device (D130) and console
+//! device (D136) on top of either. A device's driver connects its interrupt with
+//! [`connect_interrupt`]: the slot's line through the platform's interrupt controller on
+//! virtio-mmio, an MSI-X message on virtio-pci.
 
 use super::dma::DmaRegion;
+use super::interrupts::{self, DeviceEvents, Handler};
 use super::{
     Deadline, DeviceId, DeviceNode, DmaCoherence, DriverDescriptor, Identity, Match, Probe,
     ProbeError, ProbePass,
@@ -12,9 +15,11 @@ use crate::sync::LeafSpinLock;
 use alloc::boxed::Box;
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
+use eggos_drivers::pci::msix::MsixTable;
 use eggos_drivers::virtio::mmio::MmioTransport;
 use eggos_drivers::virtio::pci::{self as virtio_pci, PciTransport, VirtioPciCapability};
 use eggos_drivers::virtio::{self, QueueAddresses, Transport};
+use eggos_hal::PhysicalRange;
 
 /// Transports the bus drivers can hold for their devices' drivers.
 pub const MAX_TRANSPORTS: usize = 8;
@@ -243,6 +248,109 @@ fn add_device(
     Ok(())
 }
 
+/// Has the virtio device `id`, whose transport is `transport`, interrupt: its interrupt's handler
+/// acknowledges it and raises `events`. On virtio-mmio, the slot's device-tree interrupt routed
+/// through the platform's controller; on virtio-pci, MSI-X entry 0 for its configuration and
+/// every queue the driver enabled, so call it once the queues are set up. The driver then asks
+/// the device for interrupts ([`eggos_drivers::virtio::queue::SplitQueue`]'s notifications) and
+/// looks at it once, for what came before. Marks the device as [`super::Delivery::Interrupts`].
+pub fn connect_interrupt(
+    probe: &mut dyn Probe,
+    id: DeviceId,
+    transport: &AnyTransport,
+    events: &'static DeviceEvents,
+) -> Result<(), ProbeError> {
+    let node = *probe
+        .table()
+        .get(id)
+        .ok_or(ProbeError::Refused("no such device"))?;
+    let parent_id = node.parent.ok_or(ProbeError::Refused(
+        "the virtio device has no transport device",
+    ))?;
+    let parent = *probe
+        .table()
+        .get(parent_id)
+        .ok_or(ProbeError::Refused("no such device"))?;
+    let handler = match transport {
+        AnyTransport::Mmio(_) => {
+            let specifier = node.interrupts[0].ok_or(ProbeError::Refused(
+                "the virtio-mmio slot names no interrupt",
+            ))?;
+            let region = parent
+                .regions()
+                .next()
+                .ok_or(ProbeError::Refused("the slot has no registers"))?;
+            let base = probe.map_window(region)?;
+            let line = probe.route_interrupt(&specifier)?;
+            (
+                line,
+                Handler {
+                    acknowledge: acknowledge_mmio,
+                    context: base,
+                    events,
+                },
+            )
+        }
+        AnyTransport::Pci(pci_transport) => {
+            let Identity::Pci(function) = parent.identity else {
+                return Err(ProbeError::Refused("the transport is not a PCI function"));
+            };
+            let config = probe
+                .pci_config()
+                .ok_or(ProbeError::Refused("no PCI configuration space"))?;
+            let msix = pci::msix::find(config, function.address)
+                .ok_or(ProbeError::Refused("the function has no MSI-X"))?;
+            let bar = parent.regions[usize::from(msix.bar)];
+            let table_end = u64::from(msix.table_offset) + msix.table_bytes() as u64;
+            if bar.is_empty() || table_end > bar.len() {
+                return Err(ProbeError::Refused("the MSI-X table lies outside its BAR"));
+            }
+            let table = probe.map_window(PhysicalRange::from_start_length(
+                bar.start + u64::from(msix.table_offset),
+                msix.table_bytes() as u64,
+            ))?;
+            let (line, message) = probe.message_interrupt()?;
+            // SAFETY: `map_window` mapped the table as device memory for good, inside the BAR the
+            // capability names; only this driver reaches it.
+            let table = MsixTable::new(
+                unsafe { Mmio::new(table, msix.table_bytes()) },
+                msix.entries,
+            );
+            table.set(0, message.address, message.data);
+            let config = probe
+                .pci_config()
+                .ok_or(ProbeError::Refused("no PCI configuration space"))?;
+            msix.enable(config, function.address);
+            if !pci_transport.route_interrupts_to(0) {
+                return Err(ProbeError::Refused("the device took no MSI-X vector"));
+            }
+            (
+                line,
+                Handler {
+                    acknowledge: acknowledge_nothing,
+                    context: 0,
+                    events,
+                },
+            )
+        }
+    };
+    interrupts::connect(handler.0, handler.1).map_err(ProbeError::Refused)?;
+    if let Some(node) = probe.table().get_mut(id) {
+        node.delivery = super::Delivery::Interrupts;
+    }
+    Ok(())
+}
+
+fn acknowledge_mmio(base: usize) {
+    // SAFETY: `base` is a virtio-mmio slot's registers, which its bus driver mapped as device
+    // memory for good; only the interrupt status and acknowledge registers are reached here,
+    // which the device's driver never uses.
+    let regs = unsafe { Mmio::new(base, MMIO_REGISTERS_LENGTH as usize) };
+    virtio::mmio::acknowledge_interrupt(&regs);
+}
+
+fn acknowledge_nothing(_: usize) {}
+
 fn take_transport(identity: &Identity) -> Option<AnyTransport> {
     let Identity::Virtio { transport, .. } = *identity else {
         return None;
@@ -271,14 +379,19 @@ pub use gpu::GPU_DRIVER;
 mod gpu {
     use super::*;
     use crate::display::{Mode, Rect, Scanout};
-    use eggos_drivers::virtio::gpu::{FALLBACK_MODE, MEMORY_BYTES, Released, VirtioGpu};
+    use eggos_drivers::virtio::gpu::{
+        CURSOR_BYTES, CURSOR_SIDE, FALLBACK_MODE, MEMORY_BYTES, Released, VirtioGpu,
+    };
 
     type Gpu = VirtioGpu<AnyTransport, DmaRegion>;
+
+    const _: () = assert!(CURSOR_SIDE == eggos_drivers::desktop::CURSOR_SIDE);
 
     const ANSWER_TIMEOUT_MS: u64 = 1000;
 
     /// The polled virtio GPU (virtio 1.2, 5.7), 2D: one framebuffer on scanout 0, installed as
-    /// the kernel's display ([`crate::display`]).
+    /// the kernel's display ([`crate::display`]), and the cursor, which draws the desktop's
+    /// pointer when the device has a cursor queue (D186).
     pub static GPU_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-gpu",
         pass: ProbePass::Device,
@@ -289,6 +402,7 @@ mod gpu {
     struct GpuScanout {
         gpu: Gpu,
         mode: Mode,
+        cursor: bool,
     }
 
     impl Scanout for GpuScanout {
@@ -307,6 +421,41 @@ mod gpu {
         ) -> Result<usize, &'static str> {
             self.gpu
                 .flush(rects, &mut || deadline.keep_waiting())
+                .map_err(virtio::Error::description)
+        }
+
+        fn draws_pointer(&self) -> bool {
+            self.cursor
+        }
+
+        fn pointer_image(&mut self) -> Option<&mut [u32]> {
+            self.gpu.cursor_pixels()
+        }
+
+        fn show_pointer(
+            &mut self,
+            hotspot: (u32, u32),
+            at: (u32, u32),
+            deadline: &mut Deadline,
+        ) -> Result<(), &'static str> {
+            self.gpu
+                .show_cursor(hotspot, at, &mut || deadline.keep_waiting())
+                .map_err(virtio::Error::description)
+        }
+
+        fn move_pointer(
+            &mut self,
+            at: (u32, u32),
+            deadline: &mut Deadline,
+        ) -> Result<(), &'static str> {
+            self.gpu
+                .move_cursor(at, &mut || deadline.keep_waiting())
+                .map_err(virtio::Error::description)
+        }
+
+        fn hide_pointer(&mut self, deadline: &mut Deadline) -> Result<(), &'static str> {
+            self.gpu
+                .hide_cursor(&mut || deadline.keep_waiting())
                 .map_err(virtio::Error::description)
         }
     }
@@ -342,8 +491,9 @@ mod gpu {
             }
         };
         let shown = attach_framebuffer(&mut gpu, &mut deadline);
+        let cursor = shown.is_ok() && attach_cursor(&mut gpu, &mut deadline);
         let refused = match shown {
-            Ok(mode) => match crate::display::install(GpuScanout { gpu, mode }) {
+            Ok(mode) => match crate::display::install(GpuScanout { gpu, mode, cursor }) {
                 Ok(()) => return Ok(()),
                 Err(scanout) => (scanout.gpu, "a display is already in use"),
             },
@@ -375,17 +525,41 @@ mod gpu {
             })
     }
 
+    fn attach_cursor(gpu: &mut Gpu, deadline: &mut Deadline) -> bool {
+        if !gpu.has_cursor_queue() {
+            return false;
+        }
+        let Ok(image) = DmaRegion::allocate(CURSOR_BYTES) else {
+            return false;
+        };
+        match gpu.attach_cursor(image, &mut || deadline.keep_waiting()) {
+            Ok(()) => true,
+            Err((_, image)) => {
+                if let Some(image) = image {
+                    // SAFETY: handed back by `attach_cursor`, which does so only when the device
+                    // was never given it.
+                    unsafe { image.free() };
+                }
+                false
+            }
+        }
+    }
+
     fn release(gpu: Gpu, identity: &Identity, deadline: &mut Deadline) {
         match gpu.reset(&mut || deadline.keep_waiting()) {
             Ok(Released {
                 transport,
                 control,
                 framebuffer,
+                cursor,
                 reset,
             }) => {
                 control.free_after_reset(&reset);
                 if let Some(framebuffer) = framebuffer {
                     framebuffer.free_after_reset(&reset);
+                }
+                if let Some(cursor) = cursor {
+                    cursor.free_after_reset(&reset);
                 }
                 give_back_transport(identity, transport);
             }
@@ -408,8 +582,9 @@ mod input {
 
     const ANSWER_TIMEOUT_MS: u64 = 1000;
 
-    /// The polled virtio input device (virtio 1.2, 5.8): a keyboard, a mouse or a tablet,
-    /// installed as one of the kernel's input devices ([`crate::input`]).
+    /// The virtio input device (virtio 1.2, 5.8): a keyboard, a mouse or a tablet, installed as
+    /// one of the kernel's input devices ([`crate::input`]), on interrupts where the machine
+    /// routes them (D184), polled otherwise.
     pub static INPUT_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-input",
         pass: ProbePass::Device,
@@ -426,6 +601,10 @@ mod input {
 
         fn poll(&mut self, budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize {
             self.0.poll(budget, &mut |raw| event(raw))
+        }
+
+        fn set_caps_lock_light(&mut self, on: bool) -> bool {
+            self.0.set_caps_lock_light(on)
         }
     }
 
@@ -444,7 +623,7 @@ mod input {
         let memory = DmaRegion::allocate(MEMORY_BYTES)
             .map_err(|_| ProbeError::Refused("no memory for the device's queue"))?;
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
-        let input = match VirtioInput::new(transport, memory, &mut || deadline.keep_waiting()) {
+        let mut input = match VirtioInput::new(transport, memory, &mut || deadline.keep_waiting()) {
             Ok(input) => input,
             Err((error, transport, memory)) => {
                 if let Some(memory) = memory {
@@ -462,8 +641,19 @@ mod input {
         } else if !crate::input::has_room() {
             "no room for another input device"
         } else {
-            return crate::input::install(Box::new(VirtioInputDevice(input)))
-                .map_err(|_| ProbeError::Refused("no room for another input device"));
+            let interrupting =
+                connect_interrupt(probe, id, input.transport(), &crate::input::DEVICE_EVENTS)
+                    .is_ok();
+            if interrupting {
+                input.enable_interrupts();
+            }
+            let device = Box::new(VirtioInputDevice(input));
+            let installed = if interrupting {
+                crate::input::install_interrupting(device)
+            } else {
+                crate::input::install(device)
+            };
+            return installed.map_err(|_| ProbeError::Refused("no room for another input device"));
         };
         release(
             input,
@@ -674,6 +864,84 @@ mod agent {
         }
         agent_channel::install(Box::new(AgentConsole(console)))
             .map_err(|_| ProbeError::Refused("an agent channel is already in use"))
+    }
+}
+
+#[cfg(any(test, feature = "virtio-net"))]
+pub use network::NET_DRIVER;
+
+#[cfg(any(test, feature = "virtio-net"))]
+mod network {
+    use super::*;
+    use crate::net::NetDevice;
+    use eggos_drivers::virtio::net::{MEMORY_BYTES, VirtioNet};
+    use eggos_net::ethernet::MacAddress;
+
+    type Net = VirtioNet<AnyTransport, DmaRegion>;
+
+    const ANSWER_TIMEOUT_MS: u64 = 1000;
+
+    /// The polled virtio network device (virtio 1.2, 5.1), the stack's adapter (D157,
+    /// [`crate::net`]).
+    pub static NET_DRIVER: DriverDescriptor = DriverDescriptor {
+        name: "virtio-net",
+        pass: ProbePass::Device,
+        matches: &[Match::VirtioId(virtio::device_type::NETWORK)],
+        probe: probe_net,
+    };
+
+    struct VirtioAdapter(Net);
+
+    impl NetDevice for VirtioAdapter {
+        fn mac(&self) -> MacAddress {
+            MacAddress(self.0.mac())
+        }
+        fn mtu(&self) -> usize {
+            usize::from(self.0.mtu())
+        }
+        fn is_link_up(&self) -> bool {
+            self.0.is_link_up()
+        }
+        fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {
+            self.0.receive(frame)
+        }
+        fn transmit(&mut self, frame: &[u8]) -> Result<(), &'static str> {
+            self.0.transmit(frame).map_err(virtio::Error::description)
+        }
+    }
+
+    fn probe_net(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+        let node = *probe
+            .table()
+            .get(id)
+            .ok_or(ProbeError::Refused("no such device"))?;
+        if node.dma != DmaCoherence::Coherent {
+            return Err(ProbeError::Refused(
+                "the device's DMA is not coherent, which the kernel does not support yet",
+            ));
+        }
+        if crate::net::is_present() {
+            return Err(ProbeError::Refused("a network adapter is already in use"));
+        }
+        let transport =
+            take_transport(&node.identity).ok_or(ProbeError::Refused("no transport"))?;
+        let memory = DmaRegion::allocate(MEMORY_BYTES)
+            .map_err(|_| ProbeError::Refused("no memory for the device's queues"))?;
+        let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
+        let net = match VirtioNet::new(transport, memory, &mut || deadline.keep_waiting()) {
+            Ok(net) => net,
+            Err((error, transport, memory)) => {
+                if let Some(memory) = memory {
+                    // SAFETY: `VirtioNet::new` hands the memory back only when the device
+                    // never had it or was reset after.
+                    unsafe { memory.free() };
+                }
+                give_back_transport(&node.identity, transport);
+                return Err(ProbeError::Refused(error.description()));
+            }
+        };
+        crate::net::install(Box::new(VirtioAdapter(net)))
+            .map_err(|_| ProbeError::Refused("a network adapter is already in use"))
     }
 }
 

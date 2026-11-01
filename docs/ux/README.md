@@ -20,6 +20,9 @@ behaviour. A UX regression is treated like a performance regression.
   box as an EggOS dialog, the Win32 system colours inside a program's client area, and the
   `IDC_*` pointer mapping.
 - `font-8x16.txt`: Egg Mono 8x16, the system font, every printable ASCII glyph as pixel art.
+- `font-8x16-latin-1.txt`: Egg Mono's Latin-1 supplement (U+00A0-U+00FF) and `€`, 97 glyphs (D185).
+- `keyboard-v0.3.md`: Settings' Keyboard pane, dead keys and the AltGr/Option layer as users feel
+  them, and the notes on the Latin-1 glyphs (D185).
 - `font-ui-16.txt`: Egg Sans 16, the proportional UI font of the toolkit, ASCII and Latin-1 as
   pixel art with each glyph's advance width (D132).
 - `app-icons-v0.3.md`: installed apps' own icons (item 45, D148): where they show, no badge,
@@ -27,8 +30,14 @@ behaviour. A UX regression is treated like a performance regression.
 - `text-editor-v0.3.md`: the Text Editor (item 46, D149): the toolbar, the find bar and the
   path bar, the text view and gutter, the status bar, panels, notices, keys, the context menu,
   its place in the launcher and its icon.
+- `network-v0.3.md`: the Settings `Network` pane and the bar's network indicator (D157):
+  the five states named once for the GUI, `ip` and `net_status`, the pane's rows, the
+  indicator's glyph, tooltip and click (designed; not built yet).
 - `date-time-v0.3.md`: the Settings `Date & time` pane and the bar's clock once the real-time
   clock sets it (item 29, D150).
+- `command-model.md`: the Egg command model shared with EggDB (D160): the words, the JSON
+  answers, the errors and their categories, effects and safety, and EggOS's tables; the
+  canonical copy of the spec (CLI and MCP, not visual).
 - `toolkit-v0.3.md`: the v0.3.0 GUI toolkit's widgets (text, buttons, checkboxes, radios,
   cards, lists, text fields, scroll views, focus and keyboard navigation) and the Settings
   app's first version (item 34).

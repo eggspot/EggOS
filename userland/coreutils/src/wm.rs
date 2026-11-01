@@ -1,13 +1,19 @@
-use crate::output::{FAILURE, Output};
+use crate::options::parse_defined;
+use crate::output::{FAILURE, Output, decimal, error_for};
+use crate::page::Page;
 use crate::system::System;
 use core::ffi::CStr;
+use eggos_commands::commands::{self, LIST_PAGE_LIMIT};
+use eggos_commands::errors;
+use eggos_commands::page::Smallest;
+use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
 
 pub const DEVICE: &CStr = c"/dev/window";
 pub const LIST_WINDOW: u32 = 0xc060_770b;
 pub const MANAGE_WINDOW: u32 = 0x4010_770c;
 pub const CAPTURE_WINDOW: u32 = 0xc028_7713;
-pub const SEND_INPUT: u32 = 0x4018_7714;
+pub const SEND_INPUT: u32 = 0xc018_7714;
 pub const GET_MENU: u32 = 0xc100_7716;
 pub const CHOOSE_MENU: u32 = 0x4104_7717;
 pub const LIST_SIZE: usize = 96;
@@ -16,20 +22,30 @@ pub const CAPTURE_SIZE: usize = 40;
 pub const SEND_INPUT_SIZE: usize = 24;
 pub const GET_MENU_SIZE: usize = 256;
 pub const CHOOSE_MENU_SIZE: usize = 260;
+pub const GET_TREE: u32 = eggos_element_tree::request::GET_TREE;
+pub const GET_TREE_SIZE: usize = eggos_element_tree::size::GET_TREE;
+pub const ACT_ON_ELEMENT: u32 = eggos_element_tree::request::ACT_ON_ELEMENT;
+pub const ACT_ON_ELEMENT_SIZE: usize = eggos_element_tree::size::ACT_ON_ELEMENT;
 pub const KERNEL_CLIENT: u32 = 0xffff;
 pub const HEADER: &[u8] = b"ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n";
 pub const USAGE_STATUS: i32 = 2;
 pub const BUSY_STATUS: i32 = 75;
 
-const USAGE: &[u8] = b"usage: wm list | wm focus|minimise|maximise|restore|close <id> | \
-      wm move <id> <x> <y> | wm size <id> <width> <height> | \
+const USAGE: &[u8] =
+    b"usage: wm list [--json] | wm focus|minimise|maximise|restore|close [--] <id> | \
+      wm move [--] <id> <x> <y> | wm size [--] <id> <width> <height> | \
       wm capture [-o <file.png>] [--max-width <n>] [--max-bytes <n>] [--] <id> | \
-      wm click [--button left|right|middle] [--] <id> <x> <y> | wm type [--] <id> <text> | \
+      wm click [--button left|right|middle] [--double] [--] <id> <x> <y> | \
+      wm drag [--button left|right|middle] [--] <id> <x> <y> <to-x> <to-y> | \
+      wm type [--] <id> <text> | \
       wm press [--] <id> <keys> | wm scroll [--at <x> <y>] [--] <id> <dx> <dy> | \
       wm menu [--] <id> | wm menu --choose [--label <label>] [--] <id> <menu> <entry> | \
-      wm help";
+      wm show [--json] [--] <id> | \
+      wm act [--] <id> <element> invoke|focus|set-text|select [<text>] | wm help";
 const TITLE_AT: usize = 32;
+const PAGE_SLOTS: usize = LIST_PAGE_LIMIT as usize + 1;
 const TITLE_CAPACITY: usize = 64;
+const WINDOW_RECORD_BYTES: usize = 1024;
 
 const ACTIONS: [(&[u8], u32, usize); 7] = [
     (b"focus", 0, 0),
@@ -65,7 +81,7 @@ pub fn number(text: &[u8]) -> Option<i32> {
 }
 
 pub fn usage<S: System>(output: &mut Output<S>) -> i32 {
-    output.error(&[USAGE]);
+    output.coded(&errors::USAGE, &[USAGE]);
     USAGE_STATUS
 }
 
@@ -73,7 +89,10 @@ pub fn open_device<S: System>(output: &mut Output<S>) -> Option<usize> {
     match output.system.open(DEVICE) {
         Ok(device) => Some(device),
         Err(errno) => {
-            output.file_error(DEVICE, errno);
+            output.coded(
+                &errors::NO_WINDOW_SERVER,
+                &[DEVICE.to_bytes(), b": ", errno.message()],
+            );
             None
         }
     }
@@ -82,18 +101,21 @@ pub fn open_device<S: System>(output: &mut Output<S>) -> Option<usize> {
 pub fn refused<S: System>(output: &mut Output<S>, window: &[u8], errno: Errno) -> i32 {
     match errno {
         Errno::EBUSY => {
-            output.error(&[
-                window,
-                b": a person is using the machine; try again in a moment",
-            ]);
+            output.coded(
+                &errors::PERSON_ACTIVE,
+                &[
+                    window,
+                    b": a person is using the machine; try again in a moment",
+                ],
+            );
             BUSY_STATUS
         }
         Errno::ENOENT => {
-            output.error(&[window, b": no such window"]);
+            output.coded(&errors::NO_SUCH_WINDOW, &[window, b": no such window"]);
             FAILURE
         }
         _ => {
-            output.error(&[window, b": ", errno.message()]);
+            output.coded(error_for(errno), &[window, b": ", errno.message()]);
             FAILURE
         }
     }
@@ -107,83 +129,194 @@ fn state_name(state: u32) -> &'static [u8] {
     }
 }
 
-fn list<S: System>(output: &mut Output<S>, device: usize) -> i32 {
-    output.write(HEADER);
-    for index in 0.. {
+fn each_window<S: System>(
+    output: &mut Output<S>,
+    device: usize,
+    mut on_window: impl FnMut(&mut Output<S>, &[u8; LIST_SIZE]),
+) -> Result<(), i32> {
+    for index in 0u32.. {
         let mut entry = [0u8; LIST_SIZE];
-        entry[..4].copy_from_slice(&(index as u32).to_ne_bytes());
+        entry[..4].copy_from_slice(&index.to_ne_bytes());
         match output
             .system
             .device_control(device, LIST_WINDOW, &mut entry)
         {
-            Ok(()) => {}
+            Ok(()) => on_window(output, &entry),
             Err(Errno::ENOENT) => break,
             Err(errno) => {
-                output.error(&[b"cannot list the windows: ", errno.message()]);
-                return FAILURE;
+                output.coded(
+                    error_for(errno),
+                    &[b"cannot list the windows: ", errno.message()],
+                );
+                return Err(FAILURE);
             }
         }
-        for (field, offset) in [(0, 0), (1, 8), (2, 12), (3, 16), (4, 20)] {
-            if field == 1 {
-                output.write(state_name(word(&entry, 4)));
-                output.write(b" ");
+    }
+    Ok(())
+}
+
+fn list<S: System>(output: &mut Output<S>, device: usize, page: &Page, after: Option<u64>) -> i32 {
+    let comes_after = |id: u32| after.is_none_or(|after| u64::from(id) > after);
+    let mut selected = None;
+    if let Some(limit) = page.limit {
+        let mut smallest = Smallest::<4, PAGE_SLOTS>::new(limit as usize);
+        let walked = each_window(output, device, |_, entry| {
+            let id = word(entry, 0);
+            if comes_after(id) {
+                smallest.offer(&id.to_be_bytes());
             }
-            output.write_number(u64::from(word(&entry, offset)), 0);
-            output.write(b" ");
+        });
+        if let Err(status) = walked {
+            return status;
         }
-        match word(&entry, 24) {
-            KERNEL_CLIENT => output.write(b"kernel"),
-            client => output.write_number(u64::from(client), 0),
+        selected = Some(smallest);
+    }
+    if !output.is_json() {
+        output.write(HEADER);
+    }
+    let walked = each_window(output, device, |output, entry| {
+        let id = word(entry, 0);
+        let shown = match &selected {
+            Some(smallest) => smallest.holds(&id.to_be_bytes()),
+            None => comes_after(id),
+        };
+        if shown {
+            write_entry(output, entry);
         }
-        output.write(b" ");
-        let length = (word(&entry, 28) as usize).min(TITLE_CAPACITY);
-        output.write(&entry[TITLE_AT..TITLE_AT + length]);
-        output.write(b"\n");
+    });
+    if let Err(status) = walked {
+        return status;
+    }
+    let last = selected
+        .as_ref()
+        .filter(|smallest| smallest.more())
+        .and_then(|smallest| smallest.last())
+        .and_then(|last| <[u8; 4]>::try_from(last).ok());
+    if let Some(last) = last {
+        let mut digits = [0u8; 20];
+        output.more(decimal(u64::from(u32::from_be_bytes(last)), &mut digits));
     }
     0
+}
+
+fn write_entry<S: System>(output: &mut Output<S>, entry: &[u8; LIST_SIZE]) {
+    if output.is_json() {
+        write_window(output, entry);
+        return;
+    }
+    for (field, offset) in [(0, 0), (1, 8), (2, 12), (3, 16), (4, 20)] {
+        if field == 1 {
+            output.write(state_name(word(entry, 4)));
+            output.write(b" ");
+        }
+        output.write_number(u64::from(word(entry, offset)), 0);
+        output.write(b" ");
+    }
+    match word(entry, 24) {
+        KERNEL_CLIENT => output.write(b"kernel"),
+        client => output.write_number(u64::from(client), 0),
+    }
+    output.write(b" ");
+    let length = (word(entry, 28) as usize).min(TITLE_CAPACITY);
+    output.write(&entry[TITLE_AT..TITLE_AT + length]);
+    output.write(b"\n");
+}
+
+fn write_window<S: System>(output: &mut Output<S>, entry: &[u8; LIST_SIZE]) {
+    let mut buffer = [0u8; WINDOW_RECORD_BYTES];
+    let mut out = JsonWriter::new(&mut buffer);
+    out.begin_object();
+    out.key("id");
+    out.u64(u64::from(word(entry, 0)));
+    out.key("state");
+    out.string_lossy(state_name(word(entry, 4)));
+    for (key, offset) in [("x", 8), ("y", 12), ("width", 16), ("height", 20)] {
+        out.key(key);
+        match key {
+            "x" | "y" => out.i64(i64::from(word(entry, offset) as i32)),
+            _ => out.u64(u64::from(word(entry, offset))),
+        }
+    }
+    out.key("client_pid");
+    match word(entry, 24) {
+        KERNEL_CLIENT => out.null(),
+        client => out.u64(u64::from(client)),
+    }
+    out.key("title");
+    let length = (word(entry, 28) as usize).min(TITLE_CAPACITY);
+    out.string_lossy(&entry[TITLE_AT..TITLE_AT + length]);
+    out.end_object();
+    out.end_line();
+    if !out.overflowed() {
+        output.write(out.as_bytes());
+    }
 }
 
 pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     match arguments.first().map(|verb| verb.to_bytes()) {
         Some(b"capture") => return crate::window_capture::capture(output, &arguments[1..]),
-        Some(verb @ (b"click" | b"type" | b"press" | b"scroll")) => {
+        Some(verb @ (b"click" | b"drag" | b"type" | b"press" | b"scroll")) => {
             return crate::window_input::send(output, verb, &arguments[1..]);
         }
         Some(b"menu") => return crate::window_menu::menu(output, &arguments[1..]),
+        Some(b"show") => return crate::window_tree::show(output, &arguments[1..]),
+        Some(b"act") => return crate::window_tree::act(output, &arguments[1..]),
+        Some(b"desktop") => return crate::window_desktop::desktop(output, &arguments[1..]),
         Some(b"help") if arguments.len() == 1 => {
             output.write(USAGE);
             output.write(b"\n");
             output.write(crate::window_input::HELP);
             output.write(crate::window_menu::HELP);
+            output.write(crate::window_tree::HELP);
+            output.write(crate::window_desktop::HELP);
             return 0;
         }
         _ => {}
     }
-    let arguments: [&[u8]; 4] = core::array::from_fn(|index| {
-        arguments
-            .get(index)
-            .map_or(&b""[..], |argument| argument.to_bytes())
-    });
-    let given = arguments
-        .iter()
-        .filter(|argument| !argument.is_empty())
-        .count();
-    let command = arguments[0];
-    let action = ACTIONS.iter().find(|(name, _, _)| *name == command);
-    let valid = match action {
-        Some(&(_, _, extra)) => given == 2 + extra,
-        None => command == b"list" && given == 1,
+    let Some((verb, rest)) = arguments.split_first() else {
+        return usage(output);
     };
-    if !valid {
+    let verb = verb.to_bytes();
+    if verb == b"list" {
+        let mut page = Page::default();
+        let parsed = parse_defined(output, rest, &commands::WM_LIST, |output, given| {
+            page.take(output, given).map(|_| ())
+        });
+        let Ok(operands) = parsed else {
+            return USAGE_STATUS;
+        };
+        if !operands.all().is_empty() {
+            return usage(output);
+        }
+        let Ok(after) = page.after_number(output) else {
+            return USAGE_STATUS;
+        };
+        let Some(device) = open_device(output) else {
+            return FAILURE;
+        };
+        let status = list(output, device, &page, after);
+        output.system.close(device);
+        return status;
+    }
+    let Some(&(_, code, extra)) = ACTIONS.iter().find(|(name, _, _)| *name == verb) else {
+        return usage(output);
+    };
+    let operands = match rest.first() {
+        Some(first) if first.to_bytes() == b"--" => &rest[1..],
+        _ => rest,
+    };
+    if operands.len() != 1 + extra || operands.iter().any(|operand| operand.is_empty()) {
         return usage(output);
     }
+    let operands: [&[u8]; 3] = core::array::from_fn(|index| {
+        operands
+            .get(index)
+            .map_or(&b""[..], |operand| operand.to_bytes())
+    });
     let Some(device) = open_device(output) else {
         return FAILURE;
     };
-    let status = match action {
-        None => list(output, device),
-        Some(&(_, code, _)) => manage(output, device, code, &arguments[1..]),
-    };
+    let status = manage(output, device, code, &operands);
     output.system.close(device);
     status
 }
@@ -200,7 +333,7 @@ fn manage<S: System>(
             continue;
         }
         let Some(parsed) = number(operand) else {
-            output.error(&[b"invalid number '", operand, b"'"]);
+            output.coded(&errors::USAGE, &[b"invalid number '", operand, b"'"]);
             return USAGE_STATUS;
         };
         *value = parsed;
@@ -217,10 +350,7 @@ fn manage<S: System>(
         .device_control(device, MANAGE_WINDOW, &mut request)
     {
         Ok(()) => 0,
-        Err(errno) => {
-            output.error(&[operands[0], b": ", errno.message()]);
-            FAILURE
-        }
+        Err(errno) => refused(output, operands[0], errno),
     }
 }
 
@@ -290,6 +420,81 @@ mod tests {
             assert_eq!(fake.managed.last(), Some(&expected));
         }
         assert_eq!(fake.errors(), "");
+    }
+
+    #[test]
+    fn json_lists_each_window_as_a_record() {
+        let (status, fake) = run(&[c"list", c"--json"], windows());
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "{\"id\":64,\"state\":\"normal\",\"x\":311,\"y\":192,\"width\":658,\
+             \"height\":458,\"client_pid\":null,\"title\":\"Terminal\"}\n\
+             {\"id\":129,\"state\":\"maximised\",\"x\":0,\"y\":28,\"width\":1280,\
+             \"height\":772,\"client_pid\":67,\"title\":\"first\"}\n"
+        );
+        let mut fake = windows();
+        fake.window_server = false;
+        let (status, fake) = run(&[c"list", c"--json"], fake);
+        assert_eq!(status, 1);
+        assert!(
+            fake.errors().contains("\"code\":\"no_window_server\""),
+            "{}",
+            fake.errors()
+        );
+    }
+
+    #[test]
+    fn the_verbs_take_two_dashes_before_the_window_as_the_mcp_server_passes_them() {
+        let (status, fake) = run(&[c"focus", c"--", c"129"], windows());
+        assert_eq!(status, 0);
+        assert_eq!(fake.managed.last(), Some(&[129, 0, 0, 0]));
+        let (status, fake) = run(&[c"size", c"--", c"129", c"640", c"480"], windows());
+        assert_eq!(status, 0);
+        assert_eq!(fake.managed.last(), Some(&[129, 6, 640, 480]));
+        let (status, _) = run(&[c"focus", c"--"], windows());
+        assert_eq!(status, 2);
+    }
+
+    fn three_windows() -> Fake {
+        let mut fake = windows();
+        fake.windows.push(FakeWindow {
+            id: 3,
+            state: 1,
+            rect: [0, 0, 100, 100],
+            client: 70,
+            title: b"third".to_vec(),
+        });
+        fake
+    }
+
+    #[test]
+    fn list_pages_by_window_id_and_keeps_the_stacking_order_within_a_page() {
+        let (status, fake) = run(&[c"list", c"--limit", c"2"], three_windows());
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n\
+             64 normal 311 192 658 458 kernel Terminal\n\
+             3 minimised 0 0 100 100 70 third\n"
+        );
+        assert_eq!(fake.errors(), "more: --after 64\n");
+        let arguments = [c"list", c"--after", c"64", c"--limit", c"2"];
+        let (status, fake) = run(&arguments, three_windows());
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n\
+             129 maximised 0 28 1280 772 67 first\n"
+        );
+        assert_eq!(fake.errors(), "");
+        let arguments = [c"list", c"--json", c"--after", c"64"];
+        let (status, fake) = run(&arguments, three_windows());
+        assert_eq!(status, 0);
+        assert_eq!(fake.output().lines().count(), 1);
+        let (status, fake) = run(&[c"list", c"--after", c"x"], three_windows());
+        assert_eq!(status, 2);
+        assert_eq!(fake.errors(), "wm: invalid cursor 'x'\n");
     }
 
     #[test]

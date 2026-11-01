@@ -151,14 +151,14 @@ pub fn save_message(path: &[u8], problem: SaveProblem) -> Line {
 /// Whether `path` can be opened in a document of `capacity` bytes: a regular file of at most
 /// that size whose every byte is text. The file is read once, in pieces; nothing is kept.
 pub fn check(files: &mut impl Files, path: &[u8], capacity: usize) -> Result<u64, OpenProblem> {
-    let status = match files.status(path) {
+    let status = match files.status_following(path) {
         Ok(status) => status,
         Err(Errno::ENOENT) => return Err(OpenProblem::Missing),
         Err(error) => return Err(OpenProblem::Failed(error)),
     };
     match status.kind {
         Kind::Directory => return Err(OpenProblem::Folder),
-        Kind::Other => return Err(OpenProblem::NotText),
+        Kind::Link | Kind::Other => return Err(OpenProblem::NotText),
         Kind::File => {}
     }
     if status.size > capacity as u64 {

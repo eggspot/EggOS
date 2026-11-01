@@ -6,6 +6,7 @@ use crate::geometry::Rect;
 use crate::input::RECORD_SIZE;
 use crate::tree::PointerShape;
 use core::ffi::CStr;
+use eggos_element_tree::{MAX_TEXT_BYTES, answer_query, read_query, request, size};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::syscall::{call, number};
 
@@ -19,6 +20,28 @@ const DESTROY: usize = 0x4004_7709;
 const GET_WORK_AREA: usize = 0x8014_770a;
 const GET_PROFILE: usize = 0x8004_770d;
 const SET_PROFILE: usize = 0x4004_770e;
+const GET_KEYBOARD_LAYOUT: usize = 0x8008_771d;
+const SET_KEYBOARD_LAYOUT: usize = 0x4004_771e;
+const SET_INPUT_PREFERENCES: usize = 0x4014_771f;
+const SET_CLIPBOARD: usize = 0x4010_7720;
+const SET_KEY_ACCESSIBILITY: usize = 0x400c_7724;
+const CHANGE_FLAGS: usize = 0x400c_7725;
+const GET_CLIPBOARD: usize = 0xc020_7721;
+const CAPS_LOCK_FLAG: u32 = 1;
+const KEYBOARD_FLAG: u32 = 2;
+
+/// The window flag that has every Ctrl key reach the window, as a terminal needs (`CREATE`'s
+/// `TAKES_CTRL_KEYS`, docs/windows.md).
+pub const TAKES_CTRL_KEYS: u32 = 2;
+/// The window flag that keeps its size: no resize zones, no maximise (`CREATE`'s `FIXED_SIZE`).
+pub const FIXED_SIZE: u32 = 1;
+/// The window flag that refuses injected input (`wm click`, `wm type`, `wm key`, a menu
+/// chosen for an agent): only the person's own pointer and keys reach it (`CREATE`'s
+/// `PERSON_INPUT_ONLY`, D193's grant prompt).
+pub const PERSON_INPUT_ONLY: u32 = 4;
+/// The window flag that keeps its pixels for the person's eyes only: `wm capture` of it is
+/// refused while it is on (`PERSON_VIEW_ONLY`, D193's pairing code).
+pub const PERSON_VIEW_ONLY: u32 = 8;
 
 const TITLE_CAPACITY: usize = 64;
 const AT_FDCWD: usize = -100isize as usize;
@@ -66,6 +89,17 @@ pub struct WorkArea {
     pub scale: u32,
 }
 
+/// The keyboard, as the window server reports it (D185).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keyboard {
+    /// The layout's number in the settings file's `KEYBOARD_LAYOUTS`.
+    pub layout: u32,
+    /// Whether the machine has a keyboard.
+    pub present: bool,
+    /// Whether Caps Lock is on.
+    pub caps_lock: bool,
+}
+
 /// One connection to the window server.
 #[derive(Debug)]
 pub struct WindowServer {
@@ -98,6 +132,65 @@ impl WindowServer {
         result(answer).map(|_| ())
     }
 
+    fn ioctl_with_buffer(
+        &self,
+        request: usize,
+        buffer: *const u8,
+        length: usize,
+        offset: usize,
+    ) -> Result<[u8; 32], Errno> {
+        let mut argument = [0u8; 32];
+        argument[..8].copy_from_slice(&(buffer as u64).to_ne_bytes());
+        argument[8..16].copy_from_slice(&(length as u64).to_ne_bytes());
+        argument[16..24].copy_from_slice(&(offset as u64).to_ne_bytes());
+        // SAFETY: the request reads its 16- or 32-byte argument, which this function owns, and
+        // reads or writes at most `length` bytes at `buffer`, which every caller borrows for the
+        // call: shared for a request that only reads it, exclusively for one that writes it.
+        let answer = unsafe {
+            call(
+                number::IOCTL,
+                [self.fd, request, argument.as_mut_ptr() as usize, 0, 0, 0],
+            )
+        };
+        result(answer).map(|_| argument)
+    }
+
+    /// Turns sticky keys and slow keys on or off, slow keys counting a key once held
+    /// `slow_keys_ms` (`SET_KEY_ACCESSIBILITY`, D205).
+    pub fn set_key_accessibility(
+        &self,
+        sticky_keys: bool,
+        slow_keys: bool,
+        slow_keys_ms: u32,
+    ) -> Result<(), Errno> {
+        let mut bytes = [0u8; 12];
+        for (place, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip([
+            u32::from(sticky_keys),
+            u32::from(slow_keys),
+            slow_keys_ms,
+        ]) {
+            *place = word.to_ne_bytes();
+        }
+        self.ioctl(SET_KEY_ACCESSIBILITY, &mut bytes)
+    }
+
+    /// Makes `text` the clipboard every app shares (`SET_CLIPBOARD`, D197).
+    pub fn set_clipboard(&self, text: &str) -> Result<(), Errno> {
+        self.ioctl_with_buffer(SET_CLIPBOARD, text.as_ptr(), text.len(), 0)
+            .map(|_| ())
+    }
+
+    /// Copies the shared clipboard's text from byte `offset` on into `into`, as much as fits
+    /// (`GET_CLIPBOARD`, D197): its whole length, which may be more than `into` holds, and its
+    /// serial, which changes with every copy.
+    pub fn clipboard(&self, offset: usize, into: &mut [u8]) -> Result<(usize, u32), Errno> {
+        let reply = self.ioctl_with_buffer(GET_CLIPBOARD, into.as_mut_ptr(), into.len(), offset)?;
+        let word = |at: usize| {
+            u32::from_ne_bytes([reply[at], reply[at + 1], reply[at + 2], reply[at + 3]])
+        };
+        Ok((word(24) as usize, word(28)))
+    }
+
     /// Where windows go and the scale.
     pub fn work_area(&self) -> Result<WorkArea, Errno> {
         let mut area = [0u8; 20];
@@ -123,6 +216,61 @@ impl WindowServer {
     /// Makes profile `profile` the desktop's, at once.
     pub fn set_desktop_profile(&self, profile: u32) -> Result<(), Errno> {
         self.ioctl(SET_PROFILE, &mut profile.to_ne_bytes())
+    }
+
+    /// The keyboard (`GET_KEYBOARD_LAYOUT`, D185): its layout's number in the settings file's
+    /// `KEYBOARD_LAYOUTS`, whether the machine has a keyboard, and whether Caps Lock is on.
+    pub fn keyboard(&self) -> Result<Keyboard, Errno> {
+        let mut reply = [0u8; 8];
+        self.ioctl(GET_KEYBOARD_LAYOUT, &mut reply)?;
+        let flags = word(&reply, 4);
+        Ok(Keyboard {
+            layout: word(&reply, 0),
+            present: flags & KEYBOARD_FLAG != 0,
+            caps_lock: flags & CAPS_LOCK_FLAG != 0,
+        })
+    }
+
+    /// Makes keyboard layout `layout` (its number in the settings file's `KEYBOARD_LAYOUTS`)
+    /// the keyboard's from the next key on (`SET_KEYBOARD_LAYOUT`, D185).
+    pub fn set_keyboard_layout(&self, layout: u32) -> Result<(), Errno> {
+        self.ioctl(SET_KEYBOARD_LAYOUT, &mut layout.to_ne_bytes())
+    }
+
+    /// Uses the mouse and key preferences `words` holds from the next event on
+    /// (`SET_INPUT_PREFERENCES`, D195): left-handed, natural scrolling, pointer speed, repeat
+    /// delay in milliseconds and repeats a second, each a 32-bit word.
+    pub fn set_input_preferences(&self, words: [u32; 5]) -> Result<(), Errno> {
+        let mut bytes = [0u8; 20];
+        for (place, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+            *place = word.to_ne_bytes();
+        }
+        self.ioctl(SET_INPUT_PREFERENCES, &mut bytes)
+    }
+
+    /// The text of the action query `serial` (`READ_QUERY`, D161): `set-text`'s new text,
+    /// copied into `text`; returns its length. `ENOENT` once the query is answered or its
+    /// asker stopped waiting.
+    pub fn query_text(&self, serial: u32, text: &mut [u8; MAX_TEXT_BYTES]) -> Result<usize, Errno> {
+        let mut query = [0u8; size::READ_QUERY];
+        put(&mut query, read_query::SERIAL, serial);
+        self.ioctl(request::READ_QUERY as usize, &mut query)?;
+        let length = (word(&query, read_query::TEXT_LENGTH) as usize).min(MAX_TEXT_BYTES);
+        text[..length].copy_from_slice(&query[read_query::TEXT..read_query::TEXT + length]);
+        Ok(length)
+    }
+
+    /// Answers query `serial` with `outcome` and, for a tree, the tree's bytes
+    /// (`ANSWER_QUERY`, D161).
+    pub fn answer_query(&self, serial: u32, outcome: u32, tree: &[u8]) -> Result<(), Errno> {
+        let mut answer = [0u8; size::ANSWER_QUERY];
+        put(&mut answer, answer_query::SERIAL, serial);
+        put(&mut answer, answer_query::OUTCOME, outcome);
+        answer[answer_query::BUFFER..answer_query::BUFFER + 8]
+            .copy_from_slice(&(tree.as_ptr() as u64).to_ne_bytes());
+        answer[answer_query::LENGTH..answer_query::LENGTH + 8]
+            .copy_from_slice(&(tree.len() as u64).to_ne_bytes());
+        self.ioctl(request::ANSWER_QUERY as usize, &mut answer)
     }
 }
 
@@ -155,11 +303,23 @@ impl Window {
         height: u32,
         minimum: (u32, u32),
     ) -> Result<Self, Errno> {
+        Self::create_with_flags(title, width, height, minimum, 0)
+    }
+
+    /// [`Self::create`] with `CREATE`'s `flags` ([`TAKES_CTRL_KEYS`]).
+    pub fn create_with_flags(
+        title: &str,
+        width: u32,
+        height: u32,
+        minimum: (u32, u32),
+        flags: u32,
+    ) -> Result<Self, Errno> {
         let server = WindowServer::open()?;
         let scale = server.work_area()?.scale;
         let mut create = [0u8; 32];
         put(&mut create, 8, width * scale);
         put(&mut create, 12, height * scale);
+        put(&mut create, 16, flags);
         server.ioctl(CREATE, &mut create)?;
         let offset = u64::from_ne_bytes(create[24..32].try_into().unwrap_or([0; 8])) as usize;
         let mut window = Self {
@@ -193,6 +353,15 @@ impl Window {
         put(&mut set_title, 4, title.len() as u32);
         set_title[8..8 + title.len()].copy_from_slice(title);
         self.server.ioctl(SET_TITLE, &mut set_title)
+    }
+
+    /// Turns [`PERSON_VIEW_ONLY`] on or off while the window is open (`CHANGE_FLAGS`).
+    pub fn set_person_view_only(&self, on: bool) -> Result<(), Errno> {
+        let mut change = [0u8; 12];
+        put(&mut change, 0, self.id);
+        put(&mut change, 4, PERSON_VIEW_ONLY);
+        put(&mut change, 8, if on { PERSON_VIEW_ONLY } else { 0 });
+        self.server.ioctl(CHANGE_FLAGS, &mut change)
     }
 
     /// The connection the window was made on.
@@ -320,23 +489,49 @@ impl Window {
     /// Waits up to `timeout_ms` (for ever when `None`) for event records and reads as many as
     /// fit `records`; how many bytes, 0 when the time ran out or a signal interrupted the wait.
     pub fn read_events(&self, records: &mut [u8], timeout_ms: Option<u32>) -> Result<usize, Errno> {
-        let mut poll = [0u8; 8];
+        self.read_events_or(records, timeout_ms, None)
+            .map(|(read, _)| read)
+    }
+
+    /// [`Self::read_events`], also waking when descriptor `also`, if any, has something to
+    /// read or hung up, as a terminal's pseudo-terminal does (D187); returns how many bytes of
+    /// records it read, and whether `also` is ready.
+    pub fn read_events_or(
+        &self,
+        records: &mut [u8],
+        timeout_ms: Option<u32>,
+        also: Option<usize>,
+    ) -> Result<(usize, bool), Errno> {
+        let mut poll = [0u8; 16];
         poll[0..4].copy_from_slice(&(self.server.fd as i32).to_ne_bytes());
         poll[4..6].copy_from_slice(&POLLIN.to_ne_bytes());
+        let count = match also {
+            Some(descriptor) => {
+                poll[8..12].copy_from_slice(&(descriptor as i32).to_ne_bytes());
+                poll[12..14].copy_from_slice(&POLLIN.to_ne_bytes());
+                2
+            }
+            None => 1,
+        };
         let timeout = timeout_ms.map(|ms| [u64::from(ms / 1000), u64::from(ms % 1000) * 1_000_000]);
         let timeout_pointer = timeout.as_ref().map_or(0, |time| time.as_ptr() as usize);
-        // SAFETY: `ppoll` reads the one `pollfd` in `poll` and the `timespec` at
-        // `timeout_pointer` (or none), both owned here, and writes `revents` into `poll`.
+        // SAFETY: `ppoll` reads the `count` `pollfd`s in `poll` and the `timespec` at
+        // `timeout_pointer` (or none), all owned here, and writes their `revents` into `poll`.
         let ready = unsafe {
             call(
                 number::PPOLL,
-                [poll.as_mut_ptr() as usize, 1, timeout_pointer, 0, 8, 0],
+                [poll.as_mut_ptr() as usize, count, timeout_pointer, 0, 8, 0],
             )
         };
         match result(ready) {
-            Ok(0) | Err(Errno::EINTR) => return Ok(0),
+            Ok(0) | Err(Errno::EINTR) => return Ok((0, false)),
             Ok(_) => {}
             Err(error) => return Err(error),
+        }
+        let returned = |at: usize| u16::from_ne_bytes([poll[at], poll[at + 1]]) != 0;
+        let also_ready = count == 2 && returned(14);
+        if !returned(6) {
+            return Ok((0, also_ready));
         }
         let length = records.len() / RECORD_SIZE * RECORD_SIZE;
         // SAFETY: `read` writes at most `length` bytes into `records`, owned by the caller and
@@ -355,8 +550,8 @@ impl Window {
             )
         };
         match result(read) {
-            Err(Errno::EINTR) => Ok(0),
-            read => read,
+            Err(Errno::EINTR) => Ok((0, also_ready)),
+            read => read.map(|read| (read, also_ready)),
         }
     }
 

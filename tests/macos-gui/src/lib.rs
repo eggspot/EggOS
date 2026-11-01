@@ -109,6 +109,7 @@ impl MacPaint {
             field: Field {
                 text: Text::new(),
                 caret: 0,
+                anchor: 0,
                 scroll: 0,
                 placeholder: PLACEHOLDER,
                 escape: Escape::Clear,

@@ -3,7 +3,7 @@
 //! `__stdinp`, `__stdoutp` and `__stderrp`, the `printf` family and the character and line
 //! functions.
 
-use super::variadic::{RawVaList, VaList, variadic};
+use super::variadic::{self, RawVaList, VaList, variadic};
 use super::{c_string, errno_from, file, heap, set_errno};
 use crate::darwin::{self, EBADF, EINVAL};
 use crate::format::{self, Output};
@@ -14,6 +14,7 @@ use core::ptr;
 
 const BUFFER_SIZE: usize = 4096;
 const EOF: c_int = -1;
+const PUSHED_BACK_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Buffering {
@@ -31,7 +32,8 @@ pub struct Stream {
     written: usize,
     read_at: usize,
     read_end: usize,
-    unread: Option<u8>,
+    unread: [u8; PUSHED_BACK_LIMIT],
+    unread_count: usize,
     error: bool,
     end: bool,
     readable: bool,
@@ -41,6 +43,22 @@ pub struct Stream {
 }
 
 impl Stream {
+    fn take_unread(&mut self) -> Option<u8> {
+        self.unread_count = self.unread_count.checked_sub(1)?;
+        Some(self.unread[self.unread_count])
+    }
+
+    /// Puts `byte` back to be read next, as `ungetc` does; false when eight bytes are already
+    /// back.
+    pub fn push_back(&mut self, byte: u8) -> bool {
+        let Some(slot) = self.unread.get_mut(self.unread_count) else {
+            return false;
+        };
+        *slot = byte;
+        self.unread_count += 1;
+        true
+    }
+
     const fn standard(fd: c_int, buffering: Buffering) -> Self {
         Self {
             fd,
@@ -49,7 +67,8 @@ impl Stream {
             written: 0,
             read_at: 0,
             read_end: 0,
-            unread: None,
+            unread: [0; PUSHED_BACK_LIMIT],
+            unread_count: 0,
             error: false,
             end: false,
             readable: fd == 0,
@@ -103,7 +122,7 @@ fn standard_output() -> *mut Stream {
     unsafe { STDOUT_POINTER }
 }
 
-fn standard_input() -> *mut Stream {
+pub(super) fn standard_input() -> *mut Stream {
     // SAFETY: as above.
     unsafe { STDIN_POINTER }
 }
@@ -217,8 +236,8 @@ fn fill(stream: &mut Stream) -> bool {
     }
 }
 
-fn read_byte(stream: &mut Stream) -> Option<u8> {
-    if let Some(byte) = stream.unread.take() {
+pub(super) fn read_byte(stream: &mut Stream) -> Option<u8> {
+    if let Some(byte) = stream.take_unread() {
         return Some(byte);
     }
     if stream.written > 0 && flush(stream) != 0 {
@@ -233,7 +252,7 @@ fn read_byte(stream: &mut Stream) -> Option<u8> {
     Some(byte)
 }
 
-unsafe fn stream<'a>(stream: *mut Stream) -> Option<&'a mut Stream> {
+pub(super) unsafe fn stream<'a>(stream: *mut Stream) -> Option<&'a mut Stream> {
     // SAFETY: the caller's promise.
     unsafe { stream.as_mut() }
 }
@@ -378,35 +397,32 @@ pub unsafe extern "C" fn vasprintf(
     length
 }
 
-#[cfg(target_arch = "aarch64")]
-struct VaCopy(RawVaList);
+struct VaCopy {
+    list: [u64; 3],
+    raw: Option<RawVaList>,
+}
 
-#[cfg(target_arch = "aarch64")]
 impl VaCopy {
     fn raw(&self) -> RawVaList {
-        self.0
+        match self.raw {
+            Some(raw) => raw,
+            None => variadic::system_v_raw(self.list.as_ptr().cast_mut().cast()),
+        }
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 unsafe fn copy_va_list(raw: RawVaList) -> VaCopy {
-    VaCopy(raw)
-}
-
-#[cfg(target_arch = "x86_64")]
-struct VaCopy([u64; 3]);
-
-#[cfg(target_arch = "x86_64")]
-impl VaCopy {
-    fn raw(&self) -> RawVaList {
-        self.0.as_ptr().cast_mut().cast()
+    match variadic::system_v_list(raw) {
+        Some(list) => VaCopy {
+            // SAFETY: a System V `va_list` is 24 bytes, which the caller's pointer names.
+            list: unsafe { list.cast::<[u64; 3]>().read_unaligned() },
+            raw: None,
+        },
+        None => VaCopy {
+            list: [0; 3],
+            raw: Some(raw),
+        },
     }
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn copy_va_list(raw: RawVaList) -> VaCopy {
-    // SAFETY: a System V `va_list` is 24 bytes, which the caller's pointer names.
-    VaCopy(unsafe { raw.cast::<[u64; 3]>().read_unaligned() })
 }
 
 unsafe extern "C" fn printf_with(format: *const c_char, arguments: RawVaList) -> c_int {
@@ -519,6 +535,17 @@ pub use self::{
     eggos_macos_sprintf_chk as sprintf_chk,
 };
 
+/// Writes `bytes` to the standard output stream, buffered as the C library's output is; false
+/// on an error.
+pub fn write_standard_output(bytes: &[u8]) -> bool {
+    // SAFETY: the standard output pointer is one of the layer's streams or one the program
+    // opened, used one call at a time.
+    match unsafe { stream(standard_output()) } {
+        Some(output) => write_bytes(output, bytes),
+        None => false,
+    }
+}
+
 /// # Safety
 /// `file` must be a stream and `text` a NUL-terminated string.
 pub unsafe extern "C" fn fputs(text: *const c_char, file: *mut Stream) -> c_int {
@@ -606,7 +633,7 @@ pub unsafe extern "C" fn fread(
     let out = data.cast::<u8>();
     let mut filled = 0;
     while filled < total {
-        if let Some(byte) = stream.unread.take() {
+        if let Some(byte) = stream.take_unread() {
             // SAFETY: `filled` is below the caller's `total` bytes.
             unsafe { out.wrapping_add(filled).write(byte) };
             filled += 1;
@@ -648,14 +675,14 @@ pub extern "C" fn getchar() -> c_int {
 /// `file` must be a stream.
 pub unsafe extern "C" fn ungetc(character: c_int, file: *mut Stream) -> c_int {
     // SAFETY: the caller's promise.
-    match unsafe { stream(file) } {
-        Some(stream) if character != EOF && stream.unread.is_none() => {
-            stream.unread = Some(character as u8);
-            stream.end = false;
-            character & 0xff
-        }
-        _ => EOF,
+    let Some(stream) = (unsafe { stream(file) }) else {
+        return EOF;
+    };
+    if character == EOF || !stream.push_back(character as u8) {
+        return EOF;
     }
+    stream.end = false;
+    character & 0xff
 }
 
 /// # Safety
@@ -855,7 +882,7 @@ pub unsafe extern "C" fn fseeko(file: *mut Stream, offset: i64, whence: c_int) -
     if flush(stream) != 0 {
         return -1;
     }
-    let buffered = (stream.read_end - stream.read_at) as i64 + i64::from(stream.unread.is_some());
+    let buffered = (stream.read_end - stream.read_at) as i64 + stream.unread_count as i64;
     let offset = if whence == 1 {
         offset - buffered
     } else {
@@ -863,7 +890,7 @@ pub unsafe extern "C" fn fseeko(file: *mut Stream, offset: i64, whence: c_int) -
     };
     stream.read_at = 0;
     stream.read_end = 0;
-    stream.unread = None;
+    stream.unread_count = 0;
     stream.end = false;
     match linux::lseek(stream.fd as usize, offset, whence as usize) {
         Ok(_) => 0,
@@ -889,7 +916,7 @@ pub unsafe extern "C" fn ftello(file: *mut Stream) -> i64 {
         Ok(position) => {
             position as i64 + stream.written as i64
                 - (stream.read_end - stream.read_at) as i64
-                - i64::from(stream.unread.is_some())
+                - stream.unread_count as i64
         }
         Err(errno) => errno_from(errno, -1),
     }

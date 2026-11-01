@@ -1,9 +1,10 @@
 use crate::lines::{STANDARD_INPUT_NAME, each_line};
-use crate::options::{Item, parse};
+use crate::options::parse_defined;
 use crate::output::Output;
 use crate::system::System;
 use core::ffi::CStr;
 use core::ops::ControlFlow;
+use eggos_commands::{commands, errors};
 
 const SELECTED: i32 = 0;
 const NONE_SELECTED: i32 = 1;
@@ -209,8 +210,8 @@ impl<'p> Pattern<'p> {
 
 pub fn grep<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut options = Options::default();
-    let parsed = parse(output, arguments, b"ivncFGq", b"", |_, item| {
-        if let Item::Flag(letter) = item {
+    let parsed = parse_defined(output, arguments, &commands::GREP, |_, given| {
+        if let Some(letter) = given.option.short {
             match letter {
                 b'i' => options.ignore_case = true,
                 b'v' => options.invert = true,
@@ -227,7 +228,10 @@ pub fn grep<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         return TROUBLE;
     };
     let Some((&source, names)) = operands.all().split_first() else {
-        output.error(&[b"usage: grep [-icnqvF] pattern [file ...]"]);
+        output.coded(
+            &errors::USAGE,
+            &[b"usage: grep [-icnqvF] pattern [file ...]"],
+        );
         return TROUBLE;
     };
     let pattern = match Pattern::compile(source.to_bytes(), options.fixed, options.ignore_case) {

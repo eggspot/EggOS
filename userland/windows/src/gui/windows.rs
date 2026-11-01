@@ -14,6 +14,8 @@ pub const MAX_DEPTH: usize = 8;
 /// The most extra bytes a window's class may ask for (`cbWndExtra`).
 pub const MAX_EXTRA: usize = 256;
 const HANDLE_BASE: usize = 0x1_0000;
+/// The style bit of a window that takes no input (`WS_DISABLED`): its enabled state.
+pub const WS_DISABLED: u32 = 0x0800_0000;
 
 /// `GetWindowLongPtrW`'s indices below 0.
 pub mod index {
@@ -26,18 +28,32 @@ pub mod index {
     pub const USER_DATA: i32 = -21;
 }
 
-/// The system's control classes (D145).
+/// The system's control classes (D145), comctl32's common controls among them (D178).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlKind {
     Button,
     Edit,
     Static,
     ListBox,
+    ComboBox,
+    Common(CommonKind),
+}
+
+/// comctl32's common control classes (D178, `docs/ux/windows-controls-v0.3.md` sections 20-28).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommonKind {
+    StatusBar,
+    Progress,
+    TabControl,
+    ListView,
+    Header,
+    TreeView,
+    Toolbar,
 }
 
 /// Who answers a window's messages: the program's window procedure, the layer's message box
-/// (its state's address), one of the system's controls (its state's address, 0 for a static)
-/// or the layer's file picker (its state's address).
+/// (its state's address), one of the system's controls (its state's address, 0 for a static
+/// without a picture) or the layer's file picker (its state's address).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Procedure {
     Program(usize),
@@ -80,7 +96,6 @@ pub struct Window {
     pub menu_height: i32,
     pub focus: usize,
     pub capture: usize,
-    pub enabled: bool,
     pub modal_disabled: bool,
     pub text: usize,
     pub creation_sequence: u32,
@@ -93,6 +108,15 @@ pub struct Window {
     pub erase: bool,
     pub destroying: bool,
     pub thread: u32,
+    pub ansi: bool,
+    pub font: usize,
+    /// The program's procedure that replaced a system control's (`SetWindowLongPtrW` with
+    /// `GWLP_WNDPROC`, D178), 0 while the control answers its messages itself.
+    pub subclass: usize,
+    /// The result `EndDialog` gave a dialog, once it was called.
+    pub dialog_end: Option<isize>,
+    /// The window menu `GetSystemMenu` made for a top-level window, 0 until then.
+    pub system_menu: usize,
 }
 
 /// Where a window draws: its top-level window, the point of that window's buffer its client
@@ -141,7 +165,6 @@ impl Window {
             menu_height: 0,
             focus: 0,
             capture: 0,
-            enabled: true,
             modal_disabled: false,
             text: 0,
             creation_sequence: 0,
@@ -154,6 +177,11 @@ impl Window {
             erase: false,
             destroying: false,
             thread: 0,
+            ansi: false,
+            font: 0,
+            subclass: 0,
+            dialog_end: None,
+            system_menu: 0,
         }
     }
 
@@ -176,6 +204,19 @@ impl Window {
 
     pub fn is_child(&self) -> bool {
         self.parent != 0
+    }
+
+    /// Whether it takes input: `WS_DISABLED` is clear in its style, however that was set.
+    pub fn enabled(&self) -> bool {
+        self.style & WS_DISABLED == 0
+    }
+
+    /// Clears `WS_DISABLED` in its style when `enabled`, sets it otherwise.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        match enabled {
+            true => self.style &= !WS_DISABLED,
+            false => self.style |= WS_DISABLED,
+        }
     }
 
     /// The buffer of a top-level window.
@@ -285,6 +326,12 @@ pub const fn new_table() -> WindowTable {
     Slots::new(HANDLE_BASE)
 }
 
+/// The table slot window `handle` lives in, below [`MAX_WINDOWS`]: no two windows alive at once
+/// share one.
+pub fn slot_of(handle: usize) -> usize {
+    handle.wrapping_sub(HANDLE_BASE) % MAX_WINDOWS
+}
+
 /// The top-level window of server window `server`, if the program has it.
 pub fn by_server(table: &WindowTable, server: u32) -> Option<usize> {
     table
@@ -320,7 +367,7 @@ pub fn enabled_in_tree(table: &WindowTable, handle: usize) -> bool {
     ancestry(table, handle).is_some_and(|(chain, length)| {
         chain[..length]
             .iter()
-            .all(|&at| table.get(at).is_some_and(|window| window.enabled))
+            .all(|&at| table.get(at).is_some_and(|window| window.enabled()))
     })
 }
 
@@ -378,6 +425,84 @@ pub fn children(table: &WindowTable, parent: usize) -> ([usize; MAX_WINDOWS], us
         *slot = *handle;
     }
     (handles, count)
+}
+
+/// The handles of the top-level windows, the newest first, as Windows orders the windows on the
+/// desktop.
+pub fn top_levels(table: &WindowTable) -> ([usize; MAX_WINDOWS], usize) {
+    let mut found = [(0u32, 0usize); MAX_WINDOWS];
+    let mut count = 0;
+    for (handle, window) in table.iter() {
+        if !window.is_child() {
+            found[count] = (window.creation_sequence, handle);
+            count += 1;
+        }
+    }
+    found[..count].sort_unstable_by(|a, b| b.cmp(a));
+    let mut handles = [0; MAX_WINDOWS];
+    for (slot, (_, handle)) in handles.iter_mut().zip(&found[..count]) {
+        *slot = *handle;
+    }
+    (handles, count)
+}
+
+/// How [`related`] finds a window from another, as `GetWindow`'s `GW_` commands do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relation {
+    First,
+    Last,
+    Next,
+    Previous,
+    Owner,
+    Child,
+}
+
+/// The window `relation` names from `handle`: one of its siblings (its parent's children in
+/// creation order, or the top-level windows as [`top_levels`] orders them), its owner, or its
+/// first child.
+pub fn related(table: &WindowTable, handle: usize, relation: Relation) -> Option<usize> {
+    let window = table.get(handle)?;
+    let (all, count) = match window.is_child() {
+        true => children(table, window.parent),
+        false => top_levels(table),
+    };
+    let siblings = &all[..count];
+    let at = siblings.iter().position(|&sibling| sibling == handle);
+    match relation {
+        Relation::First => siblings.first().copied(),
+        Relation::Last => siblings.last().copied(),
+        Relation::Next => siblings.get(at? + 1).copied(),
+        Relation::Previous => siblings.get(at?.checked_sub(1)?).copied(),
+        Relation::Owner => (!window.is_child() && window.owner != 0).then_some(window.owner),
+        Relation::Child => {
+            let (kids, length) = children(table, handle);
+            kids[..length].first().copied()
+        }
+    }
+}
+
+/// Makes child window `handle` a child of `parent` (`SetParent`), at the same place in the new
+/// parent's client area; its old parent. `None`, with nothing changed, when either is gone,
+/// `handle` is not a child window, `parent` is in `handle`'s tree, or the tree would be deeper
+/// than [`MAX_DEPTH`].
+pub fn reparent(table: &mut WindowTable, handle: usize, parent: usize) -> Option<usize> {
+    if !table.get(handle)?.is_child()
+        || table.get(parent).is_none()
+        || is_in_tree(table, handle, parent)
+    {
+        return None;
+    }
+    let old = table.get(handle)?.parent;
+    table.get_mut(handle)?.parent = parent;
+    let (members, count) = tree(table, handle);
+    if members[..count]
+        .iter()
+        .all(|&member| ancestry(table, member).is_some())
+    {
+        return Some(old);
+    }
+    table.get_mut(handle)?.parent = old;
+    None
 }
 
 /// The handles of `handle`'s tree, `handle` first and every window before its children.
@@ -503,7 +628,7 @@ pub fn next_tab_stop(
     let (handles, count) = tree(table, root);
     let stops = |handle: &&usize| {
         table.get(**handle).is_some_and(|window| {
-            window.is_child() && window.shown && window.enabled && window.style & WS_TABSTOP != 0
+            window.is_child() && window.shown && window.enabled() && window.style & WS_TABSTOP != 0
         })
     };
     let order = &handles[1..count];
@@ -757,7 +882,7 @@ mod tests {
         let mut stop = |enabled: bool| {
             let mut window = child(root, Rect::sized(0, 0, 10, 10));
             window.style = 0x0001_0000;
-            window.enabled = enabled;
+            window.set_enabled(enabled);
             table.insert(window).unwrap()
         };
         let first = stop(true);
@@ -784,6 +909,67 @@ mod tests {
     }
 
     #[test]
+    fn the_disabled_style_bit_is_the_enabled_state_both_ways() {
+        let mut window = window();
+        window.style = 0x1000_0000;
+        assert!(window.enabled());
+        assert_eq!(
+            window.set_long(index::STYLE, 4, (0x1000_0000 | WS_DISABLED) as usize),
+            Some(0x1000_0000)
+        );
+        assert!(!window.enabled());
+        assert_eq!(
+            window.set_long(index::STYLE, 8, 0x1000_0000),
+            Some((0x1000_0000 | WS_DISABLED) as usize)
+        );
+        assert!(window.enabled());
+        window.set_enabled(false);
+        assert_eq!(
+            window.long(index::STYLE, 4),
+            Some((0x1000_0000 | WS_DISABLED) as usize)
+        );
+        window.set_enabled(true);
+        assert_eq!(window.long(index::STYLE, 4), Some(0x1000_0000));
+    }
+
+    #[test]
+    fn windows_are_related_as_get_window_finds_them_and_children_change_parents() {
+        let mut table = new_table();
+        let mut older = window();
+        older.creation_sequence = 1;
+        let older = table.insert(older).unwrap();
+        let mut newer = window();
+        newer.creation_sequence = 2;
+        newer.owner = older;
+        let newer = table.insert(newer).unwrap();
+        let (tops, count) = top_levels(&table);
+        assert_eq!(&tops[..count], &[newer, older]);
+        assert_eq!(related(&table, older, Relation::First), Some(newer));
+        assert_eq!(related(&table, newer, Relation::Next), Some(older));
+        assert_eq!(related(&table, newer, Relation::Previous), None);
+        assert_eq!(related(&table, newer, Relation::Owner), Some(older));
+        assert_eq!(related(&table, older, Relation::Owner), None);
+        assert_eq!(related(&table, older, Relation::Child), None);
+        let make = |parent: usize, creation_sequence: u32| {
+            let mut kid = child(parent, Rect::sized(0, 0, 10, 10));
+            kid.creation_sequence = creation_sequence;
+            kid
+        };
+        let first = table.insert(make(older, 3)).unwrap();
+        let second = table.insert(make(older, 4)).unwrap();
+        let grandchild = table.insert(make(first, 5)).unwrap();
+        assert_eq!(related(&table, older, Relation::Child), Some(first));
+        assert_eq!(related(&table, first, Relation::Last), Some(second));
+        assert_eq!(related(&table, second, Relation::Previous), Some(first));
+        assert_eq!(related(&table, first, Relation::Owner), None);
+        assert_eq!(reparent(&mut table, first, grandchild), None);
+        assert_eq!(reparent(&mut table, older, newer), None);
+        assert_eq!(reparent(&mut table, first, newer), Some(older));
+        assert_eq!(root_of(&table, grandchild), Some(newer));
+        assert_eq!(related(&table, older, Relation::Child), Some(second));
+    }
+
+    #[test]
     fn children_keep_creation_order_when_slots_are_reused() {
         let mut table = new_table();
         let root = table.insert(window()).unwrap();
@@ -799,9 +985,9 @@ mod tests {
         let (kids, count) = children(&table, root);
         assert_eq!(&kids[..count], &[second, third]);
         assert!(enabled_in_tree(&table, third));
-        table.get_mut(root).unwrap().enabled = false;
+        table.get_mut(root).unwrap().set_enabled(false);
         assert!(!enabled_in_tree(&table, third));
-        table.get_mut(root).unwrap().enabled = true;
+        table.get_mut(root).unwrap().set_enabled(true);
         assert_eq!(child_at(&table, root, 5, 5).0, third);
         assert_eq!(needing_paint(&table, root, 0), None);
         table.get_mut(third).unwrap().invalidate(None, true);

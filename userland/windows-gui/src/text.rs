@@ -9,6 +9,11 @@ use eggos_font::{self as font, UNDERLINE_ROW};
 pub const CELL_WIDTH: i32 = font::GLYPH_WIDTH as i32;
 /// A glyph cell's height in pixels, the line height of every font.
 pub const CELL_HEIGHT: i32 = font::GLYPH_HEIGHT as i32;
+/// The rows of a cell above the baseline, what `GetTextMetrics` reports as every font's ascent
+/// (D174, `docs/ux/windows-controls-v0.3.md` section 11.3).
+pub const ASCENT: i32 = 13;
+/// The rows of a cell below the baseline, every font's descent.
+pub const DESCENT: i32 = CELL_HEIGHT - ASCENT;
 
 /// One decoded character of text, as layout sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -417,8 +422,8 @@ mod tests {
                 Cell::Glyph {
                     id,
                     underline: true,
-                } => format!("_{}", id as char),
-                Cell::Glyph { id, .. } => (id as char).to_string(),
+                } => format!("_{}", font::character(id)),
+                Cell::Glyph { id, .. } => font::character(id).to_string(),
                 Cell::Space => " ".into(),
                 Cell::Break => "|".into(),
             })
@@ -437,7 +442,7 @@ mod tests {
         let plain = Reading::default();
         assert_eq!(shown(&decoded("a\r\nb\nc\rd", plain)), "a|b|c|d");
         assert_eq!(shown(&decoded("a\u{1}b\tc", plain)), "ab c");
-        assert_eq!(shown(&decoded("é€😀", plain)), "???");
+        assert_eq!(shown(&decoded("é€😀", plain)), "é€?");
         let prefixed = Reading {
             prefixes: true,
             ..plain

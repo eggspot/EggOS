@@ -1,26 +1,48 @@
-//! The shell itself (D107): it reads lines, checks each one's syntax, then runs its commands
-//! one after another, each a builtin or a program found through `PATH`. A pipeline's commands
-//! run at the same time, each one's output piped into the next one's input, and the shell
-//! waits for all of them; its status is the last one's (D125). Everything it asks of the
-//! system goes through [`System`], so all of it runs in host tests against a fake one.
+//! The shell itself (D107): it reads complete commands, checks each one's syntax, then runs it
+//! (`script.rs` holds the grammar: lists, pipelines, `if`, `while`, `until`, `for`, `case`,
+//! `{ }`, `( )` and functions, D182). A simple command is a builtin, a function or a program
+//! found through `PATH`. A pipeline's commands run at the same time, each one's output piped
+//! into the next one's input, and the shell waits for all of them; its status is the last one's
+//! (D125). `&&` and `||` run the next pipeline only if the last one succeeded or failed, and `&`
+//! starts a pipeline or a list in the background as a job, which `jobs`, `fg`, `bg`, `wait` and
+//! `kill` act on; interactive, a program that a stop signal stops (`^Z`) becomes a job too
+//! (D181). Subshells, command substitutions and compound commands in a pipeline run in a
+//! forked copy of the shell (D182). Everything it asks of the system goes through [`System`],
+//! so all of it runs in host tests against a fake one.
 
+use crate::arguments::Arguments;
+use crate::functions::Functions;
+use crate::jobs::{Jobs, NewJob, State};
 use crate::path::{self, DEFAULT_PATH, Files, Lookup, PATH_CAPACITY};
-use crate::status::{self, Ended, NOT_EXECUTABLE, NOT_FOUND, USAGE};
+use crate::status::{self, Change, Ended, NOT_EXECUTABLE, NOT_FOUND, USAGE};
 use crate::syntax::{
-    MAX_WORDS, Parameters, Quoting, Redirection, SyntaxError, Terminator, Value, Words, check_line,
-    is_name, line_end, next_command,
+    MAX_REDIRECTIONS, MAX_WORDS, Parameters, Quoting, Redirect, Redirection, SyntaxError, Value,
+    Words, is_name, line_end,
 };
+use crate::test::{Access, FileStatus};
 use crate::variables::{MAX_VARIABLES, VARIABLES_CAPACITY, Variables};
 pub use eggos_runtime::errno::Errno;
+use language::Locals;
+use script::{Control, Documents, Source};
 
-/// The most bytes of a line the shell holds before its end: longer lines are refused.
-pub const LINE_CAPACITY: usize = 4096;
+mod job_control;
+mod language;
+mod script;
+
+/// The most bytes of a complete command the shell holds before its end (a line, or a whole
+/// `if`, loop or function definition with its here-documents): longer ones are refused.
+pub const LINE_CAPACITY: usize = 16384;
 
 /// How deeply `.` may run files from files.
 pub const MAX_SOURCE_DEPTH: u8 = 16;
 
-/// The positional parameters the shell keeps: `$0` to `$9`.
-pub const MAX_POSITIONAL: usize = 10;
+/// How deeply functions may call functions (D182).
+pub const MAX_CALL_DEPTH: u8 = 64;
+
+/// How deeply compound commands, `eval`, command substitutions, expanded here-documents and
+/// `.` may nest, together: deeper text is refused as nested too deeply instead of running out
+/// of stack (D182).
+pub const MAX_NESTING: u16 = 200;
 
 /// `$?` after `^C` at the prompt, as if the line had been interrupted by `SIGINT`.
 pub const INTERRUPTED: i32 = 128 + status::SIGINT as i32;
@@ -28,7 +50,15 @@ pub const INTERRUPTED: i32 = 128 + status::SIGINT as i32;
 /// The most commands a pipeline has.
 pub const MAX_PIPELINE: usize = 16;
 
+/// The history file's name in `$HOME`, `HISTFILE`'s value unless it is set (D181).
+pub const HISTORY_FILE: &[u8] = b"/.eggsh_history";
+
+const _: () = assert!(MAX_PIPELINE == crate::jobs::MAX_PROGRAMS);
+
 const OUTPUT_CAPACITY: usize = 512;
+const MESSAGE_OF_THE_DAY: &[u8] = b"/etc/motd\0";
+const MESSAGE_PIECE: usize = 256;
+const NULL_DEVICE: &[u8] = b"/dev/null\0";
 
 const STANDARD_INPUT: usize = 0;
 
@@ -39,11 +69,23 @@ const STANDARD_ERROR: usize = 2;
 const HELP: &[u8] = b"eggsh, the EggOS shell\n\
 Commands are words separated by blanks, ended by a newline or `;`. Quote with '...' (as is)\n\
 or \"...\" ($ expands); \\ keeps the next character; # starts a comment.\n\
-$NAME, ${NAME}, $?, $$, $#, $0-$9 expand; ~ is $HOME; NAME=value sets a variable, and\n\
-NAME=value command sets it for that command only.\n\
-a | b pipes a's output into b; < file reads a file, > file writes one, >> file adds to one.\n\
-Builtins: . (source) : cd echo exit export false help pwd set true type unset\n\
-Not supported yet: && || & << ( ) `...` $(...) and wildcards.\n";
+$NAME, ${NAME}, $?, $$, $!, $#, $0-$9, ${10}, $@, $* expand; ${NAME:-word}, :=, :?, :+,\n\
+${#NAME}, ${NAME#pattern}, ##, %, %% change them; $(command) and `command` are its output;\n\
+~ is $HOME; * ? [...] match file names. NAME=value sets a variable, NAME=value command\n\
+sets it for that command only.\n\
+a | b pipes a's output into b; a && b runs b if a succeeded, a || b if it failed; a & runs a\n\
+in the background; ( list ) runs a list in a subshell, { list; } in this shell.\n\
+< file reads a file, > file writes one, >> file adds to one; 2> file sends errors to a file,\n\
+2>&1 where the output goes; <<word reads the lines up to word.\n\
+if list; then list; elif list; then list; else list; fi\n\
+while list; do list; done   until list; do list; done   for name in words; do list; done\n\
+case word in pattern | pattern) list ;; esac   name() { list; }\n\
+Builtins: . (source) : [ bg break cd continue echo eval exit export false fg help jobs kill\n\
+local pwd read return set shift test true type unset wait\n\
+help <command> describes an EggOS command, help --json all of them (/bin/help).\n\
+At the prompt the arrows, Home, End, ^A ^E ^B ^F ^K ^U ^W edit the line, up and down bring\n\
+back the lines typed before ($HISTFILE keeps them); ^Z stops the program running, fg and bg\n\
+continue it.\n";
 
 /// What a read from a descriptor gave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,12 +98,34 @@ pub enum Read {
     Interrupted,
 }
 
+/// How [`System::wait`] waits for a child (D181).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+    /// Until the child changes: it ends, or, under job control, stops.
+    Block,
+    /// Not at all: `None` if no child changed; under job control, stops and continuations
+    /// are reported too.
+    Poll,
+}
+
+/// Which copy of the shell [`System::fork`] returned in (D182).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Forked {
+    /// The new copy, a subshell.
+    Child,
+    /// The shell itself; the subshell has this process id.
+    Parent(i32),
+}
+
 /// What the shell needs from the system.
 pub trait System: Files {
     /// Writes all of `bytes` to `descriptor`, as far as it can.
     fn write(&mut self, descriptor: usize, bytes: &[u8]);
-    /// Reads from `descriptor` into `buffer`.
+    /// Reads from `descriptor` into `buffer`; at the prompt, a line edited at the terminal.
     fn read(&mut self, descriptor: usize, buffer: &mut [u8]) -> Read;
+    /// Reads from `descriptor` into `buffer` as it comes, never through the line editor: for
+    /// `read` and the output of `$(...)` (D182).
+    fn read_data(&mut self, descriptor: usize, buffer: &mut [u8]) -> Read;
     /// Opens the file at `path` (with its NUL) to read it.
     fn open(&mut self, path: &[u8]) -> Result<usize, Errno>;
     /// Closes `descriptor`.
@@ -72,11 +136,14 @@ pub trait System: Files {
     fn working_directory<'b>(&mut self, buffer: &'b mut [u8; PATH_CAPACITY]) -> Option<&'b [u8]>;
     /// Opens the file at `path` (with its NUL) for `redirection`, closed by `execve`.
     fn open_redirection(&mut self, path: &[u8], redirection: Redirection) -> Result<usize, Errno>;
+    /// A descriptor to read `contents` from, from its start, closed by `execve`: a
+    /// here-document's body (D182).
+    fn document(&mut self, contents: &[u8]) -> Result<usize, Errno>;
     /// A new pipe, both ends closed by `execve`: the end to read, then the end to write.
     fn pipe(&mut self) -> Result<(usize, usize), Errno>;
     /// Starts `program` (with its NUL) with `arguments` and `environment` (each with its NUL),
-    /// `streams` as its standard input and output, in `group`, and returns its process id once
-    /// it runs. An error if it could not be run (it was waited for then).
+    /// `streams` as its standard input, output and error, in `group`, and returns its process
+    /// id once it runs. An error if it could not be run (it was waited for then).
     fn start(
         &mut self,
         program: &[u8],
@@ -85,19 +152,63 @@ pub trait System: Files {
         streams: Streams,
         group: Group,
     ) -> Result<i32, Errno>;
-    /// Waits for child `child` to end: its wait status.
-    fn wait(&mut self, child: i32) -> Result<i32, Errno>;
+    /// Makes a copy of the shell in `group`, which runs on from here as [`Forked::Child`]
+    /// without the terminal or job control (D182).
+    fn fork(&mut self, group: Group) -> Result<Forked, Errno>;
+    /// Ends a copy [`System::fork`] made with `status`; it does not return on a real system.
+    fn end_subshell(&mut self, status: i32);
+    /// Waits for child `child` (any child for -1) to change as `how` says: the child and its
+    /// wait status, `None` when polling found no change.
+    fn wait(&mut self, child: i32, how: Wait) -> Result<Option<(i32, i32)>, Errno>;
     /// Gives the terminal back to the shell's own group once a pipeline that had it ended.
     fn take_back_terminal(&mut self);
+    /// Gives the terminal to process group `group`, a job `fg` continues, with the terminal's
+    /// settings as they were before the shell's line editing (D181).
+    fn give_terminal(&mut self, group: i32);
+    /// Sends signal `signal` to process `target`, or to process group `-target` (D181).
+    fn kill(&mut self, target: i32, signal: u8) -> Result<(), Errno>;
+    /// Keeps the lines typed at the prompt in the file at `file` (no NUL) from now on, `None`
+    /// or empty for none; the first file named gives back the lines it holds (D181).
+    fn keep_history_in(&mut self, file: Option<&[u8]>);
+    /// Calls `each` with the name of every entry of the directory at `path` (with its NUL)
+    /// (D182).
+    fn read_directory(&mut self, path: &[u8], each: &mut dyn FnMut(&[u8])) -> Result<(), Errno>;
+    /// What `test` needs to know of the file at `path` (with its NUL), of a symbolic link
+    /// itself unless `follow` (D182).
+    fn file_status(&mut self, path: &[u8], follow: bool) -> Option<FileStatus>;
+    /// Whether the shell may `access` the file at `path` (with its NUL) (D182).
+    fn accessible(&mut self, path: &[u8], access: Access) -> bool;
+    /// Whether `descriptor` is a terminal (D182).
+    fn is_terminal(&mut self, descriptor: usize) -> bool;
 }
 
-/// A started program's standard input and output.
+/// A started program's standard input, output and error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Streams {
     /// The descriptor its standard input reads.
     pub input: usize,
     /// The descriptor its standard output writes.
     pub output: usize,
+    /// The descriptor its standard error writes (D181).
+    pub error: usize,
+}
+
+impl Streams {
+    fn get(&self, descriptor: u8) -> usize {
+        match descriptor {
+            0 => self.input,
+            1 => self.output,
+            _ => self.error,
+        }
+    }
+
+    fn set(&mut self, descriptor: u8, file: usize) {
+        match descriptor {
+            0 => self.input = file,
+            1 => self.output = file,
+            _ => self.error = file,
+        }
+    }
 }
 
 /// The process group a started program joins.
@@ -107,6 +218,9 @@ pub enum Group {
     Shell,
     /// A new one, led by the program, that takes the terminal: a pipeline's first program.
     New,
+    /// A new one, led by the program, that leaves the terminal to the shell: a background
+    /// pipeline's first program (D181).
+    Background,
     /// The group led by this process: the pipeline's later programs.
     Join(i32),
 }
@@ -117,6 +231,15 @@ enum Ran {
     Finished(i32),
 }
 
+impl Ran {
+    fn as_job_end(self) -> Result<i32, Ended> {
+        match self {
+            Ran::Started(child) => Ok(child),
+            Ran::Finished(status) => Err(Ended::Exited(status as u8)),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Pipeline {
     input: Option<usize>,
@@ -124,52 +247,114 @@ struct Pipeline {
     count: usize,
     group: Option<i32>,
     last: Option<Ran>,
+    background: bool,
+    text_start: usize,
 }
 
 impl Pipeline {
-    fn new() -> Self {
+    fn new(text_start: usize) -> Self {
         Self {
             input: None,
             children: [0; MAX_PIPELINE],
             count: 0,
             group: None,
             last: None,
+            background: false,
+            text_start,
         }
+    }
+
+    fn record(&mut self, ran: Ran) {
+        if let Ran::Started(child) = ran {
+            self.children[self.count] = child;
+            self.count += 1;
+        }
+        self.last = Some(ran);
+    }
+}
+
+#[derive(Debug, Default)]
+struct Opened {
+    descriptors: [usize; MAX_REDIRECTIONS + 3],
+    count: usize,
+}
+
+impl Opened {
+    fn push(&mut self, descriptor: usize) {
+        if self.count < self.descriptors.len() {
+            self.descriptors[self.count] = descriptor;
+            self.count += 1;
+        }
+    }
+
+    fn close_all(&mut self, system: &mut impl System) {
+        for &descriptor in &self.descriptors[..self.count] {
+            system.close(descriptor);
+        }
+        self.count = 0;
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Builtin {
+    Background,
+    Bracket,
+    Break,
     Colon,
     Cd,
+    Continue,
     Echo,
+    Eval,
     Exit,
     Export,
     False,
+    Foreground,
     Help,
+    Jobs,
+    Kill,
+    Local,
     Pwd,
+    ReadLine,
+    Return,
     Set,
+    Shift,
     Source,
+    Test,
     True,
     Type,
     Unset,
+    Wait,
 }
 
-const BUILTINS: [(&[u8], Builtin); 14] = [
+const BUILTINS: [(&[u8], Builtin); 28] = [
     (b".", Builtin::Source),
     (b":", Builtin::Colon),
+    (b"[", Builtin::Bracket),
+    (b"bg", Builtin::Background),
+    (b"break", Builtin::Break),
     (b"cd", Builtin::Cd),
+    (b"continue", Builtin::Continue),
     (b"echo", Builtin::Echo),
+    (b"eval", Builtin::Eval),
     (b"exit", Builtin::Exit),
     (b"export", Builtin::Export),
     (b"false", Builtin::False),
+    (b"fg", Builtin::Foreground),
     (b"help", Builtin::Help),
+    (b"jobs", Builtin::Jobs),
+    (b"kill", Builtin::Kill),
+    (b"local", Builtin::Local),
     (b"pwd", Builtin::Pwd),
+    (b"read", Builtin::ReadLine),
+    (b"return", Builtin::Return),
     (b"set", Builtin::Set),
+    (b"shift", Builtin::Shift),
     (b"source", Builtin::Source),
+    (b"test", Builtin::Test),
     (b"true", Builtin::True),
     (b"type", Builtin::Type),
     (b"unset", Builtin::Unset),
+    (b"wait", Builtin::Wait),
 ];
 
 fn builtin(name: &[u8]) -> Option<Builtin> {
@@ -177,6 +362,25 @@ fn builtin(name: &[u8]) -> Option<Builtin> {
         .iter()
         .find(|(builtin, _)| *builtin == name)
         .map(|(_, builtin)| *builtin)
+}
+
+impl Builtin {
+    fn is_special(self) -> bool {
+        matches!(
+            self,
+            Self::Source
+                | Self::Colon
+                | Self::Break
+                | Self::Continue
+                | Self::Eval
+                | Self::Exit
+                | Self::Export
+                | Self::Return
+                | Self::Set
+                | Self::Shift
+                | Self::Unset
+        )
+    }
 }
 
 struct Output<'s, S: System> {
@@ -234,58 +438,129 @@ impl<S: System> Drop for Output<'_, S> {
     }
 }
 
-/// The shell: its variables, `$?`, its positional parameters, and the system it runs on.
+/// The shell: its variables, functions, `$?`, its positional parameters, and the system it
+/// runs on.
 #[derive(Debug)]
 pub struct Shell<'a, S> {
     /// The system the shell runs on.
     pub system: S,
     variables: Variables,
+    functions: Functions,
     status: i32,
     pid: u32,
-    positional: [&'a [u8]; MAX_POSITIONAL],
-    argument_count: usize,
+    name: &'a [u8],
+    arguments: Arguments,
     interactive: bool,
     root: bool,
     exit: Option<i32>,
+    control: Option<Control>,
     depth: u8,
+    calls: u8,
+    nesting: u16,
+    loops: u32,
+    conditions: u32,
+    errexit: bool,
+    last_substitution: Option<i32>,
+    input: usize,
     output: usize,
+    error_output: usize,
+    jobs: Jobs,
+    last_background: Option<i32>,
+    lines: u64,
+    warned_at: Option<u64>,
+    documents: Documents,
+    locals: Locals,
 }
 
 impl<'a, S: System> Shell<'a, S> {
-    /// A shell on `system`, its process id `pid`, `$0` and the first arguments in
-    /// `positional` (at most [`MAX_POSITIONAL`] are kept), `argument_count` of them in all;
+    /// A shell on `system`, its process id `pid`, `$0` and the arguments in `positional`;
     /// `interactive` if it reads commands from a terminal (then it writes prompts and runs
-    /// each program in a group of its own), `root` if its user is root (`#` prompt).
+    /// each program in a group of its own), `root` if its user is root (`#` prompt). Arguments
+    /// past what the shell keeps (8 KiB, 256 of them) are left out.
     pub fn new(
         system: S,
         pid: u32,
         positional: &[&'a [u8]],
-        argument_count: usize,
         interactive: bool,
         root: bool,
     ) -> Self {
-        let mut kept: [&'a [u8]; MAX_POSITIONAL] = [b""; MAX_POSITIONAL];
-        for (slot, argument) in kept.iter_mut().zip(positional) {
-            *slot = argument;
+        let mut arguments = Arguments::default();
+        let given = positional.get(1..).unwrap_or_default();
+        let mut kept = given.len();
+        while arguments.set(given[..kept].iter().copied()).is_err() {
+            kept -= 1;
         }
         Self {
             system,
             variables: Variables::default(),
+            functions: Functions::default(),
             status: 0,
             pid,
-            positional: kept,
-            argument_count,
+            name: positional.first().copied().unwrap_or(b"eggsh"),
+            arguments,
             interactive,
             root,
             exit: None,
+            control: None,
             depth: 0,
+            calls: 0,
+            nesting: 0,
+            loops: 0,
+            conditions: 0,
+            errexit: false,
+            last_substitution: None,
+            input: STANDARD_INPUT,
             output: STANDARD_OUTPUT,
+            error_output: STANDARD_ERROR,
+            jobs: Jobs::default(),
+            last_background: None,
+            lines: 0,
+            warned_at: None,
+            documents: Documents::default(),
+            locals: Locals::default(),
         }
     }
 
     /// Takes a `NAME=value` from the environment the shell started with, exported.
     pub fn import(&mut self, variable: &[u8]) {
         let _ = self.variables.assign(variable, true);
+    }
+
+    /// What an interactive shell does before its first prompt: goes to `$HOME`, sets
+    /// `HISTFILE` to `$HOME/.eggsh_history` unless it is set (D181), and writes `/etc/motd`,
+    /// the welcome (docs/ux/desktop-v0.3-gui.md 14.4). Nothing otherwise.
+    pub fn greet(&mut self) {
+        if !self.interactive {
+            return;
+        }
+        let mut home = [0u8; PATH_CAPACITY];
+        let length = match self.variables.get(b"HOME") {
+            Some(value) if value.len() + HISTORY_FILE.len() < PATH_CAPACITY => {
+                home[..value.len()].copy_from_slice(value);
+                Some(value.len())
+            }
+            _ => None,
+        };
+        if let Some(length) = length
+            && self.system.change_directory(&home[..=length]).is_ok()
+        {
+            self.set_working_directory_variable();
+        }
+        if let Some(length) = length
+            && self.variables.get(b"HISTFILE").is_none()
+        {
+            let end = length + HISTORY_FILE.len();
+            home[length..end].copy_from_slice(HISTORY_FILE);
+            let _ = self.variables.set(b"HISTFILE", &home[..end], false);
+        }
+        let Ok(descriptor) = self.system.open(MESSAGE_OF_THE_DAY) else {
+            return;
+        };
+        let mut buffer = [0u8; MESSAGE_PIECE];
+        while let Read::Bytes(count) = self.system.read(descriptor, &mut buffer) {
+            self.system.write(self.output, &buffer[..count]);
+        }
+        self.system.close(descriptor);
     }
 
     /// Sets `PWD` to the working directory, exported.
@@ -307,15 +582,39 @@ impl<'a, S: System> Shell<'a, S> {
         self.run_buffer(text, true, &mut words);
     }
 
-    /// Runs the commands read from `descriptor` until its end or `exit`, writing a prompt
-    /// before each line if `prompt`.
+    fn unwinding(&self) -> bool {
+        self.exit.is_some() || self.control.is_some()
+    }
+
+    fn streams(&self) -> Streams {
+        Streams {
+            input: self.input,
+            output: self.output,
+            error: self.error_output,
+        }
+    }
+
+    fn set_streams(&mut self, streams: Streams) -> Streams {
+        let old = self.streams();
+        self.input = streams.input;
+        self.output = streams.output;
+        self.error_output = streams.error;
+        old
+    }
+
+    /// Runs the commands read from `descriptor` until its end, `exit` or `return`, writing a
+    /// prompt before each line if `prompt`.
     pub fn run_descriptor(&mut self, descriptor: usize, prompt: bool) {
         let mut buffer = [0; LINE_CAPACITY];
         let mut words = Words::default();
         let mut length = 0;
         let mut discarding = None;
-        while self.exit.is_none() {
+        while !self.unwinding() {
             if prompt {
+                if length == 0 {
+                    self.report_jobs();
+                    self.system.keep_history_in(self.variables.get(b"HISTFILE"));
+                }
                 self.prompt(length > 0);
             }
             let count = match self.system.read(descriptor, &mut buffer[length..]) {
@@ -334,6 +633,11 @@ impl<'a, S: System> Shell<'a, S> {
                     }
                     if prompt && self.exit.is_none() {
                         self.system.write(STANDARD_ERROR, b"exit\n");
+                        if self.stopped_jobs_keep_the_shell() {
+                            length = 0;
+                            discarding = None;
+                            continue;
+                        }
                     }
                     return;
                 }
@@ -385,62 +689,71 @@ impl<'a, S: System> Shell<'a, S> {
         final_input: bool,
         words: &mut Words,
     ) -> (usize, Option<Quoting>) {
+        let kept = self.documents;
         let mut at = 0;
-        while at < text.len() && self.exit.is_none() {
-            match check_line(&text[at..], final_input) {
-                Ok(length) => {
-                    self.run_line(&text[at..at + length], words);
-                    at += length;
+        let mut discard = None;
+        while at < text.len() && !self.unwinding() {
+            self.documents = Documents::default();
+            let source = Source::new(text, final_input);
+            match self.check(source, at, words) {
+                Ok(end) => {
+                    self.lines += 1;
+                    let complete = Source::new(&text[..end], true);
+                    if let Err(error) = self.run_complete(complete, at, words) {
+                        self.syntax_error(error);
+                    }
+                    at = end;
                 }
                 Err(SyntaxError::Incomplete) => break,
                 Err(error) => {
                     self.syntax_error(error);
                     let mut quoting = Quoting::WordStart;
-                    match line_end(&mut quoting, &text[at..]) {
-                        Some(end) => at += end,
-                        None if final_input => return (text.len(), None),
-                        None => return (text.len(), Some(quoting)),
+                    let mut rest = at;
+                    while let Some(end) = line_end(&mut quoting, &text[rest..]) {
+                        rest += end;
                     }
+                    if rest < text.len() && !final_input {
+                        discard = Some(quoting);
+                    }
+                    at = text.len();
+                    break;
                 }
             }
         }
-        (at, None)
+        self.documents = kept;
+        (at, discard)
     }
 
-    fn run_line(&mut self, line: &[u8], words: &mut Words) {
-        let mut at = 0;
-        let mut pipeline = Pipeline::new();
-        while self.exit.is_none() {
-            match next_command(&line[at..], true, &*self, words) {
-                Ok(parsed) => {
-                    at += parsed.consumed;
-                    let piped = parsed.terminator == Terminator::Pipe;
-                    self.stage(words, &mut pipeline, piped);
-                    if !piped {
-                        self.finish(&mut pipeline);
-                        if parsed.terminator != Terminator::Semicolon {
-                            return;
-                        }
-                    }
-                }
-                Err(error) => {
-                    self.finish(&mut pipeline);
-                    self.syntax_error(error);
-                    return;
-                }
-            }
+    fn stage(
+        &mut self,
+        source: Source<'_>,
+        start: usize,
+        words: &mut Words,
+        pipeline: &mut Pipeline,
+        piped: bool,
+    ) {
+        let first = pipeline.last.is_none();
+        let (mut streams, mut opened, mut ran) = self.stage_streams(pipeline, piped);
+        if ran.is_none() {
+            ran = self.redirect(source, start, words, &mut streams, &mut opened);
         }
-        self.finish(&mut pipeline);
+        let forked = !first || piped || pipeline.background;
+        let ran = ran.unwrap_or_else(|| self.execute(words, streams, pipeline, forked));
+        opened.close_all(&mut self.system);
+        pipeline.record(ran);
     }
 
-    fn stage(&mut self, words: &Words, pipeline: &mut Pipeline, piped: bool) {
-        let mut opened = [None; 4];
-        let mut streams = Streams {
-            input: pipeline.input.take().unwrap_or(STANDARD_INPUT),
-            output: STANDARD_OUTPUT,
-        };
-        if streams.input != STANDARD_INPUT {
-            opened[0] = Some(streams.input);
+    fn stage_streams(
+        &mut self,
+        pipeline: &mut Pipeline,
+        piped: bool,
+    ) -> (Streams, Opened, Option<Ran>) {
+        let mut opened = Opened::default();
+        let first = pipeline.last.is_none();
+        let mut streams = self.streams();
+        if let Some(input) = pipeline.input.take() {
+            streams.input = input;
+            opened.push(input);
         }
         let mut ran = None;
         if piped {
@@ -452,7 +765,7 @@ impl<'a, S: System> Shell<'a, S> {
                     Ok((read, write)) => {
                         pipeline.input = Some(read);
                         streams.output = write;
-                        opened[1] = Some(write);
+                        opened.push(write);
                     }
                     Err(errno) => {
                         self.error(&[b"pipe: ", errno.message()]);
@@ -461,88 +774,283 @@ impl<'a, S: System> Shell<'a, S> {
                 }
             }
         }
-        if ran.is_none() {
-            let [.., input, output] = &mut opened;
-            ran = self.redirect(words, &mut streams, [input, output]);
+        if first
+            && pipeline.background
+            && !self.interactive
+            && let Ok(null) = self
+                .system
+                .open_redirection(NULL_DEVICE, Redirection::Input)
+        {
+            streams.input = null;
+            opened.push(null);
         }
-        let ran = ran.unwrap_or_else(|| self.execute(words, streams, pipeline));
-        for descriptor in opened.into_iter().flatten() {
-            self.system.close(descriptor);
-        }
-        if let Ran::Started(child) = ran {
-            pipeline.children[pipeline.count] = child;
-            pipeline.count += 1;
-        }
-        pipeline.last = Some(ran);
+        (streams, opened, ran)
     }
 
     fn redirect(
         &mut self,
+        source: Source<'_>,
+        start: usize,
         words: &Words,
         streams: &mut Streams,
-        [opened_input, opened_output]: [&mut Option<usize>; 2],
+        opened: &mut Opened,
     ) -> Option<Ran> {
-        for (redirection, path) in words.redirections() {
-            let descriptor = match self.system.open_redirection(path, redirection) {
-                Ok(descriptor) => descriptor,
-                Err(errno) => {
-                    self.error(&[&path[..path.len() - 1], b": ", errno.message()]);
-                    return Some(Ran::Finished(1));
+        for redirect in words.redirections() {
+            match redirect {
+                Redirect::File {
+                    descriptor,
+                    redirection,
+                    path,
+                } => {
+                    if descriptor > 2 {
+                        self.bad_descriptor(descriptor);
+                        return Some(Ran::Finished(1));
+                    }
+                    let file = match self.system.open_redirection(path, redirection) {
+                        Ok(file) => file,
+                        Err(errno) => {
+                            self.error(&[&path[..path.len() - 1], b": ", errno.message()]);
+                            return Some(Ran::Finished(1));
+                        }
+                    };
+                    opened.push(file);
+                    streams.set(descriptor, file);
                 }
-            };
-            let (target, opened) = match redirection {
-                Redirection::Input => (&mut streams.input, &mut *opened_input),
-                Redirection::Output | Redirection::Append => {
-                    (&mut streams.output, &mut *opened_output)
+                Redirect::Duplicate { descriptor, source } => {
+                    if descriptor > 2 || source > 2 {
+                        self.bad_descriptor(descriptor.max(source));
+                        return Some(Ran::Finished(1));
+                    }
+                    streams.set(descriptor, streams.get(source));
                 }
-            };
-            *target = descriptor;
-            if let Some(previous) = opened.replace(descriptor) {
-                self.system.close(previous);
+                Redirect::Document {
+                    descriptor,
+                    position,
+                } => {
+                    if descriptor > 2 {
+                        self.bad_descriptor(descriptor);
+                        return Some(Ran::Finished(1));
+                    }
+                    match self.open_document(source, start + position) {
+                        Ok(file) => {
+                            opened.push(file);
+                            streams.set(descriptor, file);
+                        }
+                        Err(status) => return Some(Ran::Finished(status)),
+                    }
+                }
             }
         }
         None
     }
 
-    fn finish(&mut self, pipeline: &mut Pipeline) {
+    fn bad_descriptor(&mut self, descriptor: u8) {
+        let digit = [b'0' + descriptor];
+        self.error(&[
+            &digit,
+            b": only descriptors 0, 1 and 2 can be redirected yet",
+        ]);
+    }
+
+    fn wait_for(&mut self, child: i32) -> Result<Change, Errno> {
+        loop {
+            match self.system.wait(child, Wait::Block)? {
+                Some((_, status)) => match Change::from_wait_status(status) {
+                    Change::Continued => {}
+                    change => return Ok(change),
+                },
+                None => return Err(Errno::ECHILD),
+            }
+        }
+    }
+
+    fn finish(&mut self, pipeline: &mut Pipeline, text: &[u8]) {
         if let Some(input) = pipeline.input.take() {
             self.system.close(input);
         }
         let Some(last) = pipeline.last.take() else {
             return;
         };
-        let mut last_status = None;
-        for &child in &pipeline.children[..pipeline.count] {
-            let waited = self.system.wait(child);
-            if last == Ran::Started(child) {
-                last_status = Some(waited);
+        let mut last_change = None;
+        let mut ended = 0u16;
+        let mut stopped = None;
+        for (index, &child) in pipeline.children[..pipeline.count].iter().enumerate() {
+            match self.wait_for(child) {
+                Ok(Change::Stopped(signal)) => {
+                    stopped = Some(signal);
+                    break;
+                }
+                Ok(change) => {
+                    ended |= 1 << index;
+                    if last == Ran::Started(child) {
+                        last_change = Some(change);
+                    }
+                }
+                Err(_) => ended |= 1 << index,
             }
         }
         if pipeline.group.is_some() {
             self.system.take_back_terminal();
         }
-        self.status = match (last, last_status) {
-            (Ran::Finished(status), _) => status,
-            (Ran::Started(_), Some(Ok(wait_status))) => {
-                let ended = Ended::from_wait_status(wait_status);
-                let report = ended.report();
-                if !report.is_empty() {
-                    self.system.write(STANDARD_ERROR, report);
+        if let Some(signal) = stopped {
+            self.keep_stopped(pipeline, ended, last, text, signal);
+        } else {
+            self.status = match (last, last_change) {
+                (Ran::Finished(status), _) => status,
+                (Ran::Started(_), Some(Change::Ended(ended))) => {
+                    let report = ended.report();
+                    if !report.is_empty() {
+                        self.system.write(STANDARD_ERROR, report);
+                    }
+                    ended.shell_status()
                 }
-                ended.shell_status()
+                (Ran::Started(_), _) => 1,
+            };
+        }
+        *pipeline = Pipeline::new(0);
+        if !self.jobs.is_empty() {
+            self.collect_job_changes();
+        }
+    }
+
+    fn keep_stopped(
+        &mut self,
+        pipeline: &Pipeline,
+        ended: u16,
+        last: Ran,
+        text: &[u8],
+        signal: u8,
+    ) {
+        self.status = 128 + i32::from(signal);
+        let added = self.jobs.add(NewJob {
+            group: pipeline.group.unwrap_or(0),
+            programs: &pipeline.children[..pipeline.count],
+            ended,
+            last: last.as_job_end(),
+            text,
+            state: State::Stopped(signal),
+        });
+        match added {
+            Ok(number) => {
+                self.system.write(STANDARD_ERROR, b"\n");
+                self.jobs.set_state(number, State::Stopped(signal));
+                self.write_job(number, STANDARD_ERROR, false);
             }
-            (Ran::Started(_), _) => 1,
+            Err(_) => self.error(&[b"too many jobs: the stopped program is not kept"]),
+        }
+    }
+
+    fn run_in_background(&mut self, pipeline: &mut Pipeline, text: &[u8]) {
+        if let Some(input) = pipeline.input.take() {
+            self.system.close(input);
+        }
+        let Some(last) = pipeline.last.take() else {
+            return;
         };
-        *pipeline = Pipeline::new();
+        if pipeline.count == 0 {
+            self.status = match last {
+                Ran::Finished(status) => status,
+                Ran::Started(_) => 0,
+            };
+            *pipeline = Pipeline::new(0);
+            return;
+        }
+        let programs = pipeline.children;
+        let count = pipeline.count;
+        let group = pipeline.group.unwrap_or(0);
+        self.add_background_job(group, &programs[..count], last.as_job_end(), text);
+        *pipeline = Pipeline::new(0);
+    }
+
+    fn add_background_job(
+        &mut self,
+        group: i32,
+        programs: &[i32],
+        last: Result<i32, Ended>,
+        text: &[u8],
+    ) {
+        self.last_background = programs.last().copied();
+        let added = self.jobs.add(NewJob {
+            group,
+            programs,
+            ended: 0,
+            last,
+            text,
+            state: State::Running,
+        });
+        match added {
+            Ok(number) if self.interactive => {
+                let mut digits = [0; 20];
+                let mut output = Output::new(&mut self.system, STANDARD_ERROR);
+                output.push(b"[");
+                output.push(crate::syntax::decimal(u64::from(number), &mut digits));
+                output.push(b"] ");
+                let pid = self.last_background.unwrap_or(0) as u64;
+                output.push(crate::syntax::decimal(pid, &mut digits));
+                output.push(b"\n");
+            }
+            Ok(_) => {}
+            Err(_) => self.error(&[b"too many jobs: the background job is not followed"]),
+        }
+        self.status = 0;
+    }
+
+    fn write_job(&mut self, number: u16, descriptor: usize, program: bool) {
+        let Some(job) = self.jobs.get(number).copied() else {
+            return;
+        };
+        let mut output = Output::new(&mut self.system, descriptor);
+        self.jobs
+            .write_line(&job, program, &mut |bytes| output.push(bytes));
+    }
+
+    fn collect_job_changes(&mut self) {
+        while let Ok(Some((child, status))) = self.system.wait(-1, Wait::Poll) {
+            self.jobs.record(child, Change::from_wait_status(status));
+        }
+    }
+
+    fn report_jobs(&mut self) {
+        if self.jobs.is_empty() {
+            return;
+        }
+        self.collect_job_changes();
+        while let Some(job) = self.jobs.take_changed() {
+            self.write_job(job.number(), STANDARD_ERROR, false);
+        }
+        self.jobs.remove_reported();
+    }
+
+    fn stopped_jobs_keep_the_shell(&mut self) -> bool {
+        if !self.interactive || self.jobs.is_empty() {
+            return false;
+        }
+        self.collect_job_changes();
+        if !self.jobs.any_stopped() || self.warned_at.is_some_and(|at| at + 1 >= self.lines) {
+            return false;
+        }
+        self.warned_at = Some(self.lines);
+        self.system
+            .write(STANDARD_ERROR, b"There are stopped jobs.\n");
+        true
     }
 
     fn syntax_error(&mut self, error: SyntaxError) {
+        let status = match error {
+            SyntaxError::Failed => 1,
+            _ => USAGE,
+        };
         match error {
             SyntaxError::Incomplete | SyntaxError::UnexpectedEnd(b'\'') => {
                 self.error(&[b"syntax error: unexpected end of file, looking for the closing `'`"])
             }
             SyntaxError::UnexpectedEnd(b'"') => {
                 self.error(&[b"syntax error: unexpected end of file, looking for the closing `\"`"])
+            }
+            SyntaxError::UnexpectedEnd(b'`') => self
+                .error(&[b"syntax error: unexpected end of file, looking for the closing `` ` ``"]),
+            SyntaxError::UnexpectedEnd(b'(') => {
+                self.error(&[b"syntax error: unexpected end of file, looking for the closing `)`"])
             }
             SyntaxError::UnexpectedEnd(_) => {
                 self.error(&[b"syntax error: unexpected end of file, looking for the closing `}`"])
@@ -555,17 +1063,31 @@ impl<'a, S: System> Shell<'a, S> {
                 token.as_bytes(),
                 b"`",
             ]),
+            SyntaxError::Missing(word) => self.error(&[
+                b"syntax error: unexpected end of file, looking for `",
+                word.as_bytes(),
+                b"`",
+            ]),
+            SyntaxError::Expected(word) => {
+                self.error(&[b"syntax error: `", word.as_bytes(), b"` expected"])
+            }
+            SyntaxError::UnexpectedWord => {
+                self.error(&[b"syntax error: a word after a compound command"])
+            }
+            SyntaxError::BadName => self.error(&[b"syntax error: `for` needs a variable's name"]),
             SyntaxError::BadSubstitution => self.error(&[b"bad substitution"]),
             SyntaxError::TooLong => self.error(&[b"command too long"]),
+            SyntaxError::TooDeep => self.error(&[b"syntax error: nested too deeply"]),
+            SyntaxError::Failed => {}
         }
-        self.status = USAGE;
-        if !self.interactive {
-            self.exit = Some(USAGE);
+        self.status = status;
+        if !self.interactive && self.exit.is_none() {
+            self.exit = Some(status);
         }
     }
 
     fn error(&mut self, parts: &[&[u8]]) {
-        let mut output = Output::new(&mut self.system, STANDARD_ERROR);
+        let mut output = Output::new(&mut self.system, self.error_output);
         output.push(b"eggsh: ");
         for part in parts {
             output.push(part);
@@ -591,7 +1113,13 @@ impl<'a, S: System> Shell<'a, S> {
         }
     }
 
-    fn execute(&mut self, words: &Words, streams: Streams, pipeline: &mut Pipeline) -> Ran {
+    fn execute(
+        &mut self,
+        words: &mut Words,
+        streams: Streams,
+        pipeline: &mut Pipeline,
+        forked: bool,
+    ) -> Ran {
         if words.command_length() == 0 {
             for assignment in words.assignments() {
                 if self.variables.assign(assignment, false).is_err() {
@@ -599,36 +1127,59 @@ impl<'a, S: System> Shell<'a, S> {
                     return Ran::Finished(1);
                 }
             }
-            return Ran::Finished(0);
+            return Ran::Finished(self.last_substitution.unwrap_or(0));
         }
-        match builtin(words.command(0)) {
+        let name = words.command(0);
+        let chosen =
+            builtin(name).filter(|&found| found != Builtin::Help || words.command_length() == 1);
+        if !chosen.is_some_and(Builtin::is_special) && self.functions.contains(name) {
+            return match forked {
+                true => self.fork_function(words, streams, pipeline),
+                false => Ran::Finished(self.call_function(words, streams)),
+            };
+        }
+        match chosen {
             Some(builtin) => {
-                self.output = streams.output;
+                let saved = self.set_streams(streams);
                 let status = self.builtin(builtin, words);
-                self.output = STANDARD_OUTPUT;
+                self.set_streams(saved);
                 Ran::Finished(status)
             }
             None => self.external(words, streams, pipeline),
         }
     }
 
-    fn builtin(&mut self, builtin: Builtin, words: &Words) -> i32 {
+    fn builtin(&mut self, builtin: Builtin, words: &mut Words) -> i32 {
         match builtin {
             Builtin::Colon | Builtin::True => 0,
             Builtin::False => 1,
+            Builtin::Background => self.continue_in_background(words),
+            Builtin::Bracket => self.test(words, true),
+            Builtin::Break => self.break_loop(words, false),
             Builtin::Cd => self.cd(words),
+            Builtin::Continue => self.break_loop(words, true),
             Builtin::Echo => self.echo(words),
+            Builtin::Eval => self.eval(words),
             Builtin::Exit => self.exit(words),
             Builtin::Export => self.export(words),
+            Builtin::Foreground => self.continue_in_foreground(words),
             Builtin::Help => {
                 self.system.write(self.output, HELP);
                 0
             }
+            Builtin::Jobs => self.list_jobs(words),
+            Builtin::Kill => self.kill(words),
+            Builtin::Local => self.local(words),
             Builtin::Pwd => self.pwd(),
+            Builtin::ReadLine => self.read_line(words),
+            Builtin::Return => self.return_from(words),
             Builtin::Set => self.set(words),
+            Builtin::Shift => self.shift(words),
             Builtin::Source => self.source(words),
+            Builtin::Test => self.test(words, false),
             Builtin::Type => self.type_of(words),
             Builtin::Unset => self.unset(words),
+            Builtin::Wait => self.wait(words),
         }
     }
 
@@ -736,6 +1287,9 @@ impl<'a, S: System> Shell<'a, S> {
                 return 1;
             }
         };
+        if self.stopped_jobs_keep_the_shell() {
+            return 1;
+        }
         self.exit = Some(status);
         status
     }
@@ -777,33 +1331,28 @@ impl<'a, S: System> Shell<'a, S> {
 
     fn unset(&mut self, words: &Words) -> i32 {
         let mut status = 0;
-        for index in 1..words.command_length() {
+        let mut functions = false;
+        let mut first = 1;
+        match words.command_length() > 1 {
+            true if words.command(1) == b"-f" => {
+                functions = true;
+                first = 2;
+            }
+            true if words.command(1) == b"-v" => first = 2,
+            _ => {}
+        }
+        for index in first..words.command_length() {
             let name = words.command(index);
-            if is_name(name) {
-                self.variables.unset(name);
-            } else {
+            if !is_name(name) {
                 self.error(&[b"unset: `", name, b"': not a valid identifier"]);
                 status = 1;
+            } else if functions {
+                self.functions.remove(name);
+            } else {
+                self.variables.unset(name);
             }
         }
         status
-    }
-
-    fn set(&mut self, words: &Words) -> i32 {
-        if words.command_length() > 1 {
-            self.error(&[b"set: options are not supported yet"]);
-            return USAGE;
-        }
-        let mut output = Output::new(&mut self.system, self.output);
-        for variable in self.variables.iter() {
-            if let Some(value) = variable.value {
-                output.push(variable.name);
-                output.push(b"=");
-                output.push_quoted(value);
-                output.push(b"\n");
-            }
-        }
-        0
     }
 
     fn source(&mut self, words: &Words) -> i32 {
@@ -825,7 +1374,18 @@ impl<'a, S: System> Shell<'a, S> {
         };
         self.depth += 1;
         self.status = 0;
-        self.run_descriptor(descriptor, false);
+        let loops = core::mem::take(&mut self.loops);
+        let ran = self.nested(|shell| {
+            shell.run_descriptor(descriptor, false);
+            Ok(())
+        });
+        if let Err(error) = ran {
+            self.syntax_error(error);
+        }
+        self.loops = loops;
+        if self.control == Some(Control::Return) {
+            self.control = None;
+        }
         self.depth -= 1;
         self.system.close(descriptor);
         self.status
@@ -837,7 +1397,12 @@ impl<'a, S: System> Shell<'a, S> {
             let name = words.command(index);
             let mut program = [0; PATH_CAPACITY];
             let search = self.variables.get(b"PATH").unwrap_or(DEFAULT_PATH);
-            if builtin(name).is_some() {
+            let known = builtin(name);
+            if known.is_none_or(|found| !found.is_special()) && self.functions.contains(name) {
+                let mut output = Output::new(&mut self.system, self.output);
+                output.push(name);
+                output.push(b" is a function\n");
+            } else if known.is_some() {
                 let mut output = Output::new(&mut self.system, self.output);
                 output.push(name);
                 output.push(b" is a shell builtin\n");
@@ -855,6 +1420,15 @@ impl<'a, S: System> Shell<'a, S> {
             }
         }
         status
+    }
+
+    fn group_for(&self, pipeline: &Pipeline) -> Group {
+        match (self.interactive, pipeline.group, pipeline.background) {
+            (false, _, _) => Group::Shell,
+            (true, None, false) => Group::New,
+            (true, None, true) => Group::Background,
+            (true, Some(leader), _) => Group::Join(leader),
+        }
     }
 
     fn external(&mut self, words: &Words, streams: Streams, pipeline: &mut Pipeline) -> Ran {
@@ -916,11 +1490,7 @@ impl<'a, S: System> Shell<'a, S> {
                 variables += 1;
             }
         }
-        let group = match (self.interactive, pipeline.group) {
-            (false, _) => Group::Shell,
-            (true, None) => Group::New,
-            (true, Some(leader)) => Group::Join(leader),
-        };
+        let group = self.group_for(pipeline);
         let result = self.system.start(
             &program[..length],
             &arguments[..count],
@@ -939,21 +1509,57 @@ impl<'a, S: System> Shell<'a, S> {
     }
 }
 
-impl<S> Parameters for Shell<'_, S> {
+impl<S: System> Parameters for Shell<'_, S> {
     fn value(&self, name: &[u8]) -> Value<'_> {
         match name {
             b"?" => Value::Number(self.status as u32 as u64),
             b"$" => Value::Number(u64::from(self.pid)),
-            b"#" => Value::Number(self.argument_count.saturating_sub(1) as u64),
-            &[digit @ b'0'..=b'9'] => {
-                let index = usize::from(digit - b'0');
-                match index < self.argument_count.min(MAX_POSITIONAL) {
-                    true => Value::Text(self.positional[index]),
-                    false => Value::Unset,
-                }
+            b"!" => self
+                .last_background
+                .map_or(Value::Unset, |pid| Value::Number(pid as u64)),
+            b"#" => Value::Number(self.arguments.count() as u64),
+            b"0" => Value::Text(self.name),
+            [b'0'..=b'9', ..] if name.iter().all(u8::is_ascii_digit) => {
+                let number = name.iter().try_fold(0usize, |value, &digit| {
+                    value
+                        .checked_mul(10)?
+                        .checked_add(usize::from(digit - b'0'))
+                });
+                number
+                    .and_then(|number| self.arguments.get(number))
+                    .map_or(Value::Unset, Value::Text)
             }
             _ => self.variables.get(name).map_or(Value::Unset, Value::Text),
         }
+    }
+
+    fn positional_count(&self) -> usize {
+        self.arguments.count()
+    }
+
+    fn positional(&self, number: usize) -> &[u8] {
+        self.arguments.get(number).unwrap_or_default()
+    }
+
+    fn assign(&mut self, name: &[u8], value: &[u8]) -> Result<(), SyntaxError> {
+        if self.variables.set(name, value, false).is_err() {
+            self.error(&[b"too many variables"]);
+            return Err(SyntaxError::Failed);
+        }
+        Ok(())
+    }
+
+    fn fail(&mut self, name: &[u8], message: &[u8]) {
+        self.error(&[name, b": ", message]);
+    }
+
+    fn substitute(
+        &mut self,
+        command: &[u8],
+        backquoted: bool,
+        output: &mut dyn FnMut(&[u8]) -> Result<(), SyntaxError>,
+    ) -> Result<(), SyntaxError> {
+        self.run_substitution(command, backquoted, output)
     }
 }
 

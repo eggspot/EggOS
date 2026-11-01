@@ -33,6 +33,8 @@ const HELD_MIDDLE: u32 = 4;
 const SHIFT: u32 = 1;
 const CONTROL: u32 = 2;
 const ALT: u32 = 4;
+const ALT_GRAPH: u32 = 32;
+const VK_PACKET: u8 = 0xe7;
 
 /// `wParam`'s `MK_` flags on mouse messages.
 pub mod mouse_keys {
@@ -44,6 +46,24 @@ pub mod mouse_keys {
 }
 
 const WHEEL_DELTA: i32 = 120;
+const CAPS_LOCK: u32 = 16;
+/// The virtual keys `GetKeyboardState` reports.
+pub const KEY_STATES: usize = 256;
+const HELD: u8 = 0x80;
+const TOGGLED: u8 = 0x01;
+
+mod held_key {
+    pub const LEFT_BUTTON: usize = 0x01;
+    pub const RIGHT_BUTTON: usize = 0x02;
+    pub const MIDDLE_BUTTON: usize = 0x04;
+    pub const SHIFT: usize = 0x10;
+    pub const CONTROL: usize = 0x11;
+    pub const MENU: usize = 0x12;
+    pub const CAPITAL: usize = 0x14;
+    pub const LEFT_SHIFT: usize = 0xa0;
+    pub const LEFT_CONTROL: usize = 0xa2;
+    pub const LEFT_MENU: usize = 0xa4;
+}
 
 /// One event record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -97,12 +117,26 @@ pub enum Event {
     Ignored,
 }
 
-/// The buttons and modifiers held, which mouse messages report.
+/// `RegisterHotKey`'s `MOD_` flags.
+pub mod hot_key_modifiers {
+    pub const ALT: u32 = 0x1;
+    pub const CONTROL: u32 = 0x2;
+    pub const SHIFT: u32 = 0x4;
+    pub const WIN: u32 = 0x8;
+}
+
+const VK_LEFT_WIN: usize = 0x5b;
+const VK_RIGHT_WIN: usize = 0x5c;
+
+/// The buttons and modifiers held, which mouse messages report, and where the pointer was last
+/// seen.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InputState {
     buttons: u32,
     modifiers: u32,
     point: (i32, i32),
+    pointer_window: Option<u16>,
+    keys_down: [u64; KEY_STATES / 64],
 }
 
 impl InputState {
@@ -111,7 +145,151 @@ impl InputState {
         self.modifiers & SHIFT != 0
     }
 
-    fn mouse_keys(&self) -> usize {
+    /// The server window the pointer was last over and the point of its content it was at;
+    /// `None` before the pointer first reached one of the program's windows.
+    pub fn pointer(&self) -> Option<(u16, (i32, i32))> {
+        self.pointer_window.map(|window| (window, self.point))
+    }
+
+    /// Puts the pointer at `point` of server window `window`'s content, as input a program
+    /// sends itself (`SendInput`) moves it.
+    pub fn move_pointer(&mut self, window: u16, point: (i32, i32)) {
+        self.pointer_window = Some(window);
+        self.point = point;
+    }
+
+    /// The `MOD_` flags of the modifiers held, as `RegisterHotKey` names them.
+    pub fn hot_key_modifiers(&self) -> u32 {
+        let held = |key: usize| self.keys_down[key / 64] & (1 << (key % 64)) != 0;
+        let mut flags = 0;
+        for (on, flag) in [
+            (self.modifiers & ALT != 0, hot_key_modifiers::ALT),
+            (self.modifiers & CONTROL != 0, hot_key_modifiers::CONTROL),
+            (self.modifiers & SHIFT != 0, hot_key_modifiers::SHIFT),
+            (
+                held(VK_LEFT_WIN) || held(VK_RIGHT_WIN),
+                hot_key_modifiers::WIN,
+            ),
+        ] {
+            if on {
+                flags |= flag;
+            }
+        }
+        flags
+    }
+
+    /// Records virtual key `virtual_key` pressed or released by input the program sends itself
+    /// (`SendInput`, `keybd_event`), Shift, Ctrl and Alt (either side) as modifiers too.
+    pub fn press_key(&mut self, virtual_key: u8, pressed: bool) {
+        let key = usize::from(virtual_key);
+        let bit = 1 << (key % 64);
+        match pressed {
+            true => self.keys_down[key / 64] |= bit,
+            false => self.keys_down[key / 64] &= !bit,
+        }
+        let modifier = match key {
+            held_key::SHIFT | held_key::LEFT_SHIFT | 0xa1 => SHIFT,
+            held_key::CONTROL | held_key::LEFT_CONTROL | 0xa3 => CONTROL,
+            held_key::MENU | held_key::LEFT_MENU | 0xa5 => ALT,
+            _ => return,
+        };
+        match pressed {
+            true => self.modifiers |= modifier,
+            false => self.modifiers &= !modifier,
+        }
+    }
+
+    /// Records mouse button `button` (one of [`mouse_keys`]' `LEFT`, `RIGHT` and `MIDDLE`)
+    /// pressed or released by input the program sends itself.
+    pub fn press_button(&mut self, button: usize, pressed: bool) {
+        let held = match button {
+            mouse_keys::LEFT => HELD_LEFT,
+            mouse_keys::RIGHT => HELD_RIGHT,
+            mouse_keys::MIDDLE => HELD_MIDDLE,
+            _ => return,
+        };
+        match pressed {
+            true => self.buttons |= held,
+            false => self.buttons &= !held,
+        }
+    }
+
+    /// `SetKeyboardState`: the keys, buttons and modifiers held, and Caps Lock, from 256 bytes
+    /// as [`Self::keyboard_state`] gives them.
+    pub fn set_keyboard_state(&mut self, state: &[u8; KEY_STATES]) {
+        self.keys_down = [0; KEY_STATES / 64];
+        for (key, &value) in state.iter().enumerate() {
+            if value & HELD != 0 {
+                self.keys_down[key / 64] |= 1 << (key % 64);
+            }
+        }
+        let held = |key: usize| state[key] & HELD != 0;
+        self.buttons = 0;
+        for (key, flag) in [
+            (held_key::LEFT_BUTTON, HELD_LEFT),
+            (held_key::RIGHT_BUTTON, HELD_RIGHT),
+            (held_key::MIDDLE_BUTTON, HELD_MIDDLE),
+        ] {
+            if held(key) {
+                self.buttons |= flag;
+            }
+        }
+        self.modifiers = 0;
+        for (key, flag) in [
+            (held_key::SHIFT, SHIFT),
+            (held_key::CONTROL, CONTROL),
+            (held_key::MENU, ALT),
+        ] {
+            if held(key) {
+                self.modifiers |= flag;
+            }
+        }
+        if state[held_key::CAPITAL] & TOGGLED != 0 {
+            self.modifiers |= CAPS_LOCK;
+        }
+    }
+
+    /// `GetKeyboardState`'s 256 bytes (D174): 0x80 for each key held (the keys pressed and not
+    /// yet released, the mouse buttons, Shift, Ctrl and Alt and their left forms), 0x01 for
+    /// Caps Lock while it is on.
+    pub fn keyboard_state(&self) -> [u8; KEY_STATES] {
+        let mut state = [0u8; KEY_STATES];
+        for (key, slot) in state.iter_mut().enumerate() {
+            if self.keys_down[key / 64] & (1 << (key % 64)) != 0 {
+                *slot = HELD;
+            }
+        }
+        for (held, keys) in [
+            (self.buttons & HELD_LEFT, &[held_key::LEFT_BUTTON][..]),
+            (self.buttons & HELD_RIGHT, &[held_key::RIGHT_BUTTON][..]),
+            (self.buttons & HELD_MIDDLE, &[held_key::MIDDLE_BUTTON][..]),
+            (
+                self.modifiers & SHIFT,
+                &[held_key::SHIFT, held_key::LEFT_SHIFT][..],
+            ),
+            (
+                self.modifiers & CONTROL,
+                &[held_key::CONTROL, held_key::LEFT_CONTROL][..],
+            ),
+            (
+                self.modifiers & ALT,
+                &[held_key::MENU, held_key::LEFT_MENU][..],
+            ),
+        ] {
+            if held != 0 {
+                for &key in keys {
+                    state[key] = HELD;
+                }
+            }
+        }
+        if self.modifiers & CAPS_LOCK != 0 {
+            state[held_key::CAPITAL] |= TOGGLED;
+        }
+        state
+    }
+
+    /// The `MK_` flags of the buttons and modifiers held, as mouse messages carry them.
+    pub fn mouse_keys(&self) -> usize {
         let mut keys = 0;
         for (held, flag) in [
             (self.buttons & HELD_LEFT, mouse_keys::LEFT),
@@ -140,6 +318,12 @@ impl InputState {
 
     /// What `record` means; it also updates the buttons and modifiers held.
     pub fn translate(&mut self, record: &Record) -> Event {
+        if matches!(
+            record.kind,
+            kind::POINTER_ENTER | kind::POINTER_MOVE | kind::BUTTON
+        ) {
+            self.pointer_window = Some(record.window);
+        }
         match record.kind {
             kind::POINTER_ENTER | kind::POINTER_MOVE => {
                 if record.kind == kind::POINTER_MOVE {
@@ -175,9 +359,13 @@ impl InputState {
                 self.mouse(if pressed { down } else { up }, record.a, record.b)
             }
             kind::WHEEL => {
-                let delta = record.d as i32 * WHEEL_DELTA;
+                let (number, notches) = match record.d {
+                    0 => (message::MOUSE_HORIZONTAL_WHEEL, record.c as i32),
+                    vertical => (message::MOUSE_WHEEL, vertical as i32),
+                };
+                let delta = notches * WHEEL_DELTA;
                 Event::Input {
-                    message: message::MOUSE_WHEEL,
+                    message: number,
                     wparam: (usize::from(delta as i16 as u16) << 16) | self.mouse_keys(),
                     lparam: point_parameter(record.a, record.b),
                     point: (record.a, record.b),
@@ -188,6 +376,7 @@ impl InputState {
             kind::FOCUS_IN => Event::FocusIn,
             kind::FOCUS_OUT => {
                 self.buttons = 0;
+                self.keys_down = [0; KEY_STATES / 64];
                 Event::FocusOut
             }
             kind::CLOSE_REQUEST => Event::CloseRequest,
@@ -205,11 +394,27 @@ impl InputState {
             return Event::Ignored;
         };
         self.modifiers = record.c;
-        let Some(key) = virtual_key(code) else {
-            return Event::Ignored;
+        let key = match code {
+            0 => VirtualKey {
+                virtual_key: VK_PACKET,
+                scan: 0,
+                extended: false,
+            },
+            _ => match virtual_key(code) {
+                Some(key) => key,
+                None => return Event::Ignored,
+            },
         };
         let pressed = record.b != 0;
-        let alt = self.modifiers & ALT != 0;
+        let (word, bit) = (
+            usize::from(key.virtual_key) / 64,
+            u64::from(key.virtual_key) % 64,
+        );
+        match pressed {
+            true => self.keys_down[word] |= 1 << bit,
+            false => self.keys_down[word] &= !(1 << bit),
+        }
+        let alt = self.modifiers & ALT != 0 && self.modifiers & ALT_GRAPH == 0;
         let number = match (pressed, alt) {
             (true, false) => message::KEY_DOWN,
             (false, false) => message::KEY_UP,
@@ -312,7 +517,9 @@ pub fn virtual_key(code: u16) -> Option<VirtualKey> {
         81 => plain(0x63),
         82 => plain(0x60),
         83 => plain(0x6e),
+        86 => plain(0xe2),
         87 => plain(0x7a),
+        89 => plain(0xc1),
         88 => plain(0x7b),
         96 => extended(0x0d, 0x1c),
         97 => extended(0x11, 0x1d),
@@ -429,6 +636,16 @@ mod tests {
             panic!("a wheel record is input");
         };
         assert_eq!(wparam >> 16, 120);
+        let Event::Input {
+            message: number,
+            wparam,
+            ..
+        } = state.translate(&record(kind::WHEEL, 0, 0, (-1i32) as u32, 0))
+        else {
+            panic!("a sideways wheel record is input");
+        };
+        assert_eq!(number, message::MOUSE_HORIZONTAL_WHEEL);
+        assert_eq!((wparam >> 16) as u16 as i16, -120);
     }
 
     #[test]
@@ -513,5 +730,60 @@ mod tests {
             Event::PointerLeft
         );
         assert_eq!(state.translate(&record(13, 4, 0, 0, 0)), Event::Ignored);
+    }
+
+    #[test]
+    fn input_a_program_sends_itself_changes_the_state_and_the_pointer_is_remembered() {
+        let mut state = InputState::default();
+        assert_eq!(state.pointer(), None);
+        state.translate(&record(kind::POINTER_MOVE, 10, 20, 0, 0));
+        assert_eq!(state.pointer(), Some((3, (10, 20))));
+        state.move_pointer(4, (1, 2));
+        assert_eq!(state.pointer(), Some((4, (1, 2))));
+        state.press_key(0xa2, true);
+        state.press_key(0x5b, true);
+        state.press_key(b'K', true);
+        assert_eq!(
+            state.hot_key_modifiers(),
+            hot_key_modifiers::CONTROL | hot_key_modifiers::WIN
+        );
+        assert_eq!(state.keyboard_state()[usize::from(b'K')], 0x80);
+        assert_eq!(state.keyboard_state()[0x11], 0x80);
+        state.press_key(0xa2, false);
+        assert_eq!(state.hot_key_modifiers(), hot_key_modifiers::WIN);
+        state.press_button(mouse_keys::RIGHT, true);
+        assert_eq!(state.mouse_keys(), mouse_keys::RIGHT);
+        let mut bytes = [0u8; KEY_STATES];
+        bytes[0x10] = 0x80;
+        bytes[0x41] = 0x80;
+        bytes[0x14] = 0x01;
+        state.set_keyboard_state(&bytes);
+        assert_eq!(state.keyboard_state()[0x41], 0x80);
+        assert_eq!(state.keyboard_state()[0x14], 0x01);
+        assert_eq!(state.keyboard_state()[0x02], 0);
+        assert!(state.shift_held());
+        assert_eq!(state.keyboard_state()[0x12], 0);
+        assert_eq!(state.hot_key_modifiers(), hot_key_modifiers::SHIFT);
+    }
+
+    #[test]
+    fn the_keyboard_state_holds_the_keys_buttons_and_modifiers_held() {
+        let mut state = InputState::default();
+        state.translate(&record(kind::KEY, 30, 1, 0, u32::from(b'a')));
+        state.translate(&record(kind::KEY, 29, 1, CONTROL, 0));
+        state.translate(&record(kind::BUTTON, 5, 5, BUTTON_LEFT, 1));
+        let held = state.keyboard_state();
+        assert_eq!(held[usize::from(b'A')], 0x80);
+        assert_eq!(held[0x11], 0x80);
+        assert_eq!(held[0xa2], 0x80);
+        assert_eq!(held[0x01], 0x80);
+        assert_eq!(held[0x10], 0);
+        state.translate(&record(kind::KEY, 30, 0, CONTROL | CAPS_LOCK, 0));
+        let held = state.keyboard_state();
+        assert_eq!(held[usize::from(b'A')], 0);
+        assert_eq!(held[0x14], 0x01);
+        state.translate(&record(kind::FOCUS_OUT, 0, 0, 0, 0));
+        assert_eq!(state.keyboard_state()[0x11], 0x80);
+        assert_eq!(state.keyboard_state()[0x01], 0);
     }
 }

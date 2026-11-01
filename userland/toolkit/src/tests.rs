@@ -2,8 +2,9 @@ use crate::canvas::Canvas;
 use crate::colour;
 use crate::geometry::Rect;
 use crate::input::{Input, Modifiers, MouseButton, key};
-use crate::tree::{PointerShape, Response, WidgetId, WidgetTree};
+use crate::tree::{PointerShape, ROOT_ELEMENT, Response, WidgetId, WidgetTree, element_of};
 use crate::widget::{Escape, Kind, Length, Place, card_rect, scroll_bar};
+use eggos_element_tree::{Action, MAX_TREE_BYTES, Outcome, Role, TreeWriter, elements, flags};
 
 const ITEMS: &[&str] = &["Appearance", "Display", "Keyboard", "Mouse", "About"];
 
@@ -446,10 +447,7 @@ fn a_text_field_edits_at_the_caret_and_esc_clears_it() {
             },
             0
         ),
-        Response::Unused {
-            code: 46,
-            shift: false
-        }
+        Response::Nothing
     );
     assert_eq!(
         press(tree, key::ESC, 27, false),
@@ -634,4 +632,507 @@ fn a_scroll_bar_over_very_tall_content_keeps_its_thumb_in_its_track() {
         rect.y + (rect.height - crate::widget::MIN_THUMB) / 2
     );
     assert!(scroll_bar(rect, rect.height, 0).is_none());
+}
+
+fn described(tree: &WidgetTree<24>) -> Vec<(u32, u32, Role, u16, String, String)> {
+    let mut bytes = vec![0u8; MAX_TREE_BYTES];
+    let mut writer = TreeWriter::new(&mut bytes);
+    tree.describe(&mut writer);
+    elements(writer.bytes())
+        .map(|element| {
+            let element = element.unwrap();
+            (
+                element.id,
+                element.parent,
+                element.role,
+                element.flags,
+                String::from_utf8(element.name.to_vec()).unwrap(),
+                String::from_utf8(element.value.to_vec()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn every_shown_widget_option_card_and_row_is_an_element_of_the_tree() {
+    let mut form = form();
+    let elements = described(&form.tree);
+    let find = |id: u32| elements.iter().find(|element| element.0 == id).cloned();
+    let field = find(element_of(form.field)).unwrap();
+    assert_eq!(field.2, Role::TextField);
+    assert_eq!((field.4.as_str(), field.5.as_str()), ("Search", ""));
+    let cards = element_of(form.cards);
+    assert_eq!(find(cards).unwrap().2, Role::RadioGroup);
+    let two = find(cards + 2).unwrap();
+    assert_eq!((two.1, two.2, two.4.as_str()), (cards, Role::Radio, "Two"));
+    assert_ne!(two.3 & flags::SELECTED, 0, "card 1 is chosen");
+    let list = element_of(form.list);
+    let rows: Vec<_> = elements
+        .iter()
+        .filter(|element| element.1 == list)
+        .collect();
+    assert_eq!(rows.len(), ITEMS.len());
+    assert_eq!(
+        (rows[0].0, rows[0].2, rows[0].4.as_str()),
+        (list + 1, Role::ListItem, "Appearance")
+    );
+    let ok = find(element_of(form.ok)).unwrap();
+    assert_ne!(ok.3 & flags::DEFAULT, 0);
+    assert_ne!(find(element_of(form.off)).unwrap().3 & flags::DISABLED, 0);
+    assert_eq!(find(element_of(form.check)).unwrap().2, Role::Checkbox);
+    assert_eq!(find(element_of(form.radios) + 2).unwrap().4, "2x");
+    assert_eq!(find(element_of(form.value)).unwrap().4, "Right");
+    assert_eq!(
+        find(100).unwrap().1,
+        ROOT_ELEMENT,
+        "the side panel is the root's"
+    );
+    assert_eq!(
+        find(element_of(form.scroll)).unwrap().1,
+        400,
+        "the scroll view is the pane's"
+    );
+    form.tree.set_shown(form.list, false);
+    assert!(
+        described(&form.tree)
+            .iter()
+            .all(|element| element.1 != list)
+    );
+}
+
+#[test]
+fn a_person_only_widget_refuses_every_agent_action_and_is_listed_so() {
+    let mut form = form();
+    form.tree.set_person_only(form.ok, true);
+    form.tree.set_person_only(form.cards, true);
+    assert!(form.tree.is_person_only(form.ok));
+    for action in [
+        Action::Invoke,
+        Action::Focus,
+        Action::SetText,
+        Action::Select,
+    ] {
+        assert_eq!(
+            form.tree.act(element_of(form.ok), action, "", 0),
+            (Outcome::NotSupported, Response::Nothing)
+        );
+    }
+    assert_eq!(
+        form.tree
+            .act(element_of(form.cards) + 3, Action::Invoke, "", 0),
+        (Outcome::NotSupported, Response::Nothing)
+    );
+    assert_ne!(form.tree.selected(form.cards), Some(2));
+    let listed = described(&form.tree);
+    let ok = listed
+        .iter()
+        .find(|element| element.0 == element_of(form.ok))
+        .unwrap();
+    assert_ne!(ok.3 & flags::PERSON_ONLY, 0);
+    let card = listed
+        .iter()
+        .find(|element| element.0 == element_of(form.cards) + 3)
+        .unwrap();
+    assert_ne!(card.3 & flags::PERSON_ONLY, 0);
+    assert_eq!(
+        form.tree
+            .act(element_of(form.field), Action::SetText, "egg", 0),
+        (Outcome::Done, Response::Edited(form.field))
+    );
+}
+
+#[test]
+fn a_person_only_label_s_text_and_field_s_value_stay_out_of_the_tree() {
+    let mut form = form();
+    form.tree.set_text(form.field, "ABCD-EFGH");
+    let find = |tree: &WidgetTree<24>, id: WidgetId| {
+        described(tree)
+            .into_iter()
+            .find(|element| element.0 == element_of(id))
+            .unwrap()
+    };
+    assert_eq!(find(&form.tree, form.value).4, "Right");
+    assert_eq!(find(&form.tree, form.field).5, "ABCD-EFGH");
+    form.tree.set_person_only(form.value, true);
+    form.tree.set_person_only(form.field, true);
+    form.tree.set_person_only(form.ok, true);
+    let label = find(&form.tree, form.value);
+    assert_eq!((label.4.as_str(), label.5.as_str()), ("", ""));
+    assert_ne!(label.3 & flags::PERSON_ONLY, 0);
+    let field = find(&form.tree, form.field);
+    assert_eq!((field.4.as_str(), field.5.as_str()), ("Search", ""));
+    assert_eq!(find(&form.tree, form.ok).4, "OK");
+    assert_eq!(form.tree.text_of(form.value), Some("Right"));
+}
+
+#[test]
+fn acting_on_an_element_does_what_a_person_s_input_does() {
+    let mut form = form();
+    let cards = element_of(form.cards);
+    assert_eq!(
+        form.tree.act(cards + 3, Action::Invoke, "", 0),
+        (Outcome::Done, Response::Chosen(form.cards, 2))
+    );
+    assert_eq!(form.tree.selected(form.cards), Some(2));
+    assert_eq!(
+        form.tree.act(element_of(form.ok), Action::Invoke, "", 0),
+        (Outcome::Done, Response::Activated(form.ok))
+    );
+    assert_eq!(
+        form.tree.act(element_of(form.off), Action::Invoke, "", 0),
+        (Outcome::Disabled, Response::Nothing)
+    );
+    assert_eq!(
+        form.tree
+            .act(element_of(form.field), Action::SetText, "egg", 0),
+        (Outcome::Done, Response::Edited(form.field))
+    );
+    assert_eq!(form.tree.text_of(form.field), Some("egg"));
+    let list = element_of(form.list);
+    assert_eq!(
+        form.tree.act(list + 3, Action::Select, "", 0),
+        (Outcome::Done, Response::Chosen(form.list, 2))
+    );
+    assert_eq!(
+        form.tree.act(list + 3, Action::Invoke, "", 0),
+        (Outcome::Done, Response::Opened(form.list, 2))
+    );
+    assert_eq!(
+        form.tree.act(element_of(form.check), Action::Invoke, "", 0),
+        (Outcome::Done, Response::Toggled(form.check, true))
+    );
+    assert_eq!(
+        form.tree.act(element_of(form.field), Action::Focus, "", 0),
+        (Outcome::Done, Response::Nothing)
+    );
+    assert_eq!(form.tree.focus(), Some(form.field));
+    assert_eq!(
+        form.tree
+            .act(element_of(form.ok), Action::SetText, "x", 0)
+            .0,
+        Outcome::NotSupported
+    );
+    for missing in [0, 7, list + 60, element_of(form.ok) + 1, 99_999] {
+        assert_eq!(
+            form.tree.act(missing, Action::Invoke, "", 0).0,
+            Outcome::NoSuchElement,
+            "{missing}"
+        );
+    }
+}
+
+fn slider_tree(value: i32) -> (WidgetTree<4>, WidgetId) {
+    let mut tree = WidgetTree::<4>::new();
+    let root = tree
+        .add(None, Place::fill(), Kind::panel(colour::MENU))
+        .unwrap();
+    let slider = tree
+        .add(
+            Some(root),
+            Place::at(16, 16, Length::Px(216), Length::Px(28)),
+            Kind::slider("Speed", 1, 10, 1, value, ""),
+        )
+        .unwrap();
+    tree.resize(320, 300);
+    (tree, slider)
+}
+
+fn left(tree: &mut WidgetTree<4>, x: i32, y: i32, pressed: bool) -> Response {
+    tree.handle(
+        Input::Button {
+            x,
+            y,
+            button: MouseButton::Left,
+            pressed,
+        },
+        0,
+    )
+}
+
+#[test]
+fn a_slider_jumps_to_a_click_and_follows_a_drag_by_whole_steps() {
+    let (mut tree, slider) = slider_tree(5);
+    assert_eq!(
+        left(&mut tree, 150, 30, true),
+        Response::Adjusted(slider, 9)
+    );
+    assert_eq!(left(&mut tree, 150, 30, false), Response::Nothing);
+    assert_eq!(left(&mut tree, 20, 30, true), Response::Adjusted(slider, 1));
+    assert_eq!(
+        tree.handle(Input::PointerMove { x: 300, y: 30 }, 0),
+        Response::Adjusted(slider, 10)
+    );
+    assert_eq!(left(&mut tree, 300, 30, false), Response::Nothing);
+    tree.set_value(slider, 5);
+    assert_eq!(left(&mut tree, 88, 30, true), Response::Nothing);
+    let moved = |tree: &mut WidgetTree<4>, x| tree.handle(Input::PointerMove { x, y: 30 }, 0);
+    assert_eq!(moved(&mut tree, 104), Response::Adjusted(slider, 6));
+    assert_eq!(moved(&mut tree, 108), Response::Nothing);
+    assert_eq!(moved(&mut tree, 112), Response::Adjusted(slider, 7));
+    left(&mut tree, 112, 30, false);
+    tree.set_value(slider, 5);
+    assert_eq!(left(&mut tree, 92, 30, true), Response::Nothing);
+    assert_eq!(moved(&mut tree, 108), Response::Adjusted(slider, 6));
+}
+
+#[test]
+fn a_focused_slider_steps_by_its_keys_and_stays_in_its_range() {
+    let (mut tree, slider) = slider_tree(5);
+    tree.set_focus(Some(slider), 0);
+    let mut key = |code| {
+        tree.handle(
+            Input::Key {
+                code,
+                pressed: true,
+                modifiers: Modifiers::default(),
+                character: 0,
+            },
+            0,
+        )
+    };
+    for (code, expected) in [
+        (key::RIGHT, Response::Adjusted(slider, 6)),
+        (key::UP, Response::Adjusted(slider, 7)),
+        (key::LEFT, Response::Adjusted(slider, 6)),
+        (key::END, Response::Adjusted(slider, 10)),
+        (key::RIGHT, Response::Nothing),
+        (key::HOME, Response::Adjusted(slider, 1)),
+        (key::PAGE_UP, Response::Adjusted(slider, 10)),
+        (key::PAGE_DOWN, Response::Adjusted(slider, 1)),
+    ] {
+        assert_eq!(key(code), expected, "{code}");
+    }
+}
+
+#[test]
+fn a_slider_s_range_is_snapped_and_set_text_takes_a_number() {
+    let Kind::Slider(odd) = Kind::slider("Odd", 0, 95, 10, 95, "") else {
+        panic!("a slider");
+    };
+    assert_eq!((odd.max, odd.value), (90, 90));
+    let (mut tree, slider) = slider_tree(5);
+    let element = element_of(slider);
+    assert_eq!(
+        tree.act(element, Action::SetText, "7", 0),
+        (Outcome::Done, Response::Adjusted(slider, 7))
+    );
+    assert_eq!(
+        tree.act(element, Action::SetText, "x", 0),
+        (Outcome::NotSupported, Response::Nothing)
+    );
+    let mut buffer = vec![0u8; MAX_TREE_BYTES];
+    let mut writer = TreeWriter::new(&mut buffer);
+    tree.describe(&mut writer);
+    let found = elements(writer.bytes())
+        .map(|each| each.unwrap())
+        .find(|each| each.id == element)
+        .map(|each| {
+            (
+                each.role,
+                each.value.to_vec(),
+                each.flags & flags::FOCUSABLE,
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        found,
+        (Role::Slider, b"7 1..10 by 1".to_vec(), flags::FOCUSABLE)
+    );
+}
+
+fn with_modifiers(tree: &mut WidgetTree<24>, code: u16, character: u32, held: u32) -> Response {
+    tree.handle(
+        Input::Key {
+            code,
+            pressed: true,
+            modifiers: Modifiers(held),
+            character,
+        },
+        0,
+    )
+}
+
+fn type_into(tree: &mut WidgetTree<24>, words: &str) {
+    for character in words.chars() {
+        press(tree, 30, character as u32, false);
+    }
+}
+
+#[test]
+fn a_field_s_selection_grows_with_shift_and_typing_replaces_it() {
+    let mut form = form();
+    form.tree.set_focus(Some(form.field), 0);
+    type_into(&mut form.tree, "hello");
+    press(&mut form.tree, key::HOME, 0, false);
+    press(&mut form.tree, key::RIGHT, 0, true);
+    press(&mut form.tree, key::RIGHT, 0, true);
+    let Some(Kind::TextField(field)) = form.tree.kind(form.field).copied() else {
+        panic!("a field");
+    };
+    assert_eq!(field.selected(), "he");
+    assert_eq!(
+        press(&mut form.tree, 30, 'j' as u32, false),
+        Response::Edited(form.field)
+    );
+    assert_eq!(form.tree.text_of(form.field), Some("jllo"));
+    press(&mut form.tree, key::END, 0, false);
+    press(&mut form.tree, key::LEFT, 0, true);
+    assert_eq!(
+        press(&mut form.tree, key::BACKSPACE, 0, false),
+        Response::Edited(form.field)
+    );
+    assert_eq!(form.tree.text_of(form.field), Some("jll"));
+}
+
+#[test]
+fn copy_cut_and_paste_go_through_the_application() {
+    let mut form = form();
+    form.tree.set_focus(Some(form.field), 0);
+    type_into(&mut form.tree, "one two");
+    assert_eq!(
+        with_modifiers(&mut form.tree, key::A, 'a' as u32, Modifiers::CTRL),
+        Response::Nothing
+    );
+    assert_eq!(
+        with_modifiers(&mut form.tree, key::C, 'c' as u32, Modifiers::SUPER),
+        Response::Copied(form.field)
+    );
+    assert_eq!(form.tree.copied(), "one two");
+    assert_eq!(
+        with_modifiers(&mut form.tree, key::X, 'x' as u32, Modifiers::CTRL),
+        Response::Cut(form.field)
+    );
+    assert_eq!(form.tree.text_of(form.field), Some(""));
+    assert_eq!(
+        with_modifiers(&mut form.tree, key::V, 'v' as u32, Modifiers::CTRL),
+        Response::PasteWanted(form.field)
+    );
+    assert_eq!(
+        form.tree.paste(form.field, "a\tb\u{7}c", 0),
+        Response::Edited(form.field)
+    );
+    assert_eq!(form.tree.text_of(form.field), Some("a bc"));
+    assert_eq!(form.tree.paste(form.field, "", 0), Response::Nothing);
+}
+
+#[test]
+fn a_double_click_takes_a_word() {
+    let mut field = match Kind::text_field("", Escape::Clear) {
+        Kind::TextField(field) => field,
+        _ => unreachable!(),
+    };
+    field.text.set("path/to my_file.txt");
+    assert_eq!(field.word_at(1), (0, 4));
+    assert_eq!(field.word_at(4), (4, 5));
+    assert_eq!(field.word_at(7), (7, 8));
+    assert_eq!(field.word_at(9), (8, 15));
+    assert_eq!(field.word_at(19), (16, 19));
+}
+
+#[test]
+fn a_stale_anchor_never_reaches_past_the_text() {
+    let mut field = match Kind::text_field("", Escape::Clear) {
+        Kind::TextField(field) => field,
+        _ => unreachable!(),
+    };
+    field.text.set("/home/root");
+    field.place_caret(10);
+    field.text.set("/tmp");
+    field.caret = 4;
+    field.anchor = 10;
+    assert_eq!(field.selection(), (4, 4));
+    assert_eq!(field.selected(), "");
+    assert!(!field.remove_selection());
+    field.text.set("\u{e9}t\u{e9}");
+    field.caret = 1;
+    field.anchor = 4;
+    assert_eq!(field.selection(), (0, 3));
+    field.set_text("/tmp/x");
+    assert_eq!((field.caret, field.anchor), (6, 6));
+    field.place_caret(99);
+    assert_eq!((field.caret, field.anchor), (6, 6));
+}
+
+const LAYOUTS: &[&str] = &["US", "UK", "German", "Swedish"];
+
+fn dropdown_tree() -> (WidgetTree<4>, WidgetId) {
+    let mut tree = WidgetTree::<4>::new();
+    let root = tree
+        .add(None, Place::fill(), Kind::panel(colour::MENU))
+        .unwrap();
+    let dropdown = tree
+        .add(
+            Some(root),
+            Place::at(16, 60, Length::Px(160), Length::Px(28)),
+            Kind::dropdown("Layout", LAYOUTS, 0),
+        )
+        .unwrap();
+    tree.resize(320, 300);
+    (tree, dropdown)
+}
+
+#[test]
+fn a_dropdown_opens_below_and_a_click_on_a_row_chooses_it() {
+    let (mut tree, dropdown) = dropdown_tree();
+    let Some(Kind::Dropdown(closed)) = tree.kind(dropdown).copied() else {
+        panic!("a dropdown");
+    };
+    assert_eq!(
+        closed.popup(tree.rect(dropdown).unwrap(), (320, 300)),
+        (Rect::new(4, 92, 184, 130), 4)
+    );
+    assert_eq!(left(&mut tree, 100, 74, true), Response::Nothing);
+    assert_eq!(left(&mut tree, 100, 74, false), Response::Nothing);
+    assert!(matches!(tree.kind(dropdown), Some(Kind::Dropdown(open)) if open.open));
+    assert_eq!(left(&mut tree, 50, 140, true), Response::Nothing);
+    assert_eq!(
+        left(&mut tree, 50, 140, false),
+        Response::Chosen(dropdown, 1)
+    );
+    assert_eq!(tree.selected(dropdown), Some(1));
+    left(&mut tree, 100, 74, true);
+    left(&mut tree, 100, 74, false);
+    assert_eq!(left(&mut tree, 300, 280, true), Response::Nothing);
+    assert!(matches!(tree.kind(dropdown), Some(Kind::Dropdown(closed)) if !closed.open));
+}
+
+#[test]
+fn a_dropdown_answers_its_keys_open_and_closed() {
+    let (mut tree, dropdown) = dropdown_tree();
+    tree.set_focus(Some(dropdown), 0);
+    let mut key = |code, character| {
+        tree.handle(
+            Input::Key {
+                code,
+                pressed: true,
+                modifiers: Modifiers::default(),
+                character,
+            },
+            0,
+        )
+    };
+    assert_eq!(key(key::DOWN, 0), Response::Chosen(dropdown, 1));
+    assert_eq!(key(31, 's' as u32), Response::Chosen(dropdown, 3));
+    assert_eq!(key(key::SPACE, ' ' as u32), Response::Nothing);
+    assert_eq!(key(key::HOME, 0), Response::Nothing);
+    assert_eq!(key(key::ENTER, 0), Response::Chosen(dropdown, 0));
+    assert_eq!(key(key::ENTER, 0), Response::Nothing);
+    assert_eq!(key(key::ESC, 0), Response::Nothing);
+    assert_eq!(tree.selected(dropdown), Some(0));
+}
+
+#[test]
+fn set_text_leaves_no_selection_behind() {
+    let mut form = form();
+    let tree = &mut form.tree;
+    tree.set_focus(Some(form.field), 0);
+    for character in "abcde".chars() {
+        press(tree, 30, character as u32, false);
+    }
+    tree.set_text(form.field, "");
+    assert_eq!(
+        press(tree, 30, 'x' as u32, false),
+        Response::Edited(form.field)
+    );
+    assert_eq!(tree.text_of(form.field), Some("x"));
 }

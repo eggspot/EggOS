@@ -1,13 +1,16 @@
 //! macOS console programs (D120): Mach-O executables, thin or fat, that the macOS layer at
-//! `/usr/lib/eggos/macos` runs on aarch64 and x86_64. An image gets the layer only when an added
-//! file is a Mach-O or fat file. The boot test's programs are built from `tests/macos-console`
-//! by Apple's linker, so only on a macOS host; CI builds them on its macOS runner and hands them
-//! to the Linux job through `EGGOS_MACOS_PROGRAMS`. A fat file of both slices is written here.
-//! The Objective-C program, `tests/macos-objc/main.m`, is test data our own source and Apple's
-//! clang build the same way (D142); it is never shipped. So is the AppKit test app `mac-paint`,
-//! `tests/macos-gui/main.m` (D147), which the macOS GUI boot test installs from
-//! `mac-paint.zip` (D148), the `mac-paint.app` bundle `assemble_app` writes with the icon
-//! `test_icns` draws, archived by `archive_app`.
+//! `/usr/lib/eggos/macos` runs on aarch64 and x86_64, where the release image carries it (D152).
+//! The boot test's programs are built from `tests/macos-console` by Apple's linker, so only on a
+//! macOS host; CI builds them on its macOS runner and hands them to the Linux job through
+//! `EGGOS_MACOS_PROGRAMS`. A fat file of both slices is written here. The Objective-C program,
+//! `tests/macos-objc/main.m`, is test data our own source and Apple's clang build the same way
+//! (D142); it is never shipped. So is the AppKit test app `mac-paint`, `tests/macos-gui/main.m`
+//! (D147), which the macOS GUI boot test installs from `mac-paint.zip` (D148), the
+//! `mac-paint.app` bundle `assemble_app` writes with the icon `test_icns` draws, archived by
+//! `archive_app`; `cargo xtask sample-apps` writes the same archive for people to try (D152).
+//! The Swift program, `tests/macos-swift/main.swift`, is test data too, built by Apple's `swiftc`
+//! the same way (D180), and so are the C programs, `tests/<folder>/main.c`, built by Apple's
+//! clang (D190).
 
 use crate::qmp::Picture;
 use std::path::{Path, PathBuf};
@@ -47,6 +50,56 @@ pub const OBJC_PROGRAMS: [ObjcProgram; 2] = [
         name: GUI_APP,
         folder: "macos-gui",
         frameworks: &["AppKit", "Foundation"],
+    },
+];
+
+/// A program built from Swift source with Apple's `swiftc`: `tests/<folder>/main.swift`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwiftProgram {
+    pub name: &'static str,
+    pub folder: &'static str,
+}
+
+/// The programs built from Swift sources with Apple's `swiftc`.
+pub const SWIFT_PROGRAMS: [SwiftProgram; 1] = [SwiftProgram {
+    name: "macos-swift",
+    folder: "macos-swift",
+}];
+
+/// A program built from C source with Apple's clang: `tests/<folder>/main.c`, for macOS
+/// `deployment_target` and later, with `link_flags` for Apple's linker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CProgram {
+    pub name: &'static str,
+    pub folder: &'static str,
+    pub deployment_target: &'static str,
+    pub link_flags: &'static [&'static str],
+}
+
+/// The oldest macOS the older-program test targets: clang raises it to 11.0 for arm64, where
+/// the program starts at `LC_MAIN`, and keeps it for x86_64, where the program starts at
+/// `LC_UNIXTHREAD` with `LC_VERSION_MIN_MACOSX`, as for every target up to 10.7 (D190).
+pub const LEGACY_DEPLOYMENT_TARGET: &str = "10.7";
+
+/// The programs built from C sources with Apple's clang.
+pub const C_PROGRAMS: [CProgram; 3] = [
+    CProgram {
+        name: "macos-process",
+        folder: "macos-process",
+        deployment_target: DEPLOYMENT_TARGET,
+        link_flags: &[],
+    },
+    CProgram {
+        name: "macos-text",
+        folder: "macos-text",
+        deployment_target: DEPLOYMENT_TARGET,
+        link_flags: &[],
+    },
+    CProgram {
+        name: "macos-legacy",
+        folder: "macos-legacy",
+        deployment_target: LEGACY_DEPLOYMENT_TARGET,
+        link_flags: &["-Wl,-no_fixup_chains"],
     },
 ];
 
@@ -133,8 +186,6 @@ pub fn archive_app(bundle: &Path) -> Result<PathBuf, String> {
 
 const MH_MAGIC_64: [u8; 4] = [0xcf, 0xfa, 0xed, 0xfe];
 const FAT_MAGIC: u32 = 0xcafe_babe;
-const FAT_MAGIC_64: u32 = 0xcafe_babf;
-const MAX_FAT_ARCHITECTURES: u32 = 32;
 const FAT_ALIGNMENT_SHIFT: u32 = 14;
 
 /// The macOS CPU name (`arm64`, `x86_64`) and Rust target of the architecture named `arch`, if
@@ -161,26 +212,6 @@ pub fn qemu_cpu_args(arch: &str) -> &'static [&'static str] {
 /// Whether the layer runs on the architecture named `arch`.
 pub fn layer_runs_on(arch: &str) -> bool {
     target(arch).is_some()
-}
-
-/// Whether `bytes` start as a 64-bit Mach-O file or a fat file (not a Java class file, whose
-/// second word is a version of at least 45).
-pub fn is_mach_o(bytes: &[u8]) -> bool {
-    let word = |at: usize| -> Option<u32> {
-        Some(u32::from_be_bytes(
-            bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
-        ))
-    };
-    bytes.starts_with(&MH_MAGIC_64)
-        || (matches!(word(0), Some(FAT_MAGIC | FAT_MAGIC_64))
-            && word(4).is_some_and(|count| (1..=MAX_FAT_ARCHITECTURES).contains(&count)))
-}
-
-pub fn is_program(path: &str) -> bool {
-    let mut start = [0u8; 8];
-    std::fs::File::open(path)
-        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut start))
-        .is_ok_and(|()| is_mach_o(&start))
 }
 
 fn cputype(thin: &[u8]) -> Option<u32> {
@@ -251,7 +282,10 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
         };
         crate::ci_artifact::fetch_when_built("macos-programs", &programs.directory)?;
         let objc_names = OBJC_PROGRAMS.into_iter().map(|program| program.name);
-        for program in PROGRAMS.into_iter().chain(objc_names) {
+        let swift_names = SWIFT_PROGRAMS.into_iter().map(|program| program.name);
+        let c_names = C_PROGRAMS.into_iter().map(|program| program.name);
+        let names = objc_names.chain(swift_names).chain(c_names);
+        for program in PROGRAMS.into_iter().chain(names) {
             for cpu in ["arm64", "x86_64"] {
                 let path = programs.path(program, cpu);
                 if !path.is_file() {
@@ -285,8 +319,46 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
             let output = directory.join(format!("{}-{cpu}", program.name));
             build_objc_program(program, cpu, &output)?;
         }
+        for program in SWIFT_PROGRAMS {
+            let output = directory.join(format!("{}-{cpu}", program.name));
+            build_swift_program(program, cpu, &output)?;
+        }
+        for program in C_PROGRAMS {
+            let output = directory.join(format!("{}-{cpu}", program.name));
+            build_c_program(program, cpu, &output)?;
+        }
     }
     Ok(Some(Programs { directory }))
+}
+
+/// The `swiftc` arguments that build `source` for `cpu` into `output`: optimized, as a release
+/// build is, for macOS 13 and later, whose Swift runtime is the system's.
+pub fn swift_arguments(source: &Path, cpu: &str, output: &Path) -> Vec<String> {
+    vec![
+        "swiftc".to_owned(),
+        "-O".to_owned(),
+        "-target".to_owned(),
+        format!("{cpu}-apple-macos{DEPLOYMENT_TARGET}"),
+        "-o".to_owned(),
+        output.to_string_lossy().into_owned(),
+        source.to_string_lossy().into_owned(),
+    ]
+}
+
+fn build_swift_program(program: SwiftProgram, cpu: &str, output: &Path) -> Result<(), String> {
+    let source = crate::workspace_root()
+        .join("tests")
+        .join(program.folder)
+        .join("main.swift");
+    let arguments = swift_arguments(&source, cpu, output);
+    let status = std::process::Command::new("xcrun")
+        .args(&arguments)
+        .status()
+        .map_err(|e| format!("xcrun swiftc: {e}"))?;
+    if !status.success() {
+        return Err(format!("xcrun swiftc {}: {status}", source.display()));
+    }
+    Ok(())
 }
 
 /// The `clang` arguments that build `source` for `cpu` into `output` linked with `frameworks`:
@@ -356,6 +428,41 @@ fn build_objc_program(program: ObjcProgram, cpu: &str, output: &Path) -> Result<
     Ok(())
 }
 
+/// The `clang` arguments that build `program`'s `source` for `cpu` into `output`: optimized,
+/// warnings as errors, for the program's macOS version and later, with its link flags.
+pub fn c_arguments(program: &CProgram, source: &Path, cpu: &str, output: &Path) -> Vec<String> {
+    let mut arguments = vec![
+        "clang".to_owned(),
+        format!("-mmacosx-version-min={}", program.deployment_target),
+    ];
+    arguments.extend(
+        ["-arch", cpu, "-O2", "-Wall", "-Werror"]
+            .iter()
+            .chain(program.link_flags)
+            .chain(&["-o"])
+            .map(|argument| argument.to_string()),
+    );
+    arguments.push(output.to_string_lossy().into_owned());
+    arguments.push(source.to_string_lossy().into_owned());
+    arguments
+}
+
+fn build_c_program(program: CProgram, cpu: &str, output: &Path) -> Result<(), String> {
+    let source = crate::workspace_root()
+        .join("tests")
+        .join(program.folder)
+        .join("main.c");
+    let arguments = c_arguments(&program, &source, cpu, output);
+    let status = std::process::Command::new("xcrun")
+        .args(&arguments)
+        .status()
+        .map_err(|e| format!("xcrun clang: {e}"))?;
+    if !status.success() {
+        return Err(format!("xcrun clang {}: {status}", source.display()));
+    }
+    Ok(())
+}
+
 /// The environment `cargo build --target <target> -p eggos-macos-console --release` needs to
 /// link programs with chained fixups (macOS 13 and later) into `target/macos-console`.
 pub fn build_environment(target_directory: &Path) -> [(&'static str, String); 3] {
@@ -397,6 +504,19 @@ mod tests {
 
     const CPU_TYPE_X86_64: u32 = 0x0100_0007;
     const CPU_TYPE_ARM64: u32 = 0x0100_000c;
+    const FAT_MAGIC_64: u32 = 0xcafe_babf;
+    const MAX_FAT_ARCHITECTURES: u32 = 32;
+
+    fn is_mach_o(bytes: &[u8]) -> bool {
+        let word = |at: usize| -> Option<u32> {
+            Some(u32::from_be_bytes(
+                bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
+            ))
+        };
+        bytes.starts_with(&MH_MAGIC_64)
+            || (matches!(word(0), Some(FAT_MAGIC | FAT_MAGIC_64))
+                && word(4).is_some_and(|count| (1..=MAX_FAT_ARCHITECTURES).contains(&count)))
+    }
 
     fn thin(cputype: u32, length: usize) -> Vec<u8> {
         let mut bytes = MH_MAGIC_64.to_vec();
@@ -488,6 +608,58 @@ mod tests {
         assert!(source_folder(&app).ends_with(Path::new("tests").join("macos-gui")));
         assert!(source_folder(&app).join("main.m").is_file());
         assert!(source_folder(&app).join(INFO_PLIST).is_file());
+    }
+
+    #[test]
+    fn c_programs_build_with_warnings_as_errors_for_their_macos_version() {
+        let program = C_PROGRAMS[0];
+        let arguments = c_arguments(&program, Path::new("main.c"), "x86_64", Path::new("out"));
+        assert_eq!(arguments[0], "clang");
+        assert!(arguments.contains(&"-mmacosx-version-min=13.0".to_owned()));
+        assert!(arguments.windows(2).any(|pair| pair == ["-arch", "x86_64"]));
+        assert!(arguments.contains(&"-Werror".to_owned()));
+        assert_eq!(&arguments[arguments.len() - 3..], ["-o", "out", "main.c"]);
+        let names: Vec<&str> = C_PROGRAMS.iter().map(|program| program.name).collect();
+        assert_eq!(names, ["macos-process", "macos-text", "macos-legacy"]);
+        let legacy = c_arguments(
+            &C_PROGRAMS[2],
+            Path::new("main.c"),
+            "x86_64",
+            Path::new("out"),
+        );
+        assert!(legacy.contains(&"-mmacosx-version-min=10.7".to_owned()));
+        assert_eq!(
+            &legacy[legacy.len() - 4..],
+            ["-Wl,-no_fixup_chains", "-o", "out", "main.c"]
+        );
+        let source = crate::workspace_root()
+            .join("tests")
+            .join(program.folder)
+            .join("main.c");
+        assert!(source.is_file());
+    }
+
+    #[test]
+    fn swift_programs_build_optimized_for_macos_13_on_each_cpu() {
+        let arguments = swift_arguments(Path::new("main.swift"), "x86_64", Path::new("out"));
+        assert_eq!(arguments[0], "swiftc");
+        assert!(arguments.contains(&"-O".to_owned()));
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["-target", "x86_64-apple-macos13.0"])
+        );
+        assert_eq!(
+            &arguments[arguments.len() - 3..],
+            ["-o", "out", "main.swift"]
+        );
+        let names: Vec<&str> = SWIFT_PROGRAMS.iter().map(|program| program.name).collect();
+        assert_eq!(names, ["macos-swift"]);
+        let source = crate::workspace_root()
+            .join("tests")
+            .join(SWIFT_PROGRAMS[0].folder)
+            .join("main.swift");
+        assert!(source.is_file());
     }
 
     #[test]

@@ -26,7 +26,7 @@
 use super::Errno;
 use super::fault::Fault;
 use super::futex::WaitSlot;
-use super::process_table;
+use super::process_table::{self, JobChange};
 use super::signal::{SIGBUS, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGSTOP, SIGTRAP};
 use super::signal_frame::{self, BadFrame, FpPart, INFO_SIZE, STACK_SIZE, Saved};
 use super::thread::LinuxThread;
@@ -387,6 +387,13 @@ pub mod code {
     pub const CLD_EXITED: i32 = 1;
     /// `SIGCHLD`'s: a signal ended the child (`CLD_KILLED`).
     pub const CLD_KILLED: i32 = 2;
+    /// `SIGCHLD`'s: a stop signal stopped the child (`CLD_STOPPED`, D181).
+    pub const CLD_STOPPED: i32 = 5;
+    /// `SIGCHLD`'s: `SIGCONT` continued the child (`CLD_CONTINUED`, D181).
+    pub const CLD_CONTINUED: i32 = 6;
+    /// The kernel's own, never given to a program: a thread whose process another thread
+    /// stopped stops with it (D181).
+    pub const GROUP_STOP: i32 = 0x7fff_0001;
 }
 
 /// A pending signal's `siginfo_t`, as the kernel keeps it ([`KEPT_INFO_SIZE`]).
@@ -415,9 +422,25 @@ impl Info {
         info
     }
 
+    /// `SIGCHLD` telling a parent its child `pid`, whose real user id is `uid`, stopped
+    /// (`CLD_STOPPED` with the stop signal) or continued (`CLD_CONTINUED` with `SIGCONT`), D181.
+    pub fn child_job_change(pid: u32, uid: u32, change: JobChange) -> Self {
+        let (code, status) = match change {
+            JobChange::Stopped(signal) => (code::CLD_STOPPED, u32::from(signal)),
+            JobChange::Continued => (code::CLD_CONTINUED, SIGCONT),
+        };
+        let mut info = Self::sent(super::signal::SIGCHLD, code, pid, uid);
+        info.0[24..28].copy_from_slice(&status.to_ne_bytes());
+        info
+    }
+
     /// Signal `signal` raised by the kernel ([`code::KERNEL`]).
     pub fn from_kernel(signal: u32) -> Self {
         Self::without_sender(signal, code::KERNEL)
+    }
+
+    fn group_stop() -> Self {
+        Self::without_sender(SIGSTOP, code::GROUP_STOP)
     }
 
     /// The `siginfo_t` a program queues signal `signal` with: as written, but with `signal` as
@@ -753,6 +776,18 @@ impl Signals {
         self.actions_and_queue
             .as_deref()
             .is_some_and(|[block]| block.threads.iter().any(|thread| thread.id == id))
+    }
+
+    /// Adds the id of each of the process's threads but its first that has not exited to
+    /// `ids`, whose ids nothing else may take (D183). `ENOMEM` without memory for them.
+    pub fn other_thread_ids(&self, ids: &mut Vec<u32>) -> Result<(), Errno> {
+        let Some([block]) = self.actions_and_queue.as_deref() else {
+            return Ok(());
+        };
+        ids.try_reserve(block.threads.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        ids.extend(block.threads.iter().map(|thread| thread.id));
+        Ok(())
     }
 
     /// Sends the signal `info` describes to thread `id`, another of the process's threads,
@@ -1119,6 +1154,37 @@ impl LockedSignals<'_> {
         others > 0
     }
 
+    fn leave_group_stop(&mut self, first: Option<u32>) -> bool {
+        let caller = self.id;
+        let Some([block]) = self.actions_and_queue.as_deref_mut() else {
+            return false;
+        };
+        let count = block.threads.len() + 1;
+        let other = |threads: &[OtherThread], index: usize| {
+            threads
+                .get(index)
+                .map(|thread| thread.id)
+                .or(first)
+                .filter(|&thread| thread != caller)
+        };
+        let others = (0..count)
+            .filter(|&index| other(&block.threads, index).is_some())
+            .count();
+        if block.sent_to_threads.try_reserve(others).is_err() {
+            return false;
+        }
+        for index in 0..count {
+            if let Some(thread) = other(&block.threads, index) {
+                charge(&QUEUED_SIGNALS);
+                block.sent_to_threads.push(SentToThread {
+                    thread,
+                    sent: Sent::Signal(Info::group_stop()),
+                });
+            }
+        }
+        others > 0
+    }
+
     /// Discards the thread's pending signals in `set`, with their queued [`Info`].
     pub fn discard(&mut self, set: u64) {
         self.thread.pending &= !set;
@@ -1174,7 +1240,10 @@ impl LockedSignals<'_> {
 
     /// Takes the next pending, unblocked signal, discarding the ignored ones on the way: `Some`
     /// for one that ends the process (default actions Term and Core, `SIGKILL`'s included),
-    /// stops it, or runs its handler. The order: `SIGKILL`; then, as on Linux, the synchronous
+    /// stops it (default action Stop, D181; whether a terminal's stop signal stops a process in
+    /// an orphaned group is the job control's to decide), stops the thread with its process
+    /// another thread stopped ([`Delivery::JoinStop`]), or runs its handler. The order:
+    /// `SIGKILL`; then, as on Linux, the synchronous
     /// signals (`SIGILL`, `SIGTRAP`, `SIGBUS`, `SIGFPE`, `SIGSEGV`, `SIGSYS`), the first the
     /// kernel raised (a positive `si_code`) in the order raised, then the lowest, so a fault's
     /// or a failed frame's `SIGSEGV` is never overtaken; then the lowest number, and a
@@ -1195,7 +1264,9 @@ impl LockedSignals<'_> {
                 DEFAULT => match default_action(signal) {
                     DefaultAction::Terminate | DefaultAction::Core => Some(Delivery::Kill(signal)),
                     DefaultAction::Ignore | DefaultAction::Continue => None,
-                    DefaultAction::Stop if signal != SIGSTOP => None,
+                    DefaultAction::Stop if info.code() == code::GROUP_STOP => {
+                        Some(Delivery::JoinStop)
+                    }
                     DefaultAction::Stop => Some(Delivery::Stop(signal)),
                 },
                 _ => {
@@ -1335,6 +1406,8 @@ pub enum Delivery {
     Kill(u32),
     /// The process stops until `SIGCONT` or `SIGKILL`.
     Stop(u32),
+    /// Another thread stopped the process: this one stops with it, while it is stopped (D181).
+    JoinStop,
     /// `action`'s handler runs for `signal`, with its `info`.
     Handler {
         signal: u32,
@@ -1432,9 +1505,10 @@ pub fn rt_sigaction<P: Platform>(
         if new.is_some() && signal == super::signal::SIGCHLD {
             let action = signals.action(signal).unwrap_or_default();
             let no_zombies = action.handler == IGNORE || action.flags & flag::NOCLDWAIT != 0;
-            super::process_table::TABLE
-                .lock()
-                .set_no_zombie_children(process.id().get(), no_zombies);
+            let no_stop_notices = action.flags & flag::NOCLDSTOP != 0;
+            let mut table = super::process_table::TABLE.lock();
+            table.set_no_zombie_children(process.id().get(), no_zombies);
+            table.set_no_stop_notices(process.id().get(), no_stop_notices);
         }
         let first = process.id().get();
         let first = (process.first_thread_status().is_none()).then_some(first);
@@ -1729,11 +1803,15 @@ fn send_to_process<P: Platform>(
 /// blocking it: the wait of its first thread, `first_thread`, is ended, and those of the
 /// threads the process's signal state records, so a waiting thread looks; a running one is
 /// interrupted, unless the process ignores the signal: then it is taken in at the threads'
-/// next look (a thread that blocks it still finds it pending, as on Linux). Nothing for a
-/// process that has ended, nor without memory to record the signal.
+/// next look (a thread that blocks it still finds it pending, as on Linux). `SIGCONT`
+/// continues a stopped process first, whatever its action (D181). Nothing for a process that
+/// has ended, nor without memory to record the signal.
 pub fn send_from_outside<P: Platform>(process: &Process<P>, first_thread: &WaitSlot, info: Info) {
     if process.has_ended() {
         return;
+    }
+    if info.signal() == SIGCONT {
+        super::job_control::continue_process::<P>(process);
     }
     let ignored = {
         let mut signals = process.signals().lock();
@@ -1758,6 +1836,33 @@ pub fn send_from_outside<P: Platform>(process: &Process<P>, first_thread: &WaitS
 }
 
 const NO_THREAD: u32 = 0;
+
+/// For `thread`, the calling thread of `process`, which a stop signal just stopped (D181):
+/// leaves each other thread of the process a stop that makes it stop too, and interrupts it so
+/// it looks at once, as Linux's group stop. Nothing for a process with one thread.
+pub fn stop_other_threads<P: Platform>(process: &Process<P>, thread: &mut LinuxThread) {
+    if process.threads() <= 1 {
+        return;
+    }
+    let id = process.id().get();
+    let first = process.first_thread_status().is_none().then_some(id);
+    let left = {
+        let mut guard = process.signals().lock();
+        let left = thread.signals(&mut guard).leave_group_stop(first);
+        if left {
+            process.set_sent_signals_waiting(true);
+        }
+        left
+    };
+    if !left {
+        return;
+    }
+    process.record_signal_sent();
+    let signals = process.signals().lock();
+    for slot in signals.wait_slots_but(thread.id(), id) {
+        super::futex::interrupt::<P>(slot);
+    }
+}
 
 /// The process's id as a `pid_t`, which it fits: a [`crate::process::ProcessId`] is at most
 /// `i32::MAX`.
@@ -1794,6 +1899,33 @@ pub fn init_takes(signal: u32, action: Option<Action>) -> bool {
     signal != SIGKILL
         && signal != SIGSTOP
         && action.is_some_and(|action| action.handler != DEFAULT && action.handler != IGNORE)
+}
+
+/// Sends `signal` from the kernel to init if init takes it ([`init_takes`]): how the desktop's
+/// power menu asks init to take the machine down (D183). Whether init was sent it.
+pub fn ask_init<P: Platform>(signal: u32) -> bool {
+    let target = {
+        let table = process_table::TABLE.lock();
+        match table.init() {
+            0 => None,
+            init => table.target(init),
+        }
+    };
+    let Some(running) = target.and_then(|target| target.running) else {
+        return false;
+    };
+    let Some(process) = running
+        .process
+        .upgrade()
+        .and_then(|process| process.downcast::<Process<P>>().ok())
+    else {
+        return false;
+    };
+    if !init_takes(signal, process.signals().lock().action(signal)) {
+        return false;
+    }
+    send_from_outside::<P>(&process, &running.first_thread, Info::from_kernel(signal));
+    true
 }
 
 fn signal_ids<P: Platform>(process: &Process<P>) -> SignalIds {
@@ -1842,12 +1974,15 @@ fn send_to_other<P: Platform>(
     Reached::Delivered
 }
 
+const EVERY_OTHER_PROCESS: i32 = -1;
+
 /// `kill(pid, signal)`: sends `signal` to the process `pid` names: its id (the caller's own
-/// included); 0, every process of the caller's group; or minus a group's id, every process of
-/// that group. A process that ended and is not yet reaped is found, and takes nothing. `ESRCH`
-/// for `-1` (every process but the caller is not supported), `i32::MIN` and an id or group
-/// with no process, before the signal is looked at, as on Linux; then `EINVAL` for a signal
-/// outside 0 to 64; then `EPERM` when the caller may signal none of them ([`may_signal`]); 0,
+/// included); 0, every process of the caller's group; minus a group's id, every process of
+/// that group; or -1, every process but the caller and init (D183), which init's shutdown
+/// uses. A process that ended and is not yet reaped is found, and takes nothing. `ESRCH`
+/// for `i32::MIN` and an id or group with no process (for -1, no process but the caller and
+/// init), before the signal is looked at, as on Linux; then `EINVAL` for a signal outside 0
+/// to 64; then `EPERM` when the caller may signal none of them ([`may_signal`]); 0,
 /// the signal, only checks. Init takes another process's signal only through a handler, and
 /// never `SIGKILL` or `SIGSTOP` ([`init_takes`]). `pid` is a `pid_t`: the register's upper half
 /// is ignored. The signal's `siginfo_t` says `SI_USER` from the caller. The caller's own
@@ -1860,8 +1995,7 @@ pub fn kill<P: Platform>(
 ) -> Result<u64, Errno> {
     let own = own_id(process);
     let pid = pid as u32 as i32;
-    let every_process_but_the_caller = -1;
-    if pid == every_process_but_the_caller || pid == i32::MIN {
+    if pid == i32::MIN {
         return Err(Errno::ESRCH);
     }
     let uid = real_user_id(process);
@@ -1876,6 +2010,7 @@ pub fn kill<P: Platform>(
             .map_or(own as u32, |(group, _)| group);
         let init = table.init();
         match pid {
+            EVERY_OTHER_PROCESS => (table.every_target_but(own as u32), false, init),
             0 => (table.group_targets(own_group), true, init),
             pid if pid < 0 => {
                 let group = pid.unsigned_abs();
@@ -1968,6 +2103,9 @@ fn read_queued_info<P: Platform>(
     process
         .read_user_memory(address, &mut bytes)
         .map_err(|_| Errno::EFAULT)?;
+    if i32::from_ne_bytes(bytes[8..12].try_into().unwrap()) == code::GROUP_STOP {
+        return Err(Errno::EPERM);
+    }
     Ok(bytes)
 }
 
@@ -1981,7 +2119,8 @@ fn is_reserved_for_kernel_and_kill(bytes: &[u8; KEPT_INFO_SIZE]) -> bool {
 /// process it can reach yet. As Linux, in this order: `EFAULT` if the first
 /// [`KEPT_INFO_SIZE`] bytes at `info`, all that is read, are not the program's memory;
 /// `EPERM` if its `si_code` is one only the kernel and `kill` send (0 or more, or
-/// `SI_TKILL`) and the target is not the caller; `ESRCH` unless the target is the caller (0
+/// `SI_TKILL`) and the target is not the caller, or the kernel's own group-stop code to
+/// anyone; `ESRCH` unless the target is the caller (0
 /// is no process); `EINVAL` for a signal outside 0 to 64; `EAGAIN` for a real-time signal when
 /// the queued signals are at `RLIMIT_SIGPENDING`. Signal 0 only checks. The receiver gets the
 /// `siginfo_t` as written, with `signal` as its `si_signo` and only its first
@@ -2212,6 +2351,33 @@ fn note_taken_in<P: Platform>(process: &Process<P>, signals: &Signals) {
     }
 }
 
+/// The signals of `set` pending to `thread`, of `process`, or sent to the process and not
+/// taken in by any thread yet, blocked or not: what a `signalfd` reads for it.
+pub fn pending_in<P: Platform>(process: &Process<P>, thread: &LinuxThread, set: u64) -> u64 {
+    let pending = thread.signal_state().pending;
+    let left = process.signals().lock().left_for_process();
+    (pending | left) & set
+}
+
+/// Takes the first signal of `wanted` pending to `thread`, of `process`, or sent to the
+/// process, blocked or not, as a `signalfd` read takes it: as [`rt_sigtimedwait`] takes it,
+/// without waiting.
+pub fn take_for_signalfd<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    wanted: u64,
+) -> Option<Info> {
+    take_in_sent(process, thread);
+    let wanted = wanted & !UNBLOCKABLE;
+    let mut guard = process.signals().lock();
+    let mut signals = thread.signals(&mut guard);
+    signals.set_waited(wanted);
+    let taken = signals.take_waited(wanted);
+    signals.set_waited(0);
+    note_taken_in(process, &guard);
+    taken
+}
+
 /// Whether a signal is pending and not blocked: due, so a wait that has not started yet does
 /// not start, as on Linux.
 pub fn is_due(thread: &LinuxThread) -> bool {
@@ -2344,8 +2510,9 @@ pub fn rt_sigpending<P: Platform>(
 
 /// Delivers the signals a call just made due (sent to the caller, unblocked, or no longer
 /// caught), before the call returns to the program, as POSIX requires: ends the process for
-/// one whose action does, stops it for `SIGSTOP`, or writes a frame and starts the program in
-/// the handler (`context` is the program's registers, the call's result already set). Every
+/// one whose action does, stops it for a stop signal until `SIGCONT` (D181), or writes a frame
+/// and starts the program in the handler (`context` is the program's registers, the call's
+/// result already set). Every
 /// due signal with a handler gets a frame, each on top of the one before, so the last one's
 /// handler runs first, as on Linux. Only the calls that can make a signal due run this, so
 /// the system-call path pays nothing; signals from other processes and timers will need a
@@ -2403,9 +2570,11 @@ fn deliver_with<P: Platform>(
             Some(Delivery::Kill(signal)) => {
                 return super::end_process(process, ProcessExit::Killed { signal });
             }
-            Some(Delivery::Stop(_)) => {
-                super::thread::wait_for_end(process, thread);
-                return ControlFlow::Break(());
+            Some(Delivery::Stop(signal)) => {
+                super::job_control::stop::<P>(process, thread, signal)?;
+            }
+            Some(Delivery::JoinStop) => {
+                super::job_control::stay_stopped::<P>(process, thread)?;
             }
             Some(Delivery::Handler {
                 signal,
@@ -2909,11 +3078,17 @@ mod tests {
         signals.send(by_kill(SIGTSTP), NO_LIMIT).unwrap();
         assert_eq!(
             signals.next_delivery(),
-            None,
-            "a terminal's stop signal is discarded in an orphaned process group"
+            Some(Delivery::Stop(SIGTSTP)),
+            "a terminal's stop signal stops, unless job control finds the group orphaned"
         );
         signals.send(by_kill(SIGSTOP), NO_LIMIT).unwrap();
         assert_eq!(signals.next_delivery(), Some(Delivery::Stop(SIGSTOP)));
+        signals.send(Info::group_stop(), NO_LIMIT).unwrap();
+        assert_eq!(
+            signals.next_delivery(),
+            Some(Delivery::JoinStop),
+            "a stop another thread left, when this process keeps its signals' information"
+        );
     }
 
     #[test]

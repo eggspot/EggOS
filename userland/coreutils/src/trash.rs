@@ -1,6 +1,6 @@
 use crate::disk::{ABSOLUTE_CAPACITY, SystemFiles, absolute_path};
 use crate::output::{FAILURE, Output};
-use crate::system::System;
+use crate::system::{SymbolicLinks, System};
 use core::ffi::CStr;
 use eggos_app::files::Files;
 use eggos_files::clock::deletion_date;
@@ -8,7 +8,8 @@ use eggos_files::names::is_valid;
 use eggos_files::trash::{HOME, RestoreError, Trash};
 use eggos_runtime::errno::Errno;
 
-const USAGE: &[u8] = b"usage: trash [-f] [--] <path>... | trash -l | trash -r <name>... | trash -e";
+const USAGE: &[u8] =
+    b"usage: trash [-f] [--dry-run] [--] <path>... | trash -l | trash -r <name>... | trash -e";
 const USAGE_STATUS: i32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +27,7 @@ fn the_trash() -> Option<Trash> {
 pub fn trash<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut action = Action::Put;
     let mut force = false;
+    let mut dry_run = false;
     let mut operands = [c""; crate::utilities::MAX_ARGUMENTS];
     let mut count = 0;
     let mut options_end = false;
@@ -41,6 +43,10 @@ pub fn trash<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             b"-e" | b"--empty" => Some(Action::Empty),
             b"-f" | b"--force" => {
                 force = true;
+                continue;
+            }
+            b"--dry-run" => {
+                dry_run = true;
                 continue;
             }
             bytes if bytes.len() > 1 && bytes[0] == b'-' => {
@@ -68,9 +74,14 @@ pub fn trash<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     }
     let operands = &operands[..count];
     let wants_operands = matches!(action, Action::Put | Action::Restore);
-    if wants_operands == operands.is_empty() && !(force && action == Action::Put) {
+    if (wants_operands == operands.is_empty() && !(force && action == Action::Put))
+        || (dry_run && action != Action::Put)
+    {
         output.error(&[USAGE]);
         return USAGE_STATUS;
+    }
+    if dry_run {
+        return preview(output, operands, force);
     }
     let Some(trash) = the_trash() else {
         return FAILURE;
@@ -155,6 +166,25 @@ fn put<S: System>(output: &mut Output<S>, trash: &Trash, paths: &[&CStr], force:
         }
     }
     output.system.sync();
+    status
+}
+
+fn preview<S: System>(output: &mut Output<S>, paths: &[&CStr], force: bool) -> i32 {
+    let mut status = 0;
+    for &path in paths {
+        match output.system.status(None, path, SymbolicLinks::DoNotFollow) {
+            Ok(_) => {
+                output.write(b"would move '");
+                write_escaped(output, path.to_bytes());
+                output.write(b"' to the Trash\n");
+            }
+            Err(Errno::ENOENT) if force => {}
+            Err(errno) => {
+                output.file_error(path, errno);
+                status = FAILURE;
+            }
+        }
+    }
     status
 }
 
@@ -262,6 +292,35 @@ mod tests {
         let status = output.finish(status);
         assert_eq!(output.system.open_count(), 0, "a descriptor was left open");
         (status, output.system)
+    }
+
+    #[test]
+    fn dry_run_says_what_it_would_move_and_moves_nothing() {
+        let (status, fake) = run(
+            home(),
+            &[
+                c"--dry-run",
+                c"/home/root/Work/notes.txt",
+                c"/home/root/Work",
+            ],
+        );
+        assert_eq!(status, 0, "{}", fake.errors());
+        assert_eq!(
+            fake.output(),
+            "would move '/home/root/Work/notes.txt' to the Trash\n\
+             would move '/home/root/Work' to the Trash\n"
+        );
+        assert_eq!(fake.contents("/home/root/Work/notes.txt"), b"notes");
+        let (status, fake) = run(home(), &[c"--dry-run", c"/home/root/gone"]);
+        assert_eq!(status, 1);
+        assert_eq!(
+            fake.errors(),
+            "trash: /home/root/gone: No such file or directory\n"
+        );
+        let (status, _) = run(home(), &[c"-f", c"--dry-run", c"/home/root/gone"]);
+        assert_eq!(status, 0);
+        let (status, _) = run(home(), &[c"-l", c"--dry-run"]);
+        assert_eq!(status, 2);
     }
 
     #[test]

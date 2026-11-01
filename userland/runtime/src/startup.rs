@@ -96,6 +96,11 @@ impl Startup {
         unsafe { null_ended_strings(self.envp) }
     }
 
+    /// The environment as `execve` takes it: the null-ended array of `NAME=value` strings.
+    pub fn environment_block(&self) -> *const *const c_char {
+        self.envp
+    }
+
     /// The `argv` array's end marker: a null pointer if the stack is laid out as Linux does.
     pub fn argument_end_marker(&self) -> *const c_char {
         // SAFETY: `from_stack` found `argc` pointers and their end marker here.

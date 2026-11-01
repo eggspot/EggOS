@@ -721,6 +721,17 @@ fn address_spaces_keep_user_pages_apart<P: Platform>(
     Ok(())
 }
 
+unsafe fn run_past_interrupts<P: Platform>(context: &mut UserContext) -> UserExit {
+    loop {
+        // SAFETY: the caller's promise, which holds again after an interrupt: it switched no
+        // thread or address space.
+        let exit = unsafe { P::run_user(context) };
+        if exit != UserExit::Interrupt {
+            return exit;
+        }
+    }
+}
+
 /// A program in user mode must make system calls with its arguments in the ABI's registers, get
 /// each result back with every other register as it was, and, reading kernel memory, fault
 /// without stopping the kernel; a floating-point instruction must trap (D49); a timer interrupt
@@ -758,13 +769,13 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
         // SAFETY: interrupts are masked, as the kernel runs; the program's address space is
         // active, sharing the kernel's half; nothing here switches threads or address spaces
         // before `run_user` returns. The same holds for each `run_user` below.
-        let exit = unsafe { P::run_user(&mut context) };
+        let exit = unsafe { run_past_interrupts::<P>(&mut context) };
         if syscall(&context, exit, TestProgram::SYSCALL_FIRST)? != [1, 2, 3, 4, 5, 6] {
             return Err("a system call's arguments did not arrive");
         }
         context.set_syscall_result(FIRST_RESULT);
         // SAFETY: as above.
-        let exit = unsafe { P::run_user(&mut context) };
+        let exit = unsafe { run_past_interrupts::<P>(&mut context) };
         let [result, differences, ..] = syscall(&context, exit, TestProgram::SYSCALL_REPORT)?;
         if result != FIRST_RESULT {
             return Err("a system call's result did not reach the program");
@@ -774,7 +785,7 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
         }
         context.set_syscall_result(kernel_address);
         // SAFETY: as above.
-        match unsafe { P::run_user(&mut context) } {
+        match unsafe { run_past_interrupts::<P>(&mut context) } {
             UserExit::Exception(exception)
                 if exception.kind == ExceptionKind::DataFault
                     && exception.address == Some(kernel_address)
@@ -789,7 +800,7 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
         let mut context = Process::<P>::test_program_context(|program| program.floating_point);
         let floating_point = context.pc();
         // SAFETY: as above.
-        match unsafe { P::run_user(&mut context) } {
+        match unsafe { run_past_interrupts::<P>(&mut context) } {
             UserExit::Exception(exception)
                 if exception.kind == ExceptionKind::IllegalInstruction
                     && exception.pc == floating_point => {}

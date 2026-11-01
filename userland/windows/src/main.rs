@@ -2,23 +2,40 @@
 //! starts with `MZ`, and it runs that Windows console or GUI program (D129) natively on x86_64
 //! (x64 programs) and aarch64 (ARM64 programs, D124). The PE format, the image's layout,
 //! relocations and imports, UTF-16 text, the command line, the GUI's tables (`gui/`) and the C
-//! runtime's streams, numbers and counted `printf` endings (`stream.rs`, `c_text.rs`,
-//! `counted_print.rs`) are pure logic with host tests;
+//! runtime's streams and counted `printf` endings (`stream.rs`, numbers and `scanf` in
+//! `eggos_c_format`, `counted_print.rs`) and handle flags and peeked pipe bytes (`handle_flags.rs`,
+//! `peeked_pipes.rs`, D189), the old C runtime's `FILE` layout, `errno` texts and
+//! `VirtualQuery`'s regions (`msvcrt_layout.rs`, `error_messages.rs`, `memory_regions.rs`,
+//! D189), and the table of named objects shared between processes and the rules of file
+//! mappings' views (`named_objects.rs`, `mapping_views.rs`, D189) are pure logic with host
+//! tests;
+//! an x64 program on aarch64 runs translated ahead of time (D191): `translated.rs` turns its
+//! image into the translator's input and handles the cache directory as pure logic, and
+//! `translation.rs` maps the translated code and calls into it;
 //! `start.rs` loads the program and `win32/` implements the Win32 and C runtime functions it
-//! imports; `fault_handler.rs` handles its hardware faults, and `user_shared_data.rs` lays out
-//! the page Windows shares with every process.
+//! imports; `fault_handler.rs` turns its hardware faults into Windows exceptions, which
+//! `win32/exception` dispatches over the unwind data `unwind/` reads (D177), with C++'s data
+//! read by `cxx_data.rs`; `user_shared_data.rs` lays out the page Windows shares with every
+//! process.
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
 
-#[cfg(any(test, runs_windows_programs))]
-mod c_text;
+#[cfg(any(test, all(runs_windows_programs, target_arch = "aarch64")))]
+extern crate alloc;
+
 #[cfg(any(test, runs_windows_programs))]
 mod calendar;
+#[cfg(any(test, runs_windows_programs))]
+mod com;
 #[cfg(any(test, runs_windows_programs))]
 mod command_line;
 #[cfg(any(test, runs_windows_programs))]
 mod counted_print;
+#[cfg(any(test, runs_windows_programs))]
+mod cxx_data;
+#[cfg(any(test, runs_windows_programs))]
+mod error_messages;
 #[cfg(any(test, runs_windows_programs))]
 mod errors;
 #[cfg(any(test, runs_windows_programs))]
@@ -28,25 +45,71 @@ mod fault_handler;
 #[cfg(any(test, runs_windows_programs))]
 mod find;
 #[cfg(any(test, runs_windows_programs))]
+mod float;
+#[cfg(any(test, runs_windows_programs))]
 mod gui;
 #[cfg(any(test, runs_windows_programs))]
+mod handle_flags;
+#[cfg(any(test, runs_windows_programs))]
 mod image;
+#[cfg(any(test, runs_windows_programs))]
+mod ini;
+#[cfg(any(test, runs_windows_programs))]
+mod known_folders;
 #[cfg(any(test, runs_windows_programs))]
 mod library;
 #[cfg(runs_windows_programs)]
 mod linux;
 #[cfg(any(test, runs_windows_programs))]
+mod locale;
+#[cfg(any(test, runs_windows_programs))]
+mod low_level_io;
+#[cfg(any(test, runs_windows_programs))]
+mod mapping_views;
+#[cfg(any(test, runs_windows_programs))]
+mod memory_regions;
+#[cfg(any(test, runs_windows_programs))]
+mod msvcrt_layout;
+#[cfg(any(test, runs_windows_programs))]
+mod named_objects;
+#[cfg(any(test, runs_windows_programs))]
+mod nt_status;
+#[cfg(any(test, runs_windows_programs))]
+mod ordinals;
+#[cfg(any(test, runs_windows_programs))]
 mod pe;
+#[cfg(any(test, runs_windows_programs))]
+mod peeked_pipes;
+#[cfg(any(test, runs_windows_programs))]
+mod pending_reads;
+#[cfg(any(test, runs_windows_programs))]
+mod process_list;
+#[cfg(any(test, runs_windows_programs))]
+mod queued_calls;
+#[cfg(any(test, runs_windows_programs))]
+mod sockets;
 #[cfg(runs_windows_programs)]
 mod start;
 #[cfg(any(test, runs_windows_programs))]
 mod stream;
 #[cfg(any(test, runs_windows_programs))]
 mod text;
+#[cfg(any(test, all(runs_windows_programs, target_arch = "aarch64")))]
+mod translated;
+#[cfg(all(runs_windows_programs, target_arch = "aarch64"))]
+mod translation;
+#[cfg(any(test, runs_windows_programs))]
+mod trash;
+#[cfg(any(test, runs_windows_programs))]
+mod unwind;
 #[cfg(any(test, runs_windows_programs))]
 mod user_shared_data;
+#[cfg(any(test, runs_windows_programs))]
+mod version_info;
 #[cfg(runs_windows_programs)]
 mod win32;
+#[cfg(any(test, runs_windows_programs))]
+mod write_execute;
 
 #[cfg(runs_windows_programs)]
 eggos_runtime::main!(start::run);

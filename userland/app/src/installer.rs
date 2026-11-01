@@ -9,7 +9,15 @@
 //! app's folder, one entry a step. An archive holding a file the installer writes itself
 //! ([`RESERVED_NAMES`]) or more than [`MAX_EXTRACTED_BYTES`] once extracted is refused. After
 //! the copy the app's own icon (D148) is made from what was installed and written as
-//! `app.icon`, named by the manifest; an app without one installs all the same.
+//! `app.icon`, named by the manifest; an app without one installs all the same. Symbolic links
+//! in a bundle or a `.zip` (a macOS framework's `Versions/Current`) are made again as links
+//! with the same target, when [`link_stays_inside`] (D170). A dynamically linked Linux program
+//! installs from a `.zip` that also holds the dynamic loader its `PT_INTERP` names: the
+//! manifest then names that loader and the folders holding the archive's libraries, and the
+//! app opens through them; `--arguments` gives the words it opens with (D172) and
+//! `--environment` the variables it opens with (D176). An app that carries fonts in
+//! [`APP_FONTS`] gets a link to them in [`FONTS`], where `/etc/fonts` tells fontconfig to look,
+//! made before its manifest and removed with the app (D176).
 
 use crate::architecture::Architecture;
 use crate::archive::{self, Archive, ArchiveError, Cursor, Entry};
@@ -17,9 +25,11 @@ use crate::files::{self, Files, Handle, Kind, PATH_CAPACITY, Path};
 use crate::icon::{self, OwnIcon, Workspace};
 use crate::program::{self, NotRunnable, Program};
 use crate::reader::{self, FileReader, Reader};
+use crate::translation::{self, RecordBuffer};
 use core::cell::RefCell;
 use eggos_app_manifest::icon as icon_file;
 use eggos_app_manifest::{self as manifest, Manifest, Source};
+use eggos_commands::page::Smallest;
 use eggos_png::inflate::{Sink, Window};
 use eggos_runtime::errno::Errno;
 
@@ -35,13 +45,21 @@ pub const TEMPORARY_MANIFEST: &[u8] = b"app.manifest.tmp";
 pub const MAX_DEPTH: usize = 16;
 /// The files the installer writes in an app's folder, which no program and no entry of a
 /// `.zip` may take.
-pub const RESERVED_NAMES: [&[u8]; 3] = [
+pub const RESERVED_NAMES: [&[u8]; 4] = [
     manifest::FILE_NAME.as_bytes(),
     TEMPORARY_MANIFEST,
     icon_file::FILE_NAME.as_bytes(),
+    manifest::translation::FILE_NAME.as_bytes(),
 ];
 /// The most bytes a `.zip`'s files may take once extracted.
 pub const MAX_EXTRACTED_BYTES: u64 = 4 << 30;
+/// The folder of links to the fonts apps carry, one link per app named like the app (D176);
+/// `/etc/fonts/fonts.conf` lists it, so every program that uses fontconfig finds them.
+pub const FONTS: &[u8] = b"/Applications/.fonts";
+/// The folder inside an app's folder holding the fonts it carries.
+pub const APP_FONTS: &[u8] = b"share/fonts";
+/// [`FONTS`]' name in `/Applications`, which no app may take.
+pub const FONTS_FOLDER: &[u8] = b".fonts";
 
 const MAX_BUNDLES: usize = 4;
 const INFO_PLIST: &[u8] = b"Contents/Info.plist";
@@ -82,8 +100,10 @@ pub enum Problem {
     DiskFull,
     /// Folders nest deeper than [`MAX_DEPTH`].
     TooDeep,
-    /// A symbolic link, a device or anything else that is neither a file nor a folder.
+    /// A device, a socket or anything else that is neither a file, a folder nor a link.
     UnsupportedEntry,
+    /// A symbolic link whose target could lead outside the app ([`link_stays_inside`]).
+    UnsafeLink,
     /// A `.zip` that cannot be read or extracted.
     Archive(ArchiveError),
     /// A `.zip` holding no program this installer recognises.
@@ -97,6 +117,10 @@ pub enum Problem {
     ReservedName,
     /// A `.zip` whose files take more than [`MAX_EXTRACTED_BYTES`] once extracted.
     TooLarge,
+    /// Arguments a manifest cannot hold ([`manifest::is_arguments`]).
+    InvalidArguments,
+    /// Environment variables a manifest cannot hold ([`manifest::is_environment`]).
+    InvalidEnvironment,
     /// Another error of the file system.
     Failed(Errno),
 }
@@ -117,7 +141,7 @@ impl core::fmt::Debug for Listing {
 
 impl Listing {
     /// The longest listing, in bytes.
-    pub const CAPACITY: usize = 120;
+    pub const CAPACITY: usize = 140;
     const SEPARATOR: &[u8] = b", ";
     const ELLIPSIS: &[u8] = b"...";
 
@@ -223,9 +247,11 @@ impl Name {
         core::str::from_utf8(self.as_bytes()).unwrap_or("?")
     }
 
-    /// Whether it may name an app ([`manifest::is_name`]).
+    /// Whether it may name an app ([`manifest::is_name`]), and is not [`FONTS_FOLDER`].
     pub fn is_valid(&self) -> bool {
-        self.length <= manifest::NAME_CAPACITY && manifest::is_name(self.as_bytes())
+        self.length <= manifest::NAME_CAPACITY
+            && manifest::is_name(self.as_bytes())
+            && self.as_bytes() != FONTS_FOLDER
     }
 }
 
@@ -263,8 +289,20 @@ pub struct Plan {
     bundle: bool,
     archive: Option<Archive>,
     run: Path,
+    loader: Option<Loader>,
+    arguments: Option<Path>,
+    environment: Option<Path>,
     leftover: bool,
     total_bytes: u64,
+}
+
+/// A dynamically linked program's loader and library folders inside its `.zip` (D172).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Loader {
+    /// The loader's path inside the app's folder.
+    pub path: Path,
+    /// The folders holding libraries, inside the app's folder, separated by `:`.
+    pub libraries: Path,
 }
 
 impl Plan {
@@ -301,6 +339,90 @@ impl Plan {
     /// The bytes the copy writes.
     pub fn total_bytes(&self) -> u64 {
         self.total_bytes
+    }
+
+    /// The dynamic loader and library folders the program opens through, for a dynamically
+    /// linked Linux program.
+    pub fn loader(&self) -> Option<&Loader> {
+        self.loader.as_ref()
+    }
+
+    /// The words the app opens with, if any.
+    pub fn arguments(&self) -> Option<&[u8]> {
+        self.arguments.as_ref().map(Path::as_bytes)
+    }
+
+    /// The same plan, opening the app with `arguments` (D172); refused when a manifest
+    /// cannot hold them.
+    pub fn with_arguments(self, arguments: &[u8]) -> Result<Self, Refused> {
+        let refused = Refused {
+            name: self.name,
+            problem: Problem::InvalidArguments,
+        };
+        if !manifest::is_arguments(arguments) {
+            return Err(refused);
+        }
+        let arguments = Path::from(arguments).ok_or(refused)?;
+        Ok(Self {
+            arguments: Some(arguments),
+            ..self
+        })
+    }
+
+    /// The `NAME=value` words the app opens with, if any.
+    pub fn environment(&self) -> Option<&[u8]> {
+        self.environment.as_ref().map(Path::as_bytes)
+    }
+
+    /// The same plan, opening the app with the variables `environment` (D176); refused when a
+    /// manifest cannot hold them.
+    pub fn with_environment(self, environment: &[u8]) -> Result<Self, Refused> {
+        let refused = Refused {
+            name: self.name,
+            problem: Problem::InvalidEnvironment,
+        };
+        if !manifest::is_environment(environment) {
+            return Err(refused);
+        }
+        let environment = Path::from(environment).ok_or(refused)?;
+        Ok(Self {
+            environment: Some(environment),
+            ..self
+        })
+    }
+}
+
+fn font_link(name: &[u8]) -> Option<Path> {
+    Path::from(FONTS)?.join(name)
+}
+
+fn link_fonts(files: &mut impl Files, name: &[u8], folder: &Path) -> Result<(), Problem> {
+    let fonts = folder.join(APP_FONTS).ok_or(Problem::PathTooLong)?;
+    let carries = files
+        .status(fonts.as_bytes())
+        .is_ok_and(|status| status.kind == Kind::Directory);
+    if !carries {
+        return Ok(());
+    }
+    let link = font_link(name).ok_or(Problem::PathTooLong)?;
+    match files.make_directory(FONTS) {
+        Ok(()) | Err(Errno::EEXIST) => {}
+        Err(error) => return Err(Problem::from_errno(error)),
+    }
+    match files.remove_file(link.as_bytes()) {
+        Ok(()) | Err(Errno::ENOENT) => {}
+        Err(error) => return Err(Problem::from_errno(error)),
+    }
+    files
+        .make_link(fonts.as_bytes(), link.as_bytes())
+        .map_err(Problem::from_errno)
+}
+
+fn unlink_fonts(files: &mut impl Files, name: &[u8]) {
+    if let Some(link) = font_link(name)
+        && files.remove_file(link.as_bytes()).is_ok()
+    {
+        let _ = files.remove_directory(FONTS);
     }
 }
 
@@ -339,8 +461,56 @@ pub fn read_manifest(
 
 fn is_file(files: &mut impl Files, path: &Path) -> bool {
     files
-        .status(path.as_bytes())
+        .status_following(path.as_bytes())
         .is_ok_and(|status| status.kind == Kind::File)
+}
+
+/// Whether symbolic link `link`, a path inside a folder (`Contents/Frameworks/Current`), with
+/// target `target` names something inside that folder however the links in it resolve: a
+/// relative target whose `..` parts all come first and climb no higher than the link's own
+/// folder. An absolute target, an empty one, or a `..` after a name is refused (a name before
+/// it may itself be a link that leads higher).
+pub fn link_stays_inside(link: &[u8], target: &[u8]) -> bool {
+    if target.is_empty() || target.first() == Some(&b'/') || target.contains(&0) {
+        return false;
+    }
+    let mut depth = link
+        .split(|&byte| byte == b'/')
+        .filter(|part| !part.is_empty())
+        .count()
+        .saturating_sub(1);
+    let mut named = false;
+    for part in target.split(|&byte| byte == b'/') {
+        match part {
+            b"" | b"." => {}
+            b".." if named => return false,
+            b".." => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return false,
+            },
+            _ => named = true,
+        }
+    }
+    true
+}
+
+fn bundle_link(
+    files: &mut impl Files,
+    root: &Path,
+    relative: &Path,
+    target: &mut [u8; PATH_CAPACITY],
+) -> Result<usize, Problem> {
+    let path = Walk::under(root, relative)?;
+    let length = files
+        .read_link(path.as_bytes(), target)
+        .map_err(|error| match error {
+            Errno::ENAMETOOLONG => Problem::PathTooLong,
+            other => Problem::Unreadable(other),
+        })?;
+    match link_stays_inside(relative.as_bytes(), &target[..length]) {
+        true => Ok(length),
+        false => Err(Problem::UnsafeLink),
+    }
 }
 
 fn declared_program(files: &mut impl Files, bundle: &Path, programs: &Path) -> Option<Path> {
@@ -383,10 +553,14 @@ fn bundle_program(files: &mut impl Files, bundle: &Path, stem: &[u8]) -> Result<
 fn measure(files: &mut impl Files, root: &Path) -> Result<u64, Problem> {
     let mut walk = Walk::new();
     let mut total = 0u64;
-    while let Some((_, status)) = walk.next(files, root)? {
+    let mut target = [0u8; PATH_CAPACITY];
+    while let Some((relative, status)) = walk.next(files, root)? {
         match status.kind {
             Kind::File => total = total.saturating_add(status.size),
             Kind::Directory => {}
+            Kind::Link => {
+                bundle_link(files, root, &relative, &mut target)?;
+            }
             Kind::Other => return Err(Problem::UnsupportedEntry),
         }
     }
@@ -429,7 +603,7 @@ pub fn plan_entry(
     let refused = |problem| Refused { name, problem };
     let source = Path::from(source).ok_or(refused(Problem::PathTooLong))?;
     let status = files
-        .status(source.as_bytes())
+        .status_following(source.as_bytes())
         .map_err(|error| refused(Problem::Unreadable(error)))?;
     let (bundle, program_path) = match status.kind {
         Kind::Directory if is_bundle_name => {
@@ -438,7 +612,9 @@ pub fn plan_entry(
         }
         Kind::Directory => return Err(refused(Problem::FolderNotApp)),
         Kind::File => (false, source),
-        Kind::Other => return Err(refused(Problem::NotRunnable(NotRunnable::NotAProgram))),
+        Kind::Link | Kind::Other => {
+            return Err(refused(Problem::NotRunnable(NotRunnable::NotAProgram)));
+        }
     };
     let mut head = [0u8; program::HEAD_BYTES];
     let length = read_head(files, program_path.as_bytes(), &mut head)
@@ -474,6 +650,9 @@ pub fn plan_entry(
         bundle,
         archive: None,
         run,
+        loader: None,
+        arguments: None,
+        environment: None,
         leftover,
         total_bytes,
     })
@@ -658,7 +837,7 @@ fn zipped_bundles(
         let Some(end) = bundle_end(name) else {
             continue;
         };
-        if entry.is_metadata() || entry.is_directory() {
+        if entry.is_metadata() || entry.is_directory() || entry.is_link() {
             continue;
         }
         let (bundle, rest) = name.split_at(end);
@@ -688,7 +867,7 @@ fn zipped_bundles(
     if bundles.any_declared() {
         let mut cursor = archive.first();
         while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
-            if !entry.is_metadata() && !entry.is_directory() {
+            if !entry.is_metadata() && !entry.is_directory() && !entry.is_link() {
                 bundles.mark_declared_found(entry.name());
             }
         }
@@ -724,7 +903,109 @@ struct Scanned {
     run: Path,
     named_after: Path,
     program: Program,
+    loader: Option<Loader>,
     total: u64,
+}
+
+const MAX_LIBRARY_FOLDERS: usize = 4;
+const SHARED_OBJECT: &[u8] = b".so";
+const VERSIONED_SHARED_OBJECT: &[u8] = b".so.";
+
+fn parent_folder(name: &[u8]) -> Option<&[u8]> {
+    name.iter()
+        .rposition(|&byte| byte == b'/')
+        .map(|slash| &name[..slash])
+}
+
+fn holds(file_name: &[u8], part: &[u8]) -> bool {
+    file_name.windows(part.len()).any(|window| window == part)
+}
+
+fn is_shared_object(file_name: &[u8]) -> bool {
+    holds(file_name, SHARED_OBJECT)
+}
+
+fn is_versioned_shared_object(file_name: &[u8]) -> bool {
+    holds(file_name, VERSIONED_SHARED_OBJECT)
+}
+
+struct LibraryFolders {
+    folders: [Path; MAX_LIBRARY_FOLDERS],
+    count: usize,
+}
+
+impl LibraryFolders {
+    fn new() -> Self {
+        Self {
+            folders: [Path::new(); MAX_LIBRARY_FOLDERS],
+            count: 0,
+        }
+    }
+
+    fn add(&mut self, folder: &[u8]) -> Result<(), Problem> {
+        let known = self
+            .listed()
+            .iter()
+            .any(|listed| listed.as_bytes() == folder);
+        if !known && self.count < MAX_LIBRARY_FOLDERS {
+            self.folders[self.count] = Path::from(folder).ok_or(Problem::PathTooLong)?;
+            self.count += 1;
+        }
+        Ok(())
+    }
+
+    fn listed(&self) -> &[Path] {
+        &self.folders[..self.count]
+    }
+}
+
+fn find_loader(
+    zip: &mut impl Reader,
+    archive: &Archive,
+    interpreter: &[u8],
+) -> Result<Loader, Problem> {
+    let wanted = files::file_name(interpreter);
+    let mut loader = None;
+    let mut versioned = LibraryFolders::new();
+    let mut any = LibraryFolders::new();
+    let mut cursor = archive.first();
+    while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
+        if entry.is_metadata() || entry.is_directory() {
+            continue;
+        }
+        let name = entry.name();
+        let file_name = files::file_name(name);
+        if loader.is_none() && file_name == wanted && !entry.is_link() {
+            loader = Some(Path::from(name).ok_or(Problem::PathTooLong)?);
+        }
+        if !is_shared_object(file_name) {
+            continue;
+        }
+        let Some(folder) = parent_folder(name).filter(|folder| !folder.is_empty()) else {
+            continue;
+        };
+        any.add(folder)?;
+        if is_versioned_shared_object(file_name) {
+            versioned.add(folder)?;
+        }
+    }
+    let path = loader.ok_or(Problem::NotRunnable(NotRunnable::NeedsDynamicLoader))?;
+    let folders = match versioned.count {
+        0 => any.listed(),
+        _ => versioned.listed(),
+    };
+    let mut libraries = Path::new();
+    for (at, folder) in folders.iter().enumerate() {
+        if (at > 0 && !libraries.append(b":")) || !libraries.append(folder.as_bytes()) {
+            return Err(Problem::PathTooLong);
+        }
+    }
+    if !manifest::is_icon(path.as_bytes())
+        || (!folders.is_empty() && !manifest::is_libraries(libraries.as_bytes()))
+    {
+        return Err(Problem::InvalidProgramPath);
+    }
+    Ok(Loader { path, libraries })
 }
 
 fn program_role(
@@ -733,7 +1014,7 @@ fn program_role(
     window: &mut Window,
     bundles: &ZippedBundles,
 ) -> Option<Role> {
-    if entry.is_metadata() || entry.is_directory() {
+    if entry.is_metadata() || entry.is_directory() || entry.is_link() {
         return None;
     }
     let role = role(entry.name(), bundles);
@@ -801,7 +1082,21 @@ fn scan(
     };
     let mut head = [0u8; program::HEAD_BYTES];
     let length = archive::head(zip, &entry, window, &mut head).map_err(Problem::Archive)?;
-    let program = program::recognise(&head[..length], machine).map_err(Problem::NotRunnable)?;
+    let head = &head[..length];
+    let (program, loader) = match program::recognise(head, machine) {
+        Ok(program) => (program, None),
+        Err(NotRunnable::NeedsDynamicLoader) if role == Role::MaybeLinuxProgram => {
+            let interpreter = program::interpreter(head)
+                .ok_or(Problem::NotRunnable(NotRunnable::NeedsDynamicLoader))?;
+            let loader = find_loader(zip, &archive, interpreter)?;
+            let program = Program {
+                source: Source::Linux,
+                architecture: machine,
+            };
+            (program, Some(loader))
+        }
+        Err(reason) => return Err(Problem::NotRunnable(reason)),
+    };
     let named_after = match role {
         Role::BundleProgram { bundle_end } if program.source == Source::Macos => {
             &entry.name()[..bundle_end]
@@ -816,6 +1111,7 @@ fn scan(
         run: Path::from(entry.name()).ok_or(Problem::PathTooLong)?,
         named_after: Path::from(named_after).ok_or(Problem::PathTooLong)?,
         program,
+        loader,
         total,
     })
 }
@@ -847,6 +1143,9 @@ fn plan_archive(
         bundle: false,
         archive: Some(scanned.archive),
         run: scanned.run,
+        loader: scanned.loader,
+        arguments: None,
+        environment: None,
         leftover,
         total_bytes: scanned.total,
     })
@@ -1102,8 +1401,58 @@ fn make_parents(files: &mut impl Files, folder: &Path, name: &[u8]) -> Result<()
     for (at, _) in name.iter().enumerate().filter(|&(_, &byte)| byte == b'/') {
         let parent = folder.join(&name[..at]).ok_or(Problem::PathTooLong)?;
         make_directory_once(files, parent.as_bytes())?;
+        let kind = files.status(parent.as_bytes()).map(|status| status.kind);
+        if kind != Ok(Kind::Directory) {
+            return Err(Problem::Archive(ArchiveError::UnsafeName));
+        }
     }
     Ok(())
+}
+
+struct LinkTarget {
+    bytes: [u8; PATH_CAPACITY],
+    length: usize,
+    overflowed: bool,
+}
+
+impl Sink for LinkTarget {
+    fn write(&mut self, bytes: &[u8]) -> bool {
+        let end = self.length + bytes.len();
+        match self.bytes.get_mut(self.length..end) {
+            Some(place) => {
+                place.copy_from_slice(bytes);
+                self.length = end;
+                true
+            }
+            None => {
+                self.overflowed = true;
+                false
+            }
+        }
+    }
+}
+
+fn extracted_link_target<F: Files>(
+    files: &mut F,
+    zip: Handle,
+    size: u64,
+    entry: &Entry,
+) -> Result<LinkTarget, Problem> {
+    if entry.size() >= PATH_CAPACITY as u64 {
+        return Err(Problem::PathTooLong);
+    }
+    let mut reader = FileReader::new(files, zip, size);
+    let mut target = LinkTarget {
+        bytes: [0; PATH_CAPACITY],
+        length: 0,
+        overflowed: false,
+    };
+    let mut window = Window::new();
+    match archive::extract(&mut reader, entry, &mut window, &mut target) {
+        Ok(()) => Ok(target),
+        Err(ArchiveError::Stopped) if target.overflowed => Err(Problem::PathTooLong),
+        Err(error) => Err(Problem::Archive(error)),
+    }
 }
 
 impl Installation {
@@ -1187,6 +1536,7 @@ impl Installation {
             && let Ok(folder) = self.folder()
         {
             let _ = remove_tree(files, folder.as_bytes());
+            unlink_fonts(files, self.plan.name.as_bytes());
         }
         self.stage = Stage::Finished;
     }
@@ -1269,7 +1619,7 @@ impl Installation {
                 .join(self.plan.run.as_bytes())
                 .ok_or(Problem::PathTooLong)?;
             let permissions = files
-                .status(self.plan.source.as_bytes())
+                .status_following(self.plan.source.as_bytes())
                 .map_err(Problem::Unreadable)?
                 .permissions;
             let source = self.plan.source;
@@ -1294,6 +1644,13 @@ impl Installation {
                     .join(relative.as_bytes())
                     .ok_or(Problem::PathTooLong)?;
                 self.start_copy(files, from.as_bytes(), to.as_bytes(), status.permissions)?;
+            }
+            Kind::Link => {
+                let mut target = [0u8; PATH_CAPACITY];
+                let length = bundle_link(files, &source, &relative, &mut target)?;
+                files
+                    .make_link(&target[..length], to.as_bytes())
+                    .map_err(Problem::from_errno)?;
             }
             Kind::Other => return Err(Problem::UnsupportedEntry),
         }
@@ -1347,6 +1704,18 @@ impl Installation {
         let to = folder.join(entry.name()).ok_or(Problem::PathTooLong)?;
         if entry.is_directory() {
             make_directory_once(files, to.as_bytes())?;
+            return Ok(Progress::Copying(self.done_bytes));
+        }
+        if entry.is_link() {
+            let target = extracted_link_target(files, open.file, archive.size(), &entry)?;
+            let target = &target.bytes[..target.length];
+            if !link_stays_inside(entry.name(), target) {
+                return Err(Problem::UnsafeLink);
+            }
+            files
+                .make_link(target, to.as_bytes())
+                .map_err(Problem::from_errno)?;
+            self.done_bytes = self.done_bytes.saturating_add(entry.size());
             return Ok(Progress::Copying(self.done_bytes));
         }
         let permissions = match (
@@ -1406,8 +1775,15 @@ impl Installation {
 
     fn register(&mut self, files: &mut impl Files) -> Result<Progress, Problem> {
         let folder = self.folder()?;
-        let run = core::str::from_utf8(self.plan.run.as_bytes())
-            .map_err(|_| Problem::InvalidProgramPath)?;
+        let text = path_text;
+        let run = text(&self.plan.run)?;
+        let loader = self.plan.loader.as_ref().map(|loader| &loader.path);
+        let libraries = self
+            .plan
+            .loader
+            .as_ref()
+            .map(|loader| &loader.libraries)
+            .filter(|libraries| !libraries.as_bytes().is_empty());
         let entry = Manifest {
             name: self.plan.name.as_str(),
             source: self.plan.program.source,
@@ -1415,7 +1791,12 @@ impl Installation {
             architecture: Some(self.plan.program.architecture.name()),
             synonyms: "",
             icon: self.icon.then_some(icon_file::FILE_NAME),
+            loader: loader.map(text).transpose()?,
+            libraries: libraries.map(text).transpose()?,
+            arguments: self.plan.arguments.as_ref().map(text).transpose()?,
+            environment: self.plan.environment.as_ref().map(text).transpose()?,
         };
+        link_fonts(files, self.plan.name.as_bytes(), &folder)?;
         let mut file = [0u8; manifest::LARGEST];
         let length = manifest::write(&entry, &mut file).map_err(|refused| match refused {
             manifest::Refused::InvalidName => Problem::InvalidName,
@@ -1444,6 +1825,10 @@ impl Installation {
     }
 }
 
+fn path_text(path: &Path) -> Result<&str, Problem> {
+    core::str::from_utf8(path.as_bytes()).map_err(|_| Problem::InvalidProgramPath)
+}
+
 /// Installs `plan` in one go.
 pub fn install(files: &mut impl Files, plan: Plan, buffer: &mut [u8]) -> Result<(), Problem> {
     match Installation::new(plan).run(files, buffer) {
@@ -1453,7 +1838,8 @@ pub fn install(files: &mut impl Files, plan: Plan, buffer: &mut [u8]) -> Result<
 }
 
 /// Uninstalls the app called `name`: its manifest first, so it leaves the catalogue at once,
-/// then its folder and everything in it (D18: nothing is left behind).
+/// then its folder and everything in it (D18: nothing is left behind), and its
+/// translation's cache file when it was translated at install (D191).
 pub fn uninstall(files: &mut impl Files, name: &[u8]) -> Result<(), Problem> {
     if !Name::new(name).is_valid() {
         return Err(Problem::NotInstalled);
@@ -1469,7 +1855,14 @@ pub fn uninstall(files: &mut impl Files, name: &[u8]) -> Result<(), Problem> {
     files
         .remove_file(manifest_path.as_bytes())
         .map_err(Problem::from_errno)?;
+    unlink_fonts(files, name);
+    let mut kept: RecordBuffer = [0; manifest::translation::LARGEST + 1];
+    let record = translation::read_record(files, name, &mut kept)
+        .and_then(|length| manifest::translation::parse(&kept[..length]));
     let removed = remove_tree(files, folder.as_bytes()).map_err(Problem::from_errno);
+    if let Some(record) = record {
+        translation::remove_cache(files, &record);
+    }
     files.sync();
     removed
 }
@@ -1500,6 +1893,44 @@ pub fn for_each_installed(
             each(&app);
         }
     }
+}
+
+/// The most apps a page of `app list` holds (D164).
+pub const PAGE_LIMIT: usize = eggos_commands::commands::LIST_PAGE_LIMIT as usize;
+
+const PAGE_SLOTS: usize = PAGE_LIMIT + 1;
+const NAME_KEY_BYTES: usize = manifest::NAME_CAPACITY;
+
+/// Calls `each` with the installed apps whose names come after `after`, in `/Applications`'
+/// order: with `limit`, only the next `limit` of them by name, and then the name the page ended
+/// with when more follow, the next page's cursor (D164).
+pub fn for_each_installed_page(
+    files: &mut impl Files,
+    limit: Option<usize>,
+    after: Option<&[u8]>,
+    mut each: impl FnMut(&Manifest<'_>),
+) -> Result<Option<Name>, Errno> {
+    let comes_after = |name: &str| after.is_none_or(|after| name.as_bytes() > after);
+    let Some(limit) = limit else {
+        for_each_installed(files, |app| {
+            if comes_after(app.name) {
+                each(app);
+            }
+        })?;
+        return Ok(None);
+    };
+    let mut page = Smallest::<NAME_KEY_BYTES, PAGE_SLOTS>::new(limit);
+    for_each_installed(files, |app| {
+        if comes_after(app.name) {
+            page.offer(app.name.as_bytes());
+        }
+    })?;
+    for_each_installed(files, |app| {
+        if page.holds(app.name.as_bytes()) {
+            each(app);
+        }
+    })?;
+    Ok(page.last().filter(|_| page.more()).map(Name::new))
 }
 
 const _: () = assert!(

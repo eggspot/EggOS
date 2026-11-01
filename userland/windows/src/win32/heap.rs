@@ -2,7 +2,9 @@
 //! size classes, each class a free list, carved from 1 MiB chunks; larger blocks are mappings
 //! of their own. Every block starts with a 16-byte header holding its class and the size asked
 //! for, so blocks stay 16-byte aligned as Windows' are, and a pointer the heap did not hand out
-//! is refused instead of corrupting it. No system call on the common path.
+//! is refused instead of corrupting it. No system call on the common path. Its size classes
+//! make it what `HeapQueryInformation` calls a low-fragmentation heap (D178). On aarch64 it is
+//! also the layer's own allocator, which the translator of x64 programs needs (D191).
 
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail};
 use crate::library::Export;
@@ -176,12 +178,8 @@ pub unsafe fn free(pointer: *mut u8) {
 }
 
 const LMEM_ZEROINIT: u32 = 0x40;
-const LMEM_MOVEABLE: u32 = 0x2;
 
 extern "efiapi" fn local_alloc(flags: u32, size: usize) -> *mut u8 {
-    if flags & LMEM_MOVEABLE != 0 {
-        return fail(error::NOT_SUPPORTED, ptr::null_mut());
-    }
     let block = allocate_with(size, flags & LMEM_ZEROINIT != 0);
     if block.is_null() {
         return fail(error::NOT_ENOUGH_MEMORY, block);
@@ -200,6 +198,52 @@ unsafe extern "efiapi" fn local_free(pointer: *mut u8) -> *mut u8 {
             ptr::null_mut()
         }
         None => fail(error::INVALID_HANDLE, pointer),
+    }
+}
+
+/// The UTF-16 units a `GlobalAlloc` block holds, as many as its size allows; empty for a
+/// pointer that is not one of this heap's blocks.
+///
+/// # Safety
+/// `memory` is null or a block this heap returned and has not freed, which nothing writes
+/// while the slice lives.
+pub unsafe fn global_units<'a>(memory: *mut u8) -> &'a [u16] {
+    // SAFETY: the caller's duty, as `block_of`'s.
+    match unsafe { block_of(memory) } {
+        Some(block) if (memory as usize).is_multiple_of(2) => {
+            // SAFETY: the block holds `size` bytes from `memory`, which the caller keeps alive
+            // and unwritten.
+            unsafe { core::slice::from_raw_parts(memory.cast::<u16>(), block.size / 2) }
+        }
+        _ => &[],
+    }
+}
+
+unsafe extern "efiapi" fn global_lock(memory: *mut u8) -> *mut u8 {
+    // SAFETY: `GlobalLock`'s contract: a block `GlobalAlloc` returned, moveable ones included,
+    // whose handle is the block itself.
+    match unsafe { block_of(memory) } {
+        Some(_) => memory,
+        None => fail(error::INVALID_HANDLE, ptr::null_mut()),
+    }
+}
+
+unsafe extern "efiapi" fn global_unlock(memory: *mut u8) -> Bool {
+    // SAFETY: as `GlobalLock`.
+    match unsafe { block_of(memory) } {
+        Some(_) => {
+            super::thread_environment::set_last_error(error::SUCCESS);
+            FALSE
+        }
+        None => fail(error::INVALID_HANDLE, FALSE),
+    }
+}
+
+unsafe extern "efiapi" fn global_size(memory: *mut u8) -> usize {
+    // SAFETY: as `GlobalLock`.
+    match unsafe { block_of(memory) } {
+        Some(block) => block.size,
+        None => fail(error::INVALID_HANDLE, 0),
     }
 }
 
@@ -286,6 +330,31 @@ extern "efiapi" fn heap_destroy(_heap: usize) -> Bool {
     TRUE
 }
 
+const HEAP_COMPATIBILITY_INFORMATION: u32 = 0;
+const LOW_FRAGMENTATION_HEAP: u32 = 2;
+
+unsafe extern "efiapi" fn heap_query_information(
+    _heap: usize,
+    class: u32,
+    information: *mut u32,
+    length: usize,
+    returned: *mut usize,
+) -> Bool {
+    if class != HEAP_COMPATIBILITY_INFORMATION {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    if !returned.is_null() {
+        // SAFETY: the caller passes a writable `SIZE_T`.
+        unsafe { returned.write(core::mem::size_of::<u32>()) };
+    }
+    if information.is_null() || length < core::mem::size_of::<u32>() {
+        return fail(error::INSUFFICIENT_BUFFER, FALSE);
+    }
+    // SAFETY: the caller passes `length` writable bytes, at least a `ULONG`.
+    unsafe { information.write_unaligned(LOW_FRAGMENTATION_HEAP) };
+    TRUE
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"GetProcessHeap" => get_process_heap,
     b"HeapAlloc" => heap_alloc,
@@ -294,8 +363,51 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"HeapReAlloc" => heap_realloc,
     b"HeapCreate" => heap_create,
     b"HeapDestroy" => heap_destroy,
+    b"HeapQueryInformation" => heap_query_information,
     b"LocalAlloc" => local_alloc,
     b"LocalFree" => local_free,
     b"GlobalAlloc" => local_alloc,
     b"GlobalFree" => local_free,
+    b"GlobalLock" => global_lock,
+    b"LocalLock" => global_lock,
+    b"GlobalUnlock" => global_unlock,
+    b"LocalUnlock" => global_unlock,
+    b"GlobalSize" => global_size,
+    b"LocalSize" => global_size,
 ];
+
+#[cfg(target_env = "musl")]
+mod layer_allocator {
+    use core::alloc::{GlobalAlloc, Layout};
+
+    const BLOCK_ALIGNMENT: usize = 16;
+
+    struct ProcessHeap;
+
+    // SAFETY: every block comes from the process heap, aligned to 16 bytes, and is handed out
+    // once until it is given back; larger alignments are refused with null.
+    unsafe impl GlobalAlloc for ProcessHeap {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            match layout.align() <= BLOCK_ALIGNMENT {
+                true => super::allocate_with(layout.size(), false),
+                false => core::ptr::null_mut(),
+            }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            match layout.align() <= BLOCK_ALIGNMENT {
+                true => super::allocate(layout.size()),
+                false => core::ptr::null_mut(),
+            }
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, _layout: Layout) {
+            // SAFETY: `GlobalAlloc`'s contract: a block this allocator returned, which nothing
+            // uses any more.
+            unsafe { super::free(pointer) }
+        }
+    }
+
+    #[global_allocator]
+    static LAYER_HEAP: ProcessHeap = ProcessHeap;
+}

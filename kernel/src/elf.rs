@@ -50,6 +50,8 @@ pub const PROGRAM_HEADER_SIZE: usize = 56;
 /// The most program headers accepted: a page of them, as Linux allows, so a hostile count
 /// cannot make the loader walk far (this also refuses `PN_XNUM`'s extended count).
 pub const MAX_PROGRAM_HEADERS: u16 = (4096 / PROGRAM_HEADER_SIZE) as u16;
+/// The longest interpreter path accepted, its NUL included: Linux's `PATH_MAX`.
+pub const MAX_INTERPRETER_PATH: u64 = 4096;
 
 /// What kind of file an image is (`e_type`), of the kinds a loader runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +166,30 @@ impl<'a> Elf<'a> {
     /// How many program headers there are (`e_phnum`), at least one.
     pub fn program_header_count(&self) -> u16 {
         self.program_header_count
+    }
+
+    /// The path of the program's interpreter, its dynamic loader (`PT_INTERP`, D167), without
+    /// its NUL, if it names one: the first such header's bytes, which must lie within the
+    /// image, be from 2 to [`MAX_INTERPRETER_PATH`] bytes long and end with a NUL, as Linux
+    /// requires. The path ends at its first NUL.
+    pub fn interpreter(&self) -> Result<Option<&'a [u8]>, InvalidElf> {
+        let Some(header) = self
+            .program_headers()
+            .find(|header| header.kind == segment::INTERP)
+        else {
+            return Ok(None);
+        };
+        if !(2..=MAX_INTERPRETER_PATH).contains(&header.file_size) {
+            return Err(InvalidElf("an interpreter path of a length Linux refuses"));
+        }
+        let bytes = header
+            .file_bytes(self.image)
+            .ok_or(InvalidElf("the interpreter path is not within the image"))?;
+        if bytes.last() != Some(&0) {
+            return Err(InvalidElf("an interpreter path without its NUL"));
+        }
+        let end = bytes.iter().position(|&byte| byte == 0).unwrap_or(0);
+        Ok(Some(&bytes[..end]))
     }
 
     /// The program headers, in the image's order (for `LOAD` segments, ascending addresses).
@@ -316,6 +342,46 @@ mod tests {
         // Past the end, overflowing: not within the image.
         assert_eq!(load(0x1010, 0, 9, 9).file_bytes(&image), None);
         assert_eq!(load(u64::MAX, 0, 2, 2).file_bytes(&image), None);
+    }
+
+    fn with_interpreter(path: &[u8]) -> Vec<u8> {
+        let interp = ProgramHeader {
+            kind: segment::INTERP,
+            flags: segment::READ,
+            offset: 0x2000,
+            virt: 0x40_2000,
+            file_size: path.len() as u64,
+            memory_size: path.len() as u64,
+            align: 1,
+        };
+        build::image(
+            3,
+            machine::NATIVE,
+            0x1000,
+            &[interp, load(0, 0x40_0000, 0x1010, 0x1010)],
+            &[(0x2000, path)],
+        )
+    }
+
+    #[test]
+    fn the_interpreter_path_is_read_as_linux_reads_it() {
+        let image = sample();
+        let elf = Elf::parse(&image, machine::NATIVE).unwrap();
+        assert_eq!(elf.interpreter(), Ok(None));
+        let image = with_interpreter(b"/lib/ld-musl-x86_64.so.1\0");
+        let elf = Elf::parse(&image, machine::NATIVE).unwrap();
+        assert_eq!(
+            elf.interpreter(),
+            Ok(Some(&b"/lib/ld-musl-x86_64.so.1"[..]))
+        );
+        let image = with_interpreter(b"/lib/ld\0junk\0");
+        let elf = Elf::parse(&image, machine::NATIVE).unwrap();
+        assert_eq!(elf.interpreter(), Ok(Some(&b"/lib/ld"[..])));
+        for refused in [&b"/lib/ld"[..], b"\0", &[b'a'; 4096][..]] {
+            let image = with_interpreter(refused);
+            let elf = Elf::parse(&image, machine::NATIVE).unwrap();
+            assert!(elf.interpreter().is_err(), "{refused:?}");
+        }
     }
 
     #[test]

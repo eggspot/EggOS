@@ -1,6 +1,9 @@
 use super::*;
 use crate::path::Kind;
+use crate::test::FileType;
 use std::collections::{BTreeSet, HashMap, VecDeque};
+
+const FIRST_FORK: i32 = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Started {
@@ -31,6 +34,29 @@ struct FakeSystem {
     pipes: Vec<(usize, usize)>,
     waited: Vec<i32>,
     terminal_taken_back: usize,
+    stops: HashMap<String, i32>,
+    stopped: BTreeSet<i32>,
+    finished: BTreeSet<i32>,
+    reaped: BTreeSet<i32>,
+    kills: Vec<(i32, u8)>,
+    given: Vec<i32>,
+    history_files: Vec<Option<String>>,
+    forks: Vec<Group>,
+    fork_as_child: bool,
+    fork_statuses: HashMap<i32, i32>,
+    substitution_outputs: VecDeque<Vec<u8>>,
+    ended_subshells: Vec<i32>,
+    documents: Vec<Vec<u8>>,
+}
+
+impl FakeSystem {
+    fn final_status(&self, child: i32) -> i32 {
+        if child >= FIRST_FORK {
+            return self.fork_statuses.get(&child).copied().unwrap_or(0);
+        }
+        let program = &self.ran[(child - 100) as usize].program;
+        self.statuses.get(program).copied().unwrap_or(0)
+    }
 }
 
 impl FakeSystem {
@@ -97,6 +123,83 @@ impl System for FakeSystem {
         }
     }
 
+    fn read_data(&mut self, descriptor: usize, buffer: &mut [u8]) -> Read {
+        match self.open.contains_key(&descriptor) || descriptor == 0 {
+            true => self.read(descriptor, buffer),
+            false => Read::End,
+        }
+    }
+
+    fn document(&mut self, contents: &[u8]) -> Result<usize, Errno> {
+        let descriptor = self.descriptor();
+        self.documents.push(contents.to_vec());
+        self.open
+            .insert(descriptor, contents.iter().copied().collect());
+        Ok(descriptor)
+    }
+
+    fn fork(&mut self, group: Group) -> Result<Forked, Errno> {
+        self.forks.push(group);
+        if std::mem::take(&mut self.fork_as_child) {
+            return Ok(Forked::Child);
+        }
+        if let Some(output) = self.substitution_outputs.pop_front() {
+            let (read, _) = *self.pipes.last().unwrap();
+            self.open.insert(read, output.into_iter().collect());
+        }
+        Ok(Forked::Parent(FIRST_FORK + self.forks.len() as i32 - 1))
+    }
+
+    fn end_subshell(&mut self, status: i32) {
+        self.ended_subshells.push(status);
+    }
+
+    fn read_directory(&mut self, path: &[u8], each: &mut dyn FnMut(&[u8])) -> Result<(), Errno> {
+        let directory = match text(path) {
+            dot if dot == "." => self.working_directory.clone(),
+            other if other.len() > 1 => other.trim_end_matches('/').to_owned(),
+            other => other,
+        };
+        if self.kind(format!("{directory}\0").as_bytes()) != Kind::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+        let prefix = format!("{}/", directory.trim_end_matches('/'));
+        for (name, _) in &self.files {
+            if let Some(rest) = name.strip_prefix(&prefix)
+                && !rest.is_empty()
+                && !rest.contains('/')
+            {
+                each(rest.as_bytes());
+            }
+        }
+        Ok(())
+    }
+
+    fn file_status(&mut self, path: &[u8], _follow: bool) -> Option<FileStatus> {
+        let size = self.contents.get(&text(path)).map_or(1, Vec::len) as u64;
+        let file_type = match self.kind(path) {
+            Kind::Missing => return None,
+            Kind::Directory => FileType::Directory,
+            Kind::Executable | Kind::NotExecutable => FileType::Regular,
+        };
+        Some(FileStatus {
+            file_type,
+            size,
+            mode: 0o755,
+        })
+    }
+
+    fn accessible(&mut self, path: &[u8], access: Access) -> bool {
+        !matches!(
+            (self.kind(path), access),
+            (Kind::Missing, _) | (Kind::NotExecutable, Access::Execute)
+        )
+    }
+
+    fn is_terminal(&mut self, _descriptor: usize) -> bool {
+        false
+    }
+
     fn open(&mut self, path: &[u8]) -> Result<usize, Errno> {
         let content = self.contents.get(&text(path)).ok_or(Errno::ENOENT)?.clone();
         let descriptor = self.descriptor();
@@ -120,6 +223,10 @@ impl System for FakeSystem {
             return Err(Errno(30));
         }
         let descriptor = self.descriptor();
+        if redirection == Redirection::Input {
+            let content = self.contents[&path].iter().copied().collect();
+            self.open.insert(descriptor, content);
+        }
         self.redirected.push((path, redirection, descriptor));
         Ok(descriptor)
     }
@@ -130,14 +237,56 @@ impl System for FakeSystem {
         Ok(ends)
     }
 
-    fn wait(&mut self, child: i32) -> Result<i32, Errno> {
-        self.waited.push(child);
-        let program = &self.ran[(child - 100) as usize].program;
-        Ok(self.statuses.get(program).copied().unwrap_or(0))
+    fn wait(&mut self, child: i32, how: Wait) -> Result<Option<(i32, i32)>, Errno> {
+        match how {
+            Wait::Block => {
+                self.waited.push(child);
+                if child >= FIRST_FORK {
+                    assert!(self.reaped.insert(child), "{child} waited for twice");
+                    return Ok(Some((child, self.final_status(child))));
+                }
+                let program = self.ran[(child - 100) as usize].program.clone();
+                if let Some(&stop) = self.stops.get(&program)
+                    && self.stopped.insert(child)
+                {
+                    return Ok(Some((child, stop)));
+                }
+                assert!(self.reaped.insert(child), "{child} waited for twice");
+                Ok(Some((child, self.final_status(child))))
+            }
+            Wait::Poll => {
+                let Some(child) = self
+                    .finished
+                    .iter()
+                    .copied()
+                    .find(|child| !self.reaped.contains(child))
+                else {
+                    return Ok(None);
+                };
+                self.reaped.insert(child);
+                Ok(Some((child, self.final_status(child))))
+            }
+        }
     }
 
     fn take_back_terminal(&mut self) {
         self.terminal_taken_back += 1;
+    }
+
+    fn give_terminal(&mut self, group: i32) {
+        self.given.push(group);
+    }
+
+    fn kill(&mut self, target: i32, signal: u8) -> Result<(), Errno> {
+        if target == 404 {
+            return Err(Errno::ESRCH);
+        }
+        self.kills.push((target, signal));
+        Ok(())
+    }
+
+    fn keep_history_in(&mut self, file: Option<&[u8]>) {
+        self.history_files.push(file.map(text));
     }
 
     fn change_directory(&mut self, path: &[u8]) -> Result<(), Errno> {
@@ -181,7 +330,7 @@ impl System for FakeSystem {
                 .all(|variable| variable.last() == Some(&0))
         );
         let program = text(program);
-        for descriptor in [streams.input, streams.output] {
+        for descriptor in [streams.input, streams.output, streams.error] {
             assert!(descriptor < 3 || self.live.contains(&descriptor));
         }
         if let Some(error) = self.run_error {
@@ -206,6 +355,7 @@ fn system() -> FakeSystem {
             ("/bin", Kind::Directory),
             ("/home", Kind::Directory),
             ("/bin/ls", Kind::Executable),
+            ("/bin/help", Kind::Executable),
             ("/bin/fail", Kind::Executable),
             ("/bin/notes", Kind::NotExecutable),
             ("/usr/bin/tool", Kind::Executable),
@@ -222,7 +372,7 @@ fn system() -> FakeSystem {
 const ARGUMENTS: [&[u8]; 3] = [b"script", b"one", b"two words"];
 
 fn shell(interactive: bool) -> Shell<'static, FakeSystem> {
-    let mut shell = Shell::new(system(), 42, &ARGUMENTS, 3, interactive, true);
+    let mut shell = Shell::new(system(), 42, &ARGUMENTS, interactive, true);
     shell.import(b"HOME=/home");
     shell.import(b"PATH=/bin:/usr/bin");
     shell.import(b"TERM=linux");
@@ -388,14 +538,20 @@ fn type_says_what_a_name_runs() {
 
 #[test]
 fn unsupported_operators_reject_the_whole_line_and_end_a_script() {
-    let shell = run("echo first\necho ran; ls || wc\necho never");
+    let shell = run("echo first\necho ran; echo $((1 + 2))\necho never");
     assert_eq!(output(&shell), "first\n");
-    assert_eq!(errors(&shell), "eggsh: `||` is not supported yet\n");
+    assert_eq!(errors(&shell), "eggsh: `$((` is not supported yet\n");
     assert_eq!(shell.exit_status(), 2);
-    let mut interactive = shell_with_input(true, &["echo a << f\n", "echo next\n"]);
+    let shell = run("ls (wc)");
+    assert_eq!(
+        errors(&shell),
+        "eggsh: syntax error near unexpected token `(`\n"
+    );
+    assert!(shell.system.ran.is_empty());
+    let mut interactive = shell_with_input(true, &["echo a &> f\n", "echo next\n"]);
     interactive.run_descriptor(0, true);
     assert_eq!(output(&interactive), "next\n");
-    assert!(errors(&interactive).contains("eggsh: `<<` is not supported yet\n"));
+    assert!(errors(&interactive).contains("eggsh: `&>` is not supported yet\n"));
     assert!(interactive.system.ran.is_empty());
 }
 
@@ -418,21 +574,24 @@ fn a_pipeline_s_programs_start_together_piped_and_its_status_is_the_last_one_s()
         ran[0].streams,
         Streams {
             input: 0,
-            output: pipes[0].1
+            output: pipes[0].1,
+            error: 2
         }
     );
     assert_eq!(
         ran[1].streams,
         Streams {
             input: pipes[0].0,
-            output: pipes[1].1
+            output: pipes[1].1,
+            error: 2
         }
     );
     assert_eq!(
         ran[2].streams,
         Streams {
             input: pipes[1].0,
-            output: 1
+            output: 1,
+            error: 2
         }
     );
     assert_eq!(ran[2].program, "/usr/bin/tool");
@@ -492,7 +651,8 @@ fn redirections_open_their_files_for_builtins_and_programs() {
         ls.streams,
         Streams {
             input: redirected[2].2,
-            output: redirected[3].2
+            output: redirected[3].2,
+            error: 2
         }
     );
     assert_eq!(shell.system.ran[1].streams.input, shell.system.pipes[0].0);
@@ -520,7 +680,7 @@ fn syntax_errors_are_reported() {
             "syntax error: unexpected end of file, looking for the closing `}`",
         ),
         ("; echo", "syntax error near unexpected token `;`"),
-        ("echo ${A:-b}", "bad substitution"),
+        ("echo ${A:}", "bad substitution"),
     ] {
         let shell = run(script);
         assert_eq!(errors(&shell), format!("eggsh: {message}\n"), "{script}");
@@ -575,7 +735,7 @@ fn the_prompt_follows_ps1_and_the_user() {
     let mut shell = shell_with_input(true, &["PS1='> $ '\n"]);
     shell.run_descriptor(0, true);
     assert_eq!(errors(&shell), "eggsh:/# > $ exit\n");
-    let mut user = Shell::new(system(), 1, &ARGUMENTS, 3, true, false);
+    let mut user = Shell::new(system(), 1, &ARGUMENTS, true, false);
     user.set_working_directory_variable();
     user.run_descriptor(0, true);
     assert_eq!(errors(&user), "eggsh:/$ exit\n");
@@ -583,7 +743,7 @@ fn the_prompt_follows_ps1_and_the_user() {
 
 #[test]
 fn a_line_too_long_is_refused_and_the_shell_goes_on() {
-    let long = format!("echo {}\n", "x".repeat(LINE_CAPACITY));
+    let long = format!("# {}\n", "x".repeat(LINE_CAPACITY));
     let mut shell = shell_with_input(true, &[&long, "echo ok\n"]);
     shell.run_descriptor(0, true);
     assert_eq!(output(&shell), "ok\n");
@@ -632,7 +792,19 @@ fn a_file_read_in_pieces_runs_each_command_once() {
 #[test]
 fn help_lists_the_builtins() {
     let shell = run("help");
-    assert!(output(&shell).contains("Builtins: . (source) : cd echo exit"));
+    assert!(output(&shell).contains("Builtins: . (source) : [ bg break cd continue echo eval"));
+    assert!(output(&shell).contains("fg help jobs kill"));
+}
+
+#[test]
+fn help_with_words_runs_the_commands_help() {
+    let shell = run("help ls\nhelp --json");
+    let ran = &shell.system.ran;
+    assert_eq!(ran.len(), 2);
+    assert_eq!(ran[0].program, "/bin/help");
+    assert_eq!(ran[0].arguments, ["help", "ls"]);
+    assert_eq!(ran[1].arguments, ["help", "--json"]);
+    assert!(output(&shell).is_empty());
 }
 
 #[test]
@@ -643,14 +815,17 @@ fn cd_from_a_working_directory_longer_than_a_path_keeps_the_shell_alive() {
     ));
     assert_eq!(output(&shell), "1 [] /\n");
     assert_eq!(errors(&shell), "eggsh: cd: too many variables\n");
-    let mut imported = Shell::new(system(), 1, &ARGUMENTS, 3, false, true);
+    let mut imported = Shell::new(system(), 1, &ARGUMENTS, false, true);
     imported.import(format!("PWD=/{}", "p".repeat(PATH_CAPACITY + 10)).as_bytes());
     imported.run_text(b"cd /bin; echo $? $PWD \"[$OLDPWD]\"");
     assert_eq!(output(&imported), "1 /bin []\n");
 }
 
 fn long_quoted_line() -> String {
-    format!("echo 'start\n{}\nls\n'\necho after\n", "y".repeat(5000))
+    format!(
+        "echo 'start\n{}\nls\n'\necho after\n",
+        "y".repeat(LINE_CAPACITY + 1000)
+    )
 }
 
 #[test]
@@ -691,3 +866,265 @@ fn a_refused_line_is_skipped_up_to_the_end_of_its_quote() {
     assert!(shell.system.ran.is_empty());
     assert_eq!(output(&shell), "after\n");
 }
+
+#[test]
+fn an_interactive_shell_goes_home_and_writes_the_welcome_before_its_first_prompt() {
+    let welcome = b"Welcome to EggOS. Type help. Apps: the egg, or Super.\n";
+    let mut interactive = shell(true);
+    interactive
+        .system
+        .contents
+        .insert("/etc/motd".to_owned(), welcome.to_vec());
+    interactive.greet();
+    assert_eq!(interactive.system.working_directory, "/home");
+    assert_eq!(output(&interactive).as_bytes(), welcome);
+    let mut script = shell(false);
+    script
+        .system
+        .contents
+        .insert("/etc/motd".to_owned(), welcome.to_vec());
+    script.greet();
+    assert_eq!(script.system.working_directory, "/");
+    assert_eq!(output(&script), "");
+}
+
+#[test]
+fn and_and_or_run_the_next_pipeline_by_the_last_status() {
+    let shell = run(
+        "true && echo a; false && echo b; false || echo c; true || echo d\n\
+         false && echo e || echo f; fail && echo g; echo $?",
+    );
+    assert_eq!(output(&shell), "a\nc\nf\n3\n");
+    assert_eq!(
+        shell.system.ran.len(),
+        1,
+        "only fail ran: echo is a builtin"
+    );
+}
+
+#[test]
+fn a_background_pipeline_is_a_job_and_dollar_bang_its_last_program() {
+    let mut shell = shell(false);
+    shell
+        .system
+        .contents
+        .insert("/dev/null".to_owned(), Vec::new());
+    shell.run_text(b"echo [$!]; ls | tool & echo $! $?; wait $!; echo $?; fail & wait %1; echo $?");
+    assert_eq!(output(&shell), "[]\n101 0\n0\n3\n");
+    let null = shell
+        .system
+        .redirected
+        .iter()
+        .find(|(path, ..)| path == "/dev/null")
+        .map(|&(_, redirection, descriptor)| (redirection, descriptor))
+        .unwrap();
+    assert_eq!(null.0, Redirection::Input);
+    assert_eq!(shell.system.ran[0].streams.input, null.1);
+    assert!(
+        shell.system.ran.iter().all(|ran| ran.group == Group::Shell),
+        "no job control in a script"
+    );
+    assert_eq!(errors(&shell), "", "no job reports in a script");
+    all_closed(&shell);
+}
+
+#[test]
+fn an_interactive_background_job_leads_a_group_of_its_own_and_is_announced() {
+    let mut shell = shell_with_input(true, &["ls | tool &\n", "jobs\n", "jobs -p\n"]);
+    shell.run_descriptor(0, true);
+    let groups: Vec<Group> = shell.system.ran.iter().map(|ran| ran.group).collect();
+    assert_eq!(groups, [Group::Background, Group::Join(100)]);
+    assert!(errors(&shell).contains("[1] 101\n"));
+    assert_eq!(
+        output(&shell),
+        "[1]+  Running                 ls | tool &\n101\n"
+    );
+    assert_eq!(shell.system.terminal_taken_back, 0);
+    assert_eq!(shell.system.ran[0].streams.input, 0);
+}
+
+#[test]
+fn a_job_done_in_the_background_is_reported_before_the_next_prompt() {
+    let mut shell = shell_with_input(true, &["tool &\n", "echo next\n"]);
+    shell.system.finished.insert(100);
+    shell
+        .system
+        .statuses
+        .insert("/usr/bin/tool".to_owned(), 3 << 8);
+    shell.run_descriptor(0, true);
+    let errors = errors(&shell);
+    assert!(errors.contains("[1] 100\n"));
+    assert!(errors.contains("[1]+  Exit 3                  tool\n"));
+    assert_eq!(output(&shell), "next\n");
+}
+
+#[test]
+fn a_stopped_program_becomes_a_job_that_bg_and_fg_continue() {
+    let mut shell = shell_with_input(
+        true,
+        &[
+            "ls -l\n",
+            "echo $?\n",
+            "jobs\n",
+            "bg\n",
+            "fg\n",
+            "echo $?\n",
+        ],
+    );
+    shell.system.stops.insert("/bin/ls".to_owned(), 0x147f);
+    shell.run_descriptor(0, true);
+    assert!(errors(&shell).contains("\n[1]+  Stopped                 ls -l\n"));
+    assert_eq!(
+        output(&shell),
+        "148\n[1]+  Stopped                 ls -l\n[1]+ ls -l &\nls -l\n0\n"
+    );
+    assert_eq!(shell.system.kills, [(-100, 18)]);
+    assert_eq!(shell.system.given, [100]);
+    assert_eq!(shell.system.terminal_taken_back, 2);
+    assert_eq!(shell.system.waited, [100, 100]);
+}
+
+#[test]
+fn fg_continues_a_stopped_job_its_number_names() {
+    let mut shell = shell_with_input(true, &["ls\n", "fg %1\n", "echo $?\n"]);
+    shell.system.stops.insert("/bin/ls".to_owned(), 0x167f);
+    shell.run_descriptor(0, true);
+    assert_eq!(output(&shell), "ls\n0\n");
+    assert_eq!(shell.system.kills, [(-100, 18)]);
+    assert!(errors(&shell).contains("[1]+  Stopped (tty output)    ls\n"));
+}
+
+#[test]
+fn exit_with_stopped_jobs_warns_once_first() {
+    let mut shell = shell_with_input(true, &["ls\n", "exit\n", "exit 4\n"]);
+    shell.system.stops.insert("/bin/ls".to_owned(), 0x147f);
+    shell.run_descriptor(0, true);
+    assert_eq!(
+        errors(&shell).matches("There are stopped jobs.\n").count(),
+        1
+    );
+    assert_eq!(shell.exit_status(), 4);
+    let mut shell = shell_with_input(true, &["ls\n"]);
+    shell.system.stops.insert("/bin/ls".to_owned(), 0x147f);
+    shell.run_descriptor(0, true);
+    let errors = errors(&shell);
+    assert_eq!(errors.matches("There are stopped jobs.\n").count(), 1);
+    assert!(errors.ends_with("exit\n"), "a second ^D leaves");
+}
+
+#[test]
+fn kill_and_wait_reach_jobs_and_processes() {
+    let mut shell = shell(false);
+    shell
+        .system
+        .contents
+        .insert("/dev/null".to_owned(), Vec::new());
+    shell.system.statuses.insert("/bin/ls".to_owned(), 15);
+    shell.run_text(
+        b"ls & kill %1; wait %1; echo $?; kill -9 77; kill -s HUP 78; kill -KILL -- -79\n\
+          kill -l; kill %3; echo $?; kill 404; echo $?; wait 999; echo $?; kill; echo $?",
+    );
+    assert_eq!(
+        output(&shell),
+        "143\nHUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM STKFLT \
+         CHLD CONT STOP TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH IO PWR SYS\n1\n1\n127\n2\n"
+    );
+    assert_eq!(shell.system.kills, [(100, 15), (77, 9), (78, 1), (-79, 9)]);
+    let errors = errors(&shell);
+    assert!(errors.contains("eggsh: kill: %3: no such job\n"));
+    assert!(errors.contains("eggsh: kill: (404) - No such process\n"));
+    assert!(errors.contains("eggsh: wait: pid 999 is not a child of this shell\n"));
+}
+
+#[test]
+fn a_stopped_job_killed_is_continued_to_take_the_signal() {
+    let mut shell = shell_with_input(true, &["ls\n", "kill %ls\n", "kill -CONT %1\n"]);
+    shell.system.stops.insert("/bin/ls".to_owned(), 0x147f);
+    shell.run_descriptor(0, true);
+    assert_eq!(shell.system.kills, [(-100, 15), (-100, 18), (-100, 18)]);
+}
+
+#[test]
+fn fg_and_bg_need_job_control_and_a_job() {
+    let shell = run("fg; echo $?; bg %2; echo $?");
+    assert_eq!(output(&shell), "1\n1\n");
+    assert_eq!(
+        errors(&shell),
+        "eggsh: fg: no job control\neggsh: bg: no job control\n"
+    );
+    let mut shell = shell_with_input(true, &["fg\n", "bg %2\n", "jobs -x\n"]);
+    shell.run_descriptor(0, true);
+    let errors = errors(&shell);
+    assert!(errors.contains("eggsh: fg: current: no such job\n"));
+    assert!(errors.contains("eggsh: bg: %2: no such job\n"));
+    assert!(errors.contains("eggsh: jobs: -x: invalid option\n"));
+}
+
+#[test]
+fn errors_go_to_files_and_to_the_output_as_redirected() {
+    let mut shell = shell(false);
+    shell.run_text(
+        b"ls 2> /tmp/e; ls > /tmp/o 2>&1; ls 2>&1 > /tmp/p; cd /missing 2> /tmp/c\n\
+          echo out >&2; ls 3> /tmp/f; echo $?",
+    );
+    let redirected = shell.system.redirected.clone();
+    let opened = |path: &str| {
+        redirected
+            .iter()
+            .find(|(name, ..)| name == path)
+            .map(|&(.., descriptor)| descriptor)
+            .unwrap()
+    };
+    let ran = &shell.system.ran;
+    assert_eq!(ran.len(), 3);
+    assert_eq!(
+        ran[0].streams,
+        Streams {
+            input: 0,
+            output: 1,
+            error: opened("/tmp/e")
+        }
+    );
+    assert_eq!(
+        ran[1].streams,
+        Streams {
+            input: 0,
+            output: opened("/tmp/o"),
+            error: opened("/tmp/o")
+        }
+    );
+    assert_eq!(
+        ran[2].streams,
+        Streams {
+            input: 0,
+            output: opened("/tmp/p"),
+            error: 1
+        }
+    );
+    assert_eq!(
+        shell.system.written.get(&opened("/tmp/c")).unwrap(),
+        b"eggsh: cd: /missing: No such file or directory\n"
+    );
+    assert_eq!(output(&shell), "1\n");
+    assert_eq!(
+        errors(&shell),
+        "out\neggsh: 3: only descriptors 0, 1 and 2 can be redirected yet\n"
+    );
+    assert!(redirected.iter().all(|(path, ..)| path != "/tmp/f"));
+    all_closed(&shell);
+}
+
+#[test]
+fn an_interactive_shell_names_its_history_file_before_each_prompt() {
+    let mut shell = shell_with_input(true, &["echo hi\n", "HISTFILE=\n"]);
+    shell.greet();
+    shell.run_descriptor(0, true);
+    let kept = Some("/home/.eggsh_history".to_owned());
+    assert_eq!(
+        shell.system.history_files,
+        [kept.clone(), kept, Some(String::new())]
+    );
+    assert!(run("echo x").system.history_files.is_empty());
+}
+
+mod language;

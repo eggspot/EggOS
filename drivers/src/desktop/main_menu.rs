@@ -405,6 +405,9 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) -> Result<(), WindowError> {
         let slot = self.any_window(window)?;
+        if self.window_at(slot).takes_person_input_only() {
+            return Err(WindowError::NotAllowed);
+        }
         if self.person_is_active() {
             return Err(WindowError::Busy);
         }

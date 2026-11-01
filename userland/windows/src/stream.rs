@@ -333,6 +333,13 @@ impl<B: Backing> Stream<B> {
         }
     }
 
+    /// Changes when written bytes leave the buffer (`setvbuf`), writing out what it holds first.
+    pub fn set_buffering(&mut self, buffering: Buffering) -> Result<(), u16> {
+        self.flush_output()?;
+        self.buffering = buffering;
+        Ok(())
+    }
+
     /// Moves to `offset` from `origin` (`fseek`), counting the file's own bytes.
     pub fn seek(&mut self, offset: i64, origin: Origin) -> Result<(), u16> {
         let ahead = match self.direction {
@@ -651,6 +658,17 @@ mod tests {
         let mut large = stream(b"", "wb");
         assert_eq!(large.write(&vec![7u8; BUFFER_SIZE * 2]), BUFFER_SIZE * 2);
         assert_eq!(large.backing().bytes.len(), BUFFER_SIZE * 2);
+    }
+
+    #[test]
+    fn changing_the_buffering_writes_out_what_the_buffer_holds() {
+        let mut output = stream(b"", "wb");
+        output.write(b"held");
+        assert_eq!(output.backing().writes, 0);
+        assert_eq!(output.set_buffering(Buffering::None), Ok(()));
+        assert_eq!(output.backing().bytes, b"held");
+        output.write(b"!");
+        assert_eq!(output.backing().bytes, b"held!");
     }
 
     #[test]

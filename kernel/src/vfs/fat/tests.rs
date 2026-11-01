@@ -969,3 +969,69 @@ fn corrupt_volumes_never_panic() {
         }
     }
 }
+
+fn point_fat_entry(image: &mut Image, layout: &Layout, cluster: u32, value: u32) {
+    let base = layout.fat_start;
+    match layout.fat_type {
+        FatType::Fat12 => {
+            let at = base + u64::from(cluster) + u64::from(cluster / 2);
+            let old = u16::from_le_bytes([image.get(at), image.get(at + 1)]);
+            let value = (value & 0xfff) as u16;
+            let new = if cluster % 2 == 1 {
+                (old & 0x000f) | (value << 4)
+            } else {
+                (old & 0xf000) | value
+            };
+            image.put(at, &new.to_le_bytes());
+        }
+        FatType::Fat16 => image.put(base + 2 * u64::from(cluster), &(value as u16).to_le_bytes()),
+        FatType::Fat32 => image.put(
+            base + 4 * u64::from(cluster),
+            &(value & 0x0fff_ffff).to_le_bytes(),
+        ),
+    }
+}
+
+#[test]
+fn a_cluster_chain_that_loops_back_is_an_io_error() {
+    for fat_type in [FatType::Fat12, FatType::Fat16, FatType::Fat32] {
+        let pristine =
+            Builder::new(&Format::of(fat_type)).build(&[file("loop.bin", &pattern(20 * 512, 9))]);
+        let fat = mounted_with(pristine.clone(), &Probes::default());
+        let layout = fat.layout;
+        let node = path(fat, "/loop.bin");
+        let (first, third) = {
+            let mut volume = fat.volume.lock();
+            let (_, _, entry) = volume.entry_of(&layout, node.id()).unwrap().unwrap();
+            let first = entry.first_cluster(layout.fat_type);
+            let second = volume.next_cluster(&layout, first).unwrap().unwrap();
+            let third = volume.next_cluster(&layout, second).unwrap().unwrap();
+            (first, third)
+        };
+        let mut looping = pristine;
+        point_fat_entry(&mut looping, &layout, third, first);
+        let fat = mounted_with(looping.clone(), &Probes::default());
+        let node = path(fat, "/loop.bin");
+        let mut buffer = [0u8; 512];
+        assert_eq!(
+            fat.read_into(node.id(), 10 * layout.cluster_bytes, &mut buffer),
+            Err(StorageError),
+            "{fat_type:?}: a jump into the loop"
+        );
+        let fat = mounted_with(looping, &Probes::default());
+        let node = path(fat, "/loop.bin");
+        let mut offset = 0;
+        let stopped = loop {
+            match fat.read_into(node.id(), offset, &mut buffer) {
+                Ok(0) => break Ok(()),
+                Ok(read) => offset += read as u64,
+                Err(error) => break Err(error),
+            }
+        };
+        assert_eq!(stopped, Err(StorageError), "{fat_type:?}: reading on");
+        assert!(
+            offset < 8 * layout.cluster_bytes,
+            "{fat_type:?}: found the loop within twice its length"
+        );
+    }
+}

@@ -1,8 +1,10 @@
 //! The Win32 functions Windows programs import, implemented natively on EggOS's Linux system
-//! calls and, for windows, the window server, and the C runtime of MSVC's `/MD` programs
-//! (`crt/`): each is an `extern "efiapi"` function (Windows'
+//! calls and, for windows, the window server, the C runtime of MSVC's `/MD` programs (`crt/`)
+//! and exception handling (`exception/`, D177): each is an `extern "efiapi"` function (Windows'
 //! calling convention on x86_64 and aarch64, `abi.rs`) the program calls through its import
 //! address table, directly on x86_64 and through an entry that restores `x18` on aarch64.
+//! comctl32's common controls (`common_controls/`), GDI+ (`gdiplus.rs`), COM (`com/`) and the
+//! smaller system libraries a real app imports came with AutoHotkey (D178).
 
 #[macro_use]
 mod abi;
@@ -16,41 +18,94 @@ macro_rules! exports {
     };
 }
 
+mod accelerator;
+mod advapi32;
+mod ansi;
+mod clipboard;
+mod com;
+mod combo_box;
+mod common_controls;
 mod console;
 mod controls;
 mod crt;
 mod dialog;
+mod dialog_box;
+mod dialog_window;
+mod dib;
 mod directory;
+mod dwmapi;
+mod elements;
 mod environment;
+mod exception;
 mod file;
+mod file_information;
+mod file_mapping;
 mod file_picker;
+mod gdi;
+mod gdiplus;
 mod gui;
 mod heap;
+mod icon;
+mod keyboard;
 mod memory;
 mod menu;
+mod menu_items;
 mod message_box;
+mod messages;
 mod module;
+mod monitor;
+mod named;
+mod native_files;
+mod nls;
+mod overlapped;
 mod paint;
+mod pipe;
+mod placement;
+mod private_profile;
 mod process;
+mod processes;
+mod psapi;
+mod random;
+mod resource;
+mod send_input;
 mod shell;
+mod shell_desktop;
+mod shell_files;
+mod shell_folders;
+mod shlwapi;
 mod strings;
+mod subclass;
 mod sync;
 mod system;
 mod thread;
 pub mod thread_environment;
 mod time;
 mod timer;
+mod toolhelp;
 mod user32;
+mod userenv;
+mod uxtheme;
+mod version;
+mod volume;
+mod window_class;
 mod window_device;
+mod window_state;
 mod window_text;
+mod window_tree;
+mod wininet;
+mod winmm;
+mod winsock;
 
 use crate::library::{self, Export, Library};
+use crate::ordinals::Winsock;
 use eggos_runtime::errno::Errno;
 
 pub use abi::call_program;
 pub use console::set_gui_program;
 pub use crt::set_processor_features;
-pub use heap::{allocate as heap_allocate, process_heap};
+pub use exception::{deliver_fault, in_layer as in_layer_code, set_image as set_exception_image};
+pub use heap::{allocate as heap_allocate, free as heap_free, process_heap};
+pub use memory::flip_write_execute_page;
 pub use process::set_process;
 pub use thread::finish as end_thread;
 
@@ -163,14 +218,36 @@ const KERNEL32: &[&[Export]] = &[
     thread_environment::EXPORTS,
     time::EXPORTS,
     crt::KERNEL32_EXPORTS,
+    exception::KERNEL32_EXPORTS,
+    resource::EXPORTS,
+    nls::EXPORTS,
+    private_profile::EXPORTS,
+    processes::EXPORTS,
+    pipe::EXPORTS,
+    toolhelp::EXPORTS,
+    volume::EXPORTS,
+    overlapped::EXPORTS,
+    file_information::EXPORTS,
+    file_mapping::EXPORTS,
 ];
 
-const NTDLL: &[&[Export]] = &[memory::NTDLL_EXPORTS, system::NTDLL_EXPORTS];
+const NTDLL: &[&[Export]] = &[
+    memory::NTDLL_EXPORTS,
+    system::NTDLL_EXPORTS,
+    exception::NTDLL_EXPORTS,
+    native_files::EXPORTS,
+];
 
-const SHELL32: &[&[Export]] = &[shell::EXPORTS];
+const SHELL32: &[&[Export]] = &[
+    shell::EXPORTS,
+    shell_folders::EXPORTS,
+    shell_files::EXPORTS,
+    shell_desktop::EXPORTS,
+];
 
 const USER32: &[&[Export]] = &[
     strings::USER32_EXPORTS,
+    sync::USER32_EXPORTS,
     user32::EXPORTS,
     paint::USER32_EXPORTS,
     message_box::EXPORTS,
@@ -178,11 +255,57 @@ const USER32: &[&[Export]] = &[
     dialog::EXPORTS,
     menu::EXPORTS,
     timer::EXPORTS,
+    ansi::EXPORTS,
+    dialog_window::EXPORTS,
+    placement::EXPORTS,
+    clipboard::EXPORTS,
+    icon::EXPORTS,
+    subclass::EXPORTS,
+    window_tree::EXPORTS,
+    window_state::EXPORTS,
+    window_class::EXPORTS,
+    messages::EXPORTS,
+    keyboard::EXPORTS,
+    send_input::EXPORTS,
+    monitor::EXPORTS,
+    accelerator::EXPORTS,
+    dialog_box::EXPORTS,
+    menu_items::EXPORTS,
 ];
 
 const COMDLG32: &[&[Export]] = &[file_picker::EXPORTS];
 
-const GDI32: &[&[Export]] = &[paint::GDI32_EXPORTS];
+const GDI32: &[&[Export]] = &[paint::GDI32_EXPORTS, gdi::EXPORTS];
+
+const COMCTL32: &[&[Export]] = common_controls::EXPORT_LISTS;
+
+const GDIPLUS: &[&[Export]] = &[gdiplus::EXPORTS];
+
+const OLE32: &[&[Export]] = &[com::OLE32_EXPORTS];
+
+const OLEAUT32: &[&[Export]] = &[com::OLEAUT32_EXPORTS];
+
+const ADVAPI32: &[&[Export]] = &[advapi32::EXPORTS];
+
+const WSOCK32: &[&[Export]] = &[winsock::EXPORTS];
+
+const WINMM: &[&[Export]] = &[winmm::EXPORTS];
+
+const VERSION: &[&[Export]] = &[version::EXPORTS];
+
+const PSAPI: &[&[Export]] = &[psapi::EXPORTS];
+
+const WININET: &[&[Export]] = &[wininet::EXPORTS];
+
+const SHLWAPI: &[&[Export]] = &[shlwapi::EXPORTS];
+
+const UXTHEME: &[&[Export]] = &[uxtheme::EXPORTS];
+
+const DWMAPI: &[&[Export]] = &[dwmapi::EXPORTS];
+
+const BCRYPTPRIMITIVES: &[&[Export]] = &[random::EXPORTS];
+
+const USERENV: &[&[Export]] = &[userenv::EXPORTS];
 
 fn exports(library: Library) -> &'static [&'static [Export]] {
     match library {
@@ -192,8 +315,25 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::User32 => USER32,
         Library::Gdi32 => GDI32,
         Library::Comdlg32 => COMDLG32,
+        Library::Comctl32 => COMCTL32,
         Library::VcRuntime => crt::VCRUNTIME,
         Library::Ucrt => crt::UCRT,
+        Library::GdiPlus => GDIPLUS,
+        Library::Ole32 => OLE32,
+        Library::OleAut32 => OLEAUT32,
+        Library::Advapi32 => ADVAPI32,
+        Library::Wsock32 => WSOCK32,
+        Library::Winmm => WINMM,
+        Library::Version => VERSION,
+        Library::Psapi => PSAPI,
+        Library::Wininet => WININET,
+        Library::Shlwapi => SHLWAPI,
+        Library::UxTheme => UXTHEME,
+        Library::Dwmapi => DWMAPI,
+        Library::BcryptPrimitives => BCRYPTPRIMITIVES,
+        Library::Userenv => USERENV,
+        Library::Msvcrt => crt::MSVCRT,
+        Library::Ws2_32 => WSOCK32,
     }
 }
 
@@ -201,4 +341,18 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
 pub fn resolve(library: &[u8], function: &[u8]) -> Option<u64> {
     let exports = exports(library::library(library)?);
     library::find(exports, function).map(|address| address as u64)
+}
+
+/// The address of the function an import names by `ordinal` in `library` (D174: comctl32's
+/// `InitCommonControls`; D178: oleaut32's and wsock32's functions, which programs import only
+/// so; D189: ws2_32's, numbered apart, `ordinals.rs`).
+pub fn resolve_ordinal(library: &[u8], ordinal: u16) -> Option<u64> {
+    let address = match library::library(library)? {
+        Library::Comctl32 => common_controls::by_ordinal(ordinal),
+        Library::OleAut32 => com::oleaut32_by_ordinal(ordinal),
+        Library::Wsock32 => winsock::by_ordinal(Winsock::Wsock32, ordinal),
+        Library::Ws2_32 => winsock::by_ordinal(Winsock::Ws2_32, ordinal),
+        _ => None,
+    };
+    address.map(|address| address as u64)
 }

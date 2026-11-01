@@ -14,11 +14,16 @@ mod fake;
 pub mod framing;
 #[cfg(any(test, feature = "fuzz"))]
 pub mod fuzz;
+pub mod grant_files;
+pub mod grant_prompt;
 pub mod grants;
+pub mod http;
 pub mod json;
 #[cfg(target_env = "musl")]
 pub mod linux;
+pub mod pairing;
 pub mod paths;
+pub mod prompts;
 pub mod rpc;
 pub mod server;
 pub mod session;

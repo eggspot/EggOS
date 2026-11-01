@@ -119,3 +119,107 @@ pub fn copy_opaque_rows(
         }
     }
 }
+
+/// Where a surface's pixels land in a window: `source`, a rectangle of its buffer, scaled to
+/// `size` with its top-left at `at` in the window (negative when it starts left of or above
+/// the window), only `clip` of the window written; `blend` draws `ARGB8888` pixels over what
+/// the window holds, by their premultiplied alpha.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Placement {
+    pub source: Rect,
+    pub at: (i32, i32),
+    pub size: (u32, u32),
+    pub clip: Rect,
+    pub blend: bool,
+}
+
+impl Placement {
+    /// The window's pixels it writes: its rectangle inside `clip`; empty when it writes none.
+    pub fn written(&self) -> Rect {
+        let left = i64::from(self.at.0).max(i64::from(self.clip.x));
+        let top = i64::from(self.at.1).max(i64::from(self.clip.y));
+        let right = (i64::from(self.at.0) + i64::from(self.size.0)).min(self.clip.right() as i64);
+        let bottom = (i64::from(self.at.1) + i64::from(self.size.1)).min(self.clip.bottom() as i64);
+        if right <= left || bottom <= top || self.source.is_empty() {
+            return Rect::default();
+        }
+        Rect::new(
+            left as u32,
+            top as u32,
+            (right - left) as u32,
+            (bottom - top) as u32,
+        )
+    }
+
+    /// The buffer pixel the window's pixel (`x`, `y`) inside [`Self::written`] shows: the
+    /// nearest one, so a scale of 1 copies pixel for pixel.
+    pub fn source_of(&self, x: u32, y: u32) -> (u32, u32) {
+        let along = |at: i32, value: u32, start: u32, length: u32, size: u32| -> u32 {
+            let offset = (i64::from(value) - i64::from(at)).max(0) as u64;
+            let scaled = offset * u64::from(length) / u64::from(size.max(1));
+            start + scaled.min(u64::from(length.saturating_sub(1))) as u32
+        };
+        (
+            along(self.at.0, x, self.source.x, self.source.width, self.size.0),
+            along(self.at.1, y, self.source.y, self.source.height, self.size.1),
+        )
+    }
+
+    /// Writes every pixel of [`Self::written`] into `window`: `read` gives a buffer pixel
+    /// (`None` outside the client's memory, which leaves that window pixel alone).
+    pub fn draw(
+        &self,
+        mut read: impl FnMut(u32, u32) -> Option<u32>,
+        window: &mut impl WindowPixels,
+    ) {
+        let written = self.written();
+        let unscaled = self.size == (self.source.width, self.source.height);
+        let shift = (
+            i64::from(self.source.x) - i64::from(self.at.0),
+            i64::from(self.source.y) - i64::from(self.at.1),
+        );
+        for y in written.y..written.bottom() as u32 {
+            for x in written.x..written.right() as u32 {
+                let (column, row) = match unscaled {
+                    true => (
+                        (i64::from(x) + shift.0) as u32,
+                        (i64::from(y) + shift.1) as u32,
+                    ),
+                    false => self.source_of(x, y),
+                };
+                let Some(pixel) = read(column, row) else {
+                    continue;
+                };
+                let value = match self.blend {
+                    true => blend_over(pixel, window.get(x, y)),
+                    false => pixel & OPAQUE_MASK,
+                };
+                window.set(x, y, value);
+            }
+        }
+    }
+}
+
+/// A window's pixels, as [`Placement::draw`] reads and writes them.
+pub trait WindowPixels {
+    /// The pixel at (`x`, `y`), inside the window.
+    fn get(&mut self, x: u32, y: u32) -> u32;
+    /// Sets the pixel at (`x`, `y`), inside the window.
+    fn set(&mut self, x: u32, y: u32, pixel: u32);
+}
+
+/// `source`, an `ARGB8888` pixel with premultiplied alpha, drawn over the opaque
+/// `destination`; the result is opaque.
+pub fn blend_over(source: u32, destination: u32) -> u32 {
+    let alpha = source >> 24;
+    if alpha == 0xff {
+        return source & OPAQUE_MASK;
+    }
+    let keep = 255 - alpha;
+    let channel = |shift: u32| -> u32 {
+        let top = (source >> shift) & 0xff;
+        let under = (destination >> shift) & 0xff;
+        (top + (under * keep + 127) / 255).min(255) << shift
+    };
+    channel(16) | channel(8) | channel(0)
+}

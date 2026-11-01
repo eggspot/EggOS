@@ -23,7 +23,7 @@ pub mod time;
 pub mod user;
 
 pub use exception::{Exception, ExceptionKind};
-pub use interrupt::Interrupt;
+pub use interrupt::{DeviceLine, Interrupt, InterruptMessage};
 pub use memory::{MemoryMap, PhysicalRange};
 
 /// How a run ends, as reported to whoever started the machine (in tests: the QEMU runner).
@@ -55,6 +55,33 @@ pub trait Platform: 'static {
     /// may be lost. Called once, on the boot CPU, once the kernel's page tables are active. Fails
     /// when the machine's description gives no way to route it.
     fn enable_console_input() -> Result<(), &'static str>;
+
+    /// Turns on the power button's interrupt, [`Interrupt::PowerButton`] (D202), where the
+    /// machine has one the HAL answers: ACPI's fixed-feature button on x86_64. An error says why
+    /// not.
+    fn enable_power_button() -> Result<(), &'static str> {
+        Err("this machine has no power button EggOS answers yet")
+    }
+
+    /// Routes the device interrupt `specifier` names (a device-tree interrupt of the machine's
+    /// interrupt controller: a GIC shared peripheral interrupt, a PLIC source) to the boot CPU and
+    /// enables it: from then on it raises [`Interrupt::Device`] with the line returned. A
+    /// specifier routed before gets its line again. Called on the boot CPU once the kernel's page
+    /// tables are active. Fails on a machine without device-tree interrupts (the default), for a
+    /// specifier the HAL cannot route, or when every line is taken.
+    fn route_device_interrupt(
+        _specifier: &fdt::InterruptSpecifier,
+    ) -> Result<DeviceLine, &'static str> {
+        Err("this machine routes no device-tree interrupts")
+    }
+
+    /// Takes a message-signalled interrupt for a device (PCI MSI-X): the message the device
+    /// writes raises [`Interrupt::Device`] with the line returned, on the boot CPU. Called on the
+    /// boot CPU. Fails on a machine without message-signalled interrupts (the default) or when
+    /// every line is taken.
+    fn message_interrupt() -> Result<(DeviceLine, InterruptMessage), &'static str> {
+        Err("this machine has no message-signalled interrupts")
+    }
 
     /// Powers the machine off, reporting `status` to the host when the machine supports it.
     fn exit(status: ExitStatus) -> !;
@@ -106,9 +133,16 @@ pub trait Platform: 'static {
     /// The physical memory the kernel may allocate: the machine's RAM as the firmware or
     /// loader describes it, minus everything in use (the kernel image and its boot stack, the
     /// firmware, and the boot data the kernel still reads, such as the device tree), limited
-    /// to what the kernel can reach today. Built from the firmware's description on each call;
-    /// the kernel calls it once at boot.
+    /// to what the kernel's direct map covers. Built from the firmware's description on each
+    /// call; the kernel calls it once at boot.
     fn memory_map() -> MemoryMap;
+
+    /// Where the boot direct map ends: the kernel builds its page tables only with memory
+    /// below this physical address, and hands out the rest of [`Self::memory_map`] once its own
+    /// tables, whose direct map covers all of it, are active (D171). No limit by default.
+    fn boot_direct_map_end() -> u64 {
+        u64::MAX
+    }
 
     /// Where the kernel reaches physical memory: free RAM at physical address `p` (from
     /// [`Self::memory_map`]) is readable and writable at virtual address `p + offset`. On every

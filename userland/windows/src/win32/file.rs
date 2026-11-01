@@ -1,14 +1,20 @@
 //! Handles and files: a file handle names a Linux descriptor (`(fd + 1) * 4`, so handles are
 //! multiples of four and never null, as Windows' are), and `CreateFile`, `ReadFile`,
 //! `WriteFile`, `CloseHandle`, `GetFileSize(Ex)`, `SetFilePointer(Ex)` and `GetFileType` are
-//! the matching Linux calls. Paths are UTF-16 or ANSI (UTF-8) and may use `\`, a drive letter
-//! (`C:\` is `/`) or the `\\?\` prefix.
+//! the matching Linux calls, as are `CopyFileW`, `SetEndOfFile`, `SetFileTime` (the
+//! modification time: EggOS keeps no creation time) and `SetFileAttributesW` (the read-only
+//! attribute is the write permission; the others have no place on EggOS's files, D178). Paths
+//! are UTF-16 or ANSI (UTF-8) and may use `\`, a drive letter (`C:\` is `/`) or the `\\?\`
+//! prefix. A file is inherited by children only when its `SECURITY_ATTRIBUTES` ask for it, and
+//! `ReadFile` at a pipe's end fails with `ERROR_BROKEN_PIPE` and `WriteFile` to a pipe nobody
+//! reads with `ERROR_NO_DATA`, as on Windows (D189).
 
 use super::{Bool, FALSE, INVALID_HANDLE_VALUE, TRUE, error, error_for, fail};
 use crate::library::Export;
 use crate::linux::{self, O_CREAT, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
 use crate::text;
 use core::ffi::c_void;
+use eggos_runtime::errno::Errno;
 
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
@@ -24,6 +30,7 @@ const FILE_TYPE_CHAR: u32 = 2;
 const FILE_TYPE_PIPE: u32 = 3;
 const INVALID_SET_FILE_POINTER: u32 = u32::MAX;
 const MAX_FD: usize = 1 << 20;
+const EPIPE: u16 = 32;
 
 /// The descriptor a file handle names.
 pub fn fd_of(handle: usize) -> Option<usize> {
@@ -48,6 +55,10 @@ pub unsafe fn read_into(handle: usize, buffer: *mut u8, length: usize) -> Option
     };
     // SAFETY: the caller's duty.
     let buffer = unsafe { core::slice::from_raw_parts_mut(buffer, length) };
+    let peeked = super::pipe::take_peeked(fd, buffer);
+    if peeked != 0 {
+        return Some(peeked);
+    }
     match linux::read(fd, buffer) {
         Ok(read) => Some(read),
         Err(errno) => fail(error_for(errno), None),
@@ -61,6 +72,7 @@ pub fn write_bytes(handle: usize, bytes: &[u8]) -> bool {
     };
     match linux::write_all(fd, bytes) {
         Ok(()) => true,
+        Err(errno) if errno.0 == EPIPE => fail(error::NO_DATA, false),
         Err(errno) => fail(error_for(errno), false),
     }
 }
@@ -73,7 +85,10 @@ unsafe extern "efiapi" fn read_file(
     overlapped: *mut c_void,
 ) -> Bool {
     if !overlapped.is_null() {
-        return fail(error::NOT_SUPPORTED, FALSE);
+        // SAFETY: `ReadFile`'s contract, with a writable `OVERLAPPED`.
+        return unsafe {
+            super::overlapped::read_file(handle, buffer, length, read, overlapped as usize)
+        };
     }
     // SAFETY: `ReadFile`'s contract: `buffer` holds `length` writable bytes.
     let Some(count) = (unsafe { read_into(handle, buffer, length as usize) }) else {
@@ -82,6 +97,10 @@ unsafe extern "efiapi" fn read_file(
     if !read.is_null() {
         // SAFETY: the caller passes a writable `DWORD` for the count.
         unsafe { read.write(count as u32) };
+    }
+    let pipe_ended = count == 0 && length != 0 && fd_of(handle).is_some_and(super::pipe::is_pipe);
+    if pipe_ended {
+        return fail(error::BROKEN_PIPE, FALSE);
     }
     TRUE
 }
@@ -94,7 +113,10 @@ unsafe extern "efiapi" fn write_file(
     overlapped: *mut c_void,
 ) -> Bool {
     if !overlapped.is_null() {
-        return fail(error::NOT_SUPPORTED, FALSE);
+        // SAFETY: `WriteFile`'s contract, with a writable `OVERLAPPED`.
+        return unsafe {
+            super::overlapped::write_file(handle, buffer, length, written, overlapped as usize)
+        };
     }
     // SAFETY: `WriteFile`'s contract: `buffer` holds `length` readable bytes.
     let bytes = unsafe { core::slice::from_raw_parts(buffer, length as usize) };
@@ -108,7 +130,7 @@ unsafe extern "efiapi" fn write_file(
     TRUE
 }
 
-extern "efiapi" fn close_handle(handle: usize) -> Bool {
+pub(super) extern "efiapi" fn close_handle(handle: usize) -> Bool {
     if handle >= super::CURRENT_THREAD {
         return TRUE;
     }
@@ -118,10 +140,23 @@ extern "efiapi" fn close_handle(handle: usize) -> Bool {
     let Some(fd) = fd_of(handle) else {
         return fail(error::INVALID_HANDLE, FALSE);
     };
-    match linux::close(fd) {
+    match close_descriptor(fd) {
         Ok(_) => TRUE,
         Err(_) => fail(error::INVALID_HANDLE, FALSE),
     }
+}
+
+const EBADF: Errno = Errno(9);
+
+/// Closes `fd`, the descriptor of a handle, a C runtime descriptor or a socket, once the layer
+/// dropped what it keeps for that number (`pipe::closing`): bytes `PeekNamedPipe` kept,
+/// overlapped reads in progress, the unclaimed end of a native pipe. `EBADF`, with nothing
+/// done, when its handle is protected from closing.
+pub(super) fn close_descriptor(fd: usize) -> Result<usize, Errno> {
+    if !super::pipe::closing(fd) {
+        return Err(EBADF);
+    }
+    linux::close(fd)
 }
 
 fn open_flags(access: u32, disposition: u32) -> Option<usize> {
@@ -143,12 +178,30 @@ fn open_flags(access: u32, disposition: u32) -> Option<usize> {
     Some(mode | creation)
 }
 
-fn create_file(path: &[u8], access: u32, disposition: u32) -> usize {
+fn open_noting_existing(path: &[u8], flags: usize) -> Result<(usize, bool), Errno> {
+    if flags & O_CREAT == 0 || flags & O_EXCL != 0 {
+        return linux::open(path, flags).map(|fd| (fd, false));
+    }
+    match linux::open(path, flags | O_EXCL) {
+        Ok(fd) => Ok((fd, false)),
+        Err(Errno::EEXIST) => linux::open(path, flags).map(|fd| (fd, true)),
+        Err(errno) => Err(errno),
+    }
+}
+
+fn create_file(path: &[u8], access: u32, disposition: u32, inherit: bool) -> usize {
     let Some(flags) = open_flags(access, disposition) else {
         return fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE);
     };
-    let fd = match linux::open(path, flags) {
-        Ok(fd) => fd,
+    let fd = match open_noting_existing(path, flags | super::pipe::close_on_exec_unless(inherit)) {
+        Ok((fd, existed)) => {
+            let reported = matches!(disposition, CREATE_ALWAYS | OPEN_ALWAYS) && existed;
+            super::thread_environment::set_last_error(match reported {
+                true => error::ALREADY_EXISTS,
+                false => error::SUCCESS,
+            });
+            fd
+        }
         Err(errno) => {
             return fail(
                 super::directory::path_error(path, errno),
@@ -169,16 +222,18 @@ unsafe extern "efiapi" fn create_file_w(
     name: *const u16,
     access: u32,
     _share: u32,
-    _security: *mut c_void,
+    security: *const u8,
     disposition: u32,
     _flags: u32,
     _template: usize,
 ) -> usize {
     // SAFETY: `CreateFileW`'s contract: a NUL-terminated UTF-16 name.
     let name = unsafe { wide_string(name) };
+    // SAFETY: `CreateFileW`'s contract: null or a readable `SECURITY_ATTRIBUTES`.
+    let inherit = unsafe { super::pipe::inherits(security) };
     let mut path = [0u8; text::PATH_CAPACITY];
     match text::eggos_path(text::utf16_chars(name), &mut path) {
-        Some(length) => create_file(&path[..length], access, disposition),
+        Some(length) => create_file(&path[..length], access, disposition, inherit),
         None => fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE),
     }
 }
@@ -187,16 +242,18 @@ unsafe extern "efiapi" fn create_file_a(
     name: *const u8,
     access: u32,
     _share: u32,
-    _security: *mut c_void,
+    security: *const u8,
     disposition: u32,
     _flags: u32,
     _template: usize,
 ) -> usize {
     // SAFETY: `CreateFileA`'s contract: a NUL-terminated name.
     let name = unsafe { core::ffi::CStr::from_ptr(name.cast()) }.to_bytes();
+    // SAFETY: `CreateFileA`'s contract: null or a readable `SECURITY_ATTRIBUTES`.
+    let inherit = unsafe { super::pipe::inherits(security) };
     let mut path = [0u8; text::PATH_CAPACITY];
     match text::eggos_path(text::utf8_chars(name), &mut path) {
-        Some(length) => create_file(&path[..length], access, disposition),
+        Some(length) => create_file(&path[..length], access, disposition, inherit),
         None => fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE),
     }
 }
@@ -213,6 +270,29 @@ pub unsafe fn wide_string<'a>(text: *const u16) -> &'a [u16] {
     }
     // SAFETY: as above.
     unsafe { core::slice::from_raw_parts(text, length) }
+}
+
+/// The caller's buffer of `size` UTF-16 units at `buffer`, empty when it is null.
+///
+/// # Safety
+/// A non-null `buffer` must hold `size` writable units that outlive the result's use.
+pub unsafe fn wide_buffer<'a>(buffer: *mut u16, size: usize) -> &'a mut [u16] {
+    match buffer.is_null() {
+        true => &mut [],
+        // SAFETY: the caller's duty.
+        false => unsafe { core::slice::from_raw_parts_mut(buffer, size) },
+    }
+}
+
+/// Copies `units` and a NUL into `out`: the units copied (no NUL), or, when they do not fit,
+/// the units needed with the NUL.
+pub fn copy_terminated(units: &[u16], out: &mut [u16]) -> Result<usize, usize> {
+    if units.len() >= out.len() {
+        return Err(units.len() + 1);
+    }
+    out[..units.len()].copy_from_slice(units);
+    out[units.len()] = 0;
+    Ok(units.len())
 }
 
 fn file_size(handle: usize) -> Option<u64> {
@@ -325,6 +405,157 @@ fn set_success() {
     super::thread_environment::set_last_error(error::SUCCESS);
 }
 
+const COPY_CHUNK: usize = 16 << 10;
+const SEEK_CURRENT: usize = 1;
+const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
+const WRITE_BITS: u32 = 0o222;
+const OWNER_WRITE: u32 = 0o200;
+const PRESERVE_TIME: u64 = u64::MAX;
+
+/// Copies the regular file at `from` to `to` (both NUL-terminated EggOS paths), replacing what
+/// `to` names only when `replace`, and gives the copy the original's modification time.
+pub(super) fn copy_file_at(from: &[u8], to: &[u8], replace: bool) -> Result<(), u32> {
+    let source =
+        linux::open(from, O_RDONLY).map_err(|errno| super::directory::path_error(from, errno))?;
+    let copied = copy_from(source, to, replace);
+    let _ = linux::close(source);
+    copied
+}
+
+fn copy_from(source: usize, to: &[u8], replace: bool) -> Result<(), u32> {
+    let words = linux::fstat(source).map_err(error_for)?;
+    if linux::file_mode(&words) & linux::FILE_TYPE != linux::REGULAR_FILE {
+        return Err(error::ACCESS_DENIED);
+    }
+    let creation = if replace {
+        O_CREAT | O_TRUNC
+    } else {
+        O_CREAT | O_EXCL
+    };
+    let target = linux::open(to, O_WRONLY | creation).map_err(|errno| match errno.0 {
+        17 => error::FILE_EXISTS,
+        _ => super::directory::path_error(to, errno),
+    })?;
+    let mut chunk = [0u8; COPY_CHUNK];
+    let result = loop {
+        match linux::read(source, &mut chunk) {
+            Ok(0) => break Ok(()),
+            Ok(read) => {
+                if let Err(errno) = linux::write_all(target, &chunk[..read]) {
+                    break Err(error_for(errno));
+                }
+            }
+            Err(errno) => break Err(error_for(errno)),
+        }
+    };
+    if result.is_ok() {
+        let modified = [
+            [0, linux::UTIME_OMIT],
+            [
+                words[linux::STAT_MODIFY_TIME_WORD] as i64,
+                words[linux::STAT_MODIFY_TIME_WORD + 1] as i64,
+            ],
+        ];
+        let _ = linux::set_file_times(target, &modified);
+    }
+    let _ = linux::close(target);
+    result
+}
+
+unsafe extern "efiapi" fn copy_file_w(
+    from: *const u16,
+    to: *const u16,
+    fail_if_exists: Bool,
+) -> Bool {
+    let (mut old, mut new) = ([0u8; text::PATH_CAPACITY], [0u8; text::PATH_CAPACITY]);
+    // SAFETY: `CopyFileW`'s contract: two NUL-terminated names.
+    let old_length = unsafe { super::directory::eggos_path(from, &mut old) };
+    // SAFETY: as above.
+    let new_length = unsafe { super::directory::eggos_path(to, &mut new) };
+    let (Some(old_length), Some(new_length)) = (old_length, new_length) else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    match copy_file_at(
+        &old[..old_length],
+        &new[..new_length],
+        fail_if_exists == FALSE,
+    ) {
+        Ok(()) => TRUE,
+        Err(code) => fail(code, FALSE),
+    }
+}
+
+unsafe extern "efiapi" fn set_file_attributes_w(name: *const u16, attributes: u32) -> Bool {
+    let mut path = [0u8; text::PATH_CAPACITY];
+    // SAFETY: `SetFileAttributesW`'s contract: a NUL-terminated name.
+    let Some(length) = (unsafe { super::directory::eggos_path(name, &mut path) }) else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    let path = &path[..length];
+    let words = match linux::stat_at(linux::AT_FDCWD, path) {
+        Ok(words) => words,
+        Err(errno) => return fail(super::directory::path_error(path, errno), FALSE),
+    };
+    let mode = linux::file_mode(&words) & 0o7777;
+    let mode = match attributes & FILE_ATTRIBUTE_READONLY != 0 {
+        true => mode & !WRITE_BITS,
+        false => mode | OWNER_WRITE,
+    };
+    match linux::change_mode(path, mode) {
+        Ok(_) => TRUE,
+        Err(errno) => fail(error_for(errno), FALSE),
+    }
+}
+
+unsafe fn unix_time(file_time: *const u64) -> [i64; 2] {
+    let value = match file_time.is_null() {
+        true => 0,
+        // SAFETY: the caller's duty: a readable `FILETIME`, 4-byte aligned.
+        false => unsafe { file_time.read_unaligned() },
+    };
+    let epoch = crate::calendar::UNIX_EPOCH_SECONDS * crate::calendar::INTERVALS_PER_SECOND;
+    if value == 0 || value == PRESERVE_TIME || value < epoch {
+        return [0, linux::UTIME_OMIT];
+    }
+    let since = value - epoch;
+    [
+        (since / crate::calendar::INTERVALS_PER_SECOND) as i64,
+        (since % crate::calendar::INTERVALS_PER_SECOND * 100) as i64,
+    ]
+}
+
+unsafe extern "efiapi" fn set_file_time(
+    handle: usize,
+    _creation: *const u64,
+    access: *const u64,
+    write: *const u64,
+) -> Bool {
+    let Some(fd) = fd_of(handle) else {
+        return fail(error::INVALID_HANDLE, FALSE);
+    };
+    // SAFETY: `SetFileTime`'s contract: readable `FILETIME`s or nulls.
+    let accessed = unsafe { unix_time(access) };
+    // SAFETY: as above.
+    let modified = unsafe { unix_time(write) };
+    let times = [accessed, modified];
+    match linux::set_file_times(fd, &times) {
+        Ok(_) => TRUE,
+        Err(errno) => fail(error_for(errno), FALSE),
+    }
+}
+
+extern "efiapi" fn set_end_of_file(handle: usize) -> Bool {
+    let Some(fd) = fd_of(handle) else {
+        return fail(error::INVALID_HANDLE, FALSE);
+    };
+    let truncated =
+        linux::lseek(fd, 0, SEEK_CURRENT).and_then(|position| linux::truncate(fd, position as u64));
+    match truncated {
+        Ok(_) => TRUE,
+        Err(errno) => fail(error_for(errno), FALSE),
+    }
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"ReadFile" => read_file,
     b"WriteFile" => write_file,
@@ -337,4 +568,8 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"SetFilePointerEx" => set_file_pointer_ex,
     b"GetFileType" => get_file_type,
     b"FlushFileBuffers" => flush_file_buffers,
+    b"CopyFileW" => copy_file_w,
+    b"SetFileAttributesW" => set_file_attributes_w,
+    b"SetFileTime" => set_file_time,
+    b"SetEndOfFile" => set_end_of_file,
 ];

@@ -8,6 +8,18 @@
 //! directory, empty and `.` components skipped, `..` to the parent (the root's own parent is
 //! the root), every component but the last required to be a directory, and a trailing slash
 //! or `/.` requiring the last to be one too. Errors come in the order a walk meets them.
+//! A symbolic link met on the way is followed (D168): its target, which its file system makes
+//! for the walking process ([`FileSystem::link_target`]: `/proc/self` names the caller's
+//! directory), is walked from the link's directory, or from the root if it is absolute; the
+//! last component is followed only when the caller asks ([`resolve_as`]); more than
+//! [`MAX_LINKS`] links in one walk, or links nested deeper than [`MAX_NESTED_LINKS`], are
+//! [`Error::TooManyLinks`] (`ELOOP`), as on Linux. [`resolve_without_links`] refuses every
+//! link instead (`openat2`'s `RESOLVE_NO_SYMLINKS`, D170).
+//!
+//! Writable file systems make symbolic links ([`FileSystem::symlink`]) and give a file more
+//! names ([`FileSystem::link`], D170). A file whose last name goes while it is held
+//! ([`Node::hold`]: an open file description, a mapping, a running program's image) stays
+//! readable and writable until its last hold is released ([`HeldNode`]), as on Linux.
 //!
 //! The root is mounted once at boot ([`mount_embedded_initramfs`]) and never unmounted, so a
 //! node holds a `'static` reference to its file system and costs no reference count; mounts
@@ -21,6 +33,7 @@ pub mod devfs;
 pub mod eggfs;
 pub mod fat;
 pub mod initramfs;
+pub mod shared_pages;
 pub mod tmpfs;
 
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -40,7 +53,18 @@ pub enum Error {
     NotDirectory,
     /// A component is longer than [`NAME_MAX`] (`ENAMETOOLONG`).
     NameTooLong,
+    /// The walk met more symbolic links than it follows (`ELOOP`).
+    TooManyLinks,
 }
+
+/// The most symbolic links one walk follows (Linux's `MAXSYMLINKS`).
+pub const MAX_LINKS: u32 = 40;
+
+/// The most symbolic links a walk follows inside one another's targets.
+pub const MAX_NESTED_LINKS: u32 = 8;
+
+/// The process a walk is for, which `/proc/self` names: none for the kernel's own walks.
+pub const KERNEL_CALLER: u32 = 0;
 
 /// Why a file system refused a change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +93,10 @@ pub enum Refused {
     Busy,
     /// The storage under the file system failed, or what it holds is inconsistent (`EIO`).
     Storage,
+    /// The file has as many names as it may have (`EMLINK`).
+    TooManyLinks,
+    /// The change is not allowed on that node, such as a hard link to a directory (`EPERM`).
+    NotPermitted,
 }
 
 /// The storage under a file system failed: a disk did not answer or reported an error, or
@@ -97,6 +125,8 @@ pub enum NodeKind {
     /// A socket file (D138): `bind` makes it, `connect` finds its socket by it, and opening it
     /// is refused.
     Socket,
+    /// A symbolic link (D168): a walk goes on at its target ([`FileSystem::link_target`]).
+    SymbolicLink,
 }
 
 /// A node's attributes, as `stat` reports them.
@@ -118,6 +148,65 @@ pub struct Attributes {
     pub size: u64,
     /// When its contents last changed, in seconds since the Unix epoch.
     pub modified: u64,
+}
+
+/// How much a file system holds and has room for, as `statfs` reports it (D171).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    /// Linux's number for its type (`f_type`, one of [`magic`]).
+    pub magic: u64,
+    /// The size of its blocks, in bytes.
+    pub block_size: u64,
+    /// Its blocks.
+    pub blocks: u64,
+    /// The blocks free.
+    pub free_blocks: u64,
+    /// Its nodes; 0 for a file system that does not count them.
+    pub nodes: u64,
+    /// The nodes free.
+    pub free_nodes: u64,
+    /// Whether nothing can be written to it.
+    pub read_only: bool,
+}
+
+impl Usage {
+    /// The block size reported by a file system that has no blocks of its own.
+    pub const PAGE_BLOCK_SIZE: u64 = 4096;
+
+    /// A file system of type `magic` that has no blocks or counted nodes of its own (`/proc`,
+    /// `/dev`).
+    pub const fn without_blocks(magic: u64, read_only: bool) -> Self {
+        Self {
+            magic,
+            block_size: Self::PAGE_BLOCK_SIZE,
+            blocks: 0,
+            free_blocks: 0,
+            nodes: 0,
+            free_nodes: 0,
+            read_only,
+        }
+    }
+}
+
+/// Linux's numbers for the types of file system EggOS has (`f_type`, `linux/magic.h`), and
+/// EggFS's own.
+pub mod magic {
+    /// A file system in memory (`/tmp`, `/home` without a disk, `/dev`, memory files).
+    pub const TMPFS: u64 = 0x0102_1994;
+    /// The initramfs, Linux's `rootfs`.
+    pub const RAMFS: u64 = 0x8584_58f6;
+    /// `/proc`.
+    pub const PROC: u64 = 0x9fa0;
+    /// FAT (the host share).
+    pub const MSDOS: u64 = 0x4d44;
+    /// EggFS (D131): `EggF` in ASCII.
+    pub const EGGFS: u64 = 0x4567_6746;
+    /// Pipes.
+    pub const PIPEFS: u64 = 0x5049_5045;
+    /// Sockets.
+    pub const SOCKFS: u64 = 0x534f_434b;
+    /// Files with no node: event files.
+    pub const ANON_INODE_FS: u64 = 0x0904_1934;
 }
 
 /// A name of one path component, at most [`NAME_MAX`] bytes, held by value: a file system
@@ -209,6 +298,11 @@ pub trait FileSystem: Sync + Send {
     fn is_writable(&self) -> bool {
         false
     }
+    /// Whether existing node `node` can be written to, for a file system some of whose nodes
+    /// can and others cannot; [`Self::is_writable`] for the others.
+    fn is_node_writable(&self, _node: u64) -> bool {
+        self.is_writable()
+    }
     /// Writes `bytes` to regular file `node` `at` an offset or its end at time `now` (seconds
     /// since the epoch): how many it wrote, fewer if memory ran out, and the offset after them.
     fn write(
@@ -262,6 +356,37 @@ pub trait FileSystem: Sync + Send {
     fn character_device(&self, _node: u64) -> Option<(u32, u32)> {
         None
     }
+    /// The target of symbolic link `node` as a walk for process `caller` reads it (`readlink`
+    /// and the walk, D168); `None` if it names nothing now (a process's link once it ended).
+    fn link_target(&self, _node: u64, _caller: u32) -> Option<alloc::vec::Vec<u8>> {
+        None
+    }
+    /// Makes a symbolic link named `name` in `directory` whose target is `target` (D170): its
+    /// node. [`Refused::InvalidArgument`] for a target the file system cannot keep.
+    fn symlink(
+        &self,
+        _directory: u64,
+        _name: &[u8],
+        _target: &[u8],
+        _now: u64,
+    ) -> Result<u64, Refused> {
+        Err(Refused::ReadOnly)
+    }
+    /// Gives `node`, a file or a symbolic link of this file system, the name `name` in
+    /// `directory` too (a hard link, D170): [`Refused::NotPermitted`] for a directory.
+    fn link(&self, _node: u64, _directory: u64, _name: &[u8], _now: u64) -> Result<(), Refused> {
+        Err(Refused::ReadOnly)
+    }
+    /// Sets `node`'s permission bits (`chmod`, D170) to `permissions & 0o7777`.
+    fn set_permissions(&self, _node: u64, _permissions: u32) -> Result<(), Refused> {
+        Err(Refused::ReadOnly)
+    }
+    /// Keeps `node` alive while something uses it: when its last name goes, its contents stay
+    /// until the matching [`Self::release`] (D170). A file system whose nodes never go does
+    /// nothing.
+    fn hold(&self, _node: u64) {}
+    /// Ends one [`Self::hold`] of `node`; the last one frees a node that has no name left.
+    fn release(&self, _node: u64) {}
 
     /// Sets when `node`'s contents last changed.
     fn set_modified(&self, _node: u64, _time: u64) -> Result<(), Refused> {
@@ -273,6 +398,11 @@ pub trait FileSystem: Sync + Send {
     /// system with nothing to put there has nothing to do.
     fn sync(&self) -> Result<(), StorageError> {
         Ok(())
+    }
+    /// How much it holds and has room for (`statfs`, D171); one with no blocks of its own
+    /// reports none.
+    fn usage(&self) -> Usage {
+        Usage::without_blocks(magic::RAMFS, !self.is_writable())
     }
 }
 
@@ -300,6 +430,33 @@ impl PartialEq for Node {
 }
 
 impl Eq for Node {}
+
+impl crate::regions::FilePages for Node {
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Option<usize> {
+        let mut filled = 0;
+        while filled < buffer.len() {
+            let at = offset.saturating_add(filled as u64);
+            match self
+                .file_system
+                .read_into(self.id, at, &mut buffer[filled..])
+            {
+                Ok(0) => break,
+                Ok(read) => filled += read,
+                Err(StorageError) => return None,
+            }
+        }
+        shared_pages::read_over(*self, offset, &mut buffer[..filled]);
+        Some(filled)
+    }
+
+    fn path_into(&self, buffer: &mut [u8]) -> Option<usize> {
+        Node::path_into(self, buffer)
+    }
+
+    fn identity(&self) -> ((u32, u32), u64) {
+        (self.file_system.device(), self.attributes().file_id)
+    }
+}
 
 impl Node {
     /// The root of `file_system`.
@@ -333,6 +490,24 @@ impl Node {
     /// The device number of the character device it is, if it is one.
     pub fn character_device(&self) -> Option<(u32, u32)> {
         self.file_system.character_device(self.id)
+    }
+
+    /// Its target, if it is a symbolic link, as process `caller` reads it
+    /// ([`FileSystem::link_target`]).
+    pub fn link_target(&self, caller: u32) -> Option<alloc::vec::Vec<u8>> {
+        self.file_system.link_target(self.id, caller)
+    }
+
+    /// Keeps it alive until [`Self::release`] ([`FileSystem::hold`]).
+    #[inline]
+    pub fn hold(&self) {
+        self.file_system.hold(self.id);
+    }
+
+    /// Ends one [`Self::hold`].
+    #[inline]
+    pub fn release(&self) {
+        self.file_system.release(self.id);
     }
 
     /// Whether it is a directory.
@@ -420,16 +595,111 @@ impl Node {
     }
 }
 
+/// A node held while it is used ([`Node::hold`]): made by [`HeldNode::new`], released when
+/// dropped. A mapping's file and a running program's image are held this way.
+#[derive(Debug)]
+pub struct HeldNode(Node);
+
+impl HeldNode {
+    /// Holds `node`.
+    pub fn new(node: Node) -> Self {
+        node.hold();
+        Self(node)
+    }
+
+    /// The node.
+    pub fn node(&self) -> Node {
+        self.0
+    }
+}
+
+impl Drop for HeldNode {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+impl crate::regions::FilePages for HeldNode {
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Option<usize> {
+        crate::regions::FilePages::read_at(&self.0, offset, buffer)
+    }
+
+    fn path_into(&self, buffer: &mut [u8]) -> Option<usize> {
+        self.0.path_into(buffer)
+    }
+
+    fn identity(&self) -> ((u32, u32), u64) {
+        crate::regions::FilePages::identity(&self.0)
+    }
+}
+
 /// The node `path` names, from `start` if it is relative, from `root` if it is absolute: the
-/// module documentation's walk. An empty path names `start`; callers that refuse one (`ENOENT`)
-/// check first.
+/// module documentation's walk, for the kernel, following a last component that is a link. An
+/// empty path names `start`; callers that refuse one (`ENOENT`) check first.
 pub fn resolve(root: Node, start: Node, path: &[u8]) -> Result<Node, Error> {
+    resolve_as(root, start, path, KERNEL_CALLER, true)
+}
+
+/// [`resolve_as`] that follows no symbolic link (`RESOLVE_NO_SYMLINKS`): a link met on the
+/// way, or as the last component when `follow_last`, is [`Error::TooManyLinks`] (`ELOOP`); a
+/// last link is the node found when not `follow_last`.
+pub fn resolve_without_links(
+    root: Node,
+    start: Node,
+    path: &[u8],
+    caller: u32,
+    follow_last: bool,
+) -> Result<Node, Error> {
+    let mut links = 0;
+    let walk_rule = Walk {
+        caller,
+        follow_last,
+        links_allowed: false,
+    };
+    walk(root, start, path, walk_rule, 0, &mut links)
+}
+
+/// [`resolve`] for process `caller` (`/proc/self` is its directory), following the last
+/// component if it is a symbolic link only when `follow_last` (not for `lstat`, `readlink`,
+/// `O_NOFOLLOW`).
+pub fn resolve_as(
+    root: Node,
+    start: Node,
+    path: &[u8],
+    caller: u32,
+    follow_last: bool,
+) -> Result<Node, Error> {
+    let mut links = 0;
+    let walk_rule = Walk {
+        caller,
+        follow_last,
+        links_allowed: true,
+    };
+    walk(root, start, path, walk_rule, 0, &mut links)
+}
+
+#[derive(Clone, Copy)]
+struct Walk {
+    caller: u32,
+    follow_last: bool,
+    links_allowed: bool,
+}
+
+fn walk(
+    root: Node,
+    start: Node,
+    path: &[u8],
+    rule: Walk,
+    nesting: u32,
+    links: &mut u32,
+) -> Result<Node, Error> {
     let mut node = match path.first() {
         Some(b'/') => root,
         _ => start,
     };
     let mut must_be_directory = false;
-    for component in path.split(|&byte| byte == b'/') {
+    let mut components = path.split(|&byte| byte == b'/');
+    while let Some(component) = components.next() {
         match component {
             b"" => {
                 must_be_directory = true;
@@ -445,8 +715,13 @@ pub fn resolve(root: Node, start: Node, path: &[u8]) -> Result<Node, Error> {
                 must_be_directory = true;
             }
             name => {
+                let directory = node;
                 node = node.lookup(name)?;
                 must_be_directory = false;
+                let is_last = components.clone().next().is_none();
+                if node.kind() == NodeKind::SymbolicLink && (!is_last || rule.follow_last) {
+                    node = follow(root, directory, node, rule, nesting, links)?;
+                }
             }
         }
     }
@@ -454,6 +729,31 @@ pub fn resolve(root: Node, start: Node, path: &[u8]) -> Result<Node, Error> {
         return Err(Error::NotDirectory);
     }
     Ok(node)
+}
+
+#[cold]
+#[inline(never)]
+fn follow(
+    root: Node,
+    directory: Node,
+    link: Node,
+    rule: Walk,
+    nesting: u32,
+    links: &mut u32,
+) -> Result<Node, Error> {
+    *links += 1;
+    if !rule.links_allowed || *links > MAX_LINKS || nesting >= MAX_NESTED_LINKS {
+        return Err(Error::TooManyLinks);
+    }
+    let target = link.link_target(rule.caller).ok_or(Error::NotFound)?;
+    if target.is_empty() {
+        return Err(Error::NotFound);
+    }
+    let inner = Walk {
+        follow_last: true,
+        ..rule
+    };
+    walk(root, directory, &target, inner, nesting + 1, links)
 }
 
 /// The last component of `path` and the path of the directory that holds it (`.` for a
@@ -537,6 +837,24 @@ pub fn mount(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(), Mo
     if !point.is_directory() || point == root {
         return Err(MountError::NoMountPoint);
     }
+    add_mount(point, file_system)
+}
+
+/// Mounts `file_system`, whose root is a regular file, over the regular file `path` names from
+/// the root, for good, as Linux mounts one file over another (D157): opening the path opens
+/// the mounted file.
+pub fn mount_file(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(), MountError> {
+    let root = root();
+    let point = resolve(root, root, path).map_err(|_| MountError::NoMountPoint)?;
+    if point.kind() != NodeKind::Regular
+        || file_system.kind(file_system.root()) != NodeKind::Regular
+    {
+        return Err(MountError::NoMountPoint);
+    }
+    add_mount(point, file_system)
+}
+
+fn add_mount(point: Node, file_system: &'static dyn FileSystem) -> Result<(), MountError> {
     if covered_by(point).is_some() || mounts().any(|mounted| mounted.point == point) {
         return Err(MountError::Taken);
     }
@@ -562,10 +880,35 @@ pub fn mount(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(), Mo
     Err(MountError::Taken)
 }
 
+/// Calls `each` with where each mounted file system is mounted and its root, the root file
+/// system's first (`/proc/mounts`, D171).
+pub fn each_mount(mut each: impl FnMut(Node, Node)) {
+    let root = root();
+    each(root, root);
+    for mounted in mounts() {
+        each(mounted.point, mounted.root);
+    }
+}
+
+/// The name Linux gives a file system of type `magic` (`/proc/mounts`, `df -T`).
+pub fn type_name(magic: u64) -> &'static str {
+    match magic {
+        magic::TMPFS => "tmpfs",
+        magic::RAMFS => "rootfs",
+        magic::PROC => "proc",
+        magic::MSDOS => "vfat",
+        magic::EGGFS => "eggfs",
+        magic::PIPEFS => "pipefs",
+        magic::SOCKFS => "sockfs",
+        magic::ANON_INODE_FS => "anon_inodefs",
+        _ => "unknown",
+    }
+}
+
 /// Puts every mounted file system's changes on stable storage (`sync`, and before the
 /// machine goes down); [`StorageError`] if any failed, after trying them all.
 pub fn sync_all() -> Result<(), StorageError> {
-    let mut result = Ok(());
+    let mut result = shared_pages::write_back_all();
     for mounted in mounts() {
         if mounted.root.file_system.sync().is_err() {
             result = Err(StorageError);
@@ -734,5 +1077,123 @@ mod tests {
         assert_eq!(file.path_into(&mut small[..12]), None);
         assert_eq!(root.path_into(&mut small[..1]), Some(0));
         assert_eq!(root.path_into(&mut []), None);
+    }
+    #[derive(Debug)]
+    struct Links;
+
+    const LINKS_ROOT: u64 = 1;
+    const LINKS_DIRECTORY: u64 = 2;
+    const LINKS_FILE: u64 = 3;
+    const LINKS: [(&[u8], u64, &[u8]); 5] = [
+        (b"loop", 4, b"loop"),
+        (b"up", 5, b"/d"),
+        (b"near", 6, b"d/file"),
+        (b"mine", 7, b""),
+        (b"gone", 8, b"nothing"),
+    ];
+
+    impl FileSystem for Links {
+        fn root(&self) -> u64 {
+            LINKS_ROOT
+        }
+
+        fn device(&self) -> (u32, u32) {
+            (0, 99)
+        }
+
+        fn kind(&self, node: u64) -> NodeKind {
+            match node {
+                LINKS_ROOT | LINKS_DIRECTORY => NodeKind::Directory,
+                LINKS_FILE => NodeKind::Regular,
+                _ => NodeKind::SymbolicLink,
+            }
+        }
+
+        fn attributes(&self, node: u64) -> Attributes {
+            Attributes {
+                kind: self.kind(node),
+                permissions: 0o777,
+                file_id: node,
+                links: 1,
+                owner: 0,
+                group: 0,
+                size: 0,
+                modified: 0,
+            }
+        }
+
+        fn lookup(&self, directory: u64, name: &[u8]) -> Option<u64> {
+            match (directory, name) {
+                (LINKS_ROOT, b"d") => Some(LINKS_DIRECTORY),
+                (LINKS_DIRECTORY, b"file") => Some(LINKS_FILE),
+                (LINKS_ROOT, name) => LINKS
+                    .iter()
+                    .find(|(link, _, _)| *link == name)
+                    .map(|&(_, node, _)| node),
+                _ => None,
+            }
+        }
+
+        fn parent(&self, node: u64) -> u64 {
+            match node {
+                LINKS_FILE => LINKS_DIRECTORY,
+                _ => LINKS_ROOT,
+            }
+        }
+
+        fn name(&self, _node: u64) -> Name {
+            Name::new(b"")
+        }
+
+        fn read(&self, _node: u64, _offset: u64, _length: usize) -> &[u8] {
+            &[]
+        }
+
+        fn link_target(&self, node: u64, caller: u32) -> Option<Vec<u8>> {
+            if node == 7 {
+                return (caller != KERNEL_CALLER).then(|| b"d".to_vec());
+            }
+            LINKS
+                .iter()
+                .find(|&&(_, link, _)| link == node)
+                .map(|(_, _, target)| target.to_vec())
+        }
+
+        fn entry(&self, _directory: u64, _position: u64) -> Option<DirectoryEntry> {
+            None
+        }
+    }
+
+    #[test]
+    fn links_are_followed_from_their_directory_up_to_linux_s_limits() {
+        let root = Node::root_of(Box::leak(Box::new(Links)));
+        let at = |path: &[u8], follow_last| resolve_as(root, root, path, 7, follow_last);
+        assert_eq!(at(b"/up/file", true).map(|node| node.id()), Ok(LINKS_FILE));
+        assert_eq!(at(b"near", true).map(|node| node.id()), Ok(LINKS_FILE));
+        assert_eq!(at(b"near", false).map(|node| node.id()), Ok(6));
+        assert_eq!(at(b"up/", false).map(|node| node.id()), Ok(LINKS_DIRECTORY));
+        assert_eq!(
+            at(b"mine/file", false).map(|node| node.id()),
+            Ok(LINKS_FILE)
+        );
+        assert_eq!(
+            resolve(root, root, b"mine/file"),
+            Err(Error::NotFound),
+            "the kernel has no directory of its own"
+        );
+        assert_eq!(at(b"loop", true), Err(Error::TooManyLinks));
+        assert_eq!(at(b"loop", false).map(|node| node.id()), Ok(4));
+        assert_eq!(at(b"gone", true), Err(Error::NotFound));
+        assert_eq!(at(b"near/x", true), Err(Error::NotDirectory));
+        let without =
+            |path: &[u8], follow_last| resolve_without_links(root, root, path, 7, follow_last);
+        assert_eq!(without(b"up/file", true), Err(Error::TooManyLinks));
+        assert_eq!(without(b"up/file", false), Err(Error::TooManyLinks));
+        assert_eq!(without(b"near", true), Err(Error::TooManyLinks));
+        assert_eq!(without(b"near", false).map(|node| node.id()), Ok(6));
+        assert_eq!(
+            without(b"/d/file", true).map(|node| node.id()),
+            Ok(LINKS_FILE)
+        );
     }
 }

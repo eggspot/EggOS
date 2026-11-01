@@ -1,0 +1,10 @@
+[package]
+name = "eggos-multi-crate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+eggos-multi-crate-checksums = { path = "../checksums" }
+eggos-multi-crate-report = { path = "../report" }

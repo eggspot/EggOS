@@ -2,19 +2,37 @@
 //! must change with the kernel's and the test programs' own) and why QEMU gets the arguments it
 //! does: docs/build.md, "Developer commands".
 
+pub mod agent_network;
+pub mod android_dynamic;
+pub mod autohotkey;
+pub mod cocoa_app;
+pub mod disks;
+pub mod dynamic_linking;
 pub mod files;
+pub mod gtk_app;
+pub mod hello_crate;
 pub mod install;
 mod linux_gui;
 pub mod macos_gui;
 pub mod mcp;
+pub mod network;
 pub mod persistent;
+pub mod qt_app;
 pub mod real_time;
+pub mod reboot;
+pub mod run_scripts;
+pub mod rustc_version;
+pub mod sdl_app;
 pub mod settings;
 pub mod shell;
+pub mod static_glibc;
 pub mod text_editor;
+pub mod win32_app;
 mod win_controls;
 mod windows_crt;
 mod windows_gui;
+pub mod work_disk;
+pub mod workspace_build;
 
 use crate::qmp::{self, InputEvent, Picture, Qmp};
 use crate::{Arch, elf};
@@ -29,7 +47,7 @@ use eggos_drivers::desktop::{Contents, Desktop, GRID_SIZE, Part, WindowId, colou
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::input::keymap::Modifiers;
 use eggos_drivers::input::{AxisRange, key, scale_to_screen};
-use eggos_drivers::terminal::Terminal;
+use eggos_drivers::terminal::{CursorLook, Terminal};
 
 const PASS_MARKER: &str = "EGGOS-SELFTEST: PASS";
 const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
@@ -126,7 +144,8 @@ pub enum Expect {
     /// The release kernel starts init, which starts the shell; the test types one line of its
     /// session each time a prompt appears, as a person would, so the console's echo never mixes
     /// with what the commands write, and `^C` when the program waiting for it says so; the
-    /// shell writes each line the session expects and exits with 7, and init powers off (D107).
+    /// shell writes each line the session expects and exits with 7, and init powers off (D107)
+    /// after it sent `SIGTERM` to the program the session left waiting for it (D183).
     Shell,
     /// The release kernel boots to the prompt of the shell init starts by default; the test
     /// types a line of its session at each prompt, which runs the core utilities, each writing
@@ -138,7 +157,8 @@ pub enum Expect {
     /// `relocation-model=pie` (a static PIE on x86_64), boots to the shell's prompt; the test
     /// types a line at each prompt that runs one of them, by name or by its path, and each
     /// command must write its lines in order before the next prompt; the shell exits with 7 and
-    /// init powers off (D117).
+    /// init powers off (D117). The machine has the offscreen display, and `linux-memory` uses
+    /// memory up four ways while the kernel keeps its reserve (D155).
     LinuxPrograms,
     /// The release kernel with Windows console programs built for this CPU's Windows target
     /// (`x86_64-pc-windows-msvc` or `aarch64-pc-windows-msvc`, x64's on riscv64) and one built
@@ -159,7 +179,10 @@ pub enum Expect {
     /// CPU's program, one that links a library EggOS lacks, the other CPU's program and a fat
     /// file of both. The test types a line at each prompt that runs one, and each command must
     /// write its lines in order before the next prompt: the program's checks, exit statuses,
-    /// an abort, an unimplemented function and the refusals; on riscv64, `ENOEXEC` (D120).
+    /// an abort, an unimplemented function and the refusals; on riscv64, `ENOEXEC` (D120). On
+    /// aarch64 the x86_64 program runs translated and writes the same checks as this CPU's
+    /// (its `qsort` comparator and `atexit` handler called through callback thunks), on x86_64
+    /// the arm64 program is refused (D191).
     MacosPrograms,
     /// The release kernel boots with a host folder attached as the run scripts attach one
     /// (`--apps`, [`host_folder_args`]): a text file and our static Linux program in a
@@ -196,7 +219,46 @@ pub enum Expect {
     /// typed letters and Enter appear, Ctrl+S saves (its status line says so) and the close
     /// control closes it (D146); then the program's lines in the file (its arguments, the bytes
     /// it opened and saved, the keys it took and its `atexit` handler), the saved file read
-    /// back by `cat`, and its status 0.
+    /// back by `cat`, and its status 0. Then `eggcpp.exe`, our own C++ program (D177), built
+    /// for `__CxxFrameHandler4` and, as `eggcpp-fh3.exe`, for `__CxxFrameHandler3`: its lines
+    /// say it caught by type, through a base class, by value and with `catch (...)`, ran the
+    /// destructors of the frames it left, rethrew, threw from a catch block, took an access
+    /// violation, a division by zero and an illegal instruction in `__try` blocks, ran a
+    /// `__finally` block, continued from a vectored handler and a filter and raised a signal;
+    /// and an uncaught exception ends it through `terminate` with status 3.
+    /// Then `eggspawn.exe`, our own C program (D189): it starts a copy of itself with
+    /// `CreateProcessW` whose standard output is an inherited pipe, and its lines say the read
+    /// end was kept from the child, `PeekNamedPipe` saw what `ReadFile` then took before the
+    /// pipe's end, the child got its arguments, environment and folder, the exit code 42 came
+    /// back through the process handle and a duplicate, a protected handle refused to close,
+    /// `TerminateProcess` ended a waiting child with code 9, `CreateProcessA` with
+    /// `CREATE_SUSPENDED` ran a child that `ResumeThread` let go, and a missing program is
+    /// `ERROR_FILE_NOT_FOUND`; then its status 0.
+    /// Then `eggsync.exe`, our own C program (D189): its lines say APCs ran in `SleepEx` on the
+    /// thread itself and woke another thread's infinite alertable sleep, an alertable wait
+    /// returned `WAIT_IO_COMPLETION` before its event was set, mutexes whose owners ended came
+    /// back `WAIT_ABANDONED` (alone and among others), `ReleaseMutex` by a non-owner failed with
+    /// `ERROR_NOT_OWNER`, `MsgWaitForMultipleObjects(Ex)` took an object, timed out and ran an
+    /// APC, ws2_32's and wsock32's ordinals agree with their names, and `FindFirstFileW`
+    /// matched DOS wildcards (`*.txt`, `*.`, `??.c`, `<.c`, `A?.TXT`); then its status 0.
+    /// Then `eggnamed.exe`, our own C program (D189): its lines say named objects keep their
+    /// rules (`ERROR_ALREADY_EXISTS`, another kind, a missing name, a bad path), a child it
+    /// started got `*.txt` expanded by the C runtime and shared a named mutex, event,
+    /// semaphore and mapping with it, `SignalObjectAndWait` handed the mutex over, the mutex
+    /// came back abandoned once the child ended, the mapping went with its last handle, views
+    /// of a page-file mapping share memory and refuse bad offsets and sizes, and a file's view
+    /// wrote, flushed and copied on write; then its status 0.
+    /// Then `eggrust.exe`, our own Rust program on Rust's standard library (D189): its lines say
+    /// `Command::output` ran a copy of itself with its arguments and took its output, error
+    /// and exit code through pipes, a piped child's output was read as it came, a file was
+    /// written, rewritten, cut and removed, four threads shared a `Mutex` and a `Condvar`
+    /// with their own thread-locals, `thread::sleep` and the clocks worked and a `HashMap` was
+    /// seeded; then its status 0; and `eggrust.exe panic` prints the panic on standard error
+    /// and ends with status 101. Then `eggmingw.exe`, our own C program built by llvm-mingw on
+    /// MinGW's `msvcrt.dll` (D189): its lines say it got its arguments and environment through
+    /// `__getmainargs`, printed through MinGW's own `printf` and the old runtime's, sorted with
+    /// `qsort`, grew a heap block, raised a signal its handler took, named an `errno` and wrote
+    /// to standard error; its `atexit` handler ran and its status is 3.
     WindowsCrt,
     /// The release kernel with `linux-paint`, a Wayland client built from our own source with
     /// Rust's standard library on musl, added at `/bin/linux-paint`, boots to the shell's prompt
@@ -217,7 +279,7 @@ const BOOT_CLOCK_LINE: &str = "EGGOS-BENCH: boot_to_prompt ";
 
 const SHELL_PROMPT: &str = "eggsh:/";
 
-const SHELL_SESSION: [&[u8]; 17] = [
+const SHELL_SESSION: [&[u8]; 38] = [
     b"echo EGGSH-TEST quoting 'single  quoted' \"double $HOME\" \\$HOME\r",
     b"X=abc; Y=\"x y\"; echo EGGSH-TEST variables $X${X}def \"$Y\" $Y\r",
     b"cd /usr/libexec; echo EGGSH-TEST cd $PWD $OLDPWD; cd; echo EGGSH-TEST home $PWD\r",
@@ -228,21 +290,47 @@ const SHELL_SESSION: [&[u8]; 17] = [
     b"eggos-std-selftest shell-child kill-self; echo EGGSH-TEST killed $?\r",
     b"eggsh /usr/share/eggsh/test-script one two; echo EGGSH-TEST script status $?\r",
     b"eggsh -c 'echo EGGSH-TEST dash-c $0 $1' name arg\r",
-    b"echo a && b; echo EGGSH-TEST never\r",
-    b"echo EGGSH-TEST after unsupported $?\r",
+    b"eggsh /usr/share/eggsh/language-test; echo EGGSH-TEST language status $?\r",
+    b"TZ=Asia/Kolkata date +EGGSH-TEST-zone-%Z%z; echo EGGSH-TEST zone $?\r",
+    b"for i in 1 2; do echo EGGSH-TEST loop $i; done\r",
+    b"true && echo EGGSH-TEST and ok; false && echo EGGSH-TEST never; false || echo EGGSH-TEST or ok\r",
+    b"eggsh -c 'echo echo EGGSH-TEST redirected stderr >&2' 2> /tmp/e; . /tmp/e\r",
+    b"eggsh -c 'echo echo EGGSH-TEST stderr joined >&2' > /tmp/d 2>&1; . /tmp/d\r",
+    CURSOR_LINE,
+    b"eggos-std-selftest shell-child show NOTHING bg & wait $!; echo EGGSH-TEST background $?\r",
+    b"eggos-std-selftest shell-child stop-and-continue\r",
+    b"jobs\r",
+    b"bg\r",
+    b"jobs\r",
+    b"fg; echo EGGSH-TEST fg status $?\r",
+    b"eggos-std-selftest shell-child read-line & wait %1; echo EGGSH-TEST ttin $?\r",
+    b"fg\r",
+    b"echo EGGSH-TEST read status $?\r",
+    b"eggos-std-selftest shell-child sleep & kill %1; wait %1; echo EGGSH-TEST killed job $?\r",
+    b"eggos-std-selftest shell-child window-change; echo EGGSH-TEST window status $?\r",
+    b"echo EGGSH-TEST remembered $X\r",
+    b"X=nested eggsh\r",
+    RECALL_THE_LINE_BEFORE_LAST,
+    b"exit 0\r",
     b"eggos-std-selftest shell-child wait-for-interrupt\r",
     b"echo EGGSH-TEST interrupted $?\r",
     b"\x03",
     b"echo EGGSH-TEST prompt interrupt $?\r",
+    b"eggos-std-selftest shell-child term-at-power-off\r",
     b"exit 7\r",
 ];
 
-const LINUX_PROGRAM_SESSION: [&[u8]; 6] = [
+const CURSOR_LINE: &[u8] = b"EGGSH-TEST cursr\x1b[Do\x01echo \x05 moved\r";
+
+const LINUX_PROGRAM_SESSION: [&[u8]; 9] = [
     b"GREETING=hi linux-static a 'b c'; echo LINUX-STATIC status $?\r",
     b"GREETING=hi /bin/linux-static-pie a 'b c'; echo LINUX-STATIC status $?\r",
     b"linux-static exit 42; echo LINUX-STATIC status $?\r",
     b"linux-static-pie panic; echo LINUX-STATIC status $?\r",
     b"linux-sockets; echo LINUX-SOCKETS status $?\r",
+    b"linux-memory; echo LINUX-MEMORY status $?\r",
+    b"linux-mappings; echo LINUX-MAPPINGS status $?\r",
+    b"linux-events; echo LINUX-EVENTS status $?\r",
     b"exit 7\r",
 ];
 
@@ -258,6 +346,42 @@ const LINUX_SOCKETS_LINES: [&str; 10] = [
     "LINUX-SOCKETS large 1048576 bytes ok",
     "LINUX-SOCKETS peer closed eof EPIPE child 0",
     "LINUX-SOCKETS status 0",
+];
+
+const LINUX_MEMORY_LINES: [&str; 7] = [
+    "LINUX-MEMORY windows ENOMEM within a quarter of memory",
+    "LINUX-MEMORY memfd ENOMEM for a mapping as large as memory",
+    "LINUX-MEMORY memfd ENOMEM with the reserve still free",
+    "LINUX-MEMORY anonymous killed by SIGKILL",
+    "LINUX-MEMORY sockets ENOMEM within an eighth of memory",
+    "LINUX-MEMORY memory back",
+    "LINUX-MEMORY status 0",
+];
+
+const LINUX_MAPPINGS_LINES: [&str; 9] = [
+    "LINUX-MAPPINGS private read ok",
+    "LINUX-MAPPINGS past the end SIGBUS",
+    "LINUX-MAPPINGS private writes stay private, DONTNEED reads the file again",
+    "LINUX-MAPPINGS shared read-only, EACCES for writing",
+    "LINUX-MAPPINGS the program's own file",
+    "LINUX-MAPPINGS fork reads the file's pages",
+    "LINUX-MAPPINGS mremap grows into the file",
+    "LINUX-MAPPINGS msync 0 ENOMEM",
+    "LINUX-MAPPINGS status 0",
+];
+
+const LINUX_EVENTS_LINES: [&str; 9] = [
+    "LINUX-EVENTS epoll: timerfd twice, eventfd 3, semaphore 1 1 EAGAIN, signalfd SIGUSR1, a pipe \
+     woken by a thread",
+    "LINUX-EVENTS select and pselect6 on a pipe: timeout 0, ready 1, woken 1",
+    "LINUX-EVENTS fork copies on write: the child saw 1 and wrote 2, the parent kept 1",
+    "LINUX-EVENTS fork keeps MAP_SHARED anonymous memory shared: the parent sees the child's 2",
+    "LINUX-EVENTS /dev/shm: a child's write through MAP_SHARED is the parent's, then unlinked",
+    "LINUX-EVENTS MAP_SHARED of a /tmp file: msync then pread sees it, a write is seen through it",
+    "LINUX-EVENTS MADV_DONTFORK: the child gets SIGSEGV; MADV_WIPEONFORK: the child reads zeros",
+    "LINUX-EVENTS inotify: CREATE a.txt, MOVED_FROM a.txt and MOVED_TO b.txt with one cookie, \
+     DELETE b.txt, IGNORED after inotify_rm_watch, readable through epoll and FIONREAD",
+    "LINUX-EVENTS status 0",
 ];
 
 const HOST_FOLDER_SESSION: [&[u8]; 7] = [
@@ -283,8 +407,7 @@ fn host_folder_output() -> [Vec<Line>; HOST_FOLDER_SESSION.len()] {
     let program = linux_program_output()[0].clone();
     [
         vec![
-            Line::Whole("Programs and Tools".into()),
-            Line::Whole("readme.txt".into()),
+            Line::Whole("Programs and Tools  readme.txt".into()),
             Line::Around("-rwxr-xr-x 1 0 0 38 ", " /media/host/readme.txt"),
         ],
         whole(&["EGGOS-HOST-FOLDER hello from the host", "38"]),
@@ -344,6 +467,24 @@ pub fn disk_args(arch: &Arch, image: &str) -> Vec<String> {
     ]
 }
 
+/// QEMU's arguments that attach the work disk image `image` (an absolute path, made by
+/// `cargo xtask work pack`) writable on another of `arch`'s virtio block devices, which EggOS
+/// mounts at `/work` (D166). EggOS tells it from the disk that holds `/home` by the marker in
+/// its root, not by the order the disks come in.
+pub fn work_disk_args(arch: &Arch, image: &str) -> Vec<String> {
+    vec![
+        "-blockdev".into(),
+        format!(
+            "driver=file,node-name=work-file,filename={}",
+            image.replace(',', ",,")
+        ),
+        "-blockdev".into(),
+        "driver=raw,node-name=work,file=work-file".into(),
+        "-device".into(),
+        format!("{},drive=work", arch.disk_device),
+    ]
+}
+
 /// Creates the disk image `path`, `bytes` long and empty, unless it exists with something in
 /// it; returns whether it made one. An empty file is extended, as the run scripts do; a file
 /// with contents is never cut. The file is extended without writing (sparse on APFS, ext4 and
@@ -363,7 +504,7 @@ pub fn reset_disk_image(path: &Path, bytes: u64) -> Result<(), String> {
 }
 
 const PROGRAM_WINDOW_SESSION: [&[u8]; 4] = [
-    b"ls /dev\r",
+    b"ls /dev/window\r",
     b"/usr/libexec/hello-window -o first | /usr/libexec/hello-window -i second; \
       echo EGGOS-WINDOWS status $?\r",
     b"wm list\r",
@@ -379,7 +520,7 @@ const WINDOW_CONTENT: (u32, u32) = (400, 300);
 fn program_window_output() -> [Vec<Line>; PROGRAM_WINDOW_SESSION.len()] {
     let line = |text: &str| Line::Whole(text.to_owned());
     [
-        vec![line("window")],
+        vec![line("/dev/window")],
         vec![
             line("hello-window first: shown"),
             line("hello-window second: shown"),
@@ -393,7 +534,7 @@ fn program_window_output() -> [Vec<Line>; PROGRAM_WINDOW_SESSION.len()] {
         ],
         vec![
             Line::Whole(WM_LIST_HEADER.to_owned()),
-            Line::Around("64 normal ", " kernel Terminal"),
+            Line::Around("64 normal ", " kernel Console"),
         ],
         vec![line(SHELL_EXIT_LINE), line(POWER_DOWN_LINE)],
     ]
@@ -455,11 +596,105 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT quit 0",
 ];
 
-const WINDOWS_CRT_SESSION: [&[u8]; 4] = [
+const WINDOWS_CRT_SESSION: [&[u8]; 13] = [
     b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
     b"cat /tmp/eggpad.log\r",
     b"cat /tmp/note.txt\r",
+    b"eggcpp.exe; echo EGGCPP status $?\r",
+    b"eggcpp-fh3.exe; echo EGGCPP-FH3 status $?\r",
+    b"eggcpp.exe uncaught; echo EGGCPP uncaught status $?\r",
+    b"eggspawn.exe; echo EGGSPAWN status $?\r",
+    b"eggsync.exe; echo EGGSYNC status $?\r",
+    b"eggnamed.exe; echo EGGNAMED status $?\r",
+    b"eggrust.exe; echo EGGRUST status $?\r",
+    b"eggrust.exe panic; echo EGGRUST panic status $?\r",
+    b"GREETING=hi eggmingw.exe one 'two words'; echo EGGMINGW status $?\r",
     b"exit 7\r",
+];
+
+const EGGCPP_LINES: [&str; 15] = [
+    "EGGCPP caught int 7",
+    "EGGCPP caught derived through base, destroyed 1",
+    "EGGCPP caught deep after 4 destructors",
+    "EGGCPP rethrowing",
+    "EGGCPP rethrown 42",
+    "EGGCPP caught by value 9 copied",
+    "EGGCPP caught 2.5 from a catch block, destroyed 2",
+    "EGGCPP access violation c0000005 write 1",
+    "EGGCPP divide by zero c0000094",
+    "EGGCPP finally ran 1 before except",
+    "EGGCPP vectored continued 1 removed 1",
+    "EGGCPP filter continued 1",
+    "EGGCPP illegal instruction c000001d",
+    "EGGCPP signal 2",
+    "EGGCPP done",
+];
+
+const EGGSPAWN_LINES: [&str; 12] = [
+    "EGGSPAWN pipe inherit read 0 write 1",
+    "EGGSPAWN peeked 8, all 1 read, same 1, then broken pipe 1",
+    "EGGSPAWN child said args 4: child|two words|back\\slash|q\"uote",
+    "EGGSPAWN child said greeting hello",
+    "EGGSPAWN child said directory C:\\tmp",
+    "EGGSPAWN child exit 42, through a duplicate 42",
+    "EGGSPAWN duplicate inherit 1, protected close refused 1 then closed 1",
+    "EGGSPAWN terminate: running 259, timeout 1, exit 9",
+    "EGGSPAWN ansi suspended resumed 1 then 0, exit 5",
+    "EGGSPAWN missing program started 0 error 2",
+    "EGGSPAWN done",
+    "EGGSPAWN status 0",
+];
+
+const EGGRUST_LINES: [&str; 9] = [
+    "EGGRUST hello from Rust's standard library",
+    "EGGRUST output: two words|q\"uote; error: child error line; exit 7",
+    "EGGRUST piped: read|end; exit 7",
+    "EGGRUST file read back short, cut to sho, length 3, removed true",
+    "EGGRUST threads 4 added 4000, thread-local 5 main 0",
+    "EGGRUST slept at least 20 ms true, system time after 2020 true",
+    "EGGRUST hash map 3 entries",
+    "EGGRUST done",
+    "EGGRUST status 0",
+];
+
+const EGGSYNC_LINES: [&str; 10] = [
+    "EGGSYNC apc on self ran 7, sleep 192",
+    "EGGSYNC apc woke a sleeping thread with 11, its sleep 192",
+    "EGGSYNC alertable wait 192 after 13, then the event 0",
+    "EGGSYNC abandoned 128, owner released 1, then 0 with 288",
+    "EGGSYNC wait any abandoned 129",
+    "EGGSYNC message waits 0, 258, alertable 192 after 17",
+    "EGGSYNC ordinals ws2_32 1 1, wsock32 1, missing 1 127",
+    "EGGSYNC found *.txt 2, *. 1, ??.c 1, <.c 1, A?.TXT 1",
+    "EGGSYNC no match -2, end 18",
+    "EGGSYNC status 0",
+];
+
+const EGGNAMED_LINES: [&str; 11] = [
+    "EGGNAMED names created 0, again 183 with a new handle 1, as an event 6, missing 2, bad path 3",
+    "EGGNAMED child signalled 0, released 1, ended 0 with 0",
+    "EGGNAMED child args 3: child C:\\tmp\\eggnamed\\a.txt C:\\tmp\\eggnamed\\b.txt",
+    "EGGNAMED child saw the parent, mutex 258, semaphore before 0",
+    "EGGNAMED child signal and wait 0",
+    "EGGNAMED semaphore 0 0 258, mutex after the child ended 128, released 1",
+    "EGGNAMED mapping gone after the last handle and view 2",
+    "EGGNAMED page file views share 1, empty 87, misaligned 1132, too long 5",
+    "EGGNAMED file view wrote jello, flushed 1, copy jullo, read-only write 5",
+    "EGGNAMED done",
+    "EGGNAMED status 0",
+];
+
+const EGGMINGW_LINES: [&str; 10] = [
+    "EGGMINGW hello from msvcrt.dll, arguments 2: one|two words",
+    "EGGMINGW greeting hi",
+    "EGGMINGW sorted 3 7 19 25 42",
+    "EGGMINGW heap grown to 10 bytes",
+    "EGGMINGW msvcrt formatted 1234567890123|ms  | 2.50, counted 9",
+    "EGGMINGW signal 2",
+    "EGGMINGW strerror No such file or directory",
+    "EGGMINGW stderr -77",
+    "EGGMINGW atexit ran",
+    "EGGMINGW status 3",
 ];
 
 const EGGPAD_LINES: [&str; 5] = [
@@ -477,10 +712,33 @@ fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
             .map(|line| Line::Whole(line.to_string()))
             .collect()
     };
+    let with_status = |status: &str| -> Vec<Line> {
+        let mut lines = whole(&EGGCPP_LINES);
+        lines.push(Line::Whole(status.to_owned()));
+        lines
+    };
     [
         whole(&["EGGPAD status 0"]),
         whole(&EGGPAD_LINES),
         whole(&["Hello from the shell", "abc"]),
+        with_status("EGGCPP status 0"),
+        with_status("EGGCPP-FH3 status 0"),
+        whole(&[
+            "EGGCPP throwing uncaught",
+            "windows: the program called terminate",
+            "EGGCPP uncaught status 3",
+        ]),
+        whole(&EGGSPAWN_LINES),
+        whole(&EGGSYNC_LINES),
+        whole(&EGGNAMED_LINES),
+        whole(&EGGRUST_LINES),
+        vec![
+            Line::Around("thread 'main'", ":"),
+            Line::Whole("EGGRUST panicking on purpose".to_owned()),
+            Line::Around("note: run with `RUST_BACKTRACE=1`", "backtrace"),
+            Line::Whole("EGGRUST panic status 101".to_owned()),
+        ],
+        whole(&EGGMINGW_LINES),
         whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
     ]
 }
@@ -540,7 +798,7 @@ const WINDOWS_PROGRAM_SESSION: [&[u8]; 9] = [
     b"GREETING=hi windows-console.exe a 'b c'; echo WINDOWS-CONSOLE status $?\r",
     b"/bin/windows-console.exe exit 300; echo WINDOWS-CONSOLE status $?\r",
     b"windows-unsupported.exe; echo WINDOWS-CONSOLE status $?\r",
-    b"other-cpu.exe; echo WINDOWS-CONSOLE status $?\r",
+    b"GREETING=hi other-cpu.exe a 'b c'; echo WINDOWS-CONSOLE status $?\r",
     b"windows-tools.exe dir 'C:\\bin\\windows-*.exe' 'C:\\bin\\windows-?ools.exe' \
       'C:\\usr\\share\\windows-tools\\*' 'C:\\nope\\*' 'C:\\bin\\*.zzz'; \
       echo WINDOWS-TOOLS status $?\r",
@@ -551,21 +809,54 @@ const WINDOWS_PROGRAM_SESSION: [&[u8]; 9] = [
     b"exit 7\r",
 ];
 
-const ANDROID_PROGRAM_SESSION: [&[u8]; 4] = [
+const ANDROID_PROGRAM_SESSION: [&[u8]; 8] = [
+    b"setprop eggos.test.greeting hello; getprop eggos.test.greeting; \
+      echo ANDROID-PROPERTIES status $?\r",
+    b"setprop ro.build.version.sdk 30; echo ANDROID-PROPERTIES status $?\r",
     b"GREETING=hi android-console a 'b c'; echo ANDROID-CONSOLE status $?\r",
+    b"logcat -d -v brief -s eggos-test; echo ANDROID-LOG status $?\r",
+    b"logcat -c; logcat -d; echo ANDROID-LOG status $?\r",
     b"/bin/android-console exit 42; echo ANDROID-CONSOLE status $?\r",
     b"android-console abort; echo ANDROID-CONSOLE status $?\r",
     b"exit 7\r",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 16] = [
+const MACOS_CONSOLE_CHECK_LINES: [&str; 23] = [
+    "MACOS-CONSOLE apple executable_path",
+    "MACOS-CONSOLE env GREETING=hi envp setenv",
+    "MACOS-CONSOLE printf",
+    "MACOS-CONSOLE ints -42 7 3000000000 -1234567890123 9000000000000000000 12 beef BEEF \
+     10 Z %",
+    "MACOS-CONSOLE widths [   42] [42   ] [00042] [+42] [abc] [   right] [left    ] \
+     [0xff] [   7]",
+    "MACOS-CONSOLE floats 3.25 -0.500000 2 1.234568e+04 0.0001",
+    "MACOS-CONSOLE snprintf 15 truncat",
+    "MACOS-CONSOLE puts",
+    "MACOS-CONSOLE strings strlen strcmp strchr strstr strdup memcmp",
+    "MACOS-CONSOLE numbers qsort strtol atoi",
+    "MACOS-CONSOLE file eggos",
+    "MACOS-CONSOLE missing ENOENT, read-only, open read close",
+    "MACOS-CONSOLE stat regular 6 bytes, directory",
+    "MACOS-CONSOLE dir about",
+    "MACOS-CONSOLE cwd chdir getcwd relative",
+    "MACOS-CONSOLE malloc small large realloc",
+    "MACOS-CONSOLE time monotonic realtime mach gettimeofday",
+    "MACOS-CONSOLE va_list vsnprintf",
+    "MACOS-CONSOLE misaligned read with a SIGBUS handler",
+    "MACOS-CONSOLE pid positive",
+    "MACOS-CONSOLE stderr",
+    "MACOS-CONSOLE atexit",
+    "MACOS-CONSOLE status 0",
+];
+
+const MACOS_PROGRAM_SESSION: [&[u8]; 24] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
     b"macos-console abort; echo MACOS-CONSOLE status $?\r",
     b"macos-console unimplemented; echo MACOS-CONSOLE status $?\r",
     b"macos-unsupported; echo MACOS-CONSOLE status $?\r",
-    b"macos-other; echo MACOS-CONSOLE status $?\r",
+    b"GREETING=hi macos-other a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"GREETING=hi macos-std a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"macos-std exit 5; echo MACOS-CONSOLE status $?\r",
     b"macos-tools -v --verbose -n 3 --list /usr/share/eggos --name=eggos rest more; \
@@ -575,6 +866,14 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 16] = [
     b"macos-objc unrecognized; echo MACOS-CONSOLE status $?\r",
     b"macos-objc unimplemented; echo MACOS-CONSOLE status $?\r",
     b"macos-objc bench; echo MACOS-CONSOLE status $?\r",
+    b"macos-objc language; echo MACOS-CONSOLE status $?\r",
+    b"macos-objc uncaught; echo MACOS-CONSOLE status $?\r",
+    b"macos-swift; echo MACOS-CONSOLE status $?\r",
+    b"macos-swift conflict; echo MACOS-CONSOLE status $?\r",
+    b"macos-swift fatal error; echo MACOS-CONSOLE status $?\r",
+    b"macos-process; echo MACOS-CONSOLE status $?\r",
+    b"macos-text; echo MACOS-CONSOLE status $?\r",
+    b"macos-legacy one -v --name=eggos two; echo MACOS-CONSOLE status $?\r",
     b"exit 7\r",
 ];
 
@@ -645,7 +944,157 @@ const OBJC_UNRECOGNIZED: &str = "*** Terminating app due to uncaught exception \
      'NSInvalidArgumentException', reason: '-[Counter frobnicate]: unrecognized selector sent to \
      instance 0x";
 
-fn objc_program_output() -> [Vec<Line>; 4] {
+const OBJC_LANGUAGE_LINES: [&str; 27] = [
+    "MACOS-OBJC block 42",
+    "MACOS-OBJC byref 3",
+    "MACOS-OBJC enumerate a0,b1",
+    "MACOS-OBJC captured cap7",
+    "MACOS-OBJC weak set",
+    "MACOS-OBJC dealloc Weakling",
+    "MACOS-OBJC weak nil",
+    "MACOS-OBJC caught EggError cracked",
+    "MACOS-OBJC finally",
+    "MACOS-OBJC passing 3",
+    "MACOS-OBJC caught EggRaise code 3",
+    "MACOS-OBJC inner EggRaise",
+    "MACOS-OBJC outer code 4",
+    "MACOS-OBJC caught any plain string",
+    "MACOS-OBJC set 2 1 0",
+    "MACOS-OBJC set a,c",
+    "MACOS-OBJC date 1970-01-01 00:00:00 +0000 1971-01-01 00:00:00 +0000 -1 31536000",
+    "MACOS-OBJC data {length = 3, bytes = 0x616263} 5 1",
+    "MACOS-OBJC error NSPOSIXErrorDomain 2 Egg missing",
+    "MACOS-OBJC process macos-objc language 1 1",
+    "MACOS-OBJC range 6 3 1 6 11",
+    "MACOS-OBJC timer witness timer",
+    "MACOS-OBJC dealloc timer",
+    "MACOS-OBJC timer 3 0",
+    "MACOS-OBJC tick once",
+    "MACOS-OBJC language done",
+    "MACOS-CONSOLE status 0",
+];
+
+const SWIFT_PROGRAM_LINES: [&str; 19] = [
+    "MACOS-SWIFT main",
+    "MACOS-SWIFT count 2 names 2 square 13.0 circle 3.0 largest 3.0",
+    "MACOS-SWIFT shapes square,circle,square",
+    "MACOS-SWIFT grow eggs are longer than fifteen bytes",
+    "MACOS-SWIFT keyed 3 1 2 -1",
+    "MACOS-SWIFT compare true true false",
+    "MACOS-SWIFT hatch first",
+    "MACOS-SWIFT holding first",
+    "MACOS-SWIFT deinit first",
+    "MACOS-SWIFT ints -42 9223372036854775807 200 doubles 0.1 1.5e+300 -2.0 0.3333333333333333",
+    "MACOS-SWIFT|items|3",
+    "MACOS-SWIFT levels 3 true false true false raw 2",
+    "MACOS-SWIFT casts int 5 string egg node nest level 1 other",
+    "MACOS-SWIFT weak parent owner parent",
+    "MACOS-SWIFT weak after nil",
+    "MACOS-SWIFT characters 12 10 o true true true",
+    "MACOS-SWIFT type Node Level random true",
+    "MACOS-SWIFT done",
+    "MACOS-CONSOLE status 0",
+];
+
+const TEXT_PROGRAM_LINES: [&str; 21] = [
+    "MACOS-TEXT main",
+    "MACOS-TEXT numbers 10 -42 15 31 16 7 -9000000000 123456789012 44 -2 99",
+    "MACOS-TEXT floats 3 2.500 -125.000 0.125",
+    "MACOS-TEXT strings 5 'hello' 'xy' 'abc123' 18 'tail' 0x1000",
+    "MACOS-TEXT suppressed 1 34",
+    "MACOS-TEXT endings -1 -1 1 2 2 0 'x' 2 5 6",
+    "MACOS-TEXT stream 2 10 20 1 'eggos' 1 1.0 'e' 1 3.5 -1 1",
+    "MACOS-TEXT spans 3 3 '=value; other' 1",
+    "MACOS-TEXT locale C POSIX 1",
+    "MACOS-TEXT names C/UTF-8/C/C/C/C 1 1 4 C/UTF-8/C/C/C/C",
+    "MACOS-TEXT environment en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8",
+    "MACOS-TEXT en_US UTF-8 %m/%d/%Y %a %b %e %X %Y ',' 'USD ' '$' 3 2 yes:y:YES:Y -$",
+    "MACOS-TEXT time '03/05/2026|Thu Mar  5 14:07:09 2026|03/05/26' 126 2 5 14 7 9 4 63 ' rest'",
+    "MACOS-TEXT parsed 126 2 5 4 63 1 ''",
+    "MACOS-TEXT year day 1 2 5 4 63",
+    "MACOS-TEXT ctype 1 1 1 0 1 C9 E9 178 39C FF 0",
+    "MACOS-TEXT multibyte 3 E9 20AC 6 1 2 1F600 4 F4 1 1 2 1",
+    "MACOS-TEXT wide scan 1 68 E9 6C 0",
+    "MACOS-TEXT C again E9 0 1 1 E9 1",
+    "MACOS-TEXT done",
+    "MACOS-CONSOLE status 0",
+];
+
+const LEGACY_PROGRAM_LINES: [&str; 14] = [
+    "MACOS-LEGACY main",
+    "MACOS-LEGACY argv v=1 name=eggos optind=3 words=-v,--name=eggos,one,two",
+    "MACOS-LEGACY permute optind=6 after=3,4,7 order=-v,--name=x,-n,y,--,file1,file2,-v,z",
+    "MACOS-LEGACY in-order 1:a v 1:b optind=4",
+    "MACOS-LEGACY posix -1 1 plus -1 1 a",
+    "MACOS-LEGACY long-only v#1 n=q n=x ? l#3 optind=6",
+    "macos-legacy: invalid option -- x",
+    "macos-legacy: unrecognized option `--bogus'",
+    "macos-legacy: option `--verbose' doesn't allow an argument",
+    "macos-legacy: option `--name' requires an argument",
+    "MACOS-LEGACY getopt -1 1 then v 3",
+    "MACOS-LEGACY lazy 5 0 42 1,2,3 hello world 5",
+    "MACOS-LEGACY done",
+    "MACOS-CONSOLE status 0",
+];
+
+const PROCESS_PROGRAM_LINES: [&str; 22] = [
+    "MACOS-PROCESS main",
+    "MACOS-PROCESS siginfo 30 user self default-before 1",
+    "MACOS-PROCESS signal 31 count 1",
+    "MACOS-PROCESS mask held 1 pending 1 suspend -1 EINTR count 2",
+    "MACOS-PROCESS altstack 0 was-disabled refused -1 ENOMEM on 1",
+    "MACOS-PROCESS fork read 'hello from the child' same 1 exited 1 status 7",
+    "MACOS-PROCESS killed signaled 1 signal 15",
+    "MACOS-PROCESS sigchld same 1 code exited status 3 wait 3",
+    "MACOS-PROCESS exec-child by execv",
+    "MACOS-PROCESS execv status 5",
+    "MACOS-PROCESS exec-child by execlp",
+    "MACOS-PROCESS execlp status 5",
+    "MACOS-PROCESS exec missing -1 ENOENT",
+    "MACOS-PROCESS spawn 0 flags 1 read 'spawned hello' status 0",
+    "MACOS-PROCESS count-child read input",
+    "MACOS-PROCESS spawn open 0 status 0",
+    "MACOS-PROCESS spawnp missing ENOENT suspended ENOTSUP",
+    "MACOS-PROCESS spawn closing all missing ENOENT",
+    "MACOS-PROCESS popen 'popen works' status 0",
+    "MACOS-PROCESS system 4 available 1",
+    "MACOS-PROCESS done",
+    "MACOS-CONSOLE status 0",
+];
+
+fn swift_program_output() -> [Vec<Line>; 3] {
+    let program = SWIFT_PROGRAM_LINES
+        .iter()
+        .map(|line| Line::Whole((*line).to_owned()))
+        .collect();
+    let conflict = vec![
+        Line::Whole("MACOS-SWIFT conflict".to_owned()),
+        Line::Around(
+            "Simultaneous accesses to 0x",
+            ", but modification requires exclusive access.",
+        ),
+        Line::Whole("Fatal access conflict detected.".to_owned()),
+        Line::Whole("Aborted".to_owned()),
+        Line::Whole("MACOS-CONSOLE status 134".to_owned()),
+    ];
+    let fatal = vec![
+        Line::Whole("MACOS-SWIFT fatal".to_owned()),
+        Line::Around("", "/main.swift:114: Fatal error: egg cracked"),
+        Line::Whole("Aborted".to_owned()),
+        Line::Whole("MACOS-CONSOLE status 134".to_owned()),
+    ];
+    [program, conflict, fatal]
+}
+
+const OBJC_UNCAUGHT_LINES: [&str; 5] = [
+    "MACOS-OBJC handler EggFatal",
+    "*** Terminating app due to uncaught exception 'EggFatal', reason: 'no catch for 9'",
+    "libc++abi: terminating due to uncaught exception of type NSException",
+    "Aborted",
+    "MACOS-CONSOLE status 134",
+];
+
+fn objc_program_output() -> [Vec<Line>; 6] {
     let whole = |line: &str| Line::Whole(line.to_owned());
     let loads = || OBJC_LOAD_LINES.iter().map(|line| whole(line));
     let mut program: Vec<Line> = loads().collect();
@@ -664,7 +1113,7 @@ fn objc_program_output() -> [Vec<Line>; 4] {
     ]);
     let mut unimplemented: Vec<Line> = loads().collect();
     unimplemented.extend([
-        whole("eggos-macos: unimplemented CoreFoundation class NSDate"),
+        Line::Around("eggos-macos: unimplemented ", " class NSUUID"),
         whole("MACOS-CONSOLE status 127"),
     ]);
     let mut bench: Vec<Line> = loads().collect();
@@ -674,7 +1123,18 @@ fn objc_program_output() -> [Vec<Line>; 4] {
         whole("MACOS-OBJC dealloc bench"),
         whole("MACOS-CONSOLE status 0"),
     ]);
-    [program, unrecognized, unimplemented, bench]
+    let mut language: Vec<Line> = loads().collect();
+    language.extend(OBJC_LANGUAGE_LINES.iter().map(|line| whole(line)));
+    let mut uncaught: Vec<Line> = loads().collect();
+    uncaught.extend(OBJC_UNCAUGHT_LINES.iter().map(|line| whole(line)));
+    [
+        program,
+        unrecognized,
+        unimplemented,
+        bench,
+        language,
+        uncaught,
+    ]
 }
 
 fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] {
@@ -709,43 +1169,43 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-objc"),
             refused("macos-objc"),
             refused("macos-objc"),
+            refused("macos-objc"),
+            refused("macos-objc"),
+            refused("macos-swift"),
+            refused("macos-swift"),
+            refused("macos-swift"),
+            refused("macos-process"),
+            refused("macos-text"),
+            refused("macos-legacy"),
             end,
         ];
     }
-    let own = if arch == "x86_64" { "x86_64" } else { "arm64" };
     let mut objc_program = objc_program_output().into_iter();
+    let mut swift_program = swift_program_output().into_iter();
+    let console_lines = |name: &str| -> Vec<Line> {
+        let first = format!("MACOS-CONSOLE {name} args a|b c");
+        let mut lines = whole(&[first.as_str()]);
+        lines.extend(whole(&MACOS_CONSOLE_CHECK_LINES));
+        lines
+    };
+    let other = if arch == "x86_64" {
+        vec![
+            Line::Around(
+                "macos: ",
+                "macos-other: has code only for arm64, not for this x86_64 machine",
+            ),
+            status(126),
+        ]
+    } else {
+        console_lines("macos-other")
+    };
     [
-        whole(&[
-            "MACOS-CONSOLE macos-console args a|b c",
-            "MACOS-CONSOLE apple executable_path",
-            "MACOS-CONSOLE env GREETING=hi envp setenv",
-            "MACOS-CONSOLE printf",
-            "MACOS-CONSOLE ints -42 7 3000000000 -1234567890123 9000000000000000000 12 beef BEEF \
-             10 Z %",
-            "MACOS-CONSOLE widths [   42] [42   ] [00042] [+42] [abc] [   right] [left    ] \
-             [0xff] [   7]",
-            "MACOS-CONSOLE floats 3.25 -0.500000 2 1.234568e+04 0.0001",
-            "MACOS-CONSOLE snprintf 15 truncat",
-            "MACOS-CONSOLE puts",
-            "MACOS-CONSOLE strings strlen strcmp strchr strstr strdup memcmp",
-            "MACOS-CONSOLE numbers qsort strtol atoi",
-            "MACOS-CONSOLE file eggos",
-            "MACOS-CONSOLE missing ENOENT, read-only, open read close",
-            "MACOS-CONSOLE stat regular 6 bytes, directory",
-            "MACOS-CONSOLE dir about",
-            "MACOS-CONSOLE cwd chdir getcwd relative",
-            "MACOS-CONSOLE malloc small large realloc",
-            "MACOS-CONSOLE time monotonic realtime mach gettimeofday",
-            "MACOS-CONSOLE pid positive",
-            "MACOS-CONSOLE stderr",
-            "MACOS-CONSOLE atexit",
-            "MACOS-CONSOLE status 0",
-        ]),
+        console_lines("macos-console"),
         vec![status(42)],
         vec![status(3)],
         whole(&["Aborted", "MACOS-CONSOLE status 134"]),
         whole(&[
-            "eggos-macos: unimplemented libSystem function posix_spawn",
+            "eggos-macos: unimplemented libSystem function kqueue",
             "MACOS-CONSOLE status 127",
         ]),
         vec![
@@ -755,17 +1215,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             ),
             status(126),
         ],
-        vec![
-            Line::Around(
-                "macos: ",
-                if own == "x86_64" {
-                    "macos-other: has code only for arm64, not for this x86_64 machine"
-                } else {
-                    "macos-other: has code only for x86_64, not for this arm64 machine"
-                },
-            ),
-            status(126),
-        ],
+        other,
         whole(&[
             "MACOS-STD hello from Rust std",
             "MACOS-STD args a|b c",
@@ -787,11 +1237,28 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             "MACOS-TOOLS locale C US-ASCII . other refused",
             "MACOS-CONSOLE status 0",
         ]),
-        whole(&["macos-tools: illegal option -- x", "MACOS-CONSOLE status 2"]),
+        whole(&["macos-tools: invalid option -- x", "MACOS-CONSOLE status 2"]),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
+        objc_program.next().unwrap_or_default(),
+        objc_program.next().unwrap_or_default(),
+        swift_program.next().unwrap_or_default(),
+        swift_program.next().unwrap_or_default(),
+        swift_program.next().unwrap_or_default(),
+        PROCESS_PROGRAM_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).to_owned()))
+            .collect(),
+        TEXT_PROGRAM_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).to_owned()))
+            .collect(),
+        LEGACY_PROGRAM_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).to_owned()))
+            .collect(),
         end,
     ]
 }
@@ -804,27 +1271,67 @@ fn android_program_output() -> [Vec<Line>; ANDROID_PROGRAM_SESSION.len()] {
             .collect()
     };
     [
+        whole(&["hello", "ANDROID-PROPERTIES status 0"]),
         whole(&[
-            "ANDROID-CONSOLE android-console args a|b c",
+            "setprop: ro.build.version.sdk: a read-only property keeps its first value",
+            "ANDROID-PROPERTIES status 1",
+        ]),
+        android_console_lines("android-console", "static"),
+        vec![
+            Line::Around("I/eggos-test(", "): hello from android-console"),
+            Line::Whole("ANDROID-LOG status 0".to_string()),
+        ],
+        whole(&["ANDROID-LOG status 0"]),
+        whole(&["ANDROID-CONSOLE status 42"]),
+        whole(&["Aborted", "ANDROID-CONSOLE status 134"]),
+        whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
+    ]
+}
+
+fn android_console_lines(name: &str, loader: &str) -> Vec<Line> {
+    let mut lines = vec![Line::Whole(format!("ANDROID-CONSOLE {name} args a|b c"))];
+    lines.extend(
+        [
             "ANDROID-CONSOLE env GREETING=hi",
             "ANDROID-CONSOLE file eggos",
             "ANDROID-CONSOLE dir about",
             "ANDROID-CONSOLE malloc small large realloc",
             "ANDROID-CONSOLE time monotonic realtime",
             "ANDROID-CONSOLE threads 4 joined sum 30",
-            "ANDROID-CONSOLE property ro.build.version.sdk unset",
+            "ANDROID-CONSOLE property ro.build.version.sdk=29",
+            "ANDROID-CONSOLE property eggos.test.greeting=hello",
+            "ANDROID-CONSOLE log sent",
             "ANDROID-CONSOLE pagesize 4096",
+        ]
+        .map(|line| Line::Whole(line.to_owned())),
+    );
+    lines.push(Line::Whole(format!("ANDROID-CONSOLE loader {loader}")));
+    lines.extend(
+        [
             "ANDROID-CONSOLE random differs",
             "ANDROID-CONSOLE shell",
             "ANDROID-CONSOLE system status 0",
             "ANDROID-CONSOLE stderr",
             "ANDROID-CONSOLE status 0",
-        ]),
-        whole(&["ANDROID-CONSOLE status 42"]),
-        whole(&["Aborted", "ANDROID-CONSOLE status 134"]),
-        whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
-    ]
+        ]
+        .map(|line| Line::Whole(line.to_owned())),
+    );
+    lines
 }
+
+const WINDOWS_CONSOLE_CHECK_LINES: [&str; 11] = [
+    "WINDOWS-CONSOLE env GREETING=hi",
+    "WINDOWS-CONSOLE teb ok",
+    "WINDOWS-CONSOLE file eggos",
+    "WINDOWS-CONSOLE missing file refused error 3",
+    "WINDOWS-CONSOLE heap ok",
+    "WINDOWS-CONSOLE time ok",
+    "WINDOWS-CONSOLE stack ok",
+    "WINDOWS-CONSOLE library ok",
+    "WINDOWS-CONSOLE tls ok",
+    "WINDOWS-CONSOLE stderr",
+    "WINDOWS-CONSOLE status 0",
+];
 
 fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len()] {
     let whole = |lines: &[&str]| -> Vec<Line> {
@@ -834,16 +1341,24 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
             .collect()
     };
     let end = whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]);
+    let console_lines = |name: &str| -> Vec<Line> {
+        let first = format!("WINDOWS-CONSOLE {name} args a|b c");
+        let mut lines = whole(&[first.as_str()]);
+        lines.extend(whole(&WINDOWS_CONSOLE_CHECK_LINES));
+        lines
+    };
     let (architecture, other_cpu) = match arch {
         "x86_64" => (
             9,
-            "other-cpu.exe: an ARM64 program, and this computer runs x64 programs",
+            vec![
+                Line::Around(
+                    "windows: ",
+                    "other-cpu.exe: an ARM64 program, and this computer runs x64 programs",
+                ),
+                Line::Whole("WINDOWS-CONSOLE status 126".into()),
+            ],
         ),
-        "aarch64" => (
-            12,
-            "other-cpu.exe: an x64 program, and this computer runs ARM64 programs \
-             (EggOS does not translate x64 programs for Arm yet)",
-        ),
+        "aarch64" => (12, console_lines("other-cpu.exe")),
         _ => {
             let refused = |name: &str| {
                 vec![
@@ -875,33 +1390,17 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
          version 10.0.26100 module C:\\bin\\windows-tools.exe"
     );
     [
-        whole(&[
-            "WINDOWS-CONSOLE windows-console.exe args a|b c",
-            "WINDOWS-CONSOLE env GREETING=hi",
-            "WINDOWS-CONSOLE teb ok",
-            "WINDOWS-CONSOLE file eggos",
-            "WINDOWS-CONSOLE missing file refused error 3",
-            "WINDOWS-CONSOLE heap ok",
-            "WINDOWS-CONSOLE time ok",
-            "WINDOWS-CONSOLE stack ok",
-            "WINDOWS-CONSOLE library ok",
-            "WINDOWS-CONSOLE tls ok",
-            "WINDOWS-CONSOLE stderr",
-            "WINDOWS-CONSOLE status 0",
-        ]),
+        console_lines("windows-console.exe"),
         whole(&["WINDOWS-CONSOLE status 44"]),
         vec![
             Line::Around(
                 "windows: ",
-                "windows-unsupported.exe: needs CreateProcessW from kernel32.dll, \
+                "windows-unsupported.exe: needs CreateMailslotW from kernel32.dll, \
                  which EggOS does not provide yet",
             ),
             Line::Whole("WINDOWS-CONSOLE status 126".into()),
         ],
-        vec![
-            Line::Around("windows: ", other_cpu),
-            Line::Whole("WINDOWS-CONSOLE status 126".into()),
-        ],
+        other_cpu,
         whole(&[
             concat!(
                 r"WINDOWS-TOOLS dir C:\bin\windows-*.exe: windows-console.exe ",
@@ -956,32 +1455,53 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
     ]
 }
 
+fn linux_static_lines(name: &str) -> Vec<Line> {
+    vec![
+        Line::Whole(format!("LINUX-STATIC {name} args a|b c")),
+        Line::Whole("LINUX-STATIC env GREETING=hi".into()),
+        Line::Whole("LINUX-STATIC file eggos".into()),
+        Line::Whole("LINUX-STATIC dir about".into()),
+        Line::Whole("LINUX-STATIC time monotonic realtime".into()),
+        Line::Whole("LINUX-STATIC hashmap egg=3 shell=1 yolk=1".into()),
+        Line::Whole("LINUX-STATIC threads 4 joined sum 30".into()),
+        Line::Whole(format!("LINUX-STATIC cpus {TEST_CPUS}")),
+        Line::Whole("LINUX-STATIC stderr".into()),
+        Line::Whole("LINUX-STATIC status 0".into()),
+    ]
+}
+
+fn linux_static_exit_lines() -> Vec<Line> {
+    vec![Line::Whole("LINUX-STATIC status 42".into())]
+}
+
+fn linux_static_panic_lines() -> Vec<Line> {
+    vec![
+        Line::Around("thread 'main' ", ":"),
+        Line::Whole("LINUX-STATIC panicked as asked".into()),
+        Line::Whole("Aborted".into()),
+        Line::Whole("LINUX-STATIC status 134".into()),
+    ]
+}
+
 fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
-    let checks = |name: &'static str| {
-        vec![
-            Line::Whole(format!("LINUX-STATIC {name} args a|b c")),
-            Line::Whole("LINUX-STATIC env GREETING=hi".into()),
-            Line::Whole("LINUX-STATIC file eggos".into()),
-            Line::Whole("LINUX-STATIC dir about".into()),
-            Line::Whole("LINUX-STATIC time monotonic realtime".into()),
-            Line::Whole("LINUX-STATIC hashmap egg=3 shell=1 yolk=1".into()),
-            Line::Whole("LINUX-STATIC threads 4 joined sum 30".into()),
-            Line::Whole(format!("LINUX-STATIC cpus {TEST_CPUS}")),
-            Line::Whole("LINUX-STATIC stderr".into()),
-            Line::Whole("LINUX-STATIC status 0".into()),
-        ]
-    };
     [
-        checks("linux-static"),
-        checks("linux-static-pie"),
-        vec![Line::Whole("LINUX-STATIC status 42".into())],
-        vec![
-            Line::Around("thread 'main' ", ":"),
-            Line::Whole("LINUX-STATIC panicked as asked".into()),
-            Line::Whole("Aborted".into()),
-            Line::Whole("LINUX-STATIC status 134".into()),
-        ],
+        linux_static_lines("linux-static"),
+        linux_static_lines("linux-static-pie"),
+        linux_static_exit_lines(),
+        linux_static_panic_lines(),
         LINUX_SOCKETS_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).into()))
+            .collect(),
+        LINUX_MEMORY_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).into()))
+            .collect(),
+        LINUX_MAPPINGS_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).into()))
+            .collect(),
+        LINUX_EVENTS_LINES
             .iter()
             .map(|line| Line::Whole((*line).into()))
             .collect(),
@@ -992,7 +1512,7 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
     ]
 }
 
-const PROMPT_SESSION: [&[u8]; 26] = [
+const PROMPT_SESSION: [&[u8]; 28] = [
     b"ls /\r",
     b"ls -l /bin/ls; ls /nope; echo EGGOS-COREUTILS ls status $?\r",
     b"cat /etc/motd /etc/hostname\r",
@@ -1008,7 +1528,7 @@ const PROMPT_SESSION: [&[u8]; 26] = [
     b"tail -n 1 /etc/motd /etc/hostname | head -n 4 | tail -n +2\r",
     PIPELINE_READING_THE_TERMINAL,
     b"echo EGGOS-PIPE interrupted $?\r",
-    b"ls /proc; cd /proc; pwd; cd ..; pwd; grep -c kB /proc/meminfo\r",
+    b"ls /proc/sys/kernel; cd /proc; pwd; cd ..; pwd; grep -c kB /proc/meminfo\r",
     b"ps | head -n 1; ps | grep ' init$'; ps | grep -c ' R ps$'\r",
     b"free | head -n 1; free | grep -c '^Mem: '; uptime | grep -c '^up [0-9]'\r",
     b"echo a > /tmp/x; echo b >> /tmp/x; cat /tmp/x; cat < /tmp/x\r",
@@ -1018,8 +1538,18 @@ const PROMPT_SESSION: [&[u8]; 26] = [
     b"echo EGGOS-HISTORY recalled\r",
     b"echo EGGOS-HISTORY newest\r",
     RECALL_THE_LINE_BEFORE_LAST,
+    GERMAN_LAYOUT_LINE,
+    ACCENT_LINE,
     b"poweroff\r",
 ];
+
+const GERMAN_LAYOUT_LINE: &[u8] = b"settings set keyboard.layout de\r";
+
+const ACCENT_LINE: &[u8] = "echo EGGOS ACCENT caf\u{e9}\r".as_bytes();
+
+const ACCENT_OUTPUT: &str = "EGGOS ACCENT caf\u{e9}";
+
+const ACCENT_FRAME: &str = "the line typed with the German layout's dead acute";
 
 const RECALL_THE_LINE_BEFORE_LAST: &[u8] = b"\x1b[A\x1b[A\r";
 
@@ -1044,7 +1574,7 @@ struct Reaction {
     keys: &'static [u8],
 }
 
-const REACTIONS: [Reaction; 2] = [
+const REACTIONS: [Reaction; 4] = [
     Reaction {
         line_ends_with: "# cat | grep EGGOS-PIPE",
         occurrences: 1,
@@ -1054,6 +1584,16 @@ const REACTIONS: [Reaction; 2] = [
         line_ends_with: PIPELINE_INPUT_LINE,
         occurrences: 2,
         keys: b"\x03",
+    },
+    Reaction {
+        line_ends_with: "EGGOS-SHELL-CHILD: waiting for ^Z in the foreground group",
+        occurrences: 1,
+        keys: b"\x1a",
+    },
+    Reaction {
+        line_ends_with: "eggos-std-selftest shell-child read-line",
+        occurrences: 2,
+        keys: b"typed-after-fg\r",
     },
 ];
 
@@ -1066,7 +1606,7 @@ const UNAME_LINE: &[u8] = b"uname -a\r";
 
 const SHIFTED_KEYS_LINE: &[u8] = b"echo EGGOS-KEYBOARD Typed_On+Virtio:OK\r";
 
-const KEYBOARD_LINES: [&[u8]; 2] = [UNAME_LINE, SHIFTED_KEYS_LINE];
+const KEYBOARD_LINES: [&[u8]; 3] = [UNAME_LINE, SHIFTED_KEYS_LINE, ACCENT_LINE];
 
 const KEY_PAUSE: Duration = Duration::from_millis(10);
 
@@ -1112,6 +1652,7 @@ const MOUSE_MOTION: (i32, i32) = (7, -5);
 const DEVICE_PAUSE: Duration = Duration::from_millis(100);
 
 const BOOT_INPUT_LINE: &str = "boot: input keyboard pointer";
+const INPUT_ON_INTERRUPTS_LINE: &str = "input: on interrupts";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Line {
@@ -1140,26 +1681,16 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             .collect()
     };
     [
-        whole(&[
-            "Applications",
-            "bin",
-            "dev",
-            "etc",
-            "home",
-            "init",
-            "media",
-            "proc",
-            "run",
-            "tmp",
-            "usr",
-            "var",
-        ]),
+        whole(&["Applications  bin  dev  etc  home  init  media  proc  run  tmp  usr  var  work"]),
         vec![
-            Line::Around("-rwxr-xr-x 30 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 47 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
-        whole(&["Welcome to EggOS.", "eggos"]),
+        whole(&[
+            "Welcome to EggOS. Type help. Apps: the egg, or Super.",
+            "eggos",
+        ]),
         vec![Line::Whole(format!(
             "Linux localhost 6.1.0-eggos #1 SMP EggOS {} {arch} EggOS",
             env!("CARGO_PKG_VERSION")
@@ -1176,12 +1707,14 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "EGGOS-PIPE last 1",
             "EGGOS-PIPE status 1",
         ]),
-        whole(&["Welcome to EggOS.", "", "==> /etc/hostname <=="]),
+        whole(&[
+            "Welcome to EggOS. Type help. Apps: the egg, or Super.",
+            "",
+            "==> /etc/hostname <==",
+        ]),
         whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
         whole(&["EGGOS-PIPE interrupted 130"]),
-        whole(&[
-            "cmdline", "driver", "meminfo", "net", "ps", "uptime", "/proc", "/", "3",
-        ]),
+        whole(&["hostname  osrelease  ostype", "/proc", "/", "4"]),
         whole(&["  PID  PPID  PGID S CMD", "    1     0     1 R init", "1"]),
         whole(&[
             "               total        used        free      shared  buff/cache   available",
@@ -1189,16 +1722,18 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "1",
         ]),
         whole(&["a", "b", "a", "b"]),
-        whole(&["f", "z"]),
+        whole(&["f  z"]),
         whole(&[
             "f",
             "eggsh: /etc/motd: Read-only file system",
             "EGGOS-FILES read-only 1",
         ]),
-        whole(&["/home:", "x", "", "/tmp:", "4"]),
+        whole(&["/home:", "root  x", "", "/tmp:", "4"]),
         whole(&["EGGOS-HISTORY recalled"]),
         whole(&["EGGOS-HISTORY newest"]),
         whole(&["EGGOS-HISTORY recalled"]),
+        Vec::new(),
+        whole(&[ACCENT_OUTPUT]),
         whole(&[POWER_DOWN_LINE]),
     ]
 }
@@ -1215,11 +1750,11 @@ struct ShellTyping {
     reactions: [bool; REACTIONS.len()],
 }
 
-const SHELL_LINES: [&str; 19] = [
-    "EGGSH-TEST quoting single  quoted double / $HOME",
+const SHELL_LINES: [&str; 55] = [
+    "EGGSH-TEST quoting single  quoted double /home/root $HOME",
     "EGGSH-TEST variables abcabcdef x y x y",
-    "EGGSH-TEST cd /usr/libexec /",
-    "EGGSH-TEST home /",
+    "EGGSH-TEST cd /usr/libexec /home/root",
+    "EGGSH-TEST home /home/root",
     "EGGSH-TEST status 1",
     "eggsh: no-such-command: command not found",
     "EGGSH-TEST not found 127",
@@ -1231,11 +1766,50 @@ const SHELL_LINES: [&str; 19] = [
     "EGGSH-TEST sourced yes",
     "EGGSH-TEST script status 5",
     "EGGSH-TEST dash-c name arg",
-    "eggsh: `&&` is not supported yet",
-    "EGGSH-TEST after unsupported 2",
+    "EGGSH-TEST function world 2",
+    "EGGSH-TEST return 3 who=unset",
+    "EGGSH-TEST glob /usr/share/eggsh",
+    "EGGSH-TEST substitution [substituted output]",
+    "EGGSH-TEST while c",
+    "EGGSH-TEST if yes",
+    "EGGSH-TEST subshell /usr",
+    "EGGSH-TEST after subshell",
+    "EGGSH-TEST here-document one two three",
+    "EGGSH-TEST piped loop",
+    "EGGSH-TEST done default",
+    "EGGSH-TEST language status 0",
+    "EGGSH-TEST-zone-IST+0530",
+    "EGGSH-TEST zone 0",
+    "EGGSH-TEST loop 1",
+    "EGGSH-TEST loop 2",
+    "EGGSH-TEST and ok",
+    "EGGSH-TEST or ok",
+    "EGGSH-TEST redirected stderr",
+    "EGGSH-TEST stderr joined",
+    "EGGSH-TEST cursor moved",
+    "EGGOS-SHELL-CHILD: NOTHING=<unset> args=bg",
+    "EGGSH-TEST background 3",
+    STOPPED_JOB_LINE,
+    "[1]+  Running                 eggos-std-selftest shell-child stop-and-continue &",
+    "[1]+ eggos-std-selftest shell-child stop-and-continue &",
+    "EGGOS-SHELL-CHILD: back in the foreground",
+    "EGGSH-TEST fg status 4",
+    "[1]+  Stopped (tty input)     eggos-std-selftest shell-child read-line",
+    "EGGSH-TEST ttin 149",
+    "EGGOS-SHELL-CHILD: read typed-after-fg",
+    "EGGSH-TEST read status 0",
+    "EGGSH-TEST killed job 143",
+    "EGGOS-SHELL-CHILD: SIGWINCH 31x101",
+    "EGGSH-TEST window status 0",
+    "EGGSH-TEST remembered nested",
     "EGGSH-TEST interrupted 130",
     "EGGSH-TEST prompt interrupt 130",
+    "EGGOS-SHELL-CHILD: waiting for SIGTERM",
+    "EGGOS-SHELL-CHILD: SIGTERM at power-off",
 ];
+
+const STOPPED_JOB_LINE: &str =
+    "[1]+  Stopped                 eggos-std-selftest shell-child stop-and-continue";
 
 const SHELL_EXIT_LINE: &str = "init: /bin/eggsh exited with status 7";
 
@@ -1259,8 +1833,27 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
 const BENCHMARK_BOOT_TIMEOUT: Duration = Duration::from_secs(90);
 
 const BANNER_PREFIX: &str = "EggOS ";
+const FIRMWARE_BOOT_LINE: &str = "Booting from ROM..";
 
 const COMMON_ARGS: &[&str] = &["-m", "128M"];
+
+/// The least memory `--memory` gives a machine, in mebibytes: what every boot has by default.
+pub const MINIMUM_MEMORY_MEBIBYTES: u64 = 128;
+
+/// QEMU's arguments that give the machine `size` of memory, a whole number of mebibytes or
+/// gibibytes (`512M`, `4G`) of at least [`MINIMUM_MEMORY_MEBIBYTES`] (`--memory`, D171). QEMU
+/// takes the last `-m` it is given, so they go after [`interactive_args`].
+pub fn memory_args(size: &str) -> Result<Vec<String>, String> {
+    match crate::size_in_mebibytes(size) {
+        Some(mebibytes) if mebibytes >= MINIMUM_MEMORY_MEBIBYTES => {
+            Ok(vec!["-m".to_owned(), format!("{mebibytes}M")])
+        }
+        _ => Err(format!(
+            "`--memory {size}`: give a size such as 512M or 4G, at least \
+             {MINIMUM_MEMORY_MEBIBYTES}M"
+        )),
+    }
+}
 
 /// Whether a boot gives the machine its display device ([`Arch::display_args`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1273,6 +1866,8 @@ pub enum Display {
 const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
 
 const TERMINAL_LINE_1280X800: &str = "boot: terminal 80x24";
+
+const BOOT_INIT_LINE: &str = "boot: init";
 
 /// What the kernel says when it shows its display at 1280x800, the default mode.
 pub const DISPLAY_LINE_1280X800: &str = "boot: display 1280x800";
@@ -1545,24 +2140,34 @@ fn boot(
                 if first_prompt.is_none() && prompts > 0 {
                     first_prompt = Some(started.elapsed());
                 }
+                let accent_shown = terminal_frames.len() == 2
+                    && String::from_utf8_lossy(&console)
+                        .split(ACCENT_OUTPUT)
+                        .nth(2)
+                        .is_some_and(|after| after.contains(SHELL_PROMPT));
                 let at = match prompts {
                     1 => Some("the first prompt"),
                     PROMPT_SESSION_FRAME_PROMPT => {
                         Some("the output of the line typed on the virtio keyboard")
                     }
+                    _ if accent_shown => Some(ACCENT_FRAME),
                     _ => None,
                 };
                 if let (Some(port), Some(at)) = (qmp_port, at)
-                    && terminal_frames.len() < prompts.min(2)
+                    && (terminal_frames.len() < prompts.min(2) || accent_shown)
                 {
-                    let with_pointer = prompts == PROMPT_SESSION_FRAME_PROMPT;
+                    let pointer = match (prompts == PROMPT_SESSION_FRAME_PROMPT, accent_shown) {
+                        (true, _) => PointerSteps::Sent,
+                        (false, true) => PointerSteps::AlreadySent,
+                        (false, false) => PointerSteps::None,
+                    };
                     terminal_frames.push(check_terminal_frame(
                         arch,
                         port,
                         &mut console,
                         &rx,
                         at,
-                        with_pointer,
+                        pointer,
                     ));
                 }
                 let text = String::from_utf8_lossy(&console);
@@ -1701,6 +2306,18 @@ fn send_pointer_and_key_events(port: u16) -> Result<(), String> {
     Ok(())
 }
 
+fn kill_process_tree(child: &mut std::process::Child) {
+    if cfg!(windows) {
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 fn echo_console_to_stderr(mut stdout: std::process::ChildStdout) -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
@@ -1768,6 +2385,7 @@ fn shell_scripts_to_type(
 fn banner_count(console: &str) -> usize {
     console
         .lines()
+        .map(|l| l.strip_prefix(FIRMWARE_BOOT_LINE).unwrap_or(l))
         .filter(|l| l.starts_with(BANNER_PREFIX) && l.trim_end().ends_with(')'))
         .count()
 }
@@ -2007,6 +2625,9 @@ fn session_verdict<const N: usize>(
     if !clean_exit {
         return Err(format!("{arch}: QEMU exited with an error"));
     }
+    if let Some(line) = unhandled_windows_exception(console) {
+        return Err(format!("{arch}: a Windows program crashed: {line}"));
+    }
     for (typed, expected) in session.iter().zip(outputs) {
         let command = String::from_utf8_lossy(typed);
         let command = command.trim_end_matches('\r');
@@ -2058,6 +2679,17 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
     if !lines.contains(&BOOT_INPUT_LINE) {
         return Err(format!(
             "{arch}: no `{BOOT_INPUT_LINE}`: the virtio keyboard and pointers were not found"
+        ));
+    }
+    if !lines.contains(&INPUT_ON_INTERRUPTS_LINE) {
+        return Err(format!(
+            "{arch}: no `{INPUT_ON_INTERRUPTS_LINE}`: the input devices are polled, not on \
+             interrupts"
+        ));
+    }
+    if !lines.contains(&BOOT_INIT_LINE) {
+        return Err(format!(
+            "{arch}: no `{BOOT_INIT_LINE}`: the boot screen's init stage was not reached"
         ));
     }
     if !lines.contains(&DISPLAY_LINE_1280X800) {
@@ -2187,11 +2819,28 @@ fn window_pattern(colours: [u32; 2], x: u32, y: u32) -> u32 {
 /// What a `width` by `height` display shows once the release kernel's desktop is in
 /// `desktop`'s state with its clock at `up 0:00` and its terminal was fed `stream`, rendered
 /// by the same desktop and terminal engine on the host; `windows` are the programs' windows
-/// and what each shows.
+/// and what each shows. The cursor is the block while the terminal's window is focused, else
+/// its outline; the person's pointer is not in it, since the GPU's cursor draws it outside the
+/// framebuffer QEMU's `screendump` saves (D186).
 pub fn desktop_picture(
     desktop: &Desktop,
     stream: &[u8],
     windows: &[(WindowId, WindowContent)],
+) -> Option<Picture> {
+    let look = match desktop.focused() {
+        true => CursorLook::Block,
+        false => CursorLook::Outline,
+    };
+    desktop_picture_with(desktop, stream, windows, look)
+}
+
+/// [`desktop_picture`] with the terminal's cursor drawn as `look`: [`CursorLook::Blinked`] is
+/// the second half of each blink.
+pub fn desktop_picture_with(
+    desktop: &Desktop,
+    stream: &[u8],
+    windows: &[(WindowId, WindowContent)],
+    look: CursorLook,
 ) -> Option<Picture> {
     let screen = desktop.screen();
     let (width, height) = (screen.width, screen.height);
@@ -2199,6 +2848,7 @@ pub fn desktop_picture(
     let mut terminal = Terminal::new(area.columns, area.rows)?;
     terminal.set_onlcr(true);
     terminal.feed(stream);
+    terminal.set_cursor_look(look);
     let mut grid =
         vec![eggos_drivers::terminal::TERM_BACKGROUND; GRID_SIZE.0 as usize * GRID_SIZE.1 as usize];
     terminal.render(&mut grid, GRID_SIZE.0 as usize, 0, 0, &mut Damage::new());
@@ -2208,7 +2858,7 @@ pub fn desktop_picture(
         windows,
     };
     let mut pixels = vec![0; width as usize * height as usize];
-    desktop.draw(&mut pixels, width as usize, screen, &contents);
+    desktop.draw_scene(&mut pixels, width as usize, screen, &contents);
     Some(Picture {
         width,
         height,
@@ -2356,20 +3006,34 @@ fn apply_pointer_step(
         .map(|pressed| desktop.left_button(pressed, &mut damage, events))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PointerSteps {
+    None,
+    Sent,
+    AlreadySent,
+}
+
 fn check_terminal_frame(
     arch: &Arch,
     port: u16,
     console: &mut Vec<u8>,
     output: &mpsc::Receiver<Vec<u8>>,
     at: &str,
-    with_pointer: bool,
+    pointer: PointerSteps,
 ) -> Result<(), String> {
     let mut qmp = Qmp::connect(port)?;
     let (width, height) = screen_size(&mut qmp, arch)?;
     let mut desktop = Desktop::new(width, height)
         .ok_or_else(|| format!("{}: a {width}x{height} display holds no desktop", arch.name))?;
+    if pointer == PointerSteps::AlreadySent {
+        for (_, steps) in pointer_steps(&desktop) {
+            for step in steps {
+                apply_pointer_step(&mut desktop, step);
+            }
+        }
+    }
     check_desktop_frame(arch, &mut qmp, console, output, at, &desktop, &[])?;
-    if !with_pointer {
+    if pointer != PointerSteps::Sent {
         return Ok(());
     }
     for (state, steps) in pointer_steps(&desktop) {
@@ -2383,6 +3047,28 @@ fn check_terminal_frame(
 }
 
 const CLOSE_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+const WINDOWS_CRASH_MARKERS: [&str; 7] = [
+    " was not handled, raised at ",
+    ": the program ended itself at once (__fastfail) at ",
+    ": memory access violation at ",
+    ": illegal instruction at ",
+    ": breakpoint at ",
+    ": bus error at ",
+    ": arithmetic exception at ",
+];
+
+fn unhandled_windows_exception(console: &str) -> Option<&str> {
+    console
+        .lines()
+        .find(|line| {
+            line.contains("windows: ")
+                && WINDOWS_CRASH_MARKERS
+                    .iter()
+                    .any(|marker| line.contains(marker))
+        })
+        .map(str::trim_end)
+}
 
 fn has_line(console: &str, wanted: &str) -> bool {
     console
@@ -2932,6 +3618,14 @@ fn check_desktop_frame_masked(
                 desktop_picture(desktop, stream, windows)
                     .ok_or_else(|| format!("{}: the desktop holds no terminal", arch.name))?,
             );
+            if desktop.focused() {
+                candidates.extend(desktop_picture_with(
+                    desktop,
+                    stream,
+                    windows,
+                    CursorLook::Blinked,
+                ));
+            }
         }
         let host = host_seconds();
         let matched = candidates.iter_mut().any(|expected| {
@@ -2997,7 +3691,8 @@ pub fn run_interactive(
 
 /// QEMU's arguments, but the kernel's, for an interactive boot of `arch`: its display in a
 /// window when `window` says so, with the console on the terminal either way. `cargo xtask
-/// run` and the release's run scripts both use them (D116).
+/// run` and the release's run scripts both use them (D116). There is no `-no-reboot`, so
+/// `reboot` restarts EggOS in the same QEMU (D153).
 pub fn interactive_args(arch: &Arch, window: bool) -> Vec<String> {
     let console: &[&str] = match window {
         true => &["-serial", "mon:stdio"],
@@ -3010,11 +3705,30 @@ pub fn interactive_args(arch: &Arch, window: bool) -> Vec<String> {
         .chain(arch.input_args)
         .chain(COMMON_ARGS)
         .copied()
-        .chain(["-smp", cpus.as_str(), "-no-reboot"])
+        .chain(["-smp", cpus.as_str()])
         .chain(console.iter().copied())
         .map(str::to_owned)
         .collect()
 }
+
+/// QEMU's arguments that put EggOS on the host's network (D157): user networking (`-netdev
+/// user`, QEMU's own NAT and DHCP server: EggOS is 10.0.2.15, the host 10.0.2.2, DNS 10.0.2.3)
+/// behind the architecture's virtio network device.
+pub fn network_args(arch: &Arch) -> Vec<String> {
+    vec![
+        "-netdev".into(),
+        format!("user,id={NETWORK_ID}"),
+        "-device".into(),
+        format!("{},netdev={NETWORK_ID}", arch.network_device),
+    ]
+}
+
+/// QEMU's arguments for a machine without a network adapter (`--no-network`): no default one.
+pub fn no_network_args() -> Vec<String> {
+    vec!["-nic".into(), "none".into()]
+}
+
+const NETWORK_ID: &str = "net0";
 
 /// The name the agent channel's port has, which the kernel looks for (D136).
 pub const AGENT_PORT_NAME: &str = "org.eggos.mcp";
@@ -3058,6 +3772,17 @@ pub fn grant_word(list: &str) -> String {
     format!("eggos.mcp_allow={list}")
 }
 
+/// The most bytes of an agent's id, as EggOS's MCP server takes it (D193); `--mcp-agent`
+/// checks it.
+pub const MAX_AGENT_ID_BYTES: usize = 32;
+
+/// The kernel command line's word that makes the MCP channel speak for the agent `id`
+/// (checked, or a script's variable holding it), for clients that cannot name their agent in
+/// `initialize` (D193).
+pub fn agent_word(id: &str) -> String {
+    format!("eggos.mcp_agent={id}")
+}
+
 /// QEMU's arguments that make `line` (words separated by spaces) the kernel command line. QEMU
 /// keeps only the last `-append`, so a boot passes every word in this one (D144). `-append`
 /// takes a plain string: commas stay single.
@@ -3065,13 +3790,43 @@ pub fn command_line_args(line: &str) -> Vec<String> {
     vec!["-append".into(), line.into()]
 }
 
+/// Where an MCP boot's agent channel meets the host (D154).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpChannel<'a> {
+    /// QEMU's standard input and output, which then carry nothing else (`run-eggos.sh`).
+    Stdio,
+    /// A connection QEMU makes to `127.0.0.1:port`, which `run-eggos.ps1` relays to its own
+    /// standard input and output: QEMU on Windows reads a piped standard input a byte at a
+    /// time and drops each byte the guest cannot take yet, such as every one sent before
+    /// EggOS boots, while a socket is read only when the guest can take it.
+    LoopbackClient { port: &'a str },
+}
+
+impl McpChannel<'_> {
+    fn chardev(self) -> String {
+        match self {
+            Self::Stdio => format!("stdio,id={MCP_CHARDEV},signal=off"),
+            Self::LoopbackClient { port } => {
+                format!("socket,id={MCP_CHARDEV},host=127.0.0.1,port={port}")
+            }
+        }
+    }
+}
+
+const MCP_CHARDEV: &str = "mcp";
+
 /// QEMU's arguments, but the kernel's, for an MCP boot of `arch` (`run-eggos.sh --mcp`): the
-/// agent channel on QEMU's standard input and output, which then carry nothing else, the
-/// console in the file `console_log` (commas doubled), no monitor, and the display and input
+/// agent channel on `channel`, the console in the file `console_log` (commas doubled), no monitor, and the display and input
 /// devices with the display in a window when `window` says so; otherwise none of them
 /// ([`Arch::offscreen_args`]), for a boot whose command line asks for the offscreen display
-/// ([`OFFSCREEN_WORD`], D144).
-pub fn mcp_args(arch: &Arch, window: bool, console_log: &str) -> Vec<String> {
+/// ([`OFFSCREEN_WORD`], D144). It keeps `-no-reboot`: a reboot ends QEMU and with it the MCP
+/// session, which the client then starts again with a new `initialize` (D153).
+pub fn mcp_args(
+    arch: &Arch,
+    window: bool,
+    console_log: &str,
+    channel: McpChannel<'_>,
+) -> Vec<String> {
     let cpus = TEST_CPUS.to_string();
     let devices: Vec<&str> = match window {
         true => arch
@@ -3102,9 +3857,9 @@ pub fn mcp_args(arch: &Arch, window: bool, console_log: &str) -> Vec<String> {
         "-monitor".into(),
         "none".into(),
         "-chardev".into(),
-        "stdio,id=mcp,signal=off".into(),
+        channel.chardev(),
     ]);
-    args.extend(agent_channel_args(arch, "mcp"));
+    args.extend(agent_channel_args(arch, MCP_CHARDEV));
     args
 }
 
@@ -3196,6 +3951,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_banner_after_seabios_booting_from_rom_on_the_same_line_counts() {
+        let console = "Booting from ROM..EggOS 0.2.0 (x86_64)\r\nEggOS 0.2.0\r\n\
+                       Booting from ROM..EggOS 0.2.0 (x86_64)\r\n";
+        assert_eq!(banner_count(console), 2);
+    }
+
+    #[test]
     fn the_virtio_gpu_and_the_offscreen_display_share_the_default_mode() {
         use eggos_drivers::display::DEFAULT_MODE;
         let size = format!("xres={},yres={}", DEFAULT_MODE.width, DEFAULT_MODE.height);
@@ -3217,7 +3979,7 @@ mod tests {
     #[test]
     fn an_offscreen_mcp_boot_has_no_display_or_input_device_but_keeps_its_channels() {
         for arch in crate::ARCHES {
-            let args = mcp_args(arch, false, "/tmp/serial.log");
+            let args = mcp_args(arch, false, "/tmp/serial.log", McpChannel::Stdio);
             let joined = args.join(" ");
             for device in [
                 "virtio-gpu",
@@ -3238,7 +4000,7 @@ mod tests {
             assert!(joined.contains("-chardev stdio,id=mcp,signal=off"));
             assert!(joined.ends_with(&agent_channel_args(arch, "mcp").join(" ")));
             assert!(!joined.contains("-append"));
-            let windowed = mcp_args(arch, true, "/tmp/serial.log").join(" ");
+            let windowed = mcp_args(arch, true, "/tmp/serial.log", McpChannel::Stdio).join(" ");
             for part in arch.display_args.iter().chain(arch.input_args) {
                 assert!(windowed.contains(part), "{}: {part}", arch.name);
             }
@@ -3256,6 +4018,16 @@ mod tests {
         );
         assert_eq!(OFFSCREEN_WORD, "eggos.display=offscreen");
         assert_eq!(grant_word("view,run"), "eggos.mcp_allow=view,run");
+        assert_eq!(agent_word("phone"), "eggos.mcp_agent=phone");
+    }
+
+    #[test]
+    fn memory_args_come_in_mebibytes_and_refuse_less_than_the_default() {
+        assert_eq!(memory_args("4G").unwrap(), ["-m", "4096M"]);
+        assert_eq!(memory_args("128M").unwrap(), ["-m", "128M"]);
+        assert!(memory_args("64M").is_err());
+        assert!(memory_args("4").is_err());
+        assert_eq!(COMMON_ARGS[0], "-m", "memory_args goes after it to win");
     }
 
     #[test]
@@ -3271,12 +4043,34 @@ mod tests {
         {
             assert!(window.iter().any(|arg| arg == part), "{part}");
         }
-        assert!(
-            joined.ends_with("-smp 4 -no-reboot -serial mon:stdio"),
-            "{joined}"
-        );
+        assert!(joined.ends_with("-smp 4 -serial mon:stdio"), "{joined}");
         let serial = interactive_args(arch, false).join(" ");
-        assert!(serial.ends_with("-smp 4 -no-reboot -nographic"), "{serial}");
+        assert!(serial.ends_with("-smp 4 -nographic"), "{serial}");
+        assert!(!joined.contains("-no-reboot") && !serial.contains("-no-reboot"));
+        let mcp = mcp_args(arch, false, "/tmp/serial.log", McpChannel::Stdio).join(" ");
+        assert!(mcp.contains("-smp 4 -no-reboot"), "{mcp}");
+    }
+
+    #[test]
+    fn a_work_disk_is_a_raw_block_device_of_its_own_beside_the_home_disk() {
+        for arch in crate::ARCHES {
+            let args = work_disk_args(arch, "/x/a,b.img");
+            assert_eq!(
+                args,
+                [
+                    "-blockdev".to_string(),
+                    "driver=file,node-name=work-file,filename=/x/a,,b.img".into(),
+                    "-blockdev".into(),
+                    "driver=raw,node-name=work,file=work-file".into(),
+                    "-device".into(),
+                    format!("{},drive=work", arch.disk_device),
+                ]
+            );
+            let home = disk_args(arch, "/x/home.img");
+            for name in ["node-name=work", "node-name=work-file", "drive=work"] {
+                assert!(home.iter().all(|arg| !arg.contains(name)), "{name}");
+            }
+        }
     }
 
     #[test]
@@ -3393,8 +4187,9 @@ mod tests {
             let command = String::from_utf8_lossy(typed);
             console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
             for line in output {
-                if let Line::Whole(line) = line {
-                    console.push_str(&format!("{line}\r\n"));
+                match line {
+                    Line::Whole(line) => console.push_str(&format!("{line}\r\n")),
+                    Line::Around(start, end) => console.push_str(&format!("{start}   42{end}\r\n")),
                 }
             }
         }
@@ -3443,6 +4238,15 @@ mod tests {
         }
         let elsewhere = macos_programs_console("x86_64");
         assert!(verdict("aarch64", Expect::MacosPrograms, true, &elsewhere).is_err());
+        assert!(ok.contains("MACOS-CONSOLE macos-other args a|b c"));
+        assert!(!ok.contains("has code only"));
+        assert!(elsewhere.contains("macos-other: has code only for arm64"));
+        let refused = ok.replacen(
+            "MACOS-CONSOLE macos-other args a|b c\r\n",
+            "macos: macos-other: has code only for x86_64, not for this arm64 machine\r\n",
+            1,
+        );
+        assert!(verdict("aarch64", Expect::MacosPrograms, true, &refused).is_err());
     }
 
     #[test]
@@ -3455,6 +4259,8 @@ mod tests {
             "ANDROID-CONSOLE status 42",
             "Aborted",
             "ANDROID-CONSOLE stderr",
+            "ANDROID-CONSOLE log sent",
+            "ANDROID-LOG status 0",
         ] {
             let without = ok.replacen(&format!("{missing}\r\n"), "", 1);
             assert!(
@@ -3462,8 +4268,10 @@ mod tests {
                 "{missing}"
             );
         }
-        let set = ok.replace("ro.build.version.sdk unset", "ro.build.version.sdk set");
-        assert!(verdict("aarch64", Expect::AndroidPrograms, true, &set).is_err());
+        let unset = ok.replace("ro.build.version.sdk=29", "ro.build.version.sdk=unset");
+        assert!(verdict("aarch64", Expect::AndroidPrograms, true, &unset).is_err());
+        let refused = ok.replace("ANDROID-PROPERTIES status 1", "ANDROID-PROPERTIES status 0");
+        assert!(verdict("aarch64", Expect::AndroidPrograms, true, &refused).is_err());
     }
 
     fn windows_programs_console(arch: &str) -> String {
@@ -3509,7 +4317,8 @@ mod tests {
         }
         let arm = windows_programs_console("aarch64");
         assert!(arm.contains("system arch 12 "));
-        assert!(arm.contains("other-cpu.exe: an x64 program"));
+        assert!(arm.contains("WINDOWS-CONSOLE other-cpu.exe args a|b c"));
+        assert!(!arm.contains("other-cpu.exe: an x64 program"));
     }
 
     fn windows_crt_console() -> String {
@@ -3518,9 +4327,13 @@ mod tests {
             let command = String::from_utf8_lossy(typed);
             console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
             for line in output {
-                if let Line::Whole(whole) = line {
-                    console.push_str(&format!("{whole}\r\n"));
-                }
+                let text = match line {
+                    Line::Whole(whole) => whole,
+                    Line::Around(start, end) => {
+                        format!("{start} (5) panicked at src\\main.rs{end}")
+                    }
+                };
+                console.push_str(&format!("{text}\r\n"));
             }
         }
         console
@@ -3537,6 +4350,57 @@ mod tests {
         assert!(verdict("x86_64", Expect::WindowsCrt, true, &lost).is_err());
         let failed = ok.replace("EGGPAD status 0", "EGGPAD status 126");
         assert!(verdict("x86_64", Expect::WindowsCrt, true, &failed).is_err());
+        let crashed = ok.replace(
+            "EGGPAD exit\r\n",
+            "EGGPAD exit\r\nwindows: eggpad.exe: exception 0xc0000029 was not handled, raised at \
+             0x140001010 (eggpad.exe+0x1010)\r\n",
+        );
+        assert!(
+            verdict("x86_64", Expect::WindowsCrt, true, &crashed)
+                .unwrap_err()
+                .contains("crashed")
+        );
+    }
+
+    #[test]
+    fn the_windows_crt_session_checks_the_cpp_program_s_exceptions_and_its_frame_handlers() {
+        let ok = windows_crt_console();
+        let uncaught = ok.replace("EGGCPP uncaught status 3", "EGGCPP uncaught status 99");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &uncaught).is_err());
+        let fh3_failed = ok.replace("EGGCPP-FH3 status 0", "EGGCPP-FH3 status 139");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &fh3_failed).is_err());
+        let once = ok.replacen("EGGCPP rethrown 42\r\n", "", 1);
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &once).is_err());
+        let twice = ok.replace("EGGCPP divide by zero c0000094\r\n", "");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &twice).is_err());
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &ok).is_ok());
+    }
+
+    #[test]
+    fn the_windows_crt_session_checks_the_spawned_children_and_their_pipe() {
+        let ok = windows_crt_console();
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &ok).is_ok());
+        let unread = ok.replace("EGGSPAWN child said greeting hello\r\n", "");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &unread).is_err());
+        let leaked = ok.replace(
+            "EGGSPAWN pipe inherit read 0 write 1",
+            "EGGSPAWN pipe inherit read 1 write 1",
+        );
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &leaked).is_err());
+        let failed = ok.replace("EGGSPAWN status 0", "EGGSPAWN status 1");
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &failed).is_err());
+    }
+
+    #[test]
+    fn the_windows_crt_session_checks_the_mingw_program_on_msvcrt() {
+        let ok = windows_crt_console();
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &ok).is_ok());
+        let unformatted = ok.replace("1234567890123|ms  | 2.50", "123|ms  | 2.50");
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &unformatted).is_err());
+        let no_exit_work = ok.replace("EGGMINGW atexit ran\r\n", "");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &no_exit_work).is_err());
+        let failed = ok.replace("EGGMINGW status 3", "EGGMINGW status 1");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &failed).is_err());
     }
 
     #[test]
@@ -3644,6 +4508,7 @@ mod tests {
             "LINUX-STATIC stderr",
             "LINUX-SOCKETS poll woken by the client",
             "LINUX-SOCKETS status 0",
+            "LINUX-MEMORY anonymous killed by SIGKILL",
         ] {
             let without = ok.replacen(&format!("{missing}\r\n"), "", 1);
             assert!(
@@ -3814,7 +4679,7 @@ mod tests {
 
     fn prompt_console(arch: &str) -> String {
         let mut console = format!(
-            "EggOS 0.2.0 ({arch})\r\n{DISPLAY_LINE_1280X800}\r\n{BOOT_INPUT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
+            "EggOS 0.2.0 ({arch})\r\n{DISPLAY_LINE_1280X800}\r\n{BOOT_INPUT_LINE}\r\n{INPUT_ON_INTERRUPTS_LINE}\r\n{BOOT_INIT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
         );
         for (index, written) in prompt_session_output(arch).into_iter().enumerate() {
             let command = shown_command(&PROMPT_SESSION, index);
@@ -3838,7 +4703,7 @@ mod tests {
         assert!(verdict("riscv64", Expect::BootToPrompt, false, &ok).is_err());
         assert!(verdict("x86_64", Expect::BootToPrompt, true, &ok).is_err());
         for missing in [
-            "usr\r\n",
+            "  usr",
             "EGGOS-COREUTILS ls status 2\r\n",
             "eggos\r\n",
             POWER_DOWN_LINE,
@@ -3849,9 +4714,14 @@ mod tests {
                 "{missing}"
             );
         }
-        let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
+        let reordered = ok.replace("  bin  dev  ", "  dev  bin  ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 30 ", "-rwxr-xr-x 1 ");
+        let links = format!("-rwxr-xr-x {} ", crate::COREUTILS.len() + 1);
+        assert!(
+            ok.contains(&links),
+            "/bin/ls has a link per utility and its own name"
+        );
+        let one_link = ok.replace("-rwxr-xr-x 47 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());
@@ -3859,6 +4729,10 @@ mod tests {
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &panicked).is_err());
         let no_input = ok.replace(BOOT_INPUT_LINE, "boot: no input");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_input).is_err());
+        let polled = ok.replace(INPUT_ON_INTERRUPTS_LINE, "input: polled");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &polled).is_err());
+        let no_init_stage = ok.replacen(&format!("{BOOT_INIT_LINE}\r\n"), "", 1);
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_init_stage).is_err());
         let unshifted = ok.replace("Typed_On+Virtio:OK\r\n", "typed-on=virtio;ok\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &unshifted).is_err());
         let no_terminal = ok.replace(TERMINAL_LINE_1280X800, "boot: no display");
@@ -3897,6 +4771,10 @@ mod tests {
             picture,
             desktop_picture(&desktop, b"eggsh:/#", &[]).unwrap()
         );
+        let blinked = desktop_picture_with(&desktop, b"eggsh:/# ", &[], CursorLook::Blinked);
+        let blinked = blinked.unwrap();
+        let at = (area.y as usize) * 1024 + area.x as usize + 9 * 8;
+        assert_eq!(blinked.pixels[at], eggos_drivers::terminal::TERM_BACKGROUND);
     }
 
     #[test]

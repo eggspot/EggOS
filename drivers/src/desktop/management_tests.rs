@@ -1,4 +1,6 @@
-use super::protocol::{DiscardEvents, EventRecord, WindowAction, flags};
+use super::protocol::{
+    DiscardEvents, EventRecord, WindowAction, WindowError, desktop_action, flags,
+};
 use super::tests::{BlankTerminal, at};
 use super::*;
 use crate::input::keymap::Modifiers;
@@ -705,6 +707,53 @@ fn close_keys_follow_the_profile_and_spare_a_window_that_takes_ctrl_keys() {
 }
 
 #[test]
+fn a_window_that_does_not_answer_shows_the_busy_pointer_over_its_content_only() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, 400, 300);
+    let content = desktop.content_rect(window).unwrap();
+    let title = desktop.title_bar_of(window).unwrap();
+    move_to(
+        &mut desktop,
+        content.x + 50,
+        content.y + 50,
+        &mut DiscardEvents,
+    );
+    desktop.set_time(10_000);
+    tap(&mut desktop, key::F4, Modifiers::ALT, &mut DiscardEvents);
+    desktop.tick(10_500, &mut Damage::new(), &mut DiscardEvents);
+    assert!(desktop.is_not_responding(window));
+    assert_eq!(
+        desktop.pointer(),
+        Some((content.x + 50, content.y + 50, PointerShape::Busy))
+    );
+    move_to(
+        &mut desktop,
+        title.x + 100,
+        title.y + 10,
+        &mut DiscardEvents,
+    );
+    assert_eq!(
+        desktop.pointer().map(|(_, _, shape)| shape),
+        Some(PointerShape::Arrow)
+    );
+    move_to(
+        &mut desktop,
+        content.x + 60,
+        content.y + 60,
+        &mut DiscardEvents,
+    );
+    assert_eq!(
+        desktop.pointer().map(|(_, _, shape)| shape),
+        Some(PointerShape::Busy)
+    );
+    desktop.close_answered(CLIENT, &mut Damage::new());
+    assert_eq!(
+        desktop.pointer().map(|(_, _, shape)| shape),
+        Some(PointerShape::Arrow)
+    );
+}
+
+#[test]
 fn an_unanswered_close_request_says_not_responding_and_closes_after_2_s() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let window = shown(&mut desktop, 400, 300);
@@ -986,6 +1035,23 @@ fn super_d_minimises_every_window_and_again_restores_them() {
 }
 
 #[test]
+fn f11_shows_the_desktop_in_the_macos_profile_only() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, 400, 300);
+    tap(&mut desktop, key::F11, Modifiers::NONE, &mut DiscardEvents);
+    assert!(desktop.is_minimised(window));
+    tap(&mut desktop, key::F11, Modifiers::NONE, &mut DiscardEvents);
+    assert!(!desktop.is_minimised(window));
+    for profile in [Profile::Windows, Profile::Linux] {
+        assert_eq!(shortcut(key::F11, Modifiers::NONE, profile, false), None);
+    }
+    assert_eq!(
+        shortcut(key::F11, Modifiers::SHIFT, Profile::Macos, false),
+        None
+    );
+}
+
+#[test]
 fn super_x_opens_the_power_menu_for_the_keys() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     tap(&mut desktop, key::X, Modifiers::SUPER, &mut DiscardEvents);
@@ -1052,7 +1118,7 @@ fn wm_lists_shown_windows_and_manages_any_of_them() {
     let terminal = desktop.listed_window(0).unwrap();
     assert_eq!(terminal.id, desktop.terminal_window());
     assert_eq!(terminal.client, KERNEL_CLIENT);
-    assert_eq!(&terminal.title[..terminal.title_length], b"Terminal");
+    assert_eq!(&terminal.title[..terminal.title_length], b"Console");
     let info = desktop.listed_window(1).unwrap();
     assert_eq!((info.id, info.state), (window, WindowState::Normal));
     assert_eq!(desktop.listed_window(2), Err(WindowError::NoSuchWindow));
@@ -1132,4 +1198,150 @@ fn painting_with_popups_and_the_pointer_in_many_rects_equals_painting_the_whole_
         }
     }
     assert!(pieces == whole);
+}
+
+#[test]
+fn a_pressed_control_darkens_and_acts_only_when_released_over_it() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, 400, 300);
+    let close = desktop.control_of(window, Part::Close).unwrap();
+    let fill = (close.x + 4 + 6, close.y + 8 + 1);
+    let mut events = Recorded::default();
+    press(&mut desktop, close.x + 10, close.y + 14, &mut events);
+    assert!(
+        events.of_kind(event::CLOSE_REQUEST).is_empty(),
+        "not before the release"
+    );
+    assert_eq!(
+        at(&painted(&desktop), fill.0, fill.1),
+        paint::quarter(colour::BUTTON_CLOSE)
+    );
+    move_to(&mut desktop, 5, 400, &mut events);
+    assert_eq!(
+        at(&painted(&desktop), fill.0, fill.1),
+        colour::BUTTON_CLOSE,
+        "off the control while pressed"
+    );
+    move_to(&mut desktop, close.x + 10, close.y + 14, &mut events);
+    release(&mut desktop, &mut events);
+    assert_eq!(events.of_kind(event::CLOSE_REQUEST).len(), 1);
+    let minimise = desktop.control_of(window, Part::Minimise).unwrap();
+    press(&mut desktop, minimise.x + 10, minimise.y + 14, &mut events);
+    move_to(&mut desktop, 5, 400, &mut events);
+    release(&mut desktop, &mut events);
+    assert!(desktop.is_shown(window), "released elsewhere: nothing");
+    assert_eq!(paint::quarter(colour::BUTTON_CLOSE), 0x00ac_3f39);
+}
+
+#[test]
+fn ctrl_shift_esc_and_cmd_option_esc_open_the_task_manager_in_every_profile() {
+    for profile in [Profile::Windows, Profile::Macos, Profile::Linux] {
+        assert_eq!(
+            shortcut(
+                key::ESC,
+                Modifiers::CTRL.with(Modifiers::SHIFT),
+                profile,
+                true
+            ),
+            Some(Shortcut::TaskManager)
+        );
+        assert_eq!(
+            shortcut(
+                key::ESC,
+                Modifiers::SUPER.with(Modifiers::ALT),
+                profile,
+                false
+            ),
+            Some(Shortcut::TaskManager)
+        );
+    }
+    assert_eq!(
+        shortcut(key::ESC, Modifiers::ALT, Profile::Windows, false),
+        Some(Shortcut::Cycle { back: false })
+    );
+}
+
+#[test]
+fn a_window_on_another_desktop_is_hidden_until_its_desktop_shows() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let first = shown(&mut desktop, 300, 200);
+    let mut damage = Damage::new();
+    assert_eq!(desktop.desktops().0, 1);
+    assert_eq!(desktop.new_desktop(&mut damage, &mut DiscardEvents), Ok(1));
+    assert!(!desktop.is_shown(first));
+    let second = shown(&mut desktop, 300, 200);
+    assert_eq!(desktop.desktops(), (2, 1, [2, 1, 0, 0, 0, 0, 0, 0]));
+    assert_eq!(
+        desktop.desktop_action(
+            desktop_action::SWITCH,
+            1,
+            0,
+            &mut damage,
+            &mut DiscardEvents
+        ),
+        Ok(0)
+    );
+    assert!(desktop.is_shown(first));
+    assert!(!desktop.is_shown(second));
+    assert_eq!(
+        desktop.desktop_action(
+            desktop_action::MOVE,
+            1,
+            u32::from(second),
+            &mut damage,
+            &mut DiscardEvents
+        ),
+        Ok(0)
+    );
+    assert!(desktop.is_shown(second));
+    assert_eq!(
+        desktop.desktop_action(desktop_action::CLOSE, 2, 0, &mut damage, &mut DiscardEvents),
+        Ok(0)
+    );
+    assert_eq!(desktop.desktops().0, 1);
+    assert_eq!(
+        desktop.desktop_action(desktop_action::CLOSE, 1, 0, &mut damage, &mut DiscardEvents),
+        Err(WindowError::Busy)
+    );
+    assert_eq!(
+        desktop.desktop_action(
+            desktop_action::SWITCH,
+            5,
+            0,
+            &mut damage,
+            &mut DiscardEvents
+        ),
+        Err(WindowError::Invalid)
+    );
+}
+
+#[test]
+fn focusing_a_window_on_another_desktop_shows_its_desktop() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let first = shown(&mut desktop, 300, 200);
+    let mut damage = Damage::new();
+    desktop
+        .new_desktop(&mut damage, &mut DiscardEvents)
+        .unwrap();
+    desktop
+        .manage(
+            u32::from(first),
+            WindowAction::Focus as u32,
+            0,
+            0,
+            &mut damage,
+            &mut DiscardEvents,
+        )
+        .unwrap();
+    assert_eq!(desktop.desktops().1, 0);
+    assert_eq!(desktop.focused_window(), Some(first));
+    assert_eq!(
+        shortcut(
+            key::RIGHT,
+            Modifiers::CTRL.with(Modifiers::SUPER),
+            Profile::Windows,
+            false
+        ),
+        Some(Shortcut::SwitchDesktop { next: true })
+    );
 }

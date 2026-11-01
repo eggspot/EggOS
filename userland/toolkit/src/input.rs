@@ -6,6 +6,10 @@ pub const RECORD_SIZE: usize = 32;
 
 /// Linux key codes (`input-event-codes.h`) the toolkit's widgets answer.
 pub mod key {
+    pub const A: u16 = 30;
+    pub const X: u16 = 45;
+    pub const C: u16 = 46;
+    pub const V: u16 = 47;
     pub const ESC: u16 = 1;
     pub const BACKSPACE: u16 = 14;
     pub const TAB: u16 = 15;
@@ -31,15 +35,25 @@ impl Modifiers {
     pub const CTRL: u32 = 2;
     pub const ALT: u32 = 4;
     pub const SUPER: u32 = 8;
+    /// The third-level key, AltGr, or Option in the macOS profile (D185): Alt held with it
+    /// types a character instead of making a shortcut.
+    pub const ALT_GRAPH: u32 = 32;
 
     /// Whether Shift is held.
     pub fn shift(self) -> bool {
         self.0 & Self::SHIFT != 0
     }
 
-    /// Whether Ctrl, Alt or Super is held.
+    /// Whether Ctrl or Super is held: the shortcut modifier of every profile's text fields
+    /// (docs/ux/toolkit-v0.4.md section 4.3).
+    pub fn control_or_super(self) -> bool {
+        self.0 & (Self::CTRL | Self::SUPER) != 0
+    }
+
+    /// Whether Ctrl or Super is held, or Alt without the third-level key.
     pub fn command(self) -> bool {
-        self.0 & (Self::CTRL | Self::ALT | Self::SUPER) != 0
+        self.0 & (Self::CTRL | Self::SUPER) != 0
+            || (self.0 & Self::ALT != 0 && self.0 & Self::ALT_GRAPH == 0)
     }
 }
 
@@ -67,6 +81,8 @@ pub enum Input {
     },
     /// The wheel turned by `notches` (positive up) over (`x`, `y`).
     Wheel { x: i32, y: i32, notches: i32 },
+    /// The wheel turned sideways by `notches` (positive right) over (`x`, `y`) (D162).
+    SidewaysWheel { x: i32, y: i32, notches: i32 },
     /// A key was pressed or released; `character` is what it types under the US layout, or 0.
     Key {
         code: u16,
@@ -128,6 +144,11 @@ pub fn decode(record: &[u8; RECORD_SIZE]) -> Option<Event> {
                 _ => MouseButton::Middle,
             },
             pressed: d != 0,
+        },
+        5 if d == 0 && c != 0 => Input::SidewaysWheel {
+            x: a,
+            y: b,
+            notches: c as i32,
         },
         5 => Input::Wheel {
             x: a,
@@ -202,6 +223,14 @@ mod tests {
                 x: 4,
                 y: 5,
                 notches: -2
+            })
+        );
+        assert_eq!(
+            decode(&record(5, 1, [0, 4, 5, (-3i32) as u32, 0])).map(|event| event.input),
+            Some(Input::SidewaysWheel {
+                x: 4,
+                y: 5,
+                notches: -3
             })
         );
         assert_eq!(

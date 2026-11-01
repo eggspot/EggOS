@@ -1,12 +1,16 @@
-//! A minimal `/proc` (D125): `cmdline` (D137), `meminfo`, `uptime`, `ps`, `net/unix` (D138) and
-//! `driver/rtc` (D150), read-only regular files made when they are opened, mounted on `/proc` at
-//! boot when the root file system has that directory.
+//! `/proc` (D125, D168): `cmdline` (D137), `meminfo`, `uptime`, `ps`, `net/unix` (D138),
+//! `net/interfaces`, `net/route` and `net/arp` (D157), `driver/rtc` (D150), `driver/devices`
+//! (D184), `version` and
+//! `sys/kernel/{hostname,osrelease,ostype}`, and a directory per process with `self` naming the
+//! caller's (D168): read-only regular files made when they are opened, and links, mounted on
+//! `/proc` at boot when the root file system has that directory.
 //!
 //! - `cmdline`: the kernel command line the host started the machine with (QEMU's `-append`), and
 //!   a newline, as Linux writes it; the built-in MCP server reads its grants there (D137).
-//! - `meminfo`: `MemTotal`, `MemFree` and `MemAvailable` in kB, as Linux writes them: the
-//!   frames the allocator had once the kernel's page tables were built, and the frames it has
-//!   now (every free frame is available: there is no page cache to reclaim).
+//! - `meminfo`: `MemTotal`, `MemFree` and `MemAvailable` in kB, as Linux writes them, and
+//!   EggOS's `KernelReserve`: the frames the allocator had once the kernel's page tables were
+//!   built, the frames it has now, those programs can still take (every free frame but the
+//!   reserve kept for the kernel, D155: there is no page cache to reclaim) and the reserve.
 //! - `uptime`: the seconds since boot and the seconds CPUs spent idle, with two decimals, as
 //!   Linux writes them; idle time is not counted yet, so it is `0.00`.
 //! - `ps`: EggOS's own, one line per process in the process table, by id: its id, its
@@ -14,14 +18,44 @@
 //!   waited for) and its name, separated by single spaces. `ps` reads it.
 //! - `net/unix`: the bound `AF_UNIX` sockets, in Linux's format (D138,
 //!   [`super::unix_socket::proc_net_unix`]).
+//! - `net/interfaces`: EggOS's own, one line per network interface (`lo`, and `eth0` with an
+//!   adapter): its link, addresses, DHCP state, lease and counters (D157,
+//!   [`eggos_net::status`]); `ip`, `net_status` and Settings read it. `net/route` and
+//!   `net/arp`: the routes and the neighbours' hardware addresses, in Linux's layouts.
 //! - `driver/rtc`: the real-time clock's date and time, read from the clock when the file is
 //!   opened (at most once a second, [`crate::wall_clock::read_clock`]), in Linux's layout
 //!   (`rtc_time`, `rtc_date`, `24hr`), only on a machine with one; `hwclock` reads it. Opening
 //!   it fails with `EIO` when the clock cannot be read.
+//! - `driver/devices`: EggOS's own, one line per device the driver model knows, in discovery
+//!   order ([`crate::devices::devices_text`]); `device list`, `device_list` and Settings' About
+//!   read it.
+//! - `driver/disks`: EggOS's own, one line per disk in `/dev` ([`crate::block::disks_text`]);
+//!   `disk list`, `disk_list` and Settings' Storage pane read it (D192).
+//! - `version`, `sys/kernel/osrelease`, `sys/kernel/ostype` and `sys/kernel/hostname`: what
+//!   `uname` reports ([`super::identity`]), each a line as Linux writes it.
+//! - `self`: a link to the directory of the process that reads it.
+//! - `<pid>/`, one per process in the process table, listed after the files above: `cmdline`
+//!   (its arguments, each ended by a NUL, read from its stack), `exe` (a link to its program's
+//!   file), `fd/` (a link per open descriptor to what it names: a file's path, `/dev/console`,
+//!   `pipe:[inode]`, `socket:[inode]`), `maps` (its memory as Linux lists it, with files' paths,
+//!   `[heap]` and `[stack]`: glibc's `pthread_getattr_np` finds the main thread's stack there
+//!   and sizes it by `RLIMIT_STACK`), `stat` (Linux's 52 fields, counters EggOS does not keep
+//!   yet as 0) and `status` (`Name`, `State`, the ids, `FDSize`, `Groups`, `VmSize`, `Threads`).
+//!   A process that ended and was not waited for yet keeps its directory, with an empty
+//!   `cmdline` and `maps`, as Linux's zombies.
 
-use super::process_table::{NAME_LENGTH, TABLE};
+use super::descriptors::FileKind;
+use super::identity;
+use super::process_table::{Listed, NAME_LENGTH, Running, TABLE, Terminal};
+use super::pseudo_terminal::Side;
 use crate::memory;
-use crate::vfs::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind, StorageError};
+use crate::process::{Mapping, MappingLabel, Process};
+use crate::regions::FilePages;
+use crate::vfs::{
+    Attributes, DirectoryEntry, FileSystem, KERNEL_CALLER, Name, NodeKind, PATH_MAX, StorageError,
+    Usage, magic,
+};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use core::marker::PhantomData;
@@ -30,40 +64,6 @@ use eggos_hal::memory::FRAME_SIZE;
 
 const ROOT: u64 = 1;
 
-const FILES: [(&[u8], u64); 6] = [
-    (b"cmdline", 5),
-    (b"driver", 8),
-    (b"meminfo", 2),
-    (b"net", 6),
-    (b"ps", 3),
-    (b"uptime", 4),
-];
-
-const NET: u64 = 6;
-
-const NET_FILES: [(&[u8], u64); 1] = [(b"unix", 7)];
-
-const NET_UNIX: u64 = 7;
-
-const DRIVER: u64 = 8;
-
-const DRIVER_FILES: [(&[u8], u64); 1] = [(b"rtc", 9)];
-
-const DRIVER_RTC: u64 = 9;
-
-fn is_directory(node: u64) -> bool {
-    matches!(node, ROOT | NET | DRIVER)
-}
-
-fn listing(directory: u64) -> &'static [(&'static [u8], u64)] {
-    match directory {
-        ROOT => &FILES,
-        NET => &NET_FILES,
-        DRIVER if crate::wall_clock::has_clock() => &DRIVER_FILES,
-        _ => &[],
-    }
-}
-
 const MEMINFO: u64 = 2;
 
 const PS: u64 = 3;
@@ -71,6 +71,158 @@ const PS: u64 = 3;
 const UPTIME: u64 = 4;
 
 const CMDLINE: u64 = 5;
+
+const NET: u64 = 6;
+
+const NET_UNIX: u64 = 7;
+
+const DRIVER: u64 = 8;
+
+const DRIVER_RTC: u64 = 9;
+
+const NET_ARP: u64 = 10;
+
+const NET_INTERFACES: u64 = 11;
+
+const NET_ROUTE: u64 = 12;
+
+const SELF: u64 = 13;
+
+const SYS: u64 = 14;
+
+const SYS_KERNEL: u64 = 15;
+
+const VERSION: u64 = 16;
+
+const OSRELEASE: u64 = 17;
+
+const OSTYPE: u64 = 18;
+
+const HOSTNAME: u64 = 19;
+
+const MOUNTS: u64 = 20;
+
+const DRIVER_DEVICES: u64 = 21;
+
+const DRIVER_DISKS: u64 = 22;
+
+const FILES: [(&[u8], u64); 10] = [
+    (b"cmdline", CMDLINE),
+    (b"driver", DRIVER),
+    (b"meminfo", MEMINFO),
+    (b"mounts", MOUNTS),
+    (b"net", NET),
+    (b"ps", PS),
+    (b"self", SELF),
+    (b"sys", SYS),
+    (b"uptime", UPTIME),
+    (b"version", VERSION),
+];
+
+const NET_FILES: [(&[u8], u64); 4] = [
+    (b"unix", NET_UNIX),
+    (b"arp", NET_ARP),
+    (b"interfaces", NET_INTERFACES),
+    (b"route", NET_ROUTE),
+];
+
+const DRIVER_FILES: [(&[u8], u64); 3] = [
+    (b"devices", DRIVER_DEVICES),
+    (b"disks", DRIVER_DISKS),
+    (b"rtc", DRIVER_RTC),
+];
+
+const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 2] =
+    [(b"devices", DRIVER_DEVICES), (b"disks", DRIVER_DISKS)];
+
+const SYS_FILES: [(&[u8], u64); 1] = [(b"kernel", SYS_KERNEL)];
+
+const SYS_KERNEL_FILES: [(&[u8], u64); 3] = [
+    (b"hostname", HOSTNAME),
+    (b"osrelease", OSRELEASE),
+    (b"ostype", OSTYPE),
+];
+
+mod part {
+    pub const DIRECTORY: u64 = 1;
+    pub const CMDLINE: u64 = 2;
+    pub const EXE: u64 = 3;
+    pub const FD: u64 = 4;
+    pub const MAPS: u64 = 5;
+    pub const STAT: u64 = 6;
+    pub const STATUS: u64 = 7;
+    pub const DESCRIPTOR: u64 = 8;
+}
+
+const PROCESS_FILES: [(&[u8], u64); 6] = [
+    (b"cmdline", part::CMDLINE),
+    (b"exe", part::EXE),
+    (b"fd", part::FD),
+    (b"maps", part::MAPS),
+    (b"stat", part::STAT),
+    (b"status", part::STATUS),
+];
+
+const PROCESS_NODE: u64 = 1 << 62;
+
+const PID_SHIFT: u32 = 32;
+
+const MAX_PID: u32 = (1 << 30) - 1;
+
+const FD_SHIFT: u32 = 8;
+
+const MAX_FD: u32 = (1 << 24) - 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessNode {
+    pid: u32,
+    part: u64,
+    fd: u32,
+}
+
+impl ProcessNode {
+    fn of(node: u64) -> Option<Self> {
+        (node & PROCESS_NODE != 0).then_some(Self {
+            pid: (node >> PID_SHIFT) as u32 & MAX_PID,
+            part: node & 0xff,
+            fd: (node >> FD_SHIFT) as u32 & MAX_FD,
+        })
+    }
+
+    fn part_of(pid: u32, part: u64) -> Self {
+        Self { pid, part, fd: 0 }
+    }
+
+    fn number(self) -> u64 {
+        PROCESS_NODE | u64::from(self.pid) << PID_SHIFT | u64::from(self.fd) << FD_SHIFT | self.part
+    }
+}
+
+fn is_directory(node: u64) -> bool {
+    match ProcessNode::of(node) {
+        Some(node) => matches!(node.part, part::DIRECTORY | part::FD),
+        None => matches!(node, ROOT | NET | DRIVER | SYS | SYS_KERNEL),
+    }
+}
+
+fn is_link(node: u64) -> bool {
+    match ProcessNode::of(node) {
+        Some(node) => matches!(node.part, part::EXE | part::DESCRIPTOR),
+        None => node == SELF,
+    }
+}
+
+fn listing(directory: u64) -> &'static [(&'static [u8], u64)] {
+    match directory {
+        ROOT => &FILES,
+        NET => &NET_FILES,
+        DRIVER if crate::wall_clock::has_clock() => &DRIVER_FILES,
+        DRIVER => &DRIVER_FILES_WITHOUT_CLOCK,
+        SYS => &SYS_FILES,
+        SYS_KERNEL => &SYS_KERNEL_FILES,
+        _ => &[],
+    }
+}
 
 const DEVICE: (u32, u32) = (0, 4);
 
@@ -112,14 +264,52 @@ impl Write for Text {
     }
 }
 
-/// `/proc/meminfo`'s text for `total` and `free` frames.
-pub fn meminfo(total: u64, free: u64) -> Option<Vec<u8>> {
+impl Text {
+    fn bytes(&mut self, bytes: &[u8]) -> Option<()> {
+        self.0.try_reserve(bytes.len()).ok()?;
+        self.0.extend_from_slice(bytes);
+        Some(())
+    }
+}
+
+fn decimal(value: u64, buffer: &mut [u8; 20]) -> &[u8] {
+    let mut start = buffer.len();
+    let mut rest = value;
+    loop {
+        start -= 1;
+        buffer[start] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    &buffer[start..]
+}
+
+fn parse_decimal(name: &[u8], largest: u32) -> Option<u32> {
+    if name.is_empty() || name.len() > 10 || (name.len() > 1 && name[0] == b'0') {
+        return None;
+    }
+    let mut value = 0u64;
+    for &byte in name {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value * 10 + u64::from(byte - b'0');
+    }
+    u32::try_from(value).ok().filter(|&value| value <= largest)
+}
+
+/// `/proc/meminfo`'s text for `total` and `free` frames, `reserve` of them kept for the kernel
+/// (D155): what programs can still take is `MemAvailable`.
+pub fn meminfo(total: u64, free: u64, reserve: u64) -> Option<Vec<u8>> {
     let kilobytes = |frames: u64| frames * (FRAME_SIZE / 1024);
     let mut text = Text(Vec::new());
     for (name, frames) in [
         ("MemTotal", total),
         ("MemFree", free),
-        ("MemAvailable", free),
+        ("MemAvailable", free.saturating_sub(reserve)),
+        ("KernelReserve", reserve),
     ] {
         writeln!(
             text,
@@ -156,33 +346,459 @@ pub fn driver_rtc(seconds: u64) -> Option<Vec<u8>> {
     Some(text.0)
 }
 
+/// The open file description `node` names when it is a `/proc/<pid>/fd/<n>` link whose process
+/// and descriptor are still there: what opening the link opens again on Linux, where it is a
+/// "magic" link to the open file rather than to a path (D173; a pipe's link text names no
+/// file). `EACCES` when `reader` may not reach that process's descriptors: it is another
+/// process, it is not privileged, and its file system user and group ids are not the
+/// process's real, effective and saved ones (Linux's `PTRACE_MODE_READ_FSCREDS`, which
+/// always lets a thread group reach its own).
+pub fn described_file<P: Platform>(
+    node: crate::vfs::Node,
+    reader: &Process<P>,
+) -> Option<Result<Arc<super::descriptors::OpenFile>, super::Errno>> {
+    let link = ProcessNode::of(node.id())?;
+    if link.part != part::DESCRIPTOR || node.file_system().usage().magic != magic::PROC {
+        return None;
+    }
+    let (_, running) = TABLE.lock().describe(link.pid)?;
+    let running = running?;
+    let target = running
+        .process
+        .upgrade()
+        .and_then(|process| process.downcast::<Process<P>>().ok())?;
+    if !may_reach_descriptors(reader, &target) {
+        return Some(Err(super::Errno::EACCES));
+    }
+    running.files.file(link.fd).map(Ok)
+}
+
+pub(super) fn may_reach_descriptors<P: Platform>(reader: &Process<P>, target: &Process<P>) -> bool {
+    use super::credentials::{Ids, Kind};
+    if core::ptr::eq(reader, target) {
+        return true;
+    }
+    let (privileged, user, group) = {
+        let reader = reader.credentials_and_limits().lock();
+        let credentials = &reader.credentials;
+        (
+            credentials.is_privileged(),
+            credentials.ids(Kind::User).filesystem,
+            credentials.ids(Kind::Group).filesystem,
+        )
+    };
+    if privileged {
+        return true;
+    }
+    let target = target.credentials_and_limits().lock();
+    let all_are = |ids: Ids, id: u32| ids.real == id && ids.effective == id && ids.saved == id;
+    all_are(target.credentials.ids(Kind::User), user)
+        && all_are(target.credentials.ids(Kind::Group), group)
+}
+
+/// `/proc/mounts`' text (D171): a line per mounted file system, the root's first, in Linux's
+/// layout: its type as the source, where it is mounted, its type, `ro` or `rw`, and two zeros.
+/// Files mounted over files are left out.
+pub fn mounts_text() -> Option<Vec<u8>> {
+    let mut text = Text(Vec::new());
+    let mut path = [0u8; PATH_MAX];
+    let mut complete = true;
+    crate::vfs::each_mount(|point, root| {
+        if root.kind() != NodeKind::Directory {
+            return;
+        }
+        let Some(start) = point.path_into(&mut path) else {
+            return;
+        };
+        let usage = root.file_system().usage();
+        let kind = crate::vfs::type_name(usage.magic);
+        let options = if usage.read_only { "ro" } else { "rw" };
+        let written = text
+            .bytes(kind.as_bytes())
+            .and_then(|()| text.bytes(b" "))
+            .and_then(|()| text.bytes(&path[start..]))
+            .and_then(|()| writeln!(text, " {kind} {options} 0 0").ok());
+        complete &= written.is_some();
+    });
+    complete.then_some(text.0)
+}
+
+/// `/proc/version`'s text: Linux's layout, with what `uname` reports.
+pub fn version_text() -> Option<Vec<u8>> {
+    let mut text = Text(Vec::new());
+    writeln!(
+        text,
+        "Linux version {} (eggos@eggos) (rustc) {}",
+        identity::utsname::RELEASE,
+        identity::utsname::VERSION
+    )
+    .ok()?;
+    Some(text.0)
+}
+
+fn line(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut text = Text(Vec::new());
+    text.bytes(bytes)?;
+    text.bytes(b"\n")?;
+    Some(text.0)
+}
+
 fn cmdline<P: Platform>() -> Option<Vec<u8>> {
     let mut text = None;
     P::command_line(&mut |line| text = cmdline_text(line));
     text.or_else(|| cmdline_text(b""))
 }
 
-fn ps() -> Option<Vec<u8>> {
+fn ps<P: Platform>() -> Option<Vec<u8>> {
+    let mut listed = Vec::new();
+    {
+        let table = TABLE.lock();
+        listed.try_reserve(table.list().count()).ok()?;
+        listed.extend(table.list());
+    }
     let mut text = Text(Vec::new());
-    let table = TABLE.lock();
-    text.0.try_reserve(table.list().count() * 48).ok()?;
-    for process in table.list() {
-        let length = process
-            .name
-            .iter()
-            .position(|&byte| byte == 0)
-            .unwrap_or(NAME_LENGTH);
+    text.0.try_reserve(listed.len() * 56).ok()?;
+    let frequency = P::clock_frequency().max(1);
+    for process in &listed {
         let state = if process.ended { 'Z' } else { 'R' };
+        let cpu_ms = running_process::<P>(process.id)
+            .map_or(0, |running| running.cpu_ticks(false))
+            .saturating_mul(1000)
+            / frequency;
         write!(
             text,
-            "{} {} {} {} {state} ",
+            "{} {} {} {} {state} {cpu_ms} ",
             process.id, process.parent, process.group, process.session
         )
         .ok()?;
-        text.0.extend_from_slice(&process.name[..length]);
+        text.0.extend_from_slice(name_of(process));
         text.0.push(b'\n');
     }
     Some(text.0)
+}
+
+fn name_of(process: &Listed) -> &[u8] {
+    let length = process
+        .name
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(NAME_LENGTH);
+    &process.name[..length]
+}
+
+struct Described<P: Platform> {
+    listed: Listed,
+    running: Option<Running>,
+    process: Option<Arc<Process<P>>>,
+}
+
+fn described<P: Platform>(pid: u32) -> Option<Described<P>> {
+    let (listed, running) = TABLE.lock().describe(pid)?;
+    let process = running
+        .as_ref()
+        .and_then(|running| running.process.upgrade())
+        .and_then(|process| process.downcast::<Process<P>>().ok());
+    Some(Described {
+        listed,
+        running,
+        process,
+    })
+}
+
+fn running_process<P: Platform>(pid: u32) -> Option<Arc<Process<P>>> {
+    described::<P>(pid)?.process
+}
+
+fn path_of(file: &dyn FilePages) -> Option<Vec<u8>> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(PATH_MAX).ok()?;
+    buffer.resize(PATH_MAX, 0);
+    let start = file.path_into(&mut buffer)?;
+    buffer.drain(..start);
+    Some(buffer)
+}
+
+fn descriptor_target(kind: &FileKind) -> Option<Vec<u8>> {
+    let mut text = Text(Vec::new());
+    match kind {
+        FileKind::Regular(node) | FileKind::Directory(node) | FileKind::Path(node) => {
+            return path_of(node);
+        }
+        FileKind::Snapshot(snapshot) => return path_of(&snapshot.node),
+        FileKind::MemoryDevice(_, node) => return path_of(node),
+        FileKind::Console => text.bytes(b"/dev/console")?,
+        FileKind::PseudoTerminal(end) if end.side() == Side::Controlling => {
+            text.bytes(b"/dev/ptmx")?
+        }
+        FileKind::PseudoTerminal(end) => write!(text, "/dev/pts/{}", end.number()).ok()?,
+        FileKind::Window(_) => text.bytes(b"/dev/window")?,
+        FileKind::AgentChannel(_) => text.bytes(b"/dev/agent")?,
+        FileKind::Pipe(end) => write!(text, "pipe:[{}]", end.inode()).ok()?,
+        FileKind::Socket(socket) => write!(text, "socket:[{}]", socket.inode()).ok()?,
+        FileKind::InetSocket(socket) => write!(text, "socket:[{}]", socket.inode()).ok()?,
+        FileKind::MemoryFile(_) => text.bytes(b"/memfd: (deleted)")?,
+        FileKind::Event(event) => text.bytes(event.link_name())?,
+    }
+    Some(text.0)
+}
+
+fn process_cmdline<P: Platform>(pid: u32) -> Option<Vec<u8>> {
+    let process = running_process::<P>(pid)?;
+    let (start, end) = process.image_layout().arguments;
+    let length = usize::try_from(end.checked_sub(start)?).ok()?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length).ok()?;
+    bytes.resize(length, 0);
+    process.read_user_memory(start, &mut bytes).ok()?;
+    Some(bytes)
+}
+
+const MAPS_NAME_COLUMN: usize = 73;
+
+fn write_mapping(text: &mut Text, mapping: &Mapping) -> Option<()> {
+    let line_start = text.0.len();
+    let (read, write, execute) = match mapping.attributes {
+        Some(attributes) => (
+            'r',
+            if attributes.writable { 'w' } else { '-' },
+            if attributes.executable { 'x' } else { '-' },
+        ),
+        None => ('-', '-', '-'),
+    };
+    let sharing = if mapping.shared { 's' } else { 'p' };
+    let (offset, ((major, minor), inode)) = match &mapping.file {
+        Some((file, offset)) => (*offset, file.identity()),
+        None => (0, ((0, 0), 0)),
+    };
+    write!(
+        text,
+        "{:08x}-{:08x} {read}{write}{execute}{sharing} {offset:08x} {major:02x}:{minor:02x} {inode} ",
+        mapping.start, mapping.end
+    )
+    .ok()?;
+    let name = match (&mapping.file, mapping.label) {
+        (Some((file, _)), _) => path_of(&**file),
+        (None, MappingLabel::Heap) => Some(b"[heap]".to_vec()),
+        (None, MappingLabel::Stack) => Some(b"[stack]".to_vec()),
+        (None, MappingLabel::Plain) => None,
+    };
+    if let Some(name) = name {
+        let written = text.0.len() - line_start;
+        let padding = (MAPS_NAME_COLUMN - 1).saturating_sub(written) + 1;
+        text.0.try_reserve(padding + name.len()).ok()?;
+        text.0.resize(text.0.len() + padding, b' ');
+        text.0.extend_from_slice(&name);
+    }
+    text.bytes(b"\n")
+}
+
+fn process_maps<P: Platform>(pid: u32) -> Option<Vec<u8>> {
+    let process = running_process::<P>(pid)?;
+    let mappings = process.mappings()?;
+    drop(process);
+    let mut text = Text(Vec::new());
+    text.0.try_reserve(mappings.len() * 96).ok()?;
+    for mapping in &mappings {
+        write_mapping(&mut text, mapping)?;
+    }
+    Some(text.0)
+}
+
+fn mapped_bytes(mappings: &[Mapping]) -> u64 {
+    mappings
+        .iter()
+        .map(|mapping| mapping.end - mapping.start)
+        .sum()
+}
+
+const CONSOLE_TTY_NUMBER: u32 = 5 << 8 | 1;
+
+fn tty_number(terminal: Terminal) -> u32 {
+    match terminal {
+        Terminal::Console => CONSOLE_TTY_NUMBER,
+        Terminal::Pseudo(number) => {
+            crate::vfs::devfs::PSEUDO_TERMINAL_MAJOR << 8 | (number & 0xff) | (number & !0xff) << 12
+        }
+    }
+}
+
+fn process_stat<P: Platform>(pid: u32) -> Option<Vec<u8>> {
+    let (listed, terminal) = {
+        let table = TABLE.lock();
+        let (listed, _) = table.describe(pid)?;
+        let terminal = table.controlling_terminal_of(pid).and_then(|terminal| {
+            let (_, foreground) = table.controlling(terminal, pid).ok()?;
+            Some((terminal, foreground))
+        });
+        (listed, terminal)
+    };
+    let process = running_process::<P>(pid);
+    let state = if listed.ended { 'Z' } else { 'R' };
+    let (tty, foreground) = match terminal {
+        Some((terminal, foreground)) => (tty_number(terminal), i64::from(foreground)),
+        None => (0, -1),
+    };
+    let (threads, size, rss_limit, layout, heap_start) = match &process {
+        Some(process) => (
+            process.threads(),
+            mapped_bytes(&process.mappings()?),
+            process
+                .credentials_and_limits()
+                .lock()
+                .limits
+                .get(super::limits::resource::RSS)
+                .map_or(u64::MAX, |limit| limit.soft),
+            process.image_layout().clone(),
+            process.program_break_range().map_or(0, |(start, _)| start),
+        ),
+        None => (0, 0, 0, Default::default(), 0),
+    };
+    let mut text = Text(Vec::new());
+    write!(text, "{pid} (").ok()?;
+    text.bytes(name_of(&listed))?;
+    write!(
+        text,
+        ") {state} {} {} {} {tty} {foreground} 0 0 0 0 0 0 0 0 0 20 0 {threads} 0 0 {size} 0 \
+         {rss_limit} 0 0 {} 0 0 0 0 0 0 0 0 0 {} 0 0 0 0 0 0 0 0 {heap_start} {} {} {} {} 0",
+        listed.parent,
+        listed.group,
+        listed.session,
+        layout.stack_pointer,
+        listed.exit_signal,
+        layout.arguments.0,
+        layout.arguments.1,
+        layout.environment.0,
+        layout.environment.1,
+    )
+    .ok()?;
+    text.bytes(b"\n")?;
+    Some(text.0)
+}
+
+fn process_status<P: Platform>(pid: u32) -> Option<Vec<u8>> {
+    let Described {
+        listed,
+        running,
+        process,
+    } = described::<P>(pid)?;
+    let mut text = Text(Vec::new());
+    text.bytes(b"Name:\t")?;
+    text.bytes(name_of(&listed))?;
+    let state = match listed.ended {
+        true => "Z (zombie)",
+        false => "R (running)",
+    };
+    write!(
+        text,
+        "\nUmask:\t{:04o}\nState:\t{state}\nTgid:\t{pid}\nNgid:\t0\nPid:\t{pid}\n\
+         PPid:\t{}\nTracerPid:\t0\n",
+        super::file_changes::UMASK,
+        listed.parent
+    )
+    .ok()?;
+    if let Some(process) = &process {
+        let (user, group, groups) = {
+            let state = process.credentials_and_limits().lock();
+            let credentials = &state.credentials;
+            let mut groups = Vec::new();
+            groups.try_reserve_exact(credentials.groups().len()).ok()?;
+            groups.extend_from_slice(credentials.groups());
+            (
+                credentials.ids(super::credentials::Kind::User),
+                credentials.ids(super::credentials::Kind::Group),
+                groups,
+            )
+        };
+        for (name, ids) in [("Uid", user), ("Gid", group)] {
+            writeln!(
+                text,
+                "{name}:\t{}\t{}\t{}\t{}",
+                ids.real, ids.effective, ids.saved, ids.filesystem
+            )
+            .ok()?;
+        }
+        let slots = running
+            .as_ref()
+            .and_then(|running| running.files.slot_count())
+            .unwrap_or(0);
+        write!(text, "FDSize:\t{slots}\nGroups:\t").ok()?;
+        for group in groups {
+            write!(text, "{group} ").ok()?;
+        }
+        let size = mapped_bytes(&process.mappings()?);
+        write!(
+            text,
+            "\nVmSize:\t{:>8} kB\nThreads:\t{}\n",
+            size / 1024,
+            process.threads()
+        )
+        .ok()?;
+    }
+    Some(text.0)
+}
+
+fn process_lookup(directory: ProcessNode, name: &[u8]) -> Option<u64> {
+    match directory.part {
+        part::DIRECTORY => PROCESS_FILES
+            .iter()
+            .find(|(file, _)| *file == name)
+            .map(|&(_, part)| ProcessNode::part_of(directory.pid, part).number()),
+        part::FD => {
+            let fd = parse_decimal(name, MAX_FD)?;
+            let (_, running) = TABLE.lock().describe(directory.pid)?;
+            running?.files.file(fd)?;
+            Some(
+                ProcessNode {
+                    pid: directory.pid,
+                    part: part::DESCRIPTOR,
+                    fd,
+                }
+                .number(),
+            )
+        }
+        _ => None,
+    }
+}
+
+fn process_entry(directory: ProcessNode, position: usize) -> Option<DirectoryEntry> {
+    match directory.part {
+        part::DIRECTORY => {
+            let &(name, part) = PROCESS_FILES.get(position)?;
+            let node = ProcessNode::part_of(directory.pid, part).number();
+            Some(DirectoryEntry {
+                name: Name::new(name),
+                node,
+                kind: kind_of(node),
+            })
+        }
+        part::FD => {
+            let (_, running) = TABLE.lock().describe(directory.pid)?;
+            let open = running?.files.open_files()?;
+            let &(fd, _) = open.get(position)?;
+            let mut digits = [0; 20];
+            Some(DirectoryEntry {
+                name: Name::new(decimal(u64::from(fd), &mut digits)),
+                node: ProcessNode {
+                    pid: directory.pid,
+                    part: part::DESCRIPTOR,
+                    fd,
+                }
+                .number(),
+                kind: NodeKind::SymbolicLink,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn kind_of(node: u64) -> NodeKind {
+    if is_directory(node) {
+        NodeKind::Directory
+    } else if is_link(node) {
+        NodeKind::SymbolicLink
+    } else {
+        NodeKind::Regular
+    }
 }
 
 impl<P: Platform> FileSystem for Proc<P> {
@@ -194,20 +810,25 @@ impl<P: Platform> FileSystem for Proc<P> {
         DEVICE
     }
 
+    fn usage(&self) -> Usage {
+        Usage::without_blocks(magic::PROC, true)
+    }
+
     fn kind(&self, node: u64) -> NodeKind {
-        match is_directory(node) {
-            true => NodeKind::Directory,
-            false => NodeKind::Regular,
-        }
+        kind_of(node)
     }
 
     fn attributes(&self, node: u64) -> Attributes {
-        let directory = is_directory(node);
+        let kind = kind_of(node);
         Attributes {
-            kind: self.kind(node),
-            permissions: if directory { 0o555 } else { 0o444 },
+            kind,
+            permissions: match kind {
+                NodeKind::Directory => 0o555,
+                NodeKind::SymbolicLink => 0o777,
+                _ => 0o444,
+            },
             file_id: node,
-            links: if directory { 2 } else { 1 },
+            links: if kind == NodeKind::Directory { 2 } else { 1 },
             owner: 0,
             group: 0,
             size: 0,
@@ -216,28 +837,61 @@ impl<P: Platform> FileSystem for Proc<P> {
     }
 
     fn lookup(&self, directory: u64, name: &[u8]) -> Option<u64> {
-        listing(directory)
-            .iter()
-            .find(|(file, _)| *file == name)
-            .map(|&(_, node)| node)
+        if let Some(directory) = ProcessNode::of(directory) {
+            return process_lookup(directory, name);
+        }
+        if let Some(&(_, node)) = listing(directory).iter().find(|(file, _)| *file == name) {
+            return Some(node);
+        }
+        if directory != ROOT {
+            return None;
+        }
+        let pid = parse_decimal(name, MAX_PID)?;
+        TABLE.lock().describe(pid)?;
+        Some(ProcessNode::part_of(pid, part::DIRECTORY).number())
     }
 
     fn parent(&self, node: u64) -> u64 {
-        if NET_FILES.iter().any(|&(_, file)| file == node) {
-            return NET;
+        if let Some(node) = ProcessNode::of(node) {
+            return match node.part {
+                part::DIRECTORY => ROOT,
+                part::DESCRIPTOR => ProcessNode::part_of(node.pid, part::FD).number(),
+                _ => ProcessNode::part_of(node.pid, part::DIRECTORY).number(),
+            };
         }
-        match DRIVER_FILES.iter().any(|&(_, file)| file == node) {
-            true => DRIVER,
-            false => ROOT,
+        let holds = |files: &[(&[u8], u64)]| files.iter().any(|&(_, file)| file == node);
+        if holds(&NET_FILES) {
+            NET
+        } else if holds(&DRIVER_FILES) {
+            DRIVER
+        } else if holds(&SYS_FILES) {
+            SYS
+        } else if holds(&SYS_KERNEL_FILES) {
+            SYS_KERNEL
+        } else {
+            ROOT
         }
     }
 
     fn name(&self, node: u64) -> Name {
+        let mut digits = [0; 20];
+        if let Some(node) = ProcessNode::of(node) {
+            return Name::new(match node.part {
+                part::DIRECTORY => decimal(u64::from(node.pid), &mut digits),
+                part::DESCRIPTOR => decimal(u64::from(node.fd), &mut digits),
+                other => PROCESS_FILES
+                    .iter()
+                    .find(|&&(_, file)| file == other)
+                    .map_or(&[][..], |(name, _)| name),
+            });
+        }
         Name::new(
             FILES
                 .iter()
                 .chain(NET_FILES.iter())
                 .chain(DRIVER_FILES.iter())
+                .chain(SYS_FILES.iter())
+                .chain(SYS_KERNEL_FILES.iter())
                 .find(|&&(_, file)| file == node)
                 .map_or(&[][..], |(name, _)| name),
         )
@@ -248,33 +902,98 @@ impl<P: Platform> FileSystem for Proc<P> {
     }
 
     fn generate(&self, node: u64) -> Result<Option<Vec<u8>>, StorageError> {
+        if let Some(node) = ProcessNode::of(node) {
+            let generated = match node.part {
+                part::CMDLINE => process_cmdline::<P>(node.pid),
+                part::MAPS => process_maps::<P>(node.pid),
+                part::STAT => process_stat::<P>(node.pid),
+                part::STATUS => process_status::<P>(node.pid),
+                _ => return Ok(None),
+            };
+            return Ok(Some(generated.unwrap_or_default()));
+        }
         let generated = match node {
             MEMINFO => {
-                let free = memory::FRAMES
-                    .lock()
-                    .as_ref()
-                    .map_or(0, |frames| frames.free_frames());
-                meminfo(memory::total_frames(), free)
+                let (free, reserve) = memory::FRAMES.lock().as_ref().map_or((0, 0), |frames| {
+                    (frames.free_frames(), frames.user_reserve())
+                });
+                meminfo(memory::total_frames(), free, reserve)
             }
             UPTIME => uptime(P::clock_ticks(), P::clock_frequency()),
-            PS => ps(),
+            PS => ps::<P>(),
             CMDLINE => cmdline::<P>(),
             NET_UNIX => super::unix_socket::proc_net_unix(),
+            NET_INTERFACES => crate::net::interfaces_text::<P>(),
+            NET_ROUTE => crate::net::routes_text::<P>(),
+            NET_ARP => crate::net::neighbours_text::<P>(),
+            DRIVER_DEVICES => crate::devices::devices_text(),
+            DRIVER_DISKS => crate::block::disks_text(),
             DRIVER_RTC => match crate::wall_clock::read_clock::<P>() {
                 Some((_, Ok(nanoseconds))) => driver_rtc(nanoseconds / 1_000_000_000),
                 _ => return Err(StorageError),
             },
+            VERSION => version_text(),
+            MOUNTS => mounts_text(),
+            OSRELEASE => line(identity::utsname::RELEASE.as_bytes()),
+            OSTYPE => line(identity::utsname::SYSNAME.as_bytes()),
+            HOSTNAME => {
+                let mut name = [0; identity::MAX_NAME];
+                let length = identity::host_name(&mut name);
+                line(&name[..length])
+            }
             _ => None,
         };
         Ok(generated)
     }
 
+    fn link_target(&self, node: u64, caller: u32) -> Option<Vec<u8>> {
+        if node == SELF {
+            if caller == KERNEL_CALLER {
+                return None;
+            }
+            let mut digits = [0; 20];
+            return Some(decimal(u64::from(caller), &mut digits).to_vec());
+        }
+        let node = ProcessNode::of(node)?;
+        match node.part {
+            part::EXE => {
+                let file = running_process::<P>(node.pid)?
+                    .image_layout()
+                    .executable
+                    .clone()?;
+                path_of(&*file)
+            }
+            part::DESCRIPTOR => {
+                let (_, running) = TABLE.lock().describe(node.pid)?;
+                let file = running?.files.file(node.fd)?;
+                descriptor_target(file.kind())
+            }
+            _ => None,
+        }
+    }
+
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
-        let &(name, node) = listing(directory).get(usize::try_from(position).ok()?)?;
+        let position = usize::try_from(position).ok()?;
+        if let Some(directory) = ProcessNode::of(directory) {
+            return process_entry(directory, position);
+        }
+        let files = listing(directory);
+        if let Some(&(name, node)) = files.get(position) {
+            return Some(DirectoryEntry {
+                name: Name::new(name),
+                node,
+                kind: kind_of(node),
+            });
+        }
+        if directory != ROOT {
+            return None;
+        }
+        let pid = TABLE.lock().list().nth(position - files.len())?.id;
+        let mut digits = [0; 20];
         Some(DirectoryEntry {
-            name: Name::new(name),
-            node,
-            kind: self.kind(node),
+            name: Name::new(decimal(u64::from(pid), &mut digits)),
+            node: ProcessNode::part_of(pid, part::DIRECTORY).number(),
+            kind: NodeKind::Directory,
         })
     }
 }
@@ -282,16 +1001,24 @@ impl<P: Platform> FileSystem for Proc<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regions::BytesFile;
     use crate::wall_clock::host::with_clock;
     use alloc::boxed::Box;
     use eggos_drivers::rtc::{RealTimeClock, RtcError};
 
     #[test]
     fn meminfo_is_in_kilobytes_aligned_as_linux_s() {
-        let text = meminfo(32768, 1000).unwrap();
+        let text = meminfo(32768, 1000, 0).unwrap();
         assert_eq!(
             core::str::from_utf8(&text).unwrap(),
-            "MemTotal:         131072 kB\nMemFree:            4000 kB\nMemAvailable:       4000 kB\n"
+            "MemTotal:         131072 kB\nMemFree:            4000 kB\nMemAvailable:       4000 kB\n\
+             KernelReserve:         0 kB\n"
+        );
+        let text = meminfo(32768, 1000, 1024 + 600).unwrap();
+        assert!(
+            core::str::from_utf8(&text)
+                .unwrap()
+                .ends_with("MemAvailable:          0 kB\nKernelReserve:      6496 kB\n")
         );
     }
 
@@ -354,9 +1081,65 @@ mod tests {
     }
 
     #[test]
+    fn version_and_sys_kernel_say_what_uname_says() {
+        let proc = Proc::<crate::tests::TestPlatform>::new();
+        let version = proc.generate(VERSION).unwrap().unwrap();
+        let version = core::str::from_utf8(&version).unwrap();
+        assert!(
+            version.starts_with("Linux version 6.1.0-eggos ("),
+            "{version}"
+        );
+        assert!(version.ends_with(concat!(" #1 SMP EggOS ", env!("CARGO_PKG_VERSION"), "\n")));
+        assert_eq!(proc.lookup(ROOT, b"sys"), Some(SYS));
+        assert_eq!(proc.lookup(SYS, b"kernel"), Some(SYS_KERNEL));
+        assert_eq!(proc.parent(SYS_KERNEL), SYS);
+        assert_eq!(proc.parent(OSRELEASE), SYS_KERNEL);
+        assert_eq!(proc.name(OSTYPE).as_bytes(), b"ostype");
+        assert_eq!(
+            proc.generate(OSRELEASE),
+            Ok(Some(b"6.1.0-eggos\n".to_vec()))
+        );
+        assert_eq!(proc.generate(OSTYPE), Ok(Some(b"Linux\n".to_vec())));
+        let _names = identity::tests::NAMES_TEST.lock().unwrap();
+        identity::forget_changed_names();
+        assert_eq!(proc.generate(HOSTNAME), Ok(Some(b"localhost\n".to_vec())));
+        let entries: Vec<Vec<u8>> = (0..)
+            .map_while(|position| proc.entry(SYS_KERNEL, position))
+            .map(|entry| entry.name.as_bytes().to_vec())
+            .collect();
+        assert_eq!(entries, [&b"hostname"[..], b"osrelease", b"ostype"]);
+    }
+
+    #[test]
+    fn numbers_are_read_as_linux_reads_process_and_descriptor_names() {
+        let mut digits = [0; 20];
+        assert_eq!(decimal(0, &mut digits), b"0");
+        assert_eq!(decimal(u64::MAX, &mut digits), b"18446744073709551615");
+        assert_eq!(parse_decimal(b"42", MAX_PID), Some(42));
+        assert_eq!(parse_decimal(b"0", MAX_PID), Some(0));
+        for name in [&b""[..], b"042", b"4a", b"-1", b"99999999999"] {
+            assert_eq!(parse_decimal(name, MAX_PID), None);
+        }
+        assert_eq!(parse_decimal(b"1073741824", MAX_PID), None);
+        let node = ProcessNode {
+            pid: 1234,
+            part: part::DESCRIPTOR,
+            fd: 1 << 20,
+        };
+        assert_eq!(ProcessNode::of(node.number()), Some(node));
+        assert_eq!(ProcessNode::of(SELF), None);
+        assert!(is_directory(ProcessNode::part_of(7, part::FD).number()));
+        assert!(is_link(ProcessNode::part_of(7, part::EXE).number()));
+        assert_eq!(
+            kind_of(ProcessNode::part_of(7, part::MAPS).number()),
+            NodeKind::Regular
+        );
+    }
+
+    #[test]
     fn the_root_lists_and_finds_its_files_and_net() {
         let proc = Proc::<crate::tests::TestPlatform>::new();
-        let names: Vec<Vec<u8>> = (0..)
+        let names: Vec<Vec<u8>> = (0..FILES.len() as u64)
             .map_while(|position| proc.entry(ROOT, position))
             .map(|entry| entry.name.as_bytes().to_vec())
             .collect();
@@ -366,17 +1149,30 @@ mod tests {
                 &b"cmdline"[..],
                 b"driver",
                 b"meminfo",
+                b"mounts",
                 b"net",
                 b"ps",
-                b"uptime"
+                b"self",
+                b"sys",
+                b"uptime",
+                b"version"
             ]
         );
         assert_eq!(proc.kind(NET), NodeKind::Directory);
-        assert_eq!(proc.entry(ROOT, 3).unwrap().kind, NodeKind::Directory);
+        assert_eq!(proc.entry(ROOT, 4).unwrap().kind, NodeKind::Directory);
+        assert_eq!(proc.kind(MOUNTS), NodeKind::Regular);
+        let mounts = proc.generate(MOUNTS).unwrap().unwrap();
+        assert!(
+            mounts.starts_with(b"rootfs / rootfs ro 0 0\n"),
+            "{mounts:?}"
+        );
         assert_eq!(proc.kind(DRIVER), NodeKind::Directory);
         assert_eq!(proc.parent(DRIVER_RTC), DRIVER);
         assert_eq!(proc.parent(DRIVER), ROOT);
         assert_eq!(proc.name(DRIVER_RTC).as_bytes(), b"rtc");
+        assert_eq!(proc.parent(DRIVER_DEVICES), DRIVER);
+        assert_eq!(proc.lookup(DRIVER, b"devices"), Some(DRIVER_DEVICES));
+        assert_eq!(proc.kind(DRIVER_DEVICES), NodeKind::Regular);
         assert_eq!(proc.lookup(NET, b"unix"), Some(NET_UNIX));
         assert_eq!(proc.lookup(ROOT, b"unix"), None);
         assert_eq!(proc.parent(NET_UNIX), NET);
@@ -384,11 +1180,75 @@ mod tests {
         assert_eq!(proc.name(NET_UNIX).as_bytes(), b"unix");
         assert_eq!(proc.entry(NET, 0).unwrap().node, NET_UNIX);
         assert!(matches!(proc.generate(NET_UNIX), Ok(Some(_))));
+        for (name, node) in [
+            (&b"arp"[..], NET_ARP),
+            (b"interfaces", NET_INTERFACES),
+            (b"route", NET_ROUTE),
+        ] {
+            assert_eq!(proc.lookup(NET, name), Some(node));
+            assert_eq!(proc.parent(node), NET);
+            assert_eq!(proc.name(node).as_bytes(), name);
+            assert!(matches!(proc.generate(node), Ok(Some(_))));
+        }
         assert_eq!(proc.lookup(ROOT, b"cmdline"), Some(CMDLINE));
         assert_eq!(proc.lookup(ROOT, b"ps"), Some(PS));
-        assert_eq!(proc.lookup(ROOT, b"self"), None);
+        assert_eq!(proc.lookup(ROOT, b"self"), Some(SELF));
+        assert_eq!(proc.kind(SELF), NodeKind::SymbolicLink);
+        assert_eq!(proc.link_target(SELF, 42), Some(b"42".to_vec()));
+        assert_eq!(proc.link_target(SELF, KERNEL_CALLER), None);
         assert_eq!(proc.name(UPTIME).as_bytes(), b"uptime");
         assert_eq!(proc.attributes(MEMINFO).permissions, 0o444);
         assert_eq!(proc.kind(ROOT), NodeKind::Directory);
+    }
+
+    #[test]
+    fn a_maps_line_is_padded_to_its_name_as_linux_writes_it() {
+        let mut text = Text(Vec::new());
+        let file: Arc<dyn FilePages> = Arc::new(BytesFile(Vec::new()));
+        let read_execute = eggos_hal::paging::Attributes::USER_TEXT;
+        write_mapping(
+            &mut text,
+            &Mapping {
+                start: 0x40_0000,
+                end: 0x40_2000,
+                attributes: Some(read_execute),
+                shared: false,
+                file: Some((file, 0x1000)),
+                label: MappingLabel::Plain,
+            },
+        )
+        .unwrap();
+        assert_eq!(text.0, b"00400000-00402000 r-xp 00001000 00:00 0 \n");
+        let mut text = Text(Vec::new());
+        write_mapping(
+            &mut text,
+            &Mapping {
+                start: 0x7fff_f000_0000,
+                end: 0x7fff_f080_0000,
+                attributes: Some(eggos_hal::paging::Attributes::USER_READ_WRITE),
+                shared: false,
+                file: None,
+                label: MappingLabel::Stack,
+            },
+        )
+        .unwrap();
+        let line = core::str::from_utf8(&text.0).unwrap();
+        assert_eq!(line.find("[stack]"), Some(MAPS_NAME_COLUMN));
+        assert!(line.starts_with("7ffff0000000-7ffff0800000 rw-p 00000000 00:00 0 "));
+        assert!(line.ends_with(" [stack]\n"));
+        let mut text = Text(Vec::new());
+        write_mapping(
+            &mut text,
+            &Mapping {
+                start: 0x1000,
+                end: 0x2000,
+                attributes: None,
+                shared: true,
+                file: None,
+                label: MappingLabel::Plain,
+            },
+        )
+        .unwrap();
+        assert_eq!(text.0, b"00001000-00002000 ---s 00000000 00:00 0 \n");
     }
 }

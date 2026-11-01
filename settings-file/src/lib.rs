@@ -88,6 +88,183 @@ pub const DISPLAY_SCALE: &str = "display.scale";
 /// `GET_PROFILE` and `SET_PROFILE` (docs/windows.md).
 pub const PROFILES: [&str; 3] = ["windows", "macos", "linux"];
 
+/// The scale `display.scale` holds, 1 or 2, if the file holds one (D195): what the kernel
+/// shows at from its next boot.
+pub fn display_scale(file: &[u8]) -> Option<u32> {
+    match value(file, DISPLAY_SCALE)? {
+        b"1" => Some(1),
+        b"2" => Some(2),
+        _ => None,
+    }
+}
+
+/// Which hand the mouse's buttons are for: `right` (the default) or `left`, which swaps the
+/// left and right buttons (D195).
+pub const MOUSE_BUTTONS: &str = "mouse.buttons";
+/// Which way the wheel scrolls: `traditional` (the default) or `natural` (D195).
+pub const MOUSE_SCROLLING: &str = "mouse.scrolling";
+/// How far a mouse's move takes the pointer: 1 to 10, 5 the default (D195).
+pub const MOUSE_SPEED: &str = "mouse.speed";
+/// Milliseconds before a held key repeats: 150 to 2000, 400 the default (D195).
+pub const KEYBOARD_REPEAT_DELAY: &str = "keyboard.repeat_delay_ms";
+/// Repeats a second of a held key: 2 to 60, 25 the default (D195).
+pub const KEYBOARD_REPEAT_RATE: &str = "keyboard.repeat_rate";
+
+/// Whether a tapped modifier latches for the next key: `true` or `false` (D205).
+pub const STICKY_KEYS: &str = "accessibility.sticky_keys";
+/// Whether a key counts only once held a while: `true` or `false` (D205).
+pub const SLOW_KEYS: &str = "accessibility.slow_keys";
+/// How long a key must be held while slow keys are on: 100 to 1000 ms, 300 the default.
+pub const SLOW_KEYS_MS: &str = "accessibility.slow_keys_ms";
+
+/// How the keys are made easier to press (D205), as the settings file holds them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyAccessibility {
+    pub sticky_keys: bool,
+    pub slow_keys: bool,
+    /// 100 to 1000.
+    pub slow_keys_ms: u32,
+}
+
+impl KeyAccessibility {
+    /// What EggOS starts with: both off, a 300 ms delay.
+    pub const DEFAULT: Self = Self {
+        sticky_keys: false,
+        slow_keys: false,
+        slow_keys_ms: 300,
+    };
+}
+
+/// The key accessibility `file` holds.
+pub fn key_accessibility(file: &[u8]) -> KeyAccessibility {
+    let on = |key: &str| value(file, key) == Some(&b"true"[..]);
+    KeyAccessibility {
+        sticky_keys: on(STICKY_KEYS),
+        slow_keys: on(SLOW_KEYS),
+        slow_keys_ms: number_in(file, SLOW_KEYS_MS, 100, 1000)
+            .unwrap_or(KeyAccessibility::DEFAULT.slow_keys_ms),
+    }
+}
+
+/// The mouse and key preferences the settings file holds (D195), each its default when absent
+/// or out of range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputPreferences {
+    /// The buttons are swapped.
+    pub left_handed: bool,
+    /// The wheel scrolls the natural way.
+    pub natural_scrolling: bool,
+    /// 1 to 10.
+    pub pointer_speed: u32,
+    /// 150 to 2000.
+    pub repeat_delay_ms: u32,
+    /// 2 to 60.
+    pub repeat_rate: u32,
+}
+
+impl InputPreferences {
+    /// The preferences EggOS starts with.
+    pub const DEFAULT: Self = Self {
+        left_handed: false,
+        natural_scrolling: false,
+        pointer_speed: 5,
+        repeat_delay_ms: 400,
+        repeat_rate: 25,
+    };
+}
+
+fn number_in(file: &[u8], key: &str, low: u32, high: u32) -> Option<u32> {
+    let digits = value(file, key)?;
+    if digits.is_empty() || digits.len() > 5 || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let number = digits
+        .iter()
+        .fold(0u32, |number, &digit| number * 10 + u32::from(digit - b'0'));
+    (low..=high).contains(&number).then_some(number)
+}
+
+/// The mouse and key preferences `file` holds.
+pub fn input_preferences(file: &[u8]) -> InputPreferences {
+    let default = InputPreferences::DEFAULT;
+    InputPreferences {
+        left_handed: value(file, MOUSE_BUTTONS) == Some(&b"left"[..]),
+        natural_scrolling: value(file, MOUSE_SCROLLING) == Some(&b"natural"[..]),
+        pointer_speed: number_in(file, MOUSE_SPEED, 1, 10).unwrap_or(default.pointer_speed),
+        repeat_delay_ms: number_in(file, KEYBOARD_REPEAT_DELAY, 150, 2000)
+            .unwrap_or(default.repeat_delay_ms),
+        repeat_rate: number_in(file, KEYBOARD_REPEAT_RATE, 2, 60).unwrap_or(default.repeat_rate),
+    }
+}
+
+/// The keyboard layout: the name of one of [`KEYBOARD_LAYOUTS`] (D185).
+pub const KEYBOARD_LAYOUT: &str = "keyboard.layout";
+
+/// The time zone times are shown in: an IANA zone name such as `Europe/Paris`, or `UTC`
+/// (D194); `TZ` in a program's environment comes first.
+pub const TIME_ZONE: &str = "time.zone";
+
+/// A keyboard layout as Settings and `settings` name and describe it
+/// (docs/ux/keyboard-v0.3.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyboardLayout {
+    /// The value of [`KEYBOARD_LAYOUT`].
+    pub name: &'static str,
+    /// What the Keyboard pane's list shows.
+    pub title: &'static str,
+    /// Whether AltGr (or Option) types a third level of characters.
+    pub third_level: bool,
+    /// The spacing accents of its dead keys, in the pane's order, separated by spaces; empty
+    /// for none.
+    pub dead_keys: &'static str,
+}
+
+const fn entry(
+    name: &'static str,
+    title: &'static str,
+    third_level: bool,
+    dead_keys: &'static str,
+) -> KeyboardLayout {
+    KeyboardLayout {
+        name,
+        title,
+        third_level,
+        dead_keys,
+    }
+}
+
+/// The keyboard layouts, in the Keyboard pane's order, each at the index that is its number in
+/// `/dev/window`'s `GET_KEYBOARD_LAYOUT` and `SET_KEYBOARD_LAYOUT` and in the kernel's table.
+pub const KEYBOARD_LAYOUTS: [KeyboardLayout; 14] = [
+    entry("us", "English (US)", false, ""),
+    entry("us-intl", "English (US, international)", true, "´ ` ^ ¨ ~"),
+    entry("gb", "English (UK)", true, ""),
+    entry("us-dvorak", "English (US, Dvorak)", false, ""),
+    entry("us-colemak", "English (US, Colemak)", false, ""),
+    entry("dk", "Danish", true, "´ ` ^ ¨ ~"),
+    entry("fi", "Finnish", true, "´ ` ^ ¨ ~"),
+    entry("fr", "French", true, "^ ¨"),
+    entry("de", "German", true, "´ ` ^"),
+    entry("it", "Italian", true, ""),
+    entry("no", "Norwegian", true, "´ ` ^ ¨ ~"),
+    entry("br", "Portuguese (Brazil)", true, "´ ` ^ ¨ ~"),
+    entry("es", "Spanish", true, "´ ` ^ ¨"),
+    entry("se", "Swedish", true, "´ ` ^ ¨ ~"),
+];
+
+/// The number in [`KEYBOARD_LAYOUTS`] of the layout named `name`.
+pub fn keyboard_layout_named(name: &[u8]) -> Option<usize> {
+    KEYBOARD_LAYOUTS
+        .iter()
+        .position(|layout| layout.name.as_bytes() == name)
+}
+
+/// The number in [`KEYBOARD_LAYOUTS`] of the keyboard layout `file` holds, if it holds a known
+/// one.
+pub fn keyboard_layout(file: &[u8]) -> Option<usize> {
+    keyboard_layout_named(value(file, KEYBOARD_LAYOUT)?)
+}
+
 /// Why a setting could not be written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refused {
@@ -229,6 +406,28 @@ pub fn with_value(file: &[u8], key: &str, value: &[u8], out: &mut [u8]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_preferences_out_of_range_or_absent_are_their_defaults() {
+        assert_eq!(input_preferences(b""), InputPreferences::DEFAULT);
+        let file =
+            b"eggos-settings 1\nmouse.buttons=left\nmouse.scrolling=natural\nmouse.speed=9\n\
+                     keyboard.repeat_delay_ms=100\nkeyboard.repeat_rate=30\n";
+        assert_eq!(
+            input_preferences(file),
+            InputPreferences {
+                left_handed: true,
+                natural_scrolling: true,
+                pointer_speed: 9,
+                repeat_delay_ms: 400,
+                repeat_rate: 30,
+            }
+        );
+        assert_eq!(
+            input_preferences(b"eggos-settings 1\nmouse.speed=99999999\nmouse.buttons=LEFT\n"),
+            InputPreferences::DEFAULT
+        );
+    }
 
     fn set(file: &[u8], key: &str, value: &[u8]) -> Vec<u8> {
         let mut out = [0u8; LARGEST];
@@ -378,5 +577,22 @@ mod tests {
         assert!(!is_listed(ps, 402));
         assert!(!is_listed(ps, 70));
         assert!(!is_listed(b"", 1));
+    }
+
+    #[test]
+    fn the_keyboard_layout_is_one_of_the_named_layouts() {
+        let file = b"eggos-settings 1\nkeyboard.layout=de\n";
+        assert_eq!(keyboard_layout(file), Some(8));
+        assert_eq!(KEYBOARD_LAYOUTS[8].title, "German");
+        assert_eq!(
+            keyboard_layout(b"eggos-settings 1\nkeyboard.layout=DE\n"),
+            None
+        );
+        assert_eq!(keyboard_layout(b"eggos-settings 1\n"), None);
+        assert_eq!(keyboard_layout_named(b"us"), Some(0));
+        for (index, layout) in KEYBOARD_LAYOUTS.iter().enumerate() {
+            assert_eq!(keyboard_layout_named(layout.name.as_bytes()), Some(index));
+            assert!(is_key(KEYBOARD_LAYOUT.as_bytes()) && is_value(layout.name.as_bytes()));
+        }
     }
 }

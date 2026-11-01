@@ -12,7 +12,7 @@ riscv64 firmware OpenSBI-v1.3
 aarch64 qemu 8.2.2
 riscv64 qemu 8.2.2
 x86_64 qemu 8.2.2
-aarch64 boot_to_prompt 1007440.00
+aarch64 boot_to_prompt 1802320.00
 aarch64 breakpoint_round_trip 92.00
 aarch64 clock_read 5.00
 aarch64 device_tree_walk 75529.00
@@ -30,6 +30,7 @@ aarch64 futex_wake_empty 20.00
 aarch64 gfx_glyph_cell 561.56
 aarch64 gfx_terminal_line 45341.56
 aarch64 heap_allocate_free_small 50.00
+aarch64 idle_memory_bytes 602112.00
 aarch64 input_event_queue_push_pop 68.00
 aarch64 input_key_to_bytes 313.01
 aarch64 linux_clock_monotonic_read 12.00
@@ -50,7 +51,7 @@ aarch64 process_switch_round_trip 487.27
 aarch64 process_syscall_round_trip 117.40
 aarch64 random_fill_16 1323.00
 aarch64 random_fill_4096 87816.16
-aarch64 release_image_bytes 1421392.00
+aarch64 release_image_bytes 8159544.00
 aarch64 syscall_round_trip 106.17
 aarch64 term_feed_line 6046.56
 aarch64 term_scroll_line 540783.08
@@ -64,7 +65,7 @@ aarch64 virtio_input_poll_idle 25.25
 aarch64 virtqueue_round_trip_fake 375.00
 aarch64 virtqueue_submit_one 47.00
 aarch64 wait_queue_wake_empty 15.00
-riscv64 boot_to_prompt 831400.00
+riscv64 boot_to_prompt 1760800.00
 riscv64 breakpoint_round_trip 127.00
 riscv64 clock_read 4.00
 riscv64 device_tree_walk 86792.01
@@ -82,6 +83,7 @@ riscv64 futex_wake_empty 27.00
 riscv64 gfx_glyph_cell 680.59
 riscv64 gfx_terminal_line 56240.69
 riscv64 heap_allocate_free_small 57.00
+riscv64 idle_memory_bytes 528384.00
 riscv64 input_event_queue_push_pop 69.01
 riscv64 input_key_to_bytes 385.01
 riscv64 linux_clock_monotonic_read 15.00
@@ -102,7 +104,7 @@ riscv64 process_switch_round_trip 598.45
 riscv64 process_syscall_round_trip 156.39
 riscv64 random_fill_16 1998.00
 riscv64 random_fill_4096 131313.16
-riscv64 release_image_bytes 1666104.00
+riscv64 release_image_bytes 5263952.00
 riscv64 syscall_round_trip 148.27
 riscv64 term_feed_line 6839.81
 riscv64 term_scroll_line 669769.34
@@ -116,7 +118,7 @@ riscv64 virtio_input_poll_idle 28.28
 riscv64 virtqueue_round_trip_fake 353.00
 riscv64 virtqueue_submit_one 84.01
 riscv64 wait_queue_wake_empty 13.01
-x86_64 boot_to_prompt 1312499.74
+x86_64 boot_to_prompt 2348339.00
 x86_64 breakpoint_round_trip 60.00
 x86_64 clock_read 8.00
 x86_64 device_tree_walk 49162.73
@@ -134,6 +136,7 @@ x86_64 futex_wake_empty 25.00
 x86_64 gfx_glyph_cell 689.53
 x86_64 gfx_terminal_line 59319.64
 x86_64 heap_allocate_free_small 48.00
+x86_64 idle_memory_bytes 606208.00
 x86_64 input_event_queue_push_pop 66.00
 x86_64 input_key_to_bytes 334.00
 x86_64 linux_clock_monotonic_read 19.00
@@ -154,7 +157,7 @@ x86_64 process_switch_round_trip 450.32
 x86_64 process_syscall_round_trip 117.66
 x86_64 random_fill_16 1237.00
 x86_64 random_fill_4096 79921.61
-x86_64 release_image_bytes 1354904.00
+x86_64 release_image_bytes 7993648.00
 x86_64 syscall_round_trip 107.44
 x86_64 term_feed_line 5949.24
 x86_64 term_scroll_line 196729.62

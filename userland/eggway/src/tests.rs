@@ -2,8 +2,11 @@ use crate::compositor::{self, Compositor, MAX_CLIENTS};
 use crate::fake::{Fake, SentEvent, message};
 use crate::system::{Fd, System};
 use eggos_wayland::protocol::{
-    Interface, buffer, callback, display, keyboard, pointer, registry, shm, surface, xdg_surface,
-    xdg_toplevel,
+    Interface, SERVER_ID_START, activation_token, buffer, callback, cursor_shape, data_device,
+    data_offer, data_source, decoration, display, fractional_scale, keyboard, output, pointer,
+    primary_selection_device, primary_selection_offer, primary_selection_source, registry,
+    server_decoration, shm, surface, text_input, viewport, xdg_popup, xdg_positioner, xdg_surface,
+    xdg_toplevel, xdg_wm_base,
 };
 use eggos_wayland::wire::Value;
 
@@ -30,6 +33,7 @@ mod record {
     pub const BUTTON: u16 = 4;
     pub const KEY: u16 = 6;
     pub const FOCUS_IN: u16 = 7;
+    pub const FOCUS_OUT: u16 = 8;
     pub const CLOSE_REQUEST: u16 = 9;
     pub const RESIZE: u16 = 10;
     pub const STATE_CHANGED: u16 = 11;
@@ -83,8 +87,10 @@ impl Session {
             if self.compositor.client_count() == 0 {
                 break;
             }
-            self.compositor.readable(&mut self.fake, 0);
-            self.compositor.device_readable(&mut self.fake, 0);
+            for index in 0..MAX_CLIENTS {
+                self.compositor.readable(&mut self.fake, index);
+                self.compositor.device_readable(&mut self.fake, index);
+            }
             self.compositor.tick(&mut self.fake);
         }
         let events = self.fake.events(self.socket, &mut self.read);
@@ -247,13 +253,95 @@ fn the_registry_announces_every_global_and_refuses_a_newer_bind() {
         .iter()
         .filter(|event| event.object == REGISTRY && event.opcode == registry::GLOBAL.opcode)
         .collect();
-    assert_eq!(globals.len(), 5);
+    assert_eq!(globals.len(), 15);
     assert_eq!(globals[0].word(0), 1);
     session.bind(1, "wl_compositor", 5, COMPOSITOR);
     session.pump();
     assert_eq!(session.error(), Some((REGISTRY, display::INVALID_OBJECT)));
     assert!(!session.alive());
     assert!(session.fake.open.is_empty());
+}
+
+#[test]
+fn newer_binds_get_the_output_s_name_the_toplevel_s_bounds_and_capabilities_and_a_scale_of_one() {
+    const MANAGER: u32 = 40;
+    const SCALE: u32 = 41;
+    const SECOND_SCALE: u32 = 42;
+    let mut session = Session::new();
+    session.send(1, 1, &[Value::NewId(REGISTRY)]);
+    session.bind(1, "wl_compositor", 4, COMPOSITOR);
+    session.bind(4, "wl_output", 4, OUTPUT);
+    session.bind(5, "xdg_wm_base", 5, WM_BASE);
+    session.bind(15, "wp_fractional_scale_manager_v1", 1, MANAGER);
+    session.pump();
+    let name = session.of(OUTPUT, output::NAME.opcode)[0];
+    assert_eq!(name.word(0), 10);
+    assert_eq!(&name.body[4..13], b"DISPLAY-1");
+    assert_eq!(session.of(OUTPUT, output::DESCRIPTION.opcode).len(), 1);
+    let events = session.events.len();
+    session.send(COMPOSITOR, 0, &[Value::NewId(SURFACE)]);
+    session.send(
+        WM_BASE,
+        2,
+        &[Value::NewId(XDG_SURFACE), Value::Object(SURFACE)],
+    );
+    session.send(XDG_SURFACE, 1, &[Value::NewId(TOPLEVEL)]);
+    session.send(SURFACE, 6, &[]);
+    session.pump();
+    let toplevel: Vec<u16> = session.events[events..]
+        .iter()
+        .filter(|event| event.object == TOPLEVEL)
+        .map(|event| event.opcode)
+        .collect();
+    assert_eq!(
+        toplevel,
+        [
+            xdg_toplevel::WM_CAPABILITIES.opcode,
+            xdg_toplevel::CONFIGURE_BOUNDS.opcode,
+            xdg_toplevel::CONFIGURE.opcode
+        ]
+    );
+    let capabilities = session.of(TOPLEVEL, xdg_toplevel::WM_CAPABILITIES.opcode)[0];
+    assert_eq!(
+        (
+            capabilities.word(0),
+            capabilities.word(1),
+            capabilities.word(2)
+        ),
+        (
+            8,
+            xdg_toplevel::CAPABILITY_MAXIMIZE,
+            xdg_toplevel::CAPABILITY_MINIMIZE
+        )
+    );
+    let bounds = session.of(TOPLEVEL, xdg_toplevel::CONFIGURE_BOUNDS.opcode)[0];
+    assert_eq!((bounds.word(0), bounds.word(1)), (1280, 732));
+    session.send(MANAGER, 1, &[Value::NewId(SCALE), Value::Object(SURFACE)]);
+    session.pump();
+    let preferred = session.of(SCALE, fractional_scale::PREFERRED_SCALE.opcode);
+    assert_eq!(preferred.len(), 1);
+    assert_eq!(preferred[0].word(0), 120);
+    session.send(SCALE, 0, &[]);
+    session.send(
+        MANAGER,
+        1,
+        &[Value::NewId(SECOND_SCALE), Value::Object(SURFACE)],
+    );
+    session.pump();
+    assert!(session.alive());
+    assert_eq!(
+        session
+            .of(SECOND_SCALE, fractional_scale::PREFERRED_SCALE.opcode)
+            .len(),
+        1
+    );
+    session.send(MANAGER, 1, &[Value::NewId(SCALE), Value::Object(SURFACE)]);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((MANAGER, fractional_scale::FRACTIONAL_SCALE_EXISTS))
+    );
+    session.end();
 }
 
 #[test]
@@ -323,6 +411,88 @@ fn a_buffer_before_the_first_configure_is_an_error() {
     );
     assert!(!session.alive());
     assert!(session.fake.open.is_empty());
+}
+
+#[test]
+fn a_surface_whose_last_commit_attached_null_gets_a_new_xdg_surface_as_sdl_shows_it_again() {
+    const XDG_SURFACE_AGAIN: u32 = 30;
+    const TOPLEVEL_AGAIN: u32 = 31;
+    let mut session = Session::new();
+    let first = session.shown();
+    let detach_and_commit = |session: &mut Session| {
+        session.send(
+            SURFACE,
+            1,
+            &[Value::Object(0), Value::Int(0), Value::Int(0)],
+        );
+        session.send(SURFACE, 6, &[]);
+    };
+    detach_and_commit(&mut session);
+    session.send(TOPLEVEL, 0, &[]);
+    session.send(XDG_SURFACE, 0, &[]);
+    detach_and_commit(&mut session);
+    session.send(
+        WM_BASE,
+        2,
+        &[Value::NewId(XDG_SURFACE_AGAIN), Value::Object(SURFACE)],
+    );
+    session.send(XDG_SURFACE_AGAIN, 1, &[Value::NewId(TOPLEVEL_AGAIN)]);
+    session.send(SURFACE, 6, &[]);
+    let events = session.pump();
+    assert_eq!(session.error(), None);
+    assert!(session.alive());
+    assert!(session.fake.windows[&first].destroyed);
+    let serial = events
+        .iter()
+        .find(|event| event.object == XDG_SURFACE_AGAIN)
+        .map(|event| event.word(0))
+        .expect("a configure");
+    session.send(XDG_SURFACE_AGAIN, 4, &[Value::Uint(serial)]);
+    session.show(BUFFER, (0, 0, WIDTH as i32, HEIGHT as i32));
+    session.pump();
+    assert_eq!(session.error(), None);
+    assert_eq!(
+        session
+            .fake
+            .windows
+            .values()
+            .filter(|window| !window.destroyed)
+            .count(),
+        1
+    );
+    session.end();
+}
+
+#[test]
+fn a_surface_with_a_committed_or_attached_buffer_gets_no_xdg_surface() {
+    for commits in [true, false] {
+        let mut session = Session::new();
+        session.globals();
+        session.send(COMPOSITOR, 0, &[Value::NewId(SURFACE)]);
+        session.pool(vec![0; 64 * 64]);
+        session.buffer(BUFFER, 64, 64);
+        session.send(
+            SURFACE,
+            1,
+            &[Value::Object(BUFFER), Value::Int(0), Value::Int(0)],
+        );
+        if commits {
+            session.send(SURFACE, 6, &[]);
+        }
+        session.send(
+            WM_BASE,
+            2,
+            &[Value::NewId(XDG_SURFACE), Value::Object(SURFACE)],
+        );
+        session.pump();
+        assert_eq!(
+            session.error(),
+            Some((WM_BASE, xdg_wm_base::INVALID_SURFACE_STATE)),
+            "commits: {commits}"
+        );
+        assert!(!session.alive());
+        assert!(session.fake.open.is_empty());
+    }
 }
 
 #[test]
@@ -1050,4 +1220,1246 @@ fn a_pointer_made_over_a_window_is_entered_and_a_gone_surface_s_callbacks_end() 
         .any(|event| event.word(0) == 50);
     assert!(deleted);
     session.end();
+}
+
+#[test]
+fn a_query_gets_the_toplevel_s_title_and_app_id_and_refuses_actions() {
+    use eggos_element_tree::{QUERY_EVENT, Role, elements};
+    let mut session = Session::new();
+    session.shown();
+    session.send(TOPLEVEL, 3, &[Value::String(b"org.eggos.paint")]);
+    session.pump();
+    session.record(QUERY_EVENT, [7, 0, 0, 0]);
+    let (serial, outcome, tree) = session.fake.answers.last().cloned().unwrap();
+    assert_eq!((serial, outcome), (7, 0));
+    let root = elements(&tree).next().unwrap().unwrap();
+    assert_eq!(
+        (root.id, root.parent, root.role, root.name, root.value),
+        (
+            1,
+            0,
+            Role::Window,
+            &b"linux-paint"[..],
+            &b"org.eggos.paint"[..]
+        )
+    );
+    session.record(QUERY_EVENT, [8, 1, 1, 1]);
+    let answer = session.fake.answers.last().unwrap();
+    assert_eq!((answer.0, answer.1, answer.2.len()), (8, 2, 0));
+    session.end();
+}
+
+const SUBCOMPOSITOR: u32 = 30;
+const DECORATION_MANAGER: u32 = 31;
+const CURSOR_MANAGER: u32 = 32;
+const VIEWPORTER: u32 = 33;
+const CHILD: u32 = 34;
+const SUBSURFACE: u32 = 35;
+const CHILD_BUFFER: u32 = 36;
+const POSITIONER: u32 = 37;
+const POPUP_SURFACE: u32 = 38;
+const POPUP_XDG: u32 = 39;
+const POPUP: u32 = 40;
+const SECOND_POOL: u32 = 41;
+const POPUP_BUFFER: u32 = 42;
+const DECORATION: u32 = 43;
+const CURSOR_DEVICE: u32 = 44;
+const VIEWPORT: u32 = 45;
+
+impl Session {
+    fn second_pool(&mut self, pixels: Vec<u32>) {
+        let bytes = pixels.len() as i32 * 4;
+        let memory = self.fake.memory_file(pixels);
+        self.send_with(
+            SHM,
+            0,
+            &[Value::NewId(SECOND_POOL), Value::Fd, Value::Int(bytes)],
+            vec![memory],
+        );
+    }
+
+    fn argb_buffer(&mut self, pool: u32, id: u32, offset: i32, size: (i32, i32)) {
+        self.send(
+            pool,
+            0,
+            &[
+                Value::NewId(id),
+                Value::Int(offset),
+                Value::Int(size.0),
+                Value::Int(size.1),
+                Value::Int(size.0 * 4),
+                Value::Uint(shm::ARGB8888),
+            ],
+        );
+    }
+
+    fn commit_buffer(&mut self, surface: u32, buffer: u32) {
+        self.send(
+            surface,
+            1,
+            &[Value::Object(buffer), Value::Int(0), Value::Int(0)],
+        );
+        self.send(surface, 6, &[]);
+    }
+}
+
+#[test]
+fn a_subsurface_is_drawn_over_its_parent_where_it_is_placed_on_the_parent_s_commit() {
+    let mut session = Session::new();
+    session.globals();
+    session.bind(6, "wl_subcompositor", 1, SUBCOMPOSITOR);
+    session.configured_toplevel();
+    let parent = (WIDTH * HEIGHT) as usize;
+    let mut pixels = vec![0x0011_1111u32; parent];
+    pixels.extend(vec![0xff22_2222u32; 100]);
+    session.pool(pixels);
+    session.buffer(BUFFER, WIDTH, HEIGHT);
+    session.argb_buffer(POOL, CHILD_BUFFER, parent as i32 * 4, (10, 10));
+    session.send(COMPOSITOR, 0, &[Value::NewId(CHILD)]);
+    session.send(
+        SUBCOMPOSITOR,
+        1,
+        &[
+            Value::NewId(SUBSURFACE),
+            Value::Object(CHILD),
+            Value::Object(SURFACE),
+        ],
+    );
+    session.send(SUBSURFACE, 1, &[Value::Int(20), Value::Int(30)]);
+    session.commit_buffer(CHILD, CHILD_BUFFER);
+    session.pump();
+    assert!(session.fake.window().is_none());
+    session.show(BUFFER, (0, 0, WIDTH as i32, HEIGHT as i32));
+    session.pump();
+    let (_, window) = session.fake.window().expect("a window");
+    assert_eq!(window.pixels[(30 * WIDTH + 20) as usize], 0x0022_2222);
+    assert_eq!(window.pixels[(39 * WIDTH + 29) as usize], 0x0022_2222);
+    assert_eq!(window.pixels[(29 * WIDTH + 20) as usize], 0x0011_1111);
+    assert_eq!(window.pixels[(30 * WIDTH + 30) as usize], 0x0011_1111);
+    assert!(session.of(BUFFER, buffer::RELEASE.opcode).is_empty());
+    session.send(
+        SUBCOMPOSITOR,
+        1,
+        &[
+            Value::NewId(46),
+            Value::Object(SURFACE),
+            Value::Object(CHILD),
+        ],
+    );
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((
+            SUBCOMPOSITOR,
+            eggos_wayland::protocol::subsurface::BAD_SURFACE
+        ))
+    );
+    session.end();
+}
+
+#[test]
+fn a_popup_goes_where_its_positioner_says_and_a_click_outside_its_grab_dismisses_it() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.send(WM_BASE, 1, &[Value::NewId(POSITIONER)]);
+    session.send(POSITIONER, 1, &[Value::Int(50), Value::Int(40)]);
+    session.send(
+        POSITIONER,
+        2,
+        &[
+            Value::Int(10),
+            Value::Int(10),
+            Value::Int(20),
+            Value::Int(10),
+        ],
+    );
+    session.send(POSITIONER, 3, &[Value::Uint(xdg_positioner::BOTTOM_LEFT)]);
+    session.send(POSITIONER, 4, &[Value::Uint(xdg_positioner::BOTTOM_RIGHT)]);
+    session.send(COMPOSITOR, 0, &[Value::NewId(POPUP_SURFACE)]);
+    session.send(
+        WM_BASE,
+        2,
+        &[Value::NewId(POPUP_XDG), Value::Object(POPUP_SURFACE)],
+    );
+    session.send(
+        POPUP_XDG,
+        2,
+        &[
+            Value::NewId(POPUP),
+            Value::Object(XDG_SURFACE),
+            Value::Object(POSITIONER),
+        ],
+    );
+    session.pump();
+    let placed = session.of(POPUP, xdg_popup::CONFIGURE.opcode)[0];
+    let place: Vec<i32> = (0..4).map(|index| placed.word(index) as i32).collect();
+    assert_eq!(place, [10, 20, 50, 40]);
+    let serial = session.of(POPUP_XDG, xdg_surface::CONFIGURE.opcode)[0].word(0);
+    session.send(POPUP_XDG, 4, &[Value::Uint(serial)]);
+    session.second_pool(vec![0xff33_3333; 50 * 40]);
+    session.argb_buffer(SECOND_POOL, POPUP_BUFFER, 0, (50, 40));
+    session.send(POPUP, 1, &[Value::Object(SEAT), Value::Uint(1)]);
+    session.commit_buffer(POPUP_SURFACE, POPUP_BUFFER);
+    session.pump();
+    let pixels = &session.fake.windows[&window].pixels;
+    assert_eq!(pixels[(20 * WIDTH + 10) as usize], 0x0033_3333);
+    assert_eq!(pixels[(59 * WIDTH + 59) as usize], 0x0033_3333);
+    assert_eq!(pixels[(20 * WIDTH + 9) as usize], 20 * WIDTH + 9);
+    let entered = session.of(KEYBOARD, keyboard::ENTER.opcode);
+    assert_eq!(
+        entered.last().map(|event| event.word(1)),
+        Some(POPUP_SURFACE)
+    );
+    session.record(record::POINTER_ENTER, [30, 30, 0, 0]);
+    let pointed = session.of(POINTER, pointer::ENTER.opcode);
+    assert_eq!(
+        pointed.last().map(|event| event.word(1)),
+        Some(POPUP_SURFACE)
+    );
+    session.record(record::POINTER_MOVE, [5, 5, 0, 0]);
+    session.record(record::BUTTON, [5, 5, 0x110, 1]);
+    assert_eq!(session.of(POPUP, xdg_popup::POPUP_DONE.opcode).len(), 1);
+    assert!(session.of(POINTER, pointer::BUTTON.opcode).is_empty());
+    session.end();
+}
+
+#[test]
+fn a_toplevel_s_decoration_is_the_server_s_whatever_mode_it_asks_for() {
+    let mut session = Session::new();
+    session.globals();
+    session.bind(7, "zxdg_decoration_manager_v1", 1, DECORATION_MANAGER);
+    session.configured_toplevel();
+    session.send(
+        DECORATION_MANAGER,
+        1,
+        &[Value::NewId(DECORATION), Value::Object(TOPLEVEL)],
+    );
+    session.send(DECORATION, 1, &[Value::Uint(decoration::CLIENT_SIDE)]);
+    session.pump();
+    let modes: Vec<u32> = session
+        .of(DECORATION, decoration::CONFIGURE.opcode)
+        .iter()
+        .map(|event| event.word(0))
+        .collect();
+    assert_eq!(modes, [decoration::SERVER_SIDE, decoration::SERVER_SIDE]);
+    assert_eq!(
+        session.of(XDG_SURFACE, xdg_surface::CONFIGURE.opcode).len(),
+        3
+    );
+    session.send(DECORATION, 1, &[Value::Uint(7)]);
+    session.pump();
+    assert_eq!(session.error(), Some((DECORATION, display::INVALID_METHOD)));
+    session.end();
+}
+
+#[test]
+fn cursor_shapes_and_a_hidden_cursor_set_the_window_s_pointer() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.bind(8, "wp_cursor_shape_manager_v1", 1, CURSOR_MANAGER);
+    session.send(
+        CURSOR_MANAGER,
+        1,
+        &[Value::NewId(CURSOR_DEVICE), Value::Object(POINTER)],
+    );
+    session.pump();
+    session.record(record::POINTER_ENTER, [5, 5, 0, 0]);
+    let serial = session.of(POINTER, pointer::ENTER.opcode)[0].word(0);
+    for shape in [
+        cursor_shape::TEXT,
+        cursor_shape::NWSE_RESIZE,
+        cursor_shape::POINTER,
+        cursor_shape::WAIT,
+        cursor_shape::PROGRESS,
+    ] {
+        session.send(CURSOR_DEVICE, 1, &[Value::Uint(serial), Value::Uint(shape)]);
+    }
+    session.send(
+        POINTER,
+        0,
+        &[
+            Value::Uint(serial),
+            Value::Object(0),
+            Value::Int(0),
+            Value::Int(0),
+        ],
+    );
+    session.pump();
+    assert_eq!(
+        session.fake.windows[&window].pointer_shapes,
+        [1, 4, 7, 8, 0, 6]
+    );
+    session.send(
+        CURSOR_DEVICE,
+        1,
+        &[Value::Uint(serial), Value::Uint(cursor_shape::LAST + 1)],
+    );
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((CURSOR_DEVICE, cursor_shape::INVALID_SHAPE))
+    );
+    session.end();
+}
+
+#[test]
+fn a_viewport_scales_the_buffer_to_its_destination_and_refuses_a_source_outside_it() {
+    let mut session = Session::new();
+    session.globals();
+    session.bind(9, "wp_viewporter", 1, VIEWPORTER);
+    session.configured_toplevel();
+    session.send(
+        VIEWPORTER,
+        1,
+        &[Value::NewId(VIEWPORT), Value::Object(SURFACE)],
+    );
+    session.send(VIEWPORT, 2, &[Value::Int(400), Value::Int(200)]);
+    let pixels = (0..WIDTH * HEIGHT).collect();
+    session.pool(pixels);
+    session.buffer(BUFFER, WIDTH, HEIGHT);
+    session.show(BUFFER, (0, 0, WIDTH as i32, HEIGHT as i32));
+    session.pump();
+    let (_, window) = session.fake.window().expect("a window");
+    assert_eq!((window.width, window.height), (400, 200));
+    assert_eq!(window.pixels[2 * 400 + 3], WIDTH + 1);
+    assert_eq!(window.pixels[199 * 400 + 399], WIDTH * HEIGHT - 1);
+    let fixed = eggos_wayland::wire::fixed;
+    session.send(
+        VIEWPORT,
+        1,
+        &[
+            Value::Fixed(fixed(150)),
+            Value::Fixed(0),
+            Value::Fixed(fixed(100)),
+            Value::Fixed(fixed(10)),
+        ],
+    );
+    session.send(SURFACE, 6, &[]);
+    session.pump();
+    assert_eq!(session.error(), Some((VIEWPORT, viewport::OUT_OF_BUFFER)));
+    session.end();
+}
+
+#[test]
+fn a_subsurface_whose_parent_went_keeps_its_role_until_its_object_is_destroyed() {
+    const PARENT: u32 = 48;
+    const SECOND_SUBSURFACE: u32 = 49;
+    let mut session = Session::new();
+    session.globals();
+    session.bind(6, "wl_subcompositor", 1, SUBCOMPOSITOR);
+    session.configured_toplevel();
+    session.send(COMPOSITOR, 0, &[Value::NewId(PARENT)]);
+    session.send(COMPOSITOR, 0, &[Value::NewId(CHILD)]);
+    session.send(
+        SUBCOMPOSITOR,
+        1,
+        &[
+            Value::NewId(SUBSURFACE),
+            Value::Object(CHILD),
+            Value::Object(PARENT),
+        ],
+    );
+    session.send(PARENT, 0, &[]);
+    session.pump();
+    assert!(session.alive());
+    let again = [
+        Value::NewId(SECOND_SUBSURFACE),
+        Value::Object(CHILD),
+        Value::Object(SURFACE),
+    ];
+    session.send(SUBSURFACE, 0, &[]);
+    session.send(SUBCOMPOSITOR, 1, &again);
+    session.pump();
+    assert!(session.alive(), "a new role once the old object is gone");
+    session.end();
+    let mut session = Session::new();
+    session.globals();
+    session.bind(6, "wl_subcompositor", 1, SUBCOMPOSITOR);
+    session.configured_toplevel();
+    session.send(COMPOSITOR, 0, &[Value::NewId(PARENT)]);
+    session.send(COMPOSITOR, 0, &[Value::NewId(CHILD)]);
+    session.send(
+        SUBCOMPOSITOR,
+        1,
+        &[
+            Value::NewId(SUBSURFACE),
+            Value::Object(CHILD),
+            Value::Object(PARENT),
+        ],
+    );
+    session.send(PARENT, 0, &[]);
+    session.send(SUBCOMPOSITOR, 1, &again);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((
+            SUBCOMPOSITOR,
+            eggos_wayland::protocol::subsurface::BAD_SURFACE
+        ))
+    );
+    session.end();
+}
+
+#[test]
+fn a_synchronized_subsurface_s_cached_buffer_is_checked_against_its_new_viewport() {
+    const CHILD_VIEWPORT: u32 = 47;
+    let mut session = Session::new();
+    session.globals();
+    session.bind(6, "wl_subcompositor", 1, SUBCOMPOSITOR);
+    session.bind(9, "wp_viewporter", 1, VIEWPORTER);
+    session.configured_toplevel();
+    let parent = (WIDTH * HEIGHT) as usize;
+    let mut pixels = vec![0x0011_1111u32; parent];
+    pixels.extend(vec![0xff22_2222u32; 100]);
+    session.pool(pixels);
+    session.buffer(BUFFER, WIDTH, HEIGHT);
+    session.argb_buffer(POOL, CHILD_BUFFER, parent as i32 * 4, (10, 10));
+    session.send(COMPOSITOR, 0, &[Value::NewId(CHILD)]);
+    session.send(
+        SUBCOMPOSITOR,
+        1,
+        &[
+            Value::NewId(SUBSURFACE),
+            Value::Object(CHILD),
+            Value::Object(SURFACE),
+        ],
+    );
+    session.send(
+        VIEWPORTER,
+        1,
+        &[Value::NewId(CHILD_VIEWPORT), Value::Object(CHILD)],
+    );
+    session.commit_buffer(CHILD, CHILD_BUFFER);
+    session.pump();
+    assert!(session.alive());
+    session.send(
+        CHILD_VIEWPORT,
+        1,
+        &[
+            Value::Fixed(0),
+            Value::Fixed(0),
+            Value::Fixed(i32::MAX),
+            Value::Fixed(i32::MAX),
+        ],
+    );
+    session.send(CHILD, 6, &[]);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((CHILD_VIEWPORT, viewport::OUT_OF_BUFFER))
+    );
+    session.end();
+}
+
+const DATA_MANAGER: u32 = 50;
+const DATA_DEVICE: u32 = 51;
+const SOURCE: u32 = 52;
+const SECOND_SOURCE: u32 = 53;
+const PRIMARY_MANAGER: u32 = 54;
+const PRIMARY_DEVICE: u32 = 55;
+const PRIMARY_SOURCE: u32 = 56;
+const ACTIVATION: u32 = 57;
+const TOKEN: u32 = 58;
+const SECOND_TOKEN: u32 = 59;
+const TEXT_INPUT_MANAGER: u32 = 60;
+const TEXT_INPUT: u32 = 61;
+const DECORATION_MANAGER_KDE: u32 = 62;
+const DECORATION_KDE: u32 = 63;
+
+fn text_of(event: &SentEvent) -> String {
+    let length = event.word(0) as usize;
+    String::from_utf8(event.body[4..4 + length - 1].to_vec()).expect("UTF-8")
+}
+
+impl Session {
+    fn data_device(&mut self) {
+        self.bind(10, "wl_data_device_manager", 3, DATA_MANAGER);
+        self.send(
+            DATA_MANAGER,
+            1,
+            &[Value::NewId(DATA_DEVICE), Value::Object(SEAT)],
+        );
+    }
+
+    fn source(&mut self, id: u32, types: &[&[u8]]) {
+        self.send(DATA_MANAGER, 0, &[Value::NewId(id)]);
+        for mime_type in types {
+            self.send(id, 0, &[Value::String(mime_type)]);
+        }
+    }
+
+    fn second_client(&mut self) -> (Fd, usize) {
+        let socket = self.fake.connect();
+        assert!(self.compositor.add_client(&mut self.fake, socket));
+        self.switch_to(socket, 0)
+    }
+
+    fn switch_to(&mut self, socket: Fd, read: usize) -> (Fd, usize) {
+        self.flush_requests();
+        self.events.clear();
+        let old = (self.socket, self.read);
+        self.socket = socket;
+        self.read = read;
+        old
+    }
+
+    fn last_window(&self) -> u32 {
+        *self.fake.windows.keys().last().expect("a window")
+    }
+
+    fn input_serial(&self) -> u32 {
+        self.of(KEYBOARD, keyboard::ENTER.opcode)
+            .last()
+            .expect("the keyboard focus came")
+            .word(0)
+    }
+
+    fn focus(&mut self, from: Option<u32>, to: u32) -> Vec<SentEvent> {
+        if let Some(from) = from {
+            self.fake.record(from, record::FOCUS_OUT, [0; 4]);
+        }
+        self.fake.record(to, record::FOCUS_IN, [0; 4]);
+        self.pump()
+    }
+}
+
+#[test]
+fn copy_and_paste_hand_the_pipe_from_the_focused_client_to_the_source_s_client() {
+    let mut session = Session::new();
+    let first = session.shown();
+    session.data_device();
+    session.source(
+        SOURCE,
+        &[
+            b"text/plain;charset=utf-8",
+            b"UTF8_STRING",
+            b"text/plain;charset=utf-8",
+        ],
+    );
+    session.focus(None, first);
+    let first_serial = session.input_serial();
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(first_serial)],
+    );
+    let events = session.pump();
+    let offer = events
+        .iter()
+        .find(|event| event.object == DATA_DEVICE && event.opcode == data_device::DATA_OFFER.opcode)
+        .expect("its own selection offered")
+        .word(0);
+    assert_eq!(offer, SERVER_ID_START);
+    let types: Vec<String> = events
+        .iter()
+        .filter(|event| event.object == offer && event.opcode == data_offer::OFFER.opcode)
+        .map(text_of)
+        .collect();
+    assert_eq!(types, ["text/plain;charset=utf-8", "UTF8_STRING"]);
+    let selections = session.of(DATA_DEVICE, data_device::SELECTION.opcode);
+    assert_eq!(selections.last().map(|event| event.word(0)), Some(offer));
+
+    let (first_socket, first_read) = session.second_client();
+    session.shown();
+    let second = session.last_window();
+    session.data_device();
+    session.pump();
+    assert!(
+        session
+            .of(DATA_DEVICE, data_device::SELECTION.opcode)
+            .is_empty()
+    );
+    let events = session.focus(Some(first), second);
+    let offer = events
+        .iter()
+        .find(|event| event.object == DATA_DEVICE && event.opcode == data_device::DATA_OFFER.opcode)
+        .expect("the selection offered on focus")
+        .word(0);
+    let pipe = session.fake.other_file();
+    session.send_with(
+        offer,
+        1,
+        &[Value::String(b"UTF8_STRING"), Value::Fd],
+        vec![pipe],
+    );
+    session.pump();
+    assert!(!session.fake.open.contains(&pipe), "the pipe went on");
+    let mut read = first_read;
+    let sent = session.fake.events(first_socket, &mut read);
+    let send = sent
+        .iter()
+        .find(|event| event.object == SOURCE && event.opcode == data_source::SEND.opcode)
+        .expect("the source asked for its data");
+    assert_eq!(text_of(send), "UTF8_STRING");
+    assert_eq!(session.fake.sockets[&first_socket].outgoing_descriptors, 2);
+
+    let (second_socket, second_read) = session.switch_to(first_socket, read);
+    session.source(SECOND_SOURCE, &[b"text/plain"]);
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(0), Value::Uint(first_serial)],
+    );
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SECOND_SOURCE), Value::Uint(first_serial)],
+    );
+    session.pump();
+    assert!(
+        session.of(SOURCE, data_source::CANCELLED.opcode).is_empty(),
+        "a client without the keyboard focus cannot set the selection"
+    );
+    session.focus(Some(second), first);
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SECOND_SOURCE), Value::Uint(first_serial)],
+    );
+    session.pump();
+    assert!(
+        session.of(SOURCE, data_source::CANCELLED.opcode).is_empty(),
+        "nor with a serial from before its focus came"
+    );
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[
+            Value::Object(SECOND_SOURCE),
+            Value::Uint(session.input_serial()),
+        ],
+    );
+    session.pump();
+    assert_eq!(session.of(SOURCE, data_source::CANCELLED.opcode).len(), 1);
+    let read = session.read;
+    session.switch_to(second_socket, second_read);
+    let events = session.focus(Some(first), second);
+    let fresh = events
+        .iter()
+        .find(|event| event.object == DATA_DEVICE && event.opcode == data_device::DATA_OFFER.opcode)
+        .expect("the new selection offered when the focus comes")
+        .word(0);
+    assert_ne!(fresh, offer);
+    let stale = session.fake.other_file();
+    session.send_with(
+        offer,
+        1,
+        &[Value::String(b"UTF8_STRING"), Value::Fd],
+        vec![stale],
+    );
+    session.pump();
+    assert!(
+        !session.fake.open.contains(&stale),
+        "a stale offer's pipe is closed"
+    );
+    assert_eq!(session.fake.sockets[&first_socket].outgoing_descriptors, 2);
+
+    session.fake.hang_up(first_socket);
+    let events = session.pump();
+    let cleared = events
+        .iter()
+        .filter(|event| {
+            event.object == DATA_DEVICE && event.opcode == data_device::SELECTION.opcode
+        })
+        .any(|event| event.word(0) == 0);
+    assert!(cleared, "the selection ends with its client");
+    let _ = read;
+    session.end();
+}
+
+#[test]
+fn an_offer_stays_dead_however_many_times_the_selection_changes() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.source(SECOND_SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    let serial = session.input_serial();
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(serial)],
+    );
+    let events = session.pump();
+    let offer = events
+        .iter()
+        .find(|event| event.object == DATA_DEVICE && event.opcode == data_device::DATA_OFFER.opcode)
+        .expect("the selection offered")
+        .word(0);
+    for change in 0..u32::from(u16::MAX) {
+        session.send(DATA_DEVICE, 1, &[Value::Object(0), Value::Uint(serial)]);
+        if change % 32 == 31 {
+            session.pump();
+        }
+    }
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SECOND_SOURCE), Value::Uint(serial)],
+    );
+    session.pump();
+    assert!(session.alive());
+    let pipe = session.fake.other_file();
+    session.send_with(
+        offer,
+        1,
+        &[Value::String(b"text/plain"), Value::Fd],
+        vec![pipe],
+    );
+    session.pump();
+    assert!(
+        !session.fake.open.contains(&pipe),
+        "the stale offer's pipe is closed"
+    );
+    assert!(
+        session
+            .of(SECOND_SOURCE, data_source::SEND.opcode)
+            .is_empty(),
+        "an offer made for the first selection never reads a later one"
+    );
+    session.end();
+}
+
+#[test]
+fn the_focused_client_may_set_a_selection_with_its_latest_pointer_enter_serial() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.source(SECOND_SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    let key_serial = session.input_serial();
+    session.record(record::POINTER_ENTER, [5, 5, 0, 0]);
+    let entered = session
+        .of(POINTER, pointer::ENTER.opcode)
+        .last()
+        .expect("the pointer entered")
+        .word(0);
+    assert_ne!(entered, key_serial);
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(entered)],
+    );
+    let events = session.pump();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.object == DATA_DEVICE
+                && event.opcode == data_device::DATA_OFFER.opcode),
+        "a selection quoting the pointer enter's serial is taken"
+    );
+
+    session.record(record::POINTER_LEAVE, [0; 4]);
+    session.record(record::POINTER_ENTER, [6, 6, 0, 0]);
+    let entered_again = session
+        .of(POINTER, pointer::ENTER.opcode)
+        .last()
+        .expect("the pointer entered")
+        .word(0);
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SECOND_SOURCE), Value::Uint(entered)],
+    );
+    session.pump();
+    assert!(
+        session.of(SOURCE, data_source::CANCELLED.opcode).is_empty(),
+        "only the latest pointer enter's serial counts"
+    );
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SECOND_SOURCE), Value::Uint(entered_again)],
+    );
+    session.pump();
+    assert_eq!(session.of(SOURCE, data_source::CANCELLED.opcode).len(), 1);
+
+    session.record(record::FOCUS_OUT, [0; 4]);
+    session.record(record::POINTER_LEAVE, [0; 4]);
+    session.record(record::POINTER_ENTER, [7, 7, 0, 0]);
+    let unfocused = session
+        .of(POINTER, pointer::ENTER.opcode)
+        .last()
+        .expect("the pointer entered")
+        .word(0);
+    session.send(DATA_DEVICE, 1, &[Value::Object(0), Value::Uint(unfocused)]);
+    session.pump();
+    assert!(
+        session
+            .of(SECOND_SOURCE, data_source::CANCELLED.opcode)
+            .is_empty(),
+        "a client without the keyboard focus cannot set it from a pointer enter"
+    );
+    session.end();
+}
+
+#[test]
+fn the_selection_s_own_source_set_again_is_offered_again_with_its_new_types() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    let serial = session.input_serial();
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(serial)],
+    );
+    session.pump();
+    let offers = session.of(DATA_DEVICE, data_device::SELECTION.opcode).len();
+    session.send(SOURCE, 0, &[Value::String(b"SAVE_TARGETS")]);
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(serial)],
+    );
+    session.pump();
+    assert_eq!(session.error(), None);
+    assert!(session.alive());
+    assert!(session.of(SOURCE, data_source::CANCELLED.opcode).is_empty());
+    assert_eq!(
+        session.of(DATA_DEVICE, data_device::SELECTION.opcode).len(),
+        offers + 1
+    );
+    let offer = session
+        .of(DATA_DEVICE, data_device::SELECTION.opcode)
+        .last()
+        .map(|event| event.word(0))
+        .expect("offered again");
+    let types: Vec<String> = session
+        .of(offer, data_offer::OFFER.opcode)
+        .into_iter()
+        .map(text_of)
+        .collect();
+    assert_eq!(types, ["text/plain", "SAVE_TARGETS"]);
+    session.end();
+}
+
+#[test]
+fn a_source_is_used_once_and_a_selection_offer_has_no_finish() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    session.send(
+        DATA_DEVICE,
+        0,
+        &[
+            Value::Object(SOURCE),
+            Value::Object(SURFACE),
+            Value::Object(0),
+            Value::Uint(1),
+        ],
+    );
+    session.pump();
+    let serial = session.input_serial();
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(serial)],
+    );
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((DATA_DEVICE, data_device::USED_SOURCE))
+    );
+    assert!(!session.alive());
+
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    let serial = session.input_serial();
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(serial)],
+    );
+    session.pump();
+    session.send(SERVER_ID_START, 3, &[]);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((SERVER_ID_START, data_offer::INVALID_FINISH))
+    );
+
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    session.send(
+        DATA_DEVICE,
+        0,
+        &[
+            Value::Object(SOURCE),
+            Value::Object(SURFACE),
+            Value::Object(0),
+            Value::Uint(1),
+        ],
+    );
+    session.pump();
+    assert_eq!(session.of(SOURCE, data_source::CANCELLED.opcode).len(), 1);
+    session.send(SOURCE, 1, &[]);
+    session.pump();
+    assert!(session.alive());
+    session.end();
+}
+
+#[test]
+fn the_primary_selection_is_offered_and_read_through_its_own_device() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.bind(
+        11,
+        "zwp_primary_selection_device_manager_v1",
+        1,
+        PRIMARY_MANAGER,
+    );
+    session.send(
+        PRIMARY_MANAGER,
+        1,
+        &[Value::NewId(PRIMARY_DEVICE), Value::Object(SEAT)],
+    );
+    session.send(PRIMARY_MANAGER, 0, &[Value::NewId(PRIMARY_SOURCE)]);
+    session.send(
+        PRIMARY_SOURCE,
+        0,
+        &[Value::String(b"text/plain;charset=utf-8")],
+    );
+    let events = session.focus(None, window);
+    let cleared = events.iter().any(|event| {
+        event.object == PRIMARY_DEVICE
+            && event.opcode == primary_selection_device::SELECTION.opcode
+            && event.word(0) == 0
+    });
+    assert!(cleared, "no primary selection yet");
+    session.send(
+        PRIMARY_DEVICE,
+        0,
+        &[
+            Value::Object(PRIMARY_SOURCE),
+            Value::Uint(session.input_serial()),
+        ],
+    );
+    let events = session.pump();
+    let offer = events
+        .iter()
+        .find(|event| {
+            event.object == PRIMARY_DEVICE
+                && event.opcode == primary_selection_device::DATA_OFFER.opcode
+        })
+        .expect("the primary selection offered")
+        .word(0);
+    let offered: Vec<String> = events
+        .iter()
+        .filter(|event| {
+            event.object == offer && event.opcode == primary_selection_offer::OFFER.opcode
+        })
+        .map(text_of)
+        .collect();
+    assert_eq!(offered, ["text/plain;charset=utf-8"]);
+    let pipe = session.fake.other_file();
+    session.send_with(
+        offer,
+        0,
+        &[Value::String(b"text/plain;charset=utf-8"), Value::Fd],
+        vec![pipe],
+    );
+    session.pump();
+    let send = session.of(PRIMARY_SOURCE, primary_selection_source::SEND.opcode);
+    assert_eq!(send.len(), 1);
+    assert_eq!(text_of(send[0]), "text/plain;charset=utf-8");
+    assert!(!session.fake.open.contains(&pipe));
+    session.send(PRIMARY_SOURCE, 1, &[]);
+    let events = session.pump();
+    let cleared = events.iter().any(|event| {
+        event.object == PRIMARY_DEVICE
+            && event.opcode == primary_selection_device::SELECTION.opcode
+            && event.word(0) == 0
+    });
+    assert!(cleared, "a destroyed source ends the selection");
+    session.end();
+}
+
+#[test]
+fn an_activation_token_from_the_focused_client_raises_a_window_once() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.bind(12, "xdg_activation_v1", 1, ACTIVATION);
+    session.send(ACTIVATION, 1, &[Value::NewId(TOKEN)]);
+    session.send(TOKEN, 0, &[Value::Uint(1), Value::Object(SEAT)]);
+    session.send(TOKEN, 2, &[Value::Object(SURFACE)]);
+    session.send(TOKEN, 3, &[]);
+    let events = session.pump();
+    let unfocused = text_of(
+        events
+            .iter()
+            .find(|event| event.object == TOKEN && event.opcode == activation_token::DONE.opcode)
+            .expect("a token"),
+    );
+    assert!(unfocused.starts_with("eggway-"));
+    assert_eq!(unfocused.len(), crate::activation::TOKEN_BYTES);
+    session.send(
+        ACTIVATION,
+        2,
+        &[Value::String(unfocused.as_bytes()), Value::Object(SURFACE)],
+    );
+    session.pump();
+    assert!(
+        session.fake.focused.is_empty(),
+        "a background token raises nothing"
+    );
+
+    session.focus(None, window);
+    session.send(ACTIVATION, 1, &[Value::NewId(SECOND_TOKEN)]);
+    session.send(SECOND_TOKEN, 3, &[]);
+    let events = session.pump();
+    let token = text_of(
+        events
+            .iter()
+            .find(|event| {
+                event.object == SECOND_TOKEN && event.opcode == activation_token::DONE.opcode
+            })
+            .expect("a token"),
+    );
+    assert_ne!(token, unfocused);
+    for _ in 0..2 {
+        session.send(
+            ACTIVATION,
+            2,
+            &[Value::String(token.as_bytes()), Value::Object(SURFACE)],
+        );
+        session.pump();
+    }
+    assert_eq!(session.fake.focused, [window]);
+    session.send(SECOND_TOKEN, 3, &[]);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((SECOND_TOKEN, activation_token::ALREADY_USED))
+    );
+}
+
+#[test]
+fn without_random_bytes_the_token_given_raises_nothing() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.bind(12, "xdg_activation_v1", 1, ACTIVATION);
+    session.focus(None, window);
+    session.fake.random_unavailable = true;
+    session.send(ACTIVATION, 1, &[Value::NewId(TOKEN)]);
+    session.send(TOKEN, 3, &[]);
+    let events = session.pump();
+    let token = text_of(
+        events
+            .iter()
+            .find(|event| event.object == TOKEN && event.opcode == activation_token::DONE.opcode)
+            .expect("a token"),
+    );
+    assert_eq!(token.as_bytes(), crate::activation::UNUSABLE_TOKEN);
+    assert_eq!(crate::activation::token_value(token.as_bytes()), None);
+    session.send(
+        ACTIVATION,
+        2,
+        &[Value::String(token.as_bytes()), Value::Object(SURFACE)],
+    );
+    session.pump();
+    assert!(session.fake.focused.is_empty());
+}
+
+#[test]
+fn tokens_are_single_use_and_expire() {
+    use crate::activation::{Activation, TOKEN_LIFETIME_MS, token_text, token_value};
+    let mut tokens = Activation::default();
+    let value = tokens.issue(1000, true, 0x1234);
+    assert_eq!(token_value(&token_text(value)), Some(value));
+    assert_eq!(token_value(b"eggway-0123"), None);
+    assert_eq!(token_value(b"other-0123456789abcdef"), None);
+    assert!(tokens.redeem(value, 1000 + TOKEN_LIFETIME_MS));
+    assert!(!tokens.redeem(value, 1001));
+    let late = tokens.issue(2000, true, 0x5678);
+    assert!(!tokens.redeem(late, 2001 + TOKEN_LIFETIME_MS));
+    let first = tokens.issue(3000, true, 0x9abc);
+    for at in 0..crate::activation::MAX_TOKENS as u64 {
+        tokens.issue(4000 + at, true, at);
+    }
+    assert!(!tokens.redeem(first, 5000), "the oldest token made room");
+}
+
+#[test]
+fn background_clients_tokens_never_push_out_a_focused_client_s() {
+    use crate::activation::{Activation, MAX_TOKENS};
+    let mut tokens = Activation::default();
+    let focused = tokens.issue(1000, true, 0x1234);
+    for at in 0..4 * MAX_TOKENS as u64 {
+        tokens.issue(1001 + at, false, at);
+    }
+    assert!(
+        tokens.redeem(focused, 1100),
+        "the focused client's token kept its slot"
+    );
+    for at in 0..MAX_TOKENS as u64 {
+        tokens.issue(2000 + at, true, at);
+    }
+    let late = tokens.issue(3000, false, 0x9999);
+    assert!(!tokens.redeem(late, 3001));
+    let newest = tokens.issue(3002, true, 0x7777);
+    assert!(tokens.redeem(newest, 3003));
+}
+
+#[test]
+fn a_token_cannot_be_predicted_from_the_count_and_the_clock() {
+    use crate::activation::Activation;
+    let mut one = Activation::default();
+    let mut other = Activation::default();
+    let seen = one.issue(1000, false, 0x1111);
+    let guessed = other.issue(1000, false, 0x1111);
+    assert_eq!(seen, guessed);
+    let next = one.issue(1001, true, 0x2222);
+    let predicted = other.issue(1001, true, 0x1111);
+    assert_ne!(next, predicted);
+}
+
+#[test]
+fn a_focused_text_field_joins_the_element_tree_without_a_password_s_text() {
+    use eggos_element_tree::{QUERY_EVENT, Role, elements, flags};
+    let mut session = Session::new();
+    let window = session.shown();
+    session.bind(13, "zwp_text_input_manager_v3", 1, TEXT_INPUT_MANAGER);
+    session.focus(None, window);
+    session.send(
+        TEXT_INPUT_MANAGER,
+        1,
+        &[Value::NewId(TEXT_INPUT), Value::Object(SEAT)],
+    );
+    let events = session.pump();
+    let entered: Vec<u32> = events
+        .iter()
+        .filter(|event| event.object == TEXT_INPUT && event.opcode == text_input::ENTER.opcode)
+        .map(|event| event.word(0))
+        .collect();
+    assert_eq!(entered, [SURFACE]);
+    session.send(TEXT_INPUT, 1, &[]);
+    session.send(
+        TEXT_INPUT,
+        3,
+        &[Value::String(b"alpha beta"), Value::Int(5), Value::Int(0)],
+    );
+    session.send(TEXT_INPUT, 5, &[Value::Uint(0), Value::Uint(0)]);
+    session.send(
+        TEXT_INPUT,
+        6,
+        &[
+            Value::Int(30),
+            Value::Int(12),
+            Value::Int(1),
+            Value::Int(16),
+        ],
+    );
+    session.pump();
+    session.record(QUERY_EVENT, [9, 0, 0, 0]);
+    let (_, _, tree) = session.fake.answers.last().cloned().unwrap();
+    assert_eq!(
+        elements(&tree).count(),
+        1,
+        "nothing shows before the commit"
+    );
+    session.send(TEXT_INPUT, 7, &[]);
+    session.pump();
+    session.record(QUERY_EVENT, [10, 0, 0, 0]);
+    let (_, _, tree) = session.fake.answers.last().cloned().unwrap();
+    let field = elements(&tree).nth(1).unwrap().unwrap();
+    assert_eq!(
+        (field.parent, field.role, field.name, field.value),
+        (1, Role::TextField, &b"text"[..], &b"alpha beta"[..])
+    );
+    assert_eq!(
+        (field.bounds.x, field.bounds.y, field.bounds.height),
+        (30, 12, 16)
+    );
+    assert_eq!(field.flags, flags::FOCUSED | flags::FOCUSABLE);
+    session.send(
+        TEXT_INPUT,
+        5,
+        &[Value::Uint(0), Value::Uint(text_input::PURPOSE_PASSWORD)],
+    );
+    session.send(TEXT_INPUT, 7, &[]);
+    session.pump();
+    session.record(QUERY_EVENT, [11, 0, 0, 0]);
+    let (_, _, tree) = session.fake.answers.last().cloned().unwrap();
+    let field = elements(&tree).nth(1).unwrap().unwrap();
+    assert_eq!((field.name, field.value), (&b"password"[..], &b""[..]));
+    let events = session.record(record::FOCUS_OUT, [0; 4]);
+    assert!(
+        events
+            .iter()
+            .any(|event| event.object == TEXT_INPUT && event.opcode == text_input::LEAVE.opcode)
+    );
+    session.record(QUERY_EVENT, [12, 0, 0, 0]);
+    let (_, _, tree) = session.fake.answers.last().cloned().unwrap();
+    assert_eq!(elements(&tree).count(), 1, "no field once the focus left");
+    session.end();
+}
+
+#[test]
+fn long_surrounding_text_keeps_whole_characters_around_the_cursor() {
+    use crate::text_input::{SURROUNDING_CAPACITY, excerpt};
+    let short = b"short";
+    assert_eq!(excerpt(short, 2), (0, 5));
+    let long = "é".repeat(200);
+    let (start, end) = excerpt(long.as_bytes(), 200);
+    assert!(end - start <= SURROUNDING_CAPACITY);
+    assert!(long.is_char_boundary(start) && long.is_char_boundary(end));
+    assert!((start..=end).contains(&200));
+    let (start, end) = excerpt(long.as_bytes(), 0);
+    assert_eq!(start, 0);
+    assert_eq!(end, SURROUNDING_CAPACITY);
+    let (start, end) = excerpt(long.as_bytes(), 400);
+    assert_eq!(end, 400);
+    assert!(400 - start <= SURROUNDING_CAPACITY);
+}
+
+#[test]
+fn kde_server_decorations_are_always_the_server_s() {
+    let mut session = Session::new();
+    session.shown();
+    session.bind(
+        14,
+        "org_kde_kwin_server_decoration_manager",
+        1,
+        DECORATION_MANAGER_KDE,
+    );
+    session.send(
+        DECORATION_MANAGER_KDE,
+        0,
+        &[Value::NewId(DECORATION_KDE), Value::Object(SURFACE)],
+    );
+    session.send(DECORATION_KDE, 1, &[Value::Uint(server_decoration::CLIENT)]);
+    session.pump();
+    let defaults = session.of(
+        DECORATION_MANAGER_KDE,
+        server_decoration::DEFAULT_MODE.opcode,
+    );
+    assert_eq!(defaults[0].word(0), server_decoration::SERVER);
+    let modes: Vec<u32> = session
+        .of(DECORATION_KDE, server_decoration::MODE.opcode)
+        .iter()
+        .map(|event| event.word(0))
+        .collect();
+    assert_eq!(
+        modes,
+        [server_decoration::SERVER, server_decoration::SERVER]
+    );
+    session.send(DECORATION_KDE, 1, &[Value::Uint(7)]);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((DECORATION_KDE, display::INVALID_METHOD))
+    );
 }

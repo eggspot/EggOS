@@ -13,7 +13,9 @@
 mod console_input;
 mod exception;
 mod fp;
+mod message_interrupts;
 mod port;
+mod power_button;
 mod random;
 mod thread;
 mod timer;
@@ -142,17 +144,19 @@ start64_high:
     jmp     3b
     .popsection
 
-    // A secondary CPU's 64-bit entry, reached from the trampoline below at the kernel's
-    // virtual address with the boot page tables (D40): the `CpuStart` from the trampoline's
-    // slot, read through the boot tables' identity map, and its stack; then the kernel's GDT
+    // A secondary CPU's 64-bit entry from the trampoline (D40): the `CpuStart`'s address and
+    // the kernel's root from it, then the kernel's tables (the boot ones map only 4 GiB, not
+    // the `CpuStart` or its stack wherever they are), the stack; then the kernel's GDT
     // and segments as in `start64_high` (CS through a far return, which needs the stack), and
     // the IDT.
     .pushsection .text.boot, "ax"
 secondary_start64:
     movq    {trampoline} + (eggos_trampoline_start_slot - eggos_trampoline_start), %rbx
-    movq    {start_stack_top}(%rbx), %rsp
+    movq    {trampoline} + (eggos_trampoline_page_table_root - eggos_trampoline_start), %rax
     // The slot is read: the boot CPU may reuse it for the next CPU.
     movl    $1, {trampoline} + (eggos_trampoline_taken - eggos_trampoline_start)
+    movq    %rax, %cr3
+    movq    {start_stack_top}(%rbx), %rsp
     lgdt    boot_gdt_pointer64(%rip)
     movw    $0x10, %ax
     movw    %ax, %ds
@@ -205,7 +209,7 @@ trampoline32:
     movl    %eax, %cr3
     movl    $0xc0000080, %ecx
     rdmsr
-    orl     $(1 << 8), %eax         // EFER.LME
+    orl     $((1 << 8) | {efer_nxe}), %eax // EFER.LME, and NXE for the kernel's tables
     wrmsr
     movl    %cr0, %eax
     orl     $0x80000000, %eax       // PG
@@ -226,10 +230,13 @@ trampoline_gdt_pointer:
     .word trampoline_gdt_end - trampoline_gdt - 1
     .long {trampoline} + (trampoline_gdt - eggos_trampoline_start)
     .balign 8
-    // Written by the boot CPU in the copy before each start: the `CpuStart`'s address, and
-    // a flag the CPU sets once it has read it.
+    // Written by the boot CPU in the copy before each start: the `CpuStart`'s address, the
+    // kernel's page-table root, and a flag the CPU sets once it has read them.
     .global eggos_trampoline_start_slot
 eggos_trampoline_start_slot:
+    .quad 0
+    .global eggos_trampoline_page_table_root
+eggos_trampoline_page_table_root:
     .quad 0
     .global eggos_trampoline_taken
 eggos_trampoline_taken:
@@ -280,6 +287,7 @@ boot_pd:
     start_stack_top = const core::mem::offset_of!(CpuStart, stack_top),
     trampoline = const TRAMPOLINE,
     trampoline_page = const TRAMPOLINE >> 12,
+    efer_nxe = const EFER_NXE,
     options(att_syntax)
 );
 
@@ -371,17 +379,18 @@ const STARTUP_TIMEOUT_US: u64 = 100_000;
 const IA32_GS_BASE: u32 = 0xc000_0101;
 
 unsafe extern "C" {
-    /// The trampoline in `.rodata`, and the two words in it the boot CPU writes in the copy
+    /// The trampoline in `.rodata`, and the three words in it the boot CPU writes in the copy
     /// (see the boot code above).
     static eggos_trampoline_start: u8;
     static eggos_trampoline_start_slot: u8;
+    static eggos_trampoline_page_table_root: u8;
     static eggos_trampoline_taken: u8;
     static eggos_trampoline_end: u8;
 }
 
-/// Called by `secondary_start64` on the `CpuStart`'s stack, at the kernel's virtual address with
-/// the boot page tables and the IDT loaded: switches to the kernel's page tables, sets this CPU's
-/// local APIC and timer up (D41), then calls the entry.
+/// Called by `secondary_start64` on the `CpuStart`'s stack with the kernel's page tables and the
+/// IDT loaded: activates the tables as the boot CPU did (write protection, the root), sets this
+/// CPU's local APIC and timer up (D41), then calls the entry.
 extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
     // everything this CPU uses at the addresses it uses now, as they did for the boot CPU;
@@ -541,6 +550,14 @@ impl Platform for X86_64 {
         Ok(())
     }
 
+    fn enable_power_button() -> Result<(), &'static str> {
+        power_button::enable()
+    }
+
+    fn message_interrupt() -> Result<(crate::DeviceLine, crate::InterruptMessage), &'static str> {
+        message_interrupts::take()
+    }
+
     fn exit(_status: ExitStatus) -> ! {
         // ACPI S5 has no exit status; the QEMU runner reads the verdict from the console. If
         // the tables are missing or malformed we fall through and halt.
@@ -654,13 +671,11 @@ impl Platform for X86_64 {
         for range in pvh.boot_data() {
             map.reserve(range);
         }
-        // The kernel's page tables are built through the boot direct map, so only memory
-        // inside it is handed out.
-        map.retain_within(PhysicalRange {
-            start: 0,
-            end: BOOT_DIRECT_MAP_END,
-        });
         map
+    }
+
+    fn boot_direct_map_end() -> u64 {
+        BOOT_DIRECT_MAP_END
     }
 
     #[inline]
@@ -910,9 +925,13 @@ impl Platform for X86_64 {
         // until the start-up interrupt below, and the previous CPU set the taken flag only
         // after reading it, so it no longer does.
         let slot = unsafe { trampoline_word::<AtomicU64>(&raw const eggos_trampoline_start_slot) };
+        // SAFETY: the root is the trampoline's u64; as for the slot.
+        let root =
+            unsafe { trampoline_word::<AtomicU64>(&raw const eggos_trampoline_page_table_root) };
         // SAFETY: the taken flag is the trampoline's u32; as above.
         let taken = unsafe { trampoline_word::<AtomicU32>(&raw const eggos_trampoline_taken) };
         slot.store(core::ptr::from_ref(start) as u64, Ordering::Relaxed);
+        root.store(start.page_table_roots[0], Ordering::Relaxed);
         taken.store(0, Ordering::Release);
         // Keep the stores above, and the caller's writes to `*start`, before the start-up
         // interrupt's ICR write, which a release store alone would not order (x86 itself keeps

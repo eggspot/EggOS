@@ -23,7 +23,7 @@ use eggos_toolkit::window::Window;
 
 const COPY_BUFFER: usize = 64 * 1024;
 const STEPS_PER_TICK: usize = 16;
-const MAX_ARGUMENTS: usize = 8;
+const MAX_ARGUMENTS: usize = 12;
 const SIGNATURE_BYTES: usize = 8;
 
 static mut BUFFER: [u8; COPY_BUFFER] = [0; COPY_BUFFER];
@@ -52,6 +52,8 @@ struct Installer {
     machine: Architecture,
     name: Option<Name>,
     entry: Option<Path>,
+    arguments: Option<Path>,
+    environment: Option<Path>,
     buffer: &'static mut [u8],
 }
 
@@ -93,7 +95,10 @@ fn programs_in(
         let Some(path) = folder.join(entry) else {
             continue;
         };
-        let wanted = match files.status(path.as_bytes()).map(|status| status.kind) {
+        let wanted = match files
+            .status_following(path.as_bytes())
+            .map(|status| status.kind)
+        {
             Ok(Kind::Directory) => installer::is_bundle_name(entry),
             Ok(Kind::File) => is_program_file(files, path.as_bytes()),
             _ => false,
@@ -112,6 +117,16 @@ fn programs_in(
     (names, count, more)
 }
 
+fn with_own_icon(files: &mut impl crate::files::Files, name: &[u8], icon: AppIcon) -> AppIcon {
+    match crate::icon_export::large_image(files, name) {
+        Some(pixels) => {
+            dialog::keep_own_icon(&pixels);
+            icon.with_own_icon()
+        }
+        None => icon,
+    }
+}
+
 impl Installer {
     fn show(&mut self, dialog: Dialog, stage: Stage) {
         self.dialog = dialog;
@@ -123,11 +138,22 @@ impl Installer {
         AppIcon::of(plan.name(), Some(plan.program().source))
     }
 
+    #[allow(clippy::result_large_err)]
     fn prompt_for(&mut self, path: &[u8]) {
         let name = self.name.as_ref().map(Name::as_bytes);
         let entry = self.entry.as_ref().map(Path::as_bytes);
         let (dialog, plan) =
             dialog::install_prompt_entry(&mut self.files, path, name, entry, self.machine);
+        let (arguments, environment) = (self.arguments, self.environment);
+        let plan = plan
+            .and_then(|plan| match arguments {
+                Some(arguments) => plan.with_arguments(arguments.as_bytes()),
+                None => Ok(plan),
+            })
+            .and_then(|plan| match environment {
+                Some(environment) => plan.with_environment(environment.as_bytes()),
+                None => Ok(plan),
+            });
         match plan {
             Ok(plan) => self.show(dialog, Stage::Prompting(plan)),
             Err(refused)
@@ -202,7 +228,12 @@ impl Installer {
             }
             Progress::Installed => {
                 linux::apps_changed();
-                let dialog = Dialog::installed(Self::icon_of(&plan), plan.name());
+                let icon = with_own_icon(
+                    &mut self.files,
+                    plan.name().as_bytes(),
+                    Self::icon_of(&plan),
+                );
+                let dialog = Dialog::installed(icon, plan.name());
                 self.show(dialog, Stage::Installed(plan));
             }
             Progress::Failed(problem) => {
@@ -302,7 +333,7 @@ fn first_screen(installer: &mut Installer, command: Command<'_>) {
             let is_plain_folder = !installer::is_bundle_name(files::file_name(path))
                 && installer
                     .files
-                    .status(path)
+                    .status_following(path)
                     .is_ok_and(|status| status.kind == Kind::Directory);
             if !is_plain_folder {
                 installer.prompt_for(path);
@@ -324,7 +355,11 @@ fn first_screen(installer: &mut Installer, command: Command<'_>) {
             let source = installer::read_manifest(&mut installer.files, name, &mut file)
                 .and_then(|length| manifest::parse(&file[..length], name))
                 .map(|app| app.source);
-            let icon = AppIcon::of(shown.as_str(), source);
+            let icon = with_own_icon(
+                &mut installer.files,
+                name,
+                AppIcon::of(shown.as_str(), source),
+            );
             match source {
                 Some(_) => {
                     let dialog = Dialog::confirm_uninstall(icon, shown.as_str());
@@ -339,7 +374,11 @@ fn first_screen(installer: &mut Installer, command: Command<'_>) {
                 }
             }
         }
-        Command::Open { .. } | Command::List | Command::Help => {}
+        Command::Open { .. }
+        | Command::List { .. }
+        | Command::Show { .. }
+        | Command::Icon { .. }
+        | Command::Help => {}
     }
 }
 
@@ -369,9 +408,38 @@ pub fn run(startup: &Startup) -> i32 {
             return command::USAGE_ERROR;
         }
     };
-    let (name, entry) = match command {
-        Command::Install { name, entry, .. } => (name.map(Name::new), entry.map(entry_as_given)),
-        _ => (None, None),
+    let (name, entry, arguments, environment) = match command {
+        Command::Install {
+            name,
+            entry,
+            arguments,
+            environment,
+            ..
+        } => (
+            name.map(Name::new),
+            entry.map(entry_as_given),
+            arguments,
+            environment,
+        ),
+        _ => (None, None, None, None),
+    };
+    let environment = match environment {
+        Some(words) if !eggos_app_manifest::is_environment(words) => {
+            complain(&[
+                b"its environment must be NAME=value words of letters, digits and -_./:=+,@% only",
+            ]);
+            return command::USAGE_ERROR;
+        }
+        Some(words) => Path::from(words),
+        None => None,
+    };
+    let arguments = match arguments {
+        Some(words) if !eggos_app_manifest::is_arguments(words) => {
+            complain(&[b"its arguments must be letters, digits, spaces and -_./:=+,@% only"]);
+            return command::USAGE_ERROR;
+        }
+        Some(words) => Path::from(words),
+        None => None,
     };
     let (width, height) = SIZE;
     let mut window = match Window::create(title(&command), width, height, SIZE) {
@@ -392,6 +460,8 @@ pub fn run(startup: &Startup) -> i32 {
         machine: linux::machine(),
         name,
         entry,
+        arguments,
+        environment,
         buffer,
     };
     first_screen(&mut installer, command);

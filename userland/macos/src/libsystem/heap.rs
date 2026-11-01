@@ -204,3 +204,42 @@ pub fn allocate_aligned(alignment: usize, size: usize) -> *mut u8 {
     let aligned = (inner as usize + HEADER_SIZE).next_multiple_of(alignment);
     write_header(aligned - HEADER_SIZE, ALIGNED, aligned - inner as usize)
 }
+
+#[cfg(target_arch = "aarch64")]
+mod layer_allocator {
+    use core::alloc::{GlobalAlloc, Layout};
+
+    const BLOCK_ALIGNMENT: usize = 16;
+
+    struct ProcessHeap;
+
+    // SAFETY: every block comes from the process heap, aligned to at least the layout's
+    // alignment, and is handed out once until it is given back.
+    unsafe impl GlobalAlloc for ProcessHeap {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            match layout.align() <= BLOCK_ALIGNMENT {
+                true => super::allocate(layout.size(), false),
+                false => super::allocate_aligned(layout.align(), layout.size()),
+            }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            if layout.align() <= BLOCK_ALIGNMENT {
+                return super::allocate(layout.size(), true);
+            }
+            let pointer = super::allocate_aligned(layout.align(), layout.size());
+            if !pointer.is_null() {
+                // SAFETY: the block holds at least `layout.size()` bytes.
+                unsafe { pointer.write_bytes(0, layout.size()) };
+            }
+            pointer
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, _layout: Layout) {
+            super::release(pointer)
+        }
+    }
+
+    #[global_allocator]
+    static LAYER_HEAP: ProcessHeap = ProcessHeap;
+}

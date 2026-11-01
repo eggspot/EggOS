@@ -1,14 +1,22 @@
-//! Kernel objects and waits: events, mutexes, semaphores and threads live in one table of
-//! handles (`OBJECT_HANDLES` plus four times the slot), each a reference-counted heap block,
-//! and their states change only under the table's lock. A wait checks (and for wait-all takes)
-//! every object under the lock and otherwise sleeps on one process-wide futex word, the wake
-//! sequence, which every state change bumps, so a wake can never be lost between the check and
-//! the sleep. Critical sections, SRW locks, condition variables, one-time initialisation and
-//! `WaitOnAddress` are futexes on the caller's own memory and need no handle.
+//! Kernel objects and waits: events, mutexes, semaphores, threads, other processes and access
+//! tokens (D178) live in one table of handles (`OBJECT_HANDLES` plus four times the slot), each
+//! a reference-counted heap block, and their states change only under the table's lock. A wait
+//! checks (and for wait-all takes) every object under the lock and otherwise sleeps on one
+//! process-wide futex word, the wake sequence, which every state change bumps, so a wake can
+//! never be lost between the check and the sleep; a process's end bumps nothing, so a wait for
+//! one looks again every 10 ms, as does a wait on the event of an overlapped read in progress
+//! (`overlapped.rs`). A named event, mutex or semaphore (D189) is a handle to a slot of the
+//! table shared between processes (`named.rs`), whose state changes under that table's lock,
+//! taken after this one; a wait for one looks again every 10 ms too, since another process's
+//! change wakes nobody here. Critical sections, SRW locks, condition variables, one-time
+//! initialisation and `WaitOnAddress` are futexes on the caller's own memory and need no handle.
 
-use super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap, thread_environment};
+use super::named::{self, Reference};
+use super::{Bool, FALSE, SpinLock, TRUE, ansi, error, fail, heap, thread_environment};
+use crate::handle_flags;
 use crate::library::Export;
 use crate::linux;
+use crate::named_objects::{self, Shared, State};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use eggos_runtime::futex::WakeCount;
 
@@ -17,6 +25,7 @@ const MAX_OBJECTS: usize = 4096;
 const MAX_PENDING_THREADS: usize = 256;
 pub const INFINITE: u32 = u32::MAX;
 const WAIT_OBJECT_0: u32 = 0;
+const WAIT_ABANDONED_0: u32 = 0x80;
 const WAIT_TIMEOUT: u32 = 0x102;
 const WAIT_FAILED: u32 = u32::MAX;
 const MAXIMUM_WAIT_OBJECTS: usize = 64;
@@ -41,10 +50,24 @@ pub struct Thread {
 
 #[derive(Debug)]
 pub enum Kind {
-    Event { manual_reset: bool, signaled: bool },
-    Mutex { owner: u32, recursion: u32 },
-    Semaphore { count: i32, maximum: i32 },
+    Event {
+        manual_reset: bool,
+        signaled: bool,
+    },
+    Mutex {
+        owner: u32,
+        recursion: u32,
+        abandoned: bool,
+    },
+    Semaphore {
+        count: i32,
+        maximum: i32,
+    },
     Thread(Thread),
+    Process(super::processes::ProcessObject),
+    Token,
+    Named(Reference),
+    Section(super::file_mapping::Section),
 }
 
 #[derive(Debug)]
@@ -55,6 +78,7 @@ pub struct Object {
 
 struct Table {
     objects: [*mut Object; MAX_OBJECTS],
+    flags: [u8; MAX_OBJECTS],
     pending_threads: [*mut Object; MAX_PENDING_THREADS],
 }
 
@@ -63,6 +87,7 @@ unsafe impl Send for Table {}
 
 static TABLE: SpinLock<Table> = SpinLock::new(Table {
     objects: [core::ptr::null_mut(); MAX_OBJECTS],
+    flags: [0; MAX_OBJECTS],
     pending_threads: [core::ptr::null_mut(); MAX_PENDING_THREADS],
 });
 static WAKE_SEQUENCE: AtomicU32 = AtomicU32::new(0);
@@ -102,6 +127,7 @@ pub fn insert(kind: Kind, extra_references: usize) -> (usize, *mut Object) {
     let slot = TABLE.with(|table| {
         let slot = table.objects.iter().position(|slot| slot.is_null())?;
         table.objects[slot] = pointer;
+        table.flags[slot] = 0;
         Some(slot)
     });
     match slot {
@@ -135,6 +161,9 @@ pub fn close(handle: usize) -> Bool {
     reap_threads();
     let closed = TABLE.with(|table| {
         let slot = slot_of(handle)?;
+        if u32::from(table.flags[slot]) & handle_flags::PROTECT_FROM_CLOSE != 0 {
+            return None;
+        }
         let pointer = core::mem::replace(&mut table.objects[slot], core::ptr::null_mut());
         if pointer.is_null() {
             return None;
@@ -158,12 +187,35 @@ pub fn duplicate(handle: usize) -> Option<usize> {
     let slot = TABLE.with(|table| {
         let slot = table.objects.iter().position(|slot| slot.is_null());
         match slot {
-            Some(slot) => table.objects[slot] = pointer,
+            Some(slot) => {
+                table.objects[slot] = pointer;
+                table.flags[slot] = 0;
+            }
             None => release_reference(pointer),
         }
         slot
     });
     slot.map(|slot| OBJECT_HANDLES + slot * 4)
+}
+
+/// The handle flags (`handle_flags.rs`) of the object handle `handle`, which the layer keeps
+/// for the handle alone: objects live in the layer's memory, so children never inherit them.
+pub fn flags_of(handle: usize) -> Option<u32> {
+    TABLE.with(|table| {
+        let slot = slot_of(handle)?;
+        (!table.objects[slot].is_null()).then(|| u32::from(table.flags[slot]))
+    })
+}
+
+/// Sets the handle flags of the object handle `handle`; `false` if it names no object.
+pub fn set_flags(handle: usize, flags: u32) -> bool {
+    TABLE.with(|table| match slot_of(handle) {
+        Some(slot) if !table.objects[slot].is_null() => {
+            table.flags[slot] = (flags & 0xff) as u8;
+            true
+        }
+        _ => false,
+    })
 }
 
 /// Runs `work` on the object `handle` names, under the table's lock, and wakes every waiter
@@ -188,6 +240,12 @@ pub fn change<R>(handle: usize, work: impl FnOnce(&mut Kind) -> (R, bool)) -> Op
 pub fn thread_ended(pointer: *mut Object, exit_code: u32) {
     TABLE.with(|table| {
         // SAFETY: the running thread holds a reference to its own object.
+        let id = match unsafe { &(*pointer).kind } {
+            Kind::Thread(thread) => thread.id.load(Ordering::Acquire),
+            _ => 0,
+        };
+        abandon_mutexes_of(table, id);
+        // SAFETY: as above; no other reference to the object is alive.
         let object = unsafe { &mut *pointer };
         if let Kind::Thread(thread) = &mut object.kind {
             thread.ended = true;
@@ -201,6 +259,50 @@ pub fn thread_ended(pointer: *mut Object, exit_code: u32) {
     });
     if SLEEPERS.load(Ordering::Acquire) != 0 {
         linux::futex_wake(WAKE_SEQUENCE.as_ptr() as usize, WakeCount::All);
+    }
+}
+
+fn abandon_mutexes_of(table: &mut Table, thread: u32) {
+    if thread == 0 {
+        return;
+    }
+    for pointer in table.objects.iter().filter(|pointer| !pointer.is_null()) {
+        // SAFETY: a non-null slot points to a live object, which the table's lock (held by
+        // the caller, who lent `table`) guards.
+        let kind = unsafe { &mut (**pointer).kind };
+        if let Kind::Mutex {
+            owner,
+            recursion,
+            abandoned,
+        } = kind
+            && *owner == thread
+        {
+            *owner = 0;
+            *recursion = 0;
+            *abandoned = true;
+        }
+    }
+    let named_handles = || {
+        table.objects.iter().filter_map(|pointer| {
+            // SAFETY: as above.
+            match unsafe { (*pointer).as_ref() } {
+                Some(Object {
+                    kind: Kind::Named(reference),
+                    ..
+                }) => Some(reference),
+                _ => None,
+            }
+        })
+    };
+    if named_handles().next().is_some() {
+        let process = named::process();
+        named::locked(|shared| {
+            for reference in named_handles() {
+                reference
+                    .slot(shared)
+                    .abandon_if_owned_by(process, Some(thread));
+            }
+        });
     }
 }
 
@@ -258,70 +360,166 @@ pub fn reap_threads() {
     });
 }
 
-fn is_signaled(kind: &Kind, caller: u32) -> bool {
+fn is_signaled(kind: &Kind, caller: u32, shared: Option<&Shared>) -> bool {
     match kind {
         Kind::Event { signaled, .. } => *signaled,
         Kind::Mutex { owner, .. } => *owner == 0 || *owner == caller,
         Kind::Semaphore { count, .. } => *count > 0,
         Kind::Thread(thread) => thread.ended,
+        Kind::Process(process) => process.ended(),
+        Kind::Named(reference) => shared.is_some_and(|shared| {
+            shared.slots[reference.index()].is_signaled(named::process(), caller)
+        }),
+        Kind::Token | Kind::Section(_) => false,
     }
 }
 
-fn acquire(kind: &mut Kind, caller: u32) {
+fn acquire(kind: &mut Kind, caller: u32, shared: Option<&mut Shared>) -> bool {
+    if let Kind::Named(reference) = kind {
+        return shared
+            .is_some_and(|shared| reference.slot(shared).acquire(named::process(), caller));
+    }
     match kind {
         Kind::Event {
             manual_reset: false,
             signaled,
         } => *signaled = false,
-        Kind::Mutex { owner, recursion } => {
+        Kind::Mutex {
+            owner,
+            recursion,
+            abandoned,
+        } => {
             *owner = caller;
             *recursion += 1;
+            return core::mem::take(abandoned);
         }
         Kind::Semaphore { count, .. } => *count -= 1,
-        Kind::Event { .. } | Kind::Thread(_) => {}
+        Kind::Event { .. }
+        | Kind::Thread(_)
+        | Kind::Process(_)
+        | Kind::Token
+        | Kind::Named(_)
+        | Kind::Section(_) => {}
     }
+    false
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ObjectIdentity {
+    Local(usize),
+    Named(usize),
 }
 
 enum Check {
     Done(u32),
-    Sleep(u32),
+    Sleep { sequence: u32, polling: bool },
 }
+
+const PROCESS_POLL_NANOSECONDS: u64 = 10_000_000;
 
 fn check(handles: &[usize], wait_all: bool, caller: u32) -> Result<Check, u32> {
     TABLE.with(|table| {
+        let mut identities = [ObjectIdentity::Local(0); MAXIMUM_WAIT_OBJECTS];
         for (index, handle) in handles.iter().enumerate() {
-            object(table, *handle).ok_or(error::INVALID_HANDLE)?;
-            if wait_all && handles[..index].contains(handle) {
-                return Err(error::INVALID_PARAMETER);
+            let found = object(table, *handle).ok_or(error::INVALID_HANDLE)?;
+            let identity = match &found.kind {
+                Kind::Named(reference) => ObjectIdentity::Named(reference.index()),
+                _ => ObjectIdentity::Local(core::ptr::from_mut(found) as usize),
+            };
+            if index < identities.len() {
+                if wait_all && identities[..index].contains(&identity) {
+                    return Err(error::INVALID_PARAMETER);
+                }
+                identities[index] = identity;
             }
         }
-        let mut signaled = handles.iter().enumerate().filter(|(_, handle)| {
-            object(table, **handle).is_some_and(|object| is_signaled(&object.kind, caller))
-        });
-        let ready = match wait_all {
-            true => (signaled.count() == handles.len()).then_some(0),
-            false => signaled.next().map(|(index, _)| index),
-        };
-        match ready {
-            Some(first) => {
-                let taken = if wait_all {
-                    handles
-                } else {
-                    &handles[first..=first]
-                };
-                for handle in taken {
-                    if let Some(object) = object(table, *handle) {
-                        acquire(&mut object.kind, caller);
-                    }
-                }
-                Ok(Check::Done(WAIT_OBJECT_0 + first as u32))
+        let mut any_named = false;
+        for handle in handles {
+            match object(table, *handle) {
+                Some(Object {
+                    kind: Kind::Process(process),
+                    ..
+                }) => process.refresh(),
+                Some(Object {
+                    kind: Kind::Named(_),
+                    ..
+                }) => any_named = true,
+                _ => {}
             }
-            None => {
-                SLEEPERS.fetch_add(1, Ordering::AcqRel);
-                Ok(Check::Sleep(WAKE_SEQUENCE.load(Ordering::Acquire)))
-            }
+        }
+        match any_named {
+            false => Ok(check_objects(table, handles, wait_all, caller, None)),
+            true => named::locked(|shared| {
+                check_objects(table, handles, wait_all, caller, Some(shared))
+            })
+            .ok_or(error::INVALID_HANDLE),
         }
     })
+}
+
+fn check_objects(
+    table: &mut Table,
+    handles: &[usize],
+    wait_all: bool,
+    caller: u32,
+    mut shared: Option<&mut Shared>,
+) -> Check {
+    if let Some(shared) = shared.as_deref_mut() {
+        for handle in handles {
+            if let Some(Object {
+                kind: Kind::Named(reference),
+                ..
+            }) = object(table, *handle)
+            {
+                named::abandon_if_owner_ended(reference.slot(shared));
+            }
+        }
+    }
+    let seen = shared.as_deref();
+    let mut signaled = handles.iter().enumerate().filter(|(_, handle)| {
+        object(table, **handle).is_some_and(|object| is_signaled(&object.kind, caller, seen))
+    });
+    let ready = match wait_all {
+        true => (signaled.count() == handles.len()).then_some(0),
+        false => signaled.next().map(|(index, _)| index),
+    };
+    match ready {
+        Some(first) => {
+            let taken = if wait_all {
+                handles
+            } else {
+                &handles[first..=first]
+            };
+            let mut abandoned = None;
+            for (index, handle) in taken.iter().enumerate() {
+                if let Some(object) = object(table, *handle)
+                    && acquire(&mut object.kind, caller, shared.as_deref_mut())
+                {
+                    abandoned.get_or_insert(first + index);
+                }
+            }
+            Check::Done(match abandoned {
+                Some(index) => WAIT_ABANDONED_0 + index as u32,
+                None => WAIT_OBJECT_0 + first as u32,
+            })
+        }
+        None => {
+            let polling = handles.iter().any(|handle| {
+                matches!(
+                    object(table, *handle),
+                    Some(Object {
+                        kind: Kind::Process(_) | Kind::Named(_),
+                        ..
+                    })
+                )
+            });
+            SLEEPERS.fetch_add(1, Ordering::AcqRel);
+            Check::Sleep {
+                sequence: WAKE_SEQUENCE.load(Ordering::Acquire),
+                polling,
+            }
+        }
+    }
 }
 
 /// Nanoseconds left until `deadline` (a monotonic time), `None` for no deadline.
@@ -338,25 +536,36 @@ pub fn remaining(deadline: Option<u64>) -> Option<u64> {
         .map(|deadline| deadline.saturating_sub(linux::clock_nanoseconds(linux::CLOCK_MONOTONIC)))
 }
 
-fn wait(handles: &[usize], wait_all: bool, milliseconds: u32) -> u32 {
+fn wait(handles: &[usize], wait_all: bool, milliseconds: u32, alertable: bool) -> u32 {
     if handles.is_empty() || handles.len() > MAXIMUM_WAIT_OBJECTS {
         return fail(error::INVALID_PARAMETER, WAIT_FAILED);
     }
     let caller = thread_environment::thread_id();
     let mut deadline = None;
     loop {
-        let sequence = match check(handles, wait_all, caller) {
+        let reading = super::overlapped::finish_ready_reads(handles);
+        let (sequence, polling) = match check(handles, wait_all, caller) {
             Err(code) => return fail(code, WAIT_FAILED),
             Ok(Check::Done(result)) => return result,
-            Ok(Check::Sleep(sequence)) => sequence,
+            Ok(Check::Sleep { sequence, polling }) => (sequence, polling),
         };
+        if alertable && super::overlapped::run_queued_calls() {
+            SLEEPERS.fetch_sub(1, Ordering::AcqRel);
+            return super::overlapped::WAIT_IO_COMPLETION;
+        }
         let left = match milliseconds {
             0 => Some(0),
             INFINITE => None,
             _ => remaining(*deadline.get_or_insert_with(|| deadline_after(milliseconds))),
         };
         if left != Some(0) {
-            let _ = linux::futex_wait(&WAKE_SEQUENCE, sequence, left);
+            let slice = match polling || reading {
+                true => Some(left.map_or(PROCESS_POLL_NANOSECONDS, |left| {
+                    left.min(PROCESS_POLL_NANOSECONDS)
+                })),
+                false => left,
+            };
+            let _ = linux::futex_wait(&WAKE_SEQUENCE, sequence, slice);
         }
         SLEEPERS.fetch_sub(1, Ordering::AcqRel);
         if left == Some(0) {
@@ -365,12 +574,57 @@ fn wait(handles: &[usize], wait_all: bool, milliseconds: u32) -> u32 {
     }
 }
 
-extern "efiapi" fn wait_for_single_object(handle: usize, milliseconds: u32) -> u32 {
-    wait(&[handle], false, milliseconds)
+/// Wakes every wait so that it looks again: a call was queued for an alertable one.
+pub fn wake_waiters() {
+    TABLE.with(|_| WAKE_SEQUENCE.fetch_add(1, Ordering::Release));
+    if SLEEPERS.load(Ordering::Acquire) != 0 {
+        linux::futex_wake(WAKE_SEQUENCE.as_ptr() as usize, WakeCount::All);
+    }
 }
 
-extern "efiapi" fn wait_for_single_object_ex(handle: usize, milliseconds: u32, _: Bool) -> u32 {
-    wait(&[handle], false, milliseconds)
+/// `SleepEx` with `bAlertable`: sleeps `milliseconds` unless calls are queued for the thread,
+/// or get queued meanwhile, which it runs; `WAIT_IO_COMPLETION` after running them, else 0.
+pub fn sleep_alertably(milliseconds: u32) -> u32 {
+    let deadline = deadline_after(milliseconds);
+    loop {
+        let sequence = TABLE.with(|_| {
+            SLEEPERS.fetch_add(1, Ordering::AcqRel);
+            WAKE_SEQUENCE.load(Ordering::Acquire)
+        });
+        let ran = super::overlapped::run_queued_calls();
+        let left = remaining(deadline);
+        if !ran && left != Some(0) {
+            let _ = linux::futex_wait(&WAKE_SEQUENCE, sequence, left);
+        }
+        SLEEPERS.fetch_sub(1, Ordering::AcqRel);
+        if ran {
+            return super::overlapped::WAIT_IO_COMPLETION;
+        }
+        if remaining(deadline) == Some(0) {
+            return 0;
+        }
+    }
+}
+
+extern "efiapi" fn wait_for_single_object(handle: usize, milliseconds: u32) -> u32 {
+    wait(&[handle], false, milliseconds, false)
+}
+
+extern "efiapi" fn wait_for_single_object_ex(
+    handle: usize,
+    milliseconds: u32,
+    alertable: Bool,
+) -> u32 {
+    wait(&[handle], false, milliseconds, alertable != FALSE)
+}
+
+unsafe fn handle_list<'a>(count: u32, handles: *const usize, most: usize) -> Option<&'a [usize]> {
+    match count {
+        0 => Some(&[]),
+        _ if handles.is_null() || count as usize > most => None,
+        // SAFETY: the wait functions' contract: `handles` holds `count` handles.
+        _ => Some(unsafe { core::slice::from_raw_parts(handles, count as usize) }),
+    }
 }
 
 unsafe extern "efiapi" fn wait_for_multiple_objects(
@@ -379,12 +633,8 @@ unsafe extern "efiapi" fn wait_for_multiple_objects(
     wait_all: Bool,
     milliseconds: u32,
 ) -> u32 {
-    if handles.is_null() || count as usize > MAXIMUM_WAIT_OBJECTS {
-        return fail(error::INVALID_PARAMETER, WAIT_FAILED);
-    }
-    // SAFETY: `WaitForMultipleObjects`' contract: `handles` holds `count` handles.
-    let handles = unsafe { core::slice::from_raw_parts(handles, count as usize) };
-    wait(handles, wait_all != FALSE, milliseconds)
+    // SAFETY: `WaitForMultipleObjects`' contract, which the caller keeps.
+    unsafe { wait_for_multiple_objects_ex(count, handles, wait_all, milliseconds, FALSE) }
 }
 
 unsafe extern "efiapi" fn wait_for_multiple_objects_ex(
@@ -392,10 +642,67 @@ unsafe extern "efiapi" fn wait_for_multiple_objects_ex(
     handles: *const usize,
     wait_all: Bool,
     milliseconds: u32,
-    _alertable: Bool,
+    alertable: Bool,
 ) -> u32 {
-    // SAFETY: the same contract as `WaitForMultipleObjects`'.
-    unsafe { wait_for_multiple_objects(count, handles, wait_all, milliseconds) }
+    // SAFETY: `WaitForMultipleObjectsEx`' contract, which the caller keeps.
+    match unsafe { handle_list(count, handles, MAXIMUM_WAIT_OBJECTS) } {
+        Some(handles) => wait(handles, wait_all != FALSE, milliseconds, alertable != FALSE),
+        None => fail(error::INVALID_PARAMETER, WAIT_FAILED),
+    }
+}
+
+const MWMO_WAITALL: u32 = 1;
+const MWMO_ALERTABLE: u32 = 2;
+
+unsafe extern "efiapi" fn msg_wait_for_multiple_objects_ex(
+    count: u32,
+    handles: *const usize,
+    milliseconds: u32,
+    _wake_mask: u32,
+    flags: u32,
+) -> u32 {
+    // SAFETY: `MsgWaitForMultipleObjectsEx`' contract, which the caller keeps.
+    let Some(handles) = (unsafe { handle_list(count, handles, MAXIMUM_WAIT_OBJECTS - 1) }) else {
+        return fail(error::INVALID_PARAMETER, WAIT_FAILED);
+    };
+    let deadline = deadline_after(milliseconds);
+    loop {
+        if !handles.is_empty() {
+            match wait(handles, flags & MWMO_WAITALL != 0, 0, false) {
+                WAIT_TIMEOUT => {}
+                result => return result,
+            }
+        }
+        if super::gui::has_message() {
+            return WAIT_OBJECT_0 + count;
+        }
+        if flags & MWMO_ALERTABLE != 0 && super::overlapped::run_queued_calls() {
+            return super::overlapped::WAIT_IO_COMPLETION;
+        }
+        let left = remaining(deadline);
+        if left == Some(0) {
+            return WAIT_TIMEOUT;
+        }
+        let sequence = TABLE.with(|_| {
+            SLEEPERS.fetch_add(1, Ordering::AcqRel);
+            WAKE_SEQUENCE.load(Ordering::Acquire)
+        });
+        let slice = left.unwrap_or(u64::MAX).min(PROCESS_POLL_NANOSECONDS);
+        let _ = linux::futex_wait(&WAKE_SEQUENCE, sequence, Some(slice));
+        SLEEPERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+unsafe extern "efiapi" fn msg_wait_for_multiple_objects(
+    count: u32,
+    handles: *const usize,
+    wait_all: Bool,
+    milliseconds: u32,
+    wake_mask: u32,
+) -> u32 {
+    let flags = if wait_all != FALSE { MWMO_WAITALL } else { 0 };
+    // SAFETY: `MsgWaitForMultipleObjects`' contract, which the caller keeps.
+    unsafe { msg_wait_for_multiple_objects_ex(count, handles, milliseconds, wake_mask, flags) }
 }
 
 fn new_object(kind: Kind) -> usize {
@@ -406,35 +713,168 @@ fn new_object(kind: Kind) -> usize {
     handle
 }
 
-extern "efiapi" fn create_event_w(_: usize, manual_reset: Bool, initial: Bool, _: usize) -> usize {
-    new_object(Kind::Event {
-        manual_reset: manual_reset != FALSE,
-        signaled: initial != FALSE,
-    })
+/// The UTF-16 name at `name`; `None` for a null or empty one, which names nothing.
+///
+/// # Safety
+/// `name` is null or a readable NUL-terminated UTF-16 string.
+pub unsafe fn object_name<'a>(name: *const u16) -> Option<&'a [u16]> {
+    if name.is_null() {
+        return None;
+    }
+    // SAFETY: the caller's duty.
+    let units = unsafe { super::file::wide_string(name) };
+    (!units.is_empty()).then_some(units)
+}
+
+/// Runs `work` with the ANSI name at `name` widened (`None` for a null or empty one); 0 with
+/// `ERROR_NOT_ENOUGH_MEMORY` without memory.
+///
+/// # Safety
+/// `name` is null or a readable NUL-terminated string.
+pub unsafe fn with_ansi_name(name: *const u8, work: impl FnOnce(Option<&[u16]>) -> usize) -> usize {
+    // SAFETY: the caller's duty.
+    match unsafe { ansi::widen_text(name) } {
+        Ok(wide) => work(
+            wide.as_ref()
+                .map(ansi::Wide::units)
+                .filter(|units| !units.is_empty()),
+        ),
+        Err(code) => fail(code, 0),
+    }
+}
+
+fn new_named_object(name: Option<&[u16]>, object_kind: u32, state: State, local: Kind) -> usize {
+    let Some(name) = name else {
+        return new_object(local);
+    };
+    let created =
+        named_objects::parse(name).and_then(|name| named::create(&name, object_kind, state));
+    match created {
+        Ok(created) => {
+            let existed = created.existed;
+            let handle = new_object(Kind::Named(created.reference));
+            if handle != 0 && existed {
+                thread_environment::set_last_error(error::ALREADY_EXISTS);
+            }
+            handle
+        }
+        Err(code) => fail(code, 0),
+    }
+}
+
+fn open_named_object(name: Option<&[u16]>, object_kind: u32) -> usize {
+    let Some(name) = name else {
+        return fail(error::INVALID_PARAMETER, 0);
+    };
+    let opened = named_objects::parse(name).and_then(|name| named::open(&name, object_kind));
+    match opened {
+        Ok(opened) => new_object(Kind::Named(opened.reference)),
+        Err(code) => fail(code, 0),
+    }
+}
+
+fn create_event(name: Option<&[u16]>, manual_reset: bool, signaled: bool) -> usize {
+    new_named_object(
+        name,
+        named_objects::kind::EVENT,
+        State::event(manual_reset, signaled),
+        Kind::Event {
+            manual_reset,
+            signaled,
+        },
+    )
+}
+
+unsafe extern "efiapi" fn create_event_w(
+    _: usize,
+    manual_reset: Bool,
+    initial: Bool,
+    name: *const u16,
+) -> usize {
+    // SAFETY: `CreateEventW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_event(name, manual_reset != FALSE, initial != FALSE)
+}
+
+unsafe extern "efiapi" fn create_event_a(
+    _: usize,
+    manual_reset: Bool,
+    initial: Bool,
+    name: *const u8,
+) -> usize {
+    let create = |name: Option<&[u16]>| create_event(name, manual_reset != FALSE, initial != FALSE);
+    // SAFETY: `CreateEventA`'s contract: `name` is null or a NUL-terminated string.
+    unsafe { with_ansi_name(name, create) }
 }
 
 const CREATE_EVENT_MANUAL_RESET: u32 = 1;
 const CREATE_EVENT_INITIAL_SET: u32 = 2;
 const CREATE_MUTEX_INITIAL_OWNER: u32 = 1;
 
-extern "efiapi" fn create_event_ex_w(_: usize, _: usize, flags: u32, _access: u32) -> usize {
-    new_object(Kind::Event {
-        manual_reset: flags & CREATE_EVENT_MANUAL_RESET != 0,
-        signaled: flags & CREATE_EVENT_INITIAL_SET != 0,
-    })
+unsafe extern "efiapi" fn create_event_ex_w(
+    _: usize,
+    name: *const u16,
+    flags: u32,
+    _access: u32,
+) -> usize {
+    // SAFETY: `CreateEventExW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_event(
+        name,
+        flags & CREATE_EVENT_MANUAL_RESET != 0,
+        flags & CREATE_EVENT_INITIAL_SET != 0,
+    )
+}
+
+unsafe extern "efiapi" fn open_event_w(_access: u32, _inherit: Bool, name: *const u16) -> usize {
+    // SAFETY: `OpenEventW`'s contract: `name` is a NUL-terminated string.
+    open_named_object(unsafe { object_name(name) }, named_objects::kind::EVENT)
+}
+
+unsafe extern "efiapi" fn open_event_a(_access: u32, _inherit: Bool, name: *const u8) -> usize {
+    let open = |name: Option<&[u16]>| open_named_object(name, named_objects::kind::EVENT);
+    // SAFETY: `OpenEventA`'s contract: `name` is a NUL-terminated string.
+    unsafe { with_ansi_name(name, open) }
+}
+
+/// Sets or resets event `handle` without touching the last error; nothing when it is no event.
+pub fn set_event_quietly(handle: usize, state: bool) {
+    let _ = change(handle, |kind| match kind {
+        Kind::Event { signaled, .. } => {
+            *signaled = state;
+            ((), state)
+        }
+        _ => ((), false),
+    });
+}
+
+fn set_event_kind(kind: &mut Kind, state: bool) -> (Result<(), u32>, bool) {
+    match kind {
+        Kind::Event { signaled, .. } => {
+            *signaled = state;
+            (Ok(()), state)
+        }
+        Kind::Named(reference) => {
+            let set = reference.with_slot(|slot| match slot.kind {
+                named_objects::kind::EVENT => {
+                    slot.state.signaled = u32::from(state);
+                    Ok(())
+                }
+                _ => Err(error::INVALID_HANDLE),
+            });
+            let result = set.unwrap_or(Err(error::INVALID_HANDLE));
+            let changed = result.is_ok() && state;
+            (result, changed)
+        }
+        _ => (Err(error::INVALID_HANDLE), false),
+    }
 }
 
 fn set_event_state(handle: usize, state: bool) -> Bool {
-    let done = change(handle, |kind| match kind {
-        Kind::Event { signaled, .. } => {
-            *signaled = state;
-            (true, state)
-        }
-        _ => (false, false),
-    });
-    match done {
-        Some(true) => TRUE,
-        _ => fail(error::INVALID_HANDLE, FALSE),
+    match change(handle, |kind| set_event_kind(kind, state)) {
+        Some(Ok(())) => TRUE,
+        Some(Err(code)) => fail(code, FALSE),
+        None => fail(error::INVALID_HANDLE, FALSE),
     }
 }
 
@@ -446,30 +886,61 @@ extern "efiapi" fn reset_event(handle: usize) -> Bool {
     set_event_state(handle, false)
 }
 
-fn create_mutex(initial_owner: bool) -> usize {
-    let owner = if initial_owner {
-        thread_environment::thread_id()
-    } else {
-        0
-    };
-    new_object(Kind::Mutex {
-        owner,
-        recursion: u32::from(initial_owner),
-    })
+fn create_mutex(name: Option<&[u16]>, initial_owner: bool) -> usize {
+    let thread = thread_environment::thread_id();
+    let owner = if initial_owner { thread } else { 0 };
+    let named_owner = initial_owner.then(|| (named::process(), thread));
+    new_named_object(
+        name,
+        named_objects::kind::MUTEX,
+        State::mutex(named_owner),
+        Kind::Mutex {
+            owner,
+            recursion: u32::from(initial_owner),
+            abandoned: false,
+        },
+    )
 }
 
-extern "efiapi" fn create_mutex_w(_: usize, initial_owner: Bool, _: usize) -> usize {
-    create_mutex(initial_owner != FALSE)
+unsafe extern "efiapi" fn create_mutex_w(_: usize, initial_owner: Bool, name: *const u16) -> usize {
+    // SAFETY: `CreateMutexW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_mutex(name, initial_owner != FALSE)
 }
 
-extern "efiapi" fn create_mutex_ex_w(_: usize, _: usize, flags: u32, _access: u32) -> usize {
-    create_mutex(flags & CREATE_MUTEX_INITIAL_OWNER != 0)
+unsafe extern "efiapi" fn create_mutex_a(_: usize, initial_owner: Bool, name: *const u8) -> usize {
+    let create = |name: Option<&[u16]>| create_mutex(name, initial_owner != FALSE);
+    // SAFETY: `CreateMutexA`'s contract: `name` is null or a NUL-terminated string.
+    unsafe { with_ansi_name(name, create) }
 }
 
-extern "efiapi" fn release_mutex(handle: usize) -> Bool {
-    let caller = thread_environment::thread_id();
-    let result = change(handle, |kind| match kind {
-        Kind::Mutex { owner, recursion } if *owner == caller && *recursion > 0 => {
+unsafe extern "efiapi" fn create_mutex_ex_w(
+    _: usize,
+    name: *const u16,
+    flags: u32,
+    _access: u32,
+) -> usize {
+    // SAFETY: `CreateMutexExW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_mutex(name, flags & CREATE_MUTEX_INITIAL_OWNER != 0)
+}
+
+unsafe extern "efiapi" fn open_mutex_w(_access: u32, _inherit: Bool, name: *const u16) -> usize {
+    // SAFETY: `OpenMutexW`'s contract: `name` is a NUL-terminated string.
+    open_named_object(unsafe { object_name(name) }, named_objects::kind::MUTEX)
+}
+
+unsafe extern "efiapi" fn open_mutex_a(_access: u32, _inherit: Bool, name: *const u8) -> usize {
+    let open = |name: Option<&[u16]>| open_named_object(name, named_objects::kind::MUTEX);
+    // SAFETY: `OpenMutexA`'s contract: `name` is a NUL-terminated string.
+    unsafe { with_ansi_name(name, open) }
+}
+
+fn release_mutex_kind(kind: &mut Kind, caller: u32) -> (Result<(), u32>, bool) {
+    match kind {
+        Kind::Mutex {
+            owner, recursion, ..
+        } if *owner == caller && *recursion > 0 => {
             *recursion -= 1;
             if *recursion == 0 {
                 *owner = 0;
@@ -477,34 +948,111 @@ extern "efiapi" fn release_mutex(handle: usize) -> Bool {
             (Ok(()), *recursion == 0)
         }
         Kind::Mutex { .. } => (Err(error::NOT_OWNER), false),
+        Kind::Named(reference) => {
+            let released = reference.with_slot(|slot| match slot.kind {
+                named_objects::kind::MUTEX => slot.release_mutex(named::process(), caller),
+                _ => Err(error::INVALID_HANDLE),
+            });
+            match released.unwrap_or(Err(error::INVALID_HANDLE)) {
+                Ok(free) => (Ok(()), free),
+                Err(code) => (Err(code), false),
+            }
+        }
         _ => (Err(error::INVALID_HANDLE), false),
-    });
-    match result {
+    }
+}
+
+extern "efiapi" fn release_mutex(handle: usize) -> Bool {
+    let caller = thread_environment::thread_id();
+    match change(handle, |kind| release_mutex_kind(kind, caller)) {
         Some(Ok(())) => TRUE,
         Some(Err(code)) => fail(code, FALSE),
         None => fail(error::INVALID_HANDLE, FALSE),
     }
 }
 
-extern "efiapi" fn create_semaphore_w(_: usize, initial: i32, maximum: i32, _: usize) -> usize {
+fn create_semaphore(name: Option<&[u16]>, initial: i32, maximum: i32) -> usize {
     if maximum <= 0 || initial < 0 || initial > maximum {
         return fail(error::INVALID_PARAMETER, 0);
     }
-    new_object(Kind::Semaphore {
-        count: initial,
-        maximum,
-    })
+    new_named_object(
+        name,
+        named_objects::kind::SEMAPHORE,
+        State::semaphore(initial, maximum),
+        Kind::Semaphore {
+            count: initial,
+            maximum,
+        },
+    )
 }
 
-extern "efiapi" fn create_semaphore_ex_w(
+unsafe extern "efiapi" fn create_semaphore_w(
     _: usize,
     initial: i32,
     maximum: i32,
+    name: *const u16,
+) -> usize {
+    // SAFETY: `CreateSemaphoreW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_semaphore(name, initial, maximum)
+}
+
+unsafe extern "efiapi" fn create_semaphore_a(
     _: usize,
+    initial: i32,
+    maximum: i32,
+    name: *const u8,
+) -> usize {
+    let create = |name: Option<&[u16]>| create_semaphore(name, initial, maximum);
+    // SAFETY: `CreateSemaphoreA`'s contract: `name` is null or a NUL-terminated string.
+    unsafe { with_ansi_name(name, create) }
+}
+
+unsafe extern "efiapi" fn create_semaphore_ex_w(
+    _: usize,
+    initial: i32,
+    maximum: i32,
+    name: *const u16,
     _flags: u32,
     _access: u32,
 ) -> usize {
-    create_semaphore_w(0, initial, maximum, 0)
+    // SAFETY: `CreateSemaphoreExW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_semaphore(name, initial, maximum)
+}
+
+unsafe extern "efiapi" fn open_semaphore_w(
+    _access: u32,
+    _inherit: Bool,
+    name: *const u16,
+) -> usize {
+    // SAFETY: `OpenSemaphoreW`'s contract: `name` is a NUL-terminated string.
+    open_named_object(unsafe { object_name(name) }, named_objects::kind::SEMAPHORE)
+}
+
+unsafe extern "efiapi" fn open_semaphore_a(_access: u32, _inherit: Bool, name: *const u8) -> usize {
+    let open = |name: Option<&[u16]>| open_named_object(name, named_objects::kind::SEMAPHORE);
+    // SAFETY: `OpenSemaphoreA`'s contract: `name` is a NUL-terminated string.
+    unsafe { with_ansi_name(name, open) }
+}
+
+fn release_semaphore_kind(kind: &mut Kind, release: i32) -> (Result<i32, u32>, bool) {
+    match kind {
+        Kind::Semaphore { count, maximum } => match count.checked_add(release) {
+            Some(new) if new <= *maximum => (Ok(core::mem::replace(count, new)), true),
+            _ => (Err(error::TOO_MANY_POSTS), false),
+        },
+        Kind::Named(reference) => {
+            let released = reference.with_slot(|slot| match slot.kind {
+                named_objects::kind::SEMAPHORE => slot.release_semaphore(release),
+                _ => Err(error::INVALID_HANDLE),
+            });
+            let released = released.unwrap_or(Err(error::INVALID_HANDLE));
+            let changed = released.is_ok();
+            (released, changed)
+        }
+        _ => (Err(error::INVALID_HANDLE), false),
+    }
 }
 
 unsafe extern "efiapi" fn release_semaphore(
@@ -515,18 +1063,7 @@ unsafe extern "efiapi" fn release_semaphore(
     if release <= 0 {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
-    let result = change(handle, |kind| match kind {
-        Kind::Semaphore { count, maximum } => match count.checked_add(release) {
-            Some(new) if new <= *maximum => {
-                let old = *count;
-                *count = new;
-                (Ok(old), true)
-            }
-            _ => (Err(error::TOO_MANY_POSTS), false),
-        },
-        _ => (Err(error::INVALID_HANDLE), false),
-    });
-    match result {
+    match change(handle, |kind| release_semaphore_kind(kind, release)) {
         Some(Ok(old)) => {
             if !previous.is_null() {
                 // SAFETY: the caller passes a writable `LONG` for the previous count.
@@ -536,6 +1073,41 @@ unsafe extern "efiapi" fn release_semaphore(
         }
         Some(Err(code)) => fail(code, FALSE),
         None => fail(error::INVALID_HANDLE, FALSE),
+    }
+}
+
+fn signal_object(kind: &mut Kind, caller: u32) -> (Result<(), u32>, bool) {
+    let target = match kind {
+        Kind::Event { .. } => named_objects::kind::EVENT,
+        Kind::Mutex { .. } => named_objects::kind::MUTEX,
+        Kind::Semaphore { .. } => named_objects::kind::SEMAPHORE,
+        Kind::Named(reference) => reference
+            .with_slot(|slot| slot.kind)
+            .unwrap_or(named_objects::kind::FREE),
+        _ => named_objects::kind::FREE,
+    };
+    match target {
+        named_objects::kind::EVENT => set_event_kind(kind, true),
+        named_objects::kind::MUTEX => release_mutex_kind(kind, caller),
+        named_objects::kind::SEMAPHORE => {
+            let (result, changed) = release_semaphore_kind(kind, 1);
+            (result.map(|_| ()), changed)
+        }
+        _ => (Err(error::INVALID_HANDLE), false),
+    }
+}
+
+extern "efiapi" fn signal_object_and_wait(
+    signal: usize,
+    wait_for: usize,
+    milliseconds: u32,
+    alertable: Bool,
+) -> u32 {
+    let caller = thread_environment::thread_id();
+    match change(signal, |kind| signal_object(kind, caller)) {
+        Some(Ok(())) => wait(&[wait_for], false, milliseconds, alertable != FALSE),
+        Some(Err(code)) => fail(code, WAIT_FAILED),
+        None => fail(error::INVALID_HANDLE, WAIT_FAILED),
     }
 }
 
@@ -650,7 +1222,7 @@ unsafe fn critical(section: *mut u8) -> CriticalSection {
     }
 }
 
-unsafe extern "efiapi" fn enter_critical_section(section: *mut u8) {
+pub(super) unsafe extern "efiapi" fn enter_critical_section(section: *mut u8) {
     // SAFETY: `EnterCriticalSection`'s contract: an initialized `CRITICAL_SECTION`.
     let section = unsafe { critical(section) };
     let caller = u64::from(thread_environment::thread_id());
@@ -687,7 +1259,7 @@ unsafe extern "efiapi" fn try_enter_critical_section(section: *mut u8) -> Bool {
     TRUE
 }
 
-unsafe extern "efiapi" fn leave_critical_section(section: *mut u8) {
+pub(super) unsafe extern "efiapi" fn leave_critical_section(section: *mut u8) {
     // SAFETY: `LeaveCriticalSection`'s contract: a `CRITICAL_SECTION` the caller entered.
     let section = unsafe { critical(section) };
     let caller = u64::from(thread_environment::thread_id());
@@ -1032,23 +1604,48 @@ unsafe extern "efiapi" fn duplicate_handle(
     target_process: usize,
     target: *mut usize,
     _access: u32,
-    _inherit: Bool,
+    inherit: Bool,
     options: u32,
 ) -> Bool {
-    if source_process != super::CURRENT_PROCESS || target_process != super::CURRENT_PROCESS {
+    let own = |process| super::processes::process_id_of(process) == Some(linux::process_id());
+    if !own(source_process) || !own(target_process) {
         return fail(error::ACCESS_DENIED, FALSE);
     }
-    let Some(new) = duplicate(source) else {
-        return fail(error::INVALID_HANDLE, FALSE);
-    };
     if !target.is_null() {
+        let new = match duplicated(source, inherit != FALSE) {
+            Ok(new) => new,
+            Err(code) => return fail(code, FALSE),
+        };
         // SAFETY: the caller passes a writable `HANDLE` for the new handle.
         unsafe { target.write(new) };
     }
     if options & DUPLICATE_CLOSE_SOURCE != 0 {
-        close(source);
+        super::file::close_handle(source);
     }
     TRUE
+}
+
+fn duplicated(source: usize, inherit: bool) -> Result<usize, u32> {
+    if source == super::CURRENT_PROCESS {
+        return super::processes::own_process_handle().ok_or(error::NOT_ENOUGH_MEMORY);
+    }
+    if is_object_handle(source) {
+        let new = duplicate(source).ok_or(error::INVALID_HANDLE)?;
+        let flags = match inherit {
+            true => handle_flags::INHERIT,
+            false => 0,
+        };
+        set_flags(new, flags);
+        return Ok(new);
+    }
+    let fd = super::file::fd_of(source).ok_or(error::INVALID_HANDLE)?;
+    let command = match inherit {
+        true => linux::F_DUPFD,
+        false => linux::F_DUPFD_CLOEXEC,
+    };
+    linux::control(fd, command, 0)
+        .map(super::file::handle_of)
+        .map_err(super::error_for)
 }
 
 pub(super) const EXPORTS: &[Export] = exports![
@@ -1057,18 +1654,25 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"WaitForSingleObjectEx" => wait_for_single_object_ex,
     b"WaitForMultipleObjects" => wait_for_multiple_objects,
     b"WaitForMultipleObjectsEx" => wait_for_multiple_objects_ex,
+    b"SignalObjectAndWait" => signal_object_and_wait,
     b"CreateEventW" => create_event_w,
-    b"CreateEventA" => create_event_w,
+    b"CreateEventA" => create_event_a,
     b"CreateEventExW" => create_event_ex_w,
+    b"OpenEventW" => open_event_w,
+    b"OpenEventA" => open_event_a,
     b"SetEvent" => set_event,
     b"ResetEvent" => reset_event,
     b"CreateMutexW" => create_mutex_w,
-    b"CreateMutexA" => create_mutex_w,
+    b"CreateMutexA" => create_mutex_a,
     b"CreateMutexExW" => create_mutex_ex_w,
+    b"OpenMutexW" => open_mutex_w,
+    b"OpenMutexA" => open_mutex_a,
     b"ReleaseMutex" => release_mutex,
     b"CreateSemaphoreW" => create_semaphore_w,
-    b"CreateSemaphoreA" => create_semaphore_w,
+    b"CreateSemaphoreA" => create_semaphore_a,
     b"CreateSemaphoreExW" => create_semaphore_ex_w,
+    b"OpenSemaphoreW" => open_semaphore_w,
+    b"OpenSemaphoreA" => open_semaphore_a,
     b"ReleaseSemaphore" => release_semaphore,
     b"InitializeCriticalSection" => initialize_critical_section,
     b"InitializeCriticalSectionAndSpinCount" => initialize_critical_section_and_spin_count,
@@ -1096,4 +1700,10 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"WaitOnAddress" => wait_on_address,
     b"WakeByAddressSingle" => wake_by_address_single,
     b"WakeByAddressAll" => wake_by_address_all,
+];
+
+/// user32's waits that also wake for the thread's messages.
+pub(super) const USER32_EXPORTS: &[Export] = exports![
+    b"MsgWaitForMultipleObjects" => msg_wait_for_multiple_objects,
+    b"MsgWaitForMultipleObjectsEx" => msg_wait_for_multiple_objects_ex,
 ];

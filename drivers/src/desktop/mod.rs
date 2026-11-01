@@ -14,8 +14,11 @@
 //! when the kernel hands the desktop a new catalogue ([`Desktop::set_catalogue`]) or a client
 //! sets a menu ([`Desktop::set_menu`]).
 
+mod agent;
+pub mod boot_screen;
 mod catalogue;
 mod desktop_icons;
+mod desktops;
 mod events;
 mod icons;
 mod injection;
@@ -44,6 +47,7 @@ mod tests;
 #[cfg(test)]
 mod window_tests;
 
+pub use agent::{AGENT_ACTING_MS, AGENT_LABEL, AGENT_LOG_LINE, AGENT_SUFFIX, AGENT_TOOLTIP};
 pub use catalogue::{
     ARGUMENT_SEPARATOR, AppId, COMMAND_CAPACITY, Catalogue, Command, INSTALLER_PROGRAM, Launch,
     MAX_INSTALLED,
@@ -56,10 +60,16 @@ pub use injection::{
     TerminalInput,
 };
 pub use launcher::{
-    FILES_MISSING, LAUNCH_FAILED, LAUNCHER_ROW_HEIGHT, NOTICE_MS, TEXT_EDITOR_MISSING,
+    FILES_MISSING, LAUNCH_FAILED, LAUNCHER_FOOTER, LAUNCHER_ROW_HEIGHT, NOTICE_MS,
+    TEXT_EDITOR_MISSING,
 };
 pub use layout::{IconSide, Layout, layout};
 pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
+pub use pointer::{CURSOR_SIDE, write_cursor_image};
+
+/// How far a window's content is cut in from each side on its last rows, bottom row first:
+/// the pixels its rounded corners take (a maximised window has square corners).
+pub const CONTENT_CORNER_INSETS: [u32; 5] = paint::INSET_INSIDE_R6;
 pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU_ITEMS};
 pub use shell::{DOCK_ICON, TASKBAR_ITEM, TOOLTIP_DELAY_MS};
 pub use shortcuts::{Profile, Shortcut, shortcut};
@@ -154,8 +164,9 @@ pub const GRID_SIZE: (u32, u32) = (
 pub const WINDOW_WIDTH: u32 = GRID_SIZE.0 + 2 * PADDING + 2;
 /// The terminal window's height, its 1 px border included.
 pub const WINDOW_HEIGHT: u32 = GRID_SIZE.1 + 2 * PADDING + TITLE_HEIGHT + 2;
-/// The terminal window's title.
-pub const WINDOW_TITLE: &str = "Terminal";
+/// The console terminal window's title, which tells it apart from the terminal program's
+/// windows (D187).
+pub const WINDOW_TITLE: &str = "Console";
 /// The power menu's width.
 pub const MENU_WIDTH: u32 = 160;
 /// One power menu item's height.
@@ -209,6 +220,8 @@ const FIRST_GENERATION: u16 = 1;
 const GENERATIONS: u16 = 1 << (16 - SLOT_BITS);
 const BUTTON_CODES: [u16; 3] = [button::LEFT, button::RIGHT, button::MIDDLE];
 const CONTENT_CORNER_ROWS: u32 = 3;
+/// How much of a window's title bar's width a person's move keeps inside the work area.
+pub const HANGING_TITLE_KEPT: u32 = 48;
 
 /// What a pointer or key event asks of the machine, beyond redrawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +238,9 @@ pub enum Action {
     Type(AppId),
     /// Start the installer's window to uninstall the app ([`Catalogue::uninstall`]).
     Uninstall(AppId),
+    /// Focus the terminal and type `agentlog` in it, as the `Agent` chip's click asks
+    /// ([`AGENT_LOG_LINE`]).
+    ShowAgentLog,
 }
 
 /// Where the desktop reads windows' pixels: the buffers the kernel keeps for them.
@@ -282,6 +298,7 @@ pub struct Desktop {
     resize: Option<Resize>,
     last_title_press: Option<(usize, u32, u32, u32)>,
     control_hover: Option<(usize, Part)>,
+    control_pressed: Option<(usize, Part)>,
     menu_open: bool,
     menu_hover: Option<usize>,
     switcher: Option<Switcher>,
@@ -291,6 +308,7 @@ pub struct Desktop {
     pointer: (u32, u32),
     pointer_visible: bool,
     pointer_drawn: Option<(u32, u32, PointerShape)>,
+    pointer_on_display: bool,
     profile: Profile,
     layout: Layout,
     catalogue: Catalogue,
@@ -300,6 +318,7 @@ pub struct Desktop {
     notice: Option<Notice>,
     icons: DesktopIcons,
     super_alone: bool,
+    typed: u32,
     now_ms: u32,
     person_input_ms: Option<u32>,
     person_pointer: (u32, u32),
@@ -308,6 +327,9 @@ pub struct Desktop {
     clock: [u8; CLOCK_GLYPHS],
     clock_length: u8,
     clock_shows_time_of_day: bool,
+    agent: agent::AgentState,
+    desktops: u8,
+    current_desktop: u8,
 }
 
 impl Desktop {
@@ -365,6 +387,7 @@ impl Desktop {
             resize: None,
             last_title_press: None,
             control_hover: None,
+            control_pressed: None,
             menu_open: false,
             menu_hover: None,
             switcher: None,
@@ -374,6 +397,7 @@ impl Desktop {
             pointer: (0, 0),
             pointer_visible: false,
             pointer_drawn: None,
+            pointer_on_display: false,
             profile: Profile::default(),
             layout: layout(width, height, 1, Profile::default()),
             catalogue: Catalogue::new(),
@@ -383,6 +407,7 @@ impl Desktop {
             notice: None,
             icons: DesktopIcons::default(),
             super_alone: false,
+            typed: 0,
             now_ms: 0,
             person_input_ms: None,
             person_pointer: (0, 0),
@@ -391,6 +416,9 @@ impl Desktop {
             clock: [b' '; CLOCK_GLYPHS],
             clock_length: 0,
             clock_shows_time_of_day: false,
+            agent: agent::AgentState::default(),
+            desktops: 1,
+            current_desktop: 0,
         };
         let content = (WINDOW_WIDTH - CHROME.0, WINDOW_HEIGHT - CHROME.1);
         let mut terminal = Window::new(
@@ -669,6 +697,9 @@ impl Desktop {
         };
         window.shown
             && !window.minimised
+            && (window.role != Role::Normal
+                || window.parent.is_some()
+                || window.desktop == self.current_desktop)
             && window
                 .parent
                 .is_none_or(|parent| self.is_visible(usize::from(parent)))
@@ -862,6 +893,7 @@ impl Desktop {
         );
         window.parent = parent;
         window.flags = window_flags;
+        window.desktop = self.current_desktop;
         self.dialogs += usize::from(parent.is_some());
         self.windows[slot] = Some(window);
         self.created[self.created_length] = slot as u8;
@@ -976,6 +1008,13 @@ impl Desktop {
         Ok(())
     }
 
+    /// `client`'s window `id`'s outside rectangle on the screen, its border and title bar
+    /// included (D174): where `GetPlacement` says it is.
+    pub fn placement(&self, client: u16, id: u32) -> Result<Rect, WindowError> {
+        let slot = self.owned(client, id)?;
+        Ok(self.window_at(slot).outside())
+    }
+
     /// Places `client`'s window `id` with its top-left corner at (`x`, `y`) of the work area,
     /// clamped so the whole window is inside it: at once if it is shown, else when it first is.
     pub fn set_position(
@@ -996,6 +1035,28 @@ impl Desktop {
                 i64::from(work.y) + i64::from(y),
                 damage,
             );
+        }
+        Ok(())
+    }
+
+    /// Sets `client`'s window `id`'s flags named in `mask` to their bits in `values`: only
+    /// [`flags::CHANGEABLE`] ones, [`WindowError::Invalid`] for any other (D193).
+    pub fn change_flags(
+        &mut self,
+        client: u16,
+        id: u32,
+        mask: u32,
+        values: u32,
+    ) -> Result<(), WindowError> {
+        let slot = self.owned(client, id)?;
+        if mask & !flags::CHANGEABLE != 0 || values & !mask != 0 {
+            return Err(WindowError::Invalid);
+        }
+        let window = self.window_mut(slot);
+        let was_view_only = window.is_person_view_only();
+        window.flags = (window.flags & !mask) | values;
+        if !was_view_only && window.is_person_view_only() {
+            window.view_only_turns = window.view_only_turns.wrapping_add(1);
         }
         Ok(())
     }
@@ -1153,6 +1214,12 @@ impl Desktop {
         if self.control_hover.is_some_and(|hover| hover.0 == slot) {
             self.control_hover = None;
         }
+        if self
+            .control_pressed
+            .is_some_and(|pressed| pressed.0 == slot)
+        {
+            self.control_pressed = None;
+        }
         self.forget_in_popups(slot, damage, events);
         if focused {
             self.focus = None;
@@ -1266,8 +1333,32 @@ impl Desktop {
         (x as u32, y as u32)
     }
 
+    fn hanging_clamped(&self, slot: usize, x: i64, y: i64) -> (u32, u32) {
+        let outside = self.window_at(slot).outside();
+        let work = self.work_area();
+        let kept = HANGING_TITLE_KEPT.min(outside.width);
+        let x = x.clamp(
+            i64::from(work.x),
+            i64::from(work.right().saturating_sub(kept).max(work.x)),
+        );
+        let y = y.clamp(
+            i64::from(work.y),
+            i64::from(work.bottom().saturating_sub(TITLE_HEIGHT + 1).max(work.y)),
+        );
+        (x as u32, y as u32)
+    }
+
     fn move_window(&mut self, slot: usize, x: i64, y: i64, damage: &mut Damage) {
-        let (x, y) = self.clamped(slot, x, y);
+        let at = self.clamped(slot, x, y);
+        self.place_window(slot, at, damage);
+    }
+
+    fn drag_window(&mut self, slot: usize, x: i64, y: i64, damage: &mut Damage) {
+        let at = self.hanging_clamped(slot, x, y);
+        self.place_window(slot, at, damage);
+    }
+
+    fn place_window(&mut self, slot: usize, (x, y): (u32, u32), damage: &mut Damage) {
         let window = self.window_at(slot);
         if (x, y) == (window.x, window.y) {
             return;
@@ -1566,7 +1657,7 @@ impl Desktop {
             self.unmaximise(drag.window, damage, events);
             self.drag = Some(drag);
         }
-        self.move_window(
+        self.drag_window(
             drag.window,
             i64::from(x) - drag.from_pointer_x,
             i64::from(y) - drag.from_pointer_y,
@@ -1630,6 +1721,7 @@ impl Desktop {
                 self.drag = None;
                 self.resize = None;
                 self.panel_release(damage);
+                self.release_control(damage, events);
             }
             if let Some(grab) = self.grab {
                 let (cx, cy) = self.content_point(grab);
@@ -1718,10 +1810,11 @@ impl Desktop {
         self.set_focus(Some(slot), damage, events);
         let window = *self.window_at(slot);
         match window.part_at(x, y, self.profile.control_side()) {
-            Some(Part::Minimise) => self.minimise(slot, damage, events),
+            Some(Part::Minimise) => self.press_control(slot, Part::Minimise, damage),
             Some(Part::Maximise) if window.can_maximise() => {
-                self.toggle_maximise(slot, damage, events)
+                self.press_control(slot, Part::Maximise, damage)
             }
+            Some(Part::Close) if window.closable => self.press_control(slot, Part::Close, damage),
             Some(Part::Close) => self.request_close(slot, events),
             Some(Part::TitleBar) => {
                 let press = (x, y, self.now_ms);
@@ -1744,6 +1837,30 @@ impl Desktop {
             Some(Part::Maximise | Part::Border) | None => {}
         }
         Action::None
+    }
+
+    fn press_control(&mut self, slot: usize, part: Part, damage: &mut Damage) {
+        self.control_pressed = Some((slot, part));
+        damage.add(self.window_at(slot).title_bar());
+    }
+
+    fn release_control(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {
+        let Some((slot, part)) = self.control_pressed.take() else {
+            return;
+        };
+        let (x, y) = self.pointer;
+        if self.control_under(self.hit(x, y)) != Some((slot, part)) {
+            if self.is_visible(slot) {
+                damage.add(self.window_at(slot).title_bar());
+            }
+            return;
+        }
+        damage.add(self.window_at(slot).title_bar());
+        match part {
+            Part::Close => self.request_close(slot, events),
+            Part::Minimise => self.minimise(slot, damage, events),
+            _ => self.toggle_maximise(slot, damage, events),
+        }
     }
 
     fn other_button_down(
@@ -1823,6 +1940,23 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Action {
+        let character = codepoint(code, modifiers);
+        self.key_typing(code, pressed, modifiers, character, damage, events)
+    }
+
+    /// A key event whose `character` the keyboard layout chose (D185): as [`Self::key`], the
+    /// focused window's record and the launcher's search taking `character` instead of the US
+    /// keymap's. Code 0 is a character typed with no key of its own, such as a dead key's accent.
+    pub fn key_typing(
+        &mut self,
+        code: u16,
+        pressed: bool,
+        modifiers: Modifiers,
+        character: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
+        self.typed = character;
         self.note_person_input();
         let action = self.key_change(code, pressed, modifiers, damage, events);
         self.update_control_hover(damage);
@@ -1896,7 +2030,7 @@ impl Desktop {
                     i32::from(code),
                     i32::from(pressed),
                     key_modifiers(modifiers),
-                    codepoint(code, modifiers),
+                    self.typed,
                 );
                 self.send(slot, record, events);
             }
@@ -1958,13 +2092,57 @@ impl Desktop {
     /// rectangle inside the content of the top window there is only copied from that window's
     /// buffer, under the pointer. Paints nothing outside the screen or `pixels`.
     pub fn draw(&self, pixels: &mut [u32], stride: usize, clip: Rect, contents: &dyn Contents) {
+        self.paint(pixels, stride, clip, contents, !self.pointer_on_display);
+    }
+
+    /// As [`Self::draw`], never with the person's pointer: the picture a display that draws the
+    /// pointer itself shows, and what QEMU's `screendump` of it holds.
+    pub fn draw_scene(
+        &self,
+        pixels: &mut [u32],
+        stride: usize,
+        clip: Rect,
+        contents: &dyn Contents,
+    ) {
+        self.paint(pixels, stride, clip, contents, false);
+    }
+
+    /// Whether the display draws the pointer itself (a GPU's cursor, D186): the desktop then
+    /// neither draws it nor damages anything when it moves; the kernel shows [`Self::pointer`]
+    /// on the display instead. The agent's pointer (D156) is drawn either way.
+    pub fn set_pointer_on_display(&mut self, on_display: bool, damage: &mut Damage) {
+        if on_display == self.pointer_on_display {
+            return;
+        }
+        self.pointer_on_display = on_display;
+        if let Some((x, y, shape)) = self.pointer_drawn {
+            damage.add(pointer::area(shape, x, y).clipped(self.width, self.height));
+        }
+    }
+
+    /// Whether the display draws the pointer itself ([`Self::set_pointer_on_display`]).
+    pub fn pointer_on_display(&self) -> bool {
+        self.pointer_on_display
+    }
+
+    fn paint(
+        &self,
+        pixels: &mut [u32],
+        stride: usize,
+        clip: Rect,
+        contents: &dyn Contents,
+        with_pointer: bool,
+    ) {
         let clip = clip.clipped(self.width, self.height);
         let Some(mut canvas) = Canvas::new(pixels, stride, clip) else {
             return;
         };
         if let Some(slot) = self.content_holding(clip) {
             self.draw_content(&mut canvas, self.window_at(slot), contents);
-            self.draw_pointer(&mut canvas);
+            self.draw_agent_pointer(&mut canvas);
+            if with_pointer {
+                self.draw_pointer(&mut canvas);
+            }
             return;
         }
         self.draw_wallpaper(&mut canvas);
@@ -1987,7 +2165,10 @@ impl Desktop {
         }
         self.draw_popups(&mut canvas);
         self.draw_tooltip(&mut canvas);
-        self.draw_pointer(&mut canvas);
+        self.draw_agent_pointer(&mut canvas);
+        if with_pointer {
+            self.draw_pointer(&mut canvas);
+        }
     }
 
     fn draw_pointer(&self, canvas: &mut Canvas<'_>) {
@@ -2103,6 +2284,12 @@ impl Desktop {
                 true => colour,
                 false => colour::BUTTON_INACTIVE,
             };
+            let pressed = self.control_pressed == Some((slot, part))
+                && self.control_hover == Some((slot, part));
+            let fill = match active && pressed {
+                true => paint::quarter(fill),
+                false => fill,
+            };
             canvas.rounded(circle, &paint::INSET_R6, true, true, fill);
             if active && self.control_hover == Some((slot, part)) {
                 let glyph = match part {
@@ -2124,9 +2311,10 @@ impl Desktop {
                 }
             }
         }
-        let suffix = match window.not_responding {
-            true => NOT_RESPONDING,
-            false => "",
+        let (suffix, suffix_ink) = match (window.not_responding, self.agent_drives(slot)) {
+            (true, _) => (NOT_RESPONDING, title_text),
+            (false, true) => (AGENT_SUFFIX, colour::ACCENT),
+            (false, false) => ("", title_text),
         };
         let room = windows::title_room(outside.width).saturating_sub(suffix.len());
         let (text, cut) = windows::cut_title(window.title(), room);
@@ -2135,8 +2323,12 @@ impl Desktop {
         let width = glyphs as u32 * GLYPH_WIDTH as u32;
         let mut x = outside.x + outside.width.saturating_sub(width) / 2;
         let y = outside.y + 1 + (TITLE_HEIGHT - GLYPH_HEIGHT as u32) / 2;
-        for part in [text, ellipsis, suffix] {
-            canvas.text(x, y, part, title_text);
+        for (part, ink) in [
+            (text, title_text),
+            (ellipsis, title_text),
+            (suffix, suffix_ink),
+        ] {
+            canvas.text(x, y, part, ink);
             x += part.chars().count() as u32 * GLYPH_WIDTH as u32;
         }
     }
@@ -2219,6 +2411,7 @@ pub fn key_modifiers(modifiers: Modifiers) -> u32 {
         (Modifiers::ALT, modifier::ALT),
         (Modifiers::SUPER, modifier::SUPER),
         (Modifiers::CAPS_LOCK, modifier::CAPS_LOCK),
+        (Modifiers::ALT_GRAPH, modifier::ALT_GRAPH),
     ]
     .into_iter()
     .filter(|(held, _)| modifiers.contains(*held))

@@ -2,6 +2,8 @@
 //! and matches each name against the search's wildcard pattern, attributes and times come from
 //! `stat`, and the working directory and full paths are shown in Windows' form (`C:\` is `/`).
 //! A missing file whose directory is missing too is `ERROR_PATH_NOT_FOUND`, as on Windows.
+//! `GetShortPathNameW` gives the path as it is (EggOS's file systems have no 8.3 names) and
+//! `GetTempPathW` the folder `TMP`, `TEMP` or `TMPDIR` names, else `/tmp` (D178).
 
 use super::{Bool, FALSE, INVALID_HANDLE_VALUE, SpinLock, TRUE, error, error_for, fail, heap};
 use crate::calendar;
@@ -326,13 +328,34 @@ fn read_only_error(errno: Errno) -> u32 {
     }
 }
 
+unsafe fn narrow_path(name: *const u8, out: &mut [u8; text::PATH_CAPACITY]) -> Option<usize> {
+    if name.is_null() {
+        return None;
+    }
+    // SAFETY: the caller's duty: a NUL-terminated name.
+    let name = unsafe { core::ffi::CStr::from_ptr(name.cast()) }.to_bytes();
+    text::eggos_path(text::utf8_chars(name), out)
+}
+
 unsafe extern "efiapi" fn create_directory_w(name: *const u16, _security: usize) -> Bool {
     let mut path = [0u8; text::PATH_CAPACITY];
     // SAFETY: `CreateDirectoryW`'s contract: a NUL-terminated name.
     let Some(length) = (unsafe { eggos_path(name, &mut path) }) else {
         return fail(error::INVALID_PARAMETER, FALSE);
     };
-    let path = &path[..length];
+    create_directory_at(&path[..length])
+}
+
+unsafe extern "efiapi" fn create_directory_a(name: *const u8, _security: usize) -> Bool {
+    let mut path = [0u8; text::PATH_CAPACITY];
+    // SAFETY: `CreateDirectoryA`'s contract: a NUL-terminated name.
+    let Some(length) = (unsafe { narrow_path(name, &mut path) }) else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    create_directory_at(&path[..length])
+}
+
+fn create_directory_at(path: &[u8]) -> Bool {
     match linux::stat_at(AT_FDCWD, path) {
         Ok(_) => return fail(error::ALREADY_EXISTS, FALSE),
         Err(errno) if errno.0 == ENOENT => {
@@ -354,7 +377,75 @@ unsafe fn remove(name: *const u16, directory: bool) -> Bool {
     let Some(length) = (unsafe { eggos_path(name, &mut path) }) else {
         return fail(error::INVALID_PARAMETER, FALSE);
     };
-    let path = &path[..length];
+    remove_at(&path[..length], directory)
+}
+
+unsafe fn remove_narrow(name: *const u8, directory: bool) -> Bool {
+    let mut path = [0u8; text::PATH_CAPACITY];
+    // SAFETY: the callers' contract: a NUL-terminated name.
+    let Some(length) = (unsafe { narrow_path(name, &mut path) }) else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    remove_at(&path[..length], directory)
+}
+
+unsafe extern "efiapi" fn delete_file_a(name: *const u8) -> Bool {
+    // SAFETY: `DeleteFileA`'s contract: a NUL-terminated name.
+    unsafe { remove_narrow(name, false) }
+}
+
+unsafe extern "efiapi" fn remove_directory_a(name: *const u8) -> Bool {
+    // SAFETY: `RemoveDirectoryA`'s contract: a NUL-terminated name.
+    unsafe { remove_narrow(name, true) }
+}
+
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+const EEXIST: u16 = 17;
+
+fn move_at(from: &[u8], to: &[u8], flags: u32) -> Bool {
+    let no_replace = flags & MOVEFILE_REPLACE_EXISTING == 0;
+    match linux::rename(from, to, no_replace) {
+        Ok(_) => TRUE,
+        Err(errno) if errno.0 == EEXIST => fail(error::ALREADY_EXISTS, FALSE),
+        Err(errno) => fail(path_error(from, errno), FALSE),
+    }
+}
+
+unsafe extern "efiapi" fn move_file_ex_w(from: *const u16, to: *const u16, flags: u32) -> Bool {
+    let (mut old, mut new) = ([0u8; text::PATH_CAPACITY], [0u8; text::PATH_CAPACITY]);
+    // SAFETY: `MoveFileExW`'s contract: two NUL-terminated names.
+    let old_length = unsafe { eggos_path(from, &mut old) };
+    // SAFETY: as above.
+    let new_length = unsafe { eggos_path(to, &mut new) };
+    let (Some(old_length), Some(new_length)) = (old_length, new_length) else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    move_at(&old[..old_length], &new[..new_length], flags)
+}
+
+unsafe extern "efiapi" fn move_file_ex_a(from: *const u8, to: *const u8, flags: u32) -> Bool {
+    let (mut old, mut new) = ([0u8; text::PATH_CAPACITY], [0u8; text::PATH_CAPACITY]);
+    // SAFETY: `MoveFileExA`'s contract: two NUL-terminated names.
+    let old_length = unsafe { narrow_path(from, &mut old) };
+    // SAFETY: as above.
+    let new_length = unsafe { narrow_path(to, &mut new) };
+    let (Some(old_length), Some(new_length)) = (old_length, new_length) else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    move_at(&old[..old_length], &new[..new_length], flags)
+}
+
+unsafe extern "efiapi" fn move_file_w(from: *const u16, to: *const u16) -> Bool {
+    // SAFETY: the caller's duty, passed on.
+    unsafe { move_file_ex_w(from, to, 0) }
+}
+
+unsafe extern "efiapi" fn move_file_a(from: *const u8, to: *const u8) -> Bool {
+    // SAFETY: the caller's duty, passed on.
+    unsafe { move_file_ex_a(from, to, 0) }
+}
+
+fn remove_at(path: &[u8], directory: bool) -> Bool {
     let is_directory = match linux::stat_at(AT_FDCWD, path) {
         Ok(words) => linux::file_mode(&words) & linux::FILE_TYPE == linux::DIRECTORY,
         Err(errno) => return fail(path_error(path, errno), FALSE),
@@ -478,7 +569,60 @@ unsafe extern "efiapi" fn get_full_path_name_w(
     }
 }
 
+unsafe extern "efiapi" fn get_short_path_name_w(name: *const u16, out: *mut u16, size: u32) -> u32 {
+    let mut path = [0u8; text::PATH_CAPACITY];
+    // SAFETY: `GetShortPathNameW`'s contract: a NUL-terminated name.
+    let Some(length) = (unsafe { eggos_path(name, &mut path) }) else {
+        return fail(error::INVALID_PARAMETER, 0);
+    };
+    if let Err(errno) = linux::stat_at(AT_FDCWD, &path[..length]) {
+        return fail(path_error(&path[..length], errno), 0);
+    }
+    // SAFETY: as above: the name is NUL-terminated.
+    let long = unsafe { super::file::wide_string(name) };
+    // SAFETY: the caller passes `size` writable units, or null.
+    let out = unsafe { super::file::wide_buffer(out, size as usize) };
+    match super::file::copy_terminated(long, out) {
+        Ok(written) | Err(written) => written as u32,
+    }
+}
+
+const TEMPORARY_VARIABLES: [&[u8]; 3] = [b"TMP", b"TEMP", b"TMPDIR"];
+
+unsafe extern "efiapi" fn get_temp_path_w(size: u32, buffer: *mut u16) -> u32 {
+    let mut value = [0u8; text::PATH_CAPACITY];
+    let length = TEMPORARY_VARIABLES
+        .iter()
+        .find_map(|name| super::environment::variable(name, &mut value))
+        .filter(|length| (1..text::PATH_CAPACITY).contains(length));
+    let value: &[u8] = match length {
+        Some(length) => &value[..length],
+        None => b"/tmp",
+    };
+    let mut path = [0u8; text::PATH_CAPACITY];
+    let Some(length) = text::eggos_path(text::utf8_chars(value), &mut path) else {
+        return fail(error::FILENAME_EXCED_RANGE, 0);
+    };
+    let mut units = [0u16; text::PATH_CAPACITY];
+    let Ok(mut written) =
+        write_windows_path(&path[..length - 1], &mut units[..text::PATH_CAPACITY - 1])
+    else {
+        return fail(error::FILENAME_EXCED_RANGE, 0);
+    };
+    if units[..written].last() != Some(&u16::from(b'\\')) {
+        units[written] = u16::from(b'\\');
+        written += 1;
+    }
+    // SAFETY: `GetTempPathW`'s contract: `buffer` holds `size` writable units, or is null.
+    let out = unsafe { super::file::wide_buffer(buffer, size as usize) };
+    match super::file::copy_terminated(&units[..written], out) {
+        Ok(written) | Err(written) => written as u32,
+    }
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
+    b"GetShortPathNameW" => get_short_path_name_w,
+    b"GetTempPathW" => get_temp_path_w,
     b"FindFirstFileW" => find_first_file_w,
     b"FindFirstFileExW" => find_first_file_ex_w,
     b"FindNextFileW" => find_next_file_w,
@@ -489,6 +633,13 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"CreateDirectoryW" => create_directory_w,
     b"DeleteFileW" => delete_file_w,
     b"RemoveDirectoryW" => remove_directory_w,
+    b"CreateDirectoryA" => create_directory_a,
+    b"DeleteFileA" => delete_file_a,
+    b"RemoveDirectoryA" => remove_directory_a,
+    b"MoveFileExW" => move_file_ex_w,
+    b"MoveFileExA" => move_file_ex_a,
+    b"MoveFileW" => move_file_w,
+    b"MoveFileA" => move_file_a,
     b"GetCurrentDirectoryW" => get_current_directory_w,
     b"SetCurrentDirectoryW" => set_current_directory_w,
     b"GetFullPathNameW" => get_full_path_name_w,

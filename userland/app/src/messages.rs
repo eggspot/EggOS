@@ -8,6 +8,7 @@ use crate::installer::{Plan, Problem};
 use crate::program::{NotRunnable, Program};
 use core::fmt::Write;
 use eggos_app_manifest::Source;
+use eggos_app_manifest::translation::Record;
 
 /// A line of at most 256 bytes; what does not fit is dropped.
 #[derive(Clone, Copy)]
@@ -98,7 +99,7 @@ fn not_runnable(line: &mut Line, reason: NotRunnable) {
             line.write_str("it is a 32-bit program, and EggOS runs 64-bit programs only")
         }
         NotRunnable::NeedsDynamicLoader => line.write_str(
-            "it needs a dynamic loader, and EggOS runs static Linux programs only for now",
+            "it needs a dynamic loader: install it in a .zip that holds its loader and libraries",
         ),
         NotRunnable::OtherCpu(architecture) => write!(
             line,
@@ -162,8 +163,12 @@ pub fn reason(problem: Problem) -> Line {
         Problem::DiskFull => line.write_str("not enough space on the disk (ENOSPC)"),
         Problem::TooDeep => line.write_str("its folders nest more than 16 deep"),
         Problem::UnsupportedEntry => {
-            line.write_str("it holds a symbolic link or a device, which an app cannot")
+            line.write_str("it holds a device or a socket, which an app cannot")
         }
+        Problem::UnsafeLink => line.write_str(
+            "it holds a symbolic link that could lead outside the app (an absolute target, or \
+             .. that climbs out of it or comes after a name)",
+        ),
         Problem::Archive(error) => line.write_str(archive_reason(error)),
         Problem::NoProgramInArchive => line.write_str("it holds no program EggOS can run"),
         Problem::SeveralPrograms(listing) => write!(
@@ -177,6 +182,13 @@ pub fn reason(problem: Problem) -> Line {
              installer writes itself",
         ),
         Problem::TooLarge => line.write_str("its files would take more than 4 GiB once extracted"),
+        Problem::InvalidArguments => line.write_str(
+            "its arguments must be letters, digits, spaces and -_./:=+,@% only, at most 128 bytes",
+        ),
+        Problem::InvalidEnvironment => line.write_str(
+            "its environment must be NAME=value words separated by spaces, values of letters, \
+             digits and -_./:=+,@% only, at most 128 bytes",
+        ),
         Problem::Failed(error) => {
             line.push_bytes(error.message());
             Ok(())
@@ -225,10 +237,83 @@ pub fn installed(plan: &Plan) -> Line {
     line
 }
 
+/// What the install says before translating its program ahead of the first launch (D191).
+pub fn translating(name: &str, built_for: Architecture, machine: Architecture) -> Line {
+    let mut line = Line::new();
+    let _ = write!(
+        line,
+        "Translating {name}'s {} code for this {} computer, once...",
+        built_for.name(),
+        machine.name()
+    );
+    line
+}
+
+/// What the install says once its program is translated: the sizes, and the refused
+/// instructions that `app show` lists.
+pub fn translated(name: &str, record: &Record<'_>) -> Line {
+    let mut line = Line::new();
+    let _ = write!(
+        line,
+        "Translated {} bytes of code into a {}-byte cache",
+        record.code_bytes, record.cache_bytes
+    );
+    let _ = match (record.refused, record.stored) {
+        (_, false) => line.write_str(
+            ", which could not be stored: it is translated again when the app first opens.",
+        ),
+        (0, true) => line.write_str("; every instruction was translated."),
+        (1, true) => write!(
+            line,
+            "; 1 instruction was refused: it ends the app with a report if it ever runs \
+             (app show {name})."
+        ),
+        (refused, true) => write!(
+            line,
+            "; {refused} instructions were refused: each ends the app with a report if it ever \
+             runs (app show {name})."
+        ),
+    };
+    line
+}
+
+/// What the install says when its program could not be translated ahead of the first launch.
+pub fn not_translated() -> Line {
+    let mut line = Line::new();
+    let _ = line.write_str("Not translated yet: it is translated when the app first opens.");
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use eggos_runtime::errno::Errno;
+
+    #[test]
+    fn the_translation_lines_give_the_sizes_and_the_refused_count() {
+        assert_eq!(
+            translating("Paint", Architecture::X86_64, Architecture::Aarch64).as_str(),
+            "Translating Paint's x86_64 code for this aarch64 computer, once..."
+        );
+        let mut record = Record::new([0; 32], 4096, 20480, true, 0);
+        assert_eq!(
+            translated("Paint", &record).as_str(),
+            "Translated 4096 bytes of code into a 20480-byte cache; every instruction was \
+             translated."
+        );
+        record.refused = 2;
+        assert_eq!(
+            translated("Paint", &record).as_str(),
+            "Translated 4096 bytes of code into a 20480-byte cache; 2 instructions were \
+             refused: each ends the app with a report if it ever runs (app show Paint)."
+        );
+        record.stored = false;
+        assert!(
+            translated("Paint", &record)
+                .as_str()
+                .ends_with("when the app first opens.")
+        );
+    }
 
     #[test]
     fn reasons_read_as_the_design_words_them() {

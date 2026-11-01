@@ -385,6 +385,17 @@ fn the_scroll_bars_of_a_very_wide_line_stay_in_their_tracks() {
     }
     let (track, thumb) = window.horizontal_bar().unwrap();
     assert_eq!(thumb.x, track.x);
+    let area = window.area();
+    let (x, y) = (area.x + area.width / 2, area.y + area.height / 2);
+    window.handle(&mut files, Input::SidewaysWheel { x, y, notches: 2 }, 30);
+    assert!(
+        window.scroll_x > 0,
+        "the wheel's sideways turn scrolls right"
+    );
+    window.handle(&mut files, Input::SidewaysWheel { x, y, notches: -2 }, 40);
+    assert_eq!(window.scroll_x, 0);
+    let (_, back) = window.horizontal_bar().unwrap();
+    assert_eq!(back.x, thumb.x);
 }
 
 #[test]
@@ -498,4 +509,61 @@ fn the_window_draws_its_parts_and_the_caret_blinks() {
 
 fn colour_of_field() -> u32 {
     eggos_toolkit::colour::FIELD
+}
+
+#[test]
+fn an_agent_reads_the_text_as_a_text_field_and_sets_it() {
+    use eggos_toolkit::elements::{
+        Action, Bounds, MAX_TREE_BYTES, Outcome, Role, TreeWriter, elements, flags,
+    };
+    let mut owned = Owned::new(4096);
+    let mut driver = Driver::new(&mut owned, Some(NOTES));
+    let mut bytes = vec![0u8; MAX_TREE_BYTES];
+    let mut tree = TreeWriter::new(&mut bytes);
+    driver.window.describe(&mut tree);
+    let read: Vec<_> = elements(tree.bytes()).map(Result::unwrap).collect();
+    assert_eq!(read.len(), 1);
+    let text = read[0];
+    assert_eq!((text.id, text.role), (TEXT_ELEMENT, Role::TextField));
+    assert_eq!(text.name, b"notes.txt");
+    assert_eq!(text.value, b"one egg\ntwo eggs\nEGG three\n");
+    assert_ne!(text.flags & flags::FOCUSABLE, 0);
+    let view = driver.window.text_view();
+    assert_eq!(
+        text.bounds,
+        Bounds::new(view.x, view.y, view.width, view.height)
+    );
+    assert_eq!(
+        driver
+            .window
+            .act(TEXT_ELEMENT, Action::SetText, "fresh text"),
+        Outcome::Done
+    );
+    assert_eq!(driver.text(), "fresh text");
+    assert_eq!(driver.window.take_title(), Some("*notes.txt - Text Editor"));
+    driver.command(code::Z);
+    assert_eq!(
+        driver.text(),
+        "one egg\ntwo eggs\nEGG three\n",
+        "one step to undo"
+    );
+    assert_eq!(
+        driver.window.act(TEXT_ELEMENT, Action::Focus, ""),
+        Outcome::Done
+    );
+    assert_eq!(
+        driver.window.act(TEXT_ELEMENT, Action::Invoke, ""),
+        Outcome::NotSupported
+    );
+    assert_eq!(
+        driver.window.act(TEXT_ELEMENT + 1, Action::Focus, ""),
+        Outcome::NoSuchElement
+    );
+    driver.type_text("x");
+    assert!(!driver.window.close_requested());
+    assert_eq!(
+        driver.window.act(TEXT_ELEMENT, Action::SetText, "no"),
+        Outcome::Disabled,
+        "the save question is open"
+    );
 }

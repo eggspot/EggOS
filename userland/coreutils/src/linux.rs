@@ -1,8 +1,11 @@
 use crate::system::{
-    CapturedRows, Duration, STATX_SIZE, Status, SymbolicLinks, System, SystemName, UTSNAME_SIZE,
+    CapturedRows, DatagramKind, Duration, FileSystemUsage, STATFS_SIZE, STATX_SIZE, Sender, Status,
+    SymbolicLinks, System, SystemName, UTSNAME_SIZE, WindowTree, folder_and_leaf,
+    refuses_symbolic_links,
 };
 use crate::utilities::{self, MAX_ARGUMENTS};
 use core::ffi::CStr;
+use eggos_net::Ipv4Address;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
@@ -16,16 +19,92 @@ const O_TRUNC: usize = 0o1000;
 const O_APPEND: usize = 0o2000;
 const AT_REMOVEDIR: usize = 0x200;
 const STATX_BASIC_STATS: usize = 0x7ff;
+const O_PATH: usize = 0o10_000_000;
+#[cfg(target_arch = "aarch64")]
+const O_DIRECTORY: usize = 0o40_000;
+#[cfg(not(target_arch = "aarch64"))]
+const O_DIRECTORY: usize = 0o200_000;
+const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+const FOLDER_PATH_BYTES: usize = 4096;
+const ENOSYS: Errno = Errno(38);
 const CLOCK_MONOTONIC: usize = 1;
 const CLOCK_REALTIME: usize = 0;
 const REBOOT_MAGIC1: usize = 0xfee1_dead;
 const REBOOT_MAGIC2: usize = 0x2812_1969;
 const EIO: Errno = Errno(5);
+const AF_INET: u16 = 2;
+const SOCK_DGRAM_CLOEXEC: usize = 2 | 0o2_000_000;
+const SOCK_STREAM_CLOEXEC: usize = 1 | 0o2_000_000;
+const SOL_SOCKET: usize = 1;
+const SO_SNDTIMEO: usize = 21;
+const MSG_NOSIGNAL: usize = 0x4000;
+const IPPROTO_ICMP: usize = 1;
+const MSG_DONTWAIT: usize = 0x40;
+const POLLIN: i16 = 1;
+const SIGSET_BYTES: usize = 8;
+const SOCKADDR_IN_SIZE: usize = 16;
+const SIGTERM: usize = 15;
+const SIG_UNBLOCK: usize = 1;
+const INIT: usize = 1;
+const TIOCGWINSZ: usize = 0x5413;
+
+#[repr(C)]
+struct PollFd {
+    descriptor: i32,
+    events: i16,
+    returned: i16,
+}
+
+fn sockaddr_in(address: Ipv4Address, port: u16) -> [u8; SOCKADDR_IN_SIZE] {
+    let mut bytes = [0u8; SOCKADDR_IN_SIZE];
+    bytes[..2].copy_from_slice(&AF_INET.to_ne_bytes());
+    bytes[2..4].copy_from_slice(&port.to_be_bytes());
+    bytes[4..8].copy_from_slice(&address.0);
+    bytes
+}
 
 #[repr(C)]
 struct Timespec {
     seconds: i64,
     nanoseconds: i64,
+}
+
+#[repr(C)]
+struct Timeval {
+    seconds: i64,
+    microseconds: i64,
+}
+
+fn wait_readable(descriptor: usize, timeout_ms: u32) -> Result<bool, Errno> {
+    let mut poll = PollFd {
+        descriptor: descriptor as i32,
+        events: POLLIN,
+        returned: 0,
+    };
+    let timeout = Timespec {
+        seconds: i64::from(timeout_ms / 1000),
+        nanoseconds: i64::from(timeout_ms % 1000) * 1_000_000,
+    };
+    loop {
+        let polled = call(
+            number::PPOLL,
+            [
+                &raw mut poll as usize,
+                1,
+                &raw const timeout as usize,
+                0,
+                SIGSET_BYTES,
+                0,
+            ],
+        );
+        match polled {
+            Ok(0) => return Ok(false),
+            Ok(_) => return Ok(true),
+            Err(Errno::EINTR) => {}
+            Err(errno) => return Err(errno),
+        }
+    }
 }
 
 fn call(number: usize, arguments: [usize; 6]) -> Result<usize, Errno> {
@@ -34,8 +113,142 @@ fn call(number: usize, arguments: [usize; 6]) -> Result<usize, Errno> {
     Errno::result(unsafe { syscall::call(number, arguments) })
 }
 
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+fn open_refusing_links(
+    directory: usize,
+    path: &CStr,
+    flags: usize,
+    mode: u32,
+) -> Result<usize, Errno> {
+    let how = OpenHow {
+        flags: flags as u64,
+        mode: u64::from(mode),
+        resolve: RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
+    };
+    call(
+        number::OPENAT2,
+        [
+            directory,
+            path.as_ptr() as usize,
+            &raw const how as usize,
+            core::mem::size_of::<OpenHow>(),
+            0,
+            0,
+        ],
+    )
+}
+
+struct Folder {
+    descriptor: usize,
+}
+
+impl Drop for Folder {
+    fn drop(&mut self) {
+        let _ = call(number::CLOSE, [self.descriptor, 0, 0, 0, 0, 0]);
+    }
+}
+
+fn in_folder(path: &CStr) -> Result<(Folder, &CStr), Errno> {
+    let (folder, start) = folder_and_leaf(path.to_bytes());
+    let mut buffer = [0u8; FOLDER_PATH_BYTES];
+    buffer
+        .get_mut(..folder.len())
+        .filter(|_| folder.len() < FOLDER_PATH_BYTES)
+        .ok_or(Errno::ENAMETOOLONG)?
+        .copy_from_slice(folder);
+    let folder = CStr::from_bytes_until_nul(&buffer).map_err(|_| Errno::EINVAL)?;
+    let descriptor =
+        open_refusing_links(AT_FDCWD, folder, O_PATH | O_DIRECTORY | O_RDONLY_CLOEXEC, 0)?;
+    let folder = Folder { descriptor };
+    let leaf =
+        CStr::from_bytes_with_nul(&path.to_bytes_with_nul()[start..]).map_err(|_| Errno::EINVAL)?;
+    match leaf.is_empty() {
+        true => Ok((folder, c".")),
+        false => Ok((folder, leaf)),
+    }
+}
+
+fn status_at(directory: usize, path: &CStr, flags: usize) -> Result<Status, Errno> {
+    let mut record = [0u8; STATX_SIZE];
+    call(
+        number::STATX,
+        [
+            directory,
+            path.as_ptr() as usize,
+            flags,
+            STATX_BASIC_STATS,
+            record.as_mut_ptr() as usize,
+            0,
+        ],
+    )?;
+    Ok(Status::from_statx(&record))
+}
+
 #[derive(Debug)]
-struct Linux;
+struct Linux {
+    no_symlinks: bool,
+    time_zone: Option<([u8; TIME_ZONE_BYTES], usize)>,
+    environment: *const *const core::ffi::c_char,
+    started_environment: [*const u8; STARTED_VARIABLES + 1],
+}
+
+const STARTED_ARGUMENTS: usize = 8;
+const STARTED_VARIABLES: usize = 64;
+const O_CLOEXEC: usize = 0o2_000_000;
+
+fn started_environment<'a>(
+    environment: impl IntoIterator<Item = &'a CStr>,
+) -> [*const u8; STARTED_VARIABLES + 1] {
+    let mut pointers = [core::ptr::null(); STARTED_VARIABLES + 1];
+    for (slot, variable) in pointers[..STARTED_VARIABLES].iter_mut().zip(environment) {
+        *slot = variable.as_ptr().cast();
+    }
+    pointers
+}
+
+const TIME_ZONE_BYTES: usize = 64;
+
+fn time_zone_of<'a>(
+    environment: impl IntoIterator<Item = &'a CStr>,
+) -> Option<([u8; TIME_ZONE_BYTES], usize)> {
+    let value = environment
+        .into_iter()
+        .find_map(|variable| variable.to_bytes().strip_prefix(b"TZ="))?;
+    let mut kept = [0u8; TIME_ZONE_BYTES];
+    let length = value.len().min(TIME_ZONE_BYTES);
+    kept[..length].copy_from_slice(&value[..length]);
+    Some((kept, length))
+}
+
+impl Linux {
+    fn at<T>(
+        &self,
+        path: &CStr,
+        action: impl FnOnce(usize, &CStr) -> Result<T, Errno>,
+    ) -> Result<T, Errno> {
+        if !self.no_symlinks {
+            return action(AT_FDCWD, path);
+        }
+        let (folder, leaf) = in_folder(path)?;
+        action(folder.descriptor, leaf)
+    }
+
+    fn open_file(&self, path: &CStr, flags: usize, mode: u32) -> Result<usize, Errno> {
+        match self.no_symlinks {
+            true => open_refusing_links(AT_FDCWD, path, flags, mode),
+            false => call(
+                number::OPENAT,
+                [AT_FDCWD, path.as_ptr() as usize, flags, mode as usize, 0, 0],
+            ),
+        }
+    }
+}
 
 impl System for Linux {
     fn write(&mut self, descriptor: usize, mut bytes: &[u8]) -> Result<(), Errno> {
@@ -57,8 +270,7 @@ impl System for Linux {
     }
 
     fn open(&mut self, path: &CStr) -> Result<usize, Errno> {
-        let path = path.as_ptr() as usize;
-        call(number::OPENAT, [AT_FDCWD, path, O_RDONLY_CLOEXEC, 0, 0, 0])
+        self.open_file(path, O_RDONLY_CLOEXEC, 0)
     }
 
     fn close(&mut self, descriptor: usize) {
@@ -79,23 +291,14 @@ impl System for Linux {
         path: &CStr,
         links: SymbolicLinks,
     ) -> Result<Status, Errno> {
-        let mut record = [0u8; STATX_SIZE];
-        let flags = match links {
-            SymbolicLinks::Follow => 0,
-            SymbolicLinks::DoNotFollow => AT_SYMLINK_NOFOLLOW,
+        let flags = match (links, self.no_symlinks) {
+            (SymbolicLinks::Follow, false) => 0,
+            _ => AT_SYMLINK_NOFOLLOW,
         };
-        call(
-            number::STATX,
-            [
-                directory.unwrap_or(AT_FDCWD),
-                path.as_ptr() as usize,
-                flags,
-                STATX_BASIC_STATS,
-                record.as_mut_ptr() as usize,
-                0,
-            ],
-        )?;
-        Ok(Status::from_statx(&record))
+        match directory {
+            Some(descriptor) => status_at(descriptor, path, flags),
+            None => self.at(path, |folder, leaf| status_at(folder, leaf, flags)),
+        }
     }
 
     fn system_name(&mut self) -> Result<SystemName, Errno> {
@@ -145,35 +348,137 @@ impl System for Linux {
 
     fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno> {
         let flags = O_RDONLY_CLOEXEC | O_WRONLY | O_CREAT | if truncate { O_TRUNC } else { 0 };
-        let path = path.as_ptr() as usize;
-        call(number::OPENAT, [AT_FDCWD, path, flags, mode as usize, 0, 0])
+        self.open_file(path, flags, mode)
     }
 
     fn append(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
         let flags = O_RDONLY_CLOEXEC | O_WRONLY | O_CREAT | O_APPEND;
-        let path = path.as_ptr() as usize;
-        call(number::OPENAT, [AT_FDCWD, path, flags, mode as usize, 0, 0])
+        self.open_file(path, flags, mode)
     }
 
     fn make_directory(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {
-        let path = path.as_ptr() as usize;
-        call(number::MKDIRAT, [AT_FDCWD, path, mode as usize, 0, 0, 0]).map(|_| ())
+        self.at(path, |folder, leaf| {
+            let leaf = leaf.as_ptr() as usize;
+            call(number::MKDIRAT, [folder, leaf, mode as usize, 0, 0, 0]).map(|_| ())
+        })
     }
 
     fn remove(&mut self, path: &CStr, directory: bool) -> Result<(), Errno> {
         let flags = if directory { AT_REMOVEDIR } else { 0 };
-        let path = path.as_ptr() as usize;
-        call(number::UNLINKAT, [AT_FDCWD, path, flags, 0, 0, 0]).map(|_| ())
+        self.at(path, |folder, leaf| {
+            let leaf = leaf.as_ptr() as usize;
+            call(number::UNLINKAT, [folder, leaf, flags, 0, 0, 0]).map(|_| ())
+        })
     }
 
     fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno> {
-        let (from, to) = (from.as_ptr() as usize, to.as_ptr() as usize);
-        call(number::RENAMEAT2, [AT_FDCWD, from, AT_FDCWD, to, 0, 0]).map(|_| ())
+        self.at(from, |from_folder, from_leaf| {
+            self.at(to, |to_folder, to_leaf| {
+                call(
+                    number::RENAMEAT2,
+                    [
+                        from_folder,
+                        from_leaf.as_ptr() as usize,
+                        to_folder,
+                        to_leaf.as_ptr() as usize,
+                        0,
+                        0,
+                    ],
+                )
+                .map(|_| ())
+            })
+        })
     }
 
     fn set_modified_now(&mut self, path: &CStr) -> Result<(), Errno> {
-        let path = path.as_ptr() as usize;
-        call(number::UTIMENSAT, [AT_FDCWD, path, 0, 0, 0, 0]).map(|_| ())
+        let no_symlinks = self.no_symlinks;
+        self.at(path, |folder, leaf| {
+            if no_symlinks && status_at(folder, leaf, AT_SYMLINK_NOFOLLOW)?.is_link() {
+                return Err(Errno::ELOOP);
+            }
+            let leaf = leaf.as_ptr() as usize;
+            call(number::UTIMENSAT, [folder, leaf, 0, 0, 0, 0]).map(|_| ())
+        })
+    }
+
+    fn file_system_usage(&mut self, path: &CStr) -> Result<FileSystemUsage, Errno> {
+        let mut record = [0u8; STATFS_SIZE];
+        let buffer = record.as_mut_ptr() as usize;
+        if self.no_symlinks {
+            let descriptor = open_refusing_links(AT_FDCWD, path, O_PATH | O_RDONLY_CLOEXEC, 0)?;
+            let result = call(number::FSTATFS, [descriptor, buffer, 0, 0, 0, 0]);
+            self.close(descriptor);
+            result?;
+        } else {
+            let path = path.as_ptr() as usize;
+            call(number::STATFS, [path, buffer, 0, 0, 0, 0])?;
+        }
+        Ok(FileSystemUsage::from_statfs(&record))
+    }
+
+    fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {
+        let mode = (mode & 0o7777) as usize;
+        if !self.no_symlinks {
+            let path = path.as_ptr() as usize;
+            return call(number::FCHMODAT, [AT_FDCWD, path, mode, 0, 0, 0]).map(|_| ());
+        }
+        self.at(path, |folder, leaf| {
+            if status_at(folder, leaf, AT_SYMLINK_NOFOLLOW)?.is_link() {
+                return Err(Errno::ELOOP);
+            }
+            let leaf = leaf.as_ptr() as usize;
+            let changed = call(
+                number::FCHMODAT2,
+                [folder, leaf, mode, AT_SYMLINK_NOFOLLOW, 0, 0],
+            );
+            match changed {
+                Err(Errno::EOPNOTSUPP) => Err(Errno::ELOOP),
+                Err(ENOSYS) => call(number::FCHMODAT, [folder, leaf, mode, 0, 0, 0]).map(|_| ()),
+                result => result.map(|_| ()),
+            }
+        })
+    }
+
+    fn read_link(&mut self, path: &CStr, target: &mut [u8]) -> Result<usize, Errno> {
+        self.at(path, |folder, leaf| {
+            call(
+                number::READLINKAT,
+                [
+                    folder,
+                    leaf.as_ptr() as usize,
+                    target.as_mut_ptr() as usize,
+                    target.len(),
+                    0,
+                    0,
+                ],
+            )
+        })
+    }
+
+    fn make_link(&mut self, target: &CStr, path: &CStr) -> Result<(), Errno> {
+        self.at(path, |folder, leaf| {
+            let (target, leaf) = (target.as_ptr() as usize, leaf.as_ptr() as usize);
+            call(number::SYMLINKAT, [target, folder, leaf, 0, 0, 0]).map(|_| ())
+        })
+    }
+
+    fn make_hard_link(&mut self, existing: &CStr, path: &CStr) -> Result<(), Errno> {
+        self.at(existing, |from_folder, from_leaf| {
+            self.at(path, |to_folder, to_leaf| {
+                call(
+                    number::LINKAT,
+                    [
+                        from_folder,
+                        from_leaf.as_ptr() as usize,
+                        to_folder,
+                        to_leaf.as_ptr() as usize,
+                        0,
+                        0,
+                    ],
+                )
+                .map(|_| ())
+            })
+        })
     }
 
     fn working_directory(&mut self, out: &mut [u8]) -> Result<usize, Errno> {
@@ -182,6 +487,12 @@ impl System for Linux {
             [out.as_mut_ptr() as usize, out.len(), 0, 0, 0, 0],
         )?;
         Ok(length.saturating_sub(1))
+    }
+
+    fn time_zone_variable(&self) -> Option<&[u8]> {
+        self.time_zone
+            .as_ref()
+            .map(|(bytes, length)| &bytes[..*length])
     }
 
     fn now(&mut self) -> u64 {
@@ -226,7 +537,7 @@ impl System for Linux {
         request: u32,
         argument: &mut [u8],
     ) -> Result<(), Errno> {
-        if (request >> 16) & 0x3fff != argument.len() as u32 {
+        if !crate::system::argument_fits(request, argument.len()) {
             return Err(Errno::EINVAL);
         }
         let pointer = argument.as_mut_ptr() as usize;
@@ -277,6 +588,377 @@ impl System for Linux {
             rows: word(20),
         })
     }
+
+    fn set_affinity(&mut self, mask: u64) -> Result<(), Errno> {
+        let words = [mask];
+        call(
+            number::SCHED_SETAFFINITY,
+            [0, 8, words.as_ptr() as usize, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    fn start_program(&mut self, program: &CStr, arguments: &[&CStr]) -> Result<(), Errno> {
+        use eggos_runtime::process::{ChildStack, Spawn, spawn};
+        if arguments.len() > STARTED_ARGUMENTS {
+            return Err(Errno::E2BIG);
+        }
+        let mut pointers = [core::ptr::null::<u8>(); STARTED_ARGUMENTS + 1];
+        for (slot, argument) in pointers.iter_mut().zip(arguments) {
+            *slot = argument.as_ptr().cast();
+        }
+        let mut pipe = [0i32; 2];
+        call(
+            number::PIPE2,
+            [pipe.as_mut_ptr() as usize, O_CLOEXEC, 0, 0, 0, 0],
+        )?;
+        let (reading, writing) = (pipe[0] as usize, pipe[1] as usize);
+        let request = Spawn::new(
+            program,
+            &pointers[..=arguments.len()],
+            &self.started_environment,
+            [reading, writing, writing],
+        )
+        .in_own_session();
+        let mut stack = ChildStack::new();
+        let started = spawn(&mut stack, &request);
+        let _ = call(number::CLOSE, [reading, 0, 0, 0, 0, 0]);
+        let _ = call(number::CLOSE, [writing, 0, 0, 0, 0, 0]);
+        started.map(|_| ())
+    }
+
+    fn execute(&mut self, program: &CStr, arguments: &[&CStr]) -> Errno {
+        let mut pointers =
+            [core::ptr::null::<core::ffi::c_char>(); crate::utilities::MAX_ARGUMENTS + 1];
+        for (slot, argument) in pointers.iter_mut().zip(arguments) {
+            *slot = argument.as_ptr();
+        }
+        match call(
+            number::EXECVE,
+            [
+                program.as_ptr() as usize,
+                pointers.as_ptr() as usize,
+                self.environment as usize,
+                0,
+                0,
+                0,
+            ],
+        ) {
+            Ok(_) => Errno::EIO,
+            Err(errno) => errno,
+        }
+    }
+
+    fn set_clipboard(&mut self, descriptor: usize, text: &[u8]) -> Result<(), Errno> {
+        let mut request = [0u8; 16];
+        request[..8].copy_from_slice(&(text.as_ptr() as u64).to_ne_bytes());
+        request[8..].copy_from_slice(&(text.len() as u64).to_ne_bytes());
+        let pointer = request.as_mut_ptr() as usize;
+        call(
+            number::IOCTL,
+            [
+                descriptor,
+                crate::clip::SET_CLIPBOARD as usize,
+                pointer,
+                0,
+                0,
+                0,
+            ],
+        )
+        .map(|_| ())
+    }
+
+    fn clipboard(
+        &mut self,
+        descriptor: usize,
+        offset: usize,
+        into: &mut [u8],
+    ) -> Result<(usize, u32), Errno> {
+        let mut request = [0u8; 32];
+        request[..8].copy_from_slice(&(into.as_mut_ptr() as u64).to_ne_bytes());
+        request[8..16].copy_from_slice(&(into.len() as u64).to_ne_bytes());
+        request[16..24].copy_from_slice(&(offset as u64).to_ne_bytes());
+        let pointer = request.as_mut_ptr() as usize;
+        call(
+            number::IOCTL,
+            [
+                descriptor,
+                crate::clip::GET_CLIPBOARD as usize,
+                pointer,
+                0,
+                0,
+                0,
+            ],
+        )?;
+        let word = |at: usize| {
+            u32::from_ne_bytes([
+                request[at],
+                request[at + 1],
+                request[at + 2],
+                request[at + 3],
+            ])
+        };
+        Ok((word(24) as usize, word(28)))
+    }
+
+    fn window_tree(
+        &mut self,
+        descriptor: usize,
+        window: u32,
+        tree: &mut [u8],
+    ) -> Result<WindowTree, Errno> {
+        let mut request = [0u8; crate::wm::GET_TREE_SIZE];
+        request[..4].copy_from_slice(&window.to_ne_bytes());
+        request[16..24].copy_from_slice(&(tree.as_mut_ptr() as u64).to_ne_bytes());
+        request[24..32].copy_from_slice(&(tree.len() as u64).to_ne_bytes());
+        let pointer = request.as_mut_ptr() as usize;
+        call(
+            number::IOCTL,
+            [descriptor, crate::wm::GET_TREE as usize, pointer, 0, 0, 0],
+        )?;
+        let word = |at: usize| {
+            u32::from_ne_bytes([
+                request[at],
+                request[at + 1],
+                request[at + 2],
+                request[at + 3],
+            ])
+        };
+        Ok(WindowTree {
+            pixels_only: word(4) != 0,
+            length: (word(8) as usize).min(tree.len()),
+        })
+    }
+
+    fn open_datagram_socket(&mut self, kind: DatagramKind) -> Result<usize, Errno> {
+        let protocol = match kind {
+            DatagramKind::Udp => 0,
+            DatagramKind::Ping => IPPROTO_ICMP,
+        };
+        call(
+            number::SOCKET,
+            [usize::from(AF_INET), SOCK_DGRAM_CLOEXEC, protocol, 0, 0, 0],
+        )
+    }
+
+    fn send_to(
+        &mut self,
+        descriptor: usize,
+        bytes: &[u8],
+        address: Ipv4Address,
+        port: u16,
+    ) -> Result<usize, Errno> {
+        let to = sockaddr_in(address, port);
+        call(
+            number::SENDTO,
+            [
+                descriptor,
+                bytes.as_ptr() as usize,
+                bytes.len(),
+                0,
+                to.as_ptr() as usize,
+                SOCKADDR_IN_SIZE,
+            ],
+        )
+    }
+
+    fn receive_from(
+        &mut self,
+        descriptor: usize,
+        buffer: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<Option<(usize, Sender)>, Errno> {
+        if !wait_readable(descriptor, timeout_ms)? {
+            return Ok(None);
+        }
+        let mut from = [0u8; SOCKADDR_IN_SIZE];
+        let mut length = SOCKADDR_IN_SIZE as u32;
+        let received = call(
+            number::RECVFROM,
+            [
+                descriptor,
+                buffer.as_mut_ptr() as usize,
+                buffer.len(),
+                MSG_DONTWAIT,
+                from.as_mut_ptr() as usize,
+                &raw mut length as usize,
+            ],
+        );
+        match received {
+            Ok(count) => Ok(Some((
+                count,
+                Sender {
+                    address: Ipv4Address([from[4], from[5], from[6], from[7]]),
+                    port: u16::from_be_bytes([from[2], from[3]]),
+                },
+            ))),
+            Err(Errno::EAGAIN) => Ok(None),
+            Err(errno) => Err(errno),
+        }
+    }
+
+    fn monotonic_us(&mut self) -> u64 {
+        let mut time = Timespec {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+        match call(
+            number::CLOCK_GETTIME,
+            [CLOCK_MONOTONIC, &raw mut time as usize, 0, 0, 0, 0],
+        ) {
+            Ok(_) => {
+                (time.seconds.max(0) as u64) * 1_000_000 + (time.nanoseconds.max(0) as u64) / 1000
+            }
+            Err(_) => 0,
+        }
+    }
+
+    fn open_stream_socket(&mut self) -> Result<usize, Errno> {
+        call(
+            number::SOCKET,
+            [usize::from(AF_INET), SOCK_STREAM_CLOEXEC, 0, 0, 0, 0],
+        )
+    }
+
+    fn connect(
+        &mut self,
+        descriptor: usize,
+        address: Ipv4Address,
+        port: u16,
+        timeout_ms: u32,
+    ) -> Result<(), Errno> {
+        let timeout = Timeval {
+            seconds: i64::from(timeout_ms / 1000),
+            microseconds: i64::from(timeout_ms % 1000) * 1000,
+        };
+        call(
+            number::SETSOCKOPT,
+            [
+                descriptor,
+                SOL_SOCKET,
+                SO_SNDTIMEO,
+                &raw const timeout as usize,
+                core::mem::size_of::<Timeval>(),
+                0,
+            ],
+        )?;
+        let to = sockaddr_in(address, port);
+        let connected = call(
+            number::CONNECT,
+            [descriptor, to.as_ptr() as usize, SOCKADDR_IN_SIZE, 0, 0, 0],
+        );
+        match connected {
+            Ok(_) => Ok(()),
+            Err(Errno::EINPROGRESS) => Err(Errno::ETIMEDOUT),
+            Err(errno) => Err(errno),
+        }
+    }
+
+    fn send(&mut self, descriptor: usize, mut bytes: &[u8]) -> Result<(), Errno> {
+        while !bytes.is_empty() {
+            let pointer = bytes.as_ptr() as usize;
+            let sent = call(
+                number::SENDTO,
+                [descriptor, pointer, bytes.len(), MSG_NOSIGNAL, 0, 0],
+            );
+            match sent {
+                Ok(0) => return Err(EIO),
+                Ok(count) => bytes = &bytes[count.min(bytes.len())..],
+                Err(Errno::EINTR) => {}
+                Err(errno) => return Err(errno),
+            }
+        }
+        Ok(())
+    }
+
+    fn receive(
+        &mut self,
+        descriptor: usize,
+        buffer: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<Option<usize>, Errno> {
+        if !wait_readable(descriptor, timeout_ms)? {
+            return Ok(None);
+        }
+        let received = call(
+            number::RECVFROM,
+            [
+                descriptor,
+                buffer.as_mut_ptr() as usize,
+                buffer.len(),
+                MSG_DONTWAIT,
+                0,
+                0,
+            ],
+        );
+        match received {
+            Ok(count) => Ok(Some(count)),
+            Err(Errno::EAGAIN) => Ok(None),
+            Err(errno) => Err(errno),
+        }
+    }
+
+    fn random(&mut self, out: &mut [u8]) -> Result<(), Errno> {
+        let mut filled = 0;
+        while filled < out.len() {
+            let rest = &mut out[filled..];
+            match call(
+                number::GETRANDOM,
+                [rest.as_mut_ptr() as usize, rest.len(), 0, 0, 0, 0],
+            ) {
+                Ok(count) => filled += count,
+                Err(Errno::EINTR) => {}
+                Err(errno) => return Err(errno),
+            }
+        }
+        Ok(())
+    }
+
+    fn send_signal(&mut self, pid: i32, signal: u32) -> Result<(), Errno> {
+        call(
+            number::KILL,
+            [pid as isize as usize, signal as usize, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    fn signal_init(&mut self, signal: u32) -> Result<(), Errno> {
+        let default_action = [0usize; 4];
+        call(
+            number::RT_SIGACTION,
+            [
+                SIGTERM,
+                default_action.as_ptr() as usize,
+                0,
+                SIGSET_BYTES,
+                0,
+                0,
+            ],
+        )?;
+        let terminate = 1u64 << (SIGTERM - 1);
+        call(
+            number::RT_SIGPROCMASK,
+            [
+                SIG_UNBLOCK,
+                &raw const terminate as usize,
+                0,
+                SIGSET_BYTES,
+                0,
+                0,
+            ],
+        )?;
+        call(number::KILL, [INIT, signal as usize, 0, 0, 0, 0]).map(|_| ())
+    }
+
+    fn terminal_columns(&mut self, descriptor: usize) -> Option<u16> {
+        let mut size = [0u16; 4];
+        call(
+            number::IOCTL,
+            [descriptor, TIOCGWINSZ, size.as_mut_ptr() as usize, 0, 0, 0],
+        )
+        .ok()?;
+        Some(size[1])
+    }
 }
 
 /// The program's main function: see the crate's documentation.
@@ -293,5 +975,11 @@ pub fn run(startup: &Startup) -> i32 {
         arguments[count] = argument;
         count += 1;
     }
-    utilities::run(Linux, &arguments[..count])
+    let system = Linux {
+        no_symlinks: refuses_symbolic_links(startup.environment()),
+        time_zone: time_zone_of(startup.environment()),
+        environment: startup.environment_block(),
+        started_environment: started_environment(startup.environment()),
+    };
+    utilities::run(system, &arguments[..count])
 }

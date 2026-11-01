@@ -1,41 +1,21 @@
+use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
 use crate::system::{STANDARD_INPUT, System};
 use core::ffi::CStr;
+use eggos_commands::commands;
 use eggos_runtime::errno::Errno;
 
 const CHUNK: usize = 16 * 1024;
 
 pub fn cat<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    let mut options_end = false;
-    for argument in arguments {
-        let bytes = argument.to_bytes();
-        if options_end || bytes.len() < 2 || bytes[0] != b'-' {
-            continue;
-        }
-        match bytes {
-            b"--" => options_end = true,
-            b"-u" => {}
-            _ if bytes.starts_with(b"--") => return output.invalid_option(bytes),
-            _ => {
-                if let Some(&letter) = bytes[1..].iter().find(|&&letter| letter != b'u') {
-                    return output.invalid_option(&[b'-', letter]);
-                }
-            }
-        }
-    }
+    let Ok(operands) = parse_defined(output, arguments, &commands::CAT, |_, _| Ok(())) else {
+        return FAILURE;
+    };
     let mut status = 0;
-    let mut copied_any = false;
-    let mut options_end = false;
-    for &argument in arguments {
-        let bytes = argument.to_bytes();
-        if !options_end && bytes.len() > 1 && bytes[0] == b'-' {
-            options_end = bytes == b"--";
-            continue;
-        }
-        copied_any = true;
+    for &argument in operands.all() {
         status = status.max(copy(output, argument));
     }
-    if !copied_any {
+    if operands.all().is_empty() {
         status = copy(output, c"-");
     }
     status

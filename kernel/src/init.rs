@@ -13,7 +13,7 @@ use eggos_hal::Platform;
 /// The program the kernel starts as process 1: Linux's default for an initramfs.
 pub const PATH: &[u8] = b"/init";
 
-const ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
+const ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=xterm"];
 
 const CPU_START_TIMEOUT_MS: u64 = 1000;
 
@@ -21,6 +21,10 @@ const CPU_START_TIMEOUT_MS: u64 = 1000;
 /// its window's grid's columns and rows (`80x24`): from the next line on, the serial console and the
 /// terminal receive the same bytes. Must match the QEMU runner's.
 pub const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
+
+/// The line the kernel writes as it starts init, when the boot screen lights its third stage
+/// (docs/ux/desktop-v0.3.md section 1). Must match the QEMU runner's.
+pub const BOOT_INIT_LINE: &str = "boot: init";
 
 /// Why init could not run, or how it ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,14 +57,20 @@ pub fn run<P: Platform, W: Write>(
     let plural = if online == 1 { "" } else { "s" };
     writeln!(console, "cpu: {online} CPU{plural} online")?;
     thread::enable_preemption::<P>();
-    let polled = match input::start_polling::<P>() {
-        Ok(polled) => polled,
+    let polled = match input::start::<P>() {
+        Ok(Some(watching)) => {
+            writeln!(console, "{}", input_line(watching))?;
+            watching == input::Watching::Polling
+        }
+        Ok(None) => false,
         Err(error) => {
-            writeln!(console, "input: not polled: {error:?}")?;
+            writeln!(console, "input: not started: {error:?}")?;
             false
         }
     };
-    terminal::load_saved_profile();
+    terminal::load_saved_settings();
+    writeln!(console, "{BOOT_INIT_LINE}")?;
+    let _ = crate::display::light_boot_stages::<P>(crate::display::BOOT_STAGE_INIT);
     if let Some(area) = terminal::start::<P>(terminal::Session::Interactive) {
         writeln!(
             console,
@@ -88,6 +98,16 @@ pub fn run<P: Platform, W: Write>(
     cpu::stop_others::<P>();
     Ok(outcome)
 }
+
+fn input_line(watching: input::Watching) -> &'static str {
+    match watching {
+        input::Watching::Interrupts => INPUT_ON_INTERRUPTS_LINE,
+        input::Watching::Polling => "input: polled",
+    }
+}
+
+/// What the boot log says when every input device interrupts and nothing polls them (D184).
+pub const INPUT_ON_INTERRUPTS_LINE: &str = "input: on interrupts";
 
 fn start_cpus<P: Platform>(memory: &Memory<P>) -> usize {
     // SAFETY: these are the kernel's page tables, active since `paging::enable`, whose frames
@@ -117,6 +137,7 @@ fn start_and_wait<P: Platform>(memory: &Memory<P>) -> Outcome {
     let Ok(mut process) = (unsafe { Process::<P>::new(&memory.page_tables) }) else {
         return Outcome::NotStarted("no memory for process 1");
     };
+    exec::randomize_layouts();
     let Ok(context) = exec::load(&mut process, image, PATH, &[PATH], &ENVIRONMENT) else {
         return Outcome::NotStarted("/init is not a program this machine runs");
     };

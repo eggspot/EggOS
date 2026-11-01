@@ -3,11 +3,17 @@
 //! the wake-up interrupt between CPUs, a GICv2 software-generated interrupt (D41).
 
 use super::DIRECT_MAP_OFFSET;
+use crate::interrupt::SourceLines;
 use crate::memory::PhysicalRange;
 use core::sync::atomic::{AtomicU64, Ordering};
 pub(super) use eggos_drivers::interrupt::gicv2::Acknowledged;
 use eggos_drivers::interrupt::gicv2::{self, Gicv2CpuInterface, Gicv2Distributor, Trigger};
 use eggos_drivers::io::Mmio;
+
+/// `CNTKCTL_EL1` with only `EL0VCTEN` set: user mode may read the virtual counter and its
+/// frequency (`CNTVCT_EL0`, `CNTFRQ_EL0`), as on Linux, but not the physical counter, and may
+/// not touch either timer (D210).
+pub(super) const CNTKCTL_USER_VIRTUAL_COUNTER: u64 = 1 << 1;
 
 /// QEMU `virt` (`-machine gic-version=2`): GICv2 distributor and CPU interface. Device-tree
 /// discovery replaces these in M5, along with GICv3 support.
@@ -33,6 +39,11 @@ const WAKEUP_PRIORITY: u8 = 0x80;
 pub(super) const UART0_INTERRUPT: u32 = 33;
 /// Below the timer and wake-up: input can wait for them.
 const CONSOLE_INPUT_PRIORITY: u8 = 0xa0;
+/// The first shared peripheral interrupt's id: UART0's and the devices' are from here on.
+pub(super) const FIRST_SHARED_INTERRUPT: u32 = 32;
+const DEVICE_PRIORITY: u8 = 0xc0;
+/// The shared peripheral interrupts routed for devices, by line.
+pub(super) static DEVICE_LINES: SourceLines = SourceLines::new();
 
 /// The CPU interfaces a GICv2 has.
 const GIC_CPU_INTERFACES: usize = 8;
@@ -104,6 +115,25 @@ pub(super) fn route_console_input() {
         gicd.this_cpu_target(),
         Trigger::Level,
     );
+}
+
+/// Routes the shared peripheral interrupt `id`, signalled as `trigger` says, to the calling CPU
+/// and enables it, as a device's line; a line routed before is the same line.
+pub(super) fn route_device_interrupt(
+    id: u32,
+    trigger: Trigger,
+) -> Result<crate::DeviceLine, &'static str> {
+    if id == UART0_INTERRUPT {
+        return Err("the interrupt is the console's");
+    }
+    let (line, new) = DEVICE_LINES
+        .claim(id)
+        .ok_or("every device interrupt line is taken")?;
+    if new {
+        let gicd = distributor();
+        gicd.route_shared_interrupt(id, DEVICE_PRIORITY, gicd.this_cpu_target(), trigger);
+    }
+    Ok(line)
 }
 
 /// This CPU's MPIDR affinity, as the device tree's `/cpus` and the PSCI calls give it: Aff3 in

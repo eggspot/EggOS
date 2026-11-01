@@ -5,21 +5,32 @@
 //! can wait for it (the kernel is its parent, or the parent ignores `SIGCHLD` or set
 //! `SA_NOCLDWAIT`). A process that ends hands its children to the nearest ancestor that asked
 //! for orphans (`PR_SET_CHILD_SUBREAPER`), else to init, else to the kernel. The table also
-//! records which session has the console as its controlling terminal and the console's
-//! foreground process group.
+//! records which session has each terminal, the console or a pseudo-terminal (D187), as its
+//! controlling terminal, and the terminal's foreground process group.
 //!
 //! One lock holds it all, a leaf but for the heap: nothing else is locked under it, and
 //! nothing it gives out is a strong reference to a process, so no process is freed under it.
 //! A running process's entry holds a weak reference to its current program's process and
 //! its first thread's wait slot, through which a signal sent to it from outside reaches it.
+//!
+//! A running process may be stopped by a stop signal and continued by `SIGCONT` (D181): its
+//! entry says so until its parent's wait reports it (`WUNTRACED`, `WCONTINUED`), and the end
+//! of a process that leaves a process group orphaned with stopped members hangs that group up
+//! (`SIGHUP`, then `SIGCONT`), as POSIX requires.
+//!
+//! A child's end, stop or continuation that sends its parent a signal is hidden from the
+//! parent's waits until [`Table::announce`]: the signal is queued first, outside the lock, so a
+//! wait that reports the change finds it pending already, as on Linux.
 
 use super::Errno;
+use super::descriptors::WeakDescriptors;
 use super::futex::WaitSlot;
 use crate::process::ProcessExit;
 use crate::sync::SpinLock;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::any::Any;
+use core::num::NonZeroU32;
 
 /// `SIGCHLD`, the signal a child's end sends its parent unless `clone` named another.
 pub const SIGCHLD: u8 = super::signal::SIGCHLD as u8;
@@ -28,11 +39,13 @@ pub const SIGCHLD: u8 = super::signal::SIGCHLD as u8;
 pub static TABLE: SpinLock<Table> = SpinLock::new(Table::new());
 
 /// A process's current program, type-erased (a `Process<P>`), and its first thread's wait slot:
-/// what a signal sent from outside the process needs to reach it.
+/// what a signal sent from outside the process needs to reach it; and that thread's descriptor
+/// table, which `/proc/<pid>/fd` lists (D168).
 #[derive(Debug, Clone)]
 pub struct Running {
     pub process: Weak<dyn Any + Send + Sync>,
     pub first_thread: Arc<WaitSlot>,
+    pub files: WeakDescriptors,
 }
 
 /// A process a signal is sent to: its id, and how to reach it while it runs (`None` once it
@@ -67,9 +80,68 @@ struct Entry {
     children: u32,
     child_subreaper: bool,
     no_zombie_children: bool,
+    no_stop_notices: bool,
     executed: bool,
+    job: JobState,
+    unannounced: Option<Announcement>,
     running: Option<Running>,
     name: Name,
+}
+
+/// A child's change whose signal its parent is still to be sent: until [`Table::announce`]
+/// with it, the changes it names are hidden from the parent's waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Announcement(NonZeroU32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobState {
+    Running,
+    Stopped { signal: u8, reported: bool },
+    Continued,
+}
+
+/// What a wait reports of children that stopped or continued, besides their ends (D181).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct JobReports {
+    /// Children stopped since a wait last reported it (`WUNTRACED`, `WSTOPPED`).
+    pub stopped: bool,
+    /// Children continued since a wait last reported it (`WCONTINUED`).
+    pub continued: bool,
+    /// Leaves what it reports to be reported again (`WNOWAIT`).
+    pub keep: bool,
+}
+
+/// A child's stop or continuation, as its parent learns of it (D181).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobChange {
+    /// This signal stopped it.
+    Stopped(u8),
+    /// `SIGCONT` continued it.
+    Continued,
+}
+
+/// Whom a process's stop or continuation tells (D181): its parent, which wakes from a wait for
+/// its children, and is sent `SIGCHLD` unless it set `SA_NOCLDSTOP` (`signal` false).
+#[derive(Debug, Clone)]
+pub struct JobNotice {
+    pub parent: u32,
+    pub running: Option<Running>,
+    pub child: u32,
+    pub uid: u32,
+    pub change: JobChange,
+    pub signal: bool,
+    pub announcement: Option<Announcement>,
+}
+
+/// What a stop signal's delivery did to a process (D181).
+#[derive(Debug, Clone)]
+pub enum Stopping {
+    /// It is stopped now, and its parent is to be told, if it has one.
+    Stopped(Option<JobNotice>),
+    /// It was stopped already: the delivering thread stops with it.
+    Already,
+    /// It is not in the table, or has ended.
+    Gone,
 }
 
 /// The length of a process's name, its NUL included (Linux's `TASK_COMM_LEN`).
@@ -96,6 +168,22 @@ pub struct Listed {
     pub session: u32,
     pub ended: bool,
     pub name: Name,
+    /// The signal its end sends its parent (D168, `/proc/<pid>/stat`).
+    pub exit_signal: u8,
+}
+
+impl Listed {
+    fn of(entry: &Entry) -> Self {
+        Self {
+            id: entry.id,
+            parent: entry.parent,
+            group: entry.group,
+            session: entry.session,
+            ended: entry.exit.is_some(),
+            name: entry.name,
+            exit_signal: entry.exit_signal,
+        }
+    }
 }
 
 /// Which children a wait looks at: Linux's `pid` argument.
@@ -141,6 +229,13 @@ pub enum Found {
         uid: u32,
         exit: ProcessExit,
     },
+    /// A child that a stop signal stopped (D181); reported once unless the wait only looked.
+    Stopped { id: u32, uid: u32, signal: u8 },
+    /// A child that `SIGCONT` continued (D181); reported once unless the wait only looked.
+    Continued { id: u32, uid: u32 },
+    /// A child whose change the wait would report, hidden until its parent's signal for it is
+    /// queued ([`Table::announce`]), which is under way: the wait looks again in a moment.
+    Announcing,
     /// Children that may be waited for, none of them ended yet.
     Running,
     /// No child the wait may wait for (`ECHILD`).
@@ -157,6 +252,7 @@ pub struct Notice {
     pub child: u32,
     pub uid: u32,
     pub exit: ProcessExit,
+    pub announcement: Option<Announcement>,
 }
 
 /// What the end of a process leaves to be done once the table's lock is released.
@@ -166,13 +262,23 @@ pub struct Ended {
     pub to_parent: Option<Notice>,
     /// The ended children it handed over, for their new parent.
     pub to_new_parent: Option<Notice>,
-    /// The console's foreground group, which loses its controlling terminal as the session's
-    /// leader ends: each gets `SIGHUP` and `SIGCONT`.
+    /// The foreground group of the terminal the session's leader controlled, which loses its
+    /// controlling terminal as the leader ends: each gets `SIGHUP` and `SIGCONT`.
     pub hung_up: Vec<Running>,
 }
 
+/// A terminal a session may have as its controlling terminal (D187).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Console {
+pub enum Terminal {
+    /// The console (`/dev/console`).
+    Console,
+    /// Pseudo-terminal `n` (`/dev/pts/<n>`), of which `/dev/ptmx` opened the other side.
+    Pseudo(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Controlled {
+    terminal: Terminal,
     session: u32,
     foreground: u32,
 }
@@ -182,19 +288,56 @@ struct Console {
 pub struct Table {
     entries: Vec<Entry>,
     init: u32,
-    console: Console,
+    controlled: Vec<Controlled>,
+    stopped: u32,
+    announcements: u32,
 }
 
 impl Table {
-    /// No process, no init and the console no session's.
+    /// No process, no init and no terminal any session's.
     pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
             init: 0,
-            console: Console {
-                session: 0,
-                foreground: 0,
-            },
+            controlled: Vec::new(),
+            stopped: 0,
+            announcements: 0,
+        }
+    }
+
+    fn next_announcement(&mut self) -> Announcement {
+        self.announcements = self.announcements.wrapping_add(1);
+        let number = NonZeroU32::new(self.announcements).unwrap_or(NonZeroU32::MIN);
+        self.announcements = number.get();
+        Announcement(number)
+    }
+
+    fn announcement_if(&mut self, signal_sent: bool) -> Option<Announcement> {
+        signal_sent.then(|| self.next_announcement())
+    }
+
+    /// Shows the parent's waits the changes `announcement` names, once their signal is queued.
+    pub fn announce(&mut self, announcement: Announcement) {
+        for entry in &mut self.entries {
+            if entry.unannounced == Some(announcement) {
+                entry.unannounced = None;
+            }
+        }
+    }
+
+    fn controlled_by(&self, terminal: Terminal) -> Option<&Controlled> {
+        self.controlled
+            .iter()
+            .find(|controlled| controlled.terminal == terminal)
+    }
+
+    fn controlled_by_session(&self, session: u32) -> Option<usize> {
+        match session {
+            0 => None,
+            session => self
+                .controlled
+                .iter()
+                .position(|controlled| controlled.session == session),
         }
     }
 
@@ -245,7 +388,10 @@ impl Table {
             children: 0,
             child_subreaper: false,
             no_zombie_children: inherited.is_some_and(|parent| parent.no_zombie_children),
+            no_stop_notices: inherited.is_some_and(|parent| parent.no_stop_notices),
             executed: false,
+            job: JobState::Running,
+            unannounced: None,
             running: None,
             name: inherited.map_or([0; NAME_LENGTH], |parent| parent.name),
         };
@@ -297,14 +443,7 @@ impl Table {
 
     /// Every process in the table, by id: what `/proc` lists.
     pub fn list(&self) -> impl Iterator<Item = Listed> + '_ {
-        self.entries.iter().map(|entry| Listed {
-            id: entry.id,
-            parent: entry.parent,
-            group: entry.group,
-            session: entry.session,
-            ended: entry.exit.is_some(),
-            name: entry.name,
-        })
+        self.entries.iter().map(Listed::of)
     }
 
     /// Records that process `id` ran `execve`: its parent may no longer move it to another
@@ -320,6 +459,14 @@ impl Table {
     pub fn set_no_zombie_children(&mut self, id: u32, no_zombies: bool) {
         if let Some(entry) = self.entry_mut(id) {
             entry.no_zombie_children = no_zombies;
+        }
+    }
+
+    /// Records whether process `id` is sent `SIGCHLD` when a child stops or continues: not if
+    /// it set `SA_NOCLDSTOP` for it (D181).
+    pub fn set_no_stop_notices(&mut self, id: u32, no_notices: bool) {
+        if let Some(entry) = self.entry_mut(id) {
+            entry.no_stop_notices = no_notices;
         }
     }
 
@@ -383,8 +530,8 @@ impl Table {
     /// Records that process `id`, whose real user id is `uid`, ended as `exit`: it becomes a
     /// zombie for its parent, or is removed at once if nobody can wait for it; its children go
     /// to their new parent, which reaps those that ended already if it cannot wait for them;
-    /// if it led the session the console belongs to, the console belongs to none from now on.
-    /// Returns whom to tell.
+    /// if it led a session that has a controlling terminal, the terminal belongs to none from
+    /// now on and its foreground group is hung up. Returns whom to tell.
     pub fn end(&mut self, id: u32, exit: ProcessExit, uid: u32) -> Ended {
         let mut ended = Ended::default();
         let Some(index) = self.index(id) else {
@@ -393,6 +540,12 @@ impl Table {
         if self.entries[index].exit.is_some() {
             return ended;
         }
+        self.forget_stop(index);
+        let mut around = match self.stopped {
+            0 => Vec::new(),
+            _ => self.groups_around(index),
+        };
+        around.retain(|&group| !self.is_orphaned(group));
         self.entries[index].exit = Some(exit);
         self.entries[index].uid = uid;
         self.entries[index].running = None;
@@ -410,24 +563,182 @@ impl Table {
             0 => None,
             parent => self.entry(parent),
         };
-        if let Some(parent_entry) = parent_entry {
+        let reaped = Self::reaped_by(parent_entry, exit_signal);
+        let parent_running = parent_entry.map(|parent| parent.running.clone());
+        let signal_sent = exit_signal != 0 && !reaped && matches!(parent_running, Some(Some(_)));
+        let announcement = self.announcement_if(signal_sent);
+        if let Some(running) = parent_running {
             ended.to_parent = Some(Notice {
                 parent,
-                running: parent_entry.running.clone(),
+                running,
                 signal: exit_signal,
                 child: id,
                 uid,
                 exit,
+                announcement,
             });
         }
-        if Self::reaped_by(parent_entry, exit_signal) {
-            self.remove_at(index);
+        match reaped {
+            true => self.remove_at(index),
+            false => self.entries[index].unannounced = announcement,
         }
-        if session == id && self.console.session == id {
-            ended.hung_up = self.members(self.console.foreground);
-            self.release_console();
+        let mut hung_up_group = 0;
+        if session == id
+            && let Some(index) = self.controlled_by_session(id)
+        {
+            let controlled = self.controlled.swap_remove(index);
+            hung_up_group = controlled.foreground;
+            ended.hung_up = self.members(controlled.foreground);
+        }
+        for group in around {
+            if group != hung_up_group && self.has_stopped_member(group) && self.is_orphaned(group) {
+                let mut members = self.members(group);
+                if ended.hung_up.try_reserve(members.len()).is_ok() {
+                    ended.hung_up.append(&mut members);
+                }
+            }
         }
         ended
+    }
+
+    fn forget_stop(&mut self, index: usize) {
+        if let JobState::Stopped { .. } = self.entries[index].job {
+            self.stopped = self.stopped.saturating_sub(1);
+        }
+        self.entries[index].job = JobState::Running;
+    }
+
+    fn groups_around(&self, index: usize) -> Vec<u32> {
+        let ending = &self.entries[index];
+        let mut groups = Vec::new();
+        if groups.try_reserve(1).is_ok() {
+            groups.push(ending.group);
+        }
+        if ending.children == 0 {
+            return groups;
+        }
+        for entry in &self.entries {
+            if entry.parent == ending.id
+                && entry.session == ending.session
+                && !groups.contains(&entry.group)
+                && groups.try_reserve(1).is_ok()
+            {
+                groups.push(entry.group);
+            }
+        }
+        groups
+    }
+
+    fn is_orphaned(&self, group: u32) -> bool {
+        !self.entries.iter().any(|member| {
+            member.group == group
+                && member.exit.is_none()
+                && self.entry(member.parent).is_some_and(|parent| {
+                    parent.exit.is_none()
+                        && parent.group != group
+                        && parent.session == member.session
+                })
+        })
+    }
+
+    fn has_stopped_member(&self, group: u32) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.group == group
+                && entry.exit.is_none()
+                && matches!(entry.job, JobState::Stopped { .. })
+        })
+    }
+
+    /// For a stop signal delivered to process `id`, whose real user id is `uid` (D181): stops
+    /// it, unless it is stopped already, and says whom to tell.
+    pub fn stop(&mut self, id: u32, signal: u8, uid: u32) -> Stopping {
+        let Some(index) = self.index(id) else {
+            return Stopping::Gone;
+        };
+        let entry = &mut self.entries[index];
+        if entry.exit.is_some() {
+            return Stopping::Gone;
+        }
+        if let JobState::Stopped { .. } = entry.job {
+            return Stopping::Already;
+        }
+        entry.job = JobState::Stopped {
+            signal,
+            reported: false,
+        };
+        entry.uid = uid;
+        let parent = entry.parent;
+        self.stopped += 1;
+        Stopping::Stopped(self.job_notice(index, parent, uid, JobChange::Stopped(signal)))
+    }
+
+    /// For `SIGCONT` sent to process `id` (D181): continues it if it is stopped, and says whom
+    /// to tell; `None` if it was not stopped.
+    pub fn resume(&mut self, id: u32) -> Option<JobNotice> {
+        let index = self.index(id)?;
+        let entry = &mut self.entries[index];
+        if entry.exit.is_some() || !matches!(entry.job, JobState::Stopped { .. }) {
+            return None;
+        }
+        entry.job = JobState::Continued;
+        let (parent, uid) = (entry.parent, entry.uid);
+        self.stopped = self.stopped.saturating_sub(1);
+        self.job_notice(index, parent, uid, JobChange::Continued)
+    }
+
+    fn job_notice(
+        &mut self,
+        index: usize,
+        parent: u32,
+        uid: u32,
+        change: JobChange,
+    ) -> Option<JobNotice> {
+        let told = self
+            .entry(parent)
+            .filter(|entry| entry.exit.is_none())
+            .map(|entry| (entry.running.clone(), !entry.no_stop_notices));
+        let signal_sent = matches!(told, Some((Some(_), true)));
+        let announcement = self.announcement_if(signal_sent);
+        let child = &mut self.entries[index];
+        child.unannounced = announcement;
+        let (running, signal) = told?;
+        Some(JobNotice {
+            parent,
+            running,
+            child: child.id,
+            uid,
+            change,
+            signal,
+            announcement,
+        })
+    }
+
+    /// Whether process `id` is stopped (D181).
+    pub fn is_stopped(&self, id: u32) -> bool {
+        self.entry(id)
+            .is_some_and(|entry| matches!(entry.job, JobState::Stopped { .. }))
+    }
+
+    /// Whether process `id`'s group is orphaned, so the terminal's stop signals do not stop it
+    /// (D181).
+    pub fn is_in_orphaned_group(&self, id: u32) -> bool {
+        self.entry(id)
+            .is_some_and(|entry| self.is_orphaned(entry.group))
+    }
+
+    /// For process `caller` reading `terminal` or changing its settings (D181): its process
+    /// group, and whether that group is orphaned, if `terminal` is its controlling terminal
+    /// and its group is not the terminal's foreground; `None` otherwise (it may go on).
+    pub fn background_on(&self, terminal: Terminal, caller: u32) -> Option<(u32, bool)> {
+        let entry = self.entry(caller)?;
+        let controlled = self.controlled_by(terminal)?;
+        (controlled.session == entry.session && entry.group != controlled.foreground)
+            .then(|| (entry.group, self.is_orphaned(entry.group)))
+    }
+
+    /// [`Self::background_on`] the console.
+    pub fn background_on_console(&self, caller: u32) -> Option<(u32, bool)> {
+        self.background_on(Terminal::Console, caller)
     }
 
     /// Removes process `id`, which never ended as a Linux process does (it never ran, or its
@@ -441,6 +752,7 @@ impl Table {
         if self.entries[index].exit.is_some() {
             return ended;
         }
+        self.forget_stop(index);
         ended.to_new_parent = self.hand_over_children(id);
         if let Some(index) = self.index(id) {
             let parent = self.entries[index].parent;
@@ -452,12 +764,13 @@ impl Table {
                     child: id,
                     uid: 0,
                     exit: ProcessExit::Exited(0),
+                    announcement: None,
                 });
             }
             self.remove_at(index);
         }
-        if self.console.session == id {
-            self.release_console();
+        if let Some(index) = self.controlled_by_session(id) {
+            self.controlled.swap_remove(index);
         }
         ended
     }
@@ -470,6 +783,13 @@ impl Table {
         entry.children = 0;
         let new_parent = self.new_parent_for_children_of(id);
         let reaped = self.reaps_at_end(new_parent, SIGCHLD);
+        let running = match new_parent {
+            0 => None,
+            new_parent => self
+                .entry(new_parent)
+                .and_then(|entry| entry.running.clone()),
+        };
+        let announcement = self.announcement_if(!reaped && running.is_some());
         let mut first_ended = None;
         let mut kept = 0;
         self.entries.retain_mut(|entry| {
@@ -481,6 +801,9 @@ impl Table {
             if let (None, Some(exit)) = (first_ended, entry.exit) {
                 first_ended = Some((entry.id, entry.uid, exit));
             }
+            if entry.exit.is_some() {
+                entry.unannounced = announcement;
+            }
             let keep = !(reaped && entry.exit.is_some());
             kept += u32::from(keep);
             keep
@@ -489,22 +812,35 @@ impl Table {
             entry.children += kept;
         }
         let (child, uid, exit) = first_ended?;
-        (new_parent != 0).then(|| Notice {
+        (new_parent != 0).then_some(Notice {
             parent: new_parent,
-            running: self
-                .entry(new_parent)
-                .and_then(|entry| entry.running.clone()),
+            running,
             signal: SIGCHLD,
             child,
             uid,
             exit,
+            announcement,
         })
     }
 
-    /// The wait of process `parent` for one of its children that `selector` and `kind` name:
-    /// the first of them that has ended, reaped or not as `ends` says; otherwise whether any of
-    /// them is running.
+    /// [`Self::wait_for_change`] for ends alone.
+    #[cfg(test)]
     pub fn wait(&mut self, parent: u32, selector: Selector, kind: ChildKind, ends: Ends) -> Found {
+        self.wait_for_change(parent, selector, kind, ends, JobReports::default())
+    }
+
+    /// The wait of process `parent` for one of its children that `selector` and `kind` name:
+    /// the first of them that has ended, reaped or not as `ends` says, or that stopped or
+    /// continued since a wait last said so, if `reports` asks for those (D181); otherwise
+    /// whether such a change is about to be announced, or any of them is running.
+    pub fn wait_for_change(
+        &mut self,
+        parent: u32,
+        selector: Selector,
+        kind: ChildKind,
+        ends: Ends,
+        reports: JobReports,
+    ) -> Found {
         let matches = |entry: &Entry| {
             entry.parent == parent
                 && match selector {
@@ -522,27 +858,58 @@ impl Table {
             return Found::NoChild;
         }
         let mut running = false;
-        let mut ended = None;
+        let mut announcing = false;
+        let mut found = None;
         for (index, entry) in self.entries.iter().enumerate() {
             if !matches(entry) {
                 continue;
             }
-            match entry.exit {
-                Some(_) if ends == Ends::Ignore => {}
-                Some(exit) => {
-                    ended = Some((index, entry.id, entry.uid, exit));
+            let (id, uid) = (entry.id, entry.uid);
+            let reportable = match (entry.exit, entry.job) {
+                (Some(_), _) if ends == Ends::Ignore => None,
+                (Some(exit), _) => Some(Found::Ended { id, uid, exit }),
+                (
+                    None,
+                    JobState::Stopped {
+                        signal,
+                        reported: false,
+                    },
+                ) if reports.stopped => Some(Found::Stopped { id, uid, signal }),
+                (None, JobState::Continued) if reports.continued => {
+                    Some(Found::Continued { id, uid })
+                }
+                (None, _) => {
+                    running = true;
+                    None
+                }
+            };
+            match (reportable, entry.unannounced) {
+                (Some(_), Some(_)) => announcing = true,
+                (Some(reportable), None) => {
+                    found = Some((index, reportable));
                     break;
                 }
-                None => running = true,
+                (None, _) => {}
             }
         }
-        match ended {
-            Some((index, id, uid, exit)) => {
-                if ends == Ends::Reap {
-                    self.remove_at(index);
+        match found {
+            Some((index, found)) => {
+                match found {
+                    Found::Ended { .. } if ends == Ends::Reap => self.remove_at(index),
+                    Found::Stopped { signal, .. } if !reports.keep => {
+                        self.entries[index].job = JobState::Stopped {
+                            signal,
+                            reported: true,
+                        };
+                    }
+                    Found::Continued { .. } if !reports.keep => {
+                        self.entries[index].job = JobState::Running;
+                    }
+                    _ => {}
                 }
-                Found::Ended { id, uid, exit }
+                found
             }
+            None if announcing => Found::Announcing,
             None if running => Found::Running,
             None => Found::NoChild,
         }
@@ -616,43 +983,82 @@ impl Table {
     /// For a session leader the kernel starts, `id`: the console becomes its session's
     /// controlling terminal, its group the foreground, if the console has no session yet.
     pub fn give_console_if_free(&mut self, id: u32) {
-        if self.console.session != 0 {
+        self.give_if_free(Terminal::Console, id);
+    }
+
+    /// For process `id` opening `terminal` without `O_NOCTTY`, as Linux's open of a terminal
+    /// does: if it leads a session that has no controlling terminal and `terminal` is no
+    /// session's, `terminal` becomes the session's, its group the foreground.
+    pub fn give_if_free(&mut self, terminal: Terminal, id: u32) {
+        if self.controlled_by(terminal).is_some() || self.controlled_by_session(id).is_some() {
             return;
         }
-        if let Some(entry) = self.entry(id)
-            && entry.session == id
-        {
-            self.console = Console {
-                session: id,
-                foreground: entry.group,
-            };
+        let Some(entry) = self.entry(id).filter(|entry| entry.session == id) else {
+            return;
+        };
+        let controlled = Controlled {
+            terminal,
+            session: id,
+            foreground: entry.group,
+        };
+        if self.controlled.try_reserve(1).is_ok() {
+            self.controlled.push(controlled);
         }
+    }
+
+    /// `terminal` becomes no session's controlling terminal.
+    pub fn release(&mut self, terminal: Terminal) {
+        self.controlled
+            .retain(|controlled| controlled.terminal != terminal);
     }
 
     /// The console becomes no session's controlling terminal.
     pub fn release_console(&mut self) {
-        self.console = Console {
-            session: 0,
-            foreground: 0,
-        };
+        self.release(Terminal::Console);
     }
 
-    /// The console's session and foreground group, if the console is process `caller`'s
+    /// The terminal process `caller`'s session controls, if it has one.
+    pub fn controlling_terminal_of(&self, caller: u32) -> Option<Terminal> {
+        let (session, _) = self.session_of(caller).ok()?;
+        let index = self.controlled_by_session(session)?;
+        Some(self.controlled[index].terminal)
+    }
+
+    /// `terminal`'s session and foreground group, if `terminal` is process `caller`'s
     /// controlling terminal; `ENOTTY` otherwise.
-    pub fn controlling_terminal(&self, caller: u32) -> Result<(u32, u32), Errno> {
+    pub fn controlling(&self, terminal: Terminal, caller: u32) -> Result<(u32, u32), Errno> {
         let (session, _) = self.session_of(caller).map_err(|_| Errno::ENOTTY)?;
-        match self.console.session == session && session != 0 {
-            true => Ok((self.console.session, self.console.foreground)),
-            false => Err(Errno::ENOTTY),
+        match self.controlled_by(terminal) {
+            Some(controlled) if controlled.session == session && session != 0 => {
+                Ok((controlled.session, controlled.foreground))
+            }
+            _ => Err(Errno::ENOTTY),
         }
     }
 
-    /// `TIOCSPGRP` by process `caller`: makes group `group` (a `pid_t`) the console's
-    /// foreground. `ENOTTY` unless the console is the caller's controlling terminal; `EINVAL`
+    /// [`Self::controlling`] the console.
+    pub fn controlling_terminal(&self, caller: u32) -> Result<(u32, u32), Errno> {
+        self.controlling(Terminal::Console, caller)
+    }
+
+    /// `terminal`'s session and foreground group, whoever asks, if a session controls it: what
+    /// a pseudo-terminal's other side reads (`TIOCGPGRP`, `TIOCGSID` on `/dev/ptmx`'s side).
+    pub fn session_and_foreground(&self, terminal: Terminal) -> Option<(u32, u32)> {
+        self.controlled_by(terminal)
+            .map(|controlled| (controlled.session, controlled.foreground))
+    }
+
+    /// `TIOCSPGRP` by process `caller`: makes group `group` (a `pid_t`) `terminal`'s
+    /// foreground. `ENOTTY` unless `terminal` is the caller's controlling terminal; `EINVAL`
     /// for a negative group; `ESRCH` for a group no process is in; `EPERM` for a group of
     /// another session.
-    pub fn set_console_foreground(&mut self, caller: u32, group: i32) -> Result<(), Errno> {
-        let (session, _) = self.controlling_terminal(caller)?;
+    pub fn set_foreground(
+        &mut self,
+        terminal: Terminal,
+        caller: u32,
+        group: i32,
+    ) -> Result<(), Errno> {
+        let (session, _) = self.controlling(terminal, caller)?;
         if group < 0 {
             return Err(Errno::EINVAL);
         }
@@ -662,30 +1068,72 @@ impl Table {
         if !self.group_exists_in(group as u32, session) {
             return Err(Errno::EPERM);
         }
-        self.console.foreground = group as u32;
+        if let Some(controlled) = self
+            .controlled
+            .iter_mut()
+            .find(|controlled| controlled.terminal == terminal)
+        {
+            controlled.foreground = group as u32;
+        }
         Ok(())
     }
 
-    /// `TIOCSCTTY` by process `caller`: makes the console its session's controlling terminal,
+    /// [`Self::set_foreground`] of the console.
+    pub fn set_console_foreground(&mut self, caller: u32, group: i32) -> Result<(), Errno> {
+        self.set_foreground(Terminal::Console, caller, group)
+    }
+
+    /// `TIOCSCTTY` by process `caller`: makes `terminal` its session's controlling terminal,
     /// its group the foreground. As Linux: `EPERM` unless the caller leads its session; then
-    /// nothing to do if it is already; `EPERM` if the console is another session's and the
-    /// caller may not `steal` it (an argument of 1 and privileges).
-    pub fn take_console(&mut self, caller: u32, steal: bool) -> Result<(), Errno> {
+    /// nothing to do if it is already; `EPERM` if the session controls another terminal, or if
+    /// `terminal` is another session's and the caller may not `steal` it (an argument of 1 and
+    /// privileges). `ENOMEM` without memory.
+    pub fn take(&mut self, terminal: Terminal, caller: u32, steal: bool) -> Result<(), Errno> {
         let (session, group) = self.session_of(caller)?;
         if session != caller {
             return Err(Errno::EPERM);
         }
-        if self.console.session == session {
+        let current = self.controlled_by(terminal).map(|owner| owner.session);
+        if current == Some(session) {
             return Ok(());
         }
-        if self.console.session != 0 && !steal {
+        if self.controlled_by_session(session).is_some() || (current.is_some() && !steal) {
             return Err(Errno::EPERM);
         }
-        self.console = Console {
+        self.release(terminal);
+        self.controlled.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+        self.controlled.push(Controlled {
+            terminal,
             session,
             foreground: group,
-        };
+        });
         Ok(())
+    }
+
+    /// [`Self::take`] the console.
+    pub fn take_console(&mut self, caller: u32, steal: bool) -> Result<(), Errno> {
+        self.take(Terminal::Console, caller, steal)
+    }
+
+    /// Hangs `terminal` up, as the last close of a pseudo-terminal's `/dev/ptmx` side does
+    /// (D187): it becomes no session's, and the running processes of its foreground group and
+    /// its session's leader are returned, to be sent `SIGHUP` and `SIGCONT`.
+    pub fn hang_up(&mut self, terminal: Terminal) -> Vec<Running> {
+        let Some(controlled) = self.controlled_by(terminal).copied() else {
+            return Vec::new();
+        };
+        self.release(terminal);
+        let mut hung_up = self.members(controlled.foreground);
+        let leader = self
+            .entry(controlled.session)
+            .filter(|leader| leader.group != controlled.foreground && leader.exit.is_none())
+            .and_then(|leader| leader.running.clone());
+        if let Some(leader) = leader
+            && hung_up.try_reserve(1).is_ok()
+        {
+            hung_up.push(leader);
+        }
+        hung_up
     }
 
     /// The running processes of group `group`.
@@ -711,6 +1159,13 @@ impl Table {
         self.entry(id).map(Target::of)
     }
 
+    /// What `/proc/<id>` says of process `id` and how to reach its program while it runs, if
+    /// the process is in the table (D168).
+    pub fn describe(&self, id: u32) -> Option<(Listed, Option<Running>)> {
+        let entry = self.entry(id)?;
+        Some((Listed::of(entry), Target::of(entry).running))
+    }
+
     /// Every process of group `group` as a signal sent to the group finds it, ended or not.
     pub fn group_targets(&self, group: u32) -> Vec<Target> {
         let mut targets = Vec::new();
@@ -725,14 +1180,61 @@ impl Table {
         targets
     }
 
+    /// Every process a signal sent to `-1` finds (`kill(-1, ...)`, D183): all but `caller` and
+    /// init, ended or not.
+    pub fn every_target_but(&self, caller: u32) -> Vec<Target> {
+        let mut targets = Vec::new();
+        for entry in &self.entries {
+            if entry.id != caller && entry.id != self.init && targets.try_reserve(1).is_ok() {
+                targets.push(Target::of(entry));
+            }
+        }
+        targets
+    }
+
+    /// Adds to `ids` every process id the table holds in use (D183): each process's, ended or
+    /// not, every process group's and session's, each controlling terminal's session and
+    /// foreground group, and init's; and returns how to reach each running process, whose other threads hold
+    /// ids too. Ids are pushed unsorted, possibly more than once. `Err` without memory.
+    pub fn ids_in_use(&self, ids: &mut Vec<u32>) -> Result<Vec<Running>, Errno> {
+        ids.try_reserve(self.entries.len() * 3 + self.controlled.len() * 2 + 1)
+            .map_err(|_| Errno::ENOMEM)?;
+        let mut running = Vec::new();
+        running
+            .try_reserve(self.entries.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        for entry in &self.entries {
+            ids.extend([entry.id, entry.group, entry.session]);
+            if entry.exit.is_none()
+                && let Some(reach) = &entry.running
+            {
+                running.push(reach.clone());
+            }
+        }
+        ids.push(self.init);
+        for controlled in &self.controlled {
+            ids.extend([controlled.session, controlled.foreground]);
+        }
+        Ok(running)
+    }
+
     /// The process orphans go to, which cannot be killed; 0 before there is one.
     pub fn init(&self) -> u32 {
         self.init
     }
 
-    /// The running processes of the console's foreground group.
+    /// The running processes of `terminal`'s foreground group; none while no session controls
+    /// it.
+    pub fn foreground_members(&self, terminal: Terminal) -> Vec<Running> {
+        match self.controlled_by(terminal) {
+            Some(controlled) => self.members(controlled.foreground),
+            None => Vec::new(),
+        }
+    }
+
+    /// [`Self::foreground_members`] of the console.
     pub fn console_foreground_members(&self) -> Vec<Running> {
-        self.members(self.console.foreground)
+        self.foreground_members(Terminal::Console)
     }
 
     /// How many processes the table holds, zombies among them, in session `session`.
@@ -984,6 +1486,7 @@ mod tests {
             Running {
                 process: Weak::<()>::new(),
                 first_thread: Arc::clone(&slot),
+                files: WeakDescriptors::default(),
             },
         );
         assert_eq!(table.console_foreground_members().len(), 1);
@@ -995,6 +1498,214 @@ mod tests {
     }
 
     #[test]
+    fn each_session_controls_one_terminal_and_a_pseudo_terminal_hangs_up_its_session() {
+        let mut table = table_with(&[(120, None), (121, Some(120)), (130, None), (131, Some(130))]);
+        let pseudo = Terminal::Pseudo(3);
+        table.give_console_if_free(120);
+        table.give_if_free(pseudo, 120);
+        assert_eq!(table.controlling_terminal_of(121), Some(Terminal::Console));
+        assert_eq!(table.controlling(pseudo, 120), Err(Errno::ENOTTY));
+        table.give_if_free(pseudo, 131);
+        assert_eq!(
+            table.controlling_terminal_of(131),
+            None,
+            "not a session leader"
+        );
+        table.give_if_free(pseudo, 130);
+        assert_eq!(
+            table.controlling_terminal_of(131),
+            Some(Terminal::Pseudo(3))
+        );
+        assert_eq!(table.controlling(pseudo, 131), Ok((130, 130)));
+        assert_eq!(table.session_and_foreground(pseudo), Some((130, 130)));
+        assert_eq!(table.take(Terminal::Console, 130, false), Err(Errno::EPERM));
+        assert_eq!(table.take(pseudo, 120, true), Err(Errno::EPERM));
+        table.set_group(130, 131, 0).unwrap();
+        table.set_foreground(pseudo, 130, 131).unwrap();
+        assert_eq!(
+            table.set_foreground(Terminal::Console, 130, 131),
+            Err(Errno::ENOTTY)
+        );
+        assert_eq!(table.background_on(pseudo, 130), Some((130, true)));
+        assert_eq!(table.background_on(pseudo, 131), None);
+        assert_eq!(table.background_on(Terminal::Console, 131), None);
+        table.set_running(130, running());
+        table.set_running(131, running());
+        assert_eq!(table.foreground_members(pseudo).len(), 1);
+        assert_eq!(
+            table.hang_up(pseudo).len(),
+            2,
+            "the foreground group and the leader"
+        );
+        assert_eq!(table.controlling_terminal_of(130), None);
+        assert!(table.hang_up(pseudo).is_empty());
+        assert_eq!(table.controlling_terminal_of(120), Some(Terminal::Console));
+        let mut ids = Vec::new();
+        table.ids_in_use(&mut ids).unwrap();
+        assert!(ids.contains(&120));
+        table.release_console();
+        assert_eq!(table.controlling_terminal_of(121), None);
+    }
+
+    fn running() -> Running {
+        Running {
+            process: Weak::<()>::new(),
+            first_thread: Arc::new(WaitSlot::new()),
+            files: WeakDescriptors::default(),
+        }
+    }
+
+    const STOPPED_AND_CONTINUED: JobReports = JobReports {
+        stopped: true,
+        continued: true,
+        keep: false,
+    };
+
+    #[test]
+    fn a_stopped_child_is_reported_once_to_a_wait_that_asks_then_its_continuation() {
+        let mut table = table_with(&[(140, None), (141, Some(140))]);
+        let Stopping::Stopped(Some(notice)) = table.stop(141, 20, 5) else {
+            panic!("the child did not stop");
+        };
+        assert_eq!(
+            (notice.parent, notice.child, notice.uid, notice.change),
+            (140, 141, 5, JobChange::Stopped(20))
+        );
+        assert!(notice.signal);
+        assert!(table.is_stopped(141));
+        assert!(matches!(table.stop(141, 19, 5), Stopping::Already));
+        assert!(matches!(table.stop(999, 19, 5), Stopping::Gone));
+        assert_eq!(
+            table.wait(140, Selector::Any, ChildKind::Sigchld, Ends::Reap),
+            Found::Running,
+            "a wait without WUNTRACED does not see the stop"
+        );
+        let looked = JobReports {
+            keep: true,
+            ..STOPPED_AND_CONTINUED
+        };
+        for reports in [looked, STOPPED_AND_CONTINUED] {
+            assert_eq!(
+                table.wait_for_change(140, Selector::Any, ChildKind::Sigchld, Ends::Reap, reports),
+                Found::Stopped {
+                    id: 141,
+                    uid: 5,
+                    signal: 20
+                }
+            );
+        }
+        assert_eq!(
+            table.wait_for_change(
+                140,
+                Selector::Any,
+                ChildKind::Sigchld,
+                Ends::Reap,
+                STOPPED_AND_CONTINUED
+            ),
+            Found::Running,
+            "a stop is reported once"
+        );
+        let notice = table.resume(141).unwrap();
+        assert_eq!(notice.change, JobChange::Continued);
+        assert!(!table.is_stopped(141));
+        assert!(table.resume(141).is_none());
+        assert_eq!(
+            table.wait_for_change(
+                140,
+                Selector::Process(141),
+                ChildKind::Sigchld,
+                Ends::Reap,
+                STOPPED_AND_CONTINUED
+            ),
+            Found::Continued { id: 141, uid: 5 }
+        );
+        table.set_no_stop_notices(140, true);
+        let Stopping::Stopped(Some(quiet)) = table.stop(141, 19, 5) else {
+            panic!("the child did not stop again");
+        };
+        assert!(!quiet.signal, "SA_NOCLDSTOP: woken, but no SIGCHLD");
+        table.end(141, ProcessExit::Killed { signal: 9 }, 5);
+        assert_eq!(table.stopped, 0);
+        assert!(matches!(
+            table.wait_for_change(
+                140,
+                Selector::Any,
+                ChildKind::Sigchld,
+                Ends::Reap,
+                STOPPED_AND_CONTINUED
+            ),
+            Found::Ended { id: 141, .. }
+        ));
+    }
+
+    #[test]
+    fn a_group_is_orphaned_when_no_member_has_a_parent_elsewhere_in_its_session() {
+        let mut table = table_with(&[(150, None), (151, Some(150))]);
+        table.set_group(150, 151, 0).unwrap();
+        assert!(
+            !table.is_in_orphaned_group(151),
+            "151's parent is in another group of the session"
+        );
+        assert!(
+            table.is_in_orphaned_group(150),
+            "the session leader's group has no parent in the session"
+        );
+        table.end(150, EXITED, 0);
+        assert!(table.is_in_orphaned_group(151), "its parent ended");
+        assert!(!table.is_in_orphaned_group(999));
+    }
+
+    #[test]
+    fn the_end_of_a_process_hangs_up_a_group_it_leaves_orphaned_with_stopped_members() {
+        let mut table = table_with(&[(160, None), (161, Some(160)), (162, Some(160))]);
+        table.set_group(160, 161, 0).unwrap();
+        table.set_group(160, 162, 0).unwrap();
+        table.set_running(161, running());
+        table.set_running(162, running());
+        assert!(matches!(table.stop(161, 20, 0), Stopping::Stopped(_)));
+        let ended = table.end(160, EXITED, 0);
+        assert_eq!(
+            ended.hung_up.len(),
+            1,
+            "only the group with a stopped member: 161's, not 162's"
+        );
+        let mut quiet = table_with(&[(170, None), (171, Some(170))]);
+        quiet.set_group(170, 171, 0).unwrap();
+        quiet.set_running(171, running());
+        assert!(quiet.end(170, EXITED, 0).hung_up.is_empty());
+    }
+
+    #[test]
+    fn the_end_of_a_process_leaves_a_group_that_was_orphaned_already_stopped() {
+        let mut table = table_with(&[(200, None), (201, Some(200)), (202, Some(201))]);
+        table.set_group(200, 201, 0).unwrap();
+        table.set_group(201, 202, 201).unwrap();
+        table.set_running(201, running());
+        table.set_running(202, running());
+        assert!(table.end(200, EXITED, 0).hung_up.is_empty());
+        assert!(table.is_in_orphaned_group(202));
+        assert!(matches!(table.stop(202, 19, 0), Stopping::Stopped(_)));
+        assert!(
+            table.end(201, EXITED, 0).hung_up.is_empty(),
+            "the group was orphaned before 201 ended"
+        );
+    }
+
+    #[test]
+    fn a_background_group_of_the_console_s_session_is_told_apart() {
+        let mut table = table_with(&[(180, None), (181, Some(180)), (190, None)]);
+        table.give_console_if_free(180);
+        assert_eq!(table.background_on_console(180), None);
+        table.set_group(180, 181, 0).unwrap();
+        assert_eq!(table.background_on_console(181), Some((181, false)));
+        assert_eq!(table.background_on_console(190), None, "another session");
+        table.set_console_foreground(180, 181).unwrap();
+        assert_eq!(table.background_on_console(181), None);
+        assert_eq!(table.background_on_console(180), Some((180, true)));
+        table.release_console();
+    }
+
+    #[test]
     fn signals_find_processes_and_groups_zombies_included() {
         let mut table = table_with(&[(120, None), (121, Some(120)), (122, Some(120)), (130, None)]);
         for id in [121, 122] {
@@ -1003,6 +1714,7 @@ mod tests {
                 Running {
                     process: Weak::<()>::new(),
                     first_thread: Arc::new(WaitSlot::new()),
+                    files: WeakDescriptors::default(),
                 },
             );
         }
@@ -1023,5 +1735,113 @@ mod tests {
         let zombies = table.group_targets(122);
         assert_eq!(ids(zombies.clone()), [122]);
         assert!(zombies.iter().all(|target| target.running.is_none()));
+    }
+
+    #[test]
+    fn minus_one_finds_every_process_but_the_caller_and_init() {
+        let mut table = table_with(&[(1, None), (5, Some(1)), (6, Some(5)), (7, Some(1))]);
+        table.set_init(1);
+        table.end(7, EXITED, 0);
+        let ids = |targets: Vec<Target>| -> Vec<u32> { targets.iter().map(|t| t.id).collect() };
+        assert_eq!(ids(table.every_target_but(5)), [6, 7]);
+        assert_eq!(ids(table.every_target_but(1)), [5, 6, 7]);
+        let mut alone = table_with(&[(1, None)]);
+        alone.set_init(1);
+        assert!(alone.every_target_but(1).is_empty());
+    }
+
+    #[test]
+    fn a_group_and_session_hold_their_id_after_their_leader_is_reaped() {
+        let mut table = table_with(&[(1, None), (60, Some(1))]);
+        table.set_init(1);
+        assert_eq!(table.new_session(60), Ok(60));
+        table.add(61, Some(60)).unwrap();
+        table.set_exit_signal(61, SIGCHLD);
+        table.set_running(61, running());
+        table.end(60, EXITED, 0);
+        assert_eq!(
+            table.wait(1, Selector::Process(60), ChildKind::Sigchld, Ends::Reap),
+            Found::Ended {
+                id: 60,
+                uid: 0,
+                exit: EXITED
+            }
+        );
+        assert!(table.target(60).is_none());
+        let mut ids = Vec::new();
+        let running = table.ids_in_use(&mut ids).unwrap();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids, [1, 60, 61]);
+        assert_eq!(running.len(), 1);
+    }
+
+    #[test]
+    fn a_reused_id_below_the_newest_takes_its_sorted_place_once() {
+        let mut table = table_with(&[(1, None), (500, Some(1))]);
+        table.add(300, Some(1)).unwrap();
+        assert_eq!(table.parent(300), 1);
+        let listed: Vec<u32> = table.list().map(|listed| listed.id).collect();
+        assert_eq!(listed, [1, 300, 500]);
+        assert_eq!(table.add(300, Some(1)), Err(Errno::EAGAIN));
+        assert_eq!(table.add(500, None), Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn a_signalled_change_is_hidden_from_waits_until_its_signal_is_announced() {
+        let mut table = table_with(&[
+            (210, None),
+            (211, Some(210)),
+            (212, Some(211)),
+            (213, Some(210)),
+        ]);
+        table.set_running(210, running());
+        table.set_child_subreaper(210, true);
+        let reaping = |table: &mut Table| {
+            table.wait_for_change(
+                210,
+                Selector::Any,
+                ChildKind::Sigchld,
+                Ends::Reap,
+                STOPPED_AND_CONTINUED,
+            )
+        };
+        let Stopping::Stopped(Some(stop)) = table.stop(213, 19, 0) else {
+            panic!("the child did not stop");
+        };
+        assert_eq!(reaping(&mut table), Found::Announcing);
+        table.announce(stop.announcement.unwrap());
+        assert!(matches!(
+            reaping(&mut table),
+            Found::Stopped { id: 213, .. }
+        ));
+        let resumed = table.resume(213).unwrap();
+        assert_eq!(reaping(&mut table), Found::Announcing);
+        table.announce(resumed.announcement.unwrap());
+        assert_eq!(reaping(&mut table), Found::Continued { id: 213, uid: 0 });
+        table.end(212, EXITED, 0);
+        let ended = table.end(211, EXITED, 0);
+        let own = ended.to_parent.unwrap().announcement.unwrap();
+        let handed_over = ended.to_new_parent.unwrap().announcement.unwrap();
+        assert_ne!(own, handed_over);
+        assert_eq!(reaping(&mut table), Found::Announcing);
+        table.announce(own);
+        assert!(matches!(reaping(&mut table), Found::Ended { id: 211, .. }));
+        assert_eq!(reaping(&mut table), Found::Announcing);
+        table.announce(handed_over);
+        assert!(matches!(reaping(&mut table), Found::Ended { id: 212, .. }));
+        table.set_exit_signal(213, 0);
+        assert!(
+            table
+                .end(213, EXITED, 0)
+                .to_parent
+                .unwrap()
+                .announcement
+                .is_none()
+        );
+        assert!(matches!(
+            table.wait(210, Selector::Any, ChildKind::All, Ends::Reap),
+            Found::Ended { id: 213, .. }
+        ));
     }
 }

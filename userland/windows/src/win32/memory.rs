@@ -1,10 +1,16 @@
 //! Virtual memory (`VirtualAlloc`, `VirtualFree`, `VirtualProtect`) on Linux's `mmap`,
-//! `mprotect`, `madvise` and `munmap`, and the memory functions and stack probe (`__chkstk`)
+//! `mprotect`, `madvise` and `munmap`, with writable and executable pages flipped between the
+//! two on the program's faults (`write_execute`), `VirtualQuery` from `/proc/self/maps` (D189),
+//! `FlushInstructionCache` for code a program writes, and
+//! the memory functions and stack probe (`__chkstk`)
 //! that ntdll exports and compilers call.
 
+use super::heap as process_heap;
 use super::{Bool, FALSE, SpinLock, TRUE, error, error_for, fail};
 use crate::library::Export;
 use crate::linux::{self, PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
+use crate::memory_regions::{self, Region};
+use crate::write_execute::{Flip, WriteExecutePages};
 use core::ptr;
 
 const MEM_COMMIT: u32 = 0x1000;
@@ -12,20 +18,70 @@ const MEM_RESERVE: u32 = 0x2000;
 const MEM_DECOMMIT: u32 = 0x4000;
 const MEM_RELEASE: u32 = 0x8000;
 const PAGE_SIZE: usize = 4096;
-const PAGE_READWRITE: u32 = 0x04;
+const PAGE_NOACCESS: u32 = 0x01;
+const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 const MAX_RESERVATIONS: usize = 256;
+const MAX_WRITE_EXECUTE_RANGES: usize = 64;
+const MAPS_PATH: &[u8] = b"/proc/self/maps\0";
+const FIRST_MAPS_BYTES: usize = 64 * 1024;
+const LARGEST_MAPS_BYTES: usize = 4 * 1024 * 1024;
+const MEMORY_BASIC_INFORMATION_BYTES: usize = 48;
+const END_OF_USER_SPACE: usize = 0x7fff_ffff_0000;
 
 static RESERVATIONS: SpinLock<[(usize, usize); MAX_RESERVATIONS]> =
     SpinLock::new([(0, 0); MAX_RESERVATIONS]);
+static WRITE_EXECUTE: SpinLock<WriteExecutePages<MAX_WRITE_EXECUTE_RANGES>> =
+    SpinLock::new(WriteExecutePages::new());
 
-fn protection(protect: u32) -> Option<usize> {
+fn protection(protect: u32) -> Option<(usize, bool)> {
     Some(match protect & 0xff {
-        0x01 => PROT_NONE,
-        0x02 => PROT_READ,
-        0x04 | 0x08 => PROT_READ | PROT_WRITE,
-        0x10 | 0x20 => PROT_READ | PROT_EXEC,
-        0x40 | 0x80 => PROT_READ | PROT_WRITE | PROT_EXEC,
+        0x01 => (PROT_NONE, false),
+        0x02 => (PROT_READ, false),
+        0x04 | 0x08 => (PROT_READ | PROT_WRITE, false),
+        0x10 | 0x20 => (PROT_READ | PROT_EXEC, false),
+        0x40 | 0x80 => (PROT_READ | PROT_WRITE, true),
         _ => return None,
+    })
+}
+
+fn change_write_execute<T>(
+    start: usize,
+    length: usize,
+    write_execute: bool,
+    change: impl FnOnce(&WriteExecutePages<MAX_WRITE_EXECUTE_RANGES>) -> Result<T, u32>,
+) -> Result<T, u32> {
+    let end = start.saturating_add(length);
+    WRITE_EXECUTE.with(|pages| {
+        let mut changed = *pages;
+        let recorded = match write_execute {
+            true => changed.add(start, end),
+            false => changed.remove(start, end),
+        };
+        if !recorded {
+            return Err(error::NOT_ENOUGH_MEMORY);
+        }
+        let outcome = change(pages)?;
+        *pages = changed;
+        Ok(outcome)
+    })
+}
+
+/// Flips the page at `address` of memory the program made writable and executable, after a
+/// fault with `access` (`fault::access`) on it raised by the instruction at `pc`: executable
+/// for an instruction fetch, writable for a write. False when `address` is not in such memory,
+/// when the write is to a page the instruction itself runs from, or when the page cannot
+/// change.
+pub fn flip_write_execute_page(address: usize, access: u64, pc: usize) -> bool {
+    WRITE_EXECUTE.with(|pages| {
+        let protection = match pages.flip(address, access, pc) {
+            Some(Flip::Executable) => PROT_READ | PROT_EXEC,
+            Some(Flip::Writable) => PROT_READ | PROT_WRITE,
+            None => return false,
+        };
+        // SAFETY: the page is the program's, which asked for it to be writable and executable
+        // and has not changed or freed it since: those calls change it under the same lock. It
+        // only changes which of the two it is now.
+        unsafe { linux::protect(address & !(PAGE_SIZE - 1), PAGE_SIZE, protection) }.is_ok()
     })
 }
 
@@ -37,8 +93,14 @@ fn page_range(address: usize, size: usize) -> Option<(usize, usize)> {
     Some((start, end - start))
 }
 
-extern "efiapi" fn virtual_alloc(address: usize, size: usize, kind: u32, protect: u32) -> usize {
-    let (Some(prot), Some((start, length))) = (protection(protect), page_range(address, size))
+pub(super) extern "efiapi" fn virtual_alloc(
+    address: usize,
+    size: usize,
+    kind: u32,
+    protect: u32,
+) -> usize {
+    let (Some((prot, write_execute)), Some((start, length))) =
+        (protection(protect), page_range(address, size))
     else {
         return fail(error::INVALID_PARAMETER, 0);
     };
@@ -46,28 +108,27 @@ extern "efiapi" fn virtual_alloc(address: usize, size: usize, kind: u32, protect
         return fail(error::INVALID_PARAMETER, 0);
     }
     if kind & MEM_RESERVE == 0 && address != 0 {
-        // SAFETY: committing pages of a reservation the program made only changes what it may
-        // do with them.
-        return match unsafe { linux::protect(start, length, prot) } {
+        let committed = change_write_execute(start, length, write_execute, |_| {
+            // SAFETY: committing pages of a reservation the program made only changes what it
+            // may do with them.
+            unsafe { linux::protect(start, length, prot) }.map_err(error_for)
+        });
+        return match committed {
             Ok(_) => start,
-            Err(errno) => fail(error_for(errno), 0),
+            Err(code) => fail(code, 0),
         };
     }
-    let prot = if kind & MEM_COMMIT != 0 {
-        prot
-    } else {
-        PROT_NONE
-    };
+    let committed = kind & MEM_COMMIT != 0;
+    let prot = if committed { prot } else { PROT_NONE };
     let mapped = match linux::map_anonymous(start, length, prot, address != 0) {
         Ok(mapped) => mapped,
         Err(_) => return fail(error::INVALID_ADDRESS, 0),
     };
-    let recorded = RESERVATIONS.with(|table| {
-        let free = table.iter_mut().find(|entry| entry.1 == 0)?;
-        *free = (mapped, length);
-        Some(())
-    });
-    if recorded.is_none() {
+    let recorded = record_reservation(mapped, length) && {
+        change_write_execute(mapped, length, committed && write_execute, |_| Ok(())).is_ok()
+    };
+    if !recorded {
+        release_reservation(mapped);
         // SAFETY: the mapping was just made and handed to no one.
         let _ = unsafe { linux::unmap(mapped, length) };
         return fail(error::NOT_ENOUGH_MEMORY, 0);
@@ -75,33 +136,58 @@ extern "efiapi" fn virtual_alloc(address: usize, size: usize, kind: u32, protect
     mapped
 }
 
-extern "efiapi" fn virtual_free(address: usize, size: usize, kind: u32) -> Bool {
+fn record_reservation(address: usize, length: usize) -> bool {
+    RESERVATIONS.with(|table| match table.iter_mut().find(|entry| entry.1 == 0) {
+        Some(free) => {
+            *free = (address, length);
+            true
+        }
+        None => false,
+    })
+}
+
+fn release_reservation(address: usize) -> Option<usize> {
+    RESERVATIONS.with(|table| {
+        let entry = table
+            .iter_mut()
+            .find(|entry| entry.0 == address && entry.1 != 0)?;
+        Some(core::mem::take(entry).1)
+    })
+}
+
+pub(super) extern "efiapi" fn virtual_free(address: usize, size: usize, kind: u32) -> Bool {
     match kind {
         MEM_RELEASE if size == 0 => {
-            let length = RESERVATIONS.with(|table| {
-                let entry = table
-                    .iter_mut()
-                    .find(|entry| entry.0 == address && entry.1 != 0)?;
-                Some(core::mem::take(entry).1)
-            });
-            let Some(length) = length else {
+            let Some(length) = release_reservation(address) else {
                 return fail(error::INVALID_ADDRESS, FALSE);
             };
-            // SAFETY: the reservation is the program's, which gives it back whole.
-            let _ = unsafe { linux::unmap(address, length) };
-            TRUE
+            let released = change_write_execute(address, length, false, |_| {
+                // SAFETY: the reservation is the program's, which gives it back whole.
+                let _ = unsafe { linux::unmap(address, length) };
+                Ok(())
+            });
+            match released {
+                Ok(()) => TRUE,
+                Err(code) => {
+                    record_reservation(address, length);
+                    fail(code, FALSE)
+                }
+            }
         }
         MEM_DECOMMIT => {
             let Some((start, length)) = page_range(address, size.max(1)) else {
                 return fail(error::INVALID_PARAMETER, FALSE);
             };
-            // SAFETY: the program decommits its own pages: their contents go.
-            let discarded = unsafe { linux::discard(start, length) }
-                // SAFETY: as above; the pages become inaccessible until committed again.
-                .and_then(|_| unsafe { linux::protect(start, length, PROT_NONE) });
-            match discarded {
+            let decommitted = change_write_execute(start, length, false, |_| {
+                // SAFETY: the program decommits its own pages: their contents go.
+                unsafe { linux::discard(start, length) }
+                    // SAFETY: as above; the pages become inaccessible until committed again.
+                    .and_then(|_| unsafe { linux::protect(start, length, PROT_NONE) })
+                    .map_err(error_for)
+            });
+            match decommitted {
                 Ok(_) => TRUE,
-                Err(errno) => fail(error_for(errno), FALSE),
+                Err(code) => fail(code, FALSE),
             }
         }
         _ => fail(error::INVALID_PARAMETER, FALSE),
@@ -114,22 +200,96 @@ unsafe extern "efiapi" fn virtual_protect(
     protect: u32,
     old: *mut u32,
 ) -> Bool {
-    let (Some(prot), Some((start, length))) = (protection(protect), page_range(address, size))
+    let (Some((prot, write_execute)), Some((start, length))) =
+        (protection(protect), page_range(address, size))
     else {
         return fail(error::INVALID_PARAMETER, FALSE);
     };
     if old.is_null() {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
-    // SAFETY: the program changes its own pages' protection, as `VirtualProtect` does.
-    match unsafe { linux::protect(start, length, prot) } {
-        Ok(_) => {
+    let mapped = match region_of(start) {
+        Ok(region) if region.protect == 0 => PAGE_NOACCESS,
+        Ok(region) => region.protect,
+        Err(code) => return fail(code, FALSE),
+    };
+    let changed = change_write_execute(start, length, write_execute, |pages| {
+        let previous = match pages.holds(start) {
+            true => PAGE_EXECUTE_READWRITE,
+            false => mapped,
+        };
+        // SAFETY: the program changes its own pages' protection, as `VirtualProtect` does.
+        unsafe { linux::protect(start, length, prot) }
+            .map(|_| previous)
+            .map_err(error_for)
+    });
+    match changed {
+        Ok(previous) => {
             // SAFETY: the caller passes a writable `DWORD` for the old protection.
-            unsafe { old.write(PAGE_READWRITE) };
+            unsafe { old.write(previous) };
             TRUE
         }
-        Err(errno) => fail(error_for(errno), FALSE),
+        Err(code) => fail(code, FALSE),
     }
+}
+
+/// The region `VirtualQuery` reports for `address`.
+pub(super) fn region_of(address: usize) -> Result<Region, u32> {
+    let mut capacity = FIRST_MAPS_BYTES;
+    loop {
+        let block = process_heap::allocate(capacity);
+        if block.is_null() {
+            return Err(error::NOT_ENOUGH_MEMORY);
+        }
+        // SAFETY: a fresh, zeroed block of `capacity` bytes, used only through this slice.
+        let text = unsafe { core::slice::from_raw_parts_mut(block, capacity) };
+        let outcome = match linux::read_file(MAPS_PATH, text) {
+            Ok(length) if length == capacity && capacity < LARGEST_MAPS_BYTES => None,
+            Ok(length) => {
+                let maps = match length == capacity {
+                    true => memory_regions::complete_lines(&text[..length]),
+                    false => &text[..length],
+                };
+                Some(Ok(memory_regions::region_at(
+                    maps,
+                    address,
+                    END_OF_USER_SPACE,
+                )))
+            }
+            Err(errno) => Some(Err(error_for(errno))),
+        };
+        // SAFETY: the block this call allocated, which nothing holds any more.
+        unsafe { process_heap::free(block) };
+        match outcome {
+            Some(outcome) => return outcome,
+            None => capacity *= 2,
+        }
+    }
+}
+
+unsafe extern "efiapi" fn virtual_query(address: usize, out: *mut u8, length: usize) -> usize {
+    if out.is_null() || length < MEMORY_BASIC_INFORMATION_BYTES {
+        return fail(error::BAD_LENGTH, 0);
+    }
+    if address >= END_OF_USER_SPACE {
+        return fail(error::INVALID_PARAMETER, 0);
+    }
+    let region = match region_of(address) {
+        Ok(region) => region,
+        Err(code) => return fail(code, 0),
+    };
+    let mut information = [0u8; MEMORY_BASIC_INFORMATION_BYTES];
+    information[0..8].copy_from_slice(&(region.base as u64).to_le_bytes());
+    information[8..16].copy_from_slice(&(region.allocation_base as u64).to_le_bytes());
+    information[16..20].copy_from_slice(&region.allocation_protect.to_le_bytes());
+    information[24..32].copy_from_slice(&(region.size as u64).to_le_bytes());
+    information[32..36].copy_from_slice(&region.state.to_le_bytes());
+    information[36..40].copy_from_slice(&region.protect.to_le_bytes());
+    information[40..44].copy_from_slice(&region.kind.to_le_bytes());
+    // SAFETY: `VirtualQuery`'s contract: `length` writable bytes, at least one
+    // `MEMORY_BASIC_INFORMATION`.
+    unsafe { ptr::copy_nonoverlapping(information.as_ptr(), out, information.len()) };
+    MEMORY_BASIC_INFORMATION_BYTES
 }
 
 unsafe extern "efiapi" fn memcpy(
@@ -212,10 +372,22 @@ core::arch::global_asm!(
     "ret",
 );
 
+extern "efiapi" fn flush_instruction_cache(_process: usize, _address: usize, _size: usize) -> Bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: barriers touch no memory; they order the program's earlier writes of code
+        // before the instructions that follow, which is all a fresh mapping needs.
+        unsafe { core::arch::asm!("dsb ish", "isb", options(nostack, preserves_flags)) };
+    }
+    TRUE
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"VirtualAlloc" => virtual_alloc,
     b"VirtualFree" => virtual_free,
     b"VirtualProtect" => virtual_protect,
+    b"VirtualQuery" => virtual_query,
+    b"FlushInstructionCache" => flush_instruction_cache,
 ];
 
 pub(super) const NTDLL_EXPORTS: &[Export] = exports![

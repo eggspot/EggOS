@@ -12,7 +12,9 @@ pub const PATH_CAPACITY: usize = 512;
 pub enum Kind {
     File,
     Directory,
-    /// A symbolic link, a device or anything else the installer does not copy.
+    /// A symbolic link (D170): [`Files::read_link`] reads its target.
+    Link,
+    /// A device, a socket or anything else the installer does not copy.
     Other,
 }
 
@@ -29,6 +31,17 @@ pub struct Status {
     pub device: u64,
 }
 
+/// How full the file system holding a path is (`statfs`, D171), in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Space {
+    /// Its size.
+    pub total: u64,
+    /// What a program may still write (`f_bavail` blocks).
+    pub available: u64,
+    /// Whether nothing can be written to it.
+    pub read_only: bool,
+}
+
 /// An open file.
 pub type Handle = usize;
 
@@ -36,6 +49,14 @@ pub type Handle = usize;
 pub trait Files {
     /// What `path` is, without following a symbolic link at its end.
     fn status(&mut self, path: &[u8]) -> Result<Status, Errno>;
+    /// What `path` names, following symbolic links to the end (`stat`): a link's target's
+    /// status; `ENOENT` for a link that names nothing, `ELOOP` for one that loops.
+    fn status_following(&mut self, path: &[u8]) -> Result<Status, Errno>;
+    /// Copies the target of symbolic link `path` into `target` and returns its length:
+    /// `EINVAL` for anything but a link, `ENAMETOOLONG` for a target that does not fit.
+    fn read_link(&mut self, path: &[u8], target: &mut [u8]) -> Result<usize, Errno>;
+    /// Makes `path`, which must not exist, a symbolic link to `target` (`symlink`).
+    fn make_link(&mut self, target: &[u8], path: &[u8]) -> Result<(), Errno>;
     /// The name of entry `index` of directory `directory`, `.` and `..` left out, copied into
     /// `name`; `None` past the last. Entries keep their order while the directory is unchanged.
     fn entry(
@@ -69,6 +90,12 @@ pub trait Files {
     fn rename(&mut self, from: &[u8], to: &[u8]) -> Result<(), Errno>;
     /// Commits every file system's changes to its disk.
     fn sync(&mut self);
+    /// How full the file system holding `path` is, following symbolic links (`statfs`, D171);
+    /// `ENOSYS` from one that cannot say.
+    fn space(&mut self, path: &[u8]) -> Result<Space, Errno> {
+        let _ = path;
+        Err(Errno::ENOSYS)
+    }
 }
 
 /// A path of at most [`PATH_CAPACITY`] bytes.

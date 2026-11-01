@@ -25,6 +25,12 @@ pub const MAX_MENU_ENTRIES: usize = 16;
 /// The longest item label `ChooseMenu` carries, in bytes: room for the longest a pool holds
 /// (the pool less an empty menu's `M\n` and the item's `I`, tab and `\n`), the argument 260.
 pub const MENU_LABEL_CAPACITY: usize = 244;
+/// The largest element tree an app answers `GET_TREE` with, in bytes (D161).
+pub const MAX_TREE_BYTES: usize = 64 * 1024;
+/// The longest text `ACT_ON_ELEMENT` carries, in bytes (D161).
+pub const ELEMENT_TEXT_CAPACITY: usize = 232;
+/// How long `GET_TREE` and `ACT_ON_ELEMENT` wait for the app's answer, in ms (D161).
+pub const QUERY_ANSWER_MS: u32 = 500;
 /// The size of one event record.
 pub const EVENT_SIZE: usize = 32;
 /// The `ioctl` type byte of every request (`_IOC_TYPE`).
@@ -62,6 +68,20 @@ pub mod size {
     pub const SET_MENU: usize = 256;
     pub const GET_MENU: usize = 256;
     pub const CHOOSE_MENU: usize = super::choose_menu_request::LABEL + super::MENU_LABEL_CAPACITY;
+    pub const GET_TREE: usize = 32;
+    pub const ACT_ON_ELEMENT: usize = super::act_request::TEXT + super::ELEMENT_TEXT_CAPACITY;
+    pub const READ_QUERY: usize = super::read_query_reply::TEXT + super::ELEMENT_TEXT_CAPACITY;
+    pub const ANSWER_QUERY: usize = 24;
+    pub const GET_PLACEMENT: usize = 20;
+    pub const GET_KEYBOARD_LAYOUT: usize = 8;
+    pub const SET_KEYBOARD_LAYOUT: usize = 4;
+    pub const SET_INPUT_PREFERENCES: usize = 20;
+    pub const SET_CLIPBOARD: usize = 16;
+    pub const GET_CLIPBOARD: usize = 32;
+    pub const LIST_DESKTOPS: usize = 16;
+    pub const DESKTOP_ACTION: usize = 16;
+    pub const SET_KEY_ACCESSIBILITY: usize = 12;
+    pub const CHANGE_FLAGS: usize = 12;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -90,10 +110,24 @@ pub mod request {
     pub const TYPE_IN_TERMINAL: u32 = encode(WRITE, 17, size::TYPE_IN_TERMINAL);
     pub const START_MOVE_OR_RESIZE: u32 = encode(WRITE, 18, size::START_MOVE_OR_RESIZE);
     pub const CAPTURE_WINDOW: u32 = encode(READ | WRITE, 19, size::CAPTURE_WINDOW);
-    pub const SEND_INPUT: u32 = encode(WRITE, 20, size::SEND_INPUT);
+    pub const SEND_INPUT: u32 = encode(READ | WRITE, 20, size::SEND_INPUT);
     pub const SET_MENU: u32 = encode(WRITE, 21, size::SET_MENU);
     pub const GET_MENU: u32 = encode(READ | WRITE, 22, size::GET_MENU);
     pub const CHOOSE_MENU: u32 = encode(WRITE, 23, size::CHOOSE_MENU);
+    pub const GET_TREE: u32 = encode(READ | WRITE, 24, size::GET_TREE);
+    pub const ACT_ON_ELEMENT: u32 = encode(READ | WRITE, 25, size::ACT_ON_ELEMENT);
+    pub const READ_QUERY: u32 = encode(READ | WRITE, 26, size::READ_QUERY);
+    pub const ANSWER_QUERY: u32 = encode(WRITE, 27, size::ANSWER_QUERY);
+    pub const GET_PLACEMENT: u32 = encode(READ | WRITE, 28, size::GET_PLACEMENT);
+    pub const GET_KEYBOARD_LAYOUT: u32 = encode(READ, 29, size::GET_KEYBOARD_LAYOUT);
+    pub const SET_KEYBOARD_LAYOUT: u32 = encode(WRITE, 30, size::SET_KEYBOARD_LAYOUT);
+    pub const SET_INPUT_PREFERENCES: u32 = encode(WRITE, 31, size::SET_INPUT_PREFERENCES);
+    pub const SET_CLIPBOARD: u32 = encode(WRITE, 32, size::SET_CLIPBOARD);
+    pub const GET_CLIPBOARD: u32 = encode(READ | WRITE, 33, size::GET_CLIPBOARD);
+    pub const LIST_DESKTOPS: u32 = encode(READ, 34, size::LIST_DESKTOPS);
+    pub const DESKTOP_ACTION: u32 = encode(READ | WRITE, 35, size::DESKTOP_ACTION);
+    pub const SET_KEY_ACCESSIBILITY: u32 = encode(WRITE, 36, size::SET_KEY_ACCESSIBILITY);
+    pub const CHANGE_FLAGS: u32 = encode(WRITE, 37, size::CHANGE_FLAGS);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -110,16 +144,52 @@ pub mod input_kind {
     pub const POINTER_MOVE: u32 = 0;
     /// Button `code` is pressed and released at (`x`, `y`).
     pub const CLICK: u32 = 1;
-    /// The wheel turns by `value` notches (up when positive) at (`x`, `y`).
+    /// The wheel turns by `value` notches (up when positive) and sideways by `code` notches
+    /// (right when positive, as a signed word) at (`x`, `y`); not both 0 (D162).
     pub const WHEEL: u32 = 2;
     /// Key `code` is pressed and released with the [`super::modifier`] bits in `value` held.
     pub const KEY: u32 = 3;
     /// The printable ASCII character `code` is typed, as the US keymap types it.
     pub const CHARACTER: u32 = 4;
+    /// Button `code` is clicked twice at (`x`, `y`) in one step, a double-click (D162).
+    pub const DOUBLE_CLICK: u32 = 5;
+    /// Button `code` is pressed at (`x`, `y`), the pointer moves to the point `value` holds
+    /// ([`super::drag_end`]) in [`super::DRAG_STEPS`] moves, and the button is released there
+    /// (D162).
+    pub const DRAG: u32 = 6;
 }
 
-/// The most wheel notches one `SendInput` turns, either way; more are clamped to it.
+/// The most wheel notches one `SendInput` turns, either way and on either axis; more are
+/// clamped to it.
 pub const MAX_WHEEL_NOTCHES: i32 = 16;
+
+/// The pointer moves a `Drag` makes from where it presses to where it releases.
+pub const DRAG_STEPS: u32 = 8;
+
+/// A `Drag`'s end point as its `value` carries it: `x` in the low 16 bits, `y` in the high.
+pub const fn drag_end(x: u16, y: u16) -> u32 {
+    x as u32 | ((y as u32) << 16)
+}
+
+/// Where `SendInput` writes back which window the input went to and how (D162).
+pub mod send_input_reply {
+    /// The window that got the input, or the open dialog that refused it.
+    pub const RECEIVER: usize = 0;
+    /// One of [`super::input_outcome`].
+    pub const OUTCOME: usize = 4;
+}
+
+/// What became of `SendInput`'s input.
+pub mod input_outcome {
+    /// The window named got it.
+    pub const SENT: u32 = 0;
+    /// The window named has a dialog open: keys and characters went to the dialog, as a
+    /// person's would.
+    pub const SENT_TO_DIALOG: u32 = 1;
+    /// The window named has a dialog open: pointer input is not sent, since its point means
+    /// nothing in the dialog; aim at the dialog instead.
+    pub const DIALOG_OPEN: u32 = 2;
+}
 
 /// The longest app name `OpenApp` carries, in bytes.
 pub const APP_NAME_CAPACITY: usize = size::OPEN_APP - 4;
@@ -132,8 +202,16 @@ pub mod flags {
     pub const FIXED_SIZE: u32 = 1;
     /// The window takes every Ctrl key the shell's shortcuts would otherwise take.
     pub const TAKES_CTRL_KEYS: u32 = 2;
+    /// The window takes input from the person only: `SendInput` and `ChooseMenu` aimed at it
+    /// are refused with `NotAllowed` (the grant prompt, D193).
+    pub const PERSON_INPUT_ONLY: u32 = 4;
+    /// The window's pixels are for the person's eyes only: `CaptureWindow` of it is refused
+    /// with `PersonViewOnly` (a pairing code on screen, D193).
+    pub const PERSON_VIEW_ONLY: u32 = 8;
     /// Every flag there is.
-    pub const KNOWN: u32 = FIXED_SIZE | TAKES_CTRL_KEYS;
+    pub const KNOWN: u32 = FIXED_SIZE | TAKES_CTRL_KEYS | PERSON_INPUT_ONLY | PERSON_VIEW_ONLY;
+    /// The flags `ChangeFlags` may turn on or off on a live window.
+    pub const CHANGEABLE: u32 = PERSON_VIEW_ONLY;
 }
 
 /// The kinds of event records.
@@ -142,6 +220,8 @@ pub mod event {
     pub const POINTER_MOVE: u16 = 2;
     pub const POINTER_LEAVE: u16 = 3;
     pub const BUTTON: u16 = 4;
+    /// `d` notches up when positive; when `d` is 0, `c` notches sideways, right when positive
+    /// (D162).
     pub const WHEEL: u16 = 5;
     pub const KEY: u16 = 6;
     pub const FOCUS_IN: u16 = 7;
@@ -152,6 +232,7 @@ pub mod event {
     pub const SCALE: u16 = 12;
     pub const OVERFLOW: u16 = 13;
     pub const MENU_CHOSEN: u16 = 14;
+    pub const QUERY: u16 = 15;
 }
 
 /// The modifier bits of a `Key` record's `c`.
@@ -161,6 +242,9 @@ pub mod modifier {
     pub const ALT: u32 = 4;
     pub const SUPER: u32 = 8;
     pub const CAPS_LOCK: u32 = 16;
+    /// The third-level key: AltGr (Right Alt) on a layout with a third level, or Option in the
+    /// macOS profile (D185).
+    pub const ALT_GRAPH: u32 = 32;
 }
 
 /// What a window is for (docs/ux/desktop-v0.3-gui.md, section 3.1).
@@ -222,10 +306,18 @@ pub enum PointerShape {
     ResizeEastWest,
     ResizeNorthWestSouthEast,
     ResizeNorthEastSouthWest,
+    /// No pointer at all over the window's content (D172): what a Wayland program's null
+    /// cursor surface asks for.
+    Hidden,
+    /// A pointing hand, over links and things that act on a click (D186).
+    Hand,
+    /// An hourglass: the window does not take input now (D186). The server shows it itself over
+    /// a window that does not answer.
+    Busy,
 }
 
 impl PointerShape {
-    /// The shape numbered `value`, 0 to 5 in the order above.
+    /// The shape numbered `value`, 0 to 8 in the order above.
     pub const fn from_value(value: u32) -> Option<Self> {
         Some(match value {
             0 => Self::Arrow,
@@ -234,6 +326,9 @@ impl PointerShape {
             3 => Self::ResizeEastWest,
             4 => Self::ResizeNorthWestSouthEast,
             5 => Self::ResizeNorthEastSouthWest,
+            6 => Self::Hidden,
+            7 => Self::Hand,
+            8 => Self::Busy,
             _ => return None,
         })
     }
@@ -244,12 +339,15 @@ impl PointerShape {
 pub enum WindowError {
     /// No such window of the caller's, or an argument out of range (`EINVAL`).
     Invalid,
-    /// A role the caller may not create (`EPERM`).
+    /// A role the caller may not create, or input injected into a window that takes only the
+    /// person's input (`EPERM`).
     NotAllowed,
     /// The caller or the server holds as many windows as it may (`ENOSPC`).
     TableFull,
     /// Something this version does not do yet (`EOPNOTSUPP`).
     Unsupported,
+    /// A capture of a window whose pixels are for the person's eyes only (`EACCES`, D193).
+    PersonViewOnly,
     /// No window at that place in the list, or no window of that id (`ENOENT`).
     NoSuchWindow,
     /// A person is using the keyboard or pointer, so injected input waits (`EBUSY`).
@@ -362,6 +460,76 @@ pub enum Request {
         label_length: u32,
         label: [u8; MENU_LABEL_CAPACITY],
     },
+    GetTree {
+        window: u32,
+        buffer: u64,
+        length: u64,
+    },
+    ActOnElement {
+        window: u32,
+        element: u32,
+        action: u32,
+        text_length: u32,
+        text: [u8; ELEMENT_TEXT_CAPACITY],
+    },
+    ReadQuery {
+        serial: u32,
+    },
+    AnswerQuery {
+        serial: u32,
+        outcome: u32,
+        buffer: u64,
+        length: u64,
+    },
+    GetPlacement {
+        window: u32,
+    },
+    GetKeyboardLayout,
+    SetKeyboardLayout {
+        layout: u32,
+    },
+    SetInputPreferences {
+        left_handed: u32,
+        natural_scrolling: u32,
+        pointer_speed: u32,
+        repeat_delay_ms: u32,
+        repeat_rate: u32,
+    },
+    /// Writes the desktops' count, the shown one and their windows ([`list_desktops_reply`],
+    /// D204).
+    ListDesktops,
+    /// Turns sticky keys and slow keys on or off, slow keys with this delay (D205).
+    SetKeyAccessibility {
+        sticky_keys: u32,
+        slow_keys: u32,
+        slow_keys_ms: u32,
+    },
+    /// Does a [`desktop_action`] with desktop `desktop` (from 1) and window `window` (D204).
+    DesktopAction {
+        action: u32,
+        desktop: u32,
+        window: u32,
+    },
+    /// Makes the `length` bytes of UTF-8 text at `buffer` the clipboard's (D197).
+    SetClipboard {
+        buffer: u64,
+        length: u64,
+    },
+    /// Copies the clipboard's text from byte `offset` on into the `length` bytes at `buffer`,
+    /// as much as fits, and writes its whole length and its serial back
+    /// ([`get_clipboard_reply`]).
+    GetClipboard {
+        buffer: u64,
+        length: u64,
+        offset: u64,
+    },
+    /// Sets the caller's window `window`'s flags named in `mask` (only [`flags::CHANGEABLE`]
+    /// ones) to their bits in `values` (D193).
+    ChangeFlags {
+        window: u32,
+        mask: u32,
+        values: u32,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -413,6 +581,20 @@ impl Request {
             request::SET_MENU => size::SET_MENU,
             request::GET_MENU => size::GET_MENU,
             request::CHOOSE_MENU => size::CHOOSE_MENU,
+            request::GET_TREE => size::GET_TREE,
+            request::ACT_ON_ELEMENT => size::ACT_ON_ELEMENT,
+            request::READ_QUERY => size::READ_QUERY,
+            request::ANSWER_QUERY => size::ANSWER_QUERY,
+            request::GET_PLACEMENT => size::GET_PLACEMENT,
+            request::GET_KEYBOARD_LAYOUT => size::GET_KEYBOARD_LAYOUT,
+            request::SET_KEYBOARD_LAYOUT => size::SET_KEYBOARD_LAYOUT,
+            request::SET_INPUT_PREFERENCES => size::SET_INPUT_PREFERENCES,
+            request::SET_CLIPBOARD => size::SET_CLIPBOARD,
+            request::GET_CLIPBOARD => size::GET_CLIPBOARD,
+            request::LIST_DESKTOPS => size::LIST_DESKTOPS,
+            request::DESKTOP_ACTION => size::DESKTOP_ACTION,
+            request::SET_KEY_ACCESSIBILITY => size::SET_KEY_ACCESSIBILITY,
+            request::CHANGE_FLAGS => size::CHANGE_FLAGS,
             _ => return None,
         })
     }
@@ -545,9 +727,82 @@ impl Request {
                     label,
                 }
             }
+            request::GET_TREE => Self::GetTree {
+                window: at(0),
+                buffer: double_word(bytes, get_tree_request::BUFFER),
+                length: double_word(bytes, get_tree_request::BUFFER_LENGTH),
+            },
+            request::ACT_ON_ELEMENT => {
+                let mut text = [0; ELEMENT_TEXT_CAPACITY];
+                text.copy_from_slice(&bytes[act_request::TEXT..]);
+                Self::ActOnElement {
+                    window: at(0),
+                    element: at(act_request::ELEMENT),
+                    action: at(act_request::ACTION),
+                    text_length: at(act_request::TEXT_LENGTH),
+                    text,
+                }
+            }
+            request::READ_QUERY => Self::ReadQuery { serial: at(0) },
+            request::ANSWER_QUERY => Self::AnswerQuery {
+                serial: at(0),
+                outcome: at(4),
+                buffer: double_word(bytes, 8),
+                length: double_word(bytes, 16),
+            },
+            request::GET_PLACEMENT => Self::GetPlacement { window: at(0) },
+            request::GET_KEYBOARD_LAYOUT => Self::GetKeyboardLayout,
+            request::SET_KEYBOARD_LAYOUT => Self::SetKeyboardLayout { layout: at(0) },
+            request::SET_INPUT_PREFERENCES => Self::SetInputPreferences {
+                left_handed: at(0),
+                natural_scrolling: at(4),
+                pointer_speed: at(8),
+                repeat_delay_ms: at(12),
+                repeat_rate: at(16),
+            },
+            request::SET_CLIPBOARD => Self::SetClipboard {
+                buffer: double_word(bytes, 0),
+                length: double_word(bytes, 8),
+            },
+            request::LIST_DESKTOPS => Self::ListDesktops,
+            request::SET_KEY_ACCESSIBILITY => Self::SetKeyAccessibility {
+                sticky_keys: at(0),
+                slow_keys: at(4),
+                slow_keys_ms: at(8),
+            },
+            request::CHANGE_FLAGS => Self::ChangeFlags {
+                window: at(0),
+                mask: at(4),
+                values: at(8),
+            },
+            request::DESKTOP_ACTION => Self::DesktopAction {
+                action: at(0),
+                desktop: at(4),
+                window: at(8),
+            },
+            request::GET_CLIPBOARD => Self::GetClipboard {
+                buffer: double_word(bytes, 0),
+                length: double_word(bytes, 8),
+                offset: double_word(bytes, 16),
+            },
             _ => Self::GetWorkArea,
         })
     }
+}
+
+/// What `GetKeyboardLayout` writes back (D185): the keyboard layout's number (its index in the
+/// settings file's `KEYBOARD_LAYOUTS`) and the keyboard's [`keyboard_flags`].
+pub mod keyboard_layout_reply {
+    pub const LAYOUT: usize = 0;
+    pub const FLAGS: usize = 4;
+}
+
+/// The bits of `GetKeyboardLayout`'s flags.
+pub mod keyboard_flags {
+    /// Caps Lock is on.
+    pub const CAPS_LOCK: u32 = 1;
+    /// The machine has a keyboard.
+    pub const KEYBOARD: u32 = 2;
 }
 
 /// Where `Create` writes the window's id, its content width and height and its buffer's offset
@@ -564,6 +819,39 @@ pub mod set_size_reply {
     pub const WIDTH: usize = 4;
     pub const HEIGHT: usize = 8;
     pub const OFFSET: usize = 16;
+}
+
+/// Where `GetPlacement` writes the window's outside rectangle on the screen (D174).
+pub mod placement_reply {
+    pub const X: usize = 4;
+    pub const Y: usize = 8;
+    pub const WIDTH: usize = 12;
+    pub const HEIGHT: usize = 16;
+}
+
+/// What `ListDesktops` writes back (D204): the desktops' count at byte 0, the shown one's
+/// number (from 1) at byte 1, and each desktop's normal windows from byte 2.
+pub mod list_desktops_reply {
+    pub const COUNT: usize = 0;
+    pub const CURRENT: usize = 1;
+    pub const WINDOWS: usize = 2;
+}
+
+/// `DesktopAction`'s actions (D204), and where it writes what it reports back.
+pub mod desktop_action {
+    pub const SWITCH: u32 = 0;
+    pub const NEW: u32 = 1;
+    pub const CLOSE: u32 = 2;
+    pub const MOVE: u32 = 3;
+    /// The new desktop's number for `NEW`, the windows moved for `CLOSE`.
+    pub const REPORT: usize = 12;
+}
+
+/// Where `GetClipboard` writes the text's whole length and the clipboard's serial back into
+/// its argument.
+pub mod get_clipboard_reply {
+    pub const LENGTH: usize = 24;
+    pub const SERIAL: usize = 28;
 }
 
 /// Where `CaptureWindow` writes the window's content width and height and how many rows it
@@ -586,6 +874,71 @@ pub mod get_menu_reply {
 pub mod choose_menu_request {
     pub const LABEL_LENGTH: usize = 12;
     pub const LABEL: usize = 16;
+}
+
+/// Where `GetTree`'s argument holds the caller's buffer and its length (64-bit each).
+pub mod get_tree_request {
+    pub const BUFFER: usize = 16;
+    pub const BUFFER_LENGTH: usize = 24;
+}
+
+/// Where `GetTree` writes how the app answered ([`tree_answer`]) and the tree's length back.
+pub mod get_tree_reply {
+    pub const ANSWER: usize = 4;
+    pub const LENGTH: usize = 8;
+}
+
+/// Where `ActOnElement`'s argument holds the element, the action ([`element_action`]), the
+/// text's length and the text, and where the app's [`act_outcome`] is written back.
+pub mod act_request {
+    pub const ELEMENT: usize = 4;
+    pub const ACTION: usize = 8;
+    pub const TEXT_LENGTH: usize = 12;
+    pub const OUTCOME: usize = 16;
+    pub const TEXT: usize = 24;
+}
+
+/// Where `ReadQuery` writes the query whose serial it was given: its [`query_kind`], window,
+/// element, action, text length and text.
+pub mod read_query_reply {
+    pub const KIND: usize = 4;
+    pub const WINDOW: usize = 8;
+    pub const ELEMENT: usize = 12;
+    pub const ACTION: usize = 16;
+    pub const TEXT_LENGTH: usize = 20;
+    pub const TEXT: usize = 24;
+}
+
+/// What a query asks the app: its kind in a `Query` record's `b` (D161).
+pub mod query_kind {
+    /// The window's element tree.
+    pub const TREE: u32 = 0;
+    /// An action on one of its elements.
+    pub const ACT: u32 = 1;
+}
+
+/// How an app answered a tree query, and what `GetTree` reports.
+pub mod tree_answer {
+    /// The app gave its tree.
+    pub const TREE: u32 = 0;
+    /// It gave none, or none in time: pixels only.
+    pub const PIXELS_ONLY: u32 = 1;
+}
+
+/// The actions `ActOnElement` asks for.
+pub mod element_action {
+    pub const INVOKE: u32 = 1;
+    pub const FOCUS: u32 = 2;
+    pub const SET_TEXT: u32 = 3;
+    pub const SELECT: u32 = 4;
+}
+
+/// How an app answered an action.
+pub mod act_outcome {
+    pub const DONE: u32 = 0;
+    pub const NO_SUCH_ELEMENT: u32 = 1;
+    pub const NOT_SUPPORTED: u32 = 2;
+    pub const DISABLED: u32 = 3;
 }
 
 /// Where `ListWindow` writes the window at the index it was given: its id, state, outside

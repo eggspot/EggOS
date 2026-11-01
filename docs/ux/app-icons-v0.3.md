@@ -245,8 +245,10 @@ Built from this brief for item 45; where the build differs, D148 records why:
 - The installer's dialogs (prompt, progress, result, uninstall) still show the generic tile:
   the icon is made after the copy, from what was installed, so the prompt has none yet. The
   `.zip` prompt has its `Inside:` line.
-- `app icon` and the MCP tool `app_icon` (section 7) are not built yet; `app list` and
-  `app_list` name the icon file.
+- `app icon` and the MCP tool `app_icon` (section 7) are built (D196; `app_icon` always
+  answers the 48-pixel image); `app list` and `app_list` name the icon file.
+- The installer's `Installed` screen and the uninstall confirmation show the own icon (D196);
+  binary `Info.plist` files are read (D196).
 - The QEMU test installs `mac-paint.zip`, whose bundle's `AppIcon.icns` holds a 128-pixel `ic07`
   and a 32-pixel `icp5` PNG drawn by xtask; `win-paint.exe` gets no icon resources (it is
   linked without a resource compiler), so PE icons are covered by host tests on hand-built

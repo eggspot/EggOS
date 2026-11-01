@@ -153,7 +153,8 @@ holds what used to be written in them.
   `mac-paint`, our AppKit test app built from `tests/macos-gui/main.m` with the other macOS
   programs (`-framework AppKit -framework Foundation`), writes `mac-paint.app` (its
   `Info.plist` and this CPU's slice as `Contents/MacOS/mac-paint`) in a host folder, and boots
-  the release kernel with the macOS layer on a blank disk with that folder attached. It installs
+  the release image itself, which carries the macOS layer (D152), on a blank disk with that
+  folder attached. It installs
   the bundle with `app install /media/host/mac-paint.app`, opens it from the launcher, then
   compares the display with the host's render (the desktop, and the window and alert painted by
   `eggos-macos-gui-tests`) after each step: the window with its menu in the top bar, `Hello` and
@@ -177,13 +178,129 @@ holds what used to be written in them.
   its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image, under a file,
   with an empty, `.` or `..` part, a name over 255 bytes or a path of 4096 bytes or more is
   refused) and writes `target/image/eggos-<arch>.elf`; `cargo xtask run` takes the same options
-  ([Linux programs](linux-programs.md), D117). Adding a Windows program (a file that starts with
-  `MZ`) to an x86_64 image installs the Windows layer at `/usr/lib/eggos/windows` with it
-  ([Windows programs](windows-programs.md), D118). Adding an Android program (an ELF file with
-  the `.note.android.ident` note) adds `/system/bin/sh`, another name for `eggsh`
-  ([Android programs](android-programs.md), D119). Adding a macOS program (a 64-bit Mach-O or
-  fat file) to an aarch64 or x86_64 image installs the macOS layer at `/usr/lib/eggos/macos`
-  ([macOS programs](macos-programs.md), D120).
+  ([Linux programs](linux-programs.md), D117). Every release image, with or without added
+  files, carries the Windows layer at `/usr/lib/eggos/windows` on x86_64 and aarch64
+  ([Windows programs](windows-programs.md), D118) and the macOS layer at `/usr/lib/eggos/macos`
+  on aarch64 and x86_64 ([macOS programs](macos-programs.md), D120), as a v0.3.0 exception to
+  D18 until the component manager (D152); so does every test image built on the release
+  initramfs. Adding an Android program (an ELF file with the `.note.android.ident` note) adds
+  `/system/bin/sh`, another name for `eggsh` ([Android programs](android-programs.md), D119).
+- **The reboot boot test** (`xtask/src/qemu/reboot.rs`, every architecture) boots the release
+  image with `qemu::interactive_args`' serial arguments, as `run-eggos.sh --serial` does,
+  types `reboot` at the prompt and must see the restart, a second boot and its prompt in the
+  same QEMU, then powers off with `poweroff` (D153).
+- **The run scripts boot test** (`xtask/src/qemu/run_scripts.rs`, every architecture; alone:
+  `cargo xtask run-scripts --arch <arch>`) writes the release image and both scripts as `cargo
+  xtask release` does and runs the host's script (`run-eggos.ps1` through `powershell -File` on
+  Windows, `run-eggos.sh` through `sh` elsewhere): `--serial --apps --format-disk`, where it
+  types `uname`, `ls /media/host` and `poweroff`; then `--mcp --no-window` as a child with piped
+  standard input and output (`initialize`, `tools/list`, a `cat` of the shared folder's file,
+  every line on standard output JSON-RPC); and meanwhile a second start on the same disk image,
+  which must be refused for the lock (D154). On Windows a stopped script's QEMU is ended with
+  its process tree (`taskkill /T`), since killing PowerShell leaves its child running.
+- **The install, Files and MCP boot tests boot the release image itself**, the kernel `cargo
+  xtask release` copies to `target/release-dist/`, with no `--add`: they install
+  `win-paint.exe` (x86_64 and aarch64) or the static Linux program (riscv64) from the host
+  folder and open them, and the MCP test, through `run-eggos.sh --mcp --no-window --apps`,
+  installs and captures `win-paint` (x86_64 and aarch64) and captures `linux-paint`; the macOS
+  GUI boot test does the same with `mac-paint.zip` (D152).
+- **`cargo xtask sample-apps --arch <arch>`** builds our own apps for people to try installing
+  into `target/sample-apps/<arch>/` and prints that folder, for the run scripts' `--apps`:
+  `win-paint.exe` and `win-controls.exe` (x86_64 and aarch64, `tests/windows-gui`),
+  `linux-paint` (`tests/linux-gui`, a static Wayland program) and, where Apple's linker or
+  `EGGOS_MACOS_PROGRAMS` provides the Mach-O programs, `mac-paint.zip` and `mac-paint.app`
+  (aarch64 and x86_64). They are test programs built from our sources, never release assets
+  (D152).
+- **`cargo xtask dynamic-linking --arch <arch>`** (D167, Linux hosts) builds
+  `tests/linux-dynamic`, our own `no_std` program on the C library alone, against glibc (the
+  host's x86_64 library, or the `gcc-aarch64-linux-gnu` and `gcc-riscv64-linux-gnu` cross
+  compilers' sysroots, which also link it; `rustup target add <arch>-unknown-linux-gnu`) and
+  against musl (Alpine `v3.24`'s `musl` and `musl-dev`, which xtask downloads with `curl` and
+  unpacks with `tar` into `target/dynamic-linking/`, linked by `rust-lld`), adds both with
+  their loaders (at the paths their `PT_INTERP` names) and glibc's `libc.so.6` to the release
+  image, boots it and wants both programs' lines. The libraries are test data, never shipped.
+- **`cargo xtask static-glibc --arch <arch>`** (D188, Linux hosts) builds `tests/linux-static`
+  for `<arch>-unknown-linux-gnu` with `+crt-static`, as a static executable
+  (`relocation-model=static`) and as a static PIE (`pic`), linked by the host's `gcc` or the
+  `gcc-aarch64-linux-gnu` and `gcc-riscv64-linux-gnu` cross compilers against their static
+  glibc (`libc.a`, `crt1.o`, `rcrt1.o`; `rustup target add <arch>-unknown-linux-gnu`), checks
+  each is the kind asked for, adds both to the release image and boots it, wanting the Linux
+  programs test's lines from each. glibc is test data, never shipped.
+- **`cargo xtask android-dynamic --arch <arch>`** (D188, aarch64 and x86_64, needs the Android
+  NDK as the Android programs boot test does) links `tests/android-console` dynamically with
+  the NDK's clang (`PT_INTERP` `/system/bin/linker64`), downloads AOSP's prebuilt
+  `com.android.runtime` APEX of the pinned `platform/prebuilts/runtime` commit from
+  android.googlesource.com (base64, checked against its git blob id, kept in
+  `target/android-runtime/<abi>`), reads `linker64` and the `lib64` libraries out of its ext4
+  payload, adds them under `/system` with our `/system/etc/ld.config.<abi>.txt`, the shell
+  and `/system/build.prop` to the release image, boots it and wants the Android programs
+  test's lines with `loader linker64`. The runtime is test data, never shipped. `cargo xtask
+  image --add` adds the same runtime when an added file is a dynamically linked Android
+  program.
+- **`cargo xtask hello-crate --arch <arch>`** (D171, Linux hosts, x86_64 and aarch64)
+  downloads the pinned release's `rustc` and `cargo` for the architecture's glibc target and
+  the standard library of its musl target from static.rust-lang.org (checked against their
+  pinned SHA-256s, kept in `target/hello-crate/downloads`), merges them into one toolchain,
+  copies the glibc libraries its programs need from this host, and a copy of
+  `tests/hello-crate` with a `.cargo/config.toml` naming the musl target and `rust-lld`, onto
+  a work disk; builds and runs the same crate here with this host's toolchain in a folder
+  outside the repository (natively, or through `qemu-<arch>` for the other architecture);
+  boots the release image with glibc's loader and 4 GiB, runs `cargo build` and `cargo run`
+  in `/work/hello`, unpacks the disk and wants the program's output to be Linux's. On a host
+  that is not Linux it compares with the output the program's source gives, and with `CI` set
+  it refuses to. cargo runs a job per CPU (D173).
+- **`cargo xtask workspace-build --arch <arch>`** (D173, Linux hosts, x86_64 and aarch64)
+  assembles `hello-crate`'s toolchain (downloads kept in `target/workspace-build/downloads`)
+  with a copy of `tests/multi-crate` (six crates of ours, no dependencies, its own workspace and
+  `Cargo.lock`) and the build timer (`tests/build-timer`, static musl) in a work folder; on an
+  x86_64 host building for x86_64 it first runs the timer here, as a reference; then it boots
+  the release image with the folder on a work disk and runs `/work/build-timer /work` from the
+  shell, and boots Alpine's `linux-virt` kernel (pinned SHA-256s; on aarch64 the gzipped
+  `Image` inside its EFI zboot file) in the same QEMU machine (4 CPUs, 4 GiB, `-accel
+  tcg,thread=multi`) from an initramfs holding the same folder at `/work`, glibc's loader and the
+  timer as `/init`. The timer runs `rustc --version`, `cargo build`, `cargo build` again and
+  `cargo run` with a job per CPU, writing `BUILD-TIMER` lines; xtask times each phase by when
+  it reads those lines, wants every phase to end with 0 and both programs to print the same,
+  and writes a table of EggOS's times against Linux's to standard error and, in CI, to the job
+  summary (`GITHUB_STEP_SUMMARY`). The kernel and toolchain are test data, never shipped.
+- **`cargo xtask sdl3 --arch <arch>`** (D172, x86_64 and aarch64, hosts with Docker) builds
+  `libSDL3.so.0` from SDL's pinned commit (its archive checked against a pinned SHA-256) for
+  Alpine's musl, with SDL's Wayland video driver and its `wl_shm` framebuffer alone (no OpenGL,
+  Vulkan, X11, D-Bus or audio back ends), by Alpine's own compilers in an `alpine:3.24`
+  container of the architecture's platform, started, run and removed by xtask with `docker`
+  argument lists (no shell script); the library and its commit go to
+  `target/sdl-app/sdl3-<arch>`, which a later run reuses. Test data, never shipped.
+- **`cargo xtask sdl-app --arch <arch>`** (D172) downloads Brogue CE and the libraries it loads
+  from Alpine `v3.24` (pinned SHA-256s, kept in `target/sdl-app/downloads-<arch>`), takes
+  `libSDL3.so.0` from `cargo xtask sdl3` (built first if missing), packs `brogue.zip` (the game,
+  musl's loader and the libraries in `lib/`, the game's data in `share/brogue`) into a host
+  folder and boots the release image on a blank disk: `app install --arguments` installs it,
+  `app open` opens it, keys play a few turns, `S` and Enter save and close it, and the console,
+  the disk's manifest and `/tmp`'s saved game are checked ([compatibility](compatibility.md)).
+- **`cargo xtask gtk-app --arch <arch>`** (D176) downloads Mousepad, the GTK 3 libraries it
+  loads and DejaVu's fonts from Alpine `v3.24` (pinned SHA-256s, kept in
+  `target/gtk-app/downloads-<arch>`), packs `mousepad.zip` (the editor, GLib's
+  `glib-compile-schemas` in `libexec/`, musl's loader and the libraries in `lib/`, the schemas,
+  GtkSourceView's data and the fonts in `share/`) into a host folder and boots the release
+  image on a blank disk: `app install --entry --environment --arguments` installs it, the
+  schemas are compiled inside EggOS, `app open` opens it on `/tmp/note.txt`, keys type, copy,
+  paste, save and quit, and the note, `/Applications/.fonts`, `wm list` and the disk's manifest
+  are checked ([compatibility](compatibility.md)).
+- **`cargo xtask qt-app --arch <arch>`** (D179) downloads CorePad, the Qt 6 libraries and
+  plugins it loads, ICU's data and DejaVu's fonts from Alpine `v3.24` (pinned SHA-256s, kept in
+  `target/qt-app/downloads-<arch>`), writes EggOS's own `libEGL.so.1`, `libGL.so.1` and
+  `libGLESv2.so.2` (`xtask/src/gl_libraries.rs`), packs `corepad.zip` (the editor, musl's
+  loader and the libraries in `lib/`, Qt's plugins in `plugins/`, ICU's data and the fonts in
+  `share/`) into a host folder and boots the release image on a blank disk: `app install
+  --entry --environment --arguments` installs it, `app open` opens it on `/tmp/note.txt`, keys
+  type, copy, paste, save as `/tmp/saved.txt` through Qt's file dialog and quit, and the saved
+  file, the note, `/Applications/.fonts`, `wm list` and the disk's manifest are checked
+  ([compatibility](compatibility.md)).
+- **`--memory` and `--room`** (D171). `cargo xtask run --memory <size>` (such as `4G`, at
+  least `128M`) and the run scripts' `--memory`/`-Memory` give the machine more memory, which
+  on x86_64 reaches above 4 GiB; `cargo xtask run --work <folder> --room <size>` and `cargo
+  xtask work pack --room <size> <folder> <image>` leave that much room on the work disk instead
+  of 1 GiB.
 - **What the runner matches.** The lines it looks for are the ones the kernel and the test
   programs write, and must be changed with them: the self-tests' `EGGOS-SELFTEST: PASS` and
   `FAIL` markers and `EGGOS-CONSOLE: input ready` (`eggos_kernel::selftest`,
@@ -249,6 +366,22 @@ holds what used to be written in them.
   `qemu-img create -f raw` from QEMU's folder (sparse), else `SetLength`. The persistent files
   boot test (`xtask/src/qemu/persistent.rs`) boots on images in `target/qemu-disks` and checks
   them afterwards with the `eggos-eggfs` crate.
+- **Work disk** (D166, the CI track's stage 1). `cargo xtask run --work <folder>` packs the
+  folder into `target/image/eggos-<arch>-work.img` (`xtask/src/work_disk.rs`): a sparse image
+  the size of the folder plus a thirty-second plus 1 GiB, formatted with EggFS on the host by
+  the `eggos-eggfs` crate, its root holding the marker `.eggos-work-disk` and the folder's tree
+  under `work`, with permission bits (on Unix hosts) and modification times; the folder's
+  top-level `.git` and `target` are left out, symbolic links and special files too (each with
+  a warning). EggOS mounts it writable at `/work`, whatever the order of the disks
+  (`qemu::work_disk_args`, a virtio block device of its own beside the `/home` disk). When
+  QEMU ends, xtask replays the image's journal, checks the file system and writes `/work`'s
+  tree into `--work-out`'s folder (default `<folder>.out` beside the folder), which must be
+  new or empty: the folder itself is never changed. `cargo xtask work pack <folder> <image>`
+  and `cargo xtask work unpack <image> <folder>` do the two halves alone, for the run scripts'
+  `--work <image>` (`-Work` in PowerShell), which attach a packed image. The work disk boot
+  test (`xtask/src/qemu/work_disk.rs`) packs a folder, boots with the work disk before a blank
+  `/home` disk, writes results and removes a file under `/work`, writes to `/home`, powers off,
+  then unpacks the image and checks both disks.
 - **Input** (D113). Every run with the display also gets a virtio keyboard, tablet and mouse:
   `-device virtio-keyboard-device -device virtio-tablet-device -device virtio-mouse-device` on
   the `virt` machines, the `-pci` devices with `disable-legacy=on` on q35; the kernel prints
@@ -267,10 +400,13 @@ holds what used to be written in them.
   and writes to `target/release-dist/` (under `CARGO_TARGET_DIR` when set): the image as
   `eggos-<version>-<arch>.elf` (the version is `[workspace.package]`'s), `SHA256SUMS` in
   `sha256sum`'s format (xtask's own SHA-256), `run-eggos.sh` and `run-eggos.ps1`, and
-  `RELEASE-NOTES.md`, a skeleton with each image's size and boot-to-prompt time whose
-  what's-new section the release PR writes. The scripts' QEMU arguments are
-  `qemu::interactive_args`, the ones `cargo xtask run` uses, with `-nographic` for `--serial`
-  (`-Serial`), `qemu::host_folder_args` for `--apps <folder>` (`-Apps`, or `--apps`, in
+  `RELEASE-NOTES.md`: what's new, written from the subjects of the pull requests merged on
+  `main` since the last `v*` tag that say what users can now do (`git log --first-parent`, so
+  the release needs the history and its tags), each image's size and boot-to-prompt time, what
+  runs, installing an app, the keys, the MCP grants and what they do not protect, and the known
+  limits (D153). The scripts' QEMU arguments are `qemu::interactive_args`, the ones `cargo
+  xtask run` uses, with no `-no-reboot`, so `reboot` restarts EggOS in the same QEMU (D153), and
+  with `-nographic` for `--serial` (`-Serial`), `qemu::host_folder_args` for `--apps <folder>` (`-Apps`, or `--apps`, in
   PowerShell), with the folder made absolute and its commas doubled, and `qemu::disk_args`
   for the disk image; with `--mcp` (`-Mcp`) `qemu::mcp_args`: the agent channel on the
   script's standard input and output (`qemu::agent_channel_args`), the console in
@@ -278,13 +414,17 @@ holds what used to be written in them.
   input device (`Arch::offscreen_args`, `-display none`) and the kernel command line word
   `qemu::OFFSCREEN_WORD`, `eggos.display=offscreen`, so EggOS draws its desktop in memory
   (D144), every script message on standard error, and the disk image checked with `qemu-io`
-  for another EggOS's lock (D136, docs/mcp.md); with `--mcp-allow <list>` (`-McpAllow`,
+  for another EggOS's lock, and `-no-reboot`, so a reboot ends the MCP session (D136, D153,
+  docs/mcp.md); with `--mcp-allow <list>` (`-McpAllow`,
   `--mcp` only) the word `qemu::grant_word`, `eggos.mcp_allow=<list>`, once each name is
   checked as `view`, `write`, `run` or `install` (D137, D143). The words go in one `-append`
   (`qemu::command_line_args`), since QEMU keeps only the last; host tests check the scripts'
-  text. Each script picks the host's architecture
+  text. `run-eggos.ps1` reads its arguments itself (`$args`: PowerShell's `-Name` and the shell
+  script's `--name` spellings alike, no `param` block), so an unknown or misplaced one prints
+  one usage line on standard error and exits with 2, as `run-eggos.sh` does (D153). Each script picks the host's architecture
   unless one is named, checks the image against `SHA256SUMS` with `sha256sum`, `shasum` or
-  `Get-FileHash` (refusing a mismatch, warning when no tool or no `SHA256SUMS` is found), and looks for
+  .NET's `SHA256` (not `Get-FileHash`, which Windows PowerShell started from PowerShell 7
+  cannot find; refusing a mismatch, warning when no tool or no `SHA256SUMS` is found), and looks for
   `qemu-system-<arch>` on `PATH` (and under `Program Files\qemu` on Windows). They are the one
   kind of shell and PowerShell file in the repository, generated, never committed, and hold no
   comments. **`cargo xtask screenshot --arch <arch>`** boots the release image headless with
@@ -301,7 +441,20 @@ holds what used to be written in them.
   `fast` (format, `cargo xtask lint`, clippy on the host and the kernel targets, docs, host unit
   tests), `qemu` (the boot tests, one job per architecture), `bench` (the benchmarks, one job per
   architecture), `macos-programs` (the Mach-O test programs), `windows-programs` (the MSVC test
-  programs, D146) and, on PRs, `hosts` (macOS and Windows). Runners are free for this public repository, so the goal is wall-clock time: the run
+  programs, D146), `dynamic-linking` (one per architecture: `cargo xtask dynamic-linking` after
+  installing the glibc cross compilers and target in the CI image, D167), `static-glibc` (one
+  per architecture: `cargo xtask static-glibc` the same way, D188), `android-dynamic` (D188,
+  aarch64 and x86_64, with the runner's NDK mounted as the `qemu` job mounts it), `rustc-version` (D168)
+  and `hello-crate` (D171, one per architecture, with `qemu-user` for aarch64's Linux run),
+  `workspace-build` (D173, one per architecture: EggOS and Linux in the same QEMU machine,
+  the times in the job summary),
+  `sdl3` (D172: `cargo xtask sdl3` outside the CI image, on a runner of each architecture's own
+  CPU, `ubuntu-24.04` and `ubuntu-24.04-arm`, cached by `xtask/src/sdl_app.rs`'s hash and handed
+  on as an artifact kept one day) and `sdl-app` (D172, one per architecture in the CI image,
+  after `sdl3`), `gtk-app` (D176, one per architecture in the CI image, its downloads cached by
+  `xtask/src/gtk_app.rs`'s hash), `qt-app` (D179, the same for `xtask/src/qt_app.rs`) and, on
+  PRs, `hosts`
+  (macOS and Windows) and `run-scripts-windows` (D154). Runners are free for this public repository, so the goal is wall-clock time: the run
   takes as long as its slowest job.
 - **`check` is the only required status check on `main`.** It is the last job (`needs` every other
   job, `if: always()`) and fails if any of them failed or was cancelled; a skipped job passes. The
@@ -332,6 +485,16 @@ holds what used to be written in them.
 - **Hosts.** Development hosts are macOS and Windows, so on PRs into `main`, when code changed, a
   small job on each builds, lints and tests the workspace and builds the kernel for every
   architecture.
+- **`run-eggos.ps1` on Windows (D154).** On PRs into `main` that change `xtask/src/release.rs`,
+  `xtask/src/qemu*`, `userland/mcp/`, `kernel/src/agent_channel.rs` or the workflow,
+  `run-scripts-windows` installs QEMU (`choco install qemu`, which the script finds under
+  `Program Files\qemu`) and runs `cargo xtask run-scripts --arch x86_64`: the release image
+  booted through `run-eggos.ps1` with `-Serial -Apps -FormatDisk` (`uname`, `ls /media/host`,
+  `poweroff`), then with `-Mcp -NoWindow` as a child with piped standard input and output, as
+  Claude Code starts it (`initialize`, `tools/list`, a `cat` of the shared folder's file, every
+  line on standard output JSON-RPC), and a second start on the disk in use, which the script
+  must refuse. It runs beside the `qemu` jobs, with a 30-minute timeout; on Linux the `qemu`
+  jobs run the same check through `run-eggos.sh`.
 - **Billing**: the global rules in `~/.claude/CLAUDE.md` (CI section) and D8: concurrency
   cancels superseded PR runs only, every job has a timeout, checkouts are shallow.
 

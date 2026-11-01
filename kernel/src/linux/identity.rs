@@ -1,6 +1,11 @@
 //! Who a program is and where it runs (M6, D55): `getpid`, `getppid`, `gettid`, `uname`,
-//! `getcpu` and `sched_getaffinity` (D117), and the thread bookkeeping C libraries and Rust's
-//! std do at startup, `set_tid_address`, `set_robust_list` and `get_robust_list`.
+//! `sethostname` and `setdomainname` (D168), `getcpu` and `sched_getaffinity` (D117), and the
+//! thread bookkeeping C libraries and Rust's std do at startup, `set_tid_address`,
+//! `set_robust_list` and `get_robust_list`.
+//!
+//! The machine's name and NIS domain name start as [`utsname::NODENAME`] and
+//! [`utsname::DOMAINNAME`]; a privileged process may change them, for every process (EggOS has
+//! one UTS namespace), and `uname` and `/proc/sys/kernel/hostname` report the change.
 //!
 //! A process's first thread has the process's id, as on Linux, and the threads `clone` starts
 //! ids of their own (D91). The two bookkeeping calls register user memory the kernel touches
@@ -13,6 +18,7 @@ use super::Errno;
 use super::thread::LinuxThread;
 use crate::cpu;
 use crate::process::Process;
+use crate::sync::LeafSpinLock;
 use eggos_hal::Platform;
 
 /// What `uname` reports (D55): Linux's identity, so build scripts and libraries that look at
@@ -105,8 +111,8 @@ pub fn getcpu<P: Platform>(process: &Process<P>, cpu: u64, node: u64) -> Result<
     Ok(0)
 }
 
-/// `sched_getaffinity(pid, size, mask)`: writes the CPUs the thread may run on, every online
-/// CPU since none can be excluded yet, to `mask`, a bit per CPU in 64-bit words, and returns
+/// `sched_getaffinity(pid, size, mask)`: writes the CPUs the thread may run on, the online
+/// ones its affinity allows ([`sched_setaffinity`], D198), to `mask`, a bit per CPU in 64-bit words, and returns
 /// the bytes written: the kernel's mask, a bit for each of the machine's CPUs rounded up to a
 /// word, as Linux's raw call does (C libraries count the bits; Rust's
 /// `std::thread::available_parallelism` sizes thread pools by them). `pid` 0, the caller's
@@ -134,11 +140,45 @@ pub fn sched_getaffinity<P: Platform>(
         let address = mask
             .checked_add((word * AFFINITY_WORD_BYTES) as u64)
             .ok_or(Errno::EFAULT)?;
+        let allowed = match word {
+            0 => crate::thread::running_affinity::<P>(),
+            _ => u64::MAX,
+        };
         process
-            .write_user_memory(address, &online_cpus(cpus, word).to_ne_bytes())
+            .write_user_memory(address, &(online_cpus(cpus, word) & allowed).to_ne_bytes())
             .map_err(|_| Errno::EFAULT)?;
     }
     Ok(bytes)
+}
+
+/// `sched_setaffinity(pid, size, mask)` (D198): lets the calling thread run only on the online
+/// CPUs set in the `size` bytes at `mask` (CPUs past the first 64 are always allowed), moving
+/// it to one of them at once; its later threads inherit the set. `pid` names the caller as for
+/// [`sched_getaffinity`] (another id is `ESRCH`); `EINVAL` when no online CPU is set, `EFAULT`
+/// when `mask` is not the program's memory.
+pub fn sched_setaffinity<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    pid: u64,
+    size: u64,
+    mask: u64,
+) -> Result<u64, Errno> {
+    let pid = pid as u32;
+    if pid != 0 && pid != thread.id() && pid != process.id().get() {
+        return Err(Errno::ESRCH);
+    }
+    let mut first = [0u8; AFFINITY_WORD_BYTES];
+    let length = usize::try_from(size)
+        .unwrap_or(usize::MAX)
+        .min(AFFINITY_WORD_BYTES);
+    process
+        .read_user_memory(mask, &mut first[..length])
+        .map_err(|_| Errno::EFAULT)?;
+    let wanted = u64::from_ne_bytes(first) & online_cpus(cpu::CPUS.all(), 0);
+    if wanted == 0 || !crate::thread::set_running_affinity::<P>(wanted) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(0)
 }
 
 /// `sched_getscheduler(pid)`: `SCHED_OTHER` (0), the only scheduling policy threads have
@@ -247,17 +287,140 @@ pub fn get_robust_list<P: Platform>(
     Ok(0)
 }
 
-/// `uname(buffer)`: copies `UTSNAME` to `buffer`, or `EFAULT` if it is not all the
-/// program's writable memory (part may be written by then, as on Linux).
+/// The longest machine or domain name (`__NEW_UTS_LEN`): a field without its zero.
+pub const MAX_NAME: usize = utsname::FIELD - 1;
+
+#[derive(Debug, Clone, Copy)]
+struct ChangedName {
+    set: bool,
+    length: u8,
+    bytes: [u8; MAX_NAME],
+}
+
+const UNCHANGED: ChangedName = ChangedName {
+    set: false,
+    length: 0,
+    bytes: [0; MAX_NAME],
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Which {
+    Host,
+    Domain,
+}
+
+impl Which {
+    fn index(self) -> usize {
+        match self {
+            Self::Host => 0,
+            Self::Domain => 1,
+        }
+    }
+
+    fn field(self) -> usize {
+        match self {
+            Self::Host => 1,
+            Self::Domain => 5,
+        }
+    }
+}
+
+static CHANGED_NAMES: LeafSpinLock<[ChangedName; 2]> = LeafSpinLock::new_leaf([UNCHANGED; 2]);
+
+fn current_utsname() -> [u8; 6 * utsname::FIELD] {
+    let mut image = UTSNAME;
+    let changed = *CHANGED_NAMES.lock();
+    for which in [Which::Host, Which::Domain] {
+        let name = changed[which.index()];
+        if name.set {
+            let field = &mut image[which.field() * utsname::FIELD..][..utsname::FIELD];
+            let length = usize::from(name.length);
+            field.fill(0);
+            field[..length].copy_from_slice(&name.bytes[..length]);
+        }
+    }
+    image
+}
+
+/// The machine's name now (`uname -n`, `/proc/sys/kernel/hostname`), copied into `into`: its
+/// length.
+pub fn host_name(into: &mut [u8; MAX_NAME]) -> usize {
+    let image = current_utsname();
+    let field = &image[utsname::FIELD..][..MAX_NAME];
+    let length = field.iter().position(|&byte| byte == 0).unwrap_or(MAX_NAME);
+    into[..length].copy_from_slice(&field[..length]);
+    length
+}
+
+/// `uname(buffer)`: copies `struct utsname` to `buffer`, the names `sethostname` and
+/// `setdomainname` changed included, or `EFAULT` if it is not all the program's writable memory
+/// (part may be written by then, as on Linux).
 pub fn uname<P: Platform>(process: &Process<P>, buffer: u64) -> Result<u64, Errno> {
     process
-        .write_user_memory(buffer, &UTSNAME)
+        .write_user_memory(buffer, &current_utsname())
         .map_err(|_| Errno::EFAULT)?;
     Ok(0)
 }
 
+/// `sethostname(name, length)`: the machine's name becomes the `length` bytes at `name` (D168).
+/// As Linux, in this order: `EPERM` unless the caller is privileged (effective user id 0);
+/// `EINVAL` for a `length` (an `int`) that is negative or above [`MAX_NAME`]; `EFAULT` if the
+/// bytes are not the program's memory.
+pub fn sethostname<P: Platform>(
+    process: &Process<P>,
+    name: u64,
+    length: u64,
+) -> Result<u64, Errno> {
+    set_name(process, Which::Host, name, length)
+}
+
+/// `setdomainname(name, length)`: the NIS domain name, as [`sethostname`] sets the machine's.
+pub fn setdomainname<P: Platform>(
+    process: &Process<P>,
+    name: u64,
+    length: u64,
+) -> Result<u64, Errno> {
+    set_name(process, Which::Domain, name, length)
+}
+
+fn set_name<P: Platform>(
+    process: &Process<P>,
+    which: Which,
+    name: u64,
+    length: u64,
+) -> Result<u64, Errno> {
+    if !process
+        .credentials_and_limits()
+        .lock()
+        .credentials
+        .is_privileged()
+    {
+        return Err(Errno::EPERM);
+    }
+    let length = usize::try_from(length as i32).map_err(|_| Errno::EINVAL)?;
+    if length > MAX_NAME {
+        return Err(Errno::EINVAL);
+    }
+    let mut bytes = [0; MAX_NAME];
+    process
+        .read_user_memory(name, &mut bytes[..length])
+        .map_err(|_| Errno::EFAULT)?;
+    CHANGED_NAMES.lock()[which.index()] = ChangedName {
+        set: true,
+        length: length as u8,
+        bytes,
+    };
+    Ok(0)
+}
+
+/// Gives back the names `uname` started with, for tests that change them.
 #[cfg(test)]
-mod tests {
+pub fn forget_changed_names() {
+    *CHANGED_NAMES.lock() = [UNCHANGED; 2];
+}
+
+#[cfg(test)]
+pub mod tests {
     use super::*;
 
     #[test]
@@ -278,4 +441,47 @@ mod tests {
         assert_eq!(field(4), utsname::MACHINE);
         assert_eq!(field(5), "(none)");
     }
+
+    #[test]
+    fn a_changed_name_replaces_its_field_whole() {
+        let _guard = NAMES_TEST.lock().unwrap();
+        forget_changed_names();
+        let mut name = [0; MAX_NAME];
+        let length = host_name(&mut name);
+        assert_eq!(&name[..length], b"localhost");
+        CHANGED_NAMES.lock()[Which::Host.index()] = ChangedName {
+            set: true,
+            length: 3,
+            bytes: {
+                let mut bytes = [0; MAX_NAME];
+                bytes[..3].copy_from_slice(b"egg");
+                bytes
+            },
+        };
+        let length = host_name(&mut name);
+        assert_eq!(&name[..length], b"egg");
+        let image = current_utsname();
+        assert_eq!(&image[utsname::FIELD..][..4], b"egg\0");
+        assert!(
+            image[utsname::FIELD..][..utsname::FIELD]
+                .iter()
+                .skip(3)
+                .all(|&byte| byte == 0)
+        );
+        CHANGED_NAMES.lock()[Which::Domain.index()] = ChangedName {
+            set: true,
+            length: 0,
+            bytes: [0; MAX_NAME],
+        };
+        assert!(
+            current_utsname()[5 * utsname::FIELD..]
+                .iter()
+                .all(|&byte| byte == 0)
+        );
+        forget_changed_names();
+        assert_eq!(current_utsname(), UTSNAME);
+    }
+
+    /// Serializes the tests that change the names, which every process shares.
+    pub static NAMES_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }

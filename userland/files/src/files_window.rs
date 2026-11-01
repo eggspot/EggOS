@@ -1,20 +1,28 @@
-//! The Files window (docs/ux/desktop-v0.3-gui.md sections 8 and 8.1, D135): the toolbar with
+//! The Files window (docs/ux/desktop-v0.3-gui.md sections 8 and 8.1, D135, and its links
+//! addendum docs/ux/files-links-v0.3.md, D170): the toolbar with
 //! back, up and the path field, the sidebar's places, the list of the folder's entries, the
-//! status bar, and the context menus, dialogs, notices and rename field drawn inside it. It is
+//! status bar with the free space (docs/ux/files-free-space-v0.3.md, D171), and the context
+//! menus, dialogs, notices and rename field drawn inside it. It is
 //! pure state over [`Files`]: it reads and changes the file systems through the trait and asks
 //! the program for what only the system does ([`Request`]), so host tests and the QEMU test's
 //! expected frames run the same code the program shows.
 
+mod elements;
 mod paint;
 #[cfg(test)]
 mod tests;
 
+pub use elements::{
+    ENTRIES_ELEMENT, FIRST_ENTRY_ELEMENT, FIRST_PLACE_ELEMENT, FREE_SPACE_ELEMENT, ITEMS_ELEMENT,
+    PATH_ELEMENT, PLACES_ELEMENT,
+};
+
 use crate::job::{Job, STEP_BYTES, Step, Work};
-use crate::kind::{self, Kind};
-use crate::listing::{Listing, items_text, size_text};
+use crate::kind::{self, Kind, Link};
+use crate::listing::{FreeSpace, Listing, free_space_text, items_text, size_text};
 use crate::names::{
-    self, Name, copy_name, extension_start, free_path, is_valid, is_within, joined,
-    new_folder_name, parent,
+    self, Name, copy_name, extension_start, free_path, is_valid, is_within, joined, link_name,
+    link_target_path, new_folder_name, parent, resolved,
 };
 use crate::trash::{RestoreError, Trash, make_folders};
 use core::fmt::Write;
@@ -39,8 +47,9 @@ use eggos_toolkit::widget::{
 pub const TITLE: &str = "Files";
 /// The content's size when it opens.
 pub const DEFAULT_SIZE: (u32, u32) = (720, 480);
-/// The smallest content.
-pub const MINIMUM_SIZE: (u32, u32) = (480, 300);
+/// The smallest content: tall enough for every place, the host share and the work disk
+/// included, above the status bar (docs/ux/files-work-place-v0.3.md).
+pub const MINIMUM_SIZE: (u32, u32) = (480, 324);
 pub use crate::trash::HOME;
 /// Where the home folders' file system is mounted: what is in it can be trashed.
 pub const HOMES: &[u8] = b"/home";
@@ -50,6 +59,8 @@ pub const HOST_SHARE: &[u8] = b"/media/host";
 pub const MEDIA: &[u8] = b"/media";
 /// The memory file system's folder, which has no Trash.
 pub const TMP: &[u8] = b"/tmp";
+/// Where the work disk the host attached is mounted (D166): writable, with no Trash.
+pub const WORK: &[u8] = b"/work";
 /// How long a notice shows.
 pub const NOTICE_MS: u32 = 3000;
 /// The largest text file opened in the Terminal, when the Text Editor is not installed.
@@ -79,13 +90,17 @@ pub(crate) const SIZE_END_FROM_RIGHT: i32 = 144;
 pub(crate) const TIME_WIDTH: i32 = 128;
 pub(crate) const COLUMN_GAP: i32 = 8;
 pub(crate) const SIZE_WIDTH: i32 = 80;
+pub(crate) const STATUS_TEXT_X: i32 = 12;
+pub(crate) const STATUS_TEXT_TOP: i32 = 4;
+pub(crate) const STATUS_END_FROM_RIGHT: i32 = 12;
+pub(crate) const STATUS_GAP: i32 = 16;
 const DOUBLE_CLICK_MS: u32 = 400;
 const CARET_BLINK_MS: u32 = 500;
 const TYPE_AHEAD_MS: u32 = 1000;
 const HISTORY: usize = 16;
 const WHEEL_ROWS: i32 = 3;
 const MAX_REQUESTS: usize = 4;
-const MAX_PLACES: usize = 9;
+const MAX_PLACES: usize = 10;
 const PROPERTIES_LINES: usize = 5;
 
 mod code {
@@ -118,6 +133,8 @@ mod item {
     pub const RELOAD: u8 = 12;
     pub const EMPTY_TRASH: u8 = 13;
     pub const RESTORE: u8 = 14;
+    pub const MAKE_LINK: u8 = 15;
+    pub const SHOW_ORIGINAL: u8 = 16;
 }
 
 /// A place in the sidebar.
@@ -129,6 +146,7 @@ pub enum Place {
     Desktop,
     Tmp,
     HostShare,
+    WorkDisk,
     Apps,
     System,
     Trash,
@@ -144,6 +162,7 @@ impl Place {
             Self::Desktop => "Desktop",
             Self::Tmp => "tmp",
             Self::HostShare => "Host share",
+            Self::WorkDisk => "Work disk",
             Self::Apps => "Apps",
             Self::System => "System",
             Self::Trash if windows => "Recycle Bin",
@@ -167,6 +186,7 @@ impl Place {
             Self::Desktop => in_home(b"Desktop"),
             Self::Tmp => folder(TMP),
             Self::HostShare => folder(HOST_SHARE),
+            Self::WorkDisk => folder(WORK),
             Self::Apps => folder(APPLICATIONS),
             Self::System => folder(b"/"),
             Self::Trash => Location::Trash,
@@ -334,6 +354,7 @@ pub struct FilesWindow {
     history: [Location; HISTORY],
     history_length: usize,
     listing: Listing,
+    free_space: FreeSpace,
     selected: Option<usize>,
     offset: i32,
     focus: Focus,
@@ -398,6 +419,7 @@ impl FilesWindow {
             history: [home; HISTORY],
             history_length: 0,
             listing: Listing::new(),
+            free_space: FreeSpace::Unknown,
             selected: None,
             offset: 0,
             focus: Focus::List,
@@ -407,6 +429,7 @@ impl FilesWindow {
             path_field: Field {
                 text: Text::new(),
                 caret: 0,
+                anchor: 0,
                 scroll: 0,
                 placeholder: "",
                 escape: Escape::Revert,
@@ -701,8 +724,16 @@ impl FilesWindow {
         }
     }
 
+    fn work_disk_attached(files: &mut impl Files) -> bool {
+        match (files.status(WORK), files.status(b"/")) {
+            (Ok(work), Ok(root)) => work.device != root.device,
+            _ => false,
+        }
+    }
+
     fn set_places(&mut self, files: &mut impl Files) {
         let mounted = Self::share_mounted(files);
+        let attached = Self::work_disk_attached(files);
         let all = [
             Place::Home,
             Place::Documents,
@@ -710,13 +741,19 @@ impl FilesWindow {
             Place::Desktop,
             Place::Tmp,
             Place::HostShare,
+            Place::WorkDisk,
             Place::Apps,
             Place::System,
             Place::Trash,
         ];
         self.place_count = 0;
         for place in all {
-            if place == Place::HostShare && !mounted {
+            let hidden = match place {
+                Place::HostShare => !mounted,
+                Place::WorkDisk => !attached,
+                _ => false,
+            };
+            if hidden {
                 continue;
             }
             self.places[self.place_count] = place;
@@ -738,7 +775,7 @@ impl FilesWindow {
             Location::Trash => Text::from(Place::Trash.label(self.windows_words)),
         };
         self.path_field.text = text;
-        self.path_field.caret = text.len();
+        self.path_field.place_caret(text.len());
         self.path_field.scroll = 0;
         let rect = self.path_field_rect();
         widget::keep_caret_visible(&mut self.path_field, rect);
@@ -754,6 +791,7 @@ impl FilesWindow {
             Location::Folder(folder) => self.listing.read_folder(files, &folder),
             Location::Trash => self.listing.read_trash(files, &self.trash),
         }
+        self.free_space = self.read_free_space(files);
         self.selected = keep.and_then(|name| self.listing.find(name.as_bytes()));
         if self
             .rename
@@ -766,6 +804,67 @@ impl FilesWindow {
         }
         self.clamp_offset();
         self.damage_all();
+    }
+
+    fn read_free_space(&self, files: &mut impl Files) -> FreeSpace {
+        if self.listing.error().is_some() {
+            return FreeSpace::Unknown;
+        }
+        let folder = match &self.location {
+            Location::Folder(folder) => folder.as_bytes(),
+            Location::Trash => HOME,
+        };
+        let detached = (is_within(folder, HOST_SHARE)
+            && !self.places().contains(&Place::HostShare))
+            || (is_within(folder, WORK) && !self.places().contains(&Place::WorkDisk));
+        if detached {
+            return FreeSpace::Unknown;
+        }
+        match files.space(folder) {
+            Ok(space) if space.read_only => FreeSpace::ReadOnly,
+            Ok(space) if space.total > 0 => FreeSpace::Bytes(space.available),
+            _ => FreeSpace::Unknown,
+        }
+    }
+
+    /// What the status bar says about the folder's file system (D171).
+    pub fn free_space(&self) -> FreeSpace {
+        self.free_space
+    }
+
+    /// Where the status bar's left text, `N items`, is.
+    pub fn items_rect(&self) -> Rect {
+        let status = self.status_bar();
+        let text = items_text(self.listing.len());
+        Rect::new(
+            STATUS_TEXT_X,
+            status.y + STATUS_TEXT_TOP,
+            eggos_toolkit::text::width(text.as_str()),
+            widget::LINE_HEIGHT,
+        )
+    }
+
+    /// Where the status bar's right text may be, whatever it says: what a test that cannot
+    /// know the guest's disks leaves out of a frame it compares.
+    pub fn free_space_area(&self) -> Rect {
+        let items = self.items_rect();
+        let left = items.right() + STATUS_GAP;
+        let right = self.width - STATUS_END_FROM_RIGHT;
+        Rect::new(left, items.y, (right - left).max(0), items.height)
+    }
+
+    /// Where the status bar's right text, the free space, is: the cell a test that cannot know
+    /// the guest's disk skips; `None` when nothing is drawn there, for want of something to say
+    /// or of room beside `N items`.
+    pub fn free_space_rect(&self) -> Option<Rect> {
+        let text = free_space_text(self.free_space)?;
+        let width = eggos_toolkit::text::width(text.as_str());
+        let x = self.width - STATUS_END_FROM_RIGHT - width;
+        let items = self.items_rect();
+        if x < items.right() + STATUS_GAP {
+            return None;
+        }
+        Some(Rect::new(x, items.y, width, items.height))
     }
 
     fn clamp_offset(&mut self) {
@@ -793,8 +892,12 @@ impl FilesWindow {
     }
 
     fn go(&mut self, files: &mut impl Files, location: Location) {
+        self.go_selecting(files, location, None);
+    }
+
+    fn go_selecting(&mut self, files: &mut impl Files, location: Location, select: Option<&[u8]>) {
         if let Location::Folder(folder) = &location {
-            match files.status(folder.as_bytes()) {
+            match files.status_following(folder.as_bytes()) {
                 Ok(status) if status.kind == files::Kind::Directory => {}
                 Ok(_) => {
                     self.show_notice(format_args!(
@@ -821,7 +924,7 @@ impl FilesWindow {
             self.history[self.history_length] = self.location;
             self.history_length += 1;
         }
-        self.enter(files, location, None);
+        self.enter(files, location, select);
     }
 
     fn enter(&mut self, files: &mut impl Files, location: Location, select: Option<&[u8]>) {
@@ -1230,7 +1333,8 @@ impl FilesWindow {
                 pressed: true,
                 ..
             } if rect.contains(x, y) => {
-                rename.field.caret = widget::caret_at(&rename.field, rect, x);
+                let at = widget::caret_at(&rename.field, rect, x);
+                rename.field.place_caret(at);
                 self.rename = Some(rename);
                 self.restart_caret();
                 self.damage.add(rect);
@@ -1252,7 +1356,7 @@ impl FilesWindow {
             self.show_notice(format_args!("The host share is read-only."));
             return;
         }
-        if let Some(Kind::App(_)) = self.listing.get(index).map(|entry| entry.kind) {
+        if self.is_installed_app(index) {
             self.show_notice(format_args!(
                 "An installed app keeps its name: use Uninstall... to remove it."
             ));
@@ -1274,6 +1378,7 @@ impl FilesWindow {
         let mut field = Field {
             text,
             caret,
+            anchor: caret,
             scroll: 0,
             placeholder: "",
             escape: Escape::Revert,
@@ -1482,7 +1587,7 @@ impl FilesWindow {
     fn focus_path(&mut self) {
         self.focus = Focus::Path;
         self.path_before = self.path_field.text;
-        self.path_field.caret = self.path_field.text.len();
+        self.path_field.place_caret(self.path_field.text.len());
         let rect = self.path_field_rect();
         widget::keep_caret_visible(&mut self.path_field, rect);
         self.restart_caret();
@@ -1689,7 +1794,8 @@ impl FilesWindow {
             if self.focus != Focus::Path {
                 self.focus_path();
             }
-            self.path_field.caret = widget::caret_at(&self.path_field, field, x);
+            let at = widget::caret_at(&self.path_field, field, x);
+            self.path_field.place_caret(at);
             self.restart_caret();
             self.damage.add(self.toolbar());
             return;
@@ -1832,11 +1938,11 @@ impl FilesWindow {
                 add(item("Properties", true, item::PROPERTIES));
             }
             MenuOn::Row(index) => {
-                let kind = self
+                let (kind, link) = self
                     .listing
                     .get(index)
-                    .map_or(Kind::Other, |entry| entry.kind);
-                if let Kind::App(_) = kind {
+                    .map_or((Kind::Other, Link::None), |entry| (entry.kind, entry.link));
+                if self.is_installed_app(index) {
                     add(item("Open", true, item::OPEN));
                     add(item("Uninstall...", true, item::UNINSTALL));
                     add(Entry::Separator);
@@ -1847,6 +1953,13 @@ impl FilesWindow {
                 if kind.installs() {
                     add(item("Install...", true, item::INSTALL));
                 }
+                if link != Link::None {
+                    let label = match windows {
+                        true => "Open file location",
+                        false => "Show Original",
+                    };
+                    add(item(label, link == Link::Sound, item::SHOW_ORIGINAL));
+                }
                 add(Entry::Separator);
                 add(item("Cut", !share, item::CUT));
                 add(item("Copy", true, item::COPY));
@@ -1854,6 +1967,11 @@ impl FilesWindow {
                     add(item("Paste", pasteable, item::PASTE));
                 }
                 add(Entry::Separator);
+                let make_link = match windows {
+                    true => "Create shortcut",
+                    false => "Make Link",
+                };
+                add(item(make_link, !share, item::MAKE_LINK));
                 add(item("Rename", !share, item::RENAME));
                 add(item(delete_label, !share, item::DELETE));
                 add(Entry::Separator);
@@ -1871,7 +1989,7 @@ impl FilesWindow {
         match (id, row) {
             (item::OPEN, Some(index)) => self.open(files, index),
             (item::INSTALL, Some(index)) => {
-                if let Some(path) = self.entry_path(index) {
+                if let Some(path) = self.real_path(files, index) {
                     self.ask(Request::Install(path));
                 }
             }
@@ -1896,7 +2014,114 @@ impl FilesWindow {
             (item::RELOAD, _) => self.reload(files),
             (item::EMPTY_TRASH, _) => self.ask_to_empty(files),
             (item::RESTORE, Some(index)) => self.restore(files, index),
+            (item::MAKE_LINK, Some(index)) => self.make_link(files, index),
+            (item::SHOW_ORIGINAL, Some(index)) => self.show_original(files, index),
             _ => {}
+        }
+    }
+
+    fn is_installed_app(&self, index: usize) -> bool {
+        self.listing
+            .get(index)
+            .is_some_and(|entry| matches!(entry.kind, Kind::App(_)) && entry.link == Link::None)
+    }
+
+    fn real_path(&self, files: &mut impl Files, index: usize) -> Option<Path> {
+        let path = self.entry_path(index)?;
+        match self.listing.get(index).map(|entry| entry.link) {
+            Some(Link::None) | None => Some(path),
+            Some(_) => Some(resolved(files, path.as_bytes()).unwrap_or(path)),
+        }
+    }
+
+    fn make_link(&mut self, files: &mut impl Files, index: usize) {
+        let (Some(folder), Some(target), Some(entry)) = (
+            self.folder().copied(),
+            self.entry_path(index),
+            self.listing.get(index).copied(),
+        ) else {
+            return;
+        };
+        if self.on_share() {
+            self.show_notice(format_args!("The host share is read-only."));
+            return;
+        }
+        let owned = Name::from(self.listing.name(index)).unwrap_or_default();
+        let name = owned.as_bytes();
+        let folder_row = entry.kind.is_folder();
+        let path = free_path(files, folder.as_bytes(), |number| {
+            link_name(name, folder_row, number)
+        });
+        let made = path.and_then(|path| {
+            files
+                .make_link(target.as_bytes(), path.as_bytes())
+                .map(|()| path)
+        });
+        match made {
+            Ok(path) => {
+                self.reload(files);
+                if let Some(index) = self.listing.find(path.file_name()) {
+                    self.begin_rename(index);
+                }
+            }
+            Err(error) => self.show_notice(format_args!(
+                "Could not make a link to {} ({}).",
+                Shown(name),
+                errno_text(error)
+            )),
+        }
+    }
+
+    fn show_original(&mut self, files: &mut impl Files, index: usize) {
+        let (Some(folder), Some(path)) = (self.folder().copied(), self.entry_path(index)) else {
+            return;
+        };
+        let mut target = [0u8; files::PATH_CAPACITY];
+        let original = files
+            .read_link(path.as_bytes(), &mut target)
+            .and_then(|length| {
+                link_target_path(folder.as_bytes(), &target[..length]).ok_or(Errno::ENAMETOOLONG)
+            });
+        let original = match original {
+            Ok(original) => original,
+            Err(error) => {
+                self.show_notice(format_args!(
+                    "Could not open {} ({}).",
+                    Shown(path.file_name()),
+                    errno_text(error)
+                ));
+                return;
+            }
+        };
+        let Some(above) = Path::from(parent(original.as_bytes())) else {
+            return;
+        };
+        let name = Name::from(original.file_name()).unwrap_or_default();
+        self.go_selecting(files, Location::Folder(above), Some(name.as_bytes()));
+    }
+
+    fn broken_link(&mut self, files: &mut impl Files, path: &Path, name: &[u8]) {
+        let error = files
+            .status_following(path.as_bytes())
+            .err()
+            .unwrap_or(Errno::ENOENT);
+        let mut target = [0u8; files::PATH_CAPACITY];
+        let length = files.read_link(path.as_bytes(), &mut target).unwrap_or(0);
+        let target = &target[..length];
+        match error {
+            Errno::ENOENT | Errno::ENOTDIR => self.show_notice(format_args!(
+                "{} points to {}, which does not exist.",
+                Shown(name),
+                Shown(target)
+            )),
+            Errno::ELOOP => {
+                self.show_notice(format_args!("{} points back to itself.", Shown(name)))
+            }
+            error => self.show_notice(format_args!(
+                "Could not open {} ({}).",
+                Shown(name),
+                errno_text(error)
+            )),
         }
     }
 
@@ -1920,17 +2145,23 @@ impl FilesWindow {
         };
         let owned = Name::from(self.listing.name(index)).unwrap_or_default();
         let name = owned.as_bytes();
+        if entry.link == Link::Broken {
+            self.broken_link(files, &path, name);
+            return;
+        }
         match entry.kind {
             Kind::Folder => self.go(files, Location::Folder(path)),
             Kind::App(_) => {
-                if let Some(name) = Name::from(name) {
-                    self.ask(Request::OpenApp(name));
+                let real = self.real_path(files, index).unwrap_or(path);
+                if let Some(app) = Name::from(real.file_name()) {
+                    self.ask(Request::OpenApp(app));
                 }
             }
             Kind::Bundle
             | Kind::Archive
             | Kind::Program(manifest::Source::Windows | manifest::Source::Macos) => {
-                self.ask(Request::Install(path))
+                let real = self.real_path(files, index).unwrap_or(path);
+                self.ask(Request::Install(real))
             }
             Kind::Program(manifest::Source::Linux) => self.type_in_terminal(b"", &path),
             Kind::Text if files.status(TEXT_EDITOR).is_ok() => {
@@ -1996,13 +2227,21 @@ impl FilesWindow {
             self.damage_middle();
             return;
         }
-        if names::is_inside(folder.as_bytes(), clip.path.as_bytes()) {
-            self.show_notice(format_args!("Cannot paste a folder into itself."));
-            return;
-        }
         let is_folder = files
             .status(clip.path.as_bytes())
             .is_ok_and(|status| status.kind == files::Kind::Directory);
+        let lands_inside = is_folder
+            && match (
+                resolved(files, folder.as_bytes()),
+                resolved(files, clip.path.as_bytes()),
+            ) {
+                (Ok(into), Ok(source)) => is_within(into.as_bytes(), source.as_bytes()),
+                _ => false,
+            };
+        if lands_inside || names::is_inside(folder.as_bytes(), clip.path.as_bytes()) {
+            self.show_notice(format_args!("Cannot paste a folder into itself."));
+            return;
+        }
         let target = free_path(files, folder.as_bytes(), |number| {
             copy_name(name, is_folder, number)
         });
@@ -2038,15 +2277,11 @@ impl FilesWindow {
         };
         let owned = Name::from(self.listing.name(index)).unwrap_or_default();
         let name = owned.as_bytes();
-        let kind = self
-            .listing
-            .get(index)
-            .map_or(Kind::Other, |entry| entry.kind);
         if self.on_share() {
             self.show_notice(format_args!("The host share is read-only."));
             return;
         }
-        if let Kind::App(_) = kind {
+        if self.is_installed_app(index) {
             self.uninstall(index);
             return;
         }
@@ -2068,12 +2303,16 @@ impl FilesWindow {
         }
         let mut first = Line::new();
         let _ = write!(first, "Delete {} permanently?", Shown(name));
-        let second = match self
-            .folder()
-            .is_some_and(|folder| is_within(folder.as_bytes(), TMP))
-        {
-            true => "/tmp is not kept, so it has no Trash. This cannot be undone.",
-            false => "This cannot be undone.",
+        let within = |place: &[u8]| {
+            self.folder()
+                .is_some_and(|folder| is_within(folder.as_bytes(), place))
+        };
+        let second = if within(TMP) {
+            "/tmp is not kept, so it has no Trash. This cannot be undone."
+        } else if within(WORK) {
+            "/work is the host's folder, so it has no Trash. This cannot be undone."
+        } else {
+            "This cannot be undone."
         };
         let panel = Panel::new(&[first.as_str(), second], &["Cancel", "Delete"], Some(1), 0);
         self.panel = Some((panel, Asked::DeletePermanently(path)));
@@ -2140,9 +2379,14 @@ impl FilesWindow {
         let name = self.listing.name(index);
         let mut lines = [Line::new(); PROPERTIES_LINES];
         lines[0].push_bytes(name);
-        let kind = kind::describe(files, path.as_bytes(), entry.kind, self.machine);
+        let kind = kind::describe(files, path.as_bytes(), entry.kind, entry.link, self.machine);
         let _ = write!(lines[1], "Kind: {}", kind.as_str());
         match entry.kind {
+            _ if entry.link != Link::None => {
+                let mut target = [0u8; files::PATH_CAPACITY];
+                let length = files.read_link(path.as_bytes(), &mut target).unwrap_or(0);
+                let _ = write!(lines[2], "Target: {}", Shown(&target[..length]));
+            }
             Kind::Folder | Kind::Bundle => {
                 let mut count = 0;
                 let mut scratch = [0u8; 256];

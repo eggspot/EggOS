@@ -1,7 +1,7 @@
 //! Directory listing as `FindFirstFileW` does it: a search path splits into the directory and
-//! the last component's wildcard pattern (`*` any run of characters, `?` one character,
-//! compared ignoring ASCII case as Windows compares names, and `*.*` everything), and each
-//! entry that matches fills a `WIN32_FIND_DATAW` from its `stat`.
+//! the last component's wildcard pattern, matched with DOS's rules ([`matches`]: `*`, `?`,
+//! `*.*`, `*.` and the DOS wildcards `<`, `>` and `"`, compared ignoring ASCII case as Windows
+//! compares names), and each entry that matches fills a `WIN32_FIND_DATAW` from its `stat`.
 
 use crate::text;
 
@@ -69,17 +69,85 @@ pub fn split(path: &[u8]) -> (&[u8], &[u8]) {
     }
 }
 
-/// Whether `name` matches the wildcard `pattern` (UTF-8 both).
-pub fn matches(pattern: &[u8], name: &[u8]) -> bool {
-    if pattern == b"*.*" || pattern == b"*" {
-        return true;
+/// Where the pattern starts in the program argument `argument` that the C runtime expands
+/// (`_dowildcard`, D189): after its last `\` or `/`, or after the drive's `:`, when that last
+/// component holds `*` or `?`; `None` for an argument kept as it is (no wildcard there, or a
+/// `:` other than the drive's).
+pub fn argument_pattern_start(argument: &[u8]) -> Option<usize> {
+    let other_colon = argument
+        .iter()
+        .enumerate()
+        .any(|(at, byte)| *byte == b':' && at != 1);
+    if other_colon {
+        return None;
     }
-    if let Some(stem) = pattern.strip_suffix(b".*")
-        && matches_exactly(stem, name)
+    let start = match argument
+        .iter()
+        .rposition(|byte| matches!(byte, b'\\' | b'/'))
     {
+        Some(at) => at + 1,
+        None if argument.get(1) == Some(&b':') => 2,
+        None => 0,
+    };
+    argument[start..]
+        .iter()
+        .any(|byte| matches!(byte, b'*' | b'?'))
+        .then_some(start)
+}
+
+/// Whether `name` matches the wildcard `pattern` (UTF-8 both) as `FindFirstFileW` matches
+/// names, ignoring ASCII case: `*` any run of characters, `?` one character or none before a
+/// dot or the end, a `.` before a wildcard or at the end a dot or the end (`*.*` everything,
+/// `readme.*` `readme` too), `*.` a name without an extension, and the DOS wildcards `<` (any
+/// run up to the last dot), `>` (as `?`) and `"` (a dot or the end). A pattern without
+/// wildcards names one entry, its trailing dots dropped.
+pub fn matches(pattern: &[u8], name: &[u8]) -> bool {
+    if pattern == b"*" || pattern == b"*.*" {
         return true;
     }
-    matches_exactly(pattern, name)
+    if name.len() > MAX_NAME_BYTES {
+        return false;
+    }
+    if !pattern.iter().any(|byte| b"*?<>\"".contains(byte)) {
+        let literal = match pattern.iter().rposition(|byte| *byte != b'.') {
+            Some(last) => &pattern[..=last],
+            None => pattern,
+        };
+        return literal.eq_ignore_ascii_case(name);
+    }
+    let last_dot = name.iter().rposition(|byte| *byte == b'.');
+    let mut reached = Positions::none();
+    reached.add(0);
+    for index in 0..pattern.len() {
+        reached = reached.step(wildcard(pattern, index), name, last_dot);
+    }
+    reached.has(name.len())
+}
+
+const MAX_NAME_BYTES: usize = 1023;
+const POSITION_WORDS: usize = (MAX_NAME_BYTES + 1) / 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wildcard {
+    AnyRun,
+    RunToLastDot,
+    OneOrNone,
+    DotOrEnd,
+    Byte(u8),
+}
+
+fn wildcard(pattern: &[u8], index: usize) -> Wildcard {
+    let next = pattern.get(index + 1).copied();
+    let last = index + 1 == pattern.len();
+    match pattern[index] {
+        b'*' if next == Some(b'.') && index + 2 == pattern.len() => Wildcard::RunToLastDot,
+        b'*' => Wildcard::AnyRun,
+        b'<' => Wildcard::RunToLastDot,
+        b'?' | b'>' => Wildcard::OneOrNone,
+        b'.' if last || matches!(next, Some(b'*' | b'?')) => Wildcard::DotOrEnd,
+        b'"' => Wildcard::DotOrEnd,
+        byte => Wildcard::Byte(byte),
+    }
 }
 
 fn char_length(bytes: &[u8]) -> usize {
@@ -91,41 +159,67 @@ fn char_length(bytes: &[u8]) -> usize {
     }
 }
 
-fn matches_exactly(pattern: &[u8], name: &[u8]) -> bool {
-    let (mut p, mut n) = (0, 0);
-    let mut star: Option<(usize, usize)> = None;
-    while n < name.len() {
-        match pattern.get(p) {
-            Some(b'*') => {
-                star = Some((p + 1, n));
-                p += 1;
-                continue;
+fn starts_char(name: &[u8], at: usize) -> bool {
+    name.get(at).is_none_or(|byte| !(0x80..0xc0).contains(byte))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Positions([u64; POSITION_WORDS]);
+
+impl Positions {
+    const fn none() -> Self {
+        Self([0; POSITION_WORDS])
+    }
+
+    fn add(&mut self, at: usize) {
+        self.0[at / 64] |= 1 << (at % 64);
+    }
+
+    fn has(&self, at: usize) -> bool {
+        self.0[at / 64] & (1 << (at % 64)) != 0
+    }
+
+    fn add_run(&mut self, name: &[u8], from: usize, to: usize) {
+        for at in from..=to {
+            if starts_char(name, at) {
+                self.add(at);
             }
-            Some(b'?') => {
-                p += 1;
-                n += char_length(&name[n..]);
-                continue;
-            }
-            Some(byte) if byte.eq_ignore_ascii_case(&name[n]) => {
-                p += 1;
-                n += 1;
-                continue;
-            }
-            _ => {}
-        }
-        match star {
-            Some((after, from)) => {
-                let next = from + char_length(&name[from..]);
-                star = Some((after, next));
-                p = after;
-                n = next;
-            }
-            None => return false,
         }
     }
-    pattern[p.min(pattern.len())..]
-        .iter()
-        .all(|byte| *byte == b'*')
+
+    fn step(&self, wildcard: Wildcard, name: &[u8], last_dot: Option<usize>) -> Self {
+        let mut next = Self::none();
+        for from in (0..=name.len()).filter(|at| self.has(*at)) {
+            match wildcard {
+                Wildcard::AnyRun => {
+                    next.add_run(name, from, name.len());
+                    break;
+                }
+                Wildcard::RunToLastDot => {
+                    let end = last_dot.filter(|dot| *dot >= from).unwrap_or(name.len());
+                    next.add_run(name, from, end);
+                }
+                Wildcard::OneOrNone => match name.get(from) {
+                    None | Some(b'.') => next.add(from),
+                    Some(_) => next.add(from + char_length(&name[from..])),
+                },
+                Wildcard::DotOrEnd => match name.get(from) {
+                    None => next.add(from),
+                    Some(b'.') => next.add(from + 1),
+                    Some(_) => {}
+                },
+                Wildcard::Byte(byte) => {
+                    if name
+                        .get(from)
+                        .is_some_and(|own| own.eq_ignore_ascii_case(&byte))
+                    {
+                        next.add(from + 1);
+                    }
+                }
+            }
+        }
+        next
+    }
 }
 
 fn put_u32(out: &mut [u8], at: usize, value: u32) {
@@ -172,6 +266,43 @@ pub fn fill_file_information(out: &mut [u8; FILE_INFORMATION_SIZE], entry: &Entr
     put_u32(out, 48, entry.index as u32);
 }
 
+/// The size of `FILE_BASIC_INFO`.
+pub const BASIC_INFORMATION_SIZE: usize = 40;
+/// The size of `FILE_STANDARD_INFO`.
+pub const STANDARD_INFORMATION_SIZE: usize = 24;
+/// The size of `FILE_ATTRIBUTE_TAG_INFO`.
+pub const ATTRIBUTE_TAG_INFORMATION_SIZE: usize = 8;
+
+/// Fills `out`, a `FILE_BASIC_INFO` (`GetFileInformationByHandleEx`'s `FileBasicInfo`): the
+/// creation, access, write and change times and the attributes.
+pub fn fill_basic_information(out: &mut [u8; BASIC_INFORMATION_SIZE], entry: &Entry) {
+    out.fill(0);
+    put_u64(out, 0, entry.creation_time);
+    put_u64(out, 8, entry.last_access_time);
+    put_u64(out, 16, entry.last_write_time);
+    put_u64(out, 24, entry.creation_time);
+    put_u32(out, 32, entry.attributes);
+}
+
+/// Fills `out`, a `FILE_STANDARD_INFO`: the size as both the allocation and the end of the
+/// file, the links, never a pending delete, and whether it is a directory.
+pub fn fill_standard_information(out: &mut [u8; STANDARD_INFORMATION_SIZE], entry: &Entry) {
+    out.fill(0);
+    put_u64(out, 0, entry.size);
+    put_u64(out, 8, entry.size);
+    put_u32(out, 16, entry.links);
+    out[21] = u8::from(entry.attributes & attribute::DIRECTORY != 0);
+}
+
+/// Fills `out`, a `FILE_ATTRIBUTE_TAG_INFO`: the attributes and no reparse tag.
+pub fn fill_attribute_tag_information(
+    out: &mut [u8; ATTRIBUTE_TAG_INFORMATION_SIZE],
+    entry: &Entry,
+) {
+    put_u32(out, 0, entry.attributes);
+    put_u32(out, 4, 0);
+}
+
 /// Fills `out`, a `WIN32_FILE_ATTRIBUTE_DATA` (`GetFileAttributesExW`'s standard level).
 pub fn fill_attribute_data(out: &mut [u8; ATTRIBUTE_DATA_SIZE], entry: &Entry) {
     put_u32(out, 0, entry.attributes);
@@ -202,6 +333,18 @@ mod tests {
             (b"readme.*", b"readme"),
             (b"*", b""),
             (b"**", b"x"),
+            (b"a??", b"a"),
+            (b"a??", b"abc"),
+            (b"a?.txt", b"a.txt"),
+            (b"*.", b"README"),
+            (b"readme.", b"readme"),
+            (b"FILE.TXT", b"file.txt"),
+            (b"..", b".."),
+            (b"<.txt", b"a.b.txt"),
+            (b"a\"txt", b"a.txt"),
+            (b"a\"", b"a"),
+            (b">>>.c", b"ab.c"),
+            (b"a*.*", b"abc"),
         ] {
             assert!(
                 matches(pattern, name),
@@ -215,10 +358,16 @@ mod tests {
             (b"windows-?ools.exe", b"windows-console.exe"),
             (b"host???", b"hostname"),
             (b"a*b*c", b"aXXbYY"),
-            (b"?", b""),
             (b"abc", b"abcd"),
             (b"", b"x"),
             (b"??ber.txt", "über.txt".as_bytes()),
+            (b"a??", b"abcd"),
+            (b"a?", b"a.b"),
+            (b"*.", b"a.txt"),
+            (b"..", b"."),
+            (b"<.txt", b"a.txt.bak"),
+            (b"a\"txt", b"abtxt"),
+            (b"?", b"ab"),
         ] {
             assert!(
                 !matches(pattern, name),
@@ -296,5 +445,46 @@ mod tests {
         let mut data = [0u8; ATTRIBUTE_DATA_SIZE];
         fill_attribute_data(&mut data, &entry);
         assert_eq!(&data[32..36], &7u32.to_le_bytes());
+    }
+
+    #[test]
+    fn the_handle_information_classes_have_windows_layout() {
+        let entry = Entry {
+            attributes: attribute::DIRECTORY,
+            creation_time: 3,
+            last_access_time: 4,
+            last_write_time: 5,
+            size: 7,
+            links: 2,
+            ..Entry::default()
+        };
+        let mut basic = [0xffu8; BASIC_INFORMATION_SIZE];
+        fill_basic_information(&mut basic, &entry);
+        assert_eq!(&basic[0..8], &3u64.to_le_bytes());
+        assert_eq!(&basic[8..16], &4u64.to_le_bytes());
+        assert_eq!(&basic[16..24], &5u64.to_le_bytes());
+        assert_eq!(&basic[24..32], &3u64.to_le_bytes());
+        assert_eq!(&basic[32..40], &[0x10, 0, 0, 0, 0, 0, 0, 0]);
+        let mut standard = [0xffu8; STANDARD_INFORMATION_SIZE];
+        fill_standard_information(&mut standard, &entry);
+        assert_eq!(&standard[0..8], &7u64.to_le_bytes());
+        assert_eq!(&standard[8..16], &7u64.to_le_bytes());
+        assert_eq!(&standard[16..20], &2u32.to_le_bytes());
+        assert_eq!(&standard[20..24], &[0, 1, 0, 0]);
+        let mut tag = [0xffu8; ATTRIBUTE_TAG_INFORMATION_SIZE];
+        fill_attribute_tag_information(&mut tag, &entry);
+        assert_eq!(tag, [0x10, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn arguments_expand_only_a_wildcard_in_their_last_component() {
+        assert_eq!(argument_pattern_start(b"*.txt"), Some(0));
+        assert_eq!(argument_pattern_start(b"C:\\tmp\\x\\a?.c"), Some(9));
+        assert_eq!(argument_pattern_start(b"dir/*"), Some(4));
+        assert_eq!(argument_pattern_start(b"C:*.txt"), Some(2));
+        assert_eq!(argument_pattern_start(b"plain.txt"), None);
+        assert_eq!(argument_pattern_start(b"a*\\b.txt"), None);
+        assert_eq!(argument_pattern_start(b"x:y:*.c"), None);
+        assert_eq!(argument_pattern_start(b"http://*"), None);
     }
 }

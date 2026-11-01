@@ -1,8 +1,8 @@
 use crate::checksum::Crc64;
 use crate::layout::{
     BITS_PER_BLOCK, BLOCK_SIZE, Block, DESCRIPTOR_MAGIC, Descriptor, FIRST_FREE_INODE,
-    FORMATTING_MAGIC, Geometry, Inode, InodeKind, ROOT_INODE, commit_matches, encode_commit,
-    u64_at, zeroed_block,
+    FORMATTING_MAGIC, Geometry, Inode, InodeKind, MAX_LABEL, ROOT_INODE, commit_matches,
+    encode_commit, u64_at, zeroed_block,
 };
 use crate::volume::Volume;
 use crate::{Disk, DiskError, Error, MountError, Mounted};
@@ -54,6 +54,20 @@ pub enum FormatError {
     TooSmall,
     /// The disk failed a write.
     Io,
+    /// The size asked for is larger than the disk.
+    LargerThanDisk,
+    /// The label is longer than [`crate::MAX_LABEL`] bytes or holds NUL.
+    BadLabel,
+}
+
+/// How [`format_with`] makes a file system.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FormatOptions<'a> {
+    /// The blocks of [`crate::BLOCK_SIZE`] bytes to use from the start of the disk; all of it
+    /// when `None`.
+    pub blocks: Option<u64>,
+    /// The volume's name, empty for none.
+    pub label: &'a str,
 }
 
 fn bitmap_block(index: u32, used_below: u32, total: u32) -> alloc::boxed::Box<Block> {
@@ -72,7 +86,26 @@ fn bitmap_block(index: u32, used_below: u32, total: u32) -> alloc::boxed::Box<Bl
 /// stamped `now`. The superblock goes last, after a marker that [`probe`] reads as blank, so a
 /// format that stops midway is done again rather than mounted.
 pub fn format<D: Disk + ?Sized>(disk: &mut D, now: u64) -> Result<(), FormatError> {
-    let geometry = Geometry::for_disk(disk.blocks(), now).ok_or(FormatError::TooSmall)?;
+    format_with(disk, now, &FormatOptions::default())
+}
+
+/// Writes an empty EggFS file system as [`format`] does, on the part of `disk` and with the
+/// label `options` ask for.
+pub fn format_with<D: Disk + ?Sized>(
+    disk: &mut D,
+    now: u64,
+    options: &FormatOptions<'_>,
+) -> Result<(), FormatError> {
+    let blocks = options.blocks.unwrap_or(disk.blocks());
+    if blocks > disk.blocks() {
+        return Err(FormatError::LargerThanDisk);
+    }
+    let label = options.label.as_bytes();
+    if label.len() > MAX_LABEL || label.iter().any(u8::is_ascii_control) {
+        return Err(FormatError::BadLabel);
+    }
+    let mut geometry = Geometry::for_disk(blocks, now).ok_or(FormatError::TooSmall)?;
+    geometry.label[..label.len()].copy_from_slice(label);
     let io = |_: DiskError| FormatError::Io;
     let mut marker = zeroed_block();
     marker[..8].copy_from_slice(&FORMATTING_MAGIC);
@@ -102,10 +135,14 @@ pub fn format<D: Disk + ?Sized>(disk: &mut D, now: u64) -> Result<(), FormatErro
 
 fn is_replayable(geometry: &Geometry, target: u32) -> bool {
     let journal_end = geometry.journal + geometry.journal_blocks;
-    target >= 1 && target < geometry.blocks && !(geometry.journal..journal_end).contains(&target)
+    target < geometry.blocks && !(geometry.journal..journal_end).contains(&target)
 }
 
-fn replay<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<(u64, u32), MountError> {
+fn is_same_superblock(geometry: &Geometry, image: &[u8]) -> bool {
+    Geometry::decode(image).is_some_and(|upgraded| geometry.same_layout(&upgraded))
+}
+
+pub(crate) fn replay<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<(u64, u32), MountError> {
     let io = |_: DiskError| MountError::Io;
     let journal = u64::from(geometry.journal);
     let mut block = zeroed_block();
@@ -141,6 +178,15 @@ fn replay<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<(u64, u32), Moun
     {
         return Err(MountError::Corrupt);
     }
+    for (index, &target) in descriptor.targets.iter().enumerate() {
+        if target == 0 {
+            disk.read(journal + 1 + index as u64, &mut image[..])
+                .map_err(io)?;
+            if !is_same_superblock(geometry, &image[..]) {
+                return Err(MountError::Corrupt);
+            }
+        }
+    }
     let mut recovered = 0;
     for (index, &target) in descriptor.targets.iter().enumerate() {
         disk.read(journal + 1 + index as u64, &mut image[..])
@@ -157,7 +203,7 @@ fn replay<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<(u64, u32), Moun
     Ok((next, recovered))
 }
 
-fn count_clear<D: Disk>(
+pub(crate) fn count_clear<D: Disk>(
     disk: &mut D,
     start: u32,
     blocks: u32,
@@ -185,8 +231,9 @@ fn count_clear<D: Disk>(
 
 impl<D: Disk> Volume<D> {
     /// Mounts the EggFS file system on `disk`, first restoring from the journal a committed
-    /// transaction whose blocks did not all reach their places. On an error the disk comes
-    /// back.
+    /// transaction whose blocks did not all reach their places, then freeing, in a commit of
+    /// its own, the files removed while open that a crash or a power-off left behind. On an
+    /// error the disk comes back.
     pub fn mount(mut disk: D) -> Result<(Self, Mounted), (MountError, D)> {
         let mut block = zeroed_block();
         if disk.read(0, &mut block[..]).is_err() {
@@ -201,6 +248,18 @@ impl<D: Disk> Volume<D> {
         let (sequence, recovered_blocks) = match replay(&mut disk, &geometry) {
             Ok(replayed) => replayed,
             Err(error) => return Err((error, disk)),
+        };
+        let geometry = match recovered_blocks {
+            0 => geometry,
+            _ => {
+                if disk.read(0, &mut block[..]).is_err() {
+                    return Err((MountError::Io, disk));
+                }
+                match Geometry::decode(&block[..]) {
+                    Some(replayed) if geometry.same_layout(&replayed) => replayed,
+                    _ => return Err((MountError::Corrupt, disk)),
+                }
+            }
         };
         let free = count_clear(
             &mut disk,
@@ -223,14 +282,22 @@ impl<D: Disk> Volume<D> {
         let mut volume = Volume::assemble(disk, geometry, sequence);
         volume.free_blocks = free_blocks;
         volume.free_inodes = free_inodes;
-        match volume.inode(ROOT_INODE) {
-            Ok(root) if root.kind == InodeKind::Directory => {
-                volume.root_generation = root.generation;
-                Ok((volume, Mounted { recovered_blocks }))
-            }
-            Ok(_) | Err(Error::Corrupt) => Err((MountError::Corrupt, volume.into_disk())),
-            Err(_) => Err((MountError::Io, volume.into_disk())),
-        }
+        let root = match volume.inode(ROOT_INODE) {
+            Ok(root) if root.kind == InodeKind::Directory => root,
+            Ok(_) | Err(Error::Corrupt) => return Err((MountError::Corrupt, volume.into_disk())),
+            Err(_) => return Err((MountError::Io, volume.into_disk())),
+        };
+        volume.root_generation = root.generation;
+        let freed_orphans = match volume.free_left_orphans() {
+            Ok(freed) => freed,
+            Err(Error::Io) => return Err((MountError::Io, volume.into_disk())),
+            Err(_) => return Err((MountError::Corrupt, volume.into_disk())),
+        };
+        let mounted = Mounted {
+            recovered_blocks,
+            freed_orphans,
+        };
+        Ok((volume, mounted))
     }
 
     /// Commits the changes made since the last commit: journal, commit record, then the blocks

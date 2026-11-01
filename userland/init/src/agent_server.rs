@@ -12,6 +12,13 @@ pub const AGENT_SERVER: &[u8] = b"/usr/libexec/eggmcpd\0";
 /// The argument a server started again gets, with its terminating NUL.
 pub const RESTARTED_ARGUMENT: &[u8] = b"--restarted\0";
 
+/// The file whose presence starts the network server (`agent network on`, D193), with its
+/// terminating NUL.
+pub const NETWORK_ENABLED: &[u8] = b"/var/lib/eggos/agent-network\0";
+
+/// The argument that starts the server for agents on the network, with its terminating NUL.
+pub const NETWORK_ARGUMENT: &[u8] = b"--network\0";
+
 /// A run shorter than this counts as a quick end.
 pub const QUICK_END_MS: u64 = 5000;
 
@@ -65,7 +72,13 @@ mod tests {
 
     #[test]
     fn the_paths_and_the_argument_are_c_strings() {
-        for text in [AGENT_CHANNEL, AGENT_SERVER, RESTARTED_ARGUMENT] {
+        for text in [
+            AGENT_CHANNEL,
+            AGENT_SERVER,
+            RESTARTED_ARGUMENT,
+            NETWORK_ENABLED,
+            NETWORK_ARGUMENT,
+        ] {
             assert_eq!(
                 text.iter().position(|&byte| byte == 0),
                 Some(text.len() - 1)

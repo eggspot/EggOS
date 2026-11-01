@@ -208,3 +208,18 @@ fn a_held_transmission_takes_nothing_until_the_device_lets_it_go() {
     close();
     uninstall();
 }
+
+#[test]
+fn an_agent_is_connected_while_the_channel_is_open_and_the_host_side_is_there() {
+    let (_guard, wire) = installed();
+    assert!(!is_connected(), "nobody opened it");
+    assert_eq!(open(), Ok(()));
+    assert!(is_connected());
+    wire.lock().unwrap().host_open = false;
+    assert!(!is_connected(), "the host side went away");
+    wire.lock().unwrap().host_open = true;
+    close();
+    assert!(!is_connected());
+    uninstall();
+    assert!(!is_connected());
+}

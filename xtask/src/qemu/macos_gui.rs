@@ -1,8 +1,9 @@
-//! The macOS GUI boot test (D147, D148): one boot of the release kernel with the macOS layer,
-//! on a blank disk, with a host folder holding `mac-paint.zip`, the `mac-paint.app` bundle (our
-//! own AppKit app, `tests/macos-gui/main.m`, with the icon xtask draws) archived, each frame
-//! compared with the desktop the host renders from the same input, the app's window content and
-//! alert painted by `eggos-macos-gui-tests`, its own icon made by the installer's own code.
+//! The macOS GUI boot test (D147, D148): one boot of the release image, which carries the
+//! macOS layer (D152), on a blank disk, with a host folder holding `mac-paint.zip`, the
+//! `mac-paint.app` bundle (our own AppKit app, `tests/macos-gui/main.m`, with the icon xtask
+//! draws) archived, each frame compared with the desktop the host renders from the same input,
+//! the app's window content and alert painted by `eggos-macos-gui-tests`, its own icon made by
+//! the installer's own code.
 //!
 //! `app install /media/host/mac-paint.zip` in the terminal extracts and installs the bundle,
 //! whose own icon then shows on the desktop and in the launcher's row; Cmd+Space,
@@ -135,6 +136,10 @@ fn manifest_of(arch: &Arch) -> Vec<u8> {
         architecture: Some(arch.name),
         synonyms: "",
         icon: Some(manifest::icon::FILE_NAME),
+        loader: None,
+        libraries: None,
+        arguments: None,
+        environment: None,
     };
     let mut file = [0u8; manifest::LARGEST];
     let length = manifest::write(&entry, &mut file).expect("mac-paint's manifest is valid");
@@ -143,6 +148,7 @@ fn manifest_of(arch: &Arch) -> Vec<u8> {
 
 fn catalogue(arch: &Arch, installed: bool) -> Result<Catalogue, String> {
     let mut catalogue = Catalogue::new();
+    catalogue.set_task_manager_present(true);
     catalogue.set_host_share(true);
     if installed {
         catalogue.add_installed(NAME.as_bytes(), &manifest_of(arch));
@@ -533,9 +539,9 @@ impl MacGui<'_> {
     }
 }
 
-/// Runs the macOS GUI boot test (see the module documentation) on `kernel`, a release kernel
-/// for `arch` with the macOS layer, with `folder` (the host folder holding `mac-paint.zip`)
-/// attached.
+/// Runs the macOS GUI boot test (see the module documentation) on `kernel`, the release image
+/// for `arch` (with the macOS layer, D152), with `folder` (the host folder holding
+/// `mac-paint.zip`) attached.
 pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     let directory = crate::target_directory().join("qemu-disks");
     std::fs::create_dir_all(&directory).map_err(|e| format!("{}: {e}", directory.display()))?;

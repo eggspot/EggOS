@@ -78,6 +78,7 @@ fn timing(now: u64) -> Timing {
         now,
         repeat_delay: 400,
         repeat_interval: 40,
+        slow_keys: 0,
     }
 }
 
@@ -117,10 +118,16 @@ fn tap(code: u16) -> Vec<RawEvent> {
 const SYN: RawEvent = RawEvent::new(event_type::SYN, SYN_REPORT, 0);
 
 fn key_event(code: u16, pressed: bool, modifiers: Modifiers) -> InputEvent {
+    let mut us = Typist::new();
+    let character = match pressed {
+        true => us.press(code, modifiers).character(code, modifiers),
+        false => us.character_of(code, modifiers),
+    };
     InputEvent::Key {
         code,
         pressed,
         modifiers,
+        character,
     }
 }
 
@@ -405,7 +412,13 @@ fn polling_is_fast_while_active_slow_when_idle_and_never_later_than_a_repeat() {
 fn every_event_packs_into_a_word_and_back() {
     let events = [
         key_event(0, false, Modifiers::NONE),
-        key_event(key::MAX, true, Modifiers::from_bits(31)),
+        key_event(key::MAX, true, Modifiers::from_bits(63)),
+        InputEvent::Key {
+            code: 0,
+            pressed: true,
+            modifiers: Modifiers::ALT_GRAPH,
+            character: 0x10_ffff,
+        },
         InputEvent::PointerMove { x: 0, y: 0 },
         InputEvent::PointerMove {
             x: 0xff_ffff,
@@ -673,6 +686,8 @@ fn a_device_that_never_runs_dry_cannot_keep_the_poller_awake() {
     let devices = LeafSpinLock::new_leaf(Some(Box::new(Input {
         sources: [const { None }; MAX_DEVICES],
         state: InputState::new(),
+        caps_lock_shown: false,
+        events_left: false,
     })));
     let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     if let Some(input) = devices.lock().as_mut() {
@@ -682,14 +697,264 @@ fn a_device_that_never_runs_dry_cannot_keep_the_poller_awake() {
             }),
             capabilities: Device::mouse().capabilities,
             report: PendingReport::default(),
+            interrupting: false,
         });
     }
     let next = poll_devices::<TestPlatform>(&devices, None, SCREEN, timing(1000));
     assert_eq!(next, Some(1000 + ACTIVE_POLL_MS * 1000));
     assert_eq!(polls.load(Ordering::Relaxed), MAX_POLL_ROUNDS);
+    assert!(devices.lock().as_ref().unwrap().events_left);
     let empty = LeafSpinLock::new_leaf(None);
     assert_eq!(
         poll_devices::<TestPlatform>(&empty, None, SCREEN, timing(0)),
         None
     );
+}
+
+#[test]
+fn a_layout_s_dead_keys_and_altgr_type_utf_8_and_characters_in_key_events() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    let german = layout::named(b"de").unwrap();
+    state.set_layout(german, Profile::Windows);
+    assert_eq!(state.layout(), german);
+    let acute = 13;
+    let typed: Vec<RawEvent> = [acute, 18, acute, 3].into_iter().flat_map(tap).collect();
+    let recorded = send(&mut state, &mut keyboard, &typed, SCREEN, 0);
+    assert_eq!(recorded.bytes, "é´2".as_bytes());
+    let characters: Vec<(u16, bool, u32)> = recorded
+        .events
+        .iter()
+        .filter_map(|event| match *event {
+            InputEvent::Key {
+                code,
+                pressed,
+                character,
+                ..
+            } => Some((code, pressed, character)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        characters,
+        [
+            (acute, true, 0),
+            (acute, false, 0),
+            (18, true, u32::from('é')),
+            (18, false, u32::from('e')),
+            (acute, true, 0),
+            (acute, false, 0),
+            (0, true, u32::from('´')),
+            (0, false, u32::from('´')),
+            (3, true, u32::from('2')),
+            (3, false, u32::from('2')),
+        ]
+    );
+    let alt_graph_e: Vec<RawEvent> = [press(key::RIGHT_ALT), press(18)].concat();
+    let recorded = send(&mut state, &mut keyboard, &alt_graph_e, SCREEN, 0);
+    assert_eq!(recorded.bytes, "€".as_bytes());
+    assert_eq!(
+        recorded.events[1],
+        InputEvent::Key {
+            code: 18,
+            pressed: true,
+            modifiers: Modifiers::ALT_GRAPH,
+            character: u32::from('€'),
+        }
+    );
+}
+
+#[test]
+fn backspace_takes_back_a_waiting_accent_and_sends_nothing() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    state.set_layout(layout::named(b"de").unwrap(), Profile::Windows);
+    let typed: Vec<RawEvent> = [13, key::BACKSPACE, 18].into_iter().flat_map(tap).collect();
+    let recorded = send(&mut state, &mut keyboard, &typed, SCREEN, 0);
+    assert_eq!(recorded.bytes, b"e");
+    assert!(!recorded.events.iter().any(|event| matches!(
+        event,
+        InputEvent::Key {
+            code: key::BACKSPACE,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn in_the_macos_profile_either_alt_is_option_and_reaches_the_third_level() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    state.set_layout(layout::named(b"de").unwrap(), Profile::Macos);
+    let option_e: Vec<RawEvent> = [press(key::LEFT_ALT), press(18)].concat();
+    let recorded = send(&mut state, &mut keyboard, &option_e, SCREEN, 0);
+    assert_eq!(recorded.bytes, "€".as_bytes());
+    let us = InputState::new();
+    assert_eq!(us.layout(), layout::US_LAYOUT);
+    assert!(!us.caps_lock());
+}
+
+#[test]
+fn the_kernel_s_layouts_are_the_settings_file_s_in_its_order() {
+    assert_eq!(
+        layout::LAYOUTS.len(),
+        eggos_settings_file::KEYBOARD_LAYOUTS.len()
+    );
+    for (kernel, named) in layout::LAYOUTS
+        .iter()
+        .zip(eggos_settings_file::KEYBOARD_LAYOUTS)
+    {
+        assert_eq!(kernel.name, named.name);
+        assert_eq!(
+            kernel.has_third_level(),
+            named.third_level,
+            "{}",
+            named.name
+        );
+        let dead: Vec<String> = layout::DEAD_ACCENTS
+            .iter()
+            .filter(|&&accent| kernel.has_dead_key(accent))
+            .map(char::to_string)
+            .collect();
+        assert_eq!(dead.join(" "), named.dead_keys, "{}", named.name);
+    }
+}
+
+#[test]
+fn a_left_handed_mouse_swaps_only_its_left_and_right_buttons() {
+    assert_eq!(handed(Button::Left, true), Button::Right);
+    assert_eq!(handed(Button::Right, true), Button::Left);
+    assert_eq!(handed(Button::Middle, true), Button::Middle);
+    assert_eq!(handed(Button::Left, false), Button::Left);
+}
+
+#[test]
+fn pointer_speed_five_moves_as_reported_and_ten_twice_as_far() {
+    assert_eq!(sped(7, 5), 7);
+    assert_eq!(sped(7, 10), 14);
+    assert_eq!(sped(-10, 1), -2);
+    assert_eq!(sped(10, 0), 2);
+}
+
+#[test]
+fn preferences_out_of_range_change_nothing() {
+    let wrong = Preferences {
+        pointer_speed: 11,
+        ..DEFAULT_PREFERENCES
+    };
+    assert!(!set_preferences(wrong));
+    assert_eq!(preferences(), DEFAULT_PREFERENCES);
+}
+
+#[test]
+fn sticky_keys_latch_a_tapped_modifier_for_the_next_key_and_a_second_tap_locks_it() {
+    let mut sticky = Sticky::new();
+    let shift = Modifiers::SHIFT.bits();
+    let none = Modifiers::NONE;
+    assert_eq!(
+        sticky.apply(42, KeyChange::Pressed, Modifiers::SHIFT, shift),
+        Modifiers::SHIFT
+    );
+    assert_eq!(sticky.apply(42, KeyChange::Released, none, 0), none);
+    assert_eq!(
+        sticky.apply(30, KeyChange::Pressed, none, 0),
+        Modifiers::SHIFT
+    );
+    assert_eq!(
+        sticky.apply(30, KeyChange::Released, none, 0),
+        Modifiers::SHIFT
+    );
+    assert_eq!(sticky.apply(30, KeyChange::Pressed, none, 0), none);
+    for _ in 0..2 {
+        sticky.apply(42, KeyChange::Pressed, Modifiers::SHIFT, shift);
+        sticky.apply(42, KeyChange::Released, none, 0);
+    }
+    assert_eq!(sticky.locked, shift);
+    sticky.apply(30, KeyChange::Released, none, 0);
+    assert_eq!(
+        sticky.apply(31, KeyChange::Pressed, none, 0),
+        Modifiers::SHIFT
+    );
+    sticky.apply(31, KeyChange::Released, none, 0);
+    assert_eq!(
+        sticky.apply(32, KeyChange::Pressed, none, 0),
+        Modifiers::SHIFT
+    );
+}
+
+#[test]
+fn key_accessibility_refuses_a_slow_delay_out_of_range() {
+    assert!(!set_key_accessibility(false, Some(50)));
+    assert!(set_key_accessibility(false, None));
+}
+
+struct BusyLight {
+    refusals_left: usize,
+    asked: Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+impl InputDevice for BusyLight {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            keyboard: true,
+            ..Capabilities::default()
+        }
+    }
+
+    fn poll(&mut self, _budget: usize, _event: &mut dyn FnMut(RawEvent)) -> usize {
+        0
+    }
+
+    fn set_caps_lock_light(&mut self, on: bool) -> bool {
+        self.asked.lock().unwrap().push(on);
+        if self.refusals_left == 0 {
+            return true;
+        }
+        self.refusals_left -= 1;
+        false
+    }
+}
+
+#[test]
+fn a_caps_lock_light_the_device_could_not_take_is_asked_again_until_it_does() {
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut input = Input {
+        sources: [const { None }; MAX_DEVICES],
+        state: InputState::new(),
+        caps_lock_shown: false,
+        events_left: false,
+    };
+    input.sources[0] = Some(Source {
+        device: Box::new(BusyLight {
+            refusals_left: 1,
+            asked: Arc::clone(&asked),
+        }),
+        capabilities: Device::keyboard().capabilities,
+        report: PendingReport::default(),
+        interrupting: false,
+    });
+    let mut keyboard = Device::keyboard();
+    send(
+        &mut input.state,
+        &mut keyboard,
+        &tap(key::CAPS_LOCK),
+        SCREEN,
+        0,
+    );
+    assert!(input.state.caps_lock());
+    input.show_caps_lock();
+    assert!(!input.caps_lock_shown);
+    input.show_caps_lock();
+    assert!(input.caps_lock_shown);
+    input.show_caps_lock();
+    send(
+        &mut input.state,
+        &mut keyboard,
+        &tap(key::CAPS_LOCK),
+        SCREEN,
+        0,
+    );
+    input.show_caps_lock();
+    assert!(!input.caps_lock_shown);
+    assert_eq!(*asked.lock().unwrap(), [true, true, false]);
 }

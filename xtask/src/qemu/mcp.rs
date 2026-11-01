@@ -7,25 +7,35 @@
 //! boot's console must show. Two boots of the same disk:
 //!
 //! 1. No grants: the protocol probe and handshake, the tool list, each reading tool's CLI twin,
+//!    `ls` paging the host folder one entry and then the rest by its `next_cursor` (D164),
 //!    a large read with the client slow to drain it (QEMU must hold the output, not drop it),
 //!    `clock_get` within five minutes of the host's clock (D150), paths outside the roots,
 //!    hostile lines, and every tool that needs a grant refused with its grant named
 //!    (`wm_capture` with `view`).
 //! 2. `--mcp-allow view,write,run,install`: `clock_set` refused without `confirm`, then a day
 //!    ahead and back, each read by `clock_get` (D150); writing, replacing with `confirm`, reading back,
-//!    refused paths, trashing with and without `confirm`, `run` (`uname`, `/proc/cmdline`, a
-//!    program stopped at its time limit), installing and opening an app; then the windows
-//!    (D143): Settings opened by name and captured at scale 1/2, a click on its macOS card
-//!    through `wm_click` that `settings get` sees, on x86_64 and aarch64 `win-paint` captured,
-//!    minimised, typed into with `wm_type`, captured again with the text and closed (an
+//!    refused paths (one through a symbolic link `ln -s` made out of the home, D170),
+//!    trashing with and without `confirm`, `run` (`uname`, `/proc/cmdline`, a program stopped
+//!    at its time limit), installing and opening an app; then the windows
+//!    (D143): Settings opened by name and captured at scale 1/2, its macOS card found in
+//!    `wm_show`'s element tree and invoked by its id with `wm_act` (D161), which
+//!    `settings_get` (D163) sees, after `settings_set` chose Windows' layout; on x86_64 and aarch64 `win-paint` captured,
+//!    minimised, typed into with `wm_type`, captured again with the text, its drawn text read
+//!    from `wm_show` (D162) and closed (an
 //!    installed app runs in the terminal, which takes the next one when it ends), `linux-paint`
 //!    captured, covered by Settings, clicked, typed into and captured after each, every
 //!    capture compared exactly with the host's drawing, the terminal's window refused, a key
 //!    pressed in it and a scroll, and `edit_open` opening the share's text file in a Text
-//!    Editor window that `wm_list` shows (D149); then uninstalling the app; then, with a
-//!    client that can ask its user, a trash declined and one accepted through `elicitation/create`; last `agentlog` through `run`,
-//!    which must show every call. The disk image read back must hold the audit log, with
-//!    `asked` records and no written content.
+//!    Editor window that `wm_list` shows (D149), whose text field (D162) a `wm_drag` across its
+//!    first word and `wm_type` replace, Files opened by name, a new folder found as a
+//!    list item in its element tree and opened by `wm_click`'s double-click (D162); then
+//!    uninstalling the app; then, with a
+//!    client that can ask its user, a trash declined and one accepted through `elicitation/create`; then `agentlog` through `run`,
+//!    which must show every call, then `agent_list`, `/bin/agent revoke local` through `run`
+//!    (D193), a `tee` refused because its grant was taken back and `agent_show` with every
+//!    grant denied. The disk image read back must hold the audit log, with
+//!    `asked` records, the refused `tee` and no written content, and the agent grants with
+//!    every grant taken from `local`.
 
 use super::persistent::{contents, image_volume};
 use super::settings::settings_window_images;
@@ -43,7 +53,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TEST_DISK_BYTES: u64 = 64 << 20;
-const FIRST_ANSWER_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const FIRST_ANSWER_TIMEOUT: Duration = Duration::from_secs(120);
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 const SLOW_CLIENT_PAUSE: Duration = Duration::from_secs(2);
 const BIG_FILE_BYTES: usize = 200 * 1024;
@@ -53,6 +63,8 @@ const GRANTS: &str = "view,write,run,install";
 const CONTENT_MARKER: &str = "EGGOS-MCP-CONTENT-31f9";
 const NOTE: &str = "/home/root/note.txt";
 const ELICITED: &str = "/home/root/elicit.txt";
+const LINK_OUT_OF_HOME: &str = "/home/root/out";
+const LINK_REFUSAL: &str = "the path goes through a symbolic link";
 const TIME_LIMIT_ANSWER: Duration = Duration::from_secs(10);
 const WINDOW_TIMEOUT: Duration = Duration::from_secs(20);
 const README: &str = "EGGOS-MCP hello from the host\n";
@@ -61,12 +73,17 @@ const WM_LIST_HEADER: &str = "ID STATE X Y WIDTH HEIGHT CLIENT TITLE";
 /// The Linux GUI program the check installs from the host folder.
 pub const LINUX_GUI_PROGRAM: &str = "linux-paint";
 const SETTINGS_SCALE: u32 = 2;
+const REVOKED_EVERY_GRANT: &str = "took every grant back from local; it keeps reading";
+const REVOKED_TEE_ARGUMENTS: &str = r#"{"path":"/home/root/after-revoke","content":"x"}"#;
+const GRANT_TAKEN_BACK: &str =
+    "tee needs the write grant, which the user has not given this agent or has taken back";
+const REVOKED_LOCAL_LINE: &[u8] = b"\nlocal\tdeny\tdeny\tdeny\tdeny\tlocal\n";
 const CAPTURE_POLL: Duration = Duration::from_secs(1);
 
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 6] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 17] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -77,11 +94,65 @@ pub const TWIN_CALLS: [(&str, &str, &str); 6] = [
     ("wm_list", "{}", WM_LIST_HEADER),
     ("app_list", "{}", ""),
     ("clock_get", "{}", "Z"),
+    ("net_status", "{}", "\"adapters\""),
+    (
+        "net_ping",
+        r#"{"host":"127.0.0.1","count":1}"#,
+        "1 received",
+    ),
+    ("settings_list", "{}", "shell.profile="),
+    ("settings_get", r#"{"key":"keyboard.layout"}"#, "us"),
+    (
+        "df",
+        r#"{"path":"/media/host"}"#,
+        "\"mounted_on\":\"/media/host\"",
+    ),
+    ("device_list", r#"{"all":true}"#, "\"state\":\"bound\""),
+    ("getprop", r#"{"name":"eggos.mcp.unset"}"#, ""),
+    ("logcat", r#"{"tag":"eggos-mcp-unset"}"#, ""),
+    ("disk_list", "{}", ""),
+    ("agent_show", "{}", r#""id":"local""#),
+    ("wm_desktop_list", "{}", r#""current":true"#),
 ];
+
+/// Every call of a reading tool whose answer is checked whether it succeeded or not: the tool,
+/// its arguments and texts one of which its result must hold. The lookup's result depends on
+/// the network the machine was started on (D158); `.invalid` names never exist (RFC 6761), so
+/// it answers whether or not the host reaches the internet. The app tools ask about an app
+/// that is never installed, as no app is installed when they run.
+pub const ANSWERED_CALLS: [(&str, &str, &[&str]); 3] = [
+    (
+        "net_lookup",
+        r#"{"host":"eggos-mcp.invalid"}"#,
+        &["Server:", "no DNS server"],
+    ),
+    (
+        "app_show",
+        r#"{"name":"eggos-mcp-absent"}"#,
+        &["eggos-mcp-absent is not installed"],
+    ),
+    (
+        "app_icon",
+        r#"{"name":"eggos-mcp-absent"}"#,
+        &["eggos-mcp-absent is not installed"],
+    ),
+];
+
+/// `fetch`'s arguments in both boots: a port on the host where nothing listens, so the
+/// download fails fast in a way that names the host (refused, or unreachable without a
+/// network).
+pub const FETCH_ARGUMENTS: &str = r#"{"url":"http://10.0.2.2:1/x","path":"/home/root/fetched"}"#;
+/// What `fetch`'s failure says in the second boot.
+pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 15] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 38] = [
+    (
+        "ln",
+        r#"{"target":"x","link":"/home/root/x-link"}"#,
+        "write",
+    ),
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -92,12 +163,14 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 15] = [
         r#"{"path":"/home/root/x","confirm":true}"#,
         "write",
     ),
+    ("fetch", FETCH_ARGUMENTS, "write"),
     ("run", r#"{"program":"/bin/uname"}"#, "run"),
     (
         "clock_set",
         r#"{"time":"2030-01-02T03:04:05Z","confirm":true}"#,
         "run",
     ),
+    ("clock_sync", "{}", "run"),
     (
         "app_install",
         r#"{"path":"/media/host/win-paint.exe"}"#,
@@ -125,6 +198,50 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 15] = [
         r#"{"window":64,"menu":0,"entry":0}"#,
         "run",
     ),
+    ("wm_focus", r#"{"window":64}"#, "run"),
+    ("wm_move", r#"{"window":64,"x":10,"y":40}"#, "run"),
+    (
+        "wm_size",
+        r#"{"window":64,"width":640,"height":400}"#,
+        "run",
+    ),
+    ("wm_minimise", r#"{"window":64}"#, "run"),
+    ("wm_maximise", r#"{"window":64}"#, "run"),
+    ("wm_restore", r#"{"window":64}"#, "run"),
+    ("wm_close", r#"{"window":64}"#, "run"),
+    ("wm_show", r#"{"window":64}"#, "view"),
+    (
+        "wm_act",
+        r#"{"window":64,"element":1,"action":"focus"}"#,
+        "run",
+    ),
+    (
+        "wm_drag",
+        r#"{"window":64,"x":1,"y":1,"to_x":2,"to_y":2}"#,
+        "run",
+    ),
+    (
+        "settings_set",
+        r#"{"key":"shell.profile","value":"windows"}"#,
+        "run",
+    ),
+    (
+        "setprop",
+        r#"{"name":"eggos.mcp.test","value":"1"}"#,
+        "write",
+    ),
+    ("disk_check", r#"{"device":"/dev/vdd"}"#, "view"),
+    ("disk_repair", r#"{"device":"/dev/vdd"}"#, "write"),
+    (
+        "disk_format",
+        r#"{"device":"/dev/vdd","confirm":true}"#,
+        "write",
+    ),
+    ("agent_list", "{}", "view"),
+    ("clipboard_get", "{}", "view"),
+    ("clipboard_set", r#"{"content":"x"}"#, "write"),
+    ("kill", r#"{"pid":1,"confirm":true}"#, "run"),
+    ("wm_desktop_new", "{}", "run"),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [
@@ -132,7 +249,7 @@ const REFUSED_PATHS: [&str; 2] = [
     r#""/home/\u002e\u002e/etc/eggos/init.conf""#,
 ];
 
-struct Client {
+pub(super) struct Client {
     child: std::process::Child,
     input: std::process::ChildStdin,
     lines: mpsc::Receiver<Result<Vec<u8>, String>>,
@@ -142,7 +259,7 @@ struct Client {
 }
 
 impl Client {
-    fn start(
+    pub(super) fn start(
         arch: &Arch,
         script: &Path,
         apps: &Path,
@@ -227,7 +344,7 @@ impl Client {
         format!("{}: MCP check: {message}", self.arch)
     }
 
-    fn send(&mut self, line: &[u8]) -> Result<(), String> {
+    pub(super) fn send(&mut self, line: &[u8]) -> Result<(), String> {
         self.input
             .write_all(line)
             .and_then(|()| self.input.write_all(b"\n"))
@@ -235,7 +352,7 @@ impl Client {
             .map_err(|e| self.fail(format!("could not write to the script: {e}")))
     }
 
-    fn receive(&mut self, timeout: Duration) -> Result<String, String> {
+    pub(super) fn receive(&mut self, timeout: Duration) -> Result<String, String> {
         let line = match self.lines.recv_timeout(timeout) {
             Ok(Ok(line)) => line,
             Ok(Err(error)) => return Err(self.fail(format!("reading stdout: {error}"))),
@@ -253,7 +370,7 @@ impl Client {
         String::from_utf8(line.to_vec()).map_err(|_| self.fail("an answer is not UTF-8"))
     }
 
-    fn request(&mut self, method: &str, params: &str) -> Result<String, String> {
+    pub(super) fn request(&mut self, method: &str, params: &str) -> Result<String, String> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(
@@ -268,7 +385,7 @@ impl Client {
         Ok(answer)
     }
 
-    fn call(&mut self, tool: &str, arguments: &str) -> Result<ToolResult, String> {
+    pub(super) fn call(&mut self, tool: &str, arguments: &str) -> Result<ToolResult, String> {
         let answer = self.request(
             "tools/call",
             &format!(r#"{{"name":"{tool}","arguments":{arguments}}}"#),
@@ -318,17 +435,18 @@ impl Client {
         ToolResult::of(&answer).ok_or_else(|| self.fail(format!("not a tool result: {answer}")))
     }
 
-    fn stop(mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+    pub(super) fn stop(mut self) {
+        kill_process_tree(&mut self.child);
     }
 }
 
-struct ToolResult {
+pub(super) struct ToolResult {
     texts: Vec<String>,
-    is_error: bool,
+    pub(super) is_error: bool,
     png: Option<Vec<u8>>,
     scale: Option<u64>,
+    truncated: Option<bool>,
+    next_cursor: Option<String>,
 }
 
 impl ToolResult {
@@ -357,19 +475,31 @@ impl ToolResult {
                 bytes.truncate(length);
                 Some(bytes)
             });
-        let scale = result
-            .get("structuredContent")
+        let structured = result.get("structuredContent");
+        let scale = structured
             .and_then(|structured| structured.get("scale"))
             .and_then(|scale| std::str::from_utf8(scale.raw()).ok()?.parse().ok());
+        let truncated = structured
+            .and_then(|structured| structured.get("truncated"))
+            .and_then(|truncated| match truncated {
+                Value::Bool(truncated) => Some(truncated),
+                _ => None,
+            });
+        let next_cursor = structured
+            .and_then(|structured| structured.get("next_cursor"))
+            .and_then(Value::as_str)
+            .map(|cursor| cursor.chars().collect());
         Some(Self {
             texts,
             is_error: result.get("isError") == Some(Value::Bool(true)),
             png,
             scale,
+            truncated,
+            next_cursor,
         })
     }
 
-    fn all(&self) -> String {
+    pub(super) fn all(&self) -> String {
         self.texts.join("\n")
     }
 }
@@ -382,7 +512,7 @@ fn error_code(answer: &str) -> Option<i64> {
         .ok()
 }
 
-fn result_field(answer: &str, key: &str) -> Option<String> {
+pub(super) fn result_field(answer: &str, key: &str) -> Option<String> {
     let result = json::parse(answer.as_bytes()).ok()?.value.get("result")?;
     Some(result.get(key)?.as_str()?.chars().collect())
 }
@@ -457,14 +587,52 @@ fn expect(holds: bool, arch: &str, what: &str) -> Result<(), String> {
     }
 }
 
+fn pages_ls(client: &mut Client) -> Result<(), String> {
+    let arch = client.arch;
+    let first = client.call("ls", r#"{"path":"/media/host","limit":1}"#)?;
+    expect(
+        !first.is_error && first.truncated == Some(true) && first.all().contains(" big.txt\n"),
+        arch,
+        &format!(
+            "ls's first page of one is not big.txt with more to follow: {}",
+            first.all()
+        ),
+    )?;
+    expect(
+        first.next_cursor.as_deref() == Some("big.txt"),
+        arch,
+        &format!(
+            "ls's first page names no next_cursor big.txt: {:?}",
+            first.next_cursor
+        ),
+    )?;
+    let rest = client.call(
+        "ls",
+        r#"{"path":"/media/host","limit":100,"after":"big.txt"}"#,
+    )?;
+    expect(
+        !rest.is_error
+            && rest.truncated == Some(false)
+            && rest.next_cursor.is_none()
+            && rest.all().contains(" readme.txt\n")
+            && !rest.all().contains(" big.txt\n"),
+        arch,
+        &format!(
+            "ls's page after big.txt is not the rest of the folder: {}",
+            rest.all()
+        ),
+    )
+}
+
 fn session(client: &mut Client) -> Result<(), String> {
     let arch = client.arch;
     client.send(br#"{"jsonrpc":"2.0","id":"probe","method":"server/discover","params":{}}"#)?;
     let probe = client.receive(FIRST_ANSWER_TIMEOUT)?;
     expect(
-        error_code(&probe) == Some(-32601),
+        result_field(&probe, "resultType").as_deref() == Some("complete")
+            && probe.contains(r#""supportedVersions":["2026-07-28","2025-11-25","2025-06-18"]"#),
         arch,
-        "server/discover is not METHOD_NOT_FOUND",
+        &format!("server/discover does not list the three versions: {probe}"),
     )?;
     let answer = client.request(
         "initialize",
@@ -525,6 +693,18 @@ fn session(client: &mut Client) -> Result<(), String> {
             &format!("{tool}'s output lacks `{wanted}`: {}", result.all()),
         )?;
     }
+    for (tool, arguments, wanted) in ANSWERED_CALLS {
+        let result = client.call(tool, arguments)?;
+        expect(
+            wanted.iter().any(|text| result.all().contains(text)),
+            arch,
+            &format!(
+                "{tool}'s result lacks every one of {wanted:?}: {}",
+                result.all()
+            ),
+        )?;
+    }
+    pages_ls(client)?;
     clock_near(client, host_seconds(), "the first boot")?;
     client.paused.store(true, Ordering::Release);
     let id = client.next_id;
@@ -553,7 +733,10 @@ fn session(client: &mut Client) -> Result<(), String> {
     for path in REFUSED_PATHS {
         let result = client.call("cat", &format!(r#"{{"path":{path}}}"#))?;
         expect(
-            result.is_error && result.all().contains("outside /home and /media/host"),
+            result.is_error
+                && result
+                    .all()
+                    .contains("outside /home, /media/host and /work"),
             arch,
             &format!("{path} was not refused: {}", result.all()),
         )?;
@@ -596,6 +779,15 @@ fn session(client: &mut Client) -> Result<(), String> {
             ),
         )?;
     }
+    let answer = client.request(
+        "tools/call",
+        r#"{"name":"wm_focus","arguments":{"window":64}}"#,
+    )?;
+    expect(
+        answer.contains(r#""code":"needs_grant","category":"needs_grant""#),
+        arch,
+        &format!("a refusal carries no command-model error: {answer}"),
+    )?;
     Ok(())
 }
 
@@ -714,6 +906,12 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
     )?;
     client.send(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)?;
     set_clock(client)?;
+    let synced = client.call("clock_sync", "{}")?;
+    expect(
+        synced.all().contains("pool.ntp.org"),
+        arch,
+        &format!("clock_sync does not name its time server: {}", synced.all()),
+    )?;
     let first = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} first\n"}}"#);
     succeeds(client, "tee", &first, "Wrote")?;
     let second = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n"}}"#);
@@ -721,6 +919,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
     let confirmed =
         format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n","confirm":true}}"#);
     succeeds(client, "tee", &confirmed, "Wrote")?;
+    refused(client, "fetch", FETCH_ARGUMENTS, FETCH_FAILURE)?;
     succeeds(
         client,
         "cat",
@@ -731,7 +930,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         client,
         "cat",
         r#"{"path":"/home/../etc/eggos/init.conf"}"#,
-        "outside /home and /media/host",
+        "outside /home, /media/host and /work",
     )?;
     for (path, wanted) in [
         ("/home/../etc/x", "outside /home/root"),
@@ -749,11 +948,24 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
             wanted,
         )?;
     }
+    run_program(client, &["/bin/ln", "-s", "/etc", LINK_OUT_OF_HOME])?;
+    refused(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{LINK_OUT_OF_HOME}/hostname"}}"#),
+        LINK_REFUSAL,
+    )?;
     refused(
         client,
         "trash",
         &format!(r#"{{"path":"{NOTE}"}}"#),
         "confirm: true",
+    )?;
+    succeeds(
+        client,
+        "trash",
+        &format!(r#"{{"path":"{NOTE}","dry_run":true}}"#),
+        "Dry run: trash would move",
     )?;
     succeeds(
         client,
@@ -916,7 +1128,23 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         !log.contains(CONTENT_MARKER),
         arch,
         "agentlog shows content a call wrote",
-    )
+    )?;
+    revoke_everything(client)
+}
+
+fn revoke_everything(client: &mut Client) -> Result<(), String> {
+    succeeds(client, "agent_list", "{}", r#""id":"local""#)?;
+    let revoked = run_program(client, &["/bin/agent", "revoke", "local"])?;
+    expect(
+        revoked.all().contains(REVOKED_EVERY_GRANT),
+        client.arch,
+        &format!(
+            "agent revoke local did not take every grant back: {}",
+            revoked.all()
+        ),
+    )?;
+    refused(client, "tee", REVOKED_TEE_ARGUMENTS, GRANT_TAKEN_BACK)?;
+    succeeds(client, "agent_show", "{}", r#""run":"deny""#).map(|_| ())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1117,9 +1345,11 @@ fn run_program(client: &mut Client, arguments: &[&str]) -> Result<ToolResult, St
 
 fn settings_session(client: &mut Client) -> Result<u32, String> {
     let arch = client.arch;
-    run_program(
+    succeeds(
         client,
-        &["/bin/settings", "set", "shell.profile", "windows"],
+        "settings_set",
+        r#"{"key":"shell.profile","value":"windows"}"#,
+        "",
     )?;
     succeeds(client, "app_open", r#"{"name":"Settings"}"#, "Opened")?;
     let settings = window_titled(client, eggos_settings::settings_window::TITLE)?;
@@ -1151,22 +1381,30 @@ fn settings_session(client: &mut Client) -> Result<u32, String> {
         "xtask: {arch}: MCP check: wm_capture of Settings ({width}x{height} at scale 1/{SETTINGS_SCALE}) took {} ms",
         took.as_millis()
     );
-    let card = SettingsWindow::new(facts)
+    SettingsWindow::new(facts)
         .card_rect(Profile::Macos.number() as usize)
         .ok_or_else(|| client.fail("Settings has no macOS card"))?;
+    let tree = succeeds(
+        client,
+        "wm_show",
+        &format!(r#"{{"window":{settings}}}"#),
+        " radio ",
+    )?;
+    let card = card_element(&tree.all(), "macOS").ok_or_else(|| {
+        client.fail(format!(
+            "wm_show of Settings lists no macOS card: {}",
+            tree.all()
+        ))
+    })?;
     succeeds(
         client,
-        "wm_click",
-        &format!(
-            r#"{{"window":{settings},"x":{},"y":{}}}"#,
-            card.x + card.width / 2,
-            card.y + 20
-        ),
-        "clicked left",
+        "wm_act",
+        &format!(r#"{{"window":{settings},"element":{card},"action":"invoke"}}"#),
+        "Acted on an element of window",
     )?;
     let deadline = Instant::now() + ANSWER_TIMEOUT;
     loop {
-        let profile = run_program(client, &["/bin/settings", "get", "shell.profile"])?;
+        let profile = succeeds(client, "settings_get", r#"{"key":"shell.profile"}"#, "")?;
         if profile.all().contains("macos") {
             return Ok(settings);
         }
@@ -1180,6 +1418,15 @@ fn settings_session(client: &mut Client) -> Result<u32, String> {
         )?;
         std::thread::sleep(CAPTURE_POLL);
     }
+}
+
+fn card_element(tree: &str, label: &str) -> Option<u32> {
+    let quoted = format!("\"{label}\"");
+    tree.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        let id = words.next()?.parse().ok()?;
+        (words.next() == Some("radio") && line.ends_with(&quoted)).then_some(id)
+    })
 }
 
 fn win_paint_session(client: &mut Client, title: &str) -> Result<(), String> {
@@ -1206,6 +1453,22 @@ fn win_paint_session(client: &mut Client, title: &str) -> Result<(), String> {
         None,
         &drawn(&scene),
         "win-paint minimised, after typing ab",
+    )?;
+    let tree = succeeds(
+        client,
+        "wm_show",
+        &format!(r#"{{"window":{paint}}}"#),
+        " text ",
+    )?;
+    expect(
+        tree.all().contains(" text ")
+            && tree.all().contains("\"EggOS win-paint\"")
+            && tree.all().contains("ab\""),
+        client.arch,
+        &format!(
+            "wm_show of win-paint does not list the text it drew: {}",
+            tree.all()
+        ),
     )?;
     run_program(client, &["/bin/wm", "close", &paint.to_string()])?;
     let deadline = Instant::now() + WINDOW_TIMEOUT;
@@ -1322,13 +1585,183 @@ fn window_session(client: &mut Client, paint_title: Option<&str>) -> Result<(), 
         r#"{"path":"/media/host/readme.txt"}"#,
         "Opened /media/host/readme.txt in Text Editor.",
     )?;
-    window_titled(client, "readme.txt - Text Editor")?;
+    let editor = window_titled(client, "readme.txt - Text Editor")?;
+    editor_session(client, editor)?;
+    files_session(client)?;
     Ok(())
 }
 
-/// Runs the MCP boot test for `arch` with the release image `kernel` (with the Windows layer),
-/// the folder `programs` holding the test apps and `linux_gui_program`, `linux-paint` built
-/// for `arch`.
+fn editor_session(client: &mut Client, editor: u32) -> Result<(), String> {
+    let deadline = Instant::now() + ANSWER_TIMEOUT;
+    let (x, y, _, _) = loop {
+        let tree = succeeds(
+            client,
+            "wm_show",
+            &format!(r#"{{"window":{editor}}}"#),
+            " text-field ",
+        )?;
+        let all = tree.all();
+        if all.contains("= \"EGGOS-MCP hello from the host")
+            && let Some(bounds) = element_bounds(&all, "text-field")
+        {
+            break bounds;
+        }
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            &format!("the Text Editor's wm_show has no text field with the file: {all}"),
+        )?;
+        std::thread::sleep(CAPTURE_POLL);
+    };
+    let row = y + EDITOR_FIRST_ROW_CENTRE;
+    let column = |columns: u32| {
+        x + eggos_editor::editor_window::TEXT_LEFT as u32
+            + columns * eggos_editor::editor_window::CELL_WIDTH as u32
+    };
+    succeeds(
+        client,
+        "wm_drag",
+        &format!(
+            r#"{{"window":{editor},"x":{},"y":{row},"to_x":{},"to_y":{row}}}"#,
+            column(0) + 1,
+            column(5) + 1
+        ),
+        "dragged left",
+    )?;
+    succeeds(
+        client,
+        "wm_type",
+        &format!(r#"{{"window":{editor},"text":"Z"}}"#),
+        "typed 1 of 1",
+    )?;
+    let deadline = Instant::now() + ANSWER_TIMEOUT;
+    loop {
+        let tree = succeeds(
+            client,
+            "wm_show",
+            &format!(r#"{{"window":{editor}}}"#),
+            " text-field ",
+        )?;
+        if tree.all().contains("= \"Z-MCP hello from the host") {
+            return Ok(());
+        }
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            &format!(
+                "dragging across EGGOS and typing Z did not replace it: {}",
+                tree.all()
+            ),
+        )?;
+        std::thread::sleep(CAPTURE_POLL);
+    }
+}
+
+const EDITOR_FIRST_ROW_CENTRE: u32 = eggos_editor::editor_window::TEXT_TOP as u32
+    + eggos_editor::editor_window::ROW_HEIGHT as u32 / 2;
+
+fn element_bounds(tree: &str, role: &str) -> Option<(u32, u32, u32, u32)> {
+    tree.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        words.next()?.parse::<u32>().ok()?;
+        if words.next() != Some(role) {
+            return None;
+        }
+        let (x, y) = words.next()?.split_once(',')?;
+        let (width, height) = words.next()?.split_once('x')?;
+        Some((
+            x.parse().ok()?,
+            y.parse().ok()?,
+            width.parse().ok()?,
+            height.parse().ok()?,
+        ))
+    })
+}
+
+const DOUBLE_CLICKED_FOLDER: &str = "opened-by-double-click";
+
+fn files_session(client: &mut Client) -> Result<(), String> {
+    let home = String::from_utf8_lossy(eggos_files::trash::HOME).into_owned();
+    let folder = format!("{home}/{DOUBLE_CLICKED_FOLDER}");
+    client.call(
+        "run",
+        &format!(r#"{{"program":"/bin/mkdir","arguments":["{folder}"]}}"#),
+    )?;
+    succeeds(client, "app_open", r#"{"name":"Files"}"#, "Opened")?;
+    let files = window_titled(client, eggos_files::files_window::TITLE)?;
+    let deadline = Instant::now() + ANSWER_TIMEOUT;
+    let (x, y) = loop {
+        let tree = succeeds(
+            client,
+            "wm_show",
+            &format!(r#"{{"window":{files}}}"#),
+            " list-item ",
+        )?;
+        if let Some(point) = list_item_centre(&tree.all(), DOUBLE_CLICKED_FOLDER, "folder") {
+            break point;
+        }
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            &format!(
+                "wm_show of Files lists no folder {DOUBLE_CLICKED_FOLDER} as a list item: {}",
+                tree.all()
+            ),
+        )?;
+        std::thread::sleep(CAPTURE_POLL);
+    };
+    succeeds(
+        client,
+        "wm_click",
+        &format!(r#"{{"window":{files},"x":{x},"y":{y},"double":true}}"#),
+        "double-clicked left",
+    )?;
+    let opened = format!("\"Path\" = \"{folder}\"");
+    let deadline = Instant::now() + ANSWER_TIMEOUT;
+    loop {
+        let tree = succeeds(
+            client,
+            "wm_show",
+            &format!(r#"{{"window":{files}}}"#),
+            " text-field ",
+        )?;
+        if tree.all().contains(&opened) {
+            break;
+        }
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            &format!(
+                "the double-click on {DOUBLE_CLICKED_FOLDER} did not open it: {}",
+                tree.all()
+            ),
+        )?;
+        std::thread::sleep(CAPTURE_POLL);
+    }
+    run_program(client, &["/bin/wm", "close", &files.to_string()])?;
+    Ok(())
+}
+
+fn list_item_centre(tree: &str, name: &str, value: &str) -> Option<(u32, u32)> {
+    let wanted = format!("\"{name}\" = \"{value}\"");
+    tree.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        words.next()?;
+        if words.next() != Some("list-item") || !line.ends_with(&wanted) {
+            return None;
+        }
+        let (x, y) = words.next()?.split_once(',')?;
+        let (width, height) = words.next()?.split_once('x')?;
+        let centre = |start: &str, length: &str| -> Option<u32> {
+            Some(start.parse::<u32>().ok()? + length.parse::<u32>().ok()? / 2)
+        };
+        Some((centre(x, width)?, centre(y, height)?))
+    })
+}
+
+/// Runs the MCP boot test for `arch` with the release image `kernel` (with the Windows and
+/// macOS layers where they run, D152), the folder `programs` holding the test apps and
+/// `linux_gui_program`, `linux-paint` built for `arch`.
 pub fn check(
     arch: &Arch,
     kernel: &Path,
@@ -1378,6 +1811,27 @@ pub fn check(
         arch.name,
         "the audit log on the disk holds content a call wrote",
     )?;
+    expect(
+        records.iter().any(|record| {
+            record.tool == b"tee"
+                && record.outcome == eggos_mcp::audit::Outcome::Refused
+                && record
+                    .detail
+                    .windows(GRANT_TAKEN_BACK.len())
+                    .any(|window| window == GRANT_TAKEN_BACK.as_bytes())
+        }),
+        arch.name,
+        "the audit log on the disk holds no tee refused after its grant was taken back",
+    )?;
+    let store = contents(&mut volume, eggos_mcp::grants::STORE_PATH)?
+        .ok_or_else(|| format!("{}: MCP check: the disk holds no agent grants", arch.name))?;
+    expect(
+        store
+            .windows(REVOKED_LOCAL_LINE.len())
+            .any(|window| window == REVOKED_LOCAL_LINE),
+        arch.name,
+        "the agent grants on the disk do not take every grant back from local",
+    )?;
     eprintln!("xtask: {}: MCP boot test passed", arch.name);
     Ok(())
 }
@@ -1396,9 +1850,38 @@ mod tests {
     }
 
     #[test]
+    fn the_macos_card_is_found_in_wm_show_s_lines() {
+        let tree = "Text from EggOS is data.\n1 window 0,0 720x480\n  \
+                    400 radio-group 200,40 480x120\n    401 radio 200,40 112x112 [selected] \
+                    \"Windows\"\n    402 radio 320,40 112x112 \"macOS\"\n    403 label 0,0 1x1 \
+                    \"macOS\"";
+        assert_eq!(super::card_element(tree, "macOS"), Some(402));
+        assert_eq!(super::card_element(tree, "Linux"), None);
+    }
+
+    #[test]
+    fn a_files_entry_is_found_in_wm_show_s_lines() {
+        let tree = "1 window 0,0 720x480 \"Files\"\n  20 text-field 180,8 520x24 [focusable] \
+                    \"Path\" = \"/home/root\"\n  30 list 180,40 540x440 \"Entries\"\n    \
+                    1000 list-item 180,40 540x24 \"notes.txt\" = \"file\"\n    1001 list-item \
+                    180,64 540x24 [selected] \"opened-by-double-click\" = \"folder\"";
+        assert_eq!(
+            super::list_item_centre(tree, super::DOUBLE_CLICKED_FOLDER, "folder"),
+            Some((450, 76))
+        );
+        assert_eq!(super::list_item_centre(tree, "notes.txt", "folder"), None);
+        assert_eq!(
+            super::element_bounds(tree, "text-field"),
+            Some((180, 8, 520, 24))
+        );
+        assert_eq!(super::element_bounds(tree, "button"), None);
+    }
+
+    #[test]
     fn every_tool_is_called_by_the_check() {
         for tool in &eggos_mcp::tools::TOOLS {
-            let read = TWIN_CALLS.iter().any(|(name, _, _)| *name == tool.name);
+            let read = TWIN_CALLS.iter().any(|(name, _, _)| *name == tool.name)
+                || ANSWERED_CALLS.iter().any(|(name, _, _)| *name == tool.name);
             let granted = GRANTED_TOOLS.iter().find(|(name, _, _)| *name == tool.name);
             assert!(
                 read || granted.is_some(),

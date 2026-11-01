@@ -5,6 +5,7 @@ const PREFIX: &str = "ANDROID-CONSOLE";
 const CLOCK_REALTIME: c_int = 0;
 const CLOCK_MONOTONIC: c_int = 1;
 const AT_PAGESZ: c_ulong = 6;
+const AT_BASE: c_ulong = 7;
 const PROPERTY_VALUE_MAX: usize = 92;
 const THREADS: usize = 4;
 const LINE_BUFFER: usize = 128;
@@ -12,6 +13,15 @@ const LISTED_NAMES: usize = 16;
 const NAME_LENGTH: usize = 64;
 const SMALL_BLOCKS: usize = 64;
 const LARGE_BLOCK: usize = 1 << 20;
+const AF_UNIX: c_int = 1;
+const SOCK_DGRAM: c_int = 2;
+const SOCK_CLOEXEC: c_int = 0o2_000_000;
+const LOG_SOCKET: &[u8] = b"/dev/socket/logdw";
+const LOG_ID_MAIN: u8 = 0;
+const LOG_INFO: u8 = 4;
+const LOG_HEADER: usize = 11;
+const LOG_TAG: &CStr = c"eggos-test";
+const LOG_MESSAGE: &CStr = c"hello from android-console";
 
 #[repr(C)]
 struct File {
@@ -30,6 +40,18 @@ struct DirectoryEntry {
     record_length: u16,
     kind: u8,
     name: [c_char; 256],
+}
+
+#[repr(C)]
+struct UnixAddress {
+    family: u16,
+    path: [u8; 108],
+}
+
+#[repr(C)]
+struct IoVector {
+    base: *const c_void,
+    length: usize,
 }
 
 #[repr(C)]
@@ -71,6 +93,11 @@ unsafe extern "C" {
     fn arc4random_buf(buffer: *mut c_void, length: usize);
     fn system(command: *const c_char) -> c_int;
     fn atoi(text: *const c_char) -> c_int;
+    fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
+    fn connect(socket: c_int, address: *const UnixAddress, length: u32) -> c_int;
+    fn writev(file: c_int, vectors: *const IoVector, count: c_int) -> isize;
+    fn close(file: c_int) -> c_int;
+    fn gettid() -> c_int;
     fn exit(status: c_int) -> !;
     fn abort() -> !;
 }
@@ -173,7 +200,9 @@ extern "C" fn main(count: c_int, arguments: *const *const c_char) -> c_int {
     say!("malloc {}", heap());
     say!("time {}", clocks());
     say!("threads {}", threads());
-    say!("property {}", sdk_property());
+    say_property(c"ro.build.version.sdk");
+    say_property(c"eggos.test.greeting");
+    say!("log {}", log_entry());
     // SAFETY: `getauxval` takes a number.
     let page_size = unsafe { getauxval(AT_PAGESZ) };
     // SAFETY: the format takes one string and one unsigned long, which follow it.
@@ -184,6 +213,12 @@ extern "C" fn main(count: c_int, arguments: *const *const c_char) -> c_int {
             page_size,
         )
     };
+    // SAFETY: `getauxval` takes a number.
+    let loader = match unsafe { getauxval(AT_BASE) } {
+        0 => "static",
+        _ => "linker64",
+    };
+    say!("loader {loader}");
     say!("random {}", random());
     // SAFETY: `fflush(NULL)` flushes every stream.
     unsafe { fflush(core::ptr::null_mut()) };
@@ -357,15 +392,15 @@ fn threads() -> &'static str {
     }
 }
 
-fn sdk_property() -> &'static str {
+fn say_property(name: &CStr) {
     let mut value = [0 as c_char; PROPERTY_VALUE_MAX];
     // SAFETY: the name is NUL-terminated, and `value` holds `PROP_VALUE_MAX` bytes.
-    let length =
-        unsafe { __system_property_get(c"ro.build.version.sdk".as_ptr(), value.as_mut_ptr()) };
-    match (length, value[0]) {
-        (0, 0) => "ro.build.version.sdk unset",
-        _ => "ro.build.version.sdk set",
-    }
+    let length = unsafe { __system_property_get(name.as_ptr(), value.as_mut_ptr()) };
+    let value = match length {
+        0 => "unset",
+        _ => text(value.as_ptr()),
+    };
+    say!("property {}={value}", text(name.as_ptr()));
 }
 
 fn random() -> &'static str {
@@ -383,5 +418,48 @@ fn random() -> &'static str {
         "differs"
     } else {
         "repeats"
+    }
+}
+
+fn log_entry() -> &'static str {
+    // SAFETY: `socket` takes numbers.
+    let file = unsafe { socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0) };
+    if file < 0 {
+        return "socket failed";
+    }
+    let mut address = UnixAddress {
+        family: AF_UNIX as u16,
+        path: [0; 108],
+    };
+    address.path[..LOG_SOCKET.len()].copy_from_slice(LOG_SOCKET);
+    let length = core::mem::size_of::<UnixAddress>() as u32;
+    // SAFETY: `address` is a local `sockaddr_un` of `length` bytes.
+    let connected = unsafe { connect(file, &address, length) } == 0;
+    let mut time = Timespec::default();
+    // SAFETY: `time` is a local `timespec`.
+    unsafe { clock_gettime(CLOCK_REALTIME, &mut time) };
+    // SAFETY: `gettid` takes no arguments.
+    let thread = unsafe { gettid() };
+    let mut header = [0u8; LOG_HEADER];
+    header[0] = LOG_ID_MAIN;
+    header[1..3].copy_from_slice(&(thread as u16).to_le_bytes());
+    header[3..7].copy_from_slice(&(time.seconds as u32).to_le_bytes());
+    header[7..11].copy_from_slice(&(time.nanoseconds as u32).to_le_bytes());
+    let priority = [LOG_INFO];
+    let tag = LOG_TAG.to_bytes_with_nul();
+    let message = LOG_MESSAGE.to_bytes_with_nul();
+    let vectors = [&header[..], &priority[..], tag, message].map(|part| IoVector {
+        base: part.as_ptr().cast(),
+        length: part.len(),
+    });
+    // SAFETY: each vector points at a local or static buffer of its length.
+    let written = unsafe { writev(file, vectors.as_ptr(), vectors.len() as c_int) };
+    // SAFETY: `file` is the socket opened above, closed once.
+    unsafe { close(file) };
+    let whole = LOG_HEADER + priority.len() + tag.len() + message.len();
+    match (connected, usize::try_from(written)) {
+        (false, _) => "connect failed",
+        (true, Ok(written)) if written == whole => "sent",
+        (true, _) => "writev failed",
     }
 }

@@ -2,24 +2,51 @@
 //! kernel, the settings file it reads and replaces, the profile it sets through `/dev/window`,
 //! and the window's event loop.
 
+use crate::disk_system::LinuxDisks;
 use core::ffi::CStr;
 use core::fmt::Write;
+use eggos_eggfs::CheckMode;
+use eggos_files::storage;
+use eggos_mcp::audit::calls::LogFiles;
+use eggos_mcp::grant_files::{self, GrantFiles, SaveError};
+use eggos_mcp::grant_prompt::{
+    ANSWER_BYTES, PROMPT_OPTION, PromptAnswer, QUESTION_BYTES, offers_always, read_question,
+};
+use eggos_mcp::grants::{self, AgentId, Grant};
+use eggos_mcp::pairing::{self, PairingFiles};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{call, number, write_all};
+use eggos_settings::activity::read_activity;
+use eggos_settings::agents_pane::GrantsRead;
+use eggos_settings::command::{
+    self, MAX_ARGUMENTS, PairingAsked, USAGE, USAGE_STATUS, WindowAsked,
+};
 use eggos_settings::facts::Facts;
-use eggos_settings::keys::{self, Change, Key, PROFILE_CHOICES, Refusal};
+use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
+use eggos_settings::keys::{InputChange, KeysChange};
+use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
-    ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, MINIMUM_SIZE, Request, SetOutcome,
+    ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, Request, SetOutcome,
     SettingsWindow, TITLE,
 };
-use eggos_settings_file::{
-    self as settings_file, DIRECTORIES, LARGEST, PATH, TEMPORARY_PATH_CAPACITY,
+use eggos_settings::task_manager::{
+    self, ProcessFact, Request as TaskRequest, Snapshot, TaskManager, WindowFact,
 };
-use eggos_toolkit::application::{self, Application};
+use eggos_settings_file::{
+    self as settings_file, DIRECTORIES, InputPreferences, KeyAccessibility, LARGEST, PATH,
+    TEMPORARY_PATH_CAPACITY,
+};
+use eggos_toolkit::application::{self, Application, View};
+use eggos_toolkit::canvas::Canvas;
+use eggos_toolkit::damage::Damage;
+use eggos_toolkit::elements::{Action, Outcome, TreeWriter};
+use eggos_toolkit::input::Input;
 use eggos_toolkit::text::Text;
-use eggos_toolkit::tree::{Response, WidgetTree};
-use eggos_toolkit::window::{Window, WindowServer, now_ms};
+use eggos_toolkit::tree::{PointerShape, Response, WidgetTree};
+use eggos_toolkit::window::{
+    FIXED_SIZE, Keyboard, PERSON_INPUT_ONLY, Window, WindowServer, now_ms,
+};
 
 const STANDARD_OUTPUT: usize = 1;
 const STANDARD_ERROR: usize = 2;
@@ -37,7 +64,6 @@ const UTSNAME_FIELD: usize = 65;
 const AFFINITY_BYTES: usize = 128;
 const PATH_CAPACITY: usize = 128;
 const DEFAULT_PROFILE: usize = 1;
-const USAGE: &[u8] = b"usage: settings [get <key> | set <key> <value> | list]\n";
 const O_DIRECTORY: usize = 0o200_000;
 const PS_CAPACITY: usize = 4096;
 const STALE_CAPACITY: usize = 8;
@@ -45,9 +71,21 @@ const DIRECTORY_BUFFER: usize = 1024;
 const DIRENT_LENGTH: usize = 16;
 const DIRENT_NAME: usize = 19;
 const WINDOW_PROGRAM_NAME: &[u8] = b"app-window";
+const APP_COMMAND_NAME: &[u8] = b"app";
 const FILES_PROGRAM_NAME: &[u8] = b"files";
 const EDITOR_PROGRAM_NAME: &[u8] = b"text-editor";
+const TASK_MANAGER_PROGRAM_NAME: &[u8] = b"task-manager";
+const APPS_OPTION: &[u8] = b"--apps";
+const WINDOW_DEVICE: &str = "/dev/window";
+const O_RDWR_CLOEXEC: usize = 0o2_000_002;
+const LIST_WINDOW: usize = 0xc060_770b;
+const MANAGE_WINDOW: usize = 0x4010_770c;
+const LIST_SIZE: usize = 96;
+const CLOSE_ACTION: u32 = 4;
+const TASK_LIST_CAPACITY: usize = 16 * 1024;
+const TERMINAL_PROGRAM_NAME: &[u8] = b"terminal";
 const EDIT_COMMAND_NAME: &[u8] = b"edit";
+const DISK_COMMAND_NAME: &[u8] = b"disk";
 const CLOCK_REALTIME: usize = 0;
 const HARDWARE_CLOCK: &str = "/proc/driver/rtc";
 const SAVED_WITHIN_S: u64 = 2;
@@ -108,13 +146,18 @@ fn read_file(path: &str, buffer: &mut [u8]) -> Result<usize, Errno> {
 
 fn write_file(path: &str, bytes: &[u8]) -> Result<(), Errno> {
     let path = CPath::new(path);
+    let path = CStr::from_bytes_until_nul(&path.bytes).map_err(|_| Errno::EINVAL)?;
+    write_file_with_mode(path, FILE_MODE, bytes)
+}
+
+fn write_file_with_mode(path: &CStr, mode: usize, bytes: &[u8]) -> Result<(), Errno> {
     let fd = syscall(
         number::OPENAT,
         [
             AT_FDCWD,
-            path.pointer(),
+            path.as_ptr() as usize,
             O_WRONLY_CREATE_TRUNCATE,
-            FILE_MODE,
+            mode,
             0,
             0,
         ],
@@ -356,6 +399,8 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         .and_then(|server| server.desktop_profile().ok())
         .map_or(saved, |profile| profile as usize);
     let area = server.and_then(|server| server.work_area().ok());
+    let saved_layout = settings_file::keyboard_layout(&file[..length]).unwrap_or(0);
+    let keyboard = server.and_then(|server| server.keyboard().ok());
     Facts {
         version: env!("CARGO_PKG_VERSION"),
         architecture: architecture(),
@@ -364,15 +409,26 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         uptime_s: uptime_s(),
         resolution: area.map_or((0, 0), |area| {
             (
-                area.rect.right().max(0) as u32,
-                area.rect.bottom().max(0) as u32,
+                area.rect.right().max(0) as u32 * area.scale.max(1),
+                area.rect.bottom().max(0) as u32 * area.scale.max(1),
             )
         }),
-        scale: area.map_or(1, |area| area.scale),
+        scale: settings_file::display_scale(&file[..length])
+            .unwrap_or_else(|| area.map_or(1, |area| area.scale)),
+        scale_in_force: area.map_or(1, |area| area.scale.max(1)),
         profile,
         on_disk: home_is_on_a_disk(),
         now_s: wall_clock().0,
         hardware_clock: hardware_clock_s().is_some(),
+        keyboard_layout: keyboard.map_or(saved_layout, |keyboard| keyboard.layout as usize),
+        keyboard: keyboard.is_none_or(|keyboard| keyboard.present),
+        caps_lock: keyboard.is_some_and(|keyboard| keyboard.caps_lock),
+        time_zone: settings_file::value(&file[..length], settings_file::TIME_ZONE)
+            .and_then(|name| core::str::from_utf8(name).ok())
+            .and_then(eggos_settings::facts::zone_index)
+            .unwrap_or_else(eggos_settings::facts::utc_zone),
+        input: settings_file::input_preferences(&file[..length]),
+        keys: settings_file::key_accessibility(&file[..length]),
     }
 }
 
@@ -393,6 +449,75 @@ fn save_profile(index: usize) -> bool {
         say_error(&[PATH.as_bytes(), b": ", error.message()]);
     }
     saved.is_ok()
+}
+
+fn save_display_scale(scale: u32) -> Result<(), Errno> {
+    let value = match scale {
+        2 => "2",
+        _ => "1",
+    };
+    save_through_a_temporary_file(settings_file::DISPLAY_SCALE, value)
+}
+
+fn save_time_zone(index: usize) -> Result<(), Errno> {
+    let name = eggos_calendar::zone::ZONES
+        .get(index)
+        .map_or("UTC", |(name, _)| *name);
+    save_through_a_temporary_file(settings_file::TIME_ZONE, name)
+}
+
+fn save_keyboard_layout(index: usize) -> Result<(), Errno> {
+    let name = settings_file::KEYBOARD_LAYOUTS[index].name;
+    save_through_a_temporary_file(settings_file::KEYBOARD_LAYOUT, name)
+}
+
+fn apply_keyboard_layout(index: usize, server: Option<&WindowServer>) -> Result<(), Errno> {
+    let opened;
+    let server = match server {
+        Some(server) => Some(server),
+        None => {
+            opened = WindowServer::open();
+            opened.as_ref().ok()
+        }
+    };
+    match server {
+        Some(server) => server.set_keyboard_layout(index as u32),
+        None => Ok(()),
+    }
+}
+
+fn apply_input(preferences: InputPreferences, server: Option<&WindowServer>) -> Result<(), Errno> {
+    let opened;
+    let server = match server {
+        Some(server) => Some(server),
+        None => {
+            opened = WindowServer::open();
+            opened.as_ref().ok()
+        }
+    };
+    match server {
+        Some(server) => server.set_input_preferences([
+            u32::from(preferences.left_handed),
+            u32::from(preferences.natural_scrolling),
+            preferences.pointer_speed,
+            preferences.repeat_delay_ms,
+            preferences.repeat_rate,
+        ]),
+        None => Ok(()),
+    }
+}
+
+fn choose_keyboard_layout(index: usize, server: Option<&WindowServer>) {
+    if let Err(error) = apply_keyboard_layout(index, server) {
+        say_error(&[
+            settings_file::KEYBOARD_LAYOUT.as_bytes(),
+            b": not applied: ",
+            error.message(),
+        ]);
+    }
+    if let Err(error) = save_keyboard_layout(index) {
+        say_error(&[PATH.as_bytes(), b": ", error.message()]);
+    }
 }
 
 fn apply_profile(index: usize, server: Option<&WindowServer>) -> bool {
@@ -418,67 +543,218 @@ fn apply_profile(index: usize, server: Option<&WindowServer>) -> bool {
     applied.is_ok()
 }
 
-fn print_line(parts: &[&str]) {
-    let mut line = Text::<256>::new();
-    for part in parts {
-        let _ = line.write_str(part);
-    }
-    let _ = line.write_str("\n");
-    write_all(STANDARD_OUTPUT, line.as_str().as_bytes());
+struct Machine {
+    server: Option<WindowServer>,
 }
 
-fn command(arguments: &[&str]) -> i32 {
-    let server = WindowServer::open().ok();
-    match arguments {
-        ["list"] => {
-            let facts = facts(server.as_ref());
-            for key in Key::ALL {
-                print_line(&[key.name(), "=", key.value(&facts).as_str()]);
-            }
-            0
-        }
-        ["get", name] => match Key::named(name) {
-            Some(key) => {
-                print_line(&[key.value(&facts(server.as_ref())).as_str()]);
-                0
-            }
+impl command::Machine for Machine {
+    fn facts(&mut self) -> Facts {
+        facts(self.server.as_ref())
+    }
+
+    fn save_profile(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let name = settings_file::PROFILES[index];
+        save_through_a_temporary_file(settings_file::SHELL_PROFILE, name).map_err(Errno::message)
+    }
+
+    fn apply_profile(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let opened;
+        let server = match self.server.as_ref() {
+            Some(server) => Some(server),
             None => {
-                say_error(&[name.as_bytes(), b": no such setting"]);
-                1
+                opened = WindowServer::open();
+                opened.as_ref().ok()
             }
-        },
-        ["set", name, value] => match keys::change(name, value) {
-            Ok((_, Change::Profile(index))) => {
-                let saved = save_profile(index);
-                match apply_profile(index, server.as_ref()) && saved {
-                    true => 0,
-                    false => 1,
-                }
-            }
-            Err(Refusal::NoSuchSetting) => {
-                say_error(&[name.as_bytes(), b": no such setting"]);
-                1
-            }
-            Err(Refusal::ReadOnly) => {
-                say_error(&[name.as_bytes(), b": read-only"]);
-                1
-            }
-            Err(Refusal::InvalidValue) => {
-                say_error(&[
-                    name.as_bytes(),
-                    b": invalid value '",
-                    value.as_bytes(),
-                    b"' (",
-                    PROFILE_CHOICES.as_bytes(),
-                    b")",
-                ]);
-                2
-            }
-        },
-        _ => {
-            write_all(STANDARD_ERROR, USAGE);
-            2
+        };
+        match server {
+            Some(server) => server
+                .set_desktop_profile(index as u32)
+                .map_err(Errno::message),
+            None => Ok(()),
         }
+    }
+
+    fn save_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        save_keyboard_layout(index).map_err(Errno::message)
+    }
+
+    fn apply_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        apply_keyboard_layout(index, self.server.as_ref()).map_err(Errno::message)
+    }
+
+    fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        save_time_zone(index).map_err(Errno::message)
+    }
+
+    fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]> {
+        save_display_scale(scale).map_err(Errno::message)
+    }
+
+    fn save_input(&mut self, change: InputChange) -> Result<(), &'static [u8]> {
+        let (key, value) = change.saved();
+        save_through_a_temporary_file(key, value.as_str()).map_err(Errno::message)
+    }
+
+    fn apply_input(&mut self, preferences: InputPreferences) -> Result<(), &'static [u8]> {
+        apply_input(preferences, self.server.as_ref()).map_err(Errno::message)
+    }
+
+    fn save_keys(&mut self, change: KeysChange) -> Result<(), &'static [u8]> {
+        let (key, value) = change.saved();
+        save_through_a_temporary_file(key, value.as_str()).map_err(Errno::message)
+    }
+
+    fn apply_keys(&mut self, keys: KeyAccessibility) -> Result<(), &'static [u8]> {
+        let opened;
+        let server = match self.server.as_ref() {
+            Some(server) => Some(server),
+            None => {
+                opened = WindowServer::open();
+                opened.as_ref().ok()
+            }
+        };
+        match server {
+            Some(server) => server
+                .set_key_accessibility(keys.sticky_keys, keys.slow_keys, keys.slow_keys_ms)
+                .map_err(Errno::message),
+            None => Ok(()),
+        }
+    }
+
+    fn write_output(&mut self, bytes: &[u8]) {
+        write_all(STANDARD_OUTPUT, bytes);
+    }
+
+    fn write_error(&mut self, bytes: &[u8]) {
+        write_all(STANDARD_ERROR, bytes);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DiskWork {
+    Check(&'static str, CheckMode),
+    Format(&'static str, Text<LABEL_BYTES>),
+}
+
+const LABEL_BYTES: usize = 64;
+const COMMAND_LINE_BYTES: usize = 1024;
+
+struct LinuxGrantFiles;
+
+impl GrantFiles for LinuxGrantFiles {
+    fn read_whole(&mut self, path: &CStr, out: &mut [u8]) -> Result<usize, Errno> {
+        read_file(path.to_str().map_err(|_| Errno::EINVAL)?, out)
+    }
+
+    fn make_directory(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {
+        syscall(
+            number::MKDIRAT,
+            [AT_FDCWD, path.as_ptr() as usize, mode as usize, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    fn write_new(&mut self, path: &CStr, mode: u32, bytes: &[u8]) -> Result<(), Errno> {
+        write_file_with_mode(path, mode as usize, bytes)
+    }
+
+    fn sync(&mut self) {
+        let _ = syscall(number::SYNC, [0; 6]);
+    }
+
+    fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno> {
+        syscall(
+            number::RENAMEAT2,
+            [
+                AT_FDCWD,
+                from.as_ptr() as usize,
+                AT_FDCWD,
+                to.as_ptr() as usize,
+                0,
+                0,
+            ],
+        )
+        .map(|_| ())
+    }
+}
+
+impl PairingFiles for LinuxGrantFiles {
+    fn remove(&mut self, path: &CStr) -> Result<(), Errno> {
+        syscall(
+            number::UNLINKAT,
+            [AT_FDCWD, path.as_ptr() as usize, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    fn random(&mut self, out: &mut [u8]) -> Result<(), Errno> {
+        let mut filled = 0;
+        while let Some(free) = out.get_mut(filled..).filter(|free| !free.is_empty()) {
+            match syscall(
+                number::GETRANDOM,
+                [free.as_mut_ptr() as usize, free.len(), 0, 0, 0, 0],
+            ) {
+                Ok(count) => filled += count,
+                Err(Errno::EINTR) => {}
+                Err(errno) => return Err(errno),
+            }
+        }
+        Ok(())
+    }
+}
+
+struct LinuxLogFiles;
+
+impl LogFiles for LinuxLogFiles {
+    fn open_log(&mut self, path: &CStr) -> Result<usize, Errno> {
+        syscall(
+            number::OPENAT,
+            [AT_FDCWD, path.as_ptr() as usize, O_RDONLY_CLOEXEC, 0, 0, 0],
+        )
+    }
+
+    fn read_log(&mut self, descriptor: usize, out: &mut [u8]) -> Result<usize, Errno> {
+        loop {
+            match syscall(
+                number::READ,
+                [descriptor, out.as_mut_ptr() as usize, out.len(), 0, 0, 0],
+            ) {
+                Err(Errno::EINTR) => {}
+                read => return read,
+            }
+        }
+    }
+
+    fn close_log(&mut self, descriptor: usize) {
+        close(descriptor);
+    }
+}
+
+fn grants_read(on_disk: bool) -> GrantsRead {
+    let mut line = [0u8; COMMAND_LINE_BYTES];
+    let boot = match read_file(grants::COMMAND_LINE_PATH, &mut line) {
+        Ok(length) => grants::from_command_line(&line[..length]).0,
+        Err(_) => grants::Grants::NONE,
+    };
+    GrantsRead {
+        store: grant_files::load(&mut LinuxGrantFiles),
+        boot,
+        now: wall_clock().0,
+        on_disk,
+    }
+}
+
+fn write_grants(window: &SettingsWindow) -> Result<(), SaveError> {
+    grant_files::save(&mut LinuxGrantFiles, window.grants_to_write())
+}
+
+fn network_read() -> NetworkRead {
+    let files = &mut LinuxGrantFiles;
+    NetworkRead {
+        state: pairing::network_state(files),
+        fingerprint: pairing::certificate_fingerprint(files),
+        pending: pairing::pending(files),
+        now: wall_clock().0,
     }
 }
 
@@ -488,6 +764,7 @@ struct Settings {
     uptime_from_ms: u32,
     uptime_at_start: u64,
     unsaved_profile: Option<usize>,
+    disk_work: Option<DiskWork>,
 }
 
 const SECOND_MS: u32 = 1000;
@@ -508,13 +785,102 @@ impl Application<CAPACITY> for Settings {
                 self.window.show_set_outcome(outcome, now_ms);
                 self.window.show_time(wall_clock().0);
             }
+            Some(Request::SetKeyboardLayout(index)) => {
+                choose_keyboard_layout(index, self.server.as_ref());
+            }
+            Some(Request::SetTimeZone(index)) => {
+                self.window.time_zone_saved(index, save_time_zone(index));
+            }
+            Some(Request::SetDisplayScale(scale)) => {
+                self.window
+                    .display_scale_saved(scale, save_display_scale(scale));
+            }
+            Some(Request::ChangeKeys(change)) => {
+                let (key, value) = change.saved();
+                let saved = save_through_a_temporary_file(key, value.as_str());
+                let applied = match (saved, self.server.as_ref()) {
+                    (Ok(()), Some(server)) => {
+                        let keys = change.applied_to(self.window.facts().keys);
+                        server.set_key_accessibility(
+                            keys.sticky_keys,
+                            keys.slow_keys,
+                            keys.slow_keys_ms,
+                        )
+                    }
+                    _ => Ok(()),
+                };
+                self.window.keys_changed(change, saved, applied);
+            }
+            Some(Request::ChangeInput(change)) => {
+                let (key, value) = change.saved();
+                let saved = save_through_a_temporary_file(key, value.as_str());
+                let applied = match saved {
+                    Ok(()) => {
+                        let input = change.applied_to(self.window.facts().input);
+                        apply_input(input, self.server.as_ref())
+                    }
+                    Err(_) => Ok(()),
+                };
+                self.window.input_changed(change, saved, applied);
+            }
+            Some(Request::ReadDisks) => self.window.show_disks(storage::list(&mut LinuxDisks)),
+            Some(Request::CheckDisk(device)) => {
+                self.disk_work = Some(DiskWork::Check(device, CheckMode::ReadOnly));
+            }
+            Some(Request::RepairDisk(device)) => {
+                self.disk_work = Some(DiskWork::Check(device, CheckMode::Repair));
+            }
+            Some(Request::FormatDisk(device)) => {
+                let label = Text::from(self.window.format_label());
+                self.disk_work = Some(DiskWork::Format(device, label));
+            }
+            Some(Request::ReadGrants) => {
+                let read = grants_read(self.window.facts().on_disk);
+                self.window.show_grants(read);
+            }
+            Some(Request::WriteGrants) => {
+                let written = write_grants(&self.window);
+                let read = grants_read(self.window.facts().on_disk);
+                self.window.grants_written(written, read);
+            }
+            Some(Request::ReadActivity) => {
+                let query = self.window.activity_query();
+                let read = read_activity(&mut LinuxLogFiles, &query, wall_clock().0);
+                self.window.show_activity(read);
+            }
+            Some(Request::ReadNetwork) => self.window.show_network(network_read()),
+            Some(Request::TurnNetwork(port)) => {
+                let turned =
+                    pairing::turn_network(&mut LinuxGrantFiles, port).map_err(|(_, errno)| errno);
+                self.window.network_turned(turned, network_read());
+            }
+            Some(Request::BeginPairing) => {
+                if let Some((agent, name)) = self.window.to_pair() {
+                    let outcome =
+                        pairing::begin_pairing(&mut LinuxGrantFiles, agent, name, wall_clock().0);
+                    let grants = grants_read(self.window.facts().on_disk);
+                    self.window
+                        .paired(agent, outcome, grants, network_read(), now_ms);
+                }
+            }
             None => self.show_clock(now_ms),
+        }
+        if self.window.pane() == KEYBOARD {
+            self.show_keyboard();
         }
     }
 
+    fn person_view_only(&self) -> bool {
+        self.window.pairing_counting_down()
+    }
+
     fn deadline(&self, now_ms: u32) -> Option<u32> {
-        if self.unsaved_profile.is_some() {
+        if self.unsaved_profile.is_some() || self.disk_work.is_some() {
             return Some(now_ms);
+        }
+        if self.window.pairing_counting_down() {
+            let (_, nanoseconds) = wall_clock();
+            return Some(now_ms.wrapping_add(SECOND_MS - nanoseconds / NANOSECONDS_PER_MS));
         }
         match self.window.pane() {
             ABOUT => {
@@ -531,7 +897,11 @@ impl Application<CAPACITY> for Settings {
 
     fn tick(&mut self, now_ms: u32) {
         self.save_unsaved();
+        self.do_disk_work(now_ms);
         self.show_clock(now_ms);
+        if self.window.pairing_counting_down() {
+            self.window.show_network(network_read());
+        }
     }
 
     fn focused(&mut self, _now_ms: u32) {
@@ -547,13 +917,52 @@ impl Application<CAPACITY> for Settings {
         if let Some(profile) = current.filter(|&profile| profile != self.window.facts().profile) {
             self.window.show_profile(profile);
         }
+        if let Some(keyboard) = self.keyboard() {
+            let layout = keyboard.layout as usize;
+            if layout != self.window.facts().keyboard_layout {
+                self.window.show_keyboard_layout(layout);
+            }
+            self.window
+                .show_keyboard(keyboard.present, keyboard.caps_lock);
+        }
     }
 }
 
 impl Settings {
+    fn keyboard(&self) -> Option<Keyboard> {
+        self.server.as_ref()?.keyboard().ok()
+    }
+
+    fn show_keyboard(&mut self) {
+        if let Some(keyboard) = self.keyboard() {
+            self.window
+                .show_keyboard(keyboard.present, keyboard.caps_lock);
+        }
+    }
+
     fn save_unsaved(&mut self) {
         if let Some(index) = self.unsaved_profile.take() {
             save_profile(index);
+        }
+    }
+
+    fn do_disk_work(&mut self, now_ms: u32) {
+        let Some(work) = self.disk_work.take() else {
+            return;
+        };
+        let mut disks = LinuxDisks;
+        match work {
+            DiskWork::Check(device, mode) => {
+                let result = storage::check(&mut disks, device, mode);
+                self.window.show_disks(storage::list(&mut disks));
+                self.window.show_check(device, mode, result);
+            }
+            DiskWork::Format(device, label) => {
+                let result = storage::format(&mut disks, device, label.as_str());
+                self.window.show_disks(storage::list(&mut disks));
+                self.window
+                    .show_formatted(device, label.as_str(), result, now_ms);
+            }
         }
     }
 
@@ -571,7 +980,163 @@ impl Settings {
     }
 }
 
-fn open_window() -> i32 {
+const STANDARD_INPUT: usize = 0;
+
+struct PromptWindow {
+    prompt: GrantPrompt,
+    agent: Option<AgentId>,
+    class: Option<Grant>,
+    destructive: bool,
+}
+
+impl PromptWindow {
+    fn finish(&mut self) -> ! {
+        let mut answer = self.prompt.answer().unwrap_or(PromptAnswer::Deny);
+        if answer == PromptAnswer::Always {
+            answer = match offers_always(self.class, self.destructive) {
+                true if self.write_always() => PromptAnswer::Always,
+                true => PromptAnswer::Once,
+                false => PromptAnswer::Deny,
+            };
+        }
+        let mut line = Text::<ANSWER_BYTES>::new();
+        let _ = line.write_str(answer.word());
+        let _ = line.write_str("\n");
+        write_all(STANDARD_OUTPUT, line.as_str().as_bytes());
+        eggos_runtime::syscall::exit(0)
+    }
+
+    fn write_always(&self) -> bool {
+        let (Some(agent), Some(class)) = (self.agent, self.class) else {
+            return false;
+        };
+        let Some(store) = allowed_always(grant_files::load(&mut LinuxGrantFiles), &agent, class)
+        else {
+            return false;
+        };
+        grant_files::save(&mut LinuxGrantFiles, &store).is_ok()
+    }
+
+    fn finish_if_answered(&mut self) {
+        if self.prompt.answer().is_some() {
+            self.finish();
+        }
+    }
+}
+
+impl View for PromptWindow {
+    fn resize(&mut self, width: i32, height: i32) {
+        self.prompt.tree().resize(width, height);
+    }
+
+    fn handle(&mut self, input: Input, time_ms: u32) -> bool {
+        self.prompt.handle(input, time_ms);
+        self.finish_if_answered();
+        true
+    }
+
+    fn take_damage(&mut self) -> Damage {
+        self.prompt.tree().take_damage()
+    }
+
+    fn paint(&mut self, canvas: &mut Canvas<'_>) {
+        self.prompt.tree().paint(canvas);
+    }
+
+    fn pointer_shape(&mut self) -> PointerShape {
+        self.prompt.tree().pointer_shape()
+    }
+
+    fn deadline(&mut self, now_ms: u32) -> Option<u32> {
+        Some(self.prompt.deadline(now_ms))
+    }
+
+    fn tick(&mut self, now_ms: u32) {
+        self.prompt.tick(now_ms);
+        self.finish_if_answered();
+    }
+
+    fn close_requested(&mut self, _time_ms: u32) -> bool {
+        self.prompt.close_requested();
+        self.finish()
+    }
+
+    fn describe(&mut self, tree: &mut TreeWriter<'_>) -> bool {
+        self.prompt.tree().describe(tree);
+        true
+    }
+
+    fn act(&mut self, element: u32, action: Action, text: &str, time_ms: u32) -> Outcome {
+        let (outcome, response) = self.prompt.tree().act(element, action, text, time_ms);
+        self.prompt.respond(response);
+        self.finish_if_answered();
+        outcome
+    }
+}
+
+fn read_question_line(line: &mut [u8]) -> usize {
+    let mut length = 0;
+    while length < line.len() && !line[..length].contains(&b'\n') {
+        let space = &mut line[length..];
+        match syscall(
+            number::READ,
+            [
+                STANDARD_INPUT,
+                space.as_mut_ptr() as usize,
+                space.len(),
+                0,
+                0,
+                0,
+            ],
+        ) {
+            Ok(0) => break,
+            Ok(read) => length += read,
+            Err(Errno::EINTR) => {}
+            Err(_) => break,
+        }
+    }
+    length
+}
+
+fn grant_prompt() -> i32 {
+    let mut line = [0u8; QUESTION_BYTES];
+    let length = read_question_line(&mut line);
+    let Some(question) = read_question(&line[..length]) else {
+        say_error(&[b"--grant-prompt: stdin holds no question; the answer is deny"]);
+        write_all(STANDARD_OUTPUT, b"deny\n");
+        return USAGE_STATUS;
+    };
+    let mut window = match Window::create_with_flags(
+        prompt::TITLE,
+        prompt::WIDTH,
+        prompt::HEIGHT,
+        (prompt::WIDTH, prompt::HEIGHT),
+        FIXED_SIZE | PERSON_INPUT_ONLY,
+    ) {
+        Ok(window) => window,
+        Err(error) => {
+            say_error(&[b"cannot open the grant prompt: ", error.message()]);
+            return 1;
+        }
+    };
+    let mut id = [0u8; grants::MAX_AGENT_ID_BYTES];
+    let mut view = PromptWindow {
+        prompt: GrantPrompt::new(&question, now_ms()),
+        agent: question
+            .agent
+            .decode_into(&mut id)
+            .and_then(|id| AgentId::stored(id.as_bytes())),
+        class: question.class,
+        destructive: question.destructive,
+    };
+    if let Err(error) = application::run_view(&mut window, &mut view) {
+        say_error(&[b"the grant prompt: ", error.message()]);
+    }
+    view.prompt.close_requested();
+    view.finish()
+}
+
+fn open_window(pairing: Option<PairingAsked<'_>>) -> i32 {
     let (width, height) = DEFAULT_SIZE;
     let mut window = match Window::create(TITLE, width, height, MINIMUM_SIZE) {
         Ok(window) => window,
@@ -587,7 +1152,14 @@ fn open_window() -> i32 {
         uptime_from_ms: now_ms(),
         uptime_at_start: facts.uptime_s,
         unsaved_profile: None,
+        disk_work: None,
     };
+    if let Some(asked) = pairing {
+        let grants = grants_read(settings.window.facts().on_disk);
+        settings
+            .window
+            .open_pairing(asked.id, asked.name, grants, network_read(), now_ms());
+    }
     let served = application::run(&mut window, &mut settings);
     settings.save_unsaved();
     match served {
@@ -599,34 +1171,258 @@ fn open_window() -> i32 {
     }
 }
 
+struct TaskManagerProgram {
+    window: TaskManager,
+    device: Option<usize>,
+}
+
+fn word_at(bytes: &[u8], at: usize) -> u32 {
+    u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+}
+
+fn task_snapshot(device: Option<usize>) -> Snapshot {
+    let mut ps = alloc::vec![0u8; TASK_LIST_CAPACITY];
+    let processes = read_file("/proc/ps", &mut ps).ok().map(|length| {
+        ps[..length]
+            .split(|&byte| byte == b'\n')
+            .filter_map(|line| {
+                let mut fields = line.splitn(7, |&byte| byte == b' ');
+                let mut number = || {
+                    core::str::from_utf8(fields.next()?)
+                        .ok()?
+                        .parse::<u64>()
+                        .ok()
+                };
+                let pid = number()? as u32;
+                let parent = number()? as u32;
+                let _group = number()?;
+                let _session = number()?;
+                let state = *fields.next()?.first()?;
+                let cpu_ms = core::str::from_utf8(fields.next()?)
+                    .ok()?
+                    .parse::<u64>()
+                    .ok();
+                let name = core::str::from_utf8(fields.next()?).unwrap_or("?");
+                Some(ProcessFact {
+                    pid,
+                    parent,
+                    state,
+                    cpu_ms,
+                    name: Text::from(name),
+                })
+            })
+            .collect::<alloc::vec::Vec<_>>()
+    });
+    let windows = device.map(|device| {
+        let mut windows = alloc::vec::Vec::new();
+        for index in 0u32.. {
+            let mut entry = [0u8; LIST_SIZE];
+            entry[..4].copy_from_slice(&index.to_ne_bytes());
+            if syscall(
+                number::IOCTL,
+                [device, LIST_WINDOW, entry.as_mut_ptr() as usize, 0, 0, 0],
+            )
+            .is_err()
+            {
+                break;
+            }
+            let length = (word_at(&entry, 28) as usize).min(LIST_SIZE - 32);
+            windows.push(WindowFact {
+                id: word_at(&entry, 0),
+                client_pid: word_at(&entry, 24),
+                title: Text::from(core::str::from_utf8(&entry[32..32 + length]).unwrap_or("")),
+            });
+        }
+        windows
+    });
+    let mut meminfo = [0u8; 512];
+    let memory = read_file("/proc/meminfo", &mut meminfo)
+        .ok()
+        .and_then(|length| {
+            let field = |name: &[u8]| {
+                meminfo[..length]
+                    .split(|&byte| byte == b'\n')
+                    .find(|line| line.starts_with(name))
+                    .and_then(first_number)
+            };
+            Some((field(b"MemTotal:")? * 1024, field(b"MemFree:")? * 1024))
+        });
+    let mut uptime = [0u8; 64];
+    let uptime_s = read_file("/proc/uptime", &mut uptime)
+        .ok()
+        .and_then(|length| first_number(&uptime[..length]));
+    Snapshot {
+        processes,
+        windows,
+        cpus: cpus(),
+        memory,
+        uptime_s,
+        now_ms: u64::from(now_ms()),
+    }
+}
+
+impl TaskManagerProgram {
+    fn act(&mut self, request: Option<TaskRequest>) {
+        match request {
+            None => {}
+            Some(TaskRequest::Refresh) => {
+                let more = self.window.refreshed(task_snapshot(self.device));
+                self.act(more);
+            }
+            Some(TaskRequest::CloseWindowsOf(pid)) => {
+                for window in self.window.windows_of(pid) {
+                    let mut request = [0u8; 16];
+                    request[..4].copy_from_slice(&window.to_ne_bytes());
+                    request[4..8].copy_from_slice(&CLOSE_ACTION.to_ne_bytes());
+                    if let Some(device) = self.device {
+                        let _ = syscall(
+                            number::IOCTL,
+                            [
+                                device,
+                                MANAGE_WINDOW,
+                                request.as_mut_ptr() as usize,
+                                0,
+                                0,
+                                0,
+                            ],
+                        );
+                    }
+                }
+            }
+            Some(TaskRequest::Signal { pid, signal }) => {
+                let stopped = self.window.is_stopped(pid);
+                let sent =
+                    syscall(number::KILL, [pid as usize, signal as usize, 0, 0, 0, 0]).map(|_| ());
+                if sent.is_ok() && stopped && signal == task_manager::TERMINATE {
+                    let _ = syscall(
+                        number::KILL,
+                        [pid as usize, task_manager::CONTINUE as usize, 0, 0, 0, 0],
+                    );
+                }
+                self.window.signal_sent(pid, sent);
+            }
+        }
+    }
+}
+
+impl Application<{ task_manager::CAPACITY }> for TaskManagerProgram {
+    fn tree(&mut self) -> &mut WidgetTree<{ task_manager::CAPACITY }> {
+        self.window.tree()
+    }
+
+    fn respond(&mut self, response: Response, now_ms: u32) {
+        let request = self.window.respond(response, u64::from(now_ms));
+        self.act(request);
+    }
+
+    fn deadline(&self, now_ms: u32) -> Option<u32> {
+        Some(now_ms.wrapping_add(task_manager::REFRESH_MS))
+    }
+
+    fn tick(&mut self, _now_ms: u32) {
+        self.act(Some(TaskRequest::Refresh));
+    }
+}
+
+fn run_task_manager(startup: &Startup) -> i32 {
+    let apps_only = startup
+        .arguments()
+        .skip(1)
+        .any(|argument| argument.to_bytes() == APPS_OPTION);
+    let (width, height) = task_manager::DEFAULT_SIZE;
+    let mut window = match Window::create(
+        task_manager::TITLE,
+        width,
+        height,
+        task_manager::MINIMUM_SIZE,
+    ) {
+        Ok(window) => window,
+        Err(error) => {
+            write_all(STANDARD_ERROR, b"task-manager: cannot open its window: ");
+            write_all(STANDARD_ERROR, error.message());
+            write_all(STANDARD_ERROR, b"\n");
+            return 1;
+        }
+    };
+    let device = syscall(
+        number::OPENAT,
+        [
+            AT_FDCWD,
+            CPath::new(WINDOW_DEVICE).pointer(),
+            O_RDWR_CLOEXEC,
+            0,
+            0,
+            0,
+        ],
+    )
+    .ok();
+    let own_pid = syscall(number::GETPID, [0; 6]).unwrap_or(0) as u32;
+    let mut program = TaskManagerProgram {
+        window: TaskManager::new(own_pid, apps_only),
+        device,
+    };
+    program.act(Some(TaskRequest::Refresh));
+    match application::run(&mut window, &mut program) {
+        Ok(()) => 0,
+        Err(error) => {
+            write_all(STANDARD_ERROR, b"task-manager: its window: ");
+            write_all(STANDARD_ERROR, error.message());
+            write_all(STANDARD_ERROR, b"\n");
+            1
+        }
+    }
+}
+
 /// The program: see the crate's documentation. Started as `app-window`, it is the
-/// installer's window instead (D134); as `files` the Files window (D135); as `text-editor` the
-/// Text Editor and as `edit` its command (D149).
+/// installer's window instead (D134); as `app` the `app` command (D134, D214); as `files` the
+/// Files window (D135); as `text-editor` the Text Editor and as `edit` its command (D149); as
+/// `disk` the `disk` command (D192).
 pub fn run(startup: &Startup) -> i32 {
     let started_as = startup.arguments().next().map_or(&b""[..], CStr::to_bytes);
     match eggos_app::files::file_name(started_as) {
         WINDOW_PROGRAM_NAME => return eggos_app::window_program::run(startup),
+        APP_COMMAND_NAME => return eggos_app::command::run(startup),
         FILES_PROGRAM_NAME => return eggos_files::program::run(startup),
         EDITOR_PROGRAM_NAME => return eggos_editor::program::run(startup),
         EDIT_COMMAND_NAME => return eggos_editor::command::run(startup),
+        DISK_COMMAND_NAME => return crate::disk_system::run(startup),
+        TERMINAL_PROGRAM_NAME => return eggos_terminal_window::program::run(startup),
+        TASK_MANAGER_PROGRAM_NAME => return run_task_manager(startup),
         _ => {}
     }
-    let mut arguments = [""; 4];
+    let mut options = startup.arguments().skip(1).map(CStr::to_bytes);
+    if options.next() == Some(PROMPT_OPTION.as_bytes()) && options.next().is_none() {
+        return grant_prompt();
+    }
+    let mut arguments = [""; MAX_ARGUMENTS];
     let mut count = 0;
     for argument in startup.arguments().skip(1).map(CStr::to_bytes) {
         if count == arguments.len() {
-            write_all(STANDARD_ERROR, USAGE);
-            return 2;
+            write_all(STANDARD_ERROR, USAGE.as_bytes());
+            return USAGE_STATUS;
         }
         let Ok(argument) = core::str::from_utf8(argument) else {
-            write_all(STANDARD_ERROR, USAGE);
-            return 2;
+            write_all(STANDARD_ERROR, USAGE.as_bytes());
+            return USAGE_STATUS;
         };
         arguments[count] = argument;
         count += 1;
     }
+    match command::window_asked(&arguments[..count]) {
+        WindowAsked::Pairing(asked) => return open_window(Some(asked)),
+        WindowAsked::Usage => {
+            write_all(STANDARD_ERROR, USAGE.as_bytes());
+            return USAGE_STATUS;
+        }
+        WindowAsked::Other => {}
+    }
     match count {
-        0 => open_window(),
-        _ => command(&arguments[..count]),
+        0 => open_window(None),
+        _ => {
+            let mut machine = Machine {
+                server: WindowServer::open().ok(),
+            };
+            command::run(&mut machine, &arguments[..count])
+        }
     }
 }

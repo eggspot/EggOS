@@ -1,6 +1,9 @@
+use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use core::ffi::CStr;
+use eggos_commands::{commands, errors};
+use eggos_mcp::json::JsonWriter;
 
 pub const OPERATING_SYSTEM: &[u8] = b"EggOS";
 
@@ -16,49 +19,40 @@ enum Source {
 #[derive(Debug)]
 struct Field {
     letter: u8,
-    long: &'static [u8],
     source: Source,
 }
 
 const FIELDS: [Field; 8] = [
     Field {
         letter: b's',
-        long: b"--kernel-name",
         source: Source::Kernel(0),
     },
     Field {
         letter: b'n',
-        long: b"--nodename",
         source: Source::Kernel(1),
     },
     Field {
         letter: b'r',
-        long: b"--kernel-release",
         source: Source::Kernel(2),
     },
     Field {
         letter: b'v',
-        long: b"--kernel-version",
         source: Source::Kernel(3),
     },
     Field {
         letter: b'm',
-        long: b"--machine",
         source: Source::Kernel(4),
     },
     Field {
         letter: b'p',
-        long: b"--processor",
         source: Source::Unknown,
     },
     Field {
         letter: b'i',
-        long: b"--hardware-platform",
         source: Source::Unknown,
     },
     Field {
         letter: b'o',
-        long: b"--operating-system",
         source: Source::OperatingSystem,
     },
 ];
@@ -67,33 +61,43 @@ const KERNEL_NAME: u8 = 1;
 
 const ALL_KNOWN: u8 = 0b1001_1111;
 
+const JSON_BYTES: usize = 1024;
+
+const JSON_KEYS: [Option<&str>; 8] = [
+    Some("kernel_name"),
+    Some("node_name"),
+    Some("kernel_release"),
+    Some("kernel_version"),
+    Some("machine"),
+    None,
+    None,
+    Some("operating_system"),
+];
+
 pub fn uname<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut selected = 0u8;
-    let mut options_end = false;
-    for argument in arguments {
-        let bytes = argument.to_bytes();
-        if options_end || bytes.len() < 2 || bytes[0] != b'-' {
-            output.error(&[b"extra operand '", bytes, b"'"]);
-            return FAILURE;
-        }
-        if bytes == b"--" {
-            options_end = true;
-        } else if bytes == b"--all" {
-            selected |= ALL_KNOWN;
-        } else if bytes.starts_with(b"--") {
-            match FIELDS.iter().position(|field| field.long == bytes) {
-                Some(index) => selected |= 1 << index,
-                None => return output.invalid_option(bytes),
-            }
-        } else {
-            for &letter in &bytes[1..] {
-                match FIELDS.iter().position(|field| field.letter == letter) {
-                    Some(index) => selected |= 1 << index,
-                    None if letter == b'a' => selected |= ALL_KNOWN,
-                    None => return output.invalid_option(&[b'-', letter]),
+    let mut json = false;
+    let parsed = parse_defined(output, arguments, &commands::UNAME, |_, given| {
+        match given.option.short {
+            Some(b'a') => selected |= ALL_KNOWN,
+            Some(letter) => {
+                if let Some(index) = FIELDS.iter().position(|field| field.letter == letter) {
+                    selected |= 1 << index;
                 }
             }
+            None => json = true,
         }
+        Ok(())
+    });
+    let Ok(operands) = parsed else {
+        return FAILURE;
+    };
+    if let Some(extra) = operands.all().first() {
+        output.coded(
+            &errors::USAGE,
+            &[b"extra operand '", extra.to_bytes(), b"'"],
+        );
+        return FAILURE;
     }
     if selected == 0 {
         selected = KERNEL_NAME;
@@ -105,6 +109,26 @@ pub fn uname<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             return FAILURE;
         }
     };
+    if json {
+        let mut buffer = [0u8; JSON_BYTES];
+        let mut out = JsonWriter::new(&mut buffer);
+        out.begin_object();
+        for (key, field) in JSON_KEYS.into_iter().zip(&FIELDS) {
+            let Some(key) = key else {
+                continue;
+            };
+            out.key(key);
+            out.string_lossy(match field.source {
+                Source::Kernel(index) => name.field(index),
+                Source::Unknown => UNKNOWN,
+                Source::OperatingSystem => OPERATING_SYSTEM,
+            });
+        }
+        out.end_object();
+        out.end_line();
+        output.write(out.as_bytes());
+        return 0;
+    }
     let mut first = true;
     for (index, field) in FIELDS.iter().enumerate() {
         if selected & 1 << index == 0 {
@@ -154,6 +178,18 @@ mod tests {
         assert_eq!(
             run(&[c"-ap"]).1,
             all.replace(" EggOS\n", " unknown EggOS\n")
+        );
+    }
+
+    #[test]
+    fn json_writes_every_known_field() {
+        let (status, output, _) = run(&[c"--json"]);
+        assert_eq!(status, 0);
+        assert_eq!(
+            output,
+            "{\"kernel_name\":\"Linux\",\"node_name\":\"localhost\",\
+             \"kernel_release\":\"6.1.0-eggos\",\"kernel_version\":\"#1 SMP EggOS 0.2.0\",\
+             \"machine\":\"aarch64\",\"operating_system\":\"EggOS\"}\n"
         );
     }
 

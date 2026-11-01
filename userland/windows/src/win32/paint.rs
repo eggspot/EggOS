@@ -6,6 +6,8 @@
 //! own origin, clipped to its client area and its ancestors'; what a window of a tree draws is
 //! committed once no paint of the same thread is left to hand out in that tree, so a window
 //! never shows with its controls half painted, and an open drop-down is painted over it first.
+//! A DIB section whose bits are not its pixels (D178, `gdi.rs`) is read from the program's bits
+//! before each drawing call on it and the rows drawn are written back after.
 
 use super::gui::{self, Gui, try_with, with};
 use super::thread_environment;
@@ -35,51 +37,96 @@ struct PaintStruct {
 }
 
 #[repr(C)]
-struct Size {
-    width: i32,
-    height: i32,
+pub(super) struct Size {
+    pub(super) width: i32,
+    pub(super) height: i32,
 }
 
 #[repr(C)]
-struct Point {
-    x: i32,
-    y: i32,
+pub(super) struct Point {
+    pub(super) x: i32,
+    pub(super) y: i32,
 }
 
-fn rect_of(rect: &Win32Rect) -> Rect {
+pub(super) fn rect_of(rect: &Win32Rect) -> Rect {
     Rect::new(rect.left, rect.top, rect.right, rect.bottom)
 }
 
-/// Runs `work` on context `hdc`'s window's surface (none when it draws nowhere), translated to
-/// the window's client area and clipped to it and to the context, under the state's lock.
+/// Where a device context's drawing lands: a buffer of `width` by `height` pixels at
+/// `address` (a top-level window's mapped buffer, or a memory context's bitmap), the point of
+/// it the context's (0, 0) is at, and the part the context may draw on, in its coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Raster {
+    pub address: usize,
+    pub width: u32,
+    pub height: u32,
+    pub origin: (i32, i32),
+    pub clip: Rect,
+}
+
+/// Where `context` draws, under the state's lock; `None` when it draws nowhere.
+pub fn raster_of(gui: &Gui, context: &DeviceContext) -> Option<Raster> {
+    if context.memory {
+        let bitmap = context.selected_bitmap(&gui.objects)?;
+        return (bitmap.address != 0).then(|| Raster {
+            address: bitmap.address,
+            width: bitmap.width,
+            height: bitmap.height,
+            origin: (0, 0),
+            clip: bitmap.bounds().intersection(&context.clip),
+        });
+    }
+    let placement = windows::client_placement(&gui.windows, context.window)?;
+    let root = gui.windows.get(placement.root)?;
+    if root.pixels == 0 {
+        return None;
+    }
+    let (x, y) = placement.origin;
+    Some(Raster {
+        address: root.pixels,
+        width: root.buffer_width,
+        height: root.buffer_height,
+        origin: placement.origin,
+        clip: placement.clip.offset(-x, -y).intersection(&context.clip),
+    })
+}
+
+/// Runs `work` on context `hdc`'s surface (none when it draws nowhere): its window's, translated
+/// to the window's client area and clipped to it and to the context, or its bitmap's for a
+/// memory context, under the state's lock.
 pub fn draw_in<R>(
     hdc: usize,
     work: impl FnOnce(Option<&mut Surface<'_>>, &mut DeviceContext, &Gui) -> R,
 ) -> Result<R, u32> {
     try_with(|gui| {
         let mut context = *gui.contexts.get(hdc).ok_or(error::INVALID_HANDLE)?;
-        let placement = windows::client_placement(&gui.windows, context.window);
-        let surface = placement.and_then(|placement| {
-            let root = gui.windows.get(placement.root)?;
-            // SAFETY: the top-level window's pixels are its mapped buffer of `buffer_width *
-            // buffer_height` pixels, which stays mapped while the window is in the table, and
-            // the table's lock is held.
+        let section = context.memory.then_some(context.bitmap);
+        if let Some(bitmap) = section {
+            super::gdi::load_section(bitmap);
+        }
+        let surface = raster_of(gui, &context).and_then(|raster| {
+            // SAFETY: a raster's buffer is a top-level window's mapped buffer, mapped while the
+            // window is in the table, or a bitmap's heap block, freed only once no context holds
+            // it; both are `width * height` pixels, and the table's lock is held.
             let pixels = unsafe {
                 core::slice::from_raw_parts_mut(
-                    root.pixels as *mut u32,
-                    root.buffer_width as usize * root.buffer_height as usize,
+                    raster.address as *mut u32,
+                    raster.width as usize * raster.height as usize,
                 )
             };
-            let mut surface = Surface::new(pixels, root.buffer_width, root.buffer_height)?;
-            surface.clip_to(placement.clip);
-            surface.translate(placement.origin.0, placement.origin.1);
+            let mut surface = Surface::new(pixels, raster.width, raster.height)?;
+            surface.translate(raster.origin.0, raster.origin.1);
+            surface.clip_to(raster.clip);
             Some(surface)
         });
         let result = match surface {
             Some(mut surface) => {
-                surface.clip_to(context.clip);
                 let result = work(Some(&mut surface), &mut context, gui);
-                context.drawn = context.drawn.union(&surface.drawn());
+                let drawn = surface.drawn();
+                context.drawn = context.drawn.union(&drawn);
+                if let Some(bitmap) = section {
+                    super::gdi::store_section(bitmap, drawn);
+                }
                 result
             }
             None => work(None, &mut context, gui),
@@ -91,7 +138,7 @@ pub fn draw_in<R>(
     })
 }
 
-fn draw<R>(
+pub(super) fn draw<R>(
     hdc: usize,
     work: impl FnOnce(Option<&mut Surface<'_>>, &mut DeviceContext, &ObjectTable) -> R,
 ) -> Result<R, u32> {
@@ -100,8 +147,18 @@ fn draw<R>(
     })
 }
 
+pub(super) fn remember_drawn(hdc: usize, rect: Rect, units: &[u16]) {
+    with(|gui| {
+        let window = gui.contexts.get(hdc).map(|context| context.window);
+        if let Some(window) = window.filter(|window| *window != 0) {
+            gui.drawn.record(window, rect, units);
+        }
+    });
+}
+
 /// `BeginPaint`'s work: a painting context on `window`'s region waiting to be painted (now
-/// validated), the region, and whether the background is still to erase.
+/// validated), the region, and whether the background is still to erase. The text drawn in
+/// the region before is forgotten (D162): the paint draws what is there now.
 pub fn begin(window: usize) -> Result<(usize, Rect, bool), u32> {
     let (hdc, region, erase) = try_with(|gui| {
         let target = gui.window_mut(window)?;
@@ -109,6 +166,7 @@ pub fn begin(window: usize) -> Result<(usize, Rect, bool), u32> {
         let erase = target.erase;
         target.update = Rect::default();
         target.erase = false;
+        gui.drawn.forget_in(window, region);
         let hdc = gui
             .contexts
             .insert(DeviceContext::new(window, true, region))
@@ -171,10 +229,14 @@ pub fn show_pending(
         super::menu::paint_bar(gui, root);
     }
     let dropped = super::menu::paint_open_drop_down(gui, root);
+    let listed = super::combo_box::paint_open_list(gui, root);
     match first {
         true => Some((device, server, None)),
         false => {
-            let area = dropped.map_or(pending, |dropped| pending.union(&dropped));
+            let area = [dropped, listed]
+                .into_iter()
+                .flatten()
+                .fold(pending, |area, over| area.union(&over));
             (!area.is_empty()).then_some((device, server, Some(area)))
         }
     }
@@ -201,6 +263,17 @@ pub fn erase_background(window: usize, hdc: usize) -> bool {
     draw(hdc, |surface, context, _| {
         if let Some(surface) = surface {
             surface.fill(context.clip, background);
+        }
+    })
+    .is_ok()
+}
+
+/// Fills context `hdc`'s clip with `colour`, as `DefDlgProc`'s `WM_ERASEBKGND` does with the
+/// dialog's grey (D174); whether there was such a context.
+pub fn fill_clip(hdc: usize, colour: u32) -> bool {
+    draw(hdc, |surface, context, _| {
+        if let Some(surface) = surface {
+            surface.fill(context.clip, colour);
         }
     })
     .is_ok()
@@ -301,9 +374,20 @@ unsafe extern "efiapi" fn invalidate_rect(
 unsafe extern "efiapi" fn fill_rect(hdc: usize, rect: *const Win32Rect, brush: usize) -> i32 {
     // SAFETY: the caller passes a readable `RECT`.
     let rect = rect_of(unsafe { &*rect });
-    let filled = draw(hdc, |surface, _, objects| {
-        if let (Some(surface), Some(colour)) = (surface, objects::brush_colour(objects, brush)) {
-            surface.fill(rect, colour);
+    let filled = draw(hdc, |surface, context, objects| {
+        let (Some(surface), Some(colour)) = (surface, objects::brush_colour(objects, brush)) else {
+            return;
+        };
+        match super::gdi::pattern(brush) {
+            Some(tile) => {
+                let area = rect.intersection(&surface.clip());
+                for y in area.top..area.bottom {
+                    for x in area.left..area.right {
+                        surface.pixel(x, y, tile.at((x, y), context.brush_origin));
+                    }
+                }
+            }
+            None => surface.fill(rect, colour),
         }
     });
     match filled {
@@ -312,7 +396,7 @@ unsafe extern "efiapi" fn fill_rect(hdc: usize, rect: *const Win32Rect, brush: u
     }
 }
 
-unsafe fn units<'a>(text: *const u16, count: i32) -> &'a [u16] {
+pub(super) unsafe fn units<'a>(text: *const u16, count: i32) -> &'a [u16] {
     if text.is_null() || count == 0 {
         return &[];
     }
@@ -355,6 +439,9 @@ unsafe extern "efiapi" fn draw_text_w(
             None => text::measure(cells, bounds, format).height(),
         }
     });
+    if drawn.is_ok() {
+        remember_drawn(hdc, text::measure(cells, bounds, format), units);
+    }
     match drawn {
         Ok(height) => height,
         Err(code) => fail(code, 0),
@@ -369,7 +456,7 @@ extern "efiapi" fn get_sys_color_brush(index: i32) -> usize {
     objects::system_brush_handle(index as u32).unwrap_or(0)
 }
 
-fn create(object: Object) -> usize {
+pub(super) fn create(object: Object) -> usize {
     match with(|gui| gui.objects.insert(object)).flatten() {
         Some(handle) => handle,
         None => fail(error::NOT_ENOUGH_MEMORY, 0),
@@ -410,9 +497,23 @@ extern "efiapi" fn delete_object(handle: usize) -> Bool {
     if objects::is_permanent(handle) {
         return TRUE;
     }
-    match with(|gui| gui.objects.remove(handle)).flatten() {
-        Some(_) => TRUE,
-        None => fail(error::INVALID_HANDLE, FALSE),
+    let removed = with(|gui| {
+        let selected = gui
+            .contexts
+            .iter()
+            .any(|(_, context)| context.memory && context.bitmap == handle);
+        match selected {
+            true => Err(error::BUSY),
+            false => gui.objects.remove(handle).ok_or(error::INVALID_HANDLE),
+        }
+    });
+    match removed {
+        Some(Ok(object)) => {
+            super::gdi::release(handle, object);
+            TRUE
+        }
+        Some(Err(code)) => fail(code, FALSE),
+        None => fail(error::NOT_ENOUGH_MEMORY, FALSE),
     }
 }
 
@@ -536,6 +637,10 @@ unsafe extern "efiapi" fn text_out_w(
             text::text_out(surface, x, y, units, foreground, context.text_background());
         }
     });
+    if drawn.is_ok() {
+        let (width, height) = text::extent(units);
+        remember_drawn(hdc, Rect::sized(x, y, width, height), units);
+    }
     match drawn {
         Ok(()) => TRUE,
         Err(code) => fail(code, FALSE),

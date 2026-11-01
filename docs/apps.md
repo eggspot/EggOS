@@ -37,13 +37,43 @@ the app appears there and on the desktop.
 `app` is the command; the installer's window is the same capability with dialogs (D22, D134).
 
 ```
-app install [--name <name>] [--entry <path>] [--window] [--] <path>
-app uninstall [--window] [--] <name>   (app remove is the same)
+app install [--name <name>] [--entry <path>] [--arguments <words>] [--environment <variables>] [--window] [--] <path>
+app uninstall [--window] [--dry-run] [--] <name>   (app remove is the same)
 app open [--] <name>
-app list
+app list [--json] [--limit <count>] [--after <cursor>]
+app show [--json] [--] <name>
+app icon [--size 48|32] [-o <file.png>] [--] <name> [<file.png>]
 ```
 
 `--` ends the options: the word after it is the path or name even if it starts with `-`.
+
+### What you can install today, and apps to try
+
+On the release images (D152):
+
+| Kind | Where it installs | What runs |
+|------|-------------------|-----------|
+| Windows `.exe` (PE32+), or a `.zip` holding one | x86_64 (x64 programs) and aarch64 (ARM64 programs) | console programs and GUI programs on kernel32, user32, gdi32, the system's controls and dialogs, and MSVC's C runtime (`/MD`): [Windows programs](windows-programs.md) |
+| macOS Mach-O tool, `.app` bundle, or a `.zip` holding one | aarch64 (arm64) and x86_64 (x86_64), macOS 13 or later | console programs on libSystem and Foundation's core, and AppKit apps built in code: [macOS programs](macos-programs.md) |
+| Linux static ELF program | every architecture | console programs, and GUI programs through Wayland: [Linux programs](linux-programs.md) |
+| Linux dynamically linked program in a `.zip` with its loader and libraries (D172) | every architecture | the same, through the loader it carries: SDL apps such as Brogue CE ([compatibility](compatibility.md)) |
+
+Programs built for another CPU, 32-bit programs, dynamically linked Linux programs on their
+own (without their loader beside them in a `.zip`), Android and iOS apps are refused with the
+reason. The release does not ship apps of its own; to get
+some to try, build ours from a checkout and pass their folder to the run script:
+
+```
+cargo xtask sample-apps --arch x86_64                          # prints target/sample-apps/x86_64
+sh run-eggos.sh --apps ~/EggOS/target/sample-apps/x86_64       # the downloaded release
+cargo xtask run --arch x86_64 --apps target/sample-apps/x86_64 # or the checkout's own image
+```
+
+then, at the prompt, `app install /media/host/win-paint.exe` (or `win-controls.exe`,
+`linux-paint`, `mac-paint.zip`), or `Install from host share...` in the launcher.
+`win-paint.exe` and `win-controls.exe` (x86_64 and aarch64) are our Windows GUI test programs,
+`linux-paint` our Wayland one, and `mac-paint.zip` our AppKit app, written only when the folder
+is built on a Mac (Apple's linker builds it).
 
 - **`app install <path>`** installs a Windows program (a PE32+ `.exe`, x86_64 or ARM64), a
   macOS program (a 64-bit Mach-O or fat file, or an `.app` folder whose `Contents/MacOS` holds
@@ -77,6 +107,44 @@ app list
   can open`, and an entry whose name would leave the folder (absolute, `..`, a backslash or a
   colon) as `it holds a file whose name points outside its folder`. Each entry's CRC-32 is
   checked; a damaged one fails the install and removes what was extracted.
+- **A dynamically linked Linux program** (D172) installs from a `.zip` that also holds the
+  dynamic loader its `PT_INTERP` names (a file of that name anywhere in the archive, such as
+  `lib/ld-musl-x86_64.so.1`) and its libraries: the manifest gets `loader` (that file) and
+  `libraries` (the folders of the archive's versioned libraries, `*.so.<n>`, at most four,
+  separated by `:`; plugin folders holding only unversioned `.so` files, such as Qt's
+  `plugins/platforms`, stay off the path, as the app loads them itself; an archive with no
+  versioned library lists the folders of its `.so` files), and
+  opening the app runs the loader with `--library-path` and those folders, then the program,
+  as glibc's and musl's loaders take them. Without the loader in the archive, or on its own,
+  it is refused (`it needs a dynamic loader: install it in a .zip that holds its loader and
+  libraries`).
+- **`--arguments <words>`** (D172) gives the words the app opens with, written as the
+  manifest's `arguments`: letters, digits, spaces and `-_./:=+,@%` only, at most 128 bytes
+  (anything else is refused: `its arguments must be letters, digits, spaces and -_./:=+,@%
+  only, at most 128 bytes`), so nothing in them can reach the shell as anything but words.
+  The MCP tool `app_install` takes them as `arguments`; the installer's window takes them on
+  its command line (`/usr/libexec/app-window install --arguments ...`).
+- **`--environment <variables>`** (D176) gives `NAME=value` words set in the program's
+  environment when the app opens, written as the manifest's `environment` and typed before the
+  program on its launch line: names of letters, digits and `_` (not starting with a digit),
+  values of letters, digits and `-_./:=+,@%`, single spaces between words, at most 128 bytes
+  (anything else is refused). A toolkit app uses it to find the data it carries (GTK's
+  schemas through `XDG_DATA_DIRS=/Applications/<name>/share`). The MCP tool `app_install`
+  takes it as `environment`, the installer's window on its command line.
+- **Fonts** (D176): an app that carries fonts in `share/fonts` gets a link to that folder at
+  `/Applications/.fonts/<name>`, made before its manifest and removed when it is
+  uninstalled; `/etc/fonts/fonts.conf` lists `/Applications/.fonts`, so every program that uses
+  fontconfig finds the fonts of every installed app. No app may be called `.fonts`.
+- **Symbolic links** (D170) in an `.app` folder or a `.zip` (a macOS framework's
+  `Versions/Current -> A` and `Foo -> Versions/Current/Foo`) are made again as links with the
+  same target, not followed. A link whose target is absolute, or whose `..` parts climb above
+  the link's own folder or come after a name (which could itself be a link leading higher), is
+  refused before anything is written (`it holds a symbolic link that could lead outside the
+  app`), and so is a `.zip` entry that would be written through a link the archive made
+  (`it holds a file whose name points outside its folder`), so an app never reaches outside its
+  folder through a link. The file, `.app` or `.zip` named to install may itself be a link: it
+  is followed. Uninstalling removes links like files; devices and sockets are refused
+  (`it holds a device or a socket, which an app cannot`).
 - **The app's own icon** (D148, `docs/ux/app-icons-v0.3.md`): after the copy, the installer
   looks for it in what it installed: a Windows program's first icon group (`RT_GROUP_ICON`
   and its `RT_ICON` images, PNG or bitmap with its mask), a bundle's `.icns`
@@ -92,17 +160,21 @@ app list
   installed (`it is already installed`: uninstall it first), a name or program path the
   manifest cannot hold, and what this machine cannot run, as `EggOS cannot run <file> on
   <arch>: <reason>`: a Windows or macOS program where its layer does not run (riscv64), a
-  program built for another CPU (until ahead-of-time translation exists, D17), a 32-bit
-  program, a Linux program that needs a dynamic loader. A Windows or macOS program whose
-  layer is not installed (`/usr/lib/eggos/windows`, `/usr/lib/eggos/macos`) is refused too
-  (`it needs the Windows layer, which is not installed`), since nothing could open it (D18).
+  program built for another CPU (except an x64 Windows or x86_64 macOS program on aarch64,
+  which runs translated, D191), a 32-bit program, a Linux program that needs a dynamic loader. A
+  Windows or macOS program whose layer is not installed (`/usr/lib/eggos/windows`,
+  `/usr/lib/eggos/macos`) is refused too (`it needs the Windows layer, which is not
+  installed`), since nothing could open it (D18).
+  The x86_64 and aarch64 release images carry both layers (D152); riscv64 runs neither.
 - A failure while copying (`/Applications is read-only because EggOS started without a
   disk`, `not enough space on the disk (ENOSPC)`, an I/O error) removes what was copied. A
   folder of that name without a valid manifest (an install or uninstall that was cut short)
   is replaced.
 - **`app uninstall <name>`** removes the app: its manifest, so it leaves the launcher and the
   desktop at once, then its folder; nothing of it is left (D18). The layer it ran through
-  stays. `app: could not uninstall <name>: it is not installed` otherwise.
+  stays. `app: could not uninstall <name>: it is not installed` otherwise. `--dry-run` says
+  `would uninstall <name>: removes /Applications/<name> and everything in it` and removes
+  nothing (D164).
 - **`app open <name>`** opens an app as a double-click on its icon does (`OPEN_APP`, D137):
   the built-in `Terminal`, `Files`, `Settings` or `Text Editor` (D141, D149; a built-in wins
   over an installed app
@@ -111,7 +183,38 @@ app list
   desktop. It is the MCP tool `app_open`'s twin.
 - **`app list`** prints one line per installed app, in `/Applications`' order: its name,
   source, architecture, program path and own icon file (`app.icon`, or `-` for the generic
-  tile), separated by tabs; the MCP tool `app_list` answers the same.
+  tile), separated by tabs; the MCP tool `app_list` answers the same. `app list --json`
+  writes a JSON record per app instead (`name`, `source`, `architecture`, `program`, `icon`,
+  `null` for no architecture or icon; D160, docs/ux/command-model.md). `--limit` and `--after`
+  page them (D164): the next apps by name after the cursor, at most 100, each page in
+  `/Applications`' order, then `more: --after <cursor>` on standard error when more follow.
+- **`app icon <name> <file.png>`** (D196) writes the app's own icon, the one the dock, the
+  launcher and the taskbar draw, as a PNG with transparency: 48 pixels square, or 32 with
+  `--size 32`; the file may be given with `-o` instead. It prints `Wrote <file>.`, and fails
+  with `app: <name> has no icon` for an app drawn as the generic tile (a built-in, or one whose
+  files carried no icon) and `app: <name> is not installed`. The MCP tool `app_icon` returns
+  the 48-pixel PNG as an image.
+- **`app show <name>`** prints one installed app's fields, a line each (`name:`, `source:`,
+  `architecture:`, `program:`, `icon:`), then its translation (D191): for an x64 Windows or
+  x86_64 macOS program installed on aarch64, `translation:` with the bytes of code translated,
+  the cache file's size and path under `/var/cache/eggos/translate` (`(not stored)` when it
+  could not be written), `refused:` with how many instructions were refused, and one line per
+  refused site (the first 8: its guest address and why, such as `an AVX (VEX-encoded)
+  instruction`); `translation: -` for an app with no translation record. `--json` writes one
+  object: `app list --json`'s fields and `translation` (`null`, or `key`, `code_bytes`,
+  `cache_bytes`, `stored`, `refused` and `refused_sites`, each with `address` and `reason`).
+  The MCP tool `app_show` answers the same text. `app: <name> is not installed` and status 1
+  for a name with no app.
+- **Translating at install** (D191): `app install` of an x64 Windows or x86_64 macOS program
+  on aarch64 copies it, prints `Installed ...`, then `Translating <name>'s x86_64 code for
+  this aarch64 computer, once...` and runs its layer as `<layer> --translate <program>`,
+  which translates it into the cache (or finds it there) and prints its translation record;
+  the installer keeps that record as `app.translation` in the app's folder and says `Translated
+  <n> bytes of code into a <m>-byte cache;` with the refused count (`app show <name>` lists
+  them). When the layer cannot translate it, the install still succeeds and says `Not
+  translated yet: it is translated when the app first opens.`; the first launch translates a
+  missing or stale cache either way. Uninstalling removes the cache file the record names
+  (`--dry-run` names it), so nothing is left behind (D18).
 - Status: 0 done, 1 refused or failed, 2 a usage error. With a desktop running, `install`
   and `uninstall` tell it (`APPS_CHANGED`, [Windows](windows.md)), so its launcher and icons
   follow at once.
@@ -133,8 +236,7 @@ app list
   prompt (for a `.zip`, an `Inside:` line names the program in it); in the
   `Apps` place (`/Applications`) a double-click on an app opens it as its icon does and Delete
   or `Uninstall...` asks to uninstall it.
-- Not yet: the MCP tools `app_install`, `app_uninstall` and `app_list` come with the MCP
-  server (D21, after the release); installing a missing layer (the component manager, D18);
+- Not yet: removing or installing a layer on its own (the component manager, D18, D152);
   `--force` to replace an installed app (uninstall it first).
 
 ## The Text Editor: `edit`
@@ -179,6 +281,10 @@ and the installer share it.
 | `run` | yes | The program: an absolute path, or a path relative to the app's folder; at most 192 bytes, no `..` part, no `'`, not ending in `/`. |
 | `architecture` | no | The machine it was built for (`x86_64`, `aarch64`, ...), at most 16 bytes. |
 | `synonyms` | no | Words the launcher's search also matches, separated by commas, at most 8 used, at most 128 bytes in all. The program's file name always matches. |
+| `loader` | no | A Linux program's dynamic loader, relative to the folder, with `run`'s rules (D172): the app opens through it. |
+| `libraries` | no | The folders the loader finds the program's libraries in, relative to the folder and separated by `:`, at most 128 bytes, no spaces (D172). |
+| `arguments` | no | Words the program opens with, after its path: letters, digits, spaces and `-_./:=+,@%`, at most 128 bytes, not starting with a space (D172). |
+| `environment` | no | `NAME=value` words set in the program's environment when the app opens, typed before it on its launch line: names of letters, digits and `_`, values of letters, digits and `-_./:=+,@%`, single spaces between, at most 128 bytes (D176). |
 | `icon` | no | The app's own icon file (D148), relative to the folder, with `run`'s rules: [`app.icon`](../app-manifest/src/icon.rs), exactly 13 312 bytes, the 48x48 then the 32x32 image as premultiplied `0xAARRGGBB`, little-endian. The shell draws it, without a badge, wherever the app's icon shows; without the key, or with a file of another size, the app wears the letter tile and its source's badge. |
 
 A manifest that is not this format, is longer than 1024 bytes, lacks a required key, has an
@@ -194,7 +300,7 @@ are kept.
 | Settings, Files | Focuses its window if it has one, else starts `/bin/settings` or `/bin/files` as a process. Without `/bin/files` (D18), Files says `Files is not installed.` |
 | Text Editor | Starts `/bin/text-editor` on an untitled document, a new window each time (D149); the dock's icon of running editors focuses them. Without it, `Text Editor is not installed.` |
 | Host share | Starts Files on `/media/host` (`/bin/files /media/host`, D135); without Files it focuses the terminal and runs `ls /media/host` in it. |
-| An installed app | Focuses the terminal and runs its program there, as if its path had been typed at the prompt (single-quoted when it holds a space or other punctuation), after Ctrl-U, so a half-typed line is erased first. The program runs through its layer as at the prompt: a Windows GUI program or a macOS app (an `.app`, D147) opens its window, a console program writes in the terminal. |
+| An installed app | Focuses the terminal and runs its program there, as if its path had been typed at the prompt (single-quoted when it holds a space or other punctuation), after Ctrl-U, so a half-typed line is erased first; a program with a `loader` runs through it (`<loader> --library-path <libraries> <program>`, each absolute in the app's folder) and the app's `arguments` follow (D172); the app's `environment` comes first on the line (D176). The program runs through its layer as at the prompt: a Windows GUI program or a macOS app (an `.app`, D147) opens its window, a console program writes in the terminal. |
 | `Install from host share...` | Starts the installer's window on `/media/host` (above). |
 
 The kernel reads the catalogue when the desktop starts, each time the launcher opens and when

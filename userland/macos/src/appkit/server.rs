@@ -1,21 +1,31 @@
 //! The layer's connection to the window server, `/dev/window` (docs/windows.md, D127): one per
 //! process, opened when the app first shows a window or runs, blocking, with the requests
-//! AppKit makes and the pixel buffers it maps.
+//! AppKit makes and the pixel buffers it maps; the element tree's queries are read and answered
+//! here too (D161, D175).
 
 use crate::linux::{self, O_CLOEXEC, O_RDWR};
 use core::sync::atomic::{AtomicUsize, Ordering};
+use eggos_element_tree::{
+    MAX_TEXT_BYTES, answer_query, put_double_word, put_word, read_query, read_word,
+    request as query_request, size as query_size,
+};
 use eggos_runtime::errno::Errno;
 
 const CREATE: usize = 0xc020_7701;
 const SET_TITLE: usize = 0x4048_7702;
 const SET_SIZE: usize = 0xc018_7703;
+const SET_POSITION: usize = 0x400c_7705;
 const SET_POINTER: usize = 0x4008_7707;
 const COMMIT: usize = 0x4088_7708;
 const DESTROY: usize = 0x4004_7709;
+const GET_WORK_AREA: usize = 0x8014_770a;
 const SET_MENU: usize = 0x4100_7715;
+const GET_PLACEMENT: usize = 0xc014_771c;
 const TITLE_CAPACITY: usize = 64;
 const MENU_REQUEST_SIZE: usize = 256;
 const PIXEL_BYTES: usize = 4;
+const POLL_INPUT: i16 = 1;
+const SIGNAL_SET_BYTES: usize = 8;
 
 /// `CREATE`'s roles.
 pub const ROLE_NORMAL: u32 = 0;
@@ -191,6 +201,100 @@ pub unsafe fn destroy(buffer: &Buffer) {
     let length = buffer.width as usize * buffer.height as usize * PIXEL_BYTES;
     // SAFETY: the caller's promise: the mapping is unused.
     let _ = unsafe { linux::unmap(buffer.pixels, length) };
+}
+
+/// Places `window`'s outside top-left at (`x`, `y`) of the work area.
+pub fn set_position(window: u32, x: i32, y: i32) {
+    let mut position = [0u8; 12];
+    put(&mut position, 0, window);
+    put(&mut position, 4, x as u32);
+    put(&mut position, 8, y as u32);
+    let _ = request(SET_POSITION, &mut position);
+}
+
+/// A rectangle on the screen: x, y, width and height.
+pub type ScreenRect = (i32, i32, i32, i32);
+
+/// The work area: the screen without the bars.
+pub fn work_area() -> Option<ScreenRect> {
+    let mut area = [0u8; 20];
+    request(GET_WORK_AREA, &mut area).ok()?;
+    Some((
+        word(&area, 0) as i32,
+        word(&area, 4) as i32,
+        word(&area, 8) as i32,
+        word(&area, 12) as i32,
+    ))
+}
+
+/// `window`'s outside rectangle on the screen, its border and title bar included.
+pub fn placement(window: u32) -> Option<ScreenRect> {
+    let mut placement = [0u8; 20];
+    put(&mut placement, 0, window);
+    request(GET_PLACEMENT, &mut placement).ok()?;
+    Some((
+        word(&placement, 4) as i32,
+        word(&placement, 8) as i32,
+        word(&placement, 12) as i32,
+        word(&placement, 16) as i32,
+    ))
+}
+
+/// The text a `set-text` query `serial` carries, copied into `text`; its length.
+pub fn query_text(serial: u32, text: &mut [u8; MAX_TEXT_BYTES]) -> Result<usize, Errno> {
+    let mut query = [0u8; query_size::READ_QUERY];
+    put_word(&mut query, read_query::SERIAL, serial);
+    request(query_request::READ_QUERY as usize, &mut query)?;
+    let length = (read_word(&query, read_query::TEXT_LENGTH) as usize).min(MAX_TEXT_BYTES);
+    text[..length].copy_from_slice(&query[read_query::TEXT..read_query::TEXT + length]);
+    Ok(length)
+}
+
+/// Answers query `serial` with `outcome` and, for a tree, its bytes (`ANSWER_QUERY`).
+pub fn answer_query(serial: u32, outcome: u32, tree: &[u8]) {
+    let mut answer = [0u8; query_size::ANSWER_QUERY];
+    put_word(&mut answer, answer_query::SERIAL, serial);
+    put_word(&mut answer, answer_query::OUTCOME, outcome);
+    put_double_word(&mut answer, answer_query::BUFFER, tree.as_ptr() as u64);
+    put_double_word(&mut answer, answer_query::LENGTH, tree.len() as u64);
+    let _ = request(query_request::ANSWER_QUERY as usize, &mut answer);
+}
+
+/// Waits up to `timeout_ms` for event records; whether some wait (or the connection failed,
+/// which the read then reports).
+pub fn wait_for_events(timeout_ms: u64) -> bool {
+    let Ok(fd) = descriptor() else {
+        return true;
+    };
+    let mut poll = [0u8; 8];
+    poll[..4].copy_from_slice(&(fd as i32).to_ne_bytes());
+    poll[4..6].copy_from_slice(&POLL_INPUT.to_ne_bytes());
+    let time = [
+        (timeout_ms / 1000) as i64,
+        ((timeout_ms % 1000) * 1_000_000) as i64,
+    ];
+    loop {
+        // SAFETY: `ppoll` reads and writes one `struct pollfd` and reads one `struct timespec`
+        // from the borrowed buffers.
+        let polled = unsafe {
+            linux::syscall(
+                linux::number::PPOLL,
+                [
+                    poll.as_mut_ptr() as usize,
+                    1,
+                    time.as_ptr() as usize,
+                    0,
+                    SIGNAL_SET_BYTES,
+                    0,
+                ],
+            )
+        };
+        match polled {
+            Err(Errno::EINTR) => continue,
+            Ok(ready) => return ready > 0,
+            Err(_) => return true,
+        }
+    }
 }
 
 /// Waits for event records and reads as many as fit `records`; how many bytes.

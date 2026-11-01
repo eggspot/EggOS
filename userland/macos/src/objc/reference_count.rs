@@ -1,8 +1,10 @@
 //! Objects and their reference counts. An object the runtime allocates sits 16 bytes into its
-//! heap block; the word before it holds its extra retains (0 means one owner) and, in its top
-//! bit, that it is being deallocated, after which retains and releases do nothing. Objects of
+//! heap block; the word before it holds its extra retains (0 means one owner), in its top bit
+//! that it is being deallocated, after which retains and releases do nothing, and in the next
+//! bit that a weak variable names it (D175), so freeing it clears those variables. Objects of
 //! immortal classes (metaclasses, constant strings and literals) are never counted; classes that
-//! define their own `retain` or `release` get the messages. ARC's functions build on these.
+//! define their own `retain` or `release` get the messages. Native Swift objects count in their
+//! own header, weak variables included (D180). ARC's functions build on these.
 
 use super::abi::{ClassObject, Id, Sel};
 use super::class::{self, CUSTOM_REFERENCE_COUNTING, HAS_CXX_DESTRUCT, IMMORTAL};
@@ -12,6 +14,8 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 const HEADER: usize = 16;
 const DEALLOCATING: usize = 1 << (usize::BITS - 1);
+const WEAKLY_REFERENCED: usize = 1 << (usize::BITS - 2);
+const COUNT_MASK: usize = !(DEALLOCATING | WEAKLY_REFERENCED);
 
 fn count_of(object: Id) -> &'static AtomicUsize {
     // SAFETY: only objects the runtime allocated are counted, and their count word is the
@@ -23,9 +27,13 @@ enum Counting {
     Never,
     Messages,
     Direct,
+    Swift,
 }
 
 fn counting(object: Id) -> Counting {
+    if crate::swift::uses_swift_counting(object.cast()) {
+        return Counting::Swift;
+    }
     match class::record_of(class::class_of(object)) {
         None => Counting::Never,
         Some(record) if record.has(IMMORTAL) => Counting::Never,
@@ -68,20 +76,93 @@ pub fn direct_release(object: Id) {
         if value & DEALLOCATING != 0 {
             return;
         }
-        let next = if value == 0 { DEALLOCATING } else { value - 1 };
+        let next = match value & COUNT_MASK {
+            0 => value | DEALLOCATING,
+            _ => value - 1,
+        };
         match count.compare_exchange_weak(value, next, Ordering::Release, Ordering::Relaxed) {
             Ok(_) => break,
             Err(now) => value = now,
         }
     }
-    if value == 0 {
+    if value & COUNT_MASK == 0 {
         core::sync::atomic::fence(Ordering::Acquire);
         send(object, sel!("dealloc"));
     }
 }
 
 pub fn direct_retain_count(object: Id) -> usize {
-    (count_of(object).load(Ordering::Relaxed) & !DEALLOCATING) + 1
+    (count_of(object).load(Ordering::Relaxed) & COUNT_MASK) + 1
+}
+
+/// Whether the runtime frees `object` once uncounted: one it allocated (with a count word) or a
+/// mortal native Swift object.
+pub fn is_counted(object: Id) -> bool {
+    match counting(object) {
+        Counting::Direct | Counting::Messages => true,
+        Counting::Swift => !crate::swift::is_immortal(object.cast()),
+        Counting::Never => false,
+    }
+}
+
+/// Whether the counted `object` is being deallocated.
+pub fn is_deallocating(object: Id) -> bool {
+    if crate::swift::uses_swift_counting(object.cast()) {
+        return crate::swift::is_deinitializing(object.cast());
+    }
+    count_of(object).load(Ordering::Acquire) & DEALLOCATING != 0
+}
+
+/// Marks the counted `object` as named by a weak variable.
+pub fn mark_weakly_referenced(object: Id) {
+    if crate::swift::uses_swift_counting(object.cast()) {
+        crate::swift::mark_weakly_referenced(object.cast());
+        return;
+    }
+    count_of(object).fetch_or(WEAKLY_REFERENCED, Ordering::Relaxed);
+}
+
+/// Retains `object` unless it is being deallocated (`None`); `Some(false)` when its class
+/// counts by messages, which a weak load then sends with [`retain_for_weak_load`].
+pub fn try_retain(object: Id) -> Option<bool> {
+    match counting(object) {
+        Counting::Never => Some(true),
+        Counting::Swift => crate::swift::try_retain(object.cast()).then_some(true),
+        Counting::Messages => match is_deallocating(object) {
+            true => None,
+            false => Some(false),
+        },
+        Counting::Direct => {
+            let count = count_of(object);
+            let mut value = count.load(Ordering::Relaxed);
+            loop {
+                if value & DEALLOCATING != 0 {
+                    return None;
+                }
+                match count.compare_exchange_weak(
+                    value,
+                    value + 1,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return Some(true),
+                    Err(now) => value = now,
+                }
+            }
+        }
+    }
+}
+
+/// Retains `object`, whose class counts by messages, for a weak load while the weak table is
+/// locked, as Apple's runtime does: `retainWeakReference` when its class has one (false when
+/// the object refuses, as one being deallocated does), else `retain`.
+pub fn retain_for_weak_load(object: Id) -> bool {
+    let weak_retain = sel!("retainWeakReference");
+    if super::root::responds(class::class_of(object), weak_retain) {
+        return super::send_bool(object, weak_retain, 0);
+    }
+    send(object, sel!("retain"));
+    true
 }
 
 /// Runs every `.cxx_destruct` of the object's classes, the most derived first, then frees it.
@@ -93,13 +174,16 @@ pub fn dispose(object: Id) {
     while let Some(current) = record {
         if current.has(HAS_CXX_DESTRUCT) {
             let destruct = super::RUNTIME.with(|_| current.own_method(sel!(".cxx_destruct")));
-            if let Some(imp) = destruct {
+            if let Some(imp) = destruct.map(crate::callback::native_callable) {
                 // SAFETY: `.cxx_destruct` takes the object and its selector.
                 let destruct: extern "C" fn(Id, Sel) = unsafe { core::mem::transmute(imp) };
                 destruct(object, sel!(".cxx_destruct"));
             }
         }
         record = current.superclass();
+    }
+    if count_of(object).load(Ordering::Acquire) & WEAKLY_REFERENCED != 0 {
+        super::weak::clear(object);
     }
     heap::release(object.cast::<u8>().wrapping_sub(HEADER));
 }
@@ -110,6 +194,7 @@ pub extern "C" fn objc_retain(object: Id) -> Id {
     }
     match counting(object) {
         Counting::Never => object,
+        Counting::Swift => crate::swift::retain(object.cast()).cast(),
         Counting::Messages => send(object, sel!("retain")),
         Counting::Direct => direct_retain(object),
     }
@@ -121,6 +206,7 @@ pub extern "C" fn objc_release(object: Id) {
     }
     match counting(object) {
         Counting::Never => {}
+        Counting::Swift => crate::swift::release(object.cast()),
         Counting::Messages => {
             send(object, sel!("release"));
         }
@@ -135,7 +221,7 @@ pub extern "C" fn objc_autorelease(object: Id) -> Id {
     match counting(object) {
         Counting::Never => object,
         Counting::Messages => send(object, sel!("autorelease")),
-        Counting::Direct => autorelease::add(object),
+        Counting::Direct | Counting::Swift => autorelease::add(object),
     }
 }
 
@@ -326,7 +412,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
             objc_unsafe_claim_autoreleased_return_value as *const () as usize
         }
         b"_objc_storeStrong" => objc_store_strong as *const () as usize,
-        b"_objc_alloc" => objc_alloc as *const () as usize,
+        b"_objc_alloc" | b"_objc_allocWithZone" => objc_alloc as *const () as usize,
         b"_objc_alloc_init" => objc_alloc_init as *const () as usize,
         b"_objc_opt_new" => objc_opt_new as *const () as usize,
         b"_objc_opt_class" => objc_opt_class as *const () as usize,

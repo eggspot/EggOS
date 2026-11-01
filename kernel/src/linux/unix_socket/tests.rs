@@ -2,8 +2,6 @@ use super::*;
 use crate::linux::descriptors::open_flag;
 use alloc::vec;
 
-fn no_wake() {}
-
 const ME: PeerCredentials = PeerCredentials {
     pid: 7,
     uid: 1000,
@@ -11,7 +9,7 @@ const ME: PeerCredentials = PeerCredentials {
 };
 
 fn pair() -> (Arc<UnixSocket>, Arc<UnixSocket>) {
-    UnixSocket::pair(ME, no_wake)
+    UnixSocket::pair(ME)
 }
 
 fn connection_of(socket: &UnixSocket) -> (Arc<Connection>, Side) {
@@ -207,7 +205,7 @@ fn shutting_down_ends_reads_on_one_side_and_writes_on_the_other() {
 fn poll_events_follow_the_state() {
     let _serial = tests_lock();
     let all = u16::MAX;
-    let open = UnixSocket::new(no_wake);
+    let open = UnixSocket::new();
     assert_eq!(open.events(all), event::OUT | event::WRNORM | event::HUP);
     let (first, second) = pair();
     assert_eq!(first.events(all), event::OUT | event::WRNORM);
@@ -219,7 +217,7 @@ fn poll_events_follow_the_state() {
 #[test]
 fn a_listener_queues_connections_up_to_its_backlog_and_hands_them_out_in_order() {
     let _serial = tests_lock();
-    let listener = UnixSocket::new(no_wake);
+    let listener = UnixSocket::new();
     assert_eq!(listener.listen(1, ME), Err(Errno::EINVAL));
     listener
         .set_bound(Address::Abstract(Arc::from(&b"queue"[..])))
@@ -245,9 +243,9 @@ fn a_listener_queues_connections_up_to_its_backlog_and_hands_them_out_in_order()
     assert_eq!(first.credentials(Side::Second), ME);
     assert!(Arc::ptr_eq(&listener.accept().unwrap().unwrap(), &two));
     assert!(listener.accept().unwrap().is_none());
-    assert!(UnixSocket::new(no_wake).accept().is_err());
+    assert!(UnixSocket::new().accept().is_err());
     assert_eq!(
-        UnixSocket::new(no_wake).queue(&connecting()),
+        UnixSocket::new().queue(&connecting()),
         Err(Errno::ECONNREFUSED)
     );
 }
@@ -255,12 +253,12 @@ fn a_listener_queues_connections_up_to_its_backlog_and_hands_them_out_in_order()
 #[test]
 fn connections_left_in_a_closed_listener_s_backlog_are_reset() {
     let _serial = tests_lock();
-    let listener = UnixSocket::new(no_wake);
+    let listener = UnixSocket::new();
     listener
         .set_bound(Address::Abstract(Arc::from(&b"closing"[..])))
         .unwrap();
     listener.listen(4, ME).unwrap();
-    let client = UnixSocket::new(no_wake);
+    let client = UnixSocket::new();
     let connection = Connection::new(client.begin_connect().unwrap(), ME);
     assert_eq!(listener.queue(&connection), Ok(true));
     client.finish_connect(&connection).unwrap();
@@ -276,12 +274,12 @@ fn connections_left_in_a_closed_listener_s_backlog_are_reset() {
 #[test]
 fn a_connecting_socket_can_neither_listen_nor_be_passed_and_a_given_up_connection_resets() {
     let _serial = tests_lock();
-    let listener = UnixSocket::new(no_wake);
+    let listener = UnixSocket::new();
     listener
         .set_bound(Address::Abstract(Arc::from(&b"race"[..])))
         .unwrap();
     listener.listen(4, ME).unwrap();
-    let racer = UnixSocket::new(no_wake);
+    let racer = UnixSocket::new();
     racer
         .set_bound(Address::Abstract(Arc::from(&b"racer"[..])))
         .unwrap();
@@ -303,7 +301,7 @@ fn a_connecting_socket_can_neither_listen_nor_be_passed_and_a_given_up_connectio
     assert_eq!(racer.finish_connect(&connection), Err(Errno::EINVAL));
     release_rights(connection.abort(Side::First));
     assert_eq!(racer.listen(1, ME), Ok(()));
-    let accepted = UnixSocket::accepted(listener.accept().unwrap().unwrap(), no_wake);
+    let accepted = UnixSocket::accepted(listener.accept().unwrap().unwrap());
     let (back, side) = connection_of(&accepted);
     let mut buffer = [0u8; 4];
     assert!(matches!(
@@ -311,7 +309,7 @@ fn a_connecting_socket_can_neither_listen_nor_be_passed_and_a_given_up_connectio
         Taken::Reset
     ));
     assert_eq!(send(&accepted, b"x"), Err(Errno::EPIPE));
-    let other = UnixSocket::new(no_wake);
+    let other = UnixSocket::new();
     let connection = Connection::new(other.begin_connect().unwrap(), ME);
     other.finish_connect(&connection).unwrap();
     assert_eq!(other.begin_connect(), Err(Errno::EISCONN));
@@ -321,8 +319,8 @@ fn a_connecting_socket_can_neither_listen_nor_be_passed_and_a_given_up_connectio
 #[test]
 fn two_sockets_connecting_to_each_other_at_once_both_get_refused() {
     let _serial = tests_lock();
-    let x = UnixSocket::new(no_wake);
-    let y = UnixSocket::new(no_wake);
+    let x = UnixSocket::new();
+    let y = UnixSocket::new();
     let names = [&b"cross-x"[..], &b"cross-y"[..]];
     for (socket, name) in [(&x, names[0]), (&y, names[1])] {
         let name: Arc<[u8]> = Arc::from(name);
@@ -351,11 +349,11 @@ fn two_sockets_connecting_to_each_other_at_once_both_get_refused() {
 fn the_registry_exists_only_while_something_is_bound_and_refuses_a_taken_name() {
     let _serial = tests_lock();
     assert!(!has_bindings());
-    let socket = UnixSocket::new(no_wake);
+    let socket = UnixSocket::new();
     let key = BindingKey::Abstract(Arc::from(&b"taken"[..]));
     register(key.clone(), &socket).unwrap();
     assert!(has_bindings());
-    let other = UnixSocket::new(no_wake);
+    let other = UnixSocket::new();
     assert_eq!(register(key.clone(), &other), Err(Errno::EADDRINUSE));
     assert!(Arc::ptr_eq(&find(&key).unwrap(), &socket));
     let first = register_autobound(&other).unwrap();
@@ -380,7 +378,7 @@ fn proc_net_unix_lists_bound_sockets_in_linux_s_format() {
         empty,
         b"Num       RefCount Protocol Flags    Type St Inode Path\n"
     );
-    let socket = UnixSocket::new(no_wake);
+    let socket = UnixSocket::new();
     let name: Arc<[u8]> = Arc::from(&b"listed"[..]);
     register(BindingKey::Abstract(Arc::clone(&name)), &socket).unwrap();
     socket.set_bound(Address::Abstract(name)).unwrap();
@@ -424,7 +422,7 @@ fn passing_a_socket_that_would_make_a_cycle_is_refused_and_every_socket_is_freed
         Err(Errno::ETOOMANYREFS)
     );
 
-    let listener = UnixSocket::new(no_wake);
+    let listener = UnixSocket::new();
     listener
         .set_bound(Address::Abstract(Arc::from(&b"passed"[..])))
         .unwrap();
@@ -513,4 +511,118 @@ fn descriptors_in_flight_are_capped_in_all_and_per_direction() {
     drop(pairs);
     drop((connection, last, back));
     assert_eq!(in_flight(), 0);
+}
+
+#[test]
+fn a_queue_grows_only_within_every_queue_s_limit_and_shrinks_once_read() {
+    let mut direction = Direction::default();
+    assert_eq!(direction.make_room(10, 0), Err(Errno::ENOMEM));
+    assert_eq!(
+        direction.bytes.capacity(),
+        0,
+        "a refused growth takes nothing"
+    );
+    direction.make_room(3 * WRITE_ROOM, u64::MAX).unwrap();
+    let grown = direction.bytes.capacity();
+    assert!(grown >= 3 * WRITE_ROOM);
+    direction.bytes.extend(&vec![7u8; 3 * WRITE_ROOM]);
+    let spare = grown - direction.bytes.len();
+    assert!(direction.can_take(1, u64::MAX));
+    if spare == 0 {
+        assert!(
+            !direction.can_take(1, 0),
+            "full, and every queue at its cap"
+        );
+    }
+    assert_eq!(
+        direction.make_room(spare, 0),
+        Ok(()),
+        "room the buffer has needs no growth"
+    );
+    direction.bytes.drain(..WRITE_ROOM);
+    direction.shrink_when_empty();
+    assert_eq!(direction.bytes.capacity(), grown, "not empty yet");
+    direction.bytes.drain(..);
+    direction.shrink_when_empty();
+    assert!(direction.bytes.capacity() < grown);
+    assert!(direction.bytes.capacity() >= WRITE_ROOM.min(grown));
+    let rights = direction.clear();
+    assert!(rights.is_empty());
+    assert_eq!(direction.bytes.capacity(), 0);
+}
+
+#[test]
+fn a_packet_is_ready_to_send_only_when_the_queue_can_grow_by_the_whole_packet() {
+    let mut direction = Direction::default();
+    direction.make_room(WRITE_ROOM, u64::MAX).unwrap();
+    let held = direction.bytes.capacity();
+    direction.bytes.extend(&vec![7u8; held - 1]);
+    direction.packets.push_back(Packet {
+        end: direction.end(),
+        carries_rights: false,
+    });
+    assert!(
+        direction.can_take_packet(1, 0),
+        "fits in what the buffer holds"
+    );
+    assert!(
+        !direction.can_take_packet(2, 0),
+        "every queue at its cap: a send would wait, so the sender sleeps"
+    );
+    assert_eq!(direction.make_room(2, 0), Err(Errno::ENOMEM));
+    assert!(direction.can_take_packet(2, u64::MAX));
+    assert!(!direction.can_take_packet(direction.room() + 1, u64::MAX));
+    let rights = direction.clear();
+    assert!(rights.is_empty());
+    assert!(
+        direction.can_take_packet(QUEUE_CAPACITY, 0),
+        "an empty queue never waits"
+    );
+}
+
+#[test]
+fn a_seqpacket_send_waits_until_the_whole_packet_fits_and_a_close_resets_the_peer() {
+    let _serial = tests_lock();
+    let (first, second) = UnixSocket::seqpacket_pair(ME);
+    assert!(first.is_seqpacket() && second.is_seqpacket());
+    let (connection, side) = connection_of(&first);
+    let big = vec![7u8; QUEUE_CAPACITY - 10];
+    assert_eq!(connection.send_packet(side, &big, &mut None), Ok(true));
+    assert_eq!(connection.send_packet(side, &[1; 11], &mut None), Ok(false));
+    assert!(!connection.can_send_packet(side, 11));
+    assert!(connection.can_send_packet(side, 10));
+    assert_eq!(connection.send_packet(side, &[1; 10], &mut None), Ok(true));
+    let (back, back_side) = connection_of(&second);
+    match back.receive_packet(back_side, 4, false) {
+        Ok(TakenPacket::Packet { bytes, length, .. }) => {
+            assert_eq!(bytes, [7; 4]);
+            assert_eq!(length, QUEUE_CAPACITY - 10);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(connection.can_send_packet(side, 11));
+    let files = connection.close(side);
+    assert!(files.is_empty());
+    assert!(matches!(
+        back.receive_packet(back_side, 4, false),
+        Ok(TakenPacket::Packet { length: 10, .. })
+    ));
+    assert!(matches!(
+        back.receive_packet(back_side, 4, false),
+        Ok(TakenPacket::Ended)
+    ));
+    let (third, fourth) = UnixSocket::seqpacket_pair(ME);
+    let (connection, side) = connection_of(&third);
+    assert_eq!(connection.send_packet(side, &[], &mut None), Ok(true));
+    let (back, back_side) = connection_of(&fourth);
+    assert!(back.can_receive(back_side));
+    release_rights(back.close(back_side));
+    assert!(matches!(
+        connection.receive_packet(side, 4, false),
+        Ok(TakenPacket::Reset)
+    ));
+    assert_eq!(
+        connection.send_packet(side, b"x", &mut None),
+        Err(Errno::EPIPE)
+    );
 }

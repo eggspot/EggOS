@@ -36,6 +36,9 @@ pub(super) const TIMER_VECTOR: u8 = 0x30;
 pub(super) const WAKEUP_VECTOR: u8 = 0x31;
 /// COM1's receive interrupt's vector, through the I/O APIC.
 pub(super) const CONSOLE_INPUT_VECTOR: u8 = 0x32;
+/// The ACPI system control interrupt's vector, through the I/O APIC, after the device lines'
+/// (D202).
+pub(super) const POWER_BUTTON_VECTOR: u8 = 0x53;
 /// The local APIC's spurious-interrupt vector (its low four bits must be 1s on old CPUs).
 pub(super) const APIC_SPURIOUS_VECTOR: u8 = 0xff;
 

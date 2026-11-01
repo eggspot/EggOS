@@ -1,10 +1,13 @@
 //! The Objective-C runtime, libobjc (D142): selectors, classes and categories from the image's
 //! metadata, `objc_msgSend` and its kin in assembly, reference counting, autorelease pools,
-//! ARC's entry points and NSObject. It is set up only for a program that uses Objective-C.
+//! ARC's entry points and NSObject; blocks, weak references and exceptions with their unwinder
+//! (D175). It is set up only for a program that uses Objective-C.
 
 pub mod abi;
 pub mod cache;
+pub mod lsda;
 pub mod selector;
+pub mod unwind_info;
 
 #[cfg(target_env = "musl")]
 macro_rules! sel {
@@ -38,15 +41,21 @@ mod api;
 #[cfg(target_env = "musl")]
 pub mod autorelease;
 #[cfg(target_env = "musl")]
+pub mod block;
+#[cfg(target_env = "musl")]
 pub mod buffer;
 #[cfg(target_env = "musl")]
 pub mod class;
+#[cfg(target_env = "musl")]
+pub mod exception;
 #[cfg(target_env = "musl")]
 pub mod message;
 #[cfg(target_env = "musl")]
 pub mod reference_count;
 #[cfg(target_env = "musl")]
 pub mod root;
+#[cfg(target_env = "musl")]
+pub mod weak;
 
 #[cfg(target_env = "musl")]
 pub use runtime::*;
@@ -57,7 +66,7 @@ mod runtime {
     use super::buffer::Buffer;
     use super::class::{self, ClassRecord};
     use super::selector::SelectorTable;
-    use super::{api, autorelease, message, reference_count, root};
+    use super::{api, autorelease, block, exception, message, reference_count, root, weak};
     use crate::libsystem::{Exclusive, heap, stdio, thread, write_error};
     use crate::macho::{ObjcSections, SectionRange};
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -135,7 +144,7 @@ mod runtime {
     /// memory.
     pub fn set_up() -> bool {
         thread::set_finish_hook(autorelease::drain_thread);
-        root::define()
+        root::define() && RUNTIME.with(block::define)
     }
 
     /// The address of the libobjc function or variable `name`, if the runtime has it.
@@ -145,6 +154,9 @@ mod runtime {
             .or_else(|| reference_count::resolve(name))
             .or_else(|| message::resolve(name))
             .or_else(|| autorelease::resolve(name))
+            .or_else(|| exception::resolve(name))
+            .or_else(|| block::resolve(name))
+            .or_else(|| weak::resolve(name))
     }
 
     const CLASS_PREFIX: &[u8] = b"_OBJC_CLASS_$_";
@@ -289,6 +301,7 @@ mod runtime {
     }
 
     fn call_load(imp: usize, class: *mut ClassObject) {
+        let imp = crate::callback::native_callable(imp);
         // SAFETY: a `+load` method, which takes the class and its selector.
         let load: extern "C" fn(Id, Sel) = unsafe { core::mem::transmute(imp) };
         load(class.cast(), sel!("load"));

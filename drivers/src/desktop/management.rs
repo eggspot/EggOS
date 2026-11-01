@@ -188,6 +188,7 @@ impl Desktop {
         self.profile = profile;
         self.layout = super::layout::layout(self.width, self.height, 1, profile);
         self.control_hover = None;
+        self.control_pressed = None;
         self.reset_panels();
         self.icons.last_press = None;
         let work = self.work_area();
@@ -583,6 +584,7 @@ impl Desktop {
                 damage.add(self.window_at(slot).title_bar());
             }
         }
+        self.update_pointer(damage);
     }
 
     /// The clock reached `now_ms`: windows whose close request went unread for
@@ -592,6 +594,7 @@ impl Desktop {
     pub fn tick(&mut self, now_ms: u32, damage: &mut Damage, events: &mut dyn EventSink) -> bool {
         self.now_ms = now_ms;
         let mut destroyed = false;
+        let mut stopped_answering = false;
         for slot in 0..self.windows.len() {
             let Some(window) = self.windows[slot] else {
                 continue;
@@ -605,16 +608,18 @@ impl Desktop {
                 destroyed = true;
             } else if waited >= NOT_RESPONDING_AFTER_MS && !window.not_responding {
                 self.window_mut(slot).not_responding = true;
+                stopped_answering = true;
                 if self.is_visible(slot) {
                     damage.add(window.title_bar());
                 }
             }
         }
-        if destroyed {
+        if destroyed || stopped_answering {
             self.update_pointer(damage);
         }
         self.tick_notice(damage);
         self.tick_tooltip(damage);
+        self.tick_agent(damage);
         destroyed
     }
 
@@ -625,6 +630,12 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) {
+        let window = self.window_at(slot);
+        let normal = self.window_at(window.parent.map_or(slot, usize::from));
+        if normal.role == Role::Normal && normal.desktop != self.current_desktop {
+            let desktop = normal.desktop;
+            let _ = self.switch_desktop(desktop, damage, events);
+        }
         if self.window_at(slot).minimised {
             self.restore(slot, damage, events);
             return;
@@ -721,6 +732,33 @@ impl Desktop {
                 self.menu_hover = Some(0);
             }
             Shortcut::Launcher => self.toggle_launcher(damage, events),
+            Shortcut::TaskManager => {
+                return self.launch(super::catalogue::AppId::TaskManager, damage, events);
+            }
+            Shortcut::SwitchDesktop { next } => {
+                let wanted = match next {
+                    true => self.current_desktop.checked_add(1),
+                    false => self.current_desktop.checked_sub(1),
+                };
+                if let Some(wanted) = wanted {
+                    let _ = self.switch_desktop(wanted, damage, events);
+                }
+            }
+            Shortcut::NewDesktop => {
+                let _ = self.new_desktop(damage, events);
+            }
+            Shortcut::CloseDesktop => {
+                let _ = self.close_desktop(self.current_desktop, damage, events);
+            }
+            Shortcut::MoveToDesktop { next } => {
+                let wanted = match next {
+                    true => self.current_desktop.checked_add(1),
+                    false => self.current_desktop.checked_sub(1),
+                };
+                if let (Some(slot), Some(wanted)) = (normal, wanted) {
+                    let _ = self.move_to_desktop(slot, wanted, true, damage, events);
+                }
+            }
         }
         super::Action::None
     }
@@ -778,6 +816,7 @@ impl Desktop {
             return PointerShape::IBeam;
         }
         match self.content_under(hit) {
+            Some(slot) if self.window_at(slot).not_responding => PointerShape::Busy,
             Some(slot) => self.window_at(slot).pointer_shape,
             None => PointerShape::Arrow,
         }
@@ -823,6 +862,10 @@ impl Desktop {
         if drawn == self.pointer_drawn {
             return;
         }
+        if self.pointer_on_display {
+            self.pointer_drawn = drawn;
+            return;
+        }
         if let Some((old_x, old_y, old_shape)) = self.pointer_drawn {
             damage.add(pointer::area(old_shape, old_x, old_y).clipped(self.width, self.height));
         }
@@ -832,7 +875,7 @@ impl Desktop {
         self.pointer_drawn = drawn;
     }
 
-    fn control_under(&self, hit: Hit) -> Option<(usize, Part)> {
+    pub(super) fn control_under(&self, hit: Hit) -> Option<(usize, Part)> {
         if self.drag.is_some() || self.resize.is_some() || self.grab.is_some() {
             return None;
         }
@@ -883,7 +926,7 @@ impl Desktop {
         };
         let window = *self.window_at(slot);
         if !sizing {
-            self.move_window(
+            self.drag_window(
                 slot,
                 i64::from(window.x) + dx,
                 i64::from(window.y) + dy,

@@ -23,7 +23,7 @@ pub(super) fn device_regions(region: &mut dyn FnMut(PhysicalRange)) {
     }
 }
 
-fn io_apic(apic: MadtIoApic) -> IoApic<Mmio> {
+pub(super) fn io_apic(apic: MadtIoApic) -> IoApic<Mmio> {
     // SAFETY: the MADT lists `apic`'s registers at this physical address, which
     // `device_regions` gives the kernel's page tables, mapped as device memory at the direct map
     // offset; only this module drives the I/O APICs.

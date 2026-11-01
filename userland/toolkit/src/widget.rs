@@ -1,7 +1,7 @@
 //! The widgets (docs/ux/toolkit-v0.3.md sections 4 to 8): what each holds, the size it asks
 //! for, where its parts are, and how it is drawn in each state.
 
-use crate::canvas::{Canvas, INSET_R3, INSET_R4, INSET_R6, INSET_R8, SQUARE};
+use crate::canvas::{Canvas, INSET_R2, INSET_R3, INSET_R4, INSET_R6, INSET_R8, SQUARE};
 use crate::colour;
 use crate::geometry::Rect;
 use crate::input::key;
@@ -39,6 +39,35 @@ pub const MAX_ROWS: usize = 32;
 pub const PROGRESS_HEIGHT: i32 = 8;
 /// A progress bar's value when it is all done.
 pub const PROGRESS_DONE: u16 = 1000;
+/// A slider's track bar's height (docs/ux/toolkit-v0.4.md section 2).
+pub const SLIDER_TRACK_HEIGHT: i32 = 4;
+/// A slider's thumb's diameter.
+pub const SLIDER_THUMB: i32 = 16;
+/// The shortest track a slider takes by its content.
+pub const SLIDER_MIN_TRACK: i32 = 128;
+/// The width of a slider's value, drawn at its right.
+pub const SLIDER_READOUT: i32 = 48;
+/// The gap between a slider's track and its value.
+pub const SLIDER_GAP: i32 = 8;
+/// How many steps PageUp and PageDown move a slider.
+pub const SLIDER_PAGE_STEPS: i32 = 10;
+/// Where a dropdown's chosen option starts, from its left edge (docs/ux/toolkit-v0.4.md
+/// section 3).
+pub const DROPDOWN_TEXT_X: i32 = 12;
+/// The room a dropdown keeps at its right for its chevron.
+pub const DROPDOWN_ARROW_ROOM: i32 = 32;
+/// A dropdown popup's row height.
+pub const POPUP_ROW_HEIGHT: i32 = 32;
+/// The most rows a dropdown's popup shows at once.
+pub const POPUP_ROWS: usize = 8;
+/// The gap between a dropdown and its popup.
+pub const POPUP_GAP: i32 = 4;
+/// How far a popup reaches past its dropdown on each side.
+pub const POPUP_OUTSET: i32 = 12;
+/// Where a popup row's `>` goes, from the popup's left edge.
+pub const POPUP_MARK_X: i32 = 8;
+/// Where a popup row's text goes, from the popup's left edge.
+pub const POPUP_TEXT_X: i32 = 24;
 
 /// Where a widget's left edge goes in its parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +157,9 @@ pub struct Field {
     pub text: Text<255>,
     /// The caret's byte in `text`.
     pub caret: usize,
+    /// The selection's other end: the text between it and the caret is selected, none when
+    /// they are equal (docs/ux/toolkit-v0.4.md section 4).
+    pub anchor: usize,
     /// How far the text is scrolled left, in pixels.
     pub scroll: i32,
     pub placeholder: &'static str,
@@ -221,6 +253,11 @@ pub enum Kind {
     TextField(Field),
     /// A progress bar, `permille` of it done (docs/ux/desktop-v0.3-gui.md section 9).
     Progress { permille: u16 },
+    /// A slider setting a number in a range (docs/ux/toolkit-v0.4.md section 2).
+    Slider(Slider),
+    /// A button showing one of its options that opens a list of them (docs/ux/toolkit-v0.4.md
+    /// section 3).
+    Dropdown(Dropdown),
     /// Something the program draws itself, with a word of its own data.
     Custom { painter: Painter, data: u32 },
 }
@@ -330,9 +367,51 @@ impl Kind {
         Self::TextField(Field {
             text: Text::new(),
             caret: 0,
+            anchor: 0,
             scroll: 0,
             placeholder,
             escape,
+        })
+    }
+
+    /// A slider named `name` for agents, from `min` to `max` by `step`, at `value`, its value
+    /// drawn with `unit` after it; `max` lowered to the last value a step reaches and `value`
+    /// snapped to one.
+    pub fn slider(
+        name: &'static str,
+        min: i32,
+        max: i32,
+        step: i32,
+        value: i32,
+        unit: &'static str,
+    ) -> Self {
+        let step = step.max(1);
+        let max = min + (max.max(min) - min) / step * step;
+        let mut slider = Slider {
+            name,
+            value: min,
+            min,
+            max,
+            step,
+            unit,
+            readout: true,
+        };
+        slider.value = slider.snapped(value);
+        Self::Slider(slider)
+    }
+
+    /// A dropdown named `name` for agents, choosing among `options` (at most [`MAX_ROWS`]),
+    /// `selected` chosen.
+    pub fn dropdown(name: &'static str, options: &'static [&'static str], selected: usize) -> Self {
+        let options = &options[..options.len().min(MAX_ROWS)];
+        let selected = selected.min(options.len().saturating_sub(1));
+        Self::Dropdown(Dropdown {
+            name,
+            options,
+            selected,
+            open: false,
+            highlighted: selected,
+            offset: 0,
         })
     }
 
@@ -341,6 +420,8 @@ impl Kind {
         matches!(
             self,
             Self::Button { .. }
+                | Self::Slider(_)
+                | Self::Dropdown(_)
                 | Self::Checkbox { .. }
                 | Self::Radios { .. }
                 | Self::Cards { .. }
@@ -401,6 +482,25 @@ impl Kind {
             Self::List(list) => (0, list.content_height()),
             Self::TextField(_) => (BUTTON_MIN_WIDTH, CONTROL_HEIGHT),
             Self::Progress { .. } => (BUTTON_MIN_WIDTH, PROGRESS_HEIGHT),
+            Self::Slider(slider) => match slider.readout {
+                true => (
+                    SLIDER_MIN_TRACK + SLIDER_GAP + SLIDER_READOUT,
+                    CONTROL_HEIGHT,
+                ),
+                false => (SLIDER_MIN_TRACK, CONTROL_HEIGHT),
+            },
+            Self::Dropdown(dropdown) => {
+                let widest = dropdown
+                    .options
+                    .iter()
+                    .map(|option| text::width(option))
+                    .max()
+                    .unwrap_or(0);
+                (
+                    (DROPDOWN_TEXT_X + widest + DROPDOWN_ARROW_ROOM).max(BUTTON_MIN_WIDTH),
+                    CONTROL_HEIGHT,
+                )
+            }
             Self::Panel { .. }
             | Self::Column { .. }
             | Self::ScrollView { .. }
@@ -553,12 +653,184 @@ pub enum FieldKey {
     Moved,
     /// The text changed.
     Changed,
+    /// The selection was copied ([`Field::selected`] holds it).
+    Copied,
+    /// The selection was copied, then removed.
+    Cut,
+    /// The clipboard's text is wanted at the caret.
+    PasteWanted,
+}
+
+impl Field {
+    /// The selection's first and last byte, both within the text and on character boundaries
+    /// however `caret` and `anchor` were set.
+    pub fn selection(&self) -> (usize, usize) {
+        let text = self.text.as_str();
+        let bounded = |at: usize| {
+            let mut at = at.min(text.len());
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            at
+        };
+        let (caret, anchor) = (bounded(self.caret), bounded(self.anchor));
+        (caret.min(anchor), caret.max(anchor))
+    }
+
+    /// Puts the caret at byte `at` (at most the text's end), nothing selected.
+    pub fn place_caret(&mut self, at: usize) {
+        self.caret = at.min(self.text.len());
+        self.anchor = self.caret;
+    }
+
+    /// Replaces its text, the caret at the end and nothing selected.
+    pub fn set_text(&mut self, text: &str) {
+        self.text.set(text);
+        self.place_caret(self.text.len());
+    }
+
+    /// The selected text.
+    pub fn selected(&self) -> &str {
+        let (start, end) = self.selection();
+        self.text.as_str().get(start..end).unwrap_or("")
+    }
+
+    /// Removes the selected text, the caret where it was; whether there was any.
+    pub fn remove_selection(&mut self) -> bool {
+        let (start, end) = self.selection();
+        if start == end {
+            return false;
+        }
+        let mut kept = Text::<255>::new();
+        let words = self.text.as_str();
+        kept.push_str(&words[..start]);
+        kept.push_str(&words[end..]);
+        self.text = kept;
+        self.caret = start;
+        self.anchor = start;
+        true
+    }
+
+    /// Selects all of its text, the caret at the end.
+    pub fn select_all(&mut self) {
+        self.anchor = 0;
+        self.caret = self.text.len();
+    }
+
+    /// The word around byte `at` as a double-click selects it: a run of ASCII letters,
+    /// digits and `_`, or of characters beyond ASCII; a run of spaces; or one other character.
+    pub fn word_at(&self, at: usize) -> (usize, usize) {
+        let words = self.text.as_str();
+        let class = |character: char| match character {
+            ' ' => 0,
+            character if character.is_ascii_alphanumeric() || character == '_' => 1,
+            character if !character.is_ascii() => 1,
+            _ => 2,
+        };
+        let Some(here) = words[at.min(words.len())..]
+            .chars()
+            .next()
+            .or_else(|| words[..at.min(words.len())].chars().next_back())
+        else {
+            return (0, 0);
+        };
+        let start_at = match words[at.min(words.len())..].chars().next() {
+            Some(_) => at.min(words.len()),
+            None => at.min(words.len()) - here.len_utf8(),
+        };
+        let kind = class(here);
+        if kind == 2 {
+            return (start_at, start_at + here.len_utf8());
+        }
+        let start = words[..start_at]
+            .char_indices()
+            .rev()
+            .take_while(|&(_, character)| class(character) == kind)
+            .last()
+            .map_or(start_at, |(index, _)| index);
+        let end = words[start_at..]
+            .char_indices()
+            .take_while(|&(_, character)| class(character) == kind)
+            .last()
+            .map_or(start_at, |(index, character)| {
+                start_at + index + character.len_utf8()
+            });
+        (start, end)
+    }
 }
 
 /// Applies key `code` (typing `character`, with Ctrl, Alt or Super held when `command`) to
 /// `field` as section 7 of docs/ux/toolkit-v0.3.md says; Esc in a [`Escape::Revert`] field
 /// puts back `before`.
 pub fn field_key(
+    field: &mut Field,
+    code: u16,
+    character: u32,
+    command: bool,
+    before: &Text<255>,
+) -> FieldKey {
+    field_key_with(field, code, character, command, false, false, before)
+}
+
+/// [`field_key`] with Shift (`extend`) and Ctrl or Super (`shortcut`) told apart: Shift with a
+/// move extends the selection, and the shortcut modifier with A, C, X and V selects all,
+/// copies, cuts and asks for a paste (docs/ux/toolkit-v0.4.md section 4.3).
+pub fn field_key_with(
+    field: &mut Field,
+    code: u16,
+    character: u32,
+    command: bool,
+    extend: bool,
+    shortcut: bool,
+    before: &Text<255>,
+) -> FieldKey {
+    let selecting = field.anchor != field.caret;
+    if shortcut {
+        match code {
+            key::A => {
+                field.select_all();
+                return FieldKey::Moved;
+            }
+            key::C if selecting => return FieldKey::Copied,
+            key::X if selecting => return FieldKey::Cut,
+            key::V => return FieldKey::PasteWanted,
+            key::C | key::X => return FieldKey::Moved,
+            _ => {}
+        }
+    }
+    let moves = matches!(code, key::LEFT | key::RIGHT | key::HOME | key::END);
+    if moves && selecting && !extend && matches!(code, key::LEFT | key::RIGHT) {
+        let (start, end) = field.selection();
+        field.caret = if code == key::LEFT { start } else { end };
+        field.anchor = field.caret;
+        return FieldKey::Moved;
+    }
+    if selecting && matches!(code, key::BACKSPACE | key::DELETE) {
+        field.remove_selection();
+        return FieldKey::Changed;
+    }
+    let anchor = field.anchor;
+    let typing = !moves && !matches!(code, key::BACKSPACE | key::DELETE | key::ESC);
+    let typed_over = typing
+        && selecting
+        && char::from_u32(character)
+            .is_some_and(|typed| !command && eggos_font::egg_sans::covers(typed));
+    if typed_over {
+        field.remove_selection();
+    }
+    let result = field_key_alone(field, code, character, command, before);
+    field.anchor = match (moves && extend, result) {
+        (true, _) => anchor,
+        (false, FieldKey::Unused) => anchor,
+        _ => field.caret,
+    };
+    match (typed_over, result) {
+        (true, FieldKey::Unused | FieldKey::Moved) => FieldKey::Changed,
+        _ => result,
+    }
+}
+
+fn field_key_alone(
     field: &mut Field,
     code: u16,
     character: u32,
@@ -608,7 +880,7 @@ pub fn field_key(
         },
         _ => {
             let typed = char::from_u32(character)
-                .filter(|typed| !command && !typed.is_control() && (*typed as u32) < 0x100);
+                .filter(|typed| !command && eggos_font::egg_sans::covers(*typed));
             let Some(typed) = typed else {
                 return FieldKey::Unused;
             };
@@ -927,6 +1199,16 @@ fn paint_field(canvas: &mut Canvas<'_>, field: &Field, rect: Rect, look: Look) {
         false => (field.text.as_str(), colour::TEXT),
     };
     let ink = if look.enabled { ink } else { colour::TEXT_DIM };
+    let (start, end) = field.selection();
+    if look.focused && start != end && !field.text.is_empty() {
+        let text = field.text.as_str();
+        let left = inner.x - field.scroll + text::width(&text[..start]);
+        let right = inner.x - field.scroll + text::width(&text[..end]);
+        canvas.fill(
+            Rect::new(left, y, right - left, LINE_HEIGHT),
+            colour::SELECTION,
+        );
+    }
     canvas.text(inner.x - field.scroll, y, words, ink, 1);
     canvas.restore(previous);
     if look.focused && look.caret_shown && look.enabled {
@@ -935,6 +1217,275 @@ fn paint_field(canvas: &mut Canvas<'_>, field: &Field, rect: Rect, look: Look) {
     }
     if look.focused {
         ring(canvas, rect, 2, colour::FOCUS_RING);
+    }
+}
+
+/// A dropdown's options and its popup (docs/ux/toolkit-v0.4.md section 3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dropdown {
+    /// Its name for agents: the words of the label before it.
+    pub name: &'static str,
+    pub options: &'static [&'static str],
+    pub selected: usize,
+    /// Whether its popup is open.
+    pub open: bool,
+    /// The popup's row the keys and the pointer are on.
+    pub highlighted: usize,
+    /// The popup's first row shown.
+    pub offset: usize,
+}
+
+impl Dropdown {
+    /// The popup's rectangle for a dropdown at `rect` in a window `window` big, and how many
+    /// rows it shows: below the dropdown when it fits, else above, else below and cut.
+    pub fn popup(&self, rect: Rect, window: (i32, i32)) -> (Rect, usize) {
+        let mut rows = self.options.len().min(POPUP_ROWS);
+        let height = |rows: usize| 2 + rows as i32 * POPUP_ROW_HEIGHT;
+        let width = (rect.width + 2 * POPUP_OUTSET).min(window.0);
+        let x = (rect.x - POPUP_OUTSET).clamp(0, (window.0 - width).max(0));
+        let below = rect.bottom() + POPUP_GAP;
+        let y = if below + height(rows) <= window.1 {
+            below
+        } else if rect.y - POPUP_GAP - height(rows) >= 0 {
+            rect.y - POPUP_GAP - height(rows)
+        } else {
+            rows = ((window.1 - rect.bottom() - 6) / POPUP_ROW_HEIGHT).max(1) as usize;
+            below
+        };
+        (Rect::new(x, y, width, height(rows)), rows)
+    }
+
+    /// The option at popup row `row` from the top of the rows shown.
+    pub fn option_at_row(&self, row: usize) -> Option<usize> {
+        let option = self.offset + row;
+        (option < self.options.len()).then_some(option)
+    }
+
+    /// The scroll that keeps `option` among `rows` rows shown.
+    pub fn offset_showing(&self, option: usize, rows: usize) -> usize {
+        match option {
+            option if option < self.offset => option,
+            option if option >= self.offset + rows => option + 1 - rows,
+            _ => self.offset,
+        }
+    }
+
+    /// The next option after `from` whose text starts with `letter`, ignoring case, cycling.
+    pub fn next_starting_with(&self, from: usize, letter: char) -> Option<usize> {
+        let count = self.options.len();
+        (1..=count)
+            .map(|step| (from + step) % count)
+            .find(|&index| {
+                self.options[index]
+                    .chars()
+                    .next()
+                    .is_some_and(|first| first.eq_ignore_ascii_case(&letter))
+            })
+    }
+}
+
+fn paint_dropdown(canvas: &mut Canvas<'_>, dropdown: &Dropdown, rect: Rect, look: Look) {
+    let fill = match (
+        look.enabled,
+        dropdown.open || look.pressed.is_some(),
+        look.hovered,
+    ) {
+        (false, _, _) => colour::BUTTON,
+        (true, true, _) => colour::BUTTON_PRESSED,
+        (true, false, Some(_)) => colour::BUTTON_HOVER,
+        (true, false, None) => colour::BUTTON,
+    };
+    let ink = if look.enabled {
+        colour::TEXT
+    } else {
+        colour::TEXT_DIM
+    };
+    canvas.rounded(rect, &INSET_R4, fill);
+    canvas.outline(rect, &INSET_R4, 1, colour::BUTTON_BORDER);
+    let chosen = dropdown
+        .options
+        .get(dropdown.selected)
+        .copied()
+        .unwrap_or("");
+    let x = rect.x + DROPDOWN_TEXT_X;
+    let y = rect.y + (rect.height - LINE_HEIGHT) / 2;
+    line(
+        canvas,
+        x,
+        y,
+        rect.right() - DROPDOWN_ARROW_ROOM - x,
+        chosen,
+        ink,
+        1,
+    );
+    let (left, top) = (rect.right() - 22, rect.y + 11);
+    for index in 0..9 {
+        let down = (index - 4i32).abs();
+        canvas.fill(Rect::new(left + index, top + 4 - down, 2, 2), ink);
+    }
+    if look.focused {
+        ring(canvas, rect, 2, colour::FOCUS_RING);
+    }
+}
+
+/// Draws the open popup of `dropdown`, at `popup` showing `rows` rows, over everything.
+pub fn paint_popup(canvas: &mut Canvas<'_>, dropdown: &Dropdown, popup: Rect, rows: usize) {
+    canvas.rounded(popup, &INSET_R6, colour::MENU);
+    canvas.outline(popup, &INSET_R6, 1, colour::MENU_BORDER);
+    for row in 0..rows {
+        let Some(option) = dropdown.option_at_row(row) else {
+            break;
+        };
+        let row_rect = Rect::new(
+            popup.x + 1,
+            popup.y + 1 + row as i32 * POPUP_ROW_HEIGHT,
+            popup.width - 2,
+            POPUP_ROW_HEIGHT,
+        );
+        if option == dropdown.highlighted {
+            canvas.fill(row_rect, colour::MENU_HOVER);
+        }
+        if option == dropdown.selected {
+            canvas.text(
+                popup.x + POPUP_MARK_X,
+                row_rect.y + 8,
+                ">",
+                colour::ACCENT,
+                1,
+            );
+        }
+        let x = popup.x + POPUP_TEXT_X;
+        line(
+            canvas,
+            x,
+            row_rect.y + 8,
+            popup.right() - 9 - x,
+            dropdown.options[option],
+            colour::TEXT,
+            1,
+        );
+    }
+}
+
+/// A slider's number and range (docs/ux/toolkit-v0.4.md section 2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Slider {
+    /// Its name for agents: the words of the label before it.
+    pub name: &'static str,
+    pub value: i32,
+    pub min: i32,
+    pub max: i32,
+    pub step: i32,
+    /// Drawn after the number: `""`, `" ms"`, `"/s"`.
+    pub unit: &'static str,
+    /// Whether the number is drawn at the right.
+    pub readout: bool,
+}
+
+impl Slider {
+    /// `value` clamped to the range and moved to the nearest step, a half rounding up.
+    pub fn snapped(&self, value: i32) -> i32 {
+        let value = value.clamp(self.min, self.max);
+        let steps = (value - self.min + self.step / 2) / self.step;
+        (self.min + steps * self.step).min(self.max)
+    }
+
+    /// Where its track is in a control at `rect`: all of it but the value and its gap.
+    pub fn track(&self, rect: Rect) -> Rect {
+        let width = match self.readout {
+            true => rect.width - SLIDER_GAP - SLIDER_READOUT,
+            false => rect.width,
+        };
+        Rect::new(rect.x, rect.y, width.max(SLIDER_THUMB), rect.height)
+    }
+
+    /// The thumb's centre's x in a control at `rect`.
+    pub fn thumb_x(&self, rect: Rect) -> i32 {
+        let track = self.track(rect);
+        let travel = track.width - SLIDER_THUMB;
+        let span = self.max - self.min;
+        let moved = match span {
+            0 => 0,
+            span => (i64::from(self.value - self.min) * i64::from(travel) / i64::from(span)) as i32,
+        };
+        track.x + SLIDER_THUMB / 2 + moved
+    }
+
+    /// The value the thumb's centre at `x` stands for, in a control at `rect`.
+    pub fn value_at(&self, rect: Rect, x: i32) -> i32 {
+        let track = self.track(rect);
+        let travel = i64::from((track.width - SLIDER_THUMB).max(1));
+        let moved = i64::from((x - track.x - SLIDER_THUMB / 2).clamp(0, travel as i32));
+        let span = i64::from(self.max - self.min);
+        let raw = (moved * span * 2 + travel) / (2 * travel);
+        self.snapped(self.min + raw as i32)
+    }
+}
+
+fn paint_slider(canvas: &mut Canvas<'_>, slider: &Slider, rect: Rect, look: Look) {
+    let track = slider.track(rect);
+    let bar = Rect::new(
+        track.x,
+        rect.y + (rect.height - SLIDER_TRACK_HEIGHT) / 2,
+        track.width,
+        SLIDER_TRACK_HEIGHT,
+    );
+    canvas.rounded(bar, &INSET_R2, colour::PROGRESS_TRACK);
+    let thumb_x = slider.thumb_x(rect);
+    if look.enabled && thumb_x > bar.x {
+        let previous = canvas.narrow(Rect::new(bar.x, bar.y, thumb_x - bar.x, bar.height));
+        canvas.rounded(bar, &INSET_R2, colour::ACCENT);
+        canvas.restore(previous);
+    }
+    let thumb = Rect::new(
+        thumb_x - SLIDER_THUMB / 2,
+        rect.y + (rect.height - SLIDER_THUMB) / 2,
+        SLIDER_THUMB,
+        SLIDER_THUMB,
+    );
+    match look.enabled {
+        true => {
+            let fill = match (look.pressed, look.hovered) {
+                (Some(_), _) => colour::BUTTON_PRIMARY_PRESSED,
+                (None, Some(_)) => colour::BUTTON_PRIMARY_HOVER,
+                (None, None) => colour::BUTTON_PRIMARY,
+            };
+            canvas.rounded(thumb, &INSET_R8, fill);
+        }
+        false => {
+            canvas.rounded(thumb, &INSET_R8, colour::BUTTON);
+            canvas.outline(thumb, &INSET_R8, 1, colour::TEXT_DIM);
+        }
+    }
+    if look.focused {
+        ring(
+            canvas,
+            Rect::new(thumb_x - 13, rect.y + (rect.height - 26) / 2, 26, 26),
+            2,
+            colour::FOCUS_RING,
+        );
+    }
+    if slider.readout {
+        let mut words = crate::text::Text::<32>::new();
+        let _ = core::fmt::Write::write_fmt(
+            &mut words,
+            format_args!("{}{}", slider.value, slider.unit),
+        );
+        let ink = match look.enabled {
+            true => colour::TEXT,
+            false => colour::TEXT_DIM,
+        };
+        let width = text::width(words.as_str());
+        let y = rect.y + (rect.height - LINE_HEIGHT) / 2;
+        line(
+            canvas,
+            rect.right() - width,
+            y,
+            width,
+            words.as_str(),
+            ink,
+            1,
+        );
     }
 }
 
@@ -1033,6 +1584,8 @@ pub fn paint(canvas: &mut Canvas<'_>, kind: &Kind, rect: Rect, look: Look) {
         Kind::List(list) => paint_list(canvas, list, rect, look),
         Kind::TextField(field) => paint_field(canvas, field, rect, look),
         Kind::Progress { permille } => paint_progress(canvas, rect, *permille),
+        Kind::Slider(slider) => paint_slider(canvas, slider, rect, look),
+        Kind::Dropdown(dropdown) => paint_dropdown(canvas, dropdown, rect, look),
         Kind::Custom { painter, data } => painter(canvas, rect, *data),
     }
 }

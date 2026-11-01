@@ -5,7 +5,20 @@
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
+pub mod accessibility_pane;
+pub mod activity;
+pub mod agents_pane;
 pub mod art;
+pub mod command;
+pub mod disk;
 pub mod facts;
+pub mod grant_prompt;
+pub mod input_panes;
 pub mod keys;
+pub mod network_view;
 pub mod settings_window;
+pub mod storage_pane;
+pub mod task_manager;
+pub mod zone_picker;

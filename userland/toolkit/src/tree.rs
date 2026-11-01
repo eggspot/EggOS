@@ -6,7 +6,7 @@
 use crate::canvas::Canvas;
 use crate::damage::Damage;
 use crate::geometry::Rect;
-use crate::input::{Input, MouseButton, key};
+use crate::input::{Input, Modifiers, MouseButton, key};
 use crate::text::Text;
 use crate::widget::{
     self, Field, FieldKey, Horizontal, Kind, Length, List, Look, Place, THUMB, WHEEL_STEP,
@@ -39,6 +39,15 @@ pub enum Response {
     Opened(WidgetId, usize),
     /// A text field's text changed.
     Edited(WidgetId),
+    /// A slider's value changed to this, by a key, a click or a step of a drag (D199).
+    Adjusted(WidgetId, i32),
+    /// A text field's selection was copied: give [`WidgetTree::copied`] to the clipboard.
+    Copied(WidgetId),
+    /// A text field's selection was copied, then removed: give [`WidgetTree::copied`] to the
+    /// clipboard, and treat it as [`Response::Edited`].
+    Cut(WidgetId),
+    /// A text field wants the clipboard's text: answer with [`WidgetTree::paste`].
+    PasteWanted(WidgetId),
     /// A key no widget used, for the window: its code and modifiers.
     Unused { code: u16, shift: bool },
 }
@@ -51,8 +60,17 @@ pub enum PointerShape {
     IBeam,
 }
 
+mod elements;
+
+pub use elements::element_of;
+
+/// The element id of a window's content: the root of its element tree (D161).
+pub const ROOT_ELEMENT: u32 = 1;
+
 const CARET_BLINK_MS: u32 = 500;
 const DOUBLE_CLICK_MS: u32 = 400;
+const LEFT_SHIFT: u16 = 42;
+const RIGHT_SHIFT: u16 = 54;
 const DAMAGE_OUTSET: i32 = 5;
 
 #[derive(Debug, Clone, Copy)]
@@ -64,6 +82,7 @@ struct Node {
     visible: Rect,
     shown: bool,
     enabled: bool,
+    person_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +110,15 @@ pub struct WidgetTree<const N: usize> {
     pressed_inside: bool,
     key_pressed: Option<WidgetId>,
     drag: Option<Drag>,
+    slide: Option<(WidgetId, i32)>,
+    selecting: Option<WidgetId>,
+    popup: Option<WidgetId>,
+    popup_pressed: bool,
+    clicks: u8,
+    shift_held: bool,
+    shortcut_held: bool,
+    alt_held: bool,
+    copied: Text<255>,
     window_focused: bool,
     caret_epoch_ms: u32,
     caret_shown: bool,
@@ -119,6 +147,15 @@ impl<const N: usize> WidgetTree<N> {
             pressed_inside: false,
             key_pressed: None,
             drag: None,
+            slide: None,
+            selecting: None,
+            popup: None,
+            popup_pressed: false,
+            clicks: 0,
+            shift_held: false,
+            shortcut_held: false,
+            alt_held: false,
+            copied: Text::new(),
             window_focused: true,
             caret_epoch_ms: 0,
             caret_shown: true,
@@ -149,6 +186,7 @@ impl<const N: usize> WidgetTree<N> {
             visible: Rect::default(),
             shown: true,
             enabled: true,
+            person_only: false,
         });
         self.count += 1;
         Some(id)
@@ -198,6 +236,7 @@ impl<const N: usize> WidgetTree<N> {
             Kind::TextField(field) => {
                 field.text.set(words);
                 field.caret = field.text.len();
+                field.anchor = field.caret;
                 field.scroll = 0;
             }
             _ => {}
@@ -233,6 +272,7 @@ impl<const N: usize> WidgetTree<N> {
         match self.kind(id)? {
             Kind::Radios { selected, .. } | Kind::Cards { selected, .. } => Some(*selected),
             Kind::List(list) => Some(list.selected),
+            Kind::Dropdown(dropdown) => Some(dropdown.selected),
             Kind::Checkbox { checked, .. } => Some(usize::from(*checked)),
             _ => None,
         }
@@ -258,6 +298,10 @@ impl<const N: usize> WidgetTree<N> {
                 *ring = index;
             }
             Kind::List(list) if list.row_of(index).is_some() => list.selected = index,
+            Kind::Dropdown(dropdown) if index < dropdown.options.len() => {
+                dropdown.selected = index;
+                dropdown.highlighted = index;
+            }
             Kind::Checkbox { checked, .. } => *checked = index != 0,
             _ => {}
         });
@@ -311,6 +355,25 @@ impl<const N: usize> WidgetTree<N> {
         }
     }
 
+    /// Whether widget `id` is enabled.
+    pub fn is_enabled(&self, id: WidgetId) -> bool {
+        self.node(id).is_some_and(|node| node.enabled)
+    }
+
+    /// Marks widget `id` as one only a person operates (D193): [`Self::act`] refuses every
+    /// agent action on it and `wm show` lists it `person-only`, without its value or, for a
+    /// label, its text; pointer and keys still work.
+    pub fn set_person_only(&mut self, id: WidgetId, person_only: bool) {
+        if let Some(node) = self.node_mut(id) {
+            node.person_only = person_only;
+        }
+    }
+
+    /// Whether widget `id` is one only a person operates.
+    pub fn is_person_only(&self, id: WidgetId) -> bool {
+        self.node(id).is_some_and(|node| node.person_only)
+    }
+
     /// Makes push button `id` the window's default: Enter reaches it from widgets that do not
     /// use Enter.
     pub fn set_default_button(&mut self, id: WidgetId) {
@@ -328,7 +391,8 @@ impl<const N: usize> WidgetTree<N> {
         false
     }
 
-    fn is_shown(&self, id: WidgetId) -> bool {
+    /// Whether widget `id` and every widget holding it are shown.
+    pub fn is_shown(&self, id: WidgetId) -> bool {
         let mut at = Some(id);
         while let Some(current) = at {
             match self.node(current) {
@@ -509,7 +573,8 @@ impl<const N: usize> WidgetTree<N> {
             (_, Some(widget)) if widget == id => Some(0),
             _ => None,
         };
-        let drag = self.drag.is_some_and(|drag| drag.widget == id);
+        let drag = self.drag.is_some_and(|drag| drag.widget == id)
+            || self.slide.is_some_and(|(widget, _)| widget == id);
         Look {
             hovered,
             pressed: if drag { Some(THUMB) } else { pressed },
@@ -538,6 +603,119 @@ impl<const N: usize> WidgetTree<N> {
             widget::paint(canvas, &node.kind, node.rect, self.look(id));
             canvas.restore(previous);
         }
+        if let Some((_, dropdown, popup, rows)) = self.popup_of() {
+            let previous = canvas.narrow(popup.intersection(&clip));
+            widget::paint_popup(canvas, &dropdown, popup, rows);
+            canvas.restore(previous);
+        }
+    }
+
+    fn popup_of(&self) -> Option<(WidgetId, widget::Dropdown, Rect, usize)> {
+        let id = self.popup?;
+        let Some(Kind::Dropdown(dropdown)) = self.kind(id).copied() else {
+            return None;
+        };
+        let (popup, rows) = dropdown.popup(self.rect(id)?, self.size);
+        Some((id, dropdown, popup, rows))
+    }
+
+    fn open_popup(&mut self, id: WidgetId) {
+        let Some(rect) = self.rect(id) else {
+            return;
+        };
+        let size = self.size;
+        self.change(id, |kind| {
+            if let Kind::Dropdown(dropdown) = kind {
+                let (_, rows) = dropdown.popup(rect, size);
+                dropdown.open = true;
+                dropdown.highlighted = dropdown.selected;
+                dropdown.offset = dropdown.offset_showing(dropdown.selected, rows);
+            }
+        });
+        self.popup = Some(id);
+        if let Some((_, _, popup, _)) = self.popup_of() {
+            self.damage.add(popup);
+        }
+    }
+
+    fn close_popup(&mut self) {
+        let Some((id, _, popup, _)) = self.popup_of() else {
+            self.popup = None;
+            return;
+        };
+        self.damage.add(popup);
+        self.popup = None;
+        self.popup_pressed = false;
+        self.change(id, |kind| {
+            if let Kind::Dropdown(dropdown) = kind {
+                dropdown.open = false;
+            }
+        });
+    }
+
+    pub(crate) fn choose_option(&mut self, id: WidgetId, option: usize) -> Response {
+        self.close_popup();
+        let Some(Kind::Dropdown(dropdown)) = self.kind(id).copied() else {
+            return Response::Nothing;
+        };
+        if option == dropdown.selected || option >= dropdown.options.len() {
+            return Response::Nothing;
+        }
+        self.change(id, |kind| {
+            if let Kind::Dropdown(dropdown) = kind {
+                dropdown.selected = option;
+                dropdown.highlighted = option;
+            }
+        });
+        Response::Chosen(id, option)
+    }
+
+    fn highlight(&mut self, option: usize) {
+        let Some((id, dropdown, popup, rows)) = self.popup_of() else {
+            return;
+        };
+        let option = option.min(dropdown.options.len().saturating_sub(1));
+        if option == dropdown.highlighted {
+            return;
+        }
+        if let Some(node) = self.node_mut(id)
+            && let Kind::Dropdown(held) = &mut node.kind
+        {
+            held.highlighted = option;
+            held.offset = held.offset_showing(option, rows);
+        }
+        self.damage.add(popup);
+    }
+
+    fn popup_option_at(&self, x: i32, y: i32) -> Option<usize> {
+        let (_, dropdown, popup, rows) = self.popup_of()?;
+        if !popup.contains(x, y) {
+            return None;
+        }
+        let row = ((y - popup.y - 1) / widget::POPUP_ROW_HEIGHT).max(0) as usize;
+        (row < rows).then(|| dropdown.option_at_row(row)).flatten()
+    }
+
+    fn popup_key(&mut self, id: WidgetId, dropdown: widget::Dropdown, code: u16, character: u32) {
+        let last = dropdown.options.len().saturating_sub(1);
+        let page = self
+            .popup_of()
+            .map_or(1, |(_, _, _, rows)| rows.saturating_sub(1).max(1));
+        let here = dropdown.highlighted;
+        let next = match code {
+            key::UP => here.saturating_sub(1),
+            key::DOWN => (here + 1).min(last),
+            key::HOME => 0,
+            key::END => last,
+            key::PAGE_UP => here.saturating_sub(page),
+            key::PAGE_DOWN => (here + page).min(last),
+            _ => match char::from_u32(character).filter(char::is_ascii_alphanumeric) {
+                Some(letter) => dropdown.next_starting_with(here, letter).unwrap_or(here),
+                None => return,
+            },
+        };
+        let _ = id;
+        self.highlight(next);
     }
 
     /// Draws the whole window into `pixels`, `width` by `height` at `scale`: what a test
@@ -642,6 +820,12 @@ impl<const N: usize> WidgetTree<N> {
             let id = WidgetId(index as u16);
             if self.focusable(id) {
                 self.set_focus(Some(id), now_ms);
+                if matches!(self.kind(id), Some(Kind::TextField(_))) {
+                    self.edit_field(id, now_ms, |field| {
+                        field.select_all();
+                        false
+                    });
+                }
                 return;
             }
         }
@@ -710,6 +894,19 @@ impl<const N: usize> WidgetTree<N> {
     pub fn handle(&mut self, input: Input, time_ms: u32) -> Response {
         match input {
             Input::PointerMove { x, y } => {
+                if self.popup.is_some() {
+                    if let Some(option) = self.popup_option_at(x, y) {
+                        self.highlight(option);
+                    }
+                    return Response::Nothing;
+                }
+                if let Some((id, grab)) = self.slide {
+                    return self.slide_to(id, x - grab);
+                }
+                if let Some(id) = self.selecting {
+                    self.select_to(id, x, time_ms);
+                    return Response::Nothing;
+                }
                 self.pointer_moved(x, y);
                 Response::Nothing
             }
@@ -734,6 +931,19 @@ impl<const N: usize> WidgetTree<N> {
             },
             Input::Button { .. } => Response::Nothing,
             Input::Wheel { x, y, notches } => {
+                if let Some((id, dropdown, popup, rows)) = self.popup_of() {
+                    if popup.contains(x, y) {
+                        let most = dropdown.options.len().saturating_sub(rows);
+                        let offset = (dropdown.offset as i32 - notches * 2).clamp(0, most as i32);
+                        if let Some(node) = self.node_mut(id)
+                            && let Kind::Dropdown(held) = &mut node.kind
+                        {
+                            held.offset = offset as usize;
+                        }
+                        self.damage.add(popup);
+                    }
+                    return Response::Nothing;
+                }
                 self.wheel(x, y, notches);
                 Response::Nothing
             }
@@ -743,17 +953,30 @@ impl<const N: usize> WidgetTree<N> {
                 modifiers,
                 character,
             } => match pressed {
-                true => self.key_down(
-                    code,
-                    modifiers.shift(),
-                    modifiers.command(),
-                    character,
-                    time_ms,
-                ),
-                false => self.key_up(code),
+                true => {
+                    self.shift_held = modifiers.shift() || matches!(code, LEFT_SHIFT | RIGHT_SHIFT);
+                    self.shortcut_held = modifiers.control_or_super();
+                    self.alt_held = modifiers.0 & Modifiers::ALT != 0;
+                    self.key_down(
+                        code,
+                        modifiers.shift(),
+                        modifiers.command(),
+                        character,
+                        time_ms,
+                    )
+                }
+                false => {
+                    if matches!(code, LEFT_SHIFT | RIGHT_SHIFT) {
+                        self.shift_held = false;
+                    }
+                    self.key_up(code)
+                }
             },
             Input::FocusIn | Input::FocusOut => {
                 let focused = input == Input::FocusIn;
+                if !focused {
+                    self.close_popup();
+                }
                 if self.window_focused != focused {
                     self.window_focused = focused;
                     if let Some(id) = self.focus {
@@ -764,6 +987,7 @@ impl<const N: usize> WidgetTree<N> {
                 Response::Nothing
             }
             Input::CloseRequest
+            | Input::SidewaysWheel { .. }
             | Input::Resize { .. }
             | Input::StateChanged { .. }
             | Input::Overflow => Response::Nothing,
@@ -854,19 +1078,51 @@ impl<const N: usize> WidgetTree<N> {
     }
 
     fn left_pressed(&mut self, x: i32, y: i32, time_ms: u32) -> Response {
+        if self.popup.is_some() {
+            match self.popup_option_at(x, y) {
+                Some(option) => {
+                    self.highlight(option);
+                    self.popup_pressed = true;
+                }
+                None => self.close_popup(),
+            }
+            return Response::Nothing;
+        }
         let Some(target) = self.hit(x, y) else {
             return Response::Nothing;
         };
         let id = target.widget;
+        if matches!(self.kind(id), Some(Kind::Dropdown(_))) {
+            if self.focusable(id) {
+                self.set_focus(Some(id), time_ms);
+            }
+            self.open_popup(id);
+            self.popup_pressed = true;
+            return Response::Nothing;
+        }
         if self.focusable(id) {
             self.set_focus(Some(id), time_ms);
         }
         if target.part == THUMB {
             return self.thumb_pressed(id, y);
         }
+        if let (Some(Kind::Slider(slider)), Some(rect)) = (self.kind(id).copied(), self.rect(id)) {
+            let thumb_x = slider.thumb_x(rect);
+            let grab = match (x - thumb_x).abs() <= widget::SLIDER_THUMB / 2 {
+                true => x - thumb_x,
+                false => 0,
+            };
+            self.slide = Some((id, grab));
+            self.damage_widget(id);
+            return self.slide_to(id, x - grab);
+        }
         let double = self.last_click.is_some_and(|(last, at)| {
             last == target && time_ms.wrapping_sub(at) <= DOUBLE_CLICK_MS
         });
+        self.clicks = match double {
+            true => self.clicks % 3 + 1,
+            false => 1,
+        };
         self.last_click = Some((target, time_ms));
         match self.kind(id).copied() {
             Some(Kind::List(list)) => {
@@ -881,7 +1137,19 @@ impl<const N: usize> WidgetTree<N> {
                 Response::Nothing
             }
             Some(Kind::TextField(field)) => {
+                let clicks = self.clicks;
+                let extend = self.shift_held;
                 self.place_caret(id, &field, x, time_ms);
+                self.edit_field(id, time_ms, |placed| {
+                    match clicks {
+                        2 => (placed.anchor, placed.caret) = placed.word_at(placed.caret),
+                        3 => placed.select_all(),
+                        _ if extend => placed.anchor = field.anchor,
+                        _ => placed.anchor = placed.caret,
+                    }
+                    false
+                });
+                self.selecting = Some(id);
                 Response::Nothing
             }
             _ => {
@@ -929,7 +1197,108 @@ impl<const N: usize> WidgetTree<N> {
         });
     }
 
+    fn select_to(&mut self, id: WidgetId, x: i32, now_ms: u32) {
+        let (Some(Kind::TextField(field)), Some(rect)) = (self.kind(id).copied(), self.rect(id))
+        else {
+            return;
+        };
+        let caret = widget::caret_at(&field, rect, x);
+        if caret != field.caret {
+            self.edit_field(id, now_ms, |selected| {
+                selected.caret = caret;
+                false
+            });
+        }
+    }
+
+    /// The text the last [`Response::Copied`] or [`Response::Cut`] took.
+    pub fn copied(&self) -> &str {
+        self.copied.as_str()
+    }
+
+    /// Puts `text`, the clipboard's, in text field `id` in place of its selection, as
+    /// [`Response::PasteWanted`] asked: line breaks and tabs become spaces, other control
+    /// characters go, and what does not fit is left out. [`Response::Edited`] when the text
+    /// changed.
+    pub fn paste(&mut self, id: WidgetId, text: &str, now_ms: u32) -> Response {
+        let changed = self.edit_field(id, now_ms, |field| {
+            let mut changed = field.remove_selection();
+            for character in text.chars() {
+                let character = match character {
+                    '\n' | '\r' | '\t' => ' ',
+                    character if character.is_control() => continue,
+                    character => character,
+                };
+                if !field.text.insert(field.caret, character) {
+                    break;
+                }
+                field.caret += character.len_utf8();
+                changed = true;
+            }
+            field.anchor = field.caret;
+            changed
+        });
+        match changed {
+            true => Response::Edited(id),
+            false => Response::Nothing,
+        }
+    }
+
+    fn slide_to(&mut self, id: WidgetId, thumb_x: i32) -> Response {
+        let (Some(Kind::Slider(slider)), Some(rect)) = (self.kind(id).copied(), self.rect(id))
+        else {
+            return Response::Nothing;
+        };
+        self.adjust(id, slider.value_at(rect, thumb_x))
+    }
+
+    pub(crate) fn adjust(&mut self, id: WidgetId, wanted: i32) -> Response {
+        let Some(Kind::Slider(slider)) = self.kind(id).copied() else {
+            return Response::Nothing;
+        };
+        let value = slider.snapped(wanted);
+        if value == slider.value {
+            return Response::Nothing;
+        }
+        self.set_value(id, value);
+        Response::Adjusted(id, value)
+    }
+
+    /// A slider's value.
+    pub fn value(&self, id: WidgetId) -> Option<i32> {
+        match self.kind(id)? {
+            Kind::Slider(slider) => Some(slider.value),
+            _ => None,
+        }
+    }
+
+    /// Sets slider `id` to `value`, snapped to its steps and clamped to its range, without a
+    /// response.
+    pub fn set_value(&mut self, id: WidgetId, value: i32) {
+        if !matches!(self.kind(id), Some(Kind::Slider(_))) {
+            return;
+        }
+        self.change(id, |kind| {
+            if let Kind::Slider(slider) = kind {
+                slider.value = slider.snapped(value);
+            }
+        });
+    }
+
     fn left_released(&mut self, x: i32, y: i32) -> Response {
+        self.selecting = None;
+        if let Some(id) = self.popup {
+            let pressed = core::mem::take(&mut self.popup_pressed);
+            return match (pressed, self.popup_option_at(x, y)) {
+                (true, Some(option)) => self.choose_option(id, option),
+                _ => Response::Nothing,
+            };
+        }
+        if let Some((id, _)) = self.slide.take() {
+            self.damage_widget(id);
+            self.set_hover(self.hit(x, y));
+            return Response::Nothing;
+        }
         if let Some(drag) = self.drag.take() {
             self.damage_widget(drag.widget);
             self.set_hover(self.hit(x, y));
@@ -994,7 +1363,16 @@ impl<const N: usize> WidgetTree<N> {
         time_ms: u32,
     ) -> Response {
         if code == key::TAB && !command {
+            self.close_popup();
             self.move_focus(shift, time_ms);
+            return Response::Nothing;
+        }
+        if let Some((id, dropdown, _, _)) = self.popup_of() {
+            match code {
+                key::ESC => self.close_popup(),
+                key::ENTER | key::SPACE => return self.choose_option(id, dropdown.highlighted),
+                _ => self.popup_key(id, dropdown, code, character),
+            }
             return Response::Nothing;
         }
         let unused = Response::Unused { code, shift };
@@ -1015,6 +1393,44 @@ impl<const N: usize> WidgetTree<N> {
                 _ => unused,
             },
             Kind::Checkbox { .. } if code == key::SPACE => self.activate(id, 0),
+            Kind::Dropdown(dropdown) => {
+                let last = dropdown.options.len().saturating_sub(1);
+                let here = dropdown.selected;
+                let next = match code {
+                    key::SPACE | key::ENTER => {
+                        self.open_popup(id);
+                        return Response::Nothing;
+                    }
+                    key::DOWN | key::UP if self.alt_held => {
+                        self.open_popup(id);
+                        return Response::Nothing;
+                    }
+                    key::UP | key::LEFT => here.saturating_sub(1),
+                    key::DOWN | key::RIGHT => (here + 1).min(last),
+                    key::HOME => 0,
+                    key::END => last,
+                    _ => match char::from_u32(character).filter(char::is_ascii_alphanumeric) {
+                        Some(letter) if !command => {
+                            dropdown.next_starting_with(here, letter).unwrap_or(here)
+                        }
+                        _ => return self.default_or(code, unused),
+                    },
+                };
+                self.choose_option(id, next)
+            }
+            Kind::Slider(slider) => {
+                let page = slider.step * widget::SLIDER_PAGE_STEPS;
+                let wanted = match code {
+                    key::RIGHT | key::UP => slider.value.saturating_add(slider.step),
+                    key::LEFT | key::DOWN => slider.value.saturating_sub(slider.step),
+                    key::HOME => slider.min,
+                    key::END => slider.max,
+                    key::PAGE_UP => slider.value.saturating_add(page),
+                    key::PAGE_DOWN => slider.value.saturating_sub(page),
+                    _ => return self.default_or(code, unused),
+                };
+                self.adjust(id, wanted)
+            }
             Kind::Radios {
                 count, selected, ..
             } => {
@@ -1153,9 +1569,21 @@ impl<const N: usize> WidgetTree<N> {
             return unused;
         };
         let before = self.text_before_focus;
-        let key = widget::field_key(&mut edited, code, character, command, &before);
+        let selected = Text::<255>::from(edited.selected());
+        let key = widget::field_key_with(
+            &mut edited,
+            code,
+            character,
+            command,
+            self.shift_held,
+            self.shortcut_held,
+            &before,
+        );
         if key == FieldKey::Unused {
             return unused;
+        }
+        if key == FieldKey::Cut {
+            edited.remove_selection();
         }
         self.edit_field(id, now_ms, |field| {
             *field = edited;
@@ -1163,6 +1591,15 @@ impl<const N: usize> WidgetTree<N> {
         });
         match key {
             FieldKey::Changed => Response::Edited(id),
+            FieldKey::Copied => {
+                self.copied = selected;
+                Response::Copied(id)
+            }
+            FieldKey::Cut => {
+                self.copied = selected;
+                Response::Cut(id)
+            }
+            FieldKey::PasteWanted => Response::PasteWanted(id),
             _ => Response::Nothing,
         }
     }

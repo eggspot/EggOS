@@ -1,8 +1,12 @@
-use crate::editor::{Editor, Fed, History};
+use crate::arguments::MAX_ARGUMENTS;
+use crate::editor::{
+    Editor, Fed, HISTORY_CAPACITY, History, HistoryLoader, LOADED_LINE_CAPACITY, should_remember,
+};
 use crate::path::{Files, Kind, PATH_CAPACITY};
-use crate::shell::{Errno, Group, MAX_POSITIONAL, Read, Shell, Streams, System};
+use crate::shell::{Errno, Forked, Group, Read, Shell, Streams, System, Wait};
 use crate::status::USAGE;
 use crate::syntax::{MAX_WORDS, Redirection};
+use crate::test::{Access, FileStatus, FileType};
 use crate::variables::MAX_VARIABLES;
 use core::cell::UnsafeCell;
 use core::ffi::CStr;
@@ -13,6 +17,7 @@ use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
 
 const TERMINAL: usize = 0;
+const HISTORY_FILE_LIMIT: usize = 8 * HISTORY_CAPACITY;
 const STANDARD_ERROR: usize = 2;
 const AT_FDCWD: usize = -100isize as usize;
 const O_CLOEXEC: usize = 0o2_000_000;
@@ -22,8 +27,13 @@ const O_CREAT: usize = 0o100;
 const O_TRUNC: usize = 0o1000;
 const O_APPEND: usize = 0o2000;
 const NEW_FILE_MODE: usize = 0o666;
-const STANDARD_INPUT: usize = 0;
-const STANDARD_OUTPUT: usize = 1;
+const HISTORY_FILE_MODE: usize = 0o600;
+const HISTORY_PIECE: usize = 1024;
+const TEMPORARY_SUFFIX: &[u8] = b".tmp";
+const F_DUPFD_CLOEXEC: usize = 1030;
+const WNOHANG: usize = 1;
+const WUNTRACED: usize = 2;
+const WCONTINUED: usize = 8;
 const SIGPIPE: usize = 13;
 const EINTR: isize = 4;
 const ENOENT: isize = 2;
@@ -35,6 +45,7 @@ const SIG_IGN: usize = 1;
 const SA_RESTORER: usize = 0x0400_0000;
 const SIGNAL_SET_SIZE: usize = 8;
 const JOB_CONTROL_SIGNALS: [usize; 4] = [3, 20, 21, 22];
+const STOP_SIGNALS: [usize; 3] = [20, 21, 22];
 const SIG_BLOCK: usize = 0;
 const SIG_SETMASK: usize = 2;
 const INTERRUPT_MASK: u64 = 1 << (SIGINT - 1);
@@ -56,6 +67,23 @@ const DIRECTORY: u32 = 0o040_000;
 const REGULAR_FILE: u32 = 0o100_000;
 const ANY_EXECUTE: u32 = 0o111;
 const CHILD_STACK_SIZE: usize = 16 * 1024;
+const AT_SYMLINK_NOFOLLOW: usize = 0x100;
+const SIZE_OFFSET: usize = 48;
+const SYMBOLIC_LINK: u32 = 0o120_000;
+const CHARACTER_DEVICE: u32 = 0o020_000;
+const BLOCK_DEVICE: u32 = 0o060_000;
+const FIFO: u32 = 0o010_000;
+const SOCKET: u32 = 0o140_000;
+const MODE_BITS: u32 = 0o7777;
+const READ_ACCESS: usize = 4;
+const WRITE_ACCESS: usize = 2;
+const EXECUTE_ACCESS: usize = 1;
+const MFD_CLOEXEC: usize = 1;
+const SEEK_SET: usize = 0;
+const DOCUMENT_NAME: &[u8] = b"eggsh-here-document\0";
+const DIRECTORY_PIECE: usize = 4096;
+const DIRECTORY_ENTRY_NAME: usize = 19;
+const DIRECTORY_ENTRY_LENGTH: usize = 16;
 const COMMAND_NOT_RUN: i32 = 127;
 const NOT_EXECUTABLE: i32 = 126;
 
@@ -235,6 +263,10 @@ extern "C" fn start_child(request: usize) -> ! {
             set_foreground(call(number::GETPID, [0; 6]) as i32);
             true
         }
+        Group::Background => {
+            call(number::SETPGID, [0; 6]);
+            true
+        }
         Group::Join(leader) => {
             call(number::SETPGID, [0, leader as usize, 0, 0, 0, 0]);
             true
@@ -248,12 +280,22 @@ extern "C" fn start_child(request: usize) -> ! {
         set_signal_mask(SIG_SETMASK, 0);
     }
     set_signal_action(SIGPIPE, SIG_DFL);
-    for (from, to) in [
-        (request.streams.input, STANDARD_INPUT),
-        (request.streams.output, STANDARD_OUTPUT),
-    ] {
-        if from != to {
-            call(number::DUP3, [from, to, 0, 0, 0, 0]);
+    let mut sources = [
+        request.streams.input,
+        request.streams.output,
+        request.streams.error,
+    ];
+    for (target, source) in sources.iter_mut().enumerate() {
+        if *source <= STANDARD_ERROR && *source != target {
+            let copy = call(number::FCNTL, [*source, F_DUPFD_CLOEXEC, 3, 0, 0, 0]);
+            if copy >= 0 {
+                *source = copy as usize;
+            }
+        }
+    }
+    for (target, &source) in sources.iter().enumerate() {
+        if source != target {
+            call(number::DUP3, [source, target, 0, 0, 0, 0]);
         }
     }
     let result = call(
@@ -275,18 +317,198 @@ extern "C" fn start_child(request: usize) -> ! {
     })
 }
 
-fn wait_for(child: isize) -> Result<i32, Errno> {
+fn wait_for(child: isize, options: usize) -> Result<Option<(i32, i32)>, Errno> {
     loop {
         let mut status = 0i32;
-        let ended = call(
+        let changed = call(
             number::WAIT4,
-            [child as usize, &raw mut status as usize, 0, 0, 0, 0],
+            [child as usize, &raw mut status as usize, options, 0, 0, 0],
         );
-        match ended {
-            _ if ended == child => return Ok(status),
-            _ if ended == -EINTR => {}
-            _ => return Err(Errno(ended.unsigned_abs() as u16)),
+        match changed {
+            0 => return Ok(None),
+            1.. => return Ok(Some((changed as i32, status))),
+            _ if changed == -EINTR => {}
+            _ => return Err(Errno(changed.unsigned_abs() as u16)),
         }
+    }
+}
+
+fn open_file(path: &[u8], flags: usize, mode: usize) -> Result<usize, Errno> {
+    let descriptor = call(
+        number::OPENAT,
+        [AT_FDCWD, path.as_ptr() as usize, flags, mode, 0, 0],
+    );
+    match descriptor {
+        0.. => Ok(descriptor as usize),
+        _ => Err(Errno(descriptor.unsigned_abs() as u16)),
+    }
+}
+
+fn close(descriptor: usize) {
+    call(number::CLOSE, [descriptor, 0, 0, 0, 0, 0]);
+}
+
+fn reset_signals() {
+    set_signal_action(SIGINT, SIG_DFL);
+    for signal in JOB_CONTROL_SIGNALS {
+        set_signal_action(signal, SIG_DFL);
+    }
+    set_signal_mask(SIG_SETMASK, 0);
+}
+
+fn join_group(process: usize, group: Group) {
+    let leader = match group {
+        Group::Shell => return,
+        Group::New | Group::Background => process,
+        Group::Join(leader) => leader as usize,
+    };
+    call(number::SETPGID, [process, leader, 0, 0, 0, 0]);
+}
+
+fn file_type(mode: u32) -> FileType {
+    match mode & FILE_TYPE {
+        DIRECTORY => FileType::Directory,
+        SYMBOLIC_LINK => FileType::SymbolicLink,
+        CHARACTER_DEVICE => FileType::CharacterDevice,
+        BLOCK_DEVICE => FileType::BlockDevice,
+        FIFO => FileType::Fifo,
+        SOCKET => FileType::Socket,
+        _ => FileType::Regular,
+    }
+}
+
+fn read_raw(descriptor: usize, buffer: &mut [u8]) -> Read {
+    let read = call(
+        number::READ,
+        [
+            descriptor,
+            buffer.as_mut_ptr() as usize,
+            buffer.len(),
+            0,
+            0,
+            0,
+        ],
+    );
+    match read {
+        1.. => Read::Bytes(read as usize),
+        _ if read == -EINTR => Read::Interrupted,
+        _ => Read::End,
+    }
+}
+
+#[derive(Debug)]
+struct HistoryFile {
+    path: [u8; PATH_CAPACITY],
+    length: usize,
+    loaded: bool,
+}
+
+impl HistoryFile {
+    fn path_with_nul(&self) -> Option<&[u8]> {
+        (self.length > 0).then(|| &self.path[..=self.length])
+    }
+
+    fn name(&mut self, file: Option<&[u8]>, history: &mut History) {
+        let file = file.unwrap_or_default();
+        if file == &self.path[..self.length] {
+            return;
+        }
+        if file.len() + TEMPORARY_SUFFIX.len() >= PATH_CAPACITY {
+            self.length = 0;
+            return;
+        }
+        self.path[..file.len()].copy_from_slice(file);
+        self.path[file.len()] = 0;
+        self.length = file.len();
+        if self.length > 0 && !self.loaded {
+            self.loaded = true;
+            self.load(history);
+        }
+    }
+
+    fn load(&mut self, history: &mut History) {
+        let Some(path) = self.path_with_nul() else {
+            return;
+        };
+        let Ok(descriptor) = open_file(path, O_RDONLY_CLOEXEC, 0) else {
+            return;
+        };
+        let mut loader = HistoryLoader::default();
+        let mut piece = [0u8; HISTORY_PIECE];
+        let mut size = 0;
+        loop {
+            let read = call(
+                number::READ,
+                [
+                    descriptor,
+                    piece.as_mut_ptr() as usize,
+                    piece.len(),
+                    0,
+                    0,
+                    0,
+                ],
+            );
+            if read <= 0 {
+                break;
+            }
+            size += read as usize;
+            loader.feed(&piece[..read as usize], history);
+        }
+        loader.finish(history);
+        close(descriptor);
+        if size > HISTORY_FILE_LIMIT {
+            self.write_again(history);
+        }
+    }
+
+    fn write_again(&self, history: &History) {
+        let mut temporary = [0u8; PATH_CAPACITY];
+        let end = self.length + TEMPORARY_SUFFIX.len();
+        temporary[..self.length].copy_from_slice(&self.path[..self.length]);
+        temporary[self.length..end].copy_from_slice(TEMPORARY_SUFFIX);
+        let flags = O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC;
+        let Ok(descriptor) = open_file(&temporary[..=end], flags, HISTORY_FILE_MODE) else {
+            return;
+        };
+        let mut line = [0u8; LOADED_LINE_CAPACITY + 1];
+        for back in (0..history.len()).rev() {
+            if let Some(kept) = history.get(back)
+                && kept.len() < line.len()
+            {
+                line[..kept.len()].copy_from_slice(kept);
+                line[kept.len()] = b'\n';
+                syscall::write_all(descriptor, &line[..=kept.len()]);
+            }
+        }
+        close(descriptor);
+        call(
+            number::RENAMEAT2,
+            [
+                AT_FDCWD,
+                temporary.as_ptr() as usize,
+                AT_FDCWD,
+                self.path.as_ptr() as usize,
+                0,
+                0,
+            ],
+        );
+    }
+
+    fn append(&self, line: &[u8]) {
+        let Some(path) = self.path_with_nul() else {
+            return;
+        };
+        let flags = O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC;
+        let Ok(descriptor) = open_file(path, flags, HISTORY_FILE_MODE) else {
+            return;
+        };
+        let mut kept = [0u8; LOADED_LINE_CAPACITY + 1];
+        if line.len() < kept.len() {
+            kept[..line.len()].copy_from_slice(line);
+            kept[line.len()] = b'\n';
+            syscall::write_all(descriptor, &kept[..=line.len()]);
+        }
+        close(descriptor);
     }
 }
 
@@ -297,6 +519,7 @@ struct Linux {
     editing: bool,
     editor: Editor,
     history: History,
+    history_file: HistoryFile,
 }
 
 impl Linux {
@@ -336,7 +559,10 @@ impl Linux {
             match fed {
                 Fed::Editing => {}
                 Fed::Line(length) => {
-                    self.history.add(&buffer[..length - 1]);
+                    let line = &buffer[..length - 1];
+                    if should_remember(line) && self.history.add(line) {
+                        self.history_file.append(line);
+                    }
                     return Read::Bytes(length);
                 }
                 Fed::End => return Read::End,
@@ -394,22 +620,14 @@ impl System for Linux {
         {
             return Read::Interrupted;
         }
-        let read = call(
-            number::READ,
-            [
-                descriptor,
-                buffer.as_mut_ptr() as usize,
-                buffer.len(),
-                0,
-                0,
-                0,
-            ],
-        );
-        match read {
-            1.. => Read::Bytes(read as usize),
-            _ if read == -EINTR => Read::Interrupted,
-            _ => Read::End,
+        read_raw(descriptor, buffer)
+    }
+
+    fn read_data(&mut self, descriptor: usize, buffer: &mut [u8]) -> Read {
+        if descriptor == TERMINAL {
+            self.edit_lines(false);
         }
+        read_raw(descriptor, buffer)
     }
 
     fn open(&mut self, path: &[u8]) -> Result<usize, Errno> {
@@ -463,6 +681,23 @@ impl System for Linux {
         }
     }
 
+    fn document(&mut self, contents: &[u8]) -> Result<usize, Errno> {
+        let descriptor = call(
+            number::MEMFD_CREATE,
+            [DOCUMENT_NAME.as_ptr() as usize, MFD_CLOEXEC, 0, 0, 0, 0],
+        );
+        if descriptor < 0 {
+            return Err(Errno(descriptor.unsigned_abs() as u16));
+        }
+        let descriptor = descriptor as usize;
+        if !syscall::write_all(descriptor, contents) {
+            close(descriptor);
+            return Err(Errno::ENOSPC);
+        }
+        call(number::LSEEK, [descriptor, 0, SEEK_SET, 0, 0, 0]);
+        Ok(descriptor)
+    }
+
     fn pipe(&mut self) -> Result<(usize, usize), Errno> {
         let mut ends = [0i32; 2];
         match call(
@@ -474,8 +709,17 @@ impl System for Linux {
         }
     }
 
-    fn wait(&mut self, child: i32) -> Result<i32, Errno> {
-        wait_for(child as isize)
+    fn wait(&mut self, child: i32, how: Wait) -> Result<Option<(i32, i32)>, Errno> {
+        let job_control = match self.has_the_terminal() {
+            true => WUNTRACED,
+            false => 0,
+        };
+        let options = match how {
+            Wait::Block => job_control,
+            Wait::Poll if job_control != 0 => WNOHANG | WUNTRACED | WCONTINUED,
+            Wait::Poll => WNOHANG,
+        };
+        wait_for(child as isize, options)
     }
 
     fn take_back_terminal(&mut self) {
@@ -483,6 +727,148 @@ impl System for Linux {
             set_foreground(self.group);
             self.edit_lines(true);
         }
+    }
+
+    fn give_terminal(&mut self, group: i32) {
+        if self.has_the_terminal() && group != 0 {
+            self.edit_lines(false);
+            set_foreground(group);
+        }
+    }
+
+    fn kill(&mut self, target: i32, signal: u8) -> Result<(), Errno> {
+        match call(
+            number::KILL,
+            [target as isize as usize, usize::from(signal), 0, 0, 0, 0],
+        ) {
+            0 => Ok(()),
+            error => Err(Errno(error.unsigned_abs() as u16)),
+        }
+    }
+
+    fn keep_history_in(&mut self, file: Option<&[u8]>) {
+        if self.settings.is_some() {
+            self.history_file.name(file, &mut self.history);
+        }
+    }
+
+    fn fork(&mut self, group: Group) -> Result<Forked, Errno> {
+        self.edit_lines(false);
+        let child = call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]);
+        match child {
+            0 => {
+                let job_control = self.has_the_terminal();
+                join_group(0, group);
+                if group == Group::New {
+                    set_foreground(call(number::GETPID, [0; 6]) as i32);
+                }
+                if job_control {
+                    reset_signals();
+                    if group == Group::Shell {
+                        for signal in STOP_SIGNALS {
+                            set_signal_action(signal, SIG_IGN);
+                        }
+                    }
+                }
+                set_signal_action(SIGPIPE, SIG_DFL);
+                self.group = 0;
+                self.settings = None;
+                Ok(Forked::Child)
+            }
+            1.. => {
+                join_group(child as usize, group);
+                Ok(Forked::Parent(child as i32))
+            }
+            _ => Err(Errno(child.unsigned_abs() as u16)),
+        }
+    }
+
+    fn end_subshell(&mut self, status: i32) {
+        syscall::exit(status)
+    }
+
+    fn read_directory(&mut self, path: &[u8], each: &mut dyn FnMut(&[u8])) -> Result<(), Errno> {
+        let descriptor = open_file(path, O_RDONLY_CLOEXEC, 0)?;
+        let mut piece = [0u8; DIRECTORY_PIECE];
+        loop {
+            let read = call(
+                number::GETDENTS64,
+                [
+                    descriptor,
+                    piece.as_mut_ptr() as usize,
+                    piece.len(),
+                    0,
+                    0,
+                    0,
+                ],
+            );
+            if read <= 0 {
+                close(descriptor);
+                return match read {
+                    0 => Ok(()),
+                    _ => Err(Errno(read.unsigned_abs() as u16)),
+                };
+            }
+            let mut at = 0;
+            while at + DIRECTORY_ENTRY_NAME <= read as usize {
+                let length = usize::from(u16::from_ne_bytes([
+                    piece[at + DIRECTORY_ENTRY_LENGTH],
+                    piece[at + DIRECTORY_ENTRY_LENGTH + 1],
+                ]));
+                if length <= DIRECTORY_ENTRY_NAME || at + length > read as usize {
+                    break;
+                }
+                let name = &piece[at + DIRECTORY_ENTRY_NAME..at + length];
+                let end = name
+                    .iter()
+                    .position(|&byte| byte == 0)
+                    .unwrap_or(name.len());
+                each(&name[..end]);
+                at += length;
+            }
+        }
+    }
+
+    fn file_status(&mut self, path: &[u8], follow: bool) -> Option<FileStatus> {
+        let mut status = [0u8; STAT_SIZE];
+        let flags = if follow { 0 } else { AT_SYMLINK_NOFOLLOW };
+        let result = call(
+            number::NEWFSTATAT,
+            [
+                AT_FDCWD,
+                path.as_ptr() as usize,
+                status.as_mut_ptr() as usize,
+                flags,
+                0,
+                0,
+            ],
+        );
+        if result < 0 {
+            return None;
+        }
+        let mode = u32::from_ne_bytes(status[MODE_OFFSET..MODE_OFFSET + 4].try_into().ok()?);
+        let size = u64::from_ne_bytes(status[SIZE_OFFSET..SIZE_OFFSET + 8].try_into().ok()?);
+        Some(FileStatus {
+            file_type: file_type(mode),
+            size,
+            mode: mode & MODE_BITS,
+        })
+    }
+
+    fn accessible(&mut self, path: &[u8], access: Access) -> bool {
+        let mode = match access {
+            Access::Read => READ_ACCESS,
+            Access::Write => WRITE_ACCESS,
+            Access::Execute => EXECUTE_ACCESS,
+        };
+        call(
+            number::FACCESSAT,
+            [AT_FDCWD, path.as_ptr() as usize, mode, 0, 0, 0],
+        ) == 0
+    }
+
+    fn is_terminal(&mut self, descriptor: usize) -> bool {
+        is_terminal(descriptor)
     }
 
     fn start(
@@ -531,7 +917,7 @@ impl System for Linux {
         match request.error.load(Ordering::Acquire) {
             0 => Ok(child as i32),
             error => {
-                let _ = wait_for(child);
+                let _ = wait_for(child, 0);
                 if group == Group::New {
                     self.take_back_terminal();
                 }
@@ -545,7 +931,7 @@ impl System for Linux {
 pub fn run(startup: &Startup) -> i32 {
     let mut arguments = startup.arguments();
     let name = arguments.next().map_or(&b"eggsh"[..], CStr::to_bytes);
-    let mut positional: [&[u8]; MAX_POSITIONAL] = [b""; MAX_POSITIONAL];
+    let mut positional: [&[u8]; MAX_ARGUMENTS + 1] = [b""; MAX_ARGUMENTS + 1];
     let first = arguments.next();
     let mut text = None;
     let mut file = None;
@@ -570,9 +956,11 @@ pub fn run(startup: &Startup) -> i32 {
     };
     let mut count = 1;
     for argument in arguments {
-        if count < MAX_POSITIONAL {
-            positional[count] = argument.to_bytes();
+        if count == positional.len() {
+            syscall::write_all(STANDARD_ERROR, b"eggsh: too many arguments\n");
+            return USAGE;
         }
+        positional[count] = argument.to_bytes();
         count += 1;
     }
     set_signal_action(SIGPIPE, SIG_IGN);
@@ -580,7 +968,6 @@ pub fn run(startup: &Startup) -> i32 {
     let group = if interactive { take_the_terminal() } else { 0 };
     let pid = call(number::GETPID, [0; 6]) as u32;
     let root = call(number::GETEUID, [0; 6]) == 0;
-    let kept = count.min(MAX_POSITIONAL);
     let settings = if interactive {
         terminal_settings()
     } else {
@@ -592,15 +979,21 @@ pub fn run(startup: &Startup) -> i32 {
         editing: false,
         editor: Editor::new(),
         history: History::default(),
+        history_file: HistoryFile {
+            path: [0; PATH_CAPACITY],
+            length: 0,
+            loaded: false,
+        },
     };
     if interactive {
         linux.edit_lines(true);
     }
-    let mut shell = Shell::new(linux, pid, &positional[..kept], count, interactive, root);
+    let mut shell = Shell::new(linux, pid, &positional[..count], interactive, root);
     for variable in startup.environment() {
         shell.import(variable.to_bytes());
     }
     shell.set_working_directory_variable();
+    shell.greet();
     if let Some(text) = text {
         shell.run_text(text);
     } else if let Some(file) = file {

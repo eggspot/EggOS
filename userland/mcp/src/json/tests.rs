@@ -307,3 +307,37 @@ fn every_control_byte_is_escaped_and_the_text_round_trips() {
     assert_eq!(parsed.decode_into(&mut buffer), Some(all.as_str()));
     assert!(text.bytes().all(|byte| byte >= 0x20));
 }
+
+#[test]
+fn an_object_written_last_reopens_for_more_members() {
+    let text = written(|out| {
+        out.begin_object();
+        out.key("result");
+        out.begin_object();
+        out.key("a");
+        out.u64(1);
+        out.end_object();
+        out.end_object();
+        assert!(out.reopen_object());
+        assert!(out.reopen_object());
+        out.key("b");
+        out.u64(2);
+        out.end_object();
+        out.key("c");
+        out.bool(true);
+        out.end_object();
+    });
+    assert_eq!(text, r#"{"result":{"a":1,"b":2},"c":true}"#);
+    let empty = written(|out| {
+        out.begin_object();
+        out.end_object();
+        assert!(out.reopen_object());
+        out.key("only");
+        out.null();
+        out.end_object();
+        out.begin_array();
+        out.end_array();
+        assert!(!out.reopen_object());
+    });
+    assert_eq!(empty, r#"{"only":null}[]"#);
+}

@@ -1,14 +1,17 @@
 //! The calls that change files and directories (D125), on file systems that can be changed
 //! (the tmpfs on `/tmp` and `/home`; the initramfs answers `EROFS`): `write`, `writev` and
-//! `pwrite64` on regular files, `ftruncate`, `mkdirat`, `unlinkat`, `renameat`, `renameat2`
-//! and `utimensat`, with x86_64's `mkdir`, `rmdir`, `unlink` and `rename`, and `sync`,
+//! `pwrite64` on regular files, `ftruncate`, `mkdirat`, `unlinkat`, `renameat`, `renameat2`,
+//! `utimensat`, `symlinkat`, `linkat`, `fchmodat`, `fchmodat2` and `fchmod` (D170), with
+//! x86_64's `mkdir`, `rmdir`, `unlink`, `rename`, `symlink`, `link` and `chmod`, and `sync`,
 //! `syncfs`, `fsync` and `fdatasync`, which put changes on the disk (D131); `openat` creates and
 //! truncates files through [`create_file`] and [`truncate_on_open`]. Errors are Linux's, in
 //! Linux's order where it has one. User memory is copied through a buffer on the kernel stack,
-//! never while a file system's lock is held. Times are the wall clock's seconds.
+//! never while a file system's lock is held. Times are the wall clock's seconds. Each change is
+//! reported to the `inotify` watches of what it changed ([`inotify`], D179).
 
 use super::descriptors::{FileKind, OpenFile, open_flag};
 use super::files::{PathBuffer, read_path, starting_points, walk_error};
+use super::inotify::{self, mask as watched};
 use super::thread::LinuxThread;
 use super::{Errno, Iovecs, MAX_RW_COUNT, iovec};
 use crate::process::Process;
@@ -21,6 +24,9 @@ pub const AT_REMOVEDIR: u64 = 0x200;
 
 /// `renameat2`'s flag that refuses to replace an existing name (`RENAME_NOREPLACE`).
 pub const RENAME_NOREPLACE: u64 = 1;
+
+/// `linkat`'s flag that follows a symbolic link named as the existing file (`AT_SYMLINK_FOLLOW`).
+pub const AT_SYMLINK_FOLLOW: u64 = 0x400;
 
 pub(super) const UMASK: u32 = 0o022;
 
@@ -47,6 +53,8 @@ pub fn refused(refused: Refused) -> Errno {
         Refused::TooBig => Errno::EFBIG,
         Refused::Busy => Errno::EBUSY,
         Refused::Storage => Errno::EIO,
+        Refused::TooManyLinks => Errno::EMLINK,
+        Refused::NotPermitted => Errno::EPERM,
     }
 }
 
@@ -55,6 +63,20 @@ pub(super) fn parent_and_name(
     start: Node,
     path: &[u8],
     dots_are_names: bool,
+    caller: u32,
+) -> Result<(Node, &[u8]), Errno> {
+    parent_and_name_walking(root, start, path, dots_are_names, caller, true)
+}
+
+/// [`parent_and_name`] whose walk to the directory follows no symbolic link unless
+/// `links_allowed` (`openat2`'s `RESOLVE_NO_SYMLINKS`: `ELOOP`).
+pub(super) fn parent_and_name_walking(
+    root: Node,
+    start: Node,
+    path: &[u8],
+    dots_are_names: bool,
+    caller: u32,
+    links_allowed: bool,
 ) -> Result<(Node, &[u8]), Errno> {
     let end = path
         .iter()
@@ -79,7 +101,11 @@ pub(super) fn parent_and_name(
             _ => Errno::ENOENT,
         });
     };
-    let directory = vfs::resolve(root, start, directory).map_err(walk_error)?;
+    let directory = match links_allowed {
+        true => vfs::resolve_as(root, start, directory, caller, true),
+        false => vfs::resolve_without_links(root, start, directory, caller, true),
+    }
+    .map_err(walk_error)?;
     if !directory.is_directory() {
         return Err(Errno::ENOTDIR);
     }
@@ -102,19 +128,23 @@ fn parent_and_name_at<'p, P: Platform>(
         return Err(Errno::ENOENT);
     }
     let (root, start) = starting_points(thread, dirfd, path)?;
-    parent_and_name(root, start, path, dots_are_names)
+    parent_and_name(root, start, path, dots_are_names, process.id().get())
 }
 
 /// Creates regular file `path` (from `start`, or the root) for `openat` with `O_CREAT`, which
-/// found nothing there: the new file's node. `EROFS` on a file system that cannot be changed,
+/// found nothing there, walking as process `caller` and through no symbolic link unless
+/// `links_allowed`: the new file's node. `EROFS` on a file system that cannot be changed,
 /// `EISDIR` for a path ending in `/`.
 pub fn create_file<P: Platform>(
     root: Node,
     start: Node,
     path: &[u8],
     mode: u64,
+    caller: u32,
+    links_allowed: bool,
 ) -> Result<Node, Errno> {
-    let (directory, name) = parent_and_name(root, start, path, false)?;
+    let (directory, name) =
+        parent_and_name_walking(root, start, path, false, caller, links_allowed)?;
     if path.ends_with(b"/") {
         return Err(Errno::EISDIR);
     }
@@ -132,7 +162,8 @@ pub fn create_file<P: Platform>(
             now::<P>(),
         )
         .map_err(refused)?;
-    vfs::resolve(root, directory, name)
+    inotify::created(directory, name, false);
+    vfs::resolve_as(root, directory, name, caller, false)
         .map_err(walk_error)
         .and_then(|node| match node.id() == id {
             true => Ok(node),
@@ -141,11 +172,11 @@ pub fn create_file<P: Platform>(
 }
 
 /// What `openat` does to existing regular file `node` opened with `flags` for writing or with
-/// `O_TRUNC`: `EROFS` unless its file system can be changed; with `O_TRUNC` and write access,
+/// `O_TRUNC`: `EROFS` unless it can be written to; with `O_TRUNC` and write access,
 /// empties it.
 pub fn truncate_on_open<P: Platform>(node: Node, flags: u32) -> Result<(), Errno> {
     let file_system = node.file_system();
-    if !file_system.is_writable() {
+    if !file_system.is_node_writable(node.id()) {
         return Err(Errno::EROFS);
     }
     let writes = flags & open_flag::ACCMODE != open_flag::RDONLY;
@@ -153,6 +184,8 @@ pub fn truncate_on_open<P: Platform>(node: Node, flags: u32) -> Result<(), Errno
         file_system
             .truncate(node.id(), 0, now::<P>())
             .map_err(refused)?;
+        vfs::shared_pages::truncated(node, 0);
+        inotify::changed(node, watched::MODIFY);
     }
     Ok(())
 }
@@ -160,8 +193,23 @@ pub fn truncate_on_open<P: Platform>(node: Node, flags: u32) -> Result<(), Errno
 /// `write` or `writev` of `buffers` to regular file `node` through `file`, at its offset or,
 /// with `O_APPEND`, at the file's end, moving the offset past what was written; `pwrite64`
 /// with `at`, leaving the offset. As Linux: `EFAULT` if nothing could be copied, `ENOSPC`
-/// when memory ran out before the first byte.
+/// when memory ran out before the first byte. A write of at least one byte is `IN_MODIFY` to
+/// the file's watches ([`inotify`]).
 pub(super) fn write_regular<P: Platform>(
+    process: &Process<P>,
+    file: &OpenFile,
+    node: Node,
+    buffers: &Iovecs,
+    at: Option<u64>,
+) -> Result<u64, Errno> {
+    let written = write_into(process, file, node, buffers, at);
+    if matches!(written, Ok(count) if count > 0) {
+        inotify::changed(node, watched::MODIFY);
+    }
+    written
+}
+
+fn write_into<P: Platform>(
     process: &Process<P>,
     file: &OpenFile,
     node: Node,
@@ -198,6 +246,7 @@ pub(super) fn write_regular<P: Platform>(
                 Ok(done) => done,
                 Err(error) => return partial(written, refused(error)),
             };
+            vfs::shared_pages::wrote(node, reached - count as u64, &chunk[..count]);
             offset = reached;
             if at.is_none() {
                 file.set_offset(reached);
@@ -231,7 +280,14 @@ pub fn pwrite64<P: Platform>(
         return Err(Errno::EBADF);
     }
     let node = match file.kind() {
-        FileKind::Console | FileKind::Pipe(_) | FileKind::Socket(_) => return Err(Errno::ESPIPE),
+        FileKind::Console
+        | FileKind::PseudoTerminal(_)
+        | FileKind::Pipe(_)
+        | FileKind::Socket(_)
+        | FileKind::InetSocket(_)
+        | FileKind::Event(_) => {
+            return Err(Errno::ESPIPE);
+        }
         FileKind::Regular(node) => *node,
         FileKind::MemoryFile(memory) => {
             if !super::ends_in_user_space::<P>(buffer, count) {
@@ -239,6 +295,13 @@ pub fn pwrite64<P: Platform>(
             }
             let buffers = Iovecs::one(buffer, count);
             return super::memfd::write(process, &file, memory, &buffers, Some(offset));
+        }
+        FileKind::MemoryDevice(device, _) => {
+            if !super::ends_in_user_space::<P>(buffer, count) {
+                return Err(Errno::EFAULT);
+            }
+            let buffers = core::iter::once((buffer, count));
+            return super::memory_devices::write(process, *device, buffers);
         }
         _ => return Err(Errno::EBADF),
     };
@@ -276,8 +339,10 @@ pub fn ftruncate<P: Platform>(thread: &LinuxThread, fd: u64, length: u64) -> Res
     }
     node.file_system()
         .truncate(node.id(), length, now::<P>())
-        .map(|()| 0)
-        .map_err(refused)
+        .map_err(refused)?;
+    vfs::shared_pages::truncated(*node, length);
+    inotify::changed(*node, watched::MODIFY);
+    Ok(0)
 }
 
 /// `mkdirat(dirfd, path, mode)`: makes a directory. As Linux: the path's errors, `EEXIST` if
@@ -309,8 +374,9 @@ pub fn mkdirat<P: Platform>(
             permissions,
             now::<P>(),
         )
-        .map(|_| 0)
-        .map_err(refused)
+        .map_err(refused)?;
+    inotify::created(directory, name, true);
+    Ok(0)
 }
 
 /// `unlinkat(dirfd, path, flags)`: removes a file, or with `AT_REMOVEDIR` an empty directory.
@@ -343,15 +409,20 @@ pub fn unlinkat<P: Platform>(
     {
         return Err(Errno::EBUSY);
     }
+    let watching = inotify::watching();
+    let last_name = watching && target.attributes().links <= 1;
     directory
         .file_system()
         .remove(directory.id(), name, directories, now::<P>())
-        .map(|()| 0)
         .map_err(|error| match (error, directories) {
             (Refused::ReadOnly, _) => Errno::EROFS,
             (Refused::IsDirectory, false) => Errno::EISDIR,
             (error, _) => refused(error),
-        })
+        })?;
+    if watching {
+        inotify::removed(directory, name, target, last_name);
+    }
+    Ok(0)
 }
 
 /// `renameat2(olddirfd, oldpath, newdirfd, newpath, flags)`: moves a name, replacing what the
@@ -384,6 +455,18 @@ pub fn renameat2<P: Platform>(
     {
         return Err(Errno::EBUSY);
     }
+    let no_replace = flags & RENAME_NOREPLACE != 0;
+    rename_reported(from, from_name, to, to_name, no_replace, now::<P>()).map(|()| 0)
+}
+
+fn rename_reported(
+    from: Node,
+    from_name: &[u8],
+    to: Node,
+    to_name: &[u8],
+    no_replace: bool,
+    now: u64,
+) -> Result<(), Errno> {
     let moved = from.lookup(from_name).map_err(walk_error)?;
     let file_system = from.file_system();
     if !core::ptr::addr_eq(file_system, to.file_system())
@@ -391,17 +474,207 @@ pub fn renameat2<P: Platform>(
     {
         return Err(Errno::EXDEV);
     }
+    let replaced = match inotify::watching() && !no_replace {
+        true => to
+            .lookup(to_name)
+            .ok()
+            .filter(|replaced| *replaced != moved)
+            .map(|replaced| (replaced, replaced.attributes().links <= 1)),
+        false => None,
+    };
     file_system
-        .rename(
-            from.id(),
-            from_name,
-            to.id(),
-            to_name,
-            flags & RENAME_NOREPLACE != 0,
-            now::<P>(),
-        )
-        .map(|()| 0)
-        .map_err(refused)
+        .rename(from.id(), from_name, to.id(), to_name, no_replace, now)
+        .map_err(refused)?;
+    inotify::moved(from, from_name, to, to_name, moved);
+    if let Some((replaced, last_name)) = replaced {
+        inotify::replaced(replaced, last_name);
+    }
+    Ok(())
+}
+
+/// `symlinkat(target, newdirfd, linkpath)`: makes `linkpath` a symbolic link whose target is
+/// the text `target` (D170; `symlink` on x86_64 from the working directory). As Linux: the
+/// paths' errors (`ENOENT` for an empty target or link path), `EEXIST` if the name is taken
+/// (a dangling link included), `EROFS` on a file system that cannot be changed, `EPERM` on one
+/// that cannot hold a link (FAT), `ENOSPC`.
+pub fn symlinkat<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    target: u64,
+    dirfd: u64,
+    path: u64,
+) -> Result<u64, Errno> {
+    let mut target_buffer = PathBuffer::uninit();
+    let target = read_path(process, target, &mut target_buffer)?;
+    if target.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+    let mut buffer = PathBuffer::uninit();
+    let (directory, name) =
+        match parent_and_name_at(process, thread, dirfd, path, &mut buffer, true) {
+            Ok(found) => found,
+            Err(Errno::EBUSY) => return Err(Errno::EEXIST),
+            Err(error) => return Err(error),
+        };
+    if matches!(name, b"." | b"..") || directory.lookup(name).is_ok() {
+        return Err(Errno::EEXIST);
+    }
+    let file_system = directory.file_system();
+    if !file_system.is_writable() {
+        return Err(Errno::EROFS);
+    }
+    file_system
+        .symlink(directory.id(), name, target, now::<P>())
+        .map_err(|error| match error {
+            Refused::ReadOnly | Refused::InvalidArgument => Errno::EPERM,
+            error => refused(error),
+        })?;
+    inotify::created(directory, name, false);
+    Ok(0)
+}
+
+/// `linkat(olddirfd, oldpath, newdirfd, newpath, flags)`: gives the file `olddirfd` and
+/// `oldpath` name the new name `newpath` too (a hard link, D170; `link` on x86_64). The old
+/// path's last link is the file linked unless `AT_SYMLINK_FOLLOW`; `AT_EMPTY_PATH` with an
+/// empty old path links `olddirfd`'s own file. As Linux: `EINVAL` for another flag, the paths'
+/// errors, `EEXIST` if the new name is taken, `EXDEV` across file systems, `EPERM` for a
+/// directory or on a file system that cannot hold another name (FAT), `EROFS` on one that
+/// cannot be changed, `EMLINK` for a file with as many names as it may have, `ENOENT` for a
+/// file whose last name went while it was open.
+pub fn linkat<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    old_dirfd: u64,
+    old_path: u64,
+    new_dirfd: u64,
+    new_path: u64,
+    flags: u64,
+) -> Result<u64, Errno> {
+    use super::stat::at;
+    if flags & !(AT_SYMLINK_FOLLOW | at::EMPTY_PATH) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let caller = process.id().get();
+    let mut old_buffer = PathBuffer::uninit();
+    let old = read_path(process, old_path, &mut old_buffer)?;
+    let node = if old.is_empty() {
+        if flags & at::EMPTY_PATH == 0 {
+            return Err(Errno::ENOENT);
+        }
+        let file = thread.files().file(old_dirfd)?;
+        file.kind().node().ok_or(Errno::ENOENT)?
+    } else {
+        let (root, start) = starting_points(thread, old_dirfd, old)?;
+        vfs::resolve_as(root, start, old, caller, flags & AT_SYMLINK_FOLLOW != 0)
+            .map_err(walk_error)?
+    };
+    let mut new_buffer = PathBuffer::uninit();
+    let (directory, name) =
+        match parent_and_name_at(process, thread, new_dirfd, new_path, &mut new_buffer, true) {
+            Ok(found) => found,
+            Err(Errno::EBUSY) => return Err(Errno::EEXIST),
+            Err(error) => return Err(error),
+        };
+    if matches!(name, b"." | b"..") || directory.lookup(name).is_ok() {
+        return Err(Errno::EEXIST);
+    }
+    let file_system = directory.file_system();
+    if !core::ptr::addr_eq(file_system, node.file_system()) {
+        return Err(Errno::EXDEV);
+    }
+    if node.is_directory() {
+        return Err(Errno::EPERM);
+    }
+    if !file_system.is_writable() {
+        return Err(Errno::EROFS);
+    }
+    file_system
+        .link(node.id(), directory.id(), name, now::<P>())
+        .map_err(|error| match error {
+            Refused::ReadOnly => Errno::EPERM,
+            error => refused(error),
+        })?;
+    inotify::created(directory, name, false);
+    inotify::changed(node, watched::ATTRIB);
+    Ok(0)
+}
+
+/// `fchmodat2(dirfd, path, mode, flags)`: sets the permission bits of the file `dirfd` and
+/// `path` name to `mode & 07777` (D170; `fchmodat` is this with no flags, `chmod` on x86_64
+/// from the working directory). `AT_SYMLINK_NOFOLLOW` acts on a last link itself, which has no
+/// mode of its own: `EOPNOTSUPP`, as Linux; `AT_EMPTY_PATH` with an empty path acts on
+/// `dirfd`'s own file. As Linux: `EINVAL` for another flag, the path's errors, `EPERM` unless
+/// the caller's file system user id owns the file or is root's, `EROFS` on a file system that
+/// cannot be changed.
+pub fn fchmodat2<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    dirfd: u64,
+    path: u64,
+    mode: u64,
+    flags: u64,
+) -> Result<u64, Errno> {
+    use super::stat::at;
+    if flags & !(at::SYMLINK_NOFOLLOW | at::EMPTY_PATH) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let mut buffer = PathBuffer::uninit();
+    let path = read_path(process, path, &mut buffer)?;
+    let node = if path.is_empty() {
+        if flags & at::EMPTY_PATH == 0 {
+            return Err(Errno::ENOENT);
+        }
+        let file = thread.files().file(dirfd)?;
+        file.kind().node().ok_or(Errno::EBADF)?
+    } else {
+        let (root, start) = starting_points(thread, dirfd, path)?;
+        let follow_last = flags & at::SYMLINK_NOFOLLOW == 0;
+        vfs::resolve_as(root, start, path, process.id().get(), follow_last).map_err(walk_error)?
+    };
+    change_mode(process, node, mode)
+}
+
+/// `fchmod(fd, mode)`: [`fchmodat2`] on the file `fd` is open on; a descriptor that names no
+/// node (a pipe, a socket, a memory file) keeps no mode, so nothing changes. As Linux: `EBADF`
+/// for a descriptor not open or `O_PATH`.
+pub fn fchmod<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    fd: u64,
+    mode: u64,
+) -> Result<u64, Errno> {
+    let file = thread.files().file(fd)?;
+    if file.is_location_only() {
+        return Err(Errno::EBADF);
+    }
+    match file.kind().node() {
+        Some(node) => change_mode(process, node, mode),
+        None => Ok(0),
+    }
+}
+
+fn change_mode<P: Platform>(process: &Process<P>, node: Node, mode: u64) -> Result<u64, Errno> {
+    if node.kind() == NodeKind::SymbolicLink {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let user = process
+        .credentials_and_limits()
+        .lock()
+        .credentials
+        .ids(super::credentials::Kind::User)
+        .filesystem;
+    if user != 0 && user != node.attributes().owner {
+        return Err(Errno::EPERM);
+    }
+    let file_system = node.file_system();
+    if !file_system.is_writable() {
+        return Err(Errno::EROFS);
+    }
+    file_system
+        .set_permissions(node.id(), mode as u32 & 0o7777)
+        .map_err(refused)?;
+    inotify::changed(node, watched::ATTRIB);
+    Ok(0)
 }
 
 /// `utimensat(dirfd, path, times, flags)`: sets when a file last changed, the second of the
@@ -456,8 +729,9 @@ pub fn utimensat<P: Platform>(
     };
     node.file_system()
         .set_modified(node.id(), modified)
-        .map(|()| 0)
-        .map_err(refused)
+        .map_err(refused)?;
+    inotify::changed(node, watched::ATTRIB);
+    Ok(0)
 }
 
 /// `sync()`: puts every file system's changes on stable storage. As Linux, it cannot fail.
@@ -477,8 +751,10 @@ pub fn fsync(thread: &LinuxThread, fd: u64) -> Result<u64, Errno> {
         FileKind::MemoryFile(_) => return Ok(0),
         kind => kind.node().ok_or(Errno::EINVAL)?,
     };
+    let written = vfs::shared_pages::write_back(node);
     node.file_system()
         .sync()
+        .and(written)
         .map(|()| 0)
         .map_err(|_| Errno::EIO)
 }
@@ -506,6 +782,7 @@ mod tests {
     use super::*;
     use crate::vfs::tmpfs::{Budget, Tmpfs};
     use alloc::boxed::Box;
+    use alloc::vec::Vec;
 
     fn tmpfs() -> Node {
         let budget = Box::leak(Box::new(Budget::new(1 << 20)));
@@ -519,28 +796,31 @@ mod tests {
         let fs = root.file_system();
         fs.create(root.id(), b"d", NodeKind::Directory, 0o755, 0)
             .unwrap();
-        let (directory, name) = parent_and_name(root, root, b"/d/x//", false).unwrap();
+        let (directory, name) = parent_and_name(root, root, b"/d/x//", false, 0).unwrap();
         assert_eq!((directory, name), (root.lookup(b"d").unwrap(), &b"x"[..]));
         assert_eq!(
-            parent_and_name(root, root, b"x", false).unwrap(),
+            parent_and_name(root, root, b"x", false, 0).unwrap(),
             (root, &b"x"[..])
         );
-        assert_eq!(parent_and_name(root, root, b"/", false), Err(Errno::EBUSY));
         assert_eq!(
-            parent_and_name(root, root, b"d/..", false),
+            parent_and_name(root, root, b"/", false, 0),
+            Err(Errno::EBUSY)
+        );
+        assert_eq!(
+            parent_and_name(root, root, b"d/..", false, 0),
             Err(Errno::ENOENT)
         );
         assert_eq!(
-            parent_and_name(root, root, b"d/..", true).unwrap(),
+            parent_and_name(root, root, b"d/..", true, 0).unwrap(),
             (root.lookup(b"d").unwrap(), &b".."[..])
         );
         assert_eq!(
-            parent_and_name(root, root, b"/missing/x", false),
+            parent_and_name(root, root, b"/missing/x", false, 0),
             Err(Errno::ENOENT)
         );
         let long = [b'a'; NAME_MAX + 1];
         assert_eq!(
-            parent_and_name(root, root, &long, false),
+            parent_and_name(root, root, &long, false, 0),
             Err(Errno::ENAMETOOLONG)
         );
     }
@@ -551,5 +831,54 @@ mod tests {
         assert_eq!(refused(Refused::NotEmpty), Errno::ENOTEMPTY);
         assert_eq!(refused(Refused::ReadOnly), Errno::EROFS);
         assert_eq!(refused(Refused::TooBig), Errno::EFBIG);
+    }
+
+    #[test]
+    fn an_open_file_description_keeps_a_removed_file_until_it_is_dropped() {
+        let root = tmpfs();
+        let fs = root.file_system();
+        let id = fs
+            .create(root.id(), b"f", NodeKind::Regular, 0o644, 0)
+            .unwrap();
+        fs.write(id, WriteAt::End, b"kept", 0).unwrap();
+        let node = root.lookup(b"f").unwrap();
+        let file = OpenFile::new(FileKind::Regular(node), open_flag::RDONLY);
+        fs.remove(root.id(), b"f", false, 1).unwrap();
+        let mut buffer = [0u8; 8];
+        assert_eq!(fs.read_into(id, 0, &mut buffer), Ok(4));
+        assert_eq!(&buffer[..4], b"kept");
+        drop(file);
+        assert_eq!(fs.read_into(id, 0, &mut buffer), Ok(0));
+        assert_eq!(fs.attributes(id).links, 0);
+    }
+
+    #[test]
+    fn a_rename_over_a_watched_file_ends_its_watch_as_its_last_name_goes() {
+        let root = tmpfs();
+        let fs = root.file_system();
+        for name in [&b"note.txt"[..], b"note.tmp"] {
+            fs.create(root.id(), name, NodeKind::Regular, 0o644, 0)
+                .unwrap();
+        }
+        let note = root.lookup(b"note.txt").unwrap();
+        let instance = inotify::Inotify::new();
+        let wanted = watched::ATTRIB | watched::DELETE_SELF | watched::MOVE_SELF;
+        let descriptor = instance.add_watch(note, wanted).unwrap();
+        rename_reported(root, b"note.tmp", root, b"note.txt", false, 2).unwrap();
+        let bytes = instance.take(4096).unwrap().unwrap();
+        let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+        let records: Vec<(i32, u32)> = (0..bytes.len() / inotify::EVENT_SIZE)
+            .map(|index| index * inotify::EVENT_SIZE)
+            .map(|at| (word(at) as i32, word(at + 4)))
+            .collect();
+        assert_eq!(
+            records,
+            [
+                (descriptor, watched::ATTRIB),
+                (descriptor, watched::DELETE_SELF),
+                (descriptor, watched::IGNORED),
+            ]
+        );
+        assert_eq!(instance.remove_watch(descriptor), Err(Errno::EINVAL));
     }
 }

@@ -1,46 +1,93 @@
+use crate::agent::duration_seconds;
+use crate::options::wants_json;
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use core::ffi::CStr;
+use eggos_commands::{commands, errors};
 use eggos_files::clock::deletion_date;
-use eggos_mcp::audit::{self, Outcome, Record};
+use eggos_mcp::audit::calls::{self, CallRow, CallRows, LINE_BYTES, LogFiles};
+use eggos_mcp::audit::{self, Filter, Outcome, Record};
+use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
 
-const USAGE: &[u8] = b"usage: agentlog [-n <count>] [--raw]";
+const USAGE: &[u8] = b"usage: agentlog [-n <count>] [--agent <id>] [--tool <name>] \
+    [--outcome <result>] [--since <time>] [--raw | --json]";
 const USAGE_STATUS: i32 = 2;
-const LOGS: [&CStr; 8] = [
-    c"/var/log/agent-audit.log.7",
-    c"/var/log/agent-audit.log.6",
-    c"/var/log/agent-audit.log.5",
-    c"/var/log/agent-audit.log.4",
-    c"/var/log/agent-audit.log.3",
-    c"/var/log/agent-audit.log.2",
-    c"/var/log/agent-audit.log.1",
-    c"/var/log/agent-audit.log",
+const HEADER: &[u8] = b"TIME  AGENT  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL\n";
+const JSON_RECORD_BYTES: usize = 4 * 7 * audit::FIELD_BYTES + 512;
+const FILTER_OPTIONS: [(&[u8], FilterOption); 4] = [
+    (b"--agent", FilterOption::Agent),
+    (b"--tool", FilterOption::Tool),
+    (b"--outcome", FilterOption::Outcome),
+    (b"--since", FilterOption::Since),
 ];
-const LINE_BYTES: usize = 4096;
-const CHUNK: usize = 4096;
-const HEADER: &[u8] = b"TIME  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Rows,
     Raw,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilterOption {
+    Agent,
+    Tool,
+    Outcome,
+    Since,
+}
+
+impl FilterOption {
+    fn takes(self) -> &'static [u8] {
+        match self {
+            FilterOption::Agent => b"--agent takes an agent's id",
+            FilterOption::Tool => b"--tool takes a tool's name",
+            FilterOption::Outcome => {
+                b"--outcome takes server-start, server-restart, initialize, disconnected, \
+                  asked, started, ok, error or refused"
+            }
+            FilterOption::Since => {
+                b"--since takes a time ago (30s, 15m, 2h or 7d) or a date and time in UTC \
+                  (2026-10-31 09:00)"
+            }
+        }
+    }
 }
 
 pub fn agentlog<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut mode = Mode::Rows;
     let mut last = None;
+    let mut filter = Filter::default();
     let mut index = 0;
+    if wants_json(&commands::AGENTLOG, arguments) {
+        output.use_json();
+    }
     while let Some(argument) = arguments.get(index) {
+        if let Some((option, attached)) = filter_option(argument.to_bytes()) {
+            let value = match attached {
+                Some(value) => Some(value),
+                None => {
+                    index += 1;
+                    arguments.get(index).map(|value| value.to_bytes())
+                }
+            };
+            if !value.is_some_and(|value| narrow(output, &mut filter, option, value)) {
+                output.coded(&errors::USAGE, &[option.takes()]);
+                return USAGE_STATUS;
+            }
+            index += 1;
+            continue;
+        }
         match argument.to_bytes() {
             b"--raw" => mode = Mode::Raw,
+            b"--json" => mode = Mode::Json,
             b"-n" => {
                 index += 1;
                 let Some(count) = arguments
                     .get(index)
                     .and_then(|count| number(count.to_bytes()))
                 else {
-                    output.error(&[USAGE]);
+                    output.coded(&errors::USAGE, &[USAGE]);
                     return USAGE_STATUS;
                 };
                 last = Some(count);
@@ -48,23 +95,23 @@ pub fn agentlog<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             bytes if bytes.starts_with(b"-n") => match number(&bytes[2..]) {
                 Some(count) => last = Some(count),
                 None => {
-                    output.error(&[USAGE]);
+                    output.coded(&errors::USAGE, &[USAGE]);
                     return USAGE_STATUS;
                 }
             },
             bytes if bytes.starts_with(b"-") => {
                 output.invalid_option(bytes);
-                output.error(&[USAGE]);
+                output.coded(&errors::USAGE, &[USAGE]);
                 return USAGE_STATUS;
             }
             _ => {
-                output.error(&[USAGE]);
+                output.coded(&errors::USAGE, &[USAGE]);
                 return USAGE_STATUS;
             }
         }
         index += 1;
     }
-    let total = match each_row(output, mode, &mut |_, _| {}) {
+    let total = match each_row(output, mode, &filter, &mut |_, _| {}) {
         Ok(total) => total,
         Err(status) => return status,
     };
@@ -73,7 +120,7 @@ pub fn agentlog<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         output.write(HEADER);
     }
     let mut seen = 0;
-    match each_row(output, mode, &mut |output, row| {
+    match each_row(output, mode, &filter, &mut |output, row| {
         if seen >= skip {
             output.write(row);
         }
@@ -91,117 +138,161 @@ fn number(bytes: &[u8]) -> Option<usize> {
     core::str::from_utf8(bytes).ok()?.parse().ok()
 }
 
-struct Pending {
-    line: [u8; LINE_BYTES],
-    length: usize,
+fn filter_option(argument: &[u8]) -> Option<(FilterOption, Option<&[u8]>)> {
+    FILTER_OPTIONS
+        .iter()
+        .find_map(|&(name, option)| match argument.strip_prefix(name)? {
+            [] => Some((option, None)),
+            [b'=', value @ ..] => Some((option, Some(value))),
+            _ => None,
+        })
 }
 
-impl Pending {
-    fn record(&self) -> Option<Record<'_>> {
-        (self.length > 0)
-            .then(|| audit::parse_line(&self.line[..self.length]))
-            .flatten()
+fn narrow<'f, S: System>(
+    output: &mut Output<S>,
+    filter: &mut Filter<'f>,
+    option: FilterOption,
+    value: &'f [u8],
+) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    match option {
+        FilterOption::Agent => filter.agent = Some(value),
+        FilterOption::Tool => filter.tool = Some(value),
+        FilterOption::Outcome => match Outcome::from_word(value) {
+            Some(outcome) => filter.outcome = Some(outcome),
+            None => return false,
+        },
+        FilterOption::Since => match since(output.system.now(), value) {
+            Some(seconds) => filter.since = Some(seconds),
+            None => return false,
+        },
+    }
+    true
+}
+
+fn since(now: u64, text: &[u8]) -> Option<u64> {
+    if let Some(ago) = duration_seconds(text) {
+        return Some(now.saturating_sub(ago));
+    }
+    let text = core::str::from_utf8(text).ok()?;
+    let moment = eggos_calendar::parse_setting(text, i64::try_from(now).ok()?).ok()?;
+    u64::try_from(moment).ok()
+}
+
+impl<S: System> LogFiles for Output<S> {
+    fn open_log(&mut self, path: &CStr) -> Result<usize, Errno> {
+        self.system.open(path)
+    }
+
+    fn read_log(&mut self, descriptor: usize, out: &mut [u8]) -> Result<usize, Errno> {
+        self.system.read(descriptor, out)
+    }
+
+    fn close_log(&mut self, descriptor: usize) {
+        self.system.close(descriptor);
     }
 }
 
 fn each_row<S: System>(
     output: &mut Output<S>,
     mode: Mode,
+    filter: &Filter<'_>,
     row: &mut dyn FnMut(&mut Output<S>, &[u8]),
 ) -> Result<usize, i32> {
     let mut rows = 0;
-    let mut pending = Pending {
-        line: [0; LINE_BYTES],
-        length: 0,
-    };
+    let mut calls = CallRows::new();
     let mut text = [0u8; LINE_BYTES * 2];
-    for log in LOGS {
-        let descriptor = match output.system.open(log) {
-            Ok(descriptor) => descriptor,
-            Err(Errno::ENOENT) => continue,
-            Err(errno) => {
-                output.file_error(log, errno);
-                return Err(FAILURE);
-            }
+    let read = calls::each_line(output, &mut |output, line| {
+        let view = View {
+            mode,
+            filter,
+            calls: &mut calls,
+            text: &mut text,
         };
-        let mut line = [0u8; LINE_BYTES];
-        let mut length = 0;
-        let mut too_long = false;
-        let mut chunk = [0u8; CHUNK];
-        loop {
-            let count = match output.system.read(descriptor, &mut chunk) {
-                Ok(0) => break,
-                Ok(count) => count,
-                Err(errno) => {
-                    output.system.close(descriptor);
-                    output.file_error(log, errno);
-                    return Err(FAILURE);
-                }
-            };
-            for &byte in &chunk[..count] {
-                if byte != b'\n' {
-                    match line.get_mut(length) {
-                        Some(slot) => {
-                            *slot = byte;
-                            length += 1;
-                        }
-                        None => too_long = true,
-                    }
-                    continue;
-                }
-                if !too_long {
-                    rows += take_line(output, mode, &line[..length], &mut pending, &mut text, row);
-                }
-                length = 0;
-                too_long = false;
-            }
-        }
-        output.system.close(descriptor);
+        rows += take_line(output, view, line, row);
+    });
+    if let Err(error) = read {
+        output.file_error(error.path, error.errno);
+        return Err(FAILURE);
     }
-    if let Some(record) = pending.record() {
-        let shown = format_row(&record, Some(b"interrupted"), &mut text);
+    rows += calls.finish(filter, &mut |call| {
+        let shown = format_row(call, &mut text);
         row(output, &text[..shown]);
-        rows += 1;
-    }
+    });
     Ok(rows)
+}
+
+struct View<'v, 'f> {
+    mode: Mode,
+    filter: &'v Filter<'f>,
+    calls: &'v mut CallRows,
+    text: &'v mut [u8],
 }
 
 fn take_line<S: System>(
     output: &mut Output<S>,
-    mode: Mode,
+    view: View<'_, '_>,
     line: &[u8],
-    pending: &mut Pending,
-    text: &mut [u8],
     row: &mut dyn FnMut(&mut Output<S>, &[u8]),
 ) -> usize {
+    let View {
+        mode,
+        filter,
+        calls,
+        text,
+    } = view;
+    if mode == Mode::Rows {
+        return calls.take(line, filter, &mut |call| {
+            let shown = format_row(call, text);
+            row(output, &text[..shown]);
+        });
+    }
     let Some(record) = audit::parse_line(line) else {
         return 0;
     };
-    if mode == Mode::Raw {
-        let shown = format_raw(line, text);
-        row(output, &text[..shown]);
+    if !filter.matches(&record) {
+        return 0;
+    }
+    if mode == Mode::Json {
+        let mut record_text = [0u8; JSON_RECORD_BYTES];
+        let shown = format_json(&record, &mut record_text);
+        row(output, &record_text[..shown]);
         return 1;
     }
-    let mut rows = 0;
-    let continues = pending.record().is_some_and(|open| {
-        open.call == record.call
-            && (record.outcome.ends_a_call()
-                || (open.outcome == Outcome::Asked && record.outcome == Outcome::Started))
-    });
-    if !continues && let Some(open) = pending.record() {
-        let shown = format_row(&open, Some(b"interrupted"), text);
-        row(output, &text[..shown]);
-        rows += 1;
-    }
-    if matches!(record.outcome, Outcome::Asked | Outcome::Started) {
-        pending.line[..line.len()].copy_from_slice(line);
-        pending.length = line.len();
-        return rows;
-    }
-    pending.length = 0;
-    let shown = format_row(&record, None, text);
+    let shown = format_raw(line, text);
     row(output, &text[..shown]);
-    rows + 1
+    1
+}
+
+fn format_json(record: &Record<'_>, text: &mut [u8]) -> usize {
+    let mut out = JsonWriter::new(text);
+    out.begin_object();
+    out.key("called_at");
+    match eggos_calendar::rfc3339(i64::try_from(record.time).unwrap_or(i64::MAX)) {
+        Some(stamp) => out.string_lossy(&stamp),
+        None => out.null(),
+    }
+    out.key("call");
+    out.u64(record.call);
+    for (key, value) in [
+        ("agent", record.agent),
+        ("client", record.client),
+        ("tool", record.tool),
+        ("result", record.outcome.word().as_bytes()),
+        ("arguments", record.arguments),
+        ("detail", record.detail),
+    ] {
+        out.key(key);
+        out.string_lossy(value);
+    }
+    out.end_object();
+    out.end_line();
+    match out.overflowed() {
+        true => 0,
+        false => out.len(),
+    }
 }
 
 fn format_raw(line: &[u8], text: &mut [u8]) -> usize {
@@ -226,11 +317,13 @@ fn put(text: &mut [u8], at: usize, bytes: &[u8]) -> usize {
     }
 }
 
-fn format_row(record: &Record<'_>, result: Option<&[u8]>, text: &mut [u8]) -> usize {
+fn format_row(call: &CallRow<'_>, text: &mut [u8]) -> usize {
+    let record = &call.record;
     let stamp = deletion_date(record.time);
     let mut length = put(text, 0, stamp.as_str().as_bytes());
-    let result = result.unwrap_or(record.outcome.word().as_bytes());
+    let result = call.result().as_bytes();
     for field in [
+        record.agent,
         record.client,
         record.tool,
         result,
@@ -274,15 +367,43 @@ mod tests {
     }
 
     #[test]
+    fn json_writes_one_record_per_line_of_the_log() {
+        let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
+        assert_eq!(run(&mut fake, &[c"--json", c"-n", c"2"]), 0);
+        let output = fake.output();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "{\"called_at\":\"1970-01-01T00:00:06Z\",\"call\":0,\"agent\":\"local\",\
+                 \"client\":\"-\",\"tool\":\"-\",\"result\":\"server-restart\",\
+                 \"arguments\":\"\",\"detail\":\"0.2.0\"}",
+                "{\"called_at\":\"1970-01-01T00:00:07Z\",\"call\":1,\"agent\":\"local\",\
+                 \"client\":\"unknown (restarted)\",\"tool\":\"ls\",\"result\":\"started\",\
+                 \"arguments\":\"{}\",\"detail\":\"/home\"}",
+            ]
+        );
+        assert_eq!(run(&mut fake, &[c"--json", c"--bad"]), 2);
+        assert!(
+            fake.errors().contains("\"code\":\"usage\""),
+            "{}",
+            fake.errors()
+        );
+    }
+
+    #[test]
     fn calls_are_one_row_each_and_unfinished_ones_are_interrupted() {
         let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
         assert_eq!(run(&mut fake, &[]), 0);
         let output = fake.output();
         let lines: Vec<&str> = output.lines().collect();
-        assert!(lines[0].starts_with("TIME"));
+        assert_eq!(
+            lines[0],
+            "TIME  AGENT  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL"
+        );
         assert_eq!(lines.len(), 1 + 7);
         assert!(lines[1].contains("server-start"));
-        assert!(lines[2].contains("claude-code  -  initialize"));
+        assert!(lines[2].contains("  local  claude-code  -  initialize"));
         assert!(lines[3].contains("cat  ok  {\"path\":\"/home/a\"}  exit status 0, 5 bytes"));
         assert!(lines[4].contains("cat  refused"));
         assert!(lines[5].contains("ps  interrupted"));
@@ -391,6 +512,81 @@ mod tests {
             assert!(output.contains("after the long field"), "{arguments:?}");
             assert!(output.lines().all(|row| row.len() < 2 * LINE_BYTES));
         }
+    }
+
+    fn agents_log() -> String {
+        [
+            "1699990000\t1\tlocal\tclaude-code\tcat\tok\t{\"path\":\"/home/a\"}\tlong ago",
+            "1699999500\t2\tphone\tphone-app\tcat\tstarted\t{\"path\":\"/home/b\"}\t",
+            "1699999501\t2\tphone\tphone-app\tcat\tok\t{\"path\":\"/home/b\"}\tphone read",
+            "1699999600\t3\tphone\tphone-app\ttee\trefused\t{\"path\":\"/home/c\"}\ttaken back",
+            "1699999700\t4\tlocal\tclaude-code\tps\tstarted\t{}\t",
+        ]
+        .join("\n")
+            + "\n"
+    }
+
+    fn rows(arguments: &[&CStr]) -> Vec<String> {
+        let mut fake = Fake::default().with_file(LOG, 0o640, agents_log().as_bytes(), 0);
+        assert_eq!(run(&mut fake, arguments), 0, "{}", fake.errors());
+        fake.output().lines().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn rows_name_the_agent_and_filters_narrow_them() {
+        let all = rows(&[]);
+        assert_eq!(all.len(), 1 + 4, "{all:?}");
+        assert!(all[2].contains("  phone  phone-app  cat  ok"), "{all:?}");
+        let phone = rows(&[c"--agent", c"phone"]);
+        assert_eq!(phone.len(), 1 + 2, "{phone:?}");
+        assert!(phone[1..].iter().all(|row| row.contains("  phone  ")));
+        assert_eq!(rows(&[c"--agent=local", c"--tool", c"cat"]).len(), 1 + 1);
+        let refused = rows(&[c"--outcome", c"refused"]);
+        assert_eq!(refused.len(), 1 + 1, "{refused:?}");
+        assert!(refused[1].contains("tee  refused") && refused[1].contains("taken back"));
+        let interrupted = rows(&[c"--outcome=started"]);
+        assert_eq!(interrupted.len(), 1 + 1, "{interrupted:?}");
+        assert!(interrupted[1].contains("ps  interrupted"));
+        assert!(rows(&[c"--agent", c"tablet"]).is_empty());
+    }
+
+    #[test]
+    fn since_takes_a_time_ago_or_a_date_and_time() {
+        let recent = rows(&[c"--since", c"1h"]);
+        assert_eq!(recent.len(), 1 + 3, "{recent:?}");
+        assert!(recent.iter().all(|row| !row.contains("long ago")));
+        assert_eq!(rows(&[c"--since=2023-11-14 22:00"]), recent);
+        assert_eq!(rows(&[c"--since", c"2023-11-14T22:00:00Z"]), recent);
+        assert_eq!(rows(&[c"--since", c"7d"]).len(), 1 + 4);
+    }
+
+    #[test]
+    fn filters_apply_to_raw_and_json_records() {
+        let raw = rows(&[c"--raw", c"--agent", c"phone"]);
+        assert_eq!(raw.len(), 3, "{raw:?}");
+        assert!(raw.iter().all(|line| line.contains("\tphone\t")));
+        let json = rows(&[c"--json", c"--outcome", c"ok", c"--tool", c"cat"]);
+        assert_eq!(json.len(), 2, "{json:?}");
+        assert!(json[1].contains("\"agent\":\"phone\",\"client\":\"phone-app\""));
+        assert_eq!(rows(&[c"--agent", c"phone", c"-n", c"1"]).len(), 1 + 1);
+    }
+
+    #[test]
+    fn a_filter_without_a_good_value_is_a_usage_error() {
+        for (arguments, wanted) in [
+            (&[c"--agent"][..], "--agent takes"),
+            (&[c"--agent="][..], "--agent takes"),
+            (&[c"--outcome", c"maybe"][..], "--outcome takes"),
+            (&[c"--since", c"yesterday"][..], "--since takes"),
+            (&[c"--since", c"0s"][..], "--since takes"),
+        ] {
+            let mut fake = Fake::default();
+            assert_eq!(run(&mut fake, arguments), USAGE_STATUS, "{arguments:?}");
+            assert!(fake.errors().contains(wanted), "{}", fake.errors());
+        }
+        let mut fake = Fake::default();
+        assert_eq!(run(&mut fake, &[c"--agents", c"phone"]), USAGE_STATUS);
+        assert!(fake.errors().contains("unrecognized option '--agents'"));
     }
 
     #[test]

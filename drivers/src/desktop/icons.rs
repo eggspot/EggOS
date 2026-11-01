@@ -92,6 +92,8 @@ pub enum Icon<'a> {
     Settings,
     /// An off-white page with grey lines and the yolk caret: the Text Editor (D149).
     TextEditor,
+    /// Three yolk bars on the generic tile: the Task Manager (D200).
+    TaskManager,
     /// A folder with a grey front: the host's shared folder.
     HostShare,
     /// A tile with `letter` (`A`-`Z`, `0`-`9` or `?`) and, for an installed app, the badge of
@@ -212,6 +214,32 @@ const TEXT_EDITOR_LARGE: [Shape; 7] = [
     Shape::Fill(rect(14, 27, 20, 2), colour::ICON_PAGE_LINE),
     Shape::Fill(rect(14, 33, 10, 2), colour::ICON_PAGE_LINE),
     Shape::Fill(rect(26, 30, 2, 8), colour::ACCENT),
+];
+
+const TASK_MANAGER_LARGE: [Shape; 5] = [
+    Shape::Tile(
+        rect(0, 0, 48, 48),
+        Corners::R6,
+        colour::ICON_TILE,
+        colour::ICON_TILE_BORDER,
+    ),
+    Shape::Fill(rect(11, 26, 7, 12), colour::ACCENT),
+    Shape::Fill(rect(21, 12, 7, 26), colour::ACCENT),
+    Shape::Fill(rect(31, 20, 7, 18), colour::ACCENT),
+    Shape::Fill(rect(9, 40, 30, 2), colour::ICON_PAGE_LINE),
+];
+
+const TASK_MANAGER_SMALL: [Shape; 5] = [
+    Shape::Tile(
+        rect(0, 0, 32, 32),
+        Corners::R4,
+        colour::ICON_TILE,
+        colour::ICON_TILE_BORDER,
+    ),
+    Shape::Fill(rect(7, 17, 5, 8), colour::ACCENT),
+    Shape::Fill(rect(14, 8, 5, 17), colour::ACCENT),
+    Shape::Fill(rect(21, 13, 5, 12), colour::ACCENT),
+    Shape::Fill(rect(5, 27, 22, 2), colour::ICON_PAGE_LINE),
 ];
 
 const TEXT_EDITOR_SMALL: [Shape; 6] = [
@@ -349,6 +377,8 @@ pub(super) fn draw_icon(canvas: &mut Canvas<'_>, icon: Icon<'_>, size: IconSize,
         (Icon::Settings, IconSize::Small) => &SETTINGS_SMALL,
         (Icon::TextEditor, IconSize::Large) => &TEXT_EDITOR_LARGE,
         (Icon::TextEditor, IconSize::Small) => &TEXT_EDITOR_SMALL,
+        (Icon::TaskManager, IconSize::Large) => &TASK_MANAGER_LARGE,
+        (Icon::TaskManager, IconSize::Small) => &TASK_MANAGER_SMALL,
         (Icon::App { letter, badge }, size) => {
             generic = app_shapes(letter, badge, size);
             &generic.0[..generic.1]

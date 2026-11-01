@@ -1,12 +1,16 @@
 use crate::lines::{STANDARD_INPUT_NAME, each_line, is_standard_input};
-use crate::options::{Item, parse};
+use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use crate::utilities::MAX_ARGUMENTS;
 use core::ffi::CStr;
 use core::ops::ControlFlow;
+use eggos_commands::commands;
+use eggos_mcp::json::JsonWriter;
 
 const UNKNOWN_SIZE_WIDTH: usize = 7;
+
+const RECORD_BYTES: usize = 4096 + 128;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Counts {
@@ -32,11 +36,13 @@ struct Shown {
 
 pub fn wc<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut shown = Shown::default();
-    let Ok(operands) = parse(output, arguments, b"lwc", b"", |_, item| {
-        match item {
-            Item::Flag(b'l') => shown.lines = true,
-            Item::Flag(b'w') => shown.words = true,
-            _ => shown.bytes = true,
+    let mut json = false;
+    let Ok(operands) = parse_defined(output, arguments, &commands::WC, |_, given| {
+        match given.option.short {
+            Some(b'l') => shown.lines = true,
+            Some(b'w') => shown.words = true,
+            Some(_) => shown.bytes = true,
+            None => json = true,
         }
         Ok(())
     }) else {
@@ -62,6 +68,19 @@ pub fn wc<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         failed[index] = status != 0;
         total.add(result);
     }
+    let status = match failed[..names.len()].contains(&true) {
+        true => FAILURE,
+        false => 0,
+    };
+    if json {
+        for (index, &name) in names.iter().enumerate() {
+            if !failed[index] {
+                let path = (!is_standard_input(name)).then_some(name.to_bytes());
+                write_record(output, counts[index], path);
+            }
+        }
+        return status;
+    }
     let fields = usize::from(shown.lines) + usize::from(shown.words) + usize::from(shown.bytes);
     let width = if fields == 1 && names.len() == 1 {
         0
@@ -85,10 +104,28 @@ pub fn wc<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     if names.len() > 1 {
         write_counts(output, total, shown, width, Some(b"total"));
     }
-    if failed[..names.len()].contains(&true) {
-        FAILURE
-    } else {
-        0
+    status
+}
+
+fn write_record<S: System>(output: &mut Output<S>, counts: Counts, path: Option<&[u8]>) {
+    let mut buffer = [0u8; RECORD_BYTES];
+    let mut out = JsonWriter::new(&mut buffer);
+    out.begin_object();
+    out.key("path");
+    match path {
+        Some(path) => out.string_lossy(path),
+        None => out.null(),
+    }
+    out.key("lines");
+    out.u64(counts.lines);
+    out.key("words");
+    out.u64(counts.words);
+    out.key("size_bytes");
+    out.u64(counts.bytes);
+    out.end_object();
+    out.end_line();
+    if !out.overflowed() {
+        output.write(out.as_bytes());
     }
 }
 
@@ -176,6 +213,24 @@ mod tests {
         assert_eq!(errors, "wc: /missing: No such file or directory\n");
         let (_, output, _) = run(b"", &[c"-l", c"/a"]);
         assert_eq!(output, "2 /a\n");
+    }
+
+    #[test]
+    fn json_writes_a_record_per_file_with_null_for_standard_input() {
+        let (status, output, _) = run(b"hi\n", &[c"--json", c"/a", c"-"]);
+        assert_eq!(status, 0);
+        assert_eq!(
+            output,
+            "{\"path\":\"/a\",\"lines\":2,\"words\":3,\"size_bytes\":14}\n\
+             {\"path\":null,\"lines\":1,\"words\":1,\"size_bytes\":3}\n"
+        );
+        let (status, output, errors) = run(b"", &[c"--json", c"/missing", c"/b"]);
+        assert_eq!(status, 1);
+        assert_eq!(
+            output,
+            "{\"path\":\"/b\",\"lines\":0,\"words\":1,\"size_bytes\":1}\n"
+        );
+        assert!(errors.contains("\"code\":\"no_such_file\""), "{errors}");
     }
 
     #[test]

@@ -31,6 +31,8 @@ pub mod code {
     pub const SEGV_ACCERR: i32 = 2;
     /// `SIGBUS`: a misaligned address.
     pub const BUS_ADRALN: i32 = 1;
+    /// `SIGBUS`: an address with no backing, a page of a file mapping past the file's end.
+    pub const BUS_ADRERR: i32 = 2;
     /// `SIGBUS`: a hardware error at the address.
     pub const BUS_OBJERR: i32 = 3;
     /// `SIGILL`: an illegal opcode.
@@ -85,6 +87,19 @@ pub fn classify<P: Platform>(process: &Process<P>, exception: &Exception, stack:
         (signal::SIGSEGV, code, address)
     };
     arch::classify(exception, stack, in_user_space, segv)
+}
+
+/// The fault of a page fault `exception` at a page of a file mapping past the file's end, or
+/// whose file could not be read ([`crate::process::UnresolvedFault::BusError`], D167):
+/// `SIGBUS` with `BUS_ADRERR` at the faulting address, the machine context reporting the page
+/// fault as for `SIGSEGV`.
+#[cold]
+pub fn bus_error<P: Platform>(process: &Process<P>, exception: &Exception, stack: u64) -> Fault {
+    Fault {
+        signal: signal::SIGBUS,
+        code: code::BUS_ADRERR,
+        ..classify(process, exception, stack)
+    }
 }
 
 /// Builds a [`Fault`].

@@ -61,6 +61,36 @@ pub fn sleep_until<P: Platform>(
     }
 }
 
+/// The futex key `thread` of `process` sleeps on, which [`sleep_once_until`] also wakes on.
+pub fn sleep_key_of<P: Platform>(process: &Process<P>, thread: &LinuxThread) -> futex::Key {
+    sleep_key(process, thread.id)
+}
+
+/// As [`sleep_until`], but returns too when the thread's sleep word ([`sleep_key_of`]) is
+/// woken, so a sleep until a time on the wall clock can be measured again after the clock is
+/// set (D194).
+pub fn sleep_once_until<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    deadline: u64,
+) -> ControlFlow<()> {
+    let key = sleep_key(process, thread.id);
+    if !signals::take_in_sent(process, thread) && !process.has_ended() {
+        let _ = futex::wait_interruptibly::<P>(
+            key,
+            u32::MAX,
+            deadline,
+            &thread.wait_slot,
+            unless_signalled_or_ended(process, thread),
+        );
+        signals::take_in_sent_now(process, thread);
+    }
+    match process.has_ended() {
+        true => ControlFlow::Break(()),
+        false => ControlFlow::Continue(()),
+    }
+}
+
 /// A `futex` wait's last check for `thread`, the calling thread of `process`: `EINTR` if a
 /// signal was sent to it since it last took them in, or its process has ended, so it does
 /// not start waiting ([`futex::wait_interruptibly`]'s `still_expected`).
@@ -75,17 +105,36 @@ pub fn unless_signalled_or_ended<P: Platform>(
     }
 }
 
-/// Waits until `process`, of which `thread` is the calling thread, ends, taking in nothing,
-/// as a stopped thread does: signals sent to the process stay for its other threads.
-pub fn wait_for_end<P: Platform>(process: &Process<P>, thread: &LinuxThread) {
+/// Sleeps `thread`, the calling thread of `process`, while `stopped` says its process is
+/// stopped (D181), taking in the signals sent to it meanwhile, which stay pending: until
+/// `stopped` says otherwise once a signal sent to the process woke it (`SIGCONT` continues the
+/// process before it is sent), `SIGKILL` is due to it, or the process ends (`Break`). Call it
+/// as a blocking system call runs: with interrupts masked and no lock held.
+pub fn sleep_while<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    stopped: impl Fn() -> bool,
+) -> ControlFlow<()> {
+    const SIGKILL_BIT: u64 = 1 << (super::signal::SIGKILL - 1);
     let key = sleep_key(process, thread.id);
-    while !process.has_ended() {
-        let _ = futex::wait_interruptibly::<P>(key, u32::MAX, u64::MAX, &thread.wait_slot, || {
-            match process.has_ended() {
-                true => Err(Errno::EINTR),
-                false => Ok(()),
-            }
-        });
+    loop {
+        if process.has_ended() {
+            return ControlFlow::Break(());
+        }
+        signals::take_in_sent(process, thread);
+        if thread.signals.pending & SIGKILL_BIT != 0 || !stopped() {
+            return ControlFlow::Continue(());
+        }
+        let slept = futex::wait_interruptibly::<P>(
+            key,
+            u32::MAX,
+            u64::MAX,
+            &thread.wait_slot,
+            unless_signalled_or_ended(process, thread),
+        );
+        if slept == Err(Errno::EINTR) {
+            signals::take_in_sent_now(process, thread);
+        }
     }
 }
 
@@ -421,7 +470,6 @@ pub fn clone<P: Platform>(
             .map_err(|_| Errno::EPERM)?;
     }
     child.set_syscall_result(0);
-    let id = process::allocate_thread_id().ok_or(Errno::EAGAIN)?;
     let clear_child_tid = if any(flag::CHILD_CLEARTID) {
         arguments.child_tid
     } else {
@@ -435,6 +483,7 @@ pub fn clone<P: Platform>(
         true => thread.working_directory().share(),
         false => thread.working_directory().copy(),
     };
+    let id = process::allocate_thread_id::<P>().ok_or(Errno::EAGAIN)?;
     let mut new = thread.new_thread(id, clear_child_tid, files, working_directory);
     new.inherit_fp(running_fp::<P>());
     process

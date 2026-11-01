@@ -5,18 +5,35 @@
 //! docs/build.md, "Developer commands".
 
 mod android;
+mod android_dynamic;
+mod android_runtime;
+mod autohotkey;
 mod bench;
 mod ci_artifact;
+mod cocoa_app;
+mod dynamic_linking;
 mod elf;
+mod ext4;
+mod gitiles;
+mod gl_libraries;
+mod gtk_app;
+mod hello_crate;
 mod image;
 mod initramfs;
 mod lint;
 mod macos;
 mod qemu;
 mod qmp;
+mod qt_app;
 mod release;
+mod rustc_version;
+mod sdl_app;
 mod sha256;
+mod static_glibc;
+mod win32_app;
 mod windows;
+mod work_disk;
+mod workspace_build;
 mod zip;
 
 use std::process::{Command, ExitCode};
@@ -46,7 +63,8 @@ commands:
                          /bin/<file's name> or <path>, executable, and write it to
                          target/image/eggos-<arch>.elf (<arch> may be `all`)
   run   --arch <arch> [--nographic] [--apps <folder>] [--disk <image> | --no-disk]
-        [--format-disk] [--add <file> [--as <path>]]...
+        [--format-disk] [--no-network] [--work <folder> [--work-out <folder>]
+        [--room <size>]] [--memory <size>] [--add <file> [--as <path>]]...
                          boot the kernel in QEMU interactively, its display in a window
                          with a keyboard and a pointer, and its console on this terminal
                          (quit: Ctrl-A then X); with --nographic, no window; with --apps,
@@ -54,8 +72,20 @@ commands:
                          target/image/eggos-<arch>-disk.img (or --disk's), made empty and
                          1 GiB sparse if missing, holds /home, /Applications and /var across
                          boots (--no-disk: none, /home in memory); --format-disk empties
-                         it first, erasing everything on it; with --add, the release image
-                         with those files, as `image` builds it
+                         it first, erasing everything on it; EggOS is on the host's network
+                         through QEMU's user networking (--no-network: no network adapter);
+                         with --work, the folder (without its top-level .git and target) on
+                         a work disk at /work, writable, unpacked after QEMU ends into
+                         --work-out's new folder (default: <folder>.out beside it), with
+                         --room to spare on it (default 1G); --memory gives the machine
+                         that much memory (such as 4G; default 128M); with --add, the
+                         release image with those files, as `image` builds it
+  work pack [--room <size>] <folder> <image>
+                         write the folder (without its top-level .git and target) into a
+                         new work disk image that EggOS mounts writable at /work, for the run
+                         scripts' --work, with --room to spare (default 1G)
+  work unpack <image> <folder>
+                         write what /work holds on a work disk image into a new folder
   bench --arch <arch> [--update-baseline | --report-only]
                          boot the benchmark kernel in QEMU (deterministic instruction counts)
                          and fail on a regression against benchmarks/baseline.txt; with
@@ -69,6 +99,83 @@ commands:
   screenshot --arch <arch>
                          boot the release image headless and save its desktop to
                          docs/images/desktop.png
+  sample-apps --arch <arch>
+                         build our own apps to try installing in EggOS into
+                         target/sample-apps/<arch> and print that folder, for the run
+                         scripts' --apps: win-paint.exe and win-controls.exe (x86_64 and
+                         aarch64), linux-paint, and mac-paint.zip (aarch64 and x86_64,
+                         built on a macOS host) (<arch> may be `all`)
+  dynamic-linking --arch <arch>
+                         build our dynamically linked hello against glibc and musl, add it
+                         with their dynamic loaders and C libraries (test data: glibc from
+                         this Linux host's cross compilers' packages, musl downloaded from
+                         Alpine into target/dynamic-linking) to the release image, boot it
+                         and check both run (<arch> may be `all`)
+  static-glibc --arch <arch>
+                         build our Linux console program statically against glibc (test
+                         data: this Linux host's cross compilers' static C library), as a
+                         static executable and as a static PIE, add both to the release
+                         image, boot it and check both run (<arch> may be `all`)
+  android-dynamic --arch <arch>
+                         link our Android console program dynamically with the Android NDK,
+                         add it with Android's linker64 and the runtime module's libraries
+                         (test data: AOSP's prebuilt com.android.runtime APEX, downloaded
+                         into target/android-runtime) to the release image, boot it and
+                         check it runs (aarch64 and x86_64; <arch> may be `all`)
+  rustc-version --arch <arch>
+                         download the official Rust toolchain's rustc (test data, into
+                         target/rustc-version, checked against its pinned SHA-256), hand
+                         it to EggOS on a work disk with the C libraries it needs from this
+                         Linux host and check `rustc --version` runs (x86_64 and aarch64)
+  hello-crate --arch <arch>
+                         download the official toolchain's rustc, cargo and the musl
+                         target's standard library (test data, pinned SHA-256s), build and
+                         run tests/hello-crate with them here on Linux, then inside EggOS
+                         from a work disk, and check both print the same (x86_64 and
+                         aarch64)
+  workspace-build --arch <arch>
+                         build tests/multi-crate with the same toolchain and a job per CPU
+                         inside EggOS and inside Linux booted in the same QEMU machine (its
+                         kernel from Alpine: test data, pinned SHA-256), check both build
+                         and print the same, and report each phase's time against Linux's
+                         (and the job summary in CI; x86_64 and aarch64; Linux hosts)
+  sdl3 --arch <arch>     build SDL's pinned commit (test data, checked against its pinned
+                         SHA-256) as libSDL3.so.0 for Alpine's musl, with its Wayland video
+                         driver and no GPU, in an alpine:3.24 Docker container, into
+                         target/sdl-app/sdl3-<arch> (x86_64 and aarch64; needs Docker)
+  sdl-app --arch <arch>  download Brogue CE and its libraries from Alpine (test data,
+                         pinned SHA-256s), pack them with libSDL3.so.0 into brogue.zip, and
+                         boot the release image: install it, open it, play and save, and
+                         check it closed and saved (x86_64 and aarch64)
+  win32-app --arch <arch>
+                         download Simon Tatham's Puzzles' Pegs, a classic Win32 app (test
+                         data, pinned SHA-256), and boot the release image: install it,
+                         open it, play, undo and redo a move, change the board from its
+                         menu, open its About box, quit, and compare the frames (x86_64:
+                         the app ships no ARM64 build)
+  autohotkey --arch <arch>
+                         download AutoHotkey v2's release archive (test data, pinned
+                         SHA-256) and boot the release image: install it, open our script's
+                         window of common controls, GDI+ and COM, drive its list, toolbar,
+                         tabs and tree, read its element tree, close it, and compare the
+                         frames (x86_64: the app ships no ARM64 build)
+  cocoa-app --arch <arch>
+                         download CocoaGame, a real Objective-C Mac app (test data, pinned
+                         SHA-256), and boot the release image: install it from its .zip,
+                         open it, move its player and eat the food, read its element tree,
+                         open its About panel, quit with Cmd+Q, and compare the frames
+                         (aarch64 and x86_64)
+  gtk-app --arch <arch>  download Mousepad, a real GTK 3 app, and its libraries and fonts
+                         from Alpine (test data, pinned SHA-256s), pack them into
+                         mousepad.zip, and boot the release image: install it with its
+                         environment, compile its schemas, open it, type, copy and paste,
+                         save and quit, and check the note it saved (x86_64 and aarch64)
+  qt-app --arch <arch>   download CorePad, a real Qt 6 app, and its libraries, plugins and
+                         fonts from Alpine (test data, pinned SHA-256s), pack them with
+                         EggOS's own EGL and GL libraries into corepad.zip, and boot the
+                         release image: install it with its environment, open it, type, copy
+                         and paste, save as through its file dialog and quit, and check the
+                         file it saved (x86_64 and aarch64)
   fuzz mcp [--seconds <n>]
                          hand the MCP server's message handling hostile lines for <n>
                          seconds (default 60) and fail on a panic or a wrong answer
@@ -86,6 +193,12 @@ commands:
                          run only the Windows C runtime boot test (eggpad.exe, built by MSVC
                          here or taken from EGGOS_WINDOWS_PROGRAMS), as `qemu` runs it
                          (<arch> may be `all`)
+  run-scripts --arch <arch>
+                         build the release image and boot it through the run script the
+                         release ships for this host (run-eggos.ps1 on Windows, run-eggos.sh
+                         elsewhere): a serial session with a host folder, then an MCP
+                         session over the script's piped standard input and output, as
+                         `qemu` runs it (<arch> may be `all`)
 
 architectures: aarch64, riscv64, x86_64";
 
@@ -111,6 +224,9 @@ pub struct Arch {
     pub disk_device: &'static str,
     /// The virtio console device the agent channel's port sits on (D136).
     pub agent_bus_device: &'static str,
+    /// The virtio network device the run scripts and the network boot test attach to QEMU's
+    /// user networking (D157).
+    pub network_device: &'static str,
 }
 
 /// Every architecture brought up so far, cheapest to test first.
@@ -135,6 +251,7 @@ pub const ARCHES: &[Arch] = &[
         offscreen_args: &[],
         disk_device: MMIO_DISK_DEVICE,
         agent_bus_device: "virtio-serial-device",
+        network_device: "virtio-net-device",
     },
     Arch {
         name: "riscv64",
@@ -156,6 +273,7 @@ pub const ARCHES: &[Arch] = &[
         offscreen_args: &[],
         disk_device: MMIO_DISK_DEVICE,
         agent_bus_device: "virtio-serial-device",
+        network_device: "virtio-net-device",
     },
     Arch {
         name: "x86_64",
@@ -187,6 +305,7 @@ pub const ARCHES: &[Arch] = &[
         offscreen_args: &["-vga", "none"],
         disk_device: "virtio-blk-pci,disable-legacy=on",
         agent_bus_device: "virtio-serial-pci,disable-legacy=on",
+        network_device: "virtio-net-pci,disable-legacy=on",
     },
 ];
 
@@ -206,7 +325,9 @@ const KERNEL_CRATES: &[&str] = &[
     "eggos-hal",
     "eggos-drivers",
     "eggos-font",
+    "eggos-terminal",
     "eggos-calendar",
+    "eggos-net",
     "eggos-settings-file",
     "eggos-app-manifest",
     "eggos-wayland",
@@ -214,11 +335,17 @@ const KERNEL_CRATES: &[&str] = &[
 
 const USER_CRATES: &[&str] = &[
     "eggos-runtime",
+    "eggos-net",
+    "eggos-crypto",
+    "eggos-tls",
     "eggos-png",
+    "eggos-translate",
+    "eggos-translation-loader",
     "eggos-c-format",
     "eggos-init",
     "eggos-eggsh",
-    "eggos-coreutils",
+    "eggos-commands",
+    "eggos-element-tree",
     "eggos-hello-window",
     "eggos-toolkit",
     "eggos-settings",
@@ -227,15 +354,26 @@ const USER_CRATES: &[&str] = &[
     "eggos-eggway",
     "eggos-wayland",
     "eggos-files",
+    "eggos-terminal",
+    "eggos-terminal-window",
     "eggos-selftest",
     "eggos-std-selftest",
     "eggos-linux-static",
     "eggos-linux-sockets",
+    "eggos-linux-memory",
+    "eggos-linux-mappings",
+    "eggos-linux-events",
+    "eggos-linux-dynamic",
+    "eggos-linux-udp",
+    "eggos-linux-tcp",
     "eggos-linux-gui-tests",
+    "eggos-build-timer",
     "eggos-windows",
     "eggos-windows-gui",
     "eggos-macos",
 ];
+
+const USER_CRATES_WITHOUT_ALLOCATOR: &[&str] = &["eggos-coreutils"];
 
 struct UserProgram {
     package: &'static str,
@@ -276,6 +414,8 @@ const SHELL_PATH: &str = "bin/eggsh";
 
 const COREUTILS_PATH: &str = "bin/coreutils";
 
+const DATE_PATH: &str = "bin/date";
+
 const SETTINGS_PATH: &str = "bin/settings";
 
 const APP_PATH: &str = "bin/app";
@@ -292,7 +432,13 @@ const FILES_PATH: &str = "bin/files";
 
 const TEXT_EDITOR_PATH: &str = "bin/text-editor";
 
+const TASK_MANAGER_PATH: &str = "bin/task-manager";
+
 const EDIT_PATH: &str = "bin/edit";
+
+const DISK_PATH: &str = "bin/disk";
+
+const TERMINAL_PATH: &str = "bin/terminal";
 
 const PROC_PATH: &str = "proc";
 
@@ -310,10 +456,14 @@ const HOME_PATH: &str = "home";
 
 const APPLICATIONS_PATH: &str = "Applications";
 
-const COREUTILS: [&str; 29] = [
-    "agentlog", "cat", "cp", "date", "echo", "false", "free", "grep", "halt", "head", "hwclock",
-    "ls", "mkdir", "mv", "poweroff", "ps", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch",
-    "trash", "true", "uname", "uptime", "wc", "wm",
+const WORK_PATH: &str = "work";
+
+const COREUTILS: [&str; 46] = [
+    "agent", "agentlog", "cat", "chmod", "clip", "cp", "date", "device", "df", "echo", "false",
+    "fetch", "free", "getprop", "grep", "halt", "head", "help", "hwclock", "ip", "kill", "ln",
+    "logcat", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "readlink", "reboot",
+    "rm", "setprop", "sleep", "sync", "tail", "taskset", "tee", "touch", "trash", "true", "uname",
+    "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -325,6 +475,45 @@ const SHELL_TEST_SCRIPT: &str = "# the shell boot test's script (D107)\n\
     . /usr/share/eggsh/sourced\n\
     echo EGGSH-TEST sourced $SOURCED\n\
     exit 5\n";
+
+const SHELL_TEST_LANGUAGE_PATH: &str = "usr/share/eggsh/language-test";
+
+const SHELL_TEST_LANGUAGE: &str = "# the shell boot test's language script (D182)\n\
+    greet() {\n\
+    \tlocal who=\"$1\"\n\
+    \techo EGGSH-TEST function \"$who\" $#\n\
+    \treturn 3\n\
+    }\n\
+    greet world two\n\
+    echo EGGSH-TEST return $? who=${who:-unset}\n\
+    for file in /usr/share/eggsh/*; do\n\
+    \tcase ${file##*/} in\n\
+    \t\tsourced) echo EGGSH-TEST glob ${file%/*} ;;\n\
+    \t\ttest-* | language-*) ;;\n\
+    \t\t*) echo EGGSH-TEST glob unexpected $file ;;\n\
+    \tesac\n\
+    done\n\
+    words=$(echo substituted `echo output`)\n\
+    echo \"EGGSH-TEST substitution [$words]\"\n\
+    set -- a b c\n\
+    while [ $# -gt 1 ]; do\n\
+    \tshift\n\
+    done\n\
+    echo EGGSH-TEST while \"$@\"\n\
+    if [ -d /usr/share/eggsh ] && ! [ -f /missing ]; then\n\
+    \techo EGGSH-TEST if yes\n\
+    else\n\
+    \techo EGGSH-TEST if no\n\
+    fi\n\
+    ( cd /usr && echo EGGSH-TEST subshell $PWD )\n\
+    [ \"$PWD\" != /usr ] && echo EGGSH-TEST after subshell\n\
+    read first rest <<END\n\
+    one two three\n\
+    END\n\
+    echo EGGSH-TEST here-document \"$first\" \"$rest\"\n\
+    echo EGGSH-TEST piped | while read line; do echo \"$line loop\"; done\n\
+    until true; do :; done\n\
+    echo EGGSH-TEST done ${undefined-default}\n";
 
 const SHELL_TEST_SOURCED_PATH: &str = "usr/share/eggsh/sourced";
 
@@ -417,7 +606,98 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        Some("run-scripts") => {
+            for arch in arch()? {
+                let kernel = build_kernel(arch, None)?;
+                qemu::run_scripts::check(arch, &kernel)?;
+            }
+            Ok(())
+        }
         Some("release") if args.len() == 1 => release::run(),
+        Some("sample-apps") => {
+            for arch in arch()? {
+                println!("{}", build_sample_apps(arch)?.display());
+            }
+            Ok(())
+        }
+        Some("dynamic-linking") => {
+            for arch in arch()? {
+                dynamic_linking::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("static-glibc") => {
+            for arch in arch()? {
+                static_glibc::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("android-dynamic") => {
+            for arch in arch()? {
+                android_dynamic::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("rustc-version") => {
+            for arch in arch()? {
+                rustc_version::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("hello-crate") => {
+            for arch in arch()? {
+                hello_crate::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("workspace-build") => {
+            for arch in arch()? {
+                workspace_build::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("sdl3") => {
+            for arch in arch()? {
+                println!("{}", sdl_app::build_sdl3(arch)?.display());
+            }
+            Ok(())
+        }
+        Some("sdl-app") => {
+            for arch in arch()? {
+                sdl_app::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("win32-app") => {
+            for arch in arch()? {
+                win32_app::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("autohotkey") => {
+            for arch in arch()? {
+                autohotkey::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("cocoa-app") => {
+            for arch in arch()? {
+                cocoa_app::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("gtk-app") => {
+            for arch in arch()? {
+                gtk_app::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("qt-app") => {
+            for arch in arch()? {
+                qt_app::check(arch)?;
+            }
+            Ok(())
+        }
         Some("fuzz") => match &args[1..] {
             [target] if target == "mcp" => fuzz_mcp(60),
             [target, flag, seconds] if target == "mcp" && flag == "--seconds" => {
@@ -451,14 +731,30 @@ fn run(args: &[String]) -> Result<(), String> {
             let (options, no_disk) = without_flag(&options, "--no-disk");
             let (options, format_disk) = without_flag(&options, "--format-disk");
             let (options, disk) = with_value(&options, "--disk")?;
+            let (options, no_network) = without_flag(&options, "--no-network");
+            let (options, work) = with_value(&options, "--work")?;
+            let (options, work_out) = with_value(&options, "--work-out")?;
+            let (options, room) = with_value(&options, "--room")?;
+            let (options, memory) = with_value(&options, "--memory")?;
             let arches = arch_option(&options)?;
             let [arch] = arches.as_slice() else {
                 return Err("`run` boots one architecture; pass a single --arch".into());
+            };
+            let room = room.as_deref().map(room_bytes).transpose()?;
+            let work = match (work, work_out, room) {
+                (None, Some(_), _) => return Err("`--work-out` needs `--work <folder>`".into()),
+                (None, None, Some(_)) => return Err("`--room` needs `--work <folder>`".into()),
+                (None, None, None) => None,
+                (Some(folder), out, room) => Some(WorkRun::prepare(arch, &folder, out, room)?),
             };
             let mut extra_args = match folder {
                 Some(folder) => qemu::host_folder_args(arch, &host_folder(&folder)?),
                 None => Vec::new(),
             };
+            extra_args.extend(match no_network {
+                true => qemu::no_network_args(),
+                false => qemu::network_args(arch),
+            });
             let kernel = build_release_image(arch, &added)?;
             let disk = match (no_disk, disk, format_disk) {
                 (true, Some(_), _) => {
@@ -473,9 +769,153 @@ fn run(args: &[String]) -> Result<(), String> {
             if let Some(disk) = disk {
                 extra_args.extend(prepare_disk_image(arch, &disk, format_disk)?);
             }
-            qemu::run_interactive(arch, &kernel, !nographic, &extra_args)
+            if let Some(work) = &work {
+                extra_args.extend(work.pack(arch)?);
+            }
+            if let Some(memory) = memory {
+                extra_args.extend(qemu::memory_args(&memory)?);
+            }
+            let ran = qemu::run_interactive(arch, &kernel, !nographic, &extra_args);
+            match work {
+                Some(work) => {
+                    let unpacked = work.unpack();
+                    ran.and(unpacked)
+                }
+                None => ran,
+            }
         }
+        Some("work") => match &args[1..] {
+            [verb, rest @ ..] if verb == "pack" && matches!(rest.len(), 2 | 4) => {
+                let (rest, room) = with_value(rest, "--room")?;
+                let [folder, image] = rest.as_slice() else {
+                    return Err(USAGE.into());
+                };
+                let room = room
+                    .as_deref()
+                    .map(room_bytes)
+                    .transpose()?
+                    .unwrap_or(work_disk::HEADROOM_BYTES);
+                let packed = work_disk::pack_with_room(
+                    std::path::Path::new(folder),
+                    std::path::Path::new(image),
+                    room,
+                )?;
+                eprintln!(
+                    "xtask: packed {} files ({} bytes) and {} folders into {} ({} MiB, sparse); \
+                     {} left out",
+                    packed.files,
+                    packed.bytes,
+                    packed.folders,
+                    image,
+                    packed.image_bytes >> 20,
+                    packed.skipped
+                );
+                Ok(())
+            }
+            [verb, image, folder] if verb == "unpack" => {
+                let unpacked =
+                    work_disk::unpack(std::path::Path::new(image), std::path::Path::new(folder))?;
+                eprintln!(
+                    "xtask: unpacked {} files ({} bytes) and {} folders into {folder}",
+                    unpacked.files, unpacked.bytes, unpacked.folders
+                );
+                Ok(())
+            }
+            _ => Err(USAGE.into()),
+        },
         _ => Err(USAGE.into()),
+    }
+}
+
+/// A size given as a whole number of mebibytes or gibibytes (`512M`, `4G`), in mebibytes:
+/// `--memory` and `--room` (D171). `None` for anything else, or 0.
+pub fn size_in_mebibytes(size: &str) -> Option<u64> {
+    let (digits, factor) = match size.as_bytes().last()? {
+        b'M' => (&size[..size.len() - 1], 1),
+        b'G' => (&size[..size.len() - 1], 1024),
+        _ => return None,
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let mebibytes = digits.parse::<u64>().ok()?.checked_mul(factor)?;
+    (mebibytes > 0).then_some(mebibytes)
+}
+
+fn room_bytes(size: &str) -> Result<u64, String> {
+    size_in_mebibytes(size)
+        .and_then(|mebibytes| mebibytes.checked_mul(1 << 20))
+        .ok_or_else(|| format!("`--room {size}`: give a size such as 512M or 8G"))
+}
+
+#[derive(Debug)]
+struct WorkRun {
+    folder: std::path::PathBuf,
+    image: std::path::PathBuf,
+    out: std::path::PathBuf,
+    room: u64,
+}
+
+impl WorkRun {
+    fn prepare(
+        arch: &Arch,
+        folder: &str,
+        out: Option<String>,
+        room: Option<u64>,
+    ) -> Result<Self, String> {
+        let folder = std::path::PathBuf::from(host_folder(folder)?);
+        let out = match out {
+            Some(out) => std::path::PathBuf::from(out),
+            None => work_disk::default_output(&folder)?,
+        };
+        let unusable = out.exists()
+            && std::fs::read_dir(&out)
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(true);
+        if unusable {
+            return Err(format!(
+                "`{}` is not an empty folder: remove it, or name a new one with --work-out",
+                out.display()
+            ));
+        }
+        let image = target_directory()
+            .join("image")
+            .join(format!("eggos-{}-work.img", arch.name));
+        Ok(Self {
+            folder,
+            image,
+            out,
+            room: room.unwrap_or(work_disk::HEADROOM_BYTES),
+        })
+    }
+
+    fn pack(&self, arch: &Arch) -> Result<Vec<String>, String> {
+        let packed = work_disk::pack_with_room(&self.folder, &self.image, self.room)?;
+        eprintln!(
+            "xtask: {} is at /work in EggOS, writable ({} files, {} MiB disk); what EggOS \
+             writes there is unpacked into {} when QEMU ends",
+            self.folder.display(),
+            packed.files,
+            packed.image_bytes >> 20,
+            self.out.display()
+        );
+        let image = std::path::absolute(&self.image)
+            .map_err(|e| format!("{}: {e}", self.image.display()))?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| format!("`{}` is not valid Unicode", self.image.display()))?;
+        Ok(qemu::work_disk_args(arch, &image))
+    }
+
+    fn unpack(&self) -> Result<(), String> {
+        let unpacked = work_disk::unpack(&self.image, &self.out)?;
+        eprintln!(
+            "xtask: unpacked /work ({} files, {} bytes) into {}",
+            unpacked.files,
+            unpacked.bytes,
+            self.out.display()
+        );
+        Ok(())
     }
 }
 
@@ -615,13 +1055,20 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         &[],
     )?;
     let kernel = build_linux_programs_test_kernel(arch)?;
+    let mut offscreen: Vec<String> = arch
+        .offscreen_args
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+    offscreen.extend(qemu::command_line_args(qemu::OFFSCREEN_WORD));
+    let offscreen: Vec<&str> = offscreen.iter().map(String::as_str).collect();
     qemu::boot_test(
         arch,
         &kernel,
         qemu::Expect::LinuxPrograms,
         qemu::TEST_CPUS,
         qemu::Display::Absent,
-        &[],
+        &offscreen,
     )?;
     let (kernel, folder) = build_host_folder_test(arch)?;
     let folder_args = qemu::host_folder_args(arch, &folder);
@@ -693,20 +1140,26 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     }
     let kernel = build_kernel(arch, None)?;
     qemu::persistent::check(arch, &kernel)?;
+    qemu::work_disk::check(arch, &kernel)?;
+    qemu::disks::check(arch, &kernel)?;
     qemu::settings::check(arch, &kernel)?;
     qemu::shell::check(arch, &kernel)?;
     qemu::real_time::check(arch, &kernel)?;
     qemu::text_editor::check(arch, &kernel)?;
-    if let Some((kernel, folder)) = build_macos_gui_test(arch)? {
+    qemu::reboot::check(arch, &kernel)?;
+    qemu::network::check(arch, &build_network_test_kernel(arch)?)?;
+    qemu::agent_network::check(arch, &kernel)?;
+    qemu::run_scripts::check(arch, &kernel)?;
+    if let Some(folder) = build_macos_gui_folder(arch)? {
         qemu::macos_gui::check(arch, &kernel, &folder)?;
     }
-    let (install_kernel, install_folder) = build_install_test(arch)?;
-    qemu::install::check(arch, &install_kernel, &install_folder)?;
-    qemu::files::check(arch, &install_kernel, &install_folder)?;
+    let install_folder = build_install_folder(arch)?;
+    qemu::install::check(arch, &kernel, &install_folder)?;
+    qemu::files::check(arch, &kernel, &install_folder)?;
     let linux_gui_program = build_linux_test_program(arch, LINUX_GUI_PACKAGE, "static")?;
     qemu::mcp::check(
         arch,
-        &install_kernel,
+        &kernel,
         &install_folder,
         std::path::Path::new(&linux_gui_program),
     )?;
@@ -769,6 +1222,18 @@ fn clippy_targets() -> Result<(), String> {
         }
         args.extend(["--", "-D", "warnings"]);
         cargo(&args)?;
+        for krate in USER_CRATES_WITHOUT_ALLOCATOR {
+            cargo(&[
+                "clippy",
+                "--target",
+                arch.user_target,
+                "-p",
+                krate,
+                "--",
+                "-D",
+                "warnings",
+            ])?;
+        }
         let mut programs = build_user_programs(arch)?;
         programs.push(initramfs_variable(arch, &programs)?);
         let env = program_variables(&programs);
@@ -793,7 +1258,8 @@ fn clippy_targets() -> Result<(), String> {
 
 /// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
 /// any, and returns its path. The image embeds the initramfs ([`initramfs::build`]): without a
-/// feature, the release kernel's, with init, the shell and the core utilities; every kernel
+/// feature, the release kernel's, with init, the shell, the core utilities and the Windows and
+/// macOS layers where they run (D152); every kernel
 /// feature is a test kernel's, which runs the programs [`build_user_programs`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let Some(feature) = feature else {
@@ -837,14 +1303,25 @@ pub fn build_release_image(
     {
         return Err(format!("`{}` is not a file to add", missing.host));
     }
-    let layer = windows_layer_for(arch, added)?;
-    let macos_layer = macos_layer_for(arch, added)?;
+    let dynamic_runtime = match added
+        .iter()
+        .any(|file| android::is_dynamic_program(&file.host))
+    {
+        true => Some(android_runtime::Runtime::fetch(arch.name)?),
+        false => None,
+    };
     let mut members = image::members(added);
-    members.extend(layer.iter().map(|layer| layer.member()));
-    members.extend(macos_layer.iter().map(|layer| layer.member()));
     if added.iter().any(|file| android::is_program(&file.host)) {
         members.extend(
-            android::system_members(SHELL_PATH)
+            android::system_members(SHELL_PATH, arch.name)
+                .into_iter()
+                .filter(|(path, _)| !added.iter().any(|file| file.path == *path)),
+        );
+    }
+    if let Some(runtime) = &dynamic_runtime {
+        members.extend(
+            runtime
+                .members()
                 .into_iter()
                 .filter(|(path, _)| !added.iter().any(|file| file.path == *path)),
         );
@@ -897,33 +1374,6 @@ const WINDOWS_TOOLS_TEXT_PATH: &str = "usr/share/windows-tools/über.txt";
 
 const WINDOWS_TOOLS_TEXT: &str = "grüße aus EggOS 🥚\nzweite Zeile\n";
 
-struct WindowsLayer {
-    host: String,
-}
-
-impl WindowsLayer {
-    fn member(&self) -> (&str, initramfs::Content<'_>) {
-        (WINDOWS_LAYER_PATH, initramfs::Content::Program(&self.host))
-    }
-}
-
-fn windows_layer_for(
-    arch: &Arch,
-    added: &[image::AddedFile],
-) -> Result<Option<WindowsLayer>, String> {
-    let windows_program = added.iter().any(|file| {
-        let mut magic = [0u8; 2];
-        std::fs::File::open(&file.host)
-            .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut magic))
-            .is_ok_and(|()| &magic == b"MZ")
-    });
-    if !windows_program || !WINDOWS_LAYER_ARCHES.contains(&arch.name) {
-        return Ok(None);
-    }
-    let host = build_runtime_program(arch, WINDOWS_LAYER_PACKAGE)?;
-    Ok(Some(WindowsLayer { host }))
-}
-
 fn build_windows_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
     let mut added = Vec::new();
     for (program, path) in WINDOWS_CONSOLE_PROGRAMS {
@@ -937,7 +1387,6 @@ fn build_windows_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf,
         host: build_windows_program(program, other_cpu_windows_target(arch.name))?,
         path: path.to_owned(),
     });
-    let layer = windows_layer_for(arch, &added)?;
     let mut extra = vec![
         (
             "etc/eggos/init.conf",
@@ -949,7 +1398,6 @@ fn build_windows_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf,
         ),
     ];
     extra.extend(image::members(&added));
-    extra.extend(layer.iter().map(|layer| layer.member()));
     let initramfs = release_initramfs(
         arch,
         &extra,
@@ -1048,13 +1496,11 @@ fn build_windows_gui_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, Stri
             path: path.to_owned(),
         });
     }
-    let layer = windows_layer_for(arch, &added)?;
     let mut extra = vec![(
         "etc/eggos/init.conf",
         initramfs::Content::Text(SHELL_TEST_CONFIG),
     )];
     extra.extend(image::members(&added));
-    extra.extend(layer.iter().map(|layer| layer.member()));
     let initramfs = release_initramfs(
         arch,
         &extra,
@@ -1063,7 +1509,16 @@ fn build_windows_gui_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, Stri
     build_release_kernel(arch, &initramfs)
 }
 
-const EGGPAD: (&str, &str) = ("eggpad", "bin/eggpad.exe");
+const WINDOWS_CRT_PROGRAMS: [(&str, &str); 8] = [
+    ("eggpad", "bin/eggpad.exe"),
+    ("eggcpp", "bin/eggcpp.exe"),
+    ("eggcpp-fh3", "bin/eggcpp-fh3.exe"),
+    ("eggspawn", "bin/eggspawn.exe"),
+    ("eggsync", "bin/eggsync.exe"),
+    ("eggnamed", "bin/eggnamed.exe"),
+    ("eggrust", "bin/eggrust.exe"),
+    ("eggmingw", "bin/eggmingw.exe"),
+];
 
 fn windows_crt_boot_test(arch: &Arch) -> Result<(), String> {
     let Some(kernel) = build_windows_crt_test_kernel(arch)? else {
@@ -1109,21 +1564,21 @@ fn build_windows_crt_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBu
         );
         return Ok(None);
     };
-    let (program, path) = EGGPAD;
-    let added = [image::AddedFile {
-        host: programs
-            .path(program, target)
-            .to_string_lossy()
-            .into_owned(),
-        path: path.to_owned(),
-    }];
-    let layer = windows_layer_for(arch, &added)?;
+    let added: Vec<image::AddedFile> = WINDOWS_CRT_PROGRAMS
+        .iter()
+        .map(|(program, path)| image::AddedFile {
+            host: programs
+                .path(program, target)
+                .to_string_lossy()
+                .into_owned(),
+            path: (*path).to_owned(),
+        })
+        .collect();
     let mut extra = vec![(
         "etc/eggos/init.conf",
         initramfs::Content::Text(SHELL_TEST_CONFIG),
     )];
     extra.extend(image::members(&added));
-    extra.extend(layer.iter().map(|layer| layer.member()));
     let initramfs = release_initramfs(
         arch,
         &extra,
@@ -1141,9 +1596,12 @@ fn release_initramfs(
     let shell = build_shell(arch)?;
     let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
     let settings = build_runtime_program(arch, "eggos-settings")?;
-    let app = build_runtime_program(arch, "eggos-app")?;
     let mcp_server = build_runtime_program(arch, "eggos-mcp")?;
     let wayland_server = build_runtime_program(arch, "eggos-eggway")?;
+    let mut layers = Vec::new();
+    for (path, package) in foreign_layers(arch.name) {
+        layers.push((path, build_runtime_program(arch, package)?));
+    }
     let links: Vec<String> = COREUTILS.iter().map(|name| format!("bin/{name}")).collect();
     let mut members = vec![
         (INIT_PATH, initramfs::Content::Program(&init)),
@@ -1157,7 +1615,13 @@ fn release_initramfs(
             initramfs::Content::HardLink(SETTINGS_PATH),
         ),
         (EDIT_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
-        (APP_PATH, initramfs::Content::Program(&app)),
+        (DISK_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (TERMINAL_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (
+            TASK_MANAGER_PATH,
+            initramfs::Content::HardLink(SETTINGS_PATH),
+        ),
+        (APP_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
         (
             WAYLAND_SERVER_PATH,
@@ -1169,6 +1633,7 @@ fn release_initramfs(
         (HOME_PATH, initramfs::Content::Directory),
         (APPLICATIONS_PATH, initramfs::Content::Directory),
         (HOST_FOLDER_PATH, initramfs::Content::Directory),
+        (WORK_PATH, initramfs::Content::Directory),
         (VAR_PATH, initramfs::Content::Directory),
         (RUN_PATH, initramfs::Content::Directory),
     ];
@@ -1177,8 +1642,21 @@ fn release_initramfs(
             .iter()
             .map(|link| (link.as_str(), initramfs::Content::HardLink(COREUTILS_PATH))),
     );
+    members.extend(
+        layers
+            .iter()
+            .map(|(path, host)| (*path, initramfs::Content::Program(host.as_str()))),
+    );
     members.extend_from_slice(extra);
     initramfs::build(&members, file_name)
+}
+
+fn foreign_layers(arch: &str) -> Vec<(&'static str, &'static str)> {
+    let windows = WINDOWS_LAYER_ARCHES
+        .contains(&arch)
+        .then_some((WINDOWS_LAYER_PATH, WINDOWS_LAYER_PACKAGE));
+    let macos = macos::layer_runs_on(arch).then_some((macos::LAYER_PATH, macos::LAYER_PACKAGE));
+    windows.into_iter().chain(macos).collect()
 }
 
 fn fuzz_mcp(seconds: u64) -> Result<(), String> {
@@ -1293,6 +1771,7 @@ fn build_init_test_kernel(arch: &Arch, login_exit: &str) -> Result<std::path::Pa
 fn build_shell_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
     let init = build_init(arch)?;
     let shell = build_shell(arch)?;
+    let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
     let programs = build_user_programs(arch)?;
     let commands = programs
         .iter()
@@ -1307,6 +1786,8 @@ fn build_shell_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
                 initramfs::Content::Text(SHELL_TEST_CONFIG),
             ),
             (SHELL_PATH, initramfs::Content::Program(&shell)),
+            (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
+            (DATE_PATH, initramfs::Content::HardLink(COREUTILS_PATH)),
             (INIT_TEST_LOGIN_PATH, initramfs::Content::Program(commands)),
             (
                 SHELL_TEST_SCRIPT_PATH,
@@ -1316,6 +1797,12 @@ fn build_shell_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
                 SHELL_TEST_SOURCED_PATH,
                 initramfs::Content::Text(SHELL_TEST_SOURCED),
             ),
+            (
+                SHELL_TEST_LANGUAGE_PATH,
+                initramfs::Content::Text(SHELL_TEST_LANGUAGE),
+            ),
+            (TMP_PATH, initramfs::Content::Directory),
+            (HOME_PATH, initramfs::Content::Directory),
         ],
         &format!("initramfs-shell-{}.cpio", arch.user_target),
     )?;
@@ -1327,6 +1814,46 @@ const LINUX_STATIC_PACKAGE: &str = "eggos-linux-static";
 const LINUX_SOCKETS_PACKAGE: &str = "eggos-linux-sockets";
 
 const LINUX_SOCKETS_PATH: &str = "bin/linux-sockets";
+
+const LINUX_MEMORY_PACKAGE: &str = "eggos-linux-memory";
+
+const LINUX_MEMORY_PATH: &str = "bin/linux-memory";
+
+const LINUX_MAPPINGS_PACKAGE: &str = "eggos-linux-mappings";
+
+const LINUX_MAPPINGS_PATH: &str = "bin/linux-mappings";
+
+const LINUX_EVENTS_PACKAGE: &str = "eggos-linux-events";
+
+const LINUX_EVENTS_PATH: &str = "bin/linux-events";
+
+const LINUX_UDP_PACKAGE: &str = "eggos-linux-udp";
+
+const LINUX_TCP_PACKAGE: &str = "eggos-linux-tcp";
+
+fn build_network_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let added = [
+        image::AddedFile {
+            host: build_linux_test_program(arch, LINUX_UDP_PACKAGE, "static")?,
+            path: qemu::network::PROGRAM_PATH.to_owned(),
+        },
+        image::AddedFile {
+            host: build_linux_test_program(arch, LINUX_TCP_PACKAGE, "static")?,
+            path: qemu::network::TCP_PROGRAM_PATH.to_owned(),
+        },
+    ];
+    let mut extra = vec![(
+        "etc/eggos/init.conf",
+        initramfs::Content::Text(SHELL_TEST_CONFIG),
+    )];
+    extra.extend(image::members(&added));
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-network-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs)
+}
 
 const LINUX_GUI_PACKAGE: &str = "eggos-linux-gui-tests";
 
@@ -1366,6 +1893,18 @@ fn build_linux_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, S
     added.push(image::AddedFile {
         host: build_linux_test_program(arch, LINUX_SOCKETS_PACKAGE, "static")?,
         path: LINUX_SOCKETS_PATH.to_owned(),
+    });
+    added.push(image::AddedFile {
+        host: build_linux_test_program(arch, LINUX_MEMORY_PACKAGE, "static")?,
+        path: LINUX_MEMORY_PATH.to_owned(),
+    });
+    added.push(image::AddedFile {
+        host: build_linux_test_program(arch, LINUX_MAPPINGS_PACKAGE, "static")?,
+        path: LINUX_MAPPINGS_PATH.to_owned(),
+    });
+    added.push(image::AddedFile {
+        host: build_linux_test_program(arch, LINUX_EVENTS_PACKAGE, "static")?,
+        path: LINUX_EVENTS_PATH.to_owned(),
     });
     let mut extra = vec![(
         "etc/eggos/init.conf",
@@ -1411,7 +1950,7 @@ fn build_host_folder_test(arch: &Arch) -> Result<(std::path::PathBuf, String), S
     Ok((kernel, host_folder(&folder.to_string_lossy())?))
 }
 
-fn build_install_test(arch: &Arch) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+fn build_install_folder(arch: &Arch) -> Result<std::path::PathBuf, String> {
     let folder = target_directory().join(format!("install-folder-{}", arch.name));
     std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     let (program, _) = WIN_PAINT;
@@ -1421,26 +1960,71 @@ fn build_install_test(arch: &Arch) -> Result<(std::path::PathBuf, std::path::Pat
         (&paint, qemu::install::WINDOWS_PROGRAM),
         (&linux, qemu::install::LINUX_PROGRAM),
     ] {
-        let to = folder.join(name);
-        std::fs::copy(host, &to).map_err(|e| format!("{host} to {}: {e}", to.display()))?;
+        copy_file(host, &folder.join(name))?;
     }
     let (name, text) = qemu::files::HOST_TEXT_FILE;
     let to = folder.join(name);
     std::fs::write(&to, text).map_err(|e| format!("{}: {e}", to.display()))?;
-    let detected = [image::AddedFile {
-        host: paint,
-        path: String::new(),
-    }];
-    let layer = windows_layer_for(arch, &detected)?;
-    let extra: Vec<(&str, initramfs::Content)> = layer.iter().map(|layer| layer.member()).collect();
-    let initramfs = release_initramfs(
-        arch,
-        &extra,
-        &format!("initramfs-install-{}.cpio", arch.user_target),
+    Ok(std::path::PathBuf::from(host_folder(
+        &folder.to_string_lossy(),
+    )?))
+}
+
+fn copy_file(host: &str, to: &std::path::Path) -> Result<(), String> {
+    std::fs::copy(host, to)
+        .map(drop)
+        .map_err(|e| format!("{host} to {}: {e}", to.display()))
+}
+
+const SAMPLE_APPS_DIRECTORY: &str = "sample-apps";
+
+const SAMPLE_LINUX_APP: &str = "linux-paint";
+
+fn build_sample_apps(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let folder = target_directory()
+        .join(SAMPLE_APPS_DIRECTORY)
+        .join(arch.name);
+    std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    if WINDOWS_LAYER_ARCHES.contains(&arch.name) {
+        for (program, _) in [WIN_PAINT, WIN_CONTROLS] {
+            let host = build_windows_gui_program(program, windows_target(arch.name))?;
+            copy_file(&host, &folder.join(format!("{program}.exe")))?;
+        }
+    }
+    let linux = build_linux_test_program(arch, LINUX_GUI_PACKAGE, "static")?;
+    copy_file(&linux, &folder.join(SAMPLE_LINUX_APP))?;
+    if let Some((cpu, _)) = macos::target(arch.name) {
+        match macos::find_or_build_programs(&target_directory())? {
+            Some(programs) => write_mac_paint(&programs, cpu, &folder)?,
+            None => eprintln!(
+                "xtask: {}: no {}.zip: Apple's linker builds it, so build the sample apps on a \
+                 macOS host, or name a folder of the Mach-O programs with {}",
+                arch.name,
+                macos::GUI_APP,
+                macos::PROGRAMS_VARIABLE
+            ),
+        }
+    }
+    Ok(folder)
+}
+
+fn write_mac_paint(
+    programs: &macos::Programs,
+    cpu: &str,
+    folder: &std::path::Path,
+) -> Result<(), String> {
+    let app = macos::objc_program(macos::GUI_APP)
+        .ok_or_else(|| format!("{} is not an Objective-C test program", macos::GUI_APP))?;
+    let program = programs.path(macos::GUI_APP, cpu);
+    let bundle = macos::assemble_app(
+        folder,
+        macos::GUI_APP,
+        &macos::source_folder(&app).join(macos::INFO_PLIST),
+        &program,
     )?;
-    let kernel = build_release_kernel(arch, &initramfs)?;
-    let folder = std::path::PathBuf::from(host_folder(&folder.to_string_lossy())?);
-    Ok((kernel, folder))
+    macos::add_test_icon(&bundle)?;
+    macos::archive_app(&bundle)?;
+    Ok(())
 }
 
 fn build_program_windows_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
@@ -1505,24 +2089,6 @@ fn build_linux_test_program(
     Ok(path.to_string_lossy().into_owned())
 }
 
-struct MacosLayer {
-    host: String,
-}
-
-impl MacosLayer {
-    fn member(&self) -> (&str, initramfs::Content<'_>) {
-        (macos::LAYER_PATH, initramfs::Content::Program(&self.host))
-    }
-}
-
-fn macos_layer_for(arch: &Arch, added: &[image::AddedFile]) -> Result<Option<MacosLayer>, String> {
-    if !macos::layer_runs_on(arch.name) || !added.iter().any(|file| macos::is_program(&file.host)) {
-        return Ok(None);
-    }
-    let host = build_runtime_program(arch, macos::LAYER_PACKAGE)?;
-    Ok(Some(MacosLayer { host }))
-}
-
 const MACOS_FAT_PROGRAM: &str = "macos-fat";
 
 fn macos_test_programs(arch: &Arch, test: &str) -> Result<Option<macos::Programs>, String> {
@@ -1554,42 +2120,19 @@ fn macos_test_programs(arch: &Arch, test: &str) -> Result<Option<macos::Programs
     Ok(Some(programs))
 }
 
-fn build_macos_gui_test(
-    arch: &Arch,
-) -> Result<Option<(std::path::PathBuf, std::path::PathBuf)>, String> {
+fn build_macos_gui_folder(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
     let Some((cpu, _)) = macos::target(arch.name) else {
         return Ok(None);
     };
     let Some(programs) = macos_test_programs(arch, "macOS GUI boot test")? else {
         return Ok(None);
     };
-    let app = macos::objc_program(macos::GUI_APP)
-        .ok_or_else(|| format!("{} is not an Objective-C test program", macos::GUI_APP))?;
     let folder = target_directory().join(format!("macos-gui-folder-{}", arch.name));
     std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-    let program = programs.path(macos::GUI_APP, cpu);
-    let bundle = macos::assemble_app(
-        &folder,
-        macos::GUI_APP,
-        &macos::source_folder(&app).join(macos::INFO_PLIST),
-        &program,
-    )?;
-    macos::add_test_icon(&bundle)?;
-    macos::archive_app(&bundle)?;
-    let detected = [image::AddedFile {
-        host: program.to_string_lossy().into_owned(),
-        path: String::new(),
-    }];
-    let layer = macos_layer_for(arch, &detected)?;
-    let extra: Vec<(&str, initramfs::Content)> = layer.iter().map(|layer| layer.member()).collect();
-    let initramfs = release_initramfs(
-        arch,
-        &extra,
-        &format!("initramfs-macos-gui-{}.cpio", arch.user_target),
-    )?;
-    let kernel = build_release_kernel(arch, &initramfs)?;
-    let folder = std::path::PathBuf::from(host_folder(&folder.to_string_lossy())?);
-    Ok(Some((kernel, folder)))
+    write_mac_paint(&programs, cpu, &folder)?;
+    Ok(Some(std::path::PathBuf::from(host_folder(
+        &folder.to_string_lossy(),
+    )?)))
 }
 
 fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
@@ -1641,14 +2184,28 @@ fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::Pat
             host: host("macos-objc", own),
             path: "bin/macos-objc".to_owned(),
         },
+        image::AddedFile {
+            host: host("macos-swift", own),
+            path: "bin/macos-swift".to_owned(),
+        },
+        image::AddedFile {
+            host: host("macos-process", own),
+            path: "bin/macos-process".to_owned(),
+        },
+        image::AddedFile {
+            host: host("macos-text", own),
+            path: "bin/macos-text".to_owned(),
+        },
+        image::AddedFile {
+            host: host("macos-legacy", own),
+            path: "bin/macos-legacy".to_owned(),
+        },
     ];
-    let layer = macos_layer_for(arch, &added)?;
     let mut extra = vec![(
         "etc/eggos/init.conf",
         initramfs::Content::Text(SHELL_TEST_CONFIG),
     )];
     extra.extend(image::members(&added));
-    extra.extend(layer.iter().map(|layer| layer.member()));
     let initramfs = release_initramfs(
         arch,
         &extra,
@@ -1685,7 +2242,7 @@ fn build_android_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::P
         );
         return Ok(None);
     };
-    let program = build_android_console(&ndk, target)?;
+    let program = build_android_console(&ndk, target, android::Linkage::Static)?;
     let added = [image::AddedFile {
         host: program.to_string_lossy().into_owned(),
         path: ANDROID_CONSOLE_PATH.to_owned(),
@@ -1701,7 +2258,7 @@ fn build_android_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::P
         initramfs::Content::Text(SHELL_TEST_CONFIG),
     )];
     extra.extend(image::members(&added));
-    extra.extend(android::system_members(SHELL_PATH));
+    extra.extend(android::system_members(SHELL_PATH, arch.name));
     let initramfs = release_initramfs(
         arch,
         &extra,
@@ -1710,7 +2267,11 @@ fn build_android_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::P
     build_release_kernel(arch, &initramfs).map(Some)
 }
 
-fn build_android_console(ndk: &android::Ndk, target: &str) -> Result<std::path::PathBuf, String> {
+fn build_android_console(
+    ndk: &android::Ndk,
+    target: &str,
+    linkage: android::Linkage,
+) -> Result<std::path::PathBuf, String> {
     let target_dir = target_directory().join("android-console");
     let target_dir_text = target_dir.to_string_lossy();
     cargo_with_env(
@@ -1728,8 +2289,17 @@ fn build_android_console(ndk: &android::Ndk, target: &str) -> Result<std::path::
         ],
     )?;
     let release = target_dir.join(target).join("release");
-    let program = release.join("android-console");
-    android::link(ndk, target, &release.join("libandroid_console.a"), &program)?;
+    let program = release.join(match linkage {
+        android::Linkage::Static => "android-console",
+        android::Linkage::Dynamic => "android-console-dynamic",
+    });
+    android::link(
+        ndk,
+        target,
+        linkage,
+        &release.join("libandroid_console.a"),
+        &program,
+    )?;
     Ok(program)
 }
 
@@ -1905,16 +2475,47 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::{
-        APP_PATH, COREUTILS, EDIT_PATH, arch_option, host_folder, json_string_field, with_value,
-        without_flag,
+        APP_PATH, COREUTILS, DISK_PATH, EDIT_PATH, SETTINGS_PATH, arch_option, foreign_layers,
+        host_folder, json_string_field, room_bytes, size_in_mebibytes, with_value, without_flag,
     };
+
+    #[test]
+    fn sizes_are_whole_mebibytes_or_gibibytes() {
+        assert_eq!(size_in_mebibytes("512M"), Some(512));
+        assert_eq!(size_in_mebibytes("4G"), Some(4096));
+        let refused = ["", "M", "4", "4g", "4 G", "-4G", "0M", "4.5G", "G4"];
+        for refused in refused.into_iter().chain(["99999999999999999G"]) {
+            assert_eq!(size_in_mebibytes(refused), None, "{refused}");
+        }
+        assert_eq!(room_bytes("8G"), Ok(8 << 30));
+        assert!(room_bytes("8").is_err());
+    }
+
+    #[test]
+    fn the_release_image_carries_each_foreign_layer_where_it_runs() {
+        for arch in ["x86_64", "aarch64"] {
+            assert_eq!(
+                foreign_layers(arch),
+                [
+                    ("usr/lib/eggos/windows", "eggos-windows"),
+                    ("usr/lib/eggos/macos", "eggos-macos"),
+                ]
+            );
+        }
+        assert!(foreign_layers("riscv64").is_empty());
+    }
 
     #[test]
     fn every_mcp_tool_has_a_cli_twin_in_the_release_image() {
         let programs: Vec<String> = COREUTILS
             .iter()
             .map(|name| format!("/bin/{name}"))
-            .chain([format!("/{APP_PATH}"), format!("/{EDIT_PATH}")])
+            .chain([
+                format!("/{APP_PATH}"),
+                format!("/{EDIT_PATH}"),
+                format!("/{DISK_PATH}"),
+                format!("/{SETTINGS_PATH}"),
+            ])
             .collect();
         for tool in &eggos_mcp::tools::TOOLS {
             match tool.twin.program {

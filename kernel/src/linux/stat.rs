@@ -1,5 +1,6 @@
 //! File status (M6, D74, D102): `fstat`, `newfstatat` (`fstatat` in the generic table) and
-//! `statx` on descriptors and paths. glibc's stdio asks `fstat` whether a stream is a
+//! `statx` on descriptors and paths, and whether a caller may reach a file: `access`,
+//! `faccessat` and `faccessat2` (D168). glibc's stdio asks `fstat` whether a stream is a
 //! character device before it line-buffers a terminal, and Rust's std asks `statx` first for
 //! a file's metadata, falling back to `fstatat`.
 //!
@@ -10,14 +11,17 @@
 //!
 //! `newfstatat` and `statx` look up what `dirfd` and `path` name as `openat` does
 //! ([`super::files`]). Their synchronisation flags change nothing: there is no remote file
-//! system to ask, and with no symbolic links yet `AT_SYMLINK_NOFOLLOW` changes nothing either.
+//! system to ask. A symbolic link (`/proc/self/exe`, D168) is followed unless
+//! `AT_SYMLINK_NOFOLLOW` asks for the link itself.
 //! A null path with `AT_EMPTY_PATH` is not read, as Linux has accepted since 6.11. An empty
 //! path is `ENOENT` without `AT_EMPTY_PATH`, and with it names `dirfd` itself: `EBADF` for a
 //! descriptor that is not open, the working directory for `AT_FDCWD`.
 
 use super::Errno;
+use super::credentials::{Credentials, Kind as IdKind};
 use super::descriptors::{Descriptors, FileKind};
 use super::files;
+use super::pseudo_terminal::{PseudoTerminalEnd, Side};
 use super::thread::LinuxThread;
 use crate::process::Process;
 use crate::vfs::{self, Node, NodeKind};
@@ -115,12 +119,36 @@ pub const S_IFREG: u32 = 0o100000;
 
 /// A socket's file type bits (`S_IFSOCK`).
 pub const S_IFSOCK: u32 = 0o140000;
+/// A symbolic link's file type bits (`S_IFLNK`).
+pub const S_IFLNK: u32 = 0o120000;
 
 /// The device Linux's sockets report (`st_dev`): the anonymous device of its socket file system.
 pub const SOCKETS: Device = Device { major: 0, minor: 8 };
 
 /// The device memory files report (`st_dev`): the anonymous device of Linux's internal tmpfs.
 pub const MEMORY_FILES: Device = Device { major: 0, minor: 1 };
+
+/// The device of Linux's anonymous inodes, which event files report (`st_dev`).
+pub const ANONYMOUS_FILES: Device = Device {
+    major: 0,
+    minor: 15,
+};
+
+/// The status of an event file (`eventfd`, `timerfd`, `signalfd`, `epoll`): Linux's one
+/// anonymous inode, read and write for its owner, with no file type.
+pub const EVENT_FILE: Status = Status {
+    device: ANONYMOUS_FILES,
+    inode: 1,
+    mode: 0o600,
+    links: 1,
+    owner: 0,
+    group: 0,
+    represented_device: Device { major: 0, minor: 0 },
+    size: 0,
+    block_size: FRAME_SIZE as u32,
+    blocks: 0,
+    modified: 0,
+};
 
 /// The status of `node`: its attributes, on its file system's device, in blocks of the page
 /// size as a memory file system reports them.
@@ -132,6 +160,7 @@ pub fn node_status(node: Node) -> Status {
         NodeKind::Regular => S_IFREG,
         NodeKind::CharacterDevice => S_IFCHR,
         NodeKind::Socket => S_IFSOCK,
+        NodeKind::SymbolicLink => S_IFLNK,
     };
     let (represented_major, represented_minor) = node.character_device().unwrap_or((0, 0));
     Status {
@@ -301,6 +330,7 @@ fn write<P: Platform>(process: &Process<P>, address: u64, bytes: &[u8]) -> Resul
 fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
     match files.file(fd)?.kind() {
         FileKind::Console => Ok(CONSOLE),
+        FileKind::PseudoTerminal(end) => Ok(pseudo_terminal_status(end)),
         FileKind::Pipe(end) => Ok(Status {
             device: PIPES,
             inode: end.inode(),
@@ -315,6 +345,7 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
             Ok(node_status(*node))
         }
         FileKind::Snapshot(snapshot) => Ok(node_status(snapshot.node)),
+        FileKind::MemoryDevice(_, node) => Ok(node_status(*node)),
         FileKind::Window(_) => Ok(WINDOW),
         FileKind::AgentChannel(_) => Ok(AGENT),
         FileKind::MemoryFile(memory) => {
@@ -330,6 +361,16 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
                 ..CONSOLE
             })
         }
+        FileKind::InetSocket(socket) => Ok(Status {
+            device: SOCKETS,
+            inode: socket.inode(),
+            mode: S_IFSOCK | 0o777,
+            links: 1,
+            represented_device: Device { major: 0, minor: 0 },
+            size: 0,
+            blocks: 0,
+            ..CONSOLE
+        }),
         FileKind::Socket(socket) => Ok(Status {
             device: SOCKETS,
             inode: socket.inode(),
@@ -340,6 +381,25 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
             blocks: 0,
             ..CONSOLE
         }),
+        FileKind::Event(_) => Ok(EVENT_FILE),
+    }
+}
+
+fn pseudo_terminal_status(end: &PseudoTerminalEnd) -> Status {
+    use crate::vfs::devfs;
+    let (inode, permissions, (major, minor)) = match end.side() {
+        Side::Controlling => (devfs::PTMX, 0o666, devfs::PTMX_DEVICE),
+        Side::Program => (
+            devfs::pseudo_terminal_node(end.number()),
+            0o620,
+            (devfs::PSEUDO_TERMINAL_MAJOR, end.number()),
+        ),
+    };
+    Status {
+        inode,
+        mode: S_IFCHR | permissions,
+        represented_device: Device { major, minor },
+        ..CONSOLE
     }
 }
 
@@ -377,7 +437,9 @@ fn lookup<P: Platform>(
         };
     }
     let (root, start) = files::starting_points(thread, dirfd, path)?;
-    let node = vfs::resolve(root, start, path).map_err(files::walk_error)?;
+    let follow_last = flags & at::SYMLINK_NOFOLLOW == 0;
+    let node = vfs::resolve_as(root, start, path, process.id().get(), follow_last)
+        .map_err(files::walk_error)?;
     Ok(node_status(node))
 }
 
@@ -439,6 +501,137 @@ pub fn statx<P: Platform>(
     write(process, statxbuf, &statx_bytes(&status))
 }
 
+/// `access`'s modes (`R_OK`, `W_OK`, `X_OK`); `F_OK`, 0, asks only whether the file exists.
+pub mod access_mode {
+    /// May read.
+    pub const READ: u32 = 4;
+    /// May write.
+    pub const WRITE: u32 = 2;
+    /// May execute, or search a directory.
+    pub const EXECUTE: u32 = 1;
+    /// Every mode.
+    pub const ALL: u32 = READ | WRITE | EXECUTE;
+}
+
+/// `faccessat2`'s flag that checks with the file system ids rather than the real ones
+/// (`AT_EACCESS`).
+pub const AT_EACCESS: u64 = 0x200;
+
+/// `faccessat2(dirfd, path, mode, flags)`: whether the caller may reach what `dirfd` and `path`
+/// name with `mode` (D168; `access` and `faccessat` are this with no flags). Found as
+/// `newfstatat` finds it, the last link followed unless `AT_SYMLINK_NOFOLLOW`. The caller's
+/// real user and group ids decide, or its file system ids with `AT_EACCESS`: the owner's,
+/// group's (the group id or a supplementary group) or others' bits; root may read and write
+/// anything and execute what has an execute bit, or a directory. As Linux, in this order:
+/// `EINVAL` for a mode bit other than `R_OK`, `W_OK` and `X_OK`, or another flag; the path's
+/// errors; `EACCES` if the bits refuse; `EROFS` for writing a regular file, directory or link
+/// on a file system that cannot be changed. A descriptor that names no node (the console, a
+/// pipe, a socket) with `AT_EMPTY_PATH` may be read and written, never executed. `mode` and
+/// `flags` are `int`s.
+pub fn faccessat2<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    dirfd: u64,
+    path: u64,
+    mode: u64,
+    flags: u64,
+) -> Result<u64, Errno> {
+    let mode = mode as u32;
+    let flags = u64::from(flags as u32);
+    if mode & !access_mode::ALL != 0
+        || flags & !(AT_EACCESS | at::SYMLINK_NOFOLLOW | at::EMPTY_PATH) != 0
+    {
+        return Err(Errno::EINVAL);
+    }
+    let node = match access_target(process, thread, dirfd, path, flags)? {
+        Some(node) => node,
+        None if mode & access_mode::EXECUTE != 0 => return Err(Errno::EACCES),
+        None => return Ok(0),
+    };
+    let attributes = node.attributes();
+    let allowed = {
+        let state = process.credentials_and_limits().lock();
+        may_access(
+            &attributes,
+            &state.credentials,
+            flags & AT_EACCESS != 0,
+            mode,
+        )
+    };
+    if !allowed {
+        return Err(Errno::EACCES);
+    }
+    let changeable_kind = matches!(
+        attributes.kind,
+        NodeKind::Regular | NodeKind::Directory | NodeKind::SymbolicLink
+    );
+    if mode & access_mode::WRITE != 0
+        && changeable_kind
+        && !node.file_system().is_node_writable(node.id())
+    {
+        return Err(Errno::EROFS);
+    }
+    Ok(0)
+}
+
+fn access_target<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    dirfd: u64,
+    path: u64,
+    flags: u64,
+) -> Result<Option<Node>, Errno> {
+    let mut buffer = files::PathBuffer::uninit();
+    let path = files::read_path(process, path, &mut buffer)?;
+    if path.is_empty() {
+        if flags & at::EMPTY_PATH == 0 {
+            return Err(Errno::ENOENT);
+        }
+        if dirfd as u32 as i32 == at::FDCWD {
+            return Ok(Some(thread.working_directory().get()));
+        }
+        return Ok(thread.files().file(dirfd)?.kind().node());
+    }
+    let (root, start) = files::starting_points(thread, dirfd, path)?;
+    let follow_last = flags & at::SYMLINK_NOFOLLOW == 0;
+    vfs::resolve_as(root, start, path, process.id().get(), follow_last)
+        .map(Some)
+        .map_err(files::walk_error)
+}
+
+/// Whether `credentials` allow `mode` (an `access` mode) on a node with `attributes`: see
+/// [`faccessat2`].
+pub fn may_access(
+    attributes: &vfs::Attributes,
+    credentials: &Credentials,
+    file_system_ids: bool,
+    mode: u32,
+) -> bool {
+    let (user, group) = match file_system_ids {
+        true => (
+            credentials.ids(IdKind::User).filesystem,
+            credentials.ids(IdKind::Group).filesystem,
+        ),
+        false => (
+            credentials.ids(IdKind::User).real,
+            credentials.ids(IdKind::Group).real,
+        ),
+    };
+    let bits = attributes.permissions;
+    if user == 0 {
+        let executable = attributes.kind == NodeKind::Directory || bits & 0o111 != 0;
+        return mode & access_mode::EXECUTE == 0 || executable;
+    }
+    let class = if user == attributes.owner {
+        bits >> 6
+    } else if group == attributes.group || credentials.groups().contains(&attributes.group) {
+        bits >> 3
+    } else {
+        bits
+    };
+    class & mode == mode
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +645,71 @@ mod tests {
             minor: 0x6789ab,
         };
         assert_eq!(large.encoded(), 0x0001_2006_7893_45ab);
+    }
+
+    #[test]
+    fn access_follows_the_class_bits_and_root_needs_an_execute_bit() {
+        use super::super::credentials::Ids;
+        use access_mode::{EXECUTE, READ, WRITE};
+        let file = |permissions, kind| vfs::Attributes {
+            kind,
+            permissions,
+            file_id: 1,
+            links: 1,
+            owner: 1000,
+            group: 100,
+            size: 0,
+            modified: 0,
+        };
+        let ids = |id| Ids {
+            real: id,
+            effective: id,
+            saved: id,
+            filesystem: id,
+        };
+        let regular = file(0o640, NodeKind::Regular);
+        let root = Credentials::default();
+        assert!(may_access(&regular, &root, false, READ | WRITE));
+        assert!(!may_access(&regular, &root, false, EXECUTE));
+        assert!(may_access(
+            &file(0o001, NodeKind::Regular),
+            &root,
+            false,
+            EXECUTE
+        ));
+        assert!(may_access(
+            &file(0, NodeKind::Directory),
+            &root,
+            false,
+            EXECUTE
+        ));
+        let mut owner = Credentials::default();
+        owner.set_ids(IdKind::User, ids(1000)).unwrap();
+        owner.set_ids(IdKind::Group, ids(100)).unwrap();
+        assert!(may_access(&regular, &owner, false, READ | WRITE));
+        assert!(!may_access(&regular, &owner, false, EXECUTE));
+        let mut other = Credentials::default();
+        other.set_ids(IdKind::User, ids(2000)).unwrap();
+        other.set_ids(IdKind::Group, ids(100)).unwrap();
+        assert!(may_access(&regular, &other, false, READ));
+        assert!(!may_access(&regular, &other, false, WRITE));
+        other.set_ids(IdKind::Group, ids(200)).unwrap();
+        assert!(!may_access(&regular, &other, false, READ));
+        assert!(may_access(&regular, &other, false, 0));
+        let mut set_user = Credentials::default();
+        set_user
+            .set_ids(
+                IdKind::User,
+                Ids {
+                    real: 2000,
+                    effective: 1000,
+                    saved: 1000,
+                    filesystem: 1000,
+                },
+            )
+            .unwrap();
+        set_user.set_ids(IdKind::Group, ids(200)).unwrap();
+        assert!(!may_access(&regular, &set_user, false, WRITE));
+        assert!(may_access(&regular, &set_user, true, WRITE));
     }
 }

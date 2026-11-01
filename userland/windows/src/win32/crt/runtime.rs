@@ -4,11 +4,13 @@
 //! modes the startup sets, the `atexit` tables and `exit`; and `errno`, which lives in a slot of
 //! each thread's TEB past the documented part.
 
+use super::super::directory;
 use super::super::heap as process_heap;
 use super::super::process::process;
 use super::super::{SpinLock, call_program, thread_environment};
 use super::stdio;
 use crate::command_line;
+use crate::find;
 use crate::library::Export;
 use crate::linux;
 use crate::text;
@@ -24,13 +26,13 @@ pub mod errno {
     pub const EINVAL: i32 = 22;
     pub const EMFILE: i32 = 24;
     pub const ERANGE: i32 = 34;
+    pub const EOVERFLOW: i32 = 132;
 }
 
 const LAST_LINUX_ERRNO_SHARED_WITH_WINDOWS: u16 = 34;
 const DISABLE_PER_THREAD_LOCALE: i32 = 2;
 const TEXT_MODE: i32 = 0x4000;
 const BINARY_MODE: i32 = 0x8000;
-const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
 const DLL_PROCESS_DETACH: usize = 0;
 const FIRST_EXIT_TABLE_CAPACITY: usize = 32;
 const ABORT_STATUS: u32 = 3;
@@ -200,11 +202,11 @@ unsafe extern "efiapi" fn initterm_e(first: *const usize, last: *const usize) ->
     0
 }
 
-static ARGUMENT_COUNT: AtomicI32 = AtomicI32::new(0);
-static NARROW_ARGUMENTS: AtomicPtr<*mut u8> = AtomicPtr::new(ptr::null_mut());
-static WIDE_ARGUMENTS: AtomicPtr<*mut u16> = AtomicPtr::new(ptr::null_mut());
-static NARROW_ENVIRONMENT: AtomicPtr<*mut u8> = AtomicPtr::new(ptr::null_mut());
-static WIDE_ENVIRONMENT: AtomicPtr<*mut u16> = AtomicPtr::new(ptr::null_mut());
+pub(super) static ARGUMENT_COUNT: AtomicI32 = AtomicI32::new(0);
+pub(super) static NARROW_ARGUMENTS: AtomicPtr<*mut u8> = AtomicPtr::new(ptr::null_mut());
+pub(super) static WIDE_ARGUMENTS: AtomicPtr<*mut u16> = AtomicPtr::new(ptr::null_mut());
+pub(super) static NARROW_ENVIRONMENT: AtomicPtr<*mut u8> = AtomicPtr::new(ptr::null_mut());
+pub(super) static WIDE_ENVIRONMENT: AtomicPtr<*mut u16> = AtomicPtr::new(ptr::null_mut());
 
 fn program_arguments() -> impl Iterator<Item = &'static CStr> {
     process().startup.arguments().skip(2)
@@ -272,13 +274,131 @@ fn configured<T>(list: *mut *mut T, count: usize, into: &AtomicPtr<*mut T>) -> i
     0
 }
 
-extern "efiapi" fn configure_narrow_argv(_mode: i32) -> i32 {
+/// `_crt_argv_expanded_arguments`: the mode of `_configure_narrow_argv` and
+/// `_configure_wide_argv` that expands wildcards in the arguments (D189).
+pub(super) const EXPANDED_ARGUMENTS: i32 = 2;
+
+enum Expanded<'a> {
+    Argument { folder: &'a [u8], name: &'a [u8] },
+    End,
+}
+
+fn expand_pattern(argument: &[u8], start: usize, visit: &mut dyn FnMut(Expanded<'_>)) -> usize {
+    let (folder, pattern) = argument.split_at(start);
+    let Ok(folder_text) = core::str::from_utf8(folder) else {
+        return 0;
+    };
+    let mut path = [0u8; text::PATH_CAPACITY];
+    let length = match text::eggos_path(folder_text.chars(), &mut path) {
+        Some(length) if length > 1 => length,
+        _ => {
+            path[..2].copy_from_slice(b".\0");
+            2
+        }
+    };
+    let mut matched = 0;
+    directory::for_each_entry(&path[..length], &mut |name, _| {
+        if find::matches(pattern, name) {
+            visit(Expanded::Argument { folder, name });
+            matched += 1;
+        }
+    });
+    matched
+}
+
+fn expand_arguments(visit: &mut dyn FnMut(Expanded<'_>)) {
+    for (position, argument) in program_arguments().enumerate() {
+        let argument = argument.to_bytes();
+        let matched = match find::argument_pattern_start(argument) {
+            Some(start) if position > 0 => expand_pattern(argument, start, visit),
+            _ => 0,
+        };
+        if matched == 0 {
+            visit(Expanded::Argument {
+                folder: argument,
+                name: b"",
+            });
+        }
+        visit(Expanded::End);
+    }
+}
+
+fn expanded_list() -> Option<(*mut *mut u8, usize)> {
+    let mut bytes = 0;
+    let mut count = 0;
+    expand_arguments(&mut |piece| {
+        if let Expanded::Argument { folder, name } = piece {
+            bytes += folder.len() + name.len() + 1;
+            count += 1;
+        }
+    });
+    let block = process_heap::allocate(bytes.max(1));
+    let list = new_list::<u8>(count);
+    if block.is_null() || list.is_null() {
+        return None;
+    }
+    let mut at = 0;
+    let mut index = 0;
+    let mut run = 0;
+    expand_arguments(&mut |piece| match piece {
+        Expanded::Argument { folder, name } => {
+            let size = folder.len() + name.len() + 1;
+            if index == count || at + size > bytes {
+                return;
+            }
+            // SAFETY: the block holds `bytes` bytes, and this string's `size` fit after `at`.
+            let out = unsafe { core::slice::from_raw_parts_mut(block.wrapping_add(at), size) };
+            out[..folder.len()].copy_from_slice(folder);
+            out[folder.len()..size - 1].copy_from_slice(name);
+            out[size - 1] = 0;
+            // SAFETY: the list holds `count + 1` pointers and `index` is below `count`.
+            unsafe { list.wrapping_add(index).write(block.wrapping_add(at)) };
+            at += size;
+            index += 1;
+        }
+        Expanded::End => {
+            // SAFETY: the list's entries `run..index` were written above.
+            let names =
+                unsafe { core::slice::from_raw_parts_mut(list.wrapping_add(run), index - run) };
+            names.sort_unstable_by(|a, b| {
+                // SAFETY: each entry is a NUL-terminated string in the block.
+                let a = unsafe { CStr::from_ptr(a.cast_const().cast()) };
+                // SAFETY: as above.
+                let b = unsafe { CStr::from_ptr(b.cast_const().cast()) };
+                a.cmp(b)
+            });
+            run = index;
+        }
+    });
+    Some((list, index))
+}
+
+pub(super) extern "efiapi" fn configure_narrow_argv(mode: i32) -> i32 {
+    if mode == EXPANDED_ARGUMENTS {
+        let (list, count) = expanded_list().unwrap_or((ptr::null_mut(), 0));
+        return configured(list, count, &NARROW_ARGUMENTS);
+    }
     let count = program_arguments().count();
     let list = narrow_list(program_arguments(), count);
     configured(list, count, &NARROW_ARGUMENTS)
 }
 
-extern "efiapi" fn configure_wide_argv(_mode: i32) -> i32 {
+pub(super) extern "efiapi" fn configure_wide_argv(mode: i32) -> i32 {
+    if mode == EXPANDED_ARGUMENTS {
+        let (list, count) = match expanded_list() {
+            Some((narrow, count)) => {
+                let strings = (0..count).map(|index| {
+                    // SAFETY: `expanded_list` wrote `count` pointers.
+                    let string = unsafe { narrow.wrapping_add(index).read() };
+                    // SAFETY: each a NUL-terminated string kept for the process's life.
+                    unsafe { CStr::from_ptr(string.cast_const().cast()) }
+                });
+                (wide_list(strings, count), count)
+            }
+            None => (ptr::null_mut(), 0),
+        };
+        return configured(list, count, &WIDE_ARGUMENTS);
+    }
     let count = program_arguments().count();
     let list = wide_list(program_arguments(), count);
     configured(list, count, &WIDE_ARGUMENTS)
@@ -296,7 +416,7 @@ extern "efiapi" fn wide_arguments() -> *mut *mut *mut u16 {
     WIDE_ARGUMENTS.as_ptr()
 }
 
-fn narrow_environment() -> *mut *mut u8 {
+pub(super) fn narrow_environment() -> *mut *mut u8 {
     let current = NARROW_ENVIRONMENT.load(Ordering::Acquire);
     if !current.is_null() {
         return current;
@@ -306,7 +426,7 @@ fn narrow_environment() -> *mut *mut u8 {
     list
 }
 
-fn wide_environment() -> *mut *mut u16 {
+pub(super) fn wide_environment() -> *mut *mut u16 {
     let current = WIDE_ENVIRONMENT.load(Ordering::Acquire);
     if !current.is_null() {
         return current;
@@ -363,7 +483,7 @@ extern "efiapi" fn get_wide_winmain_command_line() -> *mut u16 {
     after_program_name(process().command_line_wide)
 }
 
-extern "efiapi" fn set_app_type(_kind: i32) {}
+pub(super) extern "efiapi" fn set_app_type(_kind: i32) {}
 
 extern "efiapi" fn set_user_math_error(_handler: usize) {}
 
@@ -372,10 +492,10 @@ extern "efiapi" fn configure_thread_locale(_flag: i32) -> i32 {
 }
 
 static NEW_MODE: AtomicI32 = AtomicI32::new(0);
-static COMMIT_MODE: AtomicI32 = AtomicI32::new(0);
-static FILE_MODE: AtomicI32 = AtomicI32::new(TEXT_MODE);
+pub(super) static COMMIT_MODE: AtomicI32 = AtomicI32::new(0);
+pub(super) static FILE_MODE: AtomicI32 = AtomicI32::new(TEXT_MODE);
 
-extern "efiapi" fn set_new_mode(mode: i32) -> i32 {
+pub(super) extern "efiapi" fn set_new_mode(mode: i32) -> i32 {
     NEW_MODE.swap(mode, Ordering::AcqRel)
 }
 
@@ -415,15 +535,11 @@ pub fn binary_by_default() -> bool {
     FILE_MODE.load(Ordering::Acquire) == BINARY_MODE
 }
 
-extern "efiapi" fn seh_filter_exe(_code: u32, _pointers: usize) -> i32 {
-    EXCEPTION_CONTINUE_SEARCH
-}
-
 extern "efiapi" fn register_thread_local_exe_atexit_callback(callback: usize) {
     THREAD_LOCAL_EXIT_CALLBACK.store(callback, Ordering::Release);
 }
 
-extern "efiapi" fn crt_atexit(function: usize) -> i32 {
+pub(super) extern "efiapi" fn crt_atexit(function: usize) -> i32 {
     // SAFETY: the process's own table.
     unsafe { register(AT_EXIT.0.get(), function) }
 }
@@ -514,7 +630,79 @@ extern "efiapi" fn dos_errno_location() -> *mut u32 {
     (thread_environment::current() + thread_environment::teb::DOS_ERRNO) as *mut u32
 }
 
+unsafe extern "efiapi" fn getenv(name: *const u8) -> *mut u8 {
+    if name.is_null() {
+        set_errno(errno::EINVAL);
+        return ptr::null_mut();
+    }
+    // SAFETY: `getenv`'s contract: a NUL-terminated name.
+    let name = unsafe { CStr::from_ptr(name.cast()) }.to_bytes();
+    let list = narrow_environment();
+    if name.is_empty() || name.contains(&b'=') || list.is_null() {
+        return ptr::null_mut();
+    }
+    for index in 0.. {
+        // SAFETY: the environment list is NULL-terminated and lives for the program's life.
+        let entry = unsafe { list.wrapping_add(index).read() };
+        if entry.is_null() {
+            break;
+        }
+        // SAFETY: each entry is a NUL-terminated `NAME=value` string of the list.
+        let bytes = unsafe { CStr::from_ptr(entry.cast()) }.to_bytes();
+        let named = bytes.len() > name.len()
+            && bytes[name.len()] == b'='
+            && bytes[..name.len()].eq_ignore_ascii_case(name);
+        if named {
+            return entry.wrapping_add(name.len() + 1);
+        }
+    }
+    ptr::null_mut()
+}
+
+const ASSERTION_MESSAGE_BYTES: usize = 512;
+
+unsafe extern "efiapi" fn wassert(message: *const u16, file: *const u16, line: u32) {
+    let mut text = [0u8; ASSERTION_MESSAGE_BYTES];
+    let mut length = 0;
+    let mut push = |bytes: &[u8]| {
+        let room = text.len() - length;
+        let taken = bytes.len().min(room);
+        text[length..length + taken].copy_from_slice(&bytes[..taken]);
+        length += taken;
+    };
+    let push_wide = |units: *const u16, push: &mut dyn FnMut(&[u8])| {
+        if units.is_null() {
+            return;
+        }
+        // SAFETY: `_wassert`'s contract: NUL-terminated wide strings.
+        let units = unsafe { super::super::file::wide_string(units) };
+        let mut bytes = [0u8; ASSERTION_MESSAGE_BYTES];
+        let (written, _) = crate::text::write_utf8(units, &mut bytes);
+        push(&bytes[..written]);
+    };
+    push(b"Assertion failed: ");
+    push_wide(message, &mut push);
+    push(b", file ");
+    push_wide(file, &mut push);
+    push(b", line ");
+    let mut digits = [0u8; 10];
+    let mut at = digits.len();
+    let mut rest = line;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    push(&digits[at..]);
+    end_abnormally(&text[..length], ABORT_STATUS)
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
+    b"getenv" => getenv,
+    b"_wassert" => wassert,
     b"_initterm" => initterm,
     b"_initterm_e" => initterm_e,
     b"_configure_narrow_argv" => configure_narrow_argv,
@@ -539,7 +727,6 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"__p__fmode" => file_mode,
     b"_set_fmode" => set_file_mode,
     b"_get_fmode" => get_file_mode,
-    b"_seh_filter_exe" => seh_filter_exe,
     b"_register_thread_local_exe_atexit_callback" => register_thread_local_exe_atexit_callback,
     b"_crt_atexit" => crt_atexit,
     b"_crt_at_quick_exit" => crt_at_quick_exit,
@@ -553,7 +740,6 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"_cexit" => cexit,
     b"_c_exit" => c_exit,
     b"abort" => abort,
-    b"terminate" => abort,
     b"_invalid_parameter_noinfo" => invalid_parameter,
     b"_invalid_parameter_noinfo_noreturn" => invalid_parameter,
     b"_errno" => errno_location,

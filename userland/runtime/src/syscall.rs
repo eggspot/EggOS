@@ -48,6 +48,7 @@ pub mod number {
     pub const GETDENTS64: usize = 217;
     pub const STATX: usize = 332;
     pub const DUP3: usize = 292;
+    pub const CLOSE_RANGE: usize = 436;
     pub const FCNTL: usize = 72;
     pub const PIPE2: usize = 293;
     pub const MKDIRAT: usize = 258;
@@ -56,10 +57,15 @@ pub mod number {
     pub const RENAMEAT2: usize = 316;
     pub const SYNC: usize = 162;
     pub const SCHED_GETAFFINITY: usize = 204;
+    pub const SCHED_SETAFFINITY: usize = 203;
     pub const FSYNC: usize = 74;
     pub const KILL: usize = 62;
     pub const SOCKET: usize = 41;
     pub const CONNECT: usize = 42;
+    pub const SENDTO: usize = 44;
+    pub const RECVFROM: usize = 45;
+    pub const GETSOCKNAME: usize = 51;
+    pub const SETSOCKOPT: usize = 54;
     pub const SENDMSG: usize = 46;
     pub const RECVMSG: usize = 47;
     pub const BIND: usize = 49;
@@ -68,6 +74,17 @@ pub mod number {
     pub const MEMFD_CREATE: usize = 319;
     pub const FTRUNCATE: usize = 77;
     pub const PREAD64: usize = 17;
+    pub const PWRITE64: usize = 18;
+    pub const READLINKAT: usize = 267;
+    pub const SYMLINKAT: usize = 266;
+    pub const LINKAT: usize = 265;
+    pub const OPENAT2: usize = 437;
+    pub const FCHMODAT: usize = 268;
+    pub const FCHMODAT2: usize = 452;
+    pub const STATFS: usize = 137;
+    pub const FSTATFS: usize = 138;
+    pub const LSEEK: usize = 8;
+    pub const FACCESSAT: usize = 269;
 }
 
 /// Linux's system-call numbers: the generic table AArch64 and RISC-V share.
@@ -115,6 +132,7 @@ pub mod number {
     pub const GETDENTS64: usize = 61;
     pub const STATX: usize = 291;
     pub const DUP3: usize = 24;
+    pub const CLOSE_RANGE: usize = 436;
     pub const FCNTL: usize = 25;
     pub const PIPE2: usize = 59;
     pub const MKDIRAT: usize = 34;
@@ -122,6 +140,7 @@ pub mod number {
     pub const UTIMENSAT: usize = 88;
     pub const RENAMEAT2: usize = 276;
     pub const SYNC: usize = 81;
+    pub const SCHED_SETAFFINITY: usize = 122;
     pub const SCHED_GETAFFINITY: usize = 123;
     pub const FSYNC: usize = 82;
     pub const KILL: usize = 129;
@@ -129,12 +148,27 @@ pub mod number {
     pub const BIND: usize = 200;
     pub const LISTEN: usize = 201;
     pub const CONNECT: usize = 203;
+    pub const GETSOCKNAME: usize = 204;
+    pub const SETSOCKOPT: usize = 208;
+    pub const SENDTO: usize = 206;
+    pub const RECVFROM: usize = 207;
     pub const SENDMSG: usize = 211;
     pub const RECVMSG: usize = 212;
     pub const ACCEPT4: usize = 242;
     pub const MEMFD_CREATE: usize = 279;
     pub const FTRUNCATE: usize = 46;
     pub const PREAD64: usize = 67;
+    pub const PWRITE64: usize = 68;
+    pub const READLINKAT: usize = 78;
+    pub const SYMLINKAT: usize = 36;
+    pub const LINKAT: usize = 37;
+    pub const OPENAT2: usize = 437;
+    pub const FCHMODAT: usize = 53;
+    pub const FCHMODAT2: usize = 452;
+    pub const STATFS: usize = 43;
+    pub const FSTATFS: usize = 44;
+    pub const LSEEK: usize = 62;
+    pub const FACCESSAT: usize = 48;
 }
 
 /// Makes Linux system call `number` with `arguments` and returns its result: a negative errno

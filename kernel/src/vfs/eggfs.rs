@@ -11,16 +11,28 @@
 //!   Nothing runs while nothing changes.
 //! - **Errors.** A disk failure or an inconsistency reads as `EIO`; a volume whose commit
 //!   failed refuses every change after it.
+//! - **Links** (D170): symbolic links and hard links are the volume's own (EggFS version 2);
+//!   an open file is held on the volume, so a file whose last name goes while open stays
+//!   until its last close. A release may come under a spin lock (a mapping's last reference),
+//!   so it never takes the volume's lock: it is queued in [`RELEASE_SLOTS`] lock-free slots,
+//!   or past them in a list of [`RELEASES_PER_CHUNK`]-entry chunks under a leaf lock, which
+//!   the next commit applies and frees. The list is not held to the user reserve (D155): the
+//!   release cannot wait for the volume under a spin lock, and a lost one would keep a removed
+//!   file's blocks until the next mount; one entry per close, freed within [`COMMIT_DELAY`],
+//!   on top of the open file the close just freed. Only a release that finds no memory at all
+//!   leaves the file until the next mount, which frees it.
 
 use super::{
-    Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Refused, StorageError, WriteAt,
+    Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Refused, StorageError, Usage, WriteAt,
+    magic,
 };
 use crate::block::{BlockDevice, SECTOR_SIZE};
 use crate::devices::Deadline;
-use crate::sync::{SleepLock, Sleeping};
+use crate::sync::{LeafSpinLock, SleepLock, Sleeping};
 use crate::thread::WaitQueue;
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use eggos_eggfs::{BLOCK_SIZE, Disk, DiskError, Error, Kind, MAX_NAME, Volume};
 
 /// How long one disk request may take before it fails.
@@ -29,6 +41,14 @@ pub const REQUEST_TIMEOUT_MS: u64 = 2000;
 /// How long the committer waits after a change before it commits, so the changes of a burst
 /// of work share one transaction.
 pub const COMMIT_DELAY: core::time::Duration = core::time::Duration::from_secs(5);
+
+/// How many releases of held files wait for the next commit in lock-free slots; more wait in
+/// a list.
+pub const RELEASE_SLOTS: usize = 64;
+
+/// How many releases one chunk of the list past [`RELEASE_SLOTS`] holds: a page of them, so
+/// the list never needs a larger contiguous allocation however long it grows.
+pub const RELEASES_PER_CHUNK: usize = 512;
 
 const SECTORS_PER_BLOCK: u64 = (BLOCK_SIZE / SECTOR_SIZE) as u64;
 
@@ -117,6 +137,8 @@ pub struct EggFs<D: Disk + Send> {
     sleeping: Sleeping,
     changed: AtomicBool,
     committer: WaitQueue,
+    releases: [AtomicU64; RELEASE_SLOTS],
+    releases_past_slots: LeafSpinLock<Vec<Vec<u64>>>,
 }
 
 impl<D: Disk + Send> core::fmt::Debug for EggFs<D> {
@@ -140,6 +162,7 @@ fn refused(error: Error) -> Refused {
         Error::InvalidArgument => Refused::InvalidArgument,
         Error::TooBig => Refused::TooBig,
         Error::Busy => Refused::Busy,
+        Error::TooManyLinks => Refused::TooManyLinks,
         Error::Corrupt | Error::Io => Refused::Storage,
     }
 }
@@ -148,6 +171,7 @@ fn node_kind(node: u64) -> NodeKind {
     match eggos_eggfs::kind_of(node) {
         Kind::Directory => NodeKind::Directory,
         Kind::Regular => NodeKind::Regular,
+        Kind::SymbolicLink => NodeKind::SymbolicLink,
     }
 }
 
@@ -161,6 +185,8 @@ impl<D: Disk + Send> EggFs<D> {
             sleeping,
             changed: AtomicBool::new(false),
             committer: WaitQueue::new(),
+            releases: [const { AtomicU64::new(0) }; RELEASE_SLOTS],
+            releases_past_slots: LeafSpinLock::new_leaf(Vec::new()),
         }
     }
 
@@ -189,9 +215,47 @@ impl<D: Disk + Send> EggFs<D> {
         })
     }
 
-    /// Commits every change made so far.
+    /// Commits every change made so far, the queued releases first.
     pub fn commit(&self) -> Result<(), StorageError> {
-        self.volume.lock().commit().map_err(|_| StorageError)
+        let mut volume = self.volume.lock();
+        for slot in &self.releases {
+            let node = slot.swap(0, Ordering::AcqRel);
+            if node != 0 {
+                let _ = volume.release(node);
+            }
+        }
+        let past_slots = core::mem::take(&mut *self.releases_past_slots.lock());
+        for node in past_slots.into_iter().flatten() {
+            let _ = volume.release(node);
+        }
+        volume.commit().map_err(|_| StorageError)
+    }
+
+    fn release_later(&self, node: u64) {
+        let queued = self.releases.iter().any(|slot| {
+            slot.compare_exchange(0, node, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        }) || self.release_past_slots(node);
+        if queued && !self.changed.swap(true, Ordering::AcqRel) {
+            self.sleeping.wake(&self.committer);
+        }
+    }
+
+    fn release_past_slots(&self, node: u64) -> bool {
+        let mut chunks = self.releases_past_slots.lock();
+        if let Some(chunk) = chunks.last_mut()
+            && chunk.len() < RELEASES_PER_CHUNK
+        {
+            chunk.push(node);
+            return true;
+        }
+        let mut chunk = Vec::new();
+        if chunks.try_reserve(1).is_err() || chunk.try_reserve_exact(RELEASES_PER_CHUNK).is_err() {
+            return false;
+        }
+        chunk.push(node);
+        chunks.push(chunk);
+        true
     }
 
     fn changed(&self) {
@@ -263,6 +327,21 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
 
     fn device(&self) -> (u32, u32) {
         self.eggfs.device
+    }
+
+    fn usage(&self) -> Usage {
+        let volume = self.volume();
+        let (blocks, free_blocks) = volume.space();
+        let (nodes, free_nodes) = volume.inodes();
+        Usage {
+            magic: magic::EGGFS,
+            block_size: BLOCK_SIZE as u64,
+            blocks,
+            free_blocks,
+            nodes,
+            free_nodes,
+            read_only: false,
+        }
     }
 
     fn kind(&self, node: u64) -> NodeKind {
@@ -366,9 +445,51 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
         let kind = match kind {
             NodeKind::Directory => Kind::Directory,
             NodeKind::Regular => Kind::Regular,
-            NodeKind::CharacterDevice | NodeKind::Socket => return Err(Refused::InvalidArgument),
+            NodeKind::CharacterDevice | NodeKind::Socket | NodeKind::SymbolicLink => {
+                return Err(Refused::InvalidArgument);
+            }
         };
         self.changing(|volume| volume.create(directory, name, kind, permissions, now))
+    }
+
+    fn symlink(
+        &self,
+        directory: u64,
+        name: &[u8],
+        target: &[u8],
+        now: u64,
+    ) -> Result<u64, Refused> {
+        self.changing(|volume| volume.symlink(directory, name, target, now))
+    }
+
+    fn link(&self, node: u64, directory: u64, name: &[u8], now: u64) -> Result<(), Refused> {
+        if node_kind(node) == NodeKind::Directory {
+            return Err(Refused::NotPermitted);
+        }
+        self.changing(|volume| volume.link(node, directory, name, now))
+    }
+
+    fn link_target(&self, node: u64, _caller: u32) -> Option<alloc::vec::Vec<u8>> {
+        if node_kind(node) != NodeKind::SymbolicLink {
+            return None;
+        }
+        self.volume().link_target(node).ok()
+    }
+
+    fn set_permissions(&self, node: u64, permissions: u32) -> Result<(), Refused> {
+        self.changing(|volume| volume.set_permissions(node, permissions))
+    }
+
+    fn hold(&self, node: u64) {
+        if node_kind(node) != NodeKind::Directory {
+            let _ = self.volume().hold(node);
+        }
+    }
+
+    fn release(&self, node: u64) {
+        if node_kind(node) != NodeKind::Directory {
+            self.eggfs.release_later(node);
+        }
     }
 
     fn remove(
@@ -486,6 +607,136 @@ mod tests {
             fs.remove(home.id(), b"missing", false, 9),
             Err(Refused::NotFound)
         );
+        eggfs.with_volume(|volume| volume.check().unwrap());
+    }
+
+    #[test]
+    fn links_and_a_file_removed_while_held_go_through_the_volume() {
+        let (eggfs, home, _) = mounted();
+        let fs = home.file_system();
+        let file = fs
+            .create(home.id(), b"a", NodeKind::Regular, 0o644, 1)
+            .unwrap();
+        fs.write(file, WriteAt::End, b"text", 2).unwrap();
+        let link = fs.symlink(home.id(), b"l", b"a", 3).unwrap();
+        assert_eq!(fs.kind(link), NodeKind::SymbolicLink);
+        assert_eq!(fs.link_target(link, 0), Some(b"a".to_vec()));
+        assert_eq!(read_all(resolve(home, home, b"l").unwrap()), b"text");
+        fs.link(file, home.id(), b"b", 4).unwrap();
+        assert_eq!(fs.attributes(file).links, 2);
+        assert_eq!(
+            fs.link(home.id(), home.id(), b"c", 4),
+            Err(Refused::NotPermitted)
+        );
+        fs.set_permissions(file, 0o755).unwrap();
+        assert_eq!(fs.attributes(file).permissions, 0o755);
+        fs.hold(file);
+        fs.remove(home.id(), b"a", false, 5).unwrap();
+        fs.remove(home.id(), b"b", false, 5).unwrap();
+        assert_eq!(read_all(home.with_id(file)), b"text");
+        fs.release(file);
+        assert_eq!(
+            read_all(home.with_id(file)),
+            b"text",
+            "released at the next commit"
+        );
+        fs.sync().unwrap();
+        assert_eq!(read_all(home.with_id(file)), b"");
+        eggfs.with_volume(|volume| volume.check().unwrap());
+    }
+
+    #[test]
+    fn usage_counts_a_removed_file_s_blocks_as_used_until_the_commit_after_its_last_release() {
+        let (_, home, applications) = mounted();
+        let fs = home.file_system();
+        let empty = fs.usage();
+        assert_eq!(empty.magic, magic::EGGFS);
+        assert_eq!((empty.block_size, empty.blocks), (BLOCK_SIZE as u64, 2048));
+        assert!(empty.free_blocks < empty.blocks && empty.free_nodes < empty.nodes);
+        assert_eq!(applications.file_system().usage(), empty);
+        let file = fs
+            .create(home.id(), b"big", NodeKind::Regular, 0o644, 1)
+            .unwrap();
+        fs.write(file, WriteAt::End, &[1; 8 * BLOCK_SIZE], 2)
+            .unwrap();
+        let written = fs.usage();
+        assert!(written.free_blocks + 8 <= empty.free_blocks, "{written:?}");
+        fs.hold(file);
+        fs.remove(home.id(), b"big", false, 3).unwrap();
+        assert!(
+            fs.usage().free_blocks < written.free_blocks + 8,
+            "an orphan"
+        );
+        fs.release(file);
+        assert!(
+            fs.usage().free_blocks < written.free_blocks + 8,
+            "until the commit"
+        );
+        fs.sync().unwrap();
+        assert!(fs.usage().free_blocks >= written.free_blocks + 8);
+    }
+
+    #[test]
+    fn more_releases_than_slots_between_commits_all_free_their_files() {
+        let (eggfs, home, _) = mounted();
+        let fs = home.file_system();
+        let before = fs.usage();
+        let files: alloc::vec::Vec<u64> = (0..RELEASE_SLOTS + 8)
+            .map(|index| {
+                let name = alloc::format!("f{index}");
+                let file = fs
+                    .create(home.id(), name.as_bytes(), NodeKind::Regular, 0o644, 1)
+                    .unwrap();
+                fs.write(file, WriteAt::End, &[7; BLOCK_SIZE], 2).unwrap();
+                fs.hold(file);
+                fs.remove(home.id(), name.as_bytes(), false, 3).unwrap();
+                file
+            })
+            .collect();
+        for &file in &files {
+            fs.release(file);
+        }
+        fs.sync().unwrap();
+        for &file in &files {
+            assert_eq!(read_all(home.with_id(file)), b"");
+        }
+        assert_eq!(fs.usage().free_nodes, before.free_nodes);
+        eggfs.with_volume(|volume| volume.check().unwrap());
+    }
+    #[test]
+    fn releases_past_the_slots_queue_in_page_sized_chunks_and_all_apply() {
+        let (eggfs, home, _) = mounted();
+        let fs = home.file_system();
+        let before = fs.usage();
+        let file = fs
+            .create(home.id(), b"held", NodeKind::Regular, 0o644, 1)
+            .unwrap();
+        fs.write(file, WriteAt::End, &[7; BLOCK_SIZE], 2).unwrap();
+        let holds = RELEASE_SLOTS + 2 * RELEASES_PER_CHUNK + 3;
+        for _ in 0..holds {
+            fs.hold(file);
+        }
+        fs.remove(home.id(), b"held", false, 3).unwrap();
+        for _ in 0..holds {
+            fs.release(file);
+        }
+        {
+            let chunks = eggfs.releases_past_slots.lock();
+            assert_eq!(chunks.len(), 3);
+            assert!(
+                chunks
+                    .iter()
+                    .all(|chunk| chunk.capacity() == RELEASES_PER_CHUNK)
+            );
+            assert_eq!(
+                chunks.iter().map(Vec::len).sum::<usize>(),
+                holds - RELEASE_SLOTS
+            );
+        }
+        fs.sync().unwrap();
+        assert!(eggfs.releases_past_slots.lock().is_empty());
+        assert_eq!(read_all(home.with_id(file)), b"");
+        assert_eq!(fs.usage().free_nodes, before.free_nodes);
         eggfs.with_volume(|volume| volume.check().unwrap());
     }
 }
