@@ -911,8 +911,8 @@ pub extern "efiapi" fn def_window_proc_w(
         }
         message::NC_CREATE => 1,
         super::hover::SET_CURSOR => super::hover::default_set_cursor(handle, wparam, lparam),
-        colour if super::controls::control_colour::is(colour) => {
-            super::controls::default_control_colour(colour, wparam)
+        number if super::controls::control_colour::is(number) => {
+            super::controls::default_control_colour(number, wparam)
         }
         message::CLOSE => {
             destroy_window(handle);
