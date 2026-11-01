@@ -195,16 +195,33 @@ fn random_below<P: Platform>(limit: u64) -> u64 {
 
 /// A program image to load ([`load_program`]) and the file it was read from, if it was: the
 /// segments' pages are read from that file again after `MADV_DONTNEED` discards them (D167).
+/// A program file larger than [`EAGER_PROGRAM_BYTES`] on a file system that copies contents is
+/// read only that far: `image` is then its first bytes, and the pages of segments past them
+/// are read from the file when the program first touches them.
 #[derive(Clone)]
 pub struct Program<'a> {
-    pub image: &'a [u8],
-    pub file: Option<Arc<dyn FilePages>>,
+    image: &'a [u8],
+    size: u64,
+    file: Option<Arc<dyn FilePages>>,
 }
 
 impl<'a> Program<'a> {
     /// `image`, with no file behind it.
     pub fn bytes(image: &'a [u8]) -> Self {
-        Self { image, file: None }
+        Self {
+            image,
+            size: image.len() as u64,
+            file: None,
+        }
+    }
+
+    /// The first bytes of `file`, `image`, from a file of `size` bytes, at least as many.
+    pub fn from_file(image: &'a [u8], size: u64, file: Arc<dyn FilePages>) -> Self {
+        Self {
+            image,
+            size: size.max(image.len() as u64),
+            file: Some(file),
+        }
     }
 }
 
@@ -213,6 +230,7 @@ impl core::fmt::Debug for Program<'_> {
         formatter
             .debug_struct("Program")
             .field("bytes", &self.image.len())
+            .field("size", &self.size)
             .field("from_a_file", &self.file.is_some())
             .finish()
     }
@@ -265,7 +283,7 @@ pub fn load_program<P: Platform>(
         _ => random_below::<P>(pie_slots(user_end, span.align)) * span.align.max(PIE_ALIGN),
     };
     let bias = load_bias(&elf, &span, user_end).wrapping_sub(slide);
-    let layout = check_image(&elf, bias, user_end)?;
+    let layout = check_image(&elf, bias, user_end, program.size)?;
     let program_headers = layout.program_headers.ok_or(ExecError::InvalidProgram(
         "the program headers are not in a segment",
     ))?;
@@ -445,8 +463,7 @@ struct Layout {
     names_interpreter: bool,
 }
 
-fn check_image(elf: &Elf<'_>, bias: u64, user_end: u64) -> Result<Layout, ExecError> {
-    let image = elf.image();
+fn check_image(elf: &Elf<'_>, bias: u64, user_end: u64, size: u64) -> Result<Layout, ExecError> {
     let table_offset = elf.program_header_offset();
     let table_size = u64::from(elf.program_header_count()) * elf::PROGRAM_HEADER_SIZE as u64;
     let mut layout = Layout {
@@ -466,7 +483,7 @@ fn check_image(elf: &Elf<'_>, bias: u64, user_end: u64) -> Result<Layout, ExecEr
                 ));
             }
             segment::LOAD if header.memory_size > 0 => {
-                let (start, end) = check_segment(image, &header, bias, user_end)?;
+                let (start, end) = check_segment(size, &header, bias, user_end)?;
                 let first_page = start & !(FRAME_SIZE - 1);
                 if first_page < layout.end {
                     return Err(ExecError::InvalidProgram(
@@ -511,7 +528,7 @@ fn check_loader<'a>(
         .map_err(|InvalidElf(reason)| ExecError::BadInterpreter(reason))?;
     let span = Span::of(&elf).map_err(bad)?;
     let bias = interpreter_bias(&elf, &span, user_end, program)?;
-    let layout = check_image(&elf, bias, user_end).map_err(bad)?;
+    let layout = check_image(&elf, bias, user_end, interpreter.size).map_err(bad)?;
     if layout.names_interpreter {
         return Err(ExecError::BadInterpreter(
             "an interpreter that names an interpreter",
@@ -546,7 +563,16 @@ fn map_segments<P: Platform>(
         if header.kind != segment::LOAD || header.memory_size == 0 {
             continue;
         }
-        map_segment(process, elf.image(), &header, bias)?;
+        let read = header.file_size == 0 || header.file_bytes(elf.image()).is_some();
+        match (read, file) {
+            (true, _) => map_segment(process, elf.image(), &header, bias)?,
+            (false, Some(_)) => add_segment_region(process, &header, bias)?,
+            (false, None) => {
+                return Err(ExecError::InvalidProgram(
+                    "a segment is not within the image",
+                ));
+            }
+        }
         if let Some(file) = file
             && header.file_size > 0
         {
@@ -568,12 +594,12 @@ fn map_segments<P: Platform>(
 }
 
 /// Checks a `LOAD` segment with memory: its access; if it has file bytes, that they are within
-/// `image` and that its file offset and address are equal within a page (each page maps one
+/// the program file's `size` bytes and that its file offset and address are equal within a page (each page maps one
 /// page of the file); and its memory within user space, before and after the move by `bias`,
 /// at or above [`MINIMUM_ADDRESS`] and below the stack's reserve. Returns its (start, end) in
 /// memory.
 fn check_segment(
-    image: &[u8],
+    size: u64,
     header: &ProgramHeader,
     bias: u64,
     user_end: u64,
@@ -586,7 +612,11 @@ fn check_segment(
     }
     // A segment without file bytes is zero pages alone: its offset means nothing.
     if header.file_size > 0 {
-        if header.file_bytes(image).is_none() {
+        if header
+            .offset
+            .checked_add(header.file_size)
+            .is_none_or(|end| end > size)
+        {
             return Err(ExecError::InvalidProgram(
                 "a segment is not within the image",
             ));
@@ -648,6 +678,26 @@ fn map_segment<P: Platform>(
     // Every page is mapped already; the region records what the program may do there.
     process
         .add_region(first_page, end.next_multiple_of(FRAME_SIZE), attributes)
+        .map_err(|_| ExecError::InvalidProgram("segments that share a page"))
+}
+
+/// A checked `LOAD` segment whose file bytes are past the image read, moved by `bias`: its
+/// region alone, whose pages the program's first touches read from the file (the
+/// [`FileRange`] [`map_segments`] adds after it).
+fn add_segment_region<P: Platform>(
+    process: &mut Process<P>,
+    header: &ProgramHeader,
+    bias: u64,
+) -> Result<(), ExecError> {
+    let attributes = segment_attributes(header.flags)?;
+    let start = header.virt.wrapping_add(bias);
+    let end = start + header.memory_size;
+    process
+        .add_region(
+            start & !(FRAME_SIZE - 1),
+            end.next_multiple_of(FRAME_SIZE),
+            attributes,
+        )
         .map_err(|_| ExecError::InvalidProgram("segments that share a page"))
 }
 
@@ -954,13 +1004,14 @@ fn prepare<P: Platform>(
             &scripted[..]
         }
     };
-    let (image, image_node, interpreter) = match interpreter_for(head.bytes()) {
+    let (image, image_size, image_node, interpreter) = match interpreter_for(head.bytes()) {
         Some(interpreter) => {
-            let (interpreter, layer, image) = read_interpreter(process, thread, interpreter)?;
-            (image, layer, Some(interpreter))
+            let (interpreter, layer, image, size) = read_interpreter(process, thread, interpreter)?;
+            (image, size, layer, Some(interpreter))
         }
         None => (
-            ProgramBytes::read(node, attributes.size, u64::MAX)?,
+            ProgramBytes::read_program(node, attributes.size)?,
+            attributes.size,
             node,
             None,
         ),
@@ -978,13 +1029,17 @@ fn prepare<P: Platform>(
         }
         None => (name, arguments),
     };
-    let program = Program {
-        image: image.bytes(),
-        file: Some(Arc::new(vfs::HeldNode::new(image_node))),
-    };
-    let dynamic_loader = dynamic_loader.as_ref().map(|(loader, bytes)| Program {
-        image: bytes.bytes(),
-        file: Some(Arc::new(vfs::HeldNode::new(*loader)) as Arc<dyn FilePages>),
+    let program = Program::from_file(
+        image.bytes(),
+        image_size,
+        Arc::new(vfs::HeldNode::new(image_node)),
+    );
+    let dynamic_loader = dynamic_loader.as_ref().map(|(loader, bytes, size)| {
+        Program::from_file(
+            bytes.bytes(),
+            *size,
+            Arc::new(vfs::HeldNode::new(*loader)) as Arc<dyn FilePages>,
+        )
     });
     let files = match thread.files().is_shared() {
         true => Some(thread.files().copy()?),
@@ -1089,7 +1144,7 @@ fn read_interpreter<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
     interpreter: Interpreter,
-) -> Result<(Interpreter, Node, ProgramBytes), Errno> {
+) -> Result<(Interpreter, Node, ProgramBytes, u64), Errno> {
     if !ANY_INTERPRETER {
         return Err(Errno::ENOEXEC);
     }
@@ -1112,7 +1167,8 @@ fn read_interpreter<P: Platform>(
     Ok((
         interpreter,
         node,
-        ProgramBytes::read(node, attributes.size, u64::MAX)?,
+        ProgramBytes::read_program(node, attributes.size)?,
+        attributes.size,
     ))
 }
 
@@ -1120,7 +1176,7 @@ fn read_dynamic_loader<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
     image: &[u8],
-) -> Result<Option<(Node, ProgramBytes)>, Errno> {
+) -> Result<Option<(Node, ProgramBytes, u64)>, Errno> {
     let Ok(elf) = Elf::parse(image, elf::machine::NATIVE) else {
         return Ok(None);
     };
@@ -1140,11 +1196,17 @@ fn read_dynamic_loader<P: Platform>(
     }
     Ok(Some((
         node,
-        ProgramBytes::read(node, attributes.size, u64::MAX)?,
+        ProgramBytes::read_program(node, attributes.size)?,
+        attributes.size,
     )))
 }
 
 const SIGNATURE_BYTES: u64 = 64;
+
+/// How much of a program file on a file system that copies contents exec reads before loading
+/// it (the headers, the interpreter's path and the first segments); the rest of a larger file
+/// is read a page at a time as the program touches it.
+pub const EAGER_PROGRAM_BYTES: u64 = 1 << 20;
 
 /// How many bytes of a script its `#!` line is read from (Linux's `BINPRM_BUF_SIZE`).
 pub const SCRIPT_LINE_BYTES: usize = 256;
@@ -1246,6 +1308,13 @@ impl ProgramBytes {
         }
         bytes.truncate(filled);
         Ok(Self::Copied(bytes))
+    }
+
+    /// What exec reads of a program file of `size` bytes: all of it, or its first
+    /// [`EAGER_PROGRAM_BYTES`] when the file is larger and its file system copies contents, so a
+    /// large program needs no buffer its size ([`Program`]).
+    pub(crate) fn read_program(node: Node, size: u64) -> Result<Self, Errno> {
+        Self::read(node, size, EAGER_PROGRAM_BYTES)
     }
 
     /// The bytes.
@@ -2024,10 +2093,7 @@ mod tests {
         let kernel = kernel_tables();
         let image = linux_start_image::<P>();
         let file: Arc<dyn FilePages> = Arc::new(crate::regions::BytesFile(image.clone()));
-        let program = Program {
-            image: &image,
-            file: Some(file),
-        };
+        let program = Program::from_file(&image, image.len() as u64, file);
         let (process, context) = load_dynamic(&kernel, program, None);
         context.unwrap();
         process
@@ -2048,6 +2114,41 @@ mod tests {
         let mut byte = [0xff];
         process.read_user_memory(bss, &mut byte).unwrap();
         assert_eq!(byte, [0], "the segment's .bss reads zeros, not the file");
+    }
+
+    #[test]
+    fn segments_past_the_bytes_read_come_from_the_file_when_touched() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let image = linux_start_image::<P>();
+        let head = &image[..FRAME_SIZE as usize];
+        let file: Arc<dyn FilePages> = Arc::new(crate::regions::BytesFile(image.clone()));
+        let program = Program::from_file(head, image.len() as u64, file);
+        let (process, context) = load_dynamic(&kernel, program, None);
+        context.unwrap();
+        let page = LINUX_START_DATA & !(FRAME_SIZE - 1);
+        assert_eq!(process.address_space().translate(page), None);
+        let mut data = [0; 16];
+        process
+            .read_user_memory(LINUX_START_DATA, &mut data)
+            .unwrap();
+        assert_eq!(&data, LINUX_START_DATA_BYTES);
+        let mut byte = [0xff];
+        process
+            .read_user_memory(page + FRAME_SIZE, &mut byte)
+            .unwrap();
+        assert_eq!(byte, [0], "the segment's .bss reads zeros, not the file");
+    }
+
+    #[test]
+    fn a_segment_past_the_image_without_its_file_is_refused() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let image = linux_start_image::<P>();
+        let mut program = Program::bytes(&image[..FRAME_SIZE as usize]);
+        program.size = image.len() as u64;
+        let (_, context) = load_dynamic(&kernel, program, None);
+        assert!(matches!(context, Err(ExecError::InvalidProgram(_))));
     }
 
     #[test]
