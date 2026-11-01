@@ -17162,7 +17162,7 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The retry check looks at the mapping's write and execute bits but not its user
   bit; checking it too would make a retry on a kernel-only entry fail safe.
 
-## D216 The first weekly performance pass (2026-10-31, main 9ff972cb): the switch path's CPU-time accounting is cut to user threads, the costs of #149's features are accepted, and five regressions are left to fix (extends D78, D122, D198) — Decided by the build loop (decided by research)
+## D216 The first weekly performance pass (2026-10-31, main 9ff972cb): the switch path's CPU-time accounting is cut to user threads, the costs of #149's features are accepted, and the regressions it found are fixed or accepted (extends D78, D122, D198) — Decided by the build loop (decided by research)
 
 - **What was measured.** `cargo xtask bench --arch all` on `main` 9ff972cb, locally, gave the
   same numbers as CI's run on that commit: 54 results across the three architectures were
@@ -17210,16 +17210,37 @@ the license, by an explicit instruction recorded here.
     (`FileSystem::keeps_holds`), and closing one does its lock, inotify and release work out of
     line only when one applies; the initramfs compares names in an inline loop, not `memcmp`.
   - `linux::properties::AREA` and `linux::android_log::LOG` are null boxes in `.bss`.
-- **Still left (their baseline lines stay; the exact gate fails on them).**
-  `linux_openat_close` is still +20 / +47 / +41% over its line: the bench initramfs's `/etc`
-  grew from 4 to 7 entries (one more binary-search step per lookup), `open`'s `openat2` and
-  link handling, and the growth across #129 to #147. `linux_mmap_munmap` (419 / 377 / 426,
-  unchanged): `Vec<Region>::insert` is no longer inlined into `map_region` (32 instructions per
-  call); routing the rare callers through one out-of-line copy did not bring it back. riscv64
-  `heap_allocate_free_small` is still 60: with both statics in `.bss` the heap's `alloc` and
-  `dealloc` are instruction for instruction those of `main` before #149, so the 3 instructions
-  are elsewhere in the benchmark's loop. The extra `idle_memory_bytes` page was not bisected.
-- **Not yet.** Reading `previous.user` from the box `replace_current` returns (about 3
+- **Fixed in the third part** (instructions per op, before -> after, x86_64 / aarch64 /
+  riscv64; traced as in the second part; baseline lines updated to the new values).
+  - `linux_openat_close` 1633 / 2019 / 2084 -> 1304 / 1187 / 1404, under its old line
+    (1361 / 1375 / 1474) on every architecture. On aarch64 and riscv64 ~500 instructions were
+    byte-wise `memcpy`: a `Result<Node, Error>` or `Result<(Node, Node), Errno>` keeps its
+    error in the byte after the node's first word, so moving the node out copied 15, 38 and
+    14 unaligned bytes. The walk now looks up a child's id (`Node::child_id_as`) and builds
+    the node, `open` inlines `starting_points`, and `mounted_on` is always inlined. `read_path`
+    reads each chunk straight into the path buffer (`Process::read_user_memory_uninit`). The
+    bench's `/etc` growing from 4 to 7 entries was a real cost of the lookup, not of the
+    benchmark: the initramfs index keeps each name's first 8 bytes as a big-endian key, so
+    the binary search compares one word per step and whole names only on equal keys.
+  - `heap_allocate_free_small` 48 / 50 / 60 -> 38 / 37 / 40. The riscv64 +3 was layout:
+    with the frame allocator inlined into `alloc` for large layouts, LLVM needed a second
+    base register for `FRAMES` (and a shared epilogue) whenever the linker put `FRAMES` out of
+    reach of `HEAP`'s base, which the self-tests' code decides. The whole-frames path is out
+    of line now, so the block path saves no callee-saved register on any layout.
+  - `linux_mmap_munmap` 419 / 377 / 423 -> 387 / 354 / 396: a region appended after the last
+    one with room is pushed inline (`Vec::insert` is out of line in the pinned toolchain,
+    `insert_mut`, 32 instructions), and other inserts go through one cold function.
+- **Accepted in the third part (D78's test, decided by research).** `linux_mmap_munmap`'s
+  remaining +5.3 to +5.7% over its old line (366.09 / 335.52 / 376.08 -> 387.09 / 354.49 /
+  396.08): `unmap_locked` loads the records word and tests the lent-frame and file-range
+  bits munmap must honour since D139, D167 and D169 (+5), `map_region` has the 4-byte
+  attributes' check and the append branch (+7), and ~8 is drift the tree showed before #149.
+  Linux (`find_vma`, vma split and merge, mlock, userfaultfd, uprobe and hugetlb checks, a TLB
+  gather), Windows (VAD tree insert and delete under the address-space lock) and macOS
+  (`vm_map_enter`, `vm_map_delete`) do far more per call, and no small change reaches the
+  exact gate. Follow-up: a `records == 0` fast path in `unmap_locked` with the rest in one
+  cold function could save about 5 more.
+- **Not yet.** The extra `idle_memory_bytes` page was not bisected. Reading `previous.user` from the box `replace_current` returns (about 3
   instructions per switch); folding a thread's time into its process's account only at exit and
   when read, instead of an atomic add per switch; an instruction profile of `vfork` + `execve` on
   x86_64; reserving `FileRanges` once per exec.
