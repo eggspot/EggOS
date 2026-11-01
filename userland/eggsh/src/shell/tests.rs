@@ -1128,3 +1128,53 @@ fn an_interactive_shell_names_its_history_file_before_each_prompt() {
 }
 
 mod language;
+
+#[test]
+fn a_terminal_program_hears_the_folder_and_the_running_command_as_titles() {
+    let mut shell = shell_with_input(true, &["tool 1\n"]);
+    shell.import(b"TERM_PROGRAM=EggTerminal");
+    shell.import(b"HOME=/home/mea");
+    shell.import(b"PWD=/home/mea/Documents");
+    shell.run_descriptor(0, true);
+    let errors = errors(&shell);
+    let folder = "\x1b]0;~/Documents\x07\x1b]7;file:///home/mea/Documents\x07";
+    assert!(errors.starts_with(&format!("{folder}eggsh:/home/mea/Documents# ")));
+    let command = errors.find("\x1b]0;tool\x07").expect("the command's title");
+    let again = errors.rfind(folder).expect("the folder again");
+    assert!(command < again);
+    assert_eq!(errors.matches("\x1b]7;").count(), 2);
+}
+
+#[test]
+fn a_terminal_title_encodes_the_folder_and_shortens_the_home_folder() {
+    let mut written = Vec::new();
+    super::terminal_title::announce_folder(b"/home/mea/a b", Some(b"/home/mea"), &mut |bytes| {
+        written.extend_from_slice(bytes)
+    });
+    assert_eq!(
+        written,
+        b"\x1b]0;~/a b\x07\x1b]7;file:///home/mea/a%20b\x07".to_vec()
+    );
+    written.clear();
+    super::terminal_title::announce_folder(b"/etc", Some(b"/home/mea"), &mut |bytes| {
+        written.extend_from_slice(bytes)
+    });
+    assert_eq!(written, b"\x1b]0;/etc\x07\x1b]7;file:///etc\x07".to_vec());
+    written.clear();
+    super::terminal_title::announce_folder(b"/home/meadow", Some(b"/home/mea"), &mut |bytes| {
+        written.extend_from_slice(bytes)
+    });
+    assert!(written.starts_with(b"\x1b]0;/home/meadow\x07"));
+    written.clear();
+    super::terminal_title::announce_command(b"/bin/sleep", &mut |bytes| {
+        written.extend_from_slice(bytes)
+    });
+    assert_eq!(written, b"\x1b]0;sleep\x07".to_vec());
+}
+
+#[test]
+fn without_a_terminal_program_the_shell_writes_no_title() {
+    let mut shell = shell_with_input(true, &["tool 1\n"]);
+    shell.run_descriptor(0, true);
+    assert!(!errors(&shell).contains("\x1b]"));
+}
