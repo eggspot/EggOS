@@ -88,6 +88,7 @@ pub const ELICITATION_TIMEOUT_MS: u64 = 120_000;
 pub const APPLICATIONS: &str = "/Applications";
 
 const SERVER_NAME: &str = "eggos";
+const REGISTRY_DEFAULT_VALUE_WORD: &str = "@";
 const SERVER_TITLE: &str = "EggOS";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INSTRUCTIONS: &str = "EggOS's built-in MCP server. Every tool is a front-end over an \
@@ -667,7 +668,9 @@ impl Server {
                 let now = self.refresh_policy(system);
                 match self.policy.check(&self.agent, None, now) {
                     Decision::Deny(_) => rpc::write_result(out, id, write_no_tools),
-                    _ => rpc::write_result(out, id, tools::write_list),
+                    _ => rpc::write_result(out, id, |out| {
+                        tools::write_list(out, &mut |file| system.reaches_file(file))
+                    }),
                 }
             }
             "prompts/list" => rpc::write_result(out, id, prompts::write_list),
@@ -1126,7 +1129,9 @@ impl Server {
         };
         let mut name_text = [0u8; 128];
         let (name, _) = name.decode_prefix_into(&mut name_text);
-        let Some(tool) = tools::find(name) else {
+        let found = tools::find(name)
+            .filter(|tool| tool.needs.is_none_or(|file| system.reaches_file(file)));
+        let Some(tool) = found else {
             self.stop(
                 system,
                 scratch,
@@ -1170,7 +1175,8 @@ impl Server {
                 return;
             }
         }
-        if tool.grant.is_some() && self.pending.is_some() {
+        let shares_held_buffers = tool.grant.is_some() || tool.kind == Kind::WindowsRegistryGet;
+        if shares_held_buffers && self.pending.is_some() {
             self.stop(
                 system,
                 scratch,
@@ -1261,11 +1267,15 @@ impl Server {
             let target = target_text(tool, scratch.resolved, target_length);
             let mut would = [0u8; MAX_PATH_BYTES * 2 + 256];
             let source = arguments::source_text(&checked, scratch.content).unwrap_or("");
+            let source = arguments::registry_name_text(&checked, scratch.content).unwrap_or(source);
+            let shown_target = arguments::registry_key_text(&checked, scratch.content)
+                .or(target)
+                .unwrap_or("");
             let would_length = would_text(
                 tool,
                 &checked,
                 state,
-                (target.unwrap_or(""), source),
+                (shown_target, source),
                 &mut would,
             );
             let would = text_prefix(&would, would_length);
@@ -1631,6 +1641,8 @@ impl Server {
         let target = target_text(tool, scratch.held_path, target_length).unwrap_or("");
         let mut message = [0u8; 2048];
         let source = arguments::source_text(&checked, scratch.content).unwrap_or("");
+        let target = arguments::registry_key_text(&checked, scratch.content).unwrap_or(target);
+        let source = arguments::registry_name_text(&checked, scratch.content).unwrap_or(source);
         let length = question_text(
             tool,
             &checked,
@@ -2164,6 +2176,27 @@ impl Server {
             push_word(&mut words, &mut count, "--environment");
             push_word(&mut words, &mut count, environment);
         }
+        if prepared.checked.machine {
+            push_word(&mut words, &mut count, "--machine");
+        }
+        if let Some(kind) = prepared.checked.registry_type {
+            push_word(&mut words, &mut count, "--type");
+            push_word(&mut words, &mut count, kind);
+        }
+        if let Some(key) = arguments::registry_key_text(&prepared.checked, buffers.content) {
+            push_word(&mut words, &mut count, "--");
+            push_word(&mut words, &mut count, key);
+            match arguments::registry_name_text(&prepared.checked, buffers.content) {
+                Some("") => push_word(&mut words, &mut count, REGISTRY_DEFAULT_VALUE_WORD),
+                Some(name) => push_word(&mut words, &mut count, name),
+                None => {}
+            }
+            if tool.kind == Kind::WindowsRegistrySet {
+                for word in prepared.checked.words.each(buffers.words) {
+                    push_word(&mut words, &mut count, word);
+                }
+            }
+        }
         let decimals = Decimals::of_window_call(&prepared.checked);
         if tool.twin.operand == Operand::Window {
             push_window_words(
@@ -2283,6 +2316,13 @@ impl Server {
                 .map(|target| (target, prepared.checked.symbolic)),
             source: arguments::source_text(&prepared.checked, buffers.content),
             recursive: prepared.checked.recursive,
+            registry: arguments::registry_key_text(&prepared.checked, buffers.content).map(
+                |key| {
+                    let name = arguments::registry_name_text(&prepared.checked, buffers.content);
+                    (key, name)
+                },
+            ),
+            machine: prepared.checked.machine,
         };
         answer_with_output(out, &answer);
     }
@@ -2408,6 +2448,8 @@ impl Server {
             link: None,
             source: None,
             recursive: false,
+            registry: None,
+            machine: false,
         };
         answer_with_output(out, &answer);
     }
@@ -3271,6 +3313,40 @@ fn question_text(
             }
             text.put(", erasing everything on it. Allow it?");
         }
+        Kind::WindowsRegistryDelete => {
+            text.put("An agent asks to delete ");
+            match checked.registry_name {
+                None => {
+                    text.put("the registry key ");
+                    text.put(shown);
+                    text.put(" with every subkey and value below it");
+                }
+                Some(0) => {
+                    text.put("the (Default) value of the registry key ");
+                    text.put(shown);
+                }
+                Some(_) => {
+                    text.put("the value ");
+                    text.put(from);
+                    text.put(" from the registry key ");
+                    text.put(shown);
+                }
+            }
+            text.put(". Allow it?");
+        }
+        Kind::WindowsRegistryReset => {
+            text.put(match checked.machine {
+                true => {
+                    "An agent asks to replace the machine's Windows registry file with an empty \
+                     one, keeping the old one as machine.hive.damaged"
+                }
+                false => {
+                    "An agent asks to replace your Windows registry file with an empty one, \
+                     keeping the old one as user.hive.damaged"
+                }
+            });
+            text.put(": Windows programs' saved settings are lost. Allow it?");
+        }
         _ => {
             text.put("An agent asks to run ");
             text.put(tool.name);
@@ -3392,6 +3468,33 @@ fn would_text(
                 text.put(label.as_str());
             }
         }
+        (Kind::WindowsRegistryDelete, _) => match checked.registry_name {
+            None => {
+                text.put(" would delete the registry key ");
+                text.put(shown);
+                text.put(" with every subkey and value below it");
+            }
+            Some(0) => {
+                text.put(" would delete the (Default) value of the registry key ");
+                text.put(shown);
+            }
+            Some(_) => {
+                text.put(" would delete the value ");
+                text.put(from);
+                text.put(" from the registry key ");
+                text.put(shown);
+            }
+        },
+        (Kind::WindowsRegistryReset, _) => text.put(match checked.machine {
+            true => {
+                " would replace the machine's registry file with an empty one, keeping the old \
+                 one as machine.hive.damaged"
+            }
+            false => {
+                " would replace the registry file with an empty one, keeping the old one as \
+                 user.hive.damaged"
+            }
+        }),
         _ => text.put(" would make its change"),
     }
     text.length
@@ -3522,6 +3625,26 @@ fn write_audit_arguments(
     if let Some(value) = arguments::setting_value_text(checked, scratch.words) {
         writer.key("value");
         shown_string(&mut writer, value, cut);
+    }
+    if let Some(key) = arguments::registry_key_text(checked, scratch.content) {
+        writer.key("key");
+        shown_string(&mut writer, key, cut);
+    }
+    if let Some(name) = arguments::registry_name_text(checked, scratch.content) {
+        writer.key("name");
+        shown_string(&mut writer, name, cut);
+    }
+    if let Some(kind) = checked.registry_type {
+        writer.key("type");
+        writer.string(kind);
+    }
+    if tool.kind == Kind::WindowsRegistrySet {
+        writer.key("data");
+        writer.u64(checked.words.len() as u64);
+    }
+    if tool.kind == Kind::WindowsRegistryReset {
+        writer.key("machine");
+        writer.bool(checked.machine);
     }
     if tool.takes("confirm") {
         writer.key("confirm");
@@ -4120,6 +4243,8 @@ struct Answered<'a> {
     link: Option<(&'a str, bool)>,
     source: Option<&'a str>,
     recursive: bool,
+    registry: Option<(&'a str, Option<&'a str>)>,
+    machine: bool,
 }
 
 fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
@@ -4193,6 +4318,36 @@ fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
             out.string_piece(value);
             out.string_piece(".");
         }
+        Kind::WindowsRegistrySet | Kind::WindowsRegistryDelete => {
+            let (key, name) = answer.registry.unwrap_or(("", None));
+            let deleting = answer.tool.kind == Kind::WindowsRegistryDelete;
+            match (deleting, name) {
+                (false, None) => out.string_piece("The key "),
+                (false, Some("")) => out.string_piece("Saved the (Default) value in "),
+                (false, Some(name)) => {
+                    out.string_piece("Saved the value ");
+                    out.string_piece(name);
+                    out.string_piece(" in ");
+                }
+                (true, None) => out.string_piece("Deleted the key "),
+                (true, Some("")) => out.string_piece("Deleted the (Default) value of "),
+                (true, Some(name)) => {
+                    out.string_piece("Deleted the value ");
+                    out.string_piece(name);
+                    out.string_piece(" from ");
+                }
+            }
+            out.string_piece(key);
+            out.string_piece(match (deleting, name) {
+                (false, None) => " exists.",
+                (true, None) => " and everything below it.",
+                _ => ".",
+            });
+        }
+        Kind::WindowsRegistryReset => out.string_piece(match answer.machine {
+            true => "Replaced the machine's registry file. It is empty.",
+            false => "Replaced the registry file. It is empty.",
+        }),
         kind => {
             let mut digits = [0u8; 24];
             let mut number = Text::new(&mut digits);
@@ -4232,6 +4387,9 @@ fn has_done_text(kind: Kind) -> bool {
             | Kind::FileRemove
             | Kind::SettingsSet
             | Kind::Setprop
+            | Kind::WindowsRegistrySet
+            | Kind::WindowsRegistryDelete
+            | Kind::WindowsRegistryReset
             | Kind::WmFocus
             | Kind::WmMove
             | Kind::WmSize

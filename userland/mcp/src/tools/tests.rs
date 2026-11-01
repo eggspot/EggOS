@@ -327,7 +327,7 @@ fn the_shipped_tools_keep_their_annotations() {
 fn the_list_is_valid_json_with_annotations() {
     let mut buffer = vec![0u8; 128 * 1024];
     let mut out = JsonWriter::new(&mut buffer);
-    write_list(&mut out);
+    write_list(&mut out, &mut |_| true);
     assert!(!out.overflowed());
     let list = json::parse(out.as_bytes()).unwrap().value;
     let Some(Value::Array(tools)) = list.get("tools") else {
@@ -574,4 +574,65 @@ fn the_component_tools_run_component_with_the_grants_the_design_names() {
         assert_eq!(tool.hints.destructive, destructive, "{name}");
         assert!(!tool.hints.open_world, "{name}");
     }
+}
+
+#[test]
+fn the_registry_tools_run_windows_registry_and_exist_only_with_the_windows_layer() {
+    for (name, kind, words, grant, confirmation, destructive) in [
+        (
+            "windows_registry_get",
+            Kind::WindowsRegistryGet,
+            &["registry", "get", "--json"][..],
+            None,
+            Confirmation::Never,
+            false,
+        ),
+        (
+            "windows_registry_set",
+            Kind::WindowsRegistrySet,
+            &["registry", "set"][..],
+            Some(Grant::Write),
+            Confirmation::Never,
+            false,
+        ),
+        (
+            "windows_registry_delete",
+            Kind::WindowsRegistryDelete,
+            &["registry", "delete", "--yes"][..],
+            Some(Grant::Write),
+            Confirmation::Always,
+            true,
+        ),
+        (
+            "windows_registry_reset",
+            Kind::WindowsRegistryReset,
+            &["registry", "reset", "--yes"][..],
+            Some(Grant::Write),
+            Confirmation::Always,
+            true,
+        ),
+    ] {
+        let tool = find(name).unwrap();
+        assert_eq!(tool.kind, kind, "{name}");
+        assert_eq!(tool.twin.program, Program::Fixed("/bin/windows"), "{name}");
+        assert_eq!(tool.twin.words, words, "{name}");
+        assert_eq!(tool.twin.operand, Operand::None, "{name}");
+        assert_eq!(tool.grant, grant, "{name}");
+        assert_eq!(tool.confirmation, confirmation, "{name}");
+        assert_eq!(tool.hints.destructive, destructive, "{name}");
+        assert_eq!(tool.needs, Some(WINDOWS_LAYER), "{name}");
+    }
+    assert!(
+        TOOLS
+            .iter()
+            .filter(|tool| tool.needs.is_some())
+            .all(|tool| tool.name.starts_with("windows_registry_"))
+    );
+    let mut buffer = vec![0u8; 1 << 20];
+    let mut out = JsonWriter::new(&mut buffer);
+    write_list(&mut out, &mut |_| false);
+    assert!(!out.overflowed());
+    let listed = core::str::from_utf8(out.as_bytes()).unwrap();
+    assert!(!listed.contains("windows_registry"), "{listed}");
+    assert!(listed.contains("\"component_list\""), "{listed}");
 }

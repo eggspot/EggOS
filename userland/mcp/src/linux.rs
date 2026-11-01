@@ -878,6 +878,14 @@ impl System for Linux {
             .is_ok_and(|status| mode_of(&status) & S_IFMT == S_IFLNK)
     }
 
+    fn reaches_file(&mut self, path: &str) -> bool {
+        let mut buffer = [0u8; MAX_PATH_BYTES + 1];
+        let Some(path) = c_path(path, &mut buffer) else {
+            return false;
+        };
+        statx(path, STATX_TYPE, 0).is_ok_and(|status| mode_of(&status) & S_IFMT == S_IFREG)
+    }
+
     fn file_state(&mut self, path: &str) -> FileState {
         let mut buffer = [0u8; MAX_PATH_BYTES + 1];
         let Some(path) = c_path(path, &mut buffer) else {

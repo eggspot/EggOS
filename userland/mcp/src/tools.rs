@@ -181,6 +181,14 @@ pub enum Kind {
     ComponentInstall,
     /// `component_remove`: removes an installed component (D237).
     ComponentRemove,
+    /// `windows_registry_get`: a registry key's subkeys and values, or one value (D230).
+    WindowsRegistryGet,
+    /// `windows_registry_set`: makes a registry key or sets a value (D230).
+    WindowsRegistrySet,
+    /// `windows_registry_delete`: deletes a registry key or value (D230).
+    WindowsRegistryDelete,
+    /// `windows_registry_reset`: replaces a damaged registry file with an empty one (D230).
+    WindowsRegistryReset,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -272,7 +280,13 @@ pub struct Tool {
     pub hints: Hints,
     /// Its CLI twin.
     pub twin: Twin,
+    /// The file an optional component installs that the tool exists only with (D18); `None`
+    /// for a tool of the base.
+    pub needs: Option<&'static str>,
 }
+
+/// The Windows layer's file, which the Windows apps component installs (D237).
+pub const WINDOWS_LAYER: &str = "/usr/lib/eggos/windows";
 
 impl Tool {
     /// Whether it takes an argument of this name.
@@ -305,6 +319,7 @@ const fn tool(definition: &'static ToolDefinition, kind: Kind, twin: Twin) -> To
             open_world: definition.open_world,
         },
         twin,
+        needs: None,
     }
 }
 
@@ -399,12 +414,23 @@ const fn twin(program: &'static str, words: &'static [&'static str], operand: Op
     }
 }
 
+const fn of_component(tool: Tool, file: &'static str) -> Tool {
+    Tool {
+        needs: Some(file),
+        ..tool
+    }
+}
+
+const fn registry_twin(words: &'static [&'static str]) -> Twin {
+    twin("/bin/windows", words, Operand::None)
+}
+
 const fn window_twin(words: &'static [&'static str]) -> Twin {
     twin("/bin/wm", words, Operand::Window)
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 68] = [
+pub const TOOLS: [Tool; 72] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -745,6 +771,38 @@ pub const TOOLS: [Tool; 68] = [
         Kind::ComponentRemove,
         twin("/bin/component", &["remove", "--yes", "--json"], Operand::Name),
     ),
+    of_component(
+        tool(
+            &registry::WINDOWS_REGISTRY_GET,
+            Kind::WindowsRegistryGet,
+            registry_twin(&["registry", "get", "--json"]),
+        ),
+        WINDOWS_LAYER,
+    ),
+    of_component(
+        tool(
+            &registry::WINDOWS_REGISTRY_SET,
+            Kind::WindowsRegistrySet,
+            registry_twin(&["registry", "set"]),
+        ),
+        WINDOWS_LAYER,
+    ),
+    of_component(
+        tool(
+            &registry::WINDOWS_REGISTRY_DELETE,
+            Kind::WindowsRegistryDelete,
+            registry_twin(&["registry", "delete", "--yes"]),
+        ),
+        WINDOWS_LAYER,
+    ),
+    of_component(
+        tool(
+            &registry::WINDOWS_REGISTRY_RESET,
+            Kind::WindowsRegistryReset,
+            registry_twin(&["registry", "reset", "--yes"]),
+        ),
+        WINDOWS_LAYER,
+    ),
 ];
 
 /// The tool named `name`.
@@ -860,12 +918,13 @@ fn write_default(out: &mut JsonWriter<'_>, default: DefaultValue) {
     }
 }
 
-/// Writes `tools/list`'s result: every tool with its schema and annotations.
-pub fn write_list(out: &mut JsonWriter<'_>) {
+/// Writes `tools/list`'s result: every tool with its schema and annotations, leaving out a
+/// tool whose component's file `present` does not find (D18).
+pub fn write_list(out: &mut JsonWriter<'_>, present: &mut dyn FnMut(&'static str) -> bool) {
     out.begin_object();
     out.key("tools");
     out.begin_array();
-    for tool in &TOOLS {
+    for tool in TOOLS.iter().filter(|tool| tool.needs.is_none_or(&mut *present)) {
         let definition = tool.definition;
         out.begin_object();
         out.key("name");

@@ -114,6 +114,11 @@ pub trait System {
     fn is_link(&mut self, path: &str) -> bool;
     /// What is at `path`, not following a last symbolic link.
     fn file_state(&mut self, path: &str) -> FileState;
+    /// Whether `path` reaches a regular file, following symbolic links: whether an optional
+    /// component's file is installed (D18).
+    fn reaches_file(&mut self, path: &str) -> bool {
+        matches!(self.file_state(path), FileState::File(_))
+    }
     /// Removes the file at `path` if there is one (a symbolic link itself, never what it
     /// names).
     fn remove_capture(&mut self, path: &str);

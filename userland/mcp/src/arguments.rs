@@ -81,6 +81,15 @@ pub const MAX_LABEL_BYTES: usize = 64;
 pub const MAX_CURSOR_BYTES: usize = eggos_commands::page::MAX_CURSOR_BYTES;
 /// The longest `target` `ln` takes (D170).
 pub const MAX_LINK_TARGET_BYTES: usize = eggos_commands::tools::MAX_LINK_TARGET_BYTES as usize;
+/// The longest registry key a call names, in bytes (D230).
+pub const MAX_REGISTRY_KEY_BYTES: usize = eggos_commands::tools::MAX_REGISTRY_KEY_BYTES as usize;
+/// The longest registry value name a call names, in bytes (D230).
+pub const MAX_REGISTRY_NAME_BYTES: usize =
+    eggos_commands::tools::MAX_REGISTRY_NAME_BYTES as usize;
+/// Where a registry tool's value name starts in the content buffer, after its key (D230).
+pub const REGISTRY_NAME_AT: usize = MAX_REGISTRY_KEY_BYTES;
+/// `windows_registry_set`'s types, as the tool and its twin's `--type` name them (D230).
+pub const REGISTRY_TYPES: [&str; 6] = ["sz", "expand_sz", "multi_sz", "dword", "qword", "binary"];
 
 const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
 
@@ -194,6 +203,18 @@ pub enum ArgumentProblem {
     BadDevice,
     /// `label` is longer than 64 bytes or holds a control character (D192).
     BadLabel,
+    /// A registry tool's `key` is missing, empty, longer than [`MAX_REGISTRY_KEY_BYTES`] or
+    /// holds a control character (D230).
+    BadRegistryKey,
+    /// A registry tool's `name` is longer than [`MAX_REGISTRY_NAME_BYTES`] or holds a NUL
+    /// (D230).
+    BadRegistryName,
+    /// `windows_registry_set`'s `type` is not one of its choices, or `type` or `data` comes
+    /// without a `name` (D230).
+    BadRegistryType,
+    /// `windows_registry_set`'s `data` is not an array of at most 32 strings, 4096 bytes in
+    /// all, none holding a NUL (D230).
+    BadRegistryData,
 }
 
 impl ArgumentProblem {
@@ -347,6 +368,22 @@ impl ArgumentProblem {
             ArgumentProblem::BadDevice => "device must be a disk's file: /dev/vda to /dev/vdd",
             ArgumentProblem::BadLabel => {
                 "label must be at most 64 bytes without control characters"
+            }
+            ArgumentProblem::BadRegistryKey => {
+                "key is required: a registry key such as HKEY_CURRENT_USER\\Software\\AutoHotkey, \
+                 1 to 4096 bytes without control characters"
+            }
+            ArgumentProblem::BadRegistryName => {
+                "name must be a value's name of at most 16383 characters without NUL; an empty \
+                 name is the (Default) value"
+            }
+            ArgumentProblem::BadRegistryType => {
+                "type is sz, expand_sz, multi_sz, dword, qword or binary, and type and data need \
+                 a name"
+            }
+            ArgumentProblem::BadRegistryData => {
+                "data must be an array of at most 32 strings, 4096 bytes in all, none holding a \
+                 NUL"
             }
         }
     }
@@ -601,6 +638,15 @@ pub struct Checked {
     pub recursive: bool,
     /// `folder_create`'s `parents` (D225).
     pub parents: bool,
+    /// A registry tool's key's length, at the start of the content buffer (D230).
+    pub registry_key: Option<usize>,
+    /// A registry tool's value name's length, at [`REGISTRY_NAME_AT`] in the content buffer;
+    /// `Some(0)` is the (Default) value (D230).
+    pub registry_name: Option<usize>,
+    /// `windows_registry_set`'s type, as its twin's `--type` takes it (D230).
+    pub registry_type: Option<&'static str>,
+    /// `windows_registry_reset`'s `machine` (D230).
+    pub machine: bool,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -711,6 +757,15 @@ pub fn check(
         checked.archive_entry = archive_entry(get("entry"), decoded.words)?;
         checked.app_arguments = app_arguments(get("arguments"), decoded.words)?;
         checked.app_environment = app_environment(get("environment"), decoded.words)?;
+    }
+    if matches!(
+        tool.kind,
+        Kind::WindowsRegistryGet | Kind::WindowsRegistrySet | Kind::WindowsRegistryDelete
+    ) {
+        registry_arguments(tool.kind, &get, decoded, &mut checked)?;
+    }
+    if tool.kind == Kind::WindowsRegistryReset {
+        checked.machine = flag(get("machine"), "machine")?;
     }
     if tool.kind == Kind::Run {
         checked.words = words(get("arguments"), decoded.words)?;
@@ -1342,6 +1397,89 @@ pub fn decode_base64(encoded: Str<'_>, out: &mut [u8]) -> Result<usize, Argument
         return Err(ArgumentProblem::BadBase64);
     }
     Ok(length)
+}
+
+fn registry_arguments<'a>(
+    kind: Kind,
+    get: &impl Fn(&str) -> Option<Value<'a>>,
+    decoded: &mut Decoded<'_>,
+    checked: &mut Checked,
+) -> Result<(), ArgumentProblem> {
+    let key = match get("key") {
+        Some(Value::Str(text)) => text,
+        _ => return Err(ArgumentProblem::BadRegistryKey),
+    };
+    let room = decoded
+        .content
+        .get_mut(..MAX_REGISTRY_KEY_BYTES)
+        .ok_or(ArgumentProblem::BadRegistryKey)?;
+    let key = key
+        .decode_into(room)
+        .ok_or(ArgumentProblem::BadRegistryKey)?;
+    if key.is_empty() || key.chars().any(char::is_control) {
+        return Err(ArgumentProblem::BadRegistryKey);
+    }
+    checked.registry_key = Some(key.len());
+    checked.registry_name = match get("name") {
+        None => None,
+        Some(Value::Str(text)) => {
+            let room = decoded
+                .content
+                .get_mut(REGISTRY_NAME_AT..REGISTRY_NAME_AT + MAX_REGISTRY_NAME_BYTES)
+                .ok_or(ArgumentProblem::BadRegistryName)?;
+            let name = text
+                .decode_into(room)
+                .ok_or(ArgumentProblem::BadRegistryName)?;
+            if name.contains('\0') {
+                return Err(ArgumentProblem::BadRegistryName);
+            }
+            Some(name.len())
+        }
+        Some(_) => return Err(ArgumentProblem::BadRegistryName),
+    };
+    if kind != Kind::WindowsRegistrySet {
+        return Ok(());
+    }
+    checked.registry_type = match get("type") {
+        None => None,
+        Some(Value::Str(text)) => {
+            let mut bytes = [0u8; 16];
+            let given = text
+                .decode_into(&mut bytes)
+                .ok_or(ArgumentProblem::BadRegistryType)?;
+            Some(
+                REGISTRY_TYPES
+                    .into_iter()
+                    .find(|choice| *choice == given)
+                    .ok_or(ArgumentProblem::BadRegistryType)?,
+            )
+        }
+        Some(_) => return Err(ArgumentProblem::BadRegistryType),
+    };
+    checked.words = words(get("data"), decoded.words).map_err(|problem| match problem {
+        ArgumentProblem::WrongType(_) | ArgumentProblem::BadWords => {
+            ArgumentProblem::BadRegistryData
+        }
+        other => other,
+    })?;
+    let typed = checked.registry_type.is_some() || !checked.words.is_empty();
+    if checked.registry_name.is_none() && typed {
+        return Err(ArgumentProblem::BadRegistryType);
+    }
+    Ok(())
+}
+
+/// A registry tool's key in `buffer`, the content buffer, that [`Checked::registry_key`]
+/// measures (D230).
+pub fn registry_key_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.registry_key?)?).ok()
+}
+
+/// A registry tool's value name in `buffer`, the content buffer, that
+/// [`Checked::registry_name`] measures (D230).
+pub fn registry_name_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    let end = REGISTRY_NAME_AT.checked_add(checked.registry_name?)?;
+    core::str::from_utf8(buffer.get(REGISTRY_NAME_AT..end)?).ok()
 }
 
 fn words(value: Option<Value<'_>>, buffer: &mut [u8]) -> Result<Words, ArgumentProblem> {

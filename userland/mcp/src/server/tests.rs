@@ -4251,3 +4251,249 @@ fn component_install_needs_the_install_grant_and_component_remove_asks_first() {
     assert!(is_error(&answer), "{answer}");
     assert!(harness.system.runs.is_empty());
 }
+
+fn tool_names(harness: &mut Harness) -> Vec<String> {
+    let answer = harness
+        .send(r#"{"jsonrpc":"2.0","id":90,"method":"tools/list","params":{}}"#)
+        .unwrap();
+    let Some(Value::Array(tools)) = parsed(&answer).get("result").unwrap().get("tools") else {
+        panic!("tools");
+    };
+    tools
+        .elements()
+        .map(|tool| tool.get("name").unwrap().as_str().unwrap().chars().collect())
+        .collect()
+}
+
+fn with_windows_layer(mut harness: Harness) -> Harness {
+    harness
+        .system
+        .files
+        .insert(crate::tools::WINDOWS_LAYER.into(), b"\x7fELF layer".to_vec());
+    harness
+}
+
+#[test]
+fn the_registry_tools_exist_only_while_the_windows_layer_is_installed() {
+    let registry_tools = [
+        "windows_registry_get",
+        "windows_registry_set",
+        "windows_registry_delete",
+        "windows_registry_reset",
+    ];
+    let mut harness = Harness::initialized();
+    let names = tool_names(&mut harness);
+    assert!(registry_tools.iter().all(|tool| !names.iter().any(|name| name == tool)));
+    let answer = harness.call(1, "windows_registry_get", r#"{"key":"HKCU"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS, "{answer}");
+    assert!(harness.system.runs.is_empty());
+    let mut harness = with_windows_layer(harness);
+    let names = tool_names(&mut harness);
+    let listed: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| name.starts_with("windows_registry_"))
+        .collect();
+    assert_eq!(listed, registry_tools);
+    let answer = harness.call(2, "windows_registry_get", r#"{"key":"HKCU"}"#);
+    assert!(!is_error(&answer), "{answer}");
+}
+
+#[test]
+fn windows_registry_get_reads_freely_with_the_key_and_the_name_after_the_options() {
+    let mut harness = with_windows_layer(Harness::initialized());
+    let answer = harness.call(
+        1,
+        "windows_registry_get",
+        r#"{"key":"HKCU\\Software\\AutoHotkey"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "get",
+            "--json",
+            "--",
+            "HKCU\\Software\\AutoHotkey"
+        ]
+    );
+    let answer = harness.call(
+        2,
+        "windows_registry_get",
+        r#"{"key":"HKCU\\Software\\AutoHotkey","name":"Count"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "get",
+            "--json",
+            "--",
+            "HKCU\\Software\\AutoHotkey",
+            "Count"
+        ]
+    );
+    let answer = harness.call(3, "windows_registry_get", r#"{"key":"HKCU","name":""}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/windows", "registry", "get", "--json", "--", "HKCU", "@"]
+    );
+    for refused in [
+        r#"{}"#,
+        r#"{"key":""}"#,
+        r#"{"key":"HKCU\nx"}"#,
+        r#"{"key":7}"#,
+        r#"{"key":"HKCU","name":5}"#,
+        r#"{"key":"HKCU","data":["1"]}"#,
+    ] {
+        let answer = harness.call(4, "windows_registry_get", refused);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{refused}");
+    }
+    assert_eq!(harness.system.runs.len(), 3);
+}
+
+#[test]
+fn windows_registry_set_needs_the_write_grant_and_passes_type_and_data_as_operands() {
+    let mut harness = with_windows_layer(Harness::initialized());
+    let call =
+        r#"{"key":"HKCU\\Software\\AutoHotkey","name":"Count","type":"dword","data":["0x2b"]}"#;
+    let answer = harness.call(1, "windows_registry_set", call);
+    assert!(is_error(&answer), "{answer}");
+    assert!(harness.system.runs.is_empty());
+    let mut harness = with_windows_layer(granted_only(&[crate::grants::Grant::Write]));
+    let answer = harness.call(2, "windows_registry_set", call);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "set",
+            "--type",
+            "dword",
+            "--",
+            "HKCU\\Software\\AutoHotkey",
+            "Count",
+            "0x2b"
+        ]
+    );
+    assert!(
+        texts(&answer)
+            .iter()
+            .any(|text| text == "Saved the value Count in HKCU\\Software\\AutoHotkey."),
+        "{answer}"
+    );
+    let answer = harness.call(
+        3,
+        "windows_registry_set",
+        r#"{"key":"HKCU\\Software\\Paths","name":"","type":"multi_sz","data":["-a","b"]}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "set",
+            "--type",
+            "multi_sz",
+            "--",
+            "HKCU\\Software\\Paths",
+            "@",
+            "-a",
+            "b"
+        ]
+    );
+    let answer = harness.call(4, "windows_registry_set", r#"{"key":"HKCU\\Software\\New"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/windows", "registry", "set", "--", "HKCU\\Software\\New"]
+    );
+    for refused in [
+        r#"{"key":"HKCU","name":"x","type":"REG_NONE"}"#,
+        r#"{"key":"HKCU","type":"sz"}"#,
+        r#"{"key":"HKCU","data":["x"]}"#,
+        r#"{"key":"HKCU","name":"x","data":"x"}"#,
+        r#"{"key":"HKCU","name":"x","data":[1]}"#,
+        r#"{"key":"HKCU","name":"x","data":["a\u0000b"]}"#,
+    ] {
+        let answer = harness.call(5, "windows_registry_set", refused);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{refused}");
+    }
+    assert_eq!(harness.system.runs.len(), 3);
+}
+
+#[test]
+fn windows_registry_delete_and_reset_ask_first_and_dry_runs_change_nothing() {
+    let mut harness = with_windows_layer(granted_only(&[crate::grants::Grant::Write]));
+    let key = r#"{"key":"HKCU\\Software\\AutoHotkey"}"#;
+    let answer = harness.call(1, "windows_registry_delete", key);
+    assert!(is_error(&answer), "{answer}");
+    assert!(
+        texts(&answer)[0].contains("windows_registry_delete needs the user's yes"),
+        "{answer}"
+    );
+    let answer = harness.call(
+        2,
+        "windows_registry_delete",
+        r#"{"key":"HKCU\\Software\\AutoHotkey","dry_run":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert!(
+        texts(&answer).iter().any(|text| text.contains(
+            "would delete the registry key HKCU\\Software\\AutoHotkey with every subkey and \
+             value below it"
+        )),
+        "{answer}"
+    );
+    assert!(harness.system.runs.is_empty());
+    let answer = harness.call(
+        3,
+        "windows_registry_delete",
+        r#"{"key":"HKCU\\Software\\AutoHotkey","name":"Version","confirm":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "delete",
+            "--yes",
+            "--",
+            "HKCU\\Software\\AutoHotkey",
+            "Version"
+        ]
+    );
+    assert!(
+        texts(&answer)
+            .iter()
+            .any(|text| text == "Deleted the value Version from HKCU\\Software\\AutoHotkey."),
+        "{answer}"
+    );
+    let answer = harness.call(4, "windows_registry_reset", r#"{"machine":true}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.len(), 1);
+    let answer = harness.call(5, "windows_registry_reset", r#"{"machine":true,"confirm":true}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/windows", "registry", "reset", "--yes", "--machine"]
+    );
+    assert!(
+        texts(&answer)
+            .iter()
+            .any(|text| text == "Replaced the machine's registry file. It is empty."),
+        "{answer}"
+    );
+    let mut harness = with_windows_layer(granted_only(&[crate::grants::Grant::View]));
+    let answer = harness.call(6, "windows_registry_delete", r#"{"key":"HKCU","confirm":true}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert!(harness.system.runs.is_empty());
+}
