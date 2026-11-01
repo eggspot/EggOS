@@ -2,7 +2,7 @@ use crate::output::Output;
 use crate::system::System;
 use crate::utilities::MAX_ARGUMENTS;
 use core::ffi::CStr;
-use eggos_commands::{CommandDefinition, OptionDefinition, errors};
+use eggos_commands::{CommandDefinition, OptionDefinition, ValueType, errors};
 
 #[derive(Debug)]
 pub struct Operands<'a> {
@@ -46,6 +46,19 @@ impl<'a> Given<'a> {
     }
 }
 
+fn takes_negative_numbers(definition: &CommandDefinition) -> bool {
+    let negative =
+        |value: ValueType| matches!(value, ValueType::Integer { minimum, .. } if minimum < 0);
+    definition
+        .operands
+        .iter()
+        .any(|operand| negative(operand.value))
+        && !definition
+            .options
+            .iter()
+            .any(|option| option.short.is_some_and(|letter| letter.is_ascii_digit()))
+}
+
 fn tail(argument: &CStr, from: usize) -> &CStr {
     CStr::from_bytes_with_nul(&argument.to_bytes_with_nul()[from..]).unwrap_or(c"")
 }
@@ -72,13 +85,18 @@ pub fn parse_defined<'a, S: System>(
         operands: [c""; MAX_ARGUMENTS],
         count: 0,
     };
+    let negative_numbers = takes_negative_numbers(definition);
     let mut options_end = false;
     let mut index = 0;
     while index < arguments.len() {
         let argument = arguments[index];
         index += 1;
         let bytes = argument.to_bytes();
-        if options_end || bytes.len() < 2 || bytes[0] != b'-' {
+        if options_end
+            || bytes.len() < 2
+            || bytes[0] != b'-'
+            || (negative_numbers && bytes[1..].iter().all(u8::is_ascii_digit))
+        {
             if operands.count == MAX_ARGUMENTS {
                 output.coded(&errors::USAGE, &[b"too many operands"]);
                 return Err(Refused::Reported);
@@ -245,6 +263,20 @@ mod tests {
         assert_eq!(operands, Ok(vec!["+%s".to_owned()]));
         assert_eq!(seen, ["sync=", "sync=10.0.2.2:123"]);
         assert_eq!(errors, "");
+    }
+
+    #[test]
+    fn negative_numbers_are_operands_only_where_the_registry_takes_them() {
+        let (operands, _, _) = given_to(&commands::WM_MOVE, &[c"1", c"-20", c"-3"]);
+        assert_eq!(
+            operands,
+            Ok(vec!["1".to_owned(), "-20".to_owned(), "-3".to_owned()])
+        );
+        let (_, _, errors) = given_to(&commands::WM_MOVE, &[c"1", c"-2x", c"3"]);
+        assert_eq!(errors, "t: invalid option -- '2'\n");
+        let (result, _, errors) = given_to(&commands::HEAD, &[c"-5"]);
+        assert_eq!(result, Err(Refused::Reported));
+        assert_eq!(errors, "t: invalid option -- '5'\n");
     }
 
     #[test]

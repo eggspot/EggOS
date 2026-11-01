@@ -4,8 +4,8 @@ use crate::page::Page;
 use crate::system::System;
 use core::ffi::CStr;
 use eggos_commands::commands::{self, LIST_PAGE_LIMIT};
-use eggos_commands::errors;
 use eggos_commands::page::Smallest;
+use eggos_commands::{CommandDefinition, errors};
 use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
 
@@ -51,14 +51,14 @@ const PAGE_SLOTS: usize = LIST_PAGE_LIMIT as usize + 1;
 const TITLE_CAPACITY: usize = 64;
 const WINDOW_RECORD_BYTES: usize = 1024;
 
-const ACTIONS: [(&[u8], u32, usize); 7] = [
-    (b"focus", 0, 0),
-    (b"minimise", 1, 0),
-    (b"maximise", 2, 0),
-    (b"restore", 3, 0),
-    (b"close", 4, 0),
-    (b"move", 5, 2),
-    (b"size", 6, 2),
+const ACTIONS: [(&CommandDefinition, u32); 7] = [
+    (&commands::WM_FOCUS, 0),
+    (&commands::WM_MINIMISE, 1),
+    (&commands::WM_MAXIMISE, 2),
+    (&commands::WM_RESTORE, 3),
+    (&commands::WM_CLOSE, 4),
+    (&commands::WM_MOVE, 5),
+    (&commands::WM_SIZE, 6),
 ];
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -325,14 +325,19 @@ pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         output.system.close(device);
         return status;
     }
-    let Some(&(_, code, extra)) = ACTIONS.iter().find(|(name, _, _)| *name == verb) else {
+    let Some(&(definition, code)) = ACTIONS
+        .iter()
+        .find(|(definition, _)| definition.words[1].as_bytes() == verb)
+    else {
         return usage(output);
     };
-    let operands = match rest.first() {
-        Some(first) if first.to_bytes() == b"--" => &rest[1..],
-        _ => rest,
+    let Ok(operands) = parse_defined(output, rest, definition, |_, _| Ok(())) else {
+        return USAGE_STATUS;
     };
-    if operands.len() != 1 + extra || operands.iter().any(|operand| operand.is_empty()) {
+    let operands = operands.all();
+    if operands.len() != definition.operands.len()
+        || operands.iter().any(|operand| operand.is_empty())
+    {
         return usage(output);
     }
     let operands: [&[u8]; 3] = core::array::from_fn(|index| {
@@ -548,6 +553,36 @@ mod tests {
         let (status, fake) = run(&[c"close", c"x1"], windows());
         assert_eq!(status, 2);
         assert_eq!(fake.errors(), "wm: invalid number 'x1'\n");
+    }
+
+    #[test]
+    fn the_window_verbs_parse_from_the_registry_with_negative_places_as_operands() {
+        let (status, fake) = run(&[c"move", c"129", c"-10", c"-3"], windows());
+        assert_eq!((status, fake.errors().as_str()), (0, ""));
+        assert_eq!(
+            fake.managed.last(),
+            Some(&[129, 5, -10i32 as u32, -3i32 as u32])
+        );
+        let (status, fake) = run(&[c"move", c"--", c"129", c"-10", c"40"], windows());
+        assert_eq!(status, 0);
+        assert_eq!(fake.managed.last(), Some(&[129, 5, -10i32 as u32, 40]));
+        for (arguments, error) in [
+            (&[c"focus", c"-x", c"129"][..], "wm: invalid option -- 'x'\n"),
+            (
+                &[c"close", c"--force", c"129"][..],
+                "wm: unrecognized option '--force'\n",
+            ),
+            (&[c"size", c"129", c"-5", c"10"][..], "wm: invalid option -- '5'\n"),
+        ] {
+            let (status, fake) = run(arguments, windows());
+            assert_eq!((status, fake.errors().as_str()), (2, error), "{arguments:?}");
+            assert!(fake.managed.is_empty());
+        }
+        for arguments in [&[c"focus", c"129", c"130"][..], &[c"size", c"129", c"5"][..]] {
+            let (status, fake) = run(arguments, windows());
+            assert_eq!(status, 2, "{arguments:?}");
+            assert!(fake.errors().starts_with("wm: usage: wm list"));
+        }
     }
 
     #[test]
