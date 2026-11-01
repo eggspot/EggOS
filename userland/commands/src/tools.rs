@@ -1801,10 +1801,11 @@ pub const SETTINGS_LIST: ToolDefinition = reading(
      accessibility.slow_keys_ms can be set with settings_set; the others report facts: the display's resolution and pointer, the \
      network's state (network.state: connected, getting-address, no-address, cable-unplugged \
      or none), address, router, DNS servers and hardware address, the version, architecture, \
-     CPUs, memory and uptime.",
+     CPUs, memory and uptime. With limit, a page of at most that many by key; structuredContent \
+     then says whether more follow and their next_cursor, to pass as after.",
     &["settings", "list"],
     &[],
-    &[],
+    &LIST_PAGE,
 );
 
 /// `settings_get` (D163).

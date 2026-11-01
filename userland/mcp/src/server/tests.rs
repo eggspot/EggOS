@@ -2848,6 +2848,64 @@ fn only_the_twin_s_last_line_of_errors_names_a_next_page() {
 }
 
 #[test]
+fn settings_list_pages_through_settings_by_key() {
+    let mut harness = Harness::initialized();
+    harness.system.outputs.insert(
+        "/bin/settings".into(),
+        (
+            b"shell.profile=macos\n".to_vec(),
+            b"more: --after shell.profile\n".to_vec(),
+            Ended::Exited(0),
+        ),
+    );
+    let answer = harness.call(1, "settings_list", r#"{"limit":1}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/settings", "list", "--limit", "1"]
+    );
+    let page = page_of(&answer).unwrap();
+    assert_eq!(page.get("truncated"), Some(Value::Bool(true)));
+    assert!(
+        page.get("next_cursor")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("shell.profile")
+    );
+    assert_eq!(last_record(&harness).2, r#"{"limit":1}"#);
+    harness.system.outputs.insert(
+        "/bin/settings".into(),
+        (b"time.zone=UTC\n".to_vec(), Vec::new(), Ended::Exited(0)),
+    );
+    let answer = harness.call(2, "settings_list", r#"{"limit":1,"after":"shell.profile"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/settings",
+            "list",
+            "--limit",
+            "1",
+            "--after",
+            "shell.profile"
+        ]
+    );
+    let page = page_of(&answer).unwrap();
+    assert_eq!(page.get("truncated"), Some(Value::Bool(false)));
+    let answer = harness.call(3, "settings_list", "{}");
+    assert!(page_of(&answer).is_none(), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/settings", "list"]
+    );
+    for (id, arguments) in [(4, r#"{"limit":101}"#), (5, r#"{"after":"-x"}"#)] {
+        let answer = harness.call(id, "settings_list", arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{arguments}");
+    }
+}
+
+#[test]
 fn a_dry_run_is_answered_by_the_server_without_asking_or_running_the_twin() {
     let mut harness = asking();
     harness
