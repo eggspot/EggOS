@@ -24,6 +24,19 @@ pub mod key {
     pub const DOWN: u16 = 108;
     pub const PAGE_DOWN: u16 = 109;
     pub const DELETE: u16 = 111;
+    pub const F10: u16 = 68;
+    pub const LEFT_SHIFT: u16 = 42;
+    pub const RIGHT_SHIFT: u16 = 54;
+    pub const LEFT_ALT: u16 = 56;
+    pub const RIGHT_ALT: u16 = 100;
+    pub const LEFT_CTRL: u16 = 29;
+    pub const RIGHT_CTRL: u16 = 97;
+    pub const LEFT_SUPER: u16 = 125;
+    pub const RIGHT_SUPER: u16 = 126;
+    pub const MENU: u16 = 127;
+    pub const Z: u16 = 44;
+    pub const F: u16 = 33;
+    pub const Q: u16 = 16;
 }
 
 /// The modifiers held with a key.

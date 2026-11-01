@@ -4,7 +4,6 @@
 //! presses the focused one, Enter the primary, Esc the cancel.
 
 use crate::canvas::{Canvas, INSET_R6};
-use crate::colour;
 use crate::geometry::Rect;
 use crate::input::key;
 use crate::text::Text;
@@ -203,6 +202,7 @@ impl Panel {
     /// Draws it centred in `area`, its focused button ringed when the window has the keyboard.
     pub fn paint(&self, canvas: &mut Canvas<'_>, area: Rect, window_focused: bool) {
         let rect = self.rect(area);
+        let palette = canvas.palette();
         canvas.rounded(
             Rect::new(
                 rect.x - EDGE,
@@ -211,15 +211,15 @@ impl Panel {
                 rect.height + 2 * EDGE,
             ),
             &INSET_R6,
-            colour::FIELD,
+            palette.field,
         );
-        canvas.rounded(rect, &INSET_R6, colour::MENU);
-        canvas.outline(rect, &INSET_R6, 1, colour::MENU_BORDER);
+        canvas.rounded(rect, &INSET_R6, palette.menu);
+        canvas.outline(rect, &INSET_R6, 1, palette.menu_border);
         let inner = rect.width - 2 * PADDING;
         for (index, line) in self.lines[..self.line_count].iter().enumerate() {
             let ink = match index {
-                0 => colour::TEXT,
-                _ => colour::TEXT_DIM,
+                0 => palette.text,
+                _ => palette.text_dim,
             };
             widget::clipped_text(
                 canvas,
@@ -331,6 +331,9 @@ mod tests {
         panel.paint(&mut canvas, AREA, true);
         let bar = panel.rect(AREA);
         let row = (bar.y + 44) as usize * 720;
-        assert_eq!(pixels[row + (bar.right() - 20) as usize], colour::ACCENT);
+        assert_eq!(
+            pixels[row + (bar.right() - 20) as usize],
+            crate::theme::DARK.accent
+        );
     }
 }

@@ -4,6 +4,7 @@
 //! number and stroke doubles and glyphs are pixel-doubled. Nothing is drawn outside the clip.
 
 use crate::geometry::Rect;
+use crate::theme::{self, Palette};
 use eggos_font::egg_sans::{self, HEIGHT as GLYPH_HEIGHT};
 
 /// The corner of radius 6: how far each row from the outside is shortened at both ends.
@@ -76,6 +77,7 @@ pub struct Canvas<'a> {
     width: i32,
     scale: i32,
     clip: Rect,
+    palette: &'static Palette,
 }
 
 impl<'a> Canvas<'a> {
@@ -90,7 +92,18 @@ impl<'a> Canvas<'a> {
             width: width as i32,
             scale: scale as i32,
             clip: Rect::new(0, 0, width as i32, height as i32),
+            palette: &theme::DARK,
         })
+    }
+
+    /// The palette the widgets draw with: the dark one until [`Self::set_palette`].
+    pub fn palette(&self) -> &'static Palette {
+        self.palette
+    }
+
+    /// Draws with `palette` from now on.
+    pub fn set_palette(&mut self, palette: &'static Palette) {
+        self.palette = palette;
     }
 
     /// The scale every coordinate is multiplied by.

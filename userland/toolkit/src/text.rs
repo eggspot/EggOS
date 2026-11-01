@@ -11,6 +11,11 @@ pub fn width(text: &str) -> i32 {
     egg_sans::width(text) as i32
 }
 
+/// The advance of `character` at scale 1: how far the next glyph starts after it.
+pub fn advance(character: char) -> i32 {
+    i32::from(egg_sans::glyph(character).advance)
+}
+
 /// How much of `text` is drawn in `space` pixels: the bytes to draw and whether `...` follows
 /// them. Whole text when it fits; else glyphs are dropped from the end until the rest and the
 /// ellipsis fit; when not even one glyph and the ellipsis fit, as many whole glyphs as fit.

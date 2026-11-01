@@ -154,12 +154,26 @@ pub enum Role {
     Slider,
     /// A dropdown: its value is the chosen option's text, its options its children (D199).
     ComboBox,
+    /// A widget's tooltip, below it: its name the text, its value the shortcut (D218).
+    Tooltip,
+    /// A window's menu bar: its value the open title, its titles its children.
+    MenuBar,
+    /// A menu's title or item: its value an item's key.
+    MenuItem,
+    /// A table: its value `row <n> of <rows>`, its column headers and shown rows its children.
+    Table,
+    /// A table's shown row: its value every cell joined by tabs.
+    Row,
+    /// A table's column header: its value `ascending` or `descending` when sorted by it.
+    ColumnHeader,
+    /// Multi-line text: its value its text.
+    TextArea,
     /// A role this version does not know.
     Unknown,
 }
 
 impl Role {
-    const ALL: [Role; 15] = [
+    const ALL: [Role; 22] = [
         Role::Window,
         Role::Group,
         Role::Label,
@@ -175,6 +189,13 @@ impl Role {
         Role::Text,
         Role::Slider,
         Role::ComboBox,
+        Role::Tooltip,
+        Role::MenuBar,
+        Role::MenuItem,
+        Role::Table,
+        Role::Row,
+        Role::ColumnHeader,
+        Role::TextArea,
     ];
 
     /// Its number on the wire.
@@ -208,6 +229,13 @@ impl Role {
             Role::Text => "text",
             Role::Slider => "slider",
             Role::ComboBox => "combo-box",
+            Role::Tooltip => "tooltip",
+            Role::MenuBar => "menubar",
+            Role::MenuItem => "menuitem",
+            Role::Table => "table",
+            Role::Row => "row",
+            Role::ColumnHeader => "columnheader",
+            Role::TextArea => "textarea",
             Role::Unknown => "unknown",
         }
     }

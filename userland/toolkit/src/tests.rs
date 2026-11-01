@@ -1,5 +1,6 @@
 use crate::canvas::Canvas;
 use crate::colour;
+use crate::theme::Token;
 use crate::geometry::Rect;
 use crate::input::{Input, Modifiers, MouseButton, key};
 use crate::tree::{PointerShape, ROOT_ELEMENT, Response, WidgetId, WidgetTree, element_of};
@@ -29,7 +30,7 @@ fn form() -> Form {
         .add(
             None,
             Place::at(0, 0, Length::Px(120), Length::Fill(0)),
-            Kind::panel(colour::DOCK),
+            Kind::panel(Token::Dock),
         )
         .unwrap();
     let field = tree
@@ -50,17 +51,14 @@ fn form() -> Form {
         .add(
             None,
             Place::at(120, 0, Length::Fill(0), Length::Fill(0)),
-            Kind::panel(colour::MENU),
+            Kind::panel(Token::Menu),
         )
         .unwrap();
     let scroll = tree
         .add(
             Some(pane),
             Place::fill(),
-            Kind::ScrollView {
-                offset: 0,
-                content_height: 0,
-            },
+            Kind::scroll_view(),
         )
         .unwrap();
     let cards = tree
@@ -102,7 +100,7 @@ fn form() -> Form {
         .add(
             Some(scroll),
             Place::right(16, 200),
-            Kind::label("Right", colour::TEXT),
+            Kind::label("Right", Token::Text),
         )
         .unwrap();
     let ok = tree
@@ -824,7 +822,7 @@ fn acting_on_an_element_does_what_a_person_s_input_does() {
 fn slider_tree(value: i32) -> (WidgetTree<4>, WidgetId) {
     let mut tree = WidgetTree::<4>::new();
     let root = tree
-        .add(None, Place::fill(), Kind::panel(colour::MENU))
+        .add(None, Place::fill(), Kind::panel(Token::Menu))
         .unwrap();
     let slider = tree
         .add(
@@ -1058,7 +1056,7 @@ const LAYOUTS: &[&str] = &["US", "UK", "German", "Swedish"];
 fn dropdown_tree() -> (WidgetTree<4>, WidgetId) {
     let mut tree = WidgetTree::<4>::new();
     let root = tree
-        .add(None, Place::fill(), Kind::panel(colour::MENU))
+        .add(None, Place::fill(), Kind::panel(Token::Menu))
         .unwrap();
     let dropdown = tree
         .add(

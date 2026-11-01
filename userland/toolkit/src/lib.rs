@@ -15,11 +15,16 @@ pub mod application;
 pub mod canvas;
 pub mod colour;
 pub mod damage;
+pub mod drag;
 pub mod geometry;
 pub mod input;
 pub mod menu;
 pub mod panel;
+pub mod table;
 pub mod text;
+pub mod text_area;
+pub mod theme;
+pub mod tooltip;
 pub mod tree;
 pub mod widget;
 #[cfg(eggos_user)]
