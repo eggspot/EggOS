@@ -882,6 +882,18 @@ impl Application<CAPACITY> for Settings {
                 let choice = KeyboardChoice::of(self.window.facts()).choosing(index);
                 choose_keyboard(choice, self.server.as_ref());
             }
+            Some(Request::SetKeyboardLayouts { layouts, in_force }) => {
+                let choice = KeyboardChoice {
+                    layouts,
+                    in_force,
+                    switch_key: self.window.facts().switch_key,
+                };
+                choose_keyboard(choice, self.server.as_ref());
+            }
+            Some(Request::SetSwitchKey(switch_key)) => {
+                let choice = KeyboardChoice::of(self.window.facts()).switching_with(switch_key);
+                choose_keyboard(choice, self.server.as_ref());
+            }
             Some(Request::SetTimeZone(index)) => {
                 self.window.time_zone_saved(index, save_time_zone(index));
             }
@@ -1013,8 +1025,23 @@ impl Application<CAPACITY> for Settings {
         }
         if let Some(keyboard) = self.keyboard() {
             let layout = keyboard.layout as usize;
-            if layout != self.window.facts().keyboard_layout {
-                self.window.show_keyboard_layout(layout);
+            let mut listed = [0u8; settings_file::KEYBOARD_LAYOUT_SET_CAPACITY + 1];
+            let layouts = read_file(KEYBOARD_LAYOUTS_CONTROL, &mut listed)
+                .ok()
+                .and_then(|length| {
+                    let text = &listed[..length.min(listed.len())];
+                    let text = text.strip_suffix(b"\n").unwrap_or(text);
+                    settings_file::KeyboardLayoutSet::parse(text).ok()
+                });
+            let facts = self.window.facts();
+            match layouts {
+                Some(layouts)
+                    if layouts != facts.keyboard_layouts || layout != facts.keyboard_layout =>
+                {
+                    self.window.show_keyboard_layouts(layouts, layout);
+                }
+                _ if layout != facts.keyboard_layout => self.window.show_keyboard_layout(layout),
+                _ => {}
             }
             self.window
                 .show_keyboard(keyboard.present, keyboard.caps_lock);

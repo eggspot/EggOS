@@ -281,6 +281,7 @@ dependencies = [
  "eggos-editor",
  "eggos-eggfs",
  "eggos-files",
+ "eggos-font",
  "eggos-mcp",
  "eggos-runtime",
  "eggos-settings-file",

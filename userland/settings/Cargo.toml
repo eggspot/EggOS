@@ -16,6 +16,7 @@ eggos-commands = { path = "../commands" }
 eggos-editor = { path = "../editor", features = ["window"] }
 eggos-files = { path = "../files", features = ["window", "storage"] }
 eggos-eggfs = { path = "../../eggfs" }
+eggos-font = { path = "../../font" }
 eggos-mcp = { path = "../mcp" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }

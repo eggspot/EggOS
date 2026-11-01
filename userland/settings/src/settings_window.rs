@@ -24,7 +24,7 @@ use eggos_mcp::grant_files::SaveError;
 use eggos_mcp::grants::{AgentId, AgentName, GrantStore};
 use eggos_mcp::pairing::{Code, PairError};
 use eggos_runtime::errno::Errno;
-use eggos_settings_file::KEYBOARD_LAYOUTS;
+use eggos_settings_file::{KEYBOARD_LAYOUTS, KeyboardLayoutSet, MAX_KEYBOARD_LAYOUTS, SwitchKey};
 use eggos_toolkit::theme::{Theme, Token};
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
@@ -38,7 +38,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 176;
+pub const CAPACITY: usize = 186;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -63,10 +63,20 @@ const SET_FIELD: (i32, i32, i32, i32) = (144, 110, 200, 28);
 const SET_BUTTON: (i32, i32, i32, i32) = (352, 110, 96, 28);
 const STATUS_LINE: i32 = 156;
 
-const LAYOUT_LIST: (i32, i32, i32, i32) = (16, 64, 208, 240);
+const LAYOUT_LIST: (i32, i32, i32, i32) = (16, 64, 208, 96);
 const LAYOUT_ROW: i32 = 24;
 const LAYOUT_MARK_X: i32 = 8;
 const LAYOUT_TEXT_X: i32 = 24;
+const LAYOUT_LABEL_X: i32 = 40;
+const LAYOUT_LABEL_TOP: i32 = 68;
+const ADD_LAYOUT: (i32, i32, i32, i32) = (16, 168, 208, 28);
+const MOVE_UP: (i32, i32, i32, i32) = (16, 204, 100, 28);
+const MOVE_DOWN: (i32, i32, i32, i32) = (124, 204, 100, 28);
+const REMOVE: (i32, i32, i32, i32) = (16, 240, 96, 28);
+const SWITCH_KEY_LABEL: (i32, i32) = (16, 282);
+const SWITCH_KEY: (i32, i32, i32, i32) = (96, 276, 128, 28);
+const NO_ROWS: [&str; MAX_KEYBOARD_LAYOUTS] = [""; MAX_KEYBOARD_LAYOUTS];
+const FOUR_LAYOUTS: &str = "Four layouts is the most.";
 const KEYBOARD_FACTS_X: i32 = 240;
 const THIRD_LEVEL_LINE: i32 = 68;
 const DEAD_KEYS_LINE: i32 = 88;
@@ -83,6 +93,17 @@ pub const LAYOUT_TITLES: [&str; KEYBOARD_LAYOUTS.len()] = {
         index += 1;
     }
     titles
+};
+
+/// The `Add a layout...` dropdown's options: the prompt, then every layout's title (D220).
+pub const ADD_LAYOUT_OPTIONS: [&str; KEYBOARD_LAYOUTS.len() + 1] = {
+    let mut options = ["Add a layout..."; KEYBOARD_LAYOUTS.len() + 1];
+    let mut index = 0;
+    while index < KEYBOARD_LAYOUTS.len() {
+        options[index + 1] = KEYBOARD_LAYOUTS[index].title;
+        index += 1;
+    }
+    options
 };
 
 const NO_THIRD_LEVEL: &str = "No third level, so no \u{20ac} key";
@@ -175,6 +196,13 @@ const PANE_WORDS: [&[&str]; 10] = [
         "QWERTZ",
         "AZERTY",
         "international",
+        "swiss",
+        "belgian",
+        "canadian",
+        "latin america",
+        "portugal",
+        "mac",
+        "switch key",
         "Key repeat",
         "shortcuts",
         "Repeat delay",
@@ -304,6 +332,14 @@ pub enum Request {
     /// Make the keyboard layout at this index of the settings file's `KEYBOARD_LAYOUTS` the
     /// keyboard's and save it (D185).
     SetKeyboardLayout(usize),
+    /// Make these the layouts the switch key cycles through, `in_force` the one in force,
+    /// and save both (D220).
+    SetKeyboardLayouts {
+        layouts: KeyboardLayoutSet,
+        in_force: usize,
+    },
+    /// Make this the key that switches layouts and save it (D220).
+    SetSwitchKey(SwitchKey),
     /// Save the time zone at this index of `eggos_calendar::zone::ZONES` as `time.zone`, then
     /// say how it went ([`SettingsWindow::time_zone_saved`]) (D194).
     SetTimeZone(usize),
@@ -383,6 +419,13 @@ struct Widgets {
     set_button: WidgetId,
     status: WidgetId,
     layouts: WidgetId,
+    layout_titles: [WidgetId; MAX_KEYBOARD_LAYOUTS],
+    add_layout: WidgetId,
+    move_up: WidgetId,
+    move_down: WidgetId,
+    remove: WidgetId,
+    switch_key: WidgetId,
+    keyboard_status: WidgetId,
     third_level: WidgetId,
     dead_keys: WidgetId,
     try_field: WidgetId,
@@ -405,15 +448,7 @@ pub struct SettingsWindow {
 }
 
 fn lowercase_contains(haystack: &str, needle: &str) -> bool {
-    let lower = |byte: u8| byte.to_ascii_lowercase();
-    let (haystack, needle) = (haystack.as_bytes(), needle.as_bytes());
-    needle.is_empty()
-        || haystack.windows(needle.len()).any(|window| {
-            window
-                .iter()
-                .zip(needle)
-                .all(|(&a, &b)| lower(a) == lower(b))
-        })
+    eggos_font::contains_folded(haystack, needle)
 }
 
 /// Whether pane `pane` stays in the sidebar while the search holds `query`: the query is in
@@ -643,7 +678,47 @@ impl SettingsWindow {
                 Length::Px(LAYOUT_LIST.2),
                 Length::Px(LAYOUT_LIST.3),
             ),
-            Kind::list(&LAYOUT_TITLES, LAYOUT_ROW, LAYOUT_MARK_X, LAYOUT_TEXT_X),
+            Kind::list(&NO_ROWS, LAYOUT_ROW, LAYOUT_MARK_X, LAYOUT_TEXT_X),
+        );
+        let layout_titles = core::array::from_fn(|row| {
+            build.label(
+                keyboard,
+                LAYOUT_LABEL_X,
+                LAYOUT_LABEL_TOP + row as i32 * LAYOUT_ROW,
+                "",
+                Token::Text,
+            )
+        });
+        let at = |(x, y, width, height): (i32, i32, i32, i32)| {
+            Place::at(x, y, Length::Px(width), Length::Px(height))
+        };
+        let add_layout = build.add(
+            Some(keyboard),
+            at(ADD_LAYOUT),
+            Kind::dropdown("Add a layout", &ADD_LAYOUT_OPTIONS, 0),
+        );
+        let move_up = build.add(Some(keyboard), at(MOVE_UP), Kind::button("Move up", false));
+        let move_down = build.add(
+            Some(keyboard),
+            at(MOVE_DOWN),
+            Kind::button("Move down", false),
+        );
+        let remove = build.add(Some(keyboard), at(REMOVE), Kind::button("Remove", false));
+        build.label(
+            keyboard,
+            SWITCH_KEY_LABEL.0,
+            SWITCH_KEY_LABEL.1,
+            "Switch key",
+            Token::Text,
+        );
+        let switch_key = build.add(
+            Some(keyboard),
+            at(SWITCH_KEY),
+            Kind::dropdown(
+                "Switch key",
+                &SwitchKey::LABELS,
+                facts.switch_key.number(),
+            ),
         );
         let third_level = build.label(
             keyboard,
@@ -803,7 +878,6 @@ impl SettingsWindow {
         tree.set_default_button(set_button);
         tree.set_shown(no_disk, !facts.on_disk);
         tree.set_shown(keyboard_no_disk, !facts.on_disk);
-        tree.set_selected(layouts, layout);
         for (index, pane) in panes.iter().enumerate() {
             tree.set_shown(*pane, index == APPEARANCE);
         }
@@ -826,6 +900,13 @@ impl SettingsWindow {
                 set_button,
                 status,
                 layouts,
+                layout_titles,
+                add_layout,
+                move_up,
+                move_down,
+                remove,
+                switch_key,
+                keyboard_status: keyboard_no_disk,
                 third_level,
                 dead_keys,
                 try_field,
@@ -841,6 +922,7 @@ impl SettingsWindow {
             pane: APPEARANCE,
         };
         window.show_keyboard(facts.keyboard, facts.caps_lock);
+        window.show_layout_set();
         window
     }
 
@@ -1092,18 +1174,132 @@ impl SettingsWindow {
             .set_text(self.widgets.third_level, third_level_text(layout, index));
     }
 
-    /// Shows keyboard layout `index` (of the settings file's `KEYBOARD_LAYOUTS`) as the chosen
-    /// one: its row selected, its third level and dead keys in the lines beside the list.
+    /// Shows keyboard layout `index` (of the settings file's `KEYBOARD_LAYOUTS`) as the one in
+    /// force: its row of your layouts selected (it joins them, as the CLI would make it,
+    /// when it is not one of them), its third level and dead keys in the lines beside them.
     pub fn show_keyboard_layout(&mut self, index: usize) {
         let index = index.min(KEYBOARD_LAYOUTS.len() - 1);
+        self.facts.keyboard_layouts = self
+            .facts
+            .keyboard_layouts
+            .with_chosen(index, self.facts.keyboard_layout);
         self.facts.keyboard_layout = index;
-        self.tree.set_selected(self.widgets.layouts, index);
+        self.show_layout_set();
+    }
+
+    /// Shows `layouts` as your layouts and `in_force` as the one in force (D220), as a set
+    /// changed from the CLI or MCP leaves them.
+    pub fn show_keyboard_layouts(&mut self, layouts: KeyboardLayoutSet, in_force: usize) {
+        self.facts.keyboard_layouts = layouts;
+        self.facts.keyboard_layout = layouts.keeping(in_force);
+        self.show_layout_set();
+    }
+
+    fn show_layout_set(&mut self) {
+        let layouts = self.facts.keyboard_layouts;
+        let in_force = layout_index(&self.facts);
+        let widgets = self.widgets;
+        for (row, &title) in widgets.layout_titles.iter().enumerate() {
+            let layout = layouts.get(row);
+            self.tree.set_shown(title, layout.is_some());
+            if let Some(layout) = layout {
+                self.tree.set_text(title, KEYBOARD_LAYOUTS[layout].title);
+            }
+        }
+        self.tree
+            .set_shown_items(widgets.layouts, (1u32 << layouts.len()) - 1);
+        let row = layouts.position(in_force).unwrap_or(0);
+        self.tree.set_selected(widgets.layouts, row);
+        self.tree.set_enabled(widgets.move_up, row > 0);
+        self.tree
+            .set_enabled(widgets.move_down, row + 1 < layouts.len());
+        self.tree.set_enabled(widgets.remove, layouts.len() > 1);
+        let full = layouts.len() >= MAX_KEYBOARD_LAYOUTS;
+        self.tree.set_enabled(widgets.add_layout, !full);
+        self.tree.set_selected(widgets.add_layout, 0);
+        self.tree
+            .set_selected(widgets.switch_key, self.facts.switch_key.number());
+        self.tree.set_enabled(widgets.switch_key, self.facts.keyboard);
+        let status = widgets.keyboard_status;
+        let (text, shown) = match full {
+            true => (FOUR_LAYOUTS, true),
+            false => (NO_DISK, !self.facts.on_disk),
+        };
+        self.tree.set_text(status, text);
+        self.tree.set_shown(status, shown);
         self.tree.set_text(
-            self.widgets.third_level,
-            third_level_text(index, self.facts.profile),
+            widgets.third_level,
+            third_level_text(in_force, self.facts.profile),
         );
         self.tree
-            .set_text(self.widgets.dead_keys, dead_keys_text(index).as_str());
+            .set_text(widgets.dead_keys, dead_keys_text(in_force).as_str());
+    }
+
+    fn change_layout_set(&mut self, layouts: KeyboardLayoutSet, in_force: usize) -> Request {
+        self.facts.keyboard_layouts = layouts;
+        self.facts.keyboard_layout = in_force;
+        self.show_layout_set();
+        Request::SetKeyboardLayouts { layouts, in_force }
+    }
+
+    fn choose_layout_in_set(&mut self, layout: usize) -> Option<Request> {
+        if layout == self.facts.keyboard_layout {
+            self.show_layout_set();
+            return None;
+        }
+        self.facts.keyboard_layout = layout;
+        self.show_layout_set();
+        Some(Request::SetKeyboardLayout(layout))
+    }
+
+    fn add_layout(&mut self, option: usize) -> Option<Request> {
+        self.tree.set_selected(self.widgets.add_layout, 0);
+        let layout = option.checked_sub(1)?;
+        let layouts = self.facts.keyboard_layouts;
+        if layouts.contains(layout) {
+            return self.choose_layout_in_set(layout);
+        }
+        if layouts.len() >= MAX_KEYBOARD_LAYOUTS {
+            return None;
+        }
+        let added = layouts.with_chosen(layout, self.facts.keyboard_layout);
+        Some(self.change_layout_set(added, layout))
+    }
+
+    fn move_layout(&mut self, down: bool) -> Option<Request> {
+        let layouts = self.facts.keyboard_layouts;
+        let in_force = self.facts.keyboard_layout;
+        let row = layouts.position(in_force)?;
+        let other = match down {
+            true => row + 1,
+            false => row.checked_sub(1)?,
+        };
+        let mut numbers = [0usize; MAX_KEYBOARD_LAYOUTS];
+        for (place, number) in numbers.iter_mut().zip(layouts.numbers()) {
+            *place = number;
+        }
+        if other >= layouts.len() {
+            return None;
+        }
+        numbers.swap(row, other);
+        let moved = KeyboardLayoutSet::of(&numbers[..layouts.len()])?;
+        Some(self.change_layout_set(moved, in_force))
+    }
+
+    fn remove_layout(&mut self) -> Option<Request> {
+        let layouts = self.facts.keyboard_layouts;
+        let in_force = self.facts.keyboard_layout;
+        let row = layouts.position(in_force)?;
+        if layouts.len() < 2 {
+            return None;
+        }
+        let kept: [usize; MAX_KEYBOARD_LAYOUTS] = core::array::from_fn(|index| {
+            let from = if index < row { index } else { index + 1 };
+            layouts.get(from).unwrap_or(0)
+        });
+        let left = KeyboardLayoutSet::of(&kept[..layouts.len() - 1])?;
+        let next = left.get(row.min(left.len() - 1)).unwrap_or(0);
+        Some(self.change_layout_set(left, next))
     }
 
     /// Shows the keyboard on the Keyboard pane: `Caps Lock is on` while it is, `No keyboard
@@ -1124,11 +1320,23 @@ impl SettingsWindow {
         });
         self.tree.set_shown(line, !present || caps_lock);
         self.tree.set_enabled(self.widgets.try_field, present);
+        self.tree.set_enabled(self.widgets.switch_key, present);
     }
 
-    /// The keyboard layout shown as chosen.
+    /// The keyboard layout shown as the one in force: the selected row's.
     pub fn keyboard_layout_shown(&self) -> Option<usize> {
-        self.tree.selected(self.widgets.layouts)
+        let row = self.tree.selected(self.widgets.layouts)?;
+        self.facts.keyboard_layouts.get(row)
+    }
+
+    /// The titles of your layouts the Keyboard pane shows, in order.
+    pub fn keyboard_layout_titles(&self) -> Vec<&str> {
+        self.widgets
+            .layout_titles
+            .iter()
+            .filter(|&&title| self.tree.is_shown(title))
+            .filter_map(|&title| self.tree.text_of(title))
+            .collect()
     }
 
     /// The Keyboard pane's lines beside the list: the third level, the dead keys, and the
@@ -1316,12 +1524,21 @@ impl SettingsWindow {
                 self.show_profile(card);
                 Some(Request::SetProfile(card))
             }
-            Response::Chosen(id, layout) if id == widgets.layouts => {
-                if layout == self.facts.keyboard_layout {
+            Response::Chosen(id, row) if id == widgets.layouts => {
+                let layout = self.facts.keyboard_layouts.get(row)?;
+                self.choose_layout_in_set(layout)
+            }
+            Response::Chosen(id, option) if id == widgets.add_layout => self.add_layout(option),
+            Response::Activated(id) if id == widgets.move_up => self.move_layout(false),
+            Response::Activated(id) if id == widgets.move_down => self.move_layout(true),
+            Response::Activated(id) if id == widgets.remove => self.remove_layout(),
+            Response::Chosen(id, number) if id == widgets.switch_key => {
+                let switch_key = SwitchKey::from_number(number);
+                if switch_key == self.facts.switch_key {
                     return None;
                 }
-                self.show_keyboard_layout(layout);
-                Some(Request::SetKeyboardLayout(layout))
+                self.facts.switch_key = switch_key;
+                Some(Request::SetSwitchKey(switch_key))
             }
             Response::Chosen(id, pane) | Response::Opened(id, pane) if id == widgets.list => {
                 self.show_pane(pane)
@@ -1669,11 +1886,18 @@ mod tests {
     }
 
     #[test]
-    fn the_keyboard_pane_lists_the_layouts_and_choosing_one_asks_for_it() {
+    fn the_keyboard_pane_lists_your_layouts_and_choosing_one_asks_for_it() {
+        let named = |name: &[u8]| eggos_settings_file::keyboard_layout_named(name).unwrap();
         let mut window = SettingsWindow::new(Facts::example());
         click(&mut window, 50, 120);
         assert_eq!(window.pane(), KEYBOARD);
         assert_eq!(window.keyboard_layout_shown(), Some(0));
+        assert_eq!(window.keyboard_layout_titles(), ["English (US)"]);
+        let widgets = window.widgets;
+        assert!(!window.tree.is_enabled(widgets.remove));
+        assert!(!window.tree.is_enabled(widgets.move_up));
+        assert!(!window.tree.is_enabled(widgets.move_down));
+        assert!(window.tree.is_enabled(widgets.switch_key));
         assert_eq!(
             window.keyboard_lines(),
             [
@@ -1682,12 +1906,21 @@ mod tests {
                 None
             ]
         );
-        let german = (176 + 16 + 50, 64 + 8 * LAYOUT_ROW + 12);
+        let german = named(b"de");
+        let us_de = KeyboardLayoutSet::parse(b"us,de").unwrap();
         assert_eq!(
-            click(&mut window, german.0, german.1),
-            Some(Request::SetKeyboardLayout(8))
+            window.respond(Response::Chosen(widgets.add_layout, german + 1), 0),
+            Some(Request::SetKeyboardLayouts {
+                layouts: us_de,
+                in_force: german
+            })
         );
-        assert_eq!(window.facts().keyboard_layout, 8);
+        assert_eq!(
+            window.keyboard_layout_titles(),
+            ["English (US)", "German"]
+        );
+        assert_eq!(window.keyboard_layout_shown(), Some(german));
+        assert_eq!(window.tree.selected(widgets.add_layout), Some(0));
         assert_eq!(
             window.keyboard_lines()[..2],
             [
@@ -1700,13 +1933,44 @@ mod tests {
             window.keyboard_lines()[0],
             Some("Right Alt (AltGr) types \u{20ac} and more")
         );
-        assert_eq!(click(&mut window, german.0, german.1), None);
+        let first_row = (176 + 16 + 190, 64 + 12);
+        assert_eq!(
+            click(&mut window, first_row.0, first_row.1),
+            Some(Request::SetKeyboardLayout(0))
+        );
+        assert_eq!(click(&mut window, first_row.0, first_row.1), None);
+        assert_eq!(
+            window.respond(Response::Activated(widgets.move_down), 0),
+            Some(Request::SetKeyboardLayouts {
+                layouts: KeyboardLayoutSet::parse(b"de,us").unwrap(),
+                in_force: 0
+            })
+        );
+        assert_eq!(window.keyboard_layout_titles(), ["German", "English (US)"]);
+        assert_eq!(window.keyboard_layout_shown(), Some(0));
+        assert_eq!(
+            window.respond(Response::Activated(widgets.remove), 0),
+            Some(Request::SetKeyboardLayouts {
+                layouts: KeyboardLayoutSet::parse(b"de").unwrap(),
+                in_force: german
+            })
+        );
+        window.show_keyboard_layouts(KeyboardLayoutSet::parse(b"us,de,fr,es").unwrap(), 0);
+        assert!(!window.tree.is_enabled(widgets.add_layout));
+        assert_eq!(window.tree.text_of(widgets.keyboard_status), Some(FOUR_LAYOUTS));
+        assert_eq!(
+            window.respond(Response::Chosen(widgets.switch_key, 3), 0),
+            Some(Request::SetSwitchKey(SwitchKey::AltShift))
+        );
         window.show_keyboard(true, true);
         assert_eq!(window.keyboard_lines()[2], Some(CAPS_LOCK_ON));
         window.show_keyboard(false, false);
         assert_eq!(window.keyboard_lines()[2], Some(NO_KEYBOARD));
-        window.show_keyboard_layout(7);
+        assert!(!window.tree.is_enabled(widgets.switch_key));
+        window.show_keyboard_layout(named(b"fr"));
         assert_eq!(window.keyboard_lines()[1], Some("Dead keys: ^ \u{a8}"));
+        assert_eq!(ADD_LAYOUT_OPTIONS[0], "Add a layout...");
+        assert_eq!(ADD_LAYOUT_OPTIONS[1], "English (US)");
         assert_eq!(LAYOUT_TITLES[0], "English (US)");
     }
 
@@ -1719,6 +1983,8 @@ mod tests {
             "caps lock",
             "azerty",
             "german",
+            "swiss",
+            "azertÿ",
         ] {
             assert!(pane_matches(KEYBOARD, query), "{query}");
             assert!(!pane_matches(APPEARANCE, query), "{query}");
