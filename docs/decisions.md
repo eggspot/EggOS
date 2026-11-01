@@ -17162,7 +17162,7 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The retry check looks at the mapping's write and execute bits but not its user
   bit; checking it too would make a retry on a kernel-only entry fail safe.
 
-## D216 The first weekly performance pass (2026-10-31, main 9ff972cb): the switch path's CPU-time accounting is cut to user threads, the costs of #149's features are accepted, and the regressions it found are fixed or accepted (extends D78, D122, D198) — Decided by the build loop (decided by research)
+## D216 The first weekly performance pass (2026-10-31, main 9ff972cb): the switch path's CPU-time accounting is cut to user threads, the costs of #149's features are accepted, and the regressions it found are fixed, accepted or named for the next pass (extends D78, D122, D198) — Decided by the build loop (decided by research)
 
 - **What was measured.** `cargo xtask bench --arch all` on `main` 9ff972cb, locally, gave the
   same numbers as CI's run on that commit: 54 results across the three architectures were
@@ -17179,21 +17179,42 @@ the license, by an explicit instruction recorded here.
   -> 196 -> 174; `thread_wait_wake_round_trip` 206/218/222 -> 230/240/243 -> 220/230/232;
   `futex_wait_wake_round_trip` -1.6 to -1.7%; `process_switch_round_trip` -0.8 to -1.2%.
 - **Accepted (D78's test; Linux, Windows and macOS pay the same costs, unconditionally).**
-  - The rest of the switch cost: two flag loads and two branches per switch, and for user
-    threads the clock read and the account's atomic add, which `CLOCK_THREAD_CPUTIME_ID`,
-    `getrusage` and `times` need. Linux's `update_curr`, Windows' cycle accounting and macOS's
-    thread timer switch run on every switch, for every thread.
-  - The file paths: `linux_file_read` (+14 to +54%, a larger `FileKind` match), the descriptor
-    lookups (+1 instruction), `linux_dup3_close` (+2 to +3%), `eggfs_create` (+15 to +18%: link
+  - The rest of the switch cost, for user threads the clock read, the `since` stamp and the
+    account's atomic add, which `CLOCK_THREAD_CPUTIME_ID`, `getrusage` and `times` need.
+    Linux's `update_curr`, Windows' cycle accounting and macOS's thread timer switch run on
+    every switch, for every thread. Against the old lines (x86_64 / aarch64 / riscv64):
+    `process_switch_round_trip` 450.32 / 487.27 / 598.45 -> 492.34 / 531.25 / 638.46,
+    `fp_process_switch_round_trip` 798.34 / 1107.98 / 1041.02 -> 832.44 / 1145.38 / 1074.70 and
+    `futex_wait_wake_round_trip` 473.03 / 455.05 / 554.06 -> 489.04 / 467.05 / 566.07: two
+    switches per iteration, each paying the per-switch +7 below, and the switches between user
+    threads the clock and the account.
+  - `thread_yield_round_trip` 122.07 / 131.08 / 162.10 -> 136.07 / 143.08 / 174.10, +7 per
+    switch on x86_64 by the trace diff against the tree before #149: loading and testing
+    `previous.user` (+1) and `|| next.user` (+2), which D198 needs, and `replace_current`
+    swapping the current box and testing the returned one for `None` (+4), a codegen cost with a
+    named fix under "Not yet" (decided by research: follow-up, the line stays at the new value).
+  - The file paths: the descriptor lookups (+1 instruction), `linux_dup3_close` (+2 to +3%), `eggfs_create` (+15 to +18%: link
     counts, orphans and the big-directory index, D170), `eggfs_read_4k` and `fat_read_4k` (+2
     to +8%: hold and release of open files, D170).
   - The memory paths: `linux_fork` (x86_64 +14%, aarch64 +8%: copy-on-write fork, D169, which
     makes a large process fork in near-constant time), `linux_vfork_exec` (x86_64 +41%, riscv64
     +17%; aarch64 is 8% faster), `linux_execve` x86_64 +8.5% and `linux_exec_load` +1.5 to
     +2.6% (dynamic loading, file ranges and held executables, D167, D168).
-  - `input_key_to_bytes` x86_64 334 -> 339 (code layout; steady on `main` since cc486cdb) and
-    `idle_memory_bytes` +4096 bytes on riscv64 and x86_64 (one frame, the smallest step;
-    provisional, its commit is among the 130 after e321ce74).
+  - `input_key_to_bytes` x86_64 334 -> 339 (code layout; steady on `main` since cc486cdb).
+  - Kept at the new value but not accepted (decided by research: follow-ups under "Not yet",
+    since D24 lets idle memory only shrink): `idle_memory_bytes` 606208 -> 610304 on x86_64 and
+    528384 -> 532480 on riscv64, one frame, not on aarch64, from one of the ~130 commits after
+    e321ce74.
+  - `linux_file_read` 371.57 / 339.06 / 393.61 -> 415.57 / 509.02 / 554.61, measured, not
+    accepted (decided by research: follow-up; the line stays at the new value). `/etc/motd`'s
+    data now starts at archive offset 2140 (4 mod 8), since files such as `etc/fonts/fonts.conf`
+    were added ahead of it, so the 54-byte copy to the program takes `compiler_builtins`'
+    misaligned `memcpy`, which on aarch64 (a strict-align target) and riscv64 builds each word
+    from byte loads: 22 instructions per 8 bytes, 209 of the 509 on aarch64. x86_64 copies with
+    `rep movsb`; its +33 over the tree before #149 is `copy_user_pages` setting up and dropping
+    D167's `FilePageReads` on every user copy, with the register spills its pointer brings
+    (+16), `pread64`'s larger `FileKind` match (+7, accepted) and `memcpy` (+8). The line
+    depends on the archive's layout: any file added ahead of `/etc/motd` can move it.
   - The new benchmarks of #149 get their first lines.
 - **Fixed in the second part** (instructions per op, `main` -> fixed, x86_64 / aarch64 /
   riscv64; found with a QEMU `-d in_asm,exec` trace of each benchmark against the same trace of
@@ -17203,7 +17224,11 @@ the license, by an explicit instruction recorded here.
     checks (baseline lines updated).
   - `linux_page_fault` 1216 / 1464 / 1517 -> 1164 / 1405 / 1437: a fault in memory that maps
     no files skips the file-read state and checks, as before D167; the three flags for lent
-    ranges, file ranges and fork marks are one word (baseline lines updated to these values).
+    ranges, file ranges and fork marks are one word. That is #149's growth removed: the trace
+    per iteration equals the tree before #149 (aarch64 1568.2 against 1570.5, setup included).
+    Against the old lines, 1150.39 / 1388.94 / 1430.28 -> 1163.97 / 1404.61 / 1437.47 (+0.5 to
+    +1.2%) is older: it came in #129 to #147, which CI passed under D122. Not bisected, so not
+    accepted (decided by research: follow-up; the line stays at the new value).
   - `linux_openat_close` 1988 / 2246 / 2371 -> 1633 / 2019 / 2084: the walk asks each node's
     kind once and hands it to `open`, which asks `character_device` only for a character
     device; open files hold their node only on file systems that keep holds
@@ -17221,7 +17246,8 @@ the license, by an explicit instruction recorded here.
     reads each chunk straight into the path buffer (`Process::read_user_memory_uninit`). The
     bench's `/etc` growing from 4 to 7 entries was a real cost of the lookup, not of the
     benchmark: the initramfs index keeps each name's first 8 bytes as a big-endian key, so
-    the binary search compares one word per step and whole names only on equal keys.
+    the binary search compares one word per step and whole names only on equal keys; each
+    index entry grows by those 8 bytes, from 56 to 64.
   - `heap_allocate_free_small` 48 / 50 / 60 -> 38 / 37 / 40. The riscv64 +3 was layout:
     with the frame allocator inlined into `alloc` for large layouts, LLVM needed a second
     base register for `FRAMES` (and a shared epilogue) whenever the linker put `FRAMES` out of
@@ -17240,7 +17266,14 @@ the license, by an explicit instruction recorded here.
   (`vm_map_enter`, `vm_map_delete`) do far more per call, and no small change reaches the
   exact gate. Follow-up: a `records == 0` fast path in `unmap_locked` with the rest in one
   cold function could save about 5 more.
-- **Not yet.** The extra `idle_memory_bytes` page was not bisected. Reading `previous.user` from the box `replace_current` returns (about 3
-  instructions per switch); folding a thread's time into its process's account only at exit and
+- **Not yet** (named follow-ups for the next pass, which lowers each line as its fix lands).
+  `thread_yield_round_trip`: keep `previous.user` in a register and do not take the previous
+  box back out of `replace_current` (+4 per switch). `linux_page_fault`: bisect #129 to #147
+  with the per-iteration trace diff. `linux_file_read`: align file data in the initramfs
+  archive (8 bytes or more), so reads never take the byte-wise misaligned `memcpy`, or a
+  per-architecture misaligned copy like `eggos_hal::memory::zero`; and a `copy_user_pages` fast
+  path that builds `FilePageReads` only when a page is not mapped (about 16). `idle_memory_bytes`:
+  bisect the ~130 commits after e321ce74 (about 7 builds; the
+  number is deterministic). Also: folding a thread's time into its process's account only at exit and
   when read, instead of an atomic add per switch; an instruction profile of `vfork` + `execve` on
   x86_64; reserving `FileRanges` once per exec.
