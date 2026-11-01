@@ -119,16 +119,8 @@ pub fn read_path<'a, P: Platform>(
 
 /// The root and the directory a relative `path` starts from, given `dirfd`: see the module
 /// documentation.
-pub fn starting_points(
-    thread: &LinuxThread,
-    dirfd: u64,
-    path: &[u8],
-) -> Result<(Node, Node), Errno> {
-    starting_points_inlined(thread, dirfd, path)
-}
-
 #[inline(always)]
-fn starting_points_inlined(
+pub fn starting_points(
     thread: &LinuxThread,
     dirfd: u64,
     path: &[u8],
@@ -321,7 +313,7 @@ fn open<P: Platform>(
     if path.is_empty() {
         return Err(Errno::ENOENT);
     }
-    let (root, start) = starting_points_inlined(thread, dirfd, path)?;
+    let (root, start) = starting_points(thread, dirfd, path)?;
     let caller = process.id().get();
     let follow_last = flags & open_flag::NOFOLLOW == 0;
     let mut created = false;

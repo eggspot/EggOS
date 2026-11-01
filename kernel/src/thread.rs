@@ -1755,6 +1755,15 @@ fn switch_to_with_fp<P: Platform>(
     switch_now::<P>(schedulers, here, next, park);
 }
 
+#[inline(always)]
+fn start_turn(previous_user: bool, next: &Thread, clock: impl FnOnce() -> u64) -> Option<u64> {
+    let now = (previous_user || next.user).then(clock);
+    if let Some(now) = now {
+        next.since.set(now);
+    }
+    now
+}
+
 /// The switch itself: see [`switch_to`].
 #[inline(always)]
 fn switch_now<P: Platform>(
@@ -1769,10 +1778,7 @@ fn switch_now<P: Platform>(
         .current
         .as_ref()
         .is_some_and(|previous| previous.get().user);
-    let now = (previous_user || next.get().user).then(P::clock_ticks);
-    if let Some(now) = now {
-        next.get().since.set(now);
-    }
+    let now = start_turn(previous_user, next.get(), P::clock_ticks);
     let previous = schedulers.of(here).replace_current(next);
     if let Some(now) = now {
         previous.get().charge(now);
@@ -2625,6 +2631,47 @@ mod tests {
         assert_eq!(old.load(Ordering::Relaxed), 30);
         assert_eq!(new.load(Ordering::Relaxed), 20);
         assert_eq!(thread.ran.get(), 50);
+    }
+
+    fn accounting_thread(user: bool, account: Option<Arc<AtomicU64>>) -> Thread {
+        Thread {
+            id: ThreadId(u64::MAX - 5),
+            context: 0,
+            stack: None,
+            joined: Arc::new(Joined {
+                finished: AtomicBool::new(false),
+                joiners: WaitQueue::new(),
+            }),
+            next: None,
+            wake_at: 0,
+            cpu: cpu::current::<P>(),
+            user,
+            fp: OnceCell::new(),
+            ran: Cell::new(0),
+            since: Cell::new(0),
+            account: CpuAccount(Cell::new(account)),
+            allowed: Cell::new(u64::MAX),
+        }
+    }
+
+    #[test]
+    fn a_program_s_time_is_counted_across_kernel_and_user_switches() {
+        let account = Arc::new(AtomicU64::new(0));
+        let first = accounting_thread(false, None);
+        let second = accounting_thread(false, None);
+        let program = accounting_thread(true, Some(Arc::clone(&account)));
+        let unread = || -> u64 { panic!("a switch between kernel threads reads no clock") };
+        assert_eq!(start_turn(false, &second, unread), None);
+        assert_eq!(start_turn(false, &program, || 100), Some(100));
+        let now = start_turn(true, &first, || 130).unwrap();
+        program.charge(now);
+        assert_eq!(start_turn(false, &second, unread), None);
+        assert_eq!(start_turn(false, &program, || 200), Some(200));
+        program.charge(start_turn(true, &second, || 250).unwrap());
+        assert_eq!(account.load(Ordering::Relaxed), 80);
+        assert_eq!(program.ran.get(), 80);
+        assert_eq!(first.ran.get(), 0);
+        assert_eq!(second.ran.get(), 0);
     }
 
     #[test]

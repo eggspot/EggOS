@@ -111,7 +111,7 @@ impl Regions {
                         attributes,
                     });
                 } else {
-                    self.insert_out_of_line(at, start, end, attributes);
+                    self.insert_region_at(at, start, end, attributes);
                 }
             }
         }
@@ -120,7 +120,7 @@ impl Regions {
 
     #[cold]
     #[inline(never)]
-    fn insert_out_of_line(
+    fn insert_region_at(
         &mut self,
         at: usize,
         start: u64,
