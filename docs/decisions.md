@@ -11177,10 +11177,17 @@ the license, by an explicit instruction recorded here.
   by a lock, a `Vec` and a flag. Two new test programs (`linux-mappings` in the Linux programs
   image only, `linux-dynamic` only in the dynamic linking job's image); the release image does
   not change.
+- **File pages are read with no lock held** (CI run 41271268076, round 6). A file system
+  may sleep in a read (EggFS's volume lock is a sleeping lock), and a thread that slept holding
+  the process's regions' spin lock left its other threads spinning for it with interrupts
+  masked: with four multi-threaded `rustc` faulting in `librustc_driver.so` from the work
+  disk, every CPU ended up spinning and the sleeper never ran again (seen on x86_64, all four
+  CPUs in `wait_until_free`). Now a page fault, a kernel copy, a futex word and `populate_range`
+  that find an unread file page drop the lock, read the page into a new frame, take the lock
+  again and map it if the file still maps there (`FilePageReads`), else read again.
 - **Not yet.** Writable `MAP_SHARED` of tmpfs and EggFS files with their pages shared and
   written back, and shared mappings that see later writes (part 17 brings tmpfs pages as
-  frames); reading file pages without holding the regions' lock (`execve`'s first-touch
-  segment pages too); segments within the first 1 MiB of a program mapped lazily too (only
+  frames); segments within the first 1 MiB of a program mapped lazily too (only
   those past it load on first touch, #149); `ETXTBSY`, so a write to a running program's file
   changes the pages it has not touched yet; a vDSO; `/proc/self/maps` naming the mapped files (part 16:
   `FilePages` will need a path); Android's `linker64`, untested; the toolkits' libraries

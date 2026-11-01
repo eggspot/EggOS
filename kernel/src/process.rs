@@ -1468,6 +1468,23 @@ impl<P: Platform> Process<P> {
     ) -> Result<(), PopulateError> {
         let memory = &*self.memory;
         debug_assert!(is_page_range(start, end));
+        let mut reads = FilePageReads::default();
+        loop {
+            let result = self.populate_range_locked(start, end, access, &mut reads);
+            if !reads.read_wanted(memory.frame_offset) {
+                return result;
+            }
+        }
+    }
+
+    fn populate_range_locked(
+        &self,
+        start: u64,
+        end: u64,
+        access: Access,
+        reads: &mut FilePageReads,
+    ) -> Result<(), PopulateError> {
+        let memory = &*self.memory;
         let regions = memory.regions.lock();
         let mut covered = start;
         let mut result = Ok(());
@@ -1492,13 +1509,13 @@ impl<P: Platform> Process<P> {
                     {
                         continue;
                     }
-                    Self::populate(memory, &regions, page, access, true).map_err(|error| {
-                        match error {
+                    Self::populate(memory, &regions, page, access, true, reads).map_err(
+                        |error| match error {
                             UnresolvedFault::NotAllowed => PopulateError::NotAllowed,
                             UnresolvedFault::OutOfMemory => PopulateError::OutOfMemory,
                             UnresolvedFault::BusError => PopulateError::BusError,
-                        }
-                    })?;
+                        },
+                    )?;
                 }
             }
             covered = part_end;
@@ -1746,9 +1763,23 @@ impl<P: Platform> Process<P> {
     ) -> Result<(), UnresolvedFault> {
         let memory = &*self.memory;
         let page = address & !(FRAME_SIZE - 1);
-        let regions = memory.regions.lock();
-        Self::populate(memory, &regions, page, fault.access, fault.may_be_stale)?;
-        drop(regions);
+        let mut reads = FilePageReads::default();
+        loop {
+            let regions = memory.regions.lock();
+            let result = Self::populate(
+                memory,
+                &regions,
+                page,
+                fault.access,
+                fault.may_be_stale,
+                &mut reads,
+            );
+            drop(regions);
+            if !reads.read_wanted(memory.frame_offset) {
+                result?;
+                break;
+            }
+        }
         P::drop_user_translations(page, FRAME_SIZE);
         Ok(())
     }
@@ -1770,6 +1801,7 @@ impl<P: Platform> Process<P> {
         page: u64,
         access: Access,
         mapped_is_ready: bool,
+        reads: &mut FilePageReads,
     ) -> Result<(u64, Attributes), UnresolvedFault> {
         let region = regions.find(page).ok_or(UnresolvedFault::NotAllowed)?;
         let attributes = region
@@ -1778,7 +1810,7 @@ impl<P: Platform> Process<P> {
             .ok_or(UnresolvedFault::NotAllowed)?;
         if mapped_is_ready {
             if memory.has_files.load(Ordering::Relaxed)
-                && let Some(read) = Self::populate_from_file(memory, page, attributes)
+                && let Some(read) = Self::populate_from_file(memory, page, attributes, reads)
             {
                 return read;
             }
@@ -1801,7 +1833,7 @@ impl<P: Platform> Process<P> {
             Some(_) => Err(UnresolvedFault::NotAllowed),
             None => {
                 if memory.has_files.load(Ordering::Relaxed)
-                    && let Some(read) = Self::populate_from_file(memory, page, attributes)
+                    && let Some(read) = Self::populate_from_file(memory, page, attributes, reads)
                 {
                     return read;
                 }
@@ -1879,57 +1911,43 @@ impl<P: Platform> Process<P> {
         memory: &Memory<P>,
         page: u64,
         attributes: Attributes,
+        reads: &mut FilePageReads,
     ) -> Option<Result<(u64, Attributes), UnresolvedFault>> {
-        let (file, offset, readable) = {
+        let wanted = {
             let files = memory.files.lock();
             let range = files.find(page)?;
-            (
-                Arc::clone(&range.file),
-                range.offset_of(page),
-                range.file_bytes_in(page),
-            )
+            FilePageRead {
+                page,
+                file: Arc::clone(&range.file),
+                offset: range.offset_of(page),
+                readable: range.file_bytes_in(page) as usize,
+            }
         };
         if memory.space.translate(page).is_some() {
             return None;
         }
-        Some(Self::map_file_page(
-            memory,
-            page,
-            attributes,
-            &*file,
-            offset,
-            readable as usize,
-        ))
+        let Some(read) = reads.take_ready(&wanted) else {
+            reads.wanted = Some(wanted);
+            return Some(Err(UnresolvedFault::BusError));
+        };
+        Some(Self::map_read_file_page(memory, page, attributes, read))
     }
 
-    fn map_file_page(
+    fn map_read_file_page(
         memory: &Memory<P>,
         page: u64,
         attributes: Attributes,
-        file: &dyn FilePages,
-        offset: u64,
-        readable: usize,
+        read: ReadFilePage,
     ) -> Result<(u64, Attributes), UnresolvedFault> {
-        let frame = {
-            let mut frames = memory::FRAMES.lock();
-            let frames = frames.as_mut().ok_or(UnresolvedFault::OutOfMemory)?;
-            frames
-                .allocate_for_user()
-                .ok_or(UnresolvedFault::OutOfMemory)?
+        let (frame, read) = match read {
+            ReadFilePage::Read { frame, bytes } => (frame, bytes),
+            ReadFilePage::Failed => return Err(UnresolvedFault::BusError),
+            ReadFilePage::NoFrame => return Err(UnresolvedFault::OutOfMemory),
         };
         let bytes = (frame as usize).wrapping_add(memory.frame_offset) as *mut u8;
-        // SAFETY: the frame was just allocated, so this code owns it, and the allocator reaches
-        // it through its offset, the process's `frame_offset`; `readable` is at most a page.
-        let buffer = unsafe { core::slice::from_raw_parts_mut(bytes, readable) };
-        let read = match file.read_at(offset, buffer) {
-            Some(0) if readable > 0 => None,
-            read => read,
-        };
-        let Some(read) = read else {
-            free_frame(frame);
-            return Err(UnresolvedFault::BusError);
-        };
-        // SAFETY: as above: the rest of the frame, after the file's bytes.
+        // SAFETY: the frame was allocated for this read (`FilePageReads::read_wanted`) and
+        // nothing else reaches it; the allocator reaches it through its offset, the process's
+        // `frame_offset`, and `read` is at most a page.
         unsafe { eggos_hal::memory::zero(bytes.wrapping_add(read), FRAME_SIZE as usize - read) };
         if attributes.executable {
             P::make_instructions_visible(bytes as usize, FRAME_SIZE as usize);
@@ -2144,8 +2162,17 @@ impl<P: Platform> Process<P> {
         if !address.is_multiple_of(4) || address >= <P::PageTableFormat as Format>::USER_END {
             return Err(InvalidUserAddress);
         }
-        let regions = memory.regions.lock();
-        let kernel = Self::in_direct_map(memory, &regions, address, write)?;
+        let mut reads = FilePageReads::default();
+        let (_held_regions, kernel) = loop {
+            let regions = memory.regions.lock();
+            if let Ok(kernel) = Self::in_direct_map(memory, &regions, address, write, &mut reads) {
+                break (regions, kernel);
+            }
+            drop(regions);
+            if !reads.read_wanted(memory.frame_offset) {
+                return Err(InvalidUserAddress);
+            }
+        };
         // SAFETY: `kernel` reaches the word, 4-byte aligned, in one of the process's frames
         // through the direct map (`in_direct_map`' promise), mapped with the same memory type
         // as the program's mapping; the regions' lock, held until `access` returns, keeps the
@@ -2165,13 +2192,14 @@ impl<P: Platform> Process<P> {
         regions: &Regions,
         virt: u64,
         write: bool,
+        reads: &mut FilePageReads,
     ) -> Result<*mut u8, InvalidUserAddress> {
         let page = virt & !(FRAME_SIZE - 1);
         let (frame, attributes) = match memory.space.translate(page) {
             Some(mapped) if !write || mapped.1.writable => mapped,
             _ => {
                 let access = if write { Access::Write } else { Access::Read };
-                Self::populate(memory, regions, page, access, true)
+                Self::populate(memory, regions, page, access, true, reads)
                     .map_err(|_| InvalidUserAddress)?
             }
         };
@@ -2214,11 +2242,19 @@ impl<P: Platform> Process<P> {
         if end > <P::PageTableFormat as Format>::USER_END {
             return Err(InvalidUserAddress);
         }
-        let regions = memory.regions.lock();
+        let mut reads = FilePageReads::default();
         let mut done = 0;
+        let mut regions = memory.regions.lock();
         while done < length {
             let virt = address + done as u64;
-            let kernel = Self::in_direct_map(memory, &regions, virt, write)?;
+            let Ok(kernel) = Self::in_direct_map(memory, &regions, virt, write, &mut reads) else {
+                drop(regions);
+                if !reads.read_wanted(memory.frame_offset) {
+                    return Err(InvalidUserAddress);
+                }
+                regions = memory.regions.lock();
+                continue;
+            };
             let in_page = (FRAME_SIZE - virt % FRAME_SIZE).min((length - done) as u64) as usize;
             copy(kernel, done, in_page);
             done += in_page;
@@ -2452,13 +2488,110 @@ fn free_range(
 }
 
 /// Gives a frame `map_frame` allocated and could not map back to the kernel's frame allocator.
+/// A page of a file a process maps that `Process::populate` found unread: which file, where,
+/// and how many of its bytes the page holds.
+struct FilePageRead {
+    page: u64,
+    file: Arc<dyn FilePages>,
+    offset: u64,
+    readable: usize,
+}
+
+impl FilePageRead {
+    fn is(&self, other: &Self) -> bool {
+        self.page == other.page
+            && Arc::ptr_eq(&self.file, &other.file)
+            && self.offset == other.offset
+            && self.readable == other.readable
+    }
+}
+
+/// What reading a [`FilePageRead`] gave: a frame holding the file's bytes, the rest not yet
+/// zeroed.
+enum ReadFilePage {
+    Read { frame: u64, bytes: usize },
+    Failed,
+    NoFrame,
+}
+
+/// The file pages one call needs, read with no lock held: a file system may sleep in a read,
+/// and a thread that sleeps holding the regions' spin lock leaves every other thread of its
+/// process spinning for it with interrupts masked, which can take every CPU and so never let
+/// it run again. `Process::populate` asks for a page (`wanted`) and fails; the caller drops the
+/// lock, reads it (`read_wanted`), takes the lock again and retries, and `populate` maps the
+/// page read if the file still maps it there, or asks again.
+#[derive(Default)]
+struct FilePageReads {
+    wanted: Option<FilePageRead>,
+    ready: Option<(FilePageRead, ReadFilePage)>,
+}
+
+impl FilePageReads {
+    fn take_ready(&mut self, wanted: &FilePageRead) -> Option<ReadFilePage> {
+        match &self.ready {
+            Some((read, _)) if read.is(wanted) => self.ready.take().map(|(_, page)| page),
+            _ => None,
+        }
+    }
+
+    /// Reads the page `populate` asked for, if it asked, into a new frame (sleeping if the
+    /// file system does) that the frame allocator reaches at `frame_offset`, and returns
+    /// whether it did, so the caller retries. Call it holding no spin lock.
+    fn read_wanted(&mut self, frame_offset: usize) -> bool {
+        let Some(wanted) = self.wanted.take() else {
+            return false;
+        };
+        self.release_ready();
+        let frame = {
+            let mut frames = memory::FRAMES.lock();
+            frames
+                .as_mut()
+                .and_then(|frames| frames.allocate_for_user())
+        };
+        let page = match frame {
+            None => ReadFilePage::NoFrame,
+            Some(frame) => {
+                let bytes = (frame as usize).wrapping_add(frame_offset) as *mut u8;
+                // SAFETY: the frame was just allocated, so this code owns it, and the allocator
+                // reaches it through its offset; `readable` is at most a page.
+                let buffer = unsafe { core::slice::from_raw_parts_mut(bytes, wanted.readable) };
+                match wanted.file.read_at(wanted.offset, buffer) {
+                    Some(0) if wanted.readable > 0 => {
+                        free_frame(frame);
+                        ReadFilePage::Failed
+                    }
+                    Some(bytes) => ReadFilePage::Read { frame, bytes },
+                    None => {
+                        free_frame(frame);
+                        ReadFilePage::Failed
+                    }
+                }
+            }
+        };
+        self.ready = Some((wanted, page));
+        true
+    }
+
+    fn release_ready(&mut self) {
+        if let Some((_, ReadFilePage::Read { frame, .. })) = self.ready.take() {
+            free_frame(frame);
+        }
+    }
+}
+
+impl Drop for FilePageReads {
+    fn drop(&mut self) {
+        self.release_ready();
+    }
+}
+
 fn free_frame(frame: u64) {
     let mut frames = memory::FRAMES.lock();
     let frames = frames
         .as_mut()
         .expect("the frame came from the frame allocator");
     // SAFETY: every caller's frame came from this allocator for a user page and nothing maps it
-    // any more: one that could not be mapped (`Process::map_frame`, `map_file_page`), or one
+    // any more: one that could not be mapped (`Process::map_frame`, `map_read_file_page`), or one
     // copy on write unmapped and released as the last address space mapping it.
     unsafe { frames.free(frame) };
 }
@@ -3539,6 +3672,72 @@ mod tests {
         let mut bytes = alloc::vec![0; FRAME_SIZE as usize];
         process.read_user_memory(virt, &mut bytes).unwrap();
         bytes
+    }
+
+    struct FileReadWithRegionsProbe {
+        bytes: Vec<u8>,
+        regions: core::sync::atomic::AtomicUsize,
+        reads: core::sync::atomic::AtomicUsize,
+        reads_with_regions_locked: core::sync::atomic::AtomicUsize,
+    }
+
+    impl FilePages for FileReadWithRegionsProbe {
+        fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Option<usize> {
+            let regions = self.regions.load(Ordering::Relaxed) as *const SpinLock<Regions>;
+            // SAFETY: the test stores the address of the regions' lock of a process that
+            // outlives every read of this file.
+            if unsafe { &*regions }.try_lock().is_none() {
+                self.reads_with_regions_locked
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            let from = (offset as usize).min(self.bytes.len());
+            let count = buffer.len().min(self.bytes.len() - from);
+            buffer[..count].copy_from_slice(&self.bytes[from..from + count]);
+            Some(count)
+        }
+    }
+
+    #[test]
+    fn file_pages_are_read_with_the_regions_lock_free_on_every_path_that_maps_them() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        // SAFETY: test tables, never active; the test platform's switch only records roots.
+        let process = unsafe { Process::<P>::new(&kernel) }.unwrap();
+        let file = Arc::new(FileReadWithRegionsProbe {
+            bytes: (0..4 * FRAME_SIZE)
+                .map(|at| (at / FRAME_SIZE) as u8 + 1)
+                .collect(),
+            regions: core::sync::atomic::AtomicUsize::new(
+                ptr::from_ref(&process.memory.regions) as usize
+            ),
+            reads: core::sync::atomic::AtomicUsize::new(0),
+            reads_with_regions_locked: core::sync::atomic::AtomicUsize::new(0),
+        });
+        process
+            .map_file_region(
+                Placement::Exactly(DATA),
+                4 * FRAME_SIZE,
+                Some(Attributes::USER_READ_WRITE),
+                file.clone() as Arc<dyn FilePages>,
+                0,
+                true,
+            )
+            .unwrap();
+        process.resolve_page_fault(DATA, READ_FAULT).unwrap();
+        assert_eq!(read_page(&process, DATA + FRAME_SIZE)[0], 2);
+        assert_eq!(
+            process.with_user_word(DATA + 2 * FRAME_SIZE, false, |word| word
+                .load(Ordering::Relaxed)),
+            Ok(u32::from_le_bytes([3; 4]))
+        );
+        process
+            .populate_range(DATA + 3 * FRAME_SIZE, DATA + 4 * FRAME_SIZE, Access::Write)
+            .unwrap();
+        assert_eq!(read_page(&process, DATA)[0], 1);
+        assert_eq!(read_page(&process, DATA + 3 * FRAME_SIZE)[0], 4);
+        assert_eq!(file.reads.load(Ordering::Relaxed), 4, "each page read once");
+        assert_eq!(file.reads_with_regions_locked.load(Ordering::Relaxed), 0);
     }
 
     #[test]
