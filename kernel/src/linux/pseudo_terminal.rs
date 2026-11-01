@@ -612,8 +612,9 @@ impl Line for PseudoTerminal {
 /// (`EIO`, `ENOTTY` for `TIOCSPGRP`), `TIOCSCTTY` checked under the process table's lock.
 /// Packet mode (`TIOCPKT`) puts a status byte before each read on the controlling side;
 /// `TIOCGPTPEER` opens the program side as a new descriptor; `TIOCSTI` types a byte into the
-/// program side only for a caller whose controlling terminal it is, and fails with `EIO` for
-/// any other, so no program can type into another session's terminal.
+/// program side only for a caller whose controlling terminal it is, and fails with `EPERM` for
+/// any other (Linux's answer to a caller it does not let type), so no program can type into
+/// another session's terminal.
 pub(super) fn ioctl<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
@@ -847,8 +848,11 @@ fn take_packet_into<P: Platform>(
     Some(Ok(size as u64))
 }
 
-fn may_type_into(table: &Table, caller: u32, terminal: Terminal) -> bool {
-    table.controlling_terminal_of(caller) == Some(terminal)
+fn may_type_into(table: &Table, caller: u32, terminal: Terminal) -> Result<(), Errno> {
+    match table.controlling_terminal_of(caller) == Some(terminal) {
+        true => Ok(()),
+        false => Err(Errno::EPERM),
+    }
 }
 
 fn type_one<P: Platform>(
@@ -856,9 +860,7 @@ fn type_one<P: Platform>(
     terminal: &PseudoTerminal,
     argument: u64,
 ) -> Result<u64, Errno> {
-    if !may_type_into(&TABLE.lock(), process.id().get(), terminal.terminal()) {
-        return Err(Errno::EIO);
-    }
+    may_type_into(&TABLE.lock(), process.id().get(), terminal.terminal())?;
     let mut byte = [0u8; 1];
     process
         .read_user_memory(argument, &mut byte)
@@ -1301,10 +1303,16 @@ mod tests {
         terminal
             .become_controlling_terminal(&mut table, 140, false)
             .unwrap();
-        assert!(may_type_into(&table, 140, terminal.terminal()));
-        assert!(!may_type_into(&table, 150, terminal.terminal()));
+        assert_eq!(may_type_into(&table, 140, terminal.terminal()), Ok(()));
+        assert_eq!(
+            may_type_into(&table, 150, terminal.terminal()),
+            Err(Errno::EPERM)
+        );
         let other = new_terminal(no_hang_up).unwrap();
         let _other_controlling_side = controlling(&other);
-        assert!(!may_type_into(&table, 140, other.terminal()));
+        assert_eq!(
+            may_type_into(&table, 140, other.terminal()),
+            Err(Errno::EPERM)
+        );
     }
 }

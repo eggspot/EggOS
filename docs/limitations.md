@@ -168,7 +168,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   every file is root's), and there is no `/sys` (D168); `/dev` holds the memory devices, `tty`, `console`, the
   standard streams' links, `window`, `agent`, `shm` (a memory file system for `shm_open`,
   D169) and the pseudo-terminals `ptmx` and `pts` (D187, D222: at most 64 at once; `TIOCSTI` only into the caller's own controlling
-  terminal; packet mode reports flushes and flow control but never `TIOCPKT_STOP`, `START` or
+  terminal, `EPERM` for any other; packet mode reports flushes and flow control but never `TIOCPKT_STOP`, `START` or
   `FLUSHWRITE`; a packet-mode `readv` fills only its first buffer), but no block devices;
   symbolic links work on `/tmp`, `/home`, the work disk and the initramfs, and hard links on
   `/tmp`, `/home` and the work disk (D170), but `O_CREAT` through a link that names nothing
