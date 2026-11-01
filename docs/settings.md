@@ -154,7 +154,8 @@ The kernel reads `shell.profile`, `keyboard.layouts`, `keyboard.switch_key` and
 frame is already in the saved profile and the first key types in the saved layout.
 `settings set` and the Keyboard pane apply the keyboard keys at once through `/dev/window`'s
 `SET_KEYBOARD_LAYOUTS` and `SET_KEYBOARD_LAYOUT`, and without a display by writing
-`/proc/sys/eggos/keyboard_layouts`, `keyboard_switch_key` and `keyboard_layout` (D220). The format is the `eggos-settings-file`
+`/proc/sys/eggos/keyboard_layouts`, `keyboard_switch_key` and `keyboard_layout` (D220), which
+only a privileged caller may write (`EACCES` otherwise, as `/dev/window`'s settings requests). The format is the `eggos-settings-file`
 crate (`settings-file/`), shared by the kernel and the program.
 
 Not yet: the boot parameter `eggos.profile=` (the kernel has no command line yet), per-user
