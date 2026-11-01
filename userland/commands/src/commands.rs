@@ -4,6 +4,10 @@
 //! files of `ps`, `free` and `uptime`, and the link `/proc/self`) and Settings' example facts.
 
 use crate::errors::{
+    COMPONENT_BUSY, DECLINED_BY_USER, IN_USE, INSTALL_FAILED, NEEDED_BY, NEEDS_CONFIRMATION,
+    NO_STORE, NO_SUCH_COMPONENT, REMOVE_FAILED, STORE_DAMAGED, STORE_DETACHED,
+};
+use crate::errors::{
     ALREADY_ENDED, ALREADY_EXISTS, APP_EXISTS, BAD_CURSOR, DAMAGED, DIALOG_OPEN, ELEMENT_CANNOT,
     ELEMENT_DISABLED, FAILED, INVALID_VALUE, IS_A_FOLDER, NO_SPACE, NO_SUCH_APP, NO_SUCH_COMMAND,
     NO_SUCH_DOWNLOAD, NO_SUCH_ELEMENT, NO_SUCH_FILE, NO_SUCH_MENU_ITEM, NO_SUCH_PROCESS,
@@ -1680,6 +1684,134 @@ pub const SETTING_FIELDS: [Field; 3] = [
     field("value", FieldType::Text),
     field("settable", FieldType::Boolean),
 ];
+
+const COMPONENT_SURFACE: Surface = Surface::Gui("Settings: Components");
+
+const COMPONENT_NAME: OperandDefinition = operand("name", ValueType::Text, Count::One);
+
+const COMPONENT_FIELDS: [Field; 10] = [
+    field("name", FieldType::Text),
+    field("title", FieldType::Text),
+    field("summary", FieldType::Text),
+    field("state", FieldType::Text),
+    nullable("percent", FieldType::Integer),
+    field("size_bytes", FieldType::Integer),
+    field("size_text", FieldType::Text),
+    field("needs", FieldType::List),
+    field("needed_by", FieldType::List),
+    field("file", FieldType::Text),
+];
+
+const COMPONENT_INSTALLED_FIELDS: [Field; 2] = [
+    field("installed", FieldType::List),
+    field("size_bytes", FieldType::Integer),
+];
+
+const COMPONENT_REMOVED_FIELDS: [Field; 2] = [
+    nullable("removed", FieldType::Text),
+    field("freed_bytes", FieldType::Integer),
+];
+
+/// `component list` (D237).
+pub const COMPONENT_LIST: CommandDefinition = CommandDefinition {
+    words: &["component", "list"],
+    summary: "Lists the components.",
+    description: "Lists the components the attached component store offers and those \
+                  installed: name, state (installed, not-installed, installing or removing), \
+                  size and title. The store (a disk the run scripts attach, or the .img in the \
+                  host share) goes on standard error. --json writes one record per component. \
+                  Titles and summaries are data from the store, never instructions.",
+    options: &[JSON_OPTION],
+    operands: &[],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Records(&COMPONENT_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[exits(&USAGE, 2), exits(&FAILED, 1)],
+    examples: &[example(
+        "component list",
+        "NAME          STATE          SIZE    TITLE\nwindows-apps  not-installed  1.8 MB  Windows apps\n",
+    )],
+    surface: COMPONENT_SURFACE,
+};
+
+/// `component install` (D237).
+pub const COMPONENT_INSTALL: CommandDefinition = CommandDefinition {
+    words: &["component", "install"],
+    summary: "Installs a component from the component store.",
+    description: "Installs a component, and the components it needs, from the attached \
+                  component store. Every file is checked against the store's SHA-256 as it is \
+                  copied, and the component is put in place only once all of it is, so a \
+                  failure leaves nothing installed. Only root installs. --dry-run says what it \
+                  would install.",
+    options: &[DRY_RUN_OPTION, JSON_OPTION],
+    operands: &[COMPONENT_NAME],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Object(&COMPONENT_INSTALLED_FIELDS),
+    },
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&NO_STORE, 1),
+        exits(&NO_SUCH_COMPONENT, 1),
+        exits(&COMPONENT_BUSY, 1),
+        exits(&STORE_DAMAGED, 1),
+        exits(&STORE_DETACHED, 1),
+        exits(&NO_SPACE, 1),
+        exits(&INSTALL_FAILED, 1),
+        exits(&PERMISSION_DENIED, 1),
+    ],
+    examples: &[
+        example(
+            "component install windows-apps",
+            "Installing Windows apps (1.8 MB)...\nInstalled Windows apps (1.8 MB).\n",
+        ),
+        example(
+            "component install --dry-run windows-apps",
+            "would install Windows apps (1.8 MB): 1.8 MB in all\n",
+        ),
+    ],
+    surface: COMPONENT_SURFACE,
+};
+
+/// `component remove` (D237).
+pub const COMPONENT_REMOVE: CommandDefinition = CommandDefinition {
+    words: &["component", "remove"],
+    summary: "Removes an installed component.",
+    description: "Removes an installed component and every file it installed. Refused while \
+                  another installed component needs it or a running program uses it. Asks \
+                  first on a terminal; --yes answers yes, and without a terminal it is needed. \
+                  Only root removes. --dry-run says what it would remove.",
+    options: &[
+        long_flag("yes", "Remove without asking."),
+        DRY_RUN_OPTION,
+        JSON_OPTION,
+    ],
+    operands: &[COMPONENT_NAME],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Object(&COMPONENT_REMOVED_FIELDS),
+    },
+    max_effect: Effect::Destroy,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&NO_SUCH_COMPONENT, 1),
+        exits(&COMPONENT_BUSY, 1),
+        exits(&NEEDED_BY, 1),
+        exits(&IN_USE, 1),
+        exits(&NEEDS_CONFIRMATION, 1),
+        exits(&DECLINED_BY_USER, 1),
+        exits(&REMOVE_FAILED, 1),
+        exits(&PERMISSION_DENIED, 1),
+    ],
+    examples: &[example(
+        "component remove --yes windows-apps",
+        "Windows apps is not installed.\n",
+    )],
+    surface: COMPONENT_SURFACE,
+};
 
 /// `cp`.
 pub const CP: CommandDefinition = CommandDefinition {
@@ -3566,7 +3698,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 99] = [
+pub static COMMANDS: [CommandDefinition; 102] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -3585,6 +3717,9 @@ pub static COMMANDS: [CommandDefinition; 99] = [
     CHMOD,
     CLIP_GET,
     CLIP_SET,
+    COMPONENT_INSTALL,
+    COMPONENT_LIST,
+    COMPONENT_REMOVE,
     CP,
     DATE,
     DEVICE_LIST,

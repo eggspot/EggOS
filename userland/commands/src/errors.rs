@@ -522,8 +522,71 @@ pub fn by_code(code: &[u8]) -> Option<&'static ErrorDefinition> {
         .find(|error| error.code.as_bytes() == code)
 }
 
+/// `component`: no component store is attached (D237).
+pub const NO_STORE: ErrorDefinition = error(
+    "no_store",
+    Category::NotFound,
+    "Attach the component store disk, or put its .img in the host share.",
+    None,
+);
+/// `component`: neither the store nor the installed components know the name (D237).
+pub const NO_SUCH_COMPONENT: ErrorDefinition = error(
+    "no_such_component",
+    Category::NotFound,
+    "Check the name: component list shows the components.",
+    Some("component list"),
+);
+/// `component`: another install or remove is running (D237).
+pub const COMPONENT_BUSY: ErrorDefinition = error(
+    "component_busy",
+    Category::Busy,
+    "Wait for the other install or remove, then try again.",
+    None,
+);
+/// `component`: an installed component needs it (D237).
+pub const NEEDED_BY: ErrorDefinition = error(
+    "needed_by",
+    Category::Refused,
+    "Remove the components that need it first.",
+    None,
+);
+/// `component`: a running program needs it (D237).
+pub const IN_USE: ErrorDefinition = error(
+    "in_use",
+    Category::Busy,
+    "Quit the programs that use it, then remove it.",
+    None,
+);
+/// `component`: a file in the store does not match its SHA-256; nothing was installed (D237).
+pub const STORE_DAMAGED: ErrorDefinition = error(
+    "store_damaged",
+    Category::Damaged,
+    "Get the component store again; nothing was installed.",
+    None,
+);
+/// `component`: the store could not be read before the copy finished (D237).
+pub const STORE_DETACHED: ErrorDefinition = error(
+    "store_detached",
+    Category::Failed,
+    "Attach the component store again, then install again.",
+    None,
+);
+/// `component`: an install failed; nothing was installed (D237).
+pub const INSTALL_FAILED: ErrorDefinition = error(
+    "install_failed",
+    Category::Failed,
+    "Read the message; nothing was installed.",
+    None,
+);
+/// `component`: a remove failed; the component stays installed (D237).
+pub const REMOVE_FAILED: ErrorDefinition = error(
+    "remove_failed",
+    Category::Failed,
+    "Read the message; the component stays installed.",
+    None,
+);
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 70] = [
+pub const ALL: [&ErrorDefinition; 79] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -594,4 +657,13 @@ pub const ALL: [&ErrorDefinition; 70] = [
     &HIVE_FULL,
     &HIVE_DAMAGED,
     &WRITE_FAILED,
+    &NO_STORE,
+    &NO_SUCH_COMPONENT,
+    &COMPONENT_BUSY,
+    &NEEDED_BY,
+    &IN_USE,
+    &STORE_DAMAGED,
+    &STORE_DETACHED,
+    &INSTALL_FAILED,
+    &REMOVE_FAILED,
 ];

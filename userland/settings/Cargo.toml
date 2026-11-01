@@ -13,6 +13,7 @@ path = "src/main.rs"
 eggos-app = { path = "../app", features = ["window"] }
 eggos-calendar = { path = "../../calendar" }
 eggos-commands = { path = "../commands" }
+eggos-components = { path = "../components" }
 eggos-device-list = { path = "../device-list" }
 eggos-downloads = { path = "../downloads" }
 eggos-editor = { path = "../editor", features = ["window"] }

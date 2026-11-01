@@ -4,8 +4,9 @@
 //! toolkit is in the image once: as `/usr/libexec/app-window` the installer's window and as
 //! `/bin/app` the `app` command (D134, D214), as `/bin/files` the Files window (D135), as
 //! `/bin/text-editor` the Text Editor with `/bin/edit` its command (D149), as `/bin/terminal`
-//! the terminal program (D187), as `/bin/disk` the `disk` command (D192), and as
-//! `/bin/task-manager` the Task Manager (D200).
+//! the terminal program (D187), as `/bin/disk` the `disk` command (D192), as
+//! `/bin/task-manager` the Task Manager (D200), and as `/bin/component` the `component`
+//! command (D237).
 
 #![cfg_attr(eggos_user, no_std, no_main)]
 
@@ -18,7 +19,19 @@ mod disk_system;
 mod program;
 
 #[cfg(eggos_user)]
-eggos_runtime::main!(program::run);
+eggos_runtime::main!(run);
+
+#[cfg(eggos_user)]
+fn run(startup: &eggos_runtime::startup::Startup) -> i32 {
+    let started_as = startup
+        .arguments()
+        .next()
+        .map_or(&b""[..], core::ffi::CStr::to_bytes);
+    match eggos_app::files::file_name(started_as) {
+        b"component" => eggos_components::program::run(startup),
+        _ => program::run(startup),
+    }
+}
 
 #[cfg(not(eggos_user))]
 fn main() {}
