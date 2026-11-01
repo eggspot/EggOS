@@ -284,10 +284,15 @@ impl Desktop {
         if title.ends_with(TEXT_EDITOR_TITLE_SUFFIX) {
             return Some(AppId::TextEditor);
         }
-        [AppId::Files, AppId::Settings, AppId::TaskManager]
-            .into_iter()
-            .find(|&app| self.catalogue.name(app) == title)
-            .or_else(|| self.catalogue.installed_named(title))
+        [
+            AppId::Files,
+            AppId::Settings,
+            AppId::TaskManager,
+            AppId::Downloads,
+        ]
+        .into_iter()
+        .find(|&app| self.catalogue.name(app) == title)
+        .or_else(|| self.catalogue.installed_named(title))
     }
 
     /// Window `slot`'s icon: its app's, else the generic tile of its title (6.4.1).
@@ -606,6 +611,7 @@ impl Desktop {
             | AppId::Settings
             | AppId::TextEditor
             | AppId::TaskManager
+            | AppId::Downloads
             | AppId::InstallFromHostShare
             | AppId::HostShare => {
                 let starting = self.panels.starting.is_some_and(|(pending, at)| {

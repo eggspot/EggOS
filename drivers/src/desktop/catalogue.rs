@@ -47,6 +47,17 @@ const TASK_MANAGER_SYNONYMS: [&str; 20] = [
     "frozen",
     "hung",
 ];
+const DOWNLOADS_PROGRAM: &str = "/bin/downloads";
+const DOWNLOADS_SYNONYMS: [&str; 8] = [
+    "download",
+    "fetch",
+    "transfers",
+    "wget",
+    "curl",
+    "Library",
+    "download manager",
+    "downloading",
+];
 const TERMINAL_PROGRAM: &str = "/bin/terminal";
 const SHELL_PROGRAM: &str = "/bin/eggsh";
 const HOST_SHARE_LISTING: &str = "ls /media/host";
@@ -61,12 +72,13 @@ pub const INSTALLER_PROGRAM: &str = "/usr/libexec/app-window";
 /// What separates a started program's path and its arguments in a [`Command`].
 pub const ARGUMENT_SEPARATOR: u8 = 0;
 
-const BUILT_INS: [AppId; 5] = [
+const BUILT_INS: [AppId; 6] = [
     AppId::Terminal,
     AppId::Files,
     AppId::Settings,
     AppId::TextEditor,
     AppId::TaskManager,
+    AppId::Downloads,
 ];
 
 /// An app the shell can launch.
@@ -83,6 +95,8 @@ pub enum AppId {
     TextEditor,
     /// The Task Manager (`/bin/task-manager`, D200), when the build has it.
     TaskManager,
+    /// The Downloads window (`/bin/downloads`, D224), when the build has it.
+    Downloads,
     /// The host's shared folder at `/media/host`.
     HostShare,
     /// The launcher's row that opens the installer on the host's shared folder.
@@ -274,6 +288,7 @@ pub struct Catalogue {
     files_present: bool,
     text_editor_present: bool,
     task_manager_present: bool,
+    downloads_present: bool,
     terminal_present: bool,
 }
 
@@ -395,6 +410,16 @@ impl Catalogue {
         self.task_manager_present
     }
 
+    /// Records whether the build has the Downloads window (`/bin/downloads`, D224).
+    pub fn set_downloads_present(&mut self, present: bool) {
+        self.downloads_present = present;
+    }
+
+    /// Whether the build has the Downloads window.
+    pub fn downloads_present(&self) -> bool {
+        self.downloads_present
+    }
+
     pub fn set_text_editor_present(&mut self, present: bool) {
         self.text_editor_present = present;
     }
@@ -430,6 +455,7 @@ impl Catalogue {
             AppId::Installed(index) => self.installed(index).is_some(),
             AppId::Terminal | AppId::Files | AppId::Settings | AppId::TextEditor => true,
             AppId::TaskManager => self.task_manager_present,
+            AppId::Downloads => self.downloads_present,
         }
     }
 
@@ -458,6 +484,7 @@ impl Catalogue {
             AppId::Settings => "Settings",
             AppId::TextEditor => "Text Editor",
             AppId::TaskManager => "Task Manager",
+            AppId::Downloads => "Downloads",
             AppId::HostShare => "Host share",
             AppId::InstallFromHostShare => INSTALL_FROM_HOST_SHARE,
             AppId::Installed(index) => self.installed(index).map_or("", InstalledApp::name),
@@ -480,6 +507,7 @@ impl Catalogue {
             AppId::Settings => Icon::Settings,
             AppId::TextEditor => Icon::TextEditor,
             AppId::TaskManager => Icon::TaskManager,
+            AppId::Downloads => Icon::Downloads,
             AppId::HostShare | AppId::InstallFromHostShare => Icon::HostShare,
             AppId::Installed(index) => {
                 match self.installed(index).and_then(|app| app.icon.as_ref()) {
@@ -494,6 +522,7 @@ impl Catalogue {
     /// alphabetically, then `Install from host share...` while the share is mounted.
     pub fn launcher_apps(&self) -> impl Iterator<Item = AppId> + '_ {
         [
+            AppId::Downloads,
             AppId::Files,
             AppId::Settings,
             AppId::TaskManager,
@@ -501,7 +530,7 @@ impl Catalogue {
             AppId::TextEditor,
         ]
         .into_iter()
-        .filter(|&app| app != AppId::TaskManager || self.task_manager_present)
+        .filter(|&app| !matches!(app, AppId::TaskManager | AppId::Downloads) || self.has(app))
         .chain((0..self.installed.len()).map(|index| AppId::Installed(index as u8)))
         .chain(self.host_share.then_some(AppId::InstallFromHostShare))
     }
@@ -527,6 +556,7 @@ impl Catalogue {
             AppId::Settings => &SETTINGS_SYNONYMS,
             AppId::TextEditor => &TEXT_EDITOR_SYNONYMS,
             AppId::TaskManager => &TASK_MANAGER_SYNONYMS,
+            AppId::Downloads => &DOWNLOADS_SYNONYMS,
             AppId::HostShare | AppId::InstallFromHostShare | AppId::Installed(_) => &[],
         };
         if built_in
@@ -582,6 +612,7 @@ impl Catalogue {
             AppId::Settings => Some(Launch::Start(Command::from(SETTINGS_PROGRAM))),
             AppId::TextEditor => Some(Launch::Start(Command::from(TEXT_EDITOR_PROGRAM))),
             AppId::TaskManager => Some(Launch::Start(Command::from(TASK_MANAGER_PROGRAM))),
+            AppId::Downloads => Some(Launch::Start(Command::from(DOWNLOADS_PROGRAM))),
             AppId::InstallFromHostShare => {
                 Command::program(INSTALLER_PROGRAM, &[b"install", HOST_SHARE.as_bytes()])
                     .map(Launch::Start)
@@ -679,6 +710,33 @@ mod tests {
             catalogue.app_named("Task Manager"),
             Some(AppId::TaskManager)
         );
+    }
+
+    #[test]
+    fn downloads_is_listed_first_and_found_only_when_the_build_has_it() {
+        let mut catalogue = Catalogue::new();
+        assert!(!catalogue.launcher_apps().any(|app| app == AppId::Downloads));
+        assert!(!catalogue.has(AppId::Downloads));
+        catalogue.set_downloads_present(true);
+        assert_eq!(catalogue.launcher_apps().next(), Some(AppId::Downloads));
+        for query in ["wget", "curl", "fetch", "transfers", "library", "down"] {
+            assert!(catalogue.matches(AppId::Downloads, query), "{query}");
+            for other in [
+                AppId::Files,
+                AppId::Settings,
+                AppId::TaskManager,
+                AppId::Terminal,
+                AppId::TextEditor,
+            ] {
+                assert!(!catalogue.matches(other, query), "{query} {other:?}");
+            }
+        }
+        assert_eq!(
+            catalogue.launch(AppId::Downloads),
+            Some(Launch::Start(Command::from("/bin/downloads")))
+        );
+        assert_eq!(catalogue.app_named("Downloads"), Some(AppId::Downloads));
+        assert_eq!(catalogue.icon(AppId::Downloads), Icon::Downloads);
     }
 
     #[test]
