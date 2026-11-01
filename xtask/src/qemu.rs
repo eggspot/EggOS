@@ -495,6 +495,24 @@ pub fn work_disk_args(arch: &Arch, image: &str) -> Vec<String> {
     ]
 }
 
+/// QEMU's arguments that attach the component store `image` (an absolute path,
+/// `eggos-<version>-<arch>-components.img`) read-only on another of `arch`'s virtio block
+/// devices, where the component manager finds it (D237): the file and the disk are both
+/// read-only, so nothing in EggOS can change the store it installs from.
+pub fn store_disk_args(arch: &Arch, image: &str) -> Vec<String> {
+    vec![
+        "-blockdev".into(),
+        format!(
+            "driver=file,node-name=store-file,filename={},read-only=on",
+            image.replace(',', ",,")
+        ),
+        "-blockdev".into(),
+        "driver=raw,node-name=store,file=store-file,read-only=on".into(),
+        "-device".into(),
+        format!("{},drive=store", arch.disk_device),
+    ]
+}
+
 /// Creates the disk image `path`, `bytes` long and empty, unless it exists with something in
 /// it; returns whether it made one. An empty file is extended, as the run scripts do; a file
 /// with contents is never cut. The file is extended without writing (sparse on APFS, ext4 and
@@ -4160,6 +4178,24 @@ mod tests {
             for name in ["node-name=work", "node-name=work-file", "drive=work"] {
                 assert!(home.iter().all(|arg| !arg.contains(name)), "{name}");
             }
+        }
+    }
+
+    #[test]
+    fn the_component_store_is_a_read_only_raw_block_device_of_its_own() {
+        for arch in crate::ARCHES {
+            let args = store_disk_args(arch, "/x/a,b.img");
+            assert_eq!(
+                args,
+                [
+                    "-blockdev".to_string(),
+                    "driver=file,node-name=store-file,filename=/x/a,,b.img,read-only=on".into(),
+                    "-blockdev".into(),
+                    "driver=raw,node-name=store,file=store-file,read-only=on".into(),
+                    "-device".into(),
+                    format!("{},drive=store", arch.disk_device),
+                ]
+            );
         }
     }
 

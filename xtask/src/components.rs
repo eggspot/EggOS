@@ -7,6 +7,8 @@ use eggos_components::index::{self, Component, File, Header, Index, SECTOR};
 use eggos_components::manager;
 use std::path::PathBuf;
 
+const KERNEL_BLOCK: usize = 4096;
+
 /// One component the store offers, and the programs its files are built from.
 #[derive(Debug)]
 pub struct Offered {
@@ -122,7 +124,7 @@ pub fn store_image(parts: &[(&Offered, Vec<Vec<u8>>)], arch: &str) -> Vec<u8> {
             image.extend_from_slice(bytes);
         }
     }
-    image.resize(image.len().div_ceil(SECTOR as usize) * SECTOR as usize, 0);
+    image.resize(image.len().next_multiple_of(KERNEL_BLOCK), 0);
     image
 }
 
@@ -155,7 +157,8 @@ mod tests {
             .map(|offered| (offered, vec![vec![0x7f; 700]]))
             .collect();
         let image = store_image(&parts, "x86_64");
-        assert_eq!(image.len() % SECTOR as usize, 0);
+        assert_eq!(image.len() % KERNEL_BLOCK, 0);
+        assert_eq!(&image[..16], b"EGGOS-COMPONENTS");
         let header = Header::parse(&image).unwrap();
         let text = &image[SECTOR as usize..][..header.index_bytes as usize];
         let read = index::parse_index(&header, text, image.len() as u64).unwrap();

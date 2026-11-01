@@ -64,8 +64,9 @@ commands:
                          /bin/<file's name> or <path>, executable, and write it to
                          target/image/eggos-<arch>.elf (<arch> may be `all`)
   run   --arch <arch> [--nographic] [--apps <folder>] [--disk <image> | --no-disk]
-        [--format-disk] [--no-network] [--work <folder> [--work-out <folder>]
-        [--room <size>]] [--memory <size>] [--add <file> [--as <path>]]...
+        [--format-disk] [--no-network] [--no-components] [--work <folder>
+        [--work-out <folder>] [--room <size>]] [--memory <size>]
+        [--add <file> [--as <path>]]...
                          boot the kernel in QEMU interactively, its display in a window
                          with a keyboard and a pointer, and its console on this terminal
                          (quit: Ctrl-A then X); with --nographic, no window; with --apps,
@@ -75,7 +76,9 @@ commands:
                          boots (--no-disk: none, /home in memory); --format-disk empties
                          it first, erasing everything on it; EggOS is on the host's network
                          through QEMU's user networking (--no-network: no network adapter);
-                         with --work, the folder (without its top-level .git and target) on
+                         the component store target/components/eggos-<version>-<arch>-
+                         components.img is attached read-only, for component install
+                         (--no-components: none); with --work, the folder (without its top-level .git and target) on
                          a work disk at /work, writable, unpacked after QEMU ends into
                          --work-out's new folder (default: <folder>.out beside it), with
                          --room to spare on it (default 1G); --memory gives the machine
@@ -752,6 +755,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let (options, format_disk) = without_flag(&options, "--format-disk");
             let (options, disk) = with_value(&options, "--disk")?;
             let (options, no_network) = without_flag(&options, "--no-network");
+            let (options, no_components) = without_flag(&options, "--no-components");
             let (options, work) = with_value(&options, "--work")?;
             let (options, work_out) = with_value(&options, "--work-out")?;
             let (options, room) = with_value(&options, "--room")?;
@@ -791,6 +795,16 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             if let Some(work) = &work {
                 extra_args.extend(work.pack(arch)?);
+            }
+            if !no_components {
+                let store = components::build_store(arch)?;
+                let store = std::path::absolute(&store)
+                    .map_err(|e| format!("{}: {e}", store.display()))?;
+                extra_args.extend(qemu::store_disk_args(arch, &store.to_string_lossy()));
+                eprintln!(
+                    "xtask: {} is attached read-only: component install installs from it",
+                    store.display()
+                );
             }
             if let Some(memory) = memory {
                 extra_args.extend(qemu::memory_args(&memory)?);
