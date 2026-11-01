@@ -499,7 +499,7 @@ fn a_click_opens_settings_on_network_once_while_it_starts() {
             .map(|command| command.words().map(<[u8]>::to_vec).collect::<Vec<_>>()),
         Some(vec![
             b"/bin/settings".to_vec(),
-            b"--pane".to_vec(),
+            b"open".to_vec(),
             b"network".to_vec()
         ])
     );

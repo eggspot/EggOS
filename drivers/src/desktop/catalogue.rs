@@ -20,7 +20,7 @@ const FILES_SYNONYMS: [&str; 5] = ["Explorer", "Finder", "Dolphin", "Nautilus", 
 const SETTINGS_SYNONYMS: [&str; 4] = ["Control Panel", "System Settings", "Preferences", "options"];
 const TEXT_EDITOR_SYNONYMS: [&str; 6] = ["Notepad", "TextEdit", "gedit", "Kate", "editor", "notes"];
 const SETTINGS_PROGRAM: &str = "/bin/settings";
-const PANE_OPTION: &str = "--pane";
+const OPEN_VERB: &str = "open";
 const SET_VERB: &str = "set";
 const FILES_PROGRAM: &str = "/bin/files";
 const TEXT_EDITOR_PROGRAM: &str = "/bin/text-editor";
@@ -546,10 +546,10 @@ impl Catalogue {
         })
     }
 
-    /// The command that starts Settings on the pane named `pane`: `/bin/settings --pane
-    /// <pane>` (D220).
+    /// The command that starts Settings on the pane named `pane`: `/bin/settings open <pane>`
+    /// (D220, D224).
     pub fn settings_pane(&self, pane: &str) -> Option<Command> {
-        Command::program(SETTINGS_PROGRAM, &[PANE_OPTION.as_bytes(), pane.as_bytes()])
+        Command::program(SETTINGS_PROGRAM, &[OPEN_VERB.as_bytes(), pane.as_bytes()])
     }
 
     /// The command that saves and applies `key` as `value`: `/bin/settings set <key> <value>`,

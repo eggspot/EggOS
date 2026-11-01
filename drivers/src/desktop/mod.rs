@@ -295,7 +295,7 @@ pub enum SettingsPane {
 }
 
 impl SettingsPane {
-    /// The pane's name as `settings --pane` takes it.
+    /// The pane's name as `settings open` takes it.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Keyboard => "keyboard",

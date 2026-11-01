@@ -208,7 +208,7 @@ fn keyboard_settings_opens_the_keyboard_pane_and_a_second_press_closes_the_menu(
             .map(|command| command.words().map(<[u8]>::to_vec).collect::<Vec<_>>()),
         Some(vec![
             b"/bin/settings".to_vec(),
-            b"--pane".to_vec(),
+            b"open".to_vec(),
             b"keyboard".to_vec()
         ])
     );

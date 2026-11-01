@@ -746,8 +746,8 @@ impl Desktop {
         Action::OpenSettingsPane(pane)
     }
 
-    /// What [`Action::OpenSettingsPane`] of `pane` starts: Settings with `--pane` and the
-    /// pane's name.
+    /// What [`Action::OpenSettingsPane`] of `pane` starts: `settings open` and the pane's
+    /// name.
     pub fn settings_pane_command(&self, pane: super::SettingsPane) -> Option<super::Command> {
         self.catalogue.settings_pane(pane.name())
     }
