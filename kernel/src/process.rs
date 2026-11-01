@@ -2487,9 +2487,6 @@ fn free_range(
     }
 }
 
-/// Gives a frame `map_frame` allocated and could not map back to the kernel's frame allocator.
-/// A page of a file a process maps that `Process::populate` found unread: which file, where,
-/// and how many of its bytes the page holds.
 struct FilePageRead {
     page: u64,
     file: Arc<dyn FilePages>,
@@ -2506,20 +2503,12 @@ impl FilePageRead {
     }
 }
 
-/// What reading a [`FilePageRead`] gave: a frame holding the file's bytes, the rest not yet
-/// zeroed.
 enum ReadFilePage {
     Read { frame: u64, bytes: usize },
     Failed,
     NoFrame,
 }
 
-/// The file pages one call needs, read with no lock held: a file system may sleep in a read,
-/// and a thread that sleeps holding the regions' spin lock leaves every other thread of its
-/// process spinning for it with interrupts masked, which can take every CPU and so never let
-/// it run again. `Process::populate` asks for a page (`wanted`) and fails; the caller drops the
-/// lock, reads it (`read_wanted`), takes the lock again and retries, and `populate` maps the
-/// page read if the file still maps it there, or asks again.
 #[derive(Default)]
 struct FilePageReads {
     wanted: Option<FilePageRead>,
@@ -2534,9 +2523,6 @@ impl FilePageReads {
         }
     }
 
-    /// Reads the page `populate` asked for, if it asked, into a new frame (sleeping if the
-    /// file system does) that the frame allocator reaches at `frame_offset`, and returns
-    /// whether it did, so the caller retries. Call it holding no spin lock.
     fn read_wanted(&mut self, frame_offset: usize) -> bool {
         let Some(wanted) = self.wanted.take() else {
             return false;

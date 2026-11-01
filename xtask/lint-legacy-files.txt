@@ -56,7 +56,7 @@ kernel/src/linux/trampoline.rs 10
 kernel/src/main.rs 18
 kernel/src/memory.rs 65
 kernel/src/paging.rs 64
-kernel/src/process.rs 98
+kernel/src/process.rs 97
 kernel/src/random.rs 23
 kernel/src/random/blake2s.rs 12
 kernel/src/random/chacha20.rs 3
