@@ -26,6 +26,7 @@ use eggos_windows_gui::controls::image::{self, Picture};
 use eggos_windows_gui::controls::label::{self, LabelLook};
 use eggos_windows_gui::controls::list_box::{self, ITEM_HEIGHT, ListBox, ListLook, visible_rows};
 use eggos_windows_gui::controls::scroll_bar::{self as bar_model, BarLook, ScrollBar};
+use eggos_windows_gui::colour::{colour_ref, pixel, system_colour};
 use eggos_windows_gui::controls::{DARK, LIGHT, Palette};
 use eggos_windows_gui::surface::{Rect, Surface};
 
@@ -34,6 +35,23 @@ const VK_SHIFT: i32 = 0x10;
 const VK_CONTROL: i32 = 0x11;
 const LB_ERR: usize = usize::MAX;
 const SCROLL_REPEAT_TIMER: usize = 0xffff_0227;
+const COLOR_WINDOW: u32 = 5;
+const COLOR_WINDOWTEXT: u32 = 8;
+const COLOR_BTNFACE: u32 = 15;
+
+/// `WM_CTLCOLOR*`, sent to a control's parent before it paints (design section 1).
+pub mod control_colour {
+    pub const MESSAGE_BOX: u32 = 0x0132;
+    pub const EDIT: u32 = 0x0133;
+    pub const LIST_BOX: u32 = 0x0134;
+    pub const BUTTON: u32 = 0x0135;
+    pub const STATIC: u32 = 0x0138;
+
+    /// Whether `number` is one of the `WM_CTLCOLOR*` messages.
+    pub fn is(number: u32) -> bool {
+        (MESSAGE_BOX..=STATIC).contains(&number)
+    }
+}
 /// The layer's own message that does an agent's action on a list box's item on the list's
 /// thread (D226): `wParam` the item, `lParam` the [`Action`]'s number.
 pub const ACT_ON_LIST_ITEM: u32 = 0x03f3;
@@ -394,14 +412,16 @@ pub(super) fn notify(window: usize, notification: usize) {
     }
 }
 
-pub(super) fn palette_of(gui: &Gui, window: usize) -> &'static Palette {
-    let root = crate::gui::windows::root_of(&gui.windows, window);
-    match root
+fn in_layer_dialog(gui: &Gui, window: usize) -> bool {
+    crate::gui::windows::root_of(&gui.windows, window)
         .and_then(|root| gui.windows.get(root))
-        .map(|root| root.procedure)
-    {
-        Some(Procedure::FilePicker(_)) => &DARK,
-        _ => &LIGHT,
+        .is_some_and(|root| matches!(root.procedure, Procedure::FilePicker(_)))
+}
+
+pub(super) fn palette_of(gui: &Gui, window: usize) -> &'static Palette {
+    match in_layer_dialog(gui, window) {
+        true => &DARK,
+        false => &LIGHT,
     }
 }
 
@@ -421,10 +441,81 @@ fn is_default_button(gui: &Gui, window: usize, kind: ButtonKind) -> bool {
     }
 }
 
+/// The `WM_CTLCOLOR*` control `window` asks its parent with, by the design's rule: read-only
+/// and disabled edits, statics, check boxes, radios and group boxes ask as statics.
+fn colour_message(gui: &mut Gui, window: usize) -> Option<(usize, u32)> {
+    if in_layer_dialog(gui, window) {
+        return None;
+    }
+    let (entry, state) = state_of(gui, window)?;
+    let parent = entry.parent;
+    let enabled = entry.enabled();
+    let number = match state {
+        State::Button(button) if button.kind.is_push() => control_colour::BUTTON,
+        State::Edit(edit) if enabled && !edit.read_only => control_colour::EDIT,
+        State::ListBox(_) => control_colour::LIST_BOX,
+        State::ScrollBar(_) | State::Picture(_) => return None,
+        State::Button(_) | State::Edit(_) | State::Static => control_colour::STATIC,
+    };
+    (parent != 0).then_some((parent, number))
+}
+
+/// The colours the parent's answer to `WM_CTLCOLOR*` gives control `window`: the brush's
+/// pixel (none for a null brush or no answer) and the text colour it left in `hdc`.
+fn program_colours(window: usize, hdc: usize) -> Option<(u32, Option<u32>, u32)> {
+    let (parent, number) = with(|gui| colour_message(gui, window)).flatten()?;
+    let brush = gui::send(parent, number, hdc, window);
+    with(|gui| {
+        let fill = objects::brush_colour(&gui.objects, brush);
+        let text = gui.contexts.get(hdc)?.text_colour;
+        Some((number, fill, pixel(text)))
+    })
+    .flatten()
+}
+
+/// The palette control `window` paints with after its parent's `WM_CTLCOLOR*` answer: the
+/// brush replaces the control's fill and the text colour its text, never a border, caret,
+/// highlight or disabled text.
+fn answered_palette(base: &Palette, (number, fill, text): (u32, Option<u32>, u32)) -> Palette {
+    let mut palette = *base;
+    match number {
+        control_colour::BUTTON => {
+            palette.text = text;
+            palette.default_text = text;
+        }
+        control_colour::EDIT | control_colour::LIST_BOX => {
+            palette.text = text;
+            palette.field_fill = fill.unwrap_or(palette.field_fill);
+        }
+        _ => {
+            palette.text = text;
+            palette.surface = fill.unwrap_or(palette.surface);
+            palette.field_read_only_fill = fill.unwrap_or(palette.field_read_only_fill);
+        }
+    }
+    palette
+}
+
+/// `DefWindowProc`'s answer to `WM_CTLCOLOR*`: `COLOR_WINDOW` for edits and lists,
+/// `COLOR_BTNFACE` for the rest, with `COLOR_WINDOWTEXT` set in `hdc`.
+pub(super) fn default_control_colour(number: u32, hdc: usize) -> usize {
+    with(|gui| {
+        if let Some(context) = gui.contexts.get_mut(hdc) {
+            context.text_colour = system_colour(COLOR_WINDOWTEXT).map_or(0, colour_ref);
+        }
+    });
+    let index = match number {
+        control_colour::EDIT | control_colour::LIST_BOX => COLOR_WINDOW,
+        _ => COLOR_BTNFACE,
+    };
+    objects::system_brush_handle(index).unwrap_or(0)
+}
+
 fn paint_control(window: usize) {
     let Ok((hdc, _, _)) = paint::begin(window) else {
         return;
     };
+    let answered = program_colours(window, hdc);
     let _ = paint::draw_in(hdc, |surface, _, gui| {
         let Some(surface) = surface else {
             return;
@@ -436,7 +527,8 @@ fn paint_control(window: usize) {
             return;
         };
         let rect = entry.client();
-        let palette = palette_of(gui, window);
+        let custom = answered.map(|answer| answered_palette(palette_of(gui, window), answer));
+        let palette = custom.as_ref().unwrap_or(palette_of(gui, window));
         let focused = has_focus(gui, window);
         let hovered = gui.hover.under() == window;
         let text = window_text::of(gui, window);
@@ -1393,4 +1485,24 @@ pub fn caret_to_end(window: usize) {
         }
     });
     invalidate(window);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_parents_colours_replace_only_the_fill_and_text_the_message_names() {
+        let label = answered_palette(&LIGHT, (control_colour::STATIC, Some(0x0011_2233), 0xff));
+        assert_eq!((label.surface, label.text), (0x0011_2233, 0xff));
+        assert_eq!(label.field_read_only_fill, 0x0011_2233);
+        assert_eq!(label.text_disabled, LIGHT.text_disabled);
+        let edit = answered_palette(&LIGHT, (control_colour::EDIT, None, 0xff));
+        assert_eq!((edit.field_fill, edit.text), (LIGHT.field_fill, 0xff));
+        assert_eq!(edit.field_border, LIGHT.field_border);
+        let button = answered_palette(&LIGHT, (control_colour::BUTTON, Some(0x0011_2233), 0xff));
+        assert_eq!((button.button_fill, button.text), (LIGHT.button_fill, 0xff));
+        assert_eq!(button.default_text, 0xff);
+        assert!(control_colour::is(0x0136) && !control_colour::is(0x0139));
+    }
 }
