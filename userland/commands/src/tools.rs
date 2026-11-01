@@ -1531,7 +1531,8 @@ pub const WM_SHOW: ToolDefinition = reading(
     "Reads a window's controls as an element tree, as `wm show` does (D161): one element a \
          line, indented below its parent, with its id, role (window, group, label, button, \
          checkbox, radio-group, radio, list, list-item, text-field, progress, graphic, text, \
-         slider, combo-box), x,y and widthxheight in window pixels, [flags] (focused, \
+         slider, combo-box, tooltip, menubar, menuitem, table, row, columnheader, textarea), \
+         x,y and widthxheight in window pixels, [flags] (focused, \
          focusable, disabled, selected, checked, default, expanded, person-only), \"name\" and \
          = \"value\", each cut at 255 \
          bytes without a mark. Act on an element with wm_act \
