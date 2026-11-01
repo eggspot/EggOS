@@ -178,6 +178,7 @@ dependencies = [
  "eggos-element-tree",
  "eggos-hal",
  "eggos-image",
+ "eggos-math",
  "eggos-net",
  "eggos-settings-file",
  "eggos-toolkit",

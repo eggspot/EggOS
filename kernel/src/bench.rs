@@ -179,6 +179,8 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 65] {
         ("text_area_wrap_64k", |_, n| text_area_wrap_64k(n)),
         ("block_read_4k_qd8", |_, n| block_read_4k_qd8::<P>(n)),
         ("net_rx_wakeup", |_, n| net_rx_wakeup::<P>(n)),
+        ("math_sin_f64", |_, n| math_sin_f64(n)),
+        ("math_exp_f64", |_, n| math_exp_f64(n)),
     ]
 }
 
@@ -249,6 +251,35 @@ fn block_read_4k_qd8<P: Platform>(n: u64) {
         let mut disk = MemoryDisk(alloc::vec![0u8; 64 * BLOCK_READ_BYTES]);
         read_all(&mut disk);
     }
+}
+
+const MATH_INPUT_STEP: f64 = 0.7;
+const MATH_INPUT_SPAN: f64 = 100.0;
+
+fn math_sin_f64(n: u64) {
+    let mut x = 0.1;
+    let mut sum = 0.0;
+    for _ in 0..n {
+        sum += eggos_math::sin(black_box(x));
+        x += MATH_INPUT_STEP;
+        if x > MATH_INPUT_SPAN {
+            x -= MATH_INPUT_SPAN;
+        }
+    }
+    black_box(sum);
+}
+
+fn math_exp_f64(n: u64) {
+    let mut x = -50.0;
+    let mut sum = 0.0;
+    for _ in 0..n {
+        sum += eggos_math::exp(black_box(x));
+        x += MATH_INPUT_STEP;
+        if x > MATH_INPUT_SPAN - 50.0 {
+            x -= MATH_INPUT_SPAN;
+        }
+    }
+    black_box(sum);
 }
 
 fn net_rx_wakeup<P: Platform>(n: u64) {
