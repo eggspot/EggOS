@@ -1,6 +1,7 @@
 //! The C runtime's low-level I/O (`io.h`, `fcntl.h`, `share.h`; D179): what `_open`'s
 //! `_O_*` flags, `_sopen_s`'s sharing mode and `_lseek`'s origin ask of Linux's `openat` and
-//! `lseek`, kept here, outside the layer's Win32 code, so its host tests run.
+//! `lseek`, and what a descriptor's translation mode does to the bytes `_read` and `_write`
+//! move (D228), kept here, outside the layer's Win32 code, so its host tests run.
 
 /// `_open`'s flags (`_O_*`).
 pub mod windows_flag {
@@ -105,6 +106,190 @@ pub fn whence(origin: i32) -> Option<usize> {
     }
 }
 
+/// What a descriptor's translation mode does to the bytes `_read` and `_write` move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Translation {
+    /// `_O_BINARY`: bytes as they are.
+    Binary,
+    /// `_O_TEXT`: `\n` is `\r\n` in the file and Ctrl+Z ends the text.
+    Text,
+    /// `_O_WTEXT` and `_O_U16TEXT`: the program's UTF-16 is UTF-16 in the file.
+    Utf16,
+    /// `_O_U8TEXT`: the program's UTF-16 is UTF-8 in the file.
+    Utf8,
+}
+
+impl Translation {
+    /// The translation of the mode `_setmode` and `_open` take (`_O_TEXT`, ...).
+    pub fn of_mode(mode: i32) -> Translation {
+        match mode {
+            windows_flag::BINARY => Translation::Binary,
+            windows_flag::WTEXT | windows_flag::U16TEXT => Translation::Utf16,
+            windows_flag::U8TEXT => Translation::Utf8,
+            _ => Translation::Text,
+        }
+    }
+
+    /// Whether the program's buffers hold UTF-16, so their sizes must be even.
+    pub fn is_wide(self) -> bool {
+        matches!(self, Translation::Utf16 | Translation::Utf8)
+    }
+}
+
+/// The translation modes, in the order `_open` looks for them in its flags.
+pub const TRANSLATION_MODES: [i32; 5] = [
+    windows_flag::TEXT,
+    windows_flag::BINARY,
+    windows_flag::WTEXT,
+    windows_flag::U16TEXT,
+    windows_flag::U8TEXT,
+];
+
+/// The translation mode `_open`'s `flags` ask for, else `default` (`_fmode`'s).
+pub fn open_mode(flags: i32, default: i32) -> i32 {
+    TRANSLATION_MODES
+        .into_iter()
+        .find(|mode| flags & mode != 0)
+        .unwrap_or(default)
+}
+
+const CARRIAGE_RETURN: u8 = b'\r';
+const LINE_FEED: u8 = b'\n';
+const END_OF_TEXT: u8 = 0x1a;
+/// The fewest bytes `translate_written`'s `out` may hold: one character's.
+pub const SMALLEST_TRANSLATION: usize = 4;
+
+fn put(out: &mut [u8], at: &mut usize, bytes: &[u8]) -> bool {
+    match out.get_mut(*at..*at + bytes.len()) {
+        Some(room) => {
+            room.copy_from_slice(bytes);
+            *at += bytes.len();
+            true
+        }
+        None => false,
+    }
+}
+
+/// Translates the start of `input`, the bytes given to `_write`, into `out` as `translation`
+/// asks for a file, or with `to_terminal` for a terminal, which takes UTF-8 in every wide
+/// mode: text mode writes `\n` as `\r\n`; the wide modes read `input` as UTF-16 and write
+/// UTF-16 with `\r\n`, or UTF-8 with `\r\n` (`_O_U8TEXT`, a terminal; an unpaired surrogate
+/// as U+FFFD). Takes whole characters only; returns how many bytes of `input` it took and how
+/// many it put in `out`, which holds at least `SMALLEST_TRANSLATION` bytes.
+pub fn translate_written(
+    translation: Translation,
+    to_terminal: bool,
+    input: &[u8],
+    out: &mut [u8],
+) -> (usize, usize) {
+    let mut taken = 0;
+    let mut put_at = 0;
+    match (translation, to_terminal) {
+        (Translation::Binary, _) => {
+            taken = input.len().min(out.len());
+            out[..taken].copy_from_slice(&input[..taken]);
+            put_at = taken;
+        }
+        (Translation::Text, _) => {
+            for &byte in input {
+                let bytes: &[u8] = match byte {
+                    LINE_FEED => b"\r\n",
+                    _ => core::slice::from_ref(&byte),
+                };
+                if !put(out, &mut put_at, bytes) {
+                    break;
+                }
+                taken += 1;
+            }
+        }
+        (Translation::Utf16, false) => {
+            for unit in input.chunks_exact(2) {
+                let bytes: &[u8] = match unit {
+                    [LINE_FEED, 0] => &[CARRIAGE_RETURN, 0, LINE_FEED, 0],
+                    _ => unit,
+                };
+                if !put(out, &mut put_at, bytes) {
+                    break;
+                }
+                taken += 2;
+            }
+        }
+        _ => {
+            let units = input
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+            for decoded in char::decode_utf16(units) {
+                let (c, width) = match decoded {
+                    Ok(c) => (c, c.len_utf16() * 2),
+                    Err(_) => (char::REPLACEMENT_CHARACTER, 2),
+                };
+                let mut encoded = [0; 4];
+                let bytes: &[u8] = match c {
+                    '\n' => b"\r\n",
+                    _ => c.encode_utf8(&mut encoded).as_bytes(),
+                };
+                if !put(out, &mut put_at, bytes) {
+                    break;
+                }
+                taken += width;
+            }
+        }
+    }
+    (taken, put_at)
+}
+
+/// What text mode made of the bytes one `_read` read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextRead {
+    /// How many bytes the program gets, at the buffer's start.
+    pub kept: usize,
+    /// The index among the bytes read of the Ctrl+Z that ended the text, if one did.
+    pub stopped_at: Option<usize>,
+    /// Whether the last byte read was a `\r` left out of `kept`: the byte after it decides
+    /// whether it is a line's end (`\n`) or itself.
+    pub return_pending: bool,
+}
+
+/// Turns the bytes `_read` read, all of `buffer`, into text mode's in place: `\r\n` becomes
+/// `\n`, and a Ctrl+Z ends the text.
+pub fn take_text(buffer: &mut [u8]) -> TextRead {
+    let mut kept = 0;
+    let mut index = 0;
+    while index < buffer.len() {
+        let byte = buffer[index];
+        match byte {
+            END_OF_TEXT => {
+                return TextRead {
+                    kept,
+                    stopped_at: Some(index),
+                    return_pending: false,
+                };
+            }
+            CARRIAGE_RETURN if index + 1 == buffer.len() => {
+                return TextRead {
+                    kept,
+                    stopped_at: None,
+                    return_pending: true,
+                };
+            }
+            CARRIAGE_RETURN if buffer[index + 1] == LINE_FEED => {
+                buffer[kept] = LINE_FEED;
+                index += 2;
+            }
+            _ => {
+                buffer[kept] = byte;
+                index += 1;
+            }
+        }
+        kept += 1;
+    }
+    TextRead {
+        kept,
+        stopped_at: None,
+        return_pending: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +338,109 @@ mod tests {
         assert_eq!(whence(2), Some(2));
         assert_eq!(whence(3), None);
         assert_eq!(whence(-1), None);
+    }
+
+    fn written(translation: Translation, to_terminal: bool, input: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut rest = input;
+        while !rest.is_empty() {
+            let mut chunk = [0u8; 5];
+            let (taken, put) = translate_written(translation, to_terminal, rest, &mut chunk);
+            assert!(taken > 0, "{translation:?} stalled");
+            out.extend_from_slice(&chunk[..put]);
+            rest = &rest[taken..];
+        }
+        out
+    }
+
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn translation_modes_come_from_open_s_flags_or_the_default() {
+        assert_eq!(
+            open_mode(windows_flag::RDONLY, windows_flag::TEXT),
+            windows_flag::TEXT
+        );
+        assert_eq!(
+            open_mode(windows_flag::RDONLY, windows_flag::BINARY),
+            windows_flag::BINARY
+        );
+        assert_eq!(
+            open_mode(
+                windows_flag::WRONLY | windows_flag::U16TEXT,
+                windows_flag::TEXT
+            ),
+            windows_flag::U16TEXT
+        );
+        assert_eq!(
+            Translation::of_mode(windows_flag::WTEXT),
+            Translation::Utf16
+        );
+        assert_eq!(
+            Translation::of_mode(windows_flag::U8TEXT),
+            Translation::Utf8
+        );
+        assert_eq!(
+            Translation::of_mode(windows_flag::BINARY),
+            Translation::Binary
+        );
+        assert_eq!(Translation::of_mode(windows_flag::TEXT), Translation::Text);
+        assert!(Translation::Utf8.is_wide() && !Translation::Text.is_wide());
+    }
+
+    #[test]
+    fn writing_translates_line_ends_and_wide_text_in_whole_characters() {
+        assert_eq!(written(Translation::Binary, false, b"a\nb"), b"a\nb");
+        assert_eq!(
+            written(Translation::Text, false, b"a\n\nb\n"),
+            b"a\r\n\r\nb\r\n"
+        );
+        assert_eq!(
+            written(Translation::Utf16, false, &utf16("é\n")),
+            utf16("é\r\n")
+        );
+        assert_eq!(
+            written(Translation::Utf8, false, &utf16("é😀\n")),
+            "é😀\r\n".as_bytes()
+        );
+        assert_eq!(written(Translation::Utf16, true, &utf16("x\n")), b"x\r\n");
+        assert_eq!(
+            written(Translation::Utf8, false, &[0x00, 0xd8, b'a', 0]),
+            "\u{fffd}a".as_bytes()
+        );
+        let mut small = [0u8; SMALLEST_TRANSLATION];
+        assert_eq!(
+            translate_written(Translation::Utf8, false, &utf16("😀"), &mut small),
+            (4, 4)
+        );
+        let mut one = [0u8; 1];
+        assert_eq!(
+            translate_written(Translation::Text, false, b"\n", &mut one),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn reading_text_joins_line_ends_and_stops_at_ctrl_z() {
+        let mut lines = *b"a\r\nb\rc\r\n";
+        assert_eq!(
+            take_text(&mut lines),
+            TextRead {
+                kept: 6,
+                stopped_at: None,
+                return_pending: false
+            }
+        );
+        assert_eq!(&lines[..6], b"a\nb\rc\n");
+        let mut ended = *b"ab\x1acd";
+        let read = take_text(&mut ended);
+        assert_eq!((read.kept, read.stopped_at), (2, Some(2)));
+        let mut split = *b"ab\r";
+        let read = take_text(&mut split);
+        assert_eq!((read.kept, read.return_pending), (2, true));
+        let mut only_return = *b"\r";
+        assert_eq!(take_text(&mut only_return).kept, 0);
     }
 }

@@ -1,19 +1,63 @@
 //! The C runtime's low-level I/O (`io.h`, D179): `_open`, `_wopen`, `_sopen_s`, `_wsopen_s`,
 //! `_close`, `_read`, `_write`, `_lseek` and `_lseeki64` on the Linux descriptors the streams
 //! and handles use, so `_fileno`, `_fdopen` and `_open_osfhandle` name the same descriptors.
-//! Paths are Windows paths, as `fopen`'s. The flags are `crate::low_level_io`'s. Bytes are read
-//! and written as they are, in text mode too: line endings are not translated, so `_setmode`
-//! (D189) only records a descriptor's mode and reports the one it had.
+//! Paths are Windows paths, as `fopen`'s. The flags are `crate::low_level_io`'s. Each
+//! descriptor has a translation mode (D228), from `_open`'s flags or `_fmode`, which `_setmode`
+//! changes: `_write` in text mode writes `\n` as `\r\n` and in the wide modes writes the
+//! program's UTF-16 as UTF-16 or UTF-8; `_read` in text mode takes `\r\n` as `\n` and stops at
+//! Ctrl+Z, seeking back to it, and a last `\r` waits for the next byte, which goes back to the
+//! file, or for a descriptor that cannot seek to the next `_read`. The wide modes read bytes as
+//! they are.
 
-use super::runtime::{errno, errno_for_linux, errno_value, set_errno};
+use super::runtime::{binary_by_default, errno, errno_for_linux, errno_value, set_errno};
 use crate::library::Export;
 use crate::linux;
-use crate::low_level_io::{is_sharing_mode, open_flags, whence};
+use crate::low_level_io::{
+    SMALLEST_TRANSLATION, TRANSLATION_MODES, Translation, is_sharing_mode, open_flags, open_mode,
+    take_text, translate_written, whence, windows_flag,
+};
 use crate::text;
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 const FAILED: i32 = -1;
+const SEEK_CURRENT: usize = 1;
+const NO_BYTE: i32 = -1;
+const TRANSLATION_CHUNK: usize = 1024;
+const TRACKED_DESCRIPTORS: usize = 64;
+
+const _: () = assert!(TRANSLATION_CHUNK >= SMALLEST_TRANSLATION);
+
+static TRANSLATION: [AtomicI32; TRACKED_DESCRIPTORS] =
+    [const { AtomicI32::new(windows_flag::TEXT) }; TRACKED_DESCRIPTORS];
+static PENDING_BYTE: [AtomicI32; TRACKED_DESCRIPTORS] =
+    [const { AtomicI32::new(NO_BYTE) }; TRACKED_DESCRIPTORS];
+
+/// The translation mode (`_O_TEXT`, ...) of descriptor `fd`: text for one the runtime does
+/// not track.
+pub(super) fn translation_mode(fd: usize) -> i32 {
+    TRANSLATION
+        .get(fd)
+        .map_or(windows_flag::TEXT, |slot| slot.load(Ordering::Acquire))
+}
+
+/// Forgets what the runtime kept for descriptor `fd`, which is closing: its translation
+/// mode and a byte waiting to be read.
+pub(super) fn forget_descriptor(fd: usize) {
+    if let Some(slot) = TRANSLATION.get(fd) {
+        slot.store(windows_flag::TEXT, Ordering::Release);
+    }
+    if let Some(slot) = PENDING_BYTE.get(fd) {
+        slot.store(NO_BYTE, Ordering::Release);
+    }
+}
+
+fn default_mode() -> i32 {
+    match binary_by_default() {
+        true => windows_flag::BINARY,
+        false => windows_flag::TEXT,
+    }
+}
 
 fn refused(linux_errno: u16) -> i32 {
     set_errno(errno_for_linux(linux_errno));
@@ -37,6 +81,12 @@ fn open_path(path: impl Iterator<Item = char>, flags: i32) -> i32 {
     if temporary && let Err(error) = linux::remove(&eggos_path[..length], 0) {
         let _ = linux::close(fd);
         return refused(error.0);
+    }
+    if let Some(slot) = TRANSLATION.get(fd) {
+        slot.store(open_mode(flags, default_mode()), Ordering::Release);
+    }
+    if let Some(slot) = PENDING_BYTE.get(fd) {
+        slot.store(NO_BYTE, Ordering::Release);
     }
     match i32::try_from(fd) {
         Ok(fd) => fd,
@@ -154,6 +204,7 @@ extern "efiapi" fn close(fd: i32) -> i32 {
     let Some(fd) = descriptor(fd) else {
         return FAILED;
     };
+    forget_descriptor(fd);
     match super::super::file::close_descriptor(fd) {
         Ok(_) => 0,
         Err(error) => refused(error.0),
@@ -175,14 +226,63 @@ unsafe extern "efiapi" fn read(fd: i32, buffer: *mut u8, count: u32) -> i32 {
         // SAFETY: `_read`'s contract: `count` writable bytes at `buffer`.
         _ => unsafe { core::slice::from_raw_parts_mut(buffer, count) },
     };
+    let read = match Translation::of_mode(translation_mode(fd)) {
+        Translation::Text if !bytes.is_empty() => read_text(fd, bytes),
+        _ => read_raw(fd, bytes),
+    };
+    match read {
+        Ok(read) => read as i32,
+        Err(error) => refused(error),
+    }
+}
+
+fn read_raw(fd: usize, bytes: &mut [u8]) -> Result<usize, u16> {
     let peeked = super::super::pipe::take_peeked(fd, bytes);
     if peeked != 0 {
-        return peeked as i32;
+        return Ok(peeked);
     }
-    match linux::read(fd, bytes) {
-        Ok(read) => read as i32,
-        Err(error) => refused(error.0),
+    linux::read(fd, bytes).map_err(|error| error.0)
+}
+
+fn take_pending_byte(fd: usize) -> Option<u8> {
+    let slot = PENDING_BYTE.get(fd)?;
+    u8::try_from(slot.swap(NO_BYTE, Ordering::AcqRel)).ok()
+}
+
+fn give_back(fd: usize, byte: u8) {
+    if linux::lseek(fd, -1, SEEK_CURRENT).is_err()
+        && let Some(slot) = PENDING_BYTE.get(fd)
+    {
+        slot.store(i32::from(byte), Ordering::Release);
     }
+}
+
+fn read_text(fd: usize, bytes: &mut [u8]) -> Result<usize, u16> {
+    let read = match take_pending_byte(fd) {
+        Some(byte) => {
+            bytes[0] = byte;
+            1
+        }
+        None => read_raw(fd, bytes)?,
+    };
+    let text = take_text(&mut bytes[..read]);
+    if let Some(at) = text.stopped_at {
+        let _ = linux::lseek(fd, at as i64 - read as i64, SEEK_CURRENT);
+        return Ok(text.kept);
+    }
+    if !text.return_pending {
+        return Ok(text.kept);
+    }
+    let mut next = [0u8; 1];
+    bytes[text.kept] = match read_raw(fd, &mut next) {
+        Ok(1) if next[0] == b'\n' => b'\n',
+        Ok(1) => {
+            give_back(fd, next[0]);
+            b'\r'
+        }
+        _ => b'\r',
+    };
+    Ok(text.kept + 1)
 }
 
 unsafe extern "efiapi" fn write(fd: i32, buffer: *const u8, count: u32) -> i32 {
@@ -199,10 +299,37 @@ unsafe extern "efiapi" fn write(fd: i32, buffer: *const u8, count: u32) -> i32 {
         // SAFETY: `_write`'s contract: `count` readable bytes at `buffer`.
         _ => unsafe { core::slice::from_raw_parts(buffer, count) },
     };
-    match linux::write(fd, bytes) {
-        Ok(written) => written as i32,
-        Err(error) => refused(error.0),
+    match Translation::of_mode(translation_mode(fd)) {
+        Translation::Binary => match linux::write(fd, bytes) {
+            Ok(written) => written as i32,
+            Err(error) => refused(error.0),
+        },
+        translation => write_translated(fd, translation, bytes),
     }
+}
+
+fn write_translated(fd: usize, translation: Translation, bytes: &[u8]) -> i32 {
+    if translation.is_wide() && bytes.len() % 2 != 0 {
+        set_errno(errno::EINVAL);
+        return FAILED;
+    }
+    let terminal = linux::is_terminal(fd);
+    let mut out = [0u8; TRANSLATION_CHUNK];
+    let mut taken = 0;
+    while taken < bytes.len() {
+        let (used, put) = translate_written(translation, terminal, &bytes[taken..], &mut out);
+        if let Err(error) = linux::write_all(fd, &out[..put]) {
+            return match taken {
+                0 => refused(error.0),
+                _ => taken as i32,
+            };
+        }
+        if used == 0 {
+            break;
+        }
+        taken += used;
+    }
+    taken as i32
 }
 
 fn seek(fd: i32, offset: i64, origin: i32) -> i64 {
@@ -234,13 +361,6 @@ extern "efiapi" fn lseeki64(fd: i32, offset: i64, origin: i32) -> i64 {
     seek(fd, offset, origin)
 }
 
-const TEXT_MODE: i32 = 0x4000;
-const TRANSLATION_MODES: [i32; 5] = [TEXT_MODE, 0x8000, 0x1_0000, 0x2_0000, 0x4_0000];
-const TRACKED_DESCRIPTORS: usize = 64;
-
-static TRANSLATION: [AtomicI32; TRACKED_DESCRIPTORS] =
-    [const { AtomicI32::new(TEXT_MODE) }; TRACKED_DESCRIPTORS];
-
 extern "efiapi" fn set_mode(fd: i32, mode: i32) -> i32 {
     if !TRANSLATION_MODES.contains(&mode) {
         set_errno(errno::EINVAL);
@@ -255,7 +375,7 @@ extern "efiapi" fn set_mode(fd: i32, mode: i32) -> i32 {
     }
     match TRANSLATION.get(descriptor) {
         Some(slot) => slot.swap(mode, Ordering::AcqRel),
-        None => TEXT_MODE,
+        None => windows_flag::TEXT,
     }
 }
 
