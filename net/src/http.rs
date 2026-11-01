@@ -368,6 +368,21 @@ pub fn parse_head(head: &[u8]) -> Result<Head<'_>, HeadError> {
     })
 }
 
+/// The value of the first header field called `name` (any case) in `head`, a response's head
+/// as [`head_end`] found it, trimmed of spaces; `None` when there is none.
+pub fn header<'a>(head: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
+    head.split(|&byte| byte == b'\n')
+        .skip(1)
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+        .take_while(|line| !line.is_empty())
+        .find_map(|line| {
+            let colon = line.iter().position(|&byte| byte == b':')?;
+            line[..colon]
+                .eq_ignore_ascii_case(name)
+                .then(|| trimmed(&line[colon + 1..]))
+        })
+}
+
 fn parse_status_line(line: &[u8]) -> Result<(u16, &[u8]), HeadError> {
     let rest = line
         .strip_prefix(b"HTTP/1.")
