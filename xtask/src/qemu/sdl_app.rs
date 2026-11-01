@@ -179,6 +179,9 @@ fn play_and_save(boot: &mut Boot<'_>, screen: &mut Screen, area: Rect) -> Result
     std::thread::sleep(SETTLE);
     picture(screen, arch, "-sdl-app-saved")?;
     tap(screen, "ret")?;
+    std::thread::sleep(SETTLE);
+    picture(screen, arch, "-sdl-app-saved-more")?;
+    tap(screen, "ret")?;
     Ok(())
 }
 
