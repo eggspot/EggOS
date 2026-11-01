@@ -144,11 +144,9 @@ start64_high:
     jmp     3b
     .popsection
 
-    // A secondary CPU's 64-bit entry, reached from the trampoline below at the kernel's
-    // virtual address with the boot page tables (D40): the `CpuStart`'s address and the
-    // kernel's page-table root from the trampoline, read through the boot tables' identity map;
-    // then the kernel's tables, which map the `CpuStart` and its stack wherever they are in
-    // RAM (the boot tables map only the first 4 GiB), and the stack; then the kernel's GDT
+    // A secondary CPU's 64-bit entry from the trampoline (D40): the `CpuStart`'s address and
+    // the kernel's root from it, then the kernel's tables (the boot ones map only 4 GiB, not
+    // the `CpuStart` or its stack wherever they are), the stack; then the kernel's GDT
     // and segments as in `start64_high` (CS through a far return, which needs the stack), and
     // the IDT.
     .pushsection .text.boot, "ax"
@@ -390,10 +388,9 @@ unsafe extern "C" {
     static eggos_trampoline_end: u8;
 }
 
-/// Called by `secondary_start64` on the `CpuStart`'s stack, at the kernel's virtual address with
-/// the kernel's page tables and the IDT loaded: activates the tables as the boot CPU did (write
-/// protection, then the root again), sets this CPU's local APIC and timer up (D41), then calls
-/// the entry.
+/// Called by `secondary_start64` on the `CpuStart`'s stack with the kernel's page tables and the
+/// IDT loaded: activates the tables as the boot CPU did (write protection, the root), sets this
+/// CPU's local APIC and timer up (D41), then calls the entry.
 extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
     // everything this CPU uses at the addresses it uses now, as they did for the boot CPU;

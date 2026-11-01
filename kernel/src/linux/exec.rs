@@ -681,9 +681,6 @@ fn map_segment<P: Platform>(
         .map_err(|_| ExecError::InvalidProgram("segments that share a page"))
 }
 
-/// A checked `LOAD` segment whose file bytes are past the image read, moved by `bias`: its
-/// region alone, whose pages the program's first touches read from the file (the
-/// [`FileRange`] [`map_segments`] adds after it).
 fn add_segment_region<P: Platform>(
     process: &mut Process<P>,
     header: &ProgramHeader,

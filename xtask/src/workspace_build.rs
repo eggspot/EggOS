@@ -485,9 +485,6 @@ fn run_natively(arch: &Arch, work: &Path) -> Result<Option<BuildRun>, String> {
     Ok(Some(run))
 }
 
-/// A work folder for the runner's build outside the repository, whose `.cargo/config.toml`
-/// cargo would otherwise merge into the workspace's: a copy of the workspace, new `tmp` and
-/// `cargo-home`, and links to `work`'s toolchain and glibc libraries.
 fn outside_the_repository(arch: &Arch, work: &Path) -> Result<PathBuf, String> {
     let outside = std::env::temp_dir().join(format!(
         "eggos-workspace-build-{}-{}",
