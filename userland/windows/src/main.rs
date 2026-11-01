@@ -35,6 +35,8 @@ mod command_line;
 #[cfg(any(test, runs_windows_programs))]
 mod counted_print;
 #[cfg(any(test, runs_windows_programs))]
+mod cpp_errors;
+#[cfg(any(test, runs_windows_programs))]
 mod cxx_data;
 #[cfg(any(test, runs_windows_programs))]
 mod cxx_walk;

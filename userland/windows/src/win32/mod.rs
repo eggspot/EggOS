@@ -55,6 +55,7 @@ mod message_box;
 mod messages;
 mod module;
 mod monitor;
+mod msvcp;
 mod named;
 mod native_files;
 mod nls;
@@ -341,6 +342,7 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::Userenv => USERENV,
         Library::Msvcrt => crt::MSVCRT,
         Library::Ws2_32 => WSOCK32,
+        Library::Msvcp140 => msvcp::MSVCP140,
     }
 }
 

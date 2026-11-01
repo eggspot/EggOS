@@ -29,7 +29,7 @@ fn stack_length(requested: usize) -> Option<usize> {
     (length <= MAX_STACK).then_some(length)
 }
 
-unsafe extern "efiapi" fn create_thread(
+pub(super) unsafe extern "efiapi" fn create_thread(
     _security: usize,
     stack_size: usize,
     start: usize,
@@ -185,11 +185,11 @@ pub fn finish(code: u32) -> ! {
     linux::exit_thread()
 }
 
-extern "efiapi" fn exit_thread(code: u32) -> ! {
+pub(super) extern "efiapi" fn exit_thread(code: u32) -> ! {
     finish(code)
 }
 
-unsafe extern "efiapi" fn get_exit_code_thread(handle: usize, code: *mut u32) -> Bool {
+pub(super) unsafe extern "efiapi" fn get_exit_code_thread(handle: usize, code: *mut u32) -> Bool {
     let state = match handle {
         super::CURRENT_THREAD => Some((sync::STILL_ACTIVE, 0)),
         handle => sync::thread_state(handle),

@@ -13,8 +13,8 @@ use crate::library::Export;
 use crate::linux::{self, CLOCK_MONOTONIC, CLOCK_REALTIME};
 use eggos_calendar::zone::{self, MonthRule, Rule, UTC};
 
-const PERFORMANCE_FREQUENCY: i64 = 10_000_000;
-const NANOSECONDS_PER_TICK: u64 = 100;
+pub(super) const PERFORMANCE_FREQUENCY: i64 = 10_000_000;
+pub(super) const NANOSECONDS_PER_TICK: u64 = 100;
 const FILETIME_EPOCH_OFFSET_SECONDS: u64 = 11_644_473_600;
 const INFINITE: u32 = u32::MAX;
 
@@ -46,7 +46,8 @@ unsafe extern "efiapi" fn get_system_time_as_file_time(time: *mut u64) {
     unsafe { time.write_unaligned(intervals) };
 }
 
-fn now() -> u64 {
+/// The time now as a `FILETIME`: 100 ns intervals since 1601.
+pub(super) fn now() -> u64 {
     let nanoseconds = linux::clock_nanoseconds(CLOCK_REALTIME);
     nanoseconds / NANOSECONDS_PER_TICK + FILETIME_EPOCH_OFFSET_SECONDS * 10_000_000
 }

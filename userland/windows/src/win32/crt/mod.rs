@@ -64,6 +64,7 @@ pub(super) const UCRT: &[&[Export]] = &[
     locale::EXPORTS,
     super::exception::CXX_UCRT_EXPORTS,
     super::exception::SIGNAL_EXPORTS,
+    super::msvcp::UCRT_THREAD_EXPORTS,
 ];
 
 /// The old C runtime's (`msvcrt.dll`) functions and variables: its own names first, then the
