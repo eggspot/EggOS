@@ -12971,7 +12971,13 @@ the license, by an explicit instruction recorded here.
   remove children with `unlinkat` relative to it); `TB_GETBUTTONINFOW` and `TB_SETBUTTONINFOW`
   do not check `cbSize`, and `TB_ADDBUTTONSW` reads at least a 32-byte stride whatever size
   `TB_BUTTONSTRUCTSIZE` gave; `SB_SETTEXTW` with `SBT_OWNERDRAW` drops its `lParam`, so
-  `SB_GETTEXTW` cannot return an owner-drawn part's data.
+  `SB_GETTEXTW` cannot return an owner-drawn part's data. From #149's CI fix review (CI1): a
+  tool window without `WS_EX_APPWINDOW` that `ShowWindow(SW_MINIMIZE)` minimises before it was
+  ever shown stays hidden, so `IsWindowVisible` and `IsIconic` both answer `FALSE` where
+  Windows shows it minimised with no taskbar button (needs a shown-but-not-presented state in
+  the layer); host tests of the catch walk's changes in commit 55a0122e (`frames.rs`'s
+  `leave_catch` and `funclet_stands_in`, `cxx.rs`'s FH4 branch), which only `windows-crt` in
+  QEMU exercises until those pure parts move out of `win32/`.
 
 ## D179 A real Qt app installs and runs: CorePad on Qt 6 Widgets through `eggway`, with EggOS's own EGL and GL libraries that report no display, `wl_output` 4, `xdg_wm_base` 5 and `wp_fractional_scale_v1`; `inotify` in the kernel; `/etc/passwd` and `/etc/group`; CI's `qt-app` job (batch part 27, the Real apps track's eighth step, its first Qt app; D176's "Not yet"; extends D18, D21, D22, D140, D167, D169, D172, D176) — Decided by the build loop (the app, where its pieces come from and what Qt needs at run time decided by research)
 - **Why.** After an SDL game (D172) and a GTK app (D176), Qt is the other toolkit most Linux
@@ -13155,7 +13161,11 @@ the license, by an explicit instruction recorded here.
   `PR_SET_NAME` and `/proc/<pid>/task/<tid>/comm` (Qt and GLib name their threads and ignore
   the failure); users other than `root` (part 62); riscv64 (Alpine `v3.24` has no riscv64
   build pinned); whatever the first CI run finds missing for Qt and CorePad, to be recorded in
-  the roadmap.
+  the roadmap. From #149's CI fix review (CI1): once an archive holds any versioned library,
+  the installer's `find_loader` leaves folders that hold only unversioned `.so` files off the
+  library path, so an app whose `DT_NEEDED` names an unversioned library in such a folder does
+  not load (the rule is in `docs/apps.md`); the catalogue still drops a launch line over 256
+  bytes without saying so.
 
 ## D180 Swift's runtime, first slice: `libswiftCore` in the macOS layer for Swift console programs — native objects and their reference counts, type metadata and value witness tables, `Optional`, existentials, `String` and `Hasher`, `Array` and `Dictionary` storage, mangled type names, the standard library's `description`s, `print` and exclusivity checks; the `macos-swift` program built by Apple's `swiftc` in CI; the real Swift app chosen (batch part 28, its first slice; the Real apps track's ninth step; extends D17, D120, D142, D147, D175) — Decided by the build loop (the app and how the console program is built decided by research)
 
