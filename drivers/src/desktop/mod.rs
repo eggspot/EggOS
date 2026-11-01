@@ -27,6 +27,7 @@ mod launcher;
 pub mod layout;
 mod main_menu;
 mod management;
+mod network;
 mod paint;
 mod panel_focus;
 mod pointer;
@@ -46,6 +47,8 @@ mod keyboard_layout_tests;
 mod main_menu_tests;
 #[cfg(test)]
 mod management_tests;
+#[cfg(test)]
+mod network_tests;
 #[cfg(test)]
 mod panel_keys_tests;
 #[cfg(test)]
@@ -78,6 +81,10 @@ pub use launcher::{
 };
 pub use layout::{IconSide, Layout, layout};
 pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
+pub use network::{
+    CABLE_UNPLUGGED_TOOLTIP, CONNECTED_TOOLTIP_PREFIX, GETTING_ADDRESS_TOOLTIP, NETWORK_GLYPH_SIDE,
+    NO_ADDRESS_TOOLTIP, NetworkState,
+};
 pub use pointer::{CURSOR_SIDE, write_cursor_image};
 pub use responsiveness::{
     APP_STARTING_MS, END_APP_OFFER_MS, END_APP_SIZE, EndAppButton, UNREAD_EVENTS_BUSY_MS,
@@ -283,6 +290,8 @@ pub const STICKY_TOGGLE_WITHIN_MS: u32 = 2000;
 pub enum SettingsPane {
     /// The Keyboard pane, from the keyboard layout indicator's menu (D220).
     Keyboard,
+    /// The Network pane, from the bar's network indicator (D224).
+    Network,
 }
 
 impl SettingsPane {
@@ -290,6 +299,7 @@ impl SettingsPane {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Keyboard => "keyboard",
+            Self::Network => "network",
         }
     }
 }
@@ -383,6 +393,7 @@ pub struct Desktop {
     sticky: sticky_keys::StickyChips,
     panel_focus: Option<panel_focus::PanelFocus>,
     keyboard_layouts: keyboard_layout::KeyboardLayouts,
+    network: network::NetworkIndicator,
     desktops: u8,
     current_desktop: u8,
     responsiveness: responsiveness::Responsiveness,
@@ -478,6 +489,7 @@ impl Desktop {
             sticky: sticky_keys::StickyChips::default(),
             panel_focus: None,
             keyboard_layouts: keyboard_layout::KeyboardLayouts::default(),
+            network: network::NetworkIndicator::default(),
             desktops: 1,
             current_desktop: 0,
             responsiveness: responsiveness::Responsiveness::default(),

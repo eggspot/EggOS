@@ -68,6 +68,22 @@ fn without_an_adapter_only_lo_is_reported() {
         b"IP address       HW type     Flags       HW address            Mask     Device\n"
     );
     assert!(!is_present());
+    assert_eq!(indicated(), None);
     assert!(is_local(Ipv4Address::new(127, 0, 0, 53)));
     assert!(!is_local(Ipv4Address::new(10, 0, 2, 15)));
+}
+
+#[test]
+fn the_indicator_s_word_keeps_each_state_and_the_address() {
+    for state in [
+        NetworkState::CableUnplugged,
+        NetworkState::GettingAddress,
+        NetworkState::NoAddress,
+        NetworkState::Connected([10, 0, 2, 15]),
+        NetworkState::Connected([255, 255, 255, 255]),
+        NetworkState::Connected([0, 0, 0, 0]),
+    ] {
+        assert_eq!(state_of(word_of(state)), Some(state));
+    }
+    assert_eq!(state_of(NO_ADAPTER_WORD), None);
 }

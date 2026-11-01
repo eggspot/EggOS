@@ -88,6 +88,8 @@ pub(super) enum PanelItem {
     Agent,
     /// The keyboard layout indicator, while two or more layouts are chosen (D220).
     KeyboardLayout,
+    /// The network indicator, while the machine has a network adapter (D224).
+    Network,
 }
 
 /// The panels' pointer state: the item under the pointer and since when, the one pressed,
@@ -372,7 +374,8 @@ impl Desktop {
         let leftmost = self
             .sticky_strip()
             .or(self.agent_chip())
-            .or(self.keyboard_layout_indicator());
+            .or(self.keyboard_layout_indicator())
+            .or(self.network_indicator());
         let limit = match leftmost {
             Some(leftmost) => leftmost.x,
             None => self.clock_rect().x,
@@ -414,6 +417,9 @@ impl Desktop {
         }
         if let Some(indicator) = self.keyboard_layout_indicator() {
             item(PanelItem::KeyboardLayout, indicator);
+        }
+        if let Some(indicator) = self.network_indicator() {
+            item(PanelItem::Network, indicator);
         }
         self.for_each_taskbar_item(&mut item);
         self.for_each_dock_item(&mut item);
@@ -671,6 +677,9 @@ impl Desktop {
                 self.open_keyboard_layout_menu(damage);
                 Action::None
             }
+            PanelItem::Network => {
+                self.open_settings_pane(super::SettingsPane::Network, damage, events)
+            }
         }
     }
 
@@ -830,6 +839,7 @@ impl Desktop {
             (PanelItem::System, Profile::Linux) => Some(ACTIVITIES_TOOLTIP),
             (PanelItem::Agent, _) => Some(super::AGENT_TOOLTIP),
             (PanelItem::KeyboardLayout, _) => self.keyboard_layout_tooltip(),
+            (PanelItem::Network, _) => self.network_indicator_name(),
             (PanelItem::Power, Profile::Windows) => Some(POWER_TOOLTIP),
             (PanelItem::DockApp(app), _) => Some(self.catalogue.name(app)),
             (PanelItem::TaskbarWindow(slot) | PanelItem::DockWindow(slot), _) => self
@@ -838,6 +848,21 @@ impl Desktop {
                 .and_then(Option::as_ref)
                 .map(|window| window.title()),
             _ => None,
+        }
+    }
+
+    /// The text of `item`'s tooltip changed: a tooltip of it that shows moves to the place
+    /// the new text takes, the old and new rectangles damaged.
+    pub(super) fn tooltip_text_changed(&mut self, item: PanelItem, damage: &mut Damage) {
+        if self.panels.tooltip != Some(item) {
+            return;
+        }
+        if let Some(rect) = self.panels.tooltip_area.take() {
+            damage.add(rect);
+        }
+        self.panels.tooltip_area = self.tooltip_place();
+        if let Some(rect) = self.panels.tooltip_area {
+            damage.add(rect);
         }
     }
 
@@ -887,7 +912,7 @@ impl Desktop {
         );
     }
 
-    fn item_fill(&self, item: PanelItem, open: bool) -> Option<u32> {
+    pub(super) fn item_fill(&self, item: PanelItem, open: bool) -> Option<u32> {
         if open || self.panels.pressed == Some(item) {
             return Some(colour::BAR_PRESSED);
         }
@@ -995,6 +1020,7 @@ impl Desktop {
         self.draw_agent_chip(canvas, self.agent_chip_hovered());
         self.draw_sticky_chips(canvas);
         self.draw_keyboard_layout_item(canvas);
+        self.draw_network_item(canvas);
         self.draw_power(canvas, bar);
     }
 
@@ -1083,6 +1109,7 @@ impl Desktop {
         self.draw_agent_chip(canvas, self.agent_chip_hovered());
         self.draw_sticky_chips(canvas);
         self.draw_keyboard_layout_item(canvas);
+        self.draw_network_item(canvas);
         self.draw_power(canvas, bar);
     }
 

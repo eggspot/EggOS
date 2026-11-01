@@ -65,13 +65,16 @@ impl Desktop {
     }
 
     /// The chip's rectangle while it shows: left of the top bar's power button, or of the
-    /// taskbar's clock, and left of the keyboard layout indicator while that shows (D220).
+    /// taskbar's clock, and left of the keyboard layout indicator (D220) and the network
+    /// indicator (D224) while they show.
     pub fn agent_chip(&self) -> Option<Rect> {
         if !self.agent.connected {
             return None;
         }
         let width = AGENT_LABEL.len() as u32 * GLYPH_WIDTH as u32 + 2 * CHIP_PADDING;
-        let indicator = self.keyboard_layout_indicator();
+        let indicator = self
+            .keyboard_layout_indicator()
+            .or(self.network_indicator());
         match (self.layout.taskbar, self.layout.top_bar) {
             (Some(bar), _) => Some(Rect::new(
                 match indicator {

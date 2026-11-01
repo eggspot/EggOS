@@ -721,6 +721,7 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
         desktop.set_unread_since(client.id(), client.unread_since(), damage);
     }
     desktop.set_agent_connected(AGENT_CONNECTED.load(Ordering::Relaxed), damage);
+    desktop.set_network(crate::net::indicated(), damage);
     let (latched, locked) = input::sticky_modifiers();
     desktop.set_latched(latched, locked, damage);
     show_keyboard_layouts(desktop, damage);
@@ -924,6 +925,12 @@ fn show_keyboard_layouts(desktop: &mut Desktop, damage: &mut Damage) {
 /// at once.
 pub fn keyboard_layouts_changed<P: Platform>() {
     with_windows::<P, _>(|desktop, _, damage, _| show_keyboard_layouts(desktop, damage));
+}
+
+/// The network adapter's state changed (D224): the next frame shows it on the bar's network
+/// indicator ([`crate::net::indicated`]).
+pub fn network_changed<P: Platform>() {
+    request_render::<P>();
 }
 
 fn open_settings_pane<P: Platform>(pane: eggos_drivers::desktop::SettingsPane) {

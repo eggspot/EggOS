@@ -31,6 +31,7 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
+use eggos_drivers::desktop::NetworkState;
 use eggos_hal::Platform;
 use eggos_net::ethernet::{MAX_FRAME_BYTES, MacAddress};
 use eggos_net::interface::{Counters, Datagram, Delivery, Interface, SendError};
@@ -87,6 +88,16 @@ static LOOPBACK_PACKETS: AtomicU64 = AtomicU64::new(0);
 
 static LOOPBACK_BYTES: AtomicU64 = AtomicU64::new(0);
 
+static INDICATED: AtomicU64 = AtomicU64::new(NO_ADAPTER_WORD);
+
+const NO_ADAPTER_WORD: u64 = 0;
+const CABLE_UNPLUGGED_WORD: u64 = 1;
+const GETTING_ADDRESS_WORD: u64 = 2;
+const NO_ADDRESS_WORD: u64 = 3;
+const CONNECTED_WORD: u64 = 4;
+const STATE_BITS: u64 = 0xff;
+const ADDRESS_SHIFT: u32 = 8;
+
 /// Lends the stack `device`, the first adapter; gives it back when there already is one.
 pub fn install(device: Box<dyn NetDevice>) -> Result<(), Box<dyn NetDevice>> {
     if is_present() {
@@ -137,11 +148,14 @@ pub fn start<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     let link_up = device.is_link_up();
     let mut interface = Interface::new(mac, device.mtu(), u64::from_ne_bytes(seed));
     interface.set_link(link_up, now_ms::<P>());
+    let indicated = word_of(indicator_state(&interface));
     *ADAPTER.lock() = Some(Box::new(Adapter {
         device,
         interface,
         frame: [0; MAX_FRAME_BYTES],
     }));
+    INDICATED.store(indicated, Ordering::Relaxed);
+    crate::terminal::network_changed::<P>();
     resolv_conf::mount();
     let state = match link_up {
         true => "asking for an address by DHCP",
@@ -200,7 +214,7 @@ pub fn poll<P: Platform>() -> bool {
     let now = now_ms::<P>();
     let mut delivered = false;
     let mut moved = false;
-    {
+    let indicated = {
         let mut adapter = ADAPTER.lock();
         let Some(adapter) = adapter.as_mut() else {
             return false;
@@ -229,6 +243,10 @@ pub fn poll<P: Platform>() -> bool {
         interface.poll(now, &mut |bytes| {
             let _ = device.transmit(bytes);
         });
+        word_of(indicator_state(interface))
+    };
+    if INDICATED.swap(indicated, Ordering::Relaxed) != indicated {
+        crate::terminal::network_changed::<P>();
     }
     tcp::run::<P>();
     if moved {
@@ -249,6 +267,45 @@ fn deliver<P: Platform>(delivery: Delivery<'_>, link_mss: u16) -> bool {
         } => tcp::deliver::<P>(source, destination, &segment, link_mss),
         other => endpoints::deliver(other),
     }
+}
+
+fn indicator_state(interface: &Interface) -> NetworkState {
+    match (interface.is_link_up(), interface.dhcp(), interface.address()) {
+        (false, _, _) => NetworkState::CableUnplugged,
+        (true, _, Some(address)) => NetworkState::Connected(address.0),
+        (true, Dhcp::NoAddress, None) => NetworkState::NoAddress,
+        (true, _, None) => NetworkState::GettingAddress,
+    }
+}
+
+fn word_of(state: NetworkState) -> u64 {
+    match state {
+        NetworkState::CableUnplugged => CABLE_UNPLUGGED_WORD,
+        NetworkState::GettingAddress => GETTING_ADDRESS_WORD,
+        NetworkState::NoAddress => NO_ADDRESS_WORD,
+        NetworkState::Connected(address) => {
+            CONNECTED_WORD | (u64::from(u32::from_be_bytes(address)) << ADDRESS_SHIFT)
+        }
+    }
+}
+
+fn state_of(word: u64) -> Option<NetworkState> {
+    match word & STATE_BITS {
+        CABLE_UNPLUGGED_WORD => Some(NetworkState::CableUnplugged),
+        GETTING_ADDRESS_WORD => Some(NetworkState::GettingAddress),
+        NO_ADDRESS_WORD => Some(NetworkState::NoAddress),
+        CONNECTED_WORD => Some(NetworkState::Connected(
+            ((word >> ADDRESS_SHIFT) as u32).to_be_bytes(),
+        )),
+        _ => None,
+    }
+}
+
+/// What the desktop's network indicator shows (docs/ux/network-v0.3.md section 4, D224): the
+/// adapter's state as the network's thread last saw it, `None` without an adapter. Each change
+/// asks the desktop to draw again ([`crate::terminal::network_changed`]).
+pub fn indicated() -> Option<NetworkState> {
+    state_of(INDICATED.load(Ordering::Relaxed))
 }
 
 /// The largest TCP segment the adapter's link carries; [`tcp::MSS`] without an adapter.

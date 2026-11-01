@@ -107,8 +107,8 @@ impl Desktop {
     }
 
     /// The strip the chips or the notice fill, while any shows: its right edge 8 px left of
-    /// the Agent chip, the keyboard layout indicator or the top bar's power button, or 16 px
-    /// left of the taskbar's clock.
+    /// the Agent chip, the keyboard layout indicator, the network indicator or the top bar's
+    /// power button, or 16 px left of the taskbar's clock.
     pub fn sticky_strip(&self) -> Option<Rect> {
         let width = match self.sticky_keys_notice() {
             Some(notice) => chip_width(notice),
@@ -127,7 +127,10 @@ impl Desktop {
     }
 
     fn sticky_strip_of(&self, width: u32) -> Option<Rect> {
-        let neighbour = self.agent_chip().or(self.keyboard_layout_indicator());
+        let neighbour = self
+            .agent_chip()
+            .or(self.keyboard_layout_indicator())
+            .or(self.network_indicator());
         let (right, y) = match (self.layout.taskbar, self.layout.top_bar) {
             (Some(bar), _) => (
                 match neighbour {

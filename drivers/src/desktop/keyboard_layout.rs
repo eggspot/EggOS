@@ -170,15 +170,18 @@ impl Desktop {
         }
     }
 
-    /// The indicator's hit target while two or more layouts are chosen: 28 px square left of
-    /// the top bar's power button, or a taskbar item 8 px left of the taskbar's clock.
+    /// The indicator's hit target while two or more layouts are chosen: 28 px square directly
+    /// left of the top bar's network indicator or power button, or a taskbar item 8 px left of
+    /// the taskbar's network indicator or clock.
     pub fn keyboard_layout_indicator(&self) -> Option<Rect> {
         if !self.keyboard_layouts.shown() {
             return None;
         }
+        let network = self.network_indicator();
         match (self.layout.taskbar, self.layout.top_bar) {
             (Some(bar), _) => Some(Rect::new(
-                self.clock_rect()
+                network
+                    .unwrap_or(self.clock_rect())
                     .x
                     .checked_sub(INDICATOR_BEFORE_CLOCK + TASKBAR_ITEM)?,
                 bar.y,
@@ -186,7 +189,10 @@ impl Desktop {
                 TASKBAR_ITEM,
             )),
             (None, Some(bar)) => Some(Rect::new(
-                self.power_button().x.checked_sub(bar.height)?,
+                network
+                    .unwrap_or(self.power_button())
+                    .x
+                    .checked_sub(bar.height)?,
                 bar.y,
                 bar.height,
                 bar.height,
