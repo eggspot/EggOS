@@ -1186,18 +1186,20 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::agent_network::check(arch, &kernel)?;
     qemu::https::check(arch, &kernel)?;
     qemu::run_scripts::check(arch, &kernel)?;
+    let layered = build_kernel_with_layers(arch)?;
     if let Some(folder) = build_macos_gui_folder(arch)? {
-        qemu::macos_gui::check(arch, &kernel, &folder)?;
+        qemu::macos_gui::check(arch, &layered, &folder)?;
     }
     let install_folder = build_install_folder(arch)?;
     qemu::install::check(arch, &kernel, &install_folder)?;
-    qemu::files::check(arch, &build_kernel_with_layers(arch)?, &install_folder)?;
+    qemu::components::check(arch, &kernel, &install_folder)?;
+    qemu::files::check(arch, &layered, &install_folder)?;
     let linux_gui_program = build_linux_test_program(arch, LINUX_GUI_PACKAGE, "static")?;
     let (program, _) = WIN_CONTROLS;
     let controls_program = build_windows_gui_program(program, windows_target(arch.name))?;
     qemu::mcp::check(
         arch,
-        &kernel,
+        &layered,
         &install_folder,
         std::path::Path::new(&linux_gui_program),
         std::path::Path::new(&controls_program),

@@ -1,14 +1,16 @@
 //! The install boot test (D134): two boots of the release image `cargo xtask release` ships,
-//! which carries the Windows layer (D152), on a blank disk, with a host folder holding
+//! whose base links to the Windows layer's component (D237), on a blank disk, with the component
+//! store attached and a host folder holding
 //! `win-paint.exe` (our own Windows GUI program) and our static Linux program, each frame of the second boot compared with the desktop the host
 //! renders from the same input, and the disk image read back with `eggos-eggfs` after each.
 //!
-//! 1. `app install /media/host/win-paint.exe` installs it into `/Applications/win-paint/`
+//! 1. `component install windows-apps` installs the Windows layer from the store, then
+//!    `app install /media/host/win-paint.exe` installs it into `/Applications/win-paint/`
 //!    (on riscv64, where the Windows layer does not run, it is refused with the reason and the
 //!    Linux program is installed instead); `app list` lists it; installing it again is refused;
 //!    the machine powers off, and the image holds the program and its manifest, and no
 //!    temporary manifest.
-//! 2. The same disk boots again: the desktop shows the app's icon and the launcher its row
+//! 2. The same disk boots again, the layer still installed on it: the desktop shows the app's icon and the launcher its row
 //!    beside `Install from host share...`; a double-click on the icon opens it through its
 //!    layer, so win-paint's window appears (the Linux program runs in the terminal), and its
 //!    close control closes it; the icon's menu's `Uninstall...` opens the installer's window,
@@ -22,6 +24,7 @@ use super::windows_gui::scene_content;
 use super::*;
 use eggos_app::dialog::{self as installer_window, AppIcon, Dialog};
 use eggos_app_manifest::{self as manifest, Manifest, Source};
+use eggos_components::index::Component;
 use eggos_drivers::desktop::{Action, AppId, Catalogue, Profile};
 use eggos_drivers::input::button;
 use eggos_eggfs::memory::MemoryDisk;
@@ -37,6 +40,7 @@ const ROLE_NORMAL: u32 = 0;
 const POWER_OFF: &[u8] = b"poweroff\r";
 const LISTED_LINE: &str = "EGGOS-APP listed 0";
 const LINUX_PROGRAM_LAST_LINE: &str = "LINUX-STATIC stderr";
+const WINDOWS_APPS: &str = "windows-apps";
 
 /// The Windows program the host folder holds.
 pub const WINDOWS_PROGRAM: &str = "win-paint.exe";
@@ -99,6 +103,9 @@ fn catalogue(arch: &Arch, app: Option<&TestApp>) -> Catalogue {
 
 fn first_session(app: &TestApp) -> Vec<String> {
     let mut lines = Vec::new();
+    if app.source == Source::Windows {
+        lines.push(super::components::install_line(WINDOWS_APPS, "layer"));
+    }
     if app.source != Source::Windows {
         lines.push(format!(
             "app install /media/host/{WINDOWS_PROGRAM}; echo EGGOS-APP refused $?\r"
@@ -117,8 +124,11 @@ fn first_session(app: &TestApp) -> Vec<String> {
     lines
 }
 
-fn first_output(arch: &Arch, app: &TestApp) -> Vec<String> {
+fn first_output(arch: &Arch, app: &TestApp, layer: Option<&Component>) -> Vec<String> {
     let mut lines = Vec::new();
+    if let Some(layer) = layer {
+        lines.extend(super::components::installed_output(layer, "layer"));
+    }
     if app.source != Source::Windows {
         lines.push(format!(
             "app: EggOS cannot run {WINDOWS_PROGRAM} on {}: the Windows layer runs on x86_64 \
@@ -276,7 +286,13 @@ fn check_lines_in_order(arch: &Arch, console: &str, wanted: &[String]) -> Result
     Ok(())
 }
 
-fn install_boot(arch: &Arch, kernel: &Path, args: &[String], app: &TestApp) -> Result<(), String> {
+fn install_boot(
+    arch: &Arch,
+    kernel: &Path,
+    args: &[String],
+    app: &TestApp,
+    layer: Option<&Component>,
+) -> Result<(), String> {
     let mut boot = Boot::start(arch, kernel, args)?;
     let session = first_session(app);
     let session: Vec<&[u8]> = session.iter().map(|line| line.as_bytes()).collect();
@@ -284,7 +300,7 @@ fn install_boot(arch: &Arch, kernel: &Path, args: &[String], app: &TestApp) -> R
         boot.type_next(&session)?;
     }
     let (console, clean_exit) = boot.finish()?;
-    check_lines_in_order(arch, &console, &first_output(arch, app))?;
+    check_lines_in_order(arch, &console, &first_output(arch, app, layer))?;
     match clean_exit {
         true => Ok(()),
         false => Err(format!(
@@ -555,8 +571,8 @@ fn open_and_uninstall_boot(
 }
 
 /// Runs the install boot test (see the module documentation) on `kernel`, the release image
-/// for `arch` (with the Windows layer where it runs, D152), with `folder` (the host folder
-/// holding [`WINDOWS_PROGRAM`] and [`LINUX_PROGRAM`]) attached.
+/// for `arch`, with the component store and `folder` (the host folder holding
+/// [`WINDOWS_PROGRAM`] and [`LINUX_PROGRAM`]) attached.
 pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     let app = test_app(arch);
     let directory = crate::target_directory().join("qemu-disks");
@@ -565,7 +581,13 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     reset_disk_image(&image, TEST_DISK_BYTES)?;
     let mut args = disk_args(arch, &image.to_string_lossy());
     args.extend(host_folder_args(arch, &folder.to_string_lossy()));
-    install_boot(arch, kernel, &args, &app)?;
+    let store = super::components::StoreDisk::build(arch)?;
+    args.extend(store.args(arch));
+    let layer = match app.source {
+        Source::Windows => Some(store.component(WINDOWS_APPS)?),
+        _ => None,
+    };
+    install_boot(arch, kernel, &args, &app, layer)?;
     check_installed_on_the_image(arch, &image, folder, &app)?;
     open_and_uninstall_boot(arch, kernel, &args, &app)?;
     check_nothing_left_on_the_image(arch, &image)?;
@@ -592,8 +614,9 @@ mod tests {
         assert!(catalogue.installed_named("win-paint").is_some());
         assert!(catalogue.host_share());
         let session = first_session(&app);
-        assert_eq!(session.len(), 4);
-        assert!(first_output(arch, &app)[0].starts_with("Installed win-paint in"));
+        assert_eq!(session.len(), 5);
+        assert!(session[0].starts_with("component install windows-apps;"));
+        assert!(first_output(arch, &app, None)[0].starts_with("Installed win-paint in"));
         let riscv = crate::ARCHES
             .iter()
             .find(|arch| arch.name == "riscv64")
