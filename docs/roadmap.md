@@ -102,7 +102,8 @@ Must-have, in order:
     the status queue; the boot-to-prompt test types `é` with the German layout's dead acute
     through QMP and checks the frame. Since D220 (batch part 3): 20 layouts (`us-mac`, `be`,
     `ca`, `ch`, `pt`, `latam` added), up to four at once (`keyboard.layouts`) with a switch key
-    (`keyboard.switch_key`) in the kernel and the desktop's hint, the layout applied without a
+    (`keyboard.switch_key`) in the kernel, the desktop's hint and the bar's layout indicator
+    with its menu, the dead-key highlight in the toolkit's text fields, the layout applied without a
     display through `/proc/sys/eggos/keyboard_layout`, Num and Scroll Lock with their lights,
     Egg Mono's Latin Extended-A, the launcher's and Settings' accent-insensitive search, and the
     Windows layer's `ToUnicodeEx`, `VkKeyScanExW` and `MapVirtualKeyW` for the layout in force.

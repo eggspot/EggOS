@@ -420,10 +420,16 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   written as they are, control characters included.
   An MCP tool whose command fails (rather than being refused) still returns that command's
   text error without a code: the twins run in text mode.
-- Keyboard layouts (D185, D220): 20 of them, up to four at once with a switch key; the bar
-  shows no layout indicator or menu yet (the switch key's hint says the new layout), and the
-  dead-key highlight is not drawn: a pending accent shows nothing. Wayland apps get the US
-  keymap whatever the layout. The Windows layer's `ToUnicodeEx`, `VkKeyScanExW` and
+- Keyboard layouts (D185, D220): 20 of them, up to four at once with a switch key. The bar's
+  layout indicator and its menu are drawn at scale 1 only (the desktop has no 2x panels yet),
+  have no element tree for agents (`wm show` lists windows, not the bar; agents use
+  `settings_set keyboard.layout`), and a layout chosen in the menu or with the switch key is
+  not saved to the settings file, so the next boot starts in the saved one. `Keyboard
+  settings...` focuses an open Settings window on the pane it shows. The dead-key highlight is
+  drawn in the toolkit's text fields and text areas only: the console's and the Terminal app's
+  grids, the Text Editor's own view, Windows edit controls, AppKit fields and Wayland apps show
+  nothing while an accent waits, and in a text area the highlight moves the rest of its line
+  right without wrapping it again. Wayland apps get the US keymap whatever the layout. The Windows layer's `ToUnicodeEx`, `VkKeyScanExW` and
   `MapVirtualKeyW` follow the layout in force, but `GetKeyboardLayout` still names US English,
   keys keep the US virtual-key codes of their places (German `Z` is `VK_Y`), and
   `GetKeyState(VK_NUMLOCK)` does not know Num Lock's state at power-on. Caps Lock never shifts

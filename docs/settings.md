@@ -118,6 +118,7 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | Command | Does | Status |
 |---------|------|--------|
 | `settings` | Opens the window and serves it until it is closed. | 0; 1 without a display |
+| `settings --pane <pane>` | Opens the window on that pane: its name in lower case with `-` for spaces and `and` for `&` (`keyboard`, `date-and-time`); what the bar's keyboard layout menu's `Keyboard settings...` starts (D220). | 0; 1 without a display; 2 for an unknown pane |
 | `settings list` | Writes every setting as `key=value`, one per line. | 0 |
 | `settings get <key>` | Writes the setting's value. | 0; 1 for an unknown key |
 | `settings set [--dry-run] <key> <value>` | Sets it: saved in the settings file, then applied at once on the display (with no display it applies at the next boot). `--dry-run` checks the key and the value and says `would set <key> from <old> to <new>`, changing nothing (D164). | 0; 1 for an unknown or read-only key, or when saving or applying failed (`settings: <key>: <why>`); 2 for an invalid value or a bad command |
@@ -130,7 +131,7 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | `display.resolution` | the screen's size, `1280x800` | no |
 | `display.pointer` | `software` | no |
 | `keyboard.layout` | `us` (the default), `us-intl`, `us-mac`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `be`, `ca`, `de`, `ch`, `it`, `no`, `br`, `pt`, `es`, `latam` or `se` (D185, D220, the Keyboard pane, docs/ux/keyboard-v0.3.md); a layout not in `keyboard.layouts` joins it (or takes the place of the one in force in a full set) | yes |
-| `keyboard.layouts` | one to four layouts, in order, separated by commas without spaces (`us,de`), none twice; `us` by default; the layouts the switch key cycles through (D220) | yes |
+| `keyboard.layouts` | one to four layouts, in order, separated by commas without spaces (`us,de`), none twice; `us` by default; the layouts the switch key cycles through (D220); with two or more, the bar shows the layout in force's code, whose menu chooses among them | yes |
 | `keyboard.switch_key` | `profile` (the default: Super+Space in the Windows and Linux profiles, Ctrl+Space in the macOS profile), `super+space`, `ctrl+space`, `alt+shift`, `ctrl+shift` or `none` (D220) | yes |
 | `time.zone` | `UTC` (the default) or any IANA zone such as `Europe/Paris`, `America/New_York` or `Asia/Kolkata` (D194); `date`, `ls -l` and the Windows and macOS layers show times in it unless `TZ` names another; the Date & time pane's picker chooses it, and its `Set to` reads local time | yes |
 | `mouse.buttons` | `right` (the default) or `left`, which swaps the primary and secondary buttons (D195; the Mouse pane, with `mouse.scrolling` and `mouse.speed`); used from the next event | yes |
