@@ -10,6 +10,9 @@
 //! `+crt-static` and their default relocation model, and a static executable at a fixed
 //! address with `relocation-model=static`; each build is checked to be the kind it should be
 //! before it is booted, since a linker without static PIE support quietly makes the other.
+//! The static PIE also hands the linker static PIE's flags itself (`-static -pie
+//! --no-dynamic-linker -z text`): GCC 13's RISC-V driver turns `-static-pie` into none of
+//! them, so it linked against `libc.so` with an interpreter.
 
 use crate::dynamic_linking::{Glibc, glibc};
 use crate::qemu::static_glibc::{PIE_PROGRAM_PATH, STATIC_PROGRAM_PATH};
@@ -36,6 +39,13 @@ impl Linkage {
         }
     }
 
+    fn linker_flags(self) -> &'static [&'static str] {
+        match self {
+            Self::Executable => &[],
+            Self::PositionIndependent => &STATIC_PIE_LINKER_FLAGS,
+        }
+    }
+
     fn start_file(self) -> &'static str {
         match self {
             Self::Executable => "crt1.o",
@@ -59,6 +69,11 @@ impl Linkage {
 }
 
 const LINKAGES: [Linkage; 2] = [Linkage::Executable, Linkage::PositionIndependent];
+
+const STATIC_PIE_LINKER_FLAGS: [&str; 2] = [
+    "-C",
+    "link-arg=-Wl,-static,-pie,--no-dynamic-linker,-z,text",
+];
 
 /// Builds both programs for `arch`, the release image with them, and boots it.
 pub fn check(arch: &Arch) -> Result<(), String> {
@@ -115,6 +130,10 @@ fn build(arch: &Arch, glibc: &Glibc, linkage: Linkage) -> Result<PathBuf, String
         "-C",
         "strip=symbols",
     ]
+    .iter()
+    .chain(linkage.linker_flags())
+    .copied()
+    .collect::<Vec<_>>()
     .join("\x1f");
     let target_dir = crate::target_directory()
         .join("static-glibc")

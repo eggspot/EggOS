@@ -14268,7 +14268,11 @@ the license, by an explicit instruction recorded here.
   installing `libc6-dev` and the cross compilers, and on riscv64 Debian 13's cross glibc 2.41
   (`libc6-riscv64-cross` and `libc6-dev-riscv64-cross` from snapshot.debian.org, checked by
   SHA-256), since Ubuntu 24.04's 2.39 ships no `rcrt1.o` for RISC-V (CI run 41257084643).
-  glibc is test data, never shipped.
+  The static PIE build passes the linker static PIE's flags itself (`-Wl,-static,-pie,
+  --no-dynamic-linker,-z,text`): GCC 13's RISC-V driver turns `-static-pie` into none of them
+  (no `-static`, a `-dynamic-linker`), so it linked against `libc.so` with an interpreter (CI
+  run 41264952268); the other drivers already pass the same flags. glibc is test data, never
+  shipped.
 - **Front-ends (D22).** The ABI only: a program runs from `eggsh`, MCP `run` and as an
   installed app as any Linux program does; no new capability.
 - **Cost (D24, D78).** Not measured (no builds in this batch). One more string and auxiliary
