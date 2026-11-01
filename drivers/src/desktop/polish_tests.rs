@@ -228,7 +228,7 @@ fn working_takes_the_arrow_s_place_until_the_window_maps_the_app_ends_or_5_s_pas
     tick(&mut desktop, 10_000);
     desktop.launch(AppId::Settings, &mut damage, &mut DiscardEvents);
     tick(&mut desktop, 13_000);
-    desktop.launch(AppId::TaskManager, &mut damage, &mut DiscardEvents);
+    desktop.launch(AppId::Settings, &mut damage, &mut DiscardEvents);
     tick(&mut desktop, 17_999);
     assert_eq!(shape(&desktop), PointerShape::Working, "the second start restarts it");
     tick(&mut desktop, 18_000);
@@ -240,7 +240,7 @@ fn working_takes_the_arrow_s_place_until_the_window_maps_the_app_ends_or_5_s_pas
     desktop.pointer_moved(5, 400, &mut damage, &mut DiscardEvents);
     assert_eq!(shape(&desktop), PointerShape::Arrow, "the first window mapped");
     tick(&mut desktop, 30_000);
-    desktop.launch(AppId::TaskManager, &mut damage, &mut DiscardEvents);
+    desktop.launch(AppId::Settings, &mut damage, &mut DiscardEvents);
     assert!(desktop.is_app_starting());
     desktop.started_app_ended(&mut damage);
     assert_eq!(shape(&desktop), PointerShape::Arrow, "its process ended");

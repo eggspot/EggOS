@@ -596,7 +596,7 @@ mod tests {
         output.use_json();
         let status = refused(&mut output, b"129", NOT_RESPONDING_ERRNO);
         assert_eq!(status, BUSY_STATUS);
-        output.finish(status);
+        let _ = output.finish(status);
         assert!(
             output.system.errors().contains("\"code\":\"not_responding\""),
             "{}",
