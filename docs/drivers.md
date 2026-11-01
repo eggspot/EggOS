@@ -137,7 +137,8 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
 - **virtio-rng.** One request queue of 8 entries and a 1 KiB request buffer in one 4 KiB
   region; `devices::virtio::read_random` fills a buffer, sleeping until the device interrupts
   (D219) or polling, until a deadline. At boot, right after probing, `seed_random` hashes 32
-  bytes from it into the kernel's generator, credited fully as Linux credits virtio-rng, and
+  bytes from it into the kernel's generator, credited 8 bits a byte only for a whole read
+  that is not all zeros (a short or all-zero read is hashed in uncredited), and
   reseeds it (`random::reseed_from_device`; the boot log says `random: reseeded from
   virtio-rng`).
 - **Interrupting drivers** (D219): virtio-input, virtio-blk, the agent channel's console,
