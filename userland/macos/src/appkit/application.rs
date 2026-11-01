@@ -381,21 +381,50 @@ pub fn read_records(handle: &mut dyn FnMut(&[u8; RECORD_SIZE])) {
     }
 }
 
+/// Runs `work`, reporting an exception that reaches it with `-[NSApplication
+/// reportException:]` and carrying on, as AppKit's run loop does on macOS (D233).
+pub fn reporting_exceptions(work: &mut dyn FnMut()) {
+    let Some(caught) = crate::objc::exception::catching(work) else {
+        return;
+    };
+    let exception = caught.finish();
+    if exception.is_null() {
+        return;
+    }
+    match application() {
+        app if app.is_null() => report(exception),
+        app => {
+            send1(app, sel!("reportException:"), exception as usize);
+        }
+    }
+}
+
+fn report(exception: Id) {
+    let description = send(exception, sel!("description"));
+    foundation::with_utf8(description, foundation::log_message);
+}
+
+extern "C" fn report_exception(_: Id, _: Sel, exception: Id) {
+    if !exception.is_null() {
+        report(exception);
+    }
+}
+
 fn run() {
-    finish_launching();
+    reporting_exceptions(&mut finish_launching);
     RUNNING.store(true, Ordering::Release);
     while RUNNING.load(Ordering::Acquire) {
         let pool = autorelease::push();
         menu::send_if_changed();
-        display_all();
+        reporting_exceptions(&mut display_all);
         let waiting = match foundation::next_due_in_ms() {
             Some(due) => server::wait_for_events(due),
             None => true,
         };
         if waiting {
-            read_records(&mut |record| dispatch(record));
+            read_records(&mut |record| reporting_exceptions(&mut || dispatch(record)));
         }
-        foundation::fire_due();
+        reporting_exceptions(&mut foundation::fire_due);
         autorelease::pop(pool);
     }
 }
@@ -591,6 +620,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "windows" => windows,
         "sendAction:to:from:" => send_action_method,
         "sendEvent:" => send_event,
+        "reportException:" => report_exception,
         "isRunning" => is_running,
         "orderFrontStandardAboutPanel:" => order_front_about_panel,
         "orderFrontStandardAboutPanelWithOptions:" => order_front_about_panel_with_options,

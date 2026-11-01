@@ -1,19 +1,26 @@
-//! Objective-C exceptions (D175): `@throw`, `-[NSException raise]`, `@catch`, `@finally` and
-//! `objc_exception_rethrow`, unwound as Apple's runtime does, in two phases over the program's
-//! frames. A throw saves the caller's callee-saved registers in an assembly stub; the search
-//! phase steps from frame to frame with the image's compact unwind information
-//! ([`unwind_info`]) and asks each frame's LSDA ([`lsda`]) whether a `@catch` takes the object;
-//! the cleanup phase walks the same frames again and jumps to each cleanup's landing pad
-//! (`@finally`, ARC releases) until the handler's, whose pad gets the selector of the catch
-//! that matched. A frame outside the program's image (the layer's own code) or one only DWARF
-//! describes ends the search: the exception is uncaught, and the program ends with its name and
-//! reason, as on macOS.
+//! Objective-C exceptions (D175, D233): `@throw`, `-[NSException raise]`, `@catch`, `@finally`
+//! and `objc_exception_rethrow`, unwound as Apple's runtime does, in two phases. A throw saves
+//! the caller's callee-saved registers in an assembly stub; the search phase steps from frame to
+//! frame with each loaded image's compact unwind information ([`unwind_info`]), or its DWARF
+//! `__eh_frame` entries for the functions the compact table defers to ([`unwind_dwarf`]), and
+//! asks each frame's LSDA ([`lsda`]) whether a `@catch` takes the exception; the cleanup phase
+//! walks the same frames again and jumps to each cleanup's landing pad (`@finally`, ARC
+//! releases) until the handler's, whose pad gets the selector of the catch that matched.
+//!
+//! The layer's own frames have no unwind tables; boundaries stand in for them. A method that
+//! may raise or call back into the program is entered through a guard stub (`guard!`) that
+//! records the program's registers at the call: an exception raised inside it
+//! ([`raise_in_layer`]), or thrown by the program's code it called, carries on from the
+//! program's frame as if the call had thrown. AppKit runs each event, timer and drawing pass
+//! inside [`catching`], whose boundary takes whatever reaches it, as AppKit's run loop does on
+//! macOS. An exception nothing takes ends the program with its name and reason.
 
 use super::abi::{ClassObject, Id};
 use super::lsda::{self, Found};
 use super::reference_count::{objc_autorelease, objc_retain};
 use super::root;
-use super::unwind_info::{self, FunctionInfo};
+use super::unwind_dwarf::{self, Fde};
+use super::unwind_info;
 use crate::libsystem::{heap, thread};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -23,21 +30,122 @@ pub use super::unwind_info::Arm64Registers as Registers;
 pub use super::unwind_info::X86_64Registers as Registers;
 
 const MAX_FRAMES: usize = 4096;
+const MAX_IMAGES: usize = 64;
 const STACK_WINDOW: u64 = 256 << 20;
+const CATCH: usize = 1;
 
-static IMAGE_START: AtomicUsize = AtomicUsize::new(0);
-static IMAGE_END: AtomicUsize = AtomicUsize::new(0);
-static UNWIND_INFO: AtomicUsize = AtomicUsize::new(0);
-static UNWIND_INFO_SIZE: AtomicUsize = AtomicUsize::new(0);
+/// Where the thread control block keeps its innermost boundary, for the assembly stubs.
+pub const BOUNDARIES: usize = core::mem::offset_of!(thread::Thread, exception_boundaries);
+
+struct ImageSlot {
+    start: AtomicUsize,
+    end: AtomicUsize,
+    unwind_info: AtomicUsize,
+    unwind_info_size: AtomicUsize,
+    eh_frame: AtomicUsize,
+    eh_frame_size: AtomicUsize,
+}
+
+impl ImageSlot {
+    const fn new() -> Self {
+        Self {
+            start: AtomicUsize::new(0),
+            end: AtomicUsize::new(0),
+            unwind_info: AtomicUsize::new(0),
+            unwind_info_size: AtomicUsize::new(0),
+            eh_frame: AtomicUsize::new(0),
+            eh_frame_size: AtomicUsize::new(0),
+        }
+    }
+}
+
+static IMAGES: [ImageSlot; MAX_IMAGES] = [const { ImageSlot::new() }; MAX_IMAGES];
+static IMAGES_CLAIMED: AtomicUsize = AtomicUsize::new(0);
+static IMAGES_READY: AtomicUsize = AtomicUsize::new(0);
 static UNCAUGHT_HANDLER: AtomicUsize = AtomicUsize::new(0);
 
-/// Records where the program's image is and its `__unwind_info` section (slid), if it has one.
-pub fn set_image(start: usize, size: usize, unwind_info: Option<(usize, usize)>) {
-    IMAGE_START.store(start, Ordering::Relaxed);
-    IMAGE_END.store(start.saturating_add(size), Ordering::Relaxed);
-    let (address, length) = unwind_info.unwrap_or((0, 0));
-    UNWIND_INFO.store(address, Ordering::Relaxed);
-    UNWIND_INFO_SIZE.store(length, Ordering::Release);
+#[derive(Debug, Clone, Copy)]
+struct Image {
+    start: u64,
+    end: u64,
+    unwind_info: (usize, usize),
+    eh_frame: (usize, usize),
+}
+
+impl Image {
+    fn of(slot: &ImageSlot) -> Self {
+        Self {
+            start: slot.start.load(Ordering::Relaxed) as u64,
+            end: slot.end.load(Ordering::Relaxed) as u64,
+            unwind_info: (
+                slot.unwind_info.load(Ordering::Relaxed),
+                slot.unwind_info_size.load(Ordering::Relaxed),
+            ),
+            eh_frame: (
+                slot.eh_frame.load(Ordering::Relaxed),
+                slot.eh_frame_size.load(Ordering::Relaxed),
+            ),
+        }
+    }
+
+    fn holds(&self, address: u64, length: u64) -> bool {
+        address >= self.start
+            && address
+                .checked_add(length)
+                .is_some_and(|last| last <= self.end)
+    }
+}
+
+fn section((address, size): (usize, usize)) -> Option<&'static [u8]> {
+    if address == 0 || size == 0 {
+        return None;
+    }
+    // SAFETY: a section of a loaded image, checked inside a mapped segment by the loader,
+    // which nothing writes and which stays mapped while the program runs.
+    Some(unsafe { core::slice::from_raw_parts(address as *const u8, size) })
+}
+
+/// Records a loaded image (the program, or a framework it links) where it is mapped, with its
+/// `__unwind_info` and `__eh_frame` sections (slid), so exceptions unwind through its frames;
+/// `false` when the table of images is full.
+pub fn add_image(
+    start: usize,
+    size: usize,
+    unwind_info: Option<(usize, usize)>,
+    eh_frame: Option<(usize, usize)>,
+) -> bool {
+    let index = IMAGES_CLAIMED.fetch_add(1, Ordering::AcqRel);
+    let Some(slot) = IMAGES.get(index) else {
+        return false;
+    };
+    let (info, info_size) = unwind_info.unwrap_or((0, 0));
+    let (frames, frames_size) = eh_frame.unwrap_or((0, 0));
+    slot.start.store(start, Ordering::Relaxed);
+    slot.end.store(start.saturating_add(size), Ordering::Relaxed);
+    slot.unwind_info.store(info, Ordering::Relaxed);
+    slot.unwind_info_size.store(info_size, Ordering::Relaxed);
+    slot.eh_frame.store(frames, Ordering::Relaxed);
+    slot.eh_frame_size.store(frames_size, Ordering::Relaxed);
+    while IMAGES_READY
+        .compare_exchange_weak(index, index + 1, Ordering::Release, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    true
+}
+
+fn image_of(address: u64, length: u64) -> Option<Image> {
+    let ready = IMAGES_READY.load(Ordering::Acquire).min(MAX_IMAGES);
+    IMAGES[..ready]
+        .iter()
+        .map(Image::of)
+        .find(|image| image.holds(address, length))
+}
+
+/// Whether `length` bytes at `address` lie inside a loaded image.
+pub fn in_image(address: u64, length: u64) -> bool {
+    image_of(address, length).is_some()
 }
 
 /// Sets the function called with an exception nothing catches, returning the previous one
@@ -51,14 +159,40 @@ pub fn uncaught_handler() -> usize {
     UNCAUGHT_HANDLER.load(Ordering::Acquire)
 }
 
+/// An exception on its way: what was thrown, the handler the search phase found, and the
+/// chain of exceptions the thread's catches are handling.
 #[repr(C)]
 #[derive(Debug)]
-struct Raised {
+pub struct Raised {
     object: Id,
     handler_frame: u64,
+    handler_boundary: u64,
     rethrown: bool,
     next: *mut Raised,
 }
+
+/// What a guard or catch stub records on its stack: the registers to carry on from (the
+/// program's at the guarded call, or the stub's own resume point), the next outer boundary and
+/// the kind.
+#[repr(C)]
+struct Boundary {
+    registers: Registers,
+    previous: *mut Boundary,
+    kind: usize,
+}
+
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    core::mem::offset_of!(Boundary, previous) == 328
+        && core::mem::offset_of!(Boundary, kind) == 336
+        && core::mem::size_of::<Boundary>() <= 352
+);
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(
+    core::mem::offset_of!(Boundary, previous) == 136
+        && core::mem::offset_of!(Boundary, kind) == 144
+        && core::mem::size_of::<Boundary>() <= 152
+);
 
 /// `objc_typeinfo`: what a `@catch` clause names in the LSDA's type table.
 #[repr(C)]
@@ -92,60 +226,118 @@ pub static OBJC_EHTYPE_NSEXCEPTION: TypeInfo = TypeInfo {
     class: &raw const crate::foundation::NSEXCEPTION,
 };
 
-fn image_start() -> u64 {
-    IMAGE_START.load(Ordering::Relaxed) as u64
-}
-
-fn in_image(address: u64, length: u64) -> bool {
-    let start = image_start();
-    let end = IMAGE_END.load(Ordering::Relaxed) as u64;
-    address >= start && address.checked_add(length).is_some_and(|last| last <= end)
-}
-
-fn image_byte(address: u64) -> Option<u8> {
+/// A byte of a loaded image.
+pub fn image_byte(address: u64) -> Option<u8> {
     if !in_image(address, 1) {
         return None;
     }
-    // SAFETY: a byte of the mapped image, which stays mapped while the program runs.
+    // SAFETY: a byte of a mapped image, which stays mapped while the program runs.
     Some(unsafe { (address as *const u8).read() })
+}
+
+/// A word of a loaded image, at any alignment.
+pub fn image_word(address: u64) -> Option<u64> {
+    if !in_image(address, 8) {
+        return None;
+    }
+    // SAFETY: eight bytes of a mapped image, as above.
+    Some(unsafe { (address as *const u64).read_unaligned() })
 }
 
 fn read_word(address: u64, floor: u64) -> Option<u64> {
     let in_stack = address >= floor
         && address < floor.saturating_add(STACK_WINDOW)
         && address.is_multiple_of(8);
-    if !in_stack && !in_image(address, 8) {
-        return None;
+    if !in_stack {
+        return image_word(address);
     }
-    // SAFETY: a word of the image, or of the thread's stack above the frame being stepped
-    // over, where the frame's unwind information says a saved register is.
-    Some(unsafe { (address as *const u64).read_unaligned() })
+    // SAFETY: a word of the thread's stack above the frame being stepped over, where the
+    // frame's unwind information says a saved register is.
+    Some(unsafe { (address as *const u64).read() })
 }
 
-fn function_at(pc: u64) -> Option<FunctionInfo> {
-    let lookup = pc.checked_sub(1)?;
-    if !in_image(lookup, 1) {
-        return None;
-    }
-    let size = UNWIND_INFO_SIZE.load(Ordering::Acquire);
-    let address = UNWIND_INFO.load(Ordering::Relaxed);
-    if address == 0 || size == 0 {
-        return None;
-    }
-    // SAFETY: the image's `__unwind_info` section, checked inside a mapped segment by the
-    // loader, which nothing writes.
-    let section = unsafe { core::slice::from_raw_parts(address as *const u8, size) };
-    unwind_info::find(section, u32::try_from(lookup - image_start()).ok()?)
+#[derive(Debug, Clone, Copy)]
+enum Unwinding {
+    Compact(u32),
+    Dwarf(Fde),
 }
 
-fn catches(type_info: u64, object: Id) -> bool {
+#[derive(Debug, Clone, Copy)]
+struct Function {
+    start: u64,
+    lsda: Option<u64>,
+    unwinding: Unwinding,
+    image: Image,
+}
+
+enum Lookup {
+    Found(Function),
+    Unknown,
+    Outside,
+}
+
+fn dwarf_function(image: &Image, fde: Fde) -> Function {
+    Function {
+        start: fde.start,
+        lsda: fde.lsda,
+        unwinding: Unwinding::Dwarf(fde),
+        image: *image,
+    }
+}
+
+fn compact_function(image: &Image, lookup: u64) -> Option<Function> {
+    let info = unwind_info::find(
+        section(image.unwind_info)?,
+        u32::try_from(lookup - image.start).ok()?,
+    )?;
+    if let Some(offset) = frame::dwarf_offset(info.encoding) {
+        let frames = section(image.eh_frame)?;
+        let fde = unwind_dwarf::fde_at(
+            frames,
+            image.eh_frame.0 as u64,
+            offset as usize,
+            &image_word,
+        )
+        .ok()?;
+        return Some(dwarf_function(image, fde));
+    }
+    Some(Function {
+        start: image.start + u64::from(info.start),
+        lsda: info.lsda.map(|offset| image.start + u64::from(offset)),
+        unwinding: Unwinding::Compact(info.encoding),
+        image: *image,
+    })
+}
+
+fn scanned_function(image: &Image, lookup: u64) -> Option<Function> {
+    let frames = section(image.eh_frame)?;
+    let fde = unwind_dwarf::find(frames, image.eh_frame.0 as u64, lookup, &image_word).ok()?;
+    Some(dwarf_function(image, fde))
+}
+
+fn function_at(pc: u64) -> Lookup {
+    let Some(lookup) = pc.checked_sub(1) else {
+        return Lookup::Outside;
+    };
+    let Some(image) = image_of(lookup, 1) else {
+        return Lookup::Outside;
+    };
+    match compact_function(&image, lookup).or_else(|| scanned_function(&image, lookup)) {
+        Some(function) => Lookup::Found(function),
+        None => Lookup::Unknown,
+    }
+}
+
+fn catches(type_info: u64, raised: *mut Raised) -> bool {
+    // SAFETY: a live exception record.
+    let object = unsafe { (*raised).object };
     if type_info == 0 || type_info == &raw const OBJC_EHTYPE_ID as u64 {
         return true;
     }
     if !in_image(type_info, 24) && type_info != &raw const OBJC_EHTYPE_NSEXCEPTION as u64 {
         return false;
     }
-    // SAFETY: a type information record of the image's or the layer's, at least three words.
+    // SAFETY: a type information record of an image's or the layer's, at least three words.
     let info = unsafe { &*(type_info as *const TypeInfo) };
     if info.vtable != vtable_pointer() {
         return false;
@@ -153,26 +345,17 @@ fn catches(type_info: u64, object: Id) -> bool {
     info.class.is_null() || root::is_kind_of(object, info.class)
 }
 
-fn landing(info: &FunctionInfo, pc: u64, object: Id) -> Found {
-    let Some(lsda) = info.lsda else {
+fn landing(function: &Function, pc: u64, raised: *mut Raised) -> Found {
+    let Some(lsda) = function.lsda else {
         return Found::Nothing;
     };
-    let image = image_start();
-    let read = |address: u64| image_byte(address);
-    let matches = |type_info: u64| catches(type_info, object);
-    lsda::search(
-        image + u64::from(lsda),
-        image + u64::from(info.start),
-        pc - 1,
-        &read,
-        &matches,
-    )
-    .unwrap_or(Found::Nothing)
+    let matches = |type_info: u64| catches(type_info, raised);
+    lsda::search(lsda, function.start, pc - 1, &image_byte, &matches).unwrap_or(Found::Nothing)
 }
 
 #[cfg(target_arch = "aarch64")]
 mod frame {
-    use super::{FunctionInfo, Registers, unwind_info};
+    use super::{Registers, unwind_info};
 
     pub fn pc(registers: &Registers) -> u64 {
         registers.pc
@@ -182,25 +365,36 @@ mod frame {
         registers.sp
     }
 
+    pub fn layer_start(sp: u64) -> Registers {
+        Registers {
+            sp,
+            ..Registers::default()
+        }
+    }
+
     pub fn land(registers: &mut Registers, pad: u64, raised: u64, selector: i64) {
         registers.pc = pad;
         registers.x[0] = raised;
         registers.x[1] = selector as u64;
     }
 
+    pub fn dwarf_offset(encoding: u32) -> Option<u32> {
+        unwind_info::arm64_dwarf_offset(encoding)
+    }
+
     pub fn step(
-        info: &FunctionInfo,
+        encoding: u32,
         _: u64,
         registers: &mut Registers,
         read: &dyn Fn(u64) -> Option<u64>,
     ) -> bool {
-        unwind_info::step_arm64(info.encoding, registers, read).is_ok()
+        unwind_info::step_arm64(encoding, registers, read).is_ok()
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 mod frame {
-    use super::{FunctionInfo, Registers, unwind_info};
+    use super::{Registers, unwind_info};
     use unwind_info::x86_64::{RAX, RDX, RSP};
 
     pub fn pc(registers: &Registers) -> u64 {
@@ -211,39 +405,126 @@ mod frame {
         registers.general[RSP]
     }
 
+    pub fn layer_start(sp: u64) -> Registers {
+        let mut registers = Registers::default();
+        registers.general[RSP] = sp;
+        registers
+    }
+
     pub fn land(registers: &mut Registers, pad: u64, raised: u64, selector: i64) {
         registers.rip = pad;
         registers.general[RAX] = raised;
         registers.general[RDX] = selector as u64;
     }
 
+    pub fn dwarf_offset(encoding: u32) -> Option<u32> {
+        unwind_info::x86_64_dwarf_offset(encoding)
+    }
+
     pub fn step(
-        info: &FunctionInfo,
+        encoding: u32,
         function_start: u64,
         registers: &mut Registers,
         read: &dyn Fn(u64) -> Option<u64>,
     ) -> bool {
-        unwind_info::step_x86_64(info.encoding, function_start, registers, read).is_ok()
+        unwind_info::step_x86_64(encoding, function_start, registers, read).is_ok()
     }
 }
 
-fn step(info: &FunctionInfo, registers: &mut Registers) -> bool {
+fn step(function: &Function, registers: &mut Registers) -> bool {
     let floor = frame::sp(registers);
     let read = |address: u64| read_word(address, floor);
-    let start = image_start() + u64::from(info.start);
-    frame::step(info, start, registers, &read)
+    match &function.unwinding {
+        Unwinding::Compact(encoding) => frame::step(*encoding, function.start, registers, &read),
+        Unwinding::Dwarf(fde) => {
+            let Some(frames) = section(function.image.eh_frame) else {
+                return false;
+            };
+            let pc = frame::pc(registers).wrapping_sub(1);
+            let base = function.image.eh_frame.0 as u64;
+            unwind_dwarf::step(frames, base, fde, pc, registers, &read).is_ok()
+        }
+    }
 }
 
-fn search(start: &Registers, object: Id) -> Option<u64> {
+fn head() -> *mut Boundary {
+    // SAFETY: the calling thread's own control block.
+    unsafe { (*thread::current()).exception_boundaries as *mut Boundary }
+}
+
+fn set_head(boundary: *mut Boundary) {
+    // SAFETY: as above.
+    unsafe { (*thread::current()).exception_boundaries = boundary as usize };
+}
+
+fn boundary_above(sp: u64) -> Option<*mut Boundary> {
+    let mut boundary = head();
+    for _ in 0..MAX_FRAMES {
+        if boundary.is_null() {
+            return None;
+        }
+        if boundary as u64 > sp {
+            return Some(boundary);
+        }
+        // SAFETY: a record its stub linked, on this thread's stack.
+        boundary = unsafe { (*boundary).previous };
+    }
+    None
+}
+
+fn drop_boundaries_below(sp: u64) {
+    let mut boundary = head();
+    for _ in 0..MAX_FRAMES {
+        if boundary.is_null() || boundary as u64 > sp {
+            break;
+        }
+        // SAFETY: as in `boundary_above`.
+        boundary = unsafe { (*boundary).previous };
+    }
+    set_head(boundary);
+}
+
+enum Frame {
+    Program(Function),
+    Boundary(*mut Boundary),
+    End,
+}
+
+fn classify(registers: &Registers) -> Frame {
+    match function_at(frame::pc(registers)) {
+        Lookup::Found(function) => Frame::Program(function),
+        Lookup::Unknown => Frame::End,
+        Lookup::Outside => boundary_above(frame::sp(registers)).map_or(Frame::End, Frame::Boundary),
+    }
+}
+
+enum Handler {
+    Frame(u64),
+    Boundary(u64),
+}
+
+fn search(start: &Registers, raised: *mut Raised) -> Option<Handler> {
     let mut registers = *start;
     for _ in 0..MAX_FRAMES {
-        let pc = frame::pc(&registers);
-        let info = function_at(pc)?;
-        if let Found::Handler { .. } = landing(&info, pc, object) {
-            return Some(frame::sp(&registers));
-        }
-        if !step(&info, &mut registers) {
-            return None;
+        match classify(&registers) {
+            Frame::Program(function) => {
+                let pc = frame::pc(&registers);
+                if let Found::Handler { .. } = landing(&function, pc, raised) {
+                    return Some(Handler::Frame(frame::sp(&registers)));
+                }
+                if !step(&function, &mut registers) {
+                    return None;
+                }
+            }
+            Frame::Boundary(boundary) => {
+                // SAFETY: a live record on this thread's stack, linked by its stub.
+                let record = unsafe { &*boundary };
+                if record.kind == CATCH {
+                    return Some(Handler::Boundary(boundary as u64));
+                }
+                registers = record.registers;
+            }
+            Frame::End => return None,
         }
     }
     None
@@ -253,62 +534,89 @@ unsafe extern "C" {
     fn eggos_install_context(registers: *const Registers) -> !;
 }
 
-fn install(mut registers: Registers, pad: u64, raised: *mut Raised, selector: i64) -> ! {
+fn install_at(mut registers: Registers, pad: u64, raised: *mut Raised, selector: i64) -> ! {
     frame::land(&mut registers, pad, raised as u64, selector);
-    // SAFETY: the registers are a frame of the program the unwinder walked to, the pad one of
-    // its landing pads, which take the exception and selector in the first two registers.
+    // SAFETY: the registers are a frame of the program the unwinder walked to, or a catch
+    // stub's own, and the pad a landing pad there, which takes the exception and selector in
+    // the first two registers.
     unsafe { eggos_install_context(&registers) }
+}
+
+fn install(registers: Registers, pad: u64, raised: *mut Raised, selector: i64) -> ! {
+    drop_boundaries_below(frame::sp(&registers));
+    install_at(registers, pad, raised, selector)
+}
+
+fn deliver(boundary: *mut Boundary, raised: *mut Raised) -> ! {
+    // SAFETY: a live catch record; its registers resume its stub's caught path.
+    let (previous, registers) = unsafe { ((*boundary).previous, (*boundary).registers) };
+    set_head(previous);
+    install_at(registers, frame::pc(&registers), raised, 0)
 }
 
 fn clean_up_to_handler(raised: *mut Raised, start: Registers) -> ! {
     // SAFETY: an exception record made by `new_raised`, alive until its catch ends.
-    let object = unsafe { (*raised).object };
-    // SAFETY: as above.
-    let handler = unsafe { (*raised).handler_frame };
+    let (handler_frame, handler_boundary) =
+        unsafe { ((*raised).handler_frame, (*raised).handler_boundary) };
     let mut registers = start;
     for _ in 0..MAX_FRAMES {
-        let pc = frame::pc(&registers);
-        let Some(info) = function_at(pc) else {
-            break;
-        };
-        let found = landing(&info, pc, object);
-        if frame::sp(&registers) == handler {
-            if let Found::Handler {
-                landing_pad,
-                selector,
-            } = found
-            {
-                install(registers, landing_pad, raised, selector);
+        match classify(&registers) {
+            Frame::Program(function) => {
+                let pc = frame::pc(&registers);
+                let found = landing(&function, pc, raised);
+                if handler_boundary == 0 && frame::sp(&registers) == handler_frame {
+                    if let Found::Handler {
+                        landing_pad,
+                        selector,
+                    } = found
+                    {
+                        install(registers, landing_pad, raised, selector);
+                    }
+                    break;
+                }
+                if let Found::Cleanup(pad) = found {
+                    install(registers, pad, raised, 0);
+                }
+                if !step(&function, &mut registers) {
+                    break;
+                }
             }
-            break;
-        }
-        if let Found::Cleanup(pad) = found {
-            install(registers, pad, raised, 0);
-        }
-        if !step(&info, &mut registers) {
-            break;
+            Frame::Boundary(boundary) => {
+                if boundary as u64 == handler_boundary {
+                    deliver(boundary, raised);
+                }
+                // SAFETY: as in `search`.
+                let record = unsafe { &*boundary };
+                if record.kind == CATCH {
+                    break;
+                }
+                registers = record.registers;
+            }
+            Frame::End => break,
         }
     }
-    report_uncaught(object)
+    report_uncaught(raised)
 }
 
 fn raise(raised: *mut Raised, start: Registers) -> ! {
+    let handler = search(&start, raised);
+    let (frame, boundary) = match handler {
+        Some(Handler::Frame(frame)) => (frame, 0),
+        Some(Handler::Boundary(boundary)) => (0, boundary),
+        None => report_uncaught(raised),
+    };
     // SAFETY: as in `clean_up_to_handler`.
-    let object = unsafe { (*raised).object };
-    match search(&start, object) {
-        Some(frame) => {
-            // SAFETY: as above.
-            unsafe { (*raised).handler_frame = frame };
-            clean_up_to_handler(raised, start)
-        }
-        None => report_uncaught(object),
+    unsafe {
+        (*raised).handler_frame = frame;
+        (*raised).handler_boundary = boundary;
     }
+    clean_up_to_handler(raised, start)
 }
 
 fn new_raised(object: Id) -> *mut Raised {
     let raised = heap::allocate(core::mem::size_of::<Raised>(), true).cast::<Raised>();
     if raised.is_null() {
-        report_uncaught(object);
+        report_uncaught_object(object);
     }
     objc_retain(object);
     // SAFETY: a new block of the record's size.
@@ -316,6 +624,7 @@ fn new_raised(object: Id) -> *mut Raised {
         raised.write(Raised {
             object,
             handler_frame: 0,
+            handler_boundary: 0,
             rethrown: false,
             next: core::ptr::null_mut(),
         })
@@ -326,12 +635,28 @@ fn new_raised(object: Id) -> *mut Raised {
 /// Throws `object` from the frame whose registers an exception stub saved at `registers`.
 pub fn throw_from(object: Id, registers: *const Registers) -> ! {
     if object.is_null() {
-        report_uncaught(object);
+        report_uncaught_object(object);
     }
     // SAFETY: the stub's saved registers, on its stack below the caller of this function; the
     // stub wrote every field, zero for the registers a call does not keep.
     let start = unsafe { *registers };
     raise(new_raised(object), start)
+}
+
+fn current_stack() -> u64 {
+    let marker = 0u8;
+    core::hint::black_box(&marker) as *const u8 as u64
+}
+
+/// Throws `object` from the layer's own code: from the program's frame that entered the
+/// innermost guarded method, or to the innermost [`catching`] boundary. The layer's frames in
+/// between are left as they are, so a caller holds no lock and owns nothing that needs freeing
+/// when it raises.
+pub fn raise_in_layer(object: Id) -> ! {
+    if object.is_null() {
+        report_uncaught_object(object);
+    }
+    raise(new_raised(object), frame::layer_start(current_stack()))
 }
 
 extern "C" fn throw(object: Id, registers: *const Registers) -> ! {
@@ -364,8 +689,6 @@ extern "C" fn rethrow(_: usize, registers: *const Registers) -> ! {
     }
     // SAFETY: the record of the exception the innermost `@catch` is handling.
     unsafe { (*top).rethrown = true };
-    // SAFETY: as above.
-    unsafe { (*top).handler_frame = 0 };
     // SAFETY: as in `throw_from`.
     let start = unsafe { *registers };
     raise(top, start)
@@ -405,7 +728,53 @@ extern "C" fn end_catch() {
     }
 }
 
-fn report_uncaught(object: Id) -> ! {
+/// An exception a [`catching`] boundary took.
+#[derive(Debug)]
+pub struct Caught(*mut Raised);
+
+impl Caught {
+    /// Throws it on from the layer, after the code that caught it has cleaned up.
+    pub fn rethrow(self) -> ! {
+        raise(self.0, frame::layer_start(current_stack()))
+    }
+
+    /// Ends it: the object thrown, autoreleased.
+    pub fn finish(self) -> Id {
+        // SAFETY: a record the unwinder handed to the boundary, owned by it now.
+        let object = unsafe { (*self.0).object };
+        objc_autorelease(object);
+        heap::release(self.0.cast());
+        object
+    }
+}
+
+unsafe extern "C" {
+    fn eggos_catching(body: extern "C" fn(usize), data: usize) -> *mut Raised;
+}
+
+extern "C" fn run_work(data: usize) {
+    // SAFETY: `catching` passes the address of its `&mut dyn FnMut()`, alive during the call.
+    let work = unsafe { &mut *(data as *mut &mut dyn FnMut()) };
+    work();
+}
+
+/// Runs `work` behind a boundary that takes any exception reaching it, as AppKit's run loop
+/// does on macOS; `None` when `work` returned normally. The layer's frames inside `work` that
+/// an exception passes are left as they are (see [`raise_in_layer`]).
+pub fn catching(mut work: &mut dyn FnMut()) -> Option<Caught> {
+    let data = (&raw mut work) as usize;
+    // SAFETY: the stub links a catch record on its stack, calls `run_work` with `data` and
+    // unlinks it; it returns once, either way, with the caller's registers kept.
+    let raised = unsafe { eggos_catching(run_work, data) };
+    (!raised.is_null()).then_some(Caught(raised))
+}
+
+fn report_uncaught(raised: *mut Raised) -> ! {
+    // SAFETY: a live exception record.
+    report_uncaught_object(unsafe { (*raised).object })
+}
+
+fn report_uncaught_object(object: Id) -> ! {
     let handler = uncaught_handler();
     if handler != 0 && !object.is_null() {
         // SAFETY: the program set it to a function that takes the exception.
@@ -551,6 +920,173 @@ core::arch::global_asm!(
     "mov rcx, [rdi + 128]",
     "mov rsp, [rdi + 56]",
     "jmp rcx",
+);
+
+
+/// Defines `$entry`, a guard stub for the layer's function `$target` (a method or C function
+/// with no arguments on the stack): it links a pass-through boundary holding the program's
+/// registers at the call, calls `$target` with the arguments untouched, unlinks it and returns
+/// `$target`'s result. Exceptions raised inside carry on from the program's frame.
+macro_rules! guard {
+    ($entry:ident => $target:path) => {
+        #[cfg(target_arch = "aarch64")]
+        core::arch::global_asm!(
+            ".text",
+            ".p2align 2",
+            concat!(".globl ", stringify!($entry)),
+            concat!(".hidden ", stringify!($entry)),
+            concat!(stringify!($entry), ":"),
+            "sub sp, sp, #352",
+            "stp x19, x20, [sp, #152]",
+            "stp x21, x22, [sp, #168]",
+            "stp x23, x24, [sp, #184]",
+            "stp x25, x26, [sp, #200]",
+            "stp x27, x28, [sp, #216]",
+            "stp x29, x30, [sp, #232]",
+            "add x9, sp, #352",
+            "stp x9, x30, [sp, #248]",
+            "stp d8, d9, [sp, #264]",
+            "stp d10, d11, [sp, #280]",
+            "stp d12, d13, [sp, #296]",
+            "stp d14, d15, [sp, #312]",
+            "mrs x9, tpidr_el0",
+            "ldr x10, [x9, #{boundaries}]",
+            "stp x10, xzr, [sp, #328]",
+            "mov x10, sp",
+            "str x10, [x9, #{boundaries}]",
+            "add x29, sp, #232",
+            "bl {target}",
+            "mrs x9, tpidr_el0",
+            "ldr x10, [sp, #328]",
+            "str x10, [x9, #{boundaries}]",
+            "ldp x29, x30, [sp, #232]",
+            "add sp, sp, #352",
+            "ret",
+            target = sym $target,
+            boundaries = const $crate::objc::exception::BOUNDARIES,
+        );
+        #[cfg(target_arch = "x86_64")]
+        core::arch::global_asm!(
+            ".text",
+            ".p2align 4",
+            concat!(".globl ", stringify!($entry)),
+            concat!(".hidden ", stringify!($entry)),
+            concat!(stringify!($entry), ":"),
+            "sub rsp, 152",
+            "mov [rsp + 24], rbx",
+            "mov [rsp + 48], rbp",
+            "lea r11, [rsp + 160]",
+            "mov [rsp + 56], r11",
+            "mov [rsp + 96], r12",
+            "mov [rsp + 104], r13",
+            "mov [rsp + 112], r14",
+            "mov [rsp + 120], r15",
+            "mov r11, [rsp + 152]",
+            "mov [rsp + 128], r11",
+            "mov r11, qword ptr fs:[8]",
+            "mov r10, [r11 + {boundaries}]",
+            "mov [rsp + 136], r10",
+            "mov qword ptr [rsp + 144], 0",
+            "mov [r11 + {boundaries}], rsp",
+            "call {target}",
+            "mov r11, qword ptr fs:[8]",
+            "mov r10, [rsp + 136]",
+            "mov [r11 + {boundaries}], r10",
+            "add rsp, 152",
+            "ret",
+            target = sym $target,
+            boundaries = const $crate::objc::exception::BOUNDARIES,
+        );
+        unsafe extern "C" {
+            pub fn $entry();
+        }
+    };
+}
+
+pub(crate) use guard;
+
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".text",
+    ".p2align 2",
+    ".globl eggos_catching",
+    ".hidden eggos_catching",
+    "eggos_catching:",
+    "sub sp, sp, #352",
+    "stp x19, x20, [sp, #152]",
+    "stp x21, x22, [sp, #168]",
+    "stp x23, x24, [sp, #184]",
+    "stp x25, x26, [sp, #200]",
+    "stp x27, x28, [sp, #216]",
+    "stp x29, x30, [sp, #232]",
+    "mov x9, sp",
+    "adr x10, 2f",
+    "stp x9, x10, [sp, #248]",
+    "stp d8, d9, [sp, #264]",
+    "stp d10, d11, [sp, #280]",
+    "stp d12, d13, [sp, #296]",
+    "stp d14, d15, [sp, #312]",
+    "mrs x9, tpidr_el0",
+    "ldr x10, [x9, #{boundaries}]",
+    "mov x11, #{catch}",
+    "stp x10, x11, [sp, #328]",
+    "mov x10, sp",
+    "str x10, [x9, #{boundaries}]",
+    "add x29, sp, #232",
+    "mov x9, x0",
+    "mov x0, x1",
+    "blr x9",
+    "mrs x9, tpidr_el0",
+    "ldr x10, [sp, #328]",
+    "str x10, [x9, #{boundaries}]",
+    "mov x0, xzr",
+    "ldp x29, x30, [sp, #232]",
+    "add sp, sp, #352",
+    "ret",
+    "2:",
+    "ldp x29, x30, [sp, #232]",
+    "add sp, sp, #352",
+    "ret",
+    boundaries = const BOUNDARIES,
+    catch = const CATCH,
+);
+
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".text",
+    ".p2align 4",
+    ".globl eggos_catching",
+    ".hidden eggos_catching",
+    "eggos_catching:",
+    "sub rsp, 152",
+    "mov [rsp + 24], rbx",
+    "mov [rsp + 48], rbp",
+    "mov [rsp + 56], rsp",
+    "mov [rsp + 96], r12",
+    "mov [rsp + 104], r13",
+    "mov [rsp + 112], r14",
+    "mov [rsp + 120], r15",
+    "lea r11, [rip + 2f]",
+    "mov [rsp + 128], r11",
+    "mov r11, qword ptr fs:[8]",
+    "mov r10, [r11 + {boundaries}]",
+    "mov [rsp + 136], r10",
+    "mov qword ptr [rsp + 144], {catch}",
+    "mov [r11 + {boundaries}], rsp",
+    "mov rax, rdi",
+    "mov rdi, rsi",
+    "call rax",
+    "mov r11, qword ptr fs:[8]",
+    "mov r10, [rsp + 136]",
+    "mov [r11 + {boundaries}], r10",
+    "xor eax, eax",
+    "add rsp, 152",
+    "ret",
+    "2:",
+    "add rsp, 152",
+    "ret",
+    boundaries = const BOUNDARIES,
+    catch = const CATCH,
 );
 
 pub fn resolve(name: &[u8]) -> Option<u64> {

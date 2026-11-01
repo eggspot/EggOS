@@ -1,16 +1,19 @@
 //! NSException (D175): a name, a reason and a user info dictionary; `-raise` and the class's
 //! `raise:format:` throw it through the runtime's unwinder (`objc::exception`), from assembly
-//! entries that save the caller's registers first, so a `@catch` in the program takes it. An
-//! exception nothing catches ends the program with Apple's two lines. Also
+//! entries that save the caller's registers first, so a `@catch` in the program takes it.
+//! Foundation's own failures (an index out of range, a nil object) raise real exceptions too
+//! ([`raise_named`], D233), which the program can catch around the guarded method that failed.
+//! An exception nothing catches ends the program with Apple's two lines. Also
 //! `NSSetUncaughtExceptionHandler`.
 
 use super::string::format_with;
 use super::{
-    Definition, NSEXCEPTION, NSEXCEPTION_META, autoreleased, define as define_class, new_instance,
-    string_from_utf8, with_utf8,
+    Definition, NSEXCEPTION, NSEXCEPTION_META, autoreleased, class_pointer, define as define_class,
+    new_instance, string_from_utf8, with_utf8,
 };
 use crate::libsystem::variadic::RawVaList;
 use crate::objc::abi::{Id, Sel};
+use crate::objc::buffer::Buffer;
 use crate::objc::exception::{self, Registers, capture, eggos_objc_exception_throw};
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::{self, NSOBJECT};
@@ -206,6 +209,25 @@ core::arch::global_asm!(
 
 unsafe extern "C" {
     fn eggos_exception_raise_format();
+}
+
+/// Raises an NSException named `name` whose reason is `reason`'s parts joined, from the layer's
+/// own code: the program's `@catch` around the guarded method that failed takes it, else the
+/// innermost AppKit boundary, else it ends the program as before. The caller holds no lock and
+/// owns nothing that needs freeing.
+pub fn raise_named(name: &[u8], reason: &[&[u8]]) -> ! {
+    let mut text = Buffer::new();
+    for &byte in reason.iter().flat_map(|part| part.iter()) {
+        text.push(byte);
+    }
+    let reason_object = string_from_utf8(text.as_slice());
+    text.free();
+    let class = class_pointer(&NSEXCEPTION).cast();
+    let object = new_exception(class, string_from_utf8(name), reason_object, core::ptr::null_mut());
+    if object.is_null() {
+        terminate_uncaught(name, reason);
+    }
+    exception::raise_in_layer(autoreleased(object))
 }
 
 /// Ends the program because nothing caught `object`, as macOS does: an NSException's name and

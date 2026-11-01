@@ -15,10 +15,11 @@ use crate::libsystem::variadic::{RawVaList, VaList, variadic};
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::class::IMMORTAL;
+use crate::objc::exception::guard;
 use crate::objc::reference_count::{objc_release, objc_retain};
 use crate::objc::root::{self, NSOBJECT};
 use crate::objc::sel;
-use crate::objc::{Runtime, methods, send, send_bool, send1, terminate_uncaught};
+use crate::objc::{Runtime, methods, send, send_bool, send1};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// An array object's fields.
@@ -123,7 +124,7 @@ fn out_of_range(this: Id, method: &[u8], index: usize) -> ! {
     } else {
         [b" beyond bounds [0 .. ", last_text, b"]"]
     };
-    terminate_uncaught(
+    super::raise_named(
         b"NSRangeException",
         &[
             b"*** -[",
@@ -506,7 +507,7 @@ extern "C" fn description_with_locale_indent(this: Id, _: Sel, _: Id, indent: us
 
 fn mutated(this: Id) -> &'static mut MutableArrayObject {
     if !is_mutable(this) {
-        terminate_uncaught(
+        super::raise_named(
             b"NSInternalInconsistencyException",
             &[
                 b"*** a mutating method sent to an immutable ",
@@ -539,7 +540,7 @@ fn grow(mutable: &mut MutableArrayObject, needed: usize) -> bool {
 
 fn refuse_nil(object: Id, method: &[u8]) {
     if object.is_null() {
-        terminate_uncaught(
+        super::raise_named(
             b"NSInvalidArgumentException",
             &[b"*** -[NSMutableArray ", method, b"]: object cannot be nil"],
         );
@@ -664,6 +665,19 @@ pub fn empty_address() -> u64 {
     &raw const EMPTY as u64
 }
 
+guard!(eggos_guarded_object_at_index => object_at_index);
+guard!(eggos_guarded_sorted_array_using_selector => sorted_array_using_selector);
+guard!(eggos_guarded_enumerate_with_block => enumerate_with_block);
+guard!(eggos_guarded_add_object => add_object);
+guard!(eggos_guarded_add_objects_from_array => add_objects_from_array);
+guard!(eggos_guarded_insert_object => insert_object);
+guard!(eggos_guarded_remove_object_at_index => remove_object_at_index);
+guard!(eggos_guarded_remove_last_object => remove_last_object);
+guard!(eggos_guarded_remove_object => remove_object);
+guard!(eggos_guarded_remove_all_objects => remove_all_objects);
+guard!(eggos_guarded_replace_object_at_index => replace_object_at_index);
+guard!(eggos_guarded_set_object_at_indexed_subscript => set_object_at_indexed_subscript);
+
 pub fn define(runtime: &mut Runtime) -> bool {
     let instance = methods![
         "init" => init,
@@ -671,8 +685,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "initWithArray:" => init_with_array,
         "dealloc" => dealloc,
         "count" => count,
-        "objectAtIndex:" => object_at_index,
-        "objectAtIndexedSubscript:" => object_at_index,
+        "objectAtIndex:" => eggos_guarded_object_at_index,
+        "objectAtIndexedSubscript:" => eggos_guarded_object_at_index,
         "firstObject" => first_object,
         "lastObject" => last_object,
         "indexOfObject:" => index_of_object,
@@ -682,8 +696,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "hash" => hash,
         "componentsJoinedByString:" => components_joined_by_string,
         "arrayByAddingObject:" => array_by_adding_object,
-        "sortedArrayUsingSelector:" => sorted_array_using_selector,
-        "enumerateObjectsUsingBlock:" => enumerate_with_block,
+        "sortedArrayUsingSelector:" => eggos_guarded_sorted_array_using_selector,
+        "enumerateObjectsUsingBlock:" => eggos_guarded_enumerate_with_block,
         "countByEnumeratingWithState:objects:count:" => count_by_enumerating,
         "copyWithZone:" => copy_with_zone,
         "mutableCopyWithZone:" => mutable_copy_with_zone,
@@ -700,15 +714,15 @@ pub fn define(runtime: &mut Runtime) -> bool {
     ];
     let mutable_instance = methods![
         "initWithCapacity:" => init_with_capacity,
-        "addObject:" => add_object,
-        "addObjectsFromArray:" => add_objects_from_array,
-        "insertObject:atIndex:" => insert_object,
-        "removeObjectAtIndex:" => remove_object_at_index,
-        "removeLastObject" => remove_last_object,
-        "removeObject:" => remove_object,
-        "removeAllObjects" => remove_all_objects,
-        "replaceObjectAtIndex:withObject:" => replace_object_at_index,
-        "setObject:atIndexedSubscript:" => set_object_at_indexed_subscript,
+        "addObject:" => eggos_guarded_add_object,
+        "addObjectsFromArray:" => eggos_guarded_add_objects_from_array,
+        "insertObject:atIndex:" => eggos_guarded_insert_object,
+        "removeObjectAtIndex:" => eggos_guarded_remove_object_at_index,
+        "removeLastObject" => eggos_guarded_remove_last_object,
+        "removeObject:" => eggos_guarded_remove_object,
+        "removeAllObjects" => eggos_guarded_remove_all_objects,
+        "replaceObjectAtIndex:withObject:" => eggos_guarded_replace_object_at_index,
+        "setObject:atIndexedSubscript:" => eggos_guarded_set_object_at_indexed_subscript,
     ];
     let mutable_class = methods![
         "arrayWithCapacity:" => array_with_capacity,

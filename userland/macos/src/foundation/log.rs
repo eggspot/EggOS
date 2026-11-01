@@ -57,20 +57,25 @@ fn prefix(out: &mut Buffer<u8>) {
     out.push(b' ');
 }
 
-extern "C" fn ns_logv(format: Id, arguments: RawVaList) {
-    let Formatted(mut message) = format_with(format, arguments);
+/// Writes `message` as one `NSLog` line.
+pub fn log_message(message: &[u8]) {
     let mut line = Buffer::new();
     prefix(&mut line);
     line.reserve(message.len() + 1);
-    for &byte in message.as_slice() {
+    for &byte in message {
         line.push(byte);
     }
-    if message.as_slice().last() != Some(&b'\n') {
+    if message.last() != Some(&b'\n') {
         line.push(b'\n');
     }
     stdio::flush_all();
     write_error(line.as_slice());
     line.free();
+}
+
+extern "C" fn ns_logv(format: Id, arguments: RawVaList) {
+    let Formatted(mut message) = format_with(format, arguments);
+    log_message(message.as_slice());
     message.free();
 }
 

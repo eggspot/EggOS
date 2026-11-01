@@ -17,9 +17,10 @@ use crate::libsystem::variadic::{RawVaList, VaList, variadic};
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::class::IMMORTAL;
+use crate::objc::exception::guard;
 use crate::objc::root::NSOBJECT;
 use crate::objc::sel;
-use crate::objc::{Runtime, methods, reference_count, send, terminate_uncaught};
+use crate::objc::{Runtime, methods, reference_count, send};
 use core::cmp::Ordering;
 
 const WIDE: u32 = 0x10;
@@ -250,7 +251,7 @@ fn new_like(text: &Text<'_>) -> Id {
 }
 
 fn range_failure(this: Id, method: &[u8]) -> ! {
-    terminate_uncaught(
+    super::raise_named(
         b"NSRangeException",
         &[
             b"-[",
@@ -903,6 +904,13 @@ extern "C" fn mutable_init(this: Id, _: Sel) -> Id {
     initialized(this, set_units(this, &[]))
 }
 
+guard!(eggos_guarded_character_at_index => character_at_index);
+guard!(eggos_guarded_get_characters => get_characters);
+guard!(eggos_guarded_substring_from_index => substring_from_index);
+guard!(eggos_guarded_substring_to_index => substring_to_index);
+guard!(eggos_guarded_substring_with_range => substring_with_range);
+guard!(eggos_guarded_delete_characters => delete_characters);
+
 pub fn define(runtime: &mut Runtime) -> bool {
     let instance = methods![
         "init" => init,
@@ -918,8 +926,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "initWithFormat:arguments:" => init_with_format_arguments,
         "dealloc" => dealloc,
         "length" => length,
-        "characterAtIndex:" => character_at_index,
-        "getCharacters:range:" => get_characters,
+        "characterAtIndex:" => eggos_guarded_character_at_index,
+        "getCharacters:range:" => eggos_guarded_get_characters,
         "UTF8String" => utf8_string,
         "cStringUsingEncoding:" => c_string_using_encoding,
         "lengthOfBytesUsingEncoding:" => length_of_bytes,
@@ -934,9 +942,9 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "rangeOfString:options:" => range_of_string_with_options,
         "stringByAppendingString:" => string_by_appending_string,
         "stringByAppendingFormat:" => eggos_string_by_appending_format,
-        "substringFromIndex:" => substring_from_index,
-        "substringToIndex:" => substring_to_index,
-        "substringWithRange:" => substring_with_range,
+        "substringFromIndex:" => eggos_guarded_substring_from_index,
+        "substringToIndex:" => eggos_guarded_substring_to_index,
+        "substringWithRange:" => eggos_guarded_substring_with_range,
         "uppercaseString" => uppercase_string,
         "lowercaseString" => lowercase_string,
         "componentsSeparatedByString:" => components_separated_by_string,
@@ -965,7 +973,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "appendFormat:" => eggos_string_append_format,
         "setString:" => set_string,
         "insertString:atIndex:" => insert_string,
-        "deleteCharactersInRange:" => delete_characters,
+        "deleteCharactersInRange:" => eggos_guarded_delete_characters,
     ];
     let mutable_class = methods![
         "stringWithCapacity:" => string_with_capacity,

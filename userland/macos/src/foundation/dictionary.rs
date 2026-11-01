@@ -16,10 +16,11 @@ use crate::libsystem::variadic::{RawVaList, VaList, variadic};
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::class::IMMORTAL;
+use crate::objc::exception::guard;
 use crate::objc::reference_count::{objc_release, objc_retain};
 use crate::objc::root::{self, NSOBJECT};
 use crate::objc::sel;
-use crate::objc::{Runtime, methods, send, send_bool, terminate_uncaught};
+use crate::objc::{Runtime, methods, send, send_bool};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// A dictionary's fields.
@@ -115,7 +116,7 @@ fn grow(this: Id, needed: usize) -> bool {
 
 fn set(this: Id, object: Id, key_object: Id) {
     if object.is_null() || key_object.is_null() {
-        terminate_uncaught(
+        super::raise_named(
             b"NSInvalidArgumentException",
             &[b"*** -[NSMutableDictionary setObject:forKey:]: object or key cannot be nil"],
         );
@@ -487,6 +488,9 @@ pub fn empty_address() -> u64 {
     &raw const EMPTY as u64
 }
 
+guard!(eggos_guarded_set_object_for_key => set_object_for_key);
+guard!(eggos_guarded_set_object_for_keyed_subscript => set_object_for_keyed_subscript);
+
 pub fn define(runtime: &mut Runtime) -> bool {
     let instance = methods![
         "init" => init,
@@ -516,8 +520,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
     ];
     let mutable_instance = methods![
         "initWithCapacity:" => init_with_capacity,
-        "setObject:forKey:" => set_object_for_key,
-        "setObject:forKeyedSubscript:" => set_object_for_keyed_subscript,
+        "setObject:forKey:" => eggos_guarded_set_object_for_key,
+        "setObject:forKeyedSubscript:" => eggos_guarded_set_object_for_keyed_subscript,
         "removeObjectForKey:" => remove_object_for_key,
         "removeAllObjects" => remove_all_objects,
         "addEntriesFromDictionary:" => add_entries_from_dictionary,

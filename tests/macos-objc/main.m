@@ -237,6 +237,23 @@ static void exceptions(void) {
     } @catch (id any) {
         say([NSString stringWithFormat:@"caught any %@", any]);
     }
+    @try {
+        [@[ @"a", @"b" ] objectAtIndex:5];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@", exception.name]);
+    }
+    @try {
+        [@[ @"x" ] enumerateObjectsUsingBlock:^(id object, NSUInteger index, BOOL *stop) {
+          @throw [NSException exceptionWithName:@"EggBlock" reason:object userInfo:nil];
+        }];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ %@", exception.name, exception.reason]);
+    }
+    @try {
+        [thrower performSelector:NSSelectorFromString(@"frobnicate")];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@", exception.name]);
+    }
 }
 
 static void foundation_classes(void) {

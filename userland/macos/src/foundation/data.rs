@@ -12,7 +12,7 @@ use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::{self, NSOBJECT};
-use crate::objc::{Runtime, methods, terminate_uncaught};
+use crate::objc::{Runtime, methods};
 
 const SHOWN_BYTES: usize = 24;
 const READ_CHUNK: usize = 4096;
@@ -298,7 +298,7 @@ extern "C" fn dealloc(this: Id, _: Sel) {
 
 fn grown_or_fail(this: Id, done: bool) {
     if !done {
-        terminate_uncaught(
+        super::raise_named(
             b"NSMallocException",
             &[
                 b"*** -[",

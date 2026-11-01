@@ -10,6 +10,8 @@
 //! fell behind fires once and moves to its next date after now, as macOS's does.
 //! `performSelector:withObject:afterDelay:` is a one-shot timer that sends the selector with
 //! the object, and `cancelPreviousPerformRequestsWithTarget:` invalidates those still waiting.
+//! An exception a timer's callout throws goes on to the code that ran the loop once the timer
+//! is released (and a one-shot invalidated), D233.
 
 use super::array;
 use super::constants::{
@@ -26,6 +28,7 @@ use crate::linux;
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::block::invoke_address;
 use crate::objc::buffer::Buffer;
+use crate::objc::exception::{self, Caught, guard};
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
 use crate::objc::{Runtime, class, methods, send, send_bool, send1};
@@ -268,7 +271,7 @@ pub fn next_due_in_ms() -> Option<u64> {
     Some(whole + u64::from((whole as f64) < milliseconds))
 }
 
-fn fire(timer: Id) {
+fn fire(timer: Id) -> Option<Caught> {
     let (target, selector, user_info, block, argument, performs) = {
         let fields = fields(timer);
         (
@@ -280,21 +283,24 @@ fn fire(timer: Id) {
             fields.performs,
         )
     };
-    if performs {
-        send1(target, selector as Sel, argument as usize);
-    } else if !block.is_null() {
-        // SAFETY: a timer's block takes the block and the timer.
-        let function: extern "C" fn(Id, Id) =
-            unsafe { core::mem::transmute(invoke_address(block)) };
-        function(block, timer);
-    } else if !target.is_null() && selector != 0 {
-        send1(target, selector as Sel, timer as usize);
-    }
+    let failure = exception::catching(&mut || {
+        if performs {
+            send1(target, selector as Sel, argument as usize);
+        } else if !block.is_null() {
+            // SAFETY: a timer's block takes the block and the timer.
+            let function: extern "C" fn(Id, Id) =
+                unsafe { core::mem::transmute(invoke_address(block)) };
+            function(block, timer);
+        } else if !target.is_null() && selector != 0 {
+            send1(target, selector as Sel, timer as usize);
+        }
+    });
     for object in [target, user_info, block, argument] {
         if !object.is_null() {
             objc_release(object);
         }
     }
+    failure
 }
 
 /// Fires every timer of the main run loop's default mode that is due.
@@ -318,7 +324,10 @@ fn fire_due_in(run_loop: Id, mode: u8) {
     });
     due.as_mut_slice()
         .sort_unstable_by(|&left, &right| fields(left).fire.total_cmp(&fields(right).fire));
+    let mut failure = None;
+    let mut released = 0;
     for &timer in due.as_slice() {
+        released += 1;
         if fields(timer).valid && fields(timer).scheduled {
             let fields_now = fields(timer);
             if fields_now.repeats {
@@ -327,14 +336,23 @@ fn fire_due_in(run_loop: Id, mode: u8) {
                 let behind = lag as u64 as f64 + 1.0;
                 fields_now.fire += behind * interval;
             }
-            fire(timer);
+            failure = fire(timer);
             if !fields(timer).repeats {
                 invalidate_timer(timer);
             }
         }
         objc_release(timer);
+        if failure.is_some() {
+            break;
+        }
+    }
+    for &rest in &due.as_slice()[released..] {
+        objc_release(rest);
     }
     due.free();
+    if let Some(caught) = failure {
+        caught.rethrow();
+    }
 }
 
 fn invalidate_timer(timer: Id) {
@@ -423,11 +441,19 @@ extern "C" fn fire_now(this: Id, _: Sel) {
     if !fields(this).valid {
         return;
     }
-    fire(this);
+    let failure = fire(this);
     if !fields(this).repeats {
         invalidate_timer(this);
     }
+    if let Some(caught) = failure {
+        caught.rethrow();
+    }
 }
+
+guard!(eggos_guarded_fire_now => fire_now);
+guard!(eggos_guarded_run => run);
+guard!(eggos_guarded_run_until_date => run_until_date);
+guard!(eggos_guarded_run_mode_before_date => run_mode_before_date);
 
 extern "C" fn time_interval(this: Id, _: Sel) -> f64 {
     match fields(this).repeats {
@@ -608,7 +634,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
     let timer_instance = methods![
         "invalidate" => invalidate,
         "isValid" => is_valid,
-        "fire" => fire_now,
+        "fire" => eggos_guarded_fire_now,
         "timeInterval" => time_interval,
         "userInfo" => user_info,
         "fireDate" => fire_date,
@@ -623,9 +649,9 @@ pub fn define(runtime: &mut Runtime) -> bool {
     ];
     let loop_instance = methods![
         "addTimer:forMode:" => add_timer,
-        "run" => run,
-        "runUntilDate:" => run_until_date,
-        "runMode:beforeDate:" => run_mode_before_date,
+        "run" => eggos_guarded_run,
+        "runUntilDate:" => eggos_guarded_run_until_date,
+        "runMode:beforeDate:" => eggos_guarded_run_mode_before_date,
         "currentMode" => current_mode,
         "retain" => this_object,
         "release" => nothing,
