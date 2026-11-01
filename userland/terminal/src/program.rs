@@ -20,7 +20,7 @@
 
 use crate::options::{self, Options, program_title};
 use crate::window::{
-    DEFAULT_CONTENT, MINIMUM_CONTENT, ProcessEnd, Shell, ShellOutput, TerminalWindow,
+    DEFAULT_CONTENT, MINIMUM_CONTENT, ProcessEnd, ProgramState, Shell, ShellOutput, TerminalWindow,
 };
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -50,6 +50,7 @@ const TERM_PROGRAM: &CStr = c"TERM_PROGRAM=EggTerminal";
 const HOME_PREFIX: &[u8] = b"HOME=";
 const TERM_PREFIX: &[u8] = b"TERM=";
 const TERM_PROGRAM_PREFIX: &[u8] = b"TERM_PROGRAM=";
+const WNOHANG: usize = 1;
 const PATH_PREFIX: &[u8] = b"PATH=";
 const DEFAULT_PATH: &[u8] = b"/bin:/usr/bin";
 const NOT_FOUND_STATUS: u8 = 127;
@@ -505,14 +506,16 @@ impl Shell for PseudoTerminal {
             .map_or(0, |(length, _)| length)
     }
 
-    fn process_end(&mut self) -> Option<ProcessEnd> {
+    fn process_end(&mut self) -> ProgramState {
         let mut status = 0i32;
-        call(
+        match call(
             number::WAIT4,
-            [self.child, &raw mut status as usize, 0, 0, 0, 0],
-        )
-        .ok()?;
-        Some(status_of(status))
+            [self.child, &raw mut status as usize, WNOHANG, 0, 0, 0],
+        ) {
+            Ok(0) => ProgramState::Running,
+            Ok(_) => ProgramState::Ended(status_of(status)),
+            Err(_) => ProgramState::Unknown,
+        }
     }
 }
 

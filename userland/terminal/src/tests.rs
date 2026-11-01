@@ -4,8 +4,9 @@ use crate::paste::{PASTE_CAPACITY, PASTE_CHUNK, prepare};
 use crate::selection::SelectionMode;
 use crate::title::{CUT_TEXT, DEFAULT_TITLE, TITLE_CAPACITY, Title};
 use crate::window::{
-    DEFAULT_CONTENT, INDICATOR_MS, MAX_COLUMNS, MAX_ROWS, MINIMUM_CONTENT, PASTE, ProcessEnd,
-    SELECT_ALL, Shell, ShellOutput, TerminalWindow, exit_line, grid_for,
+    DEFAULT_CONTENT, INDICATOR_MS, MAX_COLUMNS, MAX_ROWS, MINIMUM_CONTENT, PASTE,
+    PROGRAM_END_CHECK_MS, ProcessEnd, ProgramState, SELECT_ALL, Shell, ShellOutput, TerminalWindow,
+    exit_line, grid_for,
 };
 use eggos_element_tree::{Action, MAX_TREE_BYTES, Outcome, TreeWriter, elements, flags};
 use eggos_terminal::keymap::{CursorKeys, Modifiers as KeyModifiers};
@@ -20,6 +21,8 @@ struct FakeShell {
     output: VecDeque<Vec<u8>>,
     ended: bool,
     end: Option<ProcessEnd>,
+    child_running: bool,
+    end_asked: usize,
     written: Vec<u8>,
     writes: Vec<usize>,
     room_for: Option<usize>,
@@ -80,8 +83,13 @@ impl Shell for FakeShell {
         bytes.len()
     }
 
-    fn process_end(&mut self) -> Option<ProcessEnd> {
-        self.end
+    fn process_end(&mut self) -> ProgramState {
+        self.end_asked += 1;
+        match (self.child_running, self.end) {
+            (true, _) => ProgramState::Running,
+            (false, Some(end)) => ProgramState::Ended(end),
+            (false, None) => ProgramState::Unknown,
+        }
     }
 }
 
@@ -704,6 +712,45 @@ fn a_command_that_succeeds_closes_its_window_and_one_that_fails_leaves_a_line() 
     window.failed_to_start("terminal: frob: not found\r\n", 127);
     assert_eq!(row(&window, 0), "terminal: frob: not found");
     assert_eq!(row(&window, 2), "[process exited with status 127]");
+}
+
+#[test]
+fn a_command_that_closes_its_side_and_keeps_running_is_waited_for_on_the_tick_never_blocking() {
+    for (end, closes) in [(ProcessEnd::Exited(0), true), (ProcessEnd::Exited(3), false)] {
+        let mut window = command_window(end);
+        window.shell_mut().child_running = true;
+        assert!(window.read_shell(2), "the window stays while the program runs");
+        assert_eq!(window.shell_mut().end_asked, 1);
+        assert!(!window.is_closing());
+        assert!(!window.is_watching_the_shell(), "no busy loop on the hung-up side");
+        assert_eq!(window.deadline(2), Some(2 + PROGRAM_END_CHECK_MS));
+        assert!(window.read_shell(3));
+        assert_eq!(window.shell_mut().end_asked, 1, "a read does not ask again");
+        window.tick(2 + PROGRAM_END_CHECK_MS - 1);
+        assert_eq!(window.shell_mut().end_asked, 1);
+        window.tick(2 + PROGRAM_END_CHECK_MS);
+        assert_eq!(window.shell_mut().end_asked, 2, "asked again on the tick");
+        assert!(!window.is_closing());
+        let again = 2 + 2 * PROGRAM_END_CHECK_MS;
+        assert_eq!(window.deadline(2 + PROGRAM_END_CHECK_MS), Some(again));
+        window.shell_mut().child_running = false;
+        window.tick(again);
+        assert_eq!(window.shell_mut().end_asked, 3);
+        assert_ne!(window.deadline(again), Some(again + PROGRAM_END_CHECK_MS));
+        match closes {
+            true => {
+                assert!(window.is_closing());
+                assert!(window.is_watching_the_shell(), "the hung-up side wakes the loop");
+                assert!(!window.read_shell(again + 1), "and the window closes");
+            }
+            false => {
+                assert!(!window.is_closing());
+                assert!(!window.is_watching_the_shell());
+                assert_eq!(row(&window, 2), "[process exited with status 3]");
+                assert!(window.read_shell(again + 1));
+            }
+        }
+    }
 }
 
 #[test]

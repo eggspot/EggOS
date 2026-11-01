@@ -56,6 +56,9 @@ pub const DRAG_SCROLL_MS: u32 = 50;
 
 /// How soon a paste waiting for room in the pseudo-terminal tries again.
 pub const PASTE_RETRY_MS: u32 = 16;
+/// How often a `terminal -e` window asks again whether its program ended, once the program
+/// closed its side of the terminal and still runs.
+pub const PROGRAM_END_CHECK_MS: u32 = 50;
 
 /// The close question's first line.
 pub const CLOSE_QUESTION: &str = "Close this terminal?";
@@ -105,6 +108,17 @@ pub enum ProcessEnd {
     Signalled(u8),
 }
 
+/// What asking, without waiting, how the `-e` program ended found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramState {
+    /// It still runs.
+    Running,
+    /// It ended so.
+    Ended(ProcessEnd),
+    /// How it ended cannot be learned.
+    Unknown,
+}
+
 /// The shell on the other side of the pseudo-terminal, and what the window asks of the system.
 pub trait Shell {
     /// Reads what the shell wrote into `buffer`, never waiting.
@@ -124,8 +138,8 @@ pub trait Shell {
     fn set_clipboard(&mut self, text: &str);
     /// Copies the shared clipboard's text into `into`, as much as fits; its whole length.
     fn clipboard(&mut self, into: &mut [u8]) -> usize;
-    /// How the program ended, once its side closed; `None` when that cannot be learned.
-    fn process_end(&mut self) -> Option<ProcessEnd>;
+    /// How the program ended, asked once its side closed and never waiting for it.
+    fn process_end(&mut self) -> ProgramState;
 }
 
 /// The grid a content of `width` by `height` (scale 1) holds: the cells inside the padding, at
@@ -236,6 +250,7 @@ pub struct TerminalWindow<S: Shell> {
     paste: PendingPaste,
     command: bool,
     ended: Option<ProcessEnd>,
+    end_check_at: Option<u32>,
 }
 
 impl<S: Shell> core::fmt::Debug for TerminalWindow<S> {
@@ -301,6 +316,7 @@ impl<S: Shell> TerminalWindow<S> {
             paste: PendingPaste::default(),
             command: false,
             ended: None,
+            end_check_at: None,
         })
     }
 
@@ -475,7 +491,10 @@ impl<S: Shell> TerminalWindow<S> {
     /// is to close because its shell or command ended.
     pub fn read_shell(&mut self, now_ms: u32) -> bool {
         self.now = now_ms;
-        if self.ended.is_some() {
+        if self.closing {
+            return false;
+        }
+        if self.ended.is_some() || self.end_check_at.is_some() {
             return true;
         }
         let mut chunk = [0u8; READ_CHUNK];
@@ -492,19 +511,23 @@ impl<S: Shell> TerminalWindow<S> {
     }
 
     fn program_ended(&mut self) -> bool {
-        let end = match self.command {
-            true => self.shell.process_end(),
-            false => None,
-        };
-        match end {
-            None | Some(ProcessEnd::Exited(0)) => {
+        match self.command {
+            true => self.learn_program_end(),
+            false => self.closing = true,
+        }
+        !self.closing
+    }
+
+    fn learn_program_end(&mut self) {
+        self.end_check_at = None;
+        match self.shell.process_end() {
+            ProgramState::Running => {
+                self.end_check_at = Some(self.now.wrapping_add(PROGRAM_END_CHECK_MS));
+            }
+            ProgramState::Unknown | ProgramState::Ended(ProcessEnd::Exited(0)) => {
                 self.closing = true;
-                false
             }
-            Some(end) => {
-                self.finish(end);
-                true
-            }
+            ProgramState::Ended(end) => self.finish(end),
         }
     }
 
@@ -1035,9 +1058,10 @@ impl<S: Shell> TerminalWindow<S> {
         self.closing
     }
 
-    /// Whether the pseudo-terminal is still watched: not once the `-e` program ended.
+    /// Whether the pseudo-terminal is still watched: not once the `-e` program ended, nor while
+    /// the window waits for a program that closed its side to end.
     pub fn is_watching_the_shell(&self) -> bool {
-        self.ended.is_none()
+        self.ended.is_none() && self.end_check_at.is_none()
     }
 
     fn look_at(&self, now: u32) -> (CursorLook, Option<u32>) {
@@ -1059,18 +1083,27 @@ impl<S: Shell> TerminalWindow<S> {
     }
 
     /// When the window next wants [`Self::tick`]: the cursor's next blink, the indicator's end,
-    /// a drag's next scroll, a paste's next try.
+    /// a drag's next scroll, a paste's next try, the next look at whether the `-e` program
+    /// ended.
     pub fn deadline(&self, now_ms: u32) -> Option<u32> {
         let (_, blink) = self.look_at(now_ms);
         let paste = (!self.paste.is_empty()).then(|| now_ms.wrapping_add(PASTE_RETRY_MS));
-        [blink, self.indicator_until, self.drag_scroll_at, paste]
+        [
+            blink,
+            self.indicator_until,
+            self.drag_scroll_at,
+            paste,
+            self.end_check_at,
+        ]
             .into_iter()
             .flatten()
             .min_by_key(|at| at.wrapping_sub(now_ms) as i32)
     }
 
     /// Looks at the clock: the cursor's blink, the indicator's end, a drag past the grid's top
-    /// or bottom scrolling the view, a paste waiting for room.
+    /// or bottom scrolling the view, a paste waiting for room, and whether the `-e` program
+    /// that closed its side ended (once it ended with status 0 the shell is watched again, so
+    /// [`Self::read_shell`] says to close).
     pub fn tick(&mut self, now_ms: u32) {
         self.now = now_ms;
         let (look, _) = self.look_at(now_ms);
@@ -1094,6 +1127,11 @@ impl<S: Shell> TerminalWindow<S> {
                 true => Some(now_ms.wrapping_add(DRAG_SCROLL_MS)),
                 false => None,
             };
+        }
+        if let Some(at) = self.end_check_at
+            && at.wrapping_sub(now_ms) as i32 <= 0
+        {
+            self.learn_program_end();
         }
         self.pump_paste();
     }
