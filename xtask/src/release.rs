@@ -218,6 +218,9 @@ const POWERSHELL_AGENT: &str = "$McpAgent";
 
 const POWERSHELL_CONSOLE_LOG: &str = "$ConsoleLog";
 
+const POWERSHELL_MCP_CHANNEL: qemu::McpChannel<'static> =
+    qemu::McpChannel::LoopbackClient { port: "$McpPort" };
+
 const SHELL_COMMAND_LINE: &str = "$command_line";
 
 const POWERSHELL_COMMAND_LINE: &str = "$CommandLine";
@@ -235,10 +238,25 @@ fn script_arches() -> Vec<ScriptArch> {
             powershell_disk: qemu::disk_args(arch, POWERSHELL_DISK),
             shell_work: qemu::work_disk_args(arch, SHELL_WORK),
             powershell_work: qemu::work_disk_args(arch, POWERSHELL_WORK),
-            shell_mcp: qemu::mcp_args(arch, true, SHELL_CONSOLE_LOG),
-            shell_mcp_headless: qemu::mcp_args(arch, false, SHELL_CONSOLE_LOG),
-            powershell_mcp: qemu::mcp_args(arch, true, POWERSHELL_CONSOLE_LOG),
-            powershell_mcp_headless: qemu::mcp_args(arch, false, POWERSHELL_CONSOLE_LOG),
+            shell_mcp: qemu::mcp_args(arch, true, SHELL_CONSOLE_LOG, qemu::McpChannel::Stdio),
+            shell_mcp_headless: qemu::mcp_args(
+                arch,
+                false,
+                SHELL_CONSOLE_LOG,
+                qemu::McpChannel::Stdio,
+            ),
+            powershell_mcp: qemu::mcp_args(
+                arch,
+                true,
+                POWERSHELL_CONSOLE_LOG,
+                POWERSHELL_MCP_CHANNEL,
+            ),
+            powershell_mcp_headless: qemu::mcp_args(
+                arch,
+                false,
+                POWERSHELL_CONSOLE_LOG,
+                POWERSHELL_MCP_CHANNEL,
+            ),
             network: qemu::network_args(arch),
         })
         .collect()
@@ -753,6 +771,11 @@ if (-not (Get-Command $Qemu -ErrorAction SilentlyContinue)) {{
     }}
 }}
 $ConsoleLog = (Join-Path $PSScriptRoot "eggos-$Arch-serial.log").Replace(',', ',,')
+if ($Mcp) {{
+    $McpListener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Loopback, 0)
+    $McpListener.Start()
+    $McpPort = $McpListener.LocalEndpoint.Port
+}}
 $QemuArgs = switch ($Arch) {{
 {cases}}}
 if ($Apps) {{
@@ -839,6 +862,22 @@ if ($Mcp -and $NoWindow) {{
     Say "run-eggos.ps1: booting EggOS $Version ($Arch) on this terminal. Quit: Ctrl-A then X."
 }} else {{
     Say "run-eggos.ps1: booting EggOS $Version ($Arch) in a QEMU window; its console is here too. Quit: close the window, or Ctrl-A then X here."
+}}
+if ($Mcp) {{
+    $McpRelay = [PowerShell]::Create()
+    [void]$McpRelay.AddScript({{
+        param($Listener)
+        $Client = $Listener.AcceptTcpClient()
+        $Listener.Stop()
+        $Client.NoDelay = $true
+        $Channel = $Client.GetStream()
+        $ToClient = $Channel.CopyToAsync([Console]::OpenStandardOutput())
+        [Console]::OpenStandardInput().CopyTo($Channel)
+        $ToClient.Wait()
+    }}).AddArgument($McpListener)
+    [void]$McpRelay.BeginInvoke()
+    & $Qemu @QemuArgs -kernel $Image
+    [Environment]::Exit($LASTEXITCODE)
 }}
 & $Qemu @QemuArgs -kernel $Image
 exit $LASTEXITCODE
@@ -1138,17 +1177,27 @@ mod tests {
             assert!(powershell.contains(&format!(
                 "    '{}' {{ if ($Mcp -and $NoWindow) {{ @({}) }} elseif ($Mcp) {{ @({}) }} elseif ($Serial) {{ @({}) }} else {{ @({}) }} }}\n",
                 arch.name,
-                expanded(&qemu::mcp_args(arch, false, "$ConsoleLog")),
-                expanded(&qemu::mcp_args(arch, true, "$ConsoleLog")),
+                expanded(&qemu::mcp_args(arch, false, "$ConsoleLog", POWERSHELL_MCP_CHANNEL)),
+                expanded(&qemu::mcp_args(arch, true, "$ConsoleLog", POWERSHELL_MCP_CHANNEL)),
                 list(&serial),
                 list(&window)
             )));
             assert!(shell.contains(&format!(
                 "  {}:mcp) set -- {} ;;\n  {}:mcp-headless) set -- {} ;;\n",
                 arch.name,
-                double_quoted(&qemu::mcp_args(arch, true, "$console_log")),
+                double_quoted(&qemu::mcp_args(
+                    arch,
+                    true,
+                    "$console_log",
+                    qemu::McpChannel::Stdio
+                )),
                 arch.name,
-                double_quoted(&qemu::mcp_args(arch, false, "$console_log"))
+                double_quoted(&qemu::mcp_args(
+                    arch,
+                    false,
+                    "$console_log",
+                    qemu::McpChannel::Stdio
+                ))
             )));
         }
         for arch in ARCHES {
@@ -1223,7 +1272,8 @@ mod tests {
     #[test]
     fn the_mcp_boot_has_the_channel_on_stdio_the_console_in_a_file_and_no_monitor() {
         for arch in ARCHES {
-            let args = qemu::mcp_args(arch, false, "/tmp/a,,b.log").join(" ");
+            let args =
+                qemu::mcp_args(arch, false, "/tmp/a,,b.log", qemu::McpChannel::Stdio).join(" ");
             assert!(args.contains("-display none"), "{args}");
             assert!(
                 args.contains(
@@ -1238,11 +1288,34 @@ mod tests {
             )));
             assert!(!args.contains("stdio,") || args.matches("stdio").count() == 1);
             assert!(
-                !qemu::mcp_args(arch, true, "x")
+                !qemu::mcp_args(arch, true, "x", qemu::McpChannel::Stdio)
                     .join(" ")
                     .contains("-display none")
             );
         }
+    }
+
+    #[test]
+    fn the_powershell_mcp_boot_connects_to_the_scripts_relay_instead_of_reading_stdin() {
+        let powershell = powershell_script(&script_arches());
+        for arch in ARCHES {
+            let args = qemu::mcp_args(arch, false, "x", POWERSHELL_MCP_CHANNEL).join(" ");
+            assert!(args.contains("-chardev socket,id=mcp,host=127.0.0.1,port=$McpPort"));
+            assert!(!args.contains("stdio"), "{args}");
+        }
+        let listen = powershell.find("$McpListener.Start()").unwrap();
+        let first_qemu_args = powershell.find("$QemuArgs = switch").unwrap();
+        assert!(
+            listen < first_qemu_args,
+            "the port is known before the arguments name it"
+        );
+        let relay = powershell.find("[void]$McpRelay.BeginInvoke()").unwrap();
+        let mcp_boot = &powershell[relay..];
+        assert!(mcp_boot.starts_with(
+            "[void]$McpRelay.BeginInvoke()\n    & $Qemu @QemuArgs -kernel $Image\n    [Environment]::Exit($LASTEXITCODE)\n}\n& $Qemu"
+        ));
+        assert!(powershell.contains("[Console]::OpenStandardInput().CopyTo($Channel)"));
+        assert!(powershell.contains("$Channel.CopyToAsync([Console]::OpenStandardOutput())"));
     }
 
     #[test]

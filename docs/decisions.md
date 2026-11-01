@@ -10031,6 +10031,16 @@ the license, by an explicit instruction recorded here.
   change reaches `main` only through such a pull request. It builds the x86_64 image on the
   Windows runner, as `hosts` already builds kernels there, rather than downloading one from a
   Linux job, which would put that job's whole build ahead of this one on the critical path.
+- **`run-eggos.ps1 -Mcp` relays the channel itself** (round 6, CI runs 41271268076 and
+  41275297076: no answer to the first `ping` within 120 s). QEMU on Windows reads a piped
+  standard input a byte at a time and drops each byte the guest cannot take yet, so
+  everything a client sends before EggOS has booted (Claude Code sends `initialize` at once)
+  was lost; on Linux and macOS QEMU reads standard input only when the guest can take it.
+  The PowerShell script listens on a loopback port of its own (`TcpListener` on port 0),
+  QEMU connects to it (`-chardev socket,...,host=127.0.0.1,port=$McpPort`, read only when
+  the guest can take it), and a second runspace copies the script's standard input to the
+  connection and the connection to its standard output. `run-eggos.sh` keeps
+  `-chardev stdio`.
 - **Killing a script kills its QEMU.** On Windows, ending PowerShell leaves QEMU running (it is
   PowerShell's child, not a replacement as `exec` makes it in `sh`), holding the step's output
   and the disk. The MCP check's client and the new check end the whole process tree

@@ -3790,14 +3790,43 @@ pub fn command_line_args(line: &str) -> Vec<String> {
     vec!["-append".into(), line.into()]
 }
 
+/// Where an MCP boot's agent channel meets the host (D154).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpChannel<'a> {
+    /// QEMU's standard input and output, which then carry nothing else (`run-eggos.sh`).
+    Stdio,
+    /// A connection QEMU makes to `127.0.0.1:port`, which `run-eggos.ps1` relays to its own
+    /// standard input and output: QEMU on Windows reads a piped standard input a byte at a
+    /// time and drops each byte the guest cannot take yet, such as every one sent before
+    /// EggOS boots, while a socket is read only when the guest can take it.
+    LoopbackClient { port: &'a str },
+}
+
+impl McpChannel<'_> {
+    fn chardev(self) -> String {
+        match self {
+            Self::Stdio => format!("stdio,id={MCP_CHARDEV},signal=off"),
+            Self::LoopbackClient { port } => {
+                format!("socket,id={MCP_CHARDEV},host=127.0.0.1,port={port}")
+            }
+        }
+    }
+}
+
+const MCP_CHARDEV: &str = "mcp";
+
 /// QEMU's arguments, but the kernel's, for an MCP boot of `arch` (`run-eggos.sh --mcp`): the
-/// agent channel on QEMU's standard input and output, which then carry nothing else, the
-/// console in the file `console_log` (commas doubled), no monitor, and the display and input
+/// agent channel on `channel`, the console in the file `console_log` (commas doubled), no monitor, and the display and input
 /// devices with the display in a window when `window` says so; otherwise none of them
 /// ([`Arch::offscreen_args`]), for a boot whose command line asks for the offscreen display
 /// ([`OFFSCREEN_WORD`], D144). It keeps `-no-reboot`: a reboot ends QEMU and with it the MCP
 /// session, which the client then starts again with a new `initialize` (D153).
-pub fn mcp_args(arch: &Arch, window: bool, console_log: &str) -> Vec<String> {
+pub fn mcp_args(
+    arch: &Arch,
+    window: bool,
+    console_log: &str,
+    channel: McpChannel<'_>,
+) -> Vec<String> {
     let cpus = TEST_CPUS.to_string();
     let devices: Vec<&str> = match window {
         true => arch
@@ -3828,9 +3857,9 @@ pub fn mcp_args(arch: &Arch, window: bool, console_log: &str) -> Vec<String> {
         "-monitor".into(),
         "none".into(),
         "-chardev".into(),
-        "stdio,id=mcp,signal=off".into(),
+        channel.chardev(),
     ]);
-    args.extend(agent_channel_args(arch, "mcp"));
+    args.extend(agent_channel_args(arch, MCP_CHARDEV));
     args
 }
 
@@ -3950,7 +3979,7 @@ mod tests {
     #[test]
     fn an_offscreen_mcp_boot_has_no_display_or_input_device_but_keeps_its_channels() {
         for arch in crate::ARCHES {
-            let args = mcp_args(arch, false, "/tmp/serial.log");
+            let args = mcp_args(arch, false, "/tmp/serial.log", McpChannel::Stdio);
             let joined = args.join(" ");
             for device in [
                 "virtio-gpu",
@@ -3971,7 +4000,7 @@ mod tests {
             assert!(joined.contains("-chardev stdio,id=mcp,signal=off"));
             assert!(joined.ends_with(&agent_channel_args(arch, "mcp").join(" ")));
             assert!(!joined.contains("-append"));
-            let windowed = mcp_args(arch, true, "/tmp/serial.log").join(" ");
+            let windowed = mcp_args(arch, true, "/tmp/serial.log", McpChannel::Stdio).join(" ");
             for part in arch.display_args.iter().chain(arch.input_args) {
                 assert!(windowed.contains(part), "{}: {part}", arch.name);
             }
@@ -4018,7 +4047,7 @@ mod tests {
         let serial = interactive_args(arch, false).join(" ");
         assert!(serial.ends_with("-smp 4 -nographic"), "{serial}");
         assert!(!joined.contains("-no-reboot") && !serial.contains("-no-reboot"));
-        let mcp = mcp_args(arch, false, "/tmp/serial.log").join(" ");
+        let mcp = mcp_args(arch, false, "/tmp/serial.log", McpChannel::Stdio).join(" ");
         assert!(mcp.contains("-smp 4 -no-reboot"), "{mcp}");
     }
 
