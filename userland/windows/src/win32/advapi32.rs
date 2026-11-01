@@ -1,10 +1,8 @@
-//! advapi32 (D178): the registry, which EggOS does not have yet, answers as an empty one that
-//! cannot be written (decided by research): the predefined keys open, every subkey and value
-//! is missing (`ERROR_FILE_NOT_FOUND`), enumerations find nothing and writes are
-//! `ERROR_ACCESS_DENIED`. The user's name is the account's (`USER` or `USERNAME`, else `root`,
-//! the account every process runs as, D132). A process's access token is a handle of its own
-//! that holds no privileges, since EggOS has none (`ERROR_NOT_ALL_ASSIGNED`), and there is no
-//! service manager and no logon of other accounts.
+//! advapi32 (D178): the registry's functions are `registry.rs`'s (D230), and here are
+//! `RegConnectRegistryW` (this computer only), the user's name (the account's: `USER` or
+//! `USERNAME`, else `root`, D132) and a process's access token, a handle of its own that holds
+//! no privileges, since EggOS has none (`ERROR_NOT_ALL_ASSIGNED`); there is no service manager
+//! and no logon of other accounts.
 
 use super::sync::{self, Kind};
 use super::{Bool, FALSE, TRUE, error, fail};
@@ -64,191 +62,6 @@ fn predefined(key: usize) -> Option<u32> {
     ((high == 0 || high == 0xffff_ffff) && PREDEFINED_KEYS.contains(&low)).then_some(low)
 }
 
-unsafe fn is_empty(text: *const u16) -> bool {
-    // SAFETY: the callers' contract: a NUL-terminated string, or null.
-    text.is_null() || unsafe { text.read() } == 0
-}
-
-unsafe extern "efiapi" fn reg_open_key_ex_w(
-    key: usize,
-    subkey: *const u16,
-    _options: u32,
-    _access: u32,
-    result: *mut usize,
-) -> u32 {
-    if predefined(key).is_none() {
-        return error::INVALID_HANDLE;
-    }
-    if result.is_null() {
-        return error::INVALID_PARAMETER;
-    }
-    // SAFETY: `RegOpenKeyExW`'s contract: a NUL-terminated subkey, or null.
-    if !unsafe { is_empty(subkey) } {
-        return error::FILE_NOT_FOUND;
-    }
-    // SAFETY: the caller passes a writable `HKEY`.
-    unsafe { result.write(key) };
-    ERROR_SUCCESS
-}
-
-#[allow(clippy::too_many_arguments)]
-extern "efiapi" fn reg_create_key_ex_w(
-    key: usize,
-    _subkey: *const u16,
-    _reserved: u32,
-    _class: *const u16,
-    _options: u32,
-    _access: u32,
-    _security: usize,
-    _result: *mut usize,
-) -> u32 {
-    match predefined(key) {
-        Some(_) => error::ACCESS_DENIED,
-        None => error::INVALID_HANDLE,
-    }
-}
-
-extern "efiapi" fn reg_query_value_ex_w(
-    key: usize,
-    _name: *const u16,
-    _reserved: usize,
-    _kind: *mut u32,
-    _data: *mut u8,
-    _size: *mut u32,
-) -> u32 {
-    match predefined(key) {
-        Some(_) => error::FILE_NOT_FOUND,
-        None => error::INVALID_HANDLE,
-    }
-}
-
-extern "efiapi" fn reg_set_value_ex_w(
-    key: usize,
-    _name: *const u16,
-    _reserved: u32,
-    _kind: u32,
-    _data: *const u8,
-    _size: u32,
-) -> u32 {
-    match predefined(key) {
-        Some(_) => error::ACCESS_DENIED,
-        None => error::INVALID_HANDLE,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-extern "efiapi" fn reg_enum_key_ex_w(
-    key: usize,
-    _index: u32,
-    _name: *mut u16,
-    _name_size: *mut u32,
-    _reserved: usize,
-    _class: *mut u16,
-    _class_size: *mut u32,
-    _last_write: *mut u64,
-) -> u32 {
-    match predefined(key) {
-        Some(_) => error::NO_MORE_ITEMS,
-        None => error::INVALID_HANDLE,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-extern "efiapi" fn reg_enum_value_w(
-    key: usize,
-    _index: u32,
-    _name: *mut u16,
-    _name_size: *mut u32,
-    _reserved: usize,
-    _kind: *mut u32,
-    _data: *mut u8,
-    _size: *mut u32,
-) -> u32 {
-    match predefined(key) {
-        Some(_) => error::NO_MORE_ITEMS,
-        None => error::INVALID_HANDLE,
-    }
-}
-
-unsafe fn delete_key(key: usize, subkey: *const u16) -> u32 {
-    match predefined(key) {
-        None => error::INVALID_HANDLE,
-        // SAFETY: the callers' contract: a NUL-terminated subkey, or null.
-        Some(_) if unsafe { is_empty(subkey) } => error::ACCESS_DENIED,
-        Some(_) => error::FILE_NOT_FOUND,
-    }
-}
-
-unsafe extern "efiapi" fn reg_delete_key_w(key: usize, subkey: *const u16) -> u32 {
-    // SAFETY: `RegDeleteKeyW`'s contract.
-    unsafe { delete_key(key, subkey) }
-}
-
-unsafe extern "efiapi" fn reg_delete_key_ex_w(
-    key: usize,
-    subkey: *const u16,
-    _access: u32,
-    _reserved: u32,
-) -> u32 {
-    // SAFETY: `RegDeleteKeyExW`'s contract.
-    unsafe { delete_key(key, subkey) }
-}
-
-extern "efiapi" fn reg_delete_value_w(key: usize, _name: *const u16) -> u32 {
-    match predefined(key) {
-        Some(_) => error::FILE_NOT_FOUND,
-        None => error::INVALID_HANDLE,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-unsafe extern "efiapi" fn reg_query_info_key_w(
-    key: usize,
-    class: *mut u16,
-    class_size: *mut u32,
-    _reserved: usize,
-    subkeys: *mut u32,
-    longest_subkey: *mut u32,
-    longest_class: *mut u32,
-    values: *mut u32,
-    longest_value_name: *mut u32,
-    longest_value: *mut u32,
-    security_descriptor: *mut u32,
-    last_write: *mut u64,
-) -> u32 {
-    if predefined(key).is_none() {
-        return error::INVALID_HANDLE;
-    }
-    if !class.is_null() {
-        // SAFETY: the caller passes the class buffer's size with it.
-        if class_size.is_null() || unsafe { class_size.read() } == 0 {
-            return error::INVALID_PARAMETER;
-        }
-        // SAFETY: as above: at least one writable unit.
-        unsafe { class.write(0) };
-    }
-    for count in [
-        class_size,
-        subkeys,
-        longest_subkey,
-        longest_class,
-        values,
-        longest_value_name,
-        longest_value,
-        security_descriptor,
-    ] {
-        if !count.is_null() {
-            // SAFETY: the caller passes writable `DWORD`s, or nulls.
-            unsafe { count.write(0) };
-        }
-    }
-    if !last_write.is_null() {
-        // SAFETY: the caller passes a writable `FILETIME`, or null.
-        unsafe { last_write.write_unaligned(0) };
-    }
-    ERROR_SUCCESS
-}
-
 fn is_this_computer(name: &[u16]) -> bool {
     let name = name
         .strip_prefix(&[u16::from(b'\\'), u16::from(b'\\')])
@@ -286,13 +99,6 @@ unsafe extern "efiapi" fn reg_connect_registry_w(
             ERROR_SUCCESS
         }
         _ => error::INVALID_HANDLE,
-    }
-}
-
-extern "efiapi" fn reg_close_key(key: usize) -> u32 {
-    match predefined(key) {
-        Some(_) => ERROR_SUCCESS,
-        None => error::INVALID_HANDLE,
     }
 }
 
@@ -455,18 +261,7 @@ extern "efiapi" fn close_service_handle(_handle: usize) -> Bool {
 }
 
 pub(super) const EXPORTS: &[Export] = exports![
-    b"RegOpenKeyExW" => reg_open_key_ex_w,
-    b"RegCreateKeyExW" => reg_create_key_ex_w,
-    b"RegQueryValueExW" => reg_query_value_ex_w,
-    b"RegSetValueExW" => reg_set_value_ex_w,
-    b"RegEnumKeyExW" => reg_enum_key_ex_w,
-    b"RegEnumValueW" => reg_enum_value_w,
-    b"RegDeleteKeyW" => reg_delete_key_w,
-    b"RegDeleteKeyExW" => reg_delete_key_ex_w,
-    b"RegDeleteValueW" => reg_delete_value_w,
-    b"RegQueryInfoKeyW" => reg_query_info_key_w [four_stack_arguments],
     b"RegConnectRegistryW" => reg_connect_registry_w,
-    b"RegCloseKey" => reg_close_key,
     b"GetUserNameW" => get_user_name_w,
     b"OpenProcessToken" => open_process_token,
     b"LookupPrivilegeValueW" => lookup_privilege_value_w,

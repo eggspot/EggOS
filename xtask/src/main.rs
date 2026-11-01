@@ -1360,6 +1360,8 @@ const WINDOWS_LAYER_PACKAGE: &str = "eggos-windows";
 
 const WINDOWS_LAYER_PATH: &str = "usr/lib/eggos/windows";
 
+const WINDOWS_COMMAND_PATH: &str = "bin/windows";
+
 const WINDOWS_LAYER_ARCHES: [&str; 2] = ["x86_64", "aarch64"];
 
 const WINDOWS_X64_TARGET: &str = "x86_64-pc-windows-msvc";
@@ -1672,6 +1674,12 @@ fn release_initramfs(
             .iter()
             .map(|(path, host)| (*path, initramfs::Content::Program(host.as_str()))),
     );
+    if layers.iter().any(|(path, _)| *path == WINDOWS_LAYER_PATH) {
+        members.push((
+            WINDOWS_COMMAND_PATH,
+            initramfs::Content::HardLink(WINDOWS_LAYER_PATH),
+        ));
+    }
     members.extend_from_slice(extra);
     initramfs::build(&members, file_name)
 }

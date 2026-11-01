@@ -45,12 +45,17 @@ enum Failure {
     Translation(&'static str),
 }
 
+const REGISTRY_COMMAND: &[u8] = b"registry";
+
 pub fn run(startup: &Startup) -> i32 {
     let mut arguments = startup.arguments();
     let _layer = arguments.next();
     let program = arguments
         .next()
         .map_or(&b"windows"[..], |path| path.to_bytes());
+    if program == REGISTRY_COMMAND {
+        return win32::registry::run_command(startup);
+    }
     #[cfg(target_arch = "aarch64")]
     if program == LAYER_OPTION.as_bytes() {
         return translate_ahead(startup);

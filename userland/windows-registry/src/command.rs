@@ -7,8 +7,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use eggos_commands::errors::{self, by_code};
 use eggos_commands::ErrorDefinition;
+use eggos_commands::errors::{self, by_code};
+pub use eggos_commands::tools::CODED_ERRORS_ENVIRONMENT;
 
 use crate::hive::Value;
 use crate::path::{KeyPath, utf8, utf16};

@@ -68,6 +68,7 @@ mod process;
 mod processes;
 mod psapi;
 mod random;
+pub(crate) mod registry;
 mod resource;
 mod scroll_bar;
 mod send_input;
@@ -291,7 +292,7 @@ const OLE32: &[&[Export]] = &[com::OLE32_EXPORTS];
 
 const OLEAUT32: &[&[Export]] = &[com::OLEAUT32_EXPORTS];
 
-const ADVAPI32: &[&[Export]] = &[advapi32::EXPORTS];
+const ADVAPI32: &[&[Export]] = &[advapi32::EXPORTS, registry::EXPORTS];
 
 const WSOCK32: &[&[Export]] = &[winsock::EXPORTS];
 
