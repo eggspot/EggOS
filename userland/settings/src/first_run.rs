@@ -496,6 +496,9 @@ impl FirstRunWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use eggos_toolkit::elements::{MAX_TREE_BYTES, Role, TreeWriter, elements, flags};
     use eggos_toolkit::input::{Input, Modifiers, MouseButton, key};
 
     fn click(window: &mut FirstRunWindow, x: i32, y: i32) -> Option<FirstRunRequest> {
@@ -729,5 +732,73 @@ mod tests {
             press(&mut window, key::ENTER, 0),
             Some(FirstRunRequest::Finish { save_profile: None })
         );
+    }
+
+    type Described = (Role, u16, String, String);
+
+    fn described(window: &mut FirstRunWindow) -> Vec<Described> {
+        let mut bytes = alloc::vec![0u8; MAX_TREE_BYTES];
+        let mut writer = TreeWriter::new(&mut bytes);
+        window.tree().describe(&mut writer);
+        elements(writer.bytes())
+            .map(|element| {
+                let element = element.unwrap();
+                (
+                    element.role,
+                    element.flags,
+                    String::from_utf8(element.name.to_vec()).unwrap(),
+                    String::from_utf8(element.value.to_vec()).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn named(described: &[Described], role: Role, name: &str) -> Option<Described> {
+        described
+            .iter()
+            .find(|element| element.0 == role && element.2 == name)
+            .cloned()
+    }
+
+    #[test]
+    fn wm_show_lists_each_page_s_controls_with_the_names_of_the_design() {
+        let mut window = FirstRunWindow::new(Facts::example(), false);
+        let first = described(&mut window);
+        assert!(named(&first, Role::RadioGroup, "").is_some());
+        let radios: Vec<_> = first
+            .iter()
+            .filter(|element| element.0 == Role::Radio)
+            .map(|element| (element.2.as_str(), element.1 & flags::SELECTED != 0))
+            .collect();
+        let profile = Facts::example().profile.min(2);
+        assert_eq!(
+            radios,
+            [
+                ("Windows", profile == 0),
+                ("macOS", profile == 1),
+                ("Linux", profile == 2),
+            ]
+        );
+        assert!(named(&first, Role::Button, "Skip").is_some());
+        let back = named(&first, Role::Button, "Back").unwrap();
+        assert_ne!(back.1 & flags::DISABLED, 0);
+        assert!(named(&first, Role::Button, "Next").is_some());
+        assert!(named(&first, Role::Label, HEADINGS[0]).is_some());
+        assert!(named(&first, Role::Label, HINT).is_some());
+        assert!(named(&first, Role::ComboBox, "Layout").is_none());
+        click(&mut window, 576, 410);
+        let second = described(&mut window);
+        let layout = named(&second, Role::ComboBox, "Layout").unwrap();
+        assert!(LAYOUT_TITLES.contains(&layout.3.as_str()));
+        assert!(named(&second, Role::TextField, TRY_PLACEHOLDER).is_some());
+        let back = named(&second, Role::Button, "Back").unwrap();
+        assert_eq!(back.1 & flags::DISABLED, 0);
+        assert!(named(&second, Role::RadioGroup, "").is_none());
+        click(&mut window, 576, 410);
+        let third = described(&mut window);
+        assert!(named(&third, Role::TextField, zone_picker::PLACEHOLDER).is_some());
+        assert!(third.iter().any(|element| element.0 == Role::List));
+        assert!(named(&third, Role::Button, "Done").is_some());
+        assert!(named(&third, Role::Label, "Now").is_some());
     }
 }
