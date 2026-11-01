@@ -5,6 +5,7 @@
 //! docs/ux/agents-v0.3.md), Components and About. It holds only widgets and answers what the user does with what the
 //! program must do; the program talks to the system.
 
+use crate::about_pane::AboutPane;
 use crate::accessibility_pane::AccessibilityPane;
 use crate::activity::{ActivityQuery, ActivityRead};
 use crate::agents_pane::{self, AgentsPane, GrantsRead};
@@ -38,7 +39,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 186;
+pub const CAPACITY: usize = 189;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -311,7 +312,24 @@ const PANE_WORDS: [&[&str]; 10] = [
     ],
     &["layers", "apps", "Remove"],
     &[
-        "version", "system", "licence", "license", "memory", "CPU", "uptime",
+        "version",
+        "system",
+        "licence",
+        "license",
+        "memory",
+        "CPU",
+        "uptime",
+        "devices",
+        "hardware",
+        "driver",
+        "drivers",
+        "Device Manager",
+        "System Information",
+        "System Report",
+        "PCI",
+        "virtio",
+        "GPU",
+        "graphics",
     ],
 ];
 
@@ -379,6 +397,9 @@ pub enum Request {
     /// Pair the agent [`SettingsWindow::to_pair`] names, read the grants and the network again,
     /// then show them ([`SettingsWindow::paired`]).
     BeginPairing,
+    /// Read `/proc/driver/devices` and show it in About ([`SettingsWindow::show_devices`])
+    /// (D219).
+    ReadDevices,
 }
 
 /// How setting the clock went, as the `Date & time` pane's status line says it.
@@ -443,6 +464,7 @@ pub struct SettingsWindow {
     display: DisplayPane,
     inputs: InputPanes,
     accessibility: AccessibilityPane,
+    about: AboutPane,
     facts: Facts,
     pane: usize,
 }
@@ -556,10 +578,10 @@ impl Builder<'_> {
         )
     }
 
-    fn pane(&mut self, parent: WidgetId) -> WidgetId {
+    fn pane(&mut self, parent: WidgetId, height: Length) -> WidgetId {
         self.add(
             Some(parent),
-            Place::at(0, 0, Length::Fill(0), Length::Px(PANE_HEIGHT)),
+            Place::at(0, 0, Length::Fill(0), height),
             Kind::Panel {
                 fill: None,
                 border_right: None,
@@ -612,7 +634,10 @@ impl SettingsWindow {
             Place::fill(),
             Kind::scroll_view(),
         );
-        let panes = [(); PANES.len()].map(|()| build.pane(scroll));
+        let panes: [WidgetId; PANES.len()] = core::array::from_fn(|pane| match pane {
+            ABOUT => build.pane(scroll, Length::Fill(0)),
+            _ => build.pane(scroll, Length::Px(PANE_HEIGHT)),
+        });
         let profile = facts.profile.min(PROFILE_LABELS.len() - 1);
 
         let appearance = panes[APPEARANCE];
@@ -868,6 +893,7 @@ impl SettingsWindow {
             facts.input,
         );
         let accessibility = AccessibilityPane::build(&mut tree, panes[ACCESSIBILITY], facts.keys);
+        let about_devices = AboutPane::build(&mut tree, panes[ABOUT]);
         let zones = ZonePicker::build(
             &mut tree,
             panes[DATE_AND_TIME],
@@ -918,6 +944,7 @@ impl SettingsWindow {
             display,
             inputs,
             accessibility,
+            about: about_devices,
             facts,
             pane: APPEARANCE,
         };
@@ -1036,7 +1063,21 @@ impl SettingsWindow {
             self.agents.reset(&mut self.tree);
             return Some(Request::ReadGrants);
         }
+        if pane == ABOUT {
+            self.about.reset(&mut self.tree);
+            return Some(Request::ReadDevices);
+        }
         None
+    }
+
+    /// Shows the devices just read from `/proc/driver/devices` in About (D219).
+    pub fn show_devices(&mut self, read: Result<&[u8], Errno>) {
+        self.about.show_devices(&mut self.tree, read);
+    }
+
+    /// The About pane's `Devices` section.
+    pub fn about_pane(&self) -> &AboutPane {
+        &self.about
     }
 
     /// Shows the agents' grants just read on the Agents pane (D193).
@@ -1488,6 +1529,9 @@ impl SettingsWindow {
 
     /// Acts on what an input did at `now_ms`: what the program must do, if anything.
     pub fn respond(&mut self, response: Response, now_ms: u32) -> Option<Request> {
+        if self.about.respond(&mut self.tree, response) {
+            return None;
+        }
         if let Reply::Done(request) = self.storage.respond(&mut self.tree, response, now_ms) {
             return request;
         }

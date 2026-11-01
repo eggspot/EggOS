@@ -120,6 +120,8 @@ fn close(fd: usize) {
     let _ = syscall(number::CLOSE, [fd, 0, 0, 0, 0, 0]);
 }
 
+const DEVICES_TEXT_CAPACITY: usize = 32 * 1024;
+
 fn read_file(path: &str, buffer: &mut [u8]) -> Result<usize, Errno> {
     let path = CPath::new(path);
     let fd = syscall(
@@ -959,6 +961,12 @@ impl Application<CAPACITY> for Settings {
                 let turned =
                     pairing::turn_network(&mut LinuxGrantFiles, port).map_err(|(_, errno)| errno);
                 self.window.network_turned(turned, network_read());
+            }
+            Some(Request::ReadDevices) => {
+                let mut text = alloc::vec![0u8; DEVICES_TEXT_CAPACITY];
+                let read = read_file(eggos_device_list::DEVICES_FILE, &mut text);
+                self.window
+                    .show_devices(read.map(|length| &text[..length]));
             }
             Some(Request::BeginPairing) => {
                 if let Some((agent, name)) = self.window.to_pair() {

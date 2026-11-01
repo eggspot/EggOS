@@ -43,6 +43,16 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         });
     }
 
+    /// Makes `data` what table `id` gives its cell function from now on; without a response.
+    pub fn set_cell_data(&mut self, id: WidgetId, data: u32) {
+        self.change_table(id, |table| table.data = data);
+    }
+
+    /// Makes `text` what table `id` draws while it has no rows; without a response.
+    pub fn set_empty_text(&mut self, id: WidgetId, text: &'static str) {
+        self.change_table(id, |table| table.empty_text = text);
+    }
+
     /// Draws table `id` sorted by `sort`, or with no arrow for `None`; without a response.
     pub fn set_sort(&mut self, id: WidgetId, sort: Option<(usize, SortOrder)>) {
         self.change_table(id, |table| {

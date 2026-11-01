@@ -15,6 +15,7 @@ eggos-android-properties = { path = "../../android-properties" }
 eggos-app = { path = "../app" }
 eggos-calendar = { path = "../../calendar" }
 eggos-commands = { path = "../commands" }
+eggos-device-list = { path = "../device-list" }
 eggos-element-tree = { path = "../element-tree" }
 eggos-files = { path = "../files" }
 eggos-mcp = { path = "../mcp" }

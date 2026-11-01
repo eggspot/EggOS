@@ -55,6 +55,7 @@ dependencies = [
  "eggos-app",
  "eggos-calendar",
  "eggos-commands",
+ "eggos-device-list",
  "eggos-drivers",
  "eggos-element-tree",
  "eggos-files",
@@ -68,6 +69,10 @@ dependencies = [
 
 [[package]]
 name = "eggos-crypto"
+version = "0.2.0"
+
+[[package]]
+name = "eggos-device-list"
 version = "0.2.0"
 
 [[package]]
@@ -278,6 +283,7 @@ dependencies = [
  "eggos-app",
  "eggos-calendar",
  "eggos-commands",
+ "eggos-device-list",
  "eggos-editor",
  "eggos-eggfs",
  "eggos-files",

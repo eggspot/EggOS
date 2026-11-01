@@ -7,6 +7,7 @@
 
 extern crate alloc;
 
+pub mod about_pane;
 pub mod accessibility_pane;
 pub mod activity;
 pub mod agents_pane;
