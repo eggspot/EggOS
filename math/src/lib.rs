@@ -33,7 +33,7 @@ pub use remainder::{fmod, remainder, remquo};
 pub use root::{cbrt, fma, hypot, sqrt};
 pub use single::*;
 pub use special::{erf, erfc, lgamma, lgamma_r, tgamma};
-pub use trigonometric::{acos, asin, atan, atan2, cos, sin, tan};
+pub use trigonometric::{acos, asin, atan, atan2, cos, cospi, sin, sinpi, tan};
 
 /// [`ilogb`]'s result for zero, as MSVC's `FP_ILOGB0`.
 pub const ILOGB_ZERO: i32 = i32::MIN;
@@ -43,8 +43,8 @@ pub const ILOGB_NAN: i32 = i32::MAX;
 /// Each function's error bound in units in the last place, as the host tests check it.
 pub const ACCURACY: &[(&str, u32)] = &[
     ("sqrt fabs floor ceil trunc round rint fmod remainder frexp ldexp modf nextafter", 0),
-    ("sin cos exp exp2 expm1 log log2 log10 log1p atan cbrt hypot", 1),
+    ("sin cos sinpi cospi exp exp2 expm1 log log2 log10 log1p atan cbrt hypot", 1),
     ("tan asin acos atan2 pow sinh cosh tanh asinh acosh atanh fma", 2),
-    ("erf erfc tgamma", 4),
+    ("erf erfc tgamma lgamma (absolutely within 2^-60 next to its zeros at 1 and 2)", 4),
     ("float twins of every function", 1),
 ];

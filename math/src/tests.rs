@@ -428,6 +428,20 @@ fn c_s_special_cases_hold() {
     assert_eq!(fmax(1.0, f64::NAN), 1.0);
     assert_eq!(fdim(1.0, 3.0), 0.0);
     assert_eq!(copysign(3.0, -0.0), -3.0);
+    assert_eq!(sinpi(1.0), 0.0);
+    assert_eq!(sinpi(0.5), 1.0);
+    assert_eq!(sinpi(-1.5), 1.0);
+    assert_eq!(cospi(0.5), 0.0);
+    assert_eq!(cospi(1.0), -1.0);
+    assert_eq!(cospi(-2.0), 1.0);
+    assert!(sinpi(f64::INFINITY).is_nan());
+    let mut random = Random(13);
+    for x in random.uniform(-4.0, 4.0, 5000) {
+        let wanted = (std::f64::consts::PI * x).sin();
+        assert!((sinpi(x) - wanted).abs() <= 1e-15, "sinpi({x})");
+        let wanted = (std::f64::consts::PI * x).cos();
+        assert!((cospi(x) - wanted).abs() <= 1e-15, "cospi({x})");
+    }
 }
 
 #[test]

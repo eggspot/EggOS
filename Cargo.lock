@@ -232,6 +232,7 @@ dependencies = [
  "eggos-calendar",
  "eggos-element-tree",
  "eggos-macos-gui",
+ "eggos-math",
  "eggos-plist",
  "eggos-runtime",
  "eggos-settings-file",

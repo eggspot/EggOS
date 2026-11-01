@@ -9,6 +9,7 @@ pub mod dynamic;
 mod file;
 pub mod heap;
 mod locale;
+mod math;
 mod memory;
 mod multibyte;
 mod options;
@@ -612,6 +613,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
     let name = darwin::bound_symbol(name, cfg!(target_arch = "x86_64"))?;
     data(name)
         .or_else(|| function(name))
+        .or_else(|| math::function(name))
         .map(|address| address as u64)
 }
 

@@ -254,20 +254,26 @@ pub fn tan(x: f64) -> f64 {
     }
 }
 
+fn times_pi(value: f64) -> (f64, f64) {
+    let (product, error) = two_product(value, PI.0);
+    fast_two_sum(product, error + value * PI.1)
+}
+
+/// `x` less the nearest even whole number, exactly, for `|x| < 2^52`.
+fn less_nearest_even(x: f64) -> f64 {
+    x - 2.0 * rint(0.5 * x)
+}
+
 /// `sin(π x)`, exact in its reduction, for a finite `x`.
 pub(crate) fn sin_pi(x: f64) -> f64 {
     if fabs(x) >= TWO_POW_52 {
         return copysign(0.0, x);
     }
-    let reduced = x - 2.0 * rint(0.5 * x);
+    let reduced = less_nearest_even(x);
     let mut turn = fabs(reduced);
     if turn > 0.5 {
         turn = 1.0 - turn;
     }
-    let times_pi = |value: f64| {
-        let (product, error) = two_product(value, PI.0);
-        fast_two_sum(product, error + value * PI.1)
-    };
     let value = if turn > 0.25 {
         let (high, low) = times_pi(0.5 - turn);
         cos_kernel(high, low)
@@ -276,6 +282,39 @@ pub(crate) fn sin_pi(x: f64) -> f64 {
         sin_kernel(high, low)
     };
     if reduced < 0.0 { -value } else { value }
+}
+
+/// `sinpi`: `sin(π x)`, exact in its reduction, so whole `x` give zeros.
+pub fn sinpi(x: f64) -> f64 {
+    if !x.is_finite() {
+        return x - x;
+    }
+    sin_pi(x)
+}
+
+/// `cospi`: `cos(π x)`, exact in its reduction, so half-odd `x` give zeros.
+pub fn cospi(x: f64) -> f64 {
+    if !x.is_finite() {
+        return x - x;
+    }
+    if fabs(x) >= TWO_POW_52 {
+        return 1.0;
+    }
+    let mut turn = fabs(less_nearest_even(fabs(x)));
+    let sign = if turn > 0.5 {
+        turn = 1.0 - turn;
+        -1.0
+    } else {
+        1.0
+    };
+    let value = if turn > 0.25 {
+        let (high, low) = times_pi(0.5 - turn);
+        sin_kernel(high, low)
+    } else {
+        let (high, low) = times_pi(turn);
+        cos_kernel(high, low)
+    };
+    sign * value
 }
 
 fn atan_reduced(x: (f64, f64)) -> (f64, f64) {
