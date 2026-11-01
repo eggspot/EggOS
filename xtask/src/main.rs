@@ -1160,6 +1160,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::shell::check(arch, &kernel)?;
     qemu::real_time::check(arch, &kernel)?;
     qemu::text_editor::check(arch, &kernel)?;
+    qemu::terminals::check(arch, &kernel)?;
     qemu::reboot::check(arch, &kernel)?;
     qemu::network::check(arch, &build_network_test_kernel(arch)?)?;
     qemu::agent_network::check(arch, &kernel)?;

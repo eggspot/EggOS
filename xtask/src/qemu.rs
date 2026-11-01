@@ -26,6 +26,7 @@ pub mod sdl_app;
 pub mod settings;
 pub mod shell;
 pub mod static_glibc;
+pub mod terminals;
 pub mod text_editor;
 pub mod win32_app;
 mod win_controls;
