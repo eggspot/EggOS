@@ -721,6 +721,8 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
         desktop.set_unread_since(client.id(), client.unread_since(), damage);
     }
     desktop.set_agent_connected(AGENT_CONNECTED.load(Ordering::Relaxed), damage);
+    let (latched, locked) = input::sticky_modifiers();
+    desktop.set_latched(latched, locked, damage);
     show_keyboard_layouts(desktop, damage);
     while let Some(event) = input::next_event() {
         let asked = match event {
@@ -947,6 +949,16 @@ fn toggle_sticky_keys<P: Platform>() {
     {
         launch_failed::<P>();
     }
+}
+
+/// Sticky keys were turned `on` or off (`/dev/window`'s `SET_KEY_ACCESSIBILITY`, D223): the
+/// bar says so for a moment and shows no chips while they are off.
+pub fn sticky_keys_turned<P: Platform>(on: bool) {
+    with_windows::<P, _>(|desktop, _, damage, _| {
+        let (latched, locked) = input::sticky_modifiers();
+        desktop.set_latched(latched, locked, damage);
+        desktop.sticky_keys_turned(on, damage);
+    });
 }
 
 fn launch_command(app: AppId) -> Option<Launch> {

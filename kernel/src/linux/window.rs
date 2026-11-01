@@ -312,8 +312,12 @@ pub fn ioctl<P: Platform>(
             slow_keys_ms,
         } => {
             let slow = (slow_keys != 0).then_some(slow_keys_ms);
+            let was_on = crate::input::sticky_keys();
             if !crate::input::set_key_accessibility(sticky_keys != 0, slow) {
                 return Err(Errno::EINVAL);
+            }
+            if was_on != (sticky_keys != 0) {
+                crate::terminal::sticky_keys_turned::<P>(sticky_keys != 0);
             }
         }
         Request::ListDesktops => {

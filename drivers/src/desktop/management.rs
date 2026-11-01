@@ -642,6 +642,7 @@ impl Desktop {
         self.tick_notice(damage);
         self.tick_tooltip(damage);
         self.tick_agent(damage);
+        self.tick_sticky_notice(damage);
         destroyed
     }
 

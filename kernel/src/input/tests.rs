@@ -982,6 +982,40 @@ fn a_click_takes_the_latched_and_locked_modifiers_and_ends_a_tap() {
 }
 
 #[test]
+fn the_chips_show_latched_and_locked_modifiers_and_a_click_keeps_its_latch_shown() {
+    let mut sticky = Sticky::new();
+    let shift = Modifiers::SHIFT.bits();
+    let ctrl = Modifiers::CTRL.bits();
+    let none = Modifiers::NONE;
+    assert_eq!(sticky.shown(), 0);
+    sticky.apply(42, KeyChange::Pressed, Modifiers::SHIFT, shift);
+    sticky.apply(42, KeyChange::Released, none, 0);
+    assert_eq!(sticky.shown(), u32::from(shift));
+    for _ in 0..2 {
+        sticky.apply(29, KeyChange::Pressed, Modifiers::CTRL, ctrl);
+        sticky.apply(29, KeyChange::Released, none, 0);
+    }
+    assert_eq!(sticky.shown(), u32::from(shift) | (u32::from(ctrl) << 8));
+    sticky.button_pressed(none);
+    assert_eq!(sticky.shown(), u32::from(shift) | (u32::from(ctrl) << 8));
+    sticky.buttons_released();
+    assert_eq!(sticky.shown(), u32::from(ctrl) << 8);
+}
+
+#[test]
+fn turning_sticky_keys_off_mid_click_keeps_that_clicks_releases() {
+    let mut sticky = Sticky::new();
+    let shift = Modifiers::SHIFT.bits();
+    sticky.apply(42, KeyChange::Pressed, Modifiers::SHIFT, shift);
+    sticky.apply(42, KeyChange::Released, Modifiers::NONE, 0);
+    assert_eq!(sticky.button_pressed(Modifiers::NONE), shift);
+    let off = sticky.turned_off();
+    assert_eq!((off.latched, off.locked, off.tapping), (0, 0, None));
+    let mut off = off;
+    assert_eq!(off.buttons_released(), shift);
+}
+
+#[test]
 fn key_accessibility_refuses_a_slow_delay_out_of_range() {
     assert!(!set_key_accessibility(false, Some(50)));
     assert!(set_key_accessibility(false, None));

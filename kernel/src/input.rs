@@ -446,6 +446,21 @@ pub fn sticky_keys() -> bool {
     STICKY_KEYS.load(Ordering::Relaxed)
 }
 
+static STICKY_SHOWN: AtomicU32 = AtomicU32::new(0);
+
+/// The modifiers sticky keys hold now, latched for the next key or click and locked; none
+/// while sticky keys are off (D223).
+pub fn sticky_modifiers() -> (Modifiers, Modifiers) {
+    if !sticky_keys() {
+        return (Modifiers::NONE, Modifiers::NONE);
+    }
+    let shown = STICKY_SHOWN.load(Ordering::Relaxed);
+    (
+        Modifiers::from_bits(shown as u8),
+        Modifiers::from_bits((shown >> 8) as u8),
+    )
+}
+
 const STICKY_KEY_CODES: [(u8, u16); 5] = [
     (Modifiers::SHIFT.bits(), key::LEFT_SHIFT),
     (Modifiers::CTRL.bits(), key::LEFT_CTRL),
@@ -486,6 +501,18 @@ impl Sticky {
 
     fn buttons_released(&mut self) -> u8 {
         core::mem::take(&mut self.clicking)
+    }
+
+    const fn turned_off(self) -> Self {
+        Self {
+            clicking: self.clicking,
+            ..Self::new()
+        }
+    }
+
+    const fn shown(self) -> u32 {
+        let latched = self.latched | (self.clicking & !self.locked);
+        (latched as u32) | ((self.locked as u32) << 8)
     }
 
     fn apply(&mut self, code: u16, change: KeyChange, held: Modifiers, added: u8) -> Modifiers {
@@ -855,7 +882,7 @@ impl InputState {
         let modifiers = match sticky_keys {
             true => self.sticky_modifiers(event.code, change, before, held),
             false => {
-                self.sticky = Sticky::new();
+                self.sticky = self.sticky.turned_off();
                 held
             }
         };
@@ -985,6 +1012,16 @@ impl InputState {
             }
             _ => false,
         }
+    }
+
+    /// The modifiers sticky keys hold, latched in the low byte and locked in the next; with
+    /// sticky keys off, none, and every latch and lock let go but a click's (D223).
+    pub fn sticky_shown(&mut self) -> u32 {
+        if !STICKY_KEYS.load(Ordering::Relaxed) {
+            self.sticky = self.sticky.turned_off();
+            return 0;
+        }
+        self.sticky.shown()
     }
 
     #[cold]
@@ -1556,6 +1593,7 @@ fn poll_devices<P: Platform>(
                 input.events_left = more || !lights_taken;
             }
             PERSON_HOLDS_INPUT.store(input.state.anything_held(), Ordering::Relaxed);
+            STICKY_SHOWN.store(input.state.sticky_shown(), Ordering::Relaxed);
             let next = next_poll(&input.state, timing.now, P::clock_frequency());
             (last, next)
         };

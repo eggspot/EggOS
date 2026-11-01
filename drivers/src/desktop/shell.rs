@@ -369,7 +369,11 @@ impl Desktop {
         };
         let count = 1 + self.listed_windows().count() as u32;
         let group = count * (TASKBAR_ITEM + TASKBAR_GAP) - TASKBAR_GAP;
-        let limit = match self.agent_chip().or(self.keyboard_layout_indicator()) {
+        let leftmost = self
+            .sticky_strip()
+            .or(self.agent_chip())
+            .or(self.keyboard_layout_indicator());
+        let limit = match leftmost {
             Some(leftmost) => leftmost.x,
             None => self.clock_rect().x,
         }
@@ -988,6 +992,7 @@ impl Desktop {
         self.draw_menu_titles(canvas);
         self.draw_clock(canvas);
         self.draw_agent_chip(canvas, self.agent_chip_hovered());
+        self.draw_sticky_chips(canvas);
         self.draw_keyboard_layout_item(canvas);
         self.draw_power(canvas, bar);
     }
@@ -1075,6 +1080,7 @@ impl Desktop {
         });
         self.draw_clock(canvas);
         self.draw_agent_chip(canvas, self.agent_chip_hovered());
+        self.draw_sticky_chips(canvas);
         self.draw_keyboard_layout_item(canvas);
         self.draw_power(canvas, bar);
     }

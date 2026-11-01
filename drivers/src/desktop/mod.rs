@@ -34,6 +34,7 @@ pub mod protocol;
 mod responsiveness;
 mod shell;
 pub mod shortcuts;
+mod sticky_keys;
 mod windows;
 
 #[cfg(test)]
@@ -44,6 +45,8 @@ mod keyboard_layout_tests;
 mod main_menu_tests;
 #[cfg(test)]
 mod management_tests;
+#[cfg(test)]
+mod panel_keys_tests;
 #[cfg(test)]
 mod polish_tests;
 #[cfg(test)]
@@ -85,6 +88,7 @@ pub const CONTENT_CORNER_INSETS: [u32; 5] = paint::INSET_INSIDE_R6;
 pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU_ITEMS};
 pub use shell::{DOCK_ICON, TASKBAR_ITEM, TOOLTIP_DELAY_MS};
 pub use shortcuts::{Profile, Shortcut, shortcut};
+pub use sticky_keys::{STICKY_CHIPS, STICKY_KEYS_OFF, STICKY_KEYS_ON};
 pub use windows::{
     Bounds, CASCADE_STEP, CHROME, ControlSide, DEFAULT_MARGIN, DOUBLE_CLICK_DISTANCE, DOUBLE_CLICK_MS,
     KERNEL_CLIENT, MINIMUM_OUTSIDE, Part, RESTORE_DRAG_DISTANCE, WindowId, clamp_content_size,
@@ -375,6 +379,7 @@ pub struct Desktop {
     clock_length: u8,
     clock_shows_time_of_day: bool,
     agent: agent::AgentState,
+    sticky: sticky_keys::StickyChips,
     keyboard_layouts: keyboard_layout::KeyboardLayouts,
     desktops: u8,
     current_desktop: u8,
@@ -468,6 +473,7 @@ impl Desktop {
             clock_length: 0,
             clock_shows_time_of_day: false,
             agent: agent::AgentState::default(),
+            sticky: sticky_keys::StickyChips::default(),
             keyboard_layouts: keyboard_layout::KeyboardLayouts::default(),
             desktops: 1,
             current_desktop: 0,
