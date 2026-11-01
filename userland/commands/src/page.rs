@@ -98,6 +98,51 @@ pub fn next_cursor(errors: &[u8]) -> Option<&[u8]> {
     is_cursor(cursor).then_some(cursor)
 }
 
+/// Writes item `index`'s key into the buffer and returns its length (at most
+/// [`MAX_KEY_BYTES`]): the key a fixed list pages by.
+pub type ItemKey<'k> = &'k dyn Fn(usize, &mut [u8; MAX_KEY_BYTES]) -> usize;
+
+/// Where item `index` of a fixed list of `count` items stands among the items whose keys come
+/// after `after` (every item when `None`), by key order: `Some(0)` for the smallest, `None` when
+/// its key does not come after the cursor. A list that shows its items in its own order pages by
+/// key with it: a page of `limit` holds the items ranked below `limit`.
+pub fn rank(count: usize, index: usize, after: Option<&[u8]>, key: ItemKey<'_>) -> Option<usize> {
+    let mut own = [0u8; MAX_KEY_BYTES];
+    let own_length = key(index, &mut own);
+    let own = own.get(..own_length)?;
+    if after.is_some_and(|after| own <= after) {
+        return None;
+    }
+    let mut other = [0u8; MAX_KEY_BYTES];
+    let mut rank = 0;
+    for item in 0..count {
+        let length = key(item, &mut other);
+        let other = other.get(..length).unwrap_or_default();
+        if other < own && after.is_none_or(|after| other > after) {
+            rank += 1;
+        }
+    }
+    Some(rank)
+}
+
+/// The item that ends a page of `limit` items of a fixed list (see [`rank`]) when more items
+/// than `limit` come after `after`: its key is the next page's cursor. `None` on the last page.
+pub fn page_end(
+    count: usize,
+    limit: usize,
+    after: Option<&[u8]>,
+    key: ItemKey<'_>,
+) -> Option<usize> {
+    let following = (0..count)
+        .filter(|&index| rank(count, index, after, key).is_some())
+        .count();
+    if following <= limit {
+        return None;
+    }
+    let last = limit.checked_sub(1)?;
+    (0..count).find(|&index| rank(count, index, after, key) == Some(last))
+}
+
 /// The `limit` smallest keys of those offered in any order (each at most `K` bytes), so that a
 /// command whose items come unsorted can show one page in key order with a fixed amount of
 /// memory: `N` must be more than the largest limit.
@@ -260,6 +305,30 @@ mod tests {
         }
         let long = format!("{MORE_PREFIX}{}\n", "a".repeat(MAX_CURSOR_BYTES + 1));
         assert_eq!(next_cursor(long.as_bytes()), None);
+    }
+
+    #[test]
+    fn a_fixed_list_pages_by_key_and_keeps_its_own_order_within_a_page() {
+        const NAMES: [&str; 5] = ["pear", "apple", "fig", "kiwi", "banana"];
+        let key = |index: usize, out: &mut [u8; MAX_KEY_BYTES]| {
+            let name = NAMES[index].as_bytes();
+            out[..name.len()].copy_from_slice(name);
+            name.len()
+        };
+        let ranks: Vec<Option<usize>> = (0..NAMES.len())
+            .map(|index| rank(NAMES.len(), index, None, &key))
+            .collect();
+        assert_eq!(ranks, [Some(4), Some(0), Some(2), Some(3), Some(1)]);
+        assert_eq!(page_end(NAMES.len(), 2, None, &key), Some(4));
+        let after = Some(&b"banana"[..]);
+        let ranks: Vec<Option<usize>> = (0..NAMES.len())
+            .map(|index| rank(NAMES.len(), index, after, &key))
+            .collect();
+        assert_eq!(ranks, [Some(2), None, Some(0), Some(1), None]);
+        assert_eq!(page_end(NAMES.len(), 2, after, &key), Some(3));
+        assert_eq!(page_end(NAMES.len(), 3, after, &key), None);
+        assert_eq!(page_end(NAMES.len(), 9, None, &key), None);
+        assert_eq!(rank(NAMES.len(), 0, Some(&b"zebra"[..]), &key), None);
     }
 
     #[test]
