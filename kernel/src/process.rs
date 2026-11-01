@@ -1751,11 +1751,12 @@ impl<P: Platform> Process<P> {
     /// Resolves `fault`, a page fault the process's program took at user address `address`
     /// ([`Platform::page_fault`] classifies it): if the address is in a region that allows the
     /// access, maps the page if it is not mapped yet (demand paging), and drops this CPU's
-    /// cached translation of it, so the program can run the access again. A fault that may be
-    /// stale on a page already mapped for the access (a RISC-V hart may cache an invalid
-    /// entry) is cured by that drop alone; a permission fault on one is not retried, as the
-    /// entry the CPU used raised it. Call it from a thread of the process, on the CPU the
-    /// program faulted on.
+    /// cached translation of it, so the program can run the access again. A fault on a page
+    /// already mapped for the access is cured by that drop alone: a stale one (a RISC-V hart
+    /// may cache an invalid entry), or a permission fault whose page another thread mapped
+    /// for the access after the CPU raised it (it copied a page `fork` shared, or changed its
+    /// protection), as Linux retries a spurious fault (D215). Call it from a thread of the
+    /// process, on the CPU the program faulted on.
     pub fn resolve_page_fault(
         &self,
         address: u64,
@@ -1786,11 +1787,10 @@ impl<P: Platform> Process<P> {
 
     /// Makes user page `page` ready for `access`, with the regions' lock held (`regions`):
     /// maps a zeroed frame there if its region allows the access and it is not mapped yet.
-    /// A page already mapped for the access is ready only if `mapped_is_ready` (a fault that
-    /// may be stale, or a kernel copy). Returns the frame and the mapping's attributes.
+    /// A page already mapped for the access is ready. Returns the frame and the attributes.
     ///
-    /// When `mapped_is_ready`, the page is most likely not mapped (a first touch, or a kernel
-    /// copy that found it so), so it is mapped first and looked up only if that finds it
+    /// When `likely_unmapped` (a fault that may be stale, a first touch, or a kernel copy),
+    /// the page is mapped first and looked up only if that finds it
     /// mapped: one walk of the tables, not two (D53). The frame zeroed for a page that turns
     /// out to be mapped, a stale fault's, goes back; with no frame to try with, the page is
     /// looked up all the same, so a stale fault on a mapped page resumes the program even
@@ -1800,7 +1800,7 @@ impl<P: Platform> Process<P> {
         regions: &Regions,
         page: u64,
         access: Access,
-        mapped_is_ready: bool,
+        likely_unmapped: bool,
         reads: &mut FilePageReads,
     ) -> Result<(u64, Attributes), UnresolvedFault> {
         let region = regions.find(page).ok_or(UnresolvedFault::NotAllowed)?;
@@ -1808,7 +1808,7 @@ impl<P: Platform> Process<P> {
             .attributes
             .filter(|&attributes| access.allowed_by(attributes))
             .ok_or(UnresolvedFault::NotAllowed)?;
-        if mapped_is_ready {
+        if likely_unmapped {
             if memory.has_files.load(Ordering::Relaxed)
                 && let Some(read) = Self::populate_from_file(memory, page, attributes, reads)
             {
@@ -1824,9 +1824,7 @@ impl<P: Platform> Process<P> {
             }
         }
         match memory.space.translate(page) {
-            Some((frame, mapped)) if mapped_is_ready && access.allowed_by(mapped) => {
-                Ok((frame, mapped))
-            }
+            Some((frame, mapped)) if access.allowed_by(mapped) => Ok((frame, mapped)),
             Some((frame, mapped)) if access == Access::Write && !mapped.writable => {
                 Self::copy_on_write(memory, page, frame, attributes)
             }
@@ -2927,24 +2925,23 @@ mod tests {
         );
         let read = fault(ExceptionKind::DataFault, Some(DATA + 8), false);
         assert_eq!(resolve(&process, &read), Ok(()));
-        // On that mapped, readable page: a read that is not a page fault (say, an alignment
-        // fault reported as a data abort), and a permission fault the entry raised, are never
-        // retried; retrying would fault again for ever.
-        for code in [
-            crate::tests::NOT_A_PAGE_FAULT,
-            crate::tests::FAULT_PERMISSION,
-        ] {
-            let mut again = read;
-            again.code = code;
+        let mut not_a_page_fault = read;
+        not_a_page_fault.code = crate::tests::NOT_A_PAGE_FAULT;
+        assert_eq!(
+            resolve(&process, &not_a_page_fault),
+            Err(UnresolvedFault::NotAllowed),
+            "a read that is not a page fault on a mapped, readable page is never retried"
+        );
+        let write = fault(ExceptionKind::DataFault, Some(DATA + 8), true);
+        let mut write_raised_by_the_entry = write;
+        write_raised_by_the_entry.code |= crate::tests::FAULT_PERMISSION;
+        for write in [write, write_raised_by_the_entry] {
             assert_eq!(
-                resolve(&process, &again),
+                resolve(&process, &write),
                 Err(UnresolvedFault::NotAllowed),
-                "{code:#x}"
+                "a write to read-only memory is never resolved"
             );
         }
-        // Mapped read-only, a write still faults and is not resolved.
-        let write = fault(ExceptionKind::DataFault, Some(DATA + 8), true);
-        assert_eq!(resolve(&process, &write), Err(UnresolvedFault::NotAllowed));
         // Regions outside user space or overlapping are refused.
         let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
         assert_eq!(
@@ -2959,6 +2956,43 @@ mod tests {
             process.add_region(DATA, DATA + FRAME_SIZE, Attributes::USER_READ_WRITE),
             Err(RegionError::Overlaps)
         );
+    }
+
+    #[test]
+    fn a_permission_fault_on_a_page_another_thread_made_allow_the_access_is_retried() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        // SAFETY: as above.
+        let mut process = unsafe { Process::<P>::new(&kernel) }.unwrap();
+        process
+            .add_region(DATA, DATA + FRAME_SIZE, Attributes::USER_READ_WRITE)
+            .unwrap();
+        process.write_user_memory(DATA, b"parent").unwrap();
+        let child = process.new_child(ChildMemory::Copied).unwrap();
+        let (shared, attributes) = process.address_space().translate(DATA).unwrap();
+        assert!(!attributes.writable, "fork shares the page read-only");
+        let mut write = fault(ExceptionKind::DataFault, Some(DATA + 8), true);
+        write.code |= crate::tests::FAULT_PERMISSION;
+        assert_eq!(resolve(&process, &write), Ok(()));
+        let (copied, attributes) = process.address_space().translate(DATA).unwrap();
+        assert_ne!(copied, shared, "the first thread's write copied the page");
+        assert!(attributes.writable);
+        dropped_translations();
+        let used = free();
+        assert_eq!(
+            resolve(&process, &write),
+            Ok(()),
+            "a second thread's write, raised by the read-only entry before the first copied \
+             the page, runs again"
+        );
+        assert_eq!(free(), used, "and takes no frame");
+        assert_eq!(dropped_translations(), [(DATA, FRAME_SIZE)]);
+        assert_eq!(process.address_space().translate(DATA).unwrap().0, copied);
+        let mut read = fault(ExceptionKind::DataFault, Some(DATA + 8), false);
+        read.code |= crate::tests::FAULT_PERMISSION;
+        assert_eq!(resolve(&process, &read), Ok(()));
+        assert_eq!(&page_bytes(&process, DATA)[..6], b"parent");
+        assert_eq!(&page_bytes(&child, DATA)[..6], b"parent");
     }
 
     #[test]

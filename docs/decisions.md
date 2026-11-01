@@ -17130,3 +17130,28 @@ the license, by an explicit instruction recorded here.
   component that is not installed costs nothing again (D18); stage ticks on the boot-clock
   kernel to find riscv64's unexplained ~400k instructions; aligning the initramfs to 2 MiB so
   the kernel maps it with large pages.
+
+## D215 A permission fault on a page another thread has since mapped for the access is retried, as Linux retries a spurious fault (supersedes D52's "never retried" for that case) — Decided by the build loop (engineering; #149's CI fixes, workspace-build x86_64)
+
+- **Context.** CI's workspace-build on x86_64 (run on 1379caa1) and a local loop (1 in 6 runs)
+  saw cargo, the build timer's child, end with `SIGSEGV` after spawning four `rustc`s. A probe
+  print in `signal_fault` caught the fault: `#PF` error code 7 (present, write, user) at an
+  address in cargo's writable data region, `SEGV_ACCERR`. Cargo forks for each `rustc` (std's
+  fork path, D169's copy-on-write sharing) while its other threads run. Two threads that write
+  the same shared page both take a permission fault on its read-only entry; the first to take
+  the regions' lock copies the page and maps it writable; the second then found the page
+  mapped writable, which `populate` resolved only for a fault that may be stale (D52: "a
+  permission fault on such a page is never retried"), so it answered `NotAllowed` and the
+  thread got `SIGSEGV`. std's handler resets the action and returns, so a first race usually
+  went unnoticed (the write ran again on the copied page); a second one in the same process
+  killed it. D52 predates threads: then only the faulting thread changed the mappings.
+- **Decision.** `Process::populate` treats a page already mapped for the access as ready for
+  every caller, permission faults included, and `resolve_page_fault` drops this CPU's
+  translation and the program runs the access again, as Linux does for a spurious fault. The
+  region must still allow the access and the mapping must allow it now, so a write to
+  read-only memory, code fetched from data and the like still end in `SIGSEGV`; a retry can
+  repeat only if the hardware refuses what the tables allow, a kernel bug. `populate`'s flag
+  is renamed `likely_unmapped`: it now only chooses to map first and look up second (D53).
+  The same race with `mprotect` (another thread making a page executable or writable after the
+  fault) is resolved the same way. Host test
+  `a_permission_fault_on_a_page_another_thread_made_allow_the_access_is_retried`.
