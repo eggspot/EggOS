@@ -74,6 +74,8 @@ pub mod local {
     pub const ECHONL: u32 = 0o100;
     /// A signal character does not flush the input.
     pub const NOFLSH: u32 = 0o200;
+    /// A background process writing to its controlling terminal gets `SIGTTOU`.
+    pub const TOSTOP: u32 = 0o400;
     /// Control characters echo as `^X`.
     pub const ECHOCTL: u32 = 0o1000;
     /// A kill rubs the whole line out on the screen.
@@ -353,6 +355,11 @@ impl LineDiscipline {
             _ => 1,
         };
         self.available() >= needed
+    }
+
+    /// How many more bytes the input takes before typed bytes are dropped.
+    pub fn room(&self) -> usize {
+        CAPACITY - self.end.wrapping_sub(self.read).min(CAPACITY)
     }
 
     /// The unread bytes a non-canonical read can take.
