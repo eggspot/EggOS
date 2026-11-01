@@ -5,7 +5,10 @@ use crate::agent_server::{
 use crate::backoff::Backoff;
 use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
 use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER};
-use crate::first_run::{self, DISK_DEVICE, FIRST_RUN, Found, INSTALLED_MARK, SETTINGS_FILE};
+use crate::first_run::{
+    self, COMMAND_LINE, COMMAND_LINE_BYTES, DISK_DEVICE, FIRST_RUN, Found, INSTALLED_MARK,
+    SETTINGS_FILE,
+};
 use crate::shutdown::{self, Ending, LOOK_EVERY_MS, Request, Step};
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -348,8 +351,8 @@ fn exists(path: &[u8]) -> bool {
     true
 }
 
-fn read_settings(file: &mut [u8; eggos_settings_file::LARGEST + 1]) -> Option<usize> {
-    let descriptor = open(SETTINGS_FILE)?;
+fn read_file(path: &[u8], file: &mut [u8]) -> Option<usize> {
+    let descriptor = open(path)?;
     let mut length = 0;
     while length < file.len() {
         let read = call(
@@ -385,9 +388,14 @@ fn first_run_wanted() -> bool {
         disk: listed(DISK_DEVICE),
         agent_channel: listed(AGENT_CHANNEL),
         installed: listed(INSTALLED_MARK),
+        skipped: {
+            let mut line = [0u8; COMMAND_LINE_BYTES];
+            read_file(COMMAND_LINE, &mut line)
+                .is_some_and(|length| first_run::skipped_by(&line[..length]))
+        },
     };
     let mut file = [0u8; eggos_settings_file::LARGEST + 1];
-    let length = read_settings(&mut file);
+    let length = read_file(SETTINGS_FILE, &mut file);
     first_run::wanted(found, length.map(|length| &file[..length]))
 }
 

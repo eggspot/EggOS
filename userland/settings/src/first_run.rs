@@ -322,6 +322,13 @@ impl FirstRunWindow {
         )
     }
 
+    /// The rectangle of card `index` of the first page, in window content coordinates.
+    pub fn card_rect(&self, index: usize) -> Option<eggos_toolkit::geometry::Rect> {
+        let kind = self.tree.kind(self.widgets.cards)?;
+        let rect = self.tree.rect(self.widgets.cards)?;
+        Some(eggos_toolkit::widget::card_rect(kind, rect, index))
+    }
+
     fn show_page(&mut self, page: usize, now_ms: u32) {
         self.page = page;
         for (index, id) in self.widgets.pages.iter().enumerate() {

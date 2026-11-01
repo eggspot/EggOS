@@ -30,6 +30,7 @@ pub mod terminals;
 pub mod text_editor;
 pub mod win32_app;
 mod win_controls;
+mod win_controls2;
 mod windows_crt;
 mod windows_gui;
 pub mod work_disk;
@@ -571,12 +572,14 @@ fn linux_gui_output() -> [Vec<Line>; LINUX_GUI_SESSION.len()] {
     ]
 }
 
-const WINDOWS_GUI_SESSION: [&[u8]; 5] = [
+const WINDOWS_GUI_SESSION: [&[u8]; 6] = [
     b"win-paint.exe > /tmp/win-paint.log; echo WIN-PAINT status $?; sleep 3; \
-      win-controls.exe > /tmp/c.log; echo WIN-CONTROLS status $?\r",
+      win-controls.exe > /tmp/c.log; echo WIN-CONTROLS status $?; sleep 3; \
+      win-controls2.exe > /tmp/c2.log; echo WIN-CONTROLS2 status $?\r",
     b"cat /tmp/win-paint.log\r",
     b"cat /tmp/c.log\r",
     b"cat /tmp/win-controls/note.txt\r",
+    b"cat /tmp/c2.log\r",
     b"exit 7\r",
 ];
 
@@ -760,6 +763,20 @@ const WIN_CONTROLS_LINES: [&str; 13] = [
     "WIN-CONTROLS quit 0",
 ];
 
+const WIN_CONTROLS2_LINES: [&str; 11] = [
+    "WIN-CONTROLS2 controls created, bar at 0, list data 7 9 -1, combo data 11",
+    "WIN-CONTROLS2 window created",
+    "WIN-CONTROLS2 button 26 clicked, large 1",
+    "WIN-CONTROLS2 scrolled a line to 1",
+    "WIN-CONTROLS2 word egg x selection 5 5",
+    "WIN-CONTROLS2 password egg",
+    "WIN-CONTROLS2 number 1",
+    "WIN-CONTROLS2 radios 0 1",
+    "WIN-CONTROLS2 scroll 1",
+    "WIN-CONTROLS2 destroyed",
+    "WIN-CONTROLS2 quit 0",
+];
+
 fn runs_windows_programs(arch: &str) -> bool {
     matches!(arch, "x86_64" | "aarch64")
 }
@@ -774,10 +791,15 @@ fn windows_gui_output(arch: &str) -> [Vec<Line>; WINDOWS_GUI_SESSION.len()] {
     let end = whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]);
     match runs_windows_programs(arch) {
         true => [
-            whole(&["WIN-PAINT status 0", "WIN-CONTROLS status 0"]),
+            whole(&[
+                "WIN-PAINT status 0",
+                "WIN-CONTROLS status 0",
+                "WIN-CONTROLS2 status 0",
+            ]),
             whole(&WIN_PAINT_LINES),
             whole(&WIN_CONTROLS_LINES),
             whole(&["egg"]),
+            whole(&WIN_CONTROLS2_LINES),
             end,
         ],
         false => [
@@ -786,7 +808,10 @@ fn windows_gui_output(arch: &str) -> [Vec<Line>; WINDOWS_GUI_SESSION.len()] {
                 "WIN-PAINT status 126",
                 "eggsh: win-controls.exe: Exec format error",
                 "WIN-CONTROLS status 126",
+                "eggsh: win-controls2.exe: Exec format error",
+                "WIN-CONTROLS2 status 126",
             ]),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1993,6 +2018,7 @@ fn boot(
         .arg("-smp")
         .arg(cpus.to_string())
         .args(qmp_port.map(qmp::qemu_args).unwrap_or_default())
+        .args(command_line_args(FIRST_RUN_SKIP_WORD))
         .args(extra_args)
         .args(["-display", "none", "-serial", "stdio", "-monitor", "none"])
         .arg("-kernel")
@@ -3760,6 +3786,11 @@ pub fn agent_channel_args(arch: &Arch, chardev: &str) -> Vec<String> {
 /// The kernel command line's word that asks for the offscreen display, which `--no-window`
 /// passes (D144).
 pub const OFFSCREEN_WORD: &str = "eggos.display=offscreen";
+
+/// The kernel command line's word that keeps init from opening the first run on a blank disk
+/// (D223): every automated boot passes it before its own arguments, so a check that tests the
+/// first run, or passes a command line of its own, replaces it.
+pub const FIRST_RUN_SKIP_WORD: &str = "eggos.first_run=skip";
 
 /// The grants `--mcp-allow` takes (D137), as the kernel command line names them.
 pub const GRANT_NAMES: [&str; 4] = ["view", "write", "run", "install"];

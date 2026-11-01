@@ -4,7 +4,8 @@
 //! installed system asked its questions in the installer (`/etc/eggos/installed`); without a
 //! disk the answers could not reach the next boot; without a display there is no window; and
 //! a machine an agent drives (`/dev/agent`, `--mcp`) is set up through `settings_set`, so
-//! none of them opens it.
+//! none of them opens it. Nor does a boot whose kernel command line holds [`SKIP_WORD`], as the
+//! host's automated checks pass unless they test the first run.
 
 /// The program and its argument, each with its terminating NUL.
 pub const FIRST_RUN: [&[u8]; 2] = [b"/bin/settings\0", b"--first-run\0"];
@@ -18,6 +19,22 @@ pub const DISK_DEVICE: &[u8] = b"/dev/vda\0";
 /// The settings file (`eggos_settings_file::PATH`), with its terminating NUL.
 pub const SETTINGS_FILE: &[u8] = b"/home/root/.config/eggos/settings\0";
 
+/// The kernel command line, with its terminating NUL.
+pub const COMMAND_LINE: &[u8] = b"/proc/cmdline\0";
+
+/// The kernel command line's word that says not to ask.
+pub const SKIP_WORD: &[u8] = b"eggos.first_run=skip";
+
+/// The longest kernel command line init reads.
+pub const COMMAND_LINE_BYTES: usize = 4096;
+
+/// Whether `command_line` holds [`SKIP_WORD`] as a word of its own.
+pub fn skipped_by(command_line: &[u8]) -> bool {
+    command_line
+        .split(|byte| byte.is_ascii_whitespace() || *byte == 0)
+        .any(|word| word == SKIP_WORD)
+}
+
 /// What init finds on the machine at boot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Found {
@@ -29,6 +46,8 @@ pub struct Found {
     pub agent_channel: bool,
     /// `/etc/eggos/installed` exists.
     pub installed: bool,
+    /// The kernel command line holds [`SKIP_WORD`].
+    pub skipped: bool,
 }
 
 /// Whether init starts the first run, given what it found and the settings file's bytes
@@ -38,6 +57,7 @@ pub fn wanted(found: Found, settings: Option<&[u8]>) -> bool {
         && found.disk
         && !found.agent_channel
         && !found.installed
+        && !found.skipped
         && settings.is_none_or(|file| {
             eggos_settings_file::value(file, eggos_settings_file::SHELL_PROFILE).is_none()
         })
@@ -52,11 +72,19 @@ mod tests {
         disk: true,
         agent_channel: false,
         installed: false,
+        skipped: false,
     };
 
     #[test]
     fn the_paths_are_c_strings_and_the_settings_file_is_the_one_settings_writes() {
-        for text in [FIRST_RUN[0], FIRST_RUN[1], INSTALLED_MARK, DISK_DEVICE, SETTINGS_FILE] {
+        for text in [
+            FIRST_RUN[0],
+            FIRST_RUN[1],
+            INSTALLED_MARK,
+            DISK_DEVICE,
+            SETTINGS_FILE,
+            COMMAND_LINE,
+        ] {
             assert_eq!(
                 text.iter().position(|&byte| byte == 0),
                 Some(text.len() - 1)
@@ -97,8 +125,23 @@ mod tests {
                 installed: true,
                 ..FRESH
             },
+            Found {
+                skipped: true,
+                ..FRESH
+            },
         ] {
             assert!(!wanted(found, None), "{found:?}");
         }
+    }
+
+    #[test]
+    fn the_skip_word_counts_only_as_a_whole_word_of_the_command_line() {
+        assert!(skipped_by(b"eggos.first_run=skip"));
+        assert!(skipped_by(b"eggos.display=offscreen eggos.first_run=skip\n"));
+        assert!(skipped_by(b"eggos.first_run=skip\0"));
+        assert!(!skipped_by(b""));
+        assert!(!skipped_by(b"eggos.first_run=ask"));
+        assert!(!skipped_by(b"eggos.first_run=skipped"));
+        assert!(!skipped_by(b"xeggos.first_run=skip"));
     }
 }
