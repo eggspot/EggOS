@@ -249,9 +249,14 @@ pub fn close(window: Id, closing: bool) {
         return;
     }
     let delegate = fields(window).delegate;
-    let will_close = sel!("windowWillClose:");
-    if closing && responds(delegate, will_close) {
-        send1(delegate, will_close, 0);
+    if closing {
+        let notification =
+            crate::foundation::notification_named(crate::foundation::WINDOW_WILL_CLOSE, window);
+        let will_close = sel!("windowWillClose:");
+        if responds(delegate, will_close) {
+            send1(delegate, will_close, notification as usize);
+        }
+        crate::foundation::post(notification);
     }
     let fields = fields(window);
     let buffer = fields.buffer;

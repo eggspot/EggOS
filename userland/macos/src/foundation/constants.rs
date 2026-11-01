@@ -15,7 +15,24 @@ pub const LOCALIZED_DESCRIPTION_KEY: usize = 4;
 /// The `userInfo` key of why an error happened.
 pub const LOCALIZED_FAILURE_REASON_KEY: usize = 5;
 
-const CONSTANTS: [(&[u8], &[u8]); 12] = [
+/// The default run loop mode, `kCFRunLoopDefaultMode`.
+pub const DEFAULT_RUN_LOOP_MODE: usize = 10;
+/// The common modes, `kCFRunLoopCommonModes`.
+pub const COMMON_RUN_LOOP_MODES: usize = 11;
+/// AppKit's mode while a modal window runs.
+pub const MODAL_PANEL_RUN_LOOP_MODE: usize = 12;
+/// AppKit's mode while a control or menu tracks the pointer.
+pub const EVENT_TRACKING_RUN_LOOP_MODE: usize = 13;
+/// `NSApplicationWillFinishLaunchingNotification`.
+pub const APPLICATION_WILL_FINISH_LAUNCHING: usize = 14;
+/// `NSApplicationDidFinishLaunchingNotification`.
+pub const APPLICATION_DID_FINISH_LAUNCHING: usize = 15;
+/// `NSApplicationWillTerminateNotification`.
+pub const APPLICATION_WILL_TERMINATE: usize = 16;
+/// `NSWindowWillCloseNotification`.
+pub const WINDOW_WILL_CLOSE: usize = 17;
+
+const CONSTANTS: [(&[u8], &[u8]); 18] = [
     (
         b"_NSInvalidArgumentException",
         b"NSInvalidArgumentException\0",
@@ -37,6 +54,24 @@ const CONSTANTS: [(&[u8], &[u8]); 12] = [
     (b"_NSOSStatusErrorDomain", b"NSOSStatusErrorDomain\0"),
     (b"_NSDefaultRunLoopMode", b"kCFRunLoopDefaultMode\0"),
     (b"_NSRunLoopCommonModes", b"kCFRunLoopCommonModes\0"),
+    (b"_NSModalPanelRunLoopMode", b"NSModalPanelRunLoopMode\0"),
+    (
+        b"_NSEventTrackingRunLoopMode",
+        b"NSEventTrackingRunLoopMode\0",
+    ),
+    (
+        b"_NSApplicationWillFinishLaunchingNotification",
+        b"NSApplicationWillFinishLaunchingNotification\0",
+    ),
+    (
+        b"_NSApplicationDidFinishLaunchingNotification",
+        b"NSApplicationDidFinishLaunchingNotification\0",
+    ),
+    (
+        b"_NSApplicationWillTerminateNotification",
+        b"NSApplicationWillTerminateNotification\0",
+    ),
+    (b"_NSWindowWillCloseNotification", b"NSWindowWillCloseNotification\0"),
 ];
 
 static STRINGS: [[AtomicUsize; STRING_WORDS]; CONSTANTS.len()] =

@@ -142,19 +142,27 @@ pub fn display_all() {
     }
 }
 
-fn notify(sel: Sel) {
+fn notify(sel: Sel, name: usize) {
+    let notification = foundation::notification_named(name, application());
     let delegate = delegate();
     if responds(delegate, sel) {
-        send1(delegate, sel, 0);
+        send1(delegate, sel, notification as usize);
     }
+    foundation::post(notification);
 }
 
 fn finish_launching() {
     if LAUNCHED.swap(true, Ordering::AcqRel) {
         return;
     }
-    notify(sel!("applicationWillFinishLaunching:"));
-    notify(sel!("applicationDidFinishLaunching:"));
+    notify(
+        sel!("applicationWillFinishLaunching:"),
+        foundation::APPLICATION_WILL_FINISH_LAUNCHING,
+    );
+    notify(
+        sel!("applicationDidFinishLaunching:"),
+        foundation::APPLICATION_DID_FINISH_LAUNCHING,
+    );
 }
 
 /// Ends the app as `terminate:` does, unless the delegate cancels.
@@ -166,7 +174,10 @@ pub fn terminate() {
     {
         return;
     }
-    notify(sel!("applicationWillTerminate:"));
+    notify(
+        sel!("applicationWillTerminate:"),
+        foundation::APPLICATION_WILL_TERMINATE,
+    );
     crate::libsystem::exit(0)
 }
 
