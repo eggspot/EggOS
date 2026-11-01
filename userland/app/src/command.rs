@@ -14,10 +14,13 @@
 //! Text, the same with or without a display; `--window` shows the installer's dialogs instead.
 //! `--` ends the options, so the next word is the operand even if it starts with `-`.
 
+use crate::installer;
 use crate::messages::Line;
 use core::fmt::Write;
 use eggos_app_manifest::translation::{self, Record};
+use eggos_commands::{ErrorDefinition, errors};
 use eggos_mcp::json::JsonWriter;
+use eggos_runtime::errno::Errno;
 
 /// What the command was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,6 +293,46 @@ pub fn translation_lines(record: &Record<'_>, mut each: impl FnMut(&str)) {
     }
 }
 
+/// The error code an install or uninstall that failed with `problem` reports (D225).
+pub fn problem_error(problem: &installer::Problem) -> &'static ErrorDefinition {
+    use installer::Problem;
+    match problem {
+        Problem::NotInstalled => &errors::NO_SUCH_APP,
+        Problem::AlreadyInstalled => &errors::APP_EXISTS,
+        Problem::ReadOnly => &errors::READ_ONLY,
+        Problem::DiskFull => &errors::NO_SPACE,
+        Problem::Unreadable(errno) | Problem::Failed(errno) => errno_error(*errno),
+        Problem::InvalidName
+        | Problem::InvalidArguments
+        | Problem::InvalidEnvironment
+        | Problem::PathTooLong
+        | Problem::SeveralPrograms(_)
+        | Problem::NoSuchEntry => &errors::INVALID_VALUE,
+        Problem::NotRunnable(_)
+        | Problem::FolderNotApp
+        | Problem::BundleWithoutProgram
+        | Problem::InvalidProgramPath
+        | Problem::TooDeep
+        | Problem::UnsupportedEntry
+        | Problem::UnsafeLink
+        | Problem::Archive(_)
+        | Problem::NoProgramInArchive
+        | Problem::ReservedName
+        | Problem::TooLarge => &errors::NOT_AN_APP,
+    }
+}
+
+/// The error code a file system error `errno` reports from `app` (D225).
+pub fn errno_error(errno: Errno) -> &'static ErrorDefinition {
+    match errno {
+        Errno::ENOENT => &errors::NO_SUCH_FILE,
+        Errno::EACCES | Errno::EPERM => &errors::PERMISSION_DENIED,
+        Errno::EROFS => &errors::READ_ONLY,
+        Errno::ENOSPC => &errors::NO_SPACE,
+        _ => &errors::FAILED,
+    }
+}
+
 #[cfg(eggos_user)]
 mod program {
     use super::*;
@@ -302,7 +345,7 @@ mod program {
     use core::ffi::CStr;
     use core::fmt::Write;
     use eggos_commands::page::{self, MAX_CURSOR_BYTES, MAX_KEY_BYTES, MORE_PREFIX};
-    use eggos_commands::{ErrorDefinition, errors};
+    use core::sync::atomic::{AtomicBool, Ordering};
     use eggos_png::EncoderWorkspace;
     use eggos_runtime::startup::Startup;
 
@@ -310,6 +353,7 @@ mod program {
     const MAX_ARGUMENTS: usize = 12;
 
     static mut BUFFER: [u8; COPY_BUFFER] = [0; COPY_BUFFER];
+    static CODED_ERRORS: AtomicBool = AtomicBool::new(false);
 
     fn say(descriptor: usize, line: &str) {
         write_all(descriptor, line.as_bytes());
@@ -373,7 +417,7 @@ mod program {
                     machine,
                     refused.problem,
                 );
-                complain(line.as_str());
+                report(false, problem_error(&refused.problem), line.as_str());
                 return FAILED;
             }
         };
@@ -393,7 +437,7 @@ mod program {
             Err(problem) => {
                 let line =
                     messages::install_failed(plan.name(), subject.as_str(), machine, problem);
-                complain(line.as_str());
+                report(false, problem_error(&problem), line.as_str());
                 FAILED
             }
         }
@@ -558,25 +602,27 @@ mod program {
                 0
             }
             Err(problem) => {
-                complain(messages::uninstall_failed(shown.as_str(), problem).as_str());
+                let line = messages::uninstall_failed(shown.as_str(), problem);
+                report(false, problem_error(&problem), line.as_str());
                 FAILED
             }
         }
     }
 
     fn report(json: bool, error: &ErrorDefinition, line: &str) {
-        if json {
+        if !json {
+            complain(line);
+            if let Some(command) = error.fix_command {
+                write_all(STANDARD_ERROR, b"  try: ");
+                say(STANDARD_ERROR, command);
+            }
+        }
+        if json || CODED_ERRORS.load(Ordering::Relaxed) {
             let mut record = [0u8; 1024];
             let mut out = JsonWriter::new(&mut record);
             eggos_mcp::server::write_error(&mut out, error, line);
             out.end_line();
             write_all(STANDARD_ERROR, out.as_bytes());
-            return;
-        }
-        complain(line);
-        if let Some(command) = error.fix_command {
-            write_all(STANDARD_ERROR, b"  try: ");
-            say(STANDARD_ERROR, command);
         }
     }
 
@@ -646,7 +692,7 @@ mod program {
         if !found {
             let mut line = Line::new();
             let _ = write!(line, "{} is not installed", shown.as_str());
-            complain(line.as_str());
+            report(false, &errors::NO_SUCH_APP, line.as_str());
             return FAILED;
         }
         match linux::open_app(name) {
@@ -660,7 +706,7 @@ mod program {
                 let mut line = Line::new();
                 let _ = write!(line, "could not open {}: ", shown.as_str());
                 line.push_bytes(error.message());
-                complain(line.as_str());
+                report(false, errno_error(error), line.as_str());
                 FAILED
             }
         }
@@ -783,6 +829,12 @@ mod program {
 
     /// The program: see the module documentation.
     pub fn run(startup: &Startup) -> i32 {
+        CODED_ERRORS.store(
+            startup
+                .environment()
+                .any(|variable| variable == eggos_commands::tools::CODED_ERRORS_ENVIRONMENT),
+            Ordering::Relaxed,
+        );
         let mut arguments: [&CStr; MAX_ARGUMENTS] = [c""; MAX_ARGUMENTS];
         let mut bytes: [&[u8]; MAX_ARGUMENTS] = [b""; MAX_ARGUMENTS];
         let mut count = 0;
@@ -1088,6 +1140,60 @@ mod tests {
             "{\"name\":\"win-paint\",\"source\":\"windows\",\"architecture\":\"x86_64\",\
              \"program\":\"/Applications/win-paint/win-paint.exe\",\"icon\":null}\n"
         );
+    }
+
+    #[test]
+    fn install_and_uninstall_problems_report_the_registry_s_codes() {
+        use crate::installer::Problem;
+        let code = |problem: Problem| problem_error(&problem).code;
+        assert_eq!(code(Problem::NotInstalled), "no_such_app");
+        assert_eq!(code(Problem::AlreadyInstalled), "app_exists");
+        assert_eq!(code(Problem::ReadOnly), "read_only");
+        assert_eq!(code(Problem::DiskFull), "no_space");
+        assert_eq!(code(Problem::Unreadable(Errno::ENOENT)), "no_such_file");
+        assert_eq!(code(Problem::Failed(Errno::EACCES)), "permission_denied");
+        assert_eq!(code(Problem::Failed(Errno::EIO)), "failed");
+        assert_eq!(code(Problem::InvalidName), "invalid_value");
+        assert_eq!(code(Problem::NoSuchEntry), "invalid_value");
+        assert_eq!(code(Problem::FolderNotApp), "not_an_app");
+        assert_eq!(code(Problem::TooLarge), "not_an_app");
+        for (words, problems) in [
+            (
+                ["app", "install"],
+                &[
+                    Problem::AlreadyInstalled,
+                    Problem::ReadOnly,
+                    Problem::DiskFull,
+                    Problem::InvalidName,
+                    Problem::FolderNotApp,
+                    Problem::Unreadable(Errno::ENOENT),
+                    Problem::Failed(Errno::EPERM),
+                    Problem::Failed(Errno::EIO),
+                ][..],
+            ),
+            (
+                ["app", "uninstall"],
+                &[
+                    Problem::NotInstalled,
+                    Problem::ReadOnly,
+                    Problem::Failed(Errno::EACCES),
+                    Problem::Failed(Errno::EIO),
+                ][..],
+            ),
+        ] {
+            let definition = eggos_commands::find_command(&words.map(str::as_bytes)).unwrap();
+            for problem in problems {
+                let error = problem_error(problem);
+                assert!(
+                    definition
+                        .errors
+                        .iter()
+                        .any(|declared| declared.error == error && declared.exit == FAILED),
+                    "{words:?} {}",
+                    error.code
+                );
+            }
+        }
     }
 
     #[test]
