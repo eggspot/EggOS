@@ -40,4 +40,19 @@ mod tests {
         assert_eq!(run(&[c"x", c"-n"]), "x -n\n");
         assert_eq!(run(&[c"-e", c"\\n"]), "-e \\n\n");
     }
+
+    #[test]
+    fn its_one_option_is_the_registry_s_dash_n_as_the_first_word_and_the_rest_is_text() {
+        let options = eggos_commands::commands::ECHO.options;
+        assert_eq!(options.len(), 1);
+        assert_eq!(
+            (options[0].short, options[0].long, options[0].value),
+            (Some(b'n'), None, None)
+        );
+        assert_eq!(run(&[c"--", c"x"]), "-- x\n");
+        assert_eq!(run(&[c"-n", c"-n", c"x"]), "-n x");
+        assert_eq!(run(&[c"-nn", c"x"]), "-nn x\n");
+        assert_eq!(run(&[c"--help"]), "--help\n");
+        assert_eq!(run(&[c"-n", c"--"]), "--");
+    }
 }

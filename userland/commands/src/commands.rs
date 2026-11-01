@@ -2907,8 +2907,9 @@ pub const DOWNLOAD_CLEAR: CommandDefinition = CommandDefinition {
 pub const ECHO: CommandDefinition = CommandDefinition {
     words: &["echo"],
     summary: "Prints its words.",
-    description: "Prints its words separated by spaces and a newline; -n first leaves the \
-                  newline out. It takes every other word as text.",
+    description: "Prints its words separated by spaces and a newline; -n as the first word \
+                  leaves the newline out. Every other word is text, -- and a second -n included, \
+                  as the shell's echo does.",
     options: &[flag(b'n', "Leave out the newline.")],
     operands: &[operand("text", ValueType::Text, Count::ZeroOrMore)],
     outputs: Outputs {
