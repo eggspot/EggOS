@@ -555,3 +555,68 @@ fn the_launcher_s_caret_blinks_then_stays_and_reduce_motion_keeps_it_shown() {
     assert!(caret_shown_at(0, 600, true));
     assert!(!caret_shown_at(0, 600, false));
 }
+
+fn tap(desktop: &mut Desktop, code: u16, modifiers: Modifiers) -> Action {
+    let mut damage = Damage::new();
+    let action = desktop.key_typing(code, true, modifiers, 0, &mut damage, &mut DiscardEvents);
+    desktop.key_typing(code, false, Modifiers::NONE, 0, &mut damage, &mut DiscardEvents);
+    action
+}
+
+#[test]
+fn shift_tapped_five_times_within_two_seconds_each_toggles_sticky_keys() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut damage = Damage::new();
+    for _ in 0..4 {
+        assert_eq!(tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT), Action::None);
+    }
+    assert_eq!(
+        tap(&mut desktop, key::RIGHT_SHIFT, Modifiers::SHIFT),
+        Action::ToggleStickyKeys
+    );
+    for _ in 0..4 {
+        tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT);
+    }
+    tap(&mut desktop, 30, Modifiers::NONE);
+    assert_eq!(tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT), Action::None);
+    for _ in 0..3 {
+        tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT);
+    }
+    desktop.tick(STICKY_TOGGLE_WITHIN_MS + 1, &mut damage, &mut DiscardEvents);
+    assert_eq!(tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT), Action::None);
+    for _ in 0..3 {
+        tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT);
+    }
+    assert_eq!(
+        tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT),
+        Action::ToggleStickyKeys
+    );
+    assert_eq!(
+        tap(
+            &mut desktop,
+            key::LEFT_SHIFT,
+            Modifiers::from_bits(Modifiers::SHIFT.bits() | Modifiers::CTRL.bits())
+        ),
+        Action::None
+    );
+}
+
+#[test]
+fn the_sticky_keys_toggle_runs_settings_set() {
+    let desktop = Desktop::new(1280, 800).unwrap();
+    let words = |on: bool| {
+        desktop
+            .sticky_keys_command(on)
+            .map(|command| command.words().map(<[u8]>::to_vec).collect::<Vec<_>>())
+    };
+    assert_eq!(
+        words(true),
+        Some(vec![
+            b"/bin/settings".to_vec(),
+            b"set".to_vec(),
+            b"accessibility.sticky_keys".to_vec(),
+            b"true".to_vec(),
+        ])
+    );
+    assert_eq!(words(false).unwrap()[3], b"false");
+}

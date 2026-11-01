@@ -441,6 +441,11 @@ pub fn set_key_accessibility(sticky_keys: bool, slow_keys_ms: Option<u32>) -> bo
     true
 }
 
+/// Whether sticky keys are on (D205).
+pub fn sticky_keys() -> bool {
+    STICKY_KEYS.load(Ordering::Relaxed)
+}
+
 const STICKY_KEY_CODES: [(u8, u16); 5] = [
     (Modifiers::SHIFT.bits(), key::LEFT_SHIFT),
     (Modifiers::CTRL.bits(), key::LEFT_CTRL),

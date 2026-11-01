@@ -262,7 +262,16 @@ pub enum Action {
     /// Start Settings on this pane ([`Desktop::settings_pane_command`]): no Settings window
     /// is open to focus.
     OpenSettingsPane(SettingsPane),
+    /// Turn sticky keys on if they are off and off if they are on, by the command
+    /// [`Desktop::sticky_keys_command`] gives: Shift was tapped [`STICKY_TOGGLE_TAPS`] times
+    /// (D223).
+    ToggleStickyKeys,
 }
+
+/// How many taps of Shift in a row turn sticky keys on or off (D223).
+pub const STICKY_TOGGLE_TAPS: u8 = 5;
+/// The most milliseconds between two of those taps.
+pub const STICKY_TOGGLE_WITHIN_MS: u32 = 2000;
 
 /// A pane of Settings a bar item opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,6 +364,7 @@ pub struct Desktop {
     notice: Option<Notice>,
     icons: DesktopIcons,
     super_alone: bool,
+    shift_taps: (u8, u32),
     typed: u32,
     now_ms: u32,
     person_input_ms: Option<u32>,
@@ -447,6 +457,7 @@ impl Desktop {
             notice: None,
             icons: DesktopIcons::default(),
             super_alone: false,
+            shift_taps: (0, 0),
             typed: 0,
             now_ms: 0,
             person_input_ms: None,
@@ -2083,11 +2094,42 @@ impl Desktop {
     ) -> Action {
         self.typed = character;
         self.note_person_input();
+        if self.shift_tapped_to_toggle_sticky_keys(code, pressed, modifiers) {
+            return Action::ToggleStickyKeys;
+        }
         let action = self.key_change(code, pressed, modifiers, damage, events);
         self.update_control_hover(damage);
         self.update_pointer(damage);
         self.refresh_panel_hover(damage);
         action
+    }
+
+    fn shift_tapped_to_toggle_sticky_keys(
+        &mut self,
+        code: u16,
+        pressed: bool,
+        modifiers: Modifiers,
+    ) -> bool {
+        if !pressed {
+            return false;
+        }
+        let shift = matches!(code, key::LEFT_SHIFT | key::RIGHT_SHIFT);
+        let others = modifiers.bits() & !Modifiers::SHIFT.bits() & !Modifiers::CAPS_LOCK.bits();
+        if !shift || others != 0 {
+            self.shift_taps = (0, self.now_ms);
+            return false;
+        }
+        let (taps, last) = self.shift_taps;
+        let taps = match taps > 0 && self.now_ms.wrapping_sub(last) <= STICKY_TOGGLE_WITHIN_MS {
+            true => taps + 1,
+            false => 1,
+        };
+        if taps == STICKY_TOGGLE_TAPS {
+            self.shift_taps = (0, self.now_ms);
+            return true;
+        }
+        self.shift_taps = (taps, self.now_ms);
+        false
     }
 
     fn key_change(

@@ -27,6 +27,7 @@ pub const DOCK_ICON: u32 = 48;
 pub const TOOLTIP_DELAY_MS: u32 = 600;
 
 const SYSTEM_HIT_WIDTH: u32 = 96;
+const STICKY_KEYS_SETTING: &str = "accessibility.sticky_keys";
 const ACTIVITIES: &str = "Activities";
 const ACTIVITIES_X: u32 = 12;
 const TASKBAR_GAP: u32 = 4;
@@ -736,6 +737,16 @@ impl Desktop {
     /// pane's name.
     pub fn settings_pane_command(&self, pane: super::SettingsPane) -> Option<super::Command> {
         self.catalogue.settings_pane(pane.name())
+    }
+
+    /// What [`Action::ToggleStickyKeys`] starts to turn sticky keys `on` or off: `settings set
+    /// accessibility.sticky_keys true|false`, so the pane, the CLI and the next boot agree.
+    pub fn sticky_keys_command(&self, on: bool) -> Option<super::Command> {
+        let value = match on {
+            true => "true",
+            false => "false",
+        };
+        self.catalogue.settings_set(STICKY_KEYS_SETTING, value)
     }
 
     /// The kernel could not start the app a launch asked for: the notice says so, and the app

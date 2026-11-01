@@ -21,6 +21,7 @@ const SETTINGS_SYNONYMS: [&str; 4] = ["Control Panel", "System Settings", "Prefe
 const TEXT_EDITOR_SYNONYMS: [&str; 6] = ["Notepad", "TextEdit", "gedit", "Kate", "editor", "notes"];
 const SETTINGS_PROGRAM: &str = "/bin/settings";
 const PANE_OPTION: &str = "--pane";
+const SET_VERB: &str = "set";
 const FILES_PROGRAM: &str = "/bin/files";
 const TEXT_EDITOR_PROGRAM: &str = "/bin/text-editor";
 const TASK_MANAGER_PROGRAM: &str = "/bin/task-manager";
@@ -549,6 +550,15 @@ impl Catalogue {
     /// <pane>` (D220).
     pub fn settings_pane(&self, pane: &str) -> Option<Command> {
         Command::program(SETTINGS_PROGRAM, &[PANE_OPTION.as_bytes(), pane.as_bytes()])
+    }
+
+    /// The command that saves and applies `key` as `value`: `/bin/settings set <key> <value>`,
+    /// as the CLI does (D223, Shift five times).
+    pub fn settings_set(&self, key: &str, value: &str) -> Option<Command> {
+        Command::program(
+            SETTINGS_PROGRAM,
+            &[SET_VERB.as_bytes(), key.as_bytes(), value.as_bytes()],
+        )
     }
 
     /// What launching `app` asks of the kernel, if anything: Settings and Files start their
