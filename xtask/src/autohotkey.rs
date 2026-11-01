@@ -13,7 +13,7 @@
 use crate::dynamic_linking::download;
 use crate::qmp::Picture;
 use crate::rustc_version::sha256_of;
-use crate::{Arch, build_kernel};
+use crate::{Arch, build_kernel_with_layers};
 use std::path::{Path, PathBuf};
 
 /// The app's name once installed.
@@ -125,7 +125,7 @@ pub fn check(arch: &Arch) -> Result<(), String> {
         ));
     }
     let folder = host_folder(arch)?;
-    let kernel = build_kernel(arch, None)?;
+    let kernel = build_kernel_with_layers(arch)?;
     crate::qemu::autohotkey::check(arch, &kernel, &folder)
 }
 

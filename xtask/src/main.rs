@@ -1177,7 +1177,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     }
     let install_folder = build_install_folder(arch)?;
     qemu::install::check(arch, &kernel, &install_folder)?;
-    qemu::files::check(arch, &kernel, &install_folder)?;
+    qemu::files::check(arch, &build_kernel_with_layers(arch)?, &install_folder)?;
     let linux_gui_program = build_linux_test_program(arch, LINUX_GUI_PACKAGE, "static")?;
     let (program, _) = WIN_CONTROLS;
     let controls_program = build_windows_gui_program(program, windows_target(arch.name))?;
@@ -1283,9 +1283,9 @@ fn clippy_targets() -> Result<(), String> {
 
 /// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
 /// any, and returns its path. The image embeds the initramfs ([`initramfs::build`]): without a
-/// feature, the release kernel's, with init, the shell, the core utilities and the Windows and
-/// macOS layers where they run (D152); every kernel
-/// feature is a test kernel's, which runs the programs [`build_user_programs`] builds first.
+/// feature, the release kernel's, with init, the shell, the core utilities and, where the
+/// Windows and macOS layers run, a symbolic link at each layer's path into the component that
+/// installs it (D237); every kernel feature is a test kernel's, which runs the programs [`build_user_programs`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let Some(feature) = feature else {
         let initramfs = build_release_initramfs(arch)?;
@@ -1311,7 +1311,19 @@ pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::Pat
 }
 
 fn build_release_initramfs(arch: &Arch) -> Result<std::path::PathBuf, String> {
-    release_initramfs(arch, &[], &format!("initramfs-{}.cpio", arch.user_target))
+    base_initramfs(arch, &[], &format!("initramfs-{}.cpio", arch.user_target))
+}
+
+/// Builds the release kernel for `arch` with the Windows and macOS layers in its initramfs where
+/// they run, as test kernels have them, for the checks of apps that need a layer but not the
+/// component manager (D237).
+pub fn build_kernel_with_layers(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let initramfs = release_initramfs(
+        arch,
+        &[],
+        &format!("initramfs-layers-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs)
 }
 
 /// Builds the release kernel for `arch` with `added` in its initramfs and returns its path.
@@ -1351,7 +1363,7 @@ pub fn build_release_image(
                 .filter(|(path, _)| !added.iter().any(|file| file.path == *path)),
         );
     }
-    let initramfs = release_initramfs(
+    let initramfs = base_initramfs(
         arch,
         &members,
         &format!("initramfs-image-{}.cpio", arch.user_target),
@@ -1616,8 +1628,31 @@ fn build_windows_crt_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBu
     build_release_kernel(arch, &initramfs).map(Some)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layers {
+    LinkedToComponents,
+    Embedded,
+}
+
 fn release_initramfs(
     arch: &Arch,
+    extra: &[(&str, initramfs::Content)],
+    file_name: &str,
+) -> Result<std::path::PathBuf, String> {
+    initramfs_with(arch, Layers::Embedded, extra, file_name)
+}
+
+fn base_initramfs(
+    arch: &Arch,
+    extra: &[(&str, initramfs::Content)],
+    file_name: &str,
+) -> Result<std::path::PathBuf, String> {
+    initramfs_with(arch, Layers::LinkedToComponents, extra, file_name)
+}
+
+fn initramfs_with(
+    arch: &Arch,
+    layers: Layers,
     extra: &[(&str, initramfs::Content)],
     file_name: &str,
 ) -> Result<std::path::PathBuf, String> {
@@ -1627,10 +1662,16 @@ fn release_initramfs(
     let settings = build_runtime_program(arch, "eggos-settings")?;
     let mcp_server = build_runtime_program(arch, "eggos-mcp")?;
     let wayland_server = build_runtime_program(arch, "eggos-eggway")?;
-    let mut layers = Vec::new();
-    for (path, package) in foreign_layers(arch.name) {
-        layers.push((path, build_runtime_program(arch, package)?));
+    let mut embedded = Vec::new();
+    if layers == Layers::Embedded {
+        for (path, package) in foreign_layers(arch.name) {
+            embedded.push((path, build_runtime_program(arch, package)?));
+        }
     }
+    let component_links = match layers {
+        Layers::LinkedToComponents => components::base_links(arch.name),
+        Layers::Embedded => Vec::new(),
+    };
     let links: Vec<String> = COREUTILS.iter().map(|name| format!("bin/{name}")).collect();
     let mut members = vec![
         (INIT_PATH, initramfs::Content::Program(&init)),
@@ -1674,18 +1715,33 @@ fn release_initramfs(
             .map(|link| (link.as_str(), initramfs::Content::HardLink(COREUTILS_PATH))),
     );
     members.extend(
-        layers
+        embedded
             .iter()
             .map(|(path, host)| (*path, initramfs::Content::Program(host.as_str()))),
     );
-    if layers.iter().any(|(path, _)| *path == WINDOWS_LAYER_PATH) {
-        members.push((
-            WINDOWS_COMMAND_PATH,
-            initramfs::Content::HardLink(WINDOWS_LAYER_PATH),
-        ));
+    members.extend(
+        component_links
+            .iter()
+            .map(|(path, target)| (*path, initramfs::Content::SymbolicLink(target.as_str()))),
+    );
+    if let Some(command) = windows_command(&embedded, &component_links) {
+        members.push((WINDOWS_COMMAND_PATH, command));
     }
     members.extend_from_slice(extra);
     initramfs::build(&members, file_name)
+}
+
+fn windows_command<'a>(
+    embedded: &[(&str, String)],
+    component_links: &'a [(&str, String)],
+) -> Option<initramfs::Content<'a>> {
+    if embedded.iter().any(|(path, _)| *path == WINDOWS_LAYER_PATH) {
+        return Some(initramfs::Content::HardLink(WINDOWS_LAYER_PATH));
+    }
+    component_links
+        .iter()
+        .find(|(path, _)| *path == WINDOWS_LAYER_PATH)
+        .map(|(_, target)| initramfs::Content::SymbolicLink(target.as_str()))
 }
 
 fn foreign_layers(arch: &str) -> Vec<(&'static str, &'static str)> {
@@ -2535,8 +2591,8 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 mod tests {
     use super::{
         APP_PATH, COMPONENT_PATH, COREUTILS, DISK_PATH, EDIT_PATH, SETTINGS_PATH, arch_option,
-        foreign_layers, host_folder, json_string_field, room_bytes, size_in_mebibytes, with_value,
-        without_flag,
+        WINDOWS_LAYER_PATH, foreign_layers, host_folder, initramfs, json_string_field, room_bytes,
+        size_in_mebibytes, windows_command, with_value, without_flag,
     };
 
     #[test]
@@ -2552,7 +2608,7 @@ mod tests {
     }
 
     #[test]
-    fn the_release_image_carries_each_foreign_layer_where_it_runs() {
+    fn test_kernels_carry_each_foreign_layer_where_it_runs() {
         for arch in ["x86_64", "aarch64"] {
             assert_eq!(
                 foreign_layers(arch),
@@ -2563,6 +2619,25 @@ mod tests {
             );
         }
         assert!(foreign_layers("riscv64").is_empty());
+    }
+
+    #[test]
+    fn the_windows_command_follows_the_layer_into_its_component_or_beside_it() {
+        let links = crate::components::base_links("x86_64");
+        let Some(initramfs::Content::SymbolicLink(target)) = windows_command(&[], &links) else {
+            panic!("the base's /bin/windows is not a symbolic link");
+        };
+        assert_eq!(
+            target,
+            "/var/lib/eggos/components/windows-apps/root/usr/lib/eggos/windows"
+        );
+        let embedded = [(WINDOWS_LAYER_PATH, String::from("/target/eggos-windows"))];
+        assert!(matches!(
+            windows_command(&embedded, &[]),
+            Some(initramfs::Content::HardLink(WINDOWS_LAYER_PATH))
+        ));
+        let riscv = crate::components::base_links("riscv64");
+        assert!(windows_command(&[], &riscv).is_none());
     }
 
     #[test]

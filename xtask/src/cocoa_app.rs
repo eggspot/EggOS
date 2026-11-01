@@ -10,7 +10,7 @@
 
 use crate::dynamic_linking::download;
 use crate::rustc_version::sha256_of;
-use crate::{Arch, build_kernel};
+use crate::{Arch, build_kernel_with_layers};
 use eggos_app::archive::{Archive, extract};
 use eggos_app::icon::{self, OwnIcon, Workspace};
 use eggos_app::reader::Bytes;
@@ -118,7 +118,7 @@ pub fn check(arch: &Arch) -> Result<(), String> {
     let archive = folder.join(ARCHIVE);
     let bytes = std::fs::read(&archive).map_err(|e| format!("{}: {e}", archive.display()))?;
     let icon = expected_icon_file(&bytes)?;
-    let kernel = build_kernel(arch, None)?;
+    let kernel = build_kernel_with_layers(arch)?;
     crate::qemu::cocoa_app::check(arch, &kernel, &folder, icon.as_deref())
 }
 
