@@ -434,6 +434,8 @@ const SETTINGS_PATH: &str = "bin/settings";
 
 const APP_PATH: &str = "bin/app";
 
+const COMPONENT_PATH: &str = "bin/component";
+
 const APP_WINDOW_PATH: &str = "usr/libexec/app-window";
 
 const MCP_SERVER_PATH: &str = "usr/libexec/eggmcpd";
@@ -1650,6 +1652,7 @@ fn release_initramfs(
         ),
         (DOWNLOADS_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (APP_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (COMPONENT_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
         (
             WAYLAND_SERVER_PATH,
@@ -2531,8 +2534,9 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::{
-        APP_PATH, COREUTILS, DISK_PATH, EDIT_PATH, SETTINGS_PATH, arch_option, foreign_layers,
-        host_folder, json_string_field, room_bytes, size_in_mebibytes, with_value, without_flag,
+        APP_PATH, COMPONENT_PATH, COREUTILS, DISK_PATH, EDIT_PATH, SETTINGS_PATH, arch_option,
+        foreign_layers, host_folder, json_string_field, room_bytes, size_in_mebibytes, with_value,
+        without_flag,
     };
 
     #[test]
@@ -2568,6 +2572,7 @@ mod tests {
             .map(|name| format!("/bin/{name}"))
             .chain([
                 format!("/{APP_PATH}"),
+                format!("/{COMPONENT_PATH}"),
                 format!("/{EDIT_PATH}"),
                 format!("/{DISK_PATH}"),
                 format!("/{SETTINGS_PATH}"),
