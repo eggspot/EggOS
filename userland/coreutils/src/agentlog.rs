@@ -611,7 +611,10 @@ mod tests {
         assert_eq!(fake.errors(), "");
         let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
         assert_eq!(run(&mut fake, &[c"--after", c"7"]), 0);
-        assert_eq!((fake.output(), fake.errors()), (String::new(), String::new()));
+        assert_eq!(
+            (fake.output(), fake.errors()),
+            (String::new(), String::new())
+        );
     }
 
     #[test]
@@ -631,7 +634,10 @@ mod tests {
             "{\"page\":{\"truncated\":true,\"truncated_by\":\"limit\",\"next_cursor\":\"1\"}}\n"
         );
         let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
-        assert_eq!(run(&mut fake, &[c"--raw", c"--after", c"6", c"--limit", c"1"]), 0);
+        assert_eq!(
+            run(&mut fake, &[c"--raw", c"--after", c"6", c"--limit", c"1"]),
+            0
+        );
         assert_eq!(fake.output().lines().count(), 1);
         assert!(fake.output().starts_with("6\t0\t-\t-\tserver-restart"));
         assert_eq!(fake.errors(), "more: --after 7\n");
@@ -650,7 +656,10 @@ mod tests {
             "agentlog: invalid cursor '-x': not one a page ended with\n"
         );
         let mut fake = Fake::default();
-        assert_eq!(run(&mut fake, &[c"--json", c"--after", c"a b"]), USAGE_STATUS);
+        assert_eq!(
+            run(&mut fake, &[c"--json", c"--after", c"a b"]),
+            USAGE_STATUS
+        );
         let errors = fake.errors();
         assert!(errors.contains("\"code\":\"bad_cursor\""), "{errors}");
         assert!(!errors.contains("\"code\":\"usage\""), "{errors}");

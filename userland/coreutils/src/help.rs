@@ -597,7 +597,10 @@ mod tests {
             .iter()
             .map(|words| COMMANDS.iter().position(|c| c.words.join(" ") == *words).unwrap())
             .collect();
-        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{output}");
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{output}"
+        );
         first.sort();
         assert_eq!(first, sorted[..3]);
         let cursor = cursor_of(&sorted[2]);

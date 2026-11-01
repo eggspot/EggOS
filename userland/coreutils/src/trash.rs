@@ -270,7 +270,10 @@ fn write_entry<S: System>(output: &mut Output<S>, name: &[u8], record: Option<&R
             .map_or(&b"-"[..], |date| date.as_str().as_bytes()),
     );
     output.write(b"\t");
-    write_escaped(output, record.map_or(&b"?"[..], |record| record.original.as_bytes()));
+    write_escaped(
+        output,
+        record.map_or(&b"?"[..], |record| record.original.as_bytes()),
+    );
     output.write(b"\n");
 }
 
@@ -510,7 +513,10 @@ mod tests {
             b"[Trash Info]\nPath=/home/root/Work/b.txt\nDeletionDate=x\n",
             0,
         );
-        let (_, fake) = run(fake, &[c"-l", c"--json", c"--after", c"a.txt", c"--limit", c"1"]);
+        let (_, fake) = run(
+            fake,
+            &[c"-l", c"--json", c"--after", c"a.txt", c"--limit", c"1"],
+        );
         assert_eq!(
             fake.output(),
             "{\"name\":\"b.txt\",\"deleted_at\":null,\
@@ -528,8 +534,16 @@ mod tests {
         );
         let (status, fake) = run(fake, &[c"-l", c"--json", c"--after", c"a b"]);
         assert_eq!(status, 2);
-        assert!(fake.errors().contains("\"code\":\"bad_cursor\""), "{}", fake.errors());
-        assert!(!fake.errors().contains("\"code\":\"usage\""), "{}", fake.errors());
+        assert!(
+            fake.errors().contains("\"code\":\"bad_cursor\""),
+            "{}",
+            fake.errors()
+        );
+        assert!(
+            !fake.errors().contains("\"code\":\"usage\""),
+            "{}",
+            fake.errors()
+        );
         let (status, fake) = run(fake, &[c"-l", c"--limit", c"101"]);
         assert_eq!(status, 2);
         assert!(fake.errors().starts_with("trash: invalid limit '101'"));
