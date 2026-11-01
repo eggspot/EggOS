@@ -256,6 +256,12 @@ impl Direction {
             && (self.bytes.is_empty() || Self::may_grow(self.growth_for(1), every_queue_limit))
     }
 
+    fn can_take_packet(&self, size: usize, every_queue_limit: u64) -> bool {
+        self.packets.len() < MAX_QUEUED_PACKETS
+            && self.room() >= size
+            && (!self.has_queued() || Self::may_grow(self.growth_for(size), every_queue_limit))
+    }
+
     fn make_room(&mut self, count: usize, every_queue_limit: u64) -> Result<(), Errno> {
         let growth = self.growth_for(count);
         if growth == 0 {
@@ -506,9 +512,18 @@ impl Connection {
     /// Queues `bytes` from `from` towards its peer as one packet of a `SOCK_SEQPACKET`
     /// connection, whole, with `rights` (taken then): `true` once queued, `false` while the
     /// peer's queue has no room for all of it (or holds [`MAX_QUEUED_PACKETS`]). An empty packet
-    /// is a packet too. Errors as [`Self::send`]; the caller refuses packets longer than
+    /// is a packet too. Errors as [`Self::send_passing`]; the caller refuses packets longer than
     /// [`QUEUE_CAPACITY`] (`EMSGSIZE`).
     pub fn send_packet(
+        &self,
+        from: Side,
+        bytes: &[u8],
+        rights: &mut Option<OutgoingRights>,
+    ) -> Result<bool, Errno> {
+        self.refusing_cycles(rights, |rights| self.queue_packet(from, bytes, rights))
+    }
+
+    fn queue_packet(
         &self,
         from: Side,
         bytes: &[u8],
@@ -549,10 +564,7 @@ impl Connection {
     pub fn can_send_packet(&self, side: Side, size: usize) -> bool {
         let state = self.state.lock();
         let limit = crate::memory::share_of_memory(QUEUE_MEMORY_SHARE);
-        let direction = &state.towards[side.other().index()];
-        state.send_shut(side)
-            || (direction.packets.len() < MAX_QUEUED_PACKETS
-                && direction.can_take(size.max(1), limit))
+        state.send_shut(side) || state.towards[side.other().index()].can_take_packet(size, limit)
     }
 
     /// Takes the next packet queued towards `side` (or copies it, to `peek`): its first
@@ -617,8 +629,16 @@ impl Connection {
         bytes: &[u8],
         rights: &mut Option<OutgoingRights>,
     ) -> Result<usize, Errno> {
+        self.refusing_cycles(rights, |rights| self.send(from, bytes, rights))
+    }
+
+    fn refusing_cycles<T>(
+        &self,
+        rights: &mut Option<OutgoingRights>,
+        queue: impl FnOnce(&mut Option<OutgoingRights>) -> Result<T, Errno>,
+    ) -> Result<T, Errno> {
         if rights.as_ref().is_none_or(|rights| rights.sockets == 0) {
-            return self.send(from, bytes, rights);
+            return queue(rights);
         }
         let _passing = PASSING.lock();
         let passable = rights.as_ref().is_none_or(|rights| {
@@ -630,7 +650,7 @@ impl Connection {
         if !passable {
             return Err(Errno::ETOOMANYREFS);
         }
-        self.send(from, bytes, rights)
+        queue(rights)
     }
 
     /// Takes up to `out.len()` bytes queued towards `side` into `out`, stopping before

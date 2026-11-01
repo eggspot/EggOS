@@ -552,6 +552,35 @@ fn a_queue_grows_only_within_every_queue_s_limit_and_shrinks_once_read() {
 }
 
 #[test]
+fn a_packet_is_ready_to_send_only_when_the_queue_can_grow_by_the_whole_packet() {
+    let mut direction = Direction::default();
+    direction.make_room(WRITE_ROOM, u64::MAX).unwrap();
+    let held = direction.bytes.capacity();
+    direction.bytes.extend(&vec![7u8; held - 1]);
+    direction.packets.push_back(Packet {
+        end: direction.end(),
+        carries_rights: false,
+    });
+    assert!(
+        direction.can_take_packet(1, 0),
+        "fits in what the buffer holds"
+    );
+    assert!(
+        !direction.can_take_packet(2, 0),
+        "every queue at its cap: a send would wait, so the sender sleeps"
+    );
+    assert_eq!(direction.make_room(2, 0), Err(Errno::ENOMEM));
+    assert!(direction.can_take_packet(2, u64::MAX));
+    assert!(!direction.can_take_packet(direction.room() + 1, u64::MAX));
+    let rights = direction.clear();
+    assert!(rights.is_empty());
+    assert!(
+        direction.can_take_packet(QUEUE_CAPACITY, 0),
+        "an empty queue never waits"
+    );
+}
+
+#[test]
 fn a_seqpacket_send_waits_until_the_whole_packet_fits_and_a_close_resets_the_peer() {
     let _serial = tests_lock();
     let (first, second) = UnixSocket::seqpacket_pair(ME);

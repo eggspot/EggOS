@@ -542,6 +542,65 @@ fn an_empty_seqpacket_message_carries_descriptors_and_is_received_into_no_buffer
 }
 
 #[test]
+fn passing_seqpacket_sockets_that_would_make_a_cycle_is_refused_and_nothing_stays_in_flight() {
+    let _serial = unix_socket::tests_lock();
+    let _frames = frames_for_test();
+    let kernel = kernel_tables();
+    let process = process(&kernel);
+    let mut thread = LinuxThread::first(&process);
+    let descriptor = |fd: u64| u32::try_from(fd).unwrap();
+    let (a, b) = seqpacket_pair(&process, &mut thread);
+    assert_eq!(
+        send_rights(&process, &mut thread, a, &[descriptor(a), descriptor(b)]),
+        Errno::ETOOMANYREFS.result()
+    );
+    assert_eq!(
+        send_rights(&process, &mut thread, a, &[descriptor(b)]),
+        Errno::ETOOMANYREFS.result()
+    );
+    assert_eq!(unix_socket::in_flight(), 0);
+
+    let (stream, stream_peer) = pair(&process, &mut thread);
+    assert_eq!(
+        send_rights(&process, &mut thread, stream, &[descriptor(a)]),
+        1
+    );
+    assert_eq!(
+        send_rights(&process, &mut thread, a, &[descriptor(stream)]),
+        Errno::ETOOMANYREFS.result()
+    );
+
+    let (c, d) = seqpacket_pair(&process, &mut thread);
+    let (other_stream, other_stream_peer) = pair(&process, &mut thread);
+    assert_eq!(
+        send_rights(&process, &mut thread, c, &[descriptor(other_stream)]),
+        1
+    );
+    assert_eq!(
+        send_rights(&process, &mut thread, other_stream, &[descriptor(c)]),
+        Errno::ETOOMANYREFS.result()
+    );
+    assert_eq!(unix_socket::in_flight(), 2);
+
+    for fd in [
+        a,
+        b,
+        stream,
+        stream_peer,
+        c,
+        d,
+        other_stream,
+        other_stream_peer,
+    ] {
+        assert_eq!(
+            call(&process, &mut thread, number::CLOSE, [fd, 0, 0, 0, 0, 0]),
+            0
+        );
+    }
+    assert_eq!(unix_socket::in_flight(), 0);
+}
+
+#[test]
 fn seqpacket_and_stream_sockets_connect_only_to_their_own_type() {
     let _serial = unix_socket::tests_lock();
     let _frames = frames_for_test();
