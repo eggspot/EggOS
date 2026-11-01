@@ -24,6 +24,41 @@ const MAX_TLS_CALLBACKS: usize = 1024;
 const MAX_EXPORTS: usize = 1 << 16;
 const INTEGERS: [ArgumentKind; DEFAULT_ARGUMENTS] = [ArgumentKind::Integer; DEFAULT_ARGUMENTS];
 const ONE_FLOATING_POINT: [ArgumentKind; 1] = [ArgumentKind::FloatingPoint];
+const TWO_FLOATING_POINT: [ArgumentKind; 2] = [ArgumentKind::FloatingPoint; 2];
+const THREE_FLOATING_POINT: [ArgumentKind; 3] = [ArgumentKind::FloatingPoint; 3];
+const FLOATING_POINT_THEN_INTEGER: [ArgumentKind; 2] =
+    [ArgumentKind::FloatingPoint, ArgumentKind::Integer];
+const TWO_FLOATING_POINT_THEN_INTEGER: [ArgumentKind; 3] = [
+    ArgumentKind::FloatingPoint,
+    ArgumentKind::FloatingPoint,
+    ArgumentKind::Integer,
+];
+const ONE_FLOATING_POINT_FUNCTIONS: [&[u8]; 80] = [
+    b"acos", b"asin", b"atan", b"cos", b"sin", b"tan", b"cosh", b"sinh", b"tanh", b"acosh",
+    b"asinh", b"atanh", b"exp", b"exp2", b"expm1", b"log", b"log10", b"log2", b"log1p",
+    b"logb", b"_logb", b"sqrt", b"cbrt", b"fabs", b"ceil", b"floor", b"trunc", b"round",
+    b"rint", b"nearbyint", b"erf", b"erfc", b"tgamma", b"lgamma", b"ilogb", b"lround",
+    b"lrint", b"llround", b"llrint", b"_dclass", b"_dsign", b"_isnan", b"_finite",
+    b"_chgsign", b"acosf", b"asinf", b"atanf", b"cosf", b"sinf", b"tanf", b"coshf",
+    b"sinhf", b"tanhf", b"acoshf", b"asinhf", b"atanhf", b"expf", b"exp2f", b"expm1f",
+    b"logf", b"log10f", b"log2f", b"log1pf", b"logbf", b"_logbf", b"sqrtf", b"cbrtf",
+    b"fabsf", b"ceilf", b"floorf", b"truncf", b"roundf", b"rintf", b"nearbyintf", b"erff",
+    b"erfcf", b"tgammaf", b"lgammaf", b"ilogbf", b"_fdclass",
+];
+const MORE_ONE_FLOATING_POINT_FUNCTIONS: [&[u8]; 8] = [
+    b"lroundf", b"lrintf", b"llroundf", b"llrintf", b"_fdsign", b"_isnanf", b"_finitef",
+    b"_chgsignf",
+];
+const TWO_FLOATING_POINT_FUNCTIONS: [&[u8]; 28] = [
+    b"atan2", b"pow", b"hypot", b"_hypot", b"fmod", b"remainder", b"copysign", b"_copysign",
+    b"fmin", b"fmax", b"fdim", b"nextafter", b"_nextafter", b"nexttoward", b"atan2f",
+    b"powf", b"hypotf", b"_hypotf", b"fmodf", b"remainderf", b"copysignf", b"_copysignf",
+    b"fminf", b"fmaxf", b"fdimf", b"nextafterf", b"_nextafterf", b"nexttowardf",
+];
+const FLOATING_POINT_THEN_INTEGER_FUNCTIONS: [&[u8]; 12] = [
+    b"frexp", b"ldexp", b"scalbn", b"scalbln", b"_scalb", b"modf", b"frexpf", b"ldexpf",
+    b"scalbnf", b"scalblnf", b"_scalbf", b"modff",
+];
 
 /// The sections of `image`, laid out by `image::copy_sections` and not relocated, as the
 /// translator reads them.
@@ -189,12 +224,22 @@ impl ImportSlot {
 }
 
 /// How the layer's export `function` takes its arguments, for its bridge: [`DEFAULT_ARGUMENTS`]
-/// integers unless it is one of the few with floating-point arguments; an empty name (an
-/// ordinal) is taken as integers.
+/// integers unless it is one of the math library's functions with floating-point arguments
+/// (D228); an empty name (an ordinal) is taken as integers.
 pub fn function_arguments(function: &[u8]) -> &'static [ArgumentKind] {
-    match function {
-        b"sqrtf" => &ONE_FLOATING_POINT,
-        _ => &INTEGERS,
+    let named = |names: &[&[u8]]| names.contains(&function);
+    if named(&ONE_FLOATING_POINT_FUNCTIONS) || named(&MORE_ONE_FLOATING_POINT_FUNCTIONS) {
+        &ONE_FLOATING_POINT
+    } else if named(&TWO_FLOATING_POINT_FUNCTIONS) {
+        &TWO_FLOATING_POINT
+    } else if named(&FLOATING_POINT_THEN_INTEGER_FUNCTIONS) {
+        &FLOATING_POINT_THEN_INTEGER
+    } else if matches!(function, b"remquo" | b"remquof") {
+        &TWO_FLOATING_POINT_THEN_INTEGER
+    } else if matches!(function, b"fma" | b"fmaf") {
+        &THREE_FLOATING_POINT
+    } else {
+        &INTEGERS
     }
 }
 
@@ -440,6 +485,23 @@ mod tests {
         assert_eq!(procedure_stub_index(0x4000, 0x4000 + 16 * 64), None);
         assert_eq!(procedure_stub_rvas(1 << 32), None);
         assert_eq!(function_arguments(b"sqrtf"), [ArgumentKind::FloatingPoint]);
+        assert_eq!(function_arguments(b"sin"), [ArgumentKind::FloatingPoint]);
+        assert_eq!(function_arguments(b"lround"), [ArgumentKind::FloatingPoint]);
+        assert_eq!(function_arguments(b"pow"), [ArgumentKind::FloatingPoint; 2]);
+        assert_eq!(
+            function_arguments(b"frexp"),
+            [ArgumentKind::FloatingPoint, ArgumentKind::Integer]
+        );
+        assert_eq!(
+            function_arguments(b"remquof"),
+            [
+                ArgumentKind::FloatingPoint,
+                ArgumentKind::FloatingPoint,
+                ArgumentKind::Integer
+            ]
+        );
+        assert_eq!(function_arguments(b"fma"), [ArgumentKind::FloatingPoint; 3]);
+        assert_eq!(function_arguments(b"_dtest").len(), DEFAULT_ARGUMENTS);
         assert_eq!(function_arguments(b"").len(), DEFAULT_ARGUMENTS);
     }
 

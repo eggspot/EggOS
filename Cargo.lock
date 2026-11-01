@@ -387,6 +387,7 @@ dependencies = [
  "eggos-drivers",
  "eggos-element-tree",
  "eggos-image",
+ "eggos-math",
  "eggos-net",
  "eggos-png",
  "eggos-runtime",
