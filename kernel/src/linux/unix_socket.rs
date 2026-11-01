@@ -8,8 +8,10 @@
 //! [`Connection`]: a queue of bytes towards each side, growing on demand up to
 //! [`QUEUE_CAPACITY`], with the descriptors sent by `SCM_RIGHTS` kept beside the bytes they
 //! came with, so a read stops before the next group and hands a group over with its first
-//! byte. A bound socket is found by its address in a registry that exists only once something
-//! was bound (D18).
+//! byte. A `SOCK_SEQPACKET` connection keeps the same queues with each send's end beside them,
+//! so a read takes one whole packet, its descriptors with it, and drops what did not fit. A
+//! bound socket is found by its address in a registry that exists only once something was
+//! bound (D18).
 //!
 //! Locks are leaf locks taken one socket state at a time, then at most that socket's
 //! connection; the registry's lock is taken alone. Descriptors leave a queue through
@@ -53,6 +55,9 @@ pub const MAX_RIGHTS_PER_MESSAGE: usize = 253;
 
 /// The most descriptors queued towards one side of a connection.
 pub const MAX_QUEUED_RIGHTS: usize = 1024;
+
+/// The most packets queued towards one side of a `SOCK_SEQPACKET` connection.
+pub const MAX_QUEUED_PACKETS: usize = 1024;
 
 /// The most descriptors in flight in every connection together.
 pub const MAX_IN_FLIGHT: u32 = 4096;
@@ -156,15 +161,26 @@ struct InFlightRights {
     sockets: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Packet {
+    end: u64,
+    carries_rights: bool,
+}
+
 #[derive(Debug, Default)]
 struct Direction {
     bytes: VecDeque<u8>,
     taken: u64,
     rights: VecDeque<InFlightRights>,
     queued_rights: usize,
+    packets: VecDeque<Packet>,
 }
 
 impl Direction {
+    fn has_queued(&self) -> bool {
+        !self.bytes.is_empty() || !self.packets.is_empty()
+    }
+
     fn room(&self) -> usize {
         QUEUE_CAPACITY - self.bytes.len()
     }
@@ -212,6 +228,7 @@ impl Direction {
 
     fn clear(&mut self) -> Vec<InFlightRights> {
         self.let_go_of_bytes();
+        self.packets = VecDeque::new();
         self.queued_rights = 0;
         self.rights.drain(..).collect()
     }
@@ -333,21 +350,49 @@ pub enum Taken {
     Reset,
 }
 
+/// What a read of a packet took ([`Connection::receive_packet`]).
+#[derive(Debug)]
+pub enum TakenPacket {
+    /// The packet's first bytes, its whole `length`, and the descriptors that came with it.
+    Packet {
+        bytes: Vec<u8>,
+        length: usize,
+        rights: Option<Vec<Arc<OpenFile>>>,
+    },
+    /// Nothing queued yet.
+    Empty,
+    /// Nothing queued, and nothing more will come.
+    Ended,
+    /// The peer closed with packets it had not read (`ECONNRESET`, reported once).
+    Reset,
+}
+
 /// A connected pair's shared state. See the module documentation.
 #[derive(Debug)]
 pub struct Connection {
     state: LeafSpinLock<ConnectionState>,
+    seqpacket: bool,
 }
 
 impl Connection {
-    /// A connection whose first side has `address` and `credentials`; its second gets its own
-    /// once queued ([`UnixSocket::queue`]) or at once for a pair.
+    /// A stream connection whose first side has `address` and `credentials`; its second gets
+    /// its own once queued ([`UnixSocket::queue`]) or at once for a pair.
     pub fn new(address: Address, credentials: PeerCredentials) -> Arc<Self> {
+        Self::built(address, credentials, false)
+    }
+
+    /// As [`Self::new`], for a `SOCK_SEQPACKET` connection.
+    pub fn new_seqpacket(address: Address, credentials: PeerCredentials) -> Arc<Self> {
+        Self::built(address, credentials, true)
+    }
+
+    fn built(address: Address, credentials: PeerCredentials, seqpacket: bool) -> Arc<Self> {
         let mut state = ConnectionState::default();
         state.addresses[0] = address;
         state.credentials[0] = Some(credentials);
         Arc::new(Self {
             state: LeafSpinLock::new_leaf(state),
+            seqpacket,
         })
     }
 
@@ -418,33 +463,149 @@ impl Connection {
                 Err(_) => return Err(error),
             },
         };
-        if let Some(outgoing) = rights.as_ref() {
-            let files = outgoing.files.len();
-            if direction.queued_rights + files > MAX_QUEUED_RIGHTS {
-                return Err(Errno::ETOOMANYREFS);
-            }
-            direction.rights.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-            IN_FLIGHT
-                .try_update(Ordering::Relaxed, Ordering::Relaxed, |in_flight| {
-                    in_flight
-                        .checked_add(files as u32)
-                        .filter(|&total| total <= MAX_IN_FLIGHT)
-                })
-                .map_err(|_| Errno::ETOOMANYREFS)?;
-            let Some(outgoing) = rights.take() else {
-                unreachable!("checked above")
-            };
-            let position = direction.end();
-            direction.queued_rights += files;
-            direction.rights.push_back(InFlightRights {
-                position,
-                files: outgoing.files,
-                sockets: outgoing.sockets,
-            });
-            state.sockets_carried += outgoing.sockets;
-        }
+        Self::queue_rights(&mut state, to, rights)?;
         state.towards[to].bytes.extend(&bytes[..count]);
         Ok(count)
+    }
+
+    fn queue_rights(
+        state: &mut ConnectionState,
+        to: usize,
+        rights: &mut Option<OutgoingRights>,
+    ) -> Result<(), Errno> {
+        let direction = &mut state.towards[to];
+        let Some(outgoing) = rights.as_ref() else {
+            return Ok(());
+        };
+        let files = outgoing.files.len();
+        if direction.queued_rights + files > MAX_QUEUED_RIGHTS {
+            return Err(Errno::ETOOMANYREFS);
+        }
+        direction.rights.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+        IN_FLIGHT
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |in_flight| {
+                in_flight
+                    .checked_add(files as u32)
+                    .filter(|&total| total <= MAX_IN_FLIGHT)
+            })
+            .map_err(|_| Errno::ETOOMANYREFS)?;
+        let Some(outgoing) = rights.take() else {
+            unreachable!("checked above")
+        };
+        let position = direction.end();
+        direction.queued_rights += files;
+        direction.rights.push_back(InFlightRights {
+            position,
+            files: outgoing.files,
+            sockets: outgoing.sockets,
+        });
+        state.sockets_carried += outgoing.sockets;
+        Ok(())
+    }
+
+    /// Queues `bytes` from `from` towards its peer as one packet of a `SOCK_SEQPACKET`
+    /// connection, whole, with `rights` (taken then): `true` once queued, `false` while the
+    /// peer's queue has no room for all of it (or holds [`MAX_QUEUED_PACKETS`]). An empty packet
+    /// is a packet too. Errors as [`Self::send`]; the caller refuses packets longer than
+    /// [`QUEUE_CAPACITY`] (`EMSGSIZE`).
+    pub fn send_packet(
+        &self,
+        from: Side,
+        bytes: &[u8],
+        rights: &mut Option<OutgoingRights>,
+    ) -> Result<bool, Errno> {
+        let to = from.other().index();
+        let mut state = self.state.lock();
+        if state.send_shut(from) {
+            return Err(Errno::EPIPE);
+        }
+        let direction = &mut state.towards[to];
+        if bytes.len() > direction.room() || direction.packets.len() >= MAX_QUEUED_PACKETS {
+            return Ok(false);
+        }
+        let limit = crate::memory::share_of_memory(QUEUE_MEMORY_SHARE);
+        match direction.make_room(bytes.len(), limit) {
+            Ok(()) => {}
+            Err(_) if direction.has_queued() => return Ok(false),
+            Err(error) => return Err(error),
+        }
+        direction
+            .packets
+            .try_reserve(1)
+            .map_err(|_| Errno::ENOMEM)?;
+        let carries_rights = rights.is_some();
+        Self::queue_rights(&mut state, to, rights)?;
+        let direction = &mut state.towards[to];
+        direction.bytes.extend(bytes);
+        let end = direction.end();
+        direction.packets.push_back(Packet {
+            end,
+            carries_rights,
+        });
+        Ok(true)
+    }
+
+    /// Whether [`Self::send_packet`] of `size` bytes from `side` would not wait.
+    pub fn can_send_packet(&self, side: Side, size: usize) -> bool {
+        let state = self.state.lock();
+        let limit = crate::memory::share_of_memory(QUEUE_MEMORY_SHARE);
+        let direction = &state.towards[side.other().index()];
+        state.send_shut(side)
+            || (direction.packets.len() < MAX_QUEUED_PACKETS
+                && direction.can_take(size.max(1), limit))
+    }
+
+    /// Takes the next packet queued towards `side` (or copies it, to `peek`): its first
+    /// `wanted` bytes, its whole length, and, when taken, the descriptors that came with it.
+    /// The rest of a packet longer than `wanted` is dropped. `ENOMEM` if no room for the copy.
+    pub fn receive_packet(
+        &self,
+        side: Side,
+        wanted: usize,
+        peek: bool,
+    ) -> Result<TakenPacket, Errno> {
+        let mut state = self.state.lock();
+        let index = side.index();
+        let Some(&packet) = state.towards[index].packets.front() else {
+            return Ok(match Self::nothing(&mut state, side, true) {
+                Taken::Reset => TakenPacket::Reset,
+                Taken::Ended => TakenPacket::Ended,
+                _ => TakenPacket::Empty,
+            });
+        };
+        let direction = &mut state.towards[index];
+        let length = (packet.end - direction.taken) as usize;
+        let count = length.min(wanted);
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(count).map_err(|_| Errno::ENOMEM)?;
+        bytes.resize(count, 0);
+        direction.copy_out(0, &mut bytes);
+        if peek {
+            return Ok(TakenPacket::Packet {
+                bytes,
+                length,
+                rights: None,
+            });
+        }
+        let group = match packet.carries_rights {
+            true => direction.take_rights_at_front(),
+            false => None,
+        };
+        direction.bytes.drain(..length);
+        direction.taken += length as u64;
+        direction.packets.pop_front();
+        direction.shrink_when_empty();
+        let rights = group.map(|group| state.let_go(alloc::vec![group]));
+        Ok(TakenPacket::Packet {
+            bytes,
+            length,
+            rights,
+        })
+    }
+
+    /// Whether it is a `SOCK_SEQPACKET` connection, which keeps each send apart.
+    pub fn is_seqpacket(&self) -> bool {
+        self.seqpacket
     }
 
     /// [`Self::send`], first checking under the lock that serialises passing sockets that no
@@ -535,7 +696,7 @@ impl Connection {
     /// Whether a read on `side` would not wait: bytes queued, the end, or a reset.
     pub fn can_receive(&self, side: Side) -> bool {
         let state = self.state.lock();
-        !state.towards[side.index()].bytes.is_empty()
+        state.towards[side.index()].has_queued()
             || state.receive_shut(side)
             || state.reset[side.index()]
     }
@@ -594,7 +755,7 @@ impl Connection {
         let mut state = self.state.lock();
         let index = side.index();
         state.closed[index] = true;
-        if always || !state.towards[index].bytes.is_empty() {
+        if always || state.towards[index].has_queued() {
             state.reset[side.other().index()] = true;
         }
         let rights = state.towards[index].clear();
@@ -607,7 +768,7 @@ impl Connection {
         let index = side.index();
         let receive_shut = state.receive_shut(side);
         let mut events = 0;
-        if !state.towards[index].bytes.is_empty() || receive_shut {
+        if state.towards[index].has_queued() || receive_shut {
             events |= requested & (event::IN | event::RDNORM);
         }
         if receive_shut {
@@ -695,6 +856,7 @@ pub struct UnixSocket {
     inode: u64,
     wake_list: Arc<WakeList>,
     datagrams: Option<Box<Datagrams>>,
+    seqpacket: bool,
 }
 
 impl core::fmt::Debug for UnixSocket {
@@ -725,10 +887,14 @@ pub enum NotConnected {
 
 impl UnixSocket {
     fn with(state: SocketState) -> Arc<Self> {
-        Self::built(state, None)
+        let seqpacket = match &state {
+            SocketState::Connected { connection, .. } => connection.is_seqpacket(),
+            _ => false,
+        };
+        Self::built(state, None, seqpacket)
     }
 
-    fn built(state: SocketState, datagrams: Option<Box<Datagrams>>) -> Arc<Self> {
+    fn built(state: SocketState, datagrams: Option<Box<Datagrams>>, seqpacket: bool) -> Arc<Self> {
         let wake_list = WakeList::shared();
         if let SocketState::Connected { connection, side } = &state {
             connection.attach(*side, &wake_list);
@@ -739,6 +905,7 @@ impl UnixSocket {
             inode: LAST_INODE.fetch_add(1, Ordering::Relaxed) + 1,
             wake_list,
             datagrams,
+            seqpacket,
         })
     }
 
@@ -756,7 +923,36 @@ impl UnixSocket {
                 address: Address::Unnamed,
             },
             Some(Box::new(Datagrams::new())),
+            false,
         )
+    }
+
+    /// A new open `SOCK_SEQPACKET` socket: connected, it keeps each send apart.
+    pub fn new_seqpacket() -> Arc<Self> {
+        Self::built(
+            SocketState::Open {
+                address: Address::Unnamed,
+            },
+            None,
+            true,
+        )
+    }
+
+    /// Whether it is a `SOCK_SEQPACKET` socket.
+    pub fn is_seqpacket(&self) -> bool {
+        self.seqpacket
+    }
+
+    /// The connection its `connect` makes: a stream, or packets for a `SOCK_SEQPACKET` socket.
+    pub fn new_connection(
+        &self,
+        address: Address,
+        credentials: PeerCredentials,
+    ) -> Arc<Connection> {
+        match self.seqpacket {
+            true => Connection::new_seqpacket(address, credentials),
+            false => Connection::new(address, credentials),
+        }
     }
 
     /// Its datagram side, if it is a datagram socket.
@@ -777,9 +973,23 @@ impl UnixSocket {
         })
     }
 
-    /// A connected pair, both made by the process `credentials` names (`socketpair`).
+    /// A connected stream pair, both made by the process `credentials` names (`socketpair`).
     pub fn pair(credentials: PeerCredentials) -> (Arc<Self>, Arc<Self>) {
-        let connection = Connection::new(Address::Unnamed, credentials);
+        Self::pair_on(Connection::new(Address::Unnamed, credentials), credentials)
+    }
+
+    /// A connected `SOCK_SEQPACKET` pair, as [`Self::pair`].
+    pub fn seqpacket_pair(credentials: PeerCredentials) -> (Arc<Self>, Arc<Self>) {
+        Self::pair_on(
+            Connection::new_seqpacket(Address::Unnamed, credentials),
+            credentials,
+        )
+    }
+
+    fn pair_on(
+        connection: Arc<Connection>,
+        credentials: PeerCredentials,
+    ) -> (Arc<Self>, Arc<Self>) {
         connection.set(Side::Second, Address::Unnamed, credentials);
         let first = Self::with(SocketState::Connected {
             connection: Arc::clone(&connection),
@@ -1302,7 +1512,11 @@ pub fn proc_net_unix() -> Option<Vec<u8>> {
                 Arc::strong_count(socket),
                 0,
                 flags,
-                if socket.is_datagram() { 2 } else { 1 },
+                match (socket.is_datagram(), socket.is_seqpacket()) {
+                    (true, _) => 2,
+                    (false, true) => 5,
+                    (false, false) => 1,
+                },
                 state,
                 socket.inode()
             )?;

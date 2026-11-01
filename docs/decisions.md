@@ -14477,7 +14477,10 @@ the license, by an explicit instruction recorded here.
   (bionic's long values) and property contexts; `logcat`'s `-b` (buffers), `-f`, `-t`,
   `-g` and the other formats, the binary log buffers, `logdr` and the `logd` control
   socket, per-app log access (`READ_LOGS`), `SCM_RIGHTS` and `SCM_CREDENTIALS` on datagram
-  sockets, `SOCK_SEQPACKET`; properties set after a program first touched a page of the
+  sockets (`AF_UNIX` `SOCK_SEQPACKET` exists since #149's CI fixes: `socket`, `socketpair`,
+  `connect` to its own type only, one whole packet per send and per receive, `MSG_TRUNC`,
+  empty packets, `SCM_RIGHTS`; Rust's `std::process` makes such a pair for every spawn that
+  forks); properties set after a program first touched a page of the
   property area (each process copies a page when it first faults it in, so it sees no later
   `setprop` and `__system_property_wait` cannot work: shared frames that `set` updates); `liblog.so` (and with it `__android_log_print`) and the
   other platform libraries (`libutils`, `libbinder_ndk`, ...), from a system image read the

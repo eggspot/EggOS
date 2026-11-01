@@ -550,3 +550,50 @@ fn a_queue_grows_only_within_every_queue_s_limit_and_shrinks_once_read() {
     assert!(rights.is_empty());
     assert_eq!(direction.bytes.capacity(), 0);
 }
+
+#[test]
+fn a_seqpacket_send_waits_until_the_whole_packet_fits_and_a_close_resets_the_peer() {
+    let _serial = tests_lock();
+    let (first, second) = UnixSocket::seqpacket_pair(ME);
+    assert!(first.is_seqpacket() && second.is_seqpacket());
+    let (connection, side) = connection_of(&first);
+    let big = vec![7u8; QUEUE_CAPACITY - 10];
+    assert_eq!(connection.send_packet(side, &big, &mut None), Ok(true));
+    assert_eq!(connection.send_packet(side, &[1; 11], &mut None), Ok(false));
+    assert!(!connection.can_send_packet(side, 11));
+    assert!(connection.can_send_packet(side, 10));
+    assert_eq!(connection.send_packet(side, &[1; 10], &mut None), Ok(true));
+    let (back, back_side) = connection_of(&second);
+    match back.receive_packet(back_side, 4, false) {
+        Ok(TakenPacket::Packet { bytes, length, .. }) => {
+            assert_eq!(bytes, [7; 4]);
+            assert_eq!(length, QUEUE_CAPACITY - 10);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(connection.can_send_packet(side, 11));
+    let files = connection.close(side);
+    assert!(files.is_empty());
+    assert!(matches!(
+        back.receive_packet(back_side, 4, false),
+        Ok(TakenPacket::Packet { length: 10, .. })
+    ));
+    assert!(matches!(
+        back.receive_packet(back_side, 4, false),
+        Ok(TakenPacket::Ended)
+    ));
+    let (third, fourth) = UnixSocket::seqpacket_pair(ME);
+    let (connection, side) = connection_of(&third);
+    assert_eq!(connection.send_packet(side, &[], &mut None), Ok(true));
+    let (back, back_side) = connection_of(&fourth);
+    assert!(back.can_receive(back_side));
+    release_rights(back.close(back_side));
+    assert!(matches!(
+        connection.receive_packet(side, 4, false),
+        Ok(TakenPacket::Reset)
+    ));
+    assert_eq!(
+        connection.send_packet(side, b"x", &mut None),
+        Err(Errno::EPIPE)
+    );
+}

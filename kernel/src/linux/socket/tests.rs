@@ -193,7 +193,7 @@ fn socket_s_errors_come_in_linux_s_order_and_its_flags_are_kept() {
         Errno::ESOCKTNOSUPPORT.result()
     );
     assert_eq!(
-        socket(&mut thread, UNIX, 5, 0),
+        socket(&mut thread, UNIX, 4, 0),
         Errno::ESOCKTNOSUPPORT.result()
     );
     assert_eq!(
@@ -349,6 +349,267 @@ fn a_pair_moves_bytes_both_ways_and_reports_epipe_once_one_end_closes() {
         call(&process, &mut thread, number::SHUTDOWN, [a, 3, 0, 0, 0, 0]),
         Errno::EINVAL.result()
     );
+}
+
+const SEQPACKET: u64 = SOCK_SEQPACKET as u64;
+
+fn seqpacket_pair(process: &Arc<Process<P>>, thread: &mut LinuxThread) -> (u64, u64) {
+    let kind = SEQPACKET | u64::from(open_flag::CLOEXEC);
+    assert_eq!(
+        call(
+            process,
+            thread,
+            number::SOCKETPAIR,
+            [UNIX, kind, 0, DATA, 0, 0]
+        ),
+        0
+    );
+    (
+        u64::from(int_at(process, DATA)),
+        u64::from(int_at(process, DATA + 4)),
+    )
+}
+
+fn send_bytes(process: &Arc<Process<P>>, thread: &mut LinuxThread, fd: u64, bytes: &[u8]) -> u64 {
+    store(process, SEND_DATA, bytes);
+    call(
+        process,
+        thread,
+        number::SENDTO,
+        [fd, SEND_DATA, bytes.len() as u64, 0, 0, 0],
+    )
+}
+
+fn receive_bytes(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    fd: u64,
+    room: u64,
+    flags: u32,
+) -> u64 {
+    call(
+        process,
+        thread,
+        number::RECVFROM,
+        [fd, RECEIVE_DATA, room, u64::from(flags), 0, 0],
+    )
+}
+
+#[test]
+fn a_seqpacket_pair_keeps_each_send_apart_and_drops_what_does_not_fit() {
+    let _serial = unix_socket::tests_lock();
+    let _frames = frames_for_test();
+    let kernel = kernel_tables();
+    let process = process(&kernel);
+    let mut thread = LinuxThread::first(&process);
+    let (a, b) = seqpacket_pair(&process, &mut thread);
+    assert!(thread.files().lock().get(a as u32).unwrap().close_on_exec);
+    assert_eq!(send_bytes(&process, &mut thread, a, b"hello"), 5);
+    assert_eq!(send_bytes(&process, &mut thread, a, b"ab"), 2);
+    assert_eq!(send_bytes(&process, &mut thread, a, b"world"), 5);
+    assert_eq!(receive_bytes(&process, &mut thread, b, 3, 0), 3);
+    assert_eq!(load(&process, RECEIVE_DATA, 3), b"hel");
+    assert_eq!(receive_bytes(&process, &mut thread, b, 8, 0), 2);
+    assert_eq!(load(&process, RECEIVE_DATA, 2), b"ab");
+    assert_eq!(receive_bytes(&process, &mut thread, b, 2, message::PEEK), 2);
+    assert_eq!(
+        receive_bytes(&process, &mut thread, b, 2, message::TRUNC),
+        5
+    );
+    assert_eq!(load(&process, RECEIVE_DATA, 2), b"wo");
+    assert_eq!(
+        receive_bytes(&process, &mut thread, b, 8, message::DONTWAIT),
+        Errno::EAGAIN.result()
+    );
+
+    assert_eq!(send_bytes(&process, &mut thread, b, b"reply"), 5);
+    store(&process, RECEIVE_IOV, &iov(RECEIVE_DATA, 4));
+    store(
+        &process,
+        RECEIVE_HEADER,
+        &header(0, 0, RECEIVE_IOV, 1, 0, 0),
+    );
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::RECVMSG,
+            [a, RECEIVE_HEADER, 0, 0, 0, 0]
+        ),
+        4
+    );
+    let written = load(&process, RECEIVE_HEADER, MSGHDR_SIZE);
+    assert_eq!(
+        u32::from_ne_bytes(written[48..52].try_into().unwrap()),
+        message::TRUNC
+    );
+
+    let mut option = [0u8; 8];
+    option[..4].copy_from_slice(&4i32.to_ne_bytes());
+    store(&process, DATA + 0x80, &option);
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::GETSOCKOPT,
+            [
+                a,
+                u64::from(SOL_SOCKET),
+                u64::from(option::TYPE),
+                DATA + 0x88,
+                DATA + 0x80,
+                0
+            ]
+        ),
+        0
+    );
+    assert_eq!(int_at(&process, DATA + 0x88), SOCK_SEQPACKET);
+
+    assert_eq!(
+        call(&process, &mut thread, number::CLOSE, [a, 0, 0, 0, 0, 0]),
+        0
+    );
+    assert_eq!(receive_bytes(&process, &mut thread, b, 8, 0), 0);
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::SENDTO,
+            [b, SEND_DATA, 1, u64::from(message::NOSIGNAL), 0, 0]
+        ),
+        Errno::EPIPE.result()
+    );
+}
+
+#[test]
+fn an_empty_seqpacket_message_carries_descriptors_and_is_received_into_no_buffer() {
+    let _serial = unix_socket::tests_lock();
+    let _frames = frames_for_test();
+    let kernel = kernel_tables();
+    let process = process(&kernel);
+    let mut thread = LinuxThread::first(&process);
+    let (a, b) = seqpacket_pair(&process, &mut thread);
+    store(&process, SEND_CONTROL, &rights_message(&[1]));
+    store(
+        &process,
+        SEND_HEADER,
+        &header(0, 0, SEND_IOV, 0, SEND_CONTROL, (CMSGHDR_SIZE + 4) as u64),
+    );
+    let send_empty = |thread: &mut LinuxThread| {
+        call(
+            &process,
+            thread,
+            number::SENDMSG,
+            [a, SEND_HEADER, 0, 0, 0, 0],
+        )
+    };
+    assert_eq!(send_empty(&mut thread), 0);
+    store(&process, SEND_HEADER, &header(0, 0, SEND_IOV, 0, 0, 0));
+    assert_eq!(send_empty(&mut thread), 0);
+    assert_eq!(send_bytes(&process, &mut thread, a, b"after"), 5);
+    store(
+        &process,
+        RECEIVE_HEADER,
+        &header(0, 0, RECEIVE_IOV, 0, RECEIVE_CONTROL, 24),
+    );
+    let receive_empty = |thread: &mut LinuxThread| {
+        call(
+            &process,
+            thread,
+            number::RECVMSG,
+            [b, RECEIVE_HEADER, u64::from(message::DONTWAIT), 0, 0, 0],
+        )
+    };
+    assert_eq!(receive_empty(&mut thread), 0);
+    let written = load(&process, RECEIVE_HEADER, MSGHDR_SIZE);
+    assert_eq!(u64::from_ne_bytes(written[40..48].try_into().unwrap()), 24);
+    assert_eq!(u32::from_ne_bytes(written[48..52].try_into().unwrap()), 0);
+    let received = int_at(&process, RECEIVE_CONTROL + 16);
+    let original = thread.files().file(1).unwrap();
+    let passed = thread.files().file(u64::from(received)).unwrap();
+    assert!(Arc::ptr_eq(&original, &passed));
+    assert_eq!(unix_socket::in_flight(), 0);
+    store(
+        &process,
+        RECEIVE_HEADER,
+        &header(0, 0, RECEIVE_IOV, 0, RECEIVE_CONTROL, 24),
+    );
+    assert_eq!(receive_empty(&mut thread), 0);
+    let written = load(&process, RECEIVE_HEADER, MSGHDR_SIZE);
+    assert_eq!(u64::from_ne_bytes(written[40..48].try_into().unwrap()), 0);
+    assert_eq!(receive_bytes(&process, &mut thread, b, 8, 0), 5);
+    assert_eq!(load(&process, RECEIVE_DATA, 5), b"after");
+}
+
+#[test]
+fn seqpacket_and_stream_sockets_connect_only_to_their_own_type() {
+    let _serial = unix_socket::tests_lock();
+    let _frames = frames_for_test();
+    let kernel = kernel_tables();
+    let process = process(&kernel);
+    let mut thread = LinuxThread::first(&process);
+    let open = |thread: &mut LinuxThread, kind: u64| {
+        call(&process, thread, number::SOCKET, [UNIX, kind, 0, 0, 0, 0])
+    };
+    let name = abstract_address(b"eggos-seqpacket-test");
+    store(&process, DATA + 0x80, &name);
+    let address_length = name.len() as u64;
+    let listener = open(&mut thread, SEQPACKET);
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::BIND,
+            [listener, DATA + 0x80, address_length, 0, 0, 0]
+        ),
+        0
+    );
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::LISTEN,
+            [listener, 4, 0, 0, 0, 0]
+        ),
+        0
+    );
+    let stream = open(&mut thread, STREAM);
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::CONNECT,
+            [stream, DATA + 0x80, address_length, 0, 0, 0]
+        ),
+        Errno::EPROTOTYPE.result()
+    );
+    let client = open(&mut thread, SEQPACKET);
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::CONNECT,
+            [client, DATA + 0x80, address_length, 0, 0, 0]
+        ),
+        0
+    );
+    let accepted = call(
+        &process,
+        &mut thread,
+        number::ACCEPT,
+        [listener, 0, 0, 0, 0, 0],
+    );
+    assert!(accepted < 1024);
+    assert_eq!(send_bytes(&process, &mut thread, client, b"one"), 3);
+    assert_eq!(send_bytes(&process, &mut thread, client, b"two"), 3);
+    assert_eq!(receive_bytes(&process, &mut thread, accepted, 8, 0), 3);
+    assert_eq!(load(&process, RECEIVE_DATA, 3), b"one");
+    for fd in [listener, stream, client, accepted] {
+        assert_eq!(
+            call(&process, &mut thread, number::CLOSE, [fd, 0, 0, 0, 0, 0]),
+            0
+        );
+    }
 }
 
 #[test]
