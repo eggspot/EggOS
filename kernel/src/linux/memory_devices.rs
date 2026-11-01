@@ -1,6 +1,6 @@
-//! The memory devices (D168): `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random` and
-//! `/dev/urandom`, Linux's character devices of major 1, which shells, build tools and C
-//! libraries open by name.
+//! The memory devices (D168): `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`,
+//! `/dev/urandom` and `/dev/kmsg`, Linux's character devices of major 1, which shells, build
+//! tools and C libraries open by name.
 //!
 //! As on Linux: `null` reads nothing and takes every write without reading it; `zero` reads
 //! zeros and takes every write, and a mapping of it is anonymous memory
@@ -8,8 +8,11 @@
 //! `random` and `urandom` read the kernel's generator ([`crate::random`], as `getrandom`), and
 //! what is written to them is hashed into its input without being credited as entropy.
 //! `random` waits until the generator is seeded (`EAGAIN` with `O_NONBLOCK`) and `urandom`
-//! never waits, as since Linux 5.18. Seeking any of them leaves them at 0, reads and writes
-//! ignore the offset, and they are always ready for `poll`.
+//! never waits, as since Linux 5.18. `kmsg` (D223) has one job on EggOS: what is written to it
+//! goes to the serial console only, never to the screen's terminal, so init's `init:` lines
+//! reach the boot log while the Terminal's first text stays the banner and the shell's; it
+//! reads nothing, since the kernel keeps no log to replay. Seeking any of them leaves them at
+//! 0, reads and writes ignore the offset, and they are always ready for `poll`.
 
 use super::{Errno, MAX_RW_COUNT};
 use crate::process::Process;
@@ -31,6 +34,8 @@ pub enum MemoryDevice {
     Random,
     /// `/dev/urandom`.
     Urandom,
+    /// `/dev/kmsg`: writes go to the serial console only (D223).
+    Kmsg,
 }
 
 impl MemoryDevice {
@@ -42,6 +47,7 @@ impl MemoryDevice {
             devfs::FULL_DEVICE => Self::Full,
             devfs::RANDOM_DEVICE => Self::Random,
             devfs::URANDOM_DEVICE => Self::Urandom,
+            devfs::KMSG_DEVICE => Self::Kmsg,
             _ => return None,
         })
     }
@@ -61,7 +67,7 @@ pub fn read<P: Platform>(
     buffers: impl Iterator<Item = (u64, u64)>,
 ) -> Result<u64, Errno> {
     match device {
-        MemoryDevice::Null => Ok(0),
+        MemoryDevice::Null | MemoryDevice::Kmsg => Ok(0),
         MemoryDevice::Zero | MemoryDevice::Full => fill(process, buffers, |_| {}),
         MemoryDevice::Random | MemoryDevice::Urandom => {
             if device == MemoryDevice::Random && !random::is_seeded() {
@@ -116,8 +122,9 @@ fn fill<P: Platform>(
 
 /// Writes the buffers `buffers` lists (base, length) to `device`: how many bytes it took, at
 /// most `MAX_RW_COUNT`. `null` and `zero` take them all without reading them; `full` is
-/// `ENOSPC`; `random` and `urandom` hash what they read into the generator's input, fewer at
-/// a byte that is not the program's memory, `EFAULT` if that is the first.
+/// `ENOSPC`; `random` and `urandom` hash what they read into the generator's input and `kmsg`
+/// writes it to the serial console, fewer at a byte that is not the program's memory,
+/// `EFAULT` if that is the first.
 pub fn write<P: Platform>(
     process: &Process<P>,
     device: MemoryDevice,
@@ -128,13 +135,17 @@ pub fn write<P: Platform>(
         MemoryDevice::Null | MemoryDevice::Zero => Ok(buffers
             .fold(0u64, |total, (_, length)| total.saturating_add(length))
             .min(MAX_RW_COUNT)),
-        MemoryDevice::Random | MemoryDevice::Urandom => mix_in(process, buffers),
+        MemoryDevice::Random | MemoryDevice::Urandom => {
+            take(process, buffers, random::add_user_input)
+        }
+        MemoryDevice::Kmsg => take(process, buffers, P::console_write),
     }
 }
 
-fn mix_in<P: Platform>(
+fn take<P: Platform>(
     process: &Process<P>,
     buffers: impl Iterator<Item = (u64, u64)>,
+    mut consume: impl FnMut(&[u8]),
 ) -> Result<u64, Errno> {
     let mut chunk = [0u8; CHUNK];
     let mut total = 0u64;
@@ -156,7 +167,7 @@ fn mix_in<P: Platform>(
                     copied => Ok(copied),
                 };
             }
-            random::add_user_input(&chunk[..piece]);
+            consume(&chunk[..piece]);
             done += piece as u64;
             since_preemption += piece as u64;
             if since_preemption >= PREEMPTION_INTERVAL {
@@ -184,6 +195,7 @@ mod tests {
         assert_eq!(MemoryDevice::of((1, 7)), Some(MemoryDevice::Full));
         assert_eq!(MemoryDevice::of((1, 8)), Some(MemoryDevice::Random));
         assert_eq!(MemoryDevice::of((1, 9)), Some(MemoryDevice::Urandom));
+        assert_eq!(MemoryDevice::of((1, 11)), Some(MemoryDevice::Kmsg));
         assert_eq!(MemoryDevice::of((1, 4)), None);
         assert_eq!(MemoryDevice::of(devfs::WINDOW_DEVICE), None);
     }
