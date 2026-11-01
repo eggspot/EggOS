@@ -1,12 +1,50 @@
-use crate::fake::{Fake, FakeTerminal, FakeWindow};
+use crate::fake::{Fake, FakePage, FakeTerminal, FakeWindow};
 use crate::system::FileSystemUsage;
 use crate::utilities::{Utility, run};
 use core::ffi::CStr;
 use eggos_commands::COMMANDS;
+use eggos_download_list::{Record, State};
+use eggos_net::Ipv4Address;
 use std::ffi::CString;
 
+const EXAMPLE_HOST: Ipv4Address = Ipv4Address::new(10, 0, 2, 2);
+const EXAMPLE_DNS_SERVER: Ipv4Address = Ipv4Address::new(10, 0, 2, 3);
+const EXAMPLE_ROUND_TRIP_US: u64 = 512;
+const EXAMPLE_INTERFACES: &str = concat!(
+    "lo up 00:00:00:00:00:00 65536 off 127.0.0.1/8 - - - - - 12 1008 0 0 12 1008 0\n",
+    "eth0 up 52:54:00:12:34:56 1500 configured 10.0.2.15/24 10.0.2.2 10.0.2.3 10.0.2.2 86342 ",
+    "86400 2905 3600000 0 4 812 1300000 0\n",
+);
+const EXAMPLE_PAGE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\nHello, EggOS!\n";
+
+fn with_network(fake: Fake) -> Fake {
+    let mut fake = fake
+        .with_directory("/etc", 0)
+        .with_file("/etc/resolv.conf", 0o644, b"nameserver 10.0.2.3\n", 0)
+        .with_directory("/proc/net", 0)
+        .with_file(
+            "/proc/net/interfaces",
+            0o444,
+            EXAMPLE_INTERFACES.as_bytes(),
+            0,
+        );
+    fake.network.reachable.push(EXAMPLE_HOST);
+    fake.network.dns_servers.push((EXAMPLE_DNS_SERVER, 53));
+    fake.network
+        .names
+        .push((b"eggos.test".to_vec(), EXAMPLE_HOST));
+    fake.network.round_trip_us = EXAMPLE_ROUND_TRIP_US;
+    fake.network.pages.push(FakePage {
+        address: EXAMPLE_HOST,
+        port: 80,
+        target: b"/hello.txt".to_vec(),
+        response: EXAMPLE_PAGE.to_vec(),
+    });
+    fake
+}
+
 fn machine() -> Fake {
-    let mut fake = Fake::default()
+    let fake = Fake::default()
         .with_directory("/home", 0)
         .with_directory("/home/root", 0)
         .with_file("/home/root/notes.txt", 0o644, b"eggs\nmilk\nbread\n", 0)
@@ -44,7 +82,7 @@ fn machine() -> Fake {
             0,
         )
         .with_link("/proc/self", "7");
-    let mut fake = crate::download::tests::with_records(fake);
+    let mut fake = with_network(crate::download::tests::with_records(fake));
     fake.now = 1_793_282_709;
     fake.terminal = Some(FakeTerminal::default());
     fake.file_systems = vec![(
@@ -130,5 +168,27 @@ fn the_examples_that_change_files_change_them() {
     assert_eq!(
         fake.link_target("/home/root/latest"),
         Some(b"notes.txt".to_vec())
+    );
+}
+
+#[test]
+fn the_fetch_example_saves_the_page_and_records_the_download() {
+    let mut fake = machine();
+    let line = [c"fetch", c"-o", c"/home/root/hello.txt", c"http://eggos.test/hello.txt"];
+    assert_eq!(run(&mut fake, &line), 0);
+    assert_eq!(fake.contents("/home/root/hello.txt"), b"Hello, EggOS!\n");
+    let text = fake.contents("/run/eggos/downloads/77");
+    assert_eq!(
+        Record::parse(&text).unwrap(),
+        Record {
+            url: b"http://eggos.test/hello.txt",
+            path: b"/home/root/hello.txt",
+            received: 14,
+            total: Some(14),
+            state: State::Done,
+            reason: b"",
+            started: 1_793_282_709,
+            ended: Some(1_793_282_709),
+        }
     );
 }
