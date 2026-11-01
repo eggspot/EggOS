@@ -34,3 +34,5 @@ pub use eggos_element_tree as elements;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_slice_two;

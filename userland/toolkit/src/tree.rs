@@ -1440,6 +1440,20 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.damage.add(rect);
     }
 
+    /// Scrolls list, scroll view, table or text area `id` to `offset_x` across and `offset_y`
+    /// down, each clamped to what its content allows (a text area by whole lines).
+    pub fn set_scroll(&mut self, id: WidgetId, offset_x: i32, offset_y: i32) {
+        self.scroll_axis_to(id, true, offset_x);
+        self.scroll_axis_to(id, false, offset_y);
+    }
+
+    /// How far list, scroll view, table or text area `id` is scrolled: across, then down.
+    pub fn scroll(&self, id: WidgetId) -> Option<(i32, i32)> {
+        let down = self.scroll_range(id, false).map_or(0, |(offset, _)| offset);
+        let across = self.scroll_range(id, true).map_or(0, |(offset, _)| offset);
+        self.node(id).map(|_| (across, down))
+    }
+
     fn scroll_to(&mut self, id: WidgetId, offset: i32) {
         self.scroll_axis_to(id, false, offset);
     }
