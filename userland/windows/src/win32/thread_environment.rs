@@ -2,7 +2,9 @@
 //! Microsoft's public headers give (`NT_TIB` in `winnt.h`, `TEB` and `PEB` in `winternl.h`) and
 //! its debugger documentation names: an x64 program finds its TEB at `gs:[0x30]` and its PEB
 //! at `gs:[0x60]`, an ARM64 program its TEB in `x18` (the layer keeps it in `tpidr_el0`, D124);
-//! the layout is the same on both. The last error and the TLS slots live in the TEB, so each thread has its own;
+//! the layout is the same on both. The PEB's `ProcessParameters` points at a zeroed
+//! `RTL_USER_PROCESS_PARAMETERS` (no flags, empty strings) past the documented PEB, which the C
+//! runtime reads its flags from as it exits. The last error and the TLS slots live in the TEB, so each thread has its own;
 //! past the documented TEB (0x1838 bytes) the layer keeps each thread's fiber-local storage
 //! slots, its thread object, the C runtime's `errno` and `_doserrno`, and its exception state
 //! (D177: the layer's calls into the program's handlers, the dispatches and unwind in
@@ -47,7 +49,11 @@ pub mod teb {
 
 pub mod peb {
     pub const IMAGE_BASE_ADDRESS: usize = 0x10;
+    pub const PROCESS_PARAMETERS: usize = 0x20;
     pub const PROCESS_HEAP: usize = 0x30;
+    pub const DOCUMENTED_END: usize = 0x7c8;
+    pub const PROCESS_PARAMETERS_BLOCK: usize = 0x800;
+    pub const PROCESS_PARAMETERS_SIZE: usize = 0x400;
 }
 
 const _: () = assert!(teb::TLS_SLOTS + teb::TLS_SLOT_COUNT * 8 <= teb::DOCUMENTED_END);
@@ -58,6 +64,8 @@ const _: () = assert!(teb::ERRNO + 4 <= teb::DOS_ERRNO);
 const _: () = assert!(teb::DOS_ERRNO + 4 <= teb::EXCEPTION_BRIDGES);
 const _: () = assert!(teb::CURRENT_EXCEPTION_CONTEXT + 8 <= teb::TRANSLATED_THREAD);
 const _: () = assert!(teb::TRANSLATED_THREAD + 8 <= TEB_SIZE);
+const _: () = assert!(peb::DOCUMENTED_END <= peb::PROCESS_PARAMETERS_BLOCK);
+const _: () = assert!(peb::PROCESS_PARAMETERS_BLOCK + peb::PROCESS_PARAMETERS_SIZE <= PEB_SIZE);
 const TLS_OUT_OF_INDEXES: u32 = u32::MAX;
 const FLS_OUT_OF_INDEXES: u32 = u32::MAX;
 const DLL_THREAD_ATTACH: u32 = 2;
@@ -183,6 +191,10 @@ pub fn create(blocks: Blocks) -> Result<usize, Errno> {
     put(teb + teb::PROCESS_ENVIRONMENT_BLOCK, peb as u64);
     put(peb + peb::IMAGE_BASE_ADDRESS, blocks.image_base);
     put(peb + peb::PROCESS_HEAP, blocks.heap as u64);
+    let parameters = peb + peb::PROCESS_PARAMETERS_BLOCK;
+    let size = peb::PROCESS_PARAMETERS_SIZE as u64;
+    put(parameters, size << 32 | size);
+    put(peb + peb::PROCESS_PARAMETERS, parameters as u64);
     Ok(teb)
 }
 
