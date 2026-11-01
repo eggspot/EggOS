@@ -125,7 +125,9 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | `display.scale` | `1` (the default) or `2`, which doubles everything from the next boot (D195; the Display pane) | yes |
 | `display.resolution` | the screen's size, `1280x800` | no |
 | `display.pointer` | `software` | no |
-| `keyboard.layout` | `us` (the default), `us-intl`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `de`, `it`, `no`, `br`, `es` or `se` (D185, the Keyboard pane, docs/ux/keyboard-v0.3.md) | yes |
+| `keyboard.layout` | `us` (the default), `us-intl`, `us-mac`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `be`, `ca`, `de`, `ch`, `it`, `no`, `br`, `pt`, `es`, `latam` or `se` (D185, D220, the Keyboard pane, docs/ux/keyboard-v0.3.md); a layout not in `keyboard.layouts` joins it (or takes the place of the one in force in a full set) | yes |
+| `keyboard.layouts` | one to four layouts, in order, separated by commas without spaces (`us,de`), none twice; `us` by default; the layouts the switch key cycles through (D220) | yes |
+| `keyboard.switch_key` | `profile` (the default: Super+Space in the Windows and Linux profiles, Ctrl+Space in the macOS profile), `super+space`, `ctrl+space`, `alt+shift`, `ctrl+shift` or `none` (D220) | yes |
 | `time.zone` | `UTC` (the default) or any IANA zone such as `Europe/Paris`, `America/New_York` or `Asia/Kolkata` (D194); `date`, `ls -l` and the Windows and macOS layers show times in it unless `TZ` names another; the Date & time pane's picker chooses it, and its `Set to` reads local time | yes |
 | `mouse.buttons` | `right` (the default) or `left`, which swaps the primary and secondary buttons (D195; the Mouse pane, with `mouse.scrolling` and `mouse.speed`); used from the next event | yes |
 | `mouse.scrolling` | `traditional` (the default) or `natural` (D195) | yes |
@@ -142,10 +144,12 @@ text file: the line `eggos-settings 1`, then `key=value` lines. A file of anothe
 longer one than 4 KiB or garbage holds nothing, so every setting takes its default; unknown
 keys are kept when the file is written, and the last line of a key wins. A change is written to
 `settings.tmp.<process id>` beside it (one per writer), synced, and renamed over it, so a failure leaves the old file whole. Before it writes, a writer removes the temporary files of writers that `/proc/ps` no longer lists (one that crashed), best effort (D134).
-The kernel reads `shell.profile` and `keyboard.layout` from it after mounting the disks and
-before the desktop starts, so the first frame is already in the saved profile and the first key
-types in the saved layout. `settings set keyboard.layout` and the Keyboard pane apply a layout
-at once through `/dev/window`'s `SET_KEYBOARD_LAYOUT` (without a display, from the next boot). The format is the `eggos-settings-file`
+The kernel reads `shell.profile`, `keyboard.layouts`, `keyboard.switch_key` and
+`keyboard.layout` from it after mounting the disks and before the desktop starts, so the first
+frame is already in the saved profile and the first key types in the saved layout.
+`settings set` and the Keyboard pane apply the keyboard keys at once through `/dev/window`'s
+`SET_KEYBOARD_LAYOUTS` and `SET_KEYBOARD_LAYOUT`, and without a display by writing
+`/proc/sys/eggos/keyboard_layouts`, `keyboard_switch_key` and `keyboard_layout` (D220). The format is the `eggos-settings-file`
 crate (`settings-file/`), shared by the kernel and the program.
 
 Not yet: the boot parameter `eggos.profile=` (the kernel has no command line yet), per-user

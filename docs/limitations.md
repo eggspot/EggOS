@@ -413,15 +413,17 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   written as they are, control characters included.
   An MCP tool whose command fails (rather than being refused) still returns that command's
   text error without a code: the twins run in text mode.
-- Keyboard layouts (D185): 14 of them (US, US international, UK, Dvorak, Colemak, Danish,
-  Finnish, French, German, Italian, Norwegian, Brazilian, Spanish, Swedish); no others yet, one
-  at a time, no switch key. Dead keys combine into Latin-1 only (diaeresis and Y types `¨Y`).
-  Without a display the layout set with `settings set` applies from the next boot. Wayland
-  apps get the US keymap whatever the layout; Windows programs' `ToUnicode`,
-  `MapVirtualKey` and `GetKeyState` still answer for the US layout and AltGr is not reported
-  as Ctrl+Alt; Mac apps see Option but no Mac-specific Option layouts. The fonts cover ASCII,
-  Latin-1 and `€`: other characters show as `?`. Only Caps Lock's light is set, on virtio
-  keyboards.
+- Keyboard layouts (D185, D220): 20 of them, up to four at once with a switch key; the bar
+  shows no layout indicator or menu yet (the switch key's hint says the new layout), and the
+  dead-key highlight is not drawn: a pending accent shows nothing. Wayland apps get the US
+  keymap whatever the layout. The Windows layer's `ToUnicodeEx`, `VkKeyScanExW` and
+  `MapVirtualKeyW` follow the layout in force, but `GetKeyboardLayout` still names US English,
+  keys keep the US virtual-key codes of their places (German `Z` is `VK_Y`), and
+  `GetKeyState(VK_NUMLOCK)` does not know Num Lock's state at power-on. Caps Lock never shifts
+  the number row (Windows's French layout does). Egg Mono and Egg Sans draw Latin-1, `€` and
+  Latin Extended-A (Egg Sans with Egg Mono's 8-wide glyphs), but the terminal's cells hold
+  Egg Mono's `u8` glyph ids, so Latin Extended-A shows as `?` in terminals; other characters
+  show as `?` everywhere. Lock lights only on virtio keyboards; Num Lock starts on.
 
 ## The desktop
 The desktop is minimal (D115, D127, D128): wallpaper, a top bar with the uptime and a power

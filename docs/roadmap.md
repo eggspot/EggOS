@@ -100,7 +100,13 @@ Must-have, in order:
     33): 14 layouts with dead keys and the AltGr/Option layer, chosen with `keyboard.layout`
     (Settings' Keyboard pane, `settings set`, MCP `settings_set`), Caps Lock's light through
     the status queue; the boot-to-prompt test types `é` with the German layout's dead acute
-    through QMP and checks the frame. Follow-ups: D185's "Not yet".
+    through QMP and checks the frame. Since D220 (batch part 3): 20 layouts (`us-mac`, `be`,
+    `ca`, `ch`, `pt`, `latam` added), up to four at once (`keyboard.layouts`) with a switch key
+    (`keyboard.switch_key`) in the kernel and the desktop's hint, the layout applied without a
+    display through `/proc/sys/eggos/keyboard_layout`, Num and Scroll Lock with their lights,
+    Egg Mono's Latin Extended-A, the launcher's and Settings' accent-insensitive search, and the
+    Windows layer's `ToUnicodeEx`, `VkKeyScanExW` and `MapVirtualKeyW` for the layout in force.
+    Follow-ups: D220's "Not yet".
 13. **done** — graphical terminal (D114, docs/drivers.md): the Egg Mono 8x16 font (the design
     file's 95 ASCII glyphs, checked by a host test, and the box drawing, block, shape and arrow
     extras) and the terminal emulator of `terminal-v0.3.md` in `eggos-drivers` (cell grid,
