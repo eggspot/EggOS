@@ -139,6 +139,10 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   (D127): the top window under it found, and its enter, leave and motion events made; since
   D128 in the same walk its resize zones and the control under the pointer, then the pointer's
   shape chosen and its old and new rectangles damaged.
+- `toolkit_table_layout_1000_rows` and `text_area_wrap_64k` (D218): the toolkit's table of 1 000
+  rows laid out and drawn into a 400x300 window, and a 64 KiB text area wrapped at 384 px. They
+  link the userland toolkit into the kernel only in bench builds (`qemu-bench` and host tests);
+  a release kernel does not depend on it.
 - `device_tree_walk`: every node of QEMU 10.2's aarch64 `virt` device tree (the host tests'
   fixture, embedded in benchmark kernels only, so all three architectures walk the same 63
   nodes): the header checked, the token stream read, each node's context and the properties
