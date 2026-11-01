@@ -682,7 +682,7 @@ pub fn stty<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             b"-g" | b"--save" => style = Style::Saved,
             b"-F" | b"--file" => match arguments.get(index) {
                 Some(path) => {
-                    device = Some(path);
+                    device = Some(*path);
                     index += 1;
                 }
                 None => {
