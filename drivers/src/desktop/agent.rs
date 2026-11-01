@@ -65,23 +65,29 @@ impl Desktop {
     }
 
     /// The chip's rectangle while it shows: left of the top bar's power button, or of the
-    /// taskbar's clock.
+    /// taskbar's clock, and left of the keyboard layout indicator while that shows (D220).
     pub fn agent_chip(&self) -> Option<Rect> {
         if !self.agent.connected {
             return None;
         }
         let width = AGENT_LABEL.len() as u32 * GLYPH_WIDTH as u32 + 2 * CHIP_PADDING;
+        let indicator = self.keyboard_layout_indicator();
         match (self.layout.taskbar, self.layout.top_bar) {
             (Some(bar), _) => Some(Rect::new(
-                self.clock_rect()
-                    .x
-                    .saturating_sub(AGENT_CHIP_BEFORE_CLOCK + width),
+                match indicator {
+                    Some(indicator) => indicator.x.saturating_sub(AGENT_CHIP_FROM_POWER + width),
+                    None => self
+                        .clock_rect()
+                        .x
+                        .saturating_sub(AGENT_CHIP_BEFORE_CLOCK + width),
+                },
                 bar.y + (bar.height - CHIP_HEIGHT) / 2,
                 width,
                 CHIP_HEIGHT,
             )),
             (None, Some(_)) => Some(Rect::new(
-                self.power_button()
+                indicator
+                    .unwrap_or(self.power_button())
                     .x
                     .saturating_sub(AGENT_CHIP_FROM_POWER + width),
                 CHIP_Y,

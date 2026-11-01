@@ -22,6 +22,7 @@ mod desktops;
 mod events;
 mod icons;
 mod injection;
+mod keyboard_layout;
 mod launcher;
 pub mod layout;
 mod main_menu;
@@ -36,6 +37,8 @@ mod windows;
 
 #[cfg(test)]
 mod injection_tests;
+#[cfg(test)]
+mod keyboard_layout_tests;
 #[cfg(test)]
 mod main_menu_tests;
 #[cfg(test)]
@@ -58,6 +61,9 @@ pub use icons::{Icon, IconPixels, IconSize, Source};
 pub use injection::{
     ContentLayout, Injected, InjectedInput, PERSON_MOTION_THRESHOLD_PX, PERSON_WINS_MS,
     TerminalInput,
+};
+pub use keyboard_layout::{
+    KEYBOARD_SETTINGS, KeyboardLayoutChoice, LAYOUT_MENU_WIDTH, LayoutMenuRow, MAX_SHOWN_LAYOUTS,
 };
 pub use launcher::{
     FILES_MISSING, LAUNCH_FAILED, LAUNCHER_FOOTER, LAUNCHER_ROW_HEIGHT, LAYOUT_HINT_MS, NOTICE_MS,
@@ -241,6 +247,28 @@ pub enum Action {
     /// Focus the terminal and type `agentlog` in it, as the `Agent` chip's click asks
     /// ([`AGENT_LOG_LINE`]).
     ShowAgentLog,
+    /// Make keyboard layout number `.0` the one in force, as the switch key does, chosen in
+    /// the bar indicator's menu (D220).
+    ChooseKeyboardLayout(u8),
+    /// Start Settings on this pane ([`Desktop::settings_pane_command`]): no Settings window
+    /// is open to focus.
+    OpenSettingsPane(SettingsPane),
+}
+
+/// A pane of Settings a bar item opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsPane {
+    /// The Keyboard pane, from the keyboard layout indicator's menu (D220).
+    Keyboard,
+}
+
+impl SettingsPane {
+    /// The pane's name as `settings --pane` takes it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Keyboard => "keyboard",
+        }
+    }
 }
 
 /// Where the desktop reads windows' pixels: the buffers the kernel keeps for them.
@@ -328,6 +356,7 @@ pub struct Desktop {
     clock_length: u8,
     clock_shows_time_of_day: bool,
     agent: agent::AgentState,
+    keyboard_layouts: keyboard_layout::KeyboardLayouts,
     desktops: u8,
     current_desktop: u8,
 }
@@ -417,6 +446,7 @@ impl Desktop {
             clock_length: 0,
             clock_shows_time_of_day: false,
             agent: agent::AgentState::default(),
+            keyboard_layouts: keyboard_layout::KeyboardLayouts::default(),
             desktops: 1,
             current_desktop: 0,
         };
@@ -556,6 +586,7 @@ impl Desktop {
         self.focus == Some(TERMINAL_SLOT)
             && self.is_visible(TERMINAL_SLOT)
             && !self.menu_open
+            && !self.keyboard_layout_menu_open()
             && self.open_main_menu.is_none()
             && !self.popup_open()
     }
@@ -1594,6 +1625,7 @@ impl Desktop {
         self.main_menu_hover(x, y, damage);
         self.window_menu_hover(x, y, damage);
         self.launcher_hover(x, y, damage);
+        self.keyboard_layout_menu_hover(x, y, damage);
         self.icon_menu_hover(x, y, damage);
         self.update_panel_hover(x, y, damage);
         let hit = self.hit(x, y);
@@ -1759,6 +1791,9 @@ impl Desktop {
             return Action::None;
         }
         if let Some(action) = self.icon_menu_press(x, y, damage, events) {
+            return action;
+        }
+        if let Some(action) = self.keyboard_layout_menu_press(code, x, y, damage, events) {
             return action;
         }
         let opener = self.panel_item_at(x, y);
@@ -1989,6 +2024,7 @@ impl Desktop {
         }
         if alone_released && self.window_menu.is_none() && self.icons.menu.is_none() {
             self.close_menu_if_open(damage);
+            self.close_keyboard_layout_menu(damage);
             self.toggle_launcher(damage, events);
             return Action::None;
         }
@@ -2010,6 +2046,9 @@ impl Desktop {
         if self.open_main_menu.is_some() {
             self.main_menu_key(code, pressed, damage, events);
             return Action::None;
+        }
+        if self.keyboard_layout_menu_open() {
+            return self.keyboard_layout_menu_key(code, pressed, damage, events);
         }
         if !self.menu_open {
             if pressed
@@ -2169,6 +2208,7 @@ impl Desktop {
             canvas.shadow(self.menu());
             self.draw_menu(&mut canvas);
         }
+        self.draw_keyboard_layout_menu(&mut canvas);
         self.draw_popups(&mut canvas);
         self.draw_tooltip(&mut canvas);
         self.draw_agent_pointer(&mut canvas);
@@ -2202,6 +2242,7 @@ impl Desktop {
             .is_some_and(|rect| rect.overlaps(&clip));
         let panels = self.layout.panels().any(|panel| panel.overlaps(&clip));
         if (self.menu_open && self.menu_with_shadow().overlaps(&clip))
+            || self.keyboard_layout_menu_overlaps(clip)
             || self.popups_overlap(clip)
             || tooltip
             || panels

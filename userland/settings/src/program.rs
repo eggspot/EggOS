@@ -1058,6 +1058,23 @@ impl Application<CAPACITY> for Settings {
 }
 
 impl Settings {
+    fn open_pane(&mut self, pane: usize) {
+        match self.window.open_pane(pane) {
+            Some(Request::ReadDisks) => self.window.show_disks(storage::list(&mut LinuxDisks)),
+            Some(Request::ReadGrants) => {
+                let read = grants_read(self.window.facts().on_disk);
+                self.window.show_grants(read);
+            }
+            Some(Request::ReadDevices) => {
+                let mut text = alloc::vec![0u8; DEVICES_TEXT_CAPACITY];
+                let read = read_file(eggos_device_list::DEVICES_FILE, &mut text);
+                self.window
+                    .show_devices(read.map(|length| &text[..length]));
+            }
+            _ => {}
+        }
+    }
+
     fn keyboard(&self) -> Option<Keyboard> {
         self.server.as_ref()?.keyboard().ok()
     }
@@ -1265,7 +1282,7 @@ fn grant_prompt() -> i32 {
     view.finish()
 }
 
-fn open_window(pairing: Option<PairingAsked<'_>>) -> i32 {
+fn open_window(pairing: Option<PairingAsked<'_>>, pane: Option<usize>) -> i32 {
     let (width, height) = DEFAULT_SIZE;
     let mut window = match Window::create(TITLE, width, height, MINIMUM_SIZE) {
         Ok(window) => window,
@@ -1288,6 +1305,9 @@ fn open_window(pairing: Option<PairingAsked<'_>>) -> i32 {
         settings
             .window
             .open_pairing(asked.id, asked.name, grants, network_read(), now_ms());
+    }
+    if let Some(pane) = pane {
+        settings.open_pane(pane);
     }
     let served = application::run(&mut window, &mut settings);
     settings.save_unsaved();
@@ -1538,7 +1558,8 @@ pub fn run(startup: &Startup) -> i32 {
         count += 1;
     }
     match command::window_asked(&arguments[..count]) {
-        WindowAsked::Pairing(asked) => return open_window(Some(asked)),
+        WindowAsked::Pairing(asked) => return open_window(Some(asked), None),
+        WindowAsked::Pane(pane) => return open_window(None, Some(pane)),
         WindowAsked::Usage => {
             write_all(STANDARD_ERROR, USAGE.as_bytes());
             return USAGE_STATUS;
@@ -1546,7 +1567,7 @@ pub fn run(startup: &Startup) -> i32 {
         WindowAsked::Other => {}
     }
     match count {
-        0 => open_window(None),
+        0 => open_window(None, None),
         _ => {
             let mut machine = Machine {
                 server: WindowServer::open().ok(),

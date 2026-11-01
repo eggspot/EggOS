@@ -39,8 +39,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::{DiscardEvents, EventSink, PointerShape};
 use eggos_drivers::desktop::{
-    Action, AppId, Contents, Desktop, GRID_SIZE, Launch, Profile, TerminalInput, WindowId, colour,
-    shortcut,
+    Action, AppId, Contents, Desktop, GRID_SIZE, KeyboardLayoutChoice, Launch, MAX_SHOWN_LAYOUTS,
+    Profile, TerminalInput, WindowId, colour, shortcut,
 };
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
@@ -678,6 +678,7 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
     let mut queues = Queues::new(clients, now);
     desktop.set_time(now);
     desktop.set_agent_connected(AGENT_CONNECTED.load(Ordering::Relaxed), damage);
+    show_keyboard_layouts(desktop, damage);
     while let Some(event) = input::next_event() {
         let asked = match event {
             InputEvent::PointerMove { x, y } => {
@@ -810,6 +811,56 @@ fn draw_screen<P: Platform>(
         asked.pointer = None;
     }
     asked
+}
+
+const NO_LAYOUT_CHOICE: KeyboardLayoutChoice = KeyboardLayoutChoice {
+    number: 0,
+    name: "",
+    title: "",
+    code: "",
+};
+
+fn show_keyboard_layouts(desktop: &mut Desktop, damage: &mut Damage) {
+    let (layouts, switch_key) = input::layouts();
+    let mut choices = [NO_LAYOUT_CHOICE; MAX_SHOWN_LAYOUTS];
+    let mut count = 0;
+    for number in layouts.numbers().take(MAX_SHOWN_LAYOUTS) {
+        if let Some(layout) = eggos_settings_file::KEYBOARD_LAYOUTS.get(number) {
+            choices[count] = KeyboardLayoutChoice {
+                number: number as u8,
+                name: layout.name,
+                title: layout.title,
+                code: layout.code,
+            };
+            count += 1;
+        }
+    }
+    let chord = switch_key.chord(desktop.profile().number() as usize);
+    desktop.set_keyboard_layouts(
+        &choices[..count],
+        input::layout_number() as u8,
+        chord,
+        damage,
+    );
+}
+
+/// The keyboard's layouts, the layout in force or the switch key changed (`/dev/window`'s
+/// `SET_KEYBOARD_LAYOUT` and `SET_KEYBOARD_LAYOUTS`, D220): the bar's layout indicator follows
+/// at once.
+pub fn keyboard_layouts_changed<P: Platform>() {
+    with_windows::<P, _>(|desktop, _, damage, _| show_keyboard_layouts(desktop, damage));
+}
+
+fn open_settings_pane<P: Platform>(pane: eggos_drivers::desktop::SettingsPane) {
+    let command = SCREEN
+        .lock()
+        .as_ref()
+        .and_then(|screen| screen.desktop.as_ref()?.settings_pane_command(pane));
+    if let Some(command) = command
+        && crate::apps::start_program(command.as_bytes()).is_err()
+    {
+        launch_failed::<P>();
+    }
 }
 
 fn launch_command(app: AppId) -> Option<Launch> {
@@ -980,6 +1031,12 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
             move_view::<P>(ViewMove::Live);
             console::receive_from_keyboard::<P>(eggos_drivers::desktop::AGENT_LOG_LINE);
         }
+        Some(Action::ChooseKeyboardLayout(number)) => {
+            if input::set_layout(usize::from(number)) {
+                keyboard_layouts_changed::<P>();
+            }
+        }
+        Some(Action::OpenSettingsPane(pane)) => open_settings_pane::<P>(pane),
         Some(Action::None) | None => {}
     }
     if drawn.is_some_and(|asked| asked.catalogue) {

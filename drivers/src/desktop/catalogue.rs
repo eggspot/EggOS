@@ -20,6 +20,7 @@ const FILES_SYNONYMS: [&str; 5] = ["Explorer", "Finder", "Dolphin", "Nautilus", 
 const SETTINGS_SYNONYMS: [&str; 4] = ["Control Panel", "System Settings", "Preferences", "options"];
 const TEXT_EDITOR_SYNONYMS: [&str; 6] = ["Notepad", "TextEdit", "gedit", "Kate", "editor", "notes"];
 const SETTINGS_PROGRAM: &str = "/bin/settings";
+const PANE_OPTION: &str = "--pane";
 const FILES_PROGRAM: &str = "/bin/files";
 const TEXT_EDITOR_PROGRAM: &str = "/bin/text-editor";
 const TASK_MANAGER_PROGRAM: &str = "/bin/task-manager";
@@ -542,6 +543,12 @@ impl Catalogue {
                     .synonyms()
                     .any(|synonym| contains_ignoring_case(synonym, query))
         })
+    }
+
+    /// The command that starts Settings on the pane named `pane`: `/bin/settings --pane
+    /// <pane>` (D220).
+    pub fn settings_pane(&self, pane: &str) -> Option<Command> {
+        Command::program(SETTINGS_PROGRAM, &[PANE_OPTION.as_bytes(), pane.as_bytes()])
     }
 
     /// What launching `app` asks of the kernel, if anything: Settings and Files start their

@@ -473,6 +473,22 @@ fn lowercase_contains(haystack: &str, needle: &str) -> bool {
     eggos_font::contains_folded(haystack, needle)
 }
 
+/// The pane `settings --pane` names `name` (D220): its title in lower case, its spaces as `-`
+/// and `&` as `and`.
+pub fn pane_named(name: &str) -> Option<usize> {
+    PANES.iter().position(|title| {
+        let mut wanted = name.bytes();
+        let matched = title.split(' ').enumerate().all(|(index, word)| {
+            let word = if word == "&" { "and" } else { word };
+            (index == 0 || wanted.next() == Some(b'-'))
+                && word
+                    .bytes()
+                    .all(|byte| wanted.next() == Some(byte.to_ascii_lowercase()))
+        });
+        matched && wanted.next().is_none()
+    })
+}
+
 /// Whether pane `pane` stays in the sidebar while the search holds `query`: the query is in
 /// its name, a synonym or one of its settings' names, ignoring case.
 pub fn pane_matches(pane: usize, query: &str) -> bool {
@@ -1131,6 +1147,17 @@ impl SettingsWindow {
     ) {
         self.agents
             .paired(&mut self.tree, agent, outcome, grants, network, now_ms);
+    }
+
+    /// Shows pane `pane` (an index of [`PANES`]) and selects it in the sidebar, as
+    /// `settings --pane` asks (D220): what the program reads for it, as for a click on the
+    /// sidebar.
+    pub fn open_pane(&mut self, pane: usize) -> Option<Request> {
+        if pane >= PANES.len() {
+            return None;
+        }
+        self.tree.set_selected(self.widgets.list, pane);
+        self.show_pane(pane)
     }
 
     /// Shows the Agents pane's Network view with its pairing panel filled in with agent `id`

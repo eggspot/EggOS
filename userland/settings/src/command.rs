@@ -15,8 +15,8 @@ use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Theme;
 
 /// The command's usage, printed for a usage error.
-pub const USAGE: &str = "usage: settings [--pair <id> [--name <name>] | list [--json] | get \
-                         [--json] <key> | set [--dry-run] <key> <value>]\n";
+pub const USAGE: &str = "usage: settings [--pair <id> [--name <name>] | --pane <pane> | list \
+                         [--json] | get [--json] <key> | set [--dry-run] <key> <value>]\n";
 /// The exit status of a usage error.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of a value the setting does not take.
@@ -76,6 +76,9 @@ pub trait Machine {
 pub const PAIR_OPTION: &str = "--pair";
 /// With [`PAIR_OPTION`], the name the user sees.
 pub const NAME_OPTION: &str = "--name";
+/// Opens the window on the pane it names (D220): a pane's title in lower case, its spaces as
+/// `-` and `&` as `and` (`keyboard`, `date-and-time`).
+pub const PANE_OPTION: &str = "--pane";
 
 /// The agent `settings --pair` fills the pairing panel in with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +95,8 @@ pub enum WindowAsked<'a> {
     Other,
     /// The window at the pairing panel, filled in.
     Pairing(PairingAsked<'a>),
+    /// The window on this pane (an index of `PANES`).
+    Pane(usize),
     /// `--pair` or `--name` without what they need.
     Usage,
 }
@@ -105,7 +110,13 @@ pub fn window_asked<'a>(arguments: &[&'a str]) -> WindowAsked<'a> {
         [PAIR_OPTION, id, NAME_OPTION, name] | [NAME_OPTION, name, PAIR_OPTION, id] => {
             asked(id, name)
         }
-        [first, ..] if first == PAIR_OPTION || first == NAME_OPTION => WindowAsked::Usage,
+        [PANE_OPTION, name] => match crate::settings_window::pane_named(name) {
+            Some(pane) => WindowAsked::Pane(pane),
+            None => WindowAsked::Usage,
+        },
+        [first, ..] if [PAIR_OPTION, NAME_OPTION, PANE_OPTION].contains(&first) => {
+            WindowAsked::Usage
+        }
         _ => WindowAsked::Other,
     }
 }
@@ -347,6 +358,27 @@ mod tests {
         }
         assert_eq!(window_asked(&["list"]), WindowAsked::Other);
         assert_eq!(window_asked(&[]), WindowAsked::Other);
+    }
+
+    #[test]
+    fn pane_opens_the_window_on_the_pane_it_names() {
+        use crate::settings_window::{DATE_AND_TIME, KEYBOARD};
+        assert_eq!(
+            window_asked(&["--pane", "keyboard"]),
+            WindowAsked::Pane(KEYBOARD)
+        );
+        assert_eq!(
+            window_asked(&["--pane", "date-and-time"]),
+            WindowAsked::Pane(DATE_AND_TIME)
+        );
+        for wrong in [
+            &["--pane"][..],
+            &["--pane", "nowhere"],
+            &["--pane", "Keyboard"],
+            &["--pane", "keyboard", "list"],
+        ] {
+            assert_eq!(window_asked(wrong), WindowAsked::Usage, "{wrong:?}");
+        }
     }
 
     #[derive(Debug, Default)]

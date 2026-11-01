@@ -85,6 +85,8 @@ pub(super) enum PanelItem {
     MenuTitle(u8),
     /// The `Agent` chip, while an MCP client is connected (14.1).
     Agent,
+    /// The keyboard layout indicator, while two or more layouts are chosen (D220).
+    KeyboardLayout,
 }
 
 /// The panels' pointer state: the item under the pointer and since when, the one pressed,
@@ -366,8 +368,8 @@ impl Desktop {
         };
         let count = 1 + self.listed_windows().count() as u32;
         let group = count * (TASKBAR_ITEM + TASKBAR_GAP) - TASKBAR_GAP;
-        let limit = match self.agent_chip() {
-            Some(chip) => chip.x,
+        let limit = match self.agent_chip().or(self.keyboard_layout_indicator()) {
+            Some(leftmost) => leftmost.x,
             None => self.clock_rect().x,
         }
         .saturating_sub(TASKBAR_ROOM_BEFORE_CLOCK);
@@ -404,6 +406,9 @@ impl Desktop {
         self.for_each_chip(|slot, rect| item(PanelItem::Chip(slot as u8), rect));
         if let Some(chip) = self.agent_chip() {
             item(PanelItem::Agent, chip);
+        }
+        if let Some(indicator) = self.keyboard_layout_indicator() {
+            item(PanelItem::KeyboardLayout, indicator);
         }
         self.for_each_taskbar_item(&mut item);
         self.for_each_dock_item(&mut item);
@@ -656,6 +661,10 @@ impl Desktop {
                 self.activate(super::TERMINAL_SLOT, damage, events);
                 Action::ShowAgentLog
             }
+            PanelItem::KeyboardLayout => {
+                self.open_keyboard_layout_menu(damage);
+                Action::None
+            }
         }
     }
 
@@ -697,6 +706,35 @@ impl Desktop {
                 self.panels.tooltip_spent = true;
             }
         }
+    }
+
+    /// Opens Settings on `pane` (D220): focuses the Settings window when one exists, the pane
+    /// staying what it was, else asks the kernel to start Settings there, at most once while
+    /// it starts.
+    pub(super) fn open_settings_pane(
+        &mut self,
+        pane: super::SettingsPane,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
+        let mut windows = [0u8; MAX_WINDOWS];
+        if self.app_windows(AppId::Settings, &mut windows) > 0 {
+            return self.activate_app(AppId::Settings, damage, events);
+        }
+        let starting = self.panels.starting.is_some_and(|(pending, at)| {
+            pending == AppId::Settings && self.now_ms.wrapping_sub(at) < STARTING_MS
+        });
+        if starting {
+            return Action::None;
+        }
+        self.panels.starting = Some((AppId::Settings, self.now_ms));
+        Action::OpenSettingsPane(pane)
+    }
+
+    /// What [`Action::OpenSettingsPane`] of `pane` starts: Settings with `--pane` and the
+    /// pane's name.
+    pub fn settings_pane_command(&self, pane: super::SettingsPane) -> Option<super::Command> {
+        self.catalogue.settings_pane(pane.name())
     }
 
     /// The kernel could not start the app a launch asked for: the notice says so, and the app
@@ -756,6 +794,7 @@ impl Desktop {
         let blocked = self.panels.tooltip_spent
             || self.popup_open()
             || self.menu_open
+            || self.keyboard_layout_menu_open()
             || self.open_main_menu.is_some();
         if self.panels.tooltip.is_some() || !rested || blocked {
             return;
@@ -773,6 +812,7 @@ impl Desktop {
             (PanelItem::System, Profile::Macos) => Some(APPS_TOOLTIP),
             (PanelItem::System, Profile::Linux) => Some(ACTIVITIES_TOOLTIP),
             (PanelItem::Agent, _) => Some(super::AGENT_TOOLTIP),
+            (PanelItem::KeyboardLayout, _) => self.keyboard_layout_tooltip(),
             (PanelItem::Power, Profile::Windows) => Some(POWER_TOOLTIP),
             (PanelItem::DockApp(app), _) => Some(self.catalogue.name(app)),
             (PanelItem::TaskbarWindow(slot) | PanelItem::DockWindow(slot), _) => self
@@ -935,7 +975,14 @@ impl Desktop {
         self.draw_menu_titles(canvas);
         self.draw_clock(canvas);
         self.draw_agent_chip(canvas, self.agent_chip_hovered());
+        self.draw_keyboard_layout_item(canvas);
         self.draw_power(canvas, bar);
+    }
+
+    fn draw_keyboard_layout_item(&self, canvas: &mut Canvas<'_>) {
+        let open = self.keyboard_layout_menu_open();
+        let fill = self.item_fill(PanelItem::KeyboardLayout, open);
+        self.draw_keyboard_layout_indicator(canvas, fill);
     }
 
     fn agent_chip_hovered(&self) -> bool {
@@ -1015,6 +1062,7 @@ impl Desktop {
         });
         self.draw_clock(canvas);
         self.draw_agent_chip(canvas, self.agent_chip_hovered());
+        self.draw_keyboard_layout_item(canvas);
         self.draw_power(canvas, bar);
     }
 

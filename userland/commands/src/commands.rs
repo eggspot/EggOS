@@ -2862,7 +2862,9 @@ pub const SETTINGS: CommandDefinition = CommandDefinition {
     description: "Opens Settings, where the desktop's layout, the date and time and what the \
                   machine is are shown and set; settings list, get and set do the same from the \
                   command line. --pair opens it at Agents > Network, ready to pair that agent \
-                  (agent pair does so from a terminal window); the person presses Pair.",
+                  (agent pair does so from a terminal window); the person presses Pair. --pane \
+                  opens it on a pane: its name in lower case with - for spaces and and for &, \
+                  as the bar's keyboard layout menu opens Keyboard.",
     options: &[
         valued(
             None,
@@ -2877,6 +2879,13 @@ pub const SETTINGS: CommandDefinition = CommandDefinition {
             "name",
             ValueType::Text,
             "With --pair, the name the user sees, at most 64 bytes.",
+        ),
+        valued(
+            None,
+            Some("pane"),
+            "pane",
+            ValueType::Text,
+            "Opens the window on this pane: keyboard, date-and-time, about and the others.",
         ),
     ],
     operands: &[],

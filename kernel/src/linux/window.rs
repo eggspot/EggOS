@@ -372,6 +372,7 @@ pub fn ioctl<P: Platform>(
             if !crate::input::set_layout(layout as usize) {
                 return Err(Errno::EINVAL);
             }
+            crate::terminal::keyboard_layouts_changed::<P>();
         }
         Request::SetKeyboardLayouts {
             count,
@@ -388,6 +389,7 @@ pub fn ioctl<P: Platform>(
                 .copied()
                 .ok_or(Errno::EINVAL)?;
             crate::input::set_layouts(layouts, switch_key);
+            crate::terminal::keyboard_layouts_changed::<P>();
         }
         Request::SetInputPreferences {
             left_handed,
