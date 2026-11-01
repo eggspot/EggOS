@@ -1,6 +1,7 @@
 //! The MCP boot test (D136, D137): the release `run-eggos.sh --mcp` (or `run-eggos.ps1 -Mcp` on
 //! Windows hosts), written by `cargo xtask release`'s own writer, runs as a child with a host
-//! folder (holding `win-paint.exe` and the static Linux program) and a blank disk, and a
+//! folder (holding `win-paint.exe`, `win-controls.exe` and the static Linux program) and a
+//! blank disk, and a
 //! scripted MCP client drives it through the script's standard input and output, checking that
 //! every line the script prints there is a JSON-RPC message. Both boots run with no screen
 //! (`--no-window`, D144): no display or input device, the desktop drawn in memory, which each
@@ -22,7 +23,10 @@
 //!    `settings_get` (D163) sees, after `settings_set` chose Windows' layout; on x86_64 and aarch64 `win-paint` captured,
 //!    minimised, typed into with `wm_type`, captured again with the text, its drawn text read
 //!    from `wm_show` (D162) and closed (an
-//!    installed app runs in the terminal, which takes the next one when it ends), `linux-paint`
+//!    installed app runs in the terminal, which takes the next one when it ends), then
+//!    `win-controls` installed, its edit set to egg, Add invoked, the egg row selected and Upper
+//!    case invoked with `wm_act`, until `wm_show` shows the row selected and the box checked
+//!    (D226), closed and uninstalled, `linux-paint`
 //!    captured, covered by Settings, clicked, typed into and captured after each, every
 //!    capture compared exactly with the host's drawing, the terminal's window refused, a key
 //!    pressed in it and a scroll, and `edit_open` opening the share's text file in a Text
@@ -79,6 +83,9 @@ const GRANT_TAKEN_BACK: &str =
     "tee needs the write grant, which the user has not given this agent or has taken back";
 const REVOKED_LOCAL_LINE: &[u8] = b"\nlocal\tdeny\tdeny\tdeny\tdeny\tlocal\n";
 const CAPTURE_POLL: Duration = Duration::from_secs(1);
+const WINDOWS_CONTROLS_PROGRAM: &str = "win-controls.exe";
+const WINDOWS_CONTROLS_APP: &str = "win-controls";
+const ACTED: &str = "Acted on an element of window";
 
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
@@ -549,6 +556,7 @@ fn prepare(
     kernel: &Path,
     programs: &Path,
     linux_gui_program: &Path,
+    controls_program: &Path,
 ) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     let dir = crate::target_directory().join("mcp-test").join(arch.name);
     let script = crate::release::write_test_dist(arch, kernel, &dir)?;
@@ -565,6 +573,8 @@ fn prepare(
     }
     std::fs::copy(linux_gui_program, apps.join(LINUX_GUI_PROGRAM))
         .map_err(|e| format!("{}: {e}", linux_gui_program.display()))?;
+    std::fs::copy(controls_program, apps.join(WINDOWS_CONTROLS_PROGRAM))
+        .map_err(|e| format!("{}: {e}", controls_program.display()))?;
     let disk = dir.join("disk.img");
     reset_disk_image(&disk, TEST_DISK_BYTES)?;
     Ok((script, apps, disk))
@@ -1569,6 +1579,128 @@ fn win_paint_session(client: &mut Client, title: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn element_of(tree: &str, role: &str, name: &str) -> Option<u32> {
+    tree.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        let id = words.next()?.parse().ok()?;
+        if words.next() != Some(role) {
+            return None;
+        }
+        let quoted = line.split('"').nth(1)?;
+        (quoted.replace('&', "") == name).then_some(id)
+    })
+}
+
+fn element_line<'a>(tree: &'a str, id: u32) -> &'a str {
+    tree.lines()
+        .find(|line| line.split_whitespace().next() == Some(id.to_string().as_str()))
+        .unwrap_or("")
+}
+
+fn act(client: &mut Client, window: u32, element: u32, action: &str) -> Result<(), String> {
+    succeeds(
+        client,
+        "wm_act",
+        &format!(r#"{{"window":{window},"element":{element},"action":"{action}"}}"#),
+        ACTED,
+    )
+    .map(drop)
+}
+
+fn shown_until(
+    client: &mut Client,
+    window: u32,
+    what: &str,
+    holds: impl Fn(&str) -> bool,
+) -> Result<String, String> {
+    let deadline = Instant::now() + WINDOW_TIMEOUT;
+    loop {
+        let tree = succeeds(client, "wm_show", &format!(r#"{{"window":{window}}}"#), "")?;
+        let tree = tree.all();
+        if holds(&tree) {
+            return Ok(tree);
+        }
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            &format!("wm_show of win-controls never showed {what}: {tree}"),
+        )?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn win_controls_session(client: &mut Client) -> Result<(), String> {
+    use eggos_windows_gui_tests::controls as scene;
+    succeeds(
+        client,
+        "app_install",
+        &format!(r#"{{"path":"/media/host/{WINDOWS_CONTROLS_PROGRAM}"}}"#),
+        "Installed",
+    )?;
+    succeeds(
+        client,
+        "app_open",
+        &format!(r#"{{"name":"{WINDOWS_CONTROLS_APP}"}}"#),
+        "Opened",
+    )?;
+    let window = window_titled(client, scene::TITLE)?;
+    let tree = shown_until(client, window, "its edit", |tree| {
+        tree.contains(" text-field ")
+    })?;
+    let missing = |what: &str| client.fail(format!("wm_show of win-controls lists no {what}: {tree}"));
+    let name = tree
+        .lines()
+        .find_map(|line| {
+            let mut words = line.split_whitespace();
+            let id = words.next()?.parse::<u32>().ok()?;
+            (words.next() == Some("text-field")).then_some(id)
+        })
+        .ok_or_else(|| missing("text field"))?;
+    let add = element_of(&tree, "button", "Add").ok_or_else(|| missing("Add button"))?;
+    let upper = element_of(&tree, "checkbox", "Upper case")
+        .ok_or_else(|| missing("Upper case check box"))?;
+    succeeds(
+        client,
+        "wm_act",
+        &format!(
+            r#"{{"window":{window},"element":{name},"action":"set-text","text":"{}"}}"#,
+            scene::TYPED
+        ),
+        ACTED,
+    )?;
+    act(client, window, add, "invoke")?;
+    let tree = shown_until(client, window, "egg in its list", |tree| {
+        element_of(tree, "list-item", scene::TYPED).is_some()
+    })?;
+    let egg = element_of(&tree, "list-item", scene::TYPED)
+        .ok_or_else(|| client.fail("the egg row vanished"))?;
+    act(client, window, egg, "select")?;
+    act(client, window, upper, "invoke")?;
+    shown_until(client, window, "egg selected and Upper case checked", |tree| {
+        element_line(tree, egg).contains("selected") && element_line(tree, upper).contains("checked")
+    })?;
+    run_program(client, &["/bin/wm", "close", &window.to_string()])?;
+    let deadline = Instant::now() + WINDOW_TIMEOUT;
+    while wm_list_rows(client)?
+        .iter()
+        .any(|row| row.first() == Some(&window.to_string()))
+    {
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            "win-controls did not end when its window was closed",
+        )?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    succeeds(
+        client,
+        "app_uninstall",
+        &format!(r#"{{"name":"{WINDOWS_CONTROLS_APP}","confirm":true}}"#),
+        "Uninstalled",
+    )
+    .map(drop)
+}
+
 fn linux_paint_session(client: &mut Client, settings: u32) -> Result<u32, String> {
     let arch = client.arch;
     succeeds(
@@ -1645,6 +1777,7 @@ fn window_session(client: &mut Client, paint_title: Option<&str>) -> Result<(), 
     let settings = settings_session(client)?;
     if let Some(title) = paint_title {
         win_paint_session(client, title)?;
+        win_controls_session(client)?;
     }
     linux_paint_session(client, settings)?;
     let terminal = window_where(client, "the terminal", |row| {
@@ -1850,8 +1983,15 @@ pub fn check(
     kernel: &Path,
     programs: &Path,
     linux_gui_program: &Path,
+    controls_program: &Path,
 ) -> Result<(), String> {
-    let (script, apps, disk) = prepare(arch, kernel, programs, linux_gui_program)?;
+    let (script, apps, disk) = prepare(
+        arch,
+        kernel,
+        programs,
+        linux_gui_program,
+        controls_program,
+    )?;
     eprintln!("xtask: {}: running {} --mcp", arch.name, script.display());
     let mut client = Client::start(arch, &script, &apps, &disk, None)?;
     let outcome = session(&mut client);

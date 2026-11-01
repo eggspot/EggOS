@@ -1173,11 +1173,14 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::install::check(arch, &kernel, &install_folder)?;
     qemu::files::check(arch, &kernel, &install_folder)?;
     let linux_gui_program = build_linux_test_program(arch, LINUX_GUI_PACKAGE, "static")?;
+    let (program, _) = WIN_CONTROLS;
+    let controls_program = build_windows_gui_program(program, windows_target(arch.name))?;
     qemu::mcp::check(
         arch,
         &kernel,
         &install_folder,
         std::path::Path::new(&linux_gui_program),
+        std::path::Path::new(&controls_program),
     )?;
     let offscreen_asked = qemu::command_line_args(qemu::OFFSCREEN_WORD);
     let offscreen_asked: Vec<&str> = offscreen_asked.iter().map(String::as_str).collect();
@@ -1449,6 +1452,7 @@ const WINDOWS_GUI_PACKAGE: &str = "eggos-windows-gui-tests";
 const WIN_PAINT: (&str, &str) = ("win-paint", "bin/win-paint.exe");
 
 const WIN_CONTROLS: (&str, &str) = ("win-controls", "bin/win-controls.exe");
+const WIN_CONTROLS2: (&str, &str) = ("win-controls2", "bin/win-controls2.exe");
 
 struct WindowsProgram<'a> {
     package: &'a str,
@@ -1506,7 +1510,7 @@ fn build_windows_gui_program(program: &str, target: &str) -> Result<String, Stri
 
 fn build_windows_gui_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
     let mut added = Vec::new();
-    for (program, path) in [WIN_PAINT, WIN_CONTROLS] {
+    for (program, path) in [WIN_PAINT, WIN_CONTROLS, WIN_CONTROLS2] {
         added.push(image::AddedFile {
             host: build_windows_gui_program(program, windows_target(arch.name))?,
             path: path.to_owned(),
