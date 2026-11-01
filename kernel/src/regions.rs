@@ -103,16 +103,38 @@ impl Regions {
             }
             (true, false) => self.regions[at - 1].end = end,
             (false, true) => self.regions[at].start = start,
-            (false, false) => self.regions.insert(
-                at,
-                Region {
-                    start,
-                    end,
-                    attributes,
-                },
-            ),
+            (false, false) => {
+                if at == self.regions.len() && at < self.regions.capacity() {
+                    self.regions.push(Region {
+                        start,
+                        end,
+                        attributes,
+                    });
+                } else {
+                    self.insert_out_of_line(at, start, end, attributes);
+                }
+            }
         }
         Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn insert_out_of_line(
+        &mut self,
+        at: usize,
+        start: u64,
+        end: u64,
+        attributes: Option<Attributes>,
+    ) {
+        self.regions.insert(
+            at,
+            Region {
+                start,
+                end,
+                attributes,
+            },
+        );
     }
 
     /// The region that holds `address`, if any.
