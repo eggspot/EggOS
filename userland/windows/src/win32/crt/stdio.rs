@@ -8,6 +8,9 @@
 //! Windows dialect over the `va_list`, which on x64 and ARM64 alike is a pointer to 8-byte
 //! slots; the wide functions format UTF-8, which `swprintf`'s family converts to UTF-16 in the
 //! caller's buffer and `fwprintf`'s writes to the stream as it is (streams are byte streams).
+//! `fgetwc`, `fputwc` and the other wide character functions (D228) move UTF-16 units through
+//! `crate::wide_stream`, as UTF-8 or as UTF-16 by the stream's `ccs=` encoding (with its byte
+//! order mark), its descriptor's `_setmode` and its own mode.
 //! For the old C runtime (`msvcrt.dll`, D189), an entry of the `FILE` array `__iob_func` returns
 //! names standard input, output or error, every stream starts with the old runtime's `FILE`
 //! and the critical section MinGW's `printf` enters after it, and the `printf` family is also
@@ -17,13 +20,16 @@ use super::super::SpinLock;
 use super::super::console::standard_handle;
 use super::super::file::fd_of;
 use super::super::heap as process_heap;
+use super::low_level::{forget_descriptor, translation_mode};
 use super::runtime::{binary_by_default, errno, errno_for_linux, set_errno};
 use crate::counted_print::{self, Convention, Fault};
 use crate::library::Export;
 use crate::linux;
+use crate::low_level_io::Translation;
 use crate::msvcrt_layout;
 use crate::stream::{Backing, Buffering, Mode, Origin, Stream};
 use crate::text;
+use crate::wide_stream::{self, Ccs, Encoding, WideState};
 use core::cell::UnsafeCell;
 use core::ptr;
 use eggos_c_format::{self as c_format, Arguments, Dialect, Output};
@@ -77,6 +83,22 @@ struct File {
     #[allow(dead_code, reason = "MinGW programs reach into it")]
     msvcrt_fields: [u64; msvcrt_layout::FILE_WITH_LOCK_WORDS],
     stream: Buffered,
+    wide: WideState,
+    ccs: Option<Ccs>,
+    terminal: Option<bool>,
+}
+
+impl File {
+    fn encoding(&mut self) -> Encoding {
+        let fd = self.stream.backing().fd;
+        let terminal = *self
+            .terminal
+            .get_or_insert_with(|| fd.is_some_and(linux::is_terminal));
+        let descriptor = fd.map_or(Translation::Text, |fd| {
+            Translation::of_mode(translation_mode(fd))
+        });
+        wide_stream::encoding(self.ccs, descriptor, self.stream.is_text(), terminal)
+    }
 }
 
 #[repr(C, align(16))]
@@ -146,6 +168,9 @@ fn new_stream(stream: Buffered) -> *mut File {
         let file = File {
             msvcrt_fields: [0; msvcrt_layout::FILE_WITH_LOCK_WORDS],
             stream,
+            wide: WideState::default(),
+            ccs: None,
+            terminal: None,
         };
         // SAFETY: a fresh heap block, 16-byte aligned, for one stream.
         unsafe { block.write(file) };
@@ -171,6 +196,10 @@ fn standard_stream(streams: &mut Streams, index: usize) -> *mut File {
 }
 
 fn with_stream<R>(stream: *mut File, refused: R, work: impl FnOnce(&mut Buffered) -> R) -> R {
+    with_file(stream, refused, |file| work(&mut file.stream))
+}
+
+fn with_file<R>(stream: *mut File, refused: R, work: impl FnOnce(&mut File) -> R) -> R {
     STREAMS.with(|streams| {
         let stream = streams.resolve(stream);
         if !streams.holds(stream) {
@@ -182,7 +211,7 @@ fn with_stream<R>(stream: *mut File, refused: R, work: impl FnOnce(&mut Buffered
             return refused;
         }
         // SAFETY: an open stream of the table, used only under its lock.
-        work(unsafe { &mut (*stream).stream })
+        work(unsafe { &mut *stream })
     })
 }
 
@@ -235,6 +264,10 @@ fn open(
         set_errno(errno::EINVAL);
         return ptr::null_mut();
     };
+    let Ok(ccs) = Ccs::of_mode(mode_letters.clone()) else {
+        set_errno(errno::EINVAL);
+        return ptr::null_mut();
+    };
     let explicit = mode_letters
         .take_while(|letter| *letter != u32::from(b','))
         .any(|letter| letter == u32::from(b'b') || letter == u32::from(b't'));
@@ -262,6 +295,14 @@ fn open(
         let _ = linux::close(fd);
         return refuse_linux(error.0);
     }
+    let ccs = match ccs.map(|ccs| marked_encoding(fd, mode, ccs)) {
+        Some(Err(error)) => {
+            let _ = linux::close(fd);
+            return refuse_linux(error);
+        }
+        Some(Ok(ccs)) => Some(ccs),
+        None => None,
+    };
     let block = new_stream(Stream::new(
         Descriptor { fd: Some(fd) },
         mode,
@@ -272,6 +313,8 @@ fn open(
         set_errno(errno::ENOMEM);
         return block;
     }
+    // SAFETY: the block this call allocated and filled, which nothing else holds yet.
+    unsafe { (*block).ccs = ccs };
     let placed = STREAMS.with(|streams| {
         let free = streams.open[STANDARD_STREAMS..]
             .iter_mut()
@@ -287,6 +330,22 @@ fn open(
         return ptr::null_mut();
     }
     block
+}
+
+fn marked_encoding(fd: usize, mode: Mode, ccs: Ccs) -> Result<Ccs, u16> {
+    let empty = || linux::lseek(fd, 0, 2).map(|end| end == 0);
+    if mode.truncate || (mode.append && empty().map_err(|error| error.0)?) {
+        linux::write_all(fd, ccs.byte_order_mark()).map_err(|error| error.0)?;
+        return Ok(ccs);
+    }
+    if !mode.read {
+        return Ok(ccs);
+    }
+    let mut head = [0u8; 3];
+    let read = linux::read(fd, &mut head).map_err(|error| error.0)?;
+    let (marked, length) = Ccs::of_byte_order_mark(&head[..read]).unwrap_or((ccs, 0));
+    linux::lseek(fd, length as i64, 0).map_err(|error| error.0)?;
+    Ok(marked)
 }
 
 unsafe fn narrow<'a>(text: *const u8) -> Option<&'a [u8]> {
@@ -373,6 +432,9 @@ unsafe extern "efiapi" fn fclose(stream: *mut File) -> i32 {
         let file = unsafe { &mut (*stream).stream };
         let flushed = file.flush();
         let descriptor = *file.backing();
+        if let Some(fd) = descriptor.fd {
+            forget_descriptor(fd);
+        }
         Some((flushed, descriptor, stream))
     });
     let Some((flushed, descriptor, stream)) = closed else {
@@ -549,11 +611,14 @@ fn seek(stream: *mut File, offset: i64, from: i32) -> i32 {
         set_errno(errno::EINVAL);
         return -1;
     };
-    with_stream(stream, -1, |file| match file.seek(offset, from) {
-        Ok(()) => 0,
-        Err(error) => {
-            set_errno(errno_for_linux(error));
-            -1
+    with_file(stream, -1, |file| {
+        file.wide.forget();
+        match file.stream.seek(offset, from) {
+            Ok(()) => 0,
+            Err(error) => {
+                set_errno(errno_for_linux(error));
+                -1
+            }
         }
     })
 }
@@ -591,10 +656,128 @@ unsafe extern "efiapi" fn ftelli64(stream: *mut File) -> i64 {
 }
 
 unsafe extern "efiapi" fn rewind(stream: *mut File) {
-    with_stream(stream, (), |file| {
-        let _ = file.seek(0, Origin::Start);
-        file.clear_indicators();
+    with_file(stream, (), |file| {
+        file.wide.forget();
+        let _ = file.stream.seek(0, Origin::Start);
+        file.stream.clear_indicators();
     })
+}
+
+const WIDE_END_OF_FILE: u16 = 0xffff;
+const WIDE_END_OF_FILE_RESULT: i32 = 0xffff;
+const STANDARD_INPUT: usize = 0;
+
+unsafe extern "efiapi" fn fgetwc(stream: *mut File) -> u16 {
+    with_file(stream, WIDE_END_OF_FILE, |file| {
+        let encoding = file.encoding();
+        file.wide
+            .get(&mut file.stream, encoding)
+            .unwrap_or(WIDE_END_OF_FILE)
+    })
+}
+
+unsafe extern "efiapi" fn fputwc(unit: u16, stream: *mut File) -> u16 {
+    with_file(stream, WIDE_END_OF_FILE, |file| {
+        let encoding = file.encoding();
+        match file.wide.put(&mut file.stream, encoding, unit) {
+            true => unit,
+            false => WIDE_END_OF_FILE,
+        }
+    })
+}
+
+unsafe extern "efiapi" fn ungetwc(unit: u16, stream: *mut File) -> u16 {
+    if unit == WIDE_END_OF_FILE {
+        return WIDE_END_OF_FILE;
+    }
+    with_file(stream, WIDE_END_OF_FILE, |file| {
+        match file.wide.unget(unit) {
+            true => {
+                file.stream.clear_end_of_file();
+                unit
+            }
+            false => WIDE_END_OF_FILE,
+        }
+    })
+}
+
+unsafe extern "efiapi" fn fgetws(buffer: *mut u16, size: i32, stream: *mut File) -> *mut u16 {
+    let Ok(size) = usize::try_from(size) else {
+        set_errno(errno::EINVAL);
+        return ptr::null_mut();
+    };
+    if buffer.is_null() || size == 0 {
+        set_errno(errno::EINVAL);
+        return ptr::null_mut();
+    }
+    // SAFETY: `fgetws`'s contract: `size` writable units at `buffer`.
+    let units = unsafe { core::slice::from_raw_parts_mut(buffer, size) };
+    let filled = with_file(stream, None, |file| {
+        let encoding = file.encoding();
+        let mut filled = 0;
+        while filled + 1 < units.len() {
+            let Some(unit) = file.wide.get(&mut file.stream, encoding) else {
+                break;
+            };
+            units[filled] = unit;
+            filled += 1;
+            if unit == u16::from(b'\n') {
+                break;
+            }
+        }
+        Some(filled)
+    });
+    match filled {
+        Some(filled) if filled > 0 || size == 1 => {
+            units[filled] = 0;
+            buffer
+        }
+        _ => ptr::null_mut(),
+    }
+}
+
+unsafe fn put_wide_text(text: *const u16, stream: *mut File, newline: bool) -> i32 {
+    // SAFETY: the caller's contract: a NUL-terminated string.
+    let Some(text) = (unsafe { wide(text) }) else {
+        set_errno(errno::EINVAL);
+        return WIDE_END_OF_FILE_RESULT;
+    };
+    let line_end = [u16::from(b'\n')];
+    let ending: &[u16] = match newline {
+        true => &line_end,
+        false => &[],
+    };
+    with_file(stream, WIDE_END_OF_FILE_RESULT, |file| {
+        let encoding = file.encoding();
+        let all = text
+            .iter()
+            .chain(ending)
+            .all(|unit| file.wide.put(&mut file.stream, encoding, *unit));
+        match all {
+            true => 0,
+            false => WIDE_END_OF_FILE_RESULT,
+        }
+    })
+}
+
+unsafe extern "efiapi" fn fputws(text: *const u16, stream: *mut File) -> i32 {
+    // SAFETY: `fputws`'s contract: a NUL-terminated string.
+    unsafe { put_wide_text(text, stream, false) }
+}
+
+unsafe extern "efiapi" fn putws(text: *const u16) -> i32 {
+    // SAFETY: `_putws`'s contract: a NUL-terminated string; standard output is the table's.
+    unsafe { put_wide_text(text, standard(STANDARD_OUTPUT), true) }
+}
+
+unsafe extern "efiapi" fn getwchar() -> u16 {
+    // SAFETY: standard input is the table's own stream, or null, which `fgetwc` refuses.
+    unsafe { fgetwc(standard(STANDARD_INPUT)) }
+}
+
+unsafe extern "efiapi" fn putwchar(unit: u16) -> u16 {
+    // SAFETY: standard output is the table's own stream, or null, which `fputwc` refuses.
+    unsafe { fputwc(unit, standard(STANDARD_OUTPUT)) }
 }
 
 unsafe extern "efiapi" fn fgetpos(stream: *mut File, out: *mut i64) -> i32 {
@@ -1522,6 +1705,16 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"fputc" => fputc,
     b"putc" => fputc,
     b"ungetc" => ungetc,
+    b"fgetwc" => fgetwc,
+    b"getwc" => fgetwc,
+    b"fputwc" => fputwc,
+    b"putwc" => fputwc,
+    b"ungetwc" => ungetwc,
+    b"fgetws" => fgetws,
+    b"fputws" => fputws,
+    b"_putws" => putws,
+    b"getwchar" => getwchar,
+    b"putwchar" => putwchar,
     b"fgets" => fgets,
     b"fputs" => fputs,
     b"puts" => puts,
