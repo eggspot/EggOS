@@ -408,6 +408,28 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
     None,
 );
 
+/// No download since boot has that id (D224).
+pub const NO_SUCH_DOWNLOAD: ErrorDefinition = error(
+    "no_such_download",
+    Category::NotFound,
+    "Check the id: download list shows the downloads since boot.",
+    None,
+);
+/// The download is over, or its fetch is gone, so there is nothing to cancel (D224).
+pub const ALREADY_ENDED: ErrorDefinition = error(
+    "already_ended",
+    Category::Failed,
+    "Nothing to do: download list shows how it ended.",
+    None,
+);
+/// The download is still running, so its record stays (D224).
+pub const STILL_DOWNLOADING: ErrorDefinition = error(
+    "still_downloading",
+    Category::Busy,
+    "Wait for it to end, or cancel it first with download cancel.",
+    None,
+);
+
 /// The definition of the error code `code`, if EggOS defines it.
 pub fn by_code(code: &[u8]) -> Option<&'static ErrorDefinition> {
     ALL.iter()
@@ -416,7 +438,7 @@ pub fn by_code(code: &[u8]) -> Option<&'static ErrorDefinition> {
 }
 
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 55] = [
+pub const ALL: [&ErrorDefinition; 58] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -472,4 +494,7 @@ pub const ALL: [&ErrorDefinition; 55] = [
     &AUDIT_FULL,
     &REQUEST_ID_TOO_LONG,
     &CAPTURE_FAILED,
+    &NO_SUCH_DOWNLOAD,
+    &ALREADY_ENDED,
+    &STILL_DOWNLOADING,
 ];

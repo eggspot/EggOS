@@ -1,5 +1,5 @@
 //! The EggOS core utilities (D108): one program, `/bin/coreutils`, whose other names in `/bin`
-//! (hard links to the same file) are its utilities: `agent` (D193), `agentlog`, `cat`, `chmod` (D170), `clip` (D197), `cp`, `date` (D150), `device` (D184), `df` (D171),
+//! (hard links to the same file) are its utilities: `agent` (D193), `agentlog`, `cat`, `chmod` (D170), `clip` (D197), `cp`, `date` (D150), `device` (D184), `df` (D171), `download` (D224),
 //! `echo`, `false`, `fetch` (D158), `free`, `getprop` (D188), `grep`, `halt`, `head`, `help` (D160), `hwclock` (D150), `ip` (D157), `kill` (D200), `ln` (D170), `logcat` (D188), `ls`,
 //! `mkdir`, `mv`, `nslookup` (D157), `ping` (D157), `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `setprop` (D188), `sleep`,
 //! `stty` (D222), `sync`, `tail`, `taskset` (D198), `tee`, `touch`, `trash`, `true`, `uname`, `uptime`, `wc` and `wm`. It runs
@@ -24,6 +24,8 @@ mod clip;
 mod date;
 #[cfg(any(test, eggos_user))]
 mod device;
+#[cfg(any(test, eggos_user))]
+mod download;
 #[cfg(any(test, eggos_user))]
 mod df;
 #[cfg(any(test, eggos_user))]

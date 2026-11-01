@@ -5,6 +5,7 @@ use crate::chmod::chmod;
 use crate::clip::clip;
 use crate::date::date;
 use crate::device::device;
+use crate::download::download;
 use crate::df::df;
 use crate::echo::echo;
 use crate::fetch::fetch;
@@ -51,6 +52,7 @@ pub enum Utility {
     Cp,
     Date,
     Device,
+    Download,
     Df,
     Echo,
     False,
@@ -93,7 +95,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 48] = [
         Self::Agent,
         Self::Agentlog,
         Self::Cat,
@@ -102,6 +104,7 @@ impl Utility {
         Self::Cp,
         Self::Date,
         Self::Device,
+        Self::Download,
         Self::Df,
         Self::Echo,
         Self::False,
@@ -153,6 +156,7 @@ impl Utility {
             Self::Cp => b"cp",
             Self::Date => b"date",
             Self::Device => b"device",
+            Self::Download => b"download",
             Self::Df => b"df",
             Self::Echo => b"echo",
             Self::False => b"false",
@@ -209,6 +213,7 @@ impl Utility {
             Self::Cp => cp(output, arguments),
             Self::Date => date(output, arguments),
             Self::Device => device(output, arguments),
+            Self::Download => download(output, arguments),
             Self::Df => df(output, arguments),
             Self::Echo => echo(output, arguments),
             Self::False => FAILURE,

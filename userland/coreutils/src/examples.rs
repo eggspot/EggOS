@@ -44,6 +44,7 @@ fn machine() -> Fake {
             0,
         )
         .with_link("/proc/self", "7");
+    let mut fake = crate::download::tests::with_records(fake);
     fake.now = 1_793_282_709;
     fake.terminal = Some(FakeTerminal::default());
     fake.file_systems = vec![(
