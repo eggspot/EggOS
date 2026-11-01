@@ -20,7 +20,7 @@
 //! libraries make the system calls instead. [`load`] alone refuses a program that names an
 //! interpreter with `ENOENT`, as Linux refuses one whose interpreter is missing; an
 //! interpreter that is not an ELF program for this machine is `ELIBBAD`. A program loaded from
-//! a file keeps it as its segments' backing ([`Program::file`]): a page `MADV_DONTNEED`
+//! a file keeps it as its segments' backing ([`Program::from_file`]): a page `MADV_DONTNEED`
 //! discards is read from the file again.
 //!
 //! [`execve`] and [`execveat`] start a program from a file (D103): they find it, check that it
