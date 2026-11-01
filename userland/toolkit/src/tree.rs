@@ -492,6 +492,22 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.layout();
     }
 
+    /// Moves widget `id` (and what it holds) to `place` in its parent and lays the tree out
+    /// again, for a window whose widgets keep to its bottom or change places with its size.
+    pub fn set_place(&mut self, id: WidgetId, place: Place) {
+        let Some(node) = self.node_mut(id) else {
+            return;
+        };
+        if node.place == place {
+            return;
+        }
+        node.place = place;
+        let before = node.rect;
+        self.damage.add(before.inset(-DAMAGE_OUTSET));
+        self.layout();
+        self.damage_widget(id);
+    }
+
     /// Enables or disables widget `id`: a disabled one ignores the pointer and Tab.
     pub fn set_enabled(&mut self, id: WidgetId, enabled: bool) {
         if let Some(node) = self.node_mut(id)

@@ -1098,3 +1098,34 @@ fn the_light_palette_repaints_every_widget_and_the_dark_frame_is_unchanged() {
     assert_eq!(at(&dark, 100, 154), crate::colour::FIELD);
     assert_eq!(at(&dark, 20, 214), crate::colour::ACCENT);
 }
+
+#[test]
+fn set_place_moves_a_widget_and_what_it_holds_and_draws_both_places_again() {
+    let mut tree = WidgetTree::<4>::new();
+    let root = surface(&mut tree);
+    let bottom = tree
+        .add(
+            Some(root),
+            Place::at(0, 300, Length::Fill(0), Length::Px(40)),
+            Kind::panel(Token::Menu),
+        )
+        .unwrap();
+    let button = tree
+        .add(
+            Some(bottom),
+            Place::at(16, 6, Length::Px(96), Length::Px(28)),
+            Kind::button("Clear", false),
+        )
+        .unwrap();
+    tree.resize(WIDTH, HEIGHT);
+    tree.take_damage();
+    tree.set_place(bottom, Place::at(0, 200, Length::Fill(0), Length::Px(40)));
+    assert_eq!(tree.rect(bottom), Some(Rect::new(0, 200, WIDTH, 40)));
+    assert_eq!(tree.rect(button), Some(Rect::new(16, 206, 96, 28)));
+    let damage = tree.take_damage();
+    let covers = |x: i32, y: i32| damage.rects().iter().any(|rect| rect.contains(x, y));
+    assert!(covers(20, 310));
+    assert!(covers(20, 210));
+    tree.set_place(bottom, Place::at(0, 200, Length::Fill(0), Length::Px(40)));
+    assert!(tree.take_damage().is_empty());
+}
