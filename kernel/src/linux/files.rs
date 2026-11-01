@@ -77,7 +77,7 @@ pub fn walk_error(error: vfs::Error) -> Errno {
 const PATH_CHUNK: usize = 64;
 
 /// A buffer for a path copied from a program ([`read_path`]): left uninitialized, so a short
-/// path costs only its own bytes.
+/// path costs only the chunk it is read in.
 pub type PathBuffer = MaybeUninit<[u8; PATH_MAX]>;
 
 /// Copies the NUL-terminated path at `address` into `buffer` and returns it, without its NUL:
@@ -88,32 +88,29 @@ pub fn read_path<'a, P: Platform>(
     address: u64,
     buffer: &'a mut PathBuffer,
 ) -> Result<&'a [u8], Errno> {
-    let path = buffer.as_mut_ptr().cast::<u8>();
-    let mut chunk = [0u8; PATH_CHUNK];
+    // SAFETY: `MaybeUninit<[u8; N]>` and `[MaybeUninit<u8>; N]` have the same layout, and
+    // neither needs its bytes initialized.
+    let bytes = unsafe { &mut *(buffer as *mut PathBuffer).cast::<[MaybeUninit<u8>; PATH_MAX]>() };
     let mut offset = 0;
     while offset < PATH_MAX {
         let at = address.checked_add(offset as u64).ok_or(Errno::EFAULT)?;
         let length = (PATH_MAX - offset)
             .min(PATH_CHUNK)
             .min((FRAME_SIZE - at % FRAME_SIZE) as usize);
-        let chunk = &mut chunk[..length];
+        let chunk = &mut bytes[offset..offset + length];
         process
-            .read_user_memory(at, chunk)
+            .read_user_memory_uninit(at, chunk)
             .map_err(|_| Errno::EFAULT)?;
-        let end = chunk.iter().position(|&byte| byte == 0);
-        // SAFETY: `offset + length` is at most `PATH_MAX`, so the bytes written are within
-        // `buffer`, which `chunk`, on this stack frame, does not overlap.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                chunk.as_ptr(),
-                path.wrapping_add(offset),
-                end.unwrap_or(length),
-            )
-        };
-        if let Some(end) = end {
-            // SAFETY: the first `offset + end` bytes of `buffer` were written by this loop, and
-            // the slice borrows `buffer` for as long as it lives.
-            return Ok(unsafe { core::slice::from_raw_parts(path, offset + end) });
+        // SAFETY: `read_user_memory_uninit` returned `Ok`, so it initialized every byte of
+        // `chunk`.
+        let chunk = unsafe { &*(chunk as *const [MaybeUninit<u8>] as *const [u8]) };
+        if let Some(end) = chunk.iter().position(|&byte| byte == 0) {
+            // SAFETY: this loop's reads initialized the first `offset + length` bytes of
+            // `bytes`, and `end` is below `length`; the slice borrows `buffer` for as long as
+            // it lives.
+            return Ok(unsafe {
+                core::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), offset + end)
+            });
         }
         offset += length;
     }
@@ -122,6 +119,7 @@ pub fn read_path<'a, P: Platform>(
 
 /// The root and the directory a relative `path` starts from, given `dirfd`: see the module
 /// documentation.
+#[inline(always)]
 pub fn starting_points(
     thread: &LinuxThread,
     dirfd: u64,
@@ -319,12 +317,9 @@ fn open<P: Platform>(
     let caller = process.id().get();
     let follow_last = flags & open_flag::NOFOLLOW == 0;
     let mut created = false;
-    let found = match links_allowed {
-        true => vfs::resolve_as(root, start, path, caller, follow_last),
-        false => vfs::resolve_without_links(root, start, path, caller, follow_last),
-    };
-    let node = match found {
-        Ok(node) => node,
+    let found = vfs::resolve_with_kind(root, start, path, caller, follow_last, links_allowed);
+    let (node, kind) = match found {
+        Ok(found) => found,
         Err(vfs::Error::NotFound) if !only_path && flags & open_flag::CREAT != 0 => {
             let created_file = super::file_changes::create_file::<P>(
                 root,
@@ -337,7 +332,7 @@ fn open<P: Platform>(
             match created_file {
                 Ok(node) => {
                     created = true;
-                    node
+                    (node, node.kind())
                 }
                 Err(Errno::EROFS) => return Err(creation_error(caller, root, start, path)),
                 Err(error) => return Err(error),
@@ -355,8 +350,8 @@ fn open<P: Platform>(
             );
         }
     };
-    let directory = node.is_directory();
-    let kind = if only_path {
+    let directory = kind == NodeKind::Directory;
+    let file_kind = if only_path {
         if flags & open_flag::DIRECTORY != 0 && !directory {
             return Err(Errno::ENOTDIR);
         }
@@ -378,12 +373,16 @@ fn open<P: Platform>(
         if flags & open_flag::DIRECTORY != 0 && !directory {
             return Err(Errno::ENOTDIR);
         }
-        if node.kind() == NodeKind::SymbolicLink {
+        if kind == NodeKind::SymbolicLink {
             return Err(Errno::ELOOP);
         }
-        if let Some(device) = node.character_device() {
+        let device = match kind {
+            NodeKind::CharacterDevice => node.character_device(),
+            _ => None,
+        };
+        if let Some(device) = device {
             open_device(process, node, device, flags)?
-        } else if node.kind() == NodeKind::Socket {
+        } else if kind == NodeKind::Socket {
             return Err(Errno::ENXIO);
         } else {
             if !directory && (writes || flags & open_flag::TRUNC != 0) {
@@ -400,7 +399,7 @@ fn open<P: Platform>(
         true => open_flag::PATH,
         false => flags,
     };
-    let file = Arc::new(OpenFile::new(kind, status));
+    let file = Arc::new(OpenFile::new(file_kind, status));
     let limit = open_file_limit(process);
     let close_on_exec = flags & open_flag::CLOEXEC != 0;
     let opened = thread

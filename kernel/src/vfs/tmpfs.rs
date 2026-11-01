@@ -924,6 +924,10 @@ impl FileSystem for Tmpfs {
         Ok(())
     }
 
+    fn keeps_holds(&self) -> bool {
+        true
+    }
+
     fn hold(&self, node: u64) {
         let mut state = self.state.lock();
         if let Some(inode) = state.inode_mut(node)

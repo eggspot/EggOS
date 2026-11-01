@@ -18,6 +18,7 @@ use crate::process::Process;
 use crate::regions::FilePages;
 use crate::sync::SpinLock;
 use crate::vfs::{self, NodeKind};
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use eggos_android_properties::{self as format, PropertyError};
 use eggos_hal::Platform;
@@ -32,12 +33,15 @@ pub const LARGEST_AREA: usize = 64 * 1024;
 
 const LARGEST_BUILD_PROPERTIES: u64 = 64 * 1024;
 
-static AREA: SpinLock<Vec<u8>> = SpinLock::new(Vec::new());
+#[expect(
+    clippy::box_collection,
+    reason = "a null box keeps the static all zeros, in .bss"
+)]
+static AREA: SpinLock<Option<Box<Vec<u8>>>> = SpinLock::new(None);
 
 /// The area's size in bytes, as `stat` reports it: [`FIRST_AREA`] before it is made.
 pub fn size() -> u64 {
-    let area = AREA.lock();
-    match area.len() {
+    match AREA.lock().as_ref().map_or(0, |area| area.len()) {
         0 => FIRST_AREA as u64,
         length => length as u64,
     }
@@ -46,10 +50,10 @@ pub fn size() -> u64 {
 /// Copies the area's bytes from `offset` into `buffer`, making it first: how many, 0 at its
 /// end or without memory for it.
 pub fn read_into(offset: u64, buffer: &mut [u8]) -> usize {
-    let mut area = AREA.lock();
-    if made(&mut area).is_err() {
+    let mut slot = AREA.lock();
+    let Ok(area) = made(&mut slot) else {
         return 0;
-    }
+    };
     let Some(rest) = usize::try_from(offset)
         .ok()
         .and_then(|offset| area.get(offset..))
@@ -65,12 +69,12 @@ pub fn read_into(offset: u64, buffer: &mut [u8]) -> usize {
 /// `EROFS` for a read-only property that has a value, `ENOSPC` when the area is at
 /// [`LARGEST_AREA`], `ENOMEM` without memory to grow it.
 pub fn set(name: &[u8], value: &[u8]) -> Result<(), Errno> {
-    let mut area = AREA.lock();
-    made(&mut area)?;
+    let mut slot = AREA.lock();
+    let area = made(&mut slot)?;
     loop {
         match format::set(area.as_mut_slice(), name, value) {
             Ok(()) => return Ok(()),
-            Err(PropertyError::Full { needed }) => grow(&mut area, needed)?,
+            Err(PropertyError::Full { needed }) => grow(area, needed)?,
             Err(PropertyError::InvalidName | PropertyError::InvalidValue) => {
                 return Err(Errno::EINVAL);
             }
@@ -82,8 +86,8 @@ pub fn set(name: &[u8], value: &[u8]) -> Result<(), Errno> {
 
 /// The value of property `name`, copied into `buffer`: its length, `None` when it has none.
 pub fn get(name: &[u8], buffer: &mut [u8; format::VALUE_MAX]) -> Option<usize> {
-    let area = AREA.lock();
-    let value = format::get(&area, name)?;
+    let slot = AREA.lock();
+    let value = format::get(slot.as_deref()?, name)?;
     buffer.get_mut(..value.len())?.copy_from_slice(value);
     Some(value.len())
 }
@@ -135,14 +139,19 @@ pub fn load_build_properties() {
     }
 }
 
-fn made(area: &mut Vec<u8>) -> Result<(), Errno> {
-    if !area.is_empty() {
-        return Ok(());
+#[expect(
+    clippy::box_collection,
+    reason = "the area's slot in a static kept in .bss"
+)]
+fn made(slot: &mut Option<Box<Vec<u8>>>) -> Result<&mut Vec<u8>, Errno> {
+    let area = slot.get_or_insert_with(Box::default);
+    if area.is_empty() {
+        area.try_reserve_exact(FIRST_AREA)
+            .map_err(|_| Errno::ENOMEM)?;
+        area.resize(FIRST_AREA, 0);
+        format::initialize(area).map_err(|_| Errno::ENOMEM)?;
     }
-    area.try_reserve_exact(FIRST_AREA)
-        .map_err(|_| Errno::ENOMEM)?;
-    area.resize(FIRST_AREA, 0);
-    format::initialize(area).map_err(|_| Errno::ENOMEM)
+    Ok(area)
 }
 
 fn grow(area: &mut Vec<u8>, needed: usize) -> Result<(), Errno> {
@@ -165,18 +174,18 @@ mod tests {
 
     #[test]
     fn the_area_grows_by_pages_up_to_its_largest_size() {
-        let mut area = Vec::new();
-        made(&mut area).unwrap();
+        let mut slot = None;
+        let area = made(&mut slot).unwrap();
         assert_eq!(area.len(), FIRST_AREA);
-        assert!(format::is_area(&area));
-        grow(&mut area, FIRST_AREA + 1).unwrap();
+        assert!(format::is_area(area));
+        grow(area, FIRST_AREA + 1).unwrap();
         assert_eq!(area.len(), 2 * FIRST_AREA);
-        grow(&mut area, 3 * FIRST_AREA + 5).unwrap();
+        grow(area, 3 * FIRST_AREA + 5).unwrap();
         assert_eq!(area.len(), 4 * FIRST_AREA);
-        grow(&mut area, LARGEST_AREA - 1).unwrap();
+        grow(area, LARGEST_AREA - 1).unwrap();
         assert_eq!(area.len(), LARGEST_AREA);
-        assert_eq!(grow(&mut area, LARGEST_AREA + 1), Err(Errno::ENOSPC));
-        assert!(format::is_area(&area));
+        assert_eq!(grow(area, LARGEST_AREA + 1), Err(Errno::ENOSPC));
+        assert!(format::is_area(area));
     }
 
     #[test]

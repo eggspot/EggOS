@@ -53,6 +53,7 @@ const SYMBOLIC_LINK: u32 = 0o120000;
 
 #[derive(Debug, Clone, Copy)]
 struct Entry {
+    name_key: u64,
     path_start: u32,
     path_length: u16,
     name_offset: u16,
@@ -68,6 +69,12 @@ struct Entry {
     links: u32,
     pending_link_inode: u32,
     file_id: u32,
+}
+
+impl Entry {
+    fn name_length(&self) -> usize {
+        usize::from(self.path_length - self.name_offset)
+    }
 }
 
 /// A mounted initramfs: see the module documentation.
@@ -90,6 +97,7 @@ impl Initramfs {
 
     fn root_entry() -> Entry {
         Entry {
+            name_key: 0,
             path_start: 0,
             path_length: 0,
             name_offset: 0,
@@ -147,6 +155,7 @@ impl Initramfs {
                 .map_or(0, |at| at + 1);
             entries.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
             entries.push(Entry {
+                name_key: name_key(&path[name_offset..]),
                 path_start: path_start as u32,
                 path_length: path.len() as u16,
                 name_offset: name_offset as u16,
@@ -296,8 +305,17 @@ impl Initramfs {
         let children = self
             .entries
             .get(parent.first_child as usize..parent.end_of_children as usize)?;
+        let key = name_key(name);
         let index = children
-            .binary_search_by(|entry| self.entry_name(entry).cmp(name))
+            .binary_search_by(|entry| match entry.name_key.cmp(&key) {
+                Ordering::Equal
+                    if name.len() <= NAME_KEY_BYTES && entry.name_length() == name.len() =>
+                {
+                    Ordering::Equal
+                }
+                Ordering::Equal => compare_names(self.entry_name(entry), name),
+                order => order,
+            })
             .ok()?;
         Some(parent.first_child + index as u32)
     }
@@ -309,6 +327,30 @@ impl Initramfs {
 
     fn entry_at(&self, node: u64) -> &Entry {
         &self.entries[node as usize]
+    }
+}
+
+const NAME_KEY_BYTES: usize = 8;
+
+#[inline(always)]
+fn name_key(name: &[u8]) -> u64 {
+    let mut key = 0;
+    for &byte in &name[..name.len().min(NAME_KEY_BYTES)] {
+        key = key << 8 | u64::from(byte);
+    }
+    let missing = NAME_KEY_BYTES.saturating_sub(name.len());
+    key.checked_shl(8 * missing as u32).unwrap_or(0)
+}
+
+#[inline(always)]
+fn compare_names(name: &[u8], other: &[u8]) -> Ordering {
+    match name
+        .iter()
+        .zip(other)
+        .find(|(byte, other_byte)| byte != other_byte)
+    {
+        Some((byte, other_byte)) => byte.cmp(other_byte),
+        None => name.len().cmp(&other.len()),
     }
 }
 
@@ -498,6 +540,58 @@ pub mod tests {
             .map_while(|position| file_system.entry(directory, position))
             .map(|entry| entry.name.as_bytes().to_vec())
             .collect()
+    }
+
+    #[test]
+    fn names_compare_as_byte_strings() {
+        let names: [&[u8]; 8] = [b"", b"a", b"ab", b"abc", b"b", b"ba", b"etc", b"\xff"];
+        for name in names {
+            for other in names {
+                assert_eq!(compare_names(name, other), name.cmp(other));
+            }
+        }
+    }
+
+    #[test]
+    fn name_keys_order_as_the_names_they_start() {
+        let names: [&[u8]; 9] = [
+            b"",
+            b"a",
+            b"ab",
+            b"abcdefgh",
+            b"abcdefgh1",
+            b"abcdefgi",
+            b"b",
+            b"etc",
+            b"\xff",
+        ];
+        for name in names {
+            for other in names {
+                if name_key(name) != name_key(other) {
+                    assert_eq!(name_key(name).cmp(&name_key(other)), name.cmp(other));
+                }
+            }
+        }
+        assert_eq!(name_key(b"etc"), u64::from_be_bytes(*b"etc\0\0\0\0\0"));
+    }
+
+    #[test]
+    fn lookups_compare_whole_names_past_their_keys() {
+        let file_system = mount(&[
+            ("abcdefgh", 0o100644, 0, b""),
+            ("abcdefgh1", 0o100644, 0, b""),
+            ("abcdefgh22", 0o100644, 0, b""),
+            ("ab", 0o100644, 0, b""),
+        ])
+        .unwrap();
+        let root = file_system.root();
+        for name in [&b"ab"[..], b"abcdefgh", b"abcdefgh1", b"abcdefgh22"] {
+            let node = file_system.lookup(root, name).unwrap();
+            assert_eq!(file_system.name(node).as_bytes(), name);
+        }
+        for name in [&b"a"[..], b"ab\0", b"abcdefg", b"abcdefgh2", b"abcdefgh\0"] {
+            assert_eq!(file_system.lookup(root, name), None);
+        }
     }
 
     #[test]

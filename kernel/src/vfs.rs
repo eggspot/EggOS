@@ -387,6 +387,11 @@ pub trait FileSystem: Sync + Send {
     fn hold(&self, _node: u64) {}
     /// Ends one [`Self::hold`] of `node`; the last one frees a node that has no name left.
     fn release(&self, _node: u64) {}
+    /// Whether [`Self::hold`] and [`Self::release`] do anything: `false` for a file system
+    /// whose nodes never go while they are used, so that open files skip them.
+    fn keeps_holds(&self) -> bool {
+        false
+    }
 
     /// Sets when `node`'s contents last changed.
     fn set_modified(&self, _node: u64, _time: u64) -> Result<(), Refused> {
@@ -552,17 +557,26 @@ impl Node {
     /// [`Error::NotFound`] if there is none. `.` and `..` are the walk's, not looked up here.
     #[inline]
     pub fn lookup(&self, name: &[u8]) -> Result<Self, Error> {
-        if !self.is_directory() {
+        self.lookup_as(self.kind(), name)
+    }
+
+    #[inline]
+    fn lookup_as(&self, kind: NodeKind, name: &[u8]) -> Result<Self, Error> {
+        let id = self.child_id_as(kind, name)?;
+        Ok(mounted_on(self.with_id(id)))
+    }
+
+    #[inline(always)]
+    fn child_id_as(&self, kind: NodeKind, name: &[u8]) -> Result<u64, Error> {
+        if kind != NodeKind::Directory {
             return Err(Error::NotDirectory);
         }
         if name.len() > NAME_MAX {
             return Err(Error::NameTooLong);
         }
-        let id = self
-            .file_system
+        self.file_system
             .lookup(self.id, name)
-            .ok_or(Error::NotFound)?;
-        Ok(mounted_on(self.with_id(id)))
+            .ok_or(Error::NotFound)
     }
 
     /// Writes its absolute path, from the root of the file system it is on, to the end of
@@ -650,13 +664,7 @@ pub fn resolve_without_links(
     caller: u32,
     follow_last: bool,
 ) -> Result<Node, Error> {
-    let mut links = 0;
-    let walk_rule = Walk {
-        caller,
-        follow_last,
-        links_allowed: false,
-    };
-    walk(root, start, path, walk_rule, 0, &mut links)
+    resolve_with_kind(root, start, path, caller, follow_last, false).map(|(node, _)| node)
 }
 
 /// [`resolve`] for process `caller` (`/proc/self` is its directory), following the last
@@ -669,11 +677,25 @@ pub fn resolve_as(
     caller: u32,
     follow_last: bool,
 ) -> Result<Node, Error> {
+    resolve_with_kind(root, start, path, caller, follow_last, true).map(|(node, _)| node)
+}
+
+/// [`resolve_as`], or [`resolve_without_links`] unless `links_allowed`, with the kind of the
+/// node found, which the walk asks once.
+#[inline]
+pub fn resolve_with_kind(
+    root: Node,
+    start: Node,
+    path: &[u8],
+    caller: u32,
+    follow_last: bool,
+    links_allowed: bool,
+) -> Result<(Node, NodeKind), Error> {
     let mut links = 0;
     let walk_rule = Walk {
         caller,
         follow_last,
-        links_allowed: true,
+        links_allowed,
     };
     walk(root, start, path, walk_rule, 0, &mut links)
 }
@@ -692,11 +714,12 @@ fn walk(
     rule: Walk,
     nesting: u32,
     links: &mut u32,
-) -> Result<Node, Error> {
+) -> Result<(Node, NodeKind), Error> {
     let mut node = match path.first() {
         Some(b'/') => root,
         _ => start,
     };
+    let mut kind = node.kind();
     let mut must_be_directory = false;
     let mut components = path.split(|&byte| byte == b'/');
     while let Some(component) = components.next() {
@@ -706,29 +729,32 @@ fn walk(
                 continue;
             }
             b"." | b".." => {
-                if !node.is_directory() {
+                if kind != NodeKind::Directory {
                     return Err(Error::NotDirectory);
                 }
                 if component == b".." && node != root {
                     node = node.parent();
+                    kind = node.kind();
                 }
                 must_be_directory = true;
             }
             name => {
                 let directory = node;
-                node = node.lookup(name)?;
+                node = mounted_on(node.with_id(node.child_id_as(kind, name)?));
+                kind = node.kind();
                 must_be_directory = false;
-                let is_last = components.clone().next().is_none();
-                if node.kind() == NodeKind::SymbolicLink && (!is_last || rule.follow_last) {
-                    node = follow(root, directory, node, rule, nesting, links)?;
+                if kind == NodeKind::SymbolicLink
+                    && (rule.follow_last || components.clone().next().is_some())
+                {
+                    (node, kind) = follow(root, directory, node, rule, nesting, links)?;
                 }
             }
         }
     }
-    if must_be_directory && !node.is_directory() {
+    if must_be_directory && kind != NodeKind::Directory {
         return Err(Error::NotDirectory);
     }
-    Ok(node)
+    Ok((node, kind))
 }
 
 #[cold]
@@ -740,7 +766,7 @@ fn follow(
     rule: Walk,
     nesting: u32,
     links: &mut u32,
-) -> Result<Node, Error> {
+) -> Result<(Node, NodeKind), Error> {
     *links += 1;
     if !rule.links_allowed || *links > MAX_LINKS || nesting >= MAX_NESTED_LINKS {
         return Err(Error::TooManyLinks);
@@ -799,7 +825,7 @@ fn mounts() -> impl Iterator<Item = &'static Mounted> {
     })
 }
 
-#[inline]
+#[inline(always)]
 fn mounted_on(node: Node) -> Node {
     mounts()
         .find(|mounted| mounted.point == node)

@@ -247,6 +247,7 @@ impl FileKind {
 pub struct OpenFile {
     kind: FileKind,
     status: AtomicU32,
+    held: bool,
     offset: AtomicU64,
 }
 
@@ -254,14 +255,19 @@ impl OpenFile {
     /// A description of `kind` opened with `flags`, of which it keeps the access mode and the
     /// status flags ([`open_flag::STATUS`]), at offset 0.
     pub fn new(kind: FileKind, flags: u32) -> Self {
-        if let Some(node) = kind.node() {
-            node.hold();
-        }
+        let held = match kind.node() {
+            Some(node) if node.file_system().keeps_holds() => {
+                node.hold();
+                true
+            }
+            _ => false,
+        };
         Self {
             kind,
             status: AtomicU32::new(
                 flags & (open_flag::ACCMODE | open_flag::STATUS | open_flag::PATH),
             ),
+            held,
             offset: AtomicU64::new(0),
         }
     }
@@ -340,14 +346,26 @@ impl OpenFile {
     }
 }
 
-impl Drop for OpenFile {
-    fn drop(&mut self) {
+impl OpenFile {
+    #[inline(never)]
+    fn report_close_and_release(&self) {
         super::file_locks::description_closed(self);
         if let FileKind::Regular(node) = &self.kind {
             super::inotify::closed(*node, self.is_writable());
         }
-        if let Some(node) = self.kind.node() {
+        if self.held
+            && let Some(node) = self.kind.node()
+        {
             node.release();
+        }
+    }
+}
+
+impl Drop for OpenFile {
+    fn drop(&mut self) {
+        let watched = super::inotify::WATCHES.load(Ordering::Relaxed) != 0;
+        if self.held || watched || super::file_locks::any_held() {
+            self.report_close_and_release();
         }
     }
 }
@@ -940,6 +958,28 @@ mod tests {
     const LIMIT: u64 = 1024;
 
     const TEST_PID: u32 = u32::MAX;
+
+    #[test]
+    fn files_on_file_systems_that_keep_holds_are_held_while_open() {
+        use crate::sync::Sleeping;
+        use crate::vfs::eggfs::{EggFs, Folder};
+        use crate::vfs::tmpfs::{Budget, Tmpfs};
+        use eggos_eggfs::memory::MemoryDisk;
+        let budget = Box::leak(Box::new(Budget::new(1 << 20)));
+        let tmpfs = Box::leak(Box::new(Tmpfs::new(budget, (0, 30), 0o1777).unwrap()));
+        let mut disk = MemoryDisk::new(2048);
+        eggos_eggfs::format(&mut disk, 0).unwrap();
+        let volume = eggos_eggfs::Volume::mount(disk).unwrap().0;
+        let eggfs: &'static EggFs<MemoryDisk> =
+            Box::leak(Box::new(EggFs::new(volume, (254, 1), Sleeping::spinning())));
+        let home: &'static Folder<MemoryDisk> =
+            Box::leak(Box::new(eggfs.folder(b"home", 1).unwrap()));
+        for node in [Node::root_of(tmpfs), Node::root_of(home)] {
+            let file = OpenFile::new(FileKind::Directory(node), open_flag::RDONLY);
+            assert!(file.held);
+        }
+        assert!(!OpenFile::new(FileKind::Console, open_flag::RDWR).held);
+    }
 
     #[test]
     fn a_new_table_has_the_standard_streams_on_one_description() {
