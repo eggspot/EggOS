@@ -2297,6 +2297,7 @@ pub const HWCLOCK: CommandDefinition = CommandDefinition {
             "Set the system clock from the hardware clock.",
         ),
         named_flag(b'u', "utc", "The hardware clock keeps UTC (always so)."),
+        long_flag("get", "Print the hardware clock, as -r does."),
     ],
     operands: &[],
     outputs: TEXT_ONLY,
@@ -2307,7 +2308,10 @@ pub const HWCLOCK: CommandDefinition = CommandDefinition {
         exits(&PERMISSION_DENIED, 1),
         exits(&FAILED, 1),
     ],
-    examples: &[],
+    examples: &[
+        example("hwclock", "2026-10-29 14:05:09+00:00\n"),
+        example("hwclock --get", "2026-10-29 14:05:09+00:00\n"),
+    ],
     surface: Surface::Gui("Settings: Date & time"),
 };
 

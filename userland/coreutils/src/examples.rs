@@ -32,6 +32,12 @@ fn machine() -> Fake {
             0,
         )
         .with_file(
+            "/proc/driver/rtc",
+            0o444,
+            b"rtc_time\t: 14:05:09\nrtc_date\t: 2026-10-29\n24hr\t\t: yes\n",
+            0,
+        )
+        .with_file(
             "/proc/mounts",
             0o444,
             b"rootfs / rootfs ro 0 0\neggfs /home eggfs rw 0 0\n",
