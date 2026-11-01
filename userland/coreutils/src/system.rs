@@ -245,6 +245,9 @@ pub trait System {
     fn make_hard_link(&mut self, existing: &CStr, path: &CStr) -> Result<(), Errno>;
     fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno>;
     fn file_system_usage(&mut self, path: &CStr) -> Result<FileSystemUsage, Errno>;
+    fn may_write(&mut self, path: &CStr) -> Result<(), Errno> {
+        self.status(None, path, SymbolicLinks::Follow).map(|_| ())
+    }
     fn now(&mut self) -> u64;
     fn time_zone_variable(&self) -> Option<&[u8]> {
         None
@@ -412,6 +415,10 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn file_system_usage(&mut self, path: &CStr) -> Result<FileSystemUsage, Errno> {
         (**self).file_system_usage(path)
+    }
+
+    fn may_write(&mut self, path: &CStr) -> Result<(), Errno> {
+        (**self).may_write(path)
     }
 
     fn now(&mut self) -> u64 {

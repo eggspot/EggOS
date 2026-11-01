@@ -19,6 +19,7 @@ const O_CREAT: usize = 0o100;
 const O_TRUNC: usize = 0o1000;
 const O_APPEND: usize = 0o2000;
 const AT_REMOVEDIR: usize = 0x200;
+const W_OK: usize = 2;
 const STATX_BASIC_STATS: usize = 0x7ff;
 const O_PATH: usize = 0o10_000_000;
 #[cfg(target_arch = "aarch64")]
@@ -463,6 +464,13 @@ impl System for Linux {
             call(number::STATFS, [path, buffer, 0, 0, 0, 0])?;
         }
         Ok(FileSystemUsage::from_statfs(&record))
+    }
+
+    fn may_write(&mut self, path: &CStr) -> Result<(), Errno> {
+        self.at(path, |folder, leaf| {
+            let leaf = leaf.as_ptr() as usize;
+            call(number::FACCESSAT, [folder, leaf, W_OK, 0, 0, 0]).map(|_| ())
+        })
     }
 
     fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {

@@ -1,8 +1,10 @@
 use crate::network::{Shown, resolve};
+use crate::options::parse_defined;
 use crate::output::{FAILURE, LAST_ERROR_BYTES, Output};
-use crate::system::System;
+use crate::system::{SymbolicLinks, System};
 use core::cell::RefCell;
 use core::ffi::CStr;
+use eggos_commands::{commands, errors};
 use eggos_net::http::{self, Body, HeadError, Redirect, Url};
 use eggos_runtime::errno::Errno;
 use eggos_tls::chain::{NoRoots, TrustAnchors};
@@ -24,6 +26,7 @@ pub const MAX_REDIRECTS: usize = 5;
 pub const MAX_URL_BYTES: usize = 2048;
 const REQUEST_BYTES: usize = MAX_URL_BYTES + 512;
 const PIECE: usize = 4096;
+const MAX_PATH_BYTES: usize = 4096;
 
 struct Address {
     bytes: [u8; MAX_URL_BYTES],
@@ -74,45 +77,24 @@ enum Answer {
 
 pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut quiet = false;
+    let mut dry_run = false;
     let mut file: Option<&CStr> = None;
-    let mut operands: [Option<&CStr>; 2] = [None; 2];
-    let mut count = 0;
-    let mut options_end = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        let argument = arguments[index];
-        index += 1;
-        match argument.to_bytes() {
-            b"--" if !options_end => options_end = true,
-            b"-q" if !options_end => quiet = true,
-            b"-o" if !options_end => match arguments.get(index) {
-                Some(&path) => {
-                    file = Some(path);
-                    index += 1;
-                }
-                None => {
-                    output.error(&[b"option requires an argument -- 'o'"]);
-                    return FAILURE;
-                }
-            },
-            option if !options_end && option.starts_with(b"-") && option.len() > 1 => {
-                return output.invalid_option(option);
-            }
-            _ if count < operands.len() => {
-                operands[count] = Some(argument);
-                count += 1;
-            }
-            _ => {
-                output.error(&[USAGE]);
-                return FAILURE;
-            }
+    let parsed = parse_defined(output, arguments, &commands::FETCH, |_, given| {
+        match given.option.short {
+            Some(b'q') => quiet = true,
+            Some(b'o') => file = given.value_as_c_string(),
+            _ => dry_run |= given.is_long("dry-run"),
         }
-    }
-    let (url, file) = match (operands, file) {
-        ([Some(url), None], file) => (url, file),
-        ([Some(url), Some(path)], None) => (url, Some(path)),
+        Ok(())
+    });
+    let Ok(operands) = parsed else {
+        return FAILURE;
+    };
+    let (url, file) = match (operands.all(), file) {
+        (&[url], file) => (url, file),
+        (&[url, path], None) => (url, Some(path)),
         _ => {
-            output.error(&[USAGE]);
+            output.coded(&errors::USAGE, &[USAGE]);
             return FAILURE;
         }
     };
@@ -120,6 +102,9 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         Some(path) if path.to_bytes() != b"-" => Sink::File(path),
         _ => Sink::StandardOutput,
     };
+    if dry_run {
+        return would_fetch(output, url, &sink);
+    }
     let recorder = match sink {
         Sink::File(path) => Some(record::Recorder::start(
             &mut output.system,
@@ -135,6 +120,73 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     };
     let status = fetch_url(output, url, &request);
     recorded(output, recorder.as_ref(), status)
+}
+
+fn would_fetch<S: System>(output: &mut Output<S>, url: &CStr, sink: &Sink<'_>) -> i32 {
+    let Some(address) = Address::of(&[url.to_bytes()]) else {
+        output.error(&[b"the URL is longer than 2048 bytes"]);
+        return FAILURE;
+    };
+    if let Err(error) = http::parse_url(address.as_bytes()) {
+        output.error(&[address.as_bytes(), b": ", error.description().as_bytes()]);
+        return FAILURE;
+    }
+    let path = match *sink {
+        Sink::StandardOutput => {
+            output.write(b"would download ");
+            output.write(url.to_bytes());
+            output.write(b" to standard output\n");
+            return 0;
+        }
+        Sink::File(path) => path,
+    };
+    let replaced = match destination(&mut output.system, path) {
+        Ok(replaced) => replaced,
+        Err(errno) => {
+            output.file_error(path, errno);
+            return FAILURE;
+        }
+    };
+    output.write(b"would download ");
+    output.write(url.to_bytes());
+    output.write(b" to ");
+    output.write(path.to_bytes());
+    if let Some(size) = replaced {
+        output.write(b", replacing the file there (");
+        output.write_number(size, 0);
+        output.write(b" bytes)");
+    }
+    output.write(b"\n");
+    0
+}
+
+fn destination<S: System>(system: &mut S, path: &CStr) -> Result<Option<u64>, Errno> {
+    match system.status(None, path, SymbolicLinks::Follow) {
+        Ok(status) if status.is_directory() => Err(Errno::EISDIR),
+        Ok(status) => system.may_write(path).map(|()| Some(status.size)),
+        Err(Errno::ENOENT) => {
+            let mut held = [0u8; MAX_PATH_BYTES + 1];
+            let folder = parent_folder(path.to_bytes(), &mut held).ok_or(Errno::ENAMETOOLONG)?;
+            match system.status(None, folder, SymbolicLinks::Follow) {
+                Ok(status) if status.is_directory() => system.may_write(folder).map(|()| None),
+                Ok(_) => Err(Errno::ENOTDIR),
+                Err(errno) => Err(errno),
+            }
+        }
+        Err(errno) => Err(errno),
+    }
+}
+
+fn parent_folder<'h>(path: &[u8], held: &'h mut [u8; MAX_PATH_BYTES + 1]) -> Option<&'h CStr> {
+    let folder: &[u8] = match path.iter().rposition(|&byte| byte == b'/') {
+        Some(0) => b"/",
+        Some(at) => &path[..at],
+        None => b".",
+    };
+    let room = held.get_mut(..folder.len() + 1)?;
+    room[..folder.len()].copy_from_slice(folder);
+    room[folder.len()] = 0;
+    CStr::from_bytes_with_nul(room).ok()
 }
 
 fn fetch_url<S: System>(output: &mut Output<S>, url: &CStr, request: &Request<'_>) -> i32 {

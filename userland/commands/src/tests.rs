@@ -496,8 +496,10 @@ fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
         [
             "agent grant",
             "app uninstall",
+            "date",
             "disk format",
             "disk repair",
+            "fetch",
             "settings set",
             "trash"
         ]
