@@ -59,6 +59,7 @@ const TIMER_PACKAGE: &str = "eggos-build-timer";
 const TIMER: &str = "build-timer";
 const TOOLCHAIN: &str = "rustc";
 const WORKSPACE: &str = "workspace";
+const LIBRARIES: &str = "glibc";
 const TEMPORARY: &str = "tmp";
 const CARGO_HOME: &str = "cargo-home";
 const WORK: &str = "work";
@@ -457,9 +458,10 @@ fn run_natively(arch: &Arch, work: &Path) -> Result<Option<BuildRun>, String> {
         );
         return Ok(None);
     }
+    let outside = outside_the_repository(arch, work)?;
     let started = Instant::now();
     let mut child = Command::new(work.join(TIMER))
-        .arg(work)
+        .arg(&outside)
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|e| format!("{}: could not run the timer on the runner: {e}", arch.name))?;
@@ -474,19 +476,50 @@ fn run_natively(arch: &Arch, work: &Path) -> Result<Option<BuildRun>, String> {
     let status = child
         .wait()
         .map_err(|e| format!("{}: the timer on the runner: {e}", arch.name))?;
+    std::fs::remove_dir_all(&outside).map_err(|e| format!("{}: {e}", outside.display()))?;
     let run = parse(&lines)?;
     check_run("the runner", &run)?;
     if !status.success() {
         return Err(format!("{}: the timer on the runner: {status}", arch.name));
     }
-    let target = work.join(WORKSPACE).join("target");
-    if target.exists() {
-        std::fs::remove_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
-    }
-    for folder in [TEMPORARY, CARGO_HOME] {
-        make_new_folder(&work.join(folder))?;
-    }
     Ok(Some(run))
+}
+
+/// A work folder for the runner's build outside the repository, whose `.cargo/config.toml`
+/// cargo would otherwise merge into the workspace's: a copy of the workspace, new `tmp` and
+/// `cargo-home`, and links to `work`'s toolchain and glibc libraries.
+fn outside_the_repository(arch: &Arch, work: &Path) -> Result<PathBuf, String> {
+    let outside = std::env::temp_dir().join(format!(
+        "eggos-workspace-build-{}-{}",
+        arch.name,
+        std::process::id()
+    ));
+    make_new_folder(&outside)?;
+    let workspace = outside.join(WORKSPACE);
+    make_new_folder(&workspace)?;
+    copy_tree(&work.join(WORKSPACE), &workspace)?;
+    for folder in [TEMPORARY, CARGO_HOME] {
+        make_new_folder(&outside.join(folder))?;
+    }
+    for folder in [TOOLCHAIN, LIBRARIES] {
+        link_folder(&work.join(folder), &outside.join(folder))?;
+    }
+    Ok(outside)
+}
+
+#[cfg(unix)]
+fn link_folder(original: &Path, link: &Path) -> Result<(), String> {
+    std::os::unix::fs::symlink(original, link)
+        .map_err(|e| format!("{} to {}: {e}", link.display(), original.display()))
+}
+
+#[cfg(not(unix))]
+fn link_folder(original: &Path, link: &Path) -> Result<(), String> {
+    Err(format!(
+        "{} to {}: the runner's build needs a Linux host",
+        link.display(),
+        original.display()
+    ))
 }
 
 fn prepare_work(arch: &Arch, root: &Path, work: &Path) -> Result<(), String> {
