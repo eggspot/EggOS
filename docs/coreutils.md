@@ -3,8 +3,8 @@
 `userland/coreutils` (D108) is one program, `/bin/coreutils`, with the utilities as hard links
 to it in `/bin`: `agent`, `agentlog`, `cat`, `chmod`, `cp`, `date`, `device`, `df`, `echo`, `false`, `fetch`, `free`, `getprop`, `grep`, `halt`,
 `head`, `hwclock`, `ip`, `ln`, `logcat`, `ls`, `mkdir`, `mv`, `nslookup`, `ping`, `poweroff`, `ps`, `readlink`,
-`reboot`, `rm`, `setprop`, `sleep`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`, `wc` and `wm`
-(D108, D125, D128, D135, D136, D137, D150, D157, D158, D170, D171). It runs the utility named by the last component of the name
+`reboot`, `rm`, `setprop`, `sleep`, `stty`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`, `wc` and `wm`
+(D108, D125, D128, D135, D136, D137, D150, D157, D158, D170, D171, D222). It runs the utility named by the last component of the name
 it was started by, so `ls`, `/bin/ls` and a link called `ls` anywhere are all `ls`. Started as `coreutils`, it runs
 the utility its first argument names (`coreutils ls /`); `coreutils --list` lists them. It is
 our own Rust program on our own runtime, like the shell: no C library, no allocator, about
@@ -22,7 +22,8 @@ command fixes the error, a second line says it: `  try: wm list` (D160).
 
 The command model (D160, D163, docs/ux/command-model.md) describes every command in its
 registry (`userland/commands`): each utility here, `app`, `wm`, `edit`, `settings` and
-`terminal` (D187: opens a terminal window running the shell and returns at once). `help`
+`terminal` (D187: opens a terminal window running the shell and returns at once; D222: `-e
+<program> [arguments...]` runs a program instead, `-t <title>` names the window). `help`
 lists them, `help <words>` shows one's usage, options, error codes, examples and GUI, and
 `help --json` writes the definitions as JSON lines. The examples run as tests against the
 utilities' fake system, so they are what the commands print. Every utility reads its options
@@ -122,6 +123,14 @@ change nothing.
   every program gets `SIGTERM` at once, and the 3 s and 1 s waits are fixed (no `shutdown`
   with a delay or a message to users, no `wall`).
 - `sync` takes no operands: it puts every file system's changes on the disk (D131).
+- `stty` (D222) works on standard input or `-F <device>`: `stty size` prints `<rows> <columns>`;
+  bare `stty` the speed and what differs from `sane`; `-a` every setting in GNU's order and
+  wrapping at the terminal's width; `-g` the four flag words and the 19 control characters as
+  hex, which `stty <that>` restores. It sets modes (`echo`, `-icanon`, ...), `raw`, `-raw` or
+  `cooked`, `sane`, the control characters (`intr ^C`, `erase undef`), `min`, `time`, and `rows`
+  and `cols` (`columns`), which tell the terminal's foreground group (`SIGWINCH`) but do not
+  change a terminal window's grid. It has no `ispeed`, `ospeed` or numeric speeds, and its `-g`
+  form holds 19 control characters, not glibc's 32.
 - `echo` takes no escapes (`-e`), like the shell's builtin; `sleep` takes no `inf`.
 - `date` knows UTC only (no `TZ`, no time zone database, no `-d` to read a date, no
   `MMDDhhmm` operand to set one, no `%N` or `%:z`); `hwclock` has no `--adjust`, drift

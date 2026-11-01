@@ -160,10 +160,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   lines but `VmSize`, links in `fd` to sockets cannot be opened (to pipes they can, D173), and
   every file is root's), and there is no `/sys` (D168); `/dev` holds the memory devices, `tty`, `console`, the
   standard streams' links, `window`, `agent`, `shm` (a memory file system for `shm_open`,
-  D169) and the pseudo-terminals `ptmx` and `pts` (D187: at most 64 at once, no packet mode,
-  `TIOCGPTPEER`, `TIOCSTI` or `TIOCPKT`, a controlling side that never waits and drops what its
-  line discipline cannot hold, and a background write that never stops a program), but no
-  block devices;
+  D169) and the pseudo-terminals `ptmx` and `pts` (D187, D222: at most 64 at once; `TIOCSTI` only into the caller's own controlling
+  terminal; packet mode reports flushes and flow control but never `TIOCPKT_STOP`, `START` or
+  `FLUSHWRITE`; a packet-mode `readv` fills only its first buffer), but no block devices;
   symbolic links work on `/tmp`, `/home`, the work disk and the initramfs, and hard links on
   `/tmp`, `/home` and the work disk (D170), but `O_CREAT` through a link that names nothing
   is `EEXIST` rather than creating its target; `openat2` answers `RESOLVE_NO_SYMLINKS` and
@@ -378,8 +377,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   pattern inside `$(...)` needs its leading `(`, a here-document cannot be inside `$(...)` or
   follow a function definition's line, `read` and `wait` cannot be interrupted with `^C`, and
   only descriptors 0 to 2 can be redirected ([shell](shell.md)).
-- Job control follows Linux, but a background write to the terminal never stops a program
-  (`TOSTOP` is not acted on), `wait` cannot be interrupted with `^C`, and line editing redraws
+- Job control follows Linux (a background write to a pseudo-terminal with `TOSTOP` stops the
+  writer, D222; the console's does not), but `wait` cannot be interrupted with `^C`, and line
+  editing redraws
   a line longer than the terminal is wide wrongly once the cursor moves back across its end
   (D181).
 - **Powering off goes through init (D183).** `poweroff`, `reboot`, `halt` and the desktop's
@@ -449,9 +449,11 @@ shortcuts), kept on the disk across reboots. Not yet:
   composite arrow-and-hourglass pointer; Mac apps choose no pointer shape (no `NSCursor`);
 - a display that changes size while EggOS runs (the GPU's mode change events) keeps its first
   layout;
-- resizing the console's window: its grid stays 80x24 (terminal windows resize, D187); a
-  terminal window reflows nothing (cells cut by a narrower window do not come back) and has no
-  selection, copy and paste, tabs or `terminal -e`;
+- resizing the console's window: its grid stays 80x24 (terminal windows resize and reflow, D187,
+  D222); a terminal window has no touch selection (handles and the bottom sheet), keyboard mark
+  mode, rectangular selection, copy with colours, search, URL detection, tabs or panes
+  (docs/ux/terminal-selection-v0.3.md sections 7 and 10); its close question keeps its 400 px
+  panel in a window narrower than 416 px (section 5); `stty` has no `ispeed` or `ospeed`;
 - the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
   blink in the launcher's search field and keyboard focus in the Linux launcher's dash (D133);
 - removing or installing the Windows or macOS layer on its own (the component manager, D18,
@@ -480,10 +482,11 @@ shortcuts), kept on the disk across reboots. Not yet:
   generic tile; a native EggOS app cannot name its own icon in its manifest yet beyond `icon=`
   pointing at an `app.icon` it ships; `app icon` (writing an app's icon as a PNG) and the MCP
   tool `app_icon` from `docs/ux/app-icons-v0.3.md` section 7 are not built yet;
-- closing the console's window (its close control is disabled; terminal windows close, D187),
-  and console apps in their own terminal window: installed console apps are typed into the
-  console, so
-  they reach whatever reads the console at that moment (docs/apps.md);
+- closing the console's window (its close control is disabled; terminal windows close, D187);
+  installed console apps open in a terminal window of their own (D222), but an app whose
+  manifest says `console=false` (or an app installed before D222) is typed into the console, so
+  it reaches whatever reads the console at that moment (docs/apps.md); `app list` does not show
+  the `console` field and MCP `app_install` cannot set it;
 - Settings, the installer's window (`app --window`, D134) and Files (`/bin/files`, D135),
   all served by the same program, are the programs with a window in the image (the window tests' `hello-window`
   and `win-paint.exe` are added only to their own images); Settings' Components pane comes

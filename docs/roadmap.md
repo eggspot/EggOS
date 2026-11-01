@@ -142,9 +142,12 @@ Must-have, in order:
     open as many terminal windows as they like (the launcher's Terminal, `terminal`, Ctrl+Shift+N
     or Cmd+N in a terminal), resize, maximise and close them, programs set their titles, and
     agents capture, read and type into them like any window; the kernel's window is now titled
-    `Console`. Next, as user capabilities: users can drag a window partly off the left edge; the
-    display follows a window resized by the host (display mode change events); users can copy
-    and paste in terminals and run installed console apps in a terminal window of their own.
+    `Console`. Since D222: users select, copy and paste in terminal windows (and from
+    the context menu), run `terminal -e <program>` and installed console apps in a window of their
+    own, see lines reflow and come back from the scrollback when a window grows, get the folder
+    and the running command in the title from the shell (`OSC 0`, `OSC 7`) and new windows in
+    that folder, and use `stty`. Next, as user capabilities: users can drag a window partly off
+    the left edge; the display follows a window resized by the host (display mode change events).
 15. **done** — users can now download one image per architecture, `SHA256SUMS` and a run
     script, run it, and boot EggOS in a QEMU window with its desktop and terminal, or on the
     serial console alone with `--serial`, at an `eggsh` prompt (D116): `cargo xtask release`

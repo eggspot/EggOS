@@ -198,7 +198,7 @@ facts).
 
 **Kept names:** `agent` (D193), `agentlog`, `app`, `cat`, `chmod` (D170), `clip` (D197), `cp`, `date`, `device` (D184), `df` (D171), `disk` (D192), `echo`, `edit`, `false`, `fetch`,
 `free`, `getprop` (D188), `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `kill` (D200), `ln` (D170), `logcat` (D188), `ls`, `mkdir`, `mv`, `nslookup`,
-`ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `setprop` (D188), `settings`, `sleep`, `sync`, `tail`, `taskset` (D198), `tee`, `terminal` (D187), `touch`,
+`ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `setprop` (D188), `settings`, `sleep`, `stty` (D222), `sync`, `tail`, `taskset` (D198), `tee`, `terminal` (D187), `touch`,
 `trash`, `true`, `uname`, `uptime`, `wc`, `wm`; and `eggsh`'s built-ins `.`, `:`, `[`, `bg`,
 `break`, `cd`, `continue`, `echo`, `eval`, `exit`, `export`, `false`, `fg`, `help`, `jobs`,
 `kill`, `local`, `pwd`, `read`, `return`, `set`, `shift`, `test`, `true`, `type`, `unset`,
@@ -221,10 +221,10 @@ agent's own grants; no tool changes grants.
 named by the word agents know rather than `clip`'s (`DECIDED_NAMES`, which the registry test
 allows beside the shipped names).
 
-**Commands in the registry** (90, D163, D170, D171, D188, D193, D197, D200, D204: every command EggOS ships): `agent forget|grant|list|network|pair|revoke|show`, `agentlog`, `app icon|install|list|open|show|uninstall`, `cat`, `chmod`, `clip get|set`, `cp`, `date`, `device list`, `df`, `disk check|format|list|repair`, `echo`, `edit`, `false`,
+**Commands in the registry** (91, D163, D170, D171, D188, D193, D197, D200, D204, D222: every command EggOS ships): `agent forget|grant|list|network|pair|revoke|show`, `agentlog`, `app icon|install|list|open|show|uninstall`, `cat`, `chmod`, `clip get|set`, `cp`, `date`, `device list`, `df`, `disk check|format|list|repair`, `echo`, `edit`, `false`,
 `fetch`, `free`, `getprop`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `kill`, `ln`, `logcat`, `ls`, `mkdir`, `mv`,
 `nslookup`, `ping`, `poweroff`, `ps`, `readlink`, `reboot`, `rm`, `setprop`, `settings` (the window), `settings
-get|list|set`, `sleep`, `sync`, `tail`, `taskset`, `tee`, `terminal`, `touch`, `trash`, `true`, `uname`, `uptime`,
+get|list|set`, `sleep`, `stty`, `sync`, `tail`, `taskset`, `tee`, `terminal`, `touch`, `trash`, `true`, `uname`, `uptime`,
 `wc`, and `wm act|capture|click|close|drag|focus|list|maximise|menu|minimise|move|press|restore|scroll|show|size|type` and `wm desktop close|list|move|new|switch`.
 `echo`, `true` and `false` take any words and declare no usage error.
 
