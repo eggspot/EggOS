@@ -14261,7 +14261,10 @@ the license, by an explicit instruction recorded here.
   (arguments, environment, a file, a directory, the clocks, a `HashMap`, threads, the CPU
   count, standard error), one exits with 42 and one panics and aborts with 134. CI's
   `static-glibc` job (one per architecture, in the CI image, part of `check`) runs it after
-  installing `libc6-dev` and the cross compilers. glibc is test data, never shipped.
+  installing `libc6-dev` and the cross compilers, and on riscv64 Debian 13's cross glibc 2.41
+  (`libc6-riscv64-cross` and `libc6-dev-riscv64-cross` from snapshot.debian.org, checked by
+  SHA-256), since Ubuntu 24.04's 2.39 ships no `rcrt1.o` for RISC-V (CI run 41257084643).
+  glibc is test data, never shipped.
 - **Front-ends (D22).** The ABI only: a program runs from `eggsh`, MCP `run` and as an
   installed app as any Linux program does; no new capability.
 - **Cost (D24, D78).** Not measured (no builds in this batch). One more string and auxiliary
@@ -14270,8 +14273,10 @@ the license, by an explicit instruction recorded here.
 - **Decided by research** (research subagents, 2026-10-30, from the `getauxval(3)` page,
   published `LD_SHOW_AUXV` output, glibc's `configure.ac` history and rustc's linker code):
   `AT_PLATFORM` is `x86_64` and `aarch64` and absent on riscv64, and no `AT_BASE_PLATFORM` on
-  any of the three; glibc 2.39 (Ubuntu 24.04's cross packages) is the first with static PIE on
-  RISC-V and has it on AArch64, `rcrt1.o` and `libc.a` ship in the cross `-dev` packages, and
+  any of the three; glibc has static PIE on AArch64 and `rcrt1.o` and `libc.a` ship in the
+  cross `-dev` packages (corrected after CI: Ubuntu 24.04's glibc 2.39 has no static PIE on
+  RISC-V, its native and cross `-dev` packages list no `rcrt1.o`; Debian 13's 2.41 and Ubuntu
+  26.04's 2.43 do), and
   rustc links a static PIE (`-static-pie`) for the `*-linux-gnu` targets with `+crt-static`
   and the default relocation model, and `-static -no-pie` with `relocation-model=static`.
 - **Decided without research.** The test reuses `tests/linux-static` rather than a second

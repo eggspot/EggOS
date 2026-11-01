@@ -73,7 +73,9 @@ pub fn check(arch: &Arch) -> Result<(), String> {
             return Err(format!(
                 "{}: {} is missing: the static glibc build needs a Linux host with the \
                  target's static C library (on Ubuntu, `apt-get install libc6-dev` for x86_64, \
-                 `gcc-aarch64-linux-gnu` or `gcc-riscv64-linux-gnu` for the others)",
+                 `gcc-aarch64-linux-gnu` or `gcc-riscv64-linux-gnu` for the others; riscv64's \
+                 `rcrt1.o` needs a newer glibc than Ubuntu 24.04's 2.39, CI installs Debian 13's \
+                 2.41)",
                 arch.name,
                 file.display()
             ));

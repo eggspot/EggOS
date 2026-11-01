@@ -227,6 +227,19 @@ jobs:
           apt-get install -y --no-install-recommends libc6-dev gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu libc6-dev-arm64-cross libc6-dev-riscv64-cross
           rustup target add ${{ matrix.arch == 'riscv64' && 'riscv64gc' || matrix.arch }}-unknown-linux-gnu
 
+      - name: Install a RISC-V glibc with static PIE (glibc 2.41 from Debian 13; Ubuntu 24.04's 2.39 has no rcrt1.o there)
+        if: matrix.arch == 'riscv64'
+        working-directory: ${{ runner.temp }}
+        run: |
+          snapshot=https://snapshot.debian.org/archive/debian/20251101T000000Z/pool/main/c/cross-toolchain-base
+          curl -sSfLO "$snapshot/libc6-riscv64-cross_2.41-11cross1_all.deb"
+          curl -sSfLO "$snapshot/libc6-dev-riscv64-cross_2.41-11cross1_all.deb"
+          printf '%s\n' \
+            'd91109b719920cb503ec5146abd2cc4ba838da5bac4c8c84f698b86b779613eb  libc6-riscv64-cross_2.41-11cross1_all.deb' \
+            'b76e06ca31dba05b94f0b648c4896c0e74bf6c50dc35a2fe4328fd7971dc802f  libc6-dev-riscv64-cross_2.41-11cross1_all.deb' \
+            | sha256sum -c
+          dpkg -i libc6-riscv64-cross_2.41-11cross1_all.deb libc6-dev-riscv64-cross_2.41-11cross1_all.deb
+
       - uses: actions/cache/restore@v6
         with:
           path: target
