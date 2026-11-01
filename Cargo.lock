@@ -461,6 +461,7 @@ dependencies = [
  "eggos-app",
  "eggos-app-manifest",
  "eggos-calendar",
+ "eggos-components",
  "eggos-drivers",
  "eggos-editor",
  "eggos-eggfs",

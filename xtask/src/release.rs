@@ -1,6 +1,7 @@
 //! `cargo xtask release` and `cargo xtask screenshot` (D116): the files a release ships, one
-//! kernel image per architecture with its initramfs embedded, `SHA256SUMS`, the run scripts and
-//! the release notes' skeleton, and the README's picture of the desktop.
+//! kernel image per architecture with its initramfs embedded, one component store per
+//! architecture outside it (D237), `SHA256SUMS`, the run scripts and the release notes'
+//! skeleton, and the README's picture of the desktop.
 
 use crate::qmp::Picture;
 use crate::{ARCHES, Arch, qemu, sha256};
@@ -56,7 +57,19 @@ pub fn run() -> Result<(), String> {
             boot_to_prompt,
         });
     }
-    write(&dir.join(SUMS_FILE), sums(&images).as_bytes())?;
+    let mut sums_text = sums(&images);
+    for arch in ARCHES {
+        let store = crate::components::build_store(arch)?;
+        let contents = std::fs::read(&store).map_err(|e| format!("{}: {e}", store.display()))?;
+        let file_name = crate::components::store_name(arch);
+        write(&dir.join(&file_name), &contents)?;
+        let _ = writeln!(sums_text, "{}  {file_name}", sha256::hex_digest(&contents));
+        eprintln!(
+            "xtask: {file_name}: {} bytes (components_store_bytes), outside the base image",
+            contents.len()
+        );
+    }
+    write(&dir.join(SUMS_FILE), sums_text.as_bytes())?;
     let scripts = script_arches();
     write(&dir.join(SHELL_SCRIPT), shell_script(&scripts).as_bytes())?;
     set_executable(&dir.join(SHELL_SCRIPT))?;

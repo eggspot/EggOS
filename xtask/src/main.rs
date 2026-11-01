@@ -11,6 +11,7 @@ mod autohotkey;
 mod bench;
 mod ci_artifact;
 mod cocoa_app;
+mod components;
 mod dynamic_linking;
 mod elf;
 mod ext4;
