@@ -155,6 +155,7 @@ name = "eggos-init"
 version = "0.2.0"
 dependencies = [
  "eggos-runtime",
+ "eggos-settings-file",
 ]
 
 [[package]]

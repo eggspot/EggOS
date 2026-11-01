@@ -17,8 +17,9 @@ use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Theme;
 
 /// The command's usage, printed for a usage error.
-pub const USAGE: &str = "usage: settings [--pair <id> [--name <name>] | --pane <pane> | list \
-                         [--json] | get [--json] <key> | set [--dry-run] <key> <value>]\n";
+pub const USAGE: &str = "usage: settings [--pair <id> [--name <name>] | --pane <pane> | \
+                         --first-run | list [--json] | get [--json] <key> | set [--dry-run] \
+                         <key> <value>]\n";
 /// The exit status of a usage error.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of a value the setting does not take.
@@ -90,6 +91,11 @@ pub const NAME_OPTION: &str = "--name";
 /// Opens the window on the pane it names (D220): a pane's title in lower case, its spaces as
 /// `-` and `&` as `and` (`keyboard`, `date-and-time`).
 pub const PANE_OPTION: &str = "--pane";
+/// Opens the first run's window (D223, docs/ux/first-run-accessibility-v0.3.md section 1): the
+/// profile, the keyboard and the time zone, each saved as it is chosen.
+pub const FIRST_RUN_OPTION: &str = "--first-run";
+
+const WINDOW_OPTIONS: [&str; 4] = [PAIR_OPTION, NAME_OPTION, PANE_OPTION, FIRST_RUN_OPTION];
 
 /// The agent `settings --pair` fills the pairing panel in with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +114,8 @@ pub enum WindowAsked<'a> {
     Pairing(PairingAsked<'a>),
     /// The window on this pane (an index of `PANES`).
     Pane(usize),
+    /// The first run's window (D223).
+    FirstRun,
     /// `--pair` or `--name` without what they need.
     Usage,
 }
@@ -121,13 +129,12 @@ pub fn window_asked<'a>(arguments: &[&'a str]) -> WindowAsked<'a> {
         [PAIR_OPTION, id, NAME_OPTION, name] | [NAME_OPTION, name, PAIR_OPTION, id] => {
             asked(id, name)
         }
+        [FIRST_RUN_OPTION] => WindowAsked::FirstRun,
         [PANE_OPTION, name] => match crate::settings_window::pane_named(name) {
             Some(pane) => WindowAsked::Pane(pane),
             None => WindowAsked::Usage,
         },
-        [first, ..] if [PAIR_OPTION, NAME_OPTION, PANE_OPTION].contains(&first) => {
-            WindowAsked::Usage
-        }
+        [first, ..] if WINDOW_OPTIONS.contains(&first) => WindowAsked::Usage,
         _ => WindowAsked::Other,
     }
 }
@@ -374,6 +381,8 @@ mod tests {
         }
         assert_eq!(window_asked(&["list"]), WindowAsked::Other);
         assert_eq!(window_asked(&[]), WindowAsked::Other);
+        assert_eq!(window_asked(&["--first-run"]), WindowAsked::FirstRun);
+        assert_eq!(window_asked(&["--first-run", "now"]), WindowAsked::Usage);
     }
 
     #[test]

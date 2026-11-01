@@ -15,18 +15,41 @@ use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 
 const PADDING: i32 = 16;
-const ZONE_LINE: i32 = 180;
-const FACTS_LINE: i32 = 200;
-const FIELD: (i32, i32, i32, i32) = (16, 224, 304, 28);
-const COUNT_LINE: i32 = 230;
-const LIST: (i32, i32, i32, i32) = (16, 260, 432, 72);
 const ROW: i32 = 24;
 const MARK_X: i32 = 8;
 const TEXT_X: i32 = 24;
 const ROW_LABEL_X: i32 = 40;
-const ROW_LABEL_TOP: i32 = 264;
-const ROW_LABEL_WIDTH: i32 = 400;
+const ROW_LABEL_END: i32 = 8;
 const VISIBLE_ROWS: usize = 3;
+
+/// Where the picker's widgets go in their pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PickerLayout {
+    zone_line: i32,
+    facts_line: i32,
+    field: (i32, i32, i32, i32),
+    count_line: i32,
+    list: (i32, i32, i32, i32),
+}
+
+impl PickerLayout {
+    /// The `Date & time` pane's (docs/ux/date-time-v0.3.md section 8).
+    pub const DATE_AND_TIME: Self = Self {
+        zone_line: 180,
+        facts_line: 200,
+        field: (16, 224, 304, 28),
+        count_line: 230,
+        list: (16, 260, 432, 72),
+    };
+    /// The first run's third page (docs/ux/first-run-accessibility-v0.3.md section 1.3).
+    pub const FIRST_RUN: Self = Self {
+        zone_line: 76,
+        facts_line: 96,
+        field: (16, 120, 304, 28),
+        count_line: 126,
+        list: (16, 156, 608, 72),
+    };
+}
 const SLOTS: usize = EMPTY_ROWS.len();
 
 /// The search field's placeholder, which also names it for agents.
@@ -157,40 +180,51 @@ impl ZonePicker {
         chosen: usize,
         now_s: i64,
     ) -> Self {
+        Self::build_at(tree, pane, chosen, now_s, PickerLayout::DATE_AND_TIME)
+    }
+
+    /// [`Self::build`] with the widgets where `layout` puts them.
+    pub fn build_at(
+        tree: &mut WidgetTree<CAPACITY>,
+        pane: WidgetId,
+        chosen: usize,
+        now_s: i64,
+        layout: PickerLayout,
+    ) -> Self {
         add(
             tree,
             pane,
-            Place::at(PADDING, ZONE_LINE, Length::Content, Length::Content),
+            Place::at(PADDING, layout.zone_line, Length::Content, Length::Content),
             Kind::label("Time zone", Token::Text),
         );
         let name = add(
             tree,
             pane,
-            Place::right(PADDING, ZONE_LINE),
+            Place::right(PADDING, layout.zone_line),
             Kind::label("", Token::Text),
         );
         let facts = add(
             tree,
             pane,
-            Place::right(PADDING, FACTS_LINE),
+            Place::right(PADDING, layout.facts_line),
             Kind::label("", Token::TextDim),
         );
         let field = add(
             tree,
             pane,
-            at(FIELD),
+            at(layout.field),
             Kind::text_field(PLACEHOLDER, Escape::Clear),
         );
         let count = add(
             tree,
             pane,
-            Place::right(PADDING, COUNT_LINE),
+            Place::right(PADDING, layout.count_line),
             Kind::label("", Token::TextDim),
         );
         let list = add(
             tree,
             pane,
-            at(LIST),
+            at(layout.list),
             Kind::list(&EMPTY_ROWS, ROW, MARK_X, TEXT_X),
         );
         tree.change(list, |kind| {
@@ -204,8 +238,8 @@ impl ZonePicker {
                 pane,
                 Place::at(
                     ROW_LABEL_X,
-                    ROW_LABEL_TOP + row as i32 * ROW,
-                    Length::Px(ROW_LABEL_WIDTH),
+                    layout.list.1 + 4 + row as i32 * ROW,
+                    Length::Px(layout.list.2 - (ROW_LABEL_X - layout.list.0) - ROW_LABEL_END),
                     Length::Content,
                 ),
                 Kind::label("", Token::Text),
@@ -321,6 +355,11 @@ impl ZonePicker {
                 show_line(tree, *id, text.as_str(), Token::Text);
             }
         }
+    }
+
+    /// The search field.
+    pub fn field(&self) -> WidgetId {
+        self.widgets.field
     }
 
     /// The list of zones.

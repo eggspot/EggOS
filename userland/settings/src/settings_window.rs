@@ -508,7 +508,7 @@ pub fn pane_matches(pane: usize, query: &str) -> bool {
             .any(|word| lowercase_contains(word, query))
 }
 
-fn third_level_text(layout: usize, profile: usize) -> &'static str {
+pub(crate) fn third_level_text(layout: usize, profile: usize) -> &'static str {
     match (KEYBOARD_LAYOUTS[layout].third_level, profile) {
         (false, _) => NO_THIRD_LEVEL,
         (true, MACOS_PROFILE) => OPTION_TYPES,
@@ -516,7 +516,7 @@ fn third_level_text(layout: usize, profile: usize) -> &'static str {
     }
 }
 
-fn dead_keys_text(layout: usize) -> Text<64> {
+pub(crate) fn dead_keys_text(layout: usize) -> Text<64> {
     let mut text = Text::new();
     let _ = match KEYBOARD_LAYOUTS[layout].dead_keys {
         "" => text.write_str("No dead keys"),
@@ -541,7 +541,7 @@ fn uptime_text(seconds: u64) -> Text<64> {
     text
 }
 
-fn time_text(seconds: u64, zone: usize) -> Text<64> {
+pub(crate) fn time_text(seconds: u64, zone: usize) -> Text<64> {
     let rule = eggos_calendar::zone::ZONES
         .get(zone)
         .and_then(|(_, rule)| eggos_calendar::zone::parse(rule));

@@ -23,6 +23,7 @@ use eggos_settings::command::{
     self, MAX_ARGUMENTS, PairingAsked, USAGE, USAGE_STATUS, WindowAsked,
 };
 use eggos_settings::facts::Facts;
+use eggos_settings::first_run::{self, FirstRunRequest, FirstRunWindow};
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
 use eggos_settings::keys::APPEARANCE_THEME;
 use eggos_settings::keys::{DisplayChange, InputChange, KeyboardChoice, KeysChange};
@@ -1386,6 +1387,96 @@ fn open_window(pairing: Option<PairingAsked<'_>>, pane: Option<usize>) -> i32 {
     }
 }
 
+struct FirstRun {
+    window: FirstRunWindow,
+    server: Option<WindowServer>,
+}
+
+impl FirstRun {
+    fn choose(&mut self, request: Request) {
+        let result = match request {
+            Request::SetProfile(index) => {
+                let name = settings_file::PROFILES[index.min(settings_file::PROFILES.len() - 1)];
+                save_through_a_temporary_file(settings_file::SHELL_PROFILE, name).and_then(|()| {
+                    match self.server.as_ref() {
+                        Some(server) => server.set_desktop_profile(index as u32),
+                        None => Ok(()),
+                    }
+                })
+            }
+            Request::SetKeyboardLayout(index) => {
+                let choice = KeyboardChoice::of(self.window.facts()).choosing(index);
+                save_keyboard(choice).and_then(|()| apply_keyboard(choice, self.server.as_ref()))
+            }
+            Request::SetTimeZone(index) => save_time_zone(index),
+            _ => return,
+        };
+        self.window.chosen(request, result);
+    }
+}
+
+fn finish_first_run(request: FirstRunRequest) -> ! {
+    if let FirstRunRequest::Finish {
+        save_profile: Some(index),
+    } = request
+    {
+        save_profile(index);
+    }
+    eggos_runtime::syscall::exit(0)
+}
+
+impl Application<CAPACITY> for FirstRun {
+    fn tree(&mut self) -> &mut WidgetTree<CAPACITY> {
+        self.window.tree()
+    }
+
+    fn respond(&mut self, response: Response, now_ms: u32) {
+        match self.window.respond(response, now_ms) {
+            Some(FirstRunRequest::Choose(request)) => self.choose(request),
+            Some(finish @ FirstRunRequest::Finish { .. }) => finish_first_run(finish),
+            None => {}
+        }
+    }
+
+    fn deadline(&self, now_ms: u32) -> Option<u32> {
+        self.window
+            .shows_the_clock()
+            .then(|| now_ms.wrapping_add(SECOND_MS - now_ms % SECOND_MS))
+    }
+
+    fn tick(&mut self, _now_ms: u32) {
+        self.window.show_now(wall_clock().0);
+    }
+}
+
+fn open_first_run() -> i32 {
+    let (width, height) = first_run::SIZE;
+    let created =
+        Window::create_with_flags(first_run::TITLE, width, height, (width, height), FIXED_SIZE);
+    let Ok(mut window) = created else {
+        say_error(&[b"no display"]);
+        return 1;
+    };
+    if let Ok(area) = window.server().work_area() {
+        let (x, y) = first_run::centred_in(area.rect.width, area.rect.height, area.scale);
+        let _ = window.set_position(x, y);
+    }
+    let mut file = [0u8; LARGEST + 1];
+    let length = saved_settings(&mut file);
+    let profile_saved =
+        settings_file::value(&file[..length], settings_file::SHELL_PROFILE).is_some();
+    let mut first_run = FirstRun {
+        window: FirstRunWindow::new(facts(Some(window.server())), profile_saved),
+        server: WindowServer::open().ok(),
+    };
+    let served = application::run(&mut window, &mut first_run);
+    let closing = first_run.window.close_requested();
+    if let Err(error) = served {
+        say_error(&[b"its window: ", error.message()]);
+    }
+    finish_first_run(closing)
+}
+
 struct TaskManagerProgram {
     window: TaskManager,
     device: Option<usize>,
@@ -1626,6 +1717,7 @@ pub fn run(startup: &Startup) -> i32 {
     match command::window_asked(&arguments[..count]) {
         WindowAsked::Pairing(asked) => return open_window(Some(asked), None),
         WindowAsked::Pane(pane) => return open_window(None, Some(pane)),
+        WindowAsked::FirstRun => return open_first_run(),
         WindowAsked::Usage => {
             write_all(STANDARD_ERROR, USAGE.as_bytes());
             return USAGE_STATUS;

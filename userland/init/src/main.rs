@@ -12,7 +12,10 @@
 //! `WAYLAND_DISPLAY`. Asked to power off, restart or halt (`poweroff`, `reboot`, `halt`, the
 //! desktop's power menu), or when the login program ends and the configuration says to, init
 //! ends every other process, `SIGTERM` first and `SIGKILL` for those left, then takes the
-//! machine down (`shutdown.rs`, D183).
+//! machine down (`shutdown.rs`, D183). On a never-installed image's first boot with a disk it
+//! also starts `settings --first-run` (`first_run.rs`, D223). Its own `init:` lines go to
+//! `/dev/kmsg`, the serial console only, so the Terminal's first text is the banner and the
+//! shell's.
 
 #![cfg_attr(eggos_user, no_std, no_main)]
 
@@ -24,6 +27,8 @@ mod backoff;
 mod config;
 #[cfg(any(test, eggos_user))]
 mod display_server;
+#[cfg(any(test, eggos_user))]
+mod first_run;
 #[cfg(any(test, eggos_user))]
 mod shutdown;
 #[cfg(eggos_user)]

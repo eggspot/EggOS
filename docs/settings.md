@@ -119,6 +119,7 @@ buttons are person-only and its window takes the person's input only: `wm click`
 |---------|------|--------|
 | `settings` | Opens the window and serves it until it is closed. | 0; 1 without a display |
 | `settings --pane <pane>` | Opens the window on that pane: its name in lower case with `-` for spaces and `and` for `&` (`keyboard`, `date-and-time`); what the bar's keyboard layout menu's `Keyboard settings...` starts (D220). | 0; 1 without a display; 2 for an unknown pane |
+| `settings --first-run` | Opens `Welcome to EggOS`, the first run: where you are coming from, the keyboard layout and the time zone on three pages, each choice saved and applied the moment it is made; `Skip`, `Done` or closing it saves the profile in force when none was saved. init starts it once, on the first boot of an image that was never installed, with a disk attached and no `shell.profile` saved, and not with an agent attached (D223). | 0; 1 without a display |
 | `settings list` | Writes every setting as `key=value`, one per line. | 0 |
 | `settings get <key>` | Writes the setting's value. | 0; 1 for an unknown key |
 | `settings set [--dry-run] <key> <value>` | Sets it: saved in the settings file, then applied at once on the display (with no display it applies at the next boot). `--dry-run` checks the key and the value and says `would set <key> from <old> to <new>`, changing nothing (D164). | 0; 1 for an unknown or read-only key, or when saving or applying failed (`settings: <key>: <why>`); 2 for an invalid value or a bad command |

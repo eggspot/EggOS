@@ -11,6 +11,7 @@ use eggos_runtime::errno::Errno;
 use eggos_runtime::syscall::{call, number};
 
 const CREATE: usize = 0xc020_7701;
+const SET_POSITION: usize = 0x400c_7705;
 const SET_TITLE: usize = 0x4048_7702;
 const SET_SIZE: usize = 0xc018_7703;
 const SET_MINIMUM_SIZE: usize = 0x400c_7704;
@@ -404,6 +405,16 @@ impl Window {
         put(&mut minimum_size, 8, minimum.1 * scale);
         window.server.ioctl(SET_MINIMUM_SIZE, &mut minimum_size)?;
         Ok(window)
+    }
+
+    /// Places the window's outside top-left at (`x`, `y`) on the screen (`SET_POSITION`); a
+    /// window not shown yet appears there, kept inside the work area.
+    pub fn set_position(&self, x: i32, y: i32) -> Result<(), Errno> {
+        let mut position = [0u8; 12];
+        put(&mut position, 0, self.id);
+        put(&mut position, 4, x as u32);
+        put(&mut position, 8, y as u32);
+        self.server.ioctl(SET_POSITION, &mut position)
     }
 
     /// Gives the window the title `title`, cut at 64 bytes on a character boundary.

@@ -15,6 +15,7 @@ pub mod art;
 pub mod command;
 pub mod disk;
 pub mod facts;
+pub mod first_run;
 pub mod grant_prompt;
 pub mod input_panes;
 pub mod keys;

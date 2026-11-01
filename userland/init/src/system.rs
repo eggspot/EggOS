@@ -5,8 +5,10 @@ use crate::agent_server::{
 use crate::backoff::Backoff;
 use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
 use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER};
+use crate::first_run::{self, DISK_DEVICE, FIRST_RUN, Found, INSTALLED_MARK, SETTINGS_FILE};
 use crate::shutdown::{self, Ending, LOOK_EVERY_MS, Request, Step};
 use core::ptr;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
 
@@ -15,7 +17,10 @@ const BANNER: &[u8] = concat!("EggOS ", env!("CARGO_PKG_VERSION"), "\n").as_byte
 const CONFIG_PATH: &[u8] = b"/etc/eggos/init.conf\0";
 
 const CONSOLE: usize = 1;
+const KERNEL_LOG: &[u8] = b"/dev/kmsg\0";
+const O_WRONLY_CLOEXEC: usize = 0o1 | 0o2_000_000;
 const AT_FDCWD: usize = -100isize as usize;
+const F_OK: usize = 0;
 const HOME_DIRECTORY: &[u8] = b"/home/root\0";
 const HOME_DIRECTORY_MODE: usize = 0o755;
 const O_RDONLY_CLOEXEC: usize = 0o2_000_000;
@@ -120,9 +125,22 @@ fn call(number: usize, arguments: [usize; 6]) -> isize {
     unsafe { syscall::call(number, arguments) }
 }
 
+static LOG: AtomicUsize = AtomicUsize::new(CONSOLE);
+
+fn open_log() {
+    let descriptor = call(
+        number::OPENAT,
+        [AT_FDCWD, KERNEL_LOG.as_ptr() as usize, O_WRONLY_CLOEXEC, 0, 0, 0],
+    );
+    if descriptor >= 0 {
+        LOG.store(descriptor as usize, Ordering::Relaxed);
+    }
+}
+
 fn say(parts: &[&[u8]]) {
+    let log = LOG.load(Ordering::Relaxed);
     for part in parts {
-        syscall::write_all(CONSOLE, part);
+        syscall::write_all(log, part);
     }
 }
 
@@ -141,7 +159,8 @@ fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
 pub fn run(_startup: &Startup) -> i32 {
     set_signal_actions(SIG_IGN);
     catch_shutdown_requests();
-    say(&[BANNER]);
+    syscall::write_all(CONSOLE, BANNER);
+    open_log();
     let mut services = Services::default();
     if exists(AGENT_CHANNEL) && exists(AGENT_SERVER) {
         start_agent_server(&mut services.agent, false);
@@ -166,6 +185,7 @@ pub fn run(_startup: &Startup) -> i32 {
     let config = read_config();
     let name = config.login.program_name();
     let mut backoff = Backoff::default();
+    let mut ask_first_run = first_run_wanted();
     loop {
         if !exists(config.login.program()) {
             say(&[
@@ -177,7 +197,12 @@ pub fn run(_startup: &Startup) -> i32 {
         }
         say(&[b"init: starting ", name, b"\n"]);
         let started = now_ms();
-        match spawn(&config.login).and_then(|child| wait_for(child, &mut services)) {
+        let login = spawn(&config.login);
+        if ask_first_run {
+            ask_first_run = false;
+            start_first_run();
+        }
+        match login.and_then(|child| wait_for(child, &mut services)) {
             Some(status) => report(name, status),
             None => say(&[b"init: could not start ", name, b"\n"]),
         }
@@ -321,6 +346,77 @@ fn exists(path: &[u8]) -> bool {
     };
     call(number::CLOSE, [descriptor, 0, 0, 0, 0, 0]);
     true
+}
+
+fn read_settings(file: &mut [u8; eggos_settings_file::LARGEST + 1]) -> Option<usize> {
+    let descriptor = open(SETTINGS_FILE)?;
+    let mut length = 0;
+    while length < file.len() {
+        let read = call(
+            number::READ,
+            [
+                descriptor,
+                file[length..].as_mut_ptr() as usize,
+                file.len() - length,
+                0,
+                0,
+                0,
+            ],
+        );
+        if read <= 0 {
+            break;
+        }
+        length += read as usize;
+    }
+    call(number::CLOSE, [descriptor, 0, 0, 0, 0, 0]);
+    Some(length)
+}
+
+fn listed(path: &[u8]) -> bool {
+    call(
+        number::FACCESSAT,
+        [AT_FDCWD, path.as_ptr() as usize, F_OK, 0, 0, 0],
+    ) == 0
+}
+
+fn first_run_wanted() -> bool {
+    let found = Found {
+        display: exists(DISPLAY_DEVICE),
+        disk: listed(DISK_DEVICE),
+        agent_channel: listed(AGENT_CHANNEL),
+        installed: listed(INSTALLED_MARK),
+    };
+    let mut file = [0u8; eggos_settings_file::LARGEST + 1];
+    let length = read_settings(&mut file);
+    first_run::wanted(found, length.map(|length| &file[..length]))
+}
+
+fn start_first_run() {
+    let arguments = [FIRST_RUN[0].as_ptr(), FIRST_RUN[1].as_ptr(), ptr::null()];
+    let mut environment = [ptr::null::<u8>(); ENVIRONMENT.len() + 1];
+    for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
+        *slot = variable.as_ptr();
+    }
+    let child = call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]);
+    if child == 0 {
+        set_signal_actions(SIG_DFL);
+        call(number::SETSID, [0; 6]);
+        call(
+            number::EXECVE,
+            [
+                arguments[0] as usize,
+                arguments.as_ptr() as usize,
+                environment.as_ptr() as usize,
+                0,
+                0,
+                0,
+            ],
+        );
+        syscall::exit(COMMAND_NOT_RUN)
+    }
+    if child < 0 {
+        say(&[b"init: could not start /bin/settings --first-run\n"]);
+    }
 }
 
 fn read_config() -> Config {
