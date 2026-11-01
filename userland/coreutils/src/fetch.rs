@@ -1,5 +1,5 @@
 use crate::network::{Shown, resolve};
-use crate::output::{FAILURE, Output};
+use crate::output::{FAILURE, LAST_ERROR_BYTES, Output};
 use crate::system::System;
 use core::cell::RefCell;
 use core::ffi::CStr;
@@ -8,6 +8,8 @@ use eggos_runtime::errno::Errno;
 use eggos_tls::chain::{NoRoots, TrustAnchors};
 use eggos_tls::client::{self, Buffers, RANDOMNESS_BYTES, Session, Settings, Stopped, Transport};
 use eggos_tls::pem::Certificates;
+
+mod record;
 
 pub const ROOTS: [&CStr; 2] = [c"/etc/ssl/roots.pem", c"/media/host/roots.pem"];
 const ROOTS_PIECE: usize = 4096;
@@ -62,6 +64,7 @@ enum Sink<'a> {
 struct Request<'a> {
     quiet: bool,
     sink: Sink<'a>,
+    record: Option<&'a record::Recorder<'a>>,
 }
 
 enum Answer {
@@ -117,7 +120,24 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         Some(path) if path.to_bytes() != b"-" => Sink::File(path),
         _ => Sink::StandardOutput,
     };
-    let request = Request { quiet, sink };
+    let recorder = match sink {
+        Sink::File(path) => Some(record::Recorder::start(
+            &mut output.system,
+            url.to_bytes(),
+            path,
+        )),
+        Sink::StandardOutput => None,
+    };
+    let request = Request {
+        quiet,
+        sink,
+        record: recorder.as_ref(),
+    };
+    let status = fetch_url(output, url, &request);
+    recorded(output, recorder.as_ref(), status)
+}
+
+fn fetch_url<S: System>(output: &mut Output<S>, url: &CStr, request: &Request<'_>) -> i32 {
     let Some(mut address) = Address::of(&[url.to_bytes()]) else {
         output.error(&[b"the URL is longer than 2048 bytes"]);
         return FAILURE;
@@ -131,7 +151,7 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
                 return FAILURE;
             }
         };
-        match get(output, &url, &request, &mut redirect) {
+        match get(output, &url, request, &mut redirect) {
             Ok(Answer::Saved) => return 0,
             Ok(Answer::Redirected) => core::mem::swap(&mut address, &mut redirect),
             Err(status) => return status,
@@ -139,6 +159,28 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     }
     output.error(&[url.to_bytes(), b": more than 5 redirects"]);
     FAILURE
+}
+
+fn recorded<S: System>(
+    output: &mut Output<S>,
+    recorder: Option<&record::Recorder<'_>>,
+    status: i32,
+) -> i32 {
+    let Some(recorder) = recorder else {
+        return status;
+    };
+    if status == 0 {
+        recorder.done(&mut output.system);
+    } else if output.system.termination_requested() {
+        recorder.cancelled(&mut output.system);
+        output.error(&[b"cancelled: the partial file was removed"]);
+    } else {
+        let mut message = [0u8; LAST_ERROR_BYTES];
+        let length = output.last_error().len().min(LAST_ERROR_BYTES);
+        message[..length].copy_from_slice(&output.last_error()[..length]);
+        recorder.failed(&mut output.system, &message[..length]);
+    }
+    status
 }
 
 fn authority(url: &Url<'_>) -> Shown<264> {
@@ -173,8 +215,8 @@ impl<S: System> Transport for Socket<'_, '_, S> {
     }
 }
 
-struct RootsFile<'r, 'o, S: System> {
-    output: &'r RefCell<&'o mut Output<S>>,
+pub(crate) struct RootsFile<'r, 'o, S: System> {
+    pub(crate) output: &'r RefCell<&'o mut Output<S>>,
 }
 
 impl<S: System> TrustAnchors for RootsFile<'_, '_, S> {
@@ -205,7 +247,11 @@ struct Link<'b> {
     session: Option<Session<'b>>,
 }
 
-fn tls_failure<S: System>(output: &mut Output<S>, shown: &Shown<264>, error: client::Error) -> i32 {
+pub(crate) fn tls_failure<S: System>(
+    output: &mut Output<S>,
+    shown: &Shown<264>,
+    error: client::Error,
+) -> i32 {
     match error {
         client::Error::Transport => {}
         client::Error::Alert(code) => {
@@ -431,6 +477,12 @@ fn exchange<S: System>(
         return Err(FAILURE);
     }
     let mut body = Body::new(parsed.framing);
+    if let Some(record) = request.record {
+        record.set_total(match parsed.framing {
+            http::Framing::Length(length) => Some(length),
+            _ => None,
+        });
+    }
     let sink = match request.sink {
         Sink::StandardOutput => None,
         Sink::File(path) => match output.system.create(path, MODE, true) {
@@ -450,6 +502,7 @@ fn exchange<S: System>(
         &head[leftover_start..filled],
         sink,
         &shown,
+        request.record,
     );
     if let Some((file, _)) = sink {
         output.system.close(file);
@@ -495,6 +548,7 @@ fn receive<S: System>(
                 ]);
                 return Err(FAILURE);
             }
+            Err(Errno::EINTR) if output.system.termination_requested() => return Err(FAILURE),
             Err(Errno::EINTR) => {}
             Err(errno) => {
                 output.error(&[shown.as_bytes(), b": ", errno.message()]);
@@ -554,8 +608,15 @@ fn save<S: System>(
     first: &[u8],
     sink: Option<(usize, &CStr)>,
     shown: &Shown<264>,
+    record: Option<&record::Recorder<'_>>,
 ) -> Result<u64, i32> {
     let mut saved = feed(output, body, first, sink, shown)?;
+    if let Some(record) = record {
+        record.progress(&mut output.system, saved);
+    }
+    if output.system.termination_requested() {
+        return Err(FAILURE);
+    }
     let mut piece = [0u8; PIECE];
     while !body.is_done() {
         let count = receive_on(output, link, &mut piece, shown)?;
@@ -567,6 +628,12 @@ fn save<S: System>(
             break;
         }
         saved += feed(output, body, &piece[..count], sink, shown)?;
+        if let Some(record) = record {
+            record.progress(&mut output.system, saved);
+        }
+        if output.system.termination_requested() {
+            return Err(FAILURE);
+        }
     }
     Ok(saved)
 }

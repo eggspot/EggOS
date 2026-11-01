@@ -1,0 +1,12 @@
+[package]
+name = "eggos-download-list"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eggos-files = { path = "../files" }
+
+[lints]
+workspace = true

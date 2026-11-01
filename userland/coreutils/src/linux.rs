@@ -5,6 +5,7 @@ use crate::system::{
 };
 use crate::utilities::{self, MAX_ARGUMENTS};
 use core::ffi::CStr;
+use core::sync::atomic::{AtomicBool, Ordering};
 use eggos_net::Ipv4Address;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
@@ -46,6 +47,50 @@ const SIGSET_BYTES: usize = 8;
 const SOCKADDR_IN_SIZE: usize = 16;
 const SIGTERM: usize = 15;
 const SIG_UNBLOCK: usize = 1;
+#[cfg(target_arch = "x86_64")]
+const SA_RESTORER: usize = 0x0400_0000;
+
+static TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(not(target_arch = "riscv64"))]
+#[repr(C)]
+struct SignalAction {
+    handler: usize,
+    flags: usize,
+    restorer: usize,
+    mask: u64,
+}
+
+#[cfg(target_arch = "riscv64")]
+#[repr(C)]
+struct SignalAction {
+    handler: usize,
+    flags: usize,
+    mask: u64,
+}
+
+extern "C" fn note_termination(_signal: i32) {
+    TERMINATION_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+fn termination_action() -> SignalAction {
+    #[cfg(target_arch = "x86_64")]
+    let (flags, restorer) = (
+        SA_RESTORER,
+        eggos_runtime::process::restore_after_signal as *const () as usize,
+    );
+    #[cfg(target_arch = "aarch64")]
+    let (flags, restorer) = (0, 0);
+    #[cfg(target_arch = "riscv64")]
+    let flags = 0;
+    SignalAction {
+        handler: note_termination as *const () as usize,
+        flags,
+        #[cfg(not(target_arch = "riscv64"))]
+        restorer,
+        mask: 0,
+    }
+}
 const INIT: usize = 1;
 const TIOCGWINSZ: usize = 0x5413;
 
@@ -101,6 +146,9 @@ fn wait_readable(descriptor: usize, timeout_ms: u32) -> Result<bool, Errno> {
         match polled {
             Ok(0) => return Ok(false),
             Ok(_) => return Ok(true),
+            Err(Errno::EINTR) if TERMINATION_REQUESTED.load(Ordering::Relaxed) => {
+                return Err(Errno::EINTR);
+            }
             Err(Errno::EINTR) => {}
             Err(errno) => return Err(errno),
         }
@@ -925,6 +973,42 @@ impl System for Linux {
             [pid as isize as usize, signal as usize, 0, 0, 0, 0],
         )
         .map(|_| ())
+    }
+
+    fn process_id(&mut self) -> u32 {
+        call(number::GETPID, [0; 6]).unwrap_or(0) as u32
+    }
+
+    fn catch_termination(&mut self) -> Result<(), Errno> {
+        let action = termination_action();
+        call(
+            number::RT_SIGACTION,
+            [
+                SIGTERM,
+                &raw const action as usize,
+                0,
+                SIGSET_BYTES,
+                0,
+                0,
+            ],
+        )?;
+        let terminate = 1u64 << (SIGTERM - 1);
+        call(
+            number::RT_SIGPROCMASK,
+            [
+                SIG_UNBLOCK,
+                &raw const terminate as usize,
+                0,
+                SIGSET_BYTES,
+                0,
+                0,
+            ],
+        )
+        .map(|_| ())
+    }
+
+    fn termination_requested(&mut self) -> bool {
+        TERMINATION_REQUESTED.load(Ordering::Relaxed)
     }
 
     fn signal_init(&mut self, signal: u32) -> Result<(), Errno> {

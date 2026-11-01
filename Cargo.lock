@@ -57,6 +57,7 @@ dependencies = [
  "eggos-calendar",
  "eggos-commands",
  "eggos-device-list",
+ "eggos-download-list",
  "eggos-drivers",
  "eggos-element-tree",
  "eggos-files",
@@ -75,6 +76,13 @@ version = "0.2.0"
 [[package]]
 name = "eggos-device-list"
 version = "0.2.0"
+
+[[package]]
+name = "eggos-download-list"
+version = "0.2.0"
+dependencies = [
+ "eggos-files",
+]
 
 [[package]]
 name = "eggos-drivers"

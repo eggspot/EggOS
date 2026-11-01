@@ -239,6 +239,10 @@ pub struct Fake {
     pub clipboard: Vec<u8>,
     pub affinity: Option<u64>,
     pub signals_sent: Vec<(i32, u32)>,
+    pub pid: u32,
+    pub running: Vec<i32>,
+    pub termination_caught: bool,
+    pub termination_requested: bool,
     pub executed: Vec<Vec<u8>>,
     pub started: Vec<Vec<u8>>,
     pub clipboard_serial: u32,
@@ -308,6 +312,10 @@ impl Default for Fake {
             clipboard: Vec::new(),
             affinity: None,
             signals_sent: Vec::new(),
+            pid: 77,
+            running: Vec::new(),
+            termination_caught: false,
+            termination_requested: false,
             executed: Vec::new(),
             started: Vec::new(),
             clipboard_serial: 0,
@@ -1372,12 +1380,29 @@ impl System for Fake {
     fn send_signal(&mut self, pid: i32, signal: u32) -> Result<(), Errno> {
         match pid {
             1 => Err(Errno::EPERM),
+            pid if self.running.contains(&pid) => {
+                self.signals_sent.push((pid, signal));
+                Ok(())
+            }
             42 | 43 | 0 | -1 => {
                 self.signals_sent.push((pid, signal));
                 Ok(())
             }
             _ => Err(Errno::ESRCH),
         }
+    }
+
+    fn process_id(&mut self) -> u32 {
+        self.pid
+    }
+
+    fn catch_termination(&mut self) -> Result<(), Errno> {
+        self.termination_caught = true;
+        Ok(())
+    }
+
+    fn termination_requested(&mut self) -> bool {
+        self.termination_requested
     }
 
     fn signal_init(&mut self, signal: u32) -> Result<(), Errno> {
