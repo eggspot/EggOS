@@ -44,14 +44,14 @@ use crate::regions::{
     fork_mark, is_page_range,
 };
 use crate::shared_frames;
-use crate::sync::{LeafSpinLock, SpinLock};
+use crate::sync::{LeafSpinLock, SpinLock, SpinLockGuard};
 use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::num::{NonZeroU32, NonZeroU64};
 use core::ops::ControlFlow;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
@@ -283,6 +283,12 @@ pub struct Process<P: Platform> {
     signals: SpinLock<Signals>,
 }
 
+mod record {
+    pub const LENT: u8 = 1;
+    pub const FILES: u8 = 2;
+    pub const FORK_MARKS: u8 = 4;
+}
+
 struct Memory<P: Platform> {
     space: AddressSpace<P>,
     regions: SpinLock<Regions>,
@@ -291,11 +297,9 @@ struct Memory<P: Platform> {
     futex_space: u32,
     shared_anonymous: AtomicBool,
     lent: SpinLock<Vec<LentRange>>,
-    has_lent: AtomicBool,
     files: LeafSpinLock<FileRanges>,
-    has_files: AtomicBool,
     fork_marks: LeafSpinLock<ForkMarks>,
-    has_fork_marks: AtomicBool,
+    records: AtomicU8,
     image: ImageLayout,
     cpu_ticks: Arc<AtomicU64>,
 }
@@ -366,6 +370,18 @@ enum CopyError {
 }
 
 impl<P: Platform> Memory<P> {
+    #[inline(always)]
+    fn has_records(&self, kind: u8) -> bool {
+        self.records.load(Ordering::Relaxed) & kind != 0
+    }
+
+    fn set_records(&self, kind: u8, kept: bool) {
+        match kept {
+            true => self.records.fetch_or(kind, Ordering::Relaxed),
+            false => self.records.fetch_and(!kind, Ordering::Relaxed),
+        };
+    }
+
     fn new(space: AddressSpace<P>, frame_offset: usize, futex_space: u32) -> Self {
         Self {
             space,
@@ -375,12 +391,10 @@ impl<P: Platform> Memory<P> {
             futex_space,
             shared_anonymous: AtomicBool::new(false),
             lent: SpinLock::new(Vec::new()),
-            has_lent: AtomicBool::new(false),
             files: LeafSpinLock::new_leaf(FileRanges::new()),
-            has_files: AtomicBool::new(false),
             fork_marks: LeafSpinLock::new_leaf(ForkMarks::new()),
             cpu_ticks: Arc::new(AtomicU64::new(0)),
-            has_fork_marks: AtomicBool::new(false),
+            records: AtomicU8::new(0),
             image: ImageLayout::default(),
         }
     }
@@ -400,7 +414,7 @@ impl<P: Platform> Memory<P> {
         }
         let mut copied_regions = regions.try_copy().ok_or(CopyError::OutOfMemory)?;
         let mut copied_files = self.files.lock().try_copy().ok_or(CopyError::OutOfMemory)?;
-        let mut marks = match self.has_fork_marks.load(Ordering::Relaxed) {
+        let mut marks = match self.has_records(record::FORK_MARKS) {
             true => self
                 .fork_marks
                 .lock()
@@ -451,8 +465,9 @@ impl<P: Platform> Memory<P> {
             }
             return Err(CopyError::OutOfMemory);
         }
-        let has_lent = !copied_lent.is_empty();
-        let has_fork_marks = !marks.is_empty();
+        let records = (record::LENT * u8::from(!copied_lent.is_empty()))
+            | (record::FILES * u8::from(!copied_files.is_empty()))
+            | (record::FORK_MARKS * u8::from(!marks.is_empty()));
         Ok(Self {
             space,
             regions: SpinLock::new(copied_regions),
@@ -461,11 +476,9 @@ impl<P: Platform> Memory<P> {
             futex_space,
             shared_anonymous: AtomicBool::new(false),
             lent: SpinLock::new(copied_lent),
-            has_lent: AtomicBool::new(has_lent),
-            has_files: AtomicBool::new(!copied_files.is_empty()),
             files: LeafSpinLock::new_leaf(copied_files),
             fork_marks: LeafSpinLock::new_leaf(marks),
-            has_fork_marks: AtomicBool::new(has_fork_marks),
+            records: AtomicU8::new(records),
             image: self.image.clone(),
             cpu_ticks: Arc::new(AtomicU64::new(0)),
         })
@@ -546,7 +559,7 @@ impl<P: Platform> Memory<P> {
     }
 
     fn maps_file_in(&self, start: u64, end: u64) -> bool {
-        self.has_files.load(Ordering::Relaxed) && self.files.lock().overlaps(start, end)
+        self.has_records(record::FILES) && self.files.lock().overlaps(start, end)
     }
 
     #[cold]
@@ -587,7 +600,7 @@ impl<P: Platform> Memory<P> {
     }
 
     fn lends_in(&self, start: u64, end: u64) -> bool {
-        self.has_lent.load(Ordering::Relaxed)
+        self.has_records(record::LENT)
             && self
                 .lent
                 .lock()
@@ -596,7 +609,7 @@ impl<P: Platform> Memory<P> {
     }
 
     fn lends_read_only_in(&self, start: u64, end: u64) -> bool {
-        self.has_lent.load(Ordering::Relaxed)
+        self.has_records(record::LENT)
             && self
                 .lent
                 .lock()
@@ -1024,7 +1037,7 @@ impl<P: Platform> Process<P> {
     pub fn add_file_range(&mut self, range: FileRange) -> Result<(), RegionError> {
         let memory = self.memory_mut();
         memory.files.get_mut().insert(range)?;
-        *memory.has_files.get_mut() = true;
+        *memory.records.get_mut() |= record::FILES;
         Ok(())
     }
 
@@ -1159,7 +1172,7 @@ impl<P: Platform> Process<P> {
             end: start + length,
             frames,
         });
-        memory.has_lent.store(true, Ordering::Relaxed);
+        memory.records.fetch_or(record::LENT, Ordering::Relaxed);
         drop(lent);
         for offset in (0..length).step_by(FRAME_SIZE as usize) {
             if memory
@@ -1211,7 +1224,7 @@ impl<P: Platform> Process<P> {
             memory.files.lock().remove(start, start + length)?;
             return Err(error);
         }
-        memory.has_files.store(true, Ordering::Relaxed);
+        memory.records.fetch_or(record::FILES, Ordering::Relaxed);
         Ok(start)
     }
 
@@ -1273,14 +1286,15 @@ impl<P: Platform> Process<P> {
         if end > <P::PageTableFormat as Format>::USER_END {
             return Err(RegionError::Invalid);
         }
-        if memory.has_files.load(Ordering::Relaxed) {
+        let records = memory.records.load(Ordering::Relaxed);
+        if records & record::FILES != 0 {
             memory.unmap_files(start, end)?;
         }
-        if memory.has_fork_marks.load(Ordering::Relaxed) {
+        if records & record::FORK_MARKS != 0 {
             memory.unmap_fork_marks(start, end)?;
         }
         regions.remove(start, end, |_| ())?;
-        if memory.has_lent.load(Ordering::Relaxed) {
+        if records & record::LENT != 0 {
             memory.unmap_lent(start, end)?;
         }
         Self::free_pages(memory, start, end).map_err(|_| RegionError::Invalid)
@@ -1400,9 +1414,7 @@ impl<P: Platform> Process<P> {
             }
             covered = to;
         }
-        memory
-            .has_fork_marks
-            .store(!marks.is_empty(), Ordering::Relaxed);
+        memory.set_records(record::FORK_MARKS, !marks.is_empty());
         updated?;
         match whole && covered == end {
             true => Ok(()),
@@ -1420,7 +1432,7 @@ impl<P: Platform> Process<P> {
         now: u64,
     ) -> Result<(), crate::vfs::StorageError> {
         let memory = &*self.memory;
-        if !memory.has_lent.load(Ordering::Relaxed) {
+        if !memory.has_records(record::LENT) {
             return Ok(());
         }
         let lent = memory.lent.lock();
@@ -1509,7 +1521,7 @@ impl<P: Platform> Process<P> {
                     {
                         continue;
                     }
-                    Self::populate(memory, &regions, page, access, true, reads).map_err(
+                    Self::populate::<true>(memory, &regions, page, access, true, reads).map_err(
                         |error| match error {
                             UnresolvedFault::NotAllowed => PopulateError::NotAllowed,
                             UnresolvedFault::OutOfMemory => PopulateError::OutOfMemory,
@@ -1588,7 +1600,7 @@ impl<P: Platform> Process<P> {
                 && old_end == region.end
                 && regions.is_free(old_end, new_end)
             {
-                if memory.has_files.load(Ordering::Relaxed) {
+                if memory.has_records(record::FILES) {
                     let mut files = memory.files.lock();
                     let grown = files.moved_parts(start, old_length, start, new_length)?;
                     files.finish_move(start, old_end, grown, false)?;
@@ -1610,7 +1622,7 @@ impl<P: Platform> Process<P> {
                 to
             }
         };
-        let moved_files = match memory.has_files.load(Ordering::Relaxed) {
+        let moved_files = match memory.has_records(record::FILES) {
             true => Some(
                 memory
                     .files
@@ -1633,7 +1645,7 @@ impl<P: Platform> Process<P> {
                 .lock()
                 .finish_move(start, old_end, moved, keep_source)?;
         }
-        if memory.has_fork_marks.load(Ordering::Relaxed) {
+        if memory.has_records(record::FORK_MARKS) {
             memory.move_fork_marks(start, old_length, to, keep_source);
         }
         if !keep_source {
@@ -1668,7 +1680,7 @@ impl<P: Platform> Process<P> {
             return Err(RegionError::NotWritable);
         }
         if writes
-            && memory.has_files.load(Ordering::Relaxed)
+            && memory.has_records(record::FILES)
             && memory.files.lock().read_only_in(start, end)
         {
             return Err(RegionError::NotWritable);
@@ -1764,10 +1776,35 @@ impl<P: Platform> Process<P> {
     ) -> Result<(), UnresolvedFault> {
         let memory = &*self.memory;
         let page = address & !(FRAME_SIZE - 1);
+        let regions = memory.regions.lock();
+        if memory.has_records(record::FILES) {
+            Self::resolve_page_fault_reading_files(memory, regions, page, fault)?;
+        } else {
+            let result = Self::populate::<false>(
+                memory,
+                &regions,
+                page,
+                fault.access,
+                fault.may_be_stale,
+                &mut FilePageReads::default(),
+            );
+            drop(regions);
+            result?;
+        }
+        P::drop_user_translations(page, FRAME_SIZE);
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn resolve_page_fault_reading_files<'a>(
+        memory: &'a Memory<P>,
+        mut regions: SpinLockGuard<'a, Regions>,
+        page: u64,
+        fault: PageFault,
+    ) -> Result<(), UnresolvedFault> {
         let mut reads = FilePageReads::default();
         loop {
-            let regions = memory.regions.lock();
-            let result = Self::populate(
+            let result = Self::populate::<true>(
                 memory,
                 &regions,
                 page,
@@ -1777,12 +1814,10 @@ impl<P: Platform> Process<P> {
             );
             drop(regions);
             if !reads.read_wanted(memory.frame_offset) {
-                result?;
-                break;
+                return result.map(|_| ());
             }
+            regions = memory.regions.lock();
         }
-        P::drop_user_translations(page, FRAME_SIZE);
-        Ok(())
     }
 
     /// Makes user page `page` ready for `access`, with the regions' lock held (`regions`):
@@ -1795,7 +1830,7 @@ impl<P: Platform> Process<P> {
     /// out to be mapped, a stale fault's, goes back; with no frame to try with, the page is
     /// looked up all the same, so a stale fault on a mapped page resumes the program even
     /// when memory is out.
-    fn populate(
+    fn populate<const MAY_MAP_FILES: bool>(
         memory: &Memory<P>,
         regions: &Regions,
         page: u64,
@@ -1809,7 +1844,8 @@ impl<P: Platform> Process<P> {
             .filter(|&attributes| access.allowed_by(attributes))
             .ok_or(UnresolvedFault::NotAllowed)?;
         if likely_unmapped {
-            if memory.has_files.load(Ordering::Relaxed)
+            if MAY_MAP_FILES
+                && memory.has_records(record::FILES)
                 && let Some(read) = Self::populate_from_file(memory, page, attributes, reads)
             {
                 return read;
@@ -1830,7 +1866,8 @@ impl<P: Platform> Process<P> {
             }
             Some(_) => Err(UnresolvedFault::NotAllowed),
             None => {
-                if memory.has_files.load(Ordering::Relaxed)
+                if MAY_MAP_FILES
+                    && memory.has_records(record::FILES)
                     && let Some(read) = Self::populate_from_file(memory, page, attributes, reads)
                 {
                     return read;
@@ -2197,7 +2234,7 @@ impl<P: Platform> Process<P> {
             Some(mapped) if !write || mapped.1.writable => mapped,
             _ => {
                 let access = if write { Access::Write } else { Access::Read };
-                Self::populate(memory, regions, page, access, true, reads)
+                Self::populate::<true>(memory, regions, page, access, true, reads)
                     .map_err(|_| InvalidUserAddress)?
             }
         };
@@ -2564,8 +2601,11 @@ impl FilePageReads {
 }
 
 impl Drop for FilePageReads {
+    #[inline]
     fn drop(&mut self) {
-        self.release_ready();
+        if self.ready.is_some() {
+            self.release_ready();
+        }
     }
 }
 
