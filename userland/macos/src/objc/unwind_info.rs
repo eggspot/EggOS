@@ -2,7 +2,8 @@
 //! section (D175): for each function its start, an encoding of how its frame is laid out, its
 //! language-specific data area (LSDA) and its personality. [`find`] looks a program counter up;
 //! [`step_arm64`] and [`step_x86_64`] use an encoding to recover the caller's registers from a
-//! frame's. Encodings that defer to DWARF (`__eh_frame`) are refused. Pure logic with host tests.
+//! frame's. Encodings that defer to DWARF (`__eh_frame`) name their FDE ([`arm64_dwarf_offset`],
+//! [`x86_64_dwarf_offset`]), which `unwind_dwarf` steps over (D233). Pure logic with host tests.
 
 const VERSION: u32 = 1;
 const INDEX_ENTRY_BYTES: usize = 12;
@@ -16,6 +17,7 @@ const HAS_LSDA: u32 = 0x4000_0000;
 const PERSONALITY_MASK: u32 = 0x3000_0000;
 const PERSONALITY_SHIFT: u32 = 28;
 const MODE_MASK: u32 = 0x0f00_0000;
+const DWARF_OFFSET_MASK: u32 = 0x00ff_ffff;
 
 #[cfg(any(test, target_arch = "aarch64"))]
 const ARM64_FRAMELESS: u32 = 0x0200_0000;
@@ -218,6 +220,20 @@ fn lsda_of(section: &[u8], start: usize, end: usize, function: u32) -> Option<u3
         }
     }
     None
+}
+
+/// The offset in the image's `__eh_frame` of the FDE an arm64 encoding defers to, `None` when
+/// the encoding describes the frame itself.
+#[cfg(any(test, target_arch = "aarch64"))]
+pub fn arm64_dwarf_offset(encoding: u32) -> Option<u32> {
+    (encoding & MODE_MASK == ARM64_DWARF).then_some(encoding & DWARF_OFFSET_MASK)
+}
+
+/// The offset in the image's `__eh_frame` of the FDE an x86_64 encoding defers to, `None` when
+/// the encoding describes the frame itself.
+#[cfg(any(test, target_arch = "x86_64"))]
+pub fn x86_64_dwarf_offset(encoding: u32) -> Option<u32> {
+    (encoding & MODE_MASK == X86_64_DWARF).then_some(encoding & DWARF_OFFSET_MASK)
 }
 
 /// Why a frame could not be stepped over.
@@ -620,6 +636,14 @@ mod tests {
         assert_eq!(registers.general[x86_64::RBP], 0x9100);
         assert_eq!(registers.general[x86_64::RSP], 0x9010);
         assert_eq!(registers.rip, 0x1_0000_5678);
+    }
+
+    #[test]
+    fn a_dwarf_encoding_names_its_fde_offset() {
+        assert_eq!(arm64_dwarf_offset(ARM64_DWARF | 0x1234), Some(0x1234));
+        assert_eq!(arm64_dwarf_offset(ARM64_FRAME | 0x1234), None);
+        assert_eq!(x86_64_dwarf_offset(X86_64_DWARF | 0xab_cdef), Some(0xab_cdef));
+        assert_eq!(x86_64_dwarf_offset(X86_64_RBP_FRAME), None);
     }
 
     #[test]

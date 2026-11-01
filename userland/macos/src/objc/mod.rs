@@ -7,6 +7,7 @@ pub mod abi;
 pub mod cache;
 pub mod lsda;
 pub mod selector;
+pub mod unwind_dwarf;
 pub mod unwind_info;
 
 #[cfg(eggos_user)]
