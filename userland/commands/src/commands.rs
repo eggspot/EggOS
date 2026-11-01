@@ -882,7 +882,10 @@ pub const APP_INSTALL: CommandDefinition = CommandDefinition {
     words: &["app", "install"],
     summary: "Installs an app.",
     description: "Installs a Windows .exe, a macOS .app, a Linux program, or a .zip holding \
-                  them, into /Applications.",
+                  them, into /Applications. --dry-run reads and checks it as the install would \
+                  (its format, name, architecture, the layer it needs, an app already there, \
+                  every file or entry and the room for it), says what it would install, and \
+                  writes nothing.",
     options: &[
         valued(
             None,
@@ -921,6 +924,7 @@ pub const APP_INSTALL: CommandDefinition = CommandDefinition {
             "Open the app without a terminal window, whatever its program says (D222).",
         ),
         long_flag("window", "Show the installer's window instead of text."),
+        DRY_RUN_OPTION,
     ],
     operands: &[operand("path", ValueType::Path, Count::One)],
     outputs: TEXT_ONLY,

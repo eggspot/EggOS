@@ -1336,3 +1336,92 @@ fn a_layer_is_the_base_s_link_into_its_component_and_missing_while_the_link_dang
     let plan = planned(&mut files, "/media/host/win-paint.exe", X86_64);
     assert_eq!(plan.name(), "win-paint");
 }
+
+#[test]
+fn a_preview_checks_what_the_install_would_and_writes_nothing() {
+    let program = paint();
+    let mut files = host_with("/media/host/win-paint.exe", &program);
+    let plan = planned(&mut files, "/media/host/win-paint.exe", X86_64);
+    let before = files.paths_under("/");
+    assert_eq!(
+        preview(&mut files, &plan),
+        Ok(Preview {
+            files: 1,
+            bytes: program.len() as u64
+        })
+    );
+    assert_eq!(files.paths_under("/"), before);
+    assert_eq!(files.open_count(), 0);
+    files.read_only.push(b"/Applications".to_vec());
+    assert_eq!(preview(&mut files, &plan), Err(Problem::ReadOnly));
+    assert_eq!(
+        install(&mut files, plan, &mut [0u8; 64]),
+        Err(Problem::ReadOnly)
+    );
+    let mut files = host_with("/media/host/win-paint.exe", &program);
+    files.space = Some(program.len() + 2 * 10 + 40_000);
+    let plan = planned(&mut files, "/media/host/win-paint.exe", X86_64);
+    assert_eq!(preview(&mut files, &plan), Err(Problem::DiskFull));
+    assert_eq!(
+        install(&mut files, plan, &mut [0u8; 4096]),
+        Err(Problem::DiskFull)
+    );
+}
+
+#[test]
+fn a_preview_walks_a_bundle_and_extracts_a_zip_without_writing() {
+    let mut files = framework_bundle();
+    let plan = planned(&mut files, "/media/host/Tool.app", X86_64);
+    let before = files.paths_under("/");
+    assert_eq!(
+        preview(&mut files, &plan),
+        Ok(Preview {
+            files: 5,
+            bytes: 64 + 40
+        })
+    );
+    assert_eq!(files.paths_under("/"), before);
+    let program = windows_program(0x8664);
+    let readme = b"read me, deflated by hand";
+    let archive = zip(&[
+        stored("bin/win-paint.exe", &program),
+        deflated("bin/README.txt", readme, deflate_fixed_literals(readme)),
+        stored("__MACOSX/bin/._win-paint.exe", b"resource fork"),
+    ]);
+    let mut files = host_with("/media/host/Paint-1.2.zip", &archive);
+    let plan = planned(&mut files, "/media/host/Paint-1.2.zip", X86_64);
+    let before = files.paths_under("/");
+    assert_eq!(
+        preview(&mut files, &plan),
+        Ok(Preview {
+            files: 2,
+            bytes: (program.len() + readme.len()) as u64
+        })
+    );
+    assert_eq!(files.paths_under("/"), before);
+    assert_eq!(files.open_count(), 0);
+    for members in [
+        vec![stored("tool.exe", &program), link_member("up", "..")],
+        vec![stored("tool.exe", &program), link_member("etc", "/etc")],
+    ] {
+        let mut files = host_with("/media/host/tool.zip", &zip(&members));
+        let plan = planned(&mut files, "/media/host/tool.zip", X86_64);
+        assert_eq!(preview(&mut files, &plan), Err(Problem::UnsafeLink));
+        assert!(files.paths_under("/Applications/").is_empty());
+        assert_eq!(files.open_count(), 0);
+    }
+}
+
+#[test]
+fn a_preview_says_a_leftover_folder_would_be_replaced() {
+    let mut files = host_with("/media/host/tool", &linux_program(62));
+    files.directory("/Applications/tool");
+    files.file("/Applications/tool/tool", b"half");
+    let plan = planned(&mut files, "/media/host/tool", X86_64);
+    assert!(plan.replaces_leftover_folder());
+    assert!(preview(&mut files, &plan).is_ok());
+    assert_eq!(
+        files.find("/Applications/tool/tool"),
+        Some(&Node::File(b"half".to_vec(), 0o755))
+    );
+}

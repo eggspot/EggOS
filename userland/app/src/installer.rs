@@ -342,6 +342,12 @@ impl Plan {
         self.total_bytes
     }
 
+    /// Whether the app's folder is there without a manifest, left by an install that did not
+    /// finish, and is removed first.
+    pub fn replaces_leftover_folder(&self) -> bool {
+        self.leftover
+    }
+
     /// The dynamic loader and library folders the program opens through, for a dynamically
     /// linked Linux program.
     pub fn loader(&self) -> Option<&Loader> {
@@ -1852,6 +1858,161 @@ pub fn install(files: &mut impl Files, plan: Plan, buffer: &mut [u8]) -> Result<
     match Installation::new(plan).run(files, buffer) {
         Progress::Failed(problem) => Err(problem),
         _ => Ok(()),
+    }
+}
+
+/// What installing a plan would copy or extract, found by [`preview`] without writing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Preview {
+    /// The files and links, the manifest and the icon left out.
+    pub files: u64,
+    /// Their bytes.
+    pub bytes: u64,
+}
+
+/// Makes the checks [`install`] makes after [`plan`], reading only and writing nothing
+/// (`app install --dry-run`, D225): `/Applications` is a folder this program may write, with
+/// room for the copy; a single program opens; every file of a bundle opens and every link
+/// stays inside it; every entry of a `.zip` extracts whole, its data checked against its CRC,
+/// within [`MAX_EXTRACTED_BYTES`], with no reserved name and every link inside the app. The
+/// problem is the one the install would report.
+pub fn preview(files: &mut impl Files, plan: &Plan) -> Result<Preview, Problem> {
+    match files.status_following(APPLICATIONS) {
+        Ok(status) if status.kind == Kind::Directory => {}
+        Ok(_) => return Err(Problem::Failed(Errno::ENOTDIR)),
+        Err(error) => return Err(Problem::from_errno(error)),
+    }
+    files
+        .may_write(APPLICATIONS)
+        .map_err(Problem::from_errno)?;
+    let folder = app_folder(plan.name.as_bytes()).ok_or(Problem::PathTooLong)?;
+    if plan.leftover {
+        files
+            .may_write(folder.as_bytes())
+            .map_err(Problem::from_errno)?;
+    }
+    match files.space(APPLICATIONS) {
+        Ok(space) if space.read_only => return Err(Problem::ReadOnly),
+        Ok(space) if space.available < plan.total_bytes => return Err(Problem::DiskFull),
+        _ => {}
+    }
+    match plan.archive {
+        Some(archive) => preview_archive(files, plan, archive, &folder),
+        None if plan.bundle => preview_bundle(files, &plan.source, &folder),
+        None => {
+            let file = files
+                .open(plan.source.as_bytes())
+                .map_err(Problem::Unreadable)?;
+            files.close(file);
+            Ok(Preview {
+                files: 1,
+                bytes: plan.total_bytes,
+            })
+        }
+    }
+}
+
+fn preview_bundle(
+    files: &mut impl Files,
+    source: &Path,
+    folder: &Path,
+) -> Result<Preview, Problem> {
+    let mut preview = Preview::default();
+    let mut walk = Walk::new();
+    let mut target = [0u8; PATH_CAPACITY];
+    while let Some((relative, status)) = walk.next(files, source)? {
+        folder
+            .join(source.file_name())
+            .and_then(|bundle| bundle.join(relative.as_bytes()))
+            .ok_or(Problem::PathTooLong)?;
+        match status.kind {
+            Kind::Directory => continue,
+            Kind::File => {
+                let from = source
+                    .join(relative.as_bytes())
+                    .ok_or(Problem::PathTooLong)?;
+                let file = files.open(from.as_bytes()).map_err(Problem::Unreadable)?;
+                files.close(file);
+                preview.bytes = preview.bytes.saturating_add(status.size);
+            }
+            Kind::Link => {
+                bundle_link(files, source, &relative, &mut target)?;
+            }
+            Kind::Other => return Err(Problem::UnsupportedEntry),
+        }
+        preview.files += 1;
+    }
+    Ok(preview)
+}
+
+struct Discarded;
+
+impl Sink for Discarded {
+    fn write(&mut self, _bytes: &[u8]) -> bool {
+        true
+    }
+}
+
+fn preview_archive(
+    files: &mut impl Files,
+    plan: &Plan,
+    archive: Archive,
+    folder: &Path,
+) -> Result<Preview, Problem> {
+    let file = files
+        .open(plan.source.as_bytes())
+        .map_err(Problem::Unreadable)?;
+    let previewed = preview_entries(files, archive, file, folder);
+    files.close(file);
+    previewed
+}
+
+fn preview_entries<F: Files>(
+    files: &mut F,
+    archive: Archive,
+    file: Handle,
+    folder: &Path,
+) -> Result<Preview, Problem> {
+    let mut preview = Preview::default();
+    let mut cursor = archive.first();
+    loop {
+        let next = archive.next(
+            &mut FileReader::new(files, file, archive.size()),
+            &mut cursor,
+        );
+        let Some(entry) = next.map_err(Problem::Archive)? else {
+            return Ok(preview);
+        };
+        if is_reserved(entry.name()) {
+            return Err(Problem::ReservedName);
+        }
+        if entry.is_metadata() {
+            continue;
+        }
+        if !entry.is_directory() && preview.bytes.saturating_add(entry.size()) > MAX_EXTRACTED_BYTES
+        {
+            return Err(Problem::TooLarge);
+        }
+        folder.join(entry.name()).ok_or(Problem::PathTooLong)?;
+        if entry.is_directory() {
+            continue;
+        }
+        if entry.is_link() {
+            let target = extracted_link_target(files, file, archive.size(), &entry)?;
+            if !link_stays_inside(entry.name(), &target.bytes[..target.length]) {
+                return Err(Problem::UnsafeLink);
+            }
+        } else {
+            archive::extract(
+                &mut FileReader::new(files, file, archive.size()),
+                &entry,
+                &mut Window::new(),
+                &mut Discarded,
+            )
+            .map_err(Problem::Archive)?;
+        }
+        preview.files += 1;
+        preview.bytes = preview.bytes.saturating_add(entry.size());
     }
 }
 

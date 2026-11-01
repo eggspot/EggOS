@@ -1,4 +1,4 @@
-use crate::files::{Files, Handle, Kind, Status};
+use crate::files::{Files, Handle, Kind, Space, Status};
 use eggos_runtime::errno::Errno;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,6 +220,23 @@ impl Files for FakeFiles {
     fn status_following(&mut self, path: &[u8]) -> Result<Status, Errno> {
         let resolved = self.resolved(path)?;
         self.status(&resolved)
+    }
+
+    fn may_write(&mut self, path: &[u8]) -> Result<(), Errno> {
+        let resolved = self.resolved(path)?;
+        self.status(&resolved)?;
+        self.writable(&resolved)
+    }
+
+    fn space(&mut self, path: &[u8]) -> Result<Space, Errno> {
+        let resolved = self.resolved(path)?;
+        self.status(&resolved)?;
+        let limit = self.space.ok_or(Errno::ENOSYS)? as u64;
+        Ok(Space {
+            total: limit,
+            available: limit.saturating_sub(self.used() as u64),
+            read_only: self.writable(&resolved).is_err(),
+        })
     }
 
     fn read_link(&mut self, path: &[u8], target: &mut [u8]) -> Result<usize, Errno> {

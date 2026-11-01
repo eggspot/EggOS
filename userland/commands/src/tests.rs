@@ -495,6 +495,7 @@ fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
         commands,
         [
             "agent grant",
+            "app install",
             "app uninstall",
             "cp",
             "date",

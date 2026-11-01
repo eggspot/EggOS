@@ -4,7 +4,7 @@
 
 use crate::architecture::Architecture;
 use crate::archive::ArchiveError;
-use crate::installer::{Plan, Problem};
+use crate::installer::{Plan, Preview, Problem};
 use crate::program::{NotRunnable, Program};
 use core::fmt::Write;
 use eggos_app_manifest::Source;
@@ -302,10 +302,72 @@ pub fn not_translated() -> Line {
     line
 }
 
+/// What `app install --dry-run` says (D225): `would install win-paint (Windows program,
+/// x86_64) from /media/host/win-paint.exe into /Applications/win-paint: 1 file, 70064 bytes`,
+/// then whether it replaces a folder an unfinished install left and whether its code would be
+/// translated for this computer.
+pub fn would_install(plan: &Plan, preview: Preview, machine: Architecture) -> Line {
+    let mut line = Line::new();
+    let _ = write!(
+        line,
+        "would install {} ({}) from ",
+        plan.name(),
+        kind(plan.program()).as_str()
+    );
+    line.push_bytes(plan.source());
+    let _ = line.write_str(" into ");
+    line.push_bytes(plan.folder().as_bytes());
+    let _ = write!(
+        line,
+        ": {} {}, {} {}",
+        preview.files,
+        if preview.files == 1 { "file" } else { "files" },
+        preview.bytes,
+        if preview.bytes == 1 { "byte" } else { "bytes" },
+    );
+    if plan.replaces_leftover_folder() {
+        let _ = line.write_str(", replacing the folder an unfinished install left there");
+    }
+    let built = plan.program();
+    if crate::program::runs_translated(built.source, built.architecture, machine) {
+        let _ = write!(
+            line,
+            ", then translate its {} code for this {} computer, once",
+            built.architecture.name(),
+            machine.name()
+        );
+    }
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use eggos_runtime::errno::Errno;
+
+    #[test]
+    fn a_dry_run_install_names_the_app_its_kind_its_folder_and_what_it_copies() {
+        let mut files = crate::fake::FakeFiles::new();
+        let program = crate::program::samples::windows_program(0x8664);
+        files.file("/media/host/win-paint.exe", &program);
+        let path = b"/media/host/win-paint.exe";
+        let plan = crate::installer::plan(&mut files, path, None, Architecture::X86_64).unwrap();
+        let one = Preview { files: 1, bytes: 1 };
+        assert_eq!(
+            would_install(&plan, one, Architecture::X86_64).as_str(),
+            "would install win-paint (Windows program, x86_64) from /media/host/win-paint.exe \
+             into /Applications/win-paint: 1 file, 1 byte"
+        );
+        let two = Preview { files: 2, bytes: 70 };
+        assert!(
+            would_install(&plan, two, Architecture::Aarch64)
+                .as_str()
+                .ends_with(
+                    ": 2 files, 70 bytes, then translate its x86_64 code for this aarch64 \
+                     computer, once"
+                )
+        );
+    }
 
     #[test]
     fn the_translation_lines_give_the_sizes_and_the_refused_count() {
