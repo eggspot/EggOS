@@ -97,6 +97,8 @@ mod sockets;
 #[cfg(runs_windows_programs)]
 mod start;
 #[cfg(any(test, runs_windows_programs))]
+mod std_exceptions;
+#[cfg(any(test, runs_windows_programs))]
 mod stream;
 #[cfg(any(test, runs_windows_programs))]
 mod text;

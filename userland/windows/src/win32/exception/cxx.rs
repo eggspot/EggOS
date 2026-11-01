@@ -18,9 +18,11 @@ use super::super::thread_environment::{self, teb};
 use super::context::{Context, capturing_entry};
 use super::dispatch::{self, Origin, UnwindTarget};
 use super::frames::{self, Bridge};
-use super::{CatchState, DispatcherContext, ExceptionRecord, FrameData, disposition, flag, status};
+use super::{
+    CatchState, DispatcherContext, ExceptionRecord, FrameData, disposition, flag, status, thrown,
+};
 use crate::cxx_data::{
-    self, Action, CXX_EXCEPTION, CXX_MAGIC, CatchableType, FunctionData, Handler,
+    self, Action, CXX_EXCEPTION, CXX_MAGIC, CatchableType, FunctionData, Handler, Images,
     flags as cxx_flags,
 };
 use crate::cxx_walk::{
@@ -62,7 +64,8 @@ pub(super) fn terminate_with(reason: &[u8]) -> ! {
     super::super::crt::end_abnormally(reason, TERMINATE_STATUS)
 }
 
-fn innermost_catch() -> Option<&'static CatchState> {
+/// The innermost catch block running on this thread.
+pub(super) fn innermost_catch() -> Option<&'static CatchState> {
     frames::bridges().find_map(|bridge| bridge.catch.as_ref())
 }
 
@@ -74,6 +77,32 @@ fn running_catch(matching: impl Fn(&CatchState) -> bool) -> Option<CatchState> {
 
 fn slot(offset: usize) -> *mut u64 {
     (thread_environment::current() + offset) as *mut u64
+}
+
+/// Counts a C++ exception thrown on this thread and not yet caught (`std::uncaught_exceptions`).
+pub(super) fn count_thrown() {
+    let count = slot(teb::UNCAUGHT_EXCEPTIONS);
+    // SAFETY: this thread's TEB word.
+    unsafe { count.write(count.read().wrapping_add(1)) };
+}
+
+fn count_caught() {
+    let count = slot(teb::UNCAUGHT_EXCEPTIONS);
+    // SAFETY: this thread's TEB word.
+    unsafe { count.write(count.read().saturating_sub(1)) };
+}
+
+fn uncaught() -> u64 {
+    // SAFETY: this thread's TEB word.
+    unsafe { slot(teb::UNCAUGHT_EXCEPTIONS).read() }
+}
+
+extern "efiapi" fn uncaught_exceptions() -> i32 {
+    i32::try_from(uncaught()).unwrap_or(i32::MAX)
+}
+
+extern "efiapi" fn uncaught_exception() -> bool {
+    uncaught() != 0
 }
 
 /// Points `__current_exception` and `__current_exception_context` at the exception of the
@@ -96,7 +125,7 @@ fn destroy_object(record: &ExceptionRecord) {
     if !is_cxx(record) || record.parameters[1] == 0 {
         return;
     }
-    let image = frames::image();
+    let image = thrown::image_of(record);
     let Some(info) = cxx_data::throw_info(&image, record.parameters[2]) else {
         return;
     };
@@ -111,6 +140,7 @@ fn destroy_object(record: &ExceptionRecord) {
             )
         };
     }
+    super::exception_ptr::forget_rethrown_copy(record.parameters[1]);
 }
 
 /// An exception leaves the catch block `catch` (by `record`, being unwound): the object the
@@ -144,6 +174,7 @@ extern "C" fn throw(object: u64, info: u64, _: u64, _: u64, context: *mut Contex
         },
         _ => [CXX_MAGIC, object, info, frames::image().base],
     };
+    count_thrown();
     let mut record = ExceptionRecord::new(CXX_EXCEPTION, flag::NONCONTINUABLE, pc, &parameters);
     dispatch::dispatch(&raw mut record, context, Origin::Raised)
 }
@@ -186,7 +217,7 @@ fn adjust(object: u64, catchable: &CatchableType) -> u64 {
 }
 
 fn build_catch_object(
-    image: &Image<'_>,
+    thrown_image: &Image<'_>,
     slot: u64,
     object: u64,
     handler: &Handler,
@@ -203,7 +234,7 @@ fn build_catch_object(
         // SAFETY: the parameter slot holds an object of the catchable type's size, as the
         // thrown object does.
         unsafe { core::ptr::copy_nonoverlapping(object as *const u8, slot as *mut u8, size) };
-        if size == 8 && cxx_data::is_pointer_type(image, catchable) {
+        if size == 8 && cxx_data::is_pointer_type(thrown_image, catchable) {
             // SAFETY: as above; the slot holds a pointer.
             let value = unsafe { (slot as *const u64).read_unaligned() };
             if value != 0 {
@@ -260,12 +291,12 @@ fn catch(
     // SAFETY: the dispatch's record.
     let record = unsafe { &mut *record };
     record.flags &= !(flag::UNWINDING | flag::EXIT_UNWIND | flag::TARGET_UNWIND);
-    let image = frames::image();
+    let thrown_image = thrown::image_of(record);
     if let Some(catchable) = thrown
         && handler.catch_object != 0
     {
         let slot = frame.wrapping_add(handler.catch_object);
-        build_catch_object(&image, slot, record.parameters[1], &handler, &catchable);
+        build_catch_object(&thrown_image, slot, record.parameters[1], &handler, &catchable);
     }
     let enclosing_state = function
         .unwind_entry(block.low)
@@ -289,6 +320,9 @@ fn catch(
     unsafe { slot(teb::CURRENT_EXCEPTION).write(caught) };
     // SAFETY: as above.
     unsafe { slot(teb::CURRENT_EXCEPTION_CONTEXT).write(dispatch.context as u64) };
+    if is_cxx(record) {
+        count_caught();
+    }
     // SAFETY: the catch block's funclet, of the function whose frame is `frame`, which the
     // unwind left in the try block's state.
     let returned =
@@ -311,16 +345,19 @@ fn search(
 ) {
     // SAFETY: the dispatch's record.
     let exception = unsafe { &*record };
-    let image = frames::image();
+    let images = Images {
+        handler: frames::image(),
+        thrown: thrown::image_of(exception),
+    };
     let thrown = match is_cxx(exception) {
-        true => match cxx_data::throw_info(&image, exception.parameters[2]) {
+        true => match cxx_data::throw_info(&images.thrown, exception.parameters[2]) {
             Some(info) => Thrown::Cxx(info),
             None => return,
         },
         false => Thrown::Structured,
     };
     if let Some(caught) =
-        cxx_walk::find_handler(&image, function, data.function_begin, state, thrown)
+        cxx_walk::find_handler(&images, function, data.function_begin, state, thrown)
     {
         catch(record, function, data, frame, caught);
     }
@@ -530,12 +567,12 @@ extern "efiapi" fn current_exception_context() -> *mut u64 {
 }
 
 #[repr(C)]
-struct VirtualTable([*const (); 1]);
+pub(super) struct VirtualTable([*const (); 1]);
 
 // SAFETY: the table holds one function's address, immutable for the program's life.
 unsafe impl Sync for VirtualTable {}
 
-static TYPE_INFO_TABLE: VirtualTable = VirtualTable([export_entry!(type_info_delete)]);
+pub(super) static TYPE_INFO_TABLE: VirtualTable = VirtualTable([export_entry!(type_info_delete)]);
 
 pub(super) static TYPE_INFO_TABLE_EXPORT: [Export; 1] = [Export {
     name: b"??_7type_info@@6B@",
@@ -560,4 +597,6 @@ pub(super) const FUNCTIONS: &[Export] = exports![
 pub(super) const UCRT_EXPORTS: &[Export] = exports![
     b"terminate" => std_terminate,
     b"_callnewh" => call_new_handler,
+    b"__uncaught_exceptions" => uncaught_exceptions,
+    b"__uncaught_exception" => uncaught_exception,
 ];

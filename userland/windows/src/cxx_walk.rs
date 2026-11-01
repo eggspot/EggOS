@@ -8,8 +8,8 @@
 //! `win32/exception/cxx.rs` calls the program's funclets and destructors on these answers.
 
 use crate::cxx_data::{
-    self, Action, CXX_EXCEPTION, CXX_MAGIC, CatchableType, FunctionData, Handler, ThrowInfo,
-    TryBlock,
+    self, Action, CXX_EXCEPTION, CXX_MAGIC, CatchableType, FunctionData, Handler, Images,
+    ThrowInfo, TryBlock,
 };
 use crate::unwind::{Image, NO_STATE, UnwindTarget};
 
@@ -177,7 +177,7 @@ pub struct Caught {
 /// blocks around `state` that catches `thrown`. A structured exception is caught only by
 /// `catch (...)` of a function compiled for asynchronous exceptions (`/EHa`).
 pub fn find_handler(
-    image: &Image<'_>,
+    images: &Images<'_>,
     function: &FunctionData<'_>,
     function_begin: u32,
     state: i32,
@@ -206,12 +206,12 @@ pub fn find_handler(
                 Thrown::Structured => {}
                 Thrown::Cxx(info) => {
                     for type_index in 0..info.catchable_count {
-                        let Some(catchable) = cxx_data::catchable_type(image, &info, type_index)
+                        let Some(catchable) =
+                            cxx_data::catchable_type(&images.thrown, &info, type_index)
                         else {
                             break;
                         };
-                        if cxx_data::handler_catches(image, &handler, &catchable, info.attributes)
-                        {
+                        if cxx_data::handler_catches(images, &handler, &catchable, info.attributes) {
                             return Some(Caught {
                                 block,
                                 handler,
@@ -364,21 +364,22 @@ mod tests {
         let image = image(&bytes);
         let function = data().read(image).unwrap();
         let info = cxx_data::throw_info(&image, BASE + 0x300).unwrap();
-        let caught = find_handler(&image, &function, BEGIN, 3, Thrown::Cxx(info)).unwrap();
+        let images = Images::same(image);
+        let caught = find_handler(&images, &function, BEGIN, 3, Thrown::Cxx(info)).unwrap();
         assert_eq!((caught.block.low, caught.block.high), (2, 3));
         assert_eq!(caught.handler.funclet, BASE + 0x1600);
         let base = caught.catchable.unwrap();
         assert_eq!(base.type_descriptor, BASE + 0x440);
         assert_eq!(base.member_displacement, 8);
         assert_eq!(caught.handler.type_descriptor, BASE + 0x400);
-        let outer = find_handler(&image, &function, BEGIN, 1, Thrown::Cxx(info)).unwrap();
+        let outer = find_handler(&images, &function, BEGIN, 1, Thrown::Cxx(info)).unwrap();
         assert_eq!(outer.handler.funclet, BASE + 0x1800);
         assert_eq!(
             outer.catchable.map(|derived| derived.type_descriptor),
             Some(BASE + 0x480)
         );
-        assert_eq!(find_handler(&image, &function, BEGIN, 0, Thrown::Cxx(info)), None);
-        assert_eq!(find_handler(&image, &function, BEGIN, 4, Thrown::Cxx(info)), None);
+        assert_eq!(find_handler(&images, &function, BEGIN, 0, Thrown::Cxx(info)), None);
+        assert_eq!(find_handler(&images, &function, BEGIN, 4, Thrown::Cxx(info)), None);
     }
 
     #[test]
@@ -386,18 +387,66 @@ mod tests {
         let synchronous = function_bytes(EHS);
         let image_s = image(&synchronous);
         let function = data().read(image_s).unwrap();
-        assert_eq!(find_handler(&image_s, &function, BEGIN, 1, Thrown::Structured), None);
+        let images = Images::same(image_s);
+        assert_eq!(find_handler(&images, &function, BEGIN, 1, Thrown::Structured), None);
         let asynchronous = function_bytes(0);
         let image_a = image(&asynchronous);
         let function = data().read(image_a).unwrap();
-        let caught = find_handler(&image_a, &function, BEGIN, 1, Thrown::Structured).unwrap();
+        let images = Images::same(image_a);
+        let caught = find_handler(&images, &function, BEGIN, 1, Thrown::Structured).unwrap();
         assert_eq!(caught.handler.funclet, BASE + 0x1800);
         assert_eq!(caught.catchable, None);
         assert_eq!(
-            find_handler(&image_a, &function, BEGIN, 3, Thrown::Structured)
+            find_handler(&images, &function, BEGIN, 3, Thrown::Structured)
                 .map(|caught| caught.handler.funclet),
             Some(BASE + 0x1800)
         );
+    }
+
+    const OTHER_BASE: u64 = 0x7f00_0000_0000;
+
+    fn thrown_bytes(name: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 0x80];
+        put(&mut bytes, 0, &[0, 0, 0, 0x10]);
+        put(&mut bytes, 0x10, &[1, 0x20]);
+        put(&mut bytes, 0x20, &[0, 0x40, 0, u32::MAX, 0, 24, 0]);
+        bytes[0x50..0x50 + name.len()].copy_from_slice(name);
+        bytes
+    }
+
+    #[test]
+    fn a_handler_catches_by_name_an_object_whose_throw_info_is_in_another_image() {
+        let bytes = function_bytes(EHS);
+        let image = image(&bytes);
+        let function = data().read(image).unwrap();
+        let base_bytes = thrown_bytes(b".?AVBase@@");
+        let thrown = Image {
+            base: OTHER_BASE,
+            bytes: &base_bytes,
+        };
+        let info = cxx_data::throw_info(&thrown, OTHER_BASE).unwrap();
+        let images = Images {
+            handler: image,
+            thrown,
+        };
+        let caught = find_handler(&images, &function, BEGIN, 3, Thrown::Cxx(info)).unwrap();
+        assert_eq!(caught.handler.funclet, BASE + 0x1600);
+        assert_eq!(
+            caught.catchable.map(|base| base.type_descriptor),
+            Some(OTHER_BASE + 0x40)
+        );
+        let unrelated_bytes = thrown_bytes(b".?AVUnrelated@@");
+        let unrelated = Image {
+            base: OTHER_BASE,
+            bytes: &unrelated_bytes,
+        };
+        let info = cxx_data::throw_info(&unrelated, OTHER_BASE).unwrap();
+        let images = Images {
+            handler: image,
+            thrown: unrelated,
+        };
+        let caught = find_handler(&images, &function, BEGIN, 3, Thrown::Cxx(info)).unwrap();
+        assert_eq!(caught.handler.funclet, BASE + 0x1800);
     }
 
     #[test]

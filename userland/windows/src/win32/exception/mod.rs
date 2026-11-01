@@ -7,15 +7,19 @@
 //! that takes it unwinds the frames in between, running their termination handlers and
 //! destructors, and resumes the thread in its own frame. The layer implements the language
 //! handlers MSVC's code uses: `__C_specific_handler` for `__try`/`__except`/`__finally`
-//! (`c_specific.rs`) and `__CxxFrameHandler3`/`__CxxFrameHandler4` for C++ (`cxx.rs`).
+//! (`c_specific.rs`) and `__CxxFrameHandler3`/`__CxxFrameHandler4` for C++ (`cxx.rs`); the
+//! layer throws standard C++ exceptions of its own (`thrown.rs`, D229) and keeps
+//! `std::exception_ptr`'s copies (`exception_ptr.rs`).
 
 mod c_specific;
 mod context;
 mod cxx;
 mod dispatch;
+mod exception_ptr;
 mod frames;
 mod rtti;
 mod signal;
+mod thrown;
 mod vectored;
 
 pub use crate::cxx_walk::FrameData;
@@ -26,6 +30,7 @@ pub(in crate::win32) use context::{Context, capturing_entry};
 pub use dispatch::deliver_fault;
 pub(in crate::win32) use dispatch::{NO_STATE, UnwindTarget, reaches_frame, resume, unwind};
 pub use frames::{in_layer, set_image};
+pub(in crate::win32) use thrown::{StdObject, throw, throw_object};
 
 /// Exception flags (`EXCEPTION_RECORD.ExceptionFlags`).
 pub mod flag {
@@ -231,7 +236,11 @@ pub(super) const RTTI_EXPORTS: &[Export] = rtti::EXPORTS;
 /// vcruntime's `type_info` virtual function table, which programs import as data.
 pub(super) const TYPE_INFO_EXPORTS: &[Export] = &cxx::TYPE_INFO_TABLE_EXPORT;
 
-/// The Universal C Runtime's C++ functions: `terminate` and `_callnewh`.
+/// msvcp140's `std::exception_ptr` functions (D229).
+pub(super) const EXCEPTION_PTR_EXPORTS: &[Export] = exception_ptr::EXPORTS;
+
+/// The Universal C Runtime's C++ functions: `terminate`, `_callnewh` and
+/// `__uncaught_exceptions`.
 pub(super) const CXX_UCRT_EXPORTS: &[Export] = cxx::UCRT_EXPORTS;
 
 /// The Universal C Runtime's `signal`, `raise` and the startup's exception filter.

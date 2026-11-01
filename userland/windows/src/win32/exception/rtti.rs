@@ -2,12 +2,15 @@
 //! (`__RTDynamicCast`), `dynamic_cast<void *>` (`__RTCastToVoid`) and `typeid` of a polymorphic
 //! object (`__RTtypeid`) over the program's RTTI (`rtti.rs`), and `type_info::name()`
 //! (`__std_type_info_name`), undecorated once per type (`undecorate.rs`) and kept in the
-//! `type_info`'s own slot. A failing reference cast and `typeid` of a null pointer end the
-//! program as an uncaught `std::bad_cast` or `std::bad_typeid` does.
+//! `type_info`'s own slot. A failing reference cast throws `std::bad_cast`, `typeid` of a null
+//! pointer `std::bad_typeid` and of an object without RTTI `std::__non_rtti_object`, from the
+//! program's call (`thrown.rs`).
 
 use super::super::heap;
-use super::cxx::{ProgramMemory, terminate_with};
+use super::cxx::ProgramMemory;
+use super::thrown::{self, throwing_entry};
 use crate::library::Export;
+use crate::std_exceptions::StdException;
 use crate::{rtti, undecorate};
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -30,7 +33,8 @@ extern "efiapi" fn dynamic_cast(
     ) {
         Some(result) => result,
         None if is_reference != 0 => {
-            terminate_with(b"a dynamic_cast to a reference failed (std::bad_cast)")
+            thrown::owe(StdException::BadCast);
+            0
         }
         None => 0,
     }
@@ -38,11 +42,15 @@ extern "efiapi" fn dynamic_cast(
 
 extern "efiapi" fn type_id(object: u64) -> u64 {
     if object == 0 {
-        terminate_with(b"typeid of a null pointer (std::bad_typeid)");
+        thrown::owe(StdException::BadTypeid);
+        return 0;
     }
     match rtti::locator(&ProgramMemory, object) {
         Some(locator) => locator.type_descriptor,
-        None => terminate_with(b"typeid of an object without RTTI (std::__non_rtti_object)"),
+        None => {
+            thrown::owe(StdException::NonRttiObject);
+            0
+        }
     }
 }
 
@@ -52,9 +60,10 @@ extern "efiapi" fn cast_to_void(object: u64) -> u64 {
     }
     match rtti::locator(&ProgramMemory, object) {
         Some(locator) => rtti::complete_object(&ProgramMemory, object, &locator),
-        None => terminate_with(
-            b"dynamic_cast<void *> of an object without RTTI (std::__non_rtti_object)",
-        ),
+        None => {
+            thrown::owe(StdException::NonRttiObject);
+            0
+        }
     }
 }
 
@@ -96,10 +105,25 @@ unsafe extern "efiapi" fn type_info_name(data: *mut u64, _root: u64) -> *const u
 
 extern "efiapi" fn type_info_destroy_list(_root: u64) {}
 
-pub(super) const EXPORTS: &[Export] = exports![
-    b"__RTDynamicCast" => dynamic_cast,
-    b"__RTtypeid" => type_id,
-    b"__RTCastToVoid" => cast_to_void,
-    b"__std_type_info_name" => type_info_name,
-    b"__std_type_info_destroy_list" => type_info_destroy_list,
+pub(super) const EXPORTS: &[Export] = &[
+    Export {
+        name: b"__RTDynamicCast",
+        address: throwing_entry!(dynamic_cast),
+    },
+    Export {
+        name: b"__RTtypeid",
+        address: throwing_entry!(type_id),
+    },
+    Export {
+        name: b"__RTCastToVoid",
+        address: throwing_entry!(cast_to_void),
+    },
+    Export {
+        name: b"__std_type_info_name",
+        address: export_entry!(type_info_name),
+    },
+    Export {
+        name: b"__std_type_info_destroy_list",
+        address: export_entry!(type_info_destroy_list),
+    },
 ];
