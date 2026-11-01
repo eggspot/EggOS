@@ -21,10 +21,15 @@ const LF: u8 = 0x0a;
 const CR: u8 = 0x0d;
 const ESC: u8 = 0x1b;
 const DEL: u8 = 0x7f;
+const C1_LEAD: u8 = 0xc2;
+const C1: core::ops::RangeInclusive<u8> = 0x80..=0x9f;
+const C1_CSI: u8 = 0x9b;
+const FINAL_BYTES: core::ops::RangeInclusive<u8> = 0x40..=0x7e;
 
 /// The bytes a paste of `text` types: `CR LF` and `LF` become `CR`, `TAB` stays, every other
-/// control character is dropped, `ESC` with the control sequence it starts (`ESC [` up to its
-/// final byte) or alone, other UTF-8 passes through; at most
+/// control character is dropped (C0, `DEL` and the C1 controls U+0080 to U+009F), `ESC` and
+/// U+009B with the control sequence they start (`ESC [` or U+009B up to its final byte) or
+/// alone, other UTF-8 passes through; at most
 /// [`PASTE_CAPACITY`] bytes of `text`, cut at a character boundary; between [`BRACKET_START`]
 /// and [`BRACKET_END`] when `bracketed`. Empty for an empty text.
 pub fn prepare(text: &str, bracketed: bool) -> Vec<u8> {
@@ -57,11 +62,12 @@ pub fn prepare(text: &str, bracketed: bool) -> Vec<u8> {
             CR | LF => bytes.push(CR),
             TAB => bytes.push(TAB),
             ESC if text.get(index + 1) == Some(&b'[') => {
-                index += 2;
-                while index < text.len() && !(0x40..=0x7e).contains(&text[index]) {
-                    index += 1;
-                }
+                index = end_of_sequence(text, index + 2);
             }
+            C1_LEAD if text.get(index + 1) == Some(&C1_CSI) => {
+                index = end_of_sequence(text, index + 2);
+            }
+            C1_LEAD if text.get(index + 1).is_some_and(|next| C1.contains(next)) => index += 1,
             byte if byte < 0x20 || byte == DEL => {}
             byte => bytes.push(byte),
         }
@@ -71,6 +77,13 @@ pub fn prepare(text: &str, bracketed: bool) -> Vec<u8> {
         bytes.extend_from_slice(BRACKET_END);
     }
     bytes
+}
+
+fn end_of_sequence(text: &[u8], mut index: usize) -> usize {
+    while index < text.len() && !FINAL_BYTES.contains(&text[index]) {
+        index += 1;
+    }
+    index
 }
 
 /// A paste waiting to be written: the bytes [`prepare`] made, and how many are written.

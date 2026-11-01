@@ -594,6 +594,23 @@ fn a_paste_is_made_safe_bracketed_on_request_and_written_a_chunk_per_room() {
     assert!(window.shell().written.is_empty());
 }
 
+#[test]
+fn a_paste_drops_c1_controls_and_del_and_an_8_bit_csi_with_its_sequence() {
+    assert_eq!(prepare("a\u{80}b\u{85}c\u{9f}d\u{7f}e", false), b"abcde");
+    assert_eq!(prepare("x\u{9b}31my", false), b"xy");
+    assert_eq!(prepare("x\u{9b}", false), b"x");
+    assert_eq!(prepare("\u{a0}\u{e9}", false), "\u{a0}\u{e9}".as_bytes());
+    for c1 in '\u{80}'..='\u{9f}' {
+        let text = format!("<{c1}>");
+        let prepared = prepare(&text, false);
+        assert!(
+            prepared == b"<>" || (c1 == '\u{9b}' && prepared == b"<"),
+            "U+{:04X}: {prepared:?}",
+            c1 as u32
+        );
+    }
+}
+
 fn enabled(window: &TerminalWindow<FakeShell>) -> Vec<(&'static str, bool)> {
     window
         .menu()
