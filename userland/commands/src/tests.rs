@@ -145,10 +145,7 @@ fn examples_start_with_their_command_s_words_and_show_json_only_where_it_exists(
                 assert!(command.has_json(), "{}", example.line);
             }
         }
-        let shown_by_a_fake = !matches!(
-            command.words,
-            ["agentlog" | "help"] | ["wm" | "app" | "ip" | "ping" | "nslookup", ..]
-        );
+        let shown_by_a_fake = !matches!(command.words, ["agentlog" | "help"] | ["wm" | "app", ..]);
         if command.max_effect == Effect::Read && shown_by_a_fake {
             assert!(!command.examples.is_empty(), "{name} has no example");
         }
@@ -409,7 +406,7 @@ fn list_commands_page_with_limit_and_after_and_say_a_bad_cursor() {
             paged += 1;
         }
     }
-    assert_eq!(paged, 4);
+    assert_eq!(paged, 8);
 }
 
 #[test]
@@ -430,7 +427,7 @@ fn list_tools_page_as_their_commands_do() {
         }
         paged.push(tool.name);
     }
-    assert_eq!(paged, ["ls", "ps", "wm_list", "app_list"]);
+    assert_eq!(paged, ["ls", "ps", "wm_list", "app_list", "settings_list"]);
 }
 
 #[test]
