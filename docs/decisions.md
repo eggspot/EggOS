@@ -17161,3 +17161,50 @@ the license, by an explicit instruction recorded here.
   `a_permission_fault_on_a_page_another_thread_made_allow_the_access_is_retried`.
 - **Not yet.** The retry check looks at the mapping's write and execute bits but not its user
   bit; checking it too would make a retry on a kernel-only entry fail safe.
+
+## D216 The first weekly performance pass (2026-10-31, main 9ff972cb): the switch path's CPU-time accounting is cut to user threads, the costs of #149's features are accepted, and five regressions are left to fix (extends D78, D122, D198) — Decided by the build loop (decided by research)
+
+- **What was measured.** `cargo xtask bench --arch all` on `main` 9ff972cb, locally, gave the
+  same numbers as CI's run on that commit: 54 results across the three architectures were
+  slower than `benchmarks/baseline.txt`, and 13 per architecture were new. Almost all of it came in #149, whose 424
+  commits ran CI only from 1da74b43 (equal to `main` before it) to df5ab879 (the full growth),
+  so causes are traced to its features by their diffs, not bisected. `linux_openat_close` also
+  grew by about 180 instructions in small steps across #129 to #147.
+- **Fixed: the switch path (D198).** Every switch read the clock, stamped the next thread and
+  charged the previous one, taking the process account out of its cell and putting it back.
+  Only threads that run a program have their time read, so a switch now does that only when
+  either thread runs a program, and reads the account in place (commit 1f9a05ae). A kernel
+  thread's time is no longer counted. In instructions, baseline -> `main` -> fixed:
+  `thread_yield_round_trip` x86_64 122 -> 158 -> 136, aarch64 131 -> 161 -> 143, riscv64 162
+  -> 196 -> 174; `thread_wait_wake_round_trip` 206/218/222 -> 230/240/243 -> 220/230/232;
+  `futex_wait_wake_round_trip` -1.6 to -1.7%; `process_switch_round_trip` -0.8 to -1.2%.
+- **Accepted (D78's test; Linux, Windows and macOS pay the same costs, unconditionally).**
+  - The rest of the switch cost: two flag loads and two branches per switch, and for user
+    threads the clock read and the account's atomic add, which `CLOCK_THREAD_CPUTIME_ID`,
+    `getrusage` and `times` need. Linux's `update_curr`, Windows' cycle accounting and macOS's
+    thread timer switch run on every switch, for every thread.
+  - The file paths: `linux_file_read` (+14 to +54%, a larger `FileKind` match), the descriptor
+    lookups (+1 instruction), `linux_dup3_close` (+2 to +3%), `eggfs_create` (+15 to +18%: link
+    counts, orphans and the big-directory index, D170), `eggfs_read_4k` and `fat_read_4k` (+2
+    to +8%: hold and release of open files, D170).
+  - The memory paths: `linux_fork` (x86_64 +14%, aarch64 +8%: copy-on-write fork, D169, which
+    makes a large process fork in near-constant time), `linux_vfork_exec` (x86_64 +41%, riscv64
+    +17%; aarch64 is 8% faster), `linux_execve` x86_64 +8.5% and `linux_exec_load` +1.5 to
+    +2.6% (dynamic loading, file ranges and held executables, D167, D168).
+  - `input_key_to_bytes` x86_64 334 -> 339 (code layout; steady on `main` since cc486cdb) and
+    `idle_memory_bytes` +4096 bytes on riscv64 and x86_64 (one frame, the smallest step;
+    provisional, its commit is among the 130 after e321ce74).
+  - The new benchmarks of #149 get their first lines.
+- **Left to fix (their baseline lines stay).** `linux_openat_close` (+46 to +63%: the walk and
+  `open` ask a node's kind several times, D168, and `hold`/`release` run on file systems that
+  keep no holds, D170); `linux_page_fault` (+5 to +6%: a fast path for anonymous faults when
+  the memory maps no files); `linux_mmap_munmap` (+12 to +14%: one flags word for `has_files`,
+  `has_fork_marks` and `has_lent`); x86_64 `gfx_terminal_line` (+6% over `main` before #149:
+  the per-cell cursor-look check and `font::rows`' new arms); riscv64 `heap_allocate_free_small`
+  57 -> 60 (`HEAP` lies exactly 0x800 bytes past `memory::FRAMES`, beyond a 12-bit offset,
+  because `linux::properties::AREA` and `linux::android_log::LOG` are non-zero statics in
+  `.data`; making them zero-initialised moves them to `.bss`).
+- **Not yet.** Reading `previous.user` from the box `replace_current` returns (about 3
+  instructions per switch); folding a thread's time into its process's account only at exit and
+  when read, instead of an atomic add per switch; an instruction profile of `vfork` + `execve` on
+  x86_64; reserving `FileRanges` once per exec.
