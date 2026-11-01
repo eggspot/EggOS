@@ -260,11 +260,12 @@ impl Thread {
     fn charge(&self, now: u64) {
         let spent = now.wrapping_sub(self.since.get());
         self.ran.set(self.ran.get().wrapping_add(spent));
-        let account = self.account.0.take();
-        if let Some(account) = &account {
+        // SAFETY: only `move_account` replaces the account, for the running thread with the
+        // scheduler's lock held, after its own `charge` has returned: nothing replaces it while
+        // this shared reference lives.
+        if let Some(account) = unsafe { &*self.account.0.as_ptr() } {
             account.fetch_add(spent, Ordering::Relaxed);
         }
-        self.account.0.set(account);
     }
 
     fn move_account(&self, now: u64, account: Arc<AtomicU64>) -> Option<Arc<AtomicU64>> {
@@ -1530,7 +1531,8 @@ pub fn set_running_affinity<P: Platform>(allowed: u64) -> bool {
     true
 }
 
-/// The clock ticks the running thread has run, this turn included (D198).
+/// The clock ticks the running thread has run, this turn included (D198), when it runs a program:
+/// a kernel thread's time is not counted (D216).
 pub fn running_thread_ticks<P: Platform>() -> u64 {
     let mut schedulers = SCHEDULER.lock();
     let here = cpu::current::<P>();
@@ -1762,10 +1764,19 @@ fn switch_now<P: Platform>(
     park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
 ) {
     let resume = next.get().context;
-    let now = P::clock_ticks();
-    next.get().since.set(now);
+    let previous_user = schedulers
+        .of(here)
+        .current
+        .as_ref()
+        .is_some_and(|previous| previous.get().user);
+    let now = (previous_user || next.get().user).then(P::clock_ticks);
+    if let Some(now) = now {
+        next.get().since.set(now);
+    }
     let previous = schedulers.of(here).replace_current(next);
-    previous.get().charge(now);
+    if let Some(now) = now {
+        previous.get().charge(now);
+    }
     let save = previous.context();
     park(&mut schedulers, here, previous);
     // Held across the switch, for the thread it resumes to release.
