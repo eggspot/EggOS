@@ -191,9 +191,14 @@ impl Heap {
     ) -> Option<NonNull<u8>> {
         let address = match Kind::of(layout)? {
             Kind::Block(class) => self.allocate_block(class, frames)?,
-            Kind::Frames(order) => frames.allocate_frames(order)?,
+            Kind::Frames(order) => Self::allocate_frames_out_of_line(order, frames)?,
         };
         NonNull::new(address as *mut u8)
+    }
+
+    #[inline(never)]
+    fn allocate_frames_out_of_line(order: u32, frames: &mut impl FrameSource) -> Option<usize> {
+        frames.allocate_frames(order)
     }
 
     /// Gives back memory from [`Self::allocate`].
