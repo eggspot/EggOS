@@ -85,6 +85,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-downloads"
+version = "0.2.0"
+dependencies = [
+ "eggos-app",
+ "eggos-download-list",
+ "eggos-runtime",
+ "eggos-toolkit",
+]
+
+[[package]]
 name = "eggos-drivers"
 version = "0.2.0"
 dependencies = [
@@ -315,6 +325,7 @@ dependencies = [
  "eggos-calendar",
  "eggos-commands",
  "eggos-device-list",
+ "eggos-downloads",
  "eggos-editor",
  "eggos-eggfs",
  "eggos-files",
