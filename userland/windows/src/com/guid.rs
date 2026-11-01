@@ -29,6 +29,13 @@ pub const DISPATCH: Guid = Guid::new(0x0002_0400, 0, 0, AUTOMATION);
 pub const ENUM_VARIANT: Guid = Guid::new(0x0002_0404, 0, 0, AUTOMATION);
 /// `IID_IStream`.
 pub const STREAM: Guid = Guid::new(0x0000_000c, 0, 0, AUTOMATION);
+/// `IID_IPicture`.
+pub const PICTURE: Guid = Guid::new(
+    0x7bf8_0980,
+    0xbf32,
+    0x101a,
+    [0x8b, 0xbb, 0x00, 0xaa, 0x00, 0x30, 0x0c, 0xab],
+);
 /// `IID_ISequentialStream`.
 pub const SEQUENTIAL_STREAM: Guid = Guid::new(
     0x0c73_3a30,

@@ -3,13 +3,15 @@
 //! `ReservedForOle` word, which is ole32's own on Windows too; the task allocator
 //! (`CoTaskMemAlloc` and its family, `CoGetMalloc`'s `IMalloc`) over the layer's heap; CLSIDs
 //! and ProgIDs; `CoCreateInstance` for the one class the layer provides in process,
-//! `Scripting.Dictionary`; `CreateStreamOnHGlobal`; the tables of methods of the layer's
+//! `Scripting.Dictionary`; `CreateStreamOnHGlobal`; `OleLoadPicture`'s pictures (`picture.rs`,
+//! D230); the tables of methods of the layer's
 //! objects, whose entries keep the program's `x18` on aarch64 (`abi.rs`); and oleaut32's
 //! exports (`oleaut32.rs`), which programs import by ordinal. There is no registry, no
 //! out-of-process server, no running object table and no moniker: such calls fail as Windows
 //! reports a class, object or name it cannot find.
 
 mod oleaut32;
+mod picture;
 
 pub(super) use oleaut32::{EXPORTS as OLEAUT32_EXPORTS, by_ordinal as oleaut32_by_ordinal};
 
@@ -104,6 +106,26 @@ static STREAM: Table<14> = Table([
     export_entry!(memory_stream::lock_region),
     export_entry!(memory_stream::stat),
     export_entry!(memory_stream::clone),
+]);
+
+static PICTURE: Table<17> = Table([
+    export_entry!(picture::query_interface),
+    export_entry!(picture::add_reference),
+    export_entry!(picture::release),
+    export_entry!(picture::get_handle),
+    export_entry!(picture::get_palette),
+    export_entry!(picture::get_type),
+    export_entry!(picture::get_width),
+    export_entry!(picture::get_height),
+    export_entry!(picture::render, four_stack_arguments),
+    export_entry!(picture::set_palette),
+    export_entry!(picture::get_current_dc),
+    export_entry!(picture::select_picture),
+    export_entry!(picture::get_keep_original_format),
+    export_entry!(picture::put_keep_original_format),
+    export_entry!(picture::picture_changed),
+    export_entry!(picture::save_as_file),
+    export_entry!(picture::get_attributes),
 ]);
 
 static TASK_ALLOCATOR_TABLE: Table<9> = Table([

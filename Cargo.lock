@@ -381,6 +381,7 @@ dependencies = [
  "eggos-calendar",
  "eggos-drivers",
  "eggos-element-tree",
+ "eggos-image",
  "eggos-net",
  "eggos-png",
  "eggos-runtime",

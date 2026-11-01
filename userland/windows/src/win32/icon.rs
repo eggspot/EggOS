@@ -19,6 +19,7 @@ use crate::gui::slots::Slots;
 use crate::library::Export;
 use crate::linux;
 use crate::text;
+use eggos_image::{Error as ImageError, Limits};
 use eggos_png::rows::RowWorkspace;
 use eggos_windows_gui::surface::Rect;
 
@@ -294,20 +295,47 @@ struct IconImage {
     mask: Decoded,
 }
 
+fn alpha_mask(colour: &Decoded) -> Result<Decoded, u32> {
+    let mut mask = Decoded::new(colour.width, colour.height)?;
+    for (masked, pixel) in mask
+        .pixels
+        .pixels_mut()
+        .iter_mut()
+        .zip(colour.pixels.pixels())
+    {
+        if pixel >> 24 == 0 {
+            *masked = dib::MASKED;
+        }
+    }
+    Ok(mask)
+}
+
+/// An icon of `colour`'s own size from its straight-alpha pixels, masked where their alpha is
+/// 0, with its hot spot in the middle.
+pub(super) fn icon_from_pixels(colour: &Decoded) -> Result<usize, u32> {
+    let mask = alpha_mask(colour)?;
+    let size = colour.size();
+    make_icon(colour, &mask, size, (size.0 / 2, size.1 / 2), TRUE)
+}
+
+/// Decodes an image file in any format `eggos-image` reads (D230) into the layer's pixels: the
+/// first frame of a GIF, the first image of a TIFF, the largest image of an icon.
+pub(super) fn decode_image_file(bytes: &[u8]) -> Result<Decoded, ImageError> {
+    let limits = Limits {
+        max_side: dib::LARGEST_SIDE,
+        ..Limits::DEFAULT
+    };
+    let image = eggos_image::decode(bytes, &limits)?;
+    let mut decoded =
+        Decoded::new(image.width, image.height).map_err(|_| ImageError::OutOfMemory)?;
+    decoded.pixels.pixels_mut().copy_from_slice(&image.pixels);
+    Ok(decoded)
+}
+
 fn decode_icon_image(data: &[u8]) -> Result<IconImage, u32> {
     if dib::png_size(data).is_some() {
         let colour = decode_png(data)?;
-        let mut mask = Decoded::new(colour.width, colour.height)?;
-        for (masked, pixel) in mask
-            .pixels
-            .pixels_mut()
-            .iter_mut()
-            .zip(colour.pixels.pixels())
-        {
-            if pixel >> 24 == 0 {
-                *masked = dib::MASKED;
-            }
-        }
+        let mask = alpha_mask(&colour)?;
         return Ok(IconImage { colour, mask });
     }
     let image = dib::icon_dib(data).ok_or(error::INVALID_DATA)?;
@@ -469,7 +497,8 @@ unsafe extern "efiapi" fn get_icon_info(handle: usize, out: *mut IconInfo) -> Bo
     TRUE
 }
 
-fn destroy(handle: usize) -> Result<(), u32> {
+/// Destroys icon or cursor `handle` and its bitmaps, as `DestroyIcon` does.
+pub(super) fn destroy(handle: usize) -> Result<(), u32> {
     if objects::is_system_icon(handle) {
         return Ok(());
     }

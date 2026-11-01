@@ -1,21 +1,24 @@
 //! GDI+ (`gdiplus.dll`, D178), the flat API a program reaches through `LoadLibrary` and
-//! `GetProcAddress`: startup and shutdown; bitmaps decoded from PNG and BMP files (straight
-//! alpha, `PixelFormat32bppARGB`), or made over 32-bit pixels of the program's or new ones
+//! `GetProcAddress`: startup and shutdown; bitmaps decoded from files or `IStream`s in PNG,
+//! BMP, JPEG, GIF (its first frame), TIFF and icon formats (D230; straight alpha,
+//! `PixelFormat32bppARGB`), or made over 32-bit pixels of the program's or new ones
 //! (`GdipCreateBitmapFromScan0`); their size, pixel format and pixels; an `HBITMAP` of one
 //! (`GdipCreateHBITMAPFromBitmap`: a top-down 32-bit DIB section whose pixels are the image
 //! composited over the background colour, with premultiplied alpha, as GDI+ gives it); and a
 //! graphics on a device context that draws a bitmap scaled into a rectangle, each pixel the
 //! nearest source pixel blended over what is there. A bitmap and a graphics are heap blocks of
-//! the layer's. Other file formats (JPEG, GIF, TIFF, icons) answer `UnknownImageFormat`, other
-//! pixel formats `NotImplemented`.
+//! the layer's. Other file formats answer `UnknownImageFormat`, other pixel formats
+//! `NotImplemented`.
 
 use super::dib;
 use super::gdi;
 use super::icon::{self, Decoded};
+use crate::com::picture;
 use super::paint;
 use super::{error, heap};
 use crate::library::Export;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use eggos_image::Error as ImageError;
 use eggos_windows_gui::surface::Rect;
 
 mod status {
@@ -39,6 +42,7 @@ const PIXEL_FORMAT_32BPP_PARGB: u32 = 0x000e_200b;
 const BITMAP_MAGIC: u32 = 0x4770_426d;
 const GRAPHICS_MAGIC: u32 = 0x4770_4772;
 const OPAQUE: u32 = 0xff00_0000;
+const LARGEST_STREAM: usize = 64 << 20;
 
 static STARTED: AtomicUsize = AtomicUsize::new(0);
 
@@ -139,11 +143,21 @@ fn bitmap_of(image: Decoded) -> Result<*mut GpBitmap, Status> {
     made
 }
 
+fn image_status(error: ImageError) -> Status {
+    match error {
+        ImageError::UnknownFormat | ImageError::Unsupported => status::UNKNOWN_IMAGE_FORMAT,
+        ImageError::TooLarge | ImageError::OutOfMemory => status::OUT_OF_MEMORY,
+        ImageError::Corrupt | ImageError::Truncated => status::GENERIC_ERROR,
+    }
+}
+
 fn decode_file(bytes: &[u8]) -> Result<Decoded, Status> {
     if dib::png_size(bytes).is_some() {
         return icon::decode_png(bytes).map_err(status_of);
     }
-    let packed = dib::bmp_file(bytes).ok_or(status::UNKNOWN_IMAGE_FORMAT)?;
+    let Some(packed) = dib::bmp_file(bytes) else {
+        return icon::decode_image_file(bytes).map_err(image_status);
+    };
     let mut image = icon::decode_packed(&packed).map_err(status_of)?;
     if !packed.layout.alpha_declared {
         for pixel in image.pixels.pixels_mut() {
@@ -224,6 +238,24 @@ unsafe extern "efiapi" fn gdip_create_bitmap_from_file(
         .map_err(status_of)
         .and_then(|file| decode_file(file.bytes()))
         .and_then(bitmap_of);
+    finish(made, out)
+}
+
+unsafe extern "efiapi" fn gdip_create_bitmap_from_stream(
+    stream: usize,
+    out: *mut *mut GpBitmap,
+) -> Status {
+    if stream == 0 || out.is_null() {
+        return status::INVALID_PARAMETER;
+    }
+    if !started() {
+        return status::NOT_INITIALIZED;
+    }
+    // SAFETY: the caller passes a live `IStream`.
+    let made = match unsafe { picture::read_stream(stream, None, LARGEST_STREAM) } {
+        Ok(bytes) => decode_file(&bytes).and_then(bitmap_of),
+        Err(_) => Err(status::OUT_OF_MEMORY),
+    };
     finish(made, out)
 }
 
@@ -479,6 +511,9 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"GdiplusStartup" => gdiplus_startup,
     b"GdiplusShutdown" => gdiplus_shutdown,
     b"GdipCreateBitmapFromFile" => gdip_create_bitmap_from_file,
+    b"GdipLoadImageFromFile" => gdip_create_bitmap_from_file,
+    b"GdipCreateBitmapFromStream" => gdip_create_bitmap_from_stream,
+    b"GdipLoadImageFromStream" => gdip_create_bitmap_from_stream,
     b"GdipCreateBitmapFromScan0" => gdip_create_bitmap_from_scan0,
     b"GdipDisposeImage" => gdip_dispose_image,
     b"GdipGetImageWidth" => gdip_get_image_width,
@@ -522,8 +557,11 @@ mod tests {
     }
 
     #[test]
-    fn files_neither_png_nor_bmp_are_an_unknown_format() {
-        let refused = decode_file(b"GIF89a").err();
+    fn files_of_no_known_format_are_an_unknown_format() {
+        let refused = decode_file(b"plain text").err();
         assert_eq!(refused, Some(status::UNKNOWN_IMAGE_FORMAT));
+        assert_eq!(decode_file(b"GIF89a").err(), Some(status::GENERIC_ERROR));
+        assert_eq!(image_status(ImageError::Unsupported), status::UNKNOWN_IMAGE_FORMAT);
+        assert_eq!(image_status(ImageError::TooLarge), status::OUT_OF_MEMORY);
     }
 }

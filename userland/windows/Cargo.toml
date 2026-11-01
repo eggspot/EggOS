@@ -14,6 +14,7 @@ eggos-c-format = { path = "../c-format" }
 eggos-calendar = { path = "../../calendar" }
 eggos-drivers = { path = "../../drivers" }
 eggos-element-tree = { path = "../element-tree" }
+eggos-image = { path = "../../image" }
 eggos-net = { path = "../../net" }
 eggos-png = { path = "../../png" }
 eggos-runtime = { path = "../runtime" }

@@ -21,7 +21,7 @@
 #![cfg_attr(eggos_user, no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
 
-#[cfg(any(test, all(runs_windows_programs, target_arch = "aarch64")))]
+#[cfg(any(test, runs_windows_programs))]
 extern crate alloc;
 
 #[cfg(any(test, runs_windows_programs))]

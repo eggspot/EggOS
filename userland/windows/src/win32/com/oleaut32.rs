@@ -1,15 +1,16 @@
 //! oleaut32's exports: BSTRs, VARIANTs and their conversions, SAFEARRAYs (`crate::com`),
 //! `GetActiveObject` and `OleLoadPicture`, by name and by the ordinals of Microsoft's
 //! `oleaut32.dll`, which is how programs import them. There is no running object table, so
-//! `GetActiveObject` finds nothing (`MK_E_UNAVAILABLE`); `OleLoadPicture` has no picture object
-//! to make and reports the data as no picture it can load (`CTL_E_INVALIDPICTURE`).
+//! `GetActiveObject` finds nothing (`MK_E_UNAVAILABLE`); `OleLoadPicture` reads the program's
+//! stream and makes a picture object of the image in it (`picture.rs`, D230), or reports data it
+//! cannot decode as no picture (`CTL_E_INVALIDPICTURE`).
 
 use crate::com::guid::Guid;
-use crate::com::{HResult, bstr, conversion, safe_array, variant};
+use crate::com::{E_POINTER, HResult, bstr, conversion, picture, safe_array, variant};
 use crate::library::Export;
 
 const MK_E_UNAVAILABLE: HResult = 0x8004_01e3_u32 as i32;
-const CTL_E_INVALIDPICTURE: HResult = 0x800a_01e1_u32 as i32;
+const LARGEST_PICTURE_FILE: usize = 64 << 20;
 
 const ORDINALS: [(u16, &[u8]); 30] = [
     (2, b"SysAllocString"),
@@ -57,17 +58,31 @@ unsafe extern "efiapi" fn get_active_object(
 }
 
 unsafe extern "efiapi" fn ole_load_picture(
-    _stream: usize,
-    _size: i32,
-    _keep_original_format: i32,
-    _interface: *const Guid,
+    stream: usize,
+    size: i32,
+    run_mode: i32,
+    interface: *const Guid,
     result: *mut usize,
 ) -> HResult {
-    if !result.is_null() {
-        // SAFETY: `OleLoadPicture`'s contract: a writable pointer.
-        unsafe { result.write_unaligned(0) };
+    if result.is_null() {
+        return E_POINTER;
     }
-    CTL_E_INVALIDPICTURE
+    // SAFETY: `OleLoadPicture`'s contract: a writable pointer.
+    unsafe { result.write_unaligned(0) };
+    if stream == 0 {
+        return E_POINTER;
+    }
+    let wanted = usize::try_from(size).ok().filter(|&size| size > 0);
+    // SAFETY: as above: a live `IStream`.
+    let bytes = match unsafe { picture::read_stream(stream, wanted, LARGEST_PICTURE_FILE) } {
+        Ok(bytes) => bytes,
+        Err(status) => return status,
+    };
+    match super::picture::load(super::PICTURE.address(), &bytes, run_mode == 0) {
+        // SAFETY: a picture `load` just made; the rest as above.
+        Ok(object) => unsafe { super::picture::hand_out(object, interface, result) },
+        Err(status) => status,
+    }
 }
 
 pub(in crate::win32) const EXPORTS: &[Export] = exports![
