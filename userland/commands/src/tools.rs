@@ -1585,7 +1585,9 @@ const SETTINGS_SET_ARGUMENTS: [Argument; 3] = [
             64,
         ),
         "The new value: windows, macos or linux for shell.profile; a layout's name such as us, \
-         de, fr or us-intl for keyboard.layout; an IANA zone such as Europe/Paris, or UTC, for \
+         de, fr or us-intl for keyboard.layout; one to four layouts separated by commas such as us,de \
+         for keyboard.layouts; profile, super+space, ctrl+space, alt+shift, ctrl+shift or none \
+         for keyboard.switch_key; an IANA zone such as Europe/Paris, or UTC, for \
          time.zone; 1 or 2 for display.scale; right or left for mouse.buttons; traditional or \
          natural for mouse.scrolling; 1 to 10 for mouse.speed; 150 to 2000 for \
          keyboard.repeat_delay_ms; 2 to 60 for keyboard.repeat_rate.",
@@ -1599,7 +1601,8 @@ pub const SETTINGS_LIST: ToolDefinition = reading(
     "List the settings",
     "Lists every setting and its value, as `settings list` shows them: key=value, one a line. \
      shell.profile (windows, macos or linux: the desktop's layout) and keyboard.layout (us, \
-     us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se) and time.zone \
+     us-intl, us-mac, gb, us-dvorak, us-colemak, dk, fi, fr, be, ca, de, ch, it, no, br, pt, \
+     es, latam or se), keyboard.layouts and keyboard.switch_key and time.zone \
      (an IANA zone such as Europe/Paris, or UTC) and display.scale (1 or 2) and the mouse and \
      key preferences (mouse.buttons, mouse.scrolling, mouse.speed, keyboard.repeat_delay_ms, \
      keyboard.repeat_rate) and accessibility.sticky_keys, accessibility.slow_keys and \
@@ -1629,7 +1632,8 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
                   the Settings window would. shell.profile takes windows, macos or linux: the \
                   desktop's layout (its taskbar, dock or panel and its window buttons) changes \
                   for the person at once. keyboard.layout takes a keyboard layout's name (us, \
-                  us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se): \
+                  us-intl, us-mac, gb, us-dvorak, us-colemak, dk, fi, fr, be, ca, de, ch, it, \
+                  no, br, pt, es, latam or se): \
                   what every key types changes at once. time.zone takes an IANA zone such as \
                   Europe/Paris, or UTC: the zone programs show times in. display.scale takes 1 \
                   or 2: the display shows at it from the next boot. mouse.buttons takes right or \
