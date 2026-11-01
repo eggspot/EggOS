@@ -21,6 +21,7 @@ dependencies = [
  "eggos-app-manifest",
  "eggos-commands",
  "eggos-mcp",
+ "eggos-plist",
  "eggos-png",
  "eggos-runtime",
  "eggos-toolkit",
@@ -222,6 +223,7 @@ dependencies = [
  "eggos-calendar",
  "eggos-element-tree",
  "eggos-macos-gui",
+ "eggos-plist",
  "eggos-runtime",
  "eggos-settings-file",
  "eggos-toolkit",
@@ -261,6 +263,10 @@ dependencies = [
 
 [[package]]
 name = "eggos-net"
+version = "0.2.0"
+
+[[package]]
+name = "eggos-plist"
 version = "0.2.0"
 
 [[package]]

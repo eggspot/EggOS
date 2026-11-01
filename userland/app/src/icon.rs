@@ -7,7 +7,6 @@
 //! largest smaller, and one that fails to decode gives way to the next. Every step is "try,
 //! else next": an app whose icon cannot be read has none, and its install goes on.
 
-mod binary_plist;
 mod bitmap;
 mod icns;
 mod pe;
@@ -436,11 +435,12 @@ fn plist_file_name<'n>(
     key_element: &[u8],
     out: &'n mut [u8; PLIST_NAME_BYTES],
 ) -> Option<&'n [u8]> {
-    if plist.starts_with(binary_plist::MAGIC) {
+    if plist.starts_with(eggos_plist::binary::MAGIC) {
         let key = key_element
             .strip_prefix(b"<key>")
             .and_then(|key| key.strip_suffix(b"</key>"))?;
-        let name = binary_plist::dictionary_string(plist, key, out)?;
+        let document = eggos_plist::Document::parse(plist).ok()?;
+        let name = document.top().get(key)?.text()?.write_utf8(out)?;
         return is_plain_name(name).then_some(name);
     }
     let key = plist

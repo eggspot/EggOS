@@ -14,6 +14,7 @@ eggos-c-format = { path = "../c-format" }
 eggos-calendar = { path = "../../calendar" }
 eggos-element-tree = { path = "../element-tree" }
 eggos-macos-gui = { path = "../macos-gui" }
+eggos-plist = { path = "../../plist" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
 eggos-toolkit = { path = "../toolkit" }

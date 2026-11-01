@@ -1,20 +1,11 @@
-//! An `.app` bundle's place and its `Contents/Info.plist` (Apple's XML property list) as far as
-//! the layer reads them: the bundle a program inside `X.app/Contents/MacOS/` belongs to, and the
-//! string values of the property list's keys (`CFBundleName`, `CFBundleIdentifier`, ...).
+//! An `.app` bundle's place and its `Contents/Info.plist` (an XML or binary property list,
+//! read by `eggos-plist`) as far as the layer reads them: the bundle a program inside
+//! `X.app/Contents/MacOS/` belongs to, and the string values of the property list's keys
+//! (`CFBundleName`, `CFBundleIdentifier`, ...).
 
-const KEY_OPEN: &[u8] = b"<key>";
-const KEY_CLOSE: &[u8] = b"</key>";
-const STRING_OPEN: &[u8] = b"<string>";
-const STRING_CLOSE: &[u8] = b"</string>";
 const MACOS_FOLDER: &[u8] = b"/Contents/MacOS/";
 const BUNDLE_SUFFIX: &[u8] = b".app";
-const ENTITIES: [(&[u8], u8); 5] = [
-    (b"&amp;", b'&'),
-    (b"&lt;", b'<'),
-    (b"&gt;", b'>'),
-    (b"&quot;", b'"'),
-    (b"&apos;", b'\''),
-];
+const LONGEST_KEY: usize = 256;
 
 fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     haystack
@@ -38,50 +29,26 @@ pub fn bundle_path(executable: &[u8]) -> Option<&[u8]> {
     (!name.is_empty() && !name.contains(&b'/') && bundle.ends_with(BUNDLE_SUFFIX)).then_some(bundle)
 }
 
-fn decode<'a>(raw: &[u8], out: &'a mut [u8]) -> Option<&'a [u8]> {
-    let mut length = 0;
-    let mut at = 0;
-    while at < raw.len() {
-        let (byte, used) = match raw[at] {
-            b'&' => ENTITIES
-                .iter()
-                .find(|(entity, _)| raw[at..].starts_with(entity))
-                .map_or((b'&', 1), |(entity, byte)| (*byte, entity.len())),
-            byte => (byte, 1),
-        };
-        *out.get_mut(length)? = byte;
-        length += 1;
-        at += used;
-    }
-    Some(&out[..length])
-}
-
-/// Calls `each` with every key whose value is a string, and that value with its XML entities
-/// decoded (values longer than `scratch` are skipped).
-pub fn for_each_string(xml: &[u8], scratch: &mut [u8], mut each: impl FnMut(&[u8], &[u8])) {
-    let mut at = 0;
-    while let Some(open) = find(xml, KEY_OPEN, at) {
-        let key_start = open + KEY_OPEN.len();
-        let Some(key_end) = find(xml, KEY_CLOSE, key_start) else {
-            return;
-        };
-        let key = &xml[key_start..key_end];
-        at = key_end + KEY_CLOSE.len();
-        let mut value_at = at;
-        while xml.get(value_at).is_some_and(u8::is_ascii_whitespace) {
-            value_at += 1;
-        }
-        if !xml[value_at..].starts_with(STRING_OPEN) {
+/// Calls `each` with every key of the top-level dictionary whose value is a string, and that
+/// value as UTF-8, from an XML or a binary property list (values longer than `scratch` are
+/// skipped).
+pub fn for_each_string(plist: &[u8], scratch: &mut [u8], mut each: impl FnMut(&[u8], &[u8])) {
+    let Ok(document) = eggos_plist::Document::parse(plist) else {
+        return;
+    };
+    let Some(entries) = document.top().entries() else {
+        return;
+    };
+    let mut key_buffer = [0u8; LONGEST_KEY];
+    for (key, value) in entries {
+        let (Some(key), Some(value)) = (key.text(), value.text()) else {
             continue;
-        }
-        let value_start = value_at + STRING_OPEN.len();
-        let Some(value_end) = find(xml, STRING_CLOSE, value_start) else {
-            return;
         };
-        if let Some(value) = decode(&xml[value_start..value_end], scratch) {
-            each(key, value);
-        }
-        at = value_end + STRING_CLOSE.len();
+        let (Some(key), Some(value)) = (key.write_utf8(&mut key_buffer), value.write_utf8(scratch))
+        else {
+            continue;
+        };
+        each(key, value);
     }
 }
 
