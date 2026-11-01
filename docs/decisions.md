@@ -17335,3 +17335,712 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** `compress` and `plist` join `big-endian-tests` when they exist (parts 51 and 14).
   The legacy comments of the large files part 0 touched (`kernel/src/linux.rs`,
   `kernel/src/lib.rs` and the userland mains) are left for the comment sweep's own PR (D66).
+
+## D218 The toolkit's second slice: tooltips, the menu bar and menu button, tables, the text area, sideways scrolling, drag inside a window and the light theme, as docs/ux/toolkit-v0.5.md designs them (extends D199) — Decided by the build loop (engineering; decided by research where marked)
+
+- **Context.** D199's "Not yet" and toolkit-v0.4.md section 9 left the next widgets and the
+  light theme; Claude Fable designed them in docs/ux/toolkit-v0.5.md (D16). Settings, the
+  installer, Files and the Text Editor need menus, tables, multi-line text and a light
+  appearance a switcher from macOS or Windows expects, and agents must read every new widget
+  without the screen (D22, D161).
+- **Decision.**
+  - **Theme.** `userland/toolkit/src/theme.rs`: `Theme { Dark, Light }`, `Token` (one per
+    design token, `icon.badge` new), `Palette` with `get`, and the four palettes `DARK`,
+    `LIGHT`, `DARK_HIGH_CONTRAST`, `LIGHT_HIGH_CONTRAST` at index `theme + 2 * high_contrast`.
+    `colour.rs` keeps the dark values as constants for code that draws outside the toolkit.
+    The `Canvas` carries a palette; every widget draws through it; `Kind::Label`'s colour and
+    `Kind::Panel`'s fill and border are `Token`s, so a label made in the dark theme is right in
+    the light one without being rebuilt; `widget::label_text` draws a label in an exact pixel
+    for the macOS layer's app-chosen colours. `WidgetTree::set_palette` damages everything.
+  - **Repaint path.** `/dev/window` gains `GET_PALETTE` (request 39) and `SET_PALETTE`
+    (request 40, the same permission as `SET_PROFILE`) and the event `PaletteChanged` (kind
+    16); the kernel keeps the index beside the profile and reads `appearance.theme` from the
+    settings file at boot. `application::run` asks `GET_PALETTE` before the first frame, sets
+    the tree's palette and the canvas's on `PaletteChanged`, and draws the whole window again.
+  - **Setting.** `appearance.theme` (`dark`, `light`) in `settings get/set/list` and MCP's
+    `settings_*` through one `Change::Theme`; Settings' Appearance pane has the `Theme` row
+    (radios `Dark` `Light` at row 2, y 272, ending at x 448) and the search words.
+  - **Widgets.** `Kind::Tooltip` (a child of its owner, shown after 600 ms of hover or keyboard
+    focus, the 300 ms hop, spent by a press or key, long-press on phones, never on wearables);
+    `menu::Entry::Item` gains `key`, mnemonics with `&`, `menu::MAX_ENTRIES` 16; `menu::Bar`
+    and `menu::Button` as `Kind::MenuBar` and `Kind::MenuButton` (press-slide-release, F10 and
+    lone Alt arm the bar, Alt+letter, arrows, Esc, `Response::Invoked`; in the macOS profile the
+    bar takes no room and `run` sends it with `SET_MENU` and answers `MenuChosen` with
+    `WidgetTree::menu_chosen`); `Kind::Table` (`Column`, `SortOrder`, `CellText`; resize by
+    the 7 px handle, sort by a header click, keys, both bars; `Sorted`, `ColumnResized`; the
+    tree asks the program for the cells of the rows it draws only); `Kind::TextArea` over the
+    tree's text stores (`WidgetTree<N, A>`, `text_area::Store`: 64 KiB and 4096 visual lines,
+    the one-pass wrap); the scroll view's horizontal axis (`offset_x`, `content_width`,
+    `THUMB_X`, Shift+wheel and the sideways wheel to the innermost scroller on that axis);
+    drag inside a window (`set_drag_source`, `set_drop_target(DropMode)`, the 6 px threshold,
+    the ghost, `DragStarted`, `Dropped`, `DragCancelled`, edge scrolling, long-press on
+    phones). `PointerShape` gains `ResizeEW` and `Hand`. Seven roles join the element tree:
+    15 `tooltip` to 21 `textarea`.
+  - **Code layout.** New modules `theme.rs`, `tooltip.rs`, `table.rs`, `text_area.rs`,
+    `drag.rs`, and the tree's behaviour in `tree/{tooltips,menus,tables,text_areas,drags}.rs`;
+    `tick` now returns a `Response` (a long-press's `DragStarted`).
+- **Decided by research** (questions the design left open, settled from the design, the code
+  and the platforms' behaviour; a research subagent reviewed them again on 2026-11-01 and
+  confirmed them):
+  - *Whether the kernel may depend on the toolkit for its two benchmarks.* Not in its release
+    build (research, 2026-11-01, overruling the first draft, which made `eggos-toolkit` a
+    plain kernel dependency): the kernel must not depend on a userland GUI crate (layering,
+    and the base image's size, D24). `eggos-toolkit` is optional, enabled by `qemu-bench`
+    (`dep:eggos-toolkit`) and a dev-dependency for host tests; the kernel's own `/dev/window`
+    code that writes an element tree uses the dependency-free `eggos-element-tree`.
+  - *Where a bar's entries get element ids when every menu is listed, not only the open one
+    (the design's `16 + entry` covers one menu).* Titles are parts 0..6 and title `t`'s entry
+    `e` is part `6 + 16 t + e`; parts past 98 (the last entries of a sixth full menu) are not
+    listed, so ids stay under D161's 100 per widget.
+  - *How a release over a list row that is a drag source counts.* The press does not select;
+    the release that was not a drag selects (`Chosen` only when the row changes, as every
+    list click), macOS Finder's habit the design names.
+  - *Whether the wrap pass may start at the edited line.* It starts one line above: shortening
+    the first word of a line can let it join the line above, so "a paragraph's wrap cannot
+    affect the lines above it" does not hold for the line just above.
+  - *How `application::run` learns that the profile changed, with no event for it.* It asks
+    `GET_PROFILE` again whenever the window gets the focus (changing the profile happens in
+    Settings or a terminal, so the window regains the focus after it) and resends or removes
+    the main menu.
+  - *How large a copy from a text area may be.* `WidgetTree::copied` holds 4 KiB (it held
+    255 bytes for the field): enough for a form's page of text without making every tree
+    carry 64 KiB; a longer selection is cut at a character boundary.
+  - *How the drop highlight's fill keeps the row's text.* The target draws the row hovered
+    (`menu.hover` under its text) and the highlight adds only the 2 px `accent` outline, since
+    the framebuffer has no alpha.
+- **Check.** Host tests in `userland/toolkit/src/tests_slice_two.rs` (section 13's fixtures A
+  to G: tooltips' delay, hop, spending, focus, placement, phone and wearable; the bar's
+  pointer, keys, mnemonics, main-menu pool and macOS layout; the menu button; the table's
+  pixels, keys, sorting arrow, resize and Esc, both-way scrolling, agent actions and the
+  benchmark's shape (exactly 24 `cell` calls for 1 000 and 10 000 rows); the text area's
+  wrap, vertical moves with `wanted_x`, Enter and the bar, long words, the store's limit, the
+  clipboard and its element; the scroll view's sideways bar, wheel and thumb; drag, drop,
+  cancel and the phone's long-press; the light palette's pixels and every stated WCAG ratio
+  computed from the palette), `settings` command and window tests for `appearance.theme`,
+  and the benchmarks `toolkit_table_layout_1000_rows` and `text_area_wrap_64k` in
+  `kernel/src/bench.rs`, which link `eggos-toolkit` into the kernel only in bench builds (an
+  optional dependency the `qemu-bench` feature turns on, and a dev-dependency for host
+  tests; `bench` is built only under `any(test, feature = "qemu-bench")`).
+- **Not yet.** The shell (`drivers/src/desktop`), the boot screen and the terminal keep their
+  own dark colours in the light theme (the shell's token table is not yet a `Palette`), and so
+  do what Files and the Text Editor draw themselves and the installer's art; the Windows and
+  macOS layers' system colours; `accessibility.high_contrast` (the palettes exist, the setting
+  does not); the light high-contrast ANSI table; submenus, checkable items, a bar's overflow;
+  fit-to-content, column reordering, multi-selection and cell focus in tables; a right-click on
+  a table row selecting it first; the text area's undo, word moves, touch handles and its
+  selection in the element tree; drag between windows; phones' bottom-sheet menus and 40 px
+  rows, TVs' two-dimensional focus, `widget::form_factor` being called by `run` (programs set
+  it with `set_form_factor`); a `DragCancelled` when the source is hidden or disabled (the drag
+  ends silently); the QEMU screendump of Settings in the light theme; `bar.hover`'s `text.dim`
+  is 4.47:1, under AA by a rounding the design states as 4.5.
+
+## D219 Drivers on interrupts, the rest: virtio-blk with several requests in flight, the disk, agent console, network and entropy drivers woken by their interrupts, the generator reseeded from virtio-rng, and Settings' About listing the devices from a shared crate (batch part 2; part 32's leftover; D184's "Not yet"; extends D111, D130, D131, D136, D157, D184; M5, M8) — Decided by the build loop (the About list designed by Claude Fable, docs/ux/devices-v0.3.md; the open points decided by research, one of them changed by it)
+
+- **Context.** D184 put virtio-input on interrupts and left every other virtio driver polling
+  until an answer came, or every 4 to 50 ms (the network thread 50 wake-ups a second when idle,
+  `/dev/agent` waits every 32 ms), virtio-blk one request at a time, the generator seeded only by
+  what the firmware gives, and the GUI front-end of the `devices` capability (D22) unbuilt
+  because the toolkit had no table (D218 built `Kind::Table`).
+- **Decision: virtio-blk.** One request queue of up to 64 entries; in the same 64 KiB DMA region
+  as before, 15 request headers, 15 status bytes and fifteen 4 KiB data slots. A request has a
+  number (its header and status byte) and a run of whole data slots
+  (`eggos_drivers::virtio::block::requests::RequestTable`: `reserve`, `posted`, `answered`,
+  `release`), so up to 15 are in flight and complete in any order; a 60 KiB transfer still goes
+  as one request taking every slot, eight 4 KiB reads as eight requests at once.
+  `VirtioBlock::read_many(&mut [(sector, buffer)])` and `BlockDevice::read_many` (a default
+  that reads one after the other) post several reads together. Ordering for EggFS's journal:
+  every call returns only once all of its requests completed, a call first waits for any
+  request a timed-out call left posted, and a flush is posted alone after every earlier request
+  completed, with nothing posted until it completes, so a barrier means what it meant with one
+  request in flight.
+- **Decision: waiting on interrupts.** `Deadline` carries `DeviceEvents::wait::<P>` and gains
+  `sleep_until_raised(events, &mut seen)`; `devices::virtio::waiting_for(events, deadline)` is
+  the `keep_waiting` a driver's request gets: it reads the events' count before the request is
+  posted, then sleeps until the device's interrupt raises them or the deadline, polling as
+  before when the device has no interrupt. The caller is the waiter (one per device: a disk is
+  held by one user at a time; the entropy device is taken out of its lock while read), so a
+  completion wakes exactly the thread that asked.
+- **Decision: which drivers.** virtio-blk (a `DeviceEvents` per disk, `MAX_DISKS`), the agent
+  channel's virtio-console (every queue; `agent_channel::DEVICE_EVENTS`, made with
+  `DeviceEvents::waking_input_waiters`, whose raise also runs `console::wake_input_waiters` so
+  `read` and `poll` of `/dev/agent` sleep with no polling, `linux::agent_channel::next_poll`
+  returning no deadline), virtio-net (the receive queue only; sent frames are taken back at the
+  next send; the network thread sleeps until a frame or an interface timer, and while TCP
+  connections are open keeps D157's 1/20 ms polling for their timers) and virtio-rng. Each
+  connects at probe with `connect_interrupt` and stays polled when that fails. The GPU stays
+  polled: its flush runs under the display's spinning lock, where no thread may sleep.
+- **Decision: the generator.** `random::reseed_from_device` hashes a device's bytes in under a
+  tag of their own (0x82), credited by `random::device_credit` (8 bits a byte for a whole read
+  of `DEVICE_SEED_BYTES`, none for a short read or one of zeros only), and reseeds;
+  `devices::virtio::seed_random::<P>()` reads 32 bytes right after probing and the boot log says
+  `random: reseeded from virtio-rng` (or `..., still NOT SEEDED`).
+- **Decision: About's devices.** The parsing, filter, order and words moved out of
+  `userland/coreutils/src/device.rs` into a new no-allocator crate `eggos-device-list`
+  (`userland/device-list`: `Device`, `KINDS`, `shown_by_default`, `rows`, `parse_all`,
+  `DEVICES_FILE`, `EXAMPLE`), which `device list` (unchanged output) and Settings use.
+  `userland/settings/src/about_pane.rs` (`AboutPane`): the `Devices` label at (16, 182), `Show
+  all <n> devices` right-aligned at y 176 (disabled when the default view shows everything or
+  the file cannot be read, then labelled `Show all devices`), and the toolkit's table `Devices`
+  at (16, 212) filling the pane less 16, columns `Kind` 128, `Device` 176, `Driver` 120, none
+  sortable; the empty texts of the design. About's pane is now as tall as the window
+  (`Length::Fill`); showing it asks `Request::ReadDevices` and unticks the box; ticking keeps
+  the selected device selected when still shown, else selects the first row. The table reads
+  its cells through a `CellText` function, so the shown rows' words are kept in one of two
+  static row stores of atomics (`ROW_SLOTS`, 64 rows), claimed by a pane when it first shows
+  devices and given back when it is dropped. The toolkit gains `WidgetTree::set_empty_text` and
+  `set_cell_data`. Search words added to About: `devices`, `hardware`, `driver`, `drivers`,
+  `Device Manager`, `System Information`, `System Report`, `PCI`, `virtio`, `GPU`, `graphics`.
+  Settings' `CAPACITY` (and the installer's) goes from 186 to 189.
+- **Decision: the docs.** The roadmap's support matrix now says virtio-gpu's cursor queue and the
+  terminal's blink are built (D186), and records the drivers on interrupts and the requests in
+  flight; docs/drivers.md, network.md, settings.md, coreutils.md and limitations.md follow.
+- **Check.** Host tests: the request table (numbers, runs of slots, reuse, a full table), eight
+  4 KiB reads reaching the fake disk in one batch and landing in their buffers, more reads than
+  requests in flight completing, a flush that waits for an earlier timed-out write and goes
+  alone, interrupts clearing the no-interrupt flag, and the existing virtio-blk tests (requests
+  of at most 60 KiB, timeouts, failures, flushes); the generator credited and reseeded by a
+  device's bytes; `eggos-device-list` (parsing, the default filter, order, words, short
+  buffers); a device's short or all-zero read hashed in and reseeding but credited nothing
+  (`device_credit`: 256 bits for 32 bytes not all zero, 0 for 31 bytes, none, or 32 zeros);
+  About (rows, words and order from the shared example, the layout in window
+  coordinates, the box re-filtering and keeping the selection, an unreadable file, a default
+  view showing everything, the search words). Benchmarks (no baseline lines yet):
+  `block_read_4k_qd8` (eight 4 KiB reads in flight per iteration on the first disk no file
+  system holds, else on a memory disk), `net_rx_wakeup` (a device's events raised and a waiting
+  thread woken, round trip: the path a received frame's interrupt takes to the network thread)
+  and `idle_wakeups_per_second` (wake-ups from idle counted by the idle loop over one second
+  after the other benchmarks, `qemu-bench` builds only; it must fall).
+- **Cost (D24, D78).** Not measured (no builds in this batch). Expected: virtio-blk's DMA region
+  unchanged (64 KiB), its driver state about 200 bytes larger; `.bss` 4 + 3 `DeviceEvents` (24
+  bytes each) and two About row stores in the Settings program (about 17 KiB); the idle loop one
+  relaxed increment in `qemu-bench` builds only; idle wake-ups: the network thread's 50 a
+  second gone while no TCP connection is open, `/dev/agent`'s 31 a second gone.
+- **Decided by research** (a research subagent reviewed these on 2026-11-01 and confirmed
+  them, but for (5), which it changed): (1) data slots of 4 KiB in a run per request, rather than fixed 60 KiB slots
+  (more memory) or eight 7.5 KiB slots (a 60 KiB transfer in eight requests): keeps the region
+  at 64 KiB and a large transfer at one request. (2) The submitter waits for its own
+  completions on the device's events instead of a completion thread: one waiter per device
+  already holds (a disk has one user at a time) and no thread is added. (3) A device's raise
+  may wake the input waiters from the interrupt: the console's own receive interrupt already
+  does, and the CPU takes interrupts only where it holds no lock (D37). (4) TCP connections keep
+  D157's polling, because the stack exposes no next-timer time for them (the research found
+  the way to drop it, recorded under "Not yet"). (5) virtio-rng reseeds once at boot;
+  periodic reseeding would add wake-ups. The first draft credited every byte read 8 bits; the
+  research answer: a broken or hostile device's short or all-zero read must not count towards
+  seeding, so only a whole 32-byte read that is not all zeros is credited and anything else is
+  hashed in uncredited (`random::device_credit`). (6) About's table uses the toolkit's table as built (a 28 px header, the element
+  role `table`, cells as the row's value) where devices-v0.3.md predates it (24 px, `list`);
+  its `Device` column is fixed at the default window's 176 px; `disk` and `storage` are left out
+  of About's search words because the later Storage pane's test holds `storage` to Storage
+  alone. (7) The row store is a static of atomics instead of `unsafe` shared state, because the
+  toolkit's cell function takes only a `u32`.
+- **Not yet.** The GPU on interrupts and display events (`DisplayEvent::ModeChanged` when
+  QEMU's window is resized, the desktop relaying out, the QMP check
+  `xtask/src/qemu/display_resize.rs`); virtio-console input as a console; device lines through
+  the I/O APIC (x86 INTx), on other CPUs and a line per queue; lines given back when a driver
+  lets a device go or when connecting fails after the line was routed (the HAL hands lines out
+  for good; `interrupts::connect` has no disconnect); About's element tree in a QEMU check;
+  About's two-line rows for narrow tables and touch (D23) and its `Device` column taking a
+  wider window's extra width (the toolkit's table has fixed widths and Settings no resize hook);
+  EggFS reading several blocks at once (its `Disk` trait asks for one transfer at a time, so it
+  gets no requests in flight yet); reseeding from virtio-rng after boot; hot-plug; the costs
+  above. TCP keeps D157's 1/20 ms polling while a connection is open, because a program's
+  stream writes, reads, `shutdown` and `connect` do not wake the network thread; the fix
+  (research, 2026-11-01): sleep until the minimum of `Connection::next_poll_ms` over the
+  streams, kick the network thread's device events from the stream mutators, and drop the
+  `has_streams()` clamp.
+
+## D220 Keyboard and text, the rest: 20 layouts with `us-mac` and five more, up to four at once with a switch key in the kernel, the layout applied without a display through `/proc/sys/eggos`, Num and Scroll Lock with their lights, the bar's layout indicator and its menu, the dead-key highlight, Egg Mono's Latin Extended-A, accent-insensitive search, and the Windows layer's `ToUnicodeEx` for the layout in force (batch part 3; D185's "Not yet"; extends D132, D163, D185, D195; amends D185 (6) for the headless case) — Decided by the build loop (the open questions decided by research; the layouts, the switch key, the indicator, the pane and the glyphs designed by Claude Fable, `docs/ux/keyboard-v0.3.md` section 9, `docs/ux/font-8x16-latin-ext-a.txt`)
+
+- **Context.** D185 shipped 14 layouts, one at a time, applied only through `/dev/window`
+  (from the next boot without a display), Caps Lock's light only, fonts to Latin-1 and `€`,
+  the launcher's search ASCII only, and the Windows layer answering `ToUnicodeEx` and friends
+  for the US layout. Its "Not yet" is this part.
+- **Decision: the layouts.** `drivers/src/input/layout.rs` grows to 20 tables in the design's
+  9.2 order: `us-mac` (the Mac's U.S. layout: the US first two levels, macOS's Option layer as
+  the third level with the dead keys on Option+E, `, I, U, N), `be` (Belgian French), `ca`
+  (Canadian French, with the cedilla dead key), `ch` (Swiss German), `pt` (Portuguese) and
+  `latam` (Latin American Spanish), from Windows's layouts of those names (D185's rule:
+  Windows's levels where Windows and Linux differ; characters the fonts lack left out).
+  Diaeresis + Y now composes `Ÿ` (U+0178). The settings file's `KEYBOARD_LAYOUTS` gains each
+  layout's two-letter `code` (the bar indicator's text). Layout numbers after `us-intl` shift;
+  the settings file holds ids, so saved files are unaffected.
+- **Decision: several layouts and the switch key.** `keyboard.layouts` (one to four ids,
+  comma-separated, none twice; `KeyboardLayoutSet`, `MAX_KEYBOARD_LAYOUTS` = 4) and
+  `keyboard.switch_key` (`profile`, `super+space`, `ctrl+space`, `alt+shift`, `ctrl+shift`,
+  `none`; `SwitchKey`; `profile` is Ctrl+Space in the macOS profile, Super+Space otherwise).
+  `settings set keyboard.layout X` adds X to the set when missing (appended while there is
+  room, else in the place of the layout in force); `settings set keyboard.layouts` keeps the
+  layout in force when listed, else the first. The kernel's input layer keeps the set and the
+  key in one packed atomic word (zero is the default, so it stays in `.bss`), and
+  `InputState` cycles on the Space chords' press (Shift backwards, never on a repeat; the
+  Space press and release are swallowed) or on Alt+Shift / Ctrl+Shift's release with no other
+  key pressed between; with one layout the chord passes on unchanged. A cycle drops a pending
+  accent and sends `InputEvent::LayoutChanged(number)`; the desktop shows the layout's title
+  in the notice for `LAYOUT_HINT_MS` = 1000 and no longer counts a Super held for the chord as
+  Super alone. `/dev/window` gains `SET_KEYBOARD_LAYOUTS` (number 38, 12 bytes: count, four
+  layout bytes, switch key; the `SET_PROFILE` permission) and `GET_KEYBOARD_LAYOUT`'s flags
+  gain `NUM_LOCK` (4) and `SCROLL_LOCK` (8). The kernel reads all three keys at boot
+  (`terminal::load_saved_settings`).
+- **Decision: the bar's layout indicator (9.3).** `PanelItem::KeyboardLayout`, shown only
+  while the set holds two or more layouts (`Desktop::set_keyboard_layouts`, which the kernel
+  calls with the set, the layout in force and the switch key's chord before each frame's
+  events and after `SET_KEYBOARD_LAYOUT(S)`; one layout leaves the bar pixel for pixel as it
+  was): on the top bar a `bar.height` square left of the power button ((1216, 0, 28, 28) at
+  1280), on the taskbar a 40x40 item 8 px left of the clock ((1096, 760, 40, 40)), the code in
+  Egg Mono `TEXT` centred in it ((1222, 6) and (1108, 772)), `BAR_HOVER` on hover and
+  `BAR_PRESSED` pressed or while its menu is open. The Agent chip moves 8 px left of it
+  ((1152, 4) and (1032, 770)) and the taskbar's window items end 16 px before the leftmost of
+  the chip, the indicator and the clock. A new set damages the panels; a new layout in force
+  only the indicator (and the open menu). Its tooltip, after `TOOLTIP_DELAY_MS`, is the title,
+  two spaces and `SwitchKey::chord` (`German  Super+Space`), or the title alone with `none`.
+  A press opens the menu (a second press, Esc or a press outside closes it):
+  `LAYOUT_MENU_WIDTH` = 256, the power menu's chrome, one `MENU_ITEM_HEIGHT` row per layout
+  (title at x + 24, `>` in `ACCENT` at x + 8 on the layout in force), a 1 px `MENU_BORDER`
+  separator in an 8 px row, `Keyboard settings...`; under the top bar at y 32 with its right
+  edge at the indicator's, or with its bottom 4 px above the taskbar; `MENU_HOVER` on the row
+  under the pointer, Up/Down/Enter/Esc while open, the highlight starting on the layout in
+  force. A layout row returns `Action::ChooseKeyboardLayout(number)`, which the kernel applies
+  with `input::set_layout` (no hint: only the switch key sends `LayoutChanged`);
+  `Keyboard settings...` focuses the open Settings window, else returns
+  `Action::OpenSettingsPane(SettingsPane::Keyboard)` under the launcher's 2 s starting guard,
+  and the kernel starts `/bin/settings --pane keyboard` (`Desktop::settings_pane_command`).
+  `settings --pane <pane>` opens the window on a pane named by its title in lower case, `-`
+  for spaces and `and` for `&` (`pane_named`), exit 2 for an unknown one; the registry's
+  `settings` entry gains the option.
+- **Decision: the dead-key highlight (9.4).** The kernel's dead-key `Key` event carries the
+  waiting spacing accent (`Typist::pending_accent`) with `DEAD_KEY_CHARACTER` (bit 23 of the
+  event's 24-bit character), and Backspace taking an accent back, which sent nothing, now
+  sends a press of code 0 with character `DEAD_KEY_CHARACTER` alone. The desktop hands the
+  focused window a `Key` record with the accent (or 0) and `modifier::DEAD` = 256; its launcher
+  and shortcuts never take it as typed. The toolkit decodes such a record as
+  `Input::DeadKey { accent }` (`Modifiers::DEAD`); the focused, enabled text field or text area
+  draws a cell at its caret as wide as the accent's Egg Sans advance (at least
+  `DEAD_KEY_MIN_WIDTH` = 4) and 16 tall, filled with the palette's `accent`, the accent in
+  `icon_dark`, the rest of the text (a text area: the rest of the caret's visual line) moved
+  right by the cell, and the caret hidden; the next non-modifier key's press, `DeadKey(None)`,
+  losing the focus or the window's focus removes it, and the finished characters arrive as
+  before. Programs that ignore the bit show nothing: the Windows layer types nothing for a
+  `DEAD` record and ignores the code-0 one, eggway skips the code-0 one, AppKit and the
+  terminal program ignore `Input::DeadKey`.
+- **Decision: without a display.** `/proc/sys/eggos/keyboard_layout`, `keyboard_layouts` and
+  `keyboard_switch_key` (mode 0644): reading gives the value in use, a line; writing a value
+  (one trailing newline allowed) applies it at once, `EINVAL` for a value the settings file
+  refuses; only a privileged caller may write them, anyone else gets `EACCES`
+  (`proc::may_write_control_files`, checked by the write syscall's snapshot branch, the rule
+  `/dev/window`'s `may_change_desktop_settings` applies). `/proc` gains writable control files (`is_node_writable`, `truncate` and `write`
+  for them; the write syscall writes to a writable snapshot file). `settings set` writes them
+  when it cannot open `/dev/window`; with a desktop it still uses `/dev/window`. The Windows
+  layer reads `keyboard_layout` there.
+- **Decision: Num Lock and Scroll Lock.** Num Lock starts on; with it off the kernel turns the
+  keypad's keys into Home, Up, PgUp, Left, (5 nothing), Right, End, Down, PgDn, Insert and
+  Delete before anything else sees them, so the console, every window and both layers get the
+  navigation keys. Scroll Lock toggles its light only. `InputDevice::set_caps_lock_light`
+  becomes `set_lock_lights(LockLights)`; virtio-input sets its status queue up when `EV_BITS`
+  for `EV_LED` lists any of `LED_NUML`, `LED_CAPSL`, `LED_SCROLLL`, and writes one `EV_LED` per
+  light that changed and the keyboard has. A light a device refused now keeps the input thread
+  polling at its interval until it is taken (D185's round-2 finding: it waited for the next
+  input event).
+- **Decision: the glyphs.** `font/src/latin_ext_a.rs` reads the design file's 128 glyphs while
+  the crate compiles, with `latin_1.rs`'s parser made generic. Egg Mono's `u8` glyph ids are
+  unchanged; `eggos_font::glyph_rows(character)` draws Latin Extended-A by character and
+  `covers` says yes for U+0100-U+017F. Egg Sans draws them with Egg Mono's glyphs, 8 wide on
+  the shared baseline. The desktop's text uses `glyph_rows`.
+- **Decision: search.** `eggos_font::ascii_fold(char) -> Folded` (one or two lower-case ASCII
+  letters for every letter of U+00C0-U+017F, a 384-byte table; ASCII capitals lowered;
+  anything else unchanged), `contains_folded` and `cmp_folded`, allocation-free. The
+  launcher's `catalogue::matches` and `ordered` and Settings' pane search use them.
+- **Decision: the Windows layer.** `gui::layout_keyboard` (outside `win32/`, host-tested):
+  `ToUnicodeEx` types the layout in force through the kernel's own `Typist` (dead keys return
+  -1 with the spacing accent, the state kept between calls in one word, `Typist::to_bits`, and
+  left alone with flag 4), AltGr is Ctrl+Alt, Ctrl alone keeps the control characters;
+  `VkKeyScanExW` searches plain, Shift, AltGr and Shift+AltGr (state bits 1, 2, 4);
+  `MapVirtualKeyW`'s `MAPVK_VK_TO_CHAR` marks a dead key with the top bit. The layer now
+  depends on `eggos-drivers` (as coreutils does).
+- **Decision: the Keyboard pane (9.7).** Your layouts: a 4-row list with titles drawn by
+  labels over it, `Add a layout...` (a dropdown of the 20 titles, disabled with four, and then
+  the status line `Four layouts is the most.`), `Move up`, `Move down`, `Remove`, and the
+  `Switch key` dropdown (disabled without a keyboard). `CAPACITY` 186, the installer's dialog
+  too. The program refreshes the set from `/proc/sys/eggos/keyboard_layouts` when focused.
+- **Front-ends (D22).** GUI: the pane, the bar's indicator and its menu, the dead-key
+  highlight. CLI: `settings --pane keyboard`, `settings set|get keyboard.layouts` and
+  `keyboard.switch_key`, `settings list` lines, the refusals of 9.1 (`at most 4 layouts`,
+  `'us' is listed twice`, the unknown name with the layouts' ids), status 2, `invalid_value`.
+  MCP: `settings_set`/`settings_get`/`settings_list` with the same keys (descriptions name
+  them).
+- **Check.** Host tests: the 20 tables' order and dead keys (`ca`'s cedilla), typing on `ca`,
+  `pt`, `ch`, `be`, `latam`, `us-mac` (Option and Right Alt), `us-intl`'s `ÿ`/`Ÿ`, the pending
+  accent and the typist word; the settings file's set, refusals, `with_chosen`, `keeping`,
+  `next_after`, switch keys; the kernel's cycling, Super+Space (press, not repeat, Shift
+  backwards), Ctrl+Space in the macOS profile, `none`, Alt+Shift only on a clean release, one
+  layout passing the chord on, a cycle dropping the accent, the set's packing, Num Lock's
+  keypad and Scroll Lock, the lights' retry; `/proc/sys/eggos`'s listing, modes and parsing;
+  virtio-input's queue-1 `EV_LED` events (one per changed light, only the lights the keyboard
+  has, a full queue asked again); `/proc/sys/eggos` written by root and refused with `EACCES`
+  for an unprivileged caller; `SET_KEYBOARD_LAYOUTS`'s number and parse; the hint's
+  timing and Super-alone; Egg Mono's Ext-A glyphs equal the design file and keep the letters'
+  bodies, Egg Sans draws them 8 wide; the fold's cases and its agreement with ASCII matching,
+  the launcher's accent-insensitive search and order; `settings set` of the new keys and
+  their refusals; the pane's rows, add, move, remove, the full set and the switch key; the
+  Windows layer's `ToUnicodeEx`, `VkKeyScanExW` and `MapVirtualKeyW` on `de`, `ch` and `us`.
+  The indicator: none with one layout (the bar hashes as before, every profile), its rects,
+  text and the Agent chip on the top bar (macOS and Linux) and the taskbar, a new layout in
+  force damaging and changing only the target, the three tooltips at 700 ms, the menu's rect
+  under the top bar and above the taskbar, its `>` mark in `ACCENT`, a press on `German`
+  choosing 11, `Keyboard settings...` opening the pane and its command, a second press, Esc
+  and a press outside closing it, Down then Enter choosing the next layout, a set of one
+  closing it; `settings --pane` naming panes and refusing others. The highlight: the kernel's
+  dead-key and take-back events and their packing; the desktop's `DEAD` records; the
+  toolkit's decoding, the cell in `accent` with the accent in `icon_dark` and no caret, `é`
+  after it equal to typing `é` directly, Backspace leaving the field as before, Shift keeping
+  it and an arrow dropping it, the focus taking it, a text area's cell; the Windows layer's
+  `DEAD` records.
+- **Cost (D24, D78).** Not measured (no builds in this batch). Expected: the key path gains
+  three cheap tests (Num Lock off, the lock keys, a set of two or more) before the switch
+  key's cold function; `InputState` about 10 bytes larger; `.bss` one `u64` and two bools;
+  rodata about 2 KiB of layout tables, 2 KiB of Ext-A glyphs (twice: Egg Mono's and Egg Sans's
+  widened copy) and 384 bytes of folds. The build phase reports `input_key_to_bytes` (D214's
+  slot table kept) and the image size. The indicator adds, per frame, one read of the packed
+  set and a compare of the indicator's state (about 330 bytes, in `Desktop`); the dead-key
+  events one branch on the cold dead-key path.
+- **Decided by research** (a research subagent, 2026-11-01, from the design, D185 and the
+  code): (1) setting a layout already in the set only puts it in force; design 9.10.3's
+  example (`us,fr,es`) contradicts 9.1 and would silently drop a chosen layout, so 9.1 wins
+  and the example should name a layout not in the set. (2) `glyph_id` stays `u8` and Ext-A is
+  drawn by character (`glyph_rows`), the design's second option, keeping the terminal's `u8`
+  cells (D24); Ext-A shows `?` in terminals until their cells widen. (3) Num Lock off remaps
+  the keypad in the kernel (as Windows's VKs do) rather than a Num Lock bit in the 8-bit key
+  modifiers, which the desktop compares exactly; Num and Scroll Lock reach programs through
+  `/dev/window`'s flags, not the design's bits 64 and 128. (4) `ascii_fold` returns a
+  `Folded` value, since an unchanged `€` has no `&'static str`. (5) The Windows layer keeps
+  the US virtual-key codes of the keys' places and the US `HKL` for now. (6) Three
+  `/proc/sys/eggos` files, one value each (sysctl's convention), the headless route D185 (6)
+  lacked; `/dev/window` stays the desktop's. (7) eggway's per-layout keymap stays later, as
+  design 9.11 lists it. (8) The switch key ships with the hint, the indicator, its menu and the
+  dead-key highlight together; the work is not complete without them. (9) Who may write
+  `/proc/sys/eggos`'s control files (a research pass, 2026-11-01, overruling the first draft,
+  which let any caller write them: the files are 0644 but `open` checks no mode, so any
+  process could change the keyboard under the person): only a privileged caller
+  (`is_privileged()`), the same rule `/dev/window` applies to desktop settings; `EACCES`
+  otherwise, as Linux answers a write to a root-owned sysctl.
+- **Decided by research** (a research subagent reviewed these on 2026-11-01 and confirmed
+  them). Request number 38 for `SET_KEYBOARD_LAYOUTS`; Shift+Option+Y
+  types `Á` on `us-mac` (macOS's); `pt`'s AltGr diaeresis on the key right of P (xkb's and
+  Windows's `pt`); the Swiss and Latin American keypad decimal `.`; three `/proc` writes
+  in the order set, switch key, layout; the pane's status line shared with the no-disk line.
+  For the indicator and the highlight: `modifier::DEAD` is 256, leaving 64 and 128 to the
+  design's Num and Scroll Lock bits; the kernel marks the dead key in the event's character
+  (bit 23, above every Unicode scalar) rather than in the 8-bit key modifiers, which the
+  terminal crate owns and the desktop compares exactly; Backspace's take-back is a code-0
+  record, so programs and the launcher that ignore the bit delete nothing; the toolkit decodes
+  `DEAD` records as their own `Input::DeadKey`, so its programs that do not draw the highlight
+  (the terminal program, AppKit) type nothing, as the design promises; the menu opens with the
+  layout in force highlighted, so 9.10.6's Down then Enter chooses the next layout;
+  `settings --pane <pane>` beside `--pair` rather than network-v0.3's unbuilt `settings open
+  <pane>` verb (a later part may add the verb as a synonym); the indicator's rects follow the
+  design's no-adapter geometry, there being no network indicator yet.
+- **Not yet.** The indicator's and its menu's `wm show` roles (`Keyboard layout`,
+  `Keyboard layouts`: the bar has no element tree yet); saving the layout the menu or the
+  switch key chooses to `keyboard.layout` (9.3 says saved; the kernel does not write the
+  settings file, so the next boot starts in the saved layout); the indicator at scale 2 and on
+  the phone bar (the desktop draws its panels at scale 1), keyboard focus on bar items (Enter
+  opening the menu), the menu as a bottom sheet on touch; the dead-key highlight in the
+  console's and the Terminal app's grids (the terminal crate's cells, another part's files)
+  and in the Text Editor's own view, and a text area reflowing around the cell; eggway's
+  `wl_keyboard` keymap per layout (our XKB keymap writer); the Windows layer's
+  layout-specific virtual keys and `HKL`, and `GetKeyState(VK_NUMLOCK)`/`VK_SCROLL` from the
+  keyboard flags; Latin Extended-A in the terminal's cells (`u8` glyph ids) and Egg Sans's
+  own Ext-A glyphs; the keyboard line's `Num Lock is off` (9.5); the pane's `wm show` names
+  (`Your layouts`); the on-screen keyboard's code key (9.9); the QEMU check (9.10.13: Super+
+  Space over QMP, the hint, `café` after a switch) and typing `ü` into a Wayland and a Windows
+  edit; measured costs.
+
+## D221 Desktop polish, the rest: windows hanging off the left edge, the server's own `Busy` and `(not responding)` for a client that leaves its events unread, the End app dialog, the `Working` pointer, the launcher's caret blink, `boot: desktop <ms>` and `boot_to_desktop`, `KEYS_TO_TERMINAL` starting false (batch part 4; D186's "Not yet"; extends D115, D116, D127, D128, D156, D160, D161, D186) — Decided by the build loop (the boot line's place, the benchmark's run and the open points decided by research; `Working`, the server's `Busy`, the End app dialog, the symmetric clamp and the caret's blink designed by Claude Fable, `docs/ux/desktop-polish-v0.3.md` section 4)
+
+- **Context.** D186 left out what needed signed window positions (hanging off the left), a
+  per-client clock the server did not keep (its `Busy` showed only while a close request went
+  unread), the composite arrow-and-hourglass, the launcher's caret blink, a `boot: desktop`
+  line (a line printed when the prompt is out lands in the terminal's stream) and
+  `KEYS_TO_TERMINAL` starting false.
+- **What users get.** A window can be dragged, moved with the window menu's `Move`, `wm move`
+  or a client's own placement partly off the left edge as well as the right and bottom; it
+  keeps 48 px of its title bar's grab inside, plus the controls (116) when they are on the side
+  that stays, so it can always be dragged back. A window whose app has left an event unread
+  for 2 s says ` (not responding)`, the pointer over its content is the hourglass, `wm list`
+  says so; the moment the app reads, all of it clears. After 5 s more a press on its content
+  opens the End app dialog (`<title> is not responding`, `Ending it loses its unsaved work.`,
+  for eggway's windows also `It also ends every Linux window app.`, `Wait` focused,
+  `End app`), whose `End app` ends the app's process. While an app the desktop
+  started has no window yet (at most 5 s), the arrow carries a small hourglass (`Working`).
+  The launcher's caret blinks (500 ms shown, 500 ms hidden) and stays shown 10 s after the last
+  keystroke. The serial console says `boot: desktop <ms>` just before `boot: terminal`.
+- **Signed positions.** `windows::Bounds` (`x: i32`, `y`, `width`, `height`, `visible()`, the
+  part right of the screen's left edge): `Window.x` and `Geometry.x` are `i32`;
+  `Window::{bounds, content_bounds, content_origin, content_to_screen, overhang, moved_right}`;
+  `outside`, `title_bar`, `content`, `with_shadow`, `control` and `control_circle` give the
+  visible part, so hit-testing and damage never see a negative coordinate;
+  `resize_edges` takes `impl Into<Bounds>` and `resized` returns `Bounds`. Drawing a hanging
+  window goes through `Canvas::shifted(by)`: the window is drawn as if moved right by its
+  overhang (its shadow included) and the canvas maps every column back, so no drawing code
+  learned signed numbers. `windows::kept_when_hanging(side, scale)` and
+  `hanging_x_range(width, work, side)`; `Desktop::move_window` (drags, the keyboard `Move`,
+  `wm move`, `SET_POSITION`, a restore, a new size, a profile's new work area) clamps with it;
+  only a new window's own placement (centred, cascaded, a dialog over its parent) stays
+  wholly inside. `Desktop::{window_bounds, grid_on_screen}`; `placement` and
+  `ListedWindow.rect` are `Bounds`; `LIST_WINDOW`'s and `GET_PLACEMENT`'s x are `i32`.
+- **The server's `Busy`.** `EventQueue::{unread_since, note_read}`: the time stamp of the oldest
+  record waiting, or the time of the last read that left records waiting; the kernel's
+  `Client::take_events(records, now_ms)` notes the read. The drawing thread hands every client's
+  clock to `Desktop::set_unread_since` before `tick`, and a read by a client the desktop said is
+  not responding (`Client::seen_not_responding`) hands it at once, so the suffix, the pointer,
+  `ListedWindow.responding` and the dialog clear in the read's own tick. `Window.not_responding`
+  is the one flag: the close path's 500 ms or [`UNREAD_EVENTS_BUSY_MS`] (2000) of an unread
+  event. `Desktop::next_change_ms` names the next time something changes by itself (a client
+  turning not responding, a start's 5 s, the caret's next half), folded into the drawing
+  thread's `LOOK_AGAIN_AT`; nothing is armed when nothing waits.
+- **The End app dialog** (`responsiveness.rs`): 320x120, `dock.bg` with the popup chrome,
+  centred on the window's visible rectangle and clamped into the work area, opened by a button
+  press on the content of a window not responding for [`END_APP_OFFER_MS`] (5000) instead of
+  queueing it; its lines under the first are `Desktop::end_app_warnings`: the unsaved work,
+  and when the client is eggway (one `/dev/window` connection for every Wayland app) a third
+  at (12, 60) in `text.dim`, `It also ends every Linux window app.` (36 cells, ending 4 px
+  above the buttons; the kernel tells the desktop with `set_linux_apps_client` when a process
+  named `eggway` opens `/dev/window`, and `forget_client` forgets it); `Wait`, Esc, Enter on
+  `Wait` or a click outside close it; Tab and the arrows
+  move the focus; `End app` destroys the client's windows and returns
+  `Action::EndClient(client)`, on which the kernel sends `SIGKILL`
+  (`signals::kill_from_kernel`, never init) to the process that opened `/dev/window`
+  (`Client::process`, `Clients::process_of`). It is a popup of the server's, not a window, so
+  agents never see it.
+- **`Working`.** `PointerShape::Working` = 9 (9 was free), Fable's 22x19 bitmap at hotspot
+  (0, 0), 173 opaque pixels. `Desktop::with_server_shapes` puts it where the shape function
+  answers the arrow while `is_app_starting`: from a `Start` launch (`launch_new`) until a
+  normal window of a client first shows, `launch_failed`, `started_app_ended` or
+  `APP_STARTING_MS` (5000); a `Type` launch sets nothing. Windows' `IDC_APPSTARTING` and
+  Wayland's `progress` map to 9.
+- **Agents (D22).** `wm list` prints the signed x and the suffix after the title, `--json`
+  adds `"responding"` (`WM_FIELDS`); `LIST_WINDOW`'s state word carries
+  `list_reply::NOT_RESPONDING` (bit 8). `GET_TREE` on a window not responding answers at once
+  with the window alone, flagged `not-responding` (`eggos_element_tree::flags::NOT_RESPONDING`,
+  256), built by the kernel with the dependency-free `eggos-element-tree` (not the toolkit,
+  which a release kernel does not link, D218); `ACT_ON_ELEMENT`, `GET_MENU`, `CHOOSE_MENU`
+  and every `SEND_INPUT` (`Desktop::send_input`: clicks, double-clicks, drags, moves, the
+  wheel, keys and characters) fail with `WindowError::NotResponding` (`ENOTCONN`), nothing
+  queued, which `wm` reports as `not_responding` (category busy, exit 75, `  try: wm list`); the MCP server tells it apart
+  from `person_active` by the code in the command's error. `wm close` stays the way to end such
+  a window, and `wm move`, `wm size` and the title bar's controls, the server's own, still
+  work.
+- **The caret.** `CARET_BLINK_MS` (500), `CARET_STEADY_AFTER_MS` (10 000),
+  `caret_shown_at(since, now, reduce_motion)`; the launcher keeps the time it opened or was last
+  typed in (a character or Backspace) and whether the caret is drawn; `tick` damages only the
+  caret's 1x16 rectangle when it toggles; `Desktop::set_reduce_motion` keeps it shown.
+- **Boot.** `boot_clock` is in every kernel (one `.bss` store at boot); `init::run` writes
+  `boot: desktop <ms>` (milliseconds from the kernel's entry to the desktop being made) right
+  before `boot: terminal`, only when a desktop was made; the boot-to-prompt check requires it.
+  With `qemu-boot-clock`, the drawing thread writes `EGGOS-BENCH: boot_to_desktop` after
+  composing the frame that ends the boot screen, and the first wait's lines wait for it while
+  the boot screen shows, so `boot_to_prompt` stays the last line; `cargo xtask bench` boots the
+  boot-clock kernel a second time with the GPU and keeps `boot_to_desktop` (QEMU-dependent).
+  `KEYS_TO_TERMINAL` starts false (D115's `.data` note); `terminal::start` sets it as before.
+- **Check.** Host: the `Working` bitmap (size, hotspot, the arrow's columns, the transparent
+  column, the spot pixels, 173 opaque pixels, value 9 and 10); hanging off the left and right
+  in the Windows and macOS profiles (−542, −610, right − 48, right − 116), the top and bottom
+  limits, a narrow window inside, a drag stopping at the limit and keeping its offset, `wm list`'s
+  negative x, a new work area re-clamping; a hanging window's hit-testing (content, title bar,
+  no left resize zone, the right one, the close control), damage of a commit clipped at the
+  edge, its pixels at their columns and drawing in pieces equal to drawing whole; `Working`'s
+  timing (4999, 5000, the first window, the process's end, a second start, a `Type` launch)
+  and precedence (title bar, content, the client's `Hand` and `Working`, a resize zone, `Busy`);
+  the unread clock (1999/2000, a read clearing at once, the oldest unread event's clock, idle
+  never busy) in the desktop, the event queue and the kernel's client; the End app dialog
+  (4999 queues, 5000 opens it centred and inside the work area, Enter, Esc, a click outside,
+  a read closing it, `End app` returning `EndClient` with the window gone); the caret's halves,
+  a keystroke restarting it, steady after 10 s with no timer, its damage, `reduce_motion`;
+  `kept_when_hanging` at scale 2 (96 and 232); `wm list`'s text and JSON for a hanging and a
+  not-responding window and the `not_responding` refusal; every injected input refused
+  (move, click, double-click, drag, wheel, key, character: nothing queued) while a move still
+  moves it and a read lets input through again; `wm click`, `press`, `scroll` and `type`
+  reporting `not_responding`; the End app dialog's third line for eggway only, and forgotten
+  with the client; only `eggway` named as serving every Linux window app; the MCP refusal
+  of `wm_type`, `wm_click`, `wm_press` and `wm_scroll`; the Windows and
+  Wayland mappings; the boot check without `boot: desktop` failing. Not built or run in this
+  batch (the build phase builds and tests).
+- **Cost (D24, D78).** Not measured. Expected: per drawing pass one relaxed lock per client to
+  read its clock (none changes nothing else), a 64-window walk per tick; a read takes one
+  relaxed load more, and the server's lock only while its client is marked not responding; a
+  hanging window draws through a shifted canvas (one subtraction per row); the desktop's
+  timer wakes only when something is due. The kernel image grows by the dialog, the bitmap and
+  the boot line. `boot_to_desktop` is new; `boot_to_prompt` and `idle_memory_bytes` should not
+  move (the serial-only run is unchanged); the switch from `.data` to `.bss` for
+  `KEYS_TO_TERMINAL` may shift layout-sensitive benchmarks slightly.
+- **Decided by research.**
+  - Where `boot: desktop <ms>` goes and what it measures (research subagent, 2026-11-01, from
+    D186, `kernel/src/init.rs`, `console.rs`, `terminal.rs`, `xtask/src/qemu.rs` and
+    `bench.rs`): written by `init::run` through its serial-only console right before
+    `boot: terminal`, as the time to the desktop being made, so it never joins the prompt's line
+    and never enters the stream the screendump checks rebuild; the first-frame time is a
+    `qemu-boot-clock` benchmark line written after the frame that ends the boot screen, ordered
+    before `boot_to_prompt` so the BootClock run's stop condition is unchanged, measured in a
+    second boot with the GPU (the serial-only run has no desktop) under the same `-icount`.
+  - The benchmark's name: `boot_to_desktop`, not the plan's `boot_to_desktop_ms`, because its
+    unit is the guest's nanoseconds per iteration like `boot_to_prompt`'s.
+- **Decided by research** (a research subagent reviewed these on 2026-11-01 and confirmed
+  them, but for the injected input, which it changed).
+  - A read that leaves records waiting restarts the clock at the read's time: the design's
+    "everything clears in the tick the client reads an event" and "the oldest unread event's
+    clock" agree only so (check 7's sequence holds either way).
+  - Only `x` became signed; `y` stays unsigned because the top never goes above the work area.
+  - `outside()` and the other rectangles kept their names and give the visible part; the signed
+    rectangle is `bounds()`, so the many hit-test and damage users did not change.
+  - `wm move` and `SET_POSITION` follow the person's clamp (the design says so); a newly placed
+    window is still placed wholly inside.
+  - The End app dialog's buttons: `Wait` drawn as the default (`button.primary`), the focus ring
+    on the focused button, Tab and the arrows moving it (the design names Enter and Esc only).
+  - The process `End app` ends is the one that opened `/dev/window` (a forked child holding the
+    descriptor is not ended); `ENOTCONN` carries `NotResponding` to programs (no errno says
+    "not responding"; it was unused by `/dev/window`).
+  - Which agent input a window that is not responding refuses. The first draft refused only
+    `wm type` (a typed character) and let clicks, keys and scrolls queue, as the design names
+    only `act`, `type` and `menu`. The research answer (agent safety): every injected input
+    that would reach the client's content is refused with `not_responding`, since an agent
+    cannot see what its click or key would act on once the app stops drawing, and input piled
+    up behind an unread queue lands later on whatever the app then shows; actions the server
+    handles itself (the title bar, `wm move`, `wm size`, `wm close`) stay allowed. The
+    person's own clicks and keys still queue, as the design says.
+  - The End app dialog of eggway's window (one `/dev/window` connection for every Wayland
+    app) says what ending it costs: one more line, `It also ends every Linux window app.`, in
+    the dialog's own tokens and step (research answer; Fable's dialog had no such case);
+    eggway is told apart by its process name when it opens `/dev/window`.
+  - `Working` ends at the first normal window any client shows, since the desktop does not know
+    which client the started process becomes.
+- **Not yet.** The kernel does not tell the desktop when the started program exits without a
+  window (`Desktop::started_app_ended` exists; `Working` ends after 5 s instead); the phone and
+  TV versions (the launcher's `Starting <name>...` and `<name> did not start`, the busy strip,
+  the End app bottom sheet, `Hidden` until the first motion on TV: section 4.5, checks 12 and
+  13); a 2x cursor image (check 14's pixel doubling; the kept grab at scale 2 is done);
+  `reduce_motion` as a setting (the desktop takes it, nothing sets it); Mac apps' `NSCursor`;
+  a first-frame time on the release kernel's serial line; measured costs and the
+  `boot_to_desktop` baseline lines.
+
+## D222 Terminals, the rest: selection, copy and paste, `terminal -e` and console apps in their own window, reflow, titles and folders from the shell, `stty`, and the pseudo-terminal's packet mode, `TIOCGPTPEER`, `TIOCSTI` within its session, `TOSTOP` and a waiting controlling side (extends D181, D187) — Decided by the build loop (batch part 5; the open questions decided by research; design by Claude Fable, docs/ux/terminal-selection-v0.3.md)
+
+- **Context.** D187 gave terminal windows but left selection, copy and paste, `terminal -e`,
+  console apps in their own window, reflow, the shell's titles and folders, a narrow close
+  panel and `stty` for later, and its pseudo-terminals had no packet mode, `TIOCGPTPEER` or
+  `TIOCSTI`, a controlling side that dropped what its line discipline could not hold, and no
+  `TOSTOP` (D181's "Not yet"). Fable's design (docs/ux/terminal-selection-v0.3.md) is the spec.
+- **Decision.**
+  - The engine (`eggos-terminal`) keeps a `line_flags::WRAPPED` bit per row of both screens and
+    the scrollback (one byte a row, no per-cell cost), set on the row autowrap continues onto
+    and cleared by a line feed (`LF`, `VT`, `FF`, `ESC D`, `ESC E`) into the row, by `CSI K`
+    and `CSI 2 K` (on the next row) and by erasing rows. Lines are numbered (`LineNumber`, the
+    count of lines pushed into the scrollback before them), so a selection follows its text.
+    `Terminal::resize` reflows the main screen: every logical line of the scrollback and the
+    screen is laid out again at the new width (the last row's trailing blanks trimmed), the
+    cursor keeps its cell, the screen shows the last rows down to the cursor or the last row
+    written, and when it grows lines come back from the scrollback before blank rows are added
+    (VTE's and Windows Terminal's rule, replacing D187's cut). The alternate screen is cleared,
+    a selection reset. `Terminal::set_highlight` fills cells with `term.selection` `#2E4A6B`
+    (bright black drawn as `term.fg`); `CSI ? 2004` is tracked; `OSC 7 ; file://<host>/<path>`
+    (host empty or `localhost`, percent escapes decoded, valid UTF-8, at most 4096 bytes) sets
+    `Terminal::current_folder`.
+  - The terminal program (`userland/terminal`): `selection.rs` (cells, words with GNOME's word
+    characters plus `=` and `@`, logical lines; the copied text trims each row and joins a
+    wrapped row without `\n`), `paste.rs` (`CR LF` and `LF` to `CR`, control characters (C0,
+    `DEL` and the C1 controls U+0080 to U+009F), `ESC [` and 8-bit CSI (U+009B) sequences
+    dropped, at most 64 KiB cut at a character, bracketed when asked,
+    written 1 KiB per `POLLOUT`), the context menu (`Copy`, `Paste`, `Select All`, the
+    toolkit's `menu`), the keys (Ctrl+Shift+C/V/A, Super+C/V/A, Ctrl+C copying once when there
+    is a selection, Shift+F10 and Menu), a middle click pasting, the I-beam over the grid, and
+    for agents a `SELECTED` flag on rows, a `selection` and a `folder` element and `select` on a
+    row or the screen. `terminal [-t <title>] [-e <program> [arguments...]]` (`options.rs`)
+    runs the program directly, found through `PATH`; status 0 closes the window, another status
+    or a signal leaves `[process exited with status N]` or `[process ended by signal N (NAME)]`
+    in ANSI 8 and any key that would send bytes closes it; once the program closes its side
+    the window asks `wait4` with `WNOHANG` and, while it still runs, asks again every
+    `PROGRAM_END_CHECK_MS` (50) on the window's tick, never blocking its loop
+    (`Shell::process_end` returns `ProgramState`); a program not found shows
+    `terminal: <program>: not found` and status 127. The terminal sets
+    `TERM_PROGRAM=EggTerminal`; Ctrl+Shift+N opens the new window in the folder `OSC 7`
+    reported (the home folder when it is gone).
+  - `eggsh` writes `OSC 0` (the folder, the home folder as `~`) and `OSC 7` before each prompt
+    and `OSC 0` with a foreground command's name, only when `TERM_PROGRAM` is set.
+  - `stty` (`userland/coreutils/src/stty.rs`, a kept name in the registry with `stty size` as
+    an example run as a test): `size`, bare, `-a`, `-g`, modes, `raw`, `-raw`/`cooked`, `sane`,
+    control characters, `min`, `time`, `rows`, `cols`/`columns`, `-F`, with GNU's output
+    formats and messages, written from the man page and observed output.
+  - The pseudo-terminal: the controlling side's writes take what the program side's input has
+    room for, waiting (blocking) or failing with `EAGAIN` (non-blocking) when it is full, and
+    `POLLOUT` needs `WRITE_ROOM` (1 KiB); program-side reads wake waiting writers. `TIOCPKT`
+    and `TIOCGPKT` give packet mode (`FLUSHREAD`, `NOSTOP`, `DOSTOP`, data after a 0 byte);
+    `TIOCGPTPEER` opens the program side as a new descriptor; `TIOCSTI` types a byte only into
+    the caller's own controlling terminal and fails with `EPERM` for anyone else; `TOSTOP` sends
+    a background writer `SIGTTOU` (allowed when the signal is ignored or blocked, `EIO` for an
+    orphaned group).
+  - The manifest gains `console=true` (absent is false), written by the installer for a
+    Windows console-subsystem program (the PE optional header's subsystem is not 2), a Linux
+    program and a bare macOS tool, not for a Windows GUI program or an `.app` bundle; `app
+    install --console` and `--no-console` decide instead. The catalogue launches a console app
+    as `/bin/terminal -t <name> -e /bin/eggsh -c <line>` while the terminal program is present.
+  - The benchmark `term_reflow`: a resize between 80x24 and 100x30 with a full scrollback.
+- **Check.** Host tests: the engine's reflow (two rows at 80 columns, one at 120 with the
+  cursor on its cell, no padding, blank rows below the cursor first, 6 and then all 10 lines
+  back from the scrollback, the ring keeping the newest rows), flags, line numbers, the
+  selection fill, bracketed paste and `OSC 7`; the terminal window's selection by drag, words,
+  lines and Shift+click, a selection following and leaving the scrollback, the copy keys, paste
+  (made safe, bracketed, 64 KiB, 1 KiB per room, keys queued behind it, middle click, every C1
+  control and `DEL` dropped, U+009B with its sequence), a `-e` program that closed its side
+  and keeps running asked again on the tick, never blocking, until it ends (status 0 closing
+  the window, 3 leaving the line), the
+  context menu, the I-beam, `-t`/`-e` parsing, the exit line, the folder and new windows,
+  agents' `select`; `eggsh`'s titles; `stty` (`size` before and after `TIOCSWINSZ`, `-a`'s
+  exact text, `raw`/`-g`/restore/`sane`, `cols` and `SIGWINCH`, the errors); the
+  pseudo-terminal's `POLLOUT` room, packet status and `TIOCSTI`'s session rule (`EPERM`); the manifest's
+  `console`, the installer's PE subsystem and the catalogue's launch. QEMU:
+  `xtask/src/qemu/terminals.rs` opens two terminals (both `~ - Terminal`), resizes one with
+  `wm size`, types `stty size` into it, and checks the printed size against `wm show`'s
+  `screen`, the `folder` against `$HOME`, `row 1` against the prompt and `wm capture`'s status.
+- **Decided by research** (a research subagent reviewed these on 2026-11-01; it confirmed
+  them but for `TIOCSTI`'s errno and the `-e` wait, which it changed, and it added the C1
+  controls to the paste filter).
+  - *Where does `WRAPPED` sit, on the row that wraps or the row it continues onto?* On the
+    continuation row: the design's 3.1, test 4 and test 11 say so; test 2's "line 1 flagged
+    `WRAPPED`" is read as line 1 wrapping onto line 2. The "cleared when a line feed leaves the
+    line before the wrap" rule becomes "a line feed into a row clears its flag".
+  - *What does paste drop of `ESC [ 31 m`?* The whole control sequence, so test 7's
+    `a\rb\rc\td` holds; a lone `ESC` is dropped alone.
+  - *How does the program write a paste per `POLLOUT` without a toolkit change?* It asks the
+    pseudo-terminal with a zero-timeout `ppoll` and retries every 16 ms while a paste waits
+    (the toolkit's loop waits only for reading; part 1 owns the toolkit).
+  - *`TIOCSTI` across sessions: `EIO` or `EPERM`?* `EPERM` (research, overruling the first
+    draft's `EIO`): Linux refuses a caller it does not let type with `EPERM` (the
+    `CAP_SYS_ADMIN` check, and `legacy_tiocsti=0`), and `EIO` would read as a hung-up
+    terminal; within the session it types, as before Linux 6.2, so `TIOCSTI`-using programs in
+    the window keep working.
+  - *What does a paste drop besides C0 and `ESC`?* `DEL` and the C1 controls U+0080 to U+009F
+    too (research): U+009B is an 8-bit CSI some terminals act on, so it goes with its sequence
+    like `ESC [`, and the other C1 controls alone.
+  - *Does `stty -a` wrap?* Yes, at the terminal's columns (80 without a size), as GNU's does;
+    the expected text in the host test wraps the control characters over three lines and the
+    input and local flags over two.
+  - *`stty -g` with 19 or glibc's 32 control characters?* 19, the kernel's `struct termios`,
+    as the design says; the form is ours, not portable between systems anyway.
+  - *How is the second window resized in the QEMU check?* With `wm size`, the CLI face of the
+    window server's resize, which is what the design names; the stty-to-`screen` comparison
+    replaces a fixed 100x30 because `wm size` takes the frame's size.
+  - *Where do the `-t`/`-e` options live?* `userland/terminal/src/options.rs`, so they are
+    host-tested; `program.rs` is built for EggOS only.
+  - *How does a window that ran a `-e` program learn its status?* The first draft called a
+    blocking `wait4` once the program's side closed, which froze the window's loop (no
+    redraws, no close) while a program that closed its terminal kept running. The research
+    answer: `wait4` with `WNOHANG`, asked again every 50 ms on the window's existing tick
+    until the child ends; the hung-up side is not watched meanwhile (no busy loop), and once
+    a status 0 is learned it is watched again so the loop wakes and closes the window.
+- **Not yet.** Touch selection (handles, the bottom sheet) and TV's menu key without a pointer
+  (section 7): the toolkit delivers no touch events. The close panel in a window narrower than
+  416 px (section 5): it is the toolkit's `panel`, which batch part 1 is changing; the
+  terminal still shows the 400 px panel. `app list` printing `console`, MCP `app_install`
+  setting it. Keyboard mark mode, rectangular selection, copy with colours, search, URLs, tabs
+  and panes, `stty ispeed`/`ospeed` (section 10). Packet mode's `TIOCPKT_STOP`, `START` and
+  `FLUSHWRITE`, and a packet-mode `readv` filling more than its first buffer. The
+  `term_reflow` baseline line (the build phase adds it).
