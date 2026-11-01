@@ -1,7 +1,9 @@
 use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
+use crate::page::Page;
 use crate::system::System;
 use core::ffi::CStr;
+use eggos_commands::page::{self, MAX_KEY_BYTES};
 use eggos_commands::{
     COMMANDS, CommandDefinition, Count, OperandDefinition, OptionDefinition, Output as Form,
     Surface, ValueType, commands, errors, find_command,
@@ -16,8 +18,11 @@ const DEFINITION_BYTES: usize = 16 * 1024;
 
 pub fn help<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut json = false;
-    let Ok(operands) = parse_defined(output, arguments, &commands::HELP, |_, given| {
-        json |= given.is_long("json");
+    let mut page = Page::default();
+    let Ok(operands) = parse_defined(output, arguments, &commands::HELP, |output, given| {
+        if !page.take(output, given)? {
+            json |= given.is_long("json");
+        }
         Ok(())
     }) else {
         return USAGE_STATUS;
@@ -28,19 +33,14 @@ pub fn help<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         return USAGE_STATUS;
     }
     if operands.is_empty() {
-        for command in &COMMANDS {
-            let status = match json {
-                true => write_definition(output, command),
-                false => {
-                    write_summary(output, command);
-                    0
-                }
-            };
-            if status != 0 {
-                return status;
-            }
-        }
-        return 0;
+        return list(output, json, &page);
+    }
+    if page.is_paged() {
+        output.coded(
+            &errors::USAGE,
+            &[b"--limit and --after page the list of every command, not one command"],
+        );
+        return USAGE_STATUS;
     }
     let mut words: [&[u8]; MAX_WORDS] = [b""; MAX_WORDS];
     for (word, operand) in words.iter_mut().zip(operands) {
@@ -63,6 +63,50 @@ pub fn help<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             0
         }
     }
+}
+
+fn command_key(index: usize, out: &mut [u8; MAX_KEY_BYTES]) -> usize {
+    let Some(command) = COMMANDS.get(index) else {
+        return 0;
+    };
+    let mut words: [&[u8]; MAX_WORDS] = [b""; MAX_WORDS];
+    let count = command.words.len().min(MAX_WORDS);
+    for (word, name) in words.iter_mut().zip(command.words) {
+        *word = name.as_bytes();
+    }
+    joined(&words[..count], out)
+}
+
+fn list<S: System>(output: &mut Output<S>, json: bool, page: &Page) -> i32 {
+    let limit = page.limit.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX));
+    let after = page.after();
+    for (index, command) in COMMANDS.iter().enumerate() {
+        if page.is_paged() {
+            let Some(rank) = page::rank(COMMANDS.len(), index, after, &command_key) else {
+                continue;
+            };
+            if limit.is_some_and(|limit| rank >= limit) {
+                continue;
+            }
+        }
+        let status = match json {
+            true => write_definition(output, command),
+            false => {
+                write_summary(output, command);
+                0
+            }
+        };
+        if status != 0 {
+            return status;
+        }
+    }
+    let end = limit.and_then(|limit| page::page_end(COMMANDS.len(), limit, after, &command_key));
+    if let Some(end) = end {
+        let mut key = [0u8; MAX_KEY_BYTES];
+        let length = command_key(end, &mut key);
+        output.more(&key[..length]);
+    }
+    0
 }
 
 fn joined(words: &[&[u8]], out: &mut [u8]) -> usize {
@@ -507,5 +551,97 @@ mod tests {
         assert!(errors.contains("\"code\":\"no_such_command\""), "{errors}");
         let (status, _, _) = run(&[c"a", c"b", c"c", c"d", c"e"]);
         assert_eq!(status, 2);
+    }
+
+    fn sorted_words() -> Vec<String> {
+        let mut words: Vec<String> = COMMANDS
+            .iter()
+            .map(|command| command.words.join(" "))
+            .collect();
+        words.sort();
+        words
+    }
+
+    fn cursor_of(words: &str) -> String {
+        let mut out = [0u8; page::MAX_CURSOR_BYTES];
+        let length = page::encode(words.as_bytes(), &mut out).unwrap();
+        String::from_utf8(out[..length].to_vec()).unwrap()
+    }
+
+    fn listed_words(output: &str) -> Vec<String> {
+        output
+            .lines()
+            .map(|line| {
+                COMMANDS
+                    .iter()
+                    .map(|command| command.words.join(" "))
+                    .filter(|words| names(line, words))
+                    .max_by_key(String::len)
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    fn names(line: &str, words: &str) -> bool {
+        line.strip_prefix(words).is_some_and(|rest| rest.starts_with(' '))
+    }
+
+    #[test]
+    fn pages_list_the_commands_after_the_cursor_by_their_words_in_the_registry_s_order() {
+        let sorted = sorted_words();
+        let (status, output, errors) = run(&[c"--limit", c"3"]);
+        assert_eq!(status, 0);
+        let mut first = listed_words(&output);
+        assert_eq!(first.len(), 3, "{output}");
+        let positions: Vec<usize> = first
+            .iter()
+            .map(|words| COMMANDS.iter().position(|c| c.words.join(" ") == *words).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{output}");
+        first.sort();
+        assert_eq!(first, sorted[..3]);
+        let cursor = cursor_of(&sorted[2]);
+        assert_eq!(errors, format!("more: --after {cursor}\n"));
+        let after = std::ffi::CString::new(cursor).unwrap();
+        let (status, output, errors) = run(&[c"--limit", c"100", c"--after", after.as_c_str()]);
+        assert_eq!(status, 0);
+        let mut rest = listed_words(&output);
+        rest.sort();
+        let wanted = &sorted[3..sorted.len().min(103)];
+        assert_eq!(rest, wanted);
+        assert_eq!(errors.is_empty(), sorted.len() <= 103, "{errors}");
+        let last = std::ffi::CString::new(cursor_of(sorted.last().unwrap())).unwrap();
+        let (status, output, errors) = run(&[c"--after", last.as_c_str()]);
+        assert_eq!((status, output.as_str(), errors.as_str()), (0, "", ""));
+    }
+
+    #[test]
+    fn a_json_page_ends_with_its_page_line_and_a_bad_page_is_refused() {
+        let (status, output, errors) = run(&[c"--json", c"--limit", c"1"]);
+        assert_eq!(status, 0);
+        assert_eq!(output.lines().count(), 1);
+        let cursor = cursor_of(&sorted_words()[0]);
+        assert_eq!(
+            errors,
+            format!(
+                "{{\"page\":{{\"truncated\":true,\"truncated_by\":\"limit\",\
+                 \"next_cursor\":\"{cursor}\"}}}}\n"
+            )
+        );
+        let (status, _, errors) = run(&[c"--after", c"-ls"]);
+        assert_eq!(status, 2);
+        assert_eq!(
+            errors,
+            "help: invalid cursor '-ls': not one a page ended with\n"
+        );
+        let (status, _, errors) = run(&[c"--json", c"--after", c"a b"]);
+        assert_eq!(status, 2);
+        assert!(errors.contains("\"code\":\"bad_cursor\""), "{errors}");
+        let (status, _, errors) = run(&[c"--limit", c"101"]);
+        assert_eq!(status, 2);
+        assert!(errors.starts_with("help: invalid limit '101'"), "{errors}");
+        let (status, _, errors) = run(&[c"--limit", c"1", c"ls"]);
+        assert_eq!(status, 2);
+        assert!(errors.contains("not one command"), "{errors}");
     }
 }
