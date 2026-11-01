@@ -9,17 +9,19 @@ use crate::keys::{
     self, Change, DisplayChange, InputChange, Key, KeyboardChoice, KeysChange, Refusal,
 };
 use core::fmt::Write;
+use eggos_commands::commands::LIST_PAGE_LIMIT;
+use eggos_commands::page::{self, MAX_CURSOR_BYTES, MAX_KEY_BYTES, MORE_PREFIX};
 use eggos_commands::{ErrorDefinition, errors};
 use eggos_mcp::json::JsonWriter;
-use eggos_mcp::server::write_error;
+use eggos_mcp::server::{write_error, write_page};
 use eggos_settings_file::{DisplayAccessibility, InputPreferences, KeyAccessibility, PATH};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Theme;
 
 /// The command's usage, printed for a usage error.
 pub const USAGE: &str = "usage: settings [open <pane> | --pair <id> [--name <name>] | --pane \
-                         <pane> | --first-run | list [--json] | get [--json] <key> | set \
-                         [--dry-run] <key> <value>]\n";
+                         <pane> | --first-run | list [--json] [--limit <count>] [--after \
+                         <cursor>] | get [--json] <key> | set [--dry-run] <key> <value>]\n";
 /// The exit status of a usage error.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of a value the setting does not take.
@@ -27,11 +29,13 @@ pub const INVALID_VALUE_STATUS: i32 = 2;
 /// The exit status of every other error.
 pub const FAILURE: i32 = 1;
 /// The most words the command takes after `settings`.
-pub const MAX_ARGUMENTS: usize = 6;
+pub const MAX_ARGUMENTS: usize = 8;
 
 const MAX_WORDS: usize = 3;
 const RECORD_BYTES: usize = 512;
 const ERROR_BYTES: usize = 1024;
+const PAGE_LINE_BYTES: usize = MAX_CURSOR_BYTES + 128;
+const PAGE_OPTIONS: [&str; 2] = ["--limit", "--after"];
 
 type Message = Text<256>;
 
@@ -87,6 +91,26 @@ pub trait Machine {
     fn write_output(&mut self, bytes: &[u8]);
     /// Writes to standard error.
     fn write_error(&mut self, bytes: &[u8]);
+    /// Whether the program was started with `EGGOS_CODED_ERRORS=1` (D225): an MCP tool's twin,
+    /// which writes each error's `{"error":{...}}` line after its text.
+    fn wants_coded_errors(&self) -> bool;
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Page {
+    limit: Option<usize>,
+    after: [u8; MAX_KEY_BYTES],
+    after_length: Option<usize>,
+}
+
+impl Page {
+    fn after(&self) -> Option<&[u8]> {
+        self.after_length.and_then(|length| self.after.get(..length))
+    }
+
+    fn is_paged(&self) -> bool {
+        self.limit.is_some() || self.after_length.is_some()
+    }
 }
 
 /// The option that opens the window at the Agents pane's pairing panel, ready to pair an
@@ -154,14 +178,43 @@ pub fn window_asked<'a>(arguments: &[&'a str]) -> WindowAsked<'a> {
 /// Runs `settings` with `arguments`, the words after its name (at least one: with none the
 /// program opens its window); the exit status.
 pub fn run(machine: &mut impl Machine, arguments: &[&str]) -> i32 {
-    let mut json = false;
+    let mut json = arguments
+        .iter()
+        .take_while(|&&argument| argument != "--")
+        .any(|&argument| argument == "--json");
     let mut dry_run = false;
+    let mut page = Page {
+        limit: None,
+        after: [0; MAX_KEY_BYTES],
+        after_length: None,
+    };
     let mut words = [""; MAX_WORDS];
     let mut count = 0;
     let mut options_end = false;
-    for &argument in arguments {
+    let mut index = 0;
+    while let Some(&argument) = arguments.get(index) {
+        index += 1;
         if !options_end && argument == "--" {
             options_end = true;
+            continue;
+        }
+        if let Some((name, attached)) = page_option(argument).filter(|_| !options_end) {
+            let value = match attached {
+                Some(value) => value,
+                None => {
+                    let Some(&value) = arguments.get(index) else {
+                        let mut message = Message::new();
+                        let _ = write!(message, "option '{name}' requires an argument");
+                        report(machine, json, &errors::USAGE, message.as_str());
+                        return USAGE_STATUS;
+                    };
+                    index += 1;
+                    value
+                }
+            };
+            if let Err(status) = take_page(machine, json, &mut page, name, value) {
+                return status;
+            }
             continue;
         }
         if !options_end && argument == "--json" {
@@ -185,30 +238,96 @@ pub fn run(machine: &mut impl Machine, arguments: &[&str]) -> i32 {
         count += 1;
     }
     match words[..count] {
-        ["list"] if !dry_run => list(machine, json),
+        ["list"] if !dry_run => list(machine, json, &page),
+        _ if page.is_paged() => usage(machine, json),
         ["get", name] if !dry_run => get(machine, json, name),
         ["set", name, value] if !json => set(machine, name, value, dry_run),
         _ => usage(machine, json),
     }
 }
 
+fn page_option(argument: &str) -> Option<(&'static str, Option<&str>)> {
+    for name in PAGE_OPTIONS {
+        let Some(rest) = argument.strip_prefix(name) else {
+            continue;
+        };
+        if rest.is_empty() {
+            return Some((name, None));
+        }
+        if let Some(value) = rest.strip_prefix('=') {
+            return Some((name, Some(value)));
+        }
+    }
+    None
+}
+
+fn take_page(
+    machine: &mut impl Machine,
+    json: bool,
+    page: &mut Page,
+    name: &str,
+    value: &str,
+) -> Result<(), i32> {
+    let mut message = Message::new();
+    if name == "--limit" {
+        let most = usize::try_from(LIST_PAGE_LIMIT).unwrap_or(usize::MAX);
+        let limit = match value.bytes().all(|byte| byte.is_ascii_digit()) {
+            true => value.parse::<usize>().ok(),
+            false => None,
+        };
+        if let Some(limit) = limit.filter(|limit| (1..=most).contains(limit)) {
+            page.limit = Some(limit);
+            return Ok(());
+        }
+        let _ = write!(
+            message,
+            "invalid limit '{value}': a page holds 1 to {most} items"
+        );
+        report(machine, json, &errors::USAGE, message.as_str());
+        return Err(USAGE_STATUS);
+    }
+    match page::decode(value.as_bytes(), &mut page.after) {
+        Some(length) => {
+            page.after_length = Some(length);
+            Ok(())
+        }
+        None => {
+            let _ = write!(
+                message,
+                "invalid cursor '{value}': not one a page ended with"
+            );
+            report(machine, json, &errors::BAD_CURSOR, message.as_str());
+            Err(USAGE_STATUS)
+        }
+    }
+}
+
 fn usage(machine: &mut impl Machine, json: bool) -> i32 {
     match json {
         true => report(machine, true, &errors::USAGE, USAGE.trim_end()),
-        false => machine.write_error(USAGE.as_bytes()),
+        false => {
+            machine.write_error(USAGE.as_bytes());
+            if machine.wants_coded_errors() {
+                write_json_error(machine, &errors::USAGE, USAGE.trim_end());
+            }
+        }
     }
     USAGE_STATUS
 }
 
+fn write_json_error(machine: &mut impl Machine, error: &ErrorDefinition, message: &str) {
+    let mut buffer = [0u8; ERROR_BYTES];
+    let mut out = JsonWriter::new(&mut buffer);
+    write_error(&mut out, error, message);
+    out.end_line();
+    if !out.overflowed() {
+        machine.write_error(out.as_bytes());
+    }
+}
+
 fn report(machine: &mut impl Machine, json: bool, error: &ErrorDefinition, message: &str) {
     if json {
-        let mut buffer = [0u8; ERROR_BYTES];
-        let mut out = JsonWriter::new(&mut buffer);
-        write_error(&mut out, error, message);
-        out.end_line();
-        if !out.overflowed() {
-            machine.write_error(out.as_bytes());
-        }
+        write_json_error(machine, error, message);
         return;
     }
     machine.write_error(b"settings: ");
@@ -218,6 +337,9 @@ fn report(machine: &mut impl Machine, json: bool, error: &ErrorDefinition, messa
         machine.write_error(b"  try: ");
         machine.write_error(command.as_bytes());
         machine.write_error(b"\n");
+    }
+    if machine.wants_coded_errors() {
+        write_json_error(machine, error, message);
     }
 }
 
@@ -238,9 +360,50 @@ fn write_record(machine: &mut impl Machine, key: Key, facts: &Facts) {
     }
 }
 
-fn list(machine: &mut impl Machine, json: bool) -> i32 {
+fn key_name(index: usize, out: &mut [u8; MAX_KEY_BYTES]) -> usize {
+    let name = Key::ALL.get(index).map_or("", |key| key.name()).as_bytes();
+    let length = name.len().min(out.len());
+    out[..length].copy_from_slice(&name[..length]);
+    length
+}
+
+fn more(machine: &mut impl Machine, json: bool, last_key: &str) {
+    let mut cursor = [0u8; MAX_CURSOR_BYTES];
+    let Some(length) = page::encode(last_key.as_bytes(), &mut cursor) else {
+        return;
+    };
+    let cursor = &cursor[..length];
+    if !json {
+        machine.write_error(MORE_PREFIX.as_bytes());
+        machine.write_error(cursor);
+        machine.write_error(b"\n");
+        return;
+    }
+    let mut buffer = [0u8; PAGE_LINE_BYTES];
+    let mut out = JsonWriter::new(&mut buffer);
+    out.begin_object();
+    out.key("page");
+    write_page(&mut out, core::str::from_utf8(cursor).ok());
+    out.end_object();
+    out.end_line();
+    if !out.overflowed() {
+        machine.write_error(out.as_bytes());
+    }
+}
+
+fn list(machine: &mut impl Machine, json: bool, page: &Page) -> i32 {
     let facts = machine.facts();
-    for key in Key::ALL {
+    let count = Key::ALL.len();
+    let after = page.after();
+    for (index, key) in Key::ALL.into_iter().enumerate() {
+        if page.is_paged() {
+            let Some(rank) = page::rank(count, index, after, &key_name) else {
+                continue;
+            };
+            if page.limit.is_some_and(|limit| rank >= limit) {
+                continue;
+            }
+        }
         match json {
             true => write_record(machine, key, &facts),
             false => {
@@ -250,6 +413,10 @@ fn list(machine: &mut impl Machine, json: bool) -> i32 {
                 machine.write_output(b"\n");
             }
         }
+    }
+    let end = page.limit.and_then(|limit| page::page_end(count, limit, after, &key_name));
+    if let Some(key) = end.and_then(|end| Key::ALL.get(end)) {
+        more(machine, json, key.name());
     }
     0
 }
@@ -469,6 +636,7 @@ mod tests {
         theme_applied: Option<Theme>,
         display_saved: Option<DisplayChange>,
         display_applied: Option<(Theme, DisplayAccessibility)>,
+        coded_errors: bool,
     }
 
     impl Machine for Fake {
@@ -577,6 +745,10 @@ mod tests {
 
         fn write_error(&mut self, bytes: &[u8]) {
             self.errors.extend_from_slice(bytes);
+        }
+
+        fn wants_coded_errors(&self) -> bool {
+            self.coded_errors
         }
     }
 
@@ -811,6 +983,130 @@ mod tests {
         let (status, _, errors) = settings(&mut fake, &["--json", "--bogus"]);
         assert_eq!(status, 2);
         assert!(errors.contains("\"code\":\"usage\""), "{errors}");
+    }
+
+    fn sorted_keys() -> Vec<&'static str> {
+        let mut keys: Vec<&str> = Key::ALL.iter().map(|key| key.name()).collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    fn listed_keys(output: &str) -> Vec<&str> {
+        output
+            .lines()
+            .map(|line| line.split_once('=').unwrap().0)
+            .collect()
+    }
+
+    #[test]
+    fn list_pages_by_key_and_keeps_its_order_within_a_page() {
+        let sorted = sorted_keys();
+        let (status, output, errors) = settings(&mut Fake::default(), &["list", "--limit", "3"]);
+        assert_eq!(status, 0);
+        let mut first = listed_keys(&output);
+        let order: Vec<usize> = first
+            .iter()
+            .map(|name| Key::ALL.iter().position(|key| key.name() == *name).unwrap())
+            .collect();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{output}");
+        first.sort_unstable();
+        assert_eq!(first, sorted[..3]);
+        assert_eq!(errors, format!("more: --after {}\n", sorted[2]));
+        let (status, output, errors) = settings(
+            &mut Fake::default(),
+            &["list", "--after", sorted[2], "--limit=100"],
+        );
+        assert_eq!(status, 0);
+        let mut rest = listed_keys(&output);
+        rest.sort_unstable();
+        assert_eq!(rest, sorted[3..]);
+        assert_eq!(errors, "");
+        let last = sorted[sorted.len() - 1];
+        let (status, output, errors) = settings(&mut Fake::default(), &["list", "--after", last]);
+        assert_eq!((status, output.as_str(), errors.as_str()), (0, "", ""));
+    }
+
+    #[test]
+    fn a_json_page_ends_with_its_page_line() {
+        let first = sorted_keys()[0];
+        let (status, output, errors) =
+            settings(&mut Fake::default(), &["list", "--limit", "1", "--json"]);
+        assert_eq!(status, 0);
+        assert_eq!(output.lines().count(), 1);
+        assert!(output.starts_with(&format!("{{\"key\":\"{first}\"")), "{output}");
+        assert_eq!(
+            errors,
+            format!(
+                "{{\"page\":{{\"truncated\":true,\"truncated_by\":\"limit\",\
+                 \"next_cursor\":\"{first}\"}}}}\n"
+            )
+        );
+    }
+
+    #[test]
+    fn a_bad_page_is_refused_with_its_code() {
+        let mut fake = Fake::default();
+        let (status, _, errors) = settings(&mut fake, &["list", "--after", "-x"]);
+        assert_eq!(status, 2);
+        assert_eq!(
+            errors,
+            "settings: invalid cursor '-x': not one a page ended with\n"
+        );
+        let (status, _, errors) = settings(&mut fake, &["list", "--after", "a b", "--json"]);
+        assert_eq!(status, 2);
+        assert!(
+            errors.starts_with("{\"error\":{\"code\":\"bad_cursor\""),
+            "{errors}"
+        );
+        for limit in ["0", "101", "+5", "x", ""] {
+            let (status, _, errors) = settings(&mut fake, &["list", "--limit", limit]);
+            assert_eq!(status, 2, "{limit}");
+            assert!(errors.starts_with("settings: invalid limit"), "{errors}");
+        }
+        let (status, _, errors) = settings(&mut fake, &["list", "--limit"]);
+        assert_eq!(status, 2);
+        assert_eq!(
+            errors,
+            "settings: option '--limit' requires an argument\n"
+        );
+        let (status, _, errors) = settings(&mut fake, &["get", "--limit", "1", "shell.profile"]);
+        assert_eq!((status, errors.as_str()), (2, USAGE));
+    }
+
+    #[test]
+    fn a_twin_asked_for_coded_errors_adds_the_json_line_after_the_text() {
+        let mut fake = Fake {
+            coded_errors: true,
+            ..Fake::default()
+        };
+        let (status, _, errors) = settings(&mut fake, &["get", "nope"]);
+        assert_eq!(status, 1);
+        let lines: Vec<&str> = errors.lines().collect();
+        assert_eq!(
+            lines[..2],
+            ["settings: nope: no such setting", "  try: settings list"]
+        );
+        assert!(
+            lines[2].starts_with("{\"error\":{\"code\":\"no_such_setting\""),
+            "{errors}"
+        );
+        assert_eq!(lines.len(), 3, "{errors}");
+        let (status, _, errors) = settings(&mut fake, &["frobnicate"]);
+        assert_eq!(status, 2);
+        assert!(errors.starts_with(USAGE), "{errors}");
+        assert!(
+            errors[USAGE.len()..].starts_with("{\"error\":{\"code\":\"usage\""),
+            "{errors}"
+        );
+        let (status, _, errors) = settings(&mut fake, &["set", "shell.profile", "amiga"]);
+        assert_eq!(status, 2);
+        assert!(errors.contains("\"code\":\"invalid_value\""), "{errors}");
+        let (status, _, errors) = settings(&mut fake, &["get", "--json", "nope"]);
+        assert_eq!(status, 1);
+        assert_eq!(errors.lines().count(), 1, "{errors}");
+        let (status, _, errors) = settings(&mut Fake::default(), &["get", "nope"]);
+        assert_eq!(status, 1);
+        assert!(!errors.contains("{\"error\""), "{errors}");
     }
 
     #[test]

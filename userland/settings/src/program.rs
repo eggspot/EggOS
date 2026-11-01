@@ -775,6 +775,7 @@ fn saved_theme(file: &[u8], server: Option<&WindowServer>) -> Theme {
 
 struct Machine {
     server: Option<WindowServer>,
+    coded_errors: bool,
 }
 
 impl command::Machine for Machine {
@@ -886,6 +887,10 @@ impl command::Machine for Machine {
 
     fn write_error(&mut self, bytes: &[u8]) {
         write_all(STANDARD_ERROR, bytes);
+    }
+
+    fn wants_coded_errors(&self) -> bool {
+        self.coded_errors
     }
 }
 
@@ -1888,6 +1893,9 @@ pub fn run(startup: &Startup) -> i32 {
         _ => {
             let mut machine = Machine {
                 server: WindowServer::open().ok(),
+                coded_errors: startup
+                    .environment()
+                    .any(|variable| variable == eggos_commands::tools::CODED_ERRORS_ENVIRONMENT),
             };
             command::run(&mut machine, &arguments[..count])
         }
