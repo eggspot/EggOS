@@ -242,6 +242,18 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   through the shared translation loader; the ratio is the translated code's cost against
   native, reported apart from native benchmarks.
 
+## Image decoding
+
+- `image_decode_jpeg_640x480` (D230): `eggos-image` decoding a 640x480 baseline JPEG photo with
+  4:2:0 chroma (`image/testdata/photo-640x480.jpg`, embedded in benchmark kernels only) to
+  straight-alpha pixels, per iteration: Huffman decoding, the integer IDCT, chroma upsampling
+  and the colour conversion, with the image's buffers allocated and freed. One iteration is a
+  whole decode, so the runner times it over 20 iterations after one untimed one
+  (`LONG_BENCHMARKS` in `kernel/src/bench.rs`) instead of 10 000 after 100: under `-icount` the
+  count is exact either way. Like the toolkit benchmarks, the crate is linked into the kernel
+  only in bench builds; the Windows layer (and the macOS layer's AppKit) link it as part of
+  their optional components.
+
 ## Release kernel
 
 Two results per architecture come from the release kernel rather than the benchmark kernel
