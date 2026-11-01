@@ -333,6 +333,44 @@ fn buttons_follow_their_report_s_motion_and_the_wheel_comes_last() {
     assert!(!state.anything_held());
 }
 
+#[test]
+fn the_sideways_wheel_adds_up_over_its_report_and_comes_after_the_vertical_one() {
+    let mut state = InputState::new();
+    let mut mouse = Device::mouse();
+    let report = [
+        RawEvent::new(event_type::REL, relative::SIDEWAYS_WHEEL, 2),
+        RawEvent::new(event_type::REL, relative::WHEEL, 1),
+        RawEvent::new(event_type::REL, relative::SIDEWAYS_WHEEL, 1),
+        SYN,
+    ];
+    let both = send(&mut state, &mut mouse, &report, SCREEN, 0);
+    assert_eq!(
+        both.events,
+        [
+            InputEvent::Wheel { delta: 1 },
+            InputEvent::SidewaysWheel { delta: 3 },
+        ]
+    );
+    assert_eq!(both.views.len(), 1);
+    let left = [
+        RawEvent::new(event_type::REL, relative::SIDEWAYS_WHEEL, -1),
+        SYN,
+    ];
+    let sideways = send(&mut state, &mut mouse, &left, SCREEN, 0);
+    assert_eq!(sideways.events, [InputEvent::SidewaysWheel { delta: -1 }]);
+    assert!(sideways.views.is_empty());
+    let undone = [
+        RawEvent::new(event_type::REL, relative::SIDEWAYS_WHEEL, 1),
+        RawEvent::new(event_type::REL, relative::SIDEWAYS_WHEEL, -1),
+        SYN,
+    ];
+    assert!(
+        send(&mut state, &mut mouse, &undone, SCREEN, 0)
+            .events
+            .is_empty()
+    );
+}
+
 fn middle(pressed: bool) -> InputEvent {
     InputEvent::Button {
         button: Button::Middle,
@@ -437,6 +475,8 @@ fn every_event_packs_into_a_word_and_back() {
         InputEvent::Wheel { delta: i32::MAX },
         InputEvent::LayoutChanged(0),
         InputEvent::LayoutChanged(19),
+        InputEvent::SidewaysWheel { delta: i32::MIN },
+        InputEvent::SidewaysWheel { delta: 3 },
     ];
     for event in events {
         assert_eq!(InputEvent::unpack(event.pack()), Some(event));
@@ -453,7 +493,7 @@ fn every_event_packs_into_a_word_and_back() {
         })
     );
     assert_eq!(InputEvent::unpack(0), None);
-    assert_eq!(InputEvent::unpack(5), None);
+    assert_eq!(InputEvent::unpack(7), None);
     assert_eq!(InputEvent::unpack(BUTTON | 3 << 8), None);
 }
 

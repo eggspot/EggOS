@@ -913,7 +913,7 @@ impl Desktop {
     /// A window for `client`, not shown until its first [`Self::commit`]: `role` and `parent`
     /// as the contract numbers them, a content of `width` by `height` clamped as
     /// [`clamp_content_size`] says, and `window_flags` ([`protocol::flags`]). Clients may make
-    /// normal windows and dialogs of their own normal windows.
+    /// normal windows and dialogs of their own normal windows and dialogs (D226).
     pub fn create(
         &mut self,
         client: u16,
@@ -933,7 +933,7 @@ impl Desktop {
         let parent = match role {
             Role::Dialog => {
                 let parent = self.owned(client, parent)?;
-                if self.window_at(parent).role != Role::Normal {
+                if !matches!(self.window_at(parent).role, Role::Normal | Role::Dialog) {
                     return Err(WindowError::Invalid);
                 }
                 Some(parent as u8)
@@ -1438,13 +1438,9 @@ impl Desktop {
     }
 
     fn raise(&mut self, slot: usize, damage: &mut Damage) {
-        if let Some(parent) = self.window_at(slot).parent {
-            self.raise(usize::from(parent), damage);
-            to_top(&mut self.stack, self.stack_length, slot);
-            if self.is_visible(slot) {
-                damage.add(self.window_at(slot).with_shadow());
-            }
-            return;
+        let owner = self.owner_window(slot);
+        if owner != slot {
+            self.raise(owner, damage);
         }
         let top = self.stack[..self.stack_length]
             .last()
@@ -1454,14 +1450,14 @@ impl Desktop {
         let mut moved = 0;
         while index + moved < self.stack_length {
             let candidate = usize::from(self.stack[index]);
-            if candidate != slot && self.window_at(candidate).parent == Some(slot as u8) {
+            if candidate != slot && self.descends_from(candidate, slot) {
                 to_top(&mut self.stack, self.stack_length, candidate);
                 moved += 1;
             } else {
                 index += 1;
             }
         }
-        if top != Some(slot) && self.is_visible(slot) {
+        if (owner != slot || top != Some(slot)) && self.is_visible(slot) {
             damage.add(self.window_at(slot).with_shadow());
             for &dialog in &self.stack[self.stack_length - moved..self.stack_length] {
                 let dialog = usize::from(dialog);
@@ -1476,6 +1472,17 @@ impl Desktop {
         if self.dialogs == 0 {
             return None;
         }
+        let mut top = self.top_child_dialog(slot)?;
+        for _ in 0..MAX_WINDOWS {
+            match self.top_child_dialog(top) {
+                Some(next) => top = next,
+                None => break,
+            }
+        }
+        Some(top)
+    }
+
+    fn top_child_dialog(&self, slot: usize) -> Option<usize> {
         self.stack[..self.stack_length]
             .iter()
             .rev()
@@ -1483,6 +1490,32 @@ impl Desktop {
             .find(|&dialog| {
                 self.window_at(dialog).parent == Some(slot as u8) && self.is_visible(dialog)
             })
+    }
+
+    /// The window at the end of `slot`'s chain of parents (D226): the normal window a dialog,
+    /// or a dialog's dialog, belongs to; `slot` itself when it has no parent.
+    fn owner_window(&self, slot: usize) -> usize {
+        let mut owner = slot;
+        for _ in 0..MAX_WINDOWS {
+            match self.window_at(owner).parent {
+                Some(parent) => owner = usize::from(parent),
+                None => break,
+            }
+        }
+        owner
+    }
+
+    /// Whether `ancestor` is on `slot`'s chain of parents.
+    fn descends_from(&self, slot: usize, ancestor: usize) -> bool {
+        let mut at = slot;
+        for _ in 0..MAX_WINDOWS {
+            match self.window_at(at).parent {
+                Some(parent) if usize::from(parent) == ancestor => return true,
+                Some(parent) => at = usize::from(parent),
+                None => return false,
+            }
+        }
+        false
     }
 
     fn set_focus(&mut self, focus: Option<usize>, damage: &mut Damage, events: &mut dyn EventSink) {
@@ -1510,7 +1543,7 @@ impl Desktop {
         self.focus = focus;
         if let Some(new) = focus {
             self.focus_serial = self.focus_serial.wrapping_add(1);
-            let top = self.window_at(new).parent.map_or(new, usize::from);
+            let top = self.owner_window(new);
             let serial = self.focus_serial;
             self.window_mut(top).focus_serial = serial;
             damage.add(self.window_at(new).outside());
@@ -1549,9 +1582,8 @@ impl Desktop {
         if self.window_at(slot).minimised {
             return;
         }
-        let group = |desktop: &Self, other: usize| {
-            other == slot || desktop.window_at(other).parent == Some(slot as u8)
-        };
+        let group =
+            |desktop: &Self, other: usize| other == slot || desktop.descends_from(other, slot);
         for &other in &self.stack[..self.stack_length] {
             let other = usize::from(other);
             if self.is_visible(other) && group(self, other) {
@@ -1998,6 +2030,23 @@ impl Desktop {
             self.send(
                 slot,
                 EventRecord::new(event::WHEEL, 0, cx, cy, 0, notches as u32),
+                events,
+            );
+        }
+    }
+
+    /// The sideways wheel turned by `notches`, right when positive (D226): a `Wheel` record
+    /// with the notches in `c` and `d` 0, as [`Self::send_input`]'s sideways turn sends it, to
+    /// the window under the pointer or the one holding the grab.
+    pub fn sideways_wheel(&mut self, notches: i32, events: &mut dyn EventSink) {
+        self.note_person_input();
+        let (x, y) = self.pointer;
+        let target = self.grab.or_else(|| self.content_window_at(x, y));
+        if let Some(slot) = target {
+            let (cx, cy) = self.content_point(slot);
+            self.send(
+                slot,
+                EventRecord::new(event::WHEEL, 0, cx, cy, notches as u32, 0),
                 events,
             );
         }

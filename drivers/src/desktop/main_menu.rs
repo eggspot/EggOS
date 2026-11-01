@@ -481,11 +481,10 @@ impl Desktop {
                 inert: false,
             });
         }
-        let window = self.window_at(focus);
-        let parent = window
-            .parent
-            .filter(|_| window.role == Role::Dialog)
-            .map(usize::from)?;
+        if self.window_at(focus).role != Role::Dialog {
+            return None;
+        }
+        let parent = self.owner_window(focus);
         self.main_menus[parent].is_some().then_some(MenuBar {
             window: parent,
             inert: true,

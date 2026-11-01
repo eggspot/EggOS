@@ -896,6 +896,74 @@ fn a_window_with_a_dialog_open_passes_keys_to_it_and_refuses_points() {
 }
 
 #[test]
+fn input_aimed_at_a_window_follows_its_dialogs_to_the_topmost_one() {
+    let (mut desktop, first, _) = desktop_with_two_windows();
+    let mut dialogs = [first; 2];
+    for at in 0..2 {
+        let parent = match at {
+            0 => first,
+            _ => dialogs[at - 1],
+        };
+        let created = desktop
+            .create(CLIENT, 1, u32::from(parent), 200, 100, 0)
+            .unwrap();
+        desktop
+            .commit(
+                CLIENT,
+                u32::from(created.window),
+                &[],
+                &mut Damage::new(),
+                &mut DiscardEvents,
+            )
+            .unwrap();
+        dialogs[at] = created.window;
+    }
+    let [dialog, inner] = dialogs;
+    let mut events = Recorded::default();
+    for target in [first, dialog] {
+        assert_eq!(
+            send(
+                &mut desktop,
+                target,
+                InjectedInput::Character('y'),
+                &mut events
+            ),
+            Ok(Injected::QueuedForDialog {
+                dialog: u32::from(inner)
+            })
+        );
+        let records = events.take();
+        assert!(!records.is_empty());
+        assert!(records.iter().all(|record| record.window == inner));
+    }
+    let click = InjectedInput::Click {
+        x: 1,
+        y: 1,
+        button: crate::input::button::LEFT,
+    };
+    assert_eq!(
+        send(&mut desktop, dialog, click, &mut events),
+        Ok(Injected::DialogOpen {
+            dialog: u32::from(inner)
+        })
+    );
+    desktop
+        .destroy(
+            CLIENT,
+            u32::from(inner),
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        )
+        .unwrap();
+    assert_eq!(
+        send(&mut desktop, first, click, &mut events),
+        Ok(Injected::DialogOpen {
+            dialog: u32::from(dialog)
+        })
+    );
+}
+
+#[test]
 fn a_character_no_key_types_comes_as_a_key_record_of_code_0() {
     let (mut desktop, _, second) = desktop_with_two_windows();
     let mut events = Recorded::default();

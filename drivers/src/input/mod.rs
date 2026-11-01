@@ -59,6 +59,8 @@ pub mod button {
 pub mod relative {
     pub const X: u16 = 0x00;
     pub const Y: u16 = 0x01;
+    /// The sideways wheel (Linux's `REL_HWHEEL`): +1 a notch to the right.
+    pub const SIDEWAYS_WHEEL: u16 = 0x06;
     /// The vertical wheel: +1 a notch up.
     pub const WHEEL: u16 = 0x08;
 }

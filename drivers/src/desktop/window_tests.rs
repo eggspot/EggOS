@@ -323,6 +323,18 @@ fn keys_and_the_wheel_go_to_the_focused_window_s_client() {
         (wheel.kind, wheel.a, wheel.b, wheel.d as i32),
         (event::WHEEL, 8, 9, -2)
     );
+    desktop.sideways_wheel(3, &mut events);
+    let (_, sideways) = events.take()[0];
+    assert_eq!(
+        (
+            sideways.kind,
+            sideways.a,
+            sideways.b,
+            sideways.c as i32,
+            sideways.d
+        ),
+        (event::WHEEL, 8, 9, 3, 0)
+    );
     let terminal = desktop.window();
     click(&mut desktop, terminal.x + 10, terminal.y + 100, &mut events);
     events.take();
@@ -435,6 +447,50 @@ fn a_dialog_sits_on_its_parent_takes_its_input_and_goes_with_it() {
         .unwrap();
     assert!(!desktop.is_shown(dialog) && desktop.window_rect(dialog).is_none());
     assert_eq!(desktop.windows_of(CLIENT), 0);
+}
+
+fn shown_dialog(desktop: &mut Desktop, parent: WindowId, events: &mut Recorded) -> WindowId {
+    let dialog = desktop
+        .create(CLIENT, 1, u32::from(parent), 160, 80, 0)
+        .unwrap()
+        .window;
+    desktop
+        .commit(CLIENT, u32::from(dialog), &[], &mut Damage::new(), events)
+        .unwrap();
+    dialog
+}
+
+#[test]
+fn a_dialog_s_dialog_sits_above_both_takes_the_focus_and_goes_with_its_parent() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut events = Recorded::default();
+    let window = shown(&mut desktop, CLIENT, 400, 300);
+    let dialog = shown_dialog(&mut desktop, window, &mut events);
+    let inner = shown_dialog(&mut desktop, dialog, &mut events);
+    assert_eq!(desktop.focused_window(), Some(inner));
+    let other = shown(&mut desktop, CLIENT, 300, 200);
+    assert_eq!(desktop.focused_window(), Some(other));
+    let window_rect = desktop.window_rect(window).unwrap();
+    click(
+        &mut desktop,
+        window_rect.x + 5,
+        window_rect.bottom() - 10,
+        &mut events,
+    );
+    assert_eq!(desktop.focused_window(), Some(inner));
+    let stack: Vec<_> = desktop.stacking().collect();
+    assert_eq!(&stack[stack.len() - 3..], [window, dialog, inner]);
+    assert!(!events.kinds().contains(&(CLIENT, event::BUTTON)));
+    desktop
+        .destroy(CLIENT, u32::from(inner), &mut Damage::new(), &mut events)
+        .unwrap();
+    assert_eq!(desktop.focused_window(), Some(dialog));
+    let inner = shown_dialog(&mut desktop, dialog, &mut events);
+    desktop
+        .destroy(CLIENT, u32::from(dialog), &mut Damage::new(), &mut events)
+        .unwrap();
+    assert!(!desktop.is_shown(inner) && desktop.window_rect(inner).is_none());
+    assert_eq!(desktop.focused_window(), Some(window));
 }
 
 #[test]

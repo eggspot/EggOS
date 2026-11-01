@@ -6,8 +6,8 @@
 //! their last input, injected input is refused ([`WindowError::Busy`]).
 
 use super::protocol::{
-    DRAG_STEPS, EventRecord, EventSink, MAX_WHEEL_NOTCHES, WindowError, event, input_kind,
-    modifier, query_kind,
+    DRAG_STEPS, EventRecord, EventSink, MAX_WHEEL_NOTCHES, MAX_WINDOWS, WindowError, event,
+    input_kind, modifier, query_kind,
 };
 use super::{Desktop, KERNEL_CLIENT, WindowId, codepoint, colour, key_modifiers};
 use crate::display::{Damage, Rect};
@@ -452,6 +452,17 @@ impl Desktop {
     }
 
     fn open_dialog(&self, slot: usize) -> Option<usize> {
+        let mut open = self.open_child_dialog(slot)?;
+        for _ in 0..MAX_WINDOWS {
+            match self.open_child_dialog(open) {
+                Some(next) => open = next,
+                None => break,
+            }
+        }
+        Some(open)
+    }
+
+    fn open_child_dialog(&self, slot: usize) -> Option<usize> {
         self.stack[..self.stack_length]
             .iter()
             .rev()

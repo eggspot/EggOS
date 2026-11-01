@@ -270,7 +270,7 @@ impl Desktop {
     /// program's, D187), are Terminal's; a window whose title ends with ` - Text Editor` the
     /// Text Editor's (D149); another window (a dialog: its parent) is the app its title names.
     pub(super) fn app_of(&self, slot: usize) -> Option<AppId> {
-        let slot = self.window_at(slot).parent.map_or(slot, usize::from);
+        let slot = self.owner_window(slot);
         let title = self.window_at(slot).title();
         if slot == TERMINAL_SLOT
             || title == TERMINAL_TITLE

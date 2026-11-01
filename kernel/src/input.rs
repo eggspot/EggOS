@@ -109,6 +109,8 @@ pub enum InputEvent {
     Button { button: Button, pressed: bool },
     /// The wheel turned by `delta` notches, up when positive.
     Wheel { delta: i32 },
+    /// The sideways wheel turned by `delta` notches, right when positive (D226).
+    SidewaysWheel { delta: i32 },
     /// The switch key made layout number `.0` (an index of [`layout::LAYOUTS`]) the one in
     /// force (D220).
     LayoutChanged(u8),
@@ -119,6 +121,7 @@ const POINTER_MOVE: u64 = 2;
 const BUTTON: u64 = 3;
 const WHEEL: u64 = 4;
 const LAYOUT_CHANGED: u64 = 5;
+const SIDEWAYS_WHEEL: u64 = 6;
 const COORDINATE_MASK: u32 = 0x00ff_ffff;
 const CHARACTER_MASK: u32 = 0x00ff_ffff;
 
@@ -158,6 +161,7 @@ impl InputEvent {
                 BUTTON | (button as u64) << 8 | (pressed as u64) << 16
             }
             InputEvent::Wheel { delta } => WHEEL | (delta as u32 as u64) << 32,
+            InputEvent::SidewaysWheel { delta } => SIDEWAYS_WHEEL | (delta as u32 as u64) << 32,
             InputEvent::LayoutChanged(number) => LAYOUT_CHANGED | (number as u64) << 8,
         }
     }
@@ -188,6 +192,9 @@ impl InputEvent {
                 delta: field(word, 32, 0xffff_ffff) as u32 as i32,
             },
             LAYOUT_CHANGED => InputEvent::LayoutChanged(field(word, 8, 0xff) as u8),
+            SIDEWAYS_WHEEL => InputEvent::SidewaysWheel {
+                delta: field(word, 32, 0xffff_ffff) as u32 as i32,
+            },
             _ => return None,
         })
     }
@@ -341,6 +348,7 @@ pub struct PendingReport {
     dx: i32,
     dy: i32,
     wheel: i32,
+    sideways: i32,
     x: Option<i32>,
     y: Option<i32>,
     presses: u8,
@@ -1051,9 +1059,9 @@ impl InputState {
                 });
             }
         }
-        let wheel = match NATURAL_SCROLLING.load(Ordering::Relaxed) {
-            true => report.wheel.saturating_neg(),
-            false => report.wheel,
+        let (wheel, sideways) = match NATURAL_SCROLLING.load(Ordering::Relaxed) {
+            true => (report.wheel.saturating_neg(), report.sideways.saturating_neg()),
+            false => (report.wheel, report.sideways),
         };
         if wheel != 0 {
             let lines = wheel.unsigned_abs() as usize * WHEEL_LINES;
@@ -1063,6 +1071,9 @@ impl InputState {
                 ViewMove::Forward(lines)
             });
             sink.event(InputEvent::Wheel { delta: wheel });
+        }
+        if sideways != 0 {
+            sink.event(InputEvent::SidewaysWheel { delta: sideways });
         }
     }
 
@@ -1090,6 +1101,10 @@ impl InputState {
             }
             (event_type::REL, relative::WHEEL) => {
                 report.wheel = report.wheel.saturating_add(event.value);
+                report.pending = true;
+            }
+            (event_type::REL, relative::SIDEWAYS_WHEEL) => {
+                report.sideways = report.sideways.saturating_add(event.value);
                 report.pending = true;
             }
             (event_type::ABS, absolute::X) => {
