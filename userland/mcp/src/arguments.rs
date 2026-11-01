@@ -226,12 +226,20 @@ impl ArgumentProblem {
             ArgumentProblem::Missing("link") => "link is required: the path of the link to make",
             ArgumentProblem::Missing("target") => "target is required: what the link points to",
             ArgumentProblem::Missing("value") => "value is required: the new value",
+            ArgumentProblem::Missing("source") => "source is required: the path to copy or move",
+            ArgumentProblem::Missing("destination") => {
+                "destination is required: the new path, not a folder to put it in"
+            }
             ArgumentProblem::Missing(_) => "a required argument is missing",
             ArgumentProblem::WrongType("path") => "path must be a string",
             ArgumentProblem::WrongType("arguments") => "arguments must be an array of strings",
             ArgumentProblem::WrongType("append" | "confirm") => "append and confirm are booleans",
             ArgumentProblem::WrongType("dry_run") => "dry_run is a boolean",
             ArgumentProblem::WrongType("symbolic") => "symbolic is a boolean",
+            ArgumentProblem::WrongType("source") => "source must be a string",
+            ArgumentProblem::WrongType("destination") => "destination must be a string",
+            ArgumentProblem::WrongType("recursive") => "recursive is a boolean",
+            ArgumentProblem::WrongType("parents") => "parents is a boolean",
             ArgumentProblem::WrongType(_) => "an argument has the wrong type",
             ArgumentProblem::BadPath => "the path is longer than 4095 bytes",
             ArgumentProblem::BothContents => "give content or content_base64, not both",
@@ -587,6 +595,12 @@ pub struct Checked {
     pub symbolic: bool,
     /// `disk_format`'s label (D192).
     pub label: Option<LabelText>,
+    /// `file_copy`'s and `file_move`'s source's length, in the content buffer (D225).
+    pub source: Option<usize>,
+    /// `file_remove`'s `recursive` (D225).
+    pub recursive: bool,
+    /// `folder_create`'s `parents` (D225).
+    pub parents: bool,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -845,6 +859,20 @@ pub fn check(
         }
         checked.link_target = Some(length);
     }
+    if matches!(tool.kind, Kind::FileCopy | Kind::FileMove) {
+        let room = decoded
+            .content
+            .get_mut(..MAX_PATH_BYTES + 1)
+            .ok_or(ArgumentProblem::BadPath)?;
+        let source = match get("source") {
+            Some(Value::Str(text)) => text.decode_into(room),
+            Some(_) => return Err(ArgumentProblem::WrongType("source")),
+            None => return Err(ArgumentProblem::Missing("source")),
+        };
+        checked.source = Some(source.ok_or(ArgumentProblem::BadPath)?.len());
+    }
+    checked.recursive = flag(get("recursive"), "recursive")?;
+    checked.parents = flag(get("parents"), "parents")?;
     if matches!(
         tool.kind,
         Kind::DiskCheck | Kind::DiskRepair | Kind::DiskFormat
@@ -1427,6 +1455,12 @@ pub fn after_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
 /// (D170).
 pub fn link_target_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.link_target?)?).ok()
+}
+
+/// `file_copy`'s and `file_move`'s source in `buffer`, the content buffer, that
+/// [`Checked::source`] measures (D225).
+pub fn source_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.source?)?).ok()
 }
 
 fn is_disk_device(device: &[u8]) -> bool {
@@ -2132,5 +2166,48 @@ mod tests {
         ] {
             assert_eq!(checked("ln", arguments).0, Err(problem), "{arguments}");
         }
+    }
+
+    #[test]
+    fn the_file_tools_take_a_source_and_their_flags() {
+        let arguments = r#"{"source":"/home/root/a","destination":"/home/root/b"}"#;
+        let (result, buffers) = checked("file_copy", arguments);
+        let result = result.unwrap();
+        assert_eq!(source_text(&result, &buffers.content), Some("/home/root/a"));
+        assert_eq!(path_text(&result, &buffers.path), Some("/home/root/b"));
+        assert_eq!(
+            checked("file_move", r#"{"destination":"/home/root/b"}"#).0,
+            Err(ArgumentProblem::Missing("source"))
+        );
+        assert_eq!(
+            checked("file_move", r#"{"source":"/home/root/a"}"#).0,
+            Err(ArgumentProblem::Missing("destination"))
+        );
+        assert_eq!(
+            checked("file_copy", r#"{"source":1,"destination":"/home/root/b"}"#).0,
+            Err(ArgumentProblem::WrongType("source"))
+        );
+        let long = format!(
+            r#"{{"source":"/{}","destination":"/home/root/b"}}"#,
+            "a".repeat(MAX_PATH_BYTES + 1)
+        );
+        assert_eq!(checked("file_copy", &long).0, Err(ArgumentProblem::BadPath));
+        let (result, _) = checked("file_remove", r#"{"path":"/home/root/d","recursive":true}"#);
+        assert!(result.unwrap().recursive);
+        let (result, _) = checked("folder_create", r#"{"path":"/home/root/d","parents":true}"#);
+        assert!(result.unwrap().parents);
+        assert_eq!(
+            checked("folder_create", r#"{"path":"/home/root/d","parents":"yes"}"#).0,
+            Err(ArgumentProblem::WrongType("parents"))
+        );
+        assert_eq!(
+            checked("folder_create", r#"{"path":"/home/root/d","dry_run":true}"#).0,
+            Err(ArgumentProblem::Unknown)
+        );
+        assert!(
+            checked("file_remove", r#"{"path":"/home/root/d"}"#)
+                .0
+                .is_ok_and(|checked| !checked.recursive && checked.source.is_none())
+        );
     }
 }

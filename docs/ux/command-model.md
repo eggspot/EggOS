@@ -313,7 +313,15 @@ arguments to shipped schemas (old calls are unchanged): `limit` and `after` to `
 `app_uninstall`, which the server answers itself, and to `settings_set`, whose twin runs `settings
 set --dry-run`; `settings_set`'s result says `Set <key> to <value>.`. The confirming tools are
 exactly the `destroy` tools, each with a `confirm` argument; `run` and the input tools, though
-`control`, ask for none (their `run` grant is the user's consent).
+`control`, ask for none (their `run` grant is the user's consent). D225 adds the file tools, named by
+what they act on rather than by `cp`, `mv`, `mkdir` and `rm` (recorded with D197's clipboard
+names as decided names): `file_copy` (`source` anywhere the reading tools reach, `destination`
+below `/home/root`; `destroy`, asks when it would replace a file, idempotent), `file_move`
+(both below `/home/root`; `destroy`, asks when it would replace a file), `folder_create`
+(`path`, `parents`; `change`, never asks) and `file_remove` (`path`, `recursive`; `destroy`,
+always asks), all under the `write` grant, the three `destroy` ones with `dry_run` answered by
+the server. `destination` is always the new path itself, never a folder to put it in, so the
+question and the dry run name exactly what is replaced.
 
 **GUI surfaces** (D22): each command's `surface` names its GUI (Files for `ls`, the Text
 Editor for `cat` and `tee`, the title bar's buttons for `wm`'s verbs, the launcher for `app`,

@@ -412,3 +412,80 @@ fn the_agent_tools_read_grants_and_only_agent_show_names_the_caller() {
         .collect();
     assert_eq!(calling, ["agent_show"]);
 }
+
+#[test]
+fn the_file_tools_run_cp_mv_mkdir_and_rm_on_paths_the_write_tools_reach() {
+    let write = (&crate::paths::WRITE_ROOTS[..], true, &[crate::paths::TRASH][..]);
+    for (name, kind, program, words, operand, confirmation) in [
+        (
+            "file_copy",
+            Kind::FileCopy,
+            "/bin/cp",
+            &["-r"][..],
+            "destination",
+            Confirmation::WhenOverwriting,
+        ),
+        (
+            "file_move",
+            Kind::FileMove,
+            "/bin/mv",
+            &[][..],
+            "destination",
+            Confirmation::WhenOverwriting,
+        ),
+        (
+            "folder_create",
+            Kind::FolderCreate,
+            "/bin/mkdir",
+            &[][..],
+            "path",
+            Confirmation::Never,
+        ),
+        (
+            "file_remove",
+            Kind::FileRemove,
+            "/bin/rm",
+            &[][..],
+            "path",
+            Confirmation::Always,
+        ),
+    ] {
+        let tool = find(name).unwrap();
+        assert_eq!(tool.kind, kind, "{name}");
+        assert_eq!(tool.twin.program, Program::Fixed(program), "{name}");
+        assert_eq!(tool.twin.words, words, "{name}");
+        let Operand::Path(path) = tool.twin.operand else {
+            panic!("{name}'s operand is a path");
+        };
+        assert_eq!(path.name, operand, "{name}");
+        assert_eq!((path.roots, path.strictly, path.excluded), write, "{name}");
+        assert_eq!(tool.grant, Some(Grant::Write), "{name}");
+        assert_eq!(tool.confirmation, confirmation, "{name}");
+        assert_eq!(tool.hints.destructive, kind != Kind::FolderCreate, "{name}");
+        assert_eq!(
+            tool.takes("dry_run"),
+            kind != Kind::FolderCreate,
+            "{name}"
+        );
+        assert!(!tool.hints.open_world, "{name}");
+    }
+    let copy = crate::tools::COPY_SOURCE;
+    assert_eq!(
+        (copy.name, copy.roots),
+        ("source", &crate::paths::READ_ROOTS[..])
+    );
+    let moved = crate::tools::MOVE_SOURCE;
+    assert_eq!(
+        (moved.name, moved.roots, moved.strictly, moved.excluded),
+        ("source", write.0, write.1, write.2)
+    );
+    assert!(schema_of(find("file_copy").unwrap()).ends_with(
+        r#""required":["source","destination"],"additionalProperties":false}"#
+    ));
+    assert!(schema_of(find("file_remove").unwrap()).contains(
+        r#""recursive":{"type":"boolean","description":"Delete a folder and everything in it.","default":false}"#
+    ));
+    assert!(schema_of(find("folder_create").unwrap()).ends_with(
+        r#""required":["path"],"additionalProperties":false}"#
+    ));
+}

@@ -74,6 +74,9 @@ pub const FETCH_TIME_LIMIT_MS: u64 = 60_000;
 /// How long `net_ping`'s and `net_lookup`'s twins may run: five pings a second apart, or a
 /// lookup that retries a silent server (D158).
 pub const NETWORK_TIME_LIMIT_MS: u64 = 15_000;
+/// How long `file_copy`'s, `file_move`'s and `file_remove`'s twins may run: a folder's whole
+/// tree takes longer than one file (D225).
+pub const FILE_TREE_TIME_LIMIT_MS: u64 = 60_000;
 
 const PING_COUNTS: [&str; 6] = ["0", "1", "2", "3", "4", "5"];
 /// How long the server waits for the user's answer to a question.
@@ -1229,14 +1232,21 @@ impl Server {
         };
         let target_length = target.length;
         let state = target.state;
-        if let Err(message) = hard_link_target(&mut checked, system, scratch.content) {
+        let destination = target_text(tool, scratch.resolved, target_length).unwrap_or("");
+        if let Err(message) =
+            second_path(tool, &mut checked, destination, system, scratch.content)
+        {
+            let outcome = match message.code {
+                Some(_) => Outcome::Error,
+                None => Outcome::Refused,
+            };
             self.stop(
                 system,
                 scratch,
                 id,
                 number,
                 tool_name,
-                Outcome::Refused,
+                outcome,
                 Logged::Shown(shown),
                 message.text,
                 Ending::Refused(message.error),
@@ -1247,7 +1257,14 @@ impl Server {
         if checked.dry_run && tool.definition.dry_run_by_server() {
             let target = target_text(tool, scratch.resolved, target_length);
             let mut would = [0u8; MAX_PATH_BYTES * 2 + 256];
-            let would_length = would_text(tool, &checked, state, target.unwrap_or(""), &mut would);
+            let source = arguments::source_text(&checked, scratch.content).unwrap_or("");
+            let would_length = would_text(
+                tool,
+                &checked,
+                state,
+                (target.unwrap_or(""), source),
+                &mut would,
+            );
             let would = text_prefix(&would, would_length);
             let mut detail = [0u8; MAX_PATH_BYTES + 64];
             let mut text = Text::new(&mut detail);
@@ -1428,6 +1445,29 @@ impl Server {
                         "nothing is there to move to the Trash",
                     ));
                 }
+                (Kind::FileCopy | Kind::FileMove, FileState::Directory) => {
+                    return Err(Problem::error(
+                        &errors::IS_A_FOLDER,
+                        "destination is a folder: name the new path itself, such as \
+                         <folder>/<name>",
+                    ));
+                }
+                (Kind::FileRemove, FileState::Missing) => {
+                    return Err(Problem::error(
+                        &errors::NO_SUCH_FILE,
+                        "nothing is there to delete",
+                    ));
+                }
+                (Kind::FileRemove, _) if paths::is_inside(paths::TRASH, resolved) => {
+                    return Err(Problem::refused(&errors::PATH_NOT_ALLOWED, HOLDS_THE_TRASH));
+                }
+                (Kind::FileRemove, FileState::Directory) if !checked.recursive => {
+                    return Err(Problem::error(
+                        &errors::IS_A_FOLDER,
+                        "the path is a folder: set recursive: true to delete it and everything \
+                         in it",
+                    ));
+                }
                 _ => {}
             }
             return Ok(Target { length, state });
@@ -1587,7 +1627,15 @@ impl Server {
         }
         let target = target_text(tool, scratch.held_path, target_length).unwrap_or("");
         let mut message = [0u8; 2048];
-        let length = question_text(tool, &checked, state, target, &self.agent, &mut message);
+        let source = arguments::source_text(&checked, scratch.content).unwrap_or("");
+        let length = question_text(
+            tool,
+            &checked,
+            state,
+            (target, source),
+            &self.agent,
+            &mut message,
+        );
         let message = text_prefix(&message, length);
         out.begin_object();
         out.key("jsonrpc");
@@ -1960,7 +2008,7 @@ impl Server {
                 }
                 let state = system.file_state(held);
                 match (pending.tool.kind, pending.state, state) {
-                    (Kind::Trash, _, FileState::Missing) => false,
+                    (Kind::Trash | Kind::FileRemove, _, FileState::Missing) => false,
                     (_, FileState::File(_), FileState::File(_)) => true,
                     (_, before, now) => before == now,
                 }
@@ -2042,6 +2090,15 @@ impl Server {
         }
         if let Some(target) = arguments::link_target_text(&prepared.checked, buffers.content) {
             push_word(&mut words, &mut count, target);
+        }
+        if tool.kind == Kind::FileRemove && prepared.checked.recursive {
+            push_word(&mut words, &mut count, "-r");
+        }
+        if tool.kind == Kind::FolderCreate && prepared.checked.parents {
+            push_word(&mut words, &mut count, "-p");
+        }
+        if let Some(source) = arguments::source_text(&prepared.checked, buffers.content) {
+            push_word(&mut words, &mut count, source);
         }
         if tool.kind == Kind::Run {
             for word in prepared.checked.words.each(buffers.words) {
@@ -2142,6 +2199,7 @@ impl Server {
                 Kind::Run => prepared.checked.time_limit_ms,
                 Kind::Fetch => FETCH_TIME_LIMIT_MS,
                 Kind::NetPing | Kind::NetLookup | Kind::ClockSync => NETWORK_TIME_LIMIT_MS,
+                Kind::FileCopy | Kind::FileMove | Kind::FileRemove => FILE_TREE_TIME_LIMIT_MS,
                 _ => TWIN_TIME_LIMIT_MS,
             },
             no_symlinks: matches!(tool.twin.operand, Operand::Path(_)),
@@ -2215,6 +2273,8 @@ impl Server {
             ),
             link: arguments::link_target_text(&prepared.checked, buffers.content)
                 .map(|target| (target, prepared.checked.symbolic)),
+            source: arguments::source_text(&prepared.checked, buffers.content),
+            recursive: prepared.checked.recursive,
         };
         answer_with_output(out, &answer);
     }
@@ -2338,6 +2398,8 @@ impl Server {
             dry_run: false,
             setting: None,
             link: None,
+            source: None,
+            recursive: false,
         };
         answer_with_output(out, &answer);
     }
@@ -2864,15 +2926,65 @@ impl Problem {
     }
 }
 
-fn hard_link_target(
+const HOLDS_THE_TRASH: &str =
+    "Refused: the path holds the Trash, which belongs to trash and Files.";
+
+fn second_path(
+    tool: &Tool,
     checked: &mut Checked,
+    destination: &str,
     system: &mut impl System,
     content: &mut [u8],
 ) -> Result<(), Problem> {
-    let Some(length) = checked.link_target.filter(|_| !checked.symbolic) else {
+    if let Some(length) = checked.link_target.filter(|_| !checked.symbolic) {
+        let resolved = resolve_in_place(length, tools::HARD_LINK_TARGET, system, content)?;
+        checked.link_target = Some(resolved);
+        return Ok(());
+    }
+    let argument = match tool.kind {
+        Kind::FileCopy => tools::COPY_SOURCE,
+        Kind::FileMove => tools::MOVE_SOURCE,
+        _ => return Ok(()),
+    };
+    let Some(length) = checked.source else {
         return Ok(());
     };
-    let argument = tools::HARD_LINK_TARGET;
+    let resolved = resolve_in_place(length, argument, system, content)?;
+    checked.source = Some(resolved);
+    let source = content
+        .get(..resolved)
+        .and_then(|bytes| core::str::from_utf8(bytes).ok())
+        .unwrap_or("");
+    if system.file_state(source) == FileState::Missing {
+        return Err(Problem::error(
+            &errors::NO_SUCH_FILE,
+            "nothing is at source to copy or move",
+        ));
+    }
+    if tool.kind == Kind::FileMove && paths::is_inside(paths::TRASH, source) {
+        return Err(Problem::refused(&errors::PATH_NOT_ALLOWED, HOLDS_THE_TRASH));
+    }
+    if source == destination {
+        return Err(Problem::error(
+            &errors::USAGE,
+            "source and destination are the same path: name a new path as destination",
+        ));
+    }
+    if paths::is_inside(destination, source) {
+        return Err(Problem::error(
+            &errors::USAGE,
+            "destination is inside source: a folder cannot be copied or moved into itself",
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_in_place(
+    length: usize,
+    argument: tools::PathArgument,
+    system: &mut impl System,
+    content: &mut [u8],
+) -> Result<usize, Problem> {
     let refused =
         |refusal| Problem::refused(&errors::PATH_NOT_ALLOWED, path_refusal(&argument, refusal));
     let (given, room) = content
@@ -2893,11 +3005,13 @@ fn hard_link_target(
     .map_err(refused)?;
     let resolved_length = resolved.len();
     let place = given.get_mut(..resolved_length);
-    if let (Some(place), Some(source)) = (place, room.get(..resolved_length)) {
-        place.copy_from_slice(source);
-        checked.link_target = Some(resolved_length);
+    match (place, room.get(..resolved_length)) {
+        (Some(place), Some(source)) => {
+            place.copy_from_slice(source);
+            Ok(resolved_length)
+        }
+        _ => Err(refused(PathRefusal::TooLong)),
     }
-    Ok(())
 }
 
 fn push_word<'w>(words: &mut [&'w str], count: &mut usize, word: &'w str) {
@@ -3014,6 +3128,9 @@ fn confirmation_needed(tool: &Tool, out: &mut [u8]) -> usize {
         Kind::Tee => text.put("tee would replace an existing file"),
         Kind::Fetch => text.put("fetch would replace an existing file"),
         Kind::Trash => text.put("trash moves the file to the Trash"),
+        Kind::FileCopy => text.put("file_copy would replace an existing file"),
+        Kind::FileMove => text.put("file_move would replace an existing file"),
+        Kind::FileRemove => text.put("file_remove deletes for good, without the Trash"),
         Kind::ClockSet => text.put("clock_set sets the machine's clock"),
         Kind::AppUninstall => text.put("app_uninstall removes the app"),
         Kind::DiskFormat => text.put("disk_format erases the disk"),
@@ -3033,15 +3150,50 @@ fn question_text(
     tool: &Tool,
     checked: &Checked,
     state: FileState,
-    target: &str,
+    (target, source): (&str, &str),
     agent: &AgentId,
     out: &mut [u8],
 ) -> usize {
     let mut shown = [0u8; MAX_PATH_BYTES * 2];
     let shown_length = audit::display_into(target.as_bytes(), &mut shown);
     let shown = text_prefix(&shown, shown_length);
+    let mut from = [0u8; MAX_PATH_BYTES * 2];
+    let from_length = audit::display_into(source.as_bytes(), &mut from);
+    let from = text_prefix(&from, from_length);
     let mut text = Text::new(out);
     match tool.kind {
+        Kind::FileCopy | Kind::FileMove => {
+            text.put(match tool.kind {
+                Kind::FileCopy => "An agent asks to copy ",
+                _ => "An agent asks to move ",
+            });
+            text.put(from);
+            text.put(" to ");
+            text.put(shown);
+            text.put(", replacing the file there");
+            if let FileState::File(size) = state {
+                text.put(" (");
+                text.number(size as i64);
+                text.put(" bytes)");
+            }
+            text.put(". Allow it?");
+        }
+        Kind::FileRemove => {
+            text.put("An agent asks to delete ");
+            if state == FileState::Directory {
+                text.put("the folder ");
+            }
+            text.put(shown);
+            if let FileState::File(size) = state {
+                text.put(" (");
+                text.number(size as i64);
+                text.put(" bytes)");
+            }
+            if state == FileState::Directory {
+                text.put(" and everything in it");
+            }
+            text.put(" for good, without the Trash. Allow it?");
+        }
         Kind::Tee if checked.append => {
             text.put("An agent asks to add ");
             text.number(checked.content.unwrap_or(0) as i64);
@@ -3133,12 +3285,15 @@ fn would_text(
     tool: &Tool,
     checked: &Checked,
     state: FileState,
-    target: &str,
+    (target, source): (&str, &str),
     out: &mut [u8],
 ) -> usize {
     let mut shown = [0u8; MAX_PATH_BYTES * 2];
     let shown_length = audit::display_into(target.as_bytes(), &mut shown);
     let shown = text_prefix(&shown, shown_length);
+    let mut from = [0u8; MAX_PATH_BYTES * 2];
+    let from_length = audit::display_into(source.as_bytes(), &mut from);
+    let from = text_prefix(&from, from_length);
     let mut text = Text::new(out);
     text.put(tool.name);
     let size = |text: &mut Text<'_>| {
@@ -3194,6 +3349,30 @@ fn would_text(
             text.put("/");
             text.put(name);
             text.put(" and everything in it");
+        }
+        (Kind::FileCopy | Kind::FileMove, _) => {
+            text.put(match tool.kind {
+                Kind::FileCopy => " would copy ",
+                _ => " would move ",
+            });
+            text.put(from);
+            text.put(" to ");
+            text.put(shown);
+            if state != FileState::Missing {
+                text.put(", replacing the file there");
+                size(&mut text);
+            }
+        }
+        (Kind::FileRemove, FileState::Directory) => {
+            text.put(" would delete the folder ");
+            text.put(shown);
+            text.put(" and everything in it for good");
+        }
+        (Kind::FileRemove, _) => {
+            text.put(" would delete ");
+            text.put(shown);
+            size(&mut text);
+            text.put(" for good");
         }
         (Kind::DiskFormat, _) => {
             text.put(" would erase everything on ");
@@ -3265,6 +3444,18 @@ fn write_audit_arguments(
         shown_string(&mut writer, target, cut);
         writer.key("symbolic");
         writer.bool(checked.symbolic);
+    }
+    if let Some(source) = arguments::source_text(checked, scratch.content) {
+        writer.key("source");
+        shown_string(&mut writer, source, cut);
+    }
+    if tool.kind == Kind::FileRemove {
+        writer.key("recursive");
+        writer.bool(checked.recursive);
+    }
+    if tool.kind == Kind::FolderCreate {
+        writer.key("parents");
+        writer.bool(checked.parents);
     }
     if let Some(name) = checked.name {
         writer.key("name");
@@ -3919,6 +4110,8 @@ struct Answered<'a> {
     dry_run: bool,
     setting: Option<(&'a str, &'a str)>,
     link: Option<(&'a str, bool)>,
+    source: Option<&'a str>,
+    recursive: bool,
 }
 
 fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
@@ -3961,6 +4154,29 @@ fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
             out.string_piece(answer.link.map_or("", |(text, _)| text));
             out.string_piece(".");
         }
+        Kind::FileCopy | Kind::FileMove => {
+            out.string_piece(match answer.tool.kind {
+                Kind::FileCopy => "Copied ",
+                _ => "Moved ",
+            });
+            out.string_piece(answer.source.unwrap_or(""));
+            out.string_piece(" to ");
+            out.string_piece(target);
+            out.string_piece(".");
+        }
+        Kind::FolderCreate => {
+            out.string_piece("Made the folder ");
+            out.string_piece(target);
+            out.string_piece(".");
+        }
+        Kind::FileRemove => {
+            out.string_piece("Deleted ");
+            out.string_piece(target);
+            out.string_piece(match answer.recursive {
+                true => " and everything in it, for good.",
+                false => " for good.",
+            });
+        }
         Kind::SettingsSet | Kind::Setprop => {
             let (key, value) = answer.setting.unwrap_or(("", ""));
             out.string_piece("Set ");
@@ -4002,6 +4218,10 @@ fn has_done_text(kind: Kind) -> bool {
         Kind::Tee
             | Kind::Trash
             | Kind::Ln
+            | Kind::FileCopy
+            | Kind::FileMove
+            | Kind::FolderCreate
+            | Kind::FileRemove
             | Kind::SettingsSet
             | Kind::Setprop
             | Kind::WmFocus

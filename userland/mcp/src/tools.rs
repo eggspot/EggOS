@@ -161,6 +161,14 @@ pub enum Kind {
     AgentList,
     /// `agent_show`: the calling agent's own grants (D193).
     AgentShow,
+    /// `file_copy`: copies a file or folder to a path below `/home/root` (D225).
+    FileCopy,
+    /// `file_move`: moves or renames a file or folder below `/home/root` (D225).
+    FileMove,
+    /// `folder_create`: makes a folder below `/home/root` (D225).
+    FolderCreate,
+    /// `file_remove`: deletes a file or folder below `/home/root` for good (D225).
+    FileRemove,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -320,6 +328,24 @@ pub const HARD_LINK_TARGET: PathArgument = PathArgument {
     ..WRITE_PATH
 };
 
+const DESTINATION_PATH: PathArgument = PathArgument {
+    name: "destination",
+    ..WRITE_PATH
+};
+
+/// `file_copy`'s `source`: anything the reading tools reach (D225).
+pub const COPY_SOURCE: PathArgument = PathArgument {
+    name: "source",
+    ..READ_PATH
+};
+
+/// `file_move`'s `source`: only what the write tools may change, since a move takes it away
+/// from where it was (D225).
+pub const MOVE_SOURCE: PathArgument = PathArgument {
+    name: "source",
+    ..WRITE_PATH
+};
+
 const INSTALL_PATH: PathArgument = PathArgument {
     name: "path",
     default: None,
@@ -366,7 +392,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 58] = [
+pub const TOOLS: [Tool; 62] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -656,6 +682,26 @@ pub const TOOLS: [Tool; 58] = [
         &registry::WM_DESKTOP_NEW,
         Kind::WmDesktopNew,
         twin("/bin/wm", &["desktop", "new"], Operand::None),
+    ),
+    tool(
+        &registry::FILE_COPY,
+        Kind::FileCopy,
+        twin("/bin/cp", &["-r"], Operand::Path(DESTINATION_PATH)),
+    ),
+    tool(
+        &registry::FILE_MOVE,
+        Kind::FileMove,
+        twin("/bin/mv", &[], Operand::Path(DESTINATION_PATH)),
+    ),
+    tool(
+        &registry::FOLDER_CREATE,
+        Kind::FolderCreate,
+        twin("/bin/mkdir", &[], Operand::Path(WRITE_PATH)),
+    ),
+    tool(
+        &registry::FILE_REMOVE,
+        Kind::FileRemove,
+        twin("/bin/rm", &[], Operand::Path(WRITE_PATH)),
     ),
 ];
 

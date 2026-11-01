@@ -3806,3 +3806,290 @@ fn a_window_that_does_not_respond_is_refused_with_its_own_code() {
         assert!(answer.contains("not_responding"), "{tool}: {answer}");
     }
 }
+
+fn question_message(line: &str) -> String {
+    parsed(line)
+        .get("params")
+        .unwrap()
+        .get("message")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .chars()
+        .collect()
+}
+
+#[test]
+fn file_copy_copies_from_the_read_roots_and_asks_before_replacing() {
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/media/host/a.txt".into(), b"aaa".to_vec());
+    let arguments = r#"{"source":"/media/host/./a.txt","destination":"/home/root/b.txt"}"#;
+    let answer = harness.call(1, "file_copy", arguments);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        texts(&answer)[1],
+        "Copied /media/host/a.txt to /home/root/b.txt."
+    );
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/cp",
+            "-r",
+            "/media/host/a.txt",
+            "--",
+            "/home/root/b.txt"
+        ]
+    );
+    assert_eq!(harness.system.refusing_links.last(), Some(&true));
+    assert_eq!(
+        harness.system.time_limits.last(),
+        Some(&FILE_TREE_TIME_LIMIT_MS)
+    );
+    assert_eq!(harness.system.files["/home/root/b.txt"], b"aaa");
+    let (tool, outcome, logged, _) = last_record(&harness);
+    assert_eq!((tool.as_str(), outcome.as_str()), ("file_copy", "ok"));
+    assert!(
+        logged.contains(r#""destination":"/home/root/b.txt""#)
+            && logged.contains(r#""source":"/media/host/./a.txt""#),
+        "{logged}"
+    );
+    let runs = harness.system.runs.len();
+    let answer = harness.call(2, "file_copy", arguments);
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("confirm: true"), "{answer}");
+    let dry = r#"{"source":"/media/host/a.txt","destination":"/home/root/b.txt","dry_run":true}"#;
+    let answer = harness.call(3, "file_copy", dry);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        texts(&answer)[1],
+        "Dry run: file_copy would copy /media/host/a.txt to /home/root/b.txt, replacing the \
+         file there (3 bytes). Nothing was changed and the user was not asked."
+    );
+    assert_eq!(harness.system.runs.len(), runs);
+    let confirmed =
+        r#"{"source":"/media/host/a.txt","destination":"/home/root/b.txt","confirm":true}"#;
+    assert!(!is_error(&harness.call(4, "file_copy", confirmed)));
+    assert_eq!(harness.system.runs.len(), runs + 1);
+}
+
+#[test]
+fn file_copy_and_file_move_refuse_what_they_cannot_do_exactly() {
+    let mut harness = writer();
+    harness.system.folders.push("/home/root/dir".into());
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    harness.system.links.push("/home/root/linked".into());
+    const NEW: &str = "/home/root/p";
+    const TRASHED: &str = "/home/root/.local/share/Trash/files/a";
+    for (id, tool, source, destination, words) in [
+        (1, "file_copy", "/etc/passwd", NEW, "outside /home, /media/host"),
+        (2, "file_move", "/media/host/a", NEW, "outside /home/root"),
+        (3, "file_move", TRASHED, NEW, "in the Trash"),
+        (4, "file_copy", "/home/root/linked/a", NEW, "symbolic link"),
+        (5, "file_copy", "/home/root/missing", NEW, "nothing is at source"),
+        (6, "file_move", "/home/root/a.txt", "/home/root/./a.txt", "same path"),
+        (7, "file_copy", "/home/root/a.txt", "/home/root/dir", "is a folder"),
+        (8, "file_move", "/home/root/dir", "/home/root/dir/in", "into itself"),
+        (9, "file_copy", "/home/root/a.txt", "/etc/a", "outside /home/root"),
+        (10, "file_copy", "a.txt", NEW, "absolute"),
+    ] {
+        let arguments = format!(r#"{{"source":"{source}","destination":"{destination}"}}"#);
+        let answer = harness.call(id, tool, &arguments);
+        assert!(is_error(&answer), "{tool} {source}");
+        assert!(texts(&answer)[0].contains(words), "{tool} {source}: {answer}");
+    }
+    assert!(harness.system.runs.is_empty());
+    let answer = harness.call(11, "file_copy", r#"{"destination":"/home/root/p"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+}
+
+#[test]
+fn file_move_moves_and_renames_below_the_home_folder() {
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    let arguments = r#"{"source":"/home/root/a.txt","destination":"/home/root/b.txt"}"#;
+    let answer = harness.call(1, "file_move", arguments);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(texts(&answer)[1], "Moved /home/root/a.txt to /home/root/b.txt.");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/mv", "/home/root/a.txt", "--", "/home/root/b.txt"]
+    );
+    assert!(!harness.system.files.contains_key("/home/root/a.txt"));
+    assert_eq!(harness.system.files["/home/root/b.txt"], b"aaa");
+}
+
+#[test]
+fn folder_create_makes_folders_and_their_parents_without_asking() {
+    let mut harness = writer();
+    let answer = harness.call(
+        1,
+        "folder_create",
+        r#"{"path":"/home/root/a/b","parents":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(texts(&answer)[1], "Made the folder /home/root/a/b.");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/mkdir", "-p", "--", "/home/root/a/b"]
+    );
+    let answer = harness.call(2, "folder_create", r#"{"path":"/home/root/c"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/mkdir", "--", "/home/root/c"]
+    );
+    assert_eq!(
+        last_record(&harness).2,
+        r#"{"path":"/home/root/c","parents":false}"#
+    );
+    let answer = harness.call(3, "folder_create", r#"{"path":"/home/root"}"#);
+    assert!(texts(&answer)[0].contains("names /home/root itself"), "{answer}");
+}
+
+#[test]
+fn file_remove_deletes_for_good_only_when_confirmed_and_folders_only_when_recursive() {
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    harness.system.folders.push("/home/root/d".into());
+    harness
+        .system
+        .files
+        .insert("/home/root/d/x".into(), b"x".to_vec());
+    let answer = harness.call(1, "file_remove", r#"{"path":"/home/root/a.txt"}"#);
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("without the Trash"), "{answer}");
+    let answer = harness.call(
+        2,
+        "file_remove",
+        r#"{"path":"/home/root/a.txt","dry_run":true}"#,
+    );
+    assert_eq!(
+        texts(&answer)[1],
+        "Dry run: file_remove would delete /home/root/a.txt (3 bytes) for good. Nothing was \
+         changed and the user was not asked."
+    );
+    assert!(harness.system.runs.is_empty());
+    let answer = harness.call(
+        3,
+        "file_remove",
+        r#"{"path":"/home/root/a.txt","confirm":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(texts(&answer)[1], "Deleted /home/root/a.txt for good.");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/rm", "--", "/home/root/a.txt"]
+    );
+    let answer = harness.call(
+        4,
+        "file_remove",
+        r#"{"path":"/home/root/a.txt","confirm":true}"#,
+    );
+    assert!(texts(&answer)[0].contains("nothing is there to delete"));
+    let answer = harness.call(5, "file_remove", r#"{"path":"/home/root/d","confirm":true}"#);
+    assert!(texts(&answer)[0].contains("recursive: true"), "{answer}");
+    assert!(answer.contains(r#""code":"is_a_folder""#), "{answer}");
+    let answer = harness.call(
+        6,
+        "file_remove",
+        r#"{"path":"/home/root/d","recursive":true,"dry_run":true}"#,
+    );
+    assert!(
+        texts(&answer)[1].starts_with(
+            "Dry run: file_remove would delete the folder /home/root/d and everything in it"
+        ),
+        "{answer}"
+    );
+    let answer = harness.call(
+        7,
+        "file_remove",
+        r#"{"path":"/home/root/d","recursive":true,"confirm":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        texts(&answer)[1],
+        "Deleted /home/root/d and everything in it, for good."
+    );
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/rm", "-r", "--", "/home/root/d"]
+    );
+    assert!(!harness.system.files.contains_key("/home/root/d/x"));
+    assert_eq!(
+        last_record(&harness).2,
+        r#"{"path":"/home/root/d","recursive":true,"confirm":true}"#
+    );
+    harness.system.folders.push("/home/root/.local".into());
+    let runs = harness.system.runs.len();
+    let answer = harness.call(
+        8,
+        "file_remove",
+        r#"{"path":"/home/root/.local","recursive":true,"confirm":true}"#,
+    );
+    assert!(texts(&answer)[0].contains("holds the Trash"), "{answer}");
+    let answer = harness.call(
+        9,
+        "file_move",
+        r#"{"source":"/home/root/.local","destination":"/home/root/l"}"#,
+    );
+    assert!(texts(&answer)[0].contains("holds the Trash"), "{answer}");
+    assert_eq!(harness.system.runs.len(), runs);
+}
+
+#[test]
+fn with_elicitation_file_remove_and_a_replacing_copy_ask_the_user_naming_both_paths() {
+    let mut harness = asking();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    harness
+        .system
+        .files
+        .insert("/home/root/b.txt".into(), b"bb".to_vec());
+    let lines = harness.call_lines(1, "file_remove", r#"{"path":"/home/root/a.txt"}"#);
+    let message = question_message(&lines[0]);
+    assert!(
+        message.contains("delete /home/root/a.txt (3 bytes) for good, without the Trash"),
+        "{message}"
+    );
+    reply(&mut harness, &question_of(&lines[0]), r#"{"action":"decline"}"#);
+    assert!(harness.system.runs.is_empty());
+    let arguments = r#"{"source":"/home/root/a.txt","destination":"/home/root/b.txt"}"#;
+    let lines = harness.call_lines(2, "file_copy", arguments);
+    let message = question_message(&lines[0]);
+    assert!(
+        message.contains(
+            "copy /home/root/a.txt to /home/root/b.txt, replacing the file there (2 bytes)"
+        ),
+        "{message}"
+    );
+    let lines = reply(
+        &mut harness,
+        &question_of(&lines[0]),
+        r#"{"action":"accept","content":{"confirm":true}}"#,
+    );
+    assert!(!is_error(&lines[0]), "{}", lines[0]);
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/cp",
+            "-r",
+            "/home/root/a.txt",
+            "--",
+            "/home/root/b.txt"
+        ]
+    );
+}

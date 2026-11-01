@@ -86,6 +86,29 @@ impl System for FakeSystem {
                 self.files.remove(path);
                 (Vec::new(), Vec::new(), Ended::Exited(0))
             }
+            ("/bin/cp" | "/bin/mv", Some(to)) => {
+                let from = invocation.words.last().copied().unwrap_or_default();
+                let contents = match invocation.program {
+                    "/bin/mv" => self.files.remove(from),
+                    _ => self.files.get(from).cloned(),
+                };
+                if let Some(contents) = contents {
+                    self.files.insert(to.to_owned(), contents);
+                }
+                (Vec::new(), Vec::new(), Ended::Exited(0))
+            }
+            ("/bin/rm", Some(path)) => {
+                let inside = format!("{path}/");
+                self.files
+                    .retain(|name, _| name != path && !name.starts_with(&inside));
+                self.folders
+                    .retain(|name| name != path && !name.starts_with(&inside));
+                (Vec::new(), Vec::new(), Ended::Exited(0))
+            }
+            ("/bin/mkdir", Some(path)) => {
+                self.folders.push(path.to_owned());
+                (Vec::new(), Vec::new(), Ended::Exited(0))
+            }
             (program, _) => self.outputs.get(program).cloned().unwrap_or((
                 format!("output of {program}\n").into_bytes(),
                 Vec::new(),

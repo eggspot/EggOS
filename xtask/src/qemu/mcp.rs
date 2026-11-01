@@ -147,10 +147,26 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 38] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 42] = [
     (
         "ln",
         r#"{"target":"x","link":"/home/root/x-link"}"#,
+        "write",
+    ),
+    (
+        "file_copy",
+        r#"{"source":"/home/root/x","destination":"/home/root/y","confirm":true}"#,
+        "write",
+    ),
+    (
+        "file_move",
+        r#"{"source":"/home/root/x","destination":"/home/root/y","confirm":true}"#,
+        "write",
+    ),
+    ("folder_create", r#"{"path":"/home/root/x-folder"}"#, "write"),
+    (
+        "file_remove",
+        r#"{"path":"/home/root/x","confirm":true}"#,
         "write",
     ),
     (
@@ -919,6 +935,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
     let confirmed =
         format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n","confirm":true}}"#);
     succeeds(client, "tee", &confirmed, "Wrote")?;
+    file_tools(client)?;
     refused(client, "fetch", FETCH_ARGUMENTS, FETCH_FAILURE)?;
     succeeds(
         client,
@@ -1130,6 +1147,72 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         "agentlog shows content a call wrote",
     )?;
     revoke_everything(client)
+}
+
+fn file_tools(client: &mut Client) -> Result<(), String> {
+    const FOLDER: &str = "/home/root/mcp-files/inner";
+    succeeds(
+        client,
+        "folder_create",
+        &format!(r#"{{"path":"{FOLDER}","parents":true}}"#),
+        "Made the folder /home/root/mcp-files/inner.",
+    )?;
+    let copy = format!("{FOLDER}/copy.txt");
+    succeeds(
+        client,
+        "file_copy",
+        &format!(r#"{{"source":"{NOTE}","destination":"{copy}"}}"#),
+        &format!("Copied {NOTE} to {copy}."),
+    )?;
+    refused(
+        client,
+        "file_copy",
+        &format!(r#"{{"source":"{NOTE}","destination":"{copy}"}}"#),
+        "confirm: true",
+    )?;
+    refused(
+        client,
+        "file_copy",
+        &format!(r#"{{"source":"{NOTE}","destination":"{FOLDER}"}}"#),
+        "destination is a folder",
+    )?;
+    let moved = format!("{FOLDER}/moved.txt");
+    succeeds(
+        client,
+        "file_move",
+        &format!(r#"{{"source":"{copy}","destination":"{moved}"}}"#),
+        &format!("Moved {copy} to {moved}."),
+    )?;
+    succeeds(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{moved}"}}"#),
+        &format!("{CONTENT_MARKER} second\n"),
+    )?;
+    refused(
+        client,
+        "file_remove",
+        r#"{"path":"/home/root/mcp-files","confirm":true}"#,
+        "recursive: true",
+    )?;
+    succeeds(
+        client,
+        "file_remove",
+        r#"{"path":"/home/root/mcp-files","recursive":true,"dry_run":true}"#,
+        "Dry run: file_remove would delete the folder /home/root/mcp-files",
+    )?;
+    succeeds(
+        client,
+        "file_remove",
+        r#"{"path":"/home/root/mcp-files","recursive":true,"confirm":true}"#,
+        "Deleted /home/root/mcp-files and everything in it, for good.",
+    )?;
+    refused(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{moved}"}}"#),
+        "No such file",
+    )
 }
 
 fn revoke_everything(client: &mut Client) -> Result<(), String> {

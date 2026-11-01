@@ -474,7 +474,10 @@ fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
             "app_uninstall",
             "settings_set",
             "disk_repair",
-            "disk_format"
+            "disk_format",
+            "file_copy",
+            "file_move",
+            "file_remove"
         ]
     );
     let commands: Vec<String> = COMMANDS

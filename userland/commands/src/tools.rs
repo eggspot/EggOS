@@ -1036,6 +1036,126 @@ pub const LN: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
+const SOURCE_TO_COPY: Argument = required(described(
+    optional("source", JsonType::String, Mapping::Operand),
+    "The file or folder to copy: an absolute path in /home, /media/host or /work.",
+));
+
+const SOURCE_TO_MOVE: Argument = required(described(
+    optional("source", JsonType::String, Mapping::Operand),
+    "The file or folder to move or rename: an absolute path below /home/root, outside its \
+     Trash.",
+));
+
+const DESTINATION: Argument = required(described(
+    optional("destination", JsonType::String, Mapping::Operand),
+    "Its new path, which must not be a folder: an absolute path below /home/root, outside its \
+     Trash. A file already there is replaced.",
+));
+
+/// `file_copy` (D225): `cp -r` from a folder the reading tools reach to one name below
+/// `/home/root`.
+pub const FILE_COPY: ToolDefinition = ToolDefinition {
+    name: "file_copy",
+    title: "Copy a file or folder",
+    description: "Copies a file, or a folder and everything in it, to destination, as `cp -r` \
+                  does. The source may be in /home, /media/host or /work; the copy goes below \
+                  /home/root. destination is the copy's own path, never a folder to copy into. \
+                  Needs the write grant. Replacing an existing file asks the user first, or \
+                  needs confirm: true when the client cannot ask. dry_run: true says what it \
+                  would copy and replace, and copies nothing. The tools never follow symbolic \
+                  links: a path through one is refused.",
+    command: &["cp"],
+    fixed: &["-r"],
+    arguments: &[SOURCE_TO_COPY, DESTINATION, confirm(REPLACE_GUARD), DRY_RUN],
+    max_effect: Effect::Destroy,
+    grant: Some(Grant::Write),
+    idempotent: true,
+    open_world: false,
+    confirm: Confirmation::WhenOverwriting,
+    result: ToolResult::Text,
+};
+
+/// `file_move` (D225): `mv` inside `/home/root`.
+pub const FILE_MOVE: ToolDefinition = ToolDefinition {
+    name: "file_move",
+    title: "Move or rename a file or folder",
+    description: "Moves or renames a file or folder below /home/root to destination, as `mv` \
+                  does. destination is its new path, never a folder to move into. Needs the \
+                  write grant. Replacing an existing file asks the user first, or needs \
+                  confirm: true when the client cannot ask. dry_run: true says what it would \
+                  move and replace, and moves nothing. The tools never follow symbolic links: \
+                  a path through one is refused.",
+    command: &["mv"],
+    fixed: &[],
+    arguments: &[SOURCE_TO_MOVE, DESTINATION, confirm(REPLACE_GUARD), DRY_RUN],
+    max_effect: Effect::Destroy,
+    grant: Some(Grant::Write),
+    idempotent: false,
+    open_world: false,
+    confirm: Confirmation::WhenOverwriting,
+    result: ToolResult::Text,
+};
+
+/// `folder_create` (D225): `mkdir`, with `-p` for `parents`.
+pub const FOLDER_CREATE: ToolDefinition = ToolDefinition {
+    name: "folder_create",
+    title: "Make a folder",
+    description: "Makes a folder below /home/root, as `mkdir` does; parents: true also makes \
+                  the folders above it that are missing and accepts a folder already there. \
+                  Never replaces anything. Needs the write grant. The tools never follow \
+                  symbolic links: a path through one is refused.",
+    command: &["mkdir"],
+    fixed: &[],
+    arguments: &[
+        path(WRITE_PATH),
+        defaulting(
+            described(
+                optional("parents", JsonType::Boolean, Mapping::Option("-p")),
+                "Also make the missing folders above it, and accept a folder already there.",
+            ),
+            DefaultValue::Boolean(false),
+        ),
+    ],
+    max_effect: Effect::Change,
+    grant: Some(Grant::Write),
+    idempotent: true,
+    open_world: false,
+    confirm: Confirmation::Never,
+    result: ToolResult::Text,
+};
+
+/// `file_remove` (D225): `rm`, with `-r` for `recursive`; deletes for good, unlike `trash`.
+pub const FILE_REMOVE: ToolDefinition = ToolDefinition {
+    name: "file_remove",
+    title: "Delete a file or folder for good",
+    description: "Deletes a file below /home/root for good, as `rm` does, without the Trash \
+                  (trash moves to the Trash, where the user can restore it: prefer it). A \
+                  folder needs recursive: true, which deletes everything in it. Needs the \
+                  write grant. Asks the user first, or needs confirm: true when the client \
+                  cannot ask. dry_run: true says what it would delete, and deletes nothing.",
+    command: &["rm"],
+    fixed: &[],
+    arguments: &[
+        path(WRITE_PATH),
+        defaulting(
+            described(
+                optional("recursive", JsonType::Boolean, Mapping::Option("-r")),
+                "Delete a folder and everything in it.",
+            ),
+            DefaultValue::Boolean(false),
+        ),
+        confirm(GUARD),
+        DRY_RUN,
+    ],
+    max_effect: Effect::Destroy,
+    grant: Some(Grant::Write),
+    idempotent: false,
+    open_world: false,
+    confirm: Confirmation::Always,
+    result: ToolResult::Text,
+};
+
 /// `fetch`.
 pub const FETCH: ToolDefinition = ToolDefinition {
     name: "fetch",
@@ -1866,9 +1986,9 @@ pub const AGENT_SHOW: ToolDefinition = reading(
 );
 
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
-/// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's and
-/// D204's.
-pub const TOOLS: [ToolDefinition; 58] = [
+/// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
+/// D204's and D225's.
+pub const TOOLS: [ToolDefinition; 62] = [
     LS,
     CAT,
     PS,
@@ -1927,6 +2047,10 @@ pub const TOOLS: [ToolDefinition; 58] = [
     KILL,
     WM_DESKTOP_LIST,
     WM_DESKTOP_NEW,
+    FILE_COPY,
+    FILE_MOVE,
+    FOLDER_CREATE,
+    FILE_REMOVE,
 ];
 
 impl ToolDefinition {
@@ -1944,8 +2068,16 @@ pub fn find(name: &str) -> Option<&'static ToolDefinition> {
 }
 
 /// Tool names a decision chose over `<noun>_<verb>`: D197's clipboard tools, named by the word
-/// agents know rather than `clip`'s.
-pub const DECIDED_NAMES: [&str; 2] = ["clipboard_get", "clipboard_set"];
+/// agents know rather than `clip`'s, and D225's file tools, named by what they act on rather
+/// than by `cp`, `mv`, `mkdir` and `rm`.
+pub const DECIDED_NAMES: [&str; 6] = [
+    "clipboard_get",
+    "clipboard_set",
+    "file_copy",
+    "file_move",
+    "folder_create",
+    "file_remove",
+];
 
 /// The tool names that shipped before the model (D136, D137, D143, D147, D149, D150, D157 to
 /// D159): new tools must be `<noun>_<verb>`, these keep their names.
