@@ -17195,15 +17195,30 @@ the license, by an explicit instruction recorded here.
     `idle_memory_bytes` +4096 bytes on riscv64 and x86_64 (one frame, the smallest step;
     provisional, its commit is among the 130 after e321ce74).
   - The new benchmarks of #149 get their first lines.
-- **Left to fix (their baseline lines stay).** `linux_openat_close` (+46 to +63%: the walk and
-  `open` ask a node's kind several times, D168, and `hold`/`release` run on file systems that
-  keep no holds, D170); `linux_page_fault` (+5 to +6%: a fast path for anonymous faults when
-  the memory maps no files); `linux_mmap_munmap` (+12 to +14%: one flags word for `has_files`,
-  `has_fork_marks` and `has_lent`); x86_64 `gfx_terminal_line` (+6% over `main` before #149:
-  the per-cell cursor-look check and `font::rows`' new arms); riscv64 `heap_allocate_free_small`
-  57 -> 60 (`HEAP` lies exactly 0x800 bytes past `memory::FRAMES`, beyond a 12-bit offset,
-  because `linux::properties::AREA` and `linux::android_log::LOG` are non-zero statics in
-  `.data`; making them zero-initialised moves them to `.bss`).
+- **Fixed in the second part** (instructions per op, `main` -> fixed, x86_64 / aarch64 /
+  riscv64; found with a QEMU `-d in_asm,exec` trace of each benchmark against the same trace of
+  `main` before #149).
+  - `gfx_terminal_line` 60292 / 43273 / 55773 -> 56153 / 42102 / 54272: the cursor is checked
+    once per row and its cell drawn after the others, so the glyph loop has no cursor or look
+    checks (baseline lines updated).
+  - `linux_page_fault` 1216 / 1464 / 1517 -> 1164 / 1405 / 1437: a fault in memory that maps
+    no files skips the file-read state and checks, as before D167; the three flags for lent
+    ranges, file ranges and fork marks are one word (baseline lines updated to these values).
+  - `linux_openat_close` 1988 / 2246 / 2371 -> 1633 / 2019 / 2084: the walk asks each node's
+    kind once and hands it to `open`, which asks `character_device` only for a character
+    device; open files hold their node only on file systems that keep holds
+    (`FileSystem::keeps_holds`), and closing one does its lock, inotify and release work out of
+    line only when one applies; the initramfs compares names in an inline loop, not `memcmp`.
+  - `linux::properties::AREA` and `linux::android_log::LOG` are null boxes in `.bss`.
+- **Still left (their baseline lines stay; the exact gate fails on them).**
+  `linux_openat_close` is still +20 / +47 / +41% over its line: the bench initramfs's `/etc`
+  grew from 4 to 7 entries (one more binary-search step per lookup), `open`'s `openat2` and
+  link handling, and the growth across #129 to #147. `linux_mmap_munmap` (419 / 377 / 426,
+  unchanged): `Vec<Region>::insert` is no longer inlined into `map_region` (32 instructions per
+  call); routing the rare callers through one out-of-line copy did not bring it back. riscv64
+  `heap_allocate_free_small` is still 60: with both statics in `.bss` the heap's `alloc` and
+  `dealloc` are instruction for instruction those of `main` before #149, so the 3 instructions
+  are elsewhere in the benchmark's loop. The extra `idle_memory_bytes` page was not bisected.
 - **Not yet.** Reading `previous.user` from the box `replace_current` returns (about 3
   instructions per switch); folding a thread's time into its process's account only at exit and
   when read, instead of an atomic add per switch; an instruction profile of `vfork` + `execve` on

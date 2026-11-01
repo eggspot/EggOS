@@ -30,7 +30,7 @@ aarch64 futex_wait_wake_round_trip 467.05
 aarch64 futex_wake_empty 20.00
 aarch64 gfx_compose_four_windows 147628.04
 aarch64 gfx_glyph_cell 561.56
-aarch64 gfx_terminal_line 45341.56
+aarch64 gfx_terminal_line 42101.59
 aarch64 heap_allocate_free_small 50.00
 aarch64 idle_memory_bytes 602112.00
 aarch64 input_event_queue_push_pop 68.00
@@ -50,7 +50,7 @@ aarch64 linux_fork_touch 139508.85
 aarch64 linux_memfd_map_unmap 5895.80
 aarch64 linux_mmap_munmap 335.52
 aarch64 linux_openat_close 1374.93
-aarch64 linux_page_fault 1388.94
+aarch64 linux_page_fault 1404.61
 aarch64 linux_syscall_round_trip 125.92
 aarch64 linux_unix_stream_send_recv 397.17
 aarch64 linux_vfork_exec 103464.86
@@ -96,7 +96,7 @@ riscv64 futex_wait_wake_round_trip 566.07
 riscv64 futex_wake_empty 27.00
 riscv64 gfx_compose_four_windows 226456.89
 riscv64 gfx_glyph_cell 680.59
-riscv64 gfx_terminal_line 56240.69
+riscv64 gfx_terminal_line 54271.71
 riscv64 heap_allocate_free_small 57.00
 riscv64 idle_memory_bytes 532480.00
 riscv64 input_event_queue_push_pop 69.01
@@ -116,7 +116,7 @@ riscv64 linux_fork_touch 121079.87
 riscv64 linux_memfd_map_unmap 6862.04
 riscv64 linux_mmap_munmap 376.08
 riscv64 linux_openat_close 1473.50
-riscv64 linux_page_fault 1430.28
+riscv64 linux_page_fault 1437.47
 riscv64 linux_syscall_round_trip 165.39
 riscv64 linux_unix_stream_send_recv 497.23
 riscv64 linux_vfork_exec 84320.76
@@ -161,7 +161,7 @@ x86_64 futex_wait_wake_round_trip 489.04
 x86_64 futex_wake_empty 25.00
 x86_64 gfx_compose_four_windows 184040.73
 x86_64 gfx_glyph_cell 689.53
-x86_64 gfx_terminal_line 59319.64
+x86_64 gfx_terminal_line 56152.66
 x86_64 heap_allocate_free_small 48.00
 x86_64 idle_memory_bytes 610304.00
 x86_64 input_event_queue_push_pop 66.00
@@ -181,7 +181,7 @@ x86_64 linux_fork_touch 162254.24
 x86_64 linux_memfd_map_unmap 7369.85
 x86_64 linux_mmap_munmap 366.09
 x86_64 linux_openat_close 1361.44
-x86_64 linux_page_fault 1150.39
+x86_64 linux_page_fault 1163.97
 x86_64 linux_syscall_round_trip 130.14
 x86_64 linux_unix_stream_send_recv 397.17
 x86_64 linux_vfork_exec 57988.71
