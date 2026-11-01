@@ -575,7 +575,7 @@ pub use input::INPUT_DRIVER;
 mod input {
     use super::*;
     use crate::input::InputDevice;
-    use eggos_drivers::input::{Capabilities, RawEvent};
+    use eggos_drivers::input::{Capabilities, LockLights, RawEvent};
     use eggos_drivers::virtio::input::{MEMORY_BYTES, VirtioInput};
 
     type Input = VirtioInput<AnyTransport, DmaRegion>;
@@ -603,8 +603,8 @@ mod input {
             self.0.poll(budget, &mut |raw| event(raw))
         }
 
-        fn set_caps_lock_light(&mut self, on: bool) -> bool {
-            self.0.set_caps_lock_light(on)
+        fn set_lock_lights(&mut self, lights: LockLights) -> bool {
+            self.0.set_lock_lights(lights)
         }
     }
 

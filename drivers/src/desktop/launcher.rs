@@ -30,6 +30,9 @@ pub const LAUNCH_FAILED: &str = "The app could not start.";
 pub const LAUNCHER_ROW_HEIGHT: u32 = 40;
 /// How long a notice stays.
 pub const NOTICE_MS: u32 = 3000;
+
+/// How long the switch key's hint shows the new layout's title (D220).
+pub const LAYOUT_HINT_MS: u32 = 1000;
 /// The most bytes the launcher's search holds.
 pub const QUERY_CAPACITY: usize = 32;
 
@@ -867,10 +870,22 @@ impl Desktop {
 
     /// Shows `text` in the notice for [`NOTICE_MS`].
     pub fn show_notice(&mut self, text: &'static str, damage: &mut Damage) {
+        self.show_notice_for(text, NOTICE_MS, damage);
+    }
+
+    /// The switch key made the layout titled `title` the one in force (D220): its title shows
+    /// in the notice for [`LAYOUT_HINT_MS`], in place of any notice showing, and the Super key
+    /// held for the chord no longer counts as pressed alone.
+    pub fn show_layout_hint(&mut self, title: &'static str, damage: &mut Damage) {
+        self.super_alone = false;
+        self.show_notice_for(title, LAYOUT_HINT_MS, damage);
+    }
+
+    fn show_notice_for(&mut self, text: &'static str, milliseconds: u32, damage: &mut Damage) {
         self.close_notice(damage);
         self.notice = Some(Notice {
             text,
-            until_ms: self.now_ms.wrapping_add(NOTICE_MS),
+            until_ms: self.now_ms.wrapping_add(milliseconds),
         });
         damage.add(with_shadow(self.notice_rect()));
     }

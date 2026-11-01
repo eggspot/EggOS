@@ -60,7 +60,7 @@ pub use injection::{
     TerminalInput,
 };
 pub use launcher::{
-    FILES_MISSING, LAUNCH_FAILED, LAUNCHER_FOOTER, LAUNCHER_ROW_HEIGHT, NOTICE_MS,
+    FILES_MISSING, LAUNCH_FAILED, LAUNCHER_FOOTER, LAUNCHER_ROW_HEIGHT, LAYOUT_HINT_MS, NOTICE_MS,
     TEXT_EDITOR_MISSING,
 };
 pub use layout::{IconSide, Layout, layout};

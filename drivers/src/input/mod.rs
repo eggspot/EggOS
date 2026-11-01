@@ -76,6 +76,17 @@ pub struct AxisRange {
     pub max: i32,
 }
 
+/// The lock lights a keyboard shows (D185, D220).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LockLights {
+    /// Caps Lock's light.
+    pub caps: bool,
+    /// Num Lock's light.
+    pub num: bool,
+    /// Scroll Lock's light.
+    pub scroll: bool,
+}
+
 /// What a device reports.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capabilities {

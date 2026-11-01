@@ -283,8 +283,8 @@ pub fn set_desktop_profile<P: Platform>(profile: Profile) {
 }
 
 /// Makes the profile the settings file holds ([`eggos_settings_file::PATH`]) the desktop's,
-/// before the desktop starts, so its first frame is already in it, and its keyboard layout the
-/// keyboard's (D185), so the first key types in it; the defaults stay when there is no file, it
+/// before the desktop starts, so its first frame is already in it, and its keyboard layouts and
+/// switch key the keyboard's (D185, D220), so the first key types in the layout in force; the defaults stay when there is no file, it
 /// holds no known profile or layout, or it cannot be read.
 pub fn load_saved_settings() {
     let root = vfs::root();
@@ -311,6 +311,11 @@ pub fn load_saved_settings() {
     {
         remember_profile(profile);
     }
+    let switch_key = eggos_settings_file::keyboard_switch_key(&file[..length]);
+    crate::input::set_layouts(
+        eggos_settings_file::keyboard_layout_set(&file[..length]),
+        switch_key,
+    );
     if let Some(layout) = eggos_settings_file::keyboard_layout(&file[..length]) {
         crate::input::set_layout(layout);
     }
@@ -672,6 +677,12 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
             } => desktop.key_typing(code, pressed, modifiers, character, damage, &mut queues),
             InputEvent::Wheel { delta } => {
                 desktop.wheel(delta, &mut queues);
+                Action::None
+            }
+            InputEvent::LayoutChanged(number) => {
+                if let Some(layout) = eggos_settings_file::KEYBOARD_LAYOUTS.get(usize::from(number)) {
+                    desktop.show_layout_hint(layout.title, damage);
+                }
                 Action::None
             }
         };

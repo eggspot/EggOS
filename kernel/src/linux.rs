@@ -1284,6 +1284,14 @@ fn write_out_of_line<P: Platform>(
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
             }
+            FileKind::Snapshot(snapshot)
+                if snapshot.node.file_system().is_node_writable(snapshot.node.id()) =>
+            {
+                let node = snapshot.node;
+                let result = file_changes::write_regular(process, &file, node, &iovecs, None);
+                context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
+            }
             FileKind::MemoryFile(memory) => {
                 let result = memfd::write(process, &file, memory, &iovecs, None);
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));

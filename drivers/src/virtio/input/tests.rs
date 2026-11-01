@@ -17,6 +17,9 @@ struct FakeInput {
     notifies: Cell<usize>,
     notified_before_driver_ok: Cell<bool>,
     not_input: bool,
+    leds: Vec<u16>,
+    status_device: RefCell<Option<DeviceSide>>,
+    status_notifies: Cell<usize>,
 }
 
 fn write_event(address: u64, event: RawEvent) {
@@ -76,6 +79,7 @@ impl FakeInput {
         match (select, u16::from(subselect)) {
             (config::EVENT_BITS, event_type::KEY) => codes(&self.keys),
             (config::EVENT_BITS, event_type::REL) => codes(&self.relatives),
+            (config::EVENT_BITS, LED) => codes(&self.leds),
             (config::EVENT_BITS, event_type::ABS) => {
                 codes(&self.absolutes.iter().map(|axis| axis.0).collect::<Vec<_>>())
             }
@@ -107,6 +111,28 @@ impl FakeInput {
             sent += 1;
         }
         sent
+    }
+
+    fn status_events(&self) -> Vec<RawEvent> {
+        let mut device = self.status_device.borrow_mut();
+        let device = device.as_mut().unwrap();
+        let mut events = Vec::new();
+        while let Some(head) = device.next_available() {
+            let (address, len, flags, _) = device.descriptor(head);
+            assert_eq!(len as usize, EVENT_BYTES);
+            assert_eq!(flags & crate::virtio::queue::DESCRIPTOR_WRITE, 0);
+            let mut bytes = [0u8; 8];
+            // SAFETY: a status buffer the driver submitted, inside the test's HostDma, whose
+            // device address is its host address.
+            unsafe { std::ptr::copy_nonoverlapping(address.get() as *const u8, bytes.as_mut_ptr(), 8) };
+            events.push(RawEvent::new(
+                u16::from_le_bytes([bytes[0], bytes[1]]),
+                u16::from_le_bytes([bytes[2], bytes[3]]),
+                i32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            ));
+            device.put_used(head, 0);
+        }
+        events
     }
 
     fn available(&self) -> usize {
@@ -145,14 +171,22 @@ impl Transport for FakeInput {
         if queue < 2 { self.max_queue_size } else { 0 }
     }
     fn set_up_queue(&self, queue: u16, size: u16, addresses: &QueueAddresses) -> Result<(), Error> {
-        assert_eq!(queue, EVENT_QUEUE);
         let memory = addresses.descriptors.get() as *mut u8;
         // SAFETY: the queue lives in the test's HostDma, whose device address is its host
         // address, for as long as the fake device is used.
-        *self.device.borrow_mut() = Some(unsafe { DeviceSide::new(memory, size) });
+        let side = Some(unsafe { DeviceSide::new(memory, size) });
+        match queue {
+            EVENT_QUEUE => *self.device.borrow_mut() = side,
+            STATUS_QUEUE => *self.status_device.borrow_mut() = side,
+            _ => panic!("the driver set up queue {queue}"),
+        }
         Ok(())
     }
     fn notify(&self, queue: u16) {
+        if queue == STATUS_QUEUE {
+            self.status_notifies.set(self.status_notifies.get() + 1);
+            return;
+        }
         assert_eq!(queue, EVENT_QUEUE);
         if self.status.get() & status::DRIVER_OK == 0 {
             self.notified_before_driver_ok.set(true);
@@ -411,4 +445,77 @@ fn a_used_head_outside_the_queue_is_skipped_and_nothing_is_posted_twice() {
     assert_eq!(input.poll(16, &mut |event| events.push(event)), 1);
     assert!(events.is_empty());
     assert_eq!(input.transport().available(), 0);
+}
+
+fn led(code: u16, on: bool) -> RawEvent {
+    RawEvent::new(LED, code, i32::from(on))
+}
+
+const NUM_ON: LockLights = LockLights {
+    caps: false,
+    num: true,
+    scroll: false,
+};
+
+#[test]
+fn a_keyboard_with_lights_gets_one_led_event_per_changed_light_on_queue_1() {
+    let mut input = input(FakeInput {
+        leds: vec![LED_NUM_LOCK, LED_CAPS_LOCK, LED_SCROLL_LOCK],
+        ..FakeInput::keyboard()
+    });
+    assert!(input.has_lock_lights());
+    assert!(input.set_lock_lights(NUM_ON));
+    assert_eq!(input.transport().status_events(), [led(LED_NUM_LOCK, true)]);
+    assert!(input.set_lock_lights(NUM_ON));
+    assert!(input.transport().status_events().is_empty());
+    let caps_and_scroll = LockLights {
+        caps: true,
+        num: false,
+        scroll: true,
+    };
+    assert!(input.set_lock_lights(caps_and_scroll));
+    assert_eq!(
+        input.transport().status_events(),
+        [
+            led(LED_NUM_LOCK, false),
+            led(LED_CAPS_LOCK, true),
+            led(LED_SCROLL_LOCK, true)
+        ]
+    );
+}
+
+#[test]
+fn only_the_lights_the_keyboard_has_are_written_and_a_full_queue_is_asked_again() {
+    let mut input = input(FakeInput {
+        leds: vec![LED_CAPS_LOCK],
+        ..FakeInput::keyboard()
+    });
+    assert!(input.set_lock_lights(NUM_ON));
+    assert!(input.transport().status_events().is_empty());
+    for on in [true, false, true, false] {
+        let lights = LockLights {
+            caps: on,
+            ..NUM_ON
+        };
+        assert!(input.set_lock_lights(lights));
+    }
+    let lights = LockLights {
+        caps: true,
+        ..NUM_ON
+    };
+    assert!(!input.set_lock_lights(lights));
+    assert_eq!(input.transport().status_events().len(), 4);
+    assert!(input.set_lock_lights(lights));
+    assert_eq!(
+        input.transport().status_events(),
+        [led(LED_CAPS_LOCK, true)]
+    );
+}
+
+#[test]
+fn a_keyboard_without_lights_has_no_status_queue() {
+    let mut input = input(FakeInput::keyboard());
+    assert!(!input.has_lock_lights());
+    assert!(input.set_lock_lights(NUM_ON));
+    assert!(input.transport().status_device.borrow().is_none());
 }

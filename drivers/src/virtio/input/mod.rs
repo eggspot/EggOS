@@ -2,15 +2,15 @@
 //! tablets. The device
 //! writes one event (type, code, value: the Linux input event codes) into each buffer of its
 //! event queue; the driver keeps every buffer posted and takes the events back as they come.
-//! What the device reports is read from its configuration ([`Capabilities`]). A keyboard with a
-//! Caps Lock light gets its status queue too, where the driver writes the light's state
-//! ([`VirtioInput::set_caps_lock_light`], D185).
+//! What the device reports is read from its configuration ([`Capabilities`]). A keyboard with
+//! Caps Lock, Num Lock or Scroll Lock lights gets its status queue too, where the driver writes
+//! the lights' states ([`VirtioInput::set_lock_lights`], D185, D220).
 
 use super::queue::{Buffer, SplitQueue};
 use super::{Error, ResetDone, Transport, device_type};
 use crate::dma::DmaMemory;
 use crate::input::{
-    AxisRange, Capabilities, RawEvent, absolute, button, event_type, key, relative,
+    AxisRange, Capabilities, LockLights, RawEvent, absolute, button, event_type, key, relative,
 };
 
 #[cfg(test)]
@@ -30,7 +30,10 @@ const STATUS_QUEUE_SIZE: u16 = 4;
 const STATUS_RING: usize = EVENTS + QUEUE_SIZE as usize * EVENT_BYTES;
 const STATUS_EVENTS: usize = STATUS_RING + 128;
 const LED: u16 = 0x11;
+const LED_NUM_LOCK: u16 = 0x00;
 const LED_CAPS_LOCK: u16 = 0x01;
+const LED_SCROLL_LOCK: u16 = 0x02;
+const LOCK_LEDS: [u16; 3] = [LED_NUM_LOCK, LED_CAPS_LOCK, LED_SCROLL_LOCK];
 
 const _: () = assert!(super::queue::memory_size(QUEUE_SIZE) <= EVENTS);
 const _: () = assert!(EVENTS + QUEUE_SIZE as usize * EVENT_BYTES <= MEMORY_BYTES);
@@ -67,6 +70,8 @@ pub struct VirtioInput<T: Transport, M: DmaMemory> {
     buffer_of_head: [u8; QUEUE_SIZE as usize],
     status: Option<SplitQueue>,
     status_written: u16,
+    lights: u8,
+    lights_shown: u8,
 }
 
 impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
@@ -115,9 +120,10 @@ impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
             };
             return Err((error, transport, memory));
         }
-        let status = match has_caps_lock_light(&transport) {
-            true => set_up_status_queue(&transport, &memory),
-            false => None,
+        let lights = lock_lights_of(&transport);
+        let status = match lights {
+            0 => None,
+            _ => set_up_status_queue(&transport, &memory),
         };
         let mut input = Self {
             transport,
@@ -127,6 +133,8 @@ impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
             buffer_of_head: [0; QUEUE_SIZE as usize],
             status,
             status_written: 0,
+            lights,
+            lights_shown: 0,
         };
         if let Err(error) = (0..size as u8).try_for_each(|buffer| input.post(buffer)) {
             super::fail(&input.transport);
@@ -181,20 +189,43 @@ impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
         taken
     }
 
-    /// Whether the device is a keyboard with a Caps Lock light the driver can set.
-    pub fn has_caps_lock_light(&self) -> bool {
+    /// Whether the device is a keyboard with a lock light the driver can set.
+    pub fn has_lock_lights(&self) -> bool {
         self.status.is_some()
     }
 
-    /// Lights the Caps Lock light (`on`) or puts it out, through the status queue: one `EV_LED`
-    /// event the device reads; nothing on a device without the light. `false` when the event
-    /// was not queued (the queue is full of earlier states the device has not taken yet), so
-    /// the caller asks again later.
-    pub fn set_caps_lock_light(&mut self, on: bool) -> bool {
+    /// Shows `lights` on the lights the keyboard has, through the status queue: one `EV_LED`
+    /// event the device reads for each light that changed since the last call (all start
+    /// out); nothing on a device without lights. `false` when not every change was queued (the
+    /// queue is full of earlier states the device has not taken yet), so the caller asks again
+    /// later and only what is still different is written then.
+    pub fn set_lock_lights(&mut self, lights: LockLights) -> bool {
+        let wanted = lock_light_bits(lights) & self.lights;
+        let changed = wanted ^ self.lights_shown;
+        if changed == 0 {
+            return true;
+        }
         let Some(status) = self.status.as_mut() else {
             return true;
         };
         while status.pop_used().is_some() {}
+        for code in LOCK_LEDS {
+            let bit = 1u8 << code;
+            if changed & bit == 0 {
+                continue;
+            }
+            if !self.write_light(code, wanted & bit != 0) {
+                return false;
+            }
+            self.lights_shown ^= bit;
+        }
+        true
+    }
+
+    fn write_light(&mut self, code: u16, on: bool) -> bool {
+        let Some(status) = self.status.as_mut() else {
+            return true;
+        };
         if status.free_descriptors() == 0 {
             return false;
         }
@@ -209,7 +240,7 @@ impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
             event
                 .wrapping_add(2)
                 .cast::<u16>()
-                .write_volatile(LED_CAPS_LOCK.to_le())
+                .write_volatile(code.to_le())
         };
         // SAFETY: the value field of the same buffer.
         unsafe {
@@ -295,11 +326,18 @@ impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
     }
 }
 
-fn has_caps_lock_light<T: Transport + ?Sized>(transport: &T) -> bool {
-    has_bit(
-        &bitmap(transport, config::EVENT_BITS, LED as u8),
-        LED_CAPS_LOCK,
-    )
+fn lock_lights_of<T: Transport + ?Sized>(transport: &T) -> u8 {
+    let leds = bitmap(transport, config::EVENT_BITS, LED as u8);
+    LOCK_LEDS
+        .iter()
+        .filter(|&&code| has_bit(&leds, code))
+        .fold(0, |bits, &code| bits | 1 << code)
+}
+
+const fn lock_light_bits(lights: LockLights) -> u8 {
+    (lights.num as u8) << LED_NUM_LOCK
+        | (lights.caps as u8) << LED_CAPS_LOCK
+        | (lights.scroll as u8) << LED_SCROLL_LOCK
 }
 
 fn set_up_status_queue<T: Transport, M: DmaMemory>(

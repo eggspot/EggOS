@@ -435,6 +435,8 @@ fn every_event_packs_into_a_word_and_back() {
         InputEvent::Wheel { delta: i32::MIN },
         InputEvent::Wheel { delta: -1 },
         InputEvent::Wheel { delta: i32::MAX },
+        InputEvent::LayoutChanged(0),
+        InputEvent::LayoutChanged(19),
     ];
     for event in events {
         assert_eq!(InputEvent::unpack(event.pack()), Some(event));
@@ -686,7 +688,7 @@ fn a_device_that_never_runs_dry_cannot_keep_the_poller_awake() {
     let devices = LeafSpinLock::new_leaf(Some(Box::new(Input {
         sources: [const { None }; MAX_DEVICES],
         state: InputState::new(),
-        caps_lock_shown: false,
+        lights_shown: LockLights::default(),
         events_left: false,
     })));
     let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -890,7 +892,7 @@ fn key_accessibility_refuses_a_slow_delay_out_of_range() {
 
 struct BusyLight {
     refusals_left: usize,
-    asked: Arc<std::sync::Mutex<Vec<bool>>>,
+    asked: Arc<std::sync::Mutex<Vec<LockLights>>>,
 }
 
 impl InputDevice for BusyLight {
@@ -905,8 +907,8 @@ impl InputDevice for BusyLight {
         0
     }
 
-    fn set_caps_lock_light(&mut self, on: bool) -> bool {
-        self.asked.lock().unwrap().push(on);
+    fn set_lock_lights(&mut self, lights: LockLights) -> bool {
+        self.asked.lock().unwrap().push(lights);
         if self.refusals_left == 0 {
             return true;
         }
@@ -915,13 +917,19 @@ impl InputDevice for BusyLight {
     }
 }
 
+const NUM_ON: LockLights = LockLights {
+    caps: false,
+    num: true,
+    scroll: false,
+};
+
 #[test]
-fn a_caps_lock_light_the_device_could_not_take_is_asked_again_until_it_does() {
+fn a_lock_light_the_device_could_not_take_is_asked_again_until_it_does() {
     let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut input = Input {
         sources: [const { None }; MAX_DEVICES],
         state: InputState::new(),
-        caps_lock_shown: false,
+        lights_shown: LockLights::default(),
         events_left: false,
     };
     input.sources[0] = Some(Source {
@@ -933,6 +941,9 @@ fn a_caps_lock_light_the_device_could_not_take_is_asked_again_until_it_does() {
         report: PendingReport::default(),
         interrupting: false,
     });
+    assert!(!input.show_lock_lights());
+    assert!(input.show_lock_lights());
+    assert_eq!(input.lights_shown, NUM_ON);
     let mut keyboard = Device::keyboard();
     send(
         &mut input.state,
@@ -942,19 +953,208 @@ fn a_caps_lock_light_the_device_could_not_take_is_asked_again_until_it_does() {
         0,
     );
     assert!(input.state.caps_lock());
-    input.show_caps_lock();
-    assert!(!input.caps_lock_shown);
-    input.show_caps_lock();
-    assert!(input.caps_lock_shown);
-    input.show_caps_lock();
-    send(
-        &mut input.state,
+    assert!(input.show_lock_lights());
+    assert!(input.show_lock_lights());
+    let caps_on = LockLights {
+        caps: true,
+        ..NUM_ON
+    };
+    assert_eq!(*asked.lock().unwrap(), [NUM_ON, NUM_ON, caps_on]);
+}
+
+
+const KEYPAD_7: u16 = 71;
+const KEYPAD_5: u16 = 76;
+
+#[test]
+fn num_lock_starts_on_and_off_makes_the_keypad_the_navigation_keys() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    assert!(state.num_lock());
+    let recorded = send(&mut state, &mut keyboard, &tap(KEYPAD_7), SCREEN, 0);
+    assert_eq!(recorded.bytes, b"7");
+    send(&mut state, &mut keyboard, &tap(key::NUM_LOCK), SCREEN, 0);
+    assert!(!state.num_lock());
+    assert!(!state.lock_lights().num);
+    let recorded = send(&mut state, &mut keyboard, &tap(KEYPAD_7), SCREEN, 0);
+    assert_eq!(recorded.bytes, b"\x1b[H");
+    let recorded = send(&mut state, &mut keyboard, &tap(key::KEYPAD_DOT), SCREEN, 0);
+    assert_eq!(recorded.bytes, b"\x1b[3~");
+    let recorded = send(&mut state, &mut keyboard, &tap(KEYPAD_5), SCREEN, 0);
+    assert!(recorded.bytes.is_empty() && recorded.events.is_empty());
+    send(&mut state, &mut keyboard, &tap(key::SCROLL_LOCK), SCREEN, 0);
+    assert!(state.scroll_lock() && state.lock_lights().scroll);
+    let recorded = send(&mut state, &mut keyboard, &tap(30), SCREEN, 0);
+    assert_eq!(recorded.bytes, b"a");
+}
+
+fn layouts(names: &[u8]) -> KeyboardLayoutSet {
+    KeyboardLayoutSet::parse(names).unwrap()
+}
+
+fn named(name: &[u8]) -> usize {
+    layout::named(name).unwrap()
+}
+
+#[test]
+fn cycling_goes_through_the_set_in_order_and_backwards() {
+    let mut state = InputState::new();
+    state.set_layouts(layouts(b"us,de,fr"), SwitchKey::Profile);
+    assert_eq!(state.cycle_layout(false), Some(named(b"de")));
+    assert_eq!(state.cycle_layout(false), Some(named(b"fr")));
+    assert_eq!(state.cycle_layout(false), Some(layout::US_LAYOUT));
+    assert_eq!(state.cycle_layout(true), Some(named(b"fr")));
+    state.set_layouts(KeyboardLayoutSet::DEFAULT, SwitchKey::Profile);
+    assert_eq!(state.cycle_layout(false), None);
+}
+
+fn layout_changes(recorded: &Recorded) -> Vec<u8> {
+    recorded
+        .events
+        .iter()
+        .filter_map(|event| match *event {
+            InputEvent::LayoutChanged(number) => Some(number),
+            _ => None,
+        })
+        .collect()
+}
+
+fn chord(held: &[u16], code: u16) -> Vec<RawEvent> {
+    let mut events: Vec<RawEvent> = held.iter().flat_map(|&key| press(key)).collect();
+    events.extend(press(code));
+    events.extend(release(code));
+    events.extend(held.iter().rev().flat_map(|&key| release(key)));
+    events
+}
+
+#[test]
+fn super_space_cycles_on_the_press_and_shift_goes_backwards() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    state.set_layout(layout::US_LAYOUT, Profile::Linux);
+    state.set_layouts(layouts(b"us,de,fr"), SwitchKey::Profile);
+    let recorded = send(
+        &mut state,
         &mut keyboard,
-        &tap(key::CAPS_LOCK),
+        &chord(&[key::LEFT_SUPER], key::SPACE),
         SCREEN,
         0,
     );
-    input.show_caps_lock();
-    assert!(!input.caps_lock_shown);
-    assert_eq!(*asked.lock().unwrap(), [true, true, false]);
+    assert_eq!(layout_changes(&recorded), [named(b"de") as u8]);
+    assert!(recorded.bytes.is_empty());
+    assert!(!recorded.events.iter().any(|event| matches!(
+        event,
+        InputEvent::Key {
+            code: key::SPACE,
+            ..
+        }
+    )));
+    let held_and_repeated: Vec<RawEvent> = [
+        press(key::LEFT_SUPER),
+        press(key::SPACE),
+        [RawEvent::new(event_type::KEY, key::SPACE, 2), SYN],
+        release(key::SPACE),
+        release(key::LEFT_SUPER),
+    ]
+    .concat();
+    let recorded = send(&mut state, &mut keyboard, &held_and_repeated, SCREEN, 0);
+    assert_eq!(layout_changes(&recorded), [named(b"fr") as u8]);
+    let recorded = send(
+        &mut state,
+        &mut keyboard,
+        &chord(&[key::LEFT_SHIFT, key::LEFT_SUPER], key::SPACE),
+        SCREEN,
+        0,
+    );
+    assert_eq!(layout_changes(&recorded), [named(b"de") as u8]);
+    assert_eq!(state.layout(), named(b"de"));
+}
+
+#[test]
+fn the_profile_s_key_is_ctrl_space_in_the_macos_profile() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    state.set_layout(layout::US_LAYOUT, Profile::Macos);
+    state.set_layouts(layouts(b"us,de"), SwitchKey::Profile);
+    let ctrl_space = chord(&[key::LEFT_CTRL], key::SPACE);
+    let recorded = send(&mut state, &mut keyboard, &ctrl_space, SCREEN, 0);
+    assert_eq!(layout_changes(&recorded), [named(b"de") as u8]);
+    state.set_layouts(layouts(b"us,de"), SwitchKey::None);
+    let recorded = send(&mut state, &mut keyboard, &ctrl_space, SCREEN, 0);
+    assert!(layout_changes(&recorded).is_empty());
+}
+
+#[test]
+fn alt_shift_cycles_on_the_release_only_when_nothing_else_was_pressed() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    state.set_layout(layout::US_LAYOUT, Profile::Windows);
+    state.set_layouts(layouts(b"us,de"), SwitchKey::AltShift);
+    let alt_shift: Vec<RawEvent> = [
+        press(key::LEFT_ALT),
+        press(key::LEFT_SHIFT),
+        release(key::LEFT_SHIFT),
+        release(key::LEFT_ALT),
+    ]
+    .concat();
+    let recorded = send(&mut state, &mut keyboard, &alt_shift, SCREEN, 0);
+    assert_eq!(layout_changes(&recorded), [named(b"de") as u8]);
+    for between in [key::TAB, 30] {
+        let recorded = send(
+            &mut state,
+            &mut keyboard,
+            &chord(&[key::LEFT_ALT, key::LEFT_SHIFT], between),
+            SCREEN,
+            0,
+        );
+        assert!(layout_changes(&recorded).is_empty(), "{between}");
+    }
+}
+
+#[test]
+fn with_one_layout_super_space_reaches_the_window_as_a_key() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    state.set_layout(layout::US_LAYOUT, Profile::Linux);
+    let recorded = send(
+        &mut state,
+        &mut keyboard,
+        &chord(&[key::LEFT_SUPER], key::SPACE),
+        SCREEN,
+        0,
+    );
+    assert!(layout_changes(&recorded).is_empty());
+    assert!(recorded.events.iter().any(|event| matches!(
+        event,
+        InputEvent::Key {
+            code: key::SPACE,
+            pressed: true,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn a_cycle_drops_a_waiting_accent() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    state.set_layout(named(b"de"), Profile::Linux);
+    state.set_layouts(layouts(b"de,fr"), SwitchKey::Profile);
+    let mut events = tap(13);
+    events.extend(chord(&[key::LEFT_SUPER], key::SPACE));
+    events.extend(tap(18));
+    let recorded = send(&mut state, &mut keyboard, &events, SCREEN, 0);
+    assert_eq!(layout_changes(&recorded), [named(b"fr") as u8]);
+    assert_eq!(recorded.bytes, b"e");
+}
+
+#[test]
+fn the_layout_set_packs_into_one_word_and_back() {
+    let set = layouts(b"us-colemak,de,latam,se");
+    let word = packed_layout_set(&set, SwitchKey::CtrlShift);
+    assert_eq!(unpacked_layout_set(word), (set, SwitchKey::CtrlShift));
+    assert_eq!(
+        unpacked_layout_set(0),
+        (KeyboardLayoutSet::DEFAULT, SwitchKey::Profile)
+    );
 }

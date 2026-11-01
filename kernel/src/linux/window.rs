@@ -109,6 +109,7 @@ pub fn ioctl<P: Platform>(
         request,
         Request::SetProfile { .. }
             | Request::SetKeyboardLayout { .. }
+            | Request::SetKeyboardLayouts { .. }
             | Request::SetInputPreferences { .. }
             | Request::SetKeyAccessibility { .. }
     );
@@ -337,6 +338,8 @@ pub fn ioctl<P: Platform>(
                     crate::input::summary().keyboards > 0,
                     keyboard_flags::KEYBOARD,
                 ),
+                (crate::input::num_lock(), keyboard_flags::NUM_LOCK),
+                (crate::input::scroll_lock(), keyboard_flags::SCROLL_LOCK),
             ]
             .into_iter()
             .filter(|(set, _)| *set)
@@ -355,6 +358,22 @@ pub fn ioctl<P: Platform>(
             if !crate::input::set_layout(layout as usize) {
                 return Err(Errno::EINVAL);
             }
+        }
+        Request::SetKeyboardLayouts {
+            count,
+            layouts,
+            switch_key,
+        } => {
+            let numbers = layouts.map(usize::from);
+            let layouts = numbers
+                .get(..count as usize)
+                .and_then(eggos_settings_file::KeyboardLayoutSet::of)
+                .ok_or(Errno::EINVAL)?;
+            let switch_key = eggos_settings_file::SwitchKey::ALL
+                .get(switch_key as usize)
+                .copied()
+                .ok_or(Errno::EINVAL)?;
+            crate::input::set_layouts(layouts, switch_key);
         }
         Request::SetInputPreferences {
             left_handed,

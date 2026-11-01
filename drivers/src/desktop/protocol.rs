@@ -82,6 +82,7 @@ pub mod size {
     pub const DESKTOP_ACTION: usize = 16;
     pub const SET_KEY_ACCESSIBILITY: usize = 12;
     pub const CHANGE_FLAGS: usize = 12;
+    pub const SET_KEYBOARD_LAYOUTS: usize = 12;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -128,6 +129,7 @@ pub mod request {
     pub const DESKTOP_ACTION: u32 = encode(READ | WRITE, 35, size::DESKTOP_ACTION);
     pub const SET_KEY_ACCESSIBILITY: u32 = encode(WRITE, 36, size::SET_KEY_ACCESSIBILITY);
     pub const CHANGE_FLAGS: u32 = encode(WRITE, 37, size::CHANGE_FLAGS);
+    pub const SET_KEYBOARD_LAYOUTS: u32 = encode(WRITE, 38, size::SET_KEYBOARD_LAYOUTS);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -488,6 +490,15 @@ pub enum Request {
     SetKeyboardLayout {
         layout: u32,
     },
+    /// Makes the first `count` (one to four) of `layouts`, a layout number per byte, the
+    /// layouts the switch key cycles through, and `switch_key` (a number of the settings
+    /// file's `SwitchKey::ALL`) the key (D220); the layout in force stays if listed, else
+    /// becomes the first.
+    SetKeyboardLayouts {
+        count: u32,
+        layouts: [u8; 4],
+        switch_key: u32,
+    },
     SetInputPreferences {
         left_handed: u32,
         natural_scrolling: u32,
@@ -595,6 +606,7 @@ impl Request {
             request::DESKTOP_ACTION => size::DESKTOP_ACTION,
             request::SET_KEY_ACCESSIBILITY => size::SET_KEY_ACCESSIBILITY,
             request::CHANGE_FLAGS => size::CHANGE_FLAGS,
+            request::SET_KEYBOARD_LAYOUTS => size::SET_KEYBOARD_LAYOUTS,
             _ => return None,
         })
     }
@@ -753,6 +765,11 @@ impl Request {
             request::GET_PLACEMENT => Self::GetPlacement { window: at(0) },
             request::GET_KEYBOARD_LAYOUT => Self::GetKeyboardLayout,
             request::SET_KEYBOARD_LAYOUT => Self::SetKeyboardLayout { layout: at(0) },
+            request::SET_KEYBOARD_LAYOUTS => Self::SetKeyboardLayouts {
+                count: at(set_keyboard_layouts_request::COUNT),
+                layouts: at(set_keyboard_layouts_request::LAYOUTS).to_ne_bytes(),
+                switch_key: at(set_keyboard_layouts_request::SWITCH_KEY),
+            },
             request::SET_INPUT_PREFERENCES => Self::SetInputPreferences {
                 left_handed: at(0),
                 natural_scrolling: at(4),
@@ -797,12 +814,23 @@ pub mod keyboard_layout_reply {
     pub const FLAGS: usize = 4;
 }
 
+/// Where `SetKeyboardLayouts` reads its arguments (D220).
+pub mod set_keyboard_layouts_request {
+    pub const COUNT: usize = 0;
+    pub const LAYOUTS: usize = 4;
+    pub const SWITCH_KEY: usize = 8;
+}
+
 /// The bits of `GetKeyboardLayout`'s flags.
 pub mod keyboard_flags {
     /// Caps Lock is on.
     pub const CAPS_LOCK: u32 = 1;
     /// The machine has a keyboard.
     pub const KEYBOARD: u32 = 2;
+    /// Num Lock is on (D220).
+    pub const NUM_LOCK: u32 = 4;
+    /// Scroll Lock is on (D220).
+    pub const SCROLL_LOCK: u32 = 8;
 }
 
 /// Where `Create` writes the window's id, its content width and height and its buffer's offset
