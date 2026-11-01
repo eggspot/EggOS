@@ -10011,7 +10011,9 @@ the license, by an explicit instruction recorded here.
   `powershell -NoProfile -ExecutionPolicy Bypass -File run-eggos.ps1` on Windows, `sh
   run-eggos.sh` elsewhere. First `-Serial -Apps <folder> -Disk <image> -FormatDisk`: the
   script makes the disk, the prompt comes on its standard output, `uname` prints `Linux`, `ls
-  /media/host` lists the folder's file and `poweroff` ends the script with status 0. Then
+  /media/host` lists the folder's file and `poweroff` ends the script with status 0 (each
+  line typed ends in `\n`: QEMU on Windows drops every `\r` it reads from a piped standard
+  input, so a typed `\r` never reached EggOS there; CI run 41264952268). Then
   `-Mcp -NoWindow` on the same folder and disk through the MCP check's client (D136), a child
   with piped standard input and output: `ping`, `initialize`, `tools/list` and a `cat` of the
   folder's file, every line on standard output a JSON-RPC message. While it runs, a second

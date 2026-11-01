@@ -21,7 +21,7 @@ const HOST_FILE: (&str, &str) = (
     "eggos-run-scripts.txt",
     "EGGOS-RUN-SCRIPTS hello from the host\n",
 );
-const SERIAL_SESSION: [&[u8]; 3] = [b"uname\r", b"ls /media/host\r", b"poweroff\r"];
+const SERIAL_SESSION: [&[u8]; 3] = [b"uname\n", b"ls /media/host\n", b"poweroff\n"];
 const CLIENT_NAME: &str = "xtask-run-scripts";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +253,14 @@ mod tests {
         let three = one.repeat(3);
         assert_eq!(serial_line_to_type(&three, 2), Some(SERIAL_SESSION[2]));
         assert_eq!(serial_line_to_type(&one.repeat(4), 3), None);
+    }
+
+    #[test]
+    fn serial_lines_end_in_a_newline_as_qemu_on_windows_drops_every_carriage_return() {
+        for line in SERIAL_SESSION {
+            assert!(line.ends_with(b"\n"));
+            assert!(!line.contains(&b'\r'));
+        }
     }
 
     #[test]
