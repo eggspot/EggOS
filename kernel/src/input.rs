@@ -441,12 +441,21 @@ pub fn set_key_accessibility(sticky_keys: bool, slow_keys_ms: Option<u32>) -> bo
     true
 }
 
+const STICKY_KEY_CODES: [(u8, u16); 5] = [
+    (Modifiers::SHIFT.bits(), key::LEFT_SHIFT),
+    (Modifiers::CTRL.bits(), key::LEFT_CTRL),
+    (Modifiers::ALT.bits(), key::LEFT_ALT),
+    (Modifiers::ALT_GRAPH.bits(), key::RIGHT_ALT),
+    (Modifiers::SUPER.bits(), key::LEFT_SUPER),
+];
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Sticky {
     latched: u8,
     locked: u8,
     tapping: Option<(u16, u8)>,
     using: Option<u16>,
+    clicking: u8,
 }
 
 impl Sticky {
@@ -456,7 +465,22 @@ impl Sticky {
             locked: 0,
             tapping: None,
             using: None,
+            clicking: 0,
         }
+    }
+
+    fn button_pressed(&mut self, held: Modifiers) -> u8 {
+        self.tapping = None;
+        if self.clicking != 0 {
+            return 0;
+        }
+        self.clicking = (self.latched | self.locked) & !held.bits();
+        self.latched = 0;
+        self.clicking
+    }
+
+    fn buttons_released(&mut self) -> u8 {
+        core::mem::take(&mut self.clicking)
     }
 
     fn apply(&mut self, code: u16, change: KeyChange, held: Modifiers, added: u8) -> Modifiers {
@@ -494,6 +518,30 @@ impl Sticky {
                 with_extra
             }
         }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn send_latched_modifiers(latched: u8, pressed: bool, held: Modifiers, sink: &mut dyn InputSink) {
+    let mut in_effect = match pressed {
+        true => held.bits(),
+        false => held.bits() | latched,
+    };
+    for (bit, code) in STICKY_KEY_CODES {
+        if latched & bit == 0 {
+            continue;
+        }
+        in_effect = match pressed {
+            true => in_effect | bit,
+            false => in_effect & !bit,
+        };
+        sink.event(InputEvent::Key {
+            code,
+            pressed,
+            modifiers: Modifiers::from_bits(in_effect),
+            character: 0,
+        });
     }
 }
 
@@ -1040,6 +1088,11 @@ impl InputState {
                 sink.event(InputEvent::PointerMove { x, y });
             }
         }
+        if report.presses != 0 && STICKY_KEYS.load(Ordering::Relaxed) {
+            let held = self.keyboard.modifiers();
+            let latched = self.sticky.button_pressed(held);
+            send_latched_modifiers(latched, true, held, sink);
+        }
         let left_handed = LEFT_HANDED.load(Ordering::Relaxed);
         for (index, (button, _)) in BUTTONS.iter().enumerate() {
             let bit = 1 << index;
@@ -1058,6 +1111,10 @@ impl InputState {
                     pressed: false,
                 });
             }
+        }
+        if self.buttons_held == 0 && self.sticky.clicking != 0 {
+            let latched = self.sticky.buttons_released();
+            send_latched_modifiers(latched, false, self.keyboard.modifiers(), sink);
         }
         let (wheel, sideways) = match NATURAL_SCROLLING.load(Ordering::Relaxed) {
             true => (report.wheel.saturating_neg(), report.sideways.saturating_neg()),

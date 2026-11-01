@@ -956,6 +956,32 @@ fn sticky_keys_latch_a_tapped_modifier_for_the_next_key_and_a_second_tap_locks_i
 }
 
 #[test]
+fn a_click_takes_the_latched_and_locked_modifiers_and_ends_a_tap() {
+    let mut sticky = Sticky::new();
+    let shift = Modifiers::SHIFT.bits();
+    let ctrl = Modifiers::CTRL.bits();
+    let none = Modifiers::NONE;
+    sticky.apply(42, KeyChange::Pressed, Modifiers::SHIFT, shift);
+    sticky.apply(42, KeyChange::Released, none, 0);
+    for _ in 0..2 {
+        sticky.apply(29, KeyChange::Pressed, Modifiers::CTRL, ctrl);
+        sticky.apply(29, KeyChange::Released, none, 0);
+    }
+    assert_eq!(sticky.button_pressed(none), shift | ctrl);
+    assert_eq!(sticky.button_pressed(none), 0);
+    assert_eq!(sticky.buttons_released(), shift | ctrl);
+    assert_eq!(sticky.latched, 0);
+    assert_eq!(sticky.locked, ctrl);
+    assert_eq!(sticky.button_pressed(Modifiers::CTRL), 0);
+    assert_eq!(sticky.buttons_released(), 0);
+    sticky.apply(42, KeyChange::Pressed, Modifiers::SHIFT, shift);
+    sticky.button_pressed(Modifiers::SHIFT);
+    sticky.buttons_released();
+    sticky.apply(42, KeyChange::Released, none, 0);
+    assert_eq!(sticky.latched, 0);
+}
+
+#[test]
 fn key_accessibility_refuses_a_slow_delay_out_of_range() {
     assert!(!set_key_accessibility(false, Some(50)));
     assert!(set_key_accessibility(false, None));
