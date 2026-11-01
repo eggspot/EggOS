@@ -127,6 +127,10 @@ pub struct Bridge {
     pub resume: Option<Context>,
     /// The catch block this bridge runs, if it runs one.
     pub catch: Option<CatchState>,
+    /// Where a walk for termination handlers continues instead of `resume`, and whether its
+    /// `pc` is a return address: an unwind started in an exception handler goes on from the
+    /// frame the exception was raised in, through every frame the dispatch walked.
+    pub unwind_resume: Option<(Context, bool)>,
 }
 
 impl Bridge {
@@ -137,6 +141,26 @@ impl Bridge {
             stack: 0,
             resume,
             catch,
+            unwind_resume: None,
+        }
+    }
+
+    /// A bridge into an exception handler of the dispatch that started at `start` (whose `pc`
+    /// is a return address when `start_unwound`) and found the handler's frame, whose caller
+    /// is `caller`.
+    pub fn for_exception_handler(caller: Context, start: Context, start_unwound: bool) -> Self {
+        Self {
+            unwind_resume: Some((start, start_unwound)),
+            ..Self::new(Some(caller), None)
+        }
+    }
+
+    /// Where a walk asking for `kinds` continues once it leaves the program code this bridge
+    /// called, and whether that `pc` is a return address; none ends the walk.
+    pub fn continuation(&self, kinds: HandlerKinds) -> Option<(Context, bool)> {
+        match (kinds.termination, self.unwind_resume) {
+            (true, Some(unwind_resume)) => Some(unwind_resume),
+            _ => self.resume.map(|resume| (resume, true)),
         }
     }
 }
@@ -381,10 +405,10 @@ impl Walk {
             if let Some(catch) = bridge.catch.as_ref() {
                 return self.leave_catch(catch);
             }
-            return match bridge.resume {
-                Some(resume) => {
+            return match bridge.continuation(self.kinds) {
+                Some((resume, unwound)) => {
                     self.context = resume;
-                    self.unwound = true;
+                    self.unwound = unwound;
                     self.last_frame_had_handler = false;
                     Event::Bridge
                 }

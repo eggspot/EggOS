@@ -12669,7 +12669,12 @@ the license, by an explicit instruction recorded here.
   the layer's: each such call goes through a *bridge* that records where it returns, so a
   walk that leaves the program code a bridge called continues in the program frame the bridge
   names (the dispatched frame's caller), and a resumed context forgets the bridges and
-  dispatches below it. Per thread state (the bridges, the dispatches in progress, the unwind
+  dispatches below it. An unwind that leaves an exception handler's bridge (a statically
+  linked `__C_specific_handler` calling `RtlUnwind` to its own establisher) continues instead
+  in the frame the exception was raised in, so it reaches every frame the dispatch walked, the
+  handler's own among them, as Windows' unwind does through its dispatcher's frames (revised
+  by #149's CI fixes, CI1 B2: before, such an unwind skipped the target frame and ended the
+  program with `STATUS_INVALID_UNWIND_TARGET`, AutoHotkey's exit). Per thread state (the bridges, the dispatches in progress, the unwind
   target, the current C++ exception) lives in the TEB past `errno` (0x1e10 to 0x1e37).
 - **Faults are Windows exceptions** (`fault.rs`'s `delivery`, pure; `fault_handler.rs`). A
   fault in the program's code (or in code outside the layer) becomes: `SIGSEGV` an access

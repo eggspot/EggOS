@@ -133,7 +133,7 @@ pub fn dispatch(record: *mut ExceptionRecord, context: *mut Context, origin: Ori
                 };
                 let mut frame_context = frame.context;
                 let mut dispatcher = DispatcherContext::of(&frame, &mut frame_context, 0);
-                let mut bridge = Bridge::new(Some(frame.caller), None);
+                let mut bridge = Bridge::for_exception_handler(frame.caller, start, start_unwound);
                 // SAFETY: `handler` is the language handler the program's unwind data names
                 // for this frame, called with the four arguments every language handler takes.
                 let answer = unsafe {
