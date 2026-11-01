@@ -2111,16 +2111,18 @@ impl Server {
         if let Some(time) = prepared.checked.time.as_ref() {
             push_word(&mut words, &mut count, time.as_str());
         }
-        if let (Some(pid), Some(signal)) = (prepared.checked.pid, prepared.checked.signal) {
-            push_word(&mut words, &mut count, "-s");
-            push_word(
-                &mut words,
-                &mut count,
-                arguments::SIGNAL_NAMES
-                    .get(signal)
-                    .copied()
-                    .unwrap_or("TERM"),
-            );
+        if let Some(pid) = prepared.checked.pid {
+            if let Some(signal) = prepared.checked.signal {
+                push_word(&mut words, &mut count, "-s");
+                push_word(
+                    &mut words,
+                    &mut count,
+                    arguments::SIGNAL_NAMES
+                        .get(signal)
+                        .copied()
+                        .unwrap_or("TERM"),
+                );
+            }
             push_word(&mut words, &mut count, "--");
             push_word(&mut words, &mut count, decimal_text(pid, &mut pid_digits));
         }

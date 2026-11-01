@@ -489,3 +489,46 @@ fn the_file_tools_run_cp_mv_mkdir_and_rm_on_paths_the_write_tools_reach() {
         r#""required":["path"],"additionalProperties":false}"#
     ));
 }
+
+#[test]
+fn the_download_tools_run_download_with_the_grants_the_design_names() {
+    for (name, kind, words, grant, confirmation, destructive) in [
+        (
+            "download_list",
+            Kind::DownloadList,
+            &["list", "--json"][..],
+            None,
+            Confirmation::Never,
+            false,
+        ),
+        (
+            "download_cancel",
+            Kind::DownloadCancel,
+            &["cancel"][..],
+            Some(Grant::Run),
+            Confirmation::Always,
+            true,
+        ),
+        (
+            "download_clear",
+            Kind::DownloadClear,
+            &["clear"][..],
+            Some(Grant::Write),
+            Confirmation::Never,
+            false,
+        ),
+    ] {
+        let tool = find(name).unwrap();
+        assert_eq!(tool.kind, kind, "{name}");
+        assert_eq!(tool.twin.program, Program::Fixed("/bin/download"), "{name}");
+        assert_eq!(tool.twin.words, words, "{name}");
+        assert_eq!(tool.twin.operand, Operand::None, "{name}");
+        assert_eq!(tool.grant, grant, "{name}");
+        assert_eq!(tool.confirmation, confirmation, "{name}");
+        assert_eq!(tool.hints.destructive, destructive, "{name}");
+        assert!(!tool.hints.open_world, "{name}");
+    }
+    assert!(schema_of(find("download_cancel").unwrap()).ends_with(
+        r#""required":["pid"],"additionalProperties":false}"#
+    ));
+}

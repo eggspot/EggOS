@@ -4153,3 +4153,49 @@ fn with_elicitation_file_remove_and_a_replacing_copy_ask_the_user_naming_both_pa
         ]
     );
 }
+
+#[test]
+fn download_cancel_stops_a_download_only_when_confirmed_under_the_run_grant() {
+    let mut harness = granted_only(&[crate::grants::Grant::Write]);
+    let answer = harness.call(1, "download_cancel", r#"{"pid":61,"confirm":true}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert!(harness.system.runs.is_empty());
+    let mut harness = writer();
+    let answer = harness.call(2, "download_cancel", r#"{"pid":61}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert!(
+        texts(&answer)[0].contains("download_cancel needs the user's yes"),
+        "{answer}"
+    );
+    assert!(harness.system.runs.is_empty());
+    let answer = harness.call(3, "download_cancel", r#"{"pid":61,"confirm":true}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/download", "cancel", "--", "61"]
+    );
+    let answer = harness.call(4, "download_cancel", r#"{"pid":0,"confirm":true}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.len(), 1);
+}
+
+#[test]
+fn download_list_reads_freely_and_download_clear_needs_the_write_grant() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "download_list", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/download", "list", "--json"]
+    );
+    let answer = harness.call(2, "download_clear", "{}");
+    assert!(is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.len(), 1);
+    let mut harness = writer();
+    let answer = harness.call(3, "download_clear", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/download", "clear"]
+    );
+}

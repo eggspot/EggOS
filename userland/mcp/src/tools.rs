@@ -169,6 +169,12 @@ pub enum Kind {
     FolderCreate,
     /// `file_remove`: deletes a file or folder below `/home/root` for good (D225).
     FileRemove,
+    /// `download_list`: the downloads since boot (D224).
+    DownloadList,
+    /// `download_cancel`: stops a running download (D224).
+    DownloadCancel,
+    /// `download_clear`: removes the records of downloads that are over (D224).
+    DownloadClear,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -392,7 +398,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 62] = [
+pub const TOOLS: [Tool; 65] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -702,6 +708,21 @@ pub const TOOLS: [Tool; 62] = [
         &registry::FILE_REMOVE,
         Kind::FileRemove,
         twin("/bin/rm", &[], Operand::Path(WRITE_PATH)),
+    ),
+    tool(
+        &registry::DOWNLOAD_LIST,
+        Kind::DownloadList,
+        twin("/bin/download", &["list", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::DOWNLOAD_CANCEL,
+        Kind::DownloadCancel,
+        twin("/bin/download", &["cancel"], Operand::None),
+    ),
+    tool(
+        &registry::DOWNLOAD_CLEAR,
+        Kind::DownloadClear,
+        twin("/bin/download", &["clear"], Operand::None),
     ),
 ];
 

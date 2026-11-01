@@ -885,6 +885,13 @@ pub fn check(
             return Err(ArgumentProblem::BadDevice);
         }
     }
+    if tool.kind == Kind::DownloadCancel {
+        checked.pid = Some(
+            whole(get("pid"), i32::MAX as u64, ArgumentProblem::BadPid)?
+                .filter(|&pid| pid > 0)
+                .ok_or(ArgumentProblem::BadPid)? as u32,
+        );
+    }
     if tool.kind == Kind::Kill {
         checked.pid = Some(
             whole(get("pid"), i32::MAX as u64, ArgumentProblem::BadPid)?
