@@ -562,17 +562,21 @@ impl Node {
 
     #[inline]
     fn lookup_as(&self, kind: NodeKind, name: &[u8]) -> Result<Self, Error> {
+        let id = self.child_id_as(kind, name)?;
+        Ok(mounted_on(self.with_id(id)))
+    }
+
+    #[inline(always)]
+    fn child_id_as(&self, kind: NodeKind, name: &[u8]) -> Result<u64, Error> {
         if kind != NodeKind::Directory {
             return Err(Error::NotDirectory);
         }
         if name.len() > NAME_MAX {
             return Err(Error::NameTooLong);
         }
-        let id = self
-            .file_system
+        self.file_system
             .lookup(self.id, name)
-            .ok_or(Error::NotFound)?;
-        Ok(mounted_on(self.with_id(id)))
+            .ok_or(Error::NotFound)
     }
 
     /// Writes its absolute path, from the root of the file system it is on, to the end of
@@ -736,7 +740,7 @@ fn walk(
             }
             name => {
                 let directory = node;
-                node = node.lookup_as(kind, name)?;
+                node = mounted_on(node.with_id(node.child_id_as(kind, name)?));
                 kind = node.kind();
                 must_be_directory = false;
                 if kind == NodeKind::SymbolicLink
@@ -821,7 +825,7 @@ fn mounts() -> impl Iterator<Item = &'static Mounted> {
     })
 }
 
-#[inline]
+#[inline(always)]
 fn mounted_on(node: Node) -> Node {
     mounts()
         .find(|mounted| mounted.point == node)

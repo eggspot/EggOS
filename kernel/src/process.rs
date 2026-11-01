@@ -2145,22 +2145,36 @@ impl<P: Platform> Process<P> {
         address: u64,
         buffer: &mut [u8],
     ) -> Result<(), InvalidUserAddress> {
+        self.read_user_memory_to(address, buffer.as_mut_ptr(), buffer.len())
+    }
+
+    /// [`Self::read_user_memory`] into a buffer not yet initialized: when it returns `Ok`,
+    /// every byte of `buffer` is.
+    pub fn read_user_memory_uninit(
+        &self,
+        address: u64,
+        buffer: &mut [core::mem::MaybeUninit<u8>],
+    ) -> Result<(), InvalidUserAddress> {
+        self.read_user_memory_to(address, buffer.as_mut_ptr().cast::<u8>(), buffer.len())
+    }
+
+    #[inline(always)]
+    fn read_user_memory_to(
+        &self,
+        address: u64,
+        destination: *mut u8,
+        length: usize,
+    ) -> Result<(), InvalidUserAddress> {
         let memory = &*self.memory;
-        let destination = buffer.as_mut_ptr();
-        Self::copy_user_pages(
-            memory,
-            address,
-            buffer.len(),
-            false,
-            |kernel, done, length| {
-                // SAFETY: `kernel` reaches `length` bytes of one of the process's frames through
-                // the direct map (`copy_user_pages`' promise), and `done + length` is within
-                // `buffer`, a kernel buffer, which no frame of the process is.
-                unsafe {
-                    core::ptr::copy_nonoverlapping(kernel, destination.wrapping_add(done), length)
-                };
-            },
-        )
+        Self::copy_user_pages(memory, address, length, false, |kernel, done, length| {
+            // SAFETY: `kernel` reaches `length` bytes of one of the process's frames through
+            // the direct map (`copy_user_pages`' promise), and `done + length` is within
+            // the caller's buffer at `destination`, a kernel buffer, which no frame of the
+            // process is.
+            unsafe {
+                core::ptr::copy_nonoverlapping(kernel, destination.wrapping_add(done), length)
+            };
+        })
     }
 
     /// Copies `bytes` into the process's memory at user address `address`, as a system call

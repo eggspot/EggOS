@@ -77,7 +77,7 @@ pub fn walk_error(error: vfs::Error) -> Errno {
 const PATH_CHUNK: usize = 64;
 
 /// A buffer for a path copied from a program ([`read_path`]): left uninitialized, so a short
-/// path costs only its own bytes.
+/// path costs only the chunk it is read in.
 pub type PathBuffer = MaybeUninit<[u8; PATH_MAX]>;
 
 /// Copies the NUL-terminated path at `address` into `buffer` and returns it, without its NUL:
@@ -88,32 +88,29 @@ pub fn read_path<'a, P: Platform>(
     address: u64,
     buffer: &'a mut PathBuffer,
 ) -> Result<&'a [u8], Errno> {
-    let path = buffer.as_mut_ptr().cast::<u8>();
-    let mut chunk = [0u8; PATH_CHUNK];
+    // SAFETY: `MaybeUninit<[u8; N]>` and `[MaybeUninit<u8>; N]` have the same layout, and
+    // neither needs its bytes initialized.
+    let bytes = unsafe { &mut *(buffer as *mut PathBuffer).cast::<[MaybeUninit<u8>; PATH_MAX]>() };
     let mut offset = 0;
     while offset < PATH_MAX {
         let at = address.checked_add(offset as u64).ok_or(Errno::EFAULT)?;
         let length = (PATH_MAX - offset)
             .min(PATH_CHUNK)
             .min((FRAME_SIZE - at % FRAME_SIZE) as usize);
-        let chunk = &mut chunk[..length];
+        let chunk = &mut bytes[offset..offset + length];
         process
-            .read_user_memory(at, chunk)
+            .read_user_memory_uninit(at, chunk)
             .map_err(|_| Errno::EFAULT)?;
-        let end = chunk.iter().position(|&byte| byte == 0);
-        // SAFETY: `offset + length` is at most `PATH_MAX`, so the bytes written are within
-        // `buffer`, which `chunk`, on this stack frame, does not overlap.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                chunk.as_ptr(),
-                path.wrapping_add(offset),
-                end.unwrap_or(length),
-            )
-        };
-        if let Some(end) = end {
-            // SAFETY: the first `offset + end` bytes of `buffer` were written by this loop, and
-            // the slice borrows `buffer` for as long as it lives.
-            return Ok(unsafe { core::slice::from_raw_parts(path, offset + end) });
+        // SAFETY: `read_user_memory_uninit` returned `Ok`, so it initialized every byte of
+        // `chunk`.
+        let chunk = unsafe { &*(chunk as *const [MaybeUninit<u8>] as *const [u8]) };
+        if let Some(end) = chunk.iter().position(|&byte| byte == 0) {
+            // SAFETY: this loop's reads initialized the first `offset + length` bytes of
+            // `bytes`, and `end` is below `length`; the slice borrows `buffer` for as long as
+            // it lives.
+            return Ok(unsafe {
+                core::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), offset + end)
+            });
         }
         offset += length;
     }
@@ -123,6 +120,15 @@ pub fn read_path<'a, P: Platform>(
 /// The root and the directory a relative `path` starts from, given `dirfd`: see the module
 /// documentation.
 pub fn starting_points(
+    thread: &LinuxThread,
+    dirfd: u64,
+    path: &[u8],
+) -> Result<(Node, Node), Errno> {
+    starting_points_inlined(thread, dirfd, path)
+}
+
+#[inline(always)]
+fn starting_points_inlined(
     thread: &LinuxThread,
     dirfd: u64,
     path: &[u8],
@@ -315,7 +321,7 @@ fn open<P: Platform>(
     if path.is_empty() {
         return Err(Errno::ENOENT);
     }
-    let (root, start) = starting_points(thread, dirfd, path)?;
+    let (root, start) = starting_points_inlined(thread, dirfd, path)?;
     let caller = process.id().get();
     let follow_last = flags & open_flag::NOFOLLOW == 0;
     let mut created = false;
