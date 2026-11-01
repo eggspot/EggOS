@@ -28,6 +28,7 @@ pub enum Command<'a> {
         entry: Option<&'a [u8]>,
         arguments: Option<&'a [u8]>,
         environment: Option<&'a [u8]>,
+        console: Option<bool>,
         window: bool,
     },
     Uninstall {
@@ -57,8 +58,8 @@ pub enum Command<'a> {
 
 /// The command's usage, printed for `--help` and with a usage error.
 pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] \
-                         [--arguments <words>] [--environment <variables>] [--window] \
-                         [--] <path>\n       \
+                         [--arguments <words>] [--environment <variables>] \
+                         [--console | --no-console] [--window] [--] <path>\n       \
                          app uninstall [--window] [--dry-run] [--] <name>\n       \
                          app open [--] <name>\n       \
                          app list [--json] [--limit <count>] [--after <cursor>]\n       \
@@ -87,6 +88,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
     let mut entry = None;
     let mut words = None;
     let mut environment = None;
+    let mut console = None;
     let mut json = false;
     let mut dry_run = false;
     let mut limit = None;
@@ -120,6 +122,8 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             b"--entry" if verb == b"install" => entry = Some(*rest.next()?),
             b"--arguments" if verb == b"install" => words = Some(*rest.next()?),
             b"--environment" if verb == b"install" => environment = Some(*rest.next()?),
+            b"--console" if verb == b"install" => console = Some(true),
+            b"--no-console" if verb == b"install" => console = Some(false),
             b"--size" if icon => size = Some(*rest.next()?),
             b"-o" if icon => output = Some(*rest.next()?),
             _ if argument.starts_with(b"-") && argument.len() > 1 => return None,
@@ -135,6 +139,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             entry,
             arguments: words,
             environment,
+            console,
             window,
         }),
         b"uninstall" | b"remove" if !(window && dry_run) => Some(Command::Uninstall {
@@ -338,6 +343,7 @@ mod program {
         entry: Option<&[u8]>,
         arguments: Option<&[u8]>,
         environment: Option<&[u8]>,
+        console: Option<bool>,
     ) -> i32 {
         let mut files = LinuxFiles::new();
         let machine = linux::machine();
@@ -352,6 +358,10 @@ mod program {
                 .and_then(|plan| match environment {
                     Some(environment) => plan.with_environment(environment),
                     None => Ok(plan),
+                })
+                .map(|plan| match console {
+                    Some(console) => plan.with_console(console),
+                    None => plan,
                 })
             });
         let plan = match planned {
@@ -799,8 +809,9 @@ mod program {
                 entry,
                 arguments,
                 environment,
+                console,
                 ..
-            }) => install(path, name, entry, arguments, environment),
+            }) => install(path, name, entry, arguments, environment, console),
             Some(Command::Uninstall {
                 name,
                 dry_run: true,
@@ -879,6 +890,7 @@ mod tests {
                 entry: None,
                 arguments: None,
                 environment: None,
+                console: None,
                 window: false
             })
         );
@@ -890,6 +902,7 @@ mod tests {
                 entry: None,
                 arguments: None,
                 environment: None,
+                console: None,
                 window: true
             })
         );
@@ -917,6 +930,7 @@ mod tests {
                 entry: Some(b"bin/a.exe"),
                 arguments: None,
                 environment: None,
+                console: None,
                 window: false
             })
         );
@@ -928,6 +942,7 @@ mod tests {
                 entry: None,
                 arguments: Some(b"-n --size 4"),
                 environment: None,
+                console: None,
                 window: false
             })
         );
@@ -945,6 +960,7 @@ mod tests {
                 entry: None,
                 arguments: None,
                 environment: Some(b"XDG_DATA_DIRS=/Applications/mousepad/share"),
+                console: None,
                 window: false
             })
         );
@@ -1037,6 +1053,7 @@ mod tests {
                 entry: None,
                 arguments: None,
                 environment: None,
+                console: None,
                 window: false
             })
         );
@@ -1048,6 +1065,7 @@ mod tests {
                 entry: None,
                 arguments: None,
                 environment: None,
+                console: None,
                 window: false
             })
         );

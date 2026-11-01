@@ -127,6 +127,10 @@ pub struct Manifest<'a> {
     /// `NAME=value` words, separated by spaces, set in the program's environment when the app
     /// opens (D176): where a toolkit finds the data the app carries, say.
     pub environment: Option<&'a str>,
+    /// Whether the app is a console program (D222): it opens in a terminal window of its own,
+    /// which the launcher starts with `/bin/terminal -e`. Written as `console=true`; absent is
+    /// `false`.
+    pub console: bool,
 }
 
 impl<'a> Manifest<'a> {
@@ -305,6 +309,7 @@ pub fn parse<'a>(file: &'a [u8], folder: &[u8]) -> Option<Manifest<'a>> {
     let environment = last(file, "environment")
         .filter(|value| is_environment(value))
         .and_then(text);
+    let console = last(file, "console") == Some(&b"true"[..]);
     Some(Manifest {
         name: text(name)?,
         source,
@@ -316,6 +321,7 @@ pub fn parse<'a>(file: &'a [u8], folder: &[u8]) -> Option<Manifest<'a>> {
         libraries,
         arguments,
         environment,
+        console,
     })
 }
 
@@ -391,6 +397,9 @@ pub fn write(manifest: &Manifest<'_>, out: &mut [u8]) -> Result<usize, Refused> 
         if let Some(value) = value {
             writer.put(&[key, value.as_bytes(), b"\n"])?;
         }
+    }
+    if manifest.console {
+        writer.put(&[b"console=true\n"])?;
     }
     Ok(writer.length)
 }
@@ -525,6 +534,7 @@ mod tests {
             libraries: None,
             arguments: None,
             environment: None,
+            console: false,
         };
         let mut out = [0u8; LARGEST];
         let length = write(&manifest, &mut out).unwrap();
@@ -548,6 +558,7 @@ mod tests {
             libraries: None,
             arguments: None,
             environment: None,
+            console: false,
         };
         let mut out = [0u8; LARGEST];
         let refused = |manifest: Manifest<'_>, out: &mut [u8]| write(&manifest, out);
@@ -629,6 +640,7 @@ mod tests {
             libraries: Some("lib:usr/lib"),
             arguments: Some("--data-dir /Applications/brogue/share/brogue"),
             environment: None,
+            console: false,
         };
         let mut out = [0u8; LARGEST];
         let length = write(&manifest, &mut out).unwrap();
@@ -661,6 +673,7 @@ mod tests {
             libraries: Some("lib"),
             arguments: Some("--disable-server"),
             environment: Some(environment),
+            console: false,
         };
         let mut out = [0u8; LARGEST];
         let length = write(&manifest, &mut out).unwrap();
@@ -715,5 +728,18 @@ mod tests {
                 let _ = manifest.synonyms().count();
             }
         }
+    }
+
+    #[test]
+    fn a_console_app_says_so_and_an_app_without_the_key_is_not_one() {
+        let file = [HEADER, b"\nname=top\nsource=linux\nrun=top\nconsole=true\n"].concat();
+        let parsed = parse(&file, b"top").unwrap();
+        assert!(parsed.console);
+        let mut out = [0u8; LARGEST];
+        let length = write(&parsed, &mut out).unwrap();
+        assert!(out[..length].ends_with(b"console=true\n"));
+        assert_eq!(parse(&out[..length], b"top"), Some(parsed));
+        let plain = [HEADER, b"\nname=top\nsource=linux\nrun=top\nconsole=yes\n"].concat();
+        assert!(!parse(&plain, b"top").unwrap().console);
     }
 }

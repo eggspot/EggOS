@@ -46,6 +46,7 @@ const TASK_MANAGER_SYNONYMS: [&str; 20] = [
     "hung",
 ];
 const TERMINAL_PROGRAM: &str = "/bin/terminal";
+const SHELL_PROGRAM: &str = "/bin/eggsh";
 const HOST_SHARE_LISTING: &str = "ls /media/host";
 const HOST_SHARE: &str = "/media/host";
 const PLAIN_PATH_BYTES: &[u8] = b"/._-+";
@@ -171,6 +172,7 @@ struct InstalledApp {
     synonyms: [u8; SYNONYMS_CAPACITY],
     synonyms_length: u8,
     icon: Option<IconPixels>,
+    console: bool,
 }
 
 impl InstalledApp {
@@ -338,6 +340,7 @@ impl Catalogue {
             synonyms: [0; SYNONYMS_CAPACITY],
             synonyms_length: app.synonyms.len() as u8,
             icon: None,
+            console: app.console,
         };
         entry.name[..app.name.len()].copy_from_slice(app.name.as_bytes());
         entry.synonyms[..app.synonyms.len()].copy_from_slice(app.synonyms.as_bytes());
@@ -549,7 +552,9 @@ impl Catalogue {
     /// `--library-path` and its library folders; then the app's arguments, D172), after Ctrl-U
     /// so a half-typed line does not run with it; Terminal starts the terminal program, a new
     /// window each time (D187), and without it the console terminal is only focused, which the
-    /// desktop does itself.
+    /// desktop does itself. An installed console app (its manifest's `console=true`, D222) starts
+    /// `/bin/terminal -t <name> -e /bin/eggsh -c <line>` instead while the terminal program is
+    /// present, so it gets a terminal window of its own.
     pub fn launch(&self, app: AppId) -> Option<Launch> {
         match app {
             AppId::Terminal if self.terminal_present => {
@@ -575,7 +580,19 @@ impl Catalogue {
                 typed.then_some(Launch::Type(line))
             }
             AppId::Installed(index) => {
-                let typed = self.installed(index)?.line;
+                let app = self.installed(index)?;
+                if self.terminal_present && app.console {
+                    let words = [
+                        &b"-t"[..],
+                        app.name().as_bytes(),
+                        b"-e",
+                        SHELL_PROGRAM.as_bytes(),
+                        b"-c",
+                        app.line.as_bytes(),
+                    ];
+                    return Command::program(TERMINAL_PROGRAM, &words).map(Launch::Start);
+                }
+                let typed = app.line;
                 let mut line = Command::new();
                 let fits = line.push(KILL_LINE) && line.push(typed.as_bytes()) && line.push(b"\r");
                 fits.then_some(Launch::Type(line))
@@ -797,6 +814,35 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_console_app_opens_in_a_terminal_window_of_its_own_when_there_is_one() {
+        let mut catalogue = Catalogue::new();
+        let file = b"eggos-app 1\nname=top\nsource=linux\nrun=top\nconsole=true\n";
+        assert!(catalogue.add_installed(b"top", file));
+        let gui = b"eggos-app 1\nname=Paint\nsource=windows\nrun=paint.exe\n";
+        assert!(catalogue.add_installed(b"Paint", gui));
+        let top = catalogue.installed_named("top").unwrap();
+        let paint = catalogue.installed_named("Paint").unwrap();
+        assert!(matches!(catalogue.launch(top), Some(Launch::Type(_))));
+        catalogue.set_terminal_present(true);
+        match catalogue.launch(top) {
+            Some(Launch::Start(command)) => assert_eq!(
+                command.words().collect::<Vec<_>>(),
+                [
+                    &b"/bin/terminal"[..],
+                    b"-t",
+                    b"top",
+                    b"-e",
+                    b"/bin/eggsh",
+                    b"-c",
+                    b"/Applications/top/top",
+                ]
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(catalogue.launch(paint), Some(Launch::Type(_))));
     }
 
     #[test]

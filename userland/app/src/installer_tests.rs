@@ -95,6 +95,7 @@ fn the_manifest_is_written_last_through_a_temporary_file() {
         ]
     );
     assert!(manifest_of(&files, "tool").contains("source=linux\nrun=tool\narchitecture=aarch64\n"));
+    assert!(manifest_of(&files, "tool").ends_with("console=true\n"));
 }
 
 #[test]
@@ -720,7 +721,7 @@ fn a_program_with_a_png_beside_it_gets_that_icon() {
     install(&mut files, plan, &mut [0u8; 64]).unwrap();
     let icon = icon_of(&files, "tool");
     assert_eq!(icon[..4], [0xef, 0xcd, 0xab, 0xff]);
-    assert!(manifest_of(&files, "tool").ends_with("icon=app.icon\n"));
+    assert!(manifest_of(&files, "tool").contains("icon=app.icon\n"));
     let mut broken = host_with("/media/host/tool", &linux_program(62));
     broken.file("/media/host/tool.png", b"\x89PNG\r\n\x1a\n not really");
     let plan = planned(&mut broken, "/media/host/tool", X86_64);

@@ -292,6 +292,7 @@ pub struct Plan {
     loader: Option<Loader>,
     arguments: Option<Path>,
     environment: Option<Path>,
+    console: bool,
     leftover: bool,
     total_bytes: u64,
 }
@@ -372,6 +373,17 @@ impl Plan {
     /// The `NAME=value` words the app opens with, if any.
     pub fn environment(&self) -> Option<&[u8]> {
         self.environment.as_ref().map(Path::as_bytes)
+    }
+
+    /// Whether the app opens in a terminal window of its own (D222).
+    pub fn console(&self) -> bool {
+        self.console
+    }
+
+    /// The same plan, the app a console program or not as `console` says, whatever the
+    /// program's own kind (`app install --console`, `--no-console`).
+    pub fn with_console(self, console: bool) -> Self {
+        Self { console, ..self }
     }
 
     /// The same plan, opening the app with the variables `environment` (D176); refused when a
@@ -653,6 +665,7 @@ pub fn plan_entry(
         loader: None,
         arguments: None,
         environment: None,
+        console: !bundle && program::is_console(&head[..length]),
         leftover,
         total_bytes,
     })
@@ -904,6 +917,7 @@ struct Scanned {
     named_after: Path,
     program: Program,
     loader: Option<Loader>,
+    console: bool,
     total: u64,
 }
 
@@ -1097,6 +1111,7 @@ fn scan(
         }
         Err(reason) => return Err(Problem::NotRunnable(reason)),
     };
+    let console = !matches!(role, Role::BundleProgram { .. }) && program::is_console(head);
     let named_after = match role {
         Role::BundleProgram { bundle_end } if program.source == Source::Macos => {
             &entry.name()[..bundle_end]
@@ -1112,6 +1127,7 @@ fn scan(
         named_after: Path::from(named_after).ok_or(Problem::PathTooLong)?,
         program,
         loader,
+        console,
         total,
     })
 }
@@ -1146,6 +1162,7 @@ fn plan_archive(
         loader: scanned.loader,
         arguments: None,
         environment: None,
+        console: scanned.console,
         leftover,
         total_bytes: scanned.total,
     })
@@ -1795,6 +1812,7 @@ impl Installation {
             libraries: libraries.map(text).transpose()?,
             arguments: self.plan.arguments.as_ref().map(text).transpose()?,
             environment: self.plan.environment.as_ref().map(text).transpose()?,
+            console: self.plan.console,
         };
         link_fonts(files, self.plan.name.as_bytes(), &folder)?;
         let mut file = [0u8; manifest::LARGEST];

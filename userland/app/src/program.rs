@@ -92,6 +92,8 @@ mod pe {
     pub const MACHINE: usize = 4;
     pub const CHARACTERISTICS: usize = 22;
     pub const OPTIONAL_MAGIC: usize = 24;
+    pub const SUBSYSTEM: usize = 24 + 68;
+    pub const WINDOWS_GUI: u16 = 2;
     pub const PE32_PLUS: u16 = 0x20b;
     pub const PE32: u16 = 0x10b;
     pub const EXECUTABLE_IMAGE: u16 = 0x0002;
@@ -205,6 +207,24 @@ fn foreign(
         source,
         architecture: built_for,
     })
+}
+
+/// Whether the program at the start of `head` is a console program: a Windows program whose
+/// PE subsystem is not the Windows GUI's, or any other program (a Linux program, a bare macOS
+/// tool). An `.app` bundle's program is decided by its bundle, not here.
+pub fn is_console(head: &[u8]) -> bool {
+    let Some(header) = u32_le(head, pe::NEW_HEADER_OFFSET) else {
+        return true;
+    };
+    let header = header as usize;
+    let signature_end = header.saturating_add(pe::SIGNATURE.len());
+    if head.get(header..signature_end) != Some(pe::SIGNATURE) {
+        return true;
+    }
+    header
+        .checked_add(pe::SUBSYSTEM)
+        .and_then(|at| u16_le(head, at))
+        .is_none_or(|subsystem| subsystem != pe::WINDOWS_GUI)
 }
 
 fn windows(head: &[u8], machine: Architecture) -> Result<Program, NotRunnable> {
@@ -376,7 +396,9 @@ pub(crate) mod samples {
     }
 
     pub fn windows_program(machine: u16) -> Vec<u8> {
-        pe(machine, 0x0022, 0x20b)
+        let mut file = pe(machine, 0x0022, 0x20b);
+        file[0xdc..0xde].copy_from_slice(&2u16.to_le_bytes());
+        file
     }
 
     pub fn elf(class: u8, machine: u16, kind: u16, headers: &[u32]) -> Vec<u8> {
@@ -670,5 +692,15 @@ mod tests {
             architecture: Aarch64,
         };
         assert_eq!(windows.kind(), ("Windows program", Some("ARM64")));
+    }
+
+    #[test]
+    fn a_windows_gui_program_is_no_console_program_and_others_are() {
+        assert!(!is_console(&windows_program(0x8664)));
+        let mut console = pe(0x8664, 0x0022, 0x20b);
+        console[0xdc..0xde].copy_from_slice(&3u16.to_le_bytes());
+        assert!(is_console(&console));
+        assert!(is_console(&elf(2, 0xb7, 2, &[])));
+        assert!(is_console(b"\x7fELF"));
     }
 }

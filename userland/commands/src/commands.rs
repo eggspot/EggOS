@@ -881,6 +881,14 @@ pub const APP_INSTALL: CommandDefinition = CommandDefinition {
             ValueType::Text,
             "NAME=value words set for the app when it opens, separated by spaces (D176).",
         ),
+        long_flag(
+            "console",
+            "Open the app in a terminal window of its own, whatever its program says (D222).",
+        ),
+        long_flag(
+            "no-console",
+            "Open the app without a terminal window, whatever its program says (D222).",
+        ),
         long_flag("window", "Show the installer's window instead of text."),
     ],
     operands: &[operand("path", ValueType::Path, Count::One)],
