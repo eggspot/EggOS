@@ -866,7 +866,7 @@ if ($Mcp -and $NoWindow) {{
 if ($Mcp) {{
     $McpRelay = [PowerShell]::Create()
     [void]$McpRelay.AddScript({{
-        param($Listener)
+        $Listener = $args[0]
         $Client = $Listener.AcceptTcpClient()
         $Listener.Stop()
         $Client.NoDelay = $true
