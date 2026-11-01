@@ -20,6 +20,15 @@ This version's stores offer two components, on x86_64 and aarch64:
 
 riscv64's store is empty.
 
+`run-eggos.sh` and `run-eggos.ps1` attach the store as a read-only disk when it sits beside them
+and matches its line in `SHA256SUMS`; `--no-components` (`-NoComponents`) leaves it out.
+`cargo xtask run` builds the store and attaches it the same way, unless `--no-components`.
+
+The base holds a symbolic link at each layer's path (`/usr/lib/eggos/windows`,
+`/usr/lib/eggos/macos`, and `/bin/windows`) into the folder the component installs to. The link
+leads nowhere until you install the component, so Windows and Mac programs do not start until
+then, and `app install` tells you which component to install.
+
 ## Commands
 
 | Command | MCP tool | What it does |
