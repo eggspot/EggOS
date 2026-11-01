@@ -11177,8 +11177,10 @@ the license, by an explicit instruction recorded here.
   not change.
 - **Not yet.** Writable `MAP_SHARED` of tmpfs and EggFS files with their pages shared and
   written back, and shared mappings that see later writes (part 17 brings tmpfs pages as
-  frames); reading file pages without holding the regions' lock; segments mapped lazily from
-  the file at `execve`; a vDSO; `/proc/self/maps` naming the mapped files (part 16:
+  frames); reading file pages without holding the regions' lock (`execve`'s first-touch
+  segment pages too); segments within the first 1 MiB of a program mapped lazily too (only
+  those past it load on first touch, #149); `ETXTBSY`, so a write to a running program's file
+  changes the pages it has not touched yet; a vDSO; `/proc/self/maps` naming the mapped files (part 16:
   `FilePages` will need a path); Android's `linker64`, untested; the toolkits' libraries
   (part 20); `MAP_POPULATE` of a file mapping (pages are read on first touch).
 
@@ -11822,7 +11824,8 @@ the license, by an explicit instruction recorded here.
   glibc targets linking inside EggOS (a C compiler); cargo with more than one job (milestone
   3); the gaps the job finds against Linux, recorded in the roadmap once it has run; growing a
   work disk that fills; RAM beyond the direct map's reach on riscv64 (Sv48) and the device
-  tree's RAM above the boot direct map on aarch64.
+  tree's RAM above the boot direct map on aarch64; moving the x86_64 trampoline's comments
+  (edited for starting CPUs above 4 GiB, #149) into the docs in the HAL's comment cleanup.
 
 ## D172 A real SDL app installs and runs: Brogue CE through `eggway` with subsurfaces, popups, server-side decorations, cursor shapes and viewports, dynamically linked programs installed with their loader and libraries, and CI's `sdl3` and `sdl-app` jobs (the Real apps track's third step, its first real app; extends D18, D21, D22, D133, D134, D137, D140, D148, D160, D164, D167, D169, D170) — Decided by the build loop (the app, where its pieces come from and how SDL draws without a GPU decided by research)
 - **Why.** The Real apps track (roadmap) checks EggOS against applications people use. Its
@@ -12091,7 +12094,8 @@ the license, by an explicit instruction recorded here.
   aarch64 reference on `ubuntu-24.04-arm`; incremental builds; reopening sockets, event files
   and memory files through `/proc` links, and a pipe opened for reading and writing; deadlock
   detection across open-file-description locks (Linux has none either); the gaps and the
-  times the first run shows, to be recorded in the roadmap; stage 3, EggOS building EggDB.
+  times the first run shows, to be recorded in the roadmap; stage 3, EggOS building EggDB;
+  removing the runner's temporary build folder when its build fails.
 
 ## D174 A real classic Win32 app installs and runs: Pegs from Simon Tatham's Puzzles through ANSI windows, program-made dialogs on `DefDlgProc`, the drop-down list combo box, menu ticks and greying, window placement from the new `GET_PLACEMENT` request, memory device contexts and `BitBlt`, and CI's `win32-app` job (the Real apps track's fourth step, its first Windows app; extends D18, D21, D22, D127, D129, D145, D146, D151, D161, D162, D172) — Decided by the build loop (the app, where it comes from and which architectures it runs on decided by research; the new controls designed by Claude Fable, `docs/ux/windows-controls-v0.3.md` sections 10-19)
 - **Why.** The Real apps track checks EggOS against applications people use. After a Linux SDL
