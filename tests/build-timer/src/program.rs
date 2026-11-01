@@ -1,6 +1,7 @@
 use std::ffi::{CString, c_char, c_int, c_ulong, c_void};
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
@@ -181,7 +182,16 @@ fn timed(
     };
     let milliseconds = started.elapsed().as_millis();
     let code = match &status {
-        Ok(status) => status.code(),
+        Ok(status) => {
+            if let Some(signal) = status.signal() {
+                println!(
+                    "{MARKER} signal {} {signal}{}",
+                    phase.name,
+                    if status.core_dumped() { " core" } else { "" }
+                );
+            }
+            status.code()
+        }
         Err(error) => {
             println!("{MARKER} error {} {error}", phase.name);
             None

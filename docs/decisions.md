@@ -12107,6 +12107,11 @@ the license, by an explicit instruction recorded here.
   build phase); `open`'s hot path gains nothing but a cold call in its `ENOENT` arm
   (`linux_openat_close` shows it); `F_SETLKW` waits record and forget a waiter. The kernel grows
   by the deadlock walk, `pipe::reopen` and `proc::described_file`; the image does not change.
+- **A failed run says why, within 15 minutes** (round 6). A phase whose program a signal
+  ended writes `BUILD-TIMER signal <phase> <number>` (` core` when it dumped core) before its
+  `end` line, whose status is then -1; each boot gets 15 minutes (it was an hour) and the job
+  50 (it was 150): the build takes under a minute in either guest, and a hang held a runner
+  for an hour (CI run 41271268076).
 - **Not yet.** CPU time per phase (`getrusage` is not implemented: EggOS keeps no CPU time per
   process yet, roadmap M4) and parallel efficiency; repeated runs with the minimum reported;
   Linux from a virtio-blk disk with ext4 (its modules from the package) for a disk-to-disk

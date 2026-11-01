@@ -10,7 +10,7 @@ use crate::workspace_build::{DONE_LINE, MARKER, TIMER_PATH, WORK_PATH};
 
 const MEMORY: &str = "4G";
 
-const TIMEOUT: Duration = Duration::from_secs(3600);
+const TIMEOUT: Duration = Duration::from_secs(900);
 
 const MULTI_THREADED_TCG: [&str; 2] = ["-accel", "tcg,thread=multi"];
 

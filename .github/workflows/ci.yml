@@ -425,7 +425,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 150
+    timeout-minutes: 50
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: "0"
