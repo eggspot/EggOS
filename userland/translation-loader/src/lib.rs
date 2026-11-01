@@ -15,10 +15,10 @@ extern crate alloc;
 
 pub mod cache_files;
 pub mod callback_thunks;
-#[cfg(all(target_env = "musl", target_arch = "aarch64"))]
+#[cfg(all(eggos_user, target_arch = "aarch64"))]
 pub mod disk;
 pub mod install_record;
-#[cfg(all(target_env = "musl", target_arch = "aarch64"))]
+#[cfg(all(eggos_user, target_arch = "aarch64"))]
 pub mod installed;
 mod program_headers;
 pub mod trap;

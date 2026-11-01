@@ -161,7 +161,7 @@ pub const HAL_CPU_LOCAL_OFFSET: usize = 8;
 
 /// Where this CPU's `TSS.RSP0` is in a per-CPU block (x86_64).
 #[cfg(target_arch = "x86_64")]
-#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+#[cfg_attr(not(eggos_kernel), allow(dead_code))]
 pub(crate) const TSS_RSP0_OFFSET: usize = HAL_CPU_LOCAL_OFFSET
     + core::mem::offset_of!(HalCpuLocal, x86)
     + core::mem::offset_of!(X86Tables, tss)
@@ -169,19 +169,19 @@ pub(crate) const TSS_RSP0_OFFSET: usize = HAL_CPU_LOCAL_OFFSET
 
 /// Where the program's `rsp` is kept on the way in from `syscall` in a per-CPU block (x86_64).
 #[cfg(target_arch = "x86_64")]
-#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+#[cfg_attr(not(eggos_kernel), allow(dead_code))]
 pub(crate) const USER_RSP_OFFSET: usize = HAL_CPU_LOCAL_OFFSET
     + core::mem::offset_of!(HalCpuLocal, x86)
     + core::mem::offset_of!(X86Tables, user_rsp);
 
 #[cfg(target_arch = "x86_64")]
-#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+#[cfg_attr(not(eggos_kernel), allow(dead_code))]
 pub(crate) const SEGMENT_BASES_ID_OFFSET: usize = HAL_CPU_LOCAL_OFFSET
     + core::mem::offset_of!(HalCpuLocal, x86)
     + core::mem::offset_of!(X86Tables, segment_bases_id);
 
 /// Where the x86_64 timer's deadline is in a per-CPU block.
 #[cfg(target_arch = "x86_64")]
-#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+#[cfg_attr(not(eggos_kernel), allow(dead_code))]
 pub(crate) const TIMER_DEADLINE_OFFSET: usize =
     HAL_CPU_LOCAL_OFFSET + core::mem::offset_of!(HalCpuLocal, timer_deadline);

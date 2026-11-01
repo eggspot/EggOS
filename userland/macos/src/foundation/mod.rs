@@ -6,41 +6,41 @@
 
 pub mod string_text;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod array;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod bundle;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod constants;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod data;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod date;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod description;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod dictionary;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod error;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod exception;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod log;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod number;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod process_info;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod set;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod string;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod timer;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub use runtime::*;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod runtime {
     use super::{
         array, bundle, constants, data, date, dictionary, error, exception, log, number,

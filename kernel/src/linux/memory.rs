@@ -42,13 +42,10 @@ pub mod prot {
     pub const READ: u64 = 0x1;
     pub const WRITE: u64 = 0x2;
     pub const EXEC: u64 = 0x4;
-    /// AArch64's branch-target pages: accepted and not enforced, as on a CPU without BTI.
-    #[cfg(target_arch = "aarch64")]
-    pub const BTI: u64 = 0x10;
-    #[cfg(target_arch = "aarch64")]
-    pub(super) const KNOWN: u64 = READ | WRITE | EXEC | BTI;
-    #[cfg(not(target_arch = "aarch64"))]
-    pub(super) const KNOWN: u64 = READ | WRITE | EXEC;
+    /// The architecture's own bits (AArch64's branch-target pages, `PROT_BTI`): accepted and
+    /// not enforced, as on a CPU without them.
+    pub const ARCH: u64 = crate::linux::abi::mmap::PROT_ARCH;
+    pub(super) const KNOWN: u64 = READ | WRITE | EXEC | ARCH;
 }
 
 /// `flags` bits, the same on every architecture EggOS runs but for `MAP_32BIT`.
@@ -60,9 +57,8 @@ pub mod map {
     pub const TYPE: u64 = 0x0f;
     pub const FIXED: u64 = 0x10;
     pub const ANONYMOUS: u64 = 0x20;
-    /// x86_64 only: somewhere in the second gigabyte.
-    #[cfg(target_arch = "x86_64")]
-    pub const BIT32: u64 = 0x40;
+    /// Somewhere in the second gigabyte (`MAP_32BIT`): x86_64 only, 0 elsewhere.
+    pub const BIT32: u64 = crate::linux::abi::mmap::MAP_32BIT;
     pub const GROWSDOWN: u64 = 0x100;
     pub const DENYWRITE: u64 = 0x800;
     pub const EXECUTABLE: u64 = 0x1000;
@@ -88,21 +84,11 @@ pub mod map {
         | STACK
         | HUGETLB
         | FIXED_NOREPLACE
-        | ARCH_KNOWN;
-    #[cfg(target_arch = "x86_64")]
-    const ARCH_KNOWN: u64 = BIT32;
-    #[cfg(not(target_arch = "x86_64"))]
-    const ARCH_KNOWN: u64 = 0;
+        | BIT32;
 
     /// Whether `flags` asks for `MAP_32BIT`, which only x86_64 has.
     pub(super) fn wants_32_bit(flags: u64) -> bool {
-        #[cfg(target_arch = "x86_64")]
-        return flags & BIT32 != 0;
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            let _ = flags;
-            false
-        }
+        crate::linux::abi::mmap::wants_32_bit(flags)
     }
 }
 

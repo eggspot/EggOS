@@ -4,9 +4,9 @@
 //! calls [`kernel_main`]. On the development host it is only a stub, so `cargo build` works
 //! everywhere.
 
-#![cfg_attr(target_os = "none", no_std, no_main)]
+#![cfg_attr(eggos_kernel, no_std, no_main)]
 
-#[cfg(target_os = "none")]
+#[cfg(eggos_kernel)]
 mod bare_metal {
     use core::fmt::Write;
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -100,7 +100,7 @@ mod bare_metal {
     }
 }
 
-#[cfg(not(target_os = "none"))]
+#[cfg(not(eggos_kernel))]
 fn main() {
     eprintln!("eggos-kernel is a bare-metal binary: build and boot it with `cargo xtask qemu`.");
     std::process::exit(1);

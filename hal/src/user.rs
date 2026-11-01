@@ -45,7 +45,7 @@ pub struct UserContext {
     pub(crate) arch: x86_64::Registers,
     /// Host builds: the exception a test platform's `run_user` last returned
     /// ([`Self::simulate_exception`]), which [`Self::last_exception`] reports.
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(eggos_kernel))]
     simulated_exception: Option<Exception>,
 }
 
@@ -55,7 +55,7 @@ impl UserContext {
     pub fn new(pc: u64, stack: u64) -> Self {
         Self {
             arch: Registers::new(pc, stack),
-            #[cfg(not(target_os = "none"))]
+            #[cfg(not(eggos_kernel))]
             simulated_exception: None,
         }
     }
@@ -145,11 +145,11 @@ impl UserContext {
     /// `run_user` with this context replaces it, so it holds across preemption, a move to
     /// another CPU and the kernel's own exceptions, unlike the CPU's cause registers.
     pub fn last_exception(&self) -> Exception {
-        #[cfg(target_os = "none")]
+        #[cfg(eggos_kernel)]
         {
             self.arch.last_exception()
         }
-        #[cfg(not(target_os = "none"))]
+        #[cfg(not(eggos_kernel))]
         {
             self.simulated_exception
                 .expect("the test platform's run_user returned no exception")
@@ -171,7 +171,7 @@ impl UserContext {
 pub struct InvalidThreadPointer;
 
 /// Host builds only: for a test platform that stands in for the CPU in the kernel's host tests.
-#[cfg(not(target_os = "none"))]
+#[cfg(not(eggos_kernel))]
 impl UserContext {
     /// The value the program's last system call returns ([`Self::set_syscall_result`]).
     pub fn syscall_result(&self) -> u64 {
@@ -516,11 +516,11 @@ pub(crate) mod aarch64 {
             self.elr = registers.pc;
             self.spsr = registers.pstate;
         }
-        #[cfg(not(target_os = "none"))]
+        #[cfg(not(eggos_kernel))]
         pub(crate) fn result(&self) -> u64 {
             self.x[0]
         }
-        #[cfg(not(target_os = "none"))]
+        #[cfg(not(eggos_kernel))]
         pub(crate) fn simulate_syscall(&mut self, number: u64, arguments: [u64; 6], pc: u64) {
             self.x[8] = number;
             self.x[..6].copy_from_slice(&arguments);
@@ -618,11 +618,11 @@ pub(crate) mod riscv64 {
             self.x[0] = 0;
             self.pc = registers.pc;
         }
-        #[cfg(not(target_os = "none"))]
+        #[cfg(not(eggos_kernel))]
         pub(crate) fn result(&self) -> u64 {
             self.x[10]
         }
-        #[cfg(not(target_os = "none"))]
+        #[cfg(not(eggos_kernel))]
         pub(crate) fn simulate_syscall(&mut self, number: u64, arguments: [u64; 6], pc: u64) {
             self.x[17] = number;
             self.x[10..16].copy_from_slice(&arguments);
@@ -677,7 +677,7 @@ pub(crate) mod x86_64 {
         core::sync::atomic::AtomicU64::new(1);
 
     /// [`Registers::vector`] after a `syscall`: above every IDT vector.
-    #[cfg_attr(not(target_os = "none"), allow(dead_code))]
+    #[cfg_attr(not(eggos_kernel), allow(dead_code))]
     pub(crate) const SYSCALL_VECTOR: u64 = 0x100;
     /// [`Registers::vector`] for a context entered with `iretq`, which loads every register:
     /// a program that has not run yet, or one whose registers were all set
@@ -859,11 +859,11 @@ pub(crate) mod x86_64 {
             self.rflags = registers.rflags;
             self.vector = RESTORE_ALL_VECTOR;
         }
-        #[cfg(not(target_os = "none"))]
+        #[cfg(not(eggos_kernel))]
         pub(crate) fn result(&self) -> u64 {
             self.rax
         }
-        #[cfg(not(target_os = "none"))]
+        #[cfg(not(eggos_kernel))]
         pub(crate) fn simulate_syscall(&mut self, number: u64, arguments: [u64; 6], pc: u64) {
             self.rax = number;
             [self.rdi, self.rsi, self.rdx, self.r10, self.r8, self.r9] = arguments;

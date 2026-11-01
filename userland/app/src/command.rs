@@ -285,7 +285,7 @@ pub fn translation_lines(record: &Record<'_>, mut each: impl FnMut(&str)) {
     }
 }
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod program {
     use super::*;
     use crate::architecture::Architecture;
@@ -819,7 +819,7 @@ mod program {
     }
 }
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub use program::run;
 
 #[cfg(test)]

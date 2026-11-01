@@ -8,6 +8,7 @@ use crate::terminal;
 use eggos_drivers::dma::DmaMemory;
 use eggos_drivers::input::{AxisRange, key, scale_to_screen};
 use eggos_drivers::virtio::device_type;
+use eggos_hal::arch::TestMachine;
 use eggos_hal::paging::{Format, MemoryType};
 use eggos_hal::{PhysicalRange, Platform};
 
@@ -136,8 +137,8 @@ pub(crate) fn devices_are_discovered<P: Platform>(
 ) -> Result<(), &'static str> {
     let found = devices();
     no_normal_alias(memory, &found)?;
-    let machine = if cfg!(all(target_os = "none", target_arch = "aarch64")) {
-        virtio_mmio_slots(&found, 32).and_then(|()| {
+    let machine = match eggos_hal::arch::TEST_MACHINE {
+        Some(TestMachine::ArmVirt) => virtio_mmio_slots(&found, 32).and_then(|()| {
             let gic = found
                 .iter()
                 .any(|node| compatible(node, b"arm,cortex-a15-gic"));
@@ -145,19 +146,16 @@ pub(crate) fn devices_are_discovered<P: Platform>(
             (gic && uart)
                 .then_some(())
                 .ok_or("the device tree did not give the GIC and the PL011")
-        })
-    } else if cfg!(all(target_os = "none", target_arch = "riscv64")) {
-        virtio_mmio_slots(&found, 8).and_then(|()| {
+        }),
+        Some(TestMachine::RiscvVirt) => virtio_mmio_slots(&found, 8).and_then(|()| {
             found
                 .iter()
                 .any(|node| compatible(node, b"riscv,plic0"))
                 .then_some(())
                 .ok_or("the device tree did not give the PLIC")
-        })
-    } else if cfg!(all(target_os = "none", target_arch = "x86_64")) {
-        q35_functions(&found)
-    } else {
-        return Ok(());
+        }),
+        Some(TestMachine::Q35) => q35_functions(&found),
+        None => return Ok(()),
     };
     machine?;
     if cfg!(feature = "virtio") && virtio_devices(&found, device_type::ENTROPY) != 1 {
@@ -218,7 +216,7 @@ fn expected_input_events(width: u32, height: u32) -> [InputEvent; 7] {
 pub(crate) fn input_devices_deliver_events<P: Platform>(
     _memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
-    if !cfg!(all(target_os = "none", feature = "virtio-input")) {
+    if !cfg!(all(eggos_kernel, feature = "virtio-input")) {
         return Ok(());
     }
     let summary = input::summary();
@@ -264,7 +262,7 @@ pub(crate) fn virtio_rng_returns_bytes<P: Platform>() -> Result<(), &'static str
     let mut second = [0u8; 32];
     let mut deadline = super::Deadline::after::<P>(1000);
     let read = super::virtio::read_random(&mut first, &mut deadline);
-    if read.is_none() && !cfg!(target_os = "none") {
+    if read.is_none() && !cfg!(eggos_kernel) {
         return Ok(());
     }
     if read != Some(32) || super::virtio::read_random(&mut second, &mut deadline) != Some(32) {
@@ -286,7 +284,7 @@ pub(crate) fn display_shows_the_first_frame<P: Platform>(
     _memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     let Some(mode) = display::mode() else {
-        return match cfg!(all(target_os = "none", feature = "virtio-gpu")) {
+        return match cfg!(all(eggos_kernel, feature = "virtio-gpu")) {
             true => Err("there is no display (no virtio GPU found?)"),
             false => Ok(()),
         };
@@ -331,7 +329,7 @@ pub(crate) fn terminal_draws_on_the_display<P: Platform>(
     _memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     if display::mode().is_none() {
-        return match cfg!(all(target_os = "none", feature = "virtio-gpu")) {
+        return match cfg!(all(eggos_kernel, feature = "virtio-gpu")) {
             true => Err("there is no display (no virtio GPU found?)"),
             false => Ok(()),
         };
@@ -395,7 +393,7 @@ pub(crate) fn dma_regions_are_zeroed_and_freed_after_reset<P: Platform>(
 fn reset_and_reinitialize_the_entropy_device<P: Platform>(before: u64) -> Result<(), &'static str> {
     use eggos_drivers::virtio::rng::{MEMORY_BYTES, VirtioRng};
     let Some(rng) = super::virtio::take_rng() else {
-        return match cfg!(target_os = "none") {
+        return match cfg!(eggos_kernel) {
             true => Err("there is no virtio entropy device to reset"),
             false => Ok(()),
         };

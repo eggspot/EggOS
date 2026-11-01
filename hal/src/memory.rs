@@ -230,12 +230,12 @@ impl MemoryMap {
 #[inline]
 pub unsafe fn zero(start: *mut u8, length: usize) {
     // SAFETY: guaranteed by the caller.
-    #[cfg(target_os = "none")]
+    #[cfg(eggos_kernel)]
     unsafe {
         crate::arch::zero(start, length)
     };
     // SAFETY: guaranteed by the caller.
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(eggos_kernel))]
     unsafe {
         zero_by_lines(start, length)
     };
@@ -247,9 +247,9 @@ pub unsafe fn zero(start: *mut u8, length: usize) {
 /// a compiler fence on x86_64, a full fence in host builds.
 #[inline]
 pub fn doorbell_barrier() {
-    #[cfg(target_os = "none")]
+    #[cfg(eggos_kernel)]
     crate::arch::doorbell_barrier();
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(eggos_kernel))]
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 }
 

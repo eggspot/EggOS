@@ -23,7 +23,7 @@ pub const INITIAL_FRAME_MAX: usize = 128;
 /// # Safety
 /// The `frame.len()` words below `stack_top` rounded down to 16 must be writable memory that
 /// nothing else uses.
-#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+#[cfg_attr(not(eggos_kernel), allow(dead_code))]
 pub(crate) unsafe fn write_initial_frame(stack_top: usize, frame: &[usize]) -> usize {
     debug_assert!(size_of_val(frame) <= INITIAL_FRAME_MAX);
     let start = (stack_top & !15) - size_of_val(frame);

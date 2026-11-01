@@ -10,7 +10,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod application;
 pub mod canvas;
 pub mod colour;
@@ -22,7 +22,7 @@ pub mod panel;
 pub mod text;
 pub mod tree;
 pub mod widget;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod window;
 
 pub use eggos_element_tree as elements;

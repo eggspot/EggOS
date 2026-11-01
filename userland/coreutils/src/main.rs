@@ -8,109 +8,109 @@
 //! host tests against a fake; `linux.rs` makes the system calls. docs/coreutils.md describes
 //! what each utility does.
 
-#![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(eggos_user, no_std, no_main)]
 
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod agent;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod agentlog;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod cat;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod chmod;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod clip;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod date;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod device;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod df;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod disk;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod echo;
 #[cfg(test)]
 mod examples;
 #[cfg(test)]
 mod fake;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod fetch;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod file_changes;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod grep;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod head;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod help;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod hwclock;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod ip;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod kill;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod lines;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod links;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod linux;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod logcat;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod ls;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod network;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod nslookup;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod options;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod output;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod page;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod ping;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod power;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod processes;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod properties;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod sleep;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod system;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod taskset;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod tee;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod trash;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod uname;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod utilities;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod wc;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod window_capture;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod window_desktop;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod window_input;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod window_menu;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod window_tree;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod wm;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod zone;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 eggos_runtime::main!(linux::run);
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(eggos_user))]
 fn main() {}

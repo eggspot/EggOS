@@ -1,5 +1,5 @@
 //! One module per CPU architecture. Each is compiled only for its own bare-metal target
-//! (`target_os = "none"`), so host builds and tests never see architecture code.
+//! (`cfg(eggos_kernel)`), so host builds and tests never see architecture code.
 //!
 //! An architecture module provides the boot entry point (`_start`, or `_start32` on x86_64,
 //! which zeroes `.bss`, builds the boot page tables and jumps to the kernel's virtual address
@@ -15,41 +15,41 @@
 //! also reports the free physical memory (see [`crate::MemoryMap`];
 //! the shared parts of building it are in `boot_memory`).
 
-#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub mod aarch64;
-#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub use aarch64::Aarch64 as CurrentPlatform;
-#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub(crate) use aarch64::KERNEL_VIRTUAL_OFFSET;
-#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub(crate) use aarch64::doorbell_barrier;
-#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub(crate) use aarch64::zero;
 
-#[cfg(all(target_os = "none", target_arch = "riscv64"))]
+#[cfg(all(eggos_kernel, target_arch = "riscv64"))]
 pub mod riscv64;
-#[cfg(all(target_os = "none", target_arch = "riscv64"))]
+#[cfg(all(eggos_kernel, target_arch = "riscv64"))]
 pub(crate) use riscv64::KERNEL_VIRTUAL_OFFSET;
-#[cfg(all(target_os = "none", target_arch = "riscv64"))]
+#[cfg(all(eggos_kernel, target_arch = "riscv64"))]
 pub use riscv64::Riscv64 as CurrentPlatform;
-#[cfg(all(target_os = "none", target_arch = "riscv64"))]
+#[cfg(all(eggos_kernel, target_arch = "riscv64"))]
 pub(crate) use riscv64::doorbell_barrier;
-#[cfg(all(target_os = "none", target_arch = "riscv64"))]
+#[cfg(all(eggos_kernel, target_arch = "riscv64"))]
 pub(crate) use riscv64::zero;
 
-#[cfg(all(target_os = "none", target_arch = "x86_64"))]
+#[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub mod x86_64;
-#[cfg(all(target_os = "none", target_arch = "x86_64"))]
+#[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub(crate) use x86_64::KERNEL_VIRTUAL_OFFSET;
-#[cfg(all(target_os = "none", target_arch = "x86_64"))]
+#[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub use x86_64::X86_64 as CurrentPlatform;
-#[cfg(all(target_os = "none", target_arch = "x86_64"))]
+#[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub(crate) use x86_64::doorbell_barrier;
-#[cfg(all(target_os = "none", target_arch = "x86_64"))]
+#[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub(crate) use x86_64::zero;
 
 #[cfg(all(
-    target_os = "none",
+    eggos_kernel,
     not(any(
         target_arch = "aarch64",
         target_arch = "riscv64",
@@ -58,5 +58,29 @@ pub(crate) use x86_64::zero;
 ))]
 compile_error!("EggOS has no HAL module for this architecture yet (see docs/roadmap.md)");
 
-#[cfg(target_os = "none")]
+/// The QEMU machines the kernel's self-tests boot on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestMachine {
+    /// AArch64's `virt` with a GICv2 and a PL011.
+    ArmVirt,
+    /// RISC-V's `virt` with a PLIC.
+    RiscvVirt,
+    /// x86_64's `q35`.
+    Q35,
+}
+
+/// The machine this kernel's self-tests expect; `None` in host builds.
+#[cfg(all(eggos_kernel, target_arch = "aarch64"))]
+pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::ArmVirt);
+/// The machine this kernel's self-tests expect; `None` in host builds.
+#[cfg(all(eggos_kernel, target_arch = "riscv64"))]
+pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::RiscvVirt);
+/// The machine this kernel's self-tests expect; `None` in host builds.
+#[cfg(all(eggos_kernel, target_arch = "x86_64"))]
+pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::Q35);
+/// The machine this kernel's self-tests expect; `None` in host builds.
+#[cfg(not(eggos_kernel))]
+pub const TEST_MACHINE: Option<TestMachine> = None;
+
+#[cfg(eggos_kernel)]
 pub(crate) mod boot_memory;

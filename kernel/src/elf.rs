@@ -18,12 +18,7 @@ pub mod machine {
     pub const RISCV: u16 = 243;
 
     /// The machine the kernel runs on: the only one whose programs it runs natively (D17).
-    #[cfg(target_arch = "x86_64")]
-    pub const NATIVE: u16 = X86_64;
-    #[cfg(target_arch = "aarch64")]
-    pub const NATIVE: u16 = AARCH64;
-    #[cfg(target_arch = "riscv64")]
-    pub const NATIVE: u16 = RISCV;
+    pub const NATIVE: u16 = crate::linux::abi::ELF_MACHINE;
 }
 
 /// Program header types (`p_type`) the loader looks at.

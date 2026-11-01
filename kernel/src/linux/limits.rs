@@ -94,13 +94,6 @@ pub mod resource {
     pub const RTTIME: u32 = 15;
     /// How many resources there are (`RLIM_NLIMITS`).
     pub const COUNT: usize = 16;
-
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "riscv64",
-        target_arch = "x86_64"
-    )))]
-    compile_error!("check Linux's RLIMIT_* numbers for this architecture");
 }
 
 /// The most file descriptors a process may be allowed (Linux's `fs.nr_open` default): a higher

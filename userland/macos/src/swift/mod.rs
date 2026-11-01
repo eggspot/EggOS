@@ -20,47 +20,47 @@ pub mod refcount;
 pub mod string_index;
 pub mod string_object;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod cast;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod characters;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod conformance;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod entry;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod failures;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod generic;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod heap_object;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod metadata;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod overlays;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod print;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod protocols;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod standard_protocols;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod storage;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod string;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod swift_object;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod type_lookup;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod type_name;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod weak;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub use runtime::*;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod runtime {
     use super::{
         cast, characters, conformance, failures, heap_object, metadata, overlays, print, protocols,

@@ -18,7 +18,7 @@
 //! read by `cxx_data.rs`; `user_shared_data.rs` lays out the page Windows shares with every
 //! process.
 
-#![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(eggos_user, no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
 
 #[cfg(any(test, all(runs_windows_programs, target_arch = "aarch64")))]
@@ -114,10 +114,10 @@ mod write_execute;
 #[cfg(runs_windows_programs)]
 eggos_runtime::main!(start::run);
 
-#[cfg(all(target_env = "musl", not(runs_windows_programs)))]
+#[cfg(all(eggos_user, not(runs_windows_programs)))]
 eggos_runtime::main!(unsupported);
 
-#[cfg(all(target_env = "musl", not(runs_windows_programs)))]
+#[cfg(all(eggos_user, not(runs_windows_programs)))]
 fn unsupported(_: &eggos_runtime::startup::Startup) -> i32 {
     eggos_runtime::syscall::write_all(
         2,
@@ -126,5 +126,5 @@ fn unsupported(_: &eggos_runtime::startup::Startup) -> i32 {
     126
 }
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(eggos_user))]
 fn main() {}

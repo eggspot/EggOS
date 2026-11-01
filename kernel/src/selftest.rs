@@ -962,8 +962,7 @@ fn processes_keep_their_fp_registers<P: Platform>(
     const CALLS: u64 = 20;
     /// An exit other than the program's system calls, or a report of changed registers.
     const WRONG: u64 = u64::MAX;
-    #[cfg(all(target_os = "none", target_arch = "x86_64"))]
-    if programs_see_xsave_or_protection_keys() {
+    if eggos_hal::fp::programs_see_unswitched_state() {
         return Err("programs see XSAVE or protection keys, whose state is never switched");
     }
     let mut threads = Vec::new();
@@ -1017,15 +1016,6 @@ fn processes_keep_their_fp_registers<P: Platform>(
         }
     }
     result
-}
-
-#[cfg(all(target_os = "none", target_arch = "x86_64"))]
-fn programs_see_xsave_or_protection_keys() -> bool {
-    use core::arch::x86_64::{__cpuid, __cpuid_count};
-    const CPUID_1_ECX_OSXSAVE: u32 = 1 << 27;
-    const CPUID_7_ECX_OSPKE: u32 = 1 << 4;
-    __cpuid(1).ecx & CPUID_1_ECX_OSXSAVE != 0
-        || (__cpuid(0).eax >= 7 && __cpuid_count(7, 0).ecx & CPUID_7_ECX_OSPKE != 0)
 }
 
 /// Has every other CPU's idle thread look again until none keeps an ended process's address
@@ -1837,12 +1827,12 @@ struct RustProgram {
 }
 
 static NO_STD_PROGRAM: RustProgram = RustProgram {
-    #[cfg(all(target_os = "none", feature = "qemu-test"))]
+    #[cfg(all(eggos_kernel, feature = "qemu-test"))]
     image: Some(include_bytes!(env!(
         "EGGOS_USERLAND_SELFTEST",
         "build kernels with qemu-test through cargo xtask, which builds userland/selftest first"
     ))),
-    #[cfg(not(all(target_os = "none", feature = "qemu-test")))]
+    #[cfg(not(all(eggos_kernel, feature = "qemu-test")))]
     image: None,
     path: b"/eggos-selftest",
     arguments_after_path: &[],
@@ -1857,12 +1847,12 @@ static NO_STD_PROGRAM: RustProgram = RustProgram {
 };
 
 static STD_PROGRAM: RustProgram = RustProgram {
-    #[cfg(all(target_os = "none", feature = "qemu-test"))]
+    #[cfg(all(eggos_kernel, feature = "qemu-test"))]
     image: Some(include_bytes!(env!(
         "EGGOS_USERLAND_STD_SELFTEST",
         "build kernels with qemu-test through cargo xtask, which builds userland/std-selftest first"
     ))),
-    #[cfg(not(all(target_os = "none", feature = "qemu-test")))]
+    #[cfg(not(all(eggos_kernel, feature = "qemu-test")))]
     image: None,
     path: b"/eggos-std-selftest",
     arguments_after_path: &[b"first", b"second"],

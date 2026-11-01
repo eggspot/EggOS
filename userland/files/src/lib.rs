@@ -16,7 +16,7 @@ pub mod listing;
 #[cfg(any(test, feature = "memory"))]
 pub mod memory;
 pub mod names;
-#[cfg(all(feature = "window", target_env = "musl"))]
+#[cfg(all(feature = "window", eggos_user))]
 pub mod program;
 #[cfg(feature = "storage")]
 pub mod storage;

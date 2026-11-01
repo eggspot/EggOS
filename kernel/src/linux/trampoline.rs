@@ -25,24 +25,10 @@ use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Attributes;
 
 /// The trampoline's code on the architecture: `None` where handlers need `SA_RESTORER`.
-const CODE: Option<&[u8]> = if cfg!(target_arch = "aarch64") {
-    Some(&[
-        0x1f, 0x20, 0x03, 0xd5, // nop
-        0x68, 0x11, 0x80, 0xd2, // mov x8, #139 (rt_sigreturn)
-        0x01, 0x00, 0x00, 0xd4, // svc #0
-    ])
-} else if cfg!(target_arch = "riscv64") {
-    Some(&[
-        0x13, 0x00, 0x00, 0x00, // nop
-        0x93, 0x08, 0xb0, 0x08, // li a7, 139 (rt_sigreturn)
-        0x73, 0x00, 0x00, 0x00, // ecall
-    ])
-} else {
-    None
-};
+pub const CODE: Option<&[u8]> = crate::linux::abi::SIGRETURN_TRAMPOLINE;
 
 /// Where handlers return to in the page: the call, after the `nop`.
-const ENTRY: u64 = 4;
+pub const ENTRY: u64 = 4;
 
 /// How many pages at the bottom of the stack's guard gap the trampoline may take, lowest
 /// first: enough for threads racing for their first handler, and a small part of the gap, so
@@ -96,15 +82,12 @@ mod tests {
             .iter()
             .map(|&word| u32::from_le_bytes(word))
             .collect();
-        if cfg!(target_arch = "aarch64") {
-            // `movz x8, #139` and `svc #0`.
-            assert_eq!(
-                words,
-                [0xd503_201f, 0xd280_0000 | 139 << 5 | 8, 0xd400_0001]
-            );
-        } else {
-            // `addi a7, zero, 139` and `ecall`.
-            assert_eq!(words, [0x13, 139 << 20 | 17 << 7 | 0x13, 0x73]);
-        }
+        let aarch64_movz_x8_139_svc_0 = [0xd503_201f, 0xd280_0000 | 139 << 5 | 8, 0xd400_0001];
+        let riscv_addi_a7_zero_139_ecall = [0x13, 139 << 20 | 17 << 7 | 0x13, 0x73];
+        let expected = match crate::linux::abi::MACHINE {
+            "aarch64" => aarch64_movz_x8_139_svc_0,
+            _ => riscv_addi_a7_zero_139_ecall,
+        };
+        assert_eq!(words, expected);
     }
 }

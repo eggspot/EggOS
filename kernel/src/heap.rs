@@ -277,7 +277,7 @@ impl Heap {
 /// a reservation: CPUs growing at once may each pass it, which the reserve's size absorbs. On
 /// the host, where the heap is not the global allocator, always true.
 pub fn may_grow_for_user(bytes: usize) -> bool {
-    if cfg!(target_os = "none") {
+    if cfg!(eggos_kernel) {
         memory::user_may_take_frames((bytes as u64).div_ceil(FRAME_SIZE))
     } else {
         true

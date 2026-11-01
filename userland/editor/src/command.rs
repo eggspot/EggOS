@@ -37,7 +37,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
     }
 }
 
-#[cfg(all(feature = "window", target_env = "musl"))]
+#[cfg(all(feature = "window", eggos_user))]
 mod program {
     use super::*;
     use crate::document::TEXT_CAPACITY;
@@ -175,7 +175,7 @@ mod program {
     }
 }
 
-#[cfg(all(feature = "window", target_env = "musl"))]
+#[cfg(all(feature = "window", eggos_user))]
 pub use program::run;
 
 #[cfg(test)]

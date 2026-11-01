@@ -9,37 +9,37 @@
 //! `functions.rs` (D182), its jobs in `jobs.rs`, line editing and history at the prompt in
 //! `editor.rs`, all pure logic with host tests; `system.rs` makes the system calls.
 
-#![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(eggos_user, no_std, no_main)]
 
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod arguments;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod editor;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod functions;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod glob;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod jobs;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod path;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod pattern;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod shell;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod status;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod syntax;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod system;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod test;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod variables;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 eggos_runtime::main!(system::run);
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(eggos_user))]
 fn main() {}

@@ -72,10 +72,7 @@ pub struct InterruptMessage {
 /// one (GIC ids of devices start at 32, PLIC sources at 1), so 0 marks a free line.
 #[cfg(any(
     test,
-    all(
-        target_os = "none",
-        any(target_arch = "aarch64", target_arch = "riscv64")
-    )
+    all(eggos_kernel, any(target_arch = "aarch64", target_arch = "riscv64"))
 ))]
 #[derive(Debug)]
 pub(crate) struct SourceLines {
@@ -84,10 +81,7 @@ pub(crate) struct SourceLines {
 
 #[cfg(any(
     test,
-    all(
-        target_os = "none",
-        any(target_arch = "aarch64", target_arch = "riscv64")
-    )
+    all(eggos_kernel, any(target_arch = "aarch64", target_arch = "riscv64"))
 ))]
 impl SourceLines {
     pub(crate) const fn new() -> Self {
@@ -137,7 +131,7 @@ impl SourceLines {
     }
 }
 
-#[cfg(target_os = "none")]
+#[cfg(eggos_kernel)]
 unsafe extern "Rust" {
     /// Defined by the kernel binary with exactly this signature (Rust ABI), which makes declaring
     /// it `safe` sound. Returns to resume the interrupted code.
@@ -145,7 +139,7 @@ unsafe extern "Rust" {
 }
 
 /// Hands `interrupt` to the kernel.
-#[cfg(target_os = "none")]
+#[cfg(eggos_kernel)]
 pub(crate) fn deliver(interrupt: Interrupt) {
     kernel_interrupt(interrupt);
 }

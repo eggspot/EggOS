@@ -394,8 +394,18 @@ const USER_PROGRAMS: [UserProgram; 2] = [
     },
 ];
 
-const RUNTIME_PROGRAM_RUSTFLAGS: &[&str] =
-    &["-C", "link-self-contained=no", "-C", "relocation-model=pie"];
+const RUNTIME_PROGRAM_RUSTFLAGS: &[&str] = &[
+    "-C",
+    "link-self-contained=no",
+    "-C",
+    "relocation-model=pie",
+    "--cfg",
+    USER_CFG,
+];
+
+/// The `--cfg` every EggOS user build carries (D217): it replaces `.cargo/config.toml`'s target
+/// `rustflags`, which `CARGO_ENCODED_RUSTFLAGS` overrides.
+pub const USER_CFG: &str = "eggos_user";
 
 const INIT_RUSTFLAGS: &[&str] = &[
     "-C",
@@ -406,6 +416,8 @@ const INIT_RUSTFLAGS: &[&str] = &[
     "debuginfo=0",
     "-C",
     "strip=symbols",
+    "--cfg",
+    USER_CFG,
 ];
 
 const INIT_PATH: &str = "init";
@@ -534,6 +546,8 @@ const STD_PROGRAM_RUSTFLAGS: &[&str] = &[
     "debuginfo=0",
     "-C",
     "strip=symbols",
+    "--cfg",
+    USER_CFG,
 ];
 
 fn main() -> ExitCode {
@@ -2068,6 +2082,8 @@ fn build_linux_test_program(
         "debuginfo=0",
         "-C",
         "strip=symbols",
+        "--cfg",
+        USER_CFG,
     ]
     .join("\x1f");
     let target_dir = target_directory().join(format!(

@@ -465,18 +465,18 @@ impl FileSystem for Initramfs {
 /// named by `EGGOS_INITRAMFS` for kernel builds; a small fixed archive for host tests, and an
 /// empty one for other host builds.
 pub fn embedded() -> &'static [u8] {
-    #[cfg(target_os = "none")]
+    #[cfg(eggos_kernel)]
     {
         include_bytes!(env!(
             "EGGOS_INITRAMFS",
             "build kernels through cargo xtask, which builds the initramfs archive first"
         ))
     }
-    #[cfg(all(not(target_os = "none"), test))]
+    #[cfg(all(not(eggos_kernel), test))]
     {
         tests::host_archive()
     }
-    #[cfg(all(not(target_os = "none"), not(test)))]
+    #[cfg(all(not(eggos_kernel), not(test)))]
     {
         &[]
     }

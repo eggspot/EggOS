@@ -88,7 +88,7 @@ pub mod flag {
 
 /// Whether the architecture's `struct sigaction` has a `sa_restorer` field: RISC-V's does not
 /// (its handlers return through the vDSO).
-pub const HAS_RESTORER: bool = !cfg!(target_arch = "riscv64");
+pub const HAS_RESTORER: bool = crate::linux::abi::SIGACTION_HAS_RESTORER;
 
 /// The size of the kernel's `struct sigaction` on the architecture: handler, flags, restorer
 /// (if [`HAS_RESTORER`]) and mask, each a 64-bit word.
@@ -512,11 +512,7 @@ mod stack_flag {
 
 /// The smallest alternate stack (`MINSIGSTKSZ`): room for the kernel's largest signal frame on
 /// the architecture. Programs read it as `AT_MINSIGSTKSZ` too.
-pub const MIN_STACK_SIZE: u64 = if cfg!(target_arch = "aarch64") {
-    5120
-} else {
-    2048
-};
+pub const MIN_STACK_SIZE: u64 = crate::linux::abi::MIN_SIGNAL_STACK_SIZE;
 const _: () = assert!(signal_frame::LARGEST_FRAME_SPACE <= MIN_STACK_SIZE);
 
 impl AlternateStack {
@@ -2300,7 +2296,7 @@ pub fn rt_sigsuspend<P: Platform>(
 /// `pause()`, with the program's registers `context`: waits, with the thread's mask, until a
 /// signal starts its handler, then fails with `EINTR`, as [`rt_sigsuspend`] does. x86_64 only:
 /// AArch64's and RISC-V's C libraries call `rt_sigsuspend` with the current mask instead.
-#[cfg(target_arch = "x86_64")]
+#[cfg(linux_abi_legacy_calls)]
 pub fn pause<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,

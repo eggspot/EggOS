@@ -11,6 +11,7 @@ repository = "https://github.com/eggspot/EggOS"
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_debug_implementations = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(eggos_kernel)", "cfg(eggos_user)"] }
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "deny"

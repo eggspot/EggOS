@@ -53,14 +53,14 @@ pub struct Exception {
 
 // The kernel binary defines `kernel_exception` with exactly this signature (Rust ABI), which is
 // what makes declaring it `safe` sound.
-#[cfg(target_os = "none")]
+#[cfg(eggos_kernel)]
 unsafe extern "Rust" {
     /// Defined by the kernel binary. Returns to resume the interrupted code, or never returns.
     safe fn kernel_exception(exception: &Exception);
 }
 
 /// Hands `exception` to the kernel. Returns if the kernel wants the interrupted code resumed.
-#[cfg(target_os = "none")]
+#[cfg(eggos_kernel)]
 pub(crate) fn deliver(exception: &Exception) {
     kernel_exception(exception);
 }

@@ -7,18 +7,18 @@
 //! the terminal program (D187), as `/bin/disk` the `disk` command (D192), and as
 //! `/bin/task-manager` the Task Manager (D200).
 
-#![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(eggos_user, no_std, no_main)]
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 extern crate alloc;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod disk_system;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod program;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 eggos_runtime::main!(program::run);
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(eggos_user))]
 fn main() {}

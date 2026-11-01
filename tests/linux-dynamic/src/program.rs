@@ -2,9 +2,9 @@ use core::ffi::{CStr, c_char, c_int};
 
 #[cfg(target_env = "gnu")]
 const LIBRARY: &CStr = c"glibc";
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 const LIBRARY: &CStr = c"musl";
-#[cfg(not(any(target_env = "gnu", target_env = "musl")))]
+#[cfg(not(any(target_env = "gnu", eggos_user)))]
 const LIBRARY: &CStr = c"a C library";
 
 #[link(name = "c")]

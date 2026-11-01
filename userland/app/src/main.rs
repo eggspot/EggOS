@@ -1,9 +1,9 @@
 //! `app`: installs, uninstalls and lists apps (D134, docs/apps.md); see [`eggos_app::command`].
 
-#![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(eggos_user, no_std, no_main)]
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 eggos_runtime::main!(eggos_app::command::run);
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(eggos_user))]
 fn main() {}

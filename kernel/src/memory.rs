@@ -50,7 +50,7 @@ pub fn total_frames() -> u64 {
 /// recorded, and on the host, where the frame allocator is not the machine's memory.
 pub fn share_of_memory(divisor: u64) -> u64 {
     match total_frames() {
-        frames if frames > 0 && cfg!(target_os = "none") => frames * FRAME_SIZE / divisor.max(1),
+        frames if frames > 0 && cfg!(eggos_kernel) => frames * FRAME_SIZE / divisor.max(1),
         _ => u64::MAX,
     }
 }

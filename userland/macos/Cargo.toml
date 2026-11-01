@@ -18,7 +18,7 @@ eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
 eggos-toolkit = { path = "../toolkit" }
 
-[target.'cfg(any(target_arch = "aarch64", not(target_env = "musl")))'.dependencies]
+[target.'cfg(any(target_arch = "aarch64", not(eggos_user)))'.dependencies]
 eggos-translate = { path = "../../translate" }
 eggos-translation-loader = { path = "../translation-loader" }
 

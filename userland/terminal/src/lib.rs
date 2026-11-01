@@ -11,7 +11,7 @@
 extern crate alloc;
 
 pub mod keys;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod program;
 pub mod title;
 pub mod window;

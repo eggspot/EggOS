@@ -54,6 +54,7 @@
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
 
+pub mod abi;
 pub mod agent_channel;
 pub mod android_log;
 pub mod credentials;
@@ -113,358 +114,10 @@ use eggos_hal::user::{UserContext, UserExit};
 use eggos_hal::{ExceptionKind, Platform};
 use thread::LinuxThread;
 
-/// Linux's system-call numbers. x86_64 has its own table; AArch64 and RISC-V share the generic
-/// one (`asm-generic/unistd.h`).
+/// Linux's system-call numbers on this architecture ([`abi::number`]), checked here against
+/// [`number::LAST`].
 pub mod number {
-    #[cfg(target_arch = "x86_64")]
-    mod table {
-        pub const READ: u64 = 0;
-        pub const WRITE: u64 = 1;
-        pub const OPEN: u64 = 2;
-        pub const CLOSE: u64 = 3;
-        pub const STAT: u64 = 4;
-        pub const FSTAT: u64 = 5;
-        pub const LSTAT: u64 = 6;
-        pub const POLL: u64 = 7;
-        pub const LSEEK: u64 = 8;
-        pub const MMAP: u64 = 9;
-        pub const MPROTECT: u64 = 10;
-        pub const MUNMAP: u64 = 11;
-        pub const BRK: u64 = 12;
-        pub const RT_SIGACTION: u64 = 13;
-        pub const RT_SIGPROCMASK: u64 = 14;
-        pub const RT_SIGRETURN: u64 = 15;
-        pub const IOCTL: u64 = 16;
-        pub const PREAD64: u64 = 17;
-        pub const READV: u64 = 19;
-        pub const WRITEV: u64 = 20;
-        pub const SCHED_YIELD: u64 = 24;
-        pub const MREMAP: u64 = 25;
-        pub const MSYNC: u64 = 26;
-        pub const MADVISE: u64 = 28;
-        pub const DUP: u64 = 32;
-        pub const DUP2: u64 = 33;
-        pub const PAUSE: u64 = 34;
-        pub const NANOSLEEP: u64 = 35;
-        pub const GETPID: u64 = 39;
-        pub const CLONE: u64 = 56;
-        pub const FORK: u64 = 57;
-        pub const VFORK: u64 = 58;
-        pub const EXECVE: u64 = 59;
-        pub const EXIT: u64 = 60;
-        pub const WAIT4: u64 = 61;
-        pub const KILL: u64 = 62;
-        pub const UNAME: u64 = 63;
-        pub const FCNTL: u64 = 72;
-        pub const GETTIMEOFDAY: u64 = 96;
-        pub const GETRLIMIT: u64 = 97;
-        pub const GETUID: u64 = 102;
-        pub const GETGID: u64 = 104;
-        pub const SETUID: u64 = 105;
-        pub const SETGID: u64 = 106;
-        pub const GETEUID: u64 = 107;
-        pub const GETEGID: u64 = 108;
-        pub const SETPGID: u64 = 109;
-        pub const GETPPID: u64 = 110;
-        pub const GETPGRP: u64 = 111;
-        pub const SETSID: u64 = 112;
-        pub const SETREUID: u64 = 113;
-        pub const SETREGID: u64 = 114;
-        pub const GETGROUPS: u64 = 115;
-        pub const SETGROUPS: u64 = 116;
-        pub const SETRESUID: u64 = 117;
-        pub const GETRESUID: u64 = 118;
-        pub const SETRESGID: u64 = 119;
-        pub const GETRESGID: u64 = 120;
-        pub const GETPGID: u64 = 121;
-        pub const SETFSUID: u64 = 122;
-        pub const SETFSGID: u64 = 123;
-        pub const GETSID: u64 = 124;
-        pub const RT_SIGPENDING: u64 = 127;
-        pub const RT_SIGTIMEDWAIT: u64 = 128;
-        pub const RT_SIGQUEUEINFO: u64 = 129;
-        pub const RT_SIGSUSPEND: u64 = 130;
-        pub const SIGALTSTACK: u64 = 131;
-        pub const PRCTL: u64 = 157;
-        pub const ARCH_PRCTL: u64 = 158;
-        pub const SETRLIMIT: u64 = 160;
-        pub const SETTIMEOFDAY: u64 = 164;
-        pub const REBOOT: u64 = 169;
-        pub const GETTID: u64 = 186;
-        pub const TKILL: u64 = 200;
-        pub const TIME: u64 = 201;
-        pub const FUTEX: u64 = 202;
-        pub const SET_TID_ADDRESS: u64 = 218;
-        pub const CLOCK_SETTIME: u64 = 227;
-        pub const CLOCK_GETTIME: u64 = 228;
-        pub const CLOCK_GETRES: u64 = 229;
-        pub const CLOCK_NANOSLEEP: u64 = 230;
-        pub const EXIT_GROUP: u64 = 231;
-        pub const TGKILL: u64 = 234;
-        pub const WAITID: u64 = 247;
-        pub const NEWFSTATAT: u64 = 262;
-        pub const PPOLL: u64 = 271;
-        pub const SET_ROBUST_LIST: u64 = 273;
-        pub const GET_ROBUST_LIST: u64 = 274;
-        pub const RT_TGSIGQUEUEINFO: u64 = 297;
-        pub const PRLIMIT64: u64 = 302;
-        pub const GETCWD: u64 = 79;
-        pub const CHDIR: u64 = 80;
-        pub const FCHDIR: u64 = 81;
-        pub const GETDENTS64: u64 = 217;
-        pub const OPENAT: u64 = 257;
-        pub const GETCPU: u64 = 309;
-        pub const SCHED_GETPARAM: u64 = 143;
-        pub const SCHED_GETSCHEDULER: u64 = 145;
-        pub const SCHED_GETAFFINITY: u64 = 204;
-        pub const SCHED_SETAFFINITY: u64 = 203;
-        pub const GETRUSAGE: u64 = 98;
-        pub const TIMES: u64 = 100;
-        pub const DUP3: u64 = 292;
-        pub const PIPE: u64 = 22;
-        pub const PIPE2: u64 = 293;
-        pub const PWRITE64: u64 = 18;
-        pub const FTRUNCATE: u64 = 77;
-        pub const RENAME: u64 = 82;
-        pub const MKDIR: u64 = 83;
-        pub const RMDIR: u64 = 84;
-        pub const UNLINK: u64 = 87;
-        pub const MKDIRAT: u64 = 258;
-        pub const UNLINKAT: u64 = 263;
-        pub const RENAMEAT: u64 = 264;
-        pub const UTIMENSAT: u64 = 280;
-        pub const FSYNC: u64 = 74;
-        pub const FDATASYNC: u64 = 75;
-        pub const SYNC: u64 = 162;
-        pub const SYNCFS: u64 = 306;
-        pub const RENAMEAT2: u64 = 316;
-        pub const GETRANDOM: u64 = 318;
-        pub const EXECVEAT: u64 = 322;
-        pub const STATX: u64 = 332;
-        pub const CLOSE_RANGE: u64 = 436;
-        pub const SOCKET: u64 = 41;
-        pub const CONNECT: u64 = 42;
-        pub const ACCEPT: u64 = 43;
-        pub const SENDTO: u64 = 44;
-        pub const RECVFROM: u64 = 45;
-        pub const SENDMSG: u64 = 46;
-        pub const RECVMSG: u64 = 47;
-        pub const SHUTDOWN: u64 = 48;
-        pub const BIND: u64 = 49;
-        pub const LISTEN: u64 = 50;
-        pub const GETSOCKNAME: u64 = 51;
-        pub const GETPEERNAME: u64 = 52;
-        pub const SOCKETPAIR: u64 = 53;
-        pub const SETSOCKOPT: u64 = 54;
-        pub const GETSOCKOPT: u64 = 55;
-        pub const ACCEPT4: u64 = 288;
-        pub const FALLOCATE: u64 = 285;
-        pub const MEMFD_CREATE: u64 = 319;
-        pub const ACCESS: u64 = 21;
-        pub const READLINK: u64 = 89;
-        pub const SETHOSTNAME: u64 = 170;
-        pub const SETDOMAINNAME: u64 = 171;
-        pub const READLINKAT: u64 = 267;
-        pub const FACCESSAT: u64 = 269;
-        pub const FACCESSAT2: u64 = 439;
-        pub const SELECT: u64 = 23;
-        pub const PSELECT6: u64 = 270;
-        pub const EPOLL_CREATE: u64 = 213;
-        pub const EPOLL_WAIT: u64 = 232;
-        pub const EPOLL_CTL: u64 = 233;
-        pub const EPOLL_PWAIT: u64 = 281;
-        pub const EPOLL_CREATE1: u64 = 291;
-        pub const EPOLL_PWAIT2: u64 = 441;
-        pub const SIGNALFD: u64 = 282;
-        pub const TIMERFD_CREATE: u64 = 283;
-        pub const EVENTFD: u64 = 284;
-        pub const TIMERFD_SETTIME: u64 = 286;
-        pub const TIMERFD_GETTIME: u64 = 287;
-        pub const SIGNALFD4: u64 = 289;
-        pub const EVENTFD2: u64 = 290;
-        pub const INOTIFY_INIT: u64 = 253;
-        pub const INOTIFY_ADD_WATCH: u64 = 254;
-        pub const INOTIFY_RM_WATCH: u64 = 255;
-        pub const INOTIFY_INIT1: u64 = 294;
-        pub const LINK: u64 = 86;
-        pub const SYMLINK: u64 = 88;
-        pub const CHMOD: u64 = 90;
-        pub const FCHMOD: u64 = 91;
-        pub const LINKAT: u64 = 265;
-        pub const SYMLINKAT: u64 = 266;
-        pub const FCHMODAT: u64 = 268;
-        pub const OPENAT2: u64 = 437;
-        pub const FCHMODAT2: u64 = 452;
-        pub const FLOCK: u64 = 73;
-        pub const STATFS: u64 = 137;
-        pub const FSTATFS: u64 = 138;
-        pub const SYSINFO: u64 = 99;
-        pub const FADVISE64: u64 = 221;
-        /// The highest number above.
-        pub const LAST: u64 = FCHMODAT2;
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    mod table {
-        pub const GETCWD: u64 = 17;
-        pub const DUP: u64 = 23;
-        pub const DUP3: u64 = 24;
-        pub const FCNTL: u64 = 25;
-        pub const IOCTL: u64 = 29;
-        pub const CHDIR: u64 = 49;
-        pub const FCHDIR: u64 = 50;
-        pub const OPENAT: u64 = 56;
-        pub const CLOSE: u64 = 57;
-        pub const PIPE2: u64 = 59;
-        pub const MKDIRAT: u64 = 34;
-        pub const UNLINKAT: u64 = 35;
-        #[cfg(target_arch = "aarch64")]
-        pub const RENAMEAT: u64 = 38;
-        pub const FTRUNCATE: u64 = 46;
-        pub const PWRITE64: u64 = 68;
-        pub const UTIMENSAT: u64 = 88;
-        pub const SYNC: u64 = 81;
-        pub const FSYNC: u64 = 82;
-        pub const FDATASYNC: u64 = 83;
-        pub const SYNCFS: u64 = 267;
-        pub const RENAMEAT2: u64 = 276;
-        pub const GETDENTS64: u64 = 61;
-        pub const LSEEK: u64 = 62;
-        pub const READ: u64 = 63;
-        pub const WRITE: u64 = 64;
-        pub const READV: u64 = 65;
-        pub const WRITEV: u64 = 66;
-        pub const PREAD64: u64 = 67;
-        pub const PPOLL: u64 = 73;
-        pub const NEWFSTATAT: u64 = 79;
-        pub const FSTAT: u64 = 80;
-        pub const EXIT: u64 = 93;
-        pub const EXIT_GROUP: u64 = 94;
-        pub const WAITID: u64 = 95;
-        pub const SET_TID_ADDRESS: u64 = 96;
-        pub const FUTEX: u64 = 98;
-        pub const SET_ROBUST_LIST: u64 = 99;
-        pub const GET_ROBUST_LIST: u64 = 100;
-        pub const NANOSLEEP: u64 = 101;
-        pub const CLOCK_SETTIME: u64 = 112;
-        pub const CLOCK_GETTIME: u64 = 113;
-        pub const CLOCK_GETRES: u64 = 114;
-        pub const CLOCK_NANOSLEEP: u64 = 115;
-        pub const SCHED_YIELD: u64 = 124;
-        pub const KILL: u64 = 129;
-        pub const TKILL: u64 = 130;
-        pub const TGKILL: u64 = 131;
-        pub const SIGALTSTACK: u64 = 132;
-        pub const RT_SIGSUSPEND: u64 = 133;
-        pub const RT_SIGACTION: u64 = 134;
-        pub const RT_SIGPROCMASK: u64 = 135;
-        pub const RT_SIGPENDING: u64 = 136;
-        pub const RT_SIGTIMEDWAIT: u64 = 137;
-        pub const RT_SIGQUEUEINFO: u64 = 138;
-        pub const RT_SIGRETURN: u64 = 139;
-        pub const REBOOT: u64 = 142;
-        pub const SETREGID: u64 = 143;
-        pub const SETGID: u64 = 144;
-        pub const SETREUID: u64 = 145;
-        pub const SETUID: u64 = 146;
-        pub const SETRESUID: u64 = 147;
-        pub const GETRESUID: u64 = 148;
-        pub const SETRESGID: u64 = 149;
-        pub const GETRESGID: u64 = 150;
-        pub const SETFSUID: u64 = 151;
-        pub const SETFSGID: u64 = 152;
-        pub const GETGROUPS: u64 = 158;
-        pub const SETGROUPS: u64 = 159;
-        pub const SETPGID: u64 = 154;
-        pub const GETPGID: u64 = 155;
-        pub const GETSID: u64 = 156;
-        pub const SETSID: u64 = 157;
-        pub const UNAME: u64 = 160;
-        pub const GETRLIMIT: u64 = 163;
-        pub const SETRLIMIT: u64 = 164;
-        pub const PRCTL: u64 = 167;
-        pub const GETCPU: u64 = 168;
-        pub const SCHED_GETSCHEDULER: u64 = 120;
-        pub const SCHED_GETPARAM: u64 = 121;
-        pub const SCHED_SETAFFINITY: u64 = 122;
-        pub const SCHED_GETAFFINITY: u64 = 123;
-        pub const TIMES: u64 = 153;
-        pub const GETRUSAGE: u64 = 165;
-        pub const GETTIMEOFDAY: u64 = 169;
-        pub const SETTIMEOFDAY: u64 = 170;
-        pub const GETPID: u64 = 172;
-        pub const GETPPID: u64 = 173;
-        pub const GETUID: u64 = 174;
-        pub const GETEUID: u64 = 175;
-        pub const GETGID: u64 = 176;
-        pub const GETEGID: u64 = 177;
-        pub const GETTID: u64 = 178;
-        pub const BRK: u64 = 214;
-        pub const CLONE: u64 = 220;
-        pub const EXECVE: u64 = 221;
-        pub const MUNMAP: u64 = 215;
-        pub const MREMAP: u64 = 216;
-        pub const MMAP: u64 = 222;
-        pub const MPROTECT: u64 = 226;
-        pub const MSYNC: u64 = 227;
-        pub const MADVISE: u64 = 233;
-        pub const RT_TGSIGQUEUEINFO: u64 = 240;
-        pub const WAIT4: u64 = 260;
-        pub const PRLIMIT64: u64 = 261;
-        pub const GETRANDOM: u64 = 278;
-        pub const EXECVEAT: u64 = 281;
-        pub const STATX: u64 = 291;
-        pub const CLOSE_RANGE: u64 = 436;
-        pub const SOCKET: u64 = 198;
-        pub const SOCKETPAIR: u64 = 199;
-        pub const BIND: u64 = 200;
-        pub const LISTEN: u64 = 201;
-        pub const ACCEPT: u64 = 202;
-        pub const CONNECT: u64 = 203;
-        pub const GETSOCKNAME: u64 = 204;
-        pub const GETPEERNAME: u64 = 205;
-        pub const SENDTO: u64 = 206;
-        pub const RECVFROM: u64 = 207;
-        pub const SETSOCKOPT: u64 = 208;
-        pub const GETSOCKOPT: u64 = 209;
-        pub const SHUTDOWN: u64 = 210;
-        pub const SENDMSG: u64 = 211;
-        pub const RECVMSG: u64 = 212;
-        pub const ACCEPT4: u64 = 242;
-        pub const FALLOCATE: u64 = 47;
-        pub const MEMFD_CREATE: u64 = 279;
-        pub const FACCESSAT: u64 = 48;
-        pub const READLINKAT: u64 = 78;
-        pub const SETHOSTNAME: u64 = 161;
-        pub const SETDOMAINNAME: u64 = 162;
-        pub const FACCESSAT2: u64 = 439;
-        pub const EVENTFD2: u64 = 19;
-        pub const INOTIFY_INIT1: u64 = 26;
-        pub const INOTIFY_ADD_WATCH: u64 = 27;
-        pub const INOTIFY_RM_WATCH: u64 = 28;
-        pub const EPOLL_CREATE1: u64 = 20;
-        pub const EPOLL_CTL: u64 = 21;
-        pub const EPOLL_PWAIT: u64 = 22;
-        pub const PSELECT6: u64 = 72;
-        pub const SIGNALFD4: u64 = 74;
-        pub const TIMERFD_CREATE: u64 = 85;
-        pub const TIMERFD_SETTIME: u64 = 86;
-        pub const TIMERFD_GETTIME: u64 = 87;
-        pub const EPOLL_PWAIT2: u64 = 441;
-        pub const SYMLINKAT: u64 = 36;
-        pub const LINKAT: u64 = 37;
-        pub const FCHMOD: u64 = 52;
-        pub const FCHMODAT: u64 = 53;
-        pub const OPENAT2: u64 = 437;
-        pub const FCHMODAT2: u64 = 452;
-        pub const FLOCK: u64 = 32;
-        pub const STATFS: u64 = 43;
-        pub const FSTATFS: u64 = 44;
-        pub const SYSINFO: u64 = 179;
-        pub const FADVISE64: u64 = 223;
-        /// The highest number above.
-        pub const LAST: u64 = FCHMODAT2;
-    }
-    pub use table::*;
+    pub use super::abi::number::*;
 
     const _: () = {
         let all = [
@@ -474,19 +127,19 @@ pub mod number {
             WRITEV,
             CLOSE,
             DUP,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             DUP2,
             DUP3,
             FCNTL,
             CLOSE_RANGE,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             PIPE,
             PIPE2,
             PWRITE64,
             FTRUNCATE,
             MKDIRAT,
             UNLINKAT,
-            #[cfg(not(target_arch = "riscv64"))]
+            #[cfg(linux_abi_renameat)]
             RENAMEAT,
             RENAMEAT2,
             UTIMENSAT,
@@ -494,26 +147,26 @@ pub mod number {
             FSYNC,
             FDATASYNC,
             SYNCFS,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             RENAME,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             MKDIR,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             RMDIR,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             UNLINK,
             EXIT,
             EXIT_GROUP,
             CLONE,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             FORK,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             VFORK,
             WAIT4,
             WAITID,
             SETPGID,
             GETPGID,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             GETPGRP,
             SETSID,
             GETSID,
@@ -541,7 +194,7 @@ pub mod number {
             SCHED_SETAFFINITY,
             GETRUSAGE,
             TIMES,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_arch_prctl)]
             ARCH_PRCTL,
             GETRANDOM,
             GETRLIMIT,
@@ -555,22 +208,22 @@ pub mod number {
             RT_SIGQUEUEINFO,
             RT_TGSIGQUEUEINFO,
             RT_SIGSUSPEND,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             PAUSE,
             SIGALTSTACK,
             KILL,
             TKILL,
             TGKILL,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             POLL,
             PPOLL,
             IOCTL,
             LSEEK,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             OPEN,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             STAT,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             LSTAT,
             OPENAT,
             PREAD64,
@@ -615,45 +268,45 @@ pub mod number {
             GETSOCKOPT,
             FALLOCATE,
             MEMFD_CREATE,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             ACCESS,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             READLINK,
             READLINKAT,
             FACCESSAT,
             FACCESSAT2,
             SETHOSTNAME,
             SETDOMAINNAME,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             SELECT,
             PSELECT6,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             EPOLL_CREATE,
             EPOLL_CREATE1,
             EPOLL_CTL,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             EPOLL_WAIT,
             EPOLL_PWAIT,
             EPOLL_PWAIT2,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             EVENTFD,
             EVENTFD2,
             TIMERFD_CREATE,
             TIMERFD_SETTIME,
             TIMERFD_GETTIME,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             SIGNALFD,
             SIGNALFD4,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             INOTIFY_INIT,
             INOTIFY_INIT1,
             INOTIFY_ADD_WATCH,
             INOTIFY_RM_WATCH,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             LINK,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             SYMLINK,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(linux_abi_legacy_calls)]
             CHMOD,
             FCHMOD,
             LINKAT,
@@ -1113,7 +766,7 @@ fn out_of_line_call<P: Platform>(
 ) -> ControlFlow<()> {
     let flow = match number {
         number::RT_SIGSUSPEND => signals::rt_sigsuspend(process, thread, context),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::PAUSE => signals::pause(process, thread, context),
         number::READ => read::<P>(process, thread, context, Buffers::One),
         number::READV => read::<P>(process, thread, context, Buffers::Vectors),
@@ -1123,7 +776,7 @@ fn out_of_line_call<P: Platform>(
             ControlFlow::Continue(()) => signals::deliver(process, thread, context),
             ended => ended,
         },
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::POLL => {
             let [fds, count, timeout, ..] = context.syscall_arguments();
             let result = poll::poll::<P>(process, thread, fds, count, timeout);
@@ -1171,7 +824,7 @@ fn out_of_line_call<P: Platform>(
         | number::INOTIFY_INIT1
         | number::INOTIFY_ADD_WATCH
         | number::INOTIFY_RM_WATCH => poll::call(process, thread, number, context),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::SELECT
         | number::EPOLL_CREATE
         | number::EPOLL_WAIT
@@ -1184,7 +837,7 @@ fn out_of_line_call<P: Platform>(
                     load_inherited_fp::<P>(thread);
                     thread::clone::<P>(process, thread, context)
                 }
-                #[cfg(target_arch = "x86_64")]
+                #[cfg(linux_abi_legacy_calls)]
                 number::FORK | number::VFORK => {
                     load_inherited_fp::<P>(thread);
                     match number {
@@ -1260,7 +913,7 @@ fn out_of_line_result<P: Platform>(
     match number {
         number::CLOSE => file_locks::close(process.id().get(), thread.files(), first),
         number::DUP => descriptors::dup(process, thread.files(), first),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::DUP2 => descriptors::dup2(process, thread.files(), first, second),
         number::DUP3 => descriptors::dup3(process, thread.files(), first, second, third),
         number::FCNTL => descriptors::fcntl(process, thread.files(), first, second, third),
@@ -1271,7 +924,7 @@ fn out_of_line_result<P: Platform>(
         number::MEMFD_CREATE => memfd::memfd_create(process, thread, first, second),
         number::MKDIRAT => file_changes::mkdirat(process, thread, first, second, third),
         number::UNLINKAT => file_changes::unlinkat(process, thread, first, second, third),
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(linux_abi_renameat)]
         number::RENAMEAT => {
             file_changes::renameat2(process, thread, first, second, third, fourth, 0)
         }
@@ -1282,17 +935,17 @@ fn out_of_line_result<P: Platform>(
         number::SYNC => file_changes::sync(),
         number::FSYNC | number::FDATASYNC => file_changes::fsync(thread, first),
         number::SYNCFS => file_changes::syncfs(thread, first),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::MKDIR => file_changes::mkdirat(process, thread, CWD, first, second),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::RMDIR => {
             file_changes::unlinkat(process, thread, CWD, first, file_changes::AT_REMOVEDIR)
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::UNLINK => file_changes::unlinkat(process, thread, CWD, first, 0),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::RENAME => file_changes::renameat2(process, thread, CWD, first, CWD, second, 0),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::PIPE => pipe::pipe2::<P>(process, thread, first, 0),
         number::CLOSE_RANGE => {
             let own =
@@ -1306,7 +959,7 @@ fn out_of_line_result<P: Platform>(
         number::GETPPID => Ok(identity::getppid(process)),
         number::SETPGID => job_control::setpgid(process, first, second),
         number::GETPGID => job_control::getpgid(process, first),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::GETPGRP => job_control::getpgid(process, 0),
         number::SETSID => job_control::setsid(process),
         number::GETSID => job_control::getsid(process, first),
@@ -1356,7 +1009,7 @@ fn out_of_line_result<P: Platform>(
         number::GETRUSAGE => time::getrusage(process, first, second),
         number::TIMES => time::times(process, first),
         number::GETTIMEOFDAY => time::gettimeofday(process, first, second),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::TIME => time::time(process, first),
         number::CLOCK_SETTIME => time::clock_settime(process, first, second),
         number::SETTIMEOFDAY => time::settimeofday(process, first, second),
@@ -1369,11 +1022,11 @@ fn out_of_line_result<P: Platform>(
         number::NEWFSTATAT => stat::newfstatat(process, thread, first, second, third, fourth),
         number::STATX => stat::statx(process, thread, first, second, third, fourth, fifth),
         number::OPENAT => files::openat(process, thread, first, second, third, fourth),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::OPEN => files::openat(process, thread, CWD, first, second, third),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::STAT => stat::newfstatat(process, thread, stat::at::FDCWD as u64, first, second, 0),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::LSTAT => stat::newfstatat(
             process,
             thread,
@@ -1388,23 +1041,23 @@ fn out_of_line_result<P: Platform>(
         }
         number::GETCWD => files::getcwd(process, thread, first, second),
         number::READLINKAT => files::readlinkat(process, thread, first, second, third, fourth),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::READLINK => files::readlinkat(process, thread, CWD, first, second, third),
         number::FACCESSAT => stat::faccessat2(process, thread, first, second, third, 0),
         number::FACCESSAT2 => stat::faccessat2(process, thread, first, second, third, fourth),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::ACCESS => stat::faccessat2(process, thread, CWD, first, second, 0),
         number::SYMLINKAT => file_changes::symlinkat(process, thread, first, second, third),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::SYMLINK => file_changes::symlinkat(process, thread, first, CWD, second),
         number::LINKAT => {
             file_changes::linkat(process, thread, first, second, third, fourth, fifth)
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::LINK => file_changes::linkat(process, thread, CWD, first, CWD, second, 0),
         number::FCHMODAT => file_changes::fchmodat2(process, thread, first, second, third, 0),
         number::FCHMODAT2 => file_changes::fchmodat2(process, thread, first, second, third, fourth),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::CHMOD => file_changes::fchmodat2(process, thread, CWD, first, second, 0),
         number::FCHMOD => file_changes::fchmod(process, thread, first, second),
         number::OPENAT2 => files::openat2(process, thread, first, second, third, fourth),
@@ -1443,7 +1096,7 @@ fn out_of_line_result<P: Platform>(
             crate::thread::yield_now::<P>();
             Ok(0)
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_arch_prctl)]
         number::ARCH_PRCTL => thread_pointer::arch_prctl::<P>(process, context, first, second),
         _ => Err(Errno::ENOSYS),
     }
@@ -2847,7 +2500,7 @@ mod tests {
             let mut bytes = [0u8; 32];
             process.read_user_memory(address, &mut bytes).unwrap();
             let word = |i: usize| u64::from_ne_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
-            if cfg!(target_arch = "riscv64") {
+            if !signals::HAS_RESTORER {
                 Action {
                     handler: word(0),
                     flags: word(1),
@@ -2888,7 +2541,7 @@ mod tests {
         );
         store(
             writable,
-            &if cfg!(target_arch = "riscv64") {
+            &if !signals::HAS_RESTORER {
                 [
                     0x40_1000,
                     flag::SIGINFO | flag::ONSTACK | flag::UNSUPPORTED,
@@ -3080,7 +2733,7 @@ mod tests {
         assert_eq!(ppoll(writable, 20, timeout, 0, 0), 20);
         assert_eq!(returned(20), [OUT; 20]);
         assert_eq!(ppoll(0, 0, timeout, 0, 0), 0);
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         {
             let entries = pollfds(&[(2, OUT), (7, 0)]);
             process.write_user_memory(writable, &entries).unwrap();
@@ -3619,7 +3272,7 @@ mod tests {
         assert_eq!(fcntl(4, command::GETFD, 0), Errno::EBADF.result());
         assert_eq!(fcntl(10, command::GETFD, 0), Errno::EBADF.result());
         assert_eq!(call(number::DUP, &[0]), 4);
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         {
             assert_eq!(call(number::DUP2, &[4, 4]), 4);
             assert_eq!(call(number::DUP2, &[8, 8]), Errno::EBADF.result());
@@ -3660,7 +3313,7 @@ mod tests {
         set_handler(&process, sigusr1, caught_with(0), 0);
         let mut send = first_thread_and_sender(&process, sigusr1);
         let buffer = SCRATCH + 0x100;
-        let call_size = if cfg!(target_arch = "x86_64") { 2 } else { 4 };
+        let call_size = crate::linux::abi::test_support::SYSCALL_INSTRUCTION_SIZE;
         for restart in [0, signals::flag::RESTART] {
             set_handler(&process, sigusr1, caught_with(restart), 0);
             send();
@@ -3819,7 +3472,7 @@ mod tests {
             assert_eq!(prctl(unknown, 0x7000_2000), Err(Errno::EINVAL));
         }
         let set_gs = u64::from(code::ARCH_SET_GS);
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_arch_prctl)]
         {
             assert_eq!(prctl(set_gs, end), Err(Errno::EPERM));
             assert_eq!(prctl(1 << 32 | set_gs, 0x7000_3000), Ok(0));
@@ -3830,9 +3483,9 @@ mod tests {
                 .unwrap();
             assert_eq!(word, 0x7000_3000u64.to_ne_bytes());
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(linux_abi_arch_prctl))]
         assert_eq!(prctl(set_gs, 0x7000_2000), Err(Errno::EINVAL));
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_arch_prctl)]
         assert_eq!(context.gs_base(), 0x7000_3000);
         assert_eq!(context.thread_pointer(), 0x7000_1000);
         let mut words = [0u8; 16];
@@ -4045,11 +3698,7 @@ mod tests {
     /// AArch64's `ESR_EL1.EC`, RISC-V's `scause`; x86_64's error code is `status` alone (the
     /// kind tells its vectors apart).
     fn exception(kind: ExceptionKind, class: u64, status: u64, address: Option<u64>) -> Exception {
-        let code = match () {
-            _ if cfg!(target_arch = "x86_64") => status,
-            _ if cfg!(target_arch = "aarch64") => class << 26 | status,
-            _ => class | status,
-        };
+        let code = crate::linux::abi::test_support::exception_code(class, status);
         Exception {
             kind,
             name: "test exception",
@@ -4069,41 +3718,9 @@ mod tests {
             handle_first(&process, &mut context, UserExit::Interrupt),
             ControlFlow::Continue(())
         );
-        use ExceptionKind::*;
-        #[cfg(target_arch = "x86_64")]
-        let faults = [
-            (Arithmetic, 0, 0, signal::SIGFPE),
-            (Debug, 1, 0, signal::SIGTRAP),
-            (Breakpoint, 3, 0, signal::SIGTRAP),
-            (IllegalInstruction, 6, 0, signal::SIGILL),
-            (Segment, 12, 0, signal::SIGBUS),
-            (Other, 13, 0, signal::SIGSEGV),
-            (DataFault, 14, 0, signal::SIGSEGV),
-            (InstructionFault, 14, 0x10, signal::SIGSEGV),
-            (Alignment, 17, 0, signal::SIGBUS),
-        ];
-        #[cfg(target_arch = "aarch64")]
-        let faults = [
-            (IllegalInstruction, 0x00, 0, signal::SIGILL),
-            (Other, 0x0e, 0, signal::SIGILL),
-            (InstructionFault, 0x20, 0, signal::SIGSEGV),
-            (Alignment, 0x22, 0, signal::SIGBUS),
-            (DataFault, 0x24, 0, signal::SIGSEGV),
-            (DataFault, 0x24, 0x21, signal::SIGBUS),
-            (DataFault, 0x24, 0x10, signal::SIGBUS),
-            (Alignment, 0x26, 0, signal::SIGBUS),
-            (Breakpoint, 0x3c, 0, signal::SIGTRAP),
-        ];
-        #[cfg(target_arch = "riscv64")]
-        let faults = [
-            (Alignment, 0, 0, signal::SIGBUS),
-            (InstructionFault, 1, 0, signal::SIGSEGV),
-            (IllegalInstruction, 2, 0, signal::SIGILL),
-            (Breakpoint, 3, 0, signal::SIGTRAP),
-            (DataFault, 13, 0, signal::SIGSEGV),
-            (Other, 9, 0, signal::SIGILL),
-        ];
-        for (kind, class, status, signal) in faults {
+        for &(kind, class, status, signal) in
+            crate::linux::abi::test_support::FAULTS_WITHOUT_HANDLERS
+        {
             let process = process_with_data(&kernel, b"ab");
             let exception = exception(kind, class, status, None);
             assert_eq!(
@@ -4177,22 +3794,11 @@ mod tests {
     /// returns there: x86_64's `ret` pops the return address from the stack.
     fn return_point(process: &Process<P>, context: &UserContext) -> (u64, u64) {
         let registers = context.registers();
-        #[cfg(target_arch = "x86_64")]
-        {
+        crate::linux::abi::test_support::return_point(&registers, |address| {
             let mut bytes = [0; 8];
-            process.read_user_memory(registers.rsp, &mut bytes).unwrap();
-            (u64::from_ne_bytes(bytes), registers.rsp + 8)
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            let _ = process;
-            (registers.x[30], registers.sp)
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            let _ = process;
-            (registers.x[1], registers.x[2])
-        }
+            process.read_user_memory(address, &mut bytes).unwrap();
+            u64::from_ne_bytes(bytes)
+        })
     }
 
     /// The handler `context` runs returns: at its return point, as `rt_sigreturn` (what the
@@ -4200,32 +3806,18 @@ mod tests {
     fn handler_returns(process: &Arc<Process<P>>, context: &mut UserContext) -> ControlFlow<()> {
         let (to, stack) = return_point(process, context);
         let mut registers = context.registers();
-        #[cfg(target_arch = "x86_64")]
-        {
-            registers.rsp = stack;
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        let _ = stack;
-        #[cfg(target_arch = "aarch64")]
-        {
-            registers.x[19] = 0xdead;
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            registers.x[9] = 0xdead;
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            registers.rbx = 0xdead;
-        }
+        crate::linux::abi::test_support::set_returned_stack(&mut registers, stack);
+        *crate::linux::abi::test_support::callee_saved(&mut registers) = 0xdead;
         context.set_registers(&registers);
         context.simulate_syscall(number::RT_SIGRETURN, [0; 6], to + 4);
         handle_first(process, context, UserExit::Syscall)
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
     #[test]
     fn the_return_trampoline_never_fills_a_hole_the_program_made() {
+        if crate::linux::abi::SIGRETURN_TRAMPOLINE.is_none() {
+            return;
+        }
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (process, _) = process_with_stacks(&kernel);
@@ -4248,9 +3840,11 @@ mod tests {
         assert!(process.region(hole).is_none());
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
     #[test]
     fn the_return_trampoline_takes_the_next_gap_page_and_never_one_below_the_gap() {
+        if crate::linux::abi::SIGRETURN_TRAMPOLINE.is_none() {
+            return;
+        }
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (process, _) = process_with_stacks(&kernel);
@@ -4297,18 +3891,7 @@ mod tests {
         let stack = HANDLER_STACK_TOP - 0x30;
         let mut context = UserContext::new(0x40_0000, stack);
         let mut registers = context.registers();
-        #[cfg(target_arch = "aarch64")]
-        {
-            registers.x[19] = 0x1919;
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            registers.x[9] = 0x1919;
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            registers.rbx = 0x1919;
-        }
+        *crate::linux::abi::test_support::callee_saved(&mut registers) = 0x1919;
         context.set_registers(&registers);
         context.simulate_syscall(number::TGKILL, [pid, pid, sigusr1, 0, 0, 0], 0x40_0004);
         let mut interrupted = context.clone();
@@ -4321,13 +3904,9 @@ mod tests {
         let [signal, info, ucontext, ..] = context.syscall_arguments();
         assert_eq!(signal, sigusr1);
         let frame = context.stack();
-        if cfg!(target_arch = "x86_64") {
-            assert_eq!((frame + 8) % 16, 0);
-            assert!(frame + 128 < stack);
-        } else {
-            assert_eq!(frame % 16, 0);
-            assert!(frame < stack);
-        }
+        assert!(crate::linux::abi::test_support::frame_is_placed(
+            frame, stack
+        ));
         let mut bytes = [0; 128];
         process.read_user_memory(info, &mut bytes).unwrap();
         let int =
@@ -4481,7 +4060,7 @@ mod tests {
                 signal: signal::SIGSEGV
             })
         );
-        if cfg!(target_arch = "x86_64") {
+        if crate::linux::abi::SIGRETURN_TRAMPOLINE.is_none() {
             let (process, pid) = process_with_stacks(&kernel);
             set_handler(&process, sigusr1, 0, 0);
             let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x40);
@@ -4502,19 +4081,11 @@ mod tests {
     /// image where `fpstate` points, the others' in the frame.
     fn fp_part_address(process: &Process<P>, ucontext: u64) -> u64 {
         let frame = ucontext - signal_frame::layout::UCONTEXT as u64;
-        #[cfg(target_arch = "x86_64")]
-        {
+        crate::linux::abi::test_support::fp_part_address(frame, |address| {
             let mut pointer = [0; 8];
-            process
-                .read_user_memory(frame + signal_frame::layout::FPSTATE as u64, &mut pointer)
-                .unwrap();
+            process.read_user_memory(address, &mut pointer).unwrap();
             u64::from_ne_bytes(pointer)
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            let _ = process;
-            frame + signal_frame::layout::FP as u64
-        }
+        })
     }
 
     #[test]
@@ -4547,18 +4118,9 @@ mod tests {
         part.fill(0xa5);
         process.read_user_memory(fp, &mut part).unwrap();
         assert_eq!(part, signal_frame::initial_fp_part());
-        #[cfg(target_arch = "x86_64")]
-        {
-            assert_eq!(fp % 64, 0);
-            assert_eq!(u16::from_ne_bytes([part[0], part[1]]), 0x037f);
-            assert_eq!(u32::from_ne_bytes(part[24..28].try_into().unwrap()), 0x1f80);
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            let mut header = [0; 8];
-            process.read_user_memory(fp - 8, &mut header).unwrap();
-            assert_eq!(header, [0x01, 0x80, 0x50, 0x46, 0x10, 0x02, 0, 0]);
-        }
+        crate::linux::abi::test_support::check_initial_fp_part(fp, &part, |address, bytes| {
+            process.read_user_memory(address, bytes).unwrap()
+        });
         part[part.len() - 1] = 1;
         process.write_user_memory(fp, &part).unwrap();
         assert_eq!(
@@ -4566,10 +4128,8 @@ mod tests {
             ControlFlow::Continue(())
         );
         assert_eq!(process.exit_status(), None);
-        #[cfg(target_arch = "x86_64")]
-        {
-            let fpstate = ucontext - signal_frame::layout::UCONTEXT as u64
-                + signal_frame::layout::FPSTATE as u64;
+        if let Some(fpstate_offset) = crate::linux::abi::test_support::FPSTATE_POINTER {
+            let fpstate = ucontext - signal_frame::layout::UCONTEXT as u64 + fpstate_offset as u64;
             let (process, pid) = process_with_stacks(&kernel);
             let (mut context, _) = start_handler(&process, pid);
             process.write_user_memory(fpstate, &[0; 8]).unwrap();
@@ -4601,15 +4161,9 @@ mod tests {
     /// RISC-V's store page fault) and its code for a `write`, as the test platform encodes it
     /// (with AArch64's class in it).
     fn page_fault_exception(address: u64, write: bool) -> Exception {
-        let class = match () {
-            _ if cfg!(target_arch = "x86_64") => 14,
-            _ if cfg!(target_arch = "aarch64") => 0x24,
-            _ => 15,
-        };
-        let mut status = if write { crate::tests::FAULT_WRITE } else { 0 };
-        if cfg!(target_arch = "aarch64") {
-            status |= 1 << 25;
-        }
+        let class = crate::linux::abi::test_support::PAGE_FAULT_CLASS;
+        let status = if write { crate::tests::FAULT_WRITE } else { 0 }
+            | crate::linux::abi::test_support::PAGE_FAULT_STATUS;
         exception(ExceptionKind::DataFault, class, status, Some(address))
     }
 
@@ -4639,21 +4193,7 @@ mod tests {
                 .unwrap();
             u64::from_ne_bytes(bytes)
         };
-        #[cfg(target_arch = "x86_64")]
-        {
-            use signal_frame::layout::{CR2, ERR, TRAPNO};
-            [word(ERR), word(TRAPNO), word(CR2)]
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            use signal_frame::layout::{ESR, FAULT_ADDRESS};
-            [word(FAULT_ADDRESS), word(ESR), word(ESR + 8)]
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            let _ = word;
-            [0; 3]
-        }
+        crate::linux::abi::test_support::reported_trap(word)
     }
 
     #[test]
@@ -4695,23 +4235,11 @@ mod tests {
             assert_eq!(u64::from_ne_bytes(bytes[16..].try_into().unwrap()), address);
             let kernel_half = address >= user_end;
             let reported = reported_trap(&process, &context);
-            #[cfg(target_arch = "x86_64")]
-            assert_eq!(
-                reported,
-                [exception.code | u64::from(kernel_half), 14, address],
-                "err (protection set past user space), trapno, cr2"
-            );
-            #[cfg(target_arch = "aarch64")]
+            if let Some(expected) =
+                crate::linux::abi::test_support::expected_trap(exception.code, kernel_half, address)
             {
-                let esr = if kernel_half {
-                    fault::sanitized_syndrome(exception.code)
-                } else {
-                    exception.code
-                };
-                assert_eq!(reported, [address, 0x10_4553_5201, esr]);
+                assert_eq!(reported, expected);
             }
-            #[cfg(target_arch = "riscv64")]
-            let _ = (reported, kernel_half);
             assert_eq!(first_thread_signals(&process).blocked, 1 << (sigsegv - 1));
             assert_eq!(
                 handler_returns(&process, &mut context),
@@ -4787,9 +4315,11 @@ mod tests {
         );
     }
 
-    #[cfg(target_arch = "aarch64")]
     #[test]
     fn aarch64_breakpoints_and_undefined_instructions_report_no_fault_address_or_syndrome() {
+        if crate::linux::abi::MACHINE != "aarch64" {
+            return;
+        }
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (process, _) = process_with_stacks(&kernel);
@@ -5449,7 +4979,7 @@ mod tests {
                 Errno::EFAULT.result()
             );
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         {
             let tloc = SCRATCH + 0x130;
             let seconds = call(&process, number::TIME, [tloc, 0, 0, 0, 0, 0]);
@@ -5703,12 +5233,8 @@ mod tests {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let process = process_for_status(&kernel);
-        let x86_64 = cfg!(target_arch = "x86_64");
-        let [mode, owner, group, rdev] = if x86_64 {
-            [24, 28, 32, 40]
-        } else {
-            [16, 24, 28, 32]
-        };
+        let x86_64 = crate::linux::abi::stat::LAYOUT == crate::linux::abi::StatLayout::X86_64;
+        let [mode, owner, group, rdev] = crate::linux::abi::test_support::STAT_FIELDS;
         let links = |bytes: &[u8]| {
             if x86_64 {
                 double_word(bytes, 16)
@@ -6021,7 +5547,7 @@ mod tests {
         let status = call(&process, number::FSTAT, [fd, STAT_BUFFER, 0, 0, 0, 0]);
         assert_eq!(status, 0);
         let bytes: [u8; stat::STAT_SIZE] = user_bytes(&process, STAT_BUFFER);
-        let mode_offset = if cfg!(target_arch = "x86_64") { 24 } else { 16 };
+        let mode_offset = crate::linux::abi::test_support::STAT_FIELDS[0];
         assert_eq!(word(&bytes, mode_offset), stat::S_IFREG | 0o644);
         assert_eq!(double_word(&bytes, 48), 6);
         assert_eq!(double_word(&bytes, 88), 1_700_000_000);
@@ -6695,7 +6221,7 @@ mod tests {
         ] {
             assert_eq!(clone(flags), Errno::ENOSYS.result(), "{flags:#x}");
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_arch_prctl)]
         for flags in [NEW_THREAD | SETTLS, SETTLS | SIGCHLD] {
             assert_eq!(
                 call(&process, number::CLONE, [flags, 0, 0, 0, 1 << 63, 0]),
@@ -6721,7 +6247,7 @@ mod tests {
         let before = free();
         let fork = || call(&process, number::CLONE, [17, 0, 0, 0, 0, 0]);
         assert_eq!(fork(), Errno::ENOMEM.result());
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         assert_eq!(call(&process, number::FORK, [0; 6]), Errno::ENOMEM.result());
         assert_eq!(free(), before);
         assert!(!has_children(&process));
@@ -8074,7 +7600,7 @@ mod tests {
             .unwrap();
         write_timespec(&process, timeout, 5, 0);
         let wait = u64::from(op::WAIT | op::PRIVATE_FLAG);
-        let call_size = if cfg!(target_arch = "x86_64") { 2 } else { 4 };
+        let call_size = crate::linux::abi::test_support::SYSCALL_INSTRUCTION_SIZE;
         for (restart, timeout, restarted) in [
             (0, 0, false),
             (signals::flag::RESTART, 0, true),
@@ -8865,7 +8391,7 @@ mod tests {
             test.call(number::PSELECT6, [nfds, read_set, 0, 0, timeout, sig]),
             Errno::EINVAL.result()
         );
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         {
             test.put(FD_SETS, &fd_set(&[reading]));
             let mut time = [0u8; 16];
