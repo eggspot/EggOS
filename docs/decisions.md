@@ -16993,22 +16993,45 @@ the license, by an explicit instruction recorded here.
   kernel refuses a mapping that is writable and executable at once (W^X), so those calls
   failed and the programs ended.
 - **Decision.** The layer maps such memory readable and writable and records its range
-  (`userland/windows/src/write_execute.rs`, at most 64 ranges, in a table the fault handler
-  reads without a lock). An instruction fetch from one of its pages raises a fault; the
+  (`userland/windows/src/write_execute.rs`, at most 64 ranges). An instruction fetch from one of its pages raises a fault; the
   handler makes that page readable and executable and returns, so the instruction runs again.
   A write to a page that is executable now raises a fault too, and the handler makes it
   readable and writable again. Every page is writable or executable, never both, so W^X holds
-  for Windows programs as for every other program. `VirtualProtect` reports such memory's old
-  protection as `PAGE_EXECUTE_READWRITE`; changing the memory's protection to anything else
-  drops its range (`VirtualQuery` reads the pages' protection as it is at that moment). Pure logic with host tests; the faults go through D177's handler
-  before any are delivered to the program as Windows exceptions.
+  for Windows programs as for every other program. The fault handler's flip and the calls that
+  change such memory (`VirtualAlloc`, `VirtualProtect`, `VirtualFree`) take turns on one lock,
+  each call changing the mapping and the table together, so a flip never re-protects memory
+  the program has freed or changed meanwhile (the lock's holder only makes system calls, so a
+  fault never waits on itself); a call whose change the full table cannot record fails with
+  `ERROR_NOT_ENOUGH_MEMORY` before it changes anything. `VirtualProtect` reports such memory's
+  old protection as `PAGE_EXECUTE_READWRITE` and other memory's as `/proc/self/maps` shows it
+  (D189's reader), so a program that restores the old protection after patching its code gets
+  its code back executable; changing the memory's protection to anything else drops its range
+  (`VirtualQuery` reads the pages' protection as it is at that moment). Pure logic with host
+  tests; the faults go through D177's handler before any are delivered to the program as
+  Windows exceptions.
+- **A write to the instruction's own page is not flipped.** An instruction that writes to a
+  page it runs from (code that patches its own page, an unpacker or a JIT stub that updates
+  data beside its code) can complete under neither protection: a flip to writable makes its
+  fetch fault, a flip back makes its write fault, for ever. The handler refuses that write (the
+  page of the faulting `pc`, or a page the same instruction was fetched from since the last
+  flip, which covers an x64 instruction that straddles two pages), so the program gets
+  `STATUS_ACCESS_VIOLATION` as a Windows exception instead of hanging. Emulating the single
+  store would complete it without ever making the page writable and executable at once, but
+  that needs a decoder of every store instruction of x64 and ARM64 (the one the layer has
+  completes only misaligned accesses of translated code, D207), so it is not built (see "Not
+  yet").
 - **Cost.** Each flip is one fault, one `mprotect` and the return, a few microseconds: code
   written once and then run (thunks, a JIT's finished functions) pays one flip per page.
   Nothing else changes: pages the program never maps this way, and the program's own image,
-  are untouched.
-- **Not yet.** Two threads that write and execute the same page at the same time flip it back
-  and forth on every access and slow down without bound (no lock-step between them, and
-  correct only because each access retries after its flip). Code that modifies itself often
+  are untouched. `VirtualProtect` reads `/proc/self/maps` once per call for the old
+  protection, as `VirtualQuery` does.
+- **Not yet.** Writes to the page of the writing instruction fail (above) where Windows
+  completes them; completing them takes emulating the store. Two threads that write and execute
+  the same page at the same time flip it back and forth on every access and slow down without
+  bound (each access retries after its flip, so both complete, but nothing bounds how often).
+  The kernel does not flip: a system call that writes into such memory while it is executable
+  (`ReadFile` into a buffer on a page code ran from) fails with `EFAULT` where it succeeds on
+  Windows. Code that modifies itself often
   (a JIT that patches running code, self-modifying loops) pays a fault per switch between
   writing and running a page, far slower than on Windows; a cheaper scheme (a second, writable
   view of the same pages mapped elsewhere, as some JITs use on W^X systems) is not built.

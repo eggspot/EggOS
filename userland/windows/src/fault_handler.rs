@@ -5,7 +5,8 @@
 //! exception its cause stands for (`fault::delivery`), which the program's vectored and frame
 //! handlers get (`win32::deliver_fault`); `__fastfail` ends the program at once. A fetch from
 //! or a write to memory the program made writable and executable flips its page to what the
-//! access needs and resumes it (`win32::flip_write_execute_page`). A fault in the
+//! access needs and resumes it (`win32::flip_write_execute_page`), except a write to the page
+//! the faulting instruction runs from, which becomes an access violation (D213). A fault in the
 //! layer's own code, or one no handler took, is written to standard error with its address as
 //! the program's module and offset, and ends the process by the signal's default action. A
 //! trap or fault in the translated code of an x64 program on ARM64 (D191) ends the program with
@@ -172,7 +173,7 @@ extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
     let from_the_processor = code > 0;
     if from_the_processor
         && signal == fault::SIGSEGV
-        && win32::flip_write_execute_page(address as usize, access(context))
+        && win32::flip_write_execute_page(address as usize, access(context), pc as usize)
     {
         return;
     }
