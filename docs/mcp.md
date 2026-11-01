@@ -266,7 +266,13 @@ machine), `not_responding` (busy, the window's app has left an event unread for 
 `is_a_folder`, `no_such_file` and `no_such_app`; the text is the same as before. Agents rely
 on the category; the session's `instructions` (generated from the registry) teach the verbs,
 the effects, the categories and `fix_command`. A command that fails gives its error output and
-exit status, also as an error result. Every command starts in `/home` with `PATH=/bin`, no input
+exit status, also as an error result. Every twin but `run`'s program also runs with
+`EGGOS_CODED_ERRORS=1` (D225): each text error it writes is then followed by its
+`{"error":{...}}` line, and the server moves the last such line into the result's
+`structuredContent.error` (the code must be one EggOS defines; its category, fix and
+`fix_command` come from the registry, the message from the command) and leaves those lines out
+of the text, so a failed command's error is as structured as a refusal. A command that ends
+without a coded error (killed, timed out) has none. Every command starts in `/home` with `PATH=/bin`, no input
 but `tee`'s content, and as root; it is stopped, with every process it started, after 10 s
 (`run`: its `timeout_seconds`), or as soon as its output passes 128 KiB (the result says it was
 cut). `run` takes no shell: `run {"program": "/bin/uname", "arguments": ["-a"]}`.

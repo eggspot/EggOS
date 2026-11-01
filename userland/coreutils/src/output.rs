@@ -97,6 +97,9 @@ impl<S: System> Output<S> {
             let _ = self.system.write(STANDARD_ERROR, command.as_bytes());
             let _ = self.system.write(STANDARD_ERROR, b"\n");
         }
+        if self.system.wants_coded_errors() {
+            self.json_error(error, parts);
+        }
     }
 
     fn json_error(&mut self, error: &ErrorDefinition, parts: &[&[u8]]) {
@@ -332,6 +335,25 @@ mod tests {
         );
         assert_eq!(error_for(Errno::EROFS).code, "read_only");
         assert_eq!(error_for(Errno::EINVAL).code, "failed");
+    }
+
+    #[test]
+    fn a_twin_asked_for_coded_errors_adds_the_json_line_after_the_text_lines() {
+        let mut fake = Fake::default();
+        fake.coded_errors = true;
+        let mut output = Output::new(fake, b"wm");
+        output.coded(&errors::NO_SUCH_WINDOW, &[b"7", b": no such\nwindow"]);
+        assert_eq!(
+            output.system.errors(),
+            "wm: 7: no such\\nwindow\n  try: wm list\n\
+             {\"error\":{\"code\":\"no_such_window\",\"category\":\"not_found\",\"message\":\"7: no such\\nwindow\",\"fix\":\"Use an id that wm list shows.\",\"fix_command\":\"wm list\"}}\n"
+        );
+        let mut fake = Fake::default();
+        fake.coded_errors = true;
+        let mut output = Output::new(fake, b"ls");
+        output.use_json();
+        output.file_error(c"/nope", Errno::ENOENT);
+        assert_eq!(output.system.errors().lines().count(), 1);
     }
 
     #[test]

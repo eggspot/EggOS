@@ -14,6 +14,11 @@ pub const CAPTURE_PATH: &str = "/run/eggmcpd-capture.png";
 /// (`openat2`'s `RESOLVE_NO_SYMLINKS`), so a link inside a root never leads a tool outside it.
 pub const NO_SYMLINKS_ENVIRONMENT: &core::ffi::CStr = c"EGGOS_NO_SYMLINKS=1";
 
+/// The environment variable the MCP server gives every twin but `run`'s program (D225): a text
+/// error then ends with its `{"error":{...}}` line too, which the server moves into the result's
+/// `structuredContent.error` and leaves out of its text.
+pub const CODED_ERRORS_ENVIRONMENT: &core::ffi::CStr = c"EGGOS_CODED_ERRORS=1";
+
 /// The longest target a symbolic link `ln` makes may have, in bytes (Linux's `PATH_MAX` less
 /// its NUL).
 pub const MAX_LINK_TARGET_BYTES: u32 = 4095;

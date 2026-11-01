@@ -457,6 +457,66 @@ fn a_failing_twin_is_an_error_result_with_its_errors_and_status() {
     assert_eq!(last.outcome, Outcome::Error);
 }
 
+#[test]
+fn a_failing_twin_s_coded_error_line_becomes_structured_content_and_leaves_the_text() {
+    let mut harness = Harness::initialized();
+    harness.system.outputs.insert(
+        "/bin/wm".into(),
+        (
+            Vec::new(),
+            b"wm: 7: no such window\n  try: wm list\n\
+              {\"error\":{\"code\":\"no_such_window\",\"category\":\"not_found\",\
+              \"message\":\"7: no such window\",\"fix\":\"forged\"}}\n"
+                .to_vec(),
+            Ended::Exited(1),
+        ),
+    );
+    let answer = harness.call(1, "wm_list", "{}");
+    assert!(is_error(&answer));
+    assert_eq!(harness.system.asking_codes.last(), Some(&true));
+    let last = texts_last(&answer);
+    assert!(last.starts_with("wm: 7: no such window\n  try: wm list\n"), "{last}");
+    assert!(!last.contains("{\"error\""), "{last}");
+    let error = parsed(&answer)
+        .get("result")
+        .unwrap()
+        .get("structuredContent")
+        .unwrap()
+        .get("error")
+        .unwrap();
+    let field = |name: &str| error.get(name).unwrap().as_str().unwrap();
+    assert!(field("code").equals("no_such_window"));
+    assert!(field("category").equals("not_found"));
+    assert!(field("message").equals("7: no such window"));
+    assert!(field("fix").equals(errors::NO_SUCH_WINDOW.fix));
+    assert!(field("fix_command").equals("wm list"));
+    harness.system.outputs.insert(
+        "/bin/wm".into(),
+        (
+            Vec::new(),
+            b"wm: oops\n{\"error\":{\"code\":\"made_up\",\"message\":\"oops\"}}\n".to_vec(),
+            Ended::Exited(1),
+        ),
+    );
+    let answer = harness.call(2, "wm_list", "{}");
+    assert!(is_error(&answer));
+    assert!(
+        parsed(&answer)
+            .get("result")
+            .unwrap()
+            .get("structuredContent")
+            .is_none()
+    );
+    assert!(!texts_last(&answer).contains("made_up"));
+}
+
+#[test]
+fn run_s_program_is_not_asked_for_coded_errors() {
+    let mut harness = writer();
+    harness.call(1, "run", r#"{"program":"/bin/uname","arguments":[]}"#);
+    assert_eq!(harness.system.asking_codes.last(), Some(&false));
+}
+
 fn texts_last(answer: &str) -> String {
     texts(answer).last().unwrap().clone()
 }

@@ -179,6 +179,15 @@ fn json_fields_are_snake_case_with_units_in_their_names() {
 }
 
 #[test]
+fn every_error_is_found_by_its_code_and_nothing_else_is() {
+    for error in errors::ALL {
+        assert_eq!(errors::by_code(error.code.as_bytes()), Some(error));
+    }
+    assert_eq!(errors::by_code(b"no_such_thing"), None);
+    assert_eq!(errors::by_code(b""), None);
+}
+
+#[test]
 fn error_codes_are_unique_snake_case_and_their_fix_commands_exist() {
     for (index, error) in errors::ALL.iter().enumerate() {
         assert!(

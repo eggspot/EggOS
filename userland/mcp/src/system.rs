@@ -28,6 +28,9 @@ pub struct Invocation<'a> {
     /// Whether it runs with `EGGOS_NO_SYMLINKS=1`, so it refuses a symbolic link on any path it
     /// opens (D170): the twins whose operand is a checked path.
     pub no_symlinks: bool,
+    /// Whether it runs with `EGGOS_CODED_ERRORS=1`, so each text error it writes is followed by
+    /// its `{"error":{...}}` line (D225): every twin but `run`'s program.
+    pub coded_errors: bool,
 }
 
 /// How a command ended.

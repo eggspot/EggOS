@@ -101,8 +101,8 @@ const EFFECTS: &str = ". Each tool's annotations state the most it can do: read 
     (readOnlyHint) change nothing; change tools make or change something that can be changed \
     back; destroy and control tools (destructiveHint) remove or replace something, or can do \
     anything a person or a program can. ";
-const ERRORS_INTRODUCTION: &str = "A refused call's structuredContent.error has a code, a \
-    category (";
+const ERRORS_INTRODUCTION: &str = "A refused call's structuredContent.error, and a failed \
+    command's when it reports one, has a code, a category (";
 const ERRORS_END: &str = "), a message, a fix and, when one command fixes it, fix_command: \
     do that before retrying; codes stay, categories are what to rely on. Run /bin/help --json \
     for every command's definition. ";
@@ -2203,6 +2203,7 @@ impl Server {
                 _ => TWIN_TIME_LIMIT_MS,
             },
             no_symlinks: matches!(tool.twin.operand, Operand::Path(_)),
+            coded_errors: tool.kind != Kind::Run,
         };
         if matches!(tool.kind, Kind::WmCapture | Kind::AppIcon) {
             system.remove_capture(CAPTURE_PATH);
@@ -4310,8 +4311,14 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
             out.string("text");
             out.key("text");
             out.begin_string();
-            out.string_piece_lossy(answer.stderr);
-            if !answer.stderr.is_empty() && !answer.stderr.ends_with(b"\n") {
+            let mut shown_last = None;
+            for line in answer.stderr.split_inclusive(|&byte| byte == b'\n') {
+                if !line.starts_with(CODED_ERROR_START) {
+                    out.string_piece_lossy(line);
+                    shown_last = line.last().copied();
+                }
+            }
+            if shown_last.is_some_and(|byte| byte != b'\n') {
                 out.string_piece("\n");
             }
             let mut detail = [0u8; 160];
@@ -4324,6 +4331,13 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
             out.end_object();
         }
         out.end_array();
+        if failed && tool.kind != Kind::Run {
+            let mut message = [0u8; TWIN_ERROR_MESSAGE_BYTES];
+            if let Some((error, message)) = twin_error(answer.stderr, &mut message) {
+                out.key("structuredContent");
+                write_error(out, error, message);
+            }
+        }
         if answer.paged && !failed {
             out.key("structuredContent");
             match page_cut {
@@ -4354,6 +4368,24 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
         out.bool(failed);
         out.end_object();
     });
+}
+
+const CODED_ERROR_START: &[u8] = b"{\"error\":";
+const TWIN_ERROR_MESSAGE_BYTES: usize = 1024;
+
+fn twin_error<'m>(
+    stderr: &[u8],
+    message: &'m mut [u8; TWIN_ERROR_MESSAGE_BYTES],
+) -> Option<(&'static ErrorDefinition, &'m str)> {
+    let line = stderr
+        .split(|&byte| byte == b'\n')
+        .rfind(|line| line.starts_with(CODED_ERROR_START))?;
+    let error = crate::json::parse(line).ok()?.value.get("error")?;
+    let code = error.get("code")?.as_str()?;
+    let mut code_bytes = [0u8; 64];
+    let definition = errors::by_code(code.decode_into(&mut code_bytes)?.as_bytes())?;
+    let (text, _) = error.get("message")?.as_str()?.decode_prefix_into(message);
+    Some((definition, text))
 }
 
 fn decimal_text(value: u32, digits: &mut [u8; 10]) -> &str {

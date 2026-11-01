@@ -1,7 +1,7 @@
 use crate::system::{
     CapturedRows, DatagramKind, Duration, FileSystemUsage, STATFS_SIZE, STATX_SIZE, Sender, Status,
-    SymbolicLinks, System, SystemName, UTSNAME_SIZE, WindowTree, folder_and_leaf,
-    refuses_symbolic_links,
+    SymbolicLinks, System, SystemName, UTSNAME_SIZE, WindowTree, asks_for_coded_errors,
+    folder_and_leaf, refuses_symbolic_links,
 };
 use crate::utilities::{self, MAX_ARGUMENTS};
 use core::ffi::CStr;
@@ -193,6 +193,7 @@ fn status_at(directory: usize, path: &CStr, flags: usize) -> Result<Status, Errn
 #[derive(Debug)]
 struct Linux {
     no_symlinks: bool,
+    coded_errors: bool,
     time_zone: Option<([u8; TIME_ZONE_BYTES], usize)>,
     environment: *const *const core::ffi::c_char,
     started_environment: [*const u8; STARTED_VARIABLES + 1],
@@ -487,6 +488,10 @@ impl System for Linux {
             [out.as_mut_ptr() as usize, out.len(), 0, 0, 0, 0],
         )?;
         Ok(length.saturating_sub(1))
+    }
+
+    fn wants_coded_errors(&self) -> bool {
+        self.coded_errors
     }
 
     fn time_zone_variable(&self) -> Option<&[u8]> {
@@ -977,6 +982,7 @@ pub fn run(startup: &Startup) -> i32 {
     }
     let system = Linux {
         no_symlinks: refuses_symbolic_links(startup.environment()),
+        coded_errors: asks_for_coded_errors(startup.environment()),
         time_zone: time_zone_of(startup.environment()),
         environment: startup.environment_block(),
         started_environment: started_environment(startup.environment()),

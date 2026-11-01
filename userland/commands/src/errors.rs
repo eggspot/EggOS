@@ -408,6 +408,13 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
     None,
 );
 
+/// The definition of the error code `code`, if EggOS defines it.
+pub fn by_code(code: &[u8]) -> Option<&'static ErrorDefinition> {
+    ALL.iter()
+        .copied()
+        .find(|error| error.code.as_bytes() == code)
+}
+
 /// Every error code EggOS defines, for the registry test and `help --json`.
 pub const ALL: [&ErrorDefinition; 55] = [
     &USAGE,

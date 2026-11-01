@@ -1,5 +1,5 @@
 use core::ffi::CStr;
-use eggos_commands::tools::NO_SYMLINKS_ENVIRONMENT;
+use eggos_commands::tools::{CODED_ERRORS_ENVIRONMENT, NO_SYMLINKS_ENVIRONMENT};
 use eggos_net::Ipv4Address;
 use eggos_runtime::errno::Errno;
 
@@ -161,6 +161,12 @@ pub fn refuses_symbolic_links<'a>(environment: impl IntoIterator<Item = &'a CStr
         .any(|variable| variable == NO_SYMLINKS_ENVIRONMENT)
 }
 
+pub fn asks_for_coded_errors<'a>(environment: impl IntoIterator<Item = &'a CStr>) -> bool {
+    environment
+        .into_iter()
+        .any(|variable| variable == CODED_ERRORS_ENVIRONMENT)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemName(pub [u8; UTSNAME_SIZE]);
 
@@ -242,6 +248,9 @@ pub trait System {
     fn now(&mut self) -> u64;
     fn time_zone_variable(&self) -> Option<&[u8]> {
         None
+    }
+    fn wants_coded_errors(&self) -> bool {
+        false
     }
     fn now_with_nanoseconds(&mut self) -> Duration;
     fn set_time(&mut self, since_epoch: Duration) -> Result<(), Errno>;
@@ -408,6 +417,10 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn time_zone_variable(&self) -> Option<&[u8]> {
         (**self).time_zone_variable()
+    }
+
+    fn wants_coded_errors(&self) -> bool {
+        (**self).wants_coded_errors()
     }
 
     fn now_with_nanoseconds(&mut self) -> Duration {
