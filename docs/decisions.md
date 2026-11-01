@@ -10053,7 +10053,9 @@ the license, by an explicit instruction recorded here.
   release notes must say `-Mcp` does not work on Windows and `run-eggos.ps1 -Mcp` must say so
   instead of hanging (issue #145's fallback); that is decided by the first run. aarch64 Windows
   hosts and riscv64 are not run on Windows. The job's path filter leaves out
-  `kernel/src/net*` and `drivers/src/virtio/net/`.
+  `kernel/src/net*` and `drivers/src/virtio/net/`. `run-eggos.ps1 -Mcp`'s loopback relay
+  (#149) takes the first connection, so another local program could take it before QEMU; and
+  anything QEMU itself prints would mix into the MCP output.
 
 ## D155 A program that uses up memory, or a damaged disk, can't crash EggOS: a kernel reserve, global caps on window and socket buffers, and hostile-disk checks (issue #143; extends D28, D30, D31, D104, D125, D127, D130, D131, D138, D139) — Decided by the build loop (the numbers checked by research)
 - **Why.** The kernel's own allocations cannot fail: a `Box` or `Vec` that finds no memory
@@ -11201,7 +11203,9 @@ the license, by an explicit instruction recorded here.
   those past it load on first touch, #149); `ETXTBSY`, so a write to a running program's file
   changes the pages it has not touched yet; a vDSO; `/proc/self/maps` naming the mapped files (part 16:
   `FilePages` will need a path); Android's `linker64`, untested; the toolkits' libraries
-  (part 20); `MAP_POPULATE` of a file mapping (pages are read on first touch).
+  (part 20); `MAP_POPULATE` of a file mapping (pages are read on first touch); a kernel copy
+  to or from user memory that spans pages is not atomic across them now that file pages are
+  read with the regions' lock free (#149).
 
 ## D168 `/proc` and `/dev` for real programs, symbolic links in walks, `readlink`, `access`, `sethostname`, and the official `rustc --version` inside EggOS (the CI track's stage 2, milestone 1, part 2; extends D55, D59, D102, D125, D127, D166, D167) — Decided by the build loop (which `rustc` CI runs and how it finds its C library decided by research)
 - **Why.** Real Linux programs read about themselves through `/proc` and open devices by name:
