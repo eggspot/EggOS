@@ -6,8 +6,10 @@
 //! musl program using `std::net`: over the loopback network, then with a UDP echo server the
 //! test serves on the host; `fetch` downloads a file from an HTTP server the test serves on the
 //! host, and `linux-tcp`, `std::net`'s TCP over the loopback network and with a TCP echo server
-//! on the host; `date --sync` sets the clock from an NTP stand-in on the host (D159). `exit`
-//! then powers the machine off.
+//! on the host; `date --sync` sets the clock from an NTP stand-in on the host (D159). Before
+//! those, `settings get time.automatic` reads `on` and, 10 s after the address, `settings get
+//! time.sync` shows init's own sync from `pool.ntp.org` finished: set, confirmed, unconfirmed
+//! or unanswered (D224). `exit` then powers the machine off.
 
 use super::*;
 use eggos_net::Ipv4Address;
@@ -59,6 +61,8 @@ fn commands(ports: &Ports) -> Vec<String> {
     } = *ports;
     vec![
         "sleep 2; ip addr; echo EGGOS-NET ip $?\r".into(),
+        "settings get time.automatic; sleep 10; settings get time.sync; echo EGGOS-NET clock $?\r"
+            .into(),
         "cat /etc/resolv.conf; ping -c 2 10.0.2.2; echo EGGOS-NET ping $?\r".into(),
         format!("nslookup -port={dns} {KNOWN_NAME} 10.0.2.2; echo EGGOS-NET nslookup $?\r"),
         format!("linux-udp; linux-udp 10.0.2.2 {echo}; echo EGGOS-NET udp $?\r"),
@@ -77,6 +81,7 @@ fn wanted() -> Vec<String> {
         BOOT_LINE.into(),
         "inet 10.0.2.15/24 brd 10.0.2.255 scope global dynamic eth0".into(),
         "EGGOS-NET ip 0".into(),
+        "EGGOS-NET clock 0".into(),
         "nameserver 10.0.2.3".into(),
         "bytes from 10.0.2.2: icmp_seq=1".into(),
         "EGGOS-NET ping 0".into(),
@@ -104,6 +109,27 @@ fn command_due(console: &str, typed: usize, count: usize) -> bool {
     typed < count && console.matches(SHELL_PROMPT).count() > typed
 }
 
+const FINISHED_SYNCS: [&str; 4] = ["set ", "confirmed ", "unconfirmed ", "no-answer "];
+
+fn is_automatic_sync(line: &str) -> bool {
+    FINISHED_SYNCS.iter().any(|outcome| line.starts_with(outcome))
+        && line.contains(" pool.ntp.org ")
+}
+
+fn clock_verdict(arch: &str, console: &str) -> Result<(), String> {
+    let mut lines = console.lines().map(str::trim_end);
+    if !lines.clone().any(|line| line == "on") {
+        return Err(format!("{arch}: `settings get time.automatic` did not print `on`"));
+    }
+    if !lines.any(is_automatic_sync) {
+        return Err(format!(
+            "{arch}: `settings get time.sync` did not show init's sync from pool.ntp.org \
+             finished 10 s after the address"
+        ));
+    }
+    Ok(())
+}
+
 fn verdict(arch: &str, console: &str, clean_exit: bool) -> Result<(), String> {
     for wanted in wanted() {
         if !console.contains(&wanted) {
@@ -112,6 +138,7 @@ fn verdict(arch: &str, console: &str, clean_exit: bool) -> Result<(), String> {
             ));
         }
     }
+    clock_verdict(arch, console)?;
     if !clean_exit {
         return Err(format!("{arch}: QEMU did not exit cleanly after `exit`"));
     }
@@ -307,13 +334,37 @@ mod tests {
         assert!(!command_due(&prompt.repeat(9), 5, 5));
     }
 
+    const CLOCK_LINES: &str = "on\r\nset 2026-10-29T14:05:09Z pool.ntp.org 12000\r\n";
+
     #[test]
     fn the_verdict_wants_every_line_and_a_clean_exit() {
-        let all = wanted().join("\n");
+        let all = format!("{CLOCK_LINES}{}", wanted().join("\n"));
         assert_eq!(verdict("x86_64", &all, true), Ok(()));
         assert!(verdict("x86_64", &all, false).is_err());
         let without_echo = all.replace("LINUX-UDP echo EGGOS-UDP hello", "");
         assert!(verdict("x86_64", &without_echo, true).is_err());
+    }
+
+    #[test]
+    fn the_verdict_wants_automatic_on_and_init_s_sync_done() {
+        let rest = wanted().join("\n");
+        let with = |clock: &str| verdict("x86_64", &format!("{clock}{rest}"), true);
+        assert_eq!(with(CLOCK_LINES), Ok(()));
+        assert_eq!(
+            with("on\nno-answer 2026-10-29T14:05:09Z pool.ntp.org 0\n"),
+            Ok(())
+        );
+        assert!(with("on\nnone\n").is_err());
+        assert!(with("on\nsyncing 2026-10-29T14:05:00Z pool.ntp.org 0\n").is_err());
+        assert!(with("off\nset 2026-10-29T14:05:09Z pool.ntp.org 12000\n").is_err());
+        assert!(commands(&Ports {
+            dns: 53,
+            echo: 7,
+            tcp_echo: 8,
+            http: 8080,
+            ntp: 1123,
+        })[1]
+            .starts_with("settings get time.automatic; sleep 10; settings get time.sync;"));
     }
 
     #[test]
@@ -353,7 +404,7 @@ mod tests {
             http: 8080,
             ntp: 1123,
         };
-        assert!(commands(&ports)[6].contains("date --sync=10.0.2.2:1123;"));
+        assert!(commands(&ports)[7].contains("date --sync=10.0.2.2:1123;"));
         let mut request = [0u8; eggos_net::sntp::PACKET_BYTES];
         eggos_net::sntp::write_request(&mut request, eggos_net::sntp::Timestamp::default());
         assert_eq!(
@@ -361,8 +412,8 @@ mod tests {
             eggos_net::sntp::PACKET_BYTES
         );
         assert_eq!(ntp_answer(&request[..10]), None);
-        assert!(commands(&ports)[2].contains("-port=53 eggos.test 10.0.2.2"));
-        assert!(commands(&ports)[4].contains("http://10.0.2.2:8080/eggos.txt"));
-        assert!(commands(&ports)[5].contains("linux-tcp 10.0.2.2 8;"));
+        assert!(commands(&ports)[3].contains("-port=53 eggos.test 10.0.2.2"));
+        assert!(commands(&ports)[5].contains("http://10.0.2.2:8080/eggos.txt"));
+        assert!(commands(&ports)[6].contains("linux-tcp 10.0.2.2 8;"));
     }
 }
