@@ -2016,6 +2016,7 @@ impl Server {
                     (_, before, now) => before == now,
                 }
             }
+            Operand::Name if pending.tool.kind == Kind::ComponentRemove => true,
             Operand::Name => pending
                 .checked
                 .name

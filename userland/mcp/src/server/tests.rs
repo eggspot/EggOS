@@ -4205,3 +4205,49 @@ fn download_list_reads_freely_and_download_clear_needs_the_write_grant() {
         &["/bin/download", "clear"]
     );
 }
+
+#[test]
+fn component_install_needs_the_install_grant_and_component_remove_asks_first() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "component_list", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/component", "list", "--json"]
+    );
+    let answer = harness.call(2, "component_install", r#"{"name":"windows-apps"}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.len(), 1);
+    let mut harness = granted_only(&[crate::grants::Grant::Install]);
+    let answer = harness.call(3, "component_install", r#"{"name":"windows-apps"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/component", "install", "--json", "--", "windows-apps"]
+    );
+    let answer = harness.call(4, "component_remove", r#"{"name":"windows-apps"}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert!(
+        texts(&answer)[0].contains("component_remove needs the user's yes"),
+        "{answer}"
+    );
+    assert_eq!(harness.system.runs.len(), 1);
+    let answer = harness.call(
+        5,
+        "component_remove",
+        r#"{"name":"windows-apps","confirm":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/component", "remove", "--yes", "--json", "--", "windows-apps"]
+    );
+    let mut harness = granted_only(&[crate::grants::Grant::Write]);
+    let answer = harness.call(
+        6,
+        "component_remove",
+        r#"{"name":"windows-apps","confirm":true}"#,
+    );
+    assert!(is_error(&answer), "{answer}");
+    assert!(harness.system.runs.is_empty());
+}

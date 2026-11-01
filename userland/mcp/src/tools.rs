@@ -175,6 +175,12 @@ pub enum Kind {
     DownloadCancel,
     /// `download_clear`: removes the records of downloads that are over (D224).
     DownloadClear,
+    /// `component_list`: the components the store offers and those installed (D237).
+    ComponentList,
+    /// `component_install`: installs a component from the component store (D237).
+    ComponentInstall,
+    /// `component_remove`: removes an installed component (D237).
+    ComponentRemove,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -398,7 +404,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 65] = [
+pub const TOOLS: [Tool; 68] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -723,6 +729,21 @@ pub const TOOLS: [Tool; 65] = [
         &registry::DOWNLOAD_CLEAR,
         Kind::DownloadClear,
         twin("/bin/download", &["clear"], Operand::None),
+    ),
+    tool(
+        &registry::COMPONENT_LIST,
+        Kind::ComponentList,
+        twin("/bin/component", &["list", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::COMPONENT_INSTALL,
+        Kind::ComponentInstall,
+        twin("/bin/component", &["install", "--json"], Operand::Name),
+    ),
+    tool(
+        &registry::COMPONENT_REMOVE,
+        Kind::ComponentRemove,
+        twin("/bin/component", &["remove", "--yes", "--json"], Operand::Name),
     ),
 ];
 

@@ -532,3 +532,46 @@ fn the_download_tools_run_download_with_the_grants_the_design_names() {
         r#""required":["pid"],"additionalProperties":false}"#
     ));
 }
+
+#[test]
+fn the_component_tools_run_component_with_the_grants_the_design_names() {
+    for (name, kind, words, operand, grant, confirmation, destructive) in [
+        (
+            "component_list",
+            Kind::ComponentList,
+            &["list", "--json"][..],
+            Operand::None,
+            None,
+            Confirmation::Never,
+            false,
+        ),
+        (
+            "component_install",
+            Kind::ComponentInstall,
+            &["install", "--json"][..],
+            Operand::Name,
+            Some(Grant::Install),
+            Confirmation::Never,
+            false,
+        ),
+        (
+            "component_remove",
+            Kind::ComponentRemove,
+            &["remove", "--yes", "--json"][..],
+            Operand::Name,
+            Some(Grant::Install),
+            Confirmation::Always,
+            true,
+        ),
+    ] {
+        let tool = find(name).unwrap();
+        assert_eq!(tool.kind, kind, "{name}");
+        assert_eq!(tool.twin.program, Program::Fixed("/bin/component"), "{name}");
+        assert_eq!(tool.twin.words, words, "{name}");
+        assert_eq!(tool.twin.operand, operand, "{name}");
+        assert_eq!(tool.grant, grant, "{name}");
+        assert_eq!(tool.confirmation, confirmation, "{name}");
+        assert_eq!(tool.hints.destructive, destructive, "{name}");
+        assert!(!tool.hints.open_world, "{name}");
+    }
+}
