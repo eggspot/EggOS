@@ -30,6 +30,8 @@ mod display_server;
 #[cfg(any(test, eggos_user))]
 mod first_run;
 #[cfg(any(test, eggos_user))]
+mod network_clock;
+#[cfg(any(test, eggos_user))]
 mod shutdown;
 #[cfg(eggos_user)]
 mod system;
