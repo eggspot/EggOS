@@ -600,3 +600,9 @@ pub(super) const UCRT_EXPORTS: &[Export] = exports![
     b"__uncaught_exceptions" => uncaught_exceptions,
     b"__uncaught_exception" => uncaught_exception,
 ];
+
+/// msvcp140's `std::uncaught_exceptions` and `std::uncaught_exception`.
+pub(super) const MSVCP_EXPORTS: &[Export] = exports![
+    b"?uncaught_exceptions@std@@YAHXZ" => uncaught_exceptions,
+    b"?uncaught_exception@std@@YA_NXZ" => uncaught_exception,
+];

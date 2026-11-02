@@ -178,7 +178,7 @@ extern "C" fn throw_owed(_: u64, _: u64, _: u64, _: u64, context: *mut Context) 
         .ok()
         .and_then(|owed| StdException::ALL.get(owed.wrapping_sub(1)).copied())
         .unwrap_or(StdException::BadException);
-    throw(kind, core::ptr::null(), context)
+    throw(kind, kind.runtime_message().as_ptr(), context)
 }
 
 /// Wraps an export that may owe the program a throw (`owe`): the wrapper calls it with its

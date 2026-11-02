@@ -230,6 +230,16 @@ pub enum Expect {
     /// violation, a division by zero and an illegal instruction in `__try` blocks, ran a
     /// `__finally` block, continued from a vectored handler and a filter and raised a signal;
     /// and an uncaught exception ends it through `terminate` with status 3.
+    /// Then `eggcpp2.exe`, our own C++ program on msvcp140 (D229): its lines say the layer threw
+    /// `std::bad_cast`, `std::bad_typeid`, `std::out_of_range`, `std::length_error` and
+    /// `std::bad_function_call` with MSVC's words and type names, `std::rethrow_exception` threw
+    /// fresh copies of a held object, `std::make_exception_ptr` held a `std::runtime_error`,
+    /// `std::uncaught_exceptions` counted an exception during unwinding, four `std::thread`s
+    /// shared a `std::mutex`, a `std::condition_variable` handed a value over, a
+    /// `std::recursive_mutex` locked twice, `steady_clock` measured a sleep and a second
+    /// `join` threw `std::system_error` in the generic category; then its status 0; and
+    /// `eggcpp2.exe bench 1000` prints its `cxx_throw_catch` measurement, nanoseconds per throw
+    /// and catch, as `macos-objc bench` prints its own.
     /// Then `eggspawn.exe`, our own C program (D189): it starts a copy of itself with
     /// `CreateProcessW` whose standard output is an inherited pipe, and its lines say the read
     /// end was kept from the child, `PeekNamedPipe` saw what `ReadFile` then took before the
@@ -627,13 +637,15 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT quit 0",
 ];
 
-const WINDOWS_CRT_SESSION: [&[u8]; 14] = [
+const WINDOWS_CRT_SESSION: [&[u8]; 16] = [
     b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
     b"cat /tmp/eggpad.log\r",
     b"cat /tmp/note.txt\r",
     b"eggcpp.exe; echo EGGCPP status $?\r",
     b"eggcpp-fh3.exe; echo EGGCPP-FH3 status $?\r",
     b"eggcpp.exe uncaught; echo EGGCPP uncaught status $?\r",
+    b"eggcpp2.exe; echo EGGCPP2 status $?\r",
+    b"eggcpp2.exe bench 1000; echo EGGCPP2 bench status $?\r",
     b"eggspawn.exe; echo EGGSPAWN status $?\r",
     b"eggsync.exe; echo EGGSYNC status $?\r",
     b"eggnamed.exe; echo EGGNAMED status $?\r",
@@ -716,6 +728,25 @@ const EGGNAMED_LINES: [&str; 11] = [
     "EGGNAMED status 0",
 ];
 
+const EGGCPP2_LINES: [&str; 16] = [
+    "EGGCPP2 bad_cast Bad dynamic_cast!, class std::bad_cast",
+    "EGGCPP2 bad_typeid Attempted a typeid of nullptr pointer!, class std::bad_typeid",
+    "EGGCPP2 out_of_range invalid vector subscript, class std::out_of_range",
+    "EGGCPP2 length_error string too long",
+    "EGGCPP2 bad_function_call bad function call",
+    "EGGCPP2 rethrown 6",
+    "EGGCPP2 rethrown 6",
+    "EGGCPP2 exception_ptr copies 2, kept 1",
+    "EGGCPP2 made made, equal 0",
+    "EGGCPP2 uncaught during unwinding 1, in catch 0",
+    "EGGCPP2 threads total 4000",
+    "EGGCPP2 condition handed 42",
+    "EGGCPP2 recursive 1, cpus 1",
+    "EGGCPP2 slept at least 20 ms 1",
+    "EGGCPP2 system_error 22 generic, invalid argument, invalid argument",
+    "EGGCPP2 done",
+];
+
 const EGGCRT2_LINES: [&str; 12] = [
     "EGGCRT2 sin 0.841470984808 exp 2.71828182846 pow 1.41421356237",
     "EGGCRT2 atan2 0.785398163397 fmod 1 tgamma 24 sqrt 1.4142135623730951",
@@ -776,6 +807,15 @@ fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
             "windows: the program called terminate",
             "EGGCPP uncaught status 3",
         ]),
+        {
+            let mut lines = whole(&EGGCPP2_LINES);
+            lines.push(Line::Whole("EGGCPP2 status 0".to_owned()));
+            lines
+        },
+        vec![
+            Line::Around("EGGCPP2 bench cxx_throw_catch ", " ns (1000)"),
+            Line::Whole("EGGCPP2 bench status 0".to_owned()),
+        ],
         whole(&EGGSPAWN_LINES),
         whole(&EGGSYNC_LINES),
         whole(&EGGNAMED_LINES),

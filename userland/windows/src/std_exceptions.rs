@@ -155,6 +155,16 @@ impl StdException {
         }
     }
 
+    /// What `what()` says when the C++ runtime's own casts and `typeid` throw the class, as
+    /// MSVC's runtime words it; NUL-terminated.
+    pub const fn runtime_message(self) -> &'static [u8] {
+        match self {
+            StdException::BadCast => b"Bad dynamic_cast!\0",
+            StdException::BadTypeid => b"Attempted a typeid of nullptr pointer!\0",
+            _ => self.default_message(),
+        }
+    }
+
     /// The size of its objects.
     pub const fn size(self) -> u32 {
         match self {
@@ -463,6 +473,7 @@ mod tests {
             assert!(kind.decorated_name().len() < NAME_LENGTH, "{kind:?}");
             assert_eq!(kind.undecorated_name().last(), Some(&0));
             assert_eq!(kind.default_message().last(), Some(&0));
+            assert_eq!(kind.runtime_message().last(), Some(&0));
             assert!(kind.bases().len() <= MAX_BASES);
             assert_eq!(kind.bases()[0], kind);
             assert_eq!(kind.bases().last(), Some(&StdException::Exception));

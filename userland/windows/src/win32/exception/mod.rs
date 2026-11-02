@@ -243,6 +243,9 @@ pub(super) const EXCEPTION_PTR_EXPORTS: &[Export] = exception_ptr::EXPORTS;
 /// `__uncaught_exceptions`.
 pub(super) const CXX_UCRT_EXPORTS: &[Export] = cxx::UCRT_EXPORTS;
 
+/// msvcp140's `std::uncaught_exceptions` and `std::uncaught_exception` (D229).
+pub(super) const UNCAUGHT_EXPORTS: &[Export] = cxx::MSVCP_EXPORTS;
+
 /// The Universal C Runtime's `signal`, `raise` and the startup's exception filter.
 pub(super) const SIGNAL_EXPORTS: &[Export] = signal::EXPORTS;
 
