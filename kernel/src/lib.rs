@@ -16,6 +16,7 @@ pub mod bench;
 pub mod block;
 pub mod boot_clock;
 pub mod clipboard;
+pub mod component_store;
 pub mod console;
 pub mod cpu;
 pub mod devices;
@@ -256,6 +257,11 @@ fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
                 }
                 Err(disk) => block::put_back(index, disk.into_device()),
             }
+            continue;
+        }
+        if contents == Ok(eggos_eggfs::Contents::Other) && component_store::holds_store(&mut disk) {
+            block::put_back(index, disk.into_device());
+            writeln!(console, "{}", component_store::ATTACHED)?;
             continue;
         }
         let device = disk.into_device();
