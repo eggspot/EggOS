@@ -493,7 +493,7 @@ fn leaf(registers: &mut unwinder::Registers, memory: &ThreadMemory) -> Option<u6
 
 #[cfg(target_arch = "aarch64")]
 fn leaf(registers: &mut unwinder::Registers, _memory: &ThreadMemory) -> Option<u64> {
-    registers.pc = registers.x[30];
+    registers.pc = unwinder::strip_pointer_authentication(registers.x[30]);
     Some(registers.sp)
 }
 

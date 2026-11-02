@@ -22,6 +22,7 @@ const FLAG_PACKED_FRAGMENT: u32 = 2;
 const SMALL_FRAME: u64 = 512;
 const ONE_ALLOCATION: u64 = 4080;
 const MAX_SAVE_NEXT: u8 = 16;
+const USER_ADDRESS_BITS: u32 = 48;
 
 /// A thread's registers as an unwind step reads and changes them: `x0` to `x30` (`x29` is
 /// the frame pointer, `x30` the link register), `sp`, `pc` and `d8` to `d15`, the floating-point
@@ -540,6 +541,13 @@ impl Packed {
     }
 }
 
+/// A return address without the pointer authentication code a `pacibsp` prolog signed `lr`
+/// with: the bits above the 48-bit user address space cleared, as `xpaclri` clears them for a
+/// user address; an unsigned address is unchanged.
+pub fn strip_pointer_authentication(address: u64) -> u64 {
+    address & ((1 << USER_ADDRESS_BITS) - 1)
+}
+
 /// Undoes one frame of `function`, whose code holds `registers.pc`: on success `registers`
 /// hold the caller's registers (`pc` the return address) and the result names the frame's
 /// establisher and, if `kinds` asks for any handler and the function has one and the program
@@ -593,7 +601,7 @@ pub fn virtual_unwind(
         }
         _ => return Err(UnwindError::UnknownCode),
     }
-    registers.pc = registers.x[usize::from(LINK_REGISTER)];
+    registers.pc = strip_pointer_authentication(registers.x[usize::from(LINK_REGISTER)]);
     let handler = match handler {
         Some(at) => {
             let rva = image.u32_at(at).ok_or(UnwindError::Truncated)?;
@@ -742,6 +750,27 @@ mod tests {
         at_ret.x[30] = BASE + 0x8888;
         virtual_unwind(&image, function, BOTH, &mut at_ret, &memory).unwrap();
         assert_eq!((at_ret.sp, at_ret.pc), (STACK, BASE + 0x8888));
+    }
+
+    #[test]
+    fn a_return_address_signed_by_the_prolog_comes_back_stripped() {
+        let mut xdata = Vec::new();
+        xdata.extend(header(0x20, false, true, 0, 1));
+        xdata.extend([0x81, 0xfc, 0xe4, 0xe3]);
+        let bytes = image_with(&[(0x1000, XDATA as u32)], &xdata);
+        let image = Image {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let function = lookup(&image, PDATA as u32, 8, 0x100c).unwrap();
+        let signed = 0x0055_0000_0000_0000 | (BASE + 0x1234);
+        let memory = stack(&[STACK + 0x100, signed]);
+        let mut registers = registers_at(0x100c);
+        virtual_unwind(&image, function, BOTH, &mut registers, &memory).unwrap();
+        assert_eq!(registers.x[30], signed);
+        assert_eq!(registers.pc, BASE + 0x1234);
+        assert_eq!(registers.sp, STACK + 16);
+        assert_eq!(strip_pointer_authentication(BASE + 0x1234), BASE + 0x1234);
     }
 
     #[test]
