@@ -8,7 +8,10 @@
 use crate::grants::Grant;
 use crate::json::JsonWriter;
 use crate::paths::{ANYWHERE, INSTALL_ROOTS, READ_ROOTS, TRASH, WRITE_ROOTS};
-use eggos_commands::tools::{self as registry, Argument, DefaultValue, JsonType, ToolDefinition};
+use eggos_commands::tools::{
+    self as registry, Argument, DefaultValue, JsonType, ToolDefinition, ToolResult,
+};
+use eggos_commands::{Category, Field, FieldType};
 
 pub use eggos_commands::tools::{CAPTURE_PATH, Confirmation};
 
@@ -918,6 +921,193 @@ fn write_default(out: &mut JsonWriter<'_>, default: DefaultValue) {
     }
 }
 
+/// The fields of `wm_capture`'s `structuredContent`, every one a whole number.
+pub const IMAGE_FIELDS: [&str; 5] = ["width", "height", "image_width", "image_height", "scale"];
+
+/// The fields of `run`'s `structuredContent` (D137).
+pub const RUN_FIELDS: [&str; 4] = ["exitCode", "signal", "timedOut", "outputCut"];
+
+/// The fields of the items envelope a list tool's `structuredContent` always holds (D225).
+pub const ITEMS_REQUIRED: [&str; 2] = ["items", "truncated"];
+
+/// The fields of an error's `structuredContent.error` that are always there; `fix_command`
+/// is there when one command fixes it.
+pub const ERROR_REQUIRED: [&str; 4] = ["code", "category", "message", "fix"];
+
+/// Writes a tool's `outputSchema` (D225): `oneOf` what its `structuredContent` holds when it
+/// succeeds, which its registry [`ToolResult`] declares, and the `{"error":{...}}` of a
+/// refused or failed call.
+pub fn write_output_schema(out: &mut JsonWriter<'_>, definition: &ToolDefinition) {
+    out.begin_object();
+    out.key("type");
+    out.string("object");
+    out.key("oneOf");
+    out.begin_array();
+    write_result_schema(out, definition);
+    write_error_schema(out);
+    out.end_array();
+    out.end_object();
+}
+
+fn write_result_schema(out: &mut JsonWriter<'_>, definition: &ToolDefinition) {
+    out.begin_object();
+    out.key("type");
+    out.string("object");
+    out.key("properties");
+    out.begin_object();
+    let required: &[&str] = match definition.result {
+        ToolResult::Text | ToolResult::Icon => {
+            if definition.page_limit().is_some() {
+                write_page_properties(out);
+            }
+            &[]
+        }
+        ToolResult::Items(fields) => {
+            out.key("items");
+            out.begin_object();
+            out.key("type");
+            out.string("array");
+            out.key("items");
+            write_record_schema(out, fields);
+            out.end_object();
+            write_page_properties(out);
+            &ITEMS_REQUIRED
+        }
+        ToolResult::Image => {
+            for key in IMAGE_FIELDS {
+                out.key(key);
+                write_type(out, "integer", false);
+            }
+            &IMAGE_FIELDS
+        }
+        ToolResult::Run => {
+            for (key, json, nullable) in [
+                ("exitCode", "integer", true),
+                ("signal", "integer", true),
+                ("timedOut", "boolean", false),
+                ("outputCut", "boolean", false),
+            ] {
+                out.key(key);
+                write_type(out, json, nullable);
+            }
+            &RUN_FIELDS
+        }
+    };
+    out.end_object();
+    write_required(out, required);
+    out.key("additionalProperties");
+    out.bool(false);
+    out.end_object();
+}
+
+fn write_page_properties(out: &mut JsonWriter<'_>) {
+    out.key("truncated");
+    write_type(out, "boolean", false);
+    out.key("truncated_by");
+    out.begin_object();
+    out.key("enum");
+    out.begin_array();
+    out.string("limit");
+    out.string("bytes");
+    out.end_array();
+    out.end_object();
+    out.key("next_cursor");
+    write_type(out, "string", false);
+}
+
+fn write_record_schema(out: &mut JsonWriter<'_>, fields: &[Field]) {
+    out.begin_object();
+    out.key("type");
+    out.string("object");
+    out.key("properties");
+    out.begin_object();
+    for field in fields {
+        out.key(field.name);
+        match json_type_of(field.value) {
+            Some(json) => write_type(out, json, field.nullable),
+            None => {
+                out.begin_object();
+                out.end_object();
+            }
+        }
+    }
+    out.end_object();
+    out.end_object();
+}
+
+const fn json_type_of(value: FieldType) -> Option<&'static str> {
+    match value {
+        FieldType::Text | FieldType::Time => Some("string"),
+        FieldType::Integer => Some("integer"),
+        FieldType::Boolean => Some("boolean"),
+        FieldType::List => Some("array"),
+        FieldType::Object => Some("object"),
+        FieldType::Value => None,
+    }
+}
+
+fn write_type(out: &mut JsonWriter<'_>, json: &str, nullable: bool) {
+    out.begin_object();
+    out.key("type");
+    match nullable {
+        true => {
+            out.begin_array();
+            out.string(json);
+            out.string("null");
+            out.end_array();
+        }
+        false => out.string(json),
+    }
+    out.end_object();
+}
+
+fn write_required(out: &mut JsonWriter<'_>, required: &[&str]) {
+    if required.is_empty() {
+        return;
+    }
+    out.key("required");
+    out.begin_array();
+    for name in required {
+        out.string(name);
+    }
+    out.end_array();
+}
+
+fn write_error_schema(out: &mut JsonWriter<'_>) {
+    out.begin_object();
+    out.key("type");
+    out.string("object");
+    out.key("properties");
+    out.begin_object();
+    out.key("error");
+    out.begin_object();
+    out.key("type");
+    out.string("object");
+    out.key("properties");
+    out.begin_object();
+    for key in ["code", "message", "fix", "fix_command"] {
+        out.key(key);
+        write_type(out, "string", false);
+    }
+    out.key("category");
+    out.begin_object();
+    out.key("enum");
+    out.begin_array();
+    for category in Category::ALL {
+        out.string(category.name());
+    }
+    out.end_array();
+    out.end_object();
+    out.end_object();
+    write_required(out, &ERROR_REQUIRED);
+    out.end_object();
+    out.end_object();
+    write_required(out, &["error"]);
+    out.key("additionalProperties");
+    out.bool(false);
+    out.end_object();
+}
+
 /// Writes `tools/list`'s result: every tool with its schema and annotations, leaving out a
 /// tool whose component's file `present` does not find (D18).
 pub fn write_list(out: &mut JsonWriter<'_>, present: &mut dyn FnMut(&'static str) -> bool) {
@@ -935,6 +1125,8 @@ pub fn write_list(out: &mut JsonWriter<'_>, present: &mut dyn FnMut(&'static str
         out.string(definition.description);
         out.key("inputSchema");
         write_input_schema(out, definition);
+        out.key("outputSchema");
+        write_output_schema(out, definition);
         out.key("annotations");
         out.begin_object();
         out.key("title");

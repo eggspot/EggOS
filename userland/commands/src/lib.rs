@@ -356,6 +356,8 @@ pub enum FieldType {
     List,
     /// A JSON object.
     Object,
+    /// Any JSON value: its type depends on the record (a registry value's data, D230).
+    Value,
 }
 
 impl FieldType {
@@ -368,6 +370,7 @@ impl FieldType {
             FieldType::Time => "time",
             FieldType::List => "list",
             FieldType::Object => "object",
+            FieldType::Value => "value",
         }
     }
 }

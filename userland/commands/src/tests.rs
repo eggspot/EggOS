@@ -1,5 +1,6 @@
 use crate::tools::{
     self, Confirmation, DECIDED_NAMES, DefaultValue, JsonType, Mapping, SHIPPED_NAMES, TOOLS,
+    ToolResult,
 };
 use crate::{
     COMMANDS, CORE_VERBS, Category, Effect, Grant, KEPT_NAMES, NOUN_VERBS, Output, SHELL_BUILTINS,
@@ -244,6 +245,33 @@ fn new_tool_names_join_their_command_s_words_and_shipped_names_are_kept() {
     }
     for (shipped, tool) in SHIPPED_NAMES.iter().zip(&TOOLS) {
         assert_eq!(*shipped, tool.name);
+    }
+}
+
+#[test]
+fn every_tool_declares_its_result_and_new_list_tools_answer_items() {
+    for tool in &TOOLS {
+        let records = match find(tool.command) {
+            Some(command) if tool.fixed.contains(&"--json") => match command.outputs.json {
+                Output::Records(fields) => Some(fields),
+                _ => None,
+            },
+            _ => None,
+        };
+        match tool.result {
+            ToolResult::Items(fields) => assert_eq!(Some(fields), records, "{}", tool.name),
+            ToolResult::Image => assert_eq!(tool.name, "wm_capture"),
+            ToolResult::Icon => assert_eq!(tool.name, "app_icon"),
+            ToolResult::Run => assert_eq!(tool.name, "run"),
+            ToolResult::Text => assert!(
+                records.is_none() || SHIPPED_NAMES.contains(&tool.name),
+                "{} writes JSON records, so its result is the items envelope",
+                tool.name
+            ),
+        }
+        if tool.dry_run_by_server() {
+            assert_eq!(tool.result, ToolResult::Text, "{}", tool.name);
+        }
     }
 }
 

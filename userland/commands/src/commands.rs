@@ -2361,15 +2361,15 @@ pub const DF: CommandDefinition = CommandDefinition {
 /// when the device has none.
 pub const DEVICE_FIELDS: [Field; 10] = [
     field("id", FieldType::Integer),
-    field("parent", FieldType::Integer),
+    nullable("parent", FieldType::Integer),
     field("bus", FieldType::Text),
     field("class", FieldType::Text),
     field("name", FieldType::Text),
     field("description", FieldType::Text),
-    field("driver", FieldType::Text),
+    nullable("driver", FieldType::Text),
     field("state", FieldType::Text),
-    field("delivery", FieldType::Text),
-    field("reason", FieldType::Text),
+    nullable("delivery", FieldType::Text),
+    nullable("reason", FieldType::Text),
 ];
 
 /// `device list` (D184).
@@ -3701,7 +3701,7 @@ const REGISTRY_FIELDS: [Field; 5] = [
     nullable("subkey", FieldType::Text),
     nullable("name", FieldType::Text),
     nullable("type", FieldType::Text),
-    nullable("data", FieldType::Text),
+    nullable("data", FieldType::Value),
 ];
 
 const REGISTRY_YES: OptionDefinition = long_flag("yes", "Do it without asking.");

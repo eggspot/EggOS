@@ -4,7 +4,7 @@
 
 use crate::commands::{LIST_PAGE_LIMIT, LS_PAGE_LIMIT};
 use crate::page::{CURSOR_PATTERN, MAX_CURSOR_BYTES};
-use crate::{Effect, Grant};
+use crate::{CommandDefinition, Effect, Field, Grant, Output};
 
 /// Where `wm_capture`'s twin writes the PNG, outside every folder a tool reaches.
 pub const CAPTURE_PATH: &str = "/run/eggmcpd-capture.png";
@@ -272,18 +272,35 @@ impl Confirmation {
     }
 }
 
-/// What a tool's successful result holds.
+/// What a tool's successful result holds, which its `outputSchema` declares (D225): every tool
+/// declares one, and a refused or failed call's `structuredContent` is `{"error":{...}}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolResult {
     /// The data notice, then the twin's output as text (or the server's summary of it for
-    /// `tee` and `trash`).
+    /// `tee` and `trash`); `structuredContent` is `{}`, or where the page stands for a tool
+    /// that pages.
     Text,
+    /// The data notice and the twin's JSON lines as text, and in `structuredContent` the
+    /// `items` envelope: `{"items":[...],"truncated":...}` with `truncated_by` and
+    /// `next_cursor` when it was cut; each item has these fields (its command's records).
+    Items(&'static [Field]),
     /// The data notice and the PNG, with `width`, `height`, `image_width`, `image_height` and
     /// `scale` in `structuredContent` (`wm_capture`).
     Image,
+    /// The PNG alone; `structuredContent` is `{}` (`app_icon`).
+    Icon,
     /// The program's output and errors, with `exitCode`, `signal`, `timedOut` and `outputCut`
     /// in `structuredContent` (`run`, D137).
     Run,
+}
+
+/// The fields of a command's JSON records, for a tool whose result is
+/// [`ToolResult::Items`]; a command that writes no records stops the build.
+const fn records_of(command: &CommandDefinition) -> &'static [Field] {
+    match command.outputs.json {
+        Output::Records(fields) => fields,
+        _ => panic!("a tool's items come from a command that writes JSON records"),
+    }
 }
 
 /// One MCP tool.
@@ -354,6 +371,7 @@ const fn reading(
     command: &'static [&'static str],
     fixed: &'static [&'static str],
     arguments: &'static [Argument],
+    result: ToolResult,
 ) -> ToolDefinition {
     ToolDefinition {
         name,
@@ -367,7 +385,7 @@ const fn reading(
         idempotent: true,
         open_world: false,
         confirm: Confirmation::Never,
-        result: ToolResult::Text,
+        result,
     }
 }
 
@@ -378,6 +396,7 @@ const fn operating(
     command: &'static [&'static str],
     fixed: &'static [&'static str],
     arguments: &'static [Argument],
+    result: ToolResult,
 ) -> ToolDefinition {
     ToolDefinition {
         name,
@@ -391,7 +410,7 @@ const fn operating(
         idempotent: false,
         open_world: false,
         confirm: Confirmation::Never,
-        result: ToolResult::Text,
+        result,
     }
 }
 
@@ -402,6 +421,7 @@ const fn managing(
     command: &'static [&'static str],
     arguments: &'static [Argument],
     idempotent: bool,
+    result: ToolResult,
 ) -> ToolDefinition {
     ToolDefinition {
         name,
@@ -415,7 +435,7 @@ const fn managing(
         idempotent,
         open_world: false,
         confirm: Confirmation::Never,
-        result: ToolResult::Text,
+        result,
     }
 }
 
@@ -666,6 +686,7 @@ pub const LS: ToolDefinition = reading(
     &["ls"],
     &["-l"],
     &LS_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `cat`.
@@ -679,6 +700,7 @@ pub const CAT: ToolDefinition = reading(
     &["cat"],
     &[],
     &CAT_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `ps`.
@@ -691,6 +713,7 @@ pub const PS: ToolDefinition = reading(
     &["ps"],
     &[],
     &LIST_PAGE,
+    ToolResult::Text,
 );
 
 /// `wm_list`.
@@ -704,6 +727,7 @@ pub const WM_LIST: ToolDefinition = reading(
     &["wm", "list"],
     &[],
     &LIST_PAGE,
+    ToolResult::Text,
 );
 
 /// `wm_desktop_list` (D204).
@@ -715,6 +739,7 @@ pub const WM_DESKTOP_LIST: ToolDefinition = reading(
     &["wm", "desktop", "list"],
     &["--json"],
     &[],
+    ToolResult::Items(records_of(&crate::commands::WM_DESKTOP_LIST)),
 );
 
 /// `wm_desktop_new` (D204).
@@ -726,6 +751,7 @@ pub const WM_DESKTOP_NEW: ToolDefinition = operating(
     &["wm", "desktop", "new"],
     &[],
     &[],
+    ToolResult::Text,
 );
 
 /// `app_list`.
@@ -739,6 +765,7 @@ pub const APP_LIST: ToolDefinition = reading(
     &["app", "list"],
     &[],
     &LIST_PAGE,
+    ToolResult::Text,
 );
 
 /// `app_show` (D191).
@@ -753,6 +780,7 @@ pub const APP_SHOW: ToolDefinition = reading(
     &["app", "show"],
     &[],
     &APP_SHOW_ARGUMENTS,
+    ToolResult::Text,
 );
 
 const APP_SHOW_ARGUMENTS: [Argument; 1] = [required(described(
@@ -776,7 +804,7 @@ pub const APP_ICON: ToolDefinition = ToolDefinition {
     idempotent: true,
     open_world: false,
     confirm: Confirmation::Never,
-    result: ToolResult::Image,
+    result: ToolResult::Icon,
 };
 
 /// `kill` (D200).
@@ -859,6 +887,7 @@ pub const CLOCK_GET: ToolDefinition = reading(
     &["date"],
     &["-u", "+%Y-%m-%dT%H:%M:%SZ"],
     &[],
+    ToolResult::Text,
 );
 
 /// `net_status`.
@@ -873,6 +902,7 @@ pub const NET_STATUS: ToolDefinition = reading(
     &["ip"],
     &["-j", "addr"],
     &[],
+    ToolResult::Text,
 );
 
 /// `net_ping`.
@@ -886,6 +916,7 @@ pub const NET_PING: ToolDefinition = reading(
     &["ping"],
     &["-W", "1"],
     &NET_PING_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `net_lookup`.
@@ -898,6 +929,7 @@ pub const NET_LOOKUP: ToolDefinition = reading(
     &["nslookup"],
     &[],
     &NET_LOOKUP_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `df` (D171).
@@ -911,6 +943,7 @@ pub const DF: ToolDefinition = reading(
     &["df"],
     &["--json"],
     &DF_ARGUMENTS,
+    ToolResult::Items(records_of(&crate::commands::DF)),
 );
 
 const DEVICE_LIST_ARGUMENTS: [Argument; 1] = [defaulting(
@@ -936,6 +969,7 @@ pub const DEVICE_LIST: ToolDefinition = reading(
     &["device", "list"],
     &["--json"],
     &DEVICE_LIST_ARGUMENTS,
+    ToolResult::Items(records_of(&crate::commands::DEVICE_LIST)),
 );
 
 /// `tee`.
@@ -1175,6 +1209,7 @@ pub const DOWNLOAD_LIST: ToolDefinition = reading(
     &["download", "list"],
     &["--json"],
     &[],
+    ToolResult::Items(records_of(&crate::commands::DOWNLOAD_LIST)),
 );
 
 /// `download_cancel` (D224).
@@ -1514,6 +1549,7 @@ pub const WM_CLICK: ToolDefinition = operating(
     &["wm", "click"],
     &[],
     &CLICK_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `wm_type`.
@@ -1528,6 +1564,7 @@ pub const WM_TYPE: ToolDefinition = operating(
     &["wm", "type"],
     &[],
     &TYPE_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `wm_press`.
@@ -1543,6 +1580,7 @@ pub const WM_PRESS: ToolDefinition = operating(
     &["wm", "press"],
     &[],
     &PRESS_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `wm_scroll`.
@@ -1557,6 +1595,7 @@ pub const WM_SCROLL: ToolDefinition = operating(
     &["wm", "scroll"],
     &[],
     &SCROLL_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `wm_drag`.
@@ -1573,6 +1612,7 @@ pub const WM_DRAG: ToolDefinition = operating(
     &["wm", "drag"],
     &[],
     &DRAG_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `wm_menu_list`.
@@ -1587,6 +1627,7 @@ pub const WM_MENU_LIST: ToolDefinition = reading(
     &["wm", "menu"],
     &[],
     &WINDOW_ONLY,
+    ToolResult::Text,
 )
 .with_grant(Grant::View);
 
@@ -1604,6 +1645,7 @@ pub const WM_MENU_CHOOSE: ToolDefinition = operating(
     &["wm", "menu"],
     &["--choose"],
     &MENU_CHOOSE_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `wm_focus`.
@@ -1616,6 +1658,7 @@ pub const WM_FOCUS: ToolDefinition = managing(
     &["wm", "focus"],
     &WINDOW_ONLY,
     true,
+    ToolResult::Text,
 );
 
 /// `wm_move`.
@@ -1627,6 +1670,7 @@ pub const WM_MOVE: ToolDefinition = managing(
     &["wm", "move"],
     &SCREEN_POINT,
     true,
+    ToolResult::Text,
 );
 
 /// `wm_size`.
@@ -1639,6 +1683,7 @@ pub const WM_SIZE: ToolDefinition = managing(
     &["wm", "size"],
     &WINDOW_SIZE,
     true,
+    ToolResult::Text,
 );
 
 /// `wm_minimise`.
@@ -1650,6 +1695,7 @@ pub const WM_MINIMISE: ToolDefinition = managing(
     &["wm", "minimise"],
     &WINDOW_ONLY,
     true,
+    ToolResult::Text,
 );
 
 /// `wm_maximise`.
@@ -1661,6 +1707,7 @@ pub const WM_MAXIMISE: ToolDefinition = managing(
     &["wm", "maximise"],
     &WINDOW_ONLY,
     true,
+    ToolResult::Text,
 );
 
 /// `wm_restore`.
@@ -1672,6 +1719,7 @@ pub const WM_RESTORE: ToolDefinition = managing(
     &["wm", "restore"],
     &WINDOW_ONLY,
     true,
+    ToolResult::Text,
 );
 
 /// `wm_close`.
@@ -1684,6 +1732,7 @@ pub const WM_CLOSE: ToolDefinition = managing(
     &["wm", "close"],
     &WINDOW_ONLY,
     false,
+    ToolResult::Text,
 );
 
 const ACT_ARGUMENTS: [Argument; 4] = [
@@ -1732,6 +1781,7 @@ pub const WM_SHOW: ToolDefinition = reading(
     &["wm", "show"],
     &[],
     &WINDOW_ONLY,
+    ToolResult::Text,
 )
 .with_grant(Grant::View);
 
@@ -1751,6 +1801,7 @@ pub const WM_ACT: ToolDefinition = operating(
     &["wm", "act"],
     &[],
     &ACT_ARGUMENTS,
+    ToolResult::Text,
 );
 
 const SETTING_KEY: Argument = required(described(
@@ -1806,6 +1857,7 @@ pub const SETTINGS_LIST: ToolDefinition = reading(
     &["settings", "list"],
     &[],
     &LIST_PAGE,
+    ToolResult::Text,
 );
 
 /// `settings_get` (D163).
@@ -1817,6 +1869,7 @@ pub const SETTINGS_GET: ToolDefinition = reading(
     &["settings", "get"],
     &[],
     &SETTINGS_GET_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `settings_set` (D163).
@@ -1889,6 +1942,7 @@ pub const GETPROP: ToolDefinition = reading(
     &["getprop"],
     &[],
     &GETPROP_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// `setprop` (D188).
@@ -1932,6 +1986,7 @@ pub const LOGCAT: ToolDefinition = reading(
     &["logcat"],
     &["-d", "-v", "threadtime"],
     &LOGCAT_ARGUMENTS,
+    ToolResult::Text,
 );
 
 /// The pattern a disk's `device` argument must match (D192).
@@ -1957,6 +2012,7 @@ pub const DISK_LIST: ToolDefinition = reading(
     &["disk", "list"],
     &["--json"],
     &[],
+    ToolResult::Items(records_of(&crate::commands::DISK_LIST)),
 );
 
 /// `disk_check` (D192).
@@ -2043,6 +2099,7 @@ pub const AGENT_LIST: ToolDefinition = reading(
     &["agent", "list"],
     &["--json"],
     &[],
+    ToolResult::Items(records_of(&crate::commands::AGENT_LIST)),
 )
 .with_grant(Grant::View);
 
@@ -2057,6 +2114,7 @@ pub const AGENT_SHOW: ToolDefinition = reading(
     &["agent", "show"],
     &["--json"],
     &[],
+    ToolResult::Text,
 );
 
 /// The `name` argument of `component_install` and `component_remove` (D237).
@@ -2081,6 +2139,7 @@ pub const COMPONENT_LIST: ToolDefinition = reading(
     &["component", "list"],
     &["--json"],
     &[],
+    ToolResult::Items(records_of(&crate::commands::COMPONENT_LIST)),
 );
 
 /// `component_install` (D237).
@@ -2167,6 +2226,7 @@ pub const WINDOWS_REGISTRY_GET: ToolDefinition = reading(
     &["windows", "registry", "get"],
     &["--json"],
     &[REGISTRY_KEY, REGISTRY_NAME],
+    ToolResult::Items(records_of(&crate::commands::WINDOWS_REGISTRY_GET)),
 );
 
 /// `windows_registry_set` (D230).

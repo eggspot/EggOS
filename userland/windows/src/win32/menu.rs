@@ -84,7 +84,7 @@ fn labels(menu: &Menu, nested: bool) -> [MenuLabel<'_>; MAX_ITEMS] {
     labels
 }
 
-fn with_root_surface<R>(
+pub(super) fn with_root_surface<R>(
     gui: &Gui,
     root: usize,
     work: impl FnOnce(&mut Surface<'_>) -> R,

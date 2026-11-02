@@ -16,6 +16,12 @@ pub const MAX_EXTRA: usize = 256;
 const HANDLE_BASE: usize = 0x1_0000;
 /// The style bit of a window that takes no input (`WS_DISABLED`): its enabled state.
 pub const WS_DISABLED: u32 = 0x0800_0000;
+/// The style bit of a window showing its own vertical scroll bar at its right edge.
+pub const WS_VSCROLL: u32 = 0x0020_0000;
+/// The style bit of a window showing its own horizontal scroll bar at its bottom edge.
+pub const WS_HSCROLL: u32 = 0x0010_0000;
+/// How thick a window's own scroll bar is (design section 14).
+pub const SCROLL_BAR_THICKNESS: i32 = 16;
 
 /// `GetWindowLongPtrW`'s indices below 0.
 pub mod index {
@@ -232,8 +238,42 @@ impl Window {
     /// Sets the menu bar's height and the client area under it.
     pub fn set_menu_height(&mut self, height: i32) {
         self.menu_height = height.clamp(0, self.buffer_height as i32);
-        self.width = self.buffer_width;
-        self.height = self.buffer_height - self.menu_height as u32;
+        self.fit_client();
+    }
+
+    /// Which of its own scroll bars it shows, vertical then horizontal: those its style names,
+    /// on a window that is not a system control (those draw their bars inside themselves).
+    pub fn own_scroll_bars(&self) -> (bool, bool) {
+        if matches!(self.procedure, Procedure::Control(..)) {
+            return (false, false);
+        }
+        (
+            self.style & WS_VSCROLL != 0,
+            self.style & WS_HSCROLL != 0,
+        )
+    }
+
+    /// The size of the area inside its frame: its client area with its own scroll bars.
+    pub fn outer_size(&self) -> (i32, i32) {
+        match self.is_child() {
+            true => (self.bounds.width().max(0), self.bounds.height().max(0)),
+            false => (
+                self.buffer_width as i32,
+                (self.buffer_height as i32 - self.menu_height).max(0),
+            ),
+        }
+    }
+
+    /// Sizes the client area to the area inside its frame less its own scroll bars.
+    pub fn fit_client(&mut self) {
+        let (width, height) = self.outer_size();
+        let (vertical, horizontal) = self.own_scroll_bars();
+        let less = |size: i32, shown: bool| match shown {
+            true => (size - SCROLL_BAR_THICKNESS).max(0),
+            false => size,
+        };
+        self.width = less(width, vertical) as u32;
+        self.height = less(height, horizontal) as u32;
     }
 
     /// The client area, `(0, 0)` to its size.
@@ -531,6 +571,12 @@ pub fn tree(table: &WindowTable, handle: usize) -> ([usize; MAX_WINDOWS], usize)
 /// top, with the point in that child's client coordinates; `parent` itself when no child is
 /// there.
 pub fn child_at(table: &WindowTable, parent: usize, x: i32, y: i32) -> (usize, (i32, i32)) {
+    if table
+        .get(parent)
+        .is_some_and(|window| !window.client().contains(x, y))
+    {
+        return (parent, (x, y));
+    }
     let (kids, length) = children(table, parent);
     for &kid in kids[..length].iter().rev() {
         let Some(window) = table.get(kid) else {

@@ -179,6 +179,11 @@ impl Listing {
 
     /// Reads `folder` again, hiding names that start with `.`.
     pub fn read_folder(&mut self, files: &mut impl Files, folder: &Path) {
+        self.read_folder_showing(files, folder, false);
+    }
+
+    /// Reads `folder` again, with the names that start with `.` when `hidden` says so.
+    pub fn read_folder_showing(&mut self, files: &mut impl Files, folder: &Path, hidden: bool) {
         self.clear();
         let mut name = [0u8; 256];
         let mut index = 0;
@@ -193,7 +198,7 @@ impl Listing {
             };
             index += 1;
             let name = &name[..length];
-            if name.first() == Some(&b'.') {
+            if name.first() == Some(&b'.') && (!hidden || name == b"." || name == b"..") {
                 continue;
             }
             let Some(path) = joined(folder, name) else {

@@ -99,6 +99,8 @@ pub struct Gui {
     pub input: InputState,
     /// The window under the pointer and `TrackMouseEvent`'s requests (D227).
     pub hover: super::hover::Hover,
+    /// The scroll bars windows show themselves (`WS_VSCROLL`, `WS_HSCROLL`, D227).
+    pub window_scroll_bars: super::window_scroll_bars::WindowScrollBars,
     last_click: Option<(usize, u32, (i32, i32))>,
     characters: [PendingCharacter; PENDING_CHARACTERS],
     next_character: usize,
@@ -126,6 +128,7 @@ impl Gui {
             queue_reported: 0,
             input: InputState::default(),
             hover: super::hover::Hover::new(),
+            window_scroll_bars: super::window_scroll_bars::WindowScrollBars::new(),
             last_click: None,
             characters: [PendingCharacter::default(); PENDING_CHARACTERS],
             next_character: 0,
