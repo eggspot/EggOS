@@ -290,6 +290,32 @@ Two results per architecture come from the release kernel rather than the benchm
   whole 4 KiB blocks; riscv64's holds the header and an empty index). Gated exactly: a
   component that grows is a size regression like the base's.
 
+## The runner (`xtask/src/bench.rs`)
+
+- `MARKER` (`EGGOS-BENCH:`) must match `eggos_kernel::bench::MARKER`, and `BOOT_TO_DESKTOP`
+  must match `eggos_kernel::boot_clock::DESKTOP`, the release kernel's first desktop frame
+  (D221), measured in a boot with a display.
+- Benchmarks run on one CPU (`BENCH_CPUS`): under `-icount`, QEMU runs every CPU in one thread
+  in turn, so other CPUs' instructions would count against the measured ones (D40).
+- A result fails the exact gate when it is slower than its baseline by more than 1% plus
+  0.5 ns: the absolute allowance keeps results of a few instructions from failing by one
+  instruction. The results in `SIZES` (`release_image_bytes`, `idle_memory_bytes`,
+  `translate_install_bytes`, `components_store_bytes`) are gated exactly: any growth fails.
+- `FIRMWARE_DEPENDENT` lists the benchmarks that execute firmware code (the SBI implementation
+  on riscv64: `timer_arm`, `timer_interrupt_round_trip`), whose counts depend on the firmware
+  build QEMU loads. They are compared only when the firmware's banner version (`1.3` from
+  `OpenSBI v1.3`) matches the baseline's `<arch> firmware <version>` line, and
+  `--update-baseline` keeps their baseline values (with the firmware line) when they were
+  measured on other firmware, so a machine whose QEMU ships another firmware build cannot move
+  CI's numbers; it prints a note per kept value.
+- `QEMU_DEPENDENT` lists the benchmarks whose counts depend on the QEMU version, which builds
+  each machine's devices and tables (`boot_to_prompt`, `boot_to_desktop`): compared only when
+  QEMU's version matches the baseline's `<arch> qemu <version>` line.
+- `--update-baseline` rewrites `benchmarks/baseline.txt` with its header, replacing only the
+  architectures that ran. A comparison writes `target/bench/report.md` (a table of every
+  result against its baseline) and `report.json`, and lists one failure per regression, new
+  benchmark without a baseline, or baseline without a result.
+
 ## Host tests of the benchmarks
 
 The benchmarks' host tests run on a counting platform: its clock advances one tick per read,

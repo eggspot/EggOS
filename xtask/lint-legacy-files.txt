@@ -64,5 +64,4 @@ userland/eggsh/src/syntax.rs 1
 userland/runtime/src/lib.rs 2
 userland/std-selftest/src/console.rs 4
 userland/std-selftest/src/main.rs 2
-xtask/src/bench.rs 27
 xtask/src/elf.rs 12

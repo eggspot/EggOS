@@ -26,7 +26,6 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-/// Must match `eggos_kernel::bench::MARKER`.
 const MARKER: &str = "EGGOS-BENCH:";
 
 /// QEMU in deterministic instruction-counting mode: 2^0 ns of guest time per instruction, and
@@ -35,12 +34,8 @@ const MARKER: &str = "EGGOS-BENCH:";
 /// `RDSEED`), so a path that ever depends on random values runs the same way each time (D56).
 pub const ICOUNT_ARGS: &[&str] = &["-icount", "shift=0,sleep=off", "-seed", "1"];
 
-/// Benchmarks run on one CPU: with `-icount`, QEMU runs every CPU in one thread in turn, so
-/// other CPUs' instructions would count against the measured ones (D40).
 const BENCH_CPUS: u32 = 1;
 
-/// How much slower than its baseline a result may be before it fails: relative, plus an
-/// absolute allowance so results of a few instructions are not failed by one instruction.
 const TOLERANCE_RELATIVE: f64 = 0.01;
 const TOLERANCE_ABSOLUTE_NS: f64 = 0.5;
 
@@ -53,7 +48,6 @@ const IDLE_MEMORY_BYTES: &str = "idle_memory_bytes";
 const TRANSLATE_INSTALL_BYTES: &str = "translate_install_bytes";
 const COMPONENTS_STORE_BYTES: &str = "components_store_bytes";
 
-/// Results that are sizes, gated exactly: any growth fails.
 const SIZES: &[&str] = &[
     RELEASE_IMAGE_BYTES,
     TRANSLATE_INSTALL_BYTES,
@@ -70,7 +64,6 @@ const TRANSLATE_FUNCTION: [u8; 12] = [
 ];
 const NOP: u8 = 0x90;
 
-/// Header of the baseline file, rewritten by `--update-baseline`.
 const BASELINE_HEADER: &str = "\
 # EggOS boot-time benchmark baseline, written by `cargo xtask bench --arch all --update-baseline`.
 # One line per result: <arch> <benchmark> <ns per iteration>. The kernel runs under QEMU
@@ -84,30 +77,18 @@ const BASELINE_HEADER: &str = "\
 # the baseline with CI's QEMU (Ubuntu 24.04 packages).
 ";
 
-/// Benchmarks that execute firmware code (the SBI implementation on RISC-V), so their counts
-/// depend on the firmware build QEMU loads: (architecture, firmware banner prefix,
-/// benchmarks). Those are compared only when the firmware matches the baseline's.
 const FIRMWARE_DEPENDENT: &[(&str, &str, &[&str])] = &[(
     "riscv64",
     "OpenSBI v",
     &["timer_arm", "timer_interrupt_round_trip"],
 )];
 
-/// Benchmarks whose counts depend on the QEMU version, which builds each machine's devices
-/// and tables (Ubuntu 24.04's QEMU and QEMU 10.2 differ by up to 20% on x86_64's boot): those
-/// are compared only when QEMU's version matches the baseline's `<arch> qemu <version>` line.
 const QEMU_DEPENDENT: &[&str] = &["boot_to_prompt", BOOT_TO_DESKTOP];
 
-/// Must match `eggos_kernel::boot_clock::DESKTOP`: the release kernel's first desktop frame
-/// (D221), measured in a boot with a display.
 const BOOT_TO_DESKTOP: &str = "boot_to_desktop";
 
-/// Results in nanoseconds (= instructions, under icount) per iteration, keyed by
-/// (architecture, benchmark).
 type Results = BTreeMap<(String, String), f64>;
 
-/// A set of results and the firmware and QEMU versions each architecture ran with (when they
-/// matter).
 #[derive(Debug, Default, PartialEq)]
 struct Measurements {
     results: Results,
@@ -324,10 +305,6 @@ fn translate_install_bytes() -> Result<f64, String> {
     Ok(cache::serialize(&file).len() as f64 / guest_bytes as f64)
 }
 
-/// The baseline with the results of the architectures in `ran` replaced by `measured`'s,
-/// except firmware-dependent results measured on other firmware than the baseline's: those
-/// keep their baseline value (with its firmware line), so updating from a machine whose QEMU
-/// ships another firmware build cannot move CI's numbers. Also returns a note per kept value.
 fn updated_baseline(
     baseline: Measurements,
     measured: Measurements,
@@ -394,7 +371,6 @@ fn updated_baseline(
     (merged, kept)
 }
 
-/// Parses the kernel's `EGGOS-BENCH: <name> iterations=<n> ticks=<t> frequency=<hz>` lines.
 fn parse_console(console: &str) -> Result<Vec<(String, f64)>, String> {
     let mut results = Vec::new();
     for line in console.lines().map(str::trim_end) {
@@ -424,8 +400,6 @@ fn parse_console(console: &str) -> Result<Vec<(String, f64)>, String> {
     Ok(results)
 }
 
-/// The firmware version `arch`'s console shows, if its benchmarks depend on firmware: the
-/// rest of the firmware's banner line (e.g. `1.3` from `OpenSBI v1.3`).
 fn firmware_version(arch: &str, console: &str) -> Option<String> {
     let (_, prefix, _) = FIRMWARE_DEPENDENT.iter().find(|(a, _, _)| *a == arch)?;
     console
@@ -525,15 +499,12 @@ struct Row {
 
 #[derive(Debug, Default)]
 struct Comparison {
-    /// A table of every result against its baseline.
     text: String,
-    /// One line per regression, new benchmark without a baseline, or baseline without a result.
     failures: Vec<String>,
     rows: Vec<Row>,
     notes: Vec<String>,
 }
 
-/// Compares `measured` with `baseline` for the architectures in `ran`.
 fn compare(
     baseline: &Measurements,
     measured: &Measurements,
