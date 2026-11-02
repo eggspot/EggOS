@@ -63,7 +63,9 @@ A component installs under `/var/lib/eggos/components/<name>/`:
 - **One at a time.** One install or remove runs at a time, under `/run/eggos/components.lock`.
 
 A remove is refused in two cases: while another installed component needs the component, and
-while a running program runs one of its files. Otherwise the remove renames the component's
+while a running program runs one of its files: its command's first word, the link that word
+names (`/bin/windows registry ...`), or its executable (`/proc/<pid>/exe`) is one of the
+component's files, at its fixed path or where it is installed. Otherwise the remove renames the component's
 folder away first, then deletes it. If a staging or removing folder is left behind, the next
 action deletes it.
 

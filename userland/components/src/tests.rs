@@ -428,6 +428,40 @@ fn removing_one_that_is_needed_or_in_use_is_refused_and_otherwise_leaves_nothing
 }
 
 #[test]
+fn a_program_run_through_a_link_or_seen_by_its_executable_keeps_the_component_in_use() {
+    let mut files = machine(&[WINDOWS]);
+    let found = store(&mut files);
+    let component = found.index.component("windows-apps").unwrap().clone();
+    manager::install(&mut files, &found, &component, &mut |_, _| true).unwrap();
+    let installed_layer = manager::installed_path("windows-apps", WINDOWS_LAYER);
+    files.link("/bin/windows", &installed_layer);
+    files.file("/proc/20/cmdline", b"/bin/windows\0registry\0list\0");
+    assert_eq!(
+        manager::in_use(&mut files, &component),
+        (vec!["windows".into()], 1)
+    );
+    files.nodes.remove(&b"/proc/20/cmdline"[..]);
+    files.file("/proc/21/cmdline", b"windows\0/home/root/Paint.exe\0");
+    files.link("/proc/21/exe", "/bin/windows");
+    assert_eq!(
+        manager::in_use(&mut files, &component),
+        (vec!["Paint".into()], 1)
+    );
+    files.nodes.remove(&b"/proc/21/exe"[..]);
+    files.link("/proc/21/exe", &installed_layer);
+    assert_eq!(manager::in_use(&mut files, &component).1, 1);
+    files.nodes.remove(&b"/proc/21/exe"[..]);
+    files.link("/proc/21/exe", "/bin/ls");
+    files.file("/proc/22/cmdline", b"/bin/ls\0/usr/lib/eggos/windows\0");
+    assert_eq!(manager::in_use(&mut files, &component), (Vec::new(), 0));
+    assert_eq!(
+        manager::check_remove(&mut files, &manager::installed(&mut files), "windows-apps")
+            .map(|found| found.is_some()),
+        Ok(true)
+    );
+}
+
+#[test]
 fn leftovers_of_an_interrupted_install_or_remove_are_tidied_and_never_listed() {
     let mut files = machine(&[WINDOWS]);
     files

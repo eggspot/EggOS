@@ -40,6 +40,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const COPY_CHUNK: usize = 64 * 1024;
 const MAX_DEPTH: usize = 32;
 const NAME_BYTES: usize = 256;
+const PROGRAM_SUFFIXES: [&[u8]; 3] = [b".exe", b".EXE", b".app"];
 
 /// Where the store is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,11 +301,14 @@ pub fn check_remove<F: Files>(
 }
 
 /// The running programs that run one of `component`'s files: up to three names, and how many.
+/// A program runs a file when its `argv[0]`, the link `argv[0]` names (`/bin/windows`), or its
+/// `/proc/<pid>/exe` and the link that names is the file at its fixed or installed path.
 pub fn in_use<F: Files>(files: &mut F, component: &Component) -> (Vec<String>, usize) {
     let mut names = Vec::new();
     let mut count = 0;
     let mut name = [0u8; NAME_BYTES];
     let mut line = vec![0u8; MAX_COMMAND_LINE];
+    let mut target = vec![0u8; MAX_COMMAND_LINE];
     let mut at = 0;
     while let Ok(Some(length)) = files.entry(b"/proc", at, &mut name) {
         at += 1;
@@ -322,17 +326,13 @@ pub fn in_use<F: Files>(files: &mut F, component: &Component) -> (Vec<String>, u
         files.close(handle);
         let mut words = line[..read].split(|&byte| byte == 0);
         let program = words.next().unwrap_or(b"");
-        let runs = |file: &index::File| {
-            let installed = installed_path(&component.name, &file.path);
-            program == installed.as_bytes()
-                || (program.first() == Some(&b'/') && &program[1..] == file.path.as_bytes())
-        };
-        if !component.files.iter().any(runs) {
+        let pid = core::str::from_utf8(pid).unwrap_or("0");
+        if !runs_component(files, pid, program, component, &mut target) {
             continue;
         }
         count += 1;
         if names.len() < 3 {
-            let shown = match words.next().filter(|word| !word.is_empty()) {
+            let shown = match words.next().filter(|word| names_a_program(word)) {
                 Some(word) => program_name(word),
                 None => program_name(program),
             };
@@ -342,9 +342,50 @@ pub fn in_use<F: Files>(files: &mut F, component: &Component) -> (Vec<String>, u
     (names, count)
 }
 
+fn names_component_file(path: &[u8], component: &Component) -> bool {
+    component.files.iter().any(|file| {
+        let installed = installed_path(&component.name, &file.path);
+        path == installed.as_bytes()
+            || (path.first() == Some(&b'/') && &path[1..] == file.path.as_bytes())
+    })
+}
+
+fn runs_component<F: Files>(
+    files: &mut F,
+    pid: &str,
+    program: &[u8],
+    component: &Component,
+    target: &mut [u8],
+) -> bool {
+    if names_component_file(program, component) {
+        return true;
+    }
+    if program.first() == Some(&b'/')
+        && let Ok(length) = files.read_link(program, target)
+        && names_component_file(&target[..length], component)
+    {
+        return true;
+    }
+    let exe = ["/proc/", pid, "/exe"].concat();
+    let Ok(length) = files.read_link(exe.as_bytes(), target) else {
+        return false;
+    };
+    if names_component_file(&target[..length], component) {
+        return true;
+    }
+    let executable = target[..length].to_vec();
+    files
+        .read_link(&executable, target)
+        .is_ok_and(|length| names_component_file(&target[..length], component))
+}
+
+fn names_a_program(word: &[u8]) -> bool {
+    word.contains(&b'/') || PROGRAM_SUFFIXES.iter().any(|suffix| word.ends_with(suffix))
+}
+
 fn program_name(path: &[u8]) -> String {
     let name = eggos_app::files::file_name(path);
-    let name = [&b".exe"[..], b".EXE", b".app"]
+    let name = PROGRAM_SUFFIXES
         .iter()
         .find_map(|suffix| name.strip_suffix(*suffix))
         .unwrap_or(name);
