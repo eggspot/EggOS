@@ -51,12 +51,14 @@ const BLOCK_FACTOR: f64 = 2.0;
 const RELEASE_IMAGE_BYTES: &str = "release_image_bytes";
 const IDLE_MEMORY_BYTES: &str = "idle_memory_bytes";
 const TRANSLATE_INSTALL_BYTES: &str = "translate_install_bytes";
+const COMPONENTS_STORE_BYTES: &str = "components_store_bytes";
 
 /// Results that are sizes, gated exactly: any growth fails.
 const SIZES: &[&str] = &[
     RELEASE_IMAGE_BYTES,
     TRANSLATE_INSTALL_BYTES,
     IDLE_MEMORY_BYTES,
+    COMPONENTS_STORE_BYTES,
 ];
 
 const TRANSLATE_IMAGE_BASE: u64 = 0x1_4000_0000;
@@ -260,6 +262,11 @@ fn release_kernel_results(arch: &Arch) -> Result<Vec<(String, f64)>, String> {
             .filter(|(name, _)| name == BOOT_TO_DESKTOP),
     );
     results.push((RELEASE_IMAGE_BYTES.to_owned(), bytes as f64));
+    let store = crate::components::build_store(arch)?;
+    let store_bytes = std::fs::metadata(&store)
+        .map_err(|e| format!("{}: {e}", store.display()))?
+        .len();
+    results.push((COMPONENTS_STORE_BYTES.to_owned(), store_bytes as f64));
     if arch.name == "aarch64" {
         results.push((
             TRANSLATE_INSTALL_BYTES.to_owned(),
@@ -1009,6 +1016,18 @@ mod tests {
         );
         assert!(shrunk.failures.is_empty());
         assert!(shrunk.text.contains("faster"));
+    }
+
+    #[test]
+    fn the_component_store_may_not_grow_by_one_byte_either() {
+        let baseline = results(&[("a", COMPONENTS_STORE_BYTES, 4096.0)]);
+        let grown = compare(
+            &baseline,
+            &results(&[("a", COMPONENTS_STORE_BYTES, 4097.0)]),
+            &["a"],
+        );
+        assert_eq!(grown.failures.len(), 1, "{:?}", grown.failures);
+        assert!(grown.failures[0].contains("4097.00 bytes"));
     }
 
     #[test]

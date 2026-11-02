@@ -278,7 +278,17 @@ Two results per architecture come from the release kernel rather than the benchm
   just before `boot: terminal`.
 - `release_image_bytes`: the size in bytes of the image `cargo xtask release` ships. Gated
   exactly: any growth fails until the baseline line is updated with the reason (CLAUDE.md,
-  note 8).
+  note 8). Since D237 the image is the base alone: the Windows and macOS layers are
+  components in the store, and the base holds only links to where they install, so this is
+  the base's size with no component installed (D24).
+- `idle_memory_bytes` (D203): the memory in use when the shell first waits at its prompt,
+  from the same boot. The release kernel boots with no component installed, so this is the
+  base's idle memory (D24, D237). Gated exactly like `release_image_bytes`.
+- `components_store_bytes` (D237): the size in bytes of the component store `cargo xtask
+  release` ships beside the kernel image, `eggos-<version>-<arch>-components.img`, as
+  `components::build_store` writes it (every component the architecture offers, padded to
+  whole 4 KiB blocks; riscv64's holds the header and an empty index). Gated exactly: a
+  component that grows is a size regression like the base's.
 
 ## Host tests of the benchmarks
 
