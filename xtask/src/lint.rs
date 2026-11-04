@@ -57,7 +57,7 @@ pub fn run(shrink: bool) -> Result<(), String> {
     let remaining: usize = legacy.values().sum();
     eprintln!(
         "xtask: lint: {scanned} files scanned, {remaining} comments left in {} legacy files; \
-         {packages} packages keep their integration tests in one tests/all program",
+         integration-test layout holds in {packages} packages",
         legacy.len()
     );
     Ok(())

@@ -248,7 +248,10 @@ mod tests {
         let entries = [file("all.rs")];
         let problems = package_problems("font", SINGLE_PROGRAM, Some(&entries));
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].starts_with("font/tests/all.rs: "), "{problems:?}");
+        assert!(
+            problems[0].starts_with("font/tests/all.rs: "),
+            "{problems:?}"
+        );
     }
 
     #[test]
