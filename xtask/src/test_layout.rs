@@ -9,7 +9,7 @@ const TEST_PROGRAM: &str = "all";
 const TEST_PROGRAM_PATH: &str = "tests/all/main.rs";
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum TestsEntry {
+pub(crate) enum TestsEntry {
     File(String),
     Directory { name: String, has_main: bool },
 }
@@ -27,7 +27,10 @@ struct Manifest {
     test_targets: Vec<TestTarget>,
 }
 
-pub fn check<'a>(root: &Path, manifests: impl Iterator<Item = &'a str>) -> Result<usize, String> {
+pub(crate) fn check<'a>(
+    root: &Path,
+    manifests: impl Iterator<Item = &'a str>,
+) -> Result<usize, String> {
     let mut problems = Vec::new();
     let mut packages = 0;
     for manifest_path in manifests {
@@ -90,7 +93,7 @@ fn entry_name(entry: &TestsEntry) -> &str {
     }
 }
 
-pub fn package_problems(
+pub(crate) fn package_problems(
     package_dir: &str,
     manifest_text: &str,
     tests_entries: Option<&[TestsEntry]>,
@@ -171,13 +174,16 @@ pub fn package_problems(
 
 fn parse(text: &str) -> Manifest {
     let mut manifest = Manifest::default();
-    let mut table = "";
+    let mut table = String::new();
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
-            table = line;
-            if line == "[package]" {
+            table = without_value_comment(line)
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            if table == "[package]" {
                 manifest.is_package = true;
-            } else if line == "[[test]]" {
+            } else if table == "[[test]]" {
                 manifest.test_targets.push(TestTarget::default());
             }
             continue;
@@ -185,24 +191,42 @@ fn parse(text: &str) -> Manifest {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        let (key, value) = (key.trim(), value.trim());
-        match table {
-            "[package]" if key == "autotests" => manifest.autotests_off = value == "false",
-            "[[test]]" => {
+        let key: String = key.chars().filter(|c| !c.is_whitespace()).collect();
+        let value = without_value_comment(value)
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'');
+        match (table.as_str(), key.as_str()) {
+            ("[package]", "autotests") | ("", "package.autotests") => {
+                manifest.autotests_off = value == "false";
+            }
+            ("[[test]]", "name" | "path") => {
                 let Some(target) = manifest.test_targets.last_mut() else {
                     continue;
                 };
-                let value = Some(value.trim_matches('"').to_owned());
-                match key {
-                    "name" => target.name = value,
-                    "path" => target.path = value,
-                    _ => {}
+                let value = Some(value.to_owned());
+                if key == "name" {
+                    target.name = value;
+                } else {
+                    target.path = value;
                 }
             }
             _ => {}
         }
     }
     manifest
+}
+
+fn without_value_comment(text: &str) -> &str {
+    let mut quote = None;
+    for (at, c) in text.char_indices() {
+        match (quote, c) {
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(open), _) if c == open => quote = None,
+            (None, '#') => return &text[..at],
+            _ => {}
+        }
+    }
+    text
 }
 
 #[cfg(test)]
@@ -293,6 +317,25 @@ mod tests {
             path = \"tests/integration.rs\"\n";
         let problems = package_problems("font", manifest, None);
         assert_eq!(problems.len(), 2, "{problems:?}");
+    }
+
+    #[test]
+    fn single_quotes_spaced_headers_and_trailing_comments_are_understood() {
+        let manifest = "[ package ]\nname = 'eggos-font'\nautotests = false # one program\n\n\
+            [[ test ]]\nname = 'all' # the only one\npath = \"tests/all/main.rs\"\n";
+        assert!(package_problems("font", manifest, Some(&[directory("all", true)])).is_empty());
+    }
+
+    #[test]
+    fn a_dotted_package_autotests_key_counts() {
+        let manifest = "package.autotests = false\n\n[package]\nname = \"eggos-font\"\n";
+        assert!(package_problems("font", manifest, Some(&[])).is_empty());
+    }
+
+    #[test]
+    fn a_hash_inside_a_string_is_not_a_comment() {
+        assert_eq!(without_value_comment(" \"a#b\" # c"), " \"a#b\" ");
+        assert_eq!(without_value_comment(" 'a#b'"), " 'a#b'");
     }
 
     #[test]

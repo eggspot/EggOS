@@ -39,21 +39,27 @@ pub fn run(shrink: bool) -> Result<(), String> {
     if shrink {
         return write_shrunk(&legacy_path, &legacy, &found, &problems);
     }
-    if !problems.is_empty() {
-        return Err(format!(
-            "{}\n(CLAUDE.md allows no comments in code but `// SAFETY:`, lint directives and \
-             `///` on public items; run `cargo xtask lint --shrink` after removing comments \
-             from a file listed in {LEGACY_FILES})",
-            problems.join("\n")
-        ));
-    }
-    let packages = crate::test_layout::check(
+    let layout = crate::test_layout::check(
         &root,
         files
             .iter()
             .map(String::as_str)
             .filter(|file| *file == "Cargo.toml" || file.ends_with("/Cargo.toml")),
-    )?;
+    );
+    if !problems.is_empty() {
+        let mut message = format!(
+            "{}\n(CLAUDE.md allows no comments in code but `// SAFETY:`, lint directives and \
+             `///` on public items; run `cargo xtask lint --shrink` after removing comments \
+             from a file listed in {LEGACY_FILES})",
+            problems.join("\n")
+        );
+        if let Err(layout) = layout {
+            message.push('\n');
+            message.push_str(&layout);
+        }
+        return Err(message);
+    }
+    let packages = layout?;
     let remaining: usize = legacy.values().sum();
     eprintln!(
         "xtask: lint: {scanned} files scanned, {remaining} comments left in {} legacy files; \
