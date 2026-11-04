@@ -3,7 +3,7 @@
 Status keys: **done**, **in progress**, **next**, planned (no marker).
 Updated by every build-loop run; the order is refined as we learn (reasons in `docs/decisions.md`).
 
-## v0.3.0 plan (next, owner 2026-10-26, D99)
+## v0.3.0 plan (**done**, released as v0.3.0 on 2026-11-05; owner 2026-10-26, D99)
 
 The first interactive release, 2026-11-01. Until it ships this list comes before the milestones'
 own order. Feature freeze: 2026-10-30 07:00.
