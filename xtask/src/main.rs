@@ -49,8 +49,8 @@ commands:
   lint [--shrink]        fail on comments the repository rules disallow in tracked .rs, .toml
                          and .yml files, beyond the counts listed in
                          xtask/lint-legacy-files.txt, and on a package whose integration
-                         tests are not in its single tests/all program; with --shrink, lower
-                         that list to match the files' current counts
+                         tests are not in its single tests/all program; with --shrink, only
+                         lower that list to match the files' current counts
   clippy-targets         clippy -D warnings on the user crates for their Linux targets
                          and the kernel crates for every kernel target, with the user
                          programs built for the test kernels

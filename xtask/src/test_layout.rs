@@ -9,7 +9,7 @@ const TEST_PROGRAM: &str = "all";
 const TEST_PROGRAM_PATH: &str = "tests/all/main.rs";
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum TestsEntry {
+enum TestsEntry {
     File(String),
     Directory { name: String, has_main: bool },
 }
@@ -93,7 +93,7 @@ fn entry_name(entry: &TestsEntry) -> &str {
     }
 }
 
-pub(crate) fn package_problems(
+fn package_problems(
     package_dir: &str,
     manifest_text: &str,
     tests_entries: Option<&[TestsEntry]>,
