@@ -18,6 +18,13 @@ multiple_unsafe_ops_per_block = "deny"
 
 [profile.dev]
 panic = "abort"
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
 
 [profile.release]
 panic = "abort"

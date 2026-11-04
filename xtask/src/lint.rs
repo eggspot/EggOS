@@ -1,5 +1,6 @@
 //! `cargo xtask lint`: fails on comments the repository's rules disallow (CLAUDE.md, "No other
-//! comments in code"), in every tracked `.rs`, `.toml` and `.yml` file.
+//! comments in code"), in every tracked `.rs`, `.toml` and `.yml` file, and on integration tests
+//! outside a package's single `tests/all` program (`test_layout`).
 //!
 //! Files that still have such comments are listed with their counts in
 //! `xtask/lint-legacy-files.txt`, so the lint fails only for a violation in a file that is not
@@ -23,14 +24,15 @@ pub fn run(shrink: bool) -> Result<(), String> {
     let legacy = parse_legacy(&read(&legacy_path)?)?;
     let mut found: BTreeMap<String, Vec<Violation>> = BTreeMap::new();
     let mut scanned = 0;
-    for file in tracked_files(&root)? {
-        let Some(text) = read_if_present(&root.join(&file))? else {
+    let files = tracked_files(&root)?;
+    for file in &files {
+        let Some(text) = read_if_present(&root.join(file))? else {
             continue;
         };
         scanned += 1;
-        let violations = scan(&file, &text);
+        let violations = scan(file, &text);
         if !violations.is_empty() {
-            found.insert(file, violations);
+            found.insert(file.clone(), violations);
         }
     }
     let problems = problems(&legacy, &found);
@@ -45,9 +47,17 @@ pub fn run(shrink: bool) -> Result<(), String> {
             problems.join("\n")
         ));
     }
+    let packages = crate::test_layout::check(
+        &root,
+        files
+            .iter()
+            .map(String::as_str)
+            .filter(|file| *file == "Cargo.toml" || file.ends_with("/Cargo.toml")),
+    )?;
     let remaining: usize = legacy.values().sum();
     eprintln!(
-        "xtask: lint: {scanned} files scanned, {remaining} comments left in {} legacy files",
+        "xtask: lint: {scanned} files scanned, {remaining} comments left in {} legacy files; \
+         {packages} packages keep their integration tests in one tests/all program",
         legacy.len()
     );
     Ok(())
@@ -57,7 +67,7 @@ fn read(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn read_if_present(path: &Path) -> Result<Option<String>, String> {
+pub(crate) fn read_if_present(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

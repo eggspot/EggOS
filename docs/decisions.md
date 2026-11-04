@@ -17277,3 +17277,27 @@ the license, by an explicit instruction recorded here.
   number is deterministic). Also: folding a thread's time into its process's account only at exit and
   when read, instead of an atomic add per switch; an instruction profile of `vfork` + `execve` on
   x86_64; reserving `FileRanges` once per exec.
+
+## D217 One integration-test program per package, and line tables only in debug and test builds — Decided (owner, 2026-11-04)
+
+- **Why.** Cargo builds every `tests/*.rs` file as its own program, and each one links the whole
+  crate and everything under it, so the build folder grows with the number of test files: EggDB's
+  debug folder reached 17 GB with 95 test files and 565 test programs. The owner asked for a build
+  folder that does not grow with the number of tests.
+- **The rule.** A package's integration tests are modules of one program, `tests/all/main.rs`
+  (shared helpers too), declared as the package's only `[[test]] name = "all"`,
+  `path = "tests/all/main.rs"`, with `autotests = false` in `[package]`. Test names stay as they
+  are, so `cargo test <name>` still finds them; only the module path gains the file's name. Every
+  package follows the same layout, one test file or many. `cargo xtask lint` (CI's fast job and
+  `cargo xtask ci`) fails on a `.rs` file directly in a package's `tests/` folder (including
+  `tests/all.rs`), on a second `tests/<name>/main.rs` program, on a `tests/` folder without
+  `autotests = false`, on a `[[test]]` target other than `all` at that path, and on a
+  `tests/all/main.rs` that no `[[test]]` builds. When this was decided EggOS had no integration
+  tests at all (its tests are unit tests inside each crate, 68 test programs: one per library and
+  binary target), so nothing moved; the lint keeps it that way.
+- **Debug info.** `[profile.dev]` and `[profile.test]` keep only line tables
+  (`debug = "line-tables-only"`), and crates outside the workspace (`[profile.dev.package."*"]`)
+  none. Panic messages and failing tests still name file and line (the panic location is compiled
+  in, independent of debug info), and backtraces still resolve to file and line; what goes is
+  variable and type information for a debugger, which a developer who needs it turns back on
+  locally with `CARGO_PROFILE_DEV_DEBUG=true`. Release builds are unchanged (`strip = "debuginfo"`).
