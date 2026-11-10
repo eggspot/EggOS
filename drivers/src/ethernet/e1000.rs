@@ -14,6 +14,10 @@ const CTRL: usize = 0x0000;
 const STATUS: usize = 0x0008;
 const EERD: usize = 0x0014;
 const ICR: usize = 0x00c0;
+const IMS: usize = 0x00d0;
+const INTERRUPT_LINK_CHANGE: u32 = 1 << 2;
+const INTERRUPT_RECEIVE_THRESHOLD: u32 = 1 << 4;
+const INTERRUPT_RECEIVE_TIMER: u32 = 1 << 7;
 const IMC: usize = 0x00d8;
 const RCTL: usize = 0x0100;
 const TCTL: usize = 0x0400;
@@ -169,8 +173,18 @@ impl<R: RegisterIo, M: DmaMemory> E1000<R, M> {
         self.regs.read32(STATUS) & STATUS_LINK_UP != 0
     }
 
+    /// Asks the adapter to interrupt when frames arrive or the link changes (D255).
+    pub fn enable_interrupts(&mut self) {
+        self.regs.read32(ICR);
+        self.regs.write32(
+            IMS,
+            INTERRUPT_RECEIVE_TIMER | INTERRUPT_RECEIVE_THRESHOLD | INTERRUPT_LINK_CHANGE,
+        );
+    }
+
     /// Copies the next frame received into `frame`: its length, or `None` when none came.
     pub fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {
+        self.regs.read32(ICR);
         loop {
             let index = self.receive_next;
             let descriptor = RECEIVE_RING + index * DESCRIPTOR_BYTES;

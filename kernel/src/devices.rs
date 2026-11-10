@@ -25,6 +25,7 @@ mod acpi_bus;
 pub mod dma;
 mod fdt_bus;
 pub mod interrupts;
+pub mod message_interrupts;
 mod pci_bus;
 #[cfg(any(test, feature = "rtc"))]
 pub mod rtc;

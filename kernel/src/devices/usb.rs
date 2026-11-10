@@ -101,9 +101,17 @@ fn probe_xhci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         wheel: pointer,
         absolute: None,
     };
-    crate::input::install(Box::new(UsbInput {
+    let interrupting = super::message_interrupts::connect(probe, id, &crate::input::DEVICE_EVENTS).is_ok();
+    if interrupting {
+        controller.enable_interrupts();
+    }
+    let device = Box::new(UsbInput {
         controller,
         capabilities,
-    }))
+    });
+    match interrupting {
+        true => crate::input::install_interrupting(device),
+        false => crate::input::install(device),
+    }
     .map_err(|_| ProbeError::Refused("no room for another input device"))
 }

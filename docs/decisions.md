@@ -19358,3 +19358,20 @@ the license, by an explicit instruction recorded here.
   their own and are never polled.
 - **Not yet.** Building and running; hot-plug (the hub's status-change endpoint); multi-TT hubs'
   bit and think time; more than fifteen ports a hub; hubs as their own device class in the list.
+
+## D255 Interrupts for the real machines' drivers: MSI-X or MSI for NVMe, xHCI and e1000 (D238-D240's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `devices::message_interrupts::connect` gives a PCI function MSI-X entry 0, else MSI
+  with one vector, turns its legacy INTx off, and connects the message's line to the driver's
+  `DeviceEvents`; `waiting_for` makes a driver's wait sleep until those events are raised, or
+  poll when there are none, as virtio's does (D220).
+  - **NVMe**: the I/O completion queue is created with interrupts on vector 0; each disk's
+    transfers sleep instead of spinning.
+  - **xHCI**: interrupter 0's `IMAN.IE` and `USBCMD.INTE` turned on; every poll clears `IMAN.IP`
+    and `USBSTS.EINT`; the controller is installed as an interrupting input device.
+  - **e1000/e1000e**: receive-timer, receive-threshold and link-change causes in `IMS`; reading
+    `ICR` at each receive clears them; installed as the stack's interrupting adapter.
+  - Where no message interrupt can be had, each stays polled as before.
+- **Not yet.** Building and running; AHCI's MSI (HBA and port causes cleared per command), igc's
+  extended interrupts and the Realtek chips'; several vectors (one per queue or per CPU);
+  interrupt moderation.

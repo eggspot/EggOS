@@ -32,6 +32,7 @@ const IO_FLUSH: u8 = 0x00;
 const IO_WRITE: u8 = 0x01;
 const IO_READ: u8 = 0x02;
 
+const COMPLETION_INTERRUPTS_ON_VECTOR_0: u32 = 1 << 1;
 const IDENTIFY_NAMESPACE: u32 = 0;
 const IDENTIFY_CONTROLLER: u32 = 1;
 const IDENTIFY_ACTIVE_NAMESPACES: u32 = 2;
@@ -272,7 +273,7 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
             Command::new(ADMIN_CREATE_COMPLETION_QUEUE)
                 .data(base + IO_CQ as u64, 0)
                 .dword(10, ((entries - 1) << 16) | 1)
-                .dword(11, 1),
+                .dword(11, COMPLETION_INTERRUPTS_ON_VECTOR_0 | 1),
             keep_waiting,
         )?;
         self.admin_command(
