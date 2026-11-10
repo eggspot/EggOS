@@ -31,9 +31,12 @@ from linux-firmware's `WHENCE` (the driver's header, each file's entry, the lice
 | File | Adapter |
 | --- | --- |
 | `iwlwifi-cc-a0-77.ucode` | Wi-Fi 6 AX200 |
-| `iwlwifi-QuZ-a0-hr-b0-77.ucode` | Wi-Fi 6 AX201 |
-| `iwlwifi-ty-a0-gf-a0-89.ucode`, `iwlwifi-ty-a0-gf-a0.pnvm` | Wi-Fi 6E AX210 |
-| `iwlwifi-so-a0-gf-a0-89.ucode`, `iwlwifi-so-a0-gf-a0.pnvm` | Wi-Fi 6E AX211 |
+| `iwlwifi-QuZ-a0-hr-b0-77.ucode`, `iwlwifi-Qu-b0-hr-b0-77.ucode`, `iwlwifi-Qu-c0-hr-b0-77.ucode` | Wi-Fi 6 AX201 (by the chipset's revision) |
+| `iwlwifi-ty-a0-gf-a0-77.ucode`, `iwlwifi-ty-a0-gf-a0.pnvm` | Wi-Fi 6E AX210 |
+| `iwlwifi-so-a0-gf-a0-77.ucode`, `iwlwifi-so-a0-gf-a0.pnvm` | Wi-Fi 6E AX211 |
+
+Every Wi-Fi firmware file is the API 77 build, the one OpenBSD's `iwx(4)` (the driver's reference,
+D272) runs.
 
 Licence: `LICENCE.iwlwifi_firmware` (Intel; redistribution in binary form allowed, with the
 copyright notice and licence).

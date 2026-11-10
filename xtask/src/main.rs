@@ -1769,9 +1769,13 @@ fn initramfs_with(
     if let Some(command) = windows_command(&embedded, &component_links) {
         members.push((WINDOWS_COMMAND_PATH, command));
     }
+    members.push((IWX_NOTICE_PATH, initramfs::Content::Text(IWX_NOTICE)));
     members.extend_from_slice(extra);
     initramfs::build(&members, file_name)
 }
+
+const IWX_NOTICE_PATH: &str = "usr/share/licenses/eggos/iwx-NOTICE.md";
+const IWX_NOTICE: &str = include_str!("../../drivers/src/wifi/iwx/NOTICE.md");
 
 fn windows_command<'a>(
     embedded: &[(&str, String)],

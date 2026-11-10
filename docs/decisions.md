@@ -19649,3 +19649,41 @@ the license, by an explicit instruction recorded here.
   - The MCP tool `fetch` keeps its arguments; `--range` is for programs and the CLI.
 - **Not yet.** Building and running; reusing pieces across installs; a signed index (needs the
   owner's key); a download that runs in the background without blocking the command.
+
+## D272 The Intel Wi-Fi driver, written from OpenBSD's `iwx(4)`: an owner-approved exception to the clean-room rule, and part 1, the adapters and the firmware file (M13's Wi-Fi; code written, unbuilt, untested: code-only mode) — Decided by the owner (2026-11-10, through Main Chat: "yes do it openbsd"); the engineering by the code-only session
+
+- **Context.** Intel publishes no programming specification for its Wi-Fi adapters. The only
+  descriptions are Linux's `iwlwifi` (dual GPL-2.0/BSD-3-Clause) and OpenBSD's `iwx(4)` (ISC),
+  and `iwx(4)` says it is "Based on BSD-licensed source modules in the Linux iwlwifi driver",
+  carrying Intel's dual BSD/GPLv2 notice beside its own. CLAUDE.md forbids copying or translating
+  code from copyleft projects, the Linux kernel included.
+- **Decision (the owner's).** The Intel Wi-Fi driver is written with OpenBSD's `iwx(4)`
+  (`if_iwx.c`, `if_iwxreg.h`, `if_iwxvar.h`) as its reference. This is an owner-approved exception
+  to the clean-room rule for Intel's BSD-licensed iwlwifi-derived code, by way of OpenBSD: EggOS
+  uses that code under its BSD terms only, never under the GPL. Linux's own `iwlwifi` files are
+  never opened. `drivers/src/wifi/iwx/NOTICE.md` reproduces OpenBSD's ISC notices and Intel's
+  BSD-3-Clause notice (without the GPL summary), and the base image carries it at
+  `/usr/share/licenses/eggos/iwx-NOTICE.md`, as the BSD licence asks of binary distributions. The
+  exception covers this driver only.
+- **Part 1.** `eggos_drivers::wifi::iwx`:
+  - `devices::identify` maps a PCI function (device and subsystem ids, `CSR_HW_REV`) to the
+    adapter and its firmware: AX200 (`cc-a0`), AX201 (`QuZ-a0-hr-b0`, `Qu-c0-hr-b0` or
+    `Qu-b0-hr-b0` by the chipset's revision; the chipset-only ids 02F0h and 06F0h only as QuZ),
+    AX210 (`ty-a0-gf-a0` with its PNVM) and AX211 (`so-a0-gf-a0` with its PNVM), with the
+    reference's latency tolerance delays, crystal latencies and 6 GHz flags. Killer AX1690s and
+    AX1690i (the `gf4` radio) and the Jf/Hr radios on AX211 chipsets are left out: the component
+    carries no firmware for them, and telling Jf/Hr apart needs the radio's id register, which
+    part 2 reads.
+  - `firmware::Firmware::parse` reads the firmware file: the header's magic and version, every
+    record, the four images' sections (each section's device offset and its bytes, as offsets
+    into the file), the image loader, the platform NVM, the API and capability bits, the command
+    versions, the scan channel limit; `split` divides an image at its separators into the LMAC,
+    UMAC and paging sections. Unlike the reference, unknown records are skipped, not refused, so a
+    newer file still loads.
+  - D265's `wifi-firmware` now pins the API 77 files the reference runs (the AX210 and AX211 files
+    were API 89) and adds the Qu-b0 and Qu-c0 AX201 files.
+- **Next.** Part 2: the host interface (`CSR` registers, the NIC lock, power-up), the command
+  queue and receive ring the context info names, handing the firmware over (context info for the
+  AX200 family; context info, scratch area and image loader for the AX210 family) and waiting for
+  its alive notification; then the PNVM, NVM, scanning, association with `eggos-wifi`'s WPA2, and
+  data frames.

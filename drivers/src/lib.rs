@@ -25,3 +25,4 @@ pub use eggos_terminal as terminal;
 pub mod timer;
 pub mod usb;
 pub mod virtio;
+pub mod wifi;

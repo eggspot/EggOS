@@ -73,16 +73,24 @@ pub const COMPONENTS: [FirmwareComponent; 2] = [
                 sha256: "39d79587dd035bc84172b6bcf6de81217560088b0ceb06304d5121ba56db8d83",
             },
             Pinned {
-                path: "intel/iwlwifi/iwlwifi-ty-a0-gf-a0-89.ucode",
-                sha256: "792478ef7752595525379a5068e2d47e310a2c344636b7df866c54746ced1dc0",
+                path: "intel/iwlwifi/iwlwifi-Qu-b0-hr-b0-77.ucode",
+                sha256: "df005896aafdf5eb9c427033781890a58c7ab97a8dc1e1ea6b8df4eefc033a9d",
+            },
+            Pinned {
+                path: "intel/iwlwifi/iwlwifi-Qu-c0-hr-b0-77.ucode",
+                sha256: "a250e179666288396e19ff15c307edfe8f089341c8713a22b457b7304fc1a6fe",
+            },
+            Pinned {
+                path: "intel/iwlwifi/iwlwifi-ty-a0-gf-a0-77.ucode",
+                sha256: "fd8977dbfacfe50b8a6601479aa9ffd21d01e274e4a9efd13935dd9d667fd45b",
             },
             Pinned {
                 path: "intel/iwlwifi/iwlwifi-ty-a0-gf-a0.pnvm",
                 sha256: "9697e327f8171454b3c19b1ec9449753d5b934d4e91722f469616818a6d477b0",
             },
             Pinned {
-                path: "intel/iwlwifi/iwlwifi-so-a0-gf-a0-89.ucode",
-                sha256: "fae8230ebd1426dfb7d5b5594fdd89e346af5144080659d010b8d2a2fd2f7d4a",
+                path: "intel/iwlwifi/iwlwifi-so-a0-gf-a0-77.ucode",
+                sha256: "87590ea9535a8939fddb296bc7622f3a900f28f47b45cb4e435a2a1d5f496ccd",
             },
             Pinned {
                 path: "intel/iwlwifi/iwlwifi-so-a0-gf-a0.pnvm",
