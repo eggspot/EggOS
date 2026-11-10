@@ -394,8 +394,9 @@ fn edition<F: Files, C: Console>(
 ) -> i32 {
     let installed = manager::installed(files);
     let names = installed.iter().map(|component| component.name.as_str());
+    let recorded = recorded_edition(files);
     let Some(name) = name else {
-        let current = crate::editions::current(names);
+        let current = crate::editions::current_preferring(names, recorded.as_deref());
         for edition in crate::editions::EDITIONS {
             let mark = if current.is_some_and(|current| current.name == edition.name) { "*" } else { " " };
             out.say(&alloc::format!("{mark} {}\t{}", edition.name, edition.summary));
@@ -427,7 +428,25 @@ fn edition<F: Files, C: Console>(
             return status;
         }
     }
+    record_edition(files, edition.name);
     0
+}
+
+/// Records `name` as the edition chosen (D263), best effort.
+pub fn record_edition<F: Files>(files: &mut F, name: &str) {
+    if let Ok(handle) = files.create(crate::editions::RECORD.as_bytes(), 0o644) {
+        let _ = files.write(handle, name.as_bytes());
+        files.close(handle);
+    }
+}
+
+/// The edition recorded as chosen, if any.
+pub fn recorded_edition<F: Files>(files: &mut F) -> Option<String> {
+    let handle = files.open(crate::editions::RECORD.as_bytes()).ok()?;
+    let mut bytes = [0u8; 32];
+    let read = files.read(handle, &mut bytes).unwrap_or(0);
+    files.close(handle);
+    core::str::from_utf8(&bytes[..read]).ok().map(|text| String::from(text.trim()))
 }
 
 fn install<F: Files, C: Console>(

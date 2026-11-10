@@ -375,10 +375,12 @@ fn components_read() -> ComponentsRead {
         .filter(|row| row.state == "installed")
         .find(|row| component_manager::runs_this_program(&mut files, &row.component))
         .map(|row| row.component.name.clone());
+    let recorded_edition = component_command::recorded_edition(&mut files);
     ComponentsRead {
         store,
         rows,
         runs_this_window,
+        recorded_edition,
     }
 }
 
@@ -1423,6 +1425,9 @@ impl Settings {
                 let next = self.window.show_installed(installed, components_read());
                 if next == Some(Request::InstallComponent) {
                     self.component_work = Some(ComponentWork::Install);
+                } else if let Some(edition) = self.window.take_finished_edition() {
+                    component_command::record_edition(&mut LinuxFiles::new(), edition);
+                    self.window.show_components(components_read());
                 }
             }
             ComponentWork::Remove => {
