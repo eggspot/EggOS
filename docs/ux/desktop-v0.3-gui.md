@@ -918,6 +918,7 @@ unless an item says otherwise. The list is the toolkit `Table`; "row" below is a
     link made beside the old one and **renamed over it** in one step, so there is never a moment
     without the link; Cancel changes nothing. Error: `Could not change the target of <name>
     (<errno name>).` The row keeps its selection; a broken link becomes sound in the reload.
+    Status: design; not built (next batch).
 25. **`Copy Path`** (`Copy as path` in the Windows profile): in `Edit` and in every row's
     context menu after `Copy` (not on trashed rows), Mod+Shift+C (Cmd+Alt+C accepted). Puts the
     selected rows' absolute paths, as shown (through a link you came by), one per line joined

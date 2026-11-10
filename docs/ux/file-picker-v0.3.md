@@ -1,5 +1,7 @@
 # EggOS v0.3 system file picker: design brief
 
+Status: design; not built (next batch).
+
 Design by Claude Fable (D16) for the one file picker every app uses: `/bin/pick`, a program of
 the base (D18: every layer and every app needs it, and it is small). An app never draws its own
 picker: it starts `pick`, waits, and reads a path. EggOS apps (the Text Editor's `Open...` and
