@@ -99,6 +99,8 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 report_devices(console, devices::discover_and_probe::<P>(&mut memory))?;
                 #[cfg(feature = "virtio-rng")]
                 report_device_seed(console, devices::virtio::seed_random::<P>())?;
+                #[cfg(feature = "virtio-rng")]
+                let _ = devices::virtio::reseed_periodically::<P>();
                 report_wall_clock(console, wall_clock::start::<P>())?;
                 if display::mode().is_none() {
                     display::boot_framebuffer::report(

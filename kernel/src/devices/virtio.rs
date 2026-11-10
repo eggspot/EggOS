@@ -1021,7 +1021,7 @@ mod network {
 }
 
 #[cfg(any(test, feature = "virtio-rng"))]
-pub use entropy::{RNG_DRIVER, read_random, seed_random};
+pub use entropy::{RESEED_INTERVAL, RNG_DRIVER, read_random, reseed_periodically, seed_random};
 
 #[cfg(any(test, feature = "virtio-rng"))]
 pub(crate) use entropy::{put_rng, take_rng};
@@ -1112,6 +1112,22 @@ mod entropy {
         let seeded = read.map(|read| crate::random::reseed_from_device::<P>(&bytes[..read]));
         eggos_hal::random::wipe(&mut bytes);
         seeded
+    }
+
+    /// How often the kernel's generator is reseeded from the device after boot (D282).
+    pub const RESEED_INTERVAL: core::time::Duration = core::time::Duration::from_secs(300);
+
+    /// Starts the thread that reseeds the kernel's generator from the virtio entropy device every
+    /// [`RESEED_INTERVAL`] (D282); whether there is a device to read.
+    pub fn reseed_periodically<P: eggos_hal::Platform>() -> bool {
+        if RNG.lock().is_none() {
+            return false;
+        }
+        crate::thread::spawn::<P, _>(|| loop {
+            crate::thread::sleep::<P>(RESEED_INTERVAL);
+            let _ = seed_random::<P>();
+        })
+        .is_ok()
     }
 
     pub(crate) fn take_rng() -> Option<Rng> {

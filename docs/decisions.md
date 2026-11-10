@@ -19874,3 +19874,12 @@ the license, by an explicit instruction recorded here.
   from keep their bits. `vfs::ignores_set_ids_at` tells `/proc/mounts` which.
 - **Not yet.** Building and running; `/proc/mounts` printing `nosuid`; a `mount` system call for
   programs.
+
+## D282 The kernel's generator reseeded from virtio-rng every five minutes after boot (M8; D220's follow-up; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Where a virtio entropy device answered at boot, a kernel thread reseeds the
+  generator from it every 300 seconds through the same `seed_random` boot uses (D220's credit
+  rules), so a long-running machine keeps mixing fresh device entropy in, as Linux's periodic
+  reseed does.
+- **Not yet.** Building and running; reseeding from the CPU's instruction (RDSEED, `RNDR`) on the
+  same schedule.
