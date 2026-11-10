@@ -170,6 +170,10 @@ name = "eggos-font"
 version = "0.4.0"
 
 [[package]]
+name = "eggos-gpt"
+version = "0.4.0"
+
+[[package]]
 name = "eggos-hal"
 version = "0.4.0"
 dependencies = [
@@ -210,6 +214,7 @@ dependencies = [
  "eggos-drivers",
  "eggos-eggfs",
  "eggos-element-tree",
+ "eggos-gpt",
  "eggos-hal",
  "eggos-image",
  "eggos-math",
