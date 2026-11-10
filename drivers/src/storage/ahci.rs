@@ -14,6 +14,9 @@ const CAP2: usize = 0x24;
 const BOHC: usize = 0x28;
 const CAP_64_BIT: u32 = 1 << 31;
 const GHC_AHCI_ENABLE: u32 = 1 << 31;
+const GHC_INTERRUPT_ENABLE: u32 = 1 << 1;
+const INTERRUPT_STATUS: usize = 0x08;
+const PORT_INTERRUPTS_WANTED: u32 = 1 | (1 << 3) | (1 << 30);
 const CAP2_BIOS_HANDOFF: u32 = 1;
 const BOHC_BIOS_OWNED: u32 = 1;
 const BOHC_OS_OWNED: u32 = 1 << 1;
@@ -110,6 +113,19 @@ pub fn take_controller<R: RegisterIo>(regs: &R, keep_waiting: &mut dyn FnMut() -
         disk_ports,
         addresses_64_bit: regs.read32(CAP) & CAP_64_BIT != 0,
     }
+}
+
+/// Turns the controller's interrupt on (D262), once a message interrupt is connected; each disk
+/// then asks for its port's.
+pub fn enable_controller_interrupt<R: RegisterIo>(regs: &R) {
+    let control = regs.read32(GHC);
+    regs.write32(GHC, control | GHC_INTERRUPT_ENABLE);
+}
+
+/// Clears the controller-wide interrupt status bit of `port` (`IS.IPS`), so its next event
+/// sends a new message.
+pub fn clear_port_interrupt<R: RegisterIo>(regs: &R, port: usize) {
+    regs.write32(INTERRUPT_STATUS, 1 << port);
 }
 
 /// The host-to-device register FIS for ATA `command` on `lba` over `count` sectors.
@@ -305,6 +321,12 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
             return Err(Error::CommandFailed);
         }
         Ok(())
+    }
+
+    /// Asks the port for an interrupt when a command completes or fails (D262).
+    pub fn enable_interrupts(&mut self) {
+        self.regs.write32(PORT_INTERRUPT_STATUS, u32::MAX);
+        self.regs.write32(PORT_INTERRUPT_ENABLE, PORT_INTERRUPTS_WANTED);
     }
 
     pub fn sectors(&self) -> u64 {
