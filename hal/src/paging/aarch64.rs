@@ -12,11 +12,15 @@ pub struct Aarch64;
 
 /// `MAIR_EL1` for the attribute indexes below: index 0 Device-nGnRnE (0x00), index 1 Normal
 /// memory, inner and outer write-back, read- and write-allocate (0xff).
-pub const MAIR: u64 = (MAIR_NORMAL << (8 * NORMAL_INDEX)) | (MAIR_DEVICE << (8 * DEVICE_INDEX));
+pub const MAIR: u64 = (MAIR_NORMAL << (8 * NORMAL_INDEX))
+    | (MAIR_DEVICE << (8 * DEVICE_INDEX))
+    | (MAIR_NON_CACHEABLE << (8 * NON_CACHEABLE_INDEX));
 const MAIR_NORMAL: u64 = 0xff;
 const MAIR_DEVICE: u64 = 0x00;
+const MAIR_NON_CACHEABLE: u64 = 0x44;
 const DEVICE_INDEX: u64 = 0;
 const NORMAL_INDEX: u64 = 1;
+const NON_CACHEABLE_INDEX: u64 = 2;
 
 const VALID: u64 = 1 << 0;
 /// Bit 1: at the last level a page, above it a table (set) or a block (clear).
@@ -86,10 +90,10 @@ impl Format for Aarch64 {
             // Reserved encoding at the last level: translates nothing.
             return Entry::Empty;
         }
-        let memory_type = if (entry & ATTRIBUTE_INDEX) >> ATTRIBUTE_INDEX_SHIFT == DEVICE_INDEX {
-            MemoryType::Device
-        } else {
-            MemoryType::Normal
+        let memory_type = match (entry & ATTRIBUTE_INDEX) >> ATTRIBUTE_INDEX_SHIFT {
+            DEVICE_INDEX => MemoryType::Device,
+            NON_CACHEABLE_INDEX => MemoryType::WriteCombining,
+            _ => MemoryType::Normal,
         };
         let user = entry & USER != 0;
         let no_execute = if user {
@@ -135,6 +139,7 @@ pub const fn leaf(phys: u64, level: usize, attributes: Attributes) -> u64 {
     entry |= match attributes.memory_type {
         MemoryType::Normal => (NORMAL_INDEX << ATTRIBUTE_INDEX_SHIFT) | INNER_SHAREABLE,
         MemoryType::Device => DEVICE_INDEX << ATTRIBUTE_INDEX_SHIFT,
+        MemoryType::WriteCombining => NON_CACHEABLE_INDEX << ATTRIBUTE_INDEX_SHIFT,
     };
     if !attributes.writable {
         entry |= READ_ONLY;
@@ -149,7 +154,7 @@ mod tests {
 
     #[test]
     fn encodings_match_the_architecture() {
-        assert_eq!(MAIR, 0xff00);
+        assert_eq!(MAIR, 0x44_ff00);
         assert_eq!(Aarch64::table(0x4000_1000, 3, false), 0x4000_1003);
         assert_eq!(Aarch64::table(0x4000_1000, 3, true), 0x4000_1003);
         // 4 KiB data page: page, AttrIndx 1, inner shareable, AF, PXN, UXN.

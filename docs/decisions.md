@@ -19201,3 +19201,23 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the one-column sheet and the touch sizes of the design's
   section 4 (the pane's one-column layout code is not touched); the full acceptance of its section
   6 (host disks of 1 GiB and more); what the design lists as left out.
+
+## D245 Vendor GPUs, part 1: write-combining framebuffers (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** Every PC's GPU, Intel, AMD or NVIDIA, leaves the firmware's framebuffer lit (D236),
+  and the kernel drew into it as uncached device memory: every pixel a separate bus write, a full
+  1920x1080 frame tens of milliseconds. Vendor display drivers (mode setting, several outputs,
+  vblank-synced flips) and acceleration are each a large driver of their own.
+- **Decision.** The HAL's memory types gain `WriteCombining` (`Attributes::FRAMEBUFFER`): on x86_64
+  every CPU programs `IA32_PAT` as Linux does (entry 1 write-combining, so `PWT` alone selects it,
+  `PWT | PCD` uncached as before), on AArch64 `MAIR_EL1` gains Normal Non-cacheable at index 2,
+  RISC-V encodes no memory types. Device windows remember their memory type, so a framebuffer and
+  registers never share one; `devices::window::map_write_combining` maps a framebuffer, and the
+  firmware framebuffer (D236) uses it. A flush's full fence drains the CPU's write-combining
+  buffers.
+- **Order of the vendor drivers** (later parts of M13): Intel's display engine first (taking over
+  the pipe the firmware lit: its planes, a second surface in the GTT and flips at vblank, then mode
+  setting on eDP, DP and HDMI), then AMD's DCN and NVIDIA's display, each behind the kernel's
+  `Scanout`; 3D and compute acceleration after them, under M11's graphics stack. GPUs that need
+  vendor firmware at run time (AMD, NVIDIA's GSP) wait for the firmware question D246 records.
+- **Not yet.** Building and running; everything in the order above.

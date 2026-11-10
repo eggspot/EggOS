@@ -555,10 +555,24 @@ impl<F: Format> PageTables<F> {
     pub fn map_device_window(
         &mut self,
         window: &core::ops::Range<u64>,
+        virt: u64,
+        phys: u64,
+        length: u64,
+        frames: &mut FrameAllocator,
+    ) -> Result<(), MapError> {
+        self.map_window_as(window, virt, phys, length, frames, Attributes::DEVICE)
+    }
+
+    /// As [`Self::map_device_window`], with `attributes` (device memory, or a framebuffer's
+    /// write-combining, D245).
+    pub fn map_window_as(
+        &mut self,
+        window: &core::ops::Range<u64>,
         mut virt: u64,
         mut phys: u64,
         length: u64,
         frames: &mut FrameAllocator,
+        attributes: Attributes,
     ) -> Result<(), MapError> {
         if self.user_half_only {
             return Err(MapError::OutsideDeviceWindow);
@@ -586,7 +600,7 @@ impl<F: Format> PageTables<F> {
             if entry.read() != 0 {
                 return Err(MapError::AlreadyMapped);
             }
-            entry.write(F::leaf(phys, level, Attributes::DEVICE));
+            entry.write(F::leaf(phys, level, attributes));
             virt += paging::leaf_size(level);
             phys += paging::leaf_size(level);
         }

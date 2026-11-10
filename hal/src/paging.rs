@@ -72,6 +72,9 @@ pub enum MemoryType {
     Normal,
     /// Device registers: uncached, accesses happen exactly as the program issues them.
     Device,
+    /// A framebuffer (D245): uncached, but writes may be gathered into bursts; for memory only
+    /// the CPU writes and a device reads, never for registers.
+    WriteCombining,
 }
 
 /// The permissions and memory type of a mapping. A kernel mapping (`user` clear) is never
@@ -109,6 +112,13 @@ impl Attributes {
         writable: true,
         executable: false,
         memory_type: MemoryType::Normal,
+        user: false,
+    };
+    /// A framebuffer (D245): read and write, never execute, write-combining.
+    pub const FRAMEBUFFER: Self = Self {
+        writable: true,
+        executable: false,
+        memory_type: MemoryType::WriteCombining,
         user: false,
     };
     /// Device registers: read and write, never execute.
