@@ -45,6 +45,9 @@ pub struct Context<'a> {
     pub pid: u32,
     /// Whether every error also writes its coded JSON line (the MCP server's twins).
     pub coded: bool,
+    /// Downloads `url` into the file `path`, when the system can (D257): the release's store
+    /// when no store is attached.
+    pub download: Option<fn(&str, &str) -> bool>,
 }
 
 /// A parsed command line.
@@ -111,7 +114,14 @@ pub fn run<F: Files, C: Console>(
         console.write_error(USAGE.as_bytes());
         return USAGE_STATUS;
     };
-    let store = manager::find_store(files, context.arch);
+    let mut store = manager::find_store(files, context.arch);
+    let wants_store = matches!(command, Command::Install { dry_run: false, .. });
+    if store.is_none() && wants_store && let Some(download) = context.download {
+        let path = manager::downloaded_store_path(manager::VERSION, context.arch);
+        if download(&manager::store_url(manager::VERSION, context.arch), &path) {
+            store = manager::read_store(files, &path, manager::Source::Downloaded, context.arch).ok();
+        }
+    }
     let mut out = Out {
         console,
         coded: context.coded,
@@ -311,6 +321,7 @@ fn write_store(writer: &mut JsonWriter<'_>, store: Option<&Store>) {
                     writer.string(disk);
                 }
                 manager::Source::Share => writer.string("share"),
+                manager::Source::Downloaded => writer.string("downloaded"),
             }
             writer.end_object();
         }

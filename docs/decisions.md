@@ -19393,3 +19393,21 @@ the license, by an explicit instruction recorded here.
   device mapped to separate input devices; multi-touch contacts (only the first's position);
   precision touchpads' mode switch and gestures; HID output reports beyond the boot keyboard's
   lights; I2C HID, which needs the ACPI interpreter for its descriptor address (D252).
+
+## D257 Components downloaded on demand: `component install` fetches the release's store over HTTPS when none is attached (M14, part 2; D69; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** D235's store comes from an attached disk or the host share, which a real machine
+  installed from a USB stick (D241) has neither of. D69 wants optional components downloaded on
+  demand, never in the base.
+- **Decision.** When `component install` finds no store, it downloads this version's store from its
+  GitHub Release (`https://github.com/eggspot/EggOS/releases/download/v<version>/eggos-<version>-
+  <arch>-components.img`, which the release attaches since D235) into `/var/cache/eggos/` with
+  `fetch -q -o`, so it shows in the Downloads window like every download, waits for it, then reads
+  it as any store (header, index and every file's SHA-256 checked as before) and installs.
+  `find_store` looks there after the disks and the share, so a downloaded store serves later
+  installs too; `component list --json` names its source `downloaded`. HTTPS from the release is
+  the store's authenticity, as the release's own `SHA256SUMS` would be.
+- **Not yet.** Building and running; Settings' Components pane downloading too (it uses a store
+  already downloaded); a signed store index (needs the owner's key); downloading only the files of
+  the component asked for (range requests) instead of the whole store; delta updates applied
+  atomically between versions; a background download that does not block the command.

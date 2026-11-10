@@ -98,6 +98,7 @@ pub fn run(startup: &Startup) -> i32 {
         arch: linux::machine().name(),
         pid: syscall(number::GETPID, [0; 6]).unwrap_or(0) as u32,
         coded,
+        download: Some(download_with_fetch),
     };
     command::run(
         &mut LinuxFiles::new(),
@@ -105,4 +106,53 @@ pub fn run(startup: &Startup) -> i32 {
         context,
         &arguments[..count],
     )
+}
+
+const FETCH: &CStr = c"/bin/fetch";
+const QUIET: &CStr = c"-q";
+const OUTPUT: &CStr = c"-o";
+const SIGCHLD: usize = 17;
+const PATH_BYTES: usize = 512;
+
+fn c_string(text: &str, out: &mut [u8; PATH_BYTES]) -> Option<usize> {
+    if text.len() >= PATH_BYTES || text.as_bytes().contains(&0) {
+        return None;
+    }
+    out[..text.len()].copy_from_slice(text.as_bytes());
+    out[text.len()] = 0;
+    Some(out.as_ptr() as usize)
+}
+
+/// Runs `fetch -q -o <path> <url>` (D257) and waits for it: whether it ended with status 0.
+/// The folder is made first; the download shows in the Downloads window as any `fetch` does.
+fn download_with_fetch(url: &str, path: &str) -> bool {
+    let mut folder = [0u8; PATH_BYTES];
+    if let Some(folder) = c_string(crate::manager::DOWNLOAD_FOLDER, &mut folder) {
+        let _ = syscall(number::MKDIRAT, [-100isize as usize, folder, 0o755, 0, 0, 0]);
+    }
+    let (mut url_bytes, mut path_bytes) = ([0u8; PATH_BYTES], [0u8; PATH_BYTES]);
+    let (Some(url), Some(path)) = (c_string(url, &mut url_bytes), c_string(path, &mut path_bytes)) else {
+        return false;
+    };
+    let arguments = [FETCH.as_ptr() as usize, QUIET.as_ptr() as usize, OUTPUT.as_ptr() as usize, path, url, 0];
+    let environment = [0usize];
+    let Ok(child) = syscall(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]) else {
+        return false;
+    };
+    if child == 0 {
+        let _ = syscall(
+            number::EXECVE,
+            [FETCH.as_ptr() as usize, arguments.as_ptr() as usize, environment.as_ptr() as usize, 0, 0, 0],
+        );
+        let _ = syscall(number::EXIT_GROUP, [127, 0, 0, 0, 0, 0]);
+        return false;
+    }
+    let mut status = 0i32;
+    loop {
+        match syscall(number::WAIT4, [child, &raw mut status as usize, 0, 0, 0, 0]) {
+            Err(Errno::EINTR) => continue,
+            Ok(_) => return status & 0x7f == 0 && (status >> 8) & 0xff == 0,
+            Err(_) => return false,
+        }
+    }
 }

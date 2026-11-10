@@ -55,6 +55,29 @@ pub enum Source {
     Disk(&'static str),
     /// A file in the host share.
     Share,
+    /// The release's store, downloaded into [`DOWNLOAD_FOLDER`] (D257).
+    Downloaded,
+}
+
+/// Where a downloaded store is kept.
+pub const DOWNLOAD_FOLDER: &str = "/var/cache/eggos";
+
+/// Where this version's store for `arch` is kept once downloaded.
+pub fn downloaded_store_path(version: &str, arch: &str) -> String {
+    let mut path = String::from(DOWNLOAD_FOLDER);
+    path.push('/');
+    path.push_str(&store_file_name(version, arch));
+    path
+}
+
+/// Where this version's store for `arch` is published: the GitHub Release of its version (D235
+/// attaches the stores), over HTTPS only.
+pub fn store_url(version: &str, arch: &str) -> String {
+    let mut url = String::from("https://github.com/eggspot/EggOS/releases/download/v");
+    url.push_str(version);
+    url.push('/');
+    url.push_str(&store_file_name(version, arch));
+    url
 }
 
 /// The attached store.
@@ -198,7 +221,9 @@ pub fn find_store<F: Files>(files: &mut F, arch: &str) -> Option<Store> {
     let mut path = String::from(HOST_SHARE);
     path.push('/');
     path.push_str(&store_file_name(VERSION, arch));
-    read_store(files, &path, Source::Share, arch).ok()
+    read_store(files, &path, Source::Share, arch)
+        .ok()
+        .or_else(|| read_store(files, &downloaded_store_path(VERSION, arch), Source::Downloaded, arch).ok())
 }
 
 /// The installed components, in the order their folders are listed; a folder without a valid
