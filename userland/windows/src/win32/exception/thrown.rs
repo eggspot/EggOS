@@ -181,10 +181,6 @@ extern "C" fn throw_owed(_: u64, _: u64, _: u64, _: u64, context: *mut Context) 
     throw(kind, kind.runtime_message().as_ptr(), context)
 }
 
-/// Wraps an export that may owe the program a throw (`owe`): the wrapper calls it with its
-/// arguments (on x64 the fifth, from the caller's stack, too) and returns its result, or, when
-/// the thread owes a throw, leaves the stack as the program's call found it and jumps to
-/// `owed_throw_entry`, which raises it from the program's call.
 #[cfg(target_arch = "x86_64")]
 macro_rules! throwing_entry {
     ($function:path) => {{

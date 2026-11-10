@@ -36,14 +36,12 @@ const POLL_MILLISECONDS: u64 = 1;
 const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
 const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 
-/// `_timespec64`: a point in UTC as seconds and nanoseconds since 1970.
 #[repr(C)]
 struct Time {
     seconds: i64,
     nanoseconds: i32,
 }
 
-/// `_Thrd_t`: a thread's handle and identifier.
 #[repr(C)]
 struct ThreadHandle {
     handle: usize,

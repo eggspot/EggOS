@@ -32,7 +32,6 @@ fn console(boot: &mut Boot<'_>) -> String {
     String::from_utf8_lossy(&boot.console).into_owned()
 }
 
-/// The terminal windows `wm list` printed on `console`: their ids and titles, in its order.
 fn terminal_windows(console: &str) -> Vec<(u32, String)> {
     console
         .lines()

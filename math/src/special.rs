@@ -36,7 +36,6 @@ const STIRLING_START: f64 = 12.0;
 const TGAMMA_OVERFLOW: f64 = 171.7;
 const TGAMMA_UNDERFLOW: f64 = -184.0;
 
-/// `erfc(k/4)` for `k` from 2 to 24, as double-doubles.
 const ERFC_QUARTERS: [(f64, f64); 23] = [
     (
         f64::from_bits(0x3fde_b021_47ce_245c),
@@ -132,8 +131,6 @@ const ERFC_QUARTERS: [(f64, f64); 23] = [
     ),
 ];
 
-/// The coefficients of `lgamma(1 + e)` in powers of `e` from the first: `-γ`, then
-/// `(-1)^k ζ(k) / k`.
 const LGAMMA_ABOUT_ONE: [f64; 29] = [
     f64::from_bits(0xbfe2_788c_fc6f_b619),
     f64::from_bits(0x3fea_51a6_6253_07d3),
@@ -166,8 +163,6 @@ const LGAMMA_ABOUT_ONE: [f64; 29] = [
     f64::from_bits(0xbfa1_a7b9_61a7_b9aa),
 ];
 
-/// The coefficients of `lgamma(2 + e)` in powers of `e` from the first: `1 - γ`, then
-/// `(-1)^k (ζ(k) - 1) / k`.
 const LGAMMA_ABOUT_TWO: [f64; 29] = [
     f64::from_bits(0x3fdb_0ee6_0720_93ce),
     f64::from_bits(0x3fd4_a34c_c4a6_0fa6),
@@ -200,8 +195,6 @@ const LGAMMA_ABOUT_TWO: [f64; 29] = [
     f64::from_bits(0xbdd1_a7c2_6ec2_523c),
 ];
 
-/// Stirling's series after its `1/(12 z)` term, in powers of `1/z^2` from `1/z^3`:
-/// `B(2k) / (2k (2k - 1))` for `k` from 2 to 8.
 const STIRLING_TAIL: [f64; 7] = [
     -1.0 / 360.0,
     1.0 / 1260.0,
@@ -312,7 +305,6 @@ fn series_about(step: f64, coefficients: &[f64]) -> f64 {
     step * horner(step, coefficients)
 }
 
-/// `log(Γ(a))` for a positive double-double `a`, as a double-double.
 fn log_gamma_positive(a: (f64, f64)) -> (f64, f64) {
     let mut shifted = a;
     let mut product = (1.0, 0.0);

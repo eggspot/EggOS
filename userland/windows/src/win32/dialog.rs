@@ -38,8 +38,6 @@ fn is_edit(gui: &gui::Gui, window: usize) -> bool {
         .is_some_and(|entry| matches!(entry.procedure, Procedure::Control(ControlKind::Edit, _)))
 }
 
-/// Where Tab lands when it reaches `stop`: a radio button's group's selected radio, else
-/// `stop` itself.
 fn tab_landing(gui: &gui::Gui, stop: usize) -> usize {
     if !gui.windows.get(stop).is_some_and(is_radio) {
         return stop;
@@ -59,7 +57,6 @@ fn tab_landing(gui: &gui::Gui, stop: usize) -> usize {
         .unwrap_or(stop)
 }
 
-/// The radio an arrow moves to from the focused radio `from`, and whether it selects it.
 fn radio_arrow(dialog: usize, backwards: bool) -> Option<(usize, bool)> {
     with(|gui| {
         let root = windows::root_of(&gui.windows, dialog)?;

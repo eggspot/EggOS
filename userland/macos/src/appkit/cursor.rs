@@ -81,8 +81,6 @@ fn shared_cursor(index: usize) -> Id {
     }
 }
 
-/// The topmost view under `location` in `window` and the cursor-rect shape there, if any: the
-/// view's own rects in the order added, else an editable text field's I-beam.
 fn zone(window: Id, location: Point) -> Option<u32> {
     let view = window::view_at(window, location)?;
     let origin = view::origin_in_window(view);

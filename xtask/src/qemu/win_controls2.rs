@@ -45,7 +45,6 @@ const KEYS: [(char, &str, u16); 4] = [
     ('1', "1", 2),
 ];
 
-/// Which control has the keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Word,
@@ -55,9 +54,6 @@ enum Focus {
     Bar,
 }
 
-/// The window's state at one moment: the three edits' models, the selected radio, the bar's
-/// position, the focus and whether the pointer rests on the bar's right arrow rather than the
-/// word edit (each draws hovered, D228).
 #[derive(Clone)]
 struct Frame {
     word: Box<Edit>,
@@ -166,7 +162,6 @@ fn bar_at(position: i32) -> ScrollBar {
     bar
 }
 
-/// The window's content in `frame`.
 fn window_content(frame: &Frame) -> WindowContent {
     let (width, height) = (scene::CONTENT.0 as u32, scene::CONTENT.1 as u32);
     let face = colour::system_colour(BUTTON_FACE).expect("COLOR_BTNFACE");

@@ -187,8 +187,6 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         };
     }
 
-    /// Replaces the selection of `area` with `words` (control characters but line breaks and
-    /// tabs dropped): whether the text changed.
     fn replace_selection(area: &mut TextArea, store: &mut Store, words: &str) -> bool {
         let (start, end) = area.selection();
         let mut changed = start != end;

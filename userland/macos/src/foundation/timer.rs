@@ -96,7 +96,6 @@ fn loop_thread(run_loop: Id) -> u32 {
     unsafe { (*run_loop.cast::<RunLoopObject>()).thread }
 }
 
-/// The main thread's run loop, made on first use.
 fn main_loop() -> Id {
     let existing = MAIN_LOOP.load(Ordering::Acquire);
     if existing != 0 {
@@ -112,7 +111,6 @@ fn main_loop() -> Id {
     }
 }
 
-/// The calling thread's run loop, made on first use; it lives as long as the program.
 fn current_loop() -> Id {
     if is_main_thread() {
         return main_loop();
@@ -201,8 +199,6 @@ fn with_block(timer: Id, block: Id) -> Id {
     timer
 }
 
-/// Adds `timer` to `run_loop` in the `modes`, which keeps a reference to it while it is valid;
-/// a timer already scheduled there gains the modes.
 fn schedule(timer: Id, run_loop: Id, modes: u8) {
     if timer.is_null() || !fields(timer).valid {
         return;
@@ -308,8 +304,6 @@ pub fn fire_due() {
     fire_due_in(main_loop(), DEFAULT_MODE);
 }
 
-/// Fires every timer of `run_loop` in `mode` that is due, in date order: a repeating one
-/// moves to its next date after now, the others end.
 fn fire_due_in(run_loop: Id, mode: u8) {
     let now = date::now();
     let mut due = SCHEDULED.with(|timers| {

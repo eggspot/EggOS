@@ -172,9 +172,6 @@ pub struct Raised {
     next: *mut Raised,
 }
 
-/// What a guard or catch stub records on its stack: the registers to carry on from (the
-/// program's at the guarded call, or the stub's own resume point), the next outer boundary and
-/// the kind.
 #[repr(C)]
 struct Boundary {
     registers: Registers,
@@ -923,10 +920,6 @@ core::arch::global_asm!(
     "jmp rcx",
 );
 
-/// Defines `$entry`, a guard stub for the layer's function `$target` (a method or C function
-/// with no arguments on the stack): it links a pass-through boundary holding the program's
-/// registers at the call, calls `$target` with the arguments untouched, unlinks it and returns
-/// `$target`'s result. Exceptions raised inside carry on from the program's frame.
 macro_rules! guard {
     ($entry:ident => $target:path) => {
         #[cfg(target_arch = "aarch64")]

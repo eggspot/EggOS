@@ -13,7 +13,6 @@ pub enum Domain {
     System,
 }
 
-/// The user, local, network and system domains' bits, in the order their folders are listed.
 const DOMAINS: [(usize, Option<Domain>); 4] = [
     (1, Some(Domain::User)),
     (2, Some(Domain::Local)),

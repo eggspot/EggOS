@@ -50,7 +50,6 @@ binary![
     fmaxf => fmaxf: f32, fdimf => fdimf: f32, nextafterf => nextafterf: f32,
 ];
 
-/// `__sincos_stret`'s and `__sincosf_stret`'s result: both values in registers.
 #[repr(C)]
 struct SineCosine<T> {
     sine: T,

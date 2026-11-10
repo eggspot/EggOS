@@ -207,7 +207,6 @@ static UNITED_STATES_TEXTS: ConventionTexts = ConventionTexts {
 const NUMERIC_NARROW_TEXTS: usize = 3;
 const NUMERIC_WIDE_TEXTS: usize = 2;
 
-/// `struct lconv`: the old runtime's fields, then the UCRT's wide ones.
 #[repr(C)]
 struct LocaleConventions {
     texts: [*const u8; 10],
@@ -267,7 +266,6 @@ struct LocaleData {
     locales: RuntimeLocales,
 }
 
-/// A `_locale_t`'s object: `__crt_locale_pointers`, then the data its first pointer names.
 #[repr(C)]
 struct LocaleObject {
     data_pointer: *const LocaleData,

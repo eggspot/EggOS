@@ -270,7 +270,6 @@ extern "C" fn pool_drain(this: Id, _: Sel) {
     reference_count::dispose(this);
 }
 
-/// Defines NSObject and NSAutoreleasePool; false if there is no memory.
 guard!(eggos_guarded_perform_selector => perform_selector);
 guard!(eggos_guarded_perform_selector_with => perform_selector_with);
 guard!(eggos_guarded_perform_selector_with_with => perform_selector_with_with);

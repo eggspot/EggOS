@@ -67,11 +67,6 @@ extern "efiapi" fn cast_to_void(object: u64) -> u64 {
     }
 }
 
-/// `__std_type_info_name(data, root)`: `data` is the `type_info`'s `__std_type_info_data`, a
-/// slot for the undecorated name followed by the decorated name. The name is made once and
-/// kept in the slot for the program's life (no node goes on `root`'s list, so
-/// `__std_type_info_destroy_list` has nothing to free); a name this undecorator does not read
-/// is given decorated, past its `.`.
 unsafe extern "efiapi" fn type_info_name(data: *mut u64, _root: u64) -> *const u8 {
     // SAFETY: the slot is the first word of the `type_info`'s data, which every thread naming
     // the type reads and writes only through this function, atomically.

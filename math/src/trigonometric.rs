@@ -38,7 +38,6 @@ const TWO_POW_52: f64 = power_of_two(52);
 const TWO_POW_60: f64 = power_of_two(60);
 const WINDOW_BITS: i32 = 192;
 
-/// 2/π in binary, 1280 bits, the first word holding the bits right after the binary point.
 const TWO_OVER_PI: [u64; 20] = [
     0xa2f9_836e_4e44_1529,
     0xfc27_57d1_f534_ddc0,
@@ -62,7 +61,6 @@ const TWO_OVER_PI: [u64; 20] = [
     0xf0cf_bc20_9af4_361d,
 ];
 
-/// `atan(k/8)` for `k` from 0 to 8, as double-doubles.
 const ATAN_EIGHTHS: [(f64, f64); 9] = [
     (0.0, 0.0),
     (
@@ -103,7 +101,6 @@ const SIN_TAIL: [f64; 8] = alternating_inverse_factorials(3, true);
 const COS_TAIL: [f64; 7] = alternating_inverse_factorials(4, false);
 const ATAN_TAIL: [f64; 7] = alternating_odd_reciprocals(3);
 
-/// `±1/first!`, `∓1/(first + 2)!` and on, the first negative when `first_negative`.
 const fn alternating_inverse_factorials<const N: usize>(
     first: u32,
     first_negative: bool,
@@ -203,7 +200,6 @@ fn payne_hanek(magnitude: f64) -> (u32, f64, f64) {
     (quadrant, high, low)
 }
 
-/// `x` less the nearest multiple `n` of π/2, as a double-double, and `n` modulo 4.
 fn reduce(x: f64) -> (u32, f64, f64) {
     let magnitude = fabs(x);
     if magnitude <= FRAC_PI_4 {
@@ -283,7 +279,6 @@ fn times_pi(value: f64) -> (f64, f64) {
     fast_two_sum(product, error + value * PI.1)
 }
 
-/// `x` less the nearest even whole number, exactly, for `|x| < 2^52`.
 fn less_nearest_even(x: f64) -> f64 {
     x - 2.0 * rint(0.5 * x)
 }
@@ -362,7 +357,6 @@ fn atan_of_ratio(numerator: (f64, f64), denominator: (f64, f64)) -> (f64, f64) {
     }
 }
 
-/// `sqrt(1 - a * a)` as a double-double, for `a` in [0, 1].
 fn complement_root(a: f64) -> (f64, f64) {
     let below = two_sum(1.0, -a);
     let above = two_sum(1.0, a);

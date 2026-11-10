@@ -172,7 +172,6 @@ pub fn post(notification: Id) {
     deliveries.free();
 }
 
-/// Posts a new notification named `name` about `object` with `user_info`.
 fn post_named(name: Id, object: Id, user_info: Id) -> Id {
     let made = notification(name, object, user_info);
     post(made);

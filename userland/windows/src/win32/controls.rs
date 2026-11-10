@@ -441,8 +441,6 @@ fn is_default_button(gui: &Gui, window: usize, kind: ButtonKind) -> bool {
     }
 }
 
-/// The `WM_CTLCOLOR*` control `window` asks its parent with, by the design's rule: read-only
-/// and disabled edits, statics, check boxes, radios and group boxes ask as statics.
 fn colour_message(gui: &mut Gui, window: usize) -> Option<(usize, u32)> {
     if in_layer_dialog(gui, window) {
         return None;
@@ -460,8 +458,6 @@ fn colour_message(gui: &mut Gui, window: usize) -> Option<(usize, u32)> {
     (parent != 0).then_some((parent, number))
 }
 
-/// The colours the parent's answer to `WM_CTLCOLOR*` gives control `window`: the brush's
-/// pixel (none for a null brush or no answer) and the text colour it left in `hdc`.
 fn program_colours(window: usize, hdc: usize) -> Option<(u32, Option<u32>, u32)> {
     let (parent, number) = with(|gui| colour_message(gui, window)).flatten()?;
     let brush = gui::send(parent, number, hdc, window);
@@ -473,9 +469,6 @@ fn program_colours(window: usize, hdc: usize) -> Option<(u32, Option<u32>, u32)>
     .flatten()
 }
 
-/// The palette control `window` paints with after its parent's `WM_CTLCOLOR*` answer: the
-/// brush replaces the control's fill and the text colour its text, never a border, caret,
-/// highlight or disabled text.
 fn answered_palette(base: &Palette, (number, fill, text): (u32, Option<u32>, u32)) -> Palette {
     let mut palette = *base;
     match number {

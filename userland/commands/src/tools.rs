@@ -308,8 +308,6 @@ impl ToolResult {
     }
 }
 
-/// The fields of a command's JSON records, for a tool whose result is
-/// [`ToolResult::Items`]; a command that writes no records stops the build.
 const fn records_of(command: &CommandDefinition) -> &'static [Field] {
     match command.outputs.json {
         Output::Records(fields) => fields,
@@ -2133,7 +2131,6 @@ pub const AGENT_SHOW: ToolDefinition = reading(
     ToolResult::Text,
 );
 
-/// The `name` argument of `component_install` and `component_remove` (D235).
 const COMPONENT_NAME: Argument = required(lengths(
     described(
         optional("name", JsonType::String, Mapping::Operand),
@@ -2206,7 +2203,6 @@ pub const MAX_REGISTRY_KEY_BYTES: u32 = 4096;
 /// The most bytes a registry value's name takes in a call: 16 383 UTF-16 units (D231).
 pub const MAX_REGISTRY_NAME_BYTES: u32 = 16_383 * 3;
 
-/// The `key` argument of the `windows_registry_*` tools (D231).
 const REGISTRY_KEY: Argument = required(lengths(
     described(
         optional("key", JsonType::String, Mapping::Operand),
@@ -2218,7 +2214,6 @@ const REGISTRY_KEY: Argument = required(lengths(
     MAX_REGISTRY_KEY_BYTES,
 ));
 
-/// The `name` argument of the `windows_registry_*` tools (D231).
 const REGISTRY_NAME: Argument = lengths(
     described(
         optional("name", JsonType::String, Mapping::Operand),

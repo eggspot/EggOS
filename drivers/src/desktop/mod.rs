@@ -1524,8 +1524,6 @@ impl Desktop {
             })
     }
 
-    /// The window at the end of `slot`'s chain of parents (D227): the normal window a dialog,
-    /// or a dialog's dialog, belongs to; `slot` itself when it has no parent.
     fn owner_window(&self, slot: usize) -> usize {
         let mut owner = slot;
         for _ in 0..MAX_WINDOWS {
@@ -1537,7 +1535,6 @@ impl Desktop {
         owner
     }
 
-    /// Whether `ancestor` is on `slot`'s chain of parents.
     fn descends_from(&self, slot: usize, ancestor: usize) -> bool {
         let mut at = slot;
         for _ in 0..MAX_WINDOWS {
