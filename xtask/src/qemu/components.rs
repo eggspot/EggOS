@@ -31,6 +31,7 @@ const WINDOWS_APPS: &str = "windows-apps";
 const COMPONENTS_FOLDER: &str = "/var/lib/eggos/components";
 const LISTED_MARK: &str = "EGGOS-COMPONENT listed";
 const STEP_PREFIX: &str = "EGGOS-SETTINGS-PANE ";
+const BACKGROUND_LOG: &str = "/tmp/background.log";
 const SETTINGS_BOOT_TIMEOUT: Duration = Duration::from_secs(1500);
 const STEP_TIMEOUT: Duration = Duration::from_secs(120);
 const POLLS: usize = 60;
@@ -251,7 +252,7 @@ fn succeeds(boot: &mut Boot<'_>, command: &str, step: &str) -> Result<String, St
 fn start_in_background(boot: &mut Boot<'_>, command: &str) -> Result<(), String> {
     console_text(boot);
     let prompts = boot.prompts();
-    type_text(boot, &format!("{command} &\r"))?;
+    type_text(boot, &format!("{command} > {BACKGROUND_LOG} 2>&1 &\r"))?;
     boot.wait_for_prompts(prompts + 1)
 }
 

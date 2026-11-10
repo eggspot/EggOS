@@ -47,7 +47,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use eggos_drivers::desktop::protocol::{DiscardEvents, PointerShape};
-use eggos_drivers::desktop::{Contents, Desktop, GRID_SIZE, Part, WindowId, colour};
+use eggos_drivers::desktop::{
+    Contents, Desktop, GRID_SIZE, KeyboardLayoutChoice, Part, WindowId, colour,
+};
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::input::keymap::Modifiers;
 use eggos_drivers::input::{AxisRange, key, scale_to_screen};
@@ -1682,7 +1684,31 @@ const PROMPT_SESSION: [&[u8]; 28] = [
     b"poweroff\r",
 ];
 
+const GERMAN_LAYOUT: &str = "de";
+
 const GERMAN_LAYOUT_LINE: &[u8] = b"settings set keyboard.layout de\r";
+
+fn show_layout_chosen(desktop: &mut Desktop, name: &str) {
+    let Some(number) = eggos_settings_file::keyboard_layout_named(name.as_bytes()) else {
+        return;
+    };
+    let chosen = eggos_settings_file::KeyboardLayoutSet::DEFAULT.with_chosen(number, 0);
+    let choices: Vec<KeyboardLayoutChoice> = chosen
+        .numbers()
+        .filter_map(|listed| {
+            let layout = eggos_settings_file::KEYBOARD_LAYOUTS.get(listed)?;
+            Some(KeyboardLayoutChoice {
+                number: listed as u8,
+                name: layout.name,
+                title: layout.title,
+                code: layout.code,
+            })
+        })
+        .collect();
+    let chord =
+        eggos_settings_file::SwitchKey::default().chord(desktop.profile().number() as usize);
+    desktop.set_keyboard_layouts(&choices, number as u8, chord, &mut Damage::new());
+}
 
 const ACCENT_LINE: &[u8] = "echo EGGOS ACCENT caf\u{e9}\r".as_bytes();
 
@@ -3185,6 +3211,9 @@ fn check_terminal_frame(
     let (width, height) = screen_size(&mut qmp, arch)?;
     let mut desktop = Desktop::new(width, height)
         .ok_or_else(|| format!("{}: a {width}x{height} display holds no desktop", arch.name))?;
+    if at == ACCENT_FRAME {
+        show_layout_chosen(&mut desktop, GERMAN_LAYOUT);
+    }
     if pointer == PointerSteps::AlreadySent {
         for (_, steps) in pointer_steps(&desktop) {
             for step in steps {
