@@ -66,6 +66,82 @@ const MEASUREMENT_TIMEOUT_TSC_TICKS: u64 = 1 << 31;
 /// Disarmed: no deadline.
 const NO_DEADLINE: u64 = u64::MAX;
 
+/// `IA32_TSC_DEADLINE`, and CPUID.01H:ECX's bits for the TSC-deadline timer and a hypervisor.
+const IA32_TSC_DEADLINE: u32 = 0x6e0;
+const CPUID_TSC_DEADLINE: u32 = 1 << 24;
+const CPUID_HYPERVISOR: u32 = 1 << 31;
+const CPUID_TSC_LEAF: u32 = 0x15;
+const CPUID_FREQUENCY_LEAF: u32 = 0x16;
+const HYPERVISOR_BASE_LEAF: u32 = 0x4000_0000;
+const HYPERVISOR_TIMING_LEAF: u32 = 0x4000_0010;
+
+/// Whether the timer runs in TSC-deadline mode (D247): the deadline is written as a TSC value,
+/// so the APIC timer's own clock is never needed.
+static TSC_DEADLINE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn cpuid(leaf: u32, subleaf: u32) -> [u32; 4] {
+    let (eax, ecx, edx): (u32, u32, u32);
+    let rbx: u64;
+    // SAFETY: `cpuid` only reads identification registers; `rbx` is saved around it because LLVM
+    // reserves it.
+    unsafe {
+        core::arch::asm!(
+            "mov {saved:r}, rbx",
+            "cpuid",
+            "xchg {saved:r}, rbx",
+            saved = out(reg) rbx,
+            inout("eax") leaf => eax,
+            inout("ecx") subleaf => ecx,
+            out("edx") edx,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    [eax, rbx as u32, ecx, edx]
+}
+
+/// The TSC's frequency as the CPU or the hypervisor states it (CPUID leaves 15h and 16h, and
+/// the hypervisor timing leaf 40000010h), without measuring (D26's follow-up, D247).
+fn stated_tsc_frequency() -> Option<u64> {
+    let highest = cpuid(0, 0)[0];
+    if highest >= CPUID_TSC_LEAF {
+        let [denominator, numerator, crystal, _] = cpuid(CPUID_TSC_LEAF, 0);
+        if denominator != 0 && numerator != 0 {
+            let crystal = match crystal {
+                0 if highest >= CPUID_FREQUENCY_LEAF => {
+                    let base_megahertz = cpuid(CPUID_FREQUENCY_LEAF, 0)[0];
+                    return (base_megahertz != 0).then(|| u64::from(base_megahertz) * 1_000_000);
+                }
+                0 => None,
+                hertz => Some(u64::from(hertz)),
+            };
+            if let Some(crystal) = crystal {
+                return Some(mul_div_ceil(crystal, u64::from(numerator), u64::from(denominator)));
+            }
+        }
+    }
+    if cpuid(1, 0)[2] & CPUID_HYPERVISOR != 0 && cpuid(HYPERVISOR_BASE_LEAF, 0)[0] >= HYPERVISOR_TIMING_LEAF {
+        let kilohertz = cpuid(HYPERVISOR_TIMING_LEAF, 0)[0];
+        if kilohertz != 0 {
+            return Some(u64::from(kilohertz) * 1000);
+        }
+    }
+    None
+}
+
+fn write_tsc_deadline(deadline: u64) {
+    // SAFETY: `IA32_TSC_DEADLINE` exists when CPUID says the TSC-deadline timer does, which
+    // `TSC_DEADLINE` records; writing it only arms (or, with 0, disarms) this CPU's timer.
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") IA32_TSC_DEADLINE,
+            in("eax") deadline as u32,
+            in("edx") (deadline >> 32) as u32,
+            options(nomem, nostack),
+        );
+    }
+}
+
 /// Where the kernel reaches the local APIC's registers: their physical address in the direct
 /// map (D33), set by [`init`].
 static APIC_BASE: AtomicUsize = AtomicUsize::new(0);
@@ -193,6 +269,14 @@ pub(super) extern "C" fn init() {
     apic.enable(APIC_SPURIOUS_VECTOR);
     BOOT_APIC_ID.store(apic.id(), Ordering::Relaxed);
 
+    let deadline_mode = cpuid(1, 0)[2] & CPUID_TSC_DEADLINE != 0;
+    if deadline_mode && let Some(tsc_frequency) = stated_tsc_frequency() {
+        TSC_FREQUENCY.store(tsc_frequency, Ordering::Relaxed);
+        TSC_DEADLINE.store(true, Ordering::Relaxed);
+        apic.configure_tsc_deadline_timer(TIMER_VECTOR);
+        return;
+    }
+
     // Count the TSC and the (masked) APIC timer over a known number of PIT periods.
     apic.configure_one_shot_timer(TIMER_VECTOR, true);
     // SAFETY: ports 0x40-0x43 are the 8254; nothing else drives it.
@@ -237,7 +321,12 @@ pub(super) extern "C" fn init() {
     );
     TSC_FREQUENCY.store(tsc_frequency, Ordering::Relaxed);
     APIC_COUNTS_PER_TSC_TICK.store(ratio_ceil(apic_frequency, tsc_frequency), Ordering::Relaxed);
-    apic.configure_one_shot_timer(TIMER_VECTOR, false);
+    if deadline_mode {
+        TSC_DEADLINE.store(true, Ordering::Relaxed);
+        apic.configure_tsc_deadline_timer(TIMER_VECTOR);
+    } else {
+        apic.configure_one_shot_timer(TIMER_VECTOR, false);
+    }
 }
 
 /// The ACPI power management timer's frequency (ACPI 6.5, 4.8.3.3).
@@ -312,7 +401,11 @@ fn measure_against_pm_timer(apic: &LocalApic<Mmio>) -> Option<(u64, u64)> {
 pub(super) fn init_this_cpu() {
     let apic = local_apic();
     apic.enable(APIC_SPURIOUS_VECTOR);
-    apic.configure_one_shot_timer(TIMER_VECTOR, false);
+    if TSC_DEADLINE.load(Ordering::Relaxed) {
+        apic.configure_tsc_deadline_timer(TIMER_VECTOR);
+    } else {
+        apic.configure_one_shot_timer(TIMER_VECTOR, false);
+    }
 }
 
 /// The TSC.
@@ -337,15 +430,19 @@ pub(super) fn frequency() -> u64 {
 /// instead, it would wake an idle CPU for nothing (after about 4.3 s at QEMU's 1 GHz APIC clock).
 pub(super) fn set_deadline(deadline: u64) {
     set_deadline_word(deadline);
-    if deadline == NO_DEADLINE {
-        local_apic().start_timer(0);
-    } else {
-        arm(deadline);
+    match (deadline == NO_DEADLINE, TSC_DEADLINE.load(Ordering::Relaxed)) {
+        (true, true) => write_tsc_deadline(0),
+        (true, false) => local_apic().start_timer(0),
+        (false, _) => arm(deadline),
     }
 }
 
 /// Starts the APIC timer to expire at TSC `deadline` (at the earliest representable count).
 fn arm(deadline: u64) {
+    if TSC_DEADLINE.load(Ordering::Relaxed) {
+        write_tsc_deadline(deadline.max(1));
+        return;
+    }
     let remaining = deadline.saturating_sub(now());
     let count = scale_ceil(remaining, APIC_COUNTS_PER_TSC_TICK.load(Ordering::Relaxed));
     // 0 would stop the timer instead of firing it at once.

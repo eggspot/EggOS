@@ -19250,3 +19250,16 @@ the license, by an explicit instruction recorded here.
   firmware loading, the command and data queues, scanning, association), the `wifi-firmware`
   component, WPA3-Personal (SAE over P-256, PMF), 802.1X enterprise networks, the Network pane's
   Wi-Fi list and `wifi` CLI and MCP tools (D22), roaming.
+
+## D247 x86_64's clocks without measuring: CPUID's stated TSC frequency and the TSC-deadline timer (D26's follow-ups; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** At boot the HAL asks CPUID for the TSC's frequency before measuring: leaf 15h's
+  ratio of the core crystal (its frequency from ECX, or leaf 16h's base frequency when ECX is 0),
+  else a hypervisor's timing leaf 40000010h (TSC kHz). When the CPU has the TSC-deadline timer
+  (CPUID.01H:ECX[24]) and the frequency is stated, the PIT/PM-timer measurement is skipped
+  altogether (about 2 ms less boot) and every CPU's local APIC timer runs in TSC-deadline mode: a
+  deadline is written to `IA32_TSC_DEADLINE` as a TSC value (0 disarms), so no APIC count
+  conversion and no early expiry to re-arm. With the deadline timer but no stated frequency, the
+  TSC is measured as before and the deadline mode is still used; without it, nothing changes.
+- **Not yet.** Building and running; checking the TSC is invariant (CPUID 80000007h:EDX[8]) before
+  trusting it across idle states; the HPET as another reference.
