@@ -47,6 +47,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           for arch in aarch64 riscv64 x86_64; do
             test -f "target/release-dist/eggos-${version}-${arch}.elf"
+            test -f "target/release-dist/eggos-${version}-${arch}-components.img"
           done
           test -f "docs/releases/${GITHUB_REF_NAME}.md"
 
@@ -56,6 +57,7 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             target/release-dist/eggos-*.elf \
+            target/release-dist/eggos-*-components.img \
             target/release-dist/SHA256SUMS \
             target/release-dist/run-eggos.sh \
             target/release-dist/run-eggos.ps1 \
