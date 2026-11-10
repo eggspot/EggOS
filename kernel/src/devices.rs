@@ -32,6 +32,8 @@ pub(crate) mod selftest;
 pub mod storage;
 #[cfg(any(test, feature = "xhci"))]
 pub mod usb;
+#[cfg(any(test, feature = "ethernet"))]
+pub mod ethernet;
 #[cfg(any(test, feature = "virtio"))]
 pub mod virtio;
 pub mod window;
@@ -227,6 +229,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &storage::AHCI_DRIVER,
     #[cfg(any(test, feature = "xhci"))]
     &usb::XHCI_DRIVER,
+    #[cfg(any(test, feature = "ethernet"))]
+    &ethernet::ETHERNET_DRIVER,
 ];
 
 /// What a device is, as the bus that found it says.
