@@ -250,7 +250,7 @@ static void exceptions(void) {
         say([NSString stringWithFormat:@"caught %@ %@", exception.name, exception.reason]);
     }
     @try {
-        [thrower performSelector:NSSelectorFromString(@"frobnicate")];
+        [thrower performSelector:@selector(frobnicate)];
     } @catch (NSException *exception) {
         say([NSString stringWithFormat:@"caught %@", exception.name]);
     }

@@ -389,7 +389,7 @@ extern "C" fn enumerate_with_block(this: Id, _: Sel, block: Id) {
     objects.free();
 }
 
-guard!(eggos_guarded_enumerate_with_block => enumerate_with_block);
+guard!(eggos_guarded_set_enumerate_with_block => enumerate_with_block);
 
 extern "C" fn copy_with_zone(this: Id, _: Sel, _: usize) -> Id {
     if root::is_kind_of(this, &NSMUTABLESET) {
@@ -497,7 +497,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "intersectsSet:" => intersects,
         "hash" => hash,
         "setByAddingObject:" => set_by_adding,
-        "enumerateObjectsUsingBlock:" => eggos_guarded_enumerate_with_block,
+        "enumerateObjectsUsingBlock:" => eggos_guarded_set_enumerate_with_block,
         "copyWithZone:" => copy_with_zone,
         "mutableCopyWithZone:" => mutable_copy_with_zone,
         "description" => description,

@@ -33,5 +33,14 @@ fn run(startup: &eggos_runtime::startup::Startup) -> i32 {
     }
 }
 
+/// The CPU features Linux's auxiliary vector reports, which compiler-builtins' aarch64 atomics
+/// ask for: none, so they use load-exclusive and store-exclusive pairs, which every Armv8 CPU
+/// has.
+#[cfg(all(eggos_user, target_arch = "aarch64"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn getauxval(_: core::ffi::c_ulong) -> core::ffi::c_ulong {
+    0
+}
+
 #[cfg(not(eggos_user))]
 fn main() {}
