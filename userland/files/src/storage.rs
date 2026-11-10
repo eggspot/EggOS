@@ -170,6 +170,8 @@ pub enum StorageError {
     Busy,
     /// EggOS was not started by its UEFI loader, so there are no boot files to install (D241).
     NoBootFiles,
+    /// The disk is smaller than [`MIN_INSTALL_BYTES`] (D241, docs/ux/installer-v0.4.md).
+    TooSmallToInstall,
     /// It could not be read or written.
     Failed,
 }
@@ -191,6 +193,9 @@ impl StorageError {
             }
             StorageError::TooSmall => String::from("The disk is smaller than 1 MiB."),
             StorageError::Busy => String::from("The disk is busy: try again in a moment."),
+            StorageError::TooSmallToInstall => {
+                String::from("The disk is smaller than 1 GB: EggOS needs 1 GB or more.")
+            }
             StorageError::NoBootFiles => {
                 String::from("EggOS was not started from its USB stick or disk, so it has nothing to install.")
             }
@@ -1283,7 +1288,7 @@ pub fn install(
 ) -> Result<Installation, StorageError> {
     let line = unmounted(disks, device, true)?;
     let (layout, [(system_first, system_last), (data_first, data_last)]) =
-        installation_layout(line.sectors).ok_or(StorageError::TooSmall)?;
+        installation_layout(line.sectors).ok_or(StorageError::TooSmallToInstall)?;
     let mut unique = [0u8; 52];
     disks.unique_bytes(&mut unique);
     let guid = |at: usize| {
@@ -1370,4 +1375,142 @@ fn write_installation(
         offset += ZERO_CHUNK as u64;
     }
     Ok(())
+}
+
+/// Whether `/proc/driver/boot`'s text names both kept boot files with a size (D241).
+pub fn boot_text_has_files(text: &str) -> bool {
+    [size_named(text, "kernel"), size_named(text, "loader")]
+        .iter()
+        .all(|size| size.is_some_and(|size| size > 0))
+}
+
+/// Whether the kernel kept the files EggOS was started from, which installing needs.
+pub fn has_boot_files(disks: &mut (impl WholeDisks + ?Sized)) -> bool {
+    let mut text = [0u8; BOOT_TEXT_BYTES];
+    let Ok(length) = disks.read_system_file(BOOT_FILE, &mut text) else {
+        return false;
+    };
+    core::str::from_utf8(&text[..length]).is_ok_and(boot_text_has_files)
+}
+
+/// Whether EggOS may be installed on `record`, checked in `disk install`'s order: mounted,
+/// read-only, too small, no boot files.
+pub fn install_allowed(record: &DiskRecord, boot_files: bool) -> Result<(), StorageError> {
+    if let Some(place) = &record.mounted_on {
+        return Err(StorageError::InUse(place.clone()));
+    }
+    if record.read_only {
+        return Err(StorageError::ReadOnly);
+    }
+    if installation_layout(record.size_bytes / 512).is_none() {
+        return Err(StorageError::TooSmallToInstall);
+    }
+    if !boot_files {
+        return Err(StorageError::NoBootFiles);
+    }
+    Ok(())
+}
+
+/// The Storage pane's install line for `record` while nothing runs (docs/ux/installer-v0.4.md).
+pub fn install_idle_text(record: &DiskRecord, boot_files: bool) -> String {
+    match install_allowed(record, boot_files) {
+        Ok(()) => String::from(
+            "Install EggOS... erases the disk and writes EggOS on it, to start this machine from.",
+        ),
+        Err(StorageError::InUse(place)) => {
+            format!("In use at {place}: EggOS cannot be installed on a mounted disk.")
+        }
+        Err(StorageError::ReadOnly) => String::from("Read-only disk: EggOS cannot be installed on it."),
+        Err(StorageError::TooSmallToInstall) => {
+            String::from("Smaller than 1 GB: EggOS needs a disk of 1 GB or more.")
+        }
+        Err(error) => error.sentence(),
+    }
+}
+
+/// The install line with no disk attached but boot files kept.
+pub const NO_DISK_TO_INSTALL_ON: &str =
+    "EggOS sees no disk to install on. It reads NVMe and SATA disks, not USB ones.";
+
+/// The install line after an installation, until EggOS starts from the disk.
+pub const INSTALLED_NOTE: &str = "It reads Unknown contents here until EggOS is started from it.";
+
+/// `Install EggOS on /dev/vdb?`
+pub fn install_question(device: &str) -> String {
+    format!("Install EggOS on {device}?")
+}
+
+/// The two partitions an installation on `record` writes, as the install panel says them.
+pub fn install_writes_lines(record: &DiskRecord) -> [String; 2] {
+    let data_bytes = installation_layout(record.size_bytes / 512)
+        .map_or(0, |(_, [_, (first, last)])| (last - first + 1) * 512);
+    [
+        format!(
+            "Writes an EFI system partition, {},",
+            size_text(SYSTEM_PARTITION_BYTES).as_str()
+        ),
+        format!(
+            "and an EggOS partition, {}, for your files.",
+            size_text(data_bytes).as_str()
+        ),
+    ]
+}
+
+/// `Installing EggOS on /dev/vdb... This can take a minute.`
+pub fn installing_text(device: &str) -> String {
+    format!("Installing EggOS on {device}... This can take a minute.")
+}
+
+/// `disk install`'s done line, without its newline.
+pub fn installed_text(device: &str) -> String {
+    format!("Installed EggOS on {device}. Restart and choose it in the firmware's boot menu.")
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+
+    fn record(size_bytes: u64, mounted_on: Option<&str>, read_only: bool) -> DiskRecord {
+        DiskRecord {
+            device: "/dev/vdb",
+            size_bytes,
+            read_only,
+            file_system: FileSystem::Blank,
+            label: None,
+            mounted_on: mounted_on.map(String::from),
+            used_bytes: None,
+            available_bytes: None,
+        }
+    }
+
+    #[test]
+    fn installing_is_refused_in_the_cli_s_order() {
+        let gib = 1 << 30;
+        assert_eq!(install_allowed(&record(gib, None, false), true), Ok(()));
+        assert_eq!(
+            install_allowed(&record(gib, Some("/home"), true), true),
+            Err(StorageError::InUse(String::from("/home")))
+        );
+        assert_eq!(install_allowed(&record(gib, None, true), true), Err(StorageError::ReadOnly));
+        assert_eq!(
+            install_allowed(&record(512 << 20, None, false), true),
+            Err(StorageError::TooSmallToInstall)
+        );
+        assert_eq!(install_allowed(&record(gib, None, false), false), Err(StorageError::NoBootFiles));
+    }
+
+    #[test]
+    fn the_boot_text_needs_both_files() {
+        assert!(boot_text_has_files("partition 00\nkernel 100\nloader 20\n"));
+        assert!(!boot_text_has_files("kernel 100\n"));
+        assert!(!boot_text_has_files("kernel 0\nloader 20\n"));
+    }
+
+    #[test]
+    fn the_layout_leaves_a_256_mib_system_partition_and_the_rest() {
+        let (_, [(first, last), (data_first, _)]) = installation_layout((2u64 << 30) / 512).unwrap();
+        assert_eq!(first, 2048);
+        assert_eq!(last - first + 1, 524_288);
+        assert!(data_first > last);
+    }
 }
