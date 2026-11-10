@@ -19134,3 +19134,34 @@ the license, by an explicit instruction recorded here.
   entry written through runtime services (the firmware's removable-media path `\EFI\BOOT` is used);
   Secure Boot signing (the owner's key); USB mass storage, so the live system can keep its home on
   the stick; the components store on the stick and the installed disk.
+
+## D242 Releases from the merge commit's `Release:` trailer: `cargo xtask release-tag` and the "Tag release" workflow (refines D20's milestone release steps; owner-approved design of 2026-11-10; written, not used while code-only mode lasts) — Decided by the owner (design), written by the code-only session
+
+- **Context.** Releases were tagged and published by hand from a session after a milestone merged.
+  The owner approved (2026-11-10, through Main Chat) CI-owned releases with no release PR of their
+  own: each release batch bumps the version, adds its notes, and says `Release: vX.Y.Z` in its
+  squash commit.
+- **Decision.**
+  - **`cargo xtask release-tag <sha> [--push]`** (`xtask/src/release_tag.rs`, Rust as the host
+    automation rule wants): the commit must be on `origin/main`; its trailer is the one `Release:`
+    line of the message's last two paragraphs (carriage returns and trailing blank lines dropped;
+    two lines fail); the value must be `vMAJOR.MINOR.PATCH` with no leading zeros or suffix, equal to
+    `[workspace.package]`'s version at the commit, with `docs/releases/vX.Y.Z.md` at the commit. The
+    tag is created (annotated, as the Actions bot) when absent; a tag already on the commit whose
+    Release is still a draft is published again; a tag on another commit fails. Without a trailer,
+    a workspace version with no tag on `origin` fails loudly, naming the retry; otherwise nothing
+    happens. Prints and writes `tag=` to `$GITHUB_OUTPUT`.
+  - **"Tag release"** (`.github/workflows/tag-release.yml`): on CI's `workflow_run` completing on
+    `main` with success, for a push from this repository; job `tag` in the CI container (contents
+    write, packages read, 20 minutes, the target cache), job `release` calling the Release workflow
+    with the tag. One concurrency group per commit, never cancelled.
+  - **Release** (`release.yml`) is callable (`workflow_call`, `workflow_dispatch` with a required
+    tag) besides tag pushes; `TAG` comes from the input or the tag ref, is checked against the
+    version pattern, checks out that ref, checks the image names and the notes, and publishes
+    idempotently: a draft first, assets uploaded with `--clobber` (the component stores included),
+    then made public; a published release is left alone. Workflow permissions are read-only; the
+    job has `contents: write`. A tag pushed with the workflow's token starts no second run.
+  - CLAUDE.md's Releases steps 3-6 now say this; tags are never pushed by hand.
+- **Not yet.** The first real use (after the owner's build-and-fix pass); a PR-time check that a
+  version bump carries notes; the GitHub `latest` flag for an older version's late release;
+  merge-commit and rebase merges switched off in the repository settings (the owner's).

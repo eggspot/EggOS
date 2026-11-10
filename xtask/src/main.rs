@@ -27,6 +27,7 @@ mod qemu;
 mod qmp;
 mod qt_app;
 mod release;
+mod release_tag;
 mod rustc_version;
 mod sdl_app;
 mod sha256;
@@ -62,6 +63,10 @@ commands:
                          then boot it again to check that writing read-only data faults
                          and the fatal exception is reported
                          (<arch> may be `all`)
+  release-tag <sha> [--push]
+                         read the merge commit's Release: trailer and print tag=vX.Y.Z when
+                         CI should tag and publish it (with --push, create and push the
+                         annotated tag); fail when a version bump has no trailer (D242)
   usb-image --arch <arch>
                          build a disk image to write to a USB stick that a PC or an AArch64
                          UEFI machine boots EggOS from (EggOS's UEFI loader and the release
@@ -645,6 +650,11 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("release") if args.len() == 1 => release::run(),
+        Some("release-tag") => match &args[1..] {
+            [sha] => release_tag::run(sha, false),
+            [sha, flag] if flag == "--push" => release_tag::run(sha, true),
+            _ => Err(USAGE.into()),
+        },
         Some("sample-apps") => {
             for arch in arch()? {
                 println!("{}", build_sample_apps(arch)?.display());

@@ -198,14 +198,20 @@ are merged and CI on `main` passed, release it in the same session without askin
    someone can install and use as their everyday OS.
 2. Bump `version` in the root `Cargo.toml` (`[workspace.package]`) and mark the milestone **done** in
    the roadmap, in one PR, reviewed and merged like any other.
-3. On the merged commit, run `cargo xtask ci` locally (no extra CI minutes); if anything fails, fix it
-   first and do not release.
-4. Build the kernel image for every architecture that boots (`cargo xtask build --arch <arch>`, release
-   profile) and name each `eggos-<version>-<arch>.elf`.
-5. Tag `v<version>` on that commit, push the tag, and publish a GitHub Release
-   (`gh release create v<version> --title "EggOS <version>" --notes-file ... <images>`). The notes say
-   what's new, what works, how to boot it in QEMU (`cargo xtask run --arch <arch>`), and known limits.
-6. Report the release link.
+3. **CI releases it from the merge commit's trailer (D242).** The release PR also adds
+   `docs/releases/vX.Y.Z.md` (what's new, what works, how to boot it, known limits), and its squash
+   body ends with the line `Release: vX.Y.Z` (`gh pr merge <n> --squash --body-file ...`); fix-only
+   PRs bump PATCH the same way, docs- or CI-only PRs carry no trailer. When CI passes on that commit
+   on `main`, the "Tag release" workflow runs `cargo xtask release-tag <sha> --push`, which checks
+   the trailer against `[workspace.package]` and the notes file, creates the annotated tag, and calls
+   the Release workflow, which builds every image, publishes the release as a draft, uploads the
+   assets and then makes it public. A version bump merged without a trailer fails that workflow until
+   it is released.
+4. Never push release tags by hand. A failed release is retried by re-running the failed jobs of
+   "Tag release", or with `gh workflow run release.yml -f tag=vX.Y.Z` once the tag exists.
+5. Report the release link once the Release workflow succeeded.
+6. While the owner's code-only mode (2026-11-10) lasts, no PR carries a `Release:` line and nothing is
+   tagged: the automation is written, not used.
 
 Still the owner's: anything that needs new accounts, signing keys or other credentials, or money
 (e.g. app-store or code-signing certificates).
