@@ -23,6 +23,8 @@ eggos-net = { path = "../net" }
 eggos-tls = { path = "../tls" }
 eggos-drivers = { path = "../drivers" }
 eggos-eggfs = { path = "../eggfs" }
+eggos-fat32 = { path = "../fat32" }
+eggos-gpt = { path = "../gpt" }
 eggos-png = { path = "../png" }
 eggos-settings = { path = "../userland/settings" }
 eggos-settings-file = { path = "../settings-file" }

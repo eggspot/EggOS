@@ -67,6 +67,21 @@ pub trait WholeDisks {
     fn usage(&mut self, place: &str) -> Option<Usage>;
     /// The time, in seconds since 1970, that a new file system's root is stamped with.
     fn now(&mut self) -> u64;
+    /// Reads the system file at `path` (a `/proc/driver` file) into `buffer`; the bytes read.
+    /// None by default.
+    fn read_system_file(&mut self, _path: &str, _buffer: &mut [u8]) -> Result<usize, Fault> {
+        Err(Fault::Failed)
+    }
+    /// Fills `bytes` with bytes unlikely to repeat, for new partition GUIDs.
+    fn unique_bytes(&mut self, bytes: &mut [u8]) {
+        let mut state = self.now() ^ 0x9e37_79b9_7f4a_7c15;
+        for byte in bytes {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+    }
 }
 
 /// What a disk holds.
@@ -153,6 +168,8 @@ pub enum StorageError {
     TooSmall,
     /// Another transfer has the disk.
     Busy,
+    /// EggOS was not started by its UEFI loader, so there are no boot files to install (D241).
+    NoBootFiles,
     /// It could not be read or written.
     Failed,
 }
@@ -174,6 +191,9 @@ impl StorageError {
             }
             StorageError::TooSmall => String::from("The disk is smaller than 1 MiB."),
             StorageError::Busy => String::from("The disk is busy: try again in a moment."),
+            StorageError::NoBootFiles => {
+                String::from("EggOS was not started from its USB stick or disk, so it has nothing to install.")
+            }
             StorageError::Failed => String::from("The disk could not be read or written."),
         }
     }
@@ -1157,4 +1177,197 @@ mod tests {
             "and 4 more: disk check /dev/vdb lists them all."
         );
     }
+}
+
+/// `/proc/driver/boot` and the boot files it sizes (D241).
+pub const BOOT_FILE: &str = "/proc/driver/boot";
+pub const BOOT_KERNEL_FILE: &str = "/proc/driver/boot-kernel";
+pub const BOOT_LOADER_FILE: &str = "/proc/driver/boot-loader";
+/// The EFI system partition an installation gets.
+pub const SYSTEM_PARTITION_BYTES: u64 = 256 << 20;
+/// The smallest disk EggOS installs on.
+pub const MIN_INSTALL_BYTES: u64 = 1 << 30;
+const MAX_BOOT_FILE_BYTES: usize = 256 << 20;
+const BOOT_TEXT_BYTES: usize = 256;
+const DATA_START_ZEROED: u64 = 1 << 20;
+const ZERO_CHUNK: usize = 64 * 1024;
+
+/// The files EggOS was started from: the loader and the kernel, and the loader's name on the
+/// EFI system partition, `BOOTX64.EFI` or `BOOTAA64.EFI`.
+#[derive(Debug)]
+pub struct BootFiles {
+    pub loader: Vec<u8>,
+    pub kernel: Vec<u8>,
+    pub loader_name: &'static str,
+}
+
+fn size_named(text: &str, name: &str) -> Option<usize> {
+    text.lines()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(' ')?.trim().parse().ok())
+}
+
+fn read_whole(disks: &mut (impl WholeDisks + ?Sized), path: &str, bytes: usize) -> Result<Vec<u8>, StorageError> {
+    if bytes == 0 || bytes > MAX_BOOT_FILE_BYTES {
+        return Err(StorageError::NoBootFiles);
+    }
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(bytes).map_err(|_| StorageError::Failed)?;
+    buffer.resize(bytes, 0);
+    let read = disks
+        .read_system_file(path, &mut buffer)
+        .map_err(|_| StorageError::NoBootFiles)?;
+    if read != bytes {
+        return Err(StorageError::NoBootFiles);
+    }
+    Ok(buffer)
+}
+
+/// The PE machine of a UEFI application: its file name on the EFI system partition.
+pub fn loader_name_of(loader: &[u8]) -> Option<&'static str> {
+    let header = usize::from(u16::from_le_bytes([*loader.get(0x3c)?, *loader.get(0x3d)?]));
+    let machine = u16::from_le_bytes([*loader.get(header + 4)?, *loader.get(header + 5)?]);
+    match machine {
+        0x8664 => Some("BOOTX64.EFI"),
+        0xaa64 => Some("BOOTAA64.EFI"),
+        _ => None,
+    }
+}
+
+/// Reads the boot files the kernel kept.
+pub fn boot_files(disks: &mut (impl WholeDisks + ?Sized)) -> Result<BootFiles, StorageError> {
+    let mut text = [0u8; BOOT_TEXT_BYTES];
+    let length = disks
+        .read_system_file(BOOT_FILE, &mut text)
+        .map_err(|_| StorageError::NoBootFiles)?;
+    let text = core::str::from_utf8(&text[..length]).map_err(|_| StorageError::NoBootFiles)?;
+    let kernel_bytes = size_named(text, "kernel").ok_or(StorageError::NoBootFiles)?;
+    let loader_bytes = size_named(text, "loader").ok_or(StorageError::NoBootFiles)?;
+    let loader = read_whole(disks, BOOT_LOADER_FILE, loader_bytes)?;
+    let kernel = read_whole(disks, BOOT_KERNEL_FILE, kernel_bytes)?;
+    let loader_name = loader_name_of(&loader).ok_or(StorageError::NoBootFiles)?;
+    Ok(BootFiles {
+        loader,
+        kernel,
+        loader_name,
+    })
+}
+
+/// What an installation put on its disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Installation {
+    pub device: &'static str,
+    pub system_partition_bytes: u64,
+    pub data_partition_bytes: u64,
+}
+
+/// Where an installation's partitions go on a disk of `sectors` 512-byte sectors: the EFI system
+/// partition's first and last sector and the data partition's.
+pub fn installation_layout(sectors: u64) -> Option<(eggos_gpt::Layout, [(u64, u64); 2])> {
+    if sectors.saturating_mul(512) < MIN_INSTALL_BYTES {
+        return None;
+    }
+    let layout = eggos_gpt::Layout::new(sectors, 512)?;
+    let system_first = layout.aligned(layout.first_usable);
+    let system_last = system_first + SYSTEM_PARTITION_BYTES / 512 - 1;
+    let data_first = layout.aligned(system_last + 1);
+    (data_first < layout.last_usable).then_some((layout, [(system_first, system_last), (data_first, layout.last_usable)]))
+}
+
+/// Installs EggOS on the unmounted disk `device` (`disk install`, D241): erases it, writes a GUID
+/// partition table with an EFI system partition holding `files` and an EggOS data partition,
+/// whose start is zeroed so the next boot from the disk makes it an empty EggFS volume.
+pub fn install(
+    disks: &mut (impl WholeDisks + ?Sized),
+    device: &str,
+    files: &BootFiles,
+) -> Result<Installation, StorageError> {
+    let line = unmounted(disks, device, true)?;
+    let (layout, [(system_first, system_last), (data_first, data_last)]) =
+        installation_layout(line.sectors).ok_or(StorageError::TooSmall)?;
+    let mut unique = [0u8; 52];
+    disks.unique_bytes(&mut unique);
+    let guid = |at: usize| {
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&unique[at..at + 16]);
+        eggos_gpt::random_guid(bytes)
+    };
+    let volume_id = u32::from_le_bytes([unique[48], unique[49], unique[50], unique[51]]);
+    let partitions = [
+        eggos_gpt::NewPartition {
+            kind: eggos_gpt::EFI_SYSTEM_PARTITION,
+            unique: guid(16),
+            first: system_first,
+            last: system_last,
+            name: "EFI system partition",
+        },
+        eggos_gpt::NewPartition {
+            kind: eggos_gpt::EGGOS_DATA_PARTITION,
+            unique: guid(32),
+            first: data_first,
+            last: data_last,
+            name: "EggOS",
+        },
+    ];
+    let table = eggos_gpt::NewTable::new(layout, guid(0), &partitions).ok_or(StorageError::TooSmall)?;
+    let handle = disks.open(line.device, true).map_err(StorageError::of)?;
+    let result = write_installation(disks, handle, &table, files, system_first, system_last, data_first, volume_id);
+    let flushed = disks.flush(handle).map_err(StorageError::of);
+    disks.close(handle);
+    result?;
+    flushed?;
+    Ok(Installation {
+        device: line.device,
+        system_partition_bytes: (system_last - system_first + 1) * 512,
+        data_partition_bytes: (data_last - data_first + 1) * 512,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_installation(
+    disks: &mut (impl WholeDisks + ?Sized),
+    handle: usize,
+    table: &eggos_gpt::NewTable,
+    files: &BootFiles,
+    system_first: u64,
+    system_last: u64,
+    data_first: u64,
+    volume_id: u32,
+) -> Result<(), StorageError> {
+    let [primary_header, primary_entries, backup_entries, backup_header] = table.places();
+    let mut header_block = [0u8; 512];
+    disks.write_at(handle, 0, &table.mbr).map_err(StorageError::of)?;
+    header_block[..eggos_gpt::HEADER_BYTES].copy_from_slice(&table.primary_header);
+    disks.write_at(handle, primary_header * 512, &header_block).map_err(StorageError::of)?;
+    disks.write_at(handle, primary_entries * 512, &table.entries).map_err(StorageError::of)?;
+    disks.write_at(handle, backup_entries * 512, &table.entries).map_err(StorageError::of)?;
+    header_block[..eggos_gpt::HEADER_BYTES].copy_from_slice(&table.backup_header);
+    disks.write_at(handle, backup_header * 512, &header_block).map_err(StorageError::of)?;
+    let loader_path = format!("EFI/BOOT/{}", files.loader_name);
+    let volume_files = [
+        eggos_fat32::File {
+            path: &loader_path,
+            bytes: &files.loader,
+        },
+        eggos_fat32::File {
+            path: "EGGOS/KERNEL.ELF",
+            bytes: &files.kernel,
+        },
+    ];
+    let sectors = u32::try_from(system_last - system_first + 1).map_err(|_| StorageError::TooSmall)?;
+    let hidden = u32::try_from(system_first).unwrap_or(u32::MAX);
+    let base = system_first * 512;
+    eggos_fat32::write_volume(sectors, hidden, volume_id, &volume_files, &mut |offset, bytes| {
+        disks.write_at(handle, base + offset, bytes)
+    })
+    .map_err(|error| match error {
+        eggos_fat32::Error::Write(fault) => StorageError::of(fault),
+        _ => StorageError::TooSmall,
+    })?;
+    let zero = [0u8; ZERO_CHUNK];
+    let mut offset = 0;
+    while offset < DATA_START_ZEROED {
+        disks.write_at(handle, data_first * 512 + offset, &zero).map_err(StorageError::of)?;
+        offset += ZERO_CHUNK as u64;
+    }
+    Ok(())
 }

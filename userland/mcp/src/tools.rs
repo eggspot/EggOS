@@ -160,6 +160,8 @@ pub enum Kind {
     DiskRepair,
     /// `disk_format`: erases a disk and makes it an empty EggFS disk (D192).
     DiskFormat,
+    /// `disk_install`: erases a disk and installs EggOS on it (D241).
+    DiskInstall,
     /// `agent_list`: the agents the user added and their grants (D193).
     AgentList,
     /// `agent_show`: the calling agent's own grants (D193).
@@ -433,7 +435,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 72] = [
+pub const TOOLS: [Tool; 73] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -675,6 +677,15 @@ pub const TOOLS: [Tool; 72] = [
         twin(
             "/bin/disk",
             &["format", "--yes"],
+            Operand::Path(DEVICE_PATH),
+        ),
+    ),
+    tool(
+        &registry::DISK_INSTALL,
+        Kind::DiskInstall,
+        twin(
+            "/bin/disk",
+            &["install", "--yes"],
             Operand::Path(DEVICE_PATH),
         ),
     ),

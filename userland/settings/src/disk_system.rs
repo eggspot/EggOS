@@ -59,7 +59,11 @@ pub struct LinuxDisks;
 
 impl WholeDisks for LinuxDisks {
     fn read_disks_file(&mut self, buffer: &mut [u8]) -> Result<usize, Fault> {
-        let descriptor = open(DISKS_FILE, O_RDONLY_CLOEXEC)?;
+        self.read_system_file(DISKS_FILE, buffer)
+    }
+
+    fn read_system_file(&mut self, path: &str, buffer: &mut [u8]) -> Result<usize, Fault> {
+        let descriptor = open(path, O_RDONLY_CLOEXEC)?;
         let mut length = 0;
         while length < buffer.len() {
             let rest = &mut buffer[length..];

@@ -71,3 +71,33 @@ pub fn boot_data(handoff: &Handoff) -> PhysicalRange {
         end: handoff.boot_data_end.max(handoff.boot_data_start),
     }
 }
+
+/// A file the UEFI loader read from the boot partition and kept for the installer (D241).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootFile {
+    /// `\EGGOS\KERNEL.ELF`.
+    Kernel,
+    /// `\EFI\BOOT\BOOTX64.EFI` or `BOOTAA64.EFI`.
+    Loader,
+}
+
+/// The largest boot file read, against a corrupt length.
+const MAX_BOOT_FILE_BYTES: u64 = 256 << 20;
+
+/// The bytes of `file`, if the loader kept it; read through the direct map, which covers the
+/// loader's boot data once the kernel's page tables are active.
+pub fn file<P: Platform>(handoff: &Handoff, file: BootFile) -> Option<&'static [u8]> {
+    let (address, length) = match file {
+        BootFile::Kernel => (handoff.kernel_file, handoff.kernel_file_bytes),
+        BootFile::Loader => (handoff.loader_file, handoff.loader_file_bytes),
+    };
+    if address == 0 || length == 0 || length > MAX_BOOT_FILE_BYTES {
+        return None;
+    }
+    let inside = memory_ranges::<P>(handoff).any(|range| {
+        range.kind == memory_kind::BOOT_DATA && range.start <= address && address + length <= range.end()
+    });
+    // SAFETY: the file lies inside a range of the loader's boot data (checked), which the
+    // kernel's direct map covers and nothing writes.
+    inside.then(|| unsafe { physical_bytes::<P>(address, length as usize) })
+}

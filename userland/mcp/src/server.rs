@@ -3195,6 +3195,7 @@ fn confirmation_needed(tool: &Tool, out: &mut [u8]) -> usize {
         Kind::ClockSet => text.put("clock_set sets the machine's clock"),
         Kind::AppUninstall => text.put("app_uninstall removes the app"),
         Kind::DiskFormat => text.put("disk_format erases the disk"),
+        Kind::DiskInstall => text.put("disk_install erases the disk"),
         _ => {
             text.put(tool.name);
             text.put(" needs the user's yes");
@@ -3473,6 +3474,11 @@ fn question_text(
             text.put(text_prefix(&name, length));
             text.put(". Allow it?");
         }
+        Kind::DiskInstall => {
+            text.put("An agent asks to install EggOS on the disk ");
+            text.put(shown);
+            text.put(", erasing everything on it. Allow it?");
+        }
         Kind::DiskFormat => {
             text.put("An agent asks to format the disk ");
             text.put(shown);
@@ -3657,6 +3663,12 @@ fn would_text(
             text.put(" would set the machine's clock and its hardware clock to ");
             text.put(checked.time.as_ref().map_or("", |time| time.as_str()));
             text.put(" (UTC)");
+        }
+        (Kind::DiskInstall, _) => {
+            text.put(" would erase everything on ");
+            text.put(shown);
+            size(&mut text);
+            text.put(" and install EggOS on it");
         }
         (Kind::DiskFormat, _) => {
             text.put(" would erase everything on ");
