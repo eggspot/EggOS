@@ -461,7 +461,7 @@ fn boundary_above(sp: u64) -> Option<*mut Boundary> {
         if boundary.is_null() {
             return None;
         }
-        if boundary as u64 > sp {
+        if boundary as u64 >= sp {
             return Some(boundary);
         }
         // SAFETY: a record its stub linked, on this thread's stack.

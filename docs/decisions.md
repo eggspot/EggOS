@@ -18803,6 +18803,12 @@ the license, by an explicit instruction recorded here.
   Foundation called, an unrecognized selector, a range error from `insertString:atIndex:`, a
   nil object given to `dictionaryWithObjects:forKeys:count:`, an exception from a set's block
   and one from a notification observer's block.
+- **Nested guards.** A guarded method can reach another guarded entry through tail calls only
+  (`performSelector:` sends the unknown selector, and forwarding ends in the guarded
+  `doesNotRecognizeSelector:`); the inner guard then records exactly the outer guard's stack
+  pointer, so the search takes the first boundary at or above a frame's stack pointer, not
+  strictly above it. The `macos-objc language` check's `performSelector:` of an unknown
+  selector inside `@try` covers it.
 - **Not yet** (carried to the next plan). Guards on the variadic methods; methods that reach
   the program only through ordinary messages (`copy`, `isEqual:`, `hash`, `description`, a
   nib's setters and `awakeFromNib`) are not guarded, so an exception from there goes to the

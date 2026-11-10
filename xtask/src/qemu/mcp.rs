@@ -722,11 +722,16 @@ fn session(client: &mut Client) -> Result<(), String> {
     expect(answer.contains(r#""result":{}"#), arch, "ping")?;
     let answer = client.request("tools/list", "{}")?;
     for tool in &eggos_mcp::tools::TOOLS {
-        expect(
-            answer.contains(&format!(r#""name":"{}""#, tool.name)),
-            arch,
-            &format!("tools/list lacks {}", tool.name),
-        )?;
+        let listed = answer.contains(&format!(r#""name":"{}""#, tool.name));
+        if tool.needs == Some(eggos_mcp::tools::WINDOWS_LAYER) && !runs_windows_programs(arch) {
+            expect(
+                !listed,
+                arch,
+                &format!("tools/list offers {} without the Windows layer", tool.name),
+            )?;
+        } else {
+            expect(listed, arch, &format!("tools/list lacks {}", tool.name))?;
+        }
     }
     expect(
         answer.contains(r#""readOnlyHint":true"#),
