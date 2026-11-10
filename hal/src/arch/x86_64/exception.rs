@@ -17,10 +17,11 @@
 //! and loaded by the scheduler, per thread, once it has used them (`fp`, D54); until then `CR0.TS`
 //! traps them (D49).
 //!
-//! All exceptions run on the current stack: there is no IST stack yet, so a stack overflow
-//! that faults again ends in a triple fault (a reset, which the QEMU runner detects). Separate
-//! stacks for double faults, NMIs and machine checks are needed before untrusted programs run
-//! (D47): `syscall` and `sysretq` leave a moment in ring 0 on the program's stack.
+//! Exceptions run on the current stack, except the double fault, NMI, machine check and debug
+//! exceptions, which each CPU takes on stacks of its own from the interrupt stack table once its
+//! TSS is loaded (D248): a kernel stack overflow is reported instead of resetting the machine,
+//! and an NMI in the moment `syscall` and `sysretq` spend in ring 0 on a program's stack does not
+//! run on it. One of those from ring 3 has its frame moved to where `TSS.RSP0` would have put it.
 
 use super::message_interrupts::{self, FIRST_DEVICE_VECTOR, LAST_DEVICE_VECTOR};
 use super::timer::{
@@ -145,6 +146,37 @@ exception_common:
 user_exception:
     swapgs
     lfence
+    pushq   %rdx
+    pushq   %rcx
+    pushq   %rax
+    movq    %gs:{tss_rsp0}, %rax
+    subq    $56, %rax
+    leaq    24(%rsp), %rcx
+    cmpq    %rax, %rcx
+    je      4f
+    movq    0(%rcx), %rdx
+    movq    %rdx, 0(%rax)
+    movq    8(%rcx), %rdx
+    movq    %rdx, 8(%rax)
+    movq    16(%rcx), %rdx
+    movq    %rdx, 16(%rax)
+    movq    24(%rcx), %rdx
+    movq    %rdx, 24(%rax)
+    movq    32(%rcx), %rdx
+    movq    %rdx, 32(%rax)
+    movq    40(%rcx), %rdx
+    movq    %rdx, 40(%rax)
+    movq    48(%rcx), %rdx
+    movq    %rdx, 48(%rax)
+    movq    %rsp, %rcx
+    movq    %rax, %rsp
+    movq    16(%rcx), %rdx
+    movq    0(%rcx), %rax
+    movq    8(%rcx), %rcx
+    jmp     user_exception_save
+4:  popq    %rax
+    popq    %rcx
+    popq    %rdx
 user_exception_save:
     pushq   %rax
     pushq   %rbx
@@ -1372,6 +1404,14 @@ unsafe impl Sync for InterruptDescriptorTable {}
 static IDT: InterruptDescriptorTable =
     InterruptDescriptorTable(UnsafeCell::new([GateDescriptor::MISSING; VECTORS]));
 
+/// The same gates with the double fault, NMI, machine check and debug exceptions on the
+/// interrupt stack table (D248), which a CPU loads once its own TSS is loaded.
+static IDT_WITH_STACKS: InterruptDescriptorTable =
+    InterruptDescriptorTable(UnsafeCell::new([GateDescriptor::MISSING; VECTORS]));
+
+/// Each vector that runs on its own stack, with its TSS interrupt-stack-table index (1 to 7).
+const STACK_VECTORS: [(usize, u8); 4] = [(8, 1), (2, 2), (18, 3), (1, 4)];
+
 /// Fills the IDT and loads it. Called once by the entry code, before `kernel_main`.
 pub(super) extern "C" fn install() {
     fill();
@@ -1393,6 +1433,29 @@ fn fill() {
         // SAFETY: `fill` is the only writer and runs once, from `install`, before any CPU loads
         // the IDT, so nothing else accesses the table; `vector` is below 256, in bounds.
         unsafe { (*gates)[vector] = GateDescriptor::interrupt_gate(stub) };
+    }
+    let stacked = IDT_WITH_STACKS.0.get();
+    // SAFETY: as above, for the second table, which only `fill` writes, before any CPU loads it.
+    unsafe {
+        *stacked = *gates;
+        for (vector, index) in STACK_VECTORS {
+            (*stacked)[vector].ist = index;
+        }
+    }
+}
+
+/// Loads the IDT whose double fault, NMI, machine check and debug gates use the interrupt
+/// stack table, on a CPU whose TSS holds its stacks and is loaded.
+fn load_with_stacks() {
+    let gates = IDT_WITH_STACKS.0.get();
+    let pointer = DescriptorTablePointer {
+        limit: (core::mem::size_of::<[GateDescriptor; VECTORS]>() - 1) as u16,
+        base: gates as u64,
+    };
+    // SAFETY: filled by `fill` before any CPU runs this, with the same stubs and selector as
+    // `IDT`; the caller's CPU has its TSS loaded with every stack the table names.
+    unsafe {
+        core::arch::asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags));
     }
 }
 
@@ -1585,6 +1648,15 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
     // SAFETY: the caller guarantees the block is this CPU's and that nothing else uses its
     // tables; they are written here before the CPU loads them.
     unsafe { (*tables).tss.io_map_base = core::mem::size_of::<Tss>() as u16 };
+    for (slot, (_, index)) in STACK_VECTORS.iter().enumerate() {
+        // SAFETY: as above; the stack is this CPU's own, in its block, used only by the CPU when
+        // it takes one of these exceptions; its end is its top.
+        unsafe {
+            let stack = &raw const (*tables).exception_stacks[slot];
+            let top = stack as u64 + crate::cpu::EXCEPTION_STACK_BYTES as u64;
+            (*tables).tss.ist[usize::from(*index) - 1] = top;
+        }
+    }
     // SAFETY: as above; only the address is taken.
     let tss_base = unsafe { &raw const (*tables).tss } as u64;
     let tss_limit = core::mem::size_of::<Tss>() as u64 - 1;
@@ -1619,6 +1691,7 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
             options(nostack, preserves_flags),
         );
     }
+    load_with_stacks();
     // SAFETY: CR0 and CR4 only change what x87, MMX and SSE instructions do: with TS and MP
     // set and EM clear, each raises #NM, in ring 3 and in the kernel, which uses none, until
     // the scheduler clears TS for a program that has its own FP/SIMD registers (D54), so none
