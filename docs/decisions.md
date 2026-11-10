@@ -18506,6 +18506,12 @@ the license, by an explicit instruction recorded here.
   at once, each with its worst input. QEMU: `eggcrt2.exe`, our own C program built by MSVC in
   CI, in the windows-crt session (the math library, `setjmp` and `longjmp` through
   `__finally`, locales, wide streams and low-level text mode).
+- **Exact float formatting.** `printf`'s `%f`, `%e` and `%g` (`eggos-c-format`, which both
+  layers' C libraries share) print the double's exact decimal value rounded half to even on an
+  exact tie, as glibc and the Universal C Runtime do, from its digits in a fixed-size big
+  integer (`exact_decimal.rs`: `m * 2^e`, or `m * 5^-e` with the point moved); the double
+  arithmetic it replaced printed `sqrt(2)` as `1.4142135623730952` at `%.17g`, which
+  `eggcrt2.exe` caught once its imports resolved.
 - **Not yet.** Named locales other than C and English (United States) UTF-8 (the plan's
   "Left out"); the two benchmarks' baseline lines (the weekly pass adds them); `errno` from
   the math functions: the UCRT's `math_errhandling` is believed to include `MATH_ERRNO` (its
