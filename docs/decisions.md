@@ -18138,7 +18138,8 @@ the license, by an explicit instruction recorded here.
     the bar's items, then the dock's, with a focus ring; arrows and Tab move it, Enter or Space
     clicks, Esc or a click ends it.
   - **`/dev/kmsg`** (major 1, minor 11, mode 0644): writes reach the serial console only,
-    reads give nothing, so init's own `init:` lines stay out of the Terminal. Only a
+    reads give nothing, so init's own `init:` lines stay out of the Terminal (and the QEMU
+    checks leave them out of the console stream they render the Terminal from). Only a
     privileged writer (effective user 0, init's) may write it; anyone else's write fails with
     `EACCES`, the rule `/proc/sys/eggos` follows (D221), because `open` checks no mode and
     any process could otherwise write lines that pass for the kernel's or init's in the boot

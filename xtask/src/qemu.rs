@@ -2903,14 +2903,23 @@ fn boot_clock_verdict(arch: &str, console: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn terminal_stream(console: &[u8]) -> Option<&[u8]> {
+const SERIAL_ONLY_LINE_PREFIX: &[u8] = b"init: ";
+
+fn terminal_stream(console: &[u8]) -> Option<Vec<u8>> {
     let prefix = TERMINAL_LINE_PREFIX.as_bytes();
     let start = console
         .windows(prefix.len() + 1)
         .position(|window| window[0] == b'\n' && &window[1..] == prefix)?
         + 1;
     let end = start + console[start..].iter().position(|&byte| byte == b'\n')?;
-    Some(&console[end + 1..])
+    Some(
+        console[end + 1..]
+            .split_inclusive(|&byte| byte == b'\n')
+            .filter(|line| !line.starts_with(SERIAL_ONLY_LINE_PREFIX))
+            .flatten()
+            .copied()
+            .collect(),
+    )
 }
 
 /// What a program's window shows in the host's render.
@@ -3766,13 +3775,13 @@ fn check_desktop_frame_masked(
         let mut candidates = Vec::new();
         for windows in alternatives {
             candidates.push(
-                desktop_picture(desktop, stream, windows)
+                desktop_picture(desktop, &stream, windows)
                     .ok_or_else(|| format!("{}: the desktop holds no terminal", arch.name))?,
             );
             if desktop.focused() {
                 candidates.extend(desktop_picture_with(
                     desktop,
-                    stream,
+                    &stream,
                     windows,
                     CursorLook::Blinked,
                 ));
@@ -4923,11 +4932,12 @@ mod tests {
     }
 
     #[test]
-    fn the_terminal_s_bytes_are_the_console_s_after_the_terminal_line() {
-        let console = b"EggOS 0.2.0 (aarch64)\r\nboot: terminal 80x24\r\nEggOS 0.2.0\r\neggsh:/# ";
+    fn the_terminal_s_bytes_are_the_console_s_after_the_terminal_line_without_init_s_log() {
+        let console = b"EggOS 0.2.0 (aarch64)\r\nboot: terminal 80x24\r\nEggOS 0.2.0\r\n\
+            init: starting /bin/eggsh\nWelcome\r\neggsh:/# ";
         assert_eq!(
             terminal_stream(console),
-            Some(&b"EggOS 0.2.0\r\neggsh:/# "[..])
+            Some(b"EggOS 0.2.0\r\nWelcome\r\neggsh:/# ".to_vec())
         );
         assert_eq!(terminal_stream(b"EggOS\r\nboot: terminal 80x24"), None);
         assert_eq!(terminal_stream(b"EggOS\r\nboot: no display\r\nx"), None);
