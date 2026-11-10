@@ -19830,3 +19830,22 @@ the license, by an explicit instruction recorded here.
   network stack through CCMP, part 7); group-key rekeying; WPA3-Personal (SAE); the `wifi` CLI and
   MCP tools that write the settings file and the Network pane's list (D22); roaming and
   reconnecting after a disconnect.
+
+## D279 The Wi-Fi link as the network stack's adapter: Ethernet frames over 802.11 data frames, CCMP on the host, attached after boot (M13 Wi-Fi, part 7; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - `net::attach_late` lends the stack an adapter after boot, when none is in use, and starts the
+    network's thread as boot does: a Wi-Fi link comes up only once its network is joined, long
+    after the boot-time `net::start`. It is the stack's one adapter and keeps the name `eth0`.
+  - Once connected, the Wi-Fi thread hands the transport, the link and the keys to a
+    `WifiDevice` (a `NetDevice`) and ends. Sending wraps the Ethernet frame's payload in a data
+    frame to the access point (D278) and, on a WPA2 network, protects it with CCMP and the
+    pairwise key on the host (`eggos_wifi::protection`, packet numbers counting up from 1),
+    then sends it through the management queue with the firmware's encryption off. Receiving
+    takes the firmware's received frames, decrypts protected data frames (group-addressed ones
+    with the group key the key id names, the rest with the pairwise key), drops replays (packet
+    numbers that do not increase, per key) and unprotected frames on a protected network, and
+    hands the rest up as Ethernet frames; EAPOL frames are not passed up.
+- **Not yet.** Building and running; a name of its own (`wlan0`) and Wi-Fi and Ethernet together;
+  the firmware's hardware CCMP; group-key rekeying (EAPOL group messages); power saving;
+  reconnecting after the access point drops the station.

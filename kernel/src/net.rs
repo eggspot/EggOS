@@ -171,6 +171,30 @@ pub fn start<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     Ok(())
 }
 
+/// Lends the stack `device` after boot, when none is in use: a Wi-Fi link that came up once
+/// its network was joined (D279). Starts the network's thread as [`start`] does.
+pub fn attach_late<P: Platform>(device: Box<dyn NetDevice>) -> Result<(), &'static str> {
+    if ADAPTER.lock().is_some() || DEVICE.lock().is_some() {
+        return Err("a network adapter is already in use");
+    }
+    let mut seed = [0u8; 8];
+    crate::random::fill::<P>(&mut seed);
+    let mut interface = Interface::new(device.mac(), device.mtu(), u64::from_ne_bytes(seed));
+    interface.set_link(device.is_link_up(), now_ms::<P>());
+    let indicated = word_of(indicator_state(&interface));
+    *ADAPTER.lock() = Some(Box::new(Adapter {
+        device,
+        interface,
+        frame: [0; MAX_FRAME_BYTES],
+    }));
+    INDICATED.store(indicated, Ordering::Relaxed);
+    crate::terminal::network_changed::<P>();
+    resolv_conf::mount();
+    thread::spawn::<P, _>(poll_forever::<P>)
+        .map(|_| ())
+        .map_err(|_| "no thread to run the network")
+}
+
 fn poll_forever<P: Platform>() {
     let interrupting = INTERRUPTING.load(Ordering::Acquire);
     loop {

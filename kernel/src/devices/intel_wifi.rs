@@ -44,8 +44,135 @@ const LARGEST_SETTINGS: usize = 4096;
 static CONNECTED: SpinLock<Option<alloc::string::String>> = SpinLock::new(None);
 
 struct Connection {
-    _link: Link<DmaRegion>,
-    _keys: Option<Keys>,
+    link: Link<DmaRegion>,
+    keys: Option<Keys>,
+}
+
+const ETHERNET_HEADER_BYTES: usize = 14;
+const WIFI_MTU: usize = 1500;
+const MAX_PENDING_FRAMES: usize = 64;
+const KEY_ID_SHIFT: u32 = 6;
+
+/// The joined network as the network stack's adapter (D279): Ethernet frames out become data
+/// frames to the access point, protected by CCMP on the host when the network is WPA2; data
+/// frames in are checked, decrypted and handed up as Ethernet frames.
+struct WifiDevice {
+    transport: Transport<Mmio, DmaRegion>,
+    link: Link<DmaRegion>,
+    keys: Option<Keys>,
+    ax210: bool,
+    packet_number: u64,
+    last_unicast: u64,
+    last_group: u64,
+    pending: alloc::collections::VecDeque<Vec<u8>>,
+}
+
+// SAFETY: as `Found`: the adapter's registers and DMA memory belong to this device alone once
+// the bring-up thread hands it to the network stack.
+unsafe impl Send for WifiDevice {}
+
+impl WifiDevice {
+    fn take_frames(&mut self) {
+        for packet in self.transport.take_notifications() {
+            if packet.code != scan::RX_MPDU || self.pending.len() >= MAX_PENDING_FRAMES {
+                continue;
+            }
+            let Some(heard) = scan::received_frame(&packet.payload, self.ax210) else {
+                continue;
+            };
+            if let Some(ethernet) = self.ethernet_of(&heard.frame) {
+                self.pending.push_back(ethernet);
+            }
+        }
+    }
+
+    fn ethernet_of(&mut self, frame: &[u8]) -> Option<Vec<u8>> {
+        let header = client::data_header_bytes(frame)?;
+        let bssid = self.link.target().bssid;
+        let mut body = alloc::vec![0u8; frame.len()];
+        let body = match (client::is_protected_data(frame), &self.keys) {
+            (true, Some(keys)) => {
+                let group = frame.get(4).is_some_and(|first| first & 1 != 0);
+                let key_id = frame.get(header + 3).map_or(0, |byte| byte >> KEY_ID_SHIFT);
+                let key: [u8; 16] = match group {
+                    true if key_id == keys.gtk_index && keys.gtk_bytes >= 16 => keys.gtk[..16].try_into().ok()?,
+                    true => return None,
+                    false => keys.tk,
+                };
+                let (length, number) = eggos_wifi::protection::decrypt(&key, frame, &mut body).ok()?;
+                let last = match group {
+                    true => &mut self.last_group,
+                    false => &mut self.last_unicast,
+                };
+                if number <= *last && *last != 0 {
+                    return None;
+                }
+                *last = number;
+                &body[..length]
+            }
+            (true, None) => return None,
+            (false, Some(_)) => return None,
+            (false, None) => frame.get(header..)?,
+        };
+        let (destination, source, ethertype, payload) = client::ethernet_from(frame, body, bssid)?;
+        if ethertype == client::ETHERTYPE_EAPOL {
+            return None;
+        }
+        let mut ethernet = Vec::with_capacity(ETHERNET_HEADER_BYTES + payload.len());
+        ethernet.extend_from_slice(&destination);
+        ethernet.extend_from_slice(&source);
+        ethernet.extend_from_slice(&ethertype.to_be_bytes());
+        ethernet.extend_from_slice(&payload);
+        Some(ethernet)
+    }
+}
+
+impl crate::net::NetDevice for WifiDevice {
+    fn mac(&self) -> eggos_net::ethernet::MacAddress {
+        eggos_net::ethernet::MacAddress(self.link.address())
+    }
+
+    fn mtu(&self) -> usize {
+        WIFI_MTU
+    }
+
+    fn is_link_up(&self) -> bool {
+        !self.transport.radio_killed()
+    }
+
+    fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {
+        if self.pending.is_empty() {
+            self.take_frames();
+        }
+        let next = self.pending.pop_front()?;
+        let length = next.len().min(frame.len());
+        frame[..length].copy_from_slice(&next[..length]);
+        Some(length)
+    }
+
+    fn transmit(&mut self, frame: &[u8]) -> Result<(), &'static str> {
+        if frame.len() < ETHERNET_HEADER_BYTES {
+            return Err("a frame shorter than its Ethernet header");
+        }
+        let destination: [u8; 6] = frame[..6].try_into().map_err(|_| "a damaged Ethernet frame")?;
+        let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+        let own = self.link.address();
+        let bssid = self.link.target().bssid;
+        let plain = client::data_frame(own, bssid, destination, ethertype, &frame[ETHERNET_HEADER_BYTES..]);
+        let wire = match &self.keys {
+            None => plain,
+            Some(keys) => {
+                self.packet_number += 1;
+                let header = client::data_header_bytes(&plain).ok_or("not a data frame")?;
+                let mut out = alloc::vec![0u8; plain.len() + eggos_wifi::protection::CCMP_HEADER_BYTES + 8];
+                let length = eggos_wifi::protection::encrypt(&keys.tk, &plain[..header], self.packet_number, 0, &plain[header..], &mut out)
+                    .map_err(|_| "the frame could not be protected")?;
+                out.truncate(length);
+                out
+            }
+        };
+        self.link.send(&self.transport, &wire).map_err(station::JoinError::description)
+    }
 }
 
 /// The network the station is connected to, if any.
@@ -147,7 +274,7 @@ fn connect<P: Platform>(
     }
     station::associated(transport, &link, association, &mut Pauses::<P>::within(INIT_TIMEOUT_MS)).map_err(station::JoinError::description)?;
     if !protected {
-        return Ok(Connection { _link: link, _keys: None });
+        return Ok(Connection { link, keys: None });
     }
     let pmk = handshake::pmk_from_passphrase(passphrase, network.ssid()).ok_or("the passphrase is not 8 to 63 characters")?;
     let mut nonce = [0u8; handshake::NONCE_BYTES];
@@ -159,7 +286,7 @@ fn connect<P: Platform>(
         let frame = client::data_frame(own, bssid, bssid, client::ETHERTYPE_EAPOL, &answer.frame[..answer.length]);
         link.send(transport, &frame).map_err(station::JoinError::description)?;
         if let Some(keys) = answer.keys {
-            return Ok(Connection { _link: link, _keys: Some(keys) });
+            return Ok(Connection { link, keys: Some(keys) });
         }
     }
 }
@@ -379,12 +506,7 @@ fn bring_up<P: Platform>(found: Found) {
         address: nvm.address,
         channels: nvm.channels.len(),
     });
-    let mut connection: Option<Connection> = None;
     loop {
-        if connection.is_some() {
-            crate::thread::sleep::<P>(SCAN_INTERVAL);
-            continue;
-        }
         if transport.radio_killed() {
             set_status("ready; the radio is switched off");
         } else {
@@ -404,8 +526,20 @@ fn bring_up<P: Platform>(found: Found) {
                 match connect::<P>(&mut transport, &firmware, &adapter, &nvm, &seen, &passphrase) {
                     Ok(joined) => {
                         *CONNECTED.lock() = Some(alloc::string::String::from_utf8_lossy(seen.network.ssid()).into());
-                        set_status("connected");
-                        connection = Some(joined);
+                        let device = WifiDevice {
+                            transport,
+                            link: joined.link,
+                            keys: joined.keys,
+                            ax210: adapter.family == devices::Family::Ax210,
+                            packet_number: 0,
+                            last_unicast: 0,
+                            last_group: 0,
+                            pending: alloc::collections::VecDeque::new(),
+                        };
+                        return set_status(match crate::net::attach_late::<P>(alloc::boxed::Box::new(device)) {
+                            Ok(()) => "connected",
+                            Err(reason) => reason,
+                        });
                     }
                     Err(reason) => set_status(reason),
                 }
