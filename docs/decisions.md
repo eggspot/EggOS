@@ -18025,7 +18025,8 @@ the license, by an explicit instruction recorded here.
   - The manifest gains `console=true` (absent is false), written by the installer for a
     Windows console-subsystem program (the PE optional header's subsystem is not 2), a Linux
     program and a bare macOS tool, not for a Windows GUI program or an `.app` bundle; `app
-    install --console` and `--no-console` decide instead. The catalogue launches a console app
+    install --console` and `--no-console` decide instead (the SDL, GTK and Qt app boot tests
+    install their Linux GUI apps with `--no-console`). The catalogue launches a console app
     as `/bin/terminal -t <name> -e /bin/eggsh -c <line>` while the terminal program is present.
   - The benchmark `term_reflow`: a resize between 80x24 and 100x30 with a full scrollback.
 - **Check.** Host tests: the engine's reflow (two rows at 80 columns, one at 120 with the
@@ -18468,7 +18469,15 @@ the license, by an explicit instruction recorded here.
   - Benchmarks `math_sin_f64` and `math_exp_f64` (`eggos-math` only in the bench kernel).
 - **Check.** Host tests of every function within its `ACCURACY` bound, over ranges and the
   special values; `fma` and `fmaf` bit for bit against the host's on cancellations, overflow,
-  ties and subnormal results; a wide `_write` pair split between two writes. QEMU: `eggcrt2.exe`, our own C program built by MSVC in
+  ties and subnormal results; a wide `_write` pair split between two writes. The bounds are
+  measured against macOS's libm; the first CI run showed the other hosts' libms further from
+  the correctly rounded result than ours (glibc 2.39's `cos(5.319372648326541e255)` 8 ulps
+  off and its `sinhf` 2, the UCRT's `expm1` and `expm1f` 2, each checked against values
+  computed to 1200 digits, which ours matched or was within 1 ulp of), so other hosts get 2
+  more ulps for their libm's own error, the hardest huge trigonometric arguments are checked
+  against values computed to 1200 digits on every host, and the float twins against the
+  host's `double` function rounded to `float`. A test reports every function out of its bound
+  at once, each with its worst input. QEMU: `eggcrt2.exe`, our own C program built by MSVC in
   CI, in the windows-crt session (the math library, `setjmp` and `longjmp` through
   `__finally`, locales, wide streams and low-level text mode).
 - **Not yet.** Named locales other than C and English (United States) UTF-8 (the plan's

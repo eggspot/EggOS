@@ -1,4 +1,5 @@
 use crate::*;
+use std::cell::RefCell;
 
 struct Random(u64);
 
@@ -91,15 +92,67 @@ fn bound(name: &str) -> u128 {
     u128::from(*bound)
 }
 
+const HOST_LIBM_ERROR_ULPS_OFF_MACOS: u128 = 2;
+
+fn against_the_host(bound: u128) -> u128 {
+    match bound {
+        0 => 0,
+        _ if cfg!(target_os = "macos") => bound,
+        _ => bound + HOST_LIBM_ERROR_ULPS_OFF_MACOS,
+    }
+}
+
+thread_local! {
+    static OUT_OF_BOUND: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Default)]
+struct Misses {
+    count: usize,
+    worst: Option<(u128, String)>,
+}
+
+impl Misses {
+    fn note(&mut self, distance: u128, tolerance: u128, case: impl FnOnce() -> String) {
+        if distance <= tolerance {
+            return;
+        }
+        self.count += 1;
+        if self
+            .worst
+            .as_ref()
+            .is_none_or(|(worst, _)| distance > *worst)
+        {
+            self.worst = Some((distance, case()));
+        }
+    }
+
+    fn report(self, name: &str, tolerance: u128) {
+        if let Some((distance, case)) = self.worst {
+            let line = format!(
+                "{name}: {} inputs beyond {tolerance} ulps, the worst {case}: {distance} ulps",
+                self.count
+            );
+            OUT_OF_BOUND.with_borrow_mut(|lines| lines.push(line));
+        }
+    }
+}
+
+fn assert_every_function_within_its_bound() {
+    let lines = OUT_OF_BOUND.take();
+    assert!(lines.is_empty(), "\n{}", lines.join("\n"));
+}
+
 fn check(name: &str, ours: fn(f64) -> f64, host: fn(f64) -> f64, inputs: &[f64], bound: u128) {
+    let tolerance = against_the_host(bound);
+    let mut misses = Misses::default();
     for &x in inputs.iter().chain(&SPECIALS) {
         let (got, wanted) = (ours(x), host(x));
-        let distance = ulps(got, wanted);
-        assert!(
-            distance <= bound,
-            "{name}({x:e}) = {got:e}, the host's {wanted:e}: {distance} ulps"
-        );
+        misses.note(ulps(got, wanted), tolerance, || {
+            format!("{name}({x:e}) = {got:e}, the host's {wanted:e}")
+        });
     }
+    misses.report(name, tolerance);
 }
 
 fn check_two(
@@ -109,17 +162,18 @@ fn check_two(
     inputs: &[(f64, f64)],
     bound: u128,
 ) {
+    let tolerance = against_the_host(bound);
+    let mut misses = Misses::default();
     let specials = SPECIALS
         .iter()
         .flat_map(|&x| SPECIALS.iter().map(move |&y| (x, y)));
     for (x, y) in inputs.iter().copied().chain(specials) {
         let (got, wanted) = (ours(x, y), host(x, y));
-        let distance = ulps(got, wanted);
-        assert!(
-            distance <= bound,
-            "{name}({x:e}, {y:e}) = {got:e}, the host's {wanted:e}: {distance} ulps"
-        );
+        misses.note(ulps(got, wanted), tolerance, || {
+            format!("{name}({x:e}, {y:e}) = {got:e}, the host's {wanted:e}")
+        });
     }
+    misses.report(name, tolerance);
 }
 
 fn wide_inputs(seed: u64) -> Vec<f64> {
@@ -183,6 +237,7 @@ fn rounding_and_bit_functions_are_exact() {
     assert_eq!(llround(2.5), 3);
     assert_eq!(llrint(2.5), 2);
     assert_eq!(llrint(f64::NAN), i64::MIN);
+    assert_every_function_within_its_bound();
 }
 
 #[test]
@@ -221,7 +276,23 @@ fn fmod_and_remainder_are_exact() {
     assert_eq!(remquo(7.0, 2.0), (-1.0, 4));
     assert_eq!(remquo(-7.0, 2.0), (1.0, -4));
     assert_eq!(fmod(-0.0, 3.0).to_bits(), (-0.0f64).to_bits());
+    assert_every_function_within_its_bound();
 }
+
+const HARD_REDUCTIONS: [(u64, u64, u64, u64); 2] = [
+    (
+        0x4480f0cf064dd592,
+        0xbfeb453ab76bf397,
+        0x3fe0be2cef01c8f4,
+        0xbffa0f79c1b6b257,
+    ),
+    (
+        0x7506ac5b262ca1ff,
+        0x3ff0000000000000,
+        0xbc214ae72e6ba22f,
+        0xc3bd9ba9a7975636,
+    ),
+];
 
 #[test]
 fn trigonometric_functions_are_within_their_bounds() {
@@ -229,14 +300,23 @@ fn trigonometric_functions_are_within_their_bounds() {
     let mut inputs = random.uniform(-10.0, 10.0, 20000);
     inputs.extend(random.magnitudes(-30, 1023, 20000));
     inputs.extend((1..2000).map(|k| f64::from(k) * std::f64::consts::FRAC_PI_2));
-    inputs.extend([
-        1e22,
-        6381956970095103.0 * 2f64.powi(797),
-        5.319372648326541e255,
-    ]);
     check("sin", sin, f64::sin, &inputs, bound("sin"));
     check("cos", cos, f64::cos, &inputs, bound("cos"));
     check("tan", tan, f64::tan, &inputs, bound("tan"));
+    assert_eq!(f64::from_bits(HARD_REDUCTIONS[0].0), 1e22);
+    assert_eq!(
+        f64::from_bits(HARD_REDUCTIONS[1].0),
+        6381956970095103.0 * 2f64.powi(797)
+    );
+    let column = |pick: fn(&(u64, u64, u64, u64)) -> u64| -> Vec<(u64, u64)> {
+        HARD_REDUCTIONS
+            .iter()
+            .map(|vector| (vector.0, pick(vector)))
+            .collect()
+    };
+    check_vectors("sin", sin, &column(|vector| vector.1), bound("sin"));
+    check_vectors("cos", cos, &column(|vector| vector.2), bound("cos"));
+    check_vectors("tan", tan, &column(|vector| vector.3), bound("tan"));
     let mut unit = random.uniform(-1.0, 1.0, 20000);
     unit.extend(random.magnitudes(-60, 0, 5000));
     check("asin", asin, f64::asin, &unit, bound("asin"));
@@ -248,6 +328,7 @@ fn trigonometric_functions_are_within_their_bounds() {
         .collect();
     pairs.extend((0..20000).map(|_| (random.between(-5.0, 5.0), random.between(-5.0, 5.0))));
     check_two("atan2", atan2, f64::atan2, &pairs, bound("atan2"));
+    assert_every_function_within_its_bound();
 }
 
 #[test]
@@ -274,6 +355,7 @@ fn exponentials_and_logarithms_are_within_their_bounds() {
     assert_eq!(log2(1024.0), 10.0);
     assert_eq!(log10(1000.0), 3.0);
     assert_eq!(exp2(10.0), 1024.0);
+    assert_every_function_within_its_bound();
 }
 
 #[test]
@@ -305,6 +387,7 @@ fn pow_follows_c_and_is_within_its_bound() {
         hypotenuses.push((random.between(-10.0, 10.0), random.between(-10.0, 10.0)));
     }
     check_two("hypot", hypot, f64::hypot, &hypotenuses, bound("hypot"));
+    assert_every_function_within_its_bound();
 }
 
 fn same_fma(x: f64, y: f64, z: f64) {
@@ -415,6 +498,7 @@ fn hyperbolic_functions_are_within_their_bounds() {
     check("acosh", acosh, f64::acosh, &above_one, bound("acosh"));
     let unit = random.uniform(-1.0, 1.0, 20000);
     check("atanh", atanh, atanh_from_two_log1p, &unit, bound("atanh"));
+    assert_every_function_within_its_bound();
 }
 
 const ERF_VECTORS: [(u64, u64); 16] = [
@@ -499,15 +583,15 @@ const LGAMMA_VECTORS: [(u64, u64); 16] = [
 ];
 
 fn check_vectors(name: &str, function: fn(f64) -> f64, vectors: &[(u64, u64)], bound: u128) {
+    let mut misses = Misses::default();
     for &(input, expected) in vectors {
         let (x, wanted) = (f64::from_bits(input), f64::from_bits(expected));
         let got = function(x);
-        let distance = ulps(got, wanted);
-        assert!(
-            distance <= bound,
-            "{name}({x:e}) = {got:e}, not {wanted:e}: {distance} ulps"
-        );
+        misses.note(ulps(got, wanted), bound, || {
+            format!("{name}({x:e}) = {got:e}, not {wanted:e}")
+        });
     }
+    misses.report(name, bound);
 }
 
 #[test]
@@ -531,6 +615,7 @@ fn the_error_and_gamma_functions_match_values_computed_to_80_digits() {
     assert_eq!(erf(f64::INFINITY), 1.0);
     assert_eq!(erfc(f64::NEG_INFINITY), 2.0);
     assert_eq!(erfc(30.0), 0.0);
+    assert_every_function_within_its_bound();
 }
 
 #[test]
@@ -637,30 +722,31 @@ fn sinpi_and_cospi_are_within_their_bounds_in_ulps() {
     }));
     check("sinpi", sinpi, host_sinpi, &inputs, bound("sinpi"));
     check("cospi", cospi, host_cospi, &inputs, bound("cospi"));
+    assert_every_function_within_its_bound();
 }
 
 #[test]
 fn the_float_twins_are_within_one_unit() {
     type Pair = (fn(f32) -> f32, fn(f32) -> f32, &'static str);
     let unary: [Pair; 20] = [
-        (sinf, f32::sin, "sinf"),
-        (cosf, f32::cos, "cosf"),
-        (tanf, f32::tan, "tanf"),
-        (asinf, f32::asin, "asinf"),
-        (acosf, f32::acos, "acosf"),
-        (atanf, f32::atan, "atanf"),
-        (sinhf, f32::sinh, "sinhf"),
-        (coshf, f32::cosh, "coshf"),
-        (tanhf, f32::tanh, "tanhf"),
-        (expf, f32::exp, "expf"),
-        (exp2f, f32::exp2, "exp2f"),
-        (expm1f, f32::exp_m1, "expm1f"),
-        (logf, f32::ln, "logf"),
-        (log2f, f32::log2, "log2f"),
-        (log10f, f32::log10, "log10f"),
-        (log1pf, f32::ln_1p, "log1pf"),
+        (sinf, |x| f64::from(x).sin() as f32, "sinf"),
+        (cosf, |x| f64::from(x).cos() as f32, "cosf"),
+        (tanf, |x| f64::from(x).tan() as f32, "tanf"),
+        (asinf, |x| f64::from(x).asin() as f32, "asinf"),
+        (acosf, |x| f64::from(x).acos() as f32, "acosf"),
+        (atanf, |x| f64::from(x).atan() as f32, "atanf"),
+        (sinhf, |x| f64::from(x).sinh() as f32, "sinhf"),
+        (coshf, |x| f64::from(x).cosh() as f32, "coshf"),
+        (tanhf, |x| f64::from(x).tanh() as f32, "tanhf"),
+        (expf, |x| f64::from(x).exp() as f32, "expf"),
+        (exp2f, |x| f64::from(x).exp2() as f32, "exp2f"),
+        (expm1f, |x| f64::from(x).exp_m1() as f32, "expm1f"),
+        (logf, |x| f64::from(x).ln() as f32, "logf"),
+        (log2f, |x| f64::from(x).log2() as f32, "log2f"),
+        (log10f, |x| f64::from(x).log10() as f32, "log10f"),
+        (log1pf, |x| f64::from(x).ln_1p() as f32, "log1pf"),
         (sqrtf, f32::sqrt, "sqrtf"),
-        (cbrtf, f32::cbrt, "cbrtf"),
+        (cbrtf, |x| f64::from(x).cbrt() as f32, "cbrtf"),
         (floorf, f32::floor, "floorf"),
         (roundf, f32::round, "roundf"),
     ];
@@ -670,6 +756,7 @@ fn the_float_twins_are_within_one_unit() {
         .collect();
     inputs.extend((0..20000).map(|_| f32::from_bits(random.next() as u32)));
     for (ours, host, name) in unary {
+        let mut misses = Misses::default();
         for &x in &inputs {
             let (got, wanted) = (ours(x), host(x));
             let distance = if got.is_nan() && wanted.is_nan() {
@@ -677,12 +764,13 @@ fn the_float_twins_are_within_one_unit() {
             } else {
                 single_distance(got, wanted)
             };
-            assert!(
-                distance <= 1,
-                "{name}({x:e}) = {got:e}, the host's {wanted:e}"
-            );
+            misses.note(distance, 1, || {
+                format!("{name}({x:e}) = {got:e}, the host's {wanted:e}")
+            });
         }
+        misses.report(name, 1);
     }
+    assert_every_function_within_its_bound();
     assert_eq!(powf(2.0, 10.0), 1024.0);
     assert_eq!(fmodf(7.5, 2.0), 1.5);
     assert_eq!(nextafterf(1.0, 2.0), 1.0f32.next_up());

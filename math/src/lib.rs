@@ -41,10 +41,13 @@ pub const ILOGB_ZERO: i32 = i32::MIN;
 pub const ILOGB_NAN: i32 = i32::MAX;
 
 /// Each function's error bound in units in the last place, exactly as the host tests check
-/// it: against the host's own libm (itself not always correctly rounded), except `sinpi` and
+/// it: against macOS's libm, with 2 more ulps on other hosts for their own libm's error
+/// (glibc's and the UCRT's are further from the correctly rounded result), except `sinpi` and
 /// `cospi`, against the host's `sin` and `cos` of the exactly reduced turn carried in two
-/// doubles, and the error and gamma functions, against values computed to 80 digits. A bound
-/// of 0 is the correctly rounded result.
+/// doubles, the error and gamma functions, against values computed to 80 digits, and `sin`,
+/// `cos` and `tan` of the hardest huge arguments, against values computed to 1200 digits. A
+/// bound of 0 is the correctly rounded result. The float twins are checked against the host's
+/// `double` function rounded to `float`.
 pub const ACCURACY: &[(&str, u32)] = &[
     (
         "sqrt fabs floor ceil trunc round rint fmod remainder frexp ldexp modf nextafter fma fmaf",
