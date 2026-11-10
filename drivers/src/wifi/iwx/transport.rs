@@ -136,6 +136,34 @@ const SCRATCH_IMR_DEBUG: u32 = 1 << 1;
 
 const PACKET_LENGTH_MASK: u32 = 0x3fff;
 const PACKET_HEADER_BYTES: usize = 8;
+const PACKET_ALIGNMENT: usize = 0x40;
+const FRAME_INVALID: u32 = 0x5555_0000;
+const UNSOLICITED: u8 = 0x80;
+const COMMAND_FAILED: u8 = 0x40;
+const MAX_NOTIFICATIONS: usize = 32;
+const COMMAND_QUEUE: u8 = 0;
+const COMMAND_BUFFER: usize = 0x1c000;
+const COMMAND_BUFFER_BYTES: usize = 0x1000;
+const WIDE_HEADER_BYTES: usize = 8;
+const FIRST_TB_BYTES: usize = 20;
+const TB_BYTES: usize = 10;
+const TB_LENGTH: usize = 2;
+const TB_ADDRESS: usize = 4;
+const GEN3_TX_QUEUE_SIZE: usize = 65_536;
+const HBUS_WRITE_POINTER: usize = 0x460;
+const UREG_DOORBELL_TO_ISR6: u32 = 0x00a0_5c04;
+const DOORBELL_PNVM: u32 = 1 << 20;
+const MAC_ADDRESS_OTP: usize = 0x380;
+const MAC_ADDRESS_STRAP: usize = 0x388;
+/// The firmware's legacy command group.
+pub const LEGACY_GROUP: u8 = 0x0;
+/// The long group, which group 0's commands are sent as.
+pub const LONG_GROUP: u8 = 0x1;
+/// The system group.
+pub const SYSTEM_GROUP: u8 = 0x2;
+/// The regulatory and NVM group.
+pub const REGULATORY_AND_NVM_GROUP: u8 = 0xc;
+const PNVM_INIT_COMPLETE: u8 = 0xfe;
 const ALIVE: u8 = 0x01;
 const ALIVE_OK: u16 = 0xcafe;
 const LMAC_ALIVE_BYTES: usize = 48;
@@ -158,6 +186,14 @@ pub enum TransportError {
     BadFirmware,
     /// The firmware said it did not start, with this status.
     FirmwareFailed(u16),
+    /// A command is longer than the command buffer.
+    CommandTooLong,
+    /// The firmware refused a command with this code.
+    CommandFailed(u8),
+    /// The adapter holds no valid MAC address.
+    NoAddress,
+    /// The NVM's answer is not one this driver reads.
+    BadNvm,
 }
 
 impl TransportError {
@@ -171,6 +207,10 @@ impl TransportError {
             TransportError::NoMemory => "no memory for the Wi-Fi firmware",
             TransportError::BadFirmware => "the Wi-Fi firmware file is not one for this adapter",
             TransportError::FirmwareFailed(_) => "the Wi-Fi firmware did not start",
+            TransportError::CommandTooLong => "a Wi-Fi command was too long",
+            TransportError::CommandFailed(_) => "the Wi-Fi firmware refused a command",
+            TransportError::NoAddress => "the Wi-Fi adapter has no MAC address",
+            TransportError::BadNvm => "the Wi-Fi adapter's NVM answer is not one the driver reads",
         }
     }
 }
@@ -253,6 +293,33 @@ pub struct Transport<R: RegisterIo, M: DmaMemory> {
     paging: Vec<M>,
     image_loader: Option<M>,
     rx_next: usize,
+    tx_next: usize,
+    tx_hardware: usize,
+    responses: Vec<(u8, Packet)>,
+    notifications: Vec<Packet>,
+}
+
+/// A packet the firmware sent: a command's response or a notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Packet {
+    pub group: u8,
+    pub code: u8,
+    /// Whether it says the command failed.
+    pub failed: bool,
+    pub payload: Vec<u8>,
+}
+
+fn flip_address(low: u32, high: u32) -> [u8; 6] {
+    let low = low.to_le_bytes();
+    let high = high.to_le_bytes();
+    [low[3], low[2], low[1], low[0], high[1], high[0]]
+}
+
+/// Whether `address` may be an adapter's own: not the firmware's reserved one, broadcast, all
+/// zeros or multicast.
+pub fn is_valid_address(address: &[u8; 6]) -> bool {
+    const RESERVED: [u8; 6] = [0x02, 0xcc, 0xaa, 0xff, 0xee, 0x00];
+    *address != RESERVED && *address != [0xff; 6] && *address != [0; 6] && address[0] & 1 == 0
 }
 
 impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
@@ -271,6 +338,10 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
             paging: Vec::new(),
             image_loader: None,
             rx_next: 0,
+            tx_next: 0,
+            tx_hardware: 0,
+            responses: Vec::new(),
+            notifications: Vec::new(),
         }
     }
 
@@ -629,36 +700,187 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
         self.regs.write32(CSR_INT, INT_ALIVE);
         self.fill_rx_descriptors();
         self.regs.write32(RX_FREE_WRITE_INDEX, FIRST_RX_WRITE_INDEX);
-        loop {
-            while self.rx_next != self.rx_closed() {
-                let buffer = self.rx_next * RX_BUFFER_BYTES;
-                self.rx_next = (self.rx_next + 1) % RX_BUFFERS;
-                let length = (get32(&self.rx_buffers, buffer) & PACKET_LENGTH_MASK) as usize;
+        let payload = self.wait_notification(LEGACY_GROUP, ALIVE, wait)?;
+        let status = payload.get(..2).map_or(0, |bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
+        if status != ALIVE_OK {
+            return Err(TransportError::FirmwareFailed(status));
+        }
+        let word = |at: usize| {
+            payload
+                .get(at..at + 4)
+                .map_or(0, |bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+        Ok(Alive {
+            length: payload.len(),
+            umac_version: (word(ALIVE_UMAC_MAJOR), word(ALIVE_UMAC_MAJOR + 4)),
+        })
+    }
+
+    fn read_packets(&mut self) {
+        let closed = self.rx_closed();
+        if self.rx_next == closed {
+            return;
+        }
+        while self.rx_next != closed {
+            let buffer = self.rx_next * RX_BUFFER_BYTES;
+            self.rx_next = (self.rx_next + 1) % RX_BUFFERS;
+            let mut offset = 0;
+            while offset + PACKET_HEADER_BYTES <= RX_BUFFER_BYTES {
+                let at = buffer + offset;
+                let length_and_flags = get32(&self.rx_buffers, at);
                 let mut header = [0u8; 4];
-                get_bytes(&self.rx_buffers, buffer + 4, &mut header);
-                let payload_length = length.saturating_sub(PACKET_HEADER_BYTES - 4);
-                if header[0] != ALIVE || payload_length < 2 {
-                    continue;
+                get_bytes(&self.rx_buffers, at + 4, &mut header);
+                let [code, group, index, queue] = header;
+                let length = (length_and_flags & PACKET_LENGTH_MASK) as usize;
+                let invalid = (queue & !UNSOLICITED == 0 && index == 0 && code == 0)
+                    || length_and_flags == FRAME_INVALID
+                    || length < 4
+                    || offset + 4 + length > RX_BUFFER_BYTES;
+                if invalid {
+                    break;
                 }
-                let payload = buffer + PACKET_HEADER_BYTES;
-                let status = get16(&self.rx_buffers, payload);
-                if status != ALIVE_OK {
-                    return Err(TransportError::FirmwareFailed(status));
-                }
-                let umac = payload + ALIVE_UMAC_MAJOR;
-                let umac_version = match payload_length >= ALIVE_UMAC_MAJOR + 8 {
-                    true => (get32(&self.rx_buffers, umac), get32(&self.rx_buffers, umac + 4)),
-                    false => (0, 0),
+                let mut payload = alloc::vec![0u8; length - 4];
+                get_bytes(&self.rx_buffers, at + PACKET_HEADER_BYTES, &mut payload);
+                let solicited = queue & UNSOLICITED == 0;
+                let packet = Packet {
+                    group,
+                    code,
+                    failed: solicited && group & COMMAND_FAILED != 0,
+                    payload,
                 };
-                return Ok(Alive {
-                    length: payload_length,
-                    umac_version,
-                });
+                if solicited && queue == COMMAND_QUEUE {
+                    self.responses.push((index, packet));
+                } else {
+                    if self.notifications.len() == MAX_NOTIFICATIONS {
+                        self.notifications.remove(0);
+                    }
+                    self.notifications.push(packet);
+                }
+                if self.adapter.family == Family::Ax210 {
+                    break;
+                }
+                offset += (4 + length).next_multiple_of(PACKET_ALIGNMENT);
+            }
+        }
+        let returned = match closed {
+            0 => RX_BUFFERS - 1,
+            closed => closed - 1,
+        };
+        self.regs.write32(RX_FREE_WRITE_INDEX, returned as u32 & !7);
+    }
+
+    /// Waits for the firmware's notification `code` in `group`, taking it from those already
+    /// read first: its payload.
+    pub fn wait_notification(&mut self, group: u8, code: u8, wait: &mut dyn Wait) -> Result<Vec<u8>, TransportError> {
+        loop {
+            self.read_packets();
+            let found = self
+                .notifications
+                .iter()
+                .position(|packet| packet.code == code && packet.group == group);
+            if let Some(at) = found {
+                return Ok(self.notifications.remove(at).payload);
             }
             if !wait.keep_waiting() {
                 return Err(TransportError::TimedOut);
             }
             wait.pause(100);
+        }
+    }
+
+    /// The firmware's notifications read so far and not yet waited for, oldest first.
+    pub fn take_notifications(&mut self) -> Vec<Packet> {
+        self.read_packets();
+        core::mem::take(&mut self.notifications)
+    }
+
+    /// Sends command `code` of `group` (group 0's commands go as the long group's, as the
+    /// firmware asks) with `payload` through the command queue and waits for its response's
+    /// payload.
+    pub fn send_command(&mut self, group: u8, code: u8, payload: &[u8], wait: &mut dyn Wait) -> Result<Vec<u8>, TransportError> {
+        if payload.len() > COMMAND_BUFFER_BYTES - WIDE_HEADER_BYTES {
+            return Err(TransportError::CommandTooLong);
+        }
+        let group = match group {
+            LEGACY_GROUP => LONG_GROUP,
+            group => group,
+        };
+        let index = self.tx_next;
+        let mut header = [0u8; WIDE_HEADER_BYTES];
+        header[0] = code;
+        header[1] = group;
+        header[2] = index as u8;
+        header[3] = COMMAND_QUEUE;
+        header[4..6].copy_from_slice(&(payload.len() as u16).to_le_bytes());
+        put_bytes(&self.rings, COMMAND_BUFFER, &header);
+        put_bytes(&self.rings, COMMAND_BUFFER + WIDE_HEADER_BYTES, payload);
+        let total = WIDE_HEADER_BYTES + payload.len();
+        let descriptor = TX_RING + index * TFD_BYTES;
+        put_bytes(&self.rings, descriptor, &[0; TFD_BYTES]);
+        put16(&self.rings, descriptor + TB_LENGTH, total.min(FIRST_TB_BYTES) as u16);
+        put64(&self.rings, descriptor + TB_ADDRESS, dma(&self.rings, COMMAND_BUFFER));
+        let buffers = match total > FIRST_TB_BYTES {
+            true => {
+                put16(&self.rings, descriptor + TB_BYTES + TB_LENGTH, (total - FIRST_TB_BYTES) as u16);
+                put64(&self.rings, descriptor + TB_BYTES + TB_ADDRESS, dma(&self.rings, COMMAND_BUFFER + FIRST_TB_BYTES));
+                2
+            }
+            false => 1,
+        };
+        put16(&self.rings, descriptor, buffers);
+        fence(Ordering::SeqCst);
+        self.tx_next = (self.tx_next + 1) % TX_DESCRIPTORS;
+        self.tx_hardware = (self.tx_hardware + 1) % self.tx_queue_size();
+        self.regs.write32(HBUS_WRITE_POINTER, (u32::from(COMMAND_QUEUE) << 16) | self.tx_hardware as u32);
+        loop {
+            self.read_packets();
+            if let Some(at) = self.responses.iter().position(|(answered, _)| usize::from(*answered) == index) {
+                let (_, packet) = self.responses.remove(at);
+                self.responses.clear();
+                return match packet.failed {
+                    true => Err(TransportError::CommandFailed(code)),
+                    false => Ok(packet.payload),
+                };
+            }
+            if !wait.keep_waiting() {
+                return Err(TransportError::TimedOut);
+            }
+            wait.pause(50);
+        }
+    }
+
+    fn tx_queue_size(&self) -> usize {
+        match self.adapter.family {
+            Family::Ax200 => TX_DESCRIPTORS,
+            Family::Ax210 => GEN3_TX_QUEUE_SIZE,
+        }
+    }
+
+    /// For the AX210 family after alive: tells the firmware to go on without a platform NVM and
+    /// waits for it to say so.
+    pub fn finish_platform_nvm(&mut self, wait: &mut dyn Wait) -> Result<(), TransportError> {
+        if self.adapter.family != Family::Ax210 {
+            return Ok(());
+        }
+        self.lock_nic(wait)?;
+        self.write_prph(UREG_DOORBELL_TO_ISR6 + UMAC_PRPH_OFFSET, DOORBELL_PNVM);
+        self.unlock_nic();
+        self.wait_notification(REGULATORY_AND_NVM_GROUP, PNVM_INIT_COMPLETE, wait).map(|_| ())
+    }
+
+    /// The adapter's MAC address: the one the maker strapped, else the one in its OTP memory.
+    pub fn mac_address(&mut self, wait: &mut dyn Wait) -> Result<[u8; 6], TransportError> {
+        self.lock_nic(wait)?;
+        let read = |low: usize| flip_address(self.regs.read32(low), self.regs.read32(low + 4));
+        let strapped = read(MAC_ADDRESS_STRAP);
+        let address = match is_valid_address(&strapped) {
+            true => strapped,
+            false => read(MAC_ADDRESS_OTP),
+        };
+        self.unlock_nic();
+        match is_valid_address(&address) {
+            true => Ok(address),
+            false => Err(TransportError::NoAddress),
         }
     }
 
@@ -764,9 +986,35 @@ mod tests {
         );
         transport.regs.write32(CSR_INT, INT_ALIVE);
         put32(&transport.rx_buffers, 0, 8 + 4);
-        put_bytes(&transport.rx_buffers, 4, &[ALIVE, 0, 0, 0]);
+        put_bytes(&transport.rx_buffers, 4, &[ALIVE, 0, 0, UNSOLICITED]);
         put16(&transport.rx_buffers, 8, 0xdead);
         put16(&transport.rings, RX_STATUS, 1);
         assert_eq!(transport.wait_for_alive(&mut NoWait), Err(TransportError::FirmwareFailed(0xdead)));
+    }
+
+    #[test]
+    fn several_packets_in_a_buffer_are_read_and_addresses_flipped() {
+        let adapter = identify(0x2723, 0, 0).unwrap();
+        let mut transport = Transport::new(
+            Registers::default(),
+            adapter,
+            HostDma::zeroed(RING_BYTES / 4096),
+            HostDma::zeroed(RX_BUFFER_AREA_BYTES / 4096),
+        );
+        put32(&transport.rx_buffers, 0, 4 + 2);
+        put_bytes(&transport.rx_buffers, 4, &[0x04, 0, 0, UNSOLICITED]);
+        put_bytes(&transport.rx_buffers, 8, &[7, 7]);
+        put32(&transport.rx_buffers, 0x40, 4 + 4);
+        put_bytes(&transport.rx_buffers, 0x44, &[0x03, SYSTEM_GROUP, 5, COMMAND_QUEUE]);
+        put16(&transport.rings, RX_STATUS, 1);
+        let notifications = transport.take_notifications();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!((notifications[0].code, &notifications[0].payload[..]), (0x04, &[7u8, 7][..]));
+        assert_eq!(transport.responses.len(), 1);
+        assert_eq!(transport.responses[0].0, 5);
+        assert_eq!(transport.regs.read32(RX_FREE_WRITE_INDEX), 0);
+        assert_eq!(flip_address(0x0011_2233, 0x0000_4455), [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        assert!(!is_valid_address(&[0x01, 0, 0, 0, 0, 1]));
+        assert!(is_valid_address(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]));
     }
 }
