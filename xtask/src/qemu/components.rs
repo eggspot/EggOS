@@ -11,7 +11,8 @@
 //! 3. A blank disk of its own, through Settings (D235, D231): `settings --pane components`
 //!    opens in the background, `wm show` lists the row's `Install Windows apps`, which
 //!    `wm act` invokes, until the row's button is `Remove Windows apps` and the sidebar lists
-//!    `Windows`; with Settings closed, `win-paint.exe` is installed and opened, its window
+//!    `Windows`; with Settings closed, `win-paint.exe` is installed and its installed program
+//!    started in the background (`app open` would type it into this shell, D133), its window
 //!    found with `wm list` and closed; Settings opened again on Components, `Remove Windows
 //!    apps` invoked shows the confirmation, whose `Remove` is person-only: `wm act` on it is
 //!    refused as `element_cannot` and the layer stays; `settings --pane windows` shows the
@@ -344,7 +345,8 @@ fn run_windows_program(boot: &mut Boot<'_>) -> Result<(), String> {
         &format!("app install /media/host/{WINDOWS_PROGRAM}"),
         "paint-installed",
     )?;
-    let window = open_window(boot, &format!("app open {paint}"), paint, "paint-opened")?;
+    let installed = format!("/Applications/{paint}/{WINDOWS_PROGRAM}");
+    let window = open_window(boot, &installed, paint, "paint-opened")?;
     close_window(boot, window, paint, "paint-closed")
 }
 
