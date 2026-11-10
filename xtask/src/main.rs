@@ -492,12 +492,12 @@ const APPLICATIONS_PATH: &str = "Applications";
 
 const WORK_PATH: &str = "work";
 
-const COREUTILS: [&str; 48] = [
+const COREUTILS: [&str; 49] = [
     "agent", "agentlog", "cat", "chmod", "clip", "cp", "date", "device", "df", "download", "echo",
     "false", "fetch", "free", "getprop", "grep", "halt", "head", "help", "hwclock", "ip", "kill",
     "ln", "logcat", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "readlink",
     "reboot", "rm", "setprop", "sleep", "stty", "sync", "tail", "taskset", "tee", "touch", "trash",
-    "true", "uname", "uptime", "wc", "wm",
+    "true", "uname", "uptime", "wc", "wifi", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";

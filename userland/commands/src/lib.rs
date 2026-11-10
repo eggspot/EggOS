@@ -570,8 +570,9 @@ pub const CORE_VERBS: [&str; 20] = [
 
 /// The verbs a noun adds by a decision: `wm`'s (D128, D141, D147, D160, D161 and D162),
 /// `disk`'s (D192), `agent`'s (D193), `app`'s (D196), `download`'s (D225), `component`'s
-/// (D235), those of `wm desktop`, a noun of `wm` (D204), and those of `windows registry` (D231).
-pub const NOUN_VERBS: [(&str, &[&str]); 8] = [
+/// (D235), those of `wm desktop`, a noun of `wm` (D204), those of `windows registry` (D231), and
+/// `wifi`'s (D280).
+pub const NOUN_VERBS: [(&str, &[&str]); 9] = [
     (
         "wm",
         &[
@@ -586,6 +587,7 @@ pub const NOUN_VERBS: [(&str, &[&str]); 8] = [
     ("component", &["remove"]),
     ("wm desktop", &["switch", "new"]),
     ("windows registry", &["reset"]),
+    ("wifi", &["connect", "forget"]),
 ];
 
 /// EggOS's kept names: commands that keep their name and exact behavior, with a full

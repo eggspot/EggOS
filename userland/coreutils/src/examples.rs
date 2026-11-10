@@ -48,7 +48,18 @@ fn machine() -> Fake {
         .with_directory("/home", 0)
         .with_directory("/home/root", 0)
         .with_file("/home/root/notes.txt", 0o644, b"eggs\nmilk\nbread\n", 0)
+        .with_directory("/var", 0)
+        .with_directory("/var/lib", 0)
+        .with_directory("/var/lib/eggos", 0)
+        .with_file("/var/lib/eggos/wifi.conf", 0o600, b"ssid=home\npassphrase=correct-horse\n", 0)
         .with_directory("/proc", 0)
+        .with_directory("/proc/driver", 0)
+        .with_file(
+            "/proc/driver/wifi",
+            0o444,
+            b"ready; address 00:11:22:33:44:55; 37 channels\n02:00:00:00:00:01 6 -48 dBm Wpa2Personal home\n",
+            0,
+        )
         .with_file(
             "/proc/ps",
             0o444,

@@ -19849,3 +19849,17 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; a name of its own (`wlan0`) and Wi-Fi and Ethernet together;
   the firmware's hardware CCMP; group-key rekeying (EAPOL group messages); power saving;
   reconnecting after the access point drops the station.
+
+## D280 `wifi list`, `wifi connect` and `wifi forget`, with the MCP tools `wifi_list`, `wifi_connect` and `wifi_forget` (D22 for the Wi-Fi driver; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `wifi` is a noun whose verbs are the core `list` and, added here, `connect` and
+  `forget`. `wifi list` (also plain `wifi`) prints `/proc/driver/wifi`: the driver's state, its
+  address and channels, the joined network, and the networks the last scan heard. `wifi connect
+  <ssid> [<passphrase>]` checks the name (1 to 32 bytes) and passphrase (8 to 63 characters, or
+  none for an open network) and writes `/var/lib/eggos/wifi.conf` with mode 600, which the
+  driver reads after its next scan (D278); `wifi forget` removes it. Each has its MCP twin;
+  `wifi_connect` and `wifi_forget` need the run grant, `wifi_connect` asks the user first. They
+  live in coreutils, and the image links `/bin/wifi` to it.
+- **Not yet.** Building and running; the Network pane's Wi-Fi list and join dialog (a Claude
+  Fable design); the passphrase kept out of the command line (programs could read it from
+  standard input); forgetting while connected disconnecting at once.

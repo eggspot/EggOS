@@ -33,6 +33,7 @@ use crate::tee::tee;
 use crate::trash::trash;
 use crate::uname::uname;
 use crate::wc::wc;
+use crate::wifi::wifi;
 use crate::wm::wm;
 use core::ffi::CStr;
 
@@ -91,11 +92,12 @@ pub enum Utility {
     Uname,
     Uptime,
     Wc,
+    Wifi,
     Wm,
 }
 
 impl Utility {
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 49] = [
         Self::Agent,
         Self::Agentlog,
         Self::Cat,
@@ -143,6 +145,7 @@ impl Utility {
         Self::Uname,
         Self::Uptime,
         Self::Wc,
+        Self::Wifi,
         Self::Wm,
     ];
 
@@ -195,6 +198,7 @@ impl Utility {
             Self::Uname => b"uname",
             Self::Uptime => b"uptime",
             Self::Wc => b"wc",
+            Self::Wifi => b"wifi",
             Self::Wm => b"wm",
         }
     }
@@ -252,6 +256,7 @@ impl Utility {
             Self::Uname => uname(output, arguments),
             Self::Uptime => uptime(output, arguments),
             Self::Wc => wc(output, arguments),
+            Self::Wifi => wifi(output, arguments),
             Self::Wm => wm(output, arguments),
         }
     }
