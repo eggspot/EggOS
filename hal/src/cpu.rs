@@ -98,6 +98,7 @@ impl HalCpuLocal {
                 },
                 user_rsp: 0,
                 segment_bases_id: 0,
+                exception_stacks: [const { ExceptionStack([0; EXCEPTION_STACK_BYTES]) }; EXCEPTION_STACKS],
             })),
         }
     }
@@ -126,6 +127,27 @@ pub(crate) struct X86Tables {
     /// The program's `rsp` for the moment between `syscall` and its frame being pushed.
     pub(crate) user_rsp: u64,
     pub(crate) segment_bases_id: u64,
+    /// The stacks the double fault, NMI, machine check and debug exceptions run on (D248), so
+    /// a kernel stack overflow is reported and an NMI never lands on a program's stack.
+    pub(crate) exception_stacks: [ExceptionStack; EXCEPTION_STACKS],
+}
+
+/// How many interrupt-stack-table stacks each CPU has, and how large each is.
+#[cfg(target_arch = "x86_64")]
+pub(crate) const EXCEPTION_STACKS: usize = 4;
+#[cfg(target_arch = "x86_64")]
+pub(crate) const EXCEPTION_STACK_BYTES: usize = 16 * 1024;
+
+/// One interrupt-stack-table stack, 16-byte aligned as the CPU aligns it anyway.
+#[cfg(target_arch = "x86_64")]
+#[repr(C, align(16))]
+pub(crate) struct ExceptionStack(pub(crate) [u8; EXCEPTION_STACK_BYTES]);
+
+#[cfg(target_arch = "x86_64")]
+impl core::fmt::Debug for ExceptionStack {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ExceptionStack")
+    }
 }
 
 /// Null, kernel code and data, user data and code, and the TSS's two.

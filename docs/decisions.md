@@ -19263,3 +19263,19 @@ the license, by an explicit instruction recorded here.
   TSC is measured as before and the deadline mode is still used; without it, nothing changes.
 - **Not yet.** Building and running; checking the TSC is invariant (CPUID 80000007h:EDX[8]) before
   trusting it across idle states; the HPET as another reference.
+
+## D248 x86_64's interrupt stack table: the double fault, NMI, machine check and debug exceptions on stacks of their own (D47's and D49's follow-up for real hardware; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** D47 asked for separate stacks before untrusted programs run on a real CPU: every
+  exception ran on the current stack, so a kernel stack overflow ended in a triple fault, and an
+  NMI or machine check in the instructions `syscall` and `sysretq` spend in ring 0 on a program's
+  stack ran on that stack.
+- **Decision.** Each CPU's per-CPU block holds four 16 KiB stacks; its TSS's IST entries 1 to 4
+  point at their tops (double fault, NMI, machine check, debug). A second IDT, filled with the first,
+  gives those four gates their IST index; each CPU loads it right after `ltr` loads its own TSS, so
+  no CPU takes an IST gate before its stacks exist. An IST exception from ring 3 has its seven-word
+  frame copied from the IST stack to where `TSS.RSP0` would have put it, then takes the ring-3
+  path unchanged.
+- **Not yet.** Building and running; the paranoid GS check in those four handlers (an NMI between
+  `syscall` and its `swapgs` runs the kernel path with the program's GS base); NMIs from ring 3
+  handled by the kernel instead of the program (D49); a guard page under each IST stack.
