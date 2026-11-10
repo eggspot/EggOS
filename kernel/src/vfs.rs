@@ -811,6 +811,7 @@ pub const MAX_MOUNTS: usize = 16;
 struct Mounted {
     point: Node,
     root: Node,
+    no_set_ids: bool,
 }
 
 static MOUNTS: [AtomicPtr<Mounted>; MAX_MOUNTS] =
@@ -858,12 +859,33 @@ pub fn is_mount_point(path: &[u8]) -> bool {
 
 /// Mounts `file_system` on the directory `path` names from the root, for good.
 pub fn mount(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(), MountError> {
+    mount_directory(path, file_system, false)
+}
+
+/// [`mount`], with the set-user-id and set-group-id bits of its programs ignored, as Linux's
+/// `nosuid` (D281).
+pub fn mount_without_set_ids(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(), MountError> {
+    mount_directory(path, file_system, true)
+}
+
+fn mount_directory(path: &[u8], file_system: &'static dyn FileSystem, no_set_ids: bool) -> Result<(), MountError> {
     let root = root();
     let point = resolve(root, root, path).map_err(|_| MountError::NoMountPoint)?;
     if !point.is_directory() || point == root {
         return Err(MountError::NoMountPoint);
     }
-    add_mount(point, file_system)
+    add_mount(point, file_system, no_set_ids)
+}
+
+/// Whether programs on `node`'s file system may take their set-user-id and set-group-id bits:
+/// it was not mounted [`mount_without_set_ids`].
+pub fn allows_set_ids(node: Node) -> bool {
+    !mounts().any(|mounted| mounted.no_set_ids && core::ptr::addr_eq(mounted.root.file_system, node.file_system))
+}
+
+/// Whether the file system mounted on `point` ignores set-id bits, for `/proc/mounts`.
+pub fn ignores_set_ids_at(point: Node) -> bool {
+    mounts().any(|mounted| mounted.point == point && mounted.no_set_ids)
 }
 
 /// Mounts `file_system`, whose root is a regular file, over the regular file `path` names from
@@ -877,16 +899,17 @@ pub fn mount_file(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(
     {
         return Err(MountError::NoMountPoint);
     }
-    add_mount(point, file_system)
+    add_mount(point, file_system, false)
 }
 
-fn add_mount(point: Node, file_system: &'static dyn FileSystem) -> Result<(), MountError> {
+fn add_mount(point: Node, file_system: &'static dyn FileSystem, no_set_ids: bool) -> Result<(), MountError> {
     if covered_by(point).is_some() || mounts().any(|mounted| mounted.point == point) {
         return Err(MountError::Taken);
     }
     let mounted = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Mounted {
         point,
         root: Node::root_of(file_system),
+        no_set_ids,
     }));
     for slot in &MOUNTS {
         if slot

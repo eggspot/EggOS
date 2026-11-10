@@ -19863,3 +19863,14 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the Network pane's Wi-Fi list and join dialog (a Claude
   Fable design); the passphrase kept out of the command line (programs could read it from
   standard input); forgetting while connected disconnecting at once.
+
+## D281 `nosuid` mounts: the memory file systems, `/dev`, the work folder and the host share ignore set-id bits (D270's follow-up; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from mount(2))
+
+- **Decision.** A mount may ignore its programs' set-user-id and set-group-id bits
+  (`vfs::mount_without_set_ids`, Linux's `MS_NOSUID`), and `execve` then runs them with the
+  caller's ids. The tmpfs mounts (`/tmp`, `/home`, `/var`, `/run`, `/dev/shm`), `/dev`, the work
+  folder and the host share are mounted so, as a desktop Linux mounts them: those are where a
+  user or another machine can put files. The root and the EggFS folders the system installs
+  from keep their bits. `vfs::ignores_set_ids_at` tells `/proc/mounts` which.
+- **Not yet.** Building and running; `/proc/mounts` printing `nosuid`; a `mount` system call for
+  programs.

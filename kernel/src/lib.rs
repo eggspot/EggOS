@@ -178,7 +178,7 @@ fn mount_system_file_systems<P: Platform>() {
         let _ = vfs::mount(b"/proc", proc);
     }
     if exists(b"/dev") {
-        let _ = vfs::mount(b"/dev", &vfs::devfs::DeviceFiles);
+        let _ = vfs::mount_without_set_ids(b"/dev", &vfs::devfs::DeviceFiles);
     }
     if !MEMORY_FILE_SYSTEMS
         .iter()
@@ -197,7 +197,7 @@ fn mount_system_file_systems<P: Platform>() {
             false => 0o755,
         };
         if let Some(file_system) = vfs::tmpfs::Tmpfs::new(budget, device, permissions) {
-            let _ = vfs::mount(path, Box::leak(Box::new(file_system)));
+            let _ = vfs::mount_without_set_ids(path, Box::leak(Box::new(file_system)));
         }
     }
 }
@@ -435,7 +435,7 @@ fn attach_work<P: Platform, W: Write>(
     )));
     match eggfs.folder(eggos_eggfs::WORK_FOLDER, now) {
         Ok(folder) => {
-            if vfs::mount(WORK_FOLDER_PATH, Box::leak(Box::new(folder))).is_err() {
+            if vfs::mount_without_set_ids(WORK_FOLDER_PATH, Box::leak(Box::new(folder))).is_err() {
                 writeln!(
                     console,
                     "vfs: the work disk was not mounted: no room for another mount"
@@ -500,7 +500,7 @@ fn mount_host_folder<P: Platform>(
     ) {
         Ok(fat) => {
             let fat: &'static vfs::fat::Fat = Box::leak(Box::new(fat));
-            vfs::mount(HOST_FOLDER, fat)
+            vfs::mount_without_set_ids(HOST_FOLDER, fat)
                 .map(|()| fat)
                 .map_err(|_| ("no room for another mount", None))
         }

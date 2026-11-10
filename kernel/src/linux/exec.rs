@@ -1065,7 +1065,10 @@ fn prepare<P: Platform>(
         image_size,
         Arc::new(vfs::HeldNode::new(image_node)),
     )
-    .with_set_ids(SetIds::of(&attributes));
+    .with_set_ids(match vfs::allows_set_ids(node) {
+        true => SetIds::of(&attributes),
+        false => SetIds::default(),
+    });
     let dynamic_loader = dynamic_loader.as_ref().map(|(loader, bytes, size)| {
         Program::from_file(
             bytes.bytes(),
