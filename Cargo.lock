@@ -302,6 +302,7 @@ dependencies = [
  "eggos-crypto",
  "eggos-net",
  "eggos-runtime",
+ "eggos-settings-file",
  "eggos-tls",
 ]
 
