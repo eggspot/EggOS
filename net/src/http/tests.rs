@@ -221,3 +221,16 @@ fn an_https_request_names_the_port_only_when_it_is_not_443() {
     let length = write_request(&mut out, &url, b"a").unwrap();
     assert!(out[..length].starts_with(b"GET /x HTTP/1.1\r\nHost: example.com:80\r\n"));
 }
+
+#[test]
+fn a_header_is_found_by_its_name_in_any_case_and_only_in_the_head() {
+    let head = b"HTTP/1.1 200 OK\r\nDate: Thu, 29 Oct 2026 14:05:09 GMT\r\nage:  42 \r\n\r\n\
+                 Date: x";
+    assert_eq!(
+        header(head, b"date"),
+        Some(&b"Thu, 29 Oct 2026 14:05:09 GMT"[..])
+    );
+    assert_eq!(header(head, b"Age"), Some(&b"42"[..]));
+    assert_eq!(header(head, b"Server"), None);
+    assert_eq!(header(b"Date: x\r\n\r\n", b"Date"), None);
+}

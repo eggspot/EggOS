@@ -312,15 +312,18 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         unsafe { objc::register_image(slide, &program.objc) }.map_err(Failure::Invalid)?;
     }
     protect(&program, base)?;
-    if uses_objc {
-        let unwind_info = program.unwind_info.map(|section| {
-            (
-                base + (section.address - program.base_address()) as usize,
-                section.size as usize,
-            )
-        });
-        objc::exception::set_image(base, size, unwind_info);
-    }
+    let slid = |section: crate::macho::SectionRange| {
+        (
+            base + (section.address - program.base_address()) as usize,
+            section.size as usize,
+        )
+    };
+    objc::exception::add_image(
+        base,
+        size,
+        program.unwind_info.map(slid),
+        program.eh_frame.map(slid),
+    );
     if let Some(template) = program.thread_locals {
         let address = base + (template.address - program.base_address()) as usize;
         // SAFETY: the template lies inside a readable segment of the image, which stays

@@ -237,6 +237,57 @@ static void exceptions(void) {
     } @catch (id any) {
         say([NSString stringWithFormat:@"caught any %@", any]);
     }
+    @try {
+        [@[ @"a", @"b" ] objectAtIndex:5];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@", exception.name]);
+    }
+    @try {
+        [@[ @"x" ] enumerateObjectsUsingBlock:^(id object, NSUInteger index, BOOL *stop) {
+          @throw [NSException exceptionWithName:@"EggBlock" reason:object userInfo:nil];
+        }];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ %@", exception.name, exception.reason]);
+    }
+    @try {
+        [thrower performSelector:@selector(frobnicate)];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@", exception.name]);
+    }
+    @try {
+        [[NSMutableString stringWithString:@"egg"] insertString:@"!" atIndex:9];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ insert", exception.name]);
+    }
+    @try {
+        id objects[] = {@"v", nil};
+        id keys[] = {@"k", @"j"};
+        [NSDictionary dictionaryWithObjects:objects forKeys:keys count:2];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ dictionary", exception.name]);
+    }
+    @try {
+        [[NSSet setWithObject:@"s"] enumerateObjectsUsingBlock:^(id object, BOOL *stop) {
+          @throw [NSException exceptionWithName:@"EggSetBlock" reason:object userInfo:nil];
+        }];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ %@", exception.name, exception.reason]);
+    }
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    id token = [center addObserverForName:@"EggThrow"
+                                   object:nil
+                                    queue:nil
+                               usingBlock:^(NSNotification *note) {
+                                 @throw [NSException exceptionWithName:@"EggObserver"
+                                                                reason:note.name
+                                                              userInfo:nil];
+                               }];
+    @try {
+        [center postNotification:[NSNotification notificationWithName:@"EggThrow" object:nil]];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ %@", exception.name, exception.reason]);
+    }
+    [center removeObserver:token];
 }
 
 static void foundation_classes(void) {
@@ -322,6 +373,131 @@ static void uncaught(NSException *exception) {
     fflush(stdout);
 }
 
+@interface Listener : NSObject
+@property(nonatomic) int heard;
+@end
+
+@implementation Listener
+- (void)hear:(NSNotification *)note {
+    self.heard += 1;
+    NSString *value = note.userInfo[@"k"];
+    printf("MACOS-OBJC heard %s %s\n", note.name.UTF8String, value ? value.UTF8String : "-");
+}
+
+- (void)later:(NSString *)word {
+    printf("MACOS-OBJC later %s\n", word.UTF8String);
+}
+@end
+
+static void notifications(Listener *listener) {
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    [center addObserver:listener selector:@selector(hear:) name:@"EggNote" object:nil];
+    __block int blocks = 0;
+    id token = [center addObserverForName:@"EggNote"
+                                   object:nil
+                                    queue:nil
+                               usingBlock:^(NSNotification *note) {
+                                 blocks += note.object == nil;
+                               }];
+    [center postNotificationName:@"EggNote" object:nil userInfo:@{@"k" : @"v"}];
+    [center postNotificationName:@"Other" object:nil];
+    [center removeObserver:listener];
+    [center removeObserver:token];
+    [center postNotificationName:@"EggNote" object:nil];
+    printf("MACOS-OBJC notes %d %d\n", listener.heard, blocks);
+}
+
+static void identifiers_and_encodings(void) {
+    NSUUID *parsed = [[NSUUID alloc] initWithUUIDString:@"e621e1f8-c36c-495a-93fc-0c247a3e6e5f"];
+    NSString *fresh = [NSUUID UUID].UUIDString;
+    NSUUID *refused = [[NSUUID alloc] initWithUUIDString:@"nope"];
+    printf("MACOS-OBJC uuid %s %lu %c %d\n", parsed.UUIDString.UTF8String,
+           (unsigned long)fresh.length, (char)[fresh characterAtIndex:14], refused == nil);
+    NSData *wide = [@"h\u00e9" dataUsingEncoding:NSUTF16LittleEndianStringEncoding];
+    NSString *back = [[NSString alloc] initWithData:wide encoding:NSUTF16LittleEndianStringEncoding];
+    NSData *ascii = [@"h\u00e9" dataUsingEncoding:NSASCIIStringEncoding];
+    printf("MACOS-OBJC encode %lu %s %d\n", (unsigned long)wide.length, back.UTF8String,
+           ascii == nil);
+}
+
+static void files(void) {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSString *root = @"/tmp/egg-files";
+    [manager removeItemAtPath:root error:nil];
+    BOOL made = [manager createDirectoryAtPath:@"/tmp/egg-files/a/b"
+                   withIntermediateDirectories:YES
+                                    attributes:nil
+                                         error:nil];
+    NSData *yolk = [@"yolk" dataUsingEncoding:NSUTF8StringEncoding];
+    BOOL wrote = [manager createFileAtPath:@"/tmp/egg-files/a/b/egg.txt" contents:yolk attributes:nil];
+    NSError *error = nil;
+    BOOL copied = [manager copyItemAtPath:@"/tmp/egg-files/a" toPath:@"/tmp/egg-files/c" error:&error];
+    BOOL moved = [manager moveItemAtPath:@"/tmp/egg-files/c/b/egg.txt"
+                                  toPath:@"/tmp/egg-files/c/shell.txt"
+                                   error:&error];
+    BOOL folder = NO;
+    BOOL exists = [manager fileExistsAtPath:@"/tmp/egg-files/c/b" isDirectory:&folder];
+    NSDictionary *attributes = [manager attributesOfItemAtPath:@"/tmp/egg-files/c/shell.txt"
+                                                         error:&error];
+    NSArray *names = [manager contentsOfDirectoryAtPath:@"/tmp/egg-files/c" error:&error];
+    printf("MACOS-OBJC files %d %d %d %d %d %d %llu %s %lu\n", made, wrote, copied, moved, exists,
+           folder, [attributes[NSFileSize] unsignedLongLongValue],
+           [attributes[NSFileType] UTF8String], (unsigned long)names.count);
+    BOOL removed = [manager removeItemAtPath:root error:nil];
+    BOOL again = [manager removeItemAtPath:root error:&error];
+    printf("MACOS-OBJC files gone %d %d %ld %s\n", removed, again, (long)error.code,
+           error.domain.UTF8String);
+}
+
+static void *own_loop(void *unused) {
+    @autoreleasepool {
+        __block int fired = 0;
+        [NSTimer scheduledTimerWithTimeInterval:0.01
+                                        repeats:NO
+                                          block:^(NSTimer *timer) {
+                                            fired += 1;
+                                          }];
+        BOOL main = [NSRunLoop currentRunLoop] == [NSRunLoop mainRunLoop];
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+        printf("MACOS-OBJC thread loop %d %d\n", fired, main);
+    }
+    return unused;
+}
+
+static void run_loops(Listener *listener) {
+    [listener performSelector:@selector(later:) withObject:@"first" afterDelay:0.05];
+    [listener performSelector:@selector(later:) withObject:@"cancelled" afterDelay:0.01];
+    [NSObject cancelPreviousPerformRequestsWithTarget:listener
+                                             selector:@selector(later:)
+                                               object:@"cancelled"];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    NSTimer *moded = [NSTimer timerWithTimeInterval:0.01
+                                            repeats:NO
+                                              block:^(NSTimer *timer) {
+                                                printf("MACOS-OBJC mode fired\n");
+                                              }];
+    [[NSRunLoop currentRunLoop] addTimer:moded forMode:@"EggMode"];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    printf("MACOS-OBJC mode waiting %d\n", moded.isValid);
+    [[NSRunLoop currentRunLoop] runMode:@"EggMode"
+                             beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+    pthread_t thread;
+    pthread_create(&thread, NULL, own_loop, NULL);
+    pthread_join(thread, NULL);
+}
+
+static int foundation(void) {
+    @autoreleasepool {
+        Listener *listener = [Listener new];
+        notifications(listener);
+        identifiers_and_encodings();
+        files();
+        run_loops(listener);
+    }
+    printf("MACOS-OBJC foundation done\n");
+    return 0;
+}
+
 static int bench(void) {
     Counter *counter = [[Counter alloc] initWithName:@"bench"];
     const long rounds = 1000000;
@@ -352,7 +528,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (argc > 1 && strcmp(argv[1], "unimplemented") == 0) {
-        say([[NSUUID UUID] UUIDString]);
+        say([[NSXPCConnection new] description]);
         return 1;
     }
     if (argc > 1 && strcmp(argv[1], "language") == 0) {
@@ -365,6 +541,9 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "bench") == 0) {
         return bench();
+    }
+    if (argc > 1 && strcmp(argv[1], "foundation") == 0) {
+        return foundation();
     }
     @autoreleasepool {
         say(@"main");

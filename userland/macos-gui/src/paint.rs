@@ -8,7 +8,7 @@ use crate::colour::Colour;
 use crate::geometry::{Frame, Point, pixel_of_point, pixel_rect, round};
 use eggos_toolkit::canvas::Canvas;
 use eggos_toolkit::geometry::Rect;
-use eggos_toolkit::text::{self as toolkit_text, Text};
+use eggos_toolkit::text as toolkit_text;
 use eggos_toolkit::widget::{self, Align, CONTROL_HEIGHT, Field, Kind, Look};
 
 /// The height of one line of text at size 1.
@@ -250,16 +250,13 @@ pub fn label(
     if !colour.visible {
         return;
     }
-    widget::paint(
+    widget::label_text(
         canvas,
-        &Kind::Label {
-            text: Text::from(words),
-            colour: colour.pixel,
-            size: 1,
-            align,
-        },
         pixel_rect(frame, height),
-        Look::default(),
+        words,
+        colour.pixel,
+        1,
+        align,
     );
 }
 

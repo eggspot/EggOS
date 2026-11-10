@@ -1,0 +1,16 @@
+[package]
+name = "eggos-components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eggos-app = { path = "../app" }
+eggos-commands = { path = "../commands" }
+eggos-crypto = { path = "../../crypto" }
+eggos-mcp = { path = "../mcp" }
+eggos-runtime = { path = "../runtime" }
+
+[lints]
+workspace = true

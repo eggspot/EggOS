@@ -55,6 +55,7 @@ pub struct FakeNetwork {
     pub ntp_servers: Vec<(Ipv4Address, u16)>,
     pub ntp_time_ns: i64,
     pub random_counter: u8,
+    pub connect_interrupted: bool,
 }
 
 impl FakeNetwork {
@@ -155,6 +156,44 @@ pub struct FakeWindow {
     pub title: Vec<u8>,
 }
 
+/// A terminal on standard input and at [`FAKE_TERMINAL_PATH`], for `stty`: its settings and window
+/// size, and how often a new size reached its foreground group (`SIGWINCH`).
+#[derive(Debug, Clone)]
+pub struct FakeTerminal {
+    pub settings: [u8; crate::stty::SETTINGS_SIZE],
+    pub window: [u8; crate::stty::WINDOW_SIZE_SIZE],
+    pub window_size_changes: usize,
+}
+
+/// Where the fake terminal also opens.
+pub const FAKE_TERMINAL_PATH: &[u8] = b"/dev/pts/0";
+
+impl Default for FakeTerminal {
+    fn default() -> Self {
+        let mut terminal = Self {
+            settings: crate::stty::Settings::pseudo_terminal().to_bytes(),
+            window: [0; crate::stty::WINDOW_SIZE_SIZE],
+            window_size_changes: 0,
+        };
+        terminal.set_window_size(24, 80);
+        terminal
+    }
+}
+
+impl FakeTerminal {
+    pub fn set_window_size(&mut self, rows: u16, columns: u16) {
+        self.window[0..2].copy_from_slice(&rows.to_ne_bytes());
+        self.window[2..4].copy_from_slice(&columns.to_ne_bytes());
+    }
+
+    pub fn window_size(&self) -> (u16, u16) {
+        (
+            u16::from_ne_bytes([self.window[0], self.window[1]]),
+            u16::from_ne_bytes([self.window[2], self.window[3]]),
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 struct OpenFile {
     path: Vec<u8>,
@@ -174,6 +213,7 @@ pub struct Fake {
     pub slept: Vec<Duration>,
     pub rebooted: Vec<u32>,
     pub synced: usize,
+    pub synced_files: Vec<Vec<u8>>,
     pub reboot_error: Option<Errno>,
     pub init_signals: Vec<u32>,
     pub init_signal_error: Option<Errno>,
@@ -182,6 +222,7 @@ pub struct Fake {
     pub now: i64,
     pub now_nanoseconds: u32,
     pub time_zone_variable: Option<Vec<u8>>,
+    pub coded_errors: bool,
     pub set_times: Vec<Duration>,
     pub set_time_error: Option<Errno>,
     pub windows: Vec<FakeWindow>,
@@ -200,6 +241,10 @@ pub struct Fake {
     pub clipboard: Vec<u8>,
     pub affinity: Option<u64>,
     pub signals_sent: Vec<(i32, u32)>,
+    pub pid: u32,
+    pub running: Vec<i32>,
+    pub termination_caught: bool,
+    pub termination_requested: bool,
     pub executed: Vec<Vec<u8>>,
     pub started: Vec<Vec<u8>>,
     pub clipboard_serial: u32,
@@ -209,6 +254,7 @@ pub struct Fake {
     pub working_directory: String,
     pub network: FakeNetwork,
     pub file_systems: Vec<(Vec<u8>, FileSystemUsage)>,
+    pub terminal: Option<FakeTerminal>,
     open: Vec<Option<OpenFile>>,
     next_inode: u64,
 }
@@ -241,6 +287,7 @@ impl Default for Fake {
             slept: Vec::new(),
             rebooted: Vec::new(),
             synced: 0,
+            synced_files: Vec::new(),
             reboot_error: Some(Errno::EPERM),
             init_signals: Vec::new(),
             init_signal_error: None,
@@ -249,6 +296,7 @@ impl Default for Fake {
             now: 1_700_000_000,
             now_nanoseconds: 0,
             time_zone_variable: None,
+            coded_errors: false,
             set_times: Vec::new(),
             set_time_error: None,
             windows: Vec::new(),
@@ -267,6 +315,10 @@ impl Default for Fake {
             clipboard: Vec::new(),
             affinity: None,
             signals_sent: Vec::new(),
+            pid: 77,
+            running: Vec::new(),
+            termination_caught: false,
+            termination_requested: false,
             executed: Vec::new(),
             started: Vec::new(),
             clipboard_serial: 0,
@@ -276,6 +328,7 @@ impl Default for Fake {
             working_directory: "/".to_owned(),
             network: FakeNetwork::default(),
             file_systems: Vec::new(),
+            terminal: None,
             open: Vec::new(),
             next_inode: 1,
         }
@@ -432,6 +485,38 @@ impl Fake {
                 .then(|| (name.to_vec(), matches!(node, Node::Directory)))
         }));
         children
+    }
+
+    fn terminal_control(
+        &mut self,
+        descriptor: usize,
+        request: u32,
+        argument: &mut [u8],
+    ) -> Option<Result<(), Errno>> {
+        use crate::stty::{TCGETS, TCSETSW, TIOCGWINSZ, TIOCSWINSZ};
+        let names_terminal = descriptor == STANDARD_INPUT
+            || self
+                .file(descriptor)
+                .is_ok_and(|file| file.path == FAKE_TERMINAL_PATH);
+        if !names_terminal {
+            return None;
+        }
+        let Some(terminal) = self.terminal.as_mut() else {
+            return Some(Err(Errno::ENOTTY));
+        };
+        match request {
+            TCGETS => argument.copy_from_slice(&terminal.settings),
+            TCSETSW => terminal.settings.copy_from_slice(argument),
+            TIOCGWINSZ => argument.copy_from_slice(&terminal.window),
+            TIOCSWINSZ => {
+                if terminal.window[..] != argument[..] {
+                    terminal.window.copy_from_slice(argument);
+                    terminal.window_size_changes += 1;
+                }
+            }
+            _ => return Some(Err(Errno::ENOTTY)),
+        }
+        Some(Ok(()))
     }
 
     fn file(&mut self, descriptor: usize) -> Result<&mut OpenFile, Errno> {
@@ -631,10 +716,16 @@ impl System for Fake {
             return Err(*errno);
         }
         let path = self.through_links(&path, links == SymbolicLinks::Follow)?;
-        self.nodes
-            .get(&path)
-            .map(|(_, status)| *status)
-            .ok_or(Errno::ENOENT)
+        match self.nodes.get(&path) {
+            Some((_, status)) => Ok(*status),
+            None if path == b"/" => Ok(Status {
+                mode: DIRECTORY | 0o755,
+                links: 2,
+                inode: 1,
+                ..Status::default()
+            }),
+            None => Err(Errno::ENOENT),
+        }
     }
 
     fn system_name(&mut self) -> Result<SystemName, Errno> {
@@ -654,6 +745,12 @@ impl System for Fake {
 
     fn sync(&mut self) {
         self.synced += 1;
+    }
+
+    fn sync_file(&mut self, descriptor: usize) -> Result<(), Errno> {
+        let path = self.file(descriptor)?.path.clone();
+        self.synced_files.push(path);
+        Ok(())
     }
 
     fn reboot(&mut self, command: u32) -> Result<(), Errno> {
@@ -686,6 +783,13 @@ impl System for Fake {
             position: 0,
         }));
         Ok(self.open.len() - 1 + FIRST_FILE_DESCRIPTOR)
+    }
+
+    fn create_new(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
+        if self.nodes.contains_key(&self.resolve(path.to_bytes())) {
+            return Err(Errno::EEXIST);
+        }
+        self.create(path, mode, false)
     }
 
     fn append(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
@@ -843,6 +947,10 @@ impl System for Fake {
         self.time_zone_variable.as_deref()
     }
 
+    fn wants_coded_errors(&self) -> bool {
+        self.coded_errors
+    }
+
     fn now(&mut self) -> u64 {
         self.now.max(0) as u64
     }
@@ -880,6 +988,9 @@ impl System for Fake {
         if !crate::system::argument_fits(request, argument.len()) {
             return Err(Errno::EINVAL);
         }
+        if let Some(result) = self.terminal_control(descriptor, request, argument) {
+            return result;
+        }
         let path = self.file(descriptor)?.path.clone();
         if path == eggos_android_properties::AREA_PATH.to_bytes() {
             return self.set_property(&path, request, argument);
@@ -894,6 +1005,11 @@ impl System for Fake {
             u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
         };
         match (request, argument.len()) {
+            (crate::window_desktop::LIST_DESKTOPS, 16) => {
+                let windows = self.windows.len().min(usize::from(u8::MAX)) as u8;
+                argument[..4].copy_from_slice(&[2, 1, windows, 0]);
+                Ok(())
+            }
             (crate::wm::LIST_WINDOW, crate::wm::LIST_SIZE) => {
                 let window = self
                     .windows
@@ -1204,6 +1320,10 @@ impl System for Fake {
         port: u16,
         timeout_ms: u32,
     ) -> Result<(), Errno> {
+        if self.network.connect_interrupted {
+            self.termination_requested = true;
+            return Err(Errno::EINTR);
+        }
         let served = self
             .network
             .pages
@@ -1291,12 +1411,29 @@ impl System for Fake {
     fn send_signal(&mut self, pid: i32, signal: u32) -> Result<(), Errno> {
         match pid {
             1 => Err(Errno::EPERM),
+            pid if self.running.contains(&pid) => {
+                self.signals_sent.push((pid, signal));
+                Ok(())
+            }
             42 | 43 | 0 | -1 => {
                 self.signals_sent.push((pid, signal));
                 Ok(())
             }
             _ => Err(Errno::ESRCH),
         }
+    }
+
+    fn process_id(&mut self) -> u32 {
+        self.pid
+    }
+
+    fn catch_termination(&mut self) -> Result<(), Errno> {
+        self.termination_caught = true;
+        Ok(())
+    }
+
+    fn termination_requested(&mut self) -> bool {
+        self.termination_requested
     }
 
     fn signal_init(&mut self, signal: u32) -> Result<(), Errno> {
@@ -1312,6 +1449,11 @@ impl System for Fake {
 
 impl Fake {
     fn resolve(&self, path: &[u8]) -> Vec<u8> {
+        let kept = path
+            .iter()
+            .rposition(|&byte| byte != b'/')
+            .map_or(1, |end| end + 1);
+        let path = &path[..kept.min(path.len())];
         if path.first() == Some(&b'/') || self.working_directory == "/" {
             return path.to_vec();
         }

@@ -14,17 +14,18 @@ pub mod command;
 #[cfg(feature = "window")]
 pub mod dialog;
 pub mod files;
+pub mod gui_libraries;
 pub mod icon;
 pub mod icon_export;
 #[allow(clippy::result_large_err)]
 pub mod installer;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod linux;
 pub mod messages;
 pub mod program;
 pub mod reader;
 pub mod translation;
-#[cfg(all(feature = "window", target_env = "musl"))]
+#[cfg(all(feature = "window", eggos_user))]
 pub mod window_program;
 
 #[cfg(test)]

@@ -1,9 +1,11 @@
 //! `/proc` (D125, D168): `cmdline` (D137), `meminfo`, `uptime`, `ps`, `net/unix` (D138),
 //! `net/interfaces`, `net/route` and `net/arp` (D157), `driver/rtc` (D150), `driver/devices`
 //! (D184), `version` and
-//! `sys/kernel/{hostname,osrelease,ostype}`, and a directory per process with `self` naming the
-//! caller's (D168): read-only regular files made when they are opened, and links, mounted on
-//! `/proc` at boot when the root file system has that directory.
+//! `sys/kernel/{hostname,osrelease,ostype}`, the keyboard's control files
+//! `sys/eggos/{keyboard_layout,keyboard_layouts,keyboard_switch_key}` (D221), and a directory
+//! per process with `self` naming the caller's (D168): regular files made when they are opened,
+//! read-only but for the control files, and links, mounted on `/proc` at boot when the root
+//! file system has that directory.
 //!
 //! - `cmdline`: the kernel command line the host started the machine with (QEMU's `-append`), and
 //!   a newline, as Linux writes it; the built-in MCP server reads its grants there (D137).
@@ -33,6 +35,13 @@
 //!   `disk list`, `disk_list` and Settings' Storage pane read it (D192).
 //! - `version`, `sys/kernel/osrelease`, `sys/kernel/ostype` and `sys/kernel/hostname`: what
 //!   `uname` reports ([`super::identity`]), each a line as Linux writes it.
+//! - `sys/eggos/keyboard_layout`, `sys/eggos/keyboard_layouts` and
+//!   `sys/eggos/keyboard_switch_key`: EggOS's own, the settings file's values of
+//!   `keyboard.layout`, `keyboard.layouts` and `keyboard.switch_key` the keyboard uses now, each
+//!   a line; writing a value (a trailing newline allowed) applies it at once, with or without a
+//!   display, and `EINVAL` refuses one the settings file would refuse. Only a privileged caller
+//!   may write them; anyone else gets `EACCES`. `settings set` writes
+//!   them when there is no desktop to tell.
 //! - `self`: a link to the directory of the process that reads it.
 //! - `<pid>/`, one per process in the process table, listed after the files above: `cmdline`
 //!   (its arguments, each ended by a NUL, read from its stack), `exe` (a link to its program's
@@ -55,12 +64,16 @@ use crate::vfs::{
     Attributes, DirectoryEntry, FileSystem, KERNEL_CALLER, Name, NodeKind, PATH_MAX, StorageError,
     Usage, magic,
 };
+use crate::vfs::{Refused, WriteAt};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use core::marker::PhantomData;
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
+use eggos_settings_file::{
+    KEYBOARD_LAYOUT_SET_CAPACITY, KEYBOARD_LAYOUTS, KeyboardLayoutSet, SwitchKey,
+};
 
 const ROOT: u64 = 1;
 
@@ -106,6 +119,14 @@ const DRIVER_DEVICES: u64 = 21;
 
 const DRIVER_DISKS: u64 = 22;
 
+const SYS_EGGOS: u64 = 23;
+
+const KEYBOARD_LAYOUT: u64 = 24;
+
+const KEYBOARD_LAYOUTS_IN_USE: u64 = 25;
+
+const KEYBOARD_SWITCH_KEY: u64 = 26;
+
 const FILES: [(&[u8], u64); 10] = [
     (b"cmdline", CMDLINE),
     (b"driver", DRIVER),
@@ -135,7 +156,87 @@ const DRIVER_FILES: [(&[u8], u64); 3] = [
 const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 2] =
     [(b"devices", DRIVER_DEVICES), (b"disks", DRIVER_DISKS)];
 
-const SYS_FILES: [(&[u8], u64); 1] = [(b"kernel", SYS_KERNEL)];
+const SYS_FILES: [(&[u8], u64); 2] = [(b"eggos", SYS_EGGOS), (b"kernel", SYS_KERNEL)];
+
+const SYS_EGGOS_FILES: [(&[u8], u64); 3] = [
+    (b"keyboard_layout", KEYBOARD_LAYOUT),
+    (b"keyboard_layouts", KEYBOARD_LAYOUTS_IN_USE),
+    (b"keyboard_switch_key", KEYBOARD_SWITCH_KEY),
+];
+
+/// What a write to one of `/proc/sys/eggos`'s keyboard control files asks for (D221).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyboardControl {
+    /// This layout in force (an index of the settings file's `KEYBOARD_LAYOUTS`).
+    Layout(usize),
+    /// These layouts for the switch key to cycle through.
+    Layouts(KeyboardLayoutSet),
+    /// This switch key.
+    SwitchKey(SwitchKey),
+}
+
+fn is_control_file(node: u64) -> bool {
+    matches!(
+        node,
+        KEYBOARD_LAYOUT | KEYBOARD_LAYOUTS_IN_USE | KEYBOARD_SWITCH_KEY
+    )
+}
+
+/// Whether a caller with `credentials` may write `/proc/sys/eggos`'s control files (D221): only
+/// a privileged one, the rule `/dev/window` applies to the desktop's settings; `EACCES`
+/// otherwise.
+pub fn may_write_control_files(
+    credentials: &super::credentials::Credentials,
+) -> Result<(), super::Errno> {
+    match credentials.is_privileged() {
+        true => Ok(()),
+        false => Err(super::Errno::EACCES),
+    }
+}
+
+/// What writing `value` to control file `node` asks for: `None` for a value the settings file
+/// would refuse, or a node that is no control file. One trailing newline is allowed.
+pub fn keyboard_control(node: u64, value: &[u8]) -> Option<KeyboardControl> {
+    let value = value.strip_suffix(b"\n").unwrap_or(value);
+    match node {
+        KEYBOARD_LAYOUT => {
+            eggos_settings_file::keyboard_layout_named(value).map(KeyboardControl::Layout)
+        }
+        KEYBOARD_LAYOUTS_IN_USE => KeyboardLayoutSet::parse(value)
+            .ok()
+            .map(KeyboardControl::Layouts),
+        KEYBOARD_SWITCH_KEY => SwitchKey::named(value).map(KeyboardControl::SwitchKey),
+        _ => None,
+    }
+}
+
+fn apply_keyboard_control(control: KeyboardControl) {
+    let (layouts, switch_key) = crate::input::layouts();
+    match control {
+        KeyboardControl::Layout(number) => {
+            crate::input::set_layout(number);
+        }
+        KeyboardControl::Layouts(layouts) => crate::input::set_layouts(layouts, switch_key),
+        KeyboardControl::SwitchKey(switch_key) => crate::input::set_layouts(layouts, switch_key),
+    }
+}
+
+fn keyboard_control_text(node: u64) -> Option<Vec<u8>> {
+    let (layouts, switch_key) = crate::input::layouts();
+    match node {
+        KEYBOARD_LAYOUT => line(
+            KEYBOARD_LAYOUTS
+                .get(crate::input::layout_number())
+                .map_or("us", |layout| layout.name)
+                .as_bytes(),
+        ),
+        KEYBOARD_LAYOUTS_IN_USE => {
+            let mut text = [0u8; KEYBOARD_LAYOUT_SET_CAPACITY];
+            line(layouts.write(&mut text).as_bytes())
+        }
+        _ => line(switch_key.name().as_bytes()),
+    }
+}
 
 const SYS_KERNEL_FILES: [(&[u8], u64); 3] = [
     (b"hostname", HOSTNAME),
@@ -201,7 +302,7 @@ impl ProcessNode {
 fn is_directory(node: u64) -> bool {
     match ProcessNode::of(node) {
         Some(node) => matches!(node.part, part::DIRECTORY | part::FD),
-        None => matches!(node, ROOT | NET | DRIVER | SYS | SYS_KERNEL),
+        None => matches!(node, ROOT | NET | DRIVER | SYS | SYS_KERNEL | SYS_EGGOS),
     }
 }
 
@@ -220,6 +321,7 @@ fn listing(directory: u64) -> &'static [(&'static [u8], u64)] {
         DRIVER => &DRIVER_FILES_WITHOUT_CLOCK,
         SYS => &SYS_FILES,
         SYS_KERNEL => &SYS_KERNEL_FILES,
+        SYS_EGGOS => &SYS_EGGOS_FILES,
         _ => &[],
     }
 }
@@ -825,6 +927,7 @@ impl<P: Platform> FileSystem for Proc<P> {
             permissions: match kind {
                 NodeKind::Directory => 0o555,
                 NodeKind::SymbolicLink => 0o777,
+                _ if is_control_file(node) => 0o644,
                 _ => 0o444,
             },
             file_id: node,
@@ -868,6 +971,8 @@ impl<P: Platform> FileSystem for Proc<P> {
             SYS
         } else if holds(&SYS_KERNEL_FILES) {
             SYS_KERNEL
+        } else if holds(&SYS_EGGOS_FILES) {
+            SYS_EGGOS
         } else {
             ROOT
         }
@@ -892,6 +997,7 @@ impl<P: Platform> FileSystem for Proc<P> {
                 .chain(DRIVER_FILES.iter())
                 .chain(SYS_FILES.iter())
                 .chain(SYS_KERNEL_FILES.iter())
+                .chain(SYS_EGGOS_FILES.iter())
                 .find(|&&(_, file)| file == node)
                 .map_or(&[][..], |(name, _)| name),
         )
@@ -899,6 +1005,36 @@ impl<P: Platform> FileSystem for Proc<P> {
 
     fn read(&self, _node: u64, _offset: u64, _length: usize) -> &[u8] {
         &[]
+    }
+
+    fn is_node_writable(&self, node: u64) -> bool {
+        is_control_file(node)
+    }
+
+    fn truncate(&self, node: u64, _length: u64, _now: u64) -> Result<(), Refused> {
+        match is_control_file(node) {
+            true => Ok(()),
+            false => Err(Refused::ReadOnly),
+        }
+    }
+
+    fn write(
+        &self,
+        node: u64,
+        at: WriteAt,
+        bytes: &[u8],
+        _now: u64,
+    ) -> Result<(usize, u64), Refused> {
+        if !is_control_file(node) {
+            return Err(Refused::ReadOnly);
+        }
+        let control = keyboard_control(node, bytes).ok_or(Refused::InvalidArgument)?;
+        apply_keyboard_control(control);
+        let offset = match at {
+            WriteAt::Offset(offset) => offset,
+            WriteAt::End => 0,
+        };
+        Ok((bytes.len(), offset.saturating_add(bytes.len() as u64)))
     }
 
     fn generate(&self, node: u64) -> Result<Option<Vec<u8>>, StorageError> {
@@ -934,6 +1070,9 @@ impl<P: Platform> FileSystem for Proc<P> {
             },
             VERSION => version_text(),
             MOUNTS => mounts_text(),
+            KEYBOARD_LAYOUT | KEYBOARD_LAYOUTS_IN_USE | KEYBOARD_SWITCH_KEY => {
+                keyboard_control_text(node)
+            }
             OSRELEASE => line(identity::utsname::RELEASE.as_bytes()),
             OSTYPE => line(identity::utsname::SYSNAME.as_bytes()),
             HOSTNAME => {
@@ -1108,6 +1247,77 @@ mod tests {
             .map(|entry| entry.name.as_bytes().to_vec())
             .collect();
         assert_eq!(entries, [&b"hostname"[..], b"osrelease", b"ostype"]);
+    }
+
+    #[test]
+    fn sys_eggos_holds_the_keyboard_s_writable_control_files() {
+        let proc = Proc::<crate::tests::TestPlatform>::new();
+        assert_eq!(proc.lookup(SYS, b"eggos"), Some(SYS_EGGOS));
+        assert_eq!(proc.kind(SYS_EGGOS), NodeKind::Directory);
+        let entries: Vec<Vec<u8>> = (0..)
+            .map_while(|position| proc.entry(SYS_EGGOS, position))
+            .map(|entry| entry.name.as_bytes().to_vec())
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                &b"keyboard_layout"[..],
+                b"keyboard_layouts",
+                b"keyboard_switch_key"
+            ]
+        );
+        assert_eq!(proc.parent(KEYBOARD_LAYOUT), SYS_EGGOS);
+        assert!(proc.is_node_writable(KEYBOARD_SWITCH_KEY));
+        assert!(!proc.is_node_writable(OSTYPE));
+        assert_eq!(proc.attributes(KEYBOARD_LAYOUT).permissions, 0o644);
+        assert_eq!(proc.truncate(KEYBOARD_LAYOUT, 0, 0), Ok(()));
+        assert_eq!(proc.truncate(OSTYPE, 0, 0), Err(Refused::ReadOnly));
+        let german = eggos_settings_file::keyboard_layout_named(b"de").unwrap();
+        assert_eq!(
+            keyboard_control(KEYBOARD_LAYOUT, b"de\n"),
+            Some(KeyboardControl::Layout(german))
+        );
+        assert_eq!(keyboard_control(KEYBOARD_LAYOUT, b"DE"), None);
+        assert_eq!(
+            keyboard_control(KEYBOARD_LAYOUTS_IN_USE, b"us,de"),
+            KeyboardLayoutSet::parse(b"us,de")
+                .ok()
+                .map(KeyboardControl::Layouts)
+        );
+        assert_eq!(keyboard_control(KEYBOARD_LAYOUTS_IN_USE, b"us,us"), None);
+        assert_eq!(
+            keyboard_control(KEYBOARD_SWITCH_KEY, b"alt+shift\n"),
+            Some(KeyboardControl::SwitchKey(SwitchKey::AltShift))
+        );
+        assert_eq!(keyboard_control(KEYBOARD_SWITCH_KEY, b"x"), None);
+        assert_eq!(
+            proc.write(KEYBOARD_SWITCH_KEY, WriteAt::Offset(0), b"x", 0),
+            Err(Refused::InvalidArgument)
+        );
+        assert_eq!(
+            proc.write(OSTYPE, WriteAt::Offset(0), b"x", 0),
+            Err(Refused::ReadOnly)
+        );
+    }
+
+    #[test]
+    fn only_a_privileged_caller_may_write_the_control_files() {
+        use super::super::credentials::{Credentials, Ids, Kind};
+        let root = Credentials::new();
+        assert_eq!(may_write_control_files(&root), Ok(()));
+        let mut user = Credentials::new();
+        user.set_ids(Kind::User, Ids::all(1000)).unwrap();
+        assert_eq!(
+            may_write_control_files(&user),
+            Err(super::super::Errno::EACCES)
+        );
+        let mut root_group_only = Credentials::new();
+        root_group_only.set_ids(Kind::User, Ids::all(1000)).unwrap();
+        root_group_only.set_ids(Kind::Group, Ids::ROOT).unwrap();
+        assert_eq!(
+            may_write_control_files(&root_group_only),
+            Err(super::super::Errno::EACCES)
+        );
     }
 
     #[test]

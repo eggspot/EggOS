@@ -12,15 +12,19 @@ path = "src/main.rs"
 [dependencies]
 eggos-c-format = { path = "../c-format" }
 eggos-calendar = { path = "../../calendar" }
+eggos-drivers = { path = "../../drivers" }
 eggos-element-tree = { path = "../element-tree" }
+eggos-image = { path = "../../image" }
+eggos-math = { path = "../../math" }
 eggos-net = { path = "../../net" }
 eggos-png = { path = "../../png" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
 eggos-translation-loader = { path = "../translation-loader" }
 eggos-windows-gui = { path = "../windows-gui" }
+eggos-windows-registry = { path = "../windows-registry" }
 
-[target.'cfg(any(target_arch = "aarch64", not(target_env = "musl")))'.dependencies]
+[target.'cfg(any(target_arch = "aarch64", not(eggos_user)))'.dependencies]
 eggos-translate = { path = "../../translate" }
 
 [lints]

@@ -1,7 +1,9 @@
+use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
 use crate::system::{Duration, System};
 use core::ffi::CStr;
 use eggos_calendar::format;
+use eggos_commands::{commands, errors};
 use eggos_runtime::errno::Errno;
 
 const CLOCK: &CStr = c"/proc/driver/rtc";
@@ -34,18 +36,24 @@ impl core::fmt::Write for Line {
 
 pub fn hwclock<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut function = Function::Show;
-    for argument in arguments {
-        match argument.to_bytes() {
-            b"-r" | b"--show" | b"--get" => function = Function::Show,
-            b"-w" | b"--systohc" => function = Function::SystemToHardware,
-            b"-s" | b"--hctosys" => function = Function::HardwareToSystem,
-            b"-u" | b"--utc" => {}
-            other if other.len() > 1 && other[0] == b'-' => return output.invalid_option(other),
-            other => {
-                output.error(&[b"extra operand '", other, b"'"]);
-                return FAILURE;
-            }
+    let parsed = parse_defined(output, arguments, &commands::HWCLOCK, |_, given| {
+        match (given.option.short, given.option.long) {
+            (Some(b'w'), _) => function = Function::SystemToHardware,
+            (Some(b's'), _) => function = Function::HardwareToSystem,
+            (Some(b'r'), _) | (None, Some("get")) => function = Function::Show,
+            _ => {}
         }
+        Ok(())
+    });
+    let Ok(operands) = parsed else {
+        return FAILURE;
+    };
+    if let Some(extra) = operands.all().first() {
+        output.coded(
+            &errors::USAGE,
+            &[b"extra operand '", extra.to_bytes(), b"'"],
+        );
+        return FAILURE;
     }
     let hardware = match read_clock(output) {
         Ok(seconds) => seconds,
@@ -141,7 +149,14 @@ mod tests {
 
     #[test]
     fn it_shows_the_hardware_clock_in_utc() {
-        for arguments in [&[][..], &[c"-r"][..], &[c"--show", c"-u"][..]] {
+        for arguments in [
+            &[][..],
+            &[c"-r"][..],
+            &[c"--show", c"-u"][..],
+            &[c"--get"][..],
+            &[c"-ur"][..],
+            &[c"-w", c"--get"][..],
+        ] {
             let (status, out, _, _) = run(with_clock(), arguments);
             assert_eq!((status, out.as_str()), (0, "2026-10-29 14:05:09+00:00\n"));
         }
@@ -188,5 +203,8 @@ mod tests {
         );
         let (_, _, errors, _) = run(with_clock(), &[c"--adjust"]);
         assert_eq!(errors, "hwclock: unrecognized option '--adjust'\n");
+        let (status, _, errors, _) = run(with_clock(), &[c"now"]);
+        assert_eq!(status, 1);
+        assert_eq!(errors, "hwclock: extra operand 'now'\n");
     }
 }

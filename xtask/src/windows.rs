@@ -3,12 +3,14 @@
 //! catches C++ exceptions and handles faults with `__try`, are test data that MSVC's `cl.exe`
 //! builds as `/MD` programs (on the C runtime's DLLs) for x64 and ARM64; `eggcpp-fh3` is
 //! `eggcpp.cpp` built for `__CxxFrameHandler3` on x64 (`/d2FH4-`), whose default is
-//! `__CxxFrameHandler4`; `tests/windows-crt/eggspawn.c`, our own C program that starts copies of
-//! itself through `CreateProcessW` and `CreateProcessA` and reads one's output through a pipe
-//! (D189), `tests/windows-crt/eggsync.c`, our own C program for APCs, abandoned mutexes,
+//! `__CxxFrameHandler4`; `tests/windows-crt/eggcpp2.cpp`, our own C++ program on msvcp140
+//! (D230), builds the same way as `eggcpp`, as C++17; `tests/windows-crt/eggspawn.c`, our own
+//! C program that starts copies of itself through `CreateProcessW` and `CreateProcessA` and
+//! reads one's output through a pipe (D189), `tests/windows-crt/eggsync.c`, our own C program for APCs, abandoned mutexes,
 //! ordinal imports and DOS wildcards (D189), and `tests/windows-crt/eggnamed.c`, our own C
 //! program for named objects shared with a child, file mappings and wildcard arguments (D189),
-//! build as console programs for both.
+//! and `tests/windows-crt/eggcrt2.c`, our own C program for the math library, `setjmp`,
+//! locales, wide streams and low-level text mode (D229), build as console programs for both.
 //! `tests/windows-rust`, our own Rust program on Rust's standard library (`eggrust`, D189),
 //! builds with `cargo` for `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`, linked by
 //! MSVC's linker; and `tests/windows-mingw/eggmingw.c`, our own C program on MinGW's `msvcrt.dll` (D189), builds
@@ -21,13 +23,15 @@
 use std::path::{Path, PathBuf};
 
 pub const PROGRAMS_VARIABLE: &str = "EGGOS_WINDOWS_PROGRAMS";
-pub const PROGRAMS: [&str; 6] = [
+pub const PROGRAMS: [&str; 8] = [
     "eggpad",
     "eggcpp",
     "eggcpp-fh3",
+    "eggcpp2",
     "eggspawn",
     "eggsync",
     "eggnamed",
+    "eggcrt2",
 ];
 /// The test programs built from our own Rust source on Rust's standard library (D189).
 pub const RUST_PROGRAMS: [&str; 1] = ["eggrust"];
@@ -351,6 +355,8 @@ pub fn source_file(program: &str) -> &'static str {
         "eggspawn" => "eggspawn.c",
         "eggsync" => "eggsync.c",
         "eggnamed" => "eggnamed.c",
+        "eggcrt2" => "eggcrt2.c",
+        "eggcpp2" => "eggcpp2.cpp",
         _ => "eggcpp.cpp",
     }
 }
@@ -358,9 +364,11 @@ pub fn source_file(program: &str) -> &'static str {
 /// The `cl.exe` arguments that build `program` from `source` into `output` for MSVC's
 /// `target` on the C runtime's DLLs (`/MD`), optimized, with warnings as errors, its objects
 /// in `objects`: eggpad as a GUI program; the C++ programs as console programs with C++
-/// exceptions (`/EHsc`), `eggcpp-fh3` on x64 with `__CxxFrameHandler3`'s data (`/d2FH4-`).
-/// `eggspawn`, `eggsync` and `eggnamed` are C console programs, `eggsync` with user32's waits
-/// and `eggnamed` with `setargv.obj`, which makes the C runtime expand wildcard arguments.
+/// exceptions (`/EHsc`), `eggcpp-fh3` on x64 with `__CxxFrameHandler3`'s data (`/d2FH4-`),
+/// `eggcpp2` as C++17 (`/std:c++17`).
+/// `eggspawn`, `eggsync`, `eggnamed` and `eggcrt2` are C console programs, `eggsync` with
+/// user32's waits and `eggnamed` with `setargv.obj`, which makes the C runtime expand wildcard
+/// arguments.
 pub fn compiler_arguments(
     program: &str,
     target: &str,
@@ -379,8 +387,9 @@ pub fn compiler_arguments(
     ];
     let language: &[&str] = match (program, target) {
         ("eggpad", _) => &["/DUNICODE", "/D_UNICODE"],
-        ("eggspawn" | "eggsync" | "eggnamed", _) => &[],
+        ("eggspawn" | "eggsync" | "eggnamed" | "eggcrt2", _) => &[],
         ("eggcpp-fh3", "x64") => &["/EHsc", "/d2FH4-"],
+        ("eggcpp2", _) => &["/EHsc", "/std:c++17"],
         _ => &["/EHsc"],
     };
     let link: &[&str] = match program {
@@ -516,9 +525,11 @@ mod tests {
                 "eggpad",
                 "eggcpp",
                 "eggcpp-fh3",
+                "eggcpp2",
                 "eggspawn",
                 "eggsync",
-                "eggnamed"
+                "eggnamed",
+                "eggcrt2"
             ]
         );
     }
@@ -555,8 +566,19 @@ mod tests {
             objects,
         );
         assert!(frame_handler_3.contains(&"/d2FH4-".to_owned()));
+        let msvcp = compiler_arguments(
+            "eggcpp2",
+            "arm64",
+            Path::new("eggcpp2.cpp"),
+            Path::new("out.exe"),
+            objects,
+        );
+        for wanted in ["/EHsc", "/std:c++17", "/SUBSYSTEM:CONSOLE", "eggcpp2.cpp"] {
+            assert!(msvcp.contains(&wanted.to_owned()), "{wanted}");
+        }
         assert_eq!(source_file("eggpad"), "eggpad.c");
         assert_eq!(source_file("eggcpp-fh3"), "eggcpp.cpp");
+        assert_eq!(source_file("eggcpp2"), "eggcpp2.cpp");
     }
 
     #[test]
@@ -593,6 +615,7 @@ mod tests {
             assert!(!arguments.contains(&"/EHsc".to_owned()), "{target}");
         }
         assert_eq!(source_file("eggsync"), "eggsync.c");
+        assert_eq!(source_file("eggcrt2"), "eggcrt2.c");
     }
 
     #[test]

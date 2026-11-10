@@ -7,21 +7,30 @@
 //! that takes it unwinds the frames in between, running their termination handlers and
 //! destructors, and resumes the thread in its own frame. The layer implements the language
 //! handlers MSVC's code uses: `__C_specific_handler` for `__try`/`__except`/`__finally`
-//! (`c_specific.rs`) and `__CxxFrameHandler3`/`__CxxFrameHandler4` for C++ (`cxx.rs`).
+//! (`c_specific.rs`) and `__CxxFrameHandler3`/`__CxxFrameHandler4` for C++ (`cxx.rs`); the
+//! layer throws standard C++ exceptions of its own (`thrown.rs`, D230) and keeps
+//! `std::exception_ptr`'s copies (`exception_ptr.rs`).
 
 mod c_specific;
 mod context;
 mod cxx;
 mod dispatch;
+mod exception_ptr;
 mod frames;
+mod rtti;
 mod signal;
+mod thrown;
 mod vectored;
 
+pub use crate::cxx_walk::FrameData;
 use crate::library::Export;
-use context::{Context, unwinder};
+use context::unwinder;
 
+pub(in crate::win32) use context::{Context, capturing_entry};
 pub use dispatch::deliver_fault;
+pub(in crate::win32) use dispatch::{NO_STATE, UnwindTarget, reaches_frame, resume, unwind};
 pub use frames::{in_layer, set_image};
+pub(in crate::win32) use thrown::{StdObject, throw, throw_object};
 
 /// Exception flags (`EXCEPTION_RECORD.ExceptionFlags`).
 pub mod flag {
@@ -49,6 +58,7 @@ pub mod status {
     pub const NONCONTINUABLE_EXCEPTION: u32 = 0xc000_0025;
     pub const UNWIND: u32 = 0xc000_0027;
     pub const INVALID_UNWIND_TARGET: u32 = 0xc000_0029;
+    pub const LONGJMP: u32 = 0x8000_0026;
 }
 
 /// The most parameters an exception record holds.
@@ -81,6 +91,12 @@ impl ExceptionRecord {
             parameter_count: count as u32,
             parameters: all,
         }
+    }
+
+    /// The parameters the record holds.
+    pub fn parameters(&self) -> &[u64] {
+        let count = (self.parameter_count as usize).min(MAX_PARAMETERS);
+        &self.parameters[..count]
     }
 }
 
@@ -162,15 +178,6 @@ pub struct Frame {
     pub unwound: bool,
 }
 
-/// Which C++ data a function uses: `__CxxFrameHandler4`'s compressed data or
-/// `__CxxFrameHandler3`'s, where, and where the function starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameData {
-    pub compressed: bool,
-    pub rva: u64,
-    pub function_begin: u32,
-}
-
 /// A catch block the layer is running: the exception it handles, the frame of the function
 /// it belongs to (its establisher, and its registers as the catch began), its funclet, the
 /// state around its try block, and the function's C++ data.
@@ -223,11 +230,21 @@ pub(super) const C_SPECIFIC_EXPORTS: &[Export] = c_specific::EXPORTS;
 /// vcruntime's C++ functions: the throw, the frame handlers and their support.
 pub(super) const CXX_EXPORTS: &[Export] = cxx::FUNCTIONS;
 
+/// vcruntime's run-time type information: `dynamic_cast`, `typeid` and `type_info::name()`.
+pub(super) const RTTI_EXPORTS: &[Export] = rtti::EXPORTS;
+
 /// vcruntime's `type_info` virtual function table, which programs import as data.
 pub(super) const TYPE_INFO_EXPORTS: &[Export] = &cxx::TYPE_INFO_TABLE_EXPORT;
 
-/// The Universal C Runtime's C++ functions: `terminate` and `_callnewh`.
+/// msvcp140's `std::exception_ptr` functions (D230).
+pub(super) const EXCEPTION_PTR_EXPORTS: &[Export] = exception_ptr::EXPORTS;
+
+/// The Universal C Runtime's C++ functions: `terminate`, `_callnewh` and
+/// `__uncaught_exceptions`.
 pub(super) const CXX_UCRT_EXPORTS: &[Export] = cxx::UCRT_EXPORTS;
+
+/// msvcp140's `std::uncaught_exceptions` and `std::uncaught_exception` (D230).
+pub(super) const UNCAUGHT_EXPORTS: &[Export] = cxx::MSVCP_EXPORTS;
 
 /// The Universal C Runtime's `signal`, `raise` and the startup's exception filter.
 pub(super) const SIGNAL_EXPORTS: &[Export] = signal::EXPORTS;

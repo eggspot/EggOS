@@ -1,13 +1,17 @@
 use crate::network::{Shown, resolve};
-use crate::output::{FAILURE, Output};
-use crate::system::System;
+use crate::options::parse_defined;
+use crate::output::{FAILURE, LAST_ERROR_BYTES, Output};
+use crate::system::{SymbolicLinks, System};
 use core::cell::RefCell;
 use core::ffi::CStr;
+use eggos_commands::{commands, errors};
 use eggos_net::http::{self, Body, HeadError, Redirect, Url};
 use eggos_runtime::errno::Errno;
 use eggos_tls::chain::{NoRoots, TrustAnchors};
 use eggos_tls::client::{self, Buffers, RANDOMNESS_BYTES, Session, Settings, Stopped, Transport};
 use eggos_tls::pem::Certificates;
+
+mod record;
 
 pub const ROOTS: [&CStr; 2] = [c"/etc/ssl/roots.pem", c"/media/host/roots.pem"];
 const ROOTS_PIECE: usize = 4096;
@@ -22,6 +26,7 @@ pub const MAX_REDIRECTS: usize = 5;
 pub const MAX_URL_BYTES: usize = 2048;
 const REQUEST_BYTES: usize = MAX_URL_BYTES + 512;
 const PIECE: usize = 4096;
+const MAX_PATH_BYTES: usize = 4096;
 
 struct Address {
     bytes: [u8; MAX_URL_BYTES],
@@ -61,7 +66,9 @@ enum Sink<'a> {
 
 struct Request<'a> {
     quiet: bool,
+    no_clobber: bool,
     sink: Sink<'a>,
+    record: Option<&'a record::Recorder<'a>>,
 }
 
 enum Answer {
@@ -71,45 +78,28 @@ enum Answer {
 
 pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut quiet = false;
+    let mut dry_run = false;
+    let mut no_clobber = false;
     let mut file: Option<&CStr> = None;
-    let mut operands: [Option<&CStr>; 2] = [None; 2];
-    let mut count = 0;
-    let mut options_end = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        let argument = arguments[index];
-        index += 1;
-        match argument.to_bytes() {
-            b"--" if !options_end => options_end = true,
-            b"-q" if !options_end => quiet = true,
-            b"-o" if !options_end => match arguments.get(index) {
-                Some(&path) => {
-                    file = Some(path);
-                    index += 1;
-                }
-                None => {
-                    output.error(&[b"option requires an argument -- 'o'"]);
-                    return FAILURE;
-                }
-            },
-            option if !options_end && option.starts_with(b"-") && option.len() > 1 => {
-                return output.invalid_option(option);
-            }
-            _ if count < operands.len() => {
-                operands[count] = Some(argument);
-                count += 1;
-            }
+    let parsed = parse_defined(output, arguments, &commands::FETCH, |_, given| {
+        match given.option.short {
+            Some(b'q') => quiet = true,
+            Some(b'o') => file = given.value_as_c_string(),
             _ => {
-                output.error(&[USAGE]);
-                return FAILURE;
+                dry_run |= given.is_long("dry-run");
+                no_clobber |= given.is_long("no-clobber");
             }
         }
-    }
-    let (url, file) = match (operands, file) {
-        ([Some(url), None], file) => (url, file),
-        ([Some(url), Some(path)], None) => (url, Some(path)),
+        Ok(())
+    });
+    let Ok(operands) = parsed else {
+        return FAILURE;
+    };
+    let (url, file) = match (operands.all(), file) {
+        (&[url], file) => (url, file),
+        (&[url, path], None) => (url, Some(path)),
         _ => {
-            output.error(&[USAGE]);
+            output.coded(&errors::USAGE, &[USAGE]);
             return FAILURE;
         }
     };
@@ -117,7 +107,104 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         Some(path) if path.to_bytes() != b"-" => Sink::File(path),
         _ => Sink::StandardOutput,
     };
-    let request = Request { quiet, sink };
+    if dry_run {
+        return would_fetch(output, url, &sink, no_clobber);
+    }
+    let recorder = match sink {
+        Sink::File(path) => Some(record::Recorder::start(
+            &mut output.system,
+            url.to_bytes(),
+            path,
+        )),
+        Sink::StandardOutput => None,
+    };
+    let request = Request {
+        quiet,
+        no_clobber,
+        sink,
+        record: recorder.as_ref(),
+    };
+    let status = fetch_url(output, url, &request);
+    recorded(output, recorder.as_ref(), status)
+}
+
+fn would_fetch<S: System>(
+    output: &mut Output<S>,
+    url: &CStr,
+    sink: &Sink<'_>,
+    no_clobber: bool,
+) -> i32 {
+    let Some(address) = Address::of(&[url.to_bytes()]) else {
+        output.error(&[b"the URL is longer than 2048 bytes"]);
+        return FAILURE;
+    };
+    if let Err(error) = http::parse_url(address.as_bytes()) {
+        output.error(&[address.as_bytes(), b": ", error.description().as_bytes()]);
+        return FAILURE;
+    }
+    let path = match *sink {
+        Sink::StandardOutput => {
+            output.write(b"would download ");
+            output.write(url.to_bytes());
+            output.write(b" to standard output\n");
+            return 0;
+        }
+        Sink::File(path) => path,
+    };
+    let replaced = match destination(&mut output.system, path) {
+        Ok(Some(_)) if no_clobber => {
+            output.file_error(path, Errno::EEXIST);
+            return FAILURE;
+        }
+        Ok(replaced) => replaced,
+        Err(errno) => {
+            output.file_error(path, errno);
+            return FAILURE;
+        }
+    };
+    output.write(b"would download ");
+    output.write(url.to_bytes());
+    output.write(b" to ");
+    output.write(path.to_bytes());
+    if let Some(size) = replaced {
+        output.write(b", replacing the file there (");
+        output.write_number(size, 0);
+        output.write(b" bytes)");
+    }
+    output.write(b"\n");
+    0
+}
+
+fn destination<S: System>(system: &mut S, path: &CStr) -> Result<Option<u64>, Errno> {
+    match system.status(None, path, SymbolicLinks::Follow) {
+        Ok(status) if status.is_directory() => Err(Errno::EISDIR),
+        Ok(status) => system.may_write(path).map(|()| Some(status.size)),
+        Err(Errno::ENOENT) => {
+            let mut held = [0u8; MAX_PATH_BYTES + 1];
+            let folder = parent_folder(path.to_bytes(), &mut held).ok_or(Errno::ENAMETOOLONG)?;
+            match system.status(None, folder, SymbolicLinks::Follow) {
+                Ok(status) if status.is_directory() => system.may_write(folder).map(|()| None),
+                Ok(_) => Err(Errno::ENOTDIR),
+                Err(errno) => Err(errno),
+            }
+        }
+        Err(errno) => Err(errno),
+    }
+}
+
+fn parent_folder<'h>(path: &[u8], held: &'h mut [u8; MAX_PATH_BYTES + 1]) -> Option<&'h CStr> {
+    let folder: &[u8] = match path.iter().rposition(|&byte| byte == b'/') {
+        Some(0) => b"/",
+        Some(at) => &path[..at],
+        None => b".",
+    };
+    let room = held.get_mut(..folder.len() + 1)?;
+    room[..folder.len()].copy_from_slice(folder);
+    room[folder.len()] = 0;
+    CStr::from_bytes_with_nul(room).ok()
+}
+
+fn fetch_url<S: System>(output: &mut Output<S>, url: &CStr, request: &Request<'_>) -> i32 {
     let Some(mut address) = Address::of(&[url.to_bytes()]) else {
         output.error(&[b"the URL is longer than 2048 bytes"]);
         return FAILURE;
@@ -131,7 +218,7 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
                 return FAILURE;
             }
         };
-        match get(output, &url, &request, &mut redirect) {
+        match get(output, &url, request, &mut redirect) {
             Ok(Answer::Saved) => return 0,
             Ok(Answer::Redirected) => core::mem::swap(&mut address, &mut redirect),
             Err(status) => return status,
@@ -139,6 +226,31 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     }
     output.error(&[url.to_bytes(), b": more than 5 redirects"]);
     FAILURE
+}
+
+fn recorded<S: System>(
+    output: &mut Output<S>,
+    recorder: Option<&record::Recorder<'_>>,
+    status: i32,
+) -> i32 {
+    let Some(recorder) = recorder else {
+        return status;
+    };
+    if status == 0 {
+        recorder.done(&mut output.system);
+    } else if output.system.termination_requested() {
+        let words: &[u8] = match recorder.cancelled(&mut output.system) {
+            record::PartialFile::Removed => b"cancelled: the partial file was removed",
+            record::PartialFile::NeverCreated => b"cancelled before anything was saved",
+        };
+        output.error(&[words]);
+    } else {
+        let mut message = [0u8; LAST_ERROR_BYTES];
+        let length = output.last_error().len().min(LAST_ERROR_BYTES);
+        message[..length].copy_from_slice(&output.last_error()[..length]);
+        recorder.failed(&mut output.system, &message[..length]);
+    }
+    status
 }
 
 fn authority(url: &Url<'_>) -> Shown<264> {
@@ -173,8 +285,8 @@ impl<S: System> Transport for Socket<'_, '_, S> {
     }
 }
 
-struct RootsFile<'r, 'o, S: System> {
-    output: &'r RefCell<&'o mut Output<S>>,
+pub(crate) struct RootsFile<'r, 'o, S: System> {
+    pub(crate) output: &'r RefCell<&'o mut Output<S>>,
 }
 
 impl<S: System> TrustAnchors for RootsFile<'_, '_, S> {
@@ -205,7 +317,11 @@ struct Link<'b> {
     session: Option<Session<'b>>,
 }
 
-fn tls_failure<S: System>(output: &mut Output<S>, shown: &Shown<264>, error: client::Error) -> i32 {
+pub(crate) fn tls_failure<S: System>(
+    output: &mut Output<S>,
+    shown: &Shown<264>,
+    error: client::Error,
+) -> i32 {
     match error {
         client::Error::Transport => {}
         client::Error::Alert(code) => {
@@ -337,9 +453,13 @@ fn exchange<S: System>(
     let connected = output
         .system
         .connect(descriptor, address, url.port, CONNECT_TIMEOUT_MS);
-    if let Err(errno) = connected {
-        output.error(&[shown.as_bytes(), b": ", errno.message()]);
-        return Err(FAILURE);
+    match connected {
+        Ok(()) => {}
+        Err(Errno::EINTR) if output.system.termination_requested() => return Err(FAILURE),
+        Err(errno) => {
+            output.error(&[shown.as_bytes(), b": ", errno.message()]);
+            return Err(FAILURE);
+        }
     }
     let mut link = Link {
         descriptor,
@@ -431,15 +551,32 @@ fn exchange<S: System>(
         return Err(FAILURE);
     }
     let mut body = Body::new(parsed.framing);
+    if let Some(record) = request.record {
+        record.set_total(match parsed.framing {
+            http::Framing::Length(length) => Some(length),
+            _ => None,
+        });
+    }
     let sink = match request.sink {
         Sink::StandardOutput => None,
-        Sink::File(path) => match output.system.create(path, MODE, true) {
-            Ok(file) => Some((file, path)),
-            Err(errno) => {
-                output.file_error(path, errno);
-                return Err(FAILURE);
+        Sink::File(path) => {
+            let created = match request.no_clobber {
+                true => output.system.create_new(path, MODE),
+                false => output.system.create(path, MODE, true),
+            };
+            match created {
+                Ok(file) => {
+                    if let Some(record) = request.record {
+                        record.output_created();
+                    }
+                    Some((file, path))
+                }
+                Err(errno) => {
+                    output.file_error(path, errno);
+                    return Err(FAILURE);
+                }
             }
-        },
+        }
     };
     let reason = Shown::<64>::printable(parsed.reason);
     let leftover_start = head_length;
@@ -450,6 +587,7 @@ fn exchange<S: System>(
         &head[leftover_start..filled],
         sink,
         &shown,
+        request.record,
     );
     if let Some((file, _)) = sink {
         output.system.close(file);
@@ -495,6 +633,7 @@ fn receive<S: System>(
                 ]);
                 return Err(FAILURE);
             }
+            Err(Errno::EINTR) if output.system.termination_requested() => return Err(FAILURE),
             Err(Errno::EINTR) => {}
             Err(errno) => {
                 output.error(&[shown.as_bytes(), b": ", errno.message()]);
@@ -554,8 +693,15 @@ fn save<S: System>(
     first: &[u8],
     sink: Option<(usize, &CStr)>,
     shown: &Shown<264>,
+    record: Option<&record::Recorder<'_>>,
 ) -> Result<u64, i32> {
     let mut saved = feed(output, body, first, sink, shown)?;
+    if let Some(record) = record {
+        record.progress(&mut output.system, saved);
+    }
+    if output.system.termination_requested() {
+        return Err(FAILURE);
+    }
     let mut piece = [0u8; PIECE];
     while !body.is_done() {
         let count = receive_on(output, link, &mut piece, shown)?;
@@ -567,6 +713,12 @@ fn save<S: System>(
             break;
         }
         saved += feed(output, body, &piece[..count], sink, shown)?;
+        if let Some(record) = record {
+            record.progress(&mut output.system, saved);
+        }
+        if output.system.termination_requested() {
+            return Err(FAILURE);
+        }
     }
     Ok(saved)
 }

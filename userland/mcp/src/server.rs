@@ -13,8 +13,9 @@
 //! registry's one rule (`elicitation/create` when the client can ask, else `confirm: true`);
 //! then `started`, the CLI twin, and its outcome. A list tool's page is the twin's, its next
 //! cursor read from the twin's last line of errors (D164). The answer is what the twin
-//! printed, framed as data from the machine; `wm_capture`'s is the PNG its twin wrote, as an
-//! image after a text that frames it (D143).
+//! printed, framed as data from the machine, and for a tool whose twin writes JSON records,
+//! those records again as `structuredContent.items` (D226); `wm_capture`'s is the PNG its twin
+//! wrote, as an image after a text that frames it (D143).
 
 #![deny(
     clippy::indexing_slicing,
@@ -45,7 +46,7 @@ use crate::tools::{
     self, BUSY_STATUS, CAPTURE_PATH, Confirmation, Kind, MAX_IMAGE_BYTES, Operand, Output, Program,
     Stdin, Tool,
 };
-use eggos_commands::{Category, ErrorDefinition, errors};
+use eggos_commands::{Category, ErrorDefinition, errors, tools::ToolResult};
 use eggos_runtime::errno::Errno;
 
 /// The most bytes of a command's output an answer carries.
@@ -74,6 +75,12 @@ pub const FETCH_TIME_LIMIT_MS: u64 = 60_000;
 /// How long `net_ping`'s and `net_lookup`'s twins may run: five pings a second apart, or a
 /// lookup that retries a silent server (D158).
 pub const NETWORK_TIME_LIMIT_MS: u64 = 15_000;
+/// How long `clock_sync`'s twin may run: the time server's three tries, then up to three
+/// HTTPS checks of 10 s each (D225).
+pub const CLOCK_SYNC_TIME_LIMIT_MS: u64 = 45_000;
+/// How long `file_copy`'s, `file_move`'s and `file_remove`'s twins may run: a folder's whole
+/// tree takes longer than one file (D226).
+pub const FILE_TREE_TIME_LIMIT_MS: u64 = 60_000;
 
 const PING_COUNTS: [&str; 6] = ["0", "1", "2", "3", "4", "5"];
 /// How long the server waits for the user's answer to a question.
@@ -82,6 +89,7 @@ pub const ELICITATION_TIMEOUT_MS: u64 = 120_000;
 pub const APPLICATIONS: &str = "/Applications";
 
 const SERVER_NAME: &str = "eggos";
+const REGISTRY_DEFAULT_VALUE_WORD: &str = "@";
 const SERVER_TITLE: &str = "EggOS";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INSTRUCTIONS: &str = "EggOS's built-in MCP server. Every tool is a front-end over an \
@@ -98,8 +106,8 @@ const EFFECTS: &str = ". Each tool's annotations state the most it can do: read 
     (readOnlyHint) change nothing; change tools make or change something that can be changed \
     back; destroy and control tools (destructiveHint) remove or replace something, or can do \
     anything a person or a program can. ";
-const ERRORS_INTRODUCTION: &str = "A refused call's structuredContent.error has a code, a \
-    category (";
+const ERRORS_INTRODUCTION: &str = "A refused call's structuredContent.error, and a failed \
+    command's when it reports one, has a code, a category (";
 const ERRORS_END: &str = "), a message, a fix and, when one command fixes it, fix_command: \
     do that before retrying; codes stay, categories are what to rely on. Run /bin/help --json \
     for every command's definition. ";
@@ -115,7 +123,15 @@ const BUSY: &str = "Refused: another call waits for the user's answer; try again
 const BUDGET_USED: &str = "Refused: this server run has written as much to the audit log as it \
     may (2 MiB); calls are refused until the server starts again.";
 const QUESTION_PREFIX: &str = "eggos-elicit-";
+const COMPONENTS_FOLDER: &str = "/var/lib/eggos/components";
+const COMPONENT_RECORD: &str = "component";
+const DOWNLOADS_FOLDER: &str = "/run/eggos/downloads";
+const DOWNLOAD_RECORD_BYTES: usize = 8192;
+const RECORD_LINE_BYTES: usize = 512;
+const MAX_FILE_NAME_BYTES: usize = 255;
 const PERSON_BUSY: &str = "Busy: a person is using the machine; wait a moment and retry.";
+const NOT_RESPONDING: &str = "Not responding: the window's app has left its events unread; wait \
+                              and retry, or close the window.";
 /// The audit log's detail for a dry run the server answered, after its target (D164).
 pub const DRY_RUN_DETAIL: &str = "dry run: nothing changed";
 const PAGE_CUT: &str = "The page was cut at the output's limit, so where the next page starts is \
@@ -659,7 +675,9 @@ impl Server {
                 let now = self.refresh_policy(system);
                 match self.policy.check(&self.agent, None, now) {
                     Decision::Deny(_) => rpc::write_result(out, id, write_no_tools),
-                    _ => rpc::write_result(out, id, tools::write_list),
+                    _ => rpc::write_result(out, id, |out| {
+                        tools::write_list(out, &mut |file| system.reaches_file(file))
+                    }),
                 }
             }
             "prompts/list" => rpc::write_result(out, id, prompts::write_list),
@@ -1118,7 +1136,9 @@ impl Server {
         };
         let mut name_text = [0u8; 128];
         let (name, _) = name.decode_prefix_into(&mut name_text);
-        let Some(tool) = tools::find(name) else {
+        let found = tools::find(name)
+            .filter(|tool| tool.needs.is_none_or(|file| system.reaches_file(file)));
+        let Some(tool) = found else {
             self.stop(
                 system,
                 scratch,
@@ -1162,7 +1182,8 @@ impl Server {
                 return;
             }
         }
-        if tool.grant.is_some() && self.pending.is_some() {
+        let shares_held_buffers = tool.grant.is_some() || tool.kind == Kind::WindowsRegistryGet;
+        if shares_held_buffers && self.pending.is_some() {
             self.stop(
                 system,
                 scratch,
@@ -1227,14 +1248,20 @@ impl Server {
         };
         let target_length = target.length;
         let state = target.state;
-        if let Err(message) = hard_link_target(&mut checked, system, scratch.content) {
+        let destination = target_text(tool, scratch.resolved, target_length).unwrap_or("");
+        if let Err(message) = second_path(tool, &mut checked, destination, system, scratch.content)
+        {
+            let outcome = match message.code {
+                Some(_) => Outcome::Error,
+                None => Outcome::Refused,
+            };
             self.stop(
                 system,
                 scratch,
                 id,
                 number,
                 tool_name,
-                Outcome::Refused,
+                outcome,
                 Logged::Shown(shown),
                 message.text,
                 Ending::Refused(message.error),
@@ -1245,7 +1272,13 @@ impl Server {
         if checked.dry_run && tool.definition.dry_run_by_server() {
             let target = target_text(tool, scratch.resolved, target_length);
             let mut would = [0u8; MAX_PATH_BYTES * 2 + 256];
-            let would_length = would_text(tool, &checked, state, target.unwrap_or(""), &mut would);
+            let source = arguments::source_text(&checked, scratch.content).unwrap_or("");
+            let source = arguments::registry_name_text(&checked, scratch.content).unwrap_or(source);
+            let shown_target = arguments::registry_key_text(&checked, scratch.content)
+                .or(target)
+                .unwrap_or("");
+            let would_length =
+                would_text(tool, &checked, state, (shown_target, source), &mut would);
             let would = text_prefix(&would, would_length);
             let mut detail = [0u8; MAX_PATH_BYTES + 64];
             let mut text = Text::new(&mut detail);
@@ -1426,6 +1459,29 @@ impl Server {
                         "nothing is there to move to the Trash",
                     ));
                 }
+                (Kind::FileCopy | Kind::FileMove, FileState::Directory) => {
+                    return Err(Problem::error(
+                        &errors::IS_A_FOLDER,
+                        "destination is a folder: name the new path itself, such as \
+                         <folder>/<name>",
+                    ));
+                }
+                (Kind::FileRemove, FileState::Missing) => {
+                    return Err(Problem::error(
+                        &errors::NO_SUCH_FILE,
+                        "nothing is there to delete",
+                    ));
+                }
+                (Kind::FileRemove, _) if paths::is_inside(paths::TRASH, resolved) => {
+                    return Err(Problem::refused(&errors::PATH_NOT_ALLOWED, HOLDS_THE_TRASH));
+                }
+                (Kind::FileRemove, FileState::Directory) if !checked.recursive => {
+                    return Err(Problem::error(
+                        &errors::IS_A_FOLDER,
+                        "the path is a folder: set recursive: true to delete it and everything \
+                         in it",
+                    ));
+                }
                 _ => {}
             }
             return Ok(Target { length, state });
@@ -1585,7 +1641,19 @@ impl Server {
         }
         let target = target_text(tool, scratch.held_path, target_length).unwrap_or("");
         let mut message = [0u8; 2048];
-        let length = question_text(tool, &checked, state, target, &self.agent, &mut message);
+        let source = arguments::source_text(&checked, scratch.content).unwrap_or("");
+        let target = arguments::registry_key_text(&checked, scratch.content).unwrap_or(target);
+        let source = arguments::registry_name_text(&checked, scratch.content).unwrap_or(source);
+        let facts = question_facts(tool, &checked, system);
+        let length = question_text(
+            tool,
+            &checked,
+            state,
+            (target, source),
+            &facts,
+            &self.agent,
+            &mut message,
+        );
         let message = text_prefix(&message, length);
         out.begin_object();
         out.key("jsonrpc");
@@ -1958,11 +2026,12 @@ impl Server {
                 }
                 let state = system.file_state(held);
                 match (pending.tool.kind, pending.state, state) {
-                    (Kind::Trash, _, FileState::Missing) => false,
+                    (Kind::Trash | Kind::FileRemove, _, FileState::Missing) => false,
                     (_, FileState::File(_), FileState::File(_)) => true,
                     (_, before, now) => before == now,
                 }
             }
+            Operand::Name if pending.tool.kind == Kind::ComponentRemove => true,
             Operand::Name => pending
                 .checked
                 .name
@@ -2041,6 +2110,15 @@ impl Server {
         if let Some(target) = arguments::link_target_text(&prepared.checked, buffers.content) {
             push_word(&mut words, &mut count, target);
         }
+        if tool.kind == Kind::FileRemove && prepared.checked.recursive {
+            push_word(&mut words, &mut count, "-r");
+        }
+        if tool.kind == Kind::FolderCreate && prepared.checked.parents {
+            push_word(&mut words, &mut count, "-p");
+        }
+        if let Some(source) = arguments::source_text(&prepared.checked, buffers.content) {
+            push_word(&mut words, &mut count, source);
+        }
         if tool.kind == Kind::Run {
             for word in prepared.checked.words.each(buffers.words) {
                 push_word(&mut words, &mut count, word);
@@ -2049,16 +2127,18 @@ impl Server {
         if let Some(time) = prepared.checked.time.as_ref() {
             push_word(&mut words, &mut count, time.as_str());
         }
-        if let (Some(pid), Some(signal)) = (prepared.checked.pid, prepared.checked.signal) {
-            push_word(&mut words, &mut count, "-s");
-            push_word(
-                &mut words,
-                &mut count,
-                arguments::SIGNAL_NAMES
-                    .get(signal)
-                    .copied()
-                    .unwrap_or("TERM"),
-            );
+        if let Some(pid) = prepared.checked.pid {
+            if let Some(signal) = prepared.checked.signal {
+                push_word(&mut words, &mut count, "-s");
+                push_word(
+                    &mut words,
+                    &mut count,
+                    arguments::SIGNAL_NAMES
+                        .get(signal)
+                        .copied()
+                        .unwrap_or("TERM"),
+                );
+            }
             push_word(&mut words, &mut count, "--");
             push_word(&mut words, &mut count, decimal_text(pid, &mut pid_digits));
         }
@@ -2098,6 +2178,27 @@ impl Server {
         {
             push_word(&mut words, &mut count, "--environment");
             push_word(&mut words, &mut count, environment);
+        }
+        if prepared.checked.machine {
+            push_word(&mut words, &mut count, "--machine");
+        }
+        if let Some(kind) = prepared.checked.registry_type {
+            push_word(&mut words, &mut count, "--type");
+            push_word(&mut words, &mut count, kind);
+        }
+        if let Some(key) = arguments::registry_key_text(&prepared.checked, buffers.content) {
+            push_word(&mut words, &mut count, "--");
+            push_word(&mut words, &mut count, key);
+            match arguments::registry_name_text(&prepared.checked, buffers.content) {
+                Some("") => push_word(&mut words, &mut count, REGISTRY_DEFAULT_VALUE_WORD),
+                Some(name) => push_word(&mut words, &mut count, name),
+                None => {}
+            }
+            if tool.kind == Kind::WindowsRegistrySet {
+                for word in prepared.checked.words.each(buffers.words) {
+                    push_word(&mut words, &mut count, word);
+                }
+            }
         }
         let decimals = Decimals::of_window_call(&prepared.checked);
         if tool.twin.operand == Operand::Window {
@@ -2139,10 +2240,13 @@ impl Server {
             time_limit_ms: match tool.kind {
                 Kind::Run => prepared.checked.time_limit_ms,
                 Kind::Fetch => FETCH_TIME_LIMIT_MS,
-                Kind::NetPing | Kind::NetLookup | Kind::ClockSync => NETWORK_TIME_LIMIT_MS,
+                Kind::NetPing | Kind::NetLookup => NETWORK_TIME_LIMIT_MS,
+                Kind::ClockSync => CLOCK_SYNC_TIME_LIMIT_MS,
+                Kind::FileCopy | Kind::FileMove | Kind::FileRemove => FILE_TREE_TIME_LIMIT_MS,
                 _ => TWIN_TIME_LIMIT_MS,
             },
             no_symlinks: matches!(tool.twin.operand, Operand::Path(_)),
+            coded_errors: tool.kind != Kind::Run,
         };
         if matches!(tool.kind, Kind::WmCapture | Kind::AppIcon) {
             system.remove_capture(CAPTURE_PATH);
@@ -2213,6 +2317,13 @@ impl Server {
             ),
             link: arguments::link_target_text(&prepared.checked, buffers.content)
                 .map(|target| (target, prepared.checked.symbolic)),
+            source: arguments::source_text(&prepared.checked, buffers.content),
+            recursive: prepared.checked.recursive,
+            registry: arguments::registry_key_text(&prepared.checked, buffers.content).map(|key| {
+                let name = arguments::registry_name_text(&prepared.checked, buffers.content);
+                (key, name)
+            }),
+            machine: prepared.checked.machine,
         };
         answer_with_output(out, &answer);
     }
@@ -2255,6 +2366,21 @@ impl Server {
         };
         let mut detail = [0u8; 224];
         let mut text = Text::new(&mut detail);
+        let stderr = buffers.stderr.get(..outcome.stderr).unwrap_or_default();
+        let not_responding = [&b"not_responding"[..], b": not responding"]
+            .iter()
+            .any(|needle| stderr.windows(needle.len()).any(|part| part == *needle));
+        if outcome.ended == Ended::Exited(BUSY_STATUS) && not_responding {
+            self.record_outcome(
+                system,
+                buffers,
+                prepared,
+                Outcome::Refused,
+                "not responding",
+            );
+            refused(out, id, &errors::NOT_RESPONDING, NOT_RESPONDING);
+            return;
+        }
         if outcome.ended == Ended::Exited(BUSY_STATUS) && tool.kind != Kind::WmCapture {
             text.put("busy");
             if let Some(typed) = typed {
@@ -2327,6 +2453,10 @@ impl Server {
             dry_run: false,
             setting: None,
             link: None,
+            source: None,
+            recursive: false,
+            registry: None,
+            machine: false,
         };
         answer_with_output(out, &answer);
     }
@@ -2853,15 +2983,68 @@ impl Problem {
     }
 }
 
-fn hard_link_target(
+const HOLDS_THE_TRASH: &str =
+    "Refused: the path holds the Trash, which belongs to trash and Files.";
+const IN_THE_SETTINGS: &str = "Refused: the path is in or holds EggOS's settings folder, \
+                               /home/root/.config/eggos, which only Settings and settings_set \
+                               change.";
+
+fn second_path(
+    tool: &Tool,
     checked: &mut Checked,
+    destination: &str,
     system: &mut impl System,
     content: &mut [u8],
 ) -> Result<(), Problem> {
-    let Some(length) = checked.link_target.filter(|_| !checked.symbolic) else {
+    if let Some(length) = checked.link_target.filter(|_| !checked.symbolic) {
+        let resolved = resolve_in_place(length, tools::HARD_LINK_TARGET, system, content)?;
+        checked.link_target = Some(resolved);
+        return Ok(());
+    }
+    let argument = match tool.kind {
+        Kind::FileCopy => tools::COPY_SOURCE,
+        Kind::FileMove => tools::MOVE_SOURCE,
+        _ => return Ok(()),
+    };
+    let Some(length) = checked.source else {
         return Ok(());
     };
-    let argument = tools::HARD_LINK_TARGET;
+    let resolved = resolve_in_place(length, argument, system, content)?;
+    checked.source = Some(resolved);
+    let source = content
+        .get(..resolved)
+        .and_then(|bytes| core::str::from_utf8(bytes).ok())
+        .unwrap_or("");
+    if system.file_state(source) == FileState::Missing {
+        return Err(Problem::error(
+            &errors::NO_SUCH_FILE,
+            "nothing is at source to copy or move",
+        ));
+    }
+    if tool.kind == Kind::FileMove && paths::is_inside(paths::TRASH, source) {
+        return Err(Problem::refused(&errors::PATH_NOT_ALLOWED, HOLDS_THE_TRASH));
+    }
+    if source == destination {
+        return Err(Problem::error(
+            &errors::USAGE,
+            "source and destination are the same path: name a new path as destination",
+        ));
+    }
+    if paths::is_inside(destination, source) {
+        return Err(Problem::error(
+            &errors::USAGE,
+            "destination is inside source: a folder cannot be copied or moved into itself",
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_in_place(
+    length: usize,
+    argument: tools::PathArgument,
+    system: &mut impl System,
+    content: &mut [u8],
+) -> Result<usize, Problem> {
     let refused =
         |refusal| Problem::refused(&errors::PATH_NOT_ALLOWED, path_refusal(&argument, refusal));
     let (given, room) = content
@@ -2882,11 +3065,13 @@ fn hard_link_target(
     .map_err(refused)?;
     let resolved_length = resolved.len();
     let place = given.get_mut(..resolved_length);
-    if let (Some(place), Some(source)) = (place, room.get(..resolved_length)) {
-        place.copy_from_slice(source);
-        checked.link_target = Some(resolved_length);
+    match (place, room.get(..resolved_length)) {
+        (Some(place), Some(source)) => {
+            place.copy_from_slice(source);
+            Ok(resolved_length)
+        }
+        _ => Err(refused(PathRefusal::TooLong)),
     }
-    Ok(())
 }
 
 fn push_word<'w>(words: &mut [&'w str], count: &mut usize, word: &'w str) {
@@ -2928,6 +3113,7 @@ fn path_refusal(argument: &tools::PathArgument, refusal: PathRefusal) -> &'stati
         PathRefusal::Excluded => {
             "Refused: the path is in the Trash, which belongs to trash and Files."
         }
+        PathRefusal::InSettings => IN_THE_SETTINGS,
         other => other.message(),
     }
 }
@@ -3003,6 +3189,9 @@ fn confirmation_needed(tool: &Tool, out: &mut [u8]) -> usize {
         Kind::Tee => text.put("tee would replace an existing file"),
         Kind::Fetch => text.put("fetch would replace an existing file"),
         Kind::Trash => text.put("trash moves the file to the Trash"),
+        Kind::FileCopy => text.put("file_copy would replace an existing file"),
+        Kind::FileMove => text.put("file_move would replace an existing file"),
+        Kind::FileRemove => text.put("file_remove deletes for good, without the Trash"),
         Kind::ClockSet => text.put("clock_set sets the machine's clock"),
         Kind::AppUninstall => text.put("app_uninstall removes the app"),
         Kind::DiskFormat => text.put("disk_format erases the disk"),
@@ -3018,19 +3207,213 @@ fn confirmation_needed(tool: &Tool, out: &mut [u8]) -> usize {
     text.length
 }
 
+#[derive(Debug, Clone, Copy)]
+struct QuestionFacts {
+    component_bytes: Option<u64>,
+    download_file: [u8; MAX_FILE_NAME_BYTES],
+    download_file_length: usize,
+}
+
+impl QuestionFacts {
+    const NONE: Self = Self {
+        component_bytes: None,
+        download_file: [0; MAX_FILE_NAME_BYTES],
+        download_file_length: 0,
+    };
+
+    fn download_file(&self) -> &[u8] {
+        self.download_file
+            .get(..self.download_file_length)
+            .unwrap_or_default()
+    }
+}
+
+fn question_facts(tool: &Tool, checked: &Checked, system: &mut impl System) -> QuestionFacts {
+    let mut facts = QuestionFacts::NONE;
+    match (tool.kind, &checked.name, checked.pid) {
+        (Kind::ComponentRemove, Some(name), _) => {
+            facts.component_bytes = component_bytes(system, name.as_str());
+        }
+        (Kind::DownloadCancel, _, Some(pid)) => {
+            facts.download_file_length = download_file_name(system, pid, &mut facts.download_file);
+        }
+        _ => {}
+    }
+    facts
+}
+
+fn download_file_name(
+    system: &mut impl System,
+    pid: u32,
+    out: &mut [u8; MAX_FILE_NAME_BYTES],
+) -> usize {
+    let mut path = [0u8; DOWNLOADS_FOLDER.len() + 12];
+    let mut text = Text::new(&mut path);
+    text.put(DOWNLOADS_FOLDER);
+    text.put("/");
+    text.number(i64::from(pid));
+    let length = text.length;
+    let mut record = [0u8; DOWNLOAD_RECORD_BYTES];
+    let Ok(read) = system.read_file(text_prefix(&path, length), &mut record) else {
+        return 0;
+    };
+    let saved = record
+        .get(..read)
+        .unwrap_or_default()
+        .split(|&byte| byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"path="));
+    let Some(saved) = saved else {
+        return 0;
+    };
+    let name = saved.rsplit(|&byte| byte == b'/').next().unwrap_or(saved);
+    let length = name.len().min(out.len());
+    match (out.get_mut(..length), name.get(..length)) {
+        (Some(place), Some(name)) => {
+            place.copy_from_slice(name);
+            length
+        }
+        _ => 0,
+    }
+}
+
+fn component_bytes(system: &mut impl System, name: &str) -> Option<u64> {
+    let mut path =
+        [0u8; COMPONENTS_FOLDER.len() + 2 + arguments::MAX_NAME_BYTES + COMPONENT_RECORD.len()];
+    let mut text = Text::new(&mut path);
+    text.put(COMPONENTS_FOLDER);
+    text.put("/");
+    text.put(name);
+    text.put("/");
+    text.put(COMPONENT_RECORD);
+    let length = text.length;
+    let file = system.open_capture(text_prefix(&path, length)).ok()?;
+    let mut sum = ComponentRecordSum::of(name);
+    let mut piece = [0u8; RECORD_LINE_BYTES];
+    let read = loop {
+        match system.read_capture(&file, &mut piece) {
+            Ok(0) => break Some(()),
+            Ok(count) => sum.feed(piece.get(..count).unwrap_or_default()),
+            Err(_) => break None,
+        }
+    };
+    system.close_capture(file);
+    read?;
+    sum.end_line();
+    sum.named.then_some(sum.bytes)
+}
+
+struct ComponentRecordSum<'n> {
+    name: &'n str,
+    named: bool,
+    bytes: u64,
+    line: [u8; RECORD_LINE_BYTES],
+    filled: usize,
+    overlong: bool,
+}
+
+impl<'n> ComponentRecordSum<'n> {
+    fn of(name: &'n str) -> Self {
+        Self {
+            name,
+            named: false,
+            bytes: 0,
+            line: [0; RECORD_LINE_BYTES],
+            filled: 0,
+            overlong: false,
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if byte == b'\n' {
+                self.end_line();
+                continue;
+            }
+            match self.line.get_mut(self.filled) {
+                Some(slot) => {
+                    *slot = byte;
+                    self.filled += 1;
+                }
+                None => self.overlong = true,
+            }
+        }
+    }
+
+    fn end_line(&mut self) {
+        let line = self.line.get(..self.filled).unwrap_or_default();
+        if !self.overlong {
+            if let Some(named) = line.strip_prefix(b"component ") {
+                self.named |= named == self.name.as_bytes();
+            } else if let Some(fields) = line.strip_prefix(b"file ") {
+                let length = fields.split(|&byte| byte == b' ').nth(2);
+                let length = length.and_then(whole_decimal).unwrap_or(0);
+                self.bytes = self.bytes.saturating_add(length);
+            }
+        }
+        self.filled = 0;
+        self.overlong = false;
+    }
+}
+
+fn whole_decimal(digits: &[u8]) -> Option<u64> {
+    if digits.is_empty() || digits.len() > 19 {
+        return None;
+    }
+    digits.iter().try_fold(0u64, |value, &digit| match digit {
+        b'0'..=b'9' => Some(value * 10 + u64::from(digit - b'0')),
+        _ => None,
+    })
+}
+
 fn question_text(
     tool: &Tool,
     checked: &Checked,
     state: FileState,
-    target: &str,
+    (target, source): (&str, &str),
+    facts: &QuestionFacts,
     agent: &AgentId,
     out: &mut [u8],
 ) -> usize {
     let mut shown = [0u8; MAX_PATH_BYTES * 2];
     let shown_length = audit::display_into(target.as_bytes(), &mut shown);
     let shown = text_prefix(&shown, shown_length);
+    let mut from = [0u8; MAX_PATH_BYTES * 2];
+    let from_length = audit::display_into(source.as_bytes(), &mut from);
+    let from = text_prefix(&from, from_length);
     let mut text = Text::new(out);
     match tool.kind {
+        Kind::FileCopy | Kind::FileMove => {
+            text.put(match tool.kind {
+                Kind::FileCopy => "An agent asks to copy ",
+                _ => "An agent asks to move ",
+            });
+            text.put(from);
+            text.put(" to ");
+            text.put(shown);
+            text.put(", replacing the file there");
+            if let FileState::File(size) = state {
+                text.put(" (");
+                text.number(size as i64);
+                text.put(" bytes)");
+            }
+            text.put(". Allow it?");
+        }
+        Kind::FileRemove => {
+            text.put("An agent asks to delete ");
+            if state == FileState::Directory {
+                text.put("the folder ");
+            }
+            text.put(shown);
+            if let FileState::File(size) = state {
+                text.put(" (");
+                text.number(size as i64);
+                text.put(" bytes)");
+            }
+            if state == FileState::Directory {
+                text.put(" and everything in it");
+            }
+            text.put(" for good, without the Trash. Allow it?");
+        }
         Kind::Tee if checked.append => {
             text.put("An agent asks to add ");
             text.number(checked.content.unwrap_or(0) as i64);
@@ -3100,6 +3483,65 @@ fn question_text(
             }
             text.put(", erasing everything on it. Allow it?");
         }
+        Kind::WindowsRegistryDelete => {
+            text.put("An agent asks to delete ");
+            match checked.registry_name {
+                None => {
+                    text.put("the registry key ");
+                    text.put(shown);
+                    text.put(" with every subkey and value below it");
+                }
+                Some(0) => {
+                    text.put("the (Default) value of the registry key ");
+                    text.put(shown);
+                }
+                Some(_) => {
+                    text.put("the value ");
+                    text.put(from);
+                    text.put(" from the registry key ");
+                    text.put(shown);
+                }
+            }
+            text.put(". Allow it?");
+        }
+        Kind::ComponentRemove => {
+            let mut name = [0u8; arguments::MAX_NAME_BYTES * 4];
+            let raw = checked.name.as_ref().map_or("", |name| name.as_str());
+            let length = audit::display_into(raw.as_bytes(), &mut name);
+            text.put("An agent asks to remove the component ");
+            text.put(text_prefix(&name, length));
+            if let Some(bytes) = facts.component_bytes {
+                text.put(" (");
+                text.number(bytes.min(i64::MAX as u64) as i64);
+                text.put(" bytes)");
+            }
+            text.put(" and every file it installed. Allow it?");
+        }
+        Kind::DownloadCancel => {
+            text.put("An agent asks to cancel download ");
+            text.number(i64::from(checked.pid.unwrap_or(0)));
+            if !facts.download_file().is_empty() {
+                let mut name = [0u8; MAX_FILE_NAME_BYTES * 4];
+                let length = audit::display_into(facts.download_file(), &mut name);
+                text.put(" (");
+                text.put(text_prefix(&name, length));
+                text.put(")");
+            }
+            text.put(", deleting what it saved so far. Allow it?");
+        }
+        Kind::WindowsRegistryReset => {
+            text.put(match checked.machine {
+                true => {
+                    "An agent asks to replace the machine's Windows registry file with an empty \
+                     one, keeping the old one as machine.hive.damaged"
+                }
+                false => {
+                    "An agent asks to replace your Windows registry file with an empty one, \
+                     keeping the old one as user.hive.damaged"
+                }
+            });
+            text.put(": Windows programs' saved settings are lost. Allow it?");
+        }
         _ => {
             text.put("An agent asks to run ");
             text.put(tool.name);
@@ -3122,12 +3564,15 @@ fn would_text(
     tool: &Tool,
     checked: &Checked,
     state: FileState,
-    target: &str,
+    (target, source): (&str, &str),
     out: &mut [u8],
 ) -> usize {
     let mut shown = [0u8; MAX_PATH_BYTES * 2];
     let shown_length = audit::display_into(target.as_bytes(), &mut shown);
     let shown = text_prefix(&shown, shown_length);
+    let mut from = [0u8; MAX_PATH_BYTES * 2];
+    let from_length = audit::display_into(source.as_bytes(), &mut from);
+    let from = text_prefix(&from, from_length);
     let mut text = Text::new(out);
     text.put(tool.name);
     let size = |text: &mut Text<'_>| {
@@ -3184,6 +3629,35 @@ fn would_text(
             text.put(name);
             text.put(" and everything in it");
         }
+        (Kind::FileCopy | Kind::FileMove, _) => {
+            text.put(match tool.kind {
+                Kind::FileCopy => " would copy ",
+                _ => " would move ",
+            });
+            text.put(from);
+            text.put(" to ");
+            text.put(shown);
+            if state != FileState::Missing {
+                text.put(", replacing the file there");
+                size(&mut text);
+            }
+        }
+        (Kind::FileRemove, FileState::Directory) => {
+            text.put(" would delete the folder ");
+            text.put(shown);
+            text.put(" and everything in it for good");
+        }
+        (Kind::FileRemove, _) => {
+            text.put(" would delete ");
+            text.put(shown);
+            size(&mut text);
+            text.put(" for good");
+        }
+        (Kind::ClockSet, _) => {
+            text.put(" would set the machine's clock and its hardware clock to ");
+            text.put(checked.time.as_ref().map_or("", |time| time.as_str()));
+            text.put(" (UTC)");
+        }
         (Kind::DiskFormat, _) => {
             text.put(" would erase everything on ");
             text.put(shown);
@@ -3194,6 +3668,33 @@ fn would_text(
                 text.put(label.as_str());
             }
         }
+        (Kind::WindowsRegistryDelete, _) => match checked.registry_name {
+            None => {
+                text.put(" would delete the registry key ");
+                text.put(shown);
+                text.put(" with every subkey and value below it");
+            }
+            Some(0) => {
+                text.put(" would delete the (Default) value of the registry key ");
+                text.put(shown);
+            }
+            Some(_) => {
+                text.put(" would delete the value ");
+                text.put(from);
+                text.put(" from the registry key ");
+                text.put(shown);
+            }
+        },
+        (Kind::WindowsRegistryReset, _) => text.put(match checked.machine {
+            true => {
+                " would replace the machine's registry file with an empty one, keeping the old \
+                 one as machine.hive.damaged"
+            }
+            false => {
+                " would replace the registry file with an empty one, keeping the old one as \
+                 user.hive.damaged"
+            }
+        }),
         _ => text.put(" would make its change"),
     }
     text.length
@@ -3255,6 +3756,18 @@ fn write_audit_arguments(
         writer.key("symbolic");
         writer.bool(checked.symbolic);
     }
+    if let Some(source) = arguments::source_text(checked, scratch.content) {
+        writer.key("source");
+        shown_string(&mut writer, source, cut);
+    }
+    if tool.kind == Kind::FileRemove {
+        writer.key("recursive");
+        writer.bool(checked.recursive);
+    }
+    if tool.kind == Kind::FolderCreate {
+        writer.key("parents");
+        writer.bool(checked.parents);
+    }
     if let Some(name) = checked.name {
         writer.key("name");
         shown_string(&mut writer, name.as_str(), cut);
@@ -3312,6 +3825,26 @@ fn write_audit_arguments(
     if let Some(value) = arguments::setting_value_text(checked, scratch.words) {
         writer.key("value");
         shown_string(&mut writer, value, cut);
+    }
+    if let Some(key) = arguments::registry_key_text(checked, scratch.content) {
+        writer.key("key");
+        shown_string(&mut writer, key, cut);
+    }
+    if let Some(name) = arguments::registry_name_text(checked, scratch.content) {
+        writer.key("name");
+        shown_string(&mut writer, name, cut);
+    }
+    if let Some(kind) = checked.registry_type {
+        writer.key("type");
+        writer.string(kind);
+    }
+    if tool.kind == Kind::WindowsRegistrySet {
+        writer.key("data");
+        writer.u64(checked.words.len() as u64);
+    }
+    if tool.kind == Kind::WindowsRegistryReset {
+        writer.key("machine");
+        writer.bool(checked.machine);
     }
     if tool.takes("confirm") {
         writer.key("confirm");
@@ -3610,10 +4143,10 @@ fn write_server_meta(out: &mut JsonWriter<'_>) {
 
 fn mark_stateless_result(out: &mut JsonWriter<'_>, start: usize, cacheable: bool) {
     let written = out.as_bytes().get(start..).unwrap_or_default();
-    let is_error = written
-        .windows(16)
-        .any(|window| window == b"\"error\":{\"code\":");
-    if written.is_empty() || is_error || !written.ends_with(b"}}") {
+    if written.is_empty() || !written.ends_with(b"}}") {
+        return;
+    }
+    if crate::json::has_top_level_member(written, "error") {
         return;
     }
     if !out.reopen_object() || !out.reopen_object() {
@@ -3838,6 +4371,42 @@ pub fn write_page_cut(out: &mut JsonWriter<'_>) {
     out.end_object();
 }
 
+/// Writes a list tool's `structuredContent`, the items envelope (D226):
+/// `{"items":[...],"truncated":false}` with each of `records`' lines that is a JSON object as
+/// an item (a last line the output limit cut is left out), `"truncated_by":"bytes"` when the
+/// output was `cut`, and `"truncated_by":"limit"` with `next_cursor` when more follow.
+pub fn write_items(out: &mut JsonWriter<'_>, records: &[u8], cut: bool, next_cursor: Option<&str>) {
+    out.begin_object();
+    out.key("items");
+    out.begin_array();
+    for line in records.split(|&byte| byte == b'\n') {
+        if let Ok(crate::json::Parsed {
+            value: Value::Object(record),
+            ..
+        }) = crate::json::parse(line)
+        {
+            out.raw(record.text());
+        }
+    }
+    out.end_array();
+    out.key("truncated");
+    out.bool(cut || next_cursor.is_some());
+    match (cut, next_cursor) {
+        (true, _) => {
+            out.key("truncated_by");
+            out.string("bytes");
+        }
+        (false, Some(cursor)) => {
+            out.key("truncated_by");
+            out.string("limit");
+            out.key("next_cursor");
+            out.string(cursor);
+        }
+        (false, None) => {}
+    }
+    out.end_object();
+}
+
 fn text_item(out: &mut JsonWriter<'_>, text: &str) {
     out.begin_object();
     out.key("type");
@@ -3908,6 +4477,10 @@ struct Answered<'a> {
     dry_run: bool,
     setting: Option<(&'a str, &'a str)>,
     link: Option<(&'a str, bool)>,
+    source: Option<&'a str>,
+    recursive: bool,
+    registry: Option<(&'a str, Option<&'a str>)>,
+    machine: bool,
 }
 
 fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
@@ -3950,6 +4523,29 @@ fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
             out.string_piece(answer.link.map_or("", |(text, _)| text));
             out.string_piece(".");
         }
+        Kind::FileCopy | Kind::FileMove => {
+            out.string_piece(match answer.tool.kind {
+                Kind::FileCopy => "Copied ",
+                _ => "Moved ",
+            });
+            out.string_piece(answer.source.unwrap_or(""));
+            out.string_piece(" to ");
+            out.string_piece(target);
+            out.string_piece(".");
+        }
+        Kind::FolderCreate => {
+            out.string_piece("Made the folder ");
+            out.string_piece(target);
+            out.string_piece(".");
+        }
+        Kind::FileRemove => {
+            out.string_piece("Deleted ");
+            out.string_piece(target);
+            out.string_piece(match answer.recursive {
+                true => " and everything in it, for good.",
+                false => " for good.",
+            });
+        }
         Kind::SettingsSet | Kind::Setprop => {
             let (key, value) = answer.setting.unwrap_or(("", ""));
             out.string_piece("Set ");
@@ -3958,6 +4554,36 @@ fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
             out.string_piece(value);
             out.string_piece(".");
         }
+        Kind::WindowsRegistrySet | Kind::WindowsRegistryDelete => {
+            let (key, name) = answer.registry.unwrap_or(("", None));
+            let deleting = answer.tool.kind == Kind::WindowsRegistryDelete;
+            match (deleting, name) {
+                (false, None) => out.string_piece("The key "),
+                (false, Some("")) => out.string_piece("Saved the (Default) value in "),
+                (false, Some(name)) => {
+                    out.string_piece("Saved the value ");
+                    out.string_piece(name);
+                    out.string_piece(" in ");
+                }
+                (true, None) => out.string_piece("Deleted the key "),
+                (true, Some("")) => out.string_piece("Deleted the (Default) value of "),
+                (true, Some(name)) => {
+                    out.string_piece("Deleted the value ");
+                    out.string_piece(name);
+                    out.string_piece(" from ");
+                }
+            }
+            out.string_piece(key);
+            out.string_piece(match (deleting, name) {
+                (false, None) => " exists.",
+                (true, None) => " and everything below it.",
+                _ => ".",
+            });
+        }
+        Kind::WindowsRegistryReset => out.string_piece(match answer.machine {
+            true => "Replaced the machine's registry file. It is empty.",
+            false => "Replaced the registry file. It is empty.",
+        }),
         kind => {
             let mut digits = [0u8; 24];
             let mut number = Text::new(&mut digits);
@@ -3991,8 +4617,15 @@ fn has_done_text(kind: Kind) -> bool {
         Kind::Tee
             | Kind::Trash
             | Kind::Ln
+            | Kind::FileCopy
+            | Kind::FileMove
+            | Kind::FolderCreate
+            | Kind::FileRemove
             | Kind::SettingsSet
             | Kind::Setprop
+            | Kind::WindowsRegistrySet
+            | Kind::WindowsRegistryDelete
+            | Kind::WindowsRegistryReset
             | Kind::WmFocus
             | Kind::WmMove
             | Kind::WmSize
@@ -4079,8 +4712,14 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
             out.string("text");
             out.key("text");
             out.begin_string();
-            out.string_piece_lossy(answer.stderr);
-            if !answer.stderr.is_empty() && !answer.stderr.ends_with(b"\n") {
+            let mut shown_last = None;
+            for line in answer.stderr.split_inclusive(|&byte| byte == b'\n') {
+                if !line.starts_with(CODED_ERROR_START) {
+                    out.string_piece_lossy(line);
+                    shown_last = line.last().copied();
+                }
+            }
+            if shown_last.is_some_and(|byte| byte != b'\n') {
                 out.string_piece("\n");
             }
             let mut detail = [0u8; 160];
@@ -4093,7 +4732,19 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
             out.end_object();
         }
         out.end_array();
-        if answer.paged && !failed {
+        if failed && tool.kind != Kind::Run {
+            let mut message = [0u8; TWIN_ERROR_MESSAGE_BYTES];
+            if let Some((error, message)) = twin_error(answer.stderr, &mut message) {
+                out.key("structuredContent");
+                write_error(out, error, message);
+            }
+        }
+        let lists_items = matches!(tool.definition.result, ToolResult::Items(_));
+        if lists_items && !failed {
+            out.key("structuredContent");
+            let cut = outcome.stdout_cut || (answer.paged && page_cut);
+            write_items(out, answer.stdout, cut, next_cursor);
+        } else if answer.paged && !failed {
             out.key("structuredContent");
             match page_cut {
                 true => write_page_cut(out),
@@ -4123,6 +4774,24 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
         out.bool(failed);
         out.end_object();
     });
+}
+
+const CODED_ERROR_START: &[u8] = b"{\"error\":";
+const TWIN_ERROR_MESSAGE_BYTES: usize = 1024;
+
+fn twin_error<'m>(
+    stderr: &[u8],
+    message: &'m mut [u8; TWIN_ERROR_MESSAGE_BYTES],
+) -> Option<(&'static ErrorDefinition, &'m str)> {
+    let line = stderr
+        .split(|&byte| byte == b'\n')
+        .rfind(|line| line.starts_with(CODED_ERROR_START))?;
+    let error = crate::json::parse(line).ok()?.value.get("error")?;
+    let code = error.get("code")?.as_str()?;
+    let mut code_bytes = [0u8; 64];
+    let definition = errors::by_code(code.decode_into(&mut code_bytes)?.as_bytes())?;
+    let (text, _) = error.get("message")?.as_str()?.decode_prefix_into(message);
+    Some((definition, text))
 }
 
 fn decimal_text(value: u32, digits: &mut [u8; 10]) -> &str {

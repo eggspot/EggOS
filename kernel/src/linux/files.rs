@@ -463,7 +463,7 @@ fn open_device<P: Platform>(
     use super::pseudo_terminal;
     use crate::vfs::devfs;
     match device {
-        devfs::WINDOW_DEVICE => super::window::open::<P>(),
+        devfs::WINDOW_DEVICE => super::window::open::<P>(process.id().get()),
         devfs::AGENT_DEVICE => super::agent_channel::open(process),
         devfs::CONSOLE_DEVICE => Ok(FileKind::Console),
         devfs::PTMX_DEVICE => pseudo_terminal::open_controlling_side::<P>(),

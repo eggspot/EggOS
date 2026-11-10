@@ -125,13 +125,6 @@ const NANOSECONDS_PER_MICROSECOND: u64 = 1000;
 
 const MICROSECONDS_PER_SECOND: u64 = 1_000_000;
 
-#[cfg(not(any(
-    target_arch = "aarch64",
-    target_arch = "riscv64",
-    target_arch = "x86_64"
-)))]
-compile_error!("check Linux's socket constants and struct msghdr for this architecture");
-
 fn credentials_of<P: Platform>(process: &Process<P>) -> PeerCredentials {
     use credentials::Kind::{Group, User};
     PeerCredentials {

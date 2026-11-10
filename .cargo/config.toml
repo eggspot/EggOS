@@ -1,17 +1,23 @@
 [alias]
 xtask = "run --quiet --package xtask --"
 
+[target.aarch64-unknown-none-softfloat]
+rustflags = ["--cfg", "eggos_kernel"]
+
+[target.riscv64imac-unknown-none-elf]
+rustflags = ["--cfg", "eggos_kernel"]
+
 [target.x86_64-unknown-none]
-rustflags = ["-C", "relocation-model=static"]
+rustflags = ["-C", "relocation-model=static", "--cfg", "eggos_kernel"]
 
 [target.x86_64-unknown-linux-musl]
 linker = "rust-lld"
-rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie"]
+rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]
 
 [target.aarch64-unknown-linux-musl]
 linker = "rust-lld"
-rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie"]
+rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]
 
 [target.riscv64gc-unknown-linux-musl]
 linker = "rust-lld"
-rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie"]
+rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]

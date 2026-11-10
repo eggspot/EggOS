@@ -14,12 +14,23 @@
 //! 3. On the same disk: the desktop comes up in the Windows profile in its first frame;
 //!    `settings set shell.profile macos` switches it back at once, and the image holds that;
 //!    the command refuses an unknown profile and a read-only key.
+//!
+//! Every boot passes [`FIRST_RUN_SKIP_WORD`] but two more on a disk of their own, which pass
+//! [`FIRST_RUN_ASK_WORD`] instead (D224):
+//!
+//! 4. A blank disk: after the first prompt init opens `Welcome to EggOS` at the work area's
+//!    centre on its first page; a click on the Linux card switches the desktop, the close
+//!    control ends the first run, and the image holds the Linux profile.
+//! 5. The same disk again: the first frame is the desktop in the Linux profile with no first
+//!    run, which the saved profile keeps away.
 
 use super::*;
 use eggos_drivers::desktop::Profile;
+use eggos_drivers::desktop::protocol::flags;
 use eggos_eggfs::memory::MemoryDisk;
 use eggos_eggfs::{Kind, Volume};
 use eggos_settings::facts::Facts;
+use eggos_settings::first_run::{self, FirstRunRequest, FirstRunWindow};
 use eggos_settings::settings_window::{DEFAULT_SIZE, Request, SettingsWindow, TITLE};
 use eggos_toolkit::input::{Input, MouseButton};
 
@@ -50,6 +61,12 @@ const PERSON_STEP_PX: u32 = 16;
 const PERSON_LEAD_MOVES: u32 = 10;
 
 const SESSION_ON_A_BLANK_DISK: [&[u8]; 2] = [b"settings\r", b"poweroff\r"];
+
+/// The kernel command line's word that lets init open the first run, replacing
+/// [`FIRST_RUN_SKIP_WORD`].
+pub(super) const FIRST_RUN_ASK_WORD: &str = "eggos.first_run=ask";
+const SESSION_FIRST_RUN: [&[u8]; 1] = [b"poweroff\r"];
+const FIRST_RUN_SETTLES: Duration = Duration::from_secs(2);
 
 const SESSION_AFTER_THE_REBOOT: [&[u8]; 4] = [
     b"settings get shell.profile\r",
@@ -129,6 +146,7 @@ impl<'a> Boot<'a> {
             .args(qmp::qemu_args(port))
             .args(COMMON_ARGS)
             .args(["-smp", cpus.as_str()])
+            .args(command_line_args(FIRST_RUN_SKIP_WORD))
             .args(args)
             .args(["-display", "none", "-serial", "stdio", "-monitor", "none"])
             .arg("-kernel")
@@ -171,18 +189,31 @@ impl<'a> Boot<'a> {
     }
 
     pub(super) fn wait_for_prompts(&mut self, count: usize) -> Result<(), String> {
+        self.wait_until(&format!("prompt {count}"), |console| {
+            console.matches(SHELL_PROMPT).count() >= count
+        })
+    }
+
+    /// Waits until `done` holds for the console so far, failing as [`Self::wait_for_prompts`]
+    /// does when QEMU ends, the machine resets or the timeout passes before `what`.
+    pub(super) fn wait_until(
+        &mut self,
+        what: &str,
+        done: impl Fn(&str) -> bool,
+    ) -> Result<(), String> {
         loop {
             self.console.extend(self.output.try_iter().flatten());
-            if self.prompts() >= count {
+            let console = String::from_utf8_lossy(&self.console).into_owned();
+            if done(&console) {
                 return Ok(());
             }
             if let Some(status) = self.child.try_wait().map_err(|e| e.to_string())? {
                 return Err(format!(
-                    "{}: QEMU ended ({status}) before prompt {count}",
+                    "{}: QEMU ended ({status}) before {what}",
                     self.arch.name
                 ));
             }
-            if banner_count(&String::from_utf8_lossy(&self.console)) > 1 {
+            if banner_count(&console) > 1 {
                 return Err(self.fail(format!(
                     "{}: the machine reset and booted again",
                     self.arch.name
@@ -190,7 +221,7 @@ impl<'a> Boot<'a> {
             }
             if self.started.elapsed() > self.timeout {
                 return Err(self.fail(format!(
-                    "{}: no prompt {count} within {}s",
+                    "{}: no {what} within {}s",
                     self.arch.name,
                     self.timeout.as_secs()
                 )));
@@ -235,8 +266,12 @@ impl<'a> Boot<'a> {
 /// The Settings window's content at its default size as the host draws it from `facts`,
 /// with the text field's caret shown and hidden: the two states a frame of the real window can
 /// be in.
-pub(super) fn settings_window_images(facts: &Facts) -> [Vec<u32>; 2] {
-    settings_images(&SettingsWindow::new(*facts))
+/// The Settings window's two caret phases, with the sidebar's `Windows` row while the Windows
+/// layer is installed (D231).
+pub(super) fn settings_window_images(facts: &Facts, windows_layer: bool) -> [Vec<u32>; 2] {
+    let mut settings = SettingsWindow::new(*facts);
+    let _ = settings.show_windows_layer(windows_layer);
+    settings_images(&settings)
 }
 
 fn settings_images(settings: &SettingsWindow) -> [Vec<u32>; 2] {
@@ -616,6 +651,218 @@ fn after_the_reboot(
     expect_saved(arch.name, image, "macos")
 }
 
+fn first_run_images(window: &FirstRunWindow) -> Vec<u32> {
+    let (width, height) = first_run::SIZE;
+    let mut pixels = vec![0; (width * height) as usize];
+    window
+        .widgets()
+        .clone()
+        .render(&mut pixels, width, height, 1);
+    pixels
+}
+
+fn check_first_run(
+    boot: &mut Boot<'_>,
+    screen: &mut Screen,
+    shown: &(WindowId, FirstRunWindow),
+    at: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let content = [(
+        shown.0,
+        WindowContent::Pixels {
+            width: first_run::SIZE.0,
+            pixels: first_run_images(&shown.1),
+        },
+    )];
+    let alternatives: [&[(WindowId, WindowContent)]; 1] = [&content];
+    check_desktop_frame_among(
+        boot.arch,
+        &mut screen.qmp,
+        &mut boot.console,
+        &boot.output,
+        at,
+        &screen.desktop,
+        &alternatives,
+        timeout,
+    )
+}
+
+fn open_first_run(screen: &mut Screen, arch: &str) -> Result<(WindowId, FirstRunWindow), String> {
+    let refused = |error| format!("{arch}: the host's desktop refused the first run: {error:?}");
+    let (width, height) = first_run::SIZE;
+    let created = screen
+        .desktop
+        .create(CLIENT, ROLE_NORMAL, 0, width, height, flags::FIXED_SIZE)
+        .map_err(refused)?;
+    let id = u32::from(created.window);
+    screen
+        .desktop
+        .set_title(CLIENT, id, first_run::TITLE.as_bytes(), &mut Damage::new())
+        .map_err(refused)?;
+    let work = screen.desktop.work_area();
+    let (x, y) = first_run::centred_in(work.width as i32, work.height as i32, 1);
+    screen
+        .desktop
+        .set_position(CLIENT, id, x, y, &mut Damage::new())
+        .map_err(refused)?;
+    screen
+        .desktop
+        .commit(CLIENT, id, &[], &mut Damage::new(), &mut DiscardEvents)
+        .map_err(refused)?;
+    let facts = Facts {
+        on_disk: true,
+        profile: screen.desktop.profile().number() as usize,
+        ..Facts::example()
+    };
+    Ok((created.window, FirstRunWindow::new(facts, false)))
+}
+
+fn click_first_run_card(
+    screen: &mut Screen,
+    shown: &mut (WindowId, FirstRunWindow),
+    arch: &str,
+    card: usize,
+) -> Result<Profile, String> {
+    let content = screen
+        .desktop
+        .content_rect(shown.0)
+        .ok_or_else(|| format!("{arch}: the first run's window is gone"))?;
+    let rect = shown
+        .1
+        .card_rect(card)
+        .ok_or_else(|| format!("{arch}: the first run has no card {card}"))?;
+    let (x, y) = (rect.x + rect.width / 2, rect.y + 20);
+    let mut chosen = None;
+    for (input, button) in [
+        (Input::PointerMove { x, y }, None),
+        (
+            Input::Button {
+                x,
+                y,
+                button: MouseButton::Left,
+                pressed: true,
+            },
+            Some(true),
+        ),
+        (
+            Input::Button {
+                x,
+                y,
+                button: MouseButton::Left,
+                pressed: false,
+            },
+            Some(false),
+        ),
+    ] {
+        let response = shown.1.tree().handle(input, 0);
+        chosen = chosen.or(shown.1.respond(response, 0));
+        let step = PointerStep {
+            x: content.x + x as u32,
+            y: content.y + y as u32,
+            button,
+        };
+        send_pointer_step(&mut screen.qmp, step, screen.size)?;
+        apply_pointer_step(&mut screen.desktop, step);
+    }
+    let Some(FirstRunRequest::Choose(request @ Request::SetProfile(profile))) = chosen else {
+        return Err(format!("{arch}: the host's first run chose no profile"));
+    };
+    shown.1.chosen(request, Ok(()));
+    let profile = Profile::from_number(profile as u32)
+        .ok_or_else(|| format!("{arch}: no profile {profile}"))?;
+    screen
+        .desktop
+        .set_profile(profile, &mut Damage::new(), &mut DiscardEvents);
+    Ok(profile)
+}
+
+fn close_first_run(screen: &mut Screen, arch: &str, id: WindowId) -> Result<(), String> {
+    let close = screen
+        .desktop
+        .close_control(id)
+        .ok_or_else(|| format!("{arch}: the first run's window has no close control"))?;
+    let (x, y) = (close.x + close.width / 2, close.y + close.height / 2);
+    screen.pointer(x, y, Some(true))?;
+    screen.pointer(x, y, Some(false))?;
+    screen
+        .desktop
+        .destroy(
+            CLIENT,
+            u32::from(id),
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        )
+        .map_err(|error| format!("{arch}: the host's desktop refused a close: {error:?}"))
+}
+
+fn first_run_on_a_blank_disk(
+    arch: &Arch,
+    kernel: &Path,
+    disk: &[String],
+    image: &Path,
+) -> Result<(), String> {
+    reset_disk_image(image, TEST_DISK_BYTES)?;
+    let mut boot = Boot::start(arch, kernel, disk)?;
+    boot.wait_for_prompts(1)?;
+    let mut screen = Screen::new(&boot, Profile::Macos)?;
+    screen.park_pointer()?;
+    let mut shown = open_first_run(&mut screen, arch.name)?;
+    check_first_run(
+        &mut boot,
+        &mut screen,
+        &shown,
+        "the first run's first page at the work area's centre",
+        FIRST_FRAME_TIMEOUT,
+    )?;
+    let profile = click_first_run_card(&mut screen, &mut shown, arch.name, LINUX_CARD)?;
+    if profile != Profile::Linux {
+        return Err(boot.fail(format!("{}: the Linux card chose {profile:?}", arch.name)));
+    }
+    check_first_run(
+        &mut boot,
+        &mut screen,
+        &shown,
+        "the Linux profile chosen in the first run",
+        FRAME_TIMEOUT,
+    )?;
+    close_first_run(&mut screen, arch.name, shown.0)?;
+    screen.check(&mut boot, "the first run closed", FRAME_TIMEOUT)?;
+    boot.type_next(&SESSION_FIRST_RUN)?;
+    let (console, clean_exit) = boot.finish()?;
+    session_verdict(
+        arch.name,
+        clean_exit,
+        &console,
+        &SESSION_FIRST_RUN,
+        [whole(&[POWER_DOWN_LINE])],
+        "the first run (a blank disk)",
+    )?;
+    expect_saved(arch.name, image, "linux")
+}
+
+fn first_run_kept(arch: &Arch, kernel: &Path, disk: &[String]) -> Result<(), String> {
+    let mut boot = Boot::start(arch, kernel, disk)?;
+    boot.wait_for_prompts(1)?;
+    std::thread::sleep(FIRST_RUN_SETTLES);
+    let mut screen = Screen::new(&boot, Profile::Linux)?;
+    screen.check(
+        &mut boot,
+        "the first prompt in the saved Linux profile, with no first run",
+        FIRST_FRAME_TIMEOUT,
+    )?;
+    boot.type_next(&SESSION_FIRST_RUN)?;
+    let (console, clean_exit) = boot.finish()?;
+    session_verdict(
+        arch.name,
+        clean_exit,
+        &console,
+        &SESSION_FIRST_RUN,
+        [whole(&[POWER_DOWN_LINE])],
+        "the first run (the answer kept)",
+    )
+}
+
 /// Runs the Settings boot test (see the module documentation) on `kernel`, the release kernel
 /// for `arch`.
 pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
@@ -626,6 +873,11 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
     without_disk(arch, kernel)?;
     on_a_blank_disk(arch, kernel, &disk, &image)?;
     after_the_reboot(arch, kernel, &disk, &image)?;
+    let first_run_image = directory.join(format!("eggos-{}-first-run-disk.img", arch.name));
+    let mut first_run_disk = disk_args(arch, &first_run_image.to_string_lossy());
+    first_run_disk.extend(command_line_args(FIRST_RUN_ASK_WORD));
+    first_run_on_a_blank_disk(arch, kernel, &first_run_disk, &first_run_image)?;
+    first_run_kept(arch, kernel, &first_run_disk)?;
     eprintln!("xtask: {}: settings boot test passed", arch.name);
     Ok(())
 }
@@ -649,7 +901,7 @@ mod tests {
 
     #[test]
     fn the_host_draws_settings_with_and_without_the_caret() {
-        let screen_contents = settings_window_images(&Facts::example());
+        let screen_contents = settings_window_images(&Facts::example(), false);
         let (width, height) = DEFAULT_SIZE;
         assert_eq!(screen_contents[0].len(), (width * height) as usize);
         assert_ne!(screen_contents[0], screen_contents[1]);

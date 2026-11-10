@@ -215,6 +215,8 @@ fn build_musl(arch: &Arch, sysroot: &Path) -> Result<PathBuf, String> {
         &start,
         "-C",
         &loader,
+        "--cfg",
+        crate::USER_CFG,
     ]
     .join("\x1f");
     let target_dir = crate::target_directory()

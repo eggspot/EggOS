@@ -28,6 +28,7 @@ use script::{Control, Documents, Source};
 mod job_control;
 mod language;
 mod script;
+mod terminal_title;
 
 /// The most bytes of a complete command the shell holds before its end (a line, or a whole
 /// `if`, loop or function definition with its here-documents): longer ones are refused.
@@ -1097,6 +1098,11 @@ impl<'a, S: System> Shell<'a, S> {
 
     fn prompt(&mut self, continuation: bool) {
         let mut output = Output::new(&mut self.system, STANDARD_ERROR);
+        if !continuation && self.variables.get(terminal_title::TERM_PROGRAM).is_some() {
+            let folder = self.variables.get(b"PWD").unwrap_or(b"/");
+            let home = self.variables.get(b"HOME");
+            terminal_title::announce_folder(folder, home, &mut |bytes| output.push(bytes));
+        }
         let (variable, default) = if continuation {
             (b"PS2", &b"> "[..])
         } else {
@@ -1432,6 +1438,11 @@ impl<'a, S: System> Shell<'a, S> {
     }
 
     fn external(&mut self, words: &Words, streams: Streams, pipeline: &mut Pipeline) -> Ran {
+        let foreground = self.interactive && !pipeline.background && pipeline.group.is_none();
+        if foreground && self.variables.get(terminal_title::TERM_PROGRAM).is_some() {
+            let mut output = Output::new(&mut self.system, STANDARD_ERROR);
+            terminal_title::announce_command(words.command(0), &mut |bytes| output.push(bytes));
+        }
         match self.start(words, streams, pipeline) {
             Ok(child) => {
                 if self.interactive && pipeline.group.is_none() {

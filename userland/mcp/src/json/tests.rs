@@ -341,3 +341,17 @@ fn an_object_written_last_reopens_for_more_members() {
     });
     assert_eq!(empty, r#"{"only":null}[]"#);
 }
+
+#[test]
+fn a_top_level_member_is_told_apart_from_one_nested_in_another() {
+    let refused = br#"{"id":1,"result":{"structuredContent":{"error":{"code":"x"}}}}"#;
+    assert!(has_top_level_member(refused, "result"));
+    assert!(!has_top_level_member(refused, "error"));
+    let failed = br#"{"id":"error","error":{"code":-32602,"message":"m"}}"#;
+    assert!(has_top_level_member(failed, "error"));
+    assert!(!has_top_level_member(failed, "result"));
+    let many: String = (0..MAX_VALUES + 10).map(|n| format!("{n},")).collect();
+    let long = format!(r#"{{"result":[{many}0],"error":null}}"#);
+    assert!(has_top_level_member(long.as_bytes(), "error"));
+    assert!(!has_top_level_member(b"[]", "error"));
+}

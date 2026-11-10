@@ -219,9 +219,17 @@ Jobs (D181), as bash has them:
 - A job in the background that reads the terminal is stopped (`SIGTTIN`, reported as
   `Stopped (tty input)`), and one that changes the terminal's settings is too (`SIGTTOU`,
   `Stopped (tty output)`); `fg` lets it go on. Writing to the terminal from the background is
-  allowed. A program in the foreground is told of a change of the terminal's size
+  allowed, unless `stty tostop` asked otherwise on a terminal window's pseudo-terminal (D223). A program in the foreground is told of a change of the terminal's size
   (`SIGWINCH`).
 - The shell keeps at most 16 jobs; a job that is done makes room for a new one.
+
+## In a terminal window
+
+The terminal program sets `TERM_PROGRAM=EggTerminal` (D223). With `TERM_PROGRAM` set, `eggsh`
+writes, before each prompt, `OSC 0` with the current folder (the home folder as `~`) as the
+window's title and `OSC 7` with the folder as a `file:///` URL (percent-encoded), and before a
+command in the foreground `OSC 0` with the command's name; a new terminal window opens in that
+folder. Without it (the serial console, the console window) it writes none of them.
 
 ## Not supported yet
 

@@ -23,6 +23,21 @@ pub unsafe fn name_bytes<'a>(name: *const u8) -> &'a [u8] {
     unsafe { core::ffi::CStr::from_ptr(name.cast()) }.to_bytes()
 }
 
+/// The setter selector `set<Name>:` of the property `name`, written into `buffer`; `None`
+/// when `name` is empty or the setter does not fit.
+pub fn setter_name<'b>(name: &[u8], buffer: &'b mut [u8]) -> Option<&'b [u8]> {
+    let (&first, rest) = name.split_first()?;
+    let colon_at = name.len() + 3;
+    if colon_at >= buffer.len() {
+        return None;
+    }
+    buffer[..3].copy_from_slice(b"set");
+    buffer[3] = first.to_ascii_uppercase();
+    buffer[4..colon_at].copy_from_slice(rest);
+    buffer[colon_at] = b':';
+    Some(&buffer[..=colon_at])
+}
+
 /// The selector table. Its slots are memory the caller hands it, so it has no allocator of
 /// its own.
 #[derive(Debug)]
@@ -175,6 +190,26 @@ mod tests {
         for name in &names {
             assert_eq!(table.find(&name[..name.len() - 1]), Some(name.as_ptr()));
         }
+    }
+
+    #[test]
+    fn a_setter_capitalises_the_first_letter_and_ends_in_a_colon() {
+        let mut buffer = [0u8; 16];
+        assert_eq!(
+            setter_name(b"window", &mut buffer),
+            Some(&b"setWindow:"[..])
+        );
+        assert_eq!(setter_name(b"x", &mut buffer), Some(&b"setX:"[..]));
+        assert_eq!(
+            setter_name(b"_label", &mut buffer),
+            Some(&b"set_label:"[..])
+        );
+        assert_eq!(setter_name(b"", &mut buffer), None);
+        assert_eq!(
+            setter_name(b"twelveLetter", &mut buffer),
+            Some(&b"setTwelveLetter:"[..])
+        );
+        assert_eq!(setter_name(b"thirteenChars", &mut buffer), None);
     }
 
     #[test]

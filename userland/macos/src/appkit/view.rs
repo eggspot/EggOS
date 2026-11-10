@@ -74,6 +74,11 @@ fn assign_window(view: Id, window: Id) {
     }
 }
 
+/// Runs `work` on `view` and every view under it, in pre-order.
+pub fn each_view(view: Id, work: &mut dyn FnMut(Id)) {
+    each_in_tree(view, work);
+}
+
 fn each_in_tree(view: Id, work: &mut dyn FnMut(Id)) {
     work(view);
     let mut index = 0;
@@ -223,6 +228,7 @@ extern "C" fn set_frame_size(this: Id, _: Sel, size: Size) {
 /// Frees `view` as `-[NSView dealloc]` does: its subviews are let go of (each loses its
 /// superview and window), then its memory. A subclass's `dealloc` releases its own fields first.
 pub fn dispose(view: Id) {
+    super::cursor::discard_rects(view);
     let mut subviews = core::mem::replace(&mut fields(view).subviews, Buffer::new());
     for &child in subviews.as_slice() {
         fields(child).superview = core::ptr::null_mut();

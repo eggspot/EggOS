@@ -8,9 +8,10 @@
 //! past the documented TEB (0x1838 bytes) the layer keeps each thread's fiber-local storage
 //! slots, its thread object, the C runtime's `errno` and `_doserrno`, and its exception state
 //! (D177: the layer's calls into the program's handlers, the dispatches and unwind in
-//! progress, the exception a catch block handles) and, for an x64 program on ARM64, its
-//! translated thread block (D191). Every thread gets a TEB and a copy of the image's static
-//! TLS.
+//! progress, the exception a catch block handles), for an x64 program on ARM64 its
+//! translated thread block (D191), and its C++ state of D230 (the exceptions thrown and not yet
+//! caught, a throw the layer owes the program, the objects `std::rethrow_exception` copied).
+//! Every thread gets a TEB and a copy of the image's static TLS.
 
 use super::{Bool, FALSE, TRUE, error, fail};
 use crate::library::Export;
@@ -45,6 +46,9 @@ pub mod teb {
     pub const CURRENT_EXCEPTION: usize = 0x1e28;
     pub const CURRENT_EXCEPTION_CONTEXT: usize = 0x1e30;
     pub const TRANSLATED_THREAD: usize = 0x1e38;
+    pub const UNCAUGHT_EXCEPTIONS: usize = 0x1e40;
+    pub const PENDING_THROW: usize = 0x1e48;
+    pub const RETHROWN_COPIES: usize = 0x1e50;
 }
 
 pub mod peb {
@@ -63,7 +67,10 @@ const _: () = assert!(teb::THREAD_OBJECT + 8 <= teb::ERRNO);
 const _: () = assert!(teb::ERRNO + 4 <= teb::DOS_ERRNO);
 const _: () = assert!(teb::DOS_ERRNO + 4 <= teb::EXCEPTION_BRIDGES);
 const _: () = assert!(teb::CURRENT_EXCEPTION_CONTEXT + 8 <= teb::TRANSLATED_THREAD);
-const _: () = assert!(teb::TRANSLATED_THREAD + 8 <= TEB_SIZE);
+const _: () = assert!(teb::TRANSLATED_THREAD + 8 <= teb::UNCAUGHT_EXCEPTIONS);
+const _: () = assert!(teb::UNCAUGHT_EXCEPTIONS + 8 <= teb::PENDING_THROW);
+const _: () = assert!(teb::PENDING_THROW + 8 <= teb::RETHROWN_COPIES);
+const _: () = assert!(teb::RETHROWN_COPIES + 8 <= TEB_SIZE);
 const _: () = assert!(peb::DOCUMENTED_END <= peb::PROCESS_PARAMETERS_BLOCK);
 const _: () = assert!(peb::PROCESS_PARAMETERS_BLOCK + peb::PROCESS_PARAMETERS_SIZE <= PEB_SIZE);
 const TLS_OUT_OF_INDEXES: u32 = u32::MAX;

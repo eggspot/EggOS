@@ -25,6 +25,11 @@ pub const WRITE_ROOTS: [&str; 1] = [HOME];
 /// The home folder's Trash, which belongs to `trash` and Files: the write tools never reach it.
 pub const TRASH: &str = "/home/root/.local/share/Trash";
 
+/// EggOS's own settings folder in the home folder, which holds the settings file (D132): only
+/// Settings and `settings set` change it, so the write tools never reach it and the write
+/// grant cannot change what `settings_set` asks the run grant for.
+pub const SETTINGS: &str = "/home/root/.config/eggos";
+
 /// The roots `app_install` installs from: the host's shared folder, which the user fills.
 pub const INSTALL_ROOTS: [&str; 1] = ["/media/host"];
 
@@ -51,6 +56,9 @@ pub enum PathRefusal {
     IsRoot,
     /// Resolved, it is in a place the tool never reaches (the Trash).
     Excluded,
+    /// Resolved, it is in [`SETTINGS`] or holds it (such as `/home/root/.config`, existing or
+    /// not), which the tool never reaches.
+    InSettings,
 }
 
 impl PathRefusal {
@@ -64,6 +72,10 @@ impl PathRefusal {
             PathRefusal::OutsideRoots => "the path is outside the folders this tool may reach",
             PathRefusal::IsRoot => "the path names the folder itself, not something inside it",
             PathRefusal::Excluded => "the path is in the Trash, which belongs to trash and Files",
+            PathRefusal::InSettings => {
+                "the path is in or holds EggOS's settings folder, which only Settings and \
+                 settings set change"
+            }
         }
     }
 }
@@ -141,7 +153,9 @@ pub fn is_inside(path: &str, root: &str) -> bool {
 }
 
 /// The checks after resolution: when `strictly` is set, `resolved` must not be a root itself;
-/// it must not be in any of `excluded`.
+/// it must not be in any of `excluded` ([`PathRefusal::InSettings`] for [`SETTINGS`],
+/// [`PathRefusal::Excluded`] for the others); when `excluded` names [`SETTINGS`], it must not
+/// hold it either, so nothing can be written, linked, copied or moved in its place.
 pub fn check_place(
     resolved: &str,
     roots: &[&str],
@@ -151,10 +165,14 @@ pub fn check_place(
     if strictly && roots.contains(&resolved) {
         return Err(PathRefusal::IsRoot);
     }
-    if excluded.iter().any(|place| is_inside(resolved, place)) {
-        return Err(PathRefusal::Excluded);
+    if excluded.contains(&SETTINGS) && is_inside(SETTINGS, resolved) {
+        return Err(PathRefusal::InSettings);
     }
-    Ok(())
+    match excluded.iter().find(|place| is_inside(resolved, place)) {
+        Some(&SETTINGS) => Err(PathRefusal::InSettings),
+        Some(_) => Err(PathRefusal::Excluded),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -245,7 +263,7 @@ mod tests {
     fn written(path: &str) -> Result<String, PathRefusal> {
         let mut out = [0u8; MAX_PATH_BYTES + 1];
         let resolved = resolve(path, &mut out, &WRITE_ROOTS, &mut |_| false)?;
-        check_place(resolved, &WRITE_ROOTS, true, &[TRASH])?;
+        check_place(resolved, &WRITE_ROOTS, true, &[TRASH, SETTINGS])?;
         Ok(resolved.to_owned())
     }
 
@@ -284,6 +302,34 @@ mod tests {
         ] {
             assert_eq!(written(trash), Err(PathRefusal::Excluded), "{trash}");
         }
+        for settings in [
+            "/home/root/.config/eggos",
+            "/home/root/.config/eggos/settings",
+            "/home/root/.config/eggos/settings.tmp.7",
+            "/home/root/.config/./eggos/x/../settings",
+        ] {
+            assert_eq!(
+                written(settings),
+                Err(PathRefusal::InSettings),
+                "{settings}"
+            );
+        }
+        for holder in [
+            "/home/root/.config",
+            "/home/root/.config/",
+            "/home/root/./.config/x/..",
+        ] {
+            assert_eq!(written(holder), Err(PathRefusal::InSettings), "{holder}");
+        }
+        assert_eq!(
+            written("/home/root/.configs"),
+            Ok("/home/root/.configs".into())
+        );
+        assert_eq!(
+            written("/home/root/.config/eggos-notes"),
+            Ok("/home/root/.config/eggos-notes".into())
+        );
+        assert_eq!(Some(&SETTINGS), eggos_settings_file::DIRECTORIES.last());
         let mut out = [0u8; 64];
         assert_eq!(
             resolve("/bin/../bin/uname", &mut out, &ANYWHERE, &mut |_| false),

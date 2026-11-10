@@ -26,13 +26,13 @@ use core::ops::ControlFlow;
 use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MAX_TREE_BYTES,
-    MENU_POOL_CAPACITY, QUERY_ANSWER_MS, Request, WindowError, act_request, capture_reply,
-    create_reply, desktop_action, element_action, get_clipboard_reply, get_menu_reply,
-    get_tree_reply, input_outcome, keyboard_flags, keyboard_layout_reply, list_desktops_reply,
-    list_reply, placement_reply, put_double_word, put_word, query_kind, read_query_reply, request,
-    send_input_reply, set_size_reply, size, tree_answer,
+    MENU_POOL_CAPACITY, QUERY_ANSWER_MS, Request, TITLE_CAPACITY, WindowError, act_request,
+    capture_reply, create_reply, desktop_action, element_action, get_clipboard_reply,
+    get_menu_reply, get_tree_reply, input_outcome, keyboard_flags, keyboard_layout_reply,
+    list_desktops_reply, list_reply, placement_reply, put_double_word, put_word, query_kind,
+    read_query_reply, request, send_input_reply, set_size_reply, size, tree_answer,
 };
-use eggos_drivers::desktop::{Desktop, Injected, InjectedInput, Profile, WindowId};
+use eggos_drivers::desktop::{Desktop, Injected, InjectedInput, ListedWindow, Profile, WindowId};
 use eggos_drivers::display::Damage;
 use eggos_hal::Platform;
 use eggos_hal::paging::Attributes;
@@ -52,6 +52,7 @@ fn errno(error: ServerError) -> Errno {
         ServerError::Refused(WindowError::NoSuchWindow) => Errno::ENOENT,
         ServerError::Refused(WindowError::Busy) => Errno::EBUSY,
         ServerError::Refused(WindowError::QueueFull) => Errno::EAGAIN,
+        ServerError::Refused(WindowError::NotResponding) => Errno::ENOTCONN,
         ServerError::NoServer => Errno::ENXIO,
         ServerError::NoClientSlot => Errno::ENFILE,
         ServerError::OutOfMemory => Errno::ENOMEM,
@@ -62,12 +63,26 @@ fn refused(error: WindowError) -> Errno {
     errno(ServerError::Refused(error))
 }
 
-/// Opens the window server's device: a new client. `ENXIO` without a display, `ENFILE` when
-/// the server serves as many clients as it may.
-pub fn open<P: Platform>() -> Result<FileKind, Errno> {
-    window::connect(window::disconnect::<P>)
-        .map(FileKind::Window)
-        .map_err(errno)
+/// Opens the window server's device for process `process`: a new client. `ENXIO` without a
+/// display, `ENFILE` when the server serves as many clients as it may.
+pub fn open<P: Platform>(process: u32) -> Result<FileKind, Errno> {
+    let connection = window::connect(window::disconnect::<P>, process).map_err(errno)?;
+    let named = super::process_table::TABLE
+        .lock()
+        .list()
+        .find(|listed| listed.id == process)
+        .map(|listed| listed.name);
+    if named.is_some_and(|name| serves_linux_apps(&name)) {
+        let client = connection.client().id();
+        let _ = with_windows::<P, _>(|desktop, _, _, _| desktop.set_linux_apps_client(client));
+    }
+    Ok(FileKind::Window(connection))
+}
+
+const LINUX_APPS_SERVER: &[u8] = b"eggway";
+
+fn serves_linux_apps(name: &super::process_table::Name) -> bool {
+    name.split(|&byte| byte == 0).next() == Some(LINUX_APPS_SERVER)
 }
 
 /// `ioctl(fd, request, argument)` on `/dev/window`: the requests of docs/windows.md, their
@@ -86,6 +101,8 @@ pub fn ioctl<P: Platform>(
     let bytes = &mut bytes[..length];
     if number != request::GET_WORK_AREA
         && number != request::GET_PROFILE
+        && number != request::GET_PALETTE
+        && number != request::GET_REDUCE_MOTION
         && number != request::GET_KEYBOARD_LAYOUT
         && number != request::APPS_CHANGED
     {
@@ -108,7 +125,10 @@ pub fn ioctl<P: Platform>(
     let changes_settings = matches!(
         request,
         Request::SetProfile { .. }
+            | Request::SetPalette { .. }
+            | Request::SetReduceMotion { .. }
             | Request::SetKeyboardLayout { .. }
+            | Request::SetKeyboardLayouts { .. }
             | Request::SetInputPreferences { .. }
             | Request::SetKeyAccessibility { .. }
     );
@@ -262,8 +282,8 @@ pub fn ioctl<P: Platform>(
             bytes.fill(0);
             for (offset, value) in [
                 (list_reply::WINDOW, u32::from(info.id)),
-                (list_reply::STATE, info.state.value()),
-                (list_reply::X, info.rect.x),
+                (list_reply::STATE, listed_state(&info)),
+                (list_reply::X, info.rect.x as u32),
                 (list_reply::Y, info.rect.y),
                 (list_reply::WIDTH, info.rect.width),
                 (list_reply::HEIGHT, info.rect.height),
@@ -292,8 +312,12 @@ pub fn ioctl<P: Platform>(
             slow_keys_ms,
         } => {
             let slow = (slow_keys != 0).then_some(slow_keys_ms);
+            let was_on = crate::input::sticky_keys();
             if !crate::input::set_key_accessibility(sticky_keys != 0, slow) {
                 return Err(Errno::EINVAL);
+            }
+            if was_on != (sticky_keys != 0) {
+                crate::terminal::sticky_keys_turned::<P>(sticky_keys != 0);
             }
         }
         Request::ListDesktops => {
@@ -330,6 +354,30 @@ pub fn ioctl<P: Platform>(
             let profile = Profile::from_number(profile).ok_or(Errno::EINVAL)?;
             set_desktop_profile::<P>(profile);
         }
+        Request::GetPalette => {
+            put_word(bytes, 0, crate::terminal::desktop_palette());
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::SetPalette { palette } => {
+            if palette >= crate::terminal::PALETTES {
+                return Err(Errno::EINVAL);
+            }
+            crate::terminal::set_desktop_palette::<P>(palette);
+        }
+        Request::GetReduceMotion => {
+            put_word(bytes, 0, u32::from(crate::terminal::reduce_motion()));
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::SetReduceMotion { reduce } => {
+            if reduce > 1 {
+                return Err(Errno::EINVAL);
+            }
+            crate::terminal::set_reduce_motion::<P>(reduce == 1);
+        }
         Request::GetKeyboardLayout => {
             let flags = [
                 (crate::input::caps_lock(), keyboard_flags::CAPS_LOCK),
@@ -337,6 +385,8 @@ pub fn ioctl<P: Platform>(
                     crate::input::summary().keyboards > 0,
                     keyboard_flags::KEYBOARD,
                 ),
+                (crate::input::num_lock(), keyboard_flags::NUM_LOCK),
+                (crate::input::scroll_lock(), keyboard_flags::SCROLL_LOCK),
             ]
             .into_iter()
             .filter(|(set, _)| *set)
@@ -355,6 +405,24 @@ pub fn ioctl<P: Platform>(
             if !crate::input::set_layout(layout as usize) {
                 return Err(Errno::EINVAL);
             }
+            crate::terminal::keyboard_layouts_changed::<P>();
+        }
+        Request::SetKeyboardLayouts {
+            count,
+            layouts,
+            switch_key,
+        } => {
+            let numbers = layouts.map(usize::from);
+            let layouts = numbers
+                .get(..count as usize)
+                .and_then(eggos_settings_file::KeyboardLayoutSet::of)
+                .ok_or(Errno::EINVAL)?;
+            let switch_key = eggos_settings_file::SwitchKey::ALL
+                .get(switch_key as usize)
+                .copied()
+                .ok_or(Errno::EINVAL)?;
+            crate::input::set_layouts(layouts, switch_key);
+            crate::terminal::keyboard_layouts_changed::<P>();
         }
         Request::SetInputPreferences {
             left_handed,
@@ -490,6 +558,7 @@ pub fn ioctl<P: Platform>(
         Request::GetMenu { window } => {
             let mut pool = [0u8; MENU_POOL_CAPACITY];
             let length = on_windows::<P, _>(|desktop, _, _, _| {
+                desktop.refuse_if_not_responding(window)?;
                 let menu = desktop.menu_pool(window)?;
                 pool[..menu.len()].copy_from_slice(menu);
                 Ok(menu.len())
@@ -515,6 +584,7 @@ pub fn ioctl<P: Platform>(
                 return Err(Errno::EBUSY);
             }
             on_windows::<P, _>(|desktop, _, damage, events| {
+                desktop.refuse_if_not_responding(window)?;
                 desktop.choose_menu(window, menu, entry, label, damage, events)?;
                 desktop.note_agent_action(damage);
                 Ok(())
@@ -531,11 +601,15 @@ pub fn ioctl<P: Platform>(
             buffer
                 .checked_add(MAX_TREE_BYTES as u64)
                 .ok_or(Errno::EFAULT)?;
-            let answer = ask::<P>(process, thread, query(window, query_kind::TREE))?;
-            let tree = answer
-                .filter(|answer| answer.outcome == tree_answer::TREE)
-                .map(|answer| answer.tree)
-                .unwrap_or_default();
+            let unresponsive =
+                on_windows::<P, _>(|desktop, _, _, _| Ok(desktop.not_responding_window(window)))?;
+            let tree = match unresponsive {
+                Some(listed) => not_responding_tree(&listed),
+                None => ask::<P>(process, thread, query(window, query_kind::TREE))?
+                    .filter(|answer| answer.outcome == tree_answer::TREE)
+                    .map(|answer| answer.tree)
+                    .unwrap_or_default(),
+            };
             if !tree.is_empty() {
                 process
                     .write_user_memory(buffer, &tree)
@@ -565,6 +639,7 @@ pub fn ioctl<P: Platform>(
             if !known || !readable || element == 0 {
                 return Err(Errno::EINVAL);
             }
+            on_windows::<P, _>(|desktop, _, _, _| desktop.refuse_if_not_responding(window))?;
             if crate::input::person_holds_input() || crate::input::has_pending_events() {
                 return Err(Errno::EBUSY);
             }
@@ -627,7 +702,7 @@ pub fn ioctl<P: Platform>(
         Request::GetPlacement { window } => {
             let rect = on_windows::<P, _>(|desktop, _, _, _| desktop.placement(client, window))?;
             for (offset, value) in [
-                (placement_reply::X, rect.x),
+                (placement_reply::X, rect.x as u32),
                 (placement_reply::Y, rect.y),
                 (placement_reply::WIDTH, rect.width),
                 (placement_reply::HEIGHT, rect.height),
@@ -640,6 +715,25 @@ pub fn ioctl<P: Platform>(
         }
     }
     Ok(0)
+}
+
+fn listed_state(info: &ListedWindow) -> u32 {
+    match info.responding {
+        true => info.state.value(),
+        false => info.state.value() | list_reply::NOT_RESPONDING,
+    }
+}
+
+fn not_responding_tree(listed: &ListedWindow) -> Vec<u8> {
+    use eggos_element_tree::{Bounds, Element, HEADER_BYTES, Role, TreeWriter, flags};
+    let mut bytes = [0u8; HEADER_BYTES + TITLE_CAPACITY];
+    let mut writer = TreeWriter::new(&mut bytes);
+    let bounds = Bounds::new(0, 0, listed.rect.width as i32, listed.rect.height as i32);
+    let root = Element::new(1, 0, Role::Window, bounds)
+        .named(&listed.title[..listed.title_length])
+        .flagged(flags::NOT_RESPONDING);
+    writer.push(&root);
+    writer.bytes().to_vec()
 }
 
 fn query(window: u32, kind: u32) -> QueryRequest {
@@ -894,8 +988,15 @@ fn read_or_wait<P: Platform>(
     loop {
         let mut records = [EventRecord::default(); READ_RECORDS];
         let wanted = room.min(READ_RECORDS as u64) as usize;
-        let taken = client.take_events(&mut records[..wanted]);
+        let taken = client.take_events(&mut records[..wanted], window::time_ms::<P>());
         if taken > 0 {
+            if client.seen_not_responding() {
+                let (id, since) = (client.id(), client.unread_since());
+                with_windows::<P, _>(|desktop, _, damage, _| {
+                    desktop.set_unread_since(id, since, damage);
+                    client.set_seen_not_responding(desktop.client_not_responding(id));
+                });
+            }
             if records[..taken]
                 .iter()
                 .any(|record| record.kind == record_kind::CLOSE_REQUEST)
@@ -975,4 +1076,18 @@ pub fn map<P: Platform>(
             | RegionError::OutOfMemory
             | RegionError::NotWritable => Errno::ENOMEM,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::process_table::name_of;
+    use super::*;
+
+    #[test]
+    fn only_eggway_serves_every_linux_window_app() {
+        assert!(serves_linux_apps(&name_of(b"eggway")));
+        for other in [&b"eggwayx"[..], b"egg", b"settings", b""] {
+            assert!(!serves_linux_apps(&name_of(other)), "{other:?}");
+        }
+    }
 }

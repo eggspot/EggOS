@@ -45,6 +45,7 @@ mod gdi;
 mod gdiplus;
 mod gui;
 mod heap;
+mod hover;
 mod icon;
 mod keyboard;
 mod memory;
@@ -54,6 +55,7 @@ mod message_box;
 mod messages;
 mod module;
 mod monitor;
+mod msvcp;
 mod named;
 mod native_files;
 mod nls;
@@ -61,12 +63,15 @@ mod overlapped;
 mod paint;
 mod pipe;
 mod placement;
+mod pointer;
 mod private_profile;
 mod process;
 mod processes;
 mod psapi;
 mod random;
+pub(crate) mod registry;
 mod resource;
+mod scroll_bar;
 mod send_input;
 mod shell;
 mod shell_desktop;
@@ -271,6 +276,9 @@ const USER32: &[&[Export]] = &[
     accelerator::EXPORTS,
     dialog_box::EXPORTS,
     menu_items::EXPORTS,
+    scroll_bar::EXPORTS,
+    pointer::EXPORTS,
+    hover::EXPORTS,
 ];
 
 const COMDLG32: &[&[Export]] = &[file_picker::EXPORTS];
@@ -285,7 +293,7 @@ const OLE32: &[&[Export]] = &[com::OLE32_EXPORTS];
 
 const OLEAUT32: &[&[Export]] = &[com::OLEAUT32_EXPORTS];
 
-const ADVAPI32: &[&[Export]] = &[advapi32::EXPORTS];
+const ADVAPI32: &[&[Export]] = &[advapi32::EXPORTS, registry::EXPORTS];
 
 const WSOCK32: &[&[Export]] = &[winsock::EXPORTS];
 
@@ -334,6 +342,7 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::Userenv => USERENV,
         Library::Msvcrt => crt::MSVCRT,
         Library::Ws2_32 => WSOCK32,
+        Library::Msvcp140 => msvcp::MSVCP140,
     }
 }
 

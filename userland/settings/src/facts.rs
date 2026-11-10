@@ -1,8 +1,13 @@
 //! What Settings reports about the system and the choices it shows, gathered by the program
 //! from the kernel (or made up by a test), so the window and `settings` show the same values.
 
-use eggos_settings_file::{InputPreferences, KeyAccessibility};
+use eggos_net::status::InterfaceStatus;
+use eggos_settings_file::clock_sync::Record;
+use eggos_settings_file::{
+    DisplayAccessibility, InputPreferences, KeyAccessibility, KeyboardLayoutSet, SwitchKey,
+};
 use eggos_toolkit::text::Text;
+use eggos_toolkit::theme::Theme;
 
 /// The system's facts and the current choices.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,6 +30,8 @@ pub struct Facts {
     pub scale_in_force: u32,
     /// The desktop's layout profile: its index in the settings file's `PROFILES`.
     pub profile: usize,
+    /// The desktop's theme, `appearance.theme` (D219).
+    pub theme: Theme,
     /// Whether `/home` is on a disk, so a choice survives a power-off.
     pub on_disk: bool,
     /// The wall clock: seconds since 1970-01-01 00:00:00 UTC (D150).
@@ -33,22 +40,43 @@ pub struct Facts {
     pub hardware_clock: bool,
     /// The keyboard layout: its index in the settings file's `KEYBOARD_LAYOUTS` (D185).
     pub keyboard_layout: usize,
+    /// The layouts the switch key cycles through (D221).
+    pub keyboard_layouts: KeyboardLayoutSet,
+    /// The key that switches layouts (D221).
+    pub switch_key: SwitchKey,
     /// Whether the machine has a keyboard.
     pub keyboard: bool,
     /// Whether Caps Lock is on.
     pub caps_lock: bool,
     /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
     pub time_zone: usize,
+    /// Whether the clock is set from the network, `time.automatic` (D225).
+    pub time_automatic: bool,
+    /// What the last network clock sync did, from `/run/eggos/clock-sync` (D225).
+    pub clock_sync: Option<Record>,
     /// The mouse and key preferences (D195).
     pub input: InputPreferences,
     /// Sticky keys and slow keys (D205).
     pub keys: KeyAccessibility,
+    /// High contrast and reduced motion (D224).
+    pub display: DisplayAccessibility,
+    /// The network adapter as `/proc/net/interfaces` reports it; `None` on a machine without
+    /// one (D225).
+    pub network_adapter: Option<InterfaceStatus>,
 }
+
+/// The `/proc/net/interfaces` line of [`Facts::example`]'s adapter: connected as
+/// `10.0.2.15/24` through the router `10.0.2.2` with the DNS server `10.0.2.3`, 86342 of 86400
+/// seconds of lease left, 3,600,000 bytes received in 2,905 packets and 1,300,000 sent in 812.
+pub const EXAMPLE_ADAPTER: &str = "eth0 up 52:54:00:12:34:56 1500 configured 10.0.2.15/24 \
+                                   10.0.2.2 10.0.2.3 10.0.2.2 86342 86400 2905 3600000 0 0 812 \
+                                   1300000 0\n";
 
 impl Facts {
     /// The facts of a 1280x800 aarch64 machine with 4 CPUs and 1 GiB, up 1:02:05, in the
     /// macOS profile with a disk, a hardware clock reading Thursday 29 October 2026, 14:05:09
-    /// UTC, and a keyboard in the US layout with Caps Lock off: what tests show.
+    /// UTC, a keyboard in the US layout with Caps Lock off and the network adapter of
+    /// [`EXAMPLE_ADAPTER`]: what tests show.
     pub fn example() -> Self {
         Self {
             version: "0.2.0",
@@ -60,15 +88,25 @@ impl Facts {
             scale: 1,
             scale_in_force: 1,
             profile: 1,
+            theme: Theme::Dark,
             on_disk: true,
             now_s: 1_793_282_709,
             hardware_clock: true,
             keyboard_layout: 0,
+            keyboard_layouts: KeyboardLayoutSet::DEFAULT,
+            switch_key: SwitchKey::Profile,
             time_zone: utc_zone(),
+            time_automatic: true,
+            clock_sync: None,
             keyboard: true,
             caps_lock: false,
             input: InputPreferences::DEFAULT,
             keys: KeyAccessibility::DEFAULT,
+            display: DisplayAccessibility {
+                high_contrast: false,
+                reduce_motion: false,
+            },
+            network_adapter: eggos_net::status::parse_interface(EXAMPLE_ADAPTER.as_bytes()),
         }
     }
 }

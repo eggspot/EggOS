@@ -24,7 +24,8 @@ address usually comes within milliseconds. `ip addr` shows it.
 
 ## What works
 
-- **Adapters.** virtio-net (D157), polled, the first one only. The interface is `eth0`; `lo`
+- **Adapters.** virtio-net (D157), on interrupts where the machine routes them (D220), the
+  first one only. The interface is `eth0`; `lo`
   (127.0.0.1/8) always exists, and packets to `127.0.0.0/8` or to the machine's own address
   never leave it.
 - **DHCP.** The kernel asks for an address at boot and keeps it: it renews the lease halfway
@@ -82,8 +83,11 @@ What the kernel reports, all read-only:
 - `net/` (`eggos-net`): the protocols, without allocation, clock or device, shared by the
   kernel, the utilities and the tests: Ethernet, ARP, IPv4, ICMP echo, UDP, the DHCP client,
   DNS messages, one interface's stack and the status text.
-- `kernel/src/net.rs`: the adapter, its interface and the thread that polls it (every
-  millisecond while frames move, every 20 ms otherwise); `net/endpoints.rs` the UDP ports and
+- `kernel/src/net.rs`: the adapter, its interface and the thread that runs it: woken by the
+  adapter's interrupt when frames arrive (`net::DEVICE_EVENTS`, D220) or when an interface
+  timer is due, and while TCP connections are open every millisecond while frames move and
+  every 20 ms otherwise for their timers; an adapter that cannot interrupt is polled at those
+  intervals; `net/endpoints.rs` the UDP ports and
   ping identifiers and their queues (212992 bytes each by default, within the kernel's
   reserve for programs, D155); `net/resolv_conf.rs` the served `/etc/resolv.conf`.
 - `net/` also holds TCP (`tcp.rs`: segments and one connection's state machine over its
@@ -121,16 +125,38 @@ calls `net_ping`, `net_lookup` and `fetch`.
   SNTP (RFC 4330), `pool.ntp.org` by default, corrected by half the round trip, and says how far
   the clock moved; MCP `clock_sync` is its twin (grant `run`). Certificates need a right clock:
   a wrong one makes them look expired, and the error says to sync.
+- **The network clock** (D225). With `time.automatic` on (the default; Settings > Date & time
+  > `Set automatically`), init runs `date --sync --automatic` once the network has an address,
+  then every 24 hours (after a failure in 60 s, doubling to an hour), and records each sync in
+  `/run/eggos/clock-sync` (`settings get time.sync`). An automatic sync ignores differences
+  under a second and steps the clock by at most an hour while its unchecked steps since the
+  last HTTPS-confirmed step or `date -s` add up to at most an hour (that budget is kept in
+  `/var/lib/eggos/clock-budget`, so a reboot does not renew it); a larger step needs two of three HTTPS servers (`www.google.com`,
+  `www.cloudflare.com`, `www.apple.com`) to send a `Date` within two minutes of the time
+  server's, checked over TLS against your roots, since SNTP can be spoofed on the way. `date
+  -s` and `date --sync` by a person are never limited.
+
+## The GUI and downloads (D225)
+
+- **Settings > Network** and the bar's network indicator show the wired adapter's state,
+  address, router, DNS servers, lease, hardware address and traffic
+  ([Settings](settings.md)).
+- **Downloads.** Every download `fetch` saves to a file is recorded in
+  `/run/eggos/downloads/<pid>` (since boot): `download list [--json]` lists them newest first,
+  `download cancel <id>` stops one (its partial file removed), `download clear` forgets the
+  finished ones; the MCP tools `download_list`, `download_cancel` and `download_clear` are their
+  twins. The Downloads window (`/bin/downloads`, in the launcher as `Downloads`) shows the same
+  list once a second, starts a download from a web address into `~/Downloads`, and cancels and
+  clears.
 
 ## Not yet
 
 IPv6; fragments; static addresses, a second adapter and their routes;
-multicast; reverse lookups; netlink (iproute2 itself and `getifaddrs`); the GUI front-end
-(Settings' Network pane, the bar's indicator, a window for downloads); TCP window scaling,
+multicast; reverse lookups; netlink (iproute2 itself and `getifaddrs`); the indicator at 2x and on the phone's
+bar, and downloads kept across boots; TCP window scaling,
 selective acknowledgments, keep-alive, urgent data and Nagle's delay (`TCP_NODELAY` is always
 on), and keeping segments that arrive out of order (they are dropped and sent again); TCP
-timers on a machine without an adapter run only when a program makes a socket call; interrupts
-instead of polling; the Date & time pane's "Set automatically" and syncing at boot; TLS
+timers on a machine without an adapter run only when a program makes a socket call; TLS
 session resumption, client certificates, a second key exchange (X25519 is the only group
 offered, so a server that wants another fails), revocation (OCSP, CRLs) and name constraints
-(a certificate that makes them critical is refused). See D157 to D159.
+(a certificate that makes them critical is refused). See D157 to D159 and D225.

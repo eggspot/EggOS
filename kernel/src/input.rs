@@ -5,8 +5,10 @@
 //! console's line discipline as the UART's do ([`console::receive_from_keyboard`]); every key,
 //! pointer motion, button and wheel notch also goes into the input event queue
 //! ([`next_event`]) once a reader subscribed ([`subscribe`]), and the scrollback keys and the
-//! wheel move the graphical terminal's view ([`crate::terminal`]). Caps Lock's light follows
-//! the keyboard's state on keyboards that have one.
+//! wheel move the graphical terminal's view ([`crate::terminal`]). The lock lights follow the
+//! keyboard's Caps Lock, Num Lock and Scroll Lock on keyboards that have them; with Num Lock
+//! off the keypad's keys are the navigation keys. The switch key cycles through the chosen
+//! layouts ([`set_layouts`], D221) and tells the desktop ([`InputEvent::LayoutChanged`]).
 //!
 //! Nothing runs without an input device. With them, the release kernel's input thread
 //! ([`start`]) takes their events: when every device interrupts, it sleeps until one does or the
@@ -20,19 +22,22 @@ use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
 use crate::terminal::{self, ViewMove};
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use eggos_drivers::desktop::Profile;
+use eggos_drivers::desktop::protocol::DEAD_KEY_CHARACTER;
 use eggos_drivers::input::key;
 use eggos_drivers::input::keymap::{
     CursorKeys, KeyBytes, KeyChange, KeyRepeat, Keyboard, ThirdLevelKeys,
 };
 use eggos_drivers::input::layout::{self, Press, Typist};
 use eggos_drivers::input::{
-    Capabilities, RawEvent, SYN_REPORT, absolute, button, event_type, relative, scale_to_screen,
+    Capabilities, LockLights, RawEvent, SYN_REPORT, absolute, button, event_type, relative,
+    scale_to_screen,
 };
 use eggos_drivers::terminal::WHEEL_LINES;
 use eggos_hal::Platform;
 use eggos_hal::time::mul_div_ceil;
+use eggos_settings_file::{KeyboardLayoutSet, MAX_KEYBOARD_LAYOUTS, SwitchKey};
 
 pub use eggos_drivers::input::keymap::Modifiers;
 
@@ -64,9 +69,9 @@ pub trait InputDevice: Send {
     /// Hands `event` the device's new events, oldest first, at most `budget`; returns how many
     /// it took from the device.
     fn poll(&mut self, budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize;
-    /// Lights the Caps Lock light, or puts it out, on a keyboard that has one (D185): `false`
-    /// when the device could not take the change now, so it is asked again at the next poll.
-    fn set_caps_lock_light(&mut self, _on: bool) -> bool {
+    /// Shows `lights` on the lock lights a keyboard has (D185, D221): `false` when the device
+    /// could not take every change now, so it is asked again at the next poll.
+    fn set_lock_lights(&mut self, _lights: LockLights) -> bool {
         true
     }
 }
@@ -104,12 +109,19 @@ pub enum InputEvent {
     Button { button: Button, pressed: bool },
     /// The wheel turned by `delta` notches, up when positive.
     Wheel { delta: i32 },
+    /// The sideways wheel turned by `delta` notches, right when positive (D227).
+    SidewaysWheel { delta: i32 },
+    /// The switch key made layout number `.0` (an index of [`layout::LAYOUTS`]) the one in
+    /// force (D221).
+    LayoutChanged(u8),
 }
 
 const KEY: u64 = 1;
 const POINTER_MOVE: u64 = 2;
 const BUTTON: u64 = 3;
 const WHEEL: u64 = 4;
+const LAYOUT_CHANGED: u64 = 5;
+const SIDEWAYS_WHEEL: u64 = 6;
 const COORDINATE_MASK: u32 = 0x00ff_ffff;
 const CHARACTER_MASK: u32 = 0x00ff_ffff;
 
@@ -149,6 +161,8 @@ impl InputEvent {
                 BUTTON | (button as u64) << 8 | (pressed as u64) << 16
             }
             InputEvent::Wheel { delta } => WHEEL | (delta as u32 as u64) << 32,
+            InputEvent::SidewaysWheel { delta } => SIDEWAYS_WHEEL | (delta as u32 as u64) << 32,
+            InputEvent::LayoutChanged(number) => LAYOUT_CHANGED | (number as u64) << 8,
         }
     }
 
@@ -175,6 +189,10 @@ impl InputEvent {
                 pressed: field(word, 16, 1) != 0,
             },
             WHEEL => InputEvent::Wheel {
+                delta: field(word, 32, 0xffff_ffff) as u32 as i32,
+            },
+            LAYOUT_CHANGED => InputEvent::LayoutChanged(field(word, 8, 0xff) as u8),
+            SIDEWAYS_WHEEL => InputEvent::SidewaysWheel {
                 delta: field(word, 32, 0xffff_ffff) as u32 as i32,
             },
             _ => return None,
@@ -330,6 +348,7 @@ pub struct PendingReport {
     dx: i32,
     dy: i32,
     wheel: i32,
+    sideways: i32,
     x: Option<i32>,
     y: Option<i32>,
     presses: u8,
@@ -359,6 +378,12 @@ pub struct InputState {
     pointer: (u32, u32),
     buttons_held: u8,
     last_event: u64,
+    layouts: KeyboardLayoutSet,
+    switch_key: SwitchKey,
+    profile: Profile,
+    switch_armed: bool,
+    num_lock_off: bool,
+    scroll_lock: bool,
 }
 
 impl Default for InputState {
@@ -416,12 +441,41 @@ pub fn set_key_accessibility(sticky_keys: bool, slow_keys_ms: Option<u32>) -> bo
     true
 }
 
+/// Whether sticky keys are on (D205).
+pub fn sticky_keys() -> bool {
+    STICKY_KEYS.load(Ordering::Relaxed)
+}
+
+static STICKY_SHOWN: AtomicU32 = AtomicU32::new(0);
+
+/// The modifiers sticky keys hold now, latched for the next key or click and locked; none
+/// while sticky keys are off (D224).
+pub fn sticky_modifiers() -> (Modifiers, Modifiers) {
+    if !sticky_keys() {
+        return (Modifiers::NONE, Modifiers::NONE);
+    }
+    let shown = STICKY_SHOWN.load(Ordering::Relaxed);
+    (
+        Modifiers::from_bits(shown as u8),
+        Modifiers::from_bits((shown >> 8) as u8),
+    )
+}
+
+const STICKY_KEY_CODES: [(u8, u16); 5] = [
+    (Modifiers::SHIFT.bits(), key::LEFT_SHIFT),
+    (Modifiers::CTRL.bits(), key::LEFT_CTRL),
+    (Modifiers::ALT.bits(), key::LEFT_ALT),
+    (Modifiers::ALT_GRAPH.bits(), key::RIGHT_ALT),
+    (Modifiers::SUPER.bits(), key::LEFT_SUPER),
+];
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Sticky {
     latched: u8,
     locked: u8,
     tapping: Option<(u16, u8)>,
     using: Option<u16>,
+    clicking: u8,
 }
 
 impl Sticky {
@@ -431,7 +485,34 @@ impl Sticky {
             locked: 0,
             tapping: None,
             using: None,
+            clicking: 0,
         }
+    }
+
+    fn button_pressed(&mut self, held: Modifiers) -> u8 {
+        self.tapping = None;
+        if self.clicking != 0 {
+            return 0;
+        }
+        self.clicking = (self.latched | self.locked) & !held.bits();
+        self.latched = 0;
+        self.clicking
+    }
+
+    fn buttons_released(&mut self) -> u8 {
+        core::mem::take(&mut self.clicking)
+    }
+
+    const fn turned_off(self) -> Self {
+        Self {
+            clicking: self.clicking,
+            ..Self::new()
+        }
+    }
+
+    const fn shown(self) -> u32 {
+        let latched = self.latched | (self.clicking & !self.locked);
+        (latched as u32) | ((self.locked as u32) << 8)
     }
 
     fn apply(&mut self, code: u16, change: KeyChange, held: Modifiers, added: u8) -> Modifiers {
@@ -469,6 +550,30 @@ impl Sticky {
                 with_extra
             }
         }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn send_latched_modifiers(latched: u8, pressed: bool, held: Modifiers, sink: &mut dyn InputSink) {
+    let mut in_effect = match pressed {
+        true => held.bits(),
+        false => held.bits() | latched,
+    };
+    for (bit, code) in STICKY_KEY_CODES {
+        if latched & bit == 0 {
+            continue;
+        }
+        in_effect = match pressed {
+            true => in_effect | bit,
+            false => in_effect & !bit,
+        };
+        sink.event(InputEvent::Key {
+            code,
+            pressed,
+            modifiers: Modifiers::from_bits(in_effect),
+            character: 0,
+        });
     }
 }
 
@@ -610,6 +715,12 @@ impl InputState {
             pointer: (0, 0),
             buttons_held: 0,
             last_event: 0,
+            layouts: KeyboardLayoutSet::DEFAULT,
+            switch_key: SwitchKey::Profile,
+            profile: Profile::Macos,
+            switch_armed: false,
+            num_lock_off: false,
+            scroll_lock: false,
         }
     }
 
@@ -618,6 +729,7 @@ impl InputState {
     /// as the profile has them (Right Alt as AltGr, or either Alt as Option in the macOS
     /// profile).
     pub fn set_layout(&mut self, number: usize, profile: Profile) {
+        self.profile = profile;
         if number != self.typist.layout_number() {
             self.typist.set_layout(number);
         }
@@ -634,9 +746,47 @@ impl InputState {
         self.typist.layout_number()
     }
 
+    /// Has the switch key cycle through `layouts` from now on, `switch_key` being the key
+    /// (D221).
+    pub fn set_layouts(&mut self, layouts: KeyboardLayoutSet, switch_key: SwitchKey) {
+        self.layouts = layouts;
+        self.switch_key = switch_key;
+    }
+
+    /// Makes the layout after the one in force in the set, or before it when `backwards`, the
+    /// one in force, a waiting accent dropped: its number, or `None` with a single layout.
+    pub fn cycle_layout(&mut self, backwards: bool) -> Option<usize> {
+        if self.layouts.len() < 2 {
+            return None;
+        }
+        let next = self.layouts.next_after(self.layout(), backwards);
+        self.typist.set_layout(next);
+        self.set_layout(next, self.profile);
+        Some(next)
+    }
+
     /// Whether Caps Lock is on.
     pub fn caps_lock(&self) -> bool {
         self.keyboard.caps_lock()
+    }
+
+    /// Whether Num Lock is on: from power-on, until its key is pressed.
+    pub fn num_lock(&self) -> bool {
+        !self.num_lock_off
+    }
+
+    /// Whether Scroll Lock is on.
+    pub fn scroll_lock(&self) -> bool {
+        self.scroll_lock
+    }
+
+    /// The lights the locks call for.
+    pub fn lock_lights(&self) -> LockLights {
+        LockLights {
+            caps: self.caps_lock(),
+            num: self.num_lock(),
+            scroll: self.scroll_lock,
+        }
     }
 
     /// Whether a key or a pointer button is held.
@@ -713,6 +863,13 @@ impl InputState {
         if timing.slow_keys > 0 && self.held_back_slowly(event, timing) {
             return;
         }
+        let mut event = event;
+        if self.num_lock_off {
+            match keypad_navigation(event.code, &self.keyboard) {
+                Some(code) => event.code = code,
+                None => return,
+            }
+        }
         let sticky_keys = STICKY_KEYS.load(Ordering::Relaxed);
         let before = match sticky_keys {
             true => self.keyboard.modifiers(),
@@ -725,11 +882,17 @@ impl InputState {
         let modifiers = match sticky_keys {
             true => self.sticky_modifiers(event.code, change, before, held),
             false => {
-                self.sticky = Sticky::new();
+                self.sticky = self.sticky.turned_off();
                 held
             }
         };
         let code = event.code;
+        if matches!(code, key::NUM_LOCK | key::SCROLL_LOCK) && change == KeyChange::Pressed {
+            self.toggle_lock(code);
+        }
+        if self.layouts.len() > 1 && self.switch_key_pressed(code, change, modifiers, sink) {
+            return;
+        }
         if change == KeyChange::Released {
             self.repeat.released(code);
             if self.taken_back == code {
@@ -763,9 +926,75 @@ impl InputState {
             self.taken_back = code;
             self.repeat
                 .pressed(code, false, timing.now, timing.repeat_delay);
-            return;
+            return sink.event(InputEvent::Key {
+                code: 0,
+                pressed: true,
+                modifiers,
+                character: DEAD_KEY_CHARACTER,
+            });
         }
         self.typed(code, modifiers, press, timing, sink);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn toggle_lock(&mut self, code: u16) {
+        match code {
+            key::NUM_LOCK => self.num_lock_off = !self.num_lock_off,
+            _ => self.scroll_lock = !self.scroll_lock,
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn switch_key_pressed(
+        &mut self,
+        code: u16,
+        change: KeyChange,
+        modifiers: Modifiers,
+        sink: &mut dyn InputSink,
+    ) -> bool {
+        let held = modifiers.bits() & !Modifiers::CAPS_LOCK.bits() & !Modifiers::ALT_GRAPH.bits();
+        let resolved = self.switch_key.resolved(self.profile.number() as usize);
+        let space_chord = match resolved {
+            SwitchKey::SuperSpace => Some(Modifiers::SUPER),
+            SwitchKey::CtrlSpace => Some(Modifiers::CTRL),
+            _ => None,
+        };
+        if let Some(chord) = space_chord {
+            let without_shift = held & !Modifiers::SHIFT.bits();
+            if code != key::SPACE || change != KeyChange::Pressed || without_shift != chord.bits() {
+                return false;
+            }
+            let backwards = held & Modifiers::SHIFT.bits() != 0;
+            self.switch_layout(backwards, sink);
+            self.taken_back = code;
+            return true;
+        }
+        let (chord, second_keys) = match resolved {
+            SwitchKey::AltShift => (Modifiers::ALT, [key::LEFT_ALT, key::RIGHT_ALT]),
+            SwitchKey::CtrlShift => (Modifiers::CTRL, [key::LEFT_CTRL, key::RIGHT_CTRL]),
+            _ => return false,
+        };
+        let chord_key =
+            matches!(code, key::LEFT_SHIFT | key::RIGHT_SHIFT) || second_keys.contains(&code);
+        match change {
+            KeyChange::Pressed => {
+                self.switch_armed = chord_key && held == chord.with(Modifiers::SHIFT).bits();
+            }
+            KeyChange::Released if self.switch_armed && chord_key => {
+                self.switch_armed = false;
+                self.switch_layout(false, sink);
+            }
+            KeyChange::Released => {}
+        }
+        false
+    }
+
+    fn switch_layout(&mut self, backwards: bool, sink: &mut dyn InputSink) {
+        if let Some(next) = self.cycle_layout(backwards) {
+            sink.event(InputEvent::LayoutChanged(next as u8));
+        }
     }
 
     #[cold]
@@ -783,6 +1012,16 @@ impl InputState {
             }
             _ => false,
         }
+    }
+
+    /// The modifiers sticky keys hold, latched in the low byte and locked in the next; with
+    /// sticky keys off, none, and every latch and lock let go but a click's (D224).
+    pub fn sticky_shown(&mut self) -> u32 {
+        if !STICKY_KEYS.load(Ordering::Relaxed) {
+            self.sticky = self.sticky.turned_off();
+            return 0;
+        }
+        self.sticky.shown()
     }
 
     #[cold]
@@ -848,11 +1087,15 @@ impl InputState {
                 });
             }
         }
+        let character = match press {
+            Press::Dead => self.typist.pending_accent().map_or(0, u32::from) | DEAD_KEY_CHARACTER,
+            _ => press.character(code, modifiers),
+        };
         sink.event(InputEvent::Key {
             code,
             pressed: true,
             modifiers,
-            character: press.character(code, modifiers),
+            character,
         });
     }
 
@@ -885,6 +1128,11 @@ impl InputState {
                 sink.event(InputEvent::PointerMove { x, y });
             }
         }
+        if report.presses != 0 && STICKY_KEYS.load(Ordering::Relaxed) {
+            let held = self.keyboard.modifiers();
+            let latched = self.sticky.button_pressed(held);
+            send_latched_modifiers(latched, true, held, sink);
+        }
         let left_handed = LEFT_HANDED.load(Ordering::Relaxed);
         for (index, (button, _)) in BUTTONS.iter().enumerate() {
             let bit = 1 << index;
@@ -904,9 +1152,16 @@ impl InputState {
                 });
             }
         }
-        let wheel = match NATURAL_SCROLLING.load(Ordering::Relaxed) {
-            true => report.wheel.saturating_neg(),
-            false => report.wheel,
+        if self.buttons_held == 0 && self.sticky.clicking != 0 {
+            let latched = self.sticky.buttons_released();
+            send_latched_modifiers(latched, false, self.keyboard.modifiers(), sink);
+        }
+        let (wheel, sideways) = match NATURAL_SCROLLING.load(Ordering::Relaxed) {
+            true => (
+                report.wheel.saturating_neg(),
+                report.sideways.saturating_neg(),
+            ),
+            false => (report.wheel, report.sideways),
         };
         if wheel != 0 {
             let lines = wheel.unsigned_abs() as usize * WHEEL_LINES;
@@ -916,6 +1171,9 @@ impl InputState {
                 ViewMove::Forward(lines)
             });
             sink.event(InputEvent::Wheel { delta: wheel });
+        }
+        if sideways != 0 {
+            sink.event(InputEvent::SidewaysWheel { delta: sideways });
         }
     }
 
@@ -943,6 +1201,10 @@ impl InputState {
             }
             (event_type::REL, relative::WHEEL) => {
                 report.wheel = report.wheel.saturating_add(event.value);
+                report.pending = true;
+            }
+            (event_type::REL, relative::SIDEWAYS_WHEEL) => {
+                report.sideways = report.sideways.saturating_add(event.value);
                 report.pending = true;
             }
             (event_type::ABS, absolute::X) => {
@@ -975,37 +1237,109 @@ impl InputState {
     }
 }
 
+const KEYPAD_NAVIGATION: [(u16, u16); 11] = [
+    (71, key::HOME),
+    (72, key::UP),
+    (73, key::PAGE_UP),
+    (75, key::LEFT),
+    (76, 0),
+    (77, key::RIGHT),
+    (79, key::END),
+    (80, key::DOWN),
+    (81, key::PAGE_DOWN),
+    (82, key::INSERT),
+    (key::KEYPAD_DOT, key::DELETE),
+];
+
+#[cold]
+#[inline(never)]
+fn keypad_navigation(code: u16, keyboard: &Keyboard) -> Option<u16> {
+    if keyboard.is_held(code) {
+        return Some(code);
+    }
+    match KEYPAD_NAVIGATION.iter().find(|(keypad, _)| *keypad == code) {
+        Some(&(_, 0)) => None,
+        Some(&(_, navigation)) => Some(navigation),
+        None => Some(code),
+    }
+}
+
 struct Input {
     sources: [Option<Source>; MAX_DEVICES],
     state: InputState,
-    caps_lock_shown: bool,
+    lights_shown: LockLights,
     events_left: bool,
 }
 
 impl Input {
-    fn show_caps_lock(&mut self) {
-        let on = self.state.caps_lock();
-        if on == self.caps_lock_shown {
-            return;
+    fn show_lock_lights(&mut self) -> bool {
+        let lights = self.state.lock_lights();
+        CAPS_LOCK.store(lights.caps, Ordering::Relaxed);
+        NUM_LOCK_OFF.store(!lights.num, Ordering::Relaxed);
+        SCROLL_LOCK.store(lights.scroll, Ordering::Relaxed);
+        if lights == self.lights_shown {
+            return true;
         }
-        CAPS_LOCK.store(on, Ordering::Relaxed);
         let mut every_light_took_it = true;
         for source in self.sources.iter_mut().flatten() {
-            every_light_took_it &= source.device.set_caps_lock_light(on);
+            every_light_took_it &= source.device.set_lock_lights(lights);
         }
         if every_light_took_it {
-            self.caps_lock_shown = on;
+            self.lights_shown = lights;
         }
+        every_light_took_it
     }
 }
 
-static LAYOUT: AtomicU8 = AtomicU8::new(layout::US_LAYOUT as u8);
+static LAYOUTS: AtomicU64 = AtomicU64::new((layout::US_LAYOUT as u64) << IN_FORCE_SHIFT);
 
 static CAPS_LOCK: AtomicBool = AtomicBool::new(false);
 
+static NUM_LOCK_OFF: AtomicBool = AtomicBool::new(false);
+
+static SCROLL_LOCK: AtomicBool = AtomicBool::new(false);
+
+const SET_COUNT_SHIFT: u32 = 32;
+const SWITCH_KEY_SHIFT: u32 = 40;
+const IN_FORCE_SHIFT: u32 = 48;
+
+fn packed_layouts(layouts: &KeyboardLayoutSet, switch_key: SwitchKey, in_force: usize) -> u64 {
+    packed_layout_set(layouts, switch_key) | (in_force as u64 & 0xff) << IN_FORCE_SHIFT
+}
+
+fn in_force_of(word: u64) -> usize {
+    field(word, IN_FORCE_SHIFT, 0xff) as usize
+}
+
+fn with_in_force(word: u64, in_force: usize) -> u64 {
+    (word & !(0xff << IN_FORCE_SHIFT)) | (in_force as u64 & 0xff) << IN_FORCE_SHIFT
+}
+
+fn packed_layout_set(layouts: &KeyboardLayoutSet, switch_key: SwitchKey) -> u64 {
+    let numbers = layouts
+        .numbers()
+        .enumerate()
+        .fold(0, |word, (position, number)| {
+            word | (number as u64 & 0xff) << (8 * position)
+        });
+    numbers
+        | ((layouts.len() as u64).saturating_sub(1) & 0xff) << SET_COUNT_SHIFT
+        | (switch_key.number() as u64 & 0xff) << SWITCH_KEY_SHIFT
+}
+
+fn unpacked_layout_set(word: u64) -> (KeyboardLayoutSet, SwitchKey) {
+    let count = (field(word, SET_COUNT_SHIFT, 0xff) as usize + 1).min(MAX_KEYBOARD_LAYOUTS);
+    let numbers: [usize; MAX_KEYBOARD_LAYOUTS] =
+        core::array::from_fn(|position| field(word, 8 * position as u32, 0xff) as usize);
+    let layouts = KeyboardLayoutSet::of(&numbers[..count]).unwrap_or(KeyboardLayoutSet::DEFAULT);
+    let switch_key = SwitchKey::from_number(field(word, SWITCH_KEY_SHIFT, 0xff) as usize);
+    (layouts, switch_key)
+}
+
 /// Types with keyboard layout `number` (its index in [`layout::LAYOUTS`], D185) on every
-/// keyboard from the next poll on, a waiting accent dropped; `false`, and nothing changed, for
-/// a number that is no layout.
+/// keyboard from the next poll on, a waiting accent dropped; a layout not in the set the switch
+/// key cycles through joins it, appended while it has room, else in the place of the layout in
+/// force (D221). `false`, and nothing changed, for a number that is no layout.
 pub fn set_layout(number: usize) -> bool {
     let Ok(number) = u8::try_from(number) else {
         return false;
@@ -1013,18 +1347,47 @@ pub fn set_layout(number: usize) -> bool {
     if usize::from(number) >= layout::LAYOUTS.len() {
         return false;
     }
-    LAYOUT.store(number, Ordering::Relaxed);
+    let number = usize::from(number);
+    LAYOUTS.update(Ordering::Relaxed, Ordering::Relaxed, |word| {
+        let (layouts, switch_key) = unpacked_layout_set(word);
+        let chosen = layouts.with_chosen(number, in_force_of(word));
+        packed_layouts(&chosen, switch_key, number)
+    });
     true
+}
+
+/// Makes `layouts` the set the switch key cycles through and `switch_key` its key (D221), from
+/// the next poll on; the layout in force stays when listed, else the set's first is in force.
+pub fn set_layouts(layouts: KeyboardLayoutSet, switch_key: SwitchKey) {
+    LAYOUTS.update(Ordering::Relaxed, Ordering::Relaxed, |word| {
+        let in_force = layouts.keeping(in_force_of(word));
+        packed_layouts(&layouts, switch_key, in_force)
+    });
+}
+
+/// The set the switch key cycles through and its key.
+pub fn layouts() -> (KeyboardLayoutSet, SwitchKey) {
+    unpacked_layout_set(LAYOUTS.load(Ordering::Relaxed))
 }
 
 /// The keyboard layout's number (its index in [`layout::LAYOUTS`]).
 pub fn layout_number() -> usize {
-    usize::from(LAYOUT.load(Ordering::Relaxed))
+    in_force_of(LAYOUTS.load(Ordering::Relaxed))
 }
 
 /// Whether Caps Lock is on, as the last poll left it.
 pub fn caps_lock() -> bool {
     CAPS_LOCK.load(Ordering::Relaxed)
+}
+
+/// Whether Num Lock is on, as the last poll left it: on from power-on (D221).
+pub fn num_lock() -> bool {
+    !NUM_LOCK_OFF.load(Ordering::Relaxed)
+}
+
+/// Whether Scroll Lock is on, as the last poll left it.
+pub fn scroll_lock() -> bool {
+    SCROLL_LOCK.load(Ordering::Relaxed)
 }
 
 static INPUT: LeafSpinLock<Option<Box<Input>>> = LeafSpinLock::new_leaf(None);
@@ -1053,7 +1416,7 @@ fn install_source(
         Box::new(Input {
             sources: [const { None }; MAX_DEVICES],
             state: InputState::new(),
-            caps_lock_shown: false,
+            lights_shown: LockLights::default(),
             events_left: false,
         })
     });
@@ -1213,10 +1576,11 @@ fn poll_devices<P: Platform>(
                 } else {
                     CursorKeys::Normal
                 });
-            input.state.set_layout(
-                usize::from(LAYOUT.load(Ordering::Relaxed)),
-                terminal::desktop_profile(),
-            );
+            let wanted_word = LAYOUTS.load(Ordering::Relaxed);
+            let wanted = in_force_of(wanted_word);
+            input.state.set_layout(wanted, terminal::desktop_profile());
+            let (layouts, switch_key) = unpacked_layout_set(wanted_word);
+            input.state.set_layouts(layouts, switch_key);
             let mut more = false;
             for source in input.sources.iter_mut().flatten() {
                 let budget = (POLL_BUDGET_BYTES - sink.length) / KeyBytes::CAPACITY;
@@ -1232,13 +1596,23 @@ fn poll_devices<P: Platform>(
                 });
                 more |= taken == budget;
             }
+            let switched = input.state.layout();
+            if switched != wanted {
+                let _ = LAYOUTS.compare_exchange(
+                    wanted_word,
+                    with_in_force(wanted_word, switched),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
+            }
+            let lights_taken = input.show_lock_lights();
             let last = !more || round == MAX_POLL_ROUNDS;
             if last {
                 input.state.repeat_key(timing, &mut sink);
-                input.events_left = more;
+                input.events_left = more || !lights_taken;
             }
-            input.show_caps_lock();
             PERSON_HOLDS_INPUT.store(input.state.anything_held(), Ordering::Relaxed);
+            STICKY_SHOWN.store(input.state.sticky_shown(), Ordering::Relaxed);
             let next = next_poll(&input.state, timing.now, P::clock_frequency());
             (last, next)
         };

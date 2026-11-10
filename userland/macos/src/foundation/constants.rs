@@ -1,5 +1,6 @@
 //! The NSString constants Foundation exports as `NSString *const` variables (D175): exception
-//! names, the error domains and `userInfo` keys and the run loop modes, each laid out as clang
+//! names, the error domains and `userInfo` keys, the run loop modes and AppKit's pasteboard
+//! names and types, each laid out as clang
 //! lays out a string literal (the constant string class, ASCII flags, its bytes and length),
 //! with the variable that holds its address, which is what the program imports.
 
@@ -15,7 +16,46 @@ pub const LOCALIZED_DESCRIPTION_KEY: usize = 4;
 /// The `userInfo` key of why an error happened.
 pub const LOCALIZED_FAILURE_REASON_KEY: usize = 5;
 
-const CONSTANTS: [(&[u8], &[u8]); 12] = [
+/// The `userInfo` key of an error's underlying error.
+pub const UNDERLYING_ERROR_KEY: usize = 6;
+/// `NSCocoaErrorDomain`.
+pub const COCOA_ERROR_DOMAIN: usize = 7;
+/// `NSPOSIXErrorDomain`.
+pub const POSIX_ERROR_DOMAIN: usize = 8;
+/// The default run loop mode, `kCFRunLoopDefaultMode`.
+pub const DEFAULT_RUN_LOOP_MODE: usize = 10;
+/// The common modes, `kCFRunLoopCommonModes`.
+pub const COMMON_RUN_LOOP_MODES: usize = 11;
+/// AppKit's mode while a modal window runs.
+pub const MODAL_PANEL_RUN_LOOP_MODE: usize = 12;
+/// AppKit's mode while a control or menu tracks the pointer.
+pub const EVENT_TRACKING_RUN_LOOP_MODE: usize = 13;
+/// `NSApplicationWillFinishLaunchingNotification`.
+pub const APPLICATION_WILL_FINISH_LAUNCHING: usize = 14;
+/// `NSApplicationDidFinishLaunchingNotification`.
+pub const APPLICATION_DID_FINISH_LAUNCHING: usize = 15;
+/// `NSApplicationWillTerminateNotification`.
+pub const APPLICATION_WILL_TERMINATE: usize = 16;
+/// `NSWindowWillCloseNotification`.
+pub const WINDOW_WILL_CLOSE: usize = 17;
+/// The first of the file attribute keys, in `FILE_ATTRIBUTE_KEYS` order.
+pub const FIRST_FILE_ATTRIBUTE_KEY: usize = 18;
+/// How many file attribute keys there are: `NSFileSize`, `NSFileType`,
+/// `NSFileModificationDate`, `NSFilePosixPermissions`, `NSFileReferenceCount`,
+/// `NSFileOwnerAccountID`, `NSFileGroupOwnerAccountID`, `NSFileSystemNumber` and
+/// `NSFileSystemFileNumber`.
+pub const FILE_ATTRIBUTE_KEYS: usize = 9;
+/// The first of the file types: regular, directory, symbolic link, character special, block
+/// special, socket and unknown.
+pub const FIRST_FILE_TYPE: usize = 27;
+/// The `userInfo` key of the path a file error is about.
+pub const FILE_PATH_ERROR_KEY: usize = 34;
+/// `NSPasteboardTypeString`, the UTF-8 plain text type.
+pub const PASTEBOARD_TYPE_STRING: usize = 35;
+/// `NSPasteboardNameGeneral`, the shared clipboard's pasteboard (36 is `NSStringPboardType`).
+pub const PASTEBOARD_NAME_GENERAL: usize = 37;
+
+const CONSTANTS: [(&[u8], &[u8]); 42] = [
     (
         b"_NSInvalidArgumentException",
         b"NSInvalidArgumentException\0",
@@ -37,6 +77,57 @@ const CONSTANTS: [(&[u8], &[u8]); 12] = [
     (b"_NSOSStatusErrorDomain", b"NSOSStatusErrorDomain\0"),
     (b"_NSDefaultRunLoopMode", b"kCFRunLoopDefaultMode\0"),
     (b"_NSRunLoopCommonModes", b"kCFRunLoopCommonModes\0"),
+    (b"_NSModalPanelRunLoopMode", b"NSModalPanelRunLoopMode\0"),
+    (
+        b"_NSEventTrackingRunLoopMode",
+        b"NSEventTrackingRunLoopMode\0",
+    ),
+    (
+        b"_NSApplicationWillFinishLaunchingNotification",
+        b"NSApplicationWillFinishLaunchingNotification\0",
+    ),
+    (
+        b"_NSApplicationDidFinishLaunchingNotification",
+        b"NSApplicationDidFinishLaunchingNotification\0",
+    ),
+    (
+        b"_NSApplicationWillTerminateNotification",
+        b"NSApplicationWillTerminateNotification\0",
+    ),
+    (
+        b"_NSWindowWillCloseNotification",
+        b"NSWindowWillCloseNotification\0",
+    ),
+    (b"_NSFileSize", b"NSFileSize\0"),
+    (b"_NSFileType", b"NSFileType\0"),
+    (b"_NSFileModificationDate", b"NSFileModificationDate\0"),
+    (b"_NSFilePosixPermissions", b"NSFilePosixPermissions\0"),
+    (b"_NSFileReferenceCount", b"NSFileReferenceCount\0"),
+    (b"_NSFileOwnerAccountID", b"NSFileOwnerAccountID\0"),
+    (
+        b"_NSFileGroupOwnerAccountID",
+        b"NSFileGroupOwnerAccountID\0",
+    ),
+    (b"_NSFileSystemNumber", b"NSFileSystemNumber\0"),
+    (b"_NSFileSystemFileNumber", b"NSFileSystemFileNumber\0"),
+    (b"_NSFileTypeRegular", b"NSFileTypeRegular\0"),
+    (b"_NSFileTypeDirectory", b"NSFileTypeDirectory\0"),
+    (b"_NSFileTypeSymbolicLink", b"NSFileTypeSymbolicLink\0"),
+    (
+        b"_NSFileTypeCharacterSpecial",
+        b"NSFileTypeCharacterSpecial\0",
+    ),
+    (b"_NSFileTypeBlockSpecial", b"NSFileTypeBlockSpecial\0"),
+    (b"_NSFileTypeSocket", b"NSFileTypeSocket\0"),
+    (b"_NSFileTypeUnknown", b"NSFileTypeUnknown\0"),
+    (b"_NSFilePathErrorKey", b"NSFilePath\0"),
+    (b"_NSPasteboardTypeString", b"public.utf8-plain-text\0"),
+    (b"_NSStringPboardType", b"NSStringPboardType\0"),
+    (b"_NSPasteboardNameGeneral", b"Apple CFPasteboard general\0"),
+    (b"_NSPasteboardNameFind", b"Apple CFPasteboard find\0"),
+    (b"_NSPasteboardNameFont", b"Apple CFPasteboard font\0"),
+    (b"_NSPasteboardNameRuler", b"Apple CFPasteboard ruler\0"),
+    (b"_NSPasteboardNameDrag", b"Apple CFPasteboard drag\0"),
 ];
 
 static STRINGS: [[AtomicUsize; STRING_WORDS]; CONSTANTS.len()] =

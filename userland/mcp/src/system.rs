@@ -28,6 +28,9 @@ pub struct Invocation<'a> {
     /// Whether it runs with `EGGOS_NO_SYMLINKS=1`, so it refuses a symbolic link on any path it
     /// opens (D170): the twins whose operand is a checked path.
     pub no_symlinks: bool,
+    /// Whether it runs with `EGGOS_CODED_ERRORS=1`, so each text error it writes is followed by
+    /// its `{"error":{...}}` line (D226): every twin but `run`'s program.
+    pub coded_errors: bool,
 }
 
 /// How a command ended.
@@ -111,6 +114,11 @@ pub trait System {
     fn is_link(&mut self, path: &str) -> bool;
     /// What is at `path`, not following a last symbolic link.
     fn file_state(&mut self, path: &str) -> FileState;
+    /// Whether `path` reaches a regular file, following symbolic links: whether an optional
+    /// component's file is installed (D18).
+    fn reaches_file(&mut self, path: &str) -> bool {
+        matches!(self.file_state(path), FileState::File(_))
+    }
     /// Removes the file at `path` if there is one (a symbolic link itself, never what it
     /// names).
     fn remove_capture(&mut self, path: &str);
@@ -125,6 +133,24 @@ pub trait System {
     fn read_capture(&mut self, file: &CaptureFile, out: &mut [u8]) -> Result<usize, Errno>;
     /// Closes `file`.
     fn close_capture(&mut self, file: CaptureFile);
+    /// Reads the regular file at `path` into `out`, never through a symbolic link, as
+    /// [`System::open_capture`] opens it: the bytes read, at most `out`'s size.
+    fn read_file(&mut self, path: &str, out: &mut [u8]) -> Result<usize, Errno> {
+        let file = self.open_capture(path)?;
+        let mut length = 0;
+        let read = loop {
+            let Some(room) = out.get_mut(length..).filter(|room| !room.is_empty()) else {
+                break Ok(length);
+            };
+            match self.read_capture(&file, room) {
+                Ok(0) => break Ok(length),
+                Ok(count) => length += count,
+                Err(error) => break Err(error),
+            }
+        };
+        self.close_capture(file);
+        read
+    }
     /// Appends `record` to the audit log, durably.
     fn append_audit(&mut self, record: &[u8]) -> Result<(), Errno>;
     /// Reads the agents' grants file ([`crate::grants::STORE_PATH`]) into `out`, at most its

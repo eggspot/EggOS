@@ -10,181 +10,114 @@
 //! `appkit/` AppKit for GUI apps on the window server (D147), drawing through `eggos-macos-gui`,
 //! and `swift/` the Swift runtime of `libswiftCore` (D180).
 
-#![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(eggos_user, no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
 
-#[cfg(any(test, all(target_env = "musl", target_arch = "aarch64")))]
+#[cfg(any(test, all(eggos_user, target_arch = "aarch64")))]
 extern crate alloc;
 
-#[cfg(all(
-    target_env = "musl",
-    any(target_arch = "aarch64", target_arch = "x86_64")
-))]
+#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 mod appkit;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod calendar;
-#[cfg(all(
-    target_env = "musl",
-    any(target_arch = "aarch64", target_arch = "x86_64")
-))]
+#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 mod callback;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod darwin;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod darwin_locale;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod darwin_signals;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod dyld_info;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod fixups;
-#[cfg(all(
-    target_env = "musl",
-    any(target_arch = "aarch64", target_arch = "x86_64")
-))]
+#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 use eggos_c_format as format;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod foundation;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod getopt;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod info_plist;
-#[cfg(all(
-    target_env = "musl",
-    any(target_arch = "aarch64", target_arch = "x86_64")
-))]
+#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 mod libsystem;
-#[cfg(all(
-    target_env = "musl",
-    any(target_arch = "aarch64", target_arch = "x86_64")
-))]
+#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 mod linux;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod macho;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod objc;
+#[cfg(test)]
+mod raising_methods;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod spawn_actions;
-#[cfg(all(
-    target_env = "musl",
-    any(target_arch = "aarch64", target_arch = "x86_64")
-))]
+#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 mod start;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod stream_buffer;
 #[cfg(any(
     test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod swift;
 #[cfg(test)]
 mod tests;
-#[cfg(any(test, all(target_env = "musl", target_arch = "aarch64")))]
+#[cfg(any(test, all(eggos_user, target_arch = "aarch64")))]
 mod translated;
-#[cfg(all(target_env = "musl", target_arch = "aarch64"))]
+#[cfg(all(eggos_user, target_arch = "aarch64"))]
 mod translation;
 
-#[cfg(all(
-    target_env = "musl",
-    any(target_arch = "aarch64", target_arch = "x86_64")
-))]
+#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 eggos_runtime::main!(start::run);
 
-#[cfg(all(
-    target_env = "musl",
-    not(any(target_arch = "aarch64", target_arch = "x86_64"))
-))]
+#[cfg(all(eggos_user, not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
 eggos_runtime::main!(unsupported);
 
-#[cfg(all(
-    target_env = "musl",
-    not(any(target_arch = "aarch64", target_arch = "x86_64"))
-))]
+#[cfg(all(eggos_user, not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
 fn unsupported(_: &eggos_runtime::startup::Startup) -> i32 {
     eggos_runtime::syscall::write_all(2, b"macos: macOS programs run on aarch64 and x86_64 only\n");
     126
 }
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(eggos_user))]
 fn main() {}

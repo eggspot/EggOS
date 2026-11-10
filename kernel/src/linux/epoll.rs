@@ -84,7 +84,7 @@ pub mod event {
 
 /// The size of a `struct epoll_event`: x86_64 packs its 32-bit events and 64-bit data in 12
 /// bytes, the others align the data.
-pub const EVENT_SIZE: usize = if cfg!(target_arch = "x86_64") { 12 } else { 16 };
+pub const EVENT_SIZE: usize = crate::linux::abi::EPOLL_EVENT_SIZE;
 
 /// The longest chain of `epoll` instances watching one another, as Linux allows.
 pub const MAX_NESTING: usize = 5;
@@ -728,7 +728,7 @@ pub fn epoll_create1<P: Platform>(
 
 /// `epoll_create(size)`: [`epoll_create1`] with no flags; `size`, an `int`, must be positive
 /// (`EINVAL`), and is not used otherwise, as on Linux. x86_64 only.
-#[cfg(target_arch = "x86_64")]
+#[cfg(linux_abi_legacy_calls)]
 pub fn epoll_create<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
@@ -949,7 +949,7 @@ fn wait_call<P: Platform>(
 
 /// `epoll_wait(epfd, events, maxevents, timeout)`: [`epoll_pwait`] with no signal mask. x86_64
 /// only: AArch64's and RISC-V's C libraries call `epoll_pwait`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(linux_abi_legacy_calls)]
 pub fn epoll_wait<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,

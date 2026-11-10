@@ -13,14 +13,20 @@ path = "src/main.rs"
 eggos-app = { path = "../app", features = ["window"] }
 eggos-calendar = { path = "../../calendar" }
 eggos-commands = { path = "../commands" }
+eggos-components = { path = "../components" }
+eggos-device-list = { path = "../device-list" }
+eggos-downloads = { path = "../downloads" }
 eggos-editor = { path = "../editor", features = ["window"] }
 eggos-files = { path = "../files", features = ["window", "storage"] }
 eggos-eggfs = { path = "../../eggfs" }
+eggos-font = { path = "../../font" }
 eggos-mcp = { path = "../mcp" }
+eggos-net = { path = "../../net" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
 eggos-terminal-window = { path = "../terminal" }
 eggos-toolkit = { path = "../toolkit" }
+eggos-windows-registry = { path = "../windows-registry" }
 
 [dev-dependencies]
 eggos-files = { path = "../files", features = ["window", "storage", "memory"] }

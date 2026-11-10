@@ -40,6 +40,7 @@ struct Item {
     start: u16,
     length: u16,
     marked: bool,
+    data: usize,
 }
 
 /// A list's items, selection and scroll.
@@ -81,6 +82,7 @@ impl ListBox {
                 start: 0,
                 length: 0,
                 marked: false,
+                data: 0,
             }; LIST_CAPACITY],
             count: 0,
             selected: None,
@@ -143,6 +145,7 @@ impl ListBox {
             start: self.used as u16,
             length: length as u16,
             marked: false,
+            data: 0,
         };
         self.used += length;
         self.count += 1;
@@ -152,6 +155,22 @@ impl ListBox {
             self.selected = Some(selected + 1);
         }
         Some(index)
+    }
+
+    /// Item `index`'s value (`LB_GETITEMDATA`), 0 until the program sets one.
+    pub fn data(&self, index: usize) -> Option<usize> {
+        self.items[..self.count].get(index).map(|item| item.data)
+    }
+
+    /// `LB_SETITEMDATA`: whether item `index` exists.
+    pub fn set_data(&mut self, index: usize, value: usize) -> bool {
+        match self.items[..self.count].get_mut(index) {
+            Some(item) => {
+                item.data = value;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Gives item `index` the folder mark.
@@ -269,6 +288,15 @@ pub fn row_at(y: i32, height: i32) -> Option<usize> {
     (inner >= 0 && y < height - 1).then_some((inner / ITEM_HEIGHT) as usize)
 }
 
+/// Where item `index` sits in a list `width` wide whose first row shown is item `top`: the
+/// row's rectangle inside the frame, above the list for items before `top` and below it for
+/// those past the rows shown, as agents' element tree places each item (D227).
+pub fn row_bounds(index: usize, top: usize, width: i32) -> Rect {
+    let rows = |count: usize| count.min(LIST_CAPACITY) as i32;
+    let y = 1 + (rows(index) - rows(top)) * ITEM_HEIGHT;
+    Rect::sized(1, y, width.saturating_sub(2).max(0), ITEM_HEIGHT)
+}
+
 /// How a list looks at one moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListLook {
@@ -367,6 +395,49 @@ mod tests {
         (0..list.count())
             .map(|index| String::from_utf16(list.text(index).unwrap()).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn item_data_follows_its_item_through_inserts_and_deletes() {
+        let mut list = ListBox::new();
+        list.add(&units("b"), true);
+        list.add(&units("d"), true);
+        assert!(list.set_data(0, 11));
+        assert!(list.set_data(1, 44));
+        assert!(!list.set_data(2, 9));
+        list.add(&units("a"), true);
+        assert_eq!(list.data(0), Some(0));
+        assert_eq!(list.data(1), Some(11));
+        assert_eq!(list.data(2), Some(44));
+        list.delete(1);
+        assert_eq!(list.data(1), Some(44));
+        assert_eq!(list.data(2), None);
+    }
+
+    #[test]
+    fn each_item_s_bounds_are_the_row_a_click_finds_it_in() {
+        let height = 102;
+        let visible = visible_rows(height);
+        let mut list = ListBox::new();
+        for index in 0..12 {
+            list.add(&units(&format!("item {index}")), false);
+        }
+        list.select(Some(9), visible);
+        let top = list.top();
+        assert!(top > 0);
+        for index in top..top + visible {
+            let bounds = row_bounds(index, top, 120);
+            assert_eq!(
+                (bounds.left, bounds.width(), bounds.height()),
+                (1, 118, ITEM_HEIGHT)
+            );
+            assert_eq!(row_at(bounds.top, height), Some(index - top));
+            assert_eq!(row_at(bounds.bottom - 1, height), Some(index - top));
+        }
+        let below = 1 + visible as i32 * ITEM_HEIGHT;
+        assert!(row_bounds(top - 1, top, 120).bottom <= 1);
+        assert!(row_bounds(top + visible, top, 120).top >= below);
+        assert_eq!(row_bounds(0, 0, 1).width(), 0);
     }
 
     #[test]

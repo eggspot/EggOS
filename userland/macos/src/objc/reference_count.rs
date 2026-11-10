@@ -292,9 +292,11 @@ extern "C" fn objc_opt_responds_to_selector(object: Id, sel: usize) -> u8 {
     u8::from(super::send_bool(object, sel!("respondsToSelector:"), sel))
 }
 
+super::exception::guard!(eggos_guarded_enumeration_mutation => objc_enumeration_mutation);
+
 extern "C" fn objc_enumeration_mutation(object: Id) {
     let mut digits = [0u8; 18];
-    super::terminate_uncaught(
+    crate::foundation::raise_named(
         b"NSGenericException",
         &[
             b"*** Collection <",
@@ -419,7 +421,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_objc_opt_self" => objc_opt_self as *const () as usize,
         b"_objc_opt_isKindOfClass" => objc_opt_is_kind_of_class as *const () as usize,
         b"_objc_opt_respondsToSelector" => objc_opt_responds_to_selector as *const () as usize,
-        b"_objc_enumerationMutation" => objc_enumeration_mutation as *const () as usize,
+        b"_objc_enumerationMutation" => eggos_guarded_enumeration_mutation as *const () as usize,
         b"_objc_getProperty" => objc_get_property as *const () as usize,
         b"_objc_setProperty" => objc_set_property as *const () as usize,
         b"_objc_setProperty_atomic" => objc_set_property_atomic as *const () as usize,

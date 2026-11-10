@@ -1,5 +1,6 @@
 use crate::tools::{
     self, Confirmation, DECIDED_NAMES, DefaultValue, JsonType, Mapping, SHIPPED_NAMES, TOOLS,
+    ToolResult,
 };
 use crate::{
     COMMANDS, CORE_VERBS, Category, Effect, Grant, KEPT_NAMES, NOUN_VERBS, Output, SHELL_BUILTINS,
@@ -145,10 +146,7 @@ fn examples_start_with_their_command_s_words_and_show_json_only_where_it_exists(
                 assert!(command.has_json(), "{}", example.line);
             }
         }
-        let shown_by_a_fake = !matches!(
-            command.words,
-            ["agentlog" | "help"] | ["wm" | "app" | "ip" | "ping" | "nslookup", ..]
-        );
+        let shown_by_a_fake = !matches!(command.words, ["agentlog" | "help"] | ["wm" | "app", ..]);
         if command.max_effect == Effect::Read && shown_by_a_fake {
             assert!(!command.examples.is_empty(), "{name} has no example");
         }
@@ -176,6 +174,15 @@ fn json_fields_are_snake_case_with_units_in_their_names() {
             }
         }
     }
+}
+
+#[test]
+fn every_error_is_found_by_its_code_and_nothing_else_is() {
+    for error in errors::ALL {
+        assert_eq!(errors::by_code(error.code.as_bytes()), Some(error));
+    }
+    assert_eq!(errors::by_code(b"no_such_thing"), None);
+    assert_eq!(errors::by_code(b""), None);
 }
 
 #[test]
@@ -238,6 +245,33 @@ fn new_tool_names_join_their_command_s_words_and_shipped_names_are_kept() {
     }
     for (shipped, tool) in SHIPPED_NAMES.iter().zip(&TOOLS) {
         assert_eq!(*shipped, tool.name);
+    }
+}
+
+#[test]
+fn every_tool_declares_its_result_and_new_list_tools_answer_items() {
+    for tool in &TOOLS {
+        let records = match find(tool.command) {
+            Some(command) if tool.fixed.contains(&"--json") => match command.outputs.json {
+                Output::Records(fields) => Some(fields),
+                _ => None,
+            },
+            _ => None,
+        };
+        match tool.result {
+            ToolResult::Items(fields) => assert_eq!(Some(fields), records, "{}", tool.name),
+            ToolResult::Image => assert_eq!(tool.name, "wm_capture"),
+            ToolResult::Icon => assert_eq!(tool.name, "app_icon"),
+            ToolResult::Run => assert_eq!(tool.name, "run"),
+            ToolResult::Text => assert!(
+                records.is_none() || SHIPPED_NAMES.contains(&tool.name),
+                "{} writes JSON records, so its result is the items envelope",
+                tool.name
+            ),
+        }
+        if tool.dry_run_by_server() {
+            assert_eq!(tool.result, ToolResult::Text, "{}", tool.name);
+        }
     }
 }
 
@@ -400,7 +434,7 @@ fn list_commands_page_with_limit_and_after_and_say_a_bad_cursor() {
             paged += 1;
         }
     }
-    assert_eq!(paged, 4);
+    assert_eq!(paged, 8);
 }
 
 #[test]
@@ -421,7 +455,7 @@ fn list_tools_page_as_their_commands_do() {
         }
         paged.push(tool.name);
     }
-    assert_eq!(paged, ["ls", "ps", "wm_list", "app_list"]);
+    assert_eq!(paged, ["ls", "ps", "wm_list", "app_list", "settings_list"]);
 }
 
 #[test]
@@ -471,10 +505,18 @@ fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
         [
             "tee",
             "trash",
+            "clock_set",
             "app_uninstall",
             "settings_set",
             "disk_repair",
-            "disk_format"
+            "disk_format",
+            "file_copy",
+            "file_move",
+            "file_remove",
+            "component_install",
+            "component_remove",
+            "windows_registry_delete",
+            "windows_registry_reset",
         ]
     );
     let commands: Vec<String> = COMMANDS
@@ -486,11 +528,21 @@ fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
         commands,
         [
             "agent grant",
+            "app install",
             "app uninstall",
+            "component install",
+            "component remove",
+            "cp",
+            "date",
             "disk format",
             "disk repair",
+            "fetch",
+            "mv",
+            "rm",
             "settings set",
-            "trash"
+            "trash",
+            "windows registry delete",
+            "windows registry reset",
         ]
     );
 }

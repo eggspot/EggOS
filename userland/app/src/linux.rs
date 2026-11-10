@@ -11,6 +11,7 @@ use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
 
 const AT_FDCWD: usize = -100isize as usize;
+const WRITE_ACCESS: usize = 2;
 const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 const AT_REMOVEDIR: usize = 0x200;
 const O_RDONLY: usize = 0;
@@ -458,6 +459,15 @@ impl Files for LinuxFiles {
 
     fn status_following(&mut self, path: &[u8]) -> Result<Status, Errno> {
         status_with(path, 0)
+    }
+
+    fn may_write(&mut self, path: &[u8]) -> Result<(), Errno> {
+        let path = CPath::new(path)?;
+        call(
+            number::FACCESSAT,
+            [AT_FDCWD, path.pointer(), WRITE_ACCESS, 0, 0, 0],
+        )
+        .map(|_| ())
     }
 
     fn read_link(&mut self, path: &[u8], target: &mut [u8]) -> Result<usize, Errno> {

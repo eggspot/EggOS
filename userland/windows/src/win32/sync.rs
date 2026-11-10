@@ -606,7 +606,7 @@ pub fn sleep_alertably(milliseconds: u32) -> u32 {
     }
 }
 
-extern "efiapi" fn wait_for_single_object(handle: usize, milliseconds: u32) -> u32 {
+pub(super) extern "efiapi" fn wait_for_single_object(handle: usize, milliseconds: u32) -> u32 {
     wait(&[handle], false, milliseconds, false)
 }
 
@@ -1327,7 +1327,7 @@ extern "efiapi" fn initialize_srw_lock(lock: usize) {
     srw_lock(lock).store(0, Ordering::Relaxed);
 }
 
-extern "efiapi" fn acquire_srw_lock_exclusive(lock: usize) {
+pub(super) extern "efiapi" fn acquire_srw_lock_exclusive(lock: usize) {
     let lock = srw_lock(lock);
     while let Some(state) = srw_try_exclusive(lock) {
         if state & !SRW_WAITERS != 0 {
@@ -1345,7 +1345,7 @@ extern "efiapi" fn acquire_srw_lock_shared(lock: usize) {
     }
 }
 
-extern "efiapi" fn try_acquire_srw_lock_exclusive(lock: usize) -> u8 {
+pub(super) extern "efiapi" fn try_acquire_srw_lock_exclusive(lock: usize) -> u8 {
     u8::from(srw_try_exclusive(srw_lock(lock)).is_none())
 }
 
@@ -1359,7 +1359,7 @@ fn srw_wake(lock: &AtomicU32, previous: u32) {
     }
 }
 
-extern "efiapi" fn release_srw_lock_exclusive(lock: usize) {
+pub(super) extern "efiapi" fn release_srw_lock_exclusive(lock: usize) {
     let lock = srw_lock(lock);
     let previous = lock.fetch_and(!(SRW_WRITER | SRW_WAITERS), Ordering::Release);
     srw_wake(lock, previous);
@@ -1404,7 +1404,7 @@ unsafe extern "efiapi" fn sleep_condition_variable_cs(
 
 const CONDITION_VARIABLE_LOCKMODE_SHARED: u32 = 1;
 
-extern "efiapi" fn sleep_condition_variable_srw(
+pub(super) extern "efiapi" fn sleep_condition_variable_srw(
     variable: usize,
     lock: usize,
     milliseconds: u32,
@@ -1422,12 +1422,12 @@ extern "efiapi" fn sleep_condition_variable_srw(
     result
 }
 
-extern "efiapi" fn wake_condition_variable(variable: usize) {
+pub(super) extern "efiapi" fn wake_condition_variable(variable: usize) {
     word(variable).fetch_add(1, Ordering::Release);
     linux::futex_wake(variable, WakeCount::One);
 }
 
-extern "efiapi" fn wake_all_condition_variable(variable: usize) {
+pub(super) extern "efiapi" fn wake_all_condition_variable(variable: usize) {
     word(variable).fetch_add(1, Ordering::Release);
     linux::futex_wake(variable, WakeCount::All);
 }

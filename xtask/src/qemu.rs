@@ -6,11 +6,13 @@ pub mod agent_network;
 pub mod android_dynamic;
 pub mod autohotkey;
 pub mod cocoa_app;
+pub mod components;
 pub mod disks;
 pub mod dynamic_linking;
 pub mod files;
 pub mod gtk_app;
 pub mod hello_crate;
+pub mod https;
 pub mod install;
 mod linux_gui;
 pub mod macos_gui;
@@ -26,9 +28,11 @@ pub mod sdl_app;
 pub mod settings;
 pub mod shell;
 pub mod static_glibc;
+pub mod terminals;
 pub mod text_editor;
 pub mod win32_app;
 mod win_controls;
+mod win_controls2;
 mod windows_crt;
 mod windows_gui;
 pub mod work_disk;
@@ -43,7 +47,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use eggos_drivers::desktop::protocol::{DiscardEvents, PointerShape};
-use eggos_drivers::desktop::{Contents, Desktop, GRID_SIZE, Part, WindowId, colour};
+use eggos_drivers::desktop::{
+    Contents, Desktop, GRID_SIZE, KeyboardLayoutChoice, Part, WindowId, colour,
+};
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::input::keymap::Modifiers;
 use eggos_drivers::input::{AxisRange, key, scale_to_screen};
@@ -226,6 +232,16 @@ pub enum Expect {
     /// violation, a division by zero and an illegal instruction in `__try` blocks, ran a
     /// `__finally` block, continued from a vectored handler and a filter and raised a signal;
     /// and an uncaught exception ends it through `terminate` with status 3.
+    /// Then `eggcpp2.exe`, our own C++ program on msvcp140 (D230): its lines say the layer threw
+    /// `std::bad_cast`, `std::bad_typeid`, `std::out_of_range`, `std::length_error` and
+    /// `std::bad_function_call` with MSVC's words and type names, `std::rethrow_exception` threw
+    /// fresh copies of a held object, `std::make_exception_ptr` held a `std::runtime_error`,
+    /// `std::uncaught_exceptions` counted an exception during unwinding, four `std::thread`s
+    /// shared a `std::mutex`, a `std::condition_variable` handed a value over, a
+    /// `std::recursive_mutex` locked twice, `steady_clock` measured a sleep and a second
+    /// `join` threw `std::system_error` in the generic category; then its status 0; and
+    /// `eggcpp2.exe bench 1000` prints its `cxx_throw_catch` measurement, nanoseconds per throw
+    /// and catch, as `macos-objc bench` prints its own.
     /// Then `eggspawn.exe`, our own C program (D189): it starts a copy of itself with
     /// `CreateProcessW` whose standard output is an inherited pipe, and its lines say the read
     /// end was kept from the child, `PeekNamedPipe` saw what `ReadFile` then took before the
@@ -248,6 +264,13 @@ pub enum Expect {
     /// came back abandoned once the child ended, the mapping went with its last handle, views
     /// of a page-file mapping share memory and refuse bad offsets and sizes, and a file's view
     /// wrote, flushed and copied on write; then its status 0.
+    /// Then `eggcrt2.exe`, our own C program (D229): its lines say the math library's `sin`,
+    /// `exp`, `pow`, `atan2`, `fmod`, `tgamma` and `sqrt` gave their values, `longjmp` left two
+    /// frames through a `__finally` and turned 0 into 1, `setlocale` named "C", the user's
+    /// default and a mixed locale and refused `de-DE`, `localeconv` gave en-US's separators and
+    /// `MB_CUR_MAX` followed `LC_CTYPE`, a `ccs=UTF-16LE` stream wrote and read back UTF-16 with
+    /// its byte order mark and `\r\n`, a text stream wrote `fputws` as UTF-8, and `_write` and
+    /// `_read` in text mode translated line ends and stopped at Ctrl+Z; then its status 0.
     /// Then `eggrust.exe`, our own Rust program on Rust's standard library (D189): its lines say
     /// `Command::output` ran a copy of itself with its arguments and took its output, error
     /// and exit code through pipes, a piped child's output was read as it came, a file was
@@ -485,6 +508,24 @@ pub fn work_disk_args(arch: &Arch, image: &str) -> Vec<String> {
     ]
 }
 
+/// QEMU's arguments that attach the component store `image` (an absolute path,
+/// `eggos-<version>-<arch>-components.img`) read-only on another of `arch`'s virtio block
+/// devices, where the component manager finds it (D235): the file and the disk are both
+/// read-only, so nothing in EggOS can change the store it installs from.
+pub fn store_disk_args(arch: &Arch, image: &str) -> Vec<String> {
+    vec![
+        "-blockdev".into(),
+        format!(
+            "driver=file,node-name=store-file,filename={},read-only=on",
+            image.replace(',', ",,")
+        ),
+        "-blockdev".into(),
+        "driver=raw,node-name=store,file=store-file,read-only=on".into(),
+        "-device".into(),
+        format!("{},drive=store", arch.disk_device),
+    ]
+}
+
 /// Creates the disk image `path`, `bytes` long and empty, unless it exists with something in
 /// it; returns whether it made one. An empty file is extended, as the run scripts do; a file
 /// with contents is never cut. The file is extended without writing (sparse on APFS, ext4 and
@@ -570,12 +611,14 @@ fn linux_gui_output() -> [Vec<Line>; LINUX_GUI_SESSION.len()] {
     ]
 }
 
-const WINDOWS_GUI_SESSION: [&[u8]; 5] = [
+const WINDOWS_GUI_SESSION: [&[u8]; 6] = [
     b"win-paint.exe > /tmp/win-paint.log; echo WIN-PAINT status $?; sleep 3; \
-      win-controls.exe > /tmp/c.log; echo WIN-CONTROLS status $?\r",
+      win-controls.exe > /tmp/c.log; echo WIN-CONTROLS status $?; sleep 3; \
+      win-controls2.exe > /tmp/c2.log; echo WIN-CONTROLS2 status $?\r",
     b"cat /tmp/win-paint.log\r",
     b"cat /tmp/c.log\r",
     b"cat /tmp/win-controls/note.txt\r",
+    b"cat /tmp/c2.log\r",
     b"exit 7\r",
 ];
 
@@ -596,16 +639,19 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT quit 0",
 ];
 
-const WINDOWS_CRT_SESSION: [&[u8]; 13] = [
+const WINDOWS_CRT_SESSION: [&[u8]; 16] = [
     b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
     b"cat /tmp/eggpad.log\r",
     b"cat /tmp/note.txt\r",
     b"eggcpp.exe; echo EGGCPP status $?\r",
     b"eggcpp-fh3.exe; echo EGGCPP-FH3 status $?\r",
     b"eggcpp.exe uncaught; echo EGGCPP uncaught status $?\r",
+    b"eggcpp2.exe; echo EGGCPP2 status $?\r",
+    b"eggcpp2.exe bench 1000; echo EGGCPP2 bench status $?\r",
     b"eggspawn.exe; echo EGGSPAWN status $?\r",
     b"eggsync.exe; echo EGGSYNC status $?\r",
     b"eggnamed.exe; echo EGGNAMED status $?\r",
+    b"eggcrt2.exe; echo EGGCRT2 status $?\r",
     b"eggrust.exe; echo EGGRUST status $?\r",
     b"eggrust.exe panic; echo EGGRUST panic status $?\r",
     b"GREETING=hi eggmingw.exe one 'two words'; echo EGGMINGW status $?\r",
@@ -684,6 +730,41 @@ const EGGNAMED_LINES: [&str; 11] = [
     "EGGNAMED status 0",
 ];
 
+const EGGCPP2_LINES: [&str; 16] = [
+    "EGGCPP2 bad_cast Bad dynamic_cast!, class std::bad_cast",
+    "EGGCPP2 bad_typeid Attempted a typeid of nullptr pointer!, class std::bad_typeid",
+    "EGGCPP2 out_of_range invalid vector subscript, class std::out_of_range",
+    "EGGCPP2 length_error string too long",
+    "EGGCPP2 bad_function_call bad function call",
+    "EGGCPP2 rethrown 6",
+    "EGGCPP2 rethrown 6",
+    "EGGCPP2 exception_ptr copies 2, kept 1",
+    "EGGCPP2 made made, equal 0",
+    "EGGCPP2 uncaught during unwinding 1, in catch 0",
+    "EGGCPP2 threads total 4000",
+    "EGGCPP2 condition handed 42",
+    "EGGCPP2 recursive 1, cpus 1",
+    "EGGCPP2 slept at least 20 ms 1",
+    "EGGCPP2 system_error 22 generic, invalid argument, invalid argument",
+    "EGGCPP2 done",
+];
+
+const EGGCRT2_LINES: [&str; 12] = [
+    "EGGCRT2 sin 0.841470984808 exp 2.71828182846 pow 1.41421356237",
+    "EGGCRT2 atan2 0.785398163397 fmod 1 tgamma 24 sqrt 1.4142135623730951",
+    "EGGCRT2 longjmp returned 1 after 3 rounds, finally ran 2",
+    "EGGCRT2 locale C, user English_United States.utf8, separators . ,, grouping 3, currency $, \
+     MB_CUR_MAX 4",
+    "EGGCRT2 locale numeric C: 160 long, numeric part 1, starts LC_COLLATE=English_United States.utf8;",
+    "EGGCRT2 locale de-DE refused 1, en-US object 1, back to C 1",
+    "EGGCRT2 wide file 18 bytes, line length 6 second e9, then ! ! end 1 1",
+    "EGGCRT2 multibyte file 4 bytes c3 a9 0d 0a",
+    "EGGCRT2 text wrote 4, file 6, read 4 a|b|",
+    "EGGCRT2 ctrl+z read 3 x|y then 0, setmode was 16384",
+    "EGGCRT2 done",
+    "EGGCRT2 status 0",
+];
+
 const EGGMINGW_LINES: [&str; 10] = [
     "EGGMINGW hello from msvcrt.dll, arguments 2: one|two words",
     "EGGMINGW greeting hi",
@@ -728,9 +809,19 @@ fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
             "windows: the program called terminate",
             "EGGCPP uncaught status 3",
         ]),
+        {
+            let mut lines = whole(&EGGCPP2_LINES);
+            lines.push(Line::Whole("EGGCPP2 status 0".to_owned()));
+            lines
+        },
+        vec![
+            Line::Around("EGGCPP2 bench cxx_throw_catch ", " ns (1000)"),
+            Line::Whole("EGGCPP2 bench status 0".to_owned()),
+        ],
         whole(&EGGSPAWN_LINES),
         whole(&EGGSYNC_LINES),
         whole(&EGGNAMED_LINES),
+        whole(&EGGCRT2_LINES),
         whole(&EGGRUST_LINES),
         vec![
             Line::Around("thread 'main'", ":"),
@@ -759,6 +850,20 @@ const WIN_CONTROLS_LINES: [&str; 13] = [
     "WIN-CONTROLS quit 0",
 ];
 
+const WIN_CONTROLS2_LINES: [&str; 11] = [
+    "WIN-CONTROLS2 controls created, bar at 0, list data 7 9 -1, combo data 11",
+    "WIN-CONTROLS2 window created",
+    "WIN-CONTROLS2 button 26 clicked, large 1",
+    "WIN-CONTROLS2 scrolled a line to 1",
+    "WIN-CONTROLS2 word egg x selection 5 5",
+    "WIN-CONTROLS2 password egg",
+    "WIN-CONTROLS2 number 1",
+    "WIN-CONTROLS2 radios 0 1",
+    "WIN-CONTROLS2 scroll 1",
+    "WIN-CONTROLS2 destroyed",
+    "WIN-CONTROLS2 quit 0",
+];
+
 fn runs_windows_programs(arch: &str) -> bool {
     matches!(arch, "x86_64" | "aarch64")
 }
@@ -773,10 +878,15 @@ fn windows_gui_output(arch: &str) -> [Vec<Line>; WINDOWS_GUI_SESSION.len()] {
     let end = whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]);
     match runs_windows_programs(arch) {
         true => [
-            whole(&["WIN-PAINT status 0", "WIN-CONTROLS status 0"]),
+            whole(&[
+                "WIN-PAINT status 0",
+                "WIN-CONTROLS status 0",
+                "WIN-CONTROLS2 status 0",
+            ]),
             whole(&WIN_PAINT_LINES),
             whole(&WIN_CONTROLS_LINES),
             whole(&["egg"]),
+            whole(&WIN_CONTROLS2_LINES),
             end,
         ],
         false => [
@@ -785,7 +895,10 @@ fn windows_gui_output(arch: &str) -> [Vec<Line>; WINDOWS_GUI_SESSION.len()] {
                 "WIN-PAINT status 126",
                 "eggsh: win-controls.exe: Exec format error",
                 "WIN-CONTROLS status 126",
+                "eggsh: win-controls2.exe: Exec format error",
+                "WIN-CONTROLS2 status 126",
             ]),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -849,7 +962,7 @@ const MACOS_CONSOLE_CHECK_LINES: [&str; 23] = [
     "MACOS-CONSOLE status 0",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 24] = [
+const MACOS_PROGRAM_SESSION: [&[u8]; 25] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
@@ -868,6 +981,7 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 24] = [
     b"macos-objc bench; echo MACOS-CONSOLE status $?\r",
     b"macos-objc language; echo MACOS-CONSOLE status $?\r",
     b"macos-objc uncaught; echo MACOS-CONSOLE status $?\r",
+    b"macos-objc foundation; echo MACOS-CONSOLE status $?\r",
     b"macos-swift; echo MACOS-CONSOLE status $?\r",
     b"macos-swift conflict; echo MACOS-CONSOLE status $?\r",
     b"macos-swift fatal error; echo MACOS-CONSOLE status $?\r",
@@ -944,7 +1058,7 @@ const OBJC_UNRECOGNIZED: &str = "*** Terminating app due to uncaught exception \
      'NSInvalidArgumentException', reason: '-[Counter frobnicate]: unrecognized selector sent to \
      instance 0x";
 
-const OBJC_LANGUAGE_LINES: [&str; 27] = [
+const OBJC_LANGUAGE_LINES: [&str; 34] = [
     "MACOS-OBJC block 42",
     "MACOS-OBJC byref 3",
     "MACOS-OBJC enumerate a0,b1",
@@ -959,6 +1073,13 @@ const OBJC_LANGUAGE_LINES: [&str; 27] = [
     "MACOS-OBJC inner EggRaise",
     "MACOS-OBJC outer code 4",
     "MACOS-OBJC caught any plain string",
+    "MACOS-OBJC caught NSRangeException",
+    "MACOS-OBJC caught EggBlock x",
+    "MACOS-OBJC caught NSInvalidArgumentException",
+    "MACOS-OBJC caught NSRangeException insert",
+    "MACOS-OBJC caught NSInvalidArgumentException dictionary",
+    "MACOS-OBJC caught EggSetBlock s",
+    "MACOS-OBJC caught EggObserver EggThrow",
     "MACOS-OBJC set 2 1 0",
     "MACOS-OBJC set a,c",
     "MACOS-OBJC date 1970-01-01 00:00:00 +0000 1971-01-01 00:00:00 +0000 -1 31536000",
@@ -971,6 +1092,21 @@ const OBJC_LANGUAGE_LINES: [&str; 27] = [
     "MACOS-OBJC timer 3 0",
     "MACOS-OBJC tick once",
     "MACOS-OBJC language done",
+    "MACOS-CONSOLE status 0",
+];
+
+const OBJC_FOUNDATION_LINES: [&str; 12] = [
+    "MACOS-OBJC heard EggNote v",
+    "MACOS-OBJC notes 1 1",
+    "MACOS-OBJC uuid E621E1F8-C36C-495A-93FC-0C247A3E6E5F 36 4 1",
+    "MACOS-OBJC encode 4 h\u{e9} 1",
+    "MACOS-OBJC files 1 1 1 1 1 1 4 NSFileTypeRegular 2",
+    "MACOS-OBJC files gone 1 0 4 NSCocoaErrorDomain",
+    "MACOS-OBJC later first",
+    "MACOS-OBJC mode waiting 1",
+    "MACOS-OBJC mode fired",
+    "MACOS-OBJC thread loop 1 0",
+    "MACOS-OBJC foundation done",
     "MACOS-CONSOLE status 0",
 ];
 
@@ -1094,7 +1230,7 @@ const OBJC_UNCAUGHT_LINES: [&str; 5] = [
     "MACOS-CONSOLE status 134",
 ];
 
-fn objc_program_output() -> [Vec<Line>; 6] {
+fn objc_program_output() -> [Vec<Line>; 7] {
     let whole = |line: &str| Line::Whole(line.to_owned());
     let loads = || OBJC_LOAD_LINES.iter().map(|line| whole(line));
     let mut program: Vec<Line> = loads().collect();
@@ -1113,7 +1249,7 @@ fn objc_program_output() -> [Vec<Line>; 6] {
     ]);
     let mut unimplemented: Vec<Line> = loads().collect();
     unimplemented.extend([
-        Line::Around("eggos-macos: unimplemented ", " class NSUUID"),
+        Line::Around("eggos-macos: unimplemented ", " class NSXPCConnection"),
         whole("MACOS-CONSOLE status 127"),
     ]);
     let mut bench: Vec<Line> = loads().collect();
@@ -1127,6 +1263,8 @@ fn objc_program_output() -> [Vec<Line>; 6] {
     language.extend(OBJC_LANGUAGE_LINES.iter().map(|line| whole(line)));
     let mut uncaught: Vec<Line> = loads().collect();
     uncaught.extend(OBJC_UNCAUGHT_LINES.iter().map(|line| whole(line)));
+    let mut foundation: Vec<Line> = loads().collect();
+    foundation.extend(OBJC_FOUNDATION_LINES.iter().map(|line| whole(line)));
     [
         program,
         unrecognized,
@@ -1134,6 +1272,7 @@ fn objc_program_output() -> [Vec<Line>; 6] {
         bench,
         language,
         uncaught,
+        foundation,
     ]
 }
 
@@ -1165,6 +1304,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-std"),
             refused("macos-tools"),
             refused("macos-tools"),
+            refused("macos-objc"),
             refused("macos-objc"),
             refused("macos-objc"),
             refused("macos-objc"),
@@ -1238,6 +1378,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             "MACOS-CONSOLE status 0",
         ]),
         whole(&["macos-tools: invalid option -- x", "MACOS-CONSOLE status 2"]),
+        objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
@@ -1529,7 +1670,7 @@ const PROMPT_SESSION: [&[u8]; 28] = [
     PIPELINE_READING_THE_TERMINAL,
     b"echo EGGOS-PIPE interrupted $?\r",
     b"ls /proc/sys/kernel; cd /proc; pwd; cd ..; pwd; grep -c kB /proc/meminfo\r",
-    b"ps | head -n 1; ps | grep ' init$'; ps | grep -c ' R ps$'\r",
+    b"ps | head -n 1; ps | grep '^ *1 .* init$'; ps | grep -c ' R ps$'\r",
     b"free | head -n 1; free | grep -c '^Mem: '; uptime | grep -c '^up [0-9]'\r",
     b"echo a > /tmp/x; echo b >> /tmp/x; cat /tmp/x; cat < /tmp/x\r",
     b"mkdir /home/u; touch /home/u/f; cp /tmp/x /home/u/y; mv /home/u/y /home/u/z; ls /home/u\r",
@@ -1543,7 +1684,31 @@ const PROMPT_SESSION: [&[u8]; 28] = [
     b"poweroff\r",
 ];
 
+const GERMAN_LAYOUT: &str = "de";
+
 const GERMAN_LAYOUT_LINE: &[u8] = b"settings set keyboard.layout de\r";
+
+fn show_layout_chosen(desktop: &mut Desktop, name: &str) {
+    let Some(number) = eggos_settings_file::keyboard_layout_named(name.as_bytes()) else {
+        return;
+    };
+    let chosen = eggos_settings_file::KeyboardLayoutSet::DEFAULT.with_chosen(number, 0);
+    let choices: Vec<KeyboardLayoutChoice> = chosen
+        .numbers()
+        .filter_map(|listed| {
+            let layout = eggos_settings_file::KEYBOARD_LAYOUTS.get(listed)?;
+            Some(KeyboardLayoutChoice {
+                number: listed as u8,
+                name: layout.name,
+                title: layout.title,
+                code: layout.code,
+            })
+        })
+        .collect();
+    let chord =
+        eggos_settings_file::SwitchKey::default().chord(desktop.profile().number() as usize);
+    desktop.set_keyboard_layouts(&choices, number as u8, chord, &mut Damage::new());
+}
 
 const ACCENT_LINE: &[u8] = "echo EGGOS ACCENT caf\u{e9}\r".as_bytes();
 
@@ -1683,7 +1848,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
     [
         whole(&["Applications  bin  dev  etc  home  init  media  proc  run  tmp  usr  var  work"]),
         vec![
-            Line::Around("-rwxr-xr-x 47 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 49 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -1869,6 +2034,8 @@ const TERMINAL_LINE_1280X800: &str = "boot: terminal 80x24";
 
 const BOOT_INIT_LINE: &str = "boot: init";
 
+const DESKTOP_LINE_PREFIX: &str = "boot: desktop ";
+
 /// What the kernel says when it shows its display at 1280x800, the default mode.
 pub const DISPLAY_LINE_1280X800: &str = "boot: display 1280x800";
 
@@ -1990,6 +2157,7 @@ fn boot(
         .arg("-smp")
         .arg(cpus.to_string())
         .args(qmp_port.map(qmp::qemu_args).unwrap_or_default())
+        .args(command_line_args(FIRST_RUN_SKIP_WORD))
         .args(extra_args)
         .args(["-display", "none", "-serial", "stdio", "-monitor", "none"])
         .arg("-kernel")
@@ -2692,6 +2860,15 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
             "{arch}: no `{BOOT_INIT_LINE}`: the boot screen's init stage was not reached"
         ));
     }
+    let desktop_line = lines.iter().any(|line| {
+        line.strip_prefix(DESKTOP_LINE_PREFIX)
+            .is_some_and(|milliseconds| milliseconds.parse::<u64>().is_ok())
+    });
+    if !desktop_line {
+        return Err(format!(
+            "{arch}: no `{DESKTOP_LINE_PREFIX}<ms>`: the desktop was not made before the terminal"
+        ));
+    }
     if !lines.contains(&DISPLAY_LINE_1280X800) {
         return Err(format!(
             "{arch}: no `{DISPLAY_LINE_1280X800}`: the virtio GPU was not shown"
@@ -2752,14 +2929,23 @@ fn boot_clock_verdict(arch: &str, console: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn terminal_stream(console: &[u8]) -> Option<&[u8]> {
+const SERIAL_ONLY_LINE_PREFIX: &[u8] = b"init: ";
+
+fn terminal_stream(console: &[u8]) -> Option<Vec<u8>> {
     let prefix = TERMINAL_LINE_PREFIX.as_bytes();
     let start = console
         .windows(prefix.len() + 1)
         .position(|window| window[0] == b'\n' && &window[1..] == prefix)?
         + 1;
     let end = start + console[start..].iter().position(|&byte| byte == b'\n')?;
-    Some(&console[end + 1..])
+    Some(
+        console[end + 1..]
+            .split_inclusive(|&byte| byte == b'\n')
+            .filter(|line| !line.starts_with(SERIAL_ONLY_LINE_PREFIX))
+            .flatten()
+            .copied()
+            .collect(),
+    )
 }
 
 /// What a program's window shows in the host's render.
@@ -3025,6 +3211,9 @@ fn check_terminal_frame(
     let (width, height) = screen_size(&mut qmp, arch)?;
     let mut desktop = Desktop::new(width, height)
         .ok_or_else(|| format!("{}: a {width}x{height} display holds no desktop", arch.name))?;
+    if at == ACCENT_FRAME {
+        show_layout_chosen(&mut desktop, GERMAN_LAYOUT);
+    }
     if pointer == PointerSteps::AlreadySent {
         for (_, steps) in pointer_steps(&desktop) {
             for step in steps {
@@ -3615,13 +3804,13 @@ fn check_desktop_frame_masked(
         let mut candidates = Vec::new();
         for windows in alternatives {
             candidates.push(
-                desktop_picture(desktop, stream, windows)
+                desktop_picture(desktop, &stream, windows)
                     .ok_or_else(|| format!("{}: the desktop holds no terminal", arch.name))?,
             );
             if desktop.focused() {
                 candidates.extend(desktop_picture_with(
                     desktop,
-                    stream,
+                    &stream,
                     windows,
                     CursorLook::Blinked,
                 ));
@@ -3748,6 +3937,11 @@ pub fn agent_channel_args(arch: &Arch, chardev: &str) -> Vec<String> {
 /// The kernel command line's word that asks for the offscreen display, which `--no-window`
 /// passes (D144).
 pub const OFFSCREEN_WORD: &str = "eggos.display=offscreen";
+
+/// The kernel command line's word that keeps init from opening the first run on a blank disk
+/// (D224): every automated boot passes it before its own arguments, so a check that tests the
+/// first run, or passes a command line of its own, replaces it.
+pub const FIRST_RUN_SKIP_WORD: &str = "eggos.first_run=skip";
 
 /// The grants `--mcp-allow` takes (D137), as the kernel command line names them.
 pub const GRANT_NAMES: [&str; 4] = ["view", "write", "run", "install"];
@@ -4070,6 +4264,24 @@ mod tests {
             for name in ["node-name=work", "node-name=work-file", "drive=work"] {
                 assert!(home.iter().all(|arg| !arg.contains(name)), "{name}");
             }
+        }
+    }
+
+    #[test]
+    fn the_component_store_is_a_read_only_raw_block_device_of_its_own() {
+        for arch in crate::ARCHES {
+            let args = store_disk_args(arch, "/x/a,b.img");
+            assert_eq!(
+                args,
+                [
+                    "-blockdev".to_string(),
+                    "driver=file,node-name=store-file,filename=/x/a,,b.img,read-only=on".into(),
+                    "-blockdev".into(),
+                    "driver=raw,node-name=store,file=store-file,read-only=on".into(),
+                    "-device".into(),
+                    format!("{},drive=store", arch.disk_device),
+                ]
+            );
         }
     }
 
@@ -4679,7 +4891,7 @@ mod tests {
 
     fn prompt_console(arch: &str) -> String {
         let mut console = format!(
-            "EggOS 0.2.0 ({arch})\r\n{DISPLAY_LINE_1280X800}\r\n{BOOT_INPUT_LINE}\r\n{INPUT_ON_INTERRUPTS_LINE}\r\n{BOOT_INIT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
+            "EggOS 0.2.0 ({arch})\r\n{DISPLAY_LINE_1280X800}\r\n{BOOT_INPUT_LINE}\r\n{INPUT_ON_INTERRUPTS_LINE}\r\n{BOOT_INIT_LINE}\r\n{DESKTOP_LINE_PREFIX}412\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
         );
         for (index, written) in prompt_session_output(arch).into_iter().enumerate() {
             let command = shown_command(&PROMPT_SESSION, index);
@@ -4721,7 +4933,7 @@ mod tests {
             ok.contains(&links),
             "/bin/ls has a link per utility and its own name"
         );
-        let one_link = ok.replace("-rwxr-xr-x 47 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 49 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());
@@ -4733,6 +4945,8 @@ mod tests {
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &polled).is_err());
         let no_init_stage = ok.replacen(&format!("{BOOT_INIT_LINE}\r\n"), "", 1);
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_init_stage).is_err());
+        let no_desktop = ok.replacen(&format!("{DESKTOP_LINE_PREFIX}412\r\n"), "", 1);
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_desktop).is_err());
         let unshifted = ok.replace("Typed_On+Virtio:OK\r\n", "typed-on=virtio;ok\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &unshifted).is_err());
         let no_terminal = ok.replace(TERMINAL_LINE_1280X800, "boot: no display");
@@ -4747,11 +4961,12 @@ mod tests {
     }
 
     #[test]
-    fn the_terminal_s_bytes_are_the_console_s_after_the_terminal_line() {
-        let console = b"EggOS 0.2.0 (aarch64)\r\nboot: terminal 80x24\r\nEggOS 0.2.0\r\neggsh:/# ";
+    fn the_terminal_s_bytes_are_the_console_s_after_the_terminal_line_without_init_s_log() {
+        let console = b"EggOS 0.2.0 (aarch64)\r\nboot: terminal 80x24\r\nEggOS 0.2.0\r\n\
+            init: starting /bin/eggsh\nWelcome\r\neggsh:/# ";
         assert_eq!(
             terminal_stream(console),
-            Some(&b"EggOS 0.2.0\r\neggsh:/# "[..])
+            Some(b"EggOS 0.2.0\r\nWelcome\r\neggsh:/# ".to_vec())
         );
         assert_eq!(terminal_stream(b"EggOS\r\nboot: terminal 80x24"), None);
         assert_eq!(terminal_stream(b"EggOS\r\nboot: no display\r\nx"), None);

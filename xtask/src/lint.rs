@@ -6,6 +6,11 @@
 //! `xtask/lint-legacy-files.txt`, so the lint fails only for a violation in a file that is not
 //! listed or beyond a listed file's count, and for a list that no longer matches (a count that
 //! went down, a file that is clean or gone), which makes the list only shrink.
+//!
+//! It also enforces D218's build gates, with no list: `target_arch` appears in `kernel/src` and
+//! `drivers/src` only under `kernel/src/linux/abi/`, and kernel and user builds are told apart
+//! by `cfg(eggos_kernel)` and `cfg(eggos_user)`, never by the target's OS or C library (but in
+//! the `compile_error!` guards that refuse a build with neither).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -23,6 +28,7 @@ pub fn run(shrink: bool) -> Result<(), String> {
     let legacy_path = root.join(LEGACY_FILES);
     let legacy = parse_legacy(&read(&legacy_path)?)?;
     let mut found: BTreeMap<String, Vec<Violation>> = BTreeMap::new();
+    let mut gates = Vec::new();
     let mut scanned = 0;
     let files = tracked_files(&root)?;
     for file in &files {
@@ -30,10 +36,14 @@ pub fn run(shrink: bool) -> Result<(), String> {
             continue;
         };
         scanned += 1;
+        gates.extend(gate_problems(file, &text));
         let violations = scan(file, &text);
         if !violations.is_empty() {
             found.insert(file.clone(), violations);
         }
+    }
+    if !gates.is_empty() {
+        return Err(gates.join("\n"));
     }
     let problems = problems(&legacy, &found);
     if shrink {
@@ -67,6 +77,44 @@ pub fn run(shrink: bool) -> Result<(), String> {
         legacy.len()
     );
     Ok(())
+}
+
+const ABI_FOLDER: &str = "kernel/src/linux/abi/";
+
+const OLD_GATES: [&str; 2] = [
+    concat!("target_os", " = \"none\""),
+    concat!("target_env", " = \"musl\""),
+];
+
+/// D218's rules for `path`, whose contents are `text`: see the module documentation.
+pub fn gate_problems(path: &str, text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut problems = Vec::new();
+    let architecture_free = path.ends_with(".rs")
+        && (path.starts_with("kernel/src/") || path.starts_with("drivers/src/"))
+        && !path.starts_with(ABI_FOLDER);
+    for (index, line) in lines.iter().enumerate() {
+        let number = index + 1;
+        if architecture_free && line.contains("target_arch") {
+            problems.push(format!(
+                "{path}:{number}: `target_arch` outside {ABI_FOLDER}: put the architecture's \
+                 Linux ABI fact in {ABI_FOLDER}<arch>.rs, or hardware in the HAL (D218)"
+            ));
+        }
+        let guard = lines[index + 1..]
+            .iter()
+            .find(|next| !next.trim().is_empty())
+            .is_some_and(|next| next.contains("compile_error!"));
+        if let Some(gate) = OLD_GATES.iter().find(|gate| line.contains(**gate))
+            && !guard
+        {
+            problems.push(format!(
+                "{path}:{number}: `{gate}`: tell kernel and user builds apart with \
+                 `cfg(eggos_kernel)` and `cfg(eggos_user)` (D218)"
+            ));
+        }
+    }
+    problems
 }
 
 fn read(path: &Path) -> Result<String, String> {
@@ -693,6 +741,27 @@ fn key_column(code: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_arch_is_refused_in_the_kernel_and_drivers_outside_the_abi_folder() {
+        let text = "#[cfg(target_arch = \"x86_64\")]\nconst A: u8 = 1;\n";
+        assert_eq!(gate_problems("kernel/src/linux.rs", text).len(), 1);
+        assert_eq!(gate_problems("drivers/src/virtio/mod.rs", text).len(), 1);
+        assert!(gate_problems("kernel/src/linux/abi/mod.rs", text).is_empty());
+        assert!(gate_problems("hal/src/arch/mod.rs", text).is_empty());
+        assert!(gate_problems("kernel/build.rs", text).is_empty());
+    }
+
+    #[test]
+    fn old_build_gates_are_refused_but_in_a_compile_error_guard() {
+        for gate in OLD_GATES {
+            let gated = format!("#[cfg({gate})]\nmod entry;\n");
+            assert_eq!(gate_problems("userland/a/src/lib.rs", &gated).len(), 1);
+            assert_eq!(gate_problems("userland/a/Cargo.toml", &gated).len(), 1);
+            let guard = format!("#[cfg(all({gate}, not(eggos_user)))]\n\ncompile_error!(\"x\");\n");
+            assert!(gate_problems("hal/src/lib.rs", &guard).is_empty());
+        }
+    }
 
     fn lines_of(path: &str, text: &str) -> Vec<usize> {
         scan(path, text).iter().map(|v| v.line).collect()

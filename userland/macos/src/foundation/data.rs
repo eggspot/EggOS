@@ -10,9 +10,10 @@ use crate::libsystem::heap;
 use crate::linux::{self, O_CLOEXEC, O_RDONLY};
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
+use crate::objc::exception::guard;
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::{self, NSOBJECT};
-use crate::objc::{Runtime, methods, terminate_uncaught};
+use crate::objc::{Runtime, methods};
 
 const SHOWN_BYTES: usize = 24;
 const READ_CHUNK: usize = 4096;
@@ -84,7 +85,8 @@ fn append(this: Id, bytes: &[u8]) -> bool {
     true
 }
 
-fn new_data(class: *mut ClassObject, bytes: &[u8]) -> Id {
+/// A new data object of `class` holding a copy of `bytes`, counted once.
+pub fn new_data(class: *mut ClassObject, bytes: &[u8]) -> Id {
     let object = new_instance(class);
     if object.is_null() {
         return object;
@@ -295,14 +297,16 @@ extern "C" fn dealloc(this: Id, _: Sel) {
     dispose(this);
 }
 
-fn grown_or_fail(this: Id, done: bool) {
+fn grown_or_fail(this: Id, done: bool, method: &[u8]) {
     if !done {
-        terminate_uncaught(
+        super::raise_named(
             b"NSMallocException",
             &[
                 b"*** -[",
                 root::class_name(this),
-                b" appendBytes:length:]: out of memory",
+                b" ",
+                method,
+                b"]: out of memory",
             ],
         );
     }
@@ -310,8 +314,9 @@ fn grown_or_fail(this: Id, done: bool) {
 
 extern "C" fn append_bytes(this: Id, _: Sel, bytes: *const u8, length: usize) {
     let mut copy = copied(borrowed(bytes, length));
-    grown_or_fail(this, append(this, copy.as_slice()));
+    let done = append(this, copy.as_slice());
     copy.free();
+    grown_or_fail(this, done, b"appendBytes:length:");
 }
 
 extern "C" fn append_data(this: Id, _: Sel, other: Id) {
@@ -319,9 +324,13 @@ extern "C" fn append_data(this: Id, _: Sel, other: Id) {
         return;
     }
     let mut copy = copied(bytes_of(other));
-    grown_or_fail(this, append(this, copy.as_slice()));
+    let done = append(this, copy.as_slice());
     copy.free();
+    grown_or_fail(this, done, b"appendData:");
 }
+
+guard!(eggos_guarded_append_bytes => append_bytes);
+guard!(eggos_guarded_append_data => append_data);
 
 extern "C" fn set_length(this: Id, _: Sel, length: usize) {
     if length > fields(this).length {
@@ -376,8 +385,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "dataWithContentsOfFile:" => data_with_contents_of_file,
     ];
     let mutable_instance = methods![
-        "appendBytes:length:" => append_bytes,
-        "appendData:" => append_data,
+        "appendBytes:length:" => eggos_guarded_append_bytes,
+        "appendData:" => eggos_guarded_append_data,
         "setLength:" => set_length,
         "mutableBytes" => mutable_bytes,
     ];

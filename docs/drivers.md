@@ -59,8 +59,11 @@ delivery (`interrupts`, `polled`, `-`) and the refusal's reason or `-`. Its fron
   every refused one, sorted by kind, then id), `device list -a` (every device), `--json`
   (records with `null` for `-`); docs/coreutils.md.
 - MCP: `device_list`, `device list --json` with `all` for `-a`; docs/mcp.md.
-- GUI: Settings' About pane, designed in docs/ux/devices-v0.3.md; not built yet (it needs the
-  toolkit's `Table`).
+- GUI: Settings' About pane (`userland/settings/src/about_pane.rs`, D220,
+  docs/ux/devices-v0.3.md): a `Devices` section under the facts, the toolkit's table with the
+  columns `Kind`, `Device` and `Driver`, and `Show all <n> devices`; read each time the pane is
+  shown. The filter, the order and the words are the shared crate `eggos-device-list`
+  (`userland/device-list`), which `device list` uses too, so the two cannot drift.
 
 ## Drivers
 
@@ -132,7 +135,16 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   plus freed descriptors). A driver that waits for interrupts asks for them
   (`SplitQueue::enable_used_notifications`) and looks at the used ring once after.
 - **virtio-rng.** One request queue of 8 entries and a 1 KiB request buffer in one 4 KiB
-  region; `devices::virtio::read_random` fills a buffer, polling until a deadline.
+  region; `devices::virtio::read_random` fills a buffer, sleeping until the device interrupts
+  (D220) or polling, until a deadline. At boot, right after probing, `seed_random` hashes 32
+  bytes from it into the kernel's generator, credited 8 bits a byte only for a whole read
+  that is not all zeros (a short or all-zero read is hashed in uncredited), and
+  reseeds it (`random::reseed_from_device`; the boot log says `random: reseeded from
+  virtio-rng`).
+- **Interrupting drivers** (D220): virtio-input, virtio-blk, the agent channel's console,
+  virtio-net (receive queue only: sent frames are taken back at the next send) and virtio-rng
+  connect their interrupt at probe and clear the flag below on their queues; one whose
+  interrupt cannot be connected stays polled.
 - **Polled queues.** Every polled driver sets the available ring's `VIRTQ_AVAIL_F_NO_INTERRUPT`
   (`SplitQueue::disable_used_notifications`, D113), so the device raises no interrupt nobody
   takes (on virtio-mmio its line would otherwise stay asserted until slice 3 enables it).
@@ -162,9 +174,17 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   event type for the codes it sends, 0x12 with an axis for its range): keyboard keys, buttons,
   relative X and Y, the wheel, absolute X and Y with their ranges. A device that is neither a
   keyboard nor a pointer is refused. The status queue (LEDs) is not set up.
-- **virtio-blk** (D130). One request queue of up to 8 entries, the 16-byte request header, the
-  status byte and a 60 KiB data area in one 64 KiB region; one request at a time, three
-  descriptors (header, data, status), a transfer over 60 KiB split into several. The disk is
+- **virtio-blk** (D130, D220). One request queue of up to 64 entries and, in one 64 KiB region,
+  15 request headers of 16 bytes, 15 status bytes and fifteen 4 KiB data slots; a request has
+  a number (its header and status byte) and a run of data slots (`block::requests::
+  RequestTable`), three descriptors (header, data, status), and up to 15 are in flight at
+  once, completing in any order. A transfer over 60 KiB is split into several, and
+  `read_many` (`BlockDevice::read_many`) posts several reads together (`block_read_4k_qd8`).
+  Every call returns once all of its requests completed, and a flush is posted alone after
+  every earlier request completed, with nothing posted until it completes: EggFS's journal
+  barriers hold as with one request at a time. Where the device's interrupt is connected the
+  caller sleeps until it (`devices::virtio::waiting_for`, `Deadline::sleep_until_raised`, a
+  `DeviceEvents` per disk); otherwise it polls. The disk is
   addressed in 512-byte sectors whatever its block size; `VIRTIO_BLK_F_RO` is accepted and a
   read-only disk refuses writes before any request; the capacity comes from the
   configuration. `VIRTIO_BLK_F_FLUSH` is accepted when offered, and `flush` then sends a flush
@@ -268,17 +288,19 @@ then MSI-X turned on. virtio-mmio: the slot's first device-tree interrupt.
 ## The agent channel
 
 `eggos_drivers::virtio::console` (D136) drives a virtio console device with multiple ports
-(virtio 1.2, 5.3, `VIRTIO_CONSOLE_F_MULTIPORT` required), polled like the others: the control
+(virtio 1.2, 5.3, `VIRTIO_CONSOLE_F_MULTIPORT` required), on interrupts (D220): the control
 queues (2 and 3) and port 1's receive and transmit queues (4 and 5), four 4 KiB receive
 buffers and one 8 KiB transmit buffer in one 32 KiB DMA region allocated only when the device
 exists. At probe the driver says it is ready, readies port 1 (refusing any other port the
 device adds), waits for its name and opens it; the kernel's `CONSOLE_DRIVER` (feature
 `virtio-console`, default) installs a port named `org.eggos.mcp` as the agent channel,
 `kernel/src/agent_channel.rs`, which `/dev/agent` (240:1) hands to one privileged opener at a
-time. A read waits by polling the device (every 4 ms while bytes moved within the last second,
-every 32 ms otherwise) until device interrupts arrive (issue #97); `poll` reports `POLLIN` while
-bytes or the host's end wait and `POLLOUT` always, and a `poll` waiting for input looks at the
-device again at the same intervals (D137); a write waits while QEMU holds the transmit buffer
+time. Every queue asks for interrupts, and the device's interrupt raises
+`agent_channel::DEVICE_EVENTS`, events that also wake the threads waiting for input
+(`DeviceEvents::waking_input_waiters`, D220), so a read or a `poll` sleeps until the device
+interrupts. Where its interrupt cannot be routed a wait polls the device (every 4 ms while bytes
+moved within the last second, every 32 ms otherwise); `poll` reports `POLLIN` while bytes or
+the host's end wait and `POLLOUT` always (D137); a write waits while QEMU holds the transmit buffer
 because the host has not read it. QEMU's arguments are
 `qemu::agent_channel_args`: `-device virtio-serial-device,id=agent` (`virtio-serial-pci,
 disable-legacy=on` on q35) and `-device virtserialport,bus=agent.0,nr=1,chardev=<chardev>,
@@ -371,12 +393,12 @@ whenever Caps Lock changes.
 
 ## Not yet
 
-Interrupts for the other virtio drivers (block, console and the agent channel, GPU, network,
-entropy: they still poll until an answer comes), the I/O APIC for device lines and a line per
-queue, keyboard layouts beyond D185's 14 and the Num and Scroll Lock lights, display events (a mode
-change), several requests in flight on virtio-blk,
-virtio-console input as a console, reseeding the kernel's generator from virtio-rng, the About
-pane's device list, modes whose buffer is larger than one DMA
+The GPU's interrupts (its flush runs under the display's spinning lock, so it cannot sleep), the
+I/O APIC for device lines, lines on other CPUs, a line per queue, lines given back when a driver
+lets a device go or connecting fails, keyboard layouts beyond D185's 14 and the Num and Scroll
+Lock lights, display events (a mode change when QEMU's window is resized, with a QMP check),
+virtio-console input as a console, reseeding from virtio-rng after boot, hot-plug, modes whose
+buffer is larger than one DMA
 region (4 MiB), and a display lock that sleeps instead of spinning, DMA cache
 maintenance for non-coherent devices, `ranges` translation in the device tree, PCI on Arm and
 RISC-V (a BAR allocator), ACPI devices beyond the `MCFG` (AML, M13), unmapping windows and

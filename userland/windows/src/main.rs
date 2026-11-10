@@ -15,13 +15,15 @@
 //! `start.rs` loads the program and `win32/` implements the Win32 and C runtime functions it
 //! imports; `fault_handler.rs` turns its hardware faults into Windows exceptions, which
 //! `win32/exception` dispatches over the unwind data `unwind/` reads (D177), with C++'s data
-//! read by `cxx_data.rs`; `user_shared_data.rs` lays out the page Windows shares with every
+//! read by `cxx_data.rs`, the catch walk's decisions made by `cxx_walk.rs`, and run-time type
+//! information and type names read by `rtti.rs` and `undecorate.rs` (D230);
+//! `user_shared_data.rs` lays out the page Windows shares with every
 //! process.
 
-#![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(eggos_user, no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
 
-#[cfg(any(test, all(runs_windows_programs, target_arch = "aarch64")))]
+#[cfg(any(test, runs_windows_programs))]
 extern crate alloc;
 
 #[cfg(any(test, runs_windows_programs))]
@@ -33,7 +35,11 @@ mod command_line;
 #[cfg(any(test, runs_windows_programs))]
 mod counted_print;
 #[cfg(any(test, runs_windows_programs))]
+mod cpp_errors;
+#[cfg(any(test, runs_windows_programs))]
 mod cxx_data;
+#[cfg(any(test, runs_windows_programs))]
+mod cxx_walk;
 #[cfg(any(test, runs_windows_programs))]
 mod error_messages;
 #[cfg(any(test, runs_windows_programs))]
@@ -87,9 +93,13 @@ mod process_list;
 #[cfg(any(test, runs_windows_programs))]
 mod queued_calls;
 #[cfg(any(test, runs_windows_programs))]
+mod rtti;
+#[cfg(any(test, runs_windows_programs))]
 mod sockets;
 #[cfg(runs_windows_programs)]
 mod start;
+#[cfg(any(test, runs_windows_programs))]
+mod std_exceptions;
 #[cfg(any(test, runs_windows_programs))]
 mod stream;
 #[cfg(any(test, runs_windows_programs))]
@@ -101,11 +111,15 @@ mod translation;
 #[cfg(any(test, runs_windows_programs))]
 mod trash;
 #[cfg(any(test, runs_windows_programs))]
+mod undecorate;
+#[cfg(any(test, runs_windows_programs))]
 mod unwind;
 #[cfg(any(test, runs_windows_programs))]
 mod user_shared_data;
 #[cfg(any(test, runs_windows_programs))]
 mod version_info;
+#[cfg(any(test, runs_windows_programs))]
+mod wide_stream;
 #[cfg(runs_windows_programs)]
 mod win32;
 #[cfg(any(test, runs_windows_programs))]
@@ -114,10 +128,10 @@ mod write_execute;
 #[cfg(runs_windows_programs)]
 eggos_runtime::main!(start::run);
 
-#[cfg(all(target_env = "musl", not(runs_windows_programs)))]
+#[cfg(all(eggos_user, not(runs_windows_programs)))]
 eggos_runtime::main!(unsupported);
 
-#[cfg(all(target_env = "musl", not(runs_windows_programs)))]
+#[cfg(all(eggos_user, not(runs_windows_programs)))]
 fn unsupported(_: &eggos_runtime::startup::Startup) -> i32 {
     eggos_runtime::syscall::write_all(
         2,
@@ -126,5 +140,5 @@ fn unsupported(_: &eggos_runtime::startup::Startup) -> i32 {
     126
 }
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(eggos_user))]
 fn main() {}

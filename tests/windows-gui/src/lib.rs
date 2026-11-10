@@ -6,6 +6,7 @@
 #![no_std]
 
 pub mod controls;
+pub mod controls2;
 
 /// The window's client area the program asks for.
 pub const CLIENT: (i32, i32) = (400, 300);

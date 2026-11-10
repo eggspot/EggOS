@@ -36,6 +36,7 @@ pub enum ControlKind {
     Static,
     ListBox,
     ComboBox,
+    ScrollBar,
     Common(CommonKind),
 }
 
@@ -653,6 +654,59 @@ pub fn next_tab_stop(
     None
 }
 
+/// The controls of `handle`'s group, in creation order: its siblings from the nearest one at or
+/// before it with `WS_GROUP` up to the next one with `WS_GROUP`, as dialogs group radio buttons.
+pub fn group_of(table: &WindowTable, handle: usize) -> ([usize; MAX_WINDOWS], usize) {
+    const WS_GROUP: u32 = 0x0002_0000;
+    let mut found = [0; MAX_WINDOWS];
+    let Some(parent) = table.get(handle).map(|window| window.parent) else {
+        return (found, 0);
+    };
+    let (kids, length) = children(table, parent);
+    let kids = &kids[..length];
+    let Some(at) = kids.iter().position(|&kid| kid == handle) else {
+        return (found, 0);
+    };
+    let starts = |kid: usize| {
+        table
+            .get(kid)
+            .is_some_and(|window| window.style & WS_GROUP != 0)
+    };
+    let first = (0..=at)
+        .rev()
+        .find(|&index| starts(kids[index]))
+        .unwrap_or(0);
+    let end = (at + 1..kids.len())
+        .find(|&index| starts(kids[index]))
+        .unwrap_or(kids.len());
+    let members = &kids[first..end];
+    found[..members.len()].copy_from_slice(members);
+    (found, members.len())
+}
+
+/// The next shown, enabled window of `from`'s group (the previous one when `backwards`) that
+/// `wanted` accepts, wrapping within the group; `None` when no other one does.
+pub fn next_in_group(
+    table: &WindowTable,
+    from: usize,
+    backwards: bool,
+    wanted: &dyn Fn(&Window) -> bool,
+) -> Option<usize> {
+    let (members, count) = group_of(table, from);
+    let members = &members[..count];
+    let at = members.iter().position(|&handle| handle == from)?;
+    (1..count)
+        .map(|step| match backwards {
+            false => members[(at + step) % count],
+            true => members[(at + count - step) % count],
+        })
+        .find(|&handle| {
+            table
+                .get(handle)
+                .is_some_and(|window| window.shown && window.enabled() && wanted(window))
+        })
+}
+
 /// Gives `handle` the new buffer `new`, all of its tree to paint, and returns the buffer
 /// nothing draws on any more, for the caller to unmap after the table's lock: the window's old
 /// one, or `new` itself when the window is gone. The table never holds an unmapped buffer.
@@ -893,6 +947,32 @@ mod tests {
         assert_eq!(next_tab_stop(&table, root, last, false), Some(first));
         assert_eq!(next_tab_stop(&table, root, first, true), Some(last));
         assert_eq!(next_tab_stop(&table, root, root, false), Some(first));
+    }
+
+    #[test]
+    fn groups_run_from_one_ws_group_control_to_the_next_and_arrows_wrap_inside_them() {
+        let mut table = new_table();
+        let root = table.insert(window()).unwrap();
+        let mut control = |style: u32, enabled: bool| {
+            let mut window = child(root, Rect::sized(0, 0, 10, 10));
+            window.style = style;
+            window.set_enabled(enabled);
+            table.insert(window).unwrap()
+        };
+        let group_box = control(0x0002_0007, true);
+        let small = control(0x0001_0009, true);
+        let medium = control(0x0000_0009, false);
+        let large = control(0x0000_0009, true);
+        let next_group = control(0x0003_0000, true);
+        let (members, count) = group_of(&table, medium);
+        assert_eq!(&members[..count], &[group_box, small, medium, large]);
+        let (members, count) = group_of(&table, next_group);
+        assert_eq!(&members[..count], &[next_group]);
+        let radio = |window: &Window| window.style & 0xf == 0x9;
+        assert_eq!(next_in_group(&table, small, false, &radio), Some(large));
+        assert_eq!(next_in_group(&table, large, false, &radio), Some(small));
+        assert_eq!(next_in_group(&table, small, true, &radio), Some(large));
+        assert_eq!(next_in_group(&table, next_group, false, &radio), None);
     }
 
     #[test]

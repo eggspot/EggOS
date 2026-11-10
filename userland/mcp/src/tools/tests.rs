@@ -56,7 +56,7 @@ const SHIPPED_SCHEMAS: [(&str, &str); 26] = [
     ),
     (
         "clock_set",
-        r#"{"type":"object","properties":{"time":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","description":"The new date and time in UTC, as YYYY-MM-DDTHH:MM:SSZ."},"confirm":{"type":"boolean","description":"Set to true when the client cannot ask the user: a guard against accidents, not the user's approval.","default":false}},"required":["time"],"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"time":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","description":"The new date and time in UTC, as YYYY-MM-DDTHH:MM:SSZ."},"confirm":{"type":"boolean","description":"Set to true when the client cannot ask the user: a guard against accidents, not the user's approval.","default":false},"dry_run":{"type":"boolean","description":"Set to true to see what the call would do: nothing is changed and the user is not asked.","default":false}},"required":["time"],"additionalProperties":false}"#,
     ),
     (
         "clock_sync",
@@ -327,7 +327,7 @@ fn the_shipped_tools_keep_their_annotations() {
 fn the_list_is_valid_json_with_annotations() {
     let mut buffer = vec![0u8; 128 * 1024];
     let mut out = JsonWriter::new(&mut buffer);
-    write_list(&mut out);
+    write_list(&mut out, &mut |_| true);
     assert!(!out.overflowed());
     let list = json::parse(out.as_bytes()).unwrap().value;
     let Some(Value::Array(tools)) = list.get("tools") else {
@@ -346,7 +346,36 @@ fn the_list_is_valid_json_with_annotations() {
         );
         assert_eq!(annotations.get("openWorldHint"), Some(Value::Bool(false)));
         assert!(listed.get("inputSchema").unwrap().as_object().is_some());
+        assert_eq!(
+            listed
+                .get("outputSchema")
+                .and_then(Value::as_object)
+                .is_some(),
+            tool.definition.result.declares_output_schema(),
+            "{}",
+            tool.name
+        );
     }
+    let declaring: Vec<&str> = TOOLS
+        .iter()
+        .filter(|tool| tool.definition.result.declares_output_schema())
+        .map(|tool| tool.name)
+        .collect();
+    assert_eq!(
+        declaring,
+        [
+            "run",
+            "wm_capture",
+            "df",
+            "device_list",
+            "disk_list",
+            "agent_list",
+            "wm_desktop_list",
+            "download_list",
+            "component_list",
+            "windows_registry_get"
+        ]
+    );
 }
 
 #[test]
@@ -364,7 +393,7 @@ fn ln_makes_links_below_the_home_folder_with_its_twin_never_replacing() {
             "link",
             &crate::paths::WRITE_ROOTS[..],
             true,
-            &[crate::paths::TRASH][..]
+            &[crate::paths::TRASH, crate::paths::SETTINGS][..]
         )
     );
     assert_eq!(tool.grant, Some(Grant::Write));
@@ -411,4 +440,235 @@ fn the_agent_tools_read_grants_and_only_agent_show_names_the_caller() {
         .map(|tool| tool.name)
         .collect();
     assert_eq!(calling, ["agent_show"]);
+}
+
+#[test]
+fn the_file_tools_run_cp_mv_mkdir_and_rm_on_paths_the_write_tools_reach() {
+    let write = (
+        &crate::paths::WRITE_ROOTS[..],
+        true,
+        &[crate::paths::TRASH, crate::paths::SETTINGS][..],
+    );
+    for (name, kind, program, words, operand, confirmation) in [
+        (
+            "file_copy",
+            Kind::FileCopy,
+            "/bin/cp",
+            &["-r"][..],
+            "destination",
+            Confirmation::WhenOverwriting,
+        ),
+        (
+            "file_move",
+            Kind::FileMove,
+            "/bin/mv",
+            &[][..],
+            "destination",
+            Confirmation::WhenOverwriting,
+        ),
+        (
+            "folder_create",
+            Kind::FolderCreate,
+            "/bin/mkdir",
+            &[][..],
+            "path",
+            Confirmation::Never,
+        ),
+        (
+            "file_remove",
+            Kind::FileRemove,
+            "/bin/rm",
+            &[][..],
+            "path",
+            Confirmation::Always,
+        ),
+    ] {
+        let tool = find(name).unwrap();
+        assert_eq!(tool.kind, kind, "{name}");
+        assert_eq!(tool.twin.program, Program::Fixed(program), "{name}");
+        assert_eq!(tool.twin.words, words, "{name}");
+        let Operand::Path(path) = tool.twin.operand else {
+            panic!("{name}'s operand is a path");
+        };
+        assert_eq!(path.name, operand, "{name}");
+        assert_eq!((path.roots, path.strictly, path.excluded), write, "{name}");
+        assert_eq!(tool.grant, Some(Grant::Write), "{name}");
+        assert_eq!(tool.confirmation, confirmation, "{name}");
+        assert_eq!(tool.hints.destructive, kind != Kind::FolderCreate, "{name}");
+        assert_eq!(tool.takes("dry_run"), kind != Kind::FolderCreate, "{name}");
+        assert!(!tool.hints.open_world, "{name}");
+    }
+    let copy = crate::tools::COPY_SOURCE;
+    assert_eq!(
+        (copy.name, copy.roots),
+        ("source", &crate::paths::READ_ROOTS[..])
+    );
+    let moved = crate::tools::MOVE_SOURCE;
+    assert_eq!(
+        (moved.name, moved.roots, moved.strictly, moved.excluded),
+        ("source", write.0, write.1, write.2)
+    );
+    assert!(
+        schema_of(find("file_copy").unwrap())
+            .ends_with(r#""required":["source","destination"],"additionalProperties":false}"#)
+    );
+    assert!(schema_of(find("file_remove").unwrap()).contains(
+        r#""recursive":{"type":"boolean","description":"Delete a folder and everything in it.","default":false}"#
+    ));
+    assert!(
+        schema_of(find("folder_create").unwrap())
+            .ends_with(r#""required":["path"],"additionalProperties":false}"#)
+    );
+}
+
+#[test]
+fn the_download_tools_run_download_with_the_grants_the_design_names() {
+    for (name, kind, words, grant, confirmation, destructive) in [
+        (
+            "download_list",
+            Kind::DownloadList,
+            &["list", "--json"][..],
+            None,
+            Confirmation::Never,
+            false,
+        ),
+        (
+            "download_cancel",
+            Kind::DownloadCancel,
+            &["cancel"][..],
+            Some(Grant::Run),
+            Confirmation::Always,
+            true,
+        ),
+        (
+            "download_clear",
+            Kind::DownloadClear,
+            &["clear"][..],
+            Some(Grant::Write),
+            Confirmation::Never,
+            false,
+        ),
+    ] {
+        let tool = find(name).unwrap();
+        assert_eq!(tool.kind, kind, "{name}");
+        assert_eq!(tool.twin.program, Program::Fixed("/bin/download"), "{name}");
+        assert_eq!(tool.twin.words, words, "{name}");
+        assert_eq!(tool.twin.operand, Operand::None, "{name}");
+        assert_eq!(tool.grant, grant, "{name}");
+        assert_eq!(tool.confirmation, confirmation, "{name}");
+        assert_eq!(tool.hints.destructive, destructive, "{name}");
+        assert!(!tool.hints.open_world, "{name}");
+    }
+    assert!(
+        schema_of(find("download_cancel").unwrap())
+            .ends_with(r#""required":["pid"],"additionalProperties":false}"#)
+    );
+}
+
+#[test]
+fn the_component_tools_run_component_with_the_grants_the_design_names() {
+    for (name, kind, words, operand, grant, confirmation, destructive) in [
+        (
+            "component_list",
+            Kind::ComponentList,
+            &["list", "--json"][..],
+            Operand::None,
+            None,
+            Confirmation::Never,
+            false,
+        ),
+        (
+            "component_install",
+            Kind::ComponentInstall,
+            &["install", "--json"][..],
+            Operand::Name,
+            Some(Grant::Install),
+            Confirmation::Never,
+            false,
+        ),
+        (
+            "component_remove",
+            Kind::ComponentRemove,
+            &["remove", "--yes", "--json"][..],
+            Operand::Name,
+            Some(Grant::Install),
+            Confirmation::Always,
+            true,
+        ),
+    ] {
+        let tool = find(name).unwrap();
+        assert_eq!(tool.kind, kind, "{name}");
+        assert_eq!(
+            tool.twin.program,
+            Program::Fixed("/bin/component"),
+            "{name}"
+        );
+        assert_eq!(tool.twin.words, words, "{name}");
+        assert_eq!(tool.twin.operand, operand, "{name}");
+        assert_eq!(tool.grant, grant, "{name}");
+        assert_eq!(tool.confirmation, confirmation, "{name}");
+        assert_eq!(tool.hints.destructive, destructive, "{name}");
+        assert!(!tool.hints.open_world, "{name}");
+    }
+}
+
+#[test]
+fn the_registry_tools_run_windows_registry_and_exist_only_with_the_windows_layer() {
+    for (name, kind, words, grant, confirmation, destructive) in [
+        (
+            "windows_registry_get",
+            Kind::WindowsRegistryGet,
+            &["registry", "get", "--json"][..],
+            None,
+            Confirmation::Never,
+            false,
+        ),
+        (
+            "windows_registry_set",
+            Kind::WindowsRegistrySet,
+            &["registry", "set"][..],
+            Some(Grant::Write),
+            Confirmation::Never,
+            false,
+        ),
+        (
+            "windows_registry_delete",
+            Kind::WindowsRegistryDelete,
+            &["registry", "delete", "--yes"][..],
+            Some(Grant::Write),
+            Confirmation::Always,
+            true,
+        ),
+        (
+            "windows_registry_reset",
+            Kind::WindowsRegistryReset,
+            &["registry", "reset", "--yes"][..],
+            Some(Grant::Write),
+            Confirmation::Always,
+            true,
+        ),
+    ] {
+        let tool = find(name).unwrap();
+        assert_eq!(tool.kind, kind, "{name}");
+        assert_eq!(tool.twin.program, Program::Fixed("/bin/windows"), "{name}");
+        assert_eq!(tool.twin.words, words, "{name}");
+        assert_eq!(tool.twin.operand, Operand::None, "{name}");
+        assert_eq!(tool.grant, grant, "{name}");
+        assert_eq!(tool.confirmation, confirmation, "{name}");
+        assert_eq!(tool.hints.destructive, destructive, "{name}");
+        assert_eq!(tool.needs, Some(WINDOWS_LAYER), "{name}");
+    }
+    assert!(
+        TOOLS
+            .iter()
+            .filter(|tool| tool.needs.is_some())
+            .all(|tool| tool.name.starts_with("windows_registry_"))
+    );
+    let mut buffer = vec![0u8; 1 << 20];
+    let mut out = JsonWriter::new(&mut buffer);
+    write_list(&mut out, &mut |_| false);
+    assert!(!out.overflowed());
+    let listed = core::str::from_utf8(out.as_bytes()).unwrap();
+    assert!(!listed.contains("windows_registry"), "{listed}");
+    assert!(listed.contains("\"component_list\""), "{listed}");
 }

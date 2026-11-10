@@ -6,8 +6,8 @@
 //! their last input, injected input is refused ([`WindowError::Busy`]).
 
 use super::protocol::{
-    DRAG_STEPS, EventRecord, EventSink, MAX_WHEEL_NOTCHES, WindowError, event, input_kind,
-    modifier, query_kind,
+    DRAG_STEPS, EventRecord, EventSink, MAX_WHEEL_NOTCHES, MAX_WINDOWS, WindowError, event,
+    input_kind, modifier, query_kind,
 };
 use super::{Desktop, KERNEL_CLIENT, WindowId, codepoint, colour, key_modifiers};
 use crate::display::{Damage, Rect};
@@ -396,7 +396,9 @@ impl Desktop {
     /// point outside the content or a character no key types, [`WindowError::Unsupported`] for
     /// pointer input or sideways scrolling in the terminal, [`WindowError::QueueFull`] when the
     /// client's queue lacks room for the whole step (nothing is sent), [`WindowError::NotAllowed`]
-    /// for a window that takes only the person's input (D193's grant prompt).
+    /// for a window that takes only the person's input (D193's grant prompt),
+    /// [`WindowError::NotResponding`] for any input to a window whose app is not responding
+    /// (D222; moving, sizing and closing it stay the server's and are not input).
     pub fn send_input(
         &mut self,
         window: u32,
@@ -406,6 +408,9 @@ impl Desktop {
         let slot = self.any_window(window)?;
         if self.window_at(slot).takes_person_input_only() {
             return Err(WindowError::NotAllowed);
+        }
+        if self.window_at(slot).not_responding {
+            return Err(WindowError::NotResponding);
         }
         if self.person_is_active() {
             return Err(WindowError::Busy);
@@ -447,6 +452,17 @@ impl Desktop {
     }
 
     fn open_dialog(&self, slot: usize) -> Option<usize> {
+        let mut open = self.open_child_dialog(slot)?;
+        for _ in 0..MAX_WINDOWS {
+            match self.open_child_dialog(open) {
+                Some(next) => open = next,
+                None => break,
+            }
+        }
+        Some(open)
+    }
+
+    fn open_child_dialog(&self, slot: usize) -> Option<usize> {
         self.stack[..self.stack_length]
             .iter()
             .rev()

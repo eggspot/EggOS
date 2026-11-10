@@ -46,6 +46,8 @@ pub mod code {
     pub const CB_SELECTSTRING: u32 = 0x014d;
     pub const CB_SETCURSEL: u32 = 0x014e;
     pub const CB_SHOWDROPDOWN: u32 = 0x014f;
+    pub const CB_GETITEMDATA: u32 = 0x0150;
+    pub const CB_SETITEMDATA: u32 = 0x0151;
     pub const CB_SETITEMHEIGHT: u32 = 0x0153;
     pub const CB_GETITEMHEIGHT: u32 = 0x0154;
     pub const CB_GETDROPPEDSTATE: u32 = 0x0157;
@@ -527,6 +529,11 @@ fn combo_message(window: usize, number: u32, wparam: usize, lparam: usize) -> us
                 (0, true)
             }
             code::CB_GETCOUNT => (count, false),
+            code::CB_GETITEMDATA => (combo.items.data(wparam).unwrap_or(CB_ERR), false),
+            code::CB_SETITEMDATA => match combo.items.set_data(wparam, lparam) {
+                true => (1, false),
+                false => (CB_ERR, false),
+            },
             code::CB_GETCURSEL => (combo.selected().unwrap_or(CB_ERR), false),
             code::CB_SETCURSEL => {
                 let wanted = match wparam as isize {

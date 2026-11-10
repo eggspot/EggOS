@@ -11,6 +11,7 @@ use eggos_runtime::errno::Errno;
 use eggos_runtime::syscall::{call, number};
 
 const CREATE: usize = 0xc020_7701;
+const SET_POSITION: usize = 0x400c_7705;
 const SET_TITLE: usize = 0x4048_7702;
 const SET_SIZE: usize = 0xc018_7703;
 const SET_MINIMUM_SIZE: usize = 0x400c_7704;
@@ -22,13 +23,21 @@ const GET_PROFILE: usize = 0x8004_770d;
 const SET_PROFILE: usize = 0x4004_770e;
 const GET_KEYBOARD_LAYOUT: usize = 0x8008_771d;
 const SET_KEYBOARD_LAYOUT: usize = 0x4004_771e;
+const SET_KEYBOARD_LAYOUTS: usize = 0x400c_7726;
 const SET_INPUT_PREFERENCES: usize = 0x4014_771f;
 const SET_CLIPBOARD: usize = 0x4010_7720;
 const SET_KEY_ACCESSIBILITY: usize = 0x400c_7724;
 const CHANGE_FLAGS: usize = 0x400c_7725;
 const GET_CLIPBOARD: usize = 0xc020_7721;
+const GET_PALETTE: usize = 0x8004_7727;
+const SET_PALETTE: usize = 0x4004_7728;
+const GET_REDUCE_MOTION: usize = 0x8004_7729;
+const SET_REDUCE_MOTION: usize = 0x4004_772a;
+const SET_MENU: usize = 0x4100_7715;
+const MENU_POOL: usize = 8;
 const CAPS_LOCK_FLAG: u32 = 1;
 const KEYBOARD_FLAG: u32 = 2;
+const NUM_LOCK_FLAG: u32 = 4;
 
 /// The window flag that has every Ctrl key reach the window, as a terminal needs (`CREATE`'s
 /// `TAKES_CTRL_KEYS`, docs/windows.md).
@@ -98,6 +107,8 @@ pub struct Keyboard {
     pub present: bool,
     /// Whether Caps Lock is on.
     pub caps_lock: bool,
+    /// Whether Num Lock is on (D221).
+    pub num_lock: bool,
 }
 
 /// One connection to the window server.
@@ -213,6 +224,44 @@ impl WindowServer {
         Ok(word(&profile, 0))
     }
 
+    /// The desktop's palette index (D219): its theme plus 2 for high contrast
+    /// ([`crate::theme::palette_index`]).
+    pub fn palette(&self) -> Result<u32, Errno> {
+        let mut palette = [0u8; 4];
+        self.ioctl(GET_PALETTE, &mut palette)?;
+        Ok(word(&palette, 0))
+    }
+
+    /// Makes palette `index` the desktop's: the shell repaints and every window gets
+    /// `PaletteChanged`.
+    pub fn set_palette(&self, index: u32) -> Result<(), Errno> {
+        self.ioctl(SET_PALETTE, &mut index.to_ne_bytes())
+    }
+
+    /// Whether nothing blinks on the desktop (`accessibility.reduce_motion`, D224).
+    pub fn reduce_motion(&self) -> Result<bool, Errno> {
+        let mut reduce = [0u8; 4];
+        self.ioctl(GET_REDUCE_MOTION, &mut reduce)?;
+        Ok(word(&reduce, 0) == 1)
+    }
+
+    /// Makes motion reduced or not: the shell's and every window's blinks stop or start, each
+    /// window told with `PaletteChanged`.
+    pub fn set_reduce_motion(&self, reduce: bool) -> Result<(), Errno> {
+        self.ioctl(SET_REDUCE_MOTION, &mut u32::from(reduce).to_ne_bytes())
+    }
+
+    /// Gives window `window` the main menu `pool` (`SET_MENU`, D147), or removes it when the
+    /// pool is empty.
+    pub fn set_menu(&self, window: u32, pool: &[u8]) -> Result<(), Errno> {
+        let mut request = [0u8; 256];
+        let length = pool.len().min(request.len() - MENU_POOL);
+        put(&mut request, 0, window);
+        put(&mut request, 4, length as u32);
+        request[MENU_POOL..MENU_POOL + length].copy_from_slice(&pool[..length]);
+        self.ioctl(SET_MENU, &mut request)
+    }
+
     /// Makes profile `profile` the desktop's, at once.
     pub fn set_desktop_profile(&self, profile: u32) -> Result<(), Errno> {
         self.ioctl(SET_PROFILE, &mut profile.to_ne_bytes())
@@ -228,6 +277,7 @@ impl WindowServer {
             layout: word(&reply, 0),
             present: flags & KEYBOARD_FLAG != 0,
             caps_lock: flags & CAPS_LOCK_FLAG != 0,
+            num_lock: flags & NUM_LOCK_FLAG != 0,
         })
     }
 
@@ -235,6 +285,22 @@ impl WindowServer {
     /// the keyboard's from the next key on (`SET_KEYBOARD_LAYOUT`, D185).
     pub fn set_keyboard_layout(&self, layout: u32) -> Result<(), Errno> {
         self.ioctl(SET_KEYBOARD_LAYOUT, &mut layout.to_ne_bytes())
+    }
+
+    /// Makes the first `count` of `layouts` (numbers in the settings file's
+    /// `KEYBOARD_LAYOUTS`) the layouts the switch key cycles through and `switch_key` (a
+    /// number of its `SwitchKey::ALL`) the key, at once (`SET_KEYBOARD_LAYOUTS`, D221).
+    pub fn set_keyboard_layouts(
+        &self,
+        count: u32,
+        layouts: [u8; 4],
+        switch_key: u32,
+    ) -> Result<(), Errno> {
+        let mut bytes = [0u8; 12];
+        bytes[0..4].copy_from_slice(&count.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&layouts);
+        bytes[8..12].copy_from_slice(&switch_key.to_ne_bytes());
+        self.ioctl(SET_KEYBOARD_LAYOUTS, &mut bytes)
     }
 
     /// Uses the mouse and key preferences `words` holds from the next event on
@@ -339,6 +405,16 @@ impl Window {
         put(&mut minimum_size, 8, minimum.1 * scale);
         window.server.ioctl(SET_MINIMUM_SIZE, &mut minimum_size)?;
         Ok(window)
+    }
+
+    /// Places the window's outside top-left at (`x`, `y`) on the screen (`SET_POSITION`); a
+    /// window not shown yet appears there, kept inside the work area.
+    pub fn set_position(&self, x: i32, y: i32) -> Result<(), Errno> {
+        let mut position = [0u8; 12];
+        put(&mut position, 0, self.id);
+        put(&mut position, 4, x as u32);
+        put(&mut position, 8, y as u32);
+        self.server.ioctl(SET_POSITION, &mut position)
     }
 
     /// Gives the window the title `title`, cut at 64 bytes on a character boundary.
@@ -479,6 +555,8 @@ impl Window {
             match shape {
                 PointerShape::Arrow => 0,
                 PointerShape::IBeam => 1,
+                PointerShape::ResizeEW => 3,
+                PointerShape::Hand => 7,
             },
         );
         self.server.ioctl(SET_POINTER, &mut set_pointer)?;

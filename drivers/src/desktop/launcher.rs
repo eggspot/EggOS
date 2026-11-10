@@ -30,8 +30,15 @@ pub const LAUNCH_FAILED: &str = "The app could not start.";
 pub const LAUNCHER_ROW_HEIGHT: u32 = 40;
 /// How long a notice stays.
 pub const NOTICE_MS: u32 = 3000;
+
+/// How long the switch key's hint shows the new layout's title (D221).
+pub const LAYOUT_HINT_MS: u32 = 1000;
 /// The most bytes the launcher's search holds.
 pub const QUERY_CAPACITY: usize = 32;
+/// How long the launcher's caret is shown, then hidden, while it blinks (D222).
+pub const CARET_BLINK_MS: u32 = 500;
+/// How long after the last keystroke the launcher's caret stops blinking and stays shown.
+pub const CARET_STEADY_AFTER_MS: u32 = 10_000;
 
 const PADDING: u32 = 12;
 const FIELD_HEIGHT: u32 = 28;
@@ -214,6 +221,8 @@ pub(super) struct Launcher {
     first_row: usize,
     hover: Option<Spot>,
     pub menu: Option<AppMenu>,
+    caret_since_ms: u32,
+    caret_shown: bool,
 }
 
 impl Launcher {
@@ -227,6 +236,8 @@ impl Launcher {
             first_row: 0,
             hover: None,
             menu: None,
+            caret_since_ms: 0,
+            caret_shown: true,
         };
         launcher.filter(catalogue);
         launcher
@@ -234,6 +245,11 @@ impl Launcher {
 
     fn query(&self) -> &str {
         core::str::from_utf8(&self.query[..self.query_length]).unwrap_or("")
+    }
+
+    fn restart_caret(&mut self, now_ms: u32) {
+        self.caret_since_ms = now_ms;
+        self.caret_shown = true;
     }
 
     /// Lists the apps the search matches again, the first selected.
@@ -426,7 +442,9 @@ impl Desktop {
         }
         self.close_popups(damage, events);
         self.hide_tooltip(damage);
-        self.launcher = Some(Launcher::new(&self.catalogue));
+        let mut launcher = Launcher::new(&self.catalogue);
+        launcher.caret_since_ms = self.now_ms;
+        self.launcher = Some(launcher);
         self.catalogue_wanted = true;
         damage.add(with_shadow(self.layout.launcher));
         self.damage_launcher_openers(damage);
@@ -563,6 +581,7 @@ impl Desktop {
                 }
             }
             key::BACKSPACE => {
+                launcher.restart_caret(self.now_ms);
                 if launcher.query_length > 0 {
                     launcher.query_length -= 1;
                     launcher.filter(&self.catalogue);
@@ -584,6 +603,7 @@ impl Desktop {
                 if !plain || !printable || launcher.query_length == QUERY_CAPACITY {
                     return Action::None;
                 }
+                launcher.restart_caret(self.now_ms);
                 launcher.query[launcher.query_length] = character as u8;
                 launcher.query_length += 1;
                 launcher.filter(&self.catalogue);
@@ -788,11 +808,9 @@ impl Desktop {
             ),
             false => canvas.text(field.x + FIELD_TEXT_X, text_y, query, colour::TEXT),
         }
-        let caret_x = field.x + FIELD_TEXT_X + query.len() as u32 * GLYPH_WIDTH as u32;
-        canvas.fill(
-            Rect::new(caret_x, text_y, 1, GLYPH_HEIGHT as u32),
-            colour::TEXT,
-        );
+        if launcher.caret_shown {
+            canvas.fill(self.caret_rect(launcher), colour::TEXT);
+        }
         let text_offset = (LAUNCHER_ROW_HEIGHT - GLYPH_HEIGHT as u32) / 2;
         if launcher.match_count == 0 {
             let row = self.row_rect(0);
@@ -867,10 +885,22 @@ impl Desktop {
 
     /// Shows `text` in the notice for [`NOTICE_MS`].
     pub fn show_notice(&mut self, text: &'static str, damage: &mut Damage) {
+        self.show_notice_for(text, NOTICE_MS, damage);
+    }
+
+    /// The switch key made the layout titled `title` the one in force (D221): its title shows
+    /// in the notice for [`LAYOUT_HINT_MS`], in place of any notice showing, and the Super key
+    /// held for the chord no longer counts as pressed alone.
+    pub fn show_layout_hint(&mut self, title: &'static str, damage: &mut Damage) {
+        self.super_alone = false;
+        self.show_notice_for(title, LAYOUT_HINT_MS, damage);
+    }
+
+    fn show_notice_for(&mut self, text: &'static str, milliseconds: u32, damage: &mut Damage) {
         self.close_notice(damage);
         self.notice = Some(Notice {
             text,
-            until_ms: self.now_ms.wrapping_add(NOTICE_MS),
+            until_ms: self.now_ms.wrapping_add(milliseconds),
         });
         damage.add(with_shadow(self.notice_rect()));
     }
@@ -918,5 +948,65 @@ impl Desktop {
             notice.text,
             colour::TEXT,
         );
+    }
+}
+
+/// Whether the launcher's caret is drawn at `now_ms` when the last keystroke, or the opening,
+/// was at `since_ms` (D222): shown and hidden for [`CARET_BLINK_MS`] each, shown first, and
+/// shown for good after [`CARET_STEADY_AFTER_MS`] or with `reduce_motion`.
+pub fn caret_shown_at(since_ms: u32, now_ms: u32, reduce_motion: bool) -> bool {
+    let elapsed = super::responsiveness::waited(now_ms, since_ms);
+    reduce_motion
+        || elapsed >= CARET_STEADY_AFTER_MS
+        || (elapsed / CARET_BLINK_MS).is_multiple_of(2)
+}
+
+impl Desktop {
+    /// Whether animations are left out (`reduce_motion`, docs/ux/first-run-accessibility-v0.3.md
+    /// 2.5): the launcher's caret stays shown.
+    pub fn set_reduce_motion(&mut self, reduce_motion: bool, damage: &mut Damage) {
+        self.reduce_motion = reduce_motion;
+        self.tick_caret(damage);
+    }
+
+    /// Whether the launcher's caret is drawn now, while the launcher is open.
+    pub fn launcher_caret_drawn(&self) -> Option<bool> {
+        self.launcher.map(|launcher| launcher.caret_shown)
+    }
+
+    /// The launcher's caret's rectangle, while the launcher is open.
+    pub fn launcher_caret(&self) -> Option<Rect> {
+        self.launcher.map(|launcher| self.caret_rect(&launcher))
+    }
+
+    fn caret_rect(&self, launcher: &Launcher) -> Rect {
+        let field = self.field_rect();
+        let text_y = field.y + (FIELD_HEIGHT - GLYPH_HEIGHT as u32) / 2;
+        let x = field.x + FIELD_TEXT_X + launcher.query_length as u32 * GLYPH_WIDTH as u32;
+        Rect::new(x, text_y, 1, GLYPH_HEIGHT as u32)
+    }
+
+    /// The clock moved: the caret shows or hides, damaging only its own rectangle.
+    pub(super) fn tick_caret(&mut self, damage: &mut Damage) {
+        let Some(mut launcher) = self.launcher else {
+            return;
+        };
+        let shown = caret_shown_at(launcher.caret_since_ms, self.now_ms, self.reduce_motion);
+        if shown == launcher.caret_shown {
+            return;
+        }
+        launcher.caret_shown = shown;
+        damage.add(self.caret_rect(&launcher));
+        self.launcher = Some(launcher);
+    }
+
+    /// How long until the caret next shows or hides; `None` while it is steady.
+    pub(super) fn caret_change_after(&self) -> Option<u32> {
+        let launcher = self.launcher?;
+        let elapsed = super::responsiveness::waited(self.now_ms, launcher.caret_since_ms);
+        if self.reduce_motion || elapsed >= CARET_STEADY_AFTER_MS {
+            return None;
+        }
+        Some(CARET_BLINK_MS - elapsed % CARET_BLINK_MS)
     }
 }

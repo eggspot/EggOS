@@ -314,6 +314,12 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Whether `text`, an object written whole, has a member named `key` at its top level; the
+/// members of its members are not looked at, and [`parse`]'s limits on values do not apply.
+pub fn has_top_level_member(text: &[u8], key: &str) -> bool {
+    Members::over(text).any(|(name, _)| name.equals(key))
+}
+
 /// The members of an object, read from its validated text, in order.
 #[derive(Debug, Clone)]
 pub struct Members<'a> {

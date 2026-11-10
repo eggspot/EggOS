@@ -375,6 +375,7 @@ unsafe extern "efiapi" fn init_common_controls_ex(request: *const InitCommonCont
 pub(super) const EXPORTS: &[Export] = exports![
     b"InitCommonControls" => init_common_controls,
     b"InitCommonControlsEx" => init_common_controls_ex,
+    b"_TrackMouseEvent" => super::hover::track_mouse_event,
 ];
 
 /// Every list of comctl32's functions.

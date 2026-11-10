@@ -3,7 +3,8 @@
 //! MinGW links into the program asks for `argc`, `argv` and the environment through
 //! `__getmainargs`, registers its exit work with `atexit` and `_onexit`, and reads `_fmode`,
 //! `_commode` and `__initenv` as data; its own `printf` locks the streams of the `FILE` array
-//! (`__iob_func`, in `stdio.rs`) through `_lock` and `_unlock`, and reads `localeconv`.
+//! (`__iob_func`, in `stdio.rs`) through `_lock` and `_unlock`, and reads `localeconv`
+//! (`locale.rs`).
 
 use super::super::sync::{enter_critical_section, leave_critical_section};
 use super::runtime::{self, end_abnormally};
@@ -16,9 +17,6 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 const RUNTIME_ERROR_STATUS: u32 = 255;
 const FIRST_RUNTIME_ERROR: i32 = 6000;
-const C_LOCALE_CODE_PAGE: u32 = 0;
-const C_LOCALE_LONGEST_CHARACTER: i32 = 1;
-const CHAR_MAX: u8 = 127;
 const CRITICAL_SECTION_WORDS: usize = msvcrt_layout::FILE_LOCK_BYTES / 8;
 
 static INITIAL_ENVIRONMENT: AtomicPtr<*mut u8> = AtomicPtr::new(ptr::null_mut());
@@ -150,59 +148,6 @@ extern "efiapi" fn reset_floating_point() {
     unsafe { core::arch::asm!("msr fpcr, xzr", options(nomem, nostack)) };
 }
 
-extern "efiapi" fn locale_code_page() -> u32 {
-    C_LOCALE_CODE_PAGE
-}
-
-extern "efiapi" fn longest_character() -> i32 {
-    C_LOCALE_LONGEST_CHARACTER
-}
-
-#[repr(C)]
-struct LocaleConventions {
-    texts: [*const u8; 10],
-    numbers: [u8; 8],
-    wide_texts: [*const u16; 8],
-}
-
-// SAFETY: the conventions are read-only for the program's life.
-unsafe impl Sync for LocaleConventions {}
-
-const EMPTY: *const u8 = c"".as_ptr().cast();
-const WIDE_DECIMAL_POINT: &[u16] = &[b'.' as u16, 0];
-const WIDE_EMPTY_TEXT: &[u16] = &[0];
-const WIDE_EMPTY: *const u16 = WIDE_EMPTY_TEXT.as_ptr();
-
-static C_LOCALE_CONVENTIONS: LocaleConventions = LocaleConventions {
-    texts: [
-        c".".as_ptr().cast(),
-        EMPTY,
-        EMPTY,
-        EMPTY,
-        EMPTY,
-        EMPTY,
-        EMPTY,
-        EMPTY,
-        EMPTY,
-        EMPTY,
-    ],
-    numbers: [CHAR_MAX; 8],
-    wide_texts: [
-        WIDE_DECIMAL_POINT.as_ptr(),
-        WIDE_EMPTY,
-        WIDE_EMPTY,
-        WIDE_EMPTY,
-        WIDE_EMPTY,
-        WIDE_EMPTY,
-        WIDE_EMPTY,
-        WIDE_EMPTY,
-    ],
-};
-
-extern "efiapi" fn locale_conventions() -> *const LocaleConventions {
-    &raw const C_LOCALE_CONVENTIONS
-}
-
 extern "efiapi" fn error_text(number: i32) -> *const u8 {
     error_messages::message(number).as_ptr()
 }
@@ -242,9 +187,6 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"_amsg_exit" => runtime_error_exit,
     b"__lconv_init" => initialize_locale_conventions,
     b"_fpreset" => reset_floating_point,
-    b"___lc_codepage_func" => locale_code_page,
-    b"___mb_cur_max_func" => longest_character,
-    b"localeconv" => locale_conventions,
     b"strerror" => error_text,
     b"_lock" => lock,
     b"_unlock" => unlock,

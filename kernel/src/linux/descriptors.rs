@@ -53,17 +53,9 @@ pub mod open_flag {
     /// Truncate a regular file opened for writing.
     pub const TRUNC: u32 = 0o1000;
     /// Fail unless the path names a directory.
-    #[cfg(target_arch = "aarch64")]
-    pub const DIRECTORY: u32 = 0o40_000;
-    /// Fail unless the path names a directory.
-    #[cfg(not(target_arch = "aarch64"))]
-    pub const DIRECTORY: u32 = 0o200_000;
+    pub const DIRECTORY: u32 = crate::linux::abi::open::DIRECTORY;
     /// Do not follow a symbolic link in the last component.
-    #[cfg(target_arch = "aarch64")]
-    pub const NOFOLLOW: u32 = 0o100_000;
-    /// Do not follow a symbolic link in the last component.
-    #[cfg(not(target_arch = "aarch64"))]
-    pub const NOFOLLOW: u32 = 0o400_000;
+    pub const NOFOLLOW: u32 = crate::linux::abi::open::NOFOLLOW;
     /// Open only a location in the file system: no reads or writes.
     pub const PATH: u32 = 0o10_000_000;
     /// An unnamed temporary file in the directory named: its own bit and [`DIRECTORY`].
@@ -71,13 +63,6 @@ pub mod open_flag {
     /// The status flags kept and changed (`F_SETFL`): the others Linux lets `F_SETFL` change
     /// (`O_ASYNC`, `O_DIRECT`, `O_NOATIME`) are ignored until something acts on them.
     pub const STATUS: u32 = APPEND | NONBLOCK;
-
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "riscv64",
-        target_arch = "x86_64"
-    )))]
-    compile_error!("check Linux's O_* values for this architecture (AArch64's O_DIRECT differs)");
 }
 
 /// `fcntl`'s commands answered (`F_*`), the generic values, which x86_64 shares.
@@ -744,7 +729,7 @@ pub fn dup3<P: Platform>(
 /// `dup2(old, new)`: as [`dup3`] without flags, but `old` and `new` may be the same: then it
 /// returns `new` if `old` is open, `EBADF` otherwise. x86_64 only: AArch64 and RISC-V have only
 /// `dup3`, which their C libraries' `dup2` calls.
-#[cfg(target_arch = "x86_64")]
+#[cfg(linux_abi_legacy_calls)]
 pub fn dup2<P: Platform>(
     process: &Process<P>,
     files: &Descriptors,

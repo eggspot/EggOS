@@ -4,21 +4,43 @@
 //! toolkit is in the image once: as `/usr/libexec/app-window` the installer's window and as
 //! `/bin/app` the `app` command (D134, D214), as `/bin/files` the Files window (D135), as
 //! `/bin/text-editor` the Text Editor with `/bin/edit` its command (D149), as `/bin/terminal`
-//! the terminal program (D187), as `/bin/disk` the `disk` command (D192), and as
-//! `/bin/task-manager` the Task Manager (D200).
+//! the terminal program (D187), as `/bin/disk` the `disk` command (D192), as
+//! `/bin/task-manager` the Task Manager (D200), and as `/bin/component` the `component`
+//! command (D235).
 
-#![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(eggos_user, no_std, no_main)]
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 extern crate alloc;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod disk_system;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod program;
 
-#[cfg(target_env = "musl")]
-eggos_runtime::main!(program::run);
+#[cfg(eggos_user)]
+eggos_runtime::main!(run);
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(eggos_user)]
+fn run(startup: &eggos_runtime::startup::Startup) -> i32 {
+    let started_as = startup
+        .arguments()
+        .next()
+        .map_or(&b""[..], core::ffi::CStr::to_bytes);
+    match eggos_app::files::file_name(started_as) {
+        b"component" => eggos_components::program::run(startup),
+        _ => program::run(startup),
+    }
+}
+
+/// The CPU features Linux's auxiliary vector reports, which compiler-builtins' aarch64 atomics
+/// ask for: none, so they use load-exclusive and store-exclusive pairs, which every Armv8 CPU
+/// has.
+#[cfg(all(eggos_user, target_arch = "aarch64"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn getauxval(_: core::ffi::c_ulong) -> core::ffi::c_ulong {
+    0
+}
+
+#[cfg(not(eggos_user))]
 fn main() {}

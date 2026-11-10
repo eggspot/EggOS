@@ -88,7 +88,7 @@ pub mod flag {
 
 /// Whether the architecture's `struct sigaction` has a `sa_restorer` field: RISC-V's does not
 /// (its handlers return through the vDSO).
-pub const HAS_RESTORER: bool = !cfg!(target_arch = "riscv64");
+pub const HAS_RESTORER: bool = crate::linux::abi::SIGACTION_HAS_RESTORER;
 
 /// The size of the kernel's `struct sigaction` on the architecture: handler, flags, restorer
 /// (if [`HAS_RESTORER`]) and mask, each a 64-bit word.
@@ -512,11 +512,7 @@ mod stack_flag {
 
 /// The smallest alternate stack (`MINSIGSTKSZ`): room for the kernel's largest signal frame on
 /// the architecture. Programs read it as `AT_MINSIGSTKSZ` too.
-pub const MIN_STACK_SIZE: u64 = if cfg!(target_arch = "aarch64") {
-    5120
-} else {
-    2048
-};
+pub const MIN_STACK_SIZE: u64 = crate::linux::abi::MIN_SIGNAL_STACK_SIZE;
 const _: () = assert!(signal_frame::LARGEST_FRAME_SPACE <= MIN_STACK_SIZE);
 
 impl AlternateStack {
@@ -1928,6 +1924,30 @@ pub fn ask_init<P: Platform>(signal: u32) -> bool {
     true
 }
 
+/// Ends process `pid` with `SIGKILL` from the kernel, as the desktop's `End app` asks for an app
+/// that does not respond (D222); never init. Whether it was sent.
+pub fn kill_from_kernel<P: Platform>(pid: u32) -> bool {
+    let target = {
+        let table = process_table::TABLE.lock();
+        match pid == table.init() {
+            true => None,
+            false => table.target(pid),
+        }
+    };
+    let Some(running) = target.and_then(|target| target.running) else {
+        return false;
+    };
+    let Some(process) = running
+        .process
+        .upgrade()
+        .and_then(|process| process.downcast::<Process<P>>().ok())
+    else {
+        return false;
+    };
+    send_from_outside::<P>(&process, &running.first_thread, Info::from_kernel(SIGKILL));
+    true
+}
+
 fn signal_ids<P: Platform>(process: &Process<P>) -> SignalIds {
     let credentials = process.credentials_and_limits().lock();
     let ids = credentials.credentials.ids(super::credentials::Kind::User);
@@ -2300,7 +2320,7 @@ pub fn rt_sigsuspend<P: Platform>(
 /// `pause()`, with the program's registers `context`: waits, with the thread's mask, until a
 /// signal starts its handler, then fails with `EINTR`, as [`rt_sigsuspend`] does. x86_64 only:
 /// AArch64's and RISC-V's C libraries call `rt_sigsuspend` with the current mask instead.
-#[cfg(target_arch = "x86_64")]
+#[cfg(linux_abi_legacy_calls)]
 pub fn pause<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,

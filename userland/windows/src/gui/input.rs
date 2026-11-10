@@ -34,6 +34,7 @@ const SHIFT: u32 = 1;
 const CONTROL: u32 = 2;
 const ALT: u32 = 4;
 const ALT_GRAPH: u32 = 32;
+const DEAD: u32 = 256;
 const VK_PACKET: u8 = 0xe7;
 
 /// `wParam`'s `MK_` flags on mouse messages.
@@ -393,7 +394,11 @@ impl InputState {
         let Ok(code) = u16::try_from(record.a) else {
             return Event::Ignored;
         };
-        self.modifiers = record.c;
+        let dead = record.c & DEAD != 0;
+        if dead && code == 0 {
+            return Event::Ignored;
+        }
+        self.modifiers = record.c & !DEAD;
         let key = match code {
             0 => VirtualKey {
                 virtual_key: VK_PACKET,
@@ -436,7 +441,7 @@ impl InputState {
             wparam: usize::from(key.virtual_key),
             lparam,
             point: self.point,
-            character: (pressed && record.d != 0).then_some(record.d),
+            character: (pressed && record.d != 0 && !dead).then_some(record.d),
         }
     }
 }
@@ -683,6 +688,24 @@ mod tests {
         assert_eq!(lparam, 1 | (0x4d << 16) | (1 << 24) | (1 << 29));
         assert_eq!(
             state.translate(&record(kind::KEY, 240, 1, 0, 0)),
+            Event::Ignored
+        );
+    }
+
+    #[test]
+    fn a_dead_key_s_record_types_nothing_and_its_backspace_record_is_ignored() {
+        let mut state = InputState::default();
+        let Event::Input {
+            message: number,
+            character,
+            ..
+        } = state.translate(&record(kind::KEY, 13, 1, DEAD, u32::from('´')))
+        else {
+            panic!("a dead key's record is still its key's input");
+        };
+        assert_eq!((number, character), (message::KEY_DOWN, None));
+        assert_eq!(
+            state.translate(&record(kind::KEY, 0, 1, DEAD, 0)),
             Event::Ignored
         );
     }

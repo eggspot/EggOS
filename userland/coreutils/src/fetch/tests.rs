@@ -187,3 +187,170 @@ fn https_runs_tls_and_says_why_the_server_refused() {
     assert_eq!(hello[0], 22);
     assert!(hello.windows(10).any(|window| window == b"files.test"));
 }
+
+#[test]
+fn options_come_from_the_registry_and_combine() {
+    let (status, out, errors, fake) = run(
+        network(),
+        &[c"-qo", c"/home/c", c"http://files.test/chunked"],
+    );
+    assert_eq!((status, out.as_str(), errors.as_str()), (0, "", ""));
+    assert_eq!(fake.contents("/home/c"), b"Hello, chunks");
+    let (status, out, _, _) = run(
+        network(),
+        &[c"-o", c"-", c"--", c"http://files.test/chunked"],
+    );
+    assert_eq!((status, out.as_str()), (0, "Hello, chunks"));
+    let usage = "fetch: usage: fetch [-q] [-o <file>] <url> [<file>]\n";
+    let cases: [(&[&CStr], &str); 4] = [
+        (
+            &[c"--bogus", c"http://files.test/"],
+            "fetch: unrecognized option '--bogus'\n",
+        ),
+        (&[c"http://files.test/", c"/home/a", c"/home/b"], usage),
+        (
+            &[c"-o", c"/home/a", c"http://files.test/", c"/home/b"],
+            usage,
+        ),
+        (
+            &[c"--dry-run=yes", c"http://files.test/"],
+            "fetch: option '--dry-run' doesn't allow an argument\n",
+        ),
+    ];
+    for (arguments, expected) in cases {
+        let (status, _, errors, fake) = run(network(), arguments);
+        assert_eq!((status, errors.as_str()), (1, expected), "{arguments:?}");
+        assert!(fake.network.requests.is_empty());
+    }
+}
+
+#[test]
+fn a_dry_run_checks_the_url_and_the_file_and_touches_neither_the_network_nor_the_file() {
+    let fake = network().with_file("/home/old.txt", 0o644, b"old", 0);
+    let (status, out, errors, fake) = run(
+        fake,
+        &[c"--dry-run", c"http://files.test/chunked", c"/home/old.txt"],
+    );
+    assert_eq!((status, errors.as_str()), (0, ""));
+    assert_eq!(
+        out,
+        "would download http://files.test/chunked to /home/old.txt, replacing the file there (3 \
+         bytes)\n"
+    );
+    assert_eq!(fake.contents("/home/old.txt"), b"old");
+    assert!(fake.network.requests.is_empty() && fake.network.streams.is_empty());
+    assert!(fake.network.sent.is_empty());
+    let (status, out, _, fake) = run(
+        network(),
+        &[
+            c"-o",
+            c"/home/new.txt",
+            c"--dry-run",
+            c"http://10.0.2.2:8080/hello.txt",
+        ],
+    );
+    assert_eq!(status, 0);
+    assert_eq!(
+        out,
+        "would download http://10.0.2.2:8080/hello.txt to /home/new.txt\n"
+    );
+    assert!(!fake.nodes.contains_key(b"/home/new.txt".as_slice()));
+    assert!(fake.network.requests.is_empty());
+    let (status, out, _, _) = run(network(), &[c"--dry-run", c"http://files.test/chunked"]);
+    assert_eq!(
+        (status, out.as_str()),
+        (
+            0,
+            "would download http://files.test/chunked to standard output\n"
+        )
+    );
+}
+
+#[test]
+fn a_dry_run_says_why_the_download_would_fail() {
+    let cases: [(&[&CStr], &str); 5] = [
+        (
+            &[c"--dry-run", c"ftp://files.test/a", c"/home/a"],
+            "fetch: ftp://files.test/a: ",
+        ),
+        (
+            &[c"--dry-run", c"http://files.test/a", c"/home"],
+            "fetch: /home: Is a directory\n",
+        ),
+        (
+            &[c"--dry-run", c"http://files.test/a", c"/nowhere/a"],
+            "fetch: /nowhere/a: No such file or directory\n",
+        ),
+        (
+            &[c"--dry-run", c"http://files.test/a", c"/home/file/a"],
+            "fetch: /home/file/a: Not a directory\n",
+        ),
+        (
+            &[c"--dry-run", c"http://files.test/a", c"/home/locked"],
+            "fetch: /home/locked: Permission denied\n",
+        ),
+    ];
+    for (arguments, expected) in cases {
+        let mut fake = network().with_file("/home/file", 0o644, b"", 0);
+        fake.status_error = Some((b"/home/locked".to_vec(), Errno::EACCES));
+        let (status, out, errors, fake) = run(fake, arguments);
+        assert_eq!((status, out.as_str()), (1, ""), "{arguments:?}");
+        assert!(errors.starts_with(expected), "{errors}");
+        assert!(fake.network.requests.is_empty() && fake.network.sent.is_empty());
+    }
+    let long = format!("http://files.test/{}\0", "a".repeat(MAX_URL_BYTES));
+    let long = CStr::from_bytes_with_nul(long.as_bytes()).unwrap();
+    let (status, _, errors, _) = run(network(), &[c"--dry-run", long]);
+    assert_eq!(status, 1);
+    assert_eq!(errors, "fetch: the URL is longer than 2048 bytes\n");
+}
+
+#[test]
+fn no_clobber_saves_only_where_nothing_is_and_never_through_a_link() {
+    let (status, _, errors, fake) = run(
+        network(),
+        &[
+            c"-q",
+            c"--no-clobber",
+            c"http://files.test/chunked",
+            c"/home/new.txt",
+        ],
+    );
+    assert_eq!((status, errors.as_str()), (0, ""));
+    assert_eq!(fake.contents("/home/new.txt"), b"Hello, chunks");
+    let (status, _, errors, fake) = run(
+        network().with_file("/home/old.txt", 0o644, b"old", 0),
+        &[
+            c"--no-clobber",
+            c"http://files.test/chunked",
+            c"/home/old.txt",
+        ],
+    );
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "fetch: /home/old.txt: File exists\n")
+    );
+    assert_eq!(fake.contents("/home/old.txt"), b"old");
+    let (status, _, errors, fake) = run(
+        network().with_link("/home/link", "/home/target"),
+        &[c"--no-clobber", c"http://files.test/chunked", c"/home/link"],
+    );
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "fetch: /home/link: File exists\n")
+    );
+    assert!(!fake.nodes.contains_key(b"/home/target".as_slice()));
+    let (status, out, errors, _) = run(
+        network().with_file("/home/old.txt", 0o644, b"old", 0),
+        &[
+            c"--dry-run",
+            c"--no-clobber",
+            c"http://files.test/chunked",
+            c"/home/old.txt",
+        ],
+    );
+    assert_eq!(
+        (status, out.as_str(), errors.as_str()),
+        (1, "", "fetch: /home/old.txt: File exists\n")
+    );
+}

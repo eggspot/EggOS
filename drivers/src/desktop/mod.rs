@@ -22,24 +22,37 @@ mod desktops;
 mod events;
 mod icons;
 mod injection;
+mod keyboard_layout;
 mod launcher;
 pub mod layout;
 mod main_menu;
 mod management;
+mod network;
 mod paint;
+mod panel_focus;
 mod pointer;
 mod popups;
 pub mod protocol;
+mod responsiveness;
 mod shell;
 pub mod shortcuts;
+mod sticky_keys;
 mod windows;
 
 #[cfg(test)]
 mod injection_tests;
 #[cfg(test)]
+mod keyboard_layout_tests;
+#[cfg(test)]
 mod main_menu_tests;
 #[cfg(test)]
 mod management_tests;
+#[cfg(test)]
+mod network_tests;
+#[cfg(test)]
+mod panel_keys_tests;
+#[cfg(test)]
+mod polish_tests;
 #[cfg(test)]
 mod shell_tests;
 #[cfg(test)]
@@ -59,13 +72,23 @@ pub use injection::{
     ContentLayout, Injected, InjectedInput, PERSON_MOTION_THRESHOLD_PX, PERSON_WINS_MS,
     TerminalInput,
 };
+pub use keyboard_layout::{
+    KEYBOARD_SETTINGS, KeyboardLayoutChoice, LAYOUT_MENU_WIDTH, LayoutMenuRow, MAX_SHOWN_LAYOUTS,
+};
 pub use launcher::{
-    FILES_MISSING, LAUNCH_FAILED, LAUNCHER_FOOTER, LAUNCHER_ROW_HEIGHT, NOTICE_MS,
-    TEXT_EDITOR_MISSING,
+    CARET_BLINK_MS, CARET_STEADY_AFTER_MS, FILES_MISSING, LAUNCH_FAILED, LAUNCHER_FOOTER,
+    LAUNCHER_ROW_HEIGHT, LAYOUT_HINT_MS, NOTICE_MS, TEXT_EDITOR_MISSING, caret_shown_at,
 };
 pub use layout::{IconSide, Layout, layout};
 pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
+pub use network::{
+    CABLE_UNPLUGGED_TOOLTIP, CONNECTED_TOOLTIP_PREFIX, GETTING_ADDRESS_TOOLTIP, NETWORK_GLYPH_SIDE,
+    NO_ADDRESS_TOOLTIP, NetworkState,
+};
 pub use pointer::{CURSOR_SIDE, write_cursor_image};
+pub use responsiveness::{
+    APP_STARTING_MS, END_APP_OFFER_MS, END_APP_SIZE, EndAppButton, UNREAD_EVENTS_BUSY_MS,
+};
 
 /// How far a window's content is cut in from each side on its last rows, bottom row first:
 /// the pixels its rounded corners take (a maximised window has square corners).
@@ -73,11 +96,12 @@ pub const CONTENT_CORNER_INSETS: [u32; 5] = paint::INSET_INSIDE_R6;
 pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU_ITEMS};
 pub use shell::{DOCK_ICON, TASKBAR_ITEM, TOOLTIP_DELAY_MS};
 pub use shortcuts::{Profile, Shortcut, shortcut};
+pub use sticky_keys::{STICKY_CHIPS, STICKY_KEYS_OFF, STICKY_KEYS_ON};
 pub use windows::{
-    CASCADE_STEP, CHROME, ControlSide, DEFAULT_MARGIN, DOUBLE_CLICK_DISTANCE, DOUBLE_CLICK_MS,
-    KERNEL_CLIENT, MINIMUM_OUTSIDE, Part, RESTORE_DRAG_DISTANCE, WindowId, clamp_content_size,
-    clamp_resized_content, edge, is_double_click, minimum_outside, resize_edges, resize_pointer,
-    resized, slot_of,
+    Bounds, CASCADE_STEP, CHROME, ControlSide, DEFAULT_MARGIN, DOUBLE_CLICK_DISTANCE,
+    DOUBLE_CLICK_MS, KERNEL_CLIENT, MINIMUM_OUTSIDE, Part, RESTORE_DRAG_DISTANCE, WindowId,
+    clamp_content_size, clamp_resized_content, edge, is_double_click, minimum_outside,
+    resize_edges, resize_pointer, resized, slot_of,
 };
 
 use crate::display::{Damage, Rect};
@@ -241,6 +265,43 @@ pub enum Action {
     /// Focus the terminal and type `agentlog` in it, as the `Agent` chip's click asks
     /// ([`AGENT_LOG_LINE`]).
     ShowAgentLog,
+    /// End the client's process: the person chose `End app` for a window that is not
+    /// responding (D222). Its windows are gone already.
+    EndClient(u16),
+    /// Make keyboard layout number `.0` the one in force, as the switch key does, chosen in
+    /// the bar indicator's menu (D221).
+    ChooseKeyboardLayout(u8),
+    /// Start Settings on this pane ([`Desktop::settings_pane_command`]): no Settings window
+    /// is open to focus.
+    OpenSettingsPane(SettingsPane),
+    /// Turn sticky keys on if they are off and off if they are on, by the command
+    /// [`Desktop::sticky_keys_command`] gives: Shift was tapped [`STICKY_TOGGLE_TAPS`] times
+    /// (D224).
+    ToggleStickyKeys,
+}
+
+/// How many taps of Shift in a row turn sticky keys on or off (D224).
+pub const STICKY_TOGGLE_TAPS: u8 = 5;
+/// The most milliseconds between two of those taps.
+pub const STICKY_TOGGLE_WITHIN_MS: u32 = 2000;
+
+/// A pane of Settings a bar item opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsPane {
+    /// The Keyboard pane, from the keyboard layout indicator's menu (D221).
+    Keyboard,
+    /// The Network pane, from the bar's network indicator (D225).
+    Network,
+}
+
+impl SettingsPane {
+    /// The pane's name as `settings open` takes it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Keyboard => "keyboard",
+            Self::Network => "network",
+        }
+    }
 }
 
 /// Where the desktop reads windows' pixels: the buffers the kernel keeps for them.
@@ -318,6 +379,7 @@ pub struct Desktop {
     notice: Option<Notice>,
     icons: DesktopIcons,
     super_alone: bool,
+    shift_taps: (u8, u32),
     typed: u32,
     now_ms: u32,
     person_input_ms: Option<u32>,
@@ -328,8 +390,14 @@ pub struct Desktop {
     clock_length: u8,
     clock_shows_time_of_day: bool,
     agent: agent::AgentState,
+    sticky: sticky_keys::StickyChips,
+    panel_focus: Option<panel_focus::PanelFocus>,
+    keyboard_layouts: keyboard_layout::KeyboardLayouts,
+    network: network::NetworkIndicator,
     desktops: u8,
     current_desktop: u8,
+    responsiveness: responsiveness::Responsiveness,
+    reduce_motion: bool,
 }
 
 impl Desktop {
@@ -407,6 +475,7 @@ impl Desktop {
             notice: None,
             icons: DesktopIcons::default(),
             super_alone: false,
+            shift_taps: (0, 0),
             typed: 0,
             now_ms: 0,
             person_input_ms: None,
@@ -417,8 +486,14 @@ impl Desktop {
             clock_length: 0,
             clock_shows_time_of_day: false,
             agent: agent::AgentState::default(),
+            sticky: sticky_keys::StickyChips::default(),
+            panel_focus: None,
+            keyboard_layouts: keyboard_layout::KeyboardLayouts::default(),
+            network: network::NetworkIndicator::default(),
             desktops: 1,
             current_desktop: 0,
+            responsiveness: responsiveness::Responsiveness::default(),
+            reduce_motion: false,
         };
         let content = (WINDOW_WIDTH - CHROME.0, WINDOW_HEIGHT - CHROME.1);
         let mut terminal = Window::new(
@@ -534,15 +609,30 @@ impl Desktop {
         self.terminal().title_bar()
     }
 
-    /// Where the terminal's grid sits: inside the window's padding.
+    /// Where the terminal's grid sits: inside the window's padding, its left edge cut at the
+    /// screen's while the window hangs off it ([`Self::grid_on_screen`] places its cells).
     pub fn text_area(&self) -> TextArea {
-        let content = self.terminal().content();
+        let (x, y) = self.terminal().content_origin();
         TextArea {
-            x: content.x + PADDING,
-            y: content.y + PADDING,
+            x: (x + i64::from(PADDING)).max(0) as u32,
+            y: (y + i64::from(PADDING)) as u32,
             columns: GRID_COLUMNS,
             rows: GRID_ROWS,
         }
+    }
+
+    /// Where rectangle `rect` of the terminal's grid is on the screen, cut at the screen's left
+    /// edge while the window hangs off it (D222).
+    pub fn grid_on_screen(&self, rect: Rect) -> Rect {
+        let (x, y) = self.terminal().content_origin();
+        let padding = i64::from(PADDING);
+        Bounds::new(
+            (x + padding + i64::from(rect.x)) as i32,
+            (y + padding + i64::from(rect.y)) as u32,
+            rect.width,
+            rect.height,
+        )
+        .visible()
     }
 
     /// Whether the terminal's window is on screen.
@@ -556,6 +646,7 @@ impl Desktop {
         self.focus == Some(TERMINAL_SLOT)
             && self.is_visible(TERMINAL_SLOT)
             && !self.menu_open
+            && !self.keyboard_layout_menu_open()
             && self.open_main_menu.is_none()
             && !self.popup_open()
     }
@@ -593,6 +684,12 @@ impl Desktop {
     /// Window `id`'s rectangle, its border included, if it exists.
     pub fn window_rect(&self, id: WindowId) -> Option<Rect> {
         self.find(id).map(|slot| self.window_at(slot).outside())
+    }
+
+    /// Window `id`'s outside rectangle on the desktop's plane, which may begin left of the
+    /// screen (D222), if it exists.
+    pub fn window_bounds(&self, id: WindowId) -> Option<Bounds> {
+        self.find(id).map(|slot| self.window_at(slot).bounds())
     }
 
     /// Window `id`'s content on the screen, if it exists.
@@ -848,7 +945,7 @@ impl Desktop {
     /// A window for `client`, not shown until its first [`Self::commit`]: `role` and `parent`
     /// as the contract numbers them, a content of `width` by `height` clamped as
     /// [`clamp_content_size`] says, and `window_flags` ([`protocol::flags`]). Clients may make
-    /// normal windows and dialogs of their own normal windows.
+    /// normal windows and dialogs of their own normal windows and dialogs (D227).
     pub fn create(
         &mut self,
         client: u16,
@@ -868,7 +965,7 @@ impl Desktop {
         let parent = match role {
             Role::Dialog => {
                 let parent = self.owned(client, parent)?;
-                if self.window_at(parent).role != Role::Normal {
+                if !matches!(self.window_at(parent).role, Role::Normal | Role::Dialog) {
                     return Err(WindowError::Invalid);
                 }
                 Some(parent as u8)
@@ -1009,14 +1106,15 @@ impl Desktop {
     }
 
     /// `client`'s window `id`'s outside rectangle on the screen, its border and title bar
-    /// included (D174): where `GetPlacement` says it is.
-    pub fn placement(&self, client: u16, id: u32) -> Result<Rect, WindowError> {
+    /// included (D174): where `GetPlacement` says it is, left of the screen while it hangs off
+    /// the left edge (D222).
+    pub fn placement(&self, client: u16, id: u32) -> Result<Bounds, WindowError> {
         let slot = self.owned(client, id)?;
-        Ok(self.window_at(slot).outside())
+        Ok(self.window_at(slot).bounds())
     }
 
     /// Places `client`'s window `id` with its top-left corner at (`x`, `y`) of the work area,
-    /// clamped so the whole window is inside it: at once if it is shown, else when it first is.
+    /// clamped as a person's move is (D222): at once if it is shown, else when it first is.
     pub fn set_position(
         &mut self,
         client: u16,
@@ -1138,19 +1236,12 @@ impl Desktop {
         if !self.is_visible(slot) {
             return Ok(());
         }
-        let content = window.content();
         if !was_ready || rects.is_empty() {
-            damage.add(content);
+            damage.add(window.content());
             return Ok(());
         }
         for rect in rects {
-            let clipped = rect.clipped(content.width, content.height);
-            damage.add(Rect::new(
-                content.x + clipped.x,
-                content.y + clipped.y,
-                clipped.width,
-                clipped.height,
-            ));
+            damage.add(window.content_to_screen(*rect));
         }
         Ok(())
     }
@@ -1192,6 +1283,7 @@ impl Desktop {
             }
         }
         self.forget_main_menu(slot, damage);
+        self.forget_end_app(slot, damage);
         if self.is_visible(slot) {
             damage.add(self.window_at(slot).with_shadow());
         }
@@ -1242,6 +1334,10 @@ impl Desktop {
     fn show(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
         self.place(slot);
         self.window_mut(slot).shown = true;
+        let window = self.window_at(slot);
+        if window.role == Role::Normal && window.client != KERNEL_CLIENT {
+            self.end_app_starting(damage);
+        }
         self.stack[self.stack_length] = slot as u8;
         self.stack_length += 1;
         if self.window_at(slot).role == Role::Normal {
@@ -1268,13 +1364,19 @@ impl Desktop {
         }
         let outside = window.outside();
         let work = self.work_area();
-        let (x, y) = if let Some((x, y)) = window.requested_position {
-            (
+        if let Some((x, y)) = window.requested_position {
+            let (x, y) = self.hanging_clamped(
+                outside.width,
                 i64::from(work.x) + i64::from(x),
                 i64::from(work.y) + i64::from(y),
-            )
-        } else if let Some(parent) = window.parent {
-            let parent = self.window_at(usize::from(parent)).outside();
+            );
+            let window = self.window_mut(slot);
+            window.x = x;
+            window.y = y;
+            return;
+        }
+        let (x, y) = if let Some(parent) = window.parent {
+            let parent = self.window_at(usize::from(parent)).bounds();
             (
                 i64::from(parent.x) + (i64::from(parent.width) - i64::from(outside.width)) / 2,
                 i64::from(parent.y) + (i64::from(parent.height) - i64::from(outside.height)) / 2,
@@ -1286,20 +1388,21 @@ impl Desktop {
                     i64::from(work.y + work.height.saturating_sub(outside.height) / 2),
                 ),
                 Some(top) => {
-                    let top = self.window_at(top).outside();
-                    let fits = |x: u32, y: u32| {
-                        x + outside.width <= work.right() && y + outside.height <= work.bottom()
+                    let top = self.window_at(top).bounds();
+                    let fits = |x: i64, y: i64| {
+                        x + i64::from(outside.width) <= i64::from(work.right())
+                            && y + i64::from(outside.height) <= i64::from(work.bottom())
                     };
-                    let cascaded = (top.x + CASCADE_STEP, top.y + CASCADE_STEP);
-                    let restarted = (work.x + CASCADE_STEP, work.y + CASCADE_STEP);
-                    let (x, y) = if fits(cascaded.0, cascaded.1) {
+                    let step = i64::from(CASCADE_STEP);
+                    let cascaded = (i64::from(top.x) + step, i64::from(top.y) + step);
+                    let restarted = (i64::from(work.x) + step, i64::from(work.y) + step);
+                    if fits(cascaded.0, cascaded.1) && cascaded.0 >= i64::from(work.x) {
                         cascaded
                     } else if fits(restarted.0, restarted.1) {
                         restarted
                     } else {
-                        (work.x, work.y)
-                    };
-                    (i64::from(x), i64::from(y))
+                        (i64::from(work.x), i64::from(work.y))
+                    }
                 }
             }
         };
@@ -1319,7 +1422,7 @@ impl Desktop {
             })
     }
 
-    fn clamped(&self, slot: usize, x: i64, y: i64) -> (u32, u32) {
+    fn clamped(&self, slot: usize, x: i64, y: i64) -> (i32, u32) {
         let outside = self.window_at(slot).outside();
         let work = self.work_area();
         let x = x.clamp(
@@ -1330,35 +1433,25 @@ impl Desktop {
             i64::from(work.y),
             i64::from(work.y + work.height.saturating_sub(outside.height)),
         );
-        (x as u32, y as u32)
+        (x as i32, y as u32)
     }
 
-    fn hanging_clamped(&self, slot: usize, x: i64, y: i64) -> (u32, u32) {
-        let outside = self.window_at(slot).outside();
+    fn hanging_clamped(&self, width: u32, x: i64, y: i64) -> (i32, u32) {
         let work = self.work_area();
-        let kept = HANGING_TITLE_KEPT.min(outside.width);
-        let x = x.clamp(
-            i64::from(work.x),
-            i64::from(work.right().saturating_sub(kept).max(work.x)),
-        );
-        let y = y.clamp(
-            i64::from(work.y),
-            i64::from(work.bottom().saturating_sub(TITLE_HEIGHT + 1).max(work.y)),
-        );
-        (x as u32, y as u32)
+        let (least, most) = windows::hanging_x_range(width, work, self.profile.control_side());
+        let lowest = work.bottom().saturating_sub(TITLE_HEIGHT + 1).max(work.y);
+        let x = x.max(least).min(most);
+        let y = y.max(i64::from(work.y)).min(i64::from(lowest));
+        (x as i32, y as u32)
     }
 
     fn move_window(&mut self, slot: usize, x: i64, y: i64, damage: &mut Damage) {
-        let at = self.clamped(slot, x, y);
+        let width = self.window_at(slot).bounds().width;
+        let at = self.hanging_clamped(width, x, y);
         self.place_window(slot, at, damage);
     }
 
-    fn drag_window(&mut self, slot: usize, x: i64, y: i64, damage: &mut Damage) {
-        let at = self.hanging_clamped(slot, x, y);
-        self.place_window(slot, at, damage);
-    }
-
-    fn place_window(&mut self, slot: usize, (x, y): (u32, u32), damage: &mut Damage) {
+    fn place_window(&mut self, slot: usize, (x, y): (i32, u32), damage: &mut Damage) {
         let window = self.window_at(slot);
         if (x, y) == (window.x, window.y) {
             return;
@@ -1377,13 +1470,9 @@ impl Desktop {
     }
 
     fn raise(&mut self, slot: usize, damage: &mut Damage) {
-        if let Some(parent) = self.window_at(slot).parent {
-            self.raise(usize::from(parent), damage);
-            to_top(&mut self.stack, self.stack_length, slot);
-            if self.is_visible(slot) {
-                damage.add(self.window_at(slot).with_shadow());
-            }
-            return;
+        let owner = self.owner_window(slot);
+        if owner != slot {
+            self.raise(owner, damage);
         }
         let top = self.stack[..self.stack_length]
             .last()
@@ -1393,14 +1482,14 @@ impl Desktop {
         let mut moved = 0;
         while index + moved < self.stack_length {
             let candidate = usize::from(self.stack[index]);
-            if candidate != slot && self.window_at(candidate).parent == Some(slot as u8) {
+            if candidate != slot && self.descends_from(candidate, slot) {
                 to_top(&mut self.stack, self.stack_length, candidate);
                 moved += 1;
             } else {
                 index += 1;
             }
         }
-        if top != Some(slot) && self.is_visible(slot) {
+        if (owner != slot || top != Some(slot)) && self.is_visible(slot) {
             damage.add(self.window_at(slot).with_shadow());
             for &dialog in &self.stack[self.stack_length - moved..self.stack_length] {
                 let dialog = usize::from(dialog);
@@ -1415,6 +1504,17 @@ impl Desktop {
         if self.dialogs == 0 {
             return None;
         }
+        let mut top = self.top_child_dialog(slot)?;
+        for _ in 0..MAX_WINDOWS {
+            match self.top_child_dialog(top) {
+                Some(next) => top = next,
+                None => break,
+            }
+        }
+        Some(top)
+    }
+
+    fn top_child_dialog(&self, slot: usize) -> Option<usize> {
         self.stack[..self.stack_length]
             .iter()
             .rev()
@@ -1422,6 +1522,29 @@ impl Desktop {
             .find(|&dialog| {
                 self.window_at(dialog).parent == Some(slot as u8) && self.is_visible(dialog)
             })
+    }
+
+    fn owner_window(&self, slot: usize) -> usize {
+        let mut owner = slot;
+        for _ in 0..MAX_WINDOWS {
+            match self.window_at(owner).parent {
+                Some(parent) => owner = usize::from(parent),
+                None => break,
+            }
+        }
+        owner
+    }
+
+    fn descends_from(&self, slot: usize, ancestor: usize) -> bool {
+        let mut at = slot;
+        for _ in 0..MAX_WINDOWS {
+            match self.window_at(at).parent {
+                Some(parent) if usize::from(parent) == ancestor => return true,
+                Some(parent) => at = usize::from(parent),
+                None => return false,
+            }
+        }
+        false
     }
 
     fn set_focus(&mut self, focus: Option<usize>, damage: &mut Damage, events: &mut dyn EventSink) {
@@ -1449,7 +1572,7 @@ impl Desktop {
         self.focus = focus;
         if let Some(new) = focus {
             self.focus_serial = self.focus_serial.wrapping_add(1);
-            let top = self.window_at(new).parent.map_or(new, usize::from);
+            let top = self.owner_window(new);
             let serial = self.focus_serial;
             self.window_mut(top).focus_serial = serial;
             damage.add(self.window_at(new).outside());
@@ -1488,9 +1611,8 @@ impl Desktop {
         if self.window_at(slot).minimised {
             return;
         }
-        let group = |desktop: &Self, other: usize| {
-            other == slot || desktop.window_at(other).parent == Some(slot as u8)
-        };
+        let group =
+            |desktop: &Self, other: usize| other == slot || desktop.descends_from(other, slot);
         for &other in &self.stack[..self.stack_length] {
             let other = usize::from(other);
             if self.is_visible(other) && group(self, other) {
@@ -1557,12 +1679,9 @@ impl Desktop {
     }
 
     fn content_point(&self, slot: usize) -> (i32, i32) {
-        let content = self.window_at(slot).content();
+        let (left, top) = self.window_at(slot).content_origin();
         let (x, y) = self.pointer;
-        (
-            (i64::from(x) - i64::from(content.x)) as i32,
-            (i64::from(y) - i64::from(content.y)) as i32,
-        )
+        ((i64::from(x) - left) as i32, (i64::from(y) - top) as i32)
     }
 
     /// The pointer moved to (`x`, `y`): drags or resizes the window while a drag or resize is
@@ -1594,6 +1713,7 @@ impl Desktop {
         self.main_menu_hover(x, y, damage);
         self.window_menu_hover(x, y, damage);
         self.launcher_hover(x, y, damage);
+        self.keyboard_layout_menu_hover(x, y, damage);
         self.icon_menu_hover(x, y, damage);
         self.update_panel_hover(x, y, damage);
         let hit = self.hit(x, y);
@@ -1657,7 +1777,7 @@ impl Desktop {
             self.unmaximise(drag.window, damage, events);
             self.drag = Some(drag);
         }
-        self.drag_window(
+        self.move_window(
             drag.window,
             i64::from(x) - drag.from_pointer_x,
             i64::from(y) - drag.from_pointer_y,
@@ -1697,6 +1817,9 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) -> Action {
         self.note_person_input();
+        if pressed {
+            self.end_panel_focus(damage);
+        }
         let action = self.button_change(code, pressed, damage, events);
         self.update_control_hover(damage);
         self.update_pointer(damage);
@@ -1751,6 +1874,9 @@ impl Desktop {
         let (x, y) = self.pointer;
         self.super_alone = false;
         self.close_notice(damage);
+        if let Some(action) = self.end_app_press(x, y, damage, events) {
+            return action;
+        }
         if self.main_menu_press(code, x, y, damage, events) {
             return Action::None;
         }
@@ -1759,6 +1885,9 @@ impl Desktop {
             return Action::None;
         }
         if let Some(action) = self.icon_menu_press(x, y, damage, events) {
+            return action;
+        }
+        if let Some(action) = self.keyboard_layout_menu_press(code, x, y, damage, events) {
             return action;
         }
         let opener = self.panel_item_at(x, y);
@@ -1833,6 +1962,9 @@ impl Desktop {
                     });
                 }
             }
+            Some(Part::Content) if self.offers_end_app(slot) => {
+                self.open_end_app(slot, damage, events)
+            }
             Some(Part::Content) => self.press_in_content(slot, code, events),
             Some(Part::Maximise | Part::Border) | None => {}
         }
@@ -1886,6 +2018,9 @@ impl Desktop {
             .window_at(slot)
             .part_at(x, y, self.profile.control_side())
         {
+            Some(Part::Content) if self.offers_end_app(slot) => {
+                self.open_end_app(slot, damage, events)
+            }
             Some(Part::Content) => self.press_in_content(slot, code, events),
             Some(Part::TitleBar) if code == button::RIGHT => {
                 self.open_window_menu(slot, Some((x, y)), damage, events)
@@ -1929,6 +2064,23 @@ impl Desktop {
         }
     }
 
+    /// The sideways wheel turned by `notches`, right when positive (D227): a `Wheel` record
+    /// with the notches in `c` and `d` 0, as [`Self::send_input`]'s sideways turn sends it, to
+    /// the window under the pointer or the one holding the grab.
+    pub fn sideways_wheel(&mut self, notches: i32, events: &mut dyn EventSink) {
+        self.note_person_input();
+        let (x, y) = self.pointer;
+        let target = self.grab.or_else(|| self.content_window_at(x, y));
+        if let Some(slot) = target {
+            let (cx, cy) = self.content_point(slot);
+            self.send(
+                slot,
+                EventRecord::new(event::WHEEL, 0, cx, cy, notches as u32, 0),
+                events,
+            );
+        }
+    }
+
     /// Key `code` went down (`pressed`) or up with `modifiers` in effect: the open popup's
     /// keys, the server's shortcuts, the power menu's Up, Down, Enter and Esc, or a `Key` event
     /// for the focused window's client.
@@ -1947,6 +2099,8 @@ impl Desktop {
     /// A key event whose `character` the keyboard layout chose (D185): as [`Self::key`], the
     /// focused window's record and the launcher's search taking `character` instead of the US
     /// keymap's. Code 0 is a character typed with no key of its own, such as a dead key's accent.
+    /// A `character` with [`protocol::DEAD_KEY_CHARACTER`] reaches the window as the waiting
+    /// accent (or 0) with [`modifier::DEAD`] (D221), and nothing else takes it as typed.
     pub fn key_typing(
         &mut self,
         code: u16,
@@ -1958,11 +2112,42 @@ impl Desktop {
     ) -> Action {
         self.typed = character;
         self.note_person_input();
+        if self.shift_tapped_to_toggle_sticky_keys(code, pressed, modifiers) {
+            return Action::ToggleStickyKeys;
+        }
         let action = self.key_change(code, pressed, modifiers, damage, events);
         self.update_control_hover(damage);
         self.update_pointer(damage);
         self.refresh_panel_hover(damage);
         action
+    }
+
+    fn shift_tapped_to_toggle_sticky_keys(
+        &mut self,
+        code: u16,
+        pressed: bool,
+        modifiers: Modifiers,
+    ) -> bool {
+        if !pressed {
+            return false;
+        }
+        let shift = matches!(code, key::LEFT_SHIFT | key::RIGHT_SHIFT);
+        let others = modifiers.bits() & !Modifiers::SHIFT.bits() & !Modifiers::CAPS_LOCK.bits();
+        if !shift || others != 0 {
+            self.shift_taps = (0, self.now_ms);
+            return false;
+        }
+        let (taps, last) = self.shift_taps;
+        let taps = match taps > 0 && self.now_ms.wrapping_sub(last) <= STICKY_TOGGLE_WITHIN_MS {
+            true => taps + 1,
+            false => 1,
+        };
+        if taps == STICKY_TOGGLE_TAPS {
+            self.shift_taps = (0, self.now_ms);
+            return true;
+        }
+        self.shift_taps = (taps, self.now_ms);
+        false
     }
 
     fn key_change(
@@ -1973,6 +2158,9 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Action {
+        if let Some(action) = self.end_app_key(code, pressed, damage, events) {
+            return action;
+        }
         let super_key = matches!(code, key::LEFT_SUPER | key::RIGHT_SUPER);
         let alone_released = super_key && !pressed && self.super_alone;
         self.super_alone = super_key
@@ -1987,6 +2175,7 @@ impl Desktop {
         }
         if alone_released && self.window_menu.is_none() && self.icons.menu.is_none() {
             self.close_menu_if_open(damage);
+            self.close_keyboard_layout_menu(damage);
             self.toggle_launcher(damage, events);
             return Action::None;
         }
@@ -2009,6 +2198,12 @@ impl Desktop {
             self.main_menu_key(code, pressed, damage, events);
             return Action::None;
         }
+        if self.keyboard_layout_menu_open() {
+            return self.keyboard_layout_menu_key(code, pressed, damage, events);
+        }
+        if pressed && self.panel_focus.is_some() && !self.menu_open {
+            return self.panel_focus_key(code, modifiers, damage, events);
+        }
         if !self.menu_open {
             if pressed
                 && let Some(shortcut) = shortcut(
@@ -2024,13 +2219,17 @@ impl Desktop {
                 return self.desktop_key(code, modifiers, damage, events);
             }
             if let Some(slot) = self.focus.filter(|&slot| self.is_visible(slot)) {
+                let (dead, character) = match self.typed & protocol::DEAD_KEY_CHARACTER {
+                    0 => (0, self.typed),
+                    _ => (modifier::DEAD, self.typed & !protocol::DEAD_KEY_CHARACTER),
+                };
                 let record = EventRecord::new(
                     event::KEY,
                     0,
                     i32::from(code),
                     i32::from(pressed),
-                    key_modifiers(modifiers),
-                    self.typed,
+                    key_modifiers(modifiers) | dead,
+                    character,
                 );
                 self.send(slot, record, events);
             }
@@ -2138,7 +2337,13 @@ impl Desktop {
             return;
         };
         if let Some(slot) = self.content_holding(clip) {
-            self.draw_content(&mut canvas, self.window_at(slot), contents);
+            let window = self.window_at(slot);
+            let shift = window.overhang();
+            self.draw_content(
+                &mut canvas.shifted(shift),
+                &window.moved_right(shift),
+                contents,
+            );
             self.draw_agent_pointer(&mut canvas);
             if with_pointer {
                 self.draw_pointer(&mut canvas);
@@ -2151,10 +2356,13 @@ impl Desktop {
             let slot = usize::from(slot);
             let window = self.window_at(slot);
             if self.is_visible(slot) && window.with_shadow().overlaps(&clip) {
-                if window.has_shadow() {
-                    canvas.shadow(window.outside());
+                let shift = window.overhang();
+                let drawn = window.moved_right(shift);
+                let mut canvas = canvas.shifted(shift);
+                if drawn.has_shadow() {
+                    canvas.shadow(drawn.outside());
                 }
-                self.draw_window(&mut canvas, slot, contents);
+                self.draw_window(&mut canvas, slot, &drawn, contents);
             }
         }
         self.draw_panels(&mut canvas);
@@ -2163,6 +2371,7 @@ impl Desktop {
             canvas.shadow(self.menu());
             self.draw_menu(&mut canvas);
         }
+        self.draw_keyboard_layout_menu(&mut canvas);
         self.draw_popups(&mut canvas);
         self.draw_tooltip(&mut canvas);
         self.draw_agent_pointer(&mut canvas);
@@ -2196,6 +2405,7 @@ impl Desktop {
             .is_some_and(|rect| rect.overlaps(&clip));
         let panels = self.layout.panels().any(|panel| panel.overlaps(&clip));
         if (self.menu_open && self.menu_with_shadow().overlaps(&clip))
+            || self.keyboard_layout_menu_overlaps(clip)
             || self.popups_overlap(clip)
             || tooltip
             || panels
@@ -2239,8 +2449,13 @@ impl Desktop {
         }
     }
 
-    fn draw_window(&self, canvas: &mut Canvas<'_>, slot: usize, contents: &dyn Contents) {
-        let window = self.window_at(slot);
+    fn draw_window(
+        &self,
+        canvas: &mut Canvas<'_>,
+        slot: usize,
+        window: &Window,
+        contents: &dyn Contents,
+    ) {
         let outside = window.outside();
         let focused = self.focus == Some(slot);
         let (border, title, title_text) = if focused {

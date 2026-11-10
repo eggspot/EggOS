@@ -74,13 +74,6 @@ pub mod request {
     pub const TCSETSW2: u32 = 0x402c_542c;
     /// [`TCSETSF`] with a `struct termios2`.
     pub const TCSETSF2: u32 = 0x402c_542d;
-
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "riscv64",
-        target_arch = "x86_64"
-    )))]
-    compile_error!("check Linux's terminal ioctl numbers for this architecture");
 }
 
 mod flush {

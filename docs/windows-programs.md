@@ -31,9 +31,10 @@ cargo xtask run --arch aarch64 --add path/to/hello-arm64.exe
 ```
 
 `--add` works as for [Linux programs](linux-programs.md): the file goes to `/bin/hello.exe`.
-The x86_64 and aarch64 release images carry the Windows layer at `/usr/lib/eggos/windows`
-(D152), with or without added files, so a program in the host folder (`--apps`) runs too
-(`/media/host/hello.exe`). At the prompt, type
+The release images do not carry the Windows layer: it is the `windows-apps` component (D235,
+[components](components.md)) at `/usr/lib/eggos/windows`, which `component install
+windows-apps` installs from the store the run scripts and `cargo xtask run` attach. Once it is
+installed, a program in the host folder (`--apps`) runs too (`/media/host/hello.exe`). At the prompt, type
 `hello.exe` (or its path) and its arguments; the shell reports its exit code's low 8 bits in
 `$?`, as for any program (`ExitProcess(300)` shows `44`).
 
@@ -166,6 +167,37 @@ cl /O2 /MD seh.c                                           :: C with __try and _
 
 `tests/windows-crt/eggcpp.cpp` is our own example, which the Windows C runtime boot test runs
 in CI (`cargo xtask windows-crt`).
+
+## C++'s standard library and the rest of the C runtime
+
+C++ programs on `msvcp140.dll` run (D230): `std::thread`, `std::mutex` and the recursive and
+timed mutexes, `std::condition_variable`, the clocks, `std::system_error`, the standard
+exceptions the library throws (`length_error`, `out_of_range`, `bad_function_call`, ...) with
+MSVC's words, `std::exception_ptr`, `std::uncaught_exceptions`, `dynamic_cast`, `typeid` and
+`type_info::name`, on x64 and ARM64 (return addresses signed by pointer authentication are
+stripped as the stack unwinds). iostreams are not there yet. The C runtime has the whole math
+library (`eggos-math`, our own, shared with the macOS layer), `setjmp` and `longjmp` (which run
+`__finally` blocks and destructors on the way), the C and English (United States) UTF-8
+locales, wide streams in UTF-8 or UTF-16 by their `ccs=` encoding, and low-level I/O's text
+mode (D229). `tests/windows-crt/eggcrt2.c` and `eggcpp2.cpp` are our own examples, run by the
+Windows C runtime boot test.
+
+## The registry
+
+Windows programs read and write a real registry (D231): `RegOpenKeyEx`, `RegCreateKeyEx`,
+`RegQueryValueEx`, `RegSetValueEx`, `RegDeleteKey`, `RegDeleteTree`, `RegEnumKeyEx`,
+`RegEnumValue`, `RegGetValue` and the rest, W and A. The user's keys live in
+`~/.local/share/eggos/windows/user.hive` and the machine's in
+`/var/lib/eggos/windows/machine.hive` (read-only but to root); `HKEY_CLASSES_ROOT` merges both.
+Only its owner reads the user's file; every user reads the machine's. Programs, the command
+and Settings write through one lock per file, so two writers never lose each other's change,
+and a program that opens a machine key to write it (`KEY_WRITE`) without root is refused
+(`ERROR_ACCESS_DENIED`). `windows registry set` asks first on a terminal before replacing a
+value or changing `HKEY_LOCAL_MACHINE`. Read and change it with
+`windows registry get|set|delete|reset`, the MCP tools
+`windows_registry_*` or Settings > Windows, all present only while the `windows-apps`
+component is installed. A damaged file is reported (`hive_damaged`) and `windows registry
+reset` replaces it, keeping the old one beside it.
 
 ## Programs built on Rust's standard library
 
@@ -323,6 +355,16 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
   return the chosen path in Windows' form with `nFileOffset`, `nFileExtension` and
   `lpstrFileTitle`, add `lpstrDefExt`, and honour `OFN_FILEMUSTEXIST` and
   `OFN_PATHMUSTEXIST`.
+- **More of the system's controls** (D228). Selection in every edit, words selected with a
+  double click and crossed with Ctrl and the arrows, `ES_PASSWORD` and `ES_NUMBER`; radio
+  buttons and group boxes, the arrows moving within a group; scroll bar controls (`SBS_*`,
+  `SetScrollInfo` and its kin, a held arrow repeating); double clicks in
+  the system's controls (`LBN_DBLCLK`); item data on list and combo box items; hover looks,
+  `TrackMouseEvent` (`WM_MOUSELEAVE`, `WM_MOUSEHOVER`), `WM_SETCURSOR`, `SetCursor` and
+  `ShowCursor`; and `WM_CTLCOLOR*`, whose brush and text colour a control's fill and text take.
+  Agents see a list box's items and select them, see check boxes' state, and focus and set
+  text on any thread's windows (D227); a password edit shows them as a text field named
+  `password`, its text left out.
 
 ## What the layer provides
 
@@ -383,11 +425,12 @@ size needed, as each function documents.
 
 ## What does not work yet
 
-- **Programs on the C++ standard library's DLL (`msvcp140.dll`) and the rest of Rust's std**:
-  they import more (iostreams, `CopyFileExW`, more of the C library), which later parts add. The layer names the first function it lacks. C++'s `std::exception_ptr`,
-  `dynamic_cast` and `typeid` are missing too (D177's "Not yet"). Of MSVC's C runtime,
-  `setlocale`, `setjmp`, the math library beyond `sqrtf`, wide streams, low-level I/O's line
-  ending translation and permission modes (`_open` itself works, D179), `rename`, `tmpfile` and `_set_invalid_parameter_handler` are missing (D146's "Not yet"); a
+- **iostreams and the rest of Rust's std**: C++ programs on `msvcp140.dll` run (D230), but
+  its iostreams are missing, and Rust's std imports more (`CopyFileExW`, more of the C
+  library), which later parts add. The layer names the first function it lacks. Of MSVC's C
+  runtime, locales other than C and English (United States) UTF-8 (D229), low-level I/O's
+  permission modes, `rename`, `tmpfile` and `_set_invalid_parameter_handler` are missing
+  (D146's "Not yet"); a
   function given an invalid parameter returns its documented error instead of ending the
   program, and one lock serialises all of stdio (a thread blocked reading `stdin` holds up
   the others' stdio calls).
@@ -414,26 +457,27 @@ size needed, as each function documents.
 - **Exceptions through the layer's own code** (D177's "Not yet"): a fault inside a Windows
   function the program called ends the program, as does an exception thrown out of a window
   procedure through `DispatchMessage`, or one raised inside a filter or `__finally` block and
-  caught outside its function. A stack overflow is not an exception yet, and on ARM64 a
+  caught outside its function. A stack overflow is not an exception yet (no
+  `STATUS_STACK_OVERFLOW`), collided unwinds, `RtlAddFunctionTable` and
+  `RtlInstallFunctionTableCallback` are missing (D230's "Not yet"), and on ARM64 a
   context resumed after a fault loses `x16`. On ARM64 a read of `CurrentEL`, which MSVC's
   atomics helpers make once, still reads exception level 0 without an exception (D151).
 - **`KUSER_SHARED_DATA`**: the page at `0x7ffe0000` holds only `ProcessorFeatures`; its clocks,
   version numbers and the rest read as zero.
 - **DLLs**: only the layer's own kernel32, ntdll, shell32, user32, gdi32, comdlg32, comctl32,
-  vcruntime140, the Universal C Runtime, gdiplus, ole32, oleaut32, advapi32, wsock32, winmm,
+  vcruntime140, msvcp140 (with `msvcp140_1`, `_2` and `_atomic_wait`), the Universal C Runtime, gdiplus, ole32, oleaut32, advapi32, wsock32, winmm,
   version, psapi, wininet, shlwapi, uxtheme and dwmapi (what the tables above list); a program
   that imports another DLL (ws2_32, its own) or a function they lack is refused, and the layer
   names it. Imports by ordinal work for comctl32, oleaut32 and wsock32.
-- **GUI programs beyond parts 1 and 2** (D129, D145): multi-line edits, selection and the
-  clipboard in edits, `ES_PASSWORD` and `ES_NUMBER`, radio buttons and group boxes, combo
-  boxes, scroll bars, owner-drawn controls,
-  `WM_CTLCOLOR*` (controls draw Windows' default colours), hover looks, per-control pointers,
-  double clicks, menu keys (F10, Alt and mnemonics), submenus,
+- **GUI programs beyond D145, D174 and D228**: multi-line edits (`ES_MULTILINE`), word
+  selection and the clipboard in edits, editable combo boxes (`CBS_DROPDOWN`, `CBS_SIMPLE`),
+  scroll bars on windows (`WS_VSCROLL`, `WS_HSCROLL`), owner-drawn controls, menu keys (F10, Alt
+  and mnemonics), submenus, `MFT_RADIOCHECK`, menus from templates,
   `EnableMenuItem` and `CheckMenuItem`, the picker's overwrite and not-found questions and its
   filter choice, `GetTextMetricsW`, fonts other
   than Egg Mono and text
-  beyond ASCII (drawn as `?`), double-click messages, screen coordinates in `MSG.pt` and
-  `WM_MOUSEWHEEL` (client coordinates today), `SetCursor`, `GetWindowRect` and moving windows
+  beyond ASCII (drawn as `?`), screen coordinates in `MSG.pt` and
+  `WM_MOUSEWHEEL` (client coordinates today), `GetWindowRect` and moving windows
   from the program, `SW_HIDE`, bitmaps and `BitBlt`, dashed pens, raster operations and
   clipping beyond one rectangle. Follow-ups: `SendMessageW` to another thread's window calls
   the procedure on the caller's thread; destroying a window that owns an open message box leaves

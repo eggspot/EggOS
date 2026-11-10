@@ -19,12 +19,14 @@ pub mod geometry;
 pub mod key;
 pub mod keymap;
 mod parser;
+mod reflow;
 
 #[cfg(test)]
 mod tests;
 
 pub use colours::{
-    ACCENT, ANSI_COLOURS, DEFAULT_COLOUR, TERM_BACKGROUND, TERM_CURSOR, TERM_FOREGROUND,
+    ACCENT, ANSI_COLOURS, DEFAULT_COLOUR, DIM_ON_SELECTION, TERM_BACKGROUND, TERM_CURSOR,
+    TERM_FOREGROUND, TERM_SELECTION,
 };
 
 use alloc::boxed::Box;
@@ -45,6 +47,49 @@ pub const WHEEL_LINES: usize = 3;
 pub const REPLY_CAPACITY: usize = 64;
 /// Bytes of a title a program sets that are kept ([`Terminal::title`]); more are dropped.
 pub const TITLE_CAPACITY: usize = 64;
+/// The longest folder a program reports with `OSC 7` ([`Terminal::current_folder`]); a longer
+/// one is ignored.
+pub const PATH_CAPACITY: usize = 4096;
+
+/// A line's place in the terminal's history: the count of lines pushed into the scrollback
+/// before it. The scrollback's oldest line is [`Terminal::first_line_number`], the live
+/// screen's row `r` is [`Terminal::line_number_of_row`]`(r)`; a line keeps its number while
+/// output scrolls it up.
+pub type LineNumber = u32;
+
+/// The bits a row of the screen or the scrollback carries ([`Terminal::row_flags`]).
+pub mod line_flags {
+    /// The row continues the row before it: autowrap carried the text onto it.
+    pub const WRAPPED: u8 = 1;
+}
+
+/// The cells [`Terminal::render`] fills with [`TERM_SELECTION`]: from `start` (a line and the
+/// boundary left of a cell, `0..=columns`) up to `end`, in reading order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Highlight {
+    pub start: (LineNumber, u16),
+    pub end: (LineNumber, u16),
+}
+
+impl Highlight {
+    /// The columns of line `line` it covers, as a range of cells.
+    pub fn columns_of(&self, line: LineNumber, columns: u16) -> core::ops::Range<u16> {
+        if line < self.start.0 || line > self.end.0 {
+            return 0..0;
+        }
+        let from = if line == self.start.0 {
+            self.start.1
+        } else {
+            0
+        };
+        let to = if line == self.end.0 {
+            self.end.1
+        } else {
+            columns
+        };
+        from.min(columns)..to.min(columns).max(from.min(columns))
+    }
+}
 
 /// One character cell: a glyph id ([`eggos_font`]), two colours (0-15 the ANSI colours,
 /// [`DEFAULT_COLOUR`] the terminal's own) and [`cell_flags`].
@@ -87,6 +132,20 @@ impl Cell {
             (background, foreground)
         } else {
             (foreground, background)
+        }
+    }
+
+    /// [`Self::colours`], or for a selected cell its foreground on [`TERM_SELECTION`], bright
+    /// black ([`DIM_ON_SELECTION`]) drawn as [`TERM_FOREGROUND`].
+    pub fn colours_selected(self, selected: bool) -> (u32, u32) {
+        let (foreground, background) = self.colours();
+        if !selected {
+            return (foreground, background);
+        }
+        let dim = ANSI_COLOURS[usize::from(DIM_ON_SELECTION)];
+        match foreground == dim {
+            true => (TERM_FOREGROUND, TERM_SELECTION),
+            false => (foreground, TERM_SELECTION),
         }
     }
 }
@@ -213,6 +272,7 @@ struct Modes {
     cursor_visible: bool,
     cursor_blinking: bool,
     application_cursor_keys: bool,
+    bracketed_paste: bool,
 }
 
 impl Modes {
@@ -222,6 +282,7 @@ impl Modes {
         cursor_visible: true,
         cursor_blinking: true,
         application_cursor_keys: false,
+        bracketed_paste: false,
     };
 }
 
@@ -283,8 +344,15 @@ pub struct Terminal {
     columns: u16,
     rows: u16,
     screens: [Box<[Cell]>; 2],
+    row_flags: [Box<[u8]>; 2],
     active: usize,
     history: Box<[Cell]>,
+    history_flags: Box<[u8]>,
+    pushed: LineNumber,
+    highlight: Option<Highlight>,
+    selection_reset: bool,
+    folder: Vec<u8>,
+    folder_changed: bool,
     history_start: usize,
     history_length: usize,
     view_back: usize,
@@ -340,8 +408,18 @@ impl Terminal {
             columns,
             rows,
             screens: [filled(cells, Cell::BLANK)?, filled(cells, Cell::BLANK)?],
+            row_flags: [
+                filled(usize::from(rows), 0u8)?,
+                filled(usize::from(rows), 0u8)?,
+            ],
             active: MAIN,
             history: filled(HISTORY_LINES * usize::from(columns), Cell::BLANK)?,
+            history_flags: filled(HISTORY_LINES, 0u8)?,
+            pushed: 0,
+            highlight: None,
+            selection_reset: false,
+            folder: Vec::new(),
+            folder_changed: false,
             history_start: 0,
             history_length: 0,
             view_back: 0,
@@ -470,6 +548,118 @@ impl Terminal {
         core::mem::take(&mut self.title_changed)
     }
 
+    /// Whether a program asked for bracketed paste (`CSI ? 2004 h`).
+    pub fn bracketed_paste(&self) -> bool {
+        self.modes.bracketed_paste
+    }
+
+    /// The folder a program last reported with `OSC 7 ; file://<host>/<path>`, an absolute
+    /// path of valid UTF-8 of at most [`PATH_CAPACITY`] bytes, percent escapes decoded and no
+    /// control character among them, escaped or not; `None` before one did.
+    pub fn current_folder(&self) -> Option<&str> {
+        match self.folder.is_empty() {
+            true => None,
+            false => core::str::from_utf8(&self.folder).ok(),
+        }
+    }
+
+    /// Whether a program reported a folder since the last call.
+    pub fn take_folder_change(&mut self) -> bool {
+        core::mem::take(&mut self.folder_changed)
+    }
+
+    /// Whether, since the last call, something made a selection's positions meaningless: the
+    /// alternate screen switching on or off, `ESC c`, `CSI 3 J` or a [`Self::resize`].
+    pub fn take_selection_reset(&mut self) -> bool {
+        core::mem::take(&mut self.selection_reset)
+    }
+
+    /// The [`line_flags`] of row `row` of the live screen shown now; 0 past the grid.
+    pub fn row_flags(&self, row: u16) -> u8 {
+        self.row_flags[self.active]
+            .get(usize::from(row))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The number of the scrollback's oldest line kept; lines before it were dropped.
+    pub fn first_line_number(&self) -> LineNumber {
+        self.pushed.wrapping_sub(self.history_length as LineNumber)
+    }
+
+    /// The number of the live screen's row `row`.
+    pub fn line_number_of_row(&self, row: u16) -> LineNumber {
+        self.pushed.wrapping_add(LineNumber::from(row))
+    }
+
+    /// The number of the line row `row` of the view shows: the scrollback's while scrolled
+    /// back.
+    pub fn line_number_of_view_row(&self, row: u16) -> LineNumber {
+        self.pushed
+            .wrapping_sub(self.view_back as LineNumber)
+            .wrapping_add(LineNumber::from(row))
+    }
+
+    /// The live screen's row holding line `number`, if the screen shows it.
+    pub fn row_of_line_number(&self, number: LineNumber) -> Option<u16> {
+        let row = number.checked_sub(self.pushed)?;
+        (row < LineNumber::from(self.rows)).then_some(row as u16)
+    }
+
+    /// The row of the view holding line `number`, if the view shows it.
+    pub fn view_row_of_line_number(&self, number: LineNumber) -> Option<u16> {
+        let top = self.line_number_of_view_row(0);
+        let row = number.checked_sub(top)?;
+        (row < LineNumber::from(self.rows)).then_some(row as u16)
+    }
+
+    /// The newest line: the live screen's last row.
+    pub fn last_line_number(&self) -> LineNumber {
+        self.line_number_of_row(self.rows - 1)
+    }
+
+    /// The cells and [`line_flags`] of line `number`, from the scrollback or the live screen
+    /// shown now; `None` for a line dropped or not yet written.
+    pub fn numbered_line(&self, number: LineNumber) -> Option<(&[Cell], u8)> {
+        let first = self.first_line_number();
+        let index = number.checked_sub(first)? as usize;
+        if index < self.history_length {
+            let slot = (self.history_start + index) % HISTORY_LINES;
+            return Some((self.history_line(index), self.history_flags[slot]));
+        }
+        let row = index - self.history_length;
+        (row < usize::from(self.rows)).then(|| (self.line(row as u16), self.row_flags(row as u16)))
+    }
+
+    /// The cells drawn in [`TERM_SELECTION`].
+    pub fn highlight(&self) -> Option<Highlight> {
+        self.highlight
+    }
+
+    /// Fills `highlight`'s cells with [`TERM_SELECTION`] from the next [`Self::render`] on,
+    /// none for `None`; the rows that change are drawn again.
+    pub fn set_highlight(&mut self, highlight: Option<Highlight>) {
+        if highlight == self.highlight {
+            return;
+        }
+        for changed in [self.highlight, highlight].into_iter().flatten() {
+            let top = self.line_number_of_view_row(0);
+            let first = changed.start.0.max(top);
+            let last = changed
+                .end
+                .0
+                .min(self.line_number_of_view_row(self.rows - 1));
+            let mut line = first;
+            while line <= last {
+                if let Some(row) = self.view_row_of_line_number(line) {
+                    self.touch(row, 0, self.columns);
+                }
+                line += 1;
+            }
+        }
+        self.highlight = highlight;
+    }
+
     /// The characters row `row` of the view shows (the scrollback while scrolled back), as
     /// UTF-8 written into `out` with the trailing spaces left out; returns how many bytes, cut
     /// before the first character that does not fit. Nothing for a row past the grid.
@@ -503,13 +693,16 @@ impl Terminal {
     }
 
     /// Changes the grid to `columns` by `rows` cells, as the terminal program does when its
-    /// window's size changes (docs/ux/terminal-windows-v0.3.md section 3, D187), with no reflow:
-    /// cells past a narrower width are cut from every row and the scrollback for good; a shorter
-    /// grid drops the blank rows below the cursor first, then moves rows from the top into the
-    /// scrollback, the cursor moving up with them; a taller one adds blank rows at the bottom.
-    /// The alternate screen is cleared, the scrolling region is the whole grid again, the view
-    /// goes back to the live screen and everything is drawn at the next render. Returns `false`,
-    /// changing nothing, for a size of no cell or without memory for the new one.
+    /// window's size changes (docs/ux/terminal-selection-v0.3.md section 3), reflowing the main
+    /// screen: every logical line of the scrollback and the screen (a row and the rows flagged
+    /// [`line_flags::WRAPPED`] after it) is laid out again at the new width, its last row's
+    /// trailing blanks trimmed, the cursor keeping its cell; the screen then shows the last
+    /// rows down to the cursor or the last row written, rows above it going into the scrollback
+    /// and, when there is room, coming back from it before blank rows are added at the bottom.
+    /// The scrollback keeps the newest [`HISTORY_LINES`] rows, the alternate screen is cleared,
+    /// the scrolling region is the whole grid again, the view goes back to the live screen, a
+    /// selection is reset and everything is drawn at the next render. Returns `false`, changing
+    /// nothing, for a size of no cell or without memory for the new one.
     pub fn resize(&mut self, columns: u16, rows: u16) -> bool {
         if columns == 0 || rows == 0 {
             return false;
@@ -517,77 +710,7 @@ impl Terminal {
         if (columns, rows) == (self.columns, self.rows) {
             return true;
         }
-        let cells = usize::from(columns) * usize::from(rows);
-        let (Some(mut main), Some(alternate), Some(mut history), Some(dirty)) = (
-            filled(cells, Cell::BLANK),
-            filled(cells, Cell::BLANK),
-            filled(HISTORY_LINES * usize::from(columns), Cell::BLANK),
-            filled(usize::from(rows), Span::CLEAN),
-        ) else {
-            return false;
-        };
-        let main_cursor_row = match self.active {
-            MAIN => self.row,
-            _ => self.saved[MAIN].row,
-        };
-        let excess = self.rows.saturating_sub(rows);
-        let blank_below = (main_cursor_row.saturating_add(1)..self.rows)
-            .rev()
-            .take_while(|&row| {
-                self.line_of(MAIN, row)
-                    .iter()
-                    .all(|cell| *cell == Cell::BLANK)
-            })
-            .count() as u16;
-        let dropped_below = excess.min(blank_below);
-        let to_history = excess - dropped_below;
-        let kept = self.rows - excess;
-        let width = usize::from(columns);
-        let copied = usize::from(columns.min(self.columns));
-        for row in 0..kept {
-            let from = self.line_of(MAIN, row + to_history);
-            let start = usize::from(row) * width;
-            main[start..start + copied].copy_from_slice(&from[..copied]);
-        }
-        let lines = self.history_length + usize::from(to_history);
-        let skipped = lines.saturating_sub(HISTORY_LINES);
-        for index in skipped..lines {
-            let from = match index < self.history_length {
-                true => self.history_line(index),
-                false => self.line_of(MAIN, (index - self.history_length) as u16),
-            };
-            let start = (index - skipped) * width;
-            history[start..start + copied].copy_from_slice(&from[..copied]);
-        }
-        self.history_start = 0;
-        self.history_length = lines - skipped;
-        self.screens = [main, alternate];
-        self.history = history;
-        self.dirty = dirty;
-        let (last_row, last_column) = (rows - 1, columns - 1);
-        match self.active {
-            MAIN => self.row = self.row.saturating_sub(to_history).min(last_row),
-            _ => self.row = self.row.min(last_row),
-        }
-        self.column = self.column.min(last_column);
-        let main_saved = &mut self.saved[MAIN];
-        main_saved.row = main_saved.row.saturating_sub(to_history).min(last_row);
-        main_saved.column = main_saved.column.min(last_column);
-        let alternate_saved = &mut self.saved[ALTERNATE];
-        alternate_saved.row = alternate_saved.row.min(last_row);
-        alternate_saved.column = alternate_saved.column.min(last_column);
-        self.position_saved = (
-            self.position_saved.0.min(last_row),
-            self.position_saved.1.min(last_column),
-        );
-        self.columns = columns;
-        self.rows = rows;
-        self.top = 0;
-        self.bottom = last_row;
-        self.pending_wrap = false;
-        self.view_back = 0;
-        self.invalidate();
-        true
+        reflow::resize(self, columns, rows)
     }
 
     fn line_of(&self, screen: usize, row: u16) -> &[Cell] {
@@ -684,6 +807,8 @@ impl Terminal {
             if self.modes.autowrap {
                 self.column = 0;
                 self.index_down();
+                let row = usize::from(self.row);
+                self.row_flags[self.active][row] |= line_flags::WRAPPED;
             }
         }
         let (row, column) = (self.row, self.column);
@@ -707,7 +832,20 @@ impl Terminal {
         if self.onlcr {
             self.column = 0;
         }
+        self.line_down();
+    }
+
+    fn line_down(&mut self) {
         self.index_down();
+        self.clear_row_flags(self.row, self.row);
+    }
+
+    fn clear_row_flags(&mut self, first: u16, last: u16) {
+        let flags = &mut self.row_flags[self.active];
+        let end = (usize::from(last) + 1).min(flags.len());
+        if let Some(rows) = flags.get_mut(usize::from(first)..end) {
+            rows.fill(0);
+        }
     }
 
     fn index_down(&mut self) {
@@ -752,6 +890,8 @@ impl Terminal {
         let from = usize::from(row) * columns;
         self.history[slot * columns..(slot + 1) * columns]
             .copy_from_slice(&self.screens[self.active][from..from + columns]);
+        self.history_flags[slot] = self.row_flags[self.active][usize::from(row)];
+        self.pushed = self.pushed.wrapping_add(1);
     }
 
     fn scroll_up(&mut self, top: u16, bottom: u16, lines: u16, to_history: bool) {
@@ -776,6 +916,10 @@ impl Terminal {
         let screen = self.screen();
         screen.copy_within(first + moved..end, first);
         screen[end - moved..end].fill(erased);
+        let (top_row, end_row) = (usize::from(top), usize::from(bottom) + 1);
+        let flags = &mut self.row_flags[self.active];
+        flags.copy_within(top_row + usize::from(lines)..end_row, top_row);
+        flags[end_row - usize::from(lines)..end_row].fill(0);
         self.record_scroll(top, bottom, lines);
     }
 
@@ -819,6 +963,13 @@ impl Terminal {
         let screen = self.screen();
         screen.copy_within(first..end - moved, first + moved);
         screen[first..first + moved].fill(erased);
+        let (top_row, end_row) = (usize::from(top), usize::from(bottom) + 1);
+        let flags = &mut self.row_flags[self.active];
+        flags.copy_within(
+            top_row..end_row - usize::from(lines),
+            top_row + usize::from(lines),
+        );
+        flags[top_row..top_row + usize::from(lines)].fill(0);
         self.touch_rows(top, bottom);
     }
 
@@ -837,6 +988,7 @@ impl Terminal {
         for row in first..=last {
             self.erase_cells(row, 0, self.columns);
         }
+        self.clear_row_flags(first, last);
     }
 
     fn erase_in_display(&mut self, mode: u16) {
@@ -859,6 +1011,8 @@ impl Terminal {
                 self.erase_rows(0, self.rows - 1);
                 self.history_start = 0;
                 self.history_length = 0;
+                self.highlight = None;
+                self.selection_reset = true;
                 self.move_view(ViewMove::Live);
             }
             _ => {}
@@ -868,9 +1022,15 @@ impl Terminal {
     fn erase_in_line(&mut self, mode: u16) {
         let (row, column) = (self.row, self.column);
         match mode {
-            0 => self.erase_cells(row, column, self.columns),
+            0 => {
+                self.erase_cells(row, column, self.columns);
+                self.clear_row_flags(row + 1, row + 1);
+            }
             1 => self.erase_cells(row, 0, column + 1),
-            2 => self.erase_cells(row, 0, self.columns),
+            2 => {
+                self.erase_cells(row, 0, self.columns);
+                self.clear_row_flags(row, row + 1);
+            }
             _ => {}
         }
     }
@@ -1062,6 +1222,7 @@ impl Terminal {
             }
             self.active = ALTERNATE;
             self.screens[ALTERNATE].fill(Cell::BLANK);
+            self.row_flags[ALTERNATE].fill(0);
         } else {
             self.active = MAIN;
             if with_cursor {
@@ -1069,12 +1230,17 @@ impl Terminal {
             }
         }
         self.view_back = 0;
+        self.highlight = None;
+        self.selection_reset = true;
         self.invalidate();
     }
 
     fn reset(&mut self) {
         self.active = MAIN;
         self.screens[MAIN].fill(Cell::BLANK);
+        self.row_flags[MAIN].fill(0);
+        self.highlight = None;
+        self.selection_reset = true;
         self.row = 0;
         self.column = 0;
         self.pending_wrap = false;
@@ -1164,6 +1330,12 @@ impl Terminal {
                 _ => None,
             };
             let cursor_look = self.cursor_look;
+            let selected = match self.highlight {
+                Some(highlight) => {
+                    highlight.columns_of(self.line_number_of_view_row(row), self.columns)
+                }
+                None => 0..0,
+            };
             let line = self.visible_line(row);
             let cell_at =
                 |column: u16| top * stride + area.x as usize + usize::from(column) * GLYPH_WIDTH;
@@ -1172,7 +1344,8 @@ impl Terminal {
             for columns in [before_cursor, after_cursor] {
                 for column in columns {
                     let cell = line[usize::from(column)];
-                    let (foreground, background) = cell.colours();
+                    let (foreground, background) =
+                        cell.colours_selected(selected.contains(&column));
                     let underline = cell.flags & cell_flags::UNDERLINE != 0;
                     font::draw_glyph(
                         pixels,
@@ -1192,6 +1365,7 @@ impl Terminal {
                     cell_at(column),
                     line[usize::from(column)],
                     cursor_look,
+                    selected.contains(&column),
                 );
             }
             band = band.union(Rect::new(
@@ -1235,10 +1409,17 @@ impl Terminal {
 }
 
 #[cold]
-fn draw_cursor_cell(pixels: &mut [u32], stride: usize, at: usize, cell: Cell, look: CursorLook) {
+fn draw_cursor_cell(
+    pixels: &mut [u32],
+    stride: usize,
+    at: usize,
+    cell: Cell,
+    look: CursorLook,
+    selected: bool,
+) {
     let (foreground, background) = match look {
         CursorLook::Block => (TERM_BACKGROUND, TERM_CURSOR),
-        _ => cell.colours(),
+        _ => cell.colours_selected(selected),
     };
     let underline = cell.flags & cell_flags::UNDERLINE != 0 && look != CursorLook::Block;
     font::draw_glyph(

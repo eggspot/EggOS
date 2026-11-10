@@ -6,6 +6,7 @@ use crate::wm::{
     refused, usage,
 };
 use core::ffi::CStr;
+use eggos_commands::commands;
 use eggos_runtime::errno::Errno;
 
 pub const HELP: &[u8] = b"wm menu: lists a window's main menu (the menus a macOS app shows in \
@@ -162,8 +163,8 @@ fn list<S: System>(output: &mut Output<S>, pool: &[u8]) {
 }
 
 pub fn menu<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    let Some(parsed) = parse(arguments, &[b"--choose", b"--label"]) else {
-        return usage(output);
+    let Some(parsed) = parse(output, arguments, &commands::WM_MENU) else {
+        return USAGE_STATUS;
     };
     let wanted = match parsed.choose {
         true => 3,
@@ -456,6 +457,12 @@ MFile\nIClear\tCmd+K\nDUndo\tCmd+Z\nIClose\tCmd+W\n";
         let (status, fake) = run(&[c"menu", c"--label", c"Clear", c"129"], machine());
         assert_eq!(status, 2);
         assert!(fake.chosen_menus.is_empty());
+        let (status, fake) = run(&[c"menu", c"--colour", c"129"], machine());
+        assert_eq!(status, 2);
+        assert_eq!(fake.errors(), "wm: unrecognized option '--colour'\n");
+        let (status, fake) = run(&[c"menu", c"129", c"--choose", c"--label"], machine());
+        assert_eq!(status, 2);
+        assert_eq!(fake.errors(), "wm: option '--label' requires an argument\n");
     }
 
     #[test]

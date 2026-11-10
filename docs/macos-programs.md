@@ -28,9 +28,10 @@ cargo xtask run --arch x86_64 --add path/to/hello      # build that image and bo
 ```
 
 `--add` works as for [Linux programs](linux-programs.md): the file goes to `/bin/hello`. The
-aarch64 and x86_64 release images carry the macOS layer at `/usr/lib/eggos/macos` (D152), with
-or without added files, so a program in the host folder (`--apps`) runs too
-(`/media/host/hello`). At the prompt, type
+release images do not carry the macOS layer: it is the `mac-apps` component (D235,
+[components](components.md)) at `/usr/lib/eggos/macos`, which `component install mac-apps`
+installs from the store the run scripts and `cargo xtask run` attach. Once it is installed, a
+program in the host folder (`--apps`) runs too (`/media/host/hello`). At the prompt, type
 `hello` (or its path) and its arguments; the shell reports the exit status in `$?`, and an
 `abort()` as `Aborted` and `134`.
 
@@ -291,7 +292,12 @@ What works:
   or `id`, `@finally`, `@throw;` to rethrow, through any number of the program's frames,
   unwound with the image's compact unwind information; an uncaught exception runs the handler
   `NSSetUncaughtExceptionHandler` set, then ends the program as on a Mac
-  (`*** Terminating app due to uncaught exception 'Name', reason: '...'`, status 134).
+  (`*** Terminating app due to uncaught exception 'Name', reason: '...'`, status 134). Since
+  D234 exceptions also pass through frames only `__eh_frame` (DWARF) describes and through the
+  layer's own code (a block Foundation called, an event handler); Foundation's own failures (an
+  index out of range, nil objects, mutation while enumerating, an unrecognized selector) raise
+  NSExceptions a `@catch` takes, and AppKit's run loop reports an exception from an event, a
+  timer or drawing with `reportException:` and carries on, as macOS does.
 - **More of Foundation** (D175): NSException; NSProcessInfo (`processName`, `arguments`,
   `environment`, `processIdentifier`, `hostName`, processors, memory, uptime); NSDate; NSError
   with the error domains and `userInfo` keys; NSData and NSMutableData; NSSet and NSMutableSet
@@ -303,7 +309,7 @@ What works:
   significant digits and floats with 7.
 
 A Foundation class the layer lacks stops the program only when it is first used:
-`eggos-macos: unimplemented Foundation class NSUUID`, status 127; a missing function
+`eggos-macos: unimplemented Foundation class NSXPCConnection`, status 127; a missing function
 names its library the same way (`unimplemented Foundation function NSHomeDirectory`).
 
 ## Swift programs
@@ -411,27 +417,38 @@ bar while one of its windows is focused.
   text fields, labels, groups and the app's own views as graphics) and `wm act` presses
   buttons, focuses views and sets text fields' text.
 
+- **Nibs** (D232): `NSApplicationMain` loads the bundle's `NSMainNibFile` (a compiled nib,
+  `NIBArchive`) and `NSPrincipalClass`: windows, views, controls, menus and the app's own
+  objects (classes on an allow-list), outlets, actions and `awakeFromNib`. `tests/macos-nib` is an
+  example, its `MainMenu.xib` compiled by `ibtool`.
+- **Button types, pointers and the pasteboard** (D233): checkboxes and radios
+  (`checkboxWithTitle:`, `radioButtonWithTitle:`, `setButtonType:`, mixed state, radio groups),
+  toggles, `NSCursor` (class cursors, push and pop, hide, cursor rects) on the window server's
+  pointer shapes, and `NSPasteboard` on the clipboard every app shares (strings, data,
+  private and named pasteboards).
+
 `tests/macos-gui/main.m` (`mac-paint.app`) is a complete example. An AppKit class the layer
 lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit class NSImage`).
 
 ## What does not work yet
 
-- **Objective-C beyond the core**: exceptions through frames only `__eh_frame` (DWARF)
-  describes or through the layer's own code (an exception thrown in an event handler or a block
-  Foundation called ends the program as uncaught), exceptions Foundation itself raises (they
-  still end the program at once), associated objects, key-value coding and observing,
+- **Objective-C beyond the core**: associated objects, key-value coding and observing,
   `NSInvocation` and message forwarding (`forwardInvocation:`, `forwardingTargetForSelector:`,
   `+resolveInstanceMethod:`), `method_setImplementation`, `class_replaceMethod`,
-  `conformsToProtocol:` and protocol objects, `objc_msgSend_fpret`, and most of Foundation:
-  NSFileManager, NSNotification, NSUUID, character sets, path methods, string encodings
-  (`dataUsingEncoding:`), locales, time zones and run loop modes. Dictionaries look keys up by
+  `conformsToProtocol:` and protocol objects, `objc_msgSend_fpret`, and much of Foundation:
+  NSURL (so `URLsForDirectory:inDomains:`), NSKeyedArchiver and NSKeyedUnarchiver, character
+  sets, path methods, locales and time zones. NSNotificationCenter, NSUUID, NSFileManager,
+  the search-path functions, string encodings, run loop modes, a run loop per thread and
+  `performSelector:withObject:afterDelay:` work (D232); a block observer's queue is ignored
+  (it is told on the posting thread), copying a folder refuses symbolic links in it, and a
+  thread sleeping in its run loop is not woken early by a timer another thread adds. Dictionaries look keys up by
   comparing them one by one (no hash index yet), and keep their keys in insertion order where
   macOS's order is unspecified, as sets keep their objects. Subclasses of Foundation's class clusters (a custom NSString subclass) are not
   supported. ARC's return-value handoff is not used yet, so returned objects always go
   through the autorelease pool: correct, a little slower than on a Mac. Manual
   retain/release programs use the same messages but are not covered by a test yet.
 - **Most of Swift's standard library and its overlays** (see "Swift programs"), **C++'s
-  runtime**, and **unwinding** beyond Objective-C's (`_Unwind_RaiseException`
+  runtime** (C++ exceptions: `__gxx_personality_v0`, `__cxa_*`, D234's "Not yet"), and **unwinding** beyond Objective-C's (`_Unwind_RaiseException`
   and the rest of `_Unwind_*`): a Rust panic with `panic = "unwind"` stops at the first
   unwinder call with status 127.
 - **Signals, in part**: a handler's third argument (the `ucontext_t`) is null, so a handler
@@ -448,10 +465,10 @@ lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit cl
   input (`%a` reads only decimal), `nan(...)`, and stdio streams shared between threads (each
   stream assumes one thread at a time).
 - **`getopt_long`'s `W;`** (`-W foo` as `--foo`) is not read.
-- **AppKit beyond its core** (D147's and D175's "Not yet"): nibs and storyboards, flipped
-  views, layers, Auto Layout, scroll views, tables, images, cursors, sheets and panels (other
-  than the About panel), checkboxes and
-  other button types, submenus below the top bar's, the menu in the Windows and Linux profiles,
+- **AppKit beyond its core** (D147's, D175's, D232's and D233's "Not yet"): storyboards and
+  keyed archives (`NSKeyedUnarchiver`), flipped views, layers, Auto Layout, scroll views,
+  tables, images, the About panel's icon and credits, sheets and panels (other than the About
+  panel), submenus below the top bar's, the menu in the Windows and Linux profiles,
   alpha and anti-aliasing, and fonts other than Egg Sans.
 - **Other libraries and frameworks**: no libc++, only the core of Foundation, CoreFoundation
   and AppKit (above) and the Cocoa umbrella over them, no `dlopen`, no dyld shared cache; a

@@ -6,6 +6,81 @@ result is an instruction count per iteration (D27), compared with `benchmarks/ba
 exactly by default (what `cargo xtask ci` and the weekly performance pass run), report-only with
 `--report-only` (CI's mode: every change reported, a result more than 2x slower fails, D122).
 
+## Kernel core
+
+- `empty_loop`: the loop alone, so the per-iteration overhead every other result includes is
+  visible.
+- `linux_clock_monotonic_read` and `linux_clock_realtime_read`: what
+  `clock_gettime(CLOCK_MONOTONIC)` and every other clock read cost beyond the system-call round
+  trip (D73): the clock read and its conversion to nanoseconds.
+- `random_fill_16` and `random_fill_4096`: `N` bytes from the random number generator (D56): with
+  16, one draw, what `AT_RANDOM` costs each program; with 4096, a stream from a draw's key,
+  `getrandom`'s long path without the copy to the program.
+- `breakpoint_round_trip`: exception entry, the kernel's handler and the return: the path syscalls
+  and page faults will take (D25).
+- `frame_allocate_untouched`: allocating never-used frames, the path every frame takes first.
+  Untouched frames are not written, so the range can be any addresses. Twice the frames allocated,
+  so the buddy allocator's bitmap (taken from the top, never written here) leaves `n` untouched
+  frames.
+- `frame_free_allocate`: freeing a frame and allocating it again: the free stack's push and pop,
+  the steady-state path once memory has been recycled. The frame is a page of this function's
+  stack, which the allocator reaches at its own address (offset 0).
+- `frame_contiguous_allocate_free`: allocating and freeing a block of 4 contiguous frames from the
+  kernel's frame allocator: the buddy allocator's split on allocation and merge on free (D31), the
+  path of heap allocations larger than a frame. Runs after the self-tests, so the allocator is in
+  place; without one, nothing is timed.
+- `heap_allocate_free_small`: allocating and freeing a small block through the kernel's global
+  heap: taking and releasing its lock around a size class's free-list pop and push, the steady
+  state of `Box` and small `Vec`s. Runs after the self-tests, so the frame allocator is in place;
+  without one every allocation fails and only the failure path is timed.
+- `thread_yield_round_trip`: the boot thread and one other passing the CPU back and forth through
+  `yield_now`: per iteration two switches (D35), each with the scheduler's queue rotation and a
+  stack canary check. Includes starting and joining the thread once per run, a few hundred
+  instructions spread over the iterations. Without a frame allocator for the stack, nothing is
+  timed.
+- `preemption_point_idle`: a preemption point in a time slice that is not over: the window for a
+  pending interrupt and the check, which long-running kernel code pays per call (D37).
+- `wait_queue_wake_empty`: waking a wait queue nobody waits in: what code that changes a condition
+  pays when no thread waits for it (D39).
+- `thread_wait_wake_round_trip`: the boot thread and one other handing a turn back and forth
+  through two wait queues: per iteration each thread wakes the other and blocks until its turn
+  comes, so two wakes, two condition checks that fail and two that hold, and two switches (D39).
+  Includes starting and joining the thread once per run, as in `thread_yield_round_trip`.
+- `syscall_round_trip`: a null system call from user mode and back (D47): the HAL's test program
+  makes system call 2 in a loop; each iteration is its `svc`/`ecall`/`syscall` into the kernel, the
+  kernel looking at why, and the return to the program. The program's address space stays active
+  throughout, as for a process making system calls. Setting the program up and freeing it is timed
+  too, amortized over the iterations.
+- `process_syscall_round_trip`: a null system call from a process's own thread (D48):
+  `syscall_round_trip` plus what the thread's loop adds per call, its preemption point, the check
+  that the address space is loaded and the call to its handler. Includes starting the process and
+  its thread and joining it once per run.
+- `linux_syscall_round_trip`: an unknown Linux system call from a Linux program's thread (M6):
+  `process_syscall_round_trip` with the Linux layer's handler, whose dispatch answers `ENOSYS`, its
+  cheapest path, as the thread's handler. Includes starting the process and its thread and joining
+  it once per run.
+- `linux_exec_load`: starting a Linux program from its ELF image (D51): a new process, the
+  self-test's image with only the code `linux_start` needs (D62) loaded into it with the
+  self-test's arguments and environment (its code, data and `.bss` mapped, its stack's region
+  recorded and its arguments' page mapped and laid out), then the process freed. Each page is a
+  frame of its own, zeroed: 1 for the stack (the rest of it is mapped as the program touches it,
+  D52), 6 for the program, and the tables, so the frames dominate.
+- `linux_mmap_munmap`: `mmap` of 16 anonymous pages and `munmap` of them again (D53), as a
+  program's allocator reserves and returns memory: the arguments checked, the region placed
+  top-down, inserted and removed, the tables walked for pages to unmap (none: they were never
+  touched), this CPU's translations of the range dropped (the address space is active, as for the
+  program's own call) and the other CPUs' records looked at. Without the trap from user mode
+  (`linux_syscall_round_trip` has it).
+- `process_switch_round_trip`: two processes' threads taking turns on one CPU, each yielding at
+  every null system call (D48): per iteration two system calls, two thread switches and two
+  address-space switches, with what each switch costs on the CPU afterwards (the user translations
+  it drops). Compare with `process_syscall_round_trip` and `thread_yield_round_trip`. Includes
+  starting and joining both once per run.
+- `fp_process_switch_round_trip`: `process_switch_round_trip` with programs that use their FP/SIMD
+  registers (D54), each checking every one after each call (`TestProgram::fp_registers`): per
+  iteration also two saves and two loads of FP/SIMD registers, and the program's checks. Compare
+  with `process_switch_round_trip`.
+
 ## Timers
 
 - `timer_arm`: arms the one-shot timer for a deadline far ahead, so it never fires during the
@@ -120,6 +195,9 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
 - `term_scroll_line`: a line feed at the bottom of an 80x24 terminal and its render (D114): the
   grid moved up a line into the scrollback, the pixels of 23 lines moved up instead of drawn
   again, the new line and the cursor drawn.
+- `term_reflow`: a resize of a terminal with a full scrollback between 80x24 and 100x30 (D223):
+  every logical line of the 256 scrollback rows and the screen laid out again at the new width,
+  the cursor kept on its cell; one resize per iteration, alternating the two sizes.
 - `gfx_compose_four_windows`: a 64x64 rectangle of a 1280x800 desktop where the terminal and
   four cascaded 658x430 windows overlap, composed from scratch (D127): the wallpaper, each
   window's shadow, chrome and content, the bar. The design's full-screen budget (four windows,
@@ -136,6 +214,10 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   (D127): the top window under it found, and its enter, leave and motion events made; since
   D128 in the same walk its resize zones and the control under the pointer, then the pointer's
   shape chosen and its old and new rectangles damaged.
+- `toolkit_table_layout_1000_rows` and `text_area_wrap_64k` (D219): the toolkit's table of 1 000
+  rows laid out and drawn into a 400x300 window, and a 64 KiB text area wrapped at 384 px. They
+  link the userland toolkit into the kernel only in bench builds (`qemu-bench` and host tests);
+  a release kernel does not depend on it.
 - `device_tree_walk`: every node of QEMU 10.2's aarch64 `virt` device tree (the host tests'
   fixture, embedded in benchmark kernels only, so all three architectures walk the same 63
   nodes): the header checked, the token stream read, each node's context and the properties
@@ -160,6 +242,18 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   through the shared translation loader; the ratio is the translated code's cost against
   native, reported apart from native benchmarks.
 
+## Image decoding
+
+- `image_decode_jpeg_640x480` (D231): `eggos-image` decoding a 640x480 baseline JPEG photo with
+  4:2:0 chroma (`image/testdata/photo-640x480.jpg`, embedded in benchmark kernels only) to
+  straight-alpha pixels, per iteration: Huffman decoding, the integer IDCT, chroma upsampling
+  and the colour conversion, with the image's buffers allocated and freed. One iteration is a
+  whole decode, so the runner times it over 20 iterations after one untimed one
+  (`LONG_BENCHMARKS` in `kernel/src/bench.rs`) instead of 10 000 after 100: under `-icount` the
+  count is exact either way. Like the toolkit benchmarks, the crate is linked into the kernel
+  only in bench builds; the Windows layer (and the macOS layer's AppKit) link it as part of
+  their optional components.
+
 ## Release kernel
 
 Two results per architecture come from the release kernel rather than the benchmark kernel
@@ -175,9 +269,52 @@ Two results per architecture come from the release kernel rather than the benchm
   The count depends on QEMU's version (x86_64 is 20% apart between Ubuntu 24.04's QEMU 8.2.2
   and QEMU 10.2.2), so it is gated only on the version of the baseline's `<arch> qemu` line,
   CI's.
+- `boot_to_desktop` (D222): guest time from the start of `boot` to the frame that ends the
+  boot screen and shows the desktop, read by the same `qemu-boot-clock` kernel booted a second
+  time under `-icount`, this time with the virtio GPU; QEMU-dependent like `boot_to_prompt`.
+  The GPU is polled, so its completions may arrive at host-dependent times: the result is kept
+  only while repeated runs on one machine give the same number. The serial console of every
+  kernel also says `boot: desktop <ms>`, the wall-clock milliseconds to the desktop being made,
+  just before `boot: terminal`.
 - `release_image_bytes`: the size in bytes of the image `cargo xtask release` ships. Gated
   exactly: any growth fails until the baseline line is updated with the reason (CLAUDE.md,
-  note 8).
+  note 8). Since D235 the image is the base alone: the Windows and macOS layers are
+  components in the store, and the base holds only links to where they install, so this is
+  the base's size with no component installed (D24).
+- `idle_memory_bytes` (D203): the memory in use when the shell first waits at its prompt,
+  from the same boot. The release kernel boots with no component installed, so this is the
+  base's idle memory (D24, D235). Gated exactly like `release_image_bytes`.
+- `components_store_bytes` (D235): the size in bytes of the component store `cargo xtask
+  release` ships beside the kernel image, `eggos-<version>-<arch>-components.img`, as
+  `components::build_store` writes it (every component the architecture offers, padded to
+  whole 4 KiB blocks; riscv64's holds the header and an empty index). Gated exactly: a
+  component that grows is a size regression like the base's.
+
+## The runner (`xtask/src/bench.rs`)
+
+- `MARKER` (`EGGOS-BENCH:`) must match `eggos_kernel::bench::MARKER`, and `BOOT_TO_DESKTOP`
+  must match `eggos_kernel::boot_clock::DESKTOP`, the release kernel's first desktop frame
+  (D222), measured in a boot with a display.
+- Benchmarks run on one CPU (`BENCH_CPUS`): under `-icount`, QEMU runs every CPU in one thread
+  in turn, so other CPUs' instructions would count against the measured ones (D40).
+- A result fails the exact gate when it is slower than its baseline by more than 1% plus
+  0.5 ns: the absolute allowance keeps results of a few instructions from failing by one
+  instruction. The results in `SIZES` (`release_image_bytes`, `idle_memory_bytes`,
+  `translate_install_bytes`, `components_store_bytes`) are gated exactly: any growth fails.
+- `FIRMWARE_DEPENDENT` lists the benchmarks that execute firmware code (the SBI implementation
+  on riscv64: `timer_arm`, `timer_interrupt_round_trip`), whose counts depend on the firmware
+  build QEMU loads. They are compared only when the firmware's banner version (`1.3` from
+  `OpenSBI v1.3`) matches the baseline's `<arch> firmware <version>` line, and
+  `--update-baseline` keeps their baseline values (with the firmware line) when they were
+  measured on other firmware, so a machine whose QEMU ships another firmware build cannot move
+  CI's numbers; it prints a note per kept value.
+- `QEMU_DEPENDENT` lists the benchmarks whose counts depend on the QEMU version, which builds
+  each machine's devices and tables (`boot_to_prompt`, `boot_to_desktop`): compared only when
+  QEMU's version matches the baseline's `<arch> qemu <version>` line.
+- `--update-baseline` rewrites `benchmarks/baseline.txt` with its header, replacing only the
+  architectures that ran. A comparison writes `target/bench/report.md` (a table of every
+  result against its baseline) and `report.json`, and lists one failure per regression, new
+  benchmark without a baseline, or baseline without a result.
 
 ## Host tests of the benchmarks
 

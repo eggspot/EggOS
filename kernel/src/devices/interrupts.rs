@@ -72,6 +72,7 @@ pub fn handle<P: Platform>(line: DeviceLine) {
 pub struct DeviceEvents {
     raised: AtomicU64,
     waiter: AtomicPtr<Parker>,
+    wakes_input_waiters: bool,
 }
 
 impl Default for DeviceEvents {
@@ -85,6 +86,17 @@ impl DeviceEvents {
         Self {
             raised: AtomicU64::new(0),
             waiter: AtomicPtr::new(core::ptr::null_mut()),
+            wakes_input_waiters: false,
+        }
+    }
+
+    /// Events whose raise also wakes the threads waiting for console or device input
+    /// ([`crate::console::wake_input_waiters`]): for a device programs wait on through `read`
+    /// and `poll` rather than through a driver's thread, such as the agent channel (D220).
+    pub const fn waking_input_waiters() -> Self {
+        Self {
+            wakes_input_waiters: true,
+            ..Self::new()
         }
     }
 
@@ -102,6 +114,9 @@ impl DeviceEvents {
             // SAFETY: the waiter's parker stays in place until it is unparked: `wait` takes it
             // back itself, or waits for this unpark when it finds it taken.
             unsafe { Parker::unpark::<P>(waiter) };
+        }
+        if self.wakes_input_waiters {
+            crate::console::wake_input_waiters::<P>();
         }
     }
 

@@ -9,6 +9,7 @@
 
 use super::abi::{ClassObject, Id, Sel};
 use super::class::{self, BuiltinClass, IMMORTAL};
+use super::exception::guard;
 use super::reference_count::{objc_release, objc_retain};
 use super::root::NSOBJECT;
 use super::{Runtime, autorelease};
@@ -339,6 +340,8 @@ extern "C" fn invoke(this: Id, _: Sel) {
     function(this);
 }
 
+guard!(eggos_guarded_invoke => invoke);
+
 fn define_one(
     runtime: &mut Runtime,
     name: &'static [u8],
@@ -367,7 +370,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
     let block = methods![
         "copy" => copy,
         "copyWithZone:" => copy_with_zone,
-        "invoke" => invoke,
+        "invoke" => eggos_guarded_invoke,
     ];
     let constant = methods![
         "retain" => this_object,

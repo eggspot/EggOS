@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 eggos-translate = { path = "../translate" }
 eggos-app = { path = "../userland/app", features = ["window"] }
+eggos-components = { path = "../userland/components" }
 eggos-editor = { path = "../userland/editor", features = ["window"] }
 eggos-files = { path = "../userland/files", features = ["window", "memory"] }
 eggos-mcp = { path = "../userland/mcp", features = ["fuzz"] }

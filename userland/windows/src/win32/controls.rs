@@ -17,16 +17,44 @@ use crate::gui::message;
 use crate::gui::objects::{self, Object};
 use crate::gui::windows::{self, ControlKind, Procedure, Window};
 use crate::text::equal_ignoring_ascii_case;
+use eggos_element_tree::Action;
+use eggos_windows_gui::colour::{colour_ref, pixel, system_colour};
 use eggos_windows_gui::controls::button::{self, Button, ButtonKind, ButtonLook, ButtonOutcome};
-use eggos_windows_gui::controls::edit::{self, Edit, EditLook, EditOutcome, visible_cells};
+use eggos_windows_gui::controls::edit::{
+    self, Edit, EditLook, EditOutcome, Modifiers, visible_cells,
+};
 use eggos_windows_gui::controls::image::{self, Picture};
 use eggos_windows_gui::controls::label::{self, LabelLook};
 use eggos_windows_gui::controls::list_box::{self, ITEM_HEIGHT, ListBox, ListLook, visible_rows};
+use eggos_windows_gui::controls::scroll_bar::{self as bar_model, BarLook, ScrollBar};
 use eggos_windows_gui::controls::{DARK, LIGHT, Palette};
 use eggos_windows_gui::surface::{Rect, Surface};
 
 const VK_SPACE: usize = 0x20;
+const VK_SHIFT: i32 = 0x10;
+const VK_CONTROL: i32 = 0x11;
 const LB_ERR: usize = usize::MAX;
+const SCROLL_REPEAT_TIMER: usize = 0xffff_0227;
+const COLOR_WINDOW: u32 = 5;
+const COLOR_WINDOWTEXT: u32 = 8;
+const COLOR_BTNFACE: u32 = 15;
+
+/// `WM_CTLCOLOR*`, sent to a control's parent before it paints (design section 1).
+pub mod control_colour {
+    pub const MESSAGE_BOX: u32 = 0x0132;
+    pub const EDIT: u32 = 0x0133;
+    pub const LIST_BOX: u32 = 0x0134;
+    pub const BUTTON: u32 = 0x0135;
+    pub const STATIC: u32 = 0x0138;
+
+    /// Whether `number` is one of the `WM_CTLCOLOR*` messages.
+    pub fn is(number: u32) -> bool {
+        (MESSAGE_BOX..=STATIC).contains(&number)
+    }
+}
+/// The layer's own message that does an agent's action on a list box's item on the list's
+/// thread (D227): `wParam` the item, `lParam` the [`Action`]'s number.
+pub const ACT_ON_LIST_ITEM: u32 = 0x03f3;
 
 /// The class messages and notification codes the controls answer and send.
 pub mod code {
@@ -36,8 +64,13 @@ pub mod code {
     pub const BM_SETSTATE: u32 = 0x00f3;
     pub const BM_SETSTYLE: u32 = 0x00f4;
     pub const BM_CLICK: u32 = 0x00f5;
+    pub const EM_GETSEL: u32 = 0x00b0;
+    pub const EM_SETSEL: u32 = 0x00b1;
+    pub const EM_REPLACESEL: u32 = 0x00c2;
     pub const EM_LIMITTEXT: u32 = 0x00c5;
+    pub const EM_SETPASSWORDCHAR: u32 = 0x00cc;
     pub const EM_SETREADONLY: u32 = 0x00cf;
+    pub const EM_GETPASSWORDCHAR: u32 = 0x00d2;
     pub const EM_GETLIMITTEXT: u32 = 0x00d5;
     pub const LB_ADDSTRING: u32 = 0x0180;
     pub const LB_INSERTSTRING: u32 = 0x0181;
@@ -48,14 +81,18 @@ pub mod code {
     pub const LB_GETTEXT: u32 = 0x0189;
     pub const LB_GETTEXTLEN: u32 = 0x018a;
     pub const LB_GETCOUNT: u32 = 0x018b;
+    pub const LB_GETITEMDATA: u32 = 0x0199;
+    pub const LB_SETITEMDATA: u32 = 0x019a;
     pub const LB_GETITEMHEIGHT: u32 = 0x01a1;
     pub const BN_CLICKED: usize = 0;
     pub const STN_CLICKED: usize = 0;
+    pub const STN_DBLCLK: usize = 1;
     pub const EN_SETFOCUS: usize = 0x0100;
     pub const EN_KILLFOCUS: usize = 0x0200;
     pub const EN_CHANGE: usize = 0x0300;
     pub const EN_UPDATE: usize = 0x0400;
     pub const LBN_SELCHANGE: usize = 1;
+    pub const LBN_DBLCLK: usize = 2;
     pub const LBN_SETFOCUS: usize = 4;
     pub const LBN_KILLFOCUS: usize = 5;
 }
@@ -157,6 +194,7 @@ pub fn system_class(name: &[u16]) -> Option<ControlKind> {
         () if is("STATIC") => Some(ControlKind::Static),
         () if is("LISTBOX") => Some(ControlKind::ListBox),
         () if is("COMBOBOX") => Some(ControlKind::ComboBox),
+        () if is("SCROLLBAR") => Some(ControlKind::ScrollBar),
         () => super::common_controls::class_of(name).map(ControlKind::Common),
     }
 }
@@ -183,12 +221,11 @@ pub fn new_state(kind: ControlKind, style: u32) -> Option<usize> {
             if address.is_null() {
                 return None;
             }
-            let mut edit = Edit::new();
-            edit.read_only = style & edit::style::READ_ONLY != 0;
             // SAFETY: a new, 16-byte aligned heap block the size of an `Edit`.
-            unsafe { address.write(edit) };
+            unsafe { address.write(Edit::with_style(style)) };
             Some(address as usize)
         }
+        ControlKind::ScrollBar => allocate(ScrollBar::new(style & bar_model::style::VERTICAL != 0)),
         ControlKind::ListBox => {
             let address = heap::allocate(core::mem::size_of::<ListBox>()).cast::<ListBox>();
             if address.is_null() {
@@ -216,6 +253,7 @@ enum State<'a> {
     Button(&'a mut Button),
     Edit(&'a mut Edit),
     ListBox(&'a mut ListBox),
+    ScrollBar(&'a mut ScrollBar),
     Picture(&'a mut StaticPicture),
     Static,
 }
@@ -234,6 +272,8 @@ fn state_of(gui: &mut Gui, window: usize) -> Option<(&mut Window, State<'_>)> {
         ControlKind::Edit => State::Edit(unsafe { &mut *(address as *mut Edit) }),
         // SAFETY: as for the button.
         ControlKind::ListBox => State::ListBox(unsafe { &mut *(address as *mut ListBox) }),
+        // SAFETY: as for the button.
+        ControlKind::ScrollBar => State::ScrollBar(unsafe { &mut *(address as *mut ScrollBar) }),
         ControlKind::Static if address != 0 => {
             // SAFETY: as for the button: a picture static's state is a `StaticPicture`.
             State::Picture(unsafe { &mut *(address as *mut StaticPicture) })
@@ -250,6 +290,118 @@ fn with_state<R>(window: usize, work: impl FnOnce(&mut Window, State<'_>) -> R) 
         Some(work(entry, state))
     })
     .flatten()
+}
+
+/// Runs `work` on list box `window`'s entry and items, read under the lock `gui` holds;
+/// `None` when `window` is not a list box.
+pub(super) fn read_list<R>(
+    gui: &Gui,
+    window: usize,
+    work: impl FnOnce(&Window, &ListBox) -> R,
+) -> Option<R> {
+    let entry = gui.windows.get(window)?;
+    let Procedure::Control(ControlKind::ListBox, address) = entry.procedure else {
+        return None;
+    };
+    // SAFETY: as `state_of`: the block is this list's, alive while its window is in the table,
+    // and the lock is held through `gui`; only a shared reference is made here.
+    let list = unsafe { &*(address as *const ListBox) };
+    Some(work(entry, list))
+}
+
+/// Runs `work` on scroll bar control `window`'s model; `None` when it is not one.
+pub(super) fn with_scroll_bar<R>(
+    window: usize,
+    work: impl FnOnce(&mut ScrollBar) -> R,
+) -> Option<R> {
+    with_state(window, |_, state| match state {
+        State::ScrollBar(bar) => Some(work(bar)),
+        _ => None,
+    })
+    .flatten()
+}
+
+/// Runs `work` on scroll bar control `window`'s model, read under the lock `gui` holds.
+pub(super) fn read_scroll_bar<R>(
+    gui: &Gui,
+    window: usize,
+    work: impl FnOnce(&ScrollBar) -> R,
+) -> Option<R> {
+    let entry = gui.windows.get(window)?;
+    let Procedure::Control(ControlKind::ScrollBar, address) = entry.procedure else {
+        return None;
+    };
+    // SAFETY: as `state_of`: the block is this scroll bar's, alive while its window is in the
+    // table, and the lock is held through `gui`; only a shared reference is made here.
+    Some(work(unsafe { &*(address as *const ScrollBar) }))
+}
+
+/// Whether button `window`, a check box or radio button, is checked.
+pub(super) fn is_checked(window: &Window) -> bool {
+    match window.procedure {
+        Procedure::Control(ControlKind::Button, address) if address != 0 => {
+            // SAFETY: as `state_of`: a button's state is the `Button` `new_state` made, alive
+            // while its window is in the table, which the caller reads under the lock; only a
+            // shared reference is made here.
+            unsafe { &*(address as *const Button) }.checked
+        }
+        _ => false,
+    }
+}
+
+/// Whether `edit` hides its text behind a password character (`ES_PASSWORD`, or
+/// `EM_SETPASSWORDCHAR` with a character other than 0).
+pub(super) fn conceals(edit: &Edit) -> bool {
+    edit.password != 0
+}
+
+/// Whether edit control `window` hides its text behind a password character.
+pub(super) fn conceals_text(window: &Window) -> bool {
+    match window.procedure {
+        Procedure::Control(ControlKind::Edit, address) if address != 0 => {
+            // SAFETY: as `state_of`: an edit's state is the `Edit` `new_state` made, alive
+            // while its window is in the table, which the caller reads under the lock; only a
+            // shared reference is made here.
+            conceals(unsafe { &*(address as *const Edit) })
+        }
+        _ => false,
+    }
+}
+
+fn act_on_list_item(window: usize, item: usize, action: Action) {
+    let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled()));
+    if enabled != Some(true) {
+        return;
+    }
+    let exists = with_state(window, |_, state| match state {
+        State::ListBox(list) => item < list.count(),
+        _ => false,
+    });
+    if exists != Some(true) {
+        return;
+    }
+    set_focus(window);
+    if action == Action::Focus {
+        return;
+    }
+    let changed = with_state(window, |entry, state| match state {
+        State::ListBox(list) if item < list.count() => {
+            let changed = list.selected() != Some(item);
+            list.select(Some(item), visible_rows(entry.height as i32));
+            Some(changed)
+        }
+        _ => None,
+    })
+    .flatten();
+    list_changed(window, changed);
+    let notifies = with(|gui| {
+        gui.windows
+            .get(window)
+            .is_some_and(|entry| entry.style & list_box::style::NOTIFY != 0)
+    });
+    if action == Action::Invoke && changed.is_some() && notifies == Some(true) {
+        notify(window, code::LBN_DBLCLK);
+    }
 }
 
 pub(super) fn invalidate(window: usize) {
@@ -279,14 +431,16 @@ pub(super) fn notify(window: usize, notification: usize) {
     }
 }
 
-pub(super) fn palette_of(gui: &Gui, window: usize) -> &'static Palette {
-    let root = crate::gui::windows::root_of(&gui.windows, window);
-    match root
+fn in_layer_dialog(gui: &Gui, window: usize) -> bool {
+    crate::gui::windows::root_of(&gui.windows, window)
         .and_then(|root| gui.windows.get(root))
-        .map(|root| root.procedure)
-    {
-        Some(Procedure::FilePicker(_)) => &DARK,
-        _ => &LIGHT,
+        .is_some_and(|root| matches!(root.procedure, Procedure::FilePicker(_)))
+}
+
+pub(super) fn palette_of(gui: &Gui, window: usize) -> &'static Palette {
+    match in_layer_dialog(gui, window) {
+        true => &DARK,
+        false => &LIGHT,
     }
 }
 
@@ -306,10 +460,74 @@ fn is_default_button(gui: &Gui, window: usize, kind: ButtonKind) -> bool {
     }
 }
 
+fn colour_message(gui: &mut Gui, window: usize) -> Option<(usize, u32)> {
+    if in_layer_dialog(gui, window) {
+        return None;
+    }
+    let (entry, state) = state_of(gui, window)?;
+    let parent = entry.parent;
+    let enabled = entry.enabled();
+    let number = match state {
+        State::Button(button) if button.kind.is_push() => control_colour::BUTTON,
+        State::Edit(edit) if enabled && !edit.read_only => control_colour::EDIT,
+        State::ListBox(_) => control_colour::LIST_BOX,
+        State::ScrollBar(_) | State::Picture(_) => return None,
+        State::Button(_) | State::Edit(_) | State::Static => control_colour::STATIC,
+    };
+    (parent != 0).then_some((parent, number))
+}
+
+fn program_colours(window: usize, hdc: usize) -> Option<(u32, Option<u32>, u32)> {
+    let (parent, number) = with(|gui| colour_message(gui, window)).flatten()?;
+    let brush = gui::send(parent, number, hdc, window);
+    with(|gui| {
+        let fill = objects::brush_colour(&gui.objects, brush);
+        let text = gui.contexts.get(hdc)?.text_colour;
+        Some((number, fill, pixel(text)))
+    })
+    .flatten()
+}
+
+fn answered_palette(base: &Palette, (number, fill, text): (u32, Option<u32>, u32)) -> Palette {
+    let mut palette = *base;
+    match number {
+        control_colour::BUTTON => {
+            palette.text = text;
+            palette.default_text = text;
+        }
+        control_colour::EDIT | control_colour::LIST_BOX => {
+            palette.text = text;
+            palette.field_fill = fill.unwrap_or(palette.field_fill);
+        }
+        _ => {
+            palette.text = text;
+            palette.surface = fill.unwrap_or(palette.surface);
+            palette.field_read_only_fill = fill.unwrap_or(palette.field_read_only_fill);
+        }
+    }
+    palette
+}
+
+/// `DefWindowProc`'s answer to `WM_CTLCOLOR*`: `COLOR_WINDOW` for edits and lists,
+/// `COLOR_BTNFACE` for the rest, with `COLOR_WINDOWTEXT` set in `hdc`.
+pub(super) fn default_control_colour(number: u32, hdc: usize) -> usize {
+    with(|gui| {
+        if let Some(context) = gui.contexts.get_mut(hdc) {
+            context.text_colour = system_colour(COLOR_WINDOWTEXT).map_or(0, colour_ref);
+        }
+    });
+    let index = match number {
+        control_colour::EDIT | control_colour::LIST_BOX => COLOR_WINDOW,
+        _ => COLOR_BTNFACE,
+    };
+    objects::system_brush_handle(index).unwrap_or(0)
+}
+
 fn paint_control(window: usize) {
     let Ok((hdc, _, _)) = paint::begin(window) else {
         return;
     };
+    let answered = program_colours(window, hdc);
     let _ = paint::draw_in(hdc, |surface, _, gui| {
         let Some(surface) = surface else {
             return;
@@ -321,8 +539,10 @@ fn paint_control(window: usize) {
             return;
         };
         let rect = entry.client();
-        let palette = palette_of(gui, window);
+        let custom = answered.map(|answer| answered_palette(palette_of(gui, window), answer));
+        let palette = custom.as_ref().unwrap_or(palette_of(gui, window));
         let focused = has_focus(gui, window);
+        let hovered = gui.hover.under() == window;
         let text = window_text::of(gui, window);
         match kind {
             ControlKind::Button => {
@@ -336,6 +556,7 @@ fn paint_control(window: usize) {
                     focused,
                     default: is_default_button(gui, window, model.kind),
                     enabled: entry.enabled(),
+                    hovered,
                 };
                 button::paint(surface, rect, text, look, palette);
             }
@@ -345,6 +566,7 @@ fn paint_control(window: usize) {
                 let look = EditLook {
                     focused,
                     enabled: entry.enabled(),
+                    hovered,
                 };
                 edit::paint(surface, rect, model, look, palette);
             }
@@ -356,6 +578,16 @@ fn paint_control(window: usize) {
                     enabled: entry.enabled(),
                 };
                 list_box::paint(surface, rect, model, look, palette);
+            }
+            ControlKind::ScrollBar => {
+                // SAFETY: as above.
+                let model = unsafe { &*(address as *const ScrollBar) };
+                let look = BarLook {
+                    enabled: entry.enabled(),
+                    focused,
+                    hovered,
+                };
+                bar_model::paint(surface, rect, model, look, palette);
             }
             ControlKind::Static if address != 0 => {
                 // SAFETY: as above; a picture static's state is a `StaticPicture`.
@@ -508,7 +740,46 @@ fn button_outcome(window: usize, outcome: ButtonOutcome) {
         ButtonOutcome::Repaint => invalidate(window),
         ButtonOutcome::Clicked => {
             invalidate(window);
+            clear_radio_group(window);
             notify(window, code::BN_CLICKED);
+        }
+    }
+}
+
+fn clear_radio_group(window: usize) {
+    let cleared = with(|gui| {
+        let kind = ButtonKind::of(gui.windows.get(window)?.style);
+        if kind != ButtonKind::AutoRadio {
+            return None;
+        }
+        let (members, count) = windows::group_of(&gui.windows, window);
+        let mut cleared = [0usize; windows::MAX_WINDOWS];
+        let mut length = 0;
+        for &member in members[..count].iter().filter(|&&member| member != window) {
+            let Some(entry) = gui.windows.get(member) else {
+                continue;
+            };
+            let Procedure::Control(ControlKind::Button, address) = entry.procedure else {
+                continue;
+            };
+            if address == 0 || !ButtonKind::of(entry.style).is_radio() {
+                continue;
+            }
+            // SAFETY: as `is_checked`: a button's state is the `Button` `new_state` made, alive
+            // while its window is in the table, whose lock `with` holds.
+            let button = unsafe { &mut *(address as *mut Button) };
+            if button.checked {
+                button.checked = false;
+                cleared[length] = member;
+                length += 1;
+            }
+        }
+        Some((cleared, length))
+    })
+    .flatten();
+    if let Some((cleared, length)) = cleared {
+        for &member in &cleared[..length] {
+            invalidate(member);
         }
     }
 }
@@ -619,13 +890,12 @@ pub fn procedure(
             left_button_down(window, kind, point(lparam));
             0
         }
+        message::LEFT_BUTTON_DOUBLE_CLICK => {
+            double_click(window, kind, point(lparam));
+            0
+        }
         message::MOUSE_MOVE => {
-            let (x, y) = point(lparam);
-            let outcome = with_state(window, |entry, state| match state {
-                State::Button(button) => button.pointer_moved(entry.client().contains(x, y)),
-                _ => ButtonOutcome::Unchanged,
-            });
-            button_outcome(window, outcome.unwrap_or(ButtonOutcome::Unchanged));
+            pointer_moved(window, point(lparam));
             0
         }
         message::LEFT_BUTTON_UP => {
@@ -649,6 +919,15 @@ pub fn procedure(
         }
         number if (code::BM_GETCHECK..=code::BM_CLICK).contains(&number) => {
             button_message(window, number, wparam)
+        }
+        code::EM_GETSEL
+        | code::EM_SETSEL
+        | code::EM_REPLACESEL
+        | code::EM_SETPASSWORDCHAR
+        | code::EM_GETPASSWORDCHAR
+            if kind == ControlKind::Edit =>
+        {
+            selection_message(window, number, wparam, lparam)
         }
         code::EM_LIMITTEXT | code::EM_GETLIMITTEXT | code::EM_SETREADONLY => {
             with_state(window, |_, state| match (state, number) {
@@ -674,6 +953,23 @@ pub fn procedure(
         }
         static_image::STM_SETICON..=static_image::STM_GETIMAGE if kind == ControlKind::Static => {
             picture_message(window, number, wparam, lparam)
+        }
+        number
+            if (super::scroll_bar::SBM_SETPOS..=super::scroll_bar::SBM_GETSCROLLINFO)
+                .contains(&number)
+                && kind == ControlKind::ScrollBar =>
+        {
+            super::scroll_bar::control_message(window, number, wparam, lparam)
+        }
+        message::TIMER if kind == ControlKind::ScrollBar && wparam == SCROLL_REPEAT_TIMER => {
+            repeat_scroll(window);
+            0
+        }
+        ACT_ON_LIST_ITEM if kind == ControlKind::ListBox => {
+            if let Some(action) = Action::from_value(lparam as u32) {
+                act_on_list_item(window, wparam, action);
+            }
+            0
         }
         _ => def_window_proc_w(window, number, wparam, lparam),
     }
@@ -716,8 +1012,14 @@ fn get_text(window: usize, kind: ControlKind, capacity: usize, buffer: usize) ->
 }
 
 fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
-    let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled()));
-    if enabled != Some(true) {
+    let takes = with(|gui| {
+        gui.windows.get(window).is_some_and(|entry| {
+            entry.enabled()
+                && !(kind == ControlKind::Button
+                    && ButtonKind::of(entry.style) == ButtonKind::GroupBox)
+        })
+    });
+    if takes != Some(true) {
         return;
     }
     if kind != ControlKind::Static {
@@ -733,12 +1035,30 @@ fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
             button_outcome(window, outcome.unwrap_or(ButtonOutcome::Unchanged));
         }
         ControlKind::Edit => {
+            set_capture(window);
+            let extend = held(VK_SHIFT);
             let outcome = with_state(window, |entry, state| match state {
-                State::Edit(edit) => Some(edit.click(x, visible_cells(entry.width as i32))),
+                State::Edit(edit) => Some(edit.click(x, extend, visible_cells(entry.width as i32))),
                 _ => None,
             })
             .flatten();
             edit_outcome(window, outcome);
+        }
+        ControlKind::ScrollBar => {
+            set_capture(window);
+            let scroll = with_state(window, |entry, state| match state {
+                State::ScrollBar(bar) => {
+                    let (offset, length) = along(bar, entry, (x, y));
+                    bar.button_down(offset, length)
+                }
+                _ => None,
+            })
+            .flatten();
+            invalidate(window);
+            if scroll.is_some() {
+                repeat_after(window, bar_model::REPEAT_DELAY_MS);
+            }
+            super::scroll_bar::send_scroll(window, scroll);
         }
         ControlKind::ListBox => {
             let changed = with_state(window, |entry, state| match state {
@@ -755,8 +1075,203 @@ fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
     }
 }
 
+fn repeat_after(window: usize, interval: u32) {
+    with(|gui| {
+        let thread = gui.windows.get(window)?.thread;
+        let now = super::user32::now_ms();
+        gui.timers
+            .set(window, SCROLL_REPEAT_TIMER, interval, 0, thread, now)
+    });
+    gui::wake();
+}
+
+fn stop_repeat(window: usize) {
+    with(|gui| {
+        let thread = gui.windows.get(window).map_or(0, |entry| entry.thread);
+        gui.timers.kill(window, SCROLL_REPEAT_TIMER, thread)
+    });
+}
+
+fn repeat_scroll(window: usize) {
+    let repeated = with_state(window, |entry, state| match state {
+        State::ScrollBar(bar) if bar.pressed().is_some() => {
+            let length = match bar.vertical {
+                true => entry.height as i32,
+                false => entry.width as i32,
+            };
+            Some(bar.repeat(length))
+        }
+        _ => None,
+    })
+    .flatten();
+    match repeated {
+        Some(scroll) => {
+            repeat_after(window, bar_model::REPEAT_INTERVAL_MS);
+            super::scroll_bar::send_scroll(window, scroll);
+        }
+        None => stop_repeat(window),
+    }
+}
+
+fn held(virtual_key: i32) -> bool {
+    super::placement::key_state(virtual_key) < 0
+}
+
+fn along(bar: &ScrollBar, entry: &Window, (x, y): (i32, i32)) -> (i32, i32) {
+    match bar.vertical {
+        true => (y, entry.height as i32),
+        false => (x, entry.width as i32),
+    }
+}
+
+fn double_click(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
+    let notifies = |style_bit: u32| {
+        with(|gui| {
+            gui.windows
+                .get(window)
+                .is_some_and(|entry| entry.style & style_bit != 0 && entry.enabled())
+        })
+        .unwrap_or(false)
+    };
+    match kind {
+        ControlKind::Button | ControlKind::ScrollBar => left_button_down(window, kind, (x, y)),
+        ControlKind::ListBox => {
+            left_button_down(window, kind, (x, y));
+            let on_row = with(|gui| {
+                gui.windows
+                    .get(window)
+                    .and_then(|entry| list_box::row_at(y, entry.height as i32))
+            })
+            .flatten()
+            .is_some();
+            if on_row && notifies(list_box::style::NOTIFY) {
+                notify(window, code::LBN_DBLCLK);
+            }
+        }
+        ControlKind::Edit => {
+            let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled()));
+            if enabled != Some(true) {
+                return;
+            }
+            set_focus(window);
+            let outcome = with_state(window, |entry, state| match state {
+                State::Edit(edit) => Some(edit.select_word(x, visible_cells(entry.width as i32))),
+                _ => None,
+            })
+            .flatten();
+            edit_outcome(window, outcome);
+        }
+        ControlKind::Static => {
+            if notifies(label::style::NOTIFY) {
+                notify(window, code::STN_DBLCLK);
+            }
+        }
+        ControlKind::ComboBox | ControlKind::Common(_) => {}
+    }
+}
+
+fn pointer_moved(window: usize, (x, y): (i32, i32)) {
+    let captured = with(|gui| {
+        crate::gui::windows::root_of(&gui.windows, window)
+            .and_then(|root| gui.windows.get(root))
+            .is_some_and(|root| root.capture == window)
+    })
+    .unwrap_or(false);
+    enum Effect {
+        Button(ButtonOutcome),
+        Edit(EditOutcome),
+        Scroll(Option<bar_model::Scroll>),
+        Hover(bool),
+    }
+    let effect = with_state(window, |entry, state| match state {
+        State::Button(button) => {
+            Effect::Button(button.pointer_moved(entry.client().contains(x, y)))
+        }
+        State::Edit(edit) if captured => {
+            Effect::Edit(edit.drag(x, visible_cells(entry.width as i32)))
+        }
+        State::ScrollBar(bar) if captured => {
+            let (offset, length) = along(bar, entry, (x, y));
+            Effect::Scroll(bar.pointer_moved(offset, length))
+        }
+        State::ScrollBar(bar) => {
+            let (offset, length) = along(bar, entry, (x, y));
+            Effect::Hover(bar.hover(Some(offset), length))
+        }
+        _ => Effect::Button(ButtonOutcome::Unchanged),
+    });
+    match effect {
+        Some(Effect::Button(outcome)) => button_outcome(window, outcome),
+        Some(Effect::Edit(outcome)) => edit_outcome(window, Some(outcome)),
+        Some(Effect::Scroll(scroll)) => {
+            if scroll.is_some() {
+                invalidate(window);
+            }
+            super::scroll_bar::send_scroll(window, scroll);
+        }
+        Some(Effect::Hover(true)) => invalidate(window),
+        Some(Effect::Hover(false)) | None => {}
+    }
+}
+
+fn selection_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
+    let replacement = match (number, lparam) {
+        (code::EM_REPLACESEL, 0) => &[][..],
+        // SAFETY: `EM_REPLACESEL`'s `lParam` is a NUL-terminated string.
+        (code::EM_REPLACESEL, text) => unsafe { super::file::wide_string(text as *const u16) },
+        _ => &[][..],
+    };
+    let answer = with_state(window, |entry, state| {
+        let State::Edit(edit) = state else {
+            return (0, None);
+        };
+        let visible = visible_cells(entry.width as i32);
+        match number {
+            code::EM_GETSEL => {
+                let (start, end) = edit.selection();
+                for (out, value) in [(wparam, start), (lparam, end)] {
+                    if out != 0 {
+                        // SAFETY: `EM_GETSEL`'s contract: each non-null parameter points to a
+                        // writable `DWORD`.
+                        unsafe { (out as *mut u32).write_unaligned(value as u32) };
+                    }
+                }
+                (message::word_pair(start, end), None)
+            }
+            code::EM_SETSEL => {
+                edit.set_selection(wparam as i32 as isize, lparam as i32 as isize, visible);
+                (0, Some(EditOutcome::Moved))
+            }
+            code::EM_REPLACESEL => (0, Some(edit.replace_selection(replacement, visible))),
+            code::EM_SETPASSWORDCHAR => {
+                edit.password = wparam as u16;
+                (0, Some(EditOutcome::Moved))
+            }
+            _ => (usize::from(edit.password), None),
+        }
+    });
+    let (result, outcome) = answer.unwrap_or((0, None));
+    edit_outcome(window, outcome);
+    result
+}
+
 fn left_button_up(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
     match kind {
+        ControlKind::Edit => {
+            release_capture();
+        }
+        ControlKind::ScrollBar => {
+            release_capture();
+            stop_repeat(window);
+            let scrolls = with_state(window, |_, state| match state {
+                State::ScrollBar(bar) => bar.button_up(),
+                _ => [None, None],
+            });
+            invalidate(window);
+            for scroll in scrolls.unwrap_or([None, None]) {
+                super::scroll_bar::send_scroll(window, scroll);
+            }
+        }
         ControlKind::Button => {
             release_capture();
             let outcome = with_state(window, |entry, state| match state {
@@ -784,13 +1299,21 @@ fn key(window: usize, down: bool, virtual_key: usize) {
         Button(ButtonOutcome),
         Edit(Option<EditOutcome>),
         List(Option<bool>),
+        Scroll(Option<bar_model::Scroll>),
         None,
     }
+    let modifiers = Modifiers {
+        shift: held(VK_SHIFT),
+        control: held(VK_CONTROL),
+    };
     let effect = with_state(window, |entry, state| match state {
         State::Button(button) if virtual_key == VK_SPACE => Effect::Button(button.space(down)),
-        State::Edit(edit) if down => Effect::Edit(Some(
-            edit.key(virtual_key as u32, visible_cells(entry.width as i32)),
-        )),
+        State::Edit(edit) if down => Effect::Edit(Some(edit.key_with(
+            virtual_key as u32,
+            modifiers,
+            visible_cells(entry.width as i32),
+        ))),
+        State::ScrollBar(bar) if down => Effect::Scroll(bar.key(virtual_key as u32)),
         State::ListBox(list) if down => {
             let changed = list.key(virtual_key as u32, visible_rows(entry.height as i32));
             Effect::List(Some(changed))
@@ -801,6 +1324,7 @@ fn key(window: usize, down: bool, virtual_key: usize) {
         Some(Effect::Button(outcome)) => button_outcome(window, outcome),
         Some(Effect::Edit(outcome)) => edit_outcome(window, outcome),
         Some(Effect::List(Some(true))) => list_changed(window, Some(true)),
+        Some(Effect::Scroll(scroll)) => super::scroll_bar::send_scroll(window, scroll),
         _ => {}
     }
 }
@@ -904,6 +1428,11 @@ fn list_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usi
             },
             code::LB_GETTEXTLEN => (index(list.text(wparam).map(<[u16]>::len)), false),
             code::LB_GETCOUNT => (list.count(), false),
+            code::LB_GETITEMDATA => (index(list.data(wparam)), false),
+            code::LB_SETITEMDATA => match list.set_data(wparam, lparam) {
+                true => (1, false),
+                false => (LB_ERR, false),
+            },
             code::LB_GETITEMHEIGHT => (ITEM_HEIGHT as usize, false),
             _ => (LB_ERR, false),
         }
@@ -967,4 +1496,33 @@ pub fn caret_to_end(window: usize) {
         }
     });
     invalidate(window);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_parents_colours_replace_only_the_fill_and_text_the_message_names() {
+        let label = answered_palette(&LIGHT, (control_colour::STATIC, Some(0x0011_2233), 0xff));
+        assert_eq!((label.surface, label.text), (0x0011_2233, 0xff));
+        assert_eq!(label.field_read_only_fill, 0x0011_2233);
+        assert_eq!(label.text_disabled, LIGHT.text_disabled);
+        let edit = answered_palette(&LIGHT, (control_colour::EDIT, None, 0xff));
+        assert_eq!((edit.field_fill, edit.text), (LIGHT.field_fill, 0xff));
+        assert_eq!(edit.field_border, LIGHT.field_border);
+        let button = answered_palette(&LIGHT, (control_colour::BUTTON, Some(0x0011_2233), 0xff));
+        assert_eq!((button.button_fill, button.text), (LIGHT.button_fill, 0xff));
+        assert_eq!(button.default_text, 0xff);
+        assert!(control_colour::is(0x0136) && !control_colour::is(0x0139));
+    }
+
+    #[test]
+    fn a_password_edit_conceals_its_text_until_its_password_character_is_cleared() {
+        let mut edit = Edit::with_style(edit::style::PASSWORD);
+        assert!(conceals(&edit));
+        edit.password = 0;
+        assert!(!conceals(&edit));
+        assert!(!conceals(&Edit::with_style(0)));
+    }
 }

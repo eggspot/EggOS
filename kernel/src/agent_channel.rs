@@ -11,8 +11,16 @@
 //! wait until the host side opens again and sends more. Nothing is held while no channel is
 //! present.
 
+use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
 use alloc::boxed::Box;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// What the agent channel's device raises when it interrupts (D220): it wakes the programs
+/// waiting to read or write `/dev/agent`, which look at the device again.
+pub static DEVICE_EVENTS: DeviceEvents = DeviceEvents::waking_input_waiters();
+
+static INTERRUPTING: AtomicBool = AtomicBool::new(false);
 
 /// The port's name a virtio console must give the port for it to be the agent channel.
 pub const PORT_NAME: &[u8] = b"org.eggos.mcp";
@@ -84,6 +92,19 @@ pub fn install(port: Box<dyn AgentPort>) -> Result<(), Box<dyn AgentPort>> {
         end_reported: false,
     }));
     Ok(())
+}
+
+/// Makes `port`, whose device's interrupts raise [`DEVICE_EVENTS`], the agent channel: waits
+/// for it sleep until the device interrupts instead of polling it.
+pub fn install_interrupting(port: Box<dyn AgentPort>) -> Result<(), Box<dyn AgentPort>> {
+    install(port)?;
+    INTERRUPTING.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Whether the agent channel's device interrupts, so a wait for it needs no polling.
+pub fn is_interrupting() -> bool {
+    INTERRUPTING.load(Ordering::Acquire)
 }
 
 /// Whether there is an agent channel.

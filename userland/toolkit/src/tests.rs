@@ -2,6 +2,7 @@ use crate::canvas::Canvas;
 use crate::colour;
 use crate::geometry::Rect;
 use crate::input::{Input, Modifiers, MouseButton, key};
+use crate::theme::Token;
 use crate::tree::{PointerShape, ROOT_ELEMENT, Response, WidgetId, WidgetTree, element_of};
 use crate::widget::{Escape, Kind, Length, Place, card_rect, scroll_bar};
 use eggos_element_tree::{Action, MAX_TREE_BYTES, Outcome, Role, TreeWriter, elements, flags};
@@ -29,7 +30,7 @@ fn form() -> Form {
         .add(
             None,
             Place::at(0, 0, Length::Px(120), Length::Fill(0)),
-            Kind::panel(colour::DOCK),
+            Kind::panel(Token::Dock),
         )
         .unwrap();
     let field = tree
@@ -50,18 +51,11 @@ fn form() -> Form {
         .add(
             None,
             Place::at(120, 0, Length::Fill(0), Length::Fill(0)),
-            Kind::panel(colour::MENU),
+            Kind::panel(Token::Menu),
         )
         .unwrap();
     let scroll = tree
-        .add(
-            Some(pane),
-            Place::fill(),
-            Kind::ScrollView {
-                offset: 0,
-                content_height: 0,
-            },
-        )
+        .add(Some(pane), Place::fill(), Kind::scroll_view())
         .unwrap();
     let cards = tree
         .add(
@@ -102,7 +96,7 @@ fn form() -> Form {
         .add(
             Some(scroll),
             Place::right(16, 200),
-            Kind::label("Right", colour::TEXT),
+            Kind::label("Right", Token::Text),
         )
         .unwrap();
     let ok = tree
@@ -512,6 +506,28 @@ fn the_caret_blinks_every_500_ms_while_the_window_has_the_focus() {
 }
 
 #[test]
+fn reduce_motion_draws_the_caret_steady_and_asks_for_no_blink() {
+    let mut form = form();
+    let tree = &mut form.tree;
+    tree.set_focus(Some(form.field), 1000);
+    tree.tick(1500);
+    tree.take_damage();
+    tree.set_reduce_motion(true);
+    assert_eq!(
+        tree.take_damage().rects().len(),
+        1,
+        "the blanked caret is drawn again"
+    );
+    assert_eq!(tree.next_deadline(1600), None);
+    for at in [1600, 2100, 2600] {
+        tree.tick(at);
+        assert!(tree.take_damage().is_empty());
+    }
+    tree.set_reduce_motion(false);
+    assert!(tree.next_deadline(2600).is_some());
+}
+
+#[test]
 fn rendering_draws_the_tokens_and_the_focus_ring_only_while_the_window_is_focused() {
     let mut form = form();
     let mut pixels = vec![0u32; 400 * 200];
@@ -766,6 +782,50 @@ fn a_person_only_label_s_text_and_field_s_value_stay_out_of_the_tree() {
 }
 
 #[test]
+fn an_accessible_name_and_value_replace_what_a_widget_draws_for_agents_only() {
+    let mut form = form();
+    let find = |tree: &WidgetTree<24>, id: WidgetId| {
+        described(tree)
+            .into_iter()
+            .find(|element| element.0 == element_of(id))
+            .unwrap()
+    };
+    assert_eq!(find(&form.tree, form.ok).4, "OK");
+    form.tree
+        .set_accessible_name(form.ok, "Install Windows apps");
+    form.tree.set_accessible_name(form.scroll, "Windows apps");
+    form.tree
+        .set_accessible_value(form.scroll, "windows-apps not-installed 1.8 MB");
+    let ok = find(&form.tree, form.ok);
+    assert_eq!(
+        (ok.2, ok.4.as_str()),
+        (Role::Button, "Install Windows apps")
+    );
+    assert_eq!(form.tree.text_of(form.ok), Some("OK"));
+    let group = find(&form.tree, form.scroll);
+    assert_eq!(
+        (group.2, group.4.as_str(), group.5.as_str()),
+        (
+            Role::Group,
+            "Windows apps",
+            "windows-apps not-installed 1.8 MB"
+        )
+    );
+    form.tree.set_person_only(form.scroll, true);
+    assert_eq!(find(&form.tree, form.scroll).5, "");
+    assert_eq!(find(&form.tree, form.scroll).4, "");
+    form.tree.set_person_only(form.ok, true);
+    assert_eq!(find(&form.tree, form.ok).4, "Install Windows apps");
+    form.tree.set_person_only(form.ok, false);
+    form.tree.set_accessible_name(form.ok, "");
+    assert_eq!(find(&form.tree, form.ok).4, "OK");
+    assert_eq!(
+        form.tree.act(element_of(form.ok), Action::Invoke, "", 0),
+        (Outcome::Done, Response::Activated(form.ok))
+    );
+}
+
+#[test]
 fn acting_on_an_element_does_what_a_person_s_input_does() {
     let mut form = form();
     let cards = element_of(form.cards);
@@ -824,7 +884,7 @@ fn acting_on_an_element_does_what_a_person_s_input_does() {
 fn slider_tree(value: i32) -> (WidgetTree<4>, WidgetId) {
     let mut tree = WidgetTree::<4>::new();
     let root = tree
-        .add(None, Place::fill(), Kind::panel(colour::MENU))
+        .add(None, Place::fill(), Kind::panel(Token::Menu))
         .unwrap();
     let slider = tree
         .add(
@@ -1058,7 +1118,7 @@ const LAYOUTS: &[&str] = &["US", "UK", "German", "Swedish"];
 fn dropdown_tree() -> (WidgetTree<4>, WidgetId) {
     let mut tree = WidgetTree::<4>::new();
     let root = tree
-        .add(None, Place::fill(), Kind::panel(colour::MENU))
+        .add(None, Place::fill(), Kind::panel(Token::Menu))
         .unwrap();
     let dropdown = tree
         .add(

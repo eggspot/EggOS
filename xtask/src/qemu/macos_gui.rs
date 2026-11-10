@@ -17,10 +17,18 @@
 //! (D147's CLI front-end of the main menu): a click paints a square, a newline on the console
 //! (well after the click, so a person no longer wins) clears it through the menu, and after Cmd+Q
 //! the command's output says what it chose.
+//!
+//! Last, the nib app (D232): `app install /media/host/mac-nib.zip`, `app open mac-nib`, `^Z` and
+//! `bg`; its window, built from its compiled `MainMenu.nib`, is found with `wm list`; `wm show`
+//! lists the nib's label and Greet button; `wm act <window> <Greet> invoke` sends the nib's
+//! `greet:` action to its delegate through the nib's outlets, so the next `wm show` lists
+//! `Hello, nib`; `wm menu --choose` chooses the nib's `Quit mac-nib` item, after which `wm list`
+//! has no mac-nib window, and the console has the delegate's `awakeFromNib` line.
 
 use super::install::host_destroy;
 use super::settings::{Boot, Screen};
 use super::shell::Shell;
+use super::win32_app::SUSPEND;
 use super::*;
 use eggos_app::icon::{self, OwnIcon, Workspace};
 use eggos_app::reader::Bytes;
@@ -50,6 +58,15 @@ const PERSON_QUIET: Duration = Duration::from_millis(1500);
 const GO_ON: &[u8] = b"\r";
 const SHOW_MENU_RESULT: &[u8] = b"cat /tmp/menu\r";
 const MENU_STATUS_LINE: &str = "EGGOS-MENU status 0";
+const NIB_PREFIX: &str = "MAC-NIB ";
+const NIB_LABEL: &str = "Loaded from a nib";
+const NIB_BUTTON: &str = "Greet";
+const NIB_GREETING: &str = "Hello, nib";
+const NIB_QUIT_ITEM: &str = "Quit mac-nib";
+const NIB_AWAKE_LINE: &str = "mac-nib: awake, window mac-nib";
+const NIB_START: Duration = Duration::from_secs(10);
+const NIB_POLL: Duration = Duration::from_secs(2);
+const NIB_POLLS: usize = 30;
 const LETTERS: &str = "abcdefghijklmnopqrstuvwxyz";
 const LETTER_CODES: [u16; 26] = [
     30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45,
@@ -127,6 +144,54 @@ fn chosen_line(window: WindowId) -> String {
     format!("chose File > Clear in window {}", u32::from(window))
 }
 
+fn nib_line(command: &str, step: &str) -> String {
+    format!("{command}; echo {NIB_PREFIX}{step} $?\r")
+}
+
+fn nib_done(step: &str) -> String {
+    format!("{NIB_PREFIX}{step} 0")
+}
+
+fn before_marker<'c>(console: &'c str, step: &str) -> Option<&'c str> {
+    console.rfind(&nib_done(step)).map(|end| &console[..end])
+}
+
+fn nib_window(console: &str, step: &str) -> Option<u32> {
+    let before = before_marker(console, step)?;
+    let start = before.rfind(WM_LIST_HEADER)?;
+    before[start + WM_LIST_HEADER.len()..]
+        .lines()
+        .find_map(|line| {
+            let fields: Vec<&str> = line.trim().splitn(8, ' ').collect();
+            match fields.get(7) {
+                Some(title) if title.trim() == crate::macos::NIB_APP => fields[0].parse().ok(),
+                _ => None,
+            }
+        })
+}
+
+fn nib_tree(console: &str, step: &str) -> Vec<String> {
+    let Some(before) = before_marker(console, step) else {
+        return Vec::new();
+    };
+    let mut lines: Vec<String> = before
+        .lines()
+        .rev()
+        .take_while(|line| !line.contains("wm show"))
+        .map(|line| line.trim().to_owned())
+        .collect();
+    lines.reverse();
+    lines
+}
+
+fn element_named(lines: &[String], name: &str) -> Option<u32> {
+    let quoted = format!("\"{name}\"");
+    lines
+        .iter()
+        .find(|line| line.contains(&quoted))
+        .and_then(|line| line.split(' ').next()?.parse().ok())
+}
+
 fn manifest_of(arch: &Arch) -> Vec<u8> {
     let run = program_inside_the_bundle();
     let entry = Manifest {
@@ -140,6 +205,7 @@ fn manifest_of(arch: &Arch) -> Vec<u8> {
         libraries: None,
         arguments: None,
         environment: None,
+        console: false,
     };
     let mut file = [0u8; manifest::LARGEST];
     let length = manifest::write(&entry, &mut file).expect("mac-paint's manifest is valid");
@@ -149,6 +215,7 @@ fn manifest_of(arch: &Arch) -> Vec<u8> {
 fn catalogue(arch: &Arch, installed: bool) -> Result<Catalogue, String> {
     let mut catalogue = Catalogue::new();
     catalogue.set_task_manager_present(true);
+    catalogue.set_downloads_present(true);
     catalogue.set_host_share(true);
     if installed {
         catalogue.add_installed(NAME.as_bytes(), &manifest_of(arch));
@@ -518,6 +585,79 @@ impl MacGui<'_> {
         self.check(FRAME_TIMEOUT)
     }
 
+    fn console_text(&mut self) -> String {
+        let boot = &mut self.shell.boot;
+        boot.console.extend(boot.output.try_iter().flatten());
+        String::from_utf8_lossy(&boot.console).into_owned()
+    }
+
+    fn nib_step(&mut self, command: &str, step: &str) -> Result<String, String> {
+        self.type_on_console(nib_line(command, step).as_bytes())?;
+        self.shell.wait_for_line(&nib_done(step))?;
+        Ok(self.console_text())
+    }
+
+    fn nib_fail(&self, what: String) -> String {
+        format!("{}: the nib app: {what}", self.arch())
+    }
+
+    fn nib_app(&mut self) -> Result<(), String> {
+        let app = crate::macos::NIB_APP;
+        self.nib_step(&format!("app install /media/host/{app}.zip"), "install")?;
+        let prompts = self.shell.boot.prompts();
+        self.type_on_console(format!("cd /tmp; app open {app}\r").as_bytes())?;
+        std::thread::sleep(NIB_START);
+        self.type_on_console(SUSPEND.as_bytes())?;
+        self.shell.boot.wait_for_prompts(prompts + 1)?;
+        self.type_on_console(b"bg\r")?;
+        let mut window = None;
+        for poll in 0..NIB_POLLS {
+            let step = format!("listed-{poll}");
+            let console = self.nib_step("wm list", &step)?;
+            window = nib_window(&console, &step);
+            if window.is_some() {
+                break;
+            }
+            std::thread::sleep(NIB_POLL);
+        }
+        let window = window.ok_or_else(|| self.nib_fail(format!("`wm list` has no {app}")))?;
+        let console = self.nib_step(&format!("wm show {window}"), "tree")?;
+        let tree = nib_tree(&console, "tree");
+        if element_named(&tree, NIB_LABEL).is_none() {
+            return Err(self.nib_fail(format!("no `{NIB_LABEL}` label in {tree:?}")));
+        }
+        let greet = element_named(&tree, NIB_BUTTON)
+            .ok_or_else(|| self.nib_fail(format!("no `{NIB_BUTTON}` button in {tree:?}")))?;
+        self.nib_step(&format!("wm act {window} {greet} invoke"), "greet")?;
+        let mut greeted = false;
+        for poll in 0..NIB_POLLS {
+            let step = format!("greeted-{poll}");
+            let console = self.nib_step(&format!("wm show {window}"), &step)?;
+            greeted = element_named(&nib_tree(&console, &step), NIB_GREETING).is_some();
+            if greeted {
+                break;
+            }
+            std::thread::sleep(NIB_POLL);
+        }
+        if !greeted {
+            return Err(self.nib_fail(format!("no `{NIB_GREETING}` after Greet")));
+        }
+        let choose = format!("wm menu --choose {window} {app} '{NIB_QUIT_ITEM}'");
+        self.nib_step(&choose, "quit")?;
+        for poll in 0..NIB_POLLS {
+            let step = format!("after-{poll}");
+            let console = self.nib_step("wm list", &step)?;
+            if nib_window(&console, &step).is_none() {
+                return match console.contains(NIB_AWAKE_LINE) {
+                    true => Ok(()),
+                    false => Err(self.nib_fail(format!("no `{NIB_AWAKE_LINE}` line"))),
+                };
+            }
+            std::thread::sleep(NIB_POLL);
+        }
+        Err(self.nib_fail(format!("{app} did not quit from its menu")))
+    }
+
     fn run(&mut self, arch: &Arch) -> Result<(), String> {
         self.install_from_the_terminal(arch)?;
         self.open_from_the_launcher()?;
@@ -527,6 +667,7 @@ impl MacGui<'_> {
         self.file_menu()?;
         self.quit()?;
         self.choose_from_the_terminal()?;
+        self.nib_app()?;
         match self.checked == CHECKS.len() {
             true => Ok(()),
             false => Err(format!(
@@ -599,6 +740,25 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_nib_step_finds_its_window_and_elements_in_the_console() {
+        let console = format!(
+            "wm list; echo MAC-NIB listed-0 $?\n{WM_LIST_HEADER}\n\
+             1 normal 0 0 640 400 65535 Terminal\n7 normal 800 467 320 120 3 mac-nib\n\
+             MAC-NIB listed-0 0\n$ wm show 7; echo MAC-NIB tree $?\n\
+             1 window 0,0 320x120 \"mac-nib\"\n2 label 18,24 284x22 \"Loaded from a nib\"\n\
+             4 button 208,72 96x28 \"Greet\"\nMAC-NIB tree 0\n"
+        );
+        assert_eq!(nib_window(&console, "listed-0"), Some(7));
+        assert_eq!(nib_window(&console, "listed-1"), None);
+        let tree = nib_tree(&console, "tree");
+        assert_eq!(tree.len(), 3);
+        assert_eq!(element_named(&tree, NIB_BUTTON), Some(4));
+        assert_eq!(element_named(&tree, NIB_LABEL), Some(2));
+        assert_eq!(element_named(&tree, NIB_GREETING), None);
+        assert_eq!(nib_line("wm list", "x"), "wm list; echo MAC-NIB x $?\r");
+    }
 
     fn arch(name: &str) -> &'static Arch {
         crate::ARCHES

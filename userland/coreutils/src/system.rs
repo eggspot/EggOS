@@ -1,5 +1,5 @@
 use core::ffi::CStr;
-use eggos_commands::tools::NO_SYMLINKS_ENVIRONMENT;
+use eggos_commands::tools::{CODED_ERRORS_ENVIRONMENT, NO_SYMLINKS_ENVIRONMENT};
 use eggos_net::Ipv4Address;
 use eggos_runtime::errno::Errno;
 
@@ -9,7 +9,11 @@ pub const STANDARD_ERROR: usize = 2;
 
 pub const STATX_SIZE: usize = 256;
 
-const SIZELESS_REQUESTS: [(u32, usize); 2] = [
+const SIZELESS_REQUESTS: [(u32, usize); 6] = [
+    (crate::stty::TCGETS, crate::stty::SETTINGS_SIZE),
+    (crate::stty::TCSETSW, crate::stty::SETTINGS_SIZE),
+    (crate::stty::TIOCGWINSZ, crate::stty::WINDOW_SIZE_SIZE),
+    (crate::stty::TIOCSWINSZ, crate::stty::WINDOW_SIZE_SIZE),
     (
         eggos_android_log::SNAPSHOT_REQUEST,
         eggos_android_log::SNAPSHOT_SIZE,
@@ -157,6 +161,12 @@ pub fn refuses_symbolic_links<'a>(environment: impl IntoIterator<Item = &'a CStr
         .any(|variable| variable == NO_SYMLINKS_ENVIRONMENT)
 }
 
+pub fn asks_for_coded_errors<'a>(environment: impl IntoIterator<Item = &'a CStr>) -> bool {
+    environment
+        .into_iter()
+        .any(|variable| variable == CODED_ERRORS_ENVIRONMENT)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemName(pub [u8; UTSNAME_SIZE]);
 
@@ -223,8 +233,10 @@ pub trait System {
     fn system_name(&mut self) -> Result<SystemName, Errno>;
     fn sleep(&mut self, duration: Duration) -> Result<(), Errno>;
     fn sync(&mut self);
+    fn sync_file(&mut self, descriptor: usize) -> Result<(), Errno>;
     fn reboot(&mut self, command: u32) -> Result<(), Errno>;
     fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno>;
+    fn create_new(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno>;
     fn append(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno>;
     fn make_directory(&mut self, path: &CStr, mode: u32) -> Result<(), Errno>;
     fn remove(&mut self, path: &CStr, directory: bool) -> Result<(), Errno>;
@@ -235,9 +247,15 @@ pub trait System {
     fn make_hard_link(&mut self, existing: &CStr, path: &CStr) -> Result<(), Errno>;
     fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno>;
     fn file_system_usage(&mut self, path: &CStr) -> Result<FileSystemUsage, Errno>;
+    fn may_write(&mut self, path: &CStr) -> Result<(), Errno> {
+        self.status(None, path, SymbolicLinks::Follow).map(|_| ())
+    }
     fn now(&mut self) -> u64;
     fn time_zone_variable(&self) -> Option<&[u8]> {
         None
+    }
+    fn wants_coded_errors(&self) -> bool {
+        false
     }
     fn now_with_nanoseconds(&mut self) -> Duration;
     fn set_time(&mut self, since_epoch: Duration) -> Result<(), Errno>;
@@ -305,6 +323,9 @@ pub trait System {
     fn random(&mut self, out: &mut [u8]) -> Result<(), Errno>;
     fn signal_init(&mut self, signal: u32) -> Result<(), Errno>;
     fn send_signal(&mut self, pid: i32, signal: u32) -> Result<(), Errno>;
+    fn process_id(&mut self) -> u32;
+    fn catch_termination(&mut self) -> Result<(), Errno>;
+    fn termination_requested(&mut self) -> bool;
     fn terminal_columns(&mut self, descriptor: usize) -> Option<u16>;
 }
 
@@ -350,12 +371,20 @@ impl<T: System + ?Sized> System for &mut T {
         (**self).sync();
     }
 
+    fn sync_file(&mut self, descriptor: usize) -> Result<(), Errno> {
+        (**self).sync_file(descriptor)
+    }
+
     fn reboot(&mut self, command: u32) -> Result<(), Errno> {
         (**self).reboot(command)
     }
 
     fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno> {
         (**self).create(path, mode, truncate)
+    }
+
+    fn create_new(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
+        (**self).create_new(path, mode)
     }
 
     fn append(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
@@ -398,12 +427,20 @@ impl<T: System + ?Sized> System for &mut T {
         (**self).file_system_usage(path)
     }
 
+    fn may_write(&mut self, path: &CStr) -> Result<(), Errno> {
+        (**self).may_write(path)
+    }
+
     fn now(&mut self) -> u64 {
         (**self).now()
     }
 
     fn time_zone_variable(&self) -> Option<&[u8]> {
         (**self).time_zone_variable()
+    }
+
+    fn wants_coded_errors(&self) -> bool {
+        (**self).wants_coded_errors()
     }
 
     fn now_with_nanoseconds(&mut self) -> Duration {
@@ -538,6 +575,18 @@ impl<T: System + ?Sized> System for &mut T {
         (**self).send_signal(pid, signal)
     }
 
+    fn process_id(&mut self) -> u32 {
+        (**self).process_id()
+    }
+
+    fn catch_termination(&mut self) -> Result<(), Errno> {
+        (**self).catch_termination()
+    }
+
+    fn termination_requested(&mut self) -> bool {
+        (**self).termination_requested()
+    }
+
     fn terminal_columns(&mut self, descriptor: usize) -> Option<u16> {
         (**self).terminal_columns(descriptor)
     }
@@ -649,6 +698,17 @@ mod tests {
         assert!(!refuses_symbolic_links([c"PATH=/bin"]));
         assert!(!refuses_symbolic_links([c"EGGOS_NO_SYMLINKS=0"]));
         assert!(!refuses_symbolic_links([c"EGGOS_NO_SYMLINKS=1x"]));
+    }
+
+    #[test]
+    fn coded_errors_are_asked_for_only_when_the_environment_says_exactly_so() {
+        assert!(asks_for_coded_errors([
+            c"PATH=/bin",
+            c"EGGOS_CODED_ERRORS=1"
+        ]));
+        assert!(!asks_for_coded_errors([c"PATH=/bin"]));
+        assert!(!asks_for_coded_errors([c"EGGOS_CODED_ERRORS=0"]));
+        assert!(!asks_for_coded_errors([c"EGGOS_CODED_ERRORS=1x"]));
     }
 
     #[test]

@@ -17,6 +17,7 @@ struct FakeDisk {
     requests: RefCell<Vec<(u32, u64, u32)>>,
     not_a_disk: bool,
     offers_flush: bool,
+    largest_batch: Cell<usize>,
 }
 
 impl FakeDisk {
@@ -36,13 +37,17 @@ impl FakeDisk {
             requests: RefCell::new(Vec::new()),
             not_a_disk: false,
             offers_flush: true,
+            largest_batch: Cell::new(0),
         }
     }
 
     fn answer_requests(&self) {
         let mut device = self.device.borrow_mut();
         let device = device.as_mut().unwrap();
+        let mut batch = 0;
         while let Some(head) = device.next_available() {
+            batch += 1;
+            self.largest_batch.set(self.largest_batch.get().max(batch));
             let (header, header_len, flags, data_index) = device.descriptor(head);
             assert_eq!(header_len as usize, HEADER_BYTES);
             assert_eq!(flags, DESCRIPTOR_NEXT);
@@ -397,4 +402,108 @@ fn a_flush_is_a_request_without_data_only_on_a_disk_with_a_write_cache() {
     assert!(!block.has_write_cache());
     block.flush(&mut polls(10)).unwrap();
     assert!(block.transport().requests.borrow().is_empty());
+}
+
+#[test]
+fn eight_reads_of_a_block_go_to_the_device_together_and_land_in_their_buffers() {
+    let mut block = disk(FakeDisk::new(256));
+    let mut buffers = [[0u8; SLOT_BYTES]; 8];
+    let sectors = [200u64, 8, 64, 120, 0, 16, 240, 32];
+    let mut reads: Vec<(u64, &mut [u8])> = buffers
+        .iter_mut()
+        .zip(sectors)
+        .map(|(buffer, sector)| (sector, &mut buffer[..]))
+        .collect();
+    block.read_many(&mut reads, &mut polls(10)).unwrap();
+    drop(reads);
+    assert_eq!(block.transport().largest_batch.get(), 8);
+    for (buffer, sector) in buffers.iter().zip(sectors) {
+        assert_eq!(
+            buffer.to_vec(),
+            sectors_of(block.transport(), sector as usize, SLOT_BYTES / SECTOR_SIZE)
+        );
+    }
+    assert_eq!(block.in_flight(), 0);
+}
+
+#[test]
+fn more_reads_than_requests_in_flight_wait_for_slots_and_all_complete() {
+    let mut block = disk(FakeDisk::new(512));
+    let mut buffers = vec![[0u8; SECTOR_SIZE]; MAX_IN_FLIGHT + 5];
+    let mut reads: Vec<(u64, &mut [u8])> = buffers
+        .iter_mut()
+        .enumerate()
+        .map(|(index, buffer)| (index as u64 * 3, &mut buffer[..]))
+        .collect();
+    block.read_many(&mut reads, &mut polls(10)).unwrap();
+    drop(reads);
+    assert_eq!(block.transport().largest_batch.get(), MAX_IN_FLIGHT);
+    for (index, buffer) in buffers.iter().enumerate() {
+        assert_eq!(buffer.to_vec(), sectors_of(block.transport(), index * 3, 1));
+    }
+}
+
+#[test]
+fn a_flush_waits_for_every_earlier_request_and_goes_alone() {
+    let mut block = disk(FakeDisk::new(64));
+    block.transport().answers.set(false);
+    assert_eq!(
+        block.write(4, &[9; SECTOR_SIZE], &mut polls(3)),
+        Err(Error::TimedOut)
+    );
+    assert_eq!(block.in_flight(), 1);
+    assert_eq!(block.flush(&mut polls(3)), Err(Error::TimedOut));
+    assert!(block.transport().requests.borrow().is_empty());
+    block.transport().answers.set(true);
+    block.transport().answer_requests();
+    block.flush(&mut polls(10)).unwrap();
+    assert_eq!(
+        *block.transport().requests.borrow(),
+        vec![
+            (request::OUT, 4, SECTOR_SIZE as u32),
+            (request::FLUSH, 0, 0)
+        ]
+    );
+    assert_eq!(block.transport().largest_batch.get(), 1);
+}
+
+#[test]
+fn interrupts_ask_the_device_to_notify_the_driver() {
+    let mut block = disk(FakeDisk::new(8));
+    block.enable_interrupts();
+    assert!(
+        !block
+            .transport()
+            .device
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .used_notifications_disabled()
+    );
+}
+
+#[test]
+fn the_request_table_hands_out_numbers_and_runs_of_slots_and_takes_them_back() {
+    let mut table = RequestTable::new();
+    assert_eq!(table.reserve(DATA_SLOTS), Some((0, 0)));
+    assert_eq!(table.reserve(1), None);
+    table.posted(0, 7);
+    assert_eq!(table.answered(7), Some(0));
+    assert_eq!(table.answered(7), None);
+    table.release(0);
+    assert!(table.all_slots_free());
+    assert_eq!(table.reserve(2), Some((0, 0)));
+    assert_eq!(table.reserve(1), Some((1, 2)));
+    assert_eq!(table.reserve(0), Some((2, 0)));
+    table.release(0);
+    assert_eq!(table.reserve(3), Some((0, 3)));
+    assert_eq!(table.reserve(2), Some((3, 0)));
+    assert_eq!(table.in_flight(), 4);
+    assert_eq!(RequestTable::slots_for(SECTOR_SIZE), 1);
+    assert_eq!(RequestTable::slots_for(MAX_TRANSFER), DATA_SLOTS);
+    let mut full = RequestTable::new();
+    for request in 0..MAX_IN_FLIGHT {
+        assert_eq!(full.reserve(0), Some((request, 0)));
+    }
+    assert_eq!(full.reserve(0), None);
 }

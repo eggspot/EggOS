@@ -135,11 +135,11 @@ specification's OAuth sign-in comes later.
 
 | Grant | Lets the agent | Tools |
 |-------|----------------|-------|
-| none (the default) | list and read files in `/home`, `/media/host` and `/work` (D166), see how full their file systems are (D171), list processes, windows and installed apps and show one app with its translation (D191) and its icon (D196), list the machine's devices (D184), read Android system properties and the Android log (D188), read the clock and the network's state, ping a host and look a name up, list the disks (D192), list the virtual desktops (D204), show its own grants (D193), list and read the settings (D163) | `ls`, `cat`, `df`, `ps`, `wm_list`, `app_list`, `app_show`, `app_icon`, `device_list`, `getprop`, `logcat`, `clock_get`, `net_status`, `net_ping`, `net_lookup`, `disk_list`, `wm_desktop_list`, `agent_show`, `settings_list`, `settings_get` |
+| none (the default) | list and read files in `/home`, `/media/host` and `/work` (D166), see how full their file systems are (D171), list processes, windows and installed apps and show one app with its translation (D191) and its icon (D196), list the machine's devices (D184), read Android system properties and the Android log (D188), read the clock and the network's state, ping a host and look a name up, list the disks (D192), list the virtual desktops (D204), show its own grants (D193), list and read the settings (D163), list the downloads (D225) and the components (D235), and read the Windows registry while the Windows apps component is installed (D231) | `ls`, `cat`, `df`, `ps`, `wm_list`, `app_list`, `app_show`, `app_icon`, `device_list`, `getprop`, `logcat`, `clock_get`, `net_status`, `net_ping`, `net_lookup`, `disk_list`, `wm_desktop_list`, `agent_show`, `settings_list`, `settings_get`, `download_list`, `component_list`, `windows_registry_get` |
 | `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu and read its controls as an element tree (D161); check an unmounted disk, which reads all of it (D192); read the text on the clipboard every app shares, which may be private (D197); list every agent and its grants (D193) | `wm_capture`, `wm_menu_list`, `wm_show`, `disk_check`, `clipboard_get`, `agent_list` |
-| `write` | write files below `/home/root`, download files there, make links there (D170), and move them to the Trash; set Android system properties (D188); repair and format an unmounted disk (D192); copy text to the shared clipboard, replacing what the person copied (D197) | `tee`, `fetch`, `ln`, `trash`, `setprop`, `disk_repair`, `disk_format`, `clipboard_set` |
-| `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor; an app it installs and opens runs as you, so **`install` is full control of the machine too** (D193) | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
-| `run` | run any program, stop any process (D200), make a virtual desktop (D204), change the settings (D163), move, size, focus, minimise, maximise, restore and close windows (D160), and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `wm_act`, `wm_drag`, `wm_desktop_new`, `kill`, `clock_set`, `clock_sync`, `settings_set`, `wm_close`, `wm_focus`, `wm_minimise`, `wm_maximise`, `wm_restore`, `wm_move`, `wm_size` |
+| `write` | write files below `/home/root`, download files there, make links there (D170), and move them to the Trash; set Android system properties (D188); repair and format an unmounted disk (D192); copy text to the shared clipboard, replacing what the person copied (D197); copy, move, make and delete files and folders there (D226); clear the finished downloads from the list (D225); change, delete and reset the Windows registry Windows programs read (D231) | `tee`, `fetch`, `ln`, `trash`, `setprop`, `disk_repair`, `disk_format`, `clipboard_set`, `file_copy`, `file_move`, `folder_create`, `file_remove`, `download_clear`, `windows_registry_set`, `windows_registry_delete`, `windows_registry_reset` |
+| `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor, install and remove components such as the Windows and Mac apps layers (D235); an app it installs and opens runs as you, so **`install` is full control of the machine too** (D193) | `app_install`, `app_open`, `edit_open`, `app_uninstall`, `component_install`, `component_remove` |
+| `run` | run any program, stop any process (D200) or download (D225), make a virtual desktop (D204), change the settings (D163), move, size, focus, minimise, maximise, restore and close windows (D160), and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `wm_act`, `wm_drag`, `wm_desktop_new`, `kill`, `clock_set`, `clock_sync`, `settings_set`, `wm_close`, `wm_focus`, `wm_minimise`, `wm_maximise`, `wm_restore`, `wm_move`, `wm_size`, `download_cancel` |
 
 - **Set on the host for the boot.** `--mcp-allow` (`-McpAllow`) takes `view`, `write`,
   `run` and `install`, lowercase, separated by commas; the script refuses anything else. It hands them to
@@ -203,20 +203,34 @@ specification's OAuth sign-in comes later.
 | `net_status` | The network's state as JSON (D157, docs/network.md): `state` (`connected`, `getting-address`, `no-address`, `cable-unplugged`, or `none` without an adapter) and an `adapters` array, each interface's link, DHCP state, hardware address, MTU, address, prefix and mask, router, DNS servers, DHCP server, lease and counters | `ip -j addr` | |
 | `net_ping` | Pings a host (`host`, an IPv4 address or a name; `count`, 1 to 5, 4 by default) and returns ping's report; an error when no reply came (D158) | `ping -W 1 -c <count> <host>` | |
 | `net_lookup` | Looks a host name up (`host`) with the network's DNS servers and returns nslookup's report (D158) | `nslookup <host>` | |
-| `settings_list` | Every setting and its value, `key=value` a line: `shell.profile`, `keyboard.layout`, `time.zone`, `display.scale`, the mouse and key preferences (`mouse.buttons`, `mouse.scrolling`, `mouse.speed`, `keyboard.repeat_delay_ms`, `keyboard.repeat_rate`) and `accessibility.sticky_keys`, `accessibility.slow_keys` and `accessibility.slow_keys_ms` can be set, the others report facts (display, version, architecture, CPUs, memory, uptime) (D163, D185) | `settings list` | |
+| `settings_list` | Every setting and its value, `key=value` a line: `shell.profile`, `keyboard.layout`, `keyboard.layouts`, `keyboard.switch_key`, `time.zone`, `display.scale`, the mouse and key preferences (`mouse.buttons`, `mouse.scrolling`, `mouse.speed`, `keyboard.repeat_delay_ms`, `keyboard.repeat_rate`) `accessibility.*` and `time.automatic` can be set, the others report facts (display, version, architecture, CPUs, memory, uptime, `network.*` (D225) and `time.sync`, the network clock's last sync) (D163, D185); `limit` and `after` page them by key (D226) | `settings list [--limit <n>] [--after <cursor>]` | |
 | `settings_get` | One setting's value (`key`, such as `shell.profile`); `no_such_setting` for an unknown key (D163) | `settings get -- <key>` | |
 | `tee` | Writes a file (`path`, `content` or `content_base64`, `append`, `confirm`, `dry_run`), at most 128 KiB a call | `tee [-a] -- <path>`, the content on its input | `write` |
 | `trash` | Moves a file or folder to the Trash (`path`, `confirm`, `dry_run`); you can restore it | `trash -- <path>` | `write` |
 | `fetch` | Downloads an `http://` or `https://` URL (`url`, at most 2048 bytes; `https://` over TLS 1.3 with the server's certificate checked against the roots in `/etc/ssl/roots.pem`, D159) into a file below `/home/root` (`path`, `confirm`): up to 5 redirects, an error for a 4xx or 5xx status, 60 seconds at most; replacing a file asks the user first (D158) | `fetch <url> -- <path>` | `write` |
 | `ln` | Makes a link at `link`, an absolute path below `/home/root` outside its Trash where nothing is yet (D170): a symbolic link (`symbolic`, `true` by default) holding `target`'s text as given (1 to 4095 bytes, no NUL, not starting with `-`: write `./-name`), or a hard link (`symbolic: false`) to the file `target`, an absolute path below `/home/root` too, resolved and checked like `link`; never replaces anything (no `confirm`); answers `Made the symbolic link <link> to <target>.` | `ln -T [-s] <target> -- <link>` | `write` |
+| `file_copy` | Copies a file, or a folder and everything in it, from `source` (in `/home`, `/media/host` or `/work`) to `destination` (below `/home/root`, outside its Trash), which is the copy's own path: a folder there is refused, the same path or a path inside `source` too; replacing a file asks the user first (`confirm`, `dry_run`); answers `Copied <source> to <destination>.` (D226) | `cp -r <source> -- <destination>` | `write` |
+| `file_move` | Moves or renames `source` to `destination`, both below `/home/root` outside its Trash, with `file_copy`'s rules for `destination` (`confirm`, `dry_run`); answers `Moved <source> to <destination>.` (D226) | `mv <source> -- <destination>` | `write` |
+| `folder_create` | Makes the folder `path` below `/home/root`; `parents: true` makes the missing folders above it and accepts one already there; never replaces anything (no `confirm`) (D226) | `mkdir [-p] -- <path>` | `write` |
+| `file_remove` | Deletes `path` below `/home/root` for good, without the Trash; a folder needs `recursive: true`; asks the user first (`confirm`, `dry_run`); answers `Deleted <path> for good.` (D226) | `rm [-r] -- <path>` | `write` |
 | `run` | Runs a program (`program`, an absolute path; `arguments`; `timeout_seconds`, 1 to 60, 10 by default) and returns its output, errors and exit status | the program itself | `run` |
-| `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`); asks the user first (D150) | `date -u -s <time>` | `run` |
+| `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`; `dry_run`, D226); asks the user first (D150) | `date -u -s <time>` | `run` |
 | `clock_sync` | Sets the machine's clock and its hardware clock from a time server (SNTP, `pool.ntp.org`) and says how far it moved; 15 seconds at most (D159) | `date -u --sync` | `run` |
-| `settings_set` | Sets a setting (`key`, `value`) and applies it at once, as the Settings window would: `shell.profile` takes `windows`, `macos` or `linux`, the desktop's layout, and `keyboard.layout` a keyboard layout's name (`us`, `us-intl`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `de`, `it`, `no`, `br`, `es` or `se`, D185), `time.zone` an IANA zone such as `Europe/Paris` or `UTC`, `display.scale` 1 or 2 (from the next boot), `mouse.buttons` `right` or `left`, `mouse.scrolling` `traditional` or `natural`, `mouse.speed` 1 to 10, `keyboard.repeat_delay_ms` 150 to 2000, `keyboard.repeat_rate` 2 to 60, `accessibility.sticky_keys` and `accessibility.slow_keys` `true` or `false` and `accessibility.slow_keys_ms` 100 to 1000; the other keys fail with `setting_read_only` (D163); answers `Set <key> to <value>.`, and with `dry_run` what would change (D164) | `settings set [--dry-run] -- <key> <value>` | `run` |
+| `settings_set` | Sets a setting (`key`, `value`) and applies it at once, as the Settings window would: `shell.profile` takes `windows`, `macos` or `linux`, the desktop's layout, and `keyboard.layout` a keyboard layout's name (`us`, `us-intl`, `us-mac`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `be`, `ca`, `de`, `ch`, `it`, `no`, `br`, `pt`, `es`, `latam` or `se`, D185, D221), `keyboard.layouts` one to four of them separated by commas and `keyboard.switch_key` `profile`, `super+space`, `ctrl+space`, `alt+shift`, `ctrl+shift` or `none` (D221), `time.zone` an IANA zone such as `Europe/Paris` or `UTC`, `display.scale` 1 or 2 (from the next boot), `mouse.buttons` `right` or `left`, `mouse.scrolling` `traditional` or `natural`, `mouse.speed` 1 to 10, `keyboard.repeat_delay_ms` 150 to 2000, `keyboard.repeat_rate` 2 to 60, `accessibility.sticky_keys`, `accessibility.slow_keys`, `accessibility.high_contrast` and `accessibility.reduce_motion` (D224) `true` or `false`, `accessibility.slow_keys_ms` 100 to 1000, and `time.automatic` `on` or `off` (D225); the other keys fail with `setting_read_only` (D163); answers `Set <key> to <value>.`, and with `dry_run` what would change (D164) | `settings set [--dry-run] -- <key> <value>` | `run` |
 | `app_install` | Installs an app from `/media/host` (`path`); a `.zip` holding several programs needs `entry`, the path of one inside it (D148); `arguments` gives the words it opens with (D172), `environment` the `NAME=value` words set for it (D176) | `app install [--entry <entry>] [--arguments <arguments>] [--environment <environment>] -- <path>` | `install` |
 | `app_open` | Opens an installed app, or the built-in `Terminal`, `Files`, `Settings` or `Text Editor`, by name (`name`) | `app open -- <name>` | `install` |
 | `edit_open` | Opens a text file in `/home`, `/media/host` or `/work` (`path`) in a Text Editor window of its own and returns (D149); a path with nothing at it opens as a new file | `edit -- <path>` | `install` |
 | `app_uninstall` | Uninstalls an app (`name`, `confirm`, `dry_run`) | `app uninstall -- <name>` | `install` |
+| `download_list` | Every download `fetch` saved to a file since boot, newest first (D225): one JSON record a line with `id` (the `fetch` process's id), `name`, `path`, `url`, `size_text`, `state` (`downloading`, `done`, `failed` or `cancelled`), `state_text`, `reason`, `percent`, `received_bytes`, `total_bytes`, `started_at` and `ended_at`, as the items envelope (D226) | `download list --json` | |
+| `download_cancel` | Stops a running download (`pid`, the id `download_list` shows): its `fetch` gets `TERM`, removes the partial file and records it cancelled; `no_such_download`, `already_ended`; asks the user first (`confirm`) (D225) | `download cancel -- <pid>` | `run` |
+| `download_clear` | Removes the records of every download that is done, failed or cancelled and says how many; the files stay, running downloads stay listed (D225) | `download clear` | `write` |
+| `component_list` | The components the attached store offers and those installed (D235, [Components](components.md)): one JSON record a line with `name`, `title`, `summary`, `state`, `percent`, `size_bytes`, `size_text`, `needs`, `needed_by` and `file`, as the items envelope (D226) | `component list --json` | |
+| `component_install` | Installs a component (`name`, `windows-apps` or `mac-apps`) and those it needs from the store, every file checked against the store's SHA-256, nothing installed on a failure; answers `{"installed":[...],"size_bytes":n}`; never asks; `dry_run` (D235) | `component install --json [--dry-run] -- <name>` | `install` |
+| `component_remove` | Removes an installed component and every file it installed; refused with `needed_by` or `in_use`; asks the user first (`confirm`, `dry_run`) (D235) | `component remove --yes --json [--dry-run] -- <name>` | `install` |
+| `windows_registry_get` | The Windows registry's key `key` (`HKEY_CURRENT_USER\Software\...`): a record per subkey and value, or one value (`name`), with `type` and `data`, as the items envelope (D231, D226); only while the Windows apps component is installed | `windows registry get --json -- <key> [<name>]` | |
+| `windows_registry_set` | Makes a key and the missing keys above it and, with `name`, sets that value to `data` (a list of strings: one, or one a line for `multi_sz`) of `type` (`sz` unless given, `expand_sz`, `multi_sz`, `dword`, `qword`, `binary`); `HKEY_LOCAL_MACHINE` only as an administrator (D231) | `windows registry set [--type <type>] -- <key> [<name> [<data>...]]` | `write` |
+| `windows_registry_delete` | Deletes a key with everything below it, or one value (`name`); asks the user first (`confirm`, `dry_run`) (D231) | `windows registry delete --yes -- <key> [<name>]` | `write` |
+| `windows_registry_reset` | Replaces the user's registry file (`machine: true`: the machine's, as an administrator) with an empty one, keeping the old one as `user.hive.damaged`; asks the user first (`confirm`, `dry_run`) (D231) | `windows registry reset --yes [--machine]` | `write` |
 | `wm_capture` | A window's content as a PNG image (`window`; `max_width`, 16 to 1568, 1024 by default) | `wm capture -o /run/eggmcpd-capture.png --max-width <n> --max-bytes 716800 -- <window>` | `view` |
 | `wm_click` | Clicks in a window (`window`, `x`, `y`, `button`: `left`, `right` or `middle`; `double: true` double-clicks, D162) | `wm click --button <button> [--double] -- <window> <x> <y>` | `run` |
 | `wm_type` | Types printable text into a window (`window`, `text`, at most 96 bytes of UTF-8, no control characters): ASCII with the US keyboard's keys, others such as `é` or `€` as characters of their own (D185) | `wm type -- <window> <text>` | `run` |
@@ -243,12 +257,12 @@ command model's registry (D160, docs/ux/command-model.md, `userland/commands`): 
 `inputSchema` is written from the registry when the tools are listed, the same bytes as before
 for the shipped tools. The reading tools, `wm_capture`, `wm_menu_list` and `wm_show` are
 `readOnlyHint`;
-`tee`, `trash`, `fetch`, `run`, `kill`, `clock_set`, `disk_format`, `app_uninstall`, `wm_desktop_new`, the input tools (`wm_click`,
+`tee`, `trash`, `fetch`, `run`, `kill`, `clock_set`, `disk_format`, `app_uninstall`, `file_copy`, `file_move`, `file_remove`, `wm_desktop_new`, the input tools (`wm_click`,
 `wm_type`, `wm_press`, `wm_scroll`, `wm_drag`), `wm_menu_choose` and `wm_act` are `destructiveHint`, so clients ask their user before them; the seven window
 tools of D160 change windows but are neither. Paths are absolute and resolved
 before they are checked: escapes are decoded, `.`, `..` and repeated slashes folded, and any
 component that is a symbolic link refused, so `/home/../etc` is `/etc` and refused. The twins of
-the tools that take a path (`ls`, `cat`, `df`, `tee`, `trash`, `fetch`, `ln`, `app_install`, `edit_open`)
+the tools that take a path (`ls`, `cat`, `df`, `tee`, `trash`, `fetch`, `ln`, the four file tools of D226, `app_install`, `edit_open`)
 also run with `EGGOS_NO_SYMLINKS=1`, and the core utilities among them then open every path with
 `openat2`'s `RESOLVE_NO_SYMLINKS` (D170, docs/coreutils.md): a link made between the check and the
 command, or met inside a folder `trash` or `ls` walks, is refused too, not followed. `run` and the
@@ -258,11 +272,19 @@ the command model's error, `{"error":{"code","category","message","fix","fix_com
 `path_not_allowed` (refused), `needs_grant`, `needs_confirmation`, `declined_by_user`
 (declined), `confirmation_failed` (failed), `confirmation_timed_out` (timeout),
 `question_pending` and `target_changed` (busy), `person_active` (busy, a person is using the
-machine), `audit_failed`, `audit_full`, `request_id_too_long`, `capture_failed`,
+machine), `not_responding` (busy, the window's app has left an event unread for 2 s, D222), `audit_failed`, `audit_full`, `request_id_too_long`, `capture_failed`,
 `is_a_folder`, `no_such_file` and `no_such_app`; the text is the same as before. Agents rely
 on the category; the session's `instructions` (generated from the registry) teach the verbs,
 the effects, the categories and `fix_command`. A command that fails gives its error output and
-exit status, also as an error result. Every command starts in `/home` with `PATH=/bin`, no input
+exit status, also as an error result. Every twin but `run`'s program also runs with
+`EGGOS_CODED_ERRORS=1` (D226): each text error it writes is then followed by its
+`{"error":{...}}` line, and the server moves the last such line into the result's
+`structuredContent.error` (the code must be one EggOS defines; its category, fix and
+`fix_command` come from the registry, the message from the command) and leaves those lines out
+of the text, so a failed command's error is as structured as a refusal; the core utilities,
+`app`, `component`, `settings` and `windows registry` write these lines. A command that ends
+without a coded error (killed, timed out), or `edit` (`edit_open`, whose errors are not coded
+yet), has none. Every command starts in `/home` with `PATH=/bin`, no input
 but `tee`'s content, and as root; it is stopped, with every process it started, after 10 s
 (`run`: its `timeout_seconds`), or as soon as its output passes 128 KiB (the result says it was
 cut). `run` takes no shell: `run {"program": "/bin/uname", "arguments": ["-a"]}`.
@@ -346,8 +368,9 @@ Replacing an existing file with `tee` (not adding to it with `append`, not creat
   gets every destructive call refused after 120 s.
 - While a call waits for your answer, other calls that need a grant are refused; reading
   goes on.
-- **Dry runs** (D164): `tee`, `trash` and `app_uninstall` take `dry_run: true`, which EggOS
-  answers itself from the path, the file and the app it checked (`Dry run: trash would move
+- **Dry runs** (D164): `tee`, `trash`, `app_uninstall` and `clock_set` (D226) take
+  `dry_run: true`, which EggOS answers itself from the path, the file, the app and the time it
+  checked (`Dry run: trash would move
   /home/root/notes.txt (812 bytes) to the Trash. Nothing was changed and the user was not
   asked.`), without running the command or asking you, since nothing changes; the call still
   needs its grant and is logged with `dry_run: nothing changed`. `settings_set` passes
@@ -356,13 +379,27 @@ Replacing an existing file with `tee` (not adding to it with `append`, not creat
 
 ## Pages
 
-`ls`, `ps`, `wm_list` and `app_list` take `limit` and `after` (D164). With either, the result
+`ls`, `ps`, `wm_list` and `app_list` take `limit` and `after` (D164), and `settings_list` by
+key (D226). With either, the result
 keeps its text and adds `structuredContent`: `{"truncated":true,"truncated_by":"limit",
 "next_cursor":"<cursor>"}` when more follow (and a line saying to call again with `after`),
 `{"truncated":false}` on the last page, and `{"truncated":true,"truncated_by":"bytes"}` when
 the output was cut before the page's end, so call again with a smaller `limit`. The cursor is
 the page's last name or id as the command wrote it (`my%20notes` for `my notes`); a call
 without `limit` and `after` answers exactly as before.
+
+## Structured results
+
+`run`, `wm_capture` and the tools whose twin writes JSON records (`df`, `device_list`,
+`disk_list`, `agent_list`, `wm_desktop_list`, `download_list`, `component_list` and
+`windows_registry_get`) list an `outputSchema` (D226): `oneOf` their `structuredContent` and
+the `{"error":{...}}` of a refused or failed call, so every successful call has
+`structuredContent` and a client can check it. A list tool's is the items envelope,
+`{"items":[...],"truncated":false}`, each item one of its twin's records with the fields the
+command model declares (the text keeps them as JSON lines too), and
+`{"items":[...],"truncated":true,"truncated_by":"bytes"}` when the output was cut at 128 KiB,
+the cut last record left out. The other tools list none: their result is their text, which a
+client that shows its model only `structuredContent` would hide.
 
 ## Text from EggOS is data
 
@@ -501,10 +538,9 @@ clock at boot (D150). The log in Settings comes after the release.
 
 ## Not yet
 
-Asking the client in the 2026-07-28 version (`input_required`), resources for files and apps, `subscriptions/listen`; tools for the commands that have none
-(the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
-is returned as before); `outputSchema`; pages for `agentlog`, `settings_list` and tools added
-later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
+Asking the client in the 2026-07-28 version (`input_required`), resources for files and apps, `subscriptions/listen`; tools for the commands that have none; coded errors for a command that fails rather than being refused (its text error
+is returned as before); pages for tools added
+later, and dry runs for `fetch` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
 terminal's window; OAuth sign-in, an event stream and session ids for MCP over the network; the grant prompt on a phone (a bottom sheet), centred and kept above other windows (it opens
 where the window server puts a new window). A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.

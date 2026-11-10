@@ -15,6 +15,8 @@ eggos-android-properties = { path = "../../android-properties" }
 eggos-app = { path = "../app" }
 eggos-calendar = { path = "../../calendar" }
 eggos-commands = { path = "../commands" }
+eggos-device-list = { path = "../device-list" }
+eggos-download-list = { path = "../download-list" }
 eggos-element-tree = { path = "../element-tree" }
 eggos-files = { path = "../files" }
 eggos-mcp = { path = "../mcp" }
@@ -26,6 +28,7 @@ eggos-tls = { path = "../../tls" }
 
 [dev-dependencies]
 eggos-drivers = { path = "../../drivers" }
+eggos-mcp = { path = "../mcp", features = ["schema-check"] }
 
 [lints]
 workspace = true

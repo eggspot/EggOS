@@ -10,22 +10,32 @@
 
 #![cfg_attr(not(test), no_std)]
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod application;
 pub mod canvas;
+pub mod cell_store;
 pub mod colour;
 pub mod damage;
+pub mod drag;
 pub mod geometry;
 pub mod input;
 pub mod menu;
 pub mod panel;
+pub mod table;
 pub mod text;
+pub mod text_area;
+pub mod theme;
+pub mod tooltip;
 pub mod tree;
 pub mod widget;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod window;
 
 pub use eggos_element_tree as elements;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_dead_keys;
+#[cfg(test)]
+mod tests_slice_two;

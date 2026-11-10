@@ -1,65 +1,85 @@
 use crate::network::{DNS_TIMEOUT_MS, LookupError, Shown, lookup, nameservers, parse_seconds_ms};
-use crate::options::parse_count;
+use crate::options::{Refused, parse_count, parse_defined};
 use crate::output::{FAILURE, Output};
 use crate::system::System;
+use crate::utilities::MAX_ARGUMENTS;
 use core::ffi::CStr;
+use eggos_commands::{commands, errors};
 use eggos_net::Ipv4Address;
 use eggos_net::dns::{self, ResponseError};
 
 const USAGE: &[u8] = b"usage: nslookup [-port=<port>] [-timeout=<seconds>] <name> [<server>]";
 
+fn bind_style(argument: &CStr) -> Option<(&'static CStr, &CStr)> {
+    let bytes = argument.to_bytes();
+    let (long, prefix): (&'static CStr, &[u8]) = if bytes.starts_with(b"-port=") {
+        (c"--port", b"-port=")
+    } else if bytes.starts_with(b"-timeout=") {
+        (c"--timeout", b"-timeout=")
+    } else {
+        return None;
+    };
+    let value = CStr::from_bytes_with_nul(&argument.to_bytes_with_nul()[prefix.len()..]).ok()?;
+    Some((long, value))
+}
+
 pub fn nslookup<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    let mut port = dns::PORT;
-    let mut timeout_ms = DNS_TIMEOUT_MS;
-    let mut operands: [&[u8]; 2] = [b"", b""];
+    let mut words = [c""; MAX_ARGUMENTS];
     let mut count = 0;
-    for argument in arguments.iter().map(|argument| argument.to_bytes()) {
-        if let Some(value) = argument.strip_prefix(b"-port=") {
-            let given = parse_count(value)
-                .and_then(|port| u16::try_from(port).ok())
-                .filter(|&port| port > 0);
-            match given {
-                Some(given) => port = given,
-                None => {
-                    output.error(&[b"invalid port '", value, b"'"]);
-                    return FAILURE;
-                }
-            }
-            continue;
-        }
-        if let Some(value) = argument.strip_prefix(b"-timeout=") {
-            let given = parse_seconds_ms(value)
-                .and_then(|ms| u32::try_from(ms).ok())
-                .filter(|&ms| ms > 0);
-            match given {
-                Some(given) => timeout_ms = given,
-                None => {
-                    output.error(&[b"invalid timeout '", value, b"'"]);
-                    return FAILURE;
-                }
-            }
-            continue;
-        }
-        match argument {
-            b"--" => {}
-            option if option.starts_with(b"-") && option.len() > 1 => {
-                return output.invalid_option(option);
-            }
-            operand if count < operands.len() => {
-                operands[count] = operand;
-                count += 1;
-            }
-            _ => {
-                output.error(&[USAGE]);
+    let mut options_end = false;
+    for &argument in arguments {
+        let (first, second) = match bind_style(argument).filter(|_| !options_end) {
+            Some((long, value)) => (long, Some(value)),
+            None => (argument, None),
+        };
+        options_end |= argument.to_bytes() == b"--";
+        for word in [Some(first), second].into_iter().flatten() {
+            let Some(slot) = words.get_mut(count) else {
+                output.coded(&errors::USAGE, &[USAGE]);
                 return FAILURE;
-            }
+            };
+            *slot = word;
+            count += 1;
         }
     }
-    let (name, server) = match operands[..count] {
-        [name] => (name, None),
-        [name, server] => (name, Some(server)),
+    let mut port = dns::PORT;
+    let mut timeout_ms = DNS_TIMEOUT_MS;
+    let parsed = parse_defined(
+        output,
+        &words[..count],
+        &commands::NSLOOKUP,
+        |output, given| {
+            let value = given.value.unwrap_or_default();
+            if given.is_long("port") {
+                let given = parse_count(value)
+                    .and_then(|port| u16::try_from(port).ok())
+                    .filter(|&port| port > 0);
+                let Some(given) = given else {
+                    output.coded(&errors::USAGE, &[b"invalid port '", value, b"'"]);
+                    return Err(Refused::Reported);
+                };
+                port = given;
+            } else if given.is_long("timeout") {
+                let given = parse_seconds_ms(value)
+                    .and_then(|ms| u32::try_from(ms).ok())
+                    .filter(|&ms| ms > 0);
+                let Some(given) = given else {
+                    output.coded(&errors::USAGE, &[b"invalid timeout '", value, b"'"]);
+                    return Err(Refused::Reported);
+                };
+                timeout_ms = given;
+            }
+            Ok(())
+        },
+    );
+    let Ok(operands) = parsed else {
+        return FAILURE;
+    };
+    let (name, server) = match operands.all() {
+        [name] => (name.to_bytes(), None),
+        [name, server] => (name.to_bytes(), Some(server.to_bytes())),
         _ => {
-            output.error(&[USAGE]);
+            output.coded(&errors::USAGE, &[USAGE]);
             return FAILURE;
         }
     };

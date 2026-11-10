@@ -17,6 +17,7 @@ pub mod dictionary;
 pub mod enumerator;
 pub mod guid;
 pub mod memory_stream;
+pub mod picture;
 pub mod safe_array;
 pub mod variant;
 

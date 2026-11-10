@@ -1,10 +1,11 @@
 use crate::system::{
     CapturedRows, DatagramKind, Duration, FileSystemUsage, STATFS_SIZE, STATX_SIZE, Sender, Status,
-    SymbolicLinks, System, SystemName, UTSNAME_SIZE, WindowTree, folder_and_leaf,
-    refuses_symbolic_links,
+    SymbolicLinks, System, SystemName, UTSNAME_SIZE, WindowTree, asks_for_coded_errors,
+    folder_and_leaf, refuses_symbolic_links,
 };
 use crate::utilities::{self, MAX_ARGUMENTS};
 use core::ffi::CStr;
+use core::sync::atomic::{AtomicBool, Ordering};
 use eggos_net::Ipv4Address;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
@@ -17,7 +18,13 @@ const O_WRONLY: usize = 0o1;
 const O_CREAT: usize = 0o100;
 const O_TRUNC: usize = 0o1000;
 const O_APPEND: usize = 0o2000;
+const O_EXCL: usize = 0o200;
+#[cfg(target_arch = "aarch64")]
+const O_NOFOLLOW: usize = 0o100_000;
+#[cfg(not(target_arch = "aarch64"))]
+const O_NOFOLLOW: usize = 0o400_000;
 const AT_REMOVEDIR: usize = 0x200;
+const W_OK: usize = 2;
 const STATX_BASIC_STATS: usize = 0x7ff;
 const O_PATH: usize = 0o10_000_000;
 #[cfg(target_arch = "aarch64")]
@@ -46,6 +53,50 @@ const SIGSET_BYTES: usize = 8;
 const SOCKADDR_IN_SIZE: usize = 16;
 const SIGTERM: usize = 15;
 const SIG_UNBLOCK: usize = 1;
+#[cfg(target_arch = "x86_64")]
+const SA_RESTORER: usize = 0x0400_0000;
+
+static TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(not(target_arch = "riscv64"))]
+#[repr(C)]
+struct SignalAction {
+    handler: usize,
+    flags: usize,
+    restorer: usize,
+    mask: u64,
+}
+
+#[cfg(target_arch = "riscv64")]
+#[repr(C)]
+struct SignalAction {
+    handler: usize,
+    flags: usize,
+    mask: u64,
+}
+
+extern "C" fn note_termination(_signal: i32) {
+    TERMINATION_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+fn termination_action() -> SignalAction {
+    #[cfg(target_arch = "x86_64")]
+    let (flags, restorer) = (
+        SA_RESTORER,
+        eggos_runtime::process::restore_after_signal as *const () as usize,
+    );
+    #[cfg(target_arch = "aarch64")]
+    let (flags, restorer) = (0, 0);
+    #[cfg(target_arch = "riscv64")]
+    let flags = 0;
+    SignalAction {
+        handler: note_termination as *const () as usize,
+        flags,
+        #[cfg(not(target_arch = "riscv64"))]
+        restorer,
+        mask: 0,
+    }
+}
 const INIT: usize = 1;
 const TIOCGWINSZ: usize = 0x5413;
 
@@ -101,6 +152,9 @@ fn wait_readable(descriptor: usize, timeout_ms: u32) -> Result<bool, Errno> {
         match polled {
             Ok(0) => return Ok(false),
             Ok(_) => return Ok(true),
+            Err(Errno::EINTR) if TERMINATION_REQUESTED.load(Ordering::Relaxed) => {
+                return Err(Errno::EINTR);
+            }
             Err(Errno::EINTR) => {}
             Err(errno) => return Err(errno),
         }
@@ -193,6 +247,7 @@ fn status_at(directory: usize, path: &CStr, flags: usize) -> Result<Status, Errn
 #[derive(Debug)]
 struct Linux {
     no_symlinks: bool,
+    coded_errors: bool,
     time_zone: Option<([u8; TIME_ZONE_BYTES], usize)>,
     environment: *const *const core::ffi::c_char,
     started_environment: [*const u8; STARTED_VARIABLES + 1],
@@ -338,6 +393,10 @@ impl System for Linux {
         let _ = call(number::SYNC, [0; 6]);
     }
 
+    fn sync_file(&mut self, descriptor: usize) -> Result<(), Errno> {
+        call(number::FSYNC, [descriptor, 0, 0, 0, 0, 0]).map(|_| ())
+    }
+
     fn reboot(&mut self, command: u32) -> Result<(), Errno> {
         call(
             number::REBOOT,
@@ -348,6 +407,11 @@ impl System for Linux {
 
     fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno> {
         let flags = O_RDONLY_CLOEXEC | O_WRONLY | O_CREAT | if truncate { O_TRUNC } else { 0 };
+        self.open_file(path, flags, mode)
+    }
+
+    fn create_new(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
+        let flags = O_RDONLY_CLOEXEC | O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW;
         self.open_file(path, flags, mode)
     }
 
@@ -414,6 +478,13 @@ impl System for Linux {
             call(number::STATFS, [path, buffer, 0, 0, 0, 0])?;
         }
         Ok(FileSystemUsage::from_statfs(&record))
+    }
+
+    fn may_write(&mut self, path: &CStr) -> Result<(), Errno> {
+        self.at(path, |folder, leaf| {
+            let leaf = leaf.as_ptr() as usize;
+            call(number::FACCESSAT, [folder, leaf, W_OK, 0, 0, 0]).map(|_| ())
+        })
     }
 
     fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {
@@ -487,6 +558,10 @@ impl System for Linux {
             [out.as_mut_ptr() as usize, out.len(), 0, 0, 0, 0],
         )?;
         Ok(length.saturating_sub(1))
+    }
+
+    fn wants_coded_errors(&self) -> bool {
+        self.coded_errors
     }
 
     fn time_zone_variable(&self) -> Option<&[u8]> {
@@ -922,6 +997,35 @@ impl System for Linux {
         .map(|_| ())
     }
 
+    fn process_id(&mut self) -> u32 {
+        call(number::GETPID, [0; 6]).unwrap_or(0) as u32
+    }
+
+    fn catch_termination(&mut self) -> Result<(), Errno> {
+        let action = termination_action();
+        call(
+            number::RT_SIGACTION,
+            [SIGTERM, &raw const action as usize, 0, SIGSET_BYTES, 0, 0],
+        )?;
+        let terminate = 1u64 << (SIGTERM - 1);
+        call(
+            number::RT_SIGPROCMASK,
+            [
+                SIG_UNBLOCK,
+                &raw const terminate as usize,
+                0,
+                SIGSET_BYTES,
+                0,
+                0,
+            ],
+        )
+        .map(|_| ())
+    }
+
+    fn termination_requested(&mut self) -> bool {
+        TERMINATION_REQUESTED.load(Ordering::Relaxed)
+    }
+
     fn signal_init(&mut self, signal: u32) -> Result<(), Errno> {
         let default_action = [0usize; 4];
         call(
@@ -977,6 +1081,7 @@ pub fn run(startup: &Startup) -> i32 {
     }
     let system = Linux {
         no_symlinks: refuses_symbolic_links(startup.environment()),
+        coded_errors: asks_for_coded_errors(startup.environment()),
         time_zone: time_zone_of(startup.environment()),
         environment: startup.environment_block(),
         started_environment: started_environment(startup.environment()),

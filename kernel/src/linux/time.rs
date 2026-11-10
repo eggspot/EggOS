@@ -317,7 +317,7 @@ pub fn gettimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Resu
 /// `time(tloc)`: the wall clock's seconds, also written to `tloc` unless that is null;
 /// `EFAULT` if it is not the program's writable memory. x86_64 only: the generic table has no
 /// `time`, and its C libraries call `clock_gettime`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(linux_abi_legacy_calls)]
 pub fn time<P: Platform>(process: &Process<P>, tloc: u64) -> Result<u64, Errno> {
     let seconds = crate::wall_clock::seconds::<P>();
     if tloc != 0 {

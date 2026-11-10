@@ -8,6 +8,8 @@
 
 use super::{HandlerKinds, Image, Memory, UnwindError, Unwound};
 
+const INSTRUCTION_BYTES: u64 = 4;
+
 /// The size of an ARM64 `.pdata` entry.
 pub const RUNTIME_FUNCTION_SIZE: u64 = 8;
 const FRAME_POINTER: u8 = 29;
@@ -22,6 +24,7 @@ const FLAG_PACKED_FRAGMENT: u32 = 2;
 const SMALL_FRAME: u64 = 512;
 const ONE_ALLOCATION: u64 = 4080;
 const MAX_SAVE_NEXT: u8 = 16;
+const USER_ADDRESS_BITS: u32 = 48;
 
 /// A thread's registers as an unwind step reads and changes them: `x0` to `x30` (`x29` is
 /// the frame pointer, `x30` the link register), `sp`, `pc` and `d8` to `d15`, the floating-point
@@ -540,6 +543,28 @@ impl Packed {
     }
 }
 
+/// A return address without the pointer authentication code a `pacibsp` prolog signed `lr`
+/// with: the bits above the 48-bit user address space cleared, as `xpaclri` clears them for a
+/// user address; an unsigned address is unchanged.
+pub fn strip_pointer_authentication(address: u64) -> u64 {
+    address & ((1 << USER_ADDRESS_BITS) - 1)
+}
+
+/// [`virtual_unwind`] of a frame whose `pc` is a return address, as Windows unwinds a context
+/// unwound to a call: the call, the instruction before the return address, decides whether the
+/// program was in the function's body or in an epilog, so a call made right before an epilog
+/// still has its frame's handler.
+pub fn virtual_unwind_to_call(
+    image: &Image<'_>,
+    function: Function,
+    kinds: HandlerKinds,
+    registers: &mut Registers,
+    memory: &impl Memory,
+) -> Result<Unwound, UnwindError> {
+    registers.pc = registers.pc.wrapping_sub(INSTRUCTION_BYTES);
+    virtual_unwind(image, function, kinds, registers, memory)
+}
+
 /// Undoes one frame of `function`, whose code holds `registers.pc`: on success `registers`
 /// hold the caller's registers (`pc` the return address) and the result names the frame's
 /// establisher and, if `kinds` asks for any handler and the function has one and the program
@@ -593,7 +618,7 @@ pub fn virtual_unwind(
         }
         _ => return Err(UnwindError::UnknownCode),
     }
-    registers.pc = registers.x[usize::from(LINK_REGISTER)];
+    registers.pc = strip_pointer_authentication(registers.x[usize::from(LINK_REGISTER)]);
     let handler = match handler {
         Some(at) => {
             let rva = image.u32_at(at).ok_or(UnwindError::Truncated)?;
@@ -742,6 +767,49 @@ mod tests {
         at_ret.x[30] = BASE + 0x8888;
         virtual_unwind(&image, function, BOTH, &mut at_ret, &memory).unwrap();
         assert_eq!((at_ret.sp, at_ret.pc), (STACK, BASE + 0x8888));
+    }
+
+    #[test]
+    fn a_call_right_before_an_epilog_is_unwound_as_the_body_with_its_handler() {
+        let xdata = standard_record();
+        let bytes = image_with(&[(0x1000, XDATA as u32)], &xdata);
+        let image = Image {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let function = lookup(&image, PDATA as u32, 8, 0x1030).unwrap();
+        let memory = stack(&[0, 0, STACK + 0x100, BASE + 0x1234, 0x1919, 0x2020]);
+        let mut returned_to = registers_at(0x1034);
+        returned_to.x[29] = STACK + 16;
+        let unwound =
+            virtual_unwind_to_call(&image, function, BOTH, &mut returned_to, &memory).unwrap();
+        assert_eq!(unwound.handler, Some(BASE + 0x1800));
+        assert_eq!(
+            (returned_to.sp, returned_to.pc),
+            (STACK + 48, BASE + 0x1234)
+        );
+        assert_eq!(unwound.establisher, STACK + 48);
+    }
+
+    #[test]
+    fn a_return_address_signed_by_the_prolog_comes_back_stripped() {
+        let mut xdata = Vec::new();
+        xdata.extend(header(0x20, false, true, 0, 1));
+        xdata.extend([0x81, 0xfc, 0xe4, 0xe3]);
+        let bytes = image_with(&[(0x1000, XDATA as u32)], &xdata);
+        let image = Image {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let function = lookup(&image, PDATA as u32, 8, 0x100c).unwrap();
+        let signed = 0x0055_0000_0000_0000 | (BASE + 0x1234);
+        let memory = stack(&[STACK + 0x100, signed]);
+        let mut registers = registers_at(0x100c);
+        virtual_unwind(&image, function, BOTH, &mut registers, &memory).unwrap();
+        assert_eq!(registers.x[30], signed);
+        assert_eq!(registers.pc, BASE + 0x1234);
+        assert_eq!(registers.sp, STACK + 16);
+        assert_eq!(strip_pointer_authentication(BASE + 0x1234), BASE + 0x1234);
     }
 
     #[test]

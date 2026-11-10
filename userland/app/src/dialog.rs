@@ -17,6 +17,7 @@ use eggos_toolkit::colour;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{CONTROL_HEIGHT, Kind, Length, PROGRESS_DONE, Place};
 
@@ -24,7 +25,7 @@ use eggos_toolkit::widget::{CONTROL_HEIGHT, Kind, Length, PROGRESS_DONE, Place};
 pub const SIZE: (u32, u32) = (480, 240);
 /// The widgets one screen of the window holds at most: Settings' capacity, so the program
 /// that serves both windows instantiates one widget tree type.
-pub const CAPACITY: usize = 176;
+pub const CAPACITY: usize = 278;
 /// The window's title while installing.
 pub const INSTALL_TITLE: &str = "Install";
 /// The window's title while uninstalling.
@@ -285,7 +286,7 @@ pub struct Dialog {
 impl Dialog {
     fn new(escape: Request) -> Self {
         let mut tree = WidgetTree::new();
-        let root = tree.add(None, Place::fill(), Kind::panel(colour::WINDOW_BACKGROUND));
+        let root = tree.add(None, Place::fill(), Kind::panel(Token::WindowBackground));
         Self {
             tree,
             root,
@@ -309,7 +310,7 @@ impl Dialog {
         );
     }
 
-    fn line(&mut self, words: &str, ink: u32) -> Option<WidgetId> {
+    fn line(&mut self, words: &str, ink: Token) -> Option<WidgetId> {
         if self.lines >= MAX_LINES {
             return None;
         }
@@ -323,7 +324,7 @@ impl Dialog {
         self.keep_label(id)
     }
 
-    fn wrapped(&mut self, words: &str, ink: u32, most: usize) {
+    fn wrapped(&mut self, words: &str, ink: Token, most: usize) {
         let mut lines = [""; MAX_LINES];
         let count = wrap(words, TEXT_WIDTH, &mut lines[..most.min(MAX_LINES)]);
         for line in &lines[..count] {
@@ -387,10 +388,10 @@ impl Dialog {
             &mut heading,
             format_args!("Install a program from {place}"),
         );
-        dialog.line(heading.as_str(), colour::TEXT);
+        dialog.line(heading.as_str(), Token::Text);
         match (names.is_empty(), more_line.is_empty()) {
             (true, true) => {
-                dialog.line("It holds no program EggOS can run.", colour::TEXT_DIM);
+                dialog.line("It holds no program EggOS can run.", Token::TextDim);
             }
             (true, false) => {}
             (false, _) => {
@@ -419,7 +420,7 @@ impl Dialog {
                     Length::Fill(PADDING),
                     Length::Px(LINE_HEIGHT),
                 ),
-                Kind::label(more_line, colour::TEXT_DIM),
+                Kind::label(more_line, Token::TextDim),
             );
             dialog.keep_label(id);
         }
@@ -436,9 +437,9 @@ impl Dialog {
         dialog.icon(icon);
         let mut question = Line::new();
         let _ = core::fmt::Write::write_fmt(&mut question, format_args!("Install {name}?"));
-        dialog.line(question.as_str(), colour::TEXT);
+        dialog.line(question.as_str(), Token::Text);
         for detail in details {
-            dialog.line(detail, colour::TEXT_DIM);
+            dialog.line(detail, Token::TextDim);
         }
         dialog.bottom_buttons(&[("Cancel", Request::Cancel), ("Install", Request::Install)]);
         dialog.finish()
@@ -449,7 +450,7 @@ impl Dialog {
     pub fn message(icon: AppIcon, message: &str) -> Self {
         let mut dialog = Self::new(Request::Close);
         dialog.icon(icon);
-        dialog.wrapped(message, colour::TEXT, MAX_LINES);
+        dialog.wrapped(message, Token::Text, MAX_LINES);
         dialog.bottom_buttons(&[("Close", Request::Close)]);
         dialog.finish()
     }
@@ -460,7 +461,7 @@ impl Dialog {
         dialog.icon(icon);
         let mut heading = Line::new();
         let _ = core::fmt::Write::write_fmt(&mut heading, format_args!("Installing {name}"));
-        dialog.line(heading.as_str(), colour::TEXT);
+        dialog.line(heading.as_str(), Token::Text);
         dialog.progress = dialog.tree.add(
             dialog.root,
             Place::at(
@@ -479,7 +480,7 @@ impl Dialog {
                 Length::Fill(PADDING),
                 Length::Px(LINE_HEIGHT),
             ),
-            Kind::label(status, colour::TEXT_DIM),
+            Kind::label(status, Token::TextDim),
         );
         dialog.status = dialog.keep_label(status);
         dialog.bottom_buttons(&[("Cancel", Request::Cancel)]);
@@ -516,11 +517,8 @@ impl Dialog {
         dialog.icon(icon);
         let mut line = Line::new();
         let _ = core::fmt::Write::write_fmt(&mut line, format_args!("Installed {name}."));
-        dialog.line(line.as_str(), colour::TEXT);
-        dialog.line(
-            "It is in the launcher and on the desktop.",
-            colour::TEXT_DIM,
-        );
+        dialog.line(line.as_str(), Token::Text);
+        dialog.line("It is in the launcher and on the desktop.", Token::TextDim);
         dialog.bottom_buttons(&[("Close", Request::Close), ("Open", Request::Open)]);
         dialog.finish()
     }
@@ -532,13 +530,13 @@ impl Dialog {
         dialog.icon(icon);
         let mut question = Line::new();
         let _ = core::fmt::Write::write_fmt(&mut question, format_args!("Uninstall {name}?"));
-        dialog.line(question.as_str(), colour::TEXT);
+        dialog.line(question.as_str(), Token::Text);
         let mut removes = Line::new();
         let _ = core::fmt::Write::write_fmt(
             &mut removes,
             format_args!("Removes: the launcher entry, the desktop icon and /Applications/{name}"),
         );
-        dialog.wrapped(removes.as_str(), colour::TEXT_DIM, 3);
+        dialog.wrapped(removes.as_str(), Token::TextDim, 3);
         dialog.bottom_buttons(&[
             ("Cancel", Request::Cancel),
             ("Uninstall", Request::Uninstall),

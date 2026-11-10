@@ -85,6 +85,12 @@ impl<T: Transport, M: DmaMemory> VirtioRng<T, M> {
         &self.transport
     }
 
+    /// Has the device interrupt when it answers a request, for a driver whose `keep_waiting`
+    /// sleeps until an interrupt instead of polling (D220).
+    pub fn enable_interrupts(&mut self) {
+        self.queue.enable_used_notifications();
+    }
+
     /// Fills the start of `bytes` with random bytes from the device, at most [`BUFFER_LEN`] in
     /// one call, and returns how many, polling while `keep_waiting` says to. A request the
     /// device has not answered when polling stops stays posted ([`Error::TimedOut`]): the next

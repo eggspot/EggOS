@@ -4,11 +4,12 @@
 //! as bytes (with a NUL after them) and anything else as UTF-16 units, so `length` and
 //! `characterAtIndex:` take constant time on every string.
 
+use super::string_encoding;
 use super::string_text::{self, Text};
 use super::{
-    CONSTANT_STRING, CONSTANT_STRING_META, Definition, NSMUTABLESTRING, NSMUTABLESTRING_META,
-    NSSTRING, NSSTRING_META, UTF8_BUFFER, UTF8_BUFFER_META, autoreleased, class_pointer,
-    define as define_class, is_string, new_instance,
+    CONSTANT_STRING, CONSTANT_STRING_META, Definition, NSDATA, NSMUTABLESTRING,
+    NSMUTABLESTRING_META, NSSTRING, NSSTRING_META, UTF8_BUFFER, UTF8_BUFFER_META, autoreleased,
+    class_pointer, define as define_class, is_data, is_string, new_instance,
 };
 use crate::format::{self, Output};
 use crate::libsystem::heap;
@@ -16,9 +17,10 @@ use crate::libsystem::variadic::{RawVaList, VaList, variadic};
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::class::IMMORTAL;
+use crate::objc::exception::guard;
 use crate::objc::root::NSOBJECT;
 use crate::objc::sel;
-use crate::objc::{Runtime, methods, reference_count, send, terminate_uncaught};
+use crate::objc::{Runtime, methods, reference_count, send};
 use core::cmp::Ordering;
 
 const WIDE: u32 = 0x10;
@@ -249,7 +251,7 @@ fn new_like(text: &Text<'_>) -> Id {
 }
 
 fn range_failure(this: Id, method: &[u8]) -> ! {
-    terminate_uncaught(
+    super::raise_named(
         b"NSRangeException",
         &[
             b"-[",
@@ -351,7 +353,7 @@ unsafe extern "C" fn init_with_bytes(
     length: usize,
     encoding: usize,
 ) -> Id {
-    if !matches!(encoding, UTF8_ENCODING | ASCII_ENCODING) || (bytes.is_null() && length > 0) {
+    if bytes.is_null() && length > 0 {
         return initialized(this, false);
     }
     let bytes = if length == 0 {
@@ -360,7 +362,62 @@ unsafe extern "C" fn init_with_bytes(
         // SAFETY: the caller's promise.
         unsafe { core::slice::from_raw_parts(bytes, length) }
     };
-    init_with_utf8(this, bytes)
+    init_decoded(this, bytes, encoding)
+}
+
+fn init_decoded(this: Id, bytes: &[u8], encoding: usize) -> Id {
+    if encoding == UTF8_ENCODING {
+        return init_with_utf8(this, bytes);
+    }
+    let mut units = Buffer::new();
+    let mut complete = true;
+    let valid = string_encoding::decode(bytes, encoding, &mut |unit| {
+        complete &= units.push(unit);
+    });
+    let made = valid && complete && set_units(this, units.as_slice());
+    units.free();
+    initialized(this, made)
+}
+
+extern "C" fn init_with_data(this: Id, _: Sel, data: Id, encoding: usize) -> Id {
+    if data.is_null() || !is_data(data) {
+        return initialized(this, false);
+    }
+    init_decoded(this, super::data::bytes_of(data), encoding)
+}
+
+fn encoded_data(this: Id, encoding: usize, lossy: bool) -> Id {
+    let mut bytes = Buffer::new();
+    let mut complete = true;
+    let valid = string_encoding::encode(&text_of(this), encoding, lossy, &mut |piece| {
+        complete &= bytes.reserve(piece.len());
+        for &byte in piece {
+            bytes.push(byte);
+        }
+    });
+    let made = match valid && complete {
+        true => super::data::new_data(class_pointer(&NSDATA), bytes.as_slice()),
+        false => core::ptr::null_mut(),
+    };
+    bytes.free();
+    autoreleased(made)
+}
+
+extern "C" fn data_using_encoding(this: Id, _: Sel, encoding: usize) -> Id {
+    encoded_data(this, encoding, false)
+}
+
+extern "C" fn data_using_encoding_lossy(this: Id, _: Sel, encoding: usize, lossy: u8) -> Id {
+    encoded_data(this, encoding, lossy != 0)
+}
+
+extern "C" fn can_be_converted(this: Id, _: Sel, encoding: usize) -> u8 {
+    u8::from(string_encoding::encode(
+        &text_of(this),
+        encoding,
+        false,
+        &mut |_| {},
+    ))
 }
 
 extern "C" fn init_with_string(this: Id, _: Sel, other: Id) -> Id {
@@ -485,8 +542,16 @@ extern "C" fn c_string_using_encoding(this: Id, sel: Sel, encoding: usize) -> *c
     utf8_string(this, sel)
 }
 
-extern "C" fn length_of_bytes(this: Id, _: Sel, _: usize) -> usize {
-    text_of(this).utf8_len()
+extern "C" fn length_of_bytes(this: Id, _: Sel, encoding: usize) -> usize {
+    if encoding == UTF8_ENCODING {
+        return text_of(this).utf8_len();
+    }
+    let mut length = 0;
+    let mut count = |piece: &[u8]| length += piece.len();
+    match string_encoding::encode(&text_of(this), encoding, false, &mut count) {
+        true => length,
+        false => 0,
+    }
 }
 
 extern "C" fn is_equal(this: Id, _: Sel, other: Id) -> u8 {
@@ -844,6 +909,15 @@ extern "C" fn mutable_init(this: Id, _: Sel) -> Id {
     initialized(this, set_units(this, &[]))
 }
 
+guard!(eggos_guarded_character_at_index => character_at_index);
+guard!(eggos_guarded_get_characters => get_characters);
+guard!(eggos_guarded_substring_from_index => substring_from_index);
+guard!(eggos_guarded_substring_to_index => substring_to_index);
+guard!(eggos_guarded_substring_with_range => substring_with_range);
+guard!(eggos_guarded_delete_characters => delete_characters);
+guard!(eggos_guarded_append_string => append_string);
+guard!(eggos_guarded_insert_string => insert_string);
+
 pub fn define(runtime: &mut Runtime) -> bool {
     let instance = methods![
         "init" => init,
@@ -851,12 +925,16 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "initWithString:" => init_with_string,
         "initWithCharacters:length:" => init_with_characters,
         "initWithBytes:length:encoding:" => init_with_bytes,
+        "initWithData:encoding:" => init_with_data,
+        "dataUsingEncoding:" => data_using_encoding,
+        "dataUsingEncoding:allowLossyConversion:" => data_using_encoding_lossy,
+        "canBeConvertedToEncoding:" => can_be_converted,
         "initWithFormat:" => eggos_string_init_with_format,
         "initWithFormat:arguments:" => init_with_format_arguments,
         "dealloc" => dealloc,
         "length" => length,
-        "characterAtIndex:" => character_at_index,
-        "getCharacters:range:" => get_characters,
+        "characterAtIndex:" => eggos_guarded_character_at_index,
+        "getCharacters:range:" => eggos_guarded_get_characters,
         "UTF8String" => utf8_string,
         "cStringUsingEncoding:" => c_string_using_encoding,
         "lengthOfBytesUsingEncoding:" => length_of_bytes,
@@ -871,9 +949,9 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "rangeOfString:options:" => range_of_string_with_options,
         "stringByAppendingString:" => string_by_appending_string,
         "stringByAppendingFormat:" => eggos_string_by_appending_format,
-        "substringFromIndex:" => substring_from_index,
-        "substringToIndex:" => substring_to_index,
-        "substringWithRange:" => substring_with_range,
+        "substringFromIndex:" => eggos_guarded_substring_from_index,
+        "substringToIndex:" => eggos_guarded_substring_to_index,
+        "substringWithRange:" => eggos_guarded_substring_with_range,
         "uppercaseString" => uppercase_string,
         "lowercaseString" => lowercase_string,
         "componentsSeparatedByString:" => components_separated_by_string,
@@ -898,11 +976,11 @@ pub fn define(runtime: &mut Runtime) -> bool {
     ];
     let mutable_instance = methods![
         "init" => mutable_init,
-        "appendString:" => append_string,
+        "appendString:" => eggos_guarded_append_string,
         "appendFormat:" => eggos_string_append_format,
         "setString:" => set_string,
-        "insertString:atIndex:" => insert_string,
-        "deleteCharactersInRange:" => delete_characters,
+        "insertString:atIndex:" => eggos_guarded_insert_string,
+        "deleteCharactersInRange:" => eggos_guarded_delete_characters,
     ];
     let mutable_class = methods![
         "stringWithCapacity:" => string_with_capacity,

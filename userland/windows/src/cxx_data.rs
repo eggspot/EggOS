@@ -619,13 +619,33 @@ pub fn type_name<'a>(image: &Image<'a>, address: u64) -> &'a [u8] {
     &bytes[..length]
 }
 
+/// The image whose function holds a catch handler and the image whose `ThrowInfo` describes the
+/// thrown object: the program's both, or the program's and the layer's for an exception the
+/// layer throws (D230).
+#[derive(Debug, Clone, Copy)]
+pub struct Images<'a> {
+    pub handler: Image<'a>,
+    pub thrown: Image<'a>,
+}
+
+impl<'a> Images<'a> {
+    /// A handler and a thrown object of the same image.
+    #[cfg(test)]
+    pub fn same(image: Image<'a>) -> Self {
+        Self {
+            handler: image,
+            thrown: image,
+        }
+    }
+}
+
 /// Whether `handler` catches an object thrown with `throw_attributes` as `catchable`: a
 /// `catch (...)` catches every C++ object; otherwise the types must be the same (the same
-/// descriptor, or descriptors with the same decorated name), a type that may only be caught by
+/// descriptor, or descriptors with the same decorated name, in their own images), a type that may only be caught by
 /// reference needs a reference handler, and a handler drops no `const`, `volatile` or
 /// `__unaligned` the thrown pointer has.
 pub fn handler_catches(
-    image: &Image<'_>,
+    images: &Images<'_>,
     handler: &Handler,
     catchable: &CatchableType,
     throw_attributes: u32,
@@ -634,8 +654,8 @@ pub fn handler_catches(
         return true;
     }
     let same = handler.type_descriptor == catchable.type_descriptor || {
-        let wanted = type_name(image, handler.type_descriptor);
-        !wanted.is_empty() && wanted == type_name(image, catchable.type_descriptor)
+        let wanted = type_name(&images.handler, handler.type_descriptor);
+        !wanted.is_empty() && wanted == type_name(&images.thrown, catchable.type_descriptor)
     };
     if !same {
         return false;
@@ -873,19 +893,20 @@ mod tests {
             continuations: [0; 2],
             continuation_count: 0,
         };
+        let images = Images::same(image);
         assert!(!handler_catches(
-            &image,
+            &images,
             &by_value,
             &derived,
             info.attributes
         ));
-        assert!(!handler_catches(&image, &by_value, &base, info.attributes));
+        assert!(!handler_catches(&images, &by_value, &base, info.attributes));
         let by_reference = Handler {
             adjectives: flags::HANDLER_CONST | flags::HANDLER_REFERENCE,
             ..by_value
         };
         assert!(handler_catches(
-            &image,
+            &images,
             &by_reference,
             &base,
             info.attributes
@@ -894,13 +915,18 @@ mod tests {
             adjectives: flags::HANDLER_REFERENCE,
             ..by_value
         };
-        assert!(!handler_catches(&image, &not_const, &base, info.attributes));
+        assert!(!handler_catches(
+            &images,
+            &not_const,
+            &base,
+            info.attributes
+        ));
         let everything = Handler {
             type_descriptor: 0,
             ..not_const
         };
         assert!(handler_catches(
-            &image,
+            &images,
             &everything,
             &derived,
             info.attributes

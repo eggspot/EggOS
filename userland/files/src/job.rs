@@ -39,6 +39,17 @@ pub enum Step {
     Failed(Errno, Path),
 }
 
+/// What a job would act on, found by reading only (`--dry-run`, D226).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Preview {
+    /// The files and symbolic links, its own source included when it is one.
+    pub files: u64,
+    /// The folders inside its source, not counting the source.
+    pub folders: u64,
+    /// The bytes in those files.
+    pub bytes: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stage {
     Starting,
@@ -112,6 +123,21 @@ impl Walk {
             return Ok(Some((relative, status)));
         }
     }
+}
+
+fn folder_of(path: &Path) -> Path {
+    let mut folder = *path;
+    folder.pop();
+    match folder.is_empty() {
+        true => Path::from(b"/").unwrap_or(folder),
+        false => folder,
+    }
+}
+
+fn is_read_only(files: &mut impl Files, folder: &Path) -> bool {
+    files
+        .space(folder.as_bytes())
+        .is_ok_and(|space| space.read_only)
 }
 
 #[allow(clippy::result_large_err)]
@@ -234,6 +260,93 @@ impl Job {
                 done => return done,
             }
         }
+    }
+
+    /// Makes the checks [`Job::run`] makes before and while it works, reading only and changing
+    /// nothing: the source is there; a copy's or move's target is not, is not inside the source
+    /// and has a folder to go in, on a file system that can be written; every folder below the
+    /// source lists, and for a copy or move every file in it opens and every link reads. The
+    /// first failure is the one [`Step::Failed`] would give. A move is checked as the copy it
+    /// becomes between two file systems.
+    pub fn preview(&self, files: &mut impl Files) -> Result<Preview, (Errno, Path)> {
+        let from = self.from;
+        let root = files
+            .status(from.as_bytes())
+            .map_err(|error| (error, from))?;
+        if self.work != Work::Delete {
+            let to = self.to;
+            if is_inside(to.as_bytes(), from.as_bytes()) {
+                return Err((Errno::EINVAL, to));
+            }
+            match files.status(to.as_bytes()) {
+                Err(Errno::ENOENT) => {}
+                Ok(_) => return Err((Errno::EEXIST, to)),
+                Err(error) => return Err((error, to)),
+            }
+            let folder = folder_of(&to);
+            match files.status_following(folder.as_bytes()) {
+                Ok(status) if status.kind == Kind::Directory => {}
+                Ok(_) => return Err((Errno::ENOTDIR, to)),
+                Err(error) => return Err((error, to)),
+            }
+            if is_read_only(files, &folder) {
+                return Err((Errno::EROFS, to));
+            }
+        }
+        if self.work != Work::Copy && is_read_only(files, &folder_of(&from)) {
+            return Err((Errno::EROFS, from));
+        }
+        let mut preview = Preview::default();
+        if root.kind != Kind::Directory {
+            self.preview_entry(files, &from, &root, &mut preview)?;
+            return Ok(preview);
+        }
+        let mut walk = Walk::new();
+        while let Some((relative, status)) = walk.next(files, &from)? {
+            let source = from
+                .join(relative.as_bytes())
+                .ok_or((Errno::ENAMETOOLONG, from))?;
+            if self.work != Work::Delete && self.to.join(relative.as_bytes()).is_none() {
+                return Err((Errno::ENAMETOOLONG, self.to));
+            }
+            self.preview_entry(files, &source, &status, &mut preview)?;
+        }
+        Ok(preview)
+    }
+
+    fn preview_entry(
+        &self,
+        files: &mut impl Files,
+        path: &Path,
+        status: &Status,
+        preview: &mut Preview,
+    ) -> Result<(), (Errno, Path)> {
+        let copies = self.work != Work::Delete;
+        match status.kind {
+            Kind::Directory => preview.folders += 1,
+            Kind::File => {
+                if copies {
+                    let file = files
+                        .open(path.as_bytes())
+                        .map_err(|error| (error, *path))?;
+                    files.close(file);
+                }
+                preview.files += 1;
+                preview.bytes = preview.bytes.saturating_add(status.size);
+            }
+            Kind::Link => {
+                if copies {
+                    let mut target = [0u8; PATH_CAPACITY];
+                    files
+                        .read_link(path.as_bytes(), &mut target)
+                        .map_err(|error| (error, *path))?;
+                }
+                preview.files += 1;
+            }
+            Kind::Other if copies => return Err((Errno::EINVAL, *path)),
+            Kind::Other => preview.files += 1,
+        }
+        Ok(())
     }
 
     /// Stops: what is done stays, a file half-written is removed.
@@ -680,5 +793,73 @@ mod tests {
             Step::Failed(Errno::ENOSPC, path("/home/root/a copy.txt"))
         );
         assert_eq!(files.node("/home/root/a copy.txt"), None);
+    }
+
+    #[test]
+    fn a_preview_checks_what_the_job_would_check_and_changes_nothing() {
+        let mut files = tree();
+        files.link("/home/root/Work/near", "a.txt", 1);
+        let before = files.paths_under("/");
+        let job = Job::copy(&path("/home/root/Work"), &path("/tmp/Work"));
+        assert_eq!(
+            job.preview(&mut files),
+            Ok(Preview {
+                files: 3,
+                folders: 2,
+                bytes: 200_001,
+            })
+        );
+        let job = Job::copy(&path("/home/root/Work/a.txt"), &path("/tmp/a.txt"));
+        assert_eq!(
+            job.preview(&mut files),
+            Ok(Preview {
+                files: 1,
+                folders: 0,
+                bytes: 200_000,
+            })
+        );
+        let job = Job::delete(&path("/home/root/Work"));
+        assert_eq!(job.preview(&mut files).map(|preview| preview.files), Ok(3));
+        assert_eq!(files.paths_under("/"), before);
+        assert_eq!(files.open_count(), 0);
+        let refused = |files: &mut MemoryFiles, job: Job| match job.preview(files) {
+            Err((error, at)) => (error, String::from_utf8_lossy(at.as_bytes()).into_owned()),
+            Ok(preview) => panic!("previewed {preview:?}"),
+        };
+        let job = Job::copy(&path("/home/root/Work"), &path("/home/root/Work/Deep/x"));
+        assert_eq!(refused(&mut files, job).0, Errno::EINVAL);
+        let job = Job::copy(&path("/home/root/Work"), &path("/home/root/Work/Deep"));
+        assert_eq!(refused(&mut files, job).0, Errno::EINVAL);
+        let job = Job::copy(&path("/home/root/Work"), &path("/tmp"));
+        assert_eq!(refused(&mut files, job), (Errno::EEXIST, "/tmp".to_owned()));
+        let job = Job::copy(&path("/home/root/Work"), &path("/nowhere/Work"));
+        assert_eq!(
+            refused(&mut files, job),
+            (Errno::ENOENT, "/nowhere/Work".to_owned())
+        );
+        let job = Job::copy(&path("/home/root/Work"), &path("/media/host/Work"));
+        assert_eq!(
+            refused(&mut files, job),
+            (Errno::EROFS, "/media/host/Work".to_owned())
+        );
+        let job = Job::moving(&path("/media/host/notes.txt"), &path("/tmp/notes.txt"));
+        assert_eq!(
+            refused(&mut files, job),
+            (Errno::EROFS, "/media/host/notes.txt".to_owned())
+        );
+        let job = Job::copy(&path("/home/root/Gone"), &path("/tmp/Gone"));
+        assert_eq!(
+            refused(&mut files, job),
+            (Errno::ENOENT, "/home/root/Gone".to_owned())
+        );
+        files.other("/home/root/Work/Deep/device");
+        let job = Job::copy(&path("/home/root/Work"), &path("/tmp/Work"));
+        assert_eq!(
+            refused(&mut files, job),
+            (Errno::EINVAL, "/home/root/Work/Deep/device".to_owned())
+        );
+        let job = Job::delete(&path("/home/root/Work"));
+        assert!(job.preview(&mut files).is_ok());
+        assert_eq!(files.open_count(), 0);
     }
 }

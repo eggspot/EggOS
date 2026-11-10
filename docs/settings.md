@@ -13,7 +13,7 @@ is the installer's window instead ([Apps](apps.md), D134), so the toolkit is in 
 Open it from the dock (macOS profile), the launcher (Super, Cmd+Space or Start, then type
 `settings`, `control panel` or `preferences`), its desktop icon, or type `settings` at the
 prompt (D133). The window has a sidebar with a search field and the panes
-`Appearance`, `Display`, `Keyboard`, `Mouse`, `Storage`, `Date & time`, `Agents`, `Components` and `About`; typing in the search
+`Appearance`, `Network`, `Display`, `Keyboard`, `Mouse`, `Accessibility`, `Storage`, `Date & time`, `Agents`, `Windows` (only while the Windows apps component is installed), `Components` and `About`; typing in the search
 field keeps the panes whose name, synonyms (`Control Panel`, `Preferences`, `theme`, `HiDPI`,
 ...) or settings match. Tab moves between the search, the sidebar and the pane's controls;
 Down in the search goes to the sidebar.
@@ -31,8 +31,11 @@ at the next boot; without a disk the pane says `No disk attached: this choice la
 power-off.`
 
 **Display** shows the resolution, the scale (1x) and how the pointer is drawn; **Keyboard** the
-layout (US); **About** the version, the architecture, the CPUs, the memory and the uptime;
-**Mouse** and **Components** come in a later version. The scale is 1x in 0.3.0 (the `2x`
+layout (US); **About** the version, the architecture, the CPUs, the memory and the uptime, and under them
+the machine's devices (D220, docs/ux/devices-v0.3.md): a table of `Kind`, `Device` and
+`Driver` with the rows `device list` prints, read from `/proc/driver/devices` each time the pane
+is shown, and `Show all <n> devices` for every device, unticked whenever the pane opens.
+The scale is 1x in 0.3.0 (the `2x`
 choice is shown disabled).
 
 **Date & time** (D150, Claude Fable's docs/ux/date-time-v0.3.md) shows the time in UTC,
@@ -41,8 +44,43 @@ from (`From the hardware clock, read at boot.`, or `No hardware clock: ...`). `S
 `YYYY-MM-DD HH:MM[:SS]` or `HH:MM[:SS]` (today's date), in the years 2000 to 2099, the same
 rules as `date -s` and the MCP tool `clock_set`; Enter or `Set` sets the clock and the hardware
 clock, and the line under them says how it went (`Set, and saved to the hardware clock.`, or
-why not). There are no time zones: everything is UTC. Its command-line front-ends are `date`
-and `hwclock` (docs/coreutils.md), not `settings`.
+why not). `Set automatically` (D225), a check box under `Now`, saves `time.automatic` and,
+ticked with a network adapter, syncs the clock at once with `date --sync --automatic`; while it
+is ticked `Set to` is disabled, and the status lines say how the last sync went (set, already
+right, HTTPS agreed, not applied, no answer, waiting for an address, not allowed) with a
+remedy. init syncs at boot once the network has an address, then every 24 hours; a step of
+more than an hour needs two of three HTTPS servers' `Date` to agree (docs/network.md). Its
+command-line front-ends are `date` and `hwclock` (docs/coreutils.md), and `settings` for
+`time.automatic`.
+
+**Network** (D225, Claude Fable's docs/ux/network-v0.3.md) shows the wired adapter's state,
+address, router, DNS servers, DHCP lease, hardware address and traffic, read again once a
+second while it shows, or `No network adapter`. The bar's network indicator, left of the power
+button (top bar) or the clock (taskbar), shows the adapter's state; its tooltip names the
+address, and a click or Enter opens this pane (`settings open network`). The same facts are the
+read-only keys `network.*` and the commands `ip` and `net_status`.
+
+**Accessibility** (D205, D224, Claude Fable's docs/ux/first-run-accessibility-v0.3.md) turns on
+high contrast (every toolkit window repaints in the theme's high-contrast palette), reduce motion
+(nothing blinks), sticky keys (tap a modifier instead of holding it; its chip shows in the bar,
+and Shift pressed five times turns them on or off) and slow keys. Ctrl+Alt+Tab, Super+T or
+Ctrl+F3 moves the keyboard to the bar's items and then the dock's.
+
+**Windows** (D231, Claude Fable's docs/ux/windows-registry-v0.3.md), shown only while the
+Windows apps component is installed, is the registry Windows programs see: the three roots and
+their keys, a path field to go to a key, the selected key's values in a table (`Name`, `Type`,
+`Data`), and panels to edit a value, make a key or a value, delete one (it asks first) and
+replace a damaged registry file. The machine's keys are read-only for a user. It reads and
+writes through the same code as `windows registry` and the MCP tools `windows_registry_*`
+([Windows programs](windows-programs.md)).
+
+**Components** (D235, Claude Fable's docs/ux/components-v0.3.md) lists the components the
+attached store offers and the ones installed ([Components](components.md)): the store's state
+above, then one row per component with its state and size and an `Install` or `Remove` button.
+Installing shows `Installing` under the row; removing, or installing what a component needs
+too, asks first under the row, in the words of `component` and its MCP tools. Only the `Remove`
+that confirms a remove is person-only (an agent's `wm act` on it answers `element_cannot`, as
+`component_remove` asks the person first); `Install`, like `component_install`, never asks.
 
 **Storage** (D192, Claude Fable's docs/ux/storage-v0.3.md) lists the disks attached
 (`/dev/vda` to `/dev/vdd`) and shows the selected one's contents (`EggFS "Photos"`, `Blank`,
@@ -115,23 +153,36 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | Command | Does | Status |
 |---------|------|--------|
 | `settings` | Opens the window and serves it until it is closed. | 0; 1 without a display |
-| `settings list` | Writes every setting as `key=value`, one per line. | 0 |
+| `settings --pane <pane>` | Opens the window on that pane: its name in lower case with `-` for spaces and `and` for `&` (`keyboard`, `date-and-time`); what the bar's keyboard layout menu's `Keyboard settings...` starts (D221). | 0; 1 without a display; 2 for an unknown pane |
+| `settings open <pane>` | Opens the window on that pane, named as for `--pane` (`network`); what the bar's network indicator runs (D225). | 0; 1 without a display; 2 for an unknown pane |
+| `settings --first-run` | Opens `Welcome to EggOS`, the first run: where you are coming from, the keyboard layout and the time zone on three pages, each choice saved and applied the moment it is made; `Skip`, `Done` or closing it saves the profile in force when none was saved. init starts it once, on the first boot of an image that was never installed, with a disk attached and no `shell.profile` saved, and not with an agent attached (D224). | 0; 1 without a display |
+| `settings list [--limit <n>] [--after <key>]` | Writes every setting as `key=value`, one per line; `--limit` and `--after` page them by key (D226). | 0 |
 | `settings get <key>` | Writes the setting's value. | 0; 1 for an unknown key |
 | `settings set [--dry-run] <key> <value>` | Sets it: saved in the settings file, then applied at once on the display (with no display it applies at the next boot). `--dry-run` checks the key and the value and says `would set <key> from <old> to <new>`, changing nothing (D164). | 0; 1 for an unknown or read-only key, or when saving or applying failed (`settings: <key>: <why>`); 2 for an invalid value or a bad command |
 
 | Key | Value | Settable |
 |-----|-------|----------|
 | `shell.profile` | `windows`, `macos` (the default) or `linux` | yes |
+| `appearance.theme` | `dark` (the default) or `light`: every window repaints in it at once (D219; the Appearance pane) | yes |
 | `display.scale` | `1` (the default) or `2`, which doubles everything from the next boot (D195; the Display pane) | yes |
 | `display.resolution` | the screen's size, `1280x800` | no |
 | `display.pointer` | `software` | no |
-| `keyboard.layout` | `us` (the default), `us-intl`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `de`, `it`, `no`, `br`, `es` or `se` (D185, the Keyboard pane, docs/ux/keyboard-v0.3.md) | yes |
+| `keyboard.layout` | `us` (the default), `us-intl`, `us-mac`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `be`, `ca`, `de`, `ch`, `it`, `no`, `br`, `pt`, `es`, `latam` or `se` (D185, D221, the Keyboard pane, docs/ux/keyboard-v0.3.md); a layout not in `keyboard.layouts` joins it (or takes the place of the one in force in a full set) | yes |
+| `keyboard.layouts` | one to four layouts, in order, separated by commas without spaces (`us,de`), none twice; `us` by default; the layouts the switch key cycles through (D221); with two or more, the bar shows the layout in force's code, whose menu chooses among them | yes |
+| `keyboard.switch_key` | `profile` (the default: Super+Space in the Windows and Linux profiles, Ctrl+Space in the macOS profile), `super+space`, `ctrl+space`, `alt+shift`, `ctrl+shift` or `none` (D221) | yes |
 | `time.zone` | `UTC` (the default) or any IANA zone such as `Europe/Paris`, `America/New_York` or `Asia/Kolkata` (D194); `date`, `ls -l` and the Windows and macOS layers show times in it unless `TZ` names another; the Date & time pane's picker chooses it, and its `Set to` reads local time | yes |
 | `mouse.buttons` | `right` (the default) or `left`, which swaps the primary and secondary buttons (D195; the Mouse pane, with `mouse.scrolling` and `mouse.speed`); used from the next event | yes |
 | `mouse.scrolling` | `traditional` (the default) or `natural` (D195) | yes |
 | `mouse.speed` | `1` to `10`, `5` the default (D195) | yes |
 | `keyboard.repeat_delay_ms` | `150` to `2000`, `400` the default: how long a key is held before it repeats (D195; the Keyboard pane, with the rate) | yes |
 | `keyboard.repeat_rate` | `2` to `60` repeats a second, `25` the default (D195) | yes |
+| `time.automatic` | `on` (the default) or `off`: the network clock sets the time at boot and every 24 h; turning it on syncs at once (D225; the Date & time pane) | yes |
+| `time.sync` | how the network clock's last sync went, from `/run/eggos/clock-sync` (D225) | no |
+| `accessibility.high_contrast`, `accessibility.reduce_motion` | `true` or `false` (the default), shown at once (D224; the Accessibility pane) | yes |
+| `accessibility.sticky_keys`, `accessibility.slow_keys` | `true` or `false` (the default) (D205) | yes |
+| `accessibility.slow_keys_ms` | `100` to `1000`, `300` the default (D205) | yes |
+| `accessibility.keyboard_navigation` | `always`: full keyboard navigation is not a toggle (D205) | no |
+| `network.state`, `network.address`, `network.router`, `network.dns`, `network.mac` | the wired adapter's state, address, router, DNS servers and hardware address (D225; the Network pane) | no |
 | `system.version`, `system.arch`, `system.cpus`, `system.memory_mb`, `system.uptime_s` | facts about the machine | no |
 
 ## The settings file
@@ -142,11 +193,18 @@ text file: the line `eggos-settings 1`, then `key=value` lines. A file of anothe
 longer one than 4 KiB or garbage holds nothing, so every setting takes its default; unknown
 keys are kept when the file is written, and the last line of a key wins. A change is written to
 `settings.tmp.<process id>` beside it (one per writer), synced, and renamed over it, so a failure leaves the old file whole. Before it writes, a writer removes the temporary files of writers that `/proc/ps` no longer lists (one that crashed), best effort (D134).
-The kernel reads `shell.profile` and `keyboard.layout` from it after mounting the disks and
-before the desktop starts, so the first frame is already in the saved profile and the first key
-types in the saved layout. `settings set keyboard.layout` and the Keyboard pane apply a layout
-at once through `/dev/window`'s `SET_KEYBOARD_LAYOUT` (without a display, from the next boot). The format is the `eggos-settings-file`
+The kernel reads `shell.profile`, `keyboard.layouts`, `keyboard.switch_key` and
+`keyboard.layout` from it after mounting the disks and before the desktop starts, so the first
+frame is already in the saved profile and the first key types in the saved layout.
+`settings set` and the Keyboard pane apply the keyboard keys at once through `/dev/window`'s
+`SET_KEYBOARD_LAYOUTS` and `SET_KEYBOARD_LAYOUT`, and without a display by writing
+`/proc/sys/eggos/keyboard_layouts`, `keyboard_switch_key` and `keyboard_layout` (D221), which
+only a privileged caller may write (`EACCES` otherwise, as `/dev/window`'s settings requests). The format is the `eggos-settings-file`
 crate (`settings-file/`), shared by the kernel and the program.
 
 Not yet: the boot parameter `eggos.profile=` (the kernel has no command line yet), per-user
-settings (there are no accounts), 2x, key repeat, the mouse settings, the components list.
+settings (there are no accounts), a writable network address and a second adapter (part 50);
+the Windows pane's key outline, editing values over 255 bytes, context menus and phone and TV
+layouts (D231); the Components pane's live progress, cancelling a single install (`Cancel installing` stops
+between components; a single install cannot be cancelled) and phone layout, and the desktop and
+the built-in apps as components (D235).

@@ -2,6 +2,7 @@ use crate::architecture::Architecture::{self, Aarch64, Riscv64, X86_64};
 use crate::archive::samples::{Member, deflate_fixed_literals, deflated, stored, zip};
 use crate::fake::{FakeFiles, Node, Operation};
 use crate::files::{Files, Kind, Path};
+use crate::gui_libraries::samples::program_needing;
 use crate::installer::*;
 use crate::program::NotRunnable;
 use crate::program::samples::{dynamic_program, linux_program, mach_o, windows_program};
@@ -95,6 +96,7 @@ fn the_manifest_is_written_last_through_a_temporary_file() {
         ]
     );
     assert!(manifest_of(&files, "tool").contains("source=linux\nrun=tool\narchitecture=aarch64\n"));
+    assert!(manifest_of(&files, "tool").ends_with("console=true\n"));
 }
 
 #[test]
@@ -720,7 +722,7 @@ fn a_program_with_a_png_beside_it_gets_that_icon() {
     install(&mut files, plan, &mut [0u8; 64]).unwrap();
     let icon = icon_of(&files, "tool");
     assert_eq!(icon[..4], [0xef, 0xcd, 0xab, 0xff]);
-    assert!(manifest_of(&files, "tool").ends_with("icon=app.icon\n"));
+    assert!(manifest_of(&files, "tool").contains("icon=app.icon\n"));
     let mut broken = host_with("/media/host/tool", &linux_program(62));
     broken.file("/media/host/tool.png", b"\x89PNG\r\n\x1a\n not really");
     let plan = planned(&mut broken, "/media/host/tool", X86_64);
@@ -1304,4 +1306,247 @@ fn an_app_s_environment_is_written_and_its_fonts_are_linked_where_fontconfig_loo
     let plan = planned(&mut files, "/media/host/mousepad.zip", Aarch64);
     install(&mut files, plan, &mut [0u8; 64]).unwrap();
     assert_eq!(files.find("/Applications/.fonts"), None);
+}
+
+#[test]
+fn a_layer_is_the_base_s_link_into_its_component_and_missing_while_the_link_dangles() {
+    let mut files = host_with("/media/host/win-paint.exe", &paint());
+    files
+        .nodes
+        .retain(|(path, _)| path.as_slice() != b"/usr/lib/eggos/windows");
+    files.link(
+        "/usr/lib/eggos/windows",
+        "/var/lib/eggos/components/windows-apps/root/usr/lib/eggos/windows",
+    );
+    assert_eq!(
+        refused(&mut files, "/media/host/win-paint.exe", X86_64),
+        Problem::NotRunnable(NotRunnable::LayerMissing(Source::Windows))
+    );
+    let reason = crate::messages::reason(Problem::NotRunnable(NotRunnable::LayerMissing(
+        Source::Windows,
+    )));
+    assert_eq!(
+        reason.as_str(),
+        "it needs the Windows layer, which is not installed: install it with `component \
+         install windows-apps`"
+    );
+    let mut folder = String::new();
+    for part in "var/lib/eggos/components/windows-apps/root/usr/lib/eggos".split('/') {
+        folder.push('/');
+        folder.push_str(part);
+        if files.find(&folder).is_none() {
+            files.directory(&folder);
+        }
+    }
+    files.file(
+        "/var/lib/eggos/components/windows-apps/root/usr/lib/eggos/windows",
+        b"\x7fELF layer",
+    );
+    let plan = planned(&mut files, "/media/host/win-paint.exe", X86_64);
+    assert_eq!(plan.name(), "win-paint");
+}
+
+#[test]
+fn a_preview_checks_what_the_install_would_and_writes_nothing() {
+    let program = paint();
+    let mut files = host_with("/media/host/win-paint.exe", &program);
+    let plan = planned(&mut files, "/media/host/win-paint.exe", X86_64);
+    let before = files.paths_under("/");
+    assert_eq!(
+        preview(&mut files, &plan),
+        Ok(Preview {
+            files: 1,
+            bytes: program.len() as u64
+        })
+    );
+    assert_eq!(files.paths_under("/"), before);
+    assert_eq!(files.open_count(), 0);
+    files.read_only.push(b"/Applications".to_vec());
+    assert_eq!(preview(&mut files, &plan), Err(Problem::ReadOnly));
+    assert_eq!(
+        install(&mut files, plan, &mut [0u8; 64]),
+        Err(Problem::ReadOnly)
+    );
+    let mut files = host_with("/media/host/win-paint.exe", &program);
+    files.space = Some(program.len() + 2 * 10 + 40_000);
+    let plan = planned(&mut files, "/media/host/win-paint.exe", X86_64);
+    assert_eq!(preview(&mut files, &plan), Err(Problem::DiskFull));
+    assert_eq!(
+        install(&mut files, plan, &mut [0u8; 4096]),
+        Err(Problem::DiskFull)
+    );
+}
+
+#[test]
+fn a_preview_walks_a_bundle_and_extracts_a_zip_without_writing() {
+    let mut files = framework_bundle();
+    let plan = planned(&mut files, "/media/host/Tool.app", X86_64);
+    let before = files.paths_under("/");
+    assert_eq!(
+        preview(&mut files, &plan),
+        Ok(Preview {
+            files: 5,
+            bytes: 64 + 40
+        })
+    );
+    assert_eq!(files.paths_under("/"), before);
+    let program = windows_program(0x8664);
+    let readme = b"read me, deflated by hand";
+    let archive = zip(&[
+        stored("bin/win-paint.exe", &program),
+        deflated("bin/README.txt", readme, deflate_fixed_literals(readme)),
+        stored("__MACOSX/bin/._win-paint.exe", b"resource fork"),
+    ]);
+    let mut files = host_with("/media/host/Paint-1.2.zip", &archive);
+    let plan = planned(&mut files, "/media/host/Paint-1.2.zip", X86_64);
+    let before = files.paths_under("/");
+    assert_eq!(
+        preview(&mut files, &plan),
+        Ok(Preview {
+            files: 2,
+            bytes: (program.len() + readme.len()) as u64
+        })
+    );
+    assert_eq!(files.paths_under("/"), before);
+    assert_eq!(files.open_count(), 0);
+    for members in [
+        vec![stored("tool.exe", &program), link_member("up", "..")],
+        vec![stored("tool.exe", &program), link_member("etc", "/etc")],
+    ] {
+        let mut files = host_with("/media/host/tool.zip", &zip(&members));
+        let plan = planned(&mut files, "/media/host/tool.zip", X86_64);
+        assert_eq!(preview(&mut files, &plan), Err(Problem::UnsafeLink));
+        assert!(files.paths_under("/Applications/").is_empty());
+        assert_eq!(files.open_count(), 0);
+    }
+}
+
+#[test]
+fn a_preview_says_a_leftover_folder_would_be_replaced() {
+    let mut files = host_with("/media/host/tool", &linux_program(62));
+    files.directory("/Applications/tool");
+    files.file("/Applications/tool/tool", b"half");
+    let plan = planned(&mut files, "/media/host/tool", X86_64);
+    assert!(plan.replaces_leftover_folder());
+    assert!(preview(&mut files, &plan).is_ok());
+    assert_eq!(
+        files.find("/Applications/tool/tool"),
+        Some(&Node::File(b"half".to_vec(), 0o755))
+    );
+}
+
+#[allow(clippy::result_large_err)]
+fn run_app_example(files: &mut FakeFiles, words: &[&[u8]]) -> (i32, String) {
+    use crate::command::{Command, FAILED, parse};
+    use crate::messages;
+    let said = match parse(words) {
+        Some(Command::Install {
+            path,
+            name,
+            entry,
+            dry_run: true,
+            ..
+        }) => plan_entry(files, path, name, entry, X86_64)
+            .map_err(|refused| refused.problem)
+            .and_then(|plan| {
+                let preview = preview(files, &plan)?;
+                Ok(messages::would_install(&plan, preview, X86_64))
+            }),
+        Some(Command::Install {
+            path, name, entry, ..
+        }) => plan_entry(files, path, name, entry, X86_64)
+            .map_err(|refused| refused.problem)
+            .and_then(|plan| {
+                install(files, plan, &mut [0u8; 4096])?;
+                Ok(messages::installed(&plan))
+            }),
+        Some(Command::Uninstall {
+            name,
+            dry_run: true,
+            ..
+        }) => {
+            let shown = core::str::from_utf8(name).unwrap();
+            match installed_names(files)
+                .iter()
+                .any(|installed| installed == shown)
+            {
+                true => Ok(messages::would_uninstall(shown)),
+                false => Err(Problem::NotInstalled),
+            }
+        }
+        Some(Command::Uninstall { name, .. }) => uninstall(files, name)
+            .map(|()| messages::uninstalled(core::str::from_utf8(name).unwrap())),
+        other => panic!("no example runner for {other:?}"),
+    };
+    match said {
+        Ok(line) => (0, format!("{}\n", line.as_str())),
+        Err(_) => (FAILED, String::new()),
+    }
+}
+
+#[test]
+fn the_registry_s_app_examples_run_as_written() {
+    let mut ran = 0;
+    for command in eggos_commands::COMMANDS
+        .iter()
+        .filter(|command| command.words[0] == "app")
+    {
+        for example in command.examples {
+            let mut files = host_with("/media/host/hello", &linux_program(62));
+            files.file("/media/host/notes.txt", b"eggs\nmilk\nbread\n");
+            files.file("/media/host/paint", &linux_program(62));
+            let plan = planned(&mut files, "/media/host/paint", X86_64);
+            install(&mut files, plan, &mut [0u8; 4096]).unwrap();
+            let words: Vec<&[u8]> = example.line.split(' ').skip(1).map(str::as_bytes).collect();
+            assert_eq!(
+                run_app_example(&mut files, &words),
+                (example.status, example.output.to_owned()),
+                "{}",
+                example.line
+            );
+            ran += 1;
+        }
+    }
+    assert_eq!(ran, 5);
+}
+
+#[test]
+fn a_linux_program_needing_a_gui_library_installs_as_a_windowed_app_and_others_as_console_apps() {
+    let loader = linux_program(62);
+    let mut kinds = Vec::new();
+    for (libraries, deflate, carried) in [
+        (&["libc.so", "libSDL2-2.0.so.0"][..], false, None),
+        (&["libc.so", "libgtk-3.so.0"][..], true, None),
+        (
+            &["libc.so", "libmousepad.so.0"][..],
+            false,
+            Some("lib/libgtk-3.so.0"),
+        ),
+        (
+            &["libc.so", "libncursesw.so.6"][..],
+            true,
+            Some("lib/libncursesw.so.6"),
+        ),
+    ] {
+        let program = program_needing(libraries);
+        let member = match deflate {
+            true => deflated("tool", &program, deflate_fixed_literals(&program)),
+            false => stored("tool", &program),
+        };
+        let mut members = vec![member, stored("lib/ld-musl-x86_64.so.1", &loader)];
+        members.extend(carried.map(|path| stored(path, b"library")));
+        let archive = zip(&members);
+        let mut files = host_with("/media/host/tool.zip", &archive);
+        let plan = planned(&mut files, "/media/host/tool.zip", X86_64);
+        let console = plan.console();
+        kinds.push(console);
+        let overridden = plan.with_console(true);
+        assert!(overridden.console());
+        install(&mut files, overridden.with_console(console), &mut [0u8; 64]).unwrap();
+        assert_eq!(
+            manifest_of(&files, "tool").contains("console=true"),
+            console
+        );
+    }
+    assert_eq!(kinds, [false, false, false, true]);
 }

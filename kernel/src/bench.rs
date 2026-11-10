@@ -7,6 +7,7 @@
 //! is what lets CI compare it against a committed baseline (D27).
 
 use crate::HEAP;
+use crate::devices::interrupts::DeviceEvents;
 use crate::linux::Errno;
 use crate::linux::exec;
 use crate::linux::futex::{self, Key};
@@ -20,6 +21,7 @@ use core::fmt::Write;
 use core::hint::black_box;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use eggos_drivers::desktop::protocol::DiscardEvents;
 use eggos_drivers::desktop::{Contents, Desktop, WindowId};
 use eggos_drivers::display::{Damage, Mode, Rect};
@@ -39,6 +41,10 @@ use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Attributes;
 use eggos_hal::user::{UserContext, UserExit};
 use eggos_hal::{MemoryMap, PhysicalRange, Platform};
+use eggos_toolkit::text::Text as ToolkitText;
+use eggos_toolkit::text_area::Store;
+use eggos_toolkit::tree::WidgetTree;
+use eggos_toolkit::widget::{Align, Column, Kind, Place, TEXT_AREA_CAPACITY};
 
 /// Starts every benchmark result line. The xtask bench runner parses these lines.
 pub const MARKER: &str = "EGGOS-BENCH:";
@@ -48,12 +54,25 @@ pub const MARKER: &str = "EGGOS-BENCH:";
 pub const ITERATIONS: u64 = 10_000;
 const WARMUP_ITERATIONS: u64 = 100;
 
+const LONG_BENCHMARKS: [(&str, u64); 3] = [
+    ("image_decode_jpeg_640x480", 20),
+    ("toolkit_table_layout_1000_rows", 200),
+    ("text_area_wrap_64k", 200),
+];
+
+fn iterations_of(name: &str) -> (u64, u64) {
+    match LONG_BENCHMARKS.iter().find(|(long, _)| *long == name) {
+        Some(&(_, iterations)) => (1, iterations),
+        None => (WARMUP_ITERATIONS, ITERATIONS),
+    }
+}
+
 /// A benchmark: a name and a body that runs the measured operation `n` times, with the
 /// kernel's memory ([`Memory`]) for those that need its page tables.
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 62] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 70] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -120,6 +139,9 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 62] {
         }),
         ("wayland_blit_rows", |_, n| wayland_blit_rows(n)),
         ("translate_block_16", |_, n| translate_block_16(n)),
+        ("image_decode_jpeg_640x480", |_, n| {
+            image_decode_jpeg_640x480(n)
+        }),
         ("syscall_round_trip", syscall_round_trip::<P>),
         (
             "process_syscall_round_trip",
@@ -150,11 +172,20 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 62] {
         ("gfx_terminal_line", |_, n| gfx_terminal_line(n)),
         ("term_feed_line", |_, n| term_feed_line(n)),
         ("term_scroll_line", |_, n| term_scroll_line(n)),
+        ("term_reflow", |_, n| term_reflow(n)),
         ("gfx_compose_four_windows", |_, n| {
             gfx_compose_four_windows(n)
         }),
         ("window_commit_line", |_, n| window_commit_line(n)),
         ("window_hit_test", |_, n| window_hit_test(n)),
+        ("toolkit_table_layout_1000_rows", |_, n| {
+            toolkit_table_layout_1000_rows(n)
+        }),
+        ("text_area_wrap_64k", |_, n| text_area_wrap_64k(n)),
+        ("block_read_4k_qd8", |_, n| block_read_4k_qd8::<P>(n)),
+        ("net_rx_wakeup", |_, n| net_rx_wakeup::<P>(n)),
+        ("math_sin_f64", |_, n| math_sin_f64(n)),
+        ("math_exp_f64", |_, n| math_exp_f64(n)),
     ]
 }
 
@@ -167,19 +198,150 @@ pub fn run<P: Platform, W: Write>(
 ) -> core::fmt::Result {
     let frequency = P::clock_frequency();
     for (name, body) in benchmarks {
-        body(memory, WARMUP_ITERATIONS);
+        let (warmup, iterations) = iterations_of(name);
+        body(memory, warmup);
         let start = P::clock_ticks();
-        body(memory, ITERATIONS);
+        body(memory, iterations);
         let ticks = P::clock_ticks().wrapping_sub(start);
         writeln!(
             console,
-            "{MARKER} {name} iterations={ITERATIONS} ticks={ticks} frequency={frequency}"
+            "{MARKER} {name} iterations={iterations} ticks={ticks} frequency={frequency}"
         )?;
     }
     Ok(())
 }
 
-/// The loop alone, so the per-iteration overhead every other result includes is visible.
+/// How many times a CPU woke from idle: the idle loop counts each wake-up (feature
+/// `qemu-bench` only), and `idle_wakeups_per_second` reads it (D220).
+pub static IDLE_WAKEUPS: AtomicU64 = AtomicU64::new(0);
+
+const IDLE_WAKEUPS_NAME: &str = "idle_wakeups_per_second";
+
+const IDLE_WAKEUPS_SPAN: Duration = Duration::from_secs(1);
+
+/// Sleeps one second and prints how often a CPU woke from idle meanwhile, as the
+/// `idle_wakeups_per_second` benchmark line (D220).
+pub fn report_idle_wakeups<P: Platform, W: Write>(console: &mut W) -> core::fmt::Result {
+    let before = IDLE_WAKEUPS.load(Ordering::Relaxed);
+    thread::sleep::<P>(IDLE_WAKEUPS_SPAN);
+    let woken = IDLE_WAKEUPS.load(Ordering::Relaxed).wrapping_sub(before);
+    writeln!(
+        console,
+        "{MARKER} {IDLE_WAKEUPS_NAME} iterations=1 ticks={woken} frequency=1000000000"
+    )
+}
+
+const QUEUE_DEPTH: usize = 8;
+
+const BLOCK_READ_BYTES: usize = 4096;
+
+fn block_read_4k_qd8<P: Platform>(n: u64) {
+    let mut buffers = alloc::vec![0u8; QUEUE_DEPTH * BLOCK_READ_BYTES];
+    let sectors_per_read = (BLOCK_READ_BYTES / crate::block::SECTOR_SIZE) as u64;
+    let mut read_all = |disk: &mut dyn crate::block::BlockDevice| {
+        let spread = (disk.sectors() / sectors_per_read).max(1);
+        for i in 0..n {
+            let mut reads: [(u64, &mut [u8]); QUEUE_DEPTH] = {
+                let mut chunks = buffers.as_chunks_mut::<BLOCK_READ_BYTES>().0.iter_mut();
+                core::array::from_fn(|at| {
+                    let block = (i * QUEUE_DEPTH as u64 + at as u64 * 37) % spread;
+                    (
+                        block * sectors_per_read,
+                        chunks.next().map_or(&mut [][..], |chunk| &mut chunk[..]),
+                    )
+                })
+            };
+            let mut deadline = crate::devices::Deadline::after::<P>(1000);
+            black_box(disk.read_many(&mut reads, &mut deadline).ok());
+        }
+    };
+    let free_disk = (0..crate::block::MAX_DISKS)
+        .find_map(|index| crate::block::with_disk(index, 1000, |disk, _| read_all(disk)));
+    if free_disk.is_none() {
+        let mut disk = MemoryDisk(alloc::vec![0u8; 64 * BLOCK_READ_BYTES]);
+        read_all(&mut disk);
+    }
+}
+
+const MATH_INPUT_STEP: f64 = 0.7;
+const MATH_INPUT_SPAN: f64 = 100.0;
+
+fn math_sin_f64(n: u64) {
+    let mut x = 0.1;
+    let mut sum = 0.0;
+    for _ in 0..n {
+        sum += eggos_math::sin(black_box(x));
+        x += MATH_INPUT_STEP;
+        if x > MATH_INPUT_SPAN {
+            x -= MATH_INPUT_SPAN;
+        }
+    }
+    black_box(sum);
+}
+
+fn math_exp_f64(n: u64) {
+    let mut x = -50.0;
+    let mut sum = 0.0;
+    for _ in 0..n {
+        sum += eggos_math::exp(black_box(x));
+        x += MATH_INPUT_STEP;
+        if x > MATH_INPUT_SPAN - 50.0 {
+            x -= MATH_INPUT_SPAN;
+        }
+    }
+    black_box(sum);
+}
+
+const WAKEUP_PATIENCE_SECONDS: u64 = 1;
+
+fn net_rx_wakeup<P: Platform>(n: u64) {
+    static FRAMES: DeviceEvents = DeviceEvents::new();
+    static TAKEN: DeviceEvents = DeviceEvents::new();
+    if let Err(problem) = raise_and_wake_round_trips::<P>(&FRAMES, &TAKEN, n) {
+        panic!("net_rx_wakeup: {problem}");
+    }
+}
+
+fn raise_and_wake_round_trips<P: Platform>(
+    frames: &'static DeviceEvents,
+    taken: &'static DeviceEvents,
+    n: u64,
+) -> Result<(), &'static str> {
+    let patience = P::clock_frequency().saturating_mul(WAKEUP_PATIENCE_SECONDS);
+    let frames_seen = frames.raised();
+    let Ok(network) = thread::spawn::<P, _>(move || {
+        let mut seen = frames_seen;
+        for _ in 0..n {
+            seen = frames.wait::<P>(seen, u64::MAX);
+            taken.raise::<P>();
+        }
+    }) else {
+        return Ok(());
+    };
+    let mut taken_seen = taken.raised();
+    for _ in 0..n {
+        frames.raise::<P>();
+        taken_seen = wait_for_raise::<P>(taken, taken_seen, patience)
+            .ok_or("the woken thread did not answer within a second")?;
+    }
+    network.join::<P>();
+    thread::disable_preemption::<P>();
+    Ok(())
+}
+
+fn wait_for_raise<P: Platform>(events: &DeviceEvents, seen: u64, patience: u64) -> Option<u64> {
+    let deadline = P::clock_ticks().saturating_add(patience);
+    loop {
+        let raised = events.wait::<P>(seen, deadline);
+        if raised != seen {
+            return Some(raised);
+        }
+        if P::clock_ticks() >= deadline {
+            return None;
+        }
+    }
+}
+
 fn empty_loop(n: u64) {
     for i in 0..n {
         black_box(i);
@@ -192,8 +354,6 @@ fn clock_read<P: Platform>(n: u64) {
     }
 }
 
-/// What `clock_gettime(CLOCK_MONOTONIC)` and every other clock read cost beyond the system-call
-/// round trip (D73): the clock read and its conversion to nanoseconds.
 fn linux_clock_monotonic_read<P: Platform>(n: u64) {
     for _ in 0..n {
         black_box(linux::time::monotonic_nanoseconds::<P>());
@@ -206,9 +366,6 @@ fn linux_clock_realtime_read<P: Platform>(n: u64) {
     }
 }
 
-/// `N` bytes from the random number generator (D56): with 16, one draw, what `AT_RANDOM`
-/// costs each program; with 4096, a stream from a draw's key, `getrandom`'s long path
-/// without the copy to the program.
 fn random_fill<P: Platform, const N: usize>(n: u64) {
     let mut bytes = [0u8; N];
     for _ in 0..n {
@@ -506,7 +663,6 @@ fn virtio_input_poll_idle(n: u64) {
 static BLOCK_MEMORY: QueueMemory<{ virtio_block::MEMORY_BYTES }> =
     QueueMemory(core::cell::UnsafeCell::new([0; virtio_block::MEMORY_BYTES]));
 
-const BLOCK_READ_BYTES: usize = 4096;
 const BLOCK_DISK_SECTORS: u32 = 1 << 16;
 
 #[derive(Debug, Default)]
@@ -954,6 +1110,20 @@ fn term_scroll_line(n: u64) {
     }
 }
 
+const REFLOW_GRIDS: [(u16, u16); 2] = [(BENCH_COLUMNS, BENCH_ROWS), (100, 30)];
+
+fn term_reflow(n: u64) {
+    let mut terminal = bench_terminal(BENCH_ROWS);
+    for _ in 0..eggos_drivers::terminal::HISTORY_LINES + usize::from(BENCH_ROWS) {
+        terminal.feed(SGR_LINE);
+        terminal.feed(b"\n");
+    }
+    for i in 0..n {
+        let (columns, rows) = REFLOW_GRIDS[(i as usize + 1) % 2];
+        black_box(terminal.resize(black_box(columns), rows));
+    }
+}
+
 const BENCH_SCREEN: (u32, u32) = (1280, 800);
 const BENCH_WINDOW: (u32, u32) = (656, 400);
 
@@ -1069,6 +1239,23 @@ fn translate_block_16(n: u64) {
     }
 }
 
+const PHOTO_640X480: &[u8] = include_bytes!("../../image/testdata/photo-640x480.jpg");
+
+fn image_decode_jpeg_640x480(n: u64) {
+    let limits = eggos_image::Limits::DEFAULT;
+    let mut decoded = None;
+    for _ in 0..n {
+        decoded = Some(black_box(eggos_image::decode(
+            black_box(PHOTO_640X480),
+            &limits,
+        )));
+    }
+    assert!(
+        decoded.is_none_or(|image| image.is_ok()),
+        "image benchmark: the photo does not decode"
+    );
+}
+
 fn window_commit_line(n: u64) {
     let (mut desktop, ids) = bench_desktop(4);
     let (mut pixels, contents) = bench_screen();
@@ -1102,6 +1289,60 @@ fn window_hit_test(n: u64) {
     black_box(desktop.focused_window());
 }
 
+fn bench_table_cell(_data: u32, row: usize, column: usize, out: &mut ToolkitText<64>) {
+    let _ = write!(out, "{row}:{column}");
+}
+
+const BENCH_TABLE_COLUMNS: [Column; 4] = [
+    Column::new("Name", 160, Align::Start),
+    Column::new("Size", 80, Align::End),
+    Column::new("Kind", 80, Align::Start),
+    Column::new("Modified", 120, Align::Start),
+];
+const BENCH_TABLE_SIZE: (i32, i32) = (400, 300);
+
+fn toolkit_table_layout_1000_rows(n: u64) {
+    let mut tree = Box::new(WidgetTree::<2>::new());
+    let table = Kind::table("Files", &BENCH_TABLE_COLUMNS, 1000, bench_table_cell, 0);
+    let Some(id) = tree.add(None, Place::fill(), table) else {
+        panic!("toolkit benchmark: the table does not fit its tree");
+    };
+    let (width, height) = BENCH_TABLE_SIZE;
+    tree.resize(width, height);
+    tree.set_scroll(id, 0, 24);
+    let mut pixels = alloc::vec![0u32; (width * height) as usize];
+    for _ in 0..n {
+        tree.resize(width, height);
+        tree.render(black_box(&mut pixels), width as u32, height as u32, 1);
+    }
+    black_box(&pixels);
+}
+
+const PANGRAM: &str = "the quick brown fox jumps over the lazy dog ";
+const WRAP_BREAK_EVERY: usize = 400;
+const WRAP_WIDTH: i32 = 384;
+
+fn text_area_wrap_64k(n: u64) {
+    let mut text = alloc::string::String::with_capacity(TEXT_AREA_CAPACITY);
+    let mut since_break = 0;
+    while text.len() + PANGRAM.len() < TEXT_AREA_CAPACITY {
+        text.push_str(PANGRAM);
+        since_break += PANGRAM.len();
+        if since_break >= WRAP_BREAK_EVERY {
+            text.push('\n');
+            since_break = 0;
+        }
+    }
+    // SAFETY: every field of `Store` is an integer or an array of integers, so all-zero bytes
+    // are a valid value; `set` gives it its text and `wrap_all` its line index before use.
+    let mut store = unsafe { Box::<Store>::new_zeroed().assume_init() };
+    store.set(&text);
+    for _ in 0..n {
+        store.wrap_all(black_box(WRAP_WIDTH));
+    }
+    black_box(store.line_count());
+}
+
 const DEVICE_TREE: &[u8] = include_bytes!("../../hal/src/fdt/testdata/qemu-aarch64-virt.dtb");
 
 fn device_tree_walk(n: u64) {
@@ -1118,8 +1359,6 @@ fn device_tree_walk(n: u64) {
     }
 }
 
-/// Exception entry, the kernel's handler and the return: the path syscalls and page faults
-/// will take (D25).
 fn breakpoint_round_trip<P: Platform>(n: u64) {
     for _ in 0..n {
         P::breakpoint();
@@ -1146,9 +1385,6 @@ fn timer_interrupt_round_trip<P: Platform>(n: u64) {
     }
 }
 
-/// Allocating never-used frames, the path every frame takes first. Untouched frames are not
-/// written, so the range can be any addresses. Twice the frames allocated, so the buddy
-/// allocator's bitmap (taken from the top, never written here) leaves `n` untouched frames.
 fn frame_allocate_untouched(n: u64) {
     let mut map = MemoryMap::new();
     map.add_ram(PhysicalRange::from_start_length(
@@ -1161,9 +1397,6 @@ fn frame_allocate_untouched(n: u64) {
     }
 }
 
-/// Freeing a frame and allocating it again: the free stack's push and pop, the steady-state
-/// path once memory has been recycled. The frame is a page of this function's stack, which
-/// the allocator reaches at its own address (offset 0).
 fn frame_free_allocate(n: u64) {
     #[repr(C, align(4096))]
     struct Page(core::mem::MaybeUninit<[u8; FRAME_SIZE as usize]>);
@@ -1186,10 +1419,6 @@ fn frame_free_allocate(n: u64) {
     black_box(&mut page);
 }
 
-/// Allocating and freeing a block of 4 contiguous frames from the kernel's frame allocator: the
-/// buddy allocator's split on allocation and merge on free (D31), the path of heap allocations
-/// larger than a frame. Runs after the self-tests, so the allocator is in place; without one,
-/// nothing is timed.
 fn frame_contiguous_allocate_free(n: u64) {
     let mut frames = FRAMES.lock();
     let Some(frames) = frames.as_mut() else {
@@ -1203,10 +1432,6 @@ fn frame_contiguous_allocate_free(n: u64) {
     }
 }
 
-/// Allocating and freeing a small block through the kernel's global heap: taking and releasing
-/// its lock around a size class's free-list pop and push, the steady state of `Box` and small
-/// `Vec`s. Runs after the self-tests, so the frame allocator is in place; without one every
-/// allocation fails and only the failure path is timed.
 fn heap_allocate_free_small(n: u64) {
     let layout = Layout::new::<[u64; 4]>();
     for _ in 0..n {
@@ -1219,10 +1444,6 @@ fn heap_allocate_free_small(n: u64) {
     }
 }
 
-/// The boot thread and one other passing the CPU back and forth through `yield_now`: per
-/// iteration two switches (D35), each with the scheduler's queue rotation and a stack canary
-/// check. Includes starting and joining the thread once per run, a few hundred instructions
-/// spread over the iterations. Without a frame allocator for the stack, nothing is timed.
 fn thread_yield_round_trip<P: Platform>(n: u64) {
     let Ok(other) = thread::spawn::<P, _>(move || {
         for _ in 0..n {
@@ -1237,16 +1458,12 @@ fn thread_yield_round_trip<P: Platform>(n: u64) {
     other.join::<P>();
 }
 
-/// A preemption point in a time slice that is not over: the window for a pending interrupt
-/// and the check, which long-running kernel code pays per call (D37).
 fn preemption_point_idle<P: Platform>(n: u64) {
     for _ in 0..n {
         thread::preemption_point::<P>();
     }
 }
 
-/// Waking a wait queue nobody waits in: what code that changes a condition pays when no
-/// thread waits for it (D39).
 fn wait_queue_wake_empty<P: Platform>(n: u64) {
     static QUEUE: thread::WaitQueue = thread::WaitQueue::new();
     for _ in 0..n {
@@ -1254,10 +1471,6 @@ fn wait_queue_wake_empty<P: Platform>(n: u64) {
     }
 }
 
-/// The boot thread and one other handing a turn back and forth through two wait queues: per
-/// iteration each thread wakes the other and blocks until its turn comes, so two wakes, two
-/// condition checks that fail and two that hold, and two switches (D39). Includes starting and
-/// joining the thread once per run, as in `thread_yield_round_trip`.
 fn thread_wait_wake_round_trip<P: Platform>(n: u64) {
     static TURN: AtomicU64 = AtomicU64::new(0);
     static BOOT: thread::WaitQueue = thread::WaitQueue::new();
@@ -1319,11 +1532,6 @@ fn futex_wait_wake_round_trip<P: Platform>(n: u64) {
     other.join::<P>();
 }
 
-/// A null system call from user mode and back (D47): the HAL's test program makes system call
-/// 2 in a loop; each iteration is its `svc`/`ecall`/`syscall` into the kernel, the kernel
-/// looking at why, and the return to the program. The program's address space stays active
-/// throughout, as for a process making system calls. Setting the program up and freeing it is
-/// timed too, amortized over the iterations.
 fn syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     // SAFETY: `memory.page_tables` are the kernel's tables, active on this CPU, the only one
     // the benchmarks run on.
@@ -1343,10 +1551,6 @@ fn syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     });
 }
 
-/// A null system call from a process's own thread (D48): `syscall_round_trip` plus what the
-/// thread's loop adds per call, its preemption point, the check that the address space is
-/// loaded and the call to its handler. Includes starting the process and its thread and
-/// joining it once per run.
 fn process_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     // SAFETY: `memory.page_tables` are the kernel's tables, active on this CPU, the only one
     // the benchmarks run on.
@@ -1369,9 +1573,6 @@ fn process_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     thread.join::<P>();
 }
 
-/// An unknown Linux system call from a Linux program's thread (M6): `process_syscall_round_trip`
-/// with the Linux layer's handler, whose dispatch answers `ENOSYS`, its cheapest path, as the
-/// thread's handler. Includes starting the process and its thread and joining it once per run.
 fn linux_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     // SAFETY: as in `process_syscall_round_trip`.
     let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
@@ -1396,12 +1597,6 @@ fn linux_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     thread.join::<P>();
 }
 
-/// Starting a Linux program from its ELF image (D51): a new process, the self-test's image
-/// with only the code `linux_start` needs (D62) loaded into it with the self-test's arguments
-/// and environment (its code, data and `.bss` mapped, its stack's region recorded and its
-/// arguments' page mapped and laid out), then the process freed. Each page is a frame of its
-/// own, zeroed: 1 for the stack (the rest of it is mapped as the program touches it, D52), 6
-/// for the program, and the tables, so the frames dominate.
 fn linux_exec_load<P: Platform>(memory: &mut Memory<P>, n: u64) {
     let image = selftest::linux_start_only_image::<P>();
     let arguments = selftest::LINUX_START_ARGUMENTS.map(str::as_bytes);
@@ -1530,7 +1725,6 @@ fn linux_epoll_wake<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
-/// The pages a Linux program's page faults map, in chunks of this many per process.
 const PAGE_FAULT_CHUNK: u64 = 512;
 
 fn linux_page_fault<P: Platform>(memory: &mut Memory<P>, n: u64) {
@@ -1554,12 +1748,6 @@ fn linux_page_fault<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
-/// `mmap` of 16 anonymous pages and `munmap` of them again (D53), as a program's allocator
-/// reserves and returns memory: the arguments checked, the region placed top-down, inserted
-/// and removed, the tables walked for pages to unmap (none: they were never touched), this
-/// CPU's translations of the range dropped (the address space is active, as for the program's
-/// own call) and the other CPUs' records looked at. Without the trap from user mode
-/// (`linux_syscall_round_trip` has it).
 fn linux_mmap_munmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
     use linux::memory::{map, prot};
     const LENGTH: u64 = 16 * FRAME_SIZE;
@@ -1762,11 +1950,6 @@ fn linux_file_read<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
-/// Two processes' threads taking turns on one CPU, each yielding at every null system call
-/// (D48): per iteration two system calls, two thread switches and two address-space switches,
-/// with what each switch costs on the CPU afterwards (the user translations it drops). Compare
-/// with `process_syscall_round_trip` and `thread_yield_round_trip`. Includes starting and
-/// joining both once per run.
 fn process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     let mut threads = [None, None];
     for thread in &mut threads {
@@ -1793,10 +1976,6 @@ fn process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
-/// `process_switch_round_trip` with programs that use their FP/SIMD registers (D54), each
-/// checking every one after each call ([`TestProgram::fp_registers`]): per iteration also two
-/// saves and two loads of FP/SIMD registers, and the program's checks. Compare with
-/// `process_switch_round_trip`.
 fn fp_process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     let mut threads = [None, None];
     for (number, thread) in threads.iter_mut().enumerate() {
@@ -2002,8 +2181,14 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (machine_only, terminal) = all[all.len() - 27..].split_at(20);
-        let benchmarks = &[&all[..all.len() - 27], terminal].concat()[..];
+        let first_machine_only = all
+            .iter()
+            .position(|(name, _)| *name == "syscall_round_trip")
+            .unwrap();
+        let (before, rest) = all.split_at(first_machine_only);
+        let (machine_only, after) = rest.split_at(20);
+        let terminal = &after[..8];
+        let benchmarks = &[before, after].concat()[..];
         let [
             (syscall, _),
             (process_syscall, _),
@@ -2036,6 +2221,7 @@ mod tests {
                 "gfx_terminal_line",
                 "term_feed_line",
                 "term_scroll_line",
+                "term_reflow",
                 "gfx_compose_four_windows",
                 "window_commit_line",
                 "window_hit_test"
@@ -2094,7 +2280,8 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), benchmarks.len());
         for (line, (name, _)) in lines.iter().zip(benchmarks) {
-            let prefix = format!("{MARKER} {name} iterations={ITERATIONS} ticks=");
+            let iterations = iterations_of(name).1;
+            let prefix = format!("{MARKER} {name} iterations={iterations} ticks=");
             assert!(line.starts_with(&prefix), "{line}");
             assert!(line.ends_with(" frequency=1000000000"), "{line}");
         }
@@ -2105,7 +2292,37 @@ mod tests {
         );
     }
 
-    /// Kernel memory for the benchmarks: page tables, active (frozen) as the kernel's are.
+    use crate::tests::TestPlatform;
+
+    #[test]
+    fn each_raise_wakes_the_waiting_thread_which_answers_once() {
+        static FRAMES: DeviceEvents = DeviceEvents::new();
+        static TAKEN: DeviceEvents = DeviceEvents::new();
+        let _lock = interrupt::lock_timer_interrupts_for_test();
+        let _frames_and_scheduler = thread::host::frames_for_test();
+        let (frames_before, taken_before) = (FRAMES.raised(), TAKEN.raised());
+        assert_eq!(
+            raise_and_wake_round_trips::<TestPlatform>(&FRAMES, &TAKEN, 5),
+            Ok(())
+        );
+        assert_eq!(FRAMES.raised(), frames_before + 5);
+        assert_eq!(TAKEN.raised(), taken_before + 5);
+    }
+
+    #[test]
+    fn a_wait_for_a_raise_gives_up_when_its_time_runs_out() {
+        static EVENTS: DeviceEvents = DeviceEvents::new();
+        let _lock = interrupt::lock_timer_interrupts_for_test();
+        let _scheduler = thread::host::lock_kernel_state_for_test();
+        let seen = EVENTS.raised();
+        assert_eq!(wait_for_raise::<TestPlatform>(&EVENTS, seen, 0), None);
+        EVENTS.raise::<TestPlatform>();
+        assert_eq!(
+            wait_for_raise::<TestPlatform>(&EVENTS, seen, 0),
+            Some(seen + 1)
+        );
+    }
+
     fn page_tables_for_test() -> Memory<CountingPlatform> {
         let _frames = thread::host::frames_for_test();
         let mut frames = FRAMES.lock();

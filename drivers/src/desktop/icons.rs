@@ -94,6 +94,8 @@ pub enum Icon<'a> {
     TextEditor,
     /// Three yolk bars on the generic tile: the Task Manager (D200).
     TaskManager,
+    /// A yolk down arrow onto a grey tray on the generic tile: the Downloads window (D225).
+    Downloads,
     /// A folder with a grey front: the host's shared folder.
     HostShare,
     /// A tile with `letter` (`A`-`Z`, `0`-`9` or `?`) and, for an installed app, the badge of
@@ -242,6 +244,37 @@ const TASK_MANAGER_SMALL: [Shape; 5] = [
     Shape::Fill(rect(5, 27, 22, 2), colour::ICON_PAGE_LINE),
 ];
 
+const DOWNLOADS_LARGE: [Shape; 8] = [
+    Shape::Tile(
+        rect(0, 0, 48, 48),
+        Corners::R6,
+        colour::ICON_TILE,
+        colour::ICON_TILE_BORDER,
+    ),
+    Shape::Fill(rect(21, 10, 6, 16), colour::ACCENT),
+    Shape::Fill(rect(13, 24, 22, 2), colour::ACCENT),
+    Shape::Fill(rect(15, 26, 18, 2), colour::ACCENT),
+    Shape::Fill(rect(17, 28, 14, 2), colour::ACCENT),
+    Shape::Fill(rect(19, 30, 10, 2), colour::ACCENT),
+    Shape::Fill(rect(21, 32, 6, 2), colour::ACCENT),
+    Shape::Fill(rect(9, 38, 30, 2), colour::ICON_PAGE_LINE),
+];
+
+const DOWNLOADS_SMALL: [Shape; 7] = [
+    Shape::Tile(
+        rect(0, 0, 32, 32),
+        Corners::R4,
+        colour::ICON_TILE,
+        colour::ICON_TILE_BORDER,
+    ),
+    Shape::Fill(rect(14, 6, 4, 11), colour::ACCENT),
+    Shape::Fill(rect(8, 16, 16, 2), colour::ACCENT),
+    Shape::Fill(rect(10, 18, 12, 2), colour::ACCENT),
+    Shape::Fill(rect(12, 20, 8, 2), colour::ACCENT),
+    Shape::Fill(rect(14, 22, 4, 2), colour::ACCENT),
+    Shape::Fill(rect(5, 26, 22, 2), colour::ICON_PAGE_LINE),
+];
+
 const TEXT_EDITOR_SMALL: [Shape; 6] = [
     Shape::Tile(
         rect(5, 0, 22, 32),
@@ -379,6 +412,8 @@ pub(super) fn draw_icon(canvas: &mut Canvas<'_>, icon: Icon<'_>, size: IconSize,
         (Icon::TextEditor, IconSize::Small) => &TEXT_EDITOR_SMALL,
         (Icon::TaskManager, IconSize::Large) => &TASK_MANAGER_LARGE,
         (Icon::TaskManager, IconSize::Small) => &TASK_MANAGER_SMALL,
+        (Icon::Downloads, IconSize::Large) => &DOWNLOADS_LARGE,
+        (Icon::Downloads, IconSize::Small) => &DOWNLOADS_SMALL,
         (Icon::App { letter, badge }, size) => {
             generic = app_shapes(letter, badge, size);
             &generic.0[..generic.1]
@@ -513,6 +548,25 @@ mod tests {
         let share = pixels(Icon::HostShare, IconSize::Small);
         assert!(share.contains(&colour::ICON_GEAR));
         assert!(!share.contains(&colour::ICON_FOLDER));
+    }
+
+    #[test]
+    fn downloads_shows_a_yolk_arrow_onto_a_tray_inside_its_square() {
+        let large = pixels(Icon::Downloads, IconSize::Large);
+        assert_eq!(large[0], BACKGROUND);
+        assert_eq!(large[15 * 48 + 23], colour::ACCENT);
+        assert_eq!(large[24 * 48 + 13], colour::ACCENT);
+        assert_eq!(large[24 * 48 + 12], colour::ICON_TILE);
+        assert_eq!(large[33 * 48 + 26], colour::ACCENT);
+        assert_eq!(large[33 * 48 + 27], colour::ICON_TILE);
+        assert_eq!(large[39 * 48 + 9], colour::ICON_PAGE_LINE);
+        assert_eq!(large[39 * 48 + 38], colour::ICON_PAGE_LINE);
+        let small = pixels(Icon::Downloads, IconSize::Small);
+        assert_eq!(small[0], BACKGROUND);
+        assert_eq!(small[10 * 32 + 15], colour::ACCENT);
+        assert_eq!(small[16 * 32 + 8], colour::ACCENT);
+        assert_eq!(small[16 * 32 + 7], colour::ICON_TILE);
+        assert_eq!(small[27 * 32 + 5], colour::ICON_PAGE_LINE);
     }
 
     #[test]

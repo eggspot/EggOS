@@ -100,7 +100,14 @@ Must-have, in order:
     33): 14 layouts with dead keys and the AltGr/Option layer, chosen with `keyboard.layout`
     (Settings' Keyboard pane, `settings set`, MCP `settings_set`), Caps Lock's light through
     the status queue; the boot-to-prompt test types `é` with the German layout's dead acute
-    through QMP and checks the frame. Follow-ups: D185's "Not yet".
+    through QMP and checks the frame. Since D221 (batch part 3): 20 layouts (`us-mac`, `be`,
+    `ca`, `ch`, `pt`, `latam` added), up to four at once (`keyboard.layouts`) with a switch key
+    (`keyboard.switch_key`) in the kernel, the desktop's hint and the bar's layout indicator
+    with its menu, the dead-key highlight in the toolkit's text fields, the layout applied without a
+    display through `/proc/sys/eggos/keyboard_layout`, Num and Scroll Lock with their lights,
+    Egg Mono's Latin Extended-A, the launcher's and Settings' accent-insensitive search, and the
+    Windows layer's `ToUnicodeEx`, `VkKeyScanExW` and `MapVirtualKeyW` for the layout in force.
+    Follow-ups: D221's "Not yet".
 13. **done** — graphical terminal (D114, docs/drivers.md): the Egg Mono 8x16 font (the design
     file's 95 ASCII glyphs, checked by a host test, and the box drawing, block, shape and arrow
     extras) and the terminal emulator of `terminal-v0.3.md` in `eggos-drivers` (cell grid,
@@ -136,9 +143,12 @@ Must-have, in order:
     open as many terminal windows as they like (the launcher's Terminal, `terminal`, Ctrl+Shift+N
     or Cmd+N in a terminal), resize, maximise and close them, programs set their titles, and
     agents capture, read and type into them like any window; the kernel's window is now titled
-    `Console`. Next, as user capabilities: users can drag a window partly off the left edge; the
-    display follows a window resized by the host (display mode change events); users can copy
-    and paste in terminals and run installed console apps in a terminal window of their own.
+    `Console`. Since D223: users select, copy and paste in terminal windows (and from
+    the context menu), run `terminal -e <program>` and installed console apps in a window of their
+    own, see lines reflow and come back from the scrollback when a window grows, get the folder
+    and the running command in the title from the shell (`OSC 0`, `OSC 7`) and new windows in
+    that folder, and use `stty`. Next, as user capabilities: users can drag a window partly off
+    the left edge; the display follows a window resized by the host (display mode change events).
 15. **done** — users can now download one image per architecture, `SHA256SUMS` and a run
     script, run it, and boot EggOS in a QEMU window with its desktop and terminal, or on the
     serial console alone with `--serial`, at an `eggsh` prompt (D116): `cargo xtask release`
@@ -324,8 +334,10 @@ D16):
     and its shapes, Alt+Tab and the switcher, Alt+F4 and Cmd+W, the window menu (Alt+Space),
     show desktop, the 2 s rule for a program that does not answer a close request, and the
     `wm` command. Since then: a profile setting (item 34), `wm`'s MCP tools, windows partly off
-    the right and bottom edges, F11, the `Hand` and `Busy` pointers (D186). Next: windows
-    partly off the left edge.
+    the right and bottom edges, F11, the `Hand` and `Busy` pointers (D186); windows partly off
+    the left edge, the server's own `Busy` and ` (not responding)` for any window whose app
+    leaves an event unread for 2 s with an End app dialog, the `Working` pointer, the
+    launcher's caret blink (D222). Next: the phone and TV versions of `Working` and End app.
 32. **done** — users can now run Windows GUI programs from `eggsh` and see their windows on
     the desktop (D129, docs/windows-programs.md): x64 on x86_64 and ARM64 on aarch64, the
     layer's own user32 and gdi32 over `/dev/window`: window classes, windows with EggOS's
@@ -479,7 +491,13 @@ D16):
     Fable's design (docs/ux/windows-controls-v0.3.md). The Windows GUI boot test drives
     `win-controls.exe` through typing, clicks, the menu and both pickers on x86_64 and aarch64
     and compares every frame with the host's render. Next: multi-line edits and the clipboard,
-    radio buttons, combo boxes, scroll bars, menu keys (D145's "Not yet").
+    radio buttons, combo boxes, scroll bars, menu keys (D145's "Not yet"). Since D228:
+    selection, `ES_PASSWORD` and `ES_NUMBER` in edits, radio buttons and group boxes, scroll
+    bar controls, double clicks in the system's controls, item data, hover looks,
+    `TrackMouseEvent`, `WM_SETCURSOR`, `SetCursor` and `WM_CTLCOLOR*`, checked by
+    `win-controls2.exe`; agents select list items and see checked states (D227). Next: multi-line
+    edits, editable combo boxes, scroll bars on windows, menu keys and submenus (D228's "Not
+    yet").
 43. **done** — users can now run Windows programs built by Microsoft's compiler on its C
     runtime (D146, docs/windows-programs.md): C programs built with `/MD`, console or GUI, x64
     on x86_64 and ARM64 on aarch64, import `vcruntime140.dll` and the Universal C Runtime
@@ -487,8 +505,11 @@ D16):
     runtime's startup and exit, `malloc`, strings, `FILE` streams in text or binary mode and
     `printf`'s family (one engine with the macOS layer's, `eggos-c-format`). A QEMU test on
     x86_64 and aarch64 runs `eggpad.exe`, our own C notepad built by MSVC in CI, opens a file,
-    types, saves it with Ctrl+S and reads it back. Next: `scanf`, locales, the math library,
-    C++ exceptions (D146's "Not yet").
+    types, saves it with Ctrl+S and reads it back. Since D229 and D230: the whole math library
+    (`eggos-math`, our own), `setjmp`, locales, wide streams and low-level text mode; C++
+    programs on msvcp140 with `dynamic_cast`, `typeid` and `std::exception_ptr` (`eggcrt2.exe`
+    and `eggcpp2.exe` in CI). Next: iostreams, stack overflow as an exception (D230's "Not
+    yet"; C++ exceptions came with D177).
 41. **done** — users can now run macOS GUI apps (D147, docs/macos-programs.md): programmatic
     Objective-C AppKit apps in an `.app` bundle install and open from the launcher, arm64 on
     aarch64 and x86_64 on x86_64. The macOS layer's own AppKit runs NSApplication's event loop
@@ -501,9 +522,11 @@ D16):
     controls, NSAlert's `runModal` in a dialog, and the main menu in the macOS profile's top bar
     (the window server's new `SET_MENU` and `MenuChosen`), with key equivalents and Cmd+Q. The
     same test types into a field, presses buttons, answers an alert, opens the `File` menu and
-    quits with Cmd+Q. Next: nibs, Swift apps, scroll views, images (D147's and D175's "Not
-    yet"; timers, blocks, weak references and exceptions came with D175; Swift console programs
-    with D180).
+    quits with Cmd+Q. Since D232 to D234: compiled nibs, NSFileManager, NSNotificationCenter,
+    run loop modes, checkboxes and radios, `NSCursor`, `NSPasteboard`, and exceptions through
+    DWARF frames and the layer's own. Next: Swift apps, scroll views, tables, images, C++
+    exceptions, UDCalc (D233's and D234's "Not yet"; timers, blocks, weak references and
+    exceptions came with D175, Swift console programs with D180).
 45. **done** — users can now install an app from a `.zip` and see its own icon (D148,
     docs/apps.md, Claude Fable's docs/ux/app-icons-v0.3.md): `app install <file>.zip` (and
     Files and the installer's window, and the MCP tool `app_install`) extracts the archive's
@@ -548,15 +571,18 @@ The release path (the release-path review's issues #141-#145, after the items ab
   (D152, docs/apps.md): the x86_64 and aarch64 release images carry the Windows and macOS
   layers, a v0.3.0 exception to D18 until the component manager; the install, Files, MCP and
   macOS GUI boot tests boot the release artifact itself, with no `--add`; `cargo xtask
-  sample-apps` builds our own apps to try. Next: the layers as optional components (M14).
+  sample-apps` builds our own apps to try. Since D235 the layers are optional components
+  (`windows-apps`, `mac-apps`) in a store beside the release images, and the exception ends.
 - #142 **partly done** — switchers feel at home in their first minute and see when an agent
   drives (D156, docs/ux/desktop-v0.3-gui.md section 14): the `Agent` chip while an MCP client
   is connected (yellow while it acts, a click runs `agentlog`), ` (agent)` on the driven
   window's title and a yellow arrow where its pointer input went; tooltips `Apps  Super`,
   `Activities  Super` and `Start  Super`, the launcher's footer of keys, the Mac host line in
   `run-eggos.sh` and the release notes; `/etc/motd` and eggsh starting in `/home/root`; window
-  controls that darken while pressed and act on release. Next: first boot asks "Where are you
-  coming from?", init's line on the serial console only, the screendump checks.
+  controls that darken while pressed and act on release. Since D224: the first boot asks
+  "Where are you coming from?" (`settings --first-run`), init's lines go to the serial console
+  only (`/dev/kmsg`), high contrast, reduce motion and the sticky keys' chips. Next: the
+  screendump checks (carried to the next plan).
 - #143 **done** — a program that uses up memory, or a damaged disk, can't crash EggOS (D155):
   programs' pages, memory files, window buffers, pipes, `/tmp` files, threads and socket
   queues stop at a kernel reserve (a thirty-second of memory, 2 to 16 MiB, shown by `free` and
@@ -579,8 +605,8 @@ The release path (the release-path review's issues #141-#145, after the items ab
   ping sockets for Linux programs, `ip`, `ping` and `nslookup`, the MCP tool `net_status`; the
   run scripts attach QEMU's user networking (`--no-network`: none); a QEMU check on all three
   architectures gets the lease, pings the host, looks a name up and talks UDP through
-  `std::net`. Next: the GUI front-end Fable designed (Settings' `Network` pane, the bar's
-  indicator, docs/ux/network-v0.3.md).
+  `std::net`. Since D225: the GUI front-end Fable designed, Settings' `Network` pane and the
+  bar's network indicator (docs/ux/network-v0.3.md).
 - Old item 27, networking part 2 **partly done** — TCP and downloads over HTTP (D158,
   docs/network.md): TCP of our own in `eggos-net` (handshake, segment size, windows,
   retransmission on a measured timeout, fast retransmission, window probes, FIN, `TIME-WAIT`,
@@ -594,7 +620,9 @@ The release path (the release-path review's issues #141-#145, after the items ab
   path validation), `fetch https://` against the roots the user gives in `/etc/ssl/roots.pem`,
   `date --sync` and MCP `clock_sync` by SNTP. Next: the Date & time pane's "Set
   automatically" (a Fable addition to date-time-v0.3.md first), syncing at boot, a QEMU check
-  of `fetch https://` against a TLS test server.
+  of `fetch https://` against a TLS test server. Since D225: the Downloads window and
+  `download list|cancel|clear` with their MCP tools, `Set automatically` with a sync at boot
+  and every 24 h (a step over an hour needs two of three HTTPS `Date`s), and the HTTPS boot test.
 - After v0.3.0, first: the Egg command model (owner's approved design, 2026-10-28), slice 1
   **done** — JSON and clear errors from the commands agents use (D160,
   docs/ux/command-model.md): the registry `userland/commands` (`eggos-commands`) holds every
@@ -637,7 +665,10 @@ The release path (the release-path review's issues #141-#145, after the items ab
   done** (D165): `sleep`, `sync`, the power commands, `cat` and `tee` on the registry's option
   parsing, `eggsh`'s built-ins defined, examples for `date` and `wm list`. Next: the rest of
   slice 2's leftovers (D165 "Not yet"), the macOS layer's NSView tree, slice 4 (apps' own
-  actions).
+  actions). Since D226: the rest of slices 2 and 3's leftovers: the registry's options in
+  every utility, coded errors from `app` and failing twins, examples against a fake network,
+  pages, dry runs, the file utilities as MCP tools and `outputSchema` with the items envelope
+  on list tools. Next: slice 4 (part 70).
 - After v0.3.0: EggOS builds our code in CI (owner, 2026-10-26; the CI track, D166): a
   GitHub-hosted Linux runner boots EggOS in QEMU, hands it a repository as a disk and runs
   `cargo build` and `cargo test` inside it; alternating with the Real apps track. Stages: (1)
@@ -800,6 +831,43 @@ Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and arch
 Editor (done, D149, replacing the terminal's `edit`); 29 an RTC driver for `date` (done, D150). Moved after
 the release: networking (part 1 done after it: D157, below); the MCP server is back in the release (owner, 2026-10-28; item 28, D136). The graphical terminal stays the owner's priority: nothing above may break it.
 
+## After v0.3.0: the batch of the docs' leftovers (parts 0-20 of its plan)
+
+The build loop's batch (branch `batch-eggos-7`, one PR) reached cut point "A-" on 2026-11-10:
+parts 0 to 16 and 20 ship as far as they were written (D218 to D235), each decision's "Not
+yet" naming what it left.
+
+- **done** — parts 0-5 (D218-D223): kernel and user builds told apart, the toolkit's second
+  slice, drivers on interrupts, keyboard layouts, desktop polish, terminals.
+- **done** — part 6, first run and accessibility (D224); part 7, the Network pane, the
+  indicator, Downloads and the network clock (D225); part 8, the command model's leftovers
+  (D226); part 9, agents on Windows controls (D227); part 10, Windows controls (D228); part
+  11, the math library and the C runtime (D229); part 12, C++ on Windows (D230); part 13's
+  first slice, images and the registry (D231); part 14, Foundation and nibs (D232); part 15's
+  first slice, button types, cursors and the pasteboard (D233); part 16's first slice,
+  exceptions on macOS (D234); part 20, the component manager's first part (D235).
+- **next** (carried to the next plan, numbered from the next free decision when built):
+  - part 17, Minesweeper (Swift on AppKit, D180's "Not yet");
+  - part 18, Files and the Text Editor grow up and one file picker `/bin/pick` (its design is
+    done; the unbuilt picker is on the branch `wip/eggos-picker`);
+  - part 19, drag and drop between windows;
+  - part 10's rest: scroll bars on windows (`wip/eggos-window-scroll-bars`), multi-line edits,
+    editable combo boxes, submenus, menu keys, `MFT_RADIOCHECK`, menus from templates, word
+    selection (D228);
+  - part 12's rest: iostreams, stack overflow as an exception, collided unwinds, function
+    tables (D230);
+  - part 13's rest: tooltips, custom drawing, label editing and the other common-control
+    breadth, COM out of process, global hooks and hot keys, layered windows, the tray, the
+    shell namespace, HTTPS in WinINet, `WSAAsyncSelect`, and the registry pane's outline and
+    phone layouts (D231);
+  - part 14's rest: `NSKeyedUnarchiver`, storyboards, NSDictionary's hash index (D232);
+  - part 15's rest: scroll views, tables, images, the About panel's icon and credits, the
+    alert's element tree, `mac-views.app` (D233);
+  - part 16's rest: C++ exceptions on macOS and UDCalc (D234);
+  - part 6's screendump checks, part 7's indicator check and part 9's wheel and list-item
+    checks in QEMU (D224, D225, D227);
+  - the desktop and built-in apps as components (D235, parts 65 and 66).
+
 ## Milestones
 
 | # | Milestone | Status |
@@ -818,7 +886,7 @@ the release: networking (part 1 done after it: D157, below); the MCP server is b
 | M11 | Graphics stack (virtio-gpu first) and compositor | **in progress** — the polled virtio-gpu 2D driver and the kernel's display API: a framebuffer on scanout 0, damage, fenced transfers and flushes (D112); the Egg Mono font and the graphical terminal, the console's session on the display (D114); the minimal desktop with the terminal's window (D115); next: the cursor queue, display events, interrupts instead of polling, 3D (virgl, Venus), a userland compositor |
 | M12 | Adaptive shell, designed by Claude Fable from `docs/ux/` (D16, D23): desktop first, then phone/tablet and TV | |
 | M13 | Real hardware and vendor GPU drivers | |
-| M14 | Component manager (D18) and app capability registry: installed apps published as CLI commands and MCP tools; agent permissions and audit log (D21); components downloaded on demand in the background, delta updates applied atomically (D69) | |
+| M14 | Component manager (D18) and app capability registry: installed apps published as CLI commands and MCP tools; agent permissions and audit log (D21); components downloaded on demand in the background, delta updates applied atomically (D69) | **in progress** — agent permissions and the audit log (D136, D193); the component manager's first part (D235): the Windows and macOS layers as components in a store outside the base, `component list|install|remove`, `component_*` MCP tools and Settings' Components list. Next: the desktop and built-in apps as components, the installer and the full pane (parts 65, 66), downloads on demand and updates (part 64), apps' own actions (part 70) |
 | M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, Windows and macOS side by side, then Android and iOS (order: D34) | **in progress** — Windows console programs on x86_64 and aarch64, parts 1, 2a and 2b: the PE32+ loader and a kernel32/ntdll subset as an optional user-mode layer (D118), then threads, waits, locks, error codes, UTF-16 and directory listing (D121), then ARM64 programs on aarch64 (D124); static Android console programs (NDK, bionic) through the Linux layer on aarch64 and x86_64 (D119); macOS console programs on aarch64 and x86_64, part 1: a Mach-O loader (thin and fat, chained fixups) and a libSystem subset as an optional user-mode layer (D120), and part 2: threads, thread-local variables, locks, `getopt`, calendar time and the C locale, so small tools and Rust std programs run (D123) |
 | M16 | Editions as component presets (D18): personal, professional, enterprise, server | |
 
@@ -1105,15 +1173,15 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | x86 local APIC (xAPIC), on every CPU: its timer, INIT/start-up IPIs and fixed IPIs; 8259 PICs (remapped and masked); 8254 PIT (frequency measurement) | **done** (x2APIC, HPET: planned) |
 | x86 I/O APIC (lines routed by the MADT's overrides) | **done** (device lines through it: planned, M5) |
 | PCI MSI-X (the capability, the table in a BAR, entries masked while written) | **done** on x86_64 (D184) |
-| virtio core: virtio-mmio (version 2), modern virtio-pci, the split virtqueue (D111); interrupts through the slot's line or MSI-X (D184) | **done** (interrupts for block, console, GPU, network and entropy: planned) |
-| virtio-rng (polled) | **done** (D111) |
-| virtio-gpu 2D (polled): display mode, framebuffer on scanout 0, transfers and flushes of damaged rectangles (D112) | **done** (cursor queue, interrupts: planned) |
-| virtio-input: keyboard, tablet and mouse, capabilities from the device's configuration, keyboard layouts with dead keys and AltGr, key repeat, Caps Lock's light, the input event queue (D113, D184, D185) | **done** (more layouts, Num and Scroll Lock lights: planned) |
-| Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114) | **done** (cursor blink, 2x scale: planned) |
-| virtio-blk (polled): capacity, read-only disks, reads, writes and flushes of 512-byte sectors, one request at a time; a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** (several requests in flight, interrupts: planned) |
+| virtio core: virtio-mmio (version 2), modern virtio-pci, the split virtqueue (D111); interrupts through the slot's line or MSI-X (D184); block, console, network and entropy on interrupts (D220) | **done** (the GPU's interrupts, a line per queue, lines through the I/O APIC and on other CPUs, lines given back: planned) |
+| virtio-rng, on interrupts, reseeding the kernel's generator at boot (D111, D220) | **done** |
+| virtio-gpu 2D (polled): display mode, framebuffer on scanout 0, transfers and flushes of damaged rectangles (D112); the cursor queue draws the pointer (D186) | **done** (interrupts, display mode changes: planned) |
+| virtio-input: keyboard, tablet and mouse on interrupts, capabilities from the device's configuration, 20 keyboard layouts with dead keys and AltGr and up to four at once with a switch key, key repeat, the Caps, Num and Scroll Lock lights, the input event queue (D113, D184, D185, D221) | **done** |
+| Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114); the cursor blinks (D186) | **done** (2x scale: planned) |
+| virtio-blk: capacity, read-only disks, reads, writes and flushes of 512-byte sectors, up to 15 requests in flight, on interrupts (D130, D220); a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** |
 | EggFS, our own journaled disk file system: `/home` and `/Applications` on a disk image, metadata journal, copy-on-write data, CRC-checked commits, crash recovery at mount, `sync`/`fsync`, symbolic and hard links (D170), an offline check and repair (D192) (D131, docs/eggfs.md) | **done** (several requests in flight, access times: planned) |
-| virtio-console (the agent channel's named port, D136) | **done** |
-| virtio-net (polled): hardware address, link state and MTU from the configuration, 16 receive and 16 transmit buffers (D157) | **done** (interrupts, offloads, several adapters: planned) |
+| virtio-console (the agent channel's named port, D136), on interrupts (D220) | **done** (its input as a console: planned) |
+| virtio-net: hardware address, link state and MTU from the configuration, 16 receive and 16 transmit buffers (D157), on interrupts (D220) | **done** (offloads, several adapters: planned) |
 
 ## Toward "better than macOS, Windows and Linux"
 

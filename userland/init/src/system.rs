@@ -5,8 +5,13 @@ use crate::agent_server::{
 use crate::backoff::Backoff;
 use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
 use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER};
+use crate::first_run::{
+    self, COMMAND_LINE, DISK_DEVICE, FIRST_RUN, Found, INSTALLED_MARK, SETTINGS_FILE,
+};
+use crate::network_clock::{self, DATE, INTERFACES, SESSION_SETTINGS, SYNC_ARGUMENTS, Schedule};
 use crate::shutdown::{self, Ending, LOOK_EVERY_MS, Request, Step};
 use core::ptr;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
 
@@ -15,7 +20,10 @@ const BANNER: &[u8] = concat!("EggOS ", env!("CARGO_PKG_VERSION"), "\n").as_byte
 const CONFIG_PATH: &[u8] = b"/etc/eggos/init.conf\0";
 
 const CONSOLE: usize = 1;
+const KERNEL_LOG: &[u8] = b"/dev/kmsg\0";
+const O_WRONLY_CLOEXEC: usize = 0o1 | 0o2_000_000;
 const AT_FDCWD: usize = -100isize as usize;
+const F_OK: usize = 0;
 const HOME_DIRECTORY: &[u8] = b"/home/root\0";
 const HOME_DIRECTORY_MODE: usize = 0o755;
 const O_RDONLY_CLOEXEC: usize = 0o2_000_000;
@@ -28,6 +36,8 @@ const SIGTERM: usize = 15;
 const SIGCONT: usize = 18;
 const ESRCH: isize = 3;
 const EVERY_OTHER_PROCESS: usize = -1isize as usize;
+const COMMAND_LINE_BYTES: usize = 4096;
+const LOOK_AGAIN_S: u64 = 2;
 #[cfg(target_arch = "x86_64")]
 const SA_RESTORER: usize = 0x0400_0000;
 const SIG_DFL: usize = 0;
@@ -58,6 +68,7 @@ struct Services {
     agent: AgentServer,
     network: AgentServer,
     display: AgentServer,
+    clock: AgentServer,
 }
 
 #[cfg(not(target_arch = "riscv64"))]
@@ -120,9 +131,29 @@ fn call(number: usize, arguments: [usize; 6]) -> isize {
     unsafe { syscall::call(number, arguments) }
 }
 
+static LOG: AtomicUsize = AtomicUsize::new(CONSOLE);
+
+fn open_log() {
+    let descriptor = call(
+        number::OPENAT,
+        [
+            AT_FDCWD,
+            KERNEL_LOG.as_ptr() as usize,
+            O_WRONLY_CLOEXEC,
+            0,
+            0,
+            0,
+        ],
+    );
+    if descriptor >= 0 {
+        LOG.store(descriptor as usize, Ordering::Relaxed);
+    }
+}
+
 fn say(parts: &[&[u8]]) {
+    let log = LOG.load(Ordering::Relaxed);
     for part in parts {
-        syscall::write_all(CONSOLE, part);
+        syscall::write_all(log, part);
     }
 }
 
@@ -141,7 +172,8 @@ fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
 pub fn run(_startup: &Startup) -> i32 {
     set_signal_actions(SIG_IGN);
     catch_shutdown_requests();
-    say(&[BANNER]);
+    syscall::write_all(CONSOLE, BANNER);
+    open_log();
     let mut services = Services::default();
     if exists(AGENT_CHANNEL) && exists(AGENT_SERVER) {
         start_agent_server(&mut services.agent, false);
@@ -151,6 +183,9 @@ pub fn run(_startup: &Startup) -> i32 {
     }
     if exists(DISPLAY_SERVER) && exists(DISPLAY_DEVICE) {
         start_display_server(&mut services.display);
+    }
+    if exists(DATE) {
+        start_clock_keeper(&mut services.clock);
     }
     call(
         number::MKDIRAT,
@@ -166,6 +201,7 @@ pub fn run(_startup: &Startup) -> i32 {
     let config = read_config();
     let name = config.login.program_name();
     let mut backoff = Backoff::default();
+    let mut ask_first_run = first_run_wanted();
     loop {
         if !exists(config.login.program()) {
             say(&[
@@ -177,7 +213,12 @@ pub fn run(_startup: &Startup) -> i32 {
         }
         say(&[b"init: starting ", name, b"\n"]);
         let started = now_ms();
-        match spawn(&config.login).and_then(|child| wait_for(child, &mut services)) {
+        let login = spawn(&config.login);
+        if ask_first_run {
+            ask_first_run = false;
+            start_first_run();
+        }
+        match login.and_then(|child| wait_for(child, &mut services)) {
             Some(status) => report(name, status),
             None => say(&[b"init: could not start ", name, b"\n"]),
         }
@@ -321,6 +362,82 @@ fn exists(path: &[u8]) -> bool {
     };
     call(number::CLOSE, [descriptor, 0, 0, 0, 0, 0]);
     true
+}
+
+fn read_file(path: &[u8], file: &mut [u8]) -> Option<usize> {
+    let descriptor = open(path)?;
+    let mut length = 0;
+    while length < file.len() {
+        let read = call(
+            number::READ,
+            [
+                descriptor,
+                file[length..].as_mut_ptr() as usize,
+                file.len() - length,
+                0,
+                0,
+                0,
+            ],
+        );
+        if read <= 0 {
+            break;
+        }
+        length += read as usize;
+    }
+    call(number::CLOSE, [descriptor, 0, 0, 0, 0, 0]);
+    Some(length)
+}
+
+fn listed(path: &[u8]) -> bool {
+    call(
+        number::FACCESSAT,
+        [AT_FDCWD, path.as_ptr() as usize, F_OK, 0, 0, 0],
+    ) == 0
+}
+
+fn first_run_wanted() -> bool {
+    let found = Found {
+        display: exists(DISPLAY_DEVICE),
+        disk: listed(DISK_DEVICE),
+        agent_channel: listed(AGENT_CHANNEL),
+        installed: listed(INSTALLED_MARK),
+        skipped: {
+            let mut line = [0u8; COMMAND_LINE_BYTES];
+            read_file(COMMAND_LINE, &mut line)
+                .is_some_and(|length| first_run::skipped_by(&line[..length]))
+        },
+    };
+    let mut file = [0u8; eggos_settings_file::LARGEST + 1];
+    let length = read_file(SETTINGS_FILE, &mut file);
+    first_run::wanted(found, length.map(|length| &file[..length]))
+}
+
+fn start_first_run() {
+    let arguments = [FIRST_RUN[0].as_ptr(), FIRST_RUN[1].as_ptr(), ptr::null()];
+    let mut environment = [ptr::null::<u8>(); ENVIRONMENT.len() + 1];
+    for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
+        *slot = variable.as_ptr();
+    }
+    let child = call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]);
+    if child == 0 {
+        set_signal_actions(SIG_DFL);
+        call(number::SETSID, [0; 6]);
+        call(
+            number::EXECVE,
+            [
+                arguments[0] as usize,
+                arguments.as_ptr() as usize,
+                environment.as_ptr() as usize,
+                0,
+                0,
+                0,
+            ],
+        );
+        syscall::exit(COMMAND_NOT_RUN)
+    }
+    if child < 0 {
+        say(&[b"init: could not start /bin/settings --first-run\n"]);
+    }
 }
 
 fn read_config() -> Config {
@@ -520,6 +637,143 @@ fn start_display_server(display: &mut AgentServer) {
     }
 }
 
+fn start_clock_keeper(clock: &mut AgentServer) {
+    let child = call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]);
+    match child {
+        0 => keep_clock(),
+        1.. => clock.started(child as usize, now_ms()),
+        _ => say(&[b"init: could not start the clock keeper\n"]),
+    }
+}
+
+fn keep_clock() -> ! {
+    set_signal_actions(SIG_DFL);
+    let default = SignalAction::with_handler(SIG_DFL);
+    for signal in shutdown::SIGNALS {
+        call(
+            number::RT_SIGACTION,
+            [
+                signal,
+                &raw const default as usize,
+                0,
+                SIGNAL_SET_SIZE,
+                0,
+                0,
+            ],
+        );
+    }
+    call(number::SETSID, [0; 6]);
+    let mut schedule = Schedule::default();
+    loop {
+        while !(clock_is_automatic() && network_has_address()) {
+            sleep_seconds(LOOK_AGAIN_S);
+        }
+        let delay = match sync_clock() {
+            true => schedule.after_success(random()),
+            false => schedule.after_failure(),
+        };
+        sleep_seconds(delay);
+    }
+}
+
+fn clock_is_automatic() -> bool {
+    let mut disk = [0u8; eggos_settings_file::LARGEST + 1];
+    let disk_length = read_file(SETTINGS_FILE, &mut disk).unwrap_or(0);
+    let mut session = [0u8; eggos_settings_file::LARGEST + 1];
+    let session_length = read_file(SESSION_SETTINGS, &mut session).unwrap_or(0);
+    eggos_settings_file::time_automatic(&disk[..disk_length], &session[..session_length])
+}
+
+fn network_has_address() -> bool {
+    let mut interfaces = [0u8; 4096];
+    let length = read_file(INTERFACES, &mut interfaces).unwrap_or(0);
+    network_clock::has_address(&interfaces[..length])
+}
+
+fn random() -> u64 {
+    let mut bytes = [0u8; 8];
+    call(
+        number::GETRANDOM,
+        [bytes.as_mut_ptr() as usize, bytes.len(), 0, 0, 0, 0],
+    );
+    u64::from_ne_bytes(bytes) ^ now_ms()
+}
+
+fn sleep_seconds(seconds: u64) {
+    let mut time = Timespec {
+        seconds: seconds as i64,
+        nanoseconds: 0,
+    };
+    let mut left = Timespec {
+        seconds: 0,
+        nanoseconds: 0,
+    };
+    while call(
+        number::CLOCK_NANOSLEEP,
+        [
+            CLOCK_MONOTONIC,
+            0,
+            &raw const time as usize,
+            &raw mut left as usize,
+            0,
+            0,
+        ],
+    ) == -EINTR
+    {
+        time.seconds = left.seconds;
+        time.nanoseconds = left.nanoseconds;
+    }
+}
+
+fn sync_clock() -> bool {
+    say(&[b"init: date --sync --automatic\n"]);
+    let arguments = [
+        DATE.as_ptr(),
+        SYNC_ARGUMENTS[0].as_ptr(),
+        SYNC_ARGUMENTS[1].as_ptr(),
+        ptr::null(),
+    ];
+    let mut environment = [ptr::null::<u8>(); ENVIRONMENT.len() + 1];
+    for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
+        *slot = variable.as_ptr();
+    }
+    let child = call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]);
+    match child {
+        0 => {
+            let log = LOG.load(Ordering::Relaxed);
+            call(number::DUP3, [log, 1, 0, 0, 0, 0]);
+            call(number::DUP3, [log, 2, 0, 0, 0, 0]);
+            call(
+                number::EXECVE,
+                [
+                    DATE.as_ptr() as usize,
+                    arguments.as_ptr() as usize,
+                    environment.as_ptr() as usize,
+                    0,
+                    0,
+                    0,
+                ],
+            );
+            syscall::exit(COMMAND_NOT_RUN)
+        }
+        1.. => {
+            let mut status = 0;
+            loop {
+                match call(
+                    number::WAIT4,
+                    [child as usize, &raw mut status as usize, 0, 0, 0, 0],
+                ) {
+                    ended if ended == child => break,
+                    error if error == -EINTR => {}
+                    _ => return false,
+                }
+            }
+            status == 0
+        }
+        _ => false,
+    }
+}
+
 fn notice_end(services: &mut Services, ended: isize) {
     if ended <= 0 {
         return;
@@ -536,6 +790,13 @@ fn notice_end(services: &mut Services, ended: isize) {
         Some(AfterEnd::GiveUp) => say(&[
             b"init: eggmcpd --network keeps ending; agents on the network are not answered\n",
         ]),
+        None => {}
+    }
+    match services.clock.ended(ended as usize, now_ms()) {
+        Some(AfterEnd::Restart) => start_clock_keeper(&mut services.clock),
+        Some(AfterEnd::GiveUp) => {
+            say(&[b"init: the clock keeper keeps ending; the clock is not set from the network\n"])
+        }
         None => {}
     }
     match services.display.ended(ended as usize, now_ms()) {

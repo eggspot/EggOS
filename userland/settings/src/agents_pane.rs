@@ -16,9 +16,9 @@ use eggos_mcp::grants::{
     AgentGrants, AgentId, AgentName, Grant, GrantStore, Grants, LOCAL_AGENT_ID, MAX_AGENTS,
     Permission, StoreError, StoreState,
 };
-use eggos_toolkit::colour;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::{ELLIPSIS, Text};
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 
@@ -180,7 +180,7 @@ pub(crate) fn line(
         tree,
         parent,
         Place::at(x, y, Length::Px(width), Length::Content),
-        Kind::label("", colour::TEXT),
+        Kind::label("", Token::Text),
     )
 }
 
@@ -221,7 +221,7 @@ pub(crate) fn shortened(words: &str) -> Text<LABEL_BYTES> {
     text
 }
 
-pub(crate) fn show_line(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, words: &str, ink: u32) {
+pub(crate) fn show_line(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, words: &str, ink: Token) {
     tree.set_text(id, shortened(words).as_str());
     tree.change(id, |kind| {
         if let Kind::Label { colour, .. } = kind {
@@ -805,13 +805,13 @@ impl AgentsPane {
         }
     }
 
-    fn idle_line(&self, tree: &WidgetTree<CAPACITY>) -> (String, u32) {
+    fn idle_line(&self, tree: &WidgetTree<CAPACITY>) -> (String, Token) {
         if let StoreState::Unreadable(error) = self.read.store {
             let line = alloc::format!("Grants file cannot be trusted: {}.", error.reason());
-            return (line, colour::TEXT_DIM);
+            return (line, Token::TextDim);
         }
         if let Err(problem) = self.id_typed(tree) {
-            return (String::from(problem), colour::TEXT_DIM);
+            return (String::from(problem), Token::TextDim);
         }
         let local = self
             .selected(tree)
@@ -822,7 +822,7 @@ impl AgentsPane {
             (false, false) => String::from(NO_DISK_LINE),
             (false, true) => boot_words(self.read.boot),
         };
-        (line, colour::TEXT_DIM)
+        (line, Token::TextDim)
     }
 
     fn store_full(&self) -> bool {
@@ -834,7 +834,7 @@ impl AgentsPane {
         let top = self.top_row(tree);
         for (row, id) in widgets.rows.iter().enumerate() {
             let text = self.rows.get(top + row).map(row_text).unwrap_or_default();
-            show_line(tree, *id, &text, colour::TEXT);
+            show_line(tree, *id, &text, Token::Text);
         }
         let writable = self.writable() && self.confirming.is_none();
         let selected = self.selected(tree).copied();
@@ -849,7 +849,7 @@ impl AgentsPane {
                 }
                 None => (String::from(CLASS_TITLES[index]), Permission::Deny),
             };
-            show_line(tree, widgets.class_lines[index], &text, colour::TEXT);
+            show_line(tree, widgets.class_lines[index], &text, Token::Text);
             tree.set_selected(widgets.class_radios[index], permission_index(choice));
             tree.set_enabled(widgets.class_radios[index], writable && selected.is_some());
         }
@@ -865,7 +865,7 @@ impl AgentsPane {
         let (line, ink) = match &self.status {
             _ if self.showing_activity(tree) => self.activity.status_line(tree),
             _ if self.showing_network(tree) => self.network.status_line(),
-            Some(status) => (status.clone(), colour::TEXT),
+            Some(status) => (status.clone(), Token::Text),
             None => self.idle_line(tree),
         };
         show_line(tree, widgets.status, &line, ink);
@@ -954,8 +954,8 @@ impl AgentsPane {
             (_, Permission::Ask) => "Each call asks you. Install lets it add programs.",
             _ => "Install lets it add programs.",
         };
-        show_line(tree, widgets.question, &question, colour::TEXT);
-        show_line(tree, widgets.meaning, meaning, colour::TEXT_DIM);
+        show_line(tree, widgets.question, &question, Token::Text);
+        show_line(tree, widgets.meaning, meaning, Token::TextDim);
         self.confirming = Some((grant, permission));
         tree.set_shown(widgets.panel, true);
         tree.set_default_button(widgets.grant);
@@ -1100,7 +1100,7 @@ impl AgentsPane {
         for (row, id) in self.widgets.rows.iter().enumerate() {
             let text = self.rows.get(top + row).map(row_text).unwrap_or_default();
             if tree.text_of(*id) != Some(shortened(&text).as_str()) {
-                show_line(tree, *id, &text, colour::TEXT);
+                show_line(tree, *id, &text, Token::Text);
             }
         }
     }

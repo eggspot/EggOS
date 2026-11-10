@@ -16,7 +16,7 @@ use crate::system::{
     CaptureFile, Ended, FileState, Invocation, MAX_COMMAND_WORDS, RunOutcome, System,
 };
 use core::ffi::CStr;
-use eggos_commands::tools::NO_SYMLINKS_ENVIRONMENT;
+use eggos_commands::tools::{CODED_ERRORS_ENVIRONMENT, NO_SYMLINKS_ENVIRONMENT};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::process::{ChildStack, Spawn, spawn};
 use eggos_runtime::startup::Startup;
@@ -658,12 +658,17 @@ impl Linux {
             return Err(Errno::E2BIG);
         }
         pointers[count] = core::ptr::null();
-        let mut environment = [core::ptr::null::<u8>(); ENVIRONMENT.len() + 2];
+        let mut environment = [core::ptr::null::<u8>(); ENVIRONMENT.len() + 3];
         for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
             *slot = variable.as_ptr().cast();
         }
+        let mut added = ENVIRONMENT.len();
         if invocation.no_symlinks {
-            environment[ENVIRONMENT.len()] = NO_SYMLINKS_ENVIRONMENT.as_ptr().cast();
+            environment[added] = NO_SYMLINKS_ENVIRONMENT.as_ptr().cast();
+            added += 1;
+        }
+        if invocation.coded_errors {
+            environment[added] = CODED_ERRORS_ENVIRONMENT.as_ptr().cast();
         }
         let input = pipe()?;
         let output = pipe().inspect_err(|_| {
@@ -871,6 +876,14 @@ impl System for Linux {
         };
         statx(path, STATX_TYPE, AT_SYMLINK_NOFOLLOW)
             .is_ok_and(|status| mode_of(&status) & S_IFMT == S_IFLNK)
+    }
+
+    fn reaches_file(&mut self, path: &str) -> bool {
+        let mut buffer = [0u8; MAX_PATH_BYTES + 1];
+        let Some(path) = c_path(path, &mut buffer) else {
+            return false;
+        };
+        statx(path, STATX_TYPE, 0).is_ok_and(|status| mode_of(&status) & S_IFMT == S_IFREG)
     }
 
     fn file_state(&mut self, path: &str) -> FileState {

@@ -382,7 +382,7 @@ pub struct Arguments {
 impl Arguments {
     fn of(context: &UserContext) -> Self {
         let [flags, stack, parent_tid, fourth, fifth, _] = context.syscall_arguments();
-        let (child_tid, tls) = if cfg!(target_arch = "x86_64") {
+        let (child_tid, tls) = if crate::linux::abi::CLONE_CHILD_TID_BEFORE_TLS {
             (fourth, fifth)
         } else {
             (fifth, fourth)

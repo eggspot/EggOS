@@ -8,14 +8,17 @@
 //! The archive is deterministic: members in name order, each directory before what it holds,
 //! the extra members last, owned by root, directories and programs `0755` and other files
 //! `0644`, every modification time `SOURCE_DATE_EPOCH` (0 if unset). Only directories and
-//! regular files are taken. A hard link shares its file's inode number and link count, and the
-//! file's data is written once, with the last of its names, as `gen_init_cpio` does (D108).
+//! regular files are taken from `initramfs/`. A hard link shares its file's inode number and link
+//! count, and the file's data is written once, with the last of its names, as `gen_init_cpio`
+//! does (D108). A symbolic link among the extra members holds its target as its data (D170),
+//! which need not exist: the base's links into components dangle until they are installed (D235).
 
 use std::path::{Path, PathBuf};
 
 const DIRECTORY_MODE: u32 = 0o040755;
 const FILE_MODE: u32 = 0o100644;
 const PROGRAM_MODE: u32 = 0o100755;
+const SYMBOLIC_LINK_MODE: u32 = 0o120777;
 const TRAILER: &str = "TRAILER!!!";
 const NAME_MAX: usize = 255;
 const PATH_MAX: usize = 4096;
@@ -29,6 +32,8 @@ pub enum Content<'a> {
     Text(&'a str),
     /// Another name for the extra member at this path in the archive, which comes earlier.
     HardLink(&'a str),
+    /// A symbolic link to this target, which need not exist.
+    SymbolicLink(&'a str),
     /// An empty directory: where the kernel mounts a file system (`/proc`, D125).
     Directory,
 }
@@ -109,10 +114,17 @@ fn add(members: &mut Vec<Member>, path: &str, content: Content) -> Result<(), St
         }
         Content::Text(text) => Member::new(path, FILE_MODE, text.as_bytes().to_vec()),
         Content::Directory => Member::new(path, DIRECTORY_MODE, Vec::new()),
+        Content::SymbolicLink(target) if target.is_empty() || target.len() >= PATH_MAX => {
+            return Err(format!("`/{path}` cannot link to `{target}`"));
+        }
+        Content::SymbolicLink(target) => {
+            Member::new(path, SYMBOLIC_LINK_MODE, target.as_bytes().to_vec())
+        }
         Content::HardLink(target) => {
             let index = members
                 .iter()
                 .position(|member| member.name == target && member.mode != DIRECTORY_MODE)
+                .filter(|&index| members[index].mode != SYMBOLIC_LINK_MODE)
                 .ok_or_else(|| format!("{path}: no file `{target}` to link to before it"))?;
             let target = members[index].link_to.unwrap_or(index);
             Member {
@@ -303,6 +315,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(members.len(), 5);
+    }
+
+    #[test]
+    fn a_symbolic_link_holds_its_target_as_data_and_nothing_goes_under_it() {
+        let mut members = vec![Member::new(".", DIRECTORY_MODE, Vec::new())];
+        let target = "/var/lib/eggos/components/windows-apps/root/usr/lib/eggos/windows";
+        let layer = "usr/lib/eggos/windows";
+        add(&mut members, layer, Content::SymbolicLink(target)).unwrap();
+        let link = members.last().unwrap();
+        assert_eq!(link.mode, SYMBOLIC_LINK_MODE);
+        assert_eq!(link.data, target.as_bytes());
+        assert!(add(&mut members, "usr/lib/eggos/windows/x", Content::Text("x")).is_err());
+        assert!(add(&mut members, "bin/windows", Content::HardLink(layer)).is_err());
+        assert!(add(&mut members, "bin/empty", Content::SymbolicLink("")).is_err());
+        let headers = headers(&archive(&members, 0));
+        let (name, _, links, data) = &headers[4];
+        assert_eq!(name, "usr/lib/eggos/windows");
+        assert_eq!(*links, 1);
+        assert_eq!(data, target.as_bytes());
     }
 
     fn headers(bytes: &[u8]) -> Vec<(String, u32, u32, Vec<u8>)> {

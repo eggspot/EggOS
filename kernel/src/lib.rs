@@ -5,6 +5,7 @@
 //! the development host as well as on every bare-metal target.
 
 #![cfg_attr(not(test), no_std)]
+#![deny(clippy::significant_drop_in_scrutinee)]
 
 extern crate alloc;
 
@@ -14,9 +15,9 @@ pub mod apps;
 #[cfg(any(test, feature = "qemu-bench"))]
 pub mod bench;
 pub mod block;
-#[cfg(feature = "qemu-boot-clock")]
 pub mod boot_clock;
 pub mod clipboard;
+pub mod component_store;
 pub mod console;
 pub mod cpu;
 pub mod devices;
@@ -49,7 +50,7 @@ use eggos_hal::{ExitStatus, Platform};
 /// The kernel heap. On the bare-metal targets it is the global allocator, so `alloc` (`Box`,
 /// `Vec`, ...) works once [`paging::enable`] has run; before that, allocating fails. Host
 /// builds keep the host's allocator, and tests use this heap directly.
-#[cfg_attr(target_os = "none", global_allocator)]
+#[cfg_attr(eggos_kernel, global_allocator)]
 pub static HEAP: heap::KernelHeap = heap::KernelHeap::new();
 
 /// Kernel version, taken from the workspace version.
@@ -81,7 +82,6 @@ pub const BOOT_MODE: BootMode = if cfg!(feature = "qemu-bench") {
 /// Returns how the boot went; the architecture entry point turns that into a machine exit. A
 /// release kernel returns only once init has ended, a failure.
 pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
-    #[cfg(feature = "qemu-boot-clock")]
     boot_clock::start::<P>();
     cpu::init_boot_cpu::<P>();
     let free_memory = P::memory_map();
@@ -97,6 +97,8 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     P::direct_map_offset()
                 )?;
                 report_devices(console, devices::discover_and_probe::<P>(&mut memory))?;
+                #[cfg(feature = "virtio-rng")]
+                report_device_seed(console, devices::virtio::seed_random::<P>())?;
                 report_wall_clock(console, wall_clock::start::<P>())?;
                 if display::mode().is_none() {
                     display::offscreen::report(
@@ -133,6 +135,7 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 #[cfg(feature = "qemu-bench")]
                 if passed {
                     bench::run::<P, _>(console, &bench::all::<P>(), &mut memory)?;
+                    bench::report_idle_wakeups::<P, _>(console)?;
                 }
                 Ok(passed)
             }
@@ -256,6 +259,11 @@ fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
                 }
                 Err(disk) => block::put_back(index, disk.into_device()),
             }
+            continue;
+        }
+        if contents == Ok(eggos_eggfs::Contents::Other) && component_store::holds_store(&mut disk) {
+            block::put_back(index, disk.into_device());
+            writeln!(console, "{}", component_store::ATTACHED)?;
             continue;
         }
         let device = disk.into_device();
@@ -602,6 +610,18 @@ fn report_random<W: Write>(console: &mut W, boot_seeds: random::BootSeeds) -> co
              getrandom waits, AT_RANDOM is guessable",
             random::SEEDED_BITS
         )
+    }
+}
+
+#[cfg(feature = "virtio-rng")]
+fn report_device_seed<W: Write>(console: &mut W, seeded: Option<bool>) -> core::fmt::Result {
+    match seeded {
+        Some(true) => writeln!(console, "random: reseeded from virtio-rng"),
+        Some(false) => writeln!(
+            console,
+            "random: reseeded from virtio-rng, still NOT SEEDED"
+        ),
+        None => Ok(()),
     }
 }
 
@@ -1429,11 +1449,8 @@ pub(crate) mod tests {
         }
         let buffer = context.stack();
         let empty_path = buffer + 256;
-        let (mode, rdev) = if cfg!(target_arch = "x86_64") {
-            (24, 40)
-        } else {
-            (16, 32)
-        };
+        let [mode, _, _, rdev] =
+            crate::linux::abi::test_support::STAT_FIELDS.map(|offset| offset as u64);
         let field = |offset: u64, bytes: &mut [u8]| read_user_bytes(buffer + offset, bytes);
         let character_device = |offset: u64, size: usize| {
             let mut bytes = [0u8; 4];
@@ -1653,12 +1670,9 @@ pub(crate) mod tests {
             if signal == 10 && word(sigmask) == usr1 {
                 write_user_bytes(ucontext + CHANGED_IN_UCONTEXT, &2u64.to_ne_bytes());
             }
-            #[cfg(target_arch = "x86_64")]
-            {
-                let mut registers = context.registers();
-                registers.rsp += 8;
-                context.set_registers(&registers);
-            }
+            let mut registers = context.registers();
+            crate::linux::abi::test_support::pop_return_address(&mut registers);
+            context.set_registers(&registers);
             context.simulate_syscall(number::RT_SIGRETURN, [0; 6], pc + 1);
             return UserExit::Syscall;
         }
@@ -1681,7 +1695,7 @@ pub(crate) mod tests {
             _ if !passed => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
             0 => {
                 let flags = signals::flag::SIGINFO
-                    | if cfg!(target_arch = "x86_64") {
+                    | if crate::linux::abi::SIGRETURN_TRAMPOLINE.is_none() {
                         signals::flag::RESTORER
                     } else {
                         0
@@ -1717,49 +1731,19 @@ pub(crate) mod tests {
     /// Where the simulated `linux_signal_handler` program's handler is, from its start.
     const SIGNAL_HANDLER: u64 = 20;
 
-    /// The two registers the simulated `linux_signal_handler` sets before its `tgkill`: one
-    /// the handler clobbers, which `rt_sigreturn` must restore, and one it sets to 2 in its
-    /// frame (`x19` and `x20`, `s1` and `s2`, `rbx` and `r12`), with the latter's offset in the
-    /// `ucontext`.
-    #[cfg(target_arch = "aarch64")]
-    fn kept_and_changed(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 2] {
-        let [.., kept, changed, _, _, _, _, _, _, _, _, _, _] = &mut registers.x;
-        [kept, changed]
-    }
-    #[cfg(target_arch = "aarch64")]
-    const CHANGED_IN_UCONTEXT: u64 = 176 + 8 + 20 * 8;
-    #[cfg(target_arch = "riscv64")]
-    fn kept_and_changed(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 2] {
-        let (low, high) = registers.x.split_at_mut(18);
-        [&mut low[9], &mut high[0]]
-    }
-    #[cfg(target_arch = "riscv64")]
-    const CHANGED_IN_UCONTEXT: u64 = 176 + 18 * 8;
-    #[cfg(target_arch = "x86_64")]
-    fn kept_and_changed(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 2] {
-        [&mut registers.rbx, &mut registers.r12]
-    }
-    #[cfg(target_arch = "x86_64")]
-    const CHANGED_IN_UCONTEXT: u64 = 40 + 4 * 8;
+    use crate::linux::abi::test_support::{
+        CHANGED_IN_UCONTEXT, FAULT_REGISTERS_IN_UCONTEXT, fault_registers, kept_and_changed,
+    };
 
     /// Where the simulated `linux_signal_handler`'s handler sets an FP/SIMD register in its
-    /// frame whose `ucontext_t` is at `ucontext` (`v9`, `f9`, `xmm9`), as the program does: the
-    /// thread has none until then, so `rt_sigreturn` must give it some.
+    /// frame whose `ucontext_t` is at `ucontext`, as the program does: the thread has none
+    /// until then, so `rt_sigreturn` must give it some.
     fn fp_changed_in_frame(ucontext: u64) -> u64 {
-        #[cfg(target_arch = "aarch64")]
-        {
-            ucontext + 176 + 288 + 16 + 9 * 16
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            ucontext + 176 + 256 + 9 * 8
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            let mut image = [0u8; 8];
-            read_user_bytes(ucontext + 40 + 184, &mut image);
-            u64::from_ne_bytes(image) + 160 + 9 * 16
-        }
+        crate::linux::abi::test_support::fp_changed_in_frame(ucontext, |address| {
+            let mut bytes = [0u8; 8];
+            read_user_bytes(address, &mut bytes);
+            u64::from_ne_bytes(bytes)
+        })
     }
 
     /// Plays `linux_signal_handler` (at `start`) for the test platform: `sigaltstack`,
@@ -1791,11 +1775,7 @@ pub(crate) mod tests {
             }
             let mut registers = context.registers();
             *kept_and_changed(&mut registers)[0] = 0;
-            // Its return: x86_64's `ret` pops the restorer.
-            #[cfg(target_arch = "x86_64")]
-            {
-                registers.rsp += 8;
-            }
+            crate::linux::abi::test_support::pop_return_address(&mut registers);
             context.set_registers(&registers);
             context.simulate_syscall(number::RT_SIGRETURN, [0; 6], pc + 1);
             return UserExit::Syscall;
@@ -1819,7 +1799,7 @@ pub(crate) mod tests {
             1 => {
                 let flags = signals::flag::SIGINFO
                     | signals::flag::ONSTACK
-                    | if cfg!(target_arch = "x86_64") {
+                    | if crate::linux::abi::SIGRETURN_TRAMPOLINE.is_none() {
                         signals::flag::RESTORER
                     } else {
                         0
@@ -1846,46 +1826,6 @@ pub(crate) mod tests {
         UserExit::Syscall
     }
 
-    /// The four registers the simulated `linux_fault_handler` sets before each fault: the
-    /// faults its handler counted, the `si_addr` and `si_code` the handler must see, and where
-    /// it resumes the program (`x20` to `x23`, `s2` to `s5`, `r12` to `r15`), with their
-    /// offsets in the `ucontext`, then the program counter's.
-    #[cfg(target_arch = "aarch64")]
-    fn fault_registers(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 4] {
-        let [.., count, address, code, resume, _, _, _, _, _, _, _] = &mut registers.x;
-        [count, address, code, resume]
-    }
-    #[cfg(target_arch = "aarch64")]
-    const FAULT_REGISTERS_IN_UCONTEXT: [u64; 5] = [
-        176 + 8 + 20 * 8,
-        176 + 8 + 21 * 8,
-        176 + 8 + 22 * 8,
-        176 + 8 + 23 * 8,
-        176 + 264,
-    ];
-    #[cfg(target_arch = "riscv64")]
-    fn fault_registers(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 4] {
-        let [count, address, code, resume] = &mut registers.x[18..22] else {
-            unreachable!()
-        };
-        [count, address, code, resume]
-    }
-    #[cfg(target_arch = "riscv64")]
-    const FAULT_REGISTERS_IN_UCONTEXT: [u64; 5] =
-        [176 + 18 * 8, 176 + 19 * 8, 176 + 20 * 8, 176 + 21 * 8, 176];
-    #[cfg(target_arch = "x86_64")]
-    fn fault_registers(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 4] {
-        [
-            &mut registers.r12,
-            &mut registers.r13,
-            &mut registers.r14,
-            &mut registers.r15,
-        ]
-    }
-    #[cfg(target_arch = "x86_64")]
-    const FAULT_REGISTERS_IN_UCONTEXT: [u64; 5] =
-        [40 + 4 * 8, 40 + 5 * 8, 40 + 6 * 8, 40 + 7 * 8, 40 + 16 * 8];
-
     /// Whether the machine context at `ucontext` reports a fault at `address` as the
     /// simulated `linux_fault_handler`'s handler checks it: AArch64's `fault_address` and
     /// `esr_context` record, x86_64's `cr2` and `trapno` 14, nothing on RISC-V.
@@ -1895,13 +1835,7 @@ pub(crate) mod tests {
             read_user_bytes(ucontext + at, &mut bytes);
             u64::from_ne_bytes(bytes)
         };
-        match () {
-            _ if cfg!(target_arch = "aarch64") => {
-                word(176) == address && word(176 + 288 + 528) == 0x10_4553_5201
-            }
-            _ if cfg!(target_arch = "x86_64") => word(40 + 176) == address && word(40 + 160) == 14,
-            _ => true,
-        }
+        crate::linux::abi::test_support::reports_fault(word, address)
     }
 
     /// Plays `linux_fault_handler` (at `start`) for the test platform: `rt_sigaction` for
@@ -1938,13 +1872,9 @@ pub(crate) mod tests {
                 write_user_bytes(count, &(word(count) + 1).to_ne_bytes());
             }
             write_user_bytes(pc_at, &word(resume).to_ne_bytes());
-            // Its return: x86_64's `ret` pops the restorer.
-            #[cfg(target_arch = "x86_64")]
-            {
-                let mut registers = context.registers();
-                registers.rsp += 8;
-                context.set_registers(&registers);
-            }
+            let mut registers = context.registers();
+            crate::linux::abi::test_support::pop_return_address(&mut registers);
+            context.set_registers(&registers);
             context.simulate_syscall(number::RT_SIGRETURN, [0; 6], pc + 1);
             return UserExit::Syscall;
         }
@@ -1955,13 +1885,7 @@ pub(crate) mod tests {
             let [_, expected_address, expected_code, resume_at] = fault_registers(&mut registers);
             (*expected_address, *expected_code, *resume_at) = (address, code, resume);
             context.set_registers(&registers);
-            // A read, as the test platform encodes it, with the architecture's class in it
-            // (AArch64's data abort, RISC-V's load page fault).
-            let code = match () {
-                _ if cfg!(target_arch = "x86_64") => 0,
-                _ if cfg!(target_arch = "aarch64") => 0x24 << 26,
-                _ => 13,
-            };
+            let code = crate::linux::abi::test_support::READ_FAULT_CODE;
             context.simulate_exception(Exception {
                 kind: ExceptionKind::DataFault,
                 name: "test page fault",
@@ -1973,7 +1897,7 @@ pub(crate) mod tests {
         let (number, arguments) = match step {
             0 => {
                 let flags = signals::flag::SIGINFO
-                    | if cfg!(target_arch = "x86_64") {
+                    | if crate::linux::abi::SIGRETURN_TRAMPOLINE.is_none() {
                         signals::flag::RESTORER
                     } else {
                         0

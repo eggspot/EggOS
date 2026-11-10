@@ -24,6 +24,9 @@ pub const FILES_PROGRAM: &[u8] = b"/bin/files";
 pub const TEXT_EDITOR_PROGRAM: &[u8] = b"/bin/text-editor";
 /// Where the Task Manager is, when the build has it (D200).
 pub const TASK_MANAGER_PROGRAM: &[u8] = b"/bin/task-manager";
+/// The Downloads window's program, when the build has it (D225), a name of the Settings
+/// program.
+pub const DOWNLOADS_PROGRAM: &[u8] = b"/bin/downloads";
 /// The terminal program (D187), a name of the Settings program.
 pub const TERMINAL_PROGRAM: &[u8] = b"/bin/terminal";
 
@@ -57,6 +60,7 @@ pub fn catalogue() -> Catalogue {
     catalogue.set_files_present(vfs::resolve(root, root, FILES_PROGRAM).is_ok());
     catalogue.set_text_editor_present(vfs::resolve(root, root, TEXT_EDITOR_PROGRAM).is_ok());
     catalogue.set_task_manager_present(vfs::resolve(root, root, TASK_MANAGER_PROGRAM).is_ok());
+    catalogue.set_downloads_present(vfs::resolve(root, root, DOWNLOADS_PROGRAM).is_ok());
     catalogue.set_terminal_present(vfs::resolve(root, root, TERMINAL_PROGRAM).is_ok());
     let Ok(directory) = vfs::resolve(root, root, manifest::DIRECTORY.as_bytes()) else {
         return catalogue;

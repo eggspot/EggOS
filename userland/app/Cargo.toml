@@ -16,6 +16,7 @@ window = ["dep:eggos-toolkit"]
 eggos-app-manifest = { path = "../../app-manifest" }
 eggos-commands = { path = "../commands" }
 eggos-mcp = { path = "../mcp" }
+eggos-plist = { path = "../../plist" }
 eggos-png = { path = "../../png" }
 eggos-runtime = { path = "../runtime" }
 eggos-toolkit = { path = "../toolkit", optional = true }

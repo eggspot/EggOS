@@ -9,17 +9,22 @@ use super::abi::{ClassObject, Id, Imp, Sel};
 use super::class;
 
 extern "C" fn lookup_for_send(_receiver: Id, sel: Sel, class: *mut ClassObject) -> Imp {
-    class::lookup(class, sel).unwrap_or(not_recognized as *const () as Imp)
+    class::lookup(class, sel).unwrap_or(eggos_guarded_not_recognized as *const () as Imp)
 }
 
 #[cfg(target_arch = "x86_64")]
 extern "C" fn lookup_for_struct_send(_receiver: Id, sel: Sel, class: *mut ClassObject) -> Imp {
-    class::lookup(class, sel).unwrap_or(not_recognized_struct as *const () as Imp)
+    class::lookup(class, sel).unwrap_or(eggos_guarded_not_recognized_struct as *const () as Imp)
 }
+
+super::exception::guard!(eggos_guarded_not_recognized => not_recognized);
 
 extern "C" fn not_recognized(receiver: Id, sel: Sel) -> usize {
     super::root::does_not_recognize(receiver, sel)
 }
+
+#[cfg(target_arch = "x86_64")]
+super::exception::guard!(eggos_guarded_not_recognized_struct => not_recognized_struct);
 
 #[cfg(target_arch = "x86_64")]
 extern "C" fn not_recognized_struct(result: usize, receiver: Id, sel: Sel) -> usize {

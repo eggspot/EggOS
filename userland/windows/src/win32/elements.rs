@@ -4,26 +4,34 @@
 //! text; its child windows follow in pre-order, each an element whose id is its `HWND`, with
 //! its control's role (a button, check box, radio button or group box by its style, an edit
 //! control as a text field, a static as a label, a list box or combo box as a list, any other
-//! window as a group), its text (an edit control's and a combo box's chosen item as the value),
-//! its rectangle in the content, and whether it is disabled, focused or the default button;
-//! below each window, the text the program drew in it with `TextOutW` and `DrawTextW`
-//! (`gui::drawn`). `invoke` clicks a button as `BM_CLICK` does, `focus` is `SetFocus` and
-//! `set-text` is `WM_SETTEXT` on an edit control, the last two for windows of the thread that
-//! reads the records. comctl32's common controls (D178) add their rows, tree items, tabs,
-//! status parts and toolbar buttons as elements below theirs (`common_controls`), which take
-//! `select`, `invoke` and `focus` as the design's section 29 says.
+//! window as a group), its text (an edit control's and a combo box's chosen item as the value;
+//! a password edit is named `password` and its text left out, D228),
+//! its rectangle in the content, and whether it is disabled, focused, checked or the default
+//! button; below each window, the text the program drew in it with `TextOutW` and `DrawTextW`
+//! (`gui::drawn`). A list box's items follow it as list items, the selected one so flagged
+//! (D227), which take `select` (as a click), `invoke` (as a double-click) and `focus`.
+//! `invoke` clicks a button as `BM_CLICK` does, `focus` is `SetFocus` and `set-text` is
+//! `WM_SETTEXT` on an edit control. An action on a window of another thread is handed to that
+//! thread's queue and done in its next `GetMessageW` or `PeekMessageW`, as Windows delivers a
+//! message sent from another thread (D227). comctl32's common controls (D178) add their rows,
+//! tree items, tabs, status parts and toolbar buttons as elements below theirs
+//! (`common_controls`), which take `select`, `invoke` and `focus` as the design's section 29
+//! says.
 
 use super::gui::{self, Delivery, Gui, with};
 use super::window_device::Device;
 use super::{dialog, heap, thread_environment, window_text};
 use crate::gui::drawn::MAX_DRAWN;
+use crate::gui::handed_over::{AGENT_FOCUS, AGENT_SET_TEXT, HANDED_OVER_WINDOW};
 use crate::gui::input::Record;
 use crate::gui::message;
+use crate::gui::queue::Message;
 use crate::gui::windows::{self, ControlKind, MAX_DEPTH, Procedure, Window};
 use eggos_element_tree::{
     Action, Bounds, Element, MAX_LABEL_BYTES, MAX_TEXT_BYTES, MAX_TREE_BYTES, Outcome, Role,
     TreeWriter, flags, query_kind, tree_answer,
 };
+use eggos_windows_gui::controls::list_box;
 
 /// The top-level window's element.
 pub const ROOT_ELEMENT: u32 = 1;
@@ -36,6 +44,7 @@ const CHECK_BOXES: [u32; 4] = [2, 3, 5, 6];
 const RADIO_BUTTONS: [u32; 2] = [4, 9];
 const GROUP_BOX: u32 = 7;
 const BUTTON_CLICK: u32 = 0x00f5;
+const CONCEALED_FIELD_NAME: &[u8] = b"password";
 
 /// Answers the query in `record` for its window, read by thread `thread`.
 pub fn answer(device: &Device, record: &Record, thread: u32) {
@@ -106,11 +115,22 @@ fn describe(gui: &Gui, root: usize, tree: &mut TreeWriter<'_>) {
     }
 }
 
+fn checked_flag(window: &Window) -> u16 {
+    match super::controls::is_checked(window) {
+        true => flags::CHECKED,
+        false => 0,
+    }
+}
+
 fn role_of(window: &Window) -> (Role, u16) {
     match window.procedure {
         Procedure::Control(ControlKind::Button, _) => match window.style & BUTTON_TYPE {
-            kind if CHECK_BOXES.contains(&kind) => (Role::Checkbox, flags::FOCUSABLE),
-            kind if RADIO_BUTTONS.contains(&kind) => (Role::Radio, flags::FOCUSABLE),
+            kind if CHECK_BOXES.contains(&kind) => {
+                (Role::Checkbox, flags::FOCUSABLE | checked_flag(window))
+            }
+            kind if RADIO_BUTTONS.contains(&kind) => {
+                (Role::Radio, flags::FOCUSABLE | checked_flag(window))
+            }
             GROUP_BOX => (Role::Group, 0),
             DEFAULT_PUSH_BUTTON => (Role::Button, flags::FOCUSABLE | flags::DEFAULT),
             _ => (Role::Button, flags::FOCUSABLE),
@@ -159,6 +179,10 @@ fn push_children(
             window.procedure,
             Procedure::Control(ControlKind::ComboBox, _)
         );
+        let is_list_box = matches!(
+            window.procedure,
+            Procedure::Control(ControlKind::ListBox, _)
+        );
         let source = match is_combo {
             true => super::combo_box::shown_text(gui, kid),
             false => window_text::of(gui, kid),
@@ -174,8 +198,9 @@ fn push_children(
             }
             None => &[][..],
         };
+        let concealed = super::controls::conceals_text(window);
         let (name, value): (&[u8], &[u8]) = match role {
-            Role::TextField => (&[], text),
+            Role::TextField => field_name_and_value(text, concealed),
             _ if is_combo => (&[], text),
             _ if common.is_some() => (text, common_value),
             _ => (text, &[]),
@@ -195,6 +220,7 @@ fn push_children(
             Some(kind) => {
                 super::common_controls::push_items(gui, kind, kid, id, placement.origin, tree)
             }
+            None if is_list_box => push_list_items(gui, kid, id, placement.origin, tree),
             None => true,
         };
         if !tree.push(&element)
@@ -206,6 +232,52 @@ fn push_children(
         }
     }
     true
+}
+
+fn field_name_and_value(text: &[u8], concealed: bool) -> (&[u8], &[u8]) {
+    match concealed {
+        true => (CONCEALED_FIELD_NAME, &[]),
+        false => (&[], text),
+    }
+}
+
+fn push_list_items(
+    gui: &Gui,
+    window: usize,
+    element: u32,
+    origin: (i32, i32),
+    tree: &mut TreeWriter<'_>,
+) -> bool {
+    super::controls::read_list(gui, window, |entry, list| {
+        for index in 0..list.count() {
+            let rect = list_box::row_bounds(index, list.top(), entry.width as i32);
+            let bounds = Bounds::new(
+                origin.0.saturating_add(rect.left),
+                origin.1.saturating_add(rect.top),
+                rect.width(),
+                rect.height(),
+            );
+            let mut name = [0u8; MAX_LABEL_BYTES];
+            let name = utf8(list.text(index).unwrap_or(&[]), &mut name);
+            let selected = match list.selected() == Some(index) {
+                true => flags::SELECTED,
+                false => 0,
+            };
+            let item = Element::new(
+                super::common_controls::item_element(window, index),
+                element,
+                Role::ListItem,
+                bounds,
+            )
+            .named(name)
+            .flagged(selected);
+            if !tree.push(&item) {
+                return false;
+            }
+        }
+        true
+    })
+    .unwrap_or(true)
 }
 
 fn push_drawn(gui: &Gui, window: usize, parent_element: u32, tree: &mut TreeWriter<'_>) -> bool {
@@ -285,6 +357,9 @@ fn act(
     {
         return super::common_controls::act(kind, handle, item, action, ours);
     }
+    if let (Some(item), Procedure::Control(ControlKind::ListBox, _)) = (item, target.procedure) {
+        return act_on_list_item(handle, item, action, target.thread, thread);
+    }
     if item.is_some() {
         return Outcome::NoSuchElement;
     }
@@ -306,7 +381,11 @@ fn act(
             dialog::set_focus(handle);
             Outcome::Done
         }
-        (Action::SetText, Procedure::Control(ControlKind::Edit, _)) if ours => {
+        (Action::Focus, _) => match hand_over(target.thread, AGENT_FOCUS, handle, 0) {
+            true => Outcome::Done,
+            false => Outcome::NotSupported,
+        },
+        (Action::SetText, Procedure::Control(ControlKind::Edit, _)) => {
             let mut text = [0u8; MAX_TEXT_BYTES];
             let length = device.query_text(serial, &mut text).unwrap_or(0);
             let text = core::str::from_utf8(&text[..length]).unwrap_or("");
@@ -314,9 +393,112 @@ fn act(
             for (slot, unit) in units.iter_mut().zip(text.encode_utf16()) {
                 *slot = unit;
             }
+            if !ours {
+                return hand_over_text(handle, target.thread, &units);
+            }
             gui::send(handle, message::SET_TEXT, 0, units.as_ptr() as usize);
             Outcome::Done
         }
         _ => Outcome::NotSupported,
+    }
+}
+
+fn act_on_list_item(
+    window: usize,
+    item: usize,
+    action: Action,
+    owner: u32,
+    thread: u32,
+) -> Outcome {
+    if action == Action::SetText {
+        return Outcome::NotSupported;
+    }
+    let exists = with(|gui| super::controls::read_list(gui, window, |_, list| item < list.count()))
+        .flatten()
+        .unwrap_or(false);
+    if !exists {
+        return Outcome::NoSuchElement;
+    }
+    let delivery = Delivery {
+        window,
+        thread: owner,
+        message: super::controls::ACT_ON_LIST_ITEM,
+        wparam: item,
+        lparam: action.value() as usize,
+    };
+    gui::deliver(&delivery, thread);
+    Outcome::Done
+}
+
+fn hand_over(owner: u32, number: u32, window: usize, lparam: usize) -> bool {
+    let posted = with(|gui| {
+        gui.post(HANDED_OVER_WINDOW, owner, number, window, lparam)
+            .is_ok()
+    })
+    .unwrap_or(false);
+    if posted {
+        gui::wake();
+    }
+    posted
+}
+
+fn hand_over_text(window: usize, owner: u32, units: &[u16; MAX_TEXT_BYTES + 1]) -> Outcome {
+    let block = heap::allocate(core::mem::size_of_val(units)).cast::<u16>();
+    if block.is_null() {
+        return Outcome::NotSupported;
+    }
+    // SAFETY: `allocate` gave a block the size of `units`, 16-byte aligned, which nothing else
+    // reaches until it is handed over below.
+    unsafe { core::ptr::copy_nonoverlapping(units.as_ptr(), block, units.len()) };
+    if hand_over(owner, AGENT_SET_TEXT, window, block as usize) {
+        return Outcome::Done;
+    }
+    // SAFETY: the block came from `allocate` and was not handed over, so nothing else has it.
+    unsafe { heap::free(block.cast()) };
+    Outcome::NotSupported
+}
+
+/// Does the agent's action in `handed`, taken out of the calling thread's queue, on its window
+/// if that is still the calling thread's, and frees the text it carries.
+pub fn act_handed_over(handed: &Message) {
+    let window = handed.wparam;
+    let thread = thread_environment::thread_id();
+    let procedure = with(|gui| {
+        gui.windows
+            .get(window)
+            .filter(|entry| entry.thread == thread)
+            .map(|entry| entry.procedure)
+    })
+    .flatten();
+    match handed.message {
+        AGENT_FOCUS if procedure.is_some() => {
+            dialog::set_focus(window);
+        }
+        AGENT_SET_TEXT => {
+            if let Some(Procedure::Control(ControlKind::Edit, _)) = procedure {
+                gui::send(window, message::SET_TEXT, 0, handed.lparam);
+            }
+            // SAFETY: the block `hand_over_text` allocated and handed to this thread alone,
+            // whose queue no longer holds it.
+            unsafe { heap::free(handed.lparam as *mut u8) };
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_password_edit_is_named_password_and_its_text_is_left_out() {
+        assert_eq!(
+            field_name_and_value(b"hunter2", true),
+            (&b"password"[..], &b""[..])
+        );
+        assert_eq!(
+            field_name_and_value(b"hello", false),
+            (&b""[..], &b"hello"[..])
+        );
     }
 }

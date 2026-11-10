@@ -16,14 +16,20 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   aarch64, 161 ms on riscv64 and 261 ms on x86_64 from QEMU's start, on CI's machines on
   2026-10-29; the release notes give each image's own figure).
 - **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse
-  (on interrupts, D184), virtio-blk (polled, one request at a time, for the host folder), the
-  real-time clock (x86_64 CMOS, AArch64 PL031, RISC-V Goldfish, D150), virtio-net (polled, the
-  first adapter only, D157) and on test kernels virtio-rng. Nothing else is driven: no Wi-Fi,
-  no sound, no USB (D110-D113, D130). `device list` and `device_list` show the devices as of
-  boot (no hot-plug); Settings' About does not list them yet; two virtio input devices read
+  (on interrupts, D184), virtio-blk (up to 15 requests in flight, on interrupts, D220), the
+  real-time clock (x86_64 CMOS, AArch64 PL031, RISC-V Goldfish, D150), virtio-net (on
+  interrupts, the first adapter only, D157, D220), virtio-console (the agent channel, on
+  interrupts) and on test kernels virtio-rng, which reseeds the kernel's generator at boot only.
+  A driver whose device's interrupt cannot be routed polls it as before. Nothing else is
+  driven: no Wi-Fi, no sound, no USB (D110-D113, D130). `device list`, `device_list` and
+  Settings' About show the devices as of boot (no hot-plug); two virtio input devices read
   alike; the console UART and the interrupt controller, set up before the driver model, read
-  `No driver`. A display mode change (QEMU's window resized) is not followed, virtio-console
-  input is not a console, and the kernel's random generator is not reseeded from virtio-rng.
+  `No driver`. About's table keeps its columns' widths when the window is wider and has no
+  two-line rows for narrow windows or touch yet; it lists at most 64 devices. Every device line
+  goes to the boot CPU, a device has one line for all its queues, x86 devices without MSI-X
+  have none (no I/O APIC lines), and a line is never given back, even when connecting it
+  failed. A display mode change (QEMU's window resized) is not followed, the GPU is polled,
+  and virtio-console input is not a console (D220).
 - **Network, parts 1 and 2** (D157, D158, [network.md](network.md)). IPv4 over one wired
   adapter with an address from DHCP, UDP, ping and TCP for programs, DNS through
   `/etc/resolv.conf`, `lo`; `ip`, `ping`, `nslookup`, `fetch` (downloads over `http://` and
@@ -33,11 +39,11 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   revocation checks; TCP has no window scaling (64 KiB windows), no selective
   acknowledgments, keep-alive or urgent data, drops segments that arrive out of order (they
   are sent again), and on a machine without an adapter its timers run only when a program
-  makes a socket call. No downloads window in the GUI yet. No IPv6, no fragment reassembly, no static addresses or second adapter, no
+  makes a socket call. Settings' Network pane, the bar's network indicator, the Downloads
+  window and the network clock are in (D225); downloads are listed since boot only. No IPv6, no fragment reassembly, no static addresses or second adapter, no
   multicast, no reverse lookups, no netlink (iproute2 and `getifaddrs` fail; `ip` reads
-  `/proc/net`). Settings has no Network pane and the bar no network indicator yet (designed in
-  docs/ux/network-v0.3.md). The adapter is polled (50 wakeups a second when idle) until drivers
-  run on interrupts. On riscv64, `--mcp --apps` with a disk and the network takes more than
+  `/proc/net`). The adapter interrupts (D220); while TCP connections are open its
+  thread still wakes every 20 ms for their timers. On riscv64, `--mcp --apps` with a disk and the network takes more than
   the machine's eight virtio slots: add `--no-network` there.
 
 ## What the system can do
@@ -75,7 +81,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   close only at the next commit, and one left open at power-off at the next mount; removing
   the name in the folder a multiply named file was made in walks the whole tree for another;
   version 1 disks mount and become version 2 at their first link. It searches directories linearly,
-  and keeps one request to the disk in flight; moving a file between `/home` and
+  and waits for each transfer to the disk before the next (the driver takes up to 15
+  requests at once, D220, but EggFS asks for one transfer at a time); moving a file between `/home` and
   `/Applications` fails (`EXDEV`) as between two disks. A disk holding anything but EggFS or
   FAT is left alone: `--format-disk` erases the image. On Windows the image takes its full 1
   GiB when QEMU's `qemu-img` is missing, and nothing stops two QEMUs sharing one image (macOS
@@ -87,10 +94,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   level holds fewer than about 250 names (QEMU refuses to start with "Too many entries in root
   directory" beyond), files of 2 GB or more are refused, names are compared without case for
   ASCII letters only, file times are your computer's local time shown as UTC, and changes made
-  on your computer while EggOS runs are not seen. Only one folder can be attached. The x86_64
-  and aarch64 release images carry the Windows and macOS layers, so Windows and macOS programs
-  in it run and install there; the riscv64 image carries neither, as neither layer runs on
-  riscv64 (D152).
+  on your computer while EggOS runs are not seen. Only one folder can be attached. Windows and
+  macOS programs in it run and install once their layer's component is installed (`component
+  install windows-apps` or `mac-apps`, from the x86_64 and aarch64 stores, D235); riscv64's
+  store offers neither, as neither layer runs on riscv64.
 - **A work disk is a copy, packed before the boot and unpacked after it** (D166). `cargo
   xtask run --work <folder>` (and `cargo xtask work pack`, for the run scripts' `--work
   <image>`) copies a folder into an EggFS image that EggOS mounts writable at `/work`; what
@@ -160,10 +167,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   lines but `VmSize`, links in `fd` to sockets cannot be opened (to pipes they can, D173), and
   every file is root's), and there is no `/sys` (D168); `/dev` holds the memory devices, `tty`, `console`, the
   standard streams' links, `window`, `agent`, `shm` (a memory file system for `shm_open`,
-  D169) and the pseudo-terminals `ptmx` and `pts` (D187: at most 64 at once, no packet mode,
-  `TIOCGPTPEER`, `TIOCSTI` or `TIOCPKT`, a controlling side that never waits and drops what its
-  line discipline cannot hold, and a background write that never stops a program), but no
-  block devices;
+  D169) and the pseudo-terminals `ptmx` and `pts` (D187, D223: at most 64 at once; `TIOCSTI` only into the caller's own controlling
+  terminal, `EPERM` for any other; packet mode reports flushes and flow control but never `TIOCPKT_STOP`, `START` or
+  `FLUSHWRITE`; a packet-mode `readv` fills only its first buffer), but no block devices;
   symbolic links work on `/tmp`, `/home`, the work disk and the initramfs, and hard links on
   `/tmp`, `/home` and the work disk (D170), but `O_CREAT` through a link that names nothing
   is `EEXIST` rather than creating its target; `openat2` answers `RESOLVE_NO_SYMLINKS` and
@@ -251,8 +257,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   program instead of reaching its exception handlers, and at most 64 functions found
   with `GetProcAddress` can be called from it; `app install` translates them right away,
   the installer's window leaves it to the first launch), from the host folder or installed as apps;
-  the layer is in the base of those images until the component manager makes it optional
-  (D152) ([Windows programs](windows-programs.md), D118, D121, D124, D129):
+  the layer is the optional `windows-apps` component, installed with `component install
+  windows-apps` or Settings > Components (D235) ([Windows programs](windows-programs.md), D118, D121, D124, D129):
   threads, waits, locks, directory listing and UTF-16 strings work, GUI programs open
   windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
   programs built by MSVC on its C runtime (`/MD`) run (D146), ANSI programs and classic Win32
@@ -287,15 +293,16 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   An exception cannot yet pass through the layer's own frames (a fault inside a Windows
   function, a throw out of a window procedure), a stack overflow is not an exception, and on
   aarch64 a context resumed after a fault loses `x16`.
-  Programs on the C++ standard library's DLL (msvcp140: iostreams, `std::thread`),
-  `std::exception_ptr`, `dynamic_cast` and `typeid`, the rest of Rust's std, `setjmp`,
-  locales, most of the math library, wide streams, low-level I/O's text mode (`_open` works but
-  never translates line endings, D179), other
-  DLLs than the layer's own, multi-line edits or selection, radio keys, editable combo boxes
-  and menu keys (D145, D174), the common controls' hover looks, tooltips, custom drawing and
-  label editing, GDI+ beyond images (JPEG, GIF and TIFF too), out-of-process COM and COM
-  classes other than `Scripting.Dictionary`, a registry with keys (it is empty and read-only),
-  global keyboard and mouse hooks, global hot keys, the tray, HTTPS in WinINet (D178),
+  C++ programs on the C++ standard library's DLL run (msvcp140: `std::thread`, mutexes and
+  condition variables, `std::exception_ptr`, `dynamic_cast` and `typeid`, D230), and the C
+  runtime has the whole math library, `setjmp`, the C and English (United States) UTF-8
+  locales, wide streams and low-level text mode (D229); Windows programs keep their settings in
+  a real registry (D231). iostreams, the rest of Rust's std, other locales, other
+  DLLs than the layer's own, multi-line edits, editable combo boxes, menu keys and submenus,
+  scroll bars on windows (`WS_VSCROLL`, D228), the common controls' tooltips, custom drawing
+  and label editing, GDI+ beyond images, out-of-process COM and COM
+  classes other than `Scripting.Dictionary`,
+  global keyboard and mouse hooks, global hot keys, the tray, HTTPS in WinINet (D178, D231),
   printing (no printers), hatched brushes (drawn solid), fonts other than Egg Mono
   and text beyond ASCII, ARM64 programs on x86_64 and riscv64 do not run yet; the shared clipboard (D197) carries text only (`CF_UNICODETEXT`); names are
   case-sensitive and local time is UTC.
@@ -319,17 +326,20 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   them right away, except from the installer's window, where the first launch does, D191),
   from the
   host folder or installed as apps (a real one, CocoaGame, is
-  checked in CI: [Real apps](compatibility.md)); the layer is in the base of those images until
-  the component manager makes it optional (D152)
+  checked in CI: [Real apps](compatibility.md)); the layer is the optional `mac-apps`
+  component (D235)
   ([macOS programs](macos-programs.md), D120, D123, D142, D147, D175). AppKit covers windows,
   views drawn with `drawRect:` (rects, lines and ovals 1 px wide, one font, no alpha), push
-  buttons, text fields, labels, alerts, the standard About panel, timers and the main menu in
+  buttons and the other button types (checkboxes, radios, toggles), pointer shapes (`NSCursor`),
+  the pasteboard on the shared clipboard (D233), windows from compiled nibs (D232), text
+  fields, labels, alerts, the standard About panel, timers and the main menu in
   the macOS profile's top bar (at most 6 menus in 248 bytes of labels; `wm menu` and the MCP
   tools list and choose its items, except while the app shows an alert); Objective-C has
-  blocks, `__weak` and exceptions (frames only DWARF describes, and exceptions passing through
-  the layer's own code, end the program as uncaught). Nibs and storyboards, scroll views,
-  tables, images, Auto Layout, Swift apps, most of Foundation beyond its core (no NSFileManager
-  or NSNotification), a signal handler's `ucontext_t` (D190), locales other than C, POSIX,
+  blocks, `__weak` and exceptions, through DWARF-described frames and the layer's own, and
+  Foundation's failures raise exceptions a `@catch` takes (D234); C++ exceptions do not work
+  yet. Storyboards and keyed archives, scroll views,
+  tables, images, Auto Layout, Swift apps, much of Foundation beyond its core (D232 added
+  NSFileManager, NSNotificationCenter, NSUUID and run loop modes), a signal handler's `ucontext_t` (D190), locales other than C, POSIX,
   C.UTF-8, en_US.UTF-8 and UTF-8, character classes above U+00FF (D190), other frameworks and
   riscv64 do not run yet; programs handle signals and start other programs (`fork`, `exec`,
   `posix_spawn`, pipes, `popen`, `system`; D190), read input with `scanf`, and choose the
@@ -348,22 +358,19 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   pointer input or sideways scrolling, and
   characters no US key types reach apps as characters of their own (code 0, D185), which a
   program that reads keys rather than characters does not see; clicks, drags and scrolling aimed at a window with a dialog
-  open are refused (keys go to the dialog: D162); Windows programs get `WM_LBUTTONDBLCLK`
-  only in windows of their own classes with `CS_DBLCLKS` (the system's controls still see two
-  presses, D174), and no mouse sends a sideways wheel yet (only
-  `wm scroll` and agents do); a minimised Wayland app does not repaint after input (eggway
+  open are refused (keys go to the dialog: D162); a minimised Wayland app does not repaint after input (eggway
   sends no frame callbacks to minimised surfaces) until it is restored; every process is root
   until users come (M10), so any program can capture and send input; agents get it only
   through the MCP server's grants (`view` to see, `run` to operate, D143). Input to a window
   whose program stopped reading its events is retried for 3 s, then fails.
 - **iOS apps are not in yet** (D17).
-- **No components yet.** The component manager (D18) comes later (M14): for v0.3.0 the
-  desktop and the Windows and macOS layers are in the base and cannot be left out (D109,
-  D152). The built-in MCP server is in (D136, docs/mcp.md), but not every capability has its
-  three front-ends yet (D22): Settings and the device list have no MCP tools, and Files'
-  copy, move and new folder have none either (an agent with `run` uses `cp`, `mv` and
-  `mkdir`), and `chmod` has only its CLI until users and permissions come (M10, D170). Window focus, move, size, minimise, maximise, restore and close have theirs
-  (D160).
+- **Components, first part** (D235, [Components](components.md)). The Windows and macOS
+  layers are components outside the base (`windows-apps`, `mac-apps`), installed and removed
+  with `component`, its MCP tools or Settings > Components from a store attached as a disk or
+  in the host share; the desktop and the built-in apps are still in the base and cannot be left
+  out (D109), and nothing downloads on demand yet (M14). The built-in MCP server is in (D136,
+  docs/mcp.md), but not every capability has its three front-ends yet (D22): `chmod` has only
+  its CLI until users and permissions come (M10, D170).
 - **One user, root.** Processes start as root; there are no logins or permissions to manage
   (D75).
 
@@ -378,8 +385,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   pattern inside `$(...)` needs its leading `(`, a here-document cannot be inside `$(...)` or
   follow a function definition's line, `read` and `wait` cannot be interrupted with `^C`, and
   only descriptors 0 to 2 can be redirected ([shell](shell.md)).
-- Job control follows Linux, but a background write to the terminal never stops a program
-  (`TOSTOP` is not acted on), `wait` cannot be interrupted with `^C`, and line editing redraws
+- Job control follows Linux (a background write to a pseudo-terminal with `TOSTOP` stops the
+  writer, D223; the console's does not), but `wait` cannot be interrupted with `^C`, and line
+  editing redraws
   a line longer than the terminal is wide wrongly once the cursor moves back across its end
   (D181).
 - **Powering off goes through init (D183).** `poweroff`, `reboot`, `halt` and the desktop's
@@ -413,15 +421,23 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   written as they are, control characters included.
   An MCP tool whose command fails (rather than being refused) still returns that command's
   text error without a code: the twins run in text mode.
-- Keyboard layouts (D185): 14 of them (US, US international, UK, Dvorak, Colemak, Danish,
-  Finnish, French, German, Italian, Norwegian, Brazilian, Spanish, Swedish); no others yet, one
-  at a time, no switch key. Dead keys combine into Latin-1 only (diaeresis and Y types `¨Y`).
-  Without a display the layout set with `settings set` applies from the next boot. Wayland
-  apps get the US keymap whatever the layout; Windows programs' `ToUnicode`,
-  `MapVirtualKey` and `GetKeyState` still answer for the US layout and AltGr is not reported
-  as Ctrl+Alt; Mac apps see Option but no Mac-specific Option layouts. The fonts cover ASCII,
-  Latin-1 and `€`: other characters show as `?`. Only Caps Lock's light is set, on virtio
-  keyboards.
+- Keyboard layouts (D185, D221): 20 of them, up to four at once with a switch key. The bar's
+  layout indicator and its menu are drawn at scale 1 only (the desktop has no 2x panels yet),
+  have no element tree for agents (`wm show` lists windows, not the bar; agents use
+  `settings_set keyboard.layout`), and a layout chosen in the menu or with the switch key is
+  not saved to the settings file, so the next boot starts in the saved one. `Keyboard
+  settings...` focuses an open Settings window on the pane it shows. The dead-key highlight is
+  drawn in the toolkit's text fields and text areas only: the console's and the Terminal app's
+  grids, the Text Editor's own view, Windows edit controls, AppKit fields and Wayland apps show
+  nothing while an accent waits, and in a text area the highlight moves the rest of its line
+  right without wrapping it again. Wayland apps get the US keymap whatever the layout. The Windows layer's `ToUnicodeEx`, `VkKeyScanExW` and
+  `MapVirtualKeyW` follow the layout in force, but `GetKeyboardLayout` still names US English,
+  keys keep the US virtual-key codes of their places (German `Z` is `VK_Y`), and
+  `GetKeyState(VK_NUMLOCK)` does not know Num Lock's state at power-on. Caps Lock never shifts
+  the number row (Windows's French layout does). Egg Mono and Egg Sans draw Latin-1, `€` and
+  Latin Extended-A (Egg Sans with Egg Mono's 8-wide glyphs), but the terminal's cells hold
+  Egg Mono's `u8` glyph ids, so Latin Extended-A shows as `?` in terminals; other characters
+  show as `?` everywhere. Lock lights only on virtio keyboards; Num Lock starts on.
 
 ## The desktop
 The desktop is minimal (D115, D127, D128): wallpaper, a top bar with the uptime and a power
@@ -433,28 +449,35 @@ restore it (its green control, a double-click on the title bar, Super+Up and Sup
 it to a half (Super+Left and Super+Right), minimise it to a chip in the bar, open its window
 menu (Alt+Space) and ask it to close (its close control, Alt+F4, Cmd+W); the pointer is drawn
 by the GPU's cursor (D186), in the shape of a resize zone or of what a program asks for, the
-hand and the hourglass included. A boot screen shows the boot's progress until the first
-prompt; a window dragged by its title bar may hang off the right and bottom edges; F11 shows
+hand and the hourglass included, and `Working` (the arrow with a small hourglass) while an app
+it started has no window yet. A window whose app leaves an event unread for 2 s says ` (not
+responding)`, shows the hourglass over its content and, after 5 s more, offers `End app` (D222).
+A boot screen shows the boot's progress until the first prompt, and the serial console says
+`boot: desktop <ms>`; a window may hang off the left, right and bottom edges, keeping its title
+bar's grab inside, and the launcher's caret blinks; F11 shows
 the desktop in the macOS profile; a display smaller than about 658x458 shows the terminal on
 the whole screen instead of the desktop. Settings (`settings`, [Settings](settings.md), D132)
 picks the layout profile, Windows, macOS or Linux habits (the controls' side and the
 shortcuts), kept on the disk across reboots. Not yet:
-- dragging a window partly off the left edge (window positions are unsigned); a window the
-  desktop moves for itself (a restore, a new size) is put back wholly inside the work area;
-- the server's `Busy` pointer shows only over a window that left a close request unread for
-  0.5 s, not over every window that stops reading its events; the boot screen's serial lines
-  are `boot: display`, `boot: input` and `boot: init` (no `boot: desktop <ms>` line yet); the
-  composite arrow-and-hourglass pointer; Mac apps choose no pointer shape (no `NSCursor`);
+- `Working` does not end when the started
+  program exits without a window (it ends after 5 s); the phone and TV versions of `Working`, `Busy` and the
+  End app dialog (the launcher's `Starting <name>...`, the bottom sheet, D222); the release
+  kernel's serial line has no first-frame time (only the `qemu-boot-clock` kernel's
+  `boot_to_desktop`);
+- the first run's phone and TV layouts; high contrast reaches toolkit windows only (not the
+  shell's own panels, the terminal's grid, Files' and the Text Editor's own drawing or the
+  layers), as the light theme does (D224, D219);
 - a display that changes size while EggOS runs (the GPU's mode change events) keeps its first
   layout;
-- resizing the console's window: its grid stays 80x24 (terminal windows resize, D187); a
-  terminal window reflows nothing (cells cut by a narrower window do not come back) and has no
-  selection, copy and paste, tabs or `terminal -e`;
-- the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
-  blink in the launcher's search field and keyboard focus in the Linux launcher's dash (D133);
-- removing or installing the Windows or macOS layer on its own (the component manager, D18,
-  D152), and `app install --force`: `app install` refuses a program whose layer is not in the
-  image, which on the release images happens only on riscv64 (D134, docs/apps.md);
+- resizing the console's window: its grid stays 80x24 (terminal windows resize and reflow, D187,
+  D223); a terminal window has no touch selection (handles and the bottom sheet), keyboard mark
+  mode, rectangular selection, copy with colours, search, URL detection, tabs or panes
+  (docs/ux/terminal-selection-v0.3.md sections 7 and 10); its close question keeps its 400 px
+  panel in a window narrower than 416 px (section 5); `stty` has no `ispeed` or `ospeed`;
+- the phone layout of the shell, 2x, dragging or arranging desktop icons and keyboard focus in
+  the Linux launcher's dash (D133);
+- `app install --force`: `app install` refuses a program whose layer is not installed and
+  names the component to install (D235), and on riscv64 there is none (D134, docs/apps.md);
 - `.app` bundles and `.zip` files whose symbolic links are absolute or climb out of their
   folder: `app install` refuses them (D170; links that stay inside, such as a framework's
   `Versions/Current`, install as links); the installer's
@@ -478,14 +501,16 @@ shortcuts), kept on the disk across reboots. Not yet:
   generic tile; a native EggOS app cannot name its own icon in its manifest yet beyond `icon=`
   pointing at an `app.icon` it ships; `app icon` (writing an app's icon as a PNG) and the MCP
   tool `app_icon` from `docs/ux/app-icons-v0.3.md` section 7 are not built yet;
-- closing the console's window (its close control is disabled; terminal windows close, D187),
-  and console apps in their own terminal window: installed console apps are typed into the
-  console, so
-  they reach whatever reads the console at that moment (docs/apps.md);
+- closing the console's window (its close control is disabled; terminal windows close, D187);
+  installed console apps open in a terminal window of their own (D223), but an app whose
+  manifest says `console=false` (or an app installed before D223) is typed into the console, so
+  it reaches whatever reads the console at that moment (docs/apps.md); `app list` does not show
+  the `console` field and MCP `app_install` cannot set it;
 - Settings, the installer's window (`app --window`, D134) and Files (`/bin/files`, D135),
   all served by the same program, are the programs with a window in the image (the window tests' `hello-window`
-  and `win-paint.exe` are added only to their own images); Settings' Components pane comes
-  later, and 2x (D195) takes a reboot, doubles pixels rather than drawing finer and has no
+  and `win-paint.exe` are added only to their own images), and the Downloads window
+  (`/bin/downloads`, D225) and the first run (`settings --first-run`, D224) are Settings'
+  program too; 2x (D195) takes a reboot, doubles pixels rather than drawing finer and has no
   fractional scales; Windows GUI programs (D129), Linux Wayland apps (D140) and
   macOS AppKit apps (D147) open windows;
 - 3D graphics;
@@ -525,3 +550,15 @@ shortcuts), kept on the disk across reboots. Not yet:
 - Time zones (D194): a zone is its current rule, so times before its last change of rules show
   with today's rule; the desktop's clock and Settings' Date & time pane still show UTC, and
   `date -s` takes UTC; reading `/dev/rtc0` to wait for its alarm is not answered yet.
+- **The toolkit's second slice (D219, written, unchecked).** Tooltips, a menu bar (in the
+  window, or the top bar's main menu in the macOS profile) and menu buttons, tables with
+  resizable and sortable columns, a multi-line text area with word wrap, sideways scrolling
+  and drag and drop inside one window, and the light theme (`appearance.theme`, Settings >
+  Appearance, `settings set`, `settings_set`). Not yet: the shell's own panels, the boot screen
+  and the terminal keep their dark colours in the light theme, and so do the parts Files and
+  the Text Editor draw themselves; the Windows and macOS layers' system colours; submenus,
+  checkable items and a bar's overflow; fit-to-content, reordering, multi-selection and cell
+  focus in tables; the text area's undo, word moves and touch handles, and a copy is cut at
+  4 KiB; drag between windows; menus as bottom sheets, 40 px rows and a D-pad's
+  two-dimensional focus on phones and TVs; the macOS profile is checked again when a window
+  gets the focus, not the moment it changes.

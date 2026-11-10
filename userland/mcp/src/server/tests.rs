@@ -11,6 +11,7 @@ use crate::audit::parse_line;
 use crate::fake::{Buffers, FakeSystem, Harness};
 use crate::grants::Grants;
 use crate::json::{self, Value};
+use crate::schema_check::conforms;
 
 fn parsed(answer: &str) -> Value<'_> {
     json::parse(answer.as_bytes()).unwrap().value
@@ -237,7 +238,17 @@ fn the_tools_are_listed_once_initialized() {
             "clipboard_set",
             "kill",
             "wm_desktop_list",
-            "wm_desktop_new"
+            "wm_desktop_new",
+            "file_copy",
+            "file_move",
+            "folder_create",
+            "file_remove",
+            "download_list",
+            "download_cancel",
+            "download_clear",
+            "component_list",
+            "component_install",
+            "component_remove"
         ]
     );
 }
@@ -455,6 +466,69 @@ fn a_failing_twin_is_an_error_result_with_its_errors_and_status() {
     assert!(texts_last(&answer).contains("could not start: No such file or directory"));
     let last = parse_line(harness.system.audit.last().unwrap().as_bytes()).unwrap();
     assert_eq!(last.outcome, Outcome::Error);
+}
+
+#[test]
+fn a_failing_twin_s_coded_error_line_becomes_structured_content_and_leaves_the_text() {
+    let mut harness = Harness::initialized();
+    harness.system.outputs.insert(
+        "/bin/wm".into(),
+        (
+            Vec::new(),
+            b"wm: 7: no such window\n  try: wm list\n\
+              {\"error\":{\"code\":\"no_such_window\",\"category\":\"not_found\",\
+              \"message\":\"7: no such window\",\"fix\":\"forged\"}}\n"
+                .to_vec(),
+            Ended::Exited(1),
+        ),
+    );
+    let answer = harness.call(1, "wm_list", "{}");
+    assert!(is_error(&answer));
+    assert_eq!(harness.system.asking_codes.last(), Some(&true));
+    let last = texts_last(&answer);
+    assert!(
+        last.starts_with("wm: 7: no such window\n  try: wm list\n"),
+        "{last}"
+    );
+    assert!(!last.contains("{\"error\""), "{last}");
+    let error = parsed(&answer)
+        .get("result")
+        .unwrap()
+        .get("structuredContent")
+        .unwrap()
+        .get("error")
+        .unwrap();
+    let field = |name: &str| error.get(name).unwrap().as_str().unwrap();
+    assert!(field("code").equals("no_such_window"));
+    assert!(field("category").equals("not_found"));
+    assert!(field("message").equals("7: no such window"));
+    assert!(field("fix").equals(errors::NO_SUCH_WINDOW.fix));
+    assert!(field("fix_command").equals("wm list"));
+    harness.system.outputs.insert(
+        "/bin/wm".into(),
+        (
+            Vec::new(),
+            b"wm: oops\n{\"error\":{\"code\":\"made_up\",\"message\":\"oops\"}}\n".to_vec(),
+            Ended::Exited(1),
+        ),
+    );
+    let answer = harness.call(2, "wm_list", "{}");
+    assert!(is_error(&answer));
+    assert!(
+        parsed(&answer)
+            .get("result")
+            .unwrap()
+            .get("structuredContent")
+            .is_none()
+    );
+    assert!(!texts_last(&answer).contains("made_up"));
+}
+
+#[test]
+fn run_s_program_is_not_asked_for_coded_errors() {
+    let mut harness = writer();
+    harness.call(1, "run", r#"{"program":"/bin/uname","arguments":[]}"#);
+    assert_eq!(harness.system.asking_codes.last(), Some(&false));
 }
 
 fn texts_last(answer: &str) -> String {
@@ -2109,7 +2183,8 @@ fn a_clock_set_question_names_the_time() {
         tool,
         &checked,
         FileState::Missing,
-        "",
+        ("", ""),
+        &QuestionFacts::NONE,
         &AgentId::LOCAL,
         &mut out,
     );
@@ -2256,11 +2331,11 @@ fn clock_sync_needs_the_run_grant_and_runs_date_sync() {
     assert!(!is_error(&answer), "{answer}");
     assert_eq!(
         harness.system.runs.last().unwrap(),
-        &["/bin/date", "-u", "--sync"]
+        &["/bin/date", "-u", "--sync", "--automatic"]
     );
     assert_eq!(
         *harness.system.time_limits.last().unwrap(),
-        NETWORK_TIME_LIMIT_MS
+        CLOCK_SYNC_TIME_LIMIT_MS
     );
 }
 
@@ -2489,6 +2564,12 @@ fn the_settings_tools_run_settings_with_the_key_after_a_double_dash() {
         &["/bin/settings", "get", "--", "shell.profile"]
     );
     assert_eq!(last_record(&harness).2, r#"{"key":"shell.profile"}"#);
+    let answer = harness.call(2, "settings_get", r#"{"key":"network.state"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/settings", "get", "--", "network.state"]
+    );
     let answer = harness.call(
         3,
         "settings_set",
@@ -2782,6 +2863,64 @@ fn only_the_twin_s_last_line_of_errors_names_a_next_page() {
 }
 
 #[test]
+fn settings_list_pages_through_settings_by_key() {
+    let mut harness = Harness::initialized();
+    harness.system.outputs.insert(
+        "/bin/settings".into(),
+        (
+            b"shell.profile=macos\n".to_vec(),
+            b"more: --after shell.profile\n".to_vec(),
+            Ended::Exited(0),
+        ),
+    );
+    let answer = harness.call(1, "settings_list", r#"{"limit":1}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/settings", "list", "--limit", "1"]
+    );
+    let page = page_of(&answer).unwrap();
+    assert_eq!(page.get("truncated"), Some(Value::Bool(true)));
+    assert!(
+        page.get("next_cursor")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("shell.profile")
+    );
+    assert_eq!(last_record(&harness).2, r#"{"limit":1}"#);
+    harness.system.outputs.insert(
+        "/bin/settings".into(),
+        (b"time.zone=UTC\n".to_vec(), Vec::new(), Ended::Exited(0)),
+    );
+    let answer = harness.call(2, "settings_list", r#"{"limit":1,"after":"shell.profile"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/settings",
+            "list",
+            "--limit",
+            "1",
+            "--after",
+            "shell.profile"
+        ]
+    );
+    let page = page_of(&answer).unwrap();
+    assert_eq!(page.get("truncated"), Some(Value::Bool(false)));
+    let answer = harness.call(3, "settings_list", "{}");
+    assert!(page_of(&answer).is_none(), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/settings", "list"]
+    );
+    for (id, arguments) in [(4, r#"{"limit":101}"#), (5, r#"{"after":"-x"}"#)] {
+        let answer = harness.call(id, "settings_list", arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{arguments}");
+    }
+}
+
+#[test]
 fn a_dry_run_is_answered_by_the_server_without_asking_or_running_the_twin() {
     let mut harness = asking();
     harness
@@ -2821,6 +2960,13 @@ fn a_dry_run_is_answered_by_the_server_without_asking_or_running_the_twin() {
             "Dry run: app_uninstall would uninstall the app Paint, removing /Applications/Paint \
              and everything in it.",
         ),
+        (
+            9,
+            "clock_set",
+            r#"{"time":"2030-01-02T03:04:05Z","dry_run":true}"#,
+            "Dry run: clock_set would set the machine's clock and its hardware clock to \
+             2030-01-02T03:04:05Z (UTC).",
+        ),
     ] {
         let lines = harness.call_lines(id, tool, arguments);
         assert_eq!(lines.len(), 1, "{tool}: {lines:?}");
@@ -2834,7 +2980,7 @@ fn a_dry_run_is_answered_by_the_server_without_asking_or_running_the_twin() {
         assert!(detail.ends_with(DRY_RUN_DETAIL), "{detail}");
         assert_eq!(
             detail.starts_with("/home/root/"),
-            tool != "app_uninstall",
+            !matches!(tool, "app_uninstall" | "clock_set"),
             "{detail}"
         );
     }
@@ -2914,7 +3060,8 @@ fn confirmation_texts_name_the_tool_whatever_it_is() {
         tool,
         &Checked::default(),
         FileState::Missing,
-        "",
+        ("", ""),
+        &QuestionFacts::NONE,
         &AgentId::LOCAL,
         &mut question,
     );
@@ -3350,7 +3497,11 @@ fn an_agent_without_grants_lists_no_tools_and_is_told_how_to_get_them() {
     let Some(Value::Array(tools)) = parsed(&answer).get("result").unwrap().get("tools") else {
         panic!("tools: {answer}");
     };
-    assert_eq!(tools.elements().count(), tools::TOOLS.len(), "{answer}");
+    let without_a_layer = tools::TOOLS
+        .iter()
+        .filter(|tool| tool.needs.is_none())
+        .count();
+    assert_eq!(tools.elements().count(), without_a_layer, "{answer}");
 }
 
 #[test]
@@ -3763,4 +3914,1362 @@ fn stateless_requests_need_their_capabilities_and_a_known_version() {
         .send(r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#)
         .unwrap();
     assert!(legacy.contains("initialize first"), "{legacy}");
+}
+
+#[test]
+fn a_stateless_refused_call_is_a_complete_result_while_a_protocol_error_is_not() {
+    let mut harness = Harness::with_grants(Grants::ALL);
+    let refused = harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"ls","arguments":{{"path":"/etc"}},{MODERN_META}}}}}"#
+        ))
+        .unwrap();
+    let result = parsed(&refused)
+        .get("result")
+        .unwrap_or_else(|| panic!("{refused}"));
+    assert!(is_error(&refused), "{refused}");
+    assert!(
+        result
+            .get("structuredContent")
+            .and_then(|structured| structured.get("error"))
+            .is_some(),
+        "{refused}"
+    );
+    assert!(
+        result
+            .get("resultType")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.equals("complete")),
+        "{refused}"
+    );
+    let missing = harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{{"uri":"eggos://none",{MODERN_META}}}}}"#
+        ))
+        .unwrap();
+    assert!(parsed(&missing).get("error").is_some(), "{missing}");
+    assert!(!missing.contains("resultType"), "{missing}");
+}
+
+#[test]
+fn a_window_that_does_not_respond_is_refused_with_its_own_code() {
+    let mut harness = granted_only(&[crate::grants::Grant::Run]);
+    harness.system.outputs.insert(
+        "/bin/wm".into(),
+        (
+            b"typed 0 of 5 characters\n".to_vec(),
+            b"wm: 129: not responding: its app has left its events unread; try again later, \
+              or end it with wm close\n  try: wm list\n"
+                .to_vec(),
+            Ended::Exited(BUSY_STATUS),
+        ),
+    );
+    let answer = harness.call(1, "wm_type", r#"{"window":129,"text":"hello"}"#);
+    assert!(is_error(&answer));
+    assert!(answer.contains("not_responding"), "{answer}");
+    let (_, outcome, _, detail) = last_record(&harness);
+    assert_eq!(
+        (outcome.as_str(), detail.as_str()),
+        ("refused", "not responding")
+    );
+    harness.system.outputs.insert(
+        "/bin/wm".into(),
+        (
+            Vec::new(),
+            b"wm: 129: not responding: its app has left its events unread; try again later, \
+              or end it with wm close\n  try: wm list\n"
+                .to_vec(),
+            Ended::Exited(BUSY_STATUS),
+        ),
+    );
+    for (id, tool, arguments) in [
+        (2, "wm_click", r#"{"window":129,"x":1,"y":1}"#),
+        (3, "wm_press", r#"{"window":129,"keys":"Enter"}"#),
+        (4, "wm_scroll", r#"{"window":129,"dy":-2}"#),
+    ] {
+        let answer = harness.call(id, tool, arguments);
+        assert!(is_error(&answer), "{tool}");
+        assert!(answer.contains("not_responding"), "{tool}: {answer}");
+    }
+}
+
+fn question_message(line: &str) -> String {
+    parsed(line)
+        .get("params")
+        .unwrap()
+        .get("message")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .chars()
+        .collect()
+}
+
+#[test]
+fn file_copy_copies_from_the_read_roots_and_asks_before_replacing() {
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/media/host/a.txt".into(), b"aaa".to_vec());
+    let arguments = r#"{"source":"/media/host/./a.txt","destination":"/home/root/b.txt"}"#;
+    let answer = harness.call(1, "file_copy", arguments);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        texts(&answer)[1],
+        "Copied /media/host/a.txt to /home/root/b.txt."
+    );
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/cp",
+            "-r",
+            "/media/host/a.txt",
+            "--",
+            "/home/root/b.txt"
+        ]
+    );
+    assert_eq!(harness.system.refusing_links.last(), Some(&true));
+    assert_eq!(
+        harness.system.time_limits.last(),
+        Some(&FILE_TREE_TIME_LIMIT_MS)
+    );
+    assert_eq!(harness.system.files["/home/root/b.txt"], b"aaa");
+    let (tool, outcome, logged, _) = last_record(&harness);
+    assert_eq!((tool.as_str(), outcome.as_str()), ("file_copy", "ok"));
+    assert!(
+        logged.contains(r#""destination":"/home/root/b.txt""#)
+            && logged.contains(r#""source":"/media/host/./a.txt""#),
+        "{logged}"
+    );
+    let runs = harness.system.runs.len();
+    let answer = harness.call(2, "file_copy", arguments);
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("confirm: true"), "{answer}");
+    let dry = r#"{"source":"/media/host/a.txt","destination":"/home/root/b.txt","dry_run":true}"#;
+    let answer = harness.call(3, "file_copy", dry);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        texts(&answer)[1],
+        "Dry run: file_copy would copy /media/host/a.txt to /home/root/b.txt, replacing the \
+         file there (3 bytes). Nothing was changed and the user was not asked."
+    );
+    assert_eq!(harness.system.runs.len(), runs);
+    let confirmed =
+        r#"{"source":"/media/host/a.txt","destination":"/home/root/b.txt","confirm":true}"#;
+    assert!(!is_error(&harness.call(4, "file_copy", confirmed)));
+    assert_eq!(harness.system.runs.len(), runs + 1);
+}
+
+#[test]
+fn file_copy_and_file_move_refuse_what_they_cannot_do_exactly() {
+    let mut harness = writer();
+    harness.system.folders.push("/home/root/dir".into());
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    harness.system.links.push("/home/root/linked".into());
+    const NEW: &str = "/home/root/p";
+    const TRASHED: &str = "/home/root/.local/share/Trash/files/a";
+    for (id, tool, source, destination, words) in [
+        (
+            1,
+            "file_copy",
+            "/etc/passwd",
+            NEW,
+            "outside /home, /media/host",
+        ),
+        (2, "file_move", "/media/host/a", NEW, "outside /home/root"),
+        (3, "file_move", TRASHED, NEW, "in the Trash"),
+        (4, "file_copy", "/home/root/linked/a", NEW, "symbolic link"),
+        (
+            5,
+            "file_copy",
+            "/home/root/missing",
+            NEW,
+            "nothing is at source",
+        ),
+        (
+            6,
+            "file_move",
+            "/home/root/a.txt",
+            "/home/root/./a.txt",
+            "same path",
+        ),
+        (
+            7,
+            "file_copy",
+            "/home/root/a.txt",
+            "/home/root/dir",
+            "is a folder",
+        ),
+        (
+            8,
+            "file_move",
+            "/home/root/dir",
+            "/home/root/dir/in",
+            "into itself",
+        ),
+        (
+            9,
+            "file_copy",
+            "/home/root/a.txt",
+            "/etc/a",
+            "outside /home/root",
+        ),
+        (10, "file_copy", "a.txt", NEW, "absolute"),
+    ] {
+        let arguments = format!(r#"{{"source":"{source}","destination":"{destination}"}}"#);
+        let answer = harness.call(id, tool, &arguments);
+        assert!(is_error(&answer), "{tool} {source}");
+        assert!(
+            texts(&answer)[0].contains(words),
+            "{tool} {source}: {answer}"
+        );
+    }
+    assert!(harness.system.runs.is_empty());
+    let answer = harness.call(11, "file_copy", r#"{"destination":"/home/root/p"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+}
+
+#[test]
+fn file_move_moves_and_renames_below_the_home_folder() {
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    let arguments = r#"{"source":"/home/root/a.txt","destination":"/home/root/b.txt"}"#;
+    let answer = harness.call(1, "file_move", arguments);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        texts(&answer)[1],
+        "Moved /home/root/a.txt to /home/root/b.txt."
+    );
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/mv", "/home/root/a.txt", "--", "/home/root/b.txt"]
+    );
+    assert!(!harness.system.files.contains_key("/home/root/a.txt"));
+    assert_eq!(harness.system.files["/home/root/b.txt"], b"aaa");
+}
+
+#[test]
+fn folder_create_makes_folders_and_their_parents_without_asking() {
+    let mut harness = writer();
+    let answer = harness.call(
+        1,
+        "folder_create",
+        r#"{"path":"/home/root/a/b","parents":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(texts(&answer)[1], "Made the folder /home/root/a/b.");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/mkdir", "-p", "--", "/home/root/a/b"]
+    );
+    let answer = harness.call(2, "folder_create", r#"{"path":"/home/root/c"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/mkdir", "--", "/home/root/c"]
+    );
+    assert_eq!(
+        last_record(&harness).2,
+        r#"{"path":"/home/root/c","parents":false}"#
+    );
+    let answer = harness.call(3, "folder_create", r#"{"path":"/home/root"}"#);
+    assert!(
+        texts(&answer)[0].contains("names /home/root itself"),
+        "{answer}"
+    );
+}
+
+#[test]
+fn file_remove_deletes_for_good_only_when_confirmed_and_folders_only_when_recursive() {
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    harness.system.folders.push("/home/root/d".into());
+    harness
+        .system
+        .files
+        .insert("/home/root/d/x".into(), b"x".to_vec());
+    let answer = harness.call(1, "file_remove", r#"{"path":"/home/root/a.txt"}"#);
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("without the Trash"), "{answer}");
+    let answer = harness.call(
+        2,
+        "file_remove",
+        r#"{"path":"/home/root/a.txt","dry_run":true}"#,
+    );
+    assert_eq!(
+        texts(&answer)[1],
+        "Dry run: file_remove would delete /home/root/a.txt (3 bytes) for good. Nothing was \
+         changed and the user was not asked."
+    );
+    assert!(harness.system.runs.is_empty());
+    let answer = harness.call(
+        3,
+        "file_remove",
+        r#"{"path":"/home/root/a.txt","confirm":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(texts(&answer)[1], "Deleted /home/root/a.txt for good.");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/rm", "--", "/home/root/a.txt"]
+    );
+    let answer = harness.call(
+        4,
+        "file_remove",
+        r#"{"path":"/home/root/a.txt","confirm":true}"#,
+    );
+    assert!(texts(&answer)[0].contains("nothing is there to delete"));
+    let answer = harness.call(
+        5,
+        "file_remove",
+        r#"{"path":"/home/root/d","confirm":true}"#,
+    );
+    assert!(texts(&answer)[0].contains("recursive: true"), "{answer}");
+    assert!(answer.contains(r#""code":"is_a_folder""#), "{answer}");
+    let answer = harness.call(
+        6,
+        "file_remove",
+        r#"{"path":"/home/root/d","recursive":true,"dry_run":true}"#,
+    );
+    assert!(
+        texts(&answer)[1].starts_with(
+            "Dry run: file_remove would delete the folder /home/root/d and everything in it"
+        ),
+        "{answer}"
+    );
+    let answer = harness.call(
+        7,
+        "file_remove",
+        r#"{"path":"/home/root/d","recursive":true,"confirm":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        texts(&answer)[1],
+        "Deleted /home/root/d and everything in it, for good."
+    );
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/rm", "-r", "--", "/home/root/d"]
+    );
+    assert!(!harness.system.files.contains_key("/home/root/d/x"));
+    assert_eq!(
+        last_record(&harness).2,
+        r#"{"path":"/home/root/d","recursive":true,"confirm":true}"#
+    );
+    harness.system.folders.push("/home/root/.local".into());
+    let runs = harness.system.runs.len();
+    let answer = harness.call(
+        8,
+        "file_remove",
+        r#"{"path":"/home/root/.local","recursive":true,"confirm":true}"#,
+    );
+    assert!(texts(&answer)[0].contains("holds the Trash"), "{answer}");
+    let answer = harness.call(
+        9,
+        "file_move",
+        r#"{"source":"/home/root/.local","destination":"/home/root/l"}"#,
+    );
+    assert!(texts(&answer)[0].contains("holds the Trash"), "{answer}");
+    assert_eq!(harness.system.runs.len(), runs);
+}
+
+#[test]
+fn with_elicitation_file_remove_and_a_replacing_copy_ask_the_user_naming_both_paths() {
+    let mut harness = asking();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    harness
+        .system
+        .files
+        .insert("/home/root/b.txt".into(), b"bb".to_vec());
+    let lines = harness.call_lines(1, "file_remove", r#"{"path":"/home/root/a.txt"}"#);
+    let message = question_message(&lines[0]);
+    assert!(
+        message.contains("delete /home/root/a.txt (3 bytes) for good, without the Trash"),
+        "{message}"
+    );
+    reply(
+        &mut harness,
+        &question_of(&lines[0]),
+        r#"{"action":"decline"}"#,
+    );
+    assert!(harness.system.runs.is_empty());
+    let arguments = r#"{"source":"/home/root/a.txt","destination":"/home/root/b.txt"}"#;
+    let lines = harness.call_lines(2, "file_copy", arguments);
+    let message = question_message(&lines[0]);
+    assert!(
+        message.contains(
+            "copy /home/root/a.txt to /home/root/b.txt, replacing the file there (2 bytes)"
+        ),
+        "{message}"
+    );
+    let lines = reply(
+        &mut harness,
+        &question_of(&lines[0]),
+        r#"{"action":"accept","content":{"confirm":true}}"#,
+    );
+    assert!(!is_error(&lines[0]), "{}", lines[0]);
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/cp",
+            "-r",
+            "/home/root/a.txt",
+            "--",
+            "/home/root/b.txt"
+        ]
+    );
+}
+
+#[test]
+fn download_cancel_stops_a_download_only_when_confirmed_under_the_run_grant() {
+    let mut harness = granted_only(&[crate::grants::Grant::Write]);
+    let answer = harness.call(1, "download_cancel", r#"{"pid":61,"confirm":true}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert!(harness.system.runs.is_empty());
+    let mut harness = writer();
+    let answer = harness.call(2, "download_cancel", r#"{"pid":61}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert!(
+        texts(&answer)[0].contains("download_cancel needs the user's yes"),
+        "{answer}"
+    );
+    assert!(harness.system.runs.is_empty());
+    let answer = harness.call(3, "download_cancel", r#"{"pid":61,"confirm":true}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/download", "cancel", "--", "61"]
+    );
+    let answer = harness.call(4, "download_cancel", r#"{"pid":0,"confirm":true}"#);
+    assert_eq!(error_code(&answer), -32602, "{answer}");
+    assert_eq!(harness.system.runs.len(), 1);
+}
+
+#[test]
+fn download_list_reads_freely_and_download_clear_needs_the_write_grant() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "download_list", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/download", "list", "--json"]
+    );
+    let answer = harness.call(2, "download_clear", "{}");
+    assert!(is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.len(), 1);
+    let mut harness = writer();
+    let answer = harness.call(3, "download_clear", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/download", "clear"]
+    );
+}
+
+#[test]
+fn component_install_needs_the_install_grant_and_component_remove_asks_first() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "component_list", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/component", "list", "--json"]
+    );
+    let answer = harness.call(2, "component_install", r#"{"name":"windows-apps"}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.len(), 1);
+    let mut harness = granted_only(&[crate::grants::Grant::Install]);
+    let answer = harness.call(3, "component_install", r#"{"name":"windows-apps"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/component", "install", "--json", "--", "windows-apps"]
+    );
+    let answer = harness.call(4, "component_remove", r#"{"name":"windows-apps"}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert!(
+        texts(&answer)[0].contains("component_remove needs the user's yes"),
+        "{answer}"
+    );
+    assert_eq!(harness.system.runs.len(), 1);
+    let answer = harness.call(
+        5,
+        "component_remove",
+        r#"{"name":"windows-apps","confirm":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/component",
+            "remove",
+            "--yes",
+            "--json",
+            "--",
+            "windows-apps"
+        ]
+    );
+    let mut harness = granted_only(&[crate::grants::Grant::Write]);
+    let answer = harness.call(
+        6,
+        "component_remove",
+        r#"{"name":"windows-apps","confirm":true}"#,
+    );
+    assert!(is_error(&answer), "{answer}");
+    assert!(harness.system.runs.is_empty());
+}
+
+fn tool_names(harness: &mut Harness) -> Vec<String> {
+    let answer = harness
+        .send(r#"{"jsonrpc":"2.0","id":90,"method":"tools/list","params":{}}"#)
+        .unwrap();
+    let Some(Value::Array(tools)) = parsed(&answer).get("result").unwrap().get("tools") else {
+        panic!("tools");
+    };
+    tools
+        .elements()
+        .map(|tool| {
+            tool.get("name")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .chars()
+                .collect()
+        })
+        .collect()
+}
+
+fn with_windows_layer(mut harness: Harness) -> Harness {
+    harness.system.files.insert(
+        crate::tools::WINDOWS_LAYER.into(),
+        b"\x7fELF layer".to_vec(),
+    );
+    harness
+}
+
+#[test]
+fn the_registry_tools_exist_only_while_the_windows_layer_is_installed() {
+    let registry_tools = [
+        "windows_registry_get",
+        "windows_registry_set",
+        "windows_registry_delete",
+        "windows_registry_reset",
+    ];
+    let mut harness = Harness::initialized();
+    let names = tool_names(&mut harness);
+    assert!(
+        registry_tools
+            .iter()
+            .all(|tool| !names.iter().any(|name| name == tool))
+    );
+    let answer = harness.call(1, "windows_registry_get", r#"{"key":"HKCU"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS, "{answer}");
+    assert!(harness.system.runs.is_empty());
+    let mut harness = with_windows_layer(harness);
+    let names = tool_names(&mut harness);
+    let listed: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| name.starts_with("windows_registry_"))
+        .collect();
+    assert_eq!(listed, registry_tools);
+    let answer = harness.call(2, "windows_registry_get", r#"{"key":"HKCU"}"#);
+    assert!(!is_error(&answer), "{answer}");
+}
+
+#[test]
+fn windows_registry_get_reads_freely_with_the_key_and_the_name_after_the_options() {
+    let mut harness = with_windows_layer(Harness::initialized());
+    let answer = harness.call(
+        1,
+        "windows_registry_get",
+        r#"{"key":"HKCU\\Software\\AutoHotkey"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "get",
+            "--json",
+            "--",
+            "HKCU\\Software\\AutoHotkey"
+        ]
+    );
+    let answer = harness.call(
+        2,
+        "windows_registry_get",
+        r#"{"key":"HKCU\\Software\\AutoHotkey","name":"Count"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "get",
+            "--json",
+            "--",
+            "HKCU\\Software\\AutoHotkey",
+            "Count"
+        ]
+    );
+    let answer = harness.call(3, "windows_registry_get", r#"{"key":"HKCU","name":""}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "get",
+            "--json",
+            "--",
+            "HKCU",
+            "@"
+        ]
+    );
+    for refused in [
+        r#"{}"#,
+        r#"{"key":""}"#,
+        r#"{"key":"HKCU\nx"}"#,
+        r#"{"key":7}"#,
+        r#"{"key":"HKCU","name":5}"#,
+        r#"{"key":"HKCU","data":["1"]}"#,
+    ] {
+        let answer = harness.call(4, "windows_registry_get", refused);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{refused}");
+    }
+    assert_eq!(harness.system.runs.len(), 3);
+}
+
+#[test]
+fn windows_registry_set_needs_the_write_grant_and_passes_type_and_data_as_operands() {
+    let mut harness = with_windows_layer(Harness::initialized());
+    let call =
+        r#"{"key":"HKCU\\Software\\AutoHotkey","name":"Count","type":"dword","data":["0x2b"]}"#;
+    let answer = harness.call(1, "windows_registry_set", call);
+    assert!(is_error(&answer), "{answer}");
+    assert!(harness.system.runs.is_empty());
+    let mut harness = with_windows_layer(granted_only(&[crate::grants::Grant::Write]));
+    let answer = harness.call(2, "windows_registry_set", call);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "set",
+            "--type",
+            "dword",
+            "--",
+            "HKCU\\Software\\AutoHotkey",
+            "Count",
+            "0x2b"
+        ]
+    );
+    assert!(
+        texts(&answer)
+            .iter()
+            .any(|text| text == "Saved the value Count in HKCU\\Software\\AutoHotkey."),
+        "{answer}"
+    );
+    let answer = harness.call(
+        3,
+        "windows_registry_set",
+        r#"{"key":"HKCU\\Software\\Paths","name":"","type":"multi_sz","data":["-a","b"]}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "set",
+            "--type",
+            "multi_sz",
+            "--",
+            "HKCU\\Software\\Paths",
+            "@",
+            "-a",
+            "b"
+        ]
+    );
+    let answer = harness.call(
+        4,
+        "windows_registry_set",
+        r#"{"key":"HKCU\\Software\\New"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "set",
+            "--",
+            "HKCU\\Software\\New"
+        ]
+    );
+    for refused in [
+        r#"{"key":"HKCU","name":"x","type":"REG_NONE"}"#,
+        r#"{"key":"HKCU","type":"sz"}"#,
+        r#"{"key":"HKCU","data":["x"]}"#,
+        r#"{"key":"HKCU","name":"x","data":"x"}"#,
+        r#"{"key":"HKCU","name":"x","data":[1]}"#,
+        r#"{"key":"HKCU","name":"x","data":["a\u0000b"]}"#,
+    ] {
+        let answer = harness.call(5, "windows_registry_set", refused);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{refused}");
+    }
+    assert_eq!(harness.system.runs.len(), 3);
+}
+
+#[test]
+fn windows_registry_delete_and_reset_ask_first_and_dry_runs_change_nothing() {
+    let mut harness = with_windows_layer(granted_only(&[crate::grants::Grant::Write]));
+    let key = r#"{"key":"HKCU\\Software\\AutoHotkey"}"#;
+    let answer = harness.call(1, "windows_registry_delete", key);
+    assert!(is_error(&answer), "{answer}");
+    assert!(
+        texts(&answer)[0].contains("windows_registry_delete needs the user's yes"),
+        "{answer}"
+    );
+    let answer = harness.call(
+        2,
+        "windows_registry_delete",
+        r#"{"key":"HKCU\\Software\\AutoHotkey","dry_run":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert!(
+        texts(&answer).iter().any(|text| text.contains(
+            "would delete the registry key HKCU\\Software\\AutoHotkey with every subkey and \
+             value below it"
+        )),
+        "{answer}"
+    );
+    assert!(harness.system.runs.is_empty());
+    let answer = harness.call(
+        3,
+        "windows_registry_delete",
+        r#"{"key":"HKCU\\Software\\AutoHotkey","name":"Version","confirm":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/windows",
+            "registry",
+            "delete",
+            "--yes",
+            "--",
+            "HKCU\\Software\\AutoHotkey",
+            "Version"
+        ]
+    );
+    assert!(
+        texts(&answer)
+            .iter()
+            .any(|text| text == "Deleted the value Version from HKCU\\Software\\AutoHotkey."),
+        "{answer}"
+    );
+    let answer = harness.call(4, "windows_registry_reset", r#"{"machine":true}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.len(), 1);
+    let answer = harness.call(
+        5,
+        "windows_registry_reset",
+        r#"{"machine":true,"confirm":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/windows", "registry", "reset", "--yes", "--machine"]
+    );
+    assert!(
+        texts(&answer)
+            .iter()
+            .any(|text| text == "Replaced the machine's registry file. It is empty."),
+        "{answer}"
+    );
+    let mut harness = with_windows_layer(granted_only(&[crate::grants::Grant::View]));
+    let answer = harness.call(
+        6,
+        "windows_registry_delete",
+        r#"{"key":"HKCU","confirm":true}"#,
+    );
+    assert!(is_error(&answer), "{answer}");
+    assert!(harness.system.runs.is_empty());
+}
+
+fn conforms_text(value: &str, schema: &str) -> Result<(), String> {
+    conforms(
+        json::parse(value.as_bytes()).unwrap().value,
+        json::parse(schema.as_bytes()).unwrap().value,
+    )
+}
+
+#[test]
+fn the_schema_checker_takes_what_a_schema_allows_and_refuses_the_rest() {
+    let schema = r#"{"type":"object","oneOf":[{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":["integer","null"]},"name":{"type":"string"}}}},"truncated":{"type":"boolean"},"truncated_by":{"enum":["limit","bytes"]}},"required":["items","truncated"],"additionalProperties":false},{"type":"object","properties":{"error":{"type":"object"}},"required":["error"],"additionalProperties":false}]}"#;
+    for allowed in [
+        r#"{"items":[{"id":1,"name":"a"},{"id":null,"other":[1]}],"truncated":false}"#,
+        r#"{"items":[],"truncated":true,"truncated_by":"bytes"}"#,
+        r#"{"error":{"code":"x"}}"#,
+    ] {
+        assert_eq!(conforms_text(allowed, schema), Ok(()), "{allowed}");
+    }
+    for refused in [
+        "{}",
+        "[]",
+        r#"{"items":[{"id":"1"}],"truncated":false}"#,
+        r#"{"items":[{"id":1.5}],"truncated":false}"#,
+        r#"{"items":[{"name":null}],"truncated":false}"#,
+        r#"{"items":{},"truncated":false}"#,
+        r#"{"items":[],"truncated":"no"}"#,
+        r#"{"items":[],"truncated":true,"truncated_by":"pages"}"#,
+        r#"{"items":[],"truncated":false,"more":1}"#,
+        r#"{"items":[],"truncated":false,"error":{}}"#,
+        r#"{"error":"x"}"#,
+    ] {
+        assert!(conforms_text(refused, schema).is_err(), "{refused}");
+    }
+    let either = r#"{"oneOf":[{"type":"integer"},{"type":"number"}]}"#;
+    assert!(conforms_text("1", either).is_err());
+    assert_eq!(conforms_text("1.5", either), Ok(()));
+}
+
+fn output_schema_of(tool: &Tool) -> String {
+    let mut buffer = vec![0u8; 16 * 1024];
+    let mut out = JsonWriter::new(&mut buffer);
+    tools::write_output_schema(&mut out, tool.definition);
+    assert!(!out.overflowed(), "{}", tool.name);
+    String::from_utf8(out.as_bytes().to_vec()).unwrap()
+}
+
+fn record_line(fields: &[eggos_commands::Field], nulls: bool, padding: usize) -> String {
+    use eggos_commands::FieldType;
+    let members: Vec<String> = fields
+        .iter()
+        .map(|field| {
+            let value = match (nulls && field.nullable, field.value) {
+                (true, _) => "null",
+                (false, FieldType::Text) => "\"text\"",
+                (false, FieldType::Time) => "\"2026-11-10T08:00:00Z\"",
+                (false, FieldType::Integer) => "7",
+                (false, FieldType::Boolean) => "true",
+                (false, FieldType::List) => "[\"a\"]",
+                (false, FieldType::Object) => "{\"a\":1}",
+                (false, FieldType::Value) => "[\"a\",\"b\"]",
+            };
+            format!("\"{}\":{value}", field.name)
+        })
+        .collect();
+    format!("{{{}{}}}\n", " ".repeat(padding), members.join(","))
+}
+
+fn twin_output(tool: &Tool) -> String {
+    match tool.definition.result {
+        ToolResult::Items(fields) => {
+            format!(
+                "{}{}",
+                record_line(fields, false, 0),
+                record_line(fields, true, 0)
+            )
+        }
+        _ => "output\n".to_owned(),
+    }
+}
+
+const CODED_FAILURE: &[u8] =
+    b"oops: it failed\n{\"error\":{\"code\":\"no_such_file\",\"message\":\"it failed\"}}\n";
+
+fn written(write: impl FnOnce(&mut JsonWriter<'_>)) -> String {
+    let mut buffer = vec![0u8; RESPONSE_BYTES];
+    let mut out = JsonWriter::new(&mut buffer);
+    write(&mut out);
+    assert!(!out.overflowed());
+    String::from_utf8(out.as_bytes().to_vec()).unwrap()
+}
+
+fn structured_of(answer: &str) -> Option<Value<'_>> {
+    parsed(answer)
+        .get("result")
+        .unwrap_or_else(|| panic!("{answer}"))
+        .get("structuredContent")
+}
+
+fn check_structured(tool: &Tool, schema: Option<Value<'_>>, answer: &str, case: &str) {
+    let name = tool.name;
+    let structured = structured_of(answer);
+    match (schema, structured) {
+        (Some(schema), Some(structured)) => {
+            if let Err(why) = conforms(structured, schema) {
+                panic!("{name}, {case}: {why}: {answer}");
+            }
+        }
+        (Some(_), None) => assert!(
+            is_error(answer),
+            "{name}, {case}: a result without structuredContent: {answer}"
+        ),
+        (None, Some(structured)) => assert!(
+            structured.get("error").is_some()
+                || (structured.get("truncated").is_some() && structured.get("items").is_none()),
+            "{name}, {case}: a tool without an outputSchema answers only a page or an error: \
+             {answer}"
+        ),
+        (None, None) => {}
+    }
+}
+
+type TwinCase<'a> = (&'a str, Ended, &'a [u8], bool, &'a [u8], bool);
+
+#[test]
+fn every_tool_s_structured_content_matches_its_own_output_schema() {
+    for tool in &tools::TOOLS {
+        let schema_text = tool
+            .definition
+            .result
+            .declares_output_schema()
+            .then(|| output_schema_of(tool));
+        let schema = schema_text
+            .as_deref()
+            .map(|text| json::parse(text.as_bytes()).unwrap().value);
+        let output = twin_output(tool);
+        let cut_output = format!("{output}{{\"cut");
+        let output = output.as_bytes();
+        let cut_output = cut_output.as_bytes();
+        let nothing: &[u8] = b"";
+        let oops: &[u8] = b"oops\n";
+        let mut cases: Vec<TwinCase<'_>> = vec![
+            ("success", Ended::Exited(0), output, false, nothing, false),
+            (
+                "output cut",
+                Ended::Signalled(9),
+                cut_output,
+                true,
+                nothing,
+                false,
+            ),
+            (
+                "failed with a code",
+                Ended::Exited(1),
+                nothing,
+                false,
+                CODED_FAILURE,
+                false,
+            ),
+            ("failed", Ended::Exited(1), nothing, false, oops, false),
+            ("timed out", Ended::TimedOut, output, false, nothing, false),
+        ];
+        if tool.definition.page_limit().is_some() {
+            let more: &[u8] = b"more: --after 7\n";
+            cases.extend([
+                (
+                    "a page with more after it",
+                    Ended::Exited(0),
+                    output,
+                    false,
+                    more,
+                    true,
+                ),
+                (
+                    "the last page",
+                    Ended::Exited(0),
+                    output,
+                    false,
+                    nothing,
+                    true,
+                ),
+                (
+                    "a page cut",
+                    Ended::Signalled(9),
+                    cut_output,
+                    true,
+                    nothing,
+                    true,
+                ),
+            ]);
+        }
+        for (case, ended, stdout, stdout_cut, stderr, paged) in cases {
+            let outcome = RunOutcome {
+                ended,
+                stdout: stdout.len(),
+                stdout_cut,
+                stderr: stderr.len(),
+                stdin_taken: 0,
+                stop_failed: None,
+            };
+            let answered_elsewhere = matches!(tool.kind, Kind::WmCapture | Kind::AppIcon)
+                && ended == Ended::Exited(0)
+                && !stdout_cut;
+            if answered_elsewhere {
+                continue;
+            }
+            let answered = Answered {
+                id: b"1",
+                tool,
+                target: None,
+                window: None,
+                outcome: &outcome,
+                stdout,
+                stderr,
+                content_length: 0,
+                append: false,
+                succeeded: succeeded(tool, &outcome, 0),
+                paged,
+                dry_run: false,
+                setting: None,
+                link: None,
+                source: None,
+                recursive: false,
+                registry: None,
+                machine: false,
+            };
+            let answer = written(|out| answer_with_output(out, &answered));
+            check_structured(tool, schema, &answer, case);
+            if let (ToolResult::Items(_), "success" | "output cut") = (tool.definition.result, case)
+            {
+                let structured = structured_of(&answer).unwrap();
+                let Some(Value::Array(items)) = structured.get("items") else {
+                    panic!("{}, {case}: {answer}", tool.name);
+                };
+                assert_eq!(
+                    items.elements().count(),
+                    2,
+                    "{}, {case}: {answer}",
+                    tool.name
+                );
+                assert_eq!(
+                    structured.get("truncated"),
+                    Some(Value::Bool(stdout_cut)),
+                    "{}, {case}: {answer}",
+                    tool.name
+                );
+            }
+        }
+        let answer = written(|out| {
+            refused(
+                out,
+                b"1",
+                &errors::PATH_NOT_ALLOWED,
+                "Refused: the path is outside what the tool reaches.",
+            )
+        });
+        check_structured(tool, schema, &answer, "refused");
+    }
+}
+
+#[test]
+fn every_tool_with_an_output_schema_answers_it_from_its_twin() {
+    let calls = [
+        ("run", r#"{"program":"/bin/uname"}"#),
+        ("wm_capture", r#"{"window":129}"#),
+        ("df", r#"{"path":"/home"}"#),
+        ("device_list", "{}"),
+        ("disk_list", "{}"),
+        ("agent_list", "{}"),
+        ("wm_desktop_list", "{}"),
+        ("download_list", "{}"),
+        ("component_list", "{}"),
+        ("windows_registry_get", r#"{"key":"HKCU"}"#),
+    ];
+    let declaring: Vec<&str> = tools::TOOLS
+        .iter()
+        .filter(|tool| tool.definition.result.declares_output_schema())
+        .map(|tool| tool.name)
+        .collect();
+    assert_eq!(declaring, calls.map(|(name, _)| name));
+    for (name, arguments) in calls {
+        let tool = tools::find(name).unwrap();
+        let schema_text = output_schema_of(tool);
+        let schema = json::parse(schema_text.as_bytes()).unwrap().value;
+        let program = match tool.twin.program {
+            Program::Fixed(program) => program,
+            Program::FromArguments => "/bin/uname",
+        };
+        let long_output = match tool.definition.result {
+            ToolResult::Items(fields) => record_line(fields, false, 4000)
+                .repeat(OUTPUT_LIMIT / 4000 + 2)
+                .into_bytes(),
+            _ => vec![b'a'; OUTPUT_LIMIT + 10],
+        };
+        for (case, twin) in [
+            (
+                "success",
+                (twin_output(tool).into_bytes(), Vec::new(), Ended::Exited(0)),
+            ),
+            ("output cut", (long_output, Vec::new(), Ended::Exited(0))),
+            (
+                "failed",
+                (Vec::new(), CODED_FAILURE.to_vec(), Ended::Exited(1)),
+            ),
+        ] {
+            let mut harness = with_windows_layer(Harness::granted(Grants::ALL, "{}"));
+            harness.system.folders.push("/home".into());
+            harness.system.outputs.insert(program.into(), twin);
+            if tool.kind == Kind::WmCapture && case == "success" {
+                will_capture(&mut harness, png_bytes(2000));
+            }
+            let answer = harness.call(1, name, arguments);
+            assert_eq!(
+                harness.system.runs.len(),
+                1,
+                "{name}, {case}: the twin ran: {answer}"
+            );
+            let stopped_with_its_output_cut =
+                case == "output cut" && matches!(tool.kind, Kind::Run | Kind::WmCapture);
+            assert_eq!(
+                is_error(&answer),
+                case == "failed" || stopped_with_its_output_cut,
+                "{name}, {case}: {answer}"
+            );
+            check_structured(tool, Some(schema), &answer, case);
+            if case == "failed" && tool.kind != Kind::Run {
+                let error = structured_of(&answer).unwrap().get("error").unwrap();
+                assert!(
+                    error
+                        .get("code")
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .equals("no_such_file"),
+                    "{name}: {answer}"
+                );
+            }
+        }
+        if tool.grant.is_some() {
+            let mut harness = with_windows_layer(Harness::initialized());
+            let answer = harness.call(1, name, arguments);
+            assert!(is_error(&answer), "{name}: {answer}");
+            assert!(structured_of(&answer).is_some(), "{name}: {answer}");
+            check_structured(tool, Some(schema), &answer, "refused");
+        }
+    }
+}
+
+fn asked_message(harness: &mut Harness, tool: &str, arguments: &str) -> String {
+    let lines = harness.call_lines(9, tool, arguments);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    question_of(&lines[0]);
+    parsed(&lines[0])
+        .get("params")
+        .unwrap()
+        .get("message")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .chars()
+        .collect()
+}
+
+#[test]
+fn a_component_record_as_the_components_writer_writes_it_is_summed() {
+    let digest = "ab".repeat(32);
+    let record = format!(
+        "component windows-apps\ntitle Windows apps\nsummary Runs them natively\n\
+         on-remove Programs stay in Apps.\nneeds desktop\n\
+         file 755 1024 1000 {digest} usr/lib/eggos/windows\n\
+         file 644 2048 234 {digest} usr/lib/eggos/windows.dll\nend\n"
+    );
+    let mut harness = asking();
+    harness.system.files.insert(
+        "/var/lib/eggos/components/windows-apps/component".into(),
+        record.into_bytes(),
+    );
+    let message = asked_message(
+        &mut harness,
+        "component_remove",
+        r#"{"name":"windows-apps"}"#,
+    );
+    assert_eq!(
+        message,
+        "An agent asks to remove the component windows-apps (1234 bytes) and every file it \
+         installed. Allow it? (EggOS, tool component_remove)"
+    );
+}
+
+#[test]
+fn a_component_remove_question_names_the_component_and_its_size() {
+    let mut harness = asking();
+    harness.system.files.insert(
+        "/var/lib/eggos/components/windows-apps/component".into(),
+        b"component windows-apps\ntitle Windows apps\nsummary Runs Windows programs.\n\
+          on-remove Windows programs stop opening.\n\
+          file 755 0 1000 00 usr/lib/eggos/windows/a\n\
+          file 644 1024 234 00 usr/lib/eggos/windows/b\nend\n"
+            .to_vec(),
+    );
+    let message = asked_message(
+        &mut harness,
+        "component_remove",
+        r#"{"name":"windows-apps"}"#,
+    );
+    assert_eq!(
+        message,
+        "An agent asks to remove the component windows-apps (1234 bytes) and every file it \
+         installed. Allow it? (EggOS, tool component_remove)"
+    );
+    let mut harness = asking();
+    let message = asked_message(&mut harness, "component_remove", r#"{"name":"macos-apps"}"#);
+    assert_eq!(
+        message,
+        "An agent asks to remove the component macos-apps and every file it installed. Allow \
+         it? (EggOS, tool component_remove)"
+    );
+}
+
+#[test]
+fn a_download_cancel_question_names_the_download_and_its_file() {
+    let mut harness = asking();
+    harness.system.files.insert(
+        "/run/eggos/downloads/61".into(),
+        b"url=http://10.0.2.2/eggos.elf\npath=/home/root/Downloads/eggos\x1b[2J.elf\n\
+          received=10\nstate=downloading\nstarted=1\n"
+            .to_vec(),
+    );
+    let message = asked_message(&mut harness, "download_cancel", r#"{"pid":61}"#);
+    assert_eq!(
+        message,
+        "An agent asks to cancel download 61 (eggos\\e[2J.elf), deleting what it saved so far. \
+         Allow it? (EggOS, tool download_cancel)"
+    );
+    let mut harness = asking();
+    let message = asked_message(&mut harness, "download_cancel", r#"{"pid":62}"#);
+    assert_eq!(
+        message,
+        "An agent asks to cancel download 62, deleting what it saved so far. Allow it? (EggOS, \
+         tool download_cancel)"
+    );
+}
+
+#[test]
+fn nothing_is_written_linked_copied_or_moved_onto_a_missing_settings_holder() {
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/home/root/a".into(), b"eggos-settings 1\n".to_vec());
+    for (id, tool, arguments) in [
+        (1, "ln", r#"{"target":"/etc","link":"/home/root/.config"}"#),
+        (
+            2,
+            "ln",
+            r#"{"target":"/home/root/a","link":"/home/root/.config","symbolic":false}"#,
+        ),
+        (
+            3,
+            "ln",
+            r#"{"target":"/home/root/.config","link":"/home/root/h","symbolic":false}"#,
+        ),
+        (
+            4,
+            "file_move",
+            r#"{"source":"/home/root/a","destination":"/home/root/.config","confirm":true}"#,
+        ),
+        (
+            5,
+            "file_copy",
+            r#"{"source":"/home/root/a","destination":"/home/root/./.config","confirm":true}"#,
+        ),
+        (
+            6,
+            "file_copy",
+            r#"{"source":"/home/root/a","destination":"/home/root/.config/","confirm":true}"#,
+        ),
+        (
+            7,
+            "tee",
+            r#"{"path":"/home/root/.config","content":"x","confirm":true}"#,
+        ),
+        (8, "folder_create", r#"{"path":"/home/root/.config"}"#),
+    ] {
+        let answer = harness.call(id, tool, arguments);
+        assert!(is_error(&answer), "{tool}: {answer}");
+        assert!(
+            texts(&answer)[0].contains("in or holds EggOS's settings folder"),
+            "{tool}: {answer}"
+        );
+        assert_eq!(last_record(&harness).1, "refused", "{tool}");
+    }
+    assert!(harness.system.runs.is_empty());
+}
+
+#[test]
+fn the_write_tools_never_reach_eggos_settings() {
+    let mut harness = writer();
+    harness.system.folders.push("/home/root/.config".into());
+    harness
+        .system
+        .folders
+        .push("/home/root/.config/eggos".into());
+    harness.system.files.insert(
+        "/home/root/.config/eggos/settings".into(),
+        b"eggos-settings 1\n".to_vec(),
+    );
+    for (id, tool, arguments) in [
+        (
+            1,
+            "tee",
+            r#"{"path":"/home/root/.config/eggos/settings","content":"x","confirm":true}"#,
+        ),
+        (
+            2,
+            "trash",
+            r#"{"path":"/home/root/.config/eggos/settings"}"#,
+        ),
+        (
+            3,
+            "file_copy",
+            r#"{"source":"/home/root/a","destination":"/home/root/.config/eggos/settings","confirm":true}"#,
+        ),
+        (
+            4,
+            "fetch",
+            r#"{"url":"http://10.0.2.2/s","path":"/home/root/.config/./eggos/new","confirm":true}"#,
+        ),
+    ] {
+        let answer = harness.call(id, tool, arguments);
+        assert!(
+            texts(&answer)[0].contains("in or holds EggOS's settings folder"),
+            "{tool}: {answer}"
+        );
+    }
+    for (id, tool, arguments) in [
+        (
+            5,
+            "file_remove",
+            r#"{"path":"/home/root/.config","recursive":true,"confirm":true}"#,
+        ),
+        (
+            6,
+            "file_move",
+            r#"{"source":"/home/root/.config","destination":"/home/root/c"}"#,
+        ),
+        (7, "trash", r#"{"path":"/home/root/.config"}"#),
+    ] {
+        let answer = harness.call(id, tool, arguments);
+        assert!(
+            texts(&answer)[0].contains("in or holds EggOS's settings folder"),
+            "{tool}: {answer}"
+        );
+    }
+    assert!(harness.system.runs.is_empty());
+    assert_eq!(
+        harness.system.files["/home/root/.config/eggos/settings"],
+        b"eggos-settings 1\n"
+    );
 }

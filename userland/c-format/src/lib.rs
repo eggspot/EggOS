@@ -13,8 +13,11 @@
 
 #![cfg_attr(not(test), no_std)]
 
+mod exact_decimal;
 pub mod number;
 pub mod scan;
+
+use exact_decimal::ExactDecimal;
 
 /// Where the variadic arguments come from.
 pub trait Arguments {
@@ -570,10 +573,13 @@ impl Spec {
             b'e' => exponential(magnitude, precision, self.alternate, upper, &mut writer),
             _ => {
                 let precision = precision.max(1);
-                let exponent = if magnitude == 0.0 {
-                    0
-                } else {
-                    decimal_exponent(round_to_significant(magnitude, precision))
+                let mut rounded = ExactDecimal::of(magnitude);
+                let exponent = match rounded.is_zero() {
+                    true => 0,
+                    false => {
+                        rounded.round_to(precision as i32);
+                        rounded.point() - 1
+                    }
                 };
                 let start = writer.length;
                 if exponent < -4 || exponent >= precision as i32 {
@@ -716,106 +722,26 @@ impl Buffer<'_> {
     }
 }
 
-fn powers_of_ten(count: i32) -> f64 {
-    let mut value = 1.0;
-    for _ in 0..count.unsigned_abs() {
-        value *= 10.0;
-    }
-    if count < 0 { 1.0 / value } else { value }
-}
-
-fn decimal_exponent(magnitude: f64) -> i32 {
-    let mut exponent = 0;
-    let mut scaled = magnitude;
-    while scaled >= 10.0 && exponent < 400 {
-        scaled /= 10.0;
-        exponent += 1;
-    }
-    while scaled < 1.0 && scaled > 0.0 && exponent > -400 {
-        scaled *= 10.0;
-        exponent -= 1;
-    }
-    exponent
-}
-
-fn round_to_significant(magnitude: f64, digits: usize) -> f64 {
-    let exponent = decimal_exponent(magnitude);
-    let scale = powers_of_ten(digits as i32 - 1 - exponent);
-    round_half_even(magnitude * scale) / scale
-}
-
-fn round_half_even(value: f64) -> f64 {
-    let floor = floor(value);
-    let rest = value - floor;
-    if rest > 0.5 || (rest == 0.5 && floor < 9.007_199_254_740_992e15 && floor as u64 % 2 == 1) {
-        floor + 1.0
-    } else {
-        floor
-    }
-}
-
-fn floor(value: f64) -> f64 {
-    if value >= 9.007_199_254_740_992e15 {
-        return value;
-    }
-    let truncated = value as u64 as f64;
-    if truncated > value {
-        truncated - 1.0
-    } else {
-        truncated
-    }
-}
-
-fn digits_of(mut value: f64, writer: &mut Buffer<'_>) {
-    let mut reversed = [0u8; 330];
-    let mut count = 0;
-    loop {
-        let quotient = floor(value / 10.0);
-        let digit = (value - quotient * 10.0).clamp(0.0, 9.0) as u8;
-        reversed[count] = b'0' + digit;
-        count += 1;
-        value = quotient;
-        if value < 1.0 || count == reversed.len() {
-            break;
-        }
-    }
-    reversed[..count].reverse();
-    writer.push(&reversed[..count]);
+fn push_digit(writer: &mut Buffer<'_>, digit: u8) {
+    writer.push(&[b'0' + digit]);
 }
 
 fn fixed(magnitude: f64, precision: usize, alternate: bool, writer: &mut Buffer<'_>) {
-    let scale = powers_of_ten(precision as i32);
-    let scaled = magnitude * scale;
-    if scaled < 1.8e19 {
-        let rounded = round_half_even(scaled) as u64;
-        let unit = 10u64.pow(precision.min(19) as u32);
-        let mut digits = [0u8; 24];
-        if precision <= 19 {
-            writer.push(decimal(rounded / unit, &mut digits));
-            if precision > 0 || alternate {
-                writer.push(b".");
-            }
-            if precision > 0 {
-                let fraction = decimal(rounded % unit, &mut digits);
-                for _ in fraction.len()..precision {
-                    writer.push(b"0");
-                }
-                writer.push(fraction);
-            }
-            return;
+    let mut decimal = ExactDecimal::of(magnitude);
+    decimal.round_to(decimal.point().saturating_add(precision as i32));
+    let point = decimal.point();
+    if decimal.is_zero() || point <= 0 {
+        writer.push(b"0");
+    } else {
+        for index in 0..point {
+            push_digit(writer, decimal.digit(index));
         }
     }
-    let whole = floor(magnitude);
-    digits_of(whole, writer);
     if precision > 0 || alternate {
         writer.push(b".");
     }
-    let mut fraction = magnitude - whole;
-    for _ in 0..precision {
-        fraction *= 10.0;
-        let digit = floor(fraction).clamp(0.0, 9.0);
-        writer.push(&[b'0' + digit as u8]);
-        fraction -= digit;
+    for index in 0..precision as i32 {
+        push_digit(writer, decimal.digit(point + index));
     }
 }
 
@@ -826,18 +752,21 @@ fn exponential(
     upper: bool,
     writer: &mut Buffer<'_>,
 ) {
-    let (mut mantissa, mut exponent) = if magnitude == 0.0 {
-        (0.0, 0)
-    } else {
-        let exponent = decimal_exponent(magnitude);
-        (magnitude / powers_of_ten(exponent), exponent)
+    let mut exact = ExactDecimal::of(magnitude);
+    let exponent = match exact.is_zero() {
+        true => 0,
+        false => {
+            exact.round_to(precision as i32 + 1);
+            exact.point() - 1
+        }
     };
-    let scale = powers_of_ten(precision as i32);
-    if round_half_even(mantissa * scale) >= 10.0 * scale {
-        mantissa /= 10.0;
-        exponent += 1;
+    push_digit(writer, exact.digit(0));
+    if precision > 0 || alternate {
+        writer.push(b".");
     }
-    fixed(mantissa, precision, alternate, writer);
+    for index in 1..=precision as i32 {
+        push_digit(writer, exact.digit(index));
+    }
     writer.push(if upper { b"E" } else { b"e" });
     writer.push(if exponent < 0 { b"-" } else { b"+" });
     let mut digits = [0u8; 24];
@@ -975,6 +904,36 @@ mod tests {
         );
         assert_eq!(formatted("%d", &[Int(0xffff_ffff)]), "-1");
         assert_eq!(formatted("%hhd %hu", &[Int(0x1ff), Int(0x1_0001)]), "-1 1");
+    }
+
+    #[test]
+    fn floats_print_their_exact_value_rounded_half_to_even() {
+        assert_eq!(
+            formatted(
+                "%.17g %.20f %e",
+                &[Float(2f64.sqrt()), Float(0.1), Float(5e-324)]
+            ),
+            "1.4142135623730951 0.10000000000000000555 4.940656e-324"
+        );
+        assert_eq!(
+            formatted(
+                "%.0f %.0f %.0f %.2f %g %g %g %.3e",
+                &[
+                    Float(0.5),
+                    Float(1.5),
+                    Float(2.5),
+                    Float(9.995),
+                    Float(100000.0),
+                    Float(1e6),
+                    Float(0.0001),
+                    Float(0.0),
+                ]
+            ),
+            "0 2 2 9.99 100000 1e+06 0.0001 0.000e+00"
+        );
+        let largest = formatted("%.0f", &[Float(f64::MAX)]);
+        assert_eq!(largest.len(), 309);
+        assert!(largest.starts_with("17976931348623157081452742373170435679807056752584"));
     }
 
     #[test]

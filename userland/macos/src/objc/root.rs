@@ -4,8 +4,9 @@
 
 use super::abi::{ClassObject, Id, Sel};
 use super::class::{self, BuiltinClass, IMMORTAL};
+use super::exception::guard;
 use super::reference_count::{self, create_instance, direct_release, direct_retain};
-use super::{RUNTIME, autorelease, send, send1, send2, terminate_uncaught};
+use super::{RUNTIME, autorelease, send, send1, send2};
 use core::sync::atomic::Ordering;
 
 pub static NSOBJECT: ClassObject = ClassObject::EMPTY;
@@ -180,7 +181,7 @@ fn report_unrecognized(receiver: Id, sel: Sel) -> ! {
         unsafe { class::abi_name(sel) }
     };
     let mut digits = [0u8; 18];
-    terminate_uncaught(
+    crate::foundation::raise_named(
         b"NSInvalidArgumentException",
         &[
             if is_class { b"+[" } else { b"-[" },
@@ -269,7 +270,11 @@ extern "C" fn pool_drain(this: Id, _: Sel) {
     reference_count::dispose(this);
 }
 
-/// Defines NSObject and NSAutoreleasePool; false if there is no memory.
+guard!(eggos_guarded_perform_selector => perform_selector);
+guard!(eggos_guarded_perform_selector_with => perform_selector_with);
+guard!(eggos_guarded_perform_selector_with_with => perform_selector_with_with);
+guard!(eggos_guarded_does_not_recognize_selector => does_not_recognize_selector);
+
 pub fn define() -> bool {
     let object_instance = methods![
         "init" => init,
@@ -288,10 +293,10 @@ pub fn define() -> bool {
         "hash" => hash,
         "copy" => copy,
         "mutableCopy" => mutable_copy,
-        "performSelector:" => perform_selector,
-        "performSelector:withObject:" => perform_selector_with,
-        "performSelector:withObject:withObject:" => perform_selector_with_with,
-        "doesNotRecognizeSelector:" => does_not_recognize_selector,
+        "performSelector:" => eggos_guarded_perform_selector,
+        "performSelector:withObject:" => eggos_guarded_perform_selector_with,
+        "performSelector:withObject:withObject:" => eggos_guarded_perform_selector_with_with,
+        "doesNotRecognizeSelector:" => eggos_guarded_does_not_recognize_selector,
         "zone" => zone,
     ];
     let object_class = methods![

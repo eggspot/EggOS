@@ -168,6 +168,7 @@ impl<T, const WAIT_DUTY: bool> fmt::Debug for SpinLock<T, WAIT_DUTY> {
 }
 
 /// Access to a [`SpinLock`]'s value; the lock is released when it is dropped.
+#[clippy::has_significant_drop]
 pub struct SpinLockGuard<'a, T, const WAIT_DUTY: bool = true> {
     lock: &'a SpinLock<T, WAIT_DUTY>,
     /// Makes the guard `Send` and `Sync` exactly when `&mut T` is: a shared guard hands out
@@ -335,6 +336,7 @@ impl<T> SleepLock<T> {
 
 /// Access to a [`SleepLock`]'s value; the lock is released, and a waiter woken, when it is
 /// dropped.
+#[clippy::has_significant_drop]
 pub struct SleepLockGuard<'a, T> {
     lock: &'a SleepLock<T>,
 }

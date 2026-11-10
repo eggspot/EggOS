@@ -27,6 +27,7 @@ pub const DOCK_ICON: u32 = 48;
 pub const TOOLTIP_DELAY_MS: u32 = 600;
 
 const SYSTEM_HIT_WIDTH: u32 = 96;
+const STICKY_KEYS_SETTING: &str = "accessibility.sticky_keys";
 const ACTIVITIES: &str = "Activities";
 const ACTIVITIES_X: u32 = 12;
 const TASKBAR_GAP: u32 = 4;
@@ -85,6 +86,10 @@ pub(super) enum PanelItem {
     MenuTitle(u8),
     /// The `Agent` chip, while an MCP client is connected (14.1).
     Agent,
+    /// The keyboard layout indicator, while two or more layouts are chosen (D221).
+    KeyboardLayout,
+    /// The network indicator, while the machine has a network adapter (D225).
+    Network,
 }
 
 /// The panels' pointer state: the item under the pointer and since when, the one pressed,
@@ -268,7 +273,7 @@ impl Desktop {
     /// program's, D187), are Terminal's; a window whose title ends with ` - Text Editor` the
     /// Text Editor's (D149); another window (a dialog: its parent) is the app its title names.
     pub(super) fn app_of(&self, slot: usize) -> Option<AppId> {
-        let slot = self.window_at(slot).parent.map_or(slot, usize::from);
+        let slot = self.owner_window(slot);
         let title = self.window_at(slot).title();
         if slot == TERMINAL_SLOT
             || title == TERMINAL_TITLE
@@ -279,10 +284,15 @@ impl Desktop {
         if title.ends_with(TEXT_EDITOR_TITLE_SUFFIX) {
             return Some(AppId::TextEditor);
         }
-        [AppId::Files, AppId::Settings, AppId::TaskManager]
-            .into_iter()
-            .find(|&app| self.catalogue.name(app) == title)
-            .or_else(|| self.catalogue.installed_named(title))
+        [
+            AppId::Files,
+            AppId::Settings,
+            AppId::TaskManager,
+            AppId::Downloads,
+        ]
+        .into_iter()
+        .find(|&app| self.catalogue.name(app) == title)
+        .or_else(|| self.catalogue.installed_named(title))
     }
 
     /// Window `slot`'s icon: its app's, else the generic tile of its title (6.4.1).
@@ -366,8 +376,13 @@ impl Desktop {
         };
         let count = 1 + self.listed_windows().count() as u32;
         let group = count * (TASKBAR_ITEM + TASKBAR_GAP) - TASKBAR_GAP;
-        let limit = match self.agent_chip() {
-            Some(chip) => chip.x,
+        let leftmost = self
+            .sticky_strip()
+            .or(self.agent_chip())
+            .or(self.keyboard_layout_indicator())
+            .or(self.network_indicator());
+        let limit = match leftmost {
+            Some(leftmost) => leftmost.x,
             None => self.clock_rect().x,
         }
         .saturating_sub(TASKBAR_ROOM_BEFORE_CLOCK);
@@ -404,6 +419,12 @@ impl Desktop {
         self.for_each_chip(|slot, rect| item(PanelItem::Chip(slot as u8), rect));
         if let Some(chip) = self.agent_chip() {
             item(PanelItem::Agent, chip);
+        }
+        if let Some(indicator) = self.keyboard_layout_indicator() {
+            item(PanelItem::KeyboardLayout, indicator);
+        }
+        if let Some(indicator) = self.network_indicator() {
+            item(PanelItem::Network, indicator);
         }
         self.for_each_taskbar_item(&mut item);
         self.for_each_dock_item(&mut item);
@@ -590,6 +611,7 @@ impl Desktop {
             | AppId::Settings
             | AppId::TextEditor
             | AppId::TaskManager
+            | AppId::Downloads
             | AppId::InstallFromHostShare
             | AppId::HostShare => {
                 let starting = self.panels.starting.is_some_and(|(pending, at)| {
@@ -599,6 +621,7 @@ impl Desktop {
                     return Action::None;
                 }
                 self.panels.starting = Some((app, self.now_ms));
+                self.app_starting(damage);
                 Action::Start(app)
             }
             AppId::Installed(_) => {
@@ -656,6 +679,13 @@ impl Desktop {
                 self.activate(super::TERMINAL_SLOT, damage, events);
                 Action::ShowAgentLog
             }
+            PanelItem::KeyboardLayout => {
+                self.open_keyboard_layout_menu(damage);
+                Action::None
+            }
+            PanelItem::Network => {
+                self.open_settings_pane(super::SettingsPane::Network, damage, events)
+            }
         }
     }
 
@@ -699,10 +729,50 @@ impl Desktop {
         }
     }
 
+    /// Opens Settings on `pane` (D221): focuses the Settings window when one exists, the pane
+    /// staying what it was, else asks the kernel to start Settings there, at most once while
+    /// it starts.
+    pub(super) fn open_settings_pane(
+        &mut self,
+        pane: super::SettingsPane,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
+        let mut windows = [0u8; MAX_WINDOWS];
+        if self.app_windows(AppId::Settings, &mut windows) > 0 {
+            return self.activate_app(AppId::Settings, damage, events);
+        }
+        let starting = self.panels.starting.is_some_and(|(pending, at)| {
+            pending == AppId::Settings && self.now_ms.wrapping_sub(at) < STARTING_MS
+        });
+        if starting {
+            return Action::None;
+        }
+        self.panels.starting = Some((AppId::Settings, self.now_ms));
+        Action::OpenSettingsPane(pane)
+    }
+
+    /// What [`Action::OpenSettingsPane`] of `pane` starts: `settings open` and the pane's
+    /// name.
+    pub fn settings_pane_command(&self, pane: super::SettingsPane) -> Option<super::Command> {
+        self.catalogue.settings_pane(pane.name())
+    }
+
+    /// What [`Action::ToggleStickyKeys`] starts to turn sticky keys `on` or off: `settings set
+    /// accessibility.sticky_keys true|false`, so the pane, the CLI and the next boot agree.
+    pub fn sticky_keys_command(&self, on: bool) -> Option<super::Command> {
+        let value = match on {
+            true => "true",
+            false => "false",
+        };
+        self.catalogue.settings_set(STICKY_KEYS_SETTING, value)
+    }
+
     /// The kernel could not start the app a launch asked for: the notice says so, and the app
     /// may be launched again at once.
     pub fn launch_failed(&mut self, damage: &mut Damage) {
         self.panels.starting = None;
+        self.end_app_starting(damage);
         self.show_notice(super::launcher::LAUNCH_FAILED, damage);
     }
 
@@ -756,6 +826,7 @@ impl Desktop {
         let blocked = self.panels.tooltip_spent
             || self.popup_open()
             || self.menu_open
+            || self.keyboard_layout_menu_open()
             || self.open_main_menu.is_some();
         if self.panels.tooltip.is_some() || !rested || blocked {
             return;
@@ -773,6 +844,8 @@ impl Desktop {
             (PanelItem::System, Profile::Macos) => Some(APPS_TOOLTIP),
             (PanelItem::System, Profile::Linux) => Some(ACTIVITIES_TOOLTIP),
             (PanelItem::Agent, _) => Some(super::AGENT_TOOLTIP),
+            (PanelItem::KeyboardLayout, _) => self.keyboard_layout_tooltip(),
+            (PanelItem::Network, _) => self.network_indicator_name(),
             (PanelItem::Power, Profile::Windows) => Some(POWER_TOOLTIP),
             (PanelItem::DockApp(app), _) => Some(self.catalogue.name(app)),
             (PanelItem::TaskbarWindow(slot) | PanelItem::DockWindow(slot), _) => self
@@ -781,6 +854,21 @@ impl Desktop {
                 .and_then(Option::as_ref)
                 .map(|window| window.title()),
             _ => None,
+        }
+    }
+
+    /// The text of `item`'s tooltip changed: a tooltip of it that shows moves to the place
+    /// the new text takes, the old and new rectangles damaged.
+    pub(super) fn tooltip_text_changed(&mut self, item: PanelItem, damage: &mut Damage) {
+        if self.panels.tooltip != Some(item) {
+            return;
+        }
+        if let Some(rect) = self.panels.tooltip_area.take() {
+            damage.add(rect);
+        }
+        self.panels.tooltip_area = self.tooltip_place();
+        if let Some(rect) = self.panels.tooltip_area {
+            damage.add(rect);
         }
     }
 
@@ -830,7 +918,7 @@ impl Desktop {
         );
     }
 
-    fn item_fill(&self, item: PanelItem, open: bool) -> Option<u32> {
+    pub(super) fn item_fill(&self, item: PanelItem, open: bool) -> Option<u32> {
         if open || self.panels.pressed == Some(item) {
             return Some(colour::BAR_PRESSED);
         }
@@ -862,6 +950,7 @@ impl Desktop {
         {
             self.draw_dock(canvas, dock);
         }
+        self.draw_panel_focus_ring(canvas);
     }
 
     fn draw_power(&self, canvas: &mut Canvas<'_>, bar: Rect) {
@@ -935,7 +1024,16 @@ impl Desktop {
         self.draw_menu_titles(canvas);
         self.draw_clock(canvas);
         self.draw_agent_chip(canvas, self.agent_chip_hovered());
+        self.draw_sticky_chips(canvas);
+        self.draw_keyboard_layout_item(canvas);
+        self.draw_network_item(canvas);
         self.draw_power(canvas, bar);
+    }
+
+    fn draw_keyboard_layout_item(&self, canvas: &mut Canvas<'_>) {
+        let open = self.keyboard_layout_menu_open();
+        let fill = self.item_fill(PanelItem::KeyboardLayout, open);
+        self.draw_keyboard_layout_indicator(canvas, fill);
     }
 
     fn agent_chip_hovered(&self) -> bool {
@@ -1015,6 +1113,9 @@ impl Desktop {
         });
         self.draw_clock(canvas);
         self.draw_agent_chip(canvas, self.agent_chip_hovered());
+        self.draw_sticky_chips(canvas);
+        self.draw_keyboard_layout_item(canvas);
+        self.draw_network_item(canvas);
         self.draw_power(canvas, bar);
     }
 

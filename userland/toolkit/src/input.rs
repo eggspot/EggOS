@@ -24,6 +24,41 @@ pub mod key {
     pub const DOWN: u16 = 108;
     pub const PAGE_DOWN: u16 = 109;
     pub const DELETE: u16 = 111;
+    pub const F10: u16 = 68;
+    pub const LEFT_SHIFT: u16 = 42;
+    pub const RIGHT_SHIFT: u16 = 54;
+    pub const LEFT_ALT: u16 = 56;
+    pub const RIGHT_ALT: u16 = 100;
+    pub const LEFT_CTRL: u16 = 29;
+    pub const RIGHT_CTRL: u16 = 97;
+    pub const LEFT_SUPER: u16 = 125;
+    pub const RIGHT_SUPER: u16 = 126;
+    pub const MENU: u16 = 127;
+    pub const Z: u16 = 44;
+    pub const F: u16 = 33;
+    pub const Q: u16 = 16;
+    pub const CAPS_LOCK: u16 = 58;
+    pub const NUM_LOCK: u16 = 69;
+    pub const SCROLL_LOCK: u16 = 70;
+
+    /// Whether key `code` is a modifier or a lock key, which leaves a dead key's accent
+    /// waiting (D221).
+    pub fn is_modifier_or_lock(code: u16) -> bool {
+        matches!(
+            code,
+            LEFT_SHIFT
+                | RIGHT_SHIFT
+                | LEFT_ALT
+                | RIGHT_ALT
+                | LEFT_CTRL
+                | RIGHT_CTRL
+                | LEFT_SUPER
+                | RIGHT_SUPER
+                | CAPS_LOCK
+                | NUM_LOCK
+                | SCROLL_LOCK
+        )
+    }
 }
 
 /// The modifiers held with a key.
@@ -38,6 +73,9 @@ impl Modifiers {
     /// The third-level key, AltGr, or Option in the macOS profile (D185): Alt held with it
     /// types a character instead of making a shortcut.
     pub const ALT_GRAPH: u32 = 32;
+    /// A dead key's record (D221): its character is the accent waiting for the next key, or 0
+    /// when Backspace took the accent back; [`decode`] makes it an [`Input::DeadKey`].
+    pub const DEAD: u32 = 256;
 
     /// Whether Shift is held.
     pub fn shift(self) -> bool {
@@ -90,6 +128,10 @@ pub enum Input {
         modifiers: Modifiers,
         character: u32,
     },
+    /// A dead key's accent waits for the next key (D221): `accent` is the spacing accent the
+    /// caret shows highlighted until the next key resolves it, `None` when Backspace took it
+    /// back. The keys that follow arrive as [`Input::Key`] with the finished characters.
+    DeadKey { accent: Option<char> },
     /// The window got the keyboard focus.
     FocusIn,
     /// The window lost it.
@@ -154,6 +196,9 @@ pub fn decode(record: &[u8; RECORD_SIZE]) -> Option<Event> {
             x: a,
             y: b,
             notches: d as i32,
+        },
+        6 if c & Modifiers::DEAD != 0 => Input::DeadKey {
+            accent: char::from_u32(d).filter(|&accent| accent != '\0'),
         },
         6 => Input::Key {
             code: a as u16,
@@ -246,5 +291,27 @@ mod tests {
         );
         assert_eq!(decode(&record(12, 1, [0; 5])), None);
         assert_eq!(decode(&record(99, 1, [0; 5])), None);
+    }
+
+    #[test]
+    fn a_dead_key_s_record_decodes_as_its_accent_and_backspace_s_as_none() {
+        let dead = Modifiers::DEAD | Modifiers::SHIFT;
+        assert_eq!(
+            decode(&record(6, 1, [0, 13, 1, dead, u32::from('`')])).map(|event| event.input),
+            Some(Input::DeadKey { accent: Some('`') })
+        );
+        assert_eq!(
+            decode(&record(6, 1, [0, 0, 1, Modifiers::DEAD, 0])).map(|event| event.input),
+            Some(Input::DeadKey { accent: None })
+        );
+        assert_eq!(
+            decode(&record(6, 1, [0, 13, 0, 0, 0])).map(|event| event.input),
+            Some(Input::Key {
+                code: 13,
+                pressed: false,
+                modifiers: Modifiers(0),
+                character: 0
+            })
+        );
     }
 }

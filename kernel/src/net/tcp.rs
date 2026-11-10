@@ -160,7 +160,7 @@ impl Stream {
         };
         let connection = Connection::connect(local, remote, initial_sequence::<P>(), mss);
         let stream = Self::new(connection, None);
-        register(Arc::clone(&stream)).then_some(stream)
+        register::<P>(Arc::clone(&stream)).then_some(stream)
     }
 
     /// The connection's own address and port.
@@ -451,15 +451,18 @@ fn table_of(slot: &mut Option<Box<Table>>) -> Option<&mut Table> {
     slot.as_deref_mut()
 }
 
-fn register(stream: Arc<Stream>) -> bool {
-    let mut table = TABLE.lock();
-    let Some(table) = table_of(&mut table) else {
-        return false;
-    };
-    if table.streams.try_reserve(1).is_err() {
-        return false;
+fn register<P: Platform>(stream: Arc<Stream>) -> bool {
+    {
+        let mut table = TABLE.lock();
+        let Some(table) = table_of(&mut table) else {
+            return false;
+        };
+        if table.streams.try_reserve(1).is_err() {
+            return false;
+        }
+        table.streams.push(stream);
     }
-    table.streams.push(stream);
+    crate::net::DEVICE_EVENTS.raise::<P>();
     true
 }
 
@@ -607,7 +610,7 @@ fn accept_syn<P: Platform>(
         return false;
     };
     let stream = Stream::new(connection, Some(Arc::downgrade(listener)));
-    if !register(stream) {
+    if !register::<P>(stream) {
         return false;
     }
     listener.state.lock().pending += 1;

@@ -10,15 +10,15 @@
 //! input, with `-o` it writes one to its standard output once shown, so two of them in a
 //! pipeline open their windows in order.
 
-#![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(eggos_user, no_std, no_main)]
 
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod pattern;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod window;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 eggos_runtime::main!(window::run);
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(eggos_user))]
 fn main() {}

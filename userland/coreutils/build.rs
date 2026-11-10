@@ -1,10 +1,10 @@
-//! Links the program as a static PIE with no C library on Linux targets.
+//! Links the program as a static PIE with no C library in EggOS user builds (`eggos_user`).
 
 use std::env;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("musl") {
+    if env::var_os("CARGO_CFG_EGGOS_USER").is_none() {
         return;
     }
     for argument in ["-nostdlib", "-pie", "--no-dynamic-linker", "-z", "text"] {

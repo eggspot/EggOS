@@ -72,6 +72,14 @@ pub fn run<P: Platform, W: Write>(
     writeln!(console, "{BOOT_INIT_LINE}")?;
     let _ = crate::display::light_boot_stages::<P>(crate::display::BOOT_STAGE_INIT);
     if let Some(area) = terminal::start::<P>(terminal::Session::Interactive) {
+        if terminal::has_desktop() {
+            writeln!(
+                console,
+                "{}{}",
+                crate::boot_clock::DESKTOP_LINE_PREFIX,
+                crate::boot_clock::milliseconds_since_start::<P>()
+            )?;
+        }
         writeln!(
             console,
             "{TERMINAL_LINE_PREFIX}{}x{}",

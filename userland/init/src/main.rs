@@ -12,25 +12,32 @@
 //! `WAYLAND_DISPLAY`. Asked to power off, restart or halt (`poweroff`, `reboot`, `halt`, the
 //! desktop's power menu), or when the login program ends and the configuration says to, init
 //! ends every other process, `SIGTERM` first and `SIGKILL` for those left, then takes the
-//! machine down (`shutdown.rs`, D183).
+//! machine down (`shutdown.rs`, D183). On a never-installed image's first boot with a disk it
+//! also starts `settings --first-run` (`first_run.rs`, D224). Its own `init:` lines go to
+//! `/dev/kmsg`, the serial console only, so the Terminal's first text is the banner and the
+//! shell's.
 
-#![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(eggos_user, no_std, no_main)]
 
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod agent_server;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod backoff;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod config;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
 mod display_server;
-#[cfg(any(test, target_env = "musl"))]
+#[cfg(any(test, eggos_user))]
+mod first_run;
+#[cfg(any(test, eggos_user))]
+mod network_clock;
+#[cfg(any(test, eggos_user))]
 mod shutdown;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod system;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 eggos_runtime::main!(system::run);
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(eggos_user))]
 fn main() {}

@@ -3,8 +3,15 @@
 //! and the window's event loop.
 
 use crate::disk_system::LinuxDisks;
+use alloc::boxed::Box;
+use alloc::string::String;
 use core::ffi::CStr;
 use core::fmt::Write;
+use eggos_app::files::Files;
+use eggos_app::linux::LinuxFiles;
+use eggos_components::command as component_command;
+use eggos_components::index::Component;
+use eggos_components::manager::{self as component_manager, Failure, Refusal, RemoveError};
 use eggos_eggfs::CheckMode;
 use eggos_files::storage;
 use eggos_mcp::audit::calls::LogFiles;
@@ -14,7 +21,9 @@ use eggos_mcp::grant_prompt::{
 };
 use eggos_mcp::grants::{self, AgentId, Grant};
 use eggos_mcp::pairing::{self, PairingFiles};
+use eggos_net::status::{self as network_status, InterfaceStatus};
 use eggos_runtime::errno::Errno;
+use eggos_runtime::process::{self, ChildStack, Spawn};
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{call, number, write_all};
 use eggos_settings::activity::read_activity;
@@ -22,20 +31,24 @@ use eggos_settings::agents_pane::GrantsRead;
 use eggos_settings::command::{
     self, MAX_ARGUMENTS, PairingAsked, USAGE, USAGE_STATUS, WindowAsked,
 };
+use eggos_settings::components_pane::ComponentsRead;
 use eggos_settings::facts::Facts;
+use eggos_settings::first_run::{self, FirstRunRequest, FirstRunWindow};
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
-use eggos_settings::keys::{InputChange, KeysChange};
+use eggos_settings::keys::APPEARANCE_THEME;
+use eggos_settings::keys::{DisplayChange, InputChange, KeyboardChoice, KeysChange};
 use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
-    ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, Request, SetOutcome,
-    SettingsWindow, TITLE,
+    ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, NETWORK, Request,
+    SetOutcome, SettingsWindow, TITLE,
 };
 use eggos_settings::task_manager::{
     self, ProcessFact, Request as TaskRequest, Snapshot, TaskManager, WindowFact,
 };
+use eggos_settings_file::clock_sync::{self, Record};
 use eggos_settings_file::{
-    self as settings_file, DIRECTORIES, InputPreferences, KeyAccessibility, LARGEST, PATH,
-    TEMPORARY_PATH_CAPACITY,
+    self as settings_file, DIRECTORIES, DisplayAccessibility, InputPreferences, KeyAccessibility,
+    LARGEST, PATH, TEMPORARY_PATH_CAPACITY, TIME_AUTOMATIC,
 };
 use eggos_toolkit::application::{self, Application, View};
 use eggos_toolkit::canvas::Canvas;
@@ -43,10 +56,13 @@ use eggos_toolkit::damage::Damage;
 use eggos_toolkit::elements::{Action, Outcome, TreeWriter};
 use eggos_toolkit::input::Input;
 use eggos_toolkit::text::Text;
+use eggos_toolkit::theme::{Theme, palette_index, theme_of};
 use eggos_toolkit::tree::{PointerShape, Response, WidgetTree};
 use eggos_toolkit::window::{
     FIXED_SIZE, Keyboard, PERSON_INPUT_ONLY, Window, WindowServer, now_ms,
 };
+use eggos_windows_registry::linux::LinuxHiveFiles;
+use eggos_windows_registry::store::FileStore;
 
 const STANDARD_OUTPUT: usize = 1;
 const STANDARD_ERROR: usize = 2;
@@ -75,9 +91,11 @@ const APP_COMMAND_NAME: &[u8] = b"app";
 const FILES_PROGRAM_NAME: &[u8] = b"files";
 const EDITOR_PROGRAM_NAME: &[u8] = b"text-editor";
 const TASK_MANAGER_PROGRAM_NAME: &[u8] = b"task-manager";
+const DOWNLOADS_PROGRAM_NAME: &[u8] = b"downloads";
 const APPS_OPTION: &[u8] = b"--apps";
 const WINDOW_DEVICE: &str = "/dev/window";
 const O_RDWR_CLOEXEC: usize = 0o2_000_002;
+const WNOHANG: usize = 1;
 const LIST_WINDOW: usize = 0xc060_770b;
 const MANAGE_WINDOW: usize = 0x4010_770c;
 const LIST_SIZE: usize = 96;
@@ -90,6 +108,8 @@ const CLOCK_REALTIME: usize = 0;
 const HARDWARE_CLOCK: &str = "/proc/driver/rtc";
 const SAVED_WITHIN_S: u64 = 2;
 const NANOSECONDS_PER_MS: u32 = 1_000_000;
+const HOME_VARIABLE: &[u8] = b"HOME=";
+const DEFAULT_HOME: &str = "/home/root";
 
 fn syscall(number: usize, arguments: [usize; 6]) -> Result<usize, Errno> {
     // SAFETY: every caller passes buffers it owns and borrows for the call, sized as the call
@@ -117,6 +137,9 @@ impl CPath {
 fn close(fd: usize) {
     let _ = syscall(number::CLOSE, [fd, 0, 0, 0, 0, 0]);
 }
+
+const DEVICES_TEXT_CAPACITY: usize = 32 * 1024;
+const INTERFACES_TEXT_CAPACITY: usize = 2048;
 
 fn read_file(path: &str, buffer: &mut [u8]) -> Result<usize, Errno> {
     let path = CPath::new(path);
@@ -255,6 +278,10 @@ fn remove_stale_temporary_files(own: u32) {
 }
 
 fn save_through_a_temporary_file(key: &str, value: &str) -> Result<(), Errno> {
+    save_values_through_a_temporary_file(&[(key, value)])
+}
+
+fn save_values_through_a_temporary_file(values: &[(&str, &str)]) -> Result<(), Errno> {
     for directory in DIRECTORIES {
         let directory = CPath::new(directory);
         match syscall(
@@ -268,8 +295,15 @@ fn save_through_a_temporary_file(key: &str, value: &str) -> Result<(), Errno> {
     let mut old = [0u8; LARGEST + 1];
     let length = saved_settings(&mut old);
     let mut new = [0u8; LARGEST];
-    let new_length = settings_file::with_value(&old[..length], key, value.as_bytes(), &mut new)
-        .map_err(|_| Errno::E2BIG)?;
+    let mut new_length = 0;
+    for (index, &(key, value)) in values.iter().enumerate() {
+        let from = match index {
+            0 => old[..length].to_vec(),
+            _ => new[..new_length].to_vec(),
+        };
+        new_length = settings_file::with_value(&from, key, value.as_bytes(), &mut new)
+            .map_err(|_| Errno::E2BIG)?;
+    }
     let process_id = syscall(number::GETPID, [0; 6])? as u32;
     remove_stale_temporary_files(process_id);
     let mut temporary = [0u8; TEMPORARY_PATH_CAPACITY];
@@ -308,6 +342,12 @@ fn uptime_s() -> u64 {
     first_number(&uptime[..length]).unwrap_or(0)
 }
 
+fn network_adapter() -> Option<InterfaceStatus> {
+    let mut text = [0u8; INTERFACES_TEXT_CAPACITY];
+    let length = read_file(network_status::INTERFACES_PATH, &mut text).ok()?;
+    network_status::adapter(&text[..length])
+}
+
 fn wall_clock() -> (u64, u32) {
     let mut time = [0u64; 2];
     match syscall(
@@ -317,6 +357,80 @@ fn wall_clock() -> (u64, u32) {
         Ok(_) => (time[0], time[1] as u32),
         Err(_) => (0, 0),
     }
+}
+
+fn windows_layer_installed() -> bool {
+    LinuxFiles::new()
+        .status_following(eggos_mcp::tools::WINDOWS_LAYER.as_bytes())
+        .is_ok()
+}
+
+fn components_read() -> ComponentsRead {
+    let mut files = LinuxFiles::new();
+    let arch = eggos_app::linux::machine().name();
+    let store = component_manager::find_store(&mut files, arch);
+    let rows = component_command::rows(&mut files, store.as_ref());
+    let runs_this_window = rows
+        .iter()
+        .filter(|row| row.state == "installed")
+        .find(|row| component_manager::runs_this_program(&mut files, &row.component))
+        .map(|row| row.component.name.clone());
+    ComponentsRead {
+        store,
+        rows,
+        runs_this_window,
+    }
+}
+
+fn check_component_remove(name: &str) -> Result<Option<Component>, Refusal> {
+    let mut files = LinuxFiles::new();
+    let installed = component_manager::installed(&mut files);
+    component_manager::check_remove(&mut files, &installed, name)
+}
+
+fn locked_failure(refusal: Refusal) -> Failure {
+    match refusal {
+        Refusal::NotAllowed => Failure::NotAllowed,
+        _ => Failure::Errno(Errno::EBUSY),
+    }
+}
+
+fn install_component(name: &str, cancelled: bool) -> Result<(), Failure> {
+    let mut files = LinuxFiles::new();
+    let arch = eggos_app::linux::machine().name();
+    let store = component_manager::find_store(&mut files, arch).ok_or(Failure::Detached)?;
+    let component = store
+        .index
+        .component(name)
+        .cloned()
+        .ok_or(Failure::Detached)?;
+    let pid = syscall(number::GETPID, [0; 6]).unwrap_or(0) as u32;
+    component_manager::lock(&mut files, &component.title, false, pid).map_err(locked_failure)?;
+    let installed =
+        component_manager::install(&mut files, &store, &component, &mut |_, _| !cancelled);
+    component_manager::unlock(&mut files);
+    if installed.is_ok() {
+        eggos_app::linux::apps_changed();
+    }
+    installed
+}
+
+fn remove_component(name: &str) -> Result<(), RemoveError> {
+    let mut files = LinuxFiles::new();
+    let installed = component_manager::installed(&mut files);
+    let title = installed
+        .iter()
+        .find(|component| component.name == name)
+        .map_or_else(|| String::from(name), |component| component.title.clone());
+    let pid = syscall(number::GETPID, [0; 6]).unwrap_or(0) as u32;
+    let removed = component_manager::remove_checked(&mut files, &title, name, pid).map(|_| ());
+    if matches!(
+        removed,
+        Ok(()) | Err(RemoveError::Failed(Failure::FilesLeft(_)))
+    ) {
+        eggos_app::linux::apps_changed();
+    }
+    removed
 }
 
 fn hardware_clock_s() -> Option<u64> {
@@ -399,7 +513,9 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         .and_then(|server| server.desktop_profile().ok())
         .map_or(saved, |profile| profile as usize);
     let area = server.and_then(|server| server.work_area().ok());
-    let saved_layout = settings_file::keyboard_layout(&file[..length]).unwrap_or(0);
+    let saved_layouts = settings_file::keyboard_layout_set(&file[..length]);
+    let saved_layout =
+        settings_file::keyboard_layout(&file[..length]).unwrap_or_else(|| saved_layouts.keeping(0));
     let keyboard = server.and_then(|server| server.keyboard().ok());
     Facts {
         version: env!("CARGO_PKG_VERSION"),
@@ -417,19 +533,114 @@ fn facts(server: Option<&WindowServer>) -> Facts {
             .unwrap_or_else(|| area.map_or(1, |area| area.scale)),
         scale_in_force: area.map_or(1, |area| area.scale.max(1)),
         profile,
+        theme: saved_theme(&file[..length], server),
         on_disk: home_is_on_a_disk(),
         now_s: wall_clock().0,
         hardware_clock: hardware_clock_s().is_some(),
         keyboard_layout: keyboard.map_or(saved_layout, |keyboard| keyboard.layout as usize),
+        keyboard_layouts: saved_layouts,
+        switch_key: settings_file::keyboard_switch_key(&file[..length]),
         keyboard: keyboard.is_none_or(|keyboard| keyboard.present),
         caps_lock: keyboard.is_some_and(|keyboard| keyboard.caps_lock),
         time_zone: settings_file::value(&file[..length], settings_file::TIME_ZONE)
             .and_then(|name| core::str::from_utf8(name).ok())
             .and_then(eggos_settings::facts::zone_index)
             .unwrap_or_else(eggos_settings::facts::utc_zone),
+        time_automatic: time_automatic(&file[..length]),
+        clock_sync: clock_sync_record(),
         input: settings_file::input_preferences(&file[..length]),
         keys: settings_file::key_accessibility(&file[..length]),
+        display: saved_display(&file[..length], server),
+        network_adapter: network_adapter(),
     }
+}
+
+fn session_settings(file: &mut [u8; LARGEST + 1]) -> usize {
+    read_file(settings_file::SESSION_PATH, file).unwrap_or(0)
+}
+
+fn time_automatic(disk: &[u8]) -> bool {
+    let mut session = [0u8; LARGEST + 1];
+    let length = session_settings(&mut session);
+    settings_file::time_automatic(disk, &session[..length])
+}
+
+fn clock_sync_record() -> Option<Record> {
+    let mut file = [0u8; clock_sync::LARGEST + 1];
+    let length = read_file(clock_sync::PATH, &mut file).ok()?;
+    Record::parse(&file[..length])
+}
+
+fn save_session_value(key: &str, value: &str) -> Result<(), Errno> {
+    let folder = CPath::new(clock_sync::FOLDER);
+    match syscall(
+        number::MKDIRAT,
+        [AT_FDCWD, folder.pointer(), DIRECTORY_MODE, 0, 0, 0],
+    ) {
+        Ok(_) | Err(Errno::EEXIST) => {}
+        Err(error) => return Err(error),
+    }
+    let mut old = [0u8; LARGEST + 1];
+    let length = session_settings(&mut old);
+    let mut new = [0u8; LARGEST];
+    let new_length = settings_file::with_value(&old[..length], key, value.as_bytes(), &mut new)
+        .map_err(|_| Errno::E2BIG)?;
+    let process_id = syscall(number::GETPID, [0; 6])?;
+    let mut temporary = Text::<64>::new();
+    let _ = write!(temporary, "{}.{process_id}", settings_file::SESSION_PATH);
+    write_file(temporary.as_str(), &new[..new_length])?;
+    let (from, to) = (
+        CPath::new(temporary.as_str()),
+        CPath::new(settings_file::SESSION_PATH),
+    );
+    syscall(
+        number::RENAMEAT2,
+        [AT_FDCWD, from.pointer(), AT_FDCWD, to.pointer(), 0, 0],
+    )
+    .map(|_| ())
+}
+
+fn save_time_automatic(on: bool) -> Result<(), Errno> {
+    let value = match on {
+        true => "on",
+        false => "off",
+    };
+    let mut session = [0u8; LARGEST + 1];
+    let length = session_settings(&mut session);
+    let in_session = settings_file::value(&session[..length], TIME_AUTOMATIC).is_some();
+    if home_is_on_a_disk() {
+        save_through_a_temporary_file(TIME_AUTOMATIC, value)?;
+        if !in_session {
+            return Ok(());
+        }
+    }
+    save_session_value(TIME_AUTOMATIC, value)
+}
+
+fn start_clock_sync() -> Result<usize, Errno> {
+    let null = CPath::new("/dev/null");
+    let quiet = syscall(
+        number::OPENAT,
+        [AT_FDCWD, null.pointer(), O_RDWR_CLOEXEC, 0, 0, 0],
+    );
+    let streams = match quiet {
+        Ok(fd) => [fd, fd, fd],
+        Err(_) => [0, 1, 2],
+    };
+    let arguments = [
+        c"date".as_ptr().cast::<u8>(),
+        c"--sync".as_ptr().cast::<u8>(),
+        c"--automatic".as_ptr().cast::<u8>(),
+        core::ptr::null(),
+    ];
+    let environment = [core::ptr::null()];
+    let request = Spawn::new(c"/bin/date", &arguments, &environment, streams).in_own_session();
+    let mut stack = alloc::boxed::Box::new(ChildStack::new());
+    let started = process::spawn(&mut stack, &request);
+    if let Ok(fd) = quiet {
+        close(fd);
+    }
+    started
 }
 
 fn say_error(parts: &[&[u8]]) {
@@ -466,12 +677,26 @@ fn save_time_zone(index: usize) -> Result<(), Errno> {
     save_through_a_temporary_file(settings_file::TIME_ZONE, name)
 }
 
-fn save_keyboard_layout(index: usize) -> Result<(), Errno> {
-    let name = settings_file::KEYBOARD_LAYOUTS[index].name;
-    save_through_a_temporary_file(settings_file::KEYBOARD_LAYOUT, name)
+fn save_keyboard(choice: KeyboardChoice) -> Result<(), Errno> {
+    let mut layouts = [0u8; settings_file::KEYBOARD_LAYOUT_SET_CAPACITY];
+    let in_force = settings_file::KEYBOARD_LAYOUTS
+        .get(choice.in_force)
+        .map_or("us", |layout| layout.name);
+    save_values_through_a_temporary_file(&[
+        (
+            settings_file::KEYBOARD_LAYOUT_SET,
+            choice.layouts.write(&mut layouts),
+        ),
+        (settings_file::KEYBOARD_LAYOUT, in_force),
+        (settings_file::KEYBOARD_SWITCH_KEY, choice.switch_key.name()),
+    ])
 }
 
-fn apply_keyboard_layout(index: usize, server: Option<&WindowServer>) -> Result<(), Errno> {
+const KEYBOARD_LAYOUT_CONTROL: &str = "/proc/sys/eggos/keyboard_layout";
+const KEYBOARD_LAYOUTS_CONTROL: &str = "/proc/sys/eggos/keyboard_layouts";
+const KEYBOARD_SWITCH_KEY_CONTROL: &str = "/proc/sys/eggos/keyboard_switch_key";
+
+fn apply_keyboard(choice: KeyboardChoice, server: Option<&WindowServer>) -> Result<(), Errno> {
     let opened;
     let server = match server {
         Some(server) => Some(server),
@@ -480,10 +705,31 @@ fn apply_keyboard_layout(index: usize, server: Option<&WindowServer>) -> Result<
             opened.as_ref().ok()
         }
     };
-    match server {
-        Some(server) => server.set_keyboard_layout(index as u32),
-        None => Ok(()),
+    if let Some(server) = server {
+        let mut numbers = [0u8; 4];
+        for (place, number) in numbers.iter_mut().zip(choice.layouts.numbers()) {
+            *place = number as u8;
+        }
+        server.set_keyboard_layouts(
+            choice.layouts.len() as u32,
+            numbers,
+            choice.switch_key.number() as u32,
+        )?;
+        return server.set_keyboard_layout(choice.in_force as u32);
     }
+    let mut layouts = [0u8; settings_file::KEYBOARD_LAYOUT_SET_CAPACITY];
+    let in_force = settings_file::KEYBOARD_LAYOUTS
+        .get(choice.in_force)
+        .map_or("us", |layout| layout.name);
+    write_file(
+        KEYBOARD_LAYOUTS_CONTROL,
+        choice.layouts.write(&mut layouts).as_bytes(),
+    )?;
+    write_file(
+        KEYBOARD_SWITCH_KEY_CONTROL,
+        choice.switch_key.name().as_bytes(),
+    )?;
+    write_file(KEYBOARD_LAYOUT_CONTROL, in_force.as_bytes())
 }
 
 fn apply_input(preferences: InputPreferences, server: Option<&WindowServer>) -> Result<(), Errno> {
@@ -507,15 +753,15 @@ fn apply_input(preferences: InputPreferences, server: Option<&WindowServer>) -> 
     }
 }
 
-fn choose_keyboard_layout(index: usize, server: Option<&WindowServer>) {
-    if let Err(error) = apply_keyboard_layout(index, server) {
+fn choose_keyboard(choice: KeyboardChoice, server: Option<&WindowServer>) {
+    if let Err(error) = apply_keyboard(choice, server) {
         say_error(&[
             settings_file::KEYBOARD_LAYOUT.as_bytes(),
             b": not applied: ",
             error.message(),
         ]);
     }
-    if let Err(error) = save_keyboard_layout(index) {
+    if let Err(error) = save_keyboard(choice) {
         say_error(&[PATH.as_bytes(), b": ", error.message()]);
     }
 }
@@ -543,13 +789,99 @@ fn apply_profile(index: usize, server: Option<&WindowServer>) -> bool {
     applied.is_ok()
 }
 
+fn apply_theme(theme: Theme, server: Option<&WindowServer>) -> Result<(), Errno> {
+    let opened;
+    let server = match server {
+        Some(server) => Some(server),
+        None => {
+            opened = WindowServer::open();
+            opened.as_ref().ok()
+        }
+    };
+    match server {
+        Some(server) => {
+            let high_contrast = server.palette().is_ok_and(|index| index >= HIGH_CONTRAST);
+            server.set_palette(palette_index(theme, high_contrast))
+        }
+        None => Ok(()),
+    }
+}
+
+const HIGH_CONTRAST: u32 = 2;
+
+fn apply_display(
+    theme: Theme,
+    display: DisplayAccessibility,
+    server: Option<&WindowServer>,
+) -> Result<(), Errno> {
+    let opened;
+    let server = match server {
+        Some(server) => Some(server),
+        None => {
+            opened = WindowServer::open();
+            opened.as_ref().ok()
+        }
+    };
+    match server {
+        Some(server) => {
+            server.set_palette(palette_index(theme, display.high_contrast))?;
+            server.set_reduce_motion(display.reduce_motion)
+        }
+        None => Ok(()),
+    }
+}
+
+fn saved_display(file: &[u8], server: Option<&WindowServer>) -> DisplayAccessibility {
+    let saved = settings_file::display_accessibility(file);
+    DisplayAccessibility {
+        high_contrast: server
+            .and_then(|server| server.palette().ok())
+            .map_or(saved.high_contrast, |index| index >= HIGH_CONTRAST),
+        reduce_motion: server
+            .and_then(|server| server.reduce_motion().ok())
+            .unwrap_or(saved.reduce_motion),
+    }
+}
+
+fn choose_theme(theme: Theme, server: Option<&WindowServer>) {
+    if let Err(error) = apply_theme(theme, server) {
+        say_error(&[
+            APPEARANCE_THEME.as_bytes(),
+            b": not applied: ",
+            error.message(),
+        ]);
+    }
+    if let Err(error) = save_through_a_temporary_file(APPEARANCE_THEME, theme.name()) {
+        say_error(&[PATH.as_bytes(), b": ", error.message()]);
+    }
+}
+
+fn saved_theme(file: &[u8], server: Option<&WindowServer>) -> Theme {
+    let saved = settings_file::value(file, APPEARANCE_THEME)
+        .and_then(|value| core::str::from_utf8(value).ok())
+        .and_then(Theme::named)
+        .unwrap_or_default();
+    server
+        .and_then(|server| server.palette().ok())
+        .map_or(saved, theme_of)
+}
+
 struct Machine {
     server: Option<WindowServer>,
+    coded_errors: bool,
 }
 
 impl command::Machine for Machine {
     fn facts(&mut self) -> Facts {
         facts(self.server.as_ref())
+    }
+
+    fn save_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]> {
+        save_through_a_temporary_file(APPEARANCE_THEME, theme.name()).map_err(Errno::message)
+    }
+
+    fn apply_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]> {
+        apply_theme(theme, self.server.as_ref()).map_err(Errno::message)
     }
 
     fn save_profile(&mut self, index: usize) -> Result<(), &'static [u8]> {
@@ -574,16 +906,24 @@ impl command::Machine for Machine {
         }
     }
 
-    fn save_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
-        save_keyboard_layout(index).map_err(Errno::message)
+    fn save_keyboard(&mut self, choice: KeyboardChoice) -> Result<(), &'static [u8]> {
+        save_keyboard(choice).map_err(Errno::message)
     }
 
-    fn apply_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
-        apply_keyboard_layout(index, self.server.as_ref()).map_err(Errno::message)
+    fn apply_keyboard(&mut self, choice: KeyboardChoice) -> Result<(), &'static [u8]> {
+        apply_keyboard(choice, self.server.as_ref()).map_err(Errno::message)
     }
 
     fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]> {
         save_time_zone(index).map_err(Errno::message)
+    }
+
+    fn save_time_automatic(&mut self, on: bool) -> Result<(), &'static [u8]> {
+        save_time_automatic(on).map_err(Errno::message)
+    }
+
+    fn start_clock_sync(&mut self) -> Result<(), &'static [u8]> {
+        start_clock_sync().map(|_| ()).map_err(Errno::message)
     }
 
     fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]> {
@@ -621,6 +961,19 @@ impl command::Machine for Machine {
         }
     }
 
+    fn save_display(&mut self, change: DisplayChange) -> Result<(), &'static [u8]> {
+        let (key, value) = change.saved();
+        save_through_a_temporary_file(key, value.as_str()).map_err(Errno::message)
+    }
+
+    fn apply_display(
+        &mut self,
+        theme: Theme,
+        display: DisplayAccessibility,
+    ) -> Result<(), &'static [u8]> {
+        apply_display(theme, display, self.server.as_ref()).map_err(Errno::message)
+    }
+
     fn write_output(&mut self, bytes: &[u8]) {
         write_all(STANDARD_OUTPUT, bytes);
     }
@@ -628,6 +981,16 @@ impl command::Machine for Machine {
     fn write_error(&mut self, bytes: &[u8]) {
         write_all(STANDARD_ERROR, bytes);
     }
+
+    fn wants_coded_errors(&self) -> bool {
+        self.coded_errors
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComponentWork {
+    Install,
+    Remove,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -765,6 +1128,8 @@ struct Settings {
     uptime_at_start: u64,
     unsaved_profile: Option<usize>,
     disk_work: Option<DiskWork>,
+    component_work: Option<ComponentWork>,
+    clock_sync_child: Option<usize>,
 }
 
 const SECOND_MS: u32 = 1000;
@@ -776,6 +1141,7 @@ impl Application<CAPACITY> for Settings {
 
     fn respond(&mut self, response: Response, now_ms: u32) {
         match self.window.respond(response, now_ms) {
+            Some(Request::SetTheme(theme)) => choose_theme(theme, self.server.as_ref()),
             Some(Request::SetProfile(index)) => {
                 apply_profile(index, self.server.as_ref());
                 self.unsaved_profile = Some(index);
@@ -786,10 +1152,31 @@ impl Application<CAPACITY> for Settings {
                 self.window.show_time(wall_clock().0);
             }
             Some(Request::SetKeyboardLayout(index)) => {
-                choose_keyboard_layout(index, self.server.as_ref());
+                let choice = KeyboardChoice::of(self.window.facts()).choosing(index);
+                choose_keyboard(choice, self.server.as_ref());
+            }
+            Some(Request::SetKeyboardLayouts { layouts, in_force }) => {
+                let choice = KeyboardChoice {
+                    layouts,
+                    in_force,
+                    switch_key: self.window.facts().switch_key,
+                };
+                choose_keyboard(choice, self.server.as_ref());
+            }
+            Some(Request::SetSwitchKey(switch_key)) => {
+                let choice = KeyboardChoice::of(self.window.facts()).switching_with(switch_key);
+                choose_keyboard(choice, self.server.as_ref());
             }
             Some(Request::SetTimeZone(index)) => {
                 self.window.time_zone_saved(index, save_time_zone(index));
+            }
+            Some(Request::SetTimeAutomatic { on, sync_now }) => {
+                let saved = save_time_automatic(on);
+                let started_at = match (saved, sync_now) {
+                    (Ok(()), true) => self.start_clock_sync(),
+                    _ => None,
+                };
+                self.window.time_automatic_saved(on, saved, started_at);
             }
             Some(Request::SetDisplayScale(scale)) => {
                 self.window
@@ -810,6 +1197,19 @@ impl Application<CAPACITY> for Settings {
                     _ => Ok(()),
                 };
                 self.window.keys_changed(change, saved, applied);
+            }
+            Some(Request::ChangeDisplay(change)) => {
+                let (key, value) = change.saved();
+                let saved = save_through_a_temporary_file(key, value.as_str());
+                let applied = match saved {
+                    Ok(()) => {
+                        let facts = self.window.facts();
+                        let display = change.applied_to(facts.display);
+                        apply_display(facts.theme, display, self.server.as_ref())
+                    }
+                    Err(_) => Ok(()),
+                };
+                self.window.display_changed(change, saved, applied);
             }
             Some(Request::ChangeInput(change)) => {
                 let (key, value) = change.saved();
@@ -854,6 +1254,11 @@ impl Application<CAPACITY> for Settings {
                     pairing::turn_network(&mut LinuxGrantFiles, port).map_err(|(_, errno)| errno);
                 self.window.network_turned(turned, network_read());
             }
+            Some(Request::ReadDevices) => {
+                let mut text = alloc::vec![0u8; DEVICES_TEXT_CAPACITY];
+                let read = read_file(eggos_device_list::DEVICES_FILE, &mut text);
+                self.window.show_devices(read.map(|length| &text[..length]));
+            }
             Some(Request::BeginPairing) => {
                 if let Some((agent, name)) = self.window.to_pair() {
                     let outcome =
@@ -861,6 +1266,20 @@ impl Application<CAPACITY> for Settings {
                     let grants = grants_read(self.window.facts().on_disk);
                     self.window
                         .paired(agent, outcome, grants, network_read(), now_ms);
+                }
+            }
+            Some(Request::ReadComponents) => self.window.show_components(components_read()),
+            Some(Request::CheckComponentRemove) => {
+                if let Some(name) = self.window.components_pane().to_check().map(String::from) {
+                    let checked = check_component_remove(&name);
+                    self.window.show_remove_check(checked, now_ms);
+                }
+            }
+            Some(Request::InstallComponent) => self.component_work = Some(ComponentWork::Install),
+            Some(Request::RemoveComponent) => self.component_work = Some(ComponentWork::Remove),
+            Some(Request::CopyToClipboard) => {
+                if let Some(server) = self.server.as_ref() {
+                    let _ = server.set_clipboard(self.window.windows_pane().to_copy());
                 }
             }
             None => self.show_clock(now_ms),
@@ -875,15 +1294,18 @@ impl Application<CAPACITY> for Settings {
     }
 
     fn deadline(&self, now_ms: u32) -> Option<u32> {
-        if self.unsaved_profile.is_some() || self.disk_work.is_some() {
+        if self.unsaved_profile.is_some()
+            || self.disk_work.is_some()
+            || self.component_work.is_some()
+        {
             return Some(now_ms);
         }
         if self.window.pairing_counting_down() {
             let (_, nanoseconds) = wall_clock();
             return Some(now_ms.wrapping_add(SECOND_MS - nanoseconds / NANOSECONDS_PER_MS));
         }
-        match self.window.pane() {
-            ABOUT => {
+        let pane_tick = match self.window.pane() {
+            ABOUT | NETWORK => {
                 let elapsed = now_ms.wrapping_sub(self.uptime_from_ms);
                 Some(now_ms.wrapping_add(SECOND_MS - elapsed % SECOND_MS))
             }
@@ -892,19 +1314,26 @@ impl Application<CAPACITY> for Settings {
                 Some(now_ms.wrapping_add(SECOND_MS - nanoseconds / NANOSECONDS_PER_MS))
             }
             _ => None,
-        }
+        };
+        let reap_tick = self
+            .clock_sync_child
+            .map(|_| now_ms.wrapping_add(SECOND_MS));
+        pane_tick.or(reap_tick)
     }
 
     fn tick(&mut self, now_ms: u32) {
         self.save_unsaved();
         self.do_disk_work(now_ms);
+        self.do_component_work();
         self.show_clock(now_ms);
+        self.clock_sync_running();
         if self.window.pairing_counting_down() {
             self.window.show_network(network_read());
         }
     }
 
     fn focused(&mut self, _now_ms: u32) {
+        self.show_windows_layer();
         if self.unsaved_profile.is_some() {
             return;
         }
@@ -919,8 +1348,23 @@ impl Application<CAPACITY> for Settings {
         }
         if let Some(keyboard) = self.keyboard() {
             let layout = keyboard.layout as usize;
-            if layout != self.window.facts().keyboard_layout {
-                self.window.show_keyboard_layout(layout);
+            let mut listed = [0u8; settings_file::KEYBOARD_LAYOUT_SET_CAPACITY + 1];
+            let layouts = read_file(KEYBOARD_LAYOUTS_CONTROL, &mut listed)
+                .ok()
+                .and_then(|length| {
+                    let text = &listed[..length.min(listed.len())];
+                    let text = text.strip_suffix(b"\n").unwrap_or(text);
+                    settings_file::KeyboardLayoutSet::parse(text).ok()
+                });
+            let facts = self.window.facts();
+            match layouts {
+                Some(layouts)
+                    if layouts != facts.keyboard_layouts || layout != facts.keyboard_layout =>
+                {
+                    self.window.show_keyboard_layouts(layouts, layout);
+                }
+                _ if layout != facts.keyboard_layout => self.window.show_keyboard_layout(layout),
+                _ => {}
             }
             self.window
                 .show_keyboard(keyboard.present, keyboard.caps_lock);
@@ -929,6 +1373,59 @@ impl Application<CAPACITY> for Settings {
 }
 
 impl Settings {
+    fn open_pane(&mut self, pane: usize) {
+        match self.window.open_pane(pane) {
+            Some(Request::ReadDisks) => self.window.show_disks(storage::list(&mut LinuxDisks)),
+            Some(Request::ReadGrants) => {
+                let read = grants_read(self.window.facts().on_disk);
+                self.window.show_grants(read);
+            }
+            Some(Request::ReadDevices) => {
+                let mut text = alloc::vec![0u8; DEVICES_TEXT_CAPACITY];
+                let read = read_file(eggos_device_list::DEVICES_FILE, &mut text);
+                self.window.show_devices(read.map(|length| &text[..length]));
+            }
+            Some(Request::ReadComponents) => self.window.show_components(components_read()),
+            _ if pane == NETWORK => self.window.show_network_adapter(network_adapter()),
+            _ => {}
+        }
+    }
+
+    fn show_windows_layer(&mut self) {
+        if let Some(Request::ReadComponents) =
+            self.window.show_windows_layer(windows_layer_installed())
+        {
+            self.window.show_components(components_read());
+        }
+    }
+
+    fn do_component_work(&mut self) {
+        let Some(work) = self.component_work.take() else {
+            return;
+        };
+        let pane = self.window.components_pane();
+        match work {
+            ComponentWork::Install => {
+                let Some(name) = pane.to_install().map(String::from) else {
+                    return;
+                };
+                let installed = install_component(&name, pane.cancelled());
+                let next = self.window.show_installed(installed, components_read());
+                if next == Some(Request::InstallComponent) {
+                    self.component_work = Some(ComponentWork::Install);
+                }
+            }
+            ComponentWork::Remove => {
+                let Some(name) = pane.to_remove().map(String::from) else {
+                    return;
+                };
+                let removed = remove_component(&name);
+                self.window.show_removed(removed, components_read());
+            }
+        }
+        self.show_windows_layer();
+    }
+
     fn keyboard(&self) -> Option<Keyboard> {
         self.server.as_ref()?.keyboard().ok()
     }
@@ -969,9 +1466,42 @@ impl Settings {
     fn show_clock(&mut self, now_ms: u32) {
         match self.window.pane() {
             ABOUT => self.show_uptime(now_ms),
-            DATE_AND_TIME => self.window.show_time(wall_clock().0),
+            DATE_AND_TIME => {
+                self.window.show_time(wall_clock().0);
+                if self.window.facts().time_automatic {
+                    let running = self.clock_sync_running();
+                    self.window
+                        .show_clock_sync(clock_sync_record(), network_adapter(), running);
+                }
+            }
+            NETWORK => self.window.show_network_adapter(network_adapter()),
             _ => {}
         }
+    }
+
+    fn start_clock_sync(&mut self) -> Option<i64> {
+        let started_at = wall_clock().0 as i64;
+        if self.clock_sync_running() {
+            return Some(started_at);
+        }
+        self.clock_sync_child = Some(start_clock_sync().ok()?);
+        Some(started_at)
+    }
+
+    fn clock_sync_running(&mut self) -> bool {
+        let Some(child) = self.clock_sync_child else {
+            return false;
+        };
+        let mut status = 0i32;
+        let waited = syscall(
+            number::WAIT4,
+            [child, &raw mut status as usize, WNOHANG, 0, 0, 0],
+        );
+        if matches!(waited, Ok(0) | Err(Errno::EINTR)) {
+            return true;
+        }
+        self.clock_sync_child = None;
+        false
     }
 
     fn show_uptime(&mut self, now_ms: u32) {
@@ -1136,7 +1666,7 @@ fn grant_prompt() -> i32 {
     view.finish()
 }
 
-fn open_window(pairing: Option<PairingAsked<'_>>) -> i32 {
+fn open_window(pairing: Option<PairingAsked<'_>>, pane: Option<usize>, home: &str) -> i32 {
     let (width, height) = DEFAULT_SIZE;
     let mut window = match Window::create(TITLE, width, height, MINIMUM_SIZE) {
         Ok(window) => window,
@@ -1153,12 +1683,21 @@ fn open_window(pairing: Option<PairingAsked<'_>>) -> i32 {
         uptime_at_start: facts.uptime_s,
         unsaved_profile: None,
         disk_work: None,
+        component_work: None,
+        clock_sync_child: None,
     };
+    settings
+        .window
+        .attach_registry(Box::new(FileStore::new(LinuxHiveFiles, home.as_bytes())));
+    settings.show_windows_layer();
     if let Some(asked) = pairing {
         let grants = grants_read(settings.window.facts().on_disk);
         settings
             .window
             .open_pairing(asked.id, asked.name, grants, network_read(), now_ms());
+    }
+    if let Some(pane) = pane {
+        settings.open_pane(pane);
     }
     let served = application::run(&mut window, &mut settings);
     settings.save_unsaved();
@@ -1169,6 +1708,96 @@ fn open_window(pairing: Option<PairingAsked<'_>>) -> i32 {
             1
         }
     }
+}
+
+struct FirstRun {
+    window: FirstRunWindow,
+    server: Option<WindowServer>,
+}
+
+impl FirstRun {
+    fn choose(&mut self, request: Request) {
+        let result = match request {
+            Request::SetProfile(index) => {
+                let name = settings_file::PROFILES[index.min(settings_file::PROFILES.len() - 1)];
+                save_through_a_temporary_file(settings_file::SHELL_PROFILE, name).and_then(|()| {
+                    match self.server.as_ref() {
+                        Some(server) => server.set_desktop_profile(index as u32),
+                        None => Ok(()),
+                    }
+                })
+            }
+            Request::SetKeyboardLayout(index) => {
+                let choice = KeyboardChoice::of(self.window.facts()).choosing(index);
+                save_keyboard(choice).and_then(|()| apply_keyboard(choice, self.server.as_ref()))
+            }
+            Request::SetTimeZone(index) => save_time_zone(index),
+            _ => return,
+        };
+        self.window.chosen(request, result);
+    }
+}
+
+fn finish_first_run(request: FirstRunRequest) -> ! {
+    if let FirstRunRequest::Finish {
+        save_profile: Some(index),
+    } = request
+    {
+        save_profile(index);
+    }
+    eggos_runtime::syscall::exit(0)
+}
+
+impl Application<CAPACITY> for FirstRun {
+    fn tree(&mut self) -> &mut WidgetTree<CAPACITY> {
+        self.window.tree()
+    }
+
+    fn respond(&mut self, response: Response, now_ms: u32) {
+        match self.window.respond(response, now_ms) {
+            Some(FirstRunRequest::Choose(request)) => self.choose(request),
+            Some(finish @ FirstRunRequest::Finish { .. }) => finish_first_run(finish),
+            None => {}
+        }
+    }
+
+    fn deadline(&self, now_ms: u32) -> Option<u32> {
+        self.window
+            .shows_the_clock()
+            .then(|| now_ms.wrapping_add(SECOND_MS - now_ms % SECOND_MS))
+    }
+
+    fn tick(&mut self, _now_ms: u32) {
+        self.window.show_now(wall_clock().0);
+    }
+}
+
+fn open_first_run() -> i32 {
+    let (width, height) = first_run::SIZE;
+    let created =
+        Window::create_with_flags(first_run::TITLE, width, height, (width, height), FIXED_SIZE);
+    let Ok(mut window) = created else {
+        say_error(&[b"no display"]);
+        return 1;
+    };
+    if let Ok(area) = window.server().work_area() {
+        let (x, y) = first_run::centred_in(area.rect.width, area.rect.height, area.scale);
+        let _ = window.set_position(x, y);
+    }
+    let mut file = [0u8; LARGEST + 1];
+    let length = saved_settings(&mut file);
+    let profile_saved =
+        settings_file::value(&file[..length], settings_file::SHELL_PROFILE).is_some();
+    let mut first_run = FirstRun {
+        window: FirstRunWindow::new(facts(Some(window.server())), profile_saved),
+        server: WindowServer::open().ok(),
+    };
+    let served = application::run(&mut window, &mut first_run);
+    let closing = first_run.window.close_requested();
+    if let Err(error) = served {
+        say_error(&[b"its window: ", error.message()]);
+    }
+    finish_first_run(closing)
 }
 
 struct TaskManagerProgram {
@@ -1376,7 +2005,7 @@ fn run_task_manager(startup: &Startup) -> i32 {
 /// The program: see the crate's documentation. Started as `app-window`, it is the
 /// installer's window instead (D134); as `app` the `app` command (D134, D214); as `files` the
 /// Files window (D135); as `text-editor` the Text Editor and as `edit` its command (D149); as
-/// `disk` the `disk` command (D192).
+/// `disk` the `disk` command (D192); as `downloads` the Downloads window (D225).
 pub fn run(startup: &Startup) -> i32 {
     let started_as = startup.arguments().next().map_or(&b""[..], CStr::to_bytes);
     match eggos_app::files::file_name(started_as) {
@@ -1388,6 +2017,7 @@ pub fn run(startup: &Startup) -> i32 {
         DISK_COMMAND_NAME => return crate::disk_system::run(startup),
         TERMINAL_PROGRAM_NAME => return eggos_terminal_window::program::run(startup),
         TASK_MANAGER_PROGRAM_NAME => return run_task_manager(startup),
+        DOWNLOADS_PROGRAM_NAME => return eggos_downloads::program::run(startup),
         _ => {}
     }
     let mut options = startup.arguments().skip(1).map(CStr::to_bytes);
@@ -1408,8 +2038,16 @@ pub fn run(startup: &Startup) -> i32 {
         arguments[count] = argument;
         count += 1;
     }
+    let home = startup
+        .environment()
+        .find_map(|variable| variable.to_bytes().strip_prefix(HOME_VARIABLE))
+        .and_then(|home| core::str::from_utf8(home).ok())
+        .filter(|home| !home.is_empty())
+        .unwrap_or(DEFAULT_HOME);
     match command::window_asked(&arguments[..count]) {
-        WindowAsked::Pairing(asked) => return open_window(Some(asked)),
+        WindowAsked::Pairing(asked) => return open_window(Some(asked), None, home),
+        WindowAsked::Pane(pane) => return open_window(None, Some(pane), home),
+        WindowAsked::FirstRun => return open_first_run(),
         WindowAsked::Usage => {
             write_all(STANDARD_ERROR, USAGE.as_bytes());
             return USAGE_STATUS;
@@ -1417,10 +2055,13 @@ pub fn run(startup: &Startup) -> i32 {
         WindowAsked::Other => {}
     }
     match count {
-        0 => open_window(None),
+        0 => open_window(None, None, home),
         _ => {
             let mut machine = Machine {
                 server: WindowServer::open().ok(),
+                coded_errors: startup
+                    .environment()
+                    .any(|variable| variable == eggos_commands::tools::CODED_ERRORS_ENVIRONMENT),
             };
             command::run(&mut machine, &arguments[..count])
         }

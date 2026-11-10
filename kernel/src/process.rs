@@ -3481,7 +3481,11 @@ mod tests {
         let read = fault(ExceptionKind::DataFault, Some(DATA), false);
         resolve(&process, &read).unwrap();
         let mut taken = Vec::new();
-        while let Some(frame) = memory::FRAMES.lock().as_mut().unwrap().allocate() {
+        loop {
+            let allocated = memory::FRAMES.lock().as_mut().unwrap().allocate();
+            let Some(frame) = allocated else {
+                break;
+            };
             taken.push(frame);
         }
         // Mapped already: the stale fault resumes; untouched: out of memory.

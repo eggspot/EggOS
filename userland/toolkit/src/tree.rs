@@ -8,9 +8,11 @@ use crate::damage::Damage;
 use crate::geometry::Rect;
 use crate::input::{Input, Modifiers, MouseButton, key};
 use crate::text::Text;
+use crate::text_area::Store;
+use crate::theme::{self, Palette};
 use crate::widget::{
-    self, Field, FieldKey, Horizontal, Kind, Length, List, Look, Place, THUMB, WHEEL_STEP,
-    card_rect, caret_rect, radio_rect, scroll_bar,
+    self, DropMode, Field, FieldKey, FormFactor, Horizontal, Kind, Length, List, Look, Place,
+    SortOrder, THUMB, THUMB_X, WHEEL_STEP, card_rect, caret_rect, radio_rect, scroll_bar,
 };
 
 /// A widget's place in its tree.
@@ -50,6 +52,27 @@ pub enum Response {
     PasteWanted(WidgetId),
     /// A key no widget used, for the window: its code and modifiers.
     Unused { code: u16, shift: bool },
+    /// A menu bar's or menu button's item of this id was chosen (D219).
+    Invoked(WidgetId, u8),
+    /// A table's header was clicked: it is now sorted by this column this way; reorder the
+    /// rows and call [`WidgetTree::set_rows`], or refuse with [`WidgetTree::set_sort`].
+    Sorted(WidgetId, usize, SortOrder),
+    /// A table's column was resized to this width by a drag that just ended.
+    ColumnResized(WidgetId, usize, i32),
+    /// A drag of this source's part (a row, or 0 for a whole widget) started: call
+    /// [`WidgetTree::cancel_drag`] to refuse it.
+    DragStarted(WidgetId, usize),
+    /// The drag of `source`'s `part` was let go over `target` at `at`: the row for
+    /// [`DropMode::Onto`] (0 for a whole widget), the insertion index for
+    /// [`DropMode::Between`].
+    Dropped {
+        source: WidgetId,
+        part: usize,
+        target: WidgetId,
+        at: usize,
+    },
+    /// The drag of this source ended without a drop.
+    DragCancelled(WidgetId),
 }
 
 /// The pointer shape a window shows over its content (docs/windows.md, `SET_POINTER`).
@@ -58,9 +81,18 @@ pub enum PointerShape {
     #[default]
     Arrow,
     IBeam,
+    /// Over a table's column handle (the server's shape 3).
+    ResizeEW,
+    /// While a drag is in progress (the server's shape 7).
+    Hand,
 }
 
+mod drags;
 mod elements;
+mod menus;
+mod tables;
+mod text_areas;
+mod tooltips;
 
 pub use elements::element_of;
 
@@ -69,8 +101,8 @@ pub const ROOT_ELEMENT: u32 = 1;
 
 const CARET_BLINK_MS: u32 = 500;
 const DOUBLE_CLICK_MS: u32 = 400;
-const LEFT_SHIFT: u16 = 42;
-const RIGHT_SHIFT: u16 = 54;
+const LEFT_SHIFT: u16 = key::LEFT_SHIFT;
+const RIGHT_SHIFT: u16 = key::RIGHT_SHIFT;
 const DAMAGE_OUTSET: i32 = 5;
 
 #[derive(Debug, Clone, Copy)]
@@ -83,6 +115,11 @@ struct Node {
     shown: bool,
     enabled: bool,
     person_only: bool,
+    drag_source: bool,
+    drop: Option<DropMode>,
+    drag_text: Text<48>,
+    accessible_name: Text<64>,
+    accessible_value: Text<64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,13 +131,14 @@ struct Target {
 #[derive(Debug, Clone, Copy)]
 struct Drag {
     widget: WidgetId,
-    grab_y: i32,
+    horizontal: bool,
+    grab: i32,
     start_offset: i32,
 }
 
-/// The widgets of one window, at most `N`.
+/// The widgets of one window, at most `N`, and `A` text stores for its text areas.
 #[derive(Debug, Clone)]
-pub struct WidgetTree<const N: usize> {
+pub struct WidgetTree<const N: usize, const A: usize = 0> {
     nodes: [Option<Node>; N],
     count: usize,
     size: (i32, i32),
@@ -118,23 +156,38 @@ pub struct WidgetTree<const N: usize> {
     shift_held: bool,
     shortcut_held: bool,
     alt_held: bool,
-    copied: Text<255>,
+    copied: Text<COPIED_BYTES>,
     window_focused: bool,
     caret_epoch_ms: u32,
     caret_shown: bool,
+    dead_key: Option<char>,
     last_click: Option<(Target, u32)>,
     default_button: Option<WidgetId>,
     text_before_focus: Text<255>,
     damage: Damage,
+    palette: &'static Palette,
+    reduce_motion: bool,
+    form: FormFactor,
+    global_menu: bool,
+    menu: Option<WidgetId>,
+    menu_pressed: bool,
+    alt_alone: bool,
+    tip: tooltips::Tip,
+    column: Option<tables::ColumnDrag>,
+    pick: Option<drags::Pick>,
+    stores: [Store; A],
 }
 
-impl<const N: usize> Default for WidgetTree<N> {
+/// The most bytes a copy or a cut hands to the clipboard.
+pub const COPIED_BYTES: usize = 4096;
+
+impl<const N: usize, const A: usize> Default for WidgetTree<N, A> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const N: usize> WidgetTree<N> {
+impl<const N: usize, const A: usize> WidgetTree<N, A> {
     /// An empty tree for a window that has the keyboard focus.
     pub const fn new() -> Self {
         Self {
@@ -159,23 +212,90 @@ impl<const N: usize> WidgetTree<N> {
             window_focused: true,
             caret_epoch_ms: 0,
             caret_shown: true,
+            dead_key: None,
             last_click: None,
             default_button: None,
             text_before_focus: Text::new(),
             damage: Damage::new(),
+            palette: &theme::DARK,
+            reduce_motion: false,
+            form: FormFactor::Desktop,
+            global_menu: false,
+            menu: None,
+            menu_pressed: false,
+            alt_alone: false,
+            tip: tooltips::Tip::NONE,
+            column: None,
+            pick: None,
+            stores: [Store::EMPTY; A],
         }
     }
 
-    /// Adds `kind` under `parent` (a container added before it, or the window when `None`) at
-    /// `place`; `None` when the tree is full or `parent` holds no widgets.
+    /// The palette it draws with.
+    pub fn palette(&self) -> &'static Palette {
+        self.palette
+    }
+
+    /// Draws with `palette` from now on: the whole window is drawn again.
+    pub fn set_palette(&mut self, palette: &'static Palette) {
+        if !core::ptr::eq(self.palette, palette) {
+            self.palette = palette;
+            self.damage_all();
+        }
+    }
+
+    /// Whether nothing blinks (`accessibility.reduce_motion`, D224): the caret is drawn steady.
+    pub fn set_reduce_motion(&mut self, reduce_motion: bool) {
+        self.reduce_motion = reduce_motion;
+        if reduce_motion && !self.caret_shown {
+            self.caret_shown = true;
+            self.damage_caret();
+        }
+    }
+
+    /// Tells it the device class it is on (docs/ux/toolkit-v0.5.md section 11).
+    pub fn set_form_factor(&mut self, form: FormFactor) {
+        self.form = form;
+    }
+
+    /// Adds `kind` under `parent` (a container added before it, or the window when `None`; a
+    /// tooltip under the widget it names, replacing one it had) at `place`; `None` when the
+    /// tree is full, `parent` holds no widgets, or a text area's store is missing or taken.
     pub fn add(&mut self, parent: Option<WidgetId>, place: Place, kind: Kind) -> Option<WidgetId> {
         if self.count >= N || self.count > usize::from(u16::MAX) {
             return None;
         }
+        let tooltip = matches!(kind, Kind::Tooltip(_));
         if let Some(parent) = parent
             && !self.node(parent)?.kind.is_container()
+            && !tooltip
         {
             return None;
+        }
+        if tooltip && parent.is_none() {
+            return None;
+        }
+        if let Kind::TextArea(area) = &kind {
+            let shared = self.ids().any(|id| {
+                matches!(self.kind(id), Some(Kind::TextArea(other)) if other.store == area.store)
+            });
+            if area.store >= A || shared {
+                return None;
+            }
+        }
+        if tooltip && let Some(parent) = parent {
+            let previous = self.ids().find(|&id| {
+                self.node(id).is_some_and(|node| {
+                    node.parent == Some(parent) && matches!(node.kind, Kind::Tooltip(_))
+                })
+            });
+            if let Some(previous) = previous {
+                if let Some(node) = self.node_mut(previous) {
+                    node.kind = kind;
+                }
+                self.layout();
+                return Some(previous);
+            }
         }
         let id = WidgetId(self.count as u16);
         self.nodes[self.count] = Some(Node {
@@ -187,8 +307,16 @@ impl<const N: usize> WidgetTree<N> {
             shown: true,
             enabled: true,
             person_only: false,
+            drag_source: false,
+            drop: None,
+            drag_text: Text::new(),
+            accessible_name: Text::new(),
+            accessible_value: Text::new(),
         });
         self.count += 1;
+        if let Kind::TextArea(area) = kind {
+            self.stores[area.store] = Store::EMPTY;
+        }
         Some(id)
     }
 
@@ -200,7 +328,7 @@ impl<const N: usize> WidgetTree<N> {
         self.nodes.get_mut(id.index())?.as_mut()
     }
 
-    fn ids(&self) -> impl DoubleEndedIterator<Item = WidgetId> + use<N> {
+    fn ids(&self) -> impl DoubleEndedIterator<Item = WidgetId> + use<N, A> {
         (0..self.count as u16).map(WidgetId)
     }
 
@@ -225,9 +353,21 @@ impl<const N: usize> WidgetTree<N> {
         }
     }
 
-    /// Replaces the text of label, button or checkbox `id`.
+    /// Replaces the text of label, button, checkbox, text field or text area `id`.
     pub fn set_text(&mut self, id: WidgetId, words: &str) {
         if self.text_of(id) == Some(words) {
+            return;
+        }
+        if let Some(Kind::TextArea(area)) = self.kind(id).copied() {
+            self.stores[area.store].set(words);
+            let length = self.stores[area.store].len();
+            self.edit_area(id, 0, |area, _| {
+                area.caret = length;
+                area.anchor = length;
+                area.wanted_x = None;
+                false
+            });
+            self.rewrap(id);
             return;
         }
         self.change(id, |kind| match kind {
@@ -262,6 +402,7 @@ impl<const N: usize> WidgetTree<N> {
             Kind::Label { text, .. } => Some(text.as_str()),
             Kind::Button { text, .. } | Kind::Checkbox { text, .. } => Some(text.as_str()),
             Kind::TextField(field) => Some(field.text.as_str()),
+            Kind::TextArea(area) => self.stores.get(area.store).map(Store::text),
             _ => None,
         }
     }
@@ -273,6 +414,7 @@ impl<const N: usize> WidgetTree<N> {
             Kind::Radios { selected, .. } | Kind::Cards { selected, .. } => Some(*selected),
             Kind::List(list) => Some(list.selected),
             Kind::Dropdown(dropdown) => Some(dropdown.selected),
+            Kind::Table(table) => Some(table.selected),
             Kind::Checkbox { checked, .. } => Some(usize::from(*checked)),
             _ => None,
         }
@@ -303,9 +445,13 @@ impl<const N: usize> WidgetTree<N> {
                 dropdown.highlighted = index;
             }
             Kind::Checkbox { checked, .. } => *checked = index != 0,
+            Kind::Table(table) if index < table.rows => table.selected = index,
             _ => {}
         });
         self.keep_selection_visible(id);
+        if matches!(self.kind(id), Some(Kind::Table(_))) {
+            self.keep_row_visible(id);
+        }
     }
 
     /// Shows only the items of list `id` whose bit is set in `shown`; when the selected one
@@ -339,10 +485,29 @@ impl<const N: usize> WidgetTree<N> {
         node.shown = shown;
         let rect = node.rect;
         self.damage.add(rect.inset(-DAMAGE_OUTSET));
+        if !shown {
+            self.widget_went(id);
+        }
         if !shown && self.focus.is_some_and(|focus| self.is_within(focus, id)) {
             self.focus = None;
         }
         self.layout();
+    }
+
+    /// Moves widget `id` (and what it holds) to `place` in its parent and lays the tree out
+    /// again, for a window whose widgets keep to its bottom or change places with its size.
+    pub fn set_place(&mut self, id: WidgetId, place: Place) {
+        let Some(node) = self.node_mut(id) else {
+            return;
+        };
+        if node.place == place {
+            return;
+        }
+        node.place = place;
+        let before = node.rect;
+        self.damage.add(before.inset(-DAMAGE_OUTSET));
+        self.layout();
+        self.damage_widget(id);
     }
 
     /// Enables or disables widget `id`: a disabled one ignores the pointer and Tab.
@@ -352,6 +517,9 @@ impl<const N: usize> WidgetTree<N> {
         {
             node.enabled = enabled;
             self.damage_widget(id);
+            if !enabled {
+                self.widget_disabled(id);
+            }
         }
     }
 
@@ -366,6 +534,23 @@ impl<const N: usize> WidgetTree<N> {
     pub fn set_person_only(&mut self, id: WidgetId, person_only: bool) {
         if let Some(node) = self.node_mut(id) {
             node.person_only = person_only;
+        }
+    }
+
+    /// Gives widget `id` the name an agent and a screen reader read for it instead of its
+    /// drawn text (docs/ux/components-v0.3.md section 11): `Install Windows apps` for a button
+    /// that draws `Install`; at most 64 bytes, and `""` for its drawn text again.
+    pub fn set_accessible_name(&mut self, id: WidgetId, name: &str) {
+        if let Some(node) = self.node_mut(id) {
+            node.accessible_name = Text::from(name);
+        }
+    }
+
+    /// Gives widget `id` the value an agent and a screen reader read for it instead of the
+    /// one its kind gives; at most 64 bytes, and `""` for its kind's value again.
+    pub fn set_accessible_value(&mut self, id: WidgetId, value: &str) {
+        if let Some(node) = self.node_mut(id) {
+            node.accessible_value = Text::from(value);
         }
     }
 
@@ -415,8 +600,18 @@ impl<const N: usize> WidgetTree<N> {
 
     /// Lays the widgets out in a window `width` by `height` at scale 1 and draws it all again.
     pub fn resize(&mut self, width: i32, height: i32) {
+        let resized = self.size != (width, height);
         self.size = (width, height);
         self.layout();
+        if resized {
+            self.hide_tooltip();
+            self.close_menu();
+        }
+        for id in self.ids() {
+            if matches!(self.kind(id), Some(Kind::TextArea(_))) {
+                self.rewrap(id);
+            }
+        }
         self.damage.clear();
         self.damage.add(Rect::new(0, 0, width, height));
     }
@@ -425,6 +620,7 @@ impl<const N: usize> WidgetTree<N> {
         let window = Rect::new(0, 0, self.size.0, self.size.1);
         let mut cursors = [0i32; N];
         let mut content_bottoms = [i32::MIN; N];
+        let mut content_rights = [i32::MIN; N];
         for index in 0..self.count {
             let Some(node) = self.nodes[index] else {
                 continue;
@@ -436,7 +632,19 @@ impl<const N: usize> WidgetTree<N> {
                 },
                 None => (window, window, None),
             };
-            let (content_width, content_height) = node.kind.content_size();
+            if let Kind::Tooltip(tooltip) = &node.kind {
+                let owner = parent_rect.intersection(&parent_visible);
+                let rect = widget::tooltip_rect(tooltip, owner, self.size);
+                if let Some(node) = self.nodes[index].as_mut() {
+                    node.rect = rect;
+                    node.visible = window;
+                }
+                continue;
+            }
+            let (content_width, content_height) = match node.kind {
+                Kind::MenuBar(_) if self.global_menu => (0, 0),
+                kind => kind.content_size(),
+            };
             let offset_x = match node.place.horizontal {
                 Horizontal::Left(x) => x,
                 Horizontal::Right(margin) => margin,
@@ -448,11 +656,15 @@ impl<const N: usize> WidgetTree<N> {
                 Length::Content => content_width,
             }
             .max(0);
+            let scrolled_x = match parent_kind {
+                Some(Kind::ScrollView { offset_x, .. }) => offset_x,
+                _ => 0,
+            };
             let x = match node.place.horizontal {
                 Horizontal::Left(x) => parent_rect.x + x,
                 Horizontal::Right(margin) => parent_rect.right() - margin - width,
                 Horizontal::Centre => parent_rect.x + (parent_rect.width - width) / 2,
-            };
+            } - scrolled_x;
             let column_gap = match parent_kind {
                 Some(Kind::Column { gap }) => Some(gap),
                 _ => None,
@@ -464,10 +676,11 @@ impl<const N: usize> WidgetTree<N> {
                 (_, Some(Kind::ScrollView { offset, .. })) => node.place.top - offset,
                 _ => node.place.top,
             };
-            let height = match node.place.height {
-                Length::Px(height) => height,
-                Length::Fill(margin) => parent_rect.height - top - margin,
-                Length::Content => content_height,
+            let height = match (node.kind, node.place.height) {
+                (Kind::MenuBar(_), _) if self.global_menu => 0,
+                (_, Length::Px(height)) => height,
+                (_, Length::Fill(margin)) => parent_rect.height - top - margin,
+                (_, Length::Content) => content_height,
             }
             .max(0);
             if let (Some(parent), Some(gap)) = (node.parent, column_gap)
@@ -482,9 +695,17 @@ impl<const N: usize> WidgetTree<N> {
                 let bottom = rect.bottom() - parent_rect.y;
                 let held = &mut content_bottoms[parent.index()];
                 *held = (*held).max(bottom);
+                let right = match node.place.width {
+                    Length::Fill(_) => 0,
+                    _ => rect.right() - parent_rect.x,
+                };
+                let held = &mut content_rights[parent.index()];
+                *held = (*held).max(right);
             }
             let visible = match node.kind {
-                Kind::ScrollView { .. } | Kind::List(_) => rect.intersection(&parent_visible),
+                Kind::ScrollView { .. } | Kind::List(_) | Kind::Table(_) | Kind::TextArea(_) => {
+                    rect.intersection(&parent_visible)
+                }
                 _ => parent_visible,
             };
             if let Some(node) = self.nodes[index].as_mut() {
@@ -492,17 +713,28 @@ impl<const N: usize> WidgetTree<N> {
                 node.visible = visible;
             }
         }
-        for (node, bottom) in self.nodes.iter_mut().zip(content_bottoms).take(self.count) {
+        for ((node, bottom), right) in self
+            .nodes
+            .iter_mut()
+            .zip(content_bottoms)
+            .zip(content_rights)
+            .take(self.count)
+        {
             if let Some(node) = node.as_mut()
                 && let Kind::ScrollView {
                     offset,
                     content_height,
+                    offset_x,
+                    content_width,
                 } = &mut node.kind
             {
-                *content_height = if bottom == i32::MIN {
-                    0
-                } else {
-                    bottom + *offset
+                *content_height = match bottom {
+                    i32::MIN => 0,
+                    bottom => bottom + *offset,
+                };
+                *content_width = match right {
+                    i32::MIN => 0,
+                    right => right + *offset_x,
                 };
             }
         }
@@ -513,21 +745,27 @@ impl<const N: usize> WidgetTree<N> {
         let mut moved = false;
         for index in 0..self.count {
             if let Some(node) = self.nodes[index].as_mut() {
-                let height = node.rect.height;
+                let rect = node.rect;
                 match &mut node.kind {
                     Kind::ScrollView {
                         offset,
                         content_height,
+                        offset_x,
+                        content_width,
                     } => {
-                        let clamped = (*offset).clamp(0, (*content_height - height).max(0));
-                        moved |= clamped != *offset;
+                        let view = widget::viewport(rect, (*content_width, *content_height));
+                        let clamped = (*offset).clamp(0, (*content_height - view.height).max(0));
+                        let clamped_x = (*offset_x).clamp(0, (*content_width - view.width).max(0));
+                        moved |= clamped != *offset || clamped_x != *offset_x;
                         *offset = clamped;
+                        *offset_x = clamped_x;
                     }
                     Kind::List(list) => {
                         list.offset = list
                             .offset
-                            .clamp(0, (list.content_height() - height).max(0));
+                            .clamp(0, (list.content_height() - rect.height).max(0));
                     }
+                    Kind::Table(table) => table.clamp_offsets(rect),
                     _ => {}
                 }
             }
@@ -535,6 +773,43 @@ impl<const N: usize> WidgetTree<N> {
         if moved {
             self.layout();
         }
+    }
+
+    fn shows_dead_key(&self, id: WidgetId) -> bool {
+        self.dead_key.is_some()
+            && self.focus == Some(id)
+            && self.window_focused
+            && self.menu_keyboard().is_none()
+            && self
+                .node(id)
+                .is_some_and(|node| node.enabled && node.kind.is_text())
+    }
+
+    fn show_dead_key(&mut self, accent: Option<char>) {
+        let shown = accent.filter(|_| {
+            self.focus
+                .and_then(|id| self.node(id))
+                .is_some_and(|node| node.kind.is_text())
+        });
+        if shown == self.dead_key {
+            return;
+        }
+        self.dead_key = shown;
+        if let Some(id) = self.focus {
+            self.damage_widget(id);
+        }
+    }
+
+    fn resolve_dead_key(&mut self, code: u16) {
+        if self.dead_key.is_some() && !key::is_modifier_or_lock(code) {
+            self.show_dead_key(None);
+        }
+    }
+
+    /// The accent a dead key left waiting, which the focused text field or text area shows at
+    /// its caret until the next key resolves it (D221).
+    pub fn dead_key(&self) -> Option<char> {
+        self.dead_key
     }
 
     fn damage_widget(&mut self, id: WidgetId) {
@@ -573,19 +848,35 @@ impl<const N: usize> WidgetTree<N> {
             (_, Some(widget)) if widget == id => Some(0),
             _ => None,
         };
-        let drag = self.drag.is_some_and(|drag| drag.widget == id)
-            || self.slide.is_some_and(|(widget, _)| widget == id);
+        let thumb = self
+            .drag
+            .filter(|drag| drag.widget == id)
+            .map(|drag| if drag.horizontal { THUMB_X } else { THUMB })
+            .or(self
+                .slide
+                .filter(|(widget, _)| *widget == id)
+                .map(|_| THUMB));
+        let column = self
+            .column
+            .filter(|column| column.table == id)
+            .map(|column| crate::table::HANDLE_PART + column.column);
         Look {
-            hovered,
-            pressed: if drag { Some(THUMB) } else { pressed },
-            focused: self.window_focused && self.focus == Some(id),
+            hovered: self.landing_hover(id).or(hovered),
+            pressed: column.or(thumb).or(pressed),
+            focused: self.window_focused
+                && self.focus == Some(id)
+                && self.menu_keyboard().is_none(),
             enabled: node.enabled,
-            caret_shown: self.caret_shown,
+            caret_shown: self.caret_shown && !self.shows_dead_key(id),
         }
     }
 
-    /// Draws every shown widget that meets the canvas's clip, parents first.
+    /// Draws every shown widget that meets the canvas's clip, parents first, then what floats
+    /// over them: a drop's highlight, a dropdown's popup, an open menu, a tooltip and a drag's
+    /// ghost, in the tree's palette.
     pub fn paint(&self, canvas: &mut Canvas<'_>) {
+        let outer = canvas.palette();
+        canvas.set_palette(self.palette);
         let clip = canvas.clip();
         for id in self.ids() {
             let Some(node) = self.node(id) else {
@@ -600,14 +891,41 @@ impl<const N: usize> WidgetTree<N> {
                 continue;
             }
             let previous = canvas.narrow(visible);
-            widget::paint(canvas, &node.kind, node.rect, self.look(id));
+            match &node.kind {
+                Kind::TextArea(area) => {
+                    if let Some(store) = self.stores.get(area.store) {
+                        crate::text_area::paint(canvas, area, store, node.rect, self.look(id));
+                    }
+                }
+                kind => widget::paint(canvas, kind, node.rect, self.look(id)),
+            }
+            if let Some(accent) = self.dead_key.filter(|_| self.shows_dead_key(id)) {
+                match &node.kind {
+                    Kind::TextField(field) => {
+                        widget::paint_dead_key(canvas, field, node.rect, accent)
+                    }
+                    Kind::TextArea(area) => {
+                        if let Some(store) = self.stores.get(area.store) {
+                            crate::text_area::paint_dead_key(
+                                canvas, area, store, node.rect, accent,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
             canvas.restore(previous);
         }
+        self.paint_landing(canvas, clip);
         if let Some((_, dropdown, popup, rows)) = self.popup_of() {
             let previous = canvas.narrow(popup.intersection(&clip));
             widget::paint_popup(canvas, &dropdown, popup, rows);
             canvas.restore(previous);
         }
+        self.paint_menu(canvas, clip);
+        self.paint_tooltip(canvas, clip);
+        self.paint_ghost(canvas, clip);
+        canvas.set_palette(outer);
     }
 
     fn popup_of(&self) -> Option<(WidgetId, widget::Dropdown, Rect, usize)> {
@@ -752,9 +1070,22 @@ impl<const N: usize> WidgetTree<N> {
             Kind::ScrollView {
                 offset,
                 content_height,
-            } => match scroll_bar(node.rect, *content_height, *offset) {
-                Some((track, _)) if track.contains(x, y) => THUMB,
+                offset_x,
+                content_width,
+            } => match widget::scroll_bars(
+                node.rect,
+                (*content_width, *content_height),
+                (*offset_x, *offset),
+            ) {
+                (Some((track, _)), _) if track.contains(x, y) => THUMB,
+                (_, Some((track, _))) if track.contains(x, y) => THUMB_X,
                 _ => return None,
+            },
+            Kind::Table(table) => table.part_at(node.rect, x, y)?,
+            Kind::MenuBar(bar) => bar.title_at(node.rect, x, y)?,
+            Kind::TextArea(_) => match self.bar_of(id, false) {
+                Some((track, _)) if track.contains(x, y) => THUMB,
+                _ => 0,
             },
             _ => 0,
         };
@@ -763,12 +1094,21 @@ impl<const N: usize> WidgetTree<N> {
 
     /// The pointer shape the window should show where the pointer is.
     pub fn pointer_shape(&self) -> PointerShape {
-        match self
-            .hover
-            .and_then(|target| self.kind(target.widget))
-            .filter(|_| self.pressed.is_none())
-        {
-            Some(Kind::TextField(_)) => PointerShape::IBeam,
+        if self.pick.is_some_and(|pick| pick.started) {
+            return PointerShape::Hand;
+        }
+        if self.column.is_some() {
+            return PointerShape::ResizeEW;
+        }
+        let hover = self.hover.filter(|_| self.pressed.is_none());
+        match hover.and_then(|target| Some((target, self.kind(target.widget)?))) {
+            Some((_, Kind::TextField(_))) => PointerShape::IBeam,
+            Some((target, Kind::TextArea(_))) if target.part != THUMB => PointerShape::IBeam,
+            Some((target, Kind::Table(_)))
+                if (crate::table::HANDLE_PART..crate::table::ROW_HIT).contains(&target.part) =>
+            {
+                PointerShape::ResizeEW
+            }
             _ => PointerShape::Arrow,
         }
     }
@@ -787,6 +1127,7 @@ impl<const N: usize> WidgetTree<N> {
             self.damage_widget(old);
         }
         self.focus = id;
+        self.dead_key = None;
         if let Some(new) = id {
             if let Some(Kind::TextField(field)) = self.kind(new) {
                 self.text_before_focus = field.text;
@@ -820,6 +1161,9 @@ impl<const N: usize> WidgetTree<N> {
             let id = WidgetId(index as u16);
             if self.focusable(id) {
                 self.set_focus(Some(id), now_ms);
+                if self.window_focused {
+                    self.tooltip_focus(id, now_ms);
+                }
                 if matches!(self.kind(id), Some(Kind::TextField(_))) {
                     self.edit_field(id, now_ms, |field| {
                         field.select_all();
@@ -840,41 +1184,57 @@ impl<const N: usize> WidgetTree<N> {
     }
 
     fn damage_caret(&mut self) {
-        if let Some(id) = self.focus
-            && let Some(node) = self.node(id)
-            && let Kind::TextField(field) = &node.kind
-        {
-            let caret = caret_rect(field, node.rect);
-            self.damage.add(caret.inset(-1));
+        let Some(id) = self.focus else {
+            return;
+        };
+        match self.node(id).map(|node| (node.kind, node.rect)) {
+            Some((Kind::TextField(field), rect)) => {
+                let caret = caret_rect(&field, rect);
+                self.damage.add(caret.inset(-1));
+            }
+            Some((Kind::TextArea(area), rect)) => {
+                if let Some(store) = self.stores.get(area.store) {
+                    let caret = crate::text_area::caret_rect(&area, store, rect);
+                    self.damage.add(caret.inset(-1));
+                }
+            }
+            _ => {}
         }
     }
 
     fn focused_field(&self) -> bool {
         self.window_focused
-            && self
-                .focus
-                .is_some_and(|id| matches!(self.kind(id), Some(Kind::TextField(_))))
+            && self.focus.is_some_and(|id| {
+                matches!(self.kind(id), Some(Kind::TextField(_) | Kind::TextArea(_)))
+            })
     }
 
-    /// Blinks the caret: call at the time [`Self::next_deadline`] gave, or any time after.
-    pub fn tick(&mut self, now_ms: u32) {
-        if !self.focused_field() {
-            return;
+    /// Blinks the caret, shows and hides tooltips, picks up a long-pressed row and scrolls a
+    /// drag's target: call at the time [`Self::next_deadline`] gave, or any time after; what
+    /// the program should act on (a long-press's [`Response::DragStarted`]).
+    pub fn tick(&mut self, now_ms: u32) -> Response {
+        if self.focused_field() {
+            let elapsed = now_ms.wrapping_sub(self.caret_epoch_ms);
+            let shown = self.reduce_motion || (elapsed / CARET_BLINK_MS).is_multiple_of(2);
+            if shown != self.caret_shown {
+                self.caret_shown = shown;
+                self.damage_caret();
+            }
         }
-        let shown = (now_ms.wrapping_sub(self.caret_epoch_ms) / CARET_BLINK_MS).is_multiple_of(2);
-        if shown != self.caret_shown {
-            self.caret_shown = shown;
-            self.damage_caret();
-        }
+        self.tooltip_tick(now_ms);
+        self.pick_tick(now_ms)
     }
 
     /// When [`Self::tick`] next has something to do, if ever.
     pub fn next_deadline(&self, now_ms: u32) -> Option<u32> {
-        if !self.focused_field() {
-            return None;
-        }
-        let elapsed = now_ms.wrapping_sub(self.caret_epoch_ms);
-        Some(now_ms.wrapping_add(CARET_BLINK_MS - elapsed % CARET_BLINK_MS))
+        let caret = (self.focused_field() && !self.reduce_motion).then(|| {
+            let elapsed = now_ms.wrapping_sub(self.caret_epoch_ms);
+            now_ms.wrapping_add(CARET_BLINK_MS - elapsed % CARET_BLINK_MS)
+        });
+        [caret, self.tooltip_deadline(), self.pick_deadline()]
+            .into_iter()
+            .flatten()
+            .min_by_key(|deadline| deadline.wrapping_sub(now_ms) as i32)
     }
 
     fn set_hover(&mut self, hover: Option<Target>) {
@@ -894,6 +1254,16 @@ impl<const N: usize> WidgetTree<N> {
     pub fn handle(&mut self, input: Input, time_ms: u32) -> Response {
         match input {
             Input::PointerMove { x, y } => {
+                if let Some(column) = self.column {
+                    return self.column_moved(column, x);
+                }
+                if self.pick.is_some() {
+                    return self.pick_moved(x, y, time_ms);
+                }
+                if self.menu_open() {
+                    self.menu_pointer_moved(x, y);
+                    return Response::Nothing;
+                }
                 if self.popup.is_some() {
                     if let Some(option) = self.popup_option_at(x, y) {
                         self.highlight(option);
@@ -904,14 +1274,16 @@ impl<const N: usize> WidgetTree<N> {
                     return self.slide_to(id, x - grab);
                 }
                 if let Some(id) = self.selecting {
-                    self.select_to(id, x, time_ms);
+                    self.select_to(id, x, y, time_ms);
                     return Response::Nothing;
                 }
                 self.pointer_moved(x, y);
+                self.tooltip_hover(time_ms);
                 Response::Nothing
             }
             Input::PointerLeave => {
                 self.set_hover(None);
+                self.tooltip_hover(time_ms);
                 if let Some(pressed) = self.pressed
                     && self.pressed_inside
                 {
@@ -926,11 +1298,27 @@ impl<const N: usize> WidgetTree<N> {
                 button: MouseButton::Left,
                 pressed,
             } => match pressed {
-                true => self.left_pressed(x, y, time_ms),
-                false => self.left_released(x, y),
+                true => {
+                    self.tooltip_spent();
+                    if let Some(cancelled) = self.cancel_pick_on_press() {
+                        return cancelled;
+                    }
+                    self.left_pressed(x, y, time_ms)
+                }
+                false => self.left_released(x, y, time_ms),
             },
+            Input::Button { pressed: true, .. } => {
+                self.tooltip_spent();
+                match self.cancel_pick_on_press() {
+                    Some(cancelled) => cancelled,
+                    None => Response::Nothing,
+                }
+            }
             Input::Button { .. } => Response::Nothing,
             Input::Wheel { x, y, notches } => {
+                if self.menu_open() {
+                    return Response::Nothing;
+                }
                 if let Some((id, dropdown, popup, rows)) = self.popup_of() {
                     if popup.contains(x, y) {
                         let most = dropdown.options.len().saturating_sub(rows);
@@ -941,10 +1329,21 @@ impl<const N: usize> WidgetTree<N> {
                             held.offset = offset as usize;
                         }
                         self.damage.add(popup);
+                    } else {
+                        self.close_popup();
                     }
                     return Response::Nothing;
                 }
-                self.wheel(x, y, notches);
+                match self.shift_held {
+                    true => self.wheel(x, y, -notches, true),
+                    false => self.wheel(x, y, notches, false),
+                }
+                Response::Nothing
+            }
+            Input::SidewaysWheel { x, y, notches } => {
+                if self.popup.is_none() && !self.menu_open() {
+                    self.wheel(x, y, notches, true);
+                }
                 Response::Nothing
             }
             Input::Key {
@@ -954,9 +1353,12 @@ impl<const N: usize> WidgetTree<N> {
                 character,
             } => match pressed {
                 true => {
+                    self.resolve_dead_key(code);
                     self.shift_held = modifiers.shift() || matches!(code, LEFT_SHIFT | RIGHT_SHIFT);
                     self.shortcut_held = modifiers.control_or_super();
-                    self.alt_held = modifiers.0 & Modifiers::ALT != 0;
+                    self.alt_held = modifiers.0 & Modifiers::ALT != 0
+                        || matches!(code, key::LEFT_ALT | key::RIGHT_ALT);
+                    self.tooltip_key();
                     self.key_down(
                         code,
                         modifiers.shift(),
@@ -969,13 +1371,31 @@ impl<const N: usize> WidgetTree<N> {
                     if matches!(code, LEFT_SHIFT | RIGHT_SHIFT) {
                         self.shift_held = false;
                     }
+                    if matches!(code, key::LEFT_ALT | key::RIGHT_ALT) {
+                        self.alt_held = false;
+                        if core::mem::take(&mut self.alt_alone) {
+                            self.arm_menu_bar();
+                            return Response::Nothing;
+                        }
+                    }
                     self.key_up(code)
                 }
             },
+            Input::DeadKey { accent } => {
+                self.show_dead_key(accent);
+                Response::Nothing
+            }
             Input::FocusIn | Input::FocusOut => {
                 let focused = input == Input::FocusIn;
+                let mut response = Response::Nothing;
                 if !focused {
+                    self.show_dead_key(None);
                     self.close_popup();
+                    self.close_menu();
+                    self.hide_tooltip();
+                    self.alt_alone = false;
+                    response = self.cancel_drag_response();
+                    self.end_column_drag(true);
                 }
                 if self.window_focused != focused {
                     self.window_focused = focused;
@@ -984,10 +1404,9 @@ impl<const N: usize> WidgetTree<N> {
                     }
                     self.restart_caret(time_ms);
                 }
-                Response::Nothing
+                response
             }
             Input::CloseRequest
-            | Input::SidewaysWheel { .. }
             | Input::Resize { .. }
             | Input::StateChanged { .. }
             | Input::Overflow => Response::Nothing,
@@ -996,7 +1415,7 @@ impl<const N: usize> WidgetTree<N> {
 
     fn pointer_moved(&mut self, x: i32, y: i32) {
         if let Some(drag) = self.drag {
-            self.drag_thumb(drag, y);
+            self.drag_thumb(drag, if drag.horizontal { x } else { y });
             return;
         }
         let target = self.hit(x, y);
@@ -1010,33 +1429,117 @@ impl<const N: usize> WidgetTree<N> {
         self.set_hover(target);
     }
 
-    fn scroll_extent(&self, id: WidgetId) -> Option<(Rect, i32, i32)> {
+    fn bar_of(&self, id: WidgetId, horizontal: bool) -> Option<(Rect, Rect)> {
         let node = self.node(id)?;
-        match &node.kind {
-            Kind::List(list) => Some((node.rect, list.content_height(), list.offset)),
-            Kind::ScrollView {
-                offset,
-                content_height,
-            } => Some((node.rect, *content_height, *offset)),
+        match (&node.kind, horizontal) {
+            (Kind::List(list), false) => scroll_bar(node.rect, list.content_height(), list.offset),
+            (
+                Kind::ScrollView {
+                    offset,
+                    content_height,
+                    offset_x,
+                    content_width,
+                },
+                _,
+            ) => {
+                let bars = widget::scroll_bars(
+                    node.rect,
+                    (*content_width, *content_height),
+                    (*offset_x, *offset),
+                );
+                if horizontal { bars.1 } else { bars.0 }
+            }
+            (Kind::Table(table), _) => {
+                let bars = table.bars(node.rect);
+                if horizontal { bars.1 } else { bars.0 }
+            }
+            (Kind::TextArea(area), false) => {
+                let store = self.stores.get(area.store)?;
+                let rect = node.rect;
+                let content = store.line_count() as i32 * widget::TEXT_AREA_LINE_PITCH
+                    + 2 * widget::TEXT_AREA_TOP;
+                scroll_bar(
+                    Rect::new(
+                        rect.right() - 1 - widget::SCROLL_BAR_WIDTH,
+                        rect.y + 1,
+                        widget::SCROLL_BAR_WIDTH,
+                        rect.height - 2,
+                    ),
+                    content,
+                    area.scroll,
+                )
+            }
             _ => None,
         }
     }
 
-    fn scroll_to(&mut self, id: WidgetId, offset: i32) {
-        let Some((rect, content, old)) = self.scroll_extent(id) else {
+    fn scroll_range(&self, id: WidgetId, horizontal: bool) -> Option<(i32, i32)> {
+        let node = self.node(id)?;
+        let rect = node.rect;
+        match (&node.kind, horizontal) {
+            (Kind::List(list), false) => {
+                Some((list.offset, (list.content_height() - rect.height).max(0)))
+            }
+            (
+                Kind::ScrollView {
+                    offset,
+                    content_height,
+                    offset_x,
+                    content_width,
+                },
+                _,
+            ) => {
+                let view = widget::viewport(rect, (*content_width, *content_height));
+                Some(match horizontal {
+                    true => (*offset_x, (*content_width - view.width).max(0)),
+                    false => (*offset, (*content_height - view.height).max(0)),
+                })
+            }
+            (Kind::Table(table), _) => {
+                let view = table.view(rect);
+                Some(match horizontal {
+                    true => (table.offset_x, (table.content_width() - view.width).max(0)),
+                    false => (
+                        table.offset_y,
+                        (table.content_height() - view.height).max(0),
+                    ),
+                })
+            }
+            (Kind::TextArea(area), false) => {
+                let store = self.stores.get(area.store)?;
+                let hidden = store
+                    .line_count()
+                    .saturating_sub(crate::text_area::visible_lines(rect));
+                Some((area.scroll, hidden as i32 * widget::TEXT_AREA_LINE_PITCH))
+            }
+            _ => None,
+        }
+    }
+
+    fn scroll_axis_to(&mut self, id: WidgetId, horizontal: bool, offset: i32) {
+        let Some((old, most)) = self.scroll_range(id, horizontal) else {
             return;
         };
-        let offset = offset.clamp(0, (content - rect.height).max(0));
+        let mut offset = offset.clamp(0, most);
+        if matches!(self.kind(id), Some(Kind::TextArea(_))) {
+            offset = offset / widget::TEXT_AREA_LINE_PITCH * widget::TEXT_AREA_LINE_PITCH;
+        }
         if offset == old {
             return;
         }
-        let is_view = matches!(self.kind(id), Some(Kind::ScrollView { .. }));
-        if let Some(node) = self.node_mut(id) {
-            match &mut node.kind {
-                Kind::List(list) => list.offset = offset,
-                Kind::ScrollView { offset: held, .. } => *held = offset,
-                _ => {}
-            }
+        let Some(node) = self.node_mut(id) else {
+            return;
+        };
+        let rect = node.rect;
+        let is_view = matches!(node.kind, Kind::ScrollView { .. });
+        match (&mut node.kind, horizontal) {
+            (Kind::List(list), false) => list.offset = offset,
+            (Kind::ScrollView { offset: held, .. }, false) => *held = offset,
+            (Kind::ScrollView { offset_x: held, .. }, true) => *held = offset,
+            (Kind::Table(table), false) => table.offset_y = offset,
+            (Kind::Table(table), true) => table.offset_x = offset,
+            (Kind::TextArea(area), false) => area.scroll = offset,
+            _ => {}
         }
         if is_view {
             self.layout();
@@ -1044,40 +1547,85 @@ impl<const N: usize> WidgetTree<N> {
         self.damage.add(rect);
     }
 
-    fn drag_thumb(&mut self, drag: Drag, y: i32) {
-        let Some((rect, content, _)) = self.scroll_extent(drag.widget) else {
-            return;
-        };
-        let Some((_, thumb)) = scroll_bar(rect, content, drag.start_offset) else {
-            return;
-        };
-        let travel = i64::from((rect.height - thumb.height).max(1));
-        let range = i64::from(content - rect.height);
-        let moved = i64::from(y - drag.grab_y) * range / travel;
-        let offset = (i64::from(drag.start_offset) + moved).clamp(0, range.max(0));
-        self.scroll_to(drag.widget, offset as i32);
+    /// Scrolls list, scroll view, table or text area `id` to `offset_x` across and `offset_y`
+    /// down, each clamped to what its content allows (a text area by whole lines).
+    pub fn set_scroll(&mut self, id: WidgetId, offset_x: i32, offset_y: i32) {
+        self.scroll_axis_to(id, true, offset_x);
+        self.scroll_axis_to(id, false, offset_y);
     }
 
-    fn wheel(&mut self, x: i32, y: i32, notches: i32) {
+    /// How far list, scroll view, table or text area `id` is scrolled: across, then down.
+    pub fn scroll(&self, id: WidgetId) -> Option<(i32, i32)> {
+        let down = self.scroll_range(id, false).map_or(0, |(offset, _)| offset);
+        let across = self.scroll_range(id, true).map_or(0, |(offset, _)| offset);
+        self.node(id).map(|_| (across, down))
+    }
+
+    fn scroll_to(&mut self, id: WidgetId, offset: i32) {
+        self.scroll_axis_to(id, false, offset);
+    }
+
+    fn drag_thumb(&mut self, drag: Drag, at: i32) {
+        let Some((track, thumb)) = self.bar_of(drag.widget, drag.horizontal) else {
+            return;
+        };
+        let Some((_, most)) = self.scroll_range(drag.widget, drag.horizontal) else {
+            return;
+        };
+        let (track_length, thumb_length) = match drag.horizontal {
+            true => (track.width, thumb.width),
+            false => (track.height, thumb.height),
+        };
+        let travel = i64::from((track_length - thumb_length).max(1));
+        let moved = i64::from(at - drag.grab) * i64::from(most) / travel;
+        let offset = (i64::from(drag.start_offset) + moved).clamp(0, i64::from(most.max(0)));
+        self.scroll_axis_to(drag.widget, drag.horizontal, offset as i32);
+    }
+
+    fn wheel(&mut self, x: i32, y: i32, notches: i32, horizontal: bool) {
         let scrollable = self.ids().rev().find(|&id| {
             self.is_shown(id)
                 && self.node(id).is_some_and(|node| {
-                    matches!(node.kind, Kind::List(_) | Kind::ScrollView { .. })
-                        && node.visible.contains(x, y)
+                    matches!(
+                        node.kind,
+                        Kind::List(_)
+                            | Kind::ScrollView { .. }
+                            | Kind::Table(_)
+                            | Kind::TextArea(_)
+                    ) && node.visible.contains(x, y)
                         && node.rect.contains(x, y)
                 })
                 && self
-                    .scroll_extent(id)
-                    .is_some_and(|(rect, content, _)| content > rect.height)
+                    .scroll_range(id, horizontal)
+                    .is_some_and(|(_, most)| most > 0)
         });
-        if let Some(id) = scrollable
-            && let Some((_, _, offset)) = self.scroll_extent(id)
-        {
-            self.scroll_to(id, offset - notches * WHEEL_STEP);
-        }
+        let Some(id) = scrollable else {
+            return;
+        };
+        let Some((offset, _)) = self.scroll_range(id, horizontal) else {
+            return;
+        };
+        let step = match self.kind(id) {
+            Some(Kind::TextArea(_)) => widget::TEXT_AREA_WHEEL_LINES * widget::TEXT_AREA_LINE_PITCH,
+            _ => WHEEL_STEP,
+        };
+        let wanted = match horizontal {
+            true => offset + notches * step,
+            false => offset - notches * step,
+        };
+        let wanted = match (self.kind(id), horizontal) {
+            (Some(Kind::Table(_)), false) => {
+                wanted / widget::TABLE_ROW_HEIGHT * widget::TABLE_ROW_HEIGHT
+            }
+            _ => wanted,
+        };
+        self.scroll_axis_to(id, horizontal, wanted);
     }
 
     fn left_pressed(&mut self, x: i32, y: i32, time_ms: u32) -> Response {
+        if self.menu_open() {
+            return self.menu_pressed_at(x, y);
+        }
         if self.popup.is_some() {
             match self.popup_option_at(x, y) {
                 Some(option) => {
@@ -1092,19 +1640,31 @@ impl<const N: usize> WidgetTree<N> {
             return Response::Nothing;
         };
         let id = target.widget;
-        if matches!(self.kind(id), Some(Kind::Dropdown(_))) {
-            if self.focusable(id) {
-                self.set_focus(Some(id), time_ms);
+        match self.kind(id).copied() {
+            Some(Kind::Dropdown(_)) => {
+                if self.focusable(id) {
+                    self.set_focus(Some(id), time_ms);
+                }
+                self.open_popup(id);
+                self.popup_pressed = true;
+                return Response::Nothing;
             }
-            self.open_popup(id);
-            self.popup_pressed = true;
-            return Response::Nothing;
+            Some(Kind::MenuBar(_)) => return self.bar_title_pressed(id, target.part),
+            Some(Kind::MenuButton(_)) => {
+                if self.focusable(id) {
+                    self.set_focus(Some(id), time_ms);
+                }
+                self.open_button_menu(id);
+                self.menu_pressed = true;
+                return Response::Nothing;
+            }
+            _ => {}
         }
         if self.focusable(id) {
             self.set_focus(Some(id), time_ms);
         }
-        if target.part == THUMB {
-            return self.thumb_pressed(id, y);
+        if target.part == THUMB || target.part == THUMB_X {
+            return self.thumb_pressed(id, target.part == THUMB_X, x, y);
         }
         if let (Some(Kind::Slider(slider)), Some(rect)) = (self.kind(id).copied(), self.rect(id)) {
             let thumb_x = slider.thumb_x(rect);
@@ -1127,6 +1687,11 @@ impl<const N: usize> WidgetTree<N> {
         match self.kind(id).copied() {
             Some(Kind::List(list)) => {
                 let item = target.part;
+                if self.is_drag_source(id) {
+                    self.start_pick(id, item, x, y, time_ms, double);
+                    self.set_hover(Some(target));
+                    return Response::Nothing;
+                }
                 if double {
                     return Response::Opened(id, item);
                 }
@@ -1134,6 +1699,16 @@ impl<const N: usize> WidgetTree<N> {
                     self.set_selected(id, item);
                     return Response::Chosen(id, item);
                 }
+                Response::Nothing
+            }
+            Some(Kind::Table(_)) => self.table_pressed(id, target.part, x, y, time_ms, double),
+            Some(Kind::TextArea(_)) => {
+                self.area_pressed(id, x, y, time_ms);
+                self.selecting = Some(id);
+                Response::Nothing
+            }
+            Some(Kind::Custom { .. }) if self.is_drag_source(id) => {
+                self.start_pick(id, 0, x, y, time_ms, false);
                 Response::Nothing
             }
             Some(Kind::TextField(field)) => {
@@ -1156,33 +1731,41 @@ impl<const N: usize> WidgetTree<N> {
                 self.pressed = Some(target);
                 self.pressed_inside = true;
                 self.damage_widget(id);
+                if self.form == FormFactor::Phone {
+                    self.tooltip_long_press(id, time_ms);
+                }
                 Response::Nothing
             }
         }
     }
 
-    fn thumb_pressed(&mut self, id: WidgetId, y: i32) -> Response {
-        let Some((rect, content, offset)) = self.scroll_extent(id) else {
+    fn thumb_pressed(&mut self, id: WidgetId, horizontal: bool, x: i32, y: i32) -> Response {
+        let Some((track, thumb)) = self.bar_of(id, horizontal) else {
             return Response::Nothing;
         };
-        let Some((_, thumb)) = scroll_bar(rect, content, offset) else {
+        let Some((offset, _)) = self.scroll_range(id, horizontal) else {
             return Response::Nothing;
         };
-        if thumb.contains(thumb.x, y) {
+        let (at, thumb_start, thumb_length, track_length) = match horizontal {
+            true => (x, thumb.x, thumb.width, track.width),
+            false => (y, thumb.y, thumb.height, track.height),
+        };
+        if (thumb_start..thumb_start + thumb_length).contains(&at) {
             self.drag = Some(Drag {
                 widget: id,
-                grab_y: y,
+                horizontal,
+                grab: at,
                 start_offset: offset,
             });
             self.damage_widget(id);
             return Response::Nothing;
         }
-        let page = rect.height - 24;
-        let offset = match y < thumb.y {
+        let page = track_length - 24;
+        let offset = match at < thumb_start {
             true => offset - page,
             false => offset + page,
         };
-        self.scroll_to(id, offset);
+        self.scroll_axis_to(id, horizontal, offset);
         Response::Nothing
     }
 
@@ -1197,7 +1780,11 @@ impl<const N: usize> WidgetTree<N> {
         });
     }
 
-    fn select_to(&mut self, id: WidgetId, x: i32, now_ms: u32) {
+    fn select_to(&mut self, id: WidgetId, x: i32, y: i32, now_ms: u32) {
+        if matches!(self.kind(id), Some(Kind::TextArea(_))) {
+            self.area_select_to(id, x, y, now_ms);
+            return;
+        }
         let (Some(Kind::TextField(field)), Some(rect)) = (self.kind(id).copied(), self.rect(id))
         else {
             return;
@@ -1216,11 +1803,15 @@ impl<const N: usize> WidgetTree<N> {
         self.copied.as_str()
     }
 
-    /// Puts `text`, the clipboard's, in text field `id` in place of its selection, as
-    /// [`Response::PasteWanted`] asked: line breaks and tabs become spaces, other control
+    /// Puts `text`, the clipboard's, in text field or text area `id` in place of its selection,
+    /// as [`Response::PasteWanted`] asked: in a field line breaks and tabs become spaces (an
+    /// area keeps them), other control
     /// characters go, and what does not fit is left out. [`Response::Edited`] when the text
     /// changed.
     pub fn paste(&mut self, id: WidgetId, text: &str, now_ms: u32) -> Response {
+        if matches!(self.kind(id), Some(Kind::TextArea(_))) {
+            return self.area_paste(id, text, now_ms);
+        }
         let changed = self.edit_field(id, now_ms, |field| {
             let mut changed = field.remove_selection();
             for character in text.chars() {
@@ -1285,8 +1876,17 @@ impl<const N: usize> WidgetTree<N> {
         });
     }
 
-    fn left_released(&mut self, x: i32, y: i32) -> Response {
+    fn left_released(&mut self, x: i32, y: i32, time_ms: u32) -> Response {
         self.selecting = None;
+        if self.column.is_some() {
+            return self.end_column_drag(false);
+        }
+        if self.pick.is_some() {
+            return self.pick_released(x, y, time_ms);
+        }
+        if self.menu_open() {
+            return self.menu_released_at(x, y);
+        }
         if let Some(id) = self.popup {
             let pressed = core::mem::take(&mut self.popup_pressed);
             return match (pressed, self.popup_option_at(x, y)) {
@@ -1307,13 +1907,19 @@ impl<const N: usize> WidgetTree<N> {
         let Some(pressed) = self.pressed.take() else {
             return Response::Nothing;
         };
+        if self.tip.spent_on_press() {
+            self.pressed_inside = false;
+            self.damage_widget(pressed.widget);
+            return Response::Nothing;
+        }
         let inside = self.pressed_inside && self.hit(x, y) == Some(pressed);
         self.pressed_inside = false;
         self.damage_widget(pressed.widget);
         self.set_hover(self.hit(x, y));
-        match inside {
-            true => self.activate(pressed.widget, pressed.part),
-            false => Response::Nothing,
+        match (inside, self.kind(pressed.widget)) {
+            (true, Some(Kind::Table(_))) => self.header_clicked(pressed.widget, pressed.part),
+            (true, _) => self.activate(pressed.widget, pressed.part),
+            (false, _) => Response::Nothing,
         }
     }
 
@@ -1362,6 +1968,17 @@ impl<const N: usize> WidgetTree<N> {
         character: u32,
         time_ms: u32,
     ) -> Response {
+        self.alt_alone =
+            matches!(code, key::LEFT_ALT | key::RIGHT_ALT) && self.menu_bar().is_some();
+        if code == key::ESC && self.column.is_some() {
+            return self.end_column_drag(true);
+        }
+        if code == key::ESC && self.pick.is_some() {
+            return self.cancel_drag_response();
+        }
+        if let Some(response) = self.menu_key(code, character, time_ms) {
+            return response;
+        }
         if code == key::TAB && !command {
             self.close_popup();
             self.move_focus(shift, time_ms);
@@ -1466,6 +2083,9 @@ impl<const N: usize> WidgetTree<N> {
                 _ => unused,
             },
             Kind::List(list) => self.list_key(id, &list, code, unused),
+            Kind::MenuButton(_) => self.menu_button_key(id, code),
+            Kind::Table(table) => self.table_key(id, &table, code, unused),
+            Kind::TextArea(_) => self.area_key(id, code, character, command, time_ms, unused),
             Kind::TextField(_) => self.field_key(id, code, character, command, time_ms, unused),
             _ => unused,
         };
@@ -1592,11 +2212,11 @@ impl<const N: usize> WidgetTree<N> {
         match key {
             FieldKey::Changed => Response::Edited(id),
             FieldKey::Copied => {
-                self.copied = selected;
+                self.copied = Text::from(selected.as_str());
                 Response::Copied(id)
             }
             FieldKey::Cut => {
-                self.copied = selected;
+                self.copied = Text::from(selected.as_str());
                 Response::Cut(id)
             }
             FieldKey::PasteWanted => Response::PasteWanted(id),

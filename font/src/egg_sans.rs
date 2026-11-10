@@ -1,7 +1,10 @@
 //! Egg Sans 16, the UI font (docs/ux/font-ui-16.txt, docs/ux/toolkit-v0.3.md): one
-//! proportional bitmap face of 16 rows, no anti-aliasing, printable ASCII, Latin-1 and `€`. The
-//! design file is the source: its glyphs are read from it while the crate compiles, so a change
-//! to the drawing is a change to the file alone.
+//! proportional bitmap face of 16 rows, no anti-aliasing, printable ASCII, Latin-1 and `€`, and
+//! Latin Extended-A drawn with Egg Mono's glyphs, 8 wide on the shared baseline, until it has its
+//! own (D221). The design files are the source: their glyphs are read from them while the crate
+//! compiles, so a change to the drawing is a change to a file alone.
+
+use crate::latin_ext_a;
 
 /// Rows of a glyph cell.
 pub const HEIGHT: usize = 16;
@@ -37,14 +40,48 @@ impl Glyph {
 
 static GLYPHS: [Glyph; GLYPH_COUNT] = parse(include_bytes!("../../docs/ux/font-ui-16.txt"));
 
-/// The glyph that draws `character`: its own for ASCII, Latin-1 and `€`, else `?`'s.
-pub fn glyph(character: char) -> &'static Glyph {
-    &GLYPHS[index(character as u32).unwrap_or(index(REPLACEMENT).unwrap_or(0))]
+const MONO_ADVANCE: u8 = crate::GLYPH_WIDTH as u8;
+
+static LATIN_EXTENDED_A: [Glyph; latin_ext_a::GLYPH_COUNT] = from_egg_mono(&crate::latin_1::parse(
+    include_bytes!("../../docs/ux/font-8x16-latin-ext-a.txt"),
+    crate::latin_1::Codepoints {
+        first: latin_ext_a::FIRST,
+        last: latin_ext_a::LAST,
+        then: latin_ext_a::LAST,
+    },
+));
+
+const fn from_egg_mono<const N: usize>(mono: &[crate::GlyphRows; N]) -> [Glyph; N] {
+    let mut glyphs = [Glyph {
+        advance: MONO_ADVANCE,
+        rows: [0; HEIGHT],
+    }; N];
+    let mut index = 0;
+    while index < N {
+        let mut row = 0;
+        while row < HEIGHT {
+            glyphs[index].rows[row] = (mono[index][row] as u16) << 8;
+            row += 1;
+        }
+        index += 1;
+    }
+    glyphs
 }
 
-/// Whether the face has a glyph of its own for `character`.
+/// The glyph that draws `character`: its own for ASCII, Latin-1 and `€`, Egg Mono's for Latin
+/// Extended-A, else `?`'s.
+pub fn glyph(character: char) -> &'static Glyph {
+    let code = character as u32;
+    if (latin_ext_a::FIRST..=latin_ext_a::LAST).contains(&code) {
+        return &LATIN_EXTENDED_A[(code - latin_ext_a::FIRST) as usize];
+    }
+    &GLYPHS[index(code).unwrap_or(index(REPLACEMENT).unwrap_or(0))]
+}
+
+/// Whether the face has a glyph for `character`, its own or Egg Mono's.
 pub fn covers(character: char) -> bool {
-    index(character as u32).is_some()
+    let code = character as u32;
+    index(code).is_some() || (latin_ext_a::FIRST..=latin_ext_a::LAST).contains(&code)
 }
 
 /// The width of `text` set in Egg Sans: the sum of its glyphs' advances.
@@ -251,10 +288,28 @@ mod tests {
 
     #[test]
     fn a_character_outside_the_face_draws_the_question_mark() {
-        for unknown in ['\u{7f}', '\u{9f}', '\u{100}', '─', '😀', '\n'] {
+        for unknown in ['\u{7f}', '\u{9f}', '\u{180}', '─', '😀', '\n'] {
             assert!(!covers(unknown));
             assert_eq!(glyph(unknown), glyph('?'));
         }
+    }
+
+    #[test]
+    fn latin_extended_a_is_egg_mono_s_glyph_8_wide_on_the_shared_baseline() {
+        for code in 0x100..=0x17f {
+            let character = char::from_u32(code).unwrap();
+            assert!(covers(character), "U+{code:04X}");
+            assert_eq!(glyph(character).advance, 8);
+        }
+        let mono = crate::glyph_rows(0x141);
+        let sans = glyph('Ł');
+        for (row, &bits) in mono.iter().enumerate() {
+            assert_eq!(sans.rows[row], u16::from(bits) << 8, "row {row}");
+        }
+        assert_eq!(
+            width("Łódź"),
+            8 + u32::from(glyph('ó').advance) + u32::from(glyph('d').advance) + 8
+        );
     }
 
     #[test]

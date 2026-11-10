@@ -39,8 +39,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::{DiscardEvents, EventSink, PointerShape};
 use eggos_drivers::desktop::{
-    Action, AppId, Contents, Desktop, GRID_SIZE, Launch, Profile, TerminalInput, WindowId, colour,
-    shortcut,
+    Action, AppId, Contents, Desktop, GRID_SIZE, KeyboardLayoutChoice, Launch, MAX_SHOWN_LAYOUTS,
+    Profile, TerminalInput, WindowId, colour, shortcut,
 };
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
@@ -219,7 +219,7 @@ static RENDER_PENDING: AtomicBool = AtomicBool::new(false);
 static AGENT_CONNECTED: AtomicBool = AtomicBool::new(false);
 static APPLICATION_CURSOR_KEYS: AtomicBool = AtomicBool::new(false);
 static DRAWER: AtomicPtr<WaitQueue> = AtomicPtr::new(core::ptr::null_mut());
-static KEYS_TO_TERMINAL: AtomicBool = AtomicBool::new(true);
+static KEYS_TO_TERMINAL: AtomicBool = AtomicBool::new(false);
 static SHOWN_CLOCK: AtomicU64 = AtomicU64::new(0);
 static BOOT_SCREEN_UP: AtomicBool = AtomicBool::new(false);
 static TYPED: AtomicBool = AtomicBool::new(false);
@@ -265,6 +265,49 @@ pub fn desktop_profile() -> Profile {
     }
 }
 
+static CHOSEN_PALETTE: AtomicU8 = AtomicU8::new(0);
+
+/// How many palettes the desktop has: the dark and light themes, each with and without high
+/// contrast (D219).
+pub const PALETTES: u32 = 4;
+const APPEARANCE_THEME: &str = "appearance.theme";
+const LIGHT_PALETTE: u8 = 1;
+
+/// The desktop's palette index (D219): 0 dark, 1 light, plus 2 for high contrast; what the
+/// settings file's `appearance.theme` held at boot or the last `SET_PALETTE` set.
+pub fn desktop_palette() -> u32 {
+    u32::from(CHOSEN_PALETTE.load(Ordering::Relaxed))
+}
+
+/// Makes palette `index` the desktop's: every window's client is told at once, so each
+/// repaints in it.
+pub fn set_desktop_palette<P: Platform>(index: u32) {
+    CHOSEN_PALETTE.store(index as u8, Ordering::Relaxed);
+    with_windows::<P, _>(|desktop, _, damage, events| {
+        desktop.set_palette(index, damage, events);
+    });
+}
+
+static REDUCE_MOTION: AtomicBool = AtomicBool::new(false);
+const HIGH_CONTRAST_PALETTES: u8 = 2;
+
+/// Whether nothing blinks (`accessibility.reduce_motion`, D224): what the settings file held at
+/// boot or the last `SET_REDUCE_MOTION` set.
+pub fn reduce_motion() -> bool {
+    REDUCE_MOTION.load(Ordering::Relaxed)
+}
+
+/// Makes motion reduced or not: the console's cursor and the launcher's caret stop or start
+/// blinking, and every window's client is told with `PaletteChanged`.
+pub fn set_reduce_motion<P: Platform>(reduce: bool) {
+    REDUCE_MOTION.store(reduce, Ordering::Relaxed);
+    let palette = desktop_palette();
+    with_windows::<P, _>(|desktop, _, damage, events| {
+        desktop.set_reduce_motion(reduce, damage);
+        desktop.set_palette(palette, damage, events);
+    });
+}
+
 fn remember_profile(profile: Profile) {
     CHOSEN_PROFILE.store(profile.number() as u8 + 1, Ordering::Relaxed);
 }
@@ -283,8 +326,8 @@ pub fn set_desktop_profile<P: Platform>(profile: Profile) {
 }
 
 /// Makes the profile the settings file holds ([`eggos_settings_file::PATH`]) the desktop's,
-/// before the desktop starts, so its first frame is already in it, and its keyboard layout the
-/// keyboard's (D185), so the first key types in it; the defaults stay when there is no file, it
+/// before the desktop starts, so its first frame is already in it, and its keyboard layouts and
+/// switch key the keyboard's (D185, D221), so the first key types in the layout in force; the defaults stay when there is no file, it
 /// holds no known profile or layout, or it cannot be read.
 pub fn load_saved_settings() {
     let root = vfs::root();
@@ -311,6 +354,22 @@ pub fn load_saved_settings() {
     {
         remember_profile(profile);
     }
+    let switch_key = eggos_settings_file::keyboard_switch_key(&file[..length]);
+    crate::input::set_layouts(
+        eggos_settings_file::keyboard_layout_set(&file[..length]),
+        switch_key,
+    );
+    let theme = match eggos_settings_file::value(&file[..length], APPEARANCE_THEME) {
+        Some(b"light") => LIGHT_PALETTE,
+        _ => 0,
+    };
+    let display = eggos_settings_file::display_accessibility(&file[..length]);
+    let contrast = match display.high_contrast {
+        true => HIGH_CONTRAST_PALETTES,
+        false => 0,
+    };
+    CHOSEN_PALETTE.store(theme + contrast, Ordering::Relaxed);
+    REDUCE_MOTION.store(display.reduce_motion, Ordering::Relaxed);
     if let Some(layout) = eggos_settings_file::keyboard_layout(&file[..length]) {
         crate::input::set_layout(layout);
     }
@@ -356,6 +415,7 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
     let desktop = match Desktop::new(mode.width, mode.height) {
         Some(mut desktop) => {
             desktop.set_profile(desktop_profile(), &mut Damage::new(), &mut DiscardEvents);
+            desktop.set_reduce_motion(reduce_motion(), &mut Damage::new());
             if session == Session::Interactive {
                 desktop.set_catalogue(
                     crate::apps::catalogue(),
@@ -536,6 +596,17 @@ pub fn note_typing() {
     }
 }
 
+/// Whether the boot screen still shows, its desktop not yet drawn.
+pub fn boot_screen_up() -> bool {
+    BOOT_SCREEN_UP.load(Ordering::Acquire)
+}
+
+/// Whether the console has a desktop: false before [`start`] made one and on the full-screen
+/// console.
+pub fn has_desktop() -> bool {
+    is_active() && !CONSOLE_ALONE.load(Ordering::Relaxed)
+}
+
 /// A program waits to read the console, so its prompt is written: the first time after the
 /// desktop was made, the desktop replaces the boot screen. One load after that.
 #[inline]
@@ -646,7 +717,14 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
     let now = window::time_ms::<P>();
     let mut queues = Queues::new(clients, now);
     desktop.set_time(now);
+    for client in clients.each() {
+        desktop.set_unread_since(client.id(), client.unread_since(), damage);
+    }
     desktop.set_agent_connected(AGENT_CONNECTED.load(Ordering::Relaxed), damage);
+    desktop.set_network(crate::net::indicated(), damage);
+    let (latched, locked) = input::sticky_modifiers();
+    desktop.set_latched(latched, locked, damage);
+    show_keyboard_layouts(desktop, damage);
     while let Some(event) = input::next_event() {
         let asked = match event {
             InputEvent::PointerMove { x, y } => {
@@ -674,6 +752,17 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
                 desktop.wheel(delta, &mut queues);
                 Action::None
             }
+            InputEvent::SidewaysWheel { delta } => {
+                desktop.sideways_wheel(delta, &mut queues);
+                Action::None
+            }
+            InputEvent::LayoutChanged(number) => {
+                if let Some(layout) = eggos_settings_file::KEYBOARD_LAYOUTS.get(usize::from(number))
+                {
+                    desktop.show_layout_hint(layout.title, damage);
+                }
+                Action::None
+            }
         };
         if asked != Action::None {
             action = asked;
@@ -682,6 +771,12 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
     if desktop.tick(now, damage, &mut queues) {
         buffers.release_unused(desktop);
     }
+    for client in clients.each() {
+        client.set_seen_not_responding(desktop.client_not_responding(client.id()));
+    }
+    let look_again_at = desktop
+        .next_change_ms()
+        .map_or(NO_LOOK, |due| ticks_after_ms::<P>(due.wrapping_sub(now)));
     let sent = queues.sent();
     let clock = clock_key::<P>();
     SHOWN_CLOCK.store(clock, Ordering::Relaxed);
@@ -698,7 +793,7 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
             true => desktop.pointer(),
             false => None,
         },
-        look_again_at: NO_LOOK,
+        look_again_at,
     }
 }
 
@@ -707,17 +802,33 @@ fn end_boot_screen_if_due(
     framebuffer: &mut display::Framebuffer<'_>,
     now: u64,
     damage: &mut Damage,
-) {
+) -> bool {
     let Some(until) = screen.boot_screen_until else {
-        return;
+        return false;
     };
     if BOOT_SCREEN_UP.load(Ordering::Acquire) && now < until {
-        return;
+        return false;
     }
     BOOT_SCREEN_UP.store(false, Ordering::Release);
     screen.boot_screen_until = None;
     framebuffer.end_boot_screen();
     damage.add(framebuffer.mode().rect());
+    true
+}
+
+fn earliest_look(first: u64, second: u64) -> u64 {
+    match (first, second) {
+        (NO_LOOK, other) | (other, NO_LOOK) => other,
+        (first, second) => first.min(second),
+    }
+}
+
+fn ticks_after_ms<P: Platform>(milliseconds: u32) -> u64 {
+    P::clock_ticks().saturating_add(mul_div_ceil(
+        u64::from(milliseconds),
+        P::clock_frequency(),
+        1000,
+    ))
 }
 
 fn render_terminal<P: Platform>(screen: &mut Screen, now: u64, damage: &mut Damage) -> u64 {
@@ -729,7 +840,8 @@ fn render_terminal<P: Platform>(screen: &mut Screen, now: u64, damage: &mut Dama
         screen.active_at = now;
     }
     let focused = screen.desktop.as_ref().is_none_or(Desktop::focused);
-    let blinks = screen.session == Session::Interactive && terminal.cursor_blinks();
+    let blinks =
+        screen.session == Session::Interactive && terminal.cursor_blinks() && !reduce_motion();
     let half = mul_div_ceil(BLINK_HALF_MS, P::clock_frequency(), 1000);
     let (look, next) = cursor_look_at(focused, blinks, screen.active_at, now, half);
     terminal.set_cursor_look(look);
@@ -740,12 +852,10 @@ fn render_terminal<P: Platform>(screen: &mut Screen, now: u64, damage: &mut Dama
     if shown {
         let area = screen.text_area();
         for rect in drawn.rects() {
-            damage.add(Rect::new(
-                area.x + rect.x,
-                area.y + rect.y,
-                rect.width,
-                rect.height,
-            ));
+            damage.add(match &screen.desktop {
+                Some(desktop) => desktop.grid_on_screen(*rect),
+                None => Rect::new(area.x + rect.x, area.y + rect.y, rect.width, rect.height),
+            });
         }
     }
     next.unwrap_or(NO_LOOK)
@@ -761,18 +871,102 @@ fn draw_screen<P: Platform>(
         Session::Interactive => take_events::<P>(screen, &mut damage),
         Session::SelfTest => Asked::NOTHING,
     };
-    end_boot_screen_if_due(screen, framebuffer, now, &mut damage);
+    let ended_boot_screen = end_boot_screen_if_due(screen, framebuffer, now, &mut damage);
     let blink = render_terminal::<P>(screen, now, &mut damage);
     compose(screen, framebuffer, &damage);
-    asked.look_again_at = match (blink, screen.boot_screen_until) {
-        (NO_LOOK, until) => until.unwrap_or(NO_LOOK),
-        (blink, Some(until)) => blink.min(until),
-        (blink, None) => blink,
-    };
+    #[cfg(feature = "qemu-boot-clock")]
+    if ended_boot_screen {
+        crate::boot_clock::report_desktop::<P>();
+    }
+    #[cfg(not(feature = "qemu-boot-clock"))]
+    let _ = ended_boot_screen;
+    let boot_screen_end = screen.boot_screen_until.unwrap_or(NO_LOOK);
+    asked.look_again_at = [blink, boot_screen_end]
+        .into_iter()
+        .fold(asked.look_again_at, earliest_look);
     if screen.boot_screen_until.is_some() {
         asked.pointer = None;
     }
     asked
+}
+
+const NO_LAYOUT_CHOICE: KeyboardLayoutChoice = KeyboardLayoutChoice {
+    number: 0,
+    name: "",
+    title: "",
+    code: "",
+};
+
+fn show_keyboard_layouts(desktop: &mut Desktop, damage: &mut Damage) {
+    let (layouts, switch_key) = input::layouts();
+    let mut choices = [NO_LAYOUT_CHOICE; MAX_SHOWN_LAYOUTS];
+    let mut count = 0;
+    for number in layouts.numbers().take(MAX_SHOWN_LAYOUTS) {
+        if let Some(layout) = eggos_settings_file::KEYBOARD_LAYOUTS.get(number) {
+            choices[count] = KeyboardLayoutChoice {
+                number: number as u8,
+                name: layout.name,
+                title: layout.title,
+                code: layout.code,
+            };
+            count += 1;
+        }
+    }
+    let chord = switch_key.chord(desktop.profile().number() as usize);
+    desktop.set_keyboard_layouts(
+        &choices[..count],
+        input::layout_number() as u8,
+        chord,
+        damage,
+    );
+}
+
+/// The keyboard's layouts, the layout in force or the switch key changed (`/dev/window`'s
+/// `SET_KEYBOARD_LAYOUT` and `SET_KEYBOARD_LAYOUTS`, D221): the bar's layout indicator follows
+/// at once.
+pub fn keyboard_layouts_changed<P: Platform>() {
+    with_windows::<P, _>(|desktop, _, damage, _| show_keyboard_layouts(desktop, damage));
+}
+
+/// The network adapter's state changed (D225): the next frame shows it on the bar's network
+/// indicator ([`crate::net::indicated`]).
+pub fn network_changed<P: Platform>() {
+    request_render::<P>();
+}
+
+fn open_settings_pane<P: Platform>(pane: eggos_drivers::desktop::SettingsPane) {
+    let command = SCREEN
+        .lock()
+        .as_ref()
+        .and_then(|screen| screen.desktop.as_ref()?.settings_pane_command(pane));
+    if let Some(command) = command
+        && crate::apps::start_program(command.as_bytes()).is_err()
+    {
+        launch_failed::<P>();
+    }
+}
+
+fn toggle_sticky_keys<P: Platform>() {
+    let on = !input::sticky_keys();
+    let command = SCREEN
+        .lock()
+        .as_ref()
+        .and_then(|screen| screen.desktop.as_ref()?.sticky_keys_command(on));
+    if let Some(command) = command
+        && crate::apps::start_program(command.as_bytes()).is_err()
+    {
+        launch_failed::<P>();
+    }
+}
+
+/// Sticky keys were turned `on` or off (`/dev/window`'s `SET_KEY_ACCESSIBILITY`, D224): the
+/// bar says so for a moment and shows no chips while they are off.
+pub fn sticky_keys_turned<P: Platform>(on: bool) {
+    with_windows::<P, _>(|desktop, _, damage, _| {
+        let (latched, locked) = input::sticky_modifiers();
+        desktop.set_latched(latched, locked, damage);
+        desktop.sticky_keys_turned(on, damage);
+    });
 }
 
 fn launch_command(app: AppId) -> Option<Launch> {
@@ -807,6 +1001,13 @@ fn run_launch<P: Platform>(action: Action) {
             console::receive_from_keyboard::<P>(line.as_bytes());
         }
         None => {}
+    }
+}
+
+fn end_client<P: Platform>(client: u16) {
+    let process = with_clients(|clients| clients.process_of(client)).flatten();
+    if let Some(process) = process {
+        crate::linux::signals::kill_from_kernel::<P>(process);
     }
 }
 
@@ -943,6 +1144,14 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
             move_view::<P>(ViewMove::Live);
             console::receive_from_keyboard::<P>(eggos_drivers::desktop::AGENT_LOG_LINE);
         }
+        Some(Action::EndClient(client)) => end_client::<P>(client),
+        Some(Action::ChooseKeyboardLayout(number)) => {
+            if input::set_layout(usize::from(number)) {
+                keyboard_layouts_changed::<P>();
+            }
+        }
+        Some(Action::OpenSettingsPane(pane)) => open_settings_pane::<P>(pane),
+        Some(Action::ToggleStickyKeys) => toggle_sticky_keys::<P>(),
         Some(Action::None) | None => {}
     }
     if drawn.is_some_and(|asked| asked.catalogue) {

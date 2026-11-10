@@ -59,6 +59,9 @@ pub const RANDOM_DEVICE: (u32, u32) = (1, 8);
 /// `/dev/urandom`'s device number.
 pub const URANDOM_DEVICE: (u32, u32) = (1, 9);
 
+/// `/dev/kmsg`'s device number (D224).
+pub const KMSG_DEVICE: (u32, u32) = (1, 11);
+
 /// `/dev/tty`'s device number: the caller's controlling terminal.
 pub const TTY_DEVICE: (u32, u32) = (5, 0);
 
@@ -162,13 +165,16 @@ const DISKS: [u64; MAX_DISKS] = [26, 27, 28, 29];
 
 const RTC: u64 = 30;
 
-const FILES: [(&[u8], u64); 24] = [
+const KMSG: u64 = 31;
+
+const FILES: [(&[u8], u64); 25] = [
     (eggos_android_properties::AREA_NAME, PROPERTIES),
     (b"agent", AGENT),
     (eggos_android_log::LOG_NAME, ANDROID_LOG),
     (b"console", CONSOLE),
     (b"fd", FD),
     (b"full", FULL),
+    (b"kmsg", KMSG),
     (b"null", NULL),
     (b"ptmx", PTMX),
     (b"pts", PTS),
@@ -291,6 +297,7 @@ impl FileSystem for DeviceFiles {
                 PROPERTIES | ANDROID_LOG => 0o444,
                 LOG_WRITER => 0o222,
                 AGENT | CONSOLE | RTC => 0o600,
+                KMSG => 0o644,
                 _ if disk_of(node).is_some() => 0o600,
                 _ if link_of(node).is_some() => 0o777,
                 _ if pseudo_terminal_of(node).is_some() => 0o620,
@@ -405,6 +412,7 @@ impl FileSystem for DeviceFiles {
             FULL => Some(FULL_DEVICE),
             RANDOM => Some(RANDOM_DEVICE),
             URANDOM => Some(URANDOM_DEVICE),
+            KMSG => Some(KMSG_DEVICE),
             TTY => Some(TTY_DEVICE),
             CONSOLE => Some(CONSOLE_DEVICE),
             PTMX => Some(PTMX_DEVICE),
@@ -486,6 +494,7 @@ mod tests {
                 b"console",
                 b"fd",
                 b"full",
+                b"kmsg",
                 b"null",
                 b"ptmx",
                 b"pts",
@@ -512,6 +521,7 @@ mod tests {
             (b"full", (1, 7), 0o666),
             (b"random", (1, 8), 0o666),
             (b"urandom", (1, 9), 0o666),
+            (b"kmsg", (1, 11), 0o644),
             (b"tty", (5, 0), 0o666),
             (b"console", (5, 1), 0o600),
             (b"ptmx", (5, 2), 0o666),

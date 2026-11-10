@@ -15,6 +15,6 @@ pub mod editor_window;
 pub mod file;
 pub mod find;
 pub mod history;
-#[cfg(all(feature = "window", target_env = "musl"))]
+#[cfg(all(feature = "window", eggos_user))]
 pub mod program;
 pub mod words;

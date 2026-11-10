@@ -81,6 +81,14 @@ pub const MAX_LABEL_BYTES: usize = 64;
 pub const MAX_CURSOR_BYTES: usize = eggos_commands::page::MAX_CURSOR_BYTES;
 /// The longest `target` `ln` takes (D170).
 pub const MAX_LINK_TARGET_BYTES: usize = eggos_commands::tools::MAX_LINK_TARGET_BYTES as usize;
+/// The longest registry key a call names, in bytes (D231).
+pub const MAX_REGISTRY_KEY_BYTES: usize = eggos_commands::tools::MAX_REGISTRY_KEY_BYTES as usize;
+/// The longest registry value name a call names, in bytes (D231).
+pub const MAX_REGISTRY_NAME_BYTES: usize = eggos_commands::tools::MAX_REGISTRY_NAME_BYTES as usize;
+/// Where a registry tool's value name starts in the content buffer, after its key (D231).
+pub const REGISTRY_NAME_AT: usize = MAX_REGISTRY_KEY_BYTES;
+/// `windows_registry_set`'s types, as the tool and its twin's `--type` name them (D231).
+pub const REGISTRY_TYPES: [&str; 6] = ["sz", "expand_sz", "multi_sz", "dword", "qword", "binary"];
 
 const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
 
@@ -194,6 +202,18 @@ pub enum ArgumentProblem {
     BadDevice,
     /// `label` is longer than 64 bytes or holds a control character (D192).
     BadLabel,
+    /// A registry tool's `key` is missing, empty, longer than [`MAX_REGISTRY_KEY_BYTES`] or
+    /// holds a control character (D231).
+    BadRegistryKey,
+    /// A registry tool's `name` is longer than [`MAX_REGISTRY_NAME_BYTES`] or holds a NUL
+    /// (D231).
+    BadRegistryName,
+    /// `windows_registry_set`'s `type` is not one of its choices, or `type` or `data` comes
+    /// without a `name` (D231).
+    BadRegistryType,
+    /// `windows_registry_set`'s `data` is not an array of at most 32 strings, 4096 bytes in
+    /// all, none holding a NUL (D231).
+    BadRegistryData,
 }
 
 impl ArgumentProblem {
@@ -226,12 +246,20 @@ impl ArgumentProblem {
             ArgumentProblem::Missing("link") => "link is required: the path of the link to make",
             ArgumentProblem::Missing("target") => "target is required: what the link points to",
             ArgumentProblem::Missing("value") => "value is required: the new value",
+            ArgumentProblem::Missing("source") => "source is required: the path to copy or move",
+            ArgumentProblem::Missing("destination") => {
+                "destination is required: the new path, not a folder to put it in"
+            }
             ArgumentProblem::Missing(_) => "a required argument is missing",
             ArgumentProblem::WrongType("path") => "path must be a string",
             ArgumentProblem::WrongType("arguments") => "arguments must be an array of strings",
             ArgumentProblem::WrongType("append" | "confirm") => "append and confirm are booleans",
             ArgumentProblem::WrongType("dry_run") => "dry_run is a boolean",
             ArgumentProblem::WrongType("symbolic") => "symbolic is a boolean",
+            ArgumentProblem::WrongType("source") => "source must be a string",
+            ArgumentProblem::WrongType("destination") => "destination must be a string",
+            ArgumentProblem::WrongType("recursive") => "recursive is a boolean",
+            ArgumentProblem::WrongType("parents") => "parents is a boolean",
             ArgumentProblem::WrongType(_) => "an argument has the wrong type",
             ArgumentProblem::BadPath => "the path is longer than 4095 bytes",
             ArgumentProblem::BothContents => "give content or content_base64, not both",
@@ -339,6 +367,22 @@ impl ArgumentProblem {
             ArgumentProblem::BadDevice => "device must be a disk's file: /dev/vda to /dev/vdd",
             ArgumentProblem::BadLabel => {
                 "label must be at most 64 bytes without control characters"
+            }
+            ArgumentProblem::BadRegistryKey => {
+                "key is required: a registry key such as HKEY_CURRENT_USER\\Software\\AutoHotkey, \
+                 1 to 4096 bytes without control characters"
+            }
+            ArgumentProblem::BadRegistryName => {
+                "name must be a value's name of at most 16383 characters without NUL; an empty \
+                 name is the (Default) value"
+            }
+            ArgumentProblem::BadRegistryType => {
+                "type is sz, expand_sz, multi_sz, dword, qword or binary, and type and data need \
+                 a name"
+            }
+            ArgumentProblem::BadRegistryData => {
+                "data must be an array of at most 32 strings, 4096 bytes in all, none holding a \
+                 NUL"
             }
         }
     }
@@ -587,6 +631,21 @@ pub struct Checked {
     pub symbolic: bool,
     /// `disk_format`'s label (D192).
     pub label: Option<LabelText>,
+    /// `file_copy`'s and `file_move`'s source's length, in the content buffer (D226).
+    pub source: Option<usize>,
+    /// `file_remove`'s `recursive` (D226).
+    pub recursive: bool,
+    /// `folder_create`'s `parents` (D226).
+    pub parents: bool,
+    /// A registry tool's key's length, at the start of the content buffer (D231).
+    pub registry_key: Option<usize>,
+    /// A registry tool's value name's length, at [`REGISTRY_NAME_AT`] in the content buffer;
+    /// `Some(0)` is the (Default) value (D231).
+    pub registry_name: Option<usize>,
+    /// `windows_registry_set`'s type, as its twin's `--type` takes it (D231).
+    pub registry_type: Option<&'static str>,
+    /// `windows_registry_reset`'s `machine` (D231).
+    pub machine: bool,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -697,6 +756,15 @@ pub fn check(
         checked.archive_entry = archive_entry(get("entry"), decoded.words)?;
         checked.app_arguments = app_arguments(get("arguments"), decoded.words)?;
         checked.app_environment = app_environment(get("environment"), decoded.words)?;
+    }
+    if matches!(
+        tool.kind,
+        Kind::WindowsRegistryGet | Kind::WindowsRegistrySet | Kind::WindowsRegistryDelete
+    ) {
+        registry_arguments(tool.kind, &get, decoded, &mut checked)?;
+    }
+    if tool.kind == Kind::WindowsRegistryReset {
+        checked.machine = flag(get("machine"), "machine")?;
     }
     if tool.kind == Kind::Run {
         checked.words = words(get("arguments"), decoded.words)?;
@@ -845,6 +913,20 @@ pub fn check(
         }
         checked.link_target = Some(length);
     }
+    if matches!(tool.kind, Kind::FileCopy | Kind::FileMove) {
+        let room = decoded
+            .content
+            .get_mut(..MAX_PATH_BYTES + 1)
+            .ok_or(ArgumentProblem::BadPath)?;
+        let source = match get("source") {
+            Some(Value::Str(text)) => text.decode_into(room),
+            Some(_) => return Err(ArgumentProblem::WrongType("source")),
+            None => return Err(ArgumentProblem::Missing("source")),
+        };
+        checked.source = Some(source.ok_or(ArgumentProblem::BadPath)?.len());
+    }
+    checked.recursive = flag(get("recursive"), "recursive")?;
+    checked.parents = flag(get("parents"), "parents")?;
     if matches!(
         tool.kind,
         Kind::DiskCheck | Kind::DiskRepair | Kind::DiskFormat
@@ -856,6 +938,13 @@ pub fn check(
         if !is_disk_device(device) {
             return Err(ArgumentProblem::BadDevice);
         }
+    }
+    if tool.kind == Kind::DownloadCancel {
+        checked.pid = Some(
+            whole(get("pid"), i32::MAX as u64, ArgumentProblem::BadPid)?
+                .filter(|&pid| pid > 0)
+                .ok_or(ArgumentProblem::BadPid)? as u32,
+        );
     }
     if tool.kind == Kind::Kill {
         checked.pid = Some(
@@ -1309,6 +1398,89 @@ pub fn decode_base64(encoded: Str<'_>, out: &mut [u8]) -> Result<usize, Argument
     Ok(length)
 }
 
+fn registry_arguments<'a>(
+    kind: Kind,
+    get: &impl Fn(&str) -> Option<Value<'a>>,
+    decoded: &mut Decoded<'_>,
+    checked: &mut Checked,
+) -> Result<(), ArgumentProblem> {
+    let key = match get("key") {
+        Some(Value::Str(text)) => text,
+        _ => return Err(ArgumentProblem::BadRegistryKey),
+    };
+    let room = decoded
+        .content
+        .get_mut(..MAX_REGISTRY_KEY_BYTES)
+        .ok_or(ArgumentProblem::BadRegistryKey)?;
+    let key = key
+        .decode_into(room)
+        .ok_or(ArgumentProblem::BadRegistryKey)?;
+    if key.is_empty() || key.chars().any(char::is_control) {
+        return Err(ArgumentProblem::BadRegistryKey);
+    }
+    checked.registry_key = Some(key.len());
+    checked.registry_name = match get("name") {
+        None => None,
+        Some(Value::Str(text)) => {
+            let room = decoded
+                .content
+                .get_mut(REGISTRY_NAME_AT..REGISTRY_NAME_AT + MAX_REGISTRY_NAME_BYTES)
+                .ok_or(ArgumentProblem::BadRegistryName)?;
+            let name = text
+                .decode_into(room)
+                .ok_or(ArgumentProblem::BadRegistryName)?;
+            if name.contains('\0') {
+                return Err(ArgumentProblem::BadRegistryName);
+            }
+            Some(name.len())
+        }
+        Some(_) => return Err(ArgumentProblem::BadRegistryName),
+    };
+    if kind != Kind::WindowsRegistrySet {
+        return Ok(());
+    }
+    checked.registry_type = match get("type") {
+        None => None,
+        Some(Value::Str(text)) => {
+            let mut bytes = [0u8; 16];
+            let given = text
+                .decode_into(&mut bytes)
+                .ok_or(ArgumentProblem::BadRegistryType)?;
+            Some(
+                REGISTRY_TYPES
+                    .into_iter()
+                    .find(|choice| *choice == given)
+                    .ok_or(ArgumentProblem::BadRegistryType)?,
+            )
+        }
+        Some(_) => return Err(ArgumentProblem::BadRegistryType),
+    };
+    checked.words = words(get("data"), decoded.words).map_err(|problem| match problem {
+        ArgumentProblem::WrongType(_) | ArgumentProblem::BadWords => {
+            ArgumentProblem::BadRegistryData
+        }
+        other => other,
+    })?;
+    let typed = checked.registry_type.is_some() || !checked.words.is_empty();
+    if checked.registry_name.is_none() && typed {
+        return Err(ArgumentProblem::BadRegistryType);
+    }
+    Ok(())
+}
+
+/// A registry tool's key in `buffer`, the content buffer, that [`Checked::registry_key`]
+/// measures (D231).
+pub fn registry_key_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.registry_key?)?).ok()
+}
+
+/// A registry tool's value name in `buffer`, the content buffer, that
+/// [`Checked::registry_name`] measures (D231).
+pub fn registry_name_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    let end = REGISTRY_NAME_AT.checked_add(checked.registry_name?)?;
+    core::str::from_utf8(buffer.get(REGISTRY_NAME_AT..end)?).ok()
+}
+
 fn words(value: Option<Value<'_>>, buffer: &mut [u8]) -> Result<Words, ArgumentProblem> {
     let mut words = Words::default();
     let elements = match value {
@@ -1427,6 +1599,12 @@ pub fn after_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
 /// (D170).
 pub fn link_target_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.link_target?)?).ok()
+}
+
+/// `file_copy`'s and `file_move`'s source in `buffer`, the content buffer, that
+/// [`Checked::source`] measures (D226).
+pub fn source_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.source?)?).ok()
 }
 
 fn is_disk_device(device: &[u8]) -> bool {
@@ -2022,7 +2200,7 @@ mod tests {
             checked("tee", r#"{"path":"/home/root/a","dry_run":"yes"}"#).0,
             Err(ArgumentProblem::WrongType("dry_run"))
         );
-        for tool in ["run", "fetch", "clock_set", "wm_click", "ls"] {
+        for tool in ["run", "fetch", "wm_click", "ls"] {
             assert_eq!(
                 checked(tool, r#"{"dry_run":true}"#).0,
                 Err(ArgumentProblem::Unknown),
@@ -2132,5 +2310,52 @@ mod tests {
         ] {
             assert_eq!(checked("ln", arguments).0, Err(problem), "{arguments}");
         }
+    }
+
+    #[test]
+    fn the_file_tools_take_a_source_and_their_flags() {
+        let arguments = r#"{"source":"/home/root/a","destination":"/home/root/b"}"#;
+        let (result, buffers) = checked("file_copy", arguments);
+        let result = result.unwrap();
+        assert_eq!(source_text(&result, &buffers.content), Some("/home/root/a"));
+        assert_eq!(path_text(&result, &buffers.path), Some("/home/root/b"));
+        assert_eq!(
+            checked("file_move", r#"{"destination":"/home/root/b"}"#).0,
+            Err(ArgumentProblem::Missing("source"))
+        );
+        assert_eq!(
+            checked("file_move", r#"{"source":"/home/root/a"}"#).0,
+            Err(ArgumentProblem::Missing("destination"))
+        );
+        assert_eq!(
+            checked("file_copy", r#"{"source":1,"destination":"/home/root/b"}"#).0,
+            Err(ArgumentProblem::WrongType("source"))
+        );
+        let long = format!(
+            r#"{{"source":"/{}","destination":"/home/root/b"}}"#,
+            "a".repeat(MAX_PATH_BYTES + 1)
+        );
+        assert_eq!(checked("file_copy", &long).0, Err(ArgumentProblem::BadPath));
+        let (result, _) = checked("file_remove", r#"{"path":"/home/root/d","recursive":true}"#);
+        assert!(result.unwrap().recursive);
+        let (result, _) = checked("folder_create", r#"{"path":"/home/root/d","parents":true}"#);
+        assert!(result.unwrap().parents);
+        assert_eq!(
+            checked(
+                "folder_create",
+                r#"{"path":"/home/root/d","parents":"yes"}"#
+            )
+            .0,
+            Err(ArgumentProblem::WrongType("parents"))
+        );
+        assert_eq!(
+            checked("folder_create", r#"{"path":"/home/root/d","dry_run":true}"#).0,
+            Err(ArgumentProblem::Unknown)
+        );
+        assert!(
+            checked("file_remove", r#"{"path":"/home/root/d"}"#)
+                .0
+                .is_ok_and(|checked| !checked.recursive && checked.source.is_none())
+        );
     }
 }

@@ -7,18 +7,24 @@
 
 extern crate alloc;
 
+pub mod about_pane;
 pub mod accessibility_pane;
 pub mod activity;
 pub mod agents_pane;
 pub mod art;
+pub mod automatic_clock;
 pub mod command;
+pub mod components_pane;
 pub mod disk;
 pub mod facts;
+pub mod first_run;
 pub mod grant_prompt;
 pub mod input_panes;
 pub mod keys;
+pub mod network_pane;
 pub mod network_view;
 pub mod settings_window;
 pub mod storage_pane;
 pub mod task_manager;
+pub mod windows_pane;
 pub mod zone_picker;

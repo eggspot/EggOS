@@ -1,13 +1,13 @@
-//! NSApplication and `NSApp`: the delegate's launch and termination, the event loop over the
-//! window server's records (each made an NSEvent and sent through `sendEvent:`, the main menu's
-//! key equivalents first, Cmd+Q always quitting; agents' queries answered with element trees;
-//! the About panel's records to it), the app's windows, and actions sent to their target or
-//! along the responder chain.
+//! NSApplication and `NSApp`: `NSApplicationMain` (its principal class and main nib, D232), the
+//! delegate's launch and termination, the event loop over the window server's records (each
+//! made an NSEvent and sent through `sendEvent:`, the main menu's key equivalents first, Cmd+Q
+//! always quitting; agents' queries answered with element trees; the About panel's records to
+//! it), the app's windows, and actions sent to their target or along the responder chain.
 
 use super::event::{self, kind};
 use super::{
-    NSAPPLICATION, NSAPPLICATION_META, NSRESPONDER, about, elements, menu, responds, server, view,
-    window,
+    NSAPPLICATION, NSAPPLICATION_META, NSRESPONDER, about, cursor, elements, menu, nib, responds,
+    server, view, window,
 };
 use crate::foundation::{self, NSARRAY, class_pointer, info_string};
 use crate::libsystem::{Exclusive, write_error};
@@ -26,7 +26,7 @@ use eggos_toolkit::input::{self, Input, MouseButton, RECORD_SIZE};
 const NS_TERMINATE_CANCEL: usize = 0;
 const RECORDS_PER_READ: usize = 16;
 const NO_WINDOW_SERVER: i32 = 1;
-const NIB_APP: i32 = 1;
+const NIB_NOT_LOADED: i32 = 1;
 
 static APPLICATION: AtomicUsize = AtomicUsize::new(0);
 static DELEGATE: AtomicUsize = AtomicUsize::new(0);
@@ -142,19 +142,27 @@ pub fn display_all() {
     }
 }
 
-fn notify(sel: Sel) {
+fn notify(sel: Sel, name: usize) {
+    let notification = foundation::notification_named(name, application());
     let delegate = delegate();
     if responds(delegate, sel) {
-        send1(delegate, sel, 0);
+        send1(delegate, sel, notification as usize);
     }
+    foundation::post(notification);
 }
 
 fn finish_launching() {
     if LAUNCHED.swap(true, Ordering::AcqRel) {
         return;
     }
-    notify(sel!("applicationWillFinishLaunching:"));
-    notify(sel!("applicationDidFinishLaunching:"));
+    notify(
+        sel!("applicationWillFinishLaunching:"),
+        foundation::APPLICATION_WILL_FINISH_LAUNCHING,
+    );
+    notify(
+        sel!("applicationDidFinishLaunching:"),
+        foundation::APPLICATION_DID_FINISH_LAUNCHING,
+    );
 }
 
 /// Ends the app as `terminate:` does, unless the delegate cancels.
@@ -166,7 +174,10 @@ pub fn terminate() {
     {
         return;
     }
-    notify(sel!("applicationWillTerminate:"));
+    notify(
+        sel!("applicationWillTerminate:"),
+        foundation::APPLICATION_WILL_TERMINATE,
+    );
     crate::libsystem::exit(0)
 }
 
@@ -347,7 +358,8 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
             send1(window, sel!("performClose:"), 0);
         }
         Input::Resize { width, height } => window::resize(window, width, height),
-        Input::PointerLeave | Input::StateChanged { .. } | Input::Overflow => {}
+        Input::PointerLeave => cursor::pointer_left(window),
+        Input::StateChanged { .. } | Input::DeadKey { .. } | Input::Overflow => {}
     }
 }
 
@@ -367,21 +379,50 @@ pub fn read_records(handle: &mut dyn FnMut(&[u8; RECORD_SIZE])) {
     }
 }
 
+/// Runs `work`, reporting an exception that reaches it with `-[NSApplication
+/// reportException:]` and carrying on, as AppKit's run loop does on macOS (D234).
+pub fn reporting_exceptions(work: &mut dyn FnMut()) {
+    let Some(caught) = crate::objc::exception::catching(work) else {
+        return;
+    };
+    let exception = caught.finish();
+    if exception.is_null() {
+        return;
+    }
+    match application() {
+        app if app.is_null() => report(exception),
+        app => {
+            send1(app, sel!("reportException:"), exception as usize);
+        }
+    }
+}
+
+fn report(exception: Id) {
+    let description = send(exception, sel!("description"));
+    foundation::with_utf8(description, foundation::log_message);
+}
+
+extern "C" fn report_exception(_: Id, _: Sel, exception: Id) {
+    if !exception.is_null() {
+        report(exception);
+    }
+}
+
 fn run() {
-    finish_launching();
+    reporting_exceptions(&mut finish_launching);
     RUNNING.store(true, Ordering::Release);
     while RUNNING.load(Ordering::Acquire) {
         let pool = autorelease::push();
         menu::send_if_changed();
-        display_all();
+        reporting_exceptions(&mut display_all);
         let waiting = match foundation::next_due_in_ms() {
             Some(due) => server::wait_for_events(due),
             None => true,
         };
         if waiting {
-            read_records(&mut |record| dispatch(record));
+            read_records(&mut |record| reporting_exceptions(&mut || dispatch(record)));
         }
-        foundation::fire_due();
+        reporting_exceptions(&mut foundation::fire_due);
         autorelease::pop(pool);
     }
 }
@@ -513,20 +554,35 @@ extern "C" fn order_front_about_panel_with_options(_: Id, _: Sel, options: Id) {
     about::show(options);
 }
 
+fn principal_class() -> *mut crate::objc::abi::ClassObject {
+    let named = info_string(b"NSPrincipalClass")
+        .filter(|name| !name.is_empty())
+        .map_or(core::ptr::null_mut(), crate::objc::class_named);
+    let application = class_pointer(&NSAPPLICATION);
+    match !named.is_null() && crate::objc::root::descends_from(named, application) {
+        true => named,
+        false => application,
+    }
+}
+
 extern "C" fn application_main(_: i32, _: usize) -> i32 {
-    if [&b"NSMainNibFile"[..], &b"NSMainStoryboardFile"[..]]
-        .into_iter()
-        .any(|key| info_string(key).is_some_and(|name| !name.is_empty()))
+    if info_string(b"NSMainStoryboardFile").is_some_and(|name| !name.is_empty()) {
+        write_error(
+            b"eggos-macos: this app builds its interface from a storyboard \
+              (NSMainStoryboardFile in its Info.plist), which EggOS cannot load yet\n",
+        );
+        crate::libsystem::exit(NIB_NOT_LOADED);
+    }
+    let application = send(principal_class().cast(), sel!("sharedApplication"));
+    if let Some(name) = info_string(b"NSMainNibFile").filter(|name| !name.is_empty())
+        && nib::load_main(name, application).is_err()
     {
         write_error(
-            b"eggos-macos: this app builds its interface from a nib or storyboard \
-              (NSMainNibFile or NSMainStoryboardFile in its Info.plist), which EggOS cannot \
-              load yet\n",
+            b"eggos-macos: the app's main nib (NSMainNibFile in its Info.plist) is missing \
+              from its bundle's Resources or could not be read\n",
         );
-        crate::libsystem::exit(NIB_APP);
+        crate::libsystem::exit(NIB_NOT_LOADED);
     }
-    let class = class_pointer(&NSAPPLICATION).cast();
-    let application = send(class, sel!("sharedApplication"));
     send(application, sel!("run"));
     0
 }
@@ -562,6 +618,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "windows" => windows,
         "sendAction:to:from:" => send_action_method,
         "sendEvent:" => send_event,
+        "reportException:" => report_exception,
         "isRunning" => is_running,
         "orderFrontStandardAboutPanel:" => order_front_about_panel,
         "orderFrontStandardAboutPanelWithOptions:" => order_front_about_panel_with_options,

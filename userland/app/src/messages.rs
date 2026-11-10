@@ -4,7 +4,7 @@
 
 use crate::architecture::Architecture;
 use crate::archive::ArchiveError;
-use crate::installer::{Plan, Problem};
+use crate::installer::{APPLICATIONS, Plan, Preview, Problem};
 use crate::program::{NotRunnable, Program};
 use core::fmt::Write;
 use eggos_app_manifest::Source;
@@ -54,6 +54,22 @@ impl Line {
             }
         }
     }
+
+    /// Adds `text` with its control characters (C0, DEL and C1) written as `\n`, `\t`, `\r`
+    /// and `\xHH` (D226), so a name in it cannot break or forge a line.
+    pub fn push_escaped(&mut self, text: &str) {
+        for character in text.chars() {
+            let _ = match character {
+                '\n' => self.write_str("\\n"),
+                '\t' => self.write_str("\\t"),
+                '\r' => self.write_str("\\r"),
+                control if control.is_control() => {
+                    write!(self, "\\x{:02x}", u32::from(control))
+                }
+                other => self.write_char(other),
+            };
+        }
+    }
 }
 
 impl Write for Line {
@@ -66,6 +82,16 @@ impl Write for Line {
         self.bytes[self.length..self.length + end].copy_from_slice(&text.as_bytes()[..end]);
         self.length += end;
         Ok(())
+    }
+}
+
+/// The component that brings the layer `source`'s programs need (D235): `windows-apps` and
+/// `mac-apps`; none for Linux programs, which the base runs.
+pub fn layer_component(source: Source) -> Option<&'static str> {
+    match source {
+        Source::Windows => Some("windows-apps"),
+        Source::Macos => Some("mac-apps"),
+        Source::Linux => None,
     }
 }
 
@@ -111,11 +137,19 @@ fn not_runnable(line: &mut Line, reason: NotRunnable) {
             "the {} layer runs on x86_64 and aarch64 only",
             layer(source)
         ),
-        NotRunnable::LayerMissing(source) => write!(
-            line,
-            "it needs the {} layer, which is not installed",
-            layer(source)
-        ),
+        NotRunnable::LayerMissing(source) => match layer_component(source) {
+            Some(component) => write!(
+                line,
+                "it needs the {} layer, which is not installed: install it with `component \
+                 install {component}`",
+                layer(source)
+            ),
+            None => write!(
+                line,
+                "it needs the {} layer, which is not installed",
+                layer(source)
+            ),
+        },
     };
 }
 
@@ -230,10 +264,30 @@ pub fn uninstall_failed(name: &str, problem: Problem) -> Line {
     line
 }
 
-/// What a finished install says.
+/// What a finished install says: `Installed win-paint in /Applications/win-paint.`
 pub fn installed(plan: &Plan) -> Line {
     let mut line = Line::new();
-    let _ = write!(line, "Installed {}.", plan.name());
+    let _ = write!(line, "Installed {} in ", plan.name());
+    line.push_bytes(plan.folder().as_bytes());
+    let _ = line.write_str(".");
+    line
+}
+
+/// What `app uninstall --dry-run` says of an installed app (D164): `would uninstall Paint:
+/// removes /Applications/Paint and everything in it`, before the translated code it would
+/// remove too.
+pub fn would_uninstall(name: &str) -> Line {
+    let mut line = Line::new();
+    let _ = write!(line, "would uninstall {name}: removes ");
+    line.push_bytes(APPLICATIONS);
+    let _ = write!(line, "/{name} and everything in it");
+    line
+}
+
+/// What a finished uninstall says: `Uninstalled Paint.`
+pub fn uninstalled(name: &str) -> Line {
+    let mut line = Line::new();
+    let _ = write!(line, "Uninstalled {name}.");
     line
 }
 
@@ -284,10 +338,75 @@ pub fn not_translated() -> Line {
     line
 }
 
+/// What `app install --dry-run` says (D226): `would install win-paint (Windows program,
+/// x86_64) from /media/host/win-paint.exe into /Applications/win-paint: 1 file, 70064 bytes`,
+/// then whether it replaces a folder an unfinished install left and whether its code would be
+/// translated for this computer.
+pub fn would_install(plan: &Plan, preview: Preview, machine: Architecture) -> Line {
+    let mut line = Line::new();
+    let _ = write!(
+        line,
+        "would install {} ({}) from ",
+        plan.name(),
+        kind(plan.program()).as_str()
+    );
+    line.push_bytes(plan.source());
+    let _ = line.write_str(" into ");
+    line.push_bytes(plan.folder().as_bytes());
+    let _ = write!(
+        line,
+        ": {} {}, {} {}",
+        preview.files,
+        if preview.files == 1 { "file" } else { "files" },
+        preview.bytes,
+        if preview.bytes == 1 { "byte" } else { "bytes" },
+    );
+    if plan.replaces_leftover_folder() {
+        let _ = line.write_str(", replacing the folder an unfinished install left there");
+    }
+    let built = plan.program();
+    if crate::program::runs_translated(built.source, built.architecture, machine) {
+        let _ = write!(
+            line,
+            ", then translate its {} code for this {} computer, once",
+            built.architecture.name(),
+            machine.name()
+        );
+    }
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use eggos_runtime::errno::Errno;
+
+    #[test]
+    fn a_dry_run_install_names_the_app_its_kind_its_folder_and_what_it_copies() {
+        let mut files = crate::fake::FakeFiles::new();
+        let program = crate::program::samples::windows_program(0x8664);
+        files.file("/media/host/win-paint.exe", &program);
+        let path = b"/media/host/win-paint.exe";
+        let plan = crate::installer::plan(&mut files, path, None, Architecture::X86_64).unwrap();
+        let one = Preview { files: 1, bytes: 1 };
+        assert_eq!(
+            would_install(&plan, one, Architecture::X86_64).as_str(),
+            "would install win-paint (Windows program, x86_64) from /media/host/win-paint.exe \
+             into /Applications/win-paint: 1 file, 1 byte"
+        );
+        let two = Preview {
+            files: 2,
+            bytes: 70,
+        };
+        assert!(
+            would_install(&plan, two, Architecture::Aarch64)
+                .as_str()
+                .ends_with(
+                    ": 2 files, 70 bytes, then translate its x86_64 code for this aarch64 \
+                     computer, once"
+                )
+        );
+    }
 
     #[test]
     fn the_translation_lines_give_the_sizes_and_the_refused_count() {
@@ -388,5 +507,15 @@ mod tests {
             let _ = long.write_str("abc");
         }
         assert_eq!(long.as_str().len(), 256);
+    }
+
+    #[test]
+    fn an_escaped_text_cannot_break_or_forge_a_line() {
+        let mut line = Line::new();
+        line.push_escaped("a.exe\napp: installed\x1b[2J\tb\r\x7f\u{e9}\u{9b}2J\u{85}\u{a0}");
+        assert_eq!(
+            line.as_str(),
+            "a.exe\\napp: installed\\x1b[2J\\tb\\r\\x7f\u{e9}\\x9b2J\\x85\u{a0}"
+        );
     }
 }

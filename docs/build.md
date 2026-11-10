@@ -153,8 +153,9 @@ holds what used to be written in them.
   `mac-paint`, our AppKit test app built from `tests/macos-gui/main.m` with the other macOS
   programs (`-framework AppKit -framework Foundation`), writes `mac-paint.app` (its
   `Info.plist` and this CPU's slice as `Contents/MacOS/mac-paint`) in a host folder, and boots
-  the release image itself, which carries the macOS layer (D152), on a blank disk with that
-  folder attached. It installs
+  the release kernel with the layers embedded (`build_kernel_with_layers`, D235; the release
+  images themselves leave them to the `mac-apps` component) on a blank disk with that folder
+  attached. It installs
   the bundle with `app install /media/host/mac-paint.app`, opens it from the launcher, then
   compares the display with the host's render (the desktop, and the window and alert painted by
   `eggos-macos-gui-tests`) after each step: the window with its menu in the top bar, `Hello` and

@@ -69,10 +69,50 @@ pub enum ControlSide {
     Right,
 }
 
+/// A rectangle on the desktop's plane whose left edge may lie left of the screen: a window
+/// hanging off the left edge (D222). [`Self::visible`] is the part on the screen's side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Bounds {
+    pub x: i32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Bounds {
+    /// The rectangle `width` by `height` with its top-left corner at (`x`, `y`).
+    pub const fn new(x: i32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Its right edge: one column past its last.
+    pub fn right(&self) -> i64 {
+        i64::from(self.x) + i64::from(self.width)
+    }
+
+    /// The part of it right of the screen's left edge, empty when none is.
+    pub fn visible(&self) -> Rect {
+        let left = i64::from(self.x).max(0);
+        let width = (self.right() - left).max(0) as u32;
+        Rect::new(left as u32, self.y, width, self.height)
+    }
+}
+
+impl From<Rect> for Bounds {
+    fn from(rect: Rect) -> Self {
+        Self::new(rect.x as i32, rect.y, rect.width, rect.height)
+    }
+}
+
 /// A window's geometry before it was maximised: its outside top-left and its content size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Geometry {
-    pub x: u32,
+    pub x: i32,
     pub y: u32,
     pub content_width: u32,
     pub content_height: u32,
@@ -86,7 +126,7 @@ pub(super) struct Window {
     pub role: Role,
     pub parent: Option<u8>,
     pub flags: u32,
-    pub x: u32,
+    pub x: i32,
     pub y: u32,
     pub content_width: u32,
     pub content_height: u32,
@@ -152,8 +192,8 @@ impl Window {
         }
     }
 
-    pub fn outside(&self) -> Rect {
-        Rect::new(
+    pub fn bounds(&self) -> Bounds {
+        Bounds::new(
             self.x,
             self.y,
             self.content_width + CHROME.0,
@@ -161,39 +201,79 @@ impl Window {
         )
     }
 
+    pub fn outside(&self) -> Rect {
+        self.bounds().visible()
+    }
+
     pub fn has_shadow(&self) -> bool {
         !self.maximised
     }
 
     pub fn with_shadow(&self) -> Rect {
-        let window = self.outside();
+        let window = self.bounds();
         if !self.has_shadow() {
-            return window;
+            return window.visible();
         }
-        Rect::new(
-            window.x.saturating_sub(super::SHADOW_RINGS),
+        Bounds::new(
+            window.x.saturating_sub(super::SHADOW_RINGS as i32),
             window.y,
             window.width + 2 * super::SHADOW_RINGS,
             window.height + super::SHADOW_RINGS,
         )
+        .visible()
     }
 
     pub fn title_bar(&self) -> Rect {
-        Rect::new(
+        Bounds::new(
             self.x,
             self.y,
             self.content_width + CHROME.0,
             TITLE_HEIGHT + 1,
         )
+        .visible()
     }
 
-    pub fn content(&self) -> Rect {
-        Rect::new(
+    pub fn content_bounds(&self) -> Bounds {
+        Bounds::new(
             self.x + 1,
             self.y + 1 + TITLE_HEIGHT,
             self.content_width,
             self.content_height,
         )
+    }
+
+    pub fn content(&self) -> Rect {
+        self.content_bounds().visible()
+    }
+
+    pub fn content_origin(&self) -> (i64, i64) {
+        let content = self.content_bounds();
+        (i64::from(content.x), i64::from(content.y))
+    }
+
+    pub fn content_to_screen(&self, rect: Rect) -> Rect {
+        let clipped = rect.clipped(self.content_width, self.content_height);
+        let (x, y) = self.content_origin();
+        Bounds::new(
+            (x + i64::from(clipped.x)) as i32,
+            (y + i64::from(clipped.y)) as u32,
+            clipped.width,
+            clipped.height,
+        )
+        .visible()
+    }
+
+    pub fn overhang(&self) -> u32 {
+        match self.x < 0 {
+            true => self.x.unsigned_abs() + super::SHADOW_RINGS,
+            false => 0,
+        }
+    }
+
+    pub fn moved_right(&self, by: u32) -> Self {
+        let mut moved = *self;
+        moved.x = self.x.saturating_add(by as i32);
+        moved
     }
 
     pub fn geometry(&self) -> Geometry {
@@ -249,32 +329,37 @@ impl Window {
         })
     }
 
-    /// The hit target of control `part` with the controls on `side`, if the window has it.
-    pub fn control(&self, part: Part, side: ControlSide) -> Option<Rect> {
+    fn control_left(&self, part: Part, side: ControlSide) -> Option<i64> {
         if !self.controls().contains(&part) {
             return None;
         }
         let index = Self::control_index(part, side)?;
-        let offset = CONTROLS_FROM_EDGE + index * CONTROL_HIT_WIDTH;
-        let x = match side {
-            ControlSide::Left => self.x + offset,
-            ControlSide::Right => {
-                (self.x + self.outside().width).saturating_sub(offset + CONTROL_HIT_WIDTH)
-            }
-        };
-        Some(Rect::new(x, self.y, CONTROL_HIT_WIDTH, TITLE_HEIGHT))
+        let offset = i64::from(CONTROLS_FROM_EDGE + index * CONTROL_HIT_WIDTH);
+        Some(match side {
+            ControlSide::Left => i64::from(self.x) + offset,
+            ControlSide::Right => self.bounds().right() - offset - i64::from(CONTROL_HIT_WIDTH),
+        })
     }
 
-    /// The circle of control `part`, if the window has it.
+    /// The hit target of control `part` with the controls on `side`, if the window has it: the
+    /// part of it on the screen.
+    pub fn control(&self, part: Part, side: ControlSide) -> Option<Rect> {
+        let left = self.control_left(part, side)?;
+        Some(Bounds::new(left as i32, self.y, CONTROL_HIT_WIDTH, TITLE_HEIGHT).visible())
+    }
+
+    /// The circle of control `part`, if the window has it: the part of it on the screen.
     pub fn control_circle(&self, part: Part, side: ControlSide) -> Option<Rect> {
-        self.control(part, side).map(|hit| {
-            Rect::new(
-                hit.x + CONTROL_CIRCLE_FROM_HIT,
+        let left = self.control_left(part, side)?;
+        Some(
+            Bounds::new(
+                (left + i64::from(CONTROL_CIRCLE_FROM_HIT)) as i32,
                 self.y + CONTROL_TOP,
                 CONTROL_SIZE,
                 CONTROL_SIZE,
             )
-        })
+            .visible(),
+        )
     }
 
     /// The controls the window draws, in drawing order.
@@ -305,7 +390,7 @@ impl Window {
         if !self.is_resizable() {
             return 0;
         }
-        resize_edges(self.outside(), x, y)
+        resize_edges(self.bounds(), x, y)
     }
 
     pub fn title(&self) -> &str {
@@ -323,12 +408,13 @@ impl Window {
 /// `outside` by: a ring 2 px outside the border and 4 px inside it (2 px inside along the top,
 /// so the title bar keeps its drag), with 16 by 16 corners that resize both edges; 0 outside
 /// the ring.
-pub fn resize_edges(outside: Rect, x: u32, y: u32) -> u8 {
+pub fn resize_edges(outside: impl Into<Bounds>, x: u32, y: u32) -> u8 {
+    let outside = outside.into();
     let (x, y) = (i64::from(x), i64::from(y));
     let left = i64::from(outside.x) - i64::from(RESIZE_OUTSIDE);
     let top = i64::from(outside.y) - i64::from(RESIZE_OUTSIDE);
-    let right = i64::from(outside.right()) + i64::from(RESIZE_OUTSIDE);
-    let bottom = i64::from(outside.bottom()) + i64::from(RESIZE_OUTSIDE);
+    let right = outside.right() + i64::from(RESIZE_OUTSIDE);
+    let bottom = i64::from(outside.y) + i64::from(outside.height) + i64::from(RESIZE_OUTSIDE);
     if x < left || x >= right || y < top || y >= bottom {
         return 0;
     }
@@ -381,11 +467,20 @@ pub fn resize_pointer(edges: u8) -> PointerShape {
 
 /// The outside rectangle a window that was `start` gets when its `edges` follow the pointer by
 /// (`dx`, `dy`): the opposite edges stay put, the size is at least `minimum` (outside) and the
-/// moving edges stay inside `work`. The minimum wins when the two disagree.
-pub fn resized(start: Rect, edges: u8, dx: i64, dy: i64, minimum: (u32, u32), work: Rect) -> Rect {
+/// moving edges stay inside `work`. The minimum wins when the two disagree. A window hanging
+/// off the left edge keeps its left edge there while its right or bottom edge moves (D222).
+pub fn resized(
+    start: impl Into<Bounds>,
+    edges: u8,
+    dx: i64,
+    dy: i64,
+    minimum: (u32, u32),
+    work: Rect,
+) -> Bounds {
+    let start = start.into();
     let axis =
-        |from: u32, size: u32, low: u8, high: u8, delta: i64, least: u32, area: (u32, u32)| {
-            let (from, end, least) = (i64::from(from), i64::from(from + size), i64::from(least));
+        |from: i64, size: u32, low: u8, high: u8, delta: i64, least: u32, area: (u32, u32)| {
+            let (end, least) = (from + i64::from(size), i64::from(least));
             let (area_start, area_end) = (i64::from(area.0), i64::from(area.1));
             let (from, end) = if edges & high != 0 {
                 let end = (end + delta)
@@ -400,10 +495,10 @@ pub fn resized(start: Rect, edges: u8, dx: i64, dy: i64, minimum: (u32, u32), wo
             } else {
                 (from, end)
             };
-            (from.max(0) as u32, (end - from.max(0)).max(0) as u32)
+            (from, (end - from).max(0) as u32)
         };
     let (x, width) = axis(
-        start.x,
+        i64::from(start.x),
         start.width,
         edge::LEFT,
         edge::RIGHT,
@@ -412,7 +507,7 @@ pub fn resized(start: Rect, edges: u8, dx: i64, dy: i64, minimum: (u32, u32), wo
         (work.x, work.right()),
     );
     let (y, height) = axis(
-        start.y,
+        i64::from(start.y),
         start.height,
         edge::TOP,
         edge::BOTTOM,
@@ -420,7 +515,34 @@ pub fn resized(start: Rect, edges: u8, dx: i64, dy: i64, minimum: (u32, u32), wo
         minimum.1,
         (work.y, work.bottom()),
     );
-    Rect::new(x, y, width, height)
+    Bounds::new(x as i32, y.max(0) as u32, width, height)
+}
+
+/// How much of a window's title bar stays inside the work area when it hangs off the left
+/// edge, and when it hangs off the right, at `scale` (D222): [`super::HANGING_TITLE_KEPT`] of
+/// its draggable part, and the controls too when they are on the side that stays visible.
+pub fn kept_when_hanging(side: ControlSide, scale: u32) -> (u32, u32) {
+    let grab = super::HANGING_TITLE_KEPT;
+    let with_controls = grab + TITLE_SIDE;
+    let (left, right) = match side {
+        ControlSide::Right => (with_controls, grab),
+        ControlSide::Left => (grab, with_controls),
+    };
+    (left * scale, right * scale)
+}
+
+/// The least and the greatest left edge a window `width` wide may have in `work` with the
+/// controls on `side` (D222): hanging off either edge as far as [`kept_when_hanging`] lets it,
+/// or wholly inside when it is narrower than the grab and the controls together.
+pub fn hanging_x_range(width: u32, work: Rect, side: ControlSide) -> (i64, i64) {
+    let start = i64::from(work.x);
+    if width < super::HANGING_TITLE_KEPT + TITLE_SIDE {
+        return (start, start + i64::from(work.width.saturating_sub(width)));
+    }
+    let (kept_left, kept_right) = kept_when_hanging(side, 1);
+    let least = start - i64::from(width - kept_left);
+    let most = (i64::from(work.right()) - i64::from(kept_right)).max(least);
+    (least, most)
 }
 
 /// The smallest outside size of a window whose client asked for content of at least
@@ -440,7 +562,7 @@ pub fn minimum_outside(client_minimum: (u32, u32), work: Rect) -> (u32, u32) {
 /// The geometry a maximised window has in `work`: the whole of it.
 pub fn maximised(work: Rect) -> Geometry {
     Geometry {
-        x: work.x,
+        x: work.x as i32,
         y: work.y,
         content_width: work.width.saturating_sub(CHROME.0).max(1),
         content_height: work.height.saturating_sub(CHROME.1).max(1),
@@ -456,7 +578,7 @@ pub fn snapped(work: Rect, right: bool, minimum: (u32, u32)) -> Geometry {
         false => work.x,
     };
     Geometry {
-        x,
+        x: x as i32,
         y: work.y,
         content_width: half.saturating_sub(CHROME.0).max(1),
         content_height: work.height.saturating_sub(CHROME.1).max(1),

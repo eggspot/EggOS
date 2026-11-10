@@ -6,6 +6,7 @@ use crate::clip::clip;
 use crate::date::date;
 use crate::device::device;
 use crate::df::df;
+use crate::download::download;
 use crate::echo::echo;
 use crate::fetch::fetch;
 use crate::file_changes::{cp, mkdir, mv, rm, touch};
@@ -25,6 +26,7 @@ use crate::power::{HALT, POWER_OFF, RESTART, power, sync};
 use crate::processes::{free, ps, uptime};
 use crate::properties::{getprop, setprop};
 use crate::sleep::sleep;
+use crate::stty::stty;
 use crate::system::{STANDARD_ERROR, STANDARD_OUTPUT, System};
 use crate::taskset::taskset;
 use crate::tee::tee;
@@ -50,6 +52,7 @@ pub enum Utility {
     Cp,
     Date,
     Device,
+    Download,
     Df,
     Echo,
     False,
@@ -77,6 +80,7 @@ pub enum Utility {
     Rm,
     Setprop,
     Sleep,
+    Stty,
     Sync,
     Tail,
     Taskset,
@@ -91,7 +95,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 48] = [
         Self::Agent,
         Self::Agentlog,
         Self::Cat,
@@ -100,6 +104,7 @@ impl Utility {
         Self::Cp,
         Self::Date,
         Self::Device,
+        Self::Download,
         Self::Df,
         Self::Echo,
         Self::False,
@@ -127,6 +132,7 @@ impl Utility {
         Self::Rm,
         Self::Setprop,
         Self::Sleep,
+        Self::Stty,
         Self::Sync,
         Self::Tail,
         Self::Taskset,
@@ -150,6 +156,7 @@ impl Utility {
             Self::Cp => b"cp",
             Self::Date => b"date",
             Self::Device => b"device",
+            Self::Download => b"download",
             Self::Df => b"df",
             Self::Echo => b"echo",
             Self::False => b"false",
@@ -177,6 +184,7 @@ impl Utility {
             Self::Rm => b"rm",
             Self::Setprop => b"setprop",
             Self::Sleep => b"sleep",
+            Self::Stty => b"stty",
             Self::Sync => b"sync",
             Self::Tail => b"tail",
             Self::Taskset => b"taskset",
@@ -205,6 +213,7 @@ impl Utility {
             Self::Cp => cp(output, arguments),
             Self::Date => date(output, arguments),
             Self::Device => device(output, arguments),
+            Self::Download => download(output, arguments),
             Self::Df => df(output, arguments),
             Self::Echo => echo(output, arguments),
             Self::False => FAILURE,
@@ -232,6 +241,7 @@ impl Utility {
             Self::Rm => rm(output, arguments),
             Self::Setprop => setprop(output, arguments),
             Self::Sleep => sleep(output, arguments),
+            Self::Stty => stty(output, arguments),
             Self::Sync => sync(output, arguments),
             Self::Tail => tail(output, arguments),
             Self::Taskset => taskset(output, arguments),

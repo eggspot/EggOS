@@ -19,12 +19,14 @@ pub mod grant_prompt;
 pub mod grants;
 pub mod http;
 pub mod json;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod linux;
 pub mod pairing;
 pub mod paths;
 pub mod prompts;
 pub mod rpc;
+#[cfg(any(test, feature = "schema-check"))]
+pub mod schema_check;
 pub mod server;
 pub mod session;
 pub mod system;

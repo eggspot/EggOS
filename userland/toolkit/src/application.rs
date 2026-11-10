@@ -5,8 +5,9 @@
 use crate::canvas::Canvas;
 use crate::damage::Damage;
 use crate::input::{self, Input, RECORD_SIZE};
-use crate::tree::ROOT_ELEMENT;
-use crate::tree::{PointerShape, Response, WidgetTree};
+use crate::menu::POOL_CAPACITY;
+use crate::theme;
+use crate::tree::{COPIED_BYTES, PointerShape, ROOT_ELEMENT, Response, WidgetTree};
 use crate::window::{Window, WindowServer, now_ms};
 use eggos_element_tree::{
     Action, Bounds, Element, MAX_TEXT_BYTES, MAX_TREE_BYTES, Outcome, Query, Role, TreeWriter,
@@ -15,11 +16,31 @@ use eggos_element_tree::{
 use eggos_runtime::errno::Errno;
 
 const RECORDS_READ: usize = 16;
+const MENU_CHOSEN: u16 = 14;
+const PALETTE_CHANGED: u16 = 16;
+const MACOS_PROFILE: u32 = 1;
 
-/// A program's window: its widgets and what it does with their responses.
-pub trait Application<const N: usize> {
+fn record_kind(record: &[u8; RECORD_SIZE]) -> (u16, u16) {
+    (
+        u16::from_ne_bytes([record[0], record[1]]),
+        u16::from_ne_bytes([record[2], record[3]]),
+    )
+}
+
+fn record_word(record: &[u8; RECORD_SIZE], offset: usize) -> u32 {
+    u32::from_ne_bytes([
+        record[offset],
+        record[offset + 1],
+        record[offset + 2],
+        record[offset + 3],
+    ])
+}
+
+/// A program's window: its widgets (with `A` text stores) and what it does with their
+/// responses.
+pub trait Application<const N: usize, const A: usize = 0> {
     /// The window's widgets.
-    fn tree(&mut self) -> &mut WidgetTree<N>;
+    fn tree(&mut self) -> &mut WidgetTree<N, A>;
 
     /// Acts on what an input did to the widgets.
     fn respond(&mut self, response: Response, now_ms: u32);
@@ -44,7 +65,12 @@ pub trait Application<const N: usize> {
     }
 }
 
-fn draw(window: &mut Window, view: &mut impl View, everything: bool) -> Result<(), Errno> {
+fn draw(
+    window: &mut Window,
+    view: &mut impl View,
+    everything: bool,
+    palette: u32,
+) -> Result<(), Errno> {
     let damage = view.take_damage();
     if damage.is_empty() && !everything {
         return Ok(());
@@ -55,6 +81,7 @@ fn draw(window: &mut Window, view: &mut impl View, everything: bool) -> Result<(
         let Some(mut canvas) = Canvas::new(window.pixels(), width, height, scale) else {
             return Err(Errno::EINVAL);
         };
+        canvas.set_palette(theme::palette_at(palette));
         for rect in damage.rects() {
             let previous = canvas.narrow(*rect);
             view.paint(&mut canvas);
@@ -197,6 +224,26 @@ pub trait View {
         true
     }
 
+    /// The desktop's palette is now index `index` ([`theme::palette_at`]); the whole window is
+    /// drawn again after it.
+    fn palette_changed(&mut self, _index: u32) {}
+
+    /// Whether nothing blinks now (`accessibility.reduce_motion`, D224): a caret or a cursor
+    /// is drawn steady while it is.
+    fn motion_changed(&mut self, _reduce: bool) {}
+
+    /// Whether the menu bar goes to the top bar (the macOS profile) rather than the window.
+    fn set_global_menu(&mut self, _global: bool) {}
+
+    /// The view's main menu as `SET_MENU`'s pool, written into `pool`: its length, or `None`
+    /// for none.
+    fn main_menu(&mut self, _pool: &mut [u8; POOL_CAPACITY]) -> Option<usize> {
+        None
+    }
+
+    /// The top bar's item `entry` of menu `menu` was chosen (`MenuChosen`).
+    fn menu_chosen(&mut self, _menu: usize, _entry: usize, _time_ms: u32) {}
+
     /// Whether the content shows something for the person's eyes only now: the loop keeps
     /// the window's pixels from agents from before it is drawn until after it is gone
     /// (`PERSON_VIEW_ONLY`, D193).
@@ -205,15 +252,15 @@ pub trait View {
     }
 }
 
-struct Tree<'a, A, const N: usize>(&'a mut A, Option<WindowServer>);
+struct Tree<'a, P, const N: usize, const A: usize>(&'a mut P, Option<WindowServer>);
 
 /// Answers a text field's clipboard response through the clipboard every app shares (D197,
 /// docs/ux/toolkit-v0.4.md section 4.4): a copy or a cut gives [`WidgetTree::copied`] to the
 /// server, a paste fetches its text into the field. What the program then sees: `Nothing` for
 /// a copy, `Edited` for a cut, [`WidgetTree::paste`]'s answer for a paste; any other response
 /// as it was.
-pub fn answer_clipboard<const N: usize>(
-    tree: &mut WidgetTree<N>,
+pub fn answer_clipboard<const N: usize, const A: usize>(
+    tree: &mut WidgetTree<N, A>,
     server: Option<&WindowServer>,
     response: Response,
     now_ms: u32,
@@ -229,7 +276,7 @@ pub fn answer_clipboard<const N: usize>(
             }
         }
         Response::PasteWanted(id) => {
-            let mut bytes = [0u8; 255];
+            let mut bytes = [0u8; COPIED_BYTES];
             let length = server
                 .and_then(|server| server.clipboard(0, &mut bytes).ok())
                 .map_or(0, |(length, _)| length.min(bytes.len()));
@@ -243,7 +290,7 @@ pub fn answer_clipboard<const N: usize>(
     }
 }
 
-impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
+impl<P: Application<N, A>, const N: usize, const A: usize> View for Tree<'_, P, N, A> {
     fn resize(&mut self, width: i32, height: i32) {
         self.0.tree().resize(width, height);
     }
@@ -291,8 +338,34 @@ impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
         self.0.person_view_only()
     }
 
+    fn palette_changed(&mut self, index: u32) {
+        self.0.tree().set_palette(theme::palette_at(index));
+    }
+
+    fn motion_changed(&mut self, reduce: bool) {
+        self.0.tree().set_reduce_motion(reduce);
+    }
+
+    fn set_global_menu(&mut self, global: bool) {
+        self.0.tree().set_global_menu(global);
+    }
+
+    fn main_menu(&mut self, pool: &mut [u8; POOL_CAPACITY]) -> Option<usize> {
+        self.0.tree().main_menu(pool)
+    }
+
+    fn menu_chosen(&mut self, menu: usize, entry: usize, time_ms: u32) {
+        let response = self.0.tree().menu_chosen(menu, entry);
+        if response != Response::Nothing {
+            self.0.respond(response, time_ms);
+        }
+    }
+
     fn tick(&mut self, now_ms: u32) {
-        self.0.tree().tick(now_ms);
+        let response = self.0.tree().tick(now_ms);
+        if response != Response::Nothing {
+            self.0.respond(response, now_ms);
+        }
         if self
             .0
             .deadline(now_ms)
@@ -305,11 +378,40 @@ impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
 
 /// Shows `window` with `application`'s widgets laid out in it and serves it until the user
 /// asks to close it.
-pub fn run<const N: usize>(
+pub fn run<const N: usize, const A: usize>(
     window: &mut Window,
-    application: &mut impl Application<N>,
+    application: &mut impl Application<N, A>,
 ) -> Result<(), Errno> {
     run_view(window, &mut Tree(application, WindowServer::open().ok()))
+}
+
+fn sync_main_menu(
+    window: &Window,
+    view: &mut impl View,
+    global: bool,
+    sent: &mut Option<([u8; POOL_CAPACITY], usize)>,
+) {
+    let mut pool = [0u8; POOL_CAPACITY];
+    let length = match global {
+        true => view.main_menu(&mut pool),
+        false => None,
+    };
+    let unchanged = match (*sent, length) {
+        (None, None) => true,
+        (Some((held, held_length)), Some(length)) => held[..held_length] == pool[..length],
+        _ => false,
+    };
+    if unchanged {
+        return;
+    }
+    let length = length.unwrap_or(0);
+    if window
+        .server()
+        .set_menu(window.id(), &pool[..length])
+        .is_ok()
+    {
+        *sent = (length > 0).then_some((pool, length));
+    }
 }
 
 /// Shows `window` with `view` drawn in it and serves it until the user asks to close it or
@@ -321,7 +423,14 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
     let mut everything = true;
     let mut records = [0u8; RECORD_SIZE * RECORDS_READ];
     let mut view_only = false;
+    let mut palette = window.server().palette().unwrap_or(0);
+    view.palette_changed(palette);
+    view.motion_changed(window.server().reduce_motion().unwrap_or(false));
+    let mut global = window.server().desktop_profile() == Ok(MACOS_PROFILE);
+    view.set_global_menu(global);
+    let mut sent_menu: Option<([u8; POOL_CAPACITY], usize)> = None;
     loop {
+        sync_main_menu(window, view, global, &mut sent_menu);
         if let Some(title) = view.take_title() {
             window.set_title(title)?;
         }
@@ -330,7 +439,7 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
             window.set_person_view_only(true)?;
             view_only = true;
         }
-        draw(window, view, everything)?;
+        draw(window, view, everything, palette)?;
         if view_only && !wanted && window.set_person_view_only(false).is_ok() {
             view_only = false;
         }
@@ -349,6 +458,19 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
         for record in records[..read].as_chunks::<RECORD_SIZE>().0 {
             if let Some(query) = Query::from_record(record) {
                 answer(window, view, &query);
+                continue;
+            }
+            let (kind, for_window) = record_kind(record);
+            if u32::from(for_window) == window.id() && kind == PALETTE_CHANGED {
+                palette = record_word(record, 8);
+                view.palette_changed(palette);
+                view.motion_changed(record_word(record, 12) == 1);
+                everything = true;
+                continue;
+            }
+            if u32::from(for_window) == window.id() && kind == MENU_CHOSEN {
+                let (menu, entry) = (record_word(record, 8), record_word(record, 12));
+                view.menu_chosen(menu as usize, entry as usize, record_word(record, 4));
                 continue;
             }
             let Some(event) = input::decode(record) else {
@@ -370,6 +492,14 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
                     everything = true;
                 }
                 other => {
+                    if other == Input::FocusIn {
+                        let now_global = window.server().desktop_profile() == Ok(MACOS_PROFILE);
+                        if now_global != global {
+                            global = now_global;
+                            view.set_global_menu(global);
+                            everything = true;
+                        }
+                    }
                     if !view.handle(in_scale_1(other, scale as i32), event.time_ms) {
                         return Ok(());
                     }

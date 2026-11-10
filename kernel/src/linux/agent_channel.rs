@@ -3,9 +3,9 @@
 //! `read` returns the bytes the host sent (waiting for some unless `O_NONBLOCK`), or 0 once
 //! when the host side closed; `write` sends all of its bytes, waiting while the host has not
 //! taken the last ones; `fstat` reports the character device; `lseek` is `ESPIPE`, `ioctl`
-//! `ENOTTY` and `mmap` `ENODEV`. The device does not interrupt yet (issue #97), so a wait polls
-//! it: every [`ACTIVE_POLL_MS`] while bytes moved in the last [`ACTIVE_WINDOW_MS`], every
-//! [`IDLE_POLL_MS`] otherwise.
+//! `ENOTTY` and `mmap` `ENODEV`. A wait sleeps until the device interrupts (D220); where its
+//! interrupt cannot be routed it polls the device: every [`ACTIVE_POLL_MS`] while bytes moved
+//! in the last [`ACTIVE_WINDOW_MS`], every [`IDLE_POLL_MS`] otherwise.
 
 use super::descriptors::{FileKind, OpenFile};
 use super::signals::{self, Interrupted};
@@ -65,8 +65,12 @@ fn note_traffic<P: Platform>() {
     LAST_TRAFFIC.store(P::clock_ticks(), Ordering::Relaxed);
 }
 
-/// When a wait for the channel looks at the device again: soon after traffic, later when idle.
+/// When a wait for the channel looks at the device again: soon after traffic, later when idle;
+/// never while the device interrupts, whose interrupt wakes the wait (D220).
 pub(super) fn next_poll<P: Platform>() -> u64 {
+    if agent_channel::is_interrupting() {
+        return u64::MAX;
+    }
     let now = P::clock_ticks();
     let frequency = P::clock_frequency();
     let window = mul_div_ceil(ACTIVE_WINDOW_MS, frequency, 1000);

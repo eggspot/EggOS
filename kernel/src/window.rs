@@ -24,7 +24,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ptr;
-use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EventRecord, EventSink, MAX_CLIENTS, MAX_WINDOWS, WindowError,
 };
@@ -160,12 +160,15 @@ impl Drop for PixelBuffer {
 }
 
 /// One client of the server: an open description of `/dev/window`, its number, its event
-/// queue and the bytes of pixel buffers it holds.
+/// queue, the bytes of pixel buffers it holds, the process that opened it and whether the
+/// desktop said it is not responding when it last looked (D222).
 #[derive(Debug)]
 pub struct Client {
     id: u16,
     queue: LeafSpinLock<EventQueue>,
     pinned: AtomicU64,
+    process: u32,
+    not_responding: AtomicBool,
 }
 
 impl Client {
@@ -174,6 +177,27 @@ impl Client {
     /// after the desktop restarts, has the number of one still connected.
     pub fn id(&self) -> u16 {
         self.id
+    }
+
+    /// The id of the process that opened it: the one `End app` ends (D222).
+    pub fn process(&self) -> u32 {
+        self.process
+    }
+
+    /// When its oldest unread event was queued, or when it last read while events still waited
+    /// (D222); `None` when none waits.
+    pub fn unread_since(&self) -> Option<u32> {
+        self.queue.lock().unread_since()
+    }
+
+    /// Whether the desktop said its windows are not responding when it last looked.
+    pub fn seen_not_responding(&self) -> bool {
+        self.not_responding.load(Ordering::Relaxed)
+    }
+
+    /// Records what the desktop says of its windows now.
+    pub fn set_seen_not_responding(&self, not_responding: bool) {
+        self.not_responding.store(not_responding, Ordering::Relaxed);
     }
 
     /// The bytes of pixel buffers it holds.
@@ -215,8 +239,9 @@ impl Client {
         !self.queue.lock().is_empty()
     }
 
-    /// Takes the oldest records, as many as `records` holds; returns how many.
-    pub fn take_events(&self, records: &mut [EventRecord]) -> usize {
+    /// Takes the oldest records, as many as `records` holds, at `now_ms` on the monotonic clock;
+    /// returns how many.
+    pub fn take_events(&self, records: &mut [EventRecord], now_ms: u32) -> usize {
         let mut queue = self.queue.lock();
         let mut taken = 0;
         while taken < records.len()
@@ -224,6 +249,9 @@ impl Client {
         {
             records[taken] = record;
             taken += 1;
+        }
+        if taken > 0 {
+            queue.note_read(now_ms);
         }
         taken
     }
@@ -381,12 +409,14 @@ impl Clients {
         }
     }
 
-    fn add(&mut self, queue: EventQueue) -> Option<Arc<Client>> {
+    fn add(&mut self, queue: EventQueue, process: u32) -> Option<Arc<Client>> {
         let slot = self.slots.iter().position(Option::is_none)?;
         let client = Arc::new(Client {
             id: client_number(slot),
             queue: LeafSpinLock::new_leaf(queue),
             pinned: AtomicU64::new(0),
+            process,
+            not_responding: AtomicBool::new(false),
         });
         self.slots[slot] = Some(Arc::clone(&client));
         Some(client)
@@ -396,6 +426,16 @@ impl Clients {
         self.slots[client_slot(id)]
             .as_ref()
             .filter(|client| client.id == id)
+    }
+
+    /// Every client.
+    pub fn each(&self) -> impl Iterator<Item = &Arc<Client>> {
+        self.slots.iter().flatten()
+    }
+
+    /// The process that opened client `id`, if it is one of these.
+    pub fn process_of(&self, id: u16) -> Option<u32> {
+        self.get(id).map(|client| client.process)
     }
 
     /// Whether `client` is one of these clients (not one of a desktop that stopped).
@@ -521,10 +561,11 @@ impl From<WindowError> for ServerError {
     }
 }
 
-/// Connects a new client; `disconnect` is called with it when its last descriptor closes.
-pub fn connect(disconnect: fn(&Arc<Client>)) -> Result<Connection, ServerError> {
+/// Connects a new client for process `process`; `disconnect` is called with it when its last
+/// descriptor closes.
+pub fn connect(disconnect: fn(&Arc<Client>), process: u32) -> Result<Connection, ServerError> {
     let queue = EventQueue::new().ok_or(ServerError::OutOfMemory)?;
-    let client = crate::terminal::with_clients(|clients| clients.add(queue))
+    let client = crate::terminal::with_clients(|clients| clients.add(queue, process))
         .ok_or(ServerError::NoServer)?
         .ok_or(ServerError::NoClientSlot)?;
     Ok(Connection { client, disconnect })
@@ -539,6 +580,7 @@ pub fn disconnect<P: Platform>(client: &Arc<Client>) {
     }
     crate::terminal::with_windows::<P, _>(|desktop, buffers, damage, events| {
         desktop.destroy_client(client.id, damage, events);
+        desktop.forget_client(client.id, damage);
         buffers.release_unused(desktop);
     });
     crate::terminal::with_clients(|clients| clients.remove(client));
@@ -702,7 +744,7 @@ mod tests {
     }
 
     fn client(clients: &mut Clients) -> Arc<Client> {
-        clients.add(EventQueue::new().unwrap()).unwrap()
+        clients.add(EventQueue::new().unwrap(), 1).unwrap()
     }
 
     #[test]
@@ -919,5 +961,29 @@ mod tests {
         assert!(ids.iter().all(|&id| id != KERNEL_CLIENT));
         restarted.remove(&new);
         assert!(!restarted.has(&new));
+    }
+    #[test]
+    fn a_client_s_unread_clock_restarts_when_it_reads_and_stops_when_nothing_waits() {
+        use eggos_drivers::desktop::protocol::event;
+        let mut clients = Clients::new();
+        let owner = client(&mut clients);
+        assert_eq!(owner.unread_since(), None);
+        assert_eq!(clients.process_of(owner.id()), Some(1));
+        let key = EventRecord::new(event::KEY, 0, 30, 1, 0, 0);
+        Queues::new(&clients, 1000).send(owner.id(), key);
+        Queues::new(&clients, 1400).send(owner.id(), key);
+        assert_eq!(owner.unread_since(), Some(1000));
+        let mut records = [EventRecord::default(); 1];
+        assert_eq!(owner.take_events(&mut records, 1700), 1);
+        assert_eq!(owner.unread_since(), Some(1700), "the last read's time");
+        assert_eq!(owner.take_events(&mut records, 1800), 1);
+        assert_eq!(owner.unread_since(), None);
+        assert_eq!(owner.take_events(&mut records, 1900), 0);
+        Queues::new(&clients, 2500).send(owner.id(), key);
+        assert_eq!(owner.unread_since(), Some(2500));
+        assert!(!owner.seen_not_responding());
+        owner.set_seen_not_responding(true);
+        assert!(owner.seen_not_responding());
+        assert_eq!(clients.each().count(), 1);
     }
 }

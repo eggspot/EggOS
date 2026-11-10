@@ -135,6 +135,28 @@ fn malformed_lines_are_refused_and_a_file_parses_line_by_line() {
 }
 
 #[test]
+fn the_adapter_is_the_first_interface_that_is_not_lo_and_its_state_has_one_word() {
+    let lo = InterfaceStatus {
+        name: InterfaceName::new(LOOPBACK_NAME).unwrap(),
+        dhcp: Dhcp::Off,
+        ..connected()
+    };
+    let unplugged = InterfaceStatus {
+        link_up: false,
+        ..connected()
+    };
+    let file = format!("{}{}", line(&lo), line(&unplugged));
+    assert_eq!(adapter(file.as_bytes()), Some(unplugged));
+    assert_eq!(
+        state_word(adapter(file.as_bytes()).as_ref()),
+        "cable-unplugged"
+    );
+    assert_eq!(adapter(line(&lo).as_bytes()), None);
+    assert_eq!(state_word(None), "none");
+    assert_eq!(INTERFACES_PATH, "/proc/net/interfaces");
+}
+
+#[test]
 fn routes_are_linux_s_hex_layout_padded_to_127_columns() {
     let lo = InterfaceStatus {
         name: InterfaceName::new(LOOPBACK_NAME).unwrap(),

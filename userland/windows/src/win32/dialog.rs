@@ -13,7 +13,67 @@ use eggos_windows_gui::controls::button::{ButtonKind, style as button_style};
 const VK_TAB: usize = 0x09;
 const VK_RETURN: usize = 0x0d;
 const VK_ESCAPE: usize = 0x1b;
+const VK_LEFT: usize = 0x25;
+const VK_UP: usize = 0x26;
+const VK_RIGHT: usize = 0x27;
+const VK_DOWN: usize = 0x28;
 const BN_CLICKED: usize = 0;
+const EM_SETSEL: u32 = 0x00b1;
+const BM_CLICK: u32 = 0x00f5;
+
+fn button_kind(window: &windows::Window) -> Option<ButtonKind> {
+    match window.procedure {
+        Procedure::Control(ControlKind::Button, _) => Some(ButtonKind::of(window.style)),
+        _ => None,
+    }
+}
+
+fn is_radio(window: &windows::Window) -> bool {
+    button_kind(window).is_some_and(ButtonKind::is_radio)
+}
+
+fn is_edit(gui: &gui::Gui, window: usize) -> bool {
+    gui.windows
+        .get(window)
+        .is_some_and(|entry| matches!(entry.procedure, Procedure::Control(ControlKind::Edit, _)))
+}
+
+fn tab_landing(gui: &gui::Gui, stop: usize) -> usize {
+    if !gui.windows.get(stop).is_some_and(is_radio) {
+        return stop;
+    }
+    let (members, count) = windows::group_of(&gui.windows, stop);
+    members[..count]
+        .iter()
+        .copied()
+        .find(|&member| {
+            gui.windows.get(member).is_some_and(|entry| {
+                is_radio(entry)
+                    && entry.shown
+                    && entry.enabled()
+                    && super::controls::is_checked(entry)
+            })
+        })
+        .unwrap_or(stop)
+}
+
+fn radio_arrow(dialog: usize, backwards: bool) -> Option<(usize, bool)> {
+    with(|gui| {
+        let root = windows::root_of(&gui.windows, dialog)?;
+        let from = gui.key_target(root);
+        if !gui.windows.get(from).is_some_and(is_radio) {
+            return None;
+        }
+        let next = windows::next_in_group(&gui.windows, from, backwards, &is_radio)?;
+        let automatic = gui
+            .windows
+            .get(next)
+            .and_then(button_kind)
+            .is_some_and(|kind| kind == ButtonKind::AutoRadio);
+        Some((next, automatic))
+    })
+    .flatten()
+}
 
 fn push_kind(gui: &gui::Gui, window: usize) -> Option<ButtonKind> {
     let entry = gui.windows.get(window)?;
@@ -333,11 +393,27 @@ pub fn dialog_message(dialog: usize, message: &crate::gui::queue::Message) -> bo
             let next = with(|gui| {
                 let root = windows::root_of(&gui.windows, dialog)?;
                 let from = gui.key_target(root);
-                windows::next_tab_stop(&gui.windows, dialog, from, gui.shift_held())
+                let stop = windows::next_tab_stop(&gui.windows, dialog, from, gui.shift_held())?;
+                let landing = tab_landing(gui, stop);
+                Some((landing, is_edit(gui, landing)))
             })
             .flatten();
-            if let Some(next) = next {
+            if let Some((next, edit)) = next {
                 set_focus(next);
+                if edit {
+                    gui::send(next, EM_SETSEL, 0, usize::MAX);
+                }
+            }
+        }
+        (message::KEY_DOWN, VK_LEFT | VK_UP | VK_RIGHT | VK_DOWN)
+            if radio_arrow(dialog, false).is_some() =>
+        {
+            let backwards = matches!(message.wparam, VK_LEFT | VK_UP);
+            if let Some((next, automatic)) = radio_arrow(dialog, backwards) {
+                set_focus(next);
+                if automatic {
+                    gui::send(next, BM_CLICK, 0, 0);
+                }
             }
         }
         (message::KEY_DOWN, VK_RETURN) => {

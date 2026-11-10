@@ -389,6 +389,8 @@ pub struct MachO<'a> {
     pub thread_locals: Option<ThreadLocalTemplate>,
     pub objc: ObjcSections,
     pub unwind_info: Option<SectionRange>,
+    /// The `__eh_frame` section: DWARF call frame information (D234).
+    pub eh_frame: Option<SectionRange>,
 }
 
 impl<'a> MachO<'a> {
@@ -429,6 +431,7 @@ impl<'a> MachO<'a> {
             thread_locals: None,
             objc: ObjcSections::default(),
             unwind_info: None,
+            eh_frame: None,
         };
         let mut entry = None;
         let mut thread_pc = None;
@@ -559,7 +562,7 @@ impl<'a> MachO<'a> {
             let section_name =
                 &section_name[..section_name.iter().position(|&b| b == 0).unwrap_or(16)];
             let pointer_list = section_name != b"__objc_imageinfo";
-            if section_name == b"__unwind_info" {
+            if section_name == b"__unwind_info" || section_name == b"__eh_frame" {
                 let address = u64_at(command, at + 32).unwrap_or(0);
                 let size = u64_at(command, at + 40).unwrap_or(0);
                 let inside = address >= segment.vmaddr
@@ -568,7 +571,11 @@ impl<'a> MachO<'a> {
                         .zip(segment.vmaddr.checked_add(segment.filesize))
                         .is_some_and(|(end, segment_end)| end <= segment_end);
                 if inside {
-                    self.unwind_info = Some(SectionRange { address, size });
+                    let range = Some(SectionRange { address, size });
+                    match section_name == b"__eh_frame" {
+                        true => self.eh_frame = range,
+                        false => self.unwind_info = range,
+                    }
                 }
             }
             if let Some(slot) = self.objc.slot(section_name) {

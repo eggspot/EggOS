@@ -21,6 +21,7 @@ dependencies = [
  "eggos-app-manifest",
  "eggos-commands",
  "eggos-mcp",
+ "eggos-plist",
  "eggos-png",
  "eggos-runtime",
  "eggos-toolkit",
@@ -47,6 +48,17 @@ name = "eggos-commands"
 version = "0.3.0"
 
 [[package]]
+name = "eggos-components"
+version = "0.3.0"
+dependencies = [
+ "eggos-app",
+ "eggos-commands",
+ "eggos-crypto",
+ "eggos-mcp",
+ "eggos-runtime",
+]
+
+[[package]]
 name = "eggos-coreutils"
 version = "0.3.0"
 dependencies = [
@@ -55,6 +67,8 @@ dependencies = [
  "eggos-app",
  "eggos-calendar",
  "eggos-commands",
+ "eggos-device-list",
+ "eggos-download-list",
  "eggos-drivers",
  "eggos-element-tree",
  "eggos-files",
@@ -69,6 +83,27 @@ dependencies = [
 [[package]]
 name = "eggos-crypto"
 version = "0.3.0"
+
+[[package]]
+name = "eggos-device-list"
+version = "0.3.0"
+
+[[package]]
+name = "eggos-download-list"
+version = "0.3.0"
+dependencies = [
+ "eggos-files",
+]
+
+[[package]]
+name = "eggos-downloads"
+version = "0.3.0"
+dependencies = [
+ "eggos-app",
+ "eggos-download-list",
+ "eggos-runtime",
+ "eggos-toolkit",
+]
 
 [[package]]
 name = "eggos-drivers"
@@ -145,10 +180,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-image"
+version = "0.3.0"
+dependencies = [
+ "eggos-png",
+]
+
+[[package]]
 name = "eggos-init"
 version = "0.3.0"
 dependencies = [
  "eggos-runtime",
+ "eggos-settings-file",
 ]
 
 [[package]]
@@ -161,9 +204,13 @@ dependencies = [
  "eggos-calendar",
  "eggos-drivers",
  "eggos-eggfs",
+ "eggos-element-tree",
  "eggos-hal",
+ "eggos-image",
+ "eggos-math",
  "eggos-net",
  "eggos-settings-file",
+ "eggos-toolkit",
  "eggos-translate",
  "eggos-wayland",
 ]
@@ -215,6 +262,8 @@ dependencies = [
  "eggos-calendar",
  "eggos-element-tree",
  "eggos-macos-gui",
+ "eggos-math",
+ "eggos-plist",
  "eggos-runtime",
  "eggos-settings-file",
  "eggos-toolkit",
@@ -242,6 +291,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-math"
+version = "0.3.0"
+
+[[package]]
 name = "eggos-mcp"
 version = "0.3.0"
 dependencies = [
@@ -249,11 +302,16 @@ dependencies = [
  "eggos-crypto",
  "eggos-net",
  "eggos-runtime",
+ "eggos-settings-file",
  "eggos-tls",
 ]
 
 [[package]]
 name = "eggos-net"
+version = "0.3.0"
+
+[[package]]
+name = "eggos-plist"
 version = "0.3.0"
 
 [[package]]
@@ -278,14 +336,20 @@ dependencies = [
  "eggos-app",
  "eggos-calendar",
  "eggos-commands",
+ "eggos-components",
+ "eggos-device-list",
+ "eggos-downloads",
  "eggos-editor",
  "eggos-eggfs",
  "eggos-files",
+ "eggos-font",
  "eggos-mcp",
+ "eggos-net",
  "eggos-runtime",
  "eggos-settings-file",
  "eggos-terminal-window",
  "eggos-toolkit",
+ "eggos-windows-registry",
 ]
 
 [[package]]
@@ -356,7 +420,10 @@ version = "0.3.0"
 dependencies = [
  "eggos-c-format",
  "eggos-calendar",
+ "eggos-drivers",
  "eggos-element-tree",
+ "eggos-image",
+ "eggos-math",
  "eggos-net",
  "eggos-png",
  "eggos-runtime",
@@ -364,6 +431,7 @@ dependencies = [
  "eggos-translate",
  "eggos-translation-loader",
  "eggos-windows-gui",
+ "eggos-windows-registry",
 ]
 
 [[package]]
@@ -382,12 +450,21 @@ name = "eggos-windows-gui-tests"
 version = "0.3.0"
 
 [[package]]
+name = "eggos-windows-registry"
+version = "0.3.0"
+dependencies = [
+ "eggos-commands",
+ "eggos-runtime",
+]
+
+[[package]]
 name = "xtask"
 version = "0.3.0"
 dependencies = [
  "eggos-app",
  "eggos-app-manifest",
  "eggos-calendar",
+ "eggos-components",
  "eggos-drivers",
  "eggos-editor",
  "eggos-eggfs",

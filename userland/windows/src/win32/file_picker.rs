@@ -919,7 +919,8 @@ unsafe fn pick_narrow(request: *mut OpenFileNameA, kind: PickerKind) -> Bool {
         return FALSE;
     };
     let max_file = local.max_file as usize;
-    let file = unit_block(max_file);
+    let wide_capacity = max_file.max(PATH_CAPACITY + 1);
+    let file = unit_block(wide_capacity);
     let file_title = unit_block(local.max_file_title as usize);
     if max_file == 0 {
         LAST_ERROR.store(FNERR_BUFFERTOOSMALL, Ordering::Relaxed);
@@ -931,7 +932,7 @@ unsafe fn pick_narrow(request: *mut OpenFileNameA, kind: PickerKind) -> Bool {
     }
     // SAFETY: `lpstrFile` holds a NUL-terminated string within its `nMaxFile` bytes.
     let start = unsafe { core::ffi::CStr::from_ptr(local.file.cast()) }.to_bytes();
-    // SAFETY: the block holds `max_file` units.
+    // SAFETY: the block holds `wide_capacity` units, at least `max_file`.
     let out = unsafe { core::slice::from_raw_parts_mut(file.0, max_file) };
     let written = text::write_utf16(start, &mut out[..max_file - 1]);
     out[written] = 0;
@@ -948,7 +949,7 @@ unsafe fn pick_narrow(request: *mut OpenFileNameA, kind: PickerKind) -> Bool {
         max_custom_filter: 0,
         filter_index: local.filter_index,
         file: file.0,
-        max_file: local.max_file,
+        max_file: wide_capacity.min(u32::MAX as usize) as u32,
         file_title: file_title.0,
         max_file_title: local.max_file_title,
         initial_dir: pointer(&initial_dir),

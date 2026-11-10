@@ -3,13 +3,13 @@
 //! writes `EGGOS-USER: a program built from Rust source passed its startup checks` if all
 //! are, and exits with 0; otherwise it names each check that failed and exits with 1.
 
-#![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(eggos_user, no_std, no_main)]
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod checks;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 eggos_runtime::main!(checks::run);
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(eggos_user))]
 fn main() {}

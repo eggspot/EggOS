@@ -7,7 +7,7 @@
 use eggos_terminal::ViewMove;
 use eggos_terminal::key;
 use eggos_terminal::keymap::{self, CursorKeys, KeyBytes, Modifiers as KeyModifiers};
-use eggos_toolkit::input::Modifiers;
+use eggos_toolkit::input::{Modifiers, key as input_key};
 
 /// The window server's bit for Caps Lock in a key event's modifiers.
 pub const CAPS_LOCK: u32 = 16;
@@ -25,6 +25,14 @@ pub enum KeyAction {
     NewWindow,
     /// Asks to close the window (Ctrl+Shift+W, Super+W).
     Close,
+    /// Copies the selection to the shared clipboard (Ctrl+Shift+C, Super+C).
+    Copy,
+    /// Pastes the shared clipboard (Ctrl+Shift+V, Super+V).
+    Paste,
+    /// Selects every line (Ctrl+Shift+A, Super+A).
+    SelectAll,
+    /// Opens the context menu at the cursor (Shift+F10, the Menu key).
+    ContextMenu,
     /// Nothing.
     Nothing,
 }
@@ -70,6 +78,11 @@ pub fn key_action(
     match code {
         key::N if window_shortcut => return KeyAction::NewWindow,
         key::W if window_shortcut => return KeyAction::Close,
+        input_key::C if window_shortcut => return KeyAction::Copy,
+        input_key::V if window_shortcut => return KeyAction::Paste,
+        input_key::A if window_shortcut => return KeyAction::SelectAll,
+        key::F10 if shift && !ctrl && !alt && !super_key => return KeyAction::ContextMenu,
+        key::COMPOSE if !ctrl && !alt && !super_key => return KeyAction::ContextMenu,
         _ => {}
     }
     if shift && !ctrl && !alt && !super_key {

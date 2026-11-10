@@ -229,18 +229,7 @@ pub const AGENT: Status = Status {
 
 /// The size of the architecture's `struct stat`: x86_64's own, or the generic one AArch64 and
 /// RISC-V share.
-pub const STAT_SIZE: usize = if cfg!(target_arch = "x86_64") {
-    144
-} else {
-    128
-};
-
-#[cfg(not(any(
-    target_arch = "aarch64",
-    target_arch = "riscv64",
-    target_arch = "x86_64"
-)))]
-compile_error!("check Linux's struct stat for this architecture");
+pub const STAT_SIZE: usize = crate::linux::abi::stat::SIZE;
 
 /// The size of a `struct statx`.
 pub const STATX_SIZE: usize = 256;
@@ -257,7 +246,7 @@ pub fn stat_bytes(status: &Status) -> [u8; STAT_SIZE] {
     let mut bytes = [0; STAT_SIZE];
     put(&mut bytes, 0, &status.device.encoded().to_ne_bytes());
     put(&mut bytes, 8, &status.inode.to_ne_bytes());
-    if cfg!(target_arch = "x86_64") {
+    if crate::linux::abi::stat::LAYOUT == crate::linux::abi::StatLayout::X86_64 {
         put(&mut bytes, 16, &u64::from(status.links).to_ne_bytes());
         put(&mut bytes, 24, &status.mode.to_ne_bytes());
         put(&mut bytes, 28, &status.owner.to_ne_bytes());

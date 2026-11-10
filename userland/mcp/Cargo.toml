@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [features]
 fuzz = []
+schema-check = []
 
 [dependencies]
 eggos-commands = { path = "../commands" }
@@ -18,6 +19,9 @@ eggos-crypto = { path = "../../crypto" }
 eggos-net = { path = "../../net" }
 eggos-runtime = { path = "../runtime" }
 eggos-tls = { path = "../../tls" }
+
+[dev-dependencies]
+eggos-settings-file = { path = "../../settings-file" }
 
 [lints]
 workspace = true

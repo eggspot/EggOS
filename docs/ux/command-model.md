@@ -198,7 +198,7 @@ facts).
 
 **Kept names:** `agent` (D193), `agentlog`, `app`, `cat`, `chmod` (D170), `clip` (D197), `cp`, `date`, `device` (D184), `df` (D171), `disk` (D192), `echo`, `edit`, `false`, `fetch`,
 `free`, `getprop` (D188), `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `kill` (D200), `ln` (D170), `logcat` (D188), `ls`, `mkdir`, `mv`, `nslookup`,
-`ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `setprop` (D188), `settings`, `sleep`, `sync`, `tail`, `taskset` (D198), `tee`, `terminal` (D187), `touch`,
+`ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `setprop` (D188), `settings`, `sleep`, `stty` (D223), `sync`, `tail`, `taskset` (D198), `tee`, `terminal` (D187), `touch`,
 `trash`, `true`, `uname`, `uptime`, `wc`, `wm`; and `eggsh`'s built-ins `.`, `:`, `[`, `bg`,
 `break`, `cd`, `continue`, `echo`, `eval`, `exit`, `export`, `false`, `fg`, `help`, `jobs`,
 `kill`, `local`, `pwd`, `read`, `return`, `set`, `shift`, `test`, `true`, `type`, `unset`,
@@ -221,10 +221,10 @@ agent's own grants; no tool changes grants.
 named by the word agents know rather than `clip`'s (`DECIDED_NAMES`, which the registry test
 allows beside the shipped names).
 
-**Commands in the registry** (90, D163, D170, D171, D188, D193, D197, D200, D204: every command EggOS ships): `agent forget|grant|list|network|pair|revoke|show`, `agentlog`, `app icon|install|list|open|show|uninstall`, `cat`, `chmod`, `clip get|set`, `cp`, `date`, `device list`, `df`, `disk check|format|list|repair`, `echo`, `edit`, `false`,
+**Commands in the registry** (91, D163, D170, D171, D188, D193, D197, D200, D204, D223: every command EggOS ships): `agent forget|grant|list|network|pair|revoke|show`, `agentlog`, `app icon|install|list|open|show|uninstall`, `cat`, `chmod`, `clip get|set`, `cp`, `date`, `device list`, `df`, `disk check|format|list|repair`, `echo`, `edit`, `false`,
 `fetch`, `free`, `getprop`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `kill`, `ln`, `logcat`, `ls`, `mkdir`, `mv`,
 `nslookup`, `ping`, `poweroff`, `ps`, `readlink`, `reboot`, `rm`, `setprop`, `settings` (the window), `settings
-get|list|set`, `sleep`, `sync`, `tail`, `taskset`, `tee`, `terminal`, `touch`, `trash`, `true`, `uname`, `uptime`,
+get|list|set`, `sleep`, `stty`, `sync`, `tail`, `taskset`, `tee`, `terminal`, `touch`, `trash`, `true`, `uname`, `uptime`,
 `wc`, and `wm act|capture|click|close|drag|focus|list|maximise|menu|minimise|move|press|restore|scroll|show|size|type` and `wm desktop close|list|move|new|switch`.
 `echo`, `true` and `false` take any words and declare no usage error.
 
@@ -239,6 +239,7 @@ get|list|set`, `sleep`, `sync`, `tail`, `taskset`, `tee`, `terminal`, `touch`, `
 | `app list --json` | `name`, `source`, `architecture` (or `null`), `program`, `icon` (or `null`) |
 | `agent list --json`, `agent show --json` | `id`, `name`, `view`, `view_ends_at`, `write`, `write_ends_at`, `install`, `install_ends_at`, `run`, `run_ends_at` (each grant `allow`, `ask` or `deny`; `null` for never): one per agent, or one object (D193) |
 | `agentlog --json` | `called_at`, `call`, `agent` (D193), `client`, `tool`, `result`, `arguments`, `detail`, one per line of the log (`--agent`, `--tool`, `--outcome` and `--since` keep the matching ones) |
+| `trash -l --json` | `name`, `deleted_at` (or `null`), `original_path` (or `null`), one per entry of the Trash (D226) |
 | `help --json` | `words`, `summary`, `description`, `options`, `operands`, `outputs`, `max_effect`, `errors`, `examples` (D163), `surface`, one per command |
 | `wc --json` | `path` (`null` for standard input), `lines`, `words`, `size_bytes`, one per input (D163) |
 | `readlink --json` | `path`, `target`, one per link (D170) |
@@ -252,7 +253,11 @@ get|list|set`, `sleep`, `sync`, `tail`, `taskset`, `tee`, `terminal`, `touch`, `
 **Pages and previews** (D164): `ls` (at most 500 a page, one folder however many entries it
 holds), `ps`, `wm list` and `app list` (at most 100) take `--limit` and `--after`, keyed by
 name, process id, window id and app name; `ps` lists by id, `wm list` and `app list` keep their
-own order within a page. `trash`, `app uninstall` and `settings set` take `--dry-run`.
+own order within a page. So do (D226, at most 100) `agentlog`, keyed by the row's position in
+the log (1 for the oldest kept row), `help`, keyed by the command's words (`wm%20list`),
+`trash -l`, keyed by the entry's name, and `settings list`, keyed by the setting's key; `help`
+and `settings list` keep the registry's and the list's order within a page, `trash -l` the
+folder's. `trash`, `app uninstall` and `settings set` take `--dry-run`.
 
 **Error codes:**
 
@@ -271,7 +276,7 @@ own order within a page. `trash`, `app uninstall` and `settings set` take `--dry
 | `out_of_memory` | too_large | ENOMEM | |
 | `failed` | failed | anything else | |
 | `too_many_entries` | too_large | `ls` without `--limit` (exit 1) | |
-| `bad_cursor` | usage | `--after` of `ls`, `wm list`, `app list` (exit 2) and `ps` (exit 1) (D164) | |
+| `bad_cursor` | usage | `--after` of `ls`, `wm list`, `app list`, `agentlog`, `help`, `trash -l`, `settings list` (exit 2; D226) and `ps` (exit 1) (D164) | |
 | `no_such_window` | not_found | `wm` (exit 1) | `wm list` |
 | `person_active` | busy | `wm` (exit 75) | |
 | `no_window_server` | not_found | `wm` (exit 1) | |
@@ -313,7 +318,15 @@ arguments to shipped schemas (old calls are unchanged): `limit` and `after` to `
 `app_uninstall`, which the server answers itself, and to `settings_set`, whose twin runs `settings
 set --dry-run`; `settings_set`'s result says `Set <key> to <value>.`. The confirming tools are
 exactly the `destroy` tools, each with a `confirm` argument; `run` and the input tools, though
-`control`, ask for none (their `run` grant is the user's consent).
+`control`, ask for none (their `run` grant is the user's consent). D226 adds the file tools, named by
+what they act on rather than by `cp`, `mv`, `mkdir` and `rm` (recorded with D197's clipboard
+names as decided names): `file_copy` (`source` anywhere the reading tools reach, `destination`
+below `/home/root`; `destroy`, asks when it would replace a file, idempotent), `file_move`
+(both below `/home/root`; `destroy`, asks when it would replace a file), `folder_create`
+(`path`, `parents`; `change`, never asks) and `file_remove` (`path`, `recursive`; `destroy`,
+always asks), all under the `write` grant, the three `destroy` ones with `dry_run` answered by
+the server. `destination` is always the new path itself, never a folder to put it in, so the
+question and the dry run name exactly what is replaced.
 
 **GUI surfaces** (D22): each command's `surface` names its GUI (Files for `ls`, the Text
 Editor for `cat` and `tee`, the title bar's buttons for `wm`'s verbs, the launcher for `app`,

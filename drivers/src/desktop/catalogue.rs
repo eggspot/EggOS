@@ -20,6 +20,8 @@ const FILES_SYNONYMS: [&str; 5] = ["Explorer", "Finder", "Dolphin", "Nautilus", 
 const SETTINGS_SYNONYMS: [&str; 4] = ["Control Panel", "System Settings", "Preferences", "options"];
 const TEXT_EDITOR_SYNONYMS: [&str; 6] = ["Notepad", "TextEdit", "gedit", "Kate", "editor", "notes"];
 const SETTINGS_PROGRAM: &str = "/bin/settings";
+const OPEN_VERB: &str = "open";
+const SET_VERB: &str = "set";
 const FILES_PROGRAM: &str = "/bin/files";
 const TEXT_EDITOR_PROGRAM: &str = "/bin/text-editor";
 const TASK_MANAGER_PROGRAM: &str = "/bin/task-manager";
@@ -45,7 +47,19 @@ const TASK_MANAGER_SYNONYMS: [&str; 20] = [
     "frozen",
     "hung",
 ];
+const DOWNLOADS_PROGRAM: &str = "/bin/downloads";
+const DOWNLOADS_SYNONYMS: [&str; 8] = [
+    "download",
+    "fetch",
+    "transfers",
+    "wget",
+    "curl",
+    "Library",
+    "download manager",
+    "downloading",
+];
 const TERMINAL_PROGRAM: &str = "/bin/terminal";
+const SHELL_PROGRAM: &str = "/bin/eggsh";
 const HOST_SHARE_LISTING: &str = "ls /media/host";
 const HOST_SHARE: &str = "/media/host";
 const PLAIN_PATH_BYTES: &[u8] = b"/._-+";
@@ -58,12 +72,13 @@ pub const INSTALLER_PROGRAM: &str = "/usr/libexec/app-window";
 /// What separates a started program's path and its arguments in a [`Command`].
 pub const ARGUMENT_SEPARATOR: u8 = 0;
 
-const BUILT_INS: [AppId; 5] = [
+const BUILT_INS: [AppId; 6] = [
     AppId::Terminal,
     AppId::Files,
     AppId::Settings,
     AppId::TextEditor,
     AppId::TaskManager,
+    AppId::Downloads,
 ];
 
 /// An app the shell can launch.
@@ -80,6 +95,8 @@ pub enum AppId {
     TextEditor,
     /// The Task Manager (`/bin/task-manager`, D200), when the build has it.
     TaskManager,
+    /// The Downloads window (`/bin/downloads`, D225), when the build has it.
+    Downloads,
     /// The host's shared folder at `/media/host`.
     HostShare,
     /// The launcher's row that opens the installer on the host's shared folder.
@@ -171,6 +188,7 @@ struct InstalledApp {
     synonyms: [u8; SYNONYMS_CAPACITY],
     synonyms_length: u8,
     icon: Option<IconPixels>,
+    console: bool,
 }
 
 impl InstalledApp {
@@ -270,25 +288,16 @@ pub struct Catalogue {
     files_present: bool,
     text_editor_present: bool,
     task_manager_present: bool,
+    downloads_present: bool,
     terminal_present: bool,
 }
 
 fn contains_ignoring_case(text: &str, query: &str) -> bool {
-    let (text, query) = (text.as_bytes(), query.as_bytes());
-    query.is_empty()
-        || text
-            .windows(query.len())
-            .any(|window| window.eq_ignore_ascii_case(query))
-}
-
-fn lower(text: &str) -> impl Iterator<Item = u8> + '_ {
-    text.bytes().map(|byte| byte.to_ascii_lowercase())
+    crate::font::contains_folded(text, query)
 }
 
 fn ordered(first: &str, second: &str) -> core::cmp::Ordering {
-    lower(first)
-        .cmp(lower(second))
-        .then_with(|| first.cmp(second))
+    crate::font::cmp_folded(first, second)
 }
 
 impl Catalogue {
@@ -348,6 +357,7 @@ impl Catalogue {
             synonyms: [0; SYNONYMS_CAPACITY],
             synonyms_length: app.synonyms.len() as u8,
             icon: None,
+            console: app.console,
         };
         entry.name[..app.name.len()].copy_from_slice(app.name.as_bytes());
         entry.synonyms[..app.synonyms.len()].copy_from_slice(app.synonyms.as_bytes());
@@ -400,6 +410,16 @@ impl Catalogue {
         self.task_manager_present
     }
 
+    /// Records whether the build has the Downloads window (`/bin/downloads`, D225).
+    pub fn set_downloads_present(&mut self, present: bool) {
+        self.downloads_present = present;
+    }
+
+    /// Whether the build has the Downloads window.
+    pub fn downloads_present(&self) -> bool {
+        self.downloads_present
+    }
+
     pub fn set_text_editor_present(&mut self, present: bool) {
         self.text_editor_present = present;
     }
@@ -435,6 +455,7 @@ impl Catalogue {
             AppId::Installed(index) => self.installed(index).is_some(),
             AppId::Terminal | AppId::Files | AppId::Settings | AppId::TextEditor => true,
             AppId::TaskManager => self.task_manager_present,
+            AppId::Downloads => self.downloads_present,
         }
     }
 
@@ -463,6 +484,7 @@ impl Catalogue {
             AppId::Settings => "Settings",
             AppId::TextEditor => "Text Editor",
             AppId::TaskManager => "Task Manager",
+            AppId::Downloads => "Downloads",
             AppId::HostShare => "Host share",
             AppId::InstallFromHostShare => INSTALL_FROM_HOST_SHARE,
             AppId::Installed(index) => self.installed(index).map_or("", InstalledApp::name),
@@ -485,6 +507,7 @@ impl Catalogue {
             AppId::Settings => Icon::Settings,
             AppId::TextEditor => Icon::TextEditor,
             AppId::TaskManager => Icon::TaskManager,
+            AppId::Downloads => Icon::Downloads,
             AppId::HostShare | AppId::InstallFromHostShare => Icon::HostShare,
             AppId::Installed(index) => {
                 match self.installed(index).and_then(|app| app.icon.as_ref()) {
@@ -499,6 +522,7 @@ impl Catalogue {
     /// alphabetically, then `Install from host share...` while the share is mounted.
     pub fn launcher_apps(&self) -> impl Iterator<Item = AppId> + '_ {
         [
+            AppId::Downloads,
             AppId::Files,
             AppId::Settings,
             AppId::TaskManager,
@@ -506,7 +530,7 @@ impl Catalogue {
             AppId::TextEditor,
         ]
         .into_iter()
-        .filter(|&app| app != AppId::TaskManager || self.task_manager_present)
+        .filter(|&app| !matches!(app, AppId::TaskManager | AppId::Downloads) || self.has(app))
         .chain((0..self.installed.len()).map(|index| AppId::Installed(index as u8)))
         .chain(self.host_share.then_some(AppId::InstallFromHostShare))
     }
@@ -532,6 +556,7 @@ impl Catalogue {
             AppId::Settings => &SETTINGS_SYNONYMS,
             AppId::TextEditor => &TEXT_EDITOR_SYNONYMS,
             AppId::TaskManager => &TASK_MANAGER_SYNONYMS,
+            AppId::Downloads => &DOWNLOADS_SYNONYMS,
             AppId::HostShare | AppId::InstallFromHostShare | AppId::Installed(_) => &[],
         };
         if built_in
@@ -551,6 +576,21 @@ impl Catalogue {
         })
     }
 
+    /// The command that starts Settings on the pane named `pane`: `/bin/settings open <pane>`
+    /// (D221, D225).
+    pub fn settings_pane(&self, pane: &str) -> Option<Command> {
+        Command::program(SETTINGS_PROGRAM, &[OPEN_VERB.as_bytes(), pane.as_bytes()])
+    }
+
+    /// The command that saves and applies `key` as `value`: `/bin/settings set <key> <value>`,
+    /// as the CLI does (D224, Shift five times).
+    pub fn settings_set(&self, key: &str, value: &str) -> Option<Command> {
+        Command::program(
+            SETTINGS_PROGRAM,
+            &[SET_VERB.as_bytes(), key.as_bytes(), value.as_bytes()],
+        )
+    }
+
     /// What launching `app` asks of the kernel, if anything: Settings and Files start their
     /// programs, `Install from host share...` the installer on the share, and the host share
     /// Files on it (D135); without Files the share's listing and installed apps are typed in
@@ -559,7 +599,9 @@ impl Catalogue {
     /// `--library-path` and its library folders; then the app's arguments, D172), after Ctrl-U
     /// so a half-typed line does not run with it; Terminal starts the terminal program, a new
     /// window each time (D187), and without it the console terminal is only focused, which the
-    /// desktop does itself.
+    /// desktop does itself. An installed console app (its manifest's `console=true`, D223) starts
+    /// `/bin/terminal -t <name> -e /bin/eggsh -c <line>` instead while the terminal program is
+    /// present, so it gets a terminal window of its own.
     pub fn launch(&self, app: AppId) -> Option<Launch> {
         match app {
             AppId::Terminal if self.terminal_present => {
@@ -570,6 +612,7 @@ impl Catalogue {
             AppId::Settings => Some(Launch::Start(Command::from(SETTINGS_PROGRAM))),
             AppId::TextEditor => Some(Launch::Start(Command::from(TEXT_EDITOR_PROGRAM))),
             AppId::TaskManager => Some(Launch::Start(Command::from(TASK_MANAGER_PROGRAM))),
+            AppId::Downloads => Some(Launch::Start(Command::from(DOWNLOADS_PROGRAM))),
             AppId::InstallFromHostShare => {
                 Command::program(INSTALLER_PROGRAM, &[b"install", HOST_SHARE.as_bytes()])
                     .map(Launch::Start)
@@ -585,7 +628,19 @@ impl Catalogue {
                 typed.then_some(Launch::Type(line))
             }
             AppId::Installed(index) => {
-                let typed = self.installed(index)?.line;
+                let app = self.installed(index)?;
+                if self.terminal_present && app.console {
+                    let words = [
+                        &b"-t"[..],
+                        app.name().as_bytes(),
+                        b"-e",
+                        SHELL_PROGRAM.as_bytes(),
+                        b"-c",
+                        app.line.as_bytes(),
+                    ];
+                    return Command::program(TERMINAL_PROGRAM, &words).map(Launch::Start);
+                }
+                let typed = app.line;
                 let mut line = Command::new();
                 let fits = line.push(KILL_LINE) && line.push(typed.as_bytes()) && line.push(b"\r");
                 fits.then_some(Launch::Type(line))
@@ -655,6 +710,33 @@ mod tests {
             catalogue.app_named("Task Manager"),
             Some(AppId::TaskManager)
         );
+    }
+
+    #[test]
+    fn downloads_is_listed_first_and_found_only_when_the_build_has_it() {
+        let mut catalogue = Catalogue::new();
+        assert!(!catalogue.launcher_apps().any(|app| app == AppId::Downloads));
+        assert!(!catalogue.has(AppId::Downloads));
+        catalogue.set_downloads_present(true);
+        assert_eq!(catalogue.launcher_apps().next(), Some(AppId::Downloads));
+        for query in ["wget", "curl", "fetch", "transfers", "library", "down"] {
+            assert!(catalogue.matches(AppId::Downloads, query), "{query}");
+            for other in [
+                AppId::Files,
+                AppId::Settings,
+                AppId::TaskManager,
+                AppId::Terminal,
+                AppId::TextEditor,
+            ] {
+                assert!(!catalogue.matches(other, query), "{query} {other:?}");
+            }
+        }
+        assert_eq!(
+            catalogue.launch(AppId::Downloads),
+            Some(Launch::Start(Command::from("/bin/downloads")))
+        );
+        assert_eq!(catalogue.app_named("Downloads"), Some(AppId::Downloads));
+        assert_eq!(catalogue.icon(AppId::Downloads), Icon::Downloads);
     }
 
     #[test]
@@ -738,6 +820,17 @@ mod tests {
         );
         assert_eq!(found("notepad"), ["Text Editor"]);
         assert_eq!(found("gedit"), ["Text Editor"]);
+        assert_eq!(found("éditor"), ["Text Editor"]);
+        assert_eq!(found("PAÏNT"), ["Paint"]);
+    }
+
+    #[test]
+    fn the_search_and_the_order_forgive_accents() {
+        assert!(contains_ignoring_case("Éditeur", "e"));
+        assert!(contains_ignoring_case("Straße", "strasse"));
+        assert!(!contains_ignoring_case("Files", "z"));
+        assert_eq!(ordered("Dolphin", "Édition"), core::cmp::Ordering::Less);
+        assert_eq!(ordered("Édition", "Files"), core::cmp::Ordering::Less);
     }
 
     #[test]
@@ -796,6 +889,35 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_console_app_opens_in_a_terminal_window_of_its_own_when_there_is_one() {
+        let mut catalogue = Catalogue::new();
+        let file = b"eggos-app 1\nname=top\nsource=linux\nrun=top\nconsole=true\n";
+        assert!(catalogue.add_installed(b"top", file));
+        let gui = b"eggos-app 1\nname=Paint\nsource=windows\nrun=paint.exe\n";
+        assert!(catalogue.add_installed(b"Paint", gui));
+        let top = catalogue.installed_named("top").unwrap();
+        let paint = catalogue.installed_named("Paint").unwrap();
+        assert!(matches!(catalogue.launch(top), Some(Launch::Type(_))));
+        catalogue.set_terminal_present(true);
+        match catalogue.launch(top) {
+            Some(Launch::Start(command)) => assert_eq!(
+                command.words().collect::<Vec<_>>(),
+                [
+                    &b"/bin/terminal"[..],
+                    b"-t",
+                    b"top",
+                    b"-e",
+                    b"/bin/eggsh",
+                    b"-c",
+                    b"/Applications/top/top",
+                ]
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(catalogue.launch(paint), Some(Launch::Type(_))));
     }
 
     #[test]

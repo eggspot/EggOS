@@ -1123,10 +1123,11 @@ pub const MACOS_FAT_LAYER: Interpreter = Interpreter {
 
 const MACOS_LAYER_PATH: &[u8] = b"/usr/lib/eggos/macos";
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-const INTERPRETERS: &[Interpreter] = &[WINDOWS_LAYER, MACOS_LAYER, MACOS_FAT_LAYER];
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-const INTERPRETERS: &[Interpreter] = &[];
+const INTERPRETERS: &[Interpreter] = if crate::linux::abi::RUNS_WINDOWS_AND_MACOS_PROGRAMS {
+    &[WINDOWS_LAYER, MACOS_LAYER, MACOS_FAT_LAYER]
+} else {
+    &[]
+};
 const ANY_INTERPRETER: bool = !INTERPRETERS.is_empty();
 
 /// The interpreter that starts `image` on this architecture, if any.
@@ -2288,7 +2289,7 @@ mod tests {
     #[test]
     fn windows_programs_start_through_the_windows_layer_on_x86_64_and_aarch64() {
         let windows = interpreter_for(b"MZ\x90\0rest of the file");
-        match cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) {
+        match crate::linux::abi::RUNS_WINDOWS_AND_MACOS_PROGRAMS {
             true => assert_eq!(windows, Some(WINDOWS_LAYER)),
             false => assert_eq!(windows, None),
         }
@@ -2300,7 +2301,7 @@ mod tests {
 
     #[test]
     fn mach_o_and_fat_files_start_through_the_macos_layer_on_aarch64_and_x86_64() {
-        let runs = cfg!(any(target_arch = "aarch64", target_arch = "x86_64"));
+        let runs = crate::linux::abi::RUNS_WINDOWS_AND_MACOS_PROGRAMS;
         let thin = interpreter_for(b"\xcf\xfa\xed\xfe\x0c\0\0\x01");
         let fat = interpreter_for(b"\xca\xfe\xba\xbe\0\0\0\x02rest");
         assert_eq!(thin, runs.then_some(MACOS_LAYER));

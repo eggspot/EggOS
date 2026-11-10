@@ -298,8 +298,8 @@ fn is_letter_pair(plain: u16, shifted: u16) -> bool {
     plain.is_lowercase() && shifted.is_uppercase()
 }
 
-/// The spacing accents of the dead keys, in the order the Keyboard pane lists them, then the
-/// two no layout here has (ring and cedilla).
+/// The spacing accents of the dead keys, in the order the Keyboard pane lists them (the
+/// cedilla last, D221), with the ring no layout here has before it.
 pub const DEAD_ACCENTS: [char; 7] = ['´', '`', '^', '¨', '~', '°', '¸'];
 
 const DEAD_MARKS: [u16; 7] = [ACUTE, GRAVE, CIRCUMFLEX, DIAERESIS, TILDE, RING, CEDILLA];
@@ -309,7 +309,7 @@ const COMPOSITIONS: [(u16, &str, &str); 7] = [
     (ACUTE, "AaEeIiOoUuYy", "ÁáÉéÍíÓóÚúÝý"),
     (CIRCUMFLEX, "AaEeIiOoUu", "ÂâÊêÎîÔôÛû"),
     (TILDE, "AaNnOo", "ÃãÑñÕõ"),
-    (DIAERESIS, "AaEeIiOoUuy", "ÄäËëÏïÖöÜüÿ"),
+    (DIAERESIS, "AaEeIiOoUuYy", "ÄäËëÏïÖöÜüŸÿ"),
     (RING, "Aa", "Åå"),
     (CEDILLA, "Cc", "Çç"),
 ];
@@ -626,22 +626,192 @@ static SPANISH: Keys = keys([
     [" ", " ", " ", " "],
 ]);
 
+static US_MAC: Keys = keys([
+    [
+        "1234567890-=",
+        "!@#$%^&*()_+",
+        "¡ £¢ §¶ ªº  ",
+        " €     °·  ±",
+    ],
+    [
+        "qwertyuiop[]",
+        "QWERTYUIOP{}",
+        "œ \u{301}® ¥\u{308}\u{302}ø   ",
+        "Œ ´  Á¨ Ø   ",
+    ],
+    [
+        "asdfghjkl;'`",
+        "ASDFGHJKL:\"~",
+        "åß  ©   ¬ æ\u{300}",
+        "ÅÍÎÏ ÓÔ ÒÚÆ`",
+    ],
+    [
+        "\\zxcvbnm,./",
+        "|ZXCVBNM<>?",
+        "«  ç  \u{303}µ  ÷",
+        "»¸ Ç ı Â¯ ¿",
+    ],
+    ["\\", "|", " ", " "],
+    [" ", " ", " ", " "],
+]);
+
+static BELGIAN: Keys = keys([
+    [
+        "&é\"'(§è!çà)-",
+        "1234567890°_",
+        "|@#  ^  {}  ",
+        "            ",
+    ],
+    [
+        "azertyuiop\u{302}$",
+        "AZERTYUIOP\u{308}*",
+        "  €       []",
+        "            ",
+    ],
+    [
+        "qsdfghjklmù²",
+        "QSDFGHJKLM%³",
+        "          \u{301} ",
+        "            ",
+    ],
+    [
+        "µwxcvbn,;:=",
+        "£WXCVBN?./+",
+        "\u{300}         \u{303}",
+        "           ",
+    ],
+    ["<", ">", "\\", " "],
+    [" ", " ", " ", " "],
+]);
+
+static CANADIAN_FRENCH: Keys = keys([
+    [
+        "1234567890-=",
+        "!\"/$%?&*()_+",
+        "±@£¢¤¬¦²³¼½¾",
+        "            ",
+    ],
+    [
+        "qwertyuiop\u{302}\u{327}",
+        "QWERTYUIOP\u{302}\u{308}",
+        "  €     §¶[]",
+        "            ",
+    ],
+    [
+        "asdfghjkl;\u{300}#",
+        "ASDFGHJKL:\u{300}|",
+        "         \u{303}{\\",
+        "            ",
+    ],
+    ["<zxcvbnm,.é", ">ZXCVBNM'.É", "}      µ¯ ´", "           "],
+    ["«", "»", "°", " "],
+    [" ", " ", " ", " "],
+]);
+
+static SWISS_GERMAN: Keys = keys([
+    [
+        "1234567890'\u{302}",
+        "+\"*ç%&/()=?\u{300}",
+        "¦@#°§¬|¢  \u{301}\u{303}",
+        "            ",
+    ],
+    [
+        "qwertzuiopü\u{308}",
+        "QWERTZUIOPè!",
+        "  €       []",
+        "            ",
+    ],
+    [
+        "asdfghjklöä§",
+        "ASDFGHJKLéà°",
+        "          { ",
+        "            ",
+    ],
+    ["$yxcvbnm,.-", "£YXCVBNM;:_", "}          ", "           "],
+    ["<", ">", "\\", " "],
+    [" ", " ", " ", " "],
+]);
+
+static PORTUGUESE: Keys = keys([
+    [
+        "1234567890'«",
+        "!\"#$%&/()=?»",
+        " @£§€ {[]}  ",
+        "            ",
+    ],
+    [
+        "qwertyuiop+\u{301}",
+        "QWERTYUIOP*\u{300}",
+        "  €       \u{308} ",
+        "            ",
+    ],
+    [
+        "asdfghjklçº\\",
+        "ASDFGHJKLÇª|",
+        "            ",
+        "            ",
+    ],
+    [
+        "\u{303}zxcvbnm,.-",
+        "\u{302}ZXCVBNM;:_",
+        "           ",
+        "           ",
+    ],
+    ["<", ">", "\\", " "],
+    [" ", " ", " ", " "],
+]);
+
+static LATIN_AMERICAN: Keys = keys([
+    [
+        "1234567890'¿",
+        "!\"#$%&/()=?¡",
+        "          \\ ",
+        "            ",
+    ],
+    [
+        "qwertyuiop\u{301}+",
+        "QWERTYUIOP\u{308}*",
+        "@ €        ~",
+        "            ",
+    ],
+    [
+        "asdfghjklñ{|",
+        "ASDFGHJKLÑ[°",
+        "          \u{302}¬",
+        "            ",
+    ],
+    [
+        "}zxcvbnm,.-",
+        "]ZXCVBNM;:_",
+        "\u{300}          ",
+        "           ",
+    ],
+    ["<", ">", " ", " "],
+    [" ", " ", " ", " "],
+]);
+
 /// Every layout, in the order of the settings file's `KEYBOARD_LAYOUTS` (the Keyboard pane's
 /// list): a layout's number is its index here. `fi` and `se` share one table.
-pub static LAYOUTS: [Layout; 14] = [
+pub static LAYOUTS: [Layout; 20] = [
     Layout::new("us", &US, b'.', false, false),
     Layout::new("us-intl", &US_INTERNATIONAL, b'.', true, true),
+    Layout::new("us-mac", &US_MAC, b'.', false, false),
     Layout::new("gb", &UNITED_KINGDOM, b'.', false, false),
     Layout::new("us-dvorak", &DVORAK, b'.', false, false),
     Layout::new("us-colemak", &COLEMAK, b'.', false, false),
     Layout::new("dk", &DANISH, b',', false, false),
     Layout::new("fi", &SWEDISH, b',', false, false),
     Layout::new("fr", &FRENCH, b',', false, false),
+    Layout::new("be", &BELGIAN, b',', false, false),
+    Layout::new("ca", &CANADIAN_FRENCH, b',', false, false),
     Layout::new("de", &GERMAN, b',', false, false),
+    Layout::new("ch", &SWISS_GERMAN, b'.', false, false),
     Layout::new("it", &ITALIAN, b',', false, false),
     Layout::new("no", &NORWEGIAN, b',', false, false),
     Layout::new("br", &BRAZILIAN, b',', false, true),
+    Layout::new("pt", &PORTUGUESE, b',', false, false),
     Layout::new("es", &SPANISH, b',', false, false),
+    Layout::new("latam", &LATIN_AMERICAN, b'.', false, false),
     Layout::new("se", &SWEDISH, b',', false, false),
 ];
 
@@ -843,6 +1013,34 @@ impl Typist {
     /// Whether a dead key's accent waits for the next key.
     pub const fn is_pending(&self) -> bool {
         self.pending != 0
+    }
+
+    /// The state in one word, for a caller that keeps it between presses elsewhere
+    /// ([`Self::from_bits`]).
+    pub const fn to_bits(&self) -> u32 {
+        self.layout as u32 | (self.pending as u32) << 8
+    }
+
+    /// The state [`Self::to_bits`] made `bits` from; the US layout for a layout that is none,
+    /// and then nothing waiting.
+    pub fn from_bits(bits: u32) -> Self {
+        let layout = (bits & 0xff) as usize;
+        match layout < LAYOUTS.len() {
+            true => Self {
+                layout: layout as u8,
+                pending: (bits >> 8) as u16,
+            },
+            false => Self::new(),
+        }
+    }
+
+    /// The spacing accent of the dead key that waits for the next key, as the dead-key
+    /// highlight shows it (D221), if one waits.
+    pub fn pending_accent(&self) -> Option<char> {
+        match self.pending {
+            0 => None,
+            mark => Some(self.layout().spacing_accent(mark)),
+        }
     }
 
     /// What pressing key `code` with `modifiers` types, the waiting accent taken into account:

@@ -361,6 +361,336 @@ write (`SetText` on the field, then `Select` on a row). Agents that want the zon
 ### Left out of 0.3.0
 
 Search by country or by offset (`zone.tab`'s country column, and `UTC+5:30` as a query);
-`Set automatically` from the network (NTP and location, with the Network pane); the next
+the time zone set automatically from the network's location; the next
 daylight change (`Clocks go back on 25 October`); a map; the zone's full English name
 (`Central European Time`: not in the data, and the abbreviation plus the offset says it).
+`Set automatically` for the clock itself is section 9.
+
+## 9. Set automatically (D225, batch part 7): the network clock in the pane
+
+Design by Claude Fable for the GUI front-end of the network clock (D22). The capability
+exists: `date --sync[=host[:port]]` sets the clock by SNTP (the default server `pool.ntp.org`,
+three tries of 3 s), writes the hardware clock when there is one and says how far the clock
+moved; the MCP tool `clock_sync` is the same code. This section adds the setting
+**`time.automatic`** (`on` or `off`, default **on**, as Windows, macOS and GNOME all default
+to), the row that shows it, and the status that tells a person what the network did to their
+clock. Sections 1 to 8 stand except where this section says otherwise; every widget of
+section 2 and 8.2 keeps its number, and 9.2 says exactly which ones move.
+
+The pattern is the one every switcher knows: Windows' `Set time automatically`, macOS's `Set
+time and date automatically` and GNOME's `Automatic Date & Time` all sit **first** in the pane,
+above the manual setting, and all three **grey out the manual setting while automatic is on**.
+EggOS does the same, with one row (a check box: the toolkit has no switch, and a check box is
+what Windows 10 and macOS used for exactly this setting) and the pane's one status line.
+
+### 9.1 Who does what
+
+- **The setting** `time.automatic` lives in the settings file beside `time.zone`; `settings
+  get time.automatic` prints `on` or `off`, `settings set time.automatic off` (and `--dry-run`:
+  `would set time.automatic from on to off`; another value: `invalid value 'x' (on or off)`)
+  writes it, `settings_set` is the same write, `settings list` gains the row (`settable:
+  true`). One code path, `Change::Automatic(bool)`, for the check box, the command and the
+  tool (D22).
+- **Turning it on syncs at once**: `Change::Automatic(true)` writes the setting and then starts
+  `/bin/date --sync` as a child process (the pane does it as Files starts the editor; the CLI
+  and the MCP tool call the same function), so the result is in the record within seconds
+  and a person who ticks the box sees the clock jump. Turning it off writes the setting and
+  leaves a running sync alone (it ends within 9 s plus the HTTPS check; its record is
+  ignored while the setting is off).
+- **init** syncs at boot once the network has an address, then every 24 h, re-reading the
+  setting before each timed sync so a change on the CLI is honoured without a reboot. init
+  never syncs while the setting is off.
+- **The record**: every `date --sync` (init's, the pane's, a person's on the CLI, an agent's
+  `clock_sync`) writes **`/run/eggos/clock-sync`** through a temporary file renamed over it,
+  `key=value` lines, first `result=syncing` with `started` and `server` when it begins, then
+  the outcome when it ends. The pane reads it; `settings get time.sync` prints it as one line
+  (below) so the CLI and MCP tell the same story (D22). It is in `/run`, so a reboot starts
+  clean and init's boot sync writes the first one.
+
+  | Key | Value |
+  |-----|-------|
+  | `result` | `syncing`, `set` (a step of 1 h or less, applied), `confirmed` (a step of more than 1 h, applied because an HTTPS `Date` header agreed), `unconfirmed` (a step of more than 1 h, **not applied**: no roots in `/etc/ssl/roots.pem` or `/media/host/roots.pem`, HTTPS unreachable, or the two disagreed), `no-answer` (no SNTP answer, DNS failed, or the host is unknown), `no-address` (the adapter had no address when the sync started), `not-allowed` (`EPERM` from the kernel) |
+  | `started`, `finished` | UTC seconds; `finished` absent while `syncing` |
+  | `server` | the host as given, `pool.ntp.org` or `time.example.com:123` |
+  | `moved_ms` | for `set` and `confirmed`: the signed step in ms, positive forward |
+  | `offset_ms` | for `unconfirmed`: how far the time server said the clock is off, signed |
+  | `reason` | for `no-answer` and `unconfirmed`: `date --sync`'s own one-line stderr text, for the CLI; the pane does not show it |
+
+  `settings get time.sync` prints `<result> <finished or started, ISO 8601 UTC> <server>
+  <moved_ms or offset_ms or 0>` (`set 2026-10-29T14:05:09Z pool.ntp.org 12000`) and `none`
+  with no record; it is read-only (`set` answers `read-only`). `time.automatic` is also what
+  the record is judged against: the pane shows the record only while the setting is on.
+- **Security rule, worded generically** (the exact rule is settled by research; the pane's
+  words hold for any outcome): an unauthenticated SNTP answer moves the clock by at most 1 h
+  on its own; a larger step needs a TLS-verified source to agree, and when none can, the
+  clock stays where it is and the pane says so and says what the person can do (9.4). The
+  pane never applies a step itself: it only runs `date --sync`.
+- **Without a disk** (D131) the setting cannot be written to the settings file, and the
+  value is kept in `/run/eggos/settings` for this session, where `settings get`, init and
+  the pane read it after the settings file; so a diskless machine on an isolated network can
+  still turn the automatic clock off and set the time by hand, and the pane's no-disk line is
+  Appearance's own: `No disk attached: this choice lasts until power-off.` (9.4). Decided:
+  the profile's precedent (applied until power-off), not the time zone's (refused), because a
+  refused write here would lock `Set to` on every diskless machine, the default being on.
+
+### 9.2 Layout: one row inserted, two lines of status, the pane grows to 408
+
+The check box goes **first**, under `Now`, where all three desktops put it; `Set to` and
+everything under it move down 40, and the status line becomes two lines (a fact and, when
+there is something to do, a remedy), which moves the time zone section down a further 20.
+In pane coordinates (origin window x 176, y 0; 464 wide at the default size, right edge 448):
+
+| # | Widget | Place and size | Text and colour | Change |
+|---|--------|----------------|-----------------|--------|
+| 1 | heading | (16, 16), 2x | `Date & time` | none |
+| 2 | label | (16, 76) | `Now` | none |
+| 3 | label, right-aligned | ends at 448, cell top 76 | the time (8.1) | none |
+| **17** | **check box** | **(16, 110), 28 tall, `Length::Content` wide (about 108)** | **`Set automatically`, ticked when `time.automatic` is on** | **new** |
+| 4 | label | (16, 156) | `Set to` in `text`, or `text.dim` while disabled (9.3) | was (16, 116) |
+| 5 | text field | (144, 150), 200x28 | placeholder `YYYY-MM-DD HH:MM`, `escape: Clear`; disabled while automatic is in charge (9.3) | was y 110 |
+| 6 | push button, primary | (352, 150), 96x28 | `Set`; disabled while the field is empty or disabled | was y 110 |
+| 7 | label | (16, 196) | **line 1**, the fact (9.4), `text` or `text.dim` | was (16, 156) |
+| **18** | **label** | **(16, 216)** | **line 2**, the remedy or the no-disk note (9.4), `text.dim`; hidden when there is none | **new** |
+| 8 | label | (16, 240) | `Time zone` | was 180 |
+| 9 | label, right-aligned | ends at 448, cell top 240 | the zone's name | was 180 |
+| 10 | label, right-aligned | ends at 448, cell top 260 | the facts line | was 200 |
+| 11 | text field | (16, 284), 304x28 | `City, region or abbreviation` | was y 224 |
+| 12 | label, right-aligned | ends at 448, cell top 290 | the match count | was 230 |
+| 13 | list, 3 rows of 24 | (16, 320), 432x72 | the zone rows | was y 260 |
+| 14-16 | labels | (40, 324), (40, 348), (40, 372) | the three row texts | were 264, 288, 312 |
+
+Rows 0 to 2 of the 40 px grid from y 64 are `Now`, `Set automatically` and `Set to` (controls
+at row + 6, text cells at row + 12); line 1's cell is at 196 (40 under `Set to`'s, as before),
+line 2's 20 under it (About's body pitch), the zone row 8 px under line 2's cell (236, so
+240 as a text row), and the rest keeps 8.2's gaps. The content ends at **392**, so this pane
+is **408 tall** (`DATE_AND_TIME_PANE_HEIGHT`, replacing `PANE_HEIGHT` 348 for this pane
+alone: `build.pane(scroll, Length::Px(..))` already takes a height per pane). At the default
+640x440 window the pane area is 440 tall and **nothing scrolls**; at the minimum 640x360 the
+window's scroll view scrolls this pane by 48 px, the focused widget kept in view, as it does
+on a phone already (8.7). Decided: grow rather than squeeze, because the alternatives were a
+two-row zone list (every zone search gets worse for a setting most people never touch
+again) or the check box sharing `Set to`'s row (a disabled field next to `Set automatically`
+reads as a server field, which it is not). The check box's hit target is the control's 28
+rows from x 16 to its label's end (toolkit section 5); the mark is at (16, 116), the label's
+cell at (40, 116). `Set automatically` is 84 px of Egg Sans, so the control ends near x 124
+and leaves `Now`'s right-aligned time, two rows up, alone.
+
+### 9.3 `Set to` while automatic is on: disabled, as on every desktop
+
+While the network clock is **in charge** (`time.automatic` on **and** the machine has a
+network adapter), widgets 4, 5 and 6 are disabled: `Set to` in `text.dim`, the field with the
+toolkit's disabled look (section 7 of `toolkit-v0.3.md`), its placeholder still readable so
+the row says what it is, and `Set` disabled; Tab skips them. Reasons: Windows disables
+`Change` under `Set the date and time manually`, GNOME makes the `Date & Time` row
+insensitive, macOS greys the pickers, so a switcher's hand already knows that the box above
+must be unticked first; and a time typed under a running automatic clock would be undone by
+the next sync, silently, which is worse than a greyed field. The field is emptied when it is
+disabled (a half-typed time is not kept under a greyed row).
+
+**Without a network adapter** the setting can do nothing, so `Set to` stays **enabled** even
+while the box is ticked, and line 1 says why the automatic clock cannot work (9.4). The box
+itself stays enabled too: it is a saved choice that matters the day the disk boots a machine
+with a network, and an agent may set it through `settings_set` regardless. Decided: this is
+the one deviation from the three desktops, and it is for a case they do not have (they
+always have some network); greying `Set to` on a machine that can never sync would leave no
+way to set the clock without first unticking a box that does nothing.
+
+Ticking the box (a click, Space, or `settings set time.automatic on`) disables the three
+widgets in the same frame (when an adapter exists), sets line 1 to the syncing text at once
+and starts the sync; the next ticks read the record. Unticking enables them, empties line 2
+(unless the no-disk note is due), and puts section 5's "shown" line back on line 1 (`From
+the hardware clock, read at boot.` or its no-hardware-clock twin): the network is no longer
+in charge, so its last word is not kept on screen. The record itself is kept, so
+`settings get time.sync` still has it.
+
+### 9.4 The status: line 1 (widget 7) and line 2 (widget 18)
+
+One status for the clock, not two: line 1 says the latest fact about it, line 2 what the
+person can do about it. Which table applies depends on who is in charge:
+
+- **Automatic off**: section 5's lines exactly, on line 1 (`text.dim` for the "shown" ones,
+  `text` for results), as today; line 2 shows the no-disk note or is hidden.
+- **Automatic on, no network adapter**: line 1 `No network adapter: the clock cannot be set
+  from the network.` in `text.dim` when the pane is shown; section 5's result lines replace
+  it after a `Set`, and showing the pane again brings it back. Line 2: the no-disk note or
+  hidden.
+- **Automatic on, an adapter**: from the record, re-read once a second while the pane is
+  shown (the tick that refreshes `Now`), only what changed retitled:
+
+| Record | Line 1 (widget 7) | Colour | Line 2 (widget 18) |
+|--------|-------------------|--------|--------------------|
+| none, the adapter has no address (`net_status` state is not `connected`) | `Waiting for a network address to set the clock.` | `text.dim` | hidden |
+| none, connected (init has not started yet, or the setting was turned on while init's sync was off) | `Not set from the network yet.` | `text.dim` | `Turn this off and on to set it now.` |
+| `syncing` | `Setting the clock from the network...` | `text.dim` | hidden |
+| `set`, \|moved\| at least 1 ms | `Set today at 14:05 from pool.ntp.org; moved 12 s forward.` | `text` | hidden |
+| `set`, \|moved\| under 1 ms | `Set today at 14:05 from pool.ntp.org; it was already right.` | `text` | hidden |
+| `confirmed` | `Set today at 14:05, HTTPS agreed; moved 3 h 2 min back.` | `text` | hidden |
+| `unconfirmed` | `Off by 3 h 2 min; not applied: HTTPS could not confirm it.` | `text` | `Turn this off and use Set to, or add /etc/ssl/roots.pem.` |
+| `no-answer` | `No answer from pool.ntp.org.` | `text` | `Check the network, then turn this off and on to try again.` |
+| `no-address` | as the first row | `text.dim` | hidden |
+| `not-allowed` | `Not allowed: this user may not set the clock.` (section 5's line) | `text` | hidden |
+
+Three periods, not U+2026. The parts:
+
+- **When**: `today` or `yesterday` by the chosen zone's local date of `finished` against the
+  local date now, else `on <D> <Mon>` (`on 27 Oct`, the day without a leading zero, the month's
+  first three letters); then `at HH:MM`, 24-hour local time in the chosen zone, as the bar's
+  clock. A clock time rather than `3 minutes ago` because the pane is where clock times
+  belong, Windows shows the last synchronisation as a time, and a fixed text is retitled only
+  when the record changes or the local date turns over at midnight (checked on the tick),
+  not every minute.
+- **The server** as the record has it, so a `date --sync=time.example.com` on the CLI shows
+  its host here. A line longer than the label's 64 bytes is cut with `...`, the Task
+  Manager's rule; with the default server no line is.
+- **How far** (`moved_text`, one function, shared with nothing yet): under 1 s `<n> ms`; under
+  60 s `<s>.<t> s` (tenths floored, `0.4 s`, `59.9 s`); from 60 s the lease formatter of
+  `network-v0.3.md` section 2 (`<m> min`, `<h> h <m> min`, `<d> d <h> h`, every unit
+  floored), then ` forward` or ` back` by the sign. `Off by` uses the same text without a
+  direction (a person reading "off by 3 h 2 min" wants the size, and `Set to` takes the
+  right time either way). The widest success line, `Set yesterday at 14:05 from pool.ntp.org;
+  moved 1 h 0 min back.`, is 63 bytes and about 350 px; the widest remedy about 320 px; both
+  inside the 432 available.
+- **`HTTPS agreed`** names the second source in two words the person can look up; the full
+  story (which host, what it said) is the CLI's (`date --sync` prints it, `reason` keeps it).
+- **The no-disk note** on line 2, `No disk attached: this choice lasts until power-off.`
+  (Appearance's `NO_DISK` text), shows whenever there is no disk and no remedy claims line 2;
+  a remedy wins, as it is the thing to do now.
+- **Line 2 after a toggle that failed**: `EPERM` or `EACCES` on the settings file puts the
+  box back and shows `Not allowed: this user may not change Set automatically.` on line 1 in
+  `text` until the pane is shown again, as the zone's refusal does (8.4); the no-disk case
+  is not a failure (9.1).
+
+A `Set` while automatic is off replaces line 1 with section 5's result, as today; a sync
+result landing while the setting is on replaces whatever line 1 showed (the only `Set`
+possible then is on a machine without an adapter, where no sync runs).
+
+### 9.5 Keys, focus and pointer
+
+- Tab from the sidebar list: **`Set automatically`**, then the `Set to` field and `Set` when
+  enabled, the zone field, the list, then wraps to the search field; Shift+Tab the reverse.
+  Space toggles the focused box; Enter still goes to the window's default button `Set`,
+  disabled whenever it could act wrongly, so Enter on the box sets nothing. Showing the pane
+  does not move the focus.
+- Pointer: `Arrow` over the box and its label (the whole 28 px control is the hit target),
+  `IBeam` over the two fields, `Arrow` over a disabled field. No tooltip: the box has words
+  (toolkit v0.5, 2.1).
+- Section 8.6's rules for the zone field and list stand, 60 px lower.
+
+### 9.6 Every device class (D23)
+
+- **One column** (the pane narrower than 448, 8.7): the box at (16, 110), the width minus 32;
+  `Set to` at (16, 156), the field at (16, 176) with the width minus 136 and `Set` at
+  (width - 112, 176); line 1 at cell top 216, line 2 at 236; the zone section as 8.7 says, 60
+  lower (name 260, facts 280, field 304, list 340, three touch rows of 40 to 460); the pane
+  scrolls in the window's scroll view.
+- **Touch**: the check box's control is 40 tall (the mark centred, cell top +12), the rows
+  40 as everywhere; a tap on the label toggles.
+- **TV (scale 2)**: everything doubles; the box is the first thing Down from the sidebar
+  reaches, OK toggles it, and the ring is the only cue; a sync's result appears on the status
+  lines without any motion.
+- **Wearable**: the pane is one column as above; the box, the two status lines and `Now` are
+  what fits a screen, the rest scrolls.
+- **Headless**: no pane; `settings set time.automatic`, `date --sync`, `settings get time.sync`
+  and the MCP tools `settings_set`, `clock_sync`, `settings_get` are the whole capability.
+
+### 9.7 Palettes and motion
+
+Nothing new is drawn: the check box is the toolkit's in all four palettes (dark, light and
+both high-contrast rows of `toolkit-v0.5.md` 8.2 and `first-run-accessibility-v0.3.md` 2.4),
+whose ticked fill `button.primary` and tick `icon.dark` pass 10.4:1 or better everywhere, and
+its disabled look is the toolkit's; the lines use `text` and `text.dim` on `menu.bg` (dark
+11.4:1 for `text.dim`, light 5.4:1, both high-contrast rows 7:1 or better). Success and
+failure are told by words, never by colour (section 5's rule). Reduce motion changes
+nothing: the three periods of `Setting the clock from the network...` are text, not an
+animation, and a status that changes once when a sync ends is information (2.5's table).
+
+### 9.8 What an agent sees (D161, `wm show`)
+
+The box is a `checkbox` named `Set automatically` with the flag `checked` when ticked, `focusable`,
+`focused`; `invoke` toggles it, which is the same write as `settings_set time.automatic`, so
+it is not person-only (an agent with `write` may already set it). Lines 1 and 2 are `label`s
+with their drawn text, line 2 listed only while shown. `Set to`'s field and `Set` carry
+`disabled` while automatic is in charge. An agent that wants the facts calls `settings_get`
+with `time.automatic` and `time.sync`, or `clock_sync` to sync now, not the tree.
+
+### 9.9 Search words and budget
+
+- **Search words** added to sections 1 and 8.9: `automatic`, `automatically`, `sync`,
+  `synchronize`, `synchronise`, `NTP`, `SNTP`, `network time`, `internet time`, `time server`,
+  `pool.ntp.org`, plus the setting name `Set automatically`. `network` therefore also matches
+  this pane, after the Network pane once that is built; nothing else collides.
+- **Budget**: `CAPACITY` is 193 today. This section adds exactly **2 widgets** (17 the check
+  box, 18 line 2), so `CAPACITY` becomes **195** and `eggos_app::dialog::CAPACITY` is raised to
+  195 with it. The pane is its container plus 18 widgets.
+
+### 9.10 Acceptance (host tests, default 640x440, scale 1x; facts as 8.10's plus `automatic`,
+`has_adapter`, `connected`, `on_disk` and the record; realtime 1_793_282_709, zone `UTC` unless said)
+
+- `CAPACITY` is 195 and the tree holds 195. In window coordinates: the check box (192, 110),
+  28 tall, mark at (192, 116), label `Set automatically` at (216, 116); `Set to` at
+  (192, 156); the field (320, 150, 200, 28); `Set` (528, 150, 96, 28); line 1 at (192, 196);
+  line 2 at (192, 216); `Time zone` at (192, 240), the name's right edge 624 cell top 240,
+  the facts at 260; the zone field (192, 284, 304, 28); the count's right edge 624, cell top
+  290, hidden; the list (192, 320, 432, 72) with its labels at (216, 324), (216, 348),
+  (216, 372). Sections 7's and 8.10's other assertions hold at these places. The pane is 408
+  tall; every other pane keeps 348; at 640x360 the scroll view's content is 408.
+- `automatic` on, `has_adapter`: the box ticked, `Set to` in `text.dim`, the field and `Set`
+  disabled and skipped by Tab (Tab from the sidebar: the box, then the zone field). `automatic`
+  off: unticked, `Set to` in `text`, the field enabled and empty, line 1 `From the hardware
+  clock, read at boot.`. `automatic` on and no adapter: ticked, the field enabled, line 1
+  `No network adapter: the clock cannot be set from the network.` in `text.dim`.
+- Records with `automatic` on and an adapter: none and not connected → `Waiting for a network
+  address to set the clock.`; none and connected → `Not set from the network yet.` and line 2
+  `Turn this off and on to set it now.`; `syncing` → `Setting the clock from the network...`,
+  line 2 hidden; `set finished=1_793_282_709 server=pool.ntp.org moved_ms=12000` → `Set today
+  at 14:05 from pool.ntp.org; moved 12 s forward.`; `moved_ms=-400` → `...; moved 0.4 s
+  back.`; `moved_ms=0` → `...; it was already right.`; `moved_ms=-3600000` → `...; moved
+  1 h 0 min back.`; `finished` 86_400 earlier → `Set yesterday at 14:05 ...`; 172_800 earlier
+  → `Set on 27 Oct at 14:05 ...`; with `Europe/Paris` the same record reads `at 15:05`;
+  `confirmed moved_ms=-10920000` → `Set today at 14:05, HTTPS agreed; moved 3 h 2 min back.`;
+  `unconfirmed offset_ms=-10920000` → `Off by 3 h 2 min; not applied: HTTPS could not
+  confirm it.` and line 2 `Turn this off and use Set to, or add /etc/ssl/roots.pem.`;
+  `no-answer server=pool.ntp.org` → `No answer from pool.ntp.org.` and `Check the network,
+  then turn this off and on to try again.`; `not-allowed` → `Not allowed: this user may not
+  set the clock.`; `set server=time.example.com:123` with `finished` 90_000 earlier reads
+  `Set yesterday at 13:05 from time.example.com:123; moved 12 s forward.`, 69 bytes, cut to
+  its first 61 plus `...` (64 in all).
+- A tick with the same record retitles nothing; one with a changed record retitles only the
+  lines that changed; a tick across local midnight turns `today` into `yesterday`.
+- Clicking (216, 124) with `automatic` off writes `time.automatic=on` (one `Change::Automatic
+  (true)`), starts `/bin/date --sync` (the fake records the start), disables the three
+  widgets and shows `Setting the clock from the network...` in the same frame; clicking again
+  writes `off`, starts nothing, enables them and shows the "shown" line with line 2 hidden.
+  Space on the focused box does the same. Without an adapter the click writes `on`, starts
+  nothing, and the field stays enabled.
+- A write answered `EPERM` leaves the box as it was and shows `Not allowed: this user may not
+  change Set automatically.`; with `on_disk` false the write goes to `/run/eggos/settings`,
+  the box changes, and line 2 reads `No disk attached: this choice lasts until power-off.`
+  (unless a remedy is due); `settings get time.automatic` then prints the new value.
+- `settings set time.automatic off` on the CLI, then showing the pane, shows it unticked with
+  the field enabled; `settings set time.automatic maybe` answers `invalid value 'maybe' (on or
+  off)`; `settings get time.sync` prints `set 2026-10-29T14:05:09Z pool.ntp.org 12000` for
+  the first record above and `none` with no record; `settings set time.sync x` answers
+  `read-only`.
+- QEMU, all three architectures, in the boot test: `settings get time.automatic` prints `on`
+  and, within 10 s of `ip addr` showing an address, `settings get time.sync` prints a line
+  starting `set ` or `no-answer ` (the host decides which), never `none`.
+
+### 9.11 Decided by design (the owner can overrule any of these)
+
+A check box, not a switch; the row first, as on the three desktops; `Set to` disabled while
+the network clock is in charge, enabled when there is no adapter; one status line for the
+clock with a second line for the remedy, instead of a separate sync status; clock times
+(`today at 14:05`) rather than `3 minutes ago`; the pane grows to 408 and scrolls at the
+minimum window rather than losing a zone row; turning the box on syncs at once from the pane
+or the CLI, not from init; the record in `/run/eggos/clock-sync` and the read-only key
+`time.sync`; the no-disk case keeps the choice for the session in `/run/eggos/settings`; no
+`Sync now` button (off and on is that, and the CLI has `date --sync`).
+
+### 9.12 Left out of 0.3.0
+
+A `Sync now` button; a time server field in the pane (`--sync=host` on the CLI); the next
+sync's time; a `Set time zone automatically` row (needs a location, 8's Left out); the
+`reason` text in the pane; a notification when a large step is refused (the pane says it);
+retrying sooner than 24 h after a failure (init's business, and the remedy line covers it);
+`ago` wording; a history of syncs.

@@ -210,6 +210,22 @@ impl X86_64State {
     }
 }
 
+/// Whether programs see FP state the kernel never switches between them: on x86_64, `XSAVE`
+/// (`CR4.OSXSAVE`) or protection keys (`CR4.PKE`) turned on. Always `false` elsewhere and in
+/// host builds.
+pub fn programs_see_unswitched_state() -> bool {
+    #[cfg(all(eggos_kernel, target_arch = "x86_64"))]
+    {
+        use core::arch::x86_64::{__cpuid, __cpuid_count};
+        const CPUID_1_ECX_OSXSAVE: u32 = 1 << 27;
+        const CPUID_7_ECX_OSPKE: u32 = 1 << 4;
+        __cpuid(1).ecx & CPUID_1_ECX_OSXSAVE != 0
+            || (__cpuid(0).eax >= 7 && __cpuid_count(7, 0).ecx & CPUID_7_ECX_OSPKE != 0)
+    }
+    #[cfg(not(all(eggos_kernel, target_arch = "x86_64")))]
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

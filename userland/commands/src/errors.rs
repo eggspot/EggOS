@@ -140,6 +140,15 @@ pub const PERSON_ACTIVE: ErrorDefinition = error(
     "Wait a moment and try again: a person always goes first.",
     None,
 );
+/// `wm act`, `wm type` and `wm menu`: the window's app has left an event unread for 2 s, so
+/// the window is not responding (exit 75, D222).
+pub const NOT_RESPONDING: ErrorDefinition = error(
+    "not_responding",
+    Category::Busy,
+    "Wait for the app to catch up and try again; wm list shows (not responding) until it does, \
+     and wm close ends a window that stays so.",
+    Some("wm list"),
+);
 /// `wm`: there is no window server (`/dev/window` cannot be opened).
 pub const NO_WINDOW_SERVER: ErrorDefinition = error(
     "no_window_server",
@@ -399,8 +408,185 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
     None,
 );
 
+/// No download since boot has that id (D225).
+pub const NO_SUCH_DOWNLOAD: ErrorDefinition = error(
+    "no_such_download",
+    Category::NotFound,
+    "Check the id: download list shows the downloads since boot.",
+    None,
+);
+/// The download is over, or its fetch is gone, so there is nothing to cancel (D225).
+pub const ALREADY_ENDED: ErrorDefinition = error(
+    "already_ended",
+    Category::Failed,
+    "Nothing to do: download list shows how it ended.",
+    None,
+);
+/// The download is still running, so its record stays (D225).
+pub const STILL_DOWNLOADING: ErrorDefinition = error(
+    "still_downloading",
+    Category::Busy,
+    "Wait for it to end, or cancel it first with download cancel.",
+    None,
+);
+
+/// The registry key does not exist (D231).
+pub const NO_SUCH_KEY: ErrorDefinition = error(
+    "no_such_key",
+    Category::NotFound,
+    "Check the key: windows registry get shows a key's subkeys.",
+    None,
+);
+/// The registry value does not exist (D231).
+pub const NO_SUCH_VALUE: ErrorDefinition = error(
+    "no_such_value",
+    Category::NotFound,
+    "Check the name: windows registry get shows a key's values.",
+    None,
+);
+/// The key is in the machine's hive, which only an administrator changes (D231).
+pub const READ_ONLY_KEY: ErrorDefinition = error(
+    "read_only_key",
+    Category::ReadOnly,
+    "Change it under HKEY_CURRENT_USER, or as an administrator.",
+    None,
+);
+/// A predefined key cannot be created, deleted or edited (D231).
+pub const ROOT_KEY: ErrorDefinition = error(
+    "root_key",
+    Category::Refused,
+    "Name a key below the root.",
+    None,
+);
+/// The key has subkeys, so it cannot be deleted alone (D231).
+pub const HAS_SUBKEYS: ErrorDefinition = error(
+    "has_subkeys",
+    Category::Refused,
+    "Delete its subkeys first, or the whole key with windows registry delete.",
+    None,
+);
+/// A key or value name is empty, too long or holds a backslash (D231).
+pub const BAD_NAME: ErrorDefinition = error(
+    "bad_name",
+    Category::Usage,
+    "Use a shorter name without a backslash.",
+    None,
+);
+/// The data cannot be read as the value's type (D231).
+pub const BAD_DATA: ErrorDefinition = error(
+    "bad_data",
+    Category::Usage,
+    "Give a number, in decimal or after 0x, or pairs of hex digits for binary.",
+    None,
+);
+/// The value is larger than a registry value may be (D231).
+pub const VALUE_TOO_LARGE: ErrorDefinition = error(
+    "value_too_large",
+    Category::TooLarge,
+    "Store large data in a file and its path in the registry.",
+    None,
+);
+/// The key would be deeper than the registry allows (D231).
+pub const KEY_TOO_DEEP: ErrorDefinition = error(
+    "key_too_deep",
+    Category::TooLarge,
+    "Make the key higher up.",
+    None,
+);
+/// The registry file has reached its size limit (D231).
+pub const HIVE_FULL: ErrorDefinition = error(
+    "hive_full",
+    Category::TooLarge,
+    "Delete keys you no longer need.",
+    None,
+);
+/// The registry file is damaged (D231).
+pub const HIVE_DAMAGED: ErrorDefinition = error(
+    "hive_damaged",
+    Category::Damaged,
+    "Replace it with an empty one; the damaged file is kept beside it.",
+    Some("windows registry reset"),
+);
+/// The registry file could not be written (D231).
+pub const WRITE_FAILED: ErrorDefinition = error(
+    "write_failed",
+    Category::Failed,
+    "Check the disk and try again.",
+    None,
+);
+
+/// The definition of the error code `code`, if EggOS defines it.
+pub fn by_code(code: &[u8]) -> Option<&'static ErrorDefinition> {
+    ALL.iter()
+        .copied()
+        .find(|error| error.code.as_bytes() == code)
+}
+
+/// `component`: no component store is attached (D235).
+pub const NO_STORE: ErrorDefinition = error(
+    "no_store",
+    Category::NotFound,
+    "Attach the component store disk, or put its .img in the host share.",
+    None,
+);
+/// `component`: neither the store nor the installed components know the name (D235).
+pub const NO_SUCH_COMPONENT: ErrorDefinition = error(
+    "no_such_component",
+    Category::NotFound,
+    "Check the name: component list shows the components.",
+    Some("component list"),
+);
+/// `component`: another install or remove is running (D235).
+pub const COMPONENT_BUSY: ErrorDefinition = error(
+    "component_busy",
+    Category::Busy,
+    "Wait for the other install or remove, then try again.",
+    None,
+);
+/// `component`: an installed component needs it (D235).
+pub const NEEDED_BY: ErrorDefinition = error(
+    "needed_by",
+    Category::Refused,
+    "Remove the components that need it first.",
+    None,
+);
+/// `component`: a running program needs it (D235).
+pub const IN_USE: ErrorDefinition = error(
+    "in_use",
+    Category::Busy,
+    "Quit the programs that use it, then remove it.",
+    None,
+);
+/// `component`: a file in the store does not match its SHA-256; nothing was installed (D235).
+pub const STORE_DAMAGED: ErrorDefinition = error(
+    "store_damaged",
+    Category::Damaged,
+    "Get the component store again; nothing was installed.",
+    None,
+);
+/// `component`: the store could not be read before the copy finished (D235).
+pub const STORE_DETACHED: ErrorDefinition = error(
+    "store_detached",
+    Category::Failed,
+    "Attach the component store again, then install again.",
+    None,
+);
+/// `component`: an install failed; nothing was installed (D235).
+pub const INSTALL_FAILED: ErrorDefinition = error(
+    "install_failed",
+    Category::Failed,
+    "Read the message; nothing was installed.",
+    None,
+);
+/// `component`: a remove failed; the component stays installed (D235).
+pub const REMOVE_FAILED: ErrorDefinition = error(
+    "remove_failed",
+    Category::Failed,
+    "Read the message; the component stays installed.",
+    None,
+);
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 54] = [
+pub const ALL: [&ErrorDefinition; 79] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -418,6 +604,7 @@ pub const ALL: [&ErrorDefinition; 54] = [
     &BAD_CURSOR,
     &NO_SUCH_WINDOW,
     &PERSON_ACTIVE,
+    &NOT_RESPONDING,
     &NO_WINDOW_SERVER,
     &NO_SUCH_MENU_ITEM,
     &DIALOG_OPEN,
@@ -455,4 +642,28 @@ pub const ALL: [&ErrorDefinition; 54] = [
     &AUDIT_FULL,
     &REQUEST_ID_TOO_LONG,
     &CAPTURE_FAILED,
+    &NO_SUCH_DOWNLOAD,
+    &ALREADY_ENDED,
+    &STILL_DOWNLOADING,
+    &NO_SUCH_KEY,
+    &NO_SUCH_VALUE,
+    &READ_ONLY_KEY,
+    &ROOT_KEY,
+    &HAS_SUBKEYS,
+    &BAD_NAME,
+    &BAD_DATA,
+    &VALUE_TOO_LARGE,
+    &KEY_TOO_DEEP,
+    &HIVE_FULL,
+    &HIVE_DAMAGED,
+    &WRITE_FAILED,
+    &NO_STORE,
+    &NO_SUCH_COMPONENT,
+    &COMPONENT_BUSY,
+    &NEEDED_BY,
+    &IN_USE,
+    &STORE_DAMAGED,
+    &STORE_DETACHED,
+    &INSTALL_FAILED,
+    &REMOVE_FAILED,
 ];

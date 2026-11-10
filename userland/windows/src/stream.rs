@@ -48,8 +48,8 @@ impl Mode {
     /// The mode `letters` (an `fopen` mode string, without its NUL) ask for: `r`, `w` or `a`,
     /// then any of `+`, `b`, `t`, `x` (only with `w`) and `D` (a temporary file) and the
     /// letters Microsoft adds for caching hints (`c`, `n`, `S`, `R`, `T`, `N`), which change
-    /// nothing here; an encoding after a comma (`, ccs=UTF-8`) is refused. Without `b` the
-    /// stream is in text mode, Windows' default.
+    /// nothing here. What follows a comma (`, ccs=UTF-8`) is `crate::wide_stream`'s. Without
+    /// `b` the stream is in text mode, Windows' default.
     pub fn parse(letters: impl IntoIterator<Item = u32>) -> Option<Mode> {
         let mut letters = letters.into_iter();
         let mut mode = match char::from_u32(letters.next()?)? {
@@ -66,7 +66,7 @@ impl Mode {
             },
             _ => return None,
         };
-        for letter in letters {
+        for letter in letters.take_while(|letter| *letter != u32::from(b',')) {
             match char::from_u32(letter)? {
                 '+' => {
                     mode.read = true;
@@ -291,15 +291,56 @@ impl<B: Backing> Stream<B> {
             }
             taken = bytes.len();
         }
+        self.flush_if_due(bytes.contains(&LINE_FEED));
+        taken
+    }
+
+    /// Writes `bytes` as they are, without text mode's translation, `line_ended` when they end
+    /// a line for line buffering; whether all of them were taken.
+    pub fn write_untranslated(&mut self, bytes: &[u8], line_ended: bool) -> bool {
+        if !self.start_writing() || !self.put(bytes) {
+            return false;
+        }
+        self.flush_if_due(line_ended);
+        true
+    }
+
+    /// The next byte as the file holds it, without text mode's translation; `None` at the end
+    /// of the file or on an error.
+    pub fn get_untranslated_byte(&mut self) -> Option<u8> {
+        if let Some(byte) = self.pushed_back.take() {
+            return Some(byte);
+        }
+        if !self.start_reading() {
+            return None;
+        }
+        self.next_raw()
+    }
+
+    /// Sets the end-of-file indicator, as a Ctrl+Z read by a caller ends the text.
+    pub fn mark_end_of_file(&mut self) {
+        self.end_of_file = true;
+    }
+
+    /// Clears the end-of-file indicator, as a character pushed back by a caller does.
+    pub fn clear_end_of_file(&mut self) {
+        self.end_of_file = false;
+    }
+
+    /// Whether the stream is in text mode.
+    pub fn is_text(&self) -> bool {
+        self.mode.text
+    }
+
+    fn flush_if_due(&mut self, line_ended: bool) {
         let flush_now = match self.buffering {
             Buffering::Full => false,
-            Buffering::Line => bytes.contains(&LINE_FEED),
+            Buffering::Line => line_ended,
             Buffering::None => true,
         };
         if flush_now {
             let _ = self.write_pending();
         }
-        taken
     }
 
     /// Writes out what the buffer holds, or gives back what it read ahead (`fflush`). Bytes read
@@ -555,7 +596,7 @@ mod tests {
         assert!(mode("wx").exclusive);
         assert!(mode("rbS").read);
         assert!(mode("w+D").temporary && !mode("w+").temporary);
-        for refused in ["", "x", "rx", "q", "r?", "w, ccs=UTF-8"] {
+        for refused in ["", "x", "rx", "q", "r?", "wq, ccs=UTF-8"] {
             assert_eq!(
                 Mode::parse(refused.chars().map(u32::from)),
                 None,

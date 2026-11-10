@@ -10,7 +10,8 @@
 //! smaller system libraries a real app imports (D178) are the layer's too; programs built
 //! on Rust's standard library also import `bcryptprimitives` and `userenv`, MinGW's programs
 //! the old C runtime, `msvcrt`, and programs linked with the SDK's `ws2_32.lib` import Winsock
-//! from `ws2_32` by ordinal (D189).
+//! from `ws2_32` by ordinal (D189); C++ programs import the standard library's runtime,
+//! `msvcp140` and its companions `msvcp140_1`, `msvcp140_2` and `msvcp140_atomic_wait` (D230).
 
 use crate::text::equal_ignoring_ascii_case;
 
@@ -42,11 +43,12 @@ pub enum Library {
     Userenv,
     Msvcrt,
     Ws2_32,
+    Msvcp140,
 }
 
 impl Library {
     /// Every library, in a fixed order (a module handle is its place in it).
-    pub const ALL: [Library; 25] = [
+    pub const ALL: [Library; 26] = [
         Library::Kernel32,
         Library::Ntdll,
         Library::Shell32,
@@ -72,6 +74,7 @@ impl Library {
         Library::Userenv,
         Library::Msvcrt,
         Library::Ws2_32,
+        Library::Msvcp140,
     ];
 
     /// Its name, as [`library`] finds it.
@@ -102,11 +105,12 @@ impl Library {
             Library::Userenv => b"userenv",
             Library::Msvcrt => b"msvcrt",
             Library::Ws2_32 => b"ws2_32",
+            Library::Msvcp140 => b"msvcp140",
         }
     }
 }
 
-const SMALLER_LIBRARIES: usize = 16;
+const SMALLER_LIBRARIES: usize = 17;
 
 /// One function a library exports: its name and its address in the layer.
 #[derive(Debug, Clone, Copy)]
@@ -142,6 +146,8 @@ pub fn library(name: &[u8]) -> Option<Library> {
         Some(Library::VcRuntime)
     } else if is(b"ucrtbase") || starts_with_ignoring_case(name, b"api-ms-win-crt-") {
         Some(Library::Ucrt)
+    } else if is(b"msvcp140_1") || is(b"msvcp140_2") || is(b"msvcp140_atomic_wait") {
+        Some(Library::Msvcp140)
     } else {
         Library::ALL[Library::ALL.len() - SMALLER_LIBRARIES..]
             .iter()
@@ -210,6 +216,12 @@ mod tests {
         assert_eq!(library(b"MSVCRT.dll"), Some(Library::Msvcrt));
         assert_eq!(library(b"msvcrt"), Some(Library::Msvcrt));
         assert_eq!(library(b"WS2_32.dll"), Some(Library::Ws2_32));
+        assert_eq!(library(b"MSVCP140.dll"), Some(Library::Msvcp140));
+        assert_eq!(library(b"msvcp140_1.dll"), Some(Library::Msvcp140));
+        assert_eq!(
+            library(b"MSVCP140_ATOMIC_WAIT.dll"),
+            Some(Library::Msvcp140)
+        );
         assert_eq!(
             library(b"api-ms-win-core-synch-l1-2-0.dll"),
             Some(Library::Kernel32)
@@ -224,6 +236,7 @@ mod tests {
             b"api-ms-win-crt",
             b"vcruntime",
             b"msvcr100.dll",
+            b"msvcp120.dll",
         ] {
             assert_eq!(library(name), None);
         }

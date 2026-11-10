@@ -1487,7 +1487,7 @@ fn cursor_shapes_and_a_hidden_cursor_set_the_window_s_pointer() {
     session.pump();
     assert_eq!(
         session.fake.windows[&window].pointer_shapes,
-        [1, 4, 7, 8, 0, 6]
+        [1, 4, 7, 8, 9, 6]
     );
     session.send(
         CURSOR_DEVICE,

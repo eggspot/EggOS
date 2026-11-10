@@ -1,6 +1,6 @@
 use super::*;
 use crate::facts::Facts;
-use crate::settings_window::{PANES, STORAGE, SettingsWindow, pane_matches};
+use crate::settings_window::{ABOUT, PANES, STORAGE, SettingsWindow, pane_matches};
 use alloc::string::String;
 use eggos_eggfs::{BLOCK_SIZE, Finding, Problem};
 use eggos_files::storage::memory::{MemoryDisks, MemoryWholeDisk};
@@ -8,7 +8,7 @@ use eggos_files::storage::{Usage, list};
 use eggos_toolkit::input::{Input, Modifiers, MouseButton};
 
 const BLOCKS: usize = 512;
-const STORAGE_ROW_Y: i32 = 44 + 5 * 32 + 10;
+const STORAGE_ROW_Y: i32 = 44 + STORAGE as i32 * 32 + 10;
 const PANE_X: i32 = 176;
 
 fn machine() -> MemoryDisks {
@@ -135,7 +135,12 @@ fn the_storage_pane_comes_after_mouse_and_is_found_by_its_words() {
         "repair",
     ] {
         for pane in 0..PANES.len() {
-            assert_eq!(pane_matches(pane, word), pane == STORAGE, "{word} {pane}");
+            let information = word == "format" && pane == ABOUT;
+            assert_eq!(
+                pane_matches(pane, word),
+                pane == STORAGE || information,
+                "{word} {pane}"
+            );
         }
     }
     assert!(pane_matches(STORAGE, "disk") && pane_matches(STORAGE, "Disks"));
@@ -186,7 +191,7 @@ fn the_pane_is_laid_out_as_the_design_says() {
     assert_eq!(pane.status(tree), Some(kept(&in_use).as_str()));
     assert!(matches!(
         tree.kind(widgets.status),
-        Some(Kind::Label { colour: ink, .. }) if *ink == colour::TEXT_DIM
+        Some(Kind::Label { colour: ink, .. }) if *ink == Token::TextDim
     ));
     assert!(pane.report_lines(tree).is_empty());
 }

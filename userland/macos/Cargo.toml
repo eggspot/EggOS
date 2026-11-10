@@ -14,11 +14,13 @@ eggos-c-format = { path = "../c-format" }
 eggos-calendar = { path = "../../calendar" }
 eggos-element-tree = { path = "../element-tree" }
 eggos-macos-gui = { path = "../macos-gui" }
+eggos-math = { path = "../../math" }
+eggos-plist = { path = "../../plist" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
 eggos-toolkit = { path = "../toolkit" }
 
-[target.'cfg(any(target_arch = "aarch64", not(target_env = "musl")))'.dependencies]
+[target.'cfg(any(target_arch = "aarch64", not(eggos_user)))'.dependencies]
 eggos-translate = { path = "../../translate" }
 eggos-translation-loader = { path = "../translation-loader" }
 

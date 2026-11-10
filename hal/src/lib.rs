@@ -7,6 +7,13 @@
 
 #![cfg_attr(not(test), no_std)]
 
+#[cfg(all(eggos_kernel, eggos_user))]
+compile_error!(
+    "a build is the kernel's (`eggos_kernel`) or a program's (`eggos_user`), never both"
+);
+#[cfg(all(target_os = "none", not(eggos_kernel)))]
+compile_error!("a bare-metal build of the HAL needs `--cfg eggos_kernel` (.cargo/config.toml)");
+
 pub mod acpi;
 pub mod arch;
 pub mod command_line;

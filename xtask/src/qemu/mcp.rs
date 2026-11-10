@@ -1,6 +1,7 @@
 //! The MCP boot test (D136, D137): the release `run-eggos.sh --mcp` (or `run-eggos.ps1 -Mcp` on
 //! Windows hosts), written by `cargo xtask release`'s own writer, runs as a child with a host
-//! folder (holding `win-paint.exe` and the static Linux program) and a blank disk, and a
+//! folder (holding `win-paint.exe`, `win-controls.exe` and the static Linux program) and a
+//! blank disk, and a
 //! scripted MCP client drives it through the script's standard input and output, checking that
 //! every line the script prints there is a JSON-RPC message. Both boots run with no screen
 //! (`--no-window`, D144): no display or input device, the desktop drawn in memory, which each
@@ -8,10 +9,10 @@
 //!
 //! 1. No grants: the protocol probe and handshake, the tool list, each reading tool's CLI twin,
 //!    `ls` paging the host folder one entry and then the rest by its `next_cursor` (D164),
-//!    a large read with the client slow to drain it (QEMU must hold the output, not drop it),
-//!    `clock_get` within five minutes of the host's clock (D150), paths outside the roots,
-//!    hostile lines, and every tool that needs a grant refused with its grant named
-//!    (`wm_capture` with `view`).
+//!    `df`'s records as its `structuredContent`'s `items` (D226), a large read with the
+//!    client slow to drain it (QEMU must hold the output, not drop it), `clock_get` within
+//!    five minutes of the host's clock (D150), paths outside the roots, hostile lines, and
+//!    every tool that needs a grant refused with its grant named (`wm_capture` with `view`).
 //! 2. `--mcp-allow view,write,run,install`: `clock_set` refused without `confirm`, then a day
 //!    ahead and back, each read by `clock_get` (D150); writing, replacing with `confirm`, reading back,
 //!    refused paths (one through a symbolic link `ln -s` made out of the home, D170),
@@ -22,7 +23,10 @@
 //!    `settings_get` (D163) sees, after `settings_set` chose Windows' layout; on x86_64 and aarch64 `win-paint` captured,
 //!    minimised, typed into with `wm_type`, captured again with the text, its drawn text read
 //!    from `wm_show` (D162) and closed (an
-//!    installed app runs in the terminal, which takes the next one when it ends), `linux-paint`
+//!    installed app runs in the terminal, which takes the next one when it ends), then
+//!    `win-controls` installed, its edit set to egg, Add invoked, the egg row selected and Upper
+//!    case invoked with `wm_act`, until `wm_show` shows the row selected and the box checked
+//!    (D227), closed and uninstalled, `linux-paint`
 //!    captured, covered by Settings, clicked, typed into and captured after each, every
 //!    capture compared exactly with the host's drawing, the terminal's window refused, a key
 //!    pressed in it and a scroll, and `edit_open` opening the share's text file in a Text
@@ -79,11 +83,14 @@ const GRANT_TAKEN_BACK: &str =
     "tee needs the write grant, which the user has not given this agent or has taken back";
 const REVOKED_LOCAL_LINE: &[u8] = b"\nlocal\tdeny\tdeny\tdeny\tdeny\tlocal\n";
 const CAPTURE_POLL: Duration = Duration::from_secs(1);
+const WINDOWS_CONTROLS_PROGRAM: &str = "win-controls.exe";
+const WINDOWS_CONTROLS_APP: &str = "win-controls";
+const ACTED: &str = "Acted on an element of window";
 
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 17] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 19] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -113,6 +120,8 @@ pub const TWIN_CALLS: [(&str, &str, &str); 17] = [
     ("disk_list", "{}", ""),
     ("agent_show", "{}", r#""id":"local""#),
     ("wm_desktop_list", "{}", r#""current":true"#),
+    ("download_list", "{}", ""),
+    ("component_list", "{}", ""),
 ];
 
 /// Every call of a reading tool whose answer is checked whether it succeeded or not: the tool,
@@ -145,12 +154,32 @@ pub const FETCH_ARGUMENTS: &str = r#"{"url":"http://10.0.2.2:1/x","path":"/home/
 /// What `fetch`'s failure says in the second boot.
 pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
-/// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
-/// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 38] = [
+/// Every tool that needs a grant, with the arguments the first boot calls it with, refused for
+/// its grant, and that grant; the second boot runs only some of them with the grant.
+pub const GRANTED_TOOLS: [(&str, &str, &str); 46] = [
     (
         "ln",
         r#"{"target":"x","link":"/home/root/x-link"}"#,
+        "write",
+    ),
+    (
+        "file_copy",
+        r#"{"source":"/home/root/x","destination":"/home/root/y","confirm":true}"#,
+        "write",
+    ),
+    (
+        "file_move",
+        r#"{"source":"/home/root/x","destination":"/home/root/y","confirm":true}"#,
+        "write",
+    ),
+    (
+        "folder_create",
+        r#"{"path":"/home/root/x-folder"}"#,
+        "write",
+    ),
+    (
+        "file_remove",
+        r#"{"path":"/home/root/x","confirm":true}"#,
         "write",
     ),
     (
@@ -242,6 +271,14 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 38] = [
     ("clipboard_set", r#"{"content":"x"}"#, "write"),
     ("kill", r#"{"pid":1,"confirm":true}"#, "run"),
     ("wm_desktop_new", "{}", "run"),
+    ("download_cancel", r#"{"pid":1,"confirm":true}"#, "run"),
+    ("download_clear", "{}", "write"),
+    ("component_install", r#"{"name":"windows-apps"}"#, "install"),
+    (
+        "component_remove",
+        r#"{"name":"windows-apps","confirm":true}"#,
+        "install",
+    ),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [
@@ -447,6 +484,7 @@ pub(super) struct ToolResult {
     scale: Option<u64>,
     truncated: Option<bool>,
     next_cursor: Option<String>,
+    items: Option<String>,
 }
 
 impl ToolResult {
@@ -489,6 +527,12 @@ impl ToolResult {
             .and_then(|structured| structured.get("next_cursor"))
             .and_then(Value::as_str)
             .map(|cursor| cursor.chars().collect());
+        let items = structured
+            .and_then(|structured| structured.get("items"))
+            .and_then(|items| match items {
+                Value::Array(_) => Some(String::from_utf8_lossy(items.raw()).into_owned()),
+                _ => None,
+            });
         Some(Self {
             texts,
             is_error: result.get("isError") == Some(Value::Bool(true)),
@@ -496,6 +540,7 @@ impl ToolResult {
             scale,
             truncated,
             next_cursor,
+            items,
         })
     }
 
@@ -533,6 +578,7 @@ fn prepare(
     kernel: &Path,
     programs: &Path,
     linux_gui_program: &Path,
+    controls_program: &Path,
 ) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     let dir = crate::target_directory().join("mcp-test").join(arch.name);
     let script = crate::release::write_test_dist(arch, kernel, &dir)?;
@@ -549,6 +595,8 @@ fn prepare(
     }
     std::fs::copy(linux_gui_program, apps.join(LINUX_GUI_PROGRAM))
         .map_err(|e| format!("{}: {e}", linux_gui_program.display()))?;
+    std::fs::copy(controls_program, apps.join(WINDOWS_CONTROLS_PROGRAM))
+        .map_err(|e| format!("{}: {e}", controls_program.display()))?;
     let disk = dir.join("disk.img");
     reset_disk_image(&disk, TEST_DISK_BYTES)?;
     Ok((script, apps, disk))
@@ -624,6 +672,19 @@ fn pages_ls(client: &mut Client) -> Result<(), String> {
     )
 }
 
+fn lists_items(client: &mut Client) -> Result<(), String> {
+    let result = client.call("df", r#"{"path":"/media/host"}"#)?;
+    let items = result.items.as_deref().unwrap_or_default();
+    expect(
+        !result.is_error && items.contains(r#""mounted_on":"/media/host""#),
+        client.arch,
+        &format!(
+            "df's structuredContent holds no items naming /media/host: {:?}",
+            result.items
+        ),
+    )
+}
+
 fn session(client: &mut Client) -> Result<(), String> {
     let arch = client.arch;
     client.send(br#"{"jsonrpc":"2.0","id":"probe","method":"server/discover","params":{}}"#)?;
@@ -661,11 +722,16 @@ fn session(client: &mut Client) -> Result<(), String> {
     expect(answer.contains(r#""result":{}"#), arch, "ping")?;
     let answer = client.request("tools/list", "{}")?;
     for tool in &eggos_mcp::tools::TOOLS {
-        expect(
-            answer.contains(&format!(r#""name":"{}""#, tool.name)),
-            arch,
-            &format!("tools/list lacks {}", tool.name),
-        )?;
+        let listed = answer.contains(&format!(r#""name":"{}""#, tool.name));
+        if tool.needs == Some(eggos_mcp::tools::WINDOWS_LAYER) && !runs_windows_programs(arch) {
+            expect(
+                !listed,
+                arch,
+                &format!("tools/list offers {} without the Windows layer", tool.name),
+            )?;
+        } else {
+            expect(listed, arch, &format!("tools/list lacks {}", tool.name))?;
+        }
     }
     expect(
         answer.contains(r#""readOnlyHint":true"#),
@@ -705,6 +771,7 @@ fn session(client: &mut Client) -> Result<(), String> {
         )?;
     }
     pages_ls(client)?;
+    lists_items(client)?;
     clock_near(client, host_seconds(), "the first boot")?;
     client.paused.store(true, Ordering::Release);
     let id = client.next_id;
@@ -919,6 +986,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
     let confirmed =
         format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n","confirm":true}}"#);
     succeeds(client, "tee", &confirmed, "Wrote")?;
+    file_tools(client)?;
     refused(client, "fetch", FETCH_ARGUMENTS, FETCH_FAILURE)?;
     succeeds(
         client,
@@ -1132,6 +1200,72 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
     revoke_everything(client)
 }
 
+fn file_tools(client: &mut Client) -> Result<(), String> {
+    const FOLDER: &str = "/home/root/mcp-files/inner";
+    succeeds(
+        client,
+        "folder_create",
+        &format!(r#"{{"path":"{FOLDER}","parents":true}}"#),
+        "Made the folder /home/root/mcp-files/inner.",
+    )?;
+    let copy = format!("{FOLDER}/copy.txt");
+    succeeds(
+        client,
+        "file_copy",
+        &format!(r#"{{"source":"{NOTE}","destination":"{copy}"}}"#),
+        &format!("Copied {NOTE} to {copy}."),
+    )?;
+    refused(
+        client,
+        "file_copy",
+        &format!(r#"{{"source":"{NOTE}","destination":"{copy}"}}"#),
+        "confirm: true",
+    )?;
+    refused(
+        client,
+        "file_copy",
+        &format!(r#"{{"source":"{NOTE}","destination":"{FOLDER}"}}"#),
+        "destination is a folder",
+    )?;
+    let moved = format!("{FOLDER}/moved.txt");
+    succeeds(
+        client,
+        "file_move",
+        &format!(r#"{{"source":"{copy}","destination":"{moved}"}}"#),
+        &format!("Moved {copy} to {moved}."),
+    )?;
+    succeeds(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{moved}"}}"#),
+        &format!("{CONTENT_MARKER} second\n"),
+    )?;
+    refused(
+        client,
+        "file_remove",
+        r#"{"path":"/home/root/mcp-files","confirm":true}"#,
+        "recursive: true",
+    )?;
+    succeeds(
+        client,
+        "file_remove",
+        r#"{"path":"/home/root/mcp-files","recursive":true,"dry_run":true}"#,
+        "Dry run: file_remove would delete the folder /home/root/mcp-files",
+    )?;
+    succeeds(
+        client,
+        "file_remove",
+        r#"{"path":"/home/root/mcp-files","recursive":true,"confirm":true}"#,
+        "Deleted /home/root/mcp-files and everything in it, for good.",
+    )?;
+    refused(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{moved}"}}"#),
+        "No such file",
+    )
+}
+
 fn revoke_everything(client: &mut Client) -> Result<(), String> {
     succeeds(client, "agent_list", "{}", r#""id":"local""#)?;
     let revoked = run_program(client, &["/bin/agent", "revoke", "local"])?;
@@ -1343,7 +1477,7 @@ fn run_program(client: &mut Client, arguments: &[&str]) -> Result<ToolResult, St
     )
 }
 
-fn settings_session(client: &mut Client) -> Result<u32, String> {
+fn settings_session(client: &mut Client, windows_layer: bool) -> Result<u32, String> {
     let arch = client.arch;
     succeeds(
         client,
@@ -1359,7 +1493,7 @@ fn settings_session(client: &mut Client) -> Result<u32, String> {
         ..Facts::example()
     };
     let (width, height) = DEFAULT_SIZE;
-    let expected: Vec<Image> = settings_window_images(&facts)
+    let expected: Vec<Image> = settings_window_images(&facts, windows_layer)
         .into_iter()
         .filter_map(|pixels| {
             Image {
@@ -1486,6 +1620,135 @@ fn win_paint_session(client: &mut Client, title: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub(super) fn element_of(tree: &str, role: &str, name: &str) -> Option<u32> {
+    tree.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        let id = words.next()?.parse().ok()?;
+        if words.next() != Some(role) {
+            return None;
+        }
+        let quoted = line.split('"').nth(1)?;
+        (quoted.replace('&', "") == name).then_some(id)
+    })
+}
+
+pub(super) fn element_line(tree: &str, id: u32) -> &str {
+    tree.lines()
+        .find(|line| line.split_whitespace().next() == Some(id.to_string().as_str()))
+        .unwrap_or("")
+}
+
+fn act(client: &mut Client, window: u32, element: u32, action: &str) -> Result<(), String> {
+    succeeds(
+        client,
+        "wm_act",
+        &format!(r#"{{"window":{window},"element":{element},"action":"{action}"}}"#),
+        ACTED,
+    )
+    .map(drop)
+}
+
+fn shown_until(
+    client: &mut Client,
+    window: u32,
+    what: &str,
+    holds: impl Fn(&str) -> bool,
+) -> Result<String, String> {
+    let deadline = Instant::now() + WINDOW_TIMEOUT;
+    loop {
+        let tree = succeeds(client, "wm_show", &format!(r#"{{"window":{window}}}"#), "")?;
+        let tree = tree.all();
+        if holds(&tree) {
+            return Ok(tree);
+        }
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            &format!("wm_show of win-controls never showed {what}: {tree}"),
+        )?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn win_controls_session(client: &mut Client) -> Result<(), String> {
+    use eggos_windows_gui_tests::controls as scene;
+    succeeds(
+        client,
+        "app_install",
+        &format!(r#"{{"path":"/media/host/{WINDOWS_CONTROLS_PROGRAM}"}}"#),
+        "Installed",
+    )?;
+    succeeds(
+        client,
+        "app_open",
+        &format!(r#"{{"name":"{WINDOWS_CONTROLS_APP}"}}"#),
+        "Opened",
+    )?;
+    let window = window_titled(client, scene::TITLE)?;
+    let tree = shown_until(client, window, "its edit", |tree| {
+        tree.contains(" text-field ")
+    })?;
+    let missing =
+        |what: &str| client.fail(format!("wm_show of win-controls lists no {what}: {tree}"));
+    let name = tree
+        .lines()
+        .find_map(|line| {
+            let mut words = line.split_whitespace();
+            let id = words.next()?.parse::<u32>().ok()?;
+            (words.next() == Some("text-field")).then_some(id)
+        })
+        .ok_or_else(|| missing("text field"))?;
+    let add = element_of(&tree, "button", "Add").ok_or_else(|| missing("Add button"))?;
+    let upper = element_of(&tree, "checkbox", "Upper case")
+        .ok_or_else(|| missing("Upper case check box"))?;
+    succeeds(
+        client,
+        "wm_act",
+        &format!(
+            r#"{{"window":{window},"element":{name},"action":"set-text","text":"{}"}}"#,
+            scene::TYPED
+        ),
+        ACTED,
+    )?;
+    act(client, window, add, "invoke")?;
+    let tree = shown_until(client, window, "egg in its list", |tree| {
+        element_of(tree, "list-item", scene::TYPED).is_some()
+    })?;
+    let egg = element_of(&tree, "list-item", scene::TYPED)
+        .ok_or_else(|| client.fail("the egg row vanished"))?;
+    act(client, window, egg, "select")?;
+    act(client, window, upper, "invoke")?;
+    shown_until(
+        client,
+        window,
+        "egg selected and Upper case checked",
+        |tree| {
+            element_line(tree, egg).contains("selected")
+                && element_line(tree, upper).contains("checked")
+        },
+    )?;
+    run_program(client, &["/bin/wm", "close", &window.to_string()])?;
+    let deadline = Instant::now() + WINDOW_TIMEOUT;
+    while wm_list_rows(client)?
+        .iter()
+        .any(|row| row.first() == Some(&window.to_string()))
+    {
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            "win-controls did not end when its window was closed",
+        )?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    succeeds(
+        client,
+        "app_uninstall",
+        &format!(r#"{{"name":"{WINDOWS_CONTROLS_APP}","confirm":true}}"#),
+        "Uninstalled",
+    )
+    .map(drop)
+}
+
 fn linux_paint_session(client: &mut Client, settings: u32) -> Result<u32, String> {
     let arch = client.arch;
     succeeds(
@@ -1559,9 +1822,10 @@ fn linux_paint_session(client: &mut Client, settings: u32) -> Result<u32, String
 }
 
 fn window_session(client: &mut Client, paint_title: Option<&str>) -> Result<(), String> {
-    let settings = settings_session(client)?;
+    let settings = settings_session(client, paint_title.is_some())?;
     if let Some(title) = paint_title {
         win_paint_session(client, title)?;
+        win_controls_session(client)?;
     }
     linux_paint_session(client, settings)?;
     let terminal = window_where(client, "the terminal", |row| {
@@ -1767,8 +2031,10 @@ pub fn check(
     kernel: &Path,
     programs: &Path,
     linux_gui_program: &Path,
+    controls_program: &Path,
 ) -> Result<(), String> {
-    let (script, apps, disk) = prepare(arch, kernel, programs, linux_gui_program)?;
+    let (script, apps, disk) =
+        prepare(arch, kernel, programs, linux_gui_program, controls_program)?;
     eprintln!("xtask: {}: running {} --mcp", arch.name, script.display());
     let mut client = Client::start(arch, &script, &apps, &disk, None)?;
     let outcome = session(&mut client);
@@ -1879,7 +2145,10 @@ mod tests {
 
     #[test]
     fn every_tool_is_called_by_the_check() {
-        for tool in &eggos_mcp::tools::TOOLS {
+        for tool in eggos_mcp::tools::TOOLS
+            .iter()
+            .filter(|tool| tool.needs.is_none())
+        {
             let read = TWIN_CALLS.iter().any(|(name, _, _)| *name == tool.name)
                 || ANSWERED_CALLS.iter().any(|(name, _, _)| *name == tool.name);
             let granted = GRANTED_TOOLS.iter().find(|(name, _, _)| *name == tool.name);
@@ -1911,7 +2180,7 @@ mod tests {
             ..Facts::example()
         };
         let (width, height) = DEFAULT_SIZE;
-        let [shown, hidden] = settings_window_images(&facts);
+        let [shown, hidden] = settings_window_images(&facts, false);
         let shrunk = Image {
             width,
             height,

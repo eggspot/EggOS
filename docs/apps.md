@@ -37,7 +37,7 @@ the app appears there and on the desktop.
 `app` is the command; the installer's window is the same capability with dialogs (D22, D134).
 
 ```
-app install [--name <name>] [--entry <path>] [--arguments <words>] [--environment <variables>] [--window] [--] <path>
+app install [--name <name>] [--entry <path>] [--arguments <words>] [--environment <variables>] [--console | --no-console] [--window] [--] <path>
 app uninstall [--window] [--dry-run] [--] <name>   (app remove is the same)
 app open [--] <name>
 app list [--json] [--limit <count>] [--after <cursor>]
@@ -47,9 +47,20 @@ app icon [--size 48|32] [-o <file.png>] [--] <name> [<file.png>]
 
 `--` ends the options: the word after it is the path or name even if it starts with `-`.
 
+A console app (D223) opens in a terminal window of its own, titled `<name> - Terminal`, which
+closes when the app exits with 0 and otherwise stays with a line saying how it ended. The
+installer writes `console=true` in the manifest for a Windows program of the console subsystem,
+a Linux program that needs no GUI library and a bare macOS tool, and nothing for a Windows GUI
+program, an `.app` bundle or a Linux program whose shared libraries (its `DT_NEEDED` entries)
+include X11, xcb, the Wayland client library, SDL, GTK, Qt's GUI module or GLFW
+(`eggos_app::gui_libraries::GUI_LIBRARIES`) or that comes in a `.zip` carrying one of them;
+`--console` and `--no-console` decide instead. The launcher, `app open` and `app_open`
+then start `/bin/terminal -t <name> -e /bin/eggsh -c <line>`.
+
 ### What you can install today, and apps to try
 
-On the release images (D152):
+On the release images, once the layer's component is installed for Windows and macOS programs
+(D235):
 
 | Kind | Where it installs | What runs |
 |------|-------------------|-----------|
@@ -165,7 +176,8 @@ is built on a Mac (Apple's linker builds it).
   Windows or macOS program whose layer is not installed (`/usr/lib/eggos/windows`,
   `/usr/lib/eggos/macos`) is refused too (`it needs the Windows layer, which is not
   installed`), since nothing could open it (D18).
-  The x86_64 and aarch64 release images carry both layers (D152); riscv64 runs neither.
+  The layers are components (D235): the x86_64 and aarch64 stores offer both (`component
+  install windows-apps` or `mac-apps`); riscv64 runs neither.
 - A failure while copying (`/Applications is read-only because EggOS started without a
   disk`, `not enough space on the disk (ENOSPC)`, an I/O error) removes what was copied. A
   folder of that name without a valid manifest (an install or uninstall that was cut short)
@@ -236,8 +248,8 @@ is built on a Mac (Apple's linker builds it).
   prompt (for a `.zip`, an `Inside:` line names the program in it); in the
   `Apps` place (`/Applications`) a double-click on an app opens it as its icon does and Delete
   or `Uninstall...` asks to uninstall it.
-- Not yet: removing or installing a layer on its own (the component manager, D18, D152);
-  `--force` to replace an installed app (uninstall it first).
+- Not yet: `--force` to replace an installed app (uninstall it first). A layer is installed and
+  removed on its own with `component` (D235).
 
 ## The Text Editor: `edit`
 

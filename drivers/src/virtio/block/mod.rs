@@ -1,12 +1,20 @@
-//! The virtio block device (virtio 1.2, 5.2), polled: one request queue, one request at a time,
-//! each a header the device reads, the data (none for a flush) and a status byte the device
-//! writes. Disks are
-//! addressed in sectors of [`SECTOR_SIZE`] bytes whatever their own block size; a transfer
-//! larger than [`MAX_TRANSFER`] goes as several requests.
+//! The virtio block device (virtio 1.2, 5.2): one request queue with up to
+//! [`MAX_IN_FLIGHT`] requests in flight (D220), each a header the device reads, the data (none
+//! for a flush) and a status byte the device writes, in a header, a status byte and a run of
+//! data slots of its own ([`requests`]). A transfer's requests are posted together and complete
+//! in any order; every call returns only once all of its requests did, and a flush is posted
+//! alone after every earlier request completed, so a file system's write barriers hold. Disks
+//! are addressed in sectors of [`SECTOR_SIZE`] bytes whatever their own block size; a transfer
+//! larger than [`MAX_TRANSFER`] goes as several requests. The driver polls the used ring, or,
+//! after [`VirtioBlock::enable_interrupts`], the device interrupts as each request completes
+//! and the caller's `keep_waiting` sleeps until then.
+
+pub mod requests;
 
 use super::queue::{Buffer, SplitQueue};
 use super::{Error, ResetDone, Transport, device_type};
 use crate::dma::{DmaAddr, DmaMemory};
+pub use requests::{DATA_SLOTS, MAX_IN_FLIGHT, RequestTable, SLOT_BYTES};
 
 #[cfg(test)]
 mod tests;
@@ -14,15 +22,16 @@ mod tests;
 /// The unit requests address the disk in, whatever its own block size.
 pub const SECTOR_SIZE: usize = 512;
 /// Entries of the request queue the driver sets up, at most: a request takes three.
-pub const QUEUE_SIZE: u16 = 8;
-/// Where the request header starts in the driver's DMA memory; the queue is at its start.
-pub const HEADER_OFFSET: usize = 1024;
-/// Where the status byte the device writes is.
-pub const STATUS_OFFSET: usize = HEADER_OFFSET + HEADER_BYTES;
-/// Where the data of a request starts.
+pub const QUEUE_SIZE: u16 = 64;
+/// Where the request headers start in the driver's DMA memory, one per request number; the
+/// queue is at its start.
+pub const HEADER_OFFSET: usize = 2048;
+/// Where the status bytes the device writes are, one per request number.
+pub const STATUS_OFFSET: usize = HEADER_OFFSET + MAX_IN_FLIGHT * HEADER_BYTES;
+/// Where the data slots start.
 pub const DATA_OFFSET: usize = 4096;
-/// The most bytes one request moves.
-pub const MAX_TRANSFER: usize = 60 * 1024;
+/// The most bytes one request moves: every data slot.
+pub const MAX_TRANSFER: usize = DATA_SLOTS * SLOT_BYTES;
 /// The DMA memory the driver needs.
 pub const MEMORY_BYTES: usize = DATA_OFFSET + MAX_TRANSFER;
 
@@ -32,8 +41,9 @@ const DESCRIPTORS_PER_REQUEST: u16 = 3;
 const NO_STATUS: u8 = 0xff;
 
 const _: () = assert!(super::queue::memory_size(QUEUE_SIZE) <= HEADER_OFFSET);
-const _: () = assert!(STATUS_OFFSET < DATA_OFFSET);
+const _: () = assert!(STATUS_OFFSET + MAX_IN_FLIGHT <= DATA_OFFSET);
 const _: () = assert!(MAX_TRANSFER.is_multiple_of(SECTOR_SIZE));
+const _: () = assert!(SLOT_BYTES.is_multiple_of(SECTOR_SIZE));
 
 /// Feature bits of the block device (virtio 1.2, 5.2.3).
 pub mod feature {
@@ -69,7 +79,7 @@ pub mod config {
     pub const CAPACITY_OFFSET: usize = 0;
 }
 
-/// A virtio block device, set up and polled.
+/// A virtio block device, set up.
 #[derive(Debug)]
 pub struct VirtioBlock<T: Transport, M: DmaMemory> {
     transport: T,
@@ -78,7 +88,7 @@ pub struct VirtioBlock<T: Transport, M: DmaMemory> {
     sectors: u64,
     read_only: bool,
     flushes: bool,
-    request_pending: bool,
+    requests: RequestTable,
 }
 
 impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
@@ -140,7 +150,7 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
             sectors,
             read_only: accepted & feature::READ_ONLY != 0,
             flushes: accepted & feature::FLUSH != 0,
-            request_pending: false,
+            requests: RequestTable::new(),
         })
     }
 
@@ -159,33 +169,47 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
         self.read_only
     }
 
+    /// Has the device interrupt as it completes requests, for a driver whose `keep_waiting`
+    /// sleeps until an interrupt instead of polling (D220); requests answered before are found
+    /// by the next look at the used ring.
+    pub fn enable_interrupts(&mut self) {
+        self.queue.enable_used_notifications();
+    }
+
+    /// How many requests are in flight: posted, and not yet handed back to a caller.
+    pub fn in_flight(&self) -> usize {
+        self.requests.in_flight()
+    }
+
     /// Reads the sectors from `sector` on into `buffer`, whose length must be a whole number
-    /// of sectors, polling while `keep_waiting` says to. A request the device has not answered
-    /// when polling stops stays posted ([`Error::TimedOut`]): the next call waits for it first.
+    /// of sectors, polling while `keep_waiting` says to. Requests the device has not answered
+    /// when polling stops stay posted ([`Error::TimedOut`]): the next call waits for them first.
     pub fn read(
         &mut self,
         sector: u64,
         buffer: &mut [u8],
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
-        self.check_range(sector, buffer.len())?;
-        let mut at = sector;
-        for chunk in buffer.chunks_mut(MAX_TRANSFER) {
-            self.request(request::IN, at, chunk.len(), keep_waiting)?;
-            // SAFETY: the data area of the driver's DMA memory holds `chunk.len()` bytes or more
-            // (`MAX_TRANSFER`), which the device wrote and handed back with the request's
-            // completion (its used index read with acquire ordering), and does not touch again
-            // until the next request; `chunk` is the caller's own memory, apart from it.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    self.memory.as_mut_ptr().wrapping_add(DATA_OFFSET),
-                    chunk.as_mut_ptr(),
-                    chunk.len(),
-                )
-            };
-            at += (chunk.len() / SECTOR_SIZE) as u64;
+        self.read_many(&mut [(sector, buffer)], keep_waiting)
+    }
+
+    /// Reads every one of `reads`, each the sectors from its first one into its buffer (a whole
+    /// number of sectors), with as many requests in flight at once as the queue and the data
+    /// slots allow, polling while `keep_waiting` says to; refused without a request when one of
+    /// them is out of range.
+    pub fn read_many(
+        &mut self,
+        reads: &mut [(u64, &mut [u8])],
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        for (sector, buffer) in reads.iter() {
+            self.check_range(*sector, buffer.len())?;
         }
-        Ok(())
+        let mut job = ReadJob {
+            reads,
+            cursor: Cursor::default(),
+        };
+        self.transfer(request::IN, &mut job, keep_waiting)
     }
 
     /// Writes `buffer`, a whole number of sectors, to the sectors from `sector` on, polling
@@ -200,24 +224,12 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
             return Err(Error::ReadOnly);
         }
         self.check_range(sector, buffer.len())?;
-        let mut at = sector;
-        for chunk in buffer.chunks(MAX_TRANSFER) {
-            if self.request_pending {
-                self.wait_for_answer(keep_waiting)?;
-            }
-            // SAFETY: the data area of the driver's DMA memory holds `chunk.len()` bytes or more,
-            // and no request is posted, so the device does not read or write it now.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    chunk.as_ptr(),
-                    self.memory.as_mut_ptr().wrapping_add(DATA_OFFSET),
-                    chunk.len(),
-                )
-            };
-            self.request(request::OUT, at, chunk.len(), keep_waiting)?;
-            at += (chunk.len() / SECTOR_SIZE) as u64;
-        }
-        Ok(())
+        let mut job = WriteJob {
+            sector,
+            buffer,
+            cursor: Cursor::default(),
+        };
+        self.transfer(request::OUT, &mut job, keep_waiting)
     }
 
     /// Whether the device has a volatile write cache that [`Self::flush`] writes back.
@@ -226,13 +238,14 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
     }
 
     /// Returns once every write before it is on stable storage, polling while `keep_waiting`
-    /// says to. A device that did not offer `VIRTIO_BLK_F_FLUSH` has no volatile cache: its
-    /// writes are stable when they complete, and there is nothing to do.
+    /// says to. The flush is posted alone, once every earlier request completed, and nothing is
+    /// posted until it completes. A device that did not offer `VIRTIO_BLK_F_FLUSH` has no
+    /// volatile cache: its writes are stable when they complete, and there is nothing to do.
     pub fn flush(&mut self, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
         if !self.flushes || self.read_only {
             return Ok(());
         }
-        self.request(request::FLUSH, 0, 0, keep_waiting)
+        self.transfer(request::FLUSH, &mut FlushJob(false), keep_waiting)
     }
 
     fn check_range(&self, sector: u64, bytes: usize) -> Result<(), Error> {
@@ -246,20 +259,113 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
         }
     }
 
-    fn request(
+    fn transfer(
         &mut self,
         kind: u32,
-        sector: u64,
-        len: usize,
+        job: &mut dyn Job,
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
-        if self.request_pending {
-            self.wait_for_answer(keep_waiting)?;
+        self.drain(keep_waiting)?;
+        let mut held: [Option<Piece>; MAX_IN_FLIGHT] = [None; MAX_IN_FLIGHT];
+        let mut failure = None;
+        let mut next = job.next_piece();
+        loop {
+            let mut posted_any = false;
+            while failure.is_none() {
+                let Some(piece) = next else {
+                    break;
+                };
+                match self.post(kind, piece, job)? {
+                    Some(request) => {
+                        held[request] = Some(piece);
+                        next = job.next_piece();
+                        posted_any = true;
+                    }
+                    None => break,
+                }
+            }
+            if posted_any && self.queue.should_notify() {
+                self.transport.notify(REQUEST_QUEUE);
+            }
+            if held.iter().all(Option::is_none) {
+                return failure.map_or(Ok(()), Err);
+            }
+            match self.next_answered() {
+                Some(request) => {
+                    let piece = held[request].take();
+                    let answer = self.finish(request, &mut |data| {
+                        if let Some(piece) = piece {
+                            job.take(piece, &data[..piece.bytes.min(data.len())]);
+                        }
+                    });
+                    if let Err(error) = answer {
+                        failure.get_or_insert(error);
+                    }
+                }
+                None if !keep_waiting() => return Err(Error::TimedOut),
+                None => {}
+            }
         }
+    }
+
+    fn drain(&mut self, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+        while self.requests.in_flight() > 0 {
+            match self.next_answered() {
+                Some(request) => self.requests.release(request),
+                None if !keep_waiting() => return Err(Error::TimedOut),
+                None => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn next_answered(&mut self) -> Option<usize> {
+        while let Some(used) = self.queue.pop_used() {
+            if let Some(request) = self.requests.answered(used.head) {
+                return Some(request);
+            }
+        }
+        None
+    }
+
+    fn at(&self, offset: usize) -> Result<DmaAddr, Error> {
+        self.memory
+            .dma_addr()
+            .checked_add(offset as u64)
+            .ok_or(Error::MemoryTooSmall)
+    }
+
+    fn post(&mut self, kind: u32, piece: Piece, job: &mut dyn Job) -> Result<Option<usize>, Error> {
+        let descriptors = match piece.bytes {
+            0 => DESCRIPTORS_PER_REQUEST - 1,
+            _ => DESCRIPTORS_PER_REQUEST,
+        };
+        if self.queue.free_descriptors() < descriptors
+            || (kind == request::FLUSH && self.requests.in_flight() > 0)
+        {
+            return Ok(None);
+        }
+        let Some((request, first_slot)) =
+            self.requests.reserve(RequestTable::slots_for(piece.bytes))
+        else {
+            return Ok(None);
+        };
+        let header_offset = HEADER_OFFSET + request * HEADER_BYTES;
+        let status_offset = STATUS_OFFSET + request;
+        let data_offset = DATA_OFFSET + first_slot * SLOT_BYTES;
         let base = self.memory.as_mut_ptr();
-        let header = base.wrapping_add(HEADER_OFFSET);
-        // SAFETY: the header's type field in the driver's DMA memory, 8-byte aligned; no request
-        // is posted, so the device does not read it now.
+        if kind == request::OUT {
+            // SAFETY: the request's data slots, `piece.bytes` or more inside the driver's DMA
+            // memory ([`MEMORY_BYTES`]), which it reserved just now: the device does not reach
+            // them until the request is posted below, and no other request holds them.
+            let data = unsafe {
+                core::slice::from_raw_parts_mut(base.wrapping_add(data_offset), piece.bytes)
+            };
+            job.fill(piece, data);
+        }
+        let header = base.wrapping_add(header_offset);
+        // SAFETY: the request's header's type field in the driver's DMA memory, 8-byte aligned;
+        // the request is not posted, so the device does not read it now.
         unsafe { header.cast::<u32>().write_volatile(kind.to_le()) };
         // SAFETY: the header's reserved field, as above.
         unsafe { header.wrapping_add(4).cast::<u32>().write_volatile(0) };
@@ -268,56 +374,66 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
             header
                 .wrapping_add(8)
                 .cast::<u64>()
-                .write_volatile(sector.to_le())
+                .write_volatile(piece.sector.to_le())
         };
-        // SAFETY: the status byte, which the device writes only once the request is posted.
-        unsafe { base.wrapping_add(STATUS_OFFSET).write_volatile(NO_STATUS) };
-        let at = |offset: usize| -> Result<DmaAddr, Error> {
-            self.memory
-                .dma_addr()
-                .checked_add(offset as u64)
-                .ok_or(Error::MemoryTooSmall)
-        };
+        // SAFETY: the request's status byte, which the device writes only once it is posted.
+        unsafe { base.wrapping_add(status_offset).write_volatile(NO_STATUS) };
         let header = Buffer {
-            addr: at(HEADER_OFFSET)?,
+            addr: self.at(header_offset)?,
             len: HEADER_BYTES as u32,
             device_writes: false,
         };
         let status = Buffer {
-            addr: at(STATUS_OFFSET)?,
+            addr: self.at(status_offset)?,
             len: 1,
             device_writes: true,
         };
         let data = Buffer {
-            addr: at(DATA_OFFSET)?,
-            len: len as u32,
+            addr: self.at(data_offset)?,
+            len: piece.bytes as u32,
             device_writes: kind == request::IN,
         };
-        match len {
-            0 => self.queue.submit(&[header, status])?,
-            _ => self.queue.submit(&[header, data, status])?,
+        let submitted = match piece.bytes {
+            0 => self.queue.submit(&[header, status]),
+            _ => self.queue.submit(&[header, data, status]),
         };
-        self.request_pending = true;
-        if self.queue.should_notify() {
-            self.transport.notify(REQUEST_QUEUE);
-        }
-        self.wait_for_answer(keep_waiting)?;
-        // SAFETY: the status byte, which the device wrote and handed back with the request.
-        match unsafe { base.wrapping_add(STATUS_OFFSET).read_volatile() } {
-            status::OK => Ok(()),
-            failed => Err(Error::CommandFailed(failed.into())),
+        match submitted {
+            Ok(head) => {
+                self.requests.posted(request, head);
+                Ok(Some(request))
+            }
+            Err(error) => {
+                self.requests.release(request);
+                Err(error)
+            }
         }
     }
 
-    fn wait_for_answer(&mut self, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
-        loop {
-            if self.queue.pop_used().is_some() {
-                self.request_pending = false;
-                return Ok(());
-            }
-            if !keep_waiting() {
-                return Err(Error::TimedOut);
-            }
+    fn finish(&mut self, request: usize, take: &mut dyn FnMut(&[u8])) -> Result<(), Error> {
+        let Some(in_flight) = self.requests.get(request) else {
+            return Ok(());
+        };
+        let base = self.memory.as_mut_ptr();
+        // SAFETY: the request's status byte, which the device wrote and handed back with the
+        // request (its used index read with acquire ordering).
+        let status = unsafe { base.wrapping_add(STATUS_OFFSET + request).read_volatile() };
+        if status == status::OK {
+            let length = in_flight.slots * SLOT_BYTES;
+            // SAFETY: the request's data slots inside the driver's DMA memory, which the device
+            // wrote and handed back with the request and does not touch again until they are
+            // posted anew, after the release below.
+            let data = unsafe {
+                core::slice::from_raw_parts(
+                    base.wrapping_add(DATA_OFFSET + in_flight.first_slot * SLOT_BYTES),
+                    length,
+                )
+            };
+            take(data);
+        }
+        self.requests.release(request);
+        match status {
+            status::OK => Ok(()),
+            failed => Err(Error::CommandFailed(failed.into())),
         }
     }
 
@@ -334,6 +450,109 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
                 Err(error)
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Piece {
+    read: usize,
+    offset: usize,
+    sector: u64,
+    bytes: usize,
+}
+
+#[derive(Debug, Default)]
+struct Cursor {
+    read: usize,
+    offset: usize,
+}
+
+impl Cursor {
+    fn next_piece(&mut self, transfer_at: &dyn Fn(usize) -> Option<(u64, usize)>) -> Option<Piece> {
+        loop {
+            let (sector, bytes) = transfer_at(self.read)?;
+            if self.offset >= bytes {
+                self.read += 1;
+                self.offset = 0;
+                continue;
+            }
+            let length = (bytes - self.offset).min(MAX_TRANSFER);
+            let piece = Piece {
+                read: self.read,
+                offset: self.offset,
+                sector: sector + (self.offset / SECTOR_SIZE) as u64,
+                bytes: length,
+            };
+            self.offset += length;
+            return Some(piece);
+        }
+    }
+}
+
+trait Job {
+    fn next_piece(&mut self) -> Option<Piece>;
+    fn fill(&mut self, _piece: Piece, _data: &mut [u8]) {}
+    fn take(&mut self, _piece: Piece, _data: &[u8]) {}
+}
+
+struct ReadJob<'r, 'a> {
+    reads: &'r mut [(u64, &'a mut [u8])],
+    cursor: Cursor,
+}
+
+impl Job for ReadJob<'_, '_> {
+    fn next_piece(&mut self) -> Option<Piece> {
+        let reads = &*self.reads;
+        self.cursor.next_piece(&|index| {
+            reads
+                .get(index)
+                .map(|(sector, buffer)| (*sector, buffer.len()))
+        })
+    }
+
+    fn take(&mut self, piece: Piece, data: &[u8]) {
+        if let Some((_, buffer)) = self.reads.get_mut(piece.read)
+            && let Some(place) = buffer.get_mut(piece.offset..piece.offset + data.len())
+        {
+            place.copy_from_slice(data);
+        }
+    }
+}
+
+struct WriteJob<'b> {
+    sector: u64,
+    buffer: &'b [u8],
+    cursor: Cursor,
+}
+
+impl Job for WriteJob<'_> {
+    fn next_piece(&mut self) -> Option<Piece> {
+        let whole = (self.sector, self.buffer.len());
+        self.cursor
+            .next_piece(&|index| (index == 0).then_some(whole))
+    }
+
+    fn fill(&mut self, piece: Piece, data: &mut [u8]) {
+        if let Some(source) = self.buffer.get(piece.offset..piece.offset + data.len()) {
+            data.copy_from_slice(source);
+        }
+    }
+}
+
+struct FlushJob(bool);
+
+impl Job for FlushJob {
+    fn next_piece(&mut self) -> Option<Piece> {
+        if self.0 {
+            return None;
+        }
+        self.0 = true;
+        Some(Piece {
+            read: 0,
+            offset: 0,
+            sector: 0,
+            bytes: 0,
+        })
     }
 }
 

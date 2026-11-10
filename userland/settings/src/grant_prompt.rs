@@ -11,9 +11,9 @@ use eggos_mcp::audit::is_hidden;
 use eggos_mcp::grant_prompt::{PromptAnswer, QuestionRead, offers_always};
 use eggos_mcp::grants::{AgentId, Grant, GrantStore, Permission, StoreState};
 use eggos_mcp::json::{Object, Str, Value};
-use eggos_toolkit::colour;
 use eggos_toolkit::input::{Input, key};
 use eggos_toolkit::text::width;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Kind, Length, Place};
 
@@ -61,23 +61,23 @@ impl GrantPrompt {
         let mut tree = WidgetTree::new();
         let name = shown_text(question.name);
         let id = shown_text(question.agent);
-        label(&mut tree, LEFT, NAME_TOP, &name, colour::TEXT);
+        label(&mut tree, LEFT, NAME_TOP, &name, Token::Text);
         let id_line = shortened(&id_text(&id));
         let id_label = label(
             &mut tree,
             RIGHT - width(id_line.as_str()),
             NAME_TOP,
             id_line.as_str(),
-            colour::TEXT_DIM,
+            Token::TextDim,
         );
         tree.set_shown(id_label, name != id);
         let mut tool = shown_text(question.tool);
         tool.push_str(" \u{b7} ");
         tool.push_str(&shown_text(question.title));
-        label(&mut tree, LEFT, TOOL_TOP, &tool, colour::TEXT);
+        label(&mut tree, LEFT, TOOL_TOP, &tool, Token::Text);
         let lines = argument_lines(question.arguments);
         for (top, line) in ARGUMENT_TOPS.into_iter().zip(&lines) {
-            let id = label(&mut tree, LEFT, top, line, colour::TEXT);
+            let id = label(&mut tree, LEFT, top, line, Token::Text);
             tree.set_shown(id, !line.is_empty());
         }
         let countdown = label(
@@ -85,7 +85,7 @@ impl GrantPrompt {
             LEFT,
             COUNTDOWN_TOP,
             &countdown_text(question.timeout_s),
-            colour::TEXT_DIM,
+            Token::TextDim,
         );
         let buttons = [
             (
@@ -258,7 +258,7 @@ fn id_text(id: &str) -> String {
     text
 }
 
-fn label(tree: &mut WidgetTree<CAPACITY>, x: i32, y: i32, words: &str, ink: u32) -> WidgetId {
+fn label(tree: &mut WidgetTree<CAPACITY>, x: i32, y: i32, words: &str, ink: Token) -> WidgetId {
     tree.add(
         None,
         Place::at(x, y, Length::Px(RIGHT - x.min(RIGHT)), Length::Content),

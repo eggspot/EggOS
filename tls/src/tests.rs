@@ -634,6 +634,7 @@ fn eggos_clients_and_eggos_servers_talk_through_a_pinned_certificate() {
         assert_eq!(&request[..count], b"POST /mcp");
         session.write(&mut server_end, b"200 OK").unwrap();
         session.close(&mut server_end).unwrap();
+        assert_eq!(session.certificate_validity(), None);
         session.suite()
     });
     let mut buffers = Box::new(Buffers::new());
@@ -650,6 +651,11 @@ fn eggos_clients_and_eggos_servers_talk_through_a_pinned_certificate() {
         &mut pinned,
     )
     .unwrap();
+    assert!(
+        session
+            .certificate_validity()
+            .is_some_and(|(before, after)| before <= settings.now && settings.now <= after)
+    );
     session.write(&mut client_end, b"POST /mcp").unwrap();
     let mut answer = [0u8; 64];
     let count = session.read(&mut client_end, &mut answer).unwrap();

@@ -322,6 +322,277 @@ pub fn sort_key_bytes(unit: u16) -> [u8; 3] {
     ]
 }
 
+/// The C runtime's locale categories (`LC_*`, `locale.h`).
+pub mod category {
+    pub const ALL: i32 = 0;
+    pub const COLLATE: i32 = 1;
+    pub const CTYPE: i32 = 2;
+    pub const MONETARY: i32 = 3;
+    pub const NUMERIC: i32 = 4;
+    pub const TIME: i32 = 5;
+}
+
+const CATEGORY_NAMES: [&str; 5] = [
+    "LC_COLLATE",
+    "LC_CTYPE",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+];
+const UTF8_CODE_PAGE: u32 = 65001;
+const LONGEST_NAME: usize = 40;
+
+/// A locale the C runtime's `setlocale` and `_create_locale` take (D229): "C", or English
+/// (United States) with UTF-8, EggOS's ANSI code page, under the name it was asked by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeLocale {
+    C,
+    EnglishUnitedStates,
+    UnitedStates,
+    UnitedStatesUtf8,
+}
+
+impl RuntimeLocale {
+    /// The locale `name` names, matched without regard to case: `C`; the user's default (``,
+    /// `.ACP`, `.OCP`, `.UTF-8`, `.UTF8`, `.65001`, `English`, `English_United States` with or
+    /// without a UTF-8 code page); `en-US` or `en_US`; and those with `.UTF-8`. `None` for every
+    /// other locale and code page, whose data EggOS has not.
+    pub fn named(name: impl Iterator<Item = char>) -> Option<RuntimeLocale> {
+        let mut folded = [0u8; LONGEST_NAME];
+        let mut length = 0;
+        for c in name {
+            if !c.is_ascii() || length == LONGEST_NAME {
+                return None;
+            }
+            folded[length] = c.to_ascii_lowercase() as u8;
+            length += 1;
+        }
+        let folded = core::str::from_utf8(&folded[..length]).ok()?;
+        let (language, code_page) = match folded.split_once('.') {
+            Some((language, code_page)) => (language, Some(code_page)),
+            None => (folded, None),
+        };
+        let utf8 = match code_page {
+            None => false,
+            Some("utf-8" | "utf8" | "65001") => true,
+            Some("acp" | "ocp") if language.is_empty() => true,
+            Some(_) => return None,
+        };
+        match (language, utf8) {
+            ("c", false) => Some(RuntimeLocale::C),
+            ("" | "english" | "english_united states", _) => {
+                Some(RuntimeLocale::EnglishUnitedStates)
+            }
+            ("en-us" | "en_us", false) => Some(RuntimeLocale::UnitedStates),
+            ("en-us" | "en_us", true) => Some(RuntimeLocale::UnitedStatesUtf8),
+            _ => None,
+        }
+    }
+
+    /// The name `setlocale` returns for the locale.
+    pub fn name(self) -> &'static str {
+        match self {
+            RuntimeLocale::C => "C",
+            RuntimeLocale::EnglishUnitedStates => "English_United States.utf8",
+            RuntimeLocale::UnitedStates => "en-US",
+            RuntimeLocale::UnitedStatesUtf8 => "en-US.utf8",
+        }
+    }
+
+    /// The code page of the locale's multibyte characters: 0 for "C".
+    pub fn code_page(self) -> u32 {
+        match self {
+            RuntimeLocale::C => 0,
+            _ => UTF8_CODE_PAGE,
+        }
+    }
+
+    /// `MB_CUR_MAX`: the most bytes one multibyte character takes.
+    pub fn longest_character(self) -> i32 {
+        match self {
+            RuntimeLocale::C => 1,
+            _ => 4,
+        }
+    }
+}
+
+/// The locale of each category, as the C runtime keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeLocales([RuntimeLocale; 5]);
+
+impl RuntimeLocales {
+    /// Every category in "C", where a program starts.
+    pub const C: RuntimeLocales = RuntimeLocales([RuntimeLocale::C; 5]);
+
+    fn slot(category: i32) -> Option<usize> {
+        match category {
+            category::COLLATE..=category::TIME => Some(category as usize - 1),
+            _ => None,
+        }
+    }
+
+    /// The locale of `category` (one category, not `LC_ALL`).
+    pub fn of(&self, category: i32) -> Option<RuntimeLocale> {
+        Self::slot(category).map(|slot| self.0[slot])
+    }
+
+    /// Sets `category` (one, or `LC_ALL` for all) to the locale `name` names; `LC_ALL` also
+    /// takes the `LC_COLLATE=...;LC_CTYPE=...` form `describe` gives. Nothing changes, and the
+    /// answer is `false`, for an unknown category or name.
+    pub fn set(&mut self, category: i32, name: &str) -> bool {
+        if category == category::ALL {
+            if name.contains('=') {
+                return self.set_each(name);
+            }
+            return match RuntimeLocale::named(name.chars()) {
+                Some(locale) => {
+                    self.0 = [locale; 5];
+                    true
+                }
+                None => false,
+            };
+        }
+        match (Self::slot(category), RuntimeLocale::named(name.chars())) {
+            (Some(slot), Some(locale)) => {
+                self.0[slot] = locale;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn set_each(&mut self, names: &str) -> bool {
+        let mut changed = *self;
+        for part in names.split(';').filter(|part| !part.is_empty()) {
+            let Some((category, name)) = part.split_once('=') else {
+                return false;
+            };
+            let Some(slot) = CATEGORY_NAMES.iter().position(|known| *known == category) else {
+                return false;
+            };
+            let Some(locale) = RuntimeLocale::named(name.chars()) else {
+                return false;
+            };
+            changed.0[slot] = locale;
+        }
+        *self = changed;
+        true
+    }
+
+    /// Writes the name `setlocale(category, NULL)` returns through `out`: one locale's name, or
+    /// for `LC_ALL` with categories in different locales each category's
+    /// (`LC_COLLATE=C;LC_CTYPE=en-US;...`). `false` for an unknown category.
+    pub fn describe(&self, category: i32, out: &mut impl FnMut(char)) -> bool {
+        if category != category::ALL {
+            return match self.of(category) {
+                Some(locale) => {
+                    locale.name().chars().for_each(&mut *out);
+                    true
+                }
+                None => false,
+            };
+        }
+        if self.0.iter().all(|locale| *locale == self.0[0]) {
+            self.0[0].name().chars().for_each(out);
+            return true;
+        }
+        for (index, (category, locale)) in CATEGORY_NAMES.iter().zip(self.0).enumerate() {
+            if index > 0 {
+                out(';');
+            }
+            category.chars().for_each(&mut *out);
+            out('=');
+            locale.name().chars().for_each(&mut *out);
+        }
+        true
+    }
+
+    /// The code page of the multibyte characters (`LC_CTYPE`'s).
+    pub fn code_page(&self) -> u32 {
+        self.0[category::CTYPE as usize - 1].code_page()
+    }
+
+    /// `MB_CUR_MAX` (`LC_CTYPE`'s).
+    pub fn longest_character(&self) -> i32 {
+        self.0[category::CTYPE as usize - 1].longest_character()
+    }
+
+    /// Whether `localeconv`'s numeric and monetary halves are "C"'s (empty, `CHAR_MAX`) rather
+    /// than English (United States)'s.
+    pub fn conventions_are_c(&self) -> (bool, bool) {
+        let is_c = |category: i32| self.0[category as usize - 1] == RuntimeLocale::C;
+        (is_c(category::NUMERIC), is_c(category::MONETARY))
+    }
+}
+
+/// `localeconv`'s fields for English (United States): the numeric ones, then the monetary.
+pub mod united_states_conventions {
+    pub const DECIMAL_POINT: &str = ".";
+    pub const THOUSANDS_SEPARATOR: &str = ",";
+    pub const GROUPING: &str = "\u{3}";
+    pub const INTERNATIONAL_CURRENCY_SYMBOL: &str = "USD ";
+    pub const CURRENCY_SYMBOL: &str = "$";
+    pub const MONETARY_DECIMAL_POINT: &str = ".";
+    pub const MONETARY_THOUSANDS_SEPARATOR: &str = ",";
+    pub const MONETARY_GROUPING: &str = "\u{3}";
+    pub const POSITIVE_SIGN: &str = "";
+    pub const NEGATIVE_SIGN: &str = "-";
+    /// `int_frac_digits`, `frac_digits`, `p_cs_precedes`, `p_sep_by_space`, `n_cs_precedes`,
+    /// `n_sep_by_space`, `p_sign_posn`, `n_sign_posn`.
+    pub const MONETARY_NUMBERS: [u8; 8] = [2, 2, 1, 0, 1, 0, 3, 0];
+}
+
+/// The classification bits of the C runtime's character type table (`_UPPER` to `_ALPHA`).
+pub mod ctype_flag {
+    pub const UPPER: u16 = 0x1;
+    pub const LOWER: u16 = 0x2;
+    pub const DIGIT: u16 = 0x4;
+    pub const SPACE: u16 = 0x8;
+    pub const PUNCT: u16 = 0x10;
+    pub const CONTROL: u16 = 0x20;
+    pub const BLANK: u16 = 0x40;
+    pub const HEX: u16 = 0x80;
+    pub const ALPHA: u16 = 0x100;
+}
+
+/// The "C" locale's character type table (`_pctype`): entry 0 is `EOF`'s, then one for each
+/// byte; only ASCII is classified.
+pub const fn classic_character_types() -> [u16; 257] {
+    let mut table = [0u16; 257];
+    let mut byte = 0;
+    while byte < 128 {
+        let c = byte as u8;
+        let mut flags = 0;
+        if c.is_ascii_uppercase() {
+            flags |= ctype_flag::UPPER | ctype_flag::ALPHA;
+        }
+        if c.is_ascii_lowercase() {
+            flags |= ctype_flag::LOWER | ctype_flag::ALPHA;
+        }
+        if c.is_ascii_digit() {
+            flags |= ctype_flag::DIGIT;
+        }
+        if c.is_ascii_hexdigit() {
+            flags |= ctype_flag::HEX;
+        }
+        if matches!(c, b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | b' ') {
+            flags |= ctype_flag::SPACE;
+        }
+        if matches!(c, b'\t' | b' ') {
+            flags |= ctype_flag::BLANK;
+        }
+        if c.is_ascii_control() {
+            flags |= ctype_flag::CONTROL;
+        }
+        if c.is_ascii_punctuation() {
+            flags |= ctype_flag::PUNCT;
+        }
+        table[byte + 1] = flags;
+        byte += 1;
+    }
+    table
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,5 +711,124 @@ mod tests {
             assert!(key > previous, "{unit:#x}");
             previous = key;
         }
+    }
+
+    fn described(locales: &RuntimeLocales, category: i32) -> Option<String> {
+        let mut text = String::new();
+        let known = locales.describe(category, &mut |c| text.push(c));
+        known.then_some(text)
+    }
+
+    #[test]
+    fn runtime_locales_are_named_as_the_research_answer_lists() {
+        let named = |name: &str| RuntimeLocale::named(name.chars());
+        assert_eq!(named("C"), Some(RuntimeLocale::C));
+        assert_eq!(named("c"), Some(RuntimeLocale::C));
+        for user_default in [
+            "",
+            ".ACP",
+            ".OCP",
+            ".UTF-8",
+            ".UTF8",
+            ".utf8",
+            ".65001",
+            "English",
+            "english_united states",
+            "English_United States.utf8",
+        ] {
+            assert_eq!(
+                named(user_default),
+                Some(RuntimeLocale::EnglishUnitedStates),
+                "{user_default}"
+            );
+        }
+        assert_eq!(named("en-US"), Some(RuntimeLocale::UnitedStates));
+        assert_eq!(named("en_US"), Some(RuntimeLocale::UnitedStates));
+        assert_eq!(named("en-US.UTF-8"), Some(RuntimeLocale::UnitedStatesUtf8));
+        assert_eq!(named("en-us.utf8"), Some(RuntimeLocale::UnitedStatesUtf8));
+        for refused in [
+            ".1252",
+            "English_United States.1252",
+            "de-DE",
+            "fr-FR",
+            "C.UTF-8",
+            "POSIX",
+        ] {
+            assert_eq!(named(refused), None, "{refused}");
+        }
+        assert_eq!(
+            RuntimeLocale::EnglishUnitedStates.name(),
+            "English_United States.utf8"
+        );
+        assert_eq!(RuntimeLocale::UnitedStatesUtf8.name(), "en-US.utf8");
+        for locale in [
+            RuntimeLocale::C,
+            RuntimeLocale::EnglishUnitedStates,
+            RuntimeLocale::UnitedStates,
+            RuntimeLocale::UnitedStatesUtf8,
+        ] {
+            assert_eq!(named(locale.name()), Some(locale));
+        }
+    }
+
+    #[test]
+    fn categories_change_alone_and_lc_all_describes_them_together() {
+        let mut locales = RuntimeLocales::C;
+        assert_eq!(described(&locales, category::ALL).as_deref(), Some("C"));
+        assert_eq!((locales.code_page(), locales.longest_character()), (0, 1));
+        assert!(locales.set(category::ALL, ""));
+        assert_eq!(
+            described(&locales, category::ALL).as_deref(),
+            Some("English_United States.utf8")
+        );
+        assert_eq!(
+            (locales.code_page(), locales.longest_character()),
+            (65001, 4)
+        );
+        assert!(locales.set(category::NUMERIC, "C"));
+        assert_eq!(
+            described(&locales, category::ALL).as_deref(),
+            Some(
+                "LC_COLLATE=English_United States.utf8;LC_CTYPE=English_United States.utf8;\
+                 LC_MONETARY=English_United States.utf8;LC_NUMERIC=C;\
+                 LC_TIME=English_United States.utf8"
+            )
+        );
+        assert_eq!(locales.conventions_are_c(), (true, false));
+        assert_eq!(described(&locales, category::NUMERIC).as_deref(), Some("C"));
+        let saved = described(&locales, category::ALL).unwrap();
+        let mut restored = RuntimeLocales::C;
+        assert!(restored.set(category::ALL, &saved));
+        assert_eq!(restored, locales);
+        assert!(!locales.set(category::ALL, "de-DE"));
+        assert!(!locales.set(category::CTYPE, ".1252"));
+        assert!(!locales.set(6, "C"));
+        assert!(!locales.set(category::ALL, "LC_CTYPE=C;LC_BOGUS=C"));
+        assert_eq!(restored, locales);
+        assert!(locales.set(category::CTYPE, "C"));
+        assert_eq!((locales.code_page(), locales.longest_character()), (0, 1));
+        assert_eq!(described(&locales, 7), None);
+    }
+
+    #[test]
+    fn the_classic_character_types_classify_ascii_only() {
+        let table = classic_character_types();
+        let of = |c: u8| table[usize::from(c) + 1];
+        assert_eq!(table[0], 0);
+        assert_eq!(
+            of(b'A'),
+            ctype_flag::UPPER | ctype_flag::ALPHA | ctype_flag::HEX
+        );
+        assert_eq!(of(b'z'), ctype_flag::LOWER | ctype_flag::ALPHA);
+        assert_eq!(of(b'7'), ctype_flag::DIGIT | ctype_flag::HEX);
+        assert_eq!(of(b' '), ctype_flag::SPACE | ctype_flag::BLANK);
+        assert_eq!(
+            of(b'\t'),
+            ctype_flag::SPACE | ctype_flag::BLANK | ctype_flag::CONTROL
+        );
+        assert_eq!(of(b'\n'), ctype_flag::SPACE | ctype_flag::CONTROL);
+        assert_eq!(of(b'!'), ctype_flag::PUNCT);
+        assert_eq!(of(0x7f), ctype_flag::CONTROL);
+        assert_eq!(of(0xe9), 0);
     }
 }

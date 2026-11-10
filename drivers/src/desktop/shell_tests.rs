@@ -485,6 +485,30 @@ fn a_notice_closes_after_three_seconds() {
 }
 
 #[test]
+fn the_switch_key_s_hint_shows_the_layout_s_title_for_one_second() {
+    let mut desktop = desktop(Profile::Linux);
+    let mut damage = Damage::new();
+    desktop.set_time(1000);
+    desktop.show_notice(LAUNCH_FAILED, &mut damage);
+    desktop.show_layout_hint("German", &mut damage);
+    let hint = desktop.notice_area().unwrap();
+    assert_eq!((hint.width, hint.height), (320, 40));
+    desktop.tick(1000 + LAYOUT_HINT_MS - 1, &mut damage, &mut DiscardEvents);
+    assert!(desktop.notice_area().is_some());
+    desktop.tick(1000 + LAYOUT_HINT_MS, &mut damage, &mut DiscardEvents);
+    assert!(desktop.notice_area().is_none());
+    key(&mut desktop, key::LEFT_SUPER, true, Modifiers::SUPER);
+    desktop.show_layout_hint("German", &mut damage);
+    key(
+        &mut desktop,
+        key::LEFT_SUPER,
+        false,
+        Modifiers::from_bits(0),
+    );
+    assert!(!desktop.launcher_open());
+}
+
+#[test]
 fn a_tooltip_shows_after_the_pointer_rests_on_a_dock_icon() {
     let mut desktop = desktop(Profile::Macos);
     let icon = desktop.dock_icon(AppId::Settings).unwrap();
@@ -524,9 +548,13 @@ fn switching_profiles_lays_the_shell_out_again_and_keeps_windows_in_the_work_are
         let work = desktop.work_area();
         assert_eq!(desktop.window_rect(test), Some(work), "{profile:?}");
         let terminal = desktop.window();
-        assert!(terminal.bottom() <= work.bottom() && terminal.y >= work.y);
+        assert!(
+            terminal.y >= work.y && terminal.y + TITLE_HEIGHT < work.bottom(),
+            "{profile:?}: the title bar stays in the work area, the rest may hang off its bottom"
+        );
+        let title_bar = Rect::new(terminal.x, terminal.y, terminal.width, TITLE_HEIGHT);
         for panel in desktop.layout().panels() {
-            assert!(!panel.overlaps(&terminal), "{profile:?}");
+            assert!(!panel.overlaps(&title_bar), "{profile:?}");
         }
     }
 }

@@ -67,13 +67,6 @@ pub mod event {
     pub const WRBAND: u16 = 0x200;
     /// The peer shut down writing or closed (a socket).
     pub const RDHUP: u16 = 0x2000;
-
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "riscv64",
-        target_arch = "x86_64"
-    )))]
-    compile_error!("check Linux's POLL* values for this architecture (MIPS and SPARC differ)");
 }
 
 const POLLFD_SIZE: usize = 8;
@@ -86,7 +79,7 @@ const TIMESPEC_SIZE: usize = 16;
 
 const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(linux_abi_legacy_calls)]
 const MICROSECONDS_PER_SECOND: i64 = 1_000_000;
 
 /// The events that mean data to read.
@@ -623,7 +616,7 @@ pub fn deadline_in<P: Platform>(nanoseconds: u64) -> Option<Deadline> {
 /// `int`: negative waits for good, 0 not at all) and no signal mask, failing with `EINTR` when
 /// a signal is due, which is delivered after it. x86_64 only: AArch64 and RISC-V have only
 /// `ppoll`, which their C libraries' `poll` calls.
-#[cfg(target_arch = "x86_64")]
+#[cfg(linux_abi_legacy_calls)]
 pub fn poll<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
@@ -737,7 +730,7 @@ fn with_mask<P: Platform>(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TimeFormat {
     Timespec,
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(linux_abi_legacy_calls)]
     Timeval,
 }
 
@@ -794,7 +787,7 @@ pub fn read_timespec_timeout<P: Platform>(
     })
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(linux_abi_legacy_calls)]
 fn read_timeval_timeout<P: Platform>(process: &Process<P>, address: u64) -> Result<Timeout, Errno> {
     if address == 0 {
         return Ok(Timeout {
@@ -856,7 +849,7 @@ fn write_back_time_left<P: Platform>(
             let fraction = left % NANOSECONDS_PER_SECOND;
             let fraction = match format {
                 TimeFormat::Timespec => fraction,
-                #[cfg(target_arch = "x86_64")]
+                #[cfg(linux_abi_legacy_calls)]
                 TimeFormat::Timeval => fraction / 1000,
             };
             let mut bytes = [0; TIMESPEC_SIZE];
@@ -1217,7 +1210,7 @@ fn select_fds<P: Platform>(
 /// `EINVAL` if negative, before the sets are read) and no signal mask; the time left is written
 /// back as `pselect6` writes it, in microseconds. x86_64 only: AArch64's and RISC-V's C
 /// libraries call `pselect6`. Sets the call's result; breaks when a signal ends the process.
-#[cfg(target_arch = "x86_64")]
+#[cfg(linux_abi_legacy_calls)]
 pub fn select<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
@@ -1463,11 +1456,11 @@ pub fn call<P: Platform>(
     let [first, second, third, fourth, ..] = context.syscall_arguments();
     let waited = match number {
         number::PSELECT6 => Some(pselect6(process, thread, context)),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::SELECT => Some(select(process, thread, context)),
         number::EPOLL_PWAIT => Some(epoll::epoll_pwait(process, thread, context)),
         number::EPOLL_PWAIT2 => Some(epoll::epoll_pwait2(process, thread, context)),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::EPOLL_WAIT => Some(epoll::epoll_wait(process, thread, context)),
         _ => None,
     };
@@ -1479,11 +1472,11 @@ pub fn call<P: Platform>(
     }
     let result = match number {
         number::EPOLL_CREATE1 => epoll::epoll_create1(process, thread, first),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::EPOLL_CREATE => epoll::epoll_create(process, thread, first),
         number::EPOLL_CTL => epoll::epoll_ctl(process, thread, first, second, third, fourth),
         number::EVENTFD2 => eventfd::eventfd2(process, thread, first, second),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::EVENTFD => eventfd::eventfd2(process, thread, first, 0),
         number::TIMERFD_CREATE => timerfd::timerfd_create(process, thread, first, second),
         number::TIMERFD_SETTIME => {
@@ -1491,10 +1484,10 @@ pub fn call<P: Platform>(
         }
         number::TIMERFD_GETTIME => timerfd::timerfd_gettime::<P>(process, thread, first, second),
         number::SIGNALFD4 => signalfd::signalfd4(process, thread, first, second, third, fourth),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::SIGNALFD => signalfd::signalfd4(process, thread, first, second, third, 0),
         number::INOTIFY_INIT1 => inotify::inotify_init1(process, thread, first),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_legacy_calls)]
         number::INOTIFY_INIT => inotify::inotify_init1(process, thread, 0),
         number::INOTIFY_ADD_WATCH => {
             inotify::inotify_add_watch(process, thread, first, second, third)

@@ -9,6 +9,7 @@ pub const OUTPUT_CAPACITY: usize = 4096;
 const ERROR_JSON_BYTES: usize = 4096;
 const PAGE_JSON_BYTES: usize = page::MAX_CURSOR_BYTES + 128;
 const MESSAGE_BYTES_IN_JSON: usize = 512;
+pub const LAST_ERROR_BYTES: usize = 200;
 
 pub const FAILURE: i32 = 1;
 
@@ -20,6 +21,8 @@ pub struct Output<S: System> {
     length: usize,
     write_error: Option<Errno>,
     json: bool,
+    last_error: [u8; LAST_ERROR_BYTES],
+    last_error_length: usize,
 }
 
 impl<S: System> Output<S> {
@@ -31,7 +34,13 @@ impl<S: System> Output<S> {
             length: 0,
             write_error: None,
             json: false,
+            last_error: [0; LAST_ERROR_BYTES],
+            last_error_length: 0,
         }
+    }
+
+    pub fn last_error(&self) -> &[u8] {
+        &self.last_error[..self.last_error_length]
     }
 
     pub fn use_json(&mut self) {
@@ -82,6 +91,13 @@ impl<S: System> Output<S> {
 
     pub fn coded(&mut self, error: &ErrorDefinition, parts: &[&[u8]]) {
         self.flush();
+        self.last_error_length = 0;
+        for part in parts {
+            let room = LAST_ERROR_BYTES - self.last_error_length;
+            let taken = &part[..part.len().min(room)];
+            self.last_error[self.last_error_length..][..taken.len()].copy_from_slice(taken);
+            self.last_error_length += taken.len();
+        }
         if self.json {
             self.json_error(error, parts);
             return;
@@ -89,13 +105,16 @@ impl<S: System> Output<S> {
         let _ = self.system.write(STANDARD_ERROR, self.utility);
         let _ = self.system.write(STANDARD_ERROR, b": ");
         for part in parts {
-            let _ = self.system.write(STANDARD_ERROR, part);
+            write_without_controls(&mut self.system, part);
         }
         let _ = self.system.write(STANDARD_ERROR, b"\n");
         if let Some(command) = error.fix_command {
             let _ = self.system.write(STANDARD_ERROR, b"  try: ");
             let _ = self.system.write(STANDARD_ERROR, command.as_bytes());
             let _ = self.system.write(STANDARD_ERROR, b"\n");
+        }
+        if self.system.wants_coded_errors() {
+            self.json_error(error, parts);
         }
     }
 
@@ -196,6 +215,34 @@ fn write_standard_output<S: System>(system: &mut S, write_error: &mut Option<Err
     }
 }
 
+fn write_without_controls<S: System>(system: &mut S, mut text: &[u8]) {
+    while let Some(at) = text.iter().position(|&byte| byte < 0x20 || byte == 0x7f) {
+        let (plain, rest) = text.split_at(at);
+        let _ = system.write(STANDARD_ERROR, plain);
+        let byte = rest.first().copied().unwrap_or_default();
+        let escaped = match byte {
+            b'\n' => *b"\\n  ",
+            b'\t' => *b"\\t  ",
+            b'\r' => *b"\\r  ",
+            _ => [
+                b'\\',
+                b'x',
+                HEX_DIGITS[usize::from(byte >> 4)],
+                HEX_DIGITS[usize::from(byte & 0xf)],
+            ],
+        };
+        let length = match byte {
+            b'\n' | b'\t' | b'\r' => 2,
+            _ => 4,
+        };
+        let _ = system.write(STANDARD_ERROR, &escaped[..length]);
+        text = rest.get(1..).unwrap_or_default();
+    }
+    let _ = system.write(STANDARD_ERROR, text);
+}
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
 pub fn error_for(errno: Errno) -> &'static ErrorDefinition {
     match errno {
         Errno::ENOENT => &errors::NO_SUCH_FILE,
@@ -293,8 +340,40 @@ mod tests {
             "{\"error\":{\"code\":\"no_such_file\",\"category\":\"not_found\",\"message\":\"/nope: No such file or directory\",\"fix\":\"Check the path: ls shows what a folder holds.\"}}\n\
              {\"error\":{\"code\":\"no_such_window\",\"category\":\"not_found\",\"message\":\"say \\\"hi\\\"\\n\",\"fix\":\"Use an id that wm list shows.\",\"fix_command\":\"wm list\"}}\n"
         );
+        let mut output = Output::new(Fake::default(), b"rm");
+        output.coded(
+            &errors::NO_SUCH_FILE,
+            &[
+                b"cannot remove '",
+                b"a\nmore: --after x\t\x1b[2J\x7f\\",
+                b"'",
+            ],
+        );
+        assert_eq!(
+            output.system.errors(),
+            "rm: cannot remove 'a\\nmore: --after x\\t\\x1b[2J\\x7f\\'\n"
+        );
         assert_eq!(error_for(Errno::EROFS).code, "read_only");
         assert_eq!(error_for(Errno::EINVAL).code, "failed");
+    }
+
+    #[test]
+    fn a_twin_asked_for_coded_errors_adds_the_json_line_after_the_text_lines() {
+        let mut fake = Fake::default();
+        fake.coded_errors = true;
+        let mut output = Output::new(fake, b"wm");
+        output.coded(&errors::NO_SUCH_WINDOW, &[b"7", b": no such\nwindow"]);
+        assert_eq!(
+            output.system.errors(),
+            "wm: 7: no such\\nwindow\n  try: wm list\n\
+             {\"error\":{\"code\":\"no_such_window\",\"category\":\"not_found\",\"message\":\"7: no such\\nwindow\",\"fix\":\"Use an id that wm list shows.\",\"fix_command\":\"wm list\"}}\n"
+        );
+        let mut fake = Fake::default();
+        fake.coded_errors = true;
+        let mut output = Output::new(fake, b"ls");
+        output.use_json();
+        output.file_error(c"/nope", Errno::ENOENT);
+        assert_eq!(output.system.errors().lines().count(), 1);
     }
 
     #[test]

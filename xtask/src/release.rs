@@ -1,6 +1,7 @@
 //! `cargo xtask release` and `cargo xtask screenshot` (D116): the files a release ships, one
-//! kernel image per architecture with its initramfs embedded, `SHA256SUMS`, the run scripts and
-//! the release notes' skeleton, and the README's picture of the desktop.
+//! kernel image per architecture with its initramfs embedded, one component store per
+//! architecture outside it (D235), `SHA256SUMS`, the run scripts and the release notes'
+//! skeleton, and the README's picture of the desktop.
 
 use crate::qmp::Picture;
 use crate::{ARCHES, Arch, qemu, sha256};
@@ -56,7 +57,19 @@ pub fn run() -> Result<(), String> {
             boot_to_prompt,
         });
     }
-    write(&dir.join(SUMS_FILE), sums(&images).as_bytes())?;
+    let mut sums_text = sums(&images);
+    for arch in ARCHES {
+        let store = crate::components::build_store(arch)?;
+        let contents = std::fs::read(&store).map_err(|e| format!("{}: {e}", store.display()))?;
+        let file_name = crate::components::store_name(arch);
+        write(&dir.join(&file_name), &contents)?;
+        let _ = writeln!(sums_text, "{}  {file_name}", sha256::hex_digest(&contents));
+        eprintln!(
+            "xtask: {file_name}: {} bytes (components_store_bytes), outside the base image",
+            contents.len()
+        );
+    }
+    write(&dir.join(SUMS_FILE), sums_text.as_bytes())?;
     let scripts = script_arches();
     write(&dir.join(SHELL_SCRIPT), shell_script(&scripts).as_bytes())?;
     set_executable(&dir.join(SHELL_SCRIPT))?;
@@ -187,6 +200,8 @@ struct ScriptArch {
     powershell_disk: Vec<String>,
     shell_work: Vec<String>,
     powershell_work: Vec<String>,
+    shell_store: Vec<String>,
+    powershell_store: Vec<String>,
     shell_mcp: Vec<String>,
     shell_mcp_headless: Vec<String>,
     powershell_mcp: Vec<String>,
@@ -205,6 +220,10 @@ const POWERSHELL_DISK: &str = "$DiskPath";
 const SHELL_WORK: &str = "$work_path";
 
 const POWERSHELL_WORK: &str = "$WorkPath";
+
+const SHELL_STORE: &str = "$store_path";
+
+const POWERSHELL_STORE: &str = "$StorePath";
 
 const SHELL_CONSOLE_LOG: &str = "$console_log";
 
@@ -238,6 +257,8 @@ fn script_arches() -> Vec<ScriptArch> {
             powershell_disk: qemu::disk_args(arch, POWERSHELL_DISK),
             shell_work: qemu::work_disk_args(arch, SHELL_WORK),
             powershell_work: qemu::work_disk_args(arch, POWERSHELL_WORK),
+            shell_store: qemu::store_disk_args(arch, SHELL_STORE),
+            powershell_store: qemu::store_disk_args(arch, POWERSHELL_STORE),
             shell_mcp: qemu::mcp_args(arch, true, SHELL_CONSOLE_LOG, qemu::McpChannel::Stdio),
             shell_mcp_headless: qemu::mcp_args(
                 arch,
@@ -291,6 +312,7 @@ fn shell_script(arches: &[ScriptArch]) -> String {
     let mut folder_cases = String::new();
     let mut disk_cases = String::new();
     let mut work_cases = String::new();
+    let mut store_cases = String::new();
     let mut network_cases = String::new();
     for arch in arches {
         let _ = writeln!(
@@ -298,6 +320,12 @@ fn shell_script(arches: &[ScriptArch]) -> String {
             "    {}) set -- \"$@\" {} ;;",
             arch.name,
             double_quoted(&arch.shell_disk)
+        );
+        let _ = writeln!(
+            store_cases,
+            "      {}) set -- \"$@\" {} ;;",
+            arch.name,
+            double_quoted(&arch.shell_store)
         );
         let _ = writeln!(
             work_cases,
@@ -334,7 +362,7 @@ fn shell_script(arches: &[ScriptArch]) -> String {
         r#"#!/bin/sh
 set -eu
 version='{VERSION}'
-usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow view,write,run,install] [--mcp-agent <id>]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk] [--no-network] [--work <image>] [--memory <size>]"
+usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow view,write,run,install] [--mcp-agent <id>]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk] [--no-network] [--no-components] [--work <image>] [--memory <size>]"
 case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;
   riscv64) arch=riscv64 ;;
@@ -352,6 +380,7 @@ disk=''
 no_disk=''
 format_disk=''
 no_network=''
+no_components=''
 work=''
 memory=''
 while [ "$#" -gt 0 ]; do
@@ -380,6 +409,7 @@ while [ "$#" -gt 0 ]; do
     --no-disk) no_disk=yes ;;
     --format-disk) format_disk=yes ;;
     --no-network) no_network=yes ;;
+    --no-components) no_components=yes ;;
     --work)
       if [ "$#" -lt 2 ]; then echo "$usage" >&2; exit 2; fi
       shift
@@ -538,6 +568,23 @@ if [ -n "$work" ]; then
 {work_cases}  esac
   say "run-eggos.sh: $work is at /work in EggOS, writable; once EggOS powers off, cargo xtask work unpack <image> <folder> writes what it holds into a new folder."
 fi
+store_file="eggos-$version-$arch-components.img"
+if [ -z "$no_components" ] && [ -f "$dir/$store_file" ]; then
+  store_line=$(grep -F "  $store_file" "$dir/{SUMS_FILE}" 2>/dev/null || true)
+  if [ -z "$store_line" ]; then
+    echo "run-eggos.sh: $store_file is not listed in {SUMS_FILE}: it was not attached" >&2
+  elif [ -z "${{check:-}}" ]; then
+    echo "run-eggos.sh: no sha256sum or shasum found: $store_file was not verified, so it was not attached" >&2
+  elif ! (cd "$dir" && printf '%s\n' "$store_line" | $check >/dev/null 2>&1); then
+    echo "run-eggos.sh: $store_file does not match its checksum in {SUMS_FILE}: download it again" >&2
+    exit 1
+  else
+    store_path=$(printf '%s' "$dir/$store_file" | sed 's/,/,,/g')
+    case "$arch" in
+{store_cases}    esac
+    say "run-eggos.sh: $store_file is attached read-only: component list shows what it offers, component install <name> installs it (--no-components: none)."
+  fi
+fi
 if [ -z "$no_network" ]; then
   case "$arch" in
 {network_cases}  esac
@@ -597,6 +644,7 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
     let mut folder_cases = String::new();
     let mut disk_cases = String::new();
     let mut work_cases = String::new();
+    let mut store_cases = String::new();
     let mut network_cases = String::new();
     for arch in arches {
         let _ = writeln!(
@@ -604,6 +652,12 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
             "        '{}' {{ @({}) }}",
             arch.name,
             double_quoted(&arch.powershell_disk).replace("\" \"", "\", \"")
+        );
+        let _ = writeln!(
+            store_cases,
+            "            '{}' {{ @({}) }}",
+            arch.name,
+            double_quoted(&arch.powershell_store).replace("\" \"", "\", \"")
         );
         let _ = writeln!(
             work_cases,
@@ -639,7 +693,7 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
         r#"$ErrorActionPreference = 'Stop'
 $Version = '{VERSION}'
 $Arches = @({names})
-$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install] [-McpAgent <id>]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk] [-NoNetwork] [-Work <image>] [-Memory <size>]"
+$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install] [-McpAgent <id>]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk] [-NoNetwork] [-NoComponents] [-Work <image>] [-Memory <size>]"
 $Arch = ''
 $Serial = $false
 $Mcp = $false
@@ -651,6 +705,7 @@ $Disk = ''
 $NoDisk = $false
 $FormatDisk = $false
 $NoNetwork = $false
+$NoComponents = $false
 $Work = ''
 $Memory = ''
 $UsageError = $false
@@ -671,6 +726,8 @@ for ($i = 0; $i -lt $Words.Count; $i++) {{
         $FormatDisk = $true
     }} elseif ($argument -in @('-NoNetwork', '--no-network')) {{
         $NoNetwork = $true
+    }} elseif ($argument -in @('-NoComponents', '--no-components')) {{
+        $NoComponents = $true
     }} elseif ($argument -in @('-McpAllow', '--mcp-allow') -and $null -ne $value) {{
         $McpAllow = $value
         $i++
@@ -827,6 +884,29 @@ if ($Work) {{
     $QemuArgs += switch ($Arch) {{
 {work_cases}    }}
     Say "run-eggos.ps1: $Work is at /work in EggOS, writable; once EggOS powers off, cargo xtask work unpack <image> <folder> writes what it holds into a new folder."
+}}
+$StoreFile = "eggos-$Version-$Arch-components.img"
+$Store = Join-Path $PSScriptRoot $StoreFile
+if (-not $NoComponents -and (Test-Path -LiteralPath $Store -PathType Leaf)) {{
+    $storeLine = $null
+    if (Test-Path -LiteralPath $Sums) {{
+        $storeLine = Get-Content -LiteralPath $Sums | Where-Object {{ $_.EndsWith("  $StoreFile") }} | Select-Object -First 1
+    }}
+    if (-not $storeLine) {{
+        [Console]::Error.WriteLine("run-eggos.ps1: $StoreFile is not listed in {SUMS_FILE}: it was not attached")
+    }} else {{
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $stream = [System.IO.File]::OpenRead($Store)
+        try {{ $actual = -join ($sha256.ComputeHash($stream) | ForEach-Object {{ $_.ToString('x2') }}) }} finally {{ $stream.Dispose(); $sha256.Dispose() }}
+        if ($actual -ne $storeLine.Substring(0, 64)) {{
+            [Console]::Error.WriteLine("run-eggos.ps1: $StoreFile does not match its checksum in {SUMS_FILE}: download it again")
+            exit 1
+        }}
+        $StorePath = $Store.Replace(',', ',,')
+        $QemuArgs += switch ($Arch) {{
+{store_cases}        }}
+        Say "run-eggos.ps1: $StoreFile is attached read-only: component list shows what it offers, component install <name> installs it (-NoComponents: none)."
+    }}
 }}
 if ($NoNetwork) {{
     $QemuArgs += @('-nic', 'none')
@@ -1064,11 +1144,18 @@ share...` in the launcher, installs a program with its own icon into `/Applicati
 survives a reboot:
 
 - Windows programs (`.exe`, or a `.zip` holding one): x64 programs on x86_64, ARM64 programs on
-  aarch64, console and GUI, on the Windows layer the x86_64 and aarch64 images carry.
+  aarch64, console and GUI, on the Windows layer: run `component install windows-apps` first.
 - macOS programs (a Mach-O tool, an `.app`, or a `.zip` holding one, for macOS 13 or later):
   arm64 on aarch64, x86_64 on x86_64, console programs and AppKit apps built in code, on the
-  macOS layer the same images carry.
+  macOS layer: run `component install mac-apps` first.
 - Linux static programs, console or Wayland GUI, on every architecture.
+
+The layers are components outside the base: `eggos-{VERSION}-<arch>-components.img`, next to
+the images, is attached read-only when it sits beside the run script and matches its line in
+`SHA256SUMS` (`--no-components`, `-NoComponents`: not attached; `run-eggos.sh` also leaves it
+out when the host has no `sha256sum` or `shasum` to check it). `component list` shows what it
+offers; `component remove <name>` takes a layer away again. An installed component stays on the
+disk image.
 
 The release ships no apps of its own. To try some, build ours from a checkout with
 `cargo xtask sample-apps --arch <arch>` and pass the folder it prints: `win-paint.exe`,
@@ -1128,8 +1215,8 @@ What grants do not protect:
 ## Known limits
 
 - QEMU only: no real hardware, no network, no sound, no USB; the US keyboard layout; UTC only.
-- Everything is in the base for now: the desktop and the Windows and macOS layers cannot be
-  left out until the component manager comes (M14).
+- The desktop and the built-in apps are still in the base; only the Windows and macOS layers
+  are components. Components install from the attached store only, not from the network.
 - Linux programs must be static; programs built for another CPU and 32-bit programs are
   refused; no Android apps (`.apk`) or iOS apps; riscv64 runs no Windows or macOS programs.
 - One host folder, read-only.
@@ -1438,6 +1525,47 @@ mod tests {
     }
 
     #[test]
+    fn the_scripts_attach_the_store_beside_them_only_when_its_checksum_is_listed_and_matches() {
+        let arches = script_arches();
+        let shell = shell_script(&arches);
+        let powershell = powershell_script(&arches);
+        assert!(shell.contains("[--no-components]") && powershell.contains("[-NoComponents]"));
+        assert!(shell.contains("    --no-components) no_components=yes ;;\n"));
+        assert!(powershell.contains("@('-NoComponents', '--no-components')"));
+        assert!(shell.contains("store_file=\"eggos-$version-$arch-components.img\"\n"));
+        assert!(powershell.contains("$StoreFile = \"eggos-$Version-$Arch-components.img\"\n"));
+        let refusals = [
+            "is not listed in SHA256SUMS: it was not attached",
+            "does not match its checksum in SHA256SUMS: download it again",
+        ];
+        for refused in refusals {
+            assert!(
+                shell.contains(&format!("$store_file {refused}")),
+                "{refused}"
+            );
+            assert!(
+                powershell.contains(&format!("$StoreFile {refused}")),
+                "{refused}"
+            );
+        }
+        for arch in &arches {
+            let attach = double_quoted(&arch.shell_store);
+            assert!(attach.contains("read-only=on"), "{attach}");
+            assert!(shell.contains(&format!("      {}) set -- \"$@\" {attach} ;;\n", arch.name)));
+            assert!(powershell.contains("$StorePath = $Store.Replace(',', ',,')"));
+        }
+        assert!(shell.find("store_file=").unwrap() < shell.find("exec \"$qemu\"").unwrap());
+        let unverified = shell
+            .find("$store_file was not verified, so it was not attached")
+            .unwrap();
+        let attached = shell.find("$store_file is attached read-only").unwrap();
+        assert!(shell[..unverified].ends_with(
+            "  elif [ -z \"${check:-}\" ]; then\n    echo \"run-eggos.sh: no sha256sum or shasum found: "
+        ));
+        assert!(unverified < attached);
+    }
+
+    #[test]
     fn a_powershell_usage_error_is_one_line_on_standard_error_and_status_2() {
         let powershell = powershell_script(&script_arches());
         assert!(!powershell.contains("Write-Error"), "{powershell}");
@@ -1497,8 +1625,12 @@ mod tests {
         assert!(powershell.contains(
             "$WorkPath = (Resolve-Path -LiteralPath $Work).ProviderPath.Replace(',', ',,')\n"
         ));
-        assert!(powershell.contains("[-NoNetwork] [-Work <image>] [-Memory <size>]\""));
-        assert!(shell.contains("[--no-network] [--work <image>] [--memory <size>]\""));
+        assert!(
+            powershell.contains("[-NoNetwork] [-NoComponents] [-Work <image>] [-Memory <size>]\"")
+        );
+        assert!(
+            shell.contains("[--no-network] [--no-components] [--work <image>] [--memory <size>]\"")
+        );
         assert!(shell.contains("    --memory)\n"));
         assert!(shell.contains("  set -- \"$@\" -m \"$memory\"\n"));
         assert!(shell.contains("at least 128M\" >&2"));

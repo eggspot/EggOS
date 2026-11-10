@@ -329,8 +329,7 @@ pub fn from_narrow(
             if lparam == 0 || wparam == 0 {
                 return 0;
             }
-            let length = deliver(window, message::GET_TEXT_LENGTH, 0, 0);
-            let Some((block, copied)) = text_of(wparam.min(length), |room, buffer| {
+            let Some((block, copied)) = text_of(wparam - 1, |room, buffer| {
                 deliver(window, number, room, buffer)
             }) else {
                 return 0;

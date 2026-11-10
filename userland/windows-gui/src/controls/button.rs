@@ -1,5 +1,5 @@
-//! `BUTTON`: push buttons and check boxes (section 2 of the design), drawn from a [`ButtonLook`],
-//! and the [`Button`] model the pointer and Space drive.
+//! `BUTTON`: push buttons, check boxes, radio buttons and group boxes (sections 2 and 15 of the
+//! design), drawn from a [`ButtonLook`], and the [`Button`] model the pointer and Space drive.
 
 use super::{
     DARK_RING_ON_PRIMARY, MAX_LABEL_CELLS, Palette, cell_top, dotted_outline, draw_fitted, filled,
@@ -26,6 +26,15 @@ const TICK: [(i32, i32); 8] = [
     (10, 4),
 ];
 const TICK_SQUARE: i32 = 2;
+const INSET_C14: [i32; 7] = [5, 3, 2, 1, 1, 0, 0];
+const INSET_C12: [i32; 6] = [4, 2, 1, 1, 0, 0];
+const INSET_R3: [i32; 3] = [2, 1, 0];
+const DOT_SIZE: i32 = 6;
+const DOT_OFFSET: i32 = 4;
+const GROUP_LINE_TOP: i32 = 7;
+const GROUP_CAPTION_LEFT: i32 = 8;
+const GROUP_GAP: i32 = 2;
+const GROUP_ROOM_LESS: i32 = 16;
 
 /// `BUTTON`'s styles this layer draws (the low four bits of the window style).
 pub mod style {
@@ -34,6 +43,9 @@ pub mod style {
     pub const DEFAULT_PUSH_BUTTON: u32 = 0x1;
     pub const CHECK_BOX: u32 = 0x2;
     pub const AUTO_CHECK_BOX: u32 = 0x3;
+    pub const RADIO_BUTTON: u32 = 0x4;
+    pub const GROUP_BOX: u32 = 0x7;
+    pub const AUTO_RADIO_BUTTON: u32 = 0x9;
 }
 
 /// What a button is.
@@ -43,6 +55,9 @@ pub enum ButtonKind {
     DefaultPush,
     CheckBox,
     AutoCheckBox,
+    Radio,
+    AutoRadio,
+    GroupBox,
 }
 
 impl ButtonKind {
@@ -52,12 +67,19 @@ impl ButtonKind {
             style::DEFAULT_PUSH_BUTTON => ButtonKind::DefaultPush,
             style::CHECK_BOX => ButtonKind::CheckBox,
             style::AUTO_CHECK_BOX => ButtonKind::AutoCheckBox,
+            style::RADIO_BUTTON => ButtonKind::Radio,
+            style::AUTO_RADIO_BUTTON => ButtonKind::AutoRadio,
+            style::GROUP_BOX => ButtonKind::GroupBox,
             _ => ButtonKind::Push,
         }
     }
 
     pub fn is_push(self) -> bool {
         matches!(self, ButtonKind::Push | ButtonKind::DefaultPush)
+    }
+
+    pub fn is_radio(self) -> bool {
+        matches!(self, ButtonKind::Radio | ButtonKind::AutoRadio)
     }
 }
 
@@ -70,6 +92,7 @@ pub struct ButtonLook {
     pub focused: bool,
     pub default: bool,
     pub enabled: bool,
+    pub hovered: bool,
 }
 
 /// Paints a button over the whole of `rect` with the label `units` (`&` underlines).
@@ -83,10 +106,48 @@ pub fn paint(
     let mut cells = [Cell::Space; MAX_LABEL_CELLS];
     let count = label_cells(units, true, &mut cells);
     let cells = &cells[..count];
-    match look.kind.is_push() {
-        true => paint_push(surface, rect, cells, look, palette),
-        false => paint_check_box(surface, rect, cells, look, palette),
+    match look.kind {
+        kind if kind.is_push() => paint_push(surface, rect, cells, look, palette),
+        ButtonKind::GroupBox => paint_group_box(surface, rect, cells, look.enabled, palette),
+        _ => paint_check_box(surface, rect, cells, look, palette),
     }
+}
+
+fn paint_group_box(
+    surface: &mut Surface<'_>,
+    rect: Rect,
+    cells: &[Cell],
+    enabled: bool,
+    palette: &Palette,
+) {
+    let saved = surface.clip();
+    surface.clip_to(rect);
+    outline(
+        surface,
+        Rect::new(
+            rect.left,
+            rect.top + GROUP_LINE_TOP,
+            rect.right,
+            rect.bottom,
+        ),
+        palette.group_border,
+    );
+    if !cells.is_empty() {
+        let x = rect.left + GROUP_CAPTION_LEFT;
+        let room = rect.width() - GROUP_ROOM_LESS;
+        let (shown, ellipsis) = super::fit_cells(cells.len(), room);
+        let wide = (shown + if ellipsis { 3 } else { 0 }) as i32 * CELL_WIDTH;
+        surface.fill(
+            Rect::sized(x - GROUP_GAP, rect.top, wide + 2 * GROUP_GAP, 16),
+            palette.surface,
+        );
+        let colour = match enabled {
+            true => palette.text,
+            false => palette.text_disabled,
+        };
+        draw_fitted(surface, x, rect.top, cells, room, colour);
+    }
+    surface.set_clip(saved);
 }
 
 fn paint_push(
@@ -109,6 +170,11 @@ fn paint_push(
                 .map(|_| palette.button_pressed_border),
             palette.default_text,
         ),
+        () if look.default && look.hovered => (
+            palette.default_hover_fill,
+            palette.default_border,
+            palette.default_text,
+        ),
         () if look.default => (
             palette.default_fill,
             palette.default_border,
@@ -117,6 +183,11 @@ fn paint_push(
         () if look.pressed => (
             palette.button_pressed_fill,
             Some(palette.button_pressed_border),
+            palette.text,
+        ),
+        () if look.hovered => (
+            palette.button_hover_fill,
+            Some(palette.button_hover_border),
             palette.text,
         ),
         () => (
@@ -197,10 +268,25 @@ fn paint_check_box(
         ),
         () => (palette.box_fill, palette.box_border, palette.box_mark),
     };
-    surface.fill(box_rect, fill);
-    outline(surface, box_rect, border);
-    if look.checked {
-        tick(surface, box_rect.left, box_rect.top, mark);
+    let border = match look.enabled && look.hovered {
+        true => palette.box_hover_border,
+        false => border,
+    };
+    match look.kind.is_radio() {
+        true => {
+            surface.rounded(box_rect, &INSET_C14, border);
+            surface.rounded(box_rect.inset(1), &INSET_C12, fill);
+            if look.checked {
+                dot(surface, box_rect.left, box_rect.top, mark);
+            }
+        }
+        false => {
+            surface.fill(box_rect, fill);
+            outline(surface, box_rect, border);
+            if look.checked {
+                tick(surface, box_rect.left, box_rect.top, mark);
+            }
+        }
     }
     let x = rect.left + CHECK_LABEL_LEFT;
     let top = cell_top(rect.top, rect.height());
@@ -243,6 +329,16 @@ pub fn tick(surface: &mut Surface<'_>, x: i32, y: i32, colour: u32) {
     }
 }
 
+/// A radio button's dot: a 6 px circle at (4, 4) from the 14x14 circle whose top-left is
+/// (`x`, `y`).
+pub fn dot(surface: &mut Surface<'_>, x: i32, y: i32, colour: u32) {
+    surface.rounded(
+        Rect::sized(x + DOT_OFFSET, y + DOT_OFFSET, DOT_SIZE, DOT_SIZE),
+        &INSET_R3,
+        colour,
+    );
+}
+
 /// What one input did to a button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonOutcome {
@@ -274,6 +370,9 @@ impl Button {
 
     /// The left button went down (`down`) or up with the pointer `inside` the button or not.
     pub fn left_button(&mut self, inside: bool, down: bool) -> ButtonOutcome {
+        if self.kind == ButtonKind::GroupBox {
+            return ButtonOutcome::Unchanged;
+        }
         match down {
             true if inside => {
                 self.pointer_held = true;
@@ -304,6 +403,9 @@ impl Button {
 
     /// Space went down or up while the button has the focus.
     pub fn space(&mut self, down: bool) -> ButtonOutcome {
+        if self.kind == ButtonKind::GroupBox {
+            return ButtonOutcome::Unchanged;
+        }
         match down {
             true if self.space_held => ButtonOutcome::Unchanged,
             true => {
@@ -320,10 +422,14 @@ impl Button {
         }
     }
 
-    /// `BM_CLICK` or a finished press: an automatic check box toggles.
+    /// `BM_CLICK` or a finished press: an automatic check box toggles, an automatic radio
+    /// button is selected (the layer clears the rest of its group); a group box is not clicked.
     pub fn click(&mut self) -> ButtonOutcome {
-        if self.kind == ButtonKind::AutoCheckBox {
-            self.checked = !self.checked;
+        match self.kind {
+            ButtonKind::AutoCheckBox => self.checked = !self.checked,
+            ButtonKind::AutoRadio => self.checked = true,
+            ButtonKind::GroupBox => return ButtonOutcome::Unchanged,
+            _ => {}
         }
         ButtonOutcome::Clicked
     }
@@ -358,6 +464,7 @@ mod tests {
             focused: false,
             default: false,
             enabled: true,
+            hovered: false,
         }
     }
 
@@ -447,6 +554,125 @@ mod tests {
         assert_eq!(surface.get(2 + 11, 5 + 5), Some(0));
         assert_eq!(surface.get(22, 18), Some(0));
         assert_eq!(surface.get(0, 0), Some(0x00f0_f0f0));
+    }
+
+    #[test]
+    fn a_selected_radio_button_is_a_circle_with_a_dot() {
+        let mut pixels = vec![0u32; 160 * 24];
+        let mut surface = Surface::new(&mut pixels, 160, 24).unwrap();
+        let selected = ButtonLook {
+            checked: true,
+            ..look(ButtonKind::AutoRadio)
+        };
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 160, 24),
+            &units("Small"),
+            selected,
+            &LIGHT,
+        );
+        assert_eq!(surface.get(7, 5), Some(LIGHT.box_border));
+        assert_eq!(surface.get(6, 5), Some(LIGHT.surface));
+        assert_eq!(surface.get(2, 12), Some(LIGHT.box_border));
+        assert_eq!(surface.get(7, 9), Some(LIGHT.box_checked_fill));
+        assert_eq!(surface.get(8, 9), Some(LIGHT.box_mark));
+        assert_eq!(surface.get(9, 12), Some(LIGHT.box_mark));
+        assert_eq!(surface.get(12, 12), Some(LIGHT.box_checked_fill));
+    }
+
+    #[test]
+    fn a_group_box_frames_its_rect_below_the_caption_and_leaves_the_rest_alone() {
+        let mut pixels = vec![0u32; 120 * 60];
+        let mut surface = Surface::new(&mut pixels, 120, 60).unwrap();
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 120, 60),
+            &units("Size"),
+            look(ButtonKind::GroupBox),
+            &LIGHT,
+        );
+        assert_eq!(surface.get(0, 7), Some(LIGHT.group_border));
+        assert_eq!(surface.get(4, 7), Some(LIGHT.group_border));
+        assert_eq!(surface.get(6, 7), Some(LIGHT.surface));
+        assert_eq!(surface.get(43, 7), Some(LIGHT.group_border));
+        assert_eq!(surface.get(119, 30), Some(LIGHT.group_border));
+        assert_eq!(surface.get(60, 59), Some(LIGHT.group_border));
+        assert_eq!(surface.get(0, 3), Some(0));
+        assert_eq!(surface.get(60, 30), Some(0));
+    }
+
+    #[test]
+    fn an_auto_radio_stays_selected_when_clicked_again_and_a_group_box_never_clicks() {
+        let mut radio = Button::new(ButtonKind::AutoRadio);
+        assert_eq!(radio.click(), ButtonOutcome::Clicked);
+        assert!(radio.checked);
+        assert_eq!(radio.click(), ButtonOutcome::Clicked);
+        assert!(radio.checked);
+        let mut plain = Button::new(ButtonKind::Radio);
+        assert_eq!(plain.click(), ButtonOutcome::Clicked);
+        assert!(!plain.checked);
+        let mut group = Button::new(ButtonKind::GroupBox);
+        assert_eq!(group.left_button(true, true), ButtonOutcome::Unchanged);
+        assert_eq!(group.space(true), ButtonOutcome::Unchanged);
+        assert_eq!(group.click(), ButtonOutcome::Unchanged);
+        assert_eq!(ButtonKind::of(0x5000_0009), ButtonKind::AutoRadio);
+        assert_eq!(ButtonKind::of(0x5000_0007), ButtonKind::GroupBox);
+    }
+
+    #[test]
+    fn a_hovered_push_button_and_check_box_take_the_hover_colours_and_pressed_wins() {
+        let mut pixels = vec![0u32; 160 * 24];
+        let mut surface = Surface::new(&mut pixels, 160, 24).unwrap();
+        let hovered = ButtonLook {
+            hovered: true,
+            ..look(ButtonKind::Push)
+        };
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 88, 24),
+            &units("Add"),
+            hovered,
+            &LIGHT,
+        );
+        assert_eq!(surface.get(0, 0), Some(LIGHT.button_hover_border));
+        assert_eq!(surface.get(4, 4), Some(LIGHT.button_hover_fill));
+        let pressed = ButtonLook {
+            pressed: true,
+            ..hovered
+        };
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 88, 24),
+            &units("Add"),
+            pressed,
+            &LIGHT,
+        );
+        assert_eq!(surface.get(4, 4), Some(LIGHT.button_pressed_fill));
+        let check = ButtonLook {
+            hovered: true,
+            ..look(ButtonKind::AutoCheckBox)
+        };
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 160, 24),
+            &units("Upper"),
+            check,
+            &LIGHT,
+        );
+        assert_eq!(surface.get(2, 5), Some(LIGHT.box_hover_border));
+        assert_eq!(surface.get(5, 8), Some(LIGHT.box_fill));
+        let disabled = ButtonLook {
+            enabled: false,
+            ..check
+        };
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 160, 24),
+            &units("Upper"),
+            disabled,
+            &LIGHT,
+        );
+        assert_eq!(surface.get(2, 5), Some(LIGHT.box_disabled_border));
     }
 
     #[test]

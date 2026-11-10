@@ -1,0 +1,13 @@
+[package]
+name = "eggos-windows-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eggos-commands = { path = "../commands" }
+eggos-runtime = { path = "../runtime" }
+
+[lints]
+workspace = true

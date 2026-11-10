@@ -1,6 +1,7 @@
 use crate::agent::duration_seconds;
-use crate::options::wants_json;
-use crate::output::{FAILURE, Output};
+use crate::options::{Refused, parse_count, parse_defined};
+use crate::output::{FAILURE, Output, decimal};
+use crate::page::Page;
 use crate::system::System;
 use core::ffi::CStr;
 use eggos_commands::{commands, errors};
@@ -11,16 +12,10 @@ use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
 
 const USAGE: &[u8] = b"usage: agentlog [-n <count>] [--agent <id>] [--tool <name>] \
-    [--outcome <result>] [--since <time>] [--raw | --json]";
+    [--outcome <result>] [--since <time>] [--limit <count>] [--after <cursor>] [--raw | --json]";
 const USAGE_STATUS: i32 = 2;
 const HEADER: &[u8] = b"TIME  AGENT  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL\n";
 const JSON_RECORD_BYTES: usize = 4 * 7 * audit::FIELD_BYTES + 512;
-const FILTER_OPTIONS: [(&[u8], FilterOption); 4] = [
-    (b"--agent", FilterOption::Agent),
-    (b"--tool", FilterOption::Tool),
-    (b"--outcome", FilterOption::Outcome),
-    (b"--since", FilterOption::Since),
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -38,6 +33,16 @@ enum FilterOption {
 }
 
 impl FilterOption {
+    fn named(long: Option<&str>) -> Option<Self> {
+        match long? {
+            "agent" => Some(FilterOption::Agent),
+            "tool" => Some(FilterOption::Tool),
+            "outcome" => Some(FilterOption::Outcome),
+            "since" => Some(FilterOption::Since),
+            _ => None,
+        }
+    }
+
     fn takes(self) -> &'static [u8] {
         match self {
             FilterOption::Agent => b"--agent takes an agent's id",
@@ -58,94 +63,89 @@ pub fn agentlog<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut mode = Mode::Rows;
     let mut last = None;
     let mut filter = Filter::default();
-    let mut index = 0;
-    if wants_json(&commands::AGENTLOG, arguments) {
-        output.use_json();
-    }
-    while let Some(argument) = arguments.get(index) {
-        if let Some((option, attached)) = filter_option(argument.to_bytes()) {
-            let value = match attached {
-                Some(value) => Some(value),
-                None => {
-                    index += 1;
-                    arguments.get(index).map(|value| value.to_bytes())
-                }
-            };
-            if !value.is_some_and(|value| narrow(output, &mut filter, option, value)) {
+    let mut page = Page::default();
+    let mut explained = false;
+    let parsed = parse_defined(output, arguments, &commands::AGENTLOG, |output, given| {
+        match page.take(output, given) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(refused) => {
+                explained = true;
+                return Err(refused);
+            }
+        }
+        let value = given.value.unwrap_or_default();
+        if let Some(option) = FilterOption::named(given.option.long) {
+            if !narrow(output, &mut filter, option, value) {
                 output.coded(&errors::USAGE, &[option.takes()]);
-                return USAGE_STATUS;
+                explained = true;
+                return Err(Refused::Reported);
             }
-            index += 1;
-            continue;
+            return Ok(());
         }
-        match argument.to_bytes() {
-            b"--raw" => mode = Mode::Raw,
-            b"--json" => mode = Mode::Json,
-            b"-n" => {
-                index += 1;
-                let Some(count) = arguments
-                    .get(index)
-                    .and_then(|count| number(count.to_bytes()))
-                else {
-                    output.coded(&errors::USAGE, &[USAGE]);
-                    return USAGE_STATUS;
-                };
-                last = Some(count);
+        match (given.option.short, given.option.long) {
+            (Some(b'n'), _) => {
+                last = Some(parse_count(value).ok_or(Refused::Reported)?);
             }
-            bytes if bytes.starts_with(b"-n") => match number(&bytes[2..]) {
-                Some(count) => last = Some(count),
-                None => {
-                    output.coded(&errors::USAGE, &[USAGE]);
-                    return USAGE_STATUS;
-                }
-            },
-            bytes if bytes.starts_with(b"-") => {
-                output.invalid_option(bytes);
-                output.coded(&errors::USAGE, &[USAGE]);
-                return USAGE_STATUS;
-            }
-            _ => {
-                output.coded(&errors::USAGE, &[USAGE]);
-                return USAGE_STATUS;
-            }
+            (_, Some("raw")) => mode = Mode::Raw,
+            (_, Some("json")) => mode = Mode::Json,
+            _ => {}
         }
-        index += 1;
-    }
-    let total = match each_row(output, mode, &filter, &mut |_, _| {}) {
-        Ok(total) => total,
-        Err(status) => return status,
+        Ok(())
+    });
+    let operands = match parsed {
+        Ok(operands) => operands,
+        Err(_) if explained => return USAGE_STATUS,
+        Err(_) => {
+            output.coded(&errors::USAGE, &[USAGE]);
+            return USAGE_STATUS;
+        }
     };
-    let skip = last.map_or(0, |last| total.saturating_sub(last));
-    if mode == Mode::Rows && total > skip {
-        output.write(HEADER);
+    if !operands.all().is_empty() {
+        output.coded(&errors::USAGE, &[USAGE]);
+        return USAGE_STATUS;
     }
-    let mut seen = 0;
-    match each_row(output, mode, &filter, &mut |output, row| {
-        if seen >= skip {
-            output.write(row);
-        }
+    let Ok(after) = page.after_number(output) else {
+        return USAGE_STATUS;
+    };
+    let skip = match last {
+        Some(last) => match each_row(output, mode, &filter, &mut |_, _| {}) {
+            Ok(total) => total.saturating_sub(usize::try_from(last).unwrap_or(usize::MAX)),
+            Err(status) => return status,
+        },
+        None => 0,
+    };
+    let start = skip.max(usize::try_from(after.unwrap_or(0)).unwrap_or(usize::MAX));
+    let limit = page
+        .limit
+        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX));
+    let mut seen = 0usize;
+    let mut shown = 0usize;
+    let mut more = false;
+    let read = each_row(output, mode, &filter, &mut |output, row| {
         seen += 1;
-    }) {
-        Ok(_) => 0,
-        Err(status) => status,
+        if seen <= start {
+            return;
+        }
+        if limit.is_some_and(|limit| shown == limit) {
+            more = true;
+            return;
+        }
+        if shown == 0 && mode == Mode::Rows {
+            output.write(HEADER);
+        }
+        output.write(row);
+        shown += 1;
+    });
+    if let Err(status) = read {
+        return status;
     }
-}
-
-fn number(bytes: &[u8]) -> Option<usize> {
-    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
-        return None;
+    if more {
+        let mut digits = [0u8; 20];
+        let position = u64::try_from(start + shown).unwrap_or(u64::MAX);
+        output.more(decimal(position, &mut digits));
     }
-    core::str::from_utf8(bytes).ok()?.parse().ok()
-}
-
-fn filter_option(argument: &[u8]) -> Option<(FilterOption, Option<&[u8]>)> {
-    FILTER_OPTIONS
-        .iter()
-        .find_map(|&(name, option)| match argument.strip_prefix(name)? {
-            [] => Some((option, None)),
-            [b'=', value @ ..] => Some((option, Some(value))),
-            _ => None,
-        })
+    0
 }
 
 fn narrow<'f, S: System>(
@@ -574,7 +574,7 @@ mod tests {
     #[test]
     fn a_filter_without_a_good_value_is_a_usage_error() {
         for (arguments, wanted) in [
-            (&[c"--agent"][..], "--agent takes"),
+            (&[c"--agent"][..], "option '--agent' requires an argument"),
             (&[c"--agent="][..], "--agent takes"),
             (&[c"--outcome", c"maybe"][..], "--outcome takes"),
             (&[c"--since", c"yesterday"][..], "--since takes"),
@@ -587,6 +587,87 @@ mod tests {
         let mut fake = Fake::default();
         assert_eq!(run(&mut fake, &[c"--agents", c"phone"]), USAGE_STATUS);
         assert!(fake.errors().contains("unrecognized option '--agents'"));
+    }
+
+    #[test]
+    fn pages_hold_the_rows_after_the_cursor_by_their_position() {
+        let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
+        assert_eq!(run(&mut fake, &[c"--limit", c"2"]), 0);
+        let output = fake.output();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 1 + 2, "{output}");
+        assert!(lines[0].starts_with("TIME  AGENT"));
+        assert!(lines[1].contains("server-start") && lines[2].contains("initialize"));
+        assert_eq!(fake.errors(), "more: --after 2\n");
+        let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
+        assert_eq!(run(&mut fake, &[c"--after", c"2", c"--limit=2"]), 0);
+        let output = fake.output();
+        assert_eq!(output.lines().count(), 1 + 2, "{output}");
+        assert!(output.lines().nth(1).unwrap().contains("cat  ok"));
+        assert_eq!(fake.errors(), "more: --after 4\n");
+        let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
+        assert_eq!(run(&mut fake, &[c"--after", c"6", c"--limit", c"5"]), 0);
+        let output = fake.output();
+        assert_eq!(output.lines().count(), 1 + 1, "{output}");
+        assert!(output.contains("unknown (restarted)  ls  interrupted"));
+        assert_eq!(fake.errors(), "");
+        let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
+        assert_eq!(run(&mut fake, &[c"--after", c"7"]), 0);
+        assert_eq!(
+            (fake.output(), fake.errors()),
+            (String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn a_page_of_the_last_rows_and_of_json_records_names_its_cursor() {
+        let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
+        assert_eq!(run(&mut fake, &[c"-n", c"3", c"--limit", c"2"]), 0);
+        let output = fake.output();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 1 + 2, "{output}");
+        assert!(lines[1].contains("ps  interrupted") && lines[2].contains("server-restart"));
+        assert_eq!(fake.errors(), "more: --after 6\n");
+        let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
+        assert_eq!(run(&mut fake, &[c"--json", c"--limit", c"1"]), 0);
+        assert_eq!(fake.output().lines().count(), 1);
+        assert_eq!(
+            fake.errors(),
+            "{\"page\":{\"truncated\":true,\"truncated_by\":\"limit\",\"next_cursor\":\"1\"}}\n"
+        );
+        let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
+        assert_eq!(
+            run(&mut fake, &[c"--raw", c"--after", c"6", c"--limit", c"1"]),
+            0
+        );
+        assert_eq!(fake.output().lines().count(), 1);
+        assert!(fake.output().starts_with("6\t0\t-\t-\tserver-restart"));
+        assert_eq!(fake.errors(), "more: --after 7\n");
+    }
+
+    #[test]
+    fn a_bad_cursor_or_limit_is_refused_with_its_code() {
+        let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
+        assert_eq!(run(&mut fake, &[c"--after", c"x"]), USAGE_STATUS);
+        assert_eq!(fake.errors(), "agentlog: invalid cursor 'x'\n");
+        assert_eq!(fake.output(), "");
+        let mut fake = Fake::default();
+        assert_eq!(run(&mut fake, &[c"--after", c"-x"]), USAGE_STATUS);
+        assert_eq!(
+            fake.errors(),
+            "agentlog: invalid cursor '-x': not one a page ended with\n"
+        );
+        let mut fake = Fake::default();
+        assert_eq!(
+            run(&mut fake, &[c"--json", c"--after", c"a b"]),
+            USAGE_STATUS
+        );
+        let errors = fake.errors();
+        assert!(errors.contains("\"code\":\"bad_cursor\""), "{errors}");
+        assert!(!errors.contains("\"code\":\"usage\""), "{errors}");
+        let mut fake = Fake::default();
+        assert_eq!(run(&mut fake, &[c"--limit", c"0"]), USAGE_STATUS);
+        assert!(fake.errors().starts_with("agentlog: invalid limit '0'"));
     }
 
     #[test]

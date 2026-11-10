@@ -7,9 +7,10 @@ pub mod abi;
 pub mod cache;
 pub mod lsda;
 pub mod selector;
+pub mod unwind_dwarf;
 pub mod unwind_info;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 macro_rules! sel {
     ($name:literal) => {{
         static CANONICAL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
@@ -23,44 +24,44 @@ macro_rules! sel {
     }};
 }
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub(crate) use sel;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 macro_rules! methods {
     ($($name:literal => $imp:path),* $(,)?) => {
         [$((concat!($name, "\0").as_bytes(), $imp as *const () as usize)),*]
     };
 }
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub(crate) use methods;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod api;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod autorelease;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod block;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod buffer;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod class;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod exception;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod message;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod reference_count;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod root;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod weak;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub use runtime::*;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod runtime {
     use super::abi::{Category, ClassObject, Id, Sel};
     use super::buffer::Buffer;

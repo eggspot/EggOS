@@ -7,8 +7,11 @@
 
 use crate::grants::Grant;
 use crate::json::JsonWriter;
-use crate::paths::{ANYWHERE, INSTALL_ROOTS, READ_ROOTS, TRASH, WRITE_ROOTS};
-use eggos_commands::tools::{self as registry, Argument, DefaultValue, JsonType, ToolDefinition};
+use crate::paths::{ANYWHERE, INSTALL_ROOTS, READ_ROOTS, SETTINGS, TRASH, WRITE_ROOTS};
+use eggos_commands::tools::{
+    self as registry, Argument, DefaultValue, JsonType, ToolDefinition, ToolResult,
+};
+use eggos_commands::{Category, Field, FieldType};
 
 pub use eggos_commands::tools::{CAPTURE_PATH, Confirmation};
 
@@ -161,6 +164,34 @@ pub enum Kind {
     AgentList,
     /// `agent_show`: the calling agent's own grants (D193).
     AgentShow,
+    /// `file_copy`: copies a file or folder to a path below `/home/root` (D226).
+    FileCopy,
+    /// `file_move`: moves or renames a file or folder below `/home/root` (D226).
+    FileMove,
+    /// `folder_create`: makes a folder below `/home/root` (D226).
+    FolderCreate,
+    /// `file_remove`: deletes a file or folder below `/home/root` for good (D226).
+    FileRemove,
+    /// `download_list`: the downloads since boot (D225).
+    DownloadList,
+    /// `download_cancel`: stops a running download (D225).
+    DownloadCancel,
+    /// `download_clear`: removes the records of downloads that are over (D225).
+    DownloadClear,
+    /// `component_list`: the components the store offers and those installed (D235).
+    ComponentList,
+    /// `component_install`: installs a component from the component store (D235).
+    ComponentInstall,
+    /// `component_remove`: removes an installed component (D235).
+    ComponentRemove,
+    /// `windows_registry_get`: a registry key's subkeys and values, or one value (D231).
+    WindowsRegistryGet,
+    /// `windows_registry_set`: makes a registry key or sets a value (D231).
+    WindowsRegistrySet,
+    /// `windows_registry_delete`: deletes a registry key or value (D231).
+    WindowsRegistryDelete,
+    /// `windows_registry_reset`: replaces a damaged registry file with an empty one (D231).
+    WindowsRegistryReset,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -252,7 +283,13 @@ pub struct Tool {
     pub hints: Hints,
     /// Its CLI twin.
     pub twin: Twin,
+    /// The file an optional component installs that the tool exists only with (D18); `None`
+    /// for a tool of the base.
+    pub needs: Option<&'static str>,
 }
+
+/// The Windows layer's file, which the Windows apps component installs (D235).
+pub const WINDOWS_LAYER: &str = "/usr/lib/eggos/windows";
 
 impl Tool {
     /// Whether it takes an argument of this name.
@@ -285,6 +322,7 @@ const fn tool(definition: &'static ToolDefinition, kind: Kind, twin: Twin) -> To
             open_world: definition.open_world,
         },
         twin,
+        needs: None,
     }
 }
 
@@ -302,7 +340,7 @@ const WRITE_PATH: PathArgument = PathArgument {
     default: None,
     roots: &WRITE_ROOTS,
     strictly: true,
-    excluded: &[TRASH],
+    excluded: &[TRASH, SETTINGS],
     outside: "Refused: the path is outside /home/root, the folder this tool may change.",
 };
 
@@ -317,6 +355,24 @@ pub const HARD_LINK_TARGET: PathArgument = PathArgument {
     name: "target",
     outside: "Refused: a hard link's target must be below /home/root, the folder this tool may \
               change.",
+    ..WRITE_PATH
+};
+
+const DESTINATION_PATH: PathArgument = PathArgument {
+    name: "destination",
+    ..WRITE_PATH
+};
+
+/// `file_copy`'s `source`: anything the reading tools reach (D226).
+pub const COPY_SOURCE: PathArgument = PathArgument {
+    name: "source",
+    ..READ_PATH
+};
+
+/// `file_move`'s `source`: only what the write tools may change, since a move takes it away
+/// from where it was (D226).
+pub const MOVE_SOURCE: PathArgument = PathArgument {
+    name: "source",
     ..WRITE_PATH
 };
 
@@ -361,12 +417,23 @@ const fn twin(program: &'static str, words: &'static [&'static str], operand: Op
     }
 }
 
+const fn of_component(tool: Tool, file: &'static str) -> Tool {
+    Tool {
+        needs: Some(file),
+        ..tool
+    }
+}
+
+const fn registry_twin(words: &'static [&'static str]) -> Twin {
+    twin("/bin/windows", words, Operand::None)
+}
+
 const fn window_twin(words: &'static [&'static str]) -> Twin {
     twin("/bin/wm", words, Operand::Window)
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 58] = [
+pub const TOOLS: [Tool; 72] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -455,7 +522,7 @@ pub const TOOLS: [Tool; 58] = [
     tool(
         &registry::CLOCK_SYNC,
         Kind::ClockSync,
-        twin("/bin/date", &["-u", "--sync"], Operand::None),
+        twin("/bin/date", &["-u", "--sync", "--automatic"], Operand::None),
     ),
     tool(
         &registry::APP_INSTALL,
@@ -657,6 +724,92 @@ pub const TOOLS: [Tool; 58] = [
         Kind::WmDesktopNew,
         twin("/bin/wm", &["desktop", "new"], Operand::None),
     ),
+    tool(
+        &registry::FILE_COPY,
+        Kind::FileCopy,
+        twin("/bin/cp", &["-r"], Operand::Path(DESTINATION_PATH)),
+    ),
+    tool(
+        &registry::FILE_MOVE,
+        Kind::FileMove,
+        twin("/bin/mv", &[], Operand::Path(DESTINATION_PATH)),
+    ),
+    tool(
+        &registry::FOLDER_CREATE,
+        Kind::FolderCreate,
+        twin("/bin/mkdir", &[], Operand::Path(WRITE_PATH)),
+    ),
+    tool(
+        &registry::FILE_REMOVE,
+        Kind::FileRemove,
+        twin("/bin/rm", &[], Operand::Path(WRITE_PATH)),
+    ),
+    tool(
+        &registry::DOWNLOAD_LIST,
+        Kind::DownloadList,
+        twin("/bin/download", &["list", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::DOWNLOAD_CANCEL,
+        Kind::DownloadCancel,
+        twin("/bin/download", &["cancel"], Operand::None),
+    ),
+    tool(
+        &registry::DOWNLOAD_CLEAR,
+        Kind::DownloadClear,
+        twin("/bin/download", &["clear"], Operand::None),
+    ),
+    tool(
+        &registry::COMPONENT_LIST,
+        Kind::ComponentList,
+        twin("/bin/component", &["list", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::COMPONENT_INSTALL,
+        Kind::ComponentInstall,
+        twin("/bin/component", &["install", "--json"], Operand::Name),
+    ),
+    tool(
+        &registry::COMPONENT_REMOVE,
+        Kind::ComponentRemove,
+        twin(
+            "/bin/component",
+            &["remove", "--yes", "--json"],
+            Operand::Name,
+        ),
+    ),
+    of_component(
+        tool(
+            &registry::WINDOWS_REGISTRY_GET,
+            Kind::WindowsRegistryGet,
+            registry_twin(&["registry", "get", "--json"]),
+        ),
+        WINDOWS_LAYER,
+    ),
+    of_component(
+        tool(
+            &registry::WINDOWS_REGISTRY_SET,
+            Kind::WindowsRegistrySet,
+            registry_twin(&["registry", "set"]),
+        ),
+        WINDOWS_LAYER,
+    ),
+    of_component(
+        tool(
+            &registry::WINDOWS_REGISTRY_DELETE,
+            Kind::WindowsRegistryDelete,
+            registry_twin(&["registry", "delete", "--yes"]),
+        ),
+        WINDOWS_LAYER,
+    ),
+    of_component(
+        tool(
+            &registry::WINDOWS_REGISTRY_RESET,
+            Kind::WindowsRegistryReset,
+            registry_twin(&["registry", "reset", "--yes"]),
+        ),
+        WINDOWS_LAYER,
+    ),
 ];
 
 /// The tool named `name`.
@@ -772,12 +925,199 @@ fn write_default(out: &mut JsonWriter<'_>, default: DefaultValue) {
     }
 }
 
-/// Writes `tools/list`'s result: every tool with its schema and annotations.
-pub fn write_list(out: &mut JsonWriter<'_>) {
+/// The fields of `wm_capture`'s `structuredContent`, every one a whole number.
+pub const IMAGE_FIELDS: [&str; 5] = ["width", "height", "image_width", "image_height", "scale"];
+
+/// The fields of `run`'s `structuredContent` (D137).
+pub const RUN_FIELDS: [&str; 4] = ["exitCode", "signal", "timedOut", "outputCut"];
+
+/// The fields of the items envelope a list tool's `structuredContent` always holds (D226).
+pub const ITEMS_REQUIRED: [&str; 2] = ["items", "truncated"];
+
+/// The fields of an error's `structuredContent.error` that are always there; `fix_command`
+/// is there when one command fixes it.
+pub const ERROR_REQUIRED: [&str; 4] = ["code", "category", "message", "fix"];
+
+/// Writes a tool's `outputSchema` (D226): `oneOf` what its `structuredContent` holds when it
+/// succeeds, which its registry [`ToolResult`] declares, and the `{"error":{...}}` of a
+/// refused or failed call. `tools/list` lists it only for a tool whose result
+/// [`ToolResult::declares_output_schema`]; a text tool's would be the empty object.
+pub fn write_output_schema(out: &mut JsonWriter<'_>, definition: &ToolDefinition) {
+    out.begin_object();
+    out.key("type");
+    out.string("object");
+    out.key("oneOf");
+    out.begin_array();
+    write_result_schema(out, definition);
+    write_error_schema(out);
+    out.end_array();
+    out.end_object();
+}
+
+fn write_result_schema(out: &mut JsonWriter<'_>, definition: &ToolDefinition) {
+    out.begin_object();
+    out.key("type");
+    out.string("object");
+    out.key("properties");
+    out.begin_object();
+    let required: &[&str] = match definition.result {
+        ToolResult::Text | ToolResult::Icon => &[],
+        ToolResult::Items(fields) => {
+            out.key("items");
+            out.begin_object();
+            out.key("type");
+            out.string("array");
+            out.key("items");
+            write_record_schema(out, fields);
+            out.end_object();
+            write_page_properties(out);
+            &ITEMS_REQUIRED
+        }
+        ToolResult::Image => {
+            for key in IMAGE_FIELDS {
+                out.key(key);
+                write_type(out, "integer", false);
+            }
+            &IMAGE_FIELDS
+        }
+        ToolResult::Run => {
+            for (key, json, nullable) in [
+                ("exitCode", "integer", true),
+                ("signal", "integer", true),
+                ("timedOut", "boolean", false),
+                ("outputCut", "boolean", false),
+            ] {
+                out.key(key);
+                write_type(out, json, nullable);
+            }
+            &RUN_FIELDS
+        }
+    };
+    out.end_object();
+    write_required(out, required);
+    out.key("additionalProperties");
+    out.bool(false);
+    out.end_object();
+}
+
+fn write_page_properties(out: &mut JsonWriter<'_>) {
+    out.key("truncated");
+    write_type(out, "boolean", false);
+    out.key("truncated_by");
+    out.begin_object();
+    out.key("enum");
+    out.begin_array();
+    out.string("limit");
+    out.string("bytes");
+    out.end_array();
+    out.end_object();
+    out.key("next_cursor");
+    write_type(out, "string", false);
+}
+
+fn write_record_schema(out: &mut JsonWriter<'_>, fields: &[Field]) {
+    out.begin_object();
+    out.key("type");
+    out.string("object");
+    out.key("properties");
+    out.begin_object();
+    for field in fields {
+        out.key(field.name);
+        match json_type_of(field.value) {
+            Some(json) => write_type(out, json, field.nullable),
+            None => {
+                out.begin_object();
+                out.end_object();
+            }
+        }
+    }
+    out.end_object();
+    out.end_object();
+}
+
+const fn json_type_of(value: FieldType) -> Option<&'static str> {
+    match value {
+        FieldType::Text | FieldType::Time => Some("string"),
+        FieldType::Integer => Some("integer"),
+        FieldType::Boolean => Some("boolean"),
+        FieldType::List => Some("array"),
+        FieldType::Object => Some("object"),
+        FieldType::Value => None,
+    }
+}
+
+fn write_type(out: &mut JsonWriter<'_>, json: &str, nullable: bool) {
+    out.begin_object();
+    out.key("type");
+    match nullable {
+        true => {
+            out.begin_array();
+            out.string(json);
+            out.string("null");
+            out.end_array();
+        }
+        false => out.string(json),
+    }
+    out.end_object();
+}
+
+fn write_required(out: &mut JsonWriter<'_>, required: &[&str]) {
+    if required.is_empty() {
+        return;
+    }
+    out.key("required");
+    out.begin_array();
+    for name in required {
+        out.string(name);
+    }
+    out.end_array();
+}
+
+fn write_error_schema(out: &mut JsonWriter<'_>) {
+    out.begin_object();
+    out.key("type");
+    out.string("object");
+    out.key("properties");
+    out.begin_object();
+    out.key("error");
+    out.begin_object();
+    out.key("type");
+    out.string("object");
+    out.key("properties");
+    out.begin_object();
+    for key in ["code", "message", "fix", "fix_command"] {
+        out.key(key);
+        write_type(out, "string", false);
+    }
+    out.key("category");
+    out.begin_object();
+    out.key("enum");
+    out.begin_array();
+    for category in Category::ALL {
+        out.string(category.name());
+    }
+    out.end_array();
+    out.end_object();
+    out.end_object();
+    write_required(out, &ERROR_REQUIRED);
+    out.end_object();
+    out.end_object();
+    write_required(out, &["error"]);
+    out.key("additionalProperties");
+    out.bool(false);
+    out.end_object();
+}
+
+/// Writes `tools/list`'s result: every tool with its schema and annotations, leaving out a
+/// tool whose component's file `present` does not find (D18).
+pub fn write_list(out: &mut JsonWriter<'_>, present: &mut dyn FnMut(&'static str) -> bool) {
     out.begin_object();
     out.key("tools");
     out.begin_array();
-    for tool in &TOOLS {
+    for tool in TOOLS
+        .iter()
+        .filter(|tool| tool.needs.is_none_or(&mut *present))
+    {
         let definition = tool.definition;
         out.begin_object();
         out.key("name");
@@ -788,6 +1128,10 @@ pub fn write_list(out: &mut JsonWriter<'_>) {
         out.string(definition.description);
         out.key("inputSchema");
         write_input_schema(out, definition);
+        if definition.result.declares_output_schema() {
+            out.key("outputSchema");
+            write_output_schema(out, definition);
+        }
         out.key("annotations");
         out.begin_object();
         out.key("title");

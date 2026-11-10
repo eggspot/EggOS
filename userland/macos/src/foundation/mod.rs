@@ -2,49 +2,56 @@
 //! and their mutable and constant (compiler-emitted literal) classes, NSBundle, NSLog and the
 //! class and selector name functions, as classes of the layer's own Objective-C runtime; and
 //! (D175) NSException, NSProcessInfo, NSDate, NSError, NSData, NSSet, NSTimer, NSRunLoop and
-//! the string constants Foundation exports.
+//! the string constants Foundation exports; and (D232) NSNotification and its center, NSUUID and
+//! NSFileManager.
 
+pub mod file_manager;
+pub mod nib_archive;
+pub mod string_encoding;
 pub mod string_text;
+pub mod uuid;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod array;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod bundle;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod constants;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod data;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod date;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod description;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod dictionary;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod error;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod exception;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod log;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
+mod notification;
+#[cfg(eggos_user)]
 mod number;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod process_info;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod set;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod string;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod timer;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub use runtime::*;
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod runtime {
     use super::{
-        array, bundle, constants, data, date, dictionary, error, exception, log, number,
-        process_info, set, string, timer,
+        array, bundle, constants, data, date, dictionary, error, exception, log, notification,
+        number, process_info, set, string, timer,
     };
     use crate::objc::abi::{ClassObject, Id};
     use crate::objc::class::{self, BuiltinClass};
@@ -87,6 +94,10 @@ mod runtime {
         NSMUTABLESET, NSMUTABLESET_META;
         NSTIMER, NSTIMER_META;
         NSRUNLOOP, NSRUNLOOP_META;
+        NSNOTIFICATION, NSNOTIFICATION_META;
+        NSNOTIFICATIONCENTER, NSNOTIFICATIONCENTER_META;
+        NSUUID, NSUUID_META;
+        NSFILEMANAGER, NSFILEMANAGER_META;
     }
 
     /// The class object `class` as the pointer the runtime takes.
@@ -180,6 +191,9 @@ mod runtime {
                 && data::define(runtime)
                 && set::define(runtime)
                 && timer::define(runtime)
+                && notification::define(runtime)
+                && super::uuid::define(runtime)
+                && super::file_manager::define(runtime)
                 && super::description::extend_object(runtime)
         }) && number::set_up_booleans()
             && array::set_up_empty()
@@ -233,18 +247,44 @@ mod runtime {
             b"_OBJC_METACLASS_$_NSTimer" => class(&NSTIMER_META),
             b"_OBJC_CLASS_$_NSRunLoop" => class(&NSRUNLOOP),
             b"_OBJC_METACLASS_$_NSRunLoop" => class(&NSRUNLOOP_META),
+            b"_OBJC_CLASS_$_NSNotification" => class(&NSNOTIFICATION),
+            b"_OBJC_METACLASS_$_NSNotification" => class(&NSNOTIFICATION_META),
+            b"_OBJC_CLASS_$_NSNotificationCenter" => class(&NSNOTIFICATIONCENTER),
+            b"_OBJC_METACLASS_$_NSNotificationCenter" => class(&NSNOTIFICATIONCENTER_META),
+            b"_OBJC_CLASS_$_NSUUID" => class(&NSUUID),
+            b"_OBJC_METACLASS_$_NSUUID" => class(&NSUUID_META),
+            b"_OBJC_CLASS_$_NSFileManager" => class(&NSFILEMANAGER),
+            b"_OBJC_METACLASS_$_NSFileManager" => class(&NSFILEMANAGER_META),
             b"___NSArray0__struct" => Some(array::empty_address()),
             b"___NSDictionary0__struct" => Some(dictionary::empty_address()),
             b"___kCFBooleanTrue" => Some(number::boolean_object(true)),
             b"___kCFBooleanFalse" => Some(number::boolean_object(false)),
             _ => log::resolve(name)
                 .or_else(|| exception::resolve(name))
-                .or_else(|| constants::resolve(name)),
+                .or_else(|| constants::resolve(name))
+                .or_else(|| super::file_manager::resolve(name)),
         }
     }
 
+    /// A new autoreleased notification named by the exported constant `name` about `object`.
+    pub fn notification_named(name: usize, object: Id) -> Id {
+        notification::notification(constants::string(name), object, core::ptr::null_mut())
+    }
+
+    /// The exported constant string at `index` of Foundation's list (`constants.rs`).
+    pub fn constant(index: usize) -> Id {
+        constants::string(index)
+    }
+
     pub use super::bundle::{LONGEST_PATH, app_name, info_string, own_icon_path};
-    pub use super::exception::terminate_with;
+    pub use super::constants::{
+        APPLICATION_DID_FINISH_LAUNCHING, APPLICATION_WILL_FINISH_LAUNCHING,
+        APPLICATION_WILL_TERMINATE, PASTEBOARD_NAME_GENERAL, PASTEBOARD_TYPE_STRING,
+        WINDOW_WILL_CLOSE,
+    };
+    pub use super::exception::{raise_named, terminate_with};
+    pub use super::log::log_message;
+    pub use super::notification::post;
     pub use super::number::{Exact, exact_value};
     pub use super::string::{string_from_utf8, text_of, with_utf8};
     pub use super::timer::{fire_due, next_due_in_ms};

@@ -5,11 +5,18 @@
 #![cfg_attr(not(test), no_std)]
 #![no_builtins]
 
-#[cfg(target_env = "musl")]
+#[cfg(all(eggos_kernel, eggos_user))]
+compile_error!(
+    "a build is the kernel's (`eggos_kernel`) or a program's (`eggos_user`), never both"
+);
+#[cfg(all(target_env = "musl", not(eggos_user)))]
+compile_error!("a musl build of the runtime needs `--cfg eggos_user` (.cargo/config.toml)");
+
+#[cfg(eggos_user)]
 mod entry;
 pub mod errno;
 pub mod futex;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod memory;
 pub mod process;
 pub mod relocation;

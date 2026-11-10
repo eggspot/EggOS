@@ -40,6 +40,7 @@ pub mod number {
     pub const MKDIRAT: usize = 258;
     pub const NEWFSTATAT: usize = 262;
     pub const UNLINKAT: usize = 263;
+    pub const RENAMEAT: usize = 264;
     pub const FACCESSAT: usize = 269;
     pub const GETRANDOM: usize = 318;
     pub const RT_SIGPROCMASK: usize = 14;
@@ -68,6 +69,7 @@ pub mod number {
     pub const IOCTL: usize = 29;
     pub const MKDIRAT: usize = 34;
     pub const UNLINKAT: usize = 35;
+    pub const RENAMEAT: usize = 38;
     pub const FACCESSAT: usize = 48;
     pub const CHDIR: usize = 49;
     pub const OPENAT: usize = 56;

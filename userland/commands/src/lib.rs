@@ -194,10 +194,13 @@ impl ValueType {
 /// An option's value: what `help` calls it and its type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OptionValue {
-    /// Its name in the usage, such as `count`.
+    /// Its name in the usage, such as `count`; a name of two words (`x y`) takes two words.
     pub name: &'static str,
     /// Its type.
     pub value: ValueType,
+    /// Whether it may be left out: then it is given only attached (`--sync=host`), never as
+    /// the next word.
+    pub optional: bool,
 }
 
 /// One option of a command.
@@ -263,6 +266,7 @@ pub const fn limit_option(maximum: i64) -> OptionDefinition {
                 minimum: 1,
                 maximum,
             },
+            optional: false,
         }),
         repeatable: false,
         default: None,
@@ -278,6 +282,7 @@ pub const AFTER_OPTION: OptionDefinition = OptionDefinition {
     value: Some(OptionValue {
         name: "cursor",
         value: ValueType::Text,
+        optional: false,
     }),
     repeatable: false,
     default: None,
@@ -351,6 +356,8 @@ pub enum FieldType {
     List,
     /// A JSON object.
     Object,
+    /// Any JSON value: its type depends on the record (a registry value's data, D231).
+    Value,
 }
 
 impl FieldType {
@@ -363,6 +370,7 @@ impl FieldType {
             FieldType::Time => "time",
             FieldType::List => "list",
             FieldType::Object => "object",
+            FieldType::Value => "value",
         }
     }
 }
@@ -561,9 +569,9 @@ pub const CORE_VERBS: [&str; 20] = [
 ];
 
 /// The verbs a noun adds by a decision: `wm`'s (D128, D141, D147, D160, D161 and D162),
-/// `disk`'s (D192), `agent`'s (D193), `app`'s (D196) and those of `wm desktop`, a noun of
-/// `wm` (D204).
-pub const NOUN_VERBS: [(&str, &[&str]); 5] = [
+/// `disk`'s (D192), `agent`'s (D193), `app`'s (D196), `download`'s (D225), `component`'s
+/// (D235), those of `wm desktop`, a noun of `wm` (D204), and those of `windows registry` (D231).
+pub const NOUN_VERBS: [(&str, &[&str]); 8] = [
     (
         "wm",
         &[
@@ -574,17 +582,70 @@ pub const NOUN_VERBS: [(&str, &[&str]); 5] = [
     ("disk", &["format", "repair"]),
     ("agent", &["grant", "revoke", "forget", "pair", "network"]),
     ("app", &["icon"]),
+    ("download", &["cancel", "clear"]),
+    ("component", &["remove"]),
     ("wm desktop", &["switch", "new"]),
+    ("windows registry", &["reset"]),
 ];
 
 /// EggOS's kept names: commands that keep their name and exact behavior, with a full
 /// definition all the same (the spec's list, checked against the code).
-pub const KEPT_NAMES: [&str; 51] = [
-    "agent", "agentlog", "app", "cat", "chmod", "clip", "cp", "date", "device", "df", "disk",
-    "echo", "edit", "false", "fetch", "free", "getprop", "grep", "halt", "head", "help", "hwclock",
-    "ip", "kill", "ln", "logcat", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps",
-    "readlink", "reboot", "rm", "setprop", "settings", "sleep", "sync", "tail", "taskset", "tee",
-    "terminal", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
+pub const KEPT_NAMES: [&str; 55] = [
+    "agent",
+    "agentlog",
+    "app",
+    "cat",
+    "chmod",
+    "clip",
+    "component",
+    "cp",
+    "date",
+    "device",
+    "df",
+    "disk",
+    "download",
+    "echo",
+    "edit",
+    "false",
+    "fetch",
+    "free",
+    "getprop",
+    "grep",
+    "halt",
+    "head",
+    "help",
+    "hwclock",
+    "ip",
+    "kill",
+    "ln",
+    "logcat",
+    "ls",
+    "mkdir",
+    "mv",
+    "nslookup",
+    "ping",
+    "poweroff",
+    "ps",
+    "readlink",
+    "reboot",
+    "rm",
+    "setprop",
+    "settings",
+    "sleep",
+    "stty",
+    "sync",
+    "tail",
+    "taskset",
+    "tee",
+    "terminal",
+    "touch",
+    "trash",
+    "true",
+    "uname",
+    "uptime",
+    "wc",
+    "windows",
+    "wm",
 ];
 
 /// `eggsh`'s built-ins: CLI only, defined in [`shell::SHELL_COMMANDS`] for the docs and the

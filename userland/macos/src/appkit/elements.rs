@@ -2,11 +2,14 @@
 //! the window server's `Query` record reaches the event loop, which answers it. A window is the
 //! root element, named by its title; its views follow in pre-order from the content view, each
 //! numbered from 2 in that order (hidden views and their subviews left out): a push button as a
-//! button named by its title (the default button flagged), an editable text field as a text
+//! button named by its title (the default button flagged; a toggle valued `on` or `off` and
+//! checked when on), a checkbox as a checkbox (checked when on, valued `mixed` when mixed), a
+//! radio as a radio (selected when on), an editable text field as a text
 //! field whose value is its text, a label as a label, a plain `NSView` as a group and any view
 //! of the app's own class as a graphic named by its class, focusable when it accepts the first
 //! responder. Each has its frame in the window's content pixels (a control its drawn 28 pixel
-//! rectangle). `invoke` clicks a button as `performClick:` does, `focus` makes a focusable view
+//! rectangle). `invoke` clicks a button as `performClick:` does (`select` too for a radio),
+//! `focus` makes a focusable view
 //! the first responder, `set-text` replaces a text field's text; disabled controls refuse.
 //! While an alert runs, trees are answered and actions refused, as the app is modal.
 
@@ -18,6 +21,7 @@ use eggos_element_tree::{
     Action, Bounds, Element, MAX_LABEL_BYTES, MAX_TEXT_BYTES, MAX_TREE_BYTES, Outcome, Query, Role,
     TreeWriter, flags, query_kind, tree_answer,
 };
+use eggos_macos_gui::button::{self, Family};
 use eggos_macos_gui::geometry::{Frame, pixel_rect};
 use eggos_macos_gui::paint;
 use eggos_toolkit::geometry::Rect;
@@ -157,8 +161,26 @@ fn is_focused(window: Id, view: Id) -> bool {
 
 fn classify(window: Id, view: Id) -> Described {
     if is(view, &NSBUTTON) {
-        let mut described =
-            control::with_title(view, |title| Described::new(Role::Button).named(title));
+        let family = control::family_of(view);
+        let on = control::state_of(view) == button::ON;
+        let role = match family {
+            Family::Checkbox => Role::Checkbox,
+            Family::Radio => Role::Radio,
+            Family::Push | Family::Toggle => Role::Button,
+        };
+        let mut described = control::with_title(view, |title| Described::new(role).named(title));
+        match family {
+            Family::Checkbox if control::state_of(view) == button::MIXED => {
+                described = described.valued("mixed");
+            }
+            Family::Toggle => described = described.valued(if on { "on" } else { "off" }),
+            Family::Checkbox | Family::Radio | Family::Push => {}
+        }
+        if on && family == Family::Radio {
+            described.flags |= flags::SELECTED;
+        } else if on && matches!(family, Family::Checkbox | Family::Toggle) {
+            described.flags |= flags::CHECKED;
+        }
         if control::is_default_button(view) {
             described.flags |= flags::DEFAULT;
         }
@@ -285,6 +307,13 @@ fn act(serial: u32, window: Id, element: u32, action: Action) -> Outcome {
     let enabled = !(is_button || is_field) || control::is_enabled_control(view);
     match action {
         Action::Invoke if is_button => {
+            if !enabled {
+                return Outcome::Disabled;
+            }
+            control::perform_click(view);
+            Outcome::Done
+        }
+        Action::Select if is_button && control::family_of(view) == Family::Radio => {
             if !enabled {
                 return Outcome::Disabled;
             }

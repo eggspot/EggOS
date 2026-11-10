@@ -14,7 +14,7 @@ pub mod compositor;
 pub mod fake;
 #[cfg(any(test, feature = "fuzz"))]
 pub mod fuzz;
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub mod linux;
 pub mod selection;
 pub mod system;

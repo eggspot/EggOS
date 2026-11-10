@@ -36,18 +36,7 @@ pub mod utsname {
     /// The build: EggOS's version. No build date, so builds are reproducible.
     pub const VERSION: &str = concat!("#1 SMP EggOS ", env!("CARGO_PKG_VERSION"));
     /// The architecture, as Linux names it.
-    #[cfg(target_arch = "aarch64")]
-    pub const MACHINE: &str = "aarch64";
-    #[cfg(target_arch = "riscv64")]
-    pub const MACHINE: &str = "riscv64";
-    #[cfg(target_arch = "x86_64")]
-    pub const MACHINE: &str = "x86_64";
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "riscv64",
-        target_arch = "x86_64"
-    )))]
-    compile_error!("utsname::MACHINE needs Linux's name for this architecture");
+    pub const MACHINE: &str = crate::linux::abi::MACHINE;
     /// The NIS domain name: Linux's default.
     pub const DOMAINNAME: &str = "(none)";
 

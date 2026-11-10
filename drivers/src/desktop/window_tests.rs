@@ -236,14 +236,18 @@ fn dragging_the_title_bar_moves_a_window_and_keeps_it_in_the_work_area() {
     );
     desktop.pointer_moved(0, 0, &mut damage, &mut events);
     assert_eq!(
+        desktop.window_bounds(window),
+        Some(Bounds::new(-100, 28, 402, 330))
+    );
+    assert_eq!(
         desktop.window_rect(window),
-        Some(Rect::new(0, 28, 402, 330))
+        Some(Rect::new(0, 28, 302, 330))
     );
     release(&mut desktop, &mut events);
     desktop.pointer_moved(900, 700, &mut damage, &mut events);
     assert_eq!(
-        desktop.window_rect(window),
-        Some(Rect::new(0, 28, 402, 330))
+        desktop.window_bounds(window),
+        Some(Bounds::new(-100, 28, 402, 330))
     );
     assert!(
         !events
@@ -322,6 +326,18 @@ fn keys_and_the_wheel_go_to_the_focused_window_s_client() {
     assert_eq!(
         (wheel.kind, wheel.a, wheel.b, wheel.d as i32),
         (event::WHEEL, 8, 9, -2)
+    );
+    desktop.sideways_wheel(3, &mut events);
+    let (_, sideways) = events.take()[0];
+    assert_eq!(
+        (
+            sideways.kind,
+            sideways.a,
+            sideways.b,
+            sideways.c as i32,
+            sideways.d
+        ),
+        (event::WHEEL, 8, 9, 3, 0)
     );
     let terminal = desktop.window();
     click(&mut desktop, terminal.x + 10, terminal.y + 100, &mut events);
@@ -437,6 +453,50 @@ fn a_dialog_sits_on_its_parent_takes_its_input_and_goes_with_it() {
     assert_eq!(desktop.windows_of(CLIENT), 0);
 }
 
+fn shown_dialog(desktop: &mut Desktop, parent: WindowId, events: &mut Recorded) -> WindowId {
+    let dialog = desktop
+        .create(CLIENT, 1, u32::from(parent), 160, 80, 0)
+        .unwrap()
+        .window;
+    desktop
+        .commit(CLIENT, u32::from(dialog), &[], &mut Damage::new(), events)
+        .unwrap();
+    dialog
+}
+
+#[test]
+fn a_dialog_s_dialog_sits_above_both_takes_the_focus_and_goes_with_its_parent() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut events = Recorded::default();
+    let window = shown(&mut desktop, CLIENT, 400, 300);
+    let dialog = shown_dialog(&mut desktop, window, &mut events);
+    let inner = shown_dialog(&mut desktop, dialog, &mut events);
+    assert_eq!(desktop.focused_window(), Some(inner));
+    let other = shown(&mut desktop, CLIENT, 300, 200);
+    assert_eq!(desktop.focused_window(), Some(other));
+    let window_rect = desktop.window_rect(window).unwrap();
+    click(
+        &mut desktop,
+        window_rect.x + 5,
+        window_rect.bottom() - 10,
+        &mut events,
+    );
+    assert_eq!(desktop.focused_window(), Some(inner));
+    let stack: Vec<_> = desktop.stacking().collect();
+    assert_eq!(&stack[stack.len() - 3..], [window, dialog, inner]);
+    assert!(!events.kinds().contains(&(CLIENT, event::BUTTON)));
+    desktop
+        .destroy(CLIENT, u32::from(inner), &mut Damage::new(), &mut events)
+        .unwrap();
+    assert_eq!(desktop.focused_window(), Some(dialog));
+    let inner = shown_dialog(&mut desktop, dialog, &mut events);
+    desktop
+        .destroy(CLIENT, u32::from(dialog), &mut Damage::new(), &mut events)
+        .unwrap();
+    assert!(!desktop.is_shown(inner) && desktop.window_rect(inner).is_none());
+    assert_eq!(desktop.focused_window(), Some(window));
+}
+
 #[test]
 fn requests_check_the_window_s_owner_role_flags_and_the_limits() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
@@ -492,7 +552,7 @@ fn requests_check_the_window_s_owner_role_flags_and_the_limits() {
         Err(WindowError::Invalid)
     );
     assert_eq!(
-        desktop.set_pointer(CLIENT, window, 9, &mut damage),
+        desktop.set_pointer(CLIENT, window, 10, &mut damage),
         Err(WindowError::Invalid)
     );
     assert_eq!(desktop.set_pointer(CLIENT, window, 1, &mut damage), Ok(()));
@@ -893,7 +953,7 @@ fn a_client_reads_its_own_window_s_placement_and_no_one_else_s() {
     assert_eq!(request::GET_PLACEMENT, 0xc014_771c);
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let window = shown(&mut desktop, CLIENT, 400, 300);
-    let outside = desktop.window_rect(window).unwrap();
+    let outside = desktop.window_bounds(window).unwrap();
     assert_eq!(desktop.placement(CLIENT, u32::from(window)), Ok(outside));
     assert_eq!(
         desktop.placement(OTHER, u32::from(window)),
@@ -904,7 +964,7 @@ fn a_client_reads_its_own_window_s_placement_and_no_one_else_s() {
         .unwrap();
     let moved = desktop.placement(CLIENT, u32::from(window)).unwrap();
     let work = desktop.work_area();
-    assert_eq!((moved.x, moved.y), (work.x + 10, work.y + 20));
+    assert_eq!((moved.x, moved.y), (work.x as i32 + 10, work.y + 20));
     let mut bytes = [0u8; size::GET_PLACEMENT];
     bytes[..4].copy_from_slice(&u32::from(window).to_ne_bytes());
     assert_eq!(
@@ -928,6 +988,19 @@ fn the_keyboard_layout_requests_have_their_numbers_and_arguments() {
         Some(Request::SetKeyboardLayout { layout: 8 })
     );
     assert_eq!(key_modifiers(Modifiers::ALT_GRAPH), modifier::ALT_GRAPH);
+    assert_eq!(request::SET_KEYBOARD_LAYOUTS, 0x400c_7726);
+    let mut layouts = [0u8; size::SET_KEYBOARD_LAYOUTS];
+    layouts[0..4].copy_from_slice(&2u32.to_ne_bytes());
+    layouts[4..8].copy_from_slice(&[0, 11, 0, 0]);
+    layouts[8..12].copy_from_slice(&3u32.to_ne_bytes());
+    assert_eq!(
+        Request::parse(request::SET_KEYBOARD_LAYOUTS, &layouts),
+        Some(Request::SetKeyboardLayouts {
+            count: 2,
+            layouts: [0, 11, 0, 0],
+            switch_key: 3,
+        })
+    );
 }
 
 #[test]

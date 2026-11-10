@@ -33,7 +33,7 @@ const _: () = assert!(eggos_hal::user::TestProgram::LINUX_ARCH_SET_FS == code::A
 /// `arch_prctl(code, address)` (x86_64): sets or reads the calling thread's FS base, its
 /// thread pointer, which takes effect when the program runs again. `code` is a C `int`, so
 /// only its low 32 bits count.
-#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(linux_abi_arch_prctl), allow(dead_code))]
 pub fn arch_prctl<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
@@ -49,12 +49,12 @@ pub fn arch_prctl<P: Platform>(
             .map_err(|_| Errno::EPERM),
         code::ARCH_SET_FS => Err(Errno::EPERM),
         code::ARCH_GET_FS => write_word(process, address, context.thread_pointer()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_arch_prctl)]
         code::ARCH_SET_GS if address < <P::PageTableFormat as Format>::USER_END => context
             .set_gs_base(address)
             .map(|()| 0)
             .map_err(|_| Errno::EPERM),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(linux_abi_arch_prctl)]
         code::ARCH_SET_GS => Err(Errno::EPERM),
         code::ARCH_GET_GS => write_word(process, address, gs_base(context)),
         code::ARCH_GET_CPUID => Ok(1),
@@ -65,11 +65,11 @@ pub fn arch_prctl<P: Platform>(
 }
 
 fn gs_base(context: &UserContext) -> u64 {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(linux_abi_arch_prctl)]
     {
         context.gs_base()
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(linux_abi_arch_prctl))]
     {
         let _ = context;
         0

@@ -3,15 +3,18 @@
 //! glyph is addressed by a `u8` glyph id: 0x20 to 0x7E are the printable ASCII characters
 //! themselves, 0xA0 to 0xFF the Latin-1 characters themselves, [`EURO`] the euro sign, and the
 //! box drawing, block and symbol extras take 0x80 upwards in the order of [`EXTRAS`]; every
-//! other id draws `?`. The desktop, the terminal and the Windows layer's drawing share it
-//! (D129). [`egg_sans`] is the proportional UI font of the toolkit (docs/ux/font-ui-16.txt,
-//! D132).
+//! other id draws `?`. Latin Extended-A (U+0100 to U+017F, docs/ux/font-8x16-latin-ext-a.txt,
+//! D221) has no `u8` id: [`glyph_rows`] draws it by character. The desktop, the terminal and the
+//! Windows layer's drawing share it (D129). [`egg_sans`] is the proportional UI font of the
+//! toolkit (docs/ux/font-ui-16.txt, D132). [`ascii_fold`] and [`contains_folded`] match text
+//! without regard to case and accents, as the launcher's and Settings' searches do (D221).
 
 #![cfg_attr(not(test), no_std)]
 
 mod egg_mono;
 pub mod egg_sans;
 mod latin_1;
+mod latin_ext_a;
 
 #[cfg(test)]
 mod tests;
@@ -79,7 +82,102 @@ pub fn character(id: u8) -> char {
 
 /// Whether Egg Mono has a glyph of its own for `character`.
 pub fn covers(character: u32) -> bool {
-    glyph_id(character) != REPLACEMENT || character == u32::from(REPLACEMENT)
+    glyph_id(character) != REPLACEMENT
+        || character == u32::from(REPLACEMENT)
+        || (latin_ext_a::FIRST..=latin_ext_a::LAST).contains(&character)
+}
+
+/// The rows that draw `character`: those of its glyph id ([`glyph_id`]), or its Latin
+/// Extended-A glyph, which has no id (D221).
+pub fn glyph_rows(character: u32) -> &'static GlyphRows {
+    match character {
+        latin_ext_a::FIRST..=latin_ext_a::LAST => {
+            &latin_ext_a::LATIN_EXTENDED_A[(character - latin_ext_a::FIRST) as usize]
+        }
+        _ => rows(glyph_id(character)),
+    }
+}
+
+const FIRST_FOLDED: u32 = 0xc0;
+const LAST_FOLDED: u32 = 0x17f;
+
+static FOLDS: &[u8; 384] = b"a a a a a a aec e e e e i i i i d n o o o o o   o u u u u y thss\
+a a a a a a aec e e e e i i i i d n o o o o o   o u u u u y thy \
+a a a a a a c c c c c c c c d d d d e e e e e e e e e e g g g g \
+g g g g h h h h i i i i i i i i i i ijijj j k k k l l l l l l l \
+l l l n n n n n n n n n o o o o o o oeoer r r r r r s s s s s s \
+s s t t t t t t u u u u u u u u u u u u w w y y y z z z z z z s ";
+
+/// A character folded for matching ([`ascii_fold`]): one or two lower-case ASCII letters, or
+/// the character itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Folded {
+    bytes: [u8; 4],
+    length: u8,
+}
+
+impl Folded {
+    /// The folded text.
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(self.as_bytes()).unwrap_or("")
+    }
+
+    /// The folded text's bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.length)]
+    }
+}
+
+/// `character` folded for matching without regard to case and accents (D221): every letter
+/// the fonts draw from U+00C0 to U+017F to one or two lower-case ASCII letters (`É` to `e`,
+/// `ß` to `ss`, `Œ` to `oe`, `Ł` to `l`), ASCII capitals to small letters, anything else
+/// unchanged.
+pub fn ascii_fold(character: char) -> Folded {
+    let code = character as u32;
+    let mut bytes = [0u8; 4];
+    if character.is_ascii() {
+        bytes[0] = (code as u8).to_ascii_lowercase();
+        return Folded { bytes, length: 1 };
+    }
+    if (FIRST_FOLDED..=LAST_FOLDED).contains(&code) {
+        let at = 2 * (code - FIRST_FOLDED) as usize;
+        let fold = [FOLDS[at], FOLDS[at + 1]];
+        if fold[0] != b' ' {
+            bytes[..2].copy_from_slice(&fold);
+            let length = if fold[1] == b' ' { 1 } else { 2 };
+            return Folded { bytes, length };
+        }
+    }
+    let length = character.encode_utf8(&mut bytes).len() as u8;
+    Folded { bytes, length }
+}
+
+fn folded(text: &str) -> impl Iterator<Item = u8> + Clone + '_ {
+    text.chars().flat_map(|character| {
+        let fold = ascii_fold(character);
+        (0..fold.length).map(move |index| fold.bytes[usize::from(index)])
+    })
+}
+
+/// Whether `query` is in `text` once both are folded ([`ascii_fold`]): `e` finds `Éditeur`,
+/// `strasse` finds `Straße`, and `é` finds `Text Editor`. Allocates nothing.
+pub fn contains_folded(text: &str, query: &str) -> bool {
+    let mut from = folded(text);
+    loop {
+        let mut candidate = from.clone();
+        if folded(query).all(|byte| candidate.next() == Some(byte)) {
+            return true;
+        }
+        if from.next().is_none() {
+            return false;
+        }
+    }
+}
+
+/// `a` and `b` in the order of their folded texts ([`ascii_fold`]), then of their bytes, so
+/// `Édition` sorts under E and the order is total.
+pub fn cmp_folded(a: &str, b: &str) -> core::cmp::Ordering {
+    folded(a).cmp(folded(b)).then_with(|| a.cmp(b))
 }
 
 /// The rows of glyph `id`; those of `?` for an id the font does not have.

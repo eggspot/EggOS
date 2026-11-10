@@ -52,6 +52,7 @@ pub(super) struct Canvas<'a> {
     pixels: &'a mut [u32],
     stride: usize,
     clip: Rect,
+    shift: u32,
 }
 
 impl<'a> Canvas<'a> {
@@ -62,7 +63,22 @@ impl<'a> Canvas<'a> {
             pixels,
             stride,
             clip,
+            shift: 0,
         })
+    }
+
+    pub(super) fn shifted(&mut self, by: u32) -> Canvas<'_> {
+        Canvas {
+            pixels: &mut *self.pixels,
+            stride: self.stride,
+            clip: Rect::new(
+                self.clip.x + by,
+                self.clip.y,
+                self.clip.width,
+                self.clip.height,
+            ),
+            shift: self.shift + by,
+        }
     }
 
     pub(super) fn clip(&self) -> Rect {
@@ -79,6 +95,7 @@ impl<'a> Canvas<'a> {
             return;
         }
         let start = row as usize * self.stride;
+        let (left, right) = (left - self.shift, right - self.shift);
         self.pixels[start + left as usize..start + right as usize].fill(colour);
     }
 
@@ -92,6 +109,7 @@ impl<'a> Canvas<'a> {
             return None;
         }
         let start = row as usize * self.stride;
+        let (left, right) = (left - self.shift, right - self.shift);
         Some(&mut self.pixels[start + left as usize..start + right as usize])
     }
 
@@ -136,7 +154,7 @@ impl<'a> Canvas<'a> {
     fn darken(&mut self, x: u32, y: u32, darkening: fn(u32) -> u32) {
         let clip = self.clip;
         if x >= clip.x && x < clip.right() && y >= clip.y && y < clip.bottom() {
-            let at = y as usize * self.stride + x as usize;
+            let at = y as usize * self.stride + (x - self.shift) as usize;
             self.pixels[at] = darkening(self.pixels[at]);
         }
     }
@@ -164,10 +182,13 @@ impl<'a> Canvas<'a> {
 
     pub(super) fn text(&mut self, x: u32, y: u32, text: &str, colour: u32) {
         for (index, character) in text.chars().enumerate() {
-            self.glyph(
+            if character == ' ' {
+                continue;
+            }
+            self.glyph_rows(
                 x + index as u32 * GLYPH_WIDTH as u32,
                 y,
-                font::glyph_id(u32::from(character)),
+                font::glyph_rows(u32::from(character)),
                 colour,
             );
         }
@@ -209,11 +230,18 @@ impl<'a> Canvas<'a> {
     }
 
     fn glyph(&mut self, x: u32, y: u32, id: u8, colour: u32) {
-        let cell = Rect::new(x, y, GLYPH_WIDTH as u32, GLYPH_HEIGHT as u32);
-        if !cell.overlaps(&self.clip) || id == b' ' {
+        if id == b' ' {
             return;
         }
-        for (row, &bits) in font::rows(id).iter().enumerate() {
+        self.glyph_rows(x, y, font::rows(id), colour);
+    }
+
+    fn glyph_rows(&mut self, x: u32, y: u32, rows: &font::GlyphRows, colour: u32) {
+        let cell = Rect::new(x, y, GLYPH_WIDTH as u32, GLYPH_HEIGHT as u32);
+        if !cell.overlaps(&self.clip) {
+            return;
+        }
+        for (row, &bits) in rows.iter().enumerate() {
             for column in 0..GLYPH_WIDTH {
                 if bits & (0x80 >> column) != 0 {
                     self.pixel(x + column as u32, y + row as u32, colour);

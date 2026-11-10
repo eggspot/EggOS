@@ -14,10 +14,13 @@
 //! Text, the same with or without a display; `--window` shows the installer's dialogs instead.
 //! `--` ends the options, so the next word is the operand even if it starts with `-`.
 
+use crate::installer;
 use crate::messages::Line;
 use core::fmt::Write;
 use eggos_app_manifest::translation::{self, Record};
+use eggos_commands::{ErrorDefinition, errors};
 use eggos_mcp::json::JsonWriter;
+use eggos_runtime::errno::Errno;
 
 /// What the command was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +31,9 @@ pub enum Command<'a> {
         entry: Option<&'a [u8]>,
         arguments: Option<&'a [u8]>,
         environment: Option<&'a [u8]>,
+        console: Option<bool>,
         window: bool,
+        dry_run: bool,
     },
     Uninstall {
         name: &'a [u8],
@@ -57,8 +62,8 @@ pub enum Command<'a> {
 
 /// The command's usage, printed for `--help` and with a usage error.
 pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] \
-                         [--arguments <words>] [--environment <variables>] [--window] \
-                         [--] <path>\n       \
+                         [--arguments <words>] [--environment <variables>] \
+                         [--console | --no-console] [--window | --dry-run] [--] <path>\n       \
                          app uninstall [--window] [--dry-run] [--] <name>\n       \
                          app open [--] <name>\n       \
                          app list [--json] [--limit <count>] [--after <cursor>]\n       \
@@ -87,6 +92,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
     let mut entry = None;
     let mut words = None;
     let mut environment = None;
+    let mut console = None;
     let mut json = false;
     let mut dry_run = false;
     let mut limit = None;
@@ -99,6 +105,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
     let mut rest = rest.iter();
     let mut options_end = false;
     let removing = verb == b"uninstall" || verb == b"remove";
+    let previewed = removing || verb == b"install";
     while let Some(&argument) = rest.next() {
         match argument {
             _ if options_end && operand.is_none() => operand = Some(argument),
@@ -106,7 +113,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             _ if options_end => return None,
             b"--" => options_end = true,
             b"--window" => window = true,
-            b"--dry-run" if removing => dry_run = true,
+            b"--dry-run" if previewed => dry_run = true,
             b"--json" if verb == b"list" || verb == b"show" => json = true,
             b"--limit" if verb == b"list" => limit = Some(*rest.next()?),
             b"--after" if verb == b"list" => after = Some(*rest.next()?),
@@ -120,6 +127,8 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             b"--entry" if verb == b"install" => entry = Some(*rest.next()?),
             b"--arguments" if verb == b"install" => words = Some(*rest.next()?),
             b"--environment" if verb == b"install" => environment = Some(*rest.next()?),
+            b"--console" if verb == b"install" => console = Some(true),
+            b"--no-console" if verb == b"install" => console = Some(false),
             b"--size" if icon => size = Some(*rest.next()?),
             b"-o" if icon => output = Some(*rest.next()?),
             _ if argument.starts_with(b"-") && argument.len() > 1 => return None,
@@ -129,13 +138,15 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
         }
     }
     match verb {
-        b"install" => Some(Command::Install {
+        b"install" if !(window && dry_run) => Some(Command::Install {
             path: operand?,
             name,
             entry,
             arguments: words,
             environment,
+            console,
             window,
+            dry_run,
         }),
         b"uninstall" | b"remove" if !(window && dry_run) => Some(Command::Uninstall {
             name: operand?,
@@ -285,7 +296,47 @@ pub fn translation_lines(record: &Record<'_>, mut each: impl FnMut(&str)) {
     }
 }
 
-#[cfg(target_env = "musl")]
+/// The error code an install or uninstall that failed with `problem` reports (D226).
+pub fn problem_error(problem: &installer::Problem) -> &'static ErrorDefinition {
+    use installer::Problem;
+    match problem {
+        Problem::NotInstalled => &errors::NO_SUCH_APP,
+        Problem::AlreadyInstalled => &errors::APP_EXISTS,
+        Problem::ReadOnly => &errors::READ_ONLY,
+        Problem::DiskFull => &errors::NO_SPACE,
+        Problem::Unreadable(errno) | Problem::Failed(errno) => errno_error(*errno),
+        Problem::InvalidName
+        | Problem::InvalidArguments
+        | Problem::InvalidEnvironment
+        | Problem::PathTooLong
+        | Problem::SeveralPrograms(_)
+        | Problem::NoSuchEntry => &errors::INVALID_VALUE,
+        Problem::NotRunnable(_)
+        | Problem::FolderNotApp
+        | Problem::BundleWithoutProgram
+        | Problem::InvalidProgramPath
+        | Problem::TooDeep
+        | Problem::UnsupportedEntry
+        | Problem::UnsafeLink
+        | Problem::Archive(_)
+        | Problem::NoProgramInArchive
+        | Problem::ReservedName
+        | Problem::TooLarge => &errors::NOT_AN_APP,
+    }
+}
+
+/// The error code a file system error `errno` reports from `app` (D226).
+pub fn errno_error(errno: Errno) -> &'static ErrorDefinition {
+    match errno {
+        Errno::ENOENT => &errors::NO_SUCH_FILE,
+        Errno::EACCES | Errno::EPERM => &errors::PERMISSION_DENIED,
+        Errno::EROFS => &errors::READ_ONLY,
+        Errno::ENOSPC => &errors::NO_SPACE,
+        _ => &errors::FAILED,
+    }
+}
+
+#[cfg(eggos_user)]
 mod program {
     use super::*;
     use crate::architecture::Architecture;
@@ -296,8 +347,8 @@ mod program {
     use crate::messages::{self, Line};
     use core::ffi::CStr;
     use core::fmt::Write;
+    use core::sync::atomic::{AtomicBool, Ordering};
     use eggos_commands::page::{self, MAX_CURSOR_BYTES, MAX_KEY_BYTES, MORE_PREFIX};
-    use eggos_commands::{ErrorDefinition, errors};
     use eggos_png::EncoderWorkspace;
     use eggos_runtime::startup::Startup;
 
@@ -305,6 +356,7 @@ mod program {
     const MAX_ARGUMENTS: usize = 12;
 
     static mut BUFFER: [u8; COPY_BUFFER] = [0; COPY_BUFFER];
+    static CODED_ERRORS: AtomicBool = AtomicBool::new(false);
 
     fn say(descriptor: usize, line: &str) {
         write_all(descriptor, line.as_bytes());
@@ -316,11 +368,10 @@ mod program {
         let _ = said.write_str("app: ");
         match line.strip_prefix("Could not") {
             Some(rest) => {
-                let _ = write!(said, "could not{rest}");
+                let _ = said.write_str("could not");
+                said.push_escaped(rest);
             }
-            None => {
-                let _ = said.write_str(line);
-            }
+            None => said.push_escaped(line),
         }
         say(STANDARD_ERROR, said.as_str());
     }
@@ -331,50 +382,100 @@ mod program {
         unsafe { core::slice::from_raw_parts_mut((&raw mut BUFFER).cast::<u8>(), COPY_BUFFER) }
     }
 
-    #[allow(clippy::result_large_err)]
-    fn install(
-        path: &[u8],
-        name: Option<&[u8]>,
-        entry: Option<&[u8]>,
-        arguments: Option<&[u8]>,
-        environment: Option<&[u8]>,
-    ) -> i32 {
-        let mut files = LinuxFiles::new();
-        let machine = linux::machine();
+    #[derive(Clone, Copy)]
+    struct Request<'a> {
+        path: &'a [u8],
+        name: Option<&'a [u8]>,
+        entry: Option<&'a [u8]>,
+        arguments: Option<&'a [u8]>,
+        environment: Option<&'a [u8]>,
+        console: Option<bool>,
+    }
+
+    fn subject_of(request: Request<'_>) -> Line {
         let mut subject = Line::new();
-        subject.push_bytes(crate::files::file_name(path));
-        let planned =
-            installer::plan_entry(&mut files, path, name, entry, machine).and_then(|plan| {
-                match arguments {
-                    Some(arguments) => plan.with_arguments(arguments),
-                    None => Ok(plan),
-                }
-                .and_then(|plan| match environment {
-                    Some(environment) => plan.with_environment(environment),
-                    None => Ok(plan),
-                })
-            });
-        let plan = match planned {
-            Ok(plan) => plan,
+        subject.push_bytes(crate::files::file_name(request.path));
+        subject
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn plan_install(
+        files: &mut LinuxFiles,
+        request: Request<'_>,
+        machine: Architecture,
+    ) -> Option<installer::Plan> {
+        let Request {
+            path,
+            name,
+            entry,
+            arguments,
+            environment,
+            console,
+        } = request;
+        let planned = installer::plan_entry(files, path, name, entry, machine).and_then(|plan| {
+            match arguments {
+                Some(arguments) => plan.with_arguments(arguments),
+                None => Ok(plan),
+            }
+            .and_then(|plan| match environment {
+                Some(environment) => plan.with_environment(environment),
+                None => Ok(plan),
+            })
+            .map(|plan| match console {
+                Some(console) => plan.with_console(console),
+                None => plan,
+            })
+        });
+        match planned {
+            Ok(plan) => Some(plan),
             Err(refused) => {
                 let line = messages::install_failed(
                     refused.name.as_str(),
-                    subject.as_str(),
+                    subject_of(request).as_str(),
                     machine,
                     refused.problem,
                 );
-                complain(line.as_str());
-                return FAILED;
+                report(false, problem_error(&refused.problem), line.as_str());
+                None
             }
+        }
+    }
+
+    fn preview_install(request: Request<'_>) -> i32 {
+        let mut files = LinuxFiles::new();
+        let machine = linux::machine();
+        let Some(plan) = plan_install(&mut files, request, machine) else {
+            return FAILED;
+        };
+        match installer::preview(&mut files, &plan) {
+            Ok(preview) => {
+                say(
+                    STANDARD_OUTPUT,
+                    messages::would_install(&plan, preview, machine).as_str(),
+                );
+                0
+            }
+            Err(problem) => {
+                let subject = subject_of(request);
+                let line =
+                    messages::install_failed(plan.name(), subject.as_str(), machine, problem);
+                report(false, problem_error(&problem), line.as_str());
+                FAILED
+            }
+        }
+    }
+
+    fn install(request: Request<'_>) -> i32 {
+        let mut files = LinuxFiles::new();
+        let machine = linux::machine();
+        let subject = subject_of(request);
+        let Some(plan) = plan_install(&mut files, request, machine) else {
+            return FAILED;
         };
         match installer::install(&mut files, plan, buffer()) {
             Ok(()) => {
                 linux::apps_changed();
-                let mut line = Line::new();
-                let _ = write!(line, "Installed {} in ", plan.name());
-                line.push_bytes(plan.folder().as_bytes());
-                let _ = line.write_str(".");
-                say(STANDARD_OUTPUT, line.as_str());
+                say(STANDARD_OUTPUT, messages::installed(&plan).as_str());
                 if let Some(ahead) = crate::translation::ahead_of_launch(&plan, machine) {
                     translate(&mut files, &plan, machine, ahead);
                 }
@@ -383,7 +484,7 @@ mod program {
             Err(problem) => {
                 let line =
                     messages::install_failed(plan.name(), subject.as_str(), machine, problem);
-                complain(line.as_str());
+                report(false, problem_error(&problem), line.as_str());
                 FAILED
             }
         }
@@ -542,31 +643,34 @@ mod program {
         match installer::uninstall(&mut files, name) {
             Ok(()) => {
                 linux::apps_changed();
-                let mut line = Line::new();
-                let _ = write!(line, "Uninstalled {}.", shown.as_str());
-                say(STANDARD_OUTPUT, line.as_str());
+                say(
+                    STANDARD_OUTPUT,
+                    messages::uninstalled(shown.as_str()).as_str(),
+                );
                 0
             }
             Err(problem) => {
-                complain(messages::uninstall_failed(shown.as_str(), problem).as_str());
+                let line = messages::uninstall_failed(shown.as_str(), problem);
+                report(false, problem_error(&problem), line.as_str());
                 FAILED
             }
         }
     }
 
     fn report(json: bool, error: &ErrorDefinition, line: &str) {
-        if json {
+        if !json {
+            complain(line);
+            if let Some(command) = error.fix_command {
+                write_all(STANDARD_ERROR, b"  try: ");
+                say(STANDARD_ERROR, command);
+            }
+        }
+        if json || CODED_ERRORS.load(Ordering::Relaxed) {
             let mut record = [0u8; 1024];
             let mut out = JsonWriter::new(&mut record);
             eggos_mcp::server::write_error(&mut out, error, line);
             out.end_line();
             write_all(STANDARD_ERROR, out.as_bytes());
-            return;
-        }
-        complain(line);
-        if let Some(command) = error.fix_command {
-            write_all(STANDARD_ERROR, b"  try: ");
-            say(STANDARD_ERROR, command);
         }
     }
 
@@ -582,15 +686,13 @@ mod program {
     fn preview_uninstall(name: &[u8]) -> i32 {
         let mut files = LinuxFiles::new();
         let shown = installer::Name::new(name);
-        let mut line = Line::new();
         if !is_installed(&mut files, name) {
+            let mut line = Line::new();
             let _ = write!(line, "{} is not installed", shown.as_str());
             report(false, &errors::NO_SUCH_APP, line.as_str());
             return FAILED;
         }
-        let _ = write!(line, "would uninstall {}: removes ", shown.as_str());
-        line.push_bytes(APPLICATIONS);
-        let _ = write!(line, "/{} and everything in it", shown.as_str());
+        let mut line = messages::would_uninstall(shown.as_str());
         let mut kept: crate::translation::RecordBuffer = [0; translation::LARGEST + 1];
         let record = crate::translation::read_record(&mut files, name, &mut kept)
             .and_then(|length| translation::parse(&kept[..length]));
@@ -636,7 +738,7 @@ mod program {
         if !found {
             let mut line = Line::new();
             let _ = write!(line, "{} is not installed", shown.as_str());
-            complain(line.as_str());
+            report(false, &errors::NO_SUCH_APP, line.as_str());
             return FAILED;
         }
         match linux::open_app(name) {
@@ -650,7 +752,7 @@ mod program {
                 let mut line = Line::new();
                 let _ = write!(line, "could not open {}: ", shown.as_str());
                 line.push_bytes(error.message());
-                complain(line.as_str());
+                report(false, errno_error(error), line.as_str());
                 FAILED
             }
         }
@@ -773,6 +875,12 @@ mod program {
 
     /// The program: see the module documentation.
     pub fn run(startup: &Startup) -> i32 {
+        CODED_ERRORS.store(
+            startup
+                .environment()
+                .any(|variable| variable == eggos_commands::tools::CODED_ERRORS_ENVIRONMENT),
+            Ordering::Relaxed,
+        );
         let mut arguments: [&CStr; MAX_ARGUMENTS] = [c""; MAX_ARGUMENTS];
         let mut bytes: [&[u8]; MAX_ARGUMENTS] = [b""; MAX_ARGUMENTS];
         let mut count = 0;
@@ -799,8 +907,23 @@ mod program {
                 entry,
                 arguments,
                 environment,
+                console,
+                dry_run,
                 ..
-            }) => install(path, name, entry, arguments, environment),
+            }) => {
+                let request = Request {
+                    path,
+                    name,
+                    entry,
+                    arguments,
+                    environment,
+                    console,
+                };
+                match dry_run {
+                    true => preview_install(request),
+                    false => install(request),
+                }
+            }
             Some(Command::Uninstall {
                 name,
                 dry_run: true,
@@ -819,7 +942,7 @@ mod program {
     }
 }
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 pub use program::run;
 
 #[cfg(test)]
@@ -879,7 +1002,9 @@ mod tests {
                 entry: None,
                 arguments: None,
                 environment: None,
-                window: false
+                console: None,
+                window: false,
+                dry_run: false
             })
         );
         assert_eq!(
@@ -890,7 +1015,9 @@ mod tests {
                 entry: None,
                 arguments: None,
                 environment: None,
-                window: true
+                console: None,
+                window: true,
+                dry_run: false
             })
         );
         assert_eq!(
@@ -917,7 +1044,9 @@ mod tests {
                 entry: Some(b"bin/a.exe"),
                 arguments: None,
                 environment: None,
-                window: false
+                console: None,
+                window: false,
+                dry_run: false
             })
         );
         assert_eq!(
@@ -928,7 +1057,9 @@ mod tests {
                 entry: None,
                 arguments: Some(b"-n --size 4"),
                 environment: None,
-                window: false
+                console: None,
+                window: false,
+                dry_run: false
             })
         );
         assert_eq!(parse(&[b"open", b"--arguments", b"x", b"a"]), None);
@@ -945,7 +1076,9 @@ mod tests {
                 entry: None,
                 arguments: None,
                 environment: Some(b"XDG_DATA_DIRS=/Applications/mousepad/share"),
-                window: false
+                console: None,
+                window: false,
+                dry_run: false
             })
         );
         assert_eq!(parse(&[b"open", b"--environment", b"A=1", b"a"]), None);
@@ -984,8 +1117,22 @@ mod tests {
                 dry_run: true
             })
         );
+        assert_eq!(
+            parse(&[b"install", b"--dry-run", b"--name", b"Paint", b"x.exe"]),
+            Some(Command::Install {
+                path: b"x.exe",
+                name: Some(b"Paint"),
+                entry: None,
+                arguments: None,
+                environment: None,
+                console: None,
+                window: false,
+                dry_run: true
+            })
+        );
         for wrong in [
             &[&b"list"[..], b"--limit"][..],
+            &[b"install", b"--dry-run", b"--window", b"x.exe"],
             &[b"list", b"--dry-run"],
             &[b"open", b"--dry-run", b"Paint"],
             &[b"uninstall", b"--dry-run", b"--window", b"Paint"],
@@ -1037,7 +1184,9 @@ mod tests {
                 entry: None,
                 arguments: None,
                 environment: None,
-                window: false
+                console: None,
+                window: false,
+                dry_run: false
             })
         );
         assert_eq!(
@@ -1048,7 +1197,9 @@ mod tests {
                 entry: None,
                 arguments: None,
                 environment: None,
-                window: false
+                console: None,
+                window: false,
+                dry_run: false
             })
         );
     }
@@ -1070,6 +1221,60 @@ mod tests {
             "{\"name\":\"win-paint\",\"source\":\"windows\",\"architecture\":\"x86_64\",\
              \"program\":\"/Applications/win-paint/win-paint.exe\",\"icon\":null}\n"
         );
+    }
+
+    #[test]
+    fn install_and_uninstall_problems_report_the_registry_s_codes() {
+        use crate::installer::Problem;
+        let code = |problem: Problem| problem_error(&problem).code;
+        assert_eq!(code(Problem::NotInstalled), "no_such_app");
+        assert_eq!(code(Problem::AlreadyInstalled), "app_exists");
+        assert_eq!(code(Problem::ReadOnly), "read_only");
+        assert_eq!(code(Problem::DiskFull), "no_space");
+        assert_eq!(code(Problem::Unreadable(Errno::ENOENT)), "no_such_file");
+        assert_eq!(code(Problem::Failed(Errno::EACCES)), "permission_denied");
+        assert_eq!(code(Problem::Failed(Errno::EIO)), "failed");
+        assert_eq!(code(Problem::InvalidName), "invalid_value");
+        assert_eq!(code(Problem::NoSuchEntry), "invalid_value");
+        assert_eq!(code(Problem::FolderNotApp), "not_an_app");
+        assert_eq!(code(Problem::TooLarge), "not_an_app");
+        for (words, problems) in [
+            (
+                ["app", "install"],
+                &[
+                    Problem::AlreadyInstalled,
+                    Problem::ReadOnly,
+                    Problem::DiskFull,
+                    Problem::InvalidName,
+                    Problem::FolderNotApp,
+                    Problem::Unreadable(Errno::ENOENT),
+                    Problem::Failed(Errno::EPERM),
+                    Problem::Failed(Errno::EIO),
+                ][..],
+            ),
+            (
+                ["app", "uninstall"],
+                &[
+                    Problem::NotInstalled,
+                    Problem::ReadOnly,
+                    Problem::Failed(Errno::EACCES),
+                    Problem::Failed(Errno::EIO),
+                ][..],
+            ),
+        ] {
+            let definition = eggos_commands::find_command(&words.map(str::as_bytes)).unwrap();
+            for problem in problems {
+                let error = problem_error(problem);
+                assert!(
+                    definition
+                        .errors
+                        .iter()
+                        .any(|declared| declared.error == error && declared.exit == FAILED),
+                    "{words:?} {}",
+                    error.code
+                );
+            }
+        }
     }
 
     #[test]

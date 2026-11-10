@@ -344,6 +344,23 @@ pub fn parse_interfaces<const N: usize>(text: &[u8]) -> ([Option<InterfaceStatus
     (interfaces, count)
 }
 
+/// Where the kernel reports its interfaces, one [`write_interface`] line each.
+pub const INTERFACES_PATH: &str = "/proc/net/interfaces";
+
+/// The network adapter a whole `/proc/net/interfaces` describes: its first interface that is
+/// not `lo`; `None` on a machine without one.
+pub fn adapter(text: &[u8]) -> Option<InterfaceStatus> {
+    text.split(|&byte| byte == b'\n')
+        .filter_map(parse_interface)
+        .find(|status| !status.is_loopback())
+}
+
+/// The network's state in one word, as `net_status` and `settings get network.state` give it:
+/// the adapter's [`State::word`], or [`NO_ADAPTER_WORD`] without an adapter.
+pub fn state_word(adapter: Option<&InterfaceStatus>) -> &'static str {
+    adapter.map_or(NO_ADAPTER_WORD, |status| status.state().word())
+}
+
 const LINUX_LINE: usize = 127;
 const ROUTE_UP: u16 = 0x0001;
 const ROUTE_GATEWAY: u16 = 0x0002;

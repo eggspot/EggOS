@@ -376,7 +376,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"LocalSize" => global_size,
 ];
 
-#[cfg(target_env = "musl")]
+#[cfg(eggos_user)]
 mod layer_allocator {
     use core::alloc::{GlobalAlloc, Layout};
 

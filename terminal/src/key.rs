@@ -6,6 +6,7 @@ pub const MINUS: u16 = 12;
 pub const BACKSPACE: u16 = 14;
 pub const TAB: u16 = 15;
 pub const W: u16 = 17;
+pub const T: u16 = 20;
 pub const ENTER: u16 = 28;
 pub const LEFT_CTRL: u16 = 29;
 pub const A: u16 = 30;

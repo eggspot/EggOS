@@ -8,6 +8,9 @@
 //! (D147), which the macOS GUI boot test installs from `mac-paint.zip` (D148), the
 //! `mac-paint.app` bundle `assemble_app` writes with the icon `test_icns` draws, archived by
 //! `archive_app`; `cargo xtask sample-apps` writes the same archive for people to try (D152).
+//! The nib test app `mac-nib`, `tests/macos-nib/main.m` with the interface `MainMenu.xib` that
+//! Apple's `ibtool` compiles beside the programs, is bundled the same way with its nib in
+//! `Contents/Resources` (D232).
 //! The Swift program, `tests/macos-swift/main.swift`, is test data too, built by Apple's `swiftc`
 //! the same way (D180), and so are the C programs, `tests/<folder>/main.c`, built by Apple's
 //! clang (D190).
@@ -39,8 +42,18 @@ pub struct ObjcProgram {
 /// The AppKit test app's name: its program, and its bundle's folder without `.app`.
 pub const GUI_APP: &str = "mac-paint";
 
+/// The nib test app's name (D232): its program, its bundle's folder without `.app`, and its
+/// compiled nib beside the programs (`<name>.nib`).
+pub const NIB_APP: &str = "mac-nib";
+
+/// The nib test app's interface, `tests/macos-nib/<NIB_SOURCE>`, which `ibtool` compiles.
+pub const NIB_SOURCE: &str = "MainMenu.xib";
+
+/// The name the nib test app's `Info.plist` gives its main nib, in `Contents/Resources`.
+pub const MAIN_NIB: &str = "MainMenu.nib";
+
 /// The programs built from Objective-C sources with Apple's clang.
-pub const OBJC_PROGRAMS: [ObjcProgram; 2] = [
+pub const OBJC_PROGRAMS: [ObjcProgram; 3] = [
     ObjcProgram {
         name: "macos-objc",
         folder: "macos-objc",
@@ -49,6 +62,11 @@ pub const OBJC_PROGRAMS: [ObjcProgram; 2] = [
     ObjcProgram {
         name: GUI_APP,
         folder: "macos-gui",
+        frameworks: &["AppKit", "Foundation"],
+    },
+    ObjcProgram {
+        name: NIB_APP,
+        folder: "macos-nib",
         frameworks: &["AppKit", "Foundation"],
     },
 ];
@@ -265,6 +283,11 @@ impl Programs {
     pub fn path(&self, program: &str, cpu: &str) -> PathBuf {
         self.directory.join(format!("{program}-{cpu}"))
     }
+
+    /// The compiled nib of the app `program`, which serves both CPUs.
+    pub fn nib(&self, program: &str) -> PathBuf {
+        self.directory.join(format!("{program}.nib"))
+    }
 }
 
 /// Whether `EGGOS_MACOS_PROGRAMS` is set but empty: CI built no programs for this run (only
@@ -295,6 +318,10 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
                     ));
                 }
             }
+        }
+        let nib = programs.nib(NIB_APP);
+        if !nib.is_file() {
+            return Err(format!("{PROGRAMS_VARIABLE}: {} is missing", nib.display()));
         }
         return Ok(Some(programs));
     }
@@ -328,7 +355,9 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
             build_c_program(program, cpu, &output)?;
         }
     }
-    Ok(Some(Programs { directory }))
+    let programs = Programs { directory };
+    compile_nib(NIB_APP, &programs.nib(NIB_APP))?;
+    Ok(Some(programs))
 }
 
 /// The `swiftc` arguments that build `source` for `cpu` into `output`: optimized, as a release
@@ -413,6 +442,39 @@ pub fn assemble_app(
             .map_err(|e| format!("{} to {}: {e}", from.display(), to.display()))?;
     }
     Ok(bundle)
+}
+
+/// The `ibtool` arguments that compile the interface `source` into the nib `output`.
+pub fn ibtool_arguments(source: &Path, output: &Path) -> Vec<String> {
+    vec![
+        "ibtool".to_owned(),
+        "--compile".to_owned(),
+        output.to_string_lossy().into_owned(),
+        source.to_string_lossy().into_owned(),
+    ]
+}
+
+fn compile_nib(program: &str, output: &Path) -> Result<(), String> {
+    let app = objc_program(program).ok_or_else(|| format!("{program}: no such program"))?;
+    let source = source_folder(&app).join(NIB_SOURCE);
+    let status = std::process::Command::new("xcrun")
+        .args(ibtool_arguments(&source, output))
+        .status()
+        .map_err(|e| format!("xcrun ibtool: {e}"))?;
+    if !status.success() {
+        return Err(format!("xcrun ibtool {}: {status}", source.display()));
+    }
+    Ok(())
+}
+
+/// Copies `from` into the bundle's `Contents/Resources` as `name`.
+pub fn add_resource(bundle: &Path, name: &str, from: &Path) -> Result<(), String> {
+    let resources = bundle.join("Contents").join("Resources");
+    std::fs::create_dir_all(&resources).map_err(|e| format!("{}: {e}", resources.display()))?;
+    let to = resources.join(name);
+    std::fs::copy(from, &to)
+        .map(drop)
+        .map_err(|e| format!("{} to {}: {e}", from.display(), to.display()))
 }
 
 fn build_objc_program(program: ObjcProgram, cpu: &str, output: &Path) -> Result<(), String> {
@@ -598,7 +660,14 @@ mod tests {
         assert!(arguments.contains(&"-Werror".to_owned()));
         assert_eq!(&arguments[arguments.len() - 2..], ["out", "main.m"]);
         let names: Vec<&str> = OBJC_PROGRAMS.iter().map(|program| program.name).collect();
-        assert_eq!(names, ["macos-objc", "mac-paint"]);
+        assert_eq!(names, ["macos-objc", "mac-paint", "mac-nib"]);
+        let nib_app = objc_program(NIB_APP).expect("mac-nib is an Objective-C program");
+        assert!(source_folder(&nib_app).join(NIB_SOURCE).is_file());
+        assert!(source_folder(&nib_app).join(INFO_PLIST).is_file());
+        assert_eq!(
+            ibtool_arguments(Path::new("MainMenu.xib"), Path::new("mac-nib.nib")),
+            ["ibtool", "--compile", "mac-nib.nib", "MainMenu.xib"]
+        );
         assert_eq!(
             objc_program("macos-objc").map(|program| program.frameworks),
             Some(&["Foundation"][..])
