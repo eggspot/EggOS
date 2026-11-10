@@ -5,7 +5,7 @@ pub(crate) const RECORDS: [(&str, &[u8]); 4] = [
     (
         "/run/eggos/downloads/61",
         b"url=https://example.com/eggos-0.3.0-x86_64.elf\n\
-path=/home/root/Downloads/eggos-0.3.0-x86_64.elf\nreceived=3565158\ntotal=12582912\n\
+path=/home/root/Downloads/eggos-0.3.0-x86_64.elf\nreceived=3565159\ntotal=12582912\n\
 state=downloading\nstarted=1793282650\n",
     ),
     (
@@ -88,7 +88,7 @@ fn the_json_list_has_the_whole_record_and_the_percent() {
          \"path\":\"/home/root/Downloads/eggos-0.3.0-x86_64.elf\",\
          \"url\":\"https://example.com/eggos-0.3.0-x86_64.elf\",\"size_text\":\"3.4 MB of 12 MB\",\
          \"state\":\"downloading\",\"state_text\":\"Downloading, 28 %\",\"reason\":null,\
-         \"percent\":28,\"received_bytes\":3565158,\"total_bytes\":12582912,"
+         \"percent\":28,\"received_bytes\":3565159,\"total_bytes\":12582912,"
     ));
     assert!(lines[0].ends_with("\"ended_at\":null}"));
     assert!(lines[2].contains("\"reason\":\"certificate not trusted\",\"percent\":null,"));

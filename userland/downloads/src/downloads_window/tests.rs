@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 const NOW: u32 = 5000;
 const EGGOS_NAME: &str = "eggos-0.3.0-x86_64.elf";
 const EGGOS_PATH: &str = "/home/root/Downloads/eggos-0.3.0-x86_64.elf";
-const EGGOS_RECEIVED: u64 = 3_565_158;
+const EGGOS_RECEIVED: u64 = 3_565_159;
 const PROCESSES: &str = "1 0 1 1 R 10 init\n61 7 61 7 R 3 fetch\n";
 const ADDRESS: &str = "https://example.com/eggos.elf";
 const SAVING_EGGOS: &str = "Saving to /home/root/Downloads/eggos-0.3.0-x86_64.elf";

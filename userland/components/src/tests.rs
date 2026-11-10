@@ -251,11 +251,12 @@ fn names_texts_counts_duplicates_and_needs_are_checked() {
     assert_eq!(with_index_text(&text, 4096), Err(IndexError::UnknownNeed));
     let text = format!("{head}{}", block("a", "needs a\n"));
     assert!(with_index_text(&text, 4096).is_err());
+    let far_file = format!("file 755 8192 1 {digest} {WINDOWS_LAYER}");
     let many: String = (0..=index::MAX_COMPONENTS)
-        .map(|at| block(&format!("c{at}"), ""))
+        .map(|at| format!("component c{at}\ntitle T\nsummary S\non-remove R\n{far_file}\nend\n"))
         .collect();
     assert_eq!(
-        with_index_text(&format!("{head}{many}"), 4096),
+        with_index_text(&format!("{head}{many}"), 16384),
         Err(IndexError::TooMany)
     );
     let clash = format!("file 755 1024 1 {digest} {WINDOWS_LAYER}/inner\n");

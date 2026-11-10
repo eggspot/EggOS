@@ -940,9 +940,10 @@ mod tests {
 
     #[test]
     fn raw_then_saved_differs_and_the_saved_form_restores_and_sane_resets() {
-        let (_, saved, _, fake) = run(terminal(), &[c"-g"]);
+        let (_, saved, _, mut fake) = run(terminal(), &[c"-g"]);
         let saved = saved.trim_end().to_string();
         assert_eq!(saved.split(':').count(), 4 + CONTROL_CHARACTERS);
+        fake.standard_output.clear();
         let (status, out, _, mut fake) = run(fake, &[c"raw"]);
         assert_eq!((status, out.as_str()), (0, ""));
         let raw = fake.terminal.as_ref().map(|terminal| terminal.settings);

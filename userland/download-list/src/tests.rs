@@ -2,7 +2,7 @@ use super::*;
 
 const RUNNING: &[u8] = b"url=https://example.com/eggos-0.3.0-x86_64.elf\n\
 path=/home/root/Downloads/eggos-0.3.0-x86_64.elf\n\
-received=3565158\n\
+received=3565159\n\
 total=12582912\n\
 state=downloading\n\
 started=1793282650\n";

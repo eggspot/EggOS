@@ -512,7 +512,11 @@ fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
             "disk_format",
             "file_copy",
             "file_move",
-            "file_remove"
+            "file_remove",
+            "component_install",
+            "component_remove",
+            "windows_registry_delete",
+            "windows_registry_reset",
         ]
     );
     let commands: Vec<String> = COMMANDS
@@ -526,6 +530,8 @@ fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
             "agent grant",
             "app install",
             "app uninstall",
+            "component install",
+            "component remove",
             "cp",
             "date",
             "disk format",
@@ -534,7 +540,9 @@ fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
             "mv",
             "rm",
             "settings set",
-            "trash"
+            "trash",
+            "windows registry delete",
+            "windows registry reset",
         ]
     );
 }

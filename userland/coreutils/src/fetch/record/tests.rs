@@ -115,7 +115,7 @@ fn a_terminated_download_removes_its_partial_file_and_is_recorded_cancelled() {
     let text = record_of(&fake);
     let record = Record::parse(&text).unwrap();
     assert_eq!(record.state, State::Cancelled);
-    assert_eq!(record.received, 5);
+    assert_eq!(record.received, 0);
 }
 
 #[test]

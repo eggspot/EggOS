@@ -713,10 +713,16 @@ impl System for Fake {
             return Err(*errno);
         }
         let path = self.through_links(&path, links == SymbolicLinks::Follow)?;
-        self.nodes
-            .get(&path)
-            .map(|(_, status)| *status)
-            .ok_or(Errno::ENOENT)
+        match self.nodes.get(&path) {
+            Some((_, status)) => Ok(*status),
+            None if path == b"/" => Ok(Status {
+                mode: DIRECTORY | 0o755,
+                links: 2,
+                inode: 1,
+                ..Status::default()
+            }),
+            None => Err(Errno::ENOENT),
+        }
     }
 
     fn system_name(&mut self) -> Result<SystemName, Errno> {
@@ -1418,6 +1424,8 @@ impl System for Fake {
 
 impl Fake {
     fn resolve(&self, path: &[u8]) -> Vec<u8> {
+        let kept = path.iter().rposition(|&byte| byte != b'/').map_or(1, |end| end + 1);
+        let path = &path[..kept.min(path.len())];
         if path.first() == Some(&b'/') || self.working_directory == "/" {
             return path.to_vec();
         }
