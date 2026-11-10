@@ -914,8 +914,16 @@ impl Platform for X86_64 {
     }
 
     fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
-        // Without SMAP (not turned on yet), ring 0 reaches user pages directly.
-        access()
+        if !exception::smap_on() {
+            return access();
+        }
+        // SAFETY: `stac` only allows this CPU's ring 0 to reach user pages until the `clac`
+        // below, which SMAP (D259) otherwise faults; nothing in `access` relies on it staying set.
+        unsafe { core::arch::asm!("stac", options(nomem, nostack)) };
+        let result = access();
+        // SAFETY: `clac` forbids user-page access again, as SMAP requires outside this function.
+        unsafe { core::arch::asm!("clac", options(nomem, nostack)) };
+        result
     }
 
     unsafe fn run_user(context: &mut crate::user::UserContext) -> crate::user::UserExit {

@@ -19427,3 +19427,14 @@ the license, by an explicit instruction recorded here.
   Components pane and in first run, which needs a Claude Fable design; editions that also remove
   what they do not include; editions' own settings (updates, policies) for professional and
   enterprise.
+
+## D259 x86_64: SMAP where the CPU has it (D251's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** With CPUID 7 EBX[20], each CPU also turns on `CR4.SMAP`: ring 0 faults on any user
+  page except inside `Platform::with_user_access`, which runs its closure between `stac` and
+  `clac` (the kernel already reaches program memory only there, D45, and copies otherwise go
+  through the direct map, D94). `syscall` already clears `RFLAGS.AC` (`IA32_FMASK`, D47), and the
+  kernel's exception entry runs `clac` so an interrupt inside the window does not inherit it; the
+  interrupted context's flags come back with `iretq`.
+- **Not yet.** Building and running; checking that every user-memory touch sits inside the
+  window (a fault in a missed one now reports a kernel page fault).

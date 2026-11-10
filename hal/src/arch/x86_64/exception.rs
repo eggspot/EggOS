@@ -111,6 +111,10 @@ exception_common:
     testb   $3, 24(%rsp)
     jnz     user_exception
     lfence
+    cmpb    $0, {smap}(%rip)
+    je      7f
+    clac
+7:
     // From the kernel: the handler keeps the callee-saved registers itself, as any call does.
     pushq   %rax
     pushq   %rcx
@@ -1254,6 +1258,7 @@ x86_64_user_test_end:
     ia32_kernel_gs_base = const IA32_KERNEL_GS_BASE,
     tss_rsp0 = const TSS_RSP0_OFFSET,
     clear_buffers = sym CLEAR_CPU_BUFFERS,
+    smap = sym SMAP_ON,
     verw_selector = sym VERW_SELECTOR,
     user_rsp = const USER_RSP_OFFSET,
     user_cs = const USER_CODE_SELECTOR,
@@ -1626,6 +1631,17 @@ const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
 const CR4_UMIP: u64 = 1 << 11;
 const CR4_SMEP: u64 = 1 << 20;
+const CR4_SMAP: u64 = 1 << 21;
+const CPUID_7_EBX_SMAP: u32 = 1 << 20;
+
+/// Whether the CPUs run with SMAP (D259): the kernel reaches user pages only inside
+/// `with_user_access`, between `stac` and `clac`. Read by the entry code and that function.
+static SMAP_ON: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Whether SMAP is on, so user accesses need `stac` and `clac`.
+pub(super) fn smap_on() -> bool {
+    SMAP_ON.load(core::sync::atomic::Ordering::Relaxed) != 0
+}
 const CPUID_7_EBX_SMEP: u32 = 1 << 7;
 const CPUID_7_ECX_UMIP: u32 = 1 << 2;
 
@@ -1638,7 +1654,13 @@ fn supervisor_protections() -> u64 {
     let [_, ebx, ecx, _] = super::timer::cpuid(7, 0);
     let smep = if ebx & CPUID_7_EBX_SMEP != 0 { CR4_SMEP } else { 0 };
     let umip = if ecx & CPUID_7_ECX_UMIP != 0 { CR4_UMIP } else { 0 };
-    smep | umip
+    let smap = if ebx & CPUID_7_EBX_SMAP != 0 {
+        SMAP_ON.store(1, core::sync::atomic::Ordering::Relaxed);
+        CR4_SMAP
+    } else {
+        0
+    };
+    smep | umip | smap
 }
 const CR4_SMEP: u64 = 1 << 20;
 const CPUID_SMEP: u32 = 1 << 7;
