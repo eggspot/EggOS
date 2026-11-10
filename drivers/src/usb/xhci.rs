@@ -1,15 +1,19 @@
 //! The eXtensible Host Controller Interface (xHCI 1.2; D239): the controller taken from the
 //! firmware and reset, its command and event rings, and every HID boot keyboard and mouse on its
 //! ports addressed, configured and polled through its interrupt endpoint, through up to five tiers
-//! of USB 2.0 and 3.x hubs (D254).
+//! of USB 2.0 and 3.x hubs (D254), and every USB flash drive read and written through its
+//! bulk endpoints with SCSI commands (D264).
 
-use super::{BootDevice, BootInterface, DESCRIPTOR_CONFIGURATION, DESCRIPTOR_DEVICE, Setup, boot_interface};
+use super::{
+    BootDevice, BootInterface, DESCRIPTOR_CONFIGURATION, DESCRIPTOR_DEVICE, Setup, StorageInterface, boot_interface,
+    command_block, scsi_read_write_10, status_passed, storage_interface,
+};
 use crate::dma::DmaMemory;
 use crate::input::hid::{BootKeyboard, BootMouse, lights_report};
 use crate::input::hid_report::{Decoder, Layout};
 use crate::input::{Capabilities, LockLights, RawEvent};
 use crate::io::RegisterIo;
-use crate::storage::{copy_out, read32, write32, write64, zero};
+use crate::storage::{Covering, SECTOR_SIZE, copy_in, copy_out, covering, read32, write32, write64, zero};
 use core::sync::atomic::{Ordering, fence};
 
 const CAPABILITY_LENGTH: usize = 0x00;
@@ -108,7 +112,17 @@ const DESCRIPTOR_BUFFER: usize = 0x2800;
 const DESCRIPTOR_BUFFER_BYTES: usize = 0x400;
 const REPORT_BUFFER: usize = 0x2c00;
 const LIGHTS_BUFFER: usize = 0x2c40;
-pub const MEMORY_BYTES: usize = DEVICES_AT + MAX_DEVICES * DEVICE_BYTES;
+const BULK_OUT_RING: usize = 0x3000;
+const STORAGE_BUFFER: usize = DEVICES_AT + MAX_DEVICES * DEVICE_BYTES;
+const STORAGE_BUFFER_BYTES: usize = 0x1_0000;
+pub const MEMORY_BYTES: usize = STORAGE_BUFFER + STORAGE_BUFFER_BYTES;
+const ENDPOINT_BULK_OUT: u32 = 2;
+const ENDPOINT_BULK_IN: u32 = 6;
+const PENDING_EVENTS: usize = 64;
+const SCSI_TEST_UNIT_READY: [u8; 6] = [0; 6];
+const SCSI_READ_CAPACITY_10: [u8; 10] = [0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const SCSI_SYNCHRONIZE_CACHE_10: [u8; 10] = [0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const UNIT_READY_TRIES: usize = 20;
 const REPORT_BYTES: usize = 64;
 
 const _: () = assert!(SCRATCHPAD_PAGES_AT + MAX_SCRATCHPAD_PAGES * 4096 <= DEVICES_AT);
@@ -175,6 +189,20 @@ impl Ring {
     }
 }
 
+enum DiskBuffer<'a> {
+    Read(&'a mut [u8]),
+    Write(&'a [u8]),
+}
+
+impl DiskBuffer<'_> {
+    fn len(&self) -> usize {
+        match self {
+            DiskBuffer::Read(buffer) => buffer.len(),
+            DiskBuffer::Write(buffer) => buffer.len(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Handler {
     Keyboard(BootKeyboard),
@@ -183,6 +211,13 @@ enum Handler {
     Hub { ports: u8 },
     /// A HID device read through its report descriptor (D256).
     Report(Layout, Decoder),
+    /// A USB mass-storage device with the bulk-only transport (D264).
+    Storage {
+        interface: StorageInterface,
+        block_bytes: u32,
+        blocks: u64,
+        tag: u32,
+    },
 }
 
 /// Where a device is on the bus: its root port, its route through hubs (four bits a tier), its
@@ -247,6 +282,7 @@ struct Device {
     reports: Ring,
     handler: Handler,
     location: Location,
+    bulk_out: Ring,
 }
 
 /// An xHCI controller and the HID boot devices on its root ports.
@@ -263,6 +299,8 @@ pub struct Xhci<R: RegisterIo, M: DmaMemory> {
     events: Ring,
     devices: [Option<Device>; MAX_DEVICES],
     lights: Option<LockLights>,
+    pending: [RawEvent; PENDING_EVENTS],
+    pending_count: usize,
 }
 
 impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
@@ -291,6 +329,8 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             events: Ring::new(EVENT_RING_AT, EVENT_TRBS),
             devices: [None; MAX_DEVICES],
             lights: None,
+            pending: [RawEvent::default(); PENDING_EVENTS],
+            pending_count: 0,
             regs,
             memory,
         };
@@ -467,7 +507,20 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
                     return Ok(event);
                 }
                 if event_kind == TRB_TRANSFER_EVENT {
-                    self.handle_transfer(event, &mut |_| {});
+                    let mut collected = [RawEvent::default(); 16];
+                    let mut count = 0;
+                    self.handle_transfer(event, &mut |raw| {
+                        if count < collected.len() {
+                            collected[count] = raw;
+                            count += 1;
+                        }
+                    });
+                    for raw in &collected[..count] {
+                        if self.pending_count < PENDING_EVENTS {
+                            self.pending[self.pending_count] = *raw;
+                            self.pending_count += 1;
+                        }
+                    }
                 }
             }
             if self.regs.read32(self.op(USB_STATUS)) & STATUS_HALTED != 0 {
@@ -705,6 +758,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             reports: Ring::new(area + REPORT_RING, RING_TRBS),
             handler: Handler::Keyboard(BootKeyboard::default()),
             location,
+            bulk_out: Ring::new(area + BULK_OUT_RING, RING_TRBS),
         };
         write64(&self.memory, DEVICE_CONTEXT_ARRAY_AT + usize::from(slot) * 8, base + (area + OUTPUT_CONTEXT) as u64);
         let mut max_packet = default_max_packet(speed);
@@ -742,6 +796,10 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         )?;
         let mut configuration = [0u8; DESCRIPTOR_BUFFER_BYTES];
         copy_out(&self.memory, area + DESCRIPTOR_BUFFER, &mut configuration[..total]);
+        if let Some(storage) = storage_interface(&configuration[..total]) {
+            self.set_up_storage(&mut device, storage, keep_waiting)?;
+            return Ok(device);
+        }
         let interface_class = configuration.get(9 + 5).copied().unwrap_or(0);
         if header[4] == DEVICE_CLASS_HUB || interface_class == DEVICE_CLASS_HUB {
             let ports = self.set_up_hub(&mut device, head[5], keep_waiting)?;
@@ -793,6 +851,243 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         )?;
         self.queue_report(&mut device);
         Ok(device)
+    }
+
+    fn set_up_storage(
+        &mut self,
+        device: &mut Device,
+        storage: StorageInterface,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        self.control_transfer(device, Setup::set_configuration(storage.configuration), 0, keep_waiting)?;
+        let base = self.memory.dma_addr().get();
+        let area = device.area;
+        let input = u32::from(storage.bulk_in) * 2 + 1;
+        let output = u32::from(storage.bulk_out) * 2;
+        zero(&self.memory, area + INPUT_CONTEXT, 0x1000);
+        write32(&self.memory, self.input_context(area, 0) + 4, 1 | (1 << input) | (1 << output));
+        let location = device.location;
+        self.write_slot_context(area, input.max(output), &location, None);
+        let packet = u32::from(storage.max_packet.max(64));
+        for (dci, kind, ring) in [
+            (input, ENDPOINT_BULK_IN, area + REPORT_RING),
+            (output, ENDPOINT_BULK_OUT, area + BULK_OUT_RING),
+        ] {
+            let endpoint = self.input_context(area, dci as usize + 1);
+            write32(&self.memory, endpoint, 0);
+            write32(&self.memory, endpoint + 4, (3 << 1) | (kind << 3) | (packet << 16));
+            write64(&self.memory, endpoint + 8, base + ring as u64 | 1);
+            write32(&self.memory, endpoint + 16, 3072);
+        }
+        self.command(
+            base + (area + INPUT_CONTEXT) as u64,
+            (TRB_CONFIGURE_ENDPOINT << 10) | (u32::from(device.slot) << 24),
+            keep_waiting,
+        )?;
+        device.interface.endpoint = storage.bulk_in;
+        device.report_endpoint = 0;
+        device.handler = Handler::Storage {
+            interface: storage,
+            block_bytes: 512,
+            blocks: 0,
+            tag: 1,
+        };
+        let mut ready = false;
+        for _ in 0..UNIT_READY_TRIES {
+            if self.scsi(device, &SCSI_TEST_UNIT_READY, true, 0, keep_waiting).is_ok() {
+                ready = true;
+                break;
+            }
+        }
+        if !ready {
+            return Err(Error::Unsupported("the USB disk did not become ready"));
+        }
+        self.scsi(device, &SCSI_READ_CAPACITY_10, true, 8, keep_waiting)?;
+        let mut capacity = [0u8; 8];
+        copy_out(&self.memory, STORAGE_BUFFER, &mut capacity);
+        let last = u32::from_be_bytes([capacity[0], capacity[1], capacity[2], capacity[3]]);
+        let block_bytes = u32::from_be_bytes([capacity[4], capacity[5], capacity[6], capacity[7]]);
+        if !(512..=4096).contains(&block_bytes) || !block_bytes.is_power_of_two() {
+            return Err(Error::Unsupported("the USB disk's block size is not one the kernel takes"));
+        }
+        if let Handler::Storage { blocks, block_bytes: size, .. } = &mut device.handler {
+            *blocks = u64::from(last) + 1;
+            *size = block_bytes;
+        }
+        Ok(())
+    }
+
+    fn bulk(
+        &mut self,
+        device: &mut Device,
+        out: bool,
+        offset: usize,
+        length: usize,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<usize, Error> {
+        let Handler::Storage { interface, .. } = device.handler else {
+            return Err(Error::Unsupported("not a USB disk"));
+        };
+        let base = self.memory.dma_addr().get();
+        let (dci, mut ring) = if out {
+            (u32::from(interface.bulk_out) * 2, device.bulk_out)
+        } else {
+            (u32::from(interface.bulk_in) * 2 + 1, device.reports)
+        };
+        let trb = self.enqueue(
+            &mut ring,
+            base + offset as u64,
+            length as u32,
+            (TRB_NORMAL << 10) | TRB_INTERRUPT_ON_COMPLETION | TRB_INTERRUPT_ON_SHORT,
+        );
+        if out {
+            device.bulk_out = ring;
+        } else {
+            device.reports = ring;
+        }
+        self.ring_doorbell(device.slot, dci);
+        let event = self.wait_for(TRB_TRANSFER_EVENT, trb, keep_waiting)?;
+        let code = event[2] >> 24;
+        if code != COMPLETION_SUCCESS && code != COMPLETION_SHORT_PACKET {
+            return Err(Error::TransferFailed);
+        }
+        Ok(length.saturating_sub((event[2] & 0x00ff_ffff) as usize))
+    }
+
+    fn scsi(
+        &mut self,
+        device: &mut Device,
+        command: &[u8],
+        data_in: bool,
+        length: usize,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let Handler::Storage { tag, .. } = &mut device.handler else {
+            return Err(Error::Unsupported("not a USB disk"));
+        };
+        *tag = tag.wrapping_add(1);
+        let tag = *tag;
+        let wrapper = command_block(tag, length as u32, data_in, command);
+        copy_in(&self.memory, device.area + DESCRIPTOR_BUFFER, &wrapper);
+        self.bulk(device, true, device.area + DESCRIPTOR_BUFFER, wrapper.len(), keep_waiting)?;
+        if length > 0 {
+            self.bulk(device, !data_in, STORAGE_BUFFER, length, keep_waiting)?;
+        }
+        self.bulk(device, false, device.area + DESCRIPTOR_BUFFER, 13, keep_waiting)?;
+        let mut status = [0u8; 13];
+        copy_out(&self.memory, device.area + DESCRIPTOR_BUFFER, &mut status);
+        status_passed(&status, tag).then_some(()).ok_or(Error::TransferFailed)
+    }
+
+    /// The USB disks attached: each one's device index and size in 512-byte sectors.
+    pub fn disks(&self) -> impl Iterator<Item = (usize, u64)> + '_ {
+        self.devices.iter().enumerate().filter_map(|(index, device)| match device.as_ref()?.handler {
+            Handler::Storage { block_bytes, blocks, .. } => {
+                Some((index, blocks.saturating_mul(u64::from(block_bytes / SECTOR_SIZE as u32))))
+            }
+            _ => None,
+        })
+    }
+
+    /// Reads whole 512-byte sectors from `sector` on of USB disk `index` into `buffer`.
+    pub fn disk_read(
+        &mut self,
+        index: usize,
+        sector: u64,
+        buffer: &mut [u8],
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        self.disk_transfer(index, sector, DiskBuffer::Read(buffer), keep_waiting)
+    }
+
+    /// Writes `buffer`, whole 512-byte sectors, to the sectors from `sector` on of USB disk
+    /// `index`.
+    pub fn disk_write(
+        &mut self,
+        index: usize,
+        sector: u64,
+        buffer: &[u8],
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        self.disk_transfer(index, sector, DiskBuffer::Write(buffer), keep_waiting)
+    }
+
+    fn disk_transfer(
+        &mut self,
+        index: usize,
+        sector: u64,
+        mut buffer: DiskBuffer<'_>,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let mut device = self.devices.get(index).copied().flatten().ok_or(Error::Unsupported("no such USB disk"))?;
+        let Handler::Storage { block_bytes, blocks: disk_blocks, .. } = device.handler else {
+            return Err(Error::Unsupported("not a USB disk"));
+        };
+        let block_bytes = block_bytes as usize;
+        let length = buffer.len();
+        if length % SECTOR_SIZE != 0 {
+            return Err(Error::Unsupported("not a whole number of sectors"));
+        }
+        let sectors = (length / SECTOR_SIZE) as u64;
+        let disk_sectors = disk_blocks.saturating_mul((block_bytes / SECTOR_SIZE) as u64);
+        if sector.checked_add(sectors).is_none_or(|end| end > disk_sectors) {
+            return Err(Error::Unsupported("past the end of the USB disk"));
+        }
+        let per_chunk = ((STORAGE_BUFFER_BYTES / block_bytes - 1) * (block_bytes / SECTOR_SIZE)) as u64;
+        let mut done = 0u64;
+        let mut result = Ok(());
+        while done < sectors && result.is_ok() {
+            let count = per_chunk.min(sectors - done);
+            let Covering { first_block, blocks, skip_bytes } = covering(sector + done, count, block_bytes);
+            let start = done as usize * SECTOR_SIZE;
+            let chunk = count as usize * SECTOR_SIZE;
+            let bytes = blocks as usize * block_bytes;
+            result = match u32::try_from(first_block) {
+                Err(_) => Err(Error::Unsupported("past 2 TiB on a USB disk")),
+                Ok(lba) => self.disk_chunk(&mut device, lba, blocks as u16, bytes, skip_bytes, &mut buffer, start, chunk, keep_waiting),
+            };
+            done += count;
+        }
+        self.devices[index] = Some(device);
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn disk_chunk(
+        &mut self,
+        device: &mut Device,
+        lba: u32,
+        blocks: u16,
+        bytes: usize,
+        skip_bytes: usize,
+        buffer: &mut DiskBuffer<'_>,
+        start: usize,
+        chunk: usize,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let partial = skip_bytes != 0 || chunk != bytes;
+        match buffer {
+            DiskBuffer::Read(buffer) => {
+                self.scsi(device, &scsi_read_write_10(false, lba, blocks), true, bytes, keep_waiting)?;
+                copy_out(&self.memory, STORAGE_BUFFER + skip_bytes, &mut buffer[start..start + chunk]);
+            }
+            DiskBuffer::Write(buffer) => {
+                if partial {
+                    self.scsi(device, &scsi_read_write_10(false, lba, blocks), true, bytes, keep_waiting)?;
+                }
+                copy_in(&self.memory, STORAGE_BUFFER + skip_bytes, &buffer[start..start + chunk]);
+                self.scsi(device, &scsi_read_write_10(true, lba, blocks), false, bytes, keep_waiting)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Asks USB disk `index` to write its cache out.
+    pub fn disk_flush(&mut self, index: usize, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+        let mut device = self.devices.get(index).copied().flatten().ok_or(Error::Unsupported("no such USB disk"))?;
+        let result = self.scsi(&mut device, &SCSI_SYNCHRONIZE_CACHE_10, true, 0, keep_waiting);
+        self.devices[index] = Some(device);
+        result
     }
 
     fn set_up_hub(&mut self, device: &mut Device, configuration: u8, keep_waiting: &mut dyn FnMut() -> bool) -> Result<u8, Error> {
@@ -885,7 +1180,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             sent = match &mut device.handler {
                 Handler::Keyboard(keyboard) => keyboard.report(&report[..length], emit),
                 Handler::Mouse(mouse) => mouse.report(&report[..length], emit),
-                Handler::Hub { .. } => 0,
+                Handler::Hub { .. } | Handler::Storage { .. } => 0,
                 Handler::Report(layout, decoder) => decoder.report(layout, &report[..length], emit),
             };
         }
@@ -914,6 +1209,10 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
     /// returns how many reports it took.
     pub fn poll(&mut self, budget: usize, emit: &mut dyn FnMut(RawEvent)) -> usize {
         self.clear_interrupt();
+        for raw in &self.pending[..self.pending_count] {
+            emit(*raw);
+        }
+        self.pending_count = 0;
         let mut taken = 0;
         while taken < budget {
             let Some(event) = self.next_event() else {
@@ -981,7 +1280,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
                     ..Capabilities::default()
                 },
                 Handler::Report(layout, _) => layout.capabilities(),
-                Handler::Hub { .. } => Capabilities::default(),
+                Handler::Hub { .. } | Handler::Storage { .. } => Capabilities::default(),
             };
             all.keyboard |= each.keyboard;
             all.buttons |= each.buttons;

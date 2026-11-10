@@ -1,10 +1,15 @@
-//! USB host controllers on PCI (D239): xHCI, with the HID boot keyboards and mice on its root
-//! ports installed as one input device ([`crate::input`]), polled.
+//! USB host controllers on PCI (D239): xHCI, with the HID keyboards and mice on its ports
+//! installed as one input device ([`crate::input`]) and each USB flash drive as one of the
+//! kernel's disks ([`crate::block`], D264), both sharing the controller behind one lock.
 
 use super::dma::DmaRegion;
 use super::{DeviceId, DmaCoherence, DriverDescriptor, Identity, Match, Probe, ProbeError, ProbePass};
+use crate::block::{BlockDevice, BlockError};
+use crate::devices::Deadline;
 use crate::input::InputDevice;
+use crate::sync::{SleepLock, Sleeping};
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use eggos_drivers::input::{Capabilities, LockLights, RawEvent};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
@@ -28,8 +33,10 @@ pub static XHCI_DRIVER: DriverDescriptor = DriverDescriptor {
     probe: probe_xhci,
 };
 
+type Controller = Arc<SleepLock<Xhci<Mmio, DmaRegion>>>;
+
 struct UsbInput {
-    controller: Xhci<Mmio, DmaRegion>,
+    controller: Controller,
     capabilities: Capabilities,
 }
 
@@ -39,12 +46,66 @@ impl InputDevice for UsbInput {
     }
 
     fn poll(&mut self, budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize {
-        self.controller.poll(budget, event)
+        match self.controller.try_lock() {
+            Some(mut controller) => controller.poll(budget, event),
+            None => 0,
+        }
     }
 
     fn set_lock_lights(&mut self, lights: LockLights) -> bool {
-        self.controller.set_lights(lights);
-        true
+        match self.controller.try_lock() {
+            Some(mut controller) => {
+                controller.set_lights(lights);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+struct UsbDisk {
+    controller: Controller,
+    index: usize,
+    sectors: u64,
+}
+
+impl UsbDisk {
+    fn check_range(&self, sector: u64, length: usize) -> Result<(), BlockError> {
+        let whole = length % eggos_drivers::storage::SECTOR_SIZE == 0;
+        let end = sector.checked_add((length / eggos_drivers::storage::SECTOR_SIZE) as u64);
+        match (whole, end) {
+            (true, Some(end)) if end <= self.sectors => Ok(()),
+            _ => Err(BlockError::OutOfRange),
+        }
+    }
+}
+
+impl BlockDevice for UsbDisk {
+    fn sectors(&self) -> u64 {
+        self.sectors
+    }
+    fn is_read_only(&self) -> bool {
+        false
+    }
+    fn read(&mut self, sector: u64, buffer: &mut [u8], deadline: &mut Deadline) -> Result<(), BlockError> {
+        self.check_range(sector, buffer.len())?;
+        self.controller
+            .lock()
+            .disk_read(self.index, sector, buffer, &mut || deadline.keep_waiting())
+            .map_err(|error| BlockError::Device(error.description()))
+    }
+    fn write(&mut self, sector: u64, buffer: &[u8], deadline: &mut Deadline) -> Result<(), BlockError> {
+        self.check_range(sector, buffer.len())?;
+        self.controller
+            .lock()
+            .disk_write(self.index, sector, buffer, &mut || deadline.keep_waiting())
+            .map_err(|error| BlockError::Device(error.description()))
+    }
+    fn flush(&mut self, deadline: &mut Deadline) -> Result<(), BlockError> {
+        self.controller
+            .lock()
+            .disk_flush(self.index, &mut || deadline.keep_waiting())
+            .map_err(|error| BlockError::Device(error.description()))
     }
 }
 
@@ -90,12 +151,24 @@ fn probe_xhci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     let mut attach = probe.deadline(ATTACH_TIMEOUT_MS);
     let attached = controller.attach_devices(&mut || settle.keep_waiting(), &mut || attach.keep_waiting());
     if attached == 0 {
-        return Err(ProbeError::Refused("no USB keyboard or mouse on its ports"));
+        return Err(ProbeError::Refused("no USB keyboard, mouse or disk on its ports"));
     }
     let capabilities = controller.capabilities();
     let interrupting = super::message_interrupts::connect(probe, id, &crate::input::DEVICE_EVENTS).is_ok();
     if interrupting {
         controller.enable_interrupts();
+    }
+    let disks: alloc::vec::Vec<(usize, u64)> = controller.disks().collect();
+    let controller: Controller = Arc::new(SleepLock::new(controller, Sleeping::spinning()));
+    for (index, sectors) in disks {
+        let disk = Box::new(UsbDisk {
+            controller: controller.clone(),
+            index,
+            sectors,
+        });
+        if crate::block::install(disk).is_err() {
+            break;
+        }
     }
     let device = Box::new(UsbInput {
         controller,

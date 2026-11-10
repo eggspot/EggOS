@@ -19487,3 +19487,20 @@ the license, by an explicit instruction recorded here.
   pane does not download the store itself (the design's section 4) or show the band's messages
   under it (they go in the summary line); the phone, tablet and TV layouts of section 7 are not
   done. These need the pane's note to sit under the band, and a store-download request (D257).
+
+## D264 USB flash drives as disks (D239, D238; code written, unbuilt, untested: code-only mode) — Decided by the code-only session
+
+- **Decision.** The xHCI driver attaches a device whose interface is mass storage (class 08h,
+  subclass 06h SCSI, protocol 50h bulk-only) by configuring its bulk IN and OUT endpoints, then
+  speaks the bulk-only transport (31-byte `USBC` command block, data, 13-byte `USBS` status) with
+  SCSI TEST UNIT READY (up to 20 tries), READ CAPACITY(10), READ(10), WRITE(10) and SYNCHRONIZE
+  CACHE(10). Data moves through one 64 KiB bounce buffer at the end of the controller's DMA block,
+  which the buddy allocator aligns to its size, so no transfer TRB crosses a 64 KiB boundary.
+  Sectors are 512 bytes to the kernel whatever the drive's block size (512 to 4096); partial
+  blocks are read, patched and written back. Disks past 2 TiB (READ(16)) are refused.
+- **Sharing.** The kernel puts the controller behind one `SleepLock` shared by the input device
+  and one `UsbDisk` per drive. The input thread only `try_lock`s it, so a disk transfer never
+  blocks input; HID reports seen while a disk transfer waits are kept (up to 64) and handed out at
+  the next poll instead of dropped.
+- **Left out.** USB Attached SCSI (UAS), more than one LUN, hot-plug, and stall recovery on the
+  bulk endpoints (a stalled drive fails its transfers until the next boot).

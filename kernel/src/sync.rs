@@ -323,6 +323,14 @@ impl<T> SleepLock<T> {
         SleepLockGuard { lock: self }
     }
 
+    /// Holds the lock if it is free, without waiting.
+    pub fn try_lock(&self) -> Option<SleepLockGuard<'_, T>> {
+        self.state
+            .compare_exchange(UNLOCKED, LOCKED, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| SleepLockGuard { lock: self })
+    }
+
     #[cold]
     #[inline(never)]
     fn lock_contended(&self) {
