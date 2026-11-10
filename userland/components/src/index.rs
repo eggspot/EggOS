@@ -28,7 +28,9 @@ pub const MAX_NAME_BYTES: usize = 32;
 /// The longest title, summary or remove note.
 pub const MAX_TEXT_BYTES: usize = 96;
 /// The only folders a component's files may be in: the base links into them.
-pub const ALLOWED_PREFIXES: [&str; 1] = ["usr/lib/eggos/"];
+pub const ALLOWED_PREFIXES: [&str; 2] = ["usr/lib/eggos/", "usr/lib/firmware/"];
+/// The block size a store image is padded to, so the kernel can attach it as a disk.
+pub const STORE_BLOCK: usize = 4096;
 /// The first line of an index.
 pub const INDEX_TAG: &str = "eggos-components";
 
@@ -118,6 +120,65 @@ pub fn sha256(bytes: &[u8]) -> [u8; DIGEST_BYTES] {
     let mut hash = Sha256::new();
     hash.update(bytes);
     hash.finish()
+}
+
+/// One component's record and its files' bytes, in the record's order, for [`store_image`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Packed {
+    /// The record; [`store_image`] sets each file's offset, length and SHA-256.
+    pub component: Component,
+    /// The files' bytes.
+    pub contents: Vec<Vec<u8>>,
+}
+
+fn placed(packed: &[Packed], version: &str, arch: &str, data_start: u64) -> Index {
+    let mut offset = data_start;
+    let components = packed
+        .iter()
+        .map(|part| {
+            let mut component = part.component.clone();
+            for (file, bytes) in component.files.iter_mut().zip(&part.contents) {
+                file.offset = offset;
+                file.length = bytes.len() as u64;
+                file.sha256 = sha256(bytes);
+                offset += (bytes.len() as u64).div_ceil(SECTOR).max(1) * SECTOR;
+            }
+            component
+        })
+        .collect();
+    Index {
+        version: version.into(),
+        arch: arch.into(),
+        components,
+    }
+}
+
+/// The store image of `version` for `arch` holding `packed`: the header, the index, then each
+/// file's bytes at a sector-aligned offset, padded to [`STORE_BLOCK`].
+pub fn store_image(packed: &[Packed], version: &str, arch: &str) -> Vec<u8> {
+    let mut data_start = SECTOR * 2;
+    let index = loop {
+        let index = placed(packed, version, arch, data_start);
+        let text = index.write();
+        let needed = Header::parse(&Header::of(text.as_bytes()))
+            .map(|header| header.data_start())
+            .unwrap_or(data_start);
+        if needed == data_start {
+            break index;
+        }
+        data_start = needed;
+    };
+    let text = index.write();
+    let mut image = Header::of(text.as_bytes()).to_vec();
+    image.extend_from_slice(text.as_bytes());
+    for (part, component) in packed.iter().zip(&index.components) {
+        for (bytes, file) in part.contents.iter().zip(&component.files) {
+            image.resize(file.offset as usize, 0);
+            image.extend_from_slice(bytes);
+        }
+    }
+    image.resize(image.len().next_multiple_of(STORE_BLOCK), 0);
+    image
 }
 
 /// One file of a component.

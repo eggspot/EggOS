@@ -173,6 +173,7 @@ pub fn where_text(store: &Store) -> String {
         crate::manager::Source::Disk(disk) => format!("on {disk}"),
         crate::manager::Source::Share => String::from("in the host share"),
         crate::manager::Source::Downloaded => String::from("downloaded from the release"),
+        crate::manager::Source::Upstream => String::from("downloaded from linux-firmware"),
     }
 }
 

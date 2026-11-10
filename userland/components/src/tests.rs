@@ -904,3 +904,110 @@ fn the_store_s_download_address_is_its_release_s_https_asset() {
         "/var/cache/eggos/eggos-0.5.0-aarch64-components.img"
     );
 }
+
+const WHENCE_SAMPLE: &str = "\
+--------------------------------------------------------------------------
+
+Driver: i915 -- Intel Integrated Graphics driver
+
+File: i915/tgl_dmc_ver2_12.bin
+Version: DMC API/APB ver 2 release 12 for Tigerlake
+
+File: i915/skl_dmc_ver1_27.bin
+Version: DMC API/APB ver 1 release 27 for Skylake
+
+License: Redistributable. See LICENSE.i915 for details
+
+--------------------------------------------------------------------------
+
+Driver: other -- Not ours
+
+File: other/blob.bin
+
+--------------------------------------------------------------------------
+";
+
+#[test]
+fn the_whence_excerpt_keeps_a_driver_s_header_and_licence_and_only_our_files() {
+    let files = [crate::firmware::Pinned {
+        path: "i915/tgl_dmc_ver2_12.bin",
+        sha256: "",
+    }];
+    let excerpt = crate::firmware::whence_entries(WHENCE_SAMPLE, &files);
+    assert!(excerpt.contains("Driver: i915 -- Intel Integrated Graphics driver"));
+    assert!(excerpt.contains("File: i915/tgl_dmc_ver2_12.bin\nVersion: DMC API/APB ver 2 release 12"));
+    assert!(excerpt.contains("License: Redistributable. See LICENSE.i915 for details"));
+    assert!(!excerpt.contains("skl_dmc"));
+    assert!(!excerpt.contains("other/blob.bin"));
+}
+
+#[test]
+fn a_firmware_file_that_is_not_the_pinned_one_is_refused() {
+    let component = crate::firmware::find("display-firmware").unwrap();
+    let gathered = crate::firmware::gather(component, &mut |_| Some(b"not the firmware".to_vec()));
+    assert_eq!(
+        gathered,
+        Err(crate::firmware::Gathering::NotPinned("i915/tgl_dmc_ver2_12.bin"))
+    );
+    let unreachable = crate::firmware::gather(component, &mut |_| None);
+    assert_eq!(
+        unreachable,
+        Err(crate::firmware::Gathering::Unreachable("i915/tgl_dmc_ver2_12.bin"))
+    );
+}
+
+#[test]
+fn every_firmware_component_installs_only_into_its_own_firmware_folder() {
+    for component in &crate::firmware::COMPONENTS {
+        assert!(index::is_name(component.name));
+        let folder = crate::firmware::folder_path(component);
+        for file in component.files {
+            assert!(file.path.starts_with(component.folder));
+            assert_eq!(file.sha256.len(), 64);
+        }
+        let record = crate::firmware::record(component, &[([folder.as_str(), "/WHENCE"].concat(), b"x".to_vec())]);
+        assert!(record.files.iter().all(|file| index::is_component_path(&file.path)));
+    }
+    assert_eq!(
+        crate::firmware::upstream_url(&crate::firmware::WHENCE),
+        "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/20261019/WHENCE"
+    );
+    assert_eq!(crate::firmware::for_arch("riscv64").count(), 0);
+}
+
+#[test]
+fn a_store_image_places_each_file_and_reads_back_with_its_digest() {
+    let component = Component {
+        name: "display-firmware".into(),
+        title: "Intel display firmware".into(),
+        summary: "Display firmware".into(),
+        on_remove: "Displays still work.".into(),
+        needs: Vec::new(),
+        files: vec![File {
+            path: "usr/lib/firmware/i915/adlp_dmc.bin".into(),
+            mode: 0o644,
+            offset: 0,
+            length: 0,
+            sha256: [0; 32],
+        }],
+    };
+    let image = index::store_image(
+        &[index::Packed {
+            component,
+            contents: vec![vec![0x5a; 1000]],
+        }],
+        "0.5.0",
+        "x86_64",
+    );
+    assert_eq!(image.len() % index::STORE_BLOCK, 0);
+    let header = Header::parse(&image).unwrap();
+    let text = &image[SECTOR as usize..][..header.index_bytes as usize];
+    let read = index::parse_index(&header, text, image.len() as u64).unwrap();
+    let file = &read.components[0].files[0];
+    assert_eq!(file.length, 1000);
+    assert_eq!(index::sha256(&image[file.offset as usize..][..1000]), file.sha256);
+    assert_eq!(
+        manager::upstream_store_path("0.5.0", "x86_64", "display-firmware"),
+        "/var/cache/eggos/eggos-0.5.0-x86_64-display-firmware.img"
+    );
+}

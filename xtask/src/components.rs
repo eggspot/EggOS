@@ -1,13 +1,13 @@
 //! The component store (D235): `eggos-<version>-<arch>-components.img`, built outside the base
 //! image, in the format `eggos_components::index` reads, with each optional component the
-//! architecture runs, and the links the base keeps at each component file's fixed path.
+//! architecture runs and the vendors' firmware its machines need (D265), and the links the base
+//! keeps at each component file's fixed path.
 
 use crate::{Arch, release};
-use eggos_components::index::{self, Component, File, Header, Index, SECTOR};
+use eggos_components::firmware::{self, Pinned};
+use eggos_components::index::{self, Component, File, Packed};
 use eggos_components::manager;
 use std::path::PathBuf;
-
-const KERNEL_BLOCK: usize = 4096;
 
 /// One component the store offers, and the programs its files are built from.
 #[derive(Debug)]
@@ -50,17 +50,22 @@ pub fn offered(arch: &str) -> impl Iterator<Item = &'static Offered> {
         .filter(move |offered| (offered.runs_on)(arch))
 }
 
-/// The links the base image of `arch` holds: each offered file's fixed path, pointing into
-/// where the component manager installs it, dangling until then.
-pub fn base_links(arch: &str) -> Vec<(&'static str, String)> {
-    offered(arch)
-        .flat_map(|offered| {
-            offered
-                .files
-                .iter()
-                .map(|(path, _)| (*path, manager::installed_path(offered.name, path)))
-        })
-        .collect()
+/// The links the base image of `arch` holds: each offered file's fixed path and each firmware
+/// component's folder, pointing into where the component manager installs it, dangling until
+/// then.
+pub fn base_links(arch: &str) -> Vec<(String, String)> {
+    let layers = offered(arch).flat_map(|offered| {
+        offered
+            .files
+            .iter()
+            .map(|(path, _)| ((*path).to_string(), manager::installed_path(offered.name, path)))
+    });
+    let firmware = firmware::for_arch(arch).map(|component| {
+        let folder = firmware::folder_path(component);
+        let target = manager::installed_path(component.name, &folder);
+        (folder, target)
+    });
+    layers.chain(firmware).collect()
 }
 
 /// The store's file name for `arch`.
@@ -68,11 +73,9 @@ pub fn store_name(arch: &Arch) -> String {
     manager::store_file_name(release::VERSION, arch.name)
 }
 
-fn index_of(parts: &[(&Offered, Vec<Vec<u8>>)], arch: &str, data_start: u64) -> Index {
-    let mut offset = data_start;
-    let components = parts
-        .iter()
-        .map(|(offered, contents)| Component {
+fn packed(offered: &Offered, contents: Vec<Vec<u8>>) -> Packed {
+    Packed {
+        component: Component {
             name: offered.name.into(),
             title: offered.title.into(),
             summary: offered.summary.into(),
@@ -81,67 +84,90 @@ fn index_of(parts: &[(&Offered, Vec<Vec<u8>>)], arch: &str, data_start: u64) -> 
             files: offered
                 .files
                 .iter()
-                .zip(contents)
-                .map(|((path, _), bytes)| {
-                    let file = File {
-                        path: (*path).into(),
-                        mode: 0o755,
-                        offset,
-                        length: bytes.len() as u64,
-                        sha256: index::sha256(bytes),
-                    };
-                    offset += (bytes.len() as u64).div_ceil(SECTOR).max(1) * SECTOR;
-                    file
+                .map(|(path, _)| File {
+                    path: (*path).into(),
+                    mode: 0o755,
+                    offset: 0,
+                    length: 0,
+                    sha256: [0; 32],
                 })
                 .collect(),
-        })
-        .collect();
-    Index {
-        version: release::VERSION.into(),
-        arch: arch.into(),
-        components,
+        },
+        contents,
     }
 }
 
 /// The store image holding `parts` (each offered component with its files' bytes) for `arch`.
 pub fn store_image(parts: &[(&Offered, Vec<Vec<u8>>)], arch: &str) -> Vec<u8> {
-    let mut data_start = SECTOR * 2;
-    let index = loop {
-        let index = index_of(parts, arch, data_start);
-        let text = index.write();
-        let needed = Header::parse(&Header::of(text.as_bytes()))
-            .map(|header| header.data_start())
-            .unwrap_or(data_start);
-        if needed == data_start {
-            break index;
-        }
-        data_start = needed;
-    };
-    let text = index.write();
-    let mut image = Header::of(text.as_bytes()).to_vec();
-    image.extend_from_slice(text.as_bytes());
-    for ((_, contents), component) in parts.iter().zip(&index.components) {
-        for (bytes, file) in contents.iter().zip(&component.files) {
-            image.resize(file.offset as usize, 0);
-            image.extend_from_slice(bytes);
-        }
+    let packed: Vec<Packed> = parts
+        .iter()
+        .map(|(offered, contents)| packed(offered, contents.clone()))
+        .collect();
+    index::store_image(&packed, release::VERSION, arch)
+}
+
+fn firmware_cache() -> PathBuf {
+    crate::target_directory()
+        .join("firmware")
+        .join(firmware::LINUX_FIRMWARE_TAG)
+}
+
+fn fetch_firmware(file: &Pinned) -> Result<Vec<u8>, String> {
+    let path = firmware_cache().join(file.path);
+    let cached = std::fs::read(&path).ok().filter(|bytes| firmware::matches_pin(file, bytes));
+    if let Some(bytes) = cached {
+        return Ok(bytes);
     }
-    image.resize(image.len().next_multiple_of(KERNEL_BLOCK), 0);
-    image
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    }
+    crate::dynamic_linking::download(&firmware::upstream_url(file), &path)?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    match firmware::matches_pin(file, &bytes) {
+        true => Ok(bytes),
+        false => Err(format!(
+            "{}: not the SHA-256 pinned in userland/components/src/firmware.rs for linux-firmware {}",
+            file.path,
+            firmware::LINUX_FIRMWARE_TAG
+        )),
+    }
+}
+
+/// The firmware components of `arch` (D265), each with its pinned files fetched from
+/// linux-firmware into `target/firmware/<tag>/` and checked.
+pub fn firmware_parts(arch: &str) -> Result<Vec<Packed>, String> {
+    let mut parts = Vec::new();
+    for component in firmware::for_arch(arch) {
+        let mut failed = None;
+        let gathered = firmware::gather(component, &mut |file| match fetch_firmware(file) {
+            Ok(bytes) => Some(bytes),
+            Err(error) => {
+                failed = Some(error);
+                None
+            }
+        });
+        let gathered = gathered.map_err(|gathering| failed.take().unwrap_or_else(|| format!("{gathering:?}")))?;
+        parts.push(Packed {
+            component: firmware::record(component, &gathered),
+            contents: gathered.into_iter().map(|(_, bytes)| bytes).collect(),
+        });
+    }
+    Ok(parts)
 }
 
 /// Builds the store of `arch` into `target/components/` and returns its path.
 pub fn build_store(arch: &Arch) -> Result<PathBuf, String> {
-    let mut parts = Vec::new();
+    let mut packed_parts = Vec::new();
     for offered in offered(arch.name) {
         let mut contents = Vec::new();
         for (_, package) in offered.files {
             let program = crate::build_runtime_program(arch, package)?;
             contents.push(std::fs::read(&program).map_err(|e| format!("{program}: {e}"))?);
         }
-        parts.push((offered, contents));
+        packed_parts.push(packed(offered, contents));
     }
-    let image = store_image(&parts, arch.name);
+    packed_parts.extend(firmware_parts(arch.name)?);
+    let image = index::store_image(&packed_parts, release::VERSION, arch.name);
     let dir = crate::target_directory().join("components");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(store_name(arch));
@@ -159,10 +185,10 @@ mod tests {
             .map(|offered| (offered, vec![vec![0x7f; 700]]))
             .collect();
         let image = store_image(&parts, "x86_64");
-        assert_eq!(image.len() % KERNEL_BLOCK, 0);
+        assert_eq!(image.len() % index::STORE_BLOCK, 0);
         assert_eq!(&image[..16], b"EGGOS-COMPONENTS");
-        let header = Header::parse(&image).unwrap();
-        let text = &image[SECTOR as usize..][..header.index_bytes as usize];
+        let header = index::Header::parse(&image).unwrap();
+        let text = &image[index::SECTOR as usize..][..header.index_bytes as usize];
         let read = index::parse_index(&header, text, image.len() as u64).unwrap();
         let names: Vec<&str> = read.components.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["windows-apps", "mac-apps"]);
@@ -180,12 +206,20 @@ mod tests {
             base_links("x86_64"),
             [
                 (
-                    "usr/lib/eggos/windows",
-                    "/var/lib/eggos/components/windows-apps/root/usr/lib/eggos/windows".into()
+                    "usr/lib/eggos/windows".to_string(),
+                    "/var/lib/eggos/components/windows-apps/root/usr/lib/eggos/windows".to_string()
                 ),
                 (
-                    "usr/lib/eggos/macos",
-                    "/var/lib/eggos/components/mac-apps/root/usr/lib/eggos/macos".into()
+                    "usr/lib/eggos/macos".to_string(),
+                    "/var/lib/eggos/components/mac-apps/root/usr/lib/eggos/macos".to_string()
+                ),
+                (
+                    "usr/lib/firmware/intel/iwlwifi".to_string(),
+                    "/var/lib/eggos/components/wifi-firmware/root/usr/lib/firmware/intel/iwlwifi".to_string()
+                ),
+                (
+                    "usr/lib/firmware/i915".to_string(),
+                    "/var/lib/eggos/components/display-firmware/root/usr/lib/firmware/i915".to_string()
                 ),
             ]
         );

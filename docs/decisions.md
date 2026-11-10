@@ -19222,7 +19222,7 @@ the license, by an explicit instruction recorded here.
   vendor firmware at run time (AMD, NVIDIA's GSP) wait for the firmware question D246 records.
 - **Not yet.** Building and running; everything in the order above.
 
-## D246 Wi-Fi, part 1: 802.11 frames, WPA2-Personal and CCMP in `eggos-wifi`, SHA-1, PBKDF2, AES key wrap, AES decryption and AES-CCM in `eggos-crypto`; adapters' firmware stays outside the repository (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; the firmware's distribution is the owner's)
+## D246 Wi-Fi, part 1: 802.11 frames, WPA2-Personal and CCMP in `eggos-wifi`, SHA-1, PBKDF2, AES key wrap, AES decryption and AES-CCM in `eggos-crypto`; adapters' firmware mirrored by eggspot's component store, outside the repository (D265; M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; the firmware's distribution is the owner's)
 
 - **Context.** Every Wi-Fi adapter a PC carries (Intel AX2xx/BE2xx, MediaTek, Realtek, Qualcomm)
   runs vendor firmware the operating system loads at start-up; none of it is open source, and
@@ -19241,11 +19241,12 @@ the license, by an explicit instruction recorded here.
     constant time, replay counters enforced, the GTK unwrapped from message 3's KDE; CCMP's
     protection of data frames (AAD and nonce from the MAC header, packet numbers out for the
     caller's replay check).
-  - **Firmware**: adapter drivers will load their firmware from `/usr/lib/firmware/`, filled by an
-    optional `wifi-firmware` component that downloads the vendor's published firmware files from
-    the vendor on the user's request, as macOS apps come from the vendor's download (D17); nothing
-    of it enters the repository or the base image. Whether EggOS's own component store may
-    redistribute those files is a licence question and stays with the owner.
+  - **Firmware** (changed by the owner on 2026-11-10, see D265): adapter drivers load their
+    firmware from `/usr/lib/firmware/`, filled by the optional `wifi-firmware` component. eggspot
+    mirrors the redistributable files (pinned linux-firmware files, with their licence texts and
+    `WHENCE` entries) in its own component store, the default source; linux-firmware's release is
+    the fallback. Nothing of it enters the repository or the base image. Files whose licence
+    forbids redistribution come from the vendor on the user's request only (docs/firmware.md).
 - **Not yet.** Building and running; the adapter drivers (Intel's AX200/AX201/AX210 first:
   firmware loading, the command and data queues, scanning, association), the `wifi-firmware`
   component, WPA3-Personal (SAE over P-256, PMF), 802.1X enterprise networks, the Network pane's
@@ -19504,3 +19505,36 @@ the license, by an explicit instruction recorded here.
   the next poll instead of dropped.
 - **Left out.** USB Attached SCSI (UAS), more than one LUN, hot-plug, and stall recovery on the
   bulk endpoints (a stalled drive fails its transfers until the next boot).
+
+## D265 Vendor firmware in eggspot's component store: pinned linux-firmware files as optional components, linux-firmware as the fallback (D246's firmware, the owner's answer; M13; code written, unbuilt, untested: code-only mode) — Decided by the owner (2026-11-10, through Main Chat); the engineering by the code-only session
+
+- **Context.** D246 left with the owner whether EggOS's own store may redistribute the vendors'
+  firmware. The owner's answer (2026-11-10): "yes eggos store ship those file itself", refined to
+  "we could store our self and still allow the user to download".
+- **Decision.**
+  - eggspot hosts the redistributable firmware as a mirror in its component store (D235's store,
+    attached to each release and downloaded on demand, D257): optional components the user
+    installs on request, never built into the EggOS image. Our store is the default source;
+    linux-firmware's tagged release is the fallback.
+  - Only files linux-firmware carries, whose licence allows redistribution, are mirrored, from one
+    tagged release (`20261019`) and each pinned by SHA-256 in `eggos_components::firmware`, the one
+    table the store build (`cargo xtask`, fetching into `target/firmware/<tag>/`) and the
+    on-device fallback share. The binaries are never committed to the repository.
+  - Each component installs one folder under `/usr/lib/firmware/` (which the base image links into
+    the component, as it links the Windows and Mac layers) holding the firmware, its licence text
+    and a `WHENCE` file with the files' entries from linux-firmware's `WHENCE` (the driver's
+    header and licence lines, and only our files' entries). docs/firmware.md lists every file.
+  - Two components to start: `wifi-firmware` (Intel AX200, AX201, AX210, AX211:
+    `LICENCE.iwlwifi_firmware`) and `display-firmware` (Intel DMC for Tiger Lake to Meteor Lake:
+    `LICENSE.i915`), both for x86_64. The store index allows `usr/lib/firmware/` beside
+    `usr/lib/eggos/`, and firmware files are installed with mode 644.
+  - When `component install <firmware>` finds no store, or one without that component, it
+    downloads each pinned file from linux-firmware with `fetch` into `/var/cache/eggos/`, checks it,
+    assembles a one-component store there (`eggos-<version>-<arch>-<name>.img`, source
+    `linux-firmware`) and installs from it through the usual atomic install.
+  - Firmware whose licence forbids redistribution is never mirrored: a driver needing it downloads
+    it from the vendor on the user's request only, listed in docs/firmware.md with the reason
+    (none needed yet; Broadcom's `b43` firmware is the known case).
+- **Not yet.** Building and running; the drivers that load these files (the Intel Wi-Fi adapter and
+  display drivers); AMD and NVIDIA GSP firmware components when their drivers come; the Components
+  pane saying a firmware component came from linux-firmware; a signed store index.

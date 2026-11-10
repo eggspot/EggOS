@@ -29,6 +29,10 @@ The base holds a symbolic link at each layer's path (`/usr/lib/eggos/windows`,
 leads nowhere until you install the component, so Windows and Mac programs do not start until
 then, and `app install` tells you which component to install.
 
+The store also mirrors the vendors' firmware some drivers load, as the optional components
+`wifi-firmware` and `display-firmware`; when the store cannot be reached they come from
+linux-firmware's pinned release instead (D265, [firmware.md](firmware.md)).
+
 ## Commands
 
 | Command | MCP tool | What it does |

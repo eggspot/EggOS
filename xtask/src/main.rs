@@ -1764,7 +1764,7 @@ fn initramfs_with(
     members.extend(
         component_links
             .iter()
-            .map(|(path, target)| (*path, initramfs::Content::SymbolicLink(target.as_str()))),
+            .map(|(path, target)| (path.as_str(), initramfs::Content::SymbolicLink(target.as_str()))),
     );
     if let Some(command) = windows_command(&embedded, &component_links) {
         members.push((WINDOWS_COMMAND_PATH, command));
@@ -1775,7 +1775,7 @@ fn initramfs_with(
 
 fn windows_command<'a>(
     embedded: &[(&str, String)],
-    component_links: &'a [(&str, String)],
+    component_links: &'a [(String, String)],
 ) -> Option<initramfs::Content<'a>> {
     if embedded.iter().any(|(path, _)| *path == WINDOWS_LAYER_PATH) {
         return Some(initramfs::Content::HardLink(WINDOWS_LAYER_PATH));

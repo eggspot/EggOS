@@ -5,8 +5,10 @@
 use crate::index::Component;
 use crate::manager::{self, Refusal, RemoveError, Store};
 use crate::messages;
+use crate::{firmware, index};
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec;
 use alloc::vec::Vec;
 use eggos_app::files::Files;
 use eggos_commands::{ErrorDefinition, errors};
@@ -129,6 +131,12 @@ pub fn run<F: Files, C: Console>(
             store = manager::read_store(files, &path, manager::Source::Downloaded, context.arch).ok();
         }
     }
+    if let (Command::Install { name, dry_run: false, .. }, Some(download)) = (command, context.download)
+        && store.as_ref().is_none_or(|store| store.index.component(name).is_none())
+        && let Some(component) = firmware::find(name).filter(|component| component.arches.contains(&context.arch))
+    {
+        store = upstream_store(files, component, context.arch, download).or(store);
+    }
     let mut out = Out {
         console,
         coded: context.coded,
@@ -166,6 +174,66 @@ pub fn run<F: Files, C: Console>(
             json,
         ),
     }
+}
+
+fn read_whole<F: Files>(files: &mut F, path: &str) -> Option<Vec<u8>> {
+    let length = files.status_following(path.as_bytes()).ok()?.size;
+    let handle = files.open(path.as_bytes()).ok()?;
+    let mut bytes = vec![0u8; usize::try_from(length).ok()?];
+    let mut done = 0;
+    let mut read = Ok(());
+    while done < bytes.len() && read.is_ok() {
+        read = match files.read_at(handle, done as u64, &mut bytes[done..]) {
+            Ok(0) | Err(_) => Err(()),
+            Ok(count) => {
+                done += count;
+                Ok(())
+            }
+        };
+    }
+    files.close(handle);
+    read.ok().map(|()| bytes)
+}
+
+fn write_whole<F: Files>(files: &mut F, path: &str, bytes: &[u8]) -> Option<()> {
+    let handle = files.create(path.as_bytes(), 0o644).ok()?;
+    let written = files.write(handle, bytes).and_then(|()| files.sync_file(handle));
+    files.close(handle);
+    written.ok()
+}
+
+fn cached_name(file: &firmware::Pinned) -> String {
+    let mut path = String::from(manager::DOWNLOAD_FOLDER);
+    path.push_str("/linux-firmware-");
+    path.push_str(firmware::LINUX_FIRMWARE_TAG);
+    path.push('-');
+    path.push_str(&file.path.replace('/', "-"));
+    path
+}
+
+fn upstream_store<F: Files>(
+    files: &mut F,
+    component: &firmware::FirmwareComponent,
+    arch: &str,
+    download: fn(&str, &str) -> bool,
+) -> Option<Store> {
+    let gathered = firmware::gather(component, &mut |file| {
+        let path = cached_name(file);
+        let cached = read_whole(files, &path).filter(|bytes| firmware::matches_pin(file, bytes));
+        cached.or_else(|| {
+            download(&firmware::upstream_url(file), &path).then_some(())?;
+            read_whole(files, &path)
+        })
+    })
+    .ok()?;
+    let packed = index::Packed {
+        component: firmware::record(component, &gathered),
+        contents: gathered.into_iter().map(|(_, bytes)| bytes).collect(),
+    };
+    let image = index::store_image(&[packed], manager::VERSION, arch);
+    let path = manager::upstream_store_path(manager::VERSION, arch, component.name);
+    write_whole(files, &path, &image)?;
+    manager::read_store(files, &path, manager::Source::Upstream, arch).ok()
 }
 
 struct Out<'c, C: Console> {
@@ -330,6 +398,7 @@ fn write_store(writer: &mut JsonWriter<'_>, store: Option<&Store>) {
                 }
                 manager::Source::Share => writer.string("share"),
                 manager::Source::Downloaded => writer.string("downloaded"),
+                manager::Source::Upstream => writer.string("linux-firmware"),
             }
             writer.end_object();
         }

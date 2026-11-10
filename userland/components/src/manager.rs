@@ -57,6 +57,9 @@ pub enum Source {
     Share,
     /// The release's store, downloaded into [`DOWNLOAD_FOLDER`] (D257).
     Downloaded,
+    /// A firmware component's pinned files, downloaded from linux-firmware when the release's
+    /// store could not be (D265).
+    Upstream,
 }
 
 /// Where a downloaded store is kept.
@@ -78,6 +81,20 @@ pub fn store_url(version: &str, arch: &str) -> String {
     url.push('/');
     url.push_str(&store_file_name(version, arch));
     url
+}
+
+/// Where firmware component `name`'s files are kept once downloaded from linux-firmware, and
+/// the store assembled from them.
+pub fn upstream_store_path(version: &str, arch: &str, name: &str) -> String {
+    let mut path = String::from(DOWNLOAD_FOLDER);
+    path.push_str("/eggos-");
+    path.push_str(version);
+    path.push('-');
+    path.push_str(arch);
+    path.push('-');
+    path.push_str(name);
+    path.push_str(".img");
+    path
 }
 
 /// The attached store.
