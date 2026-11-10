@@ -152,9 +152,7 @@ boot_translation_on:
     tlbi    vmalle1
     dsb     ish
     isb
-    mrs     x0, sctlr_el1
-    ldr     x1, ={sctlr_enable}
-    orr     x0, x0, x1
+    ldr     x0, ={sctlr}
     msr     sctlr_el1, x0
     isb
     ret
@@ -209,7 +207,7 @@ eggos_secondary_start:
     tcr = const TCR,
     ips_max = const TCR_IPS_MAX,
     ips_shift = const TCR_IPS_SHIFT,
-    sctlr_enable = const SCTLR_MMU_AND_CACHES | SCTLR_USER_CACHE_TYPE_AND_MAINTENANCE,
+    sctlr = const SCTLR_EL1_VALUE,
 );
 
 /// The image's virtual address minus its physical address: the kernel links at
@@ -301,6 +299,14 @@ const TCR_IPS_MAX: u64 = 0b101;
 /// `SCTLR_EL1`: M (MMU on), C (data cache), I (instruction cache).
 const SCTLR_MMU_AND_CACHES: u64 = (1 << 0) | (1 << 2) | (1 << 12);
 const SCTLR_USER_CACHE_TYPE_AND_MAINTENANCE: u64 = (1 << 15) | (1 << 26);
+/// `SCTLR_EL1`'s bits that are 1 on Armv8.0 (RES1: EOS, EIS, SPAN, TSCXT, ITD, nTLSMD), and
+/// what EL0 may do as on Linux (D250): `DC ZVA` (DZE), `WFI` and `WFE` without trapping (nTWI,
+/// nTWE). `UMA`, `E0E`, `EE` and alignment checks stay 0, whatever the firmware left.
+const SCTLR_RES1: u64 = 0x30d0_0800;
+const SCTLR_USER_ZERO_AND_WAIT: u64 = (1 << 14) | (1 << 16) | (1 << 18);
+/// The whole `SCTLR_EL1` the kernel runs with, written, not ORed into the firmware's value.
+const SCTLR_EL1_VALUE: u64 =
+    SCTLR_RES1 | SCTLR_MMU_AND_CACHES | SCTLR_USER_CACHE_TYPE_AND_MAINTENANCE | SCTLR_USER_ZERO_AND_WAIT;
 
 /// PSCI 0.2+ `SYSTEM_OFF` and 64-bit `CPU_ON` function IDs (Arm DEN 0022, 5.1).
 const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
