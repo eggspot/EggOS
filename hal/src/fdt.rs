@@ -16,7 +16,7 @@
 mod nodes;
 
 pub use nodes::{
-    InterruptSpecifier, InterruptSpecifiers, MAX_INTERRUPT_CELLS, MAX_NODE_DEPTH, Node,
+    InterruptSpecifier, InterruptSpecifiers, MAX_INTERRUPT_CELLS, MAX_NODE_DEPTH, MAX_TRANSLATIONS, Node, Ranges,
 };
 
 use crate::memory::PhysicalRange;

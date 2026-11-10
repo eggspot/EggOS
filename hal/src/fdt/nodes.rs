@@ -12,6 +12,43 @@ pub const MAX_NODE_DEPTH: usize = 16;
 /// The most cells an interrupt specifier may have here (GICv3 with PPI partitions uses 4).
 pub const MAX_INTERRUPT_CELLS: usize = 4;
 
+/// The most ancestors with a translating `ranges` a node's `reg` is translated through.
+pub const MAX_TRANSLATIONS: usize = 4;
+
+const PCI_ADDRESS_CELLS: u32 = 3;
+
+/// One bus's `ranges`: how its children's addresses map into its parent's (D269).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ranges<'a> {
+    /// The raw property: (child address, parent address, length) triples.
+    pub raw: &'a [u8],
+    /// The bus's own `#address-cells`, its children's address width.
+    pub child_cells: u32,
+    /// Its parent's `#address-cells`.
+    pub parent_cells: u32,
+    /// The bus's own `#size-cells`.
+    pub size_cells: u32,
+}
+
+impl Ranges<'_> {
+    /// `address` of a child of the bus, in the bus's parent's addresses; `None` when no range
+    /// covers it.
+    pub fn translate(&self, address: u64) -> Option<u64> {
+        let (child, parent, size) = (self.child_cells as usize, self.parent_cells as usize, self.size_cells as usize);
+        let entry = (child + parent + size) * 4;
+        if entry == 0 || child > 2 || parent > 2 || size > 2 {
+            return None;
+        }
+        self.raw.chunks_exact(entry).find_map(|triple| {
+            let (from, rest) = triple.split_at(child * 4);
+            let (to, length) = rest.split_at(parent * 4);
+            let (from, to, length) = (cells_value(from)?, cells_value(to)?, cells_value(length)?);
+            let offset = address.checked_sub(from).filter(|&offset| offset < length)?;
+            to.checked_add(offset)
+        })
+    }
+}
+
 /// One node of the tree, with the context its parent gives it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Node<'a> {
@@ -32,10 +69,12 @@ pub struct Node<'a> {
     pub address_cells: u32,
     /// The parent's `#size-cells` (1 when absent).
     pub size_cells: u32,
-    /// Whether `reg` holds CPU physical addresses: every ancestor below the root has an empty
-    /// `ranges` (an identity mapping). Addresses behind a non-empty `ranges` (a PCI host's
-    /// children, say) would need translation, which the walker does not do yet.
+    /// Whether [`Self::reg_entries`] gives CPU physical addresses: every ancestor below the root
+    /// has a `ranges`, empty (an identity mapping) or one the walker translates through (at most
+    /// [`MAX_TRANSLATIONS`], none of them a PCI host's three-cell addresses, D269).
     pub cpu_addressable: bool,
+    /// The translating `ranges` of its ancestors, the root's side first.
+    pub translations: [Option<Ranges<'a>>; MAX_TRANSLATIONS],
     /// The raw `interrupts` property, in the cells of [`Self::interrupt_parent`].
     pub interrupts: &'a [u8],
     /// The raw `interrupts-extended` property: (controller phandle, cells...) entries.
@@ -55,7 +94,7 @@ pub struct Node<'a> {
 }
 
 impl<'a> Node<'a> {
-    fn new(name: &'a [u8], depth: usize, parent: &Level) -> Self {
+    fn new(name: &'a [u8], depth: usize, parent: &Level<'a>) -> Self {
         Self {
             isa: &[],
             isa_extensions: &[],
@@ -67,6 +106,7 @@ impl<'a> Node<'a> {
             address_cells: parent.address_cells,
             size_cells: parent.size_cells,
             cpu_addressable: parent.children_addressable,
+            translations: parent.translations,
             interrupts: &[],
             interrupts_extended: &[],
             interrupt_parent: parent.interrupt_parent,
@@ -90,8 +130,23 @@ impl<'a> Node<'a> {
         self.compatible_strings().any(|string| string == wanted)
     }
 
-    /// The (address, size) pairs of `reg`; pairs that do not fit in 64 bits are skipped.
+    /// The (address, size) pairs of `reg`, each address translated through the ancestors'
+    /// `ranges` into the CPU's; pairs that do not fit in 64 bits or that no range covers are
+    /// skipped.
     pub fn reg_entries(&self) -> impl Iterator<Item = (u64, u64)> + 'a {
+        let translations = self.translations;
+        self.untranslated_reg_entries().filter_map(move |(address, size)| {
+            let address = translations
+                .iter()
+                .rev()
+                .flatten()
+                .try_fold(address, |address, ranges| ranges.translate(address))?;
+            Some((address, size))
+        })
+    }
+
+    /// The (address, size) pairs of `reg` in the parent bus's own addresses.
+    pub fn untranslated_reg_entries(&self) -> impl Iterator<Item = (u64, u64)> + 'a {
         let address_cells = self.address_cells as usize;
         let size_cells = self.size_cells as usize;
         let entry = (address_cells + size_cells) * 4;
@@ -189,19 +244,46 @@ impl InterruptSpecifier {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Level {
+struct Level<'a> {
     address_cells: u32,
     size_cells: u32,
     interrupt_parent: Option<u32>,
     children_addressable: bool,
+    translations: [Option<Ranges<'a>>; MAX_TRANSLATIONS],
 }
 
-const ROOT_CONTEXT: Level = Level {
+const ROOT_CONTEXT: Level<'static> = Level {
     address_cells: 2,
     size_cells: 1,
     interrupt_parent: None,
     children_addressable: true,
+    translations: [None; MAX_TRANSLATIONS],
 };
+
+fn children_context<'a>(node: &Node<'a>, own: &mut Level<'a>, ranges: Option<&'a [u8]>) {
+    own.interrupt_parent = node.interrupt_parent;
+    own.translations = node.translations;
+    own.children_addressable = match ranges {
+        _ if node.depth == 0 => true,
+        None => false,
+        Some([]) => node.cpu_addressable,
+        Some(raw) => {
+            let free = own.translations.iter().position(Option::is_none);
+            match (free, node.cpu_addressable && own.address_cells != PCI_ADDRESS_CELLS) {
+                (Some(free), true) => {
+                    own.translations[free] = Some(Ranges {
+                        raw,
+                        child_cells: own.address_cells,
+                        parent_cells: node.address_cells,
+                        size_cells: own.size_cells,
+                    });
+                    true
+                }
+                _ => false,
+            }
+        }
+    };
+}
 
 impl<'a> Fdt<'a> {
     /// Every node of the tree, parents before their children, each with its parent's context
@@ -211,8 +293,7 @@ impl<'a> Fdt<'a> {
         let mut tokens = self.tokens();
         let mut levels = [ROOT_CONTEXT; MAX_NODE_DEPTH + 1];
         let mut pending: Option<Node<'a>> = None;
-        let mut has_ranges = false;
-        let mut empty_ranges = false;
+        let mut ranges: Option<&'a [u8]> = None;
         let mut depth = 0usize;
         let mut ended = false;
         core::iter::from_fn(move || {
@@ -234,10 +315,7 @@ impl<'a> Fdt<'a> {
                 match token {
                     Token::BeginNode(name) => {
                         let parent_ready = pending.take().inspect(|node| {
-                            let level = &mut levels[node.depth + 1];
-                            level.interrupt_parent = node.interrupt_parent;
-                            level.children_addressable = node.depth == 0
-                                || (node.cpu_addressable && has_ranges && empty_ranges);
+                            children_context(node, &mut levels[node.depth + 1], ranges);
                         });
                         if depth < MAX_NODE_DEPTH {
                             let parent = levels[depth];
@@ -248,7 +326,7 @@ impl<'a> Fdt<'a> {
                             };
                             pending = Some(Node::new(name, depth, &parent));
                         }
-                        (has_ranges, empty_ranges) = (false, false);
+                        ranges = None;
                         depth += 1;
                         if parent_ready.is_some() {
                             return parent_ready.map(Ok);
@@ -276,7 +354,7 @@ impl<'a> Fdt<'a> {
                         if let Some(node) = pending.as_mut() {
                             apply(node, own, name, value);
                             if name == b"ranges" {
-                                (has_ranges, empty_ranges) = (true, value.is_empty());
+                                ranges = Some(value);
                             }
                         }
                     }
@@ -327,7 +405,7 @@ fn property(name: &[u8]) -> Option<Property> {
     })
 }
 
-fn apply<'a>(node: &mut Node<'a>, own: &mut Level, name: &[u8], value: &'a [u8]) {
+fn apply<'a>(node: &mut Node<'a>, own: &mut Level<'a>, name: &[u8], value: &'a [u8]) {
     let Some(property) = property(name) else {
         return;
     };
@@ -560,11 +638,13 @@ mod tests {
     }
 
     #[test]
-    fn addresses_behind_a_translating_or_missing_ranges_are_not_cpu_addresses() {
+    fn addresses_behind_a_translating_ranges_are_translated_and_a_missing_one_is_not() {
         let blob = tree_with_nesting();
         let nodes = nodes_of(&blob);
         let child = nodes.iter().find(|node| node.name == b"child@0").unwrap();
-        assert!(!child.cpu_addressable);
+        assert!(child.cpu_addressable);
+        assert_eq!(child.reg_entries().collect::<Vec<_>>(), [(0x8000, 0x10)]);
+        assert_eq!(child.untranslated_reg_entries().collect::<Vec<_>>(), [(0, 0x10)]);
         let i2c = nodes
             .iter()
             .find(|node| node.name == b"i2c-device@50")
@@ -573,6 +653,22 @@ mod tests {
         assert_eq!(i2c.reg_entries().collect::<Vec<_>>(), [(0x50, 0)]);
         let bus = nodes.iter().find(|node| node.name == b"bus").unwrap();
         assert!(bus.cpu_addressable);
+    }
+
+    #[test]
+    fn a_range_translates_only_the_addresses_it_covers() {
+        let raw: Vec<u8> = [0u32, 0x10, 0x8000_0000, 0x1000]
+            .iter()
+            .flat_map(|cell| cell.to_be_bytes())
+            .collect();
+        let ranges = Ranges {
+            raw: &raw,
+            child_cells: 1,
+            parent_cells: 2,
+            size_cells: 1,
+        };
+        assert_eq!(ranges.translate(0x20), Some(0x10_8000_0020));
+        assert_eq!(ranges.translate(0x1000), None);
     }
 
     #[test]

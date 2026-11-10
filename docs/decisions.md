@@ -19598,3 +19598,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running on Intel hardware; loading the DMC; mode setting and a second
   display; waiting for flips on the vertical-blank interrupt instead of polling; AMD's display
   engine (DCN) and NVIDIA's; the Wi-Fi adapter driver.
+
+## D269 Device-tree `ranges` translated: devices behind a translating bus get CPU addresses (M5's next; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** The node walker treated only identity (`ranges;`) buses as giving CPU addresses, so
+  devices behind a bus that remaps its children (an SoC's `simple-bus` with `ranges = <0 0x0
+  0x10000000 ...>`, common on real Arm and RISC-V boards) had no usable `reg`.
+- **Decision.** Each node now carries the translating `ranges` of its ancestors (up to
+  `MAX_TRANSLATIONS`, 4), with the cell counts each needs: the bus's own `#address-cells` and
+  `#size-cells` and its parent's `#address-cells`. `Node::reg_entries` translates every address
+  through them, nearest bus first, and skips a pair no range covers; `untranslated_reg_entries`
+  keeps the bus's own addresses. A bus with no `ranges` still makes its children's addresses
+  private (I2C, SPI), and a PCI host's three-cell addresses are not translated (PCI devices are
+  enumerated through its configuration space instead). Address and size cells above two are not
+  translated.
+- **Not yet.** Building and running; `dma-ranges` for devices whose DMA addresses differ from the
+  CPU's; PCI hosts' `ranges` for their windows from the device tree.
