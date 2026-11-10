@@ -3,7 +3,7 @@ resolver = "3"
 members = ["kernel", "hal", "drivers", "font", "terminal", "calendar", "math", "eggfs", "net", "crypto", "tls", "settings-file", "app-manifest", "android-properties", "android-log", "png", "image", "plist", "translate", "wayland", "userland/runtime", "userland/c-format", "userland/init", "userland/eggsh", "userland/commands", "userland/components", "userland/device-list", "userland/download-list", "userland/downloads", "userland/element-tree", "userland/coreutils", "userland/hello-window", "userland/toolkit", "userland/settings", "userland/app", "userland/files", "userland/editor", "userland/terminal", "userland/mcp", "userland/eggway", "userland/selftest", "userland/std-selftest", "userland/windows", "userland/windows-gui", "userland/windows-registry", "userland/macos", "userland/macos-gui", "userland/translation-loader", "tests/linux-static", "tests/linux-sockets", "tests/linux-memory", "tests/linux-mappings", "tests/linux-events", "tests/linux-dynamic", "tests/linux-udp", "tests/linux-tcp", "tests/linux-gui", "tests/build-timer", "tests/windows-console", "tests/windows-gui", "tests/android-console", "tests/macos-console", "tests/macos-gui", "xtask"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/eggspot/EggOS"
@@ -19,6 +19,13 @@ multiple_unsafe_ops_per_block = "deny"
 
 [profile.dev]
 panic = "abort"
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
 
 [profile.release]
 panic = "abort"

@@ -143,6 +143,14 @@ them.
   tests or `docs/decisions.md`. Existing comments are removed crate by crate in cleanup PRs.
 - Development hosts are Windows and macOS; changes must build and be testable on both.
 - Build/test: `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`.
+- **Integration tests go in the package's single `tests/all` program; never add a new top-level
+  `tests/*.rs` file** (D217). Each Cargo integration-test file is its own program linking the whole
+  crate, so the build folder would grow with every test file. A package with integration tests keeps
+  them as modules of `tests/all/main.rs` (shared helpers too, e.g. `tests/all/common.rs`), sets
+  `autotests = false` in `[package]` and declares one `[[test]] name = "all"`,
+  `path = "tests/all/main.rs"`. `cargo xtask lint` (CI's fast job) fails on anything else. Debug and
+  test builds keep line tables only (`debug = "line-tables-only"`, none for non-workspace crates):
+  panics and failing tests still show file and line.
 - CI follows the global billing rules: Linux runners by default; macOS (10x cost) and Windows (2x) jobs
   only on PRs into main. Its jobs run in parallel (fast checks, QEMU boot tests and benchmarks per
   architecture) and a final job named exactly `check` fails if any of them failed or was cancelled; it is

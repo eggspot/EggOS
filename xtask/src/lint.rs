@@ -1,5 +1,6 @@
 //! `cargo xtask lint`: fails on comments the repository's rules disallow (CLAUDE.md, "No other
-//! comments in code"), in every tracked `.rs`, `.toml` and `.yml` file.
+//! comments in code"), in every tracked `.rs`, `.toml` and `.yml` file, and on integration tests
+//! outside a package's single `tests/all` program (`test_layout`).
 //!
 //! Files that still have such comments are listed with their counts in
 //! `xtask/lint-legacy-files.txt`, so the lint fails only for a violation in a file that is not
@@ -29,15 +30,16 @@ pub fn run(shrink: bool) -> Result<(), String> {
     let mut found: BTreeMap<String, Vec<Violation>> = BTreeMap::new();
     let mut gates = Vec::new();
     let mut scanned = 0;
-    for file in tracked_files(&root)? {
-        let Some(text) = read_if_present(&root.join(&file))? else {
+    let files = tracked_files(&root)?;
+    for file in &files {
+        let Some(text) = read_if_present(&root.join(file))? else {
             continue;
         };
         scanned += 1;
-        gates.extend(gate_problems(&file, &text));
-        let violations = scan(&file, &text);
+        gates.extend(gate_problems(file, &text));
+        let violations = scan(file, &text);
         if !violations.is_empty() {
-            found.insert(file, violations);
+            found.insert(file.clone(), violations);
         }
     }
     if !gates.is_empty() {
@@ -47,17 +49,31 @@ pub fn run(shrink: bool) -> Result<(), String> {
     if shrink {
         return write_shrunk(&legacy_path, &legacy, &found, &problems);
     }
+    let layout = crate::test_layout::check(
+        &root,
+        files
+            .iter()
+            .map(String::as_str)
+            .filter(|file| *file == "Cargo.toml" || file.ends_with("/Cargo.toml")),
+    );
     if !problems.is_empty() {
-        return Err(format!(
+        let mut message = format!(
             "{}\n(CLAUDE.md allows no comments in code but `// SAFETY:`, lint directives and \
              `///` on public items; run `cargo xtask lint --shrink` after removing comments \
              from a file listed in {LEGACY_FILES})",
             problems.join("\n")
-        ));
+        );
+        if let Err(layout) = layout {
+            message.push('\n');
+            message.push_str(&layout);
+        }
+        return Err(message);
     }
+    let packages = layout?;
     let remaining: usize = legacy.values().sum();
     eprintln!(
-        "xtask: lint: {scanned} files scanned, {remaining} comments left in {} legacy files",
+        "xtask: lint: {scanned} files scanned, {remaining} comments left in {} legacy files; \
+         integration-test layout holds in {packages} packages",
         legacy.len()
     );
     Ok(())
@@ -105,7 +121,7 @@ fn read(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn read_if_present(path: &Path) -> Result<Option<String>, String> {
+pub(crate) fn read_if_present(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
