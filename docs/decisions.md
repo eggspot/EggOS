@@ -19311,3 +19311,24 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; SMAP, which needs `stac`/`clac` around every user access and
   `clac` on every entry; emulating the five instructions for the rare Windows or Linux program that
   uses one (Linux emulates them).
+
+## D252 The ACPI namespace's static part: devices with a `_HID` from the DSDT join the driver model (M5's ACPI discovery; D237's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** On PCs and Arm servers the devices no bus enumerates (the PS/2 controller, the
+  embedded controller, I2C HID touchpads and keyboards, batteries, the lid, GPIO controllers) are
+  declared in the ACPI namespace, in AML. Running AML needs an interpreter; most `_HID`s and many
+  `_CRS`s are plain data.
+- **Decision.** `eggos_hal::aml` walks a definition block's static part: `Scope`, `Device`,
+  `Processor`, `PowerResource` and `ThermalZone` bodies are entered; `Name`s with integers,
+  strings, buffers and packages are read; methods, conditionals, loops, fields and other known
+  terms with a length are stepped over; a term it does not know ends the walk of that scope only,
+  so nothing after it there is misread. Each device yields its path, `_HID` (strings, or compressed
+  EISA ids decoded to `PNP0303`), `_CID`, `_UID`, `_ADR` and a `_CRS` buffer, whose 32-bit fixed
+  memory and DWord/QWord memory descriptors become the node's regions. `Platform::acpi_dsdt`
+  (x86_64, AArch64) gives the DSDT; the driver model adds an `Identity::Acpi` node (`_HID`, `_CID`,
+  path) per device with a `_HID`, matched by `Match::AcpiHid` on the `_HID` (rank 0) or the `_CID`
+  (rank 1), listed as `acpi` in `/proc/driver/devices` with a class from its `_HID`.
+- **Not yet.** Building and running; SSDTs; an AML interpreter for `_HID`s, `_CRS`s and `_STA`s that
+  methods compute, `_PRT`, `_S5` through it, notifications and the embedded controller; interrupt
+  resources; drivers for the ACPI devices (I2C controllers and HID over I2C first, then the
+  battery, AC adapter and lid).
