@@ -206,7 +206,6 @@ impl Parser<'_> {
                 }
                 if self.eat(b"Z") {
                     arguments.push(b"...".to_vec());
-                    self.at -= 1;
                     break;
                 }
                 if arguments.len() >= MAX_PARTS {

@@ -960,7 +960,7 @@ mod tests {
             table.insert(window).unwrap()
         };
         let group_box = control(0x0002_0007, true);
-        let small = control(0x0003_0009, true);
+        let small = control(0x0001_0009, true);
         let medium = control(0x0000_0009, false);
         let large = control(0x0000_0009, true);
         let next_group = control(0x0003_0000, true);

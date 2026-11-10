@@ -186,9 +186,11 @@ pub struct TypeDescriptor {
 
 /// The layer's C++ data for its exception classes, laid out as in a 64-bit image: one type
 /// descriptor, `ThrowInfo`, catchable type array, catchable type, complete object locator,
-/// class hierarchy descriptor, base class array and base class descriptor per class.
+/// class hierarchy descriptor, base class array and base class descriptor per class. Its first
+/// eight bytes hold nothing, since MSVC's data reads an RVA of 0 as no address.
 #[repr(C)]
 pub struct TypeTable {
+    rva_zero_means_none: u64,
     descriptors: [TypeDescriptor; COUNT],
     throw_infos: [[u32; 4]; COUNT],
     catchable_arrays: [[u32; 1 + MAX_BASES]; COUNT],
@@ -201,8 +203,10 @@ pub struct TypeTable {
 
 const _: () = assert!(
     size_of::<TypeTable>()
-        == COUNT
-            * (size_of::<TypeDescriptor>() + 4 * (4 + 1 + MAX_BASES + 7 + 6 + 4 + MAX_BASES + 7))
+        == size_of::<u64>()
+            + COUNT
+                * (size_of::<TypeDescriptor>()
+                    + 4 * (4 + 1 + MAX_BASES + 7 + 6 + 4 + MAX_BASES + 7))
 );
 const _: () = assert!(size_of::<TypeDescriptor>() == 16 + NAME_LENGTH);
 
@@ -233,6 +237,7 @@ impl TypeTable {
     /// The table, with `type_info_table` as every type descriptor's virtual function table.
     pub const fn new(type_info_table: *const ()) -> Self {
         let mut table = Self {
+            rva_zero_means_none: 0,
             descriptors: [const {
                 TypeDescriptor {
                     table: core::ptr::null(),
