@@ -1514,32 +1514,39 @@ fn the_registry_s_app_examples_run_as_written() {
 fn a_linux_program_needing_a_gui_library_installs_as_a_windowed_app_and_others_as_console_apps() {
     let loader = linux_program(62);
     let mut kinds = Vec::new();
-    for (libraries, deflate) in [
-        (&["libc.so", "libSDL2-2.0.so.0"][..], false),
-        (&["libc.so", "libgtk-3.so.0"][..], true),
-        (&["libc.so", "libncursesw.so.6"][..], true),
+    for (libraries, deflate, carried) in [
+        (&["libc.so", "libSDL2-2.0.so.0"][..], false, None),
+        (&["libc.so", "libgtk-3.so.0"][..], true, None),
+        (
+            &["libc.so", "libmousepad.so.0"][..],
+            false,
+            Some("lib/libgtk-3.so.0"),
+        ),
+        (
+            &["libc.so", "libncursesw.so.6"][..],
+            true,
+            Some("lib/libncursesw.so.6"),
+        ),
     ] {
         let program = program_needing(libraries);
         let member = match deflate {
             true => deflated("tool", &program, deflate_fixed_literals(&program)),
             false => stored("tool", &program),
         };
-        let archive = zip(&[member, stored("lib/ld-musl-x86_64.so.1", &loader)]);
+        let mut members = vec![member, stored("lib/ld-musl-x86_64.so.1", &loader)];
+        members.extend(carried.map(|path| stored(path, b"library")));
+        let archive = zip(&members);
         let mut files = host_with("/media/host/tool.zip", &archive);
         let plan = planned(&mut files, "/media/host/tool.zip", X86_64);
-        kinds.push(plan.console());
+        let console = plan.console();
+        kinds.push(console);
         let overridden = plan.with_console(true);
         assert!(overridden.console());
-        install(
-            &mut files,
-            overridden.with_console(kinds[kinds.len() - 1]),
-            &mut [0u8; 64],
-        )
-        .unwrap();
+        install(&mut files, overridden.with_console(console), &mut [0u8; 64]).unwrap();
         assert_eq!(
             manifest_of(&files, "tool").contains("console=true"),
-            kinds[kinds.len() - 1]
+            console
         );
     }
-    assert_eq!(kinds, [false, false, true]);
+    assert_eq!(kinds, [false, false, false, true]);
 }

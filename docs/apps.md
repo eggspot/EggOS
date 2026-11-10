@@ -53,7 +53,8 @@ installer writes `console=true` in the manifest for a Windows program of the con
 a Linux program that needs no GUI library and a bare macOS tool, and nothing for a Windows GUI
 program, an `.app` bundle or a Linux program whose shared libraries (its `DT_NEEDED` entries)
 include X11, xcb, the Wayland client library, SDL, GTK, Qt's GUI module or GLFW
-(`eggos_app::gui_libraries::GUI_LIBRARIES`); `--console` and `--no-console` decide instead. The launcher, `app open` and `app_open`
+(`eggos_app::gui_libraries::GUI_LIBRARIES`) or that comes in a `.zip` carrying one of them;
+`--console` and `--no-console` decide instead. The launcher, `app open` and `app_open`
 then start `/bin/terminal -t <name> -e /bin/eggsh -c <line>`.
 
 ### What you can install today, and apps to try

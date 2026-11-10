@@ -18033,8 +18033,10 @@ the license, by an explicit instruction recorded here.
     `.app` bundle or a Linux program needing one of `gui_libraries::GUI_LIBRARIES` (the start of
     the file name, up to `.so`, of libX11, libxcb, libwayland-client, SDL 1.2, 2 and 3, GTK 2,
     3 and 4, Qt 5's and 6's Gui and GLFW) among its `DT_NEEDED` entries, read from its dynamic
-    section and string table in at most two reads (one inflate pass each inside a `.zip`); a
-    static program, or one whose dynamic section cannot be read, stays a console app. `app
+    section and string table in at most two reads (one inflate pass each inside a `.zip`), or
+    installed from a `.zip` that carries one of those libraries (Mousepad's program needs only
+    its own `libmousepad.so.0`, which needs GTK); a static program, or one whose dynamic
+    section cannot be read, stays a console app. `app
     install --console` and `--no-console` decide instead. (First built with every Linux program
     a console app, which opened Brogue, Mousepad and CorePad in a terminal beside their window.) The catalogue launches a console app
     as `/bin/terminal -t <name> -e /bin/eggsh -c <line>` while the terminal program is present.

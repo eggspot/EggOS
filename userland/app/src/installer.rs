@@ -1076,6 +1076,7 @@ fn scan(
     let mut found = 0;
     let mut listing = Listing::new();
     let mut total = 0u64;
+    let mut carries_gui_library = false;
     while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
         if is_reserved(entry.name()) {
             return Err(Problem::ReservedName);
@@ -1087,6 +1088,7 @@ fn scan(
         if total > MAX_EXTRACTED_BYTES {
             return Err(Problem::TooLarge);
         }
+        carries_gui_library |= gui_libraries::is_gui_library(files::file_name(entry.name()));
         let Some(role) = program_role(zip, &entry, window, &bundles) else {
             continue;
         };
@@ -1127,14 +1129,15 @@ fn scan(
     let console = !matches!(role, Role::BundleProgram { .. })
         && program::is_console(head)
         && !(program.source == Source::Linux
-            && gui_libraries::links_gui_library(
-                head,
-                &mut archive::EntryBytes {
-                    reader: zip,
-                    entry: &entry,
-                    window,
-                },
-            ));
+            && (carries_gui_library
+                || gui_libraries::links_gui_library(
+                    head,
+                    &mut archive::EntryBytes {
+                        reader: zip,
+                        entry: &entry,
+                        window,
+                    },
+                )));
     let named_after = match role {
         Role::BundleProgram { bundle_end } if program.source == Source::Macos => {
             &entry.name()[..bundle_end]
