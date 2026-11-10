@@ -19073,3 +19073,30 @@ the license, by an explicit instruction recorded here.
   after boot; report protocol (HID report descriptors: multimedia keys, touchpads' gestures,
   absolute tablets, touch screens); I2C HID touchpads and keyboards (ACPI namespace, D237); USB mass
   storage; interrupts instead of polling; AArch64's 8042-less machines need nothing more.
+
+## D240 Wired network on real PCs: Intel e1000, e1000e and igc, Realtek RTL8111/8168 and RTL8125 (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** Desktop boards and laptops with a wired port carry an Intel (82574, I217-I219, I225,
+  I226) or Realtek (RTL8111/8168, RTL8125) controller; QEMU offers the e1000 and e1000e too.
+- **Decision.**
+  - **`eggos_drivers::ethernet`**: each adapter keeps 32 receive and 32 transmit descriptors with a
+    2 KiB buffer each in 132 KiB of DMA memory, copies frames in and out, and is polled by the
+    network stack ([`crate::net`]'s `NetDevice`).
+    - **e1000 / e1000e**: reset with interrupts masked, the hardware address from `RAL0`/`RAH0` or,
+      where those are empty, the EEPROM through `EERD` (the 8254x's and the 82574's layouts), legacy
+      descriptors, broadcast accepted, CRC stripped, short frames padded, link set up with automatic
+      speed. Taken by device id: the 8254x list, and the 82574, 82583 and I217-I219 ids.
+    - **igc** (I225, I226): reset, the address from `RAL0`/`RAH0`, advanced one-buffer receive
+      descriptors and advanced data transmit descriptors on queue 0, each queue enabled and waited
+      for.
+    - **Realtek**: reset, the address from `IDR0-5`, the 8168's and the 8125's interrupt and
+      transmit-poll registers apart, descriptors owned by the chip until it hands them back, the
+      ring's end marked, CRC dropped from received lengths, frames padded to 60 bytes.
+  - **The kernel** binds one driver to every Ethernet-class PCI function (`ethernet`, a default
+    feature), which takes it by vendor and device id and refuses others by name; the first adapter
+    becomes the stack's, as the virtio adapter is.
+- **Not yet.** Building and running (QEMU: `-device e1000` and `-device e1000e`); the Realtek chips'
+  per-version PHY and MAC setup sequences and the I219's ULP and ring-flush quirks, which some
+  boards need before the link comes up; interrupts (MSI/MSI-X) instead of polling; several
+  adapters at once; checksum and segmentation offload; jumbo frames; Wake-on-LAN; Intel's
+  igb (I210/I211), ixgbe and Realtek's RTL8139; Wi-Fi (a later part of M13).
