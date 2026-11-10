@@ -19,6 +19,7 @@ const TIMER_DIVIDE_CONFIGURATION: usize = 0x3e0;
 const SVR_APIC_SOFTWARE_ENABLE: u32 = 1 << 8;
 const LVT_MASKED: u32 = 1 << 16;
 const LVT_TIMER_MODE_ONE_SHOT: u32 = 0b00 << 17;
+const LVT_TIMER_MODE_TSC_DEADLINE: u32 = 0b10 << 17;
 const DIVIDE_BY_1: u32 = 0b1011;
 
 const ICR_DELIVERY_FIXED: u32 = 0b000 << 8;
@@ -65,6 +66,14 @@ impl<R: RegisterIo> LocalApic<R> {
             LVT_TIMER,
             LVT_TIMER_MODE_ONE_SHOT | mask | u32::from(vector),
         );
+    }
+
+    /// Sets the timer up in TSC-deadline mode (Intel SDM vol. 3A, 11.5.4.1), raising `vector`
+    /// when the TSC reaches the value written to `IA32_TSC_DEADLINE`, which the caller writes.
+    pub fn configure_tsc_deadline_timer(&self, vector: u8) {
+        self.stop_timer_before_changing_its_lvt();
+        self.regs
+            .write32(LVT_TIMER, LVT_TIMER_MODE_TSC_DEADLINE | u32::from(vector));
     }
 
     fn stop_timer_before_changing_its_lvt(&self) {
