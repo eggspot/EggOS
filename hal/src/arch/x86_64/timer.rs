@@ -22,7 +22,7 @@ use crate::memory::PhysicalRange;
 use crate::time::{mul_div_ceil, ratio_ceil, scale_ceil};
 use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use eggos_drivers::interrupt::{LegacyPic, LocalApic, i8259, local_apic};
-use eggos_drivers::io::Mmio;
+use eggos_drivers::io::{Mmio, RegisterIo};
 use eggos_drivers::timer::{Pit, i8254};
 
 /// Vectors of the legacy 8259 inputs 0-15 (all masked; only spurious interrupts arrive).
@@ -212,18 +212,25 @@ pub(super) extern "C" fn init() {
         || now().wrapping_sub(wait_start) > MEASUREMENT_TIMEOUT_TSC_TICKS,
     );
     let (tsc_end, apic_end) = (now(), apic.timer_count());
-    // The panic handler reports these on the console; without a clock there is no timer.
-    assert!(
-        counted_down,
-        "8254 PIT did not count down: no reference clock"
-    );
-    let window = u64::from(MEASUREMENT_PIT_TICKS);
-    let tsc_frequency = mul_div_ceil(tsc_end.wrapping_sub(start.0), i8254::FREQUENCY_HZ, window);
-    let apic_frequency = mul_div_ceil(
-        start.1.saturating_sub(apic_end).into(),
-        i8254::FREQUENCY_HZ,
-        window,
-    );
+    let (tsc_frequency, apic_frequency) = if counted_down {
+        let window = u64::from(MEASUREMENT_PIT_TICKS);
+        (
+            mul_div_ceil(tsc_end.wrapping_sub(start.0), i8254::FREQUENCY_HZ, window),
+            mul_div_ceil(
+                start.1.saturating_sub(apic_end).into(),
+                i8254::FREQUENCY_HZ,
+                window,
+            ),
+        )
+    } else {
+        let measured = measure_against_pm_timer(&apic);
+        // The panic handler reports this on the console; without a clock there is no timer.
+        assert!(
+            measured.is_some(),
+            "neither the 8254 PIT nor the ACPI PM timer counted: no reference clock"
+        );
+        measured.unwrap_or_default()
+    };
     assert!(
         tsc_frequency > 0 && apic_frequency > 0,
         "TSC or local APIC timer did not count during the PIT measurement"
@@ -231,6 +238,73 @@ pub(super) extern "C" fn init() {
     TSC_FREQUENCY.store(tsc_frequency, Ordering::Relaxed);
     APIC_COUNTS_PER_TSC_TICK.store(ratio_ceil(apic_frequency, tsc_frequency), Ordering::Relaxed);
     apic.configure_one_shot_timer(TIMER_VECTOR, false);
+}
+
+/// The ACPI power management timer's frequency (ACPI 6.5, 4.8.3.3).
+const PM_TIMER_HZ: u64 = 3_579_545;
+/// About 2 ms of PM timer ticks, as long as the PIT's window.
+const PM_TIMER_WINDOW_TICKS: u32 = 7_159;
+const FADT_PM_TIMER_BLOCK: usize = 76;
+const FADT_FLAGS: usize = 112;
+const FADT_TIMER_IS_32_BITS: u32 = 1 << 8;
+const FADT_EXTENDED_PM_TIMER_BLOCK: usize = 208;
+const GAS_SYSTEM_IO: u8 = 1;
+
+/// The PM timer's I/O port and the mask of its counting bits, from the FADT.
+fn pm_timer() -> Option<(u16, u32)> {
+    let fadt = super::acpi_table(b"FACP")?;
+    let read_u32 = |at: usize| Some(u32::from_le_bytes(fadt.get(at..at + 4)?.try_into().ok()?));
+    let mask = if read_u32(FADT_FLAGS)? & FADT_TIMER_IS_32_BITS != 0 {
+        u32::MAX
+    } else {
+        0x00ff_ffff
+    };
+    let legacy = read_u32(FADT_PM_TIMER_BLOCK).unwrap_or(0);
+    let port = if legacy != 0 {
+        u16::try_from(legacy).ok()?
+    } else {
+        let gas = fadt.get(FADT_EXTENDED_PM_TIMER_BLOCK..FADT_EXTENDED_PM_TIMER_BLOCK + 12)?;
+        if gas[0] != GAS_SYSTEM_IO {
+            return None;
+        }
+        u16::try_from(u64::from_le_bytes(gas[4..12].try_into().ok()?)).ok()?
+    };
+    (port != 0).then_some((port, mask))
+}
+
+/// Measures the TSC's and the APIC timer's frequencies against the ACPI PM timer, for machines
+/// whose 8254 does not count (newer PCs gate it off, D237).
+fn measure_against_pm_timer(apic: &LocalApic<Mmio>) -> Option<(u64, u64)> {
+    let (port, mask) = pm_timer()?;
+    // SAFETY: the FADT names this port as the PM timer's 32-bit counter, which nothing else
+    // drives; reading it has no side effect.
+    let timer = unsafe { PortIo::new(port, 4) };
+    let read = || timer.read32(0) & mask;
+    let wait_start = now();
+    let first = read();
+    while read() == first {
+        if now().wrapping_sub(wait_start) > MEASUREMENT_TIMEOUT_TSC_TICKS {
+            return None;
+        }
+        core::hint::spin_loop();
+    }
+    let pm_start = read();
+    apic.start_timer(u32::MAX);
+    let (tsc_start, apic_start) = (now(), apic.timer_count());
+    loop {
+        let elapsed = read().wrapping_sub(pm_start) & mask;
+        if elapsed >= PM_TIMER_WINDOW_TICKS {
+            let (tsc_end, apic_end) = (now(), apic.timer_count());
+            let window = u64::from(elapsed);
+            let tsc = mul_div_ceil(tsc_end.wrapping_sub(tsc_start), PM_TIMER_HZ, window);
+            let counts = mul_div_ceil(apic_start.saturating_sub(apic_end).into(), PM_TIMER_HZ, window);
+            return Some((tsc, counts));
+        }
+        if now().wrapping_sub(wait_start) > MEASUREMENT_TIMEOUT_TSC_TICKS {
+            return None;
+        }
+        core::hint::spin_loop();
+    }
 }
 
 /// Enables this CPU's local APIC and sets its timer up, stopped, as [`init`] does for the boot

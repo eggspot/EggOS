@@ -2,6 +2,7 @@
 //! take the end-of-interrupt.
 
 pub mod gicv2;
+pub mod gicv3;
 pub mod i8259;
 pub mod io_apic;
 pub mod local_apic;
