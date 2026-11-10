@@ -19438,3 +19438,13 @@ the license, by an explicit instruction recorded here.
   interrupted context's flags come back with `iretq`.
 - **Not yet.** Building and running; checking that every user-memory touch sits inside the
   window (a fault in a missed one now reports a kernel page fault).
+
+## D260 x86_64: Spectre v2 basics, enhanced IBRS and IBPB between programs (D49's follow-up; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Where CPUID 7 EDX[26] reports IBRS and IBPB, each CPU, as it sets user mode up,
+  sets `IA32_SPEC_CTRL.IBRS` once if `IA32_ARCH_CAPABILITIES` reports enhanced IBRS (always-on,
+  no cost per entry), and every switch to another address space (`switch_address_space`) issues an
+  `IBPB`, so one program's branch training cannot steer the next program's indirect branches.
+- **Not yet.** Building and running; retpolines or IBRS on every entry for CPUs without enhanced
+  IBRS; Retbleed's return thunks; STIBP for SMT siblings; RSB filling on context switch; measuring
+  IBPB's cost on a process switch.
