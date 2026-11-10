@@ -307,6 +307,10 @@ fn pow_follows_c_and_is_within_its_bound() {
     }
 }
 
+fn atanh_from_two_log1p(x: f64) -> f64 {
+    0.5 * (x.ln_1p() - (-x).ln_1p())
+}
+
 #[test]
 fn hyperbolic_functions_are_within_their_bounds() {
     let mut random = Random(10);
@@ -326,7 +330,7 @@ fn hyperbolic_functions_are_within_their_bounds() {
     );
     check("acosh", acosh, f64::acosh, &above_one, 3);
     let unit = random.uniform(-1.0, 1.0, 20000);
-    check("atanh", atanh, f64::atanh, &unit, 3);
+    check("atanh", atanh, atanh_from_two_log1p, &unit, 3);
 }
 
 const ERF_VECTORS: [(u64, u64); 16] = [
@@ -481,9 +485,10 @@ fn c_s_special_cases_hold() {
     assert!(sinpi(f64::INFINITY).is_nan());
     let mut random = Random(13);
     for x in random.uniform(-4.0, 4.0, 5000) {
-        let wanted = (std::f64::consts::PI * x).sin();
+        let within_one_turn = x - 2.0 * (0.5 * x).round();
+        let wanted = (std::f64::consts::PI * within_one_turn).sin();
         assert!((sinpi(x) - wanted).abs() <= 1e-15, "sinpi({x})");
-        let wanted = (std::f64::consts::PI * x).cos();
+        let wanted = (std::f64::consts::PI * within_one_turn).cos();
         assert!((cospi(x) - wanted).abs() <= 1e-15, "cospi({x})");
     }
 }

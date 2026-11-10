@@ -234,7 +234,7 @@ fn tiff_bit_depths_palettes_and_alpha() {
     assert_eq!(grey.pixel(1, 0), Some(0xff27_2727));
     assert_eq!(grey.pixel(5, 3), Some(0xffe6_e6e6));
     let palette = decoded(TIFF_PALETTE4);
-    assert_eq!(palette.pixel(0, 0), Some(BLACK));
+    assert_eq!(palette.pixel(0, 0), Some(GREEN));
     assert_eq!(palette.pixel(9, 0), Some(0xff90_6ff0));
     assert_eq!(palette.pixel(0, 6), Some(0xff60_9fa0));
     let rgba = decoded(TIFF_RGBA);

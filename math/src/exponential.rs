@@ -297,7 +297,9 @@ pub fn pow(x: f64, y: f64) -> f64 {
     }
     let negate = x < 0.0 && odd;
     let (high, low) = log_double_double(fabs(x));
-    let magnitude = if fabs(y) > POW_DECIDED_EXPONENT {
+    let magnitude = if high == 0.0 {
+        1.0
+    } else if fabs(y) > POW_DECIDED_EXPONENT {
         if (high > 0.0) == (y > 0.0) {
             f64::INFINITY
         } else {

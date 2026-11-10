@@ -1006,7 +1006,7 @@ fn ycc(luma: u8, blue: u8, red: u8) -> (u8, u8, u8) {
     let channel = |value: i32| value.clamp(0, 255) as u8;
     (
         channel(luma + ((CR_TO_RED * red + FIXED_ONE_HALF) >> 16)),
-        channel(luma - ((CB_TO_GREEN * blue + CR_TO_GREEN * red - FIXED_ONE_HALF) >> 16)),
+        channel(luma + ((FIXED_ONE_HALF - CB_TO_GREEN * blue - CR_TO_GREEN * red) >> 16)),
         channel(luma + ((CB_TO_BLUE * blue + FIXED_ONE_HALF) >> 16)),
     )
 }
