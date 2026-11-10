@@ -496,7 +496,7 @@ fn the_machine_s_keys_are_read_only_for_a_user_but_their_path_copies() {
     ] {
         assert!(!window.widgets().is_enabled(id));
     }
-    assert_eq!(status(&window), MACHINE_WIDE_LINE);
+    assert_eq!(status(&window), shortened(MACHINE_WIDE_LINE).as_str());
     assert_eq!(
         activate(&mut window, widgets.copy),
         Some(Request::CopyToClipboard)
@@ -517,7 +517,7 @@ fn a_damaged_registry_file_is_replaced_after_asking() {
     store.0.borrow_mut().files[0] = Some(b"not a hive".to_vec());
     let mut window = opened(&store);
     let widgets = ids(&window);
-    assert_eq!(status(&window), USER_DAMAGED_LINE);
+    assert_eq!(status(&window), shortened(USER_DAMAGED_LINE).as_str());
     assert_eq!(rect(&window, widgets.replace), Rect::new(192, 280, 136, 28));
     assert!(!window.widgets().is_shown(widgets.new_key));
     activate(&mut window, widgets.replace);

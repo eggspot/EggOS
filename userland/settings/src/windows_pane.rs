@@ -40,7 +40,7 @@ use eggos_windows_registry::{
 /// The pane's height: the outline and the table fill what the rows above and below leave.
 pub const HEIGHT: i32 = 348;
 /// The widgets the pane adds to its container.
-pub const WIDGETS: usize = 12 + 8 + 8 + 6;
+pub const WIDGETS: usize = 12 + 9 + 9 + 7;
 /// The most keys the list shows below one key.
 pub const MAX_SUBKEYS_SHOWN: usize = 1000;
 /// The most rows the key list holds.
@@ -798,15 +798,25 @@ impl WindowsPane {
         let status = line(tree, pane, PADDING, HEIGHT - STATUS_FROM_BOTTOM, LINE_WIDTH);
 
         let panel = |tree: &mut WidgetTree<CAPACITY>, height: i32| {
-            add(
+            let panel = add(
                 tree,
                 pane,
                 at(PANEL_X, (HEIGHT - height) / 2, PANEL_WIDTH, height),
+                Kind::Panel {
+                    fill: None,
+                    border_right: None,
+                },
+            );
+            add(
+                tree,
+                panel,
+                Place::fill(),
                 Kind::Custom {
                     painter: format_panel,
                     data: 0,
                 },
-            )
+            );
+            panel
         };
         let panel_line = |tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, y: i32| {
             line(tree, parent, PADDING, y, PANEL_TEXT_WIDTH)

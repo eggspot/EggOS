@@ -1,6 +1,6 @@
 use super::*;
 use crate::facts::Facts;
-use crate::settings_window::{PANES, STORAGE, SettingsWindow, pane_matches};
+use crate::settings_window::{ABOUT, PANES, STORAGE, SettingsWindow, pane_matches};
 use alloc::string::String;
 use eggos_eggfs::{BLOCK_SIZE, Finding, Problem};
 use eggos_files::storage::memory::{MemoryDisks, MemoryWholeDisk};
@@ -135,7 +135,12 @@ fn the_storage_pane_comes_after_mouse_and_is_found_by_its_words() {
         "repair",
     ] {
         for pane in 0..PANES.len() {
-            assert_eq!(pane_matches(pane, word), pane == STORAGE, "{word} {pane}");
+            let information = word == "format" && pane == ABOUT;
+            assert_eq!(
+                pane_matches(pane, word),
+                pane == STORAGE || information,
+                "{word} {pane}"
+            );
         }
     }
     assert!(pane_matches(STORAGE, "disk") && pane_matches(STORAGE, "Disks"));

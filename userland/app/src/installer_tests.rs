@@ -1329,6 +1329,14 @@ fn a_layer_is_the_base_s_link_into_its_component_and_missing_while_the_link_dang
         "it needs the Windows layer, which is not installed: install it with `component \
          install windows-apps`"
     );
+    let mut folder = String::new();
+    for part in "var/lib/eggos/components/windows-apps/root/usr/lib/eggos".split('/') {
+        folder.push('/');
+        folder.push_str(part);
+        if files.find(&folder).is_none() {
+            files.directory(&folder);
+        }
+    }
     files.file(
         "/var/lib/eggos/components/windows-apps/root/usr/lib/eggos/windows",
         b"\x7fELF layer",

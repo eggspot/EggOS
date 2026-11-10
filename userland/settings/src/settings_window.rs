@@ -50,7 +50,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 209 + 1 + windows_pane::WIDGETS + components_pane::WIDGETS;
+pub const CAPACITY: usize = 202 + windows_pane::WIDGETS + components_pane::WIDGETS;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -2317,7 +2317,7 @@ mod tests {
     fn the_keyboard_pane_lists_your_layouts_and_choosing_one_asks_for_it() {
         let named = |name: &[u8]| eggos_settings_file::keyboard_layout_named(name).unwrap();
         let mut window = SettingsWindow::new(Facts::example());
-        click(&mut window, 50, 120);
+        click(&mut window, 50, 150);
         assert_eq!(window.pane(), KEYBOARD);
         assert_eq!(window.keyboard_layout_shown(), Some(0));
         assert_eq!(window.keyboard_layout_titles(), ["English (US)"]);

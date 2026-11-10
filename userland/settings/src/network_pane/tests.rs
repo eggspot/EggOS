@@ -1,7 +1,8 @@
 use super::*;
 use crate::facts::{EXAMPLE_ADAPTER, Facts};
 use crate::settings_window::{
-    ABOUT, DATE_AND_TIME, KEYBOARD, NETWORK, PANES, SettingsWindow, pane_matches, pane_named,
+    ABOUT, COMPONENTS, DATE_AND_TIME, KEYBOARD, NETWORK, PANES, SettingsWindow, WINDOWS,
+    pane_matches, pane_named,
 };
 use alloc::string::String;
 use eggos_toolkit::geometry::Rect;
@@ -144,7 +145,7 @@ fn the_search_finds_network_by_its_words_and_by_wi_fi() {
     let mac: alloc::vec::Vec<usize> = (0..PANES.len())
         .filter(|&pane| pane_matches(pane, "mac"))
         .collect();
-    assert_eq!(mac, [APPEARANCE, NETWORK, KEYBOARD]);
+    assert_eq!(mac, [APPEARANCE, NETWORK, KEYBOARD, WINDOWS, COMPONENTS]);
 }
 
 #[test]

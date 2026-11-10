@@ -595,7 +595,7 @@ fn every_line_of_the_pane_fits_a_label() {
         messages::desktop_in_use(true).0,
         String::from(messages::BOOT_TO_REMOVE),
         messages::in_use(&[], 3),
-        messages::in_use(&[String::from("Files"), String::from("Text Editor")], 2),
+        messages::in_use(&[String::from("Notepad"), String::from("Paint")], 2),
         messages::install_failure(&Failure::Detached, &four()[2]).0,
         messages::install_failure(
             &Failure::Damaged(String::from("builtin-apps.component")),
@@ -612,6 +612,11 @@ fn every_line_of_the_pane_fits_a_label() {
     {
         assert!(line.len() <= 64, "{line}");
     }
+    let two_long_names = messages::in_use(&[String::from("Files"), String::from("Text Editor")], 2);
+    assert_eq!(
+        shortened(&two_long_names).as_str(),
+        "In use: Files and Text Editor are running. Quit them, then re..."
+    );
     let long = "Could not install Windows apps: a reason far longer than a label holds.";
     let cut = shortened(long);
     assert!(cut.as_str().ends_with("..."));
