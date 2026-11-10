@@ -7,7 +7,8 @@
 //! 1. `component install windows-apps` installs the Windows layer from the store, then
 //!    `app install /media/host/win-paint.exe` installs it into `/Applications/win-paint/`
 //!    (on riscv64, where the Windows layer does not run, it is refused with the reason and the
-//!    Linux program is installed instead); `app list` lists it; installing it again is refused;
+//!    Linux program is installed instead, with `--no-console` so that its icon runs it on the
+//!    console this check reads rather than in a Terminal window of its own); `app list` lists it; installing it again is refused;
 //!    the machine powers off, and the image holds the program and its manifest, and no
 //!    temporary manifest.
 //! 2. The same disk boots again, the layer still installed on it: the desktop shows the app's icon and the launcher its row
@@ -83,7 +84,7 @@ fn manifest_of(arch: &Arch, app: &TestApp) -> Vec<u8> {
         libraries: None,
         arguments: None,
         environment: None,
-        console: !app.window,
+        console: false,
     };
     let mut file = [0u8; manifest::LARGEST];
     let length = manifest::write(&entry, &mut file).expect("the test app's manifest is valid");
@@ -111,8 +112,12 @@ fn first_session(app: &TestApp) -> Vec<String> {
             "app install /media/host/{WINDOWS_PROGRAM}; echo EGGOS-APP refused $?\r"
         ));
     }
+    let as_console_output = match app.window {
+        true => "",
+        false => "--no-console ",
+    };
     lines.push(format!(
-        "app install /media/host/{}; echo EGGOS-APP status $?\r",
+        "app install {as_console_output}/media/host/{}; echo EGGOS-APP status $?\r",
         app.file
     ));
     lines.push("app list\r".to_owned());
@@ -623,7 +628,8 @@ mod tests {
             .expect("riscv64 is an architecture");
         let linux = test_app(riscv);
         assert_eq!(linux.source, Source::Linux);
-        assert!(manifest_of(riscv, &linux).ends_with(b"console=true\n"));
+        assert!(!manifest_of(riscv, &linux).ends_with(b"console=true\n"));
+        assert!(first_session(&linux)[1].starts_with("app install --no-console "));
         assert_eq!(first_session(&linux).len(), 5);
     }
 }
