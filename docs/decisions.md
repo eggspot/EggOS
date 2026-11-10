@@ -19181,3 +19181,23 @@ the license, by an explicit instruction recorded here.
   an agent, no desktop) `app open` asks `OPEN_APP` as before.
 - **Not yet.** The launched program gets an empty environment, as the desktop's start does today;
   the launcher's "working" pointer is not shown for a foreground launch.
+
+## D244 The installer's GUI: Settings > Storage's `Install EggOS...` and its confirmation panel (D22 for D241; design by Claude Fable, docs/ux/installer-v0.4.md; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (the design by Claude Fable)
+
+- **Decision.** As docs/ux/installer-v0.4.md says: a fourth action button, `Install EggOS...`
+  (pane x 328, 120 wide), and an install line in report line 1's place giving its reason in
+  `disk install`'s order (mounted, read-only, smaller than 1 GB, no boot files); a confirmation
+  panel with the format panel's frame (question, erased contents, the two partitions to be written,
+  the typed short name, `Cancel`, `Install` as the default button); while installing, the panel says
+  so and nothing else runs; done, the status line is the CLI's done line and the install line says
+  the disk reads `Unknown contents` until EggOS starts from it; refused, the panel stays with the
+  error's sentence. The words are `eggos_files::storage`'s (`install_allowed`,
+  `install_idle_text`, `install_writes_lines`, `installed_text`, ...), shared with `disk install`
+  and `disk_install`; the program reads `/proc/driver/boot` when it reads the disks
+  (`has_boot_files`) and installs as deferred disk work, as it formats. `StorageError` gains
+  `TooSmallToInstall` ("The disk is smaller than 1 GB: EggOS needs 1 GB or more."), used by all
+  three front-ends. The pane's widget budget grows by 12; Storage is found by `install`,
+  `installer`, `setup`, `boot`, `EFI`, `GPT` and `USB` too.
+- **Not yet.** Building and running; the one-column sheet and the touch sizes of the design's
+  section 4 (the pane's one-column layout code is not touched); the full acceptance of its section
+  6 (host disks of 1 GiB and more); what the design lists as left out.

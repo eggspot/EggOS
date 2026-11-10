@@ -50,7 +50,8 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 202 + windows_pane::WIDGETS + components_pane::WIDGETS;
+pub const CAPACITY: usize =
+    202 + windows_pane::WIDGETS + components_pane::WIDGETS + crate::storage_pane::INSTALLER_WIDGETS;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -306,6 +307,14 @@ const PANE_WORDS: [&[&str]; 12] = [
         "repair",
         "fsck",
         "chkdsk",
+        "install",
+        "installer",
+        "setup",
+        "Install EggOS",
+        "boot",
+        "EFI",
+        "GPT",
+        "USB",
         "Disk Utility",
         "Disk Management",
         "EggFS",
@@ -508,6 +517,9 @@ pub enum Request {
     /// Format this disk with the label [`SettingsWindow::format_label`], read the disks
     /// again, then show both ([`SettingsWindow::show_formatted`]).
     FormatDisk(&'static str),
+    /// Install EggOS on this disk (D241), read the disks again, then show both
+    /// ([`SettingsWindow::show_installed`]).
+    InstallDisk(&'static str),
     /// Read the agents' grants and show them ([`SettingsWindow::show_grants`]) (D193).
     ReadGrants,
     /// Write [`SettingsWindow::grants_to_write`] as the grants file, read it again, then show
@@ -1484,6 +1496,17 @@ impl SettingsWindow {
     ) {
         self.storage
             .show_formatted(&mut self.tree, device, label, result, now_ms);
+    }
+
+    /// Shows on the Storage pane how installing EggOS on `device` went, at `now_ms`.
+    pub fn show_installed(&mut self, device: &'static str, result: Result<(), StorageError>, now_ms: u32) {
+        self.storage
+            .show_installed(&mut self.tree, device, result, now_ms);
+    }
+
+    /// Tells the Storage pane whether the kernel kept the boot files installing needs.
+    pub fn set_boot_files(&mut self, kept: bool) {
+        self.storage.set_boot_files(&mut self.tree, kept);
     }
 
     /// The label typed in the Storage pane's format panel.

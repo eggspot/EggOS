@@ -997,6 +997,7 @@ enum ComponentWork {
 enum DiskWork {
     Check(&'static str, CheckMode),
     Format(&'static str, Text<LABEL_BYTES>),
+    Install(&'static str),
 }
 
 const LABEL_BYTES: usize = 64;
@@ -1223,7 +1224,10 @@ impl Application<CAPACITY> for Settings {
                 };
                 self.window.input_changed(change, saved, applied);
             }
-            Some(Request::ReadDisks) => self.window.show_disks(storage::list(&mut LinuxDisks)),
+            Some(Request::ReadDisks) => {
+                self.window.set_boot_files(storage::has_boot_files(&mut LinuxDisks));
+                self.window.show_disks(storage::list(&mut LinuxDisks));
+            }
             Some(Request::CheckDisk(device)) => {
                 self.disk_work = Some(DiskWork::Check(device, CheckMode::ReadOnly));
             }
@@ -1233,6 +1237,9 @@ impl Application<CAPACITY> for Settings {
             Some(Request::FormatDisk(device)) => {
                 let label = Text::from(self.window.format_label());
                 self.disk_work = Some(DiskWork::Format(device, label));
+            }
+            Some(Request::InstallDisk(device)) => {
+                self.disk_work = Some(DiskWork::Install(device));
             }
             Some(Request::ReadGrants) => {
                 let read = grants_read(self.window.facts().on_disk);
@@ -1375,7 +1382,10 @@ impl Application<CAPACITY> for Settings {
 impl Settings {
     fn open_pane(&mut self, pane: usize) {
         match self.window.open_pane(pane) {
-            Some(Request::ReadDisks) => self.window.show_disks(storage::list(&mut LinuxDisks)),
+            Some(Request::ReadDisks) => {
+                self.window.set_boot_files(storage::has_boot_files(&mut LinuxDisks));
+                self.window.show_disks(storage::list(&mut LinuxDisks));
+            }
             Some(Request::ReadGrants) => {
                 let read = grants_read(self.window.facts().on_disk);
                 self.window.show_grants(read);
@@ -1459,6 +1469,13 @@ impl Settings {
                 self.window.show_disks(storage::list(&mut disks));
                 self.window
                     .show_formatted(device, label.as_str(), result, now_ms);
+            }
+            DiskWork::Install(device) => {
+                let result = storage::boot_files(&mut disks)
+                    .and_then(|files| storage::install(&mut disks, device, &files))
+                    .map(|_| ());
+                self.window.show_disks(storage::list(&mut disks));
+                self.window.show_installed(device, result, now_ms);
             }
         }
     }

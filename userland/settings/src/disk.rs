@@ -137,7 +137,10 @@ pub fn error_of(error: &StorageError) -> &'static ErrorDefinition {
         StorageError::NotEggFs => &errors::NOT_EGGFS,
         StorageError::LabelTooLong => &errors::LABEL_TOO_LONG,
         StorageError::LabelNotPlain => &errors::INVALID_VALUE,
-        StorageError::TooSmall | StorageError::Failed | StorageError::NoBootFiles => &errors::FAILED,
+        StorageError::TooSmall
+        | StorageError::TooSmallToInstall
+        | StorageError::Failed
+        | StorageError::NoBootFiles => &errors::FAILED,
     }
 }
 
@@ -330,7 +333,7 @@ fn install_on(
         return refuse(console, false, record.device, &StorageError::ReadOnly);
     }
     if storage::installation_layout(record.size_bytes / 512).is_none() {
-        return refuse(console, false, record.device, &StorageError::TooSmall);
+        return refuse(console, false, record.device, &StorageError::TooSmallToInstall);
     }
     let files = match storage::boot_files(disks) {
         Ok(files) => files,
@@ -372,10 +375,7 @@ fn install_on(
     }
     match storage::install(disks, record.device, &files) {
         Ok(installation) => {
-            let line = format!(
-                "Installed EggOS on {}. Restart and choose it in the firmware's boot menu.\n",
-                installation.device
-            );
+            let line = format!("{}\n", storage::installed_text(installation.device));
             console.write_output(line.as_bytes());
             0
         }
