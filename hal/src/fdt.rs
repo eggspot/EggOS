@@ -1238,3 +1238,44 @@ pub(crate) mod tests {
         assert_eq!(blob, before);
     }
 }
+
+/// The GIC a device tree describes (D253): its version (2 or 3), the distributor, and the GICv2
+/// CPU interface or the GICv3 redistributors, as physical ranges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeGic {
+    pub version: u8,
+    pub distributor: (u64, u64),
+    pub second: (u64, u64),
+}
+
+/// The first enabled GIC node of `blob`.
+pub fn gic(blob: &[u8]) -> Option<TreeGic> {
+    const GIC_V3: &[u8] = b"arm,gic-v3";
+    const GIC_V2: [&[u8]; 4] = [b"arm,cortex-a15-gic", b"arm,gic-400", b"arm,cortex-a9-gic", b"arm,cortex-a7-gic"];
+    let tree = Fdt::new(blob).ok()?;
+    tree.nodes().map_while(Result::ok).find_map(|node| {
+        let version = if node.is_compatible(GIC_V3) {
+            3
+        } else if GIC_V2.iter().any(|name| node.is_compatible(name)) {
+            2
+        } else {
+            return None;
+        };
+        let mut reg = node.reg_entries();
+        Some(TreeGic {
+            version,
+            distributor: reg.next()?,
+            second: reg.next()?,
+        })
+    })
+}
+
+/// The first PL011 UART of `blob`: its registers' physical address.
+pub fn pl011(blob: &[u8]) -> Option<u64> {
+    let tree = Fdt::new(blob).ok()?;
+    tree.nodes()
+        .map_while(Result::ok)
+        .find(|node| node.is_compatible(b"arm,pl011"))
+        .and_then(|node| node.reg_entries().next())
+        .map(|(address, _)| address)
+}
