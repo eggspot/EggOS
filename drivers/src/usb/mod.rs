@@ -119,6 +119,90 @@ pub struct BootInterface {
     pub report_length: u16,
 }
 
+/// A USB mass-storage interface with the bulk-only transport and SCSI commands (D264): its
+/// configuration, interface and bulk endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageInterface {
+    pub configuration: u8,
+    pub interface: u8,
+    pub bulk_in: u8,
+    pub bulk_out: u8,
+    pub max_packet: u16,
+}
+
+/// The first mass-storage interface (class 08h, SCSI transparent 06h, bulk-only 50h) of a
+/// configuration descriptor, with its two bulk endpoints.
+pub fn storage_interface(configuration: &[u8]) -> Option<StorageInterface> {
+    let value = *configuration.get(5)?;
+    let mut at = 0;
+    let mut found: Option<StorageInterface> = None;
+    while at + 2 <= configuration.len() {
+        let length = usize::from(configuration[at]);
+        if length < 2 || at + length > configuration.len() {
+            return None;
+        }
+        let descriptor = &configuration[at..at + length];
+        match descriptor[1] {
+            DESCRIPTOR_INTERFACE if length >= 9 => {
+                if found.is_some_and(|storage| storage.bulk_in != 0 && storage.bulk_out != 0) {
+                    return found;
+                }
+                found = (descriptor[5] == 0x08 && descriptor[6] == 0x06 && descriptor[7] == 0x50).then_some(
+                    StorageInterface {
+                        configuration: value,
+                        interface: descriptor[2],
+                        bulk_in: 0,
+                        bulk_out: 0,
+                        max_packet: 0,
+                    },
+                );
+            }
+            DESCRIPTOR_ENDPOINT if length >= 7 => {
+                if let Some(storage) = found.as_mut() {
+                    let address = descriptor[2];
+                    if descriptor[3] & 0b11 == 0b10 {
+                        storage.max_packet = u16::from_le_bytes([descriptor[4], descriptor[5]]) & 0x7ff;
+                        if address & 0x80 != 0 {
+                            storage.bulk_in = address & 0x0f;
+                        } else {
+                            storage.bulk_out = address & 0x0f;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        at += length;
+    }
+    found.filter(|storage| storage.bulk_in != 0 && storage.bulk_out != 0)
+}
+
+/// A bulk-only transport command block wrapper (USB Mass Storage Class BOT 1.0, 5.1).
+pub fn command_block(tag: u32, data_bytes: u32, data_in: bool, command: &[u8]) -> [u8; 31] {
+    let mut block = [0u8; 31];
+    block[..4].copy_from_slice(&0x4342_5355u32.to_le_bytes());
+    block[4..8].copy_from_slice(&tag.to_le_bytes());
+    block[8..12].copy_from_slice(&data_bytes.to_le_bytes());
+    block[12] = if data_in { 0x80 } else { 0 };
+    block[14] = command.len().min(16) as u8;
+    block[15..15 + command.len().min(16)].copy_from_slice(&command[..command.len().min(16)]);
+    block
+}
+
+/// Whether a command status wrapper says the command with `tag` passed.
+pub fn status_passed(status: &[u8; 13], tag: u32) -> bool {
+    status[..4] == 0x5342_5355u32.to_le_bytes() && status[4..8] == tag.to_le_bytes() && status[12] == 0
+}
+
+/// SCSI READ(10) or WRITE(10) of `blocks` blocks from `lba`.
+pub fn scsi_read_write_10(write: bool, lba: u32, blocks: u16) -> [u8; 10] {
+    let mut command = [0u8; 10];
+    command[0] = if write { 0x2a } else { 0x28 };
+    command[2..6].copy_from_slice(&lba.to_be_bytes());
+    command[7..9].copy_from_slice(&blocks.to_be_bytes());
+    command
+}
+
 /// The first HID boot keyboard or mouse interface in a configuration descriptor and all that
 /// follows it (`wTotalLength` bytes).
 pub fn boot_interface(configuration: &[u8]) -> Option<BootInterface> {
@@ -202,5 +286,35 @@ mod tests {
     fn a_configuration_without_a_boot_interface_has_none() {
         let configuration = [9, 2, 25, 0, 1, 1, 0, 0xa0, 50, 9, 4, 0, 0, 1, 8, 6, 80, 0, 7, 5, 0x81, 2, 0, 2, 0];
         assert_eq!(boot_interface(&configuration), None);
+    }
+
+    #[test]
+    fn a_flash_drive_s_bulk_endpoints_are_found() {
+        let configuration = [
+            9, 2, 32, 0, 1, 1, 0, 0x80, 50,
+            9, 4, 0, 0, 2, 8, 6, 0x50, 0,
+            7, 5, 0x81, 2, 0, 2, 0,
+            7, 5, 0x02, 2, 0, 2, 0,
+        ];
+        let storage = storage_interface(&configuration).unwrap();
+        assert_eq!((storage.bulk_in, storage.bulk_out, storage.max_packet), (1, 2, 512));
+    }
+
+    #[test]
+    fn a_command_block_carries_its_tag_length_and_command() {
+        let block = command_block(7, 512, true, &scsi_read_write_10(false, 0x100, 1));
+        assert_eq!(&block[..4], b"USBC");
+        assert_eq!(block[4], 7);
+        assert_eq!(u32::from_le_bytes(block[8..12].try_into().unwrap()), 512);
+        assert_eq!(block[12], 0x80);
+        assert_eq!(block[14], 10);
+        assert_eq!(block[15], 0x28);
+        assert_eq!(&block[17..21], &[0, 0, 1, 0]);
+        let mut status = [0u8; 13];
+        status[..4].copy_from_slice(b"USBS");
+        status[4] = 7;
+        assert!(status_passed(&status, 7));
+        status[12] = 1;
+        assert!(!status_passed(&status, 7));
     }
 }
