@@ -19,14 +19,17 @@
 pub mod aes;
 pub mod bignum;
 pub mod chacha20;
+pub mod ccm;
 pub mod chacha20poly1305;
 pub mod constant_time;
 pub mod ecdsa;
 pub mod gcm;
 pub mod hmac;
+pub mod key_wrap;
 pub mod p256;
 pub mod poly1305;
 pub mod rsa;
+pub mod sha1;
 pub mod sha2;
 pub mod x25519;
 

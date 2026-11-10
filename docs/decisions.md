@@ -19221,3 +19221,32 @@ the license, by an explicit instruction recorded here.
   `Scanout`; 3D and compute acceleration after them, under M11's graphics stack. GPUs that need
   vendor firmware at run time (AMD, NVIDIA's GSP) wait for the firmware question D246 records.
 - **Not yet.** Building and running; everything in the order above.
+
+## D246 Wi-Fi, part 1: 802.11 frames, WPA2-Personal and CCMP in `eggos-wifi`, SHA-1, PBKDF2, AES key wrap, AES decryption and AES-CCM in `eggos-crypto`; adapters' firmware stays outside the repository (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; the firmware's distribution is the owner's)
+
+- **Context.** Every Wi-Fi adapter a PC carries (Intel AX2xx/BE2xx, MediaTek, Realtek, Qualcomm)
+  runs vendor firmware the operating system loads at start-up; none of it is open source, and
+  CLAUDE.md allows only the firmware the machine itself provides outside EggOS, never copied into
+  the repository. The part of Wi-Fi that is the same on every adapter is the frames and the
+  security, which EggOS writes once.
+- **Decision.**
+  - **`eggos-crypto`** gains SHA-1, HMAC-SHA1 and PBKDF2-HMAC-SHA1 (`sha1`, for WPA2's key
+    derivation and MICs only), AES key wrap (`key_wrap`, RFC 3394), AES block decryption (the
+    inverse steps built from the bitsliced forward ones, so no secret-indexed table) and AES-CCM
+    with 8-byte tags and 13-byte nonces (`ccm`). Tests: FIPS 180, RFC 2202, RFC 6070, the 802.11
+    PSK vector, RFC 3394 4.1, FIPS 197 C.1, RFC 3610 packet vector 1.
+  - **`eggos-wifi`** (`wifi/`): beacons and probe responses parsed into networks (SSID, channel,
+    BSSID, open, legacy, WPA2-Personal, WPA3-Personal); WPA2-Personal as a supplicant: the PMK from
+    the passphrase, the PTK by the 802.11 PRF, EAPOL-Key frames written and parsed, MICs checked in
+    constant time, replay counters enforced, the GTK unwrapped from message 3's KDE; CCMP's
+    protection of data frames (AAD and nonce from the MAC header, packet numbers out for the
+    caller's replay check).
+  - **Firmware**: adapter drivers will load their firmware from `/usr/lib/firmware/`, filled by an
+    optional `wifi-firmware` component that downloads the vendor's published firmware files from
+    the vendor on the user's request, as macOS apps come from the vendor's download (D17); nothing
+    of it enters the repository or the base image. Whether EggOS's own component store may
+    redistribute those files is a licence question and stays with the owner.
+- **Not yet.** Building and running; the adapter drivers (Intel's AX200/AX201/AX210 first:
+  firmware loading, the command and data queues, scanning, association), the `wifi-firmware`
+  component, WPA3-Personal (SAE over P-256, PMF), 802.1X enterprise networks, the Network pane's
+  Wi-Fi list and `wifi` CLI and MCP tools (D22), roaming.
