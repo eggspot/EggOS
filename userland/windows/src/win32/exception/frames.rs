@@ -419,13 +419,11 @@ impl Walk {
         let mut registers = before.registers();
         let unwound = match function {
             Some(function) => {
-                match unwinder::virtual_unwind(
-                    &image,
-                    function,
-                    self.kinds,
-                    &mut registers,
-                    &self.memory,
-                ) {
+                let undo = match self.unwound {
+                    true => unwinder::virtual_unwind_to_call,
+                    false => unwinder::virtual_unwind,
+                };
+                match undo(&image, function, self.kinds, &mut registers, &self.memory) {
                     Ok(unwound) => unwound,
                     Err(_) => return Event::End,
                 }

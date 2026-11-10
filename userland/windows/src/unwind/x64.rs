@@ -168,6 +168,18 @@ fn establisher(
     })
 }
 
+/// [`virtual_unwind`] of a frame whose `rip` is a return address: x64 unwinds it from there,
+/// as Windows does (its compilers keep a call off an epilog's first instruction).
+pub fn virtual_unwind_to_call(
+    image: &Image<'_>,
+    function: Function,
+    kinds: HandlerKinds,
+    registers: &mut Registers,
+    memory: &impl Memory,
+) -> Result<Unwound, UnwindError> {
+    virtual_unwind(image, function, kinds, registers, memory)
+}
+
 /// Undoes one frame of the function `function`, whose code holds `registers.rip`: on success
 /// `registers` hold the caller's registers (`rip` the return address) and the result names the
 /// frame's establisher and, if `kinds` asks for one the function has and the program was past

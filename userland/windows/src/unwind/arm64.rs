@@ -8,6 +8,8 @@
 
 use super::{HandlerKinds, Image, Memory, UnwindError, Unwound};
 
+const INSTRUCTION_BYTES: u64 = 4;
+
 /// The size of an ARM64 `.pdata` entry.
 pub const RUNTIME_FUNCTION_SIZE: u64 = 8;
 const FRAME_POINTER: u8 = 29;
@@ -548,6 +550,21 @@ pub fn strip_pointer_authentication(address: u64) -> u64 {
     address & ((1 << USER_ADDRESS_BITS) - 1)
 }
 
+/// [`virtual_unwind`] of a frame whose `pc` is a return address, as Windows unwinds a context
+/// unwound to a call: the call, the instruction before the return address, decides whether the
+/// program was in the function's body or in an epilog, so a call made right before an epilog
+/// still has its frame's handler.
+pub fn virtual_unwind_to_call(
+    image: &Image<'_>,
+    function: Function,
+    kinds: HandlerKinds,
+    registers: &mut Registers,
+    memory: &impl Memory,
+) -> Result<Unwound, UnwindError> {
+    registers.pc = registers.pc.wrapping_sub(INSTRUCTION_BYTES);
+    virtual_unwind(image, function, kinds, registers, memory)
+}
+
 /// Undoes one frame of `function`, whose code holds `registers.pc`: on success `registers`
 /// hold the caller's registers (`pc` the return address) and the result names the frame's
 /// establisher and, if `kinds` asks for any handler and the function has one and the program
@@ -750,6 +767,28 @@ mod tests {
         at_ret.x[30] = BASE + 0x8888;
         virtual_unwind(&image, function, BOTH, &mut at_ret, &memory).unwrap();
         assert_eq!((at_ret.sp, at_ret.pc), (STACK, BASE + 0x8888));
+    }
+
+    #[test]
+    fn a_call_right_before_an_epilog_is_unwound_as_the_body_with_its_handler() {
+        let xdata = standard_record();
+        let bytes = image_with(&[(0x1000, XDATA as u32)], &xdata);
+        let image = Image {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let function = lookup(&image, PDATA as u32, 8, 0x1030).unwrap();
+        let memory = stack(&[0, 0, STACK + 0x100, BASE + 0x1234, 0x1919, 0x2020]);
+        let mut returned_to = registers_at(0x1034);
+        returned_to.x[29] = STACK + 16;
+        let unwound =
+            virtual_unwind_to_call(&image, function, BOTH, &mut returned_to, &memory).unwrap();
+        assert_eq!(unwound.handler, Some(BASE + 0x1800));
+        assert_eq!(
+            (returned_to.sp, returned_to.pc),
+            (STACK + 48, BASE + 0x1234)
+        );
+        assert_eq!(unwound.establisher, STACK + 48);
     }
 
     #[test]
