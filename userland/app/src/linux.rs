@@ -49,6 +49,15 @@ const WINDOW_DEVICE: &CStr = c"/dev/window";
 const APPS_CHANGED: usize = 0x0000_770f;
 const OPEN_APP: usize = 0x4044_7710;
 const OPEN_APP_SIZE: usize = 68;
+const GET_LAUNCH: usize = 0xc108_772b;
+const GET_LAUNCH_SIZE: usize = 264;
+const LAUNCH_START: u32 = 1;
+const LAUNCH_TYPE: u32 = 2;
+const LAUNCH_COMMAND: usize = 8;
+const AT_FDCWD: usize = -100isize as usize;
+const STANDARD_INPUT_LINK: &CStr = c"/proc/self/fd/0";
+const CONSOLE: &[u8] = b"/dev/console";
+const SHELL: &[u8] = b"/bin/eggsh";
 const BAD_DESCRIPTOR: Errno = Errno(9);
 const MAX_ARGUMENTS: usize = 16;
 const SIGCHLD: usize = 17;
@@ -148,6 +157,75 @@ pub fn open_app(name: &[u8]) -> Result<(), Errno> {
     argument[..4].copy_from_slice(&(length as u32).to_ne_bytes());
     argument[4..4 + length].copy_from_slice(&name[..length]);
     on_desktop(OPEN_APP, &mut argument)
+}
+
+/// Whether standard input is the console, where the console shell runs (D243).
+pub fn input_is_console() -> bool {
+    let mut target = [0u8; 64];
+    let read = call(
+        number::READLINKAT,
+        [
+            AT_FDCWD,
+            STANDARD_INPUT_LINK.as_ptr() as usize,
+            target.as_mut_ptr() as usize,
+            target.len(),
+            0,
+            0,
+        ],
+    );
+    read.is_ok_and(|length| target.get(..length) == Some(CONSOLE))
+}
+
+/// Replaces this program with the app `name` as the desktop would launch it, so it runs in the
+/// foreground of the shell that started `app open` (D243): a windowed app's program with its
+/// arguments, a console app's line through the shell. Only returns, with the error, when it
+/// cannot: `ENOENT` for no such app, `ENXIO` with no desktop.
+pub fn run_in_foreground(name: &[u8]) -> Errno {
+    let mut argument = [0u8; GET_LAUNCH_SIZE];
+    let length = name.len().min(OPEN_APP_SIZE - 4);
+    argument[..4].copy_from_slice(&(length as u32).to_ne_bytes());
+    argument[4..4 + length].copy_from_slice(&name[..length]);
+    if let Err(error) = on_desktop(GET_LAUNCH, &mut argument) {
+        return error;
+    }
+    let word = |at: usize| u32::from_ne_bytes([argument[at], argument[at + 1], argument[at + 2], argument[at + 3]]);
+    let kind = word(0);
+    let length = (word(4) as usize).min(GET_LAUNCH_SIZE - LAUNCH_COMMAND);
+    let command = &argument[LAUNCH_COMMAND..LAUNCH_COMMAND + length];
+    let mut words: [Option<CPath>; MAX_ARGUMENTS] = [const { None }; MAX_ARGUMENTS];
+    let mut count = 0;
+    let mut push = |word: &[u8]| -> Result<(), Errno> {
+        let slot = words.get_mut(count).ok_or(Errno::E2BIG)?;
+        *slot = Some(CPath::new(word)?);
+        count += 1;
+        Ok(())
+    };
+    let pushed = match kind {
+        LAUNCH_START => command
+            .split(|&byte| byte == 0)
+            .filter(|word| !word.is_empty())
+            .try_for_each(&mut push),
+        LAUNCH_TYPE => push(SHELL).and_then(|()| push(b"-c")).and_then(|()| push(command)),
+        _ => Err(Errno::EINVAL),
+    };
+    if let Err(error) = pushed {
+        return error;
+    }
+    let mut pointers = [0usize; MAX_ARGUMENTS + 1];
+    for (slot, word) in pointers.iter_mut().zip(words.iter().flatten()) {
+        *slot = word.pointer();
+    }
+    if count == 0 {
+        return Errno::ENOENT;
+    }
+    let environment = [0usize];
+    match call(
+        number::EXECVE,
+        [pointers[0], pointers.as_ptr() as usize, environment.as_ptr() as usize, 0, 0, 0],
+    ) {
+        Ok(_) => Errno::EIO,
+        Err(error) => error,
+    }
 }
 
 /// Replaces this program with the installer's window, given `arguments` after its name; only

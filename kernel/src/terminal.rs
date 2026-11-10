@@ -1057,6 +1057,26 @@ pub fn open_app<P: Platform>(name: &[u8]) -> bool {
     }
 }
 
+/// Whether an interactive desktop runs, which `GET_LAUNCH` needs (D243).
+pub fn has_interactive_desktop() -> bool {
+    is_interactive()
+}
+
+/// How the desktop would launch the app called `name` (`GET_LAUNCH`, D243), after reading the
+/// catalogue again; `None` when there is no interactive desktop or no such app.
+pub fn launch_of<P: Platform>(name: &[u8]) -> Option<Launch> {
+    if !is_interactive() {
+        return None;
+    }
+    read_catalogue_again::<P>();
+    with_windows::<P, _>(|desktop, _, _, _| {
+        let name = core::str::from_utf8(name).ok()?;
+        let app = desktop.catalogue().app_named(name)?;
+        desktop.launch_command(app)
+    })
+    .flatten()
+}
+
 /// Types `line` in the terminal window as a keyboard would, after Ctrl-U erases a half-typed
 /// line and with Enter after it, and focuses the terminal (`TYPE_IN_TERMINAL`, D135); `false`
 /// when there is no interactive desktop or the line does not fit. On the full-screen console
