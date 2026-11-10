@@ -7,6 +7,7 @@
 //! is what lets CI compare it against a committed baseline (D27).
 
 use crate::HEAP;
+use crate::devices::interrupts::DeviceEvents;
 use crate::linux::Errno;
 use crate::linux::exec;
 use crate::linux::futex::{self, Key};
@@ -291,29 +292,54 @@ fn math_exp_f64(n: u64) {
     black_box(sum);
 }
 
+const WAKEUP_PATIENCE_SECONDS: u64 = 1;
+
 fn net_rx_wakeup<P: Platform>(n: u64) {
-    use crate::devices::interrupts::DeviceEvents;
     static FRAMES: DeviceEvents = DeviceEvents::new();
     static TAKEN: DeviceEvents = DeviceEvents::new();
-    let start = FRAMES.raised();
+    if let Err(problem) = raise_and_wake_round_trips::<P>(&FRAMES, &TAKEN, n) {
+        panic!("net_rx_wakeup: {problem}");
+    }
+}
+
+fn raise_and_wake_round_trips<P: Platform>(
+    frames: &'static DeviceEvents,
+    taken: &'static DeviceEvents,
+    n: u64,
+) -> Result<(), &'static str> {
+    let patience = P::clock_frequency().saturating_mul(WAKEUP_PATIENCE_SECONDS);
+    let frames_seen = frames.raised();
     let Ok(network) = thread::spawn::<P, _>(move || {
-        let mut seen = start;
+        let mut seen = frames_seen;
         for _ in 0..n {
-            seen = FRAMES.wait::<P>(seen, u64::MAX);
-            TAKEN.raise::<P>();
+            seen = frames.wait::<P>(seen, u64::MAX);
+            taken.raise::<P>();
         }
     }) else {
-        return;
+        return Ok(());
     };
-    let mut taken = TAKEN.raised();
+    let mut taken_seen = taken.raised();
     for _ in 0..n {
-        FRAMES.raise::<P>();
-        while TAKEN.raised() == taken {
-            taken = TAKEN.wait::<P>(taken, u64::MAX);
-        }
-        taken = TAKEN.raised();
+        frames.raise::<P>();
+        taken_seen = wait_for_raise::<P>(taken, taken_seen, patience)
+            .ok_or("the woken thread did not answer within a second")?;
     }
     network.join::<P>();
+    thread::disable_preemption::<P>();
+    Ok(())
+}
+
+fn wait_for_raise<P: Platform>(events: &DeviceEvents, seen: u64, patience: u64) -> Option<u64> {
+    let deadline = P::clock_ticks().saturating_add(patience);
+    loop {
+        let raised = events.wait::<P>(seen, deadline);
+        if raised != seen {
+            return Some(raised);
+        }
+        if P::clock_ticks() >= deadline {
+            return None;
+        }
+    }
 }
 
 fn empty_loop(n: u64) {
@@ -2162,12 +2188,7 @@ mod tests {
         let (before, rest) = all.split_at(first_machine_only);
         let (machine_only, after) = rest.split_at(20);
         let terminal = &after[..8];
-        let benchmarks: Vec<Benchmark<CountingPlatform>> = [before, after]
-            .concat()
-            .into_iter()
-            .filter(|(name, _)| *name != "net_rx_wakeup")
-            .collect();
-        let benchmarks = &benchmarks[..];
+        let benchmarks = &[before, after].concat()[..];
         let [
             (syscall, _),
             (process_syscall, _),
@@ -2268,6 +2289,37 @@ mod tests {
         assert!(
             clock_line.contains(&format!("ticks={} ", ITERATIONS + 1)),
             "the clock is read once per iteration and once to end: {clock_line}"
+        );
+    }
+
+    use crate::tests::TestPlatform;
+
+    #[test]
+    fn each_raise_wakes_the_waiting_thread_which_answers_once() {
+        static FRAMES: DeviceEvents = DeviceEvents::new();
+        static TAKEN: DeviceEvents = DeviceEvents::new();
+        let _lock = interrupt::lock_timer_interrupts_for_test();
+        let _frames_and_scheduler = thread::host::frames_for_test();
+        let (frames_before, taken_before) = (FRAMES.raised(), TAKEN.raised());
+        assert_eq!(
+            raise_and_wake_round_trips::<TestPlatform>(&FRAMES, &TAKEN, 5),
+            Ok(())
+        );
+        assert_eq!(FRAMES.raised(), frames_before + 5);
+        assert_eq!(TAKEN.raised(), taken_before + 5);
+    }
+
+    #[test]
+    fn a_wait_for_a_raise_gives_up_when_its_time_runs_out() {
+        static EVENTS: DeviceEvents = DeviceEvents::new();
+        let _lock = interrupt::lock_timer_interrupts_for_test();
+        let _scheduler = thread::host::lock_kernel_state_for_test();
+        let seen = EVENTS.raised();
+        assert_eq!(wait_for_raise::<TestPlatform>(&EVENTS, seen, 0), None);
+        EVENTS.raise::<TestPlatform>();
+        assert_eq!(
+            wait_for_raise::<TestPlatform>(&EVENTS, seen, 0),
+            Some(seen + 1)
         );
     }
 
