@@ -52,6 +52,16 @@ pub unsafe trait DmaMemory {
     }
 }
 
+/// Hands a driver blocks of DMA memory of the sizes it asks for, while it runs: a firmware
+/// image's sections, each a block of its own.
+pub trait DmaAllocator {
+    /// The blocks it hands out.
+    type Memory: DmaMemory;
+    /// A zeroed block of at least `bytes`, aligned to 4096 bytes; `None` when there is no
+    /// memory for it.
+    fn allocate(&mut self, bytes: usize) -> Option<Self::Memory>;
+}
+
 #[cfg(test)]
 pub(crate) mod fake {
     use super::{DmaAddr, DmaMemory};

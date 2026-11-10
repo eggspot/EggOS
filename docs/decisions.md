@@ -19687,3 +19687,31 @@ the license, by an explicit instruction recorded here.
   AX200 family; context info, scratch area and image loader for the AX210 family) and waiting for
   its alive notification; then the PNVM, NVM, scanning, association with `eggos-wifi`'s WPA2, and
   data frames.
+
+## D273 The Intel Wi-Fi driver, part 2: the host interface, power-up, the rings and the firmware handover up to its alive notification (D272's next; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from OpenBSD's `iwx(4)` under D272's exception)
+
+- **Decision.** `eggos_drivers::wifi::iwx::transport::Transport`, polled throughout:
+  - Register access: the CSR block, `PRPH` registers through the HBUS window (a 20-bit address on
+    the AX200 family, 24-bit on the AX210 family), and the nesting NIC lock that requests MAC
+    access in `CSR_GP_CNTRL` and waits for the clock.
+  - `start_hardware`: the ready handshake (`NIC_READY`, then `PREPARE` and retries), clearing the
+    persistence bit on the AX200 family, a software reset, power gating forced and a second reset
+    on integrated AX201s, and power-up (L0s off, the HPET threshold, `INIT_DONE`, waiting for the
+    MAC clock). `radio_killed` reads the hardware switch.
+  - The rings, in one 128 KiB DMA block: the default receive queue's free and used descriptors
+    and status (512 buffers of 4 KiB in a 2 MiB block), and the command queue's 256 long-format
+    descriptors; the prph scratch area and prph info page for the AX210 family.
+  - `load_firmware`: the regular image's sections, split into LMAC, UMAC and paging, are each
+    copied into DMA memory from a `DmaAllocator` (a new trait in `eggos_drivers::dma`). The AX200
+    family gets one context info (rings, command queue, every section's address) at
+    `CSR_CTXT_INFO_BA`; the AX210 family gets a prph scratch area (control flags, free ring,
+    sections), a gen3 context info (prph info and scratch, the rings and their index arrays) at
+    `CSR_CTXT_INFO_ADDR`, and the image loader at `CSR_IML_DATA_ADDR`, with auto-boot set. Both
+    then set the boot latency tolerance and start the CPU (`UREG_CPU_INIT_RUN`).
+  - Waiting for alive: the `ALIVE` bit in `CSR_INT`, then the receive descriptors are filled
+    again and 8 buffers handed over (`RFH_Q0_FRBDCB_WIDX_TRG`), and the first `ALIVE` packet in
+    the ring is read: status `CAFE`h means running, anything else is the failure's status.
+- **Not yet.** Building and running; the kernel's probe, which must wait for the root file system
+  before it can read the firmware from `/usr/lib/firmware`; the PNVM for the AX210 family; the
+  receive ring's used-descriptor order on the AX210 family (read in order here); interrupts and
+  MSI-X; then commands, the NVM, scanning and association.
