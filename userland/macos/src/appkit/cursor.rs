@@ -54,7 +54,7 @@ fn selector_name(sel: Sel) -> &'static str {
     let mut length = 0;
     // SAFETY: a selector is the address of its NUL-terminated name, which lives as long as the
     // runtime; the scan stops at the NUL or at the longest class cursor's name.
-    while length < LONGEST_SELECTOR && unsafe { *sel.add(length) } != 0 {
+    while length < LONGEST_SELECTOR && unsafe { sel.wrapping_add(length).read() } != 0 {
         length += 1;
     }
     // SAFETY: as above, the first `length` bytes are the name.

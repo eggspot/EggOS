@@ -82,13 +82,17 @@ fn slot(offset: usize) -> *mut u64 {
 pub(super) fn count_thrown() {
     let count = slot(teb::UNCAUGHT_EXCEPTIONS);
     // SAFETY: this thread's TEB word.
-    unsafe { count.write(count.read().wrapping_add(1)) };
+    let thrown = unsafe { count.read() };
+    // SAFETY: as above.
+    unsafe { count.write(thrown.wrapping_add(1)) };
 }
 
 fn count_caught() {
     let count = slot(teb::UNCAUGHT_EXCEPTIONS);
     // SAFETY: this thread's TEB word.
-    unsafe { count.write(count.read().saturating_sub(1)) };
+    let thrown = unsafe { count.read() };
+    // SAFETY: as above.
+    unsafe { count.write(thrown.saturating_sub(1)) };
 }
 
 fn uncaught() -> u64 {

@@ -67,7 +67,7 @@ extern "efiapi" fn category_delete(category: u64, _flags: u32) -> u64 {
 }
 
 extern "efiapi" fn category_name(_category: u64) -> *const u8 {
-    b"generic\0".as_ptr()
+    c"generic".as_ptr().cast()
 }
 
 unsafe fn write_string(target: *mut StdString, text: &[u8]) {
@@ -116,8 +116,14 @@ unsafe extern "efiapi" fn category_default_condition(
 }
 
 fn same_category(left: *const Category, right: *const Category) -> bool {
+    if left == right {
+        return true;
+    }
     // SAFETY: both are `error_category` objects, whose second word is their address word.
-    left == right || unsafe { (*left).address == (*right).address }
+    let left_address = unsafe { (*left).address };
+    // SAFETY: as above.
+    let right_address = unsafe { (*right).address };
+    left_address == right_address
 }
 
 unsafe extern "efiapi" fn category_equivalent_code(

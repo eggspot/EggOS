@@ -630,6 +630,7 @@ pub struct Images<'a> {
 
 impl<'a> Images<'a> {
     /// A handler and a thrown object of the same image.
+    #[cfg(test)]
     pub fn same(image: Image<'a>) -> Self {
         Self {
             handler: image,

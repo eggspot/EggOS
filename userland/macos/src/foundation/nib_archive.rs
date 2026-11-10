@@ -298,6 +298,7 @@ impl<'b, 't> NibArchive<'b, 't> {
         })
     }
 
+    #[cfg(test)]
     pub fn object_count(&self) -> usize {
         self.objects.len()
     }

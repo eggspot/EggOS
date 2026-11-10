@@ -309,7 +309,7 @@ unsafe extern "efiapi" fn write(fd: i32, buffer: *const u8, count: u32) -> i32 {
 }
 
 fn write_translated(fd: usize, translation: Translation, bytes: &[u8]) -> i32 {
-    if translation.is_wide() && bytes.len() % 2 != 0 {
+    if translation.is_wide() && !bytes.len().is_multiple_of(2) {
         set_errno(errno::EINVAL);
         return FAILED;
     }

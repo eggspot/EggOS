@@ -84,10 +84,9 @@ unsafe extern "efiapi" fn type_info_name(data: *mut u64, _root: u64) -> *const u
         return decorated.as_ptr().wrapping_add(1);
     }
     // SAFETY: `copy` holds the name and its NUL.
-    unsafe {
-        core::ptr::copy_nonoverlapping(name.as_ptr(), copy, name.len());
-        copy.add(name.len()).write(0);
-    }
+    unsafe { core::ptr::copy_nonoverlapping(name.as_ptr(), copy, name.len()) };
+    // SAFETY: as above; the last byte is the NUL's.
+    unsafe { copy.wrapping_add(name.len()).write(0) };
     match slot.compare_exchange(0, copy as u64, Ordering::AcqRel, Ordering::Acquire) {
         Ok(_) => copy,
         Err(winner) => {

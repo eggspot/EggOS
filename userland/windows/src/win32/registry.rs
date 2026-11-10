@@ -410,8 +410,10 @@ fn ansi_data(value: &Value) -> Vec<u8> {
     }
     let units: Vec<u16> = value
         .data
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .collect();
     let mut bytes = Vec::with_capacity(units.len());
     let mut buffer = [0u8; 4];

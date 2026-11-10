@@ -297,7 +297,9 @@ fn locale_object(locales: RuntimeLocales) -> *mut LocaleObject {
     // SAFETY: a fresh heap block, 16-byte aligned, for one locale object.
     unsafe { block.write(object) };
     // SAFETY: as above; the object now holds its data.
-    unsafe { (*block).data_pointer = &raw const (*block).data };
+    let data = unsafe { &raw const (*block).data };
+    // SAFETY: as above.
+    unsafe { (*block).data_pointer = data };
     block
 }
 

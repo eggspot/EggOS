@@ -199,18 +199,24 @@ fn copies_head() -> *mut u64 {
 /// that took it has destroyed it; any other object is not on the list and is left alone.
 pub fn forget_rethrown_copy(object: u64) {
     let mut link = copies_head();
-    // SAFETY: the list holds blocks this thread allocated, each starting with its next link,
-    // and only this thread changes it.
-    unsafe {
-        while *link != 0 {
-            let block = *link as *mut u64;
-            if block as u64 + COPY_OFFSET as u64 == object {
-                *link = *block;
-                heap::free(block.cast());
-                return;
-            }
-            link = block;
+    loop {
+        // SAFETY: the list holds blocks this thread allocated, each starting with its next
+        // link, and only this thread changes it.
+        let next = unsafe { link.read() };
+        if next == 0 {
+            return;
         }
+        let block = next as *mut u64;
+        if block as u64 + COPY_OFFSET as u64 == object {
+            // SAFETY: as above; `block` is on the list, so its first word is its next link.
+            let after = unsafe { block.read() };
+            // SAFETY: as above.
+            unsafe { link.write(after) };
+            // SAFETY: the block came from this heap and is now off the list.
+            unsafe { heap::free(block.cast()) };
+            return;
+        }
+        link = block;
     }
 }
 
@@ -235,11 +241,12 @@ extern "C" fn rethrow(source: u64, _: u64, _: u64, _: u64, context: *mut Context
     let copy = block.wrapping_add(COPY_OFFSET);
     copy_object(&catchable, object_of(held) as u64, copy);
     let head = copies_head();
+    // SAFETY: this thread's list head.
+    let first = unsafe { head.read() };
     // SAFETY: a fresh block whose first word links it into this thread's list.
-    unsafe {
-        block.cast::<u64>().write(head.read());
-        head.write(block as u64);
-    }
+    unsafe { block.cast::<u64>().write(first) };
+    // SAFETY: this thread's list head.
+    unsafe { head.write(block as u64) };
     thrown::raise(
         copy as u64,
         record.parameters[2],

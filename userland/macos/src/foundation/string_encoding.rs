@@ -58,6 +58,7 @@ fn form(encoding: usize) -> Option<Form> {
 }
 
 /// Whether the layer converts `encoding`.
+#[cfg(test)]
 pub fn is_known(encoding: usize) -> bool {
     form(encoding).is_some()
 }

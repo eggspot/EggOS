@@ -108,7 +108,9 @@ fn names_match(wanted: Id, posted: Id) -> bool {
 fn observer_of(observation: *mut Observation) -> Id {
     // SAFETY: a registered observation's block, whose `observer` is a weak variable the center
     // initialized.
-    unsafe { objc_load_weak_retained(&raw mut (*observation).observer) }
+    let weak = unsafe { &raw mut (*observation).observer };
+    // SAFETY: as above.
+    unsafe { objc_load_weak_retained(weak) }
 }
 
 fn deliveries_for(sender: Id) -> Buffer<Delivery> {
@@ -193,7 +195,9 @@ fn new_observation(entry: Observation) -> *mut Observation {
     };
     if !observer.is_null() {
         // SAFETY: the new observation's weak variable, initialized once here.
-        unsafe { objc_init_weak(&raw mut (*block).observer, observer) };
+        let weak = unsafe { &raw mut (*block).observer };
+        // SAFETY: as above.
+        unsafe { objc_init_weak(weak, observer) };
     }
     block
 }

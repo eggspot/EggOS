@@ -547,15 +547,18 @@ fn install(registers: Registers, pad: u64, raised: *mut Raised, selector: i64) -
 
 fn deliver(boundary: *mut Boundary, raised: *mut Raised) -> ! {
     // SAFETY: a live catch record; its registers resume its stub's caught path.
-    let (previous, registers) = unsafe { ((*boundary).previous, (*boundary).registers) };
+    let previous = unsafe { (*boundary).previous };
+    // SAFETY: as above.
+    let registers = unsafe { (*boundary).registers };
     set_head(previous);
     install_at(registers, frame::pc(&registers), raised, 0)
 }
 
 fn clean_up_to_handler(raised: *mut Raised, start: Registers) -> ! {
     // SAFETY: an exception record made by `new_raised`, alive until its catch ends.
-    let (handler_frame, handler_boundary) =
-        unsafe { ((*raised).handler_frame, (*raised).handler_boundary) };
+    let handler_frame = unsafe { (*raised).handler_frame };
+    // SAFETY: as above.
+    let handler_boundary = unsafe { (*raised).handler_boundary };
     let mut registers = start;
     for _ in 0..MAX_FRAMES {
         match classify(&registers) {
@@ -604,10 +607,9 @@ fn raise(raised: *mut Raised, start: Registers) -> ! {
         None => report_uncaught(raised),
     };
     // SAFETY: as in `clean_up_to_handler`.
-    unsafe {
-        (*raised).handler_frame = frame;
-        (*raised).handler_boundary = boundary;
-    }
+    unsafe { (*raised).handler_frame = frame };
+    // SAFETY: as above.
+    unsafe { (*raised).handler_boundary = boundary };
     clean_up_to_handler(raised, start)
 }
 

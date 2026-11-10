@@ -26,6 +26,7 @@ const VTIME: usize = 5;
 const VMIN: usize = 6;
 
 pub const CBAUD: u32 = 0o10017;
+#[cfg(test)]
 pub const B38400: u32 = 0o17;
 pub const CS8: u32 = 0o60;
 pub const CREAD: u32 = 0o200;
@@ -267,6 +268,7 @@ impl Settings {
     /// A new pseudo-terminal's settings (D187): 38400 baud, 8 bits, canonical with echo and
     /// signals, carriage return read as newline, newline written as carriage return and
     /// newline.
+    #[cfg(test)]
     pub fn pseudo_terminal() -> Self {
         let mut characters = [0; CONTROL_CHARACTERS];
         for (_, index, value) in CHARACTERS {

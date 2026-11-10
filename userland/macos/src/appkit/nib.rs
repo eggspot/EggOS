@@ -363,7 +363,7 @@ impl Loader<'_, '_, '_> {
         };
         let class = allowed_class(name, &OBJECT_CLASSES);
         if descends(class, &NSAPPLICATION) {
-            let shared = application();
+            let shared = application::application();
             return match shared.is_null() {
                 true => objc_retain(send(class.cast(), sel!("sharedApplication"))),
                 false => objc_retain(shared),
@@ -765,7 +765,7 @@ extern "C" fn load_nib_named(this: Id, _: Sel, name: Id, owner: Id, top_level: *
     let Ok(mut loaded) = loaded else {
         return 0;
     };
-    if !loaded.main_menu.is_null() && owner == application() {
+    if !loaded.main_menu.is_null() && owner == application::application() {
         send1(owner, sel!("setMainMenu:"), loaded.main_menu as usize);
     }
     if !top_level.is_null() {
