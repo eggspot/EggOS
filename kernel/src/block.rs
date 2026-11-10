@@ -50,6 +50,11 @@ pub trait BlockDevice: Send {
         buffer: &[u8],
         deadline: &mut Deadline,
     ) -> Result<(), BlockError>;
+    /// The disk's own logical block size in bytes, which its partition table counts in
+    /// (D238): [`SECTOR_SIZE`] unless the driver says otherwise.
+    fn logical_block_bytes(&self) -> usize {
+        SECTOR_SIZE
+    }
     /// Returns once every write before it is on stable storage, polling the device until
     /// `deadline`; a disk without a volatile cache has nothing to do.
     fn flush(&mut self, _deadline: &mut Deadline) -> Result<(), BlockError> {
@@ -314,4 +319,85 @@ pub fn has_room() -> bool {
 /// those they do not take go back with [`install`].
 pub fn take_all() -> [Option<Box<dyn BlockDevice>>; MAX_DISKS] {
     core::mem::take(&mut *DISKS.lock())
+}
+
+/// The most bytes of partition entries [`eggos_data_partition`] reads.
+const MAX_ENTRY_BYTES: usize = 128 * 1024;
+
+/// Where EggOS's data partition is on a disk with a GUID partition table (D238), in sectors:
+/// its first sector and how many; `None` when the disk has no valid table, or no such partition.
+pub fn eggos_data_partition(disk: &mut dyn BlockDevice, deadline: &mut Deadline) -> Option<(u64, u64)> {
+    let block_bytes = disk.logical_block_bytes();
+    if !block_bytes.is_multiple_of(SECTOR_SIZE) || block_bytes == 0 {
+        return None;
+    }
+    let per_block = (block_bytes / SECTOR_SIZE) as u64;
+    let mut block = Vec::new();
+    block.try_reserve_exact(block_bytes).ok()?;
+    block.resize(block_bytes, 0);
+    disk.read(per_block, &mut block, deadline).ok()?;
+    let header = eggos_gpt::read_header(&block)?;
+    let entry_bytes = header.entry_count as usize * header.entry_bytes as usize;
+    if entry_bytes > MAX_ENTRY_BYTES {
+        return None;
+    }
+    let mut entries = Vec::new();
+    let length = entry_bytes.next_multiple_of(block_bytes);
+    entries.try_reserve_exact(length).ok()?;
+    entries.resize(length, 0);
+    disk.read(header.entries_at.checked_mul(per_block)?, &mut entries, deadline).ok()?;
+    let partition = eggos_gpt::partitions(&header, &entries)?
+        .find(|partition| partition.kind == eggos_gpt::EGGOS_DATA_PARTITION)?;
+    let first = partition.first.checked_mul(per_block)?;
+    let sectors = partition.blocks().checked_mul(per_block)?;
+    (first.checked_add(sectors)? <= disk.sectors()).then_some((first, sectors))
+}
+
+/// A partition of a disk, read and written as a disk of its own (D238).
+pub struct Partition {
+    disk: Box<dyn BlockDevice>,
+    first: u64,
+    sectors: u64,
+}
+
+impl Partition {
+    pub fn new(disk: Box<dyn BlockDevice>, first: u64, sectors: u64) -> Self {
+        Self {
+            disk,
+            first,
+            sectors,
+        }
+    }
+
+    fn place(&self, sector: u64, bytes: usize) -> Result<u64, BlockError> {
+        let count = (bytes / SECTOR_SIZE) as u64;
+        sector
+            .checked_add(count)
+            .filter(|&end| end <= self.sectors && bytes.is_multiple_of(SECTOR_SIZE))
+            .ok_or(BlockError::OutOfRange)?;
+        Ok(self.first + sector)
+    }
+}
+
+impl BlockDevice for Partition {
+    fn sectors(&self) -> u64 {
+        self.sectors
+    }
+    fn is_read_only(&self) -> bool {
+        self.disk.is_read_only()
+    }
+    fn logical_block_bytes(&self) -> usize {
+        self.disk.logical_block_bytes()
+    }
+    fn read(&mut self, sector: u64, buffer: &mut [u8], deadline: &mut Deadline) -> Result<(), BlockError> {
+        let at = self.place(sector, buffer.len())?;
+        self.disk.read(at, buffer, deadline)
+    }
+    fn write(&mut self, sector: u64, buffer: &[u8], deadline: &mut Deadline) -> Result<(), BlockError> {
+        let at = self.place(sector, buffer.len())?;
+        self.disk.write(at, buffer, deadline)
+    }
+    fn flush(&mut self, deadline: &mut Deadline) -> Result<(), BlockError> {
+        self.disk.flush(deadline)
+    }
 }

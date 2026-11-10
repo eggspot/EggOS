@@ -19002,3 +19002,38 @@ the license, by an explicit instruction recorded here.
   keyboards, embedded controllers, batteries, lids), `_PRT` legacy PCI interrupt routing and the
   `_S5` path beyond the DSDT's name; CPUID 0x15/0x16 frequencies before measuring (D26's
   follow-up); x2APIC for more than 255 CPUs.
+
+## D238 Real disks: NVMe and AHCI drivers, 4 KiB logical blocks behind 512-byte sectors, GUID partition tables (`eggos-gpt`) and EggOS's data partition (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** PCs keep their disks on NVMe and SATA (AHCI) controllers; an installed EggOS lives in
+  a partition of such a disk beside the EFI system partition, not on a whole disk as under QEMU.
+- **Decision.**
+  - **`eggos_drivers::storage`**: drivers generic over register access and DMA memory, each keeping
+    its queues and a bounce buffer in one DMA region and polling for completions with the caller's
+    deadline; transfers are in the kernel's 512-byte sectors, mapped onto the disk's logical blocks
+    (a partial block is read before it is written).
+    - **NVMe** (NVMe 1.4): reset, the admin queue, Identify Controller (`MDTS`, the volatile write
+      cache), the first active namespace and its formatted block size (512 B to 64 KiB), one I/O
+      queue pair of 64 entries, Read, Write and Flush with PRP entries or a PRP list, a normal
+      shutdown; 256 KiB of DMA memory, 224 KiB per transfer at most.
+    - **AHCI** (1.3.1): the BIOS/OS handoff, AHCI mode, every implemented port with an ATA disk on an
+      active link, each port its own disk with its command list, received FIS and one command table
+      (slot 0, 16 PRDs), IDENTIFY DEVICE (48-bit addressing required, large logical sectors read),
+      READ/WRITE DMA EXT, FLUSH CACHE EXT; 128 KiB of DMA memory per disk, below 4 GiB unless the
+      controller has 64-bit addressing. ATAPI drives are left alone.
+  - **The kernel** binds them by PCI class (`nvme`, `ahci`, default features), checks the
+    programming interface (NVMe 02h, AHCI 01h), turns memory space and bus mastering on, and installs
+    each disk ([`crate::block`]); `BlockDevice::logical_block_bytes` tells the partition code the
+    disk's block size.
+  - **`eggos-gpt`** (`gpt/`): GPT headers and entry arrays read and checked (header and array CRC-32),
+    and new tables written (protective MBR, primary and backup headers and arrays, 1 MiB alignment,
+    version 4 GUIDs), for the kernel, the installer and `cargo xtask`. EggOS's data partition type is
+    `0F3A6E9C-6B1D-4F63-9A2E-5C8D7E4B2F10`.
+  - **At boot** a disk whose table lists an EggOS data partition is used through that partition
+    (`block::Partition`): the EggFS probe and mount see only it, and whole-disk access to that disk
+    reaches the partition. Every other disk is used as before, whole.
+- **Not yet.** Building and running; interrupts (MSI-X for NVMe, MSI for AHCI) instead of polling;
+  several commands in flight (NCQ, more NVMe queue entries per request); TRIM and Deallocate;
+  NVMe namespaces past the first, and AHCI port multipliers; hot-plug; disks past `vdd` (four at
+  most); names such as `nvme0n1` and `sda` beside `vdX`; the backup GPT header when the primary is
+  damaged.

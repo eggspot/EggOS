@@ -28,6 +28,8 @@ mod pci_bus;
 #[cfg(any(test, feature = "rtc"))]
 pub mod rtc;
 pub(crate) mod selftest;
+#[cfg(any(test, feature = "nvme", feature = "ahci"))]
+pub mod storage;
 #[cfg(any(test, feature = "virtio"))]
 pub mod virtio;
 pub mod window;
@@ -217,6 +219,10 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &rtc::PL031_DRIVER,
     #[cfg(any(test, feature = "rtc"))]
     &rtc::GOLDFISH_DRIVER,
+    #[cfg(any(test, feature = "nvme"))]
+    &storage::NVME_DRIVER,
+    #[cfg(any(test, feature = "ahci"))]
+    &storage::AHCI_DRIVER,
 ];
 
 /// What a device is, as the bus that found it says.
