@@ -1477,7 +1477,7 @@ fn run_program(client: &mut Client, arguments: &[&str]) -> Result<ToolResult, St
     )
 }
 
-fn settings_session(client: &mut Client) -> Result<u32, String> {
+fn settings_session(client: &mut Client, windows_layer: bool) -> Result<u32, String> {
     let arch = client.arch;
     succeeds(
         client,
@@ -1493,7 +1493,7 @@ fn settings_session(client: &mut Client) -> Result<u32, String> {
         ..Facts::example()
     };
     let (width, height) = DEFAULT_SIZE;
-    let expected: Vec<Image> = settings_window_images(&facts)
+    let expected: Vec<Image> = settings_window_images(&facts, windows_layer)
         .into_iter()
         .filter_map(|pixels| {
             Image {
@@ -1822,7 +1822,7 @@ fn linux_paint_session(client: &mut Client, settings: u32) -> Result<u32, String
 }
 
 fn window_session(client: &mut Client, paint_title: Option<&str>) -> Result<(), String> {
-    let settings = settings_session(client)?;
+    let settings = settings_session(client, paint_title.is_some())?;
     if let Some(title) = paint_title {
         win_paint_session(client, title)?;
         win_controls_session(client)?;
@@ -2180,7 +2180,7 @@ mod tests {
             ..Facts::example()
         };
         let (width, height) = DEFAULT_SIZE;
-        let [shown, hidden] = settings_window_images(&facts);
+        let [shown, hidden] = settings_window_images(&facts, false);
         let shrunk = Image {
             width,
             height,

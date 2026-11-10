@@ -266,8 +266,12 @@ impl<'a> Boot<'a> {
 /// The Settings window's content at its default size as the host draws it from `facts`,
 /// with the text field's caret shown and hidden: the two states a frame of the real window can
 /// be in.
-pub(super) fn settings_window_images(facts: &Facts) -> [Vec<u32>; 2] {
-    settings_images(&SettingsWindow::new(*facts))
+/// The Settings window's two caret phases, with the sidebar's `Windows` row while the Windows
+/// layer is installed (D231).
+pub(super) fn settings_window_images(facts: &Facts, windows_layer: bool) -> [Vec<u32>; 2] {
+    let mut settings = SettingsWindow::new(*facts);
+    let _ = settings.show_windows_layer(windows_layer);
+    settings_images(&settings)
 }
 
 fn settings_images(settings: &SettingsWindow) -> [Vec<u32>; 2] {
@@ -897,7 +901,7 @@ mod tests {
 
     #[test]
     fn the_host_draws_settings_with_and_without_the_caret() {
-        let screen_contents = settings_window_images(&Facts::example());
+        let screen_contents = settings_window_images(&Facts::example(), false);
         let (width, height) = DEFAULT_SIZE;
         assert_eq!(screen_contents[0].len(), (width * height) as usize);
         assert_ne!(screen_contents[0], screen_contents[1]);
