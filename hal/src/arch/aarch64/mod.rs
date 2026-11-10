@@ -18,6 +18,7 @@ use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::PhysicalRange;
 use crate::paging::{self, Attributes, KernelImage, MemoryType};
 use crate::{ExitStatus, MemoryMap, Platform};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Pl011, Uart, pl011};
 
@@ -28,12 +29,15 @@ core::arch::global_asm!(
 _start:
     // Only the CPU whose affinity (MPIDR_EL1 Aff0-Aff3) is all zero boots for now; park
     // every other CPU, in any cluster.
+    mov     x15, x0
+    cbnz    x15, 0f
     mrs     x0, mpidr_el1
     and     x1, x0, #0xffffff
     ubfx    x2, x0, #32, #8
     orr     x0, x1, x2
     cbnz    x0, 6f
 
+0:
     // Use SP_EL1 at EL1, so exceptions taken to EL1 run on the boot stack set up below.
     msr     spsel, #1
 
@@ -61,6 +65,14 @@ _start:
     adrp    x4, {l1_kernel}
     adrp    x9, __kernel_start      // physical
     ldr     x13, =__kernel_start    // virtual
+    sub     x16, x13, x9
+    adrp    x17, {kernel_offset}
+    add     x17, x17, :lo12:{kernel_offset}
+    str     x16, [x17]
+    adrp    x17, {boot_handoff}
+    add     x17, x17, :lo12:{boot_handoff}
+    str     x15, [x17]
+    lsr     x16, x9, #30
     ubfx    x10, x9, #39, #9
     orr     x6, x1, #{table}
     str     x6, [x0, x10, lsl #3]
@@ -81,7 +93,7 @@ _start:
     ldr     x12, ={device_block}
     ldr     x14, ={normal_block}
     mov     x10, #0
-3:  cmp     x10, #{ram_gigabyte}
+3:  cmp     x10, x16
     csel    x6, x12, x14, lo
     orr     x6, x6, x10, lsl #30
     str     x6, [x3, x10, lsl #3]   // the direct map
@@ -190,7 +202,8 @@ eggos_secondary_start:
     device_block = const paging::aarch64::leaf(0, 2, Attributes::DEVICE),
     normal_block = const paging::aarch64::leaf(0, 2, Attributes::READ_WRITE),
     direct_map_l0_index = const paging::index(DIRECT_MAP_OFFSET as u64, 3),
-    ram_gigabyte = const RAM_BASE >> 30,
+    kernel_offset = sym KERNEL_OFFSET,
+    boot_handoff = sym crate::handoff::HANDOFF_ADDRESS,
     direct_map_gigabytes = const BOOT_DIRECT_MAP_END >> 30,
     mair = const paging::aarch64::MAIR,
     tcr = const TCR,
@@ -203,6 +216,19 @@ eggos_secondary_start:
 /// `0xffff_ffff_8020_0000`, in the top 2 GiB (D33). `linker.ld` uses the same value and checks
 /// it against this one.
 pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = 0xffff_ffff_4000_0000;
+
+/// The image's virtual address minus its physical address as `_start` found it: the UEFI loader
+/// places the kernel at the same offset inside whichever gigabyte of RAM is free (D236), so the
+/// physical half is known only at run time. 0 until `_start` writes it.
+static KERNEL_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+/// The image's virtual address minus its physical address.
+pub(crate) fn kernel_virtual_offset() -> u64 {
+    match KERNEL_OFFSET.load(Ordering::Relaxed) {
+        0 => KERNEL_VIRTUAL_OFFSET,
+        offset => offset,
+    }
+}
 
 /// Zeroes the `length` bytes at `start` ([`crate::memory::zero`]): in 64-byte lines of word
 /// stores, faster here than the compiler's `memset`, a loop of single word stores (D56).
@@ -316,13 +342,74 @@ fn atomics_capability() -> u64 {
     }
 }
 
-fn uart0() -> Pl011<Mmio> {
-    // SAFETY: on QEMU `virt` UART0's register block is at UART0_BASE, which the boot page
-    // tables and the kernel's own map as device memory at the direct map offset; only the early
-    // console's transmit and receive paths use it. Turning receive interrupts on changes registers
-    // transmit relies on, which is sound because the boot CPU does it once, before any other
-    // CPU starts.
-    Pl011::new(unsafe { Mmio::new(DIRECT_MAP_OFFSET + UART0_BASE, pl011::REGISTER_BLOCK_SIZE) })
+/// Where the console's PL011 is: [`UART0_BASE`] on QEMU `virt` started without the UEFI loader,
+/// else the one the ACPI `SPCR` names (D236); [`NO_UART`] when there is none the kernel drives.
+static UART_ADDRESS: AtomicUsize = AtomicUsize::new(UNKNOWN_UART);
+const UNKNOWN_UART: usize = usize::MAX;
+const NO_UART: usize = 0;
+
+fn uart_address() -> usize {
+    let known = UART_ADDRESS.load(Ordering::Relaxed);
+    if known != UNKNOWN_UART {
+        return known;
+    }
+    let found = match crate::handoff::handoff::<Aarch64>() {
+        None => UART0_BASE,
+        Some(handoff) => acpi_table_from(handoff.rsdp, b"SPCR")
+            .and_then(crate::acpi::parse_spcr)
+            .filter(|port| port.kind == crate::acpi::SerialKind::Pl011)
+            .and_then(|port| usize::try_from(port.address).ok())
+            .filter(|&address| address != 0 && (address as u64) < BOOT_DIRECT_MAP_END)
+            .unwrap_or(NO_UART),
+    };
+    UART_ADDRESS.store(found, Ordering::Relaxed);
+    found
+}
+
+fn uart0() -> Option<Pl011<Mmio>> {
+    let address = uart_address();
+    if address == NO_UART {
+        return None;
+    }
+    // SAFETY: the console UART's register block is at `address` (QEMU `virt`'s UART0, or the
+    // firmware's SPCR), inside the boot direct map, which the kernel's own tables map as device
+    // memory too ([`Aarch64::early_device_regions`]); only the early console's transmit and
+    // receive paths use it. Turning receive interrupts on changes registers transmit relies on,
+    // which is sound because the boot CPU does it once, before any other CPU starts.
+    Some(Pl011::new(unsafe {
+        Mmio::new(DIRECT_MAP_OFFSET + address, pl011::REGISTER_BLOCK_SIZE)
+    }))
+}
+
+/// The validated ACPI table with `signature` under the RSDP at physical `rsdp`, read through the
+/// boot direct map.
+fn acpi_table_from(rsdp: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
+    if rsdp == 0 {
+        return None;
+    }
+    crate::acpi::find_table(rsdp, signature, &|address, length| {
+        let end = address.checked_add(length as u64)?;
+        if address == 0 || end > BOOT_DIRECT_MAP_END {
+            return None;
+        }
+        // SAFETY: the firmware's ACPI tables are RAM the boot direct map covers (checked), which
+        // nothing writes.
+        Some(unsafe {
+            core::slice::from_raw_parts(
+                (address as usize).wrapping_add(DIRECT_MAP_OFFSET) as *const u8,
+                length,
+            )
+        })
+    })
+}
+
+/// Where the firmware's device tree is: the handoff's (none when it passed none), else the
+/// start of RAM, where QEMU `virt` loads it.
+fn device_tree_address() -> usize {
+    match crate::handoff::handoff::<Aarch64>() {
+        Some(handoff) => usize::try_from(handoff.device_tree).unwrap_or(0),
+        None => RAM_BASE,
+    }
 }
 
 fn psci_system_call(function: u64) {
@@ -350,15 +437,21 @@ impl Platform for Aarch64 {
 
     #[inline]
     fn console_write(bytes: &[u8]) {
-        uart0().write_bytes(bytes);
+        if let Some(uart) = uart0() {
+            uart.write_bytes(bytes);
+        }
     }
 
     fn console_read(buffer: &mut [u8]) -> usize {
-        uart0().read_bytes(buffer)
+        uart0().map_or(0, |uart| uart.read_bytes(buffer))
     }
 
     fn enable_console_input() -> Result<(), &'static str> {
-        uart0().enable_receive_interrupt();
+        if uart_address() != UART0_BASE {
+            return Err("the console UART's interrupt is QEMU virt's only so far");
+        }
+        let uart = uart0().ok_or("no console UART")?;
+        uart.enable_receive_interrupt();
         timer::route_console_input();
         Ok(())
     }
@@ -432,6 +525,24 @@ impl Platform for Aarch64 {
     }
 
     fn memory_map() -> MemoryMap {
+        if let Some(handoff) = crate::handoff::handoff::<Self>() {
+            let mut map = handoff_memory_map(&handoff, false);
+            map.reserve(boot_memory::kernel_image());
+            map.reserve(crate::handoff::boot_data(&handoff));
+            // SAFETY: the loader's device tree address is 0 or the firmware's tree, which
+            // nothing writes and the direct map covers.
+            if let Some(tree) = unsafe { boot_memory::device_tree_blob(device_tree_address()) } {
+                map.reserve(PhysicalRange::from_start_length(
+                    device_tree_address() as u64,
+                    tree.len() as u64,
+                ));
+            }
+            map.retain_within(PhysicalRange {
+                start: 0,
+                end: BOOT_DIRECT_MAP_END,
+            });
+            return map;
+        }
         // SAFETY: on QEMU `virt` the start of RAM holds the device tree QEMU loaded there,
         // which nothing writes; the direct map covers it. If QEMU loaded none, the header check
         // fails and the map is empty.
@@ -460,8 +571,15 @@ impl Platform for Aarch64 {
     }
 
     fn physical_memory() -> MemoryMap {
-        // SAFETY: as in `memory_map`.
-        let mut map = unsafe { boot_memory::device_tree_ram(RAM_BASE) };
+        let mut map = match crate::handoff::handoff::<Self>() {
+            Some(handoff) => {
+                let mut map = handoff_memory_map(&handoff, true);
+                map.add_ram(crate::handoff::boot_data(&handoff).covering_frames());
+                map
+            }
+            // SAFETY: as in `memory_map`.
+            None => unsafe { boot_memory::device_tree_ram(RAM_BASE) },
+        };
         // RAM beyond the boot direct map is never handed out (see `memory_map`), so it is left
         // unmapped.
         map.retain_within(PhysicalRange {
@@ -472,16 +590,36 @@ impl Platform for Aarch64 {
     }
 
     fn early_device_regions(region: &mut dyn FnMut(PhysicalRange)) {
-        region(PhysicalRange::from_start_length(
-            UART0_BASE as u64,
-            pl011::REGISTER_BLOCK_SIZE as u64,
-        ));
+        let uart = uart_address();
+        if uart != NO_UART {
+            region(PhysicalRange::from_start_length(
+                uart as u64,
+                pl011::REGISTER_BLOCK_SIZE as u64,
+            ));
+        }
         timer::DEVICE_REGIONS.into_iter().for_each(region);
     }
 
     fn device_tree() -> Option<&'static [u8]> {
         // SAFETY: as in `memory_map`.
-        unsafe { boot_memory::device_tree_blob(RAM_BASE) }
+        unsafe { boot_memory::device_tree_blob(device_tree_address()) }
+    }
+
+    fn acpi_table(signature: &[u8; 4]) -> Option<&'static [u8]> {
+        acpi_table_from(crate::handoff::handoff::<Self>()?.rsdp, signature)
+    }
+
+    fn command_line(line: &mut dyn FnMut(&[u8])) {
+        if let Some(handoff) = crate::handoff::handoff::<Self>() {
+            let text = crate::handoff::command_line::<Self>(&handoff);
+            if !text.is_empty() {
+                line(text);
+                return;
+            }
+        }
+        if let Some(arguments) = Self::device_tree().and_then(crate::fdt::boot_arguments) {
+            line(arguments);
+        }
     }
 
     const DEVICE_TREE_DMA_COHERENT_BY_DEFAULT: bool = false;
@@ -533,7 +671,7 @@ impl Platform for Aarch64 {
                 "isb",
                 low = in(reg) *low,
                 high = in(reg) *high,
-                offset = in(reg) KERNEL_VIRTUAL_OFFSET,
+                offset = in(reg) kernel_virtual_offset(),
                 tmp = out(reg) _,
                 options(nostack, preserves_flags),
             );
@@ -683,7 +821,7 @@ impl Platform for Aarch64 {
         // SAFETY: as in `memory_map`; the kernel calls this once at boot, on the boot CPU
         // before any other starts and between the HAL's other reads of the tree, which the
         // direct map keeps writable (RAM is mapped read-write in it, reserved or not).
-        unsafe { boot_memory::device_tree_take_seeds(RAM_BASE, seed) };
+        unsafe { boot_memory::device_tree_take_seeds(device_tree_address(), seed) };
     }
 
     unsafe fn set_user_fp(on: bool) {
@@ -703,7 +841,7 @@ impl Platform for Aarch64 {
 
     fn cpus(cpu: &mut dyn FnMut(u64)) {
         // SAFETY: as in `memory_map`.
-        unsafe { boot_memory::device_tree_cpus(RAM_BASE, cpu) };
+        unsafe { boot_memory::device_tree_cpus(device_tree_address(), cpu) };
     }
 
     fn boot_cpu() -> u64 {
@@ -716,7 +854,7 @@ impl Platform for Aarch64 {
             /// The secondary entry point in the boot code above.
             fn eggos_secondary_start();
         }
-        let entry = (eggos_secondary_start as *const () as u64).wrapping_sub(KERNEL_VIRTUAL_OFFSET);
+        let entry = (eggos_secondary_start as *const () as u64).wrapping_sub(kernel_virtual_offset());
         let context = core::ptr::from_ref(start) as u64;
         let result: i64;
         // SAFETY: CPU_ON starts CPU `cpu` at the physical address `entry`, the secondary entry
@@ -764,4 +902,26 @@ impl Platform for Aarch64 {
     fn wake_cpu(cpu: u64) {
         timer::wake(cpu);
     }
+}
+
+/// The memory map the UEFI loader's handoff carries: its RAM, then every other range reserved;
+/// with `whole`, every range as RAM, for the direct map (D236).
+fn handoff_memory_map(handoff: &crate::handoff::Handoff, whole: bool) -> MemoryMap {
+    let mut map = MemoryMap::new();
+    for range in crate::handoff::memory_ranges::<Aarch64>(handoff) {
+        let physical = PhysicalRange::from_start_length(range.start, range.length);
+        if whole {
+            map.add_ram(physical.covering_frames());
+        } else if range.kind == crate::handoff::memory_kind::RAM {
+            map.add_ram(physical);
+        }
+    }
+    if !whole {
+        for range in crate::handoff::memory_ranges::<Aarch64>(handoff) {
+            if range.kind != crate::handoff::memory_kind::RAM {
+                map.reserve(PhysicalRange::from_start_length(range.start, range.length));
+            }
+        }
+    }
+    map
 }

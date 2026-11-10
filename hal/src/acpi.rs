@@ -430,6 +430,100 @@ fn read_u64(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
 }
 
+/// The largest table [`find_table`] reads, against a corrupt length.
+pub const MAX_TABLE_LENGTH: usize = 1 << 20;
+
+/// Reads `length` bytes of physical memory at an address, or `None` where they are out of reach.
+pub type PhysicalReader<'a> = &'a dyn Fn(u64, usize) -> Option<&'static [u8]>;
+
+/// The validated table with `signature` that the root table under the RSDP at `rsdp` lists,
+/// every byte read through `read` (D236).
+pub fn find_table(rsdp: u64, signature: &[u8; 4], read: PhysicalReader<'_>) -> Option<&'static [u8]> {
+    let root = parse_rsdp(read(rsdp, RSDP_V2_LENGTH).or_else(|| read(rsdp, RSDP_V1_LENGTH))?)?;
+    let (RootTable::Rsdt(root_address) | RootTable::Xsdt(root_address)) = root;
+    let root_signature = match root {
+        RootTable::Rsdt(_) => b"RSDT",
+        RootTable::Xsdt(_) => b"XSDT",
+    };
+    let root_table = table_at(root_address, root_signature, read)?;
+    root_table_entries(root_table, root).find_map(|address| table_at(address, signature, read))
+}
+
+/// The validated table with `signature` at physical `address`, read through `read`.
+pub fn table_at(address: u64, signature: &[u8; 4], read: PhysicalReader<'_>) -> Option<&'static [u8]> {
+    if address == 0 {
+        return None;
+    }
+    let header = read(address, TABLE_HEADER_LENGTH)?;
+    if &header[..4] != signature {
+        return None;
+    }
+    let length = table_length(header)?;
+    if !(TABLE_HEADER_LENGTH..=MAX_TABLE_LENGTH).contains(&length) {
+        return None;
+    }
+    let table = read(address, length)?;
+    table_ok(table, signature).then_some(table)
+}
+
+/// A serial port's register interface, as the `SPCR` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SerialKind {
+    /// An Arm PL011, or the SBSA generic UART (a PL011 subset).
+    Pl011,
+    /// A 16550-compatible UART.
+    Ns16550,
+    /// Another interface the kernel has no driver for.
+    Other(u8),
+}
+
+/// The console serial port the firmware names in the `SPCR` (Microsoft's Serial Port Console
+/// Redirection table, revision 2 and later).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SerialPort {
+    pub kind: SerialKind,
+    /// Physical address of its registers (memory space), or its I/O port.
+    pub address: u64,
+    /// Whether `address` is in I/O space rather than memory.
+    pub io_space: bool,
+    /// Its global system interrupt, 0 for none.
+    pub interrupt: u32,
+}
+
+const SPCR_INTERFACE_TYPE: usize = 36;
+const SPCR_BASE_ADDRESS: usize = 40;
+const SPCR_GLOBAL_INTERRUPT: usize = 54;
+const SPCR_MINIMUM_LENGTH: usize = 80;
+const GAS_SYSTEM_IO: u8 = 1;
+const SPCR_16550: u8 = 0x00;
+const SPCR_16450: u8 = 0x01;
+const SPCR_PL011: u8 = 0x03;
+const SPCR_SBSA_32BIT: u8 = 0x0d;
+const SPCR_SBSA: u8 = 0x0e;
+const SPCR_16550_WITH_GAS: u8 = 0x12;
+
+/// The console serial port a validated `SPCR` describes.
+pub fn parse_spcr(spcr: &[u8]) -> Option<SerialPort> {
+    if spcr.len() < SPCR_MINIMUM_LENGTH {
+        return None;
+    }
+    let kind = match spcr[SPCR_INTERFACE_TYPE] {
+        SPCR_PL011 | SPCR_SBSA | SPCR_SBSA_32BIT => SerialKind::Pl011,
+        SPCR_16550 | SPCR_16450 | SPCR_16550_WITH_GAS => SerialKind::Ns16550,
+        other => SerialKind::Other(other),
+    };
+    let address = read_u64(spcr, SPCR_BASE_ADDRESS + 4)?;
+    if address == 0 {
+        return None;
+    }
+    Some(SerialPort {
+        kind,
+        address,
+        io_space: spcr[SPCR_BASE_ADDRESS] == GAS_SYSTEM_IO,
+        interrupt: read_u32(spcr, SPCR_GLOBAL_INTERRUPT)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -810,5 +904,41 @@ mod tests {
         assert_eq!(pm1_control_sleep(0, 5), (5 << 10) | (1 << 13));
         assert_eq!(pm1_control_sleep(0b111 << 10 | 1, 0), (1 << 13) | 1);
         assert_eq!(pm1_control_sleep(0, 0xff), (0b111 << 10) | (1 << 13));
+    }
+
+    #[test]
+    fn the_spcr_names_a_pl011_console() {
+        let mut spcr = vec![0u8; SPCR_MINIMUM_LENGTH];
+        spcr[SPCR_INTERFACE_TYPE] = SPCR_SBSA;
+        spcr[SPCR_BASE_ADDRESS + 4..SPCR_BASE_ADDRESS + 12].copy_from_slice(&0x0900_0000u64.to_le_bytes());
+        spcr[SPCR_GLOBAL_INTERRUPT..SPCR_GLOBAL_INTERRUPT + 4].copy_from_slice(&33u32.to_le_bytes());
+        let port = parse_spcr(&spcr).unwrap();
+        assert_eq!(port.kind, SerialKind::Pl011);
+        assert_eq!(port.address, 0x0900_0000);
+        assert_eq!(port.interrupt, 33);
+        assert!(!port.io_space);
+        assert_eq!(parse_spcr(&spcr[..40]), None);
+    }
+
+    #[test]
+    fn find_table_follows_the_rsdp_to_the_root_table() {
+        let mut memory = vec![0u8; 0x3000];
+        let rsdp = rsdp(2, 0, 0x1000);
+        memory[..RSDP_V2_LENGTH].copy_from_slice(&rsdp);
+        let mut xsdt = vec![0u8; TABLE_HEADER_LENGTH + 8];
+        xsdt[..4].copy_from_slice(b"XSDT");
+        xsdt[4..8].copy_from_slice(&(xsdt.len() as u32).to_le_bytes());
+        xsdt[TABLE_HEADER_LENGTH..].copy_from_slice(&0x2000u64.to_le_bytes());
+        fix_checksum(&mut xsdt, 9);
+        memory[0x1000..0x1000 + xsdt.len()].copy_from_slice(&xsdt);
+        let mut spcr = vec![0u8; SPCR_MINIMUM_LENGTH];
+        spcr[..4].copy_from_slice(b"SPCR");
+        spcr[4..8].copy_from_slice(&(spcr.len() as u32).to_le_bytes());
+        fix_checksum(&mut spcr, 9);
+        memory[0x2000..0x2000 + spcr.len()].copy_from_slice(&spcr);
+        let memory: &'static [u8] = Box::leak(memory.into_boxed_slice());
+        let read = |address: u64, length: usize| memory.get(address as usize..address as usize + length);
+        assert_eq!(find_table(0, b"SPCR", &read).map(<[u8]>::len), Some(SPCR_MINIMUM_LENGTH));
+        assert_eq!(find_table(0, b"MADT", &read), None);
     }
 }
