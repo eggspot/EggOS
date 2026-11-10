@@ -236,14 +236,18 @@ fn dragging_the_title_bar_moves_a_window_and_keeps_it_in_the_work_area() {
     );
     desktop.pointer_moved(0, 0, &mut damage, &mut events);
     assert_eq!(
+        desktop.window_bounds(window),
+        Some(Bounds::new(-100, 28, 402, 330))
+    );
+    assert_eq!(
         desktop.window_rect(window),
-        Some(Rect::new(0, 28, 402, 330))
+        Some(Rect::new(0, 28, 302, 330))
     );
     release(&mut desktop, &mut events);
     desktop.pointer_moved(900, 700, &mut damage, &mut events);
     assert_eq!(
-        desktop.window_rect(window),
-        Some(Rect::new(0, 28, 402, 330))
+        desktop.window_bounds(window),
+        Some(Bounds::new(-100, 28, 402, 330))
     );
     assert!(
         !events
@@ -548,7 +552,7 @@ fn requests_check_the_window_s_owner_role_flags_and_the_limits() {
         Err(WindowError::Invalid)
     );
     assert_eq!(
-        desktop.set_pointer(CLIENT, window, 9, &mut damage),
+        desktop.set_pointer(CLIENT, window, 10, &mut damage),
         Err(WindowError::Invalid)
     );
     assert_eq!(desktop.set_pointer(CLIENT, window, 1, &mut damage), Ok(()));

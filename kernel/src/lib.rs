@@ -134,6 +134,7 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 #[cfg(feature = "qemu-bench")]
                 if passed {
                     bench::run::<P, _>(console, &bench::all::<P>(), &mut memory)?;
+                    bench::report_idle_wakeups::<P, _>(console)?;
                 }
                 Ok(passed)
             }

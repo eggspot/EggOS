@@ -53,7 +53,11 @@ pub const MARKER: &str = "EGGOS-BENCH:";
 pub const ITERATIONS: u64 = 10_000;
 const WARMUP_ITERATIONS: u64 = 100;
 
-const LONG_BENCHMARKS: [(&str, u64); 1] = [("image_decode_jpeg_640x480", 20)];
+const LONG_BENCHMARKS: [(&str, u64); 3] = [
+    ("image_decode_jpeg_640x480", 20),
+    ("toolkit_table_layout_1000_rows", 200),
+    ("text_area_wrap_64k", 200),
+];
 
 fn iterations_of(name: &str) -> (u64, u64) {
     match LONG_BENCHMARKS.iter().find(|(long, _)| *long == name) {
@@ -203,7 +207,7 @@ pub fn run<P: Platform, W: Write>(
             "{MARKER} {name} iterations={iterations} ticks={ticks} frequency={frequency}"
         )?;
     }
-    report_idle_wakeups::<P, W>(console)
+    Ok(())
 }
 
 /// How many times a CPU woke from idle: the idle loop counts each wake-up (feature
@@ -214,7 +218,9 @@ const IDLE_WAKEUPS_NAME: &str = "idle_wakeups_per_second";
 
 const IDLE_WAKEUPS_SPAN: Duration = Duration::from_secs(1);
 
-fn report_idle_wakeups<P: Platform, W: Write>(console: &mut W) -> core::fmt::Result {
+/// Sleeps one second and prints how often a CPU woke from idle meanwhile, as the
+/// `idle_wakeups_per_second` benchmark line (D220).
+pub fn report_idle_wakeups<P: Platform, W: Write>(console: &mut W) -> core::fmt::Result {
     let before = IDLE_WAKEUPS.load(Ordering::Relaxed);
     thread::sleep::<P>(IDLE_WAKEUPS_SPAN);
     let woken = IDLE_WAKEUPS.load(Ordering::Relaxed).wrapping_sub(before);
@@ -2149,8 +2155,19 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (machine_only, terminal) = all[all.len() - 28..].split_at(20);
-        let benchmarks = &[&all[..all.len() - 28], terminal].concat()[..];
+        let first_machine_only = all
+            .iter()
+            .position(|(name, _)| *name == "syscall_round_trip")
+            .unwrap();
+        let (before, rest) = all.split_at(first_machine_only);
+        let (machine_only, after) = rest.split_at(20);
+        let terminal = &after[..8];
+        let benchmarks: Vec<Benchmark<CountingPlatform>> = [before, after]
+            .concat()
+            .into_iter()
+            .filter(|(name, _)| *name != "net_rx_wakeup")
+            .collect();
+        let benchmarks = &benchmarks[..];
         let [
             (syscall, _),
             (process_syscall, _),

@@ -1424,7 +1424,10 @@ impl System for Fake {
 
 impl Fake {
     fn resolve(&self, path: &[u8]) -> Vec<u8> {
-        let kept = path.iter().rposition(|&byte| byte != b'/').map_or(1, |end| end + 1);
+        let kept = path
+            .iter()
+            .rposition(|&byte| byte != b'/')
+            .map_or(1, |end| end + 1);
         let path = &path[..kept.min(path.len())];
         if path.first() == Some(&b'/') || self.working_directory == "/" {
             return path.to_vec();

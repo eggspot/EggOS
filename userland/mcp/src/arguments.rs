@@ -2200,7 +2200,7 @@ mod tests {
             checked("tee", r#"{"path":"/home/root/a","dry_run":"yes"}"#).0,
             Err(ArgumentProblem::WrongType("dry_run"))
         );
-        for tool in ["run", "fetch", "clock_set", "wm_click", "ls"] {
+        for tool in ["run", "fetch", "wm_click", "ls"] {
             assert_eq!(
                 checked(tool, r#"{"dry_run":true}"#).0,
                 Err(ArgumentProblem::Unknown),

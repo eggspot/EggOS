@@ -864,7 +864,7 @@ fn a_text_area_selects_copies_cuts_and_pastes_and_keeps_line_breaks() {
         key_with(&mut tree, key::C, 'c' as u32, Modifiers::CTRL),
         Response::Copied(area)
     );
-    assert_eq!(tree.copied(), "ick brown fox jumps over th");
+    assert_eq!(tree.copied(), &PANGRAM[7..34]);
     assert_eq!(
         key_with(&mut tree, key::X, 'x' as u32, Modifiers::CTRL),
         Response::Cut(area)

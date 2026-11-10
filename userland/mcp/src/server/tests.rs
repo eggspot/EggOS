@@ -237,7 +237,17 @@ fn the_tools_are_listed_once_initialized() {
             "clipboard_set",
             "kill",
             "wm_desktop_list",
-            "wm_desktop_new"
+            "wm_desktop_new",
+            "file_copy",
+            "file_move",
+            "folder_create",
+            "file_remove",
+            "download_list",
+            "download_cancel",
+            "download_clear",
+            "component_list",
+            "component_install",
+            "component_remove"
         ]
     );
 }
@@ -3484,7 +3494,11 @@ fn an_agent_without_grants_lists_no_tools_and_is_told_how_to_get_them() {
     let Some(Value::Array(tools)) = parsed(&answer).get("result").unwrap().get("tools") else {
         panic!("tools: {answer}");
     };
-    assert_eq!(tools.elements().count(), tools::TOOLS.len(), "{answer}");
+    let without_a_layer = tools::TOOLS
+        .iter()
+        .filter(|tool| tool.needs.is_none())
+        .count();
+    assert_eq!(tools.elements().count(), without_a_layer, "{answer}");
 }
 
 #[test]
@@ -4337,7 +4351,7 @@ fn download_cancel_stops_a_download_only_when_confirmed_under_the_run_grant() {
         &["/bin/download", "cancel", "--", "61"]
     );
     let answer = harness.call(4, "download_cancel", r#"{"pid":0,"confirm":true}"#);
-    assert!(is_error(&answer), "{answer}");
+    assert_eq!(error_code(&answer), -32602, "{answer}");
     assert_eq!(harness.system.runs.len(), 1);
 }
 

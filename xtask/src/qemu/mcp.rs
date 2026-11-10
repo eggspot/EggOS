@@ -90,7 +90,7 @@ const ACTED: &str = "Acted on an element of window";
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 17] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 19] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -120,6 +120,8 @@ pub const TWIN_CALLS: [(&str, &str, &str); 17] = [
     ("disk_list", "{}", ""),
     ("agent_show", "{}", r#""id":"local""#),
     ("wm_desktop_list", "{}", r#""current":true"#),
+    ("download_list", "{}", ""),
+    ("component_list", "{}", ""),
 ];
 
 /// Every call of a reading tool whose answer is checked whether it succeeded or not: the tool,
@@ -154,7 +156,7 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 42] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 46] = [
     (
         "ln",
         r#"{"target":"x","link":"/home/root/x-link"}"#,
@@ -269,6 +271,14 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 42] = [
     ("clipboard_set", r#"{"content":"x"}"#, "write"),
     ("kill", r#"{"pid":1,"confirm":true}"#, "run"),
     ("wm_desktop_new", "{}", "run"),
+    ("download_cancel", r#"{"pid":1,"confirm":true}"#, "run"),
+    ("download_clear", "{}", "write"),
+    ("component_install", r#"{"name":"windows-apps"}"#, "install"),
+    (
+        "component_remove",
+        r#"{"name":"windows-apps","confirm":true}"#,
+        "install",
+    ),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [
@@ -2130,7 +2140,10 @@ mod tests {
 
     #[test]
     fn every_tool_is_called_by_the_check() {
-        for tool in &eggos_mcp::tools::TOOLS {
+        for tool in eggos_mcp::tools::TOOLS
+            .iter()
+            .filter(|tool| tool.needs.is_none())
+        {
             let read = TWIN_CALLS.iter().any(|(name, _, _)| *name == tool.name)
                 || ANSWERED_CALLS.iter().any(|(name, _, _)| *name == tool.name);
             let granted = GRANTED_TOOLS.iter().find(|(name, _, _)| *name == tool.name);

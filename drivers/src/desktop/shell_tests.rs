@@ -548,9 +548,13 @@ fn switching_profiles_lays_the_shell_out_again_and_keeps_windows_in_the_work_are
         let work = desktop.work_area();
         assert_eq!(desktop.window_rect(test), Some(work), "{profile:?}");
         let terminal = desktop.window();
-        assert!(terminal.bottom() <= work.bottom() && terminal.y >= work.y);
+        assert!(
+            terminal.y >= work.y && terminal.y + TITLE_HEIGHT < work.bottom(),
+            "{profile:?}: the title bar stays in the work area, the rest may hang off its bottom"
+        );
+        let title_bar = Rect::new(terminal.x, terminal.y, terminal.width, TITLE_HEIGHT);
         for panel in desktop.layout().panels() {
-            assert!(!panel.overlaps(&terminal), "{profile:?}");
+            assert!(!panel.overlaps(&title_bar), "{profile:?}");
         }
     }
 }

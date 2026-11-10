@@ -1614,8 +1614,12 @@ mod tests {
         assert!(powershell.contains(
             "$WorkPath = (Resolve-Path -LiteralPath $Work).ProviderPath.Replace(',', ',,')\n"
         ));
-        assert!(powershell.contains("[-NoNetwork] [-Work <image>] [-Memory <size>]\""));
-        assert!(shell.contains("[--no-network] [--work <image>] [--memory <size>]\""));
+        assert!(
+            powershell.contains("[-NoNetwork] [-NoComponents] [-Work <image>] [-Memory <size>]\"")
+        );
+        assert!(
+            shell.contains("[--no-network] [--no-components] [--work <image>] [--memory <size>]\"")
+        );
         assert!(shell.contains("    --memory)\n"));
         assert!(shell.contains("  set -- \"$@\" -m \"$memory\"\n"));
         assert!(shell.contains("at least 128M\" >&2"));
