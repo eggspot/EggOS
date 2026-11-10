@@ -21,4 +21,5 @@ pub mod serial;
 pub mod storage;
 pub use eggos_terminal as terminal;
 pub mod timer;
+pub mod usb;
 pub mod virtio;

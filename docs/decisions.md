@@ -19037,3 +19037,39 @@ the license, by an explicit instruction recorded here.
   NVMe namespaces past the first, and AHCI port multipliers; hot-plug; disks past `vdd` (four at
   most); names such as `nvme0n1` and `sda` beside `vdX`; the backup GPT header when the primary is
   damaged.
+
+## D239 Keyboards and mice on real PCs: xHCI with USB HID boot keyboards and mice, and the 8042 with PS/2 keyboards and mice (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** A PC's keyboard and mouse are USB devices on its xHCI controller, or, on most
+  laptops' built-in keyboard and many touchpads, PS/2 devices behind the 8042. QEMU's virtio input
+  devices are neither.
+- **Decision.**
+  - **`eggos_drivers::usb`**: setup packets and the descriptors needed to find a HID boot interface
+    (class 03h, subclass 01h, protocol 1 keyboard or 2 mouse) and its interrupt IN endpoint.
+  - **`eggos_drivers::usb::xhci`** (xHCI 1.2): the firmware's legacy-support ownership taken, the
+    controller halted, reset, given up to 16 slots, its scratchpad pages, a command ring and one
+    event ring, and started; every root port with a device reset where it is not enabled, then the
+    device addressed (Enable Slot, Address Device), its control endpoint's packet size read and
+    evaluated, its configuration read, a boot interface selected (`SET_CONFIGURATION`,
+    `SET_PROTOCOL` boot and `SET_IDLE`, the last two allowed to stall, which resets the control
+    endpoint), its interrupt endpoint configured with the interval xHCI encodes for its speed, and
+    one report transfer kept queued. Reports are decoded as they complete; the keyboards' lock
+    lights go out as a `SET_REPORT` that is not waited for. One controller is one input device.
+  - **`eggos_drivers::input::hid`**: boot keyboard reports become presses and releases in Linux key
+    codes (usage IDs of HID Usage Tables 1.4, chapter 10; the modifiers' eight bits), rollover
+    reports change nothing; boot mouse reports become buttons, motion and the optional wheel byte.
+  - **`eggos_drivers::input::ps2`**: the 8042 with its interrupts off and translation on, so the
+    keyboard speaks scan code set 1, whose make codes are Linux key codes and whose `E0` codes are
+    mapped (the fake shifts dropped, Pause as one press); the mouse with the IntelliMouse wheel when
+    it identifies as one (sample rates 200, 100, 80), three- or four-byte packets, Y and the wheel
+    turned to the kernel's directions. The x86_64 HAL drives it at ports 60h/64h unless the `FADT`
+    (revision 3 and later) says there is no 8042, behind `Platform::start_legacy_input`,
+    `poll_legacy_input` and `set_legacy_lights`; the kernel installs it as one input device at boot.
+  - The kernel binds xHCI by PCI class (`xhci`, a default feature), waits 300 ms for root-port
+    devices to show up, and installs the controller when a keyboard or mouse answered.
+- **Not yet.** Building and running (QEMU: `qemu-xhci` with `usb-kbd` and `usb-mouse`; the PS/2
+  devices of `q35` and `pc` now also appear as an input device, which the QEMU checks' device
+  lists must take); USB hubs (a keyboard behind a monitor's hub or a docking station); hot-plug
+  after boot; report protocol (HID report descriptors: multimedia keys, touchpads' gestures,
+  absolute tablets, touch screens); I2C HID touchpads and keyboards (ACPI namespace, D237); USB mass
+  storage; interrupts instead of polling; AArch64's 8042-less machines need nothing more.

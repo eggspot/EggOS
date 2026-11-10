@@ -32,7 +32,7 @@ eggos-math = { path = "../math" }
 workspace = true
 
 [features]
-default = ["virtio-gpu", "virtio-input", "virtio-blk", "virtio-console", "virtio-net", "rtc", "nvme", "ahci"]
+default = ["virtio-gpu", "virtio-input", "virtio-blk", "virtio-console", "virtio-net", "rtc", "nvme", "ahci", "xhci"]
 virtio = []
 virtio-gpu = ["virtio"]
 virtio-input = ["virtio"]
@@ -43,7 +43,8 @@ virtio-net = ["virtio"]
 rtc = []
 nvme = []
 ahci = []
-qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk", "virtio-console", "virtio-net", "rtc", "nvme", "ahci"]
+xhci = []
+qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk", "virtio-console", "virtio-net", "rtc", "nvme", "ahci", "xhci"]
 qemu-test-fatal-exception = ["qemu-test"]
 qemu-bench = ["qemu-test", "dep:eggos-toolkit", "dep:eggos-image", "dep:eggos-math"]
 qemu-boot-clock = []

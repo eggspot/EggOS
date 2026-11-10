@@ -30,6 +30,8 @@ pub mod rtc;
 pub(crate) mod selftest;
 #[cfg(any(test, feature = "nvme", feature = "ahci"))]
 pub mod storage;
+#[cfg(any(test, feature = "xhci"))]
+pub mod usb;
 #[cfg(any(test, feature = "virtio"))]
 pub mod virtio;
 pub mod window;
@@ -223,6 +225,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &storage::NVME_DRIVER,
     #[cfg(any(test, feature = "ahci"))]
     &storage::AHCI_DRIVER,
+    #[cfg(any(test, feature = "xhci"))]
+    &usb::XHCI_DRIVER,
 ];
 
 /// What a device is, as the bus that found it says.
