@@ -27,9 +27,8 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .global _start
 _start:
-    // x0 is the UEFI loader's handoff (D236), 0 from QEMU's ELF loader. The loader enters on
-    // one CPU only, whatever its affinity; otherwise only the CPU whose affinity (MPIDR_EL1
-    // Aff0-Aff3) is all zero boots for now, and every other CPU, in any cluster, parks.
+    // Only the CPU whose affinity (MPIDR_EL1 Aff0-Aff3) is all zero boots for now; park
+    // every other CPU, in any cluster.
     mov     x15, x0
     cbnz    x15, 0f
     mrs     x0, mpidr_el1
