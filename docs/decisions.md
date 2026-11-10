@@ -19411,3 +19411,19 @@ the license, by an explicit instruction recorded here.
   already downloaded); a signed store index (needs the owner's key); downloading only the files of
   the component asked for (range requests) instead of the whole store; delta updates applied
   atomically between versions; a background download that does not block the command.
+
+## D258 Editions as component presets: `component edition` and the MCP tool `component_edition` (M16, first part; D18; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `eggos_components::editions` names four editions as lists of components: server
+  (the base alone), personal, professional and enterprise (today each with the Windows and Mac
+  apps layers, the only components a store offers; the lists grow as the desktop, the built-in
+  apps, AI services and server roles become components). `component edition` lists them, with a
+  star at the edition the installed components match exactly; `component edition <name>`
+  (`--dry-run`) installs every component of it the store offers for this machine and that is not
+  installed yet, one after the other through `component install`'s path, downloading the store if
+  needed (D257). The registry's `COMPONENT_EDITION` and the MCP tool `component_edition` (install
+  grant) are its CLI and AI front-ends.
+- **Not yet.** Building and running; the GUI front-end (D22): an edition choice in Settings'
+  Components pane and in first run, which needs a Claude Fable design; editions that also remove
+  what they do not include; editions' own settings (updates, policies) for professional and
+  enterprise.

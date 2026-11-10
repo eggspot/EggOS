@@ -15,7 +15,7 @@ use eggos_mcp::json::JsonWriter;
 /// The command's usage.
 pub const USAGE: &str = "usage: component list [--json]\n       component install [--dry-run] \
                          [--json] <name>\n       component remove [--yes] [--dry-run] [--json] \
-                         <name>\n";
+                         <name>\n       component edition [--dry-run] [<name>]\n";
 /// The exit status of a command line written wrongly.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of a refusal or a failure.
@@ -61,6 +61,8 @@ pub enum Command<'a> {
         dry_run: bool,
         json: bool,
     },
+    /// `component edition`: the editions, or the components of `name` installed (D258).
+    Edition { name: Option<&'a str>, dry_run: bool },
     /// `component remove`.
     Remove {
         name: &'a str,
@@ -83,11 +85,13 @@ pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
             "--" if !operands_only => operands_only = true,
             _ if word.starts_with('-') && !operands_only => return None,
             _ if name.is_none() && verb != "list" => name = Some(word),
+            _ if verb == "edition" => return None,
             _ => return None,
         }
     }
     match verb {
         "list" => Some(Command::List { json }),
+        "edition" if !json => Some(Command::Edition { name, dry_run }),
         "install" => Some(Command::Install {
             name: name?,
             dry_run,
@@ -115,7 +119,10 @@ pub fn run<F: Files, C: Console>(
         return USAGE_STATUS;
     };
     let mut store = manager::find_store(files, context.arch);
-    let wants_store = matches!(command, Command::Install { dry_run: false, .. });
+    let wants_store = matches!(
+        command,
+        Command::Install { dry_run: false, .. } | Command::Edition { name: Some(_), dry_run: false }
+    );
     if store.is_none() && wants_store && let Some(download) = context.download {
         let path = manager::downloaded_store_path(manager::VERSION, context.arch);
         if download(&manager::store_url(manager::VERSION, context.arch), &path) {
@@ -129,6 +136,7 @@ pub fn run<F: Files, C: Console>(
     };
     match command {
         Command::List { json } => list(files, &mut out, store.as_ref(), json),
+        Command::Edition { name, dry_run } => edition(files, &mut out, store.as_ref(), context.pid, name, dry_run),
         Command::Install {
             name,
             dry_run,
@@ -376,6 +384,52 @@ fn list<F: Files, C: Console>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn edition<F: Files, C: Console>(
+    files: &mut F,
+    out: &mut Out<'_, C>,
+    store: Option<&Store>,
+    pid: u32,
+    name: Option<&str>,
+    dry_run: bool,
+) -> i32 {
+    let installed = manager::installed(files);
+    let names = installed.iter().map(|component| component.name.as_str());
+    let Some(name) = name else {
+        let current = crate::editions::current(names);
+        for edition in crate::editions::EDITIONS {
+            let mark = if current.is_some_and(|current| current.name == edition.name) { "*" } else { " " };
+            out.say(&alloc::format!("{mark} {}\t{}", edition.name, edition.summary));
+        }
+        return 0;
+    };
+    let Some(edition) = crate::editions::edition(name) else {
+        out.say(&alloc::format!("No edition named \"{name}\": component edition names them."));
+        return FAILED;
+    };
+    let missing: alloc::vec::Vec<&str> = edition
+        .components
+        .iter()
+        .copied()
+        .filter(|wanted| !installed.iter().any(|component| component.name == *wanted))
+        .filter(|wanted| store.is_none_or(|store| store.index.components.iter().any(|offered| offered.name == *wanted)))
+        .collect();
+    if missing.is_empty() {
+        out.say(&alloc::format!("{} is installed: nothing to add.", edition.title));
+        return 0;
+    }
+    if dry_run {
+        out.say(&alloc::format!("Would install for {}: {}", edition.title, missing.join(", ")));
+        return 0;
+    }
+    for component in missing {
+        let status = install(files, out, store, pid, component, false, false);
+        if status != 0 {
+            return status;
+        }
+    }
+    0
+}
+
 fn install<F: Files, C: Console>(
     files: &mut F,
     out: &mut Out<'_, C>,

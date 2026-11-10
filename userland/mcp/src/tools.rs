@@ -182,6 +182,8 @@ pub enum Kind {
     DownloadClear,
     /// `component_list`: the components the store offers and those installed (D235).
     ComponentList,
+    /// `component_edition`: installs an edition's components (D258).
+    ComponentEdition,
     /// `component_install`: installs a component from the component store (D235).
     ComponentInstall,
     /// `component_remove`: removes an installed component (D235).
@@ -435,7 +437,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 73] = [
+pub const TOOLS: [Tool; 74] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -774,6 +776,11 @@ pub const TOOLS: [Tool; 73] = [
         &registry::COMPONENT_LIST,
         Kind::ComponentList,
         twin("/bin/component", &["list", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::COMPONENT_EDITION,
+        Kind::ComponentEdition,
+        twin("/bin/component", &["edition"], Operand::Name),
     ),
     tool(
         &registry::COMPONENT_INSTALL,

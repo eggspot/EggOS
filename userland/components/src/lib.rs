@@ -11,6 +11,7 @@
 extern crate alloc;
 
 pub mod command;
+pub mod editions;
 pub mod index;
 pub mod manager;
 pub mod messages;

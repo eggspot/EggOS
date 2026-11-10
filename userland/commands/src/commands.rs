@@ -1795,6 +1795,35 @@ pub const COMPONENT_LIST: CommandDefinition = CommandDefinition {
 };
 
 /// `component install` (D235).
+/// `component edition` (D258).
+pub const COMPONENT_EDITION: CommandDefinition = CommandDefinition {
+    words: &["component", "edition"],
+    summary: "Lists the editions, or installs an edition's components.",
+    description: "Without a name, lists the editions (server, personal, professional, enterprise) \
+                  with a star at the one the installed components make. With a name, installs \
+                  every component of that edition the store offers for this machine and that is \
+                  not installed yet, one after the other as component install does. --dry-run \
+                  says what it would install.",
+    options: &[DRY_RUN_OPTION],
+    operands: &[operand("edition", ValueType::Text, Count::ZeroOrOne)],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&NO_STORE, 1),
+        exits(&COMPONENT_BUSY, 1),
+        exits(&STORE_DAMAGED, 1),
+        exits(&NO_SPACE, 1),
+        exits(&INSTALL_FAILED, 1),
+        exits(&PERMISSION_DENIED, 1),
+    ],
+    examples: &[example(
+        "component edition",
+        "  server\tThe base alone: no desktop, no foreign apps, every service added by hand.\n  personal\tWindows and macOS apps beside EggOS's own.\n  professional\tPersonal, with every tool for work that the store offers.\n  enterprise\tProfessional, ready for managed fleets.\n",
+    )],
+    surface: Surface::Gui("Settings: Components"),
+};
+
 pub const COMPONENT_INSTALL: CommandDefinition = CommandDefinition {
     words: &["component", "install"],
     summary: "Installs a component from the component store.",
@@ -3948,7 +3977,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 103] = [
+pub static COMMANDS: [CommandDefinition; 104] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -3967,6 +3996,7 @@ pub static COMMANDS: [CommandDefinition; 103] = [
     CHMOD,
     CLIP_GET,
     CLIP_SET,
+    COMPONENT_EDITION,
     COMPONENT_INSTALL,
     COMPONENT_LIST,
     COMPONENT_REMOVE,
