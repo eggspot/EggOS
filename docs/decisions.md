@@ -19570,3 +19570,31 @@ the license, by an explicit instruction recorded here.
   mitigations (an IBPB on entry or the untrained return thunk, CVE-2022-29900) and SRSO; filling
   the return stack buffer on context switch; STIBP for SMT siblings; KPTI for CPUs Meltdown
   affects (separate user page tables, D47).
+
+## D268 Intel's integrated display engine: the firmware's mode taken over, tear-free flips between two GTT-mapped buffers and the cursor plane (M13's vendor GPU drivers, part 1; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** On a real PC the display was the firmware's framebuffer (D236): drawn in place, so
+  the screen can show a frame half drawn, every read of it is a slow uncached one, and the
+  pointer is drawn into the frame. Most PCs EggOS targets have Intel integrated graphics.
+- **Decision.**
+  - `eggos_drivers::gpu::intel` drives display versions 9 to 14 (Skylake to Meteor Lake,
+    integrated only, by the device id's high byte; discrete cards keep their surfaces in their
+    own memory and are left to the firmware framebuffer). It finds the pipe whose primary plane
+    the firmware lit (`PLANE_CTL` enabled, linear, 32-bit XRGB in BGRX order), reads its size,
+    stride and surface, writes global-GTT entries (BAR 0's second half, 8-byte entries, each a
+    4 KiB page, flushed through `GFX_FLSH_CNTL`), flips by writing `PLANE_STRIDE` then
+    `PLANE_SURF` (latched at the next vertical blank), checks `PLANE_SURFLIVE`, and drives the
+    64x64 ARGB cursor (`CUR_CTL`, `CUR_POS` with sign bits, `CUR_BASE` arming the change).
+  - The kernel's `intel_display` scanout (x86_64, feature `intel-display`, on by default) keeps
+    the kernel's framebuffer in cached memory, so drawing and reading it is fast, and two scanout
+    buffers in DMA memory (4 MiB chunks, as the frame allocator gives no more at once) mapped at
+    the top of the global GTT, below the cursor, clear of the firmware's surface. A flush waits
+    for the previous flip to show, copies this flush's damage and what that buffer missed since
+    it was last shown into the hidden buffer, writes those lines back with `clflush` (the display
+    engine does not snoop the caches) and flips. The pointer moves without redrawing anything.
+  - Mode setting stays the firmware's: no display PLLs, link training or hot-plug yet, and the
+    mode the firmware picked is the one EggOS shows. The DMC firmware (D265's
+    `display-firmware`) is not loaded yet, so the deepest display power states stay off.
+- **Not yet.** Building and running on Intel hardware; loading the DMC; mode setting and a second
+  display; waiting for flips on the vertical-blank interrupt instead of polling; AMD's display
+  engine (DCN) and NVIDIA's; the Wi-Fi adapter driver.

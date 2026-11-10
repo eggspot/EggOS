@@ -23,9 +23,11 @@ then `diskutil unmountDisk /dev/diskN` and `sudo dd if=<image> of=/dev/rdiskN bs
 Turn Secure Boot off in the firmware's setup (the loader is not signed yet), then choose the USB
 stick in the firmware's boot menu. EggOS starts with its home in memory.
 
-What it drives: the firmware's framebuffer (D236), ACPI tables and, on AArch64, GICv2/v3/v4 and
-PSCI (D237), NVMe and AHCI disks (D238), USB keyboards and mice on the root ports and PS/2 ones
-(D239), and Intel e1000/e1000e/igc and Realtek RTL8111/8125 wired network adapters (D240).
+What it drives: the firmware's framebuffer (D236), or Intel's integrated graphics from Skylake to
+Meteor Lake at the firmware's mode with tear-free flips and a hardware pointer (D268); ACPI tables
+and, on AArch64, GICv2/v3/v4 and PSCI (D237); NVMe and AHCI disks (D238) and USB flash drives
+(D264); USB keyboards and mice, through hubs too, and PS/2 ones (D239, D254); and Intel
+e1000/e1000e/igc and Realtek RTL8111/8125 wired network adapters (D240).
 
 ## Install it
 

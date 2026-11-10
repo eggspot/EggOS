@@ -36,6 +36,8 @@ pub mod storage;
 pub mod usb;
 #[cfg(any(test, feature = "ethernet"))]
 pub mod ethernet;
+#[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
+pub mod intel_display;
 #[cfg(any(test, feature = "virtio"))]
 pub mod virtio;
 pub mod window;
@@ -240,6 +242,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &usb::XHCI_DRIVER,
     #[cfg(any(test, feature = "ethernet"))]
     &ethernet::ETHERNET_DRIVER,
+    #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
+    &intel_display::INTEL_DISPLAY_DRIVER,
 ];
 
 /// What a device is, as the bus that found it says.

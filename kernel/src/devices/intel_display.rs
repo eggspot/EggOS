@@ -1,0 +1,298 @@
+//! Intel's integrated display engine on PCI (D268): the plane the firmware lit, taken over at its
+//! mode. The kernel draws into a framebuffer in ordinary cached memory; a flush copies the damage
+//! into whichever of two buffers the plane is not showing, writes those lines back from the
+//! caches (the display engine does not snoop them) and flips the plane to it, so a frame is never
+//! shown half drawn. The pointer is the engine's 64x64 ARGB cursor plane.
+
+use super::dma::DmaRegion;
+use super::{Deadline, DeviceId, DmaCoherence, DriverDescriptor, Identity, Match, Probe, ProbeError, ProbePass};
+use crate::display::{Mode, Rect, Scanout};
+use alloc::vec;
+use alloc::vec::Vec;
+use eggos_drivers::dma::DmaMemory;
+use eggos_drivers::gpu::intel::{self, DisplayEngine, LitPlane, Refusal};
+use eggos_drivers::io::Mmio;
+use eggos_drivers::pci;
+
+const DISPLAY_CONTROLLER: u8 = 0x03;
+const VGA_COMPATIBLE: u8 = 0x00;
+const CHUNK_BYTES: usize = 4 << 20;
+const CACHE_LINE: usize = 64;
+const MAX_PENDING: usize = 16;
+
+/// Intel's integrated graphics (PCI class 03h, subclass 00h, vendor 8086h).
+pub static INTEL_DISPLAY_DRIVER: DriverDescriptor = DriverDescriptor {
+    name: "intel-display",
+    pass: ProbePass::Device,
+    matches: &[Match::PciClass {
+        class: DISPLAY_CONTROLLER,
+        subclass: VGA_COMPATIBLE,
+    }],
+    probe: probe_intel_display,
+};
+
+struct Buffer {
+    chunks: Vec<DmaRegion>,
+    surface: u32,
+}
+
+impl Buffer {
+    fn allocate(bytes: usize) -> Result<Self, ProbeError> {
+        let mut chunks = Vec::new();
+        let mut left = bytes;
+        while left > 0 {
+            let size = left.min(CHUNK_BYTES);
+            let chunk = DmaRegion::allocate(size).map_err(|_| ProbeError::Refused("no memory for the display's buffers"))?;
+            left -= size;
+            chunks.push(chunk);
+        }
+        Ok(Self { chunks, surface: 0 })
+    }
+
+    fn pages(&self, bytes: usize) -> impl Iterator<Item = u64> + '_ {
+        let pages = bytes.div_ceil(intel::GTT_PAGE as usize);
+        self.chunks
+            .iter()
+            .flat_map(|chunk| {
+                let base = chunk.dma_addr().get();
+                (0..chunk.len() as u64 / intel::GTT_PAGE).map(move |page| base + page * intel::GTT_PAGE)
+            })
+            .take(pages)
+    }
+
+    fn write(&self, mut offset: usize, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            let chunk = &self.chunks[offset / CHUNK_BYTES];
+            let within = offset % CHUNK_BYTES;
+            let length = bytes.len().min(CHUNK_BYTES - within);
+            // SAFETY: the chunk is this buffer's own DMA memory, at least `within + length` bytes
+            // long since every chunk but the last is `CHUNK_BYTES` and offsets stay inside the
+            // frame; the display engine only reads it.
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), chunk.as_mut_ptr().add(within), length);
+                write_back(chunk.as_mut_ptr().add(within), length);
+            }
+            offset += length;
+            bytes = &bytes[length..];
+        }
+    }
+}
+
+unsafe fn write_back(start: *mut u8, length: usize) {
+    let first = start as usize & !(CACHE_LINE - 1);
+    let mut line = first;
+    while line < start as usize + length {
+        // SAFETY: `line` is inside a cache line of the mapped range the caller names; `clflush`
+        // writes it back and drops it from the caches, changing no memory.
+        unsafe { core::arch::x86_64::_mm_clflush(line as *const u8) };
+        line += CACHE_LINE;
+    }
+}
+
+fn fence() {
+    // SAFETY: `mfence` only orders this CPU's memory accesses, the write-backs above included.
+    unsafe { core::arch::x86_64::_mm_mfence() };
+}
+
+struct IntelDisplay {
+    engine: DisplayEngine<Mmio>,
+    mode: Mode,
+    stride: u32,
+    frame: Vec<u32>,
+    buffers: [Buffer; 2],
+    missing: [Vec<Rect>; 2],
+    front: Option<usize>,
+    cursor: DmaRegion,
+    cursor_surface: u32,
+    hotspot: (u32, u32),
+}
+
+// SAFETY: the registers and buffers belong to this scanout alone once installed, and the
+// display's lock serializes every use.
+unsafe impl Send for IntelDisplay {}
+
+impl IntelDisplay {
+    fn copy(&self, buffer: usize, rect: Rect) {
+        let rect = rect.clipped(self.mode.width, self.mode.height);
+        let mut row = vec![0u8; rect.width as usize * 4];
+        for y in rect.y..rect.y + rect.height {
+            let start = (y * self.mode.width + rect.x) as usize;
+            for (bytes, pixel) in row.chunks_exact_mut(4).zip(&self.frame[start..start + rect.width as usize]) {
+                bytes.copy_from_slice(&pixel.to_le_bytes());
+            }
+            let offset = y as usize * self.stride as usize + rect.x as usize * 4;
+            self.buffers[buffer].write(offset, &row);
+        }
+    }
+
+    fn remember(missing: &mut Vec<Rect>, rects: &[Rect]) {
+        missing.extend_from_slice(rects);
+        if missing.len() > MAX_PENDING
+            && let Some(first) = missing.first().copied()
+        {
+            let all = missing.iter().fold(first, |all, rect| all.union(*rect));
+            missing.clear();
+            missing.push(all);
+        }
+    }
+
+    fn cursor_corner(&self, at: (u32, u32)) -> (i32, i32) {
+        (at.0 as i32 - self.hotspot.0 as i32, at.1 as i32 - self.hotspot.1 as i32)
+    }
+}
+
+impl Scanout for IntelDisplay {
+    fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    fn pixels(&mut self) -> &mut [u32] {
+        &mut self.frame
+    }
+
+    fn flush(&mut self, rects: &[Rect], deadline: &mut Deadline) -> Result<usize, &'static str> {
+        if let Some(front) = self.front {
+            while !self.engine.showing(self.buffers[front].surface) {
+                if !deadline.keep_waiting() {
+                    return Err(Refusal::FlipTimedOut.description());
+                }
+                core::hint::spin_loop();
+            }
+        }
+        let hidden = self.front.map_or(0, |front| 1 - front);
+        let missing = core::mem::take(&mut self.missing[hidden]);
+        for rect in missing.iter().chain(rects) {
+            self.copy(hidden, *rect);
+        }
+        fence();
+        Self::remember(&mut self.missing[1 - hidden], rects);
+        self.engine.flip(self.buffers[hidden].surface, self.stride);
+        self.front = Some(hidden);
+        Ok(rects.len())
+    }
+
+    fn draws_pointer(&self) -> bool {
+        true
+    }
+
+    fn pointer_image(&mut self) -> Option<&mut [u32]> {
+        // SAFETY: the cursor region is this scanout's own, `CURSOR_BYTES` long and aligned to a
+        // frame; `&mut self` makes the borrow unique.
+        Some(unsafe {
+            core::slice::from_raw_parts_mut(self.cursor.as_mut_ptr().cast::<u32>(), intel::CURSOR_BYTES / 4)
+        })
+    }
+
+    fn show_pointer(&mut self, hotspot: (u32, u32), at: (u32, u32), _deadline: &mut Deadline) -> Result<(), &'static str> {
+        self.hotspot = hotspot;
+        // SAFETY: the cursor region is mapped for `CURSOR_BYTES`.
+        unsafe { write_back(self.cursor.as_mut_ptr(), intel::CURSOR_BYTES) };
+        fence();
+        let (x, y) = self.cursor_corner(at);
+        self.engine.show_cursor(self.cursor_surface, x, y);
+        Ok(())
+    }
+
+    fn move_pointer(&mut self, at: (u32, u32), _deadline: &mut Deadline) -> Result<(), &'static str> {
+        let (x, y) = self.cursor_corner(at);
+        self.engine.show_cursor(self.cursor_surface, x, y);
+        Ok(())
+    }
+
+    fn hide_pointer(&mut self, _deadline: &mut Deadline) -> Result<(), &'static str> {
+        self.engine.hide_cursor(self.cursor_surface);
+        Ok(())
+    }
+}
+
+/// Where the driver puts its surfaces in a global GTT translating `span` bytes, below its top:
+/// the cursor, then the two buffers of `buffer_bytes` each, all aligned for the planes; `None`
+/// when they would reach the firmware's surface, which ends at `firmware_end`.
+pub fn surfaces(span: u64, buffer_bytes: u64, firmware_end: u64) -> Option<(u32, [u32; 2])> {
+    let align_down = |at: u64| at & !(intel::SURFACE_ALIGNMENT - 1);
+    let cursor = span.checked_sub(intel::SURFACE_ALIGNMENT)?;
+    let second = align_down(cursor.checked_sub(buffer_bytes)?);
+    let first = align_down(second.checked_sub(buffer_bytes)?);
+    if first < firmware_end || span > 1 << 32 {
+        return None;
+    }
+    Some((cursor as u32, [first as u32, second as u32]))
+}
+
+fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+    let node = *probe.table().get(id).ok_or(ProbeError::Refused("no such device"))?;
+    let Identity::Pci(function) = node.identity else {
+        return Err(ProbeError::Refused("not a PCI function"));
+    };
+    if function.vendor_id != intel::VENDOR_INTEL || !intel::is_supported(function.device_id) {
+        return Err(ProbeError::Refused(Refusal::UnknownDevice.description()));
+    }
+    if crate::display::mode().is_some() {
+        return Err(ProbeError::Refused("a display is already in use"));
+    }
+    if node.dma != DmaCoherence::Coherent {
+        return Err(ProbeError::Refused("the device's DMA is not coherent"));
+    }
+    let region = node.regions[0];
+    if region.is_empty() {
+        return Err(ProbeError::Refused("the engine's registers are not in memory space"));
+    }
+    let length = usize::try_from(region.len()).map_err(|_| ProbeError::Refused("the register block is too large"))?;
+    let config = probe.pci_config().ok_or(ProbeError::Refused("no PCI configuration space"))?;
+    let graphics_control = config.read32(function.address, intel::GRAPHICS_CONTROL) as u16;
+    pci::enable_memory_and_bus_master(config, function.address);
+    let base = probe.map_window(region)?;
+    // SAFETY: BAR 0 of Intel's integrated graphics is its registers and, in its second half, its
+    // global GTT, mapped as device memory by `map_window` for as long as the kernel runs; only
+    // this driver drives the display engine.
+    let regs = unsafe { Mmio::new(base, length) };
+    let (engine, plane) = DisplayEngine::take(regs, length).map_err(|refusal| ProbeError::Refused(refusal.description()))?;
+    let LitPlane { width, height, stride_bytes, surface, .. } = plane;
+    let stride = intel::stride_for(width);
+    let buffer_bytes = (stride as u64 * u64::from(height)).next_multiple_of(intel::GTT_PAGE);
+    let firmware_end = u64::from(surface) + u64::from(stride_bytes) * u64::from(height);
+    let (cursor_surface, [first, second]) = surfaces(intel::gtt_span(graphics_control), buffer_bytes, firmware_end)
+        .ok_or(ProbeError::Refused(Refusal::NoGttSpace.description()))?;
+    let mut buffers = [Buffer::allocate(buffer_bytes as usize)?, Buffer::allocate(buffer_bytes as usize)?];
+    for (buffer, at) in buffers.iter_mut().zip([first, second]) {
+        buffer.surface = at;
+        engine.map(u64::from(at), &mut buffer.pages(buffer_bytes as usize));
+    }
+    let cursor = DmaRegion::allocate(intel::CURSOR_BYTES).map_err(|_| ProbeError::Refused("no memory for the cursor"))?;
+    engine.map(u64::from(cursor_surface), &mut core::iter::once(cursor.dma_addr().get()).chain(
+        (1..intel::CURSOR_BYTES as u64 / intel::GTT_PAGE).map(|page| cursor.dma_addr().get() + page * intel::GTT_PAGE),
+    ));
+    let mode = Mode::new(width, height);
+    let whole = mode.rect();
+    let scanout = IntelDisplay {
+        engine,
+        mode,
+        stride,
+        frame: vec![0; width as usize * height as usize],
+        buffers,
+        missing: [vec![whole], vec![whole]],
+        front: None,
+        cursor,
+        cursor_surface,
+        hotspot: (0, 0),
+    };
+    crate::display::install(scanout).map_err(|_| ProbeError::Refused("a display is already in use"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_surfaces_sit_below_the_gtt_s_top_and_clear_of_the_firmware_s() {
+        let span = 2u64 << 30;
+        let buffer = 1920 * 4 * 1080u64;
+        let (cursor, [first, second]) = surfaces(span, buffer, 0x80_0000).unwrap();
+        assert_eq!(u64::from(cursor), span - intel::SURFACE_ALIGNMENT);
+        assert!(u64::from(second) + buffer <= u64::from(cursor));
+        assert!(u64::from(first) + buffer <= u64::from(second));
+        assert_eq!(u64::from(first) % intel::SURFACE_ALIGNMENT, 0);
+        assert_eq!(surfaces(32 << 20, buffer, 16 << 20), None);
+        assert_eq!(surfaces(0, buffer, 0), None);
+    }
+}

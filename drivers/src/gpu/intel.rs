@@ -1,0 +1,312 @@
+//! Intel's display engine, display versions 9 to 14 (Skylake to Meteor Lake; D268): the pipe and
+//! primary plane the firmware left lit are taken over as they are (no mode setting), the plane
+//! is flipped between two buffers the driver maps into the global GTT, and the 64x64 ARGB cursor
+//! plane shows the pointer.
+
+use crate::io::RegisterIo;
+
+/// Intel's PCI vendor id.
+pub const VENDOR_INTEL: u16 = 0x8086;
+/// The bytes of one global-GTT page.
+pub const GTT_PAGE: u64 = 4096;
+/// The alignment of a plane's or the cursor's surface in the global GTT.
+pub const SURFACE_ALIGNMENT: u64 = 256 * 1024;
+/// The cursor's side, in pixels.
+pub const CURSOR_SIDE: u32 = 64;
+/// The bytes of the cursor's image.
+pub const CURSOR_BYTES: usize = (CURSOR_SIDE * CURSOR_SIDE * 4) as usize;
+/// How many pipes the engine may have.
+pub const MAX_PIPES: usize = 4;
+/// The PCI configuration register holding the graphics memory controls (`GGC`).
+pub const GRAPHICS_CONTROL: u16 = 0x50;
+
+const PIPE_STRIDE: usize = 0x1000;
+const PLANE_CTL: usize = 0x70180;
+const PLANE_STRIDE: usize = 0x70188;
+const PLANE_SIZE: usize = 0x70190;
+const PLANE_SURF: usize = 0x7019c;
+const PLANE_SURFLIVE: usize = 0x701ac;
+const CUR_CTL: usize = 0x70080;
+const CUR_BASE: usize = 0x70084;
+const CUR_POS: usize = 0x70088;
+const GTT_FLUSH: usize = 0x101008;
+
+const PLANE_ENABLE: u32 = 1 << 31;
+const PLANE_FORMAT_SHIFT: u32 = 23;
+const PLANE_FORMAT_MASK: u32 = 0x1f;
+const PLANE_FORMAT_XRGB_8888: u32 = 8;
+const PLANE_ORDER_RGBX: u32 = 1 << 20;
+const PLANE_TILING_SHIFT: u32 = 10;
+const PLANE_TILING_MASK: u32 = 0x7;
+const PLANE_STRIDE_MASK: u32 = 0xfff;
+const STRIDE_UNIT: u32 = 64;
+const SURFACE_MASK: u32 = 0xffff_f000;
+const CURSOR_MODE_64_ARGB: u32 = 0x27;
+const CURSOR_NEGATIVE: u32 = 1 << 15;
+const CURSOR_FIELD: u32 = 0x7fff;
+const GTT_PRESENT: u64 = 1;
+const GTT_FLUSH_ENABLE: u32 = 1;
+const GTT_SIZE_SHIFT: u16 = 6;
+const GTT_SIZE_MASK: u16 = 0x3;
+const GTT_ENTRY_BYTES: u64 = 8;
+
+const DISPLAY_9_TO_14: [u8; 13] = [0x19, 0x31, 0x3e, 0x46, 0x4c, 0x4e, 0x59, 0x7d, 0x87, 0x8a, 0x9a, 0x9b, 0xa7];
+/// Why the display engine is not taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// A device this driver does not know.
+    UnknownDevice,
+    /// No pipe's primary plane is lit.
+    NothingLit,
+    /// The lit plane is tiled, or not 32-bit XRGB in BGRX order.
+    UnsupportedPlane,
+    /// The global GTT is too small for the driver's buffers.
+    NoGttSpace,
+    /// A flip did not take before the deadline.
+    FlipTimedOut,
+}
+
+impl Refusal {
+    /// The reason, for the console.
+    pub fn description(self) -> &'static str {
+        match self {
+            Refusal::UnknownDevice => "an Intel graphics device this driver does not know",
+            Refusal::NothingLit => "the firmware lit no display on it",
+            Refusal::UnsupportedPlane => "the firmware's plane is tiled or not 32-bit XRGB",
+            Refusal::NoGttSpace => "its graphics translation table has no room",
+            Refusal::FlipTimedOut => "the display did not take a new frame in time",
+        }
+    }
+}
+
+/// Whether `device` is one of Intel's integrated graphics devices with display versions 9 to 14,
+/// by its device id's high byte (discrete cards, whose surfaces live in their own memory, are
+/// not).
+pub fn is_supported(device: u16) -> bool {
+    DISPLAY_9_TO_14.contains(&((device >> 8) as u8))
+}
+
+/// The bytes the global GTT translates, from the `GGC` register's GTT size field: 1, 2 or 4 MiB
+/// of 8-byte entries, each translating one 4 KiB page.
+pub fn gtt_span(graphics_control: u16) -> u64 {
+    match (graphics_control >> GTT_SIZE_SHIFT) & GTT_SIZE_MASK {
+        0 => 0,
+        size => ((1u64 << size) << 20) / GTT_ENTRY_BYTES * GTT_PAGE,
+    }
+}
+
+/// The plane the firmware left lit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LitPlane {
+    /// Its pipe, 0 for A.
+    pub pipe: usize,
+    /// Its visible width and height, in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// Its row length in bytes.
+    pub stride_bytes: u32,
+    /// Where its surface is in the global GTT.
+    pub surface: u32,
+}
+
+/// The stride, in bytes, the driver's buffers use for `width` pixels.
+pub fn stride_for(width: u32) -> u32 {
+    (width * 4).next_multiple_of(STRIDE_UNIT)
+}
+
+/// The cursor position register's value for a top-left corner at (`x`, `y`), which may be off
+/// the screen to the left or top.
+pub fn cursor_position(x: i32, y: i32) -> u32 {
+    let field = |value: i32| {
+        let magnitude = value.unsigned_abs().min(CURSOR_FIELD);
+        if value < 0 { magnitude | CURSOR_NEGATIVE } else { magnitude }
+    };
+    field(x) | (field(y) << 16)
+}
+
+/// The global GTT entry that maps the page at device address `page`.
+pub fn gtt_entry(page: u64) -> u64 {
+    (page & !(GTT_PAGE - 1)) | GTT_PRESENT
+}
+
+/// The display engine, through its registers in `regs` (BAR 0), whose second half is the global
+/// GTT.
+pub struct DisplayEngine<R: RegisterIo> {
+    regs: R,
+    gtt_offset: usize,
+    pipe: usize,
+}
+
+impl<R: RegisterIo> DisplayEngine<R> {
+    /// The engine behind `regs`, `bar_bytes` long, and the plane the firmware lit on it.
+    pub fn take(regs: R, bar_bytes: usize) -> Result<(Self, LitPlane), Refusal> {
+        let mut engine = Self {
+            regs,
+            gtt_offset: bar_bytes / 2,
+            pipe: 0,
+        };
+        let lit = (0..MAX_PIPES)
+            .find(|&pipe| engine.plane(PLANE_CTL, pipe) & PLANE_ENABLE != 0)
+            .ok_or(Refusal::NothingLit)?;
+        engine.pipe = lit;
+        let control = engine.plane(PLANE_CTL, lit);
+        let format = (control >> PLANE_FORMAT_SHIFT) & PLANE_FORMAT_MASK;
+        let tiling = (control >> PLANE_TILING_SHIFT) & PLANE_TILING_MASK;
+        if format != PLANE_FORMAT_XRGB_8888 || tiling != 0 || control & PLANE_ORDER_RGBX != 0 {
+            return Err(Refusal::UnsupportedPlane);
+        }
+        let size = engine.plane(PLANE_SIZE, lit);
+        let plane = LitPlane {
+            pipe: lit,
+            width: (size & 0xffff) + 1,
+            height: (size >> 16) + 1,
+            stride_bytes: (engine.plane(PLANE_STRIDE, lit) & PLANE_STRIDE_MASK) * STRIDE_UNIT,
+            surface: engine.plane(PLANE_SURF, lit) & SURFACE_MASK,
+        };
+        Ok((engine, plane))
+    }
+
+    fn plane(&self, register: usize, pipe: usize) -> u32 {
+        self.regs.read32(register + pipe * PIPE_STRIDE)
+    }
+
+    fn set_plane(&self, register: usize, value: u32) {
+        self.regs.write32(register + self.pipe * PIPE_STRIDE, value);
+    }
+
+    /// Maps the device pages `pages` at global-GTT address `at` on, one entry each.
+    pub fn map(&self, at: u64, pages: &mut dyn Iterator<Item = u64>) {
+        let mut entry = self.gtt_offset + (at / GTT_PAGE) as usize * GTT_ENTRY_BYTES as usize;
+        for page in pages {
+            let value = gtt_entry(page);
+            self.regs.write32(entry, value as u32);
+            self.regs.write32(entry + 4, (value >> 32) as u32);
+            entry += GTT_ENTRY_BYTES as usize;
+        }
+        let _ = self.regs.read32(entry - GTT_ENTRY_BYTES as usize);
+        self.regs.write32(GTT_FLUSH, GTT_FLUSH_ENABLE);
+    }
+
+    /// Shows the surface at global-GTT address `surface`, rows `stride_bytes` long, from the next
+    /// vertical blank.
+    pub fn flip(&self, surface: u32, stride_bytes: u32) {
+        self.set_plane(PLANE_STRIDE, stride_bytes / STRIDE_UNIT);
+        self.set_plane(PLANE_SURF, surface & SURFACE_MASK);
+    }
+
+    /// Whether the plane scans out `surface` now.
+    pub fn showing(&self, surface: u32) -> bool {
+        self.plane(PLANE_SURFLIVE, self.pipe) & SURFACE_MASK == surface & SURFACE_MASK
+    }
+
+    /// Shows the cursor image at global-GTT address `image` with its top-left corner at
+    /// (`x`, `y`), from the next vertical blank.
+    pub fn show_cursor(&self, image: u32, x: i32, y: i32) {
+        let pipe = self.pipe * PIPE_STRIDE;
+        self.regs.write32(CUR_CTL + pipe, CURSOR_MODE_64_ARGB);
+        self.regs.write32(CUR_POS + pipe, cursor_position(x, y));
+        self.regs.write32(CUR_BASE + pipe, image & SURFACE_MASK);
+    }
+
+    /// Hides the cursor from the next vertical blank.
+    pub fn hide_cursor(&self, image: u32) {
+        let pipe = self.pipe * PIPE_STRIDE;
+        self.regs.write32(CUR_CTL + pipe, 0);
+        self.regs.write32(CUR_BASE + pipe, image & SURFACE_MASK);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct Registers(RefCell<BTreeMap<usize, u32>>);
+
+    impl RegisterIo for Registers {
+        fn read8(&self, _offset: usize) -> u8 {
+            0
+        }
+        fn write8(&self, _offset: usize, _value: u8) {}
+        fn read16(&self, _offset: usize) -> u16 {
+            0
+        }
+        fn write16(&self, _offset: usize, _value: u16) {}
+        fn read32(&self, offset: usize) -> u32 {
+            self.0.borrow().get(&offset).copied().unwrap_or(0)
+        }
+        fn write32(&self, offset: usize, value: u32) {
+            self.0.borrow_mut().insert(offset, value);
+        }
+    }
+
+    fn lit_on_pipe_b(control: u32) -> Registers {
+        let regs = Registers::default();
+        regs.write32(PLANE_CTL + PIPE_STRIDE, control);
+        regs.write32(PLANE_SIZE + PIPE_STRIDE, (1079 << 16) | 1919);
+        regs.write32(PLANE_STRIDE + PIPE_STRIDE, 7680 / 64);
+        regs.write32(PLANE_SURF + PIPE_STRIDE, 0x0010_0000);
+        regs
+    }
+
+    #[test]
+    fn the_lit_plane_is_found_with_its_size_stride_and_surface() {
+        let control = PLANE_ENABLE | (PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
+        let (_, plane) = DisplayEngine::take(lit_on_pipe_b(control), 16 << 20).ok().unwrap();
+        assert_eq!(
+            plane,
+            LitPlane {
+                pipe: 1,
+                width: 1920,
+                height: 1080,
+                stride_bytes: 7680,
+                surface: 0x0010_0000,
+            }
+        );
+    }
+
+    #[test]
+    fn tiled_or_rgb_ordered_planes_and_dark_engines_are_refused() {
+        let xrgb = PLANE_ENABLE | (PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
+        assert_eq!(
+            DisplayEngine::take(lit_on_pipe_b(xrgb | (1 << PLANE_TILING_SHIFT)), 16 << 20).err(),
+            Some(Refusal::UnsupportedPlane)
+        );
+        assert_eq!(
+            DisplayEngine::take(lit_on_pipe_b(xrgb | PLANE_ORDER_RGBX), 16 << 20).err(),
+            Some(Refusal::UnsupportedPlane)
+        );
+        assert_eq!(
+            DisplayEngine::take(Registers::default(), 16 << 20).err(),
+            Some(Refusal::NothingLit)
+        );
+    }
+
+    #[test]
+    fn a_flip_writes_the_stride_before_the_surface_and_maps_pages_into_the_gtt() {
+        let control = PLANE_ENABLE | (PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
+        let (engine, _) = DisplayEngine::take(lit_on_pipe_b(control), 16 << 20).ok().unwrap();
+        engine.flip(0x3fc0_0000, stride_for(1366));
+        assert_eq!(engine.regs.read32(PLANE_STRIDE + PIPE_STRIDE), 5504 / 64);
+        assert_eq!(engine.regs.read32(PLANE_SURF + PIPE_STRIDE), 0x3fc0_0000);
+        engine.map(0x2000, &mut [0x1_2345_6000u64, 0x7000].into_iter());
+        let first = (8 << 20) + 2 * 8;
+        assert_eq!(engine.regs.read32(first), 0x2345_6001);
+        assert_eq!(engine.regs.read32(first + 4), 1);
+        assert_eq!(engine.regs.read32(first + 8), 0x7001);
+        assert_eq!(engine.regs.read32(GTT_FLUSH), GTT_FLUSH_ENABLE);
+    }
+
+    #[test]
+    fn the_cursor_position_carries_signs_and_the_gtt_span_its_size_field() {
+        assert_eq!(cursor_position(10, 20), (20 << 16) | 10);
+        assert_eq!(cursor_position(-3, 5), (5 << 16) | 3 | CURSOR_NEGATIVE);
+        assert_eq!(gtt_span(0), 0);
+        assert_eq!(gtt_span(2 << GTT_SIZE_SHIFT), 2 << 30);
+        assert_eq!(gtt_span(3 << GTT_SIZE_SHIFT), 4 << 30);
+        assert!(is_supported(0x9a49));
+        assert!(!is_supported(0x1234));
+    }
+}

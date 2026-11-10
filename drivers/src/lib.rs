@@ -12,6 +12,7 @@ pub mod desktop;
 pub mod display;
 pub mod dma;
 pub mod ethernet;
+pub mod gpu;
 pub use eggos_font as font;
 pub mod input;
 pub mod interrupt;
