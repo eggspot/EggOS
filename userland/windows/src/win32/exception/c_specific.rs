@@ -10,7 +10,7 @@
 
 use super::context::Context;
 use super::dispatch::{self, NO_STATE, UnwindTarget};
-use super::frames::{self, Bridge};
+use super::frames::{self, Bridge, FuncletRegisters};
 use super::{DispatcherContext, ExceptionPointers, ExceptionRecord, disposition, filter, flag};
 use crate::library::Export;
 
@@ -44,11 +44,11 @@ impl Scope {
     }
 }
 
-fn call(target: u64, first: u64, frame: u64, frame_pointer: u64) -> u64 {
+fn call(target: u64, first: u64, frame: u64, registers: &FuncletRegisters) -> u64 {
     let mut bridge = Bridge::new(None, None);
     // SAFETY: `target` is a filter or `__finally` block of the program's scope table, of the
     // function whose frame is `frame`, which takes these two arguments.
-    unsafe { frames::call_funclet(&mut bridge, target, first, frame, frame_pointer) }
+    unsafe { frames::call_funclet(&mut bridge, target, first, frame, registers) }
 }
 
 fn execute(record: *mut ExceptionRecord, frame: u64, ip: u64) -> ! {
@@ -88,7 +88,7 @@ unsafe extern "efiapi" fn c_specific_handler(
     let pc = dispatcher.control_rva();
     let base = dispatcher.image_base;
     // SAFETY: the dispatcher context's `CONTEXT` holds the frame's registers.
-    let frame_pointer = frames::frame_pointer(unsafe { &*dispatcher.context_record });
+    let registers = FuncletRegisters::of(unsafe { &*dispatcher.context_record });
     // SAFETY: the handler's contract: the record of the exception being dispatched.
     let flags = unsafe { (*record).flags };
     if flags & (flag::UNWINDING | flag::EXIT_UNWIND) == 0 {
@@ -104,7 +104,7 @@ unsafe extern "efiapi" fn c_specific_handler(
                 filter_rva => {
                     let mut pointers = ExceptionPointers { record, context };
                     let pointers = (&raw mut pointers) as u64;
-                    call(base + u64::from(filter_rva), pointers, frame, frame_pointer) as i32
+                    call(base + u64::from(filter_rva), pointers, frame, &registers) as i32
                 }
             };
             if verdict < 0 {
@@ -134,7 +134,7 @@ unsafe extern "efiapi" fn c_specific_handler(
                     base + u64::from(scope.handler),
                     ABNORMAL_TERMINATION,
                     frame,
-                    frame_pointer,
+                    &registers,
                 );
             }
         }

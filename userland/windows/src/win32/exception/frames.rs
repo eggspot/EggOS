@@ -216,7 +216,7 @@ unsafe extern "C" fn enter_program(
     _second: u64,
     _third: u64,
     _fourth: u64,
-    _frame_pointer: u64,
+    _registers: *const u64,
 ) -> u64 {
     core::arch::naked_asm!(
         "push rbx",
@@ -248,29 +248,41 @@ unsafe extern "C" fn enter_program(
     _second: u64,
     _third: u64,
     _fourth: u64,
-    _frame_pointer: u64,
+    _registers: *const u64,
 ) -> u64 {
     core::arch::naked_asm!(
-        "stp x29, x30, [sp, #-32]!",
-        "str x19, [sp, #16]",
-        "mov x19, x0",
+        "stp x29, x30, [sp, #-96]!",
+        "stp x19, x20, [sp, #16]",
+        "stp x21, x22, [sp, #32]",
+        "stp x23, x24, [sp, #48]",
+        "stp x25, x26, [sp, #64]",
+        "stp x27, x28, [sp, #80]",
         "mov x16, x1",
+        "adr x9, 2f",
+        "str x9, [x0, #{return_address}]",
+        "mov x9, sp",
+        "str x9, [x0, #{stack}]",
         "mov x0, x2",
         "mov x1, x3",
         "mov x2, x4",
         "mov x3, x5",
         "cbz x6, 1f",
-        "mov x29, x6",
+        "ldp x19, x20, [x6]",
+        "ldp x21, x22, [x6, #16]",
+        "ldp x23, x24, [x6, #32]",
+        "ldp x25, x26, [x6, #48]",
+        "ldp x27, x28, [x6, #64]",
+        "ldr x29, [x6, #80]",
         "1:",
-        "adr x9, 2f",
-        "str x9, [x19, #{return_address}]",
-        "mov x9, sp",
-        "str x9, [x19, #{stack}]",
         "mrs x18, tpidr_el0",
         "blr x16",
         "2:",
-        "ldr x19, [sp, #16]",
-        "ldp x29, x30, [sp], #32",
+        "ldp x19, x20, [sp, #16]",
+        "ldp x21, x22, [sp, #32]",
+        "ldp x23, x24, [sp, #48]",
+        "ldp x25, x26, [sp, #64]",
+        "ldp x27, x28, [sp, #80]",
+        "ldp x29, x30, [sp], #96",
         "ret",
         return_address = const core::mem::offset_of!(Bridge, return_address),
         stack = const core::mem::offset_of!(Bridge, stack),
@@ -284,29 +296,84 @@ unsafe extern "C" fn enter_program(
 /// `target` must be a function of the program that takes those arguments.
 pub unsafe fn call_program(bridge: &mut Bridge, target: u64, arguments: [u64; 4]) -> u64 {
     // SAFETY: the caller's duty.
-    unsafe { enter(bridge, target, arguments, 0) }
+    unsafe { enter(bridge, target, arguments, core::ptr::null()) }
+}
+
+/// The registers of a function its funclets expect: on ARM64 its non-volatile `x19` to `x28`
+/// and its frame pointer `x29`, which MSVC's funclets reach the function's locals through, as
+/// Windows restores them before calling one; none on x64, whose funclets find the function's
+/// frame from the establisher alone.
+#[derive(Debug, Clone, Copy)]
+pub struct FuncletRegisters {
+    #[cfg(target_arch = "aarch64")]
+    x19_to_x29: Option<[u64; 11]>,
+}
+
+impl FuncletRegisters {
+    /// No function's registers: the funclet runs with the layer's.
+    pub const NONE: Self = Self {
+        #[cfg(target_arch = "aarch64")]
+        x19_to_x29: None,
+    };
+
+    /// Those of the function whose registers `context` holds.
+    #[cfg(target_arch = "aarch64")]
+    pub fn of(context: &Context) -> Self {
+        let mut registers = [0; 11];
+        registers.copy_from_slice(&context.x[19..30]);
+        Self {
+            x19_to_x29: Some(registers),
+        }
+    }
+
+    /// Those of the function whose registers `context` holds.
+    #[cfg(target_arch = "x86_64")]
+    pub fn of(_context: &Context) -> Self {
+        Self::NONE
+    }
+
+    fn as_ptr(&self) -> *const u64 {
+        #[cfg(target_arch = "aarch64")]
+        return self
+            .x19_to_x29
+            .as_ref()
+            .map_or(core::ptr::null(), |registers| registers.as_ptr());
+        #[cfg(target_arch = "x86_64")]
+        core::ptr::null()
+    }
 }
 
 /// Calls a funclet of the program (a filter, a `__finally` block, a catch block or an unwind
 /// action) with `first` and the establisher frame `establisher` of the function it belongs
-/// to, as MSVC's runtime calls them: on ARM64 the function's frame pointer `frame_pointer` is
-/// in `x29` too, which the funclets address the function's locals through.
+/// to, as MSVC's runtime calls them, with the function's `registers` it expects.
 ///
 /// # Safety
-/// `target` must be a funclet of the function whose frame `establisher` and `frame_pointer`
+/// `target` must be a funclet of the function whose frame `establisher` and `registers`
 /// describe, which is still on the stack.
 pub unsafe fn call_funclet(
     bridge: &mut Bridge,
     target: u64,
     first: u64,
     establisher: u64,
-    frame_pointer: u64,
+    registers: &FuncletRegisters,
 ) -> u64 {
     // SAFETY: the caller's duty.
-    unsafe { enter(bridge, target, [first, establisher, 0, 0], frame_pointer) }
+    unsafe {
+        enter(
+            bridge,
+            target,
+            [first, establisher, 0, 0],
+            registers.as_ptr(),
+        )
+    }
 }
 
-unsafe fn enter(bridge: &mut Bridge, target: u64, arguments: [u64; 4], frame_pointer: u64) -> u64 {
+unsafe fn enter(
+    bridge: &mut Bridge,
+    target: u64,
+    arguments: [u64; 4],
+    registers: *const u64,
+) -> u64 {
     bridge.previous = bridges_head();
     set_bridges_head(bridge);
     // SAFETY: the caller's duty; the bridge stays linked, in this frame, while the program's
@@ -319,25 +386,11 @@ unsafe fn enter(bridge: &mut Bridge, target: u64, arguments: [u64; 4], frame_poi
             arguments[1],
             arguments[2],
             arguments[3],
-            frame_pointer,
+            registers,
         )
     };
     set_bridges_head(bridge.previous);
     result
-}
-
-/// The frame pointer of the function whose registers `context` holds, for its funclets:
-/// `x29` on ARM64.
-#[cfg(target_arch = "aarch64")]
-pub fn frame_pointer(context: &Context) -> u64 {
-    context.x[29]
-}
-
-/// The frame pointer of the function whose registers `context` holds, for its funclets:
-/// none on x64, whose funclets find the function's frame from the establisher alone.
-#[cfg(target_arch = "x86_64")]
-pub fn frame_pointer(_context: &Context) -> u64 {
-    0
 }
 
 /// What a walk meets next.

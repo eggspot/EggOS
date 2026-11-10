@@ -17,7 +17,7 @@ use super::super::heap;
 use super::super::thread_environment::{self, teb};
 use super::context::{Context, capturing_entry};
 use super::dispatch::{self, Origin, UnwindTarget};
-use super::frames::{self, Bridge};
+use super::frames::{self, Bridge, FuncletRegisters};
 use super::{
     CatchState, DispatcherContext, ExceptionRecord, FrameData, disposition, flag, status, thrown,
 };
@@ -186,7 +186,13 @@ fn function_data(data: FrameData) -> Option<FunctionData<'static>> {
     data.read(frames::image())
 }
 
-fn unwind_states(function: &FunctionData<'_>, frame: u64, frame_pointer: u64, from: i32, to: i32) {
+fn unwind_states(
+    function: &FunctionData<'_>,
+    frame: u64,
+    registers: &FuncletRegisters,
+    from: i32,
+    to: i32,
+) {
     for action in cxx_walk::unwind_actions(*function, from, to) {
         let mut bridge = Bridge::new(None, None);
         match action {
@@ -194,7 +200,7 @@ fn unwind_states(function: &FunctionData<'_>, frame: u64, frame_pointer: u64, fr
             Action::Funclet(address) => {
                 // SAFETY: an unwind funclet of the frame's function, which is still on the
                 // stack.
-                unsafe { frames::call_funclet(&mut bridge, address, frame, frame, frame_pointer) };
+                unsafe { frames::call_funclet(&mut bridge, address, frame, frame, registers) };
             }
             Action::Destructor {
                 function,
@@ -320,7 +326,7 @@ fn catch(
         data,
     };
     let mut bridge = Bridge::new(None, Some(state));
-    let frame_pointer = frames::frame_pointer(&parent);
+    let registers = FuncletRegisters::of(&parent);
     let caught = bridge
         .catch
         .as_ref()
@@ -335,7 +341,7 @@ fn catch(
     // SAFETY: the catch block's funclet, of the function whose frame is `frame`, which the
     // unwind left in the try block's state.
     let returned =
-        unsafe { frames::call_funclet(&mut bridge, handler.funclet, frame, frame, frame_pointer) };
+        unsafe { frames::call_funclet(&mut bridge, handler.funclet, frame, frame, &registers) };
     let continuation = cxx_walk::continuation(&handler, returned);
     if let Some(caught) = bridge.catch.as_ref() {
         destroy_object(&caught.record);
@@ -412,24 +418,27 @@ unsafe fn frame_handler(
         funclet_catch.as_ref().map(running),
         catch_of_frame.as_ref().map(running),
     );
-    let catch_frame_pointer =
-        || funclet_catch.map_or(0, |catch| frames::frame_pointer(&catch.parent_context));
-    let (frame, frame_pointer, state, data) = match role {
+    let catch_registers = || {
+        funclet_catch.map_or(FuncletRegisters::NONE, |catch| {
+            FuncletRegisters::of(&catch.parent_context)
+        })
+    };
+    let (frame, registers, state, data) = match role {
         FrameRole::Function {
             frame,
             state,
             data,
             in_catch_function: true,
-        } => (frame, catch_frame_pointer(), state, data),
+        } => (frame, catch_registers(), state, data),
         FrameRole::Function {
             frame, state, data, ..
-        } => (frame, frames::frame_pointer(own_context), state, data),
+        } => (frame, FuncletRegisters::of(own_context), state, data),
         FrameRole::FuncletLocals { frame, from } => {
             if unwinding {
                 unwind_states(
                     &own_function,
                     frame,
-                    catch_frame_pointer(),
+                    &catch_registers(),
                     from,
                     OUTSIDE_EVERY_STATE,
                 );
@@ -452,7 +461,7 @@ unsafe fn frame_handler(
             dispatch::unwind_target(),
             long_jump,
         );
-        unwind_states(&function, frame, frame_pointer, state, to);
+        unwind_states(&function, frame, &registers, state, to);
         return disposition::CONTINUE_SEARCH;
     }
     search(record, &function, data, frame, state);
