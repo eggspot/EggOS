@@ -15,6 +15,10 @@ const MACHINE: u16 = elf::MACHINE_AARCH64;
 
 const KERNEL_PATH: [u16; 32] = utf16("\\EGGOS\\KERNEL.ELF");
 const COMMAND_LINE_PATH: [u16; 32] = utf16("\\EGGOS\\CMDLINE.TXT");
+#[cfg(target_arch = "x86_64")]
+const LOADER_PATH: [u16; 32] = utf16("\\EFI\\BOOT\\BOOTX64.EFI");
+#[cfg(target_arch = "aarch64")]
+const LOADER_PATH: [u16; 32] = utf16("\\EFI\\BOOT\\BOOTAA64.EFI");
 
 const BOOT_DATA_BELOW: u64 = if cfg!(target_arch = "x86_64") {
     0xffff_ffff
@@ -507,6 +511,7 @@ fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str>
     }
     let kernel_file = read_file(firmware, root, &KERNEL_PATH)?;
     let command_line = read_file(firmware, root, &COMMAND_LINE_PATH).unwrap_or_default();
+    let loader_file = read_file(firmware, root, &LOADER_PATH).unwrap_or_default();
     let image = Image::parse(kernel_file)?;
     if image.machine != MACHINE {
         return Err("the kernel on the boot partition is for another kind of CPU");
@@ -540,6 +545,10 @@ fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str>
     data.handoff.boot_data_end = data.end;
     data.handoff.uefi_system_table = firmware.system as u64;
     data.handoff.memory_map = data.ranges.as_ptr() as u64;
+    data.handoff.kernel_file = kernel_file.as_ptr() as u64;
+    data.handoff.kernel_file_bytes = kernel_file.len() as u64;
+    data.handoff.loader_file = loader_file.as_ptr() as u64;
+    data.handoff.loader_file_bytes = loader_file.len() as u64;
 
     print("EggOS: starting the kernel\n");
     let mut map = RawMemoryMap::allocate(firmware)?;
@@ -559,6 +568,13 @@ fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str>
         }
     }
     writer.mark(data.start, data.end, memory_kind::BOOT_DATA);
+    for file in [kernel_file, loader_file] {
+        if !file.is_empty() {
+            let start = placement::page_floor(file.as_ptr() as u64);
+            let end = placement::page_ceiling(file.as_ptr() as u64 + file.len() as u64).unwrap_or(start);
+            writer.mark(start, end, memory_kind::BOOT_DATA);
+        }
+    }
     data.handoff.memory_map_entries = writer.len() as u32;
     *data.pvh = PvhStartInfo::for_handoff(data.handoff, data.handoff.command_line);
 

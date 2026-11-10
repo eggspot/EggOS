@@ -17,7 +17,7 @@ use eggos_mcp::server::write_error;
 /// The command's usage, printed for a usage error.
 pub const USAGE: &str = "usage: disk list [--json] | disk check [--json] <device> | disk repair \
                          [--json] [--dry-run] <device> | disk format [--label NAME] [--yes] \
-                         [--dry-run] <device>\n";
+                         [--dry-run] <device> | disk install [--yes] [--dry-run] <device>\n";
 /// The exit status of a usage error.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of every other error.
@@ -91,6 +91,9 @@ pub fn run(disks: &mut impl WholeDisks, console: &mut impl Console, arguments: &
             check(disks, console, device, mode, options.json)
         }
         ["format", device] if !options.json => format_disk(disks, console, device, &options),
+        ["install", device] if !options.json && options.label.is_none() => {
+            install_on(disks, console, device, &options)
+        }
         _ => usage(console, options.json),
     }
 }
@@ -134,7 +137,7 @@ pub fn error_of(error: &StorageError) -> &'static ErrorDefinition {
         StorageError::NotEggFs => &errors::NOT_EGGFS,
         StorageError::LabelTooLong => &errors::LABEL_TOO_LONG,
         StorageError::LabelNotPlain => &errors::INVALID_VALUE,
-        StorageError::TooSmall | StorageError::Failed => &errors::FAILED,
+        StorageError::TooSmall | StorageError::Failed | StorageError::NoBootFiles => &errors::FAILED,
     }
 }
 
@@ -308,6 +311,76 @@ fn check(
         return FAILURE;
     }
     0
+}
+
+fn install_on(
+    disks: &mut impl WholeDisks,
+    console: &mut impl Console,
+    device: &str,
+    options: &Options<'_>,
+) -> i32 {
+    let record = match storage::find(disks, device) {
+        Ok(record) => record,
+        Err(error) => return refuse(console, false, device, &error),
+    };
+    if let Some(place) = record.mounted_on.clone() {
+        return refuse(console, false, record.device, &StorageError::InUse(place));
+    }
+    if record.read_only {
+        return refuse(console, false, record.device, &StorageError::ReadOnly);
+    }
+    if storage::installation_layout(record.size_bytes / 512).is_none() {
+        return refuse(console, false, record.device, &StorageError::TooSmall);
+    }
+    let files = match storage::boot_files(disks) {
+        Ok(files) => files,
+        Err(error) => return refuse(console, false, record.device, &error),
+    };
+    if options.dry_run {
+        let line = format!(
+            "would erase {} ({}) and install EggOS on it\n",
+            record.device,
+            erased_text(&record)
+        );
+        console.write_output(line.as_bytes());
+        return 0;
+    }
+    if !options.yes {
+        if !console.is_terminal() {
+            let message = format!(
+                "{}: installing erases the disk: add --yes, or run it on a terminal to be asked",
+                record.device
+            );
+            report(console, false, &errors::NEEDS_CONFIRMATION, &message);
+            return FAILURE;
+        }
+        let name = record.short_name();
+        let question = format!(
+            "Type {name} to install EggOS on {} (erases {}): ",
+            record.device,
+            erased_text(&record)
+        );
+        console.write_error(question.as_bytes());
+        let mut answer = [0u8; ANSWER_BYTES];
+        let length = console.read_answer(&mut answer);
+        let answer = core::str::from_utf8(answer.get(..length).unwrap_or_default()).unwrap_or("");
+        if answer.trim() != name {
+            let message = format!("{}: nothing installed", record.device);
+            report(console, false, &errors::DECLINED_BY_USER, &message);
+            return FAILURE;
+        }
+    }
+    match storage::install(disks, record.device, &files) {
+        Ok(installation) => {
+            let line = format!(
+                "Installed EggOS on {}. Restart and choose it in the firmware's boot menu.\n",
+                installation.device
+            );
+            console.write_output(line.as_bytes());
+            0
+        }
+        Err(error) => refuse(console, false, record.device, &error),
+    }
 }
 
 fn format_disk(

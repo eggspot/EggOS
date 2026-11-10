@@ -32,6 +32,7 @@ mod sdl_app;
 mod sha256;
 mod static_glibc;
 mod test_layout;
+mod usb_image;
 mod win32_app;
 mod windows;
 mod work_disk;
@@ -61,6 +62,11 @@ commands:
                          then boot it again to check that writing read-only data faults
                          and the fatal exception is reported
                          (<arch> may be `all`)
+  usb-image --arch <arch>
+                         build a disk image to write to a USB stick that a PC or an AArch64
+                         UEFI machine boots EggOS from (EggOS's UEFI loader and the release
+                         kernel on an EFI system partition), and write it to
+                         target/image/eggos-<version>-<arch>-usb.img (D241)
   image --arch <arch> [--add <file> [--as <path>]]...
                          build the release image with each file added to its initramfs at
                          /bin/<file's name> or <path>, executable, and write it to
@@ -740,6 +746,12 @@ fn run(args: &[String]) -> Result<(), String> {
                 return Err("`screenshot` boots one architecture; pass a single --arch".into());
             };
             release::screenshot(arch)
+        }
+        Some("usb-image") => {
+            for arch in arch_option(&args[1..])? {
+                println!("{}", usb_image::build(arch)?.display());
+            }
+            Ok(())
         }
         Some("image") => {
             let (options, added) = image::added_files(&args[1..])?;

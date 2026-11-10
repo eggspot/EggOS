@@ -2104,6 +2104,26 @@ pub const DISK_FORMAT: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
+/// `disk_install` (D241): installs EggOS on an unmounted disk.
+pub const DISK_INSTALL: ToolDefinition = ToolDefinition {
+    name: "disk_install",
+    title: "Install EggOS on a disk",
+    description: "Erases everything on an unmounted disk of 1 GiB or more and installs EggOS on it \
+                  from the USB stick or disk it was started from, as `disk install --yes` does. A \
+                  mounted or read-only disk is refused. Needs the write grant. Asks the user first, \
+                  or needs confirm: true when the client cannot ask. dry_run: true says what would \
+                  be erased, and writes nothing.",
+    command: &["disk", "install"],
+    fixed: &["--yes"],
+    arguments: &[DEVICE, confirm(GUARD), DRY_RUN],
+    max_effect: Effect::Destroy,
+    grant: Some(Grant::Write),
+    idempotent: false,
+    open_world: false,
+    confirm: Confirmation::Always,
+    result: ToolResult::Text,
+};
+
 /// `agent_list` (D193): every agent the user added and its grants; seeing other agents needs
 /// `view`.
 pub const AGENT_LIST: ToolDefinition = reading(
@@ -2344,7 +2364,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
 /// D204's, D226's, D225's, D235's and D231's.
-pub const TOOLS: [ToolDefinition; 72] = [
+pub const TOOLS: [ToolDefinition; 73] = [
     LS,
     CAT,
     PS,
@@ -2395,6 +2415,7 @@ pub const TOOLS: [ToolDefinition; 72] = [
     DISK_CHECK,
     DISK_REPAIR,
     DISK_FORMAT,
+    DISK_INSTALL,
     AGENT_LIST,
     AGENT_SHOW,
     APP_ICON,

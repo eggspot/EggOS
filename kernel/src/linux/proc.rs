@@ -118,6 +118,10 @@ const MOUNTS: u64 = 20;
 const DRIVER_DEVICES: u64 = 21;
 
 const DRIVER_DISKS: u64 = 22;
+/// `driver/boot`, `driver/boot-kernel`, `driver/boot-loader` (D241).
+const DRIVER_BOOT: u64 = 27;
+const DRIVER_BOOT_KERNEL: u64 = 28;
+const DRIVER_BOOT_LOADER: u64 = 29;
 
 const SYS_EGGOS: u64 = 23;
 
@@ -147,14 +151,22 @@ const NET_FILES: [(&[u8], u64); 4] = [
     (b"route", NET_ROUTE),
 ];
 
-const DRIVER_FILES: [(&[u8], u64); 3] = [
+const DRIVER_FILES: [(&[u8], u64); 6] = [
+    (b"boot", DRIVER_BOOT),
+    (b"boot-kernel", DRIVER_BOOT_KERNEL),
+    (b"boot-loader", DRIVER_BOOT_LOADER),
     (b"devices", DRIVER_DEVICES),
     (b"disks", DRIVER_DISKS),
     (b"rtc", DRIVER_RTC),
 ];
 
-const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 2] =
-    [(b"devices", DRIVER_DEVICES), (b"disks", DRIVER_DISKS)];
+const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 5] = [
+    (b"boot", DRIVER_BOOT),
+    (b"boot-kernel", DRIVER_BOOT_KERNEL),
+    (b"boot-loader", DRIVER_BOOT_LOADER),
+    (b"devices", DRIVER_DEVICES),
+    (b"disks", DRIVER_DISKS),
+];
 
 const SYS_FILES: [(&[u8], u64); 2] = [(b"eggos", SYS_EGGOS), (b"kernel", SYS_KERNEL)];
 
@@ -1064,6 +1076,9 @@ impl<P: Platform> FileSystem for Proc<P> {
             NET_ARP => crate::net::neighbours_text::<P>(),
             DRIVER_DEVICES => crate::devices::devices_text(),
             DRIVER_DISKS => crate::block::disks_text(),
+            DRIVER_BOOT => boot_text::<P>(),
+            DRIVER_BOOT_KERNEL => boot_file_bytes::<P>(eggos_hal::handoff::BootFile::Kernel),
+            DRIVER_BOOT_LOADER => boot_file_bytes::<P>(eggos_hal::handoff::BootFile::Loader),
             DRIVER_RTC => match crate::wall_clock::read_clock::<P>() {
                 Some((_, Ok(nanoseconds))) => driver_rtc(nanoseconds / 1_000_000_000),
                 _ => return Err(StorageError),
@@ -1461,4 +1476,51 @@ mod tests {
         .unwrap();
         assert_eq!(text.0, b"00001000-00002000 ---s 00000000 00:00 0 \n");
     }
+}
+
+/// `/proc/driver/boot`'s text (D241): `partition <GUID as 32 hex digits, in GPT byte order>`,
+/// `kernel <bytes>` and `loader <bytes>`, each line only when known; empty when the kernel was
+/// not started by EggOS's UEFI loader.
+fn boot_text<P: Platform>() -> Option<Vec<u8>> {
+    let mut text = Vec::new();
+    text.try_reserve(128).ok()?;
+    if let Some(guid) = P::boot_partition() {
+        text.extend_from_slice(b"partition ");
+        for byte in guid {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            text.push(HEX[usize::from(byte >> 4)]);
+            text.push(HEX[usize::from(byte & 0xf)]);
+        }
+        text.push(b'\n');
+    }
+    for (name, file) in [
+        (&b"kernel "[..], eggos_hal::handoff::BootFile::Kernel),
+        (&b"loader "[..], eggos_hal::handoff::BootFile::Loader),
+    ] {
+        if let Some(bytes) = P::boot_file(file) {
+            text.extend_from_slice(name);
+            let mut digits = [0u8; 20];
+            let mut value = bytes.len();
+            let mut at = digits.len();
+            loop {
+                at -= 1;
+                digits[at] = b'0' + (value % 10) as u8;
+                value /= 10;
+                if value == 0 {
+                    break;
+                }
+            }
+            text.extend_from_slice(&digits[at..]);
+            text.push(b'\n');
+        }
+    }
+    Some(text)
+}
+
+fn boot_file_bytes<P: Platform>(file: eggos_hal::handoff::BootFile) -> Option<Vec<u8>> {
+    let bytes = P::boot_file(file).unwrap_or_default();
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(bytes.len()).ok()?;
+    copy.extend_from_slice(bytes);
+    Some(copy)
 }

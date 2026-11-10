@@ -249,6 +249,12 @@ pub trait Platform: 'static {
             .map(|handoff| handoff.boot_partition)
     }
 
+    /// A file EggOS's UEFI loader read from the boot partition and kept (D241), for the
+    /// installer; `None` when the kernel was started another way.
+    fn boot_file(file: handoff::BootFile) -> Option<&'static [u8]> {
+        handoff::file::<Self>(&handoff::handoff::<Self>()?, file)
+    }
+
     /// Calls `clock` with the platform's own real-time clock, one no bus describes, if it has
     /// one (D150): the PC's CMOS clock on x86_64, unless the ACPI FADT says there is none. The
     /// device-tree clocks of AArch64 and RISC-V are drivers of the driver model instead. The

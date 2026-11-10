@@ -122,6 +122,12 @@ pub struct Handoff {
     pub boot_data_end: u64,
     /// Physical address of the UEFI system table, for runtime services; 0 for none.
     pub uefi_system_table: u64,
+    /// The kernel's and the loader's files as read from the boot partition, kept for the
+    /// installer (D241): physical address and length, 0 for none.
+    pub kernel_file: u64,
+    pub kernel_file_bytes: u64,
+    pub loader_file: u64,
+    pub loader_file_bytes: u64,
 }
 
 /// Bytes of a [`Handoff`].
@@ -154,6 +160,10 @@ impl Handoff {
             boot_data_start: 0,
             boot_data_end: 0,
             uefi_system_table: 0,
+            kernel_file: 0,
+            kernel_file_bytes: 0,
+            loader_file: 0,
+            loader_file_bytes: 0,
         }
     }
 

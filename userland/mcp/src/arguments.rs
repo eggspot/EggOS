@@ -929,7 +929,7 @@ pub fn check(
     checked.parents = flag(get("parents"), "parents")?;
     if matches!(
         tool.kind,
-        Kind::DiskCheck | Kind::DiskRepair | Kind::DiskFormat
+        Kind::DiskCheck | Kind::DiskRepair | Kind::DiskFormat | Kind::DiskInstall
     ) {
         let device = checked
             .path

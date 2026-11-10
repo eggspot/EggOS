@@ -3600,6 +3600,36 @@ pub const DISK_CHECK: CommandDefinition = CommandDefinition {
     surface: DISK_SURFACE,
 };
 
+/// `disk install` (D241).
+pub const DISK_INSTALL: CommandDefinition = CommandDefinition {
+    words: &["disk", "install"],
+    summary: "Installs EggOS on an unmounted disk.",
+    description: "Erases everything on an unmounted disk (/dev/vda to /dev/vdd) of 1 GiB or more \
+                  and installs EggOS on it from the USB stick or disk it was started from: a GUID \
+                  partition table, a 256 MiB EFI system partition with EggOS's UEFI loader and \
+                  kernel, and an EggOS partition on the rest, made an empty EggFS volume at the \
+                  first boot from it. It asks the user to type the disk's short name (vdb) first \
+                  on a terminal; --yes answers for them, and without a terminal it needs --yes. \
+                  --dry-run says what would be erased and writes nothing. A mounted or read-only \
+                  disk is refused, and so is a system not started by EggOS's UEFI loader.",
+    options: &[named_flag(b'y', "yes", "Install without asking."), DRY_RUN_OPTION],
+    operands: &[DISK_OPERAND],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Destroy,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&crate::errors::NO_SUCH_DISK, 1),
+        exits(&crate::errors::DISK_IN_USE, 1),
+        exits(&READ_ONLY, 1),
+        exits(&crate::errors::NEEDS_CONFIRMATION, 1),
+        exits(&crate::errors::DECLINED_BY_USER, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[refused_example("disk install --yes /dev/vdb")],
+    surface: DISK_SURFACE,
+};
+
 /// `disk format`.
 pub const DISK_FORMAT: CommandDefinition = CommandDefinition {
     words: &["disk", "format"],
@@ -3918,7 +3948,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 102] = [
+pub static COMMANDS: [CommandDefinition; 103] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -3946,6 +3976,7 @@ pub static COMMANDS: [CommandDefinition; 102] = [
     DF,
     DISK_CHECK,
     DISK_FORMAT,
+    DISK_INSTALL,
     DISK_LIST,
     DISK_REPAIR,
     DOWNLOAD_CANCEL,

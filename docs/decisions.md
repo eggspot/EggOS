@@ -19100,3 +19100,37 @@ the license, by an explicit instruction recorded here.
   boards need before the link comes up; interrupts (MSI/MSI-X) instead of polling; several
   adapters at once; checksum and segmentation offload; jumbo frames; Wake-on-LAN; Intel's
   igb (I210/I211), ixgbe and Realtek's RTL8139; Wi-Fi (a later part of M13).
+
+## D241 Installing on a real disk: a USB image from `cargo xtask usb-image`, the boot files kept by the loader, `eggos-fat32`, and `disk install` with its MCP tool (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** The v1.0 definition (owner, 2026-11-10) is that EggOS installs and runs on a real
+  PC. The kernel has no USB mass-storage driver yet, so once the firmware's boot services are gone
+  it cannot read the stick it was started from.
+- **Decision.**
+  - **The loader keeps its files**: it reads `\EFI\BOOT\BOOTX64.EFI` / `BOOTAA64.EFI` beside the
+    kernel, and the handoff (D236) gains the two files' addresses and lengths, their pages marked
+    `BOOT_DATA`. The kernel offers them as `/proc/driver/boot-kernel` and `/proc/driver/boot-loader`,
+    and `/proc/driver/boot` names the boot partition's GUID and both sizes
+    (`Platform::boot_file`).
+  - **`eggos-fat32`** (`fat32/`): writes a FAT32 volume (4 KiB clusters, two FATs, FSInfo, backup
+    boot sector) with a few files in a few folders under 8.3 names, through a callback, for
+    `cargo xtask usb-image` and the installer.
+  - **`cargo xtask usb-image --arch <x86_64|aarch64>`** builds the release kernel and the loader and
+    writes `target/image/eggos-<version>-<arch>-usb.img`: a GPT with one 256 MiB EFI system
+    partition (loader, kernel, an empty command line). The stick has no EggOS partition: the live
+    system keeps its home in memory.
+  - **`disk install <device>`** (`eggos_files::storage::install`, the registry's `DISK_INSTALL`, the
+    MCP tool `disk_install` with the write grant and the user's confirmation) erases an unmounted
+    disk of 1 GiB or more, writes a GPT (protective MBR, both headers and arrays) with a 256 MiB EFI
+    system partition at 1 MiB, written as a FAT32 volume with the kept boot files, and an EggOS data
+    partition (D238) on the rest, whose first MiB it zeroes; the first boot from the disk finds the
+    blank EggOS partition and makes it the persistent EggFS volume, as a blank disk is made under
+    QEMU. It asks for the disk's short name as `disk format` does (`--yes`, `--dry-run`), and refuses
+    a mounted or read-only disk and a system the loader did not start.
+  - `docs/real-hardware.md` says how to write the stick, boot and install.
+- **Not yet.** Building and running; the installer's GUI front-end, which D22 requires and which
+  needs a Claude Fable design first (Settings' Storage pane: an "Install EggOS on this disk" action
+  with the same confirmation); keeping other operating systems' partitions (dual boot); a UEFI boot
+  entry written through runtime services (the firmware's removable-media path `\EFI\BOOT` is used);
+  Secure Boot signing (the owner's key); USB mass storage, so the live system can keep its home on
+  the stick; the components store on the stick and the installed disk.
