@@ -287,3 +287,56 @@ fn damaged_xml_is_an_error_or_none_never_a_panic() {
     let text = Document::parse(unknown).unwrap().top().text().unwrap();
     assert_eq!(text.write_utf8(&mut out), Some(&b"&bogus; &#xD800;"[..]));
 }
+
+fn xml_integer(text: &str) -> Option<i128> {
+    let document = format!("<plist><integer>{text}</integer></plist>");
+    Document::parse(document.as_bytes())
+        .unwrap()
+        .top()
+        .integer()
+}
+
+#[test]
+fn an_xml_integer_takes_one_leading_sign_and_every_value_of_128_bits() {
+    assert_eq!(xml_integer("5"), Some(5));
+    assert_eq!(xml_integer("+5"), Some(5));
+    assert_eq!(xml_integer("-0x1F"), Some(-31));
+    assert_eq!(
+        xml_integer("-170141183460469231731687303465884105728"),
+        Some(i128::MIN)
+    );
+    assert_eq!(
+        xml_integer("-0x80000000000000000000000000000000"),
+        Some(i128::MIN)
+    );
+    assert_eq!(
+        xml_integer("170141183460469231731687303465884105727"),
+        Some(i128::MAX)
+    );
+}
+
+#[test]
+fn an_xml_integer_with_a_second_sign_or_out_of_range_is_none_never_a_panic() {
+    for damaged in [
+        "--5",
+        "-+5",
+        "+-5",
+        "++5",
+        "-0x-5",
+        "0x-5",
+        "0x+5",
+        "-0x+5",
+        "--170141183460469231731687303465884105728",
+        "-0x-80000000000000000000000000000000",
+        "0x-80000000000000000000000000000000",
+        "170141183460469231731687303465884105728",
+        "-170141183460469231731687303465884105729",
+        "0x80000000000000000000000000000000",
+        "-",
+        "0x",
+        "-0x",
+        "5 5",
+    ] {
+        assert_eq!(xml_integer(damaged), None, "{damaged}");
+    }
+}

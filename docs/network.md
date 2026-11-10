@@ -129,8 +129,9 @@ calls `net_ping`, `net_lookup` and `fetch`.
   > `Set automatically`), init runs `date --sync --automatic` once the network has an address,
   then every 24 hours (after a failure in 60 s, doubling to an hour), and records each sync in
   `/run/eggos/clock-sync` (`settings get time.sync`). An automatic sync ignores differences
-  under a second and steps the clock by at most an hour while its unchecked steps of the last
-  hour stay within an hour; a larger step needs two of three HTTPS servers (`www.google.com`,
+  under a second and steps the clock by at most an hour while its unchecked steps since the
+  last HTTPS-confirmed step or `date -s` add up to at most an hour (that budget is kept in
+  `/var/lib/eggos/clock-budget`, so a reboot does not renew it); a larger step needs two of three HTTPS servers (`www.google.com`,
   `www.cloudflare.com`, `www.apple.com`) to send a `Date` within two minutes of the time
   server's, checked over TLS against your roots, since SNTP can be spoofed on the way. `date
   -s` and `date --sync` by a person are never limited.
@@ -155,8 +156,7 @@ multicast; reverse lookups; netlink (iproute2 itself and `getifaddrs`); the indi
 bar, and downloads kept across boots; TCP window scaling,
 selective acknowledgments, keep-alive, urgent data and Nagle's delay (`TCP_NODELAY` is always
 on), and keeping segments that arrive out of order (they are dropped and sent again); TCP
-timers on a machine without an adapter run only when a program makes a socket call; interrupts
-instead of polling; TLS
+timers on a machine without an adapter run only when a program makes a socket call; TLS
 session resumption, client certificates, a second key exchange (X25519 is the only group
 offered, so a server that wants another fails), revocation (OCSP, CRLs) and name constraints
 (a certificate that makes them critical is refused). See D157 to D159 and D225.

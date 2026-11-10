@@ -133,6 +133,24 @@ pub trait System {
     fn read_capture(&mut self, file: &CaptureFile, out: &mut [u8]) -> Result<usize, Errno>;
     /// Closes `file`.
     fn close_capture(&mut self, file: CaptureFile);
+    /// Reads the regular file at `path` into `out`, never through a symbolic link, as
+    /// [`System::open_capture`] opens it: the bytes read, at most `out`'s size.
+    fn read_file(&mut self, path: &str, out: &mut [u8]) -> Result<usize, Errno> {
+        let file = self.open_capture(path)?;
+        let mut length = 0;
+        let read = loop {
+            let Some(room) = out.get_mut(length..).filter(|room| !room.is_empty()) else {
+                break Ok(length);
+            };
+            match self.read_capture(&file, room) {
+                Ok(0) => break Ok(length),
+                Ok(count) => length += count,
+                Err(error) => break Err(error),
+            }
+        };
+        self.close_capture(file);
+        read
+    }
     /// Appends `record` to the audit log, durably.
     fn append_audit(&mut self, record: &[u8]) -> Result<(), Errno>;
     /// Reads the agents' grants file ([`crate::grants::STORE_PATH`]) into `out`, at most its

@@ -83,6 +83,14 @@ fn single_distance(ours: f32, host: f32) -> u128 {
     u128::from((ordered(ours) - ordered(host)).unsigned_abs())
 }
 
+fn bound(name: &str) -> u128 {
+    let (_, bound) = ACCURACY
+        .iter()
+        .find(|(names, _)| names.split_whitespace().any(|listed| listed == name))
+        .unwrap_or_else(|| panic!("{name} has no bound in ACCURACY"));
+    u128::from(*bound)
+}
+
 fn check(name: &str, ours: fn(f64) -> f64, host: fn(f64) -> f64, inputs: &[f64], bound: u128) {
     for &x in inputs.iter().chain(&SPECIALS) {
         let (got, wanted) = (ours(x), host(x));
@@ -136,13 +144,13 @@ fn rounding_and_bit_functions_are_exact() {
         0.49999999999999994,
     ]);
     for set in [&inputs, &small] {
-        check("floor", floor, f64::floor, set, 0);
-        check("ceil", ceil, f64::ceil, set, 0);
-        check("trunc", trunc, f64::trunc, set, 0);
-        check("round", round, f64::round, set, 0);
-        check("rint", rint, f64::round_ties_even, set, 0);
-        check("sqrt", sqrt, f64::sqrt, set, 0);
-        check("fabs", fabs, f64::abs, set, 0);
+        check("floor", floor, f64::floor, set, bound("floor"));
+        check("ceil", ceil, f64::ceil, set, bound("ceil"));
+        check("trunc", trunc, f64::trunc, set, bound("trunc"));
+        check("round", round, f64::round, set, bound("round"));
+        check("rint", rint, f64::round_ties_even, set, bound("rint"));
+        check("sqrt", sqrt, f64::sqrt, set, bound("sqrt"));
+        check("fabs", fabs, f64::abs, set, bound("fabs"));
     }
     for &x in inputs.iter().chain(&SPECIALS) {
         let (fraction, exponent) = frexp(x);
@@ -185,7 +193,7 @@ fn fmod_and_remainder_are_exact() {
         .map(|index| (inputs[index], inputs[(index * 7 + 3) % inputs.len()]))
         .chain((0..2000).map(|_| (random.between(-1e4, 1e4), random.between(-50.0, 50.0))))
         .collect();
-    check_two("fmod", fmod, |x, y| x % y, &pairs, 0);
+    check_two("fmod", fmod, |x, y| x % y, &pairs, bound("fmod"));
     for &(x, y) in &pairs {
         let (rest, quotient) = remquo(x, y);
         if !x.is_finite() || !y.is_finite() || y == 0.0 {
@@ -226,20 +234,20 @@ fn trigonometric_functions_are_within_their_bounds() {
         6381956970095103.0 * 2f64.powi(797),
         5.319372648326541e255,
     ]);
-    check("sin", sin, f64::sin, &inputs, 2);
-    check("cos", cos, f64::cos, &inputs, 2);
-    check("tan", tan, f64::tan, &inputs, 3);
+    check("sin", sin, f64::sin, &inputs, bound("sin"));
+    check("cos", cos, f64::cos, &inputs, bound("cos"));
+    check("tan", tan, f64::tan, &inputs, bound("tan"));
     let mut unit = random.uniform(-1.0, 1.0, 20000);
     unit.extend(random.magnitudes(-60, 0, 5000));
-    check("asin", asin, f64::asin, &unit, 3);
-    check("acos", acos, f64::acos, &unit, 3);
+    check("asin", asin, f64::asin, &unit, bound("asin"));
+    check("acos", acos, f64::acos, &unit, bound("acos"));
     let wide = wide_inputs(6);
-    check("atan", atan, f64::atan, &wide, 2);
+    check("atan", atan, f64::atan, &wide, bound("atan"));
     let mut pairs: Vec<(f64, f64)> = (0..20000)
         .map(|index| (wide[index % wide.len()], random.any_finite()))
         .collect();
     pairs.extend((0..20000).map(|_| (random.between(-5.0, 5.0), random.between(-5.0, 5.0))));
-    check_two("atan2", atan2, f64::atan2, &pairs, 3);
+    check_two("atan2", atan2, f64::atan2, &pairs, bound("atan2"));
 }
 
 #[test]
@@ -248,20 +256,20 @@ fn exponentials_and_logarithms_are_within_their_bounds() {
     let mut exponents = random.uniform(-746.0, 710.0, 20000);
     exponents.extend(random.uniform(-1.0, 1.0, 10000));
     exponents.extend(random.magnitudes(-80, 0, 5000));
-    check("exp", exp, f64::exp, &exponents, 2);
-    check("expm1", expm1, f64::exp_m1, &exponents, 2);
+    check("exp", exp, f64::exp, &exponents, bound("exp"));
+    check("expm1", expm1, f64::exp_m1, &exponents, bound("expm1"));
     let mut twos = random.uniform(-1076.0, 1025.0, 20000);
     twos.extend((-1074..1024).map(f64::from));
-    check("exp2", exp2, f64::exp2, &twos, 2);
+    check("exp2", exp2, f64::exp2, &twos, bound("exp2"));
     let wide = wide_inputs(8);
     let mut near_one = random.uniform(0.5, 2.0, 20000);
     near_one.extend(random.uniform(-0.999, 3.0, 10000));
     for set in [&wide, &near_one] {
-        check("log", log, f64::ln, set, 2);
-        check("log2", log2, f64::log2, set, 2);
-        check("log10", log10, f64::log10, set, 2);
-        check("log1p", log1p, f64::ln_1p, set, 2);
-        check("cbrt", cbrt, f64::cbrt, set, 2);
+        check("log", log, f64::ln, set, bound("log"));
+        check("log2", log2, f64::log2, set, bound("log2"));
+        check("log10", log10, f64::log10, set, bound("log10"));
+        check("log1p", log1p, f64::ln_1p, set, bound("log1p"));
+        check("cbrt", cbrt, f64::cbrt, set, bound("cbrt"));
     }
     assert_eq!(log2(1024.0), 10.0);
     assert_eq!(log10(1000.0), 3.0);
@@ -290,21 +298,97 @@ fn pow_follows_c_and_is_within_its_bound() {
         (10.0, 308.0),
         (2.0, -1074.0),
     ]);
-    check_two("pow", pow, f64::powf, &pairs, 3);
+    check_two("pow", pow, f64::powf, &pairs, bound("pow"));
     let mut hypotenuses: Vec<(f64, f64)> = Vec::new();
     for _ in 0..20000 {
         hypotenuses.push((random.any_finite(), random.any_finite()));
         hypotenuses.push((random.between(-10.0, 10.0), random.between(-10.0, 10.0)));
     }
-    check_two("hypot", hypot, f64::hypot, &hypotenuses, 2);
-    let products: Vec<(f64, f64)> = (0..5000)
-        .map(|_| (random.between(-1e3, 1e3), random.between(-1e3, 1e3)))
-        .collect();
-    for &(x, y) in &products {
-        let z = random.between(-1e6, 1e6);
-        let distance = ulps(fma(x, y, z), x.mul_add(y, z));
-        assert!(distance <= 2, "fma({x}, {y}, {z})");
+    check_two("hypot", hypot, f64::hypot, &hypotenuses, bound("hypot"));
+}
+
+fn same_fma(x: f64, y: f64, z: f64) {
+    let (got, wanted) = (fma(x, y, z), x.mul_add(y, z));
+    let same = got.to_bits() == wanted.to_bits() || (got.is_nan() && wanted.is_nan());
+    let distance = match same {
+        true => 0,
+        false => ulps(got, wanted).max(1),
+    };
+    assert!(
+        distance <= bound("fma"),
+        "fma({x:e}, {y:e}, {z:e}) = {got:e}, correctly rounded {wanted:e}"
+    );
+}
+
+const FMA_HARD_CASES: [(u64, u64, u64); 16] = [
+    (0x3ff0000000000001, 0x3ff0000000000001, 0x3ca0000000000000),
+    (0x3ff0000000000001, 0x3ff0000000000001, 0xbca0000000000000),
+    (0x3ff0000000000001, 0x3feffffffffffffe, 0xbff0000000000000),
+    (0x3ff8000000000000, 0x3ff0000000000001, 0xbcb0000000000000),
+    (0x7fefffffffffffff, 0x4000000000000000, 0xffefffffffffffff),
+    (0x7fefffffffffffff, 0x3ff0000000000001, 0xfc9fffffffffffff),
+    (0x7fefffffffffffff, 0x3ff0000000000000, 0x7c90000000000000),
+    (0x0010000000000000, 0x3fe0000000000000, 0x0000000000000001),
+    (0x0010000000000001, 0x3fe0000000000000, 0x8000000000000001),
+    (0x0000000000000001, 0x3fe0000000000000, 0x0000000000000000),
+    (0x8000000000000001, 0x0000000000000001, 0x0000000000000000),
+    (0x3ff0000000000000, 0x3ff0000000000000, 0xbff0000000000000),
+    (0x2000000000000001, 0x2000000000000001, 0x0000000000000003),
+    (0x1ff0000000000001, 0x1ff0000000000001, 0x8000000000000001),
+    (0x4340000000000001, 0xc340000000000001, 0x46a0000000000000),
+    (0x3cb0000000000001, 0x3cb0000000000001, 0x3ff0000000000000),
+];
+
+#[test]
+fn fma_is_correctly_rounded_through_cancellation_overflow_and_the_subnormals() {
+    for (x, y, z) in FMA_HARD_CASES {
+        same_fma(f64::from_bits(x), f64::from_bits(y), f64::from_bits(z));
     }
+    for x in SPECIALS {
+        for y in SPECIALS {
+            for z in SPECIALS {
+                same_fma(x, y, z);
+            }
+        }
+    }
+    let mut random = Random(14);
+    let firsts = random.magnitudes(-1074, 1023, 20000);
+    let seconds = random.magnitudes(-600, 600, 20000);
+    for (index, (&x, &y)) in firsts.iter().zip(&seconds).enumerate() {
+        let product = x * y;
+        let nearness = (index % 120) as i32 - 60;
+        same_fma(x, y, random.any_finite());
+        same_fma(x, y, -product);
+        same_fma(
+            x,
+            y,
+            product * 2f64.powi(nearness) * random.between(-1.0, 1.0),
+        );
+        same_fma(x, y, f64::from_bits(random.next() >> 12));
+        same_fma(
+            random.any_finite(),
+            random.any_finite(),
+            random.any_finite(),
+        );
+    }
+}
+
+#[test]
+fn fmaf_is_correctly_rounded() {
+    let mut random = Random(15);
+    for _ in 0..50000 {
+        let [x, y, z] = [0; 3].map(|_| f32::from_bits(random.next() as u32));
+        let near = [x, y, -(x * y)];
+        let small = [0; 3].map(|_| random.between(-4.0, 4.0) as f32);
+        for [x, y, z] in [[x, y, z], near, small] {
+            let (got, wanted) = (fmaf(x, y, z), x.mul_add(y, z));
+            assert!(
+                got.to_bits() == wanted.to_bits() || (got.is_nan() && wanted.is_nan()),
+                "fmaf({x:e}, {y:e}, {z:e}) = {got:e}, correctly rounded {wanted:e}"
+            );
+        }
+    }
+    assert_eq!(bound("fmaf"), 0);
 }
 
 fn atanh_from_two_log1p(x: f64) -> f64 {
@@ -317,10 +401,10 @@ fn hyperbolic_functions_are_within_their_bounds() {
     let mut inputs = random.uniform(-30.0, 30.0, 20000);
     inputs.extend(random.uniform(-712.0, 712.0, 5000));
     inputs.extend(random.magnitudes(-60, 3, 10000));
-    check("sinh", sinh, f64::sinh, &inputs, 3);
-    check("cosh", cosh, f64::cosh, &inputs, 3);
-    check("tanh", tanh, f64::tanh, &inputs, 3);
-    check("asinh", asinh, f64::asinh, &wide_inputs(11), 3);
+    check("sinh", sinh, f64::sinh, &inputs, bound("sinh"));
+    check("cosh", cosh, f64::cosh, &inputs, bound("cosh"));
+    check("tanh", tanh, f64::tanh, &inputs, bound("tanh"));
+    check("asinh", asinh, f64::asinh, &wide_inputs(11), bound("asinh"));
     let mut above_one = random.uniform(1.0, 100.0, 20000);
     above_one.extend(
         random
@@ -328,9 +412,9 @@ fn hyperbolic_functions_are_within_their_bounds() {
             .iter()
             .map(|x| x.abs() + 1.0),
     );
-    check("acosh", acosh, f64::acosh, &above_one, 3);
+    check("acosh", acosh, f64::acosh, &above_one, bound("acosh"));
     let unit = random.uniform(-1.0, 1.0, 20000);
-    check("atanh", atanh, atanh_from_two_log1p, &unit, 3);
+    check("atanh", atanh, atanh_from_two_log1p, &unit, bound("atanh"));
 }
 
 const ERF_VECTORS: [(u64, u64); 16] = [
@@ -428,10 +512,10 @@ fn check_vectors(name: &str, function: fn(f64) -> f64, vectors: &[(u64, u64)], b
 
 #[test]
 fn the_error_and_gamma_functions_match_values_computed_to_80_digits() {
-    check_vectors("erf", erf, &ERF_VECTORS, 4);
-    check_vectors("erfc", erfc, &ERFC_VECTORS, 4);
-    check_vectors("tgamma", tgamma, &TGAMMA_VECTORS, 4);
-    check_vectors("lgamma", lgamma, &LGAMMA_VECTORS, 4);
+    check_vectors("erf", erf, &ERF_VECTORS, bound("erf"));
+    check_vectors("erfc", erfc, &ERFC_VECTORS, bound("erfc"));
+    check_vectors("tgamma", tgamma, &TGAMMA_VECTORS, bound("tgamma"));
+    check_vectors("lgamma", lgamma, &LGAMMA_VECTORS, bound("lgamma"));
     let mut factorial = 1.0;
     for n in 1..=20 {
         assert_eq!(tgamma(f64::from(n)), factorial, "tgamma({n})");
@@ -483,14 +567,76 @@ fn c_s_special_cases_hold() {
     assert_eq!(cospi(1.0), -1.0);
     assert_eq!(cospi(-2.0), 1.0);
     assert!(sinpi(f64::INFINITY).is_nan());
-    let mut random = Random(13);
-    for x in random.uniform(-4.0, 4.0, 5000) {
-        let within_one_turn = x - 2.0 * (0.5 * x).round();
-        let wanted = (std::f64::consts::PI * within_one_turn).sin();
-        assert!((sinpi(x) - wanted).abs() <= 1e-15, "sinpi({x})");
-        let wanted = (std::f64::consts::PI * within_one_turn).cos();
-        assert!((cospi(x) - wanted).abs() <= 1e-15, "cospi({x})");
+}
+
+const PI_LOW: f64 = 1.2246467991473532e-16;
+
+fn host_times_pi(turn: f64) -> (f64, f64) {
+    let high = std::f64::consts::PI * turn;
+    let error = std::f64::consts::PI.mul_add(turn, -high);
+    (high, error + PI_LOW * turn)
+}
+
+fn host_sin_of_pi_times(turn: f64) -> f64 {
+    let (high, low) = host_times_pi(turn);
+    high.sin() + low * high.cos()
+}
+
+fn host_cos_of_pi_times(turn: f64) -> f64 {
+    let (high, low) = host_times_pi(turn);
+    high.cos() - low * high.sin()
+}
+
+fn within_one_turn(x: f64) -> f64 {
+    x - 2.0 * (0.5 * x).round_ties_even()
+}
+
+fn host_sinpi(x: f64) -> f64 {
+    let reduced = within_one_turn(x);
+    let mut turn = reduced.abs();
+    if turn > 0.5 {
+        turn = 1.0 - turn;
     }
+    let value = match turn > 0.25 {
+        true => host_cos_of_pi_times(0.5 - turn),
+        false => host_sin_of_pi_times(turn),
+    };
+    if reduced < 0.0 { -value } else { value }
+}
+
+fn host_cospi(x: f64) -> f64 {
+    let mut turn = within_one_turn(x).abs();
+    let sign = match turn > 0.5 {
+        true => {
+            turn = 1.0 - turn;
+            -1.0
+        }
+        false => 1.0,
+    };
+    let value = match turn > 0.25 {
+        true => host_sin_of_pi_times(0.5 - turn),
+        false => host_cos_of_pi_times(turn),
+    };
+    sign * value
+}
+
+#[test]
+fn sinpi_and_cospi_are_within_their_bounds_in_ulps() {
+    let mut random = Random(13);
+    let mut inputs = random.uniform(-4.0, 4.0, 20000);
+    inputs.extend(random.magnitudes(-60, 1, 5000));
+    inputs.extend(random.magnitudes(1, 60, 5000));
+    inputs.extend((-200..200).flat_map(|k| {
+        let whole = f64::from(k) * 0.25;
+        [
+            whole.next_up(),
+            whole.next_down(),
+            whole + 1e-9,
+            whole - 1e-9,
+        ]
+    }));
+    check("sinpi", sinpi, host_sinpi, &inputs, bound("sinpi"));
+    check("cospi", cospi, host_cospi, &inputs, bound("cospi"));
 }
 
 #[test]

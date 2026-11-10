@@ -362,6 +362,14 @@ impl LineDiscipline {
         CAPACITY - self.end.wrapping_sub(self.read).min(CAPACITY)
     }
 
+    /// Whether input that finds no room is dropped rather than waited for, as Linux's line
+    /// discipline does: in canonical mode while no whole line is unread, since no read can make
+    /// room before a line ends. The line keeps room for its end, and the signal and erase
+    /// characters need none, so they still get through.
+    pub fn drops_when_full(&self) -> bool {
+        self.settings.is_canonical() && self.lines == 0
+    }
+
     /// The unread bytes a non-canonical read can take.
     pub fn available(&self) -> usize {
         self.committed.wrapping_sub(self.read) - self.marker_count
@@ -757,6 +765,19 @@ mod tests {
         assert_eq!(console.discipline.pending(), 6);
         assert_eq!(console.read(64), b"hello\n");
         assert!(!console.discipline.is_readable());
+    }
+
+    #[test]
+    fn a_canonical_line_drops_when_full_only_while_no_whole_line_is_unread() {
+        let mut console = Console::new();
+        assert!(console.discipline.drops_when_full());
+        console.types(&[b'x'; CAPACITY + 10]);
+        assert_eq!(console.discipline.room(), 1);
+        assert!(console.discipline.drops_when_full());
+        assert!(console.types(b"\n").readable);
+        assert!(!console.discipline.drops_when_full());
+        let non_canonical = Console::with(raw(1, 0));
+        assert!(!non_canonical.discipline.drops_when_full());
     }
 
     #[test]

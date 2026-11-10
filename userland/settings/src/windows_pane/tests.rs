@@ -579,3 +579,75 @@ fn the_table_and_the_command_show_the_same_cells() {
         .unwrap();
     assert_eq!(row.join("  "), "Count  REG_DWORD  0x0000002a (42)");
 }
+
+fn table_cells(window: &SettingsWindow, table: WidgetId, row: usize) -> Vec<String> {
+    match window.widgets().kind(table) {
+        Some(Kind::Table(table)) => (0..table.column_count)
+            .map(|column| String::from(table.cell_text(row, column).as_str()))
+            .collect(),
+        _ => panic!("a table"),
+    }
+}
+
+#[test]
+fn a_deep_key_s_row_still_shows_its_name() {
+    let store = sample();
+    let mut deep = path(AUTOHOTKEY);
+    for level in 0..14 {
+        deep = deep.join(&utf16(&format!("Level{level}"))).unwrap();
+    }
+    registry_of(&store).create_key(&deep).unwrap();
+    let mut window = opened(&store);
+    go_to(&mut window, &deep.text());
+    let rows = window.windows_pane().key_rows();
+    let row = rows
+        .iter()
+        .position(|row| row.ends_with("Level13"))
+        .unwrap();
+    let shown = &table_cells(&window, ids(&window).keys, row)[0];
+    assert!(shown.ends_with("Level13"), "{shown}");
+    assert!(shown.starts_with(&format!("{}{DEEPER}", INDENT.repeat(DEEPEST_INDENTED - 1))));
+    let keys = ids(&window).keys;
+    let at = |leaf: &str| rows.iter().position(|row| row.ends_with(leaf)).unwrap();
+    assert_eq!(
+        table_cells(&window, keys, at(" Level3"))[0],
+        format!("{}- Level3", INDENT.repeat(DEEPEST_INDENTED))
+    );
+    assert_eq!(
+        table_cells(&window, keys, at(" Level4"))[0],
+        format!("{}{DEEPER}- Level4", INDENT.repeat(DEEPEST_INDENTED - 1))
+    );
+}
+
+#[test]
+fn sorting_by_data_orders_the_cells_as_shown_and_long_data_is_cut_to_a_cell() {
+    let store = sample();
+    let big: Vec<u8> = (0..4096).map(|byte| byte as u8).collect();
+    registry_of(&store)
+        .set_value(&path(AUTOHOTKEY), &utf16("Big"), REG_BINARY, big)
+        .unwrap();
+    let mut window = opened(&store);
+    go_to(&mut window, AUTOHOTKEY);
+    let values = ids(&window).values;
+    window.respond(Response::Sorted(values, 2, SortOrder::Ascending), 0);
+    let rows = value_rows(&window);
+    let names: Vec<&str> = rows.iter().map(|row| row[0].as_str()).collect();
+    assert_eq!(
+        names,
+        ["(Default)", "Big", "Count", "Version", "Blob", "Paths"]
+    );
+    assert_eq!(rows[1][2].len(), CELL_BYTES);
+    assert!(rows[1][2].starts_with("00 01 02 03"), "{}", rows[1][2]);
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(table_cells(&window, values, index), row.to_vec());
+    }
+    window.respond(Response::Sorted(values, 2, SortOrder::Descending), 0);
+    let names: Vec<String> = value_rows(&window)
+        .into_iter()
+        .map(|row| row[0].clone())
+        .collect();
+    assert_eq!(
+        names,
+        ["(Default)", "Paths", "Blob", "Version", "Count", "Big"]
+    );
+}

@@ -13,7 +13,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use eggos_components::command::Row;
 use eggos_components::index::{Component, MAX_COMPONENTS};
-use eggos_components::manager::{self, Failure, Refusal, Store};
+use eggos_components::manager::{self, Failure, Refusal, RemoveError, Store};
 use eggos_components::messages;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text;
@@ -353,25 +353,6 @@ impl ComponentsPane {
         }
     }
 
-    /// Shows the install's progress: `received` of `total` bytes copied.
-    pub fn show_install_progress(
-        &mut self,
-        tree: &mut WidgetTree<CAPACITY>,
-        received: u64,
-        total: u64,
-    ) {
-        if let Work::Installing {
-            received: shown_received,
-            total: shown_total,
-            ..
-        } = &mut self.work
-        {
-            *shown_received = received.min(total);
-            *shown_total = total;
-            self.refresh(tree);
-        }
-    }
-
     /// Shows how installing the component [`Self::to_install`] named went, with what was read
     /// after: the next of a plan is asked for when this one is done.
     pub fn show_installed(
@@ -429,7 +410,7 @@ impl ComponentsPane {
     pub fn show_removed(
         &mut self,
         tree: &mut WidgetTree<CAPACITY>,
-        result: Result<(), Failure>,
+        result: Result<(), RemoveError>,
         read: ComponentsRead,
     ) {
         let removing = match core::mem::replace(&mut self.work, Work::Idle) {
@@ -439,12 +420,20 @@ impl ComponentsPane {
         let component = removing.as_deref().and_then(|name| self.component(name));
         self.read = read;
         self.note = match (result, removing, component) {
-            (Err(failure), Some(name), Some(component)) => {
+            (Err(RemoveError::Failed(failure)), Some(name), Some(component)) => {
                 let (first, second) = messages::remove_failure(&failure, &component);
                 Note::Message {
                     name,
                     first,
                     second: String::from(second),
+                }
+            }
+            (Err(RemoveError::Refused(refusal)), Some(name), _) => {
+                let (first, _) = messages::refusal(&refusal, "");
+                Note::Message {
+                    name,
+                    first,
+                    second: String::new(),
                 }
             }
             _ => Note::Closed,

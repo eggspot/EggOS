@@ -18,6 +18,11 @@ const O_WRONLY: usize = 0o1;
 const O_CREAT: usize = 0o100;
 const O_TRUNC: usize = 0o1000;
 const O_APPEND: usize = 0o2000;
+const O_EXCL: usize = 0o200;
+#[cfg(target_arch = "aarch64")]
+const O_NOFOLLOW: usize = 0o100_000;
+#[cfg(not(target_arch = "aarch64"))]
+const O_NOFOLLOW: usize = 0o400_000;
 const AT_REMOVEDIR: usize = 0x200;
 const W_OK: usize = 2;
 const STATX_BASIC_STATS: usize = 0x7ff;
@@ -398,6 +403,11 @@ impl System for Linux {
 
     fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno> {
         let flags = O_RDONLY_CLOEXEC | O_WRONLY | O_CREAT | if truncate { O_TRUNC } else { 0 };
+        self.open_file(path, flags, mode)
+    }
+
+    fn create_new(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
+        let flags = O_RDONLY_CLOEXEC | O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW;
         self.open_file(path, flags, mode)
     }
 

@@ -28,9 +28,10 @@ cargo xtask run --arch x86_64 --add path/to/hello      # build that image and bo
 ```
 
 `--add` works as for [Linux programs](linux-programs.md): the file goes to `/bin/hello`. The
-aarch64 and x86_64 release images carry the macOS layer at `/usr/lib/eggos/macos` (D152), with
-or without added files, so a program in the host folder (`--apps`) runs too
-(`/media/host/hello`). At the prompt, type
+release images do not carry the macOS layer: it is the `mac-apps` component (D235,
+[components](components.md)) at `/usr/lib/eggos/macos`, which `component install mac-apps`
+installs from the store the run scripts and `cargo xtask run` attach. Once it is installed, a
+program in the host folder (`--apps`) runs too (`/media/host/hello`). At the prompt, type
 `hello` (or its path) and its arguments; the shell reports the exit status in `$?`, and an
 `abort()` as `Aborted` and `134`.
 

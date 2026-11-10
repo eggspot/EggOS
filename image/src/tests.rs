@@ -344,3 +344,101 @@ fn damaged_headers_are_errors() {
     jpeg[frame + 1] = 0xc9;
     assert_eq!(decode(&jpeg, &Limits::DEFAULT), Err(Error::Unsupported));
 }
+
+fn first_scan(jpeg: &[u8]) -> core::ops::Range<usize> {
+    let segment_end =
+        |at: usize| at + 2 + usize::from(u16::from_be_bytes([jpeg[at + 2], jpeg[at + 3]]));
+    let mut at = 2;
+    while jpeg[at + 1] != 0xda {
+        at = segment_end(at);
+    }
+    let mut end = segment_end(at);
+    while !(jpeg[end] == 0xff && jpeg[end + 1] != 0 && !(0xd0..=0xd7).contains(&jpeg[end + 1])) {
+        end += 1;
+    }
+    at..end
+}
+
+fn with_first_scan_repeated(jpeg: &[u8], scans: usize) -> Vec<u8> {
+    let scan = first_scan(jpeg);
+    let mut bytes = jpeg[..scan.end].to_vec();
+    for _ in 1..scans {
+        bytes.extend_from_slice(&jpeg[scan.clone()]);
+    }
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+#[test]
+fn a_jpeg_with_more_scans_than_the_cap_is_too_large() {
+    let most = with_first_scan_repeated(GREY_PROGRESSIVE, MAX_JPEG_SCANS);
+    assert!(decode(&most, &Limits::DEFAULT).is_ok());
+    let one_more = with_first_scan_repeated(GREY_PROGRESSIVE, MAX_JPEG_SCANS + 1);
+    assert_eq!(decode(&one_more, &Limits::DEFAULT), Err(Error::TooLarge));
+}
+
+#[test]
+fn working_buffers_past_the_budget_are_too_large() {
+    let grey = decoded(GREY_PROGRESSIVE);
+    let blocks = u64::from(grey.width.div_ceil(8) * grey.height.div_ceil(8));
+    let plane_and_coefficients = blocks * 64 * 3;
+    let exact = Limits {
+        max_working_bytes: plane_and_coefficients,
+        ..Limits::DEFAULT
+    };
+    assert_eq!(decode(GREY_PROGRESSIVE, &exact), Ok(grey));
+    let short = Limits {
+        max_working_bytes: plane_and_coefficients - 1,
+        ..Limits::DEFAULT
+    };
+    assert_eq!(decode(GREY_PROGRESSIVE, &short), Err(Error::TooLarge));
+    let none = Limits {
+        max_working_bytes: 0,
+        ..Limits::DEFAULT
+    };
+    for bytes in [BASELINE_420, PROGRESSIVE_420, TIFF_NONE, TIFF_LZW] {
+        assert_eq!(decode(bytes, &none), Err(Error::TooLarge));
+    }
+    assert_eq!(decode(PATTERN, &none), Ok(decoded(PATTERN)));
+    assert_eq!(decode(GRADIENT_GIF, &none), Ok(decoded(GRADIENT_GIF)));
+}
+
+fn gif_of_empty_frames(frames: usize, side: u16) -> Vec<u8> {
+    let mut gif = b"GIF89a".to_vec();
+    gif.extend_from_slice(&4u16.to_le_bytes());
+    gif.extend_from_slice(&4u16.to_le_bytes());
+    gif.extend_from_slice(&[0x80, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff]);
+    for _ in 0..frames {
+        gif.push(0x2c);
+        for value in [0, 0, side, side] {
+            gif.extend_from_slice(&u16::to_le_bytes(value));
+        }
+        let clear_then_end = 4 | 5 << 3;
+        gif.extend_from_slice(&[0, 2, 1, clear_then_end, 0]);
+    }
+    gif.push(0x3b);
+    gif
+}
+
+#[test]
+fn gif_frames_stop_once_their_declared_areas_pass_the_pixel_cap() {
+    let hundred = Limits {
+        max_pixels: 100,
+        ..Limits::DEFAULT
+    };
+    let canvas_sized = gif_of_empty_frames(3, 4);
+    assert_eq!(
+        decode_animation(&canvas_sized, &hundred)
+            .unwrap()
+            .frames
+            .len(),
+        3
+    );
+    let oversized = gif_of_empty_frames(3, 8);
+    assert_eq!(
+        decode_animation(&oversized, &hundred).unwrap().frames.len(),
+        1
+    );
+    let too_big = gif_of_empty_frames(1, 11);
+    assert_eq!(decode_animation(&too_big, &hundred), Err(Error::TooLarge));
+}

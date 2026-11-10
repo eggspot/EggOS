@@ -1,8 +1,9 @@
 use crate::command::{self, Console, Context};
 use crate::fake::FakeFiles;
 use crate::index::{self, Component, File, Header, Index, IndexError, SECTOR};
-use crate::manager::{self, COMPONENTS, Failure, Refusal, Source};
+use crate::manager::{self, COMPONENTS, Failure, REMOVING_PREFIX, Refusal, RemoveError, Source};
 use crate::messages;
+use eggos_runtime::errno::Errno;
 
 const STORE_DISK: &str = "/dev/vdc";
 const WINDOWS_LAYER: &str = "usr/lib/eggos/windows";
@@ -532,11 +533,106 @@ fn a_second_action_is_refused_while_one_runs_and_a_dead_holder_s_lock_is_taken_o
         })
     );
     files.nodes.remove(&b"/proc/40"[..]);
+    let claim = manager::take_over_claim(40);
+    files.file(&claim, b"");
+    assert_eq!(
+        manager::lock(&mut files, "Windows apps", false, 41),
+        Err(Refusal::Busy {
+            title: "Desktop".into(),
+            removing: false
+        })
+    );
+    assert_eq!(
+        files.contents(manager::LOCK),
+        Some(&b"40 install Desktop"[..])
+    );
+    files.nodes.remove(claim.as_bytes());
     assert_eq!(manager::lock(&mut files, "Windows apps", false, 41), Ok(()));
     assert_eq!(
         files.contents(manager::LOCK),
         Some(&b"41 install Windows apps"[..])
     );
+    assert!(files.contents(&claim).is_none());
+}
+
+#[test]
+fn a_confirmed_remove_checks_again_under_the_lock() {
+    let mut files = machine(&[DESKTOP, APPS, WINDOWS]);
+    let found = store(&mut files);
+    let component = |name: &str| found.index.component(name).unwrap().clone();
+    let (desktop, apps, windows) = (
+        component("desktop"),
+        component("builtin-apps"),
+        component("windows-apps"),
+    );
+    manager::install(&mut files, &found, &desktop, &mut |_, _| true).unwrap();
+    let installed = manager::installed(&mut files);
+    assert!(
+        manager::check_remove(&mut files, &installed, "desktop")
+            .unwrap()
+            .is_some()
+    );
+    manager::install(&mut files, &found, &apps, &mut |_, _| true).unwrap();
+    assert_eq!(
+        manager::remove_checked(&mut files, &desktop.title, "desktop", 7),
+        Err(RemoveError::Refused(Refusal::NeededBy(vec![
+            "Built-in apps".into()
+        ])))
+    );
+    assert_eq!(manager::installed(&mut files).len(), 2);
+    assert!(files.contents(manager::LOCK).is_none());
+
+    manager::install(&mut files, &found, &windows, &mut |_, _| true).unwrap();
+    files.file(
+        "/proc/12/cmdline",
+        b"/usr/lib/eggos/windows\0/home/root/Notepad.exe\0",
+    );
+    assert_eq!(
+        manager::remove_checked(&mut files, &windows.title, "windows-apps", 7),
+        Err(RemoveError::Refused(Refusal::InUse {
+            names: vec!["Notepad".into()],
+            count: 1
+        }))
+    );
+    files.nodes.remove(&b"/proc/12/cmdline"[..]);
+    let removed = |files: &mut crate::fake::FakeFiles| {
+        manager::remove_checked(files, &windows.title, "windows-apps", 7)
+            .map(|removed| removed.map(|component| component.name))
+    };
+    assert_eq!(removed(&mut files), Ok(Some("windows-apps".into())));
+    assert_eq!(removed(&mut files), Ok(None));
+    assert!(files.contents(manager::LOCK).is_none());
+
+    files.folder("/proc/40");
+    files.file(manager::LOCK, b"40 install Desktop");
+    assert_eq!(
+        manager::remove_checked(&mut files, &apps.title, "builtin-apps", 7),
+        Err(RemoveError::Refused(Refusal::Busy {
+            title: "Desktop".into(),
+            removing: false
+        }))
+    );
+    assert_eq!(manager::installed(&mut files).len(), 2);
+}
+
+#[test]
+fn a_remove_that_cannot_delete_every_file_says_so_and_is_no_longer_installed() {
+    let mut files = machine(&[WINDOWS]);
+    let found = store(&mut files);
+    let windows = found.index.component("windows-apps").unwrap().clone();
+    manager::install(&mut files, &found, &windows, &mut |_, _| true).unwrap();
+    files
+        .read_only
+        .push(format!("{COMPONENTS}/{REMOVING_PREFIX}windows-apps/root").into_bytes());
+    let failure = manager::remove(&mut files, "windows-apps").unwrap_err();
+    assert_eq!(failure, Failure::FilesLeft(Errno::EACCES));
+    assert!(manager::installed(&mut files).is_empty());
+    let line = messages::remove_failure_line(&failure, &windows);
+    assert!(
+        line.starts_with("Removed Windows apps, but some of its files could not be deleted: "),
+        "{line}"
+    );
+    assert!(line.ends_with(messages::FILES_LEFT), "{line}");
 }
 
 #[derive(Default)]

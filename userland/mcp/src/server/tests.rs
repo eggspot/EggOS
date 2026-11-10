@@ -11,6 +11,7 @@ use crate::audit::parse_line;
 use crate::fake::{Buffers, FakeSystem, Harness};
 use crate::grants::Grants;
 use crate::json::{self, Value};
+use crate::schema_check::conforms;
 
 fn parsed(answer: &str) -> Value<'_> {
     json::parse(answer.as_bytes()).unwrap().value
@@ -2183,6 +2184,7 @@ fn a_clock_set_question_names_the_time() {
         &checked,
         FileState::Missing,
         ("", ""),
+        &QuestionFacts::NONE,
         &AgentId::LOCAL,
         &mut out,
     );
@@ -3059,6 +3061,7 @@ fn confirmation_texts_name_the_tool_whatever_it_is() {
         &Checked::default(),
         FileState::Missing,
         ("", ""),
+        &QuestionFacts::NONE,
         &AgentId::LOCAL,
         &mut question,
     );
@@ -4712,92 +4715,6 @@ fn windows_registry_delete_and_reset_ask_first_and_dry_runs_change_nothing() {
     assert!(harness.system.runs.is_empty());
 }
 
-fn type_holds(value: Value<'_>, name: &str) -> bool {
-    match (name, value) {
-        ("object", Value::Object(_))
-        | ("array", Value::Array(_))
-        | ("string", Value::Str(_))
-        | ("boolean", Value::Bool(_))
-        | ("null", Value::Null)
-        | ("number", Value::Number(_)) => true,
-        ("integer", Value::Number(number)) => {
-            number.as_i64().is_some() || number.as_u64().is_some()
-        }
-        _ => false,
-    }
-}
-
-fn decoded(text: json::Str<'_>) -> String {
-    text.chars().collect()
-}
-
-fn conforms(value: Value<'_>, schema: Value<'_>) -> Result<(), String> {
-    let shown = || String::from_utf8_lossy(value.raw()).into_owned();
-    if let Some(types) = schema.get("type") {
-        let names: Vec<String> = match types {
-            Value::Str(name) => vec![decoded(name)],
-            Value::Array(names) => names
-                .elements()
-                .map(|name| decoded(name.as_str().unwrap()))
-                .collect(),
-            _ => panic!("a type is a name or a list of names"),
-        };
-        if !names.iter().any(|name| type_holds(value, name)) {
-            return Err(format!("{} is not of the types {names:?}", shown()));
-        }
-    }
-    if let Some(choices @ Value::Array(listed)) = schema.get("enum")
-        && !listed.elements().any(|choice| choice.raw() == value.raw())
-    {
-        return Err(format!(
-            "{} is none of {}",
-            shown(),
-            String::from_utf8_lossy(choices.raw())
-        ));
-    }
-    if let Some(Value::Array(required)) = schema.get("required") {
-        for name in required.elements() {
-            let name = decoded(name.as_str().unwrap());
-            if value.get(&name).is_none() {
-                return Err(format!("{} lacks {name}", shown()));
-            }
-        }
-    }
-    if let Value::Object(object) = value {
-        let closed = schema.get("additionalProperties") == Some(Value::Bool(false));
-        for (key, member) in object.members() {
-            let key = decoded(key);
-            match schema.get("properties").and_then(|named| named.get(&key)) {
-                Some(property) => {
-                    conforms(member, property).map_err(|why| format!("{key}: {why}"))?;
-                }
-                None if closed => {
-                    return Err(format!(
-                        "{} has {key}, which its schema does not name",
-                        shown()
-                    ));
-                }
-                None => {}
-            }
-        }
-    }
-    if let (Value::Array(elements), Some(items)) = (value, schema.get("items")) {
-        for (index, element) in elements.elements().enumerate() {
-            conforms(element, items).map_err(|why| format!("item {index}: {why}"))?;
-        }
-    }
-    if let Some(Value::Array(choices)) = schema.get("oneOf") {
-        let matching = choices
-            .elements()
-            .filter(|choice| conforms(value, *choice).is_ok())
-            .count();
-        if matching != 1 {
-            return Err(format!("{} matches {matching} of oneOf's schemas", shown()));
-        }
-    }
-    Ok(())
-}
-
 fn conforms_text(value: &str, schema: &str) -> Result<(), String> {
     conforms(
         json::parse(value.as_bytes()).unwrap().value,
@@ -5142,4 +5059,139 @@ fn every_tool_with_an_output_schema_answers_it_from_its_twin() {
             check_structured(tool, Some(schema), &answer, "refused");
         }
     }
+}
+
+fn asked_message(harness: &mut Harness, tool: &str, arguments: &str) -> String {
+    let lines = harness.call_lines(9, tool, arguments);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    question_of(&lines[0]);
+    parsed(&lines[0])
+        .get("params")
+        .unwrap()
+        .get("message")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .chars()
+        .collect()
+}
+
+#[test]
+fn a_component_remove_question_names_the_component_and_its_size() {
+    let mut harness = asking();
+    harness.system.files.insert(
+        "/var/lib/eggos/components/windows-apps/component".into(),
+        b"component windows-apps\ntitle Windows apps\nsummary Runs Windows programs.\n\
+          on-remove Windows programs stop opening.\n\
+          file 755 0 1000 00 usr/lib/eggos/windows/a\n\
+          file 644 1024 234 00 usr/lib/eggos/windows/b\nend\n"
+            .to_vec(),
+    );
+    let message = asked_message(
+        &mut harness,
+        "component_remove",
+        r#"{"name":"windows-apps"}"#,
+    );
+    assert_eq!(
+        message,
+        "An agent asks to remove the component windows-apps (1234 bytes) and every file it \
+         installed. Allow it? (EggOS, tool component_remove)"
+    );
+    let mut harness = asking();
+    let message = asked_message(&mut harness, "component_remove", r#"{"name":"macos-apps"}"#);
+    assert_eq!(
+        message,
+        "An agent asks to remove the component macos-apps and every file it installed. Allow \
+         it? (EggOS, tool component_remove)"
+    );
+}
+
+#[test]
+fn a_download_cancel_question_names_the_download_and_its_file() {
+    let mut harness = asking();
+    harness.system.files.insert(
+        "/run/eggos/downloads/61".into(),
+        b"url=http://10.0.2.2/eggos.elf\npath=/home/root/Downloads/eggos\x1b[2J.elf\n\
+          received=10\nstate=downloading\nstarted=1\n"
+            .to_vec(),
+    );
+    let message = asked_message(&mut harness, "download_cancel", r#"{"pid":61}"#);
+    assert_eq!(
+        message,
+        "An agent asks to cancel download 61 (eggos\\e[2J.elf), deleting what it saved so far. \
+         Allow it? (EggOS, tool download_cancel)"
+    );
+    let mut harness = asking();
+    let message = asked_message(&mut harness, "download_cancel", r#"{"pid":62}"#);
+    assert_eq!(
+        message,
+        "An agent asks to cancel download 62, deleting what it saved so far. Allow it? (EggOS, \
+         tool download_cancel)"
+    );
+}
+
+#[test]
+fn the_write_tools_never_reach_eggos_settings() {
+    let mut harness = writer();
+    harness.system.folders.push("/home/root/.config".into());
+    harness
+        .system
+        .folders
+        .push("/home/root/.config/eggos".into());
+    harness.system.files.insert(
+        "/home/root/.config/eggos/settings".into(),
+        b"eggos-settings 1\n".to_vec(),
+    );
+    for (id, tool, arguments) in [
+        (
+            1,
+            "tee",
+            r#"{"path":"/home/root/.config/eggos/settings","content":"x","confirm":true}"#,
+        ),
+        (
+            2,
+            "trash",
+            r#"{"path":"/home/root/.config/eggos/settings"}"#,
+        ),
+        (
+            3,
+            "file_copy",
+            r#"{"source":"/home/root/a","destination":"/home/root/.config/eggos/settings","confirm":true}"#,
+        ),
+        (
+            4,
+            "fetch",
+            r#"{"url":"http://10.0.2.2/s","path":"/home/root/.config/./eggos/new","confirm":true}"#,
+        ),
+    ] {
+        let answer = harness.call(id, tool, arguments);
+        assert!(
+            texts(&answer)[0].contains("in EggOS's settings folder"),
+            "{tool}: {answer}"
+        );
+    }
+    for (id, tool, arguments) in [
+        (
+            5,
+            "file_remove",
+            r#"{"path":"/home/root/.config","recursive":true,"confirm":true}"#,
+        ),
+        (
+            6,
+            "file_move",
+            r#"{"source":"/home/root/.config","destination":"/home/root/c"}"#,
+        ),
+        (7, "trash", r#"{"path":"/home/root/.config"}"#),
+    ] {
+        let answer = harness.call(id, tool, arguments);
+        assert!(
+            texts(&answer)[0].contains("holds EggOS's settings folder"),
+            "{tool}: {answer}"
+        );
+    }
+    assert!(harness.system.runs.is_empty());
+    assert_eq!(
+        harness.system.files["/home/root/.config/eggos/settings"],
+        b"eggos-settings 1\n"
+    );
 }

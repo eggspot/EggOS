@@ -197,3 +197,76 @@ fn the_fetch_example_saves_the_page_and_records_the_download() {
         }
     );
 }
+
+const UNDATED_DOWNLOAD: (&str, &[u8]) = (
+    "/run/eggos/downloads/70",
+    b"url=http://10.0.2.2/later.bin\npath=/home/root/Downloads/later.bin\nreceived=0\n\
+state=downloading\nstarted=300000000000\n",
+);
+
+fn list_operands(tool: &str) -> &'static [&'static str] {
+    match tool {
+        "df" => &["/home/root"],
+        _ => &[],
+    }
+}
+
+#[test]
+fn every_list_tool_s_twin_writes_records_its_output_schema_takes() {
+    let mut checked = Vec::new();
+    for tool in eggos_commands::tools::TOOLS.iter() {
+        if !matches!(tool.result, eggos_commands::tools::ToolResult::Items(_))
+            || Utility::named(tool.command[0].as_bytes()).is_none()
+        {
+            continue;
+        }
+        let words: Vec<CString> = tool
+            .command
+            .iter()
+            .chain(tool.fixed)
+            .chain(list_operands(tool.name))
+            .map(|word| CString::new(*word).unwrap())
+            .collect();
+        let arguments: Vec<&CStr> = words.iter().map(CString::as_c_str).collect();
+        let (path, record) = UNDATED_DOWNLOAD;
+        let mut fake = machine().with_file(path, 0o644, record, 0);
+        let status = run(&mut fake, &arguments);
+        assert_eq!(status, 0, "{}: {}", tool.name, fake.errors());
+        let output = fake.output();
+        assert!(!output.is_empty(), "{} writes records", tool.name);
+        let envelope = format!(
+            "{{\"items\":[{}],\"truncated\":false}}",
+            output.lines().collect::<Vec<_>>().join(",")
+        );
+        let mut schema = vec![0u8; 64 * 1024];
+        let mut writer = eggos_mcp::json::JsonWriter::new(&mut schema);
+        eggos_mcp::tools::write_output_schema(&mut writer, tool);
+        assert!(!writer.overflowed());
+        let schema = writer.as_bytes().to_vec();
+        let value = eggos_mcp::json::parse(envelope.as_bytes()).unwrap().value;
+        let schema = eggos_mcp::json::parse(&schema).unwrap().value;
+        assert_eq!(
+            eggos_mcp::schema_check::conforms(value, schema),
+            Ok(()),
+            "{}: {output}",
+            tool.name
+        );
+        if tool.name == "download_list" {
+            assert!(
+                output.contains("\"started_at\":null"),
+                "the undated download is listed: {output}"
+            );
+        }
+        checked.push(tool.name);
+    }
+    assert_eq!(
+        checked,
+        [
+            "df",
+            "device_list",
+            "agent_list",
+            "wm_desktop_list",
+            "download_list"
+        ]
+    );
+}

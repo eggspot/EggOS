@@ -35,6 +35,7 @@ const TWO_POW_MINUS_26: f64 = power_of_two(-26);
 const TWO_POW_MINUS_27: f64 = power_of_two(-27);
 const TWO_POW_MINUS_128: f64 = power_of_two(-128);
 const TWO_POW_52: f64 = power_of_two(52);
+const TWO_POW_53: f64 = power_of_two(53);
 const TWO_POW_60: f64 = power_of_two(60);
 const WINDOW_BITS: i32 = 192;
 
@@ -316,7 +317,7 @@ pub fn cospi(x: f64) -> f64 {
     if !x.is_finite() {
         return f64::NAN;
     }
-    if fabs(x) >= TWO_POW_52 {
+    if fabs(x) >= TWO_POW_53 {
         return 1.0;
     }
     let mut turn = fabs(less_nearest_even(fabs(x)));

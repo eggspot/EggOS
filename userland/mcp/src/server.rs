@@ -123,6 +123,12 @@ const BUSY: &str = "Refused: another call waits for the user's answer; try again
 const BUDGET_USED: &str = "Refused: this server run has written as much to the audit log as it \
     may (2 MiB); calls are refused until the server starts again.";
 const QUESTION_PREFIX: &str = "eggos-elicit-";
+const COMPONENTS_FOLDER: &str = "/var/lib/eggos/components";
+const COMPONENT_RECORD: &str = "component";
+const DOWNLOADS_FOLDER: &str = "/run/eggos/downloads";
+const DOWNLOAD_RECORD_BYTES: usize = 8192;
+const RECORD_LINE_BYTES: usize = 512;
+const MAX_FILE_NAME_BYTES: usize = 255;
 const PERSON_BUSY: &str = "Busy: a person is using the machine; wait a moment and retry.";
 const NOT_RESPONDING: &str = "Not responding: the window's app has left its events unread; wait \
                               and retry, or close the window.";
@@ -1469,6 +1475,14 @@ impl Server {
                 (Kind::FileRemove, _) if paths::is_inside(paths::TRASH, resolved) => {
                     return Err(Problem::refused(&errors::PATH_NOT_ALLOWED, HOLDS_THE_TRASH));
                 }
+                (Kind::FileRemove | Kind::Trash, _)
+                    if paths::is_inside(paths::SETTINGS, resolved) =>
+                {
+                    return Err(Problem::refused(
+                        &errors::PATH_NOT_ALLOWED,
+                        HOLDS_THE_SETTINGS,
+                    ));
+                }
                 (Kind::FileRemove, FileState::Directory) if !checked.recursive => {
                     return Err(Problem::error(
                         &errors::IS_A_FOLDER,
@@ -1638,11 +1652,13 @@ impl Server {
         let source = arguments::source_text(&checked, scratch.content).unwrap_or("");
         let target = arguments::registry_key_text(&checked, scratch.content).unwrap_or(target);
         let source = arguments::registry_name_text(&checked, scratch.content).unwrap_or(source);
+        let facts = question_facts(tool, &checked, system);
         let length = question_text(
             tool,
             &checked,
             state,
             (target, source),
+            &facts,
             &self.agent,
             &mut message,
         );
@@ -2977,6 +2993,11 @@ impl Problem {
 
 const HOLDS_THE_TRASH: &str =
     "Refused: the path holds the Trash, which belongs to trash and Files.";
+const HOLDS_THE_SETTINGS: &str = "Refused: the path holds EggOS's settings folder, which only \
+                                  Settings and settings_set change.";
+const IN_THE_SETTINGS: &str = "Refused: the path is in EggOS's settings folder, \
+                               /home/root/.config/eggos, which only Settings and settings_set \
+                               change.";
 
 fn second_path(
     tool: &Tool,
@@ -3012,6 +3033,12 @@ fn second_path(
     }
     if tool.kind == Kind::FileMove && paths::is_inside(paths::TRASH, source) {
         return Err(Problem::refused(&errors::PATH_NOT_ALLOWED, HOLDS_THE_TRASH));
+    }
+    if tool.kind == Kind::FileMove && paths::is_inside(paths::SETTINGS, source) {
+        return Err(Problem::refused(
+            &errors::PATH_NOT_ALLOWED,
+            HOLDS_THE_SETTINGS,
+        ));
     }
     if source == destination {
         return Err(Problem::error(
@@ -3102,6 +3129,7 @@ fn path_refusal(argument: &tools::PathArgument, refusal: PathRefusal) -> &'stati
         PathRefusal::Excluded => {
             "Refused: the path is in the Trash, which belongs to trash and Files."
         }
+        PathRefusal::InSettings => IN_THE_SETTINGS,
         other => other.message(),
     }
 }
@@ -3195,11 +3223,170 @@ fn confirmation_needed(tool: &Tool, out: &mut [u8]) -> usize {
     text.length
 }
 
+#[derive(Debug, Clone, Copy)]
+struct QuestionFacts {
+    component_bytes: Option<u64>,
+    download_file: [u8; MAX_FILE_NAME_BYTES],
+    download_file_length: usize,
+}
+
+impl QuestionFacts {
+    const NONE: Self = Self {
+        component_bytes: None,
+        download_file: [0; MAX_FILE_NAME_BYTES],
+        download_file_length: 0,
+    };
+
+    fn download_file(&self) -> &[u8] {
+        self.download_file
+            .get(..self.download_file_length)
+            .unwrap_or_default()
+    }
+}
+
+fn question_facts(tool: &Tool, checked: &Checked, system: &mut impl System) -> QuestionFacts {
+    let mut facts = QuestionFacts::NONE;
+    match (tool.kind, &checked.name, checked.pid) {
+        (Kind::ComponentRemove, Some(name), _) => {
+            facts.component_bytes = component_bytes(system, name.as_str());
+        }
+        (Kind::DownloadCancel, _, Some(pid)) => {
+            facts.download_file_length = download_file_name(system, pid, &mut facts.download_file);
+        }
+        _ => {}
+    }
+    facts
+}
+
+fn download_file_name(
+    system: &mut impl System,
+    pid: u32,
+    out: &mut [u8; MAX_FILE_NAME_BYTES],
+) -> usize {
+    let mut path = [0u8; DOWNLOADS_FOLDER.len() + 12];
+    let mut text = Text::new(&mut path);
+    text.put(DOWNLOADS_FOLDER);
+    text.put("/");
+    text.number(i64::from(pid));
+    let length = text.length;
+    let mut record = [0u8; DOWNLOAD_RECORD_BYTES];
+    let Ok(read) = system.read_file(text_prefix(&path, length), &mut record) else {
+        return 0;
+    };
+    let saved = record
+        .get(..read)
+        .unwrap_or_default()
+        .split(|&byte| byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"path="));
+    let Some(saved) = saved else {
+        return 0;
+    };
+    let name = saved.rsplit(|&byte| byte == b'/').next().unwrap_or(saved);
+    let length = name.len().min(out.len());
+    match (out.get_mut(..length), name.get(..length)) {
+        (Some(place), Some(name)) => {
+            place.copy_from_slice(name);
+            length
+        }
+        _ => 0,
+    }
+}
+
+fn component_bytes(system: &mut impl System, name: &str) -> Option<u64> {
+    let mut path =
+        [0u8; COMPONENTS_FOLDER.len() + 2 + arguments::MAX_NAME_BYTES + COMPONENT_RECORD.len()];
+    let mut text = Text::new(&mut path);
+    text.put(COMPONENTS_FOLDER);
+    text.put("/");
+    text.put(name);
+    text.put("/");
+    text.put(COMPONENT_RECORD);
+    let length = text.length;
+    let file = system.open_capture(text_prefix(&path, length)).ok()?;
+    let mut sum = ComponentRecordSum::of(name);
+    let mut piece = [0u8; RECORD_LINE_BYTES];
+    let read = loop {
+        match system.read_capture(&file, &mut piece) {
+            Ok(0) => break Some(()),
+            Ok(count) => sum.feed(piece.get(..count).unwrap_or_default()),
+            Err(_) => break None,
+        }
+    };
+    system.close_capture(file);
+    read?;
+    sum.end_line();
+    sum.named.then_some(sum.bytes)
+}
+
+struct ComponentRecordSum<'n> {
+    name: &'n str,
+    named: bool,
+    bytes: u64,
+    line: [u8; RECORD_LINE_BYTES],
+    filled: usize,
+    overlong: bool,
+}
+
+impl<'n> ComponentRecordSum<'n> {
+    fn of(name: &'n str) -> Self {
+        Self {
+            name,
+            named: false,
+            bytes: 0,
+            line: [0; RECORD_LINE_BYTES],
+            filled: 0,
+            overlong: false,
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if byte == b'\n' {
+                self.end_line();
+                continue;
+            }
+            match self.line.get_mut(self.filled) {
+                Some(slot) => {
+                    *slot = byte;
+                    self.filled += 1;
+                }
+                None => self.overlong = true,
+            }
+        }
+    }
+
+    fn end_line(&mut self) {
+        let line = self.line.get(..self.filled).unwrap_or_default();
+        if !self.overlong {
+            if let Some(named) = line.strip_prefix(b"component ") {
+                self.named |= named == self.name.as_bytes();
+            } else if let Some(fields) = line.strip_prefix(b"file ") {
+                let length = fields.split(|&byte| byte == b' ').nth(2);
+                let length = length.and_then(whole_decimal).unwrap_or(0);
+                self.bytes = self.bytes.saturating_add(length);
+            }
+        }
+        self.filled = 0;
+        self.overlong = false;
+    }
+}
+
+fn whole_decimal(digits: &[u8]) -> Option<u64> {
+    if digits.is_empty() || digits.len() > 19 {
+        return None;
+    }
+    digits.iter().try_fold(0u64, |value, &digit| match digit {
+        b'0'..=b'9' => Some(value * 10 + u64::from(digit - b'0')),
+        _ => None,
+    })
+}
+
 fn question_text(
     tool: &Tool,
     checked: &Checked,
     state: FileState,
     (target, source): (&str, &str),
+    facts: &QuestionFacts,
     agent: &AgentId,
     out: &mut [u8],
 ) -> usize {
@@ -3332,6 +3519,31 @@ fn question_text(
                 }
             }
             text.put(". Allow it?");
+        }
+        Kind::ComponentRemove => {
+            let mut name = [0u8; arguments::MAX_NAME_BYTES * 4];
+            let raw = checked.name.as_ref().map_or("", |name| name.as_str());
+            let length = audit::display_into(raw.as_bytes(), &mut name);
+            text.put("An agent asks to remove the component ");
+            text.put(text_prefix(&name, length));
+            if let Some(bytes) = facts.component_bytes {
+                text.put(" (");
+                text.number(bytes.min(i64::MAX as u64) as i64);
+                text.put(" bytes)");
+            }
+            text.put(" and every file it installed. Allow it?");
+        }
+        Kind::DownloadCancel => {
+            text.put("An agent asks to cancel download ");
+            text.number(i64::from(checked.pid.unwrap_or(0)));
+            if !facts.download_file().is_empty() {
+                let mut name = [0u8; MAX_FILE_NAME_BYTES * 4];
+                let length = audit::display_into(facts.download_file(), &mut name);
+                text.put(" (");
+                text.put(text_prefix(&name, length));
+                text.put(")");
+            }
+            text.put(", deleting what it saved so far. Allow it?");
         }
         Kind::WindowsRegistryReset => {
             text.put(match checked.machine {

@@ -55,6 +55,7 @@ pub struct FakeNetwork {
     pub ntp_servers: Vec<(Ipv4Address, u16)>,
     pub ntp_time_ns: i64,
     pub random_counter: u8,
+    pub connect_interrupted: bool,
 }
 
 impl FakeNetwork {
@@ -776,6 +777,13 @@ impl System for Fake {
         Ok(self.open.len() - 1 + FIRST_FILE_DESCRIPTOR)
     }
 
+    fn create_new(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
+        if self.nodes.contains_key(&self.resolve(path.to_bytes())) {
+            return Err(Errno::EEXIST);
+        }
+        self.create(path, mode, false)
+    }
+
     fn append(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
         let descriptor = self.create(path, mode, false)?;
         let opened = self.file(descriptor)?.path.clone();
@@ -989,6 +997,11 @@ impl System for Fake {
             u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
         };
         match (request, argument.len()) {
+            (crate::window_desktop::LIST_DESKTOPS, 16) => {
+                let windows = self.windows.len().min(usize::from(u8::MAX)) as u8;
+                argument[..4].copy_from_slice(&[2, 1, windows, 0]);
+                Ok(())
+            }
             (crate::wm::LIST_WINDOW, crate::wm::LIST_SIZE) => {
                 let window = self
                     .windows
@@ -1299,6 +1312,10 @@ impl System for Fake {
         port: u16,
         timeout_ms: u32,
     ) -> Result<(), Errno> {
+        if self.network.connect_interrupted {
+            self.termination_requested = true;
+            return Err(Errno::EINTR);
+        }
         let served = self
             .network
             .pages

@@ -254,6 +254,40 @@ static void exceptions(void) {
     } @catch (NSException *exception) {
         say([NSString stringWithFormat:@"caught %@", exception.name]);
     }
+    @try {
+        [[NSMutableString stringWithString:@"egg"] insertString:@"!" atIndex:9];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ insert", exception.name]);
+    }
+    @try {
+        id objects[] = {@"v", nil};
+        id keys[] = {@"k", @"j"};
+        [NSDictionary dictionaryWithObjects:objects forKeys:keys count:2];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ dictionary", exception.name]);
+    }
+    @try {
+        [[NSSet setWithObject:@"s"] enumerateObjectsUsingBlock:^(id object, BOOL *stop) {
+          @throw [NSException exceptionWithName:@"EggSetBlock" reason:object userInfo:nil];
+        }];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ %@", exception.name, exception.reason]);
+    }
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    id token = [center addObserverForName:@"EggThrow"
+                                   object:nil
+                                    queue:nil
+                               usingBlock:^(NSNotification *note) {
+                                 @throw [NSException exceptionWithName:@"EggObserver"
+                                                                reason:note.name
+                                                              userInfo:nil];
+                               }];
+    @try {
+        [center postNotification:[NSNotification notificationWithName:@"EggThrow" object:nil]];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ %@", exception.name, exception.reason]);
+    }
+    [center removeObserver:token];
 }
 
 static void foundation_classes(void) {

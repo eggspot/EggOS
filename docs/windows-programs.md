@@ -31,9 +31,10 @@ cargo xtask run --arch aarch64 --add path/to/hello-arm64.exe
 ```
 
 `--add` works as for [Linux programs](linux-programs.md): the file goes to `/bin/hello.exe`.
-The x86_64 and aarch64 release images carry the Windows layer at `/usr/lib/eggos/windows`
-(D152), with or without added files, so a program in the host folder (`--apps`) runs too
-(`/media/host/hello.exe`). At the prompt, type
+The release images do not carry the Windows layer: it is the `windows-apps` component (D235,
+[components](components.md)) at `/usr/lib/eggos/windows`, which `component install
+windows-apps` installs from the store the run scripts and `cargo xtask run` attach. Once it is
+installed, a program in the host folder (`--apps`) runs too (`/media/host/hello.exe`). At the prompt, type
 `hello.exe` (or its path) and its arguments; the shell reports its exit code's low 8 bits in
 `$?`, as for any program (`ExitProcess(300)` shows `44`).
 
@@ -188,7 +189,12 @@ Windows programs read and write a real registry (D231): `RegOpenKeyEx`, `RegCrea
 `RegEnumValue`, `RegGetValue` and the rest, W and A. The user's keys live in
 `~/.local/share/eggos/windows/user.hive` and the machine's in
 `/var/lib/eggos/windows/machine.hive` (read-only but to root); `HKEY_CLASSES_ROOT` merges both.
-Read and change it with `windows registry get|set|delete|reset`, the MCP tools
+Only its owner reads the user's file; every user reads the machine's. Programs, the command
+and Settings write through one lock per file, so two writers never lose each other's change,
+and a program that opens a machine key to write it (`KEY_WRITE`) without root is refused
+(`ERROR_ACCESS_DENIED`). `windows registry set` asks first on a terminal before replacing a
+value or changing `HKEY_LOCAL_MACHINE`. Read and change it with
+`windows registry get|set|delete|reset`, the MCP tools
 `windows_registry_*` or Settings > Windows, all present only while the `windows-apps`
 component is installed. A damaged file is reported (`hive_damaged`) and `windows registry
 reset` replaces it, keeping the old one beside it.
@@ -349,14 +355,16 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
   return the chosen path in Windows' form with `nFileOffset`, `nFileExtension` and
   `lpstrFileTitle`, add `lpstrDefExt`, and honour `OFN_FILEMUSTEXIST` and
   `OFN_PATHMUSTEXIST`.
-- **More of the system's controls** (D228). Selection in every edit, `ES_PASSWORD` and
-  `ES_NUMBER`; radio buttons and group boxes, the arrows moving within a group; scroll bar
-  controls (`SBS_*`, `SetScrollInfo` and its kin, a held arrow repeating); double clicks in
+- **More of the system's controls** (D228). Selection in every edit, words selected with a
+  double click and crossed with Ctrl and the arrows, `ES_PASSWORD` and `ES_NUMBER`; radio
+  buttons and group boxes, the arrows moving within a group; scroll bar controls (`SBS_*`,
+  `SetScrollInfo` and its kin, a held arrow repeating); double clicks in
   the system's controls (`LBN_DBLCLK`); item data on list and combo box items; hover looks,
   `TrackMouseEvent` (`WM_MOUSELEAVE`, `WM_MOUSEHOVER`), `WM_SETCURSOR`, `SetCursor` and
   `ShowCursor`; and `WM_CTLCOLOR*`, whose brush and text colour a control's fill and text take.
   Agents see a list box's items and select them, see check boxes' state, and focus and set
-  text on any thread's windows (D227).
+  text on any thread's windows (D227); a password edit shows them as a text field named
+  `password`, its text left out.
 
 ## What the layer provides
 

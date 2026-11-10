@@ -25,6 +25,8 @@ pub mod pairing;
 pub mod paths;
 pub mod prompts;
 pub mod rpc;
+#[cfg(any(test, feature = "schema-check"))]
+pub mod schema_check;
 pub mod server;
 pub mod session;
 pub mod system;

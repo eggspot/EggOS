@@ -131,3 +131,18 @@ fn a_relative_file_is_recorded_by_its_whole_path_and_standard_output_is_not_reco
     assert!(!fake.nodes.contains_key(RECORD.as_bytes()));
     assert!(!fake.termination_caught);
 }
+
+#[test]
+fn a_cancel_before_the_file_is_created_leaves_the_file_already_there() {
+    let mut fake = machine().with_file("/home/root/stream", 0o644, b"precious", 0);
+    fake.network.connect_interrupted = true;
+    let (status, errors, fake) = run(fake, &[c"http://10.0.2.2/stream", c"/home/root/stream"]);
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "fetch: cancelled before anything was saved\n")
+    );
+    assert_eq!(fake.contents("/home/root/stream"), b"precious");
+    let text = record_of(&fake);
+    let record = Record::parse(&text).unwrap();
+    assert_eq!((record.state, record.received), (State::Cancelled, 0));
+}

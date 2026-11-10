@@ -230,6 +230,7 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits, every_frame: bool) -> Result
         _ => Some(reader.palette(flags)?),
     };
     let per_frame = u64::from(width) * u64::from(height);
+    let mut declared_area = 0u64;
     let mut frames: Vec<Frame> = Vec::new();
     let mut loops = None;
     let mut pending = Control::NONE;
@@ -268,9 +269,14 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits, every_frame: bool) -> Result
                 let palette = local.as_ref().or(global.as_ref()).ok_or(Error::Corrupt)?;
                 let minimum = u32::from(reader.byte()?);
                 let count = place.width * place.height;
-                if count as u64 > limits.max_pixels {
-                    return Err(Error::TooLarge);
+                let declared = declared_area.saturating_add(count as u64);
+                if declared > limits.max_pixels {
+                    if frames.is_empty() {
+                        return Err(Error::TooLarge);
+                    }
+                    break;
                 }
+                declared_area = declared;
                 image_data(&mut reader, &mut data);
                 indices.clear();
                 indices

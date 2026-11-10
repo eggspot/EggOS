@@ -570,7 +570,8 @@ pub fn fde_at(
 }
 
 /// Finds the FDE covering `pc` by reading every entry of the section in turn, for an image
-/// whose compact unwind information does not name one.
+/// whose compact unwind information does not name one; an FDE (or its CIE) that cannot be read
+/// is passed over.
 pub fn find(
     section: &[u8],
     base: u64,
@@ -585,11 +586,11 @@ pub fn find(
         let Some(Entry { content, end }) = entry(section, offset)? else {
             return Err(CfiError::NotCovered);
         };
-        if word_at(section, content)? != 0 {
-            let fde = fde_at(section, base, offset, read)?;
-            if (fde.start..fde.end).contains(&pc) {
-                return Ok(fde);
-            }
+        if word_at(section, content)? != 0
+            && let Ok(fde) = fde_at(section, base, offset, read)
+            && (fde.start..fde.end).contains(&pc)
+        {
+            return Ok(fde);
         }
         offset = end;
     }
@@ -1102,6 +1103,14 @@ mod tests {
     }
 
     fn x86_64_section(fde_instructions: &[u8], lsda: Option<u64>) -> Vec<u8> {
+        x86_64_section_with(fde_instructions, lsda, &[])
+    }
+
+    fn x86_64_section_with(
+        fde_instructions: &[u8],
+        lsda: Option<u64>,
+        entries_before_fde: &[u8],
+    ) -> Vec<u8> {
         let mut bytes = Vec::new();
         put(&mut bytes, 0);
         put(&mut bytes, 0);
@@ -1118,6 +1127,7 @@ mod tests {
         bytes.push(0x1b);
         bytes.extend_from_slice(&[CFA_DEF_CFA, 7, 8, CFA_OFFSET | 16, 1, CFA_NOP, CFA_NOP]);
         finish_entry(&mut bytes, 0);
+        bytes.extend_from_slice(entries_before_fde);
         let fde = bytes.len();
         put(&mut bytes, 0);
         let cie_distance = bytes.len() as u32;
@@ -1166,6 +1176,21 @@ mod tests {
     }
 
     const FDE_OFFSET: usize = 32;
+
+    #[test]
+    fn a_damaged_fde_is_passed_over_and_the_scan_goes_on() {
+        let mut damaged = Vec::new();
+        put(&mut damaged, 4);
+        put(&mut damaged, u32::MAX);
+        let bytes = x86_64_section_with(&[], None, &damaged);
+        let read = memory(&[]);
+        assert_eq!(
+            fde_at(&bytes, BASE, FDE_OFFSET, &read).err(),
+            Some(CfiError::Malformed)
+        );
+        let found = find(&bytes, BASE, FUNCTION + 0x80, &read).unwrap();
+        assert_eq!((found.start, found.end), (FUNCTION, FUNCTION + 0x100));
+    }
 
     #[test]
     fn an_fde_gives_its_range_lsda_and_its_cie_s_personality() {

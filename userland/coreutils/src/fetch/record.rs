@@ -10,6 +10,12 @@ const RECORD_PATH_BYTES: usize = 64;
 const FOLDER_MODE: u32 = 0o755;
 const RECORD_MODE: u32 = 0o644;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PartialFile {
+    Removed,
+    NeverCreated,
+}
+
 pub(super) struct Recorder<'u> {
     url: &'u [u8],
     partial: &'u CStr,
@@ -21,6 +27,7 @@ pub(super) struct Recorder<'u> {
     received: Cell<u64>,
     total: Cell<Option<u64>>,
     written_us: Cell<u64>,
+    output_created: Cell<bool>,
 }
 
 fn record_path(out: &mut [u8; RECORD_PATH_BYTES], pid: u32, temporary: bool) -> Option<()> {
@@ -61,6 +68,7 @@ impl<'u> Recorder<'u> {
             received: Cell::new(0),
             total: Cell::new(None),
             written_us: Cell::new(system.monotonic_us()),
+            output_created: Cell::new(false),
         };
         recorder.path_length = absolute(system, partial.to_bytes(), &mut recorder.path);
         let pid = system.process_id();
@@ -79,6 +87,10 @@ impl<'u> Recorder<'u> {
         }
         recorder.write(system, State::Downloading, b"", None);
         recorder
+    }
+
+    pub(super) fn output_created(&self) {
+        self.output_created.set(true);
     }
 
     pub(super) fn set_total(&self, total: Option<u64>) {
@@ -104,10 +116,17 @@ impl<'u> Recorder<'u> {
         self.write(system, State::Failed, reason_of(message), Some(ended));
     }
 
-    pub(super) fn cancelled<S: System>(&self, system: &mut S) {
-        let _ = system.remove(self.partial, false);
+    pub(super) fn cancelled<S: System>(&self, system: &mut S) -> PartialFile {
+        let partial = match self.output_created.get() {
+            true => {
+                let _ = system.remove(self.partial, false);
+                PartialFile::Removed
+            }
+            false => PartialFile::NeverCreated,
+        };
         let ended = system.now();
         self.write(system, State::Cancelled, b"", Some(ended));
+        partial
     }
 
     fn write<S: System>(&self, system: &mut S, state: State, reason: &[u8], ended: Option<u64>) {

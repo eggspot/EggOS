@@ -15,6 +15,10 @@ const HEADER_BYTES: usize = MAGIC.len() + HEADER_WORDS * 4;
 const FORMAT_VERSION: u32 = 1;
 const LONGEST_VARINT_BYTES: usize = 5;
 const OBJECT_REFERENCE_BYTES: usize = 4;
+const SMALLEST_OBJECT_BYTES: usize = 3;
+const SMALLEST_KEY_BYTES: usize = 1;
+const SMALLEST_VALUE_BYTES: usize = 2;
+const SMALLEST_CLASS_BYTES: usize = 3;
 
 /// The largest table sizes a nib may declare.
 pub mod limits {
@@ -148,7 +152,8 @@ impl<'b> Cursor<'b> {
     }
 }
 
-/// The header's table sizes, each checked against [`limits`].
+/// The header's table sizes, each checked against [`limits`] and against the bytes after its
+/// table's offset, so no table is allocated larger than the file could fill.
 pub fn counts(bytes: &[u8]) -> Result<Counts, NibError> {
     if !bytes.starts_with(MAGIC) || bytes.len() < HEADER_BYTES {
         return Err(NibError::NotANib);
@@ -168,9 +173,22 @@ pub fn counts(bytes: &[u8]) -> Result<Counts, NibError> {
         && counts.values <= limits::VALUES
         && counts.classes <= limits::CLASSES
         && counts.objects > 0;
-    match fits {
+    if !fits {
+        return Err(NibError::TooLarge);
+    }
+    let fills = |count: usize, offset_index: usize, smallest: usize| {
+        let left = bytes.len().saturating_sub(header(offset_index));
+        count
+            .checked_mul(smallest)
+            .is_some_and(|needed| needed <= left)
+    };
+    let filled = fills(counts.objects, 3, SMALLEST_OBJECT_BYTES)
+        && fills(counts.keys, 5, SMALLEST_KEY_BYTES)
+        && fills(counts.values, 7, SMALLEST_VALUE_BYTES)
+        && fills(counts.classes, 9, SMALLEST_CLASS_BYTES);
+    match filled {
         true => Ok(counts),
-        false => Err(NibError::TooLarge),
+        false => Err(NibError::Damaged),
     }
 }
 
@@ -804,6 +822,11 @@ mod tests {
         let mut huge = bytes.clone();
         huge[MAGIC.len() + 8..MAGIC.len() + 12].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(counts(&huge).err(), Some(NibError::TooLarge));
+        let mut beyond_the_file = bytes.clone();
+        beyond_the_file[MAGIC.len() + 8..MAGIC.len() + 12]
+            .copy_from_slice(&(limits::OBJECTS as u32).to_le_bytes());
+        assert_eq!(counts(&beyond_the_file).err(), Some(NibError::Damaged));
+        assert!(counts(&bytes).is_ok());
         for cut in 0..bytes.len() {
             let _ = with_archive(&bytes[..cut], |archive| archive.object_data());
         }

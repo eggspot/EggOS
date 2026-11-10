@@ -134,19 +134,32 @@ const DEVICE_TAG: u8 = 0x82;
 /// The bytes the kernel asks a device's random number generator for at each reseed from it.
 pub const DEVICE_SEED_BYTES: usize = 32;
 
+static PREVIOUS_DEVICE_READ: LeafSpinLock<Option<[u8; blake2s::DIGEST_SIZE]>> =
+    LeafSpinLock::new_leaf(None);
+
 /// Hashes `bytes` from a device's random number generator (virtio-rng) into the input,
 /// credited as [`device_credit`] says, then reseeds ([`reseed`]); whether the generator is
 /// seeded (D220).
 pub fn reseed_from_device<P: Platform>(bytes: &[u8]) -> bool {
-    add_input(DEVICE_TAG, bytes, device_credit(bytes));
+    let repeats_previous = replace_previous_read(&mut PREVIOUS_DEVICE_READ.lock(), bytes);
+    add_input(DEVICE_TAG, bytes, device_credit(bytes, repeats_previous));
     reseed::<P>()
 }
 
+fn replace_previous_read(previous: &mut Option<[u8; blake2s::DIGEST_SIZE]>, bytes: &[u8]) -> bool {
+    let mut hash = Blake2s::new();
+    hash.update(bytes);
+    let fingerprint = Some(hash.finalize());
+    core::mem::replace(previous, fingerprint) == fingerprint
+}
+
 /// How many bits a read of `bytes` from a device's random number generator is credited
-/// with: 8 a byte for a whole read of [`DEVICE_SEED_BYTES`] or more, none for a short read or
-/// one of zeros only, which a broken or hostile device gives (D220).
-pub fn device_credit(bytes: &[u8]) -> u32 {
-    if bytes.len() < DEVICE_SEED_BYTES || bytes.iter().all(|&byte| byte == 0) {
+/// with: 8 a byte for a whole read of [`DEVICE_SEED_BYTES`] or more, none for a short read,
+/// one whose bytes are all equal or one that `repeats_previous` read, which a broken or hostile
+/// device gives (D220).
+pub fn device_credit(bytes: &[u8], repeats_previous: bool) -> u32 {
+    let all_equal = bytes.windows(2).all(|pair| pair[0] == pair[1]);
+    if repeats_previous || bytes.len() < DEVICE_SEED_BYTES || all_equal {
         return 0;
     }
     u32::try_from(bytes.len()).map_or(u32::MAX, |length| length.saturating_mul(8))
@@ -382,26 +395,38 @@ mod tests {
         assert!(key.generation > before);
     }
 
+    fn varied_read(first: u8) -> [u8; DEVICE_SEED_BYTES] {
+        core::array::from_fn(|index| first.wrapping_add((index as u8).wrapping_mul(37)))
+    }
+
     #[test]
     fn a_device_s_bytes_are_credited_and_reseed() {
         let generation = GENERATION.load(Ordering::Acquire);
-        reseed_from_device::<P>(&[7; DEVICE_SEED_BYTES]);
+        reseed_from_device::<P>(&varied_read(11));
         assert!(GENERATION.load(Ordering::Acquire) > generation);
         assert!(is_seeded());
     }
 
     #[test]
-    fn a_device_s_short_or_all_zero_read_is_hashed_but_not_credited() {
+    fn a_device_s_short_constant_or_repeated_read_is_hashed_but_not_credited() {
+        let whole = 8 * DEVICE_SEED_BYTES as u32;
+        assert_eq!(device_credit(&varied_read(3), false), whole);
+        assert_eq!(device_credit(&varied_read(3), true), 0);
+        assert_eq!(device_credit(&[0; DEVICE_SEED_BYTES], false), 0);
+        assert_eq!(device_credit(&[7; DEVICE_SEED_BYTES], false), 0);
+        assert_eq!(device_credit(&[0xff; 2 * DEVICE_SEED_BYTES], false), 0);
         assert_eq!(
-            device_credit(&[7; DEVICE_SEED_BYTES]),
-            8 * DEVICE_SEED_BYTES as u32
+            device_credit(&varied_read(3)[..DEVICE_SEED_BYTES - 1], false),
+            0
         );
-        assert_eq!(device_credit(&[0; DEVICE_SEED_BYTES]), 0);
-        assert_eq!(device_credit(&[7; DEVICE_SEED_BYTES - 1]), 0);
-        assert_eq!(device_credit(&[]), 0);
+        assert_eq!(device_credit(&[], false), 0);
         let mut one_bit = [0u8; DEVICE_SEED_BYTES];
         one_bit[DEVICE_SEED_BYTES - 1] = 1;
-        assert_eq!(device_credit(&one_bit), 8 * DEVICE_SEED_BYTES as u32);
+        assert_eq!(device_credit(&one_bit, false), whole);
+        let mut previous = None;
+        assert!(!replace_previous_read(&mut previous, &varied_read(5)));
+        assert!(replace_previous_read(&mut previous, &varied_read(5)));
+        assert!(!replace_previous_read(&mut previous, &varied_read(6)));
         let generation = GENERATION.load(Ordering::Acquire);
         reseed_from_device::<P>(&[0; DEVICE_SEED_BYTES]);
         reseed_from_device::<P>(&[7; 4]);

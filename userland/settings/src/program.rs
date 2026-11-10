@@ -11,7 +11,7 @@ use eggos_app::files::Files;
 use eggos_app::linux::LinuxFiles;
 use eggos_components::command as component_command;
 use eggos_components::index::Component;
-use eggos_components::manager::{self as component_manager, Failure, Refusal};
+use eggos_components::manager::{self as component_manager, Failure, Refusal, RemoveError};
 use eggos_eggfs::CheckMode;
 use eggos_files::storage;
 use eggos_mcp::audit::calls::LogFiles;
@@ -45,7 +45,6 @@ use eggos_settings::settings_window::{
 use eggos_settings::task_manager::{
     self, ProcessFact, Request as TaskRequest, Snapshot, TaskManager, WindowFact,
 };
-use eggos_settings::windows_pane::FileStore;
 use eggos_settings_file::clock_sync::{self, Record};
 use eggos_settings_file::{
     self as settings_file, DIRECTORIES, DisplayAccessibility, InputPreferences, KeyAccessibility,
@@ -62,6 +61,8 @@ use eggos_toolkit::tree::{PointerShape, Response, WidgetTree};
 use eggos_toolkit::window::{
     FIXED_SIZE, Keyboard, PERSON_INPUT_ONLY, Window, WindowServer, now_ms,
 };
+use eggos_windows_registry::linux::LinuxHiveFiles;
+use eggos_windows_registry::store::FileStore;
 
 const STANDARD_OUTPUT: usize = 1;
 const STANDARD_ERROR: usize = 2;
@@ -109,9 +110,6 @@ const SAVED_WITHIN_S: u64 = 2;
 const NANOSECONDS_PER_MS: u32 = 1_000_000;
 const HOME_VARIABLE: &[u8] = b"HOME=";
 const DEFAULT_HOME: &str = "/home/root";
-const FILETIME_EPOCH_INTERVALS: u64 = 11_644_473_600 * 10_000_000;
-const INTERVALS_PER_SECOND: u64 = 10_000_000;
-const NANOSECONDS_PER_INTERVAL: u64 = 100;
 
 fn syscall(number: usize, arguments: [usize; 6]) -> Result<usize, Errno> {
     // SAFETY: every caller passes buffers it owns and borrows for the call, sized as the call
@@ -361,17 +359,6 @@ fn wall_clock() -> (u64, u32) {
     }
 }
 
-fn filetime_now() -> u64 {
-    let (seconds, nanoseconds) = wall_clock();
-    seconds * INTERVALS_PER_SECOND
-        + u64::from(nanoseconds) / NANOSECONDS_PER_INTERVAL
-        + FILETIME_EPOCH_INTERVALS
-}
-
-fn effective_user() -> u32 {
-    syscall(number::GETEUID, [0; 6]).unwrap_or(0) as u32
-}
-
 fn windows_layer_installed() -> bool {
     LinuxFiles::new()
         .status_following(eggos_mcp::tools::WINDOWS_LAYER.as_bytes())
@@ -428,7 +415,7 @@ fn install_component(name: &str, cancelled: bool) -> Result<(), Failure> {
     installed
 }
 
-fn remove_component(name: &str) -> Result<(), Failure> {
+fn remove_component(name: &str) -> Result<(), RemoveError> {
     let mut files = LinuxFiles::new();
     let installed = component_manager::installed(&mut files);
     let title = installed
@@ -436,10 +423,11 @@ fn remove_component(name: &str) -> Result<(), Failure> {
         .find(|component| component.name == name)
         .map_or_else(|| String::from(name), |component| component.title.clone());
     let pid = syscall(number::GETPID, [0; 6]).unwrap_or(0) as u32;
-    component_manager::lock(&mut files, &title, true, pid).map_err(locked_failure)?;
-    let removed = component_manager::remove(&mut files, name);
-    component_manager::unlock(&mut files);
-    if removed.is_ok() {
+    let removed = component_manager::remove_checked(&mut files, &title, name, pid).map(|_| ());
+    if matches!(
+        removed,
+        Ok(()) | Err(RemoveError::Failed(Failure::FilesLeft(_)))
+    ) {
         eggos_app::linux::apps_changed();
     }
     removed
@@ -1698,12 +1686,9 @@ fn open_window(pairing: Option<PairingAsked<'_>>, pane: Option<usize>, home: &st
         component_work: None,
         clock_sync_child: None,
     };
-    settings.window.attach_registry(Box::new(FileStore::new(
-        LinuxFiles::new(),
-        home,
-        effective_user(),
-        filetime_now,
-    )));
+    settings
+        .window
+        .attach_registry(Box::new(FileStore::new(LinuxHiveFiles, home.as_bytes())));
     settings.show_windows_layer();
     if let Some(asked) = pairing {
         let grants = grants_read(settings.window.facts().on_disk);

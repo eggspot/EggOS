@@ -14,6 +14,7 @@ use crate::libsystem::variadic::{RawVaList, VaList, variadic};
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::block::invoke_address;
 use crate::objc::buffer::Buffer;
+use crate::objc::exception::guard;
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::{self, NSOBJECT};
 use crate::objc::{Runtime, methods, sel, send, send_bool, send2};
@@ -388,6 +389,8 @@ extern "C" fn enumerate_with_block(this: Id, _: Sel, block: Id) {
     objects.free();
 }
 
+guard!(eggos_guarded_enumerate_with_block => enumerate_with_block);
+
 extern "C" fn copy_with_zone(this: Id, _: Sel, _: usize) -> Id {
     if root::is_kind_of(this, &NSMUTABLESET) {
         return made_from(class_pointer(&NSSET), snapshot(this));
@@ -494,7 +497,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "intersectsSet:" => intersects,
         "hash" => hash,
         "setByAddingObject:" => set_by_adding,
-        "enumerateObjectsUsingBlock:" => enumerate_with_block,
+        "enumerateObjectsUsingBlock:" => eggos_guarded_enumerate_with_block,
         "copyWithZone:" => copy_with_zone,
         "mutableCopyWithZone:" => mutable_copy_with_zone,
         "description" => description,

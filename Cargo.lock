@@ -453,6 +453,7 @@ name = "eggos-windows-registry"
 version = "0.3.0"
 dependencies = [
  "eggos-commands",
+ "eggos-runtime",
 ]
 
 [[package]]

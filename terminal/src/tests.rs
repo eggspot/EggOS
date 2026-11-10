@@ -1201,6 +1201,10 @@ fn osc_7_reports_the_current_folder_from_a_local_file_url() {
         b"\x1b]7;file://y\x07",
         b"\x1b]7;file:///%zz\x07",
         b"\x1b]7;file:///%ff\x07",
+        b"\x1b]7;file:///a%1b%5b2J\x07",
+        b"\x1b]7;file:///a%0Ab\x07",
+        b"\x1b]7;file:///a%7f\x07",
+        b"\x1b]7;file:///a%c2%9b2J\x07",
         b"\x1b]7;http:///y\x07",
     ] {
         terminal.feed(ignored);

@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 use eggos_app::files::Files;
 use eggos_app::linux::{LinuxFiles, STANDARD_ERROR, write_all};
-use eggos_download_list::{FOLDER, MAX_DOWNLOADS, id_of};
+use eggos_download_list::{FOLDER, id_of};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::process::{self, ChildStack, Spawn};
 use eggos_runtime::startup::Startup;
@@ -25,6 +25,7 @@ use eggos_toolkit::window::{Window, WindowServer, now_ms};
 const PROCESSES_PATH: &[u8] = b"/proc/ps";
 const FETCH_PROGRAM: &core::ffi::CStr = c"/bin/fetch";
 const QUIET_OPTION: &core::ffi::CStr = c"-q";
+const NO_CLOBBER_OPTION: &core::ffi::CStr = c"--no-clobber";
 const NULL_DEVICE: &core::ffi::CStr = c"/dev/null";
 const AT_FDCWD: usize = -100isize as usize;
 const O_RDWR_CLOEXEC: usize = 0o2_000_002;
@@ -93,9 +94,6 @@ impl DownloadSystem for LinuxDownloads {
     fn record_ids(&mut self, ids: &mut Vec<u32>) -> Result<(), Errno> {
         let mut name = [0u8; 256];
         for index in 0.. {
-            if ids.len() == MAX_DOWNLOADS {
-                break;
-            }
             match self.files.entry(FOLDER.as_bytes(), index, &mut name) {
                 Ok(Some(length)) => ids.extend(id_of(&name[..length])),
                 Ok(None) | Err(Errno::ENOENT) => break,
@@ -111,7 +109,9 @@ impl DownloadSystem for LinuxDownloads {
     }
 
     fn read_processes(&mut self, text: &mut [u8]) -> Option<usize> {
+        let room = text.len();
         self.read_whole(PROCESSES_PATH, text)
+            .filter(|&length| length < room)
     }
 
     fn send_signal(&mut self, pid: u32, signal: u32) -> Result<(), i32> {
@@ -154,6 +154,7 @@ impl DownloadSystem for LinuxDownloads {
         let arguments = [
             c"fetch".as_ptr().cast::<u8>(),
             QUIET_OPTION.as_ptr().cast::<u8>(),
+            NO_CLOBBER_OPTION.as_ptr().cast::<u8>(),
             url.as_ptr(),
             path.as_ptr(),
             core::ptr::null(),

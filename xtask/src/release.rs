@@ -573,7 +573,9 @@ if [ -z "$no_components" ] && [ -f "$dir/$store_file" ]; then
   store_line=$(grep -F "  $store_file" "$dir/{SUMS_FILE}" 2>/dev/null || true)
   if [ -z "$store_line" ]; then
     echo "run-eggos.sh: $store_file is not listed in {SUMS_FILE}: it was not attached" >&2
-  elif [ -n "${{check:-}}" ] && ! (cd "$dir" && printf '%s\n' "$store_line" | $check >/dev/null 2>&1); then
+  elif [ -z "${{check:-}}" ]; then
+    echo "run-eggos.sh: no sha256sum or shasum found: $store_file was not verified, so it was not attached" >&2
+  elif ! (cd "$dir" && printf '%s\n' "$store_line" | $check >/dev/null 2>&1); then
     echo "run-eggos.sh: $store_file does not match its checksum in {SUMS_FILE}: download it again" >&2
     exit 1
   else
@@ -1146,13 +1148,14 @@ survives a reboot:
 - macOS programs (a Mach-O tool, an `.app`, or a `.zip` holding one, for macOS 13 or later):
   arm64 on aarch64, x86_64 on x86_64, console programs and AppKit apps built in code, on the
   macOS layer: run `component install mac-apps` first.
+- Linux static programs, console or Wayland GUI, on every architecture.
 
 The layers are components outside the base: `eggos-{VERSION}-<arch>-components.img`, next to
 the images, is attached read-only when it sits beside the run script and matches its line in
-`SHA256SUMS` (`--no-components`, `-NoComponents`: not attached). `component list` shows what it
+`SHA256SUMS` (`--no-components`, `-NoComponents`: not attached; `run-eggos.sh` also leaves it
+out when the host has no `sha256sum` or `shasum` to check it). `component list` shows what it
 offers; `component remove <name>` takes a layer away again. An installed component stays on the
 disk image.
-- Linux static programs, console or Wayland GUI, on every architecture.
 
 The release ships no apps of its own. To try some, build ours from a checkout with
 `cargo xtask sample-apps --arch <arch>` and pass the folder it prints: `win-paint.exe`,
@@ -1552,6 +1555,14 @@ mod tests {
             assert!(powershell.contains("$StorePath = $Store.Replace(',', ',,')"));
         }
         assert!(shell.find("store_file=").unwrap() < shell.find("exec \"$qemu\"").unwrap());
+        let unverified = shell
+            .find("$store_file was not verified, so it was not attached")
+            .unwrap();
+        let attached = shell.find("$store_file is attached read-only").unwrap();
+        assert!(shell[..unverified].ends_with(
+            "  elif [ -z \"${check:-}\" ]; then\n    echo \"run-eggos.sh: no sha256sum or shasum found: "
+        ));
+        assert!(unverified < attached);
     }
 
     #[test]

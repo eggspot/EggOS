@@ -915,6 +915,8 @@ guard!(eggos_guarded_substring_from_index => substring_from_index);
 guard!(eggos_guarded_substring_to_index => substring_to_index);
 guard!(eggos_guarded_substring_with_range => substring_with_range);
 guard!(eggos_guarded_delete_characters => delete_characters);
+guard!(eggos_guarded_append_string => append_string);
+guard!(eggos_guarded_insert_string => insert_string);
 
 pub fn define(runtime: &mut Runtime) -> bool {
     let instance = methods![
@@ -974,10 +976,10 @@ pub fn define(runtime: &mut Runtime) -> bool {
     ];
     let mutable_instance = methods![
         "init" => mutable_init,
-        "appendString:" => append_string,
+        "appendString:" => eggos_guarded_append_string,
         "appendFormat:" => eggos_string_append_format,
         "setString:" => set_string,
-        "insertString:atIndex:" => insert_string,
+        "insertString:atIndex:" => eggos_guarded_insert_string,
         "deleteCharactersInRange:" => eggos_guarded_delete_characters,
     ];
     let mutable_class = methods![

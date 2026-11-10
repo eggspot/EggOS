@@ -241,7 +241,7 @@ fn read_key(reader: &mut Reader<'_>) -> Result<Key, Error> {
     if count > reader.bytes.len() / VALUE_FIXED_BYTES {
         return Err(Error::HiveDamaged);
     }
-    let mut values = Vec::with_capacity(count);
+    let mut values = Vec::new();
     for _ in 0..count {
         let name = reader.name(MAX_VALUE_NAME_UNITS)?;
         let kind = reader.u32()?;

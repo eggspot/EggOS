@@ -158,6 +158,7 @@ const LINE_FEED: u8 = b'\n';
 const END_OF_TEXT: u8 = 0x1a;
 /// The fewest bytes `translate_written`'s `out` may hold: one character's.
 pub const SMALLEST_TRANSLATION: usize = 4;
+const HIGH_SURROGATES: core::ops::RangeInclusive<u16> = 0xd800..=0xdbff;
 
 fn put(out: &mut [u8], at: &mut usize, bytes: &[u8]) -> bool {
     match out.get_mut(*at..*at + bytes.len()) {
@@ -174,8 +175,10 @@ fn put(out: &mut [u8], at: &mut usize, bytes: &[u8]) -> bool {
 /// asks for a file, or with `to_terminal` for a terminal, which takes UTF-8 in every wide
 /// mode: text mode writes `\n` as `\r\n`; the wide modes read `input` as UTF-16 and write
 /// UTF-16 with `\r\n`, or UTF-8 with `\r\n` (`_O_U8TEXT`, a terminal; an unpaired surrogate
-/// as U+FFFD). Takes whole characters only; returns how many bytes of `input` it took and how
-/// many it put in `out`, which holds at least `SMALLEST_TRANSLATION` bytes.
+/// as U+FFFD, except a high surrogate that ends `input`, which is left for the next write's
+/// low one, see [`translate_write`]). Takes whole characters only; returns how many bytes of
+/// `input` it took and how many it put in `out`, which holds at least `SMALLEST_TRANSLATION`
+/// bytes.
 pub fn translate_written(
     translation: Translation,
     to_terminal: bool,
@@ -215,14 +218,17 @@ pub fn translate_written(
             }
         }
         _ => {
-            let units = input
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|pair| u16::from_le_bytes(*pair));
+            let pairs = input.as_chunks::<2>().0;
+            let units = pairs.iter().map(|pair| u16::from_le_bytes(*pair));
             for decoded in char::decode_utf16(units) {
                 let (c, width) = match decoded {
                     Ok(c) => (c, c.len_utf16() * 2),
+                    Err(error)
+                        if is_high_surrogate(error.unpaired_surrogate())
+                            && taken + 2 == pairs.len() * 2 =>
+                    {
+                        break;
+                    }
                     Err(_) => (char::REPLACEMENT_CHARACTER, 2),
                 };
                 let mut encoded = [0; 4];
@@ -238,6 +244,65 @@ pub fn translate_written(
         }
     }
     (taken, put_at)
+}
+
+fn is_high_surrogate(unit: u16) -> bool {
+    HIGH_SURROGATES.contains(&unit)
+}
+
+/// The high surrogate `rest`, what a wide write left untranslated, is alone, if it is one.
+pub fn lone_high_surrogate(rest: &[u8]) -> Option<u16> {
+    match rest {
+        [low, high] => {
+            Some(u16::from_le_bytes([*low, *high])).filter(|&unit| is_high_surrogate(unit))
+        }
+        _ => None,
+    }
+}
+
+/// Translates all of `bytes`, one `_write`'s, as [`translate_written`] does, through `out`,
+/// giving each translated piece to `emit`. `pending` is the high surrogate an earlier wide
+/// write ended with: it goes before this write's first unit, so a character split between two
+/// writes is written whole, and a high surrogate this write ends with takes its place.
+/// Returns how many bytes of `bytes` were taken, or with `emit`'s error how many were taken
+/// before it.
+pub fn translate_write<E>(
+    translation: Translation,
+    to_terminal: bool,
+    bytes: &[u8],
+    pending: &mut Option<u16>,
+    out: &mut [u8],
+    mut emit: impl FnMut(&[u8]) -> Result<(), E>,
+) -> Result<usize, (usize, E)> {
+    let mut taken = 0;
+    if let Some(high) = pending.take()
+        && translation.is_wide()
+    {
+        let mut joined = [0u8; 4];
+        joined[..2].copy_from_slice(&high.to_le_bytes());
+        let first = bytes.len().min(2);
+        joined[2..2 + first].copy_from_slice(&bytes[..first]);
+        let (used, put) = translate_written(translation, to_terminal, &joined[..2 + first], out);
+        emit(&out[..put]).map_err(|error| (0, error))?;
+        if used == 0 {
+            *pending = Some(high);
+            return Ok(0);
+        }
+        taken = used - 2;
+    }
+    while taken < bytes.len() {
+        let (used, put) = translate_written(translation, to_terminal, &bytes[taken..], out);
+        emit(&out[..put]).map_err(|error| (taken, error))?;
+        if used == 0 {
+            if let Some(high) = lone_high_surrogate(&bytes[taken..]) {
+                *pending = Some(high);
+                taken += 2;
+            }
+            break;
+        }
+        taken += used;
+    }
+    Ok(taken)
 }
 
 /// What text mode made of the bytes one `_read` read.
@@ -422,6 +487,46 @@ mod tests {
             translate_written(Translation::Text, false, b"\n", &mut one),
             (0, 0)
         );
+    }
+
+    fn written_in_writes(translation: Translation, writes: &[&[u8]]) -> (Vec<u8>, Option<u16>) {
+        let mut file = Vec::new();
+        let mut pending = None;
+        for bytes in writes {
+            let mut out = [0u8; SMALLEST_TRANSLATION];
+            let taken =
+                translate_write(translation, false, bytes, &mut pending, &mut out, |piece| {
+                    file.extend_from_slice(piece);
+                    Ok::<(), ()>(())
+                });
+            assert_eq!(taken, Ok(bytes.len()));
+        }
+        (file, pending)
+    }
+
+    #[test]
+    fn a_character_split_between_two_wide_writes_is_written_whole() {
+        let text = utf16("a😀\n");
+        let (first, second) = text.split_at(4);
+        assert_eq!(lone_high_surrogate(&first[2..]), Some(0xd83d));
+        assert_eq!(
+            translate_written(Translation::Utf8, false, first, &mut [0u8; 8]),
+            (2, 1)
+        );
+        let (file, pending) = written_in_writes(Translation::Utf8, &[first, second]);
+        assert_eq!(file, "a😀\r\n".as_bytes());
+        assert_eq!(pending, None);
+        let (file, pending) = written_in_writes(Translation::Utf8, &[first, &[][..], second]);
+        assert_eq!(file, "a😀\r\n".as_bytes());
+        assert_eq!(pending, None);
+        let (file, pending) = written_in_writes(Translation::Utf8, &[first, &utf16("b")[..]]);
+        assert_eq!(file, "a\u{fffd}b".as_bytes());
+        assert_eq!(pending, None);
+        let (file, pending) = written_in_writes(Translation::Utf8, &[first]);
+        assert_eq!(file, b"a");
+        assert_eq!(pending, Some(0xd83d));
+        let (file, _) = written_in_writes(Translation::Utf16, &[first, second]);
+        assert_eq!(file, utf16("a😀\r\n"));
     }
 
     #[test]

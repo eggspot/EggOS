@@ -1,24 +1,24 @@
 //! advapi32's registry functions (D231) over `eggos_windows_registry`: the user's hive below the
-//! home folder and the machine's in `/var/lib/eggos/windows`, both written through a temporary
-//! file and a rename. Opened keys are handles that name their key's path, so a key another
-//! process deleted reads as missing. The `A` functions take and give ANSI text, which is UTF-8
-//! on EggOS, string data included.
+//! home folder and the machine's in `/var/lib/eggos/windows`, kept by the crate's
+//! [`FileStore`], which Settings uses too. Opened keys are handles that name their key's path,
+//! so a key another process deleted reads as missing; the handle table's spin lock is held only
+//! to look a handle up, never across a file's reads and writes, which run on a registry taken
+//! out of its slot (or a fresh one while another thread has it). The `A` functions take and
+//! give ANSI text, which is UTF-8 on EggOS, string data included.
 
 use alloc::vec::Vec;
 
 use eggos_runtime::startup::Startup;
 use eggos_windows_registry::Error as RegistryError;
+use eggos_windows_registry::MAX_KEY_NAME_UNITS;
 use eggos_windows_registry::command::{self, CODED_ERRORS_ENVIRONMENT, Console};
-use eggos_windows_registry::hive::Value;
+use eggos_windows_registry::linux::LinuxHiveFiles;
 use eggos_windows_registry::path::{KeyPath, Root};
-use eggos_windows_registry::registry::{
-    DAMAGED_SUFFIX, HiveFile, MACHINE_HIVE_PATH, Registry, Store, StoreError, TEMPORARY_SUFFIX,
-    USER_HIVE_PATH,
-};
+use eggos_windows_registry::registry::{Registry, is_machine_key};
+use eggos_windows_registry::store::FileStore;
 use eggos_windows_registry::value::{
     REG_BINARY, REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_NONE, REG_QWORD, REG_SZ,
 };
-use eggos_windows_registry::{MAX_HIVE_BYTES, MAX_KEY_NAME_UNITS};
 
 use super::{SpinLock, error};
 use crate::library::Export;
@@ -30,142 +30,66 @@ const ERROR_MORE_DATA: u32 = 234;
 const ERROR_BADDB: u32 = 1009;
 const ERROR_CANTREAD: u32 = 1012;
 const ERROR_CANTWRITE: u32 = 1013;
+const ERROR_DATATYPE_MISMATCH: u32 = 1629;
 const ERROR_UNSUPPORTED_TYPE: u32 = 1630;
 const FIRST_HANDLE: usize = 0x5000_0000;
 const HANDLE_STEP: usize = 4;
 const MAX_OPEN_KEYS: usize = 16_384;
 const REG_CREATED_NEW_KEY: u32 = 1;
 const REG_OPENED_EXISTING_KEY: u32 = 2;
+const RRF_RT_REG_NONE: u32 = 0x01;
+const RRF_RT_REG_SZ: u32 = 0x02;
+const RRF_RT_REG_EXPAND_SZ: u32 = 0x04;
+const RRF_RT_REG_BINARY: u32 = 0x08;
+const RRF_RT_REG_DWORD: u32 = 0x10;
+const RRF_RT_REG_MULTI_SZ: u32 = 0x20;
+const RRF_RT_REG_QWORD: u32 = 0x40;
+const RRF_RT_DWORD: u32 = RRF_RT_REG_BINARY | RRF_RT_REG_DWORD;
+const RRF_RT_QWORD: u32 = RRF_RT_REG_BINARY | RRF_RT_REG_QWORD;
 const RRF_RT_ANY: u32 = 0x0000_ffff;
-const FILETIME_EPOCH_INTERVALS: u64 = 11_644_473_600 * 10_000_000;
+const RRF_NOEXPAND: u32 = 0x1000_0000;
+const KEY_SET_VALUE: u32 = 0x0002;
+const KEY_CREATE_SUB_KEY: u32 = 0x0004;
+const KEY_CREATE_LINK: u32 = 0x0020;
+const DELETE: u32 = 0x0001_0000;
+const WRITE_DAC: u32 = 0x0004_0000;
+const WRITE_OWNER: u32 = 0x0008_0000;
+const GENERIC_ALL: u32 = 0x1000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
+const WRITING_ACCESS: u32 = KEY_SET_VALUE
+    | KEY_CREATE_SUB_KEY
+    | KEY_CREATE_LINK
+    | DELETE
+    | WRITE_DAC
+    | WRITE_OWNER
+    | GENERIC_ALL
+    | GENERIC_WRITE;
+const PERCENT: u16 = b'%' as u16;
 
-struct LayerStore;
+type LayerStore = FileStore<LinuxHiveFiles>;
 
-fn hive_path(file: HiveFile, suffix: &str) -> Vec<u8> {
-    let mut path = Vec::new();
-    match file {
-        HiveFile::User => {
-            let mut home = [0u8; PATH_CAPACITY];
-            let length = super::shell_folders::home(&mut home);
-            path.extend_from_slice(&home[..length]);
-            path.push(b'/');
-            path.extend_from_slice(USER_HIVE_PATH.as_bytes());
-        }
-        HiveFile::Machine => path.extend_from_slice(MACHINE_HIVE_PATH.as_bytes()),
-    }
-    path.extend_from_slice(suffix.as_bytes());
-    path.push(0);
-    path
+fn layer_store() -> LayerStore {
+    let mut home = [0u8; PATH_CAPACITY];
+    let length = super::shell_folders::home(&mut home);
+    FileStore::new(LinuxHiveFiles, &home[..length])
 }
 
-fn store_error(errno: eggos_runtime::errno::Errno) -> StoreError {
-    match errno {
-        eggos_runtime::errno::Errno::ENOSPC => StoreError::DiskFull,
-        _ => StoreError::Failed,
-    }
+static OPENED_KEYS: SpinLock<Vec<Option<KeyPath>>> = SpinLock::new(Vec::new());
+static IDLE_REGISTRY: SpinLock<Option<Registry<LayerStore>>> = SpinLock::new(None);
+
+fn with_idle<T, R>(
+    idle: &SpinLock<Option<T>>,
+    make: impl FnOnce() -> T,
+    work: impl FnOnce(&mut T) -> R,
+) -> R {
+    let mut taken = idle.with(Option::take).unwrap_or_else(make);
+    let result = work(&mut taken);
+    drop(idle.with(|slot| slot.replace(taken)));
+    result
 }
-
-impl Store for LayerStore {
-    fn read(&mut self, file: HiveFile) -> Result<Option<Vec<u8>>, StoreError> {
-        let fd = match linux::open(&hive_path(file, ""), linux::O_RDONLY) {
-            Ok(fd) => fd,
-            Err(eggos_runtime::errno::Errno::ENOENT) => return Ok(None),
-            Err(_) => return Err(StoreError::Failed),
-        };
-        let mut bytes = Vec::new();
-        let mut chunk = [0u8; 4096];
-        let result = loop {
-            match linux::read(fd, &mut chunk) {
-                Ok(0) => break Ok(Some(bytes)),
-                Ok(count) if bytes.len() + count <= MAX_HIVE_BYTES + 1 => {
-                    bytes.extend_from_slice(&chunk[..count.min(chunk.len())]);
-                }
-                Ok(_) => break Ok(Some(bytes)),
-                Err(_) => break Err(StoreError::Failed),
-            }
-        };
-        let _ = linux::close(fd);
-        result
-    }
-
-    fn stamp(&mut self, file: HiveFile) -> Option<u64> {
-        let words = linux::stat_at(linux::AT_FDCWD, &hive_path(file, "")).ok()?;
-        Some(
-            words[linux::STAT_MODIFY_TIME_WORD]
-                .wrapping_mul(1_000_000_007)
-                .wrapping_add(words[linux::STAT_MODIFY_TIME_WORD + 1])
-                .wrapping_add(words[linux::STAT_SIZE_WORD].rotate_left(24))
-                .wrapping_add(words[linux::STAT_INODE_WORD].rotate_left(44)),
-        )
-    }
-
-    fn write_temporary(&mut self, file: HiveFile, bytes: &[u8]) -> Result<(), StoreError> {
-        let path = hive_path(file, TEMPORARY_SUFFIX);
-        for (index, byte) in path.iter().enumerate().skip(1) {
-            if *byte == b'/' {
-                let mut folder = path[..index].to_vec();
-                folder.push(0);
-                let _ = linux::make_directory(&folder);
-            }
-        }
-        let fd = linux::open(&path, linux::O_WRONLY | linux::O_CREAT | linux::O_TRUNC)
-            .map_err(store_error)?;
-        let written = linux::write_all(fd, bytes).and_then(|()| match linux::sync_file(fd) {
-            Ok(_) | Err(eggos_runtime::errno::Errno::ENOSYS) => Ok(()),
-            Err(errno) => Err(errno),
-        });
-        let _ = linux::close(fd);
-        written.map_err(store_error)
-    }
-
-    fn replace_with_temporary(&mut self, file: HiveFile) -> Result<(), StoreError> {
-        linux::rename(
-            &hive_path(file, TEMPORARY_SUFFIX),
-            &hive_path(file, ""),
-            false,
-        )
-        .map(|_| ())
-        .map_err(store_error)
-    }
-
-    fn set_aside(&mut self, file: HiveFile) -> Result<(), StoreError> {
-        match linux::rename(
-            &hive_path(file, ""),
-            &hive_path(file, DAMAGED_SUFFIX),
-            false,
-        ) {
-            Ok(_) | Err(eggos_runtime::errno::Errno::ENOENT) => Ok(()),
-            Err(errno) => Err(store_error(errno)),
-        }
-    }
-
-    fn user_id(&mut self) -> u32 {
-        linux::user_id()
-    }
-
-    fn now(&mut self) -> u64 {
-        linux::clock_nanoseconds(linux::CLOCK_REALTIME) / 100 + FILETIME_EPOCH_INTERVALS
-    }
-}
-
-struct Opened {
-    registry: Option<Registry<LayerStore>>,
-    keys: Vec<Option<KeyPath>>,
-}
-
-static OPENED: SpinLock<Opened> = SpinLock::new(Opened {
-    registry: None,
-    keys: Vec::new(),
-});
 
 fn with_registry<R>(work: impl FnOnce(&mut Registry<LayerStore>) -> R) -> R {
-    OPENED.with(|opened| {
-        work(
-            opened
-                .registry
-                .get_or_insert_with(|| Registry::new(LayerStore)),
-        )
-    })
+    with_idle(&IDLE_REGISTRY, || Registry::new(layer_store()), work)
 }
 
 struct TerminalConsole {
@@ -223,7 +147,7 @@ pub fn run_command(startup: &Startup) -> i32 {
     let coded_errors = startup
         .environment()
         .any(|variable| variable == CODED_ERRORS_ENVIRONMENT);
-    let mut registry = Registry::new(LayerStore);
+    let mut registry = Registry::new(layer_store());
     command::run(&mut registry, &mut TerminalConsole { coded_errors }, &words)
 }
 
@@ -238,7 +162,7 @@ fn key_of(handle: usize) -> Option<KeyPath> {
     if index % HANDLE_STEP != 0 {
         return None;
     }
-    OPENED.with(|opened| opened.keys.get(index / HANDLE_STEP).cloned().flatten())
+    OPENED_KEYS.with(|keys| keys.get(index / HANDLE_STEP).cloned().flatten())
 }
 
 fn is_predefined(handle: usize) -> bool {
@@ -247,18 +171,30 @@ fn is_predefined(handle: usize) -> bool {
 }
 
 fn insert_key(path: KeyPath) -> Option<usize> {
-    OPENED.with(|opened| {
-        let index = match opened.keys.iter().position(Option::is_none) {
+    OPENED_KEYS.with(|keys| {
+        let index = match keys.iter().position(Option::is_none) {
             Some(index) => index,
-            None if opened.keys.len() < MAX_OPEN_KEYS => {
-                opened.keys.push(None);
-                opened.keys.len() - 1
+            None if keys.len() < MAX_OPEN_KEYS => {
+                keys.push(None);
+                keys.len() - 1
             }
             None => return None,
         };
-        opened.keys[index] = Some(path);
+        keys[index] = Some(path);
         Some(FIRST_HANDLE + index * HANDLE_STEP)
     })
+}
+
+fn denied_by_access(path: &KeyPath, access: u32, may_change_machine: bool) -> bool {
+    access & WRITING_ACCESS != 0 && is_machine_key(path) && !may_change_machine
+}
+
+fn access_allowed(path: &KeyPath, access: u32) -> bool {
+    if access & WRITING_ACCESS == 0 || !is_machine_key(path) {
+        return true;
+    }
+    let may_change_machine = with_registry(|registry| registry.may_change_machine());
+    !denied_by_access(path, access, may_change_machine)
 }
 
 fn win32_error(failure: RegistryError) -> u32 {
@@ -316,7 +252,13 @@ unsafe fn below(handle: usize, subkey: *const u8, text: Text) -> Result<KeyPath,
     parent.join(&units).map_err(win32_error)
 }
 
-unsafe fn open_key(handle: usize, subkey: *const u8, result: *mut usize, text: Text) -> u32 {
+unsafe fn open_key(
+    handle: usize,
+    subkey: *const u8,
+    access: u32,
+    result: *mut usize,
+    text: Text,
+) -> u32 {
     if result.is_null() {
         return error::INVALID_PARAMETER;
     }
@@ -325,6 +267,9 @@ unsafe fn open_key(handle: usize, subkey: *const u8, result: *mut usize, text: T
         Ok(path) => path,
         Err(code) => return code,
     };
+    if !access_allowed(&path, access) {
+        return error::ACCESS_DENIED;
+    }
     if path.names.is_empty() && is_predefined(handle) {
         // SAFETY: the caller passes a writable `HKEY`.
         unsafe { result.write(handle) };
@@ -348,6 +293,7 @@ unsafe fn open_key(handle: usize, subkey: *const u8, result: *mut usize, text: T
 unsafe fn create_key(
     handle: usize,
     subkey: *const u8,
+    access: u32,
     result: *mut usize,
     disposition: *mut u32,
     text: Text,
@@ -360,6 +306,9 @@ unsafe fn create_key(
         Ok(path) => path,
         Err(code) => return code,
     };
+    if !access_allowed(&path, access) {
+        return error::ACCESS_DENIED;
+    }
     let created = match with_registry(|registry| registry.create_key(&path)) {
         Ok(created) => created,
         Err(failure) => return win32_error(failure),
@@ -389,13 +338,13 @@ unsafe fn create_key(
 
 fn restriction(kind: u32) -> Option<u32> {
     match kind {
-        REG_NONE => Some(0x01),
-        REG_SZ => Some(0x02),
-        REG_EXPAND_SZ => Some(0x04),
-        REG_BINARY => Some(0x08),
-        REG_DWORD => Some(0x10),
-        REG_MULTI_SZ => Some(0x20),
-        REG_QWORD => Some(0x40),
+        REG_NONE => Some(RRF_RT_REG_NONE),
+        REG_SZ => Some(RRF_RT_REG_SZ),
+        REG_EXPAND_SZ => Some(RRF_RT_REG_EXPAND_SZ),
+        REG_BINARY => Some(RRF_RT_REG_BINARY),
+        REG_DWORD => Some(RRF_RT_REG_DWORD),
+        REG_MULTI_SZ => Some(RRF_RT_REG_MULTI_SZ),
+        REG_QWORD => Some(RRF_RT_REG_QWORD),
         _ => None,
     }
 }
@@ -404,17 +353,19 @@ fn is_string(kind: u32) -> bool {
     matches!(kind, REG_SZ | REG_EXPAND_SZ | REG_MULTI_SZ)
 }
 
-fn ansi_data(value: &Value) -> Vec<u8> {
-    if !is_string(value.kind) {
-        return value.data.clone();
-    }
-    let units: Vec<u16> = value
-        .data
-        .as_chunks::<2>()
+fn units_of(data: &[u8]) -> Vec<u16> {
+    data.as_chunks::<2>()
         .0
         .iter()
         .map(|pair| u16::from_le_bytes(*pair))
-        .collect();
+        .collect()
+}
+
+fn ansi_data(kind: u32, data: &[u8]) -> Vec<u8> {
+    if !is_string(kind) {
+        return data.to_vec();
+    }
+    let units = units_of(data);
     let mut bytes = Vec::with_capacity(units.len());
     let mut buffer = [0u8; 4];
     for character in crate::text::utf16_chars(&units) {
@@ -488,7 +439,7 @@ unsafe fn query_value(
     };
     let bytes = match text {
         Text::Wide => value.data.clone(),
-        Text::Ansi => ansi_data(&value),
+        Text::Ansi => ansi_data(value.kind, &value.data),
     };
     // SAFETY: the caller's duty.
     unsafe { give_value(value.kind, &bytes, kind, data, size) }
@@ -644,7 +595,7 @@ unsafe fn enum_value(
     }
     let bytes = match text {
         Text::Wide => value.data.clone(),
-        Text::Ansi => ansi_data(value),
+        Text::Ansi => ansi_data(value.kind, &value.data),
     };
     // SAFETY: the caller's duty.
     unsafe { give_value(value.kind, &bytes, kind, data, size) }
@@ -670,12 +621,17 @@ unsafe fn open_key_ex(
     handle: usize,
     subkey: *const u8,
     _options: u32,
-    _access: u32,
+    access: u32,
     result: *mut usize,
     text: Text,
 ) -> u32 {
     // SAFETY: `RegOpenKeyEx`'s contract.
-    unsafe { open_key(handle, subkey, result, text) }
+    unsafe { open_key(handle, subkey, access, result, text) }
+}
+
+unsafe fn open_key_plain(handle: usize, subkey: *const u8, result: *mut usize, text: Text) -> u32 {
+    // SAFETY: `RegOpenKey`'s contract: the access Windows grants it is what the caller may have.
+    unsafe { open_key(handle, subkey, 0, result, text) }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -685,14 +641,14 @@ unsafe fn create_key_ex(
     _reserved: u32,
     _class: *const u8,
     _options: u32,
-    _access: u32,
+    access: u32,
     _security: usize,
     result: *mut usize,
     disposition: *mut u32,
     text: Text,
 ) -> u32 {
     // SAFETY: `RegCreateKeyEx`'s contract.
-    unsafe { create_key(handle, subkey, result, disposition, text) }
+    unsafe { create_key(handle, subkey, access, result, disposition, text) }
 }
 
 unsafe fn create_key_plain(
@@ -702,7 +658,7 @@ unsafe fn create_key_plain(
     text: Text,
 ) -> u32 {
     // SAFETY: `RegCreateKey`'s contract.
-    unsafe { create_key(handle, subkey, result, core::ptr::null_mut(), text) }
+    unsafe { create_key(handle, subkey, 0, result, core::ptr::null_mut(), text) }
 }
 
 unsafe fn query_value_ex(
@@ -742,7 +698,7 @@ unsafe fn set_key_value(
 ) -> u32 {
     let mut opened = 0usize;
     // SAFETY: `RegSetKeyValue`'s contract: the subkey as `RegCreateKeyEx` takes it.
-    let code = unsafe { create_key(handle, subkey, &mut opened, core::ptr::null_mut(), text) };
+    let code = unsafe { create_key(handle, subkey, 0, &mut opened, core::ptr::null_mut(), text) };
     if code != ERROR_SUCCESS {
         return code;
     }
@@ -825,6 +781,93 @@ unsafe fn enum_value_ex(
     unsafe { enum_value(handle, index, name, name_size, kind, data, size, text) }
 }
 
+fn expand_variables(units: &[u16], mut lookup: impl FnMut(&[u8]) -> Option<Vec<u8>>) -> Vec<u16> {
+    let mut out = Vec::with_capacity(units.len());
+    let mut rest = units;
+    while let Some(start) = rest.iter().position(|unit| *unit == PERCENT) {
+        out.extend_from_slice(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(length) = after.iter().position(|unit| *unit == PERCENT) else {
+            out.extend_from_slice(&rest[start..]);
+            return out;
+        };
+        let name = &after[..length];
+        let mut name_bytes = Vec::with_capacity(name.len());
+        let mut buffer = [0u8; 4];
+        for character in crate::text::utf16_chars(name) {
+            name_bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+        }
+        match (!name.is_empty()).then(|| lookup(&name_bytes)).flatten() {
+            Some(value) => {
+                for character in crate::text::utf8_chars(&value) {
+                    let mut pair = [0u16; 2];
+                    out.extend_from_slice(character.encode_utf16(&mut pair));
+                }
+            }
+            None => {
+                out.push(PERCENT);
+                out.extend_from_slice(name);
+                out.push(PERCENT);
+            }
+        }
+        rest = &after[length + 1..];
+    }
+    out.extend_from_slice(rest);
+    out
+}
+
+fn environment_value(name: &[u8]) -> Option<Vec<u8>> {
+    let length = super::environment::variable(name, &mut [])?;
+    let mut value = alloc::vec![0u8; length];
+    let copied = super::environment::variable(name, &mut value)?;
+    value.truncate(copied.min(length));
+    Some(value)
+}
+
+fn get_value_flags_valid(flags: u32) -> bool {
+    let expands_expand_sz = flags & RRF_RT_REG_EXPAND_SZ != 0 && flags & RRF_NOEXPAND == 0;
+    !expands_expand_sz || flags & RRF_RT_ANY == RRF_RT_ANY
+}
+
+fn restricted_value(
+    flags: u32,
+    kind: u32,
+    data: &[u8],
+    lookup: impl FnMut(&[u8]) -> Option<Vec<u8>>,
+) -> Result<(u32, Vec<u8>), u32> {
+    let (kind, data) = match kind == REG_EXPAND_SZ && flags & RRF_NOEXPAND == 0 {
+        true => {
+            let units = units_of(data);
+            let end = units
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(units.len());
+            let mut bytes = Vec::new();
+            for unit in expand_variables(&units[..end], lookup).iter().chain([&0]) {
+                bytes.extend_from_slice(&unit.to_le_bytes());
+            }
+            (REG_SZ, bytes)
+        }
+        false => (kind, data.to_vec()),
+    };
+    let allowed = match restriction(kind) {
+        Some(bit) => flags & bit != 0,
+        None => flags & RRF_RT_ANY == RRF_RT_ANY,
+    };
+    if !allowed {
+        return Err(ERROR_UNSUPPORTED_TYPE);
+    }
+    let size_needed = match (kind, flags & RRF_RT_ANY) {
+        (REG_BINARY, RRF_RT_DWORD) => Some(4),
+        (REG_BINARY, RRF_RT_QWORD) => Some(8),
+        _ => None,
+    };
+    if size_needed.is_some_and(|bytes| data.len() != bytes) {
+        return Err(ERROR_DATATYPE_MISMATCH);
+    }
+    Ok((kind, data))
+}
+
 #[allow(clippy::too_many_arguments)]
 unsafe fn get_value(
     handle: usize,
@@ -836,6 +879,9 @@ unsafe fn get_value(
     size: *mut u32,
     text: Text,
 ) -> u32 {
+    if !get_value_flags_valid(flags) {
+        return error::INVALID_PARAMETER;
+    }
     // SAFETY: `RegGetValue`'s contract.
     let path = match unsafe { below(handle, subkey, text) } {
         Ok(path) => path,
@@ -847,26 +893,24 @@ unsafe fn get_value(
         Ok(value) => value,
         Err(failure) => return win32_error(failure),
     };
-    let allowed = match restriction(value.kind) {
-        Some(bit) => flags & bit != 0,
-        None => flags & RRF_RT_ANY == RRF_RT_ANY,
-    };
-    if !allowed {
-        return ERROR_UNSUPPORTED_TYPE;
-    }
+    let (value_kind, wide) =
+        match restricted_value(flags, value.kind, &value.data, environment_value) {
+            Ok(restricted) => restricted,
+            Err(code) => return code,
+        };
     let mut bytes = match text {
-        Text::Wide => value.data.clone(),
-        Text::Ansi => ansi_data(&value),
+        Text::Wide => wide,
+        Text::Ansi => ansi_data(value_kind, &wide),
     };
     let terminator = match text {
         Text::Wide => 2,
         Text::Ansi => 1,
     };
-    if is_string(value.kind) && !bytes.ends_with(&[0, 0][..terminator]) {
+    if is_string(value_kind) && !bytes.ends_with(&[0, 0][..terminator]) {
         bytes.extend(core::iter::repeat_n(0, terminator));
     }
     // SAFETY: the caller's duty.
-    unsafe { give_value(value.kind, &bytes, kind, data, size) }
+    unsafe { give_value(value_kind, &bytes, kind, data, size) }
 }
 
 extern "efiapi" fn close_key(handle: usize) -> u32 {
@@ -880,7 +924,7 @@ extern "efiapi" fn close_key(handle: usize) -> u32 {
     else {
         return error::INVALID_HANDLE;
     };
-    OPENED.with(|opened| match opened.keys.get_mut(index) {
+    OPENED_KEYS.with(|keys| match keys.get_mut(index) {
         Some(slot @ Some(_)) => {
             *slot = None;
             ERROR_SUCCESS
@@ -951,7 +995,7 @@ unsafe extern "efiapi" fn reg_query_info_key_w(
 both!(reg_open_key_ex_w, reg_open_key_ex_a, open_key_ex, (
     handle: usize, subkey: *const u8, options: u32, access: u32, result: *mut usize
 ));
-both!(reg_open_key_w, reg_open_key_a, open_key, (
+both!(reg_open_key_w, reg_open_key_a, open_key_plain, (
     handle: usize, subkey: *const u8, result: *mut usize
 ));
 both!(reg_create_key_ex_w, reg_create_key_ex_a, create_key_ex, (
@@ -1034,3 +1078,141 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"RegCloseKey" => close_key,
     b"RegFlushKey" => flush_key,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY_READ: u32 = 0x0002_0019;
+    const KEY_WRITE: u32 = 0x0002_0006;
+
+    fn wide(text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+
+    fn home(name: &[u8]) -> Option<Vec<u8>> {
+        (name == b"HOME").then(|| b"/home/ada".to_vec())
+    }
+
+    fn expanded(text: &str) -> String {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        String::from_utf16(&expand_variables(&units, home)).unwrap()
+    }
+
+    #[test]
+    fn no_spin_lock_is_held_while_the_registry_works() {
+        static IDLE: SpinLock<Option<u32>> = SpinLock::new(None);
+        let path = KeyPath::parse("HKCU\\Software\\Locks").unwrap();
+        let handle = with_idle(&IDLE, || 1, |_| insert_key(path.clone())).unwrap();
+        assert_eq!(with_idle(&IDLE, || 1, |_| key_of(handle)), Some(path));
+        let made = with_idle(
+            &IDLE,
+            || 1,
+            |outer| {
+                *outer = 5;
+                with_idle(&IDLE, || 2, |inner| *inner)
+            },
+        );
+        assert_eq!(made, 2);
+        assert_eq!(with_idle(&IDLE, || 3, |kept| *kept), 5);
+        assert_eq!(close_key(handle), ERROR_SUCCESS);
+    }
+
+    #[test]
+    fn variables_expand_and_unknown_ones_stay_as_written() {
+        assert_eq!(expanded("%HOME%\\x"), "/home/ada\\x");
+        assert_eq!(expanded("a%home%b"), "a%home%b");
+        assert_eq!(expanded("%NOPE%%HOME%"), "%NOPE%/home/ada");
+        assert_eq!(expanded("100%"), "100%");
+        assert_eq!(expanded("%%"), "%%");
+        assert_eq!(expanded("plain"), "plain");
+    }
+
+    #[test]
+    fn reg_get_value_expands_expand_sz_into_sz_unless_told_not_to() {
+        let stored = wide("%HOME%\\x");
+        assert!(!get_value_flags_valid(RRF_RT_REG_EXPAND_SZ));
+        assert!(!get_value_flags_valid(RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ));
+        assert!(get_value_flags_valid(RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND));
+        assert!(get_value_flags_valid(RRF_RT_ANY));
+        assert!(get_value_flags_valid(RRF_RT_REG_SZ));
+        assert_eq!(
+            restricted_value(RRF_RT_REG_SZ, REG_EXPAND_SZ, &stored, home),
+            Ok((REG_SZ, wide("/home/ada\\x")))
+        );
+        assert_eq!(
+            restricted_value(RRF_RT_ANY, REG_EXPAND_SZ, &stored, home),
+            Ok((REG_SZ, wide("/home/ada\\x")))
+        );
+        assert_eq!(
+            restricted_value(RRF_RT_REG_SZ | RRF_NOEXPAND, REG_EXPAND_SZ, &stored, home),
+            Err(ERROR_UNSUPPORTED_TYPE)
+        );
+        assert_eq!(
+            restricted_value(
+                RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
+                REG_EXPAND_SZ,
+                &stored,
+                home
+            ),
+            Ok((REG_EXPAND_SZ, stored.clone()))
+        );
+        assert_eq!(
+            restricted_value(RRF_RT_REG_SZ, REG_SZ, &wide("x"), home),
+            Ok((REG_SZ, wide("x")))
+        );
+    }
+
+    #[test]
+    fn rrf_rt_dword_and_qword_take_binary_data_of_their_size_only() {
+        let binary = |length: usize| vec![7u8; length];
+        assert_eq!(
+            restricted_value(RRF_RT_DWORD, REG_BINARY, &binary(4), home),
+            Ok((REG_BINARY, binary(4)))
+        );
+        assert_eq!(
+            restricted_value(RRF_RT_DWORD, REG_BINARY, &binary(3), home),
+            Err(ERROR_DATATYPE_MISMATCH)
+        );
+        assert_eq!(
+            restricted_value(RRF_RT_QWORD, REG_BINARY, &binary(8), home),
+            Ok((REG_BINARY, binary(8)))
+        );
+        assert_eq!(
+            restricted_value(RRF_RT_QWORD, REG_BINARY, &binary(4), home),
+            Err(ERROR_DATATYPE_MISMATCH)
+        );
+        assert_eq!(
+            restricted_value(RRF_RT_REG_DWORD, REG_BINARY, &binary(4), home),
+            Err(ERROR_UNSUPPORTED_TYPE)
+        );
+        assert_eq!(
+            restricted_value(RRF_RT_ANY, REG_BINARY, &binary(3), home),
+            Ok((REG_BINARY, binary(3)))
+        );
+        assert_eq!(
+            restricted_value(RRF_RT_DWORD, REG_DWORD, &binary(4), home),
+            Ok((REG_DWORD, binary(4)))
+        );
+    }
+
+    #[test]
+    fn opening_the_machine_s_keys_to_write_is_refused_to_who_cannot_change_them() {
+        let machine = KeyPath::parse("HKLM\\Software\\AutoHotkey").unwrap();
+        let config = KeyPath::parse("HKCC\\Software").unwrap();
+        let user = KeyPath::parse("HKCU\\Software\\AutoHotkey").unwrap();
+        let classes = KeyPath::parse("HKCR\\.ahk").unwrap();
+        for access in [KEY_WRITE, KEY_SET_VALUE, GENERIC_WRITE, DELETE, 0x000f_003f] {
+            assert!(denied_by_access(&machine, access, false), "{access:#x}");
+            assert!(denied_by_access(&config, access, false), "{access:#x}");
+            assert!(!denied_by_access(&machine, access, true), "{access:#x}");
+            assert!(!denied_by_access(&user, access, false), "{access:#x}");
+            assert!(!denied_by_access(&classes, access, false), "{access:#x}");
+        }
+        assert!(!denied_by_access(&machine, KEY_READ, false));
+        assert!(!denied_by_access(&machine, 0, false));
+    }
+}

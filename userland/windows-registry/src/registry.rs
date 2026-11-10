@@ -3,8 +3,9 @@
 //! the user's `Software\Classes` over the machine's: a key the user has hides the machine's
 //! values, subkeys of both are listed, and writes go to the user's. Only root changes the
 //! machine's hive. Reads use the hive as last read while its file's stamp is unchanged; every
-//! write reads the file afresh, changes it and writes it whole to a temporary file renamed over
-//! the hive, so a crash leaves the old hive or the new one, never half of one.
+//! write holds the hive's lock ([`Store::lock`]), reads the file afresh, changes it and writes
+//! it whole to a temporary file renamed over the hive, so a crash leaves the old hive or the new
+//! one, never half of one, and two writers never lose each other's change.
 
 use alloc::format;
 use alloc::string::String;
@@ -27,7 +28,7 @@ pub enum HiveFile {
 pub const USER_HIVE_PATH: &str = ".local/share/eggos/windows/user.hive";
 /// Where the machine's hive is.
 pub const MACHINE_HIVE_PATH: &str = "/var/lib/eggos/windows/machine.hive";
-/// What the temporary file's name adds to the hive's.
+/// What a temporary file's name adds to the hive's, before a dot and the writing process's id.
 pub const TEMPORARY_SUFFIX: &str = ".new";
 /// What a damaged hive's name gets when `reset` sets it aside.
 pub const DAMAGED_SUFFIX: &str = ".damaged";
@@ -53,6 +54,17 @@ pub trait Store {
     fn replace_with_temporary(&mut self, file: HiveFile) -> Result<(), StoreError>;
     /// Renames the file to its damaged twin, replacing an older one; nothing when it is absent.
     fn set_aside(&mut self, file: HiveFile) -> Result<(), StoreError>;
+    /// Holds the file's lock until [`Store::unlock`], waiting while another writer, in this
+    /// process or another, holds it: the registry reads, changes and replaces a hive only under
+    /// it. A store no one else writes keeps this default, which locks nothing.
+    fn lock(&mut self, file: HiveFile) -> Result<(), StoreError> {
+        let _ = file;
+        Ok(())
+    }
+    /// Lets go of the file's lock.
+    fn unlock(&mut self, file: HiveFile) {
+        let _ = file;
+    }
     /// The user's id: 0 is root, who alone changes the machine's hive.
     fn user_id(&mut self) -> u32;
     /// The time now, in 100 ns since 1601.
@@ -138,6 +150,19 @@ fn load<'a>(
         Some(Err(error)) => Err(*error),
         None => Err(Error::ReadFailed),
     }
+}
+
+fn write_error(error: StoreError) -> Error {
+    match error {
+        StoreError::DiskFull => Error::DiskFull,
+        StoreError::Failed => Error::WriteFailed,
+    }
+}
+
+/// Whether the key is in the machine's hive: below `HKEY_LOCAL_MACHINE` or
+/// `HKEY_CURRENT_CONFIG`, which only root changes.
+pub fn is_machine_key(path: &KeyPath) -> bool {
+    matches!(path.root, Root::LocalMachine | Root::CurrentConfig)
 }
 
 fn prefixed(prefix: &[&str], names: &[Vec<u16>]) -> Vec<Vec<u16>> {
@@ -365,6 +390,17 @@ impl<S: Store> Registry<S> {
         if file == HiveFile::Machine && !self.may_change_machine() {
             return Err(Error::ReadOnlyKey);
         }
+        self.store.lock(file).map_err(write_error)?;
+        let changed = self.change_locked(file, edit);
+        self.store.unlock(file);
+        changed
+    }
+
+    fn change_locked<R>(
+        &mut self,
+        file: HiveFile,
+        edit: impl FnOnce(&mut Hive, u64) -> Result<R, Error>,
+    ) -> Result<R, Error> {
         let slot = match file {
             HiveFile::User => &mut self.user,
             HiveFile::Machine => &mut self.machine,
@@ -394,10 +430,7 @@ impl<S: Store> Registry<S> {
             }
             Err(error) => {
                 slot.state = None;
-                Err(match error {
-                    StoreError::DiskFull => Error::DiskFull,
-                    StoreError::Failed => Error::WriteFailed,
-                })
+                Err(write_error(error))
             }
         }
     }
@@ -532,14 +565,15 @@ impl<S: Store> Registry<S> {
         if file == HiveFile::Machine && !self.may_change_machine() {
             return Err(Error::ReadOnlyKey);
         }
-        let failed = |error| match error {
-            StoreError::DiskFull => Error::DiskFull,
-            StoreError::Failed => Error::WriteFailed,
-        };
         let bytes = Hive::default().encode()?;
-        self.store.set_aside(file).map_err(failed)?;
-        self.store.write_temporary(file, &bytes).map_err(failed)?;
-        self.store.replace_with_temporary(file).map_err(failed)?;
+        self.store.lock(file).map_err(write_error)?;
+        let replaced = self
+            .store
+            .set_aside(file)
+            .and_then(|()| self.store.write_temporary(file, &bytes))
+            .and_then(|()| self.store.replace_with_temporary(file));
+        self.store.unlock(file);
+        replaced.map_err(write_error)?;
         let slot = match file {
             HiveFile::User => &mut self.user,
             HiveFile::Machine => &mut self.machine,

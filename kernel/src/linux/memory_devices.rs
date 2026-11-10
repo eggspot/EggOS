@@ -10,10 +10,13 @@
 //! `random` waits until the generator is seeded (`EAGAIN` with `O_NONBLOCK`) and `urandom`
 //! never waits, as since Linux 5.18. `kmsg` (D224) has one job on EggOS: what is written to it
 //! goes to the serial console only, never to the screen's terminal, so init's `init:` lines
-//! reach the boot log while the Terminal's first text stays the banner and the shell's; it
-//! reads nothing, since the kernel keeps no log to replay. Seeking any of them leaves them at
+//! reach the boot log while the Terminal's first text stays the banner and the shell's; only a
+//! privileged writer may write it (`EACCES` for anyone else), its control bytes but the newline
+//! are left out so no writer can drive the serial terminal, and it reads nothing, since the
+//! kernel keeps no log to replay. Seeking any of them leaves them at
 //! 0, reads and writes ignore the offset, and they are always ready for `poll`.
 
+use super::credentials::Credentials;
 use super::{Errno, MAX_RW_COUNT};
 use crate::process::Process;
 use crate::vfs::devfs;
@@ -123,8 +126,9 @@ fn fill<P: Platform>(
 /// Writes the buffers `buffers` lists (base, length) to `device`: how many bytes it took, at
 /// most `MAX_RW_COUNT`. `null` and `zero` take them all without reading them; `full` is
 /// `ENOSPC`; `random` and `urandom` hash what they read into the generator's input and `kmsg`
-/// writes it to the serial console, fewer at a byte that is not the program's memory,
-/// `EFAULT` if that is the first.
+/// writes it to the serial console without its control bytes but the newline (`EACCES` unless
+/// the process is privileged), fewer at a byte that is not the program's memory, `EFAULT` if
+/// that is the first.
 pub fn write<P: Platform>(
     process: &Process<P>,
     device: MemoryDevice,
@@ -138,8 +142,32 @@ pub fn write<P: Platform>(
         MemoryDevice::Random | MemoryDevice::Urandom => {
             take(process, buffers, random::add_user_input)
         }
-        MemoryDevice::Kmsg => take(process, buffers, P::console_write),
+        MemoryDevice::Kmsg => {
+            may_write_kernel_log(&process.credentials_and_limits().lock().credentials)?;
+            let mut shown = [0u8; CHUNK];
+            take(process, buffers, |bytes| {
+                P::console_write(without_control_bytes(bytes, &mut shown));
+            })
+        }
     }
+}
+
+fn may_write_kernel_log(credentials: &Credentials) -> Result<(), Errno> {
+    match credentials.is_privileged() {
+        true => Ok(()),
+        false => Err(Errno::EACCES),
+    }
+}
+
+fn without_control_bytes<'shown>(bytes: &[u8], shown: &'shown mut [u8; CHUNK]) -> &'shown [u8] {
+    let mut length = 0;
+    for &byte in bytes.iter().take(CHUNK) {
+        if byte == b'\n' || !byte.is_ascii_control() {
+            shown[length] = byte;
+            length += 1;
+        }
+    }
+    &shown[..length]
 }
 
 fn take<P: Platform>(
@@ -198,5 +226,27 @@ mod tests {
         assert_eq!(MemoryDevice::of((1, 11)), Some(MemoryDevice::Kmsg));
         assert_eq!(MemoryDevice::of((1, 4)), None);
         assert_eq!(MemoryDevice::of(devfs::WINDOW_DEVICE), None);
+    }
+
+    #[test]
+    fn only_a_privileged_process_writes_the_kernel_log() {
+        use super::super::credentials::{Ids, Kind};
+        assert_eq!(may_write_kernel_log(&Credentials::new()), Ok(()));
+        let mut user = Credentials::new();
+        user.set_ids(Kind::User, Ids::all(1000)).unwrap();
+        assert_eq!(may_write_kernel_log(&user), Err(Errno::EACCES));
+    }
+
+    #[test]
+    fn the_kernel_log_keeps_text_and_newlines_and_leaves_out_other_control_bytes() {
+        let mut shown = [0u8; CHUNK];
+        assert_eq!(
+            without_control_bytes(b"init: \x1b[2Jstarting\r\tsh\x07\x7f\n", &mut shown),
+            b"init: [2Jstartingsh\n"
+        );
+        assert_eq!(
+            without_control_bytes("caf\u{e9}\n".as_bytes(), &mut shown),
+            "caf\u{e9}\n".as_bytes()
+        );
     }
 }

@@ -170,14 +170,22 @@ pub(crate) fn integer(bytes: &[u8], at: usize) -> Option<i128> {
         Some(rest) => (true, rest),
         None => (false, text.strip_prefix('+').unwrap_or(text)),
     };
-    let magnitude = match digits
+    let (radix, digits) = match digits
         .strip_prefix("0x")
         .or_else(|| digits.strip_prefix("0X"))
     {
-        Some(hex) => i128::from_str_radix(hex, 16).ok()?,
-        None => digits.parse::<i128>().ok()?,
+        Some(hex) => (16, hex),
+        None => (10, digits),
     };
-    Some(if negative { -magnitude } else { magnitude })
+    if !digits.chars().all(|digit| digit.is_digit(radix)) {
+        return None;
+    }
+    let magnitude = u128::from_str_radix(digits, radix).ok()?;
+    if negative {
+        0i128.checked_sub_unsigned(magnitude)
+    } else {
+        i128::try_from(magnitude).ok()
+    }
 }
 
 pub(crate) fn real(bytes: &[u8], at: usize) -> Option<f64> {

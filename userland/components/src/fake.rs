@@ -252,6 +252,7 @@ impl Files for FakeFiles {
     }
 
     fn remove_file(&mut self, path: &[u8]) -> Result<(), Errno> {
+        self.writable(path)?;
         match self.nodes.get(path) {
             Some(Node::Directory) => Err(Errno::EISDIR),
             Some(_) => {

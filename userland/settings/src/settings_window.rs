@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 use eggos_calendar::{ParseError, parse_local_setting};
 use eggos_components::index::Component;
-use eggos_components::manager::{Failure, Refusal};
+use eggos_components::manager::{Failure, Refusal, RemoveError};
 use eggos_eggfs::{CheckMode, DiskCheck};
 use eggos_files::storage::{DiskRecord, StorageError};
 use eggos_mcp::grant_files::SaveError;
@@ -1328,12 +1328,6 @@ impl SettingsWindow {
             .show_remove_check(&mut self.tree, checked, now_ms);
     }
 
-    /// Shows an install's progress: `received` of `total` bytes.
-    pub fn show_install_progress(&mut self, received: u64, total: u64) {
-        self.components
-            .show_install_progress(&mut self.tree, received, total);
-    }
-
     /// Shows how an install went, with the components read after; the next install of a plan
     /// when there is one.
     pub fn show_installed(
@@ -1345,7 +1339,7 @@ impl SettingsWindow {
     }
 
     /// Shows how a remove went, with the components read after.
-    pub fn show_removed(&mut self, result: Result<(), Failure>, read: ComponentsRead) {
+    pub fn show_removed(&mut self, result: Result<(), RemoveError>, read: ComponentsRead) {
         self.components.show_removed(&mut self.tree, result, read);
     }
 

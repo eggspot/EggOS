@@ -13,6 +13,7 @@
 #[cfg(eggos_user)]
 pub mod application;
 pub mod canvas;
+pub mod cell_store;
 pub mod colour;
 pub mod damage;
 pub mod drag;

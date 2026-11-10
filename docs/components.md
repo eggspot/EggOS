@@ -44,11 +44,14 @@ install, for example `component install windows-apps`.
 
 Settings > Components (Claude Fable's [design](ux/components-v0.3.md)) is the same capability
 in a window: the store's state at the top, then one row per component with its state, its
-size and an `Install` or `Remove` button. An install shows a progress bar under its row and
+size and an `Install` or `Remove` button. An install shows `Installing` under its row and
 then the result; a remove, or an install that brings a component another one needs, asks
 first under the row. The words are those of `component` and its MCP tools, and so are the
-refusals (`Needed by ...`, `In use: ... is running`). The buttons are person-only: an agent
-installs through `component_install` instead.
+refusals (`Needed by ...`, `In use: ... is running`). Only the `Remove` that confirms a remove
+is person-only: an agent's `wm act` on it answers `element_cannot`, and an agent removes
+through `component_remove`, which always asks the person first. `Install` is not: like
+`component_install`, installing never asks. A remove checks again once confirmed, under the
+lock, so a component that became needed or in use meanwhile is refused then.
 
 ## How an install stays safe
 
@@ -68,15 +71,19 @@ A component installs under `/var/lib/eggos/components/<name>/`:
 - **Copy and check.** Its files are copied into a staging folder. Each file is checked against
   its SHA-256 as it is copied.
 - **Commit.** The record is written, then the staging folder is renamed into place. A failure
-  at any step leaves nothing installed.
+  at any step leaves that component uninstalled; when an install brings a component another
+  one needs, the ones installed before the failure stay.
 - **Folders.** The folders above it must be real folders, not links.
 - **One at a time.** One install or remove runs at a time, under `/run/eggos/components.lock`.
+  A lock whose process is gone is taken over by one process at a time, which first claims it
+  with `/run/eggos/components.lock.take-over-<pid>`.
 
 A remove is refused in two cases: while another installed component needs the component, and
 while a running program runs one of its files: its command's first word, the link that word
 names (`/bin/windows registry ...`), or its executable (`/proc/<pid>/exe`) is one of the
 component's files, at its fixed path or where it is installed. Otherwise the remove renames the component's
-folder away first, then deletes it. If a staging or removing folder is left behind, the next
+folder away first, then deletes it. If a file cannot be deleted, the component is removed all
+the same and the remove says so. If a staging or removing folder is left behind, the next
 action deletes it.
 
 Without a persistent disk, `/var` is in memory, so installed components last until the
@@ -87,6 +94,7 @@ machine powers off.
 - The desktop and the built-in apps as components: the desktop runs in the kernel until the
   window server moves to user space, so only the Windows and macOS layers are components.
 - Downloading components on demand in the background, and updates (M14).
-- In Settings: a live progress bar (the copy runs in one step of the window, so the bar jumps)
-  and cancelling in the middle of a file, tooltips on disabled buttons, the phone layout, and
-  the full Components pane with the installer.
+- In Settings: live progress (the copy runs in one step of the window, so the bar shows nothing
+  copied until the result), cancelling a single install (`Cancel installing` stops between
+  components; a single install cannot be cancelled), tooltips on disabled buttons, the phone
+  layout, and the full Components pane with the installer.

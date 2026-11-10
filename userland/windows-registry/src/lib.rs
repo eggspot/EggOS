@@ -3,8 +3,9 @@
 //! `HKEY_CLASSES_ROOT` merged from both ([`registry`]), key paths and value types in the words
 //! regedit uses ([`path`], [`value`]), and the `windows registry` command ([`command`]). The
 //! Windows layer's advapi32, the command and Settings' Windows pane all go through
-//! [`registry::Registry`], so every front-end reads and writes the same way. Pure logic: the
-//! files are reached through [`registry::Store`].
+//! [`registry::Registry`], so every front-end reads and writes the same way, and both keep the
+//! hive files through the one [`store::FileStore`], over Linux system calls ([`linux`]) on
+//! EggOS and over a fake in the host tests.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -12,10 +13,14 @@ extern crate alloc;
 
 pub mod command;
 pub mod hive;
+pub mod linux;
 pub mod path;
 pub mod registry;
+pub mod store;
 pub mod value;
 
+#[cfg(test)]
+mod store_tests;
 #[cfg(test)]
 mod tests;
 

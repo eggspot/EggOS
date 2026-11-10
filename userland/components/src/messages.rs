@@ -135,6 +135,8 @@ pub const CANCELLED: &str = "Cancelled.";
 pub const NOTHING_INSTALLED: &str = "Nothing was installed.";
 /// The second line of a failed remove.
 pub const STAYS_INSTALLED: &str = "It stays installed.";
+/// The second line of a remove that left files behind.
+pub const FILES_LEFT: &str = "The next install or remove deletes them.";
 /// What a store that cannot be read is told.
 pub const STORE_UNREADABLE: &str =
     "The attached component store could not be read: it is damaged or not a store.";
@@ -272,7 +274,7 @@ pub fn install_failure(
             NOTHING_INSTALLED,
             &errors::INSTALL_FAILED,
         ),
-        Failure::Errno(errno) => (
+        Failure::Errno(errno) | Failure::FilesLeft(errno) => (
             format!(
                 "Could not install {}: {}.",
                 component.title,
@@ -303,6 +305,16 @@ pub fn install_failure_line(failure: &Failure, component: &Component) -> String 
 /// Components list shows them.
 pub fn remove_failure(failure: &Failure, component: &Component) -> (String, &'static str) {
     let reason = match failure {
+        Failure::FilesLeft(errno) => {
+            return (
+                format!(
+                    "Removed {}, but some of its files could not be deleted: {}.",
+                    component.title,
+                    errno_text(*errno)
+                ),
+                FILES_LEFT,
+            );
+        }
         Failure::Errno(errno) => errno_text(*errno),
         Failure::NotAllowed => {
             return (

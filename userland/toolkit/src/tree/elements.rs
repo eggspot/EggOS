@@ -107,6 +107,13 @@ fn part_element(id: WidgetId, part: usize) -> u32 {
     element_of(id) + part as u32 + 1
 }
 
+fn names_a_control(kind: &Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Button { .. } | Kind::MenuButton(_) | Kind::Checkbox { .. }
+    )
+}
+
 fn for_agents(person_only: bool, text: &[u8]) -> &[u8] {
     match person_only {
         true => b"",
@@ -281,7 +288,10 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             };
             let element = match node.accessible_name.is_empty() {
                 true => element,
-                false => element.named(node.accessible_name.as_str().as_bytes()),
+                false => element.named(match names_a_control(&node.kind) {
+                    true => node.accessible_name.as_str().as_bytes(),
+                    false => for_agents(node.person_only, node.accessible_name.as_str().as_bytes()),
+                }),
             };
             let element = match node.accessible_value.is_empty() {
                 true => element,

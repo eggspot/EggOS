@@ -10,7 +10,10 @@ use eggos_net::ethernet::MacAddress;
 use eggos_net::status::parse_interfaces;
 use eggos_net::{Ipv4Address, http, sntp};
 use eggos_runtime::errno::Errno;
-use eggos_settings_file::clock_sync::{LARGEST, Outcome, Record, TEMPORARY_PREFIX};
+use eggos_settings_file::clock_sync::{
+    BUDGET_LARGEST, BUDGET_TEMPORARY_PREFIX, LARGEST, Outcome, Record, TEMPORARY_PREFIX,
+    parse_budget, write_budget,
+};
 use eggos_tls::chain::TrustAnchors;
 use eggos_tls::client::{self, Buffers, RANDOMNESS_BYTES, Session, Settings, Stopped, Transport};
 
@@ -25,6 +28,9 @@ pub const FLOOR: i64 = 1_767_225_600;
 pub const RECORD: &CStr = c"/run/eggos/clock-sync";
 pub const ROOTS_REMEDY: &[u8] = b"install roots at /etc/ssl/roots.pem or run date --sync";
 const RECORD_FOLDER: &CStr = c"/run/eggos";
+pub const BUDGET: &CStr = c"/var/lib/eggos/clock-budget";
+const BUDGET_FOLDERS: [&CStr; 2] = [c"/var/lib", c"/var/lib/eggos"];
+const TEMPORARY_NAME_BYTES: usize = 64;
 const PROOF_HEAD_BYTES: usize = 8192;
 const REQUEST_BYTES: usize = 384;
 const USER_AGENT: &[u8] = b"EggOS-date";
@@ -198,7 +204,7 @@ pub fn sync<S: System, W: Witness<S>>(
         return Err(FAILURE);
     };
     let started = output.system.now() as i64;
-    let unproven_ms = read_record(&mut output.system).map_or(0, |record| record.unproven_ms);
+    let unproven_ms = unproven_budget(&mut output.system);
     let mut record = Record::new(Outcome::Syncing, started, server);
     record.unproven_ms = unproven_ms;
     write_record(&mut output.system, &record);
@@ -209,6 +215,9 @@ pub fn sync<S: System, W: Witness<S>>(
             record.outcome = synced.outcome;
             record.moved_ms = synced.moved_ms;
             record.unproven_ms = synced.unproven_ms;
+            if synced.unproven_ms != unproven_ms {
+                keep_budget(&mut output.system, synced.unproven_ms);
+            }
             Ok(synced.seconds)
         }
         Err(failed) => {
@@ -449,14 +458,42 @@ fn write_record<S: System>(system: &mut S, record: &Record) {
         return;
     };
     let _ = system.make_directory(RECORD_FOLDER, 0o755);
+    replace_file(system, TEMPORARY_PREFIX, RECORD, &file[..length]);
+}
+
+fn kept_budget<S: System>(system: &mut S) -> Option<u64> {
+    let text = read_text(system, BUDGET).ok()?;
+    parse_budget(text.as_bytes())
+}
+
+fn unproven_budget<S: System>(system: &mut S) -> u64 {
+    let this_boot = read_record(system).map_or(0, |record| record.unproven_ms);
+    kept_budget(system).unwrap_or(0).max(this_boot)
+}
+
+fn keep_budget<S: System>(system: &mut S, unproven_ms: u64) {
+    let mut file = [0u8; BUDGET_LARGEST];
+    let Some(length) = write_budget(unproven_ms, &mut file) else {
+        return;
+    };
+    for folder in BUDGET_FOLDERS {
+        let _ = system.make_directory(folder, 0o755);
+    }
+    replace_file(system, BUDGET_TEMPORARY_PREFIX, BUDGET, &file[..length]);
+}
+
+fn replace_file<S: System>(system: &mut S, temporary_prefix: &str, target: &CStr, bytes: &[u8]) {
     let mut random = [0u8; 4];
     let _ = system.random(&mut random);
-    let mut name = [0u8; 32];
-    let prefix = TEMPORARY_PREFIX.as_bytes();
-    name[..prefix.len()].copy_from_slice(prefix);
+    let mut name = [0u8; TEMPORARY_NAME_BYTES];
+    let prefix = temporary_prefix.as_bytes();
+    let Some(room) = name.get_mut(..prefix.len() + 2 * random.len()) else {
+        return;
+    };
+    room[..prefix.len()].copy_from_slice(prefix);
     for (index, byte) in random.iter().enumerate() {
-        name[prefix.len() + 2 * index] = HEX_DIGITS[usize::from(byte >> 4)];
-        name[prefix.len() + 2 * index + 1] = HEX_DIGITS[usize::from(byte & 0xf)];
+        room[prefix.len() + 2 * index] = HEX_DIGITS[usize::from(byte >> 4)];
+        room[prefix.len() + 2 * index + 1] = HEX_DIGITS[usize::from(byte & 0xf)];
     }
     let Ok(temporary) = CStr::from_bytes_until_nul(&name) else {
         return;
@@ -464,9 +501,9 @@ fn write_record<S: System>(system: &mut S, record: &Record) {
     let Ok(descriptor) = system.create(temporary, 0o644, true) else {
         return;
     };
-    let written = system.write(descriptor, &file[..length]);
+    let written = system.write(descriptor, bytes);
     system.close(descriptor);
-    if written.is_err() || system.rename(temporary, RECORD).is_err() {
+    if written.is_err() || system.rename(temporary, target).is_err() {
         let _ = system.remove(temporary, false);
     }
 }
@@ -475,6 +512,9 @@ pub fn forget_unproven_steps<S: System>(system: &mut S) {
     if let Some(mut record) = read_record(system).filter(|record| record.unproven_ms != 0) {
         record.unproven_ms = 0;
         write_record(system, &record);
+    }
+    if kept_budget(system).is_some_and(|unproven_ms| unproven_ms != 0) {
+        keep_budget(system, 0);
     }
 }
 

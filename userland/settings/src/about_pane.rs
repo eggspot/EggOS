@@ -8,9 +8,9 @@
 use crate::settings_window::CAPACITY;
 use alloc::vec::Vec;
 use core::fmt::Write;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use eggos_device_list::{Device, KINDS, rows};
 use eggos_runtime::errno::Errno;
+use eggos_toolkit::cell_store::{CELL_BYTES, CellSlot, CellStore, data_of};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
@@ -42,8 +42,12 @@ pub const UNREADABLE: &str = "The device list could not be read.";
 /// The checkbox's label when there is no count to give.
 pub const SHOW_ALL: &str = "Show all devices";
 
-const CELL_BYTES: usize = 63;
-const SLOTS: usize = 2;
+const CELL_COLUMNS: usize = 3;
+const SLOTS: usize = if cfg!(test) { 64 } else { 2 };
+
+static DEVICE_CELLS: CellStore<SLOTS, MAX_ROWS, CELL_COLUMNS> = CellStore::new();
+
+type DeviceSlot = CellSlot<'static, SLOTS, MAX_ROWS, CELL_COLUMNS>;
 
 const fn fixed(title: &'static str, width: i32) -> Column {
     Column {
@@ -52,105 +56,8 @@ const fn fixed(title: &'static str, width: i32) -> Column {
     }
 }
 
-struct CellBytes {
-    length: AtomicU8,
-    bytes: [AtomicU8; CELL_BYTES],
-}
-
-impl CellBytes {
-    const fn new() -> Self {
-        Self {
-            length: AtomicU8::new(0),
-            bytes: [const { AtomicU8::new(0) }; CELL_BYTES],
-        }
-    }
-
-    fn store(&self, text: &[u8]) {
-        let mut length = text.len().min(CELL_BYTES);
-        while length > 0 && length < text.len() && text[length] & 0xc0 == 0x80 {
-            length -= 1;
-        }
-        for (cell, &byte) in self.bytes.iter().zip(&text[..length]) {
-            cell.store(byte, Ordering::Relaxed);
-        }
-        self.length.store(length as u8, Ordering::Release);
-    }
-
-    fn write(&self, out: &mut Text<64>) {
-        let length = usize::from(self.length.load(Ordering::Acquire));
-        let mut bytes = [0u8; CELL_BYTES];
-        for (byte, cell) in bytes.iter_mut().zip(&self.bytes[..length]) {
-            *byte = cell.load(Ordering::Relaxed);
-        }
-        out.push_str(core::str::from_utf8(&bytes[..length]).unwrap_or("?"));
-    }
-}
-
-struct RowCells {
-    kind: AtomicU8,
-    device: CellBytes,
-    driver: CellBytes,
-}
-
-impl RowCells {
-    const fn new() -> Self {
-        Self {
-            kind: AtomicU8::new(0),
-            device: CellBytes::new(),
-            driver: CellBytes::new(),
-        }
-    }
-}
-
-struct RowSlot {
-    taken: AtomicBool,
-    rows: [RowCells; MAX_ROWS],
-}
-
-impl RowSlot {
-    const fn new() -> Self {
-        Self {
-            taken: AtomicBool::new(false),
-            rows: [const { RowCells::new() }; MAX_ROWS],
-        }
-    }
-}
-
-static ROW_SLOTS: [RowSlot; SLOTS] = [const { RowSlot::new() }; SLOTS];
-static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
-
-fn take_slot() -> usize {
-    loop {
-        let start = NEXT_SLOT.fetch_add(1, Ordering::Relaxed);
-        for step in 0..SLOTS {
-            let slot = (start + step) % SLOTS;
-            if ROW_SLOTS[slot]
-                .taken
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return slot;
-            }
-        }
-        core::hint::spin_loop();
-    }
-}
-
 fn device_cell(data: u32, row: usize, column: usize, out: &mut Text<64>) {
-    let Some(cells) = ROW_SLOTS
-        .get(data as usize)
-        .and_then(|slot| slot.rows.get(row))
-    else {
-        return;
-    };
-    match column {
-        0 => {
-            let kind = usize::from(cells.kind.load(Ordering::Relaxed));
-            out.push_str(KINDS.get(kind).map_or("", |(_, words)| *words));
-        }
-        1 => cells.device.write(out),
-        _ => cells.driver.write(out),
-    }
+    DEVICE_CELLS.write(data, row, column, out);
 }
 
 fn written(write: impl FnOnce(&mut dyn FnMut(&[u8]))) -> Text<64> {
@@ -175,15 +82,7 @@ pub struct AboutPane {
     readable: bool,
     all: bool,
     shown: Vec<u64>,
-    slot: Option<usize>,
-}
-
-impl Drop for AboutPane {
-    fn drop(&mut self) {
-        if let Some(slot) = self.slot {
-            ROW_SLOTS[slot].taken.store(false, Ordering::Release);
-        }
-    }
+    slot: Option<DeviceSlot>,
 }
 
 impl AboutPane {
@@ -289,23 +188,23 @@ impl AboutPane {
         let mut order = [0usize; MAX_ROWS];
         let shown = rows(devices, self.all, &mut order);
         let by_default = rows(devices, false, &mut [0usize; MAX_ROWS]);
-        let slot = *self.slot.get_or_insert_with(take_slot);
+        if self.slot.is_none() {
+            self.slot = DEVICE_CELLS.take();
+        }
         self.shown.clear();
         for (row, &index) in order[..shown].iter().enumerate() {
             let device = &devices[index];
-            let cells = &ROW_SLOTS[slot].rows[row];
-            cells
-                .kind
-                .store(device.kind_order() as u8, Ordering::Relaxed);
-            cells
-                .device
-                .store(written(|out| device.write_device(out)).as_str().as_bytes());
-            cells
-                .driver
-                .store(written(|out| device.write_driver(out)).as_str().as_bytes());
+            if let Some(slot) = &self.slot {
+                let kind = KINDS
+                    .get(device.kind_order())
+                    .map_or("", |(_, words)| *words);
+                slot.set(row, 0, kind);
+                slot.set(row, 1, written(|out| device.write_device(out)).as_str());
+                slot.set(row, 2, written(|out| device.write_driver(out)).as_str());
+            }
             self.shown.push(device.id);
         }
-        tree.set_cell_data(self.table, slot as u32);
+        tree.set_cell_data(self.table, data_of(self.slot.as_ref()));
         tree.set_empty_text(
             self.table,
             match (self.readable, self.all) {

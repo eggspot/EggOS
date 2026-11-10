@@ -66,6 +66,7 @@ enum Sink<'a> {
 
 struct Request<'a> {
     quiet: bool,
+    no_clobber: bool,
     sink: Sink<'a>,
     record: Option<&'a record::Recorder<'a>>,
 }
@@ -78,12 +79,16 @@ enum Answer {
 pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut quiet = false;
     let mut dry_run = false;
+    let mut no_clobber = false;
     let mut file: Option<&CStr> = None;
     let parsed = parse_defined(output, arguments, &commands::FETCH, |_, given| {
         match given.option.short {
             Some(b'q') => quiet = true,
             Some(b'o') => file = given.value_as_c_string(),
-            _ => dry_run |= given.is_long("dry-run"),
+            _ => {
+                dry_run |= given.is_long("dry-run");
+                no_clobber |= given.is_long("no-clobber");
+            }
         }
         Ok(())
     });
@@ -103,7 +108,7 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         _ => Sink::StandardOutput,
     };
     if dry_run {
-        return would_fetch(output, url, &sink);
+        return would_fetch(output, url, &sink, no_clobber);
     }
     let recorder = match sink {
         Sink::File(path) => Some(record::Recorder::start(
@@ -115,6 +120,7 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     };
     let request = Request {
         quiet,
+        no_clobber,
         sink,
         record: recorder.as_ref(),
     };
@@ -122,7 +128,12 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     recorded(output, recorder.as_ref(), status)
 }
 
-fn would_fetch<S: System>(output: &mut Output<S>, url: &CStr, sink: &Sink<'_>) -> i32 {
+fn would_fetch<S: System>(
+    output: &mut Output<S>,
+    url: &CStr,
+    sink: &Sink<'_>,
+    no_clobber: bool,
+) -> i32 {
     let Some(address) = Address::of(&[url.to_bytes()]) else {
         output.error(&[b"the URL is longer than 2048 bytes"]);
         return FAILURE;
@@ -141,6 +152,10 @@ fn would_fetch<S: System>(output: &mut Output<S>, url: &CStr, sink: &Sink<'_>) -
         Sink::File(path) => path,
     };
     let replaced = match destination(&mut output.system, path) {
+        Ok(Some(_)) if no_clobber => {
+            output.file_error(path, Errno::EEXIST);
+            return FAILURE;
+        }
         Ok(replaced) => replaced,
         Err(errno) => {
             output.file_error(path, errno);
@@ -224,8 +239,11 @@ fn recorded<S: System>(
     if status == 0 {
         recorder.done(&mut output.system);
     } else if output.system.termination_requested() {
-        recorder.cancelled(&mut output.system);
-        output.error(&[b"cancelled: the partial file was removed"]);
+        let words: &[u8] = match recorder.cancelled(&mut output.system) {
+            record::PartialFile::Removed => b"cancelled: the partial file was removed",
+            record::PartialFile::NeverCreated => b"cancelled before anything was saved",
+        };
+        output.error(&[words]);
     } else {
         let mut message = [0u8; LAST_ERROR_BYTES];
         let length = output.last_error().len().min(LAST_ERROR_BYTES);
@@ -435,9 +453,13 @@ fn exchange<S: System>(
     let connected = output
         .system
         .connect(descriptor, address, url.port, CONNECT_TIMEOUT_MS);
-    if let Err(errno) = connected {
-        output.error(&[shown.as_bytes(), b": ", errno.message()]);
-        return Err(FAILURE);
+    match connected {
+        Ok(()) => {}
+        Err(Errno::EINTR) if output.system.termination_requested() => return Err(FAILURE),
+        Err(errno) => {
+            output.error(&[shown.as_bytes(), b": ", errno.message()]);
+            return Err(FAILURE);
+        }
     }
     let mut link = Link {
         descriptor,
@@ -537,13 +559,24 @@ fn exchange<S: System>(
     }
     let sink = match request.sink {
         Sink::StandardOutput => None,
-        Sink::File(path) => match output.system.create(path, MODE, true) {
-            Ok(file) => Some((file, path)),
-            Err(errno) => {
-                output.file_error(path, errno);
-                return Err(FAILURE);
+        Sink::File(path) => {
+            let created = match request.no_clobber {
+                true => output.system.create_new(path, MODE),
+                false => output.system.create(path, MODE, true),
+            };
+            match created {
+                Ok(file) => {
+                    if let Some(record) = request.record {
+                        record.output_created();
+                    }
+                    Some((file, path))
+                }
+                Err(errno) => {
+                    output.file_error(path, errno);
+                    return Err(FAILURE);
+                }
             }
-        },
+        }
     };
     let reason = Shown::<64>::printable(parsed.reason);
     let leftover_start = head_length;

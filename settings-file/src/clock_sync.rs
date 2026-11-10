@@ -1,9 +1,10 @@
 //! The network clock's record (D225, docs/ux/date-time-v0.3.md section 9.1): what the last
 //! `date --sync` did, in [`PATH`], as `key=value` lines. `date --sync` writes it (through a
 //! temporary file renamed over it), Settings and `settings get time.sync` read it. It is in
-//! `/run`, so every boot starts without one. It also keeps the automatic clock's unproven
-//! budget: the sum of the steps applied without an HTTPS proof since boot or the last proven
-//! step.
+//! `/run`, so every boot starts without one. It also shows the automatic clock's unproven
+//! budget: the sum of the steps applied without an HTTPS proof since the last proven step or
+//! `date -s`. The budget itself is kept on the disk in [`BUDGET_PATH`], as the hardware clock
+//! those steps also set is, so a reboot does not renew it.
 
 /// Where the record is.
 pub const PATH: &str = "/run/eggos/clock-sync";
@@ -11,6 +12,17 @@ pub const PATH: &str = "/run/eggos/clock-sync";
 pub const FOLDER: &str = "/run/eggos";
 /// The start of a temporary file's name, followed by 8 random hex digits.
 pub const TEMPORARY_PREFIX: &str = "/run/eggos/clock-sync.";
+/// Where the automatic clock's unproven budget is kept across boots: one line,
+/// `unproven_ms=<milliseconds>`.
+pub const BUDGET_PATH: &str = "/var/lib/eggos/clock-budget";
+/// The folders [`BUDGET_PATH`] needs, outermost first.
+pub const BUDGET_FOLDERS: [&str; 2] = ["/var/lib", "/var/lib/eggos"];
+/// The start of a temporary budget file's name, followed by 8 random hex digits.
+pub const BUDGET_TEMPORARY_PREFIX: &str = "/var/lib/eggos/clock-budget.";
+/// The largest budget [`write_budget`] writes; a larger one is written as this.
+pub const MAX_BUDGET_MS: u64 = 999_999_999_999_999_999;
+/// The most bytes [`write_budget`] writes.
+pub const BUDGET_LARGEST: usize = 40;
 /// The most bytes of a time server's name a record keeps (`host[:port]`).
 pub const SERVER_CAPACITY: usize = 262;
 /// The most bytes of a reason a record keeps.
@@ -195,6 +207,21 @@ impl Record {
     }
 }
 
+/// The unproven budget in a [`BUDGET_PATH`] file; `None` when it holds none.
+pub fn parse_budget(file: &[u8]) -> Option<u64> {
+    let line = file.strip_suffix(b"\n").unwrap_or(file);
+    let value = number(line.strip_prefix(b"unproven_ms=")?)?;
+    u64::try_from(value).ok()
+}
+
+/// Writes `unproven_ms` into `out` as a [`BUDGET_PATH`] file; its length, or `None` when `out`
+/// is too small.
+pub fn write_budget(unproven_ms: u64, out: &mut [u8]) -> Option<usize> {
+    let mut writer = Lines { out, length: 0 };
+    writer.number(b"unproven_ms=", unproven_ms.min(MAX_BUDGET_MS) as i64)?;
+    Some(writer.length)
+}
+
 fn number(text: &[u8]) -> Option<i64> {
     let (negative, digits) = match text.strip_prefix(b"-") {
         Some(digits) => (true, digits),
@@ -276,6 +303,26 @@ mod tests {
             file.ends_with(b"offset_ms=-10920000\nunproven_ms=0\nreason=pool.ntp.org: unproven?\n")
         );
         assert_eq!(Record::parse(&file), Some(refused));
+    }
+
+    #[test]
+    fn the_budget_file_is_one_line_that_reads_back() {
+        let mut out = [0u8; BUDGET_LARGEST];
+        let length = write_budget(3_600_000, &mut out).unwrap();
+        assert_eq!(&out[..length], b"unproven_ms=3600000\n");
+        assert_eq!(parse_budget(&out[..length]), Some(3_600_000));
+        let length = write_budget(u64::MAX, &mut out).unwrap();
+        assert_eq!(parse_budget(&out[..length]), Some(MAX_BUDGET_MS));
+        for broken in [
+            &b""[..],
+            b"unproven_ms=",
+            b"unproven_ms=-5\n",
+            b"budget=5\n",
+        ] {
+            assert_eq!(parse_budget(broken), None, "{broken:?}");
+        }
+        assert!(BUDGET_TEMPORARY_PREFIX.starts_with(BUDGET_PATH));
+        assert!(BUDGET_PATH.starts_with(BUDGET_FOLDERS[1]));
     }
 
     #[test]

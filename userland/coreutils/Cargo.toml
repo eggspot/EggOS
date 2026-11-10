@@ -28,6 +28,7 @@ eggos-tls = { path = "../../tls" }
 
 [dev-dependencies]
 eggos-drivers = { path = "../../drivers" }
+eggos-mcp = { path = "../mcp", features = ["schema-check"] }
 
 [lints]
 workspace = true

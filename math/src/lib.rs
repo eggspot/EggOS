@@ -4,9 +4,9 @@
 //! zeros, infinities and NaNs. Arguments of the trigonometric functions are reduced with
 //! Cody and Waite's split of π/2 below about 1.6 million and with Payne and Hanek's
 //! multiplication by 1280 bits of 2/π above; logarithms and powers are carried in two
-//! doubles, so `pow` stays within 2 units in the last place. The stated error bounds (units
-//! in the last place against the correctly rounded result) are in [`ACCURACY`], and the host
-//! tests hold every function to them against the host's library.
+//! doubles. `fma` and `fmaf` are correctly rounded. The error bounds the host tests hold every
+//! function to, in units in the last place against the host's own library or reference
+//! values, are in [`ACCURACY`].
 
 #![cfg_attr(not(test), no_std)]
 
@@ -40,23 +40,27 @@ pub const ILOGB_ZERO: i32 = i32::MIN;
 /// [`ilogb`]'s result for a NaN, as MSVC's `FP_ILOGBNAN`.
 pub const ILOGB_NAN: i32 = i32::MAX;
 
-/// Each function's error bound in units in the last place, as the host tests check it.
+/// Each function's error bound in units in the last place, exactly as the host tests check
+/// it: against the host's own libm (itself not always correctly rounded), except `sinpi` and
+/// `cospi`, against the host's `sin` and `cos` of the exactly reduced turn carried in two
+/// doubles, and the error and gamma functions, against values computed to 80 digits. A bound
+/// of 0 is the correctly rounded result.
 pub const ACCURACY: &[(&str, u32)] = &[
     (
-        "sqrt fabs floor ceil trunc round rint fmod remainder frexp ldexp modf nextafter",
+        "sqrt fabs floor ceil trunc round rint fmod remainder frexp ldexp modf nextafter fma fmaf",
         0,
     ),
     (
-        "sin cos sinpi cospi exp exp2 expm1 log log2 log10 log1p atan cbrt hypot",
-        1,
+        "sin cos sinpi cospi atan exp exp2 expm1 log log2 log10 log1p cbrt hypot",
+        2,
     ),
     (
-        "tan asin acos atan2 pow sinh cosh tanh asinh acosh atanh fma",
-        2,
+        "tan asin acos atan2 pow sinh cosh tanh asinh acosh atanh",
+        3,
     ),
     (
         "erf erfc tgamma lgamma (absolutely within 2^-60 next to its zeros at 1 and 2)",
         4,
     ),
-    ("float twins of every function", 1),
+    ("the other float twins", 1),
 ];

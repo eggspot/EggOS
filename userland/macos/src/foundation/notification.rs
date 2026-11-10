@@ -14,6 +14,7 @@ use crate::libsystem::{Exclusive, heap};
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::block::invoke_address;
 use crate::objc::buffer::Buffer;
+use crate::objc::exception::guard;
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
 use crate::objc::weak::{objc_destroy_weak, objc_init_weak, objc_load_weak_retained};
@@ -396,6 +397,10 @@ extern "C" fn remove_observer_name_object(_: Id, _: Sel, wanted: Id, name: Id, s
     });
 }
 
+guard!(eggos_guarded_post_notification => post_notification);
+guard!(eggos_guarded_post_notification_name => post_notification_name);
+guard!(eggos_guarded_post_notification_name_user_info => post_notification_name_user_info);
+
 extern "C" fn this_object(this: Id, _: Sel) -> Id {
     this
 }
@@ -418,9 +423,9 @@ pub fn define(runtime: &mut Runtime) -> bool {
     let center_instance = methods![
         "addObserver:selector:name:object:" => add_observer,
         "addObserverForName:object:queue:usingBlock:" => add_observer_for_name,
-        "postNotification:" => post_notification,
-        "postNotificationName:object:" => post_notification_name,
-        "postNotificationName:object:userInfo:" => post_notification_name_user_info,
+        "postNotification:" => eggos_guarded_post_notification,
+        "postNotificationName:object:" => eggos_guarded_post_notification_name,
+        "postNotificationName:object:userInfo:" => eggos_guarded_post_notification_name_user_info,
         "removeObserver:" => remove_observer,
         "removeObserver:name:object:" => remove_observer_name_object,
         "retain" => this_object,

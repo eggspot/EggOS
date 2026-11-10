@@ -235,6 +235,7 @@ pub trait System {
     fn sync(&mut self);
     fn reboot(&mut self, command: u32) -> Result<(), Errno>;
     fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno>;
+    fn create_new(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno>;
     fn append(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno>;
     fn make_directory(&mut self, path: &CStr, mode: u32) -> Result<(), Errno>;
     fn remove(&mut self, path: &CStr, directory: bool) -> Result<(), Errno>;
@@ -375,6 +376,10 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno> {
         (**self).create(path, mode, truncate)
+    }
+
+    fn create_new(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
+        (**self).create_new(path, mode)
     }
 
     fn append(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {

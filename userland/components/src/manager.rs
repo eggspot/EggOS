@@ -2,8 +2,8 @@
 //! (D235). A component is installed under [`COMPONENTS`]`/<name>/`: its files below `root/`,
 //! at the paths the base links to, and its record `component` beside them. An install copies
 //! into a staging folder, checks every file's SHA-256 as it is copied, writes the record, and
-//! only then renames the staging folder into place, so a failure at any step leaves nothing
-//! installed; a remove renames the folder away first, then deletes it. Nothing here follows a
+//! only then renames the staging folder into place, so a failure at any step leaves that
+//! component uninstalled; a remove renames the folder away first, then deletes it. Nothing here follows a
 //! symbolic link inside the components folder, and the folders above it must be folders.
 
 use crate::index::{self, Component, Header, Index, IndexError, SECTOR};
@@ -32,12 +32,15 @@ pub const DISKS: [&str; 4] = ["/dev/vda", "/dev/vdb", "/dev/vdc", "/dev/vdd"];
 pub const HOST_SHARE: &str = "/media/host";
 /// The lock the one action at a time takes.
 pub const LOCK: &str = "/run/eggos/components.lock";
+/// What follows [`LOCK`] in the name of a claim to take over a lock whose process is gone.
+pub const TAKE_OVER_SUFFIX: &str = ".take-over-";
 /// The most bytes of a process's command line read to see what it runs.
 pub const MAX_COMMAND_LINE: usize = 4096;
 /// The version of EggOS this manager belongs to.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const COPY_CHUNK: usize = 64 * 1024;
+const LOCK_TRIES: usize = 3;
 const MAX_DEPTH: usize = 32;
 const NAME_BYTES: usize = 256;
 const PROGRAM_SUFFIXES: [&[u8]; 3] = [b".exe", b".EXE", b".app"];
@@ -96,7 +99,8 @@ pub enum Refusal {
     NotAllowed,
 }
 
-/// Why an install or a remove failed part way; nothing was installed, or it stays installed.
+/// Why an install or a remove failed part way: the component was not installed, or stays
+/// installed, but after [`Failure::FilesLeft`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
     /// A file's bytes did not match the store's SHA-256: the component's file name.
@@ -111,8 +115,20 @@ pub enum Failure {
     NotAllowed,
     /// A folder on the way is not a real folder.
     UnsafeFolder,
+    /// The component is removed, but some of its files could not be deleted; the next install
+    /// or remove deletes them.
+    FilesLeft(Errno),
     /// Anything else.
     Errno(Errno),
+}
+
+/// Why [`remove_checked`] removed nothing, or not all of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoveError {
+    /// Refused before anything changed.
+    Refused(Refusal),
+    /// Failed part way.
+    Failed(Failure),
 }
 
 /// Reads the store at `path`, if it is one for `arch`.
@@ -411,7 +427,7 @@ fn program_name(path: &[u8]) -> String {
 /// Takes the one-action-at-a-time lock for installing or removing `title`, after removing a
 /// lock whose process is gone; who holds it otherwise.
 pub fn lock<F: Files>(files: &mut F, title: &str, removing: bool, pid: u32) -> Result<(), Refusal> {
-    for _ in 0..2 {
+    for _ in 0..LOCK_TRIES {
         match files.create(LOCK.as_bytes(), 0o600) {
             Ok(handle) => {
                 let mut text = pid.to_string();
@@ -423,15 +439,12 @@ pub fn lock<F: Files>(files: &mut F, title: &str, removing: bool, pid: u32) -> R
             }
             Err(Errno::EEXIST) => {
                 let (holder, held_title, held_removing) = read_lock(files);
-                let mut proc = String::from("/proc/");
-                proc.push_str(&holder.to_string());
-                if holder != 0 && files.status(proc.as_bytes()).is_ok() {
+                if is_running(files, holder) || !take_over(files, holder) {
                     return Err(Refusal::Busy {
                         title: held_title,
                         removing: held_removing,
                     });
                 }
-                let _ = files.remove_file(LOCK.as_bytes());
             }
             Err(Errno::EACCES | Errno::EPERM) => return Err(Refusal::NotAllowed),
             Err(_) => {
@@ -443,6 +456,34 @@ pub fn lock<F: Files>(files: &mut F, title: &str, removing: bool, pid: u32) -> R
         title: title.into(),
         removing,
     })
+}
+
+fn is_running<F: Files>(files: &mut F, pid: u32) -> bool {
+    let mut proc = String::from("/proc/");
+    proc.push_str(&pid.to_string());
+    pid != 0 && files.status(proc.as_bytes()).is_ok()
+}
+
+/// The claim a process makes, with `create`, before deleting the lock of `holder`, a process
+/// that is gone: only one process at a time may take that lock over.
+pub fn take_over_claim(holder: u32) -> String {
+    let mut claim = String::from(LOCK);
+    claim.push_str(TAKE_OVER_SUFFIX);
+    claim.push_str(&holder.to_string());
+    claim
+}
+
+fn take_over<F: Files>(files: &mut F, holder: u32) -> bool {
+    let claim = take_over_claim(holder);
+    let Ok(handle) = files.create(claim.as_bytes(), 0o600) else {
+        return false;
+    };
+    files.close(handle);
+    if read_lock(files).0 == holder && !is_running(files, holder) {
+        let _ = files.remove_file(LOCK.as_bytes());
+    }
+    let _ = files.remove_file(claim.as_bytes());
+    true
 }
 
 fn read_lock<F: Files>(files: &mut F) -> (u32, String, bool) {
@@ -668,9 +709,31 @@ pub fn remove<F: Files>(files: &mut F, name: &str) -> Result<(), Failure> {
         .rename(folder.as_bytes(), removing.as_bytes())
         .map_err(failure)?;
     files.sync();
-    let _ = remove_tree(files, &removing, 0);
+    let deleted = remove_tree(files, &removing, 0);
     files.sync();
-    Ok(())
+    deleted.map_err(Failure::FilesLeft)
+}
+
+/// Removes the installed component `name` once the person confirmed, as every front-end does:
+/// takes the lock for `title`, checks the remove again against the components installed now,
+/// removes it and gives the lock back. `Ok(None)` when it is no longer installed.
+pub fn remove_checked<F: Files>(
+    files: &mut F,
+    title: &str,
+    name: &str,
+    pid: u32,
+) -> Result<Option<Component>, RemoveError> {
+    lock(files, title, true, pid).map_err(RemoveError::Refused)?;
+    let installed = installed(files);
+    let removed = match check_remove(files, &installed, name) {
+        Ok(Some(component)) => remove(files, name)
+            .map(|()| Some(component))
+            .map_err(RemoveError::Failed),
+        Ok(None) => Ok(None),
+        Err(refusal) => Err(RemoveError::Refused(refusal)),
+    };
+    unlock(files);
+    removed
 }
 
 fn remove_tree<F: Files>(files: &mut F, path: &str, depth: usize) -> Result<(), Errno> {

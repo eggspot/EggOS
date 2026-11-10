@@ -156,3 +156,86 @@ fn clear_removes_the_records_that_are_over_and_never_the_files() {
     let (status, out, _, _) = run(Fake::default(), &[c"clear"]);
     assert_eq!((status, out.as_str()), (0, "Nothing to clear.\n"));
 }
+
+#[test]
+fn cancel_signals_only_a_process_that_runs_fetch() {
+    let mut reused = machine(true).with_file(
+        "/proc/ps",
+        0o444,
+        b"1 0 1 1 R 120 init\n61 7 61 7 R 3 eggsh\n",
+        0,
+    );
+    reused.running = vec![61];
+    let (status, _, errors, fake) = run(reused, &[c"cancel", c"61"]);
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "download: 61: has already ended\n")
+    );
+    assert!(fake.signals_sent.is_empty());
+    for (command_line, signalled) in [
+        (&b"/bin/eggsh\0"[..], false),
+        (
+            b"fetch\0-q\0https://example.com/eggos-0.3.0-x86_64.elf\0",
+            true,
+        ),
+    ] {
+        let mut unlisted = with_records(
+            Fake::default()
+                .with_directory("/proc", 0)
+                .with_directory("/proc/61", 0)
+                .with_file("/proc/61/cmdline", 0o444, command_line, 0),
+        );
+        unlisted.running = vec![61];
+        let (status, _, _, fake) = run(unlisted, &[c"cancel", c"61"]);
+        assert_eq!(
+            (status, fake.signals_sent.is_empty()),
+            (if signalled { 0 } else { 1 }, !signalled),
+            "{command_line:?}"
+        );
+    }
+}
+
+#[test]
+fn a_cut_process_list_leaves_a_download_as_its_record_says() {
+    let mut ps = b"1 0 1 1 R 120 init\n".repeat(PROCESSES_BYTES / 19 + 1);
+    ps.truncate(PROCESSES_BYTES);
+    let fake = with_records(
+        Fake::default()
+            .with_directory("/proc", 0)
+            .with_file("/proc/ps", 0o444, &ps, 0),
+    );
+    let (status, out, _, _) = run(fake, &[c"list"]);
+    assert_eq!(status, 0);
+    assert!(out.contains("Downloading, 28 %"), "{out}");
+}
+
+#[test]
+fn a_full_list_keeps_the_newest_downloads() {
+    let mut fake = Fake::default()
+        .with_directory("/run", 0)
+        .with_directory("/run/eggos", 0)
+        .with_directory("/run/eggos/downloads", 0);
+    let record = |started: u64| {
+        format!(
+            "url=http://10.0.2.2/f\npath=/home/root/f\nreceived=1\nstate=done\nstarted={started}\n\
+             ended={started}\n"
+        )
+    };
+    for id in 100..100 + MAX_DOWNLOADS as u32 {
+        let path = format!("/run/eggos/downloads/{id}");
+        fake = fake.with_file(&path, 0o644, record(1_000 + u64::from(id)).as_bytes(), 0);
+    }
+    fake = fake.with_file(
+        "/run/eggos/downloads/999",
+        0o644,
+        record(9_000).as_bytes(),
+        0,
+    );
+    let (status, out, _, _) = run(fake, &[c"list", c"--json"]);
+    assert_eq!(status, 0);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), MAX_DOWNLOADS);
+    assert!(lines[0].starts_with("{\"id\":999,"), "{}", lines[0]);
+    assert!(!out.contains("{\"id\":100,"), "the oldest is dropped");
+    assert!(lines[MAX_DOWNLOADS - 1].starts_with("{\"id\":101,"));
+}

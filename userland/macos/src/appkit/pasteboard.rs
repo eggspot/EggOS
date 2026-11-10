@@ -54,13 +54,14 @@ fn is_text_type_object(kind: Id) -> bool {
     !kind.is_null() && foundation::is_string(kind) && with_text(kind, is_text_type)
 }
 
-/// The shared clipboard's whole text as a new string, nil when it is empty or unreadable.
+/// The shared clipboard's whole text as a new string, nil when it is empty, unreadable or
+/// longer than one copy holds ([`MAX_TEXT_BYTES`]).
 pub fn shared_text() -> Id {
     let Ok((mut length, _)) = server::clipboard(&mut []) else {
         return core::ptr::null_mut();
     };
     for _ in 0..READ_ATTEMPTS {
-        if length == 0 {
+        if length == 0 || length > MAX_TEXT_BYTES {
             return core::ptr::null_mut();
         }
         let block = heap::allocate(length, false);

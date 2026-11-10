@@ -160,10 +160,29 @@ fn a_downloading_record_whose_fetch_is_gone_reads_as_failed() {
 #[test]
 fn the_process_list_says_which_fetch_still_runs() {
     let ps = b"1 0 1 1 R 10 init\n61 7 61 7 R 3 fetch\n70 7 70 7 Z 1 fetch\n";
-    assert!(process_running(ps, 61));
-    assert!(!process_running(ps, 70));
-    assert!(!process_running(ps, 6));
-    assert!(!process_running(ps, 58));
+    assert!(fetch_running(ps, 61));
+    assert!(!fetch_running(ps, 70));
+    assert!(!fetch_running(ps, 6));
+    assert!(!fetch_running(ps, 58));
+    let reused = b"1 0 1 1 R 10 init\n61 7 61 7 R 3 eggsh\n62 7 62 7 R 3 fetch tool\n";
+    assert!(
+        !fetch_running(reused, 61),
+        "the id now runs another program"
+    );
+    assert!(!fetch_running(reused, 62));
+}
+
+#[test]
+fn a_command_line_runs_fetch_by_its_name_or_through_the_multi_call_program() {
+    assert!(runs_fetch(
+        b"fetch\0-q\0http://example.com/a\0/home/root/a\0"
+    ));
+    assert!(runs_fetch(b"/bin/fetch\0http://example.com/a\0"));
+    assert!(runs_fetch(b"/bin/coreutils\0fetch\0http://example.com/a\0"));
+    assert!(!runs_fetch(b"/bin/eggsh\0fetch\0"));
+    assert!(!runs_fetch(b"/bin/coreutils\0cat\0"));
+    assert!(!runs_fetch(b"fetcher\0"));
+    assert!(!runs_fetch(b""));
 }
 
 #[test]

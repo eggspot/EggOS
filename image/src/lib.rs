@@ -7,8 +7,9 @@
 //! point, [`decode`], sniffs the format ([`sniff`]); [`decode_animation`] keeps every frame of
 //! an animated GIF; [`icon_entries`] and [`decode_icon_entry`] pick one image of an icon.
 //!
-//! Every file is untrusted: each side, the pixel count and the frame count are capped by a
-//! [`Limits`], every buffer is reserved fallibly ([`Error::OutOfMemory`] instead of an abort),
+//! Every file is untrusted: each side, the pixel count, the frame count (and every GIF frame's
+//! declared area) and the working buffers' bytes are capped by a [`Limits`], a JPEG's scans
+//! by [`MAX_JPEG_SCANS`], every buffer is reserved fallibly ([`Error::OutOfMemory`] instead of an abort),
 //! and a damaged file is an [`Error`], never a panic. Pixels are straight-alpha `0xAARRGGBB`,
 //! top row first.
 
@@ -63,7 +64,8 @@ pub enum Error {
     Corrupt,
     /// The file ends before its image does.
     Truncated,
-    /// A side, the pixel count or the frame count passes the [`Limits`].
+    /// A side, the pixel count, the frame area or the working bytes pass the [`Limits`], or a
+    /// JPEG has more than [`MAX_JPEG_SCANS`] scans.
     TooLarge,
     /// A buffer the image needs could not be allocated.
     OutOfMemory,
@@ -76,18 +78,28 @@ pub struct Limits {
     pub max_side: u32,
     /// The most pixels of one image, and of every frame of an animation together.
     pub max_pixels: u64,
-    /// The most frames [`decode_animation`] keeps; later frames are left out.
+    /// The most frames [`decode_animation`] keeps; later frames are left out. The GIF frames'
+    /// declared areas together count toward [`Limits::max_pixels`] too.
     pub max_frames: usize,
+    /// The most bytes one decode reserves for working buffers besides the pixels: a JPEG's
+    /// sample planes (and a progressive JPEG's coefficients), a TIFF's undecoded rows.
+    pub max_working_bytes: u64,
 }
 
 impl Limits {
-    /// 16 384 pixels a side, 32 Mi pixels (128 MiB of pixels) and 1 024 frames.
+    /// 16 384 pixels a side, 32 Mi pixels (128 MiB of pixels), 1 024 frames and 256 MiB of
+    /// working buffers.
     pub const DEFAULT: Limits = Limits {
         max_side: 16_384,
         max_pixels: 1 << 25,
         max_frames: 1024,
+        max_working_bytes: 1 << 28,
     };
 }
+
+/// The most scans a JPEG may have: each scan walks the whole image, so a file of many tiny
+/// scans would otherwise cost far more time than its size.
+pub const MAX_JPEG_SCANS: usize = 1000;
 
 impl Default for Limits {
     fn default() -> Self {
@@ -218,6 +230,13 @@ pub(crate) fn check_size(width: u32, height: u32, limits: &Limits) -> Result<(),
         return Err(Error::TooLarge);
     }
     Ok(())
+}
+
+pub(crate) fn check_working_bytes(bytes: Option<u64>, limits: &Limits) -> Result<(), Error> {
+    match bytes {
+        Some(bytes) if bytes <= limits.max_working_bytes => Ok(()),
+        _ => Err(Error::TooLarge),
+    }
 }
 
 pub(crate) fn buffer<T: Clone>(count: usize, value: T) -> Result<Vec<T>, Error> {

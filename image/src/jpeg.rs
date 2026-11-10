@@ -26,6 +26,8 @@ const MAX_SUCCESSIVE_BIT: u8 = 13;
 const MAX_EXTEND_BITS: u8 = 16;
 const LOOKUP_BITS: u32 = 9;
 const MAX_CODE_LENGTH: usize = 16;
+const SAMPLE_BYTES: u64 = core::mem::size_of::<u8>() as u64;
+const COEFFICIENT_BYTES: u64 = core::mem::size_of::<i16>() as u64;
 const PASS_LIMIT: i32 = 65_535;
 const COEFFICIENT_LIMIT: i32 = 32_767;
 const FIXED_ONE_HALF: i32 = 1 << 15;
@@ -733,6 +735,18 @@ impl Decoder {
         let vertical_max = specified.iter().map(|entry| entry.2).max().unwrap_or(1);
         let mcus_x = (width as usize).div_ceil(8 * horizontal_max);
         let mcus_y = (height as usize).div_ceil(8 * vertical_max);
+        let bytes_per_sample = match progressive {
+            true => SAMPLE_BYTES + COEFFICIENT_BYTES,
+            false => SAMPLE_BYTES,
+        };
+        let working = specified
+            .iter()
+            .try_fold(0u64, |total, &(_, horizontal, vertical, _)| {
+                let blocks = u64::try_from(mcus_x * horizontal).ok()?
+                    * u64::try_from(mcus_y * vertical).ok()?;
+                total.checked_add(blocks.checked_mul(64 * bytes_per_sample)?)
+            });
+        crate::check_working_bytes(working, limits)?;
         let mut components = Vec::new();
         components
             .try_reserve_exact(count)
@@ -782,6 +796,9 @@ impl Decoder {
             ..
         } = self;
         let frame = frame.as_mut().ok_or(Error::Corrupt)?;
+        if *scans >= crate::MAX_JPEG_SCANS {
+            return Err(Error::TooLarge);
+        }
         let count = usize::from(byte(segment, 0)?);
         if count == 0 || count > frame.components.len() {
             return Err(Error::Corrupt);

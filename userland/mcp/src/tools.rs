@@ -7,7 +7,7 @@
 
 use crate::grants::Grant;
 use crate::json::JsonWriter;
-use crate::paths::{ANYWHERE, INSTALL_ROOTS, READ_ROOTS, TRASH, WRITE_ROOTS};
+use crate::paths::{ANYWHERE, INSTALL_ROOTS, READ_ROOTS, SETTINGS, TRASH, WRITE_ROOTS};
 use eggos_commands::tools::{
     self as registry, Argument, DefaultValue, JsonType, ToolDefinition, ToolResult,
 };
@@ -340,7 +340,7 @@ const WRITE_PATH: PathArgument = PathArgument {
     default: None,
     roots: &WRITE_ROOTS,
     strictly: true,
-    excluded: &[TRASH],
+    excluded: &[TRASH, SETTINGS],
     outside: "Refused: the path is outside /home/root, the folder this tool may change.",
 };
 

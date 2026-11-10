@@ -10,7 +10,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use eggos_download_list::{
     self as records, CancelError, MAX_DOWNLOADS, MAX_RECORD_BYTES, Record, SAVE_FOLDER, State,
-    clear_refusal, newest_first, process_running, write_cleared,
+    clear_refusal, fetch_running, newest_first, write_cleared,
 };
 use eggos_runtime::errno::Errno;
 use eggos_toolkit::elements::{Action, Outcome};
@@ -84,12 +84,12 @@ const PHONE_COLUMNS: [Column; 2] = [
 /// What the Downloads window asks of the system: the program makes the system calls, the host
 /// tests a fake.
 pub trait DownloadSystem {
-    /// Puts the ids of the records in `/run/eggos/downloads` into `ids`, at most
-    /// [`MAX_DOWNLOADS`]; none while the folder does not exist yet.
+    /// Puts the ids of every record in `/run/eggos/downloads` into `ids`; none while the folder
+    /// does not exist yet.
     fn record_ids(&mut self, ids: &mut Vec<u32>) -> Result<(), Errno>;
     /// Reads download `id`'s record into `text`: its length, or `None` when it cannot be read.
     fn read_record(&mut self, id: u32, text: &mut [u8]) -> Option<usize>;
-    /// Reads `/proc/ps` into `text`: its length, or `None` when it cannot be read.
+    /// Reads `/proc/ps` into `text`: its length, or `None` when it cannot be read whole.
     fn read_processes(&mut self, text: &mut [u8]) -> Option<usize>;
     /// Sends `signal` to process `pid`; its errno on failure.
     fn send_signal(&mut self, pid: u32, signal: u32) -> Result<(), i32>;
@@ -99,7 +99,7 @@ pub trait DownloadSystem {
     fn exists(&mut self, path: &str) -> bool;
     /// Makes folder `path`; `EEXIST` when it is there already.
     fn make_folder(&mut self, path: &str) -> Result<(), Errno>;
-    /// Starts `/bin/fetch -q <url> <path>`, which outlives the window.
+    /// Starts `/bin/fetch -q --no-clobber <url> <path>`, which outlives the window.
     fn start_fetch(&mut self, url: &str, path: &str) -> Result<(), Errno>;
 }
 
@@ -244,7 +244,7 @@ fn judged_record<'b>(
 ) -> Option<Record<'b>> {
     let length = system.read_record(id, record)?;
     let record = Record::parse(&record[..length])?;
-    Some(record.judged(processes.map(|processes| process_running(processes, id))))
+    Some(record.judged(processes.map(|processes| fetch_running(processes, id))))
 }
 
 fn read_rows(
@@ -260,7 +260,7 @@ fn read_rows(
         .read_processes(&mut buffers.processes)
         .map(|length| &buffers.processes[..length]);
     let mut started = None;
-    for &id in buffers.ids.iter().take(MAX_DOWNLOADS) {
+    for &id in &buffers.ids {
         let Some(record) = judged_record(system, &mut buffers.record, processes, id) else {
             continue;
         };
@@ -272,6 +272,7 @@ fn read_rows(
     rows.sort_unstable_by(|first, second| {
         newest_first((first.started, first.id), (second.started, second.id))
     });
+    rows.truncate(MAX_DOWNLOADS);
     Ok(started)
 }
 
@@ -298,7 +299,7 @@ fn clear_over(system: &mut impl DownloadSystem, buffers: &mut Buffers) -> usize 
         .read_processes(&mut buffers.processes)
         .map(|length| &buffers.processes[..length]);
     let mut cleared = 0;
-    for &id in buffers.ids.iter().take(MAX_DOWNLOADS) {
+    for &id in &buffers.ids {
         let record = judged_record(system, &mut buffers.record, processes, id);
         if clear_refusal(record.as_ref()).is_some() {
             continue;

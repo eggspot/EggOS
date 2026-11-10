@@ -89,7 +89,6 @@ mod manager {
     use crate::libsystem::{heap, process};
     use crate::linux::{self, AT_FDCWD, AT_REMOVEDIR, AT_SYMLINK_NOFOLLOW, number};
     use crate::objc::abi::{Id, Sel};
-    use crate::objc::buffer::Buffer;
     use crate::objc::message;
     use crate::objc::root::NSOBJECT;
     use crate::objc::selector::name_bytes;
@@ -247,7 +246,6 @@ mod manager {
         .is_ok()
     }
 
-    #[derive(Clone, Copy)]
     struct Folder {
         fd: usize,
         buffer: *mut u8,
@@ -306,10 +304,52 @@ mod manager {
                 }
             }
         }
+    }
 
-        fn close(self) {
+    impl Drop for Folder {
+        fn drop(&mut self) {
             let _ = linux::close(self.fd);
             heap::release(self.buffer);
+        }
+    }
+
+    struct OpenFolders {
+        folders: [Option<Folder>; DEEPEST_COPY],
+        depth: usize,
+    }
+
+    impl OpenFolders {
+        fn new() -> Self {
+            Self {
+                folders: [const { None }; DEEPEST_COPY],
+                depth: 0,
+            }
+        }
+
+        fn is_full(&self) -> bool {
+            self.depth >= DEEPEST_COPY
+        }
+
+        fn is_empty(&self) -> bool {
+            self.depth == 0
+        }
+
+        fn push(&mut self, folder: Folder) -> Result<(), Errno> {
+            let slot = self.folders.get_mut(self.depth).ok_or(Errno::ELOOP)?;
+            *slot = Some(folder);
+            self.depth += 1;
+            Ok(())
+        }
+
+        fn innermost(&mut self) -> Option<&mut Folder> {
+            self.folders.get_mut(self.depth.checked_sub(1)?)?.as_mut()
+        }
+
+        fn close_innermost(&mut self) {
+            if let Some(innermost) = self.depth.checked_sub(1) {
+                self.folders[innermost] = None;
+                self.depth = innermost;
+            }
         }
     }
 
@@ -329,7 +369,7 @@ mod manager {
                     Ok(None) => Ok(None),
                     Err(errno) => Err(errno),
                 };
-                folder.close();
+                drop(folder);
                 match pushed? {
                     Some(true) => continue,
                     Some(false) => return Err(Errno::ENAMETOOLONG),
@@ -384,23 +424,15 @@ mod manager {
         result
     }
 
-    fn copy_entry(
-        source: &Path,
-        target: &Path,
-        folders: &mut Buffer<Folder>,
-    ) -> Result<bool, Errno> {
+    fn copy_entry(source: &Path, target: &Path, folders: &mut OpenFolders) -> Result<bool, Errno> {
         let found = status(source, false)?;
         match found.mode & KIND_MASK {
             KIND_DIRECTORY => {
-                if folders.len() >= DEEPEST_COPY {
+                if folders.is_full() {
                     return Err(Errno::ELOOP);
                 }
                 make_folder(target, (found.mode & PERMISSIONS) as usize)?;
-                let folder = Folder::open(source)?;
-                if !folders.push(folder) {
-                    folder.close();
-                    return Err(Errno::ENOMEM);
-                }
+                folders.push(Folder::open(source)?)?;
                 Ok(true)
             }
             KIND_REGULAR => copy_file(source, target, found.mode).map(|()| false),
@@ -409,46 +441,32 @@ mod manager {
     }
 
     fn copy_tree(source: &mut Path, target: &mut Path) -> Result<(), Errno> {
-        let mut folders = Buffer::new();
-        let mut result = copy_entry(source, target, &mut folders).map(drop);
-        while result.is_ok() {
-            let Some(top) = folders.as_mut_slice().last_mut() else {
-                break;
+        let mut folders = OpenFolders::new();
+        copy_entry(source, target, &mut folders)?;
+        loop {
+            let Some(innermost) = folders.innermost() else {
+                return Ok(());
             };
-            let pushed = match top.next() {
-                Ok(Some(name)) => Ok(Some(source.push(name) && target.push(name))),
-                Ok(None) => Ok(None),
-                Err(errno) => Err(errno),
-            };
-            result = match pushed {
-                Err(errno) => Err(errno),
-                Ok(Some(false)) => Err(Errno::ENAMETOOLONG),
-                Ok(Some(true)) => match copy_entry(source, target, &mut folders) {
-                    Ok(true) => Ok(()),
-                    Ok(false) => {
-                        source.pop();
-                        target.pop();
-                        Ok(())
-                    }
-                    Err(errno) => Err(errno),
-                },
-                Ok(None) => {
-                    if let Some(done) = folders.pop() {
-                        done.close();
-                    }
-                    if !folders.as_slice().is_empty() {
+            let pushed = innermost
+                .next()?
+                .map(|name| source.push(name) && target.push(name));
+            match pushed {
+                Some(false) => return Err(Errno::ENAMETOOLONG),
+                Some(true) => {
+                    if !copy_entry(source, target, &mut folders)? {
                         source.pop();
                         target.pop();
                     }
-                    Ok(())
                 }
-            };
+                None => {
+                    folders.close_innermost();
+                    if !folders.is_empty() {
+                        source.pop();
+                        target.pop();
+                    }
+                }
+            }
         }
-        while let Some(folder) = folders.pop() {
-            folder.close();
-        }
-        folders.free();
-        result
     }
 
     fn string(bytes: &[u8]) -> Id {
@@ -581,7 +599,7 @@ mod manager {
                 Err(errno) => break Err(errno),
             }
         };
-        folder.close();
+        drop(folder);
         result
     }
 

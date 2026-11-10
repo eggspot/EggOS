@@ -1,6 +1,9 @@
 //! The `float` twins of every function (`sinf` for `sin`): each widens its arguments to
 //! `double`, which holds them exactly, calls the `double` function and rounds once, so a twin
-//! is within one unit in the last place of `float`, and exact where the `double` function is.
+//! is within one unit in the last place of `float`, and exact where the `double` function is;
+//! `fmaf` is correctly rounded.
+
+use crate::double_double::two_sum;
 
 macro_rules! unary {
     ($($twin:ident => $double:ident),* $(,)?) => {
@@ -72,9 +75,19 @@ binary![
     fdimf => fdim,
 ];
 
-/// `fmaf`: `x * y + z` for `float`; the product is exact in `double`.
+/// `fmaf`: `x * y + z` for `float`, correctly rounded: the product is exact in `double` and
+/// the sum is rounded to odd there, so rounding it to `float` rounds only once.
 pub fn fmaf(x: f32, y: f32, z: f32) -> f32 {
-    (f64::from(x) * f64::from(y) + f64::from(z)) as f32
+    let product = f64::from(x) * f64::from(y);
+    let (sum, error) = two_sum(product, f64::from(z));
+    if !sum.is_finite() || error == 0.0 || sum.to_bits() & 1 == 1 {
+        return sum as f32;
+    }
+    let odd_neighbour = match (error > 0.0) == (sum > 0.0) {
+        true => sum.to_bits() + 1,
+        false => sum.to_bits() - 1,
+    };
+    f64::from_bits(odd_neighbour) as f32
 }
 
 /// `frexpf`: `frexp` for `float`.

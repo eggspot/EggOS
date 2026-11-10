@@ -13,9 +13,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering as Order;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use eggos_app::files::{Files, Kind as FileKind};
-use eggos_runtime::errno::Errno;
+use eggos_toolkit::cell_store::{CELL_BYTES, CellSlot, CellStore, cut_length, data_of};
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Token;
@@ -25,16 +23,14 @@ use eggos_windows_registry::command::{self, VALUE_NOT_SET, name_text};
 use eggos_windows_registry::hive::Value;
 use eggos_windows_registry::path::{KeyPath, Root, utf8, utf16};
 use eggos_windows_registry::registry::{
-    DAMAGED_SUFFIX, HiveFile, MACHINE_HIVE_PATH, Registry, Store, StoreError, TEMPORARY_SUFFIX,
-    USER_HIVE_PATH,
+    DAMAGED_SUFFIX, HiveFile, Registry, Store, StoreError, USER_HIVE_PATH,
 };
 use eggos_windows_registry::value::{
     EDITABLE, REG_BINARY, REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_QWORD, REG_SZ, data_text,
     hex_text, number_of, parse_hex, string_data, string_of, strings_data, type_name,
 };
 use eggos_windows_registry::{
-    Error, MAX_DEPTH, MAX_HIVE_BYTES, MAX_KEY_NAME_UNITS, MAX_VALUE_NAME_UNITS, compare_names,
-    same_name,
+    Error, MAX_DEPTH, MAX_KEY_NAME_UNITS, MAX_VALUE_NAME_UNITS, compare_names, same_name,
 };
 
 /// The pane's height: the outline and the table fill what the rows above and below leave.
@@ -108,8 +104,11 @@ const INDENT: &str = "    ";
 const COLLAPSED: &str = "+ ";
 const EXPANDED: &str = "- ";
 const LEAF: &str = "  ";
-const CELL_BYTES: usize = 63;
-const SLOTS: usize = 2;
+const DEEPEST_INDENTED: usize = 6;
+const DEEPER: &str = "\u{2026} ";
+const SHOWN_DATA_BYTES: usize = 256;
+const VALUE_CELL_COLUMNS: usize = 3;
+const SLOTS: usize = if cfg!(test) { 64 } else { 2 };
 const KEY_COLUMNS: [Column; 1] = [Column {
     title: "Keys",
     width: 168,
@@ -145,97 +144,18 @@ const VALUE_PLACEHOLDER: &str = "Value name";
 const DATA_PLACEHOLDER: &str = "Value data";
 const CLASSES: [&str; 2] = ["Software", "Classes"];
 
-struct Cell {
-    length: AtomicU8,
-    bytes: [AtomicU8; CELL_BYTES],
-}
+static KEY_CELLS: CellStore<SLOTS, MAX_KEY_ROWS, 1> = CellStore::new();
+static VALUE_CELLS: CellStore<SLOTS, MAX_VALUE_ROWS, VALUE_CELL_COLUMNS> = CellStore::new();
 
-impl Cell {
-    const fn new() -> Self {
-        Self {
-            length: AtomicU8::new(0),
-            bytes: [const { AtomicU8::new(0) }; CELL_BYTES],
-        }
-    }
-
-    fn store(&self, text: &str) {
-        let mut length = text.len().min(CELL_BYTES);
-        while !text.is_char_boundary(length) {
-            length -= 1;
-        }
-        for (cell, &byte) in self.bytes.iter().zip(&text.as_bytes()[..length]) {
-            cell.store(byte, Ordering::Relaxed);
-        }
-        self.length.store(length as u8, Ordering::Release);
-    }
-
-    fn write(&self, out: &mut Text<64>) {
-        let length = usize::from(self.length.load(Ordering::Acquire));
-        let mut bytes = [0u8; CELL_BYTES];
-        for (byte, cell) in bytes.iter_mut().zip(&self.bytes[..length]) {
-            *byte = cell.load(Ordering::Relaxed);
-        }
-        out.push_str(core::str::from_utf8(&bytes[..length]).unwrap_or("?"));
-    }
-}
-
-struct KeySlot {
-    taken: AtomicBool,
-    cells: [Cell; MAX_KEY_ROWS],
-}
-
-struct ValueSlot {
-    taken: AtomicBool,
-    cells: [[Cell; 3]; MAX_VALUE_ROWS],
-}
-
-static KEY_SLOTS: [KeySlot; SLOTS] = [const {
-    KeySlot {
-        taken: AtomicBool::new(false),
-        cells: [const { Cell::new() }; MAX_KEY_ROWS],
-    }
-}; SLOTS];
-static VALUE_SLOTS: [ValueSlot; SLOTS] = [const {
-    ValueSlot {
-        taken: AtomicBool::new(false),
-        cells: [const { [const { Cell::new() }; 3] }; MAX_VALUE_ROWS],
-    }
-}; SLOTS];
-static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
-
-fn take_slot(taken: impl Fn(usize) -> &'static AtomicBool) -> usize {
-    loop {
-        let start = NEXT_SLOT.fetch_add(1, Ordering::Relaxed);
-        for step in 0..SLOTS {
-            let slot = (start + step) % SLOTS;
-            if taken(slot)
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return slot;
-            }
-        }
-        core::hint::spin_loop();
-    }
-}
+type KeySlot = CellSlot<'static, SLOTS, MAX_KEY_ROWS, 1>;
+type ValueSlot = CellSlot<'static, SLOTS, MAX_VALUE_ROWS, VALUE_CELL_COLUMNS>;
 
 fn key_cell(data: u32, row: usize, _: usize, out: &mut Text<64>) {
-    if let Some(cell) = KEY_SLOTS
-        .get(data as usize)
-        .and_then(|slot| slot.cells.get(row))
-    {
-        cell.write(out);
-    }
+    KEY_CELLS.write(data, row, 0, out);
 }
 
 fn value_cell(data: u32, row: usize, column: usize, out: &mut Text<64>) {
-    if let Some(cell) = VALUE_SLOTS
-        .get(data as usize)
-        .and_then(|slot| slot.cells.get(row))
-        .and_then(|cells| cells.get(column))
-    {
-        cell.write(out);
-    }
+    VALUE_CELLS.write(data, row, column, out);
 }
 
 /// The files the pane's registry reads and writes, with a generation the pane bumps to read
@@ -284,148 +204,20 @@ impl Store for RegistryStore {
         self.files.set_aside(file)
     }
 
+    fn lock(&mut self, file: HiveFile) -> Result<(), StoreError> {
+        self.files.lock(file)
+    }
+
+    fn unlock(&mut self, file: HiveFile) {
+        self.files.unlock(file);
+    }
+
     fn user_id(&mut self) -> u32 {
         self.files.user_id()
     }
 
     fn now(&mut self) -> u64 {
         self.files.now()
-    }
-}
-
-/// The hive files on a file system: the user's below `home`, the machine's at
-/// [`MACHINE_HIVE_PATH`], each written through its temporary twin and a rename, as the Windows
-/// layer writes them.
-pub struct FileStore<F: Files> {
-    files: F,
-    home: String,
-    user_id: u32,
-    clock: fn() -> u64,
-}
-
-impl<F: Files> core::fmt::Debug for FileStore<F> {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("FileStore")
-            .field("home", &self.home)
-            .field("user_id", &self.user_id)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<F: Files> FileStore<F> {
-    /// The hives of user `user_id`, whose home folder is `home`, through `files`; `clock`
-    /// gives the time in 100 ns since 1601.
-    pub fn new(files: F, home: &str, user_id: u32, clock: fn() -> u64) -> Self {
-        Self {
-            files,
-            home: String::from(home.trim_end_matches('/')),
-            user_id,
-            clock,
-        }
-    }
-
-    fn path(&self, file: HiveFile, suffix: &str) -> String {
-        match file {
-            HiveFile::User => format!("{}/{USER_HIVE_PATH}{suffix}", self.home),
-            HiveFile::Machine => format!("{MACHINE_HIVE_PATH}{suffix}"),
-        }
-    }
-}
-
-fn store_error(errno: Errno) -> StoreError {
-    match errno {
-        Errno::ENOSPC => StoreError::DiskFull,
-        _ => StoreError::Failed,
-    }
-}
-
-impl<F: Files> Store for FileStore<F> {
-    fn read(&mut self, file: HiveFile) -> Result<Option<Vec<u8>>, StoreError> {
-        let path = self.path(file, "");
-        let status = match self.files.status_following(path.as_bytes()) {
-            Ok(status) => status,
-            Err(Errno::ENOENT) => return Ok(None),
-            Err(_) => return Err(StoreError::Failed),
-        };
-        if status.kind != FileKind::File {
-            return Err(StoreError::Failed);
-        }
-        let wanted = (status.size as usize).min(MAX_HIVE_BYTES + 1);
-        let handle = self
-            .files
-            .open(path.as_bytes())
-            .map_err(|_| StoreError::Failed)?;
-        let mut bytes = alloc::vec![0u8; wanted];
-        let mut length = 0;
-        let read = loop {
-            if length == bytes.len() {
-                break Ok(());
-            }
-            match self.files.read(handle, &mut bytes[length..]) {
-                Ok(0) => break Ok(()),
-                Ok(count) => length += count,
-                Err(_) => break Err(StoreError::Failed),
-            }
-        };
-        self.files.close(handle);
-        read?;
-        bytes.truncate(length);
-        Ok(Some(bytes))
-    }
-
-    fn stamp(&mut self, file: HiveFile) -> Option<u64> {
-        let path = self.path(file, "");
-        let status = self.files.status_following(path.as_bytes()).ok()?;
-        Some(
-            status
-                .modified
-                .wrapping_mul(1_000_000_007)
-                .wrapping_add(status.size),
-        )
-    }
-
-    fn write_temporary(&mut self, file: HiveFile, bytes: &[u8]) -> Result<(), StoreError> {
-        let path = self.path(file, TEMPORARY_SUFFIX);
-        for (at, _) in path.match_indices('/').skip(1) {
-            let _ = self.files.make_directory(&path.as_bytes()[..at]);
-        }
-        let _ = self.files.remove_file(path.as_bytes());
-        let handle = self
-            .files
-            .create(path.as_bytes(), 0o600)
-            .map_err(store_error)?;
-        let written = self
-            .files
-            .write(handle, bytes)
-            .and_then(|()| self.files.sync_file(handle));
-        self.files.close(handle);
-        written.map_err(store_error)
-    }
-
-    fn replace_with_temporary(&mut self, file: HiveFile) -> Result<(), StoreError> {
-        let from = self.path(file, TEMPORARY_SUFFIX);
-        let to = self.path(file, "");
-        self.files
-            .rename(from.as_bytes(), to.as_bytes())
-            .map_err(store_error)
-    }
-
-    fn set_aside(&mut self, file: HiveFile) -> Result<(), StoreError> {
-        let from = self.path(file, "");
-        let to = self.path(file, DAMAGED_SUFFIX);
-        match self.files.rename(from.as_bytes(), to.as_bytes()) {
-            Ok(()) | Err(Errno::ENOENT) => Ok(()),
-            Err(errno) => Err(store_error(errno)),
-        }
-    }
-
-    fn user_id(&mut self) -> u32 {
-        self.user_id
-    }
-
-    fn now(&mut self) -> u64 {
-        (self.clock)()
     }
 }
 
@@ -531,20 +323,9 @@ pub struct WindowsPane {
     to_copy: String,
     user_damaged: bool,
     machine_damaged: bool,
-    key_slot: Option<usize>,
-    value_slot: Option<usize>,
+    key_slot: Option<KeySlot>,
+    value_slot: Option<ValueSlot>,
     default_button: WidgetId,
-}
-
-impl Drop for WindowsPane {
-    fn drop(&mut self) {
-        if let Some(slot) = self.key_slot {
-            KEY_SLOTS[slot].taken.store(false, Ordering::Release);
-        }
-        if let Some(slot) = self.value_slot {
-            VALUE_SLOTS[slot].taken.store(false, Ordering::Release);
-        }
-    }
 }
 
 fn add(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, place: Place, kind: Kind) -> WidgetId {
@@ -613,9 +394,15 @@ fn field_text(text: &str) -> String {
 
 fn cell_data(row: &ValueRow) -> String {
     match row.set {
-        true => data_text(row.value.kind, &row.value.data),
+        true => shown_data(row.value.kind, &row.value.data),
         false => String::from(VALUE_NOT_SET),
     }
+}
+
+fn shown_data(kind: u32, data: &[u8]) -> String {
+    let mut text = data_text(kind, &data[..data.len().min(SHOWN_DATA_BYTES)]);
+    text.truncate(cut_length(&text, CELL_BYTES));
+    text
 }
 
 fn grouped(number: usize) -> String {
@@ -1096,8 +883,18 @@ impl WindowsPane {
 
     fn row_text(row: &KeyRow) -> String {
         let mut text = String::new();
-        for _ in 0..row.depth {
-            text.push_str(INDENT);
+        match row.depth {
+            depth if depth <= DEEPEST_INDENTED => {
+                for _ in 0..depth {
+                    text.push_str(INDENT);
+                }
+            }
+            _ => {
+                for _ in 1..DEEPEST_INDENTED {
+                    text.push_str(INDENT);
+                }
+                text.push_str(DEEPER);
+            }
         }
         if row.more > 0 {
             text.push_str(&format!(
@@ -1123,13 +920,15 @@ impl WindowsPane {
             }
         }
         if !rows.is_empty() {
-            let slot = *self
-                .key_slot
-                .get_or_insert_with(|| take_slot(|slot| &KEY_SLOTS[slot].taken));
-            for (index, row) in rows.iter().enumerate() {
-                KEY_SLOTS[slot].cells[index].store(&Self::row_text(row));
+            if self.key_slot.is_none() {
+                self.key_slot = KEY_CELLS.take();
             }
-            tree.set_cell_data(self.widgets.keys, slot as u32);
+            if let Some(slot) = &self.key_slot {
+                for (index, row) in rows.iter().enumerate() {
+                    slot.set(index, 0, &Self::row_text(row));
+                }
+            }
+            tree.set_cell_data(self.widgets.keys, data_of(self.key_slot.as_ref()));
         }
         self.rows = rows;
         tree.set_rows(self.widgets.keys, self.rows.len());
@@ -1144,13 +943,20 @@ impl WindowsPane {
             .position(|row| row.more == 0 && same_key(&row.path, &self.selected))
     }
 
-    fn sorted(&self, mut values: Vec<ValueRow>) -> Vec<ValueRow> {
+    fn sorted(&self, values: Vec<ValueRow>) -> Vec<ValueRow> {
         let (column, order) = self.sort;
-        let text = |row: &ValueRow| match column {
-            1 => type_name(row.value.kind),
-            _ => data_text(row.value.kind, &row.value.data),
-        };
-        values.sort_by(|one, other| {
+        let mut keyed: Vec<(String, ValueRow)> = values
+            .into_iter()
+            .map(|row| {
+                let key = match column {
+                    0 => String::new(),
+                    1 => type_name(row.value.kind),
+                    _ => shown_data(row.value.kind, &row.value.data),
+                };
+                (key, row)
+            })
+            .collect();
+        keyed.sort_by(|(one_key, one), (other_key, other)| {
             match (one.value.name.is_empty(), other.value.name.is_empty()) {
                 (true, false) => return Order::Less,
                 (false, true) => return Order::Greater,
@@ -1158,14 +964,14 @@ impl WindowsPane {
             }
             let ordered = match column {
                 0 => compare_names(&one.value.name, &other.value.name),
-                _ => text(one).cmp(&text(other)),
+                _ => one_key.cmp(other_key),
             };
             match order {
                 SortOrder::Ascending => ordered,
                 SortOrder::Descending => ordered.reverse(),
             }
         });
-        values
+        keyed.into_iter().map(|(_, row)| row).collect()
     }
 
     fn fill_values(&mut self, tree: &mut WidgetTree<CAPACITY>) {
@@ -1192,16 +998,17 @@ impl WindowsPane {
         let mut values = self.sorted(values);
         values.truncate(MAX_VALUE_ROWS);
         if !values.is_empty() {
-            let slot = *self
-                .value_slot
-                .get_or_insert_with(|| take_slot(|slot| &VALUE_SLOTS[slot].taken));
-            for (index, row) in values.iter().enumerate() {
-                let cells = &VALUE_SLOTS[slot].cells[index];
-                cells[0].store(&name_text(&row.value.name));
-                cells[1].store(&type_name(row.value.kind));
-                cells[2].store(&cell_data(row));
+            if self.value_slot.is_none() {
+                self.value_slot = VALUE_CELLS.take();
             }
-            tree.set_cell_data(self.widgets.values, slot as u32);
+            if let Some(slot) = &self.value_slot {
+                for (index, row) in values.iter().enumerate() {
+                    slot.set(index, 0, &name_text(&row.value.name));
+                    slot.set(index, 1, &type_name(row.value.kind));
+                    slot.set(index, 2, &cell_data(row));
+                }
+            }
+            tree.set_cell_data(self.widgets.values, data_of(self.value_slot.as_ref()));
         }
         self.values = values;
         tree.set_rows(self.widgets.values, self.values.len());

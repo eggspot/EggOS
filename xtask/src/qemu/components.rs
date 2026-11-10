@@ -97,7 +97,7 @@ fn first_session() -> Vec<String> {
         install_line(WINDOWS_APPS, "installed"),
         format!("app install /media/host/{WINDOWS_PROGRAM}; echo EGGOS-APP status $?\r"),
         format!("component remove --yes {WINDOWS_APPS}; echo EGGOS-COMPONENT removed $?\r"),
-        format!("ls {COMPONENTS_FOLDER}; echo {LISTED_MARK} $?\r"),
+        format!("ls -A {COMPONENTS_FOLDER}; echo {LISTED_MARK} $?\r"),
         install_line(WINDOWS_APPS, "reinstalled"),
         "poweroff\r".to_owned(),
     ]
@@ -125,7 +125,7 @@ fn first_output(arch: &Arch, component: &Component) -> Vec<String> {
 
 fn second_session() -> Vec<String> {
     vec![
-        format!("ls {COMPONENTS_FOLDER}; echo {LISTED_MARK} $?\r"),
+        format!("ls -A {COMPONENTS_FOLDER}; echo {LISTED_MARK} $?\r"),
         "poweroff\r".to_owned(),
     ]
 }
@@ -367,7 +367,7 @@ fn remove_is_the_person_s(boot: &mut Boot<'_>, component: &Component) -> Result<
             "{arch}: `{act}` was not refused as element_cannot (status {status}): {said}"
         ));
     }
-    let kept = succeeds(boot, &format!("ls {COMPONENTS_FOLDER}"), "kept")?;
+    let kept = succeeds(boot, &format!("ls -A {COMPONENTS_FOLDER}"), "kept")?;
     if !kept.lines().any(|line| line == component.name) {
         return Err(format!(
             "{arch}: {COMPONENTS_FOLDER} lost {} after the refused confirmation: {kept}",
@@ -461,10 +461,16 @@ mod tests {
             first[1],
             "component install windows-apps; echo EGGOS-COMPONENT installed $?\r"
         );
-        let console = "eggsh:/# ls /var/lib/eggos/components; echo EGGOS-COMPONENT listed $?\r\n\
+        assert_eq!(
+            first[4],
+            "ls -A /var/lib/eggos/components; echo EGGOS-COMPONENT listed $?\r"
+        );
+        let console = "eggsh:/# ls -A /var/lib/eggos/components; echo EGGOS-COMPONENT listed $?\r\n\
                        EGGOS-COMPONENT listed 0\r\n";
         let arch = &crate::ARCHES[0];
         assert!(listed_nothing(arch, console).is_ok());
+        let half_removed = console.replace("$?\r\n", "$?\r\n.removing-windows-apps\r\n");
+        assert!(listed_nothing(arch, &half_removed).is_err());
         let left = console.replace("$?\r\n", "$?\r\nwindows-apps\r\n");
         assert!(listed_nothing(arch, &left).is_err());
         assert!(lines_in_order(arch, &left, &second_output()[..2]).is_ok());

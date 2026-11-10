@@ -1470,7 +1470,7 @@ fn ioctl<P: Platform>(
         }
         FileKind::Console => terminal::ioctl(process, &terminal::Console, request, argument),
         FileKind::PseudoTerminal(end) => {
-            pseudo_terminal::ioctl(process, thread, end, request, argument)
+            pseudo_terminal::ioctl(process, thread, &file, end, request, argument)
         }
         FileKind::Window(connection) => {
             window::ioctl(process, thread, connection, request, argument)

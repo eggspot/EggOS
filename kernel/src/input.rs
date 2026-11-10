@@ -22,7 +22,7 @@ use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
 use crate::terminal::{self, ViewMove};
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use eggos_drivers::desktop::Profile;
 use eggos_drivers::desktop::protocol::DEAD_KEY_CHARACTER;
 use eggos_drivers::input::key;
@@ -1291,9 +1291,7 @@ impl Input {
     }
 }
 
-static LAYOUT: AtomicU8 = AtomicU8::new(layout::US_LAYOUT as u8);
-
-static LAYOUT_SET: AtomicU64 = AtomicU64::new(0);
+static LAYOUTS: AtomicU64 = AtomicU64::new((layout::US_LAYOUT as u64) << IN_FORCE_SHIFT);
 
 static CAPS_LOCK: AtomicBool = AtomicBool::new(false);
 
@@ -1303,6 +1301,19 @@ static SCROLL_LOCK: AtomicBool = AtomicBool::new(false);
 
 const SET_COUNT_SHIFT: u32 = 32;
 const SWITCH_KEY_SHIFT: u32 = 40;
+const IN_FORCE_SHIFT: u32 = 48;
+
+fn packed_layouts(layouts: &KeyboardLayoutSet, switch_key: SwitchKey, in_force: usize) -> u64 {
+    packed_layout_set(layouts, switch_key) | (in_force as u64 & 0xff) << IN_FORCE_SHIFT
+}
+
+fn in_force_of(word: u64) -> usize {
+    field(word, IN_FORCE_SHIFT, 0xff) as usize
+}
+
+fn with_in_force(word: u64, in_force: usize) -> u64 {
+    (word & !(0xff << IN_FORCE_SHIFT)) | (in_force as u64 & 0xff) << IN_FORCE_SHIFT
+}
 
 fn packed_layout_set(layouts: &KeyboardLayoutSet, switch_key: SwitchKey) -> u64 {
     let numbers = layouts
@@ -1336,29 +1347,32 @@ pub fn set_layout(number: usize) -> bool {
     if usize::from(number) >= layout::LAYOUTS.len() {
         return false;
     }
-    let (layouts, switch_key) = layouts();
-    let chosen = layouts.with_chosen(usize::from(number), layout_number());
-    LAYOUT_SET.store(packed_layout_set(&chosen, switch_key), Ordering::Relaxed);
-    LAYOUT.store(number, Ordering::Relaxed);
+    let number = usize::from(number);
+    let _ = LAYOUTS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |word| {
+        let (layouts, switch_key) = unpacked_layout_set(word);
+        let chosen = layouts.with_chosen(number, in_force_of(word));
+        Some(packed_layouts(&chosen, switch_key, number))
+    });
     true
 }
 
 /// Makes `layouts` the set the switch key cycles through and `switch_key` its key (D221), from
 /// the next poll on; the layout in force stays when listed, else the set's first is in force.
 pub fn set_layouts(layouts: KeyboardLayoutSet, switch_key: SwitchKey) {
-    LAYOUT_SET.store(packed_layout_set(&layouts, switch_key), Ordering::Relaxed);
-    let in_force = layouts.keeping(layout_number());
-    LAYOUT.store(in_force as u8, Ordering::Relaxed);
+    let _ = LAYOUTS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |word| {
+        let in_force = layouts.keeping(in_force_of(word));
+        Some(packed_layouts(&layouts, switch_key, in_force))
+    });
 }
 
 /// The set the switch key cycles through and its key.
 pub fn layouts() -> (KeyboardLayoutSet, SwitchKey) {
-    unpacked_layout_set(LAYOUT_SET.load(Ordering::Relaxed))
+    unpacked_layout_set(LAYOUTS.load(Ordering::Relaxed))
 }
 
 /// The keyboard layout's number (its index in [`layout::LAYOUTS`]).
 pub fn layout_number() -> usize {
-    usize::from(LAYOUT.load(Ordering::Relaxed))
+    in_force_of(LAYOUTS.load(Ordering::Relaxed))
 }
 
 /// Whether Caps Lock is on, as the last poll left it.
@@ -1562,11 +1576,10 @@ fn poll_devices<P: Platform>(
                 } else {
                     CursorKeys::Normal
                 });
-            let wanted = LAYOUT.load(Ordering::Relaxed);
-            input
-                .state
-                .set_layout(usize::from(wanted), terminal::desktop_profile());
-            let (layouts, switch_key) = layouts();
+            let wanted_word = LAYOUTS.load(Ordering::Relaxed);
+            let wanted = in_force_of(wanted_word);
+            input.state.set_layout(wanted, terminal::desktop_profile());
+            let (layouts, switch_key) = unpacked_layout_set(wanted_word);
             input.state.set_layouts(layouts, switch_key);
             let mut more = false;
             for source in input.sources.iter_mut().flatten() {
@@ -1583,10 +1596,14 @@ fn poll_devices<P: Platform>(
                 });
                 more |= taken == budget;
             }
-            let switched = input.state.layout() as u8;
+            let switched = input.state.layout();
             if switched != wanted {
-                let _ =
-                    LAYOUT.compare_exchange(wanted, switched, Ordering::Relaxed, Ordering::Relaxed);
+                let _ = LAYOUTS.compare_exchange(
+                    wanted_word,
+                    with_in_force(wanted_word, switched),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
             }
             let lights_taken = input.show_lock_lights();
             let last = !more || round == MAX_POLL_ROUNDS;

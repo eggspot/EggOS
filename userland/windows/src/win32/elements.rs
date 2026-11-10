@@ -4,7 +4,8 @@
 //! text; its child windows follow in pre-order, each an element whose id is its `HWND`, with
 //! its control's role (a button, check box, radio button or group box by its style, an edit
 //! control as a text field, a static as a label, a list box or combo box as a list, any other
-//! window as a group), its text (an edit control's and a combo box's chosen item as the value),
+//! window as a group), its text (an edit control's and a combo box's chosen item as the value;
+//! a password edit is named `password` and its text left out, D228),
 //! its rectangle in the content, and whether it is disabled, focused, checked or the default
 //! button; below each window, the text the program drew in it with `TextOutW` and `DrawTextW`
 //! (`gui::drawn`). A list box's items follow it as list items, the selected one so flagged
@@ -21,7 +22,7 @@ use super::gui::{self, Delivery, Gui, with};
 use super::window_device::Device;
 use super::{dialog, heap, thread_environment, window_text};
 use crate::gui::drawn::MAX_DRAWN;
-use crate::gui::handed_over::{AGENT_FOCUS, AGENT_SET_TEXT};
+use crate::gui::handed_over::{AGENT_FOCUS, AGENT_SET_TEXT, HANDED_OVER_WINDOW};
 use crate::gui::input::Record;
 use crate::gui::message;
 use crate::gui::queue::Message;
@@ -43,6 +44,7 @@ const CHECK_BOXES: [u32; 4] = [2, 3, 5, 6];
 const RADIO_BUTTONS: [u32; 2] = [4, 9];
 const GROUP_BOX: u32 = 7;
 const BUTTON_CLICK: u32 = 0x00f5;
+const CONCEALED_FIELD_NAME: &[u8] = b"password";
 
 /// Answers the query in `record` for its window, read by thread `thread`.
 pub fn answer(device: &Device, record: &Record, thread: u32) {
@@ -196,8 +198,9 @@ fn push_children(
             }
             None => &[][..],
         };
+        let concealed = super::controls::conceals_text(window);
         let (name, value): (&[u8], &[u8]) = match role {
-            Role::TextField => (&[], text),
+            Role::TextField => field_name_and_value(text, concealed),
             _ if is_combo => (&[], text),
             _ if common.is_some() => (text, common_value),
             _ => (text, &[]),
@@ -229,6 +232,13 @@ fn push_children(
         }
     }
     true
+}
+
+fn field_name_and_value(text: &[u8], concealed: bool) -> (&[u8], &[u8]) {
+    match concealed {
+        true => (CONCEALED_FIELD_NAME, &[]),
+        false => (&[], text),
+    }
 }
 
 fn push_list_items(
@@ -421,7 +431,11 @@ fn act_on_list_item(
 }
 
 fn hand_over(owner: u32, number: u32, window: usize, lparam: usize) -> bool {
-    let posted = with(|gui| gui.post(0, owner, number, window, lparam).is_ok()).unwrap_or(false);
+    let posted = with(|gui| {
+        gui.post(HANDED_OVER_WINDOW, owner, number, window, lparam)
+            .is_ok()
+    })
+    .unwrap_or(false);
     if posted {
         gui::wake();
     }
@@ -469,5 +483,22 @@ pub fn act_handed_over(handed: &Message) {
             unsafe { heap::free(handed.lparam as *mut u8) };
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_password_edit_is_named_password_and_its_text_is_left_out() {
+        assert_eq!(
+            field_name_and_value(b"hunter2", true),
+            (&b"password"[..], &b""[..])
+        );
+        assert_eq!(
+            field_name_and_value(b"hello", false),
+            (&b""[..], &b"hello"[..])
+        );
     }
 }

@@ -20,7 +20,7 @@ use crate::linux;
 use crate::objc::abi::{self, ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{objc_release, objc_retain};
-use crate::objc::selector::name_bytes;
+use crate::objc::selector::{name_bytes, setter_name};
 use crate::objc::{class, class_named, message, root, sel, selector_named, send, send1, send2};
 use core::sync::atomic::Ordering;
 use eggos_macos_gui::geometry::Frame;
@@ -240,19 +240,12 @@ fn outlet_ivar(object: Id, name: &[u8]) -> Option<usize> {
 }
 
 fn set_outlet(source: Id, name: &[u8], destination: Id) {
-    let mut setter = [0u8; LONGEST_SELECTOR];
-    let length = name.len() + 4;
-    if let (Some(first), true) = (name.first(), length < LONGEST_SELECTOR) {
-        setter[..3].copy_from_slice(b"set");
-        setter[3] = first.to_ascii_uppercase();
-        setter[4..length].copy_from_slice(&name[1..]);
-        setter[length] = b':';
-        if let Some(sel) = selector_of(&setter[..=length])
-            && responds(source, sel)
-        {
-            send1(source, sel, destination as usize);
-            return;
-        }
+    let mut buffer = [0u8; LONGEST_SELECTOR];
+    if let Some(sel) = setter_name(name, &mut buffer).and_then(selector_of)
+        && responds(source, sel)
+    {
+        send1(source, sel, destination as usize);
+        return;
     }
     if let Some(offset) = outlet_ivar(source, name) {
         // SAFETY: the object's own strong-object ivar at its slid offset.

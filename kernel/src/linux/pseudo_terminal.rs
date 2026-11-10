@@ -206,6 +206,13 @@ impl State {
         self.program_side_opened && self.program_sides == 0
     }
 
+    fn input_room(&self) -> usize {
+        match self.discipline.drops_when_full() {
+            true => CHUNK,
+            false => self.discipline.room().saturating_sub(1),
+        }
+    }
+
     fn has_output(&self) -> bool {
         self.output.length > 0 || (self.packet && self.packet_status != 0)
     }
@@ -374,7 +381,8 @@ impl PseudoTerminalEnd {
     /// The `poll` events of this side among `requested`, with `POLLHUP` always reported as
     /// Linux does: the controlling side is readable when output (or, in packet mode, a status)
     /// waits, hung up once the program side was opened and closed again, and writable while the
-    /// program side's input has [`WRITE_ROOM`] bytes of room; the program side is
+    /// program side's input has [`WRITE_ROOM`] bytes of room, or while it is in canonical mode
+    /// with no whole line unread, when writes never wait; the program side is
     /// readable when a read would not wait, writable with room for a line's end, and hung up
     /// once the controlling side closed.
     pub fn events(&self, requested: u16) -> u16 {
@@ -384,7 +392,7 @@ impl PseudoTerminalEnd {
         match self.side {
             Side::Controlling => {
                 let mut events = 0;
-                if state.discipline.room() >= WRITE_ROOM {
+                if state.discipline.room() >= WRITE_ROOM || state.discipline.drops_when_full() {
                     events |= writable;
                 }
                 if state.has_output() {
@@ -514,6 +522,30 @@ impl PseudoTerminal {
         })
     }
 
+    fn receive_as_room_allows(&self, bytes: &[u8]) -> (usize, Received) {
+        let mut state = self.state.lock();
+        let State {
+            discipline, output, ..
+        } = &mut **state;
+        let mut consumed = 0;
+        let mut received = Received::default();
+        while consumed < bytes.len() {
+            let count = match discipline.room().saturating_sub(1) {
+                0 if discipline.drops_when_full() => 1,
+                room => room.min(bytes.len() - consumed),
+            };
+            if count == 0 {
+                break;
+            }
+            let settings = discipline.settings();
+            received |= discipline.receive(&bytes[consumed..consumed + count], &mut |echo| {
+                output.push_processed(settings, echo);
+            });
+            consumed += count;
+        }
+        (consumed, received)
+    }
+
     fn take_output(&self, buffer: &mut [u8]) -> usize {
         self.state.lock().output.take(buffer)
     }
@@ -611,13 +643,15 @@ impl Line for PseudoTerminal {
 /// does, `SIGTTOU` included, but once hung up its job-control requests fail as Linux's do
 /// (`EIO`, `ENOTTY` for `TIOCSPGRP`), `TIOCSCTTY` checked under the process table's lock.
 /// Packet mode (`TIOCPKT`) puts a status byte before each read on the controlling side;
-/// `TIOCGPTPEER` opens the program side as a new descriptor; `TIOCSTI` types a byte into the
-/// program side only for a caller whose controlling terminal it is, and fails with `EPERM` for
-/// any other (Linux's answer to a caller it does not let type), so no program can type into
-/// another session's terminal.
+/// `TIOCGPTPEER` opens the program side as a new descriptor, its flags only an access mode,
+/// `O_NOCTTY`, `O_NONBLOCK` and `O_CLOEXEC` (`EINVAL` for any other); `TIOCSTI` types a byte
+/// into the program side only through a description `file` open for reading, for a caller whose
+/// controlling terminal it is, and fails with `EPERM` otherwise (Linux's answer to a caller it
+/// does not let type), so no program can type into another session's terminal.
 pub(super) fn ioctl<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
+    file: &OpenFile,
     end: &PseudoTerminalEnd,
     request: u64,
     argument: u64,
@@ -644,7 +678,7 @@ pub(super) fn ioctl<P: Platform>(
             {
                 return Err(Errno::EIO);
             }
-            request::TIOCSTI => return type_one::<P>(process, pseudo, argument),
+            request::TIOCSTI => return type_one::<P>(process, file, pseudo, argument),
             _ => {}
         }
         if terminal::changes_the_terminal(request) {
@@ -679,7 +713,7 @@ pub(super) fn ioctl<P: Platform>(
             Ok(0)
         }
         request::TIOCGPKT => write_int(u32::from(pseudo.state.lock().packet)),
-        request::TIOCGPTPEER => open_peer(process, thread, pseudo, argument as u32),
+        request::TIOCGPTPEER => open_peer(process, thread, pseudo, argument),
         terminal::request::FIONREAD => {
             let waiting = pseudo.state.lock().output.length;
             write_int(u32::try_from(waiting).unwrap_or(u32::MAX))
@@ -849,8 +883,13 @@ fn take_packet_into<P: Platform>(
     Some(Ok(size as u64))
 }
 
-fn may_type_into(table: &Table, caller: u32, terminal: Terminal) -> Result<(), Errno> {
-    match table.controlling_terminal_of(caller) == Some(terminal) {
+fn may_type_into(
+    table: &Table,
+    caller: u32,
+    opened_for_reading: bool,
+    terminal: Terminal,
+) -> Result<(), Errno> {
+    match opened_for_reading && table.controlling_terminal_of(caller) == Some(terminal) {
         true => Ok(()),
         false => Err(Errno::EPERM),
     }
@@ -858,10 +897,17 @@ fn may_type_into(table: &Table, caller: u32, terminal: Terminal) -> Result<(), E
 
 fn type_one<P: Platform>(
     process: &Process<P>,
+    file: &OpenFile,
     terminal: &PseudoTerminal,
     argument: u64,
 ) -> Result<u64, Errno> {
-    may_type_into(&TABLE.lock(), process.id().get(), terminal.terminal())?;
+    let caller = process.id().get();
+    may_type_into(
+        &TABLE.lock(),
+        caller,
+        file.is_readable(),
+        terminal.terminal(),
+    )?;
     let mut byte = [0u8; 1];
     process
         .read_user_memory(argument, &mut byte)
@@ -872,12 +918,24 @@ fn type_one<P: Platform>(
     Ok(0)
 }
 
+const PEER_FLAGS: u32 =
+    open_flag::ACCMODE | open_flag::NOCTTY | open_flag::NONBLOCK | open_flag::CLOEXEC;
+
+fn peer_flags(argument: u64) -> Result<u32, Errno> {
+    let flags = argument as u32;
+    match flags & !PEER_FLAGS {
+        0 => Ok(flags),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
 fn open_peer<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
     terminal: &PseudoTerminal,
-    flags: u32,
+    argument: u64,
 ) -> Result<u64, Errno> {
+    let flags = peer_flags(argument)?;
     let kind = open_program_side(process, terminal.number, flags)?;
     let file = Arc::new(OpenFile::new(kind, flags));
     let limit = super::descriptors::open_file_limit(process);
@@ -894,7 +952,9 @@ fn open_peer<P: Platform>(
 /// for writing; sets the call's result and delivers the signals due after it. The controlling
 /// side's bytes go through the line discipline as it has room, waiting for room (or failing
 /// with `EAGAIN` when non-blocking) once it has none, and the signal characters among them
-/// signal the foreground group; the program side's are processed for output into the ring,
+/// signal the foreground group. In canonical mode with no whole line unread they never wait,
+/// as on Linux: a line longer than the input drops what does not fit, keeping room for the
+/// line's end, and the signal and erase characters still get through; the program side's are processed for output into the ring,
 /// waiting for room, and fail with `EIO` once the controlling side closed. With `TOSTOP`, a
 /// background process writing to the program side of its controlling terminal gets `SIGTTOU`
 /// as Linux does.
@@ -971,7 +1031,7 @@ fn type_into_or_wait<P: Platform>(
                 if state.program_side_gone() && written == 0 {
                     return ControlFlow::Continue(Some(Err(Errno::EIO)));
                 }
-                state.discipline.room().saturating_sub(1)
+                state.input_room()
             };
             if room == 0 {
                 if written > 0 || file.is_nonblocking() {
@@ -980,7 +1040,7 @@ fn type_into_or_wait<P: Platform>(
                 }
                 let ready = || {
                     let state = terminal.state.lock();
-                    state.discipline.room() > 1 || state.program_side_gone()
+                    state.input_room() > 0 || state.program_side_gone()
                 };
                 let lists = [&terminal.wake_list];
                 if poll::wait_for(process, thread, &lists, u64::MAX, ready)? == Waited::Signalled {
@@ -996,9 +1056,10 @@ fn type_into_or_wait<P: Platform>(
                 failed = true;
                 break 'entries;
             }
-            received |= terminal.receive(&chunk[..size]);
-            done += size as u64;
-            written += size as u64;
+            let (consumed, typed) = terminal.receive_as_room_allows(&chunk[..size]);
+            received |= typed;
+            done += consumed as u64;
+            written += consumed as u64;
         }
     }
     signal_typed::<P>(terminal.terminal(), received);
@@ -1281,6 +1342,46 @@ mod tests {
     }
 
     #[test]
+    fn a_paste_longer_than_a_canonical_line_never_blocks_its_end_or_an_interrupt() {
+        use crate::console::line_discipline::CAPACITY;
+        let terminal = new_terminal(no_hang_up).unwrap();
+        let controlling_side = controlling(&terminal);
+        let paste = alloc::vec![b'x'; 2 * 1024 + CHUNK];
+        assert_eq!(terminal.receive_as_room_allows(&paste).0, paste.len());
+        assert!(!terminal.is_readable());
+        assert_eq!(controlling_side.events(event::OUT), event::OUT);
+        assert_eq!(terminal.state.lock().input_room(), CHUNK);
+        let (consumed, received) = terminal.receive_as_room_allows(b"\n");
+        assert_eq!(consumed, 1);
+        assert!(received.readable);
+        let mut line = alloc::vec![0u8; CAPACITY + 1];
+        let taken = Line::take(&*terminal, &mut line);
+        assert_eq!(taken.length, CAPACITY);
+        assert!(line[..CAPACITY - 1].iter().all(|&byte| byte == b'x'));
+        assert_eq!(line[CAPACITY - 1], b'\n');
+        assert_eq!(terminal.receive_as_room_allows(&paste).0, paste.len());
+        let (consumed, received) = terminal.receive_as_room_allows(b"\x03");
+        assert_eq!(consumed, 1);
+        assert!(received.interrupt);
+        assert_eq!(terminal.state.lock().discipline.room(), CAPACITY);
+    }
+
+    #[test]
+    fn a_whole_line_waiting_makes_a_canonical_writer_wait_for_room() {
+        let terminal = new_terminal(no_hang_up).unwrap();
+        let controlling_side = controlling(&terminal);
+        let mut typed = b"ab\n".to_vec();
+        typed.extend_from_slice(&[b'c'; 4096]);
+        let (consumed, _) = terminal.receive_as_room_allows(&typed);
+        assert!(consumed < typed.len());
+        assert_eq!(terminal.state.lock().input_room(), 0);
+        assert_eq!(controlling_side.events(event::OUT), 0);
+        let mut line = [0u8; 8];
+        assert_eq!(&line[..Line::take(&*terminal, &mut line).length], b"ab\n");
+        assert_eq!(controlling_side.events(event::OUT), event::OUT);
+    }
+
+    #[test]
     fn packet_mode_reports_flushes_and_flow_control_as_status_bytes() {
         let terminal = new_terminal(no_hang_up).unwrap();
         let controlling_side = controlling(&terminal);
@@ -1310,16 +1411,43 @@ mod tests {
         terminal
             .become_controlling_terminal(&mut table, 140, false)
             .unwrap();
-        assert_eq!(may_type_into(&table, 140, terminal.terminal()), Ok(()));
         assert_eq!(
-            may_type_into(&table, 150, terminal.terminal()),
+            may_type_into(&table, 140, true, terminal.terminal()),
+            Ok(())
+        );
+        assert_eq!(
+            may_type_into(&table, 140, false, terminal.terminal()),
+            Err(Errno::EPERM),
+            "a description open only for writing"
+        );
+        assert_eq!(
+            may_type_into(&table, 150, true, terminal.terminal()),
             Err(Errno::EPERM)
         );
         let other = new_terminal(no_hang_up).unwrap();
         let _other_controlling_side = controlling(&other);
         assert_eq!(
-            may_type_into(&table, 140, other.terminal()),
+            may_type_into(&table, 140, true, other.terminal()),
             Err(Errno::EPERM)
         );
+    }
+
+    #[test]
+    fn tiocgptpeer_takes_an_access_mode_noctty_nonblock_and_cloexec_only() {
+        let allowed =
+            open_flag::RDWR | open_flag::NOCTTY | open_flag::NONBLOCK | open_flag::CLOEXEC;
+        assert_eq!(peer_flags(u64::from(allowed)), Ok(allowed));
+        assert_eq!(peer_flags(u64::from(open_flag::RDONLY)), Ok(0));
+        for refused in [
+            open_flag::CREAT,
+            open_flag::APPEND,
+            open_flag::TRUNC,
+            open_flag::PATH,
+        ] {
+            assert_eq!(
+                peer_flags(u64::from(open_flag::RDWR | refused)),
+                Err(Errno::EINVAL)
+            );
+        }
     }
 }

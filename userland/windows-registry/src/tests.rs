@@ -623,3 +623,69 @@ fn every_windows_registry_example_writes_what_the_registry_says() {
     }
     assert!(ran >= 6, "{ran}");
 }
+
+#[test]
+fn set_asks_before_replacing_a_value_or_changing_the_machine_s_hive() {
+    let mut registry = sample();
+    let mut console = FakeConsole {
+        answer: Some(false),
+        ..FakeConsole::default()
+    };
+    let words = [
+        "registry",
+        "set",
+        "HKCU\\Software\\AutoHotkey",
+        "Count",
+        "--type",
+        "dword",
+        "7",
+    ];
+    assert_eq!(command::run(&mut registry, &mut console, &words), 1);
+    assert_eq!(
+        console.asked,
+        ["Replace the value Count in HKEY_CURRENT_USER\\Software\\AutoHotkey? [y/N] "]
+    );
+    let autohotkey = key("HKCU\\Software\\AutoHotkey");
+    assert_eq!(
+        registry.value(&autohotkey, &utf16("Count")).unwrap().data,
+        42u32.to_le_bytes()
+    );
+    let line = "registry set --yes HKCU\\Software\\AutoHotkey Count --type dword 7";
+    assert_eq!(run(&mut registry, line, Some(false)).0, 0);
+    let line = "registry set HKCU\\Software\\AutoHotkey Fresh new";
+    let mut console = FakeConsole {
+        answer: Some(false),
+        ..FakeConsole::default()
+    };
+    let words: Vec<&str> = line.split(' ').collect();
+    assert_eq!(command::run(&mut registry, &mut console, &words), 0);
+    assert!(console.asked.is_empty());
+    let line = "registry set HKCU\\Software\\AutoHotkey Fresh newer";
+    assert_eq!(run(&mut registry, line, None).0, 0);
+    assert_eq!(
+        registry.value(&autohotkey, &utf16("Fresh")).unwrap().data,
+        string_data("newer")
+    );
+    registry.store().user_id = 0;
+    let machine = key("HKLM\\Software\\AutoHotkey");
+    assert_eq!(
+        command::set_question(&mut registry, &machine, None).as_deref(),
+        Some(
+            "Make the key HKEY_LOCAL_MACHINE\\Software\\AutoHotkey? It applies to every user \
+             of this machine. [y/N] "
+        )
+    );
+    assert_eq!(
+        command::set_question(&mut registry, &machine, Some(&utf16("InstallDir"))).as_deref(),
+        Some(
+            "Save the value InstallDir in HKEY_LOCAL_MACHINE\\Software\\AutoHotkey? It applies \
+             to every user of this machine. [y/N] "
+        )
+    );
+    registry.store().user_id = 1000;
+    assert_eq!(command::set_question(&mut registry, &machine, None), None);
+    assert_eq!(
+        command::set_question(&mut registry, &key("HKCU\\Software\\New"), None),
+        None
+    );
+}

@@ -349,6 +349,25 @@ pub(super) fn is_checked(window: &Window) -> bool {
     }
 }
 
+/// Whether `edit` hides its text behind a password character (`ES_PASSWORD`, or
+/// `EM_SETPASSWORDCHAR` with a character other than 0).
+pub(super) fn conceals(edit: &Edit) -> bool {
+    edit.password != 0
+}
+
+/// Whether edit control `window` hides its text behind a password character.
+pub(super) fn conceals_text(window: &Window) -> bool {
+    match window.procedure {
+        Procedure::Control(ControlKind::Edit, address) if address != 0 => {
+            // SAFETY: as `state_of`: an edit's state is the `Edit` `new_state` made, alive
+            // while its window is in the table, which the caller reads under the lock; only a
+            // shared reference is made here.
+            conceals(unsafe { &*(address as *const Edit) })
+        }
+        _ => false,
+    }
+}
+
 fn act_on_list_item(window: usize, item: usize, action: Action) {
     let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled()));
     if enabled != Some(true) {
@@ -1496,5 +1515,14 @@ mod tests {
         assert_eq!((button.button_fill, button.text), (LIGHT.button_fill, 0xff));
         assert_eq!(button.default_text, 0xff);
         assert!(control_colour::is(0x0136) && !control_colour::is(0x0139));
+    }
+
+    #[test]
+    fn a_password_edit_conceals_its_text_until_its_password_character_is_cleared() {
+        let mut edit = Edit::with_style(edit::style::PASSWORD);
+        assert!(conceals(&edit));
+        edit.password = 0;
+        assert!(!conceals(&edit));
+        assert!(!conceals(&Edit::with_style(0)));
     }
 }

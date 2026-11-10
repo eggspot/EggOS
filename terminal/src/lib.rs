@@ -554,8 +554,8 @@ impl Terminal {
     }
 
     /// The folder a program last reported with `OSC 7 ; file://<host>/<path>`, an absolute
-    /// path of valid UTF-8 of at most [`PATH_CAPACITY`] bytes, percent escapes decoded; `None`
-    /// before one did.
+    /// path of valid UTF-8 of at most [`PATH_CAPACITY`] bytes, percent escapes decoded and no
+    /// control character among them, escaped or not; `None` before one did.
     pub fn current_folder(&self) -> Option<&str> {
         match self.folder.is_empty() {
             true => None,

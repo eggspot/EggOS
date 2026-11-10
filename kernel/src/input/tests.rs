@@ -1288,3 +1288,14 @@ fn the_layout_set_packs_into_one_word_and_back() {
         (KeyboardLayoutSet::DEFAULT, SwitchKey::Profile)
     );
 }
+
+#[test]
+fn the_layout_in_force_shares_the_set_s_word_so_one_update_changes_both() {
+    let set = layouts(b"us,de,fr");
+    let word = packed_layouts(&set, SwitchKey::AltShift, named(b"de"));
+    assert_eq!(in_force_of(word), named(b"de"));
+    assert_eq!(unpacked_layout_set(word), (set, SwitchKey::AltShift));
+    let switched = with_in_force(word, named(b"fr"));
+    assert_eq!(in_force_of(switched), named(b"fr"));
+    assert_eq!(unpacked_layout_set(switched), (set, SwitchKey::AltShift));
+}

@@ -4,17 +4,17 @@
 //! Paths are Windows paths, as `fopen`'s. The flags are `crate::low_level_io`'s. Each
 //! descriptor has a translation mode (D229), from `_open`'s flags or `_fmode`, which `_setmode`
 //! changes: `_write` in text mode writes `\n` as `\r\n` and in the wide modes writes the
-//! program's UTF-16 as UTF-16 or UTF-8; `_read` in text mode takes `\r\n` as `\n` and stops at
-//! Ctrl+Z, seeking back to it, and a last `\r` waits for the next byte, which goes back to the
-//! file, or for a descriptor that cannot seek to the next `_read`. The wide modes read bytes as
-//! they are.
+//! program's UTF-16 as UTF-16 or UTF-8, a character split between two writes whole; `_read`
+//! in text mode takes `\r\n` as `\n` and stops at Ctrl+Z, seeking back to it, and a last `\r`
+//! waits for the next byte, which goes back to the file, or for a descriptor that cannot seek
+//! to the next `_read`. The wide modes read bytes as they are.
 
 use super::runtime::{binary_by_default, errno, errno_for_linux, errno_value, set_errno};
 use crate::library::Export;
 use crate::linux;
 use crate::low_level_io::{
     SMALLEST_TRANSLATION, TRANSLATION_MODES, Translation, is_sharing_mode, open_flags, open_mode,
-    take_text, translate_written, whence, windows_flag,
+    take_text, translate_write, whence, windows_flag,
 };
 use crate::text;
 use core::ffi::CStr;
@@ -23,6 +23,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 const FAILED: i32 = -1;
 const SEEK_CURRENT: usize = 1;
 const NO_BYTE: i32 = -1;
+const NO_UNIT: i32 = -1;
 const TRANSLATION_CHUNK: usize = 1024;
 const TRACKED_DESCRIPTORS: usize = 64;
 
@@ -32,6 +33,8 @@ static TRANSLATION: [AtomicI32; TRACKED_DESCRIPTORS] =
     [const { AtomicI32::new(windows_flag::TEXT) }; TRACKED_DESCRIPTORS];
 static PENDING_BYTE: [AtomicI32; TRACKED_DESCRIPTORS] =
     [const { AtomicI32::new(NO_BYTE) }; TRACKED_DESCRIPTORS];
+static PENDING_HIGH_SURROGATE: [AtomicI32; TRACKED_DESCRIPTORS] =
+    [const { AtomicI32::new(NO_UNIT) }; TRACKED_DESCRIPTORS];
 
 /// The translation mode (`_O_TEXT`, ...) of descriptor `fd`: text for one the runtime does
 /// not track.
@@ -42,13 +45,16 @@ pub(super) fn translation_mode(fd: usize) -> i32 {
 }
 
 /// Forgets what the runtime kept for descriptor `fd`, which is closing: its translation
-/// mode and a byte waiting to be read.
+/// mode, a byte waiting to be read and a high surrogate waiting for its low one.
 pub(super) fn forget_descriptor(fd: usize) {
     if let Some(slot) = TRANSLATION.get(fd) {
         slot.store(windows_flag::TEXT, Ordering::Release);
     }
     if let Some(slot) = PENDING_BYTE.get(fd) {
         slot.store(NO_BYTE, Ordering::Release);
+    }
+    if let Some(slot) = PENDING_HIGH_SURROGATE.get(fd) {
+        slot.store(NO_UNIT, Ordering::Release);
     }
 }
 
@@ -87,6 +93,9 @@ fn open_path(path: impl Iterator<Item = char>, flags: i32) -> i32 {
     }
     if let Some(slot) = PENDING_BYTE.get(fd) {
         slot.store(NO_BYTE, Ordering::Release);
+    }
+    if let Some(slot) = PENDING_HIGH_SURROGATE.get(fd) {
+        slot.store(NO_UNIT, Ordering::Release);
     }
     match i32::try_from(fd) {
         Ok(fd) => fd,
@@ -315,21 +324,28 @@ fn write_translated(fd: usize, translation: Translation, bytes: &[u8]) -> i32 {
     }
     let terminal = linux::is_terminal(fd);
     let mut out = [0u8; TRANSLATION_CHUNK];
-    let mut taken = 0;
-    while taken < bytes.len() {
-        let (used, put) = translate_written(translation, terminal, &bytes[taken..], &mut out);
-        if let Err(error) = linux::write_all(fd, &out[..put]) {
-            return match taken {
-                0 => refused(error.0),
-                _ => taken as i32,
-            };
-        }
-        if used == 0 {
-            break;
-        }
-        taken += used;
+    let mut pending = take_pending_high_surrogate(fd);
+    let written = translate_write(
+        translation,
+        terminal,
+        bytes,
+        &mut pending,
+        &mut out,
+        |piece| linux::write_all(fd, piece),
+    );
+    if let (Some(high), Some(slot)) = (pending, PENDING_HIGH_SURROGATE.get(fd)) {
+        slot.store(i32::from(high), Ordering::Release);
     }
-    taken as i32
+    match written {
+        Ok(taken) => taken as i32,
+        Err((0, error)) => refused(error.0),
+        Err((taken, _)) => taken as i32,
+    }
+}
+
+fn take_pending_high_surrogate(fd: usize) -> Option<u16> {
+    let slot = PENDING_HIGH_SURROGATE.get(fd)?;
+    u16::try_from(slot.swap(NO_UNIT, Ordering::AcqRel)).ok()
 }
 
 fn seek(fd: i32, offset: i64, origin: i32) -> i64 {

@@ -94,10 +94,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   level holds fewer than about 250 names (QEMU refuses to start with "Too many entries in root
   directory" beyond), files of 2 GB or more are refused, names are compared without case for
   ASCII letters only, file times are your computer's local time shown as UTC, and changes made
-  on your computer while EggOS runs are not seen. Only one folder can be attached. The x86_64
-  and aarch64 release images carry the Windows and macOS layers, so Windows and macOS programs
-  in it run and install there; the riscv64 image carries neither, as neither layer runs on
-  riscv64 (D152).
+  on your computer while EggOS runs are not seen. Only one folder can be attached. Windows and
+  macOS programs in it run and install once their layer's component is installed (`component
+  install windows-apps` or `mac-apps`, from the x86_64 and aarch64 stores, D235); riscv64's
+  store offers neither, as neither layer runs on riscv64.
 - **A work disk is a copy, packed before the boot and unpacked after it** (D166). `cargo
   xtask run --work <folder>` (and `cargo xtask work pack`, for the run scripts' `--work
   <image>`) copies a folder into an EggFS image that EggOS mounts writable at `/work`; what

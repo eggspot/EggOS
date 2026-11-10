@@ -56,7 +56,8 @@ then start `/bin/terminal -t <name> -e /bin/eggsh -c <line>`.
 
 ### What you can install today, and apps to try
 
-On the release images (D152):
+On the release images, once the layer's component is installed for Windows and macOS programs
+(D235):
 
 | Kind | Where it installs | What runs |
 |------|-------------------|-----------|
@@ -172,7 +173,8 @@ is built on a Mac (Apple's linker builds it).
   Windows or macOS program whose layer is not installed (`/usr/lib/eggos/windows`,
   `/usr/lib/eggos/macos`) is refused too (`it needs the Windows layer, which is not
   installed`), since nothing could open it (D18).
-  The x86_64 and aarch64 release images carry both layers (D152); riscv64 runs neither.
+  The layers are components (D235): the x86_64 and aarch64 stores offer both (`component
+  install windows-apps` or `mac-apps`); riscv64 runs neither.
 - A failure while copying (`/Applications is read-only because EggOS started without a
   disk`, `not enough space on the disk (ENOSPC)`, an I/O error) removes what was copied. A
   folder of that name without a valid manifest (an install or uninstall that was cut short)
@@ -243,8 +245,8 @@ is built on a Mac (Apple's linker builds it).
   prompt (for a `.zip`, an `Inside:` line names the program in it); in the
   `Apps` place (`/Applications`) a double-click on an app opens it as its icon does and Delete
   or `Uninstall...` asks to uninstall it.
-- Not yet: removing or installing a layer on its own (the component manager, D18, D152);
-  `--force` to replace an installed app (uninstall it first).
+- Not yet: `--force` to replace an installed app (uninstall it first). A layer is installed and
+  removed on its own with `component` (D235).
 
 ## The Text Editor: `edit`
 

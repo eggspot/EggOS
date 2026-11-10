@@ -81,6 +81,8 @@ mod macho;
     all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod objc;
+#[cfg(test)]
+mod raising_methods;
 #[cfg(any(
     test,
     all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))

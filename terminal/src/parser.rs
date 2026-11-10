@@ -383,18 +383,20 @@ pub(super) fn folder_of(uri: &[u8]) -> Option<Vec<u8>> {
                 index += 3;
                 high << 4 | low
             }
-            byte if byte < 0x20 || byte == DEL => return None,
             byte => {
                 index += 1;
                 byte
             }
         };
-        if folder.len() == PATH_CAPACITY {
+        if byte < 0x20 || byte == DEL || folder.len() == PATH_CAPACITY {
             return None;
         }
         folder.push(byte);
     }
-    core::str::from_utf8(&folder).ok()?;
+    let text = core::str::from_utf8(&folder).ok()?;
+    if text.chars().any(char::is_control) {
+        return None;
+    }
     Some(folder)
 }
 

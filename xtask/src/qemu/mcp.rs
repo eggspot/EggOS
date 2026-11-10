@@ -154,8 +154,8 @@ pub const FETCH_ARGUMENTS: &str = r#"{"url":"http://10.0.2.2:1/x","path":"/home/
 /// What `fetch`'s failure says in the second boot.
 pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
-/// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
-/// grant) and the grant; the second boot runs each.
+/// Every tool that needs a grant, with the arguments the first boot calls it with, refused for
+/// its grant, and that grant; the second boot runs only some of them with the grant.
 pub const GRANTED_TOOLS: [(&str, &str, &str); 46] = [
     (
         "ln",

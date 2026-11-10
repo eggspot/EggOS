@@ -54,6 +54,13 @@ fn a_loopback_connection_carries_bytes_both_ways_then_closes_in_order() {
 }
 
 #[test]
+fn a_new_connection_wakes_the_network_thread_to_send_its_syn() {
+    let before = crate::net::DEVICE_EVENTS.raised();
+    let _client = Stream::connect::<P>((LOOPBACK, 47_051), (LOOPBACK, 47_050)).unwrap();
+    assert!(crate::net::DEVICE_EVENTS.raised() > before);
+}
+
+#[test]
 fn a_connection_to_a_port_no_one_listens_on_is_refused_once() {
     let client = Stream::connect::<P>((LOOPBACK, 47_011), (LOOPBACK, 47_010)).unwrap();
     run::<P>();

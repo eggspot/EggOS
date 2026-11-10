@@ -30,6 +30,12 @@ pub const TERMINATE: u32 = 15;
 pub const ESRCH: i32 = 3;
 /// `EPERM`: the process belongs to another user.
 pub const EPERM: i32 = 1;
+/// The name of the program that downloads, as `/proc/ps` and a command line's first word show
+/// it.
+pub const FETCH: &[u8] = b"fetch";
+/// The multi-call program `fetch` is a name of, which takes the utility's name as its first
+/// argument.
+pub const MULTI_CALL: &[u8] = b"coreutils";
 
 /// Where a download is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,14 +354,28 @@ pub fn id_of(file_name: &[u8]) -> Option<u32> {
     number(file_name).and_then(|id| u32::try_from(id).ok())
 }
 
-/// Whether `/proc/ps`'s text `ps` lists `pid` as a process that has not ended.
-pub fn process_running(ps: &[u8], pid: u32) -> bool {
+/// Whether `/proc/ps`'s text `ps` lists `pid` as a [`FETCH`] that has not ended: a process
+/// with that id running another program is not the download's, whose `fetch` is gone.
+pub fn fetch_running(ps: &[u8], pid: u32) -> bool {
     ps.split(|&byte| byte == b'\n').any(|line| {
-        let mut fields = line
-            .split(|&byte| byte == b' ')
-            .filter(|field| !field.is_empty());
-        fields.next().and_then(number) == Some(u64::from(pid)) && fields.nth(3) != Some(b"Z")
+        let mut fields = line.splitn(7, |&byte| byte == b' ');
+        let listed = fields.next().and_then(number) == Some(u64::from(pid));
+        let state = fields.nth(3);
+        let name = fields.nth(1);
+        listed && state != Some(b"Z") && name == Some(FETCH)
     })
+}
+
+/// Whether `/proc/<pid>/cmdline`'s text `command_line` runs [`FETCH`]: its first word's last
+/// component is `fetch`, or [`MULTI_CALL`]'s followed by `fetch`.
+pub fn runs_fetch(command_line: &[u8]) -> bool {
+    let mut words = command_line.split(|&byte| byte == 0);
+    let program = words.next().unwrap_or_default();
+    let program = program
+        .rsplit(|&byte| byte == b'/')
+        .next()
+        .unwrap_or(program);
+    program == FETCH || (program == MULTI_CALL && words.next() == Some(FETCH))
 }
 
 /// The list's order of two downloads, each `(started, id)`: newest first, then the larger id.

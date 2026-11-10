@@ -304,3 +304,56 @@ fn a_dry_run_says_why_the_download_would_fail() {
     assert_eq!(status, 1);
     assert_eq!(errors, "fetch: the URL is longer than 2048 bytes\n");
 }
+
+#[test]
+fn no_clobber_saves_only_where_nothing_is_and_never_through_a_link() {
+    let (status, _, errors, fake) = run(
+        network(),
+        &[
+            c"-q",
+            c"--no-clobber",
+            c"http://files.test/chunked",
+            c"/home/new.txt",
+        ],
+    );
+    assert_eq!((status, errors.as_str()), (0, ""));
+    assert_eq!(fake.contents("/home/new.txt"), b"Hello, chunks");
+    let fake = network()
+        .with_file("/home/old.txt", 0o644, b"old", 0)
+        .with_link("/home/link", "/home/target");
+    let (status, _, errors, fake) = run(
+        fake,
+        &[
+            c"--no-clobber",
+            c"http://files.test/chunked",
+            c"/home/old.txt",
+        ],
+    );
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "fetch: /home/old.txt: File exists\n")
+    );
+    assert_eq!(fake.contents("/home/old.txt"), b"old");
+    let (status, _, errors, fake) = run(
+        fake,
+        &[c"--no-clobber", c"http://files.test/chunked", c"/home/link"],
+    );
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "fetch: /home/link: File exists\n")
+    );
+    assert!(!fake.nodes.contains_key(b"/home/target".as_slice()));
+    let (status, out, errors, _) = run(
+        network().with_file("/home/old.txt", 0o644, b"old", 0),
+        &[
+            c"--dry-run",
+            c"--no-clobber",
+            c"http://files.test/chunked",
+            c"/home/old.txt",
+        ],
+    );
+    assert_eq!(
+        (status, out.as_str(), errors.as_str()),
+        (1, "", "fetch: /home/old.txt: File exists\n")
+    );
+}

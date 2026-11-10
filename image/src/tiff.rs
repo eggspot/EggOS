@@ -294,7 +294,12 @@ fn inflate_strip(source: &[u8], out: &mut [u8]) -> Result<(), Error> {
     }
 }
 
-fn strips(file: &File<'_>, tags: &Tags, layout: &Layout) -> Result<Vec<u8>, Error> {
+fn strips(
+    file: &File<'_>,
+    tags: &Tags,
+    layout: &Layout,
+    limits: &Limits,
+) -> Result<Vec<u8>, Error> {
     let compression = first(file, tags.compression, UNCOMPRESSED)?;
     if !matches!(
         compression,
@@ -306,6 +311,7 @@ fn strips(file: &File<'_>, tags: &Tags, layout: &Layout) -> Result<Vec<u8>, Erro
         .row_bytes
         .checked_mul(layout.height)
         .ok_or(Error::TooLarge)?;
+    crate::check_working_bytes(u64::try_from(total).ok(), limits)?;
     let mut raw = crate::buffer(total, 0u8)?;
     let offsets = tags.offsets.ok_or(Error::Corrupt)?;
     let rows_per_strip = (first(file, tags.rows_per_strip, u32::MAX)? as usize).max(1);
@@ -446,7 +452,7 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, Error> {
         PALETTE => colour_map(&file, &tags, layout.bits)?,
         _ => Vec::new(),
     };
-    let raw = strips(&file, &tags, &layout)?;
+    let raw = strips(&file, &tags, &layout, limits)?;
     let mut image = crate::canvas(layout.width as u32, layout.height as u32, limits)?;
     let samples = layout.samples as usize;
     let bits = layout.bits;

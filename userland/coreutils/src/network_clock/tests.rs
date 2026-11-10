@@ -103,6 +103,77 @@ fn sync_with(fake: Fake, asker: Asker, witness: &mut Witnesses) -> Run {
 fn the_record_s_paths_are_the_settings_file_crate_s() {
     assert_eq!(RECORD.to_str(), Ok(clock_sync::PATH));
     assert_eq!(RECORD_FOLDER.to_str(), Ok(clock_sync::FOLDER));
+    assert_eq!(BUDGET.to_str(), Ok(clock_sync::BUDGET_PATH));
+    for (folder, expected) in BUDGET_FOLDERS.iter().zip(clock_sync::BUDGET_FOLDERS) {
+        assert_eq!(folder.to_str(), Ok(expected));
+    }
+}
+
+fn with_kept_budget(fake: Fake, unproven_ms: u64) -> Fake {
+    let mut file = [0u8; clock_sync::BUDGET_LARGEST];
+    let length = clock_sync::write_budget(unproven_ms, &mut file).unwrap();
+    let mut fake = fake.with_directory("/var", 0);
+    for folder in clock_sync::BUDGET_FOLDERS {
+        fake = fake.with_directory(folder, 0);
+    }
+    fake.with_file(clock_sync::BUDGET_PATH, 0o644, &file[..length], 0)
+}
+
+#[test]
+fn the_budget_is_kept_on_disk_so_a_reboot_does_not_renew_it() {
+    let fake = clock(NOW - 3_000, seconds(NOW)).with_directory("/var", 0);
+    let synced = sync_with(fake, Asker::Automatic, &mut Witnesses::default());
+    assert_eq!(synced.result, Ok(NOW));
+    assert_eq!(
+        synced.fake.contents(clock_sync::BUDGET_PATH),
+        b"unproven_ms=3000000\n"
+    );
+    assert!(
+        !synced
+            .fake
+            .nodes
+            .keys()
+            .any(|path| path.starts_with(clock_sync::BUDGET_TEMPORARY_PREFIX.as_bytes())),
+        "no temporary budget file is left"
+    );
+    let rebooted = with_kept_budget(clock(NOW - 900, seconds(NOW)), 3_000_000);
+    let synced = sync_with(rebooted, Asker::Automatic, &mut Witnesses::default());
+    assert_eq!(synced.result, Err(FAILURE));
+    assert!(synced.fake.set_times.is_empty());
+    let record = synced.record();
+    assert_eq!(
+        (record.outcome, record.unproven_ms),
+        (Outcome::Unconfirmed, 3_000_000)
+    );
+    let rebooted = with_kept_budget(clock(NOW - 600, seconds(NOW)), 3_000_000);
+    let synced = sync_with(rebooted, Asker::Automatic, &mut Witnesses::default());
+    assert_eq!(synced.result, Ok(NOW));
+    assert_eq!(
+        synced.fake.contents(clock_sync::BUDGET_PATH),
+        b"unproven_ms=3600000\n"
+    );
+}
+
+#[test]
+fn a_proven_step_and_date_s_empty_the_budget_on_disk() {
+    let mut witness = witnesses(&[dated(NOW), dated(NOW)]);
+    let fake = with_kept_budget(with_roots(clock(NOW - 7_200, seconds(NOW))), 3_600_000);
+    let synced = sync_with(fake, Asker::Automatic, &mut witness);
+    assert_eq!(synced.result, Ok(NOW));
+    assert_eq!(
+        synced.fake.contents(clock_sync::BUDGET_PATH),
+        b"unproven_ms=0\n"
+    );
+    let mut output = Output::new(
+        with_kept_budget(clock(NOW, seconds(NOW)), 3_600_000),
+        b"date",
+    );
+    let status = crate::date::date(&mut output, &[c"-u", c"-s", c"2026-10-29 15:00"]);
+    assert_eq!(output.finish(status), 0);
+    assert_eq!(
+        output.system.contents(clock_sync::BUDGET_PATH),
+        b"unproven_ms=0\n"
+    );
 }
 
 #[test]

@@ -1056,7 +1056,7 @@ const OBJC_UNRECOGNIZED: &str = "*** Terminating app due to uncaught exception \
      'NSInvalidArgumentException', reason: '-[Counter frobnicate]: unrecognized selector sent to \
      instance 0x";
 
-const OBJC_LANGUAGE_LINES: [&str; 30] = [
+const OBJC_LANGUAGE_LINES: [&str; 34] = [
     "MACOS-OBJC block 42",
     "MACOS-OBJC byref 3",
     "MACOS-OBJC enumerate a0,b1",
@@ -1074,6 +1074,10 @@ const OBJC_LANGUAGE_LINES: [&str; 30] = [
     "MACOS-OBJC caught NSRangeException",
     "MACOS-OBJC caught EggBlock x",
     "MACOS-OBJC caught NSInvalidArgumentException",
+    "MACOS-OBJC caught NSRangeException insert",
+    "MACOS-OBJC caught NSInvalidArgumentException dictionary",
+    "MACOS-OBJC caught EggSetBlock s",
+    "MACOS-OBJC caught EggObserver EggThrow",
     "MACOS-OBJC set 2 1 0",
     "MACOS-OBJC set a,c",
     "MACOS-OBJC date 1970-01-01 00:00:00 +0000 1971-01-01 00:00:00 +0000 -1 31536000",

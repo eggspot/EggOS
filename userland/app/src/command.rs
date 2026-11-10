@@ -368,11 +368,10 @@ mod program {
         let _ = said.write_str("app: ");
         match line.strip_prefix("Could not") {
             Some(rest) => {
-                let _ = write!(said, "could not{rest}");
+                let _ = said.write_str("could not");
+                said.push_escaped(rest);
             }
-            None => {
-                let _ = said.write_str(line);
-            }
+            None => said.push_escaped(line),
         }
         say(STANDARD_ERROR, said.as_str());
     }

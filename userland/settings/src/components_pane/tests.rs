@@ -313,23 +313,6 @@ fn installing_shows_the_bar_under_the_row_and_moves_the_rows_below() {
     for row in [0, 1, 3] {
         assert!(!window.widgets().is_enabled(row_button(&window, row)));
     }
-    window.show_install_progress(792_724, WINDOWS_BYTES);
-    assert_eq!(rows(&window)[2][1], "Installing 42 %");
-    assert_eq!(
-        window
-            .widgets()
-            .kind(ids.bar)
-            .copied()
-            .map(|kind| match kind {
-                Kind::Progress { permille } => permille,
-                _ => 0,
-            }),
-        Some(420)
-    );
-    assert_eq!(
-        notes(&window),
-        [messages::copied_of(792_724, WINDOWS_BYTES)]
-    );
     let next = window.show_installed(Ok(()), read(&["desktop", "builtin-apps", "windows-apps"]));
     assert_eq!(next, None);
     assert_eq!(
@@ -425,6 +408,31 @@ fn removing_is_refused_or_confirmed_as_the_cli_answers() {
         row_texts("Built-in apps", "Not installed \u{b7} 1.1 MB", "Install")
     );
     assert!(notes(&window).is_empty());
+}
+
+#[test]
+fn a_remove_refused_once_confirmed_says_why_and_keeps_the_component() {
+    let installed = ["desktop", "builtin-apps"];
+    let mut window = opened(read_of(Some(store()), &installed, false));
+    activate_row(&mut window, 1);
+    window.show_remove_check(Ok(Some(four()[1].clone())), 0);
+    assert_eq!(
+        press(&mut window, key::ENTER),
+        Some(Request::RemoveComponent)
+    );
+    window.show_removed(
+        Err(RemoveError::Refused(Refusal::InUse {
+            names: alloc::vec![String::from("Text Editor")],
+            count: 1,
+        })),
+        read_of(Some(store()), &installed, false),
+    );
+    assert_eq!(
+        notes(&window),
+        ["In use: Text Editor is running. Quit it, then remove."]
+    );
+    assert_eq!(rows(&window)[1][2], "Remove");
+    assert_eq!(window.components_pane().to_remove(), None);
 }
 
 #[test]

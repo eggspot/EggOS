@@ -54,6 +54,22 @@ impl Line {
             }
         }
     }
+
+    /// Adds `text` with its control characters written as `\n`, `\t`, `\r` and `\xHH`
+    /// (D226), so a name in it cannot break or forge a line.
+    pub fn push_escaped(&mut self, text: &str) {
+        for character in text.chars() {
+            let _ = match character {
+                '\n' => self.write_str("\\n"),
+                '\t' => self.write_str("\\t"),
+                '\r' => self.write_str("\\r"),
+                control if control.is_ascii_control() => {
+                    write!(self, "\\x{:02x}", u32::from(control))
+                }
+                other => self.write_char(other),
+            };
+        }
+    }
 }
 
 impl Write for Line {
@@ -491,5 +507,15 @@ mod tests {
             let _ = long.write_str("abc");
         }
         assert_eq!(long.as_str().len(), 256);
+    }
+
+    #[test]
+    fn an_escaped_text_cannot_break_or_forge_a_line() {
+        let mut line = Line::new();
+        line.push_escaped("a.exe\napp: installed\x1b[2J\tb\r\x7f\u{e9}");
+        assert_eq!(
+            line.as_str(),
+            "a.exe\\napp: installed\\x1b[2J\\tb\\r\\x7f\u{e9}"
+        );
     }
 }

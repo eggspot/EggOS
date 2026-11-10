@@ -3,7 +3,7 @@
 //! [`Files`] and [`Console`], so the host tests run it whole.
 
 use crate::index::Component;
-use crate::manager::{self, Refusal, Store};
+use crate::manager::{self, Refusal, RemoveError, Store};
 use crate::messages;
 use alloc::format;
 use alloc::string::String;
@@ -541,18 +541,24 @@ fn remove<F: Files, C: Console>(
             return out.fail(json, &errors::DECLINED_BY_USER, messages::DECLINED);
         }
     }
-    if let Err(refusal) = manager::lock(files, &component.title, true, pid) {
-        return out.refuse(json, &refusal);
-    }
-    let removed = manager::remove(files, &component.name);
-    manager::unlock(files);
-    if let Err(failure) = removed {
-        return out.fail(
-            json,
-            &errors::REMOVE_FAILED,
-            &messages::remove_failure_line(&failure, &component),
-        );
-    }
+    let component = match manager::remove_checked(files, &component.title, &component.name, pid) {
+        Ok(Some(removed)) => removed,
+        Ok(None) => {
+            match json {
+                true => out.json(|writer| write_removed(writer, None, 0)),
+                false => out.say(&messages::not_installed(&component.title)),
+            }
+            return 0;
+        }
+        Err(RemoveError::Refused(refusal)) => return out.refuse(json, &refusal),
+        Err(RemoveError::Failed(failure)) => {
+            return out.fail(
+                json,
+                &errors::REMOVE_FAILED,
+                &messages::remove_failure_line(&failure, &component),
+            );
+        }
+    };
     match json {
         true => {
             out.json(|writer| write_removed(writer, Some(&component.name), component.size_bytes()))

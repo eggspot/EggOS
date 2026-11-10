@@ -167,7 +167,7 @@ fn this_class(this: Id) -> *mut ClassObject {
 }
 
 extern "C" fn dictionary(this: Id, _: Sel) -> Id {
-    autoreleased(new_dictionary(this_class(this), &[], &[]))
+    autoreleased(new_instance(this_class(this)))
 }
 
 extern "C" fn dictionary_with_object(this: Id, _: Sel, object: Id, key_object: Id) -> Id {
@@ -247,7 +247,7 @@ extern "C" fn dictionary_with_dictionary(this: Id, _: Sel, other: Id) -> Id {
 }
 
 extern "C" fn dictionary_with_capacity(this: Id, _: Sel, _: usize) -> Id {
-    autoreleased(new_dictionary(this_class(this), &[], &[]))
+    autoreleased(new_instance(this_class(this)))
 }
 
 extern "C" fn init(this: Id, _: Sel) -> Id {
@@ -490,11 +490,18 @@ pub fn empty_address() -> u64 {
 
 guard!(eggos_guarded_set_object_for_key => set_object_for_key);
 guard!(eggos_guarded_set_object_for_keyed_subscript => set_object_for_keyed_subscript);
+guard!(eggos_guarded_add_entries_from_dictionary => add_entries_from_dictionary);
+guard!(eggos_guarded_init_with_objects_keys => init_with_objects_keys);
+guard!(eggos_guarded_copy_with_zone => copy_with_zone);
+guard!(eggos_guarded_mutable_copy_with_zone => mutable_copy_with_zone);
+guard!(eggos_guarded_dictionary_with_object => dictionary_with_object);
+guard!(eggos_guarded_dictionary_with_objects_keys => dictionary_with_objects_keys);
+guard!(eggos_guarded_dictionary_with_dictionary => dictionary_with_dictionary);
 
 pub fn define(runtime: &mut Runtime) -> bool {
     let instance = methods![
         "init" => init,
-        "initWithObjects:forKeys:count:" => init_with_objects_keys,
+        "initWithObjects:forKeys:count:" => eggos_guarded_init_with_objects_keys,
         "dealloc" => dealloc,
         "count" => count,
         "objectForKey:" => object_for_key,
@@ -505,18 +512,18 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "isEqual:" => is_equal,
         "isEqualToDictionary:" => is_equal,
         "hash" => hash,
-        "copyWithZone:" => copy_with_zone,
-        "mutableCopyWithZone:" => mutable_copy_with_zone,
+        "copyWithZone:" => eggos_guarded_copy_with_zone,
+        "mutableCopyWithZone:" => eggos_guarded_mutable_copy_with_zone,
         "description" => description_method,
         "descriptionWithLocale:" => description_with_locale,
         "descriptionWithLocale:indent:" => description_with_locale_indent,
     ];
     let class = methods![
         "dictionary" => dictionary,
-        "dictionaryWithObject:forKey:" => dictionary_with_object,
-        "dictionaryWithObjects:forKeys:count:" => dictionary_with_objects_keys,
+        "dictionaryWithObject:forKey:" => eggos_guarded_dictionary_with_object,
+        "dictionaryWithObjects:forKeys:count:" => eggos_guarded_dictionary_with_objects_keys,
         "dictionaryWithObjectsAndKeys:" => eggos_dictionary_with_objects_and_keys,
-        "dictionaryWithDictionary:" => dictionary_with_dictionary,
+        "dictionaryWithDictionary:" => eggos_guarded_dictionary_with_dictionary,
     ];
     let mutable_instance = methods![
         "initWithCapacity:" => init_with_capacity,
@@ -524,7 +531,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "setObject:forKeyedSubscript:" => eggos_guarded_set_object_for_keyed_subscript,
         "removeObjectForKey:" => remove_object_for_key,
         "removeAllObjects" => remove_all_objects,
-        "addEntriesFromDictionary:" => add_entries_from_dictionary,
+        "addEntriesFromDictionary:" => eggos_guarded_add_entries_from_dictionary,
     ];
     let mutable_class = methods![
         "dictionaryWithCapacity:" => dictionary_with_capacity,

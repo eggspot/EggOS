@@ -13,7 +13,7 @@ pub use eggos_commands::tools::CODED_ERRORS_ENVIRONMENT;
 
 use crate::hive::Value;
 use crate::path::{KeyPath, utf8, utf16};
-use crate::registry::{HiveFile, Registry, Store, USER_HIVE_PATH};
+use crate::registry::{HiveFile, Registry, Store, USER_HIVE_PATH, is_machine_key};
 use crate::value::{
     REG_DWORD, REG_DWORD_BIG_ENDIAN, REG_EXPAND_SZ, REG_MULTI_SZ, REG_QWORD, REG_SZ, data_text,
     hex_text, number_of, parse_data, string_of, strings_of, type_from_name, type_name,
@@ -26,6 +26,9 @@ pub const DEFAULT_VALUE_WORD: &str = "@";
 pub const DEFAULT_VALUE_TEXT: &str = "(Default)";
 /// The data shown for a default value that was never set.
 pub const VALUE_NOT_SET: &str = "(value not set)";
+
+/// What a question about a change to the machine's hive adds.
+pub const EVERY_USER_NOTE: &str = "It applies to every user of this machine.";
 
 const USAGE_STATUS: i32 = 2;
 const FAILURE_STATUS: i32 = 1;
@@ -355,6 +358,9 @@ fn set<S: Store, C: Console>(
         if options.kind.is_some() {
             return run.usage("--type needs a value name");
         }
+        if let Err(status) = set_confirmed(registry, run, options.yes, &path, None) {
+            return status;
+        }
         return match registry.create_key(&path) {
             Ok(_) => 0,
             Err(error) => run.error(error, &key_text, ""),
@@ -365,6 +371,9 @@ fn set<S: Store, C: Console>(
         Ok(data) => data,
         Err(error) => return run.error(error, &key_text, &name_text(&name)),
     };
+    if let Err(status) = set_confirmed(registry, run, options.yes, &path, Some(&name)) {
+        return status;
+    }
     let saved = registry
         .create_key(&path)
         .and_then(|_| registry.set_value(&path, &name, kind, data));
@@ -378,6 +387,56 @@ fn counted(count: usize, one: &str, many: &str) -> String {
     match count {
         1 => format!("1 {one}"),
         count => format!("{count} {many}"),
+    }
+}
+
+/// What `windows registry set` asks before it changes `path` (and with `name`, that value),
+/// or `None` when it asks nothing: when the change would replace a value that is there, or
+/// change the machine's hive, which applies to every user. A change the user may not make is
+/// not asked about: it fails with `read_only_key`.
+pub fn set_question<S: Store>(
+    registry: &mut Registry<S>,
+    path: &KeyPath,
+    name: Option<&[u16]>,
+) -> Option<String> {
+    let key_text = path.text();
+    let machine = is_machine_key(path) && registry.may_change_machine();
+    let note = match machine {
+        true => format!(" {EVERY_USER_NOTE}"),
+        false => String::new(),
+    };
+    let Some(name) = name else {
+        let missing = !registry.key_exists(path).unwrap_or(true);
+        return (machine && missing).then(|| format!("Make the key {key_text}?{note} [y/N] "));
+    };
+    let shown = name_text(name);
+    match registry.value(path, name) {
+        Ok(_) => Some(format!(
+            "Replace the value {shown} in {key_text}?{note} [y/N] "
+        )),
+        Err(_) if machine => Some(format!(
+            "Save the value {shown} in {key_text}?{note} [y/N] "
+        )),
+        Err(_) => None,
+    }
+}
+
+fn set_confirmed<S: Store, C: Console>(
+    registry: &mut Registry<S>,
+    run: &mut Run<'_, C>,
+    yes: bool,
+    path: &KeyPath,
+    name: Option<&[u16]>,
+) -> Result<(), i32> {
+    if yes {
+        return Ok(());
+    }
+    let Some(question) = set_question(registry, path, name) else {
+        return Ok(());
+    };
+    match run.console.confirm(&question) {
+        Some(false) => Err(run.fail(&errors::DECLINED_BY_USER, "Nothing was changed.")),
+        Some(true) | None => Ok(()),
     }
 }
 

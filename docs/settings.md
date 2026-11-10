@@ -77,9 +77,10 @@ writes through the same code as `windows registry` and the MCP tools `windows_re
 **Components** (D235, Claude Fable's docs/ux/components-v0.3.md) lists the components the
 attached store offers and the ones installed ([Components](components.md)): the store's state
 above, then one row per component with its state and size and an `Install` or `Remove` button.
-Installing shows a progress bar under the row; removing, or installing what a component needs
-too, asks first under the row, in the words of `component` and its MCP tools. Its buttons are
-person-only: an agent's `wm act` on them answers `element_cannot`.
+Installing shows `Installing` under the row; removing, or installing what a component needs
+too, asks first under the row, in the words of `component` and its MCP tools. Only the `Remove`
+that confirms a remove is person-only (an agent's `wm act` on it answers `element_cannot`, as
+`component_remove` asks the person first); `Install`, like `component_install`, never asks.
 
 **Storage** (D192, Claude Fable's docs/ux/storage-v0.3.md) lists the disks attached
 (`/dev/vda` to `/dev/vdd`) and shows the selected one's contents (`EggFS "Photos"`, `Blank`,
@@ -204,5 +205,6 @@ crate (`settings-file/`), shared by the kernel and the program.
 Not yet: the boot parameter `eggos.profile=` (the kernel has no command line yet), per-user
 settings (there are no accounts), a writable network address and a second adapter (part 50);
 the Windows pane's key outline, editing values over 255 bytes, context menus and phone and TV
-layouts (D231); the Components pane's live progress, cancelling mid-file and phone layout, and
-the desktop and the built-in apps as components (D235).
+layouts (D231); the Components pane's live progress, cancelling a single install (`Cancel installing` stops
+between components; a single install cannot be cancelled) and phone layout, and the desktop and
+the built-in apps as components (D235).

@@ -97,9 +97,11 @@ impl ScrollInfo {
         i64::from(self.maximum) - i64::from(self.minimum) + 1
     }
 
-    /// Whether the bar scrolls: a page that shows part of the range.
+    /// Whether the bar scrolls: a range of more than one position that the page shows only
+    /// part of, as Windows has it (a page of 0 scrolls whenever the maximum is above the
+    /// minimum, with a thumb of the arrows' size).
     pub fn scrolls(&self) -> bool {
-        self.page > 0 && i64::from(self.page) < self.range()
+        self.maximum > self.minimum && i64::from(self.page) < self.range()
     }
 
     /// The highest position the page can start at.
@@ -116,8 +118,11 @@ pub fn thumb(length: i32, info: &ScrollInfo) -> Option<(i32, i32)> {
     if track <= 0 || !info.scrolls() {
         return None;
     }
-    let size = (i64::from(track) * i64::from(info.page) / info.range())
-        .clamp(i64::from(SMALLEST_THUMB), i64::from(track)) as i32;
+    let size = match info.page {
+        0 => WIDTH.min(track),
+        page => (i64::from(track) * i64::from(page) / info.range())
+            .clamp(i64::from(SMALLEST_THUMB.min(track)), i64::from(track)) as i32,
+    };
     let last = info.last_position();
     let position = info.position.clamp(info.minimum, last);
     let travelled = match i64::from(last) - i64::from(info.minimum) {
@@ -552,6 +557,37 @@ mod tests {
         };
         assert_eq!(thumb(200, &whole), None);
         assert_eq!(thumb(30, &info(0)), None);
+    }
+
+    #[test]
+    fn a_bar_without_a_page_scrolls_with_an_arrow_sized_thumb_when_its_range_is_wider_than_one() {
+        let pageless = ScrollInfo { page: 0, ..info(0) };
+        assert!(pageless.scrolls());
+        assert_eq!(pageless.last_position(), 99);
+        assert_eq!(thumb(200, &pageless), Some((16, WIDTH)));
+        assert_eq!(
+            thumb(
+                200,
+                &ScrollInfo {
+                    position: 99,
+                    ..pageless
+                }
+            ),
+            Some((168, WIDTH))
+        );
+        let one_position = ScrollInfo {
+            maximum: 0,
+            ..pageless
+        };
+        assert!(!one_position.scrolls());
+        assert_eq!(thumb(200, &one_position), None);
+        assert_eq!(thumb(40, &info(0)), Some((16, 8)));
+        let mut bar = ScrollBar::new(true);
+        bar.set_info(mask::RANGE | mask::PAGE, &pageless);
+        assert_eq!(
+            bar.button_down(100, 200),
+            Some(Scroll::plain(request::PAGE_DOWN))
+        );
     }
 
     #[test]

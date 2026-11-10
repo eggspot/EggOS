@@ -813,6 +813,10 @@ fn an_accessible_name_and_value_replace_what_a_widget_draws_for_agents_only() {
     );
     form.tree.set_person_only(form.scroll, true);
     assert_eq!(find(&form.tree, form.scroll).5, "");
+    assert_eq!(find(&form.tree, form.scroll).4, "");
+    form.tree.set_person_only(form.ok, true);
+    assert_eq!(find(&form.tree, form.ok).4, "Install Windows apps");
+    form.tree.set_person_only(form.ok, false);
     form.tree.set_accessible_name(form.ok, "");
     assert_eq!(find(&form.tree, form.ok).4, "OK");
     assert_eq!(

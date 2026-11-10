@@ -17490,12 +17490,16 @@ the license, by an explicit instruction recorded here.
   `read` and `poll` of `/dev/agent` sleep with no polling, `linux::agent_channel::next_poll`
   returning no deadline), virtio-net (the receive queue only; sent frames are taken back at the
   next send; the network thread sleeps until a frame or an interface timer, and while TCP
-  connections are open keeps D157's 1/20 ms polling for their timers) and virtio-rng. Each
+  connections are open keeps D157's 1/20 ms polling for their timers; a connection registered
+  in the TCP table, by `connect` or an accepted SYN, raises `net::DEVICE_EVENTS`, so a thread
+  asleep with no deadline, no connection being open, wakes to send the first SYN) and virtio-rng. Each
   connects at probe with `connect_interrupt` and stays polled when that fails. The GPU stays
   polled: its flush runs under the display's spinning lock, where no thread may sleep.
 - **Decision: the generator.** `random::reseed_from_device` hashes a device's bytes in under a
   tag of their own (0x82), credited by `random::device_credit` (8 bits a byte for a whole read
-  of `DEVICE_SEED_BYTES`, none for a short read or one of zeros only), and reseeds;
+  of `DEVICE_SEED_BYTES`, none for a short read, one whose bytes are all equal, or one that
+  repeats the previous read, which `random::reseed_from_device` tells by a BLAKE2s fingerprint
+  of it), and reseeds;
   `devices::virtio::seed_random::<P>()` reads 32 bytes right after probing and the boot log says
   `random: reseeded from virtio-rng` (or `..., still NOT SEEDED`).
 - **Decision: About's devices.** The parsing, filter, order and words moved out of
@@ -17524,8 +17528,10 @@ the license, by an explicit instruction recorded here.
   alone, interrupts clearing the no-interrupt flag, and the existing virtio-blk tests (requests
   of at most 60 KiB, timeouts, failures, flushes); the generator credited and reseeded by a
   device's bytes; `eggos-device-list` (parsing, the default filter, order, words, short
-  buffers); a device's short or all-zero read hashed in and reseeding but credited nothing
-  (`device_credit`: 256 bits for 32 bytes not all zero, 0 for 31 bytes, none, or 32 zeros);
+  buffers); a device's short, constant or repeated read hashed in and reseeding but credited
+  nothing (`device_credit`: 256 bits for 32 bytes not all equal, 0 for 31 bytes, none, 32 equal
+  bytes or a read repeating the previous one); a TCP connection raising the network thread's
+  events when it registers (`a_new_connection_wakes_the_network_thread_to_send_its_syn`);
   About (rows, words and order from the shared example, the layout in window
   coordinates, the box re-filtering and keeping the selection, an unreadable file, a default
   view showing everything, the search words). Benchmarks (no baseline lines yet):
@@ -17552,7 +17558,9 @@ the license, by an explicit instruction recorded here.
   periodic reseeding would add wake-ups. The first draft credited every byte read 8 bits; the
   research answer: a broken or hostile device's short or all-zero read must not count towards
   seeding, so only a whole 32-byte read that is not all zeros is credited and anything else is
-  hashed in uncredited (`random::device_credit`). (6) About's table uses the toolkit's table as built (a 28 px header, the element
+  hashed in uncredited (`random::device_credit`). The review widened "all zeros" to any read
+  of one repeated byte and to a read equal to the previous one, a stuck device's two other
+  tells. (6) About's table uses the toolkit's table as built (a 28 px header, the element
   role `table`, cells as the row's value) where devices-v0.3.md predates it (24 px, `list`);
   its `Device` column is fixed at the default window's 176 px; `disk` and `storage` are left out
   of About's search words because the later Storage pane's test holds `storage` to Storage
@@ -17569,7 +17577,8 @@ the license, by an explicit instruction recorded here.
   EggFS reading several blocks at once (its `Disk` trait asks for one transfer at a time, so it
   gets no requests in flight yet); reseeding from virtio-rng after boot; hot-plug; the costs
   above. TCP keeps D157's 1/20 ms polling while a connection is open, because a program's
-  stream writes, reads, `shutdown` and `connect` do not wake the network thread; the fix
+  stream writes, reads and `shutdown` do not wake the network thread (only a new connection
+  does, so the first `connect` never waits for a frame or a timer); the fix
   (research, 2026-11-01): sleep until the minimum of `Connection::next_poll_ms` over the
   streams, kick the network thread's device events from the stream mutators, and drop the
   `has_streams()` clamp.
@@ -17595,8 +17604,10 @@ the license, by an explicit instruction recorded here.
   `none`; `SwitchKey`; `profile` is Ctrl+Space in the macOS profile, Super+Space otherwise).
   `settings set keyboard.layout X` adds X to the set when missing (appended while there is
   room, else in the place of the layout in force); `settings set keyboard.layouts` keeps the
-  layout in force when listed, else the first. The kernel's input layer keeps the set and the
-  key in one packed atomic word (zero is the default, so it stays in `.bss`), and
+  layout in force when listed, else the first. The kernel's input layer keeps the set, the
+  key and the layout in force in one packed atomic word (`input::LAYOUTS`, changed by
+  `fetch_update`, so two settings changes at once never leave a layout in force outside the
+  set, and the switch key's change is a compare-and-swap of the whole word), and
   `InputState` cycles on the Space chords' press (Shift backwards, never on a repeat; the
   Space press and release are swallowed) or on Alt+Shift / Ctrl+Shift's release with no other
   key pressed between; with one layout the chord passes on unchanged. A cycle drops a pending
@@ -17746,7 +17757,10 @@ the license, by an explicit instruction recorded here.
   which let any caller write them: the files are 0644 but `open` checks no mode, so any
   process could change the keyboard under the person): only a privileged caller
   (`is_privileged()`), the same rule `/dev/window` applies to desktop settings; `EACCES`
-  otherwise, as Linux answers a write to a root-owned sysctl.
+  otherwise, as Linux answers a write to a root-owned sysctl. One difference stays: EggOS's
+  `open` checks no mode, so an unprivileged `open` of a control file for writing succeeds and
+  its writes fail with `EACCES`, where Linux fails the `open` itself with `EACCES`; a program
+  that checks only `open`'s result learns of the refusal at its first write.
 - **Decided by research** (a research subagent reviewed these on 2026-11-01 and confirmed
   them). Request number 38 for `SET_KEYBOARD_LAYOUTS`; Shift+Option+Y
   types `Á` on `us-mac` (macOS's); `pt`'s AltGr diaeresis on the key right of P (xkb's and
@@ -17995,10 +18009,17 @@ the license, by an explicit instruction recorded here.
     formats and messages, written from the man page and observed output.
   - The pseudo-terminal: the controlling side's writes take what the program side's input has
     room for, waiting (blocking) or failing with `EAGAIN` (non-blocking) when it is full, and
-    `POLLOUT` needs `WRITE_ROOM` (1 KiB); program-side reads wake waiting writers. `TIOCPKT`
-    and `TIOCGPKT` give packet mode (`FLUSHREAD`, `NOSTOP`, `DOSTOP`, data after a 0 byte);
-    `TIOCGPTPEER` opens the program side as a new descriptor; `TIOCSTI` types a byte only into
-    the caller's own controlling terminal and fails with `EPERM` for anyone else; `TOSTOP` sends
+    `POLLOUT` needs `WRITE_ROOM` (1 KiB); program-side reads wake waiting writers. In canonical
+    mode with no whole line unread, the writes never wait and `POLLOUT` is always reported, as
+    on Linux: no read can make room before a line ends, so a line longer than the input's
+    2 KiB keeps its first 2047 bytes, drops the rest, and still takes its end (newline, `VEOL`,
+    `VEOL2`, `VEOF`), the signal characters and the erase characters
+    (`LineDiscipline::drops_when_full`); with a whole line unread a writer waits for its read.
+    `TIOCPKT` and `TIOCGPKT` give packet mode (`FLUSHREAD`, `NOSTOP`, `DOSTOP`, data after a
+    0 byte); `TIOCGPTPEER` opens the program side as a new descriptor, its flags an access
+    mode, `O_NOCTTY`, `O_NONBLOCK` and `O_CLOEXEC` only (`EINVAL` for any other); `TIOCSTI`
+    types a byte only into the caller's own controlling terminal through a description open
+    for reading and fails with `EPERM` otherwise; `TOSTOP` sends
     a background writer `SIGTTOU` (allowed when the signal is ignored or blocked, `EIO` for an
     orphaned group).
   - The manifest gains `console=true` (absent is false), written by the installer for a
@@ -18019,7 +18040,10 @@ the license, by an explicit instruction recorded here.
   context menu, the I-beam, `-t`/`-e` parsing, the exit line, the folder and new windows,
   agents' `select`; `eggsh`'s titles; `stty` (`size` before and after `TIOCSWINSZ`, `-a`'s
   exact text, `raw`/`-g`/restore/`sane`, `cols` and `SIGWINCH`, the errors); the
-  pseudo-terminal's `POLLOUT` room, packet status and `TIOCSTI`'s session rule (`EPERM`); the manifest's
+  pseudo-terminal's `POLLOUT` room, packet status and `TIOCSTI`'s session and read rules
+  (`EPERM`), `TIOCGPTPEER`'s flags, a 2 KiB paste with no newline followed by a newline and by
+  `^C` that both get through with `POLLOUT` reported meanwhile, and a writer that waits behind
+  a whole unread line; the manifest's
   `console`, the installer's PE subsystem and the catalogue's launch. QEMU:
   `xtask/src/qemu/terminals.rs` opens two terminals (both `~ - Terminal`), resizes one with
   `wm size`, types `stty size` into it, and checks the printed size against `wm show`'s
@@ -18066,7 +18090,10 @@ the license, by an explicit instruction recorded here.
   terminal still shows the 400 px panel. `app list` printing `console`, MCP `app_install`
   setting it. Keyboard mark mode, rectangular selection, copy with colours, search, URLs, tabs
   and panes, `stty ispeed`/`ospeed` (section 10). Packet mode's `TIOCPKT_STOP`, `START` and
-  `FLUSHWRITE`, and a packet-mode `readv` filling more than its first buffer. The
+  `FLUSHWRITE`, and a packet-mode `readv` filling more than its first buffer. `TIOCSTI`'s
+  exception for a privileged caller (Linux lets `CAP_SYS_ADMIN` type into any terminal; EggOS
+  refuses root too, the safer side) and the `POLLPRI` Linux reports on a packet-mode
+  controlling side with a status waiting (EggOS reports `POLLIN` only). The
   `term_reflow` baseline line (the build phase adds it).
 
 ## D224 First run and accessibility, the rest: `settings --first-run`, high contrast, reduce motion, the sticky keys' chips, Shift five times, latched modifiers on clicks, Ctrl+Alt+Tab to the bar and the dock, and `/dev/kmsg` (batch part 6; D156's and D205's "Not yet"; extends D132, D156, D205, D219) — Decided by the build loop (design by Claude Fable, docs/ux/first-run-accessibility-v0.3.md and docs/ux/desktop-v0.3-gui.md section 14)
@@ -18108,11 +18135,18 @@ the license, by an explicit instruction recorded here.
     the bar's items, then the dock's, with a focus ring; arrows and Tab move it, Enter or Space
     clicks, Esc or a click ends it.
   - **`/dev/kmsg`** (major 1, minor 11, mode 0644): writes reach the serial console only,
-    reads give nothing, so init's own `init:` lines stay out of the Terminal.
+    reads give nothing, so init's own `init:` lines stay out of the Terminal. Only a
+    privileged writer (effective user 0, init's) may write it; anyone else's write fails with
+    `EACCES`, the rule `/proc/sys/eggos` follows (D221), because `open` checks no mode and
+    any process could otherwise write lines that pass for the kernel's or init's in the boot
+    log. Its control bytes but the newline (C0 and `DEL`) are left out before the console sees
+    them, so no writer can move the serial terminal's cursor, clear it or set its title; the
+    write still counts them as taken.
 - **Check.** Host tests: the first run's pages, saving and `Skip`, and `wm show` on its window
   listing each page's cards, layout, fields, zone list and buttons with the design's names; the
   palettes; the chips, the five taps and the latched click in the kernel's input tests; the
-  bar's focus. QEMU: the first boot on a blank disk opens the first run at the work area's
+  bar's focus; `/dev/kmsg` refusing an unprivileged writer and leaving out control bytes but
+  the newline. QEMU: the first boot on a blank disk opens the first run at the work area's
   centre, a click on `Linux` is kept on the disk, and the next boot shows no first run
   (`xtask/src/qemu/settings.rs`).
 - **Not yet.** The section 14.6 screendump checks #149 left (carried to the next plan; under
@@ -18149,16 +18183,23 @@ the license, by an explicit instruction recorded here.
     `/run/eggos/downloads/<pid>` (URL, saved path, bytes received, the `Content-Length` total,
     state, failure reason, start and end), written through a temporary file renamed over it at
     most four times a second; on `SIGTERM` it removes its partial file and records the download
-    cancelled. The shared crate `eggos-download-list` reads the records, judges a `downloading`
-    record whose `fetch` is gone as failed and words the rows. `download list [--json]`,
-    `download cancel <id>` (`SIGTERM` to the running `fetch`) and `download clear` (the
+    cancelled, removing the file only once it created it (a cancel that comes earlier, while it
+    connects, leaves a file already there alone). `fetch --no-clobber` creates the file only
+    when nothing is there, never through a symbolic link (`O_CREAT|O_EXCL|O_NOFOLLOW`). The
+    shared crate `eggos-download-list` reads the records, judges a `downloading` record whose
+    `fetch` is gone (its id missing from `/proc/ps`, ended, or now running another program) as
+    failed, takes a `/proc/ps` too long to read whole as unknown (the record as it says), and
+    words the rows; a list keeps the 256 newest records by start time. `download list
+    [--json]`, `download cancel <id>` (`SIGTERM` to the running `fetch`, sent only when
+    `/proc/ps`, or else `/proc/<id>/cmdline`, shows the id still runs `fetch`) and `download
+    clear` (the
     records of downloads that are over; the files stay), with the errors `no_such_download`,
     `already_ended` and `still_downloading`; MCP `download_list` (an items tool, D226),
     `download_cancel` (`destroy` under the `run` grant, always asks first, as `kill` does) and
     `download_clear` (`change` under `write`). The Downloads window, `/bin/downloads` (a name
     of the Settings program), lists them newest first with `download list`'s words, read once a
-    second while it shows and not while minimised; its address field starts `fetch -q` into
-    `/home/root/Downloads` under the first free name; `Cancel` (and `Delete`) and `Clear` do
+    second while it shows and not while minimised; its address field starts `fetch -q
+    --no-clobber` into `/home/root/Downloads` under the first free name; `Cancel` (and `Delete`) and `Clear` do
     what the commands do; below 400 px it takes the phone's two-column layout; `Download` and
     `Cancel` are person-only. The launcher lists `Downloads` (found by download, fetch,
     transfers, wget, curl and Library) with its own icon when the image has `/bin/downloads`.
@@ -18174,12 +18215,16 @@ the license, by an explicit instruction recorded here.
     after a failure in 60 s doubling to an hour, with `date`'s lines in init's log; it takes the
     shutdown signals' default actions, so only init shuts the machine down.
   - **The step rule** (`userland/coreutils/src/network_clock.rs`): an automatic sync ignores
-    differences under 1 s, steps the clock by up to an hour while the unchecked steps of the
-    last hour stay within `UNPROVEN_BUDGET_MS` (one hour), and takes a larger step only when two
+    differences under 1 s, steps the clock by up to an hour while the unchecked steps since the
+    last HTTPS-confirmed step or `date -s` add up to at most `UNPROVEN_BUDGET_MS` (one hour), and
+    takes a larger step only when two
     of three HTTPS `Date` headers (`www.google.com`, `www.cloudflare.com`, `www.apple.com`, 10 s
     each, the TLS session's certificate validity checked at the time server's time) agree
     within 120 s; without roots in `/etc/ssl/roots.pem` a clock already set is not stepped far
-    (`ROOTS_REMEDY`). Every sync writes the record; `date -s` forgets the unchecked steps.
+    (`ROOTS_REMEDY`). The budget is not renewed by time or by a boot: it is kept on the disk in
+    `/var/lib/eggos/clock-budget` (`unproven_ms=<n>`), as the hardware clock those steps also
+    set is, so rebooting cannot buy another hour; without a writable disk it lasts the boot, in
+    the record. Every sync writes the record; `date -s` and a confirmed step empty the budget.
     `eggos_net::http::header` and the TLS client's certificate validity serve the check.
 - **Check.** Host tests: the pane and the indicator (network-v0.3.md's acceptance), the
   download records and their reader, `download`'s examples, the Downloads window, the clock
@@ -18198,7 +18243,10 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** A QEMU check of the indicator's tooltip and click (carried). A writable
   `network.<adapter>.address` and several adapters (part 50), Wi-Fi, the indicator at 2x and
   on the phone's bar, the Downloads window resuming a download or keeping its list across
-  boots (records live in `/run`).
+  boots (records live in `/run`). While the network has no address or `time.automatic` is
+  off, the clock keeper wakes every 2 s to look again instead of waiting on a change; the
+  first run (D224) looks only at `/dev/vda` for a disk; download records are written `0644`,
+  so every account can read their URLs (there is one account today).
 
 ## D226 The command model, slices 2 and 3's leftovers: the registry's options in the rest of the utilities, coded errors from `app` and from failing MCP twins, examples against a fake network, pages and dry runs for the rest, escaped control characters, the file utilities as MCP tools, and structured results for list tools (batch part 8; D160, D163-D165 "Not yet") — Decided by the build loop (where tools declare an `outputSchema` decided by research)
 
@@ -18222,7 +18270,7 @@ the license, by an explicit instruction recorded here.
     twin but `run`'s program `EGGOS_CODED_ERRORS=1`, which makes the core utilities and
     `settings` add the `{"error":{...}}` line after a text error; the server moves it into
     `structuredContent.error`. Text errors write control characters as `\n`, `\t`, `\r` and
-    `\xHH`, so a name cannot break or forge a line.
+    `\xHH`, so a name cannot break or forge a line; `app`'s too (`Line::push_escaped`).
   - **Examples run as tests** against the example machine's network (two adapters, a DNS
     server answering `eggos.test`, a host echoing pings in 0.512 ms and serving `/hello.txt`):
     `ip` and `ip route`, `ping` to `eggos.test` and to a silent host, `nslookup` of
@@ -18243,7 +18291,12 @@ the license, by an explicit instruction recorded here.
     its CRC, room in `/Applications`) and MCP `clock_set`'s `dry_run`.
   - **The file utilities as tools** under `write`: `file_copy`, `file_move`, `folder_create`
     and `file_remove` (the last three that replace or delete ask first, with `confirm` and
-    `dry_run`).
+    `dry_run`). No write tool reaches EggOS's settings folder, `/home/root/.config/eggos`,
+    as none reaches the Trash: a path in it is refused, and so is removing, moving or trashing
+    a folder that holds it, so the `write` grant cannot change what `settings_set` asks the
+    `run` grant for. The questions of `component_remove` and `download_cancel` name what goes:
+    the component and its installed size (from its record), the download's id and file name
+    (from its record).
   - **Structured results.** `run`, `wm_capture` and the tools whose twin writes JSON records
     (`df`, `device_list`, `disk_list`, `agent_list`, `wm_desktop_list`, `download_list`,
     `component_list`, `windows_registry_get`) declare an `outputSchema`: `oneOf` their result
@@ -18256,8 +18309,14 @@ the license, by an explicit instruction recorded here.
   `nslookup` or `fetch`); the utilities' host tests for each parser, page and dry run; MCP
   server tests that run every tool in `TOOLS` on fake twin output (success, a page cut,
   refused, failed) and check its `structuredContent` against its own `outputSchema` with a
-  small checker (type, nullable, required, `oneOf`). QEMU: the MCP boot reads `df`'s records
-  as its `structuredContent`'s `items` (`xtask/src/qemu/mcp.rs`).
+  small checker (type, nullable, required, `oneOf`), `eggos_mcp::schema_check`; the core
+  utilities' tests run the real `--json` writer of every list tool whose twin they hold (`df`,
+  `device list`, `agent list`, `wm desktop list`, `download list`, an undated download
+  included) through the same checker against the schema `tools/list` declares, so a field
+  written `null` must be declared nullable (`download list`'s `started_at` now is); the
+  checker is built for them by the `schema-check` feature of their dev-dependency. QEMU: the
+  MCP boot reads `df`'s records as its `structuredContent`'s `items`
+  (`xtask/src/qemu/mcp.rs`).
 - **Decided by research.** *Does every tool declare an `outputSchema`?* No: only the ten above.
   A text tool with a schema must answer `structuredContent` (an empty object at best), and
   some clients then show the model only `structuredContent`, hiding the text that is the
@@ -18267,6 +18326,8 @@ the license, by an explicit instruction recorded here.
   done text for `settings_set` beyond `Set <key> to <value>.`;
   a refused call in a 2026-07-28 session without its `resultType` (`mark_stateless_result`
   runs only on success: an old bug, noted for the next pass); apps' own actions (part 70).
+  The list tools of other crates (`disk_list`, `component_list`, `windows_registry_get`)
+  are not yet run through the checker from their own crates' real writers.
 
 ## D227 Agents operate Windows controls, the rest: list items, checked states and other threads' windows; dialogs of dialogs; the sideways wheel from the kernel's input path (batch part 9; D161's and D162's "Not yet"; extends D161, D162, D178) — Decided by the build loop (engineering)
 
@@ -18280,7 +18341,10 @@ the license, by an explicit instruction recorded here.
     check boxes and radio buttons carry their `checked` flag; `focus` and
     `set-text` on a window of another thread are handed to its owner's queue
     (`gui/handed_over.rs`) and run there, as Windows runs cross-thread `SetFocus` and
-    `WM_SETTEXT`.
+    `WM_SETTEXT`. They are posted to a handle no window has (`HANDED_OVER_WINDOW`), which
+    `PostMessageW` refuses, so a program's own `PostThreadMessageW` or `PostMessageW(NULL)`
+    of the same numbers (0x03F8, 0x03F9) stays the program's message and never has the layer
+    free its `lParam` as a block of its heap.
   - The window server's injected input follows a dialog's own dialogs to the topmost
     (`drivers/src/desktop/injection.rs`), so `open_dialog` and keys reach the dialog the
     person would answer.
@@ -18288,7 +18352,8 @@ the license, by an explicit instruction recorded here.
     into the desktop's `Wheel` records, which D162 already delivers to the toolkit, Win32's
     `WM_MOUSEHWHEEL`, AppKit and Wayland.
 - **Check.** Host tests: the element tree's list items, states and handed-over actions
-  (`userland/windows-gui`'s list box model), the injection chain, the kernel's wheel. QEMU:
+  (`userland/windows-gui`'s list box model; a program's thread message with a handed-over
+  number is not taken for one), the injection chain, the kernel's wheel. QEMU:
   the MCP boot's agents operate `win-controls` through `wm_act` (`xtask/src/qemu/mcp.rs`).
 - **Not yet.** The win-controls QEMU check of the sideways wheel and of selecting a list item
   through `wm act` (carried); items of combo boxes' lists, list views and tree views as
@@ -18304,11 +18369,17 @@ the license, by an explicit instruction recorded here.
   - **Edits**: selection in every edit between an anchor and the caret, `ES_PASSWORD`
     showing `*` for every character until `EM_SETPASSWORDCHAR`, `ES_NUMBER` taking digits only
     (`userland/windows-gui/src/controls/edit.rs`); Tab into an edit selects all under
-    `IsDialogMessageW`.
+    `IsDialogMessageW`; word selection: a double click selects the word under it (a run of
+    letters, digits and `_`, of other characters, or of spaces) and Ctrl with the arrows moves
+    by words. A password edit is an agent's `text field` named `password` with its text left
+    out (`win32/elements.rs`), as `eggway` shows a concealed Wayland field (D176), since
+    agents see the element tree, not the stars.
   - **Radio buttons and group boxes**: an automatic radio clearing the others of its group,
     the arrows moving the selection within a group and Tab landing on its selected radio.
   - **Scroll bars as controls** (`win32/scroll_bar.rs`, `SBS_HORZ`/`SBS_VERT`): `SetScrollInfo`,
-    `GetScrollInfo`, `SetScrollPos`, `SetScrollRange` and their kin, the thumb dragged with
+    `GetScrollInfo`, `SetScrollPos`, `SetScrollRange` and their kin (a bar scrolls whenever
+    its maximum is above its minimum and its page shows only part of the range, so a page of
+    0, as `SetScrollRange` leaves it, gets a thumb the arrows' size), the thumb dragged with
     `SB_THUMBTRACK` and `SB_THUMBPOSITION`, and a held arrow or track repeating its request
     after 250 ms, then every 50 ms while the pointer stays on the arrow or on that side of the
     thumb, through a timer of the control's own that the release kills.
@@ -18342,8 +18413,7 @@ the license, by an explicit instruction recorded here.
 - **Not yet** (carried to the next plan). Scroll bars on windows (`WS_VSCROLL`,
   `WS_HSCROLL`, on `wip/eggos-window-scroll-bars`); multi-line edits (`ES_MULTILINE`);
   `CBS_DROPDOWN` and `CBS_SIMPLE` combo boxes; submenu cascades; menu keys (F10, Alt,
-  mnemonics); `MFT_RADIOCHECK`; menus from templates and child-style dialog templates; word
-  selection in edits (a double click, Ctrl with the arrows).
+  mnemonics); `MFT_RADIOCHECK`; menus from templates and child-style dialog templates.
 
 ## D229 A math library of our own, and the rest of the Windows C runtime: `eggos-math`, `setjmp`/`longjmp`, locales, wide streams and low-level text mode; libSystem's libm from the same code (batch part 11; D146's and D177's "Not yet"; extends D146, D177, D179, D190) — Decided by the build loop (engineering)
 
@@ -18356,8 +18426,17 @@ the license, by an explicit instruction recorded here.
     twin, pure Rust without the standard library, following C's Annex F for zeros, infinities
     and NaNs; trigonometric arguments reduced by Cody and Waite's split of π/2 below about 1.6
     million and by Payne and Hanek's multiplication by 1280 bits of 2/π above; logarithms and
-    powers carried in two doubles, so `pow` stays within 2 ulps; `sinpi` and `cospi`; the
-    stated bounds per function in `ACCURACY`.
+    powers carried in two doubles; `sinpi` and `cospi`; `fma` correctly rounded (the exact
+    product and sum in a 128-bit integer, a shifted-out operand kept as a sticky bit, one
+    rounding, through overflow and the subnormals) and `fmaf` too (the sum rounded to odd in
+    `double`); each function's bound in `ACCURACY`, stated exactly as the host tests check it:
+    within N ulps of the host's libm (2 for `sin`, `cos`, `atan`, the exponentials and
+    logarithms, `cbrt` and `hypot`; 3 for `tan`, the other inverse functions, the hyperbolic
+    ones and `pow`), of a reference from the host's `sin` and `cos` on the exactly reduced
+    turn for `sinpi` and `cospi` (2), of values computed to 80 digits for the error and gamma
+    functions (4), and 0, correctly rounded, for `sqrt`, the rounding and bit functions,
+    `fmod`, `remainder`, `fma` and `fmaf`. `cospi` of an odd whole number from 2^52 to 2^53
+    is -1.
   - **The Windows C runtime**: every math function of the UCRT and `msvcrt.dll` for `double`
     and `float` from `eggos-math`, `_dclass` and its kin, and their floating-point arguments for
     translated x64 programs; `setjmp` and `longjmp` on Microsoft's jump buffers for x64 and
@@ -18370,16 +18449,21 @@ the license, by an explicit instruction recorded here.
     `ccs=` encoding and byte order mark, its descriptor's `_setmode` and its own mode, with text
     mode's line ends in UTF-16; low-level I/O honouring each descriptor's translation mode
     (`_open` records it from its flags or `_fmode`, `_write` writes text mode's `\r\n` and the
-    wide modes' UTF-16 or UTF-8, `_read` joins `\r\n` and stops at Ctrl+Z).
+    wide modes' UTF-16 or UTF-8, a character whose surrogates two writes split kept whole by
+    a high surrogate waiting per descriptor, `_read` joins `\r\n` and stops at Ctrl+Z).
   - **libSystem's libm**: `_sin` and every `math.h` function for `double` and `float`,
     `__sincos_stret`, `__exp10` and `__sinpi`, from the same crate.
   - Benchmarks `math_sin_f64` and `math_exp_f64` (`eggos-math` only in the bench kernel).
-- **Check.** Host tests of every function against the host's libm within its stated ulp bound,
-  over ranges and the special values. QEMU: `eggcrt2.exe`, our own C program built by MSVC in
+- **Check.** Host tests of every function within its `ACCURACY` bound, over ranges and the
+  special values; `fma` and `fmaf` bit for bit against the host's on cancellations, overflow,
+  ties and subnormal results; a wide `_write` pair split between two writes. QEMU: `eggcrt2.exe`, our own C program built by MSVC in
   CI, in the windows-crt session (the math library, `setjmp` and `longjmp` through
   `__finally`, locales, wide streams and low-level text mode).
 - **Not yet.** Named locales other than C and English (United States) UTF-8 (the plan's
-  "Left out"); the two benchmarks' baseline lines (the weekly pass adds them).
+  "Left out"); the two benchmarks' baseline lines (the weekly pass adds them); `errno` from
+  the math functions: the UCRT's `math_errhandling` is believed to include `MATH_ERRNO` (its
+  headers are not in the repo to check), so `EDOM` and `ERANGE` for domain, pole and range
+  errors, which the layer does not set yet, need checking against MSVC.
 
 ## D230 C++ on Windows: msvcp140, RTTI, the layer's own standard exceptions, `std::exception_ptr` and pointer authentication on ARM64 (batch part 12; D177's "Not yet"; extends D177, D229) — Decided by the build loop (engineering)
 
@@ -18447,7 +18531,12 @@ the license, by an explicit instruction recorded here.
 - **Decision.**
   - **`eggos-image`** (`image/`): our own decoders for baseline and progressive JPEG, GIF with
     every frame, TIFF strips, BMP and icons, and PNG through `eggos-png`, behind one sniffing
-    entry point with every size and count capped (decoders parse untrusted files). GDI+
+    entry point with every size and count capped (decoders parse untrusted files): each side,
+    the pixels, the frames and the GIF frames' declared areas together under
+    `Limits::max_pixels`; the working buffers (a JPEG's sample planes and a progressive JPEG's
+    coefficients, a TIFF's undecoded rows) under `Limits::max_working_bytes`, 256 MiB by
+    default; a JPEG's scans at 1 000 (`MAX_JPEG_SCANS`, since each scan walks the whole image
+    however few bytes it has); past any of them a file is `TooLarge`. GDI+
     decodes JPEG, GIF, TIFF and icons through it and loads images from `IStream`s;
     `OleLoadPicture` makes a real `IPicture` (bitmap or icon, HIMETRIC sizes, `Render`,
     `SaveAsFile`). Benchmark `image_decode_jpeg_640x480`, 20 whole decodes (`eggos-image` only
@@ -18457,18 +18546,46 @@ the license, by an explicit instruction recorded here.
     (`/var/lib/eggos/windows/machine.hive`): a CRC-checked pre-order of keys, written whole to a
     temporary file renamed over it, capped at 16 MiB, 512 levels and 1 MiB a value; the
     predefined keys with `HKEY_CLASSES_ROOT` merged from both, the machine's half read-only but
-    to root; regedit's words for types and data. advapi32's `RegOpenKey(Ex)`,
+    to root; regedit's words for types and data. **One store** (review fix):
+    `store::FileStore` in the crate, over a small file-call trait (`HiveFiles`, Linux system
+    calls in `linux::LinuxHiveFiles`, a fake in the host tests), is what the layer and the
+    Settings pane both use. The user's hive and its lock are written 0600, the machine's 0644;
+    every read-modify-write holds an open-file-description lock (`F_OFD_SETLKW`) on the hive's
+    `.lock` file, so two processes or threads never lose each other's change; the temporary
+    file is the writer's own (`.new.<pid>`, `O_EXCL`, a leftover of the same pid removed
+    first); a read goes to the end of the file, never trusting a size read before it, and
+    stops at the cap plus one byte (so a grown file reads as too large); the stamp mixes the
+    inode with the change time and size. The layer's handle table and its cached registry are
+    two spin locks held only to look up or take the slot, never across file I/O, `fsync` or
+    a rename: a thread finding the registry taken works on a fresh one. A hive's values grow
+    as they are read instead of being sized by the file's own count. advapi32's
+    `RegOpenKey(Ex)`,
     `RegCreateKey(Ex)`, `RegQueryValueEx`, `RegSetValueEx`, `RegSetKeyValue`, `RegDeleteValue`,
     `RegDeleteKey(Ex)`, `RegDeleteTree`, `RegEnumKey(Ex)`, `RegEnumValue`, `RegGetValue`,
     `RegQueryInfoKey`, `RegFlushKey` and `RegCloseKey`, W and A (UTF-8), over it, opened keys as
-    handles naming their path.
+    handles naming their path. As Windows (review fix): `RegGetValue` expands a
+    `REG_EXPAND_SZ` (`%NAME%` from the environment, unknown names left as written) and reports
+    it as `REG_SZ` unless `RRF_NOEXPAND`, so `RRF_RT_REG_SZ` takes it; asking for
+    `RRF_RT_REG_EXPAND_SZ` without `RRF_NOEXPAND` (and without `RRF_RT_ANY`) is
+    `ERROR_INVALID_PARAMETER`; `RRF_RT_DWORD` and `RRF_RT_QWORD` take `REG_BINARY` data of 4
+    and 8 bytes only (`ERROR_DATATYPE_MISMATCH` otherwise). `RegOpenKeyEx` and
+    `RegCreateKeyEx` asking for write access (`KEY_SET_VALUE`, `KEY_CREATE_SUB_KEY`,
+    `KEY_CREATE_LINK`, `DELETE`, `WRITE_DAC`, `WRITE_OWNER`, `GENERIC_WRITE`, `GENERIC_ALL`)
+    to a key in the machine's hive fail at open with `ERROR_ACCESS_DENIED` for a process that
+    may not change it (every process is root today, D75, so none is refused yet).
   - **CLI**: `windows registry get|set|delete|reset` with examples, errors and confirmation:
     the layer runs as the `windows` command when its first word is `registry`, and
     `/bin/windows` is a link to it wherever the layer is (so the command exists only with the
     Windows apps component, D235). **MCP**: `windows_registry_get` (an items tool, D226),
     `windows_registry_set` (`change` under `write`), `windows_registry_delete` and
     `windows_registry_reset` (`destroy` under `write`, always asking first), listed and callable
-    only while the layer's file is there.
+    only while the layer's file is there. **Asking before a set** (review, S1): `windows
+    registry set` asks on a terminal before it replaces a value that is there or changes the
+    machine's hive (a new value or key under `HKEY_LOCAL_MACHINE`, as root: "It applies to
+    every user of this machine."); `--yes` saves without asking and, without a terminal, it
+    saves, as `reg add` scripts expect. The pane does not ask: editing a value there is the
+    person's own act on the value they opened, and the machine's keys show "Changes here apply
+    to every user of this machine." first. `windows_registry_set` does not ask yet (below).
   - **GUI**: Settings' `Windows` pane (`userland/settings/src/windows_pane.rs`), its sidebar row
     shown only while the Windows layer is installed: the three roots and their keys, a typed
     path field, the selected key's values in a table (`Name`, `Type`, `Data`), panels to edit a
@@ -18477,12 +18594,18 @@ the license, by an explicit instruction recorded here.
     read-only for a user (their path still copies). Every write goes through
     `registry::Registry`, the command's own path. The toolkit gains
     `WidgetTree::set_accessible_name` and `set_accessible_value` for its rows.
-- **Check.** Host tests: the decoders against damaged and oversized input; the hive file
+- **Check.** Host tests: the decoders against damaged and oversized input (a JPEG one scan
+  past the cap, working buffers one byte past the budget, GIF frames whose declared areas pass
+  the pixel cap); the hive file
   (round trips, CRC, limits, a damaged file), the registry's merge and read-only rules, the
   command's examples; the pane (10 tests: the row only with the layer, the design's layout,
   keys by Enter or a typed path, editing a number, new keys and values, deleting, the machine's
   keys read-only, a damaged file replaced after asking, a failed write keeping its panel, the
-  table and the command showing the same cells). The release image's twin check knows the
+  table and the command showing the same cells); review fixes: the store's modes, lock around
+  every write, per-process temporary files, reads to the end capped at 16 MiB + 1 and the
+  inode in the stamp (a fake file system), `set` asking, and in the layer `RegGetValue`'s
+  expansion and type rules, the access check at open and the registry worked on with no spin
+  lock held. The release image's twin check knows the
   registry tools' twin comes with the Windows layer's component.
 - **Decided in plan review.** *Cut part 13's tail?* Yes, at cut point A-: everything below
   goes to the next plan. *Build the registry view in this batch?* Yes: the registry's CLI and
@@ -18499,7 +18622,13 @@ the license, by an explicit instruction recorded here.
   fixes; the autohotkey job's tooltip, tray and registry steps. The `windows_registry_*` tools
   in the QEMU MCP check (they are listed only while the Windows apps component is installed,
   which that boot does not do; `every_tool_is_called_by_the_check` leaves out tools that need a
-  component).
+  component). `windows_registry_set` asking the user when the value exists or the key is the
+  machine's: the server must learn whether the value exists before it runs the twin (a
+  `windows registry get` probe, or the crate's `command::set_question`), then the tool becomes
+  `WhenOverwriting` with `confirm`, `dry_run` and `--yes`. `HKEY_CLASSES_ROOT` write-through
+  (B11): writing a value under a class only the machine has makes the user's key with that
+  value alone, which then hides the machine's other values, where Windows merges both keys'
+  values; this registry merges subkeys only.
 
 ## D232 Foundation's breadth and nib loading: `eggos-plist`, compiled nibs (`NIBArchive`) for `NSMainNibFile`, NSNotificationCenter, NSUUID, string encodings, NSFileManager, run loop modes and delayed performs (batch part 14; D175's and D196's "Not yet"; extends D147, D175, D196) — Decided by the build loop (engineering)
 
@@ -18510,11 +18639,15 @@ the license, by an explicit instruction recorded here.
 - **Decision.**
   - **`eggos-plist`** (`plist/`): XML and binary property lists read in place; the installer
     and the macOS layer's `Info.plist` use it (the installer's binary reader moved into it),
-    so `NSBundle` reads a binary `Info.plist`.
+    so `NSBundle` reads a binary `Info.plist`. An XML `<integer>` is one optional sign and
+    decimal or `0x` digits, any 128-bit value; a second sign or a value out of range is no
+    integer.
   - **Nibs**: a `NIBArchive` reader for compiled nibs, checked against limits and damaged
     input; `NSApplicationMain` loads `NSMainNibFile` and `NSPrincipalClass`, and the nib loader
     makes windows, views, controls, menus and the program's objects behind a class allow-list,
-    a memo table and a depth limit, connects outlets and actions and sends `awakeFromNib`.
+    a memo table and a depth limit, connects outlets (through the object's `set<Name>:` when
+    it has one, else its ivar) and actions and sends `awakeFromNib`. Each table's declared
+    count is checked against the bytes after its offset before any table is allocated.
     `mac-nib`'s sources carry a `MainMenu.xib` that `ibtool` compiles for the host test on
     macOS.
   - **Foundation**: NSNotification and NSNotificationCenter (selector observers held weakly,
@@ -18532,7 +18665,8 @@ the license, by an explicit instruction recorded here.
     `performSelector:withObject:afterDelay:` (and `inModes:`) and
     `cancelPreviousPerformRequestsWithTarget:` with and without a selector.
 - **Check.** Host tests of the plist and `NIBArchive` readers (fixtures, limits, damaged
-  input). QEMU: `macos-objc foundation` in the macOS programs boot test (notifications, NSUUID,
+  input, XML integers with two signs or past 128 bits, table counts past the file's end) and
+  of an outlet's setter name. QEMU: `macos-objc foundation` in the macOS programs boot test (notifications, NSUUID,
   encodings, NSFileManager on a tree in `/tmp`, delayed and cancelled performs, a timer in its
   own mode and a thread's own run loop); `mac-nib.app` in the macOS GUI check (installed from `mac-nib.zip`, its nib's window and
   menu, `Quit mac-nib` from the nib's menu and the delegate's `awakeFromNib` line).
@@ -18560,8 +18694,9 @@ the license, by an explicit instruction recorded here.
     `resetCursorRects` when a window shows and `invalidateCursorRectsForView:`, one
     `SET_POINTER` per change.
   - **NSPasteboard** on the shared clipboard: the general pasteboard read and written on every
-    call, its change count the server's serial; private named and unique pasteboards; strings,
-    data and objects; the pasteboard names and types exported.
+    call, its change count the server's serial (a shared text longer than one copy holds,
+    1 MiB, reads as nil); private named and unique pasteboards; strings, data and objects; the
+    pasteboard names and types exported.
 - **Check.** Host tests in `userland/macos-gui`: the button types' looks, state order and radio
   groups, the cursor's class shapes, hide count, push stack and per-view rects, and the
   pasteboard's model.
@@ -18580,18 +18715,30 @@ the license, by an explicit instruction recorded here.
   - **DWARF call frame information** from an image's `__eh_frame` (`objc/unwind_dwarf.rs`):
     CIEs, FDEs, the call frame program with remembered states and expressions, every length,
     offset and depth checked (the tables are untrusted), for the frames compact unwind
-    information defers to; the loader records the section.
+    information defers to; the loader records the section. A scan of the section for a
+    function passes over an FDE it cannot read.
   - **Through the layer's frames**: every loaded image unwinds (compact or DWARF); guard stubs on
-    the methods that raise or call back into the program carry an exception on from the
-    program's frame. Foundation's failures (an index out of range, nil objects, mutation while
+    the methods that raise (`raise_named`) or call the program's blocks (enumerations,
+    notification observers, `-[NSBlock invoke]`) carry an exception on from the program's
+    frame. A host test (`userland/macos/src/raising_methods.rs`) reads Foundation's and the
+    runtime's sources and fails on a method table entry that reaches either without a guard;
+    `appendFormat:` and `dictionaryWithObjectsAndKeys:` are left out because they are
+    variadic, and a guard stub's frame would move their stack arguments. Foundation's failures (an index out of range, nil objects, mutation while
     enumerating, unrecognized selectors) raise NSExceptions a `@catch` takes; timers pass their
     callouts' exceptions on after cleaning up; AppKit's run loop reports an exception from an
     event, a timer or a drawing pass with `reportException:` and carries on, as macOS does.
 - **Check.** Host tests of the CFI reader (CIE and FDE parsing, the program's rules, limits,
-  damaged tables). QEMU: the macOS programs boot test's `macos-objc` catches an index out of
-  range, an exception thrown from a block Foundation called and an unrecognized selector.
-- **Not yet** (carried to the next plan). C++ exceptions (`__gxx_personality_v0`, `__cxa_*`)
-  and the rest of `_Unwind_*`; UDCalc 0.2.0 with its bundled Sparkle framework (`cargo xtask
+  damaged tables, a damaged FDE passed over); the guard audit. QEMU: the macOS programs boot
+  test's `macos-objc` catches an index out of range, an exception thrown from a block
+  Foundation called, an unrecognized selector, a range error from `insertString:atIndex:`, a
+  nil object given to `dictionaryWithObjects:forKeys:count:`, an exception from a set's block
+  and one from a notification observer's block.
+- **Not yet** (carried to the next plan). Guards on the variadic methods; methods that reach
+  the program only through ordinary messages (`copy`, `isEqual:`, `hash`, `description`, a
+  nib's setters and `awakeFromNib`) are not guarded, so an exception from there goes to the
+  nearest outer guard or boundary; an exception out of a guarded method's callback leaks what
+  the method held (an enumeration's snapshot, a post's delivery list, a dictionary half
+  filled). C++ exceptions (`__gxx_personality_v0`, `__cxa_*`) and the rest of `_Unwind_*`; UDCalc 0.2.0 with its bundled Sparkle framework (`cargo xtask
   udcalc-app`, the CI job `udcalc-app` in `check`'s needs, its row in docs/compatibility.md).
 
 ## D235 The component manager, part 1: the Windows and macOS layers as components outside the base, the store, `component`, three MCP tools and Settings' Components list (batch part 20; M14; D18; D152's and D214's "Not yet"; ends D152's exception) — Decided by the build loop (design by Claude Fable, docs/ux/components-v0.3.md; the desktop and built-in apps' rows decided in plan review; security review in the batch's review)
@@ -18611,7 +18758,8 @@ the license, by an explicit instruction recorded here.
     store on a read-only attached disk (the kernel recognises its magic, keeps the disk for the
     manager and says `vfs: the component store is attached` instead of offering to erase it) or
     in the host share. `run-eggos.sh`, `run-eggos.ps1` and `cargo xtask run` attach it
-    (`--no-components`, `-NoComponents`), the scripts only when it matches its `SHA256SUMS` line.
+    (`--no-components`, `-NoComponents`), the scripts only when it matches its `SHA256SUMS` line
+    (`run-eggos.sh` leaves it out, saying so, when the host has no `sha256sum` or `shasum`).
   - **The base** holds `/usr/lib/eggos/windows`, `/usr/lib/eggos/macos` and `/bin/windows` as
     symbolic links (`initramfs::Content::SymbolicLink`) into the folders the components install
     to; they lead nowhere until `component install`. `/bin/component` is a hard link to
@@ -18620,11 +18768,17 @@ the license, by an explicit instruction recorded here.
   - **The manager** (`userland/components`, `eggos-components`): installs under
     `/var/lib/eggos/components/<name>/`, copied into a staging folder, each file checked
     against its SHA-256 as it is copied, the record written, then the folder renamed into place,
-    the folders above it real folders, not links; a failure installs nothing. One action at a
-    time under `/run/eggos/components.lock`. A remove is refused while another installed
-    component needs it (`needed_by`) or a program runs one of its files (its first word, the link
-    that word names, or `/proc/<pid>/exe`: `in_use`, naming the program); it renames the folder
-    away, then deletes it; a left-over staging or removing folder goes on the next action.
+    the folders above it real folders, not links; a failure leaves that component uninstalled
+    (an install that brings a needed component first keeps the ones done before it). One action
+    at a time under `/run/eggos/components.lock`; a lock whose process is gone is taken over by
+    one process at a time, which claims it first with
+    `/run/eggos/components.lock.take-over-<pid>` (`create` fails for the others). A remove is
+    refused while another installed component needs it (`needed_by`) or a program runs one of
+    its files (its first word, the link that word names, or `/proc/<pid>/exe`: `in_use`,
+    naming the program), checked when asked and again under the lock once confirmed
+    (`remove_checked`, both front-ends); it renames the folder away, then deletes it, and says
+    so when a file could not be deleted (`FilesLeft`: removed all the same); a left-over
+    staging or removing folder goes on the next action.
   - **CLI**: `component list [--json]`, `component install [--dry-run] <name>` and `component
     remove [--yes] [--dry-run] <name>` with errors and examples. `app install` of a program
     whose layer is missing says which component to install (`component install windows-apps` or
@@ -18635,21 +18789,25 @@ the license, by an explicit instruction recorded here.
     store's state above, one row per component with its title, summary, state and size and one
     `Install` or `Remove` button; under the acting row a note: a confirmation (removing, or
     installing what a component needs too), the progress bar or the result, in the words of
-    `component` and its tools. Its buttons are person-only (`wm act` answers `element_cannot`),
-    and removing the component the window's own program runs from is refused with the
-    desktop's in-use words.
+    `component` and its tools. Only the `Remove` that confirms a remove is person-only (`wm
+    act` answers `element_cannot`), as `component_remove` always asks the person; `Install`,
+    like `component_install`, never asks, so an agent may press it. Removing the component the
+    window's own program runs from is refused with the desktop's in-use words.
   - **Benchmarks**: `components_store_bytes`, the store's size per architecture, gated as a
     size; `release_image_bytes` and `idle_memory_bytes` now measure the base with no component
     installed. D214's `release_image_bytes` and `boot_to_prompt` lines should fall: the weekly
     pass records the new baseline.
 - **Check.** Host tests: the store's format and limits against damaged and hostile indexes, the
-  manager's install, remove, refusals, lock and leftovers, the command's examples; the pane with
-  a four-component fake store (`desktop`, `builtin-apps`, `windows-apps`, `mac-apps`; nine
-  tests: layout, install progress moving the rows, refusals and confirmation as the CLI answers,
-  a missing dependency confirmed then installed first, a failed or cancelled install, no store,
-  an agent reading the rows but unable to say yes, every line fitting its label). QEMU:
+  manager's install, remove, refusals, the remove checked again under the lock, files a remove
+  could not delete, the lock and its take-over claim, leftovers, the command's examples; the
+  pane with a four-component fake store (`desktop`, `builtin-apps`, `windows-apps`,
+  `mac-apps`; ten tests: layout, installing moving the rows, refusals and confirmation as the
+  CLI answers, a remove refused once confirmed, a missing dependency confirmed then installed
+  first, a failed or cancelled install, no store, an agent reading the rows but unable to say
+  yes, every line fitting its label). QEMU:
   `xtask/src/qemu/components.rs` (`app install` offers the layer, `component install`, `app
-  install`, `component remove` leaves nothing, reinstall, a second boot keeps it, and a boot
+  install`, `component remove` leaves nothing (`ls -A`, so a left-over `.removing-` folder
+  fails it), reinstall, a second boot keeps it, and a boot
   that installs `windows-apps` through the Settings pane, runs a Windows program, finds the
   Windows pane's Keys table and has `wm act` refused on the person-only Remove); the install
   test runs `component install windows-apps` first; the macOS GUI and MCP checks run on kernels
@@ -18660,8 +18818,15 @@ the license, by an explicit instruction recorded here.
   the store offers (`windows-apps`, `mac-apps`) and is tested with all four names.
 - **Not yet.** The desktop and the built-in apps as components (parts 65 and 66); components
   downloaded on demand in the background and delta updates (M14, part 64); the pane's live
-  progress and cancelling mid-copy (the copy runs inside one tick of the window, so the bar
-  jumps and `Cancel installing` stops only between files), tooltips on its disabled buttons and
-  its phone layout; the full Components pane of part 65. An `In use` line naming two programs
+  progress (the copy runs inside one tick of the window, so the bar shows nothing copied until
+  the result) and cancelling a single install (`Cancel installing` stops between components; a
+  single install cannot be cancelled), tooltips on its disabled buttons and its phone layout;
+  the full Components pane of part 65. `/bin/settings` links Settings' Windows pane and the
+  registry crate whether or not `windows-apps` is installed, so the base carries that code (D18
+  wants it in the component). QEMU does not yet run a successful `component_install` or
+  `component_remove` through MCP (the MCP check calls both only without their grant) nor a
+  successful remove through the Settings pane (its confirming `Remove` is person-only); the
+  command's install and remove are run, and the pane's install. A lock file left empty (its
+  process stopped between `create` and the write) reads as a gone process and is taken over. An `In use` line naming two programs
   can pass the pane's 64 characters (`Files and Text Editor are running`) and is then cut with
   `...`.
