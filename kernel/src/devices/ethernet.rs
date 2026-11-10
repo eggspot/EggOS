@@ -124,12 +124,21 @@ fn probe_ethernet(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError>
         unsafe { memory.free() };
         ProbeError::Refused(error.description())
     };
-    let adapter = match kind {
+    let mut adapter = match kind {
         Kind::E1000(family) => Adapter::E1000(e1000::E1000::new(regs, memory, family, &mut keep_waiting).map_err(refuse)?),
         Kind::Igc => Adapter::Igc(igc::Igc::new(regs, memory, &mut keep_waiting).map_err(refuse)?),
         Kind::Realtek(generation) => {
             Adapter::Realtek(realtek::Realtek::new(regs, memory, generation, &mut keep_waiting).map_err(refuse)?)
         }
     };
-    crate::net::install(Box::new(adapter)).map_err(|_| ProbeError::Refused("a network adapter is already in use"))
+    let interrupting = matches!(adapter, Adapter::E1000(_))
+        && super::message_interrupts::connect(probe, id, &crate::net::DEVICE_EVENTS).is_ok();
+    if let (true, Adapter::E1000(e1000)) = (interrupting, &mut adapter) {
+        e1000.enable_interrupts();
+    }
+    match interrupting {
+        true => crate::net::install_interrupting(Box::new(adapter)),
+        false => crate::net::install(Box::new(adapter)),
+    }
+    .map_err(|_| ProbeError::Refused("a network adapter is already in use"))
 }

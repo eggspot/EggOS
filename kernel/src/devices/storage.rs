@@ -2,6 +2,8 @@
 //! kernel's disks ([`crate::block`]), polled.
 
 use super::dma::DmaRegion;
+use super::interrupts::DeviceEvents;
+use super::message_interrupts::{self, waiting_for};
 use super::{DeviceId, DeviceNode, DmaCoherence, DriverDescriptor, Identity, Match, Probe, ProbeError, ProbePass};
 use crate::block::{BlockDevice, BlockError};
 use crate::devices::Deadline;
@@ -50,7 +52,16 @@ fn block_error(error: storage::Error) -> BlockError {
     }
 }
 
-struct NvmeDisk(nvme::Nvme<Mmio, DmaRegion>);
+struct NvmeDisk(nvme::Nvme<Mmio, DmaRegion>, Option<&'static DeviceEvents>);
+
+static NVME_EVENTS: [DeviceEvents; crate::block::MAX_DISKS] =
+    [const { DeviceEvents::new() }; crate::block::MAX_DISKS];
+static NVME_EVENTS_TAKEN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+fn take_nvme_events() -> Option<&'static DeviceEvents> {
+    let taken = NVME_EVENTS_TAKEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    NVME_EVENTS.get(taken)
+}
 
 impl BlockDevice for NvmeDisk {
     fn sectors(&self) -> u64 {
@@ -64,17 +75,17 @@ impl BlockDevice for NvmeDisk {
     }
     fn read(&mut self, sector: u64, buffer: &mut [u8], deadline: &mut Deadline) -> Result<(), BlockError> {
         self.0
-            .read(sector, buffer, &mut || deadline.keep_waiting())
+            .read(sector, buffer, &mut waiting_for(self.1, deadline))
             .map_err(block_error)
     }
     fn write(&mut self, sector: u64, buffer: &[u8], deadline: &mut Deadline) -> Result<(), BlockError> {
         self.0
-            .write(sector, buffer, &mut || deadline.keep_waiting())
+            .write(sector, buffer, &mut waiting_for(self.1, deadline))
             .map_err(block_error)
     }
     fn flush(&mut self, deadline: &mut Deadline) -> Result<(), BlockError> {
         self.0
-            .flush(&mut || deadline.keep_waiting())
+            .flush(&mut waiting_for(self.1, deadline))
             .map_err(block_error)
     }
 }
@@ -170,7 +181,8 @@ fn probe_nvme(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         give_back(memory);
         ProbeError::Refused(error.description())
     })?;
-    crate::block::install(Box::new(NvmeDisk(controller)))
+    let events = take_nvme_events().filter(|events| message_interrupts::connect(probe, id, events).is_ok());
+    crate::block::install(Box::new(NvmeDisk(controller, events)))
         .map_err(|_| ProbeError::Refused("no room for another disk"))
 }
 

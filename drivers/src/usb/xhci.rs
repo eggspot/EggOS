@@ -40,6 +40,11 @@ const PORT_CHANGE_BITS: u32 = 0x00fe_0000;
 const PORT_WRITE_PRESERVE: u32 = !(PORT_CHANGE_BITS | PORT_ENABLED);
 
 const INTERRUPTER: usize = 0x20;
+const INTERRUPTER_MANAGEMENT: usize = INTERRUPTER;
+const INTERRUPT_PENDING: u32 = 1;
+const INTERRUPT_ENABLE: u32 = 1 << 1;
+const COMMAND_INTERRUPTS: u32 = 1 << 2;
+const STATUS_EVENT_INTERRUPT: u32 = 1 << 3;
 const INTERRUPTER_TABLE_SIZE: usize = INTERRUPTER + 0x08;
 const INTERRUPTER_TABLE_BASE: usize = INTERRUPTER + 0x10;
 const INTERRUPTER_DEQUEUE: usize = INTERRUPTER + 0x18;
@@ -868,9 +873,26 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         sent
     }
 
+    /// Asks the controller to interrupt on its events (D255), once a message interrupt is
+    /// connected.
+    pub fn enable_interrupts(&mut self) {
+        self.regs
+            .write32(self.runtime + INTERRUPTER_MANAGEMENT, INTERRUPT_ENABLE | INTERRUPT_PENDING);
+        let command = self.regs.read32(self.op(USB_COMMAND));
+        self.regs.write32(self.op(USB_COMMAND), command | COMMAND_INTERRUPTS);
+    }
+
+    fn clear_interrupt(&self) {
+        let management = self.regs.read32(self.runtime + INTERRUPTER_MANAGEMENT);
+        self.regs
+            .write32(self.runtime + INTERRUPTER_MANAGEMENT, management | INTERRUPT_PENDING);
+        self.regs.write32(self.op(USB_STATUS), STATUS_EVENT_INTERRUPT);
+    }
+
     /// Hands `emit` the reports the devices sent, at most `budget` events' worth of reports;
     /// returns how many reports it took.
     pub fn poll(&mut self, budget: usize, emit: &mut dyn FnMut(RawEvent)) -> usize {
+        self.clear_interrupt();
         let mut taken = 0;
         while taken < budget {
             let Some(event) = self.next_event() else {
