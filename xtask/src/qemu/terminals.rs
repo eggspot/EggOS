@@ -33,6 +33,13 @@ fn type_line(boot: &mut Boot<'_>, line: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("{}: could not type on the console: {e}", boot.arch.name))
 }
 
+fn captured_then_prompt(console: &str) -> bool {
+    console.match_indices(CAPTURED_PREFIX).any(|(at, _)| {
+        let rest = &console[at + CAPTURED_PREFIX.len()..];
+        rest.starts_with(|c: char| c.is_ascii_digit()) && rest.contains(SHELL_PROMPT)
+    })
+}
+
 fn console(boot: &mut Boot<'_>) -> String {
     boot.console.extend(boot.output.try_iter().flatten());
     String::from_utf8_lossy(&boot.console).into_owned()
@@ -153,7 +160,10 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
          wm capture {second} -o /tmp/terminal.png; echo {CAPTURED_PREFIX}$?\r"
     );
     type_line(&mut boot, drive.as_bytes())?;
-    boot.wait_for_prompts(prompts + 1)?;
+    boot.wait_until(
+        "the capture's status and the prompt after it",
+        captured_then_prompt,
+    )?;
     type_line(&mut boot, POWER_OFF)?;
     let (console, clean_exit) = boot.finish()?;
     verdict(arch.name, &console, &windows)?;
@@ -203,5 +213,19 @@ mod tests {
         assert!(verdict("x86_64", SHOWN, &windows[..1]).is_err());
         let no_banner = SHOWN.replace("Welcome to EggOS.", "Hello.");
         assert!(verdict("x86_64", &no_banner, &windows).is_err());
+    }
+
+    #[test]
+    fn the_wait_ends_at_the_prompt_after_the_capture_status_not_at_prompts_in_the_rows() {
+        let typed = "eggsh:/root# wm show 66; echo EGGOS-TERMINALS shown $?; \
+                     wm capture 66 -o /tmp/terminal.png; echo EGGOS-TERMINALS capture $?\n";
+        let rows = format!(
+            "{typed}{}",
+            SHOWN.replace("EGGOS-TERMINALS capture 0\n", "")
+        );
+        assert!(!captured_then_prompt(&rows));
+        let captured = format!("{rows}EGGOS-TERMINALS capture 0\n");
+        assert!(!captured_then_prompt(&captured));
+        assert!(captured_then_prompt(&format!("{captured}eggsh:/root# ")));
     }
 }

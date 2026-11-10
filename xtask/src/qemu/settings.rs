@@ -189,18 +189,31 @@ impl<'a> Boot<'a> {
     }
 
     pub(super) fn wait_for_prompts(&mut self, count: usize) -> Result<(), String> {
+        self.wait_until(&format!("prompt {count}"), |console| {
+            console.matches(SHELL_PROMPT).count() >= count
+        })
+    }
+
+    /// Waits until `done` holds for the console so far, failing as [`Self::wait_for_prompts`]
+    /// does when QEMU ends, the machine resets or the timeout passes before `what`.
+    pub(super) fn wait_until(
+        &mut self,
+        what: &str,
+        done: impl Fn(&str) -> bool,
+    ) -> Result<(), String> {
         loop {
             self.console.extend(self.output.try_iter().flatten());
-            if self.prompts() >= count {
+            let console = String::from_utf8_lossy(&self.console).into_owned();
+            if done(&console) {
                 return Ok(());
             }
             if let Some(status) = self.child.try_wait().map_err(|e| e.to_string())? {
                 return Err(format!(
-                    "{}: QEMU ended ({status}) before prompt {count}",
+                    "{}: QEMU ended ({status}) before {what}",
                     self.arch.name
                 ));
             }
-            if banner_count(&String::from_utf8_lossy(&self.console)) > 1 {
+            if banner_count(&console) > 1 {
                 return Err(self.fail(format!(
                     "{}: the machine reset and booted again",
                     self.arch.name
@@ -208,7 +221,7 @@ impl<'a> Boot<'a> {
             }
             if self.started.elapsed() > self.timeout {
                 return Err(self.fail(format!(
-                    "{}: no prompt {count} within {}s",
+                    "{}: no {what} within {}s",
                     self.arch.name,
                     self.timeout.as_secs()
                 )));
