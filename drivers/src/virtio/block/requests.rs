@@ -1,4 +1,4 @@
-//! Which of the block driver's requests are in flight (D219): each has a header and a status
+//! Which of the block driver's requests are in flight (D220): each has a header and a status
 //! byte of its own, by its number, and a run of whole data slots of the driver's DMA memory,
 //! so up to [`MAX_IN_FLIGHT`] requests are posted at once and complete in any order.
 

@@ -389,7 +389,7 @@ pub struct MachO<'a> {
     pub thread_locals: Option<ThreadLocalTemplate>,
     pub objc: ObjcSections,
     pub unwind_info: Option<SectionRange>,
-    /// The `__eh_frame` section: DWARF call frame information (D233).
+    /// The `__eh_frame` section: DWARF call frame information (D234).
     pub eh_frame: Option<SectionRange>,
 }
 

@@ -38,7 +38,7 @@ pub enum Grant {
     /// Write and delete files below `/home/root` (`tee`, `trash`, `fetch`, `ln`).
     Write,
     /// Install, open and uninstall apps (`app_install`, `app_open`, `app_uninstall`), install
-    /// and remove components (`component_install`, `component_remove`, D237), and open a text
+    /// and remove components (`component_install`, `component_remove`, D238), and open a text
     /// file in the Text Editor (`edit_open`).
     Install,
     /// Run any program (`run`), operate any window (`wm_click`, `wm_type`, `wm_press`,

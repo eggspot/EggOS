@@ -1,4 +1,4 @@
-//! First run (D223, docs/ux/first-run-accessibility-v0.3.md section 1): `settings --first-run`'s
+//! First run (D224, docs/ux/first-run-accessibility-v0.3.md section 1): `settings --first-run`'s
 //! window, `Welcome to EggOS`, asking where the person comes from, the keyboard layout and the
 //! time zone on three pages with `Skip`, `Back` and `Next`. Every choice is saved and applied
 //! the moment it is made, as the Settings panes save; ending the window saves the profile in

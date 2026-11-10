@@ -32,7 +32,7 @@ power-off.`
 
 **Display** shows the resolution, the scale (1x) and how the pointer is drawn; **Keyboard** the
 layout (US); **About** the version, the architecture, the CPUs, the memory and the uptime, and under them
-the machine's devices (D219, docs/ux/devices-v0.3.md): a table of `Kind`, `Device` and
+the machine's devices (D220, docs/ux/devices-v0.3.md): a table of `Kind`, `Device` and
 `Driver` with the rows `device list` prints, read from `/proc/driver/devices` each time the pane
 is shown, and `Show all <n> devices` for every device, unticked whenever the pane opens;
 **Mouse** and **Components** come in a later version. The scale is 1x in 0.3.0 (the `2x`
@@ -118,8 +118,8 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | Command | Does | Status |
 |---------|------|--------|
 | `settings` | Opens the window and serves it until it is closed. | 0; 1 without a display |
-| `settings --pane <pane>` | Opens the window on that pane: its name in lower case with `-` for spaces and `and` for `&` (`keyboard`, `date-and-time`); what the bar's keyboard layout menu's `Keyboard settings...` starts (D220). | 0; 1 without a display; 2 for an unknown pane |
-| `settings --first-run` | Opens `Welcome to EggOS`, the first run: where you are coming from, the keyboard layout and the time zone on three pages, each choice saved and applied the moment it is made; `Skip`, `Done` or closing it saves the profile in force when none was saved. init starts it once, on the first boot of an image that was never installed, with a disk attached and no `shell.profile` saved, and not with an agent attached (D223). | 0; 1 without a display |
+| `settings --pane <pane>` | Opens the window on that pane: its name in lower case with `-` for spaces and `and` for `&` (`keyboard`, `date-and-time`); what the bar's keyboard layout menu's `Keyboard settings...` starts (D221). | 0; 1 without a display; 2 for an unknown pane |
+| `settings --first-run` | Opens `Welcome to EggOS`, the first run: where you are coming from, the keyboard layout and the time zone on three pages, each choice saved and applied the moment it is made; `Skip`, `Done` or closing it saves the profile in force when none was saved. init starts it once, on the first boot of an image that was never installed, with a disk attached and no `shell.profile` saved, and not with an agent attached (D224). | 0; 1 without a display |
 | `settings list` | Writes every setting as `key=value`, one per line. | 0 |
 | `settings get <key>` | Writes the setting's value. | 0; 1 for an unknown key |
 | `settings set [--dry-run] <key> <value>` | Sets it: saved in the settings file, then applied at once on the display (with no display it applies at the next boot). `--dry-run` checks the key and the value and says `would set <key> from <old> to <new>`, changing nothing (D164). | 0; 1 for an unknown or read-only key, or when saving or applying failed (`settings: <key>: <why>`); 2 for an invalid value or a bad command |
@@ -127,13 +127,13 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | Key | Value | Settable |
 |-----|-------|----------|
 | `shell.profile` | `windows`, `macos` (the default) or `linux` | yes |
-| `appearance.theme` | `dark` (the default) or `light`: every window repaints in it at once (D218; the Appearance pane) | yes |
+| `appearance.theme` | `dark` (the default) or `light`: every window repaints in it at once (D219; the Appearance pane) | yes |
 | `display.scale` | `1` (the default) or `2`, which doubles everything from the next boot (D195; the Display pane) | yes |
 | `display.resolution` | the screen's size, `1280x800` | no |
 | `display.pointer` | `software` | no |
-| `keyboard.layout` | `us` (the default), `us-intl`, `us-mac`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `be`, `ca`, `de`, `ch`, `it`, `no`, `br`, `pt`, `es`, `latam` or `se` (D185, D220, the Keyboard pane, docs/ux/keyboard-v0.3.md); a layout not in `keyboard.layouts` joins it (or takes the place of the one in force in a full set) | yes |
-| `keyboard.layouts` | one to four layouts, in order, separated by commas without spaces (`us,de`), none twice; `us` by default; the layouts the switch key cycles through (D220); with two or more, the bar shows the layout in force's code, whose menu chooses among them | yes |
-| `keyboard.switch_key` | `profile` (the default: Super+Space in the Windows and Linux profiles, Ctrl+Space in the macOS profile), `super+space`, `ctrl+space`, `alt+shift`, `ctrl+shift` or `none` (D220) | yes |
+| `keyboard.layout` | `us` (the default), `us-intl`, `us-mac`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `be`, `ca`, `de`, `ch`, `it`, `no`, `br`, `pt`, `es`, `latam` or `se` (D185, D221, the Keyboard pane, docs/ux/keyboard-v0.3.md); a layout not in `keyboard.layouts` joins it (or takes the place of the one in force in a full set) | yes |
+| `keyboard.layouts` | one to four layouts, in order, separated by commas without spaces (`us,de`), none twice; `us` by default; the layouts the switch key cycles through (D221); with two or more, the bar shows the layout in force's code, whose menu chooses among them | yes |
+| `keyboard.switch_key` | `profile` (the default: Super+Space in the Windows and Linux profiles, Ctrl+Space in the macOS profile), `super+space`, `ctrl+space`, `alt+shift`, `ctrl+shift` or `none` (D221) | yes |
 | `time.zone` | `UTC` (the default) or any IANA zone such as `Europe/Paris`, `America/New_York` or `Asia/Kolkata` (D194); `date`, `ls -l` and the Windows and macOS layers show times in it unless `TZ` names another; the Date & time pane's picker chooses it, and its `Set to` reads local time | yes |
 | `mouse.buttons` | `right` (the default) or `left`, which swaps the primary and secondary buttons (D195; the Mouse pane, with `mouse.scrolling` and `mouse.speed`); used from the next event | yes |
 | `mouse.scrolling` | `traditional` (the default) or `natural` (D195) | yes |
@@ -155,7 +155,7 @@ The kernel reads `shell.profile`, `keyboard.layouts`, `keyboard.switch_key` and
 frame is already in the saved profile and the first key types in the saved layout.
 `settings set` and the Keyboard pane apply the keyboard keys at once through `/dev/window`'s
 `SET_KEYBOARD_LAYOUTS` and `SET_KEYBOARD_LAYOUT`, and without a display by writing
-`/proc/sys/eggos/keyboard_layouts`, `keyboard_switch_key` and `keyboard_layout` (D220), which
+`/proc/sys/eggos/keyboard_layouts`, `keyboard_switch_key` and `keyboard_layout` (D221), which
 only a privileged caller may write (`EACCES` otherwise, as `/dev/window`'s settings requests). The format is the `eggos-settings-file`
 crate (`settings-file/`), shared by the kernel and the program.
 

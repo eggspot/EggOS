@@ -53,7 +53,7 @@ pub mod control_colour {
     }
 }
 /// The layer's own message that does an agent's action on a list box's item on the list's
-/// thread (D226): `wParam` the item, `lParam` the [`Action`]'s number.
+/// thread (D227): `wParam` the item, `lParam` the [`Action`]'s number.
 pub const ACT_ON_LIST_ITEM: u32 = 0x03f3;
 
 /// The class messages and notification codes the controls answer and send.

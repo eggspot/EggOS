@@ -873,11 +873,11 @@ pub fn caret_rect(field: &Field, rect: Rect) -> Rect {
     )
 }
 
-/// The narrowest cell a waiting dead key's accent is drawn in at the caret (D220).
+/// The narrowest cell a waiting dead key's accent is drawn in at the caret (D221).
 pub const DEAD_KEY_MIN_WIDTH: i32 = 4;
 
 /// The cell a waiting dead key's `accent` takes at a caret whose left edge is `x` on a line
-/// whose top is `y` (D220): as wide as the accent's advance, at least [`DEAD_KEY_MIN_WIDTH`],
+/// whose top is `y` (D221): as wide as the accent's advance, at least [`DEAD_KEY_MIN_WIDTH`],
 /// and a line tall.
 pub fn dead_key_cell(x: i32, y: i32, accent: char) -> Rect {
     let mut bytes = [0; 4];
@@ -886,7 +886,7 @@ pub fn dead_key_cell(x: i32, y: i32, accent: char) -> Rect {
 }
 
 /// Draws a cell for a waiting dead key's `accent` at `x` on the line at `y` and moves `after`
-/// right by its width (D220): the line's background from `x` to `right`, the cell in the
+/// right by its width (D221): the line's background from `x` to `right`, the cell in the
 /// accent token with the accent in `icon_dark`, then `after` in the text token.
 pub fn paint_dead_key_cell(
     canvas: &mut Canvas<'_>,
@@ -905,7 +905,7 @@ pub fn paint_dead_key_cell(
 }
 
 /// Draws a waiting dead key's `accent` at the caret of `field` at `rect` in place of the
-/// caret (D220), the text after the caret moved right by the cell's width.
+/// caret (D221), the text after the caret moved right by the cell's width.
 pub fn paint_dead_key(canvas: &mut Canvas<'_>, field: &Field, rect: Rect, accent: char) {
     let inner = field_inner(rect);
     let previous = canvas.narrow(inner);

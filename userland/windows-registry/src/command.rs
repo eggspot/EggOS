@@ -1,4 +1,4 @@
-//! `windows registry get|set|delete|reset` (D230), the registry's CLI front-end, which the MCP
+//! `windows registry get|set|delete|reset` (D231), the registry's CLI front-end, which the MCP
 //! tools run as their twin: the same words, types and errors as Settings' Windows pane
 //! (docs/ux/windows-registry-v0.3.md sections 3 and 6). A value name `@` names a key's default
 //! value, as `.reg` files write it.
@@ -39,7 +39,7 @@ pub trait Console {
     fn err(&mut self, bytes: &[u8]);
     /// Asks the person `question`; `None` when there is no one to ask.
     fn confirm(&mut self, question: &str) -> Option<bool>;
-    /// Whether a text error ends with its JSON line too (`EGGOS_CODED_ERRORS=1`, D225).
+    /// Whether a text error ends with its JSON line too (`EGGOS_CODED_ERRORS=1`, D226).
     fn wants_coded_errors(&self) -> bool;
 }
 

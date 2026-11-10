@@ -1,4 +1,4 @@
-//! msvcp140's throwers (D229): the `_X*` functions the standard library's headers call when a
+//! msvcp140's throwers (D230): the `_X*` functions the standard library's headers call when a
 //! container grows too long, an index is out of range or a `std::function` is empty, and
 //! `_Throw_C_error` and `_Throw_Cpp_error`, which `std::thread` and `std::mutex` call with a
 //! failed call's result. Each throws the standard exception from the program's call. A

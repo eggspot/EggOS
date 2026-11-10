@@ -16,7 +16,7 @@ use crate::sync::LeafSpinLock;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// What the agent channel's device raises when it interrupts (D219): it wakes the programs
+/// What the agent channel's device raises when it interrupts (D220): it wakes the programs
 /// waiting to read or write `/dev/agent`, which look at the device again.
 pub static DEVICE_EVENTS: DeviceEvents = DeviceEvents::waking_input_waiters();
 

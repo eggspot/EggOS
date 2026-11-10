@@ -4,7 +4,7 @@
 //! event queue; the driver keeps every buffer posted and takes the events back as they come.
 //! What the device reports is read from its configuration ([`Capabilities`]). A keyboard with
 //! Caps Lock, Num Lock or Scroll Lock lights gets its status queue too, where the driver writes
-//! the lights' states ([`VirtioInput::set_lock_lights`], D185, D220).
+//! the lights' states ([`VirtioInput::set_lock_lights`], D185, D221).
 
 use super::queue::{Buffer, SplitQueue};
 use super::{Error, ResetDone, Transport, device_type};

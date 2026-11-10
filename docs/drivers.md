@@ -59,7 +59,7 @@ delivery (`interrupts`, `polled`, `-`) and the refusal's reason or `-`. Its fron
   every refused one, sorted by kind, then id), `device list -a` (every device), `--json`
   (records with `null` for `-`); docs/coreutils.md.
 - MCP: `device_list`, `device list --json` with `all` for `-a`; docs/mcp.md.
-- GUI: Settings' About pane (`userland/settings/src/about_pane.rs`, D219,
+- GUI: Settings' About pane (`userland/settings/src/about_pane.rs`, D220,
   docs/ux/devices-v0.3.md): a `Devices` section under the facts, the toolkit's table with the
   columns `Kind`, `Device` and `Driver`, and `Show all <n> devices`; read each time the pane is
   shown. The filter, the order and the words are the shared crate `eggos-device-list`
@@ -136,12 +136,12 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   (`SplitQueue::enable_used_notifications`) and looks at the used ring once after.
 - **virtio-rng.** One request queue of 8 entries and a 1 KiB request buffer in one 4 KiB
   region; `devices::virtio::read_random` fills a buffer, sleeping until the device interrupts
-  (D219) or polling, until a deadline. At boot, right after probing, `seed_random` hashes 32
+  (D220) or polling, until a deadline. At boot, right after probing, `seed_random` hashes 32
   bytes from it into the kernel's generator, credited 8 bits a byte only for a whole read
   that is not all zeros (a short or all-zero read is hashed in uncredited), and
   reseeds it (`random::reseed_from_device`; the boot log says `random: reseeded from
   virtio-rng`).
-- **Interrupting drivers** (D219): virtio-input, virtio-blk, the agent channel's console,
+- **Interrupting drivers** (D220): virtio-input, virtio-blk, the agent channel's console,
   virtio-net (receive queue only: sent frames are taken back at the next send) and virtio-rng
   connect their interrupt at probe and clear the flag below on their queues; one whose
   interrupt cannot be connected stays polled.
@@ -174,7 +174,7 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   event type for the codes it sends, 0x12 with an axis for its range): keyboard keys, buttons,
   relative X and Y, the wheel, absolute X and Y with their ranges. A device that is neither a
   keyboard nor a pointer is refused. The status queue (LEDs) is not set up.
-- **virtio-blk** (D130, D219). One request queue of up to 64 entries and, in one 64 KiB region,
+- **virtio-blk** (D130, D220). One request queue of up to 64 entries and, in one 64 KiB region,
   15 request headers of 16 bytes, 15 status bytes and fifteen 4 KiB data slots; a request has
   a number (its header and status byte) and a run of data slots (`block::requests::
   RequestTable`), three descriptors (header, data, status), and up to 15 are in flight at
@@ -288,7 +288,7 @@ then MSI-X turned on. virtio-mmio: the slot's first device-tree interrupt.
 ## The agent channel
 
 `eggos_drivers::virtio::console` (D136) drives a virtio console device with multiple ports
-(virtio 1.2, 5.3, `VIRTIO_CONSOLE_F_MULTIPORT` required), on interrupts (D219): the control
+(virtio 1.2, 5.3, `VIRTIO_CONSOLE_F_MULTIPORT` required), on interrupts (D220): the control
 queues (2 and 3) and port 1's receive and transmit queues (4 and 5), four 4 KiB receive
 buffers and one 8 KiB transmit buffer in one 32 KiB DMA region allocated only when the device
 exists. At probe the driver says it is ready, readies port 1 (refusing any other port the
@@ -297,7 +297,7 @@ device adds), waits for its name and opens it; the kernel's `CONSOLE_DRIVER` (fe
 `kernel/src/agent_channel.rs`, which `/dev/agent` (240:1) hands to one privileged opener at a
 time. Every queue asks for interrupts, and the device's interrupt raises
 `agent_channel::DEVICE_EVENTS`, events that also wake the threads waiting for input
-(`DeviceEvents::waking_input_waiters`, D219), so a read or a `poll` sleeps until the device
+(`DeviceEvents::waking_input_waiters`, D220), so a read or a `poll` sleeps until the device
 interrupts. Where its interrupt cannot be routed a wait polls the device (every 4 ms while bytes
 moved within the last second, every 32 ms otherwise); `poll` reports `POLLIN` while bytes or
 the host's end wait and `POLLOUT` always (D137); a write waits while QEMU holds the transmit buffer

@@ -8,7 +8,7 @@
 //! Windows dialect over the `va_list`, which on x64 and ARM64 alike is a pointer to 8-byte
 //! slots; the wide functions format UTF-8, which `swprintf`'s family converts to UTF-16 in the
 //! caller's buffer and `fwprintf`'s writes to the stream as it is (streams are byte streams).
-//! `fgetwc`, `fputwc` and the other wide character functions (D228) move UTF-16 units through
+//! `fgetwc`, `fputwc` and the other wide character functions (D229) move UTF-16 units through
 //! `crate::wide_stream`, as UTF-8 or as UTF-16 by the stream's `ccs=` encoding (with its byte
 //! order mark), its descriptor's `_setmode` and its own mode.
 //! For the old C runtime (`msvcrt.dll`, D189), an entry of the `FILE` array `__iob_func` returns

@@ -1,4 +1,4 @@
-//! The component store's format (D237): a 512-byte header, the index as text, then each
+//! The component store's format (D238): a 512-byte header, the index as text, then each
 //! file's bytes at a sector-aligned offset. Everything in a store is untrusted input: the
 //! header and every index line are checked against hard limits before anything is used, and
 //! each file's SHA-256 is checked while it is copied.

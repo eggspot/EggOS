@@ -1,4 +1,4 @@
-//! The Linux ABI of each architecture (D217): one file per architecture, `<arch>.rs`, selected
+//! The Linux ABI of each architecture (D218): one file per architecture, `<arch>.rs`, selected
 //! here and nowhere else, holds every fact the Linux layer needs that differs between them:
 //! system-call numbers, struct layouts (`stat`, `sigaction`, `epoll_event`), open and `mmap`
 //! flags, signal-frame layouts and code, fault encodings, the `uname` machine and the ELF

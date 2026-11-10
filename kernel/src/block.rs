@@ -56,7 +56,7 @@ pub trait BlockDevice: Send {
         Ok(())
     }
     /// Reads every one of `reads`, each the sectors from its first one into its buffer, with as
-    /// many requests in flight at once as the device takes (D219); one after the other by
+    /// many requests in flight at once as the device takes (D220); one after the other by
     /// default.
     fn read_many(
         &mut self,

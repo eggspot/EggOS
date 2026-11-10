@@ -342,7 +342,7 @@ const CATEGORY_NAMES: [&str; 5] = [
 const UTF8_CODE_PAGE: u32 = 65001;
 const LONGEST_NAME: usize = 40;
 
-/// A locale the C runtime's `setlocale` and `_create_locale` take (D228): "C", or English
+/// A locale the C runtime's `setlocale` and `_create_locale` take (D229): "C", or English
 /// (United States) with UTF-8, EggOS's ANSI code page, under the name it was asked by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeLocale {

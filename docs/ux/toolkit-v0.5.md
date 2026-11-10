@@ -1,6 +1,6 @@
 # EggOS toolkit v0.5, slice 2: tooltips, menus, tables, multi-line text, horizontal scrolling, drag inside a window, and the light theme
 
-Design by Claude Fable (D16) for the second slice of the toolkit's next widgets (D218 implements
+Design by Claude Fable (D16) for the second slice of the toolkit's next widgets (D219 implements
 it). It extends `toolkit-v0.3.md` and `toolkit-v0.4.md`: every token, metric, state rule, focus
 rule and pointer rule there stays, and this brief adds the next seven things their section 9
 and 10 listed: **tooltips** (`Kind::Tooltip`), a **menu bar and menu buttons** (`Kind::MenuBar`,

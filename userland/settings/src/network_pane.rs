@@ -1,4 +1,4 @@
-//! The Network pane (D224, docs/ux/network-v0.3.md sections 0-3): the wired adapter as
+//! The Network pane (D225, docs/ux/network-v0.3.md sections 0-3): the wired adapter as
 //! `/proc/net/interfaces` reports it, through the parse `ip` and `net_status` use
 //! (`eggos_net::status`), read-only and in one of five states named once for the GUI, the CLI
 //! and MCP. Each of its 15 widgets has one place; a state only shows, hides and fills them in,

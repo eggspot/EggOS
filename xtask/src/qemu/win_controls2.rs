@@ -1,4 +1,4 @@
-//! The second Windows controls boot test's checks of the display (D227): `win-controls2.exe`'s
+//! The second Windows controls boot test's checks of the display (D228): `win-controls2.exe`'s
 //! window, a click at the end of its word edit, Shift+Left selecting the last word and a letter
 //! typed over it, Tab into the password edit and the digits-only edit with letters typed, Tab
 //! landing on the group's selected radio button and Down selecting the next one, a click on the
@@ -57,7 +57,7 @@ enum Focus {
 
 /// The window's state at one moment: the three edits' models, the selected radio, the bar's
 /// position, the focus and whether the pointer rests on the bar's right arrow rather than the
-/// word edit (each draws hovered, D227).
+/// word edit (each draws hovered, D228).
 #[derive(Clone)]
 struct Frame {
     word: Box<Edit>,

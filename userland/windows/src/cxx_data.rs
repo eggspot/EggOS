@@ -621,7 +621,7 @@ pub fn type_name<'a>(image: &Image<'a>, address: u64) -> &'a [u8] {
 
 /// The image whose function holds a catch handler and the image whose `ThrowInfo` describes the
 /// thrown object: the program's both, or the program's and the layer's for an exception the
-/// layer throws (D229).
+/// layer throws (D230).
 #[derive(Debug, Clone, Copy)]
 pub struct Images<'a> {
     pub handler: Image<'a>,

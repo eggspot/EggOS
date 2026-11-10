@@ -100,14 +100,14 @@ Must-have, in order:
     33): 14 layouts with dead keys and the AltGr/Option layer, chosen with `keyboard.layout`
     (Settings' Keyboard pane, `settings set`, MCP `settings_set`), Caps Lock's light through
     the status queue; the boot-to-prompt test types `é` with the German layout's dead acute
-    through QMP and checks the frame. Since D220 (batch part 3): 20 layouts (`us-mac`, `be`,
+    through QMP and checks the frame. Since D221 (batch part 3): 20 layouts (`us-mac`, `be`,
     `ca`, `ch`, `pt`, `latam` added), up to four at once (`keyboard.layouts`) with a switch key
     (`keyboard.switch_key`) in the kernel, the desktop's hint and the bar's layout indicator
     with its menu, the dead-key highlight in the toolkit's text fields, the layout applied without a
     display through `/proc/sys/eggos/keyboard_layout`, Num and Scroll Lock with their lights,
     Egg Mono's Latin Extended-A, the launcher's and Settings' accent-insensitive search, and the
     Windows layer's `ToUnicodeEx`, `VkKeyScanExW` and `MapVirtualKeyW` for the layout in force.
-    Follow-ups: D220's "Not yet".
+    Follow-ups: D221's "Not yet".
 13. **done** — graphical terminal (D114, docs/drivers.md): the Egg Mono 8x16 font (the design
     file's 95 ASCII glyphs, checked by a host test, and the box drawing, block, shape and arrow
     extras) and the terminal emulator of `terminal-v0.3.md` in `eggos-drivers` (cell grid,
@@ -143,7 +143,7 @@ Must-have, in order:
     open as many terminal windows as they like (the launcher's Terminal, `terminal`, Ctrl+Shift+N
     or Cmd+N in a terminal), resize, maximise and close them, programs set their titles, and
     agents capture, read and type into them like any window; the kernel's window is now titled
-    `Console`. Since D222: users select, copy and paste in terminal windows (and from
+    `Console`. Since D223: users select, copy and paste in terminal windows (and from
     the context menu), run `terminal -e <program>` and installed console apps in a window of their
     own, see lines reflow and come back from the scrollback when a window grows, get the folder
     and the running command in the title from the shell (`OSC 0`, `OSC 7`) and new windows in
@@ -337,7 +337,7 @@ D16):
     the right and bottom edges, F11, the `Hand` and `Busy` pointers (D186); windows partly off
     the left edge, the server's own `Busy` and ` (not responding)` for any window whose app
     leaves an event unread for 2 s with an End app dialog, the `Working` pointer, the
-    launcher's caret blink (D221). Next: the phone and TV versions of `Working` and End app.
+    launcher's caret blink (D222). Next: the phone and TV versions of `Working` and End app.
 32. **done** — users can now run Windows GUI programs from `eggsh` and see their windows on
     the desktop (D129, docs/windows-programs.md): x64 on x86_64 and ARM64 on aarch64, the
     layer's own user32 and gdi32 over `/dev/window`: window classes, windows with EggOS's
@@ -1117,15 +1117,15 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | x86 local APIC (xAPIC), on every CPU: its timer, INIT/start-up IPIs and fixed IPIs; 8259 PICs (remapped and masked); 8254 PIT (frequency measurement) | **done** (x2APIC, HPET: planned) |
 | x86 I/O APIC (lines routed by the MADT's overrides) | **done** (device lines through it: planned, M5) |
 | PCI MSI-X (the capability, the table in a BAR, entries masked while written) | **done** on x86_64 (D184) |
-| virtio core: virtio-mmio (version 2), modern virtio-pci, the split virtqueue (D111); interrupts through the slot's line or MSI-X (D184); block, console, network and entropy on interrupts (D219) | **done** (the GPU's interrupts, a line per queue, lines through the I/O APIC and on other CPUs, lines given back: planned) |
-| virtio-rng, on interrupts, reseeding the kernel's generator at boot (D111, D219) | **done** |
+| virtio core: virtio-mmio (version 2), modern virtio-pci, the split virtqueue (D111); interrupts through the slot's line or MSI-X (D184); block, console, network and entropy on interrupts (D220) | **done** (the GPU's interrupts, a line per queue, lines through the I/O APIC and on other CPUs, lines given back: planned) |
+| virtio-rng, on interrupts, reseeding the kernel's generator at boot (D111, D220) | **done** |
 | virtio-gpu 2D (polled): display mode, framebuffer on scanout 0, transfers and flushes of damaged rectangles (D112); the cursor queue draws the pointer (D186) | **done** (interrupts, display mode changes: planned) |
 | virtio-input: keyboard, tablet and mouse, capabilities from the device's configuration, keyboard layouts with dead keys and AltGr, key repeat, Caps Lock's light, the input event queue (D113, D184, D185) | **done** (more layouts, Num and Scroll Lock lights: planned) |
 | Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114); the cursor blinks (D186) | **done** (2x scale: planned) |
-| virtio-blk: capacity, read-only disks, reads, writes and flushes of 512-byte sectors, up to 15 requests in flight, on interrupts (D130, D219); a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** |
+| virtio-blk: capacity, read-only disks, reads, writes and flushes of 512-byte sectors, up to 15 requests in flight, on interrupts (D130, D220); a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** |
 | EggFS, our own journaled disk file system: `/home` and `/Applications` on a disk image, metadata journal, copy-on-write data, CRC-checked commits, crash recovery at mount, `sync`/`fsync`, symbolic and hard links (D170), an offline check and repair (D192) (D131, docs/eggfs.md) | **done** (several requests in flight, access times: planned) |
-| virtio-console (the agent channel's named port, D136), on interrupts (D219) | **done** (its input as a console: planned) |
-| virtio-net: hardware address, link state and MTU from the configuration, 16 receive and 16 transmit buffers (D157), on interrupts (D219) | **done** (offloads, several adapters: planned) |
+| virtio-console (the agent channel's named port, D136), on interrupts (D220) | **done** (its input as a console: planned) |
+| virtio-net: hardware address, link state and MTU from the configuration, 16 receive and 16 transmit buffers (D157), on interrupts (D220) | **done** (offloads, several adapters: planned) |
 
 ## Toward "better than macOS, Windows and Linux"
 

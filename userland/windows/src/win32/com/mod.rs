@@ -4,7 +4,7 @@
 //! (`CoTaskMemAlloc` and its family, `CoGetMalloc`'s `IMalloc`) over the layer's heap; CLSIDs
 //! and ProgIDs; `CoCreateInstance` for the one class the layer provides in process,
 //! `Scripting.Dictionary`; `CreateStreamOnHGlobal`; `OleLoadPicture`'s pictures (`picture.rs`,
-//! D230); the tables of methods of the layer's
+//! D231); the tables of methods of the layer's
 //! objects, whose entries keep the program's `x18` on aarch64 (`abi.rs`); and oleaut32's
 //! exports (`oleaut32.rs`), which programs import by ordinal. There is no registry, no
 //! out-of-process server, no running object table and no moniker: such calls fail as Windows

@@ -1,4 +1,4 @@
-//! Downloads as `fetch` records them and as people read them (D224, docs/ux/downloads-v0.3.md
+//! Downloads as `fetch` records them and as people read them (D225, docs/ux/downloads-v0.3.md
 //! section 4): the record each `fetch` that saves to a file keeps in
 //! `/run/eggos/downloads/<pid>`, the judgement of a record whose `fetch` is gone, the order of
 //! the list, cancelling and clearing, and the words of the Downloads window's columns, which

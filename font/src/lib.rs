@@ -4,10 +4,10 @@
 //! themselves, 0xA0 to 0xFF the Latin-1 characters themselves, [`EURO`] the euro sign, and the
 //! box drawing, block and symbol extras take 0x80 upwards in the order of [`EXTRAS`]; every
 //! other id draws `?`. Latin Extended-A (U+0100 to U+017F, docs/ux/font-8x16-latin-ext-a.txt,
-//! D220) has no `u8` id: [`glyph_rows`] draws it by character. The desktop, the terminal and the
+//! D221) has no `u8` id: [`glyph_rows`] draws it by character. The desktop, the terminal and the
 //! Windows layer's drawing share it (D129). [`egg_sans`] is the proportional UI font of the
 //! toolkit (docs/ux/font-ui-16.txt, D132). [`ascii_fold`] and [`contains_folded`] match text
-//! without regard to case and accents, as the launcher's and Settings' searches do (D220).
+//! without regard to case and accents, as the launcher's and Settings' searches do (D221).
 
 #![cfg_attr(not(test), no_std)]
 
@@ -88,7 +88,7 @@ pub fn covers(character: u32) -> bool {
 }
 
 /// The rows that draw `character`: those of its glyph id ([`glyph_id`]), or its Latin
-/// Extended-A glyph, which has no id (D220).
+/// Extended-A glyph, which has no id (D221).
 pub fn glyph_rows(character: u32) -> &'static GlyphRows {
     match character {
         latin_ext_a::FIRST..=latin_ext_a::LAST => {
@@ -128,7 +128,7 @@ impl Folded {
     }
 }
 
-/// `character` folded for matching without regard to case and accents (D220): every letter
+/// `character` folded for matching without regard to case and accents (D221): every letter
 /// the fonts draw from U+00C0 to U+017F to one or two lower-case ASCII letters (`É` to `e`,
 /// `ß` to `ss`, `Œ` to `oe`, `Ł` to `l`), ASCII capitals to small letters, anything else
 /// unchanged.

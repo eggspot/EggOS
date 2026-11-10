@@ -1,4 +1,4 @@
-//! The HTTPS boot test (D224, D159's last check), on every architecture: one boot of the
+//! The HTTPS boot test (D225, D159's last check), on every architecture: one boot of the
 //! release kernel on QEMU's user network with a host folder holding only `roots.pem`. The
 //! test runs two TLS 1.3 servers on the host with our own `eggos_tls::server`, each with a
 //! self-signed certificate made for this run that names 10.0.2.2 (the host as EggOS sees it);

@@ -1,4 +1,4 @@
-//! Where the pointer is among a program's windows (D227, `docs/ux/windows-controls-v0.3.md`
+//! Where the pointer is among a program's windows (D228, `docs/ux/windows-controls-v0.3.md`
 //! sections 1, 14 and 16): the window under it, which the system controls draw hovered;
 //! `TrackMouseEvent`'s `WM_MOUSELEAVE` and `WM_MOUSEHOVER`; and `WM_SETCURSOR`, sent when a
 //! pointer message is taken from the queue and answered by `DefWindowProc` with the class's

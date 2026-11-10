@@ -1,4 +1,4 @@
-//! NSCursor (`docs/ux/macos-gui-v0.3.md` section 13, D232): AppKit's class cursors on the window
+//! NSCursor (`docs/ux/macos-gui-v0.3.md` section 13, D233): AppKit's class cursors on the window
 //! server's pointer shapes, `set`, `push` and `pop`, `hide` and `unhide`, and the views' cursor
 //! rects (`addCursorRect:cursor:`, `resetCursorRects`). The shape a window shows is decided by
 //! `eggos_macos_gui::cursor` on every pointer move and every change, and sent to the server only

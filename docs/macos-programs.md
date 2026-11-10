@@ -426,7 +426,7 @@ lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit cl
   NSURL (so `URLsForDirectory:inDomains:`), NSKeyedArchiver and NSKeyedUnarchiver, character
   sets, path methods, locales and time zones. NSNotificationCenter, NSUUID, NSFileManager,
   the search-path functions, string encodings, run loop modes, a run loop per thread and
-  `performSelector:withObject:afterDelay:` work (D231); a block observer's queue is ignored
+  `performSelector:withObject:afterDelay:` work (D232); a block observer's queue is ignored
   (it is told on the posting thread), copying a folder refuses symbolic links in it, and a
   thread sleeping in its run loop is not woken early by a timer another thread adds. Dictionaries look keys up by
   comparing them one by one (no hash index yet), and keep their keys in insertion order where

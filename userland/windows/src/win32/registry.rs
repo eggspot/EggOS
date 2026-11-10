@@ -1,4 +1,4 @@
-//! advapi32's registry functions (D230) over `eggos_windows_registry`: the user's hive below the
+//! advapi32's registry functions (D231) over `eggos_windows_registry`: the user's hive below the
 //! home folder and the machine's in `/var/lib/eggos/windows`, both written through a temporary
 //! file and a rename. Opened keys are handles that name their key's path, so a key another
 //! process deleted reads as missing. The `A` functions take and give ANSI text, which is UTF-8

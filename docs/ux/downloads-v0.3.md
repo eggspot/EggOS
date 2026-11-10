@@ -1,4 +1,4 @@
-# EggOS v0.3.0 Downloads: design brief (D224, batch part 7)
+# EggOS v0.3.0 Downloads: design brief (D225, batch part 7)
 
 Design by Claude Fable (D16) for the GUI front-end of downloading (D22): `fetch <url> [<file>]`
 and the MCP tool `fetch` download over HTTP and HTTPS (D158, D159); this brief adds the

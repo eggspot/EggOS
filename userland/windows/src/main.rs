@@ -16,7 +16,7 @@
 //! imports; `fault_handler.rs` turns its hardware faults into Windows exceptions, which
 //! `win32/exception` dispatches over the unwind data `unwind/` reads (D177), with C++'s data
 //! read by `cxx_data.rs`, the catch walk's decisions made by `cxx_walk.rs`, and run-time type
-//! information and type names read by `rtti.rs` and `undecorate.rs` (D229);
+//! information and type names read by `rtti.rs` and `undecorate.rs` (D230);
 //! `user_shared_data.rs` lays out the page Windows shares with every
 //! process.
 

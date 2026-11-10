@@ -88,7 +88,7 @@ fn at(surface: &mut Surface<'_>, rect: Rect, paint: impl FnOnce(&mut Surface<'_>
     surface.set_clip(saved);
 }
 
-/// The control under the pointer, which draws hovered (D227).
+/// The control under the pointer, which draws hovered (D228).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Hovered {
     Nothing,

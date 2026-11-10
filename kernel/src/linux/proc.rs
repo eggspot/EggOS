@@ -2,7 +2,7 @@
 //! `net/interfaces`, `net/route` and `net/arp` (D157), `driver/rtc` (D150), `driver/devices`
 //! (D184), `version` and
 //! `sys/kernel/{hostname,osrelease,ostype}`, the keyboard's control files
-//! `sys/eggos/{keyboard_layout,keyboard_layouts,keyboard_switch_key}` (D220), and a directory
+//! `sys/eggos/{keyboard_layout,keyboard_layouts,keyboard_switch_key}` (D221), and a directory
 //! per process with `self` naming the caller's (D168): regular files made when they are opened,
 //! read-only but for the control files, and links, mounted on `/proc` at boot when the root
 //! file system has that directory.
@@ -162,7 +162,7 @@ const SYS_EGGOS_FILES: [(&[u8], u64); 3] = [
     (b"keyboard_switch_key", KEYBOARD_SWITCH_KEY),
 ];
 
-/// What a write to one of `/proc/sys/eggos`'s keyboard control files asks for (D220).
+/// What a write to one of `/proc/sys/eggos`'s keyboard control files asks for (D221).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardControl {
     /// This layout in force (an index of the settings file's `KEYBOARD_LAYOUTS`).
@@ -177,7 +177,7 @@ fn is_control_file(node: u64) -> bool {
     matches!(node, KEYBOARD_LAYOUT | KEYBOARD_LAYOUTS_IN_USE | KEYBOARD_SWITCH_KEY)
 }
 
-/// Whether a caller with `credentials` may write `/proc/sys/eggos`'s control files (D220): only
+/// Whether a caller with `credentials` may write `/proc/sys/eggos`'s control files (D221): only
 /// a privileged one, the rule `/dev/window` applies to the desktop's settings; `EACCES`
 /// otherwise.
 pub fn may_write_control_files(

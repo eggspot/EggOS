@@ -1,4 +1,4 @@
-//! The layer's own C++ throws (D229): a standard exception object (`std_exceptions.rs`) made on
+//! The layer's own C++ throws (D230): a standard exception object (`std_exceptions.rs`) made on
 //! the throwing frame of the layer, which stays on the stack until the catch block that takes
 //! it ends, raised as `_CxxThrowException` raises the program's with the layer's type table as
 //! the throw's image. A function that always throws is a capturing entry, so the dispatch

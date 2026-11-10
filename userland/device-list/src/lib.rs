@@ -1,4 +1,4 @@
-//! The machine's devices as people read them (D184, D219, docs/ux/devices-v0.3.md): the lines
+//! The machine's devices as people read them (D184, D220, docs/ux/devices-v0.3.md): the lines
 //! of `/proc/driver/devices`, which rows a list shows, in which order, and the words of its
 //! columns. `device list`, the MCP tool `device_list` and Settings' About pane all use it, so
 //! the three front-ends show the same rows the same way (D22). No allocator.

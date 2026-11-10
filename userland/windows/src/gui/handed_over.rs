@@ -1,4 +1,4 @@
-//! Agents' actions on a window of another thread (D226): the thread answering the window
+//! Agents' actions on a window of another thread (D227): the thread answering the window
 //! server's query hands `focus` and `set-text` to the window's thread as thread messages of the
 //! layer's own, which that thread does inside its next `GetMessageW` or `PeekMessageW`, as
 //! Windows delivers a message sent from another thread; the program never sees them.

@@ -8,7 +8,7 @@
 //! destructors, and resumes the thread in its own frame. The layer implements the language
 //! handlers MSVC's code uses: `__C_specific_handler` for `__try`/`__except`/`__finally`
 //! (`c_specific.rs`) and `__CxxFrameHandler3`/`__CxxFrameHandler4` for C++ (`cxx.rs`); the
-//! layer throws standard C++ exceptions of its own (`thrown.rs`, D229) and keeps
+//! layer throws standard C++ exceptions of its own (`thrown.rs`, D230) and keeps
 //! `std::exception_ptr`'s copies (`exception_ptr.rs`).
 
 mod c_specific;
@@ -236,14 +236,14 @@ pub(super) const RTTI_EXPORTS: &[Export] = rtti::EXPORTS;
 /// vcruntime's `type_info` virtual function table, which programs import as data.
 pub(super) const TYPE_INFO_EXPORTS: &[Export] = &cxx::TYPE_INFO_TABLE_EXPORT;
 
-/// msvcp140's `std::exception_ptr` functions (D229).
+/// msvcp140's `std::exception_ptr` functions (D230).
 pub(super) const EXCEPTION_PTR_EXPORTS: &[Export] = exception_ptr::EXPORTS;
 
 /// The Universal C Runtime's C++ functions: `terminate`, `_callnewh` and
 /// `__uncaught_exceptions`.
 pub(super) const CXX_UCRT_EXPORTS: &[Export] = cxx::UCRT_EXPORTS;
 
-/// msvcp140's `std::uncaught_exceptions` and `std::uncaught_exception` (D229).
+/// msvcp140's `std::uncaught_exceptions` and `std::uncaught_exception` (D230).
 pub(super) const UNCAUGHT_EXPORTS: &[Export] = cxx::MSVCP_EXPORTS;
 
 /// The Universal C Runtime's `signal`, `raise` and the startup's exception filter.

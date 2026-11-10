@@ -243,8 +243,8 @@ pub mod event {
     pub const OVERFLOW: u16 = 13;
     pub const MENU_CHOSEN: u16 = 14;
     pub const QUERY: u16 = 15;
-    /// The desktop's palette changed to index `a` (D218), or whether motion is reduced to `b`
-    /// (1 reduced, D223): repaint the whole window.
+    /// The desktop's palette changed to index `a` (D219), or whether motion is reduced to `b`
+    /// (1 reduced, D224): repaint the whole window.
     pub const PALETTE_CHANGED: u16 = 16;
 }
 
@@ -258,12 +258,12 @@ pub mod modifier {
     /// The third-level key: AltGr (Right Alt) on a layout with a third level, or Option in the
     /// macOS profile (D185).
     pub const ALT_GRAPH: u32 = 32;
-    /// A dead key's accent (D220): on a key record carrying the spacing accent now waiting
+    /// A dead key's accent (D221): on a key record carrying the spacing accent now waiting
     /// for the next key, or character 0 when Backspace took the accent back.
     pub const DEAD: u32 = 256;
 }
 
-/// The bit the kernel sets in a key event's character for a dead key (D220): the rest is the
+/// The bit the kernel sets in a key event's character for a dead key (D221): the rest is the
 /// waiting spacing accent, or 0 when Backspace took it back; the desktop hands it on as a key
 /// record with [`modifier::DEAD`].
 pub const DEAD_KEY_CHARACTER: u32 = 0x0080_0000;
@@ -335,7 +335,7 @@ pub enum PointerShape {
     /// An hourglass: the window does not take input now (D186). The server shows it itself over
     /// a window that does not answer.
     Busy,
-    /// The arrow with a small hourglass: working, but it still takes clicks (D221). The server
+    /// The arrow with a small hourglass: working, but it still takes clicks (D222). The server
     /// shows it itself while an app it started has no window yet.
     Working,
 }
@@ -380,7 +380,7 @@ pub enum WindowError {
     /// The window's client has no room in its queue for the input's events yet (`EAGAIN`).
     QueueFull,
     /// The window's app has left an event unread for [`super::UNREAD_EVENTS_BUSY_MS`]: it is not
-    /// responding, so nothing is asked of it (`ENOTCONN`, D221).
+    /// responding, so nothing is asked of it (`ENOTCONN`, D222).
     NotResponding,
 }
 
@@ -526,7 +526,7 @@ pub enum Request {
     },
     /// Makes the first `count` (one to four) of `layouts`, a layout number per byte, the
     /// layouts the switch key cycles through, and `switch_key` (a number of the settings
-    /// file's `SwitchKey::ALL`) the key (D220); the layout in force stays if listed, else
+    /// file's `SwitchKey::ALL`) the key (D221); the layout in force stays if listed, else
     /// becomes the first.
     SetKeyboardLayouts {
         count: u32,
@@ -856,7 +856,7 @@ pub mod keyboard_layout_reply {
     pub const FLAGS: usize = 4;
 }
 
-/// Where `SetKeyboardLayouts` reads its arguments (D220).
+/// Where `SetKeyboardLayouts` reads its arguments (D221).
 pub mod set_keyboard_layouts_request {
     pub const COUNT: usize = 0;
     pub const LAYOUTS: usize = 4;
@@ -869,9 +869,9 @@ pub mod keyboard_flags {
     pub const CAPS_LOCK: u32 = 1;
     /// The machine has a keyboard.
     pub const KEYBOARD: u32 = 2;
-    /// Num Lock is on (D220).
+    /// Num Lock is on (D221).
     pub const NUM_LOCK: u32 = 4;
-    /// Scroll Lock is on (D220).
+    /// Scroll Lock is on (D221).
     pub const SCROLL_LOCK: u32 = 8;
 }
 
@@ -1012,13 +1012,13 @@ pub mod act_outcome {
 }
 
 /// Where `ListWindow` writes the window at the index it was given: its id, state, outside
-/// rectangle on the screen (`X` an `i32`: a window may hang off the left edge, D221), client
+/// rectangle on the screen (`X` an `i32`: a window may hang off the left edge, D222), client
 /// (`u16::MAX` for the kernel's), and title.
 pub mod list_reply {
     pub const WINDOW: usize = 0;
     pub const STATE: usize = 4;
     /// Set in the `STATE` word, above the state's number, while the window is not responding
-    /// (D221).
+    /// (D222).
     pub const NOT_RESPONDING: u32 = 1 << 8;
     /// The bits of the `STATE` word that hold the state's number.
     pub const STATE_NUMBER: u32 = 0xff;

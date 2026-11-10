@@ -94,7 +94,7 @@ pub enum Icon<'a> {
     TextEditor,
     /// Three yolk bars on the generic tile: the Task Manager (D200).
     TaskManager,
-    /// A yolk down arrow onto a grey tray on the generic tile: the Downloads window (D224).
+    /// A yolk down arrow onto a grey tray on the generic tile: the Downloads window (D225).
     Downloads,
     /// A folder with a grey front: the host's shared folder.
     HostShare,

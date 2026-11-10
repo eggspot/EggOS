@@ -366,7 +366,7 @@ daylight change (`Clocks go back on 25 October`); a map; the zone's full English
 (`Central European Time`: not in the data, and the abbreviation plus the offset says it).
 `Set automatically` for the clock itself is section 9.
 
-## 9. Set automatically (D224, batch part 7): the network clock in the pane
+## 9. Set automatically (D225, batch part 7): the network clock in the pane
 
 Design by Claude Fable for the GUI front-end of the network clock (D22). The capability
 exists: `date --sync[=host[:port]]` sets the clock by SNTP (the default server `pool.ntp.org`,

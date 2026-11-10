@@ -1,4 +1,4 @@
-//! NSApplication and `NSApp`: `NSApplicationMain` (its principal class and main nib, D231), the
+//! NSApplication and `NSApp`: `NSApplicationMain` (its principal class and main nib, D232), the
 //! delegate's launch and termination, the event loop over the window server's records (each
 //! made an NSEvent and sent through `sendEvent:`, the main menu's key equivalents first, Cmd+Q
 //! always quitting; agents' queries answered with element trees; the About panel's records to
@@ -382,7 +382,7 @@ pub fn read_records(handle: &mut dyn FnMut(&[u8; RECORD_SIZE])) {
 }
 
 /// Runs `work`, reporting an exception that reaches it with `-[NSApplication
-/// reportException:]` and carrying on, as AppKit's run loop does on macOS (D233).
+/// reportException:]` and carrying on, as AppKit's run loop does on macOS (D234).
 pub fn reporting_exceptions(work: &mut dyn FnMut()) {
     let Some(caught) = crate::objc::exception::catching(work) else {
         return;

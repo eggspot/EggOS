@@ -1,6 +1,6 @@
-# EggOS v0.3.0 Windows registry: design brief (D230 slice b)
+# EggOS v0.3.0 Windows registry: design brief (D231 slice b)
 
-Status: v0.3 design, D230 slice b. Design by Claude Fable (D16) for the GUI front-end of the
+Status: v0.3 design, D231 slice b. Design by Claude Fable (D16) for the GUI front-end of the
 Windows layer's registry capability (D22): the Settings `Windows` pane, where a person browses
 and edits the registry that Windows programs on EggOS see, with the same data and words as
 `windows registry get|set|delete|reset` and the MCP tools `windows_registry_get`,

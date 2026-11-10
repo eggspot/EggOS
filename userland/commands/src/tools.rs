@@ -14,7 +14,7 @@ pub const CAPTURE_PATH: &str = "/run/eggmcpd-capture.png";
 /// (`openat2`'s `RESOLVE_NO_SYMLINKS`), so a link inside a root never leads a tool outside it.
 pub const NO_SYMLINKS_ENVIRONMENT: &core::ffi::CStr = c"EGGOS_NO_SYMLINKS=1";
 
-/// The environment variable the MCP server gives every twin but `run`'s program (D225): a text
+/// The environment variable the MCP server gives every twin but `run`'s program (D226): a text
 /// error then ends with its `{"error":{...}}` line too, which the server moves into the result's
 /// `structuredContent.error` and leaves out of its text.
 pub const CODED_ERRORS_ENVIRONMENT: &core::ffi::CStr = c"EGGOS_CODED_ERRORS=1";
@@ -272,7 +272,7 @@ impl Confirmation {
     }
 }
 
-/// What a tool's successful result holds, which its `outputSchema` declares (D225): every tool
+/// What a tool's successful result holds, which its `outputSchema` declares (D226): every tool
 /// declares one, and a refused or failed call's `structuredContent` is `{"error":{...}}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolResult {
@@ -1092,7 +1092,7 @@ const DESTINATION: Argument = required(described(
      Trash. A file already there is replaced.",
 ));
 
-/// `file_copy` (D225): `cp -r` from a folder the reading tools reach to one name below
+/// `file_copy` (D226): `cp -r` from a folder the reading tools reach to one name below
 /// `/home/root`.
 pub const FILE_COPY: ToolDefinition = ToolDefinition {
     name: "file_copy",
@@ -1115,7 +1115,7 @@ pub const FILE_COPY: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
-/// `file_move` (D225): `mv` inside `/home/root`.
+/// `file_move` (D226): `mv` inside `/home/root`.
 pub const FILE_MOVE: ToolDefinition = ToolDefinition {
     name: "file_move",
     title: "Move or rename a file or folder",
@@ -1136,7 +1136,7 @@ pub const FILE_MOVE: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
-/// `folder_create` (D225): `mkdir`, with `-p` for `parents`.
+/// `folder_create` (D226): `mkdir`, with `-p` for `parents`.
 pub const FOLDER_CREATE: ToolDefinition = ToolDefinition {
     name: "folder_create",
     title: "Make a folder",
@@ -1164,7 +1164,7 @@ pub const FOLDER_CREATE: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
-/// `file_remove` (D225): `rm`, with `-r` for `recursive`; deletes for good, unlike `trash`.
+/// `file_remove` (D226): `rm`, with `-r` for `recursive`; deletes for good, unlike `trash`.
 pub const FILE_REMOVE: ToolDefinition = ToolDefinition {
     name: "file_remove",
     title: "Delete a file or folder for good",
@@ -1195,7 +1195,7 @@ pub const FILE_REMOVE: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
-/// `download_list` (D224).
+/// `download_list` (D225).
 pub const DOWNLOAD_LIST: ToolDefinition = reading(
     "download_list",
     "List the downloads",
@@ -1212,7 +1212,7 @@ pub const DOWNLOAD_LIST: ToolDefinition = reading(
     ToolResult::Items(records_of(&crate::commands::DOWNLOAD_LIST)),
 );
 
-/// `download_cancel` (D224).
+/// `download_cancel` (D225).
 pub const DOWNLOAD_CANCEL: ToolDefinition = ToolDefinition {
     name: "download_cancel",
     title: "Stop a download",
@@ -1241,7 +1241,7 @@ pub const DOWNLOAD_CANCEL: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
-/// `download_clear` (D224).
+/// `download_clear` (D225).
 pub const DOWNLOAD_CLEAR: ToolDefinition = ToolDefinition {
     name: "download_clear",
     title: "Clear finished downloads",
@@ -2117,7 +2117,7 @@ pub const AGENT_SHOW: ToolDefinition = reading(
     ToolResult::Text,
 );
 
-/// The `name` argument of `component_install` and `component_remove` (D237).
+/// The `name` argument of `component_install` and `component_remove` (D238).
 const COMPONENT_NAME: Argument = required(lengths(
     described(
         optional("name", JsonType::String, Mapping::Operand),
@@ -2127,7 +2127,7 @@ const COMPONENT_NAME: Argument = required(lengths(
     32,
 ));
 
-/// `component_list` (D237).
+/// `component_list` (D238).
 pub const COMPONENT_LIST: ToolDefinition = reading(
     "component_list",
     "List the components",
@@ -2142,7 +2142,7 @@ pub const COMPONENT_LIST: ToolDefinition = reading(
     ToolResult::Items(records_of(&crate::commands::COMPONENT_LIST)),
 );
 
-/// `component_install` (D237).
+/// `component_install` (D238).
 pub const COMPONENT_INSTALL: ToolDefinition = ToolDefinition {
     name: "component_install",
     title: "Install a component",
@@ -2164,7 +2164,7 @@ pub const COMPONENT_INSTALL: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
-/// `component_remove` (D237).
+/// `component_remove` (D238).
 pub const COMPONENT_REMOVE: ToolDefinition = ToolDefinition {
     name: "component_remove",
     title: "Remove a component",
@@ -2184,13 +2184,13 @@ pub const COMPONENT_REMOVE: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
-/// The most bytes a registry key's path takes in a call (D230).
+/// The most bytes a registry key's path takes in a call (D231).
 pub const MAX_REGISTRY_KEY_BYTES: u32 = 4096;
 
-/// The most bytes a registry value's name takes in a call: 16 383 UTF-16 units (D230).
+/// The most bytes a registry value's name takes in a call: 16 383 UTF-16 units (D231).
 pub const MAX_REGISTRY_NAME_BYTES: u32 = 16_383 * 3;
 
-/// The `key` argument of the `windows_registry_*` tools (D230).
+/// The `key` argument of the `windows_registry_*` tools (D231).
 const REGISTRY_KEY: Argument = required(lengths(
     described(
         optional("key", JsonType::String, Mapping::Operand),
@@ -2202,7 +2202,7 @@ const REGISTRY_KEY: Argument = required(lengths(
     MAX_REGISTRY_KEY_BYTES,
 ));
 
-/// The `name` argument of the `windows_registry_*` tools (D230).
+/// The `name` argument of the `windows_registry_*` tools (D231).
 const REGISTRY_NAME: Argument = lengths(
     described(
         optional("name", JsonType::String, Mapping::Operand),
@@ -2212,7 +2212,7 @@ const REGISTRY_NAME: Argument = lengths(
     MAX_REGISTRY_NAME_BYTES,
 );
 
-/// `windows_registry_get` (D230).
+/// `windows_registry_get` (D231).
 pub const WINDOWS_REGISTRY_GET: ToolDefinition = reading(
     "windows_registry_get",
     "Read the Windows registry",
@@ -2229,7 +2229,7 @@ pub const WINDOWS_REGISTRY_GET: ToolDefinition = reading(
     ToolResult::Items(records_of(&crate::commands::WINDOWS_REGISTRY_GET)),
 );
 
-/// `windows_registry_set` (D230).
+/// `windows_registry_set` (D231).
 pub const WINDOWS_REGISTRY_SET: ToolDefinition = ToolDefinition {
     name: "windows_registry_set",
     title: "Change the Windows registry",
@@ -2273,7 +2273,7 @@ pub const WINDOWS_REGISTRY_SET: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
-/// `windows_registry_delete` (D230).
+/// `windows_registry_delete` (D231).
 pub const WINDOWS_REGISTRY_DELETE: ToolDefinition = ToolDefinition {
     name: "windows_registry_delete",
     title: "Delete from the Windows registry",
@@ -2295,7 +2295,7 @@ pub const WINDOWS_REGISTRY_DELETE: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
-/// `windows_registry_reset` (D230).
+/// `windows_registry_reset` (D231).
 pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
     name: "windows_registry_reset",
     title: "Replace a damaged Windows registry",
@@ -2329,7 +2329,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
-/// D204's, D225's, D224's, D237's and D230's.
+/// D204's, D226's, D225's, D238's and D231's.
 pub const TOOLS: [ToolDefinition; 72] = [
     LS,
     CAT,
@@ -2420,7 +2420,7 @@ pub fn find(name: &str) -> Option<&'static ToolDefinition> {
 }
 
 /// Tool names a decision chose over `<noun>_<verb>`: D197's clipboard tools, named by the word
-/// agents know rather than `clip`'s, and D225's file tools, named by what they act on rather
+/// agents know rather than `clip`'s, and D226's file tools, named by what they act on rather
 /// than by `cp`, `mv`, `mkdir` and `rm`.
 pub const DECIDED_NAMES: [&str; 6] = [
     "clipboard_get",

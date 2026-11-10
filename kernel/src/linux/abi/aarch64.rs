@@ -1,4 +1,4 @@
-//! AArch64's Linux ABI (D217), on the generic table and structs: see [`super`].
+//! AArch64's Linux ABI (D218), on the generic table and structs: see [`super`].
 
 /// The calls AArch64 keeps beyond the generic table (Linux's `__ARCH_WANT_*`): `renameat`.
 pub mod wants {

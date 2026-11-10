@@ -70,7 +70,7 @@ pub enum ControlSide {
 }
 
 /// A rectangle on the desktop's plane whose left edge may lie left of the screen: a window
-/// hanging off the left edge (D221). [`Self::visible`] is the part on the screen's side.
+/// hanging off the left edge (D222). [`Self::visible`] is the part on the screen's side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Bounds {
     pub x: i32,
@@ -468,7 +468,7 @@ pub fn resize_pointer(edges: u8) -> PointerShape {
 /// The outside rectangle a window that was `start` gets when its `edges` follow the pointer by
 /// (`dx`, `dy`): the opposite edges stay put, the size is at least `minimum` (outside) and the
 /// moving edges stay inside `work`. The minimum wins when the two disagree. A window hanging
-/// off the left edge keeps its left edge there while its right or bottom edge moves (D221).
+/// off the left edge keeps its left edge there while its right or bottom edge moves (D222).
 pub fn resized(
     start: impl Into<Bounds>,
     edges: u8,
@@ -519,7 +519,7 @@ pub fn resized(
 }
 
 /// How much of a window's title bar stays inside the work area when it hangs off the left
-/// edge, and when it hangs off the right, at `scale` (D221): [`super::HANGING_TITLE_KEPT`] of
+/// edge, and when it hangs off the right, at `scale` (D222): [`super::HANGING_TITLE_KEPT`] of
 /// its draggable part, and the controls too when they are on the side that stays visible.
 pub fn kept_when_hanging(side: ControlSide, scale: u32) -> (u32, u32) {
     let grab = super::HANGING_TITLE_KEPT;
@@ -532,7 +532,7 @@ pub fn kept_when_hanging(side: ControlSide, scale: u32) -> (u32, u32) {
 }
 
 /// The least and the greatest left edge a window `width` wide may have in `work` with the
-/// controls on `side` (D221): hanging off either edge as far as [`kept_when_hanging`] lets it,
+/// controls on `side` (D222): hanging off either edge as far as [`kept_when_hanging`] lets it,
 /// or wholly inside when it is narrower than the grab and the controls together.
 pub fn hanging_x_range(width: u32, work: Rect, side: ControlSide) -> (i64, i64) {
     let start = i64::from(work.x);

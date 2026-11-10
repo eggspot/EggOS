@@ -59,7 +59,7 @@ pub const RANDOM_DEVICE: (u32, u32) = (1, 8);
 /// `/dev/urandom`'s device number.
 pub const URANDOM_DEVICE: (u32, u32) = (1, 9);
 
-/// `/dev/kmsg`'s device number (D223).
+/// `/dev/kmsg`'s device number (D224).
 pub const KMSG_DEVICE: (u32, u32) = (1, 11);
 
 /// `/dev/tty`'s device number: the caller's controlling terminal.

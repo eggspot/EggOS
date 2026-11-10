@@ -1,4 +1,4 @@
-//! `SCROLLBAR` controls (D227, `docs/ux/windows-controls-v0.3.md` section 14): their `SBM_*`
+//! `SCROLLBAR` controls (D228, `docs/ux/windows-controls-v0.3.md` section 14): their `SBM_*`
 //! messages, user32's scroll bar functions on `SB_CTL`, and the `WM_VSCROLL`/`WM_HSCROLL`
 //! records they send their parent.
 

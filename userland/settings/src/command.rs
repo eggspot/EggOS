@@ -47,24 +47,24 @@ pub trait Machine {
     fn save_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
     /// Applies the desktop profile `index` now; the error's text on failure.
     fn apply_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
-    /// Saves the desktop's theme to the settings file as `appearance.theme` (D218).
+    /// Saves the desktop's theme to the settings file as `appearance.theme` (D219).
     fn save_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]>;
     /// Makes `theme` the desktop's now (`SET_PALETTE`): every window repaints in it.
     fn apply_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]>;
     /// Saves what the keyboard uses (`keyboard.layouts`, `keyboard.layout` and
     /// `keyboard.switch_key`) to the settings file; the error's text on failure.
     fn save_keyboard(&mut self, choice: KeyboardChoice) -> Result<(), &'static [u8]>;
-    /// Has the keyboard use `choice` now, with or without a desktop (D220); the error's text
+    /// Has the keyboard use `choice` now, with or without a desktop (D221); the error's text
     /// on failure.
     fn apply_keyboard(&mut self, choice: KeyboardChoice) -> Result<(), &'static [u8]>;
     /// Saves the time zone `index` (of `eggos_calendar::zone::ZONES`) to the settings file;
     /// programs read it each time they show a time.
     fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]>;
-    /// Saves `time.automatic` (D224): to the settings file, or for this session in
+    /// Saves `time.automatic` (D225): to the settings file, or for this session in
     /// `/run/eggos/settings` without a disk.
     fn save_time_automatic(&mut self, on: bool) -> Result<(), &'static [u8]>;
     /// Starts `date --sync --automatic` in the background, which records its result in
-    /// `/run/eggos/clock-sync` (D224).
+    /// `/run/eggos/clock-sync` (D225).
     fn start_clock_sync(&mut self) -> Result<(), &'static [u8]>;
     /// Saves the display's scale to the settings file; the kernel shows at it from its next
     /// boot.
@@ -78,7 +78,7 @@ pub trait Machine {
     fn save_keys(&mut self, change: KeysChange) -> Result<(), &'static [u8]>;
     /// Uses `keys` from the next key on.
     fn apply_keys(&mut self, keys: KeyAccessibility) -> Result<(), &'static [u8]>;
-    /// Saves high contrast or reduced motion to the settings file (D223).
+    /// Saves high contrast or reduced motion to the settings file (D224).
     fn save_display(&mut self, change: DisplayChange) -> Result<(), &'static [u8]>;
     /// Shows `display` at once in `theme` (`SET_PALETTE` with the high-contrast index and
     /// `SET_REDUCE_MOTION`): every window repaints.
@@ -91,7 +91,7 @@ pub trait Machine {
     fn write_output(&mut self, bytes: &[u8]);
     /// Writes to standard error.
     fn write_error(&mut self, bytes: &[u8]);
-    /// Whether the program was started with `EGGOS_CODED_ERRORS=1` (D225): an MCP tool's twin,
+    /// Whether the program was started with `EGGOS_CODED_ERRORS=1` (D226): an MCP tool's twin,
     /// which writes each error's `{"error":{...}}` line after its text.
     fn wants_coded_errors(&self) -> bool;
 }
@@ -118,14 +118,14 @@ impl Page {
 pub const PAIR_OPTION: &str = "--pair";
 /// With [`PAIR_OPTION`], the name the user sees.
 pub const NAME_OPTION: &str = "--name";
-/// Opens the window on the pane it names (D220): a pane's title in lower case, its spaces as
+/// Opens the window on the pane it names (D221): a pane's title in lower case, its spaces as
 /// `-` and `&` as `and` (`keyboard`, `date-and-time`).
 pub const PANE_OPTION: &str = "--pane";
-/// The verb that opens the window on the pane it names (D224, docs/ux/network-v0.3.md section
+/// The verb that opens the window on the pane it names (D225, docs/ux/network-v0.3.md section
 /// 4.5): `settings open network`, what the bar's network indicator runs; the pane is named as
 /// [`PANE_OPTION`] names it.
 pub const OPEN_VERB: &str = "open";
-/// Opens the first run's window (D223, docs/ux/first-run-accessibility-v0.3.md section 1): the
+/// Opens the first run's window (D224, docs/ux/first-run-accessibility-v0.3.md section 1): the
 /// profile, the keyboard and the time zone, each saved as it is chosen.
 pub const FIRST_RUN_OPTION: &str = "--first-run";
 
@@ -148,7 +148,7 @@ pub enum WindowAsked<'a> {
     Pairing(PairingAsked<'a>),
     /// The window on this pane (an index of `PANES`).
     Pane(usize),
-    /// The first run's window (D223).
+    /// The first run's window (D224).
     FirstRun,
     /// `--pair` or `--name` without what they need.
     Usage,

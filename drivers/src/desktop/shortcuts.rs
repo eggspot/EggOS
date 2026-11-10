@@ -100,7 +100,7 @@ pub enum Shortcut {
     CloseDesktop,
     /// Move the focused window to the next desktop, or the previous, and follow it.
     MoveToDesktop { next: bool },
-    /// Move the keys to the bar's items, then the dock's, then back to the window (D223):
+    /// Move the keys to the bar's items, then the dock's, then back to the window (D224):
     /// Ctrl+Alt+Tab, Super+T and Ctrl+F3 in every profile.
     FocusPanel,
 }

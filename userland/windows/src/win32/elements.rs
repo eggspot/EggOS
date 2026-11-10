@@ -8,11 +8,11 @@
 //! its rectangle in the content, and whether it is disabled, focused, checked or the default
 //! button; below each window, the text the program drew in it with `TextOutW` and `DrawTextW`
 //! (`gui::drawn`). A list box's items follow it as list items, the selected one so flagged
-//! (D226), which take `select` (as a click), `invoke` (as a double-click) and `focus`.
+//! (D227), which take `select` (as a click), `invoke` (as a double-click) and `focus`.
 //! `invoke` clicks a button as `BM_CLICK` does, `focus` is `SetFocus` and `set-text` is
 //! `WM_SETTEXT` on an edit control. An action on a window of another thread is handed to that
 //! thread's queue and done in its next `GetMessageW` or `PeekMessageW`, as Windows delivers a
-//! message sent from another thread (D226). comctl32's common controls (D178) add their rows,
+//! message sent from another thread (D227). comctl32's common controls (D178) add their rows,
 //! tree items, tabs, status parts and toolbar buttons as elements below theirs
 //! (`common_controls`), which take `select`, `invoke` and `focus` as the design's section 29
 //! says.

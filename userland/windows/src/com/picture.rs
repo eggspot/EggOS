@@ -1,4 +1,4 @@
-//! The pure parts of `OleLoadPicture`'s picture objects (D230): reading a program's `IStream`
+//! The pure parts of `OleLoadPicture`'s picture objects (D231): reading a program's `IStream`
 //! into memory, and the HIMETRIC units `IPicture` measures and renders in (0.01 mm, at the
 //! 96 pixels per inch of the layer's screens), where a source rectangle's y axis points up.
 

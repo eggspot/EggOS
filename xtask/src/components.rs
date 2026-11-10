@@ -1,4 +1,4 @@
-//! The component store (D237): `eggos-<version>-<arch>-components.img`, built outside the base
+//! The component store (D238): `eggos-<version>-<arch>-components.img`, built outside the base
 //! image, in the format `eggos_components::index` reads, with each optional component the
 //! architecture runs, and the links the base keeps at each component file's fixed path.
 

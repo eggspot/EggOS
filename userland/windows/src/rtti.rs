@@ -1,4 +1,4 @@
-//! Run-time type information as MSVC lays it out for 64-bit programs (D229): a polymorphic
+//! Run-time type information as MSVC lays it out for 64-bit programs (D230): a polymorphic
 //! object's virtual function table is preceded by the address of its complete object locator,
 //! which names the subobject's offset in the complete object, the complete type's descriptor
 //! and its class hierarchy descriptor; that lists every base class of the complete type in

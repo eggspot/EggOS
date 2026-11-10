@@ -1,5 +1,5 @@
 //! Sets the Linux ABI's `cfg(linux_abi_<want>)` flags from the `wants` module of
-//! `src/linux/abi/<arch>.rs` (D217), and links the kernel binary (`cfg(eggos_kernel)`) with its
+//! `src/linux/abi/<arch>.rs` (D218), and links the kernel binary (`cfg(eggos_kernel)`) with its
 //! architecture's linker script from the HAL.
 
 use std::env;

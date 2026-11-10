@@ -260,9 +260,9 @@ the font reserves, so a terminal line of `é` and `e` differs only above the x-h
   on a dead-key layout types `¨Y`. Egg Sans takes the same extension glyph for glyph, with the
   widths its header gives.
 
-## 9. Keyboard and text, the rest (batch part 3, D220: D185's "Not yet")
+## 9. Keyboard and text, the rest (batch part 3, D221: D185's "Not yet")
 
-Design by Claude Fable for D220. Everything above stands except where this section says so:
+Design by Claude Fable for D221. Everything above stands except where this section says so:
 several layouts with a switch key and the bar's layout indicator, the Mac Option layout and the
 dead-key highlight, five more layouts, the Num Lock and Scroll Lock lights, the launcher's search
 beyond ASCII, Egg Mono's Latin Extended-A glyphs (`font-8x16-latin-ext-a.txt`) and the device

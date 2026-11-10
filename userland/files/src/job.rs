@@ -39,7 +39,7 @@ pub enum Step {
     Failed(Errno, Path),
 }
 
-/// What a job would act on, found by reading only (`--dry-run`, D225).
+/// What a job would act on, found by reading only (`--dry-run`, D226).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Preview {
     /// The files and symbolic links, its own source included when it is one.

@@ -31,11 +31,11 @@ pub const LAUNCHER_ROW_HEIGHT: u32 = 40;
 /// How long a notice stays.
 pub const NOTICE_MS: u32 = 3000;
 
-/// How long the switch key's hint shows the new layout's title (D220).
+/// How long the switch key's hint shows the new layout's title (D221).
 pub const LAYOUT_HINT_MS: u32 = 1000;
 /// The most bytes the launcher's search holds.
 pub const QUERY_CAPACITY: usize = 32;
-/// How long the launcher's caret is shown, then hidden, while it blinks (D221).
+/// How long the launcher's caret is shown, then hidden, while it blinks (D222).
 pub const CARET_BLINK_MS: u32 = 500;
 /// How long after the last keystroke the launcher's caret stops blinking and stays shown.
 pub const CARET_STEADY_AFTER_MS: u32 = 10_000;
@@ -888,7 +888,7 @@ impl Desktop {
         self.show_notice_for(text, NOTICE_MS, damage);
     }
 
-    /// The switch key made the layout titled `title` the one in force (D220): its title shows
+    /// The switch key made the layout titled `title` the one in force (D221): its title shows
     /// in the notice for [`LAYOUT_HINT_MS`], in place of any notice showing, and the Super key
     /// held for the chord no longer counts as pressed alone.
     pub fn show_layout_hint(&mut self, title: &'static str, damage: &mut Damage) {
@@ -952,7 +952,7 @@ impl Desktop {
 }
 
 /// Whether the launcher's caret is drawn at `now_ms` when the last keystroke, or the opening,
-/// was at `since_ms` (D221): shown and hidden for [`CARET_BLINK_MS`] each, shown first, and
+/// was at `since_ms` (D222): shown and hidden for [`CARET_BLINK_MS`] each, shown first, and
 /// shown for good after [`CARET_STEADY_AFTER_MS`] or with `reduce_motion`.
 pub fn caret_shown_at(since_ms: u32, now_ms: u32, reduce_motion: bool) -> bool {
     let elapsed = super::responsiveness::waited(now_ms, since_ms);

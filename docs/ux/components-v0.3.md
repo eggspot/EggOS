@@ -1,9 +1,9 @@
 # EggOS v0.3.0 Components: design brief (batch part 20)
 
-Status: design for v0.3, D237.
+Status: design for v0.3, D238.
 
 Design by Claude Fable (D16) for the GUI front-end of the `component` capability (D18, D22,
-D237): the Settings `Components` pane in its **minimal** first version, one list of the
+D238): the Settings `Components` pane in its **minimal** first version, one list of the
 components the component store offers and the machine has installed, each with an `Install` or
 `Remove` button, with the same data and words as `component list`, `component install <name>`,
 `component remove [--yes] [--dry-run] <name>` and the MCP tools `component_list`,
@@ -81,7 +81,7 @@ right-aligned edge is x 448; usable height 332 at the minimum window, 412 at the
 
 Every widget has one fixed place, with one exception this brief is the first to use: when the
 note (widgets 35-39) opens under a row, the rows below it move down by the note's height
-through `WidgetTree::set_place` (D224, made for windows whose widgets change places with
+through `WidgetTree::set_place` (D225, made for windows whose widgets change places with
 their size), and move back when it closes. A state otherwise shows, hides, enables or retitles
 widgets and never moves them.
 

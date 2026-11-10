@@ -65,8 +65,8 @@ impl Desktop {
     }
 
     /// The chip's rectangle while it shows: left of the top bar's power button, or of the
-    /// taskbar's clock, and left of the keyboard layout indicator (D220) and the network
-    /// indicator (D224) while they show.
+    /// taskbar's clock, and left of the keyboard layout indicator (D221) and the network
+    /// indicator (D225) while they show.
     pub fn agent_chip(&self) -> Option<Rect> {
         if !self.agent.connected {
             return None;

@@ -1,4 +1,4 @@
-//! RISC-V's (RV64) Linux ABI (D217), on the generic table and structs: see [`super`].
+//! RISC-V's (RV64) Linux ABI (D218), on the generic table and structs: see [`super`].
 
 /// The calls RISC-V keeps beyond the generic table (Linux's `__ARCH_WANT_*`): none.
 pub mod wants {

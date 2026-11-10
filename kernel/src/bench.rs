@@ -207,7 +207,7 @@ pub fn run<P: Platform, W: Write>(
 }
 
 /// How many times a CPU woke from idle: the idle loop counts each wake-up (feature
-/// `qemu-bench` only), and `idle_wakeups_per_second` reads it (D219).
+/// `qemu-bench` only), and `idle_wakeups_per_second` reads it (D220).
 pub static IDLE_WAKEUPS: AtomicU64 = AtomicU64::new(0);
 
 const IDLE_WAKEUPS_NAME: &str = "idle_wakeups_per_second";

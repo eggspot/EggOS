@@ -1,6 +1,6 @@
 //! GDI+ (`gdiplus.dll`, D178), the flat API a program reaches through `LoadLibrary` and
 //! `GetProcAddress`: startup and shutdown; bitmaps decoded from files or `IStream`s in PNG,
-//! BMP, JPEG, GIF (its first frame), TIFF and icon formats (D230; straight alpha,
+//! BMP, JPEG, GIF (its first frame), TIFF and icon formats (D231; straight alpha,
 //! `PixelFormat32bppARGB`), or made over 32-bit pixels of the program's or new ones
 //! (`GdipCreateBitmapFromScan0`); their size, pixel format and pixels; an `HBITMAP` of one
 //! (`GdipCreateHBITMAPFromBitmap`: a top-down 32-bit DIB section whose pixels are the image

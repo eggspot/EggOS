@@ -2,7 +2,7 @@
 //! `GetActiveObject` and `OleLoadPicture`, by name and by the ordinals of Microsoft's
 //! `oleaut32.dll`, which is how programs import them. There is no running object table, so
 //! `GetActiveObject` finds nothing (`MK_E_UNAVAILABLE`); `OleLoadPicture` reads the program's
-//! stream and makes a picture object of the image in it (`picture.rs`, D230), or reports data it
+//! stream and makes a picture object of the image in it (`picture.rs`, D231), or reports data it
 //! cannot decode as no picture (`CTL_E_INVALIDPICTURE`).
 
 use crate::com::guid::Guid;

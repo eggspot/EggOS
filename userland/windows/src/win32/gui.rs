@@ -97,9 +97,9 @@ pub struct Gui {
     /// The `QS_` bits `GetQueueStatus` last reported.
     pub queue_reported: u32,
     pub input: InputState,
-    /// The window under the pointer and `TrackMouseEvent`'s requests (D227).
+    /// The window under the pointer and `TrackMouseEvent`'s requests (D228).
     pub hover: super::hover::Hover,
-    /// The scroll bars windows show themselves (`WS_VSCROLL`, `WS_HSCROLL`, D227).
+    /// The scroll bars windows show themselves (`WS_VSCROLL`, `WS_HSCROLL`, D228).
     pub window_scroll_bars: super::window_scroll_bars::WindowScrollBars,
     last_click: Option<(usize, u32, (i32, i32))>,
     characters: [PendingCharacter; PENDING_CHARACTERS],
@@ -850,7 +850,7 @@ pub enum Next {
 /// The calling thread's next message `filter` accepts (taken out of the queue when `remove`
 /// says so), the server's records read first; with `wait`, the thread sleeps until one comes
 /// or `done` holds for the state, checked under the lock. An agent's action another thread
-/// handed to this one is done on the way and never returned (D226).
+/// handed to this one is done on the way and never returned (D227).
 pub fn wait_for(filter: Filter, remove: bool, wait: bool, done: &dyn Fn(&Gui) -> bool) -> Next {
     let thread = thread_environment::thread_id();
     let filter = Filter { thread, ..filter };

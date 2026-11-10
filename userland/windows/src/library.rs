@@ -11,7 +11,7 @@
 //! on Rust's standard library also import `bcryptprimitives` and `userenv`, MinGW's programs
 //! the old C runtime, `msvcrt`, and programs linked with the SDK's `ws2_32.lib` import Winsock
 //! from `ws2_32` by ordinal (D189); C++ programs import the standard library's runtime,
-//! `msvcp140` and its companions `msvcp140_1`, `msvcp140_2` and `msvcp140_atomic_wait` (D229).
+//! `msvcp140` and its companions `msvcp140_1`, `msvcp140_2` and `msvcp140_atomic_wait` (D230).
 
 use crate::text::equal_ignoring_ascii_case;
 

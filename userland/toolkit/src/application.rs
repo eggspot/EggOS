@@ -228,7 +228,7 @@ pub trait View {
     /// drawn again after it.
     fn palette_changed(&mut self, _index: u32) {}
 
-    /// Whether nothing blinks now (`accessibility.reduce_motion`, D223): a caret or a cursor
+    /// Whether nothing blinks now (`accessibility.reduce_motion`, D224): a caret or a cursor
     /// is drawn steady while it is.
     fn motion_changed(&mut self, _reduce: bool) {}
 

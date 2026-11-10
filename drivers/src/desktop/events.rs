@@ -34,7 +34,7 @@ impl EventQueue {
     }
 
     /// When the oldest record waiting was queued, by its time stamp, or when the client last
-    /// read while records still waited (D221); `None` when none waits.
+    /// read while records still waited (D222); `None` when none waits.
     pub fn unread_since(&self) -> Option<u32> {
         self.unread_since_ms
     }

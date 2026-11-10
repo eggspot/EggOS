@@ -1,4 +1,4 @@
-//! NSUUID (D231): sixteen bytes, made random as version 4 (RFC 9562, the variant bits `10`)
+//! NSUUID (D232): sixteen bytes, made random as version 4 (RFC 9562, the variant bits `10`)
 //! from the layer's `arc4random_buf`, or read from the 36-character text form
 //! (`8-4-4-4-12` hexadecimal digits, either case), and written as macOS writes it, in capitals.
 

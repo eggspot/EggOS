@@ -164,33 +164,33 @@ pub enum Kind {
     AgentList,
     /// `agent_show`: the calling agent's own grants (D193).
     AgentShow,
-    /// `file_copy`: copies a file or folder to a path below `/home/root` (D225).
+    /// `file_copy`: copies a file or folder to a path below `/home/root` (D226).
     FileCopy,
-    /// `file_move`: moves or renames a file or folder below `/home/root` (D225).
+    /// `file_move`: moves or renames a file or folder below `/home/root` (D226).
     FileMove,
-    /// `folder_create`: makes a folder below `/home/root` (D225).
+    /// `folder_create`: makes a folder below `/home/root` (D226).
     FolderCreate,
-    /// `file_remove`: deletes a file or folder below `/home/root` for good (D225).
+    /// `file_remove`: deletes a file or folder below `/home/root` for good (D226).
     FileRemove,
-    /// `download_list`: the downloads since boot (D224).
+    /// `download_list`: the downloads since boot (D225).
     DownloadList,
-    /// `download_cancel`: stops a running download (D224).
+    /// `download_cancel`: stops a running download (D225).
     DownloadCancel,
-    /// `download_clear`: removes the records of downloads that are over (D224).
+    /// `download_clear`: removes the records of downloads that are over (D225).
     DownloadClear,
-    /// `component_list`: the components the store offers and those installed (D237).
+    /// `component_list`: the components the store offers and those installed (D238).
     ComponentList,
-    /// `component_install`: installs a component from the component store (D237).
+    /// `component_install`: installs a component from the component store (D238).
     ComponentInstall,
-    /// `component_remove`: removes an installed component (D237).
+    /// `component_remove`: removes an installed component (D238).
     ComponentRemove,
-    /// `windows_registry_get`: a registry key's subkeys and values, or one value (D230).
+    /// `windows_registry_get`: a registry key's subkeys and values, or one value (D231).
     WindowsRegistryGet,
-    /// `windows_registry_set`: makes a registry key or sets a value (D230).
+    /// `windows_registry_set`: makes a registry key or sets a value (D231).
     WindowsRegistrySet,
-    /// `windows_registry_delete`: deletes a registry key or value (D230).
+    /// `windows_registry_delete`: deletes a registry key or value (D231).
     WindowsRegistryDelete,
-    /// `windows_registry_reset`: replaces a damaged registry file with an empty one (D230).
+    /// `windows_registry_reset`: replaces a damaged registry file with an empty one (D231).
     WindowsRegistryReset,
 }
 
@@ -288,7 +288,7 @@ pub struct Tool {
     pub needs: Option<&'static str>,
 }
 
-/// The Windows layer's file, which the Windows apps component installs (D237).
+/// The Windows layer's file, which the Windows apps component installs (D238).
 pub const WINDOWS_LAYER: &str = "/usr/lib/eggos/windows";
 
 impl Tool {
@@ -363,14 +363,14 @@ const DESTINATION_PATH: PathArgument = PathArgument {
     ..WRITE_PATH
 };
 
-/// `file_copy`'s `source`: anything the reading tools reach (D225).
+/// `file_copy`'s `source`: anything the reading tools reach (D226).
 pub const COPY_SOURCE: PathArgument = PathArgument {
     name: "source",
     ..READ_PATH
 };
 
 /// `file_move`'s `source`: only what the write tools may change, since a move takes it away
-/// from where it was (D225).
+/// from where it was (D226).
 pub const MOVE_SOURCE: PathArgument = PathArgument {
     name: "source",
     ..WRITE_PATH
@@ -927,14 +927,14 @@ pub const IMAGE_FIELDS: [&str; 5] = ["width", "height", "image_width", "image_he
 /// The fields of `run`'s `structuredContent` (D137).
 pub const RUN_FIELDS: [&str; 4] = ["exitCode", "signal", "timedOut", "outputCut"];
 
-/// The fields of the items envelope a list tool's `structuredContent` always holds (D225).
+/// The fields of the items envelope a list tool's `structuredContent` always holds (D226).
 pub const ITEMS_REQUIRED: [&str; 2] = ["items", "truncated"];
 
 /// The fields of an error's `structuredContent.error` that are always there; `fix_command`
 /// is there when one command fixes it.
 pub const ERROR_REQUIRED: [&str; 4] = ["code", "category", "message", "fix"];
 
-/// Writes a tool's `outputSchema` (D225): `oneOf` what its `structuredContent` holds when it
+/// Writes a tool's `outputSchema` (D226): `oneOf` what its `structuredContent` holds when it
 /// succeeds, which its registry [`ToolResult`] declares, and the `{"error":{...}}` of a
 /// refused or failed call.
 pub fn write_output_schema(out: &mut JsonWriter<'_>, definition: &ToolDefinition) {

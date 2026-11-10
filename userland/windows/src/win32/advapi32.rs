@@ -1,4 +1,4 @@
-//! advapi32 (D178): the registry's functions are `registry.rs`'s (D230), and here are
+//! advapi32 (D178): the registry's functions are `registry.rs`'s (D231), and here are
 //! `RegConnectRegistryW` (this computer only), the user's name (the account's: `USER` or
 //! `USERNAME`, else `root`, D132) and a process's access token, a handle of its own that holds
 //! no privileges, since EggOS has none (`ERROR_NOT_ALL_ASSIGNED`); there is no service manager

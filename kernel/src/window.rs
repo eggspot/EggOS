@@ -161,7 +161,7 @@ impl Drop for PixelBuffer {
 
 /// One client of the server: an open description of `/dev/window`, its number, its event
 /// queue, the bytes of pixel buffers it holds, the process that opened it and whether the
-/// desktop said it is not responding when it last looked (D221).
+/// desktop said it is not responding when it last looked (D222).
 #[derive(Debug)]
 pub struct Client {
     id: u16,
@@ -179,13 +179,13 @@ impl Client {
         self.id
     }
 
-    /// The id of the process that opened it: the one `End app` ends (D221).
+    /// The id of the process that opened it: the one `End app` ends (D222).
     pub fn process(&self) -> u32 {
         self.process
     }
 
     /// When its oldest unread event was queued, or when it last read while events still waited
-    /// (D221); `None` when none waits.
+    /// (D222); `None` when none waits.
     pub fn unread_since(&self) -> Option<u32> {
         self.queue.lock().unread_since()
     }

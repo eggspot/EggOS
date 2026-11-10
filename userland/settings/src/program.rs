@@ -1845,7 +1845,7 @@ fn run_task_manager(startup: &Startup) -> i32 {
 /// The program: see the crate's documentation. Started as `app-window`, it is the
 /// installer's window instead (D134); as `app` the `app` command (D134, D214); as `files` the
 /// Files window (D135); as `text-editor` the Text Editor and as `edit` its command (D149); as
-/// `disk` the `disk` command (D192); as `downloads` the Downloads window (D224).
+/// `disk` the `disk` command (D192); as `downloads` the Downloads window (D225).
 pub fn run(startup: &Startup) -> i32 {
     let started_as = startup.arguments().next().map_or(&b""[..], CStr::to_bytes);
     match eggos_app::files::file_name(started_as) {

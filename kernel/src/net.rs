@@ -5,7 +5,7 @@
 //! The protocols are the `eggos-net` crate's ([`eggos_net::interface::Interface`]); this module
 //! owns the adapter and its interface (`eth0`), runs them, and connects them to the endpoints
 //! programs send and receive through ([`endpoints`]). A kernel thread started at boot when
-//! there is an adapter runs it. An adapter that interrupts (D219) wakes the thread when frames
+//! there is an adapter runs it. An adapter that interrupts (D220) wakes the thread when frames
 //! arrive, and otherwise the thread sleeps until a timer of the interface is due, or, while
 //! TCP connections are open, polls as below for their timers. An adapter that cannot interrupt
 //! is polled: every [`ACTIVE_POLL_MS`] while frames moved in the last [`ACTIVE_WINDOW_MS`],
@@ -79,7 +79,7 @@ static ADAPTER: LeafSpinLock<Option<Box<Adapter>>> = LeafSpinLock::new_leaf(None
 
 static LAST_TRAFFIC_MS: AtomicU64 = AtomicU64::new(0);
 
-/// What the adapter raises when it interrupts (D219): it wakes the network's thread.
+/// What the adapter raises when it interrupts (D220): it wakes the network's thread.
 pub static DEVICE_EVENTS: DeviceEvents = DeviceEvents::new();
 
 static INTERRUPTING: AtomicBool = AtomicBool::new(false);
@@ -301,7 +301,7 @@ fn state_of(word: u64) -> Option<NetworkState> {
     }
 }
 
-/// What the desktop's network indicator shows (docs/ux/network-v0.3.md section 4, D224): the
+/// What the desktop's network indicator shows (docs/ux/network-v0.3.md section 4, D225): the
 /// adapter's state as the network's thread last saw it, `None` without an adapter. Each change
 /// asks the desktop to draw again ([`crate::terminal::network_changed`]).
 pub fn indicated() -> Option<NetworkState> {

@@ -1,4 +1,4 @@
-//! The network clock's record (D224, docs/ux/date-time-v0.3.md section 9.1): what the last
+//! The network clock's record (D225, docs/ux/date-time-v0.3.md section 9.1): what the last
 //! `date --sync` did, in [`PATH`], as `key=value` lines. `date --sync` writes it (through a
 //! temporary file renamed over it), Settings and `settings get time.sync` read it. It is in
 //! `/run`, so every boot starts without one. It also keeps the automatic clock's unproven

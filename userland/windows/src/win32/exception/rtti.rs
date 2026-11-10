@@ -1,4 +1,4 @@
-//! C++ run-time type information for Windows programs (D229): `dynamic_cast`
+//! C++ run-time type information for Windows programs (D230): `dynamic_cast`
 //! (`__RTDynamicCast`), `dynamic_cast<void *>` (`__RTCastToVoid`) and `typeid` of a polymorphic
 //! object (`__RTtypeid`) over the program's RTTI (`rtti.rs`), and `type_info::name()`
 //! (`__std_type_info_name`), undecorated once per type (`undecorate.rs`) and kept in the

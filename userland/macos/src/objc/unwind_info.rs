@@ -3,7 +3,7 @@
 //! language-specific data area (LSDA) and its personality. [`find`] looks a program counter up;
 //! [`step_arm64`] and [`step_x86_64`] use an encoding to recover the caller's registers from a
 //! frame's. Encodings that defer to DWARF (`__eh_frame`) name their FDE ([`arm64_dwarf_offset`],
-//! [`x86_64_dwarf_offset`]), which `unwind_dwarf` steps over (D233). Pure logic with host tests.
+//! [`x86_64_dwarf_offset`]), which `unwind_dwarf` steps over (D234). Pure logic with host tests.
 
 const VERSION: u32 = 1;
 const INDEX_ENTRY_BYTES: usize = 12;

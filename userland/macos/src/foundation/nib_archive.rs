@@ -1,4 +1,4 @@
-//! Compiled nibs in the `NIBArchive` format (D231), from the file format as `ibtool` writes it:
+//! Compiled nibs in the `NIBArchive` format (D232), from the file format as `ibtool` writes it:
 //! the 10 bytes `NIBArchive`, ten little-endian 32-bit words (format version 1, coder version,
 //! then the count and offset of the objects, keys, values and class names), and the four
 //! tables. Counts in the tables are variable-length integers of 7-bit groups, least significant

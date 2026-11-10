@@ -1,5 +1,5 @@
 //! The errors msvcp140's thread functions report and the `std::system_error`s they become
-//! (D229): `_Thrd_result`'s values, `_Throw_C_error`'s mapping of them to `_Throw_Cpp_error`'s
+//! (D230): `_Thrd_result`'s values, `_Throw_C_error`'s mapping of them to `_Throw_Cpp_error`'s
 //! codes, the `std::errc` value and message each code stands for, the `what()` MSVC's runtime
 //! builds from them, and the generic category's messages. Pure tables with host tests;
 //! `win32/msvcp` throws them.

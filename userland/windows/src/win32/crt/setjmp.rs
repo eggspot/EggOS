@@ -1,4 +1,4 @@
-//! `setjmp` and `longjmp` (D228) on Microsoft's `_JUMP_BUFFER` layouts (`setjmp.h`): `_setjmp`
+//! `setjmp` and `longjmp` (D229) on Microsoft's `_JUMP_BUFFER` layouts (`setjmp.h`): `_setjmp`
 //! and `_setjmpex` save the caller's non-volatile registers, stack, return address and
 //! floating-point control, and the establisher frame MSVC passes as a hidden second argument.
 //! `longjmp` with a frame unwinds to it through the layer's unwinder with a `STATUS_LONGJMP`

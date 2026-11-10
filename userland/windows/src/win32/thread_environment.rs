@@ -9,7 +9,7 @@
 //! slots, its thread object, the C runtime's `errno` and `_doserrno`, and its exception state
 //! (D177: the layer's calls into the program's handlers, the dispatches and unwind in
 //! progress, the exception a catch block handles), for an x64 program on ARM64 its
-//! translated thread block (D191), and its C++ state of D229 (the exceptions thrown and not yet
+//! translated thread block (D191), and its C++ state of D230 (the exceptions thrown and not yet
 //! caught, a throw the layer owes the program, the objects `std::rethrow_exception` copied).
 //! Every thread gets a TEB and a copy of the image's static TLS.
 

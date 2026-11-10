@@ -1,4 +1,4 @@
-//! libSystem's math library (`libm`, D228): every `math.h` function for `double` and `float`
+//! libSystem's math library (`libm`, D229): every `math.h` function for `double` and `float`
 //! from `eggos-math`, our own, the Windows layer's too, under Darwin's names (a leading
 //! underscore; `long` is 64 bits), with Darwin's own `__sincos_stret`, `__exp10` and
 //! `__sinpi` family.

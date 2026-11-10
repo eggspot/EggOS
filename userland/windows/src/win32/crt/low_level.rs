@@ -2,7 +2,7 @@
 //! `_close`, `_read`, `_write`, `_lseek` and `_lseeki64` on the Linux descriptors the streams
 //! and handles use, so `_fileno`, `_fdopen` and `_open_osfhandle` name the same descriptors.
 //! Paths are Windows paths, as `fopen`'s. The flags are `crate::low_level_io`'s. Each
-//! descriptor has a translation mode (D228), from `_open`'s flags or `_fmode`, which `_setmode`
+//! descriptor has a translation mode (D229), from `_open`'s flags or `_fmode`, which `_setmode`
 //! changes: `_write` in text mode writes `\n` as `\r\n` and in the wide modes writes the
 //! program's UTF-16 as UTF-16 or UTF-8; `_read` in text mode takes `\r\n` as `\n` and stops at
 //! Ctrl+Z, seeking back to it, and a last `\r` waits for the next byte, which goes back to the

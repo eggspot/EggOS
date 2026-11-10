@@ -225,7 +225,7 @@ impl ImportSlot {
 
 /// How the layer's export `function` takes its arguments, for its bridge: [`DEFAULT_ARGUMENTS`]
 /// integers unless it is one of the math library's functions with floating-point arguments
-/// (D228); an empty name (an ordinal) is taken as integers.
+/// (D229); an empty name (an ordinal) is taken as integers.
 pub fn function_arguments(function: &[u8]) -> &'static [ArgumentKind] {
     let named = |names: &[&[u8]]| names.contains(&function);
     if named(&ONE_FLOATING_POINT_FUNCTIONS) || named(&MORE_ONE_FLOATING_POINT_FUNCTIONS) {

@@ -19,7 +19,7 @@
 //! `idle_memory_bytes`, the memory in use when the shell first waits at its prompt (D203),
 //! neither of which may grow at all without a baseline update (CLAUDE.md, note 8). A second boot of
 //! the boot-clock kernel with a display gives `boot_to_desktop`, the guest time to the frame
-//! that ends the boot screen (D221).
+//! that ends the boot screen (D222).
 
 use crate::{Arch, qemu};
 use std::collections::BTreeMap;

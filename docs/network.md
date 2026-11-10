@@ -24,7 +24,7 @@ address usually comes within milliseconds. `ip addr` shows it.
 
 ## What works
 
-- **Adapters.** virtio-net (D157), on interrupts where the machine routes them (D219), the
+- **Adapters.** virtio-net (D157), on interrupts where the machine routes them (D220), the
   first one only. The interface is `eth0`; `lo`
   (127.0.0.1/8) always exists, and packets to `127.0.0.0/8` or to the machine's own address
   never leave it.
@@ -84,7 +84,7 @@ What the kernel reports, all read-only:
   kernel, the utilities and the tests: Ethernet, ARP, IPv4, ICMP echo, UDP, the DHCP client,
   DNS messages, one interface's stack and the status text.
 - `kernel/src/net.rs`: the adapter, its interface and the thread that runs it: woken by the
-  adapter's interrupt when frames arrive (`net::DEVICE_EVENTS`, D219) or when an interface
+  adapter's interrupt when frames arrive (`net::DEVICE_EVENTS`, D220) or when an interface
   timer is due, and while TCP connections are open every millisecond while frames move and
   every 20 ms otherwise for their timers; an adapter that cannot interrupt is polled at those
   intervals; `net/endpoints.rs` the UDP ports and

@@ -1,5 +1,5 @@
 //! The sticky keys' chips in the panel (docs/ux/first-run-accessibility-v0.3.md section 2.6,
-//! D223): one chip per modifier the kernel's input layer holds latched or locked, and for
+//! D224): one chip per modifier the kernel's input layer holds latched or locked, and for
 //! [`NOTICE_MS`] after sticky keys are turned on or off, a notice saying so in their place.
 
 use super::launcher::NOTICE_MS;

@@ -1,4 +1,4 @@
-//! The keyboard in the panel (docs/ux/first-run-accessibility-v0.3.md section 2.8, D223):
+//! The keyboard in the panel (docs/ux/first-run-accessibility-v0.3.md section 2.8, D224):
 //! `Ctrl+Alt+Tab`, `Super+T` or `Ctrl+F3` moves the keys to the bar's items, a second press to
 //! the dock's icons where there is a dock, and the next back to the window; Left, Right, Tab
 //! and Shift+Tab move the ring, Enter or Space clicks the ringed item and Esc or a click ends it.

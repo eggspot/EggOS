@@ -1,4 +1,4 @@
-//! The bar's keyboard layout indicator (docs/ux/keyboard-v0.3.md section 9.3, D220): shown
+//! The bar's keyboard layout indicator (docs/ux/keyboard-v0.3.md section 9.3, D221): shown
 //! only while two or more layouts are chosen, the layout in force's two-letter code on the top
 //! bar left of the power button or on the taskbar left of the clock, its tooltip naming the
 //! layout and the switch key, and the menu its click opens: the chosen layouts, the one in force
@@ -115,7 +115,7 @@ impl KeyboardLayouts {
 impl Desktop {
     /// Shows `choices` (the first [`MAX_SHOWN_LAYOUTS`]) as the layouts the switch key cycles
     /// through, layout number `in_force` as the one in force and `chord` as the switch key the
-    /// tooltip names (`None` for none) (D220). With two or more the bar shows the indicator, and
+    /// tooltip names (`None` for none) (D221). With two or more the bar shows the indicator, and
     /// its items move over in the same frame; a new layout in force redraws only the indicator.
     pub fn set_keyboard_layouts(
         &mut self,

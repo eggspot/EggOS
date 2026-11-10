@@ -10,7 +10,7 @@
 //! `archive_app`; `cargo xtask sample-apps` writes the same archive for people to try (D152).
 //! The nib test app `mac-nib`, `tests/macos-nib/main.m` with the interface `MainMenu.xib` that
 //! Apple's `ibtool` compiles beside the programs, is bundled the same way with its nib in
-//! `Contents/Resources` (D231).
+//! `Contents/Resources` (D232).
 //! The Swift program, `tests/macos-swift/main.swift`, is test data too, built by Apple's `swiftc`
 //! the same way (D180), and so are the C programs, `tests/<folder>/main.c`, built by Apple's
 //! clang (D190).
@@ -42,7 +42,7 @@ pub struct ObjcProgram {
 /// The AppKit test app's name: its program, and its bundle's folder without `.app`.
 pub const GUI_APP: &str = "mac-paint";
 
-/// The nib test app's name (D231): its program, its bundle's folder without `.app`, and its
+/// The nib test app's name (D232): its program, its bundle's folder without `.app`, and its
 /// compiled nib beside the programs (`<name>.nib`).
 pub const NIB_APP: &str = "mac-nib";
 

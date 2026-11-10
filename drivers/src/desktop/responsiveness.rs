@@ -1,4 +1,4 @@
-//! The server's own word on its clients (D221, docs/ux/desktop-polish-v0.3.md section 4):
+//! The server's own word on its clients (D222, docs/ux/desktop-polish-v0.3.md section 4):
 //! `Working` while an app it started has no window yet, `Busy` and ` (not responding)` over
 //! the windows of a client that leaves an event unread for [`UNREAD_EVENTS_BUSY_MS`], and the
 //! End app dialog a press on such a window opens once it has not responded for
@@ -95,7 +95,7 @@ pub fn waited(now_ms: u32, since: u32) -> u32 {
 
 impl Desktop {
     /// Client `client`'s oldest unread event was queued at `since` on the monotonic clock
-    /// (milliseconds), or it has none (D221): its windows say `(not responding)` once it has
+    /// (milliseconds), or it has none (D222): its windows say `(not responding)` once it has
     /// waited [`UNREAD_EVENTS_BUSY_MS`], and stop saying it, the End app dialog closing, as
     /// soon as it reads.
     pub fn set_unread_since(&mut self, client: u16, since: Option<u32>, damage: &mut Damage) {
@@ -132,7 +132,7 @@ impl Desktop {
     }
 
     /// Refuses (`NotResponding`) what an agent asks of window `window` while it does not
-    /// respond: an action on an element, typed text or a main menu (D221).
+    /// respond: an action on an element, typed text or a main menu (D222).
     pub fn refuse_if_not_responding(&self, window: u32) -> Result<(), WindowError> {
         let busy = super::WindowId::try_from(window)
             .ok()
@@ -145,7 +145,7 @@ impl Desktop {
     }
 
     /// Window `window` as `wm list` shows it, while it does not respond: what `wm show`
-    /// answers at once instead of asking its app (D221).
+    /// answers at once instead of asking its app (D222).
     pub fn not_responding_window(&self, window: u32) -> Option<ListedWindow> {
         let id = super::WindowId::try_from(window).ok()?;
         let slot = self.find(id)?;
@@ -220,7 +220,7 @@ impl Desktop {
     }
 
     /// The program the last launch started ended before it showed a window: the pointer stops
-    /// saying `Working` (D221).
+    /// saying `Working` (D222).
     pub fn started_app_ended(&mut self, damage: &mut Damage) {
         self.end_app_starting(damage);
     }
@@ -238,7 +238,7 @@ impl Desktop {
             .is_some_and(|since| waited(self.now_ms, since) < APP_STARTING_MS)
     }
 
-    /// `shape` with the server's own `Working` (D221): it takes the arrow's place while an app
+    /// `shape` with the server's own `Working` (D222): it takes the arrow's place while an app
     /// starts; every other shape says something more specific and stays.
     pub(super) fn with_server_shapes(&self, shape: PointerShape) -> PointerShape {
         match shape == PointerShape::Arrow && self.is_app_starting() {

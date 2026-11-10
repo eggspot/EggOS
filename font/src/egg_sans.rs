@@ -1,7 +1,7 @@
 //! Egg Sans 16, the UI font (docs/ux/font-ui-16.txt, docs/ux/toolkit-v0.3.md): one
 //! proportional bitmap face of 16 rows, no anti-aliasing, printable ASCII, Latin-1 and `€`, and
 //! Latin Extended-A drawn with Egg Mono's glyphs, 8 wide on the shared baseline, until it has its
-//! own (D220). The design files are the source: their glyphs are read from them while the crate
+//! own (D221). The design files are the source: their glyphs are read from them while the crate
 //! compiles, so a change to the drawing is a change to a file alone.
 
 use crate::latin_ext_a;

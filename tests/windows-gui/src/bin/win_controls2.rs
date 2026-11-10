@@ -1,6 +1,6 @@
 //! `win-controls2.exe`: an ordinary Windows GUI program (subsystem `WINDOWS`), built from our
 //! own source for `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` like `win-controls.exe`,
-//! that the Windows GUI boot test runs to drive the controls D227 added: an edit's selection, a
+//! that the Windows GUI boot test runs to drive the controls D228 added: an edit's selection, a
 //! password edit, a digits-only edit, a group box with two automatic radio buttons, a
 //! horizontal scroll bar control, and item values on a list's and a combo box's items. Its
 //! message loop goes through `IsDialogMessageW`, so Tab, the arrows and Esc work as in a

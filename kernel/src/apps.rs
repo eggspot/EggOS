@@ -24,7 +24,7 @@ pub const FILES_PROGRAM: &[u8] = b"/bin/files";
 pub const TEXT_EDITOR_PROGRAM: &[u8] = b"/bin/text-editor";
 /// Where the Task Manager is, when the build has it (D200).
 pub const TASK_MANAGER_PROGRAM: &[u8] = b"/bin/task-manager";
-/// The Downloads window's program, when the build has it (D224), a name of the Settings
+/// The Downloads window's program, when the build has it (D225), a name of the Settings
 /// program.
 pub const DOWNLOADS_PROGRAM: &[u8] = b"/bin/downloads";
 /// The terminal program (D187), a name of the Settings program.

@@ -105,7 +105,7 @@ pub const LAYOUT_TITLES: [&str; KEYBOARD_LAYOUTS.len()] = {
     titles
 };
 
-/// The `Add a layout...` dropdown's options: the prompt, then every layout's title (D220).
+/// The `Add a layout...` dropdown's options: the prompt, then every layout's title (D221).
 pub const ADD_LAYOUT_OPTIONS: [&str; KEYBOARD_LAYOUTS.len() + 1] = {
     let mut options = ["Add a layout..."; KEYBOARD_LAYOUTS.len() + 1];
     let mut index = 0;
@@ -140,7 +140,7 @@ pub const PANES: [&str; 11] = [
 ];
 
 const APPEARANCE: usize = 0;
-/// The `Network` pane's place in [`PANES`] (D224, docs/ux/network-v0.3.md).
+/// The `Network` pane's place in [`PANES`] (D225, docs/ux/network-v0.3.md).
 pub const NETWORK: usize = 1;
 const DISPLAY: usize = 2;
 /// The `Keyboard` pane's place in [`PANES`] (D185, docs/ux/keyboard-v0.3.md).
@@ -394,7 +394,7 @@ pub enum Request {
     /// Make the profile at this index of the settings file's `PROFILES` the desktop's and
     /// save it.
     SetProfile(usize),
-    /// Make this theme the desktop's and save it as `appearance.theme` (D218).
+    /// Make this theme the desktop's and save it as `appearance.theme` (D219).
     SetTheme(Theme),
     /// Set the clock to these seconds since the epoch, then say how it went
     /// ([`SettingsWindow::show_set_outcome`]).
@@ -403,19 +403,19 @@ pub enum Request {
     /// keyboard's and save it (D185).
     SetKeyboardLayout(usize),
     /// Make these the layouts the switch key cycles through, `in_force` the one in force,
-    /// and save both (D220).
+    /// and save both (D221).
     SetKeyboardLayouts {
         layouts: KeyboardLayoutSet,
         in_force: usize,
     },
-    /// Make this the key that switches layouts and save it (D220).
+    /// Make this the key that switches layouts and save it (D221).
     SetSwitchKey(SwitchKey),
     /// Save the time zone at this index of `eggos_calendar::zone::ZONES` as `time.zone`, then
     /// say how it went ([`SettingsWindow::time_zone_saved`]) (D194).
     SetTimeZone(usize),
     /// Save `time.automatic` as `on`, then, when `sync_now` and the save worked, start
     /// `date --sync --automatic`, then say how both went
-    /// ([`SettingsWindow::time_automatic_saved`]) (D224).
+    /// ([`SettingsWindow::time_automatic_saved`]) (D225).
     SetTimeAutomatic { on: bool, sync_now: bool },
     /// Save this scale, 1 or 2, as `display.scale` for the next boot, then say how it went
     /// ([`SettingsWindow::display_scale_saved`]) (D195).
@@ -427,7 +427,7 @@ pub enum Request {
     /// ([`SettingsWindow::keys_changed`]) (D205).
     ChangeKeys(KeysChange),
     /// Save this display accessibility setting, then apply it, then say how both went
-    /// ([`SettingsWindow::display_changed`]) (D223).
+    /// ([`SettingsWindow::display_changed`]) (D224).
     ChangeDisplay(DisplayChange),
     /// Read the disks and show them ([`SettingsWindow::show_disks`]) (D192).
     ReadDisks,
@@ -457,7 +457,7 @@ pub enum Request {
     /// then show them ([`SettingsWindow::paired`]).
     BeginPairing,
     /// Read `/proc/driver/devices` and show it in About ([`SettingsWindow::show_devices`])
-    /// (D219).
+    /// (D220).
     ReadDevices,
 }
 
@@ -534,7 +534,7 @@ fn lowercase_contains(haystack: &str, needle: &str) -> bool {
     eggos_font::contains_folded(haystack, needle)
 }
 
-/// The pane `settings --pane` names `name` (D220): its title in lower case, its spaces as `-`
+/// The pane `settings --pane` names `name` (D221): its title in lower case, its spaces as `-`
 /// and `&` as `and`.
 pub fn pane_named(name: &str) -> Option<usize> {
     PANES.iter().position(|title| {
@@ -1195,7 +1195,7 @@ impl SettingsWindow {
         None
     }
 
-    /// Shows the devices just read from `/proc/driver/devices` in About (D219).
+    /// Shows the devices just read from `/proc/driver/devices` in About (D220).
     pub fn show_devices(&mut self, read: Result<&[u8], Errno>) {
         self.about.show_devices(&mut self.tree, read);
     }
@@ -1206,13 +1206,13 @@ impl SettingsWindow {
     }
 
     /// Shows `adapter`, just read from `/proc/net/interfaces` (`None`: the machine has none),
-    /// in the Network pane, changing only what differs from what it shows (D224).
+    /// in the Network pane, changing only what differs from what it shows (D225).
     pub fn show_network_adapter(&mut self, adapter: Option<InterfaceStatus>) {
         self.facts.network_adapter = adapter;
         self.network.show(&mut self.tree, adapter.as_ref());
     }
 
-    /// The Network pane (D224).
+    /// The Network pane (D225).
     pub fn network_pane(&self) -> &NetworkPane {
         &self.network
     }
@@ -1271,7 +1271,7 @@ impl SettingsWindow {
     }
 
     /// Shows pane `pane` (an index of [`PANES`]) and selects it in the sidebar, as
-    /// `settings --pane` asks (D220): what the program reads for it, as for a click on the
+    /// `settings --pane` asks (D221): what the program reads for it, as for a click on the
     /// sidebar.
     pub fn open_pane(&mut self, pane: usize) -> Option<Request> {
         if pane >= PANES.len() {
@@ -1376,7 +1376,7 @@ impl SettingsWindow {
         self.show_layout_set();
     }
 
-    /// Shows `layouts` as your layouts and `in_force` as the one in force (D220), as a set
+    /// Shows `layouts` as your layouts and `in_force` as the one in force (D221), as a set
     /// changed from the CLI or MCP leaves them.
     pub fn show_keyboard_layouts(&mut self, layouts: KeyboardLayoutSet, in_force: usize) {
         self.facts.keyboard_layouts = layouts;
@@ -1635,7 +1635,7 @@ impl SettingsWindow {
     }
 
     /// How saving `time.automatic` as `on` went ([`Request::SetTimeAutomatic`]), with the wall
-    /// clock's seconds when the sync it started began, if one did (D224, section 9.3).
+    /// clock's seconds when the sync it started began, if one did (D225, section 9.3).
     pub fn time_automatic_saved(
         &mut self,
         on: bool,
@@ -1651,7 +1651,7 @@ impl SettingsWindow {
 
     /// Shows what the network clock's record (`record`, `None` before the first sync) and the
     /// network adapter (`adapter`, `None` without one) say now; `sync_running`, whether the
-    /// sync this window started still runs (D224, section 9.4).
+    /// sync this window started still runs (D225, section 9.4).
     pub fn show_clock_sync(
         &mut self,
         record: Option<Record>,
@@ -1669,7 +1669,7 @@ impl SettingsWindow {
         );
     }
 
-    /// The `Date & time` pane's `Set automatically` (D224).
+    /// The `Date & time` pane's `Set automatically` (D225).
     pub fn automatic_clock(&self) -> &AutomaticClock {
         &self.clock
     }

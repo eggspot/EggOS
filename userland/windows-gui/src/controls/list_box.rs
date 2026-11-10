@@ -290,7 +290,7 @@ pub fn row_at(y: i32, height: i32) -> Option<usize> {
 
 /// Where item `index` sits in a list `width` wide whose first row shown is item `top`: the
 /// row's rectangle inside the frame, above the list for items before `top` and below it for
-/// those past the rows shown, as agents' element tree places each item (D226).
+/// those past the rows shown, as agents' element tree places each item (D227).
 pub fn row_bounds(index: usize, top: usize, width: i32) -> Rect {
     let rows = |count: usize| count.min(LIST_CAPACITY) as i32;
     let y = 1 + (rows(index) - rows(top)) * ITEM_HEIGHT;

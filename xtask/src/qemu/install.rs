@@ -1,5 +1,5 @@
 //! The install boot test (D134): two boots of the release image `cargo xtask release` ships,
-//! whose base links to the Windows layer's component (D237), on a blank disk, with the component
+//! whose base links to the Windows layer's component (D238), on a blank disk, with the component
 //! store attached and a host folder holding
 //! `win-paint.exe` (our own Windows GUI program) and our static Linux program, each frame of the second boot compared with the desktop the host
 //! renders from the same input, and the disk image read back with `eggos-eggfs` after each.

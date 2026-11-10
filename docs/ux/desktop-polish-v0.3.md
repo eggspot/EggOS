@@ -138,9 +138,9 @@ the desktop or console is drawn at once, so the kernel's message is on the displ
 serial. Serial for the normal case: `boot: desktop 212ms` (from kernel entry), the number the
 first-frame test reports beside boot-to-prompt (D108).
 
-## 4. The rest of the polish: `Working`, the server's own `Busy`, hanging off the left, the launcher's caret (D221)
+## 4. The rest of the polish: `Working`, the server's own `Busy`, hanging off the left, the launcher's caret (D222)
 
-Design by Claude Fable for batch part 4 (D221), D186's "Not yet". Same system as sections 1 to
+Design by Claude Fable for batch part 4 (D222), D186's "Not yet". Same system as sections 1 to
 3; everything above stands except where this section says otherwise. Scale 2 pixel-doubles
 every bitmap and every measure below (a 22x19 shape is 44x38, 48 px of grab is 96 device px).
 
@@ -221,7 +221,7 @@ the work area. Line 1 at (12, 12) in `text`: the title cut to 19 cells by `cut_t
 ` is not responding`. Line 2 at (12, 36) in `text.dim`: `Ending it loses its unsaved work.`
 When the client is eggway (one `/dev/window` connection for every Wayland app), line 3 at
 (12, 60) in `text.dim`, the same step: `It also ends every Linux window app.` (36 cells, 288 px,
-ending 4 px above the buttons; added by the build loop, D221's research pass, in the dialog's
+ending 4 px above the buttons; added by the build loop, D222's research pass, in the dialog's
 own words and tokens).
 Two 96x28 buttons at y 80: `Wait` at x 212 (focused, Enter and Esc), `End app` at x 108, so
 a hasty Enter waits. `Wait`, Esc or a click outside closes it and leaves the window alone;
@@ -235,7 +235,7 @@ every row. `wm show` on a busy window does not wait on the client: it answers at
 the root alone (`role` `window`, the name, `flags` `["not-responding"]`). `wm act`, `wm type`
 and `wm menu` on a busy window answer the error `not_responding` (kind `busy`, exit 75, then
 `wm list`) at once, and so does every other input an agent would put in its app's queue
-(`wm click`, `wm drag`, `wm press`, `wm scroll`; D221's research pass): an agent cannot
+(`wm click`, `wm drag`, `wm press`, `wm scroll`; D222's research pass): an agent cannot
 see what it would act on. Moving, sizing and closing it are the server's and stay allowed. `wm close` stays the way to end it from the CLI: the request goes unread
 and the window is destroyed 2 s later, as today. The MCP tools mirror all of it.
 

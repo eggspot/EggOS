@@ -1925,7 +1925,7 @@ pub fn ask_init<P: Platform>(signal: u32) -> bool {
 }
 
 /// Ends process `pid` with `SIGKILL` from the kernel, as the desktop's `End app` asks for an app
-/// that does not respond (D221); never init. Whether it was sent.
+/// that does not respond (D222); never init. Whether it was sent.
 pub fn kill_from_kernel<P: Platform>(pid: u32) -> bool {
     let target = {
         let table = process_table::TABLE.lock();

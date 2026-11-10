@@ -1,4 +1,4 @@
-//! NSNotification and NSNotificationCenter (D231): a notification is a name, an object and a
+//! NSNotification and NSNotificationCenter (D232): a notification is a name, an object and a
 //! user info dictionary; the default center keeps its observations, each in its own heap block
 //! so a selector observer can be held weakly (an observer that is freed without removing
 //! itself is skipped and forgotten, as macOS has done since 10.11), and a block observer by

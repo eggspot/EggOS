@@ -1,4 +1,4 @@
-//! The terminals boot test (D222): one boot of the release kernel with its display. The shell
+//! The terminals boot test (D223): one boot of the release kernel with its display. The shell
 //! on the serial console opens two terminal windows, as the launcher's Terminal does; both are
 //! titled after the home folder (`~ - Terminal`, the shell's `OSC 0`). The second is resized
 //! with `wm size`; `stty size` typed into it with `wm type` and `wm press` prints the rows and

@@ -29,7 +29,7 @@ pub struct Invocation<'a> {
     /// opens (D170): the twins whose operand is a checked path.
     pub no_symlinks: bool,
     /// Whether it runs with `EGGOS_CODED_ERRORS=1`, so each text error it writes is followed by
-    /// its `{"error":{...}}` line (D225): every twin but `run`'s program.
+    /// its `{"error":{...}}` line (D226): every twin but `run`'s program.
     pub coded_errors: bool,
 }
 

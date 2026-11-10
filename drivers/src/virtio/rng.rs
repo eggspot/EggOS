@@ -86,7 +86,7 @@ impl<T: Transport, M: DmaMemory> VirtioRng<T, M> {
     }
 
     /// Has the device interrupt when it answers a request, for a driver whose `keep_waiting`
-    /// sleeps until an interrupt instead of polling (D219).
+    /// sleeps until an interrupt instead of polling (D220).
     pub fn enable_interrupts(&mut self) {
         self.queue.enable_used_notifications();
     }

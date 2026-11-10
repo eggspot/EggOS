@@ -1,4 +1,4 @@
-//! The names of C++ types as `type_info::name()` gives them on Windows (D229), from the
+//! The names of C++ types as `type_info::name()` gives them on Windows (D230), from the
 //! decorated names MSVC writes into type descriptors (`.?AVWidget@@` is `class Widget`, `.H` is
 //! `int`, `.PEBD` is `char const * __ptr64`), following Microsoft's public description of its
 //! name decoration: built-in types by letter, pointers and references with their qualifiers,

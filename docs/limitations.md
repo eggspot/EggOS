@@ -16,9 +16,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   aarch64, 161 ms on riscv64 and 261 ms on x86_64 from QEMU's start, on CI's machines on
   2026-10-29; the release notes give each image's own figure).
 - **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse
-  (on interrupts, D184), virtio-blk (up to 15 requests in flight, on interrupts, D219), the
+  (on interrupts, D184), virtio-blk (up to 15 requests in flight, on interrupts, D220), the
   real-time clock (x86_64 CMOS, AArch64 PL031, RISC-V Goldfish, D150), virtio-net (on
-  interrupts, the first adapter only, D157, D219), virtio-console (the agent channel, on
+  interrupts, the first adapter only, D157, D220), virtio-console (the agent channel, on
   interrupts) and on test kernels virtio-rng, which reseeds the kernel's generator at boot only.
   A driver whose device's interrupt cannot be routed polls it as before. Nothing else is
   driven: no Wi-Fi, no sound, no USB (D110-D113, D130). `device list`, `device_list` and
@@ -29,7 +29,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   goes to the boot CPU, a device has one line for all its queues, x86 devices without MSI-X
   have none (no I/O APIC lines), and a line is never given back, even when connecting it
   failed. A display mode change (QEMU's window resized) is not followed, the GPU is polled,
-  and virtio-console input is not a console (D219).
+  and virtio-console input is not a console (D220).
 - **Network, parts 1 and 2** (D157, D158, [network.md](network.md)). IPv4 over one wired
   adapter with an address from DHCP, UDP, ping and TCP for programs, DNS through
   `/etc/resolv.conf`, `lo`; `ip`, `ping`, `nslookup`, `fetch` (downloads over `http://` and
@@ -42,7 +42,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   makes a socket call. No downloads window in the GUI yet. No IPv6, no fragment reassembly, no static addresses or second adapter, no
   multicast, no reverse lookups, no netlink (iproute2 and `getifaddrs` fail; `ip` reads
   `/proc/net`). Settings has no Network pane and the bar no network indicator yet (designed in
-  docs/ux/network-v0.3.md). The adapter interrupts (D219); while TCP connections are open its
+  docs/ux/network-v0.3.md). The adapter interrupts (D220); while TCP connections are open its
   thread still wakes every 20 ms for their timers. On riscv64, `--mcp --apps` with a disk and the network takes more than
   the machine's eight virtio slots: add `--no-network` there.
 
@@ -82,7 +82,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   the name in the folder a multiply named file was made in walks the whole tree for another;
   version 1 disks mount and become version 2 at their first link. It searches directories linearly,
   and waits for each transfer to the disk before the next (the driver takes up to 15
-  requests at once, D219, but EggFS asks for one transfer at a time); moving a file between `/home` and
+  requests at once, D220, but EggFS asks for one transfer at a time); moving a file between `/home` and
   `/Applications` fails (`EXDEV`) as between two disks. A disk holding anything but EggFS or
   FAT is left alone: `--format-disk` erases the image. On Windows the image takes its full 1
   GiB when QEMU's `qemu-img` is missing, and nothing stops two QEMUs sharing one image (macOS
@@ -167,7 +167,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   lines but `VmSize`, links in `fd` to sockets cannot be opened (to pipes they can, D173), and
   every file is root's), and there is no `/sys` (D168); `/dev` holds the memory devices, `tty`, `console`, the
   standard streams' links, `window`, `agent`, `shm` (a memory file system for `shm_open`,
-  D169) and the pseudo-terminals `ptmx` and `pts` (D187, D222: at most 64 at once; `TIOCSTI` only into the caller's own controlling
+  D169) and the pseudo-terminals `ptmx` and `pts` (D187, D223: at most 64 at once; `TIOCSTI` only into the caller's own controlling
   terminal, `EPERM` for any other; packet mode reports flushes and flow control but never `TIOCPKT_STOP`, `START` or
   `FLUSHWRITE`; a packet-mode `readv` fills only its first buffer), but no block devices;
   symbolic links work on `/tmp`, `/home`, the work disk and the initramfs, and hard links on
@@ -385,7 +385,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   follow a function definition's line, `read` and `wait` cannot be interrupted with `^C`, and
   only descriptors 0 to 2 can be redirected ([shell](shell.md)).
 - Job control follows Linux (a background write to a pseudo-terminal with `TOSTOP` stops the
-  writer, D222; the console's does not), but `wait` cannot be interrupted with `^C`, and line
+  writer, D223; the console's does not), but `wait` cannot be interrupted with `^C`, and line
   editing redraws
   a line longer than the terminal is wide wrongly once the cursor moves back across its end
   (D181).
@@ -420,7 +420,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   written as they are, control characters included.
   An MCP tool whose command fails (rather than being refused) still returns that command's
   text error without a code: the twins run in text mode.
-- Keyboard layouts (D185, D220): 20 of them, up to four at once with a switch key. The bar's
+- Keyboard layouts (D185, D221): 20 of them, up to four at once with a switch key. The bar's
   layout indicator and its menu are drawn at scale 1 only (the desktop has no 2x panels yet),
   have no element tree for agents (`wm show` lists windows, not the bar; agents use
   `settings_set keyboard.layout`), and a layout chosen in the menu or with the switch key is
@@ -450,7 +450,7 @@ menu (Alt+Space) and ask it to close (its close control, Alt+F4, Cmd+W); the poi
 by the GPU's cursor (D186), in the shape of a resize zone or of what a program asks for, the
 hand and the hourglass included, and `Working` (the arrow with a small hourglass) while an app
 it started has no window yet. A window whose app leaves an event unread for 2 s says ` (not
-responding)`, shows the hourglass over its content and, after 5 s more, offers `End app` (D221).
+responding)`, shows the hourglass over its content and, after 5 s more, offers `End app` (D222).
 A boot screen shows the boot's progress until the first prompt, and the serial console says
 `boot: desktop <ms>`; a window may hang off the left, right and bottom edges, keeping its title
 bar's grab inside, and the launcher's caret blinks; F11 shows
@@ -461,13 +461,13 @@ shortcuts), kept on the disk across reboots. Not yet:
 - Mac apps choose no pointer shape (no `NSCursor`); `Working` does not end when the started
   program exits without a window (it ends after 5 s); `reduce_motion` is not a setting yet, so
   the launcher's caret always blinks; the phone and TV versions of `Working`, `Busy` and the
-  End app dialog (the launcher's `Starting <name>...`, the bottom sheet, D221); the release
+  End app dialog (the launcher's `Starting <name>...`, the bottom sheet, D222); the release
   kernel's serial line has no first-frame time (only the `qemu-boot-clock` kernel's
   `boot_to_desktop`);
 - a display that changes size while EggOS runs (the GPU's mode change events) keeps its first
   layout;
 - resizing the console's window: its grid stays 80x24 (terminal windows resize and reflow, D187,
-  D222); a terminal window has no touch selection (handles and the bottom sheet), keyboard mark
+  D223); a terminal window has no touch selection (handles and the bottom sheet), keyboard mark
   mode, rectangular selection, copy with colours, search, URL detection, tabs or panes
   (docs/ux/terminal-selection-v0.3.md sections 7 and 10); its close question keeps its 400 px
   panel in a window narrower than 416 px (section 5); `stty` has no `ispeed` or `ospeed`;
@@ -500,8 +500,8 @@ shortcuts), kept on the disk across reboots. Not yet:
   pointing at an `app.icon` it ships; `app icon` (writing an app's icon as a PNG) and the MCP
   tool `app_icon` from `docs/ux/app-icons-v0.3.md` section 7 are not built yet;
 - closing the console's window (its close control is disabled; terminal windows close, D187);
-  installed console apps open in a terminal window of their own (D222), but an app whose
-  manifest says `console=false` (or an app installed before D222) is typed into the console, so
+  installed console apps open in a terminal window of their own (D223), but an app whose
+  manifest says `console=false` (or an app installed before D223) is typed into the console, so
   it reaches whatever reads the console at that moment (docs/apps.md); `app list` does not show
   the `console` field and MCP `app_install` cannot set it;
 - Settings, the installer's window (`app --window`, D134) and Files (`/bin/files`, D135),
@@ -547,7 +547,7 @@ shortcuts), kept on the disk across reboots. Not yet:
 - Time zones (D194): a zone is its current rule, so times before its last change of rules show
   with today's rule; the desktop's clock and Settings' Date & time pane still show UTC, and
   `date -s` takes UTC; reading `/dev/rtc0` to wait for its alarm is not answered yet.
-- **The toolkit's second slice (D218, written, unchecked).** Tooltips, a menu bar (in the
+- **The toolkit's second slice (D219, written, unchecked).** Tooltips, a menu bar (in the
   window, or the top bar's main menu in the macOS profile) and menu buttons, tables with
   resizable and sortable columns, a multi-line text area with word wrap, sideways scrolling
   and drag and drop inside one window, and the light theme (`appearance.theme`, Settings >

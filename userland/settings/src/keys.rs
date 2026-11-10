@@ -15,7 +15,7 @@ use eggos_settings_file::{
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Theme;
 
-/// The setting that holds the desktop's theme in the settings file (D218).
+/// The setting that holds the desktop's theme in the settings file (D219).
 pub const APPEARANCE_THEME: &str = "appearance.theme";
 
 /// A value as it is printed and shown.
@@ -67,7 +67,7 @@ pub enum Refusal {
     ReadOnly,
     /// The value is not one the setting takes.
     InvalidValue,
-    /// The value is not a set of layouts `keyboard.layouts` takes, for this reason (D220).
+    /// The value is not a set of layouts `keyboard.layouts` takes, for this reason (D221).
     InvalidLayouts(LayoutSetRefusal),
 }
 
@@ -76,17 +76,17 @@ pub enum Refusal {
 pub enum Change {
     /// The desktop's layout profile: its index in [`PROFILES`].
     Profile(usize),
-    /// The desktop's theme, applied at once (D218).
+    /// The desktop's theme, applied at once (D219).
     Theme(Theme),
     /// The keyboard layout: its index in the settings file's `KEYBOARD_LAYOUTS` (D185).
     KeyboardLayout(usize),
-    /// The layouts the switch key cycles through (D220).
+    /// The layouts the switch key cycles through (D221).
     KeyboardLayouts(KeyboardLayoutSet),
-    /// The key that switches layouts (D220).
+    /// The key that switches layouts (D221).
     KeyboardSwitchKey(SwitchKey),
     /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
     TimeZone(usize),
-    /// Whether the clock is set from the network; turning it on syncs at once (D224).
+    /// Whether the clock is set from the network; turning it on syncs at once (D225).
     Automatic(bool),
     /// The display's scale, 1 or 2, from the next boot (D195).
     DisplayScale(u32),
@@ -94,11 +94,11 @@ pub enum Change {
     Input(InputChange),
     /// Sticky keys or slow keys, used from the next key (D205).
     Keys(KeysChange),
-    /// High contrast or reduced motion, shown at once (D223).
+    /// High contrast or reduced motion, shown at once (D224).
     Display(DisplayChange),
 }
 
-/// What the keyboard uses, all of it (D220): the layouts the switch key cycles through, the
+/// What the keyboard uses, all of it (D221): the layouts the switch key cycles through, the
 /// one in force (an index of the settings file's `KEYBOARD_LAYOUTS`, always in the set) and
 /// the switch key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +199,7 @@ impl KeysChange {
     }
 }
 
-/// One display accessibility setting's new value (D223).
+/// One display accessibility setting's new value (D224).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayChange {
     HighContrast(bool),
@@ -615,7 +615,7 @@ impl Key {
     }
 }
 
-/// What a `network.*` key holds when the network gave nothing for it (D224).
+/// What a `network.*` key holds when the network gave nothing for it (D225).
 pub const NETWORK_NONE: &str = "none";
 
 fn connected(facts: &Facts) -> Option<&InterfaceStatus> {
@@ -633,7 +633,7 @@ fn write_or_none(value: &mut Value, shown: Option<impl core::fmt::Display>) -> c
 }
 
 /// Writes `time.sync`'s value: `<result> <finished, or started while syncing, in ISO 8601
-/// UTC> <server> <moved_ms or offset_ms or 0>`, or `none` without a record (D224).
+/// UTC> <server> <moved_ms or offset_ms or 0>`, or `none` without a record (D225).
 pub fn write_clock_sync(value: &mut Value, record: Option<&Record>) -> core::fmt::Result {
     let Some(record) = record else {
         return value.write_str("none");
@@ -663,7 +663,7 @@ fn write_choices(choices: &mut Text<256>, names: &[&str]) {
 }
 
 /// Why `value` was refused for `keyboard.layouts`, as `settings set` says it: the value or
-/// the unknown name in it, and the reason (D220).
+/// the unknown name in it, and the reason (D221).
 pub fn layouts_refusal<'a>(value: &'a str, refusal: LayoutSetRefusal) -> (&'a str, Text<256>) {
     let mut reason = Text::<256>::new();
     let quoted = match refusal {

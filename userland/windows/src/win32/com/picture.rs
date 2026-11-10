@@ -1,4 +1,4 @@
-//! The picture objects `OleLoadPicture` makes (D230): an `IPicture` over a bitmap (BMP, JPEG,
+//! The picture objects `OleLoadPicture` makes (D231): an `IPicture` over a bitmap (BMP, JPEG,
 //! GIF's first frame, TIFF, PNG) as a top-down 32-bit DIB section with premultiplied alpha, or
 //! over an icon (`.ico`, `.cur`) as an `HICON`, sized in HIMETRIC at 96 pixels per inch, which
 //! `Render` draws scaled into a device context, blending its straight-alpha pixels over what is

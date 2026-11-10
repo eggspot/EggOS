@@ -8,7 +8,7 @@
 //! `random` and `urandom` read the kernel's generator ([`crate::random`], as `getrandom`), and
 //! what is written to them is hashed into its input without being credited as entropy.
 //! `random` waits until the generator is seeded (`EAGAIN` with `O_NONBLOCK`) and `urandom`
-//! never waits, as since Linux 5.18. `kmsg` (D223) has one job on EggOS: what is written to it
+//! never waits, as since Linux 5.18. `kmsg` (D224) has one job on EggOS: what is written to it
 //! goes to the serial console only, never to the screen's terminal, so init's `init:` lines
 //! reach the boot log while the Terminal's first text stays the banner and the shell's; it
 //! reads nothing, since the kernel keeps no log to replay. Seeking any of them leaves them at
@@ -34,7 +34,7 @@ pub enum MemoryDevice {
     Random,
     /// `/dev/urandom`.
     Urandom,
-    /// `/dev/kmsg`: writes go to the serial console only (D223).
+    /// `/dev/kmsg`: writes go to the serial console only (D224).
     Kmsg,
 }
 

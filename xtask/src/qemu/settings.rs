@@ -16,7 +16,7 @@
 //!    the command refuses an unknown profile and a read-only key.
 //!
 //! Every boot passes [`FIRST_RUN_SKIP_WORD`] but two more on a disk of their own, which pass
-//! [`FIRST_RUN_ASK_WORD`] instead (D223):
+//! [`FIRST_RUN_ASK_WORD`] instead (D224):
 //!
 //! 4. A blank disk: after the first prompt init opens `Welcome to EggOS` at the work area's
 //!    centre on its first page; a click on the Linux card switches the desktop, the close

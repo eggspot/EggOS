@@ -1,4 +1,4 @@
-//! Image files decoded to pixels (D230), our own, for the foreign layers that hand programs
+//! Image files decoded to pixels (D231), our own, for the foreign layers that hand programs
 //! pictures (GDI+ and `OleLoadPicture` in the Windows layer, `NSImage` in the macOS layer):
 //! baseline, extended and progressive JPEG with Huffman coding (ITU T.81), GIF87a and GIF89a
 //! with every frame composited, TIFF 6.0 strips (uncompressed, PackBits, LZW and Deflate, with

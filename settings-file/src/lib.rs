@@ -148,12 +148,12 @@ pub fn key_accessibility(file: &[u8]) -> KeyAccessibility {
     }
 }
 
-/// Whether every colour token takes its high-contrast value: `true` or `false` (D223).
+/// Whether every colour token takes its high-contrast value: `true` or `false` (D224).
 pub const HIGH_CONTRAST: &str = "accessibility.high_contrast";
-/// Whether nothing blinks: `true` or `false` (D223).
+/// Whether nothing blinks: `true` or `false` (D224).
 pub const REDUCE_MOTION: &str = "accessibility.reduce_motion";
 
-/// How the screen is made easier to see (D223), as the settings file holds it.
+/// How the screen is made easier to see (D224), as the settings file holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DisplayAccessibility {
     pub high_contrast: bool,
@@ -226,10 +226,10 @@ pub const KEYBOARD_LAYOUT: &str = "keyboard.layout";
 /// (D194); `TZ` in a program's environment comes first.
 pub const TIME_ZONE: &str = "time.zone";
 
-/// Whether the clock is set from the network (D224): `on` (the default) or `off`.
+/// Whether the clock is set from the network (D225): `on` (the default) or `off`.
 pub const TIME_AUTOMATIC: &str = "time.automatic";
 
-/// The settings kept for this session only, when no disk holds [`PATH`] (D224): read after
+/// The settings kept for this session only, when no disk holds [`PATH`] (D225): read after
 /// [`PATH`], so a value here wins.
 pub const SESSION_PATH: &str = "/run/eggos/settings";
 
@@ -253,7 +253,7 @@ pub struct KeyboardLayout {
     /// The spacing accents of its dead keys, in the pane's order, separated by spaces; empty
     /// for none.
     pub dead_keys: &'static str,
-    /// The two capital letters the bar's layout indicator shows (D220).
+    /// The two capital letters the bar's layout indicator shows (D221).
     pub code: &'static str,
 }
 
@@ -312,11 +312,11 @@ pub fn keyboard_layout(file: &[u8]) -> Option<usize> {
 }
 
 /// The layouts the switch key cycles through: one to [`MAX_KEYBOARD_LAYOUTS`] names of
-/// [`KEYBOARD_LAYOUTS`], in order, separated by commas without spaces (D220).
+/// [`KEYBOARD_LAYOUTS`], in order, separated by commas without spaces (D221).
 pub const KEYBOARD_LAYOUT_SET: &str = "keyboard.layouts";
 
 /// The key that switches to the next layout of [`KEYBOARD_LAYOUT_SET`]: one of
-/// [`SwitchKey::NAMES`] (D220).
+/// [`SwitchKey::NAMES`] (D221).
 pub const KEYBOARD_SWITCH_KEY: &str = "keyboard.switch_key";
 
 /// The most layouts [`KEYBOARD_LAYOUT_SET`] holds.
@@ -431,7 +431,7 @@ impl KeyboardLayoutSet {
     }
 
     /// The set with layout `number` put in force while `in_force` is: unchanged when it is
-    /// listed, appended when there is room, else in the place of `in_force` (D220).
+    /// listed, appended when there is room, else in the place of `in_force` (D221).
     pub fn with_chosen(&self, number: usize, in_force: usize) -> Self {
         if self.contains(number) || number >= KEYBOARD_LAYOUTS.len() {
             return *self;

@@ -268,12 +268,12 @@ pub fn desktop_profile() -> Profile {
 static CHOSEN_PALETTE: AtomicU8 = AtomicU8::new(0);
 
 /// How many palettes the desktop has: the dark and light themes, each with and without high
-/// contrast (D218).
+/// contrast (D219).
 pub const PALETTES: u32 = 4;
 const APPEARANCE_THEME: &str = "appearance.theme";
 const LIGHT_PALETTE: u8 = 1;
 
-/// The desktop's palette index (D218): 0 dark, 1 light, plus 2 for high contrast; what the
+/// The desktop's palette index (D219): 0 dark, 1 light, plus 2 for high contrast; what the
 /// settings file's `appearance.theme` held at boot or the last `SET_PALETTE` set.
 pub fn desktop_palette() -> u32 {
     u32::from(CHOSEN_PALETTE.load(Ordering::Relaxed))
@@ -291,7 +291,7 @@ pub fn set_desktop_palette<P: Platform>(index: u32) {
 static REDUCE_MOTION: AtomicBool = AtomicBool::new(false);
 const HIGH_CONTRAST_PALETTES: u8 = 2;
 
-/// Whether nothing blinks (`accessibility.reduce_motion`, D223): what the settings file held at
+/// Whether nothing blinks (`accessibility.reduce_motion`, D224): what the settings file held at
 /// boot or the last `SET_REDUCE_MOTION` set.
 pub fn reduce_motion() -> bool {
     REDUCE_MOTION.load(Ordering::Relaxed)
@@ -327,7 +327,7 @@ pub fn set_desktop_profile<P: Platform>(profile: Profile) {
 
 /// Makes the profile the settings file holds ([`eggos_settings_file::PATH`]) the desktop's,
 /// before the desktop starts, so its first frame is already in it, and its keyboard layouts and
-/// switch key the keyboard's (D185, D220), so the first key types in the layout in force; the defaults stay when there is no file, it
+/// switch key the keyboard's (D185, D221), so the first key types in the layout in force; the defaults stay when there is no file, it
 /// holds no known profile or layout, or it cannot be read.
 pub fn load_saved_settings() {
     let root = vfs::root();
@@ -921,13 +921,13 @@ fn show_keyboard_layouts(desktop: &mut Desktop, damage: &mut Damage) {
 }
 
 /// The keyboard's layouts, the layout in force or the switch key changed (`/dev/window`'s
-/// `SET_KEYBOARD_LAYOUT` and `SET_KEYBOARD_LAYOUTS`, D220): the bar's layout indicator follows
+/// `SET_KEYBOARD_LAYOUT` and `SET_KEYBOARD_LAYOUTS`, D221): the bar's layout indicator follows
 /// at once.
 pub fn keyboard_layouts_changed<P: Platform>() {
     with_windows::<P, _>(|desktop, _, damage, _| show_keyboard_layouts(desktop, damage));
 }
 
-/// The network adapter's state changed (D224): the next frame shows it on the bar's network
+/// The network adapter's state changed (D225): the next frame shows it on the bar's network
 /// indicator ([`crate::net::indicated`]).
 pub fn network_changed<P: Platform>() {
     request_render::<P>();
@@ -958,7 +958,7 @@ fn toggle_sticky_keys<P: Platform>() {
     }
 }
 
-/// Sticky keys were turned `on` or off (`/dev/window`'s `SET_KEY_ACCESSIBILITY`, D223): the
+/// Sticky keys were turned `on` or off (`/dev/window`'s `SET_KEY_ACCESSIBILITY`, D224): the
 /// bar says so for a moment and shows no chips while they are off.
 pub fn sticky_keys_turned<P: Platform>(on: bool) {
     with_windows::<P, _>(|desktop, _, damage, _| {

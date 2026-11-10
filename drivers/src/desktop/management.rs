@@ -43,7 +43,7 @@ pub struct ListedWindow {
     /// Normal, minimised or maximised.
     pub state: WindowState,
     /// Its outside rectangle on the desktop's plane: left of the screen while it hangs off the
-    /// left edge (D221).
+    /// left edge (D222).
     pub rect: super::Bounds,
     /// Its client's number, [`super::KERNEL_CLIENT`] for the kernel's.
     pub client: u16,
@@ -52,7 +52,7 @@ pub struct ListedWindow {
     /// See [`Self::title`].
     pub title_length: usize,
     /// Whether its app reads its events: false while its title says `(not responding)`
-    /// (D221).
+    /// (D222).
     pub responding: bool,
 }
 
@@ -243,8 +243,8 @@ impl Desktop {
         self.update_pointer(damage);
     }
 
-    /// Makes palette `index` the desktop's (D218): every window's client gets
-    /// `PaletteChanged`, with whether motion is reduced (D223), and the whole screen is drawn
+    /// Makes palette `index` the desktop's (D219): every window's client gets
+    /// `PaletteChanged`, with whether motion is reduced (D224), and the whole screen is drawn
     /// again.
     pub fn set_palette(&mut self, index: u32, damage: &mut Damage, events: &mut dyn EventSink) {
         let reduce = i32::from(self.reduce_motion);
@@ -601,7 +601,7 @@ impl Desktop {
     }
 
     /// Client `client` read a close request: its windows are answering, unless it also leaves
-    /// other events unread (D221).
+    /// other events unread (D222).
     pub fn close_answered(&mut self, client: u16, damage: &mut Damage) {
         for window in self.windows.iter_mut().flatten() {
             if window.client == client {
@@ -614,7 +614,7 @@ impl Desktop {
 
     /// The clock reached `now_ms`: windows whose close request went unread for
     /// [`NOT_RESPONDING_AFTER_MS`], or whose client left an event unread for
-    /// [`super::UNREAD_EVENTS_BUSY_MS`] (D221), say `(not responding)`, and those whose close
+    /// [`super::UNREAD_EVENTS_BUSY_MS`] (D222), say `(not responding)`, and those whose close
     /// request went unread for [`CLOSE_TIMEOUT_MS`] are destroyed (their programs keep
     /// running); an app's start stops showing `Working` after [`super::APP_STARTING_MS`], and
     /// the launcher's caret blinks. A clock behind the request counts as no time waited.
@@ -818,7 +818,7 @@ impl Desktop {
     }
 
     /// The pointer shape the desktop shows now at the pointer, over `hit`: `Working` in the
-    /// arrow's place while an app starts (D221).
+    /// arrow's place while an app starts (D222).
     pub(super) fn wanted_pointer(&self, hit: Hit) -> PointerShape {
         self.with_server_shapes(self.shape_over(hit))
     }

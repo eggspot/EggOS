@@ -211,7 +211,7 @@ impl<T: Transport, M: DmaMemory> VirtioConsole<T, M> {
     }
 
     /// Has the device interrupt when it uses buffers of any of its queues, for a driver woken
-    /// by its interrupt instead of polling (D219); what it used before is found by the next
+    /// by its interrupt instead of polling (D220); what it used before is found by the next
     /// look.
     pub fn enable_interrupts(&mut self) {
         self.queues.control_receive.enable_used_notifications();

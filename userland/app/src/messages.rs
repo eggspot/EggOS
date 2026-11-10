@@ -69,7 +69,7 @@ impl Write for Line {
     }
 }
 
-/// The component that brings the layer `source`'s programs need (D237): `windows-apps` and
+/// The component that brings the layer `source`'s programs need (D238): `windows-apps` and
 /// `mac-apps`; none for Linux programs, which the base runs.
 pub fn layer_component(source: Source) -> Option<&'static str> {
     match source {
@@ -302,7 +302,7 @@ pub fn not_translated() -> Line {
     line
 }
 
-/// What `app install --dry-run` says (D225): `would install win-paint (Windows program,
+/// What `app install --dry-run` says (D226): `would install win-paint (Windows program,
 /// x86_64) from /media/host/win-paint.exe into /Applications/win-paint: 1 file, 70064 bytes`,
 /// then whether it replaces a folder an unfinished install left and whether its code would be
 /// translated for this computer.

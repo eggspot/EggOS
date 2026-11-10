@@ -1,7 +1,7 @@
 //! The keyboard layout and hot keys (D178): `ToUnicodeEx`, `VkKeyScanExW` and
 //! `MapVirtualKeyW`'s character mapping answer for the layout EggOS types with, read from
 //! `/proc/sys/eggos/keyboard_layout` at each call, its dead keys and AltGr (Ctrl+Alt) included
-//! (`gui::layout_keyboard`, D220); `GetKeyboardLayout`, `GetKeyboardLayoutNameW` and
+//! (`gui::layout_keyboard`, D221); `GetKeyboardLayout`, `GetKeyboardLayoutNameW` and
 //! `ActivateKeyboardLayout` still name the US English layout; `SetKeyboardState` sets the keys
 //! held. `RegisterHotKey`'s hot keys work while one of the program's windows has the
 //! keyboard: the window server gives a client no keys meant for other apps.

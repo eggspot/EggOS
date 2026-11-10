@@ -398,7 +398,7 @@ impl Desktop {
     /// client's queue lacks room for the whole step (nothing is sent), [`WindowError::NotAllowed`]
     /// for a window that takes only the person's input (D193's grant prompt),
     /// [`WindowError::NotResponding`] for any input to a window whose app is not responding
-    /// (D221; moving, sizing and closing it stay the server's and are not input).
+    /// (D222; moving, sizing and closing it stay the server's and are not input).
     pub fn send_input(
         &mut self,
         window: u32,

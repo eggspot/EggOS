@@ -1,4 +1,4 @@
-//! NSTimer and NSRunLoop (D175, D231): a timer fires at a date, once or every interval, sending
+//! NSTimer and NSRunLoop (D175, D232): a timer fires at a date, once or every interval, sending
 //! its selector to its target (with the timer) or running its block. Every thread has its own
 //! run loop (the main thread's is the main run loop), and a timer belongs to the loop it was
 //! scheduled on and to the modes it was added for (the default mode unless `addTimer:forMode:`
@@ -11,7 +11,7 @@
 //! `performSelector:withObject:afterDelay:` is a one-shot timer that sends the selector with
 //! the object, and `cancelPreviousPerformRequestsWithTarget:` invalidates those still waiting.
 //! An exception a timer's callout throws goes on to the code that ran the loop once the timer
-//! is released (and a one-shot invalidated), D233.
+//! is released (and a one-shot invalidated), D234.
 
 use super::array;
 use super::constants::{

@@ -154,7 +154,7 @@ pub enum Role {
     Slider,
     /// A dropdown: its value is the chosen option's text, its options its children (D199).
     ComboBox,
-    /// A widget's tooltip, below it: its name the text, its value the shortcut (D218).
+    /// A widget's tooltip, below it: its name the text, its value the shortcut (D219).
     Tooltip,
     /// A window's menu bar: its value the open title, its titles its children.
     MenuBar,
@@ -261,7 +261,7 @@ pub mod flags {
     /// that change agents' grants).
     pub const PERSON_ONLY: u16 = 128;
     /// The window's app is not responding: the window server answered for it with the window
-    /// alone (D221).
+    /// alone (D222).
     pub const NOT_RESPONDING: u16 = 256;
     /// Every flag, with its name as `wm show` writes it, in order.
     pub const NAMES: [(u16, &str); 9] = [

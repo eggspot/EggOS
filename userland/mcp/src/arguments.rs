@@ -81,14 +81,14 @@ pub const MAX_LABEL_BYTES: usize = 64;
 pub const MAX_CURSOR_BYTES: usize = eggos_commands::page::MAX_CURSOR_BYTES;
 /// The longest `target` `ln` takes (D170).
 pub const MAX_LINK_TARGET_BYTES: usize = eggos_commands::tools::MAX_LINK_TARGET_BYTES as usize;
-/// The longest registry key a call names, in bytes (D230).
+/// The longest registry key a call names, in bytes (D231).
 pub const MAX_REGISTRY_KEY_BYTES: usize = eggos_commands::tools::MAX_REGISTRY_KEY_BYTES as usize;
-/// The longest registry value name a call names, in bytes (D230).
+/// The longest registry value name a call names, in bytes (D231).
 pub const MAX_REGISTRY_NAME_BYTES: usize =
     eggos_commands::tools::MAX_REGISTRY_NAME_BYTES as usize;
-/// Where a registry tool's value name starts in the content buffer, after its key (D230).
+/// Where a registry tool's value name starts in the content buffer, after its key (D231).
 pub const REGISTRY_NAME_AT: usize = MAX_REGISTRY_KEY_BYTES;
-/// `windows_registry_set`'s types, as the tool and its twin's `--type` name them (D230).
+/// `windows_registry_set`'s types, as the tool and its twin's `--type` name them (D231).
 pub const REGISTRY_TYPES: [&str; 6] = ["sz", "expand_sz", "multi_sz", "dword", "qword", "binary"];
 
 const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
@@ -204,16 +204,16 @@ pub enum ArgumentProblem {
     /// `label` is longer than 64 bytes or holds a control character (D192).
     BadLabel,
     /// A registry tool's `key` is missing, empty, longer than [`MAX_REGISTRY_KEY_BYTES`] or
-    /// holds a control character (D230).
+    /// holds a control character (D231).
     BadRegistryKey,
     /// A registry tool's `name` is longer than [`MAX_REGISTRY_NAME_BYTES`] or holds a NUL
-    /// (D230).
+    /// (D231).
     BadRegistryName,
     /// `windows_registry_set`'s `type` is not one of its choices, or `type` or `data` comes
-    /// without a `name` (D230).
+    /// without a `name` (D231).
     BadRegistryType,
     /// `windows_registry_set`'s `data` is not an array of at most 32 strings, 4096 bytes in
-    /// all, none holding a NUL (D230).
+    /// all, none holding a NUL (D231).
     BadRegistryData,
 }
 
@@ -632,20 +632,20 @@ pub struct Checked {
     pub symbolic: bool,
     /// `disk_format`'s label (D192).
     pub label: Option<LabelText>,
-    /// `file_copy`'s and `file_move`'s source's length, in the content buffer (D225).
+    /// `file_copy`'s and `file_move`'s source's length, in the content buffer (D226).
     pub source: Option<usize>,
-    /// `file_remove`'s `recursive` (D225).
+    /// `file_remove`'s `recursive` (D226).
     pub recursive: bool,
-    /// `folder_create`'s `parents` (D225).
+    /// `folder_create`'s `parents` (D226).
     pub parents: bool,
-    /// A registry tool's key's length, at the start of the content buffer (D230).
+    /// A registry tool's key's length, at the start of the content buffer (D231).
     pub registry_key: Option<usize>,
     /// A registry tool's value name's length, at [`REGISTRY_NAME_AT`] in the content buffer;
-    /// `Some(0)` is the (Default) value (D230).
+    /// `Some(0)` is the (Default) value (D231).
     pub registry_name: Option<usize>,
-    /// `windows_registry_set`'s type, as its twin's `--type` takes it (D230).
+    /// `windows_registry_set`'s type, as its twin's `--type` takes it (D231).
     pub registry_type: Option<&'static str>,
-    /// `windows_registry_reset`'s `machine` (D230).
+    /// `windows_registry_reset`'s `machine` (D231).
     pub machine: bool,
 }
 
@@ -1470,13 +1470,13 @@ fn registry_arguments<'a>(
 }
 
 /// A registry tool's key in `buffer`, the content buffer, that [`Checked::registry_key`]
-/// measures (D230).
+/// measures (D231).
 pub fn registry_key_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.registry_key?)?).ok()
 }
 
 /// A registry tool's value name in `buffer`, the content buffer, that
-/// [`Checked::registry_name`] measures (D230).
+/// [`Checked::registry_name`] measures (D231).
 pub fn registry_name_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     let end = REGISTRY_NAME_AT.checked_add(checked.registry_name?)?;
     core::str::from_utf8(buffer.get(REGISTRY_NAME_AT..end)?).ok()
@@ -1603,7 +1603,7 @@ pub fn link_target_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b s
 }
 
 /// `file_copy`'s and `file_move`'s source in `buffer`, the content buffer, that
-/// [`Checked::source`] measures (D225).
+/// [`Checked::source`] measures (D226).
 pub fn source_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.source?)?).ok()
 }

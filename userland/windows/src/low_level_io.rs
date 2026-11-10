@@ -1,7 +1,7 @@
 //! The C runtime's low-level I/O (`io.h`, `fcntl.h`, `share.h`; D179): what `_open`'s
 //! `_O_*` flags, `_sopen_s`'s sharing mode and `_lseek`'s origin ask of Linux's `openat` and
 //! `lseek`, and what a descriptor's translation mode does to the bytes `_read` and `_write`
-//! move (D228), kept here, outside the layer's Win32 code, so its host tests run.
+//! move (D229), kept here, outside the layer's Win32 code, so its host tests run.
 
 /// `_open`'s flags (`_O_*`).
 pub mod windows_flag {

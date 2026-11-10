@@ -78,7 +78,7 @@ Check each task against these before starting and again before opening the PR.
   - drivers sit behind one common driver model, so adding a device never touches the core;
   - per-architecture Linux ABI facts (system-call numbers, struct layouts, signal frames, fault
     encodings) live only in `kernel/src/linux/abi/<arch>.rs`, and kernel and user builds are told
-    apart by `cfg(eggos_kernel)` and `cfg(eggos_user)` (D217; `cargo xtask lint` enforces both);
+    apart by `cfg(eggos_kernel)` and `cfg(eggos_user)` (D218; `cargo xtask lint` enforces both);
   - each supported architecture boots in QEMU in automated tests (this Mac's QEMU emulates x86_64,
     aarch64, riscv64, loongarch64, ppc64, s390x, mips64 and more).
   Bring-up order is an engineering choice, not a scope limit: start where QEMU emulation is good and most

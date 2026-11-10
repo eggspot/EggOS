@@ -1,4 +1,4 @@
-//! NSPasteboard's rules that need no server (`docs/ux/macos-gui-v0.3.md` section 14.1, D232):
+//! NSPasteboard's rules that need no server (`docs/ux/macos-gui-v0.3.md` section 14.1, D233):
 //! which type names are plain text, the longest text one copy holds, and the names of private
 //! pasteboards made by `pasteboardWithUniqueName`.
 

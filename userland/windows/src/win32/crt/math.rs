@@ -1,4 +1,4 @@
-//! The C runtime's math library (`math.h`, D228): every function of the Universal C Runtime
+//! The C runtime's math library (`math.h`, D229): every function of the Universal C Runtime
 //! and the old `msvcrt.dll`, for `double` and `float`, from `eggos-math`, our own, under
 //! Microsoft's names and types (`long` is 32 bits, `_dclass` and `fpclassify` use `FP_*` as
 //! `corecrt_math.h` numbers them). Translated x64 programs on ARM64 take these functions'

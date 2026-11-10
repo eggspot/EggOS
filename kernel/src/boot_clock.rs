@@ -1,5 +1,5 @@
 //! The boot clock: ticks from [`boot`](crate::boot), for the serial console's
-//! `boot: desktop <ms>` line (D221) and, in kernels built with the `qemu-boot-clock` feature,
+//! `boot: desktop <ms>` line (D222) and, in kernels built with the `qemu-boot-clock` feature,
 //! the benchmark lines `cargo xtask bench` reads (D116): `boot_to_prompt` at the first time a
 //! program waits for console input, the shell at its first prompt, and `boot_to_desktop` when
 //! the frame that ends the boot screen is composed, each written once.
@@ -17,11 +17,11 @@ pub const NAME: &str = "boot_to_prompt";
 /// waits at its prompt.
 pub const IDLE_MEMORY: &str = "idle_memory_bytes";
 
-/// The first desktop frame's name in its line (D221): the time from the kernel's entry to the
+/// The first desktop frame's name in its line (D222): the time from the kernel's entry to the
 /// frame that ends the boot screen.
 pub const DESKTOP: &str = "boot_to_desktop";
 
-/// What the serial console's desktop line starts with, the milliseconds after it (D221).
+/// What the serial console's desktop line starts with, the milliseconds after it (D222).
 pub const DESKTOP_LINE_PREFIX: &str = "boot: desktop ";
 
 static STARTED: AtomicU64 = AtomicU64::new(0);

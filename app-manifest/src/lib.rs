@@ -127,7 +127,7 @@ pub struct Manifest<'a> {
     /// `NAME=value` words, separated by spaces, set in the program's environment when the app
     /// opens (D176): where a toolkit finds the data the app carries, say.
     pub environment: Option<&'a str>,
-    /// Whether the app is a console program (D222): it opens in a terminal window of its own,
+    /// Whether the app is a console program (D223): it opens in a terminal window of its own,
     /// which the launcher starts with `/bin/terminal -e`. Written as `console=true`; absent is
     /// `false`.
     pub console: bool,

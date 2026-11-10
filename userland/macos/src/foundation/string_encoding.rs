@@ -1,4 +1,4 @@
-//! NSString's byte encodings (D231), for `dataUsingEncoding:`, `initWithData:encoding:` and
+//! NSString's byte encodings (D232), for `dataUsingEncoding:`, `initWithData:encoding:` and
 //! `initWithBytes:length:encoding:`: ASCII, ISO Latin 1, UTF-8, UTF-16 and UTF-32 in either
 //! byte order. UTF-16 and UTF-32 without an order write a byte-order mark and little-endian
 //! units, as a Mac does; read without a mark they are big-endian (RFC 2781). A character an

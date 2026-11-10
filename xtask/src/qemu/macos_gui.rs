@@ -18,7 +18,7 @@
 //! (well after the click, so a person no longer wins) clears it through the menu, and after Cmd+Q
 //! the command's output says what it chose.
 //!
-//! Last, the nib app (D231): `app install /media/host/mac-nib.zip`, `app open mac-nib`, `^Z` and
+//! Last, the nib app (D232): `app install /media/host/mac-nib.zip`, `app open mac-nib`, `^Z` and
 //! `bg`; its window, built from its compiled `MainMenu.nib`, is found with `wm list`; `wm show`
 //! lists the nib's label and Greet button; `wm act <window> <Greet> invoke` sends the nib's
 //! `greet:` action to its delegate through the nib's outlets, so the next `wm show` lists

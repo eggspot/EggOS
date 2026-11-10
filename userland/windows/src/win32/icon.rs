@@ -318,7 +318,7 @@ pub(super) fn icon_from_pixels(colour: &Decoded) -> Result<usize, u32> {
     make_icon(colour, &mask, size, (size.0 / 2, size.1 / 2), TRUE)
 }
 
-/// Decodes an image file in any format `eggos-image` reads (D230) into the layer's pixels: the
+/// Decodes an image file in any format `eggos-image` reads (D231) into the layer's pixels: the
 /// first frame of a GIF, the first image of a TIFF, the largest image of an icon.
 pub(super) fn decode_image_file(bytes: &[u8]) -> Result<Decoded, ImageError> {
     let limits = Limits {

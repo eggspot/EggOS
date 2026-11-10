@@ -6,7 +6,7 @@
 //! `/bin/text-editor` the Text Editor with `/bin/edit` its command (D149), as `/bin/terminal`
 //! the terminal program (D187), as `/bin/disk` the `disk` command (D192), as
 //! `/bin/task-manager` the Task Manager (D200), and as `/bin/component` the `component`
-//! command (D237).
+//! command (D238).
 
 #![cfg_attr(eggos_user, no_std, no_main)]
 

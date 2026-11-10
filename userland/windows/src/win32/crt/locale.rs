@@ -1,4 +1,4 @@
-//! The C runtime's locales (D228): `setlocale`, `_wsetlocale`, `localeconv`, `_create_locale`
+//! The C runtime's locales (D229): `setlocale`, `_wsetlocale`, `localeconv`, `_create_locale`
 //! and the functions behind `MB_CUR_MAX` and `_pctype`, over `crate::locale`'s runtime
 //! locales, "C" and English (United States) with UTF-8. One locale serves the whole process
 //! (`_configthreadlocale` answers that per-thread locales are off); `setlocale`'s answer is a

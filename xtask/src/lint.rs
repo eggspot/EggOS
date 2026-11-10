@@ -7,7 +7,7 @@
 //! listed or beyond a listed file's count, and for a list that no longer matches (a count that
 //! went down, a file that is clean or gone), which makes the list only shrink.
 //!
-//! It also enforces D217's build gates, with no list: `target_arch` appears in `kernel/src` and
+//! It also enforces D218's build gates, with no list: `target_arch` appears in `kernel/src` and
 //! `drivers/src` only under `kernel/src/linux/abi/`, and kernel and user builds are told apart
 //! by `cfg(eggos_kernel)` and `cfg(eggos_user)`, never by the target's OS or C library (but in
 //! the `compile_error!` guards that refuse a build with neither).
@@ -86,7 +86,7 @@ const OLD_GATES: [&str; 2] = [
     concat!("target_env", " = \"musl\""),
 ];
 
-/// D217's rules for `path`, whose contents are `text`: see the module documentation.
+/// D218's rules for `path`, whose contents are `text`: see the module documentation.
 pub fn gate_problems(path: &str, text: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
     let mut problems = Vec::new();
@@ -98,7 +98,7 @@ pub fn gate_problems(path: &str, text: &str) -> Vec<String> {
         if architecture_free && line.contains("target_arch") {
             problems.push(format!(
                 "{path}:{number}: `target_arch` outside {ABI_FOLDER}: put the architecture's \
-                 Linux ABI fact in {ABI_FOLDER}<arch>.rs, or hardware in the HAL (D217)"
+                 Linux ABI fact in {ABI_FOLDER}<arch>.rs, or hardware in the HAL (D218)"
             ));
         }
         let guard = lines[index + 1..]
@@ -110,7 +110,7 @@ pub fn gate_problems(path: &str, text: &str) -> Vec<String> {
         {
             problems.push(format!(
                 "{path}:{number}: `{gate}`: tell kernel and user builds apart with \
-                 `cfg(eggos_kernel)` and `cfg(eggos_user)` (D217)"
+                 `cfg(eggos_kernel)` and `cfg(eggos_user)` (D218)"
             ));
         }
     }

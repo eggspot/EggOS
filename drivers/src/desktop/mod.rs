@@ -266,21 +266,21 @@ pub enum Action {
     /// ([`AGENT_LOG_LINE`]).
     ShowAgentLog,
     /// End the client's process: the person chose `End app` for a window that is not
-    /// responding (D221). Its windows are gone already.
+    /// responding (D222). Its windows are gone already.
     EndClient(u16),
     /// Make keyboard layout number `.0` the one in force, as the switch key does, chosen in
-    /// the bar indicator's menu (D220).
+    /// the bar indicator's menu (D221).
     ChooseKeyboardLayout(u8),
     /// Start Settings on this pane ([`Desktop::settings_pane_command`]): no Settings window
     /// is open to focus.
     OpenSettingsPane(SettingsPane),
     /// Turn sticky keys on if they are off and off if they are on, by the command
     /// [`Desktop::sticky_keys_command`] gives: Shift was tapped [`STICKY_TOGGLE_TAPS`] times
-    /// (D223).
+    /// (D224).
     ToggleStickyKeys,
 }
 
-/// How many taps of Shift in a row turn sticky keys on or off (D223).
+/// How many taps of Shift in a row turn sticky keys on or off (D224).
 pub const STICKY_TOGGLE_TAPS: u8 = 5;
 /// The most milliseconds between two of those taps.
 pub const STICKY_TOGGLE_WITHIN_MS: u32 = 2000;
@@ -288,9 +288,9 @@ pub const STICKY_TOGGLE_WITHIN_MS: u32 = 2000;
 /// A pane of Settings a bar item opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsPane {
-    /// The Keyboard pane, from the keyboard layout indicator's menu (D220).
+    /// The Keyboard pane, from the keyboard layout indicator's menu (D221).
     Keyboard,
-    /// The Network pane, from the bar's network indicator (D224).
+    /// The Network pane, from the bar's network indicator (D225).
     Network,
 }
 
@@ -622,7 +622,7 @@ impl Desktop {
     }
 
     /// Where rectangle `rect` of the terminal's grid is on the screen, cut at the screen's left
-    /// edge while the window hangs off it (D221).
+    /// edge while the window hangs off it (D222).
     pub fn grid_on_screen(&self, rect: Rect) -> Rect {
         let (x, y) = self.terminal().content_origin();
         let padding = i64::from(PADDING);
@@ -687,7 +687,7 @@ impl Desktop {
     }
 
     /// Window `id`'s outside rectangle on the desktop's plane, which may begin left of the
-    /// screen (D221), if it exists.
+    /// screen (D222), if it exists.
     pub fn window_bounds(&self, id: WindowId) -> Option<Bounds> {
         self.find(id).map(|slot| self.window_at(slot).bounds())
     }
@@ -945,7 +945,7 @@ impl Desktop {
     /// A window for `client`, not shown until its first [`Self::commit`]: `role` and `parent`
     /// as the contract numbers them, a content of `width` by `height` clamped as
     /// [`clamp_content_size`] says, and `window_flags` ([`protocol::flags`]). Clients may make
-    /// normal windows and dialogs of their own normal windows and dialogs (D226).
+    /// normal windows and dialogs of their own normal windows and dialogs (D227).
     pub fn create(
         &mut self,
         client: u16,
@@ -1107,14 +1107,14 @@ impl Desktop {
 
     /// `client`'s window `id`'s outside rectangle on the screen, its border and title bar
     /// included (D174): where `GetPlacement` says it is, left of the screen while it hangs off
-    /// the left edge (D221).
+    /// the left edge (D222).
     pub fn placement(&self, client: u16, id: u32) -> Result<Bounds, WindowError> {
         let slot = self.owned(client, id)?;
         Ok(self.window_at(slot).bounds())
     }
 
     /// Places `client`'s window `id` with its top-left corner at (`x`, `y`) of the work area,
-    /// clamped as a person's move is (D221): at once if it is shown, else when it first is.
+    /// clamped as a person's move is (D222): at once if it is shown, else when it first is.
     pub fn set_position(
         &mut self,
         client: u16,
@@ -1524,7 +1524,7 @@ impl Desktop {
             })
     }
 
-    /// The window at the end of `slot`'s chain of parents (D226): the normal window a dialog,
+    /// The window at the end of `slot`'s chain of parents (D227): the normal window a dialog,
     /// or a dialog's dialog, belongs to; `slot` itself when it has no parent.
     fn owner_window(&self, slot: usize) -> usize {
         let mut owner = slot;
@@ -2070,7 +2070,7 @@ impl Desktop {
         }
     }
 
-    /// The sideways wheel turned by `notches`, right when positive (D226): a `Wheel` record
+    /// The sideways wheel turned by `notches`, right when positive (D227): a `Wheel` record
     /// with the notches in `c` and `d` 0, as [`Self::send_input`]'s sideways turn sends it, to
     /// the window under the pointer or the one holding the grab.
     pub fn sideways_wheel(&mut self, notches: i32, events: &mut dyn EventSink) {
@@ -2106,7 +2106,7 @@ impl Desktop {
     /// focused window's record and the launcher's search taking `character` instead of the US
     /// keymap's. Code 0 is a character typed with no key of its own, such as a dead key's accent.
     /// A `character` with [`protocol::DEAD_KEY_CHARACTER`] reaches the window as the waiting
-    /// accent (or 0) with [`modifier::DEAD`] (D220), and nothing else takes it as typed.
+    /// accent (or 0) with [`modifier::DEAD`] (D221), and nothing else takes it as typed.
     pub fn key_typing(
         &mut self,
         code: u16,

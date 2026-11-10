@@ -2,7 +2,7 @@
 //! and their mutable and constant (compiler-emitted literal) classes, NSBundle, NSLog and the
 //! class and selector name functions, as classes of the layer's own Objective-C runtime; and
 //! (D175) NSException, NSProcessInfo, NSDate, NSError, NSData, NSSet, NSTimer, NSRunLoop and
-//! the string constants Foundation exports; and (D231) NSNotification and its center, NSUUID and
+//! the string constants Foundation exports; and (D232) NSNotification and its center, NSUUID and
 //! NSFileManager.
 
 pub mod file_manager;

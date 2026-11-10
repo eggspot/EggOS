@@ -1,4 +1,4 @@
-//! x86_64's Linux ABI (D217), its own `asm/unistd_64.h` table and structs: see [`super`].
+//! x86_64's Linux ABI (D218), its own `asm/unistd_64.h` table and structs: see [`super`].
 
 /// The calls x86_64 keeps beyond the generic table (Linux's `__ARCH_WANT_*`): the ones older
 /// than the `*at` family (`open`, `stat`, `fork`, `poll`, `select`, ...), `renameat` and

@@ -97,7 +97,7 @@ pub trait Files {
         Err(Errno::ENOSYS)
     }
     /// Whether this program may write `path`, a file or a folder, following symbolic links
-    /// (`faccessat` with `W_OK`, D225): `EACCES` or `EROFS` when it may not. One that cannot say
+    /// (`faccessat` with `W_OK`, D226): `EACCES` or `EROFS` when it may not. One that cannot say
     /// answers whether `path` is there.
     fn may_write(&mut self, path: &[u8]) -> Result<(), Errno> {
         self.status_following(path).map(|_| ())

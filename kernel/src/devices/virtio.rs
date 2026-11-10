@@ -704,7 +704,7 @@ mod disk {
 
     /// The virtio block device (virtio 1.2, 5.2), installed as one of the kernel's disks
     /// ([`crate::block`]), with several requests in flight; a request's caller sleeps until the
-    /// device interrupts where the machine routes its interrupt (D219), polls otherwise.
+    /// device interrupts where the machine routes its interrupt (D220), polls otherwise.
     pub static BLOCK_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-blk",
         pass: ProbePass::Device,
@@ -844,7 +844,7 @@ mod agent {
 
     /// The virtio console device (virtio 1.2, 5.3) with multiple ports, whose port named
     /// [`agent_channel::PORT_NAME`] becomes the agent channel (D136), on interrupts where the
-    /// machine routes them (D219).
+    /// machine routes them (D220).
     pub static CONSOLE_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-console",
         pass: ProbePass::Device,
@@ -944,7 +944,7 @@ mod network {
     const ANSWER_TIMEOUT_MS: u64 = 1000;
 
     /// The virtio network device (virtio 1.2, 5.1), the stack's adapter (D157,
-    /// [`crate::net`]), on interrupts where the machine routes them (D219).
+    /// [`crate::net`]), on interrupts where the machine routes them (D220).
     pub static NET_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-net",
         pass: ProbePass::Device,
@@ -1039,7 +1039,7 @@ mod entropy {
     const ANSWER_TIMEOUT_MS: u64 = 1000;
 
     /// The virtio entropy device (virtio 1.2, 5.4), on interrupts where the machine routes them
-    /// (D219); the kernel's generator is reseeded from it at boot ([`seed_random`]).
+    /// (D220); the kernel's generator is reseeded from it at boot ([`seed_random`]).
     pub static RNG_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-rng",
         pass: ProbePass::Device,
@@ -1101,7 +1101,7 @@ mod entropy {
     }
 
     /// Reseeds the kernel's generator with [`crate::random::DEVICE_SEED_BYTES`] from the virtio
-    /// entropy device (D219): whether the generator is seeded then, `None` without a device or
+    /// entropy device (D220): whether the generator is seeded then, `None` without a device or
     /// an answer within a second.
     pub fn seed_random<P: eggos_hal::Platform>() -> Option<bool> {
         let mut bytes = [0u8; crate::random::DEVICE_SEED_BYTES];

@@ -1,4 +1,4 @@
-//! Loading compiled nibs (D231): `NSApplicationMain`'s `NSMainNibFile` and
+//! Loading compiled nibs (D232): `NSApplicationMain`'s `NSMainNibFile` and
 //! `-[NSBundle loadNibNamed:owner:topLevelObjects:]`. The file is read whole into the layer's
 //! heap, indexed by `nib_archive`, and its objects are made through the classes' own
 //! initializers and setters: windows from their templates, views and their subviews, text

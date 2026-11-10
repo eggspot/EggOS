@@ -1,4 +1,4 @@
-//! NSPasteboard (`docs/ux/macos-gui-v0.3.md` section 14.1, D232): the general pasteboard is the
+//! NSPasteboard (`docs/ux/macos-gui-v0.3.md` section 14.1, D233): the general pasteboard is the
 //! window server's one shared text (D197), read and written on every call so what another app
 //! copied a moment ago is what the next read gives; its change count is the server's serial.
 //! The other named pasteboards (`Find`, `Font`, `Ruler`, `Drag`, unique names) are private to

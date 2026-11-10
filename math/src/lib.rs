@@ -1,4 +1,4 @@
-//! The C math library, our own (D228): every `<math.h>` function of C99 for `double`, with its
+//! The C math library, our own (D229): every `<math.h>` function of C99 for `double`, with its
 //! `float` twin (`sinf` for `sin`), in pure Rust without the standard library, for the Windows
 //! layer's C runtime and the macOS layer's libSystem. Each function follows C's Annex F for
 //! zeros, infinities and NaNs. Arguments of the trigonometric functions are reduced with

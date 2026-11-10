@@ -95,7 +95,7 @@ pub enum AppId {
     TextEditor,
     /// The Task Manager (`/bin/task-manager`, D200), when the build has it.
     TaskManager,
-    /// The Downloads window (`/bin/downloads`, D224), when the build has it.
+    /// The Downloads window (`/bin/downloads`, D225), when the build has it.
     Downloads,
     /// The host's shared folder at `/media/host`.
     HostShare,
@@ -410,7 +410,7 @@ impl Catalogue {
         self.task_manager_present
     }
 
-    /// Records whether the build has the Downloads window (`/bin/downloads`, D224).
+    /// Records whether the build has the Downloads window (`/bin/downloads`, D225).
     pub fn set_downloads_present(&mut self, present: bool) {
         self.downloads_present = present;
     }
@@ -577,13 +577,13 @@ impl Catalogue {
     }
 
     /// The command that starts Settings on the pane named `pane`: `/bin/settings open <pane>`
-    /// (D220, D224).
+    /// (D221, D225).
     pub fn settings_pane(&self, pane: &str) -> Option<Command> {
         Command::program(SETTINGS_PROGRAM, &[OPEN_VERB.as_bytes(), pane.as_bytes()])
     }
 
     /// The command that saves and applies `key` as `value`: `/bin/settings set <key> <value>`,
-    /// as the CLI does (D223, Shift five times).
+    /// as the CLI does (D224, Shift five times).
     pub fn settings_set(&self, key: &str, value: &str) -> Option<Command> {
         Command::program(
             SETTINGS_PROGRAM,
@@ -599,7 +599,7 @@ impl Catalogue {
     /// `--library-path` and its library folders; then the app's arguments, D172), after Ctrl-U
     /// so a half-typed line does not run with it; Terminal starts the terminal program, a new
     /// window each time (D187), and without it the console terminal is only focused, which the
-    /// desktop does itself. An installed console app (its manifest's `console=true`, D222) starts
+    /// desktop does itself. An installed console app (its manifest's `console=true`, D223) starts
     /// `/bin/terminal -t <name> -e /bin/eggsh -c <line>` instead while the terminal program is
     /// present, so it gets a terminal window of its own.
     pub fn launch(&self, app: AppId) -> Option<Launch> {

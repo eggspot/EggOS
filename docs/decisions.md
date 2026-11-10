@@ -17302,7 +17302,7 @@ the license, by an explicit instruction recorded here.
   variable and type information for a debugger, which a developer who needs it turns back on
   locally with `CARGO_PROFILE_DEV_DEBUG=true`. Release builds are unchanged (`strip = "debuginfo"`).
 
-## D217 Kernel and user builds are told apart by `cfg(eggos_kernel)` and `cfg(eggos_user)`, and each architecture's Linux ABI lives in one file, `kernel/src/linux/abi/<arch>.rs` (issue #96; extends D4, D6, D7) — Decided by the build loop (engineering)
+## D218 Kernel and user builds are told apart by `cfg(eggos_kernel)` and `cfg(eggos_user)`, and each architecture's Linux ABI lives in one file, `kernel/src/linux/abi/<arch>.rs` (issue #96; extends D4, D6, D7) — Decided by the build loop (engineering)
 
 - **Context.** The kernel and the programs were told apart by the target: `target_os = "none"`
   (68 uses in 14 files) for the kernel, `target_env = "musl"` (205 uses in 28 files, two
@@ -17360,7 +17360,7 @@ the license, by an explicit instruction recorded here.
   The legacy comments of the large files part 0 touched (`kernel/src/linux.rs`,
   `kernel/src/lib.rs` and the userland mains) are left for the comment sweep's own PR (D66).
 
-## D218 The toolkit's second slice: tooltips, the menu bar and menu button, tables, the text area, sideways scrolling, drag inside a window and the light theme, as docs/ux/toolkit-v0.5.md designs them (extends D199) — Decided by the build loop (engineering; decided by research where marked)
+## D219 The toolkit's second slice: tooltips, the menu bar and menu button, tables, the text area, sideways scrolling, drag inside a window and the light theme, as docs/ux/toolkit-v0.5.md designs them (extends D199) — Decided by the build loop (engineering; decided by research where marked)
 
 - **Context.** D199's "Not yet" and toolkit-v0.4.md section 9 left the next widgets and the
   light theme; Claude Fable designed them in docs/ux/toolkit-v0.5.md (D16). Settings, the
@@ -17458,13 +17458,13 @@ the license, by an explicit instruction recorded here.
   ends silently); the QEMU screendump of Settings in the light theme; `bar.hover`'s `text.dim`
   is 4.47:1, under AA by a rounding the design states as 4.5.
 
-## D219 Drivers on interrupts, the rest: virtio-blk with several requests in flight, the disk, agent console, network and entropy drivers woken by their interrupts, the generator reseeded from virtio-rng, and Settings' About listing the devices from a shared crate (batch part 2; part 32's leftover; D184's "Not yet"; extends D111, D130, D131, D136, D157, D184; M5, M8) — Decided by the build loop (the About list designed by Claude Fable, docs/ux/devices-v0.3.md; the open points decided by research, one of them changed by it)
+## D220 Drivers on interrupts, the rest: virtio-blk with several requests in flight, the disk, agent console, network and entropy drivers woken by their interrupts, the generator reseeded from virtio-rng, and Settings' About listing the devices from a shared crate (batch part 2; part 32's leftover; D184's "Not yet"; extends D111, D130, D131, D136, D157, D184; M5, M8) — Decided by the build loop (the About list designed by Claude Fable, docs/ux/devices-v0.3.md; the open points decided by research, one of them changed by it)
 
 - **Context.** D184 put virtio-input on interrupts and left every other virtio driver polling
   until an answer came, or every 4 to 50 ms (the network thread 50 wake-ups a second when idle,
   `/dev/agent` waits every 32 ms), virtio-blk one request at a time, the generator seeded only by
   what the firmware gives, and the GUI front-end of the `devices` capability (D22) unbuilt
-  because the toolkit had no table (D218 built `Kind::Table`).
+  because the toolkit had no table (D219 built `Kind::Table`).
 - **Decision: virtio-blk.** One request queue of up to 64 entries; in the same 64 KiB DMA region
   as before, 15 request headers, 15 status bytes and fifteen 4 KiB data slots. A request has a
   number (its header and status byte) and a run of whole data slots
@@ -17574,7 +17574,7 @@ the license, by an explicit instruction recorded here.
   streams, kick the network thread's device events from the stream mutators, and drop the
   `has_streams()` clamp.
 
-## D220 Keyboard and text, the rest: 20 layouts with `us-mac` and five more, up to four at once with a switch key in the kernel, the layout applied without a display through `/proc/sys/eggos`, Num and Scroll Lock with their lights, the bar's layout indicator and its menu, the dead-key highlight, Egg Mono's Latin Extended-A, accent-insensitive search, and the Windows layer's `ToUnicodeEx` for the layout in force (batch part 3; D185's "Not yet"; extends D132, D163, D185, D195; amends D185 (6) for the headless case) — Decided by the build loop (the open questions decided by research; the layouts, the switch key, the indicator, the pane and the glyphs designed by Claude Fable, `docs/ux/keyboard-v0.3.md` section 9, `docs/ux/font-8x16-latin-ext-a.txt`)
+## D221 Keyboard and text, the rest: 20 layouts with `us-mac` and five more, up to four at once with a switch key in the kernel, the layout applied without a display through `/proc/sys/eggos`, Num and Scroll Lock with their lights, the bar's layout indicator and its menu, the dead-key highlight, Egg Mono's Latin Extended-A, accent-insensitive search, and the Windows layer's `ToUnicodeEx` for the layout in force (batch part 3; D185's "Not yet"; extends D132, D163, D185, D195; amends D185 (6) for the headless case) — Decided by the build loop (the open questions decided by research; the layouts, the switch key, the indicator, the pane and the glyphs designed by Claude Fable, `docs/ux/keyboard-v0.3.md` section 9, `docs/ux/font-8x16-latin-ext-a.txt`)
 
 - **Context.** D185 shipped 14 layouts, one at a time, applied only through `/dev/window`
   (from the next boot without a display), Caps Lock's light only, fonts to Latin-1 and `€`,
@@ -17779,7 +17779,7 @@ the license, by an explicit instruction recorded here.
   Space over QMP, the hint, `café` after a switch) and typing `ü` into a Wayland and a Windows
   edit; measured costs.
 
-## D221 Desktop polish, the rest: windows hanging off the left edge, the server's own `Busy` and `(not responding)` for a client that leaves its events unread, the End app dialog, the `Working` pointer, the launcher's caret blink, `boot: desktop <ms>` and `boot_to_desktop`, `KEYS_TO_TERMINAL` starting false (batch part 4; D186's "Not yet"; extends D115, D116, D127, D128, D156, D160, D161, D186) — Decided by the build loop (the boot line's place, the benchmark's run and the open points decided by research; `Working`, the server's `Busy`, the End app dialog, the symmetric clamp and the caret's blink designed by Claude Fable, `docs/ux/desktop-polish-v0.3.md` section 4)
+## D222 Desktop polish, the rest: windows hanging off the left edge, the server's own `Busy` and `(not responding)` for a client that leaves its events unread, the End app dialog, the `Working` pointer, the launcher's caret blink, `boot: desktop <ms>` and `boot_to_desktop`, `KEYS_TO_TERMINAL` starting false (batch part 4; D186's "Not yet"; extends D115, D116, D127, D128, D156, D160, D161, D186) — Decided by the build loop (the boot line's place, the benchmark's run and the open points decided by research; `Working`, the server's `Busy`, the End app dialog, the symmetric clamp and the caret's blink designed by Claude Fable, `docs/ux/desktop-polish-v0.3.md` section 4)
 
 - **Context.** D186 left out what needed signed window positions (hanging off the left), a
   per-client clock the server did not keep (its `Busy` showed only while a close request went
@@ -17847,7 +17847,7 @@ the license, by an explicit instruction recorded here.
   `list_reply::NOT_RESPONDING` (bit 8). `GET_TREE` on a window not responding answers at once
   with the window alone, flagged `not-responding` (`eggos_element_tree::flags::NOT_RESPONDING`,
   256), built by the kernel with the dependency-free `eggos-element-tree` (not the toolkit,
-  which a release kernel does not link, D218); `ACT_ON_ELEMENT`, `GET_MENU`, `CHOOSE_MENU`
+  which a release kernel does not link, D219); `ACT_ON_ELEMENT`, `GET_MENU`, `CHOOSE_MENU`
   and every `SEND_INPUT` (`Desktop::send_input`: clicks, double-clicks, drags, moves, the
   wheel, keys and characters) fail with `WindowError::NotResponding` (`ENOTCONN`), nothing
   queued, which `wm` reports as `not_responding` (category busy, exit 75, `  try: wm list`); the MCP server tells it apart
@@ -17946,7 +17946,7 @@ the license, by an explicit instruction recorded here.
   a first-frame time on the release kernel's serial line; measured costs and the
   `boot_to_desktop` baseline lines.
 
-## D222 Terminals, the rest: selection, copy and paste, `terminal -e` and console apps in their own window, reflow, titles and folders from the shell, `stty`, and the pseudo-terminal's packet mode, `TIOCGPTPEER`, `TIOCSTI` within its session, `TOSTOP` and a waiting controlling side (extends D181, D187) — Decided by the build loop (batch part 5; the open questions decided by research; design by Claude Fable, docs/ux/terminal-selection-v0.3.md)
+## D223 Terminals, the rest: selection, copy and paste, `terminal -e` and console apps in their own window, reflow, titles and folders from the shell, `stty`, and the pseudo-terminal's packet mode, `TIOCGPTPEER`, `TIOCSTI` within its session, `TOSTOP` and a waiting controlling side (extends D181, D187) — Decided by the build loop (batch part 5; the open questions decided by research; design by Claude Fable, docs/ux/terminal-selection-v0.3.md)
 
 - **Context.** D187 gave terminal windows but left selection, copy and paste, `terminal -e`,
   console apps in their own window, reflow, the shell's titles and folders, a narrow close

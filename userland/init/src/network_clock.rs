@@ -1,4 +1,4 @@
-//! The network clock's place in init (D224, docs/ux/date-time-v0.3.md section 9.1): init starts
+//! The network clock's place in init (D225, docs/ux/date-time-v0.3.md section 9.1): init starts
 //! a clock keeper, a child of its own, that runs `date --sync --automatic` once the network has
 //! an address and `time.automatic` is on, then every [`POLL_S`] (less or more by up to
 //! [`JITTER_PERCENT`] %), or after a failure in [`FIRST_RETRY_S`], twice as long each time up

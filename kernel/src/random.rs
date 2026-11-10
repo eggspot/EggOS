@@ -136,7 +136,7 @@ pub const DEVICE_SEED_BYTES: usize = 32;
 
 /// Hashes `bytes` from a device's random number generator (virtio-rng) into the input,
 /// credited as [`device_credit`] says, then reseeds ([`reseed`]); whether the generator is
-/// seeded (D219).
+/// seeded (D220).
 pub fn reseed_from_device<P: Platform>(bytes: &[u8]) -> bool {
     add_input(DEVICE_TAG, bytes, device_credit(bytes));
     reseed::<P>()
@@ -144,7 +144,7 @@ pub fn reseed_from_device<P: Platform>(bytes: &[u8]) -> bool {
 
 /// How many bits a read of `bytes` from a device's random number generator is credited
 /// with: 8 a byte for a whole read of [`DEVICE_SEED_BYTES`] or more, none for a short read or
-/// one of zeros only, which a broken or hostile device gives (D219).
+/// one of zeros only, which a broken or hostile device gives (D220).
 pub fn device_credit(bytes: &[u8]) -> u32 {
     if bytes.len() < DEVICE_SEED_BYTES || bytes.iter().all(|&byte| byte == 0) {
         return 0;

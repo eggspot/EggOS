@@ -1,4 +1,4 @@
-//! The pointer's shape set by the program (D227, `docs/ux/windows-controls-v0.3.md` section
+//! The pointer's shape set by the program (D228, `docs/ux/windows-controls-v0.3.md` section
 //! 16): `SetCursor`, `GetCursor` and `ShowCursor`, applied to the program's top-level windows;
 //! a null cursor, or a show count below 0, shows the server's `Hidden` shape.
 

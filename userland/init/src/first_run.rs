@@ -1,4 +1,4 @@
-//! First run's place in init (D223, docs/ux/first-run-accessibility-v0.3.md section 1.1): on an
+//! First run's place in init (D224, docs/ux/first-run-accessibility-v0.3.md section 1.1): on an
 //! image that was never installed, booted with a disk whose settings hold no profile yet, init
 //! starts `settings --first-run` right after the login program, without waiting for it. An
 //! installed system asked its questions in the installer (`/etc/eggos/installed`); without a

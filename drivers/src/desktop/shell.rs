@@ -86,9 +86,9 @@ pub(super) enum PanelItem {
     MenuTitle(u8),
     /// The `Agent` chip, while an MCP client is connected (14.1).
     Agent,
-    /// The keyboard layout indicator, while two or more layouts are chosen (D220).
+    /// The keyboard layout indicator, while two or more layouts are chosen (D221).
     KeyboardLayout,
-    /// The network indicator, while the machine has a network adapter (D224).
+    /// The network indicator, while the machine has a network adapter (D225).
     Network,
 }
 
@@ -729,7 +729,7 @@ impl Desktop {
         }
     }
 
-    /// Opens Settings on `pane` (D220): focuses the Settings window when one exists, the pane
+    /// Opens Settings on `pane` (D221): focuses the Settings window when one exists, the pane
     /// staying what it was, else asks the kernel to start Settings there, at most once while
     /// it starts.
     pub(super) fn open_settings_pane(

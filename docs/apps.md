@@ -47,7 +47,7 @@ app icon [--size 48|32] [-o <file.png>] [--] <name> [<file.png>]
 
 `--` ends the options: the word after it is the path or name even if it starts with `-`.
 
-A console app (D222) opens in a terminal window of its own, titled `<name> - Terminal`, which
+A console app (D223) opens in a terminal window of its own, titled `<name> - Terminal`, which
 closes when the app exits with 0 and otherwise stays with a line saying how it ended. The
 installer writes `console=true` in the manifest for a Windows program of the console subsystem,
 a Linux program and a bare macOS tool, and nothing for a Windows GUI program or an `.app`

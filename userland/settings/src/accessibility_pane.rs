@@ -1,4 +1,4 @@
-//! The Accessibility pane (D205, D223, docs/ux/first-run-accessibility-v0.3.md section 2):
+//! The Accessibility pane (D205, D224, docs/ux/first-run-accessibility-v0.3.md section 2):
 //! high contrast, reduce motion, sticky keys, slow keys and the delay a key must be held, and
 //! full keyboard navigation, always on. Each change is one [`Request::ChangeDisplay`] or
 //! [`Request::ChangeKeys`] the program saves, then applies.

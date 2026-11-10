@@ -1,4 +1,4 @@
-//! What `win-controls2.exe`, the second Windows controls test program (D227), builds, as data
+//! What `win-controls2.exe`, the second Windows controls test program (D228), builds, as data
 //! both sides share: the program creates these controls through user32 and the QEMU test
 //! paints the same states with `eggos_windows_gui` on the host. It has no menu bar, so the
 //! content is the client area. Rectangles are `(x, y, width, height)` in the client area.

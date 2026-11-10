@@ -26,7 +26,7 @@
 //!    installed app runs in the terminal, which takes the next one when it ends), then
 //!    `win-controls` installed, its edit set to egg, Add invoked, the egg row selected and Upper
 //!    case invoked with `wm_act`, until `wm_show` shows the row selected and the box checked
-//!    (D226), closed and uninstalled, `linux-paint`
+//!    (D227), closed and uninstalled, `linux-paint`
 //!    captured, covered by Settings, clicked, typed into and captured after each, every
 //!    capture compared exactly with the host's drawing, the terminal's window refused, a key
 //!    pressed in it and a scroll, and `edit_open` opening the share's text file in a Text

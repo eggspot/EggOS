@@ -6,8 +6,8 @@
 //! (`NSButton`, `NSTextField` as the toolkit's controls), `NSAlert` runs a dialog of its own,
 //! `NSMenu` is shown by the server in the top bar, the standard About panel is the layer's own
 //! window, and every window answers agents with its views as an element tree (D175); compiled
-//! nibs are loaded into these classes (D231). `NSCursor` chooses the server's pointer shapes and
-//! `NSPasteboard` reads and writes the clipboard every app shares (D232).
+//! nibs are loaded into these classes (D232). `NSCursor` chooses the server's pointer shapes and
+//! `NSPasteboard` reads and writes the clipboard every app shares (D233).
 
 mod about;
 mod alert;

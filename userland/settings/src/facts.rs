@@ -30,7 +30,7 @@ pub struct Facts {
     pub scale_in_force: u32,
     /// The desktop's layout profile: its index in the settings file's `PROFILES`.
     pub profile: usize,
-    /// The desktop's theme, `appearance.theme` (D218).
+    /// The desktop's theme, `appearance.theme` (D219).
     pub theme: Theme,
     /// Whether `/home` is on a disk, so a choice survives a power-off.
     pub on_disk: bool,
@@ -40,9 +40,9 @@ pub struct Facts {
     pub hardware_clock: bool,
     /// The keyboard layout: its index in the settings file's `KEYBOARD_LAYOUTS` (D185).
     pub keyboard_layout: usize,
-    /// The layouts the switch key cycles through (D220).
+    /// The layouts the switch key cycles through (D221).
     pub keyboard_layouts: KeyboardLayoutSet,
-    /// The key that switches layouts (D220).
+    /// The key that switches layouts (D221).
     pub switch_key: SwitchKey,
     /// Whether the machine has a keyboard.
     pub keyboard: bool,
@@ -50,18 +50,18 @@ pub struct Facts {
     pub caps_lock: bool,
     /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
     pub time_zone: usize,
-    /// Whether the clock is set from the network, `time.automatic` (D224).
+    /// Whether the clock is set from the network, `time.automatic` (D225).
     pub time_automatic: bool,
-    /// What the last network clock sync did, from `/run/eggos/clock-sync` (D224).
+    /// What the last network clock sync did, from `/run/eggos/clock-sync` (D225).
     pub clock_sync: Option<Record>,
     /// The mouse and key preferences (D195).
     pub input: InputPreferences,
     /// Sticky keys and slow keys (D205).
     pub keys: KeyAccessibility,
-    /// High contrast and reduced motion (D223).
+    /// High contrast and reduced motion (D224).
     pub display: DisplayAccessibility,
     /// The network adapter as `/proc/net/interfaces` reports it; `None` on a machine without
-    /// one (D224).
+    /// one (D225).
     pub network_adapter: Option<InterfaceStatus>,
 }
 

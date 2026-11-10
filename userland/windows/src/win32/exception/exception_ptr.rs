@@ -1,4 +1,4 @@
-//! `std::exception_ptr` (D229): msvcp140's `__ExceptionPtr*` functions. A program's
+//! `std::exception_ptr` (D230): msvcp140's `__ExceptionPtr*` functions. A program's
 //! `exception_ptr` is two words; the first names a reference-counted copy of an exception, its
 //! record and, for a C++ exception, a copy of its object made with the most derived catchable
 //! type's copy constructor (byte for byte without one), which the last reference destroys with

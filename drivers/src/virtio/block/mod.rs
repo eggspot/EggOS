@@ -1,5 +1,5 @@
 //! The virtio block device (virtio 1.2, 5.2): one request queue with up to
-//! [`MAX_IN_FLIGHT`] requests in flight (D219), each a header the device reads, the data (none
+//! [`MAX_IN_FLIGHT`] requests in flight (D220), each a header the device reads, the data (none
 //! for a flush) and a status byte the device writes, in a header, a status byte and a run of
 //! data slots of its own ([`requests`]). A transfer's requests are posted together and complete
 //! in any order; every call returns only once all of its requests did, and a flush is posted
@@ -170,7 +170,7 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
     }
 
     /// Has the device interrupt as it completes requests, for a driver whose `keep_waiting`
-    /// sleeps until an interrupt instead of polling (D219); requests answered before are found
+    /// sleeps until an interrupt instead of polling (D220); requests answered before are found
     /// by the next look at the used ring.
     pub fn enable_interrupts(&mut self) {
         self.queue.enable_used_notifications();

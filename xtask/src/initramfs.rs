@@ -11,7 +11,7 @@
 //! regular files are taken from `initramfs/`. A hard link shares its file's inode number and link
 //! count, and the file's data is written once, with the last of its names, as `gen_init_cpio`
 //! does (D108). A symbolic link among the extra members holds its target as its data (D170),
-//! which need not exist: the base's links into components dangle until they are installed (D237).
+//! which need not exist: the base's links into components dangle until they are installed (D238).
 
 use std::path::{Path, PathBuf};
 

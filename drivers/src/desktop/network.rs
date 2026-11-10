@@ -1,4 +1,4 @@
-//! The bar's network indicator (docs/ux/network-v0.3.md section 4, D224): a 16x16 glyph of the
+//! The bar's network indicator (docs/ux/network-v0.3.md section 4, D225): a 16x16 glyph of the
 //! wired adapter's state drawn from a table of rectangles, directly left of the top bar's power
 //! button or 8 px left of the taskbar's clock, its tooltip in the words of section 4.4, which is
 //! also its accessible name, and a click that opens Settings on the Network pane. A machine
@@ -189,7 +189,7 @@ impl NetworkIndicator {
 
 impl Desktop {
     /// Shows the wired adapter's state `state` on the bar, `None` for a machine without a
-    /// network adapter (D224). The kernel calls it on each change; a change of state redraws
+    /// network adapter (D225). The kernel calls it on each change; a change of state redraws
     /// the glyph and re-places a tooltip of the indicator that shows, and the indicator
     /// appearing or going re-lays the bar's right-hand items in the same frame.
     pub fn set_network(&mut self, state: Option<NetworkState>, damage: &mut Damage) {

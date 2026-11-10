@@ -192,7 +192,7 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
     }
 
     /// Has the device interrupt when it receives frames, for a driver woken by its interrupt
-    /// instead of polling (D219); frames received before are found by the next look.
+    /// instead of polling (D220); frames received before are found by the next look.
     /// Transmitted frames are taken back when the next one is sent, without an interrupt.
     pub fn enable_interrupts(&mut self) {
         self.receive.enable_used_notifications();

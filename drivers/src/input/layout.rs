@@ -299,7 +299,7 @@ fn is_letter_pair(plain: u16, shifted: u16) -> bool {
 }
 
 /// The spacing accents of the dead keys, in the order the Keyboard pane lists them (the
-/// cedilla last, D220), with the ring no layout here has before it.
+/// cedilla last, D221), with the ring no layout here has before it.
 pub const DEAD_ACCENTS: [char; 7] = ['´', '`', '^', '¨', '~', '°', '¸'];
 
 const DEAD_MARKS: [u16; 7] = [ACUTE, GRAVE, CIRCUMFLEX, DIAERESIS, TILDE, RING, CEDILLA];
@@ -1040,7 +1040,7 @@ impl Typist {
     }
 
     /// The spacing accent of the dead key that waits for the next key, as the dead-key
-    /// highlight shows it (D220), if one waits.
+    /// highlight shows it (D221), if one waits.
     pub fn pending_accent(&self) -> Option<char> {
         match self.pending {
             0 => None,

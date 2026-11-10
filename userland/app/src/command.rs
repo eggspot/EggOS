@@ -296,7 +296,7 @@ pub fn translation_lines(record: &Record<'_>, mut each: impl FnMut(&str)) {
     }
 }
 
-/// The error code an install or uninstall that failed with `problem` reports (D225).
+/// The error code an install or uninstall that failed with `problem` reports (D226).
 pub fn problem_error(problem: &installer::Problem) -> &'static ErrorDefinition {
     use installer::Problem;
     match problem {
@@ -325,7 +325,7 @@ pub fn problem_error(problem: &installer::Problem) -> &'static ErrorDefinition {
     }
 }
 
-/// The error code a file system error `errno` reports from `app` (D225).
+/// The error code a file system error `errno` reports from `app` (D226).
 pub fn errno_error(errno: Errno) -> &'static ErrorDefinition {
     match errno {
         Errno::ENOENT => &errors::NO_SUCH_FILE,

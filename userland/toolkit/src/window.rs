@@ -107,7 +107,7 @@ pub struct Keyboard {
     pub present: bool,
     /// Whether Caps Lock is on.
     pub caps_lock: bool,
-    /// Whether Num Lock is on (D220).
+    /// Whether Num Lock is on (D221).
     pub num_lock: bool,
 }
 
@@ -224,7 +224,7 @@ impl WindowServer {
         Ok(word(&profile, 0))
     }
 
-    /// The desktop's palette index (D218): its theme plus 2 for high contrast
+    /// The desktop's palette index (D219): its theme plus 2 for high contrast
     /// ([`crate::theme::palette_index`]).
     pub fn palette(&self) -> Result<u32, Errno> {
         let mut palette = [0u8; 4];
@@ -238,7 +238,7 @@ impl WindowServer {
         self.ioctl(SET_PALETTE, &mut index.to_ne_bytes())
     }
 
-    /// Whether nothing blinks on the desktop (`accessibility.reduce_motion`, D223).
+    /// Whether nothing blinks on the desktop (`accessibility.reduce_motion`, D224).
     pub fn reduce_motion(&self) -> Result<bool, Errno> {
         let mut reduce = [0u8; 4];
         self.ioctl(GET_REDUCE_MOTION, &mut reduce)?;
@@ -289,7 +289,7 @@ impl WindowServer {
 
     /// Makes the first `count` of `layouts` (numbers in the settings file's
     /// `KEYBOARD_LAYOUTS`) the layouts the switch key cycles through and `switch_key` (a
-    /// number of its `SwitchKey::ALL`) the key, at once (`SET_KEYBOARD_LAYOUTS`, D220).
+    /// number of its `SwitchKey::ALL`) the key, at once (`SET_KEYBOARD_LAYOUTS`, D221).
     pub fn set_keyboard_layouts(
         &self,
         count: u32,

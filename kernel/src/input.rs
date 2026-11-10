@@ -8,7 +8,7 @@
 //! wheel move the graphical terminal's view ([`crate::terminal`]). The lock lights follow the
 //! keyboard's Caps Lock, Num Lock and Scroll Lock on keyboards that have them; with Num Lock
 //! off the keypad's keys are the navigation keys. The switch key cycles through the chosen
-//! layouts ([`set_layouts`], D220) and tells the desktop ([`InputEvent::LayoutChanged`]).
+//! layouts ([`set_layouts`], D221) and tells the desktop ([`InputEvent::LayoutChanged`]).
 //!
 //! Nothing runs without an input device. With them, the release kernel's input thread
 //! ([`start`]) takes their events: when every device interrupts, it sleeps until one does or the
@@ -69,7 +69,7 @@ pub trait InputDevice: Send {
     /// Hands `event` the device's new events, oldest first, at most `budget`; returns how many
     /// it took from the device.
     fn poll(&mut self, budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize;
-    /// Shows `lights` on the lock lights a keyboard has (D185, D220): `false` when the device
+    /// Shows `lights` on the lock lights a keyboard has (D185, D221): `false` when the device
     /// could not take every change now, so it is asked again at the next poll.
     fn set_lock_lights(&mut self, _lights: LockLights) -> bool {
         true
@@ -109,10 +109,10 @@ pub enum InputEvent {
     Button { button: Button, pressed: bool },
     /// The wheel turned by `delta` notches, up when positive.
     Wheel { delta: i32 },
-    /// The sideways wheel turned by `delta` notches, right when positive (D226).
+    /// The sideways wheel turned by `delta` notches, right when positive (D227).
     SidewaysWheel { delta: i32 },
     /// The switch key made layout number `.0` (an index of [`layout::LAYOUTS`]) the one in
-    /// force (D220).
+    /// force (D221).
     LayoutChanged(u8),
 }
 
@@ -449,7 +449,7 @@ pub fn sticky_keys() -> bool {
 static STICKY_SHOWN: AtomicU32 = AtomicU32::new(0);
 
 /// The modifiers sticky keys hold now, latched for the next key or click and locked; none
-/// while sticky keys are off (D223).
+/// while sticky keys are off (D224).
 pub fn sticky_modifiers() -> (Modifiers, Modifiers) {
     if !sticky_keys() {
         return (Modifiers::NONE, Modifiers::NONE);
@@ -747,7 +747,7 @@ impl InputState {
     }
 
     /// Has the switch key cycle through `layouts` from now on, `switch_key` being the key
-    /// (D220).
+    /// (D221).
     pub fn set_layouts(&mut self, layouts: KeyboardLayoutSet, switch_key: SwitchKey) {
         self.layouts = layouts;
         self.switch_key = switch_key;
@@ -1015,7 +1015,7 @@ impl InputState {
     }
 
     /// The modifiers sticky keys hold, latched in the low byte and locked in the next; with
-    /// sticky keys off, none, and every latch and lock let go but a click's (D223).
+    /// sticky keys off, none, and every latch and lock let go but a click's (D224).
     pub fn sticky_shown(&mut self) -> u32 {
         if !STICKY_KEYS.load(Ordering::Relaxed) {
             self.sticky = self.sticky.turned_off();
@@ -1327,7 +1327,7 @@ fn unpacked_layout_set(word: u64) -> (KeyboardLayoutSet, SwitchKey) {
 /// Types with keyboard layout `number` (its index in [`layout::LAYOUTS`], D185) on every
 /// keyboard from the next poll on, a waiting accent dropped; a layout not in the set the switch
 /// key cycles through joins it, appended while it has room, else in the place of the layout in
-/// force (D220). `false`, and nothing changed, for a number that is no layout.
+/// force (D221). `false`, and nothing changed, for a number that is no layout.
 pub fn set_layout(number: usize) -> bool {
     let Ok(number) = u8::try_from(number) else {
         return false;
@@ -1342,7 +1342,7 @@ pub fn set_layout(number: usize) -> bool {
     true
 }
 
-/// Makes `layouts` the set the switch key cycles through and `switch_key` its key (D220), from
+/// Makes `layouts` the set the switch key cycles through and `switch_key` its key (D221), from
 /// the next poll on; the layout in force stays when listed, else the set's first is in force.
 pub fn set_layouts(layouts: KeyboardLayoutSet, switch_key: SwitchKey) {
     LAYOUT_SET.store(packed_layout_set(&layouts, switch_key), Ordering::Relaxed);
@@ -1365,7 +1365,7 @@ pub fn caps_lock() -> bool {
     CAPS_LOCK.load(Ordering::Relaxed)
 }
 
-/// Whether Num Lock is on, as the last poll left it: on from power-on (D220).
+/// Whether Num Lock is on, as the last poll left it: on from power-on (D221).
 pub fn num_lock() -> bool {
     !NUM_LOCK_OFF.load(Ordering::Relaxed)
 }

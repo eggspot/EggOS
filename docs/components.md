@@ -1,4 +1,4 @@
-# Components (D18, D237)
+# Components (D18, D238)
 
 EggOS installs a small base. Everything else is an optional component that you install and
 remove yourself. A component that is not installed costs nothing: no disk, no memory, no

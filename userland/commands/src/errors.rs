@@ -141,7 +141,7 @@ pub const PERSON_ACTIVE: ErrorDefinition = error(
     None,
 );
 /// `wm act`, `wm type` and `wm menu`: the window's app has left an event unread for 2 s, so
-/// the window is not responding (exit 75, D221).
+/// the window is not responding (exit 75, D222).
 pub const NOT_RESPONDING: ErrorDefinition = error(
     "not_responding",
     Category::Busy,
@@ -408,21 +408,21 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
     None,
 );
 
-/// No download since boot has that id (D224).
+/// No download since boot has that id (D225).
 pub const NO_SUCH_DOWNLOAD: ErrorDefinition = error(
     "no_such_download",
     Category::NotFound,
     "Check the id: download list shows the downloads since boot.",
     None,
 );
-/// The download is over, or its fetch is gone, so there is nothing to cancel (D224).
+/// The download is over, or its fetch is gone, so there is nothing to cancel (D225).
 pub const ALREADY_ENDED: ErrorDefinition = error(
     "already_ended",
     Category::Failed,
     "Nothing to do: download list shows how it ended.",
     None,
 );
-/// The download is still running, so its record stays (D224).
+/// The download is still running, so its record stays (D225).
 pub const STILL_DOWNLOADING: ErrorDefinition = error(
     "still_downloading",
     Category::Busy,
@@ -430,84 +430,84 @@ pub const STILL_DOWNLOADING: ErrorDefinition = error(
     None,
 );
 
-/// The registry key does not exist (D230).
+/// The registry key does not exist (D231).
 pub const NO_SUCH_KEY: ErrorDefinition = error(
     "no_such_key",
     Category::NotFound,
     "Check the key: windows registry get shows a key's subkeys.",
     None,
 );
-/// The registry value does not exist (D230).
+/// The registry value does not exist (D231).
 pub const NO_SUCH_VALUE: ErrorDefinition = error(
     "no_such_value",
     Category::NotFound,
     "Check the name: windows registry get shows a key's values.",
     None,
 );
-/// The key is in the machine's hive, which only an administrator changes (D230).
+/// The key is in the machine's hive, which only an administrator changes (D231).
 pub const READ_ONLY_KEY: ErrorDefinition = error(
     "read_only_key",
     Category::ReadOnly,
     "Change it under HKEY_CURRENT_USER, or as an administrator.",
     None,
 );
-/// A predefined key cannot be created, deleted or edited (D230).
+/// A predefined key cannot be created, deleted or edited (D231).
 pub const ROOT_KEY: ErrorDefinition = error(
     "root_key",
     Category::Refused,
     "Name a key below the root.",
     None,
 );
-/// The key has subkeys, so it cannot be deleted alone (D230).
+/// The key has subkeys, so it cannot be deleted alone (D231).
 pub const HAS_SUBKEYS: ErrorDefinition = error(
     "has_subkeys",
     Category::Refused,
     "Delete its subkeys first, or the whole key with windows registry delete.",
     None,
 );
-/// A key or value name is empty, too long or holds a backslash (D230).
+/// A key or value name is empty, too long or holds a backslash (D231).
 pub const BAD_NAME: ErrorDefinition = error(
     "bad_name",
     Category::Usage,
     "Use a shorter name without a backslash.",
     None,
 );
-/// The data cannot be read as the value's type (D230).
+/// The data cannot be read as the value's type (D231).
 pub const BAD_DATA: ErrorDefinition = error(
     "bad_data",
     Category::Usage,
     "Give a number, in decimal or after 0x, or pairs of hex digits for binary.",
     None,
 );
-/// The value is larger than a registry value may be (D230).
+/// The value is larger than a registry value may be (D231).
 pub const VALUE_TOO_LARGE: ErrorDefinition = error(
     "value_too_large",
     Category::TooLarge,
     "Store large data in a file and its path in the registry.",
     None,
 );
-/// The key would be deeper than the registry allows (D230).
+/// The key would be deeper than the registry allows (D231).
 pub const KEY_TOO_DEEP: ErrorDefinition = error(
     "key_too_deep",
     Category::TooLarge,
     "Make the key higher up.",
     None,
 );
-/// The registry file has reached its size limit (D230).
+/// The registry file has reached its size limit (D231).
 pub const HIVE_FULL: ErrorDefinition = error(
     "hive_full",
     Category::TooLarge,
     "Delete keys you no longer need.",
     None,
 );
-/// The registry file is damaged (D230).
+/// The registry file is damaged (D231).
 pub const HIVE_DAMAGED: ErrorDefinition = error(
     "hive_damaged",
     Category::Damaged,
     "Replace it with an empty one; the damaged file is kept beside it.",
     Some("windows registry reset"),
 );
-/// The registry file could not be written (D230).
+/// The registry file could not be written (D231).
 pub const WRITE_FAILED: ErrorDefinition = error(
     "write_failed",
     Category::Failed,
@@ -522,63 +522,63 @@ pub fn by_code(code: &[u8]) -> Option<&'static ErrorDefinition> {
         .find(|error| error.code.as_bytes() == code)
 }
 
-/// `component`: no component store is attached (D237).
+/// `component`: no component store is attached (D238).
 pub const NO_STORE: ErrorDefinition = error(
     "no_store",
     Category::NotFound,
     "Attach the component store disk, or put its .img in the host share.",
     None,
 );
-/// `component`: neither the store nor the installed components know the name (D237).
+/// `component`: neither the store nor the installed components know the name (D238).
 pub const NO_SUCH_COMPONENT: ErrorDefinition = error(
     "no_such_component",
     Category::NotFound,
     "Check the name: component list shows the components.",
     Some("component list"),
 );
-/// `component`: another install or remove is running (D237).
+/// `component`: another install or remove is running (D238).
 pub const COMPONENT_BUSY: ErrorDefinition = error(
     "component_busy",
     Category::Busy,
     "Wait for the other install or remove, then try again.",
     None,
 );
-/// `component`: an installed component needs it (D237).
+/// `component`: an installed component needs it (D238).
 pub const NEEDED_BY: ErrorDefinition = error(
     "needed_by",
     Category::Refused,
     "Remove the components that need it first.",
     None,
 );
-/// `component`: a running program needs it (D237).
+/// `component`: a running program needs it (D238).
 pub const IN_USE: ErrorDefinition = error(
     "in_use",
     Category::Busy,
     "Quit the programs that use it, then remove it.",
     None,
 );
-/// `component`: a file in the store does not match its SHA-256; nothing was installed (D237).
+/// `component`: a file in the store does not match its SHA-256; nothing was installed (D238).
 pub const STORE_DAMAGED: ErrorDefinition = error(
     "store_damaged",
     Category::Damaged,
     "Get the component store again; nothing was installed.",
     None,
 );
-/// `component`: the store could not be read before the copy finished (D237).
+/// `component`: the store could not be read before the copy finished (D238).
 pub const STORE_DETACHED: ErrorDefinition = error(
     "store_detached",
     Category::Failed,
     "Attach the component store again, then install again.",
     None,
 );
-/// `component`: an install failed; nothing was installed (D237).
+/// `component`: an install failed; nothing was installed (D238).
 pub const INSTALL_FAILED: ErrorDefinition = error(
     "install_failed",
     Category::Failed,
     "Read the message; nothing was installed.",
     None,
 );
-/// `component`: a remove failed; the component stays installed (D237).
+/// `component`: a remove failed; the component stays installed (D238).
 pub const REMOVE_FAILED: ErrorDefinition = error(
     "remove_failed",
     Category::Failed,

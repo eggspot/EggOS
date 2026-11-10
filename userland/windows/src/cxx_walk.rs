@@ -1,4 +1,4 @@
-//! The decisions of C++ exception handling (D177, D229) that need no running program: whether
+//! The decisions of C++ exception handling (D177, D230) that need no running program: whether
 //! a record is a C++ exception, which frame, state and data a frame handler acts for when a
 //! catch block is running, which state an unwind leaves a frame in (`STATUS_LONGJMP`'s too),
 //! the unwind actions between two states, the search of the try blocks around a state for the

@@ -92,7 +92,7 @@ impl DeviceEvents {
 
     /// Events whose raise also wakes the threads waiting for console or device input
     /// ([`crate::console::wake_input_waiters`]): for a device programs wait on through `read`
-    /// and `poll` rather than through a driver's thread, such as the agent channel (D219).
+    /// and `poll` rather than through a driver's thread, such as the agent channel (D220).
     pub const fn waking_input_waiters() -> Self {
         Self {
             wakes_input_waiters: true,

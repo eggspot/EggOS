@@ -1102,7 +1102,7 @@ impl<S: Shell> TerminalWindow<S> {
             .min_by_key(|at| at.wrapping_sub(now_ms) as i32)
     }
 
-    /// Whether nothing blinks (`accessibility.reduce_motion`, D223): the cursor is a steady
+    /// Whether nothing blinks (`accessibility.reduce_motion`, D224): the cursor is a steady
     /// block, whatever the program asked with `CSI ? 12 h`.
     pub fn set_reduce_motion(&mut self, reduce: bool) {
         self.reduce_motion = reduce;

@@ -1,4 +1,4 @@
-//! `download list`, `download cancel` and `download clear` (D224, docs/ux/downloads-v0.3.md
+//! `download list`, `download cancel` and `download clear` (D225, docs/ux/downloads-v0.3.md
 //! section 10): the downloads `fetch` recorded since boot in `/run/eggos/downloads`, newest
 //! first, with the Downloads window's words and its judgement of a `downloading` record whose
 //! `fetch` is gone; stopping one with `SIGTERM`; removing the records of those that are over.

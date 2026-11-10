@@ -223,7 +223,7 @@ const PS_PAGE_EXAMPLE: &str = concat!("  PID  PPID  PGID S CMD\n", "    7     1 
 /// The most entries a page of `ls` holds (D164).
 pub const LS_PAGE_LIMIT: i64 = 500;
 /// The most items a page of `ps`, `wm list`, `app list`, `agentlog`, `help`, `trash -l` and
-/// `settings list` holds (D164, D225).
+/// `settings list` holds (D164, D226).
 pub const LIST_PAGE_LIMIT: i64 = 100;
 
 /// `ls`.
@@ -917,11 +917,11 @@ pub const APP_INSTALL: CommandDefinition = CommandDefinition {
         ),
         long_flag(
             "console",
-            "Open the app in a terminal window of its own, whatever its program says (D222).",
+            "Open the app in a terminal window of its own, whatever its program says (D223).",
         ),
         long_flag(
             "no-console",
-            "Open the app without a terminal window, whatever its program says (D222).",
+            "Open the app without a terminal window, whatever its program says (D223).",
         ),
         long_flag("window", "Show the installer's window instead of text."),
         DRY_RUN_OPTION,
@@ -1749,7 +1749,7 @@ const COMPONENT_REMOVED_FIELDS: [Field; 2] = [
     field("freed_bytes", FieldType::Integer),
 ];
 
-/// `component list` (D237).
+/// `component list` (D238).
 pub const COMPONENT_LIST: CommandDefinition = CommandDefinition {
     words: &["component", "list"],
     summary: "Lists the components.",
@@ -1773,7 +1773,7 @@ pub const COMPONENT_LIST: CommandDefinition = CommandDefinition {
     surface: COMPONENT_SURFACE,
 };
 
-/// `component install` (D237).
+/// `component install` (D238).
 pub const COMPONENT_INSTALL: CommandDefinition = CommandDefinition {
     words: &["component", "install"],
     summary: "Installs a component from the component store.",
@@ -1813,7 +1813,7 @@ pub const COMPONENT_INSTALL: CommandDefinition = CommandDefinition {
     surface: COMPONENT_SURFACE,
 };
 
-/// `component remove` (D237).
+/// `component remove` (D238).
 pub const COMPONENT_REMOVE: CommandDefinition = CommandDefinition {
     words: &["component", "remove"],
     summary: "Removes an installed component.",
@@ -2792,7 +2792,7 @@ pub const UNAME: CommandDefinition = reading_proc(
     "Settings: About",
 );
 
-/// `download list --json`'s records (D224): `reason` is `null` unless it failed, `percent` and
+/// `download list --json`'s records (D225): `reason` is `null` unless it failed, `percent` and
 /// `total_bytes` without a `Content-Length`, `ended_at` while it downloads.
 pub const DOWNLOAD_FIELDS: [Field; 13] = [
     field("id", FieldType::Integer),
@@ -2821,7 +2821,7 @@ const DOWNLOAD_ID: OperandDefinition = operand(
 
 const DOWNLOAD_SURFACE: Surface = Surface::Gui("the Downloads window");
 
-/// `download list` (D224).
+/// `download list` (D225).
 pub const DOWNLOAD_LIST: CommandDefinition = CommandDefinition {
     words: &["download", "list"],
     summary: "Lists the downloads since boot.",
@@ -2853,7 +2853,7 @@ pub const DOWNLOAD_LIST: CommandDefinition = CommandDefinition {
     surface: DOWNLOAD_SURFACE,
 };
 
-/// `download cancel` (D224).
+/// `download cancel` (D225).
 pub const DOWNLOAD_CANCEL: CommandDefinition = CommandDefinition {
     words: &["download", "cancel"],
     summary: "Stops a download.",
@@ -2879,7 +2879,7 @@ pub const DOWNLOAD_CANCEL: CommandDefinition = CommandDefinition {
     surface: DOWNLOAD_SURFACE,
 };
 
-/// `download clear` (D224).
+/// `download clear` (D225).
 pub const DOWNLOAD_CLEAR: CommandDefinition = CommandDefinition {
     words: &["download", "clear"],
     summary: "Removes the records of downloads that are over.",
@@ -3442,7 +3442,7 @@ pub const SETTINGS_GET: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("Settings' panes"),
 };
 
-/// `settings open` (D224, docs/ux/network-v0.3.md section 4.5).
+/// `settings open` (D225, docs/ux/network-v0.3.md section 4.5).
 pub const SETTINGS_OPEN: CommandDefinition = CommandDefinition {
     words: &["settings", "open"],
     summary: "Opens the Settings window on a pane.",
@@ -3706,7 +3706,7 @@ const REGISTRY_FIELDS: [Field; 5] = [
 
 const REGISTRY_YES: OptionDefinition = long_flag("yes", "Do it without asking.");
 
-/// `windows registry get` (D230).
+/// `windows registry get` (D231).
 pub const WINDOWS_REGISTRY_GET: CommandDefinition = CommandDefinition {
     words: &["windows", "registry", "get"],
     summary: "Shows a registry key's subkeys and values, or one value.",
@@ -3751,7 +3751,7 @@ pub const WINDOWS_REGISTRY_GET: CommandDefinition = CommandDefinition {
     surface: REGISTRY_SURFACE,
 };
 
-/// `windows registry set` (D230).
+/// `windows registry set` (D231).
 pub const WINDOWS_REGISTRY_SET: CommandDefinition = CommandDefinition {
     words: &["windows", "registry", "set"],
     summary: "Makes a registry key, or sets one of its values.",
@@ -3805,7 +3805,7 @@ pub const WINDOWS_REGISTRY_SET: CommandDefinition = CommandDefinition {
     surface: REGISTRY_SURFACE,
 };
 
-/// `windows registry delete` (D230).
+/// `windows registry delete` (D231).
 pub const WINDOWS_REGISTRY_DELETE: CommandDefinition = CommandDefinition {
     words: &["windows", "registry", "delete"],
     summary: "Deletes a registry key with everything below it, or one value.",
@@ -3844,7 +3844,7 @@ pub const WINDOWS_REGISTRY_DELETE: CommandDefinition = CommandDefinition {
     surface: REGISTRY_SURFACE,
 };
 
-/// `windows registry reset` (D230).
+/// `windows registry reset` (D231).
 pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
     words: &["windows", "registry", "reset"],
     summary: "Replaces a damaged registry file with an empty one.",

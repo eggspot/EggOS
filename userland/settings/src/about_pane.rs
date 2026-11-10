@@ -1,4 +1,4 @@
-//! The About pane's `Devices` section (D219, docs/ux/devices-v0.3.md): the machine's devices in
+//! The About pane's `Devices` section (D220, docs/ux/devices-v0.3.md): the machine's devices in
 //! a toolkit table, the rows, order and words `device list` and the MCP tool `device_list`
 //! give (the shared crate `eggos_device_list`), with `Show all <n> devices` for every one. The
 //! file is read each time the pane is shown ([`Request::ReadDevices`]); the box re-filters

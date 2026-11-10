@@ -1,7 +1,7 @@
 Egg Mono 8x16, the Latin Extended-A supplement: U+0100-U+017F, 128 glyphs in codepoint order
 (Y-diaeresis, U+0178, the capital Latin-1 lacks, is among them), the companion of font-8x16.txt
 (U+0020-U+007E) and font-8x16-latin-1.txt (U+00A0-U+00FF, U+20AC).
-Original design by Claude Fable for EggOS (D16, D220; docs/ux/keyboard-v0.3.md section 9.8).
+Original design by Claude Fable for EggOS (D16, D221; docs/ux/keyboard-v0.3.md section 9.8).
 License: MIT OR Apache-2.0, like the rest of EggOS.
 Format: font-8x16-latin-1.txt's: a block per glyph, blocks separated by one empty line. A block is
 a header line "U+XXXX c" (the codepoint in four upper-case hex digits and the character), then 16

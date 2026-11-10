@@ -13,7 +13,7 @@
 //! desktop's power menu), or when the login program ends and the configuration says to, init
 //! ends every other process, `SIGTERM` first and `SIGKILL` for those left, then takes the
 //! machine down (`shutdown.rs`, D183). On a never-installed image's first boot with a disk it
-//! also starts `settings --first-run` (`first_run.rs`, D223). Its own `init:` lines go to
+//! also starts `settings --first-run` (`first_run.rs`, D224). Its own `init:` lines go to
 //! `/dev/kmsg`, the serial console only, so the Terminal's first text is the banner and the
 //! shell's.
 

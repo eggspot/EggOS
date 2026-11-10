@@ -4,13 +4,13 @@
 //! builds as `/MD` programs (on the C runtime's DLLs) for x64 and ARM64; `eggcpp-fh3` is
 //! `eggcpp.cpp` built for `__CxxFrameHandler3` on x64 (`/d2FH4-`), whose default is
 //! `__CxxFrameHandler4`; `tests/windows-crt/eggcpp2.cpp`, our own C++ program on msvcp140
-//! (D229), builds the same way as `eggcpp`, as C++17; `tests/windows-crt/eggspawn.c`, our own
+//! (D230), builds the same way as `eggcpp`, as C++17; `tests/windows-crt/eggspawn.c`, our own
 //! C program that starts copies of itself through `CreateProcessW` and `CreateProcessA` and
 //! reads one's output through a pipe (D189), `tests/windows-crt/eggsync.c`, our own C program for APCs, abandoned mutexes,
 //! ordinal imports and DOS wildcards (D189), and `tests/windows-crt/eggnamed.c`, our own C
 //! program for named objects shared with a child, file mappings and wildcard arguments (D189),
 //! and `tests/windows-crt/eggcrt2.c`, our own C program for the math library, `setjmp`,
-//! locales, wide streams and low-level text mode (D228), build as console programs for both.
+//! locales, wide streams and low-level text mode (D229), build as console programs for both.
 //! `tests/windows-rust`, our own Rust program on Rust's standard library (`eggrust`, D189),
 //! builds with `cargo` for `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`, linked by
 //! MSVC's linker; and `tests/windows-mingw/eggmingw.c`, our own C program on MinGW's `msvcrt.dll` (D189), builds

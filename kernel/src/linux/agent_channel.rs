@@ -3,7 +3,7 @@
 //! `read` returns the bytes the host sent (waiting for some unless `O_NONBLOCK`), or 0 once
 //! when the host side closed; `write` sends all of its bytes, waiting while the host has not
 //! taken the last ones; `fstat` reports the character device; `lseek` is `ESPIPE`, `ioctl`
-//! `ENOTTY` and `mmap` `ENODEV`. A wait sleeps until the device interrupts (D219); where its
+//! `ENOTTY` and `mmap` `ENODEV`. A wait sleeps until the device interrupts (D220); where its
 //! interrupt cannot be routed it polls the device: every [`ACTIVE_POLL_MS`] while bytes moved
 //! in the last [`ACTIVE_WINDOW_MS`], every [`IDLE_POLL_MS`] otherwise.
 
@@ -66,7 +66,7 @@ fn note_traffic<P: Platform>() {
 }
 
 /// When a wait for the channel looks at the device again: soon after traffic, later when idle;
-/// never while the device interrupts, whose interrupt wakes the wait (D219).
+/// never while the device interrupts, whose interrupt wakes the wait (D220).
 pub(super) fn next_poll<P: Platform>() -> u64 {
     if agent_channel::is_interrupting() {
         return u64::MAX;

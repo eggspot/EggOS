@@ -2,7 +2,7 @@
 //! `raise:format:` throw it through the runtime's unwinder (`objc::exception`), from assembly
 //! entries that save the caller's registers first, so a `@catch` in the program takes it.
 //! Foundation's own failures (an index out of range, a nil object) raise real exceptions too
-//! ([`raise_named`], D233), which the program can catch around the guarded method that failed.
+//! ([`raise_named`], D234), which the program can catch around the guarded method that failed.
 //! An exception nothing catches ends the program with Apple's two lines. Also
 //! `NSSetUncaughtExceptionHandler`.
 

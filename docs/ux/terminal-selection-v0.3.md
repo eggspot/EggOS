@@ -1,4 +1,4 @@
-# EggOS v0.3.0 terminals, the rest: selection, console apps in their own window, reflow, titles from the shell, `stty` (batch part 5, D222)
+# EggOS v0.3.0 terminals, the rest: selection, console apps in their own window, reflow, titles from the shell, `stty` (batch part 5, D223)
 
 Design by Claude Fable (D16) for what `terminal-windows-v0.3.md` section 10 and D187's "Not
 yet" left: selection, copy and paste in terminal windows; `terminal -e` and installed console
@@ -75,7 +75,7 @@ pointer over the grid is `IBeam` (today `Arrow`), the `Arrow` over the padding.
 **Paste.** The clipboard's text is prepared as every terminal does: `CR LF` and `LF` become
 `CR` (the Enter key's byte, so a pasted script runs line by line), `TAB` is kept, every other
 control character and `ESC` is dropped, `DEL` and the C1 controls U+0080 to U+009F too (the
-8-bit CSI U+009B with its sequence; D222's research pass), so nothing pasted can be a sequence
+8-bit CSI U+009B with its sequence; D223's research pass), so nothing pasted can be a sequence
 and `ESC [ 201 ~` cannot be forged inside brackets; UTF-8 is passed through (the layout's non-ASCII bytes are
 the same bytes, D185). With bracketed paste on (`CSI ? 2004 h`: the engine's `Modes` gains
 `bracketed_paste`, read by `Terminal::bracketed_paste()`), the bytes go between `ESC [ 200 ~`

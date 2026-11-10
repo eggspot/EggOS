@@ -1,4 +1,4 @@
-//! Objective-C exceptions (D175, D233): `@throw`, `-[NSException raise]`, `@catch`, `@finally`
+//! Objective-C exceptions (D175, D234): `@throw`, `-[NSException raise]`, `@catch`, `@finally`
 //! and `objc_exception_rethrow`, unwound as Apple's runtime does, in two phases. A throw saves
 //! the caller's callee-saved registers in an assembly stub; the search phase steps from frame to
 //! frame with each loaded image's compact unwind information ([`unwind_info`]), or its DWARF

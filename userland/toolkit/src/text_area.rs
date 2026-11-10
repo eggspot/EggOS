@@ -343,7 +343,7 @@ pub fn caret_rect(area: &TextArea, store: &Store, rect: Rect) -> Rect {
 }
 
 /// Draws a waiting dead key's `accent` at the caret of `area` over `store` at `rect` in place
-/// of the caret (D220), the rest of the caret's visual line moved right by the cell's width.
+/// of the caret (D221), the rest of the caret's visual line moved right by the cell's width.
 pub fn paint_dead_key(
     canvas: &mut Canvas<'_>,
     area: &TextArea,

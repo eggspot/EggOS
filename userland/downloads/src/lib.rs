@@ -1,4 +1,4 @@
-//! The Downloads window (D224, docs/ux/downloads-v0.3.md): every download `fetch` recorded
+//! The Downloads window (D225, docs/ux/downloads-v0.3.md): every download `fetch` recorded
 //! since boot, newest first, read again once a second while the window shows; a web address
 //! field that starts `fetch` into `/home/root/Downloads`, `Cancel` and `Clear`, which do what
 //! `download cancel` and `download clear` do through the shared `eggos-download-list`. An

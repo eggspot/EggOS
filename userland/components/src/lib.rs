@@ -1,4 +1,4 @@
-//! The component manager, part 1 (D18, D237, docs/components.md): the component store's format
+//! The component manager, part 1 (D18, D238, docs/components.md): the component store's format
 //! ([`index`]), finding the store on an attached disk or in the host share, the installed
 //! components' records, installing a component atomically with every file checked against the
 //! store's SHA-256, and removing one that nothing needs and nothing runs ([`manager`]); every

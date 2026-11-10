@@ -1,4 +1,4 @@
-//! Property lists (D196, D231): Apple's XML (`<plist>`) and binary (`bplist00`) formats, read in
+//! Property lists (D196, D232): Apple's XML (`<plist>`) and binary (`bplist00`) formats, read in
 //! place from the file's bytes without allocating. [`Document::parse`] checks what it can up
 //! front (a binary list's trailer and offset table); everything else is checked as it is read,
 //! so a damaged list gives `None` from the accessor that meets the damage, never a panic.

@@ -1,4 +1,4 @@
-//! NSFileManager and the search-path functions (D231): whether a file exists and is a folder,
+//! NSFileManager and the search-path functions (D232): whether a file exists and is a folder,
 //! a folder's contents, making folders (with their parents), making a file, removing,
 //! moving and copying items (folders as whole trees, walked without recursion), an item's
 //! attributes, and where the standard folders are (`NSSearchPathForDirectoriesInDomains`,

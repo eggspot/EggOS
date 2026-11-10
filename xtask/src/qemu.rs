@@ -230,7 +230,7 @@ pub enum Expect {
     /// violation, a division by zero and an illegal instruction in `__try` blocks, ran a
     /// `__finally` block, continued from a vectored handler and a filter and raised a signal;
     /// and an uncaught exception ends it through `terminate` with status 3.
-    /// Then `eggcpp2.exe`, our own C++ program on msvcp140 (D229): its lines say the layer threw
+    /// Then `eggcpp2.exe`, our own C++ program on msvcp140 (D230): its lines say the layer threw
     /// `std::bad_cast`, `std::bad_typeid`, `std::out_of_range`, `std::length_error` and
     /// `std::bad_function_call` with MSVC's words and type names, `std::rethrow_exception` threw
     /// fresh copies of a held object, `std::make_exception_ptr` held a `std::runtime_error`,
@@ -262,7 +262,7 @@ pub enum Expect {
     /// came back abandoned once the child ended, the mapping went with its last handle, views
     /// of a page-file mapping share memory and refuse bad offsets and sizes, and a file's view
     /// wrote, flushed and copied on write; then its status 0.
-    /// Then `eggcrt2.exe`, our own C program (D228): its lines say the math library's `sin`,
+    /// Then `eggcrt2.exe`, our own C program (D229): its lines say the math library's `sin`,
     /// `exp`, `pow`, `atan2`, `fmod`, `tgamma` and `sqrt` gave their values, `longjmp` left two
     /// frames through a `__finally` and turned 0 into 1, `setlocale` named "C", the user's
     /// default and a mixed locale and refused `de-DE`, `localeconv` gave en-US's separators and
@@ -508,7 +508,7 @@ pub fn work_disk_args(arch: &Arch, image: &str) -> Vec<String> {
 
 /// QEMU's arguments that attach the component store `image` (an absolute path,
 /// `eggos-<version>-<arch>-components.img`) read-only on another of `arch`'s virtio block
-/// devices, where the component manager finds it (D237): the file and the disk are both
+/// devices, where the component manager finds it (D238): the file and the disk are both
 /// read-only, so nothing in EggOS can change the store it installs from.
 pub fn store_disk_args(arch: &Arch, image: &str) -> Vec<String> {
     vec![
@@ -3897,7 +3897,7 @@ pub fn agent_channel_args(arch: &Arch, chardev: &str) -> Vec<String> {
 pub const OFFSCREEN_WORD: &str = "eggos.display=offscreen";
 
 /// The kernel command line's word that keeps init from opening the first run on a blank disk
-/// (D223): every automated boot passes it before its own arguments, so a check that tests the
+/// (D224): every automated boot passes it before its own arguments, so a check that tests the
 /// first run, or passes a command line of its own, replaces it.
 pub const FIRST_RUN_SKIP_WORD: &str = "eggos.first_run=skip";
 

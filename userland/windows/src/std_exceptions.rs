@@ -1,4 +1,4 @@
-//! The C++ standard library's exception classes the Windows layer throws itself (D229):
+//! The C++ standard library's exception classes the Windows layer throws itself (D230):
 //! `std::bad_cast` from a failing reference `dynamic_cast`, `std::bad_alloc` and
 //! `std::length_error` from msvcp140's `_X*` functions, `std::system_error` from its threads'
 //! errors. A program catches them by the decorated names of its own types, so the layer lays

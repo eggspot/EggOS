@@ -776,7 +776,7 @@ later server shape would be.
 | `disappearingItemCursor`, `contextualMenuCursor` | 0 `Arrow` | |
 | `currentCursor` | what 13.2 resolved last | |
 | `currentSystemCursor` | the same | |
-| the spinning wait cursor | no public `NSCursor` makes it, and none is added: it is the window server's verdict on macOS and on EggOS alike, 8 `Busy` over a window whose app has left events unread for 2 s (D221) | |
+| the spinning wait cursor | no public `NSCursor` makes it, and none is added: it is the window server's verdict on macOS and on EggOS alike, 8 `Busy` over a window whose app has left events unread for 2 s (D222) | |
 
 An `NSCursor` made from an image (`initWithImage:hotSpot:`) is `Arrow` (an app's own cursor
 bitmaps: later). `hotSpot` answers the server shape's hotspot; `image` an `NSImage` of the
@@ -792,7 +792,7 @@ change, none per move). In order, the first that applies:
 1. **Hidden**: `+[NSCursor hide]` counts up, `unhide` counts down (never below 0); while the
    count is above 0 every window of the app shows 6 `Hidden`. `setHiddenUntilMouseMoves: YES`
    shows `Hidden` until the next `PointerMove` in any of the app's windows.
-2. **The server's own `Busy`** (D221) and its `Working` (D221) are the server's and outrank
+2. **The server's own `Busy`** (D222) and its `Working` (D222) are the server's and outrank
    everything the app asks; nothing to do here.
 3. **A cursor rect**: the topmost view under the pointer (a clip view's document and its
    subviews count, clipped), its rects in the order added, the first containing the point.
@@ -1230,7 +1230,7 @@ function.
 ## 20. Palettes: AppKit follows the user's appearance
 
 **Decision**: an AppKit app follows `appearance.theme` and `accessibility.high_contrast`, as
-the toolkit's own windows do (`toolkit-v0.5.md` section 8, D218), and unlike the Windows
+the toolkit's own windows do (`toolkit-v0.5.md` section 8, D219), and unlike the Windows
 layer's program content, which stays light (`windows-controls-v0.3.md` section 0) because
 Win32's colours are constants programs hard-code against. AppKit's semantic colours are
 dynamic by design: a macOS app already draws in Light and Dark Mode by reading them, so the

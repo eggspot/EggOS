@@ -356,7 +356,7 @@ pub enum FieldType {
     List,
     /// A JSON object.
     Object,
-    /// Any JSON value: its type depends on the record (a registry value's data, D230).
+    /// Any JSON value: its type depends on the record (a registry value's data, D231).
     Value,
 }
 
@@ -569,8 +569,8 @@ pub const CORE_VERBS: [&str; 20] = [
 ];
 
 /// The verbs a noun adds by a decision: `wm`'s (D128, D141, D147, D160, D161 and D162),
-/// `disk`'s (D192), `agent`'s (D193), `app`'s (D196), `download`'s (D224), those of `wm
-/// desktop`, a noun of `wm` (D204), and those of `windows registry` (D230).
+/// `disk`'s (D192), `agent`'s (D193), `app`'s (D196), `download`'s (D225), those of `wm
+/// desktop`, a noun of `wm` (D204), and those of `windows registry` (D231).
 pub const NOUN_VERBS: [(&str, &[&str]); 7] = [
     (
         "wm",

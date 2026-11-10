@@ -75,10 +75,10 @@ pub const FETCH_TIME_LIMIT_MS: u64 = 60_000;
 /// lookup that retries a silent server (D158).
 pub const NETWORK_TIME_LIMIT_MS: u64 = 15_000;
 /// How long `clock_sync`'s twin may run: the time server's three tries, then up to three
-/// HTTPS checks of 10 s each (D224).
+/// HTTPS checks of 10 s each (D225).
 pub const CLOCK_SYNC_TIME_LIMIT_MS: u64 = 45_000;
 /// How long `file_copy`'s, `file_move`'s and `file_remove`'s twins may run: a folder's whole
-/// tree takes longer than one file (D225).
+/// tree takes longer than one file (D226).
 pub const FILE_TREE_TIME_LIMIT_MS: u64 = 60_000;
 
 const PING_COUNTS: [&str; 6] = ["0", "1", "2", "3", "4", "5"];

@@ -1,4 +1,4 @@
-//! `/bin/downloads`, a name of the Settings program (D224): opens the Downloads window and
+//! `/bin/downloads`, a name of the Settings program (D225): opens the Downloads window and
 //! serves it until it closes. The downloads are the `fetch` processes it starts, which outlive
 //! it; while it runs it reaps those that end.
 

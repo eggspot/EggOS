@@ -52,7 +52,7 @@ pub enum Response {
     PasteWanted(WidgetId),
     /// A key no widget used, for the window: its code and modifiers.
     Unused { code: u16, shift: bool },
-    /// A menu bar's or menu button's item of this id was chosen (D218).
+    /// A menu bar's or menu button's item of this id was chosen (D219).
     Invoked(WidgetId, u8),
     /// A table's header was clicked: it is now sorted by this column this way; reorder the
     /// rows and call [`WidgetTree::set_rows`], or refuse with [`WidgetTree::set_sort`].
@@ -242,7 +242,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
     }
 
-    /// Whether nothing blinks (`accessibility.reduce_motion`, D223): the caret is drawn steady.
+    /// Whether nothing blinks (`accessibility.reduce_motion`, D224): the caret is drawn steady.
     pub fn set_reduce_motion(&mut self, reduce_motion: bool) {
         self.reduce_motion = reduce_motion;
         if reduce_motion && !self.caret_shown {
@@ -787,7 +787,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     }
 
     /// The accent a dead key left waiting, which the focused text field or text area shows at
-    /// its caret until the next key resolves it (D220).
+    /// its caret until the next key resolves it (D221).
     pub fn dead_key(&self) -> Option<char> {
         self.dead_key
     }

@@ -381,7 +381,7 @@ impl Plan {
         self.environment.as_ref().map(Path::as_bytes)
     }
 
-    /// Whether the app opens in a terminal window of its own (D222).
+    /// Whether the app opens in a terminal window of its own (D223).
     pub fn console(&self) -> bool {
         self.console
     }
@@ -1871,7 +1871,7 @@ pub struct Preview {
 }
 
 /// Makes the checks [`install`] makes after [`plan`], reading only and writing nothing
-/// (`app install --dry-run`, D225): `/Applications` is a folder this program may write, with
+/// (`app install --dry-run`, D226): `/Applications` is a folder this program may write, with
 /// room for the copy; a single program opens; every file of a bundle opens and every link
 /// stays inside it; every entry of a `.zip` extracts whole, its data checked against its CRC,
 /// within [`MAX_EXTRACTED_BYTES`], with no reserved name and every link inside the app. The

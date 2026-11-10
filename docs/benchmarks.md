@@ -195,7 +195,7 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
 - `term_scroll_line`: a line feed at the bottom of an 80x24 terminal and its render (D114): the
   grid moved up a line into the scrollback, the pixels of 23 lines moved up instead of drawn
   again, the new line and the cursor drawn.
-- `term_reflow`: a resize of a terminal with a full scrollback between 80x24 and 100x30 (D222):
+- `term_reflow`: a resize of a terminal with a full scrollback between 80x24 and 100x30 (D223):
   every logical line of the 256 scrollback rows and the screen laid out again at the new width,
   the cursor kept on its cell; one resize per iteration, alternating the two sizes.
 - `gfx_compose_four_windows`: a 64x64 rectangle of a 1280x800 desktop where the terminal and
@@ -214,7 +214,7 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   (D127): the top window under it found, and its enter, leave and motion events made; since
   D128 in the same walk its resize zones and the control under the pointer, then the pointer's
   shape chosen and its old and new rectangles damaged.
-- `toolkit_table_layout_1000_rows` and `text_area_wrap_64k` (D218): the toolkit's table of 1 000
+- `toolkit_table_layout_1000_rows` and `text_area_wrap_64k` (D219): the toolkit's table of 1 000
   rows laid out and drawn into a 400x300 window, and a 64 KiB text area wrapped at 384 px. They
   link the userland toolkit into the kernel only in bench builds (`qemu-bench` and host tests);
   a release kernel does not depend on it.
@@ -244,7 +244,7 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
 
 ## Image decoding
 
-- `image_decode_jpeg_640x480` (D230): `eggos-image` decoding a 640x480 baseline JPEG photo with
+- `image_decode_jpeg_640x480` (D231): `eggos-image` decoding a 640x480 baseline JPEG photo with
   4:2:0 chroma (`image/testdata/photo-640x480.jpg`, embedded in benchmark kernels only) to
   straight-alpha pixels, per iteration: Huffman decoding, the integer IDCT, chroma upsampling
   and the colour conversion, with the image's buffers allocated and freed. One iteration is a
@@ -269,7 +269,7 @@ Two results per architecture come from the release kernel rather than the benchm
   The count depends on QEMU's version (x86_64 is 20% apart between Ubuntu 24.04's QEMU 8.2.2
   and QEMU 10.2.2), so it is gated only on the version of the baseline's `<arch> qemu` line,
   CI's.
-- `boot_to_desktop` (D221): guest time from the start of `boot` to the frame that ends the
+- `boot_to_desktop` (D222): guest time from the start of `boot` to the frame that ends the
   boot screen and shows the desktop, read by the same `qemu-boot-clock` kernel booted a second
   time under `-icount`, this time with the virtio GPU; QEMU-dependent like `boot_to_prompt`.
   The GPU is polled, so its completions may arrive at host-dependent times: the result is kept
@@ -278,13 +278,13 @@ Two results per architecture come from the release kernel rather than the benchm
   just before `boot: terminal`.
 - `release_image_bytes`: the size in bytes of the image `cargo xtask release` ships. Gated
   exactly: any growth fails until the baseline line is updated with the reason (CLAUDE.md,
-  note 8). Since D237 the image is the base alone: the Windows and macOS layers are
+  note 8). Since D238 the image is the base alone: the Windows and macOS layers are
   components in the store, and the base holds only links to where they install, so this is
   the base's size with no component installed (D24).
 - `idle_memory_bytes` (D203): the memory in use when the shell first waits at its prompt,
   from the same boot. The release kernel boots with no component installed, so this is the
-  base's idle memory (D24, D237). Gated exactly like `release_image_bytes`.
-- `components_store_bytes` (D237): the size in bytes of the component store `cargo xtask
+  base's idle memory (D24, D238). Gated exactly like `release_image_bytes`.
+- `components_store_bytes` (D238): the size in bytes of the component store `cargo xtask
   release` ships beside the kernel image, `eggos-<version>-<arch>-components.img`, as
   `components::build_store` writes it (every component the architecture offers, padded to
   whole 4 KiB blocks; riscv64's holds the header and an empty index). Gated exactly: a
@@ -294,7 +294,7 @@ Two results per architecture come from the release kernel rather than the benchm
 
 - `MARKER` (`EGGOS-BENCH:`) must match `eggos_kernel::bench::MARKER`, and `BOOT_TO_DESKTOP`
   must match `eggos_kernel::boot_clock::DESKTOP`, the release kernel's first desktop frame
-  (D221), measured in a boot with a display.
+  (D222), measured in a boot with a display.
 - Benchmarks run on one CPU (`BENCH_CPUS`): under `-icount`, QEMU runs every CPU in one thread
   in turn, so other CPUs' instructions would count against the measured ones (D40).
 - A result fails the exact gate when it is slower than its baseline by more than 1% plus

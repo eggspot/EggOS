@@ -1,4 +1,4 @@
-//! The Windows registry that Windows programs on EggOS see (D230): a hive file of our own per
+//! The Windows registry that Windows programs on EggOS see (D231): a hive file of our own per
 //! user and one for the machine ([`hive`]), the predefined keys over them with
 //! `HKEY_CLASSES_ROOT` merged from both ([`registry`]), key paths and value types in the words
 //! regedit uses ([`path`], [`value`]), and the `windows registry` command ([`command`]). The

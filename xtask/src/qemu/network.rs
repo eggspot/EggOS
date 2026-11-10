@@ -9,7 +9,7 @@
 //! on the host; `date --sync` sets the clock from an NTP stand-in on the host (D159). Before
 //! those, `settings get time.automatic` reads `on` and, 10 s after the address, `settings get
 //! time.sync` shows init's own sync from `pool.ntp.org` finished: set, confirmed, unconfirmed
-//! or unanswered (D224). `exit` then powers the machine off.
+//! or unanswered (D225). `exit` then powers the machine off.
 
 use super::*;
 use eggos_net::Ipv4Address;

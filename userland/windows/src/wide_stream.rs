@@ -1,4 +1,4 @@
-//! Wide characters on the C runtime's byte streams (D228): `fgetwc`, `fputwc` and `ungetwc`
+//! Wide characters on the C runtime's byte streams (D229): `fgetwc`, `fputwc` and `ungetwc`
 //! move UTF-16 units, which a stream holds as the locale's multibyte characters (UTF-8,
 //! EggOS's ANSI code page, through the stream's own text mode) or as UTF-16LE: a stream opened
 //! with `ccs=UTF-16LE` or `ccs=UNICODE`, a descriptor `_setmode` put in `_O_WTEXT` or

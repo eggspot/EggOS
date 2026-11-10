@@ -1,4 +1,4 @@
-//! msvcp140, the C++ standard library's runtime of MSVC's `/MD` programs (D229), under its own
+//! msvcp140, the C++ standard library's runtime of MSVC's `/MD` programs (D230), under its own
 //! name and those of its companions (`msvcp140_1`, `msvcp140_2`, `msvcp140_atomic_wait`): the
 //! throwers the headers call (`errors.rs`), the threads, mutexes, condition variables and
 //! clocks (`threads.rs`), `std::exception_ptr` and `std::uncaught_exceptions` (`win32/exception`).

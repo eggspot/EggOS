@@ -1,4 +1,4 @@
-//! The keyboard layout EggOS types with, for the Win32 calls that ask what keys type (D220):
+//! The keyboard layout EggOS types with, for the Win32 calls that ask what keys type (D221):
 //! `ToUnicodeEx` ([`to_unicode`]), `VkKeyScanExW` ([`key_for`]) and `MapVirtualKeyW`'s
 //! character mapping ([`key_character`]) answer for the layout in force
 //! ([`eggos_drivers::input::layout`]), its dead keys and third level included. AltGr is Ctrl

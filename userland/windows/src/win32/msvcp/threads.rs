@@ -1,4 +1,4 @@
-//! msvcp140's threads (D229): `std::mutex`, `std::recursive_mutex` and the timed mutexes over
+//! msvcp140's threads (D230): `std::mutex`, `std::recursive_mutex` and the timed mutexes over
 //! `_Mtx_*`, `std::condition_variable` over `_Cnd_*`, `std::thread`'s join, detach and
 //! `hardware_concurrency` over `_Thrd_*`, `std::this_thread`'s sleeps, and the clocks'
 //! `_Query_perf_counter`, `_Query_perf_frequency` and `_Xtime_get_ticks`; and the Universal C

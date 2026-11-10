@@ -1,8 +1,8 @@
 //! The EggOS core utilities (D108): one program, `/bin/coreutils`, whose other names in `/bin`
-//! (hard links to the same file) are its utilities: `agent` (D193), `agentlog`, `cat`, `chmod` (D170), `clip` (D197), `cp`, `date` (D150), `device` (D184), `df` (D171), `download` (D224),
+//! (hard links to the same file) are its utilities: `agent` (D193), `agentlog`, `cat`, `chmod` (D170), `clip` (D197), `cp`, `date` (D150), `device` (D184), `df` (D171), `download` (D225),
 //! `echo`, `false`, `fetch` (D158), `free`, `getprop` (D188), `grep`, `halt`, `head`, `help` (D160), `hwclock` (D150), `ip` (D157), `kill` (D200), `ln` (D170), `logcat` (D188), `ls`,
 //! `mkdir`, `mv`, `nslookup` (D157), `ping` (D157), `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `setprop` (D188), `sleep`,
-//! `stty` (D222), `sync`, `tail`, `taskset` (D198), `tee`, `touch`, `trash`, `true`, `uname`, `uptime`, `wc` and `wm`. It runs
+//! `stty` (D223), `sync`, `tail`, `taskset` (D198), `tee`, `touch`, `trash`, `true`, `uname`, `uptime`, `wc` and `wm`. It runs
 //! the utility named by the last component of the name it was started by; started as
 //! `coreutils`, the one its first argument names (`coreutils --list` lists them). Each utility is pure logic over a `System` trait, with
 //! host tests against a fake; `linux.rs` makes the system calls. docs/coreutils.md describes

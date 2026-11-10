@@ -42,7 +42,7 @@ pub mod key {
     pub const SCROLL_LOCK: u16 = 70;
 
     /// Whether key `code` is a modifier or a lock key, which leaves a dead key's accent
-    /// waiting (D220).
+    /// waiting (D221).
     pub fn is_modifier_or_lock(code: u16) -> bool {
         matches!(
             code,
@@ -73,7 +73,7 @@ impl Modifiers {
     /// The third-level key, AltGr, or Option in the macOS profile (D185): Alt held with it
     /// types a character instead of making a shortcut.
     pub const ALT_GRAPH: u32 = 32;
-    /// A dead key's record (D220): its character is the accent waiting for the next key, or 0
+    /// A dead key's record (D221): its character is the accent waiting for the next key, or 0
     /// when Backspace took the accent back; [`decode`] makes it an [`Input::DeadKey`].
     pub const DEAD: u32 = 256;
 
@@ -128,7 +128,7 @@ pub enum Input {
         modifiers: Modifiers,
         character: u32,
     },
-    /// A dead key's accent waits for the next key (D220): `accent` is the spacing accent the
+    /// A dead key's accent waits for the next key (D221): `accent` is the spacing accent the
     /// caret shows highlighted until the next key resolves it, `None` when Backspace took it
     /// back. The keys that follow arrive as [`Input::Key`] with the finished characters.
     DeadKey { accent: Option<char> },

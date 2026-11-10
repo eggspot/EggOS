@@ -1,4 +1,4 @@
-//! The `Date & time` pane's `Set automatically` (D224, docs/ux/date-time-v0.3.md section 9):
+//! The `Date & time` pane's `Set automatically` (D225, docs/ux/date-time-v0.3.md section 9):
 //! the check box, `Set to` disabled while the network clock is in charge, and the pane's two
 //! status lines, the second read from the network clock's record.
 
