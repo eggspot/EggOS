@@ -1624,6 +1624,22 @@ const CR4_DENIED_TO_PROGRAMS: u64 = CR4_FSGSBASE | CR4_OSXSAVE | CR4_PKE | CR4_C
 /// CR4 bits for SSE (D54): the OS saves SSE state with `FXSAVE`, and handles #XM.
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
+const CR4_UMIP: u64 = 1 << 11;
+const CR4_SMEP: u64 = 1 << 20;
+const CPUID_7_EBX_SMEP: u32 = 1 << 7;
+const CPUID_7_ECX_UMIP: u32 = 1 << 2;
+
+/// The protections CR4 gets where the CPU has them (D251): SMEP, so the kernel never executes a
+/// user page, and UMIP, so programs cannot read the descriptor-table registers' kernel addresses.
+fn supervisor_protections() -> u64 {
+    if super::timer::cpuid(0, 0)[0] < 7 {
+        return 0;
+    }
+    let [_, ebx, ecx, _] = super::timer::cpuid(7, 0);
+    let smep = if ebx & CPUID_7_EBX_SMEP != 0 { CR4_SMEP } else { 0 };
+    let umip = if ecx & CPUID_7_ECX_UMIP != 0 { CR4_UMIP } else { 0 };
+    smep | umip
+}
 const CR4_SMEP: u64 = 1 << 20;
 const CPUID_SMEP: u32 = 1 << 7;
 const RFLAGS_INTERRUPTS: u64 = 1 << 9;
@@ -1742,7 +1758,7 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
             "or {tmp}, {set}",
             "mov cr4, {tmp}",
             tmp = out(reg) _,
-            set = in(reg) CR4_OSFXSR | CR4_OSXMMEXCPT,
+            set = in(reg) CR4_OSFXSR | CR4_OSXMMEXCPT | supervisor_protections(),
             options(nomem, nostack),
         );
     }
