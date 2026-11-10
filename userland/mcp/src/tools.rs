@@ -178,11 +178,11 @@ pub enum Kind {
     DownloadCancel,
     /// `download_clear`: removes the records of downloads that are over (D225).
     DownloadClear,
-    /// `component_list`: the components the store offers and those installed (D238).
+    /// `component_list`: the components the store offers and those installed (D235).
     ComponentList,
-    /// `component_install`: installs a component from the component store (D238).
+    /// `component_install`: installs a component from the component store (D235).
     ComponentInstall,
-    /// `component_remove`: removes an installed component (D238).
+    /// `component_remove`: removes an installed component (D235).
     ComponentRemove,
     /// `windows_registry_get`: a registry key's subkeys and values, or one value (D231).
     WindowsRegistryGet,
@@ -288,7 +288,7 @@ pub struct Tool {
     pub needs: Option<&'static str>,
 }
 
-/// The Windows layer's file, which the Windows apps component installs (D238).
+/// The Windows layer's file, which the Windows apps component installs (D235).
 pub const WINDOWS_LAYER: &str = "/usr/lib/eggos/windows";
 
 impl Tool {

@@ -1,9 +1,9 @@
 # EggOS v0.3.0 Components: design brief (batch part 20)
 
-Status: design for v0.3, D238.
+Status: design for v0.3, D235.
 
 Design by Claude Fable (D16) for the GUI front-end of the `component` capability (D18, D22,
-D238): the Settings `Components` pane in its **minimal** first version, one list of the
+D235): the Settings `Components` pane in its **minimal** first version, one list of the
 components the component store offers and the machine has installed, each with an `Install` or
 `Remove` button, with the same data and words as `component list`, `component install <name>`,
 `component remove [--yes] [--dry-run] <name>` and the MCP tools `component_list`,

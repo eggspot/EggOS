@@ -508,7 +508,7 @@ pub fn work_disk_args(arch: &Arch, image: &str) -> Vec<String> {
 
 /// QEMU's arguments that attach the component store `image` (an absolute path,
 /// `eggos-<version>-<arch>-components.img`) read-only on another of `arch`'s virtio block
-/// devices, where the component manager finds it (D238): the file and the disk are both
+/// devices, where the component manager finds it (D235): the file and the disk are both
 /// read-only, so nothing in EggOS can change the store it installs from.
 pub fn store_disk_args(arch: &Arch, image: &str) -> Vec<String> {
     vec![

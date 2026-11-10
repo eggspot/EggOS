@@ -1,4 +1,4 @@
-//! The component store on an attached disk (D238): recognised by its first bytes, so the kernel
+//! The component store on an attached disk (D235): recognised by its first bytes, so the kernel
 //! leaves the disk to the component manager and names it on the console instead of calling it
 //! a disk that holds neither EggFS nor FAT.
 

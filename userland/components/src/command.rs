@@ -1,4 +1,4 @@
-//! The `component` command (D238): `component list [--json]`, `component install [--dry-run]
+//! The `component` command (D235): `component list [--json]`, `component install [--dry-run]
 //! [--json] <name>` and `component remove [--yes] [--dry-run] [--json] <name>`, over any
 //! [`Files`] and [`Console`], so the host tests run it whole.
 

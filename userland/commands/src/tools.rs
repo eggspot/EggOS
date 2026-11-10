@@ -2117,7 +2117,7 @@ pub const AGENT_SHOW: ToolDefinition = reading(
     ToolResult::Text,
 );
 
-/// The `name` argument of `component_install` and `component_remove` (D238).
+/// The `name` argument of `component_install` and `component_remove` (D235).
 const COMPONENT_NAME: Argument = required(lengths(
     described(
         optional("name", JsonType::String, Mapping::Operand),
@@ -2127,7 +2127,7 @@ const COMPONENT_NAME: Argument = required(lengths(
     32,
 ));
 
-/// `component_list` (D238).
+/// `component_list` (D235).
 pub const COMPONENT_LIST: ToolDefinition = reading(
     "component_list",
     "List the components",
@@ -2142,7 +2142,7 @@ pub const COMPONENT_LIST: ToolDefinition = reading(
     ToolResult::Items(records_of(&crate::commands::COMPONENT_LIST)),
 );
 
-/// `component_install` (D238).
+/// `component_install` (D235).
 pub const COMPONENT_INSTALL: ToolDefinition = ToolDefinition {
     name: "component_install",
     title: "Install a component",
@@ -2164,7 +2164,7 @@ pub const COMPONENT_INSTALL: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
-/// `component_remove` (D238).
+/// `component_remove` (D235).
 pub const COMPONENT_REMOVE: ToolDefinition = ToolDefinition {
     name: "component_remove",
     title: "Remove a component",
@@ -2329,7 +2329,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
-/// D204's, D226's, D225's, D238's and D231's.
+/// D204's, D226's, D225's, D235's and D231's.
 pub const TOOLS: [ToolDefinition; 72] = [
     LS,
     CAT,

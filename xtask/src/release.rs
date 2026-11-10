@@ -1,6 +1,6 @@
 //! `cargo xtask release` and `cargo xtask screenshot` (D116): the files a release ships, one
 //! kernel image per architecture with its initramfs embedded, one component store per
-//! architecture outside it (D238), `SHA256SUMS`, the run scripts and the release notes'
+//! architecture outside it (D235), `SHA256SUMS`, the run scripts and the release notes'
 //! skeleton, and the README's picture of the desktop.
 
 use crate::qmp::Picture;

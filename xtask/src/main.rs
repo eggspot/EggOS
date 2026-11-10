@@ -1303,7 +1303,7 @@ fn clippy_targets() -> Result<(), String> {
 /// any, and returns its path. The image embeds the initramfs ([`initramfs::build`]): without a
 /// feature, the release kernel's, with init, the shell, the core utilities and, where the
 /// Windows and macOS layers run, a symbolic link at each layer's path into the component that
-/// installs it (D238); every kernel feature is a test kernel's, which runs the programs [`build_user_programs`] builds first.
+/// installs it (D235); every kernel feature is a test kernel's, which runs the programs [`build_user_programs`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let Some(feature) = feature else {
         let initramfs = build_release_initramfs(arch)?;
@@ -1334,7 +1334,7 @@ fn build_release_initramfs(arch: &Arch) -> Result<std::path::PathBuf, String> {
 
 /// Builds the release kernel for `arch` with the Windows and macOS layers in its initramfs where
 /// they run, as test kernels have them, for the checks of apps that need a layer but not the
-/// component manager (D238).
+/// component manager (D235).
 pub fn build_kernel_with_layers(arch: &Arch) -> Result<std::path::PathBuf, String> {
     let initramfs = release_initramfs(
         arch,

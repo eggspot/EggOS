@@ -69,7 +69,7 @@ impl Write for Line {
     }
 }
 
-/// The component that brings the layer `source`'s programs need (D238): `windows-apps` and
+/// The component that brings the layer `source`'s programs need (D235): `windows-apps` and
 /// `mac-apps`; none for Linux programs, which the base runs.
 pub fn layer_component(source: Source) -> Option<&'static str> {
     match source {

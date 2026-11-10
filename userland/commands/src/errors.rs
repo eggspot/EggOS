@@ -522,63 +522,63 @@ pub fn by_code(code: &[u8]) -> Option<&'static ErrorDefinition> {
         .find(|error| error.code.as_bytes() == code)
 }
 
-/// `component`: no component store is attached (D238).
+/// `component`: no component store is attached (D235).
 pub const NO_STORE: ErrorDefinition = error(
     "no_store",
     Category::NotFound,
     "Attach the component store disk, or put its .img in the host share.",
     None,
 );
-/// `component`: neither the store nor the installed components know the name (D238).
+/// `component`: neither the store nor the installed components know the name (D235).
 pub const NO_SUCH_COMPONENT: ErrorDefinition = error(
     "no_such_component",
     Category::NotFound,
     "Check the name: component list shows the components.",
     Some("component list"),
 );
-/// `component`: another install or remove is running (D238).
+/// `component`: another install or remove is running (D235).
 pub const COMPONENT_BUSY: ErrorDefinition = error(
     "component_busy",
     Category::Busy,
     "Wait for the other install or remove, then try again.",
     None,
 );
-/// `component`: an installed component needs it (D238).
+/// `component`: an installed component needs it (D235).
 pub const NEEDED_BY: ErrorDefinition = error(
     "needed_by",
     Category::Refused,
     "Remove the components that need it first.",
     None,
 );
-/// `component`: a running program needs it (D238).
+/// `component`: a running program needs it (D235).
 pub const IN_USE: ErrorDefinition = error(
     "in_use",
     Category::Busy,
     "Quit the programs that use it, then remove it.",
     None,
 );
-/// `component`: a file in the store does not match its SHA-256; nothing was installed (D238).
+/// `component`: a file in the store does not match its SHA-256; nothing was installed (D235).
 pub const STORE_DAMAGED: ErrorDefinition = error(
     "store_damaged",
     Category::Damaged,
     "Get the component store again; nothing was installed.",
     None,
 );
-/// `component`: the store could not be read before the copy finished (D238).
+/// `component`: the store could not be read before the copy finished (D235).
 pub const STORE_DETACHED: ErrorDefinition = error(
     "store_detached",
     Category::Failed,
     "Attach the component store again, then install again.",
     None,
 );
-/// `component`: an install failed; nothing was installed (D238).
+/// `component`: an install failed; nothing was installed (D235).
 pub const INSTALL_FAILED: ErrorDefinition = error(
     "install_failed",
     Category::Failed,
     "Read the message; nothing was installed.",
     None,
 );
-/// `component`: a remove failed; the component stays installed (D238).
+/// `component`: a remove failed; the component stays installed (D235).
 pub const REMOVE_FAILED: ErrorDefinition = error(
     "remove_failed",
     Category::Failed,

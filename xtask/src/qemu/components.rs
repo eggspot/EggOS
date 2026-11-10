@@ -1,4 +1,4 @@
-//! The component boot test (D238): two boots of the release image, whose base holds the Windows
+//! The component boot test (D235): two boots of the release image, whose base holds the Windows
 //! layer only as a link into its component, on a blank disk, with the host folder holding
 //! `win-paint.exe` and the component store attached read-only, on each architecture whose
 //! store offers `windows-apps`.

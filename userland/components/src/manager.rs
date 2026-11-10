@@ -1,5 +1,5 @@
 //! Finding the store, reading what is installed, and installing and removing components
-//! (D238). A component is installed under [`COMPONENTS`]`/<name>/`: its files below `root/`,
+//! (D235). A component is installed under [`COMPONENTS`]`/<name>/`: its files below `root/`,
 //! at the paths the base links to, and its record `component` beside them. An install copies
 //! into a staging folder, checks every file's SHA-256 as it is copied, writes the record, and
 //! only then renames the staging folder into place, so a failure at any step leaves nothing

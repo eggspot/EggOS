@@ -1749,7 +1749,7 @@ const COMPONENT_REMOVED_FIELDS: [Field; 2] = [
     field("freed_bytes", FieldType::Integer),
 ];
 
-/// `component list` (D238).
+/// `component list` (D235).
 pub const COMPONENT_LIST: CommandDefinition = CommandDefinition {
     words: &["component", "list"],
     summary: "Lists the components.",
@@ -1773,7 +1773,7 @@ pub const COMPONENT_LIST: CommandDefinition = CommandDefinition {
     surface: COMPONENT_SURFACE,
 };
 
-/// `component install` (D238).
+/// `component install` (D235).
 pub const COMPONENT_INSTALL: CommandDefinition = CommandDefinition {
     words: &["component", "install"],
     summary: "Installs a component from the component store.",
@@ -1813,7 +1813,7 @@ pub const COMPONENT_INSTALL: CommandDefinition = CommandDefinition {
     surface: COMPONENT_SURFACE,
 };
 
-/// `component remove` (D238).
+/// `component remove` (D235).
 pub const COMPONENT_REMOVE: CommandDefinition = CommandDefinition {
     words: &["component", "remove"],
     summary: "Removes an installed component.",
