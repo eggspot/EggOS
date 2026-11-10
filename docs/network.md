@@ -149,9 +149,30 @@ calls `net_ping`, `net_lookup` and `fetch`.
   list once a second, starts a download from a web address into `~/Downloads`, and cancels and
   clears.
 
+## Wi-Fi (D272 to D280)
+
+On a PC with an Intel Wi-Fi 6 or 6E adapter (AX200, AX201, AX210, AX211), install the adapter's
+firmware first, then name the network to join:
+
+```
+component install wifi-firmware
+wifi list
+wifi connect home 'correct horse battery'
+```
+
+The driver loads the firmware once the component is installed, scans every 30 seconds, and
+joins the named network after its next scan: open networks and WPA2-Personal (WPA3 is not
+there yet). `wifi list` (and the MCP tool `wifi_list`) shows where it is: waiting for the
+component, scanning, ready, connecting, connected, or why it stopped, then the networks it
+heard, strongest first. `wifi connect` writes `/var/lib/eggos/wifi.conf`, which only root reads;
+`wifi forget` removes it. Once joined, Wi-Fi is the network's adapter (`eth0`), asking for an
+address by DHCP as a cable does, and the driver encrypts and checks every frame with CCMP on the
+host. The driver is written from OpenBSD's `iwx(4)` by the owner's exception to the clean-room
+rule; its notices are in `/usr/share/licenses/eggos/iwx-NOTICE.md`.
+
 ## Not yet
 
-IPv6; fragments; static addresses, a second adapter and their routes;
+Wi-Fi and Ethernet together, WPA3-Personal, 6 GHz and the Network pane's Wi-Fi list; IPv6; fragments; static addresses, a second adapter and their routes;
 multicast; reverse lookups; netlink (iproute2 itself and `getifaddrs`); the indicator at 2x and on the phone's
 bar, and downloads kept across boots; TCP window scaling,
 selective acknowledgments, keep-alive, urgent data and Nagle's delay (`TCP_NODELAY` is always
