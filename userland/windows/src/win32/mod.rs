@@ -94,7 +94,6 @@ mod version;
 mod volume;
 mod window_class;
 mod window_device;
-mod window_scroll_bars;
 mod window_state;
 mod window_text;
 mod window_tree;

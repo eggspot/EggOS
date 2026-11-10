@@ -370,13 +370,7 @@ pub(super) unsafe extern "efiapi" fn create_window_ex_w(
     window.class_style = class_of.style;
     window.thread = thread_environment::thread_id();
     window.creation_sequence = next_sequence();
-    window.fit_client();
-    let inserted = with(|gui| {
-        let handle = gui.windows.insert(window)?;
-        super::window_scroll_bars::adopt(gui, handle);
-        Some(handle)
-    });
-    let Some(Some(handle)) = inserted else {
+    let Some(Some(handle)) = with(|gui| gui.windows.insert(window)) else {
         // SAFETY: the window never reached the table, so nothing holds its buffer.
         unsafe { device.destroy(&buffer) };
         return fail(error::NOT_ENOUGH_MEMORY, 0);
@@ -441,7 +435,6 @@ pub fn remove_window(handle: usize) {
         gui.contexts.retain(|context| context.window != handle);
         gui.timers.kill_window(handle);
         gui.hover.forget(handle);
-        gui.window_scroll_bars.forget(handle);
         gui.drawn.forget_window(handle);
         if let Some(extras) = gui.made_extras_mut() {
             extras.properties.forget(handle);
@@ -575,7 +568,6 @@ fn insert_child(mut window: Window, text: &[u16]) -> Result<usize, u32> {
             gui.windows.remove(handle);
             return Err(error::NOT_ENOUGH_MEMORY);
         }
-        super::window_scroll_bars::adopt(gui, handle);
         if window.shown {
             windows::invalidate_tree(&mut gui.windows, handle, None, true);
         }
@@ -603,7 +595,6 @@ fn create_program_child(
     window.background = class_of.background;
     window.class_style = class_of.style;
     window.shown = request.style & WS_VISIBLE != 0;
-    window.fit_client();
     insert_child(window, request.text)
 }
 
