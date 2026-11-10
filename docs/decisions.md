@@ -17537,7 +17537,12 @@ the license, by an explicit instruction recorded here.
   view showing everything, the search words). Benchmarks (no baseline lines yet):
   `block_read_4k_qd8` (eight 4 KiB reads in flight per iteration on the first disk no file
   system holds, else on a memory disk), `net_rx_wakeup` (a device's events raised and a waiting
-  thread woken, round trip: the path a received frame's interrupt takes to the network thread)
+  thread woken, round trip: the path a received frame's interrupt takes to the network thread;
+  the measuring thread's waits give up after a second and a lost wake-up panics the benchmark
+  kernel, so it is reported rather than hung, and once done it re-arms its CPU's timer for its
+  sleepers alone (`thread::disable_preemption`, preemption being off already) so its last
+  deadline wakes no idle CPU later; host-tested by
+  `each_raise_wakes_the_waiting_thread_which_answers_once`)
   and `idle_wakeups_per_second` (wake-ups from idle counted by the idle loop over one second
   after the other benchmarks, `qemu-bench` builds only; it must fall).
 - **Cost (D24, D78).** Not measured (no builds in this batch). Expected: virtio-blk's DMA region
@@ -18024,9 +18029,14 @@ the license, by an explicit instruction recorded here.
     orphaned group).
   - The manifest gains `console=true` (absent is false), written by the installer for a
     Windows console-subsystem program (the PE optional header's subsystem is not 2), a Linux
-    program and a bare macOS tool, not for a Windows GUI program or an `.app` bundle; `app
-    install --console` and `--no-console` decide instead (the SDL, GTK and Qt app boot tests
-    install their Linux GUI apps with `--no-console`). The catalogue launches a console app
+    program that needs no GUI library and a bare macOS tool, not for a Windows GUI program, an
+    `.app` bundle or a Linux program needing one of `gui_libraries::GUI_LIBRARIES` (the start of
+    the file name, up to `.so`, of libX11, libxcb, libwayland-client, SDL 1.2, 2 and 3, GTK 2,
+    3 and 4, Qt 5's and 6's Gui and GLFW) among its `DT_NEEDED` entries, read from its dynamic
+    section and string table in at most two reads (one inflate pass each inside a `.zip`); a
+    static program, or one whose dynamic section cannot be read, stays a console app. `app
+    install --console` and `--no-console` decide instead. (First built with every Linux program
+    a console app, which opened Brogue, Mousepad and CorePad in a terminal beside their window.) The catalogue launches a console app
     as `/bin/terminal -t <name> -e /bin/eggsh -c <line>` while the terminal program is present.
   - The benchmark `term_reflow`: a resize between 80x24 and 100x30 with a full scrollback.
 - **Check.** Host tests: the engine's reflow (two rows at 80 columns, one at 120 with the
@@ -18045,10 +18055,23 @@ the license, by an explicit instruction recorded here.
   (`EPERM`), `TIOCGPTPEER`'s flags, a 2 KiB paste with no newline followed by a newline and by
   `^C` that both get through with `POLLOUT` reported meanwhile, and a writer that waits behind
   a whole unread line; the manifest's
-  `console`, the installer's PE subsystem and the catalogue's launch. QEMU:
+  `console`, the installer's PE subsystem, the GUI libraries (a program needing SDL, GTK, Qt,
+  X11 or Wayland, its string table past the first 4 KiB, from a file and from a stored and a
+  deflated `.zip` entry, is no console app; one needing libc and ncurses, a static one and a
+  truncated one are), and the catalogue's launch. QEMU: the SDL, GTK and Qt app boot tests
+  install Brogue, Mousepad and CorePad without `--no-console` and see their windows;
   `xtask/src/qemu/terminals.rs` opens two terminals (both `~ - Terminal`), resizes one with
   `wm size`, types `stty size` into it, and checks the printed size against `wm show`'s
-  `screen`, the `folder` against `$HOME`, `row 1` against the prompt and `wm capture`'s status.
+  `screen`, the `folder` against `$HOME`, `row 1` against `/etc/motd`'s line (an interactive
+  eggsh writes it first), `row 2` against the prompt and `wm capture`'s status. That check first
+  ran in CI on riscv64 (the Windows checks before it fail first on x86_64 and aarch64) and found
+  the controlling side's `read` locking the pseudo-terminal's state while the guard of its own
+  packet-mode test was still held, so a terminal window spun in the kernel at its first read and
+  never showed its shell (titles stayed `Terminal`; with two windows two CPUs spun and the
+  serial shell could stall). The kernel crate now denies `clippy::significant_drop_in_scrutinee`
+  with its lock guards marked `#[clippy::has_significant_drop]`, which also found `pipe2`
+  taking the descriptor table's lock again, to undo the read end, while the failed write end's
+  lock was held.
 - **Decided by research** (a research subagent reviewed these on 2026-11-01; it confirmed
   them but for `TIOCSTI`'s errno and the `-e` wait, which it changed, and it added the C1
   controls to the paste filter).
@@ -18454,7 +18477,9 @@ the license, by an explicit instruction recorded here.
   - **The Windows C runtime**: every math function of the UCRT and `msvcrt.dll` for `double`
     and `float` from `eggos-math`, `_dclass` and its kin, and their floating-point arguments for
     translated x64 programs; `setjmp` and `longjmp` on Microsoft's jump buffers for x64 and
-    ARM64, `longjmp` unwinding to the `setjmp` frame with `STATUS_LONGJMP` so `__finally` blocks
+    ARM64 (exported by the UCRT and msvcrt as `_setjmp`, `_setjmpex` and `longjmp`, and by
+    vcruntime140, which MSVC's programs import them from, as `__intrinsic_setjmp`,
+    `__intrinsic_setjmpex` and `longjmp`), `longjmp` unwinding to the `setjmp` frame with `STATUS_LONGJMP` so `__finally` blocks
     and C++ destructors run and the C++ handler stops at the `setjmp`'s state; `setlocale`,
     `_wsetlocale`, `localeconv`, `_create_locale` and `_get_current_locale` over the C and
     English (United States) UTF-8 locales, `MB_CUR_MAX` and the code page following `LC_CTYPE`,
@@ -18523,8 +18548,12 @@ the license, by an explicit instruction recorded here.
     own; `std::mutex` and the recursive and timed mutexes over `_Mtx_*` in the program's own
     80-byte object, `std::condition_variable` over `_Cnd_*`, `_Thrd_join`, `_Thrd_detach`,
     `_Thrd_id`, `_Thrd_hardware_concurrency` and the sleeps, `_Query_perf_counter`,
-    `_Query_perf_frequency` and `_Xtime_get_ticks`; the UCRT's `_beginthreadex` and
-    `_endthreadex`.
+    `_Query_perf_frequency` and `_Xtime_get_ticks`; `_Syserror_map`, the generic category's
+    message for each `std::errc` value (`cpp_errors::GENERIC_MESSAGES`, the enumerator's name
+    in words, `unknown error` otherwise), which the program's own `std::generic_category()`
+    calls; `_Cnd_do_broadcast_at_thread_exit`, which `std::thread` calls as each thread ends
+    and which has nothing to broadcast while `_Cnd_register_at_thread_exit` is not provided;
+    the UCRT's `_beginthreadex` and `_endthreadex`.
   - **ARM64 pointer authentication**: unwinding strips the code a `pacibsp` prolog signed into
     a return address, for every frame and leaf the dispatcher, `RtlVirtualUnwind` and the
     catch walk undo.
@@ -18537,7 +18566,9 @@ the license, by an explicit instruction recorded here.
   `std::system_error`, and the `cxx_throw_catch` measurement, nanoseconds per throw and catch,
   printed by `eggcpp2.exe bench 1000`.
 - **Not yet** (carried to the next plan). iostreams and the rest of msvcp140's out-of-line
-  parts; a stack overflow as `STATUS_STACK_OVERFLOW` through a guard page the layer manages;
+  parts, `std::notify_all_at_thread_exit` (`_Cnd_register_at_thread_exit` and
+  `_Cnd_unregister_at_thread_exit`) and `std::system_category()`'s Windows messages
+  (`_Winerror_map`, `_Winerror_message`); a stack overflow as `STATUS_STACK_OVERFLOW` through a guard page the layer manages;
   collided unwinds; `RtlAddFunctionTable` and `RtlInstallFunctionTableCallback`;
   `RtlVirtualUnwind`'s context pointers (taken and ignored); exceptions thrown through the
   layer's own frames (a fault inside a Windows function, a throw out of a window procedure);
