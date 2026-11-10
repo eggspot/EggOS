@@ -67,6 +67,16 @@ impl Setup {
         }
     }
 
+    pub const fn hid_report_descriptor(interface: u8, length: u16) -> Self {
+        Self {
+            request_type: 0x81,
+            request: 6,
+            value: (DESCRIPTOR_REPORT as u16) << 8,
+            index: interface as u16,
+            length,
+        }
+    }
+
     pub const fn hid_set_output_report(interface: u8, length: u16) -> Self {
         Self {
             request_type: 0x21,
@@ -83,6 +93,8 @@ pub const DESCRIPTOR_CONFIGURATION: u8 = 2;
 const DESCRIPTOR_INTERFACE: u8 = 4;
 const DESCRIPTOR_ENDPOINT: u8 = 5;
 const CLASS_HID: u8 = 3;
+const DESCRIPTOR_HID: u8 = 0x21;
+const DESCRIPTOR_REPORT: u8 = 0x22;
 const SUBCLASS_BOOT: u8 = 1;
 
 /// A HID boot device's kind.
@@ -90,6 +102,8 @@ const SUBCLASS_BOOT: u8 = 1;
 pub enum BootDevice {
     Keyboard,
     Mouse,
+    /// A HID device without the boot protocol, read through its report descriptor (D256).
+    Report,
 }
 
 /// A HID boot interface with its interrupt IN endpoint.
@@ -101,6 +115,8 @@ pub struct BootInterface {
     pub endpoint: u8,
     pub max_packet: u16,
     pub interval: u8,
+    /// The report descriptor's length, from the HID descriptor.
+    pub report_length: u16,
 }
 
 /// The first HID boot keyboard or mouse interface in a configuration descriptor and all that
@@ -109,6 +125,7 @@ pub fn boot_interface(configuration: &[u8]) -> Option<BootInterface> {
     let value = *configuration.get(5)?;
     let mut at = 0;
     let mut current: Option<(u8, BootDevice)> = None;
+    let mut report_length = 0u16;
     while at + 2 <= configuration.len() {
         let length = usize::from(configuration[at]);
         if length < 2 || at + length > configuration.len() {
@@ -117,13 +134,18 @@ pub fn boot_interface(configuration: &[u8]) -> Option<BootInterface> {
         let descriptor = &configuration[at..at + length];
         match descriptor[1] {
             DESCRIPTOR_INTERFACE if length >= 9 => {
-                current = (descriptor[5] == CLASS_HID && descriptor[6] == SUBCLASS_BOOT)
-                    .then_some(descriptor[7])
-                    .and_then(|protocol| match protocol {
-                        1 => Some((descriptor[2], BootDevice::Keyboard)),
-                        2 => Some((descriptor[2], BootDevice::Mouse)),
-                        _ => None,
-                    });
+                report_length = 0;
+                current = (descriptor[5] == CLASS_HID).then(|| {
+                    let kind = match (descriptor[6] == SUBCLASS_BOOT, descriptor[7]) {
+                        (true, 1) => BootDevice::Keyboard,
+                        (true, 2) => BootDevice::Mouse,
+                        _ => BootDevice::Report,
+                    };
+                    (descriptor[2], kind)
+                });
+            }
+            DESCRIPTOR_HID if length >= 9 && descriptor[6] == DESCRIPTOR_REPORT => {
+                report_length = u16::from_le_bytes([descriptor[7], descriptor[8]]);
             }
             DESCRIPTOR_ENDPOINT if length >= 7 => {
                 if let Some((interface, kind)) = current {
@@ -137,6 +159,7 @@ pub fn boot_interface(configuration: &[u8]) -> Option<BootInterface> {
                             endpoint: address & 0x0f,
                             max_packet: u16::from_le_bytes([descriptor[4], descriptor[5]]) & 0x7ff,
                             interval: descriptor[6],
+                            report_length,
                         });
                     }
                 }
