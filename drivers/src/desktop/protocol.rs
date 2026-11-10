@@ -61,6 +61,7 @@ pub mod size {
     pub const SET_PROFILE: usize = 4;
     pub const APPS_CHANGED: usize = 0;
     pub const OPEN_APP: usize = 68;
+    pub const GET_LAUNCH: usize = super::get_launch_reply::COMMAND + crate::desktop::catalogue::COMMAND_CAPACITY;
     pub const TYPE_IN_TERMINAL: usize = 260;
     pub const START_MOVE_OR_RESIZE: usize = 12;
     pub const CAPTURE_WINDOW: usize = 40;
@@ -138,6 +139,7 @@ pub mod request {
     pub const SET_KEYBOARD_LAYOUTS: u32 = encode(WRITE, 38, size::SET_KEYBOARD_LAYOUTS);
     pub const GET_REDUCE_MOTION: u32 = encode(READ, 41, size::GET_REDUCE_MOTION);
     pub const SET_REDUCE_MOTION: u32 = encode(WRITE, 42, size::SET_REDUCE_MOTION);
+    pub const GET_LAUNCH: u32 = encode(READ | WRITE, 43, size::GET_LAUNCH);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -203,6 +205,18 @@ pub mod input_outcome {
 
 /// The longest app name `OpenApp` carries, in bytes.
 pub const APP_NAME_CAPACITY: usize = size::OPEN_APP - 4;
+
+/// `GET_LAUNCH`'s reply (D243): how the desktop would launch the app named in the request, as
+/// [`crate::desktop::catalogue::Launch`] says, its command after its length.
+pub mod get_launch_reply {
+    pub const KIND: usize = 0;
+    pub const LENGTH: usize = 4;
+    pub const COMMAND: usize = 8;
+    /// A program started as a process: its path, then each argument, NUL-separated.
+    pub const START: u32 = 1;
+    /// A line the desktop types in the terminal.
+    pub const TYPE: u32 = 2;
+}
 /// The longest line `TypeInTerminal` carries, in bytes.
 pub const TERMINAL_LINE_CAPACITY: usize = size::TYPE_IN_TERMINAL - 4;
 
@@ -457,6 +471,11 @@ pub enum Request {
         length: u32,
         name: [u8; APP_NAME_CAPACITY],
     },
+    /// How the desktop would launch the app named, without launching it (D243).
+    GetLaunch {
+        length: u32,
+        name: [u8; APP_NAME_CAPACITY],
+    },
     TypeInTerminal {
         length: u32,
         line: [u8; TERMINAL_LINE_CAPACITY],
@@ -619,6 +638,7 @@ impl Request {
             request::SET_PROFILE => size::SET_PROFILE,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
+            request::GET_LAUNCH => size::GET_LAUNCH,
             request::TYPE_IN_TERMINAL => size::TYPE_IN_TERMINAL,
             request::START_MOVE_OR_RESIZE => size::START_MOVE_OR_RESIZE,
             request::CAPTURE_WINDOW => size::CAPTURE_WINDOW,
@@ -728,6 +748,14 @@ impl Request {
                 let mut name = [0; APP_NAME_CAPACITY];
                 name.copy_from_slice(&bytes[4..4 + APP_NAME_CAPACITY]);
                 Self::OpenApp {
+                    length: at(0),
+                    name,
+                }
+            }
+            request::GET_LAUNCH => {
+                let mut name = [0; APP_NAME_CAPACITY];
+                name.copy_from_slice(&bytes[4..4 + APP_NAME_CAPACITY]);
+                Self::GetLaunch {
                     length: at(0),
                     name,
                 }

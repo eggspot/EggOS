@@ -700,6 +700,7 @@ fn request_numbers_and_layouts_are_the_contract_s() {
     assert_eq!(request::SET_PROFILE, 0x4004_770e);
     assert_eq!(request::APPS_CHANGED, 0x0000_770f);
     assert_eq!(request::OPEN_APP, 0x4044_7710);
+    assert_eq!(request::GET_LAUNCH, 0xc108_772b);
     assert_eq!(
         Request::parse(request::APPS_CHANGED, &[]),
         Some(Request::AppsChanged)

@@ -135,7 +135,7 @@ pub fn ioctl<P: Platform>(
     if changes_settings && !may_change_desktop_settings(process) {
         return Err(Errno::EPERM);
     }
-    if matches!(request, Request::OpenApp { .. }) && !may_open_apps(process) {
+    if matches!(request, Request::OpenApp { .. } | Request::GetLaunch { .. }) && !may_open_apps(process) {
         return Err(Errno::EPERM);
     }
     if matches!(request, Request::TypeInTerminal { .. }) && !may_type_in_terminal(process) {
@@ -489,6 +489,26 @@ pub fn ioctl<P: Platform>(
             if !open_app::<P>(name) {
                 return Err(Errno::ENOENT);
             }
+        }
+        Request::GetLaunch { length, name } => {
+            use eggos_drivers::desktop::Launch;
+            use eggos_drivers::desktop::protocol::get_launch_reply;
+            let name = name.get(..length as usize).ok_or(Errno::EINVAL)?;
+            if !crate::terminal::has_interactive_desktop() {
+                return Err(Errno::ENXIO);
+            }
+            let launch = crate::terminal::launch_of::<P>(name).ok_or(Errno::ENOENT)?;
+            let (kind, command) = match &launch {
+                Launch::Start(command) => (get_launch_reply::START, command.as_bytes()),
+                Launch::Type(line) => (get_launch_reply::TYPE, line.as_bytes()),
+            };
+            let mut reply = [0u8; eggos_drivers::desktop::protocol::size::GET_LAUNCH];
+            put_word(&mut reply, get_launch_reply::KIND, kind);
+            put_word(&mut reply, get_launch_reply::LENGTH, command.len() as u32);
+            reply[get_launch_reply::COMMAND..get_launch_reply::COMMAND + command.len()].copy_from_slice(command);
+            process
+                .write_user_memory(argument, &reply)
+                .map_err(|_| Errno::EFAULT)?;
         }
         Request::TypeInTerminal { length, line } => {
             let line = line.get(..length as usize).ok_or(Errno::EINVAL)?;

@@ -19165,3 +19165,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The first real use (after the owner's build-and-fix pass); a PR-time check that a
   version bump carries notes; the GitHub `latest` flag for an older version's late release;
   merge-commit and rebase merges switched off in the repository settings (the owner's).
+
+## D243 `app open` typed on the console runs the app in that shell's foreground: `/dev/window`'s `GET_LAUNCH` (extends D134, D135; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; the owner's ask of 2026-11-10 through Main Chat)
+
+- **Context.** `app open` asked the desktop to open the app as a click on its icon (`OPEN_APP`):
+  a windowed app started as a process of its own, a console app's line typed into the console. From
+  the console shell that meant the app was not the shell's job: no waiting for it, no Ctrl+C, no
+  exit status, and a console app's line typed into the very shell running `app open`.
+- **Decision.** `/dev/window` gains `GET_LAUNCH` (request 43, read-write, 264 bytes): the app's name
+  in, the desktop's launch out (`1` a program and its NUL-separated arguments, `2` a line to type),
+  allowed to the processes that may open apps, `ENXIO` with no interactive desktop, `ENOENT` for no
+  such app. When `app open`'s standard input is `/dev/console`, `app` replaces itself with the
+  launch: the program with its arguments, or `/bin/eggsh -c <line>` for a console app; the shell
+  that ran `app open` waits for it as for any command. Elsewhere (a terminal app's pseudo-terminal,
+  an agent, no desktop) `app open` asks `OPEN_APP` as before.
+- **Not yet.** The launched program gets an empty environment, as the desktop's start does today;
+  the launcher's "working" pointer is not shown for a foreground launch.

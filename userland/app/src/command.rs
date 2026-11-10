@@ -741,6 +741,16 @@ mod program {
             report(false, &errors::NO_SUCH_APP, line.as_str());
             return FAILED;
         }
+        if linux::input_is_console() {
+            let error = linux::run_in_foreground(name);
+            if error != Errno::ENXIO {
+                let mut line = Line::new();
+                let _ = write!(line, "could not open {}: ", shown.as_str());
+                line.push_bytes(error.message());
+                report(false, errno_error(error), line.as_str());
+                return FAILED;
+            }
+        }
         match linux::open_app(name) {
             Ok(()) => {
                 let mut line = Line::new();
