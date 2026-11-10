@@ -18968,3 +18968,37 @@ the license, by an explicit instruction recorded here.
   normal non-cacheable on AArch64), which device memory makes slow; GIC, timer, PSCI conduit, CPUs
   and console input from ACPI on AArch64 (the next part, D237); UEFI runtime services (the clock, the
   variables); Secure Boot signing (needs the owner's key).
+
+## D237 ACPI on real machines, first part: AArch64's GIC (v2, v3 and v4), CPUs, PSCI conduit and boot CPU from the `MADT` and `FADT`, PCI Express through the `MCFG` on AArch64 too, the ACPI PM timer as x86_64's reference clock when the 8254 is gated off, and PCI MSI (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** D236 brings the kernel up from UEFI; on a real AArch64 machine the interrupt
+  controller, the CPUs and the PSCI conduit are not QEMU `virt`'s, and newer PCs no longer clock
+  their 8254 PIT, which x86_64 measured its clocks against.
+- **Decision.**
+  - **GICv3 and v4** (`eggos_drivers::interrupt::gicv3`, Arm IHI 0069): the distributor with
+    affinity routing and group 1, each CPU's redistributor (found in the discovery range by its
+    `GICR_TYPER` affinity, woken through `GICR_WAKER`, its SGIs and PPIs enabled in its SGI frame,
+    GICv4's four-frame redistributors stepped over), the CPU interface through `ICC_*_EL1` system
+    registers behind a trait the HAL implements. SGIs to another CPU go through `ICC_SGI1R_EL1` by
+    affinity. The HAL's AArch64 timer module picks the GIC at boot: QEMU `virt`'s GICv2 without the
+    UEFI loader, else the `MADT`'s `GICD` (its version), its first `GICR` range (or the span of the
+    `GICC`s' redistributor bases) or its first enabled `GICC`'s GICv2 CPU interface. The loader
+    already opens the GICv3 system registers to EL1 when the firmware ran at EL2 (D236).
+  - **CPUs** come from the `MADT`'s enabled `GICC`s' MPIDRs when there is no device tree; the boot
+    CPU is whichever CPU the loader entered on (its affinity recorded at boot), not affinity 0.
+  - **PSCI** calls go through `smc` when the `FADT`'s Arm boot flags say PSCI does not use `hvc`,
+    else `hvc` as before; one `psci_call` serves `CPU_ON`, `SYSTEM_OFF` and `SYSTEM_RESET`.
+  - **AArch64 reads ACPI tables** through the loader's RSDP (`Platform::acpi_table`), so the driver
+    model's PCI Express discovery from the `MCFG` runs there too; its ECAM windows are device
+    apertures kept out of the direct map, as on x86_64.
+  - **The ACPI PM timer** (3.579545 MHz, 24 or 32 bits as the `FADT` says, at `PM_TMR_BLK` or an
+    I/O-space `X_PM_TMR_BLK`) measures the TSC and the APIC timer over about 2 ms when the 8254 does
+    not count down; boot stops with the reason only when neither counts.
+  - **PCI MSI** (`eggos_drivers::pci::msi`): the capability found, one message programmed (32- or
+    64-bit address, per-vector mask cleared) and enabled, for functions without MSI-X.
+- **Not yet.** Building and running all of it; GTDT-named timer interrupts (the SBSA's PPI 27 is
+  kept); the GICv3 ITS for MSIs on AArch64, so PCI devices there are polled; console input from the
+  `SPCR`'s interrupt; the ACPI namespace (AML) for devices with a `_HID` (I2C HID touchpads and
+  keyboards, embedded controllers, batteries, lids), `_PRT` legacy PCI interrupt routing and the
+  `_S5` path beyond the DSDT's name; CPUID 0x15/0x16 frequencies before measuring (D26's
+  follow-up); x2APIC for more than 255 CPUs.

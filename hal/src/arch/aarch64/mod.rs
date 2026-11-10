@@ -414,19 +414,71 @@ fn device_tree_address() -> usize {
 
 fn psci_system_call(function: u64) {
     // SAFETY: SYSTEM_OFF and SYSTEM_RESET take no arguments, touch none of our memory and do
-    // not return on success; QEMU `virt` provides PSCI over HVC when EL2 is not emulated.
-    // SMCCC v1.0 lets the callee corrupt x0-x17, so all of them are declared clobbered.
-    unsafe {
-        core::arch::asm!(
-            "hvc #0",
-            inout("x0") function => _,
-            out("x1") _, out("x2") _, out("x3") _, out("x4") _, out("x5") _,
-            out("x6") _, out("x7") _, out("x8") _, out("x9") _, out("x10") _,
-            out("x11") _, out("x12") _, out("x13") _, out("x14") _, out("x15") _,
-            out("x16") _, out("x17") _,
-            options(nomem, nostack),
-        );
+    // not return on success.
+    unsafe { psci_call(function, 0, 0, 0) };
+}
+
+/// Whether PSCI is called with `smc` rather than `hvc`: what the ACPI `FADT`'s Arm boot flags
+/// say when the UEFI loader started the kernel (D237); `hvc` on QEMU `virt` without EL2.
+fn psci_uses_smc() -> bool {
+    const FADT_ARM_BOOT_ARCH: usize = 129;
+    const PSCI_USE_HVC: u16 = 1 << 1;
+    let Some(handoff) = crate::handoff::handoff::<Aarch64>() else {
+        return false;
+    };
+    acpi_table_from(handoff.rsdp, b"FACP")
+        .and_then(|fadt| fadt.get(FADT_ARM_BOOT_ARCH..FADT_ARM_BOOT_ARCH + 2))
+        .map(|flags| u16::from_le_bytes([flags[0], flags[1]]))
+        .is_some_and(|flags| flags & PSCI_USE_HVC == 0)
+}
+
+/// Calls PSCI `function` with three arguments through the machine's conduit and returns `x0`.
+///
+/// # Safety
+/// The call's effects must be ones the caller allows (starting a CPU at an entry the caller
+/// prepared, powering off). SMCCC v1.0 lets the callee corrupt x0-x17, so all are clobbered;
+/// `dsb ish` completes the caller's writes for other CPUs first, as neither call is a barrier.
+unsafe fn psci_call(function: u64, first: u64, second: u64, third: u64) -> i64 {
+    let result: i64;
+    if psci_uses_smc() {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            core::arch::asm!(
+                "dsb ish",
+                "smc #0",
+                inout("x0") function => result,
+                inout("x1") first => _,
+                inout("x2") second => _,
+                inout("x3") third => _,
+                out("x4") _, out("x5") _, out("x6") _, out("x7") _, out("x8") _, out("x9") _,
+                out("x10") _, out("x11") _, out("x12") _, out("x13") _, out("x14") _,
+                out("x15") _, out("x16") _, out("x17") _,
+                options(nostack),
+            );
+        }
+    } else {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            core::arch::asm!(
+                "dsb ish",
+                "hvc #0",
+                inout("x0") function => result,
+                inout("x1") first => _,
+                inout("x2") second => _,
+                inout("x3") third => _,
+                out("x4") _, out("x5") _, out("x6") _, out("x7") _, out("x8") _, out("x9") _,
+                out("x10") _, out("x11") _, out("x12") _, out("x13") _, out("x14") _,
+                out("x15") _, out("x16") _, out("x17") _,
+                options(nostack),
+            );
+        }
     }
+    result
+}
+
+/// The ACPI `MADT` when the UEFI loader started the kernel.
+pub(super) fn madt() -> Option<&'static [u8]> {
+    acpi_table_from(crate::handoff::handoff::<Aarch64>()?.rsdp, b"APIC")
 }
 
 #[derive(Debug)]
@@ -597,7 +649,7 @@ impl Platform for Aarch64 {
                 pl011::REGISTER_BLOCK_SIZE as u64,
             ));
         }
-        timer::DEVICE_REGIONS.into_iter().for_each(region);
+        timer::device_regions(region);
     }
 
     fn device_tree() -> Option<&'static [u8]> {
@@ -607,6 +659,20 @@ impl Platform for Aarch64 {
 
     fn acpi_table(signature: &[u8; 4]) -> Option<&'static [u8]> {
         acpi_table_from(crate::handoff::handoff::<Self>()?.rsdp, signature)
+    }
+
+    fn device_apertures(aperture: &mut dyn FnMut(PhysicalRange)) {
+        let Some(mcfg) = Self::acpi_table(b"MCFG") else {
+            return;
+        };
+        for region in eggos_drivers::pci::mcfg::regions(mcfg) {
+            aperture(PhysicalRange::from_start_length(
+                region
+                    .base
+                    .saturating_add(u64::from(region.start_bus) << 20),
+                eggos_drivers::pci::ecam::ecam_length(region.start_bus, region.end_bus),
+            ));
+        }
     }
 
     fn command_line(line: &mut dyn FnMut(&[u8])) {
@@ -840,13 +906,18 @@ impl Platform for Aarch64 {
     }
 
     fn cpus(cpu: &mut dyn FnMut(u64)) {
+        if device_tree_address() == 0 {
+            if let Some(madt) = madt() {
+                crate::acpi::madt_gic_cpus(madt, cpu);
+            }
+            return;
+        }
         // SAFETY: as in `memory_map`.
         unsafe { boot_memory::device_tree_cpus(device_tree_address(), cpu) };
     }
 
     fn boot_cpu() -> u64 {
-        // `_start` lets only the CPU whose affinity is all zero boot.
-        0
+        timer::BOOT_AFFINITY.load(Ordering::Relaxed)
     }
 
     unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCpuError> {
@@ -856,27 +927,11 @@ impl Platform for Aarch64 {
         }
         let entry = (eggos_secondary_start as *const () as u64).wrapping_sub(kernel_virtual_offset());
         let context = core::ptr::from_ref(start) as u64;
-        let result: i64;
         // SAFETY: CPU_ON starts CPU `cpu` at the physical address `entry`, the secondary entry
         // code, with `context` in x0; the caller guarantees what that code relies on (the
-        // kernel's tables, `start` and its stack). The new CPU reads `*start`, so the asm may
-        // read memory (no `nomem`: the compiler keeps the writes to it before the call), and
-        // `dsb ish` completes those writes for the other CPUs before the call: an HVC is not
-        // a barrier. SMCCC v1.0 lets the callee corrupt x0-x17, so all are declared clobbered.
-        unsafe {
-            core::arch::asm!(
-                "dsb ish",
-                "hvc #0",
-                inout("x0") PSCI_CPU_ON => result,
-                inout("x1") cpu => _,
-                inout("x2") entry => _,
-                inout("x3") context => _,
-                out("x4") _, out("x5") _, out("x6") _, out("x7") _, out("x8") _, out("x9") _,
-                out("x10") _, out("x11") _, out("x12") _, out("x13") _, out("x14") _,
-                out("x15") _, out("x16") _, out("x17") _,
-                options(nostack),
-            );
-        }
+        // kernel's tables, `start` and its stack), and `psci_call` completes the writes to
+        // `*start` before the call.
+        let result = unsafe { psci_call(PSCI_CPU_ON, cpu, entry, context) };
         match result {
             PSCI_SUCCESS => Ok(()),
             PSCI_INVALID_PARAMETERS => Err(StartCpuError::InvalidCpu),

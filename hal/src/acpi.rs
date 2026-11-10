@@ -430,6 +430,80 @@ fn read_u64(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
 }
 
+/// MADT structure types for Arm's GIC (ACPI 6.5, 5.2.12.14-17): the CPU interface (`GICC`, 80
+/// bytes and more), the distributor (`GICD`, 24) and a redistributor discovery range (`GICR`, 16).
+const MADT_GICC: u8 = 0x0b;
+const MADT_GICC_LENGTH: usize = 76;
+const MADT_GICC_FLAGS: usize = 12;
+const MADT_GICC_BASE: usize = 32;
+const MADT_GICC_REDISTRIBUTOR: usize = 60;
+const MADT_GICC_MPIDR: usize = 68;
+const MADT_GICC_ENABLED: u32 = 1;
+const MADT_GICD: u8 = 0x0c;
+const MADT_GICD_LENGTH: usize = 24;
+const MADT_GICR: u8 = 0x0e;
+const MADT_GICR_LENGTH: usize = 16;
+const GICV4_REDISTRIBUTOR_BYTES: u64 = 0x4_0000;
+
+/// The interrupt controller an Arm machine's MADT describes (D237).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GicDescription {
+    /// 2, 3 or 4; 0 when the MADT does not say, which is read as 2.
+    pub version: u8,
+    pub distributor: u64,
+    /// The GICv2 CPU interface, from the first enabled `GICC`.
+    pub cpu_interface: u64,
+    /// Where the GICv3 redistributors are, and how many bytes they span.
+    pub redistributors: u64,
+    pub redistributor_bytes: u64,
+}
+
+/// The GIC a validated MADT describes: its first `GICD`, the first `GICR` range (or, with none,
+/// the span of the `GICC`s' own redistributor bases), and the first enabled `GICC`'s CPU
+/// interface.
+pub fn madt_gic(madt: &[u8]) -> Option<GicDescription> {
+    let distributor = madt_structures(madt, MADT_GICD, MADT_GICD_LENGTH).next()?;
+    let mut description = GicDescription {
+        version: distributor[20],
+        distributor: read_u64(distributor, 8)?,
+        cpu_interface: 0,
+        redistributors: 0,
+        redistributor_bytes: 0,
+    };
+    let enabled_cpus = || {
+        madt_structures(madt, MADT_GICC, MADT_GICC_LENGTH)
+            .filter(|entry| read_u32(entry, MADT_GICC_FLAGS).is_some_and(|flags| flags & MADT_GICC_ENABLED != 0))
+    };
+    if let Some(cpu) = enabled_cpus().next() {
+        description.cpu_interface = read_u64(cpu, MADT_GICC_BASE)?;
+    }
+    if let Some(range) = madt_structures(madt, MADT_GICR, MADT_GICR_LENGTH).next() {
+        description.redistributors = read_u64(range, 4)?;
+        description.redistributor_bytes = read_u32(range, 12)?.into();
+    } else {
+        let bases = || enabled_cpus().filter_map(|cpu| read_u64(cpu, MADT_GICC_REDISTRIBUTOR)).filter(|&base| base != 0);
+        if let (Some(low), Some(high)) = (bases().min(), bases().max()) {
+            description.redistributors = low;
+            description.redistributor_bytes = high - low + GICV4_REDISTRIBUTOR_BYTES;
+        }
+    }
+    if description.version == 0 {
+        description.version = if description.redistributors != 0 { 3 } else { 2 };
+    }
+    Some(description)
+}
+
+/// Calls `cpu` with the MPIDR affinity (Aff3 in bits 39:32, Aff2-Aff0 in bits 23:0) of every
+/// enabled CPU a validated MADT's `GICC` structures list.
+pub fn madt_gic_cpus(madt: &[u8], cpu: &mut dyn FnMut(u64)) {
+    for entry in madt_structures(madt, MADT_GICC, MADT_GICC_LENGTH) {
+        let enabled = read_u32(entry, MADT_GICC_FLAGS).is_some_and(|flags| flags & MADT_GICC_ENABLED != 0);
+        if let (true, Some(mpidr)) = (enabled, read_u64(entry, MADT_GICC_MPIDR)) {
+            cpu(mpidr & 0xff_00ff_ffff);
+        }
+    }
+}
+
 /// The largest table [`find_table`] reads, against a corrupt length.
 pub const MAX_TABLE_LENGTH: usize = 1 << 20;
 
@@ -940,5 +1014,38 @@ mod tests {
         let read = |address: u64, length: usize| memory.get(address as usize..address as usize + length);
         assert_eq!(find_table(0, b"SPCR", &read).map(<[u8]>::len), Some(SPCR_MINIMUM_LENGTH));
         assert_eq!(find_table(0, b"MADT", &read), None);
+    }
+
+    #[test]
+    fn an_arm_madt_names_its_gicv3_and_its_cpus() {
+        let mut madt = vec![0u8; MADT_ENTRIES];
+        let mut gicd = [0u8; MADT_GICD_LENGTH];
+        gicd[0] = MADT_GICD;
+        gicd[1] = MADT_GICD_LENGTH as u8;
+        gicd[8..16].copy_from_slice(&0x0800_0000u64.to_le_bytes());
+        gicd[20] = 3;
+        madt.extend_from_slice(&gicd);
+        let mut gicr = [0u8; MADT_GICR_LENGTH];
+        gicr[0] = MADT_GICR;
+        gicr[1] = MADT_GICR_LENGTH as u8;
+        gicr[4..12].copy_from_slice(&0x080a_0000u64.to_le_bytes());
+        gicr[12..16].copy_from_slice(&0x00f6_0000u32.to_le_bytes());
+        madt.extend_from_slice(&gicr);
+        for (mpidr, flags) in [(0u64, 1u32), (0x100, 1), (0x200, 0)] {
+            let mut gicc = [0u8; 80];
+            gicc[0] = MADT_GICC;
+            gicc[1] = 80;
+            gicc[MADT_GICC_FLAGS..MADT_GICC_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
+            gicc[MADT_GICC_MPIDR..MADT_GICC_MPIDR + 8].copy_from_slice(&mpidr.to_le_bytes());
+            madt.extend_from_slice(&gicc);
+        }
+        let gic = madt_gic(&madt).unwrap();
+        assert_eq!(gic.version, 3);
+        assert_eq!(gic.distributor, 0x0800_0000);
+        assert_eq!(gic.redistributors, 0x080a_0000);
+        assert_eq!(gic.redistributor_bytes, 0x00f6_0000);
+        let mut cpus = Vec::new();
+        madt_gic_cpus(&madt, &mut |cpu| cpus.push(cpu));
+        assert_eq!(cpus, vec![0, 0x100]);
     }
 }
