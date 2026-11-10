@@ -50,8 +50,10 @@ app icon [--size 48|32] [-o <file.png>] [--] <name> [<file.png>]
 A console app (D223) opens in a terminal window of its own, titled `<name> - Terminal`, which
 closes when the app exits with 0 and otherwise stays with a line saying how it ended. The
 installer writes `console=true` in the manifest for a Windows program of the console subsystem,
-a Linux program and a bare macOS tool, and nothing for a Windows GUI program or an `.app`
-bundle; `--console` and `--no-console` decide instead. The launcher, `app open` and `app_open`
+a Linux program that needs no GUI library and a bare macOS tool, and nothing for a Windows GUI
+program, an `.app` bundle or a Linux program whose shared libraries (its `DT_NEEDED` entries)
+include X11, xcb, the Wayland client library, SDL, GTK, Qt's GUI module or GLFW
+(`eggos_app::gui_libraries::GUI_LIBRARIES`); `--console` and `--no-console` decide instead. The launcher, `app open` and `app_open`
 then start `/bin/terminal -t <name> -e /bin/eggsh -c <line>`.
 
 ### What you can install today, and apps to try

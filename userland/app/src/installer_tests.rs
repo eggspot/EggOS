@@ -2,6 +2,7 @@ use crate::architecture::Architecture::{self, Aarch64, Riscv64, X86_64};
 use crate::archive::samples::{Member, deflate_fixed_literals, deflated, stored, zip};
 use crate::fake::{FakeFiles, Node, Operation};
 use crate::files::{Files, Kind, Path};
+use crate::gui_libraries::samples::program_needing;
 use crate::installer::*;
 use crate::program::NotRunnable;
 use crate::program::samples::{dynamic_program, linux_program, mach_o, windows_program};
@@ -1507,4 +1508,38 @@ fn the_registry_s_app_examples_run_as_written() {
         }
     }
     assert_eq!(ran, 5);
+}
+
+#[test]
+fn a_linux_program_needing_a_gui_library_installs_as_a_windowed_app_and_others_as_console_apps() {
+    let loader = linux_program(62);
+    let mut kinds = Vec::new();
+    for (libraries, deflate) in [
+        (&["libc.so", "libSDL2-2.0.so.0"][..], false),
+        (&["libc.so", "libgtk-3.so.0"][..], true),
+        (&["libc.so", "libncursesw.so.6"][..], true),
+    ] {
+        let program = program_needing(libraries);
+        let member = match deflate {
+            true => deflated("tool", &program, deflate_fixed_literals(&program)),
+            false => stored("tool", &program),
+        };
+        let archive = zip(&[member, stored("lib/ld-musl-x86_64.so.1", &loader)]);
+        let mut files = host_with("/media/host/tool.zip", &archive);
+        let plan = planned(&mut files, "/media/host/tool.zip", X86_64);
+        kinds.push(plan.console());
+        let overridden = plan.with_console(true);
+        assert!(overridden.console());
+        install(
+            &mut files,
+            overridden.with_console(kinds[kinds.len() - 1]),
+            &mut [0u8; 64],
+        )
+        .unwrap();
+        assert_eq!(
+            manifest_of(&files, "tool").contains("console=true"),
+            kinds[kinds.len() - 1]
+        );
+    }
+    assert_eq!(kinds, [false, false, true]);
 }

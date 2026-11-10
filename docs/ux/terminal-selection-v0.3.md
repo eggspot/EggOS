@@ -158,9 +158,10 @@ foreground group is not a shell's: the question is right, the program will be en
 
 **Installed console apps.** The manifest gains `console = true | false`, written by the
 installer: a Windows program by its PE subsystem (`Subsystem::Console`), a bare macOS Mach-O
-tool `true` and an `.app` bundle `false`, a Linux program `true` (a Linux GUI program opening its
-Wayland window from a terminal is what a Linux user has always seen, and a clean exit closes the
-terminal anyway); `app install --console` and `--no-console` override, and `app list` prints
+tool `true` and an `.app` bundle `false`, a Linux program `true` unless it needs a GUI library
+(X11, xcb, Wayland's client library, SDL, GTK, Qt's GUI module or GLFW among its `DT_NEEDED`
+libraries), which makes it `false` (amended by the build loop, D223: a GUI app opening an empty
+terminal beside its window read as a regression); `app install --console` and `--no-console` override, and `app list` prints
 the field after the icon. The catalogue, with `terminal_present` and `console`, launches the
 app as `Launch::Start` of `/bin/terminal -t <name> -e /bin/eggsh -c <line>` (`line` is today's
 launch line: environment words, loader, program, arguments); without the terminal program, or

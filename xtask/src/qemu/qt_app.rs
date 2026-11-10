@@ -1,15 +1,16 @@
-//! The Qt app boot test (D179), on x86_64 and aarch64: one boot of the release kernel with a blank
-//! disk and a host folder holding `corepad.zip` (`qt_app.rs`). The shell installs it with `app
-//! install --no-console --entry --environment --arguments`, which lists it and links its fonts into
-//! `/Applications/.fonts`. It writes `alpha` into the note, and in `/tmp` `app open` opens CorePad
-//! on it, as its icon does; its window appears on the display, a click on its title bar focuses it,
-//! and keys edit the note: Ctrl+End and `beta`, then Ctrl+A and Ctrl+C copy everything, Ctrl+End
-//! and Ctrl+V paste it at the end (the window changes each time). Ctrl+S opens CorePad's Save As
-//! dialog, a second window of Qt's own file dialog, where Ctrl+A, the new name and Return save the
-//! note as `saved.txt` beside it, and Ctrl+Q quits, so the shell's prompt comes back. The saved
-//! file then holds `alpha` and `beta` twice, the copy pasted right after the first `beta`, while
-//! the note still holds `alpha` alone; `wm list` has no CorePad window, and after the power-off the
-//! disk's manifest names the loader, the environment and the arguments.
+//! The Qt app boot test (D179), on x86_64 and aarch64: one boot of the release kernel with a
+//! blank disk and a host folder holding `corepad.zip` (`qt_app.rs`). The shell installs it with
+//! `app install --entry --environment --arguments`, which lists it and links its fonts into
+//! `/Applications/.fonts`. It writes `alpha` into the note, and in `/tmp` `app open` opens
+//! CorePad on it, as its icon does; its window appears on the display, a click on its title
+//! bar focuses it, and keys edit the note: Ctrl+End and `beta`, then Ctrl+A and Ctrl+C copy
+//! everything, Ctrl+End and Ctrl+V paste it at the end (the window changes each time). Ctrl+S
+//! opens CorePad's Save As dialog, a second window of Qt's own file dialog, where Ctrl+A, the
+//! new name and Return save the note as `saved.txt` beside it, and Ctrl+Q quits, so the
+//! shell's prompt comes back. The saved file then holds `alpha` and `beta` twice, the copy
+//! pasted right after the first `beta`, while the note still holds `alpha` alone; `wm list`
+//! has no CorePad window, and after the power-off the disk's manifest names the loader, the
+//! environment and the arguments.
 
 use super::install::{file_at, image_volume};
 use super::settings::{Boot, Screen};
@@ -44,8 +45,8 @@ fn saved_path() -> String {
 
 fn install_line() -> String {
     format!(
-        "app install --no-console --entry {APP} --environment '{}' --arguments '{}' \
-         /media/host/{ARCHIVE}; echo {STATUS_PREFIX}install $?\r",
+        "app install --entry {APP} --environment '{}' --arguments '{}' /media/host/{ARCHIVE}; \
+         echo {STATUS_PREFIX}install $?\r",
         install_environment(),
         install_arguments()
     )
@@ -421,8 +422,8 @@ mod tests {
     #[test]
     fn the_typed_lines_install_open_and_read_back() {
         assert!(install_line().starts_with(
-            "app install --no-console --entry corepad --environment \
-             'QT_QPA_PLATFORM=wayland QT_PLUGIN_PATH=/Applications/corepad/plugins \
+            "app install --entry corepad --environment 'QT_QPA_PLATFORM=wayland \
+             QT_PLUGIN_PATH=/Applications/corepad/plugins \
              ICU_DATA=/Applications/corepad/share/icu' --arguments '/tmp/note.txt' \
              /media/host/corepad.zip;"
         ));

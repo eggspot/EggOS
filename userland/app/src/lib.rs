@@ -14,6 +14,7 @@ pub mod command;
 #[cfg(feature = "window")]
 pub mod dialog;
 pub mod files;
+pub mod gui_libraries;
 pub mod icon;
 pub mod icon_export;
 #[allow(clippy::result_large_err)]

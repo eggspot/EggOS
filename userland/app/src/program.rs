@@ -62,19 +62,19 @@ impl NotRunnable {
     }
 }
 
-fn u16_le(bytes: &[u8], at: usize) -> Option<u16> {
+pub(crate) fn u16_le(bytes: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(
         bytes.get(at..at.checked_add(2)?)?.try_into().ok()?,
     ))
 }
 
-fn u32_le(bytes: &[u8], at: usize) -> Option<u32> {
+pub(crate) fn u32_le(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(
         bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
     ))
 }
 
-fn u64_le(bytes: &[u8], at: usize) -> Option<u64> {
+pub(crate) fn u64_le(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(
         bytes.get(at..at.checked_add(8)?)?.try_into().ok()?,
     ))
@@ -105,7 +105,7 @@ mod pe {
     pub const RISCV64: u16 = 0x5064;
 }
 
-mod elf {
+pub(crate) mod elf {
     pub const MAGIC: &[u8] = b"\x7fELF";
     pub const CLASS: usize = 4;
     pub const CLASS_64: u8 = 2;

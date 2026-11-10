@@ -1,12 +1,12 @@
-//! The SDL app boot test (D172), on x86_64 and aarch64: one boot of the release kernel with a blank
-//! disk and a host folder holding `brogue.zip` (`sdl_app.rs`). The shell installs it with `app
-//! install --no-console --arguments`, which lists it; in `/tmp` `app open` opens it as its icon
-//! does, so the terminal runs it through the loader it carries; its window appears on the display,
-//! a click focuses it, keys play turns (rest, then a step each way) and change what it shows, `S`,
-//! two Enters and Space save the game and go back to its title menu, whose `q` quits it, so its
-//! window goes and the shell's prompt comes back. `/tmp` then holds the saved game, `wm list` no
-//! Brogue window, and after the power-off the disk's manifest names the loader, the library folder
-//! and the arguments.
+//! The SDL app boot test (D172), on x86_64 and aarch64: one boot of the release kernel with a
+//! blank disk and a host folder holding `brogue.zip` (`sdl_app.rs`). The shell installs it with
+//! `app install --arguments`, which lists it; in `/tmp` `app open` opens it as its icon does, so
+//! the terminal runs it through the loader it carries; its window appears on the display, a
+//! click focuses it, keys play turns (rest, then a step each way) and change what it shows,
+//! `S`, two Enters and Space save the game and go back to its title menu, whose `q` quits it,
+//! so its window goes and the shell's prompt comes back. `/tmp` then holds the saved game,
+//! `wm list` no Brogue window, and after the power-off the disk's manifest names the loader, the
+//! library folder and the arguments.
 
 use super::install::{file_at, image_volume};
 use super::settings::{Boot, Screen};
@@ -34,8 +34,7 @@ const TURN_KEYS: [char; 9] = ['z', 'z', 'z', 'z', 'z', 'l', 'j', 'h', 'k'];
 
 fn install_line() -> String {
     format!(
-        "app install --no-console --arguments '{}' /media/host/{ARCHIVE}; \
-         echo {STATUS_PREFIX}install $?\r",
+        "app install --arguments '{}' /media/host/{ARCHIVE}; echo {STATUS_PREFIX}install $?\r",
         install_arguments()
     )
 }

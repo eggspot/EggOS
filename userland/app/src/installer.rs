@@ -22,6 +22,7 @@
 use crate::architecture::Architecture;
 use crate::archive::{self, Archive, ArchiveError, Cursor, Entry};
 use crate::files::{self, Files, Handle, Kind, PATH_CAPACITY, Path};
+use crate::gui_libraries;
 use crate::icon::{self, OwnIcon, Workspace};
 use crate::program::{self, NotRunnable, Program};
 use crate::reader::{self, FileReader, Reader};
@@ -671,7 +672,13 @@ pub fn plan_entry(
         loader: None,
         arguments: None,
         environment: None,
-        console: !bundle && program::is_console(&head[..length]),
+        console: !bundle
+            && program::is_console(&head[..length])
+            && !(program.source == Source::Linux
+                && reader::read_file(files, program_path.as_bytes(), |file| {
+                    gui_libraries::links_gui_library(&head[..length], file)
+                })
+                .unwrap_or(false)),
         leftover,
         total_bytes,
     })
@@ -1117,7 +1124,17 @@ fn scan(
         }
         Err(reason) => return Err(Problem::NotRunnable(reason)),
     };
-    let console = !matches!(role, Role::BundleProgram { .. }) && program::is_console(head);
+    let console = !matches!(role, Role::BundleProgram { .. })
+        && program::is_console(head)
+        && !(program.source == Source::Linux
+            && gui_libraries::links_gui_library(
+                head,
+                &mut archive::EntryBytes {
+                    reader: zip,
+                    entry: &entry,
+                    window,
+                },
+            ));
     let named_after = match role {
         Role::BundleProgram { bundle_end } if program.source == Source::Macos => {
             &entry.name()[..bundle_end]

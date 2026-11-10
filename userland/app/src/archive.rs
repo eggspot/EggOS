@@ -7,6 +7,7 @@
 //! outside its folder. macOS's `__MACOSX/` metadata entries are recognised so they can be
 //! skipped.
 
+use crate::gui_libraries::{ByteRange, ProgramBytes};
 use crate::reader::{RangeBytes, Reader};
 use eggos_png::crc32_update;
 use eggos_png::inflate::{InflateError, Sink, Window, inflate};
@@ -441,6 +442,94 @@ pub fn head<R: Reader>(
     match inflate(&mut source, window, &mut filler) {
         Ok(_) | Err(InflateError::Stopped) => Ok(filler.filled),
         Err(_) => Err(ArchiveError::Corrupt),
+    }
+}
+
+struct Ranges<'r, 'b> {
+    ranges: &'r mut [ByteRange<'b>],
+    at: u64,
+    end: u64,
+}
+
+impl Sink for Ranges<'_, '_> {
+    fn write(&mut self, bytes: &[u8]) -> bool {
+        let start = self.at;
+        let stop = start + bytes.len() as u64;
+        for (offset, buffer) in self.ranges.iter_mut() {
+            let from = (*offset).max(start);
+            let to = (*offset + buffer.len() as u64).min(stop);
+            if from < to {
+                let into = (from - *offset) as usize;
+                let out = (from - start) as usize;
+                let length = (to - from) as usize;
+                buffer[into..into + length].copy_from_slice(&bytes[out..out + length]);
+            }
+        }
+        self.at = stop;
+        self.at < self.end
+    }
+}
+
+/// Fills each of `ranges` with `entry`'s data, extracted, from the range's offset, in one pass
+/// that stops after the last range: whether every range lay within the data and was filled.
+pub fn read_ranges<R: Reader>(
+    reader: &mut R,
+    entry: &Entry,
+    window: &mut Window,
+    ranges: &mut [ByteRange<'_>],
+) -> Result<bool, ArchiveError> {
+    let end = ranges
+        .iter()
+        .map(|(offset, buffer)| offset.saturating_add(buffer.len() as u64))
+        .max()
+        .unwrap_or(0);
+    if end > entry.size {
+        return Ok(false);
+    }
+    let (start, data_end) = data_range(reader, entry)?;
+    if entry.method == STORED {
+        if end > data_end - start {
+            return Ok(false);
+        }
+        return Ok(ranges
+            .iter_mut()
+            .all(|(offset, buffer)| reader.read_exact_at(start + *offset, buffer)));
+    }
+    if end == 0 {
+        return Ok(true);
+    }
+    let mut filler = Ranges { ranges, at: 0, end };
+    let mut source = RangeBytes::new(reader, start, data_end);
+    match inflate(&mut source, window, &mut filler) {
+        Ok(_) | Err(InflateError::Stopped) => Ok(filler.at >= end),
+        Err(_) => Err(ArchiveError::Corrupt),
+    }
+}
+
+/// An entry's extracted data, read as a program's bytes ([`read_ranges`]); a range that cannot
+/// be read is not filled.
+pub struct EntryBytes<'a, R: Reader> {
+    pub reader: &'a mut R,
+    pub entry: &'a Entry,
+    pub window: &'a mut Window,
+}
+
+impl<R: Reader> core::fmt::Debug for EntryBytes<'_, R> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("EntryBytes")
+            .field("entry", self.entry)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R: Reader> ProgramBytes for EntryBytes<'_, R> {
+    fn size(&self) -> u64 {
+        self.entry.size
+    }
+
+    fn read_ranges(&mut self, ranges: &mut [ByteRange<'_>]) -> bool {
+        read_ranges(self.reader, self.entry, self.window, ranges) == Ok(true)
     }
 }
 
