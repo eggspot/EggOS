@@ -1279,3 +1279,33 @@ pub fn pl011(blob: &[u8]) -> Option<u64> {
         .and_then(|node| node.reg_entries().next())
         .map(|(address, _)| address)
 }
+
+/// Whether the device tree's first hart names the RISC-V extension `extension` (lower case,
+/// `sstc`), in `riscv,isa-extensions` or after an underscore in `riscv,isa` (D261).
+pub fn riscv_has_extension(blob: &[u8], extension: &[u8]) -> bool {
+    let Ok(tree) = Fdt::new(blob) else {
+        return false;
+    };
+    let hart = tree
+        .nodes()
+        .map_while(Result::ok)
+        .find(|node| !node.isa.is_empty() || !node.isa_extensions.is_empty());
+    hart.is_some_and(|node| {
+        node.isa_extensions.split(|&byte| byte == 0).any(|name| name == extension)
+            || node
+                .isa
+                .split(|&byte| byte == b'_' || byte == 0)
+                .skip(1)
+                .any(|name| name.eq_ignore_ascii_case(extension))
+    })
+}
+
+/// `/cpus`' `timebase-frequency`, in Hz.
+pub fn timebase_frequency(blob: &[u8]) -> Option<u64> {
+    let tree = Fdt::new(blob).ok()?;
+    tree.nodes()
+        .map_while(Result::ok)
+        .find(|node| node.depth == 1 && node.name == b"cpus")
+        .and_then(|node| node.timebase_frequency)
+        .map(u64::from)
+}

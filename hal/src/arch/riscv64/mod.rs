@@ -247,6 +247,13 @@ const SBI_ERR_ALREADY_AVAILABLE: isize = -6;
 
 /// The device tree's physical address, or 0 (no tree) if the largest tree read there would
 /// reach beyond the boot direct map (the kernel reads it before its own page tables exist).
+/// The firmware's device tree, whole, through the boot direct map.
+pub(super) fn device_tree_bytes() -> Option<&'static [u8]> {
+    // SAFETY: `device_tree()` is 0 or the address OpenSBI passed, which nothing writes and the
+    // boot direct map covers (checked there).
+    unsafe { boot_memory::device_tree_blob(device_tree()) }
+}
+
 fn device_tree() -> usize {
     let address = DEVICE_TREE.load(Ordering::Relaxed);
     if address as u64 > BOOT_DIRECT_MAP_END - boot_memory::MAX_DEVICE_TREE_SIZE as u64 {
@@ -388,7 +395,7 @@ impl Platform for Riscv64 {
 
     #[inline]
     fn clock_frequency() -> u64 {
-        timer::TIMEBASE_FREQUENCY
+        timer::frequency()
     }
 
     fn set_timer_deadline(deadline: u64) {

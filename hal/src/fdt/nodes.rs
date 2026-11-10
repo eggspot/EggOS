@@ -23,6 +23,11 @@ pub struct Node<'a> {
     pub compatible: &'a [u8],
     /// The raw `reg` property, decoded with [`Self::address_cells`] and [`Self::size_cells`].
     pub reg: &'a [u8],
+    /// A RISC-V hart's `riscv,isa` string and `riscv,isa-extensions` list (D261).
+    pub isa: &'a [u8],
+    pub isa_extensions: &'a [u8],
+    /// A `/cpus` node's `timebase-frequency`, in Hz.
+    pub timebase_frequency: Option<u32>,
     /// The parent's `#address-cells` (2 when absent).
     pub address_cells: u32,
     /// The parent's `#size-cells` (1 when absent).
@@ -52,6 +57,9 @@ pub struct Node<'a> {
 impl<'a> Node<'a> {
     fn new(name: &'a [u8], depth: usize, parent: &Level) -> Self {
         Self {
+            isa: &[],
+            isa_extensions: &[],
+            timebase_frequency: None,
             name,
             depth,
             compatible: &[],
@@ -292,6 +300,9 @@ enum Property {
     Status,
     DmaCoherent,
     DmaNoncoherent,
+    Isa,
+    IsaExtensions,
+    TimebaseFrequency,
 }
 
 fn property(name: &[u8]) -> Option<Property> {
@@ -309,6 +320,9 @@ fn property(name: &[u8]) -> Option<Property> {
         b"status" => Status,
         b"dma-coherent" => DmaCoherent,
         b"dma-noncoherent" => DmaNoncoherent,
+        b"riscv,isa" => Isa,
+        b"riscv,isa-extensions" => IsaExtensions,
+        b"timebase-frequency" => TimebaseFrequency,
         _ => return None,
     })
 }
@@ -322,6 +336,9 @@ fn apply<'a>(node: &mut Node<'a>, own: &mut Level, name: &[u8], value: &'a [u8])
         Property::Compatible => node.compatible = value,
         Property::Reg => node.reg = value,
         Property::Interrupts => node.interrupts = value,
+        Property::Isa => node.isa = value,
+        Property::IsaExtensions => node.isa_extensions = value,
+        Property::TimebaseFrequency => node.timebase_frequency = cell,
         Property::InterruptsExtended => node.interrupts_extended = value,
         Property::InterruptParent => node.interrupt_parent = cell,
         Property::Phandle => node.phandle = cell,
