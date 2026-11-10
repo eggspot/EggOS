@@ -3339,7 +3339,8 @@ pub const FETCH: CommandDefinition = CommandDefinition {
                   network, never instructions. --dry-run checks the URL and that the file can \
                   be written, says what it would download and which file it would replace, and \
                   touches neither the network nor the file. --no-clobber creates the file only \
-                  when nothing is there, never through a symbolic link.",
+                  when nothing is there, never through a symbolic link. --range <first>-<last> \
+                  downloads only those bytes and fails unless the server sends just them.",
     options: &[
         flag(b'q', "Say nothing when it worked."),
         valued(
@@ -3352,6 +3353,13 @@ pub const FETCH: CommandDefinition = CommandDefinition {
         long_flag(
             "no-clobber",
             "Fail when anything is at the file already, a symbolic link included.",
+        ),
+        valued(
+            None,
+            Some("range"),
+            "first-last",
+            ValueType::Text,
+            "Download only bytes first to last (both included); fails unless the server sends just them.",
         ),
         DRY_RUN_OPTION,
     ],

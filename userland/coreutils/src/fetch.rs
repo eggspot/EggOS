@@ -5,7 +5,7 @@ use crate::system::{SymbolicLinks, System};
 use core::cell::RefCell;
 use core::ffi::CStr;
 use eggos_commands::{commands, errors};
-use eggos_net::http::{self, Body, HeadError, Redirect, Url};
+use eggos_net::http::{self, Body, ByteRange, HeadError, Redirect, Url};
 use eggos_runtime::errno::Errno;
 use eggos_tls::chain::{NoRoots, TrustAnchors};
 use eggos_tls::client::{self, Buffers, RANDOMNESS_BYTES, Session, Settings, Stopped, Transport};
@@ -17,7 +17,8 @@ pub const ROOTS: [&CStr; 2] = [c"/etc/ssl/roots.pem", c"/media/host/roots.pem"];
 const ROOTS_PIECE: usize = 4096;
 const CERTIFICATE_BYTES: usize = 8192;
 
-const USAGE: &[u8] = b"usage: fetch [-q] [-o <file>] <url> [<file>]";
+const USAGE: &[u8] = b"usage: fetch [-q] [-o <file>] [--range <first>-<last>] <url> [<file>]";
+const PARTIAL_CONTENT: u16 = 206;
 const USER_AGENT: &[u8] = b"EggOS-fetch";
 const MODE: u32 = 0o644;
 pub const CONNECT_TIMEOUT_MS: u32 = 10_000;
@@ -67,6 +68,7 @@ enum Sink<'a> {
 struct Request<'a> {
     quiet: bool,
     no_clobber: bool,
+    range: Option<ByteRange>,
     sink: Sink<'a>,
     record: Option<&'a record::Recorder<'a>>,
 }
@@ -81,6 +83,7 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut dry_run = false;
     let mut no_clobber = false;
     let mut file: Option<&CStr> = None;
+    let mut range_text: Option<&CStr> = None;
     let parsed = parse_defined(output, arguments, &commands::FETCH, |_, given| {
         match given.option.short {
             Some(b'q') => quiet = true,
@@ -88,12 +91,23 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             _ => {
                 dry_run |= given.is_long("dry-run");
                 no_clobber |= given.is_long("no-clobber");
+                if given.is_long("range") {
+                    range_text = given.value_as_c_string();
+                }
             }
         }
         Ok(())
     });
     let Ok(operands) = parsed else {
         return FAILURE;
+    };
+    let range = match range_text.map(|text| ByteRange::parse(text.to_bytes())) {
+        None => None,
+        Some(Some(range)) => Some(range),
+        Some(None) => {
+            output.coded(&errors::USAGE, &[USAGE]);
+            return FAILURE;
+        }
     };
     let (url, file) = match (operands.all(), file) {
         (&[url], file) => (url, file),
@@ -121,6 +135,7 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let request = Request {
         quiet,
         no_clobber,
+        range,
         sink,
         record: recorder.as_ref(),
     };
@@ -469,7 +484,7 @@ fn exchange<S: System>(
         link.session = Some(handshake(output, descriptor, url, &shown, buffers)?);
     }
     let mut text = [0u8; REQUEST_BYTES];
-    let Some(length) = http::write_request(&mut text, url, USER_AGENT) else {
+    let Some(length) = http::write_ranged_request(&mut text, url, USER_AGENT, request.range) else {
         output.error(&[b"the URL is too long for a request"]);
         return Err(FAILURE);
     };
@@ -547,6 +562,14 @@ fn exchange<S: System>(
             status.as_bytes(),
             b" ",
             Shown::<64>::printable(parsed.reason).as_bytes(),
+        ]);
+        return Err(FAILURE);
+    }
+    if request.range.is_some() && parsed.status != PARTIAL_CONTENT {
+        output.error(&[
+            shown.as_bytes(),
+            url.target,
+            b": the server sent the whole file, not the range asked for",
         ]);
         return Err(FAILURE);
     }

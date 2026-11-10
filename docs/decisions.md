@@ -19627,3 +19627,25 @@ the license, by an explicit instruction recorded here.
   is its interpreter. Programs the kernel starts from bytes (`exec::load`) take no ids.
 - **Not yet.** Building and running; `nosuid` mounts; dropping the bits on a write by someone
   other than root, and on `chown`; refusing them while the process is traced; capabilities.
+
+## D271 Components downloaded alone: `fetch --range` and `component install` fetching only the store's index and the files it installs (M14, D257's follow-up; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from RFC 9110 section 14)
+
+- **Context.** D257 downloads this version's whole component store to install one component; the
+  store holds every optional component (the Windows and Mac layers, the firmware), so installing
+  the Wi-Fi firmware meant downloading the layers too.
+- **Decision.**
+  - `eggos_net::http` writes a `Range: bytes=<first>-<last>` header (`ByteRange`,
+    `write_ranged_request`); `fetch --range <first>-<last>` sends it, follows redirects with it,
+    and fails unless the answer is `206 Partial Content`, so a server that ignores ranges never
+    leaves a whole file where a piece was asked for.
+  - `component install <name>` with no store attached first asks the release's store for its
+    header and the largest index there may be (bytes 0 to 66,047), reads the index, plans the
+    install (the component and what it needs), downloads each planned file's bytes alone into
+    `/var/cache/eggos/` (`…-components-<piece>.part`), checks each against the index's length and
+    SHA-256, assembles a store of just those components (`…-components-for-<name>.img`) and
+    installs from it as from any store. When any step fails it falls back to D257's whole-store
+    download. `component edition`, which may install several components, still downloads the
+    whole store.
+  - The MCP tool `fetch` keeps its arguments; `--range` is for programs and the CLI.
+- **Not yet.** Building and running; reusing pieces across installs; a signed index (needs the
+  owner's key); a download that runs in the background without blocking the command.

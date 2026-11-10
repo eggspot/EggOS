@@ -164,6 +164,42 @@ pub fn redirect(location: &[u8]) -> Result<Redirect<'_>, UrlError> {
 /// Writes the `GET` request for `url` to `out`, asking the server to close the connection
 /// after its answer: its length, or `None` when `out` is shorter.
 pub fn write_request(out: &mut [u8], url: &Url<'_>, user_agent: &[u8]) -> Option<usize> {
+    write_ranged_request(out, url, user_agent, None)
+}
+
+/// A byte range of a resource, both ends included, as an HTTP `Range: bytes=` header asks for it
+/// (RFC 9110, section 14.1.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ByteRange {
+    pub first: u64,
+    pub last: u64,
+}
+
+impl ByteRange {
+    /// `first-last`, both decimal, `first` not past `last`.
+    pub fn parse(text: &[u8]) -> Option<Self> {
+        let dash = text.iter().position(|&byte| byte == b'-')?;
+        let number = |digits: &[u8]| -> Option<u64> {
+            if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            digits.iter().try_fold(0u64, |value, &digit| value.checked_mul(10)?.checked_add(u64::from(digit - b'0')))
+        };
+        let range = Self {
+            first: number(&text[..dash])?,
+            last: number(&text[dash + 1..])?,
+        };
+        (range.first <= range.last).then_some(range)
+    }
+
+    /// How many bytes it covers.
+    pub fn length(&self) -> u64 {
+        self.last - self.first + 1
+    }
+}
+
+/// [`write_request`] asking for only `range` of the resource when one is given.
+pub fn write_ranged_request(out: &mut [u8], url: &Url<'_>, user_agent: &[u8], range: Option<ByteRange>) -> Option<usize> {
     let mut writer = Writer { out, length: 0 };
     writer.put(b"GET ")?;
     writer.put(url.target)?;
@@ -191,6 +227,12 @@ pub fn write_request(out: &mut [u8], url: &Url<'_>, user_agent: &[u8]) -> Option
     }
     writer.put(b"\r\nUser-Agent: ")?;
     writer.put(user_agent)?;
+    if let Some(range) = range {
+        writer.put(b"\r\nRange: bytes=")?;
+        writer.put_number(range.first)?;
+        writer.put(b"-")?;
+        writer.put_number(range.last)?;
+    }
     writer.put(b"\r\nAccept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n")?;
     Some(writer.length)
 }
@@ -206,6 +248,20 @@ impl Writer<'_> {
         self.out.get_mut(self.length..end)?.copy_from_slice(bytes);
         self.length = end;
         Some(())
+    }
+
+    fn put_number(&mut self, mut value: u64) -> Option<()> {
+        let mut digits = [0u8; 20];
+        let mut start = digits.len();
+        loop {
+            start -= 1;
+            digits[start] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        self.put(&digits[start..])
     }
 }
 

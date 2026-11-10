@@ -31,7 +31,9 @@ then, and `app install` tells you which component to install.
 
 The store also mirrors the vendors' firmware some drivers load, as the optional components
 `wifi-firmware` and `display-firmware`; when the store cannot be reached they come from
-linux-firmware's pinned release instead (D265, [firmware.md](firmware.md)).
+linux-firmware's pinned release instead (D265, [firmware.md](firmware.md)). With no store
+attached, `component install` downloads only the store's index and the files it installs, through
+HTTP range requests, and the whole store only when the server will not send pieces (D271).
 
 ## Commands
 

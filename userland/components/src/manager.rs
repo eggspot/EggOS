@@ -83,6 +83,33 @@ pub fn store_url(version: &str, arch: &str) -> String {
     url
 }
 
+/// Where one downloaded piece of this version's store for `arch` is kept: its index, or one
+/// component's file (D271).
+pub fn partial_piece_path(version: &str, arch: &str, piece: &str) -> String {
+    let mut path = String::from(DOWNLOAD_FOLDER);
+    path.push_str("/eggos-");
+    path.push_str(version);
+    path.push('-');
+    path.push_str(arch);
+    path.push_str("-components-");
+    path.push_str(piece);
+    path.push_str(".part");
+    path
+}
+
+/// Where the store assembled from the pieces downloaded for component `name` is kept (D271).
+pub fn partial_store_path(version: &str, arch: &str, name: &str) -> String {
+    let mut path = String::from(DOWNLOAD_FOLDER);
+    path.push_str("/eggos-");
+    path.push_str(version);
+    path.push('-');
+    path.push_str(arch);
+    path.push_str("-components-for-");
+    path.push_str(name);
+    path.push_str(".img");
+    path
+}
+
 /// Where firmware component `name`'s files are kept once downloaded from linux-firmware, and
 /// the store assembled from them.
 pub fn upstream_store_path(version: &str, arch: &str, name: &str) -> String {

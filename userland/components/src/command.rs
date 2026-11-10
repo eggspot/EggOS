@@ -50,6 +50,9 @@ pub struct Context<'a> {
     /// Downloads `url` into the file `path`, when the system can (D257): the release's store
     /// when no store is attached.
     pub download: Option<fn(&str, &str) -> bool>,
+    /// Downloads bytes `first` to `last` (both included) of `url` into the file `path`, when the
+    /// system can: the store's index and the files of the component asked for (D271).
+    pub download_range: Option<fn(&str, &str, u64, u64) -> bool>,
 }
 
 /// A parsed command line.
@@ -125,6 +128,11 @@ pub fn run<F: Files, C: Console>(
         command,
         Command::Install { dry_run: false, .. } | Command::Edition { name: Some(_), dry_run: false }
     );
+    if let (None, Command::Install { name, dry_run: false, .. }, Some(download_range)) =
+        (&store, command, context.download_range)
+    {
+        store = partial_store(files, context.arch, name, download_range);
+    }
     if store.is_none() && wants_store && let Some(download) = context.download {
         let path = manager::downloaded_store_path(manager::VERSION, context.arch);
         if download(&manager::store_url(manager::VERSION, context.arch), &path) {
@@ -209,6 +217,57 @@ fn cached_name(file: &firmware::Pinned) -> String {
     path.push('-');
     path.push_str(&file.path.replace('/', "-"));
     path
+}
+
+fn partial_store<F: Files>(
+    files: &mut F,
+    arch: &str,
+    name: &str,
+    download_range: fn(&str, &str, u64, u64) -> bool,
+) -> Option<Store> {
+    let url = manager::store_url(manager::VERSION, arch);
+    let head = manager::partial_piece_path(manager::VERSION, arch, "index");
+    let index_end = index::SECTOR + u64::from(index::MAX_INDEX_BYTES) - 1;
+    if !download_range(&url, &head, 0, index_end) {
+        return None;
+    }
+    let bytes = read_whole(files, &head)?;
+    let header = index::Header::parse(&bytes).ok()?;
+    let text = bytes.get(index::SECTOR as usize..)?.get(..header.index_bytes as usize)?;
+    let whole = index::parse_index(&header, text, u64::MAX).ok()?;
+    if whole.arch != arch {
+        return None;
+    }
+    let installed = manager::installed(files);
+    let plan = manager::plan_install(&whole, &installed, name).ok()?;
+    let mut packed = Vec::new();
+    for component in plan {
+        let mut contents = Vec::new();
+        for (number, file) in component.files.iter().enumerate() {
+            if file.length == 0 {
+                contents.push(Vec::new());
+                continue;
+            }
+            let piece = manager::partial_piece_path(manager::VERSION, arch, &format!("{}-{number}", component.name));
+            let last = file.offset + file.length - 1;
+            if !download_range(&url, &piece, file.offset, last) {
+                return None;
+            }
+            let bytes = read_whole(files, &piece)?;
+            if bytes.len() as u64 != file.length || index::sha256(&bytes) != file.sha256 {
+                return None;
+            }
+            contents.push(bytes);
+        }
+        packed.push(index::Packed {
+            component: component.clone(),
+            contents,
+        });
+    }
+    let image = index::store_image(&packed, &whole.version, arch);
+    let path = manager::partial_store_path(manager::VERSION, arch, name);
+    write_whole(files, &path, &image)?;
+    manager::read_store(files, &path, manager::Source::Downloaded, arch).ok()
 }
 
 fn upstream_store<F: Files>(

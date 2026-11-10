@@ -99,6 +99,7 @@ pub fn run(startup: &Startup) -> i32 {
         pid: syscall(number::GETPID, [0; 6]).unwrap_or(0) as u32,
         coded,
         download: Some(download_with_fetch),
+        download_range: Some(download_range_with_fetch),
     };
     command::run(
         &mut LinuxFiles::new(),
@@ -111,6 +112,7 @@ pub fn run(startup: &Startup) -> i32 {
 const FETCH: &CStr = c"/bin/fetch";
 const QUIET: &CStr = c"-q";
 const OUTPUT: &CStr = c"-o";
+const RANGE: &CStr = c"--range";
 const SIGCHLD: usize = 17;
 const PATH_BYTES: usize = 512;
 
@@ -123,18 +125,38 @@ fn c_string(text: &str, out: &mut [u8; PATH_BYTES]) -> Option<usize> {
     Some(out.as_ptr() as usize)
 }
 
+/// Runs `fetch -q --range <first>-<last> -o <path> <url>` (D271) and waits for it: whether it
+/// ended with status 0.
+fn download_range_with_fetch(url: &str, path: &str, first: u64, last: u64) -> bool {
+    let range = alloc::format!("{first}-{last}");
+    run_fetch(url, path, Some(&range))
+}
+
 /// Runs `fetch -q -o <path> <url>` (D257) and waits for it: whether it ended with status 0.
 /// The folder is made first; the download shows in the Downloads window as any `fetch` does.
 fn download_with_fetch(url: &str, path: &str) -> bool {
+    run_fetch(url, path, None)
+}
+
+fn run_fetch(url: &str, path: &str, range: Option<&str>) -> bool {
     let mut folder = [0u8; PATH_BYTES];
     if let Some(folder) = c_string(crate::manager::DOWNLOAD_FOLDER, &mut folder) {
         let _ = syscall(number::MKDIRAT, [-100isize as usize, folder, 0o755, 0, 0, 0]);
     }
-    let (mut url_bytes, mut path_bytes) = ([0u8; PATH_BYTES], [0u8; PATH_BYTES]);
+    let (mut url_bytes, mut path_bytes, mut range_bytes) = ([0u8; PATH_BYTES], [0u8; PATH_BYTES], [0u8; PATH_BYTES]);
     let (Some(url), Some(path)) = (c_string(url, &mut url_bytes), c_string(path, &mut path_bytes)) else {
         return false;
     };
-    let arguments = [FETCH.as_ptr() as usize, QUIET.as_ptr() as usize, OUTPUT.as_ptr() as usize, path, url, 0];
+    let (quiet, output) = (QUIET.as_ptr() as usize, OUTPUT.as_ptr() as usize);
+    let arguments = match range {
+        None => [FETCH.as_ptr() as usize, quiet, output, path, url, 0, 0, 0],
+        Some(range) => {
+            let Some(range) = c_string(range, &mut range_bytes) else {
+                return false;
+            };
+            [FETCH.as_ptr() as usize, quiet, RANGE.as_ptr() as usize, range, output, path, url, 0]
+        }
+    };
     let environment = [0usize];
     let Ok(child) = syscall(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]) else {
         return false;

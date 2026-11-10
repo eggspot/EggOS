@@ -730,6 +730,7 @@ const CONTEXT: Context<'static> = Context {
     pid: 7,
     coded: false,
     download: None,
+    download_range: None,
 };
 
 fn run(files: &mut FakeFiles, console: &mut FakeConsole, line: &str) -> i32 {
