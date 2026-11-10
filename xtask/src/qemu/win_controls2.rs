@@ -1,9 +1,10 @@
 //! The second Windows controls boot test's checks of the display (D228): `win-controls2.exe`'s
-//! window, a click at the end of its word edit, Shift+Left selecting the last word and a letter
-//! typed over it, Tab into the password edit and the digits-only edit with letters typed, Tab
-//! landing on the group's selected radio button and Down selecting the next one, a click on the
-//! scroll bar's right arrow, and Esc closing the window, each frame compared with the desktop
-//! the host renders, the window's content painted by `eggos_windows_gui` from the same models.
+//! window as it opens with no control focused, a click at the end of its word edit, Shift+Left
+//! selecting the last word and a letter typed over it, Tab into the password edit and the
+//! digits-only edit with letters typed, Tab landing on the group's selected radio button and Down
+//! selecting the next one, a click on the scroll bar's right arrow, and Esc closing the window,
+//! each frame compared with the desktop the host renders, the window's content painted by
+//! `eggos_windows_gui` from the same models.
 
 use super::{
     Desktop, DiscardEvents, TERMINAL_FRAME_TIMEOUT, WindowContent, apply_pointer_step,
@@ -47,6 +48,7 @@ const KEYS: [(char, &str, u16); 4] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
+    Nowhere,
     Word,
     Password,
     Number,
@@ -317,11 +319,18 @@ impl Steps<'_> {
     }
 
     fn run(&mut self) -> Result<(), String> {
+        self.frame.focus = Focus::Nowhere;
+        self.check(
+            "win-controls2's window shown with no control focused",
+            FIRST_FRAME_TIMEOUT,
+        )?;
+
         self.click(scene::WORD_END)?;
+        self.frame.focus = Focus::Word;
         self.pointer_shape(I_BEAM)?;
         self.check(
             "win-controls2's window, its word edit clicked at the end",
-            FIRST_FRAME_TIMEOUT,
+            TERMINAL_FRAME_TIMEOUT,
         )?;
 
         self.key(SHIFT, true)?;

@@ -1,6 +1,7 @@
 //! The terminals boot test (D223): one boot of the release kernel with its display. The shell
 //! on the serial console opens two terminal windows, as the launcher's Terminal does; both are
-//! titled after the home folder (`~ - Terminal`, the shell's `OSC 0`). The second is resized
+//! titled after the home folder (`~ - Terminal`, the shell's `OSC 0`), which `wm list` is asked
+//! for again every 3 s until it shows, ten times at most. The second is resized
 //! with `wm size`; `stty size` typed into it with `wm type` and `wm press` prints the rows and
 //! columns its grid has, the same as `wm show`'s `screen` value (`<columns>x<rows>`), which
 //! differs from the first size; `wm show` lists its `folder` (the shell's `OSC 7`) as the home
@@ -11,6 +12,9 @@ use super::*;
 
 const TIMEOUT: Duration = Duration::from_secs(180);
 const OPEN: &[u8] = b"echo EGGOS-HOME $HOME; terminal; terminal; sleep 3; wm list\r";
+const LIST_AGAIN: &[u8] = b"sleep 3; wm list\r";
+const LISTINGS: usize = 10;
+const LISTING_HEADER: &str = "ID STATE X Y WIDTH HEIGHT CLIENT TITLE";
 const TITLE: &str = "~ - Terminal";
 const TITLE_SUFFIX: &str = " - Terminal";
 const NEW_SIZE: (u32, u32) = (840, 560);
@@ -33,7 +37,10 @@ fn console(boot: &mut Boot<'_>) -> String {
 }
 
 fn terminal_windows(console: &str) -> Vec<(u32, String)> {
-    console
+    let last_listing = console
+        .rfind(LISTING_HEADER)
+        .map_or(console, |at| &console[at..]);
+    last_listing
         .lines()
         .filter_map(|line| {
             let mut words = line.trim_end().splitn(8, ' ');
@@ -120,8 +127,15 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
     let mut boot = Boot::start(arch, kernel, &[])?.with_timeout(TIMEOUT);
     boot.wait_for_prompts(1)?;
     type_line(&mut boot, OPEN)?;
-    boot.wait_for_prompts(2)?;
-    let windows = terminal_windows(&console(&mut boot));
+    let mut prompts = 2;
+    boot.wait_for_prompts(prompts)?;
+    let mut windows = terminal_windows(&console(&mut boot));
+    while windows.len() < 2 && prompts <= LISTINGS {
+        type_line(&mut boot, LIST_AGAIN)?;
+        prompts += 1;
+        boot.wait_for_prompts(prompts)?;
+        windows = terminal_windows(&console(&mut boot));
+    }
     let Some(&(second, _)) = windows.iter().max_by_key(|(id, _)| *id) else {
         return Err(boot.fail(format!("{}: `wm list` shows no terminal window", arch.name)));
     };
@@ -132,7 +146,7 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
          wm capture {second} -o /tmp/terminal.png; echo {CAPTURED_PREFIX}$?\r"
     );
     type_line(&mut boot, drive.as_bytes())?;
-    boot.wait_for_prompts(3)?;
+    boot.wait_for_prompts(prompts + 1)?;
     type_line(&mut boot, POWER_OFF)?;
     let (console, clean_exit) = boot.finish()?;
     verdict(arch.name, &console, &windows)?;
