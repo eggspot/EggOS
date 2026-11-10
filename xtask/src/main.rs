@@ -1326,7 +1326,7 @@ pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::Pat
         &env,
         &format!("kernel executable for {}", arch.target),
     )?;
-    keep_kernel(&built, feature)
+    copy_beside_as_variant(&built, feature)
 }
 
 fn build_release_initramfs(arch: &Arch) -> Result<std::path::PathBuf, String> {
@@ -1829,9 +1829,6 @@ fn fuzz_wayland(seconds: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// Builds the release kernel for `arch` embedding `initramfs` and returns a copy named after the
-/// initramfs, so that a later build with another initramfs, which cargo writes to the same
-/// executable, leaves this kernel as it was.
 fn build_release_kernel(
     arch: &Arch,
     initramfs: &std::path::Path,
@@ -1848,11 +1845,13 @@ fn build_release_kernel(
             initramfs.display()
         )
     })?;
-    keep_kernel(&built, &initramfs_name.to_string_lossy())
+    copy_beside_as_variant(&built, &initramfs_name.to_string_lossy())
 }
 
-/// Copies the kernel cargo built at `built` to `eggos-kernel-<variant>` beside it.
-fn keep_kernel(built: &std::path::Path, variant: &str) -> Result<std::path::PathBuf, String> {
+fn copy_beside_as_variant(
+    built: &std::path::Path,
+    variant: &str,
+) -> Result<std::path::PathBuf, String> {
     let kept = built.with_file_name(kept_kernel_name(variant));
     std::fs::copy(built, &kept).map_err(|e| format!("{}: {e}", kept.display()))?;
     Ok(kept)
