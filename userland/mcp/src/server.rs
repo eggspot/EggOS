@@ -3949,10 +3949,10 @@ fn write_server_meta(out: &mut JsonWriter<'_>) {
 
 fn mark_stateless_result(out: &mut JsonWriter<'_>, start: usize, cacheable: bool) {
     let written = out.as_bytes().get(start..).unwrap_or_default();
-    let is_error = written
-        .windows(16)
-        .any(|window| window == b"\"error\":{\"code\":");
-    if written.is_empty() || is_error || !written.ends_with(b"}}") {
+    if written.is_empty() || !written.ends_with(b"}}") {
+        return;
+    }
+    if crate::json::has_top_level_member(written, "error") {
         return;
     }
     if !out.reopen_object() || !out.reopen_object() {

@@ -40,6 +40,16 @@ then, and `app install` tells you which component to install.
 `app install` of a Windows or Mac program whose layer is missing tells you which component to
 install, for example `component install windows-apps`.
 
+## In Settings
+
+Settings > Components (Claude Fable's [design](ux/components-v0.3.md)) is the same capability
+in a window: the store's state at the top, then one row per component with its state, its
+size and an `Install` or `Remove` button. An install shows a progress bar under its row and
+then the result; a remove, or an install that brings a component another one needs, asks
+first under the row. The words are those of `component` and its MCP tools, and so are the
+refusals (`Needed by ...`, `In use: ... is running`). The buttons are person-only: an agent
+installs through `component_install` instead.
+
 ## How an install stays safe
 
 Installing runs as root, so the manager treats the store as untrusted input:
@@ -71,3 +81,12 @@ action deletes it.
 
 Without a persistent disk, `/var` is in memory, so installed components last until the
 machine powers off.
+
+## Not yet
+
+- The desktop and the built-in apps as components: the desktop runs in the kernel until the
+  window server moves to user space, so only the Windows and macOS layers are components.
+- Downloading components on demand in the background, and updates (M14).
+- In Settings: a live progress bar (the copy runs in one step of the window, so the bar jumps)
+  and cancelling in the middle of a file, tooltips on disabled buttons, the phone layout, and
+  the full Components pane with the installer.

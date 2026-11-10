@@ -9,10 +9,10 @@
 //!
 //! 1. No grants: the protocol probe and handshake, the tool list, each reading tool's CLI twin,
 //!    `ls` paging the host folder one entry and then the rest by its `next_cursor` (D164),
-//!    a large read with the client slow to drain it (QEMU must hold the output, not drop it),
-//!    `clock_get` within five minutes of the host's clock (D150), paths outside the roots,
-//!    hostile lines, and every tool that needs a grant refused with its grant named
-//!    (`wm_capture` with `view`).
+//!    `df`'s records as its `structuredContent`'s `items` (D226), a large read with the
+//!    client slow to drain it (QEMU must hold the output, not drop it), `clock_get` within
+//!    five minutes of the host's clock (D150), paths outside the roots, hostile lines, and
+//!    every tool that needs a grant refused with its grant named (`wm_capture` with `view`).
 //! 2. `--mcp-allow view,write,run,install`: `clock_set` refused without `confirm`, then a day
 //!    ahead and back, each read by `clock_get` (D150); writing, replacing with `confirm`, reading back,
 //!    refused paths (one through a symbolic link `ln -s` made out of the home, D170),
@@ -470,6 +470,7 @@ pub(super) struct ToolResult {
     scale: Option<u64>,
     truncated: Option<bool>,
     next_cursor: Option<String>,
+    items: Option<String>,
 }
 
 impl ToolResult {
@@ -512,6 +513,12 @@ impl ToolResult {
             .and_then(|structured| structured.get("next_cursor"))
             .and_then(Value::as_str)
             .map(|cursor| cursor.chars().collect());
+        let items = structured
+            .and_then(|structured| structured.get("items"))
+            .and_then(|items| match items {
+                Value::Array(_) => Some(String::from_utf8_lossy(items.raw()).into_owned()),
+                _ => None,
+            });
         Some(Self {
             texts,
             is_error: result.get("isError") == Some(Value::Bool(true)),
@@ -519,6 +526,7 @@ impl ToolResult {
             scale,
             truncated,
             next_cursor,
+            items,
         })
     }
 
@@ -650,6 +658,19 @@ fn pages_ls(client: &mut Client) -> Result<(), String> {
     )
 }
 
+fn lists_items(client: &mut Client) -> Result<(), String> {
+    let result = client.call("df", r#"{"path":"/media/host"}"#)?;
+    let items = result.items.as_deref().unwrap_or_default();
+    expect(
+        !result.is_error && items.contains(r#""mounted_on":"/media/host""#),
+        client.arch,
+        &format!(
+            "df's structuredContent holds no items naming /media/host: {:?}",
+            result.items
+        ),
+    )
+}
+
 fn session(client: &mut Client) -> Result<(), String> {
     let arch = client.arch;
     client.send(br#"{"jsonrpc":"2.0","id":"probe","method":"server/discover","params":{}}"#)?;
@@ -731,6 +752,7 @@ fn session(client: &mut Client) -> Result<(), String> {
         )?;
     }
     pages_ls(client)?;
+    lists_items(client)?;
     clock_near(client, host_seconds(), "the first boot")?;
     client.paused.store(true, Ordering::Release);
     let id = client.next_id;
@@ -1579,7 +1601,7 @@ fn win_paint_session(client: &mut Client, title: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn element_of(tree: &str, role: &str, name: &str) -> Option<u32> {
+pub(super) fn element_of(tree: &str, role: &str, name: &str) -> Option<u32> {
     tree.lines().find_map(|line| {
         let mut words = line.split_whitespace();
         let id = words.next()?.parse().ok()?;
@@ -1591,7 +1613,7 @@ fn element_of(tree: &str, role: &str, name: &str) -> Option<u32> {
     })
 }
 
-fn element_line<'a>(tree: &'a str, id: u32) -> &'a str {
+pub(super) fn element_line<'a>(tree: &'a str, id: u32) -> &'a str {
     tree.lines()
         .find(|line| line.split_whitespace().next() == Some(id.to_string().as_str()))
         .unwrap_or("")

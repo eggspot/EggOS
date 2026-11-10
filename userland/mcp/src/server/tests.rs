@@ -3897,6 +3897,41 @@ fn stateless_requests_need_their_capabilities_and_a_known_version() {
 }
 
 #[test]
+fn a_stateless_refused_call_is_a_complete_result_while_a_protocol_error_is_not() {
+    let mut harness = Harness::with_grants(Grants::ALL);
+    let refused = harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"ls","arguments":{{"path":"/etc"}},{MODERN_META}}}}}"#
+        ))
+        .unwrap();
+    let result = parsed(&refused)
+        .get("result")
+        .unwrap_or_else(|| panic!("{refused}"));
+    assert!(is_error(&refused), "{refused}");
+    assert!(
+        result
+            .get("structuredContent")
+            .and_then(|structured| structured.get("error"))
+            .is_some(),
+        "{refused}"
+    );
+    assert!(
+        result
+            .get("resultType")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.equals("complete")),
+        "{refused}"
+    );
+    let missing = harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{{"uri":"eggos://none",{MODERN_META}}}}}"#
+        ))
+        .unwrap();
+    assert!(parsed(&missing).get("error").is_some(), "{missing}");
+    assert!(!missing.contains("resultType"), "{missing}");
+}
+
+#[test]
 fn a_window_that_does_not_respond_is_refused_with_its_own_code() {
     let mut harness = granted_only(&[crate::grants::Grant::Run]);
     harness.system.outputs.insert(

@@ -348,6 +348,7 @@ dependencies = [
  "eggos-settings-file",
  "eggos-terminal-window",
  "eggos-toolkit",
+ "eggos-windows-registry",
 ]
 
 [[package]]

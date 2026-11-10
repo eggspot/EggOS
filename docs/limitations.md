@@ -39,10 +39,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   revocation checks; TCP has no window scaling (64 KiB windows), no selective
   acknowledgments, keep-alive or urgent data, drops segments that arrive out of order (they
   are sent again), and on a machine without an adapter its timers run only when a program
-  makes a socket call. No downloads window in the GUI yet. No IPv6, no fragment reassembly, no static addresses or second adapter, no
+  makes a socket call. Settings' Network pane, the bar's network indicator, the Downloads
+  window and the network clock are in (D225); downloads are listed since boot only. No IPv6, no fragment reassembly, no static addresses or second adapter, no
   multicast, no reverse lookups, no netlink (iproute2 and `getifaddrs` fail; `ip` reads
-  `/proc/net`). Settings has no Network pane and the bar no network indicator yet (designed in
-  docs/ux/network-v0.3.md). The adapter interrupts (D220); while TCP connections are open its
+  `/proc/net`). The adapter interrupts (D220); while TCP connections are open its
   thread still wakes every 20 ms for their timers. On riscv64, `--mcp --apps` with a disk and the network takes more than
   the machine's eight virtio slots: add `--no-network` there.
 
@@ -257,8 +257,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   program instead of reaching its exception handlers, and at most 64 functions found
   with `GetProcAddress` can be called from it; `app install` translates them right away,
   the installer's window leaves it to the first launch), from the host folder or installed as apps;
-  the layer is in the base of those images until the component manager makes it optional
-  (D152) ([Windows programs](windows-programs.md), D118, D121, D124, D129):
+  the layer is the optional `windows-apps` component, installed with `component install
+  windows-apps` or Settings > Components (D235) ([Windows programs](windows-programs.md), D118, D121, D124, D129):
   threads, waits, locks, directory listing and UTF-16 strings work, GUI programs open
   windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
   programs built by MSVC on its C runtime (`/MD`) run (D146), ANSI programs and classic Win32
@@ -293,15 +293,16 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   An exception cannot yet pass through the layer's own frames (a fault inside a Windows
   function, a throw out of a window procedure), a stack overflow is not an exception, and on
   aarch64 a context resumed after a fault loses `x16`.
-  Programs on the C++ standard library's DLL (msvcp140: iostreams, `std::thread`),
-  `std::exception_ptr`, `dynamic_cast` and `typeid`, the rest of Rust's std, `setjmp`,
-  locales, most of the math library, wide streams, low-level I/O's text mode (`_open` works but
-  never translates line endings, D179), other
-  DLLs than the layer's own, multi-line edits or selection, radio keys, editable combo boxes
-  and menu keys (D145, D174), the common controls' hover looks, tooltips, custom drawing and
-  label editing, GDI+ beyond images (JPEG, GIF and TIFF too), out-of-process COM and COM
-  classes other than `Scripting.Dictionary`, a registry with keys (it is empty and read-only),
-  global keyboard and mouse hooks, global hot keys, the tray, HTTPS in WinINet (D178),
+  C++ programs on the C++ standard library's DLL run (msvcp140: `std::thread`, mutexes and
+  condition variables, `std::exception_ptr`, `dynamic_cast` and `typeid`, D230), and the C
+  runtime has the whole math library, `setjmp`, the C and English (United States) UTF-8
+  locales, wide streams and low-level text mode (D229); Windows programs keep their settings in
+  a real registry (D231). iostreams, the rest of Rust's std, other locales, other
+  DLLs than the layer's own, multi-line edits, editable combo boxes, menu keys and submenus,
+  scroll bars on windows (`WS_VSCROLL`, D228), the common controls' tooltips, custom drawing
+  and label editing, GDI+ beyond images, out-of-process COM and COM
+  classes other than `Scripting.Dictionary`,
+  global keyboard and mouse hooks, global hot keys, the tray, HTTPS in WinINet (D178, D231),
   printing (no printers), hatched brushes (drawn solid), fonts other than Egg Mono
   and text beyond ASCII, ARM64 programs on x86_64 and riscv64 do not run yet; the shared clipboard (D197) carries text only (`CF_UNICODETEXT`); names are
   case-sensitive and local time is UTC.
@@ -325,17 +326,20 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   them right away, except from the installer's window, where the first launch does, D191),
   from the
   host folder or installed as apps (a real one, CocoaGame, is
-  checked in CI: [Real apps](compatibility.md)); the layer is in the base of those images until
-  the component manager makes it optional (D152)
+  checked in CI: [Real apps](compatibility.md)); the layer is the optional `mac-apps`
+  component (D235)
   ([macOS programs](macos-programs.md), D120, D123, D142, D147, D175). AppKit covers windows,
   views drawn with `drawRect:` (rects, lines and ovals 1 px wide, one font, no alpha), push
-  buttons, text fields, labels, alerts, the standard About panel, timers and the main menu in
+  buttons and the other button types (checkboxes, radios, toggles), pointer shapes (`NSCursor`),
+  the pasteboard on the shared clipboard (D233), windows from compiled nibs (D232), text
+  fields, labels, alerts, the standard About panel, timers and the main menu in
   the macOS profile's top bar (at most 6 menus in 248 bytes of labels; `wm menu` and the MCP
   tools list and choose its items, except while the app shows an alert); Objective-C has
-  blocks, `__weak` and exceptions (frames only DWARF describes, and exceptions passing through
-  the layer's own code, end the program as uncaught). Nibs and storyboards, scroll views,
-  tables, images, Auto Layout, Swift apps, most of Foundation beyond its core (no NSFileManager
-  or NSNotification), a signal handler's `ucontext_t` (D190), locales other than C, POSIX,
+  blocks, `__weak` and exceptions, through DWARF-described frames and the layer's own, and
+  Foundation's failures raise exceptions a `@catch` takes (D234); C++ exceptions do not work
+  yet. Storyboards and keyed archives, scroll views,
+  tables, images, Auto Layout, Swift apps, much of Foundation beyond its core (D232 added
+  NSFileManager, NSNotificationCenter, NSUUID and run loop modes), a signal handler's `ucontext_t` (D190), locales other than C, POSIX,
   C.UTF-8, en_US.UTF-8 and UTF-8, character classes above U+00FF (D190), other frameworks and
   riscv64 do not run yet; programs handle signals and start other programs (`fork`, `exec`,
   `posix_spawn`, pipes, `popen`, `system`; D190), read input with `scanf`, and choose the
@@ -354,22 +358,19 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   pointer input or sideways scrolling, and
   characters no US key types reach apps as characters of their own (code 0, D185), which a
   program that reads keys rather than characters does not see; clicks, drags and scrolling aimed at a window with a dialog
-  open are refused (keys go to the dialog: D162); Windows programs get `WM_LBUTTONDBLCLK`
-  only in windows of their own classes with `CS_DBLCLKS` (the system's controls still see two
-  presses, D174), and no mouse sends a sideways wheel yet (only
-  `wm scroll` and agents do); a minimised Wayland app does not repaint after input (eggway
+  open are refused (keys go to the dialog: D162); a minimised Wayland app does not repaint after input (eggway
   sends no frame callbacks to minimised surfaces) until it is restored; every process is root
   until users come (M10), so any program can capture and send input; agents get it only
   through the MCP server's grants (`view` to see, `run` to operate, D143). Input to a window
   whose program stopped reading its events is retried for 3 s, then fails.
 - **iOS apps are not in yet** (D17).
-- **No components yet.** The component manager (D18) comes later (M14): for v0.3.0 the
-  desktop and the Windows and macOS layers are in the base and cannot be left out (D109,
-  D152). The built-in MCP server is in (D136, docs/mcp.md), but not every capability has its
-  three front-ends yet (D22): Settings and the device list have no MCP tools, and Files'
-  copy, move and new folder have none either (an agent with `run` uses `cp`, `mv` and
-  `mkdir`), and `chmod` has only its CLI until users and permissions come (M10, D170). Window focus, move, size, minimise, maximise, restore and close have theirs
-  (D160).
+- **Components, first part** (D235, [Components](components.md)). The Windows and macOS
+  layers are components outside the base (`windows-apps`, `mac-apps`), installed and removed
+  with `component`, its MCP tools or Settings > Components from a store attached as a disk or
+  in the host share; the desktop and the built-in apps are still in the base and cannot be left
+  out (D109), and nothing downloads on demand yet (M14). The built-in MCP server is in (D136,
+  docs/mcp.md), but not every capability has its three front-ends yet (D22): `chmod` has only
+  its CLI until users and permissions come (M10, D170).
 - **One user, root.** Processes start as root; there are no logins or permissions to manage
   (D75).
 
@@ -458,12 +459,14 @@ the desktop in the macOS profile; a display smaller than about 658x458 shows the
 the whole screen instead of the desktop. Settings (`settings`, [Settings](settings.md), D132)
 picks the layout profile, Windows, macOS or Linux habits (the controls' side and the
 shortcuts), kept on the disk across reboots. Not yet:
-- Mac apps choose no pointer shape (no `NSCursor`); `Working` does not end when the started
-  program exits without a window (it ends after 5 s); `reduce_motion` is not a setting yet, so
-  the launcher's caret always blinks; the phone and TV versions of `Working`, `Busy` and the
+- `Working` does not end when the started
+  program exits without a window (it ends after 5 s); the phone and TV versions of `Working`, `Busy` and the
   End app dialog (the launcher's `Starting <name>...`, the bottom sheet, D222); the release
   kernel's serial line has no first-frame time (only the `qemu-boot-clock` kernel's
   `boot_to_desktop`);
+- the first run's phone and TV layouts; high contrast reaches toolkit windows only (not the
+  shell's own panels, the terminal's grid, Files' and the Text Editor's own drawing or the
+  layers), as the light theme does (D224, D219);
 - a display that changes size while EggOS runs (the GPU's mode change events) keeps its first
   layout;
 - resizing the console's window: its grid stays 80x24 (terminal windows resize and reflow, D187,
@@ -473,9 +476,8 @@ shortcuts), kept on the disk across reboots. Not yet:
   panel in a window narrower than 416 px (section 5); `stty` has no `ispeed` or `ospeed`;
 - the phone layout of the shell, 2x, dragging or arranging desktop icons and keyboard focus in
   the Linux launcher's dash (D133);
-- removing or installing the Windows or macOS layer on its own (the component manager, D18,
-  D152), and `app install --force`: `app install` refuses a program whose layer is not in the
-  image, which on the release images happens only on riscv64 (D134, docs/apps.md);
+- `app install --force`: `app install` refuses a program whose layer is not installed and
+  names the component to install (D235), and on riscv64 there is none (D134, docs/apps.md);
 - `.app` bundles and `.zip` files whose symbolic links are absolute or climb out of their
   folder: `app install` refuses them (D170; links that stay inside, such as a framework's
   `Versions/Current`, install as links); the installer's
@@ -506,8 +508,9 @@ shortcuts), kept on the disk across reboots. Not yet:
   the `console` field and MCP `app_install` cannot set it;
 - Settings, the installer's window (`app --window`, D134) and Files (`/bin/files`, D135),
   all served by the same program, are the programs with a window in the image (the window tests' `hello-window`
-  and `win-paint.exe` are added only to their own images); Settings' Components pane comes
-  later, and 2x (D195) takes a reboot, doubles pixels rather than drawing finer and has no
+  and `win-paint.exe` are added only to their own images), and the Downloads window
+  (`/bin/downloads`, D225) and the first run (`settings --first-run`, D224) are Settings'
+  program too; 2x (D195) takes a reboot, doubles pixels rather than drawing finer and has no
   fractional scales; Windows GUI programs (D129), Linux Wayland apps (D140) and
   macOS AppKit apps (D147) open windows;
 - 3D graphics;

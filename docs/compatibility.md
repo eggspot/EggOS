@@ -126,9 +126,10 @@ works.
 - **Known limits.** x86_64 build only: AutoHotkey ships no ARM64 build, so on aarch64 the x64 program is
   translated ahead of time at install (D191, docs/translation.md), and this check runs on
   x86_64 only. Its hot keys work only while one of its windows has the keyboard (no global
-  hooks), there is no tray icon (scripts use `#NoTrayIcon`), the registry is empty and
-  read-only, `Download` has no HTTPS, `Run` starts programs but not documents, and every font is
-  Egg Mono. What the layer still lacks is in D178's "Not yet".
+  hooks), there is no tray icon (scripts use `#NoTrayIcon`), `Download` has no HTTPS, `Run` starts programs but not documents, and every font is
+  Egg Mono. Its registry reads and writes are real since D231 (a hive file per user), though
+  the check does not exercise them yet. What the layer still lacks is in D178's and D231's
+  "Not yet".
 
 ## CocoaGame (macOS, Objective-C on AppKit)
 
@@ -161,8 +162,9 @@ works.
   screen exactly as the host renders it with the icon the installer makes, and `wm show` lists
   its elements; Esc closes it, Cmd+Q quits the game, and `wm list` shows none of its windows.
 - **Known limits.** The game has no sound and no saved state, so nothing else is exercised. The
-  layer's AppKit is the core of AppKit (`docs/macos-programs.md`): apps with nibs, table and
-  scroll views or images, like the runner-up UDCalc, do not run yet (D175's "Not yet").
+  layer's AppKit is the core of AppKit (`docs/macos-programs.md`): compiled nibs load (D232),
+  but apps with table and scroll views or images, or C++ exceptions, like the runner-up UDCalc,
+  do not run yet (D233's and D234's "Not yet").
 
 ## Mousepad (Linux, GTK 3)
 
@@ -302,6 +304,6 @@ works.
   tables of a program's own conformances, dynamic casts, weak references, `String`'s characters
   and the runtime parts of the overlays the app links; Foundation's Swift overlay, the Dispatch
   and CoreGraphics overlays, Swift subclasses of NSView and the CoreGraphics drawing it uses
-  come next, with
+  are carried to the next plan (batch part 17), with
   `cargo xtask swift-app` and CI's `swift-app` job, which will install it, open a cell, flag one
   and start a new game. D180's "Not yet" lists what remains.
