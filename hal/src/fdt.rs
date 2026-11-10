@@ -1161,6 +1161,47 @@ pub(crate) mod tests {
         assert_eq!(names, [&b"rng-seed"[..], b"bootargs", b"kaslr-seed"]);
     }
 
+    fn two_uarts(stdout: &[u8]) -> Vec<u8> {
+        let reg = |address: u64| {
+            let mut bytes = address.to_be_bytes().to_vec();
+            bytes.extend_from_slice(&0x1000u64.to_be_bytes());
+            bytes
+        };
+        let mut b = Builder::default();
+        b.begin("")
+            .prop("#address-cells", &2u32.to_be_bytes())
+            .prop("#size-cells", &2u32.to_be_bytes())
+            .begin("aliases")
+            .prop("serial1", b"/pl011@9040000\0")
+            .end()
+            .begin("chosen")
+            .prop("stdout-path", stdout)
+            .end()
+            .begin("pl011@9000000")
+            .prop("compatible", b"arm,pl011\0arm,primecell\0")
+            .prop("reg", &reg(0x900_0000))
+            .end()
+            .begin("pl011@9040000")
+            .prop("compatible", b"arm,pl011\0arm,primecell\0")
+            .prop("reg", &reg(0x904_0000))
+            .end()
+            .end();
+        b.build()
+    }
+
+    #[test]
+    fn the_console_is_the_uart_stdout_path_names_through_an_alias_or_a_path() {
+        assert_eq!(pl011(&two_uarts(b"serial1:115200n8\0")), Some(0x904_0000));
+        assert_eq!(pl011(&two_uarts(b"/pl011@9040000\0")), Some(0x904_0000));
+        assert_eq!(pl011(&two_uarts(b"/pl011@9000000:115200\0")), Some(0x900_0000));
+        assert_eq!(pl011(&two_uarts(b"serial7\0")), Some(0x900_0000));
+        let tree = two_uarts(b"serial1\0");
+        let fdt = Fdt::new(&tree).unwrap();
+        assert_eq!(fdt.stdout_path(), Some(&b"/pl011@9040000"[..]));
+        assert_eq!(fdt.property_at(b"/aliases", b"serial1"), Some(&b"/pl011@9040000\0"[..]));
+        assert_eq!(fdt.property_at(b"/chosen", b"bootargs"), None);
+    }
+
     #[test]
     fn the_command_line_is_chosen_s_bootargs_up_to_its_nul() {
         assert_eq!(boot_arguments(&with_seeds()), Some(&b"console=ttyS0"[..]));
@@ -1270,14 +1311,94 @@ pub fn gic(blob: &[u8]) -> Option<TreeGic> {
     })
 }
 
-/// The first PL011 UART of `blob`: its registers' physical address.
+/// The first PL011 UART of `blob`: its registers' physical address; the one `/chosen`'s
+/// `stdout-path` names when it is a PL011 (D266).
 pub fn pl011(blob: &[u8]) -> Option<u64> {
+    const PL011: &[u8] = b"arm,pl011";
+    if let Some(node) = stdout_node(blob).filter(|node| node.is_compatible(PL011)) {
+        return node.reg_entries().next().map(|(address, _)| address);
+    }
     let tree = Fdt::new(blob).ok()?;
     tree.nodes()
         .map_while(Result::ok)
-        .find(|node| node.is_compatible(b"arm,pl011"))
+        .find(|node| node.is_compatible(PL011))
         .and_then(|node| node.reg_entries().next())
         .map(|(address, _)| address)
+}
+
+fn path_part(path: &[u8], index: usize) -> Option<&[u8]> {
+    path.split(|&byte| byte == b'/').filter(|part| !part.is_empty()).nth(index)
+}
+
+fn part_names(part: &[u8], name: &[u8]) -> bool {
+    part == name || (!part.contains(&b'@') && name.split(|&byte| byte == b'@').next() == Some(part))
+}
+
+impl<'a> Fdt<'a> {
+    /// The value of property `property` of the node at `path` (`/aliases`); a part without a unit
+    /// address names the first node of that name.
+    pub fn property_at(&self, path: &[u8], property: &[u8]) -> Option<&'a [u8]> {
+        let parts = path.split(|&byte| byte == b'/').filter(|part| !part.is_empty()).count();
+        let mut depth = 0usize;
+        let mut matched = 0usize;
+        for token in self.tokens() {
+            match token.ok()? {
+                Token::BeginNode(name) => {
+                    depth += 1;
+                    let level = depth - 1;
+                    if level >= 1 && matched == level - 1 && path_part(path, level - 1).is_some_and(|part| part_names(part, name)) {
+                        matched = level;
+                    }
+                }
+                Token::EndNode => {
+                    let level = depth.checked_sub(1)?;
+                    if matched == level && level >= 1 {
+                        matched = level - 1;
+                    }
+                    depth = level;
+                }
+                Token::Property(name, value) => {
+                    if depth == parts + 1 && matched == parts && name == property {
+                        return Some(value);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The path `/chosen`'s `stdout-path` (or the older `linux,stdout-path`) names, its options
+    /// after `:` left off and an alias resolved through `/aliases`.
+    pub fn stdout_path(&self) -> Option<&'a [u8]> {
+        let named = self
+            .property_at(b"/chosen", b"stdout-path")
+            .or_else(|| self.property_at(b"/chosen", b"linux,stdout-path"))?;
+        let named = named.split(|&byte| byte == 0).next()?;
+        let named = named.split(|&byte| byte == b':').next()?;
+        if named.starts_with(b"/") {
+            return Some(named);
+        }
+        let aliased = self.property_at(b"/aliases", named)?;
+        aliased.split(|&byte| byte == 0).next().filter(|path| path.starts_with(b"/"))
+    }
+}
+
+/// The node `/chosen`'s `stdout-path` names: the console the firmware chose (D266).
+pub fn stdout_node(blob: &[u8]) -> Option<Node<'_>> {
+    let tree = Fdt::new(blob).ok()?;
+    let path = tree.stdout_path()?;
+    let parts = path.split(|&byte| byte == b'/').filter(|part| !part.is_empty()).count();
+    let mut matched = 0usize;
+    tree.nodes().map_while(Result::ok).find(|node| {
+        if node.depth == 0 {
+            return parts == 0;
+        }
+        matched = matched.min(node.depth - 1);
+        if matched == node.depth - 1 && path_part(path, node.depth - 1).is_some_and(|part| part_names(part, node.name)) {
+            matched = node.depth;
+        }
+        matched == parts && node.depth == parts
+    })
 }
 
 /// Whether the device tree's first hart names the RISC-V extension `extension` (lower case,

@@ -19538,3 +19538,17 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the drivers that load these files (the Intel Wi-Fi adapter and
   display drivers); AMD and NVIDIA GSP firmware components when their drivers come; the Components
   pane saying a firmware component came from linux-firmware; a signed store index.
+
+## D266 The device tree's chosen console: `/chosen`'s `stdout-path` picks the PL011 on AArch64 (D253's follow-up; M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** D253 took the first PL011 a device tree lists. Boards with several UARTs (and QEMU
+  `virt` with a second `-serial`) name the console in `/chosen`'s `stdout-path`, which may be a
+  path (`/pl011@9000000`) or an alias (`serial0`), with options after a `:` (`115200n8`).
+- **Decision.** `Fdt::property_at` reads one property of the node at a path (a part without a
+  unit address names the first node of that name); `Fdt::stdout_path` reads `stdout-path` (or the
+  older `linux,stdout-path`), drops the options and resolves an alias through `/aliases`;
+  `fdt::stdout_node` finds that node. `fdt::pl011` uses it when it is a PL011, else the first
+  PL011 as before. The ACPI path (the `SPCR`, D236) is unchanged.
+- **Not yet.** Building and running; RISC-V's console still assumes QEMU `virt`'s UART0 (an
+  NS16550 found through `stdout-path` also needs its `reg-shift` and a check that it lies in the
+  boot direct map); other UARTs (the 8250 family on Arm boards, `snps,dw-apb-uart`).
