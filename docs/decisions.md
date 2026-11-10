@@ -18496,7 +18496,10 @@ the license, by an explicit instruction recorded here.
   non-rectangular regions; registry-backed and out-of-process COM; global hooks and hot keys;
   layered windows; the tray; the shell namespace (PIDLs, `IShellFolder`) and the folder
   pickers (with part 18's picker); HTTPS in WinINet; a real `WSAAsyncSelect`; D178's review
-  fixes; the autohotkey job's tooltip, tray and registry steps.
+  fixes; the autohotkey job's tooltip, tray and registry steps. The `windows_registry_*` tools
+  in the QEMU MCP check (they are listed only while the Windows apps component is installed,
+  which that boot does not do; `every_tool_is_called_by_the_check` leaves out tools that need a
+  component).
 
 ## D232 Foundation's breadth and nib loading: `eggos-plist`, compiled nibs (`NIBArchive`) for `NSMainNibFile`, NSNotificationCenter, NSUUID, string encodings, NSFileManager, run loop modes and delayed performs (batch part 14; D175's and D196's "Not yet"; extends D147, D175, D196) — Decided by the build loop (engineering)
 
@@ -18659,4 +18662,6 @@ the license, by an explicit instruction recorded here.
   downloaded on demand in the background and delta updates (M14, part 64); the pane's live
   progress and cancelling mid-copy (the copy runs inside one tick of the window, so the bar
   jumps and `Cancel installing` stops only between files), tooltips on its disabled buttons and
-  its phone layout; the full Components pane of part 65.
+  its phone layout; the full Components pane of part 65. An `In use` line naming two programs
+  can pass the pane's 64 characters (`Files and Text Editor are running`) and is then cut with
+  `...`.
