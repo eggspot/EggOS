@@ -83,7 +83,7 @@ fn manifest_of(arch: &Arch, app: &TestApp) -> Vec<u8> {
         libraries: None,
         arguments: None,
         environment: None,
-        console: false,
+        console: !app.window,
     };
     let mut file = [0u8; manifest::LARGEST];
     let length = manifest::write(&entry, &mut file).expect("the test app's manifest is valid");
@@ -623,6 +623,7 @@ mod tests {
             .expect("riscv64 is an architecture");
         let linux = test_app(riscv);
         assert_eq!(linux.source, Source::Linux);
+        assert!(manifest_of(riscv, &linux).ends_with(b"console=true\n"));
         assert_eq!(first_session(&linux).len(), 5);
     }
 }
