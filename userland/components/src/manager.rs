@@ -30,9 +30,12 @@ pub const REMOVING_PREFIX: &str = ".removing-";
 pub const DISKS: [&str; 4] = ["/dev/vda", "/dev/vdb", "/dev/vdc", "/dev/vdd"];
 /// The host share, where a store may also be.
 pub const HOST_SHARE: &str = "/media/host";
-/// The lock the one action at a time takes.
+/// The lock the one action at a time takes: a symbolic link whose target is
+/// `<pid> install <title>` or `<pid> remove <title>`, made in one step, so no one ever reads it
+/// half written.
 pub const LOCK: &str = "/run/eggos/components.lock";
-/// What follows [`LOCK`] in the name of a claim to take over a lock whose process is gone.
+/// What follows [`LOCK`] in the name of a claim to take over a lock whose process is gone: a
+/// symbolic link whose target is the claiming process's ID.
 pub const TAKE_OVER_SUFFIX: &str = ".take-over-";
 /// The most bytes of a process's command line read to see what it runs.
 pub const MAX_COMMAND_LINE: usize = 4096;
@@ -427,19 +430,15 @@ fn program_name(path: &[u8]) -> String {
 /// Takes the one-action-at-a-time lock for installing or removing `title`, after removing a
 /// lock whose process is gone; who holds it otherwise.
 pub fn lock<F: Files>(files: &mut F, title: &str, removing: bool, pid: u32) -> Result<(), Refusal> {
+    let mut text = pid.to_string();
+    text.push_str(if removing { " remove " } else { " install " });
+    text.push_str(title);
     for _ in 0..LOCK_TRIES {
-        match files.create(LOCK.as_bytes(), 0o600) {
-            Ok(handle) => {
-                let mut text = pid.to_string();
-                text.push_str(if removing { " remove " } else { " install " });
-                text.push_str(title);
-                let written = files.write(handle, text.as_bytes());
-                files.close(handle);
-                return written.map_err(|_| Refusal::NotAllowed);
-            }
+        match files.make_link(text.as_bytes(), LOCK.as_bytes()) {
+            Ok(()) => return Ok(()),
             Err(Errno::EEXIST) => {
                 let (holder, held_title, held_removing) = read_lock(files);
-                if is_running(files, holder) || !take_over(files, holder) {
+                if is_running(files, holder) || !take_over(files, holder, pid) {
                     return Err(Refusal::Busy {
                         title: held_title,
                         removing: held_removing,
@@ -464,8 +463,9 @@ fn is_running<F: Files>(files: &mut F, pid: u32) -> bool {
     pid != 0 && files.status(proc.as_bytes()).is_ok()
 }
 
-/// The claim a process makes, with `create`, before deleting the lock of `holder`, a process
-/// that is gone: only one process at a time may take that lock over.
+/// The claim a process makes, as a symbolic link to its own ID, before deleting the lock of
+/// `holder`, a process that is gone: only one process at a time may take that lock over, and
+/// a claim whose process is gone too is deleted first.
 pub fn take_over_claim(holder: u32) -> String {
     let mut claim = String::from(LOCK);
     claim.push_str(TAKE_OVER_SUFFIX);
@@ -473,12 +473,11 @@ pub fn take_over_claim(holder: u32) -> String {
     claim
 }
 
-fn take_over<F: Files>(files: &mut F, holder: u32) -> bool {
+fn take_over<F: Files>(files: &mut F, holder: u32, pid: u32) -> bool {
     let claim = take_over_claim(holder);
-    let Ok(handle) = files.create(claim.as_bytes(), 0o600) else {
+    if !make_claim(files, &claim, pid) {
         return false;
-    };
-    files.close(handle);
+    }
     if read_lock(files).0 == holder && !is_running(files, holder) {
         let _ = files.remove_file(LOCK.as_bytes());
     }
@@ -486,18 +485,42 @@ fn take_over<F: Files>(files: &mut F, holder: u32) -> bool {
     true
 }
 
-fn read_lock<F: Files>(files: &mut F) -> (u32, String, bool) {
-    let mut text = [0u8; 160];
-    let Ok(handle) = files.open(LOCK.as_bytes()) else {
-        return (0, String::new(), false);
-    };
-    let read = files.read(handle, &mut text).unwrap_or(0);
-    files.close(handle);
-    let text = core::str::from_utf8(&text[..read]).unwrap_or("");
+fn make_claim<F: Files>(files: &mut F, claim: &str, pid: u32) -> bool {
+    let claimer = pid.to_string();
+    match files.make_link(claimer.as_bytes(), claim.as_bytes()) {
+        Ok(()) => true,
+        Err(Errno::EEXIST) => {
+            let mut text = [0u8; 16];
+            let stale = files
+                .read_link(claim.as_bytes(), &mut text)
+                .ok()
+                .and_then(|length| core::str::from_utf8(text.get(..length)?).ok())
+                .and_then(|text| text.parse().ok())
+                .is_none_or(|other| !is_running(files, other));
+            stale
+                && files.remove_file(claim.as_bytes()).is_ok()
+                && files
+                    .make_link(claimer.as_bytes(), claim.as_bytes())
+                    .is_ok()
+        }
+        Err(_) => false,
+    }
+}
+
+/// Who holds the lock: their process ID, the title, and whether they remove it; `None` when
+/// no one does or the lock cannot be read. The process may be gone.
+pub fn lock_holder<F: Files>(files: &mut F) -> Option<(u32, String, bool)> {
+    let mut text = vec![0u8; MAX_COMMAND_LINE];
+    let length = files.read_link(LOCK.as_bytes(), &mut text).ok()?;
+    let text = core::str::from_utf8(text.get(..length)?).ok()?;
     let mut words = text.splitn(3, ' ');
-    let pid = words.next().and_then(|word| word.parse().ok()).unwrap_or(0);
-    let removing = words.next() == Some("remove");
-    (pid, words.next().unwrap_or("").into(), removing)
+    let pid = words.next()?.parse().ok()?;
+    let removing = words.next()? == "remove";
+    Some((pid, words.next()?.into(), removing))
+}
+
+fn read_lock<F: Files>(files: &mut F) -> (u32, String, bool) {
+    lock_holder(files).unwrap_or((0, String::new(), false))
 }
 
 /// Gives the lock back.

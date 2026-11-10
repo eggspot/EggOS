@@ -1475,14 +1475,6 @@ impl Server {
                 (Kind::FileRemove, _) if paths::is_inside(paths::TRASH, resolved) => {
                     return Err(Problem::refused(&errors::PATH_NOT_ALLOWED, HOLDS_THE_TRASH));
                 }
-                (Kind::FileRemove | Kind::Trash, _)
-                    if paths::is_inside(paths::SETTINGS, resolved) =>
-                {
-                    return Err(Problem::refused(
-                        &errors::PATH_NOT_ALLOWED,
-                        HOLDS_THE_SETTINGS,
-                    ));
-                }
                 (Kind::FileRemove, FileState::Directory) if !checked.recursive => {
                     return Err(Problem::error(
                         &errors::IS_A_FOLDER,
@@ -2993,9 +2985,7 @@ impl Problem {
 
 const HOLDS_THE_TRASH: &str =
     "Refused: the path holds the Trash, which belongs to trash and Files.";
-const HOLDS_THE_SETTINGS: &str = "Refused: the path holds EggOS's settings folder, which only \
-                                  Settings and settings_set change.";
-const IN_THE_SETTINGS: &str = "Refused: the path is in EggOS's settings folder, \
+const IN_THE_SETTINGS: &str = "Refused: the path is in or holds EggOS's settings folder, \
                                /home/root/.config/eggos, which only Settings and settings_set \
                                change.";
 
@@ -3033,12 +3023,6 @@ fn second_path(
     }
     if tool.kind == Kind::FileMove && paths::is_inside(paths::TRASH, source) {
         return Err(Problem::refused(&errors::PATH_NOT_ALLOWED, HOLDS_THE_TRASH));
-    }
-    if tool.kind == Kind::FileMove && paths::is_inside(paths::SETTINGS, source) {
-        return Err(Problem::refused(
-            &errors::PATH_NOT_ALLOWED,
-            HOLDS_THE_SETTINGS,
-        ));
     }
     if source == destination {
         return Err(Problem::error(

@@ -5077,6 +5077,32 @@ fn asked_message(harness: &mut Harness, tool: &str, arguments: &str) -> String {
 }
 
 #[test]
+fn a_component_record_as_the_components_writer_writes_it_is_summed() {
+    let digest = "ab".repeat(32);
+    let record = format!(
+        "component windows-apps\ntitle Windows apps\nsummary Runs them natively\n\
+         on-remove Programs stay in Apps.\nneeds desktop\n\
+         file 755 1024 1000 {digest} usr/lib/eggos/windows\n\
+         file 644 2048 234 {digest} usr/lib/eggos/windows.dll\nend\n"
+    );
+    let mut harness = asking();
+    harness.system.files.insert(
+        "/var/lib/eggos/components/windows-apps/component".into(),
+        record.into_bytes(),
+    );
+    let message = asked_message(
+        &mut harness,
+        "component_remove",
+        r#"{"name":"windows-apps"}"#,
+    );
+    assert_eq!(
+        message,
+        "An agent asks to remove the component windows-apps (1234 bytes) and every file it \
+         installed. Allow it? (EggOS, tool component_remove)"
+    );
+}
+
+#[test]
 fn a_component_remove_question_names_the_component_and_its_size() {
     let mut harness = asking();
     harness.system.files.insert(
@@ -5131,6 +5157,58 @@ fn a_download_cancel_question_names_the_download_and_its_file() {
 }
 
 #[test]
+fn nothing_is_written_linked_copied_or_moved_onto_a_missing_settings_holder() {
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/home/root/a".into(), b"eggos-settings 1\n".to_vec());
+    for (id, tool, arguments) in [
+        (1, "ln", r#"{"target":"/etc","link":"/home/root/.config"}"#),
+        (
+            2,
+            "ln",
+            r#"{"target":"/home/root/a","link":"/home/root/.config","symbolic":false}"#,
+        ),
+        (
+            3,
+            "ln",
+            r#"{"target":"/home/root/.config","link":"/home/root/h","symbolic":false}"#,
+        ),
+        (
+            4,
+            "file_move",
+            r#"{"source":"/home/root/a","destination":"/home/root/.config","confirm":true}"#,
+        ),
+        (
+            5,
+            "file_copy",
+            r#"{"source":"/home/root/a","destination":"/home/root/./.config","confirm":true}"#,
+        ),
+        (
+            6,
+            "file_copy",
+            r#"{"source":"/home/root/a","destination":"/home/root/.config/","confirm":true}"#,
+        ),
+        (
+            7,
+            "tee",
+            r#"{"path":"/home/root/.config","content":"x","confirm":true}"#,
+        ),
+        (8, "folder_create", r#"{"path":"/home/root/.config"}"#),
+    ] {
+        let answer = harness.call(id, tool, arguments);
+        assert!(is_error(&answer), "{tool}: {answer}");
+        assert!(
+            texts(&answer)[0].contains("in or holds EggOS's settings folder"),
+            "{tool}: {answer}"
+        );
+        assert_eq!(last_record(&harness).1, "refused", "{tool}");
+    }
+    assert!(harness.system.runs.is_empty());
+}
+
+#[test]
 fn the_write_tools_never_reach_eggos_settings() {
     let mut harness = writer();
     harness.system.folders.push("/home/root/.config".into());
@@ -5166,7 +5244,7 @@ fn the_write_tools_never_reach_eggos_settings() {
     ] {
         let answer = harness.call(id, tool, arguments);
         assert!(
-            texts(&answer)[0].contains("in EggOS's settings folder"),
+            texts(&answer)[0].contains("in or holds EggOS's settings folder"),
             "{tool}: {answer}"
         );
     }
@@ -5185,7 +5263,7 @@ fn the_write_tools_never_reach_eggos_settings() {
     ] {
         let answer = harness.call(id, tool, arguments);
         assert!(
-            texts(&answer)[0].contains("holds EggOS's settings folder"),
+            texts(&answer)[0].contains("in or holds EggOS's settings folder"),
             "{tool}: {answer}"
         );
     }

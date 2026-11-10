@@ -56,7 +56,8 @@ pub enum PathRefusal {
     IsRoot,
     /// Resolved, it is in a place the tool never reaches (the Trash).
     Excluded,
-    /// Resolved, it is in [`SETTINGS`], which the tool never reaches.
+    /// Resolved, it is in [`SETTINGS`] or holds it (such as `/home/root/.config`, existing or
+    /// not), which the tool never reaches.
     InSettings,
 }
 
@@ -72,8 +73,8 @@ impl PathRefusal {
             PathRefusal::IsRoot => "the path names the folder itself, not something inside it",
             PathRefusal::Excluded => "the path is in the Trash, which belongs to trash and Files",
             PathRefusal::InSettings => {
-                "the path is in EggOS's settings folder, which only Settings and settings set \
-                 change"
+                "the path is in or holds EggOS's settings folder, which only Settings and \
+                 settings set change"
             }
         }
     }
@@ -153,7 +154,8 @@ pub fn is_inside(path: &str, root: &str) -> bool {
 
 /// The checks after resolution: when `strictly` is set, `resolved` must not be a root itself;
 /// it must not be in any of `excluded` ([`PathRefusal::InSettings`] for [`SETTINGS`],
-/// [`PathRefusal::Excluded`] for the others).
+/// [`PathRefusal::Excluded`] for the others); when `excluded` names [`SETTINGS`], it must not
+/// hold it either, so nothing can be written, linked, copied or moved in its place.
 pub fn check_place(
     resolved: &str,
     roots: &[&str],
@@ -162,6 +164,9 @@ pub fn check_place(
 ) -> Result<(), PathRefusal> {
     if strictly && roots.contains(&resolved) {
         return Err(PathRefusal::IsRoot);
+    }
+    if excluded.contains(&SETTINGS) && is_inside(SETTINGS, resolved) {
+        return Err(PathRefusal::InSettings);
     }
     match excluded.iter().find(|place| is_inside(resolved, place)) {
         Some(&SETTINGS) => Err(PathRefusal::InSettings),
@@ -309,6 +314,17 @@ mod tests {
                 "{settings}"
             );
         }
+        for holder in [
+            "/home/root/.config",
+            "/home/root/.config/",
+            "/home/root/./.config/x/..",
+        ] {
+            assert_eq!(written(holder), Err(PathRefusal::InSettings), "{holder}");
+        }
+        assert_eq!(
+            written("/home/root/.configs"),
+            Ok("/home/root/.configs".into())
+        );
         assert_eq!(
             written("/home/root/.config/eggos-notes"),
             Ok("/home/root/.config/eggos-notes".into())

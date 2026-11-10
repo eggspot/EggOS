@@ -393,6 +393,10 @@ impl System for Linux {
         let _ = call(number::SYNC, [0; 6]);
     }
 
+    fn sync_file(&mut self, descriptor: usize) -> Result<(), Errno> {
+        call(number::FSYNC, [descriptor, 0, 0, 0, 0, 0]).map(|_| ())
+    }
+
     fn reboot(&mut self, command: u32) -> Result<(), Errno> {
         call(
             number::REBOOT,

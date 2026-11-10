@@ -233,6 +233,7 @@ pub trait System {
     fn system_name(&mut self) -> Result<SystemName, Errno>;
     fn sleep(&mut self, duration: Duration) -> Result<(), Errno>;
     fn sync(&mut self);
+    fn sync_file(&mut self, descriptor: usize) -> Result<(), Errno>;
     fn reboot(&mut self, command: u32) -> Result<(), Errno>;
     fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno>;
     fn create_new(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno>;
@@ -368,6 +369,10 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn sync(&mut self) {
         (**self).sync();
+    }
+
+    fn sync_file(&mut self, descriptor: usize) -> Result<(), Errno> {
+        (**self).sync_file(descriptor)
     }
 
     fn reboot(&mut self, command: u32) -> Result<(), Errno> {

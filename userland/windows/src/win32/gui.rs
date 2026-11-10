@@ -855,12 +855,17 @@ pub enum Next {
 /// The calling thread's next message `filter` accepts (taken out of the queue when `remove`
 /// says so), the server's records read first; with `wait`, the thread sleeps until one comes
 /// or `done` holds for the state, checked under the lock. An agent's action another thread
-/// handed to this one is done on the way and never returned (D227).
+/// handed to this one is done on the way, whatever `filter` accepts, and never returned (D227).
 pub fn wait_for(filter: Filter, remove: bool, wait: bool, done: &dyn Fn(&Gui) -> bool) -> Next {
     let thread = thread_environment::thread_id();
     let filter = Filter { thread, ..filter };
     loop {
         read_events(thread);
+        if let Some(Some(action)) = with(|gui| handed_over::take_for_thread(&mut gui.queue, thread))
+        {
+            super::elements::act_handed_over(&action);
+            continue;
+        }
         let found = with(|gui| match done(gui) {
             true => Next::Done,
             false => find(gui, &filter, remove).map_or(Next::Nothing, Next::Message),
@@ -934,7 +939,12 @@ fn sleep(filter: &Filter, done: &dyn Fn(&Gui) -> bool) {
     let polling = POLLING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok();
-    let idle = with(|gui| !done(gui) && find(gui, filter, false).is_none()).unwrap_or(false);
+    let idle = with(|gui| {
+        !done(gui)
+            && find(gui, filter, false).is_none()
+            && !handed_over::waits_for_thread(&mut gui.queue, filter.thread)
+    })
+    .unwrap_or(false);
     if !polling {
         if idle {
             FUTEX_WAITERS.fetch_add(1, Ordering::SeqCst);

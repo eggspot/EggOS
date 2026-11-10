@@ -23,6 +23,7 @@ use eggos_toolkit::tree::PointerShape;
 use eggos_toolkit::window::{Window, WindowServer, now_ms};
 
 const PROCESSES_PATH: &[u8] = b"/proc/ps";
+const COMMAND_LINE_PATH_BYTES: usize = 32;
 const FETCH_PROGRAM: &core::ffi::CStr = c"/bin/fetch";
 const QUIET_OPTION: &core::ffi::CStr = c"-q";
 const NO_CLOBBER_OPTION: &core::ffi::CStr = c"--no-clobber";
@@ -112,6 +113,12 @@ impl DownloadSystem for LinuxDownloads {
         let room = text.len();
         self.read_whole(PROCESSES_PATH, text)
             .filter(|&length| length < room)
+    }
+
+    fn read_command_line(&mut self, pid: u32, text: &mut [u8]) -> Option<usize> {
+        let mut path = Text::<COMMAND_LINE_PATH_BYTES>::new();
+        let _ = write!(path, "/proc/{pid}/cmdline");
+        self.read_whole(path.as_str().as_bytes(), text)
     }
 
     fn send_signal(&mut self, pid: u32, signal: u32) -> Result<(), i32> {

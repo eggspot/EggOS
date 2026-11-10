@@ -202,7 +202,7 @@ fn set_clock<S: System>(output: &mut Output<S>, seconds: i64) -> Result<(), i32>
     };
     match output.system.set_time(since_epoch) {
         Ok(()) => {
-            network_clock::forget_unproven_steps(&mut output.system);
+            network_clock::forget_unproven_steps(output);
             Ok(())
         }
         Err(errno) => {

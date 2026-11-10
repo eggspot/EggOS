@@ -18094,7 +18094,9 @@ the license, by an explicit instruction recorded here.
   exception for a privileged caller (Linux lets `CAP_SYS_ADMIN` type into any terminal; EggOS
   refuses root too, the safer side) and the `POLLPRI` Linux reports on a packet-mode
   controlling side with a status waiting (EggOS reports `POLLIN` only). The
-  `term_reflow` baseline line (the build phase adds it).
+  `term_reflow` baseline line (the build phase adds it). A full canonical line drops each new
+  character, where Linux replaces the line's last character with the newest; both keep the
+  line's end, so only that one character differs.
 
 ## D224 First run and accessibility, the rest: `settings --first-run`, high contrast, reduce motion, the sticky keys' chips, Shift five times, latched modifiers on clicks, Ctrl+Alt+Tab to the bar and the dock, and `/dev/kmsg` (batch part 6; D156's and D205's "Not yet"; extends D132, D156, D205, D219) — Decided by the build loop (design by Claude Fable, docs/ux/first-run-accessibility-v0.3.md and docs/ux/desktop-v0.3-gui.md section 14)
 
@@ -18139,14 +18141,16 @@ the license, by an explicit instruction recorded here.
     privileged writer (effective user 0, init's) may write it; anyone else's write fails with
     `EACCES`, the rule `/proc/sys/eggos` follows (D221), because `open` checks no mode and
     any process could otherwise write lines that pass for the kernel's or init's in the boot
-    log. Its control bytes but the newline (C0 and `DEL`) are left out before the console sees
-    them, so no writer can move the serial terminal's cursor, clear it or set its title; the
-    write still counts them as taken.
+    log. Its control characters but the newline (C0, `DEL` and C1, raw bytes 0x80-0x9F or
+    UTF-8's U+0080-U+009F) and bytes that are not UTF-8 text are left out before the console
+    sees them, so no writer can move the serial terminal's cursor, clear it or set its title; a
+    character split between two pieces of one write is kept whole, and the write still counts
+    what was left out as taken.
 - **Check.** Host tests: the first run's pages, saving and `Skip`, and `wm show` on its window
   listing each page's cards, layout, fields, zone list and buttons with the design's names; the
   palettes; the chips, the five taps and the latched click in the kernel's input tests; the
-  bar's focus; `/dev/kmsg` refusing an unprivileged writer and leaving out control bytes but
-  the newline. QEMU: the first boot on a blank disk opens the first run at the work area's
+  bar's focus; `/dev/kmsg` refusing an unprivileged writer and leaving out C0, `DEL` and C1
+  controls and bytes that are not UTF-8 but the newline. QEMU: the first boot on a blank disk opens the first run at the work area's
   centre, a click on `Linux` is kept on the disk, and the next boot shows no first run
   (`xtask/src/qemu/settings.rs`).
 - **Not yet.** The section 14.6 screendump checks #149 left (carried to the next plan; under
@@ -18154,7 +18158,10 @@ the license, by an explicit instruction recorded here.
   touch sizes and TV (design 1.6); the high-contrast palette for what does not draw through the
   toolkit (the shell's own panels, the terminal's grid, Files' and the Text Editor's own
   drawing and the layers, as D219's light theme); the rest of design section "Left out of
-  0.3.0" (screen reader, zoom, larger pointer, bounce, toggle and mouse keys).
+  0.3.0" (screen reader, zoom, larger pointer, bounce, toggle and mouse keys). `/dev/kmsg`
+  refuses an unprivileged writer at `write`, not at `open` as Linux does with its 0644 mode:
+  EggOS's `open` checks no permission on any file yet, so such a program opens it and only its
+  writes fail.
 
 ## D225 Network, downloads and the network clock in the GUI: Settings' Network pane, the bar's network indicator, the Downloads window and `download`, Date & time's "Set automatically" with a sync at boot and every 24 h, and an HTTPS check of large steps (batch part 7; D157-D159 "Not yet"; extends D150, D157, D158, D159) — Decided by the build loop (the step rule decided by research; designs by Claude Fable, docs/ux/network-v0.3.md, docs/ux/downloads-v0.3.md and docs/ux/date-time-v0.3.md)
 
@@ -18224,7 +18231,10 @@ the license, by an explicit instruction recorded here.
     (`ROOTS_REMEDY`). The budget is not renewed by time or by a boot: it is kept on the disk in
     `/var/lib/eggos/clock-budget` (`unproven_ms=<n>`), as the hardware clock those steps also
     set is, so rebooting cannot buy another hour; without a writable disk it lasts the boot, in
-    the record. Every sync writes the record; `date -s` and a confirmed step empty the budget.
+    the record. A budget file that is there but cannot be read or understood counts as the
+    whole budget spent (it fails closed); a new budget is written to a temporary file, synced
+    to the disk, then renamed over the old one, and a failure to keep it is said on standard
+    error. Every sync writes the record; `date -s` and a confirmed step empty the budget.
     `eggos_net::http::header` and the TLS client's certificate validity serve the check.
 - **Check.** Host tests: the pane and the indicator (network-v0.3.md's acceptance), the
   download records and their reader, `download`'s examples, the Downloads window, the clock
@@ -18292,9 +18302,11 @@ the license, by an explicit instruction recorded here.
   - **The file utilities as tools** under `write`: `file_copy`, `file_move`, `folder_create`
     and `file_remove` (the last three that replace or delete ask first, with `confirm` and
     `dry_run`). No write tool reaches EggOS's settings folder, `/home/root/.config/eggos`,
-    as none reaches the Trash: a path in it is refused, and so is removing, moving or trashing
-    a folder that holds it, so the `write` grant cannot change what `settings_set` asks the
-    `run` grant for. The questions of `component_remove` and `download_cancel` name what goes:
+    as none reaches the Trash: every path a write tool takes (the path, a link, a hard link's
+    target, a copy's or move's destination, a moved source) is refused when it is in that
+    folder or holds it (`/home/root/.config`, there or not), so nothing is written, linked,
+    copied, moved, removed or trashed in its place and the `write` grant cannot change what
+    `settings_set` asks the `run` grant for. The questions of `component_remove` and `download_cancel` name what goes:
     the component and its installed size (from its record), the download's id and file name
     (from its record).
   - **Structured results.** `run`, `wm_capture` and the tools whose twin writes JSON records
@@ -18534,7 +18546,7 @@ the license, by an explicit instruction recorded here.
     entry point with every size and count capped (decoders parse untrusted files): each side,
     the pixels, the frames and the GIF frames' declared areas together under
     `Limits::max_pixels`; the working buffers (a JPEG's sample planes and a progressive JPEG's
-    coefficients, a TIFF's undecoded rows) under `Limits::max_working_bytes`, 256 MiB by
+    coefficients, a TIFF's undecoded rows) under `Limits::max_working_bytes`, 384 MiB by
     default; a JPEG's scans at 1 000 (`MAX_JPEG_SCANS`, since each scan walks the whole image
     however few bytes it has); past any of them a file is `TooLarge`. GDI+
     decodes JPEG, GIF, TIFF and icons through it and loads images from `IStream`s;
@@ -18770,9 +18782,11 @@ the license, by an explicit instruction recorded here.
     against its SHA-256 as it is copied, the record written, then the folder renamed into place,
     the folders above it real folders, not links; a failure leaves that component uninstalled
     (an install that brings a needed component first keeps the ones done before it). One action
-    at a time under `/run/eggos/components.lock`; a lock whose process is gone is taken over by
-    one process at a time, which claims it first with
-    `/run/eggos/components.lock.take-over-<pid>` (`create` fails for the others). A remove is
+    at a time under `/run/eggos/components.lock`, a symbolic link whose target is
+    `<pid> install|remove <title>`, made in one step so no reader sees a lock without its
+    holder; a lock whose process is gone is taken over by one process at a time, which claims
+    it first with `/run/eggos/components.lock.take-over-<pid>`, a symbolic link to its own pid
+    (making it fails for the others; a claim whose process is gone too is deleted first). A remove is
     refused while another installed component needs it (`needed_by`) or a program runs one of
     its files (its first word, the link that word names, or `/proc/<pid>/exe`: `in_use`,
     naming the program), checked when asked and again under the lock once confirmed
@@ -18826,7 +18840,9 @@ the license, by an explicit instruction recorded here.
   wants it in the component). QEMU does not yet run a successful `component_install` or
   `component_remove` through MCP (the MCP check calls both only without their grant) nor a
   successful remove through the Settings pane (its confirming `Remove` is person-only); the
-  command's install and remove are run, and the pane's install. A lock file left empty (its
-  process stopped between `create` and the write) reads as a gone process and is taken over. An `In use` line naming two programs
-  can pass the pane's 64 characters (`Files and Text Editor are running`) and is then cut with
-  `...`.
+  command's install and remove are run, and the pane's install. An `In use` line naming two
+  programs can pass the pane's 64 characters (`Files and Text Editor are running`) and is then
+  cut with `...`. MCP's `component_remove` question gives the size in bytes, not the
+  `12.4 MB` the CLI and the pane show: that text is `eggos-components`' `size_text`, and
+  `eggos-components` depends on `eggos-mcp`, so the MCP server reads the installed record
+  itself (`ComponentRecordSum`), pinned to the writer's format by a test on each side.

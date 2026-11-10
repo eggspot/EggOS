@@ -305,6 +305,17 @@ pub fn translate_write<E>(
     Ok(taken)
 }
 
+/// How many bytes a translated `_write` that took `taken` bytes reports written: all of them,
+/// less the 2 of the high surrogate it ended with (`pending`) when the descriptor has no place
+/// to keep it until the next write (`keeps_pending` false), so the program writes those 2
+/// bytes again rather than losing them.
+pub fn reported_written(taken: usize, pending: Option<u16>, keeps_pending: bool) -> usize {
+    match (pending, keeps_pending) {
+        (Some(_), false) => taken.saturating_sub(2),
+        _ => taken,
+    }
+}
+
 /// What text mode made of the bytes one `_read` read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextRead {
@@ -527,6 +538,20 @@ mod tests {
         assert_eq!(pending, Some(0xd83d));
         let (file, _) = written_in_writes(Translation::Utf16, &[first, second]);
         assert_eq!(file, utf16("a😀\r\n"));
+    }
+
+    #[test]
+    fn a_high_surrogate_a_descriptor_cannot_keep_is_reported_unwritten() {
+        let text = utf16("a😀");
+        let first = &text[..4];
+        let (file, pending) = written_in_writes(Translation::Utf8, &[first]);
+        assert_eq!(file, b"a");
+        assert_eq!(reported_written(first.len(), pending, true), 4);
+        assert_eq!(reported_written(first.len(), pending, false), 2);
+        let (_, pending) = written_in_writes(Translation::Utf8, &[&text[..]]);
+        assert_eq!(reported_written(text.len(), pending, false), 6);
+        let (_, pending) = written_in_writes(Translation::Utf8, &[&text[2..4]]);
+        assert_eq!(reported_written(2, pending, false), 0);
     }
 
     #[test]

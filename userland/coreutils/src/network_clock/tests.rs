@@ -155,6 +155,56 @@ fn the_budget_is_kept_on_disk_so_a_reboot_does_not_renew_it() {
 }
 
 #[test]
+fn an_unreadable_budget_on_disk_counts_as_spent() {
+    let mut fake = clock(NOW - 600, seconds(NOW)).with_directory("/var", 0);
+    for folder in clock_sync::BUDGET_FOLDERS {
+        fake = fake.with_directory(folder, 0);
+    }
+    let fake = fake.with_file(clock_sync::BUDGET_PATH, 0o644, b"unproven_ms=oops\n", 0);
+    let synced = sync_with(fake, Asker::Automatic, &mut Witnesses::default());
+    assert_eq!(synced.result, Err(FAILURE));
+    assert!(synced.fake.set_times.is_empty());
+    let record = synced.record();
+    assert_eq!(
+        (record.outcome, record.unproven_ms),
+        (Outcome::Unconfirmed, UNPROVEN_BUDGET_MS)
+    );
+}
+
+#[test]
+fn the_budget_is_synced_to_the_disk_before_it_replaces_the_old_one() {
+    let fake = clock(NOW - 3_000, seconds(NOW)).with_directory("/var", 0);
+    let synced = sync_with(fake, Asker::Automatic, &mut Witnesses::default());
+    assert_eq!(synced.result, Ok(NOW));
+    assert!(
+        synced
+            .fake
+            .synced_files
+            .iter()
+            .any(|path| path.starts_with(clock_sync::BUDGET_TEMPORARY_PREFIX.as_bytes())),
+        "{:?}",
+        synced.fake.synced_files
+    );
+}
+
+#[test]
+fn a_budget_that_cannot_be_kept_is_reported() {
+    let synced = sync_with(
+        clock(NOW - 3_000, seconds(NOW)),
+        Asker::Automatic,
+        &mut Witnesses::default(),
+    );
+    assert_eq!(synced.result, Ok(NOW));
+    assert!(
+        synced
+            .errors
+            .contains("cannot keep the unproven clock budget in /var/lib/eggos/clock-budget"),
+        "{}",
+        synced.errors
+    );
+}
+
+#[test]
 fn a_proven_step_and_date_s_empty_the_budget_on_disk() {
     let mut witness = witnesses(&[dated(NOW), dated(NOW)]);
     let fake = with_kept_budget(with_roots(clock(NOW - 7_200, seconds(NOW))), 3_600_000);

@@ -14,7 +14,7 @@ use crate::library::Export;
 use crate::linux;
 use crate::low_level_io::{
     SMALLEST_TRANSLATION, TRANSLATION_MODES, Translation, is_sharing_mode, open_flags, open_mode,
-    take_text, translate_write, whence, windows_flag,
+    reported_written, take_text, translate_write, whence, windows_flag,
 };
 use crate::text;
 use core::ffi::CStr;
@@ -333,11 +333,12 @@ fn write_translated(fd: usize, translation: Translation, bytes: &[u8]) -> i32 {
         &mut out,
         |piece| linux::write_all(fd, piece),
     );
-    if let (Some(high), Some(slot)) = (pending, PENDING_HIGH_SURROGATE.get(fd)) {
+    let slot = PENDING_HIGH_SURROGATE.get(fd);
+    if let (Some(high), Some(slot)) = (pending, slot) {
         slot.store(i32::from(high), Ordering::Release);
     }
     match written {
-        Ok(taken) => taken as i32,
+        Ok(taken) => reported_written(taken, pending, slot.is_some()) as i32,
         Err((0, error)) => refused(error.0),
         Err((taken, _)) => taken as i32,
     }

@@ -216,7 +216,7 @@ pub fn sync<S: System, W: Witness<S>>(
             record.moved_ms = synced.moved_ms;
             record.unproven_ms = synced.unproven_ms;
             if synced.unproven_ms != unproven_ms {
-                keep_budget(&mut output.system, synced.unproven_ms);
+                keep_budget_or_say(output, synced.unproven_ms);
             }
             Ok(synced.seconds)
         }
@@ -458,12 +458,15 @@ fn write_record<S: System>(system: &mut S, record: &Record) {
         return;
     };
     let _ = system.make_directory(RECORD_FOLDER, 0o755);
-    replace_file(system, TEMPORARY_PREFIX, RECORD, &file[..length]);
+    let _ = replace_file(system, TEMPORARY_PREFIX, RECORD, &file[..length]);
 }
 
 fn kept_budget<S: System>(system: &mut S) -> Option<u64> {
-    let text = read_text(system, BUDGET).ok()?;
-    parse_budget(text.as_bytes())
+    match read_text(system, BUDGET) {
+        Err(Errno::ENOENT) => None,
+        Err(_) => Some(UNPROVEN_BUDGET_MS),
+        Ok(text) => Some(parse_budget(text.as_bytes()).unwrap_or(UNPROVEN_BUDGET_MS)),
+    }
 }
 
 fn unproven_budget<S: System>(system: &mut S) -> u64 {
@@ -471,24 +474,38 @@ fn unproven_budget<S: System>(system: &mut S) -> u64 {
     kept_budget(system).unwrap_or(0).max(this_boot)
 }
 
-fn keep_budget<S: System>(system: &mut S, unproven_ms: u64) {
+fn keep_budget<S: System>(system: &mut S, unproven_ms: u64) -> Result<(), Errno> {
     let mut file = [0u8; BUDGET_LARGEST];
-    let Some(length) = write_budget(unproven_ms, &mut file) else {
-        return;
-    };
+    let length = write_budget(unproven_ms, &mut file).ok_or(Errno::EINVAL)?;
     for folder in BUDGET_FOLDERS {
         let _ = system.make_directory(folder, 0o755);
     }
-    replace_file(system, BUDGET_TEMPORARY_PREFIX, BUDGET, &file[..length]);
+    replace_file(system, BUDGET_TEMPORARY_PREFIX, BUDGET, &file[..length])
 }
 
-fn replace_file<S: System>(system: &mut S, temporary_prefix: &str, target: &CStr, bytes: &[u8]) {
+fn keep_budget_or_say<S: System>(output: &mut Output<S>, unproven_ms: u64) {
+    if let Err(errno) = keep_budget(&mut output.system, unproven_ms) {
+        output.error(&[
+            b"cannot keep the unproven clock budget in ",
+            BUDGET.to_bytes(),
+            b": ",
+            errno.message(),
+        ]);
+    }
+}
+
+fn replace_file<S: System>(
+    system: &mut S,
+    temporary_prefix: &str,
+    target: &CStr,
+    bytes: &[u8],
+) -> Result<(), Errno> {
     let mut random = [0u8; 4];
     let _ = system.random(&mut random);
     let mut name = [0u8; TEMPORARY_NAME_BYTES];
     let prefix = temporary_prefix.as_bytes();
     let Some(room) = name.get_mut(..prefix.len() + 2 * random.len()) else {
-        return;
+        return Err(Errno::ENAMETOOLONG);
     };
     room[..prefix.len()].copy_from_slice(prefix);
     for (index, byte) in random.iter().enumerate() {
@@ -496,25 +513,28 @@ fn replace_file<S: System>(system: &mut S, temporary_prefix: &str, target: &CStr
         room[prefix.len() + 2 * index + 1] = HEX_DIGITS[usize::from(byte & 0xf)];
     }
     let Ok(temporary) = CStr::from_bytes_until_nul(&name) else {
-        return;
+        return Err(Errno::ENAMETOOLONG);
     };
-    let Ok(descriptor) = system.create(temporary, 0o644, true) else {
-        return;
-    };
-    let written = system.write(descriptor, bytes);
+    let descriptor = system.create(temporary, 0o644, true)?;
+    let written = system
+        .write(descriptor, bytes)
+        .and_then(|()| system.sync_file(descriptor));
     system.close(descriptor);
-    if written.is_err() || system.rename(temporary, target).is_err() {
+    let replaced = written.and_then(|()| system.rename(temporary, target));
+    if replaced.is_err() {
         let _ = system.remove(temporary, false);
     }
+    replaced
 }
 
-pub fn forget_unproven_steps<S: System>(system: &mut S) {
+pub fn forget_unproven_steps<S: System>(output: &mut Output<S>) {
+    let system = &mut output.system;
     if let Some(mut record) = read_record(system).filter(|record| record.unproven_ms != 0) {
         record.unproven_ms = 0;
         write_record(system, &record);
     }
     if kept_budget(system).is_some_and(|unproven_ms| unproven_ms != 0) {
-        keep_budget(system, 0);
+        keep_budget_or_say(output, 0);
     }
 }
 

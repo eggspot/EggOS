@@ -5,7 +5,7 @@
 //! posted to [`HANDED_OVER_WINDOW`], a handle no window has, so a program's own
 //! `PostThreadMessageW` or `PostMessageW` of the same numbers is never taken for one.
 
-use super::queue::{Filter, Message};
+use super::queue::{Filter, Message, Queue};
 
 /// Gives the window in `wParam` the focus.
 pub const AGENT_FOCUS: u32 = 0x03f8;
@@ -20,6 +20,27 @@ pub const HANDED_OVER_WINDOW: usize = usize::MAX - 1;
 /// Whether `message` is an agent's action handed over from another thread.
 pub fn is_handed_over(message: &Message) -> bool {
     message.window == HANDED_OVER_WINDOW && matches!(message.message, AGENT_FOCUS | AGENT_SET_TEXT)
+}
+
+/// Takes the next action handed over to `thread` out of `queue`, whatever filter the program
+/// reads its messages with: Windows delivers a message sent from another thread inside every
+/// `GetMessageW` and `PeekMessageW`, filtered or not.
+pub fn take_for_thread(queue: &mut Queue, thread: u32) -> Option<Message> {
+    queue.take(&for_thread(thread), true)
+}
+
+/// Whether an action handed over to `thread` waits in `queue`.
+pub fn waits_for_thread(queue: &mut Queue, thread: u32) -> bool {
+    queue.take(&for_thread(thread), false).is_some()
+}
+
+fn for_thread(thread: u32) -> Filter {
+    Filter {
+        window: HANDED_OVER_WINDOW,
+        first: AGENT_FOCUS,
+        last: AGENT_SET_TEXT,
+        thread,
+    }
 }
 
 /// The filter that takes `message`, a handed-over action a read left in its thread's queue,
@@ -93,6 +114,39 @@ mod tests {
             None
         );
         assert_eq!(queue.take(&any, true), Some(forged));
+    }
+
+    #[test]
+    fn a_filtered_get_message_loop_still_does_the_actions_handed_over_to_its_thread() {
+        let mut queue = Queue::new();
+        let focus = posted(HANDED_OVER_WINDOW, AGENT_FOCUS, 5, THREAD);
+        let set_text = posted(HANDED_OVER_WINDOW, AGENT_SET_TEXT, 6, THREAD);
+        let theirs = posted(HANDED_OVER_WINDOW, AGENT_FOCUS, 9, THREAD + 1);
+        let key = posted(5, 0x0100, 0x41, THREAD);
+        for message in [theirs, focus, set_text, key] {
+            assert!(queue.post(message));
+        }
+        let keys_of_window_5 = Filter {
+            window: 5,
+            first: 0x0100,
+            last: 0x0109,
+            thread: THREAD,
+        };
+        assert!(!keys_of_window_5.accepts(&focus));
+        assert!(waits_for_thread(&mut queue, THREAD));
+        let mut acted = Vec::new();
+        let read = loop {
+            if let Some(action) = take_for_thread(&mut queue, THREAD) {
+                acted.push(action);
+                continue;
+            }
+            break queue.take(&keys_of_window_5, true);
+        };
+        assert_eq!(acted, [focus, set_text]);
+        assert_eq!(read, Some(key));
+        assert!(!waits_for_thread(&mut queue, THREAD));
+        assert!(waits_for_thread(&mut queue, THREAD + 1));
+        assert_eq!(take_for_thread(&mut queue, THREAD + 1), Some(theirs));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use crate::index::Component;
 use crate::manager::{self, Refusal, RemoveError, Store};
 use crate::messages;
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use eggos_app::files::Files;
 use eggos_commands::{ErrorDefinition, errors};
@@ -248,18 +248,11 @@ pub fn rows<F: Files>(files: &mut F, store: Option<&Store>) -> Vec<Row> {
 }
 
 fn busy_with<F: Files>(files: &mut F) -> Option<(String, bool)> {
-    let mut text = [0u8; 160];
-    let handle = files.open(manager::LOCK.as_bytes()).ok()?;
-    let read = files.read(handle, &mut text).unwrap_or(0);
-    files.close(handle);
-    let text = core::str::from_utf8(&text[..read]).ok()?;
-    let mut words = text.splitn(3, ' ');
-    let pid = words.next()?;
+    let (pid, title, removing) = manager::lock_holder(files)?;
     let mut proc = String::from("/proc/");
-    proc.push_str(pid);
+    proc.push_str(&pid.to_string());
     files.status(proc.as_bytes()).ok()?;
-    let removing = words.next()? == "remove";
-    Some((words.next()?.into(), removing))
+    Some((title, removing))
 }
 
 /// Writes one row as `component list --json`'s record.

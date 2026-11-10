@@ -98,6 +98,8 @@ struct FakeSystem {
     records: BTreeMap<u32, Vec<u8>>,
     list_error: Option<Errno>,
     processes: String,
+    processes_unreadable: bool,
+    command_lines: BTreeMap<u32, Vec<u8>>,
     kills: Vec<(u32, u32)>,
     kill_answer: Result<(), i32>,
     removed: Vec<u32>,
@@ -115,6 +117,8 @@ impl FakeSystem {
             records,
             list_error: None,
             processes: String::from(PROCESSES),
+            processes_unreadable: false,
+            command_lines: BTreeMap::new(),
             kills: Vec::new(),
             kill_answer: Ok(()),
             removed: Vec::new(),
@@ -146,7 +150,15 @@ impl DownloadSystem for FakeSystem {
     }
 
     fn read_processes(&mut self, text: &mut [u8]) -> Option<usize> {
+        if self.processes_unreadable {
+            return None;
+        }
         Some(copied(self.processes.as_bytes(), text))
+    }
+
+    fn read_command_line(&mut self, pid: u32, text: &mut [u8]) -> Option<usize> {
+        let command_line = self.command_lines.get(&pid)?;
+        Some(copied(command_line, text))
     }
 
     fn send_signal(&mut self, pid: u32, signal: u32) -> Result<(), i32> {
@@ -506,6 +518,34 @@ fn a_cancel_that_finds_the_download_over_or_another_user_s_says_why() {
     let mut window = opened(&mut system);
     let done = eggos(EGGOS_RECEIVED, State::Done);
     system.records.insert(61, done);
+    press(&mut window, &mut system, key::DELETE, 0);
+    assert!(system.kills.is_empty());
+    assert_eq!(line_of(&window), status(ALREADY_ENDED));
+}
+
+#[test]
+fn without_the_process_list_cancel_checks_the_command_line_as_download_cancel_does() {
+    let mut system = FakeSystem::example();
+    let mut window = opened(&mut system);
+    system.processes_unreadable = true;
+    system
+        .command_lines
+        .insert(61, b"/bin/coreutils\0fetch\0-q\0".to_vec());
+    press(&mut window, &mut system, key::DELETE, 0);
+    assert_eq!(system.kills, [(61, TERMINATE)]);
+    assert_eq!(line_of(&window), status(CANCELLING_EGGOS));
+    let mut system = FakeSystem::example();
+    let mut window = opened(&mut system);
+    system.processes_unreadable = true;
+    system
+        .command_lines
+        .insert(61, b"/bin/eggsh\0-c\0fetch\0".to_vec());
+    press(&mut window, &mut system, key::DELETE, 0);
+    assert!(system.kills.is_empty());
+    assert_eq!(line_of(&window), status(ALREADY_ENDED));
+    let mut system = FakeSystem::example();
+    let mut window = opened(&mut system);
+    system.processes_unreadable = true;
     press(&mut window, &mut system, key::DELETE, 0);
     assert!(system.kills.is_empty());
     assert_eq!(line_of(&window), status(ALREADY_ENDED));

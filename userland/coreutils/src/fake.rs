@@ -213,6 +213,7 @@ pub struct Fake {
     pub slept: Vec<Duration>,
     pub rebooted: Vec<u32>,
     pub synced: usize,
+    pub synced_files: Vec<Vec<u8>>,
     pub reboot_error: Option<Errno>,
     pub init_signals: Vec<u32>,
     pub init_signal_error: Option<Errno>,
@@ -286,6 +287,7 @@ impl Default for Fake {
             slept: Vec::new(),
             rebooted: Vec::new(),
             synced: 0,
+            synced_files: Vec::new(),
             reboot_error: Some(Errno::EPERM),
             init_signals: Vec::new(),
             init_signal_error: None,
@@ -743,6 +745,12 @@ impl System for Fake {
 
     fn sync(&mut self) {
         self.synced += 1;
+    }
+
+    fn sync_file(&mut self, descriptor: usize) -> Result<(), Errno> {
+        let path = self.file(descriptor)?.path.clone();
+        self.synced_files.push(path);
+        Ok(())
     }
 
     fn reboot(&mut self, command: u32) -> Result<(), Errno> {

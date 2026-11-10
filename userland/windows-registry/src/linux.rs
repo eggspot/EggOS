@@ -50,6 +50,10 @@ unsafe fn system(number: usize, arguments: [usize; 6]) -> Result<usize, FileErro
     Errno::result(unsafe { call(number, arguments) }).map_err(file_error)
 }
 
+fn effective_user(answer: Result<usize, FileError>) -> u32 {
+    answer.map_or(u32::MAX, |id| u32::try_from(id).unwrap_or(u32::MAX))
+}
+
 fn terminated(path: &[u8]) -> Result<Vec<u8>, FileError> {
     if path.contains(&0) {
         return Err(FileError::Failed);
@@ -197,7 +201,7 @@ impl HiveFiles for LinuxHiveFiles {
 
     fn user_id(&mut self) -> u32 {
         // SAFETY: `geteuid` touches no memory.
-        unsafe { system(number::GETEUID, [0; 6]) }.unwrap_or(0) as u32
+        effective_user(unsafe { system(number::GETEUID, [0; 6]) })
     }
 
     fn now(&mut self) -> u64 {
@@ -212,5 +216,17 @@ impl HiveFiles for LinuxHiveFiles {
             }
             Err(_) => FILETIME_EPOCH_INTERVALS,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_user_id_that_cannot_be_read_is_never_root() {
+        assert_eq!(effective_user(Ok(0)), 0);
+        assert_eq!(effective_user(Ok(1000)), 1000);
+        assert_eq!(effective_user(Err(FileError::Failed)), u32::MAX);
     }
 }

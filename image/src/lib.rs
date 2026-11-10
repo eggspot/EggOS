@@ -87,13 +87,13 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// 16 384 pixels a side, 32 Mi pixels (128 MiB of pixels), 1 024 frames and 256 MiB of
+    /// 16 384 pixels a side, 32 Mi pixels (128 MiB of pixels), 1 024 frames and 384 MiB of
     /// working buffers.
     pub const DEFAULT: Limits = Limits {
         max_side: 16_384,
         max_pixels: 1 << 25,
         max_frames: 1024,
-        max_working_bytes: 1 << 28,
+        max_working_bytes: 384 << 20,
     };
 }
 

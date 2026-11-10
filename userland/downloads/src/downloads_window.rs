@@ -9,8 +9,8 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use eggos_download_list::{
-    self as records, CancelError, MAX_DOWNLOADS, MAX_RECORD_BYTES, Record, SAVE_FOLDER, State,
-    clear_refusal, fetch_running, newest_first, write_cleared,
+    self as records, CancelError, ESRCH, MAX_DOWNLOADS, MAX_RECORD_BYTES, Record, SAVE_FOLDER,
+    State, clear_refusal, fetch_running, newest_first, runs_fetch, write_cleared,
 };
 use eggos_runtime::errno::Errno;
 use eggos_toolkit::elements::{Action, Outcome};
@@ -58,6 +58,7 @@ const STATE_WIDTH: i32 = 112;
 const FROM_WIDTH: i32 = 112;
 const PHONE_STATE_WIDTH: i32 = 120;
 const LINE_BYTES: usize = 64;
+const COMMAND_LINE_BYTES: usize = 4096;
 const CUT: &str = "...";
 
 const fn column(title: &'static str, width: i32, align: Align) -> Column {
@@ -91,6 +92,8 @@ pub trait DownloadSystem {
     fn read_record(&mut self, id: u32, text: &mut [u8]) -> Option<usize>;
     /// Reads `/proc/ps` into `text`: its length, or `None` when it cannot be read whole.
     fn read_processes(&mut self, text: &mut [u8]) -> Option<usize>;
+    /// Reads `/proc/<pid>/cmdline` into `text`: its length, or `None` when it cannot be read.
+    fn read_command_line(&mut self, pid: u32, text: &mut [u8]) -> Option<usize>;
     /// Sends `signal` to process `pid`; its errno on failure.
     fn send_signal(&mut self, pid: u32, signal: u32) -> Result<(), i32>;
     /// Removes download `id`'s record, never the downloaded file.
@@ -286,6 +289,18 @@ fn cancel_download(
         .map(|length| &buffers.processes[..length]);
     let record = judged_record(system, &mut buffers.record, processes, id);
     records::cancel(record.as_ref(), id, |pid, signal| {
+        let is_fetch = match processes {
+            Some(processes) => fetch_running(processes, pid),
+            None => {
+                let mut command_line = [0u8; COMMAND_LINE_BYTES];
+                system
+                    .read_command_line(pid, &mut command_line)
+                    .is_some_and(|length| runs_fetch(&command_line[..length]))
+            }
+        };
+        if !is_fetch {
+            return Err(ESRCH);
+        }
         system.send_signal(pid, signal)
     })
 }

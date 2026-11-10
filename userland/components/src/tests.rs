@@ -521,10 +521,79 @@ fn leftovers_of_an_interrupted_install_or_remove_are_tidied_and_never_listed() {
 }
 
 #[test]
+fn an_installed_record_is_written_as_the_mcp_server_reads_its_size() {
+    let file = |path: &str, mode, offset, length| File {
+        path: path.into(),
+        mode,
+        offset,
+        length,
+        sha256: [0xab; 32],
+    };
+    let component = Component {
+        name: "windows-apps".into(),
+        title: "Windows apps".into(),
+        summary: "Runs them natively".into(),
+        on_remove: "Programs stay in Apps.".into(),
+        needs: vec!["desktop".into()],
+        files: vec![
+            file("usr/lib/eggos/windows", 0o755, 1024, 1000),
+            file("usr/lib/eggos/windows.dll", 0o644, 2048, 234),
+        ],
+    };
+    let mut record = String::new();
+    component.write_block(&mut record);
+    let digest = "ab".repeat(32);
+    assert_eq!(
+        record,
+        format!(
+            "component windows-apps\ntitle Windows apps\nsummary Runs them natively\n\
+             on-remove Programs stay in Apps.\nneeds desktop\n\
+             file 755 1024 1000 {digest} usr/lib/eggos/windows\n\
+             file 644 2048 234 {digest} usr/lib/eggos/windows.dll\nend\n"
+        )
+    );
+    assert_eq!(component.size_bytes(), 1234);
+}
+
+fn lock_text(files: &FakeFiles) -> Option<&[u8]> {
+    match files.nodes.get(manager::LOCK.as_bytes()) {
+        Some(crate::fake::Node::Link(target)) => Some(target),
+        Some(other) => panic!("the lock is a symbolic link, not {other:?}"),
+        None => None,
+    }
+}
+
+#[test]
+fn the_lock_is_made_in_one_step_with_its_holder_already_in_it() {
+    let mut files = machine(&[WINDOWS]);
+    files.folder("/run/eggos");
+    assert_eq!(manager::lock(&mut files, "Windows apps", true, 41), Ok(()));
+    assert_eq!(lock_text(&files), Some(&b"41 remove Windows apps"[..]));
+    assert_eq!(
+        manager::lock_holder(&mut files),
+        Some((41, "Windows apps".into(), true))
+    );
+    manager::unlock(&mut files);
+    assert_eq!(lock_text(&files), None);
+}
+
+#[test]
+fn a_claim_left_by_a_process_that_is_gone_does_not_block_the_take_over() {
+    let mut files = machine(&[WINDOWS]);
+    files.folder("/run/eggos");
+    files.link(manager::LOCK, "40 install Desktop");
+    let claim = manager::take_over_claim(40);
+    files.link(&claim, "39");
+    assert_eq!(manager::lock(&mut files, "Windows apps", false, 41), Ok(()));
+    assert_eq!(lock_text(&files), Some(&b"41 install Windows apps"[..]));
+    assert!(!files.nodes.contains_key(claim.as_bytes()));
+}
+
+#[test]
 fn a_second_action_is_refused_while_one_runs_and_a_dead_holder_s_lock_is_taken_over() {
     let mut files = machine(&[WINDOWS]);
     files.folder("/run/eggos").folder("/proc/40");
-    files.file(manager::LOCK, b"40 install Desktop");
+    files.link(manager::LOCK, "40 install Desktop");
     assert_eq!(
         manager::lock(&mut files, "Windows apps", false, 41),
         Err(Refusal::Busy {
@@ -534,7 +603,7 @@ fn a_second_action_is_refused_while_one_runs_and_a_dead_holder_s_lock_is_taken_o
     );
     files.nodes.remove(&b"/proc/40"[..]);
     let claim = manager::take_over_claim(40);
-    files.file(&claim, b"");
+    files.folder("/proc/42").link(&claim, "42");
     assert_eq!(
         manager::lock(&mut files, "Windows apps", false, 41),
         Err(Refusal::Busy {
@@ -542,17 +611,11 @@ fn a_second_action_is_refused_while_one_runs_and_a_dead_holder_s_lock_is_taken_o
             removing: false
         })
     );
-    assert_eq!(
-        files.contents(manager::LOCK),
-        Some(&b"40 install Desktop"[..])
-    );
+    assert_eq!(lock_text(&files), Some(&b"40 install Desktop"[..]));
     files.nodes.remove(claim.as_bytes());
     assert_eq!(manager::lock(&mut files, "Windows apps", false, 41), Ok(()));
-    assert_eq!(
-        files.contents(manager::LOCK),
-        Some(&b"41 install Windows apps"[..])
-    );
-    assert!(files.contents(&claim).is_none());
+    assert_eq!(lock_text(&files), Some(&b"41 install Windows apps"[..]));
+    assert!(!files.nodes.contains_key(claim.as_bytes()));
 }
 
 #[test]
@@ -580,7 +643,7 @@ fn a_confirmed_remove_checks_again_under_the_lock() {
         ])))
     );
     assert_eq!(manager::installed(&mut files).len(), 2);
-    assert!(files.contents(manager::LOCK).is_none());
+    assert_eq!(lock_text(&files), None);
 
     manager::install(&mut files, &found, &windows, &mut |_, _| true).unwrap();
     files.file(
@@ -601,10 +664,10 @@ fn a_confirmed_remove_checks_again_under_the_lock() {
     };
     assert_eq!(removed(&mut files), Ok(Some("windows-apps".into())));
     assert_eq!(removed(&mut files), Ok(None));
-    assert!(files.contents(manager::LOCK).is_none());
+    assert_eq!(lock_text(&files), None);
 
     files.folder("/proc/40");
-    files.file(manager::LOCK, b"40 install Desktop");
+    files.link(manager::LOCK, "40 install Desktop");
     assert_eq!(
         manager::remove_checked(&mut files, &apps.title, "builtin-apps", 7),
         Err(RemoveError::Refused(Refusal::Busy {
@@ -700,7 +763,7 @@ fn the_command_lists_installs_and_removes_in_the_design_s_words() {
         console.output,
         "Installing Windows apps (18 B)...\nInstalled Windows apps (18 B).\n"
     );
-    assert!(files.contents(manager::LOCK).is_none());
+    assert_eq!(lock_text(&files), None);
     let mut console = FakeConsole::default();
     assert_eq!(run(&mut files, &mut console, "install windows-apps"), 0);
     assert_eq!(console.output, "Windows apps is already installed.\n");

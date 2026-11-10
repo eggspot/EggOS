@@ -11,8 +11,9 @@
 //! never waits, as since Linux 5.18. `kmsg` (D224) has one job on EggOS: what is written to it
 //! goes to the serial console only, never to the screen's terminal, so init's `init:` lines
 //! reach the boot log while the Terminal's first text stays the banner and the shell's; only a
-//! privileged writer may write it (`EACCES` for anyone else), its control bytes but the newline
-//! are left out so no writer can drive the serial terminal, and it reads nothing, since the
+//! privileged writer may write it (`EACCES` for anyone else), its control characters but the
+//! newline (C0, DEL and C1, raw or UTF-8) and bytes that are not UTF-8 text are left out so no
+//! writer can drive the serial terminal, and it reads nothing, since the
 //! kernel keeps no log to replay. Seeking any of them leaves them at
 //! 0, reads and writes ignore the offset, and they are always ready for `poll`.
 
@@ -57,6 +58,7 @@ impl MemoryDevice {
 }
 
 const CHUNK: usize = 256;
+const SHOWN: usize = CHUNK + 4;
 
 const PREEMPTION_INTERVAL: u64 = 64 * 1024;
 
@@ -126,9 +128,9 @@ fn fill<P: Platform>(
 /// Writes the buffers `buffers` lists (base, length) to `device`: how many bytes it took, at
 /// most `MAX_RW_COUNT`. `null` and `zero` take them all without reading them; `full` is
 /// `ENOSPC`; `random` and `urandom` hash what they read into the generator's input and `kmsg`
-/// writes it to the serial console without its control bytes but the newline (`EACCES` unless
-/// the process is privileged), fewer at a byte that is not the program's memory, `EFAULT` if
-/// that is the first.
+/// writes it to the serial console as UTF-8 text without its control characters but the newline
+/// (`EACCES` unless the process is privileged), fewer at a byte that is not the program's
+/// memory, `EFAULT` if that is the first.
 pub fn write<P: Platform>(
     process: &Process<P>,
     device: MemoryDevice,
@@ -144,9 +146,10 @@ pub fn write<P: Platform>(
         }
         MemoryDevice::Kmsg => {
             may_write_kernel_log(&process.credentials_and_limits().lock().credentials)?;
-            let mut shown = [0u8; CHUNK];
+            let mut shown = [0u8; SHOWN];
+            let mut text = PrintableText::default();
             take(process, buffers, |bytes| {
-                P::console_write(without_control_bytes(bytes, &mut shown));
+                P::console_write(text.printable(bytes, &mut shown));
             })
         }
     }
@@ -159,15 +162,54 @@ fn may_write_kernel_log(credentials: &Credentials) -> Result<(), Errno> {
     }
 }
 
-fn without_control_bytes<'shown>(bytes: &[u8], shown: &'shown mut [u8; CHUNK]) -> &'shown [u8] {
-    let mut length = 0;
-    for &byte in bytes.iter().take(CHUNK) {
-        if byte == b'\n' || !byte.is_ascii_control() {
-            shown[length] = byte;
-            length += 1;
+#[derive(Default)]
+struct PrintableText {
+    started: [u8; 4],
+    started_length: usize,
+    still_needed: usize,
+}
+
+impl PrintableText {
+    fn printable<'shown>(&mut self, bytes: &[u8], shown: &'shown mut [u8; SHOWN]) -> &'shown [u8] {
+        let mut length = 0;
+        for &byte in bytes.iter().take(CHUNK) {
+            if self.still_needed > 0 && byte & 0xc0 == 0x80 {
+                self.started[self.started_length] = byte;
+                self.started_length += 1;
+                self.still_needed -= 1;
+                if self.still_needed == 0 {
+                    let character = &self.started[..self.started_length];
+                    if !is_c1_control(character) && core::str::from_utf8(character).is_ok() {
+                        shown[length..length + character.len()].copy_from_slice(character);
+                        length += character.len();
+                    }
+                    self.started_length = 0;
+                }
+                continue;
+            }
+            self.started_length = 0;
+            self.still_needed = 0;
+            let needed = match byte {
+                b'\n' | 0x20..=0x7e => {
+                    shown[length] = byte;
+                    length += 1;
+                    continue;
+                }
+                0xc2..=0xdf => 1,
+                0xe0..=0xef => 2,
+                0xf0..=0xf4 => 3,
+                _ => continue,
+            };
+            self.started[0] = byte;
+            self.started_length = 1;
+            self.still_needed = needed;
         }
+        &shown[..length]
     }
-    &shown[..length]
+}
+
+fn is_c1_control(character: &[u8]) -> bool {
+    matches!(character, [0xc2, 0x80..=0x9f])
 }
 
 fn take<P: Platform>(
@@ -237,16 +279,48 @@ mod tests {
         assert_eq!(may_write_kernel_log(&user), Err(Errno::EACCES));
     }
 
+    fn printable(bytes: &[u8]) -> std::vec::Vec<u8> {
+        let mut shown = [0u8; SHOWN];
+        PrintableText::default()
+            .printable(bytes, &mut shown)
+            .to_vec()
+    }
+
     #[test]
     fn the_kernel_log_keeps_text_and_newlines_and_leaves_out_other_control_bytes() {
-        let mut shown = [0u8; CHUNK];
         assert_eq!(
-            without_control_bytes(b"init: \x1b[2Jstarting\r\tsh\x07\x7f\n", &mut shown),
+            printable(b"init: \x1b[2Jstarting\r\tsh\x07\x7f\n"),
             b"init: [2Jstartingsh\n"
         );
         assert_eq!(
-            without_control_bytes("caf\u{e9}\n".as_bytes(), &mut shown),
-            "caf\u{e9}\n".as_bytes()
+            printable("caf\u{e9} \u{20ac} \u{1f600}\n".as_bytes()),
+            "caf\u{e9} \u{20ac} \u{1f600}\n".as_bytes()
         );
+    }
+
+    #[test]
+    fn the_kernel_log_leaves_out_c1_controls_raw_or_encoded_and_bytes_that_are_not_text() {
+        assert_eq!(printable(b"a\x9b2Jb\x85c\x90d\n"), b"a2Jbcd\n");
+        assert_eq!(
+            printable("a\u{9b}2J\u{85}b\u{a0}c\n".as_bytes()),
+            "a2Jb\u{a0}c\n".as_bytes()
+        );
+        assert_eq!(printable(b"a\xe9b\xc0\xafc\xed\xa0\x80d\xff\n"), b"abcd\n");
+        assert_eq!(printable(b"a\xe2\x82b\n"), b"ab\n");
+    }
+
+    #[test]
+    fn a_character_split_between_chunks_is_kept_whole() {
+        let mut text = PrintableText::default();
+        let mut shown = [0u8; SHOWN];
+        let euro = "\u{20ac}".as_bytes();
+        assert_eq!(text.printable(&[b'a', euro[0]], &mut shown), b"a");
+        assert_eq!(text.printable(&euro[1..2], &mut shown), b"");
+        assert_eq!(
+            text.printable(&[euro[2], b'\n'], &mut shown),
+            "\u{20ac}\n".as_bytes()
+        );
+        assert_eq!(text.printable(&[0xc2], &mut shown), b"");
+        assert_eq!(text.printable(&[0x9b, b'x'], &mut shown), b"x");
     }
 }

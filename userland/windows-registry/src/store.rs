@@ -10,8 +10,8 @@
 //!   over the hive.
 //! - A read goes to the end of the file, never trusting a size read before it, and stops at
 //!   [`MAX_HIVE_BYTES`] + 1 bytes, so a file past the cap reads as too large.
-//! - The stamp mixes the file's inode with its change time and size, so a hive renamed over
-//!   in the same tick still reads as changed.
+//! - The stamp mixes the file's inode with its modification time and size, so a hive renamed
+//!   over in the same tick still reads as changed.
 
 use alloc::format;
 use alloc::vec::Vec;
@@ -99,7 +99,8 @@ pub trait HiveFiles {
     fn remove(&mut self, path: &[u8]) -> Result<(), FileError>;
     /// This process's id.
     fn process_id(&mut self) -> u32;
-    /// The effective user id: 0 is root, who alone changes the machine's hive.
+    /// The effective user id: 0 is root, who alone changes the machine's hive; `u32::MAX`
+    /// when it cannot be read, so a failure never counts as root.
     fn user_id(&mut self) -> u32;
     /// The time now, in 100 ns since 1601.
     fn now(&mut self) -> u64;
