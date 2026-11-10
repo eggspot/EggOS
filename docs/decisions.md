@@ -19292,3 +19292,12 @@ the license, by an explicit instruction recorded here.
   threads of different programs on SMT siblings; KPTI with PCID for Meltdown-affected CPUs; Retbleed
   and Spectre v2 return and branch mitigations (IBRS, retpolines, return thunks); measurement of
   the cost on a system-call round trip.
+
+## D250 AArch64's `SCTLR_EL1` written whole, not ORed into the firmware's (D47's follow-up for UEFI machines; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Turning translation on now writes the whole `SCTLR_EL1`: its Armv8.0 RES1 bits, the
+  MMU and both caches, EL0's cache type and maintenance (`UCT`, `UCI`), `DC ZVA` (`DZE`) and
+  untrapped `WFI`/`WFE` (`nTWI`, `nTWE`), as Linux allows EL0; `UMA`, `E0E`, `EE` and the alignment
+  checks are 0. A UEFI firmware that left other bits set (D236 keeps EL1's value from the
+  firmware) no longer passes them on. Secondary CPUs use the same code.
+- **Not yet.** Building and running; `PAN`, `TCO`, `DIT` and `SSBS` (D49).
