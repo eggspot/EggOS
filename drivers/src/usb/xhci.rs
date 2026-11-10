@@ -6,7 +6,8 @@
 use super::{BootDevice, BootInterface, DESCRIPTOR_CONFIGURATION, DESCRIPTOR_DEVICE, Setup, boot_interface};
 use crate::dma::DmaMemory;
 use crate::input::hid::{BootKeyboard, BootMouse, lights_report};
-use crate::input::{LockLights, RawEvent};
+use crate::input::hid_report::{Decoder, Layout};
+use crate::input::{Capabilities, LockLights, RawEvent};
 use crate::io::RegisterIo;
 use crate::storage::{copy_out, read32, write32, write64, zero};
 use core::sync::atomic::{Ordering, fence};
@@ -180,6 +181,8 @@ enum Handler {
     Mouse(BootMouse),
     /// A hub: enumerated through at attach time, never polled (D254).
     Hub { ports: u8 },
+    /// A HID device read through its report descriptor (D256).
+    Report(Layout, Decoder),
 }
 
 /// Where a device is on the bus: its root port, its route through hubs (four bits a tier), its
@@ -695,6 +698,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
                 endpoint: 0,
                 max_packet: 0,
                 interval: 0,
+                report_length: 0,
             },
             report_endpoint: 0,
             control: Ring::new(area + CONTROL_RING, RING_TRBS),
@@ -747,12 +751,28 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         let interface = boot_interface(&configuration[..total])
             .ok_or(Error::Unsupported("not a HID boot keyboard or mouse"))?;
         device.interface = interface;
+        self.control_transfer(&mut device, Setup::set_configuration(interface.configuration), 0, keep_waiting)?;
         device.handler = match interface.kind {
             BootDevice::Keyboard => Handler::Keyboard(BootKeyboard::default()),
             BootDevice::Mouse => Handler::Mouse(BootMouse::default()),
+            BootDevice::Report => {
+                let length = usize::from(interface.report_length).clamp(1, DESCRIPTOR_BUFFER_BYTES);
+                self.control_transfer(
+                    &mut device,
+                    Setup::hid_report_descriptor(interface.interface, length as u16),
+                    DESCRIPTOR_BUFFER,
+                    keep_waiting,
+                )?;
+                let mut descriptor = [0u8; DESCRIPTOR_BUFFER_BYTES];
+                copy_out(&self.memory, area + DESCRIPTOR_BUFFER, &mut descriptor[..length]);
+                let layout = Layout::parse(&descriptor[..length])
+                    .ok_or(Error::Unsupported("the device's report descriptor does not parse"))?;
+                Handler::Report(layout, Decoder::default())
+            }
         };
-        self.control_transfer(&mut device, Setup::set_configuration(interface.configuration), 0, keep_waiting)?;
-        let _ = self.control_transfer(&mut device, Setup::hid_set_protocol_boot(interface.interface), 0, keep_waiting);
+        if interface.kind != BootDevice::Report {
+            let _ = self.control_transfer(&mut device, Setup::hid_set_protocol_boot(interface.interface), 0, keep_waiting);
+        }
         let _ = self.control_transfer(&mut device, Setup::hid_set_idle(interface.interface), 0, keep_waiting);
 
         let dci = u32::from(interface.endpoint) * 2 + 1;
@@ -866,6 +886,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
                 Handler::Keyboard(keyboard) => keyboard.report(&report[..length], emit),
                 Handler::Mouse(mouse) => mouse.report(&report[..length], emit),
                 Handler::Hub { .. } => 0,
+                Handler::Report(layout, decoder) => decoder.report(layout, &report[..length], emit),
             };
         }
         self.queue_report(&mut device);
@@ -942,6 +963,33 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             .iter()
             .flatten()
             .any(|device| device.interface.kind == kind)
+    }
+
+    /// What the attached devices report, together.
+    pub fn capabilities(&self) -> Capabilities {
+        let mut all = Capabilities::default();
+        for device in self.devices.iter().flatten() {
+            let each = match &device.handler {
+                Handler::Keyboard(_) => Capabilities {
+                    keyboard: true,
+                    ..Capabilities::default()
+                },
+                Handler::Mouse(_) => Capabilities {
+                    buttons: true,
+                    relative: true,
+                    wheel: true,
+                    ..Capabilities::default()
+                },
+                Handler::Report(layout, _) => layout.capabilities(),
+                Handler::Hub { .. } => Capabilities::default(),
+            };
+            all.keyboard |= each.keyboard;
+            all.buttons |= each.buttons;
+            all.relative |= each.relative;
+            all.wheel |= each.wheel;
+            all.absolute = all.absolute.or(each.absolute);
+        }
+        all
     }
 }
 

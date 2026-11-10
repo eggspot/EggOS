@@ -19375,3 +19375,21 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; AHCI's MSI (HBA and port causes cleared per command), igc's
   extended interrupts and the Realtek chips'; several vectors (one per queue or per CPU);
   interrupt moderation.
+
+## D256 HID report descriptors: USB keyboards, mice, tablets, touch screens and media keys in report protocol (D239's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `eggos_drivers::input::hid_report` parses a HID report descriptor (main, global and
+  local items, `Push`/`Pop`, report ids; long items skipped) into the fields of its input reports,
+  one field per usage for variable items with several usages, and decodes reports: the keyboard
+  page's modifiers and keys (through the boot keyboard's press and release logic), buttons 1 to 3,
+  the digitizer's tip switch as the left button, generic desktop X, Y and wheel (relative as
+  motion, absolute as positions with the descriptor's logical range), the consumer page's pan as
+  the sideways wheel, and a few consumer keys (mute, volume, play/pause, next and previous track,
+  brightness). The layout says the device's capabilities (absolute ranges for tablets and touch
+  screens). The USB side reads every HID interface, not only boot ones: a non-boot interface's
+  report descriptor (its length from the HID descriptor) is fetched and kept per device, and the
+  controller's capabilities are the union of its devices'.
+- **Not yet.** Building and running; several application collections and several reports per
+  device mapped to separate input devices; multi-touch contacts (only the first's position);
+  precision touchpads' mode switch and gestures; HID output reports beyond the boot keyboard's
+  lights; I2C HID, which needs the ACPI interpreter for its descriptor address (D252).

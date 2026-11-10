@@ -4,6 +4,7 @@
 //! dead keys and third level ([`layout`], D185) and the pointer's scaling.
 
 pub mod hid;
+pub mod hid_report;
 pub mod layout;
 pub mod ps2;
 

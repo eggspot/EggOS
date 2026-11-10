@@ -8,7 +8,6 @@ use alloc::boxed::Box;
 use eggos_drivers::input::{Capabilities, LockLights, RawEvent};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
-use eggos_drivers::usb::BootDevice;
 use eggos_drivers::usb::xhci::{self, Xhci};
 
 const SERIAL_BUS: u8 = 0x0c;
@@ -93,14 +92,7 @@ fn probe_xhci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     if attached == 0 {
         return Err(ProbeError::Refused("no USB keyboard or mouse on its ports"));
     }
-    let pointer = controller.has(BootDevice::Mouse);
-    let capabilities = Capabilities {
-        keyboard: controller.has(BootDevice::Keyboard),
-        buttons: pointer,
-        relative: pointer,
-        wheel: pointer,
-        absolute: None,
-    };
+    let capabilities = controller.capabilities();
     let interrupting = super::message_interrupts::connect(probe, id, &crate::input::DEVICE_EVENTS).is_ok();
     if interrupting {
         controller.enable_interrupts();

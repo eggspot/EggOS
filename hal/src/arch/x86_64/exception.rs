@@ -1751,7 +1751,9 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
     // set and EM clear, each raises #NM, in ring 3 and in the kernel, which uses none, until
     // the scheduler clears TS for a program that has its own FP/SIMD registers (D54), so none
     // can read what another left in them (D49). NE reports x87 errors as #MF; OSFXSR enables
-    // SSE and `FXSAVE`/`FXRSTOR`, OSXMMEXCPT reports unmasked SSE exceptions as #XM.
+    // SSE and `FXSAVE`/`FXRSTOR`, OSXMMEXCPT reports unmasked SSE exceptions as #XM. SMEP and
+    // UMIP (D251) only add faults: the kernel never executes user pages, and programs lose only
+    // the descriptor-table reads.
     unsafe {
         core::arch::asm!(
             "mov {tmp}, cr4",
