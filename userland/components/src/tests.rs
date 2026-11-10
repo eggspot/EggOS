@@ -729,6 +729,7 @@ const CONTEXT: Context<'static> = Context {
     arch: "x86_64",
     pid: 7,
     coded: false,
+    download: None,
 };
 
 fn run(files: &mut FakeFiles, console: &mut FakeConsole, line: &str) -> i32 {
@@ -890,4 +891,16 @@ fn the_registry_s_examples_run_as_written() {
         }
     }
     assert_eq!(ran, 4);
+}
+
+#[test]
+fn the_store_s_download_address_is_its_release_s_https_asset() {
+    assert_eq!(
+        manager::store_url("0.5.0", "x86_64"),
+        "https://github.com/eggspot/EggOS/releases/download/v0.5.0/eggos-0.5.0-x86_64-components.img"
+    );
+    assert_eq!(
+        manager::downloaded_store_path("0.5.0", "aarch64"),
+        "/var/cache/eggos/eggos-0.5.0-aarch64-components.img"
+    );
 }

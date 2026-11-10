@@ -172,6 +172,7 @@ pub fn where_text(store: &Store) -> String {
     match store.source {
         crate::manager::Source::Disk(disk) => format!("on {disk}"),
         crate::manager::Source::Share => String::from("in the host share"),
+        crate::manager::Source::Downloaded => String::from("downloaded from the release"),
     }
 }
 
