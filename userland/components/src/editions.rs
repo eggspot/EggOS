@@ -16,7 +16,7 @@ pub const EDITIONS: [Edition; 4] = [
     Edition {
         name: "server",
         title: "Server",
-        summary: "The base alone: no desktop, no foreign apps, every service added by hand.",
+        summary: "The base alone: no desktop and no foreign apps.",
         components: &[],
     },
     Edition {
@@ -42,6 +42,27 @@ pub const EDITIONS: [Edition; 4] = [
 /// The edition called `name`.
 pub fn edition(name: &str) -> Option<&'static Edition> {
     EDITIONS.iter().find(|edition| edition.name == name)
+}
+
+/// Where the edition last chosen is recorded, so editions with the same components today are
+/// told apart (docs/ux/editions-v0.4.md section 9).
+pub const RECORD: &str = "/var/lib/eggos/edition";
+
+/// The edition the installed components make, preferring `recorded` while its list still
+/// matches.
+pub fn current_preferring<'a>(
+    installed: impl Iterator<Item = &'a str> + Clone,
+    recorded: Option<&str>,
+) -> Option<&'static Edition> {
+    let matches = |edition: &Edition| {
+        let mut names = installed.clone();
+        edition.components.iter().all(|wanted| installed.clone().any(|name| name == *wanted))
+            && names.all(|name| edition.components.contains(&name))
+    };
+    recorded
+        .and_then(edition)
+        .filter(|edition| matches(edition))
+        .or_else(|| EDITIONS.iter().rev().find(|edition| matches(edition)))
 }
 
 /// The edition whose components are exactly the installed ones, if any; the largest when

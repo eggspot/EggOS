@@ -24,9 +24,19 @@ use eggos_toolkit::widget::{Kind, Length, Place};
 /// The most rows the pane shows: the most components a store offers.
 pub const ROWS: usize = MAX_COMPONENTS;
 /// The widgets the pane adds to its container.
-pub const WIDGETS: usize = 4 + 5 * ROWS + 5;
+pub const WIDGETS: usize = 4 + 5 * ROWS + 5 + EDITION_WIDGETS;
+/// The edition band's widgets (docs/ux/editions-v0.4.md section 1): panel, label, dropdown,
+/// summary.
+const EDITION_WIDGETS: usize = 4;
+const EDITION_BAND: (i32, i32, i32, i32) = (16, 124, 432, 64);
+const EDITION_LABEL: (i32, i32) = (24, 10);
+const EDITION_DROPDOWN: (i32, i32, i32, i32) = (272, 4, 160, 28);
+const EDITION_SUMMARY: (i32, i32, i32) = (24, 38, 408);
+const EDITION_TITLES: [&str; 4] = ["Server", "Personal", "Professional", "Enterprise"];
+const EDITION_TITLES_WITH_CUSTOM: [&str; 5] = ["Custom", "Server", "Personal", "Professional", "Enterprise"];
+const CUSTOM_SUMMARY: &str = "Your own set of components: no edition matches it exactly.";
 /// Row `r`'s top in the pane, with no note open above it: `ROWS_TOP + ROW_HEIGHT * r`.
-pub const ROWS_TOP: i32 = 124;
+pub const ROWS_TOP: i32 = 196;
 /// A row's height.
 pub const ROW_HEIGHT: i32 = 48;
 /// The height of a one-line message note.
@@ -75,6 +85,8 @@ pub struct ComponentsRead {
     pub store: Option<Store>,
     pub rows: Vec<Row>,
     pub runs_this_window: Option<String>,
+    /// The edition recorded as last chosen (D263).
+    pub recorded_edition: Option<String>,
 }
 
 /// What the pane did with a response.
@@ -105,6 +117,8 @@ struct Widgets {
     bar: WidgetId,
     cancel: WidgetId,
     confirm: WidgetId,
+    edition: WidgetId,
+    edition_summary: WidgetId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +172,8 @@ pub struct ComponentsPane {
     failed: Option<String>,
     min_height: i32,
     default_button: WidgetId,
+    /// The edition being installed from the band, recorded once its plan is done (D263).
+    chosen_edition: Option<&'static str>,
 }
 
 fn add(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, place: Place, kind: Kind) -> WidgetId {
@@ -205,6 +221,30 @@ impl ComponentsPane {
             Kind::heading("Components"),
         );
         let store = STORE_LINES.map(|y| label(tree, pane, line_at(PADDING, y, LINE_WIDTH)));
+        let band = add(
+            tree,
+            pane,
+            at(EDITION_BAND.0, EDITION_BAND.1, EDITION_BAND.2, EDITION_BAND.3),
+            Kind::panel(Token::Menu),
+        );
+        add(
+            tree,
+            band,
+            line_at(EDITION_LABEL.0, EDITION_LABEL.1, 0),
+            Kind::label("Edition", Token::Text),
+        );
+        let edition = add(
+            tree,
+            band,
+            at(EDITION_DROPDOWN.0, EDITION_DROPDOWN.1, EDITION_DROPDOWN.2, EDITION_DROPDOWN.3),
+            Kind::dropdown("Edition", &EDITION_TITLES, 0),
+        );
+        let edition_summary = add(
+            tree,
+            band,
+            line_at(EDITION_SUMMARY.0, EDITION_SUMMARY.1, EDITION_SUMMARY.2),
+            Kind::label("", Token::TextDim),
+        );
         let rows = core::array::from_fn(|row| {
             let panel = add(
                 tree,
@@ -274,6 +314,8 @@ impl ComponentsPane {
                 bar,
                 cancel,
                 confirm,
+                edition,
+                edition_summary,
             },
             read: ComponentsRead::default(),
             note: Note::Closed,
@@ -281,6 +323,7 @@ impl ComponentsPane {
             failed: None,
             min_height,
             default_button,
+            chosen_edition: None,
         };
         components.refresh(tree);
         components
@@ -497,6 +540,7 @@ impl ComponentsPane {
         let widgets = self.widgets;
         let row_of = |id: WidgetId| widgets.rows.iter().position(|row| row.button == id);
         let request = match response {
+            Response::Chosen(id, option) if id == widgets.edition => self.choose_edition(tree, option, now_ms),
             Response::Activated(id) if row_of(id).is_some() => {
                 self.press_row(tree, row_of(id).unwrap_or(0), now_ms)
             }
@@ -534,6 +578,89 @@ impl ComponentsPane {
             _ => return Reply::NotMine,
         };
         Reply::Done(request)
+    }
+
+    fn current_edition(&self) -> Option<&'static eggos_components::editions::Edition> {
+        let installed = self.installed();
+        let names = installed.iter().map(|component| component.name.as_str());
+        eggos_components::editions::current_preferring(names, self.read.recorded_edition.as_deref())
+    }
+
+    fn show_edition(&self, tree: &mut WidgetTree<CAPACITY>) {
+        let widgets = self.widgets;
+        let current = self.current_edition();
+        let options: &'static [&'static str] = match current {
+            Some(_) => &EDITION_TITLES,
+            None => &EDITION_TITLES_WITH_CUSTOM,
+        };
+        tree.change(widgets.edition, |kind| {
+            if let Kind::Dropdown(dropdown) = kind {
+                dropdown.options = options;
+            }
+        });
+        let index = current.map_or(0, |edition| {
+            eggos_components::editions::EDITIONS
+                .iter()
+                .position(|each| each.name == edition.name)
+                .unwrap_or(0)
+        });
+        tree.set_selected(widgets.edition, index);
+        let summary = current.map_or(CUSTOM_SUMMARY, |edition| edition.summary);
+        show_line(tree, widgets.edition_summary, summary, Token::TextDim);
+        tree.set_enabled(widgets.edition, !self.busy() && !self.confirming());
+        tree.set_accessible_value(widgets.edition, current.map_or("none", |edition| edition.name));
+    }
+
+    fn choose_edition(&mut self, tree: &mut WidgetTree<CAPACITY>, option: usize, now_ms: u32) -> Option<Request> {
+        let custom_shown = self.current_edition().is_none();
+        let index = if custom_shown { option.checked_sub(1)? } else { option };
+        let edition = eggos_components::editions::EDITIONS.get(index)?;
+        if self.current_edition().is_some_and(|current| current.name == edition.name) || self.others_busy() {
+            return None;
+        }
+        let Some(store) = self.read.store.clone() else {
+            show_line(
+                tree,
+                self.widgets.edition_summary,
+                "No component store: component edition downloads it, or attach the store disk.",
+                Token::Text,
+            );
+            return None;
+        };
+        let mut installed = self.installed();
+        let mut plan: Vec<String> = Vec::new();
+        for wanted in edition.components {
+            if installed.iter().any(|component| component.name == *wanted)
+                || !store.index.components.iter().any(|offered| offered.name == *wanted)
+            {
+                continue;
+            }
+            let Ok(needs) = manager::plan_install(&store.index, &installed, wanted) else {
+                continue;
+            };
+            let needs: Vec<Component> = needs.into_iter().cloned().collect();
+            for need in needs {
+                if !plan.contains(&need.name) {
+                    plan.push(need.name.clone());
+                    installed.push(need);
+                }
+            }
+        }
+        if plan.is_empty() {
+            let line = format!("{} is installed: nothing to add.", edition.title);
+            show_line(tree, self.widgets.edition_summary, &line, Token::Text);
+            return None;
+        }
+        let first = plan.first().cloned().unwrap_or_default();
+        let titles: Vec<String> = plan.iter().map(|name| self.title_of(name)).collect();
+        let line = format!("Would install for {}: {}", edition.title, titles.join(", "));
+        let components: Vec<Component> = plan.iter().filter_map(|name| self.component(name)).collect();
+        let parts: Vec<&Component> = components.iter().collect();
+        show_line(tree, self.widgets.first, &line, Token::Text);
+        show_line(tree, self.widgets.second, &messages::in_all(&parts), Token::TextDim);
+        self.chosen_edition = Some(edition.name);
+        self.open_confirmation(tree, Note::Install { name: first, plan }, "Install", now_ms);
+        None
     }
 
     fn installing_here(&self, name: &str) -> bool {
@@ -827,7 +954,17 @@ impl ComponentsPane {
         }
     }
 
+    /// The edition whose plan the band started and that finished installing: the program
+    /// records it (D263). Taken once.
+    pub fn take_finished_edition(&mut self) -> Option<&'static str> {
+        if matches!(self.work, Work::Idle) && self.failed.is_none() {
+            return self.chosen_edition.take();
+        }
+        None
+    }
+
     fn refresh(&mut self, tree: &mut WidgetTree<CAPACITY>) {
+        self.show_edition(tree);
         let widgets = self.widgets;
         match &self.read.store {
             Some(store) => {

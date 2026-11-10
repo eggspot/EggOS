@@ -1350,6 +1350,11 @@ impl SettingsWindow {
         self.components.show_installed(&mut self.tree, result, read)
     }
 
+    /// The edition the Components pane finished installing, to record (D263).
+    pub fn take_finished_edition(&mut self) -> Option<&'static str> {
+        self.components.take_finished_edition()
+    }
+
     /// Shows how a remove went, with the components read after.
     pub fn show_removed(&mut self, result: Result<(), RemoveError>, read: ComponentsRead) {
         self.components.show_removed(&mut self.tree, result, read);

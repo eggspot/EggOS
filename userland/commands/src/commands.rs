@@ -1819,7 +1819,7 @@ pub const COMPONENT_EDITION: CommandDefinition = CommandDefinition {
     ],
     examples: &[example(
         "component edition",
-        "  server\tThe base alone: no desktop, no foreign apps, every service added by hand.\n  personal\tWindows and macOS apps beside EggOS's own.\n  professional\tPersonal, with every tool for work that the store offers.\n  enterprise\tProfessional, ready for managed fleets.\n",
+        "  server\tThe base alone: no desktop and no foreign apps.\n  personal\tWindows and macOS apps beside EggOS's own.\n  professional\tPersonal, with every tool for work that the store offers.\n  enterprise\tProfessional, ready for managed fleets.\n",
     )],
     surface: Surface::Gui("Settings: Components"),
 };

@@ -118,6 +118,7 @@ fn read_of(store: Option<Store>, installed: &[&str], runs_this_window: bool) -> 
         rows,
         runs_this_window: (runs_this_window && installed.contains(&"desktop"))
             .then(|| String::from("desktop")),
+        recorded_edition: None,
     }
 }
 

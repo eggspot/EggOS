@@ -19468,3 +19468,22 @@ the license, by an explicit instruction recorded here.
   controller-wide `IS` is cleared, so the next completion sends a new message. All the
   controller's disks share one event, so a completion on one wakes the others to look again.
 - **Not yet.** Building and running; one message per port where the controller has several.
+
+## D263 The editions' GUI: the Components pane's Edition band (D22 for D258; design by Claude Fable, docs/ux/editions-v0.4.md; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (the design by Claude Fable)
+
+- **Decision.** As the design's sections 1 and 2: an `Edition` band above the rows (panel, label,
+  dropdown named `Edition`, summary; `ROWS_TOP` 196), the dropdown showing the current edition
+  (`Custom` added when none matches) and its summary. Choosing another edition builds the plan
+  (each missing component the store offers, with what it needs), says `Would install for <Title>:
+  ...` and the size in all, and opens the pane's install confirmation; `Install` runs the plan
+  through the pane's existing per-component progress. An empty plan answers `<Title> is
+  installed: nothing to add.`; with no store the band says the CLI downloads it. The capability
+  now records the chosen edition (`/var/lib/eggos/edition`) after `component edition <name>` and
+  after the pane's plan, and `editions::current_preferring` prefers it while its list still
+  matches, so Personal, Professional and Enterprise (the same components today) are told apart;
+  Server's summary is shortened to fit a label.
+- **Deviations from the design, for the next GUI pass.** The confirmation opens under the plan's
+  first row with the install note's lines, not under the band with one line per component; the
+  pane does not download the store itself (the design's section 4) or show the band's messages
+  under it (they go in the summary line); the phone, tablet and TV layouts of section 7 are not
+  done. These need the pane's note to sit under the band, and a store-download request (D257).
