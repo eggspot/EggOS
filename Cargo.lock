@@ -4,19 +4,19 @@ version = 4
 
 [[package]]
 name = "eggos-android-console"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-android-log"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-android-properties"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-app"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-app-manifest",
  "eggos-commands",
@@ -29,27 +29,27 @@ dependencies = [
 
 [[package]]
 name = "eggos-app-manifest"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-build-timer"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-c-format"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-calendar"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-commands"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-components"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-app",
  "eggos-commands",
@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "eggos-coreutils"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-android-log",
  "eggos-android-properties",
@@ -82,22 +82,22 @@ dependencies = [
 
 [[package]]
 name = "eggos-crypto"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-device-list"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-download-list"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-files",
 ]
 
 [[package]]
 name = "eggos-downloads"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-app",
  "eggos-download-list",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "eggos-drivers"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-app-manifest",
  "eggos-calendar",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "eggos-editor"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-app",
  "eggos-files",
@@ -128,18 +128,18 @@ dependencies = [
 
 [[package]]
 name = "eggos-eggfs"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-eggsh"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-runtime",
 ]
 
 [[package]]
 name = "eggos-eggway"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-element-tree",
  "eggos-runtime",
@@ -148,11 +148,11 @@ dependencies = [
 
 [[package]]
 name = "eggos-element-tree"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-files"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-app",
  "eggos-app-manifest",
@@ -163,32 +163,32 @@ dependencies = [
 
 [[package]]
 name = "eggos-font"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-hal"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-drivers",
 ]
 
 [[package]]
 name = "eggos-hello-window"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-runtime",
 ]
 
 [[package]]
 name = "eggos-image"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-png",
 ]
 
 [[package]]
 name = "eggos-init"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-runtime",
  "eggos-settings-file",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "eggos-kernel"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-android-log",
  "eggos-android-properties",
@@ -217,46 +217,46 @@ dependencies = [
 
 [[package]]
 name = "eggos-linux-dynamic"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-linux-events"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-linux-gui-tests"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-wayland",
 ]
 
 [[package]]
 name = "eggos-linux-mappings"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-linux-memory"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-linux-sockets"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-linux-static"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-linux-tcp"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-linux-udp"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-macos"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-c-format",
  "eggos-calendar",
@@ -273,18 +273,18 @@ dependencies = [
 
 [[package]]
 name = "eggos-macos-console"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-macos-gui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-toolkit",
 ]
 
 [[package]]
 name = "eggos-macos-gui-tests"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-macos-gui",
  "eggos-toolkit",
@@ -292,11 +292,11 @@ dependencies = [
 
 [[package]]
 name = "eggos-math"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-commands",
  "eggos-crypto",
@@ -308,30 +308,30 @@ dependencies = [
 
 [[package]]
 name = "eggos-net"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-plist"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-png"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-runtime"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-selftest"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-runtime",
 ]
 
 [[package]]
 name = "eggos-settings"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-app",
  "eggos-calendar",
@@ -354,22 +354,22 @@ dependencies = [
 
 [[package]]
 name = "eggos-settings-file"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-std-selftest"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-terminal"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-font",
 ]
 
 [[package]]
 name = "eggos-terminal-window"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-element-tree",
  "eggos-font",
@@ -380,14 +380,14 @@ dependencies = [
 
 [[package]]
 name = "eggos-tls"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-crypto",
 ]
 
 [[package]]
 name = "eggos-toolkit"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-element-tree",
  "eggos-font",
@@ -396,14 +396,14 @@ dependencies = [
 
 [[package]]
 name = "eggos-translate"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-crypto",
 ]
 
 [[package]]
 name = "eggos-translation-loader"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-app-manifest",
  "eggos-runtime",
@@ -412,11 +412,11 @@ dependencies = [
 
 [[package]]
 name = "eggos-wayland"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-windows"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-c-format",
  "eggos-calendar",
@@ -436,22 +436,22 @@ dependencies = [
 
 [[package]]
 name = "eggos-windows-console"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-windows-gui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-font",
 ]
 
 [[package]]
 name = "eggos-windows-gui-tests"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "eggos-windows-registry"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-commands",
  "eggos-runtime",
@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eggos-app",
  "eggos-app-manifest",

@@ -26,6 +26,9 @@ the run scripts.
 2. From the [latest release](https://github.com/eggspot/EggOS/releases/latest) (v0.3.0 or later), download into one
    folder the image for your machine (`eggos-<version>-aarch64.elf`, `-riscv64.elf` or
    `-x86_64.elf`), `SHA256SUMS`, and `run-eggos.sh` (macOS, Linux) or `run-eggos.ps1` (Windows).
+   From v0.4.0, also download its component store (`eggos-<version>-<arch>-components.img`) to
+   run Windows and Mac apps: the script attaches it, and `component install windows-apps` or
+   `mac-apps` (or Settings > Components) installs that layer ([docs/components.md](docs/components.md)).
 3. Run the script. It picks your machine's architecture, checks the image against `SHA256SUMS`
    (`sha256sum -c --ignore-missing SHA256SUMS` or `shasum -a 256 -c --ignore-missing SHA256SUMS`
    checks it by hand) and boots it:
