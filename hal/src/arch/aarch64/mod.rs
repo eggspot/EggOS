@@ -360,7 +360,11 @@ fn uart_address() -> usize {
         return known;
     }
     let found = match crate::handoff::handoff::<Aarch64>() {
-        None => UART0_BASE,
+        None => device_tree_bytes()
+            .and_then(crate::fdt::pl011)
+            .and_then(|address| usize::try_from(address).ok())
+            .filter(|&address| address != 0 && (address as u64) < BOOT_DIRECT_MAP_END)
+            .unwrap_or(UART0_BASE),
         Some(handoff) => acpi_table_from(handoff.rsdp, b"SPCR")
             .and_then(crate::acpi::parse_spcr)
             .filter(|port| port.kind == crate::acpi::SerialKind::Pl011)
@@ -407,6 +411,13 @@ fn acpi_table_from(rsdp: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
             )
         })
     })
+}
+
+/// The firmware's device tree, whole, through the boot direct map.
+pub(super) fn device_tree_bytes() -> Option<&'static [u8]> {
+    // SAFETY: the address is 0, the loader's tree or QEMU `virt`'s at the start of RAM, which
+    // nothing writes and the boot direct map covers.
+    unsafe { boot_memory::device_tree_blob(device_tree_address()) }
 }
 
 /// Where the firmware's device tree is: the handoff's (none when it passed none), else the

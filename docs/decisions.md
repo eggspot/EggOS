@@ -19332,3 +19332,13 @@ the license, by an explicit instruction recorded here.
   methods compute, `_PRT`, `_S5` through it, notifications and the embedded controller; interrupt
   resources; drivers for the ACPI devices (I2C controllers and HID over I2C first, then the
   battery, AC adapter and lid).
+
+## D253 AArch64's GIC and console UART from the device tree too (M5's "the GIC and UART addresses from discovery instead of D12's"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Without ACPI (D237), the HAL reads the GIC from the device tree's first GIC node
+  (`arm,gic-v3`: distributor and redistributor range; `arm,cortex-a15-gic`, `arm,gic-400`,
+  `arm,cortex-a9-gic`, `arm,cortex-a7-gic`: distributor and CPU interface) and the console from its
+  first `arm,pl011` node, before falling back to QEMU `virt`'s fixed addresses (`fdt::gic`,
+  `fdt::pl011`). This runs before `kernel_main`, through the boot direct map, like ACPI's.
+- **Not yet.** Building and running; `/chosen/stdout-path` naming the console; the UART's and the
+  timer's interrupts from the tree; `ranges` translation for nodes under buses.

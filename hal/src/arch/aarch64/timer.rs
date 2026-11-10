@@ -39,6 +39,7 @@ fn is_gicv3() -> bool {
 /// Reads the GIC's place and version from the `MADT` when the UEFI loader started the kernel.
 fn discover() {
     let Some(gic) = super::madt().and_then(crate::acpi::madt_gic) else {
+        discover_in_tree();
         return;
     };
     let Ok(distributor) = usize::try_from(gic.distributor) else {
@@ -59,6 +60,28 @@ fn discover() {
     GIC_SECOND_BLOCK.store(second, Ordering::Relaxed);
     GIC_SECOND_BLOCK_BYTES.store(bytes, Ordering::Relaxed);
     GIC_VERSION.store(gic.version.max(2), Ordering::Relaxed);
+}
+
+/// Reads the GIC's place and version from the device tree when there is no ACPI (D253).
+fn discover_in_tree() {
+    let Some(gic) = super::device_tree_bytes().and_then(crate::fdt::gic) else {
+        return;
+    };
+    let (Ok(distributor), Ok(second), Ok(bytes)) = (
+        usize::try_from(gic.distributor.0),
+        usize::try_from(gic.second.0),
+        usize::try_from(gic.second.1),
+    ) else {
+        return;
+    };
+    if distributor == 0 || second == 0 || bytes == 0 {
+        return;
+    }
+    GIC_DISTRIBUTOR.store(distributor, Ordering::Relaxed);
+    GIC_SECOND_BLOCK.store(second, Ordering::Relaxed);
+    let second_bytes = if gic.version >= 3 { bytes } else { gicv2::CPU_INTERFACE_BLOCK_SIZE };
+    GIC_SECOND_BLOCK_BYTES.store(second_bytes, Ordering::Relaxed);
+    GIC_VERSION.store(gic.version, Ordering::Relaxed);
 }
 
 /// The GIC register blocks this module drives, for the kernel's page tables.
