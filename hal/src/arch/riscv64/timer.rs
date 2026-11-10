@@ -6,6 +6,16 @@
 /// device tree once the kernel parses it (M5).
 pub(super) const TIMEBASE_FREQUENCY: u64 = 10_000_000;
 
+/// The `time` counter's frequency: `/cpus/timebase-frequency` once the boot hart read it (D261),
+/// QEMU `virt`'s until then.
+static FREQUENCY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(TIMEBASE_FREQUENCY);
+
+/// The `time` counter's frequency.
+#[inline]
+pub(super) fn frequency() -> u64 {
+    FREQUENCY.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// SBI Timer extension, `sbi_set_timer` function.
 const SBI_EXT_TIME: usize = 0x5449_4d45;
 const SBI_TIME_SET_TIMER: usize = 0;
@@ -24,6 +34,14 @@ const SBI_IPI_SEND_IPI: usize = 0;
 /// so both are taken once `sstatus.SIE` is set. Called by each hart before it runs the kernel's
 /// code: the boot hart's entry code before `kernel_main`, a secondary hart's before its entry.
 pub(super) extern "C" fn init() {
+    if let Some(tree) = super::device_tree_bytes() {
+        if crate::fdt::riscv_has_extension(tree, b"sstc") {
+            SSTC.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(hertz) = crate::fdt::timebase_frequency(tree).filter(|&hertz| hertz != 0) {
+            FREQUENCY.store(hertz, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
     disarm();
     // SAFETY: setting `sie.STIE` and `sie.SSIE` only lets the (now disarmed) timer interrupt and
     // the wake-up interrupt reach the trap vector, which is installed, once interrupts are
@@ -63,9 +81,20 @@ pub(super) fn now() -> u64 {
     ticks
 }
 
+/// Whether the harts have Sstc (D261): the deadline is written to `stimecmp` directly, with no
+/// call into the SBI firmware. Set by the boot hart from the device tree.
+pub(super) static SSTC: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Raises the supervisor timer interrupt once `time` >= `deadline`; this also clears a pending
 /// timer interrupt whose deadline is replaced.
 pub(super) fn set_deadline(deadline: u64) {
+    if SSTC.load(core::sync::atomic::Ordering::Relaxed) {
+        // SAFETY: `stimecmp` (CSR 0x14d) exists with Sstc, which the device tree said the harts
+        // have and the SBI firmware enables for S-mode (`menvcfg.STCE`); writing it only moves
+        // this hart's timer interrupt.
+        unsafe { core::arch::asm!("csrw 0x14d, {}", in(reg) deadline, options(nomem, nostack)) };
+        return;
+    }
     // SAFETY: an SBI call per the SBI calling convention: a7 = extension, a6 = function,
     // a0 = the 64-bit deadline; a0/a1 return error and value. It touches none of our memory.
     unsafe {

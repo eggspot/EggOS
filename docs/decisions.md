@@ -19448,3 +19448,13 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; retpolines or IBRS on every entry for CPUs without enhanced
   IBRS; Retbleed's return thunks; STIBP for SMT siblings; RSB filling on context switch; measuring
   IBPB's cost on a process switch.
+
+## D261 RISC-V: Sstc's `stimecmp` and the device tree's timebase (D26's follow-ups; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The boot hart reads the device tree before arming its timer: when the first hart's
+  `riscv,isa-extensions` (or an `_`-separated part of `riscv,isa`) names `sstc`, every deadline is
+  written to `stimecmp` (CSR 14Dh) directly instead of through `sbi_set_timer`, a trap to the
+  firmware saved per timer arm; and `/cpus/timebase-frequency` replaces QEMU `virt`'s 10 MHz as
+  the clock's frequency. The device tree parser now keeps those three properties per node.
+- **Not yet.** Building and running; harts that differ in their extensions; Svinval and the
+  vector extension's first-use trap (D54).
