@@ -32,7 +32,8 @@ const SCAN_REQUEST: u8 = 0x0d;
 const SCAN_COMPLETE: u8 = 0x0f;
 const BEACON_FILTER: u8 = 0xd2;
 const BEACON_FILTER_BYTES: usize = 60;
-const RX_MPDU: u8 = 0xc1;
+/// The code of the packets that carry received frames.
+pub const RX_MPDU: u8 = 0xc1;
 
 const CAPABILITY_DQA: usize = 12;
 const CAPABILITY_LAR_MULTI_MCC: usize = 29;
@@ -237,7 +238,9 @@ pub fn scan_request(nvm: &Nvm, channel_limit: usize, extended_channels: bool) ->
     request
 }
 
-fn heard(payload: &[u8], ax210: bool) -> Option<Heard> {
+/// The 802.11 frame in a `REPLY_RX_MPDU` packet's `payload`, with its channel and signal; `None`
+/// when the firmware marked it damaged.
+pub fn received_frame(payload: &[u8], ax210: bool) -> Option<Heard> {
     let descriptor = match ax210 {
         true => DESCRIPTOR_V3_BYTES,
         false => DESCRIPTOR_V1_BYTES,
@@ -282,7 +285,7 @@ pub fn scan<R: RegisterIo, M: DmaMemory>(
         let mut complete = false;
         for packet in transport.take_notifications() {
             match packet.code {
-                RX_MPDU => frames.extend(heard(&packet.payload, ax210)),
+                RX_MPDU => frames.extend(received_frame(&packet.payload, ax210)),
                 SCAN_COMPLETE => complete = true,
                 _ => {}
             }
@@ -347,10 +350,10 @@ mod tests {
         payload[33] = 0;
         payload[34] = 11;
         payload.extend_from_slice(&frame);
-        let heard = heard(&payload, false).unwrap();
+        let heard = received_frame(&payload, false).unwrap();
         assert_eq!((heard.channel, heard.signal), (11, -55));
         assert_eq!(heard.frame, frame);
         payload[12] = 0;
-        assert_eq!(super::heard(&payload, false), None);
+        assert_eq!(received_frame(&payload, false), None);
     }
 }

@@ -849,6 +849,13 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
         }
     }
 
+    /// Moves a transmit queue's write pointer: `value` is the queue's number in bits 16 and up
+    /// and its next slot below.
+    pub fn ring_doorbell(&self, value: u32) {
+        fence(Ordering::SeqCst);
+        self.regs.write32(HBUS_WRITE_POINTER, value);
+    }
+
     fn tx_queue_size(&self) -> usize {
         match self.adapter.family {
             Family::Ax200 => TX_DESCRIPTORS,

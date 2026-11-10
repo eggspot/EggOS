@@ -19787,3 +19787,46 @@ the license, by an explicit instruction recorded here.
   active and directed scans; 6 GHz; then association: the MAC, PHY and binding contexts, the
   station, authentication and association frames, WPA2's handshake through `eggos-wifi`, keys,
   and the data path (part 6); the `wifi` CLI, MCP tools and the Network pane (D22).
+
+## D277 The Intel Wi-Fi driver, part 6: joining a network, the management queue and frames sent through it (D276's next; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from OpenBSD's `iwx(4)` under D272's exception)
+
+- **Decision.** `eggos_drivers::wifi::iwx::station::join` sends what the reference's
+  authentication step sends: the PHY context on the network's channel at 20 MHz (version 3 or 4,
+  the wide channel layout when the firmware has ultra-high-band channels; the receive chains in
+  the RLC configuration instead when that command is at version 2), the MAC context for a client
+  station (the adapter's address, the BSSID, group frames and, until associated, beacons let in),
+  the binding of MAC to PHY on the right LMAC, the station entry for the access point (station
+  0, a link station), the management transmit queue (queue 1, TID 15, through `TX_QUEUE_CFG` or
+  `SCD_QUEUE_CONFIG` version 3, checked against the queue the firmware answers with) in a DMA
+  block of its own (256 descriptors, the byte-count table, a command and a 2 KiB payload slot
+  per descriptor), and session protection for nine beacon intervals. `Link::send` writes the
+  transmit command (version 7 layout on the AX200 family, 8 on the AX210 family) with the frame's
+  header, the body in its slot, the descriptor (first 20 bytes, the rest of the command, the
+  body), the byte count, and moves the queue's write pointer; the firmware picks the rate, as the
+  reference leaves it. `associated` gives the MAC context the association id and the station its
+  update. Rate scaling, aggregation and the data queues are left out: every frame goes through
+  the one queue, as the reference sends non-aggregated traffic.
+- **Not yet.** Building and running; reclaiming slots from the firmware's transmit responses;
+  removing the contexts on disconnect; HT, VHT and HE rates and widths.
+
+## D278 Connecting to a WPA2-Personal or open network: the client station's frames in `eggos-wifi`, the four-way handshake, and the network chosen by `/var/lib/eggos/wifi.conf` (M13 Wi-Fi; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from IEEE 802.11-2020)
+
+- **Decision.**
+  - `eggos_wifi::client` (written from the standard) builds the open-system authentication
+    request and the association request (ESS, short slot, privacy when protected, listen interval
+    10, SSID, the 2.4 GHz rates, WPA2-Personal's RSN element), reads the access point's
+    authentication status and association answer (only from its BSSID), reads a beacon's
+    interval, and wraps and unwraps data frames: to the distribution system with LLC/SNAP and the
+    ethertype, and back as Ethernet's destination, source, ethertype and payload.
+  - The kernel's Wi-Fi thread reads `/var/lib/eggos/wifi.conf` (`ssid=` and `passphrase=` lines)
+    after each scan; when it heard that network, it joins it (D277), authenticates, associates,
+    and for WPA2-Personal runs `eggos_wifi::handshake::Supplicant` with the PMK from the
+    passphrase and a nonce from the kernel's generator, sending messages 2 and 4 as EAPOL data
+    frames, until message 3 gives the keys. `/proc/driver/wifi` then names the network.
+  - Encryption stays in software: frames go to the firmware with its encryption off, and CCMP
+    (`eggos_wifi::protection`) will protect and check data frames on the host, so no key is
+    installed in the firmware. That keeps the data path one piece of code for every adapter.
+- **Not yet.** Building and running; the data path (Ethernet frames to and from the kernel's
+  network stack through CCMP, part 7); group-key rekeying; WPA3-Personal (SAE); the `wifi` CLI and
+  MCP tools that write the settings file and the Network pane's list (D22); roaming and
+  reconnecting after a disconnect.

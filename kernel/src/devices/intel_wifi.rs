@@ -17,7 +17,10 @@ use eggos_drivers::wifi::iwx::devices::{self, Adapter, VENDOR_INTEL};
 use eggos_drivers::wifi::iwx::firmware::Firmware;
 use eggos_drivers::wifi::iwx::nvm;
 use eggos_drivers::wifi::iwx::scan;
-use eggos_wifi::frames::{self as wifi_frames, Network};
+use eggos_drivers::wifi::iwx::station::{self, Link, Target};
+use eggos_wifi::client;
+use eggos_wifi::frames::{self as wifi_frames, Network, Security};
+use eggos_wifi::handshake::{self, Keys, Supplicant};
 use eggos_drivers::wifi::iwx::transport::{self, Transport, Wait};
 use eggos_hal::Platform;
 
@@ -32,6 +35,134 @@ const START_TIMEOUT_MS: u64 = 2000;
 const INIT_TIMEOUT_MS: u64 = 4000;
 const SCAN_TIMEOUT_MS: u64 = 15_000;
 const SCAN_INTERVAL: Duration = Duration::from_secs(30);
+const ANSWER_TIMEOUT_MS: u64 = 2000;
+const HANDSHAKE_TIMEOUT_MS: u64 = 5000;
+/// The file that names the network to join (D278): `ssid=<name>` and `passphrase=<words>` lines.
+pub const SETTINGS_PATH: &str = "/var/lib/eggos/wifi.conf";
+const LARGEST_SETTINGS: usize = 4096;
+
+static CONNECTED: SpinLock<Option<alloc::string::String>> = SpinLock::new(None);
+
+struct Connection {
+    _link: Link<DmaRegion>,
+    _keys: Option<Keys>,
+}
+
+/// The network the station is connected to, if any.
+pub fn connected_network() -> Option<alloc::string::String> {
+    CONNECTED.lock().clone()
+}
+
+fn wanted() -> Option<(Vec<u8>, Vec<u8>)> {
+    let root = vfs::root();
+    let node = vfs::resolve(root, root, SETTINGS_PATH.as_bytes()).ok()?;
+    let size = node.attributes().size;
+    if node.kind() != NodeKind::Regular || size > LARGEST_SETTINGS as u64 {
+        return None;
+    }
+    let bytes = ProgramBytes::read(node, size, size).ok()?;
+    let (mut ssid, mut passphrase) = (None, Vec::new());
+    for line in bytes.bytes().split(|&byte| byte == b'\n') {
+        if let Some(value) = line.strip_prefix(b"ssid=") {
+            ssid = Some(value.to_vec());
+        } else if let Some(value) = line.strip_prefix(b"passphrase=") {
+            passphrase = value.to_vec();
+        }
+    }
+    Some((ssid?, passphrase))
+}
+
+fn wait_frame<P: Platform, T>(
+    transport: &mut Transport<Mmio, DmaRegion>,
+    ax210: bool,
+    milliseconds: u64,
+    mut wanted: impl FnMut(&[u8]) -> Option<T>,
+) -> Result<T, &'static str> {
+    let mut wait = Pauses::<P>::within(milliseconds);
+    loop {
+        for packet in transport.take_notifications() {
+            if packet.code != scan::RX_MPDU {
+                continue;
+            }
+            let found = scan::received_frame(&packet.payload, ax210).and_then(|heard| wanted(&heard.frame));
+            if let Some(found) = found {
+                return Ok(found);
+            }
+        }
+        if !wait.keep_waiting() {
+            return Err("the network did not answer");
+        }
+        wait.pause(1000);
+    }
+}
+
+fn eapol_from(frame: &[u8], bssid: [u8; 6]) -> Option<Vec<u8>> {
+    let header = client::data_header_bytes(frame)?;
+    if client::is_protected_data(frame) {
+        return None;
+    }
+    let (_, _, ethertype, payload) = client::ethernet_from(frame, frame.get(header..)?, bssid)?;
+    (ethertype == client::ETHERTYPE_EAPOL).then_some(payload)
+}
+
+fn connect<P: Platform>(
+    transport: &mut Transport<Mmio, DmaRegion>,
+    firmware: &Firmware,
+    adapter: &Adapter,
+    nvm: &nvm::Nvm,
+    seen: &Seen,
+    passphrase: &[u8],
+) -> Result<Connection, &'static str> {
+    let network = seen.network;
+    let channel = nvm
+        .channels
+        .iter()
+        .find(|channel| Some(channel.number) == network.channel)
+        .copied()
+        .ok_or("the network's channel is not one the adapter may use")?;
+    let protected = match network.security {
+        Security::Open => false,
+        Security::Wpa2Personal => true,
+        _ => return Err("the network's security is not WPA2-Personal or open"),
+    };
+    let (own, bssid) = (nvm.address, network.bssid);
+    let ax210 = adapter.family == devices::Family::Ax210;
+    let target = Target {
+        bssid,
+        channel,
+        beacon_interval: seen.beacon_interval,
+    };
+    let mut link = station::join(transport, firmware, adapter, own, target, &mut Regions, &mut Pauses::<P>::within(INIT_TIMEOUT_MS))
+        .map_err(station::JoinError::description)?;
+    link.send(transport, &client::authentication_request(own, bssid)).map_err(station::JoinError::description)?;
+    let status = wait_frame::<P, _>(transport, ax210, ANSWER_TIMEOUT_MS, |frame| client::authentication_status(frame, bssid))?;
+    if status != 0 {
+        return Err("the network refused authentication");
+    }
+    let request = client::association_request(own, bssid, network.ssid(), protected);
+    link.send(transport, &request).map_err(station::JoinError::description)?;
+    let (status, association) = wait_frame::<P, _>(transport, ax210, ANSWER_TIMEOUT_MS, |frame| client::association_answer(frame, bssid))?;
+    if status != 0 {
+        return Err("the network refused the association");
+    }
+    station::associated(transport, &link, association, &mut Pauses::<P>::within(INIT_TIMEOUT_MS)).map_err(station::JoinError::description)?;
+    if !protected {
+        return Ok(Connection { _link: link, _keys: None });
+    }
+    let pmk = handshake::pmk_from_passphrase(passphrase, network.ssid()).ok_or("the passphrase is not 8 to 63 characters")?;
+    let mut nonce = [0u8; handshake::NONCE_BYTES];
+    crate::random::fill::<P>(&mut nonce);
+    let mut supplicant = Supplicant::new(pmk, own, bssid, nonce);
+    loop {
+        let message = wait_frame::<P, _>(transport, ax210, HANDSHAKE_TIMEOUT_MS, |frame| eapol_from(frame, bssid))?;
+        let answer = supplicant.receive(&message).map_err(|_| "the WPA2 handshake failed: is the passphrase right?")?;
+        let frame = client::data_frame(own, bssid, bssid, client::ETHERTYPE_EAPOL, &answer.frame[..answer.length]);
+        link.send(transport, &frame).map_err(station::JoinError::description)?;
+        if let Some(keys) = answer.keys {
+            return Ok(Connection { _link: link, _keys: Some(keys) });
+        }
+    }
+}
 
 /// Intel's Wi-Fi adapters (PCI class 02h, subclass 80h, vendor 8086h).
 pub static INTEL_WIFI_DRIVER: DriverDescriptor = DriverDescriptor {
@@ -69,6 +200,8 @@ struct Running {
 pub struct Seen {
     pub network: Network,
     pub signal: i8,
+    /// Its beacon interval, in time units.
+    pub beacon_interval: u16,
 }
 
 /// The networks the last scan heard, strongest first.
@@ -90,6 +223,9 @@ pub fn status() -> alloc::string::String {
         return state.into();
     };
     let mut text = alloc::format!("{state}; address {}; {channels} channels", address_text(address));
+    if let Some(network) = connected_network() {
+        text.push_str(&alloc::format!("; network {network}"));
+    }
     for seen in networks() {
         let network = seen.network;
         text.push_str(&alloc::format!(
@@ -243,7 +379,12 @@ fn bring_up<P: Platform>(found: Found) {
         address: nvm.address,
         channels: nvm.channels.len(),
     });
+    let mut connection: Option<Connection> = None;
     loop {
+        if connection.is_some() {
+            crate::thread::sleep::<P>(SCAN_INTERVAL);
+            continue;
+        }
         if transport.radio_killed() {
             set_status("ready; the radio is switched off");
         } else {
@@ -254,6 +395,20 @@ fn bring_up<P: Platform>(found: Found) {
                     set_status("ready");
                 }
                 Err(error) => set_status(error.description()),
+            }
+            let chosen = wanted().and_then(|(ssid, passphrase)| {
+                networks().into_iter().find(|seen| seen.network.ssid() == ssid.as_slice()).map(|seen| (seen, passphrase))
+            });
+            if let Some((seen, passphrase)) = chosen {
+                set_status("connecting");
+                match connect::<P>(&mut transport, &firmware, &adapter, &nvm, &seen, &passphrase) {
+                    Ok(joined) => {
+                        *CONNECTED.lock() = Some(alloc::string::String::from_utf8_lossy(seen.network.ssid()).into());
+                        set_status("connected");
+                        connection = Some(joined);
+                    }
+                    Err(reason) => set_status(reason),
+                }
             }
         }
         crate::thread::sleep::<P>(SCAN_INTERVAL);
@@ -272,6 +427,7 @@ fn publish(heard: &[scan::Heard]) {
             None => seen.push(Seen {
                 network,
                 signal: frame.signal,
+                beacon_interval: client::beacon_interval(&frame.frame).unwrap_or(100),
             }),
         }
     }
