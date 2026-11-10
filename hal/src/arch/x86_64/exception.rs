@@ -261,7 +261,10 @@ x86_64_enter_user:
     popq    %rbx
     popq    %rax
     addq    $16, %rsp               // vector and error code
-    swapgs
+    cmpb    $0, {clear_buffers}(%rip)
+    je      5f
+    verw    {verw_selector}(%rip)
+5:  swapgs
     iretq
     int3
     // After a system call: `sysretq` takes `rcx` and `r11`, so theirs are not loaded.
@@ -281,7 +284,10 @@ x86_64_enter_user:
     movq    {rflags}(%rdi), %r11
     movq    {rsp}(%rdi), %rsp       // the program's stack
     movq    {rdi}(%rdi), %rdi
-    swapgs
+    cmpb    $0, {clear_buffers}(%rip)
+    je      6f
+    verw    {verw_selector}(%rip)
+6:  swapgs
     sysretq
     int3
 2:  movq    %rax, %gs:{cpu_segment_bases_id}
@@ -1247,6 +1253,8 @@ x86_64_user_test_end:
     gs_base = const core::mem::offset_of!(Registers, gs_base),
     ia32_kernel_gs_base = const IA32_KERNEL_GS_BASE,
     tss_rsp0 = const TSS_RSP0_OFFSET,
+    clear_buffers = sym CLEAR_CPU_BUFFERS,
+    verw_selector = sym VERW_SELECTOR,
     user_rsp = const USER_RSP_OFFSET,
     user_cs = const USER_CODE_SELECTOR,
     user_ss = const USER_DATA_SELECTOR,
@@ -1412,10 +1420,41 @@ static IDT_WITH_STACKS: InterruptDescriptorTable =
 /// Each vector that runs on its own stack, with its TSS interrupt-stack-table index (1 to 7).
 const STACK_VECTORS: [(usize, u8); 4] = [(8, 1), (2, 2), (18, 3), (1, 4)];
 
+/// Whether returns to user mode clear the CPU's buffers with `verw` (D249): set at boot on a
+/// CPU that has `MD_CLEAR` and is not reported immune to MDS. Read by the entry code.
+static CLEAR_CPU_BUFFERS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// A writable data selector, the operand `verw` checks while it clears the buffers.
+static VERW_SELECTOR: u16 = 0x10;
+
+const CPUID_MD_CLEAR: u32 = 1 << 10;
+const CPUID_ARCH_CAPABILITIES: u32 = 1 << 29;
+const IA32_ARCH_CAPABILITIES: u32 = 0x10a;
+const ARCH_CAPABILITIES_MDS_NO: u64 = 1 << 5;
+const ARCH_CAPABILITIES_TAA_NO: u64 = 1 << 8;
+
+fn needs_buffer_clearing() -> bool {
+    if super::timer::cpuid(0, 0)[0] < 7 {
+        return false;
+    }
+    let features = super::timer::cpuid(7, 0)[3];
+    if features & CPUID_MD_CLEAR == 0 {
+        return false;
+    }
+    if features & CPUID_ARCH_CAPABILITIES == 0 {
+        return true;
+    }
+    let capabilities = super::read_msr(IA32_ARCH_CAPABILITIES);
+    capabilities & ARCH_CAPABILITIES_MDS_NO == 0 || capabilities & ARCH_CAPABILITIES_TAA_NO == 0
+}
+
 /// Fills the IDT and loads it. Called once by the entry code, before `kernel_main`.
 pub(super) extern "C" fn install() {
     fill();
     load();
+    if needs_buffer_clearing() {
+        CLEAR_CPU_BUFFERS.store(1, core::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Fills the IDT, before any CPU loads it.

@@ -19279,3 +19279,16 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the paranoid GS check in those four handlers (an NMI between
   `syscall` and its `swapgs` runs the kernel path with the program's GS base); NMIs from ring 3
   handled by the kernel instead of the program (D49); a guard page under each IST stack.
+
+## D249 MDS: CPU buffers cleared with `verw` on every return to user mode, on affected CPUs (D49's speculation follow-up for real Intel CPUs; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** At boot the HAL decides once whether this machine's CPUs need it: CPUID 7's
+  `MD_CLEAR` (EDX[10]) present, and `IA32_ARCH_CAPABILITIES` (when CPUID 7 EDX[29] says it exists)
+  not reporting both `MDS_NO` and `TAA_NO`. Then both returns to ring 3, `sysretq` and `iretq`, run
+  `verw` on a kernel data selector right before `swapgs`, which on those CPUs overwrites the store,
+  fill and load-port buffers, so a program cannot sample what the kernel left in them. Elsewhere a
+  byte compare skips it.
+- **Not yet.** Building and running; buffer clearing before an idle CPU's `hlt` and between
+  threads of different programs on SMT siblings; KPTI with PCID for Meltdown-affected CPUs; Retbleed
+  and Spectre v2 return and branch mitigations (IBRS, retpolines, return thunks); measurement of
+  the cost on a system-call round trip.

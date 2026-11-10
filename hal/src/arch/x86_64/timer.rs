@@ -79,7 +79,7 @@ const HYPERVISOR_TIMING_LEAF: u32 = 0x4000_0010;
 /// so the APIC timer's own clock is never needed.
 static TSC_DEADLINE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-fn cpuid(leaf: u32, subleaf: u32) -> [u32; 4] {
+pub(super) fn cpuid(leaf: u32, subleaf: u32) -> [u32; 4] {
     let (eax, ecx, edx): (u32, u32, u32);
     let rbx: u64;
     // SAFETY: `cpuid` only reads identification registers; `rbx` is saved around it because LLVM
