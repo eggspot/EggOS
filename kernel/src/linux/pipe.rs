@@ -258,7 +258,8 @@ pub fn pipe2<P: Platform>(
     let limit = open_file_limit(process);
     let files = thread.files();
     let read_fd = files.lock().open(reading, close_on_exec, limit)?;
-    let write_fd = match files.lock().open(writing, close_on_exec, limit) {
+    let opened = files.lock().open(writing, close_on_exec, limit);
+    let write_fd = match opened {
         Ok(fd) => fd,
         Err(error) => {
             let closed = files.lock().remove(read_fd);

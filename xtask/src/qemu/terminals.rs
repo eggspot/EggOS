@@ -5,7 +5,8 @@
 //! with `wm size`; `stty size` typed into it with `wm type` and `wm press` prints the rows and
 //! columns its grid has, the same as `wm show`'s `screen` value (`<columns>x<rows>`), which
 //! differs from the first size; `wm show` lists its `folder` (the shell's `OSC 7`) as the home
-//! folder and its `row 1` as the prompt; and `wm capture` saves its content.
+//! folder, its `row 1` as `/etc/motd`'s line and its `row 2` as the prompt; and `wm capture`
+//! saves its content.
 
 use super::settings::Boot;
 use super::*;
@@ -23,6 +24,7 @@ const HOME_PREFIX: &str = "EGGOS-HOME ";
 const SHOWN_PREFIX: &str = "EGGOS-TERMINALS shown ";
 const CAPTURED_PREFIX: &str = "EGGOS-TERMINALS capture ";
 const POWER_OFF: &[u8] = b"poweroff\r";
+const MOTD: &str = include_str!("../../../initramfs/etc/motd");
 
 fn type_line(boot: &mut Boot<'_>, line: &[u8]) -> Result<(), String> {
     boot.keyboard
@@ -110,8 +112,13 @@ fn verdict(arch: &str, console: &str, windows: &[(u32, String)]) -> Result<(), S
             ));
         }
     }
-    if !value_of(console, "row 1").is_some_and(|row| row.starts_with("eggsh:")) {
-        return Err(format!("{arch}: `wm show`'s `row 1` is not the prompt"));
+    let motd = MOTD.trim_end();
+    if value_of(console, "row 1") != Some(motd)
+        || !value_of(console, "row 2").is_some_and(|row| row.starts_with("eggsh:"))
+    {
+        return Err(format!(
+            "{arch}: `wm show`'s `row 1` and `row 2` are not `{motd}` and the prompt"
+        ));
     }
     for prefix in [SHOWN_PREFIX, CAPTURED_PREFIX] {
         if number_after(console, prefix) != Some(0) {
@@ -171,8 +178,9 @@ mod tests {
         66 normal 80 112 658 430 9 ~ - Terminal\n\
         1 window 0,0 824x528\n\
         \x20 2 group 8,8 808x512 \"screen\" = \"101x32\"\n\
-        \x20   3 text 8,8 808x16 \"row 1\" = \"eggsh:/root# stty size\"\n\
-        \x20   4 text 8,24 808x16 \"row 2\" = \"32 101\"\n\
+        \x20   3 text 8,8 808x16 \"row 1\" = \"Welcome to EggOS. Type help. Apps: the egg, or Super.\"\n\
+        \x20   4 text 8,24 808x16 \"row 2\" = \"eggsh:/root# stty size\"\n\
+        \x20   5 text 8,40 808x16 \"row 3\" = \"32 101\"\n\
         \x20   36 text 8,8 808x512 \"folder\" = \"/root\"\n\
         EGGOS-TERMINALS shown 0\n\
         EGGOS-TERMINALS capture 0\n";
@@ -193,5 +201,7 @@ mod tests {
         let elsewhere = SHOWN.replace("\"folder\" = \"/root\"", "\"folder\" = \"/\"");
         assert!(verdict("x86_64", &elsewhere, &windows).is_err());
         assert!(verdict("x86_64", SHOWN, &windows[..1]).is_err());
+        let no_banner = SHOWN.replace("Welcome to EggOS.", "Hello.");
+        assert!(verdict("x86_64", &no_banner, &windows).is_err());
     }
 }

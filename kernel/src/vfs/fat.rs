@@ -866,7 +866,8 @@ impl FileSystem for Fat {
         if node == ROOT {
             return NodeKind::Directory;
         }
-        match self.volume.lock().entry_of(&self.layout, node) {
+        let entry = self.volume.lock().entry_of(&self.layout, node);
+        match entry {
             Ok(Some((_, _, entry))) if entry.is_directory() => NodeKind::Directory,
             _ => NodeKind::Regular,
         }

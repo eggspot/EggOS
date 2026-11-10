@@ -5,6 +5,7 @@
 //! the development host as well as on every bare-metal target.
 
 #![cfg_attr(not(test), no_std)]
+#![deny(clippy::significant_drop_in_scrutinee)]
 
 extern crate alloc;
 

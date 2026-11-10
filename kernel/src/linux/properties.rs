@@ -41,7 +41,8 @@ static AREA: SpinLock<Option<Box<Vec<u8>>>> = SpinLock::new(None);
 
 /// The area's size in bytes, as `stat` reports it: [`FIRST_AREA`] before it is made.
 pub fn size() -> u64 {
-    match AREA.lock().as_ref().map_or(0, |area| area.len()) {
+    let length = AREA.lock().as_ref().map_or(0, |area| area.len());
+    match length {
         0 => FIRST_AREA as u64,
         length => length as u64,
     }

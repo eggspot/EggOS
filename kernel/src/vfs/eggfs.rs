@@ -350,7 +350,8 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
 
     fn attributes(&self, node: u64) -> Attributes {
         let kind = node_kind(node);
-        match self.volume().attributes(node) {
+        let found = self.volume().attributes(node);
+        match found {
             Ok(found) => Attributes {
                 kind,
                 permissions: found.permissions,
@@ -390,7 +391,8 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
             return Name::new(b"");
         }
         let mut name = [0u8; MAX_NAME];
-        match self.volume().name(node, &mut name) {
+        let named = self.volume().name(node, &mut name);
+        match named {
             Ok(length) => Name::new(&name[..length]),
             Err(_) => Name::new(b""),
         }
@@ -405,7 +407,8 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
     }
 
     fn read_into(&self, node: u64, offset: u64, buffer: &mut [u8]) -> Result<usize, StorageError> {
-        match self.volume().read(node, offset, buffer) {
+        let read = self.volume().read(node, offset, buffer);
+        match read {
             Ok(read) => Ok(read),
             Err(Error::NotFound | Error::IsDirectory) => Ok(0),
             Err(_) => Err(StorageError),

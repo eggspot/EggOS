@@ -778,7 +778,8 @@ fn read_output_or_wait<P: Platform>(
         return ControlFlow::Continue(Some(Ok(0)));
     }
     loop {
-        let taken = match terminal.state.lock().packet {
+        let packet = terminal.state.lock().packet;
+        let taken = match packet {
             true => take_packet_into(process, terminal, buffers, count),
             false => take_output_into(process, terminal, buffers, count),
         };
