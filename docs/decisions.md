@@ -19342,3 +19342,19 @@ the license, by an explicit instruction recorded here.
   `fdt::pl011`). This runs before `kernel_main`, through the boot direct map, like ACPI's.
 - **Not yet.** Building and running; `/chosen/stdout-path` naming the console; the UART's and the
   timer's interrupts from the tree; `ranges` translation for nodes under buses.
+
+## D254 USB hubs: keyboards and mice behind hubs (D239's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** Keyboards plugged into a monitor's or a dock's hub, keyboards with a hub of their
+  own, and some boards' front ports are behind USB hubs, which D239 did not drive.
+- **Decision.** At attach time, a device whose device or first interface class is 09h is set up as
+  a hub: its configuration set, its hub descriptor read (USB 2.0's 29h, USB 3.x's 2Ah, with
+  `SET_HUB_DEPTH` for the latter), its slot context marked as a hub with its port count (Configure
+  Endpoint), every port powered; then each port is polled until a device connects, reset through
+  `SET_FEATURE(PORT_RESET)` until the reset change shows, the change cleared, and the device's speed
+  read from the port status. A child's slot context carries the route string (four bits a tier,
+  up to five tiers), its root port, and, for a low- or full-speed device behind a high-speed hub,
+  that hub's slot and port as its transaction translator. Hubs take a device slot and area of
+  their own and are never polled.
+- **Not yet.** Building and running; hot-plug (the hub's status-change endpoint); multi-TT hubs'
+  bit and think time; more than fifteen ports a hub; hubs as their own device class in the list.

@@ -1,7 +1,7 @@
 //! The eXtensible Host Controller Interface (xHCI 1.2; D239): the controller taken from the
-//! firmware and reset, its command and event rings, and every HID boot keyboard and mouse on a
-//! root port addressed, configured and polled through its interrupt endpoint. Hubs are not yet
-//! driven.
+//! firmware and reset, its command and event rings, and every HID boot keyboard and mouse on its
+//! ports addressed, configured and polled through its interrupt endpoint, through up to five tiers
+//! of USB 2.0 and 3.x hubs (D254).
 
 use super::{BootDevice, BootInterface, DESCRIPTOR_CONFIGURATION, DESCRIPTOR_DEVICE, Setup, boot_interface};
 use crate::dma::DmaMemory;
@@ -173,6 +173,60 @@ impl Ring {
 enum Handler {
     Keyboard(BootKeyboard),
     Mouse(BootMouse),
+    /// A hub: enumerated through at attach time, never polled (D254).
+    Hub { ports: u8 },
+}
+
+/// Where a device is on the bus: its root port, its route through hubs (four bits a tier), its
+/// speed, the high-speed hub whose transaction translator serves it when it is a low- or
+/// full-speed device behind one, and how many hubs are above it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Location {
+    pub root_port: usize,
+    pub route: u32,
+    pub speed: u32,
+    pub translator: Option<(u8, u8)>,
+    pub depth: u8,
+}
+
+const DEVICE_CLASS_HUB: u8 = 9;
+const HUB_DESCRIPTOR_USB2: u8 = 0x29;
+const HUB_DESCRIPTOR_USB3: u8 = 0x2a;
+const PORT_FEATURE_RESET: u16 = 4;
+const PORT_FEATURE_POWER: u16 = 8;
+const PORT_FEATURE_RESET_CHANGE: u16 = 20;
+const HUB_PORT_CONNECTED: u16 = 1;
+const HUB_PORT_LOW_SPEED: u16 = 1 << 9;
+const HUB_PORT_HIGH_SPEED: u16 = 1 << 10;
+const HUB_CHANGE_RESET: u16 = 1 << 4;
+const MAX_HUB_DEPTH: u8 = 5;
+const HUB_STATUS_POLLS: usize = 100;
+const SLOT_HUB: u32 = 1 << 26;
+const SPEED_SUPER: u32 = 4;
+
+/// The speed a USB 2.0 hub's port status gives its device.
+pub fn hub_port_speed(status: u16, super_speed_hub: bool) -> u32 {
+    match (super_speed_hub, status & HUB_PORT_LOW_SPEED != 0, status & HUB_PORT_HIGH_SPEED != 0) {
+        (true, _, _) => SPEED_SUPER,
+        (false, true, _) => SPEED_LOW,
+        (false, false, true) => SPEED_HIGH,
+        _ => SPEED_FULL,
+    }
+}
+
+/// Where a device on `port` of the hub at `hub` (in slot `hub_slot`) is.
+pub fn child_location(hub: &Location, hub_slot: u8, port: u8, speed: u32) -> Location {
+    let translator = match (hub.speed, speed) {
+        (SPEED_HIGH, SPEED_LOW | SPEED_FULL) => Some((hub_slot, port)),
+        _ => hub.translator,
+    };
+    Location {
+        root_port: hub.root_port,
+        route: hub.route | (u32::from(port.min(15)) << (4 * u32::from(hub.depth))),
+        speed,
+        translator,
+        depth: hub.depth + 1,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -184,6 +238,7 @@ struct Device {
     control: Ring,
     reports: Ring,
     handler: Handler,
+    location: Location,
 }
 
 /// An xHCI controller and the HID boot devices on its root ports.
@@ -486,16 +541,108 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         }
         let mut attached = 0;
         for port in 1..=self.ports {
-            let free = self.devices.iter().position(Option::is_none);
-            let Some(index) = free else {
+            let Ok(speed) = self.reset_port(port, keep_waiting) else {
+                continue;
+            };
+            let location = Location {
+                root_port: port,
+                route: 0,
+                speed,
+                translator: None,
+                depth: 0,
+            };
+            attached += self.attach_at(location, keep_waiting);
+        }
+        attached
+    }
+
+    fn attach_at(&mut self, location: Location, keep_waiting: &mut dyn FnMut() -> bool) -> usize {
+        let Some(index) = self.devices.iter().position(Option::is_none) else {
+            return 0;
+        };
+        let Ok(device) = self.attach(location, index, keep_waiting) else {
+            return 0;
+        };
+        self.devices[index] = Some(device);
+        let Handler::Hub { ports } = device.handler else {
+            return 1;
+        };
+        if location.depth >= MAX_HUB_DEPTH {
+            return 0;
+        }
+        let mut attached = 0;
+        for port in 1..=ports {
+            let Some(mut hub) = self.devices[index] else {
                 break;
             };
-            if let Ok(device) = self.attach(port, index, keep_waiting) {
-                self.devices[index] = Some(device);
-                attached += 1;
+            let speed = self.reset_hub_port(&mut hub, port, keep_waiting);
+            self.devices[index] = Some(hub);
+            if let Some(speed) = speed {
+                attached += self.attach_at(child_location(&location, hub.slot, port, speed), keep_waiting);
             }
         }
         attached
+    }
+
+    fn hub_request(&mut self, hub: &mut Device, request: u8, feature: u16, port: u8, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+        let setup = Setup {
+            request_type: 0x23,
+            request,
+            value: feature,
+            index: u16::from(port),
+            length: 0,
+        };
+        self.control_transfer(hub, setup, 0, keep_waiting).map(|_| ())
+    }
+
+    fn hub_port_status(&mut self, hub: &mut Device, port: u8, keep_waiting: &mut dyn FnMut() -> bool) -> Option<(u16, u16)> {
+        let setup = Setup {
+            request_type: 0xa3,
+            request: 0,
+            value: 0,
+            index: u16::from(port),
+            length: 4,
+        };
+        self.control_transfer(hub, setup, DESCRIPTOR_BUFFER, keep_waiting).ok()?;
+        let mut status = [0u8; 4];
+        copy_out(&self.memory, hub.area + DESCRIPTOR_BUFFER, &mut status);
+        Some((u16::from_le_bytes([status[0], status[1]]), u16::from_le_bytes([status[2], status[3]])))
+    }
+
+    fn reset_hub_port(&mut self, hub: &mut Device, port: u8, keep_waiting: &mut dyn FnMut() -> bool) -> Option<u32> {
+        let connected = (0..HUB_STATUS_POLLS).find_map(|_| {
+            let (status, _) = self.hub_port_status(hub, port, keep_waiting)?;
+            (status & HUB_PORT_CONNECTED != 0).then_some(())
+        });
+        connected?;
+        self.hub_request(hub, 3, PORT_FEATURE_RESET, port, keep_waiting).ok()?;
+        let status = (0..HUB_STATUS_POLLS).find_map(|_| {
+            let (status, change) = self.hub_port_status(hub, port, keep_waiting)?;
+            (change & HUB_CHANGE_RESET != 0).then_some(status)
+        })?;
+        self.hub_request(hub, 1, PORT_FEATURE_RESET_CHANGE, port, keep_waiting).ok()?;
+        Some(hub_port_speed(status, hub.location.speed >= SPEED_SUPER))
+    }
+
+    fn write_slot_context(&self, area: usize, entries: u32, location: &Location, hub_ports: Option<u8>) {
+        let slot_context = self.input_context(area, 1);
+        let hub = if hub_ports.is_some() { SLOT_HUB } else { 0 };
+        write32(
+            &self.memory,
+            slot_context,
+            (entries << 27) | (location.speed << 20) | (location.route & 0xf_ffff) | hub,
+        );
+        write32(
+            &self.memory,
+            slot_context + 4,
+            ((location.root_port as u32) << 16) | (u32::from(hub_ports.unwrap_or(0)) << 24),
+        );
+        let (translator_slot, translator_port) = location.translator.unwrap_or((0, 0));
+        write32(
+            &self.memory,
+            slot_context + 8,
+            u32::from(translator_slot) | (u32::from(translator_port) << 8),
+        );
     }
 
     fn reset_port(&self, port: usize, keep_waiting: &mut dyn FnMut() -> bool) -> Result<u32, Error> {
@@ -524,8 +671,8 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         Ok((status >> 10) & 0xf)
     }
 
-    fn attach(&mut self, port: usize, index: usize, keep_waiting: &mut dyn FnMut() -> bool) -> Result<Device, Error> {
-        let speed = self.reset_port(port, keep_waiting)?;
+    fn attach(&mut self, location: Location, index: usize, keep_waiting: &mut dyn FnMut() -> bool) -> Result<Device, Error> {
+        let speed = location.speed;
         let slot = self.command(0, TRB_ENABLE_SLOT << 10, keep_waiting)?;
         if slot == 0 || usize::from(slot) > MAX_DEVICES {
             return Err(Error::Unsupported("the controller gave a slot past its configured ones"));
@@ -548,13 +695,12 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             control: Ring::new(area + CONTROL_RING, RING_TRBS),
             reports: Ring::new(area + REPORT_RING, RING_TRBS),
             handler: Handler::Keyboard(BootKeyboard::default()),
+            location,
         };
         write64(&self.memory, DEVICE_CONTEXT_ARRAY_AT + usize::from(slot) * 8, base + (area + OUTPUT_CONTEXT) as u64);
         let mut max_packet = default_max_packet(speed);
         write32(&self.memory, self.input_context(area, 0) + 4, 0b11);
-        let slot_context = self.input_context(area, 1);
-        write32(&self.memory, slot_context, (1 << 27) | (speed << 20));
-        write32(&self.memory, slot_context + 4, (port as u32) << 16);
+        self.write_slot_context(area, 1, &location, None);
         self.write_control_endpoint(&device, max_packet);
         self.command(
             base + (area + INPUT_CONTEXT) as u64,
@@ -587,6 +733,12 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         )?;
         let mut configuration = [0u8; DESCRIPTOR_BUFFER_BYTES];
         copy_out(&self.memory, area + DESCRIPTOR_BUFFER, &mut configuration[..total]);
+        let interface_class = configuration.get(9 + 5).copied().unwrap_or(0);
+        if header[4] == DEVICE_CLASS_HUB || interface_class == DEVICE_CLASS_HUB {
+            let ports = self.set_up_hub(&mut device, head[5], keep_waiting)?;
+            device.handler = Handler::Hub { ports };
+            return Ok(device);
+        }
         let interface = boot_interface(&configuration[..total])
             .ok_or(Error::Unsupported("not a HID boot keyboard or mouse"))?;
         device.interface = interface;
@@ -602,8 +754,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         device.report_endpoint = dci;
         zero(&self.memory, area + INPUT_CONTEXT, 0x1000);
         write32(&self.memory, self.input_context(area, 0) + 4, 1 | (1 << dci));
-        write32(&self.memory, slot_context, (dci << 27) | (speed << 20));
-        write32(&self.memory, slot_context + 4, (port as u32) << 16);
+        self.write_slot_context(area, dci, &location, None);
         let endpoint = self.input_context(area, dci as usize + 1);
         let packet = u32::from(interface.max_packet.max(1));
         write32(&self.memory, endpoint, interval_field(speed, interface.interval) << 16);
@@ -617,6 +768,49 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         )?;
         self.queue_report(&mut device);
         Ok(device)
+    }
+
+    fn set_up_hub(&mut self, device: &mut Device, configuration: u8, keep_waiting: &mut dyn FnMut() -> bool) -> Result<u8, Error> {
+        self.control_transfer(device, Setup::set_configuration(configuration), 0, keep_waiting)?;
+        let super_speed = device.location.speed >= SPEED_SUPER;
+        let kind = if super_speed { HUB_DESCRIPTOR_USB3 } else { HUB_DESCRIPTOR_USB2 };
+        let setup = Setup {
+            request_type: 0xa0,
+            request: 6,
+            value: u16::from(kind) << 8,
+            index: 0,
+            length: 9,
+        };
+        self.control_transfer(device, setup, DESCRIPTOR_BUFFER, keep_waiting)?;
+        let mut descriptor = [0u8; 9];
+        copy_out(&self.memory, device.area + DESCRIPTOR_BUFFER, &mut descriptor);
+        let ports = descriptor[2].min(15);
+        if super_speed {
+            let depth = Setup {
+                request_type: 0x20,
+                request: 12,
+                value: u16::from(device.location.depth),
+                index: 0,
+                length: 0,
+            };
+            self.control_transfer(device, depth, 0, keep_waiting)?;
+        }
+        let base = self.memory.dma_addr().get();
+        zero(&self.memory, device.area + INPUT_CONTEXT, 0x1000);
+        write32(&self.memory, self.input_context(device.area, 0) + 4, 1);
+        let location = device.location;
+        self.write_slot_context(device.area, 1, &location, Some(ports));
+        self.command(
+            base + (device.area + INPUT_CONTEXT) as u64,
+            (TRB_CONFIGURE_ENDPOINT << 10) | (u32::from(device.slot) << 24),
+            keep_waiting,
+        )?;
+        for port in 1..=ports {
+            let mut hub = *device;
+            let _ = self.hub_request(&mut hub, 3, PORT_FEATURE_POWER, port, keep_waiting);
+            *device = hub;
+        }
+        Ok(ports)
     }
 
     fn write_control_endpoint(&self, device: &Device, max_packet: u32) {
@@ -666,6 +860,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             sent = match &mut device.handler {
                 Handler::Keyboard(keyboard) => keyboard.report(&report[..length], emit),
                 Handler::Mouse(mouse) => mouse.report(&report[..length], emit),
+                Handler::Hub { .. } => 0,
             };
         }
         self.queue_report(&mut device);
@@ -745,5 +940,31 @@ mod tests {
         assert_eq!(default_max_packet(SPEED_LOW), 8);
         assert_eq!(default_max_packet(SPEED_HIGH), 64);
         assert_eq!(default_max_packet(4), 512);
+    }
+
+    #[test]
+    fn a_full_speed_device_behind_a_high_speed_hub_uses_its_translator() {
+        let root = Location {
+            root_port: 3,
+            route: 0,
+            speed: SPEED_HIGH,
+            translator: None,
+            depth: 0,
+        };
+        let child = child_location(&root, 5, 2, SPEED_FULL);
+        assert_eq!(child.route, 2);
+        assert_eq!(child.translator, Some((5, 2)));
+        assert_eq!(child.root_port, 3);
+        let grandchild = child_location(&Location { speed: SPEED_HIGH, translator: None, ..child }, 6, 4, SPEED_HIGH);
+        assert_eq!(grandchild.route, 0x42);
+        assert_eq!(grandchild.translator, None);
+    }
+
+    #[test]
+    fn hub_port_status_gives_the_speed() {
+        assert_eq!(hub_port_speed(HUB_PORT_LOW_SPEED | 1, false), SPEED_LOW);
+        assert_eq!(hub_port_speed(HUB_PORT_HIGH_SPEED | 1, false), SPEED_HIGH);
+        assert_eq!(hub_port_speed(1, false), SPEED_FULL);
+        assert_eq!(hub_port_speed(1, true), SPEED_SUPER);
     }
 }
