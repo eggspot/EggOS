@@ -282,6 +282,18 @@ impl Credentials {
     }
 
     /// What `execve` makes of them ([`Ids::after_exec`]); the real ids and groups are kept.
+    /// Makes `user` the effective user id and `group` the effective group id, each given, as a
+    /// set-user-id or set-group-id program file asks (D270); [`Self::after_exec`] then saves them.
+    pub fn take_file_ids(&mut self, user: Option<u32>, group: Option<u32>) -> Result<(), Errno> {
+        for (kind, id) in [(Kind::User, user), (Kind::Group, group)] {
+            if let Some(id) = id.filter(|&id| id != self.ids(kind).effective) {
+                let ids = self.ids(kind);
+                self.set_ids(kind, Ids { effective: id, filesystem: id, ..ids })?;
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the user and group ids then.
     #[inline]
     pub fn after_exec(&mut self) -> Result<(Ids, Ids), Errno> {
@@ -635,6 +647,21 @@ mod tests {
         assert_eq!(user.set_filesystem(UNCHANGED, true), user);
         let moved = ids(1, 2, 3, 7);
         assert_eq!(moved.set_filesystem(7, false), moved);
+    }
+
+    #[test]
+    fn a_set_id_program_moves_the_effective_and_saved_ids_but_not_the_real_ones() {
+        let mut credentials = Credentials::new();
+        credentials.set_ids(Kind::User, Ids::all(1000)).unwrap();
+        credentials.set_ids(Kind::Group, Ids::all(100)).unwrap();
+        credentials.take_file_ids(Some(0), Some(5)).unwrap();
+        let (user, group) = credentials.after_exec().unwrap();
+        assert_eq!(user, ids(1000, 0, 0, 0));
+        assert_eq!(group, ids(100, 5, 5, 5));
+        assert!(is_secure_execution(user, group));
+        let mut plain = Credentials::new();
+        plain.take_file_ids(None, None).unwrap();
+        assert_eq!(plain.after_exec().unwrap(), (Ids::ROOT, Ids::ROOT));
     }
 
     #[test]

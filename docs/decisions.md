@@ -19614,3 +19614,16 @@ the license, by an explicit instruction recorded here.
   translated.
 - **Not yet.** Building and running; `dma-ranges` for devices whose DMA addresses differ from the
   CPU's; PCI hosts' `ranges` for their windows from the device tree.
+
+## D270 Set-user-id and set-group-id programs: `execve` takes the program file's owner and group as the effective ids (M7's last item, issue #94's follow-up; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from execve(2) and credentials(7))
+
+- **Decision.** When `execve` runs a program file whose mode has `S_ISUID`, the process's
+  effective (and file system) user id becomes the file's owner; with `S_ISGID` and the group's
+  execute bit, its effective group id becomes the file's group (`S_ISGID` without group execute
+  marks mandatory locking, not a set-group-id program). Then exec's usual step saves the effective
+  ids as the saved ones, so the program may later drop back to its real ids and return.
+  `AT_SECURE` is then 1, as the effective ids differ from the real ones. The bits of a `#!`
+  script are ignored, as on Linux: only the program file finally run counts, which for a script
+  is its interpreter. Programs the kernel starts from bytes (`exec::load`) take no ids.
+- **Not yet.** Building and running; `nosuid` mounts; dropping the bits on a write by someone
+  other than root, and on `chown`; refusing them while the process is traced; capabilities.

@@ -203,6 +203,31 @@ pub struct Program<'a> {
     image: &'a [u8],
     size: u64,
     file: Option<Arc<dyn FilePages>>,
+    set_ids: SetIds,
+}
+
+/// The ids a program file's set-user-id and set-group-id bits give the process that runs it
+/// (D270): its owner as the effective user id with `S_ISUID`, its group as the effective group
+/// id with `S_ISGID` and the group's execute bit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SetIds {
+    pub user: Option<u32>,
+    pub group: Option<u32>,
+}
+
+impl SetIds {
+    const SET_USER_ID: u32 = 0o4000;
+    const SET_GROUP_ID: u32 = 0o2000;
+    const GROUP_EXECUTE: u32 = 0o010;
+
+    /// The ids `attributes`' mode bits give.
+    pub fn of(attributes: &vfs::Attributes) -> Self {
+        let bits = attributes.permissions;
+        Self {
+            user: (bits & Self::SET_USER_ID != 0).then_some(attributes.owner),
+            group: (bits & Self::SET_GROUP_ID != 0 && bits & Self::GROUP_EXECUTE != 0).then_some(attributes.group),
+        }
+    }
 }
 
 impl<'a> Program<'a> {
@@ -212,7 +237,13 @@ impl<'a> Program<'a> {
             image,
             size: image.len() as u64,
             file: None,
+            set_ids: SetIds::default(),
         }
+    }
+
+    /// The same program, run with the ids `set_ids` gives.
+    pub fn with_set_ids(self, set_ids: SetIds) -> Self {
+        Self { set_ids, ..self }
     }
 
     /// The first bytes of `file`, `image`, from a file of `size` bytes, at least as many.
@@ -221,6 +252,7 @@ impl<'a> Program<'a> {
             image,
             size: size.max(image.len() as u64),
             file: Some(file),
+            set_ids: SetIds::default(),
         }
     }
 }
@@ -307,9 +339,11 @@ pub fn load_program<P: Platform>(
         (true, Some(interpreter)) => Some(check_loader(interpreter, &layout, user_end)?),
     };
     let [hwcap, hwcap2] = P::linux_hardware_capabilities();
-    let (user, group) = process
-        .credentials_and_limits_mut()
-        .credentials
+    let credentials = &mut process.credentials_and_limits_mut().credentials;
+    credentials
+        .take_file_ids(program.set_ids.user, program.set_ids.group)
+        .map_err(|_| ExecError::OutOfMemory("the credentials"))?;
+    let (user, group) = credentials
         .after_exec()
         .map_err(|_| ExecError::OutOfMemory("the credentials"))?;
     let secure = u64::from(credentials::is_secure_execution(user, group));
@@ -1030,7 +1064,8 @@ fn prepare<P: Platform>(
         image.bytes(),
         image_size,
         Arc::new(vfs::HeldNode::new(image_node)),
-    );
+    )
+    .with_set_ids(SetIds::of(&attributes));
     let dynamic_loader = dynamic_loader.as_ref().map(|(loader, bytes, size)| {
         Program::from_file(
             bytes.bytes(),
