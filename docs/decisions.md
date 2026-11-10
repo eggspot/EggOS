@@ -18567,6 +18567,13 @@ the license, by an explicit instruction recorded here.
   - **ARM64 pointer authentication**: unwinding strips the code a `pacibsp` prolog signed into
     a return address, for every frame and leaf the dispatcher, `RtlVirtualUnwind` and the
     catch walk undo.
+  - **ARM64 funclets and caller frames**: a funclet (catch block, `__finally`, filter,
+    unwind action) is called with its function's `x19` to `x29` from the frame's context, as
+    Windows restores them, since MSVC's ARM64 funclets reach the function's locals through
+    any of them (eggcpp2's second catch block read its object through `x22`); and a caller's
+    frame is undone from its call rather than its return address
+    (`unwind::arm64::virtual_unwind_to_call`), so a call right before an epilog keeps its
+    frame's handler (eggcrt2's `longjmp` through a `__finally`).
 - **Check.** Host tests of the catch walk and the undecorator. QEMU: `eggcpp2.exe`, our own
   C++ program on msvcp140 built by MSVC in CI, in the windows-crt session on x86_64 and
   aarch64: the layer's `std::bad_cast`, `bad_typeid`, `out_of_range`, `length_error` and
