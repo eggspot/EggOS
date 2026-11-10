@@ -4,7 +4,7 @@
 
 use crate::architecture::Architecture;
 use crate::archive::ArchiveError;
-use crate::installer::{Plan, Preview, Problem};
+use crate::installer::{APPLICATIONS, Plan, Preview, Problem};
 use crate::program::{NotRunnable, Program};
 use core::fmt::Write;
 use eggos_app_manifest::Source;
@@ -248,10 +248,30 @@ pub fn uninstall_failed(name: &str, problem: Problem) -> Line {
     line
 }
 
-/// What a finished install says.
+/// What a finished install says: `Installed win-paint in /Applications/win-paint.`
 pub fn installed(plan: &Plan) -> Line {
     let mut line = Line::new();
-    let _ = write!(line, "Installed {}.", plan.name());
+    let _ = write!(line, "Installed {} in ", plan.name());
+    line.push_bytes(plan.folder().as_bytes());
+    let _ = line.write_str(".");
+    line
+}
+
+/// What `app uninstall --dry-run` says of an installed app (D164): `would uninstall Paint:
+/// removes /Applications/Paint and everything in it`, before the translated code it would
+/// remove too.
+pub fn would_uninstall(name: &str) -> Line {
+    let mut line = Line::new();
+    let _ = write!(line, "would uninstall {name}: removes ");
+    line.push_bytes(APPLICATIONS);
+    let _ = write!(line, "/{name} and everything in it");
+    line
+}
+
+/// What a finished uninstall says: `Uninstalled Paint.`
+pub fn uninstalled(name: &str) -> Line {
+    let mut line = Line::new();
+    let _ = write!(line, "Uninstalled {name}.");
     line
 }
 

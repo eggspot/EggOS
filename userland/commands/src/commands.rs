@@ -940,7 +940,22 @@ pub const APP_INSTALL: CommandDefinition = CommandDefinition {
         exits(&PERMISSION_DENIED, 1),
         exits(&FAILED, 1),
     ],
-    examples: &[],
+    examples: &[
+        example(
+            "app install --dry-run /media/host/hello",
+            "would install hello (Linux program) from /media/host/hello into \
+             /Applications/hello: 1 file, 176 bytes\n",
+        ),
+        example(
+            "app install /media/host/hello",
+            "Installed hello in /Applications/hello.\n",
+        ),
+        Example {
+            line: "app install /media/host/notes.txt",
+            output: "",
+            status: 1,
+        },
+    ],
     surface: Surface::Gui("the installer: double-click a program in Files"),
 };
 
@@ -965,7 +980,13 @@ pub const APP_UNINSTALL: CommandDefinition = CommandDefinition {
         exits(&PERMISSION_DENIED, 1),
         exits(&FAILED, 1),
     ],
-    examples: &[],
+    examples: &[
+        example(
+            "app uninstall --dry-run paint",
+            "would uninstall paint: removes /Applications/paint and everything in it\n",
+        ),
+        example("app uninstall paint", "Uninstalled paint.\n"),
+    ],
     surface: Surface::Gui("the installer's uninstall window (app uninstall --window)"),
 };
 

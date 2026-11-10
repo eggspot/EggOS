@@ -4,7 +4,7 @@ use crate::facts::Facts;
 use crate::settings_window::{ABOUT, DATE_AND_TIME, PANES, SettingsWindow, pane_matches};
 use eggos_toolkit::input::{Input, MouseButton};
 
-const ABOUT_ROW_Y: i32 = 44 + ABOUT as i32 * 32 + 10;
+const ABOUT_ROW_Y: i32 = 44 + (ABOUT as i32 - 1) * 32 + 10;
 const REFUSED: &[u8] =
     b"5\t-\tdevicetree\tbus\tvirtio_mmio@a000400\tvirtio,mmio\tvirtio-mmio\trefused\t-\ta legacy device\n";
 

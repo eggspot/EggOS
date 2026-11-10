@@ -2945,6 +2945,13 @@ fn a_dry_run_is_answered_by_the_server_without_asking_or_running_the_twin() {
             "Dry run: app_uninstall would uninstall the app Paint, removing /Applications/Paint \
              and everything in it.",
         ),
+        (
+            9,
+            "clock_set",
+            r#"{"time":"2030-01-02T03:04:05Z","dry_run":true}"#,
+            "Dry run: clock_set would set the machine's clock and its hardware clock to \
+             2030-01-02T03:04:05Z (UTC).",
+        ),
     ] {
         let lines = harness.call_lines(id, tool, arguments);
         assert_eq!(lines.len(), 1, "{tool}: {lines:?}");
@@ -2958,7 +2965,7 @@ fn a_dry_run_is_answered_by_the_server_without_asking_or_running_the_twin() {
         assert!(detail.ends_with(DRY_RUN_DETAIL), "{detail}");
         assert_eq!(
             detail.starts_with("/home/root/"),
-            tool != "app_uninstall",
+            !matches!(tool, "app_uninstall" | "clock_set"),
             "{detail}"
         );
     }
@@ -4554,4 +4561,382 @@ fn windows_registry_delete_and_reset_ask_first_and_dry_runs_change_nothing() {
     let answer = harness.call(6, "windows_registry_delete", r#"{"key":"HKCU","confirm":true}"#);
     assert!(is_error(&answer), "{answer}");
     assert!(harness.system.runs.is_empty());
+}
+
+fn type_holds(value: Value<'_>, name: &str) -> bool {
+    match (name, value) {
+        ("object", Value::Object(_))
+        | ("array", Value::Array(_))
+        | ("string", Value::Str(_))
+        | ("boolean", Value::Bool(_))
+        | ("null", Value::Null)
+        | ("number", Value::Number(_)) => true,
+        ("integer", Value::Number(number)) => {
+            number.as_i64().is_some() || number.as_u64().is_some()
+        }
+        _ => false,
+    }
+}
+
+fn decoded(text: json::Str<'_>) -> String {
+    text.chars().collect()
+}
+
+fn conforms(value: Value<'_>, schema: Value<'_>) -> Result<(), String> {
+    let shown = || String::from_utf8_lossy(value.raw()).into_owned();
+    if let Some(types) = schema.get("type") {
+        let names: Vec<String> = match types {
+            Value::Str(name) => vec![decoded(name)],
+            Value::Array(names) => names
+                .elements()
+                .map(|name| decoded(name.as_str().unwrap()))
+                .collect(),
+            _ => panic!("a type is a name or a list of names"),
+        };
+        if !names.iter().any(|name| type_holds(value, name)) {
+            return Err(format!("{} is not of the types {names:?}", shown()));
+        }
+    }
+    if let Some(choices @ Value::Array(listed)) = schema.get("enum")
+        && !listed.elements().any(|choice| choice.raw() == value.raw())
+    {
+        return Err(format!(
+            "{} is none of {}",
+            shown(),
+            String::from_utf8_lossy(choices.raw())
+        ));
+    }
+    if let Some(Value::Array(required)) = schema.get("required") {
+        for name in required.elements() {
+            let name = decoded(name.as_str().unwrap());
+            if value.get(&name).is_none() {
+                return Err(format!("{} lacks {name}", shown()));
+            }
+        }
+    }
+    if let Value::Object(object) = value {
+        let closed = schema.get("additionalProperties") == Some(Value::Bool(false));
+        for (key, member) in object.members() {
+            let key = decoded(key);
+            match schema.get("properties").and_then(|named| named.get(&key)) {
+                Some(property) => {
+                    conforms(member, property).map_err(|why| format!("{key}: {why}"))?;
+                }
+                None if closed => {
+                    return Err(format!("{} has {key}, which its schema does not name", shown()));
+                }
+                None => {}
+            }
+        }
+    }
+    if let (Value::Array(elements), Some(items)) = (value, schema.get("items")) {
+        for (index, element) in elements.elements().enumerate() {
+            conforms(element, items).map_err(|why| format!("item {index}: {why}"))?;
+        }
+    }
+    if let Some(Value::Array(choices)) = schema.get("oneOf") {
+        let matching = choices
+            .elements()
+            .filter(|choice| conforms(value, *choice).is_ok())
+            .count();
+        if matching != 1 {
+            return Err(format!("{} matches {matching} of oneOf's schemas", shown()));
+        }
+    }
+    Ok(())
+}
+
+fn conforms_text(value: &str, schema: &str) -> Result<(), String> {
+    conforms(
+        json::parse(value.as_bytes()).unwrap().value,
+        json::parse(schema.as_bytes()).unwrap().value,
+    )
+}
+
+#[test]
+fn the_schema_checker_takes_what_a_schema_allows_and_refuses_the_rest() {
+    let schema = r#"{"type":"object","oneOf":[{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":["integer","null"]},"name":{"type":"string"}}}},"truncated":{"type":"boolean"},"truncated_by":{"enum":["limit","bytes"]}},"required":["items","truncated"],"additionalProperties":false},{"type":"object","properties":{"error":{"type":"object"}},"required":["error"],"additionalProperties":false}]}"#;
+    for allowed in [
+        r#"{"items":[{"id":1,"name":"a"},{"id":null,"other":[1]}],"truncated":false}"#,
+        r#"{"items":[],"truncated":true,"truncated_by":"bytes"}"#,
+        r#"{"error":{"code":"x"}}"#,
+    ] {
+        assert_eq!(conforms_text(allowed, schema), Ok(()), "{allowed}");
+    }
+    for refused in [
+        "{}",
+        "[]",
+        r#"{"items":[{"id":"1"}],"truncated":false}"#,
+        r#"{"items":[{"id":1.5}],"truncated":false}"#,
+        r#"{"items":[{"name":null}],"truncated":false}"#,
+        r#"{"items":{},"truncated":false}"#,
+        r#"{"items":[],"truncated":"no"}"#,
+        r#"{"items":[],"truncated":true,"truncated_by":"pages"}"#,
+        r#"{"items":[],"truncated":false,"more":1}"#,
+        r#"{"items":[],"truncated":false,"error":{}}"#,
+        r#"{"error":"x"}"#,
+    ] {
+        assert!(conforms_text(refused, schema).is_err(), "{refused}");
+    }
+    let either = r#"{"oneOf":[{"type":"integer"},{"type":"number"}]}"#;
+    assert!(conforms_text("1", either).is_err());
+    assert_eq!(conforms_text("1.5", either), Ok(()));
+}
+
+fn output_schema_of(tool: &Tool) -> String {
+    let mut buffer = vec![0u8; 16 * 1024];
+    let mut out = JsonWriter::new(&mut buffer);
+    tools::write_output_schema(&mut out, tool.definition);
+    assert!(!out.overflowed(), "{}", tool.name);
+    String::from_utf8(out.as_bytes().to_vec()).unwrap()
+}
+
+fn record_line(fields: &[eggos_commands::Field], nulls: bool, padding: usize) -> String {
+    use eggos_commands::FieldType;
+    let members: Vec<String> = fields
+        .iter()
+        .map(|field| {
+            let value = match (nulls && field.nullable, field.value) {
+                (true, _) => "null",
+                (false, FieldType::Text) => "\"text\"",
+                (false, FieldType::Time) => "\"2026-11-10T08:00:00Z\"",
+                (false, FieldType::Integer) => "7",
+                (false, FieldType::Boolean) => "true",
+                (false, FieldType::List) => "[\"a\"]",
+                (false, FieldType::Object) => "{\"a\":1}",
+                (false, FieldType::Value) => "[\"a\",\"b\"]",
+            };
+            format!("\"{}\":{value}", field.name)
+        })
+        .collect();
+    format!("{{{}{}}}\n", " ".repeat(padding), members.join(","))
+}
+
+fn twin_output(tool: &Tool) -> String {
+    match tool.definition.result {
+        ToolResult::Items(fields) => {
+            format!("{}{}", record_line(fields, false, 0), record_line(fields, true, 0))
+        }
+        _ => "output\n".to_owned(),
+    }
+}
+
+const CODED_FAILURE: &[u8] =
+    b"oops: it failed\n{\"error\":{\"code\":\"no_such_file\",\"message\":\"it failed\"}}\n";
+
+fn written(write: impl FnOnce(&mut JsonWriter<'_>)) -> String {
+    let mut buffer = vec![0u8; RESPONSE_BYTES];
+    let mut out = JsonWriter::new(&mut buffer);
+    write(&mut out);
+    assert!(!out.overflowed());
+    String::from_utf8(out.as_bytes().to_vec()).unwrap()
+}
+
+fn structured_of(answer: &str) -> Option<Value<'_>> {
+    parsed(answer)
+        .get("result")
+        .unwrap_or_else(|| panic!("{answer}"))
+        .get("structuredContent")
+}
+
+fn check_structured(tool: &Tool, schema: Option<Value<'_>>, answer: &str, case: &str) {
+    let name = tool.name;
+    let structured = structured_of(answer);
+    match (schema, structured) {
+        (Some(schema), Some(structured)) => {
+            if let Err(why) = conforms(structured, schema) {
+                panic!("{name}, {case}: {why}: {answer}");
+            }
+        }
+        (Some(_), None) => assert!(
+            is_error(answer),
+            "{name}, {case}: a result without structuredContent: {answer}"
+        ),
+        (None, Some(structured)) => assert!(
+            structured.get("error").is_some()
+                || (structured.get("truncated").is_some() && structured.get("items").is_none()),
+            "{name}, {case}: a tool without an outputSchema answers only a page or an error: \
+             {answer}"
+        ),
+        (None, None) => {}
+    }
+}
+
+#[test]
+fn every_tool_s_structured_content_matches_its_own_output_schema() {
+    for tool in &tools::TOOLS {
+        let schema_text = tool
+            .definition
+            .result
+            .declares_output_schema()
+            .then(|| output_schema_of(tool));
+        let schema = schema_text
+            .as_deref()
+            .map(|text| json::parse(text.as_bytes()).unwrap().value);
+        let output = twin_output(tool);
+        let cut_output = format!("{output}{{\"cut");
+        let output = output.as_bytes();
+        let cut_output = cut_output.as_bytes();
+        let nothing: &[u8] = b"";
+        let oops: &[u8] = b"oops\n";
+        let mut cases: Vec<(&str, Ended, &[u8], bool, &[u8], bool)> = vec![
+            ("success", Ended::Exited(0), output, false, nothing, false),
+            ("output cut", Ended::Signalled(9), cut_output, true, nothing, false),
+            ("failed with a code", Ended::Exited(1), nothing, false, CODED_FAILURE, false),
+            ("failed", Ended::Exited(1), nothing, false, oops, false),
+            ("timed out", Ended::TimedOut, output, false, nothing, false),
+        ];
+        if tool.definition.page_limit().is_some() {
+            let more: &[u8] = b"more: --after 7\n";
+            cases.extend([
+                ("a page with more after it", Ended::Exited(0), output, false, more, true),
+                ("the last page", Ended::Exited(0), output, false, nothing, true),
+                ("a page cut", Ended::Signalled(9), cut_output, true, nothing, true),
+            ]);
+        }
+        for (case, ended, stdout, stdout_cut, stderr, paged) in cases {
+            let outcome = RunOutcome {
+                ended,
+                stdout: stdout.len(),
+                stdout_cut,
+                stderr: stderr.len(),
+                stdin_taken: 0,
+                stop_failed: None,
+            };
+            let answered_elsewhere = matches!(tool.kind, Kind::WmCapture | Kind::AppIcon)
+                && ended == Ended::Exited(0)
+                && !stdout_cut;
+            if answered_elsewhere {
+                continue;
+            }
+            let answered = Answered {
+                id: b"1",
+                tool,
+                target: None,
+                window: None,
+                outcome: &outcome,
+                stdout,
+                stderr,
+                content_length: 0,
+                append: false,
+                succeeded: succeeded(tool, &outcome, 0),
+                paged,
+                dry_run: false,
+                setting: None,
+                link: None,
+                source: None,
+                recursive: false,
+                registry: None,
+                machine: false,
+            };
+            let answer = written(|out| answer_with_output(out, &answered));
+            check_structured(tool, schema, &answer, case);
+            if let (ToolResult::Items(_), "success" | "output cut") = (tool.definition.result, case)
+            {
+                let structured = structured_of(&answer).unwrap();
+                let Some(Value::Array(items)) = structured.get("items") else {
+                    panic!("{}, {case}: {answer}", tool.name);
+                };
+                assert_eq!(items.elements().count(), 2, "{}, {case}: {answer}", tool.name);
+                assert_eq!(
+                    structured.get("truncated"),
+                    Some(Value::Bool(stdout_cut)),
+                    "{}, {case}: {answer}",
+                    tool.name
+                );
+            }
+        }
+        let answer = written(|out| {
+            refused(
+                out,
+                b"1",
+                &errors::PATH_NOT_ALLOWED,
+                "Refused: the path is outside what the tool reaches.",
+            )
+        });
+        check_structured(tool, schema, &answer, "refused");
+    }
+}
+
+#[test]
+fn every_tool_with_an_output_schema_answers_it_from_its_twin() {
+    let calls = [
+        ("run", r#"{"program":"/bin/uname"}"#),
+        ("wm_capture", r#"{"window":129}"#),
+        ("df", r#"{"path":"/home"}"#),
+        ("device_list", "{}"),
+        ("disk_list", "{}"),
+        ("agent_list", "{}"),
+        ("wm_desktop_list", "{}"),
+        ("download_list", "{}"),
+        ("component_list", "{}"),
+        ("windows_registry_get", r#"{"key":"HKCU"}"#),
+    ];
+    let declaring: Vec<&str> = tools::TOOLS
+        .iter()
+        .filter(|tool| tool.definition.result.declares_output_schema())
+        .map(|tool| tool.name)
+        .collect();
+    assert_eq!(declaring, calls.map(|(name, _)| name));
+    for (name, arguments) in calls {
+        let tool = tools::find(name).unwrap();
+        let schema_text = output_schema_of(tool);
+        let schema = json::parse(schema_text.as_bytes()).unwrap().value;
+        let program = match tool.twin.program {
+            Program::Fixed(program) => program,
+            Program::FromArguments => "/bin/uname",
+        };
+        let long_output = match tool.definition.result {
+            ToolResult::Items(fields) => record_line(fields, false, 4000)
+                .repeat(OUTPUT_LIMIT / 4000 + 2)
+                .into_bytes(),
+            _ => vec![b'a'; OUTPUT_LIMIT + 10],
+        };
+        for (case, twin) in [
+            (
+                "success",
+                (twin_output(tool).into_bytes(), Vec::new(), Ended::Exited(0)),
+            ),
+            ("output cut", (long_output, Vec::new(), Ended::Exited(0))),
+            (
+                "failed",
+                (Vec::new(), CODED_FAILURE.to_vec(), Ended::Exited(1)),
+            ),
+        ] {
+            let mut harness = with_windows_layer(Harness::granted(Grants::ALL, "{}"));
+            harness.system.folders.push("/home".into());
+            harness.system.outputs.insert(program.into(), twin);
+            if tool.kind == Kind::WmCapture && case == "success" {
+                will_capture(&mut harness, png_bytes(2000));
+            }
+            let answer = harness.call(1, name, arguments);
+            assert_eq!(
+                harness.system.runs.len(),
+                1,
+                "{name}, {case}: the twin ran: {answer}"
+            );
+            let stopped_with_its_output_cut =
+                case == "output cut" && matches!(tool.kind, Kind::Run | Kind::WmCapture);
+            assert_eq!(
+                is_error(&answer),
+                case == "failed" || stopped_with_its_output_cut,
+                "{name}, {case}: {answer}"
+            );
+            check_structured(tool, Some(schema), &answer, case);
+            if case == "failed" && tool.kind != Kind::Run {
+                let error = structured_of(&answer).unwrap().get("error").unwrap();
+                assert!(
+                    error.get("code").unwrap().as_str().unwrap().equals("no_such_file"),
+                    "{name}: {answer}"
+                );
+            }
+        }
+        if tool.grant.is_some() {
+            let mut harness = with_windows_layer(Harness::initialized());
+            let answer = harness.call(1, name, arguments);
+            assert!(is_error(&answer), "{name}: {answer}");
+            assert!(structured_of(&answer).is_some(), "{name}: {answer}");
+            check_structured(tool, Some(schema), &answer, "refused");
+        }
+    }
 }

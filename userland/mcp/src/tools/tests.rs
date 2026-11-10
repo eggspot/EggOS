@@ -56,7 +56,7 @@ const SHIPPED_SCHEMAS: [(&str, &str); 26] = [
     ),
     (
         "clock_set",
-        r#"{"type":"object","properties":{"time":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","description":"The new date and time in UTC, as YYYY-MM-DDTHH:MM:SSZ."},"confirm":{"type":"boolean","description":"Set to true when the client cannot ask the user: a guard against accidents, not the user's approval.","default":false}},"required":["time"],"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"time":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","description":"The new date and time in UTC, as YYYY-MM-DDTHH:MM:SSZ."},"confirm":{"type":"boolean","description":"Set to true when the client cannot ask the user: a guard against accidents, not the user's approval.","default":false},"dry_run":{"type":"boolean","description":"Set to true to see what the call would do: nothing is changed and the user is not asked.","default":false}},"required":["time"],"additionalProperties":false}"#,
     ),
     (
         "clock_sync",
@@ -346,7 +346,36 @@ fn the_list_is_valid_json_with_annotations() {
         );
         assert_eq!(annotations.get("openWorldHint"), Some(Value::Bool(false)));
         assert!(listed.get("inputSchema").unwrap().as_object().is_some());
+        assert_eq!(
+            listed
+                .get("outputSchema")
+                .and_then(Value::as_object)
+                .is_some(),
+            tool.definition.result.declares_output_schema(),
+            "{}",
+            tool.name
+        );
     }
+    let declaring: Vec<&str> = TOOLS
+        .iter()
+        .filter(|tool| tool.definition.result.declares_output_schema())
+        .map(|tool| tool.name)
+        .collect();
+    assert_eq!(
+        declaring,
+        [
+            "run",
+            "wm_capture",
+            "df",
+            "device_list",
+            "disk_list",
+            "agent_list",
+            "wm_desktop_list",
+            "download_list",
+            "component_list",
+            "windows_registry_get"
+        ]
+    );
 }
 
 #[test]

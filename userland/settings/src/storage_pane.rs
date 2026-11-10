@@ -64,7 +64,7 @@ pub fn format_panel(canvas: &mut Canvas<'_>, rect: Rect, _: u32) {
     canvas.outline(inner, &INSET_R6, 1, canvas.palette().menu_border);
 }
 
-fn shortened(words: &str) -> Text<LABEL_BYTES> {
+pub(crate) fn shortened(words: &str) -> Text<LABEL_BYTES> {
     let mut text = Text::new();
     if text.push_str(words) {
         return text;

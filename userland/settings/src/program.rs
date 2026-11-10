@@ -3,6 +3,15 @@
 //! and the window's event loop.
 
 use crate::disk_system::LinuxDisks;
+use alloc::boxed::Box;
+use alloc::string::String;
+use eggos_app::files::Files;
+use eggos_app::linux::LinuxFiles;
+use eggos_components::command as component_command;
+use eggos_components::index::Component;
+use eggos_components::manager::{self as component_manager, Failure, Refusal};
+use eggos_settings::components_pane::ComponentsRead;
+use eggos_settings::windows_pane::FileStore;
 use core::ffi::CStr;
 use core::fmt::Write;
 use eggos_eggfs::CheckMode;
@@ -98,6 +107,11 @@ const CLOCK_REALTIME: usize = 0;
 const HARDWARE_CLOCK: &str = "/proc/driver/rtc";
 const SAVED_WITHIN_S: u64 = 2;
 const NANOSECONDS_PER_MS: u32 = 1_000_000;
+const HOME_VARIABLE: &[u8] = b"HOME=";
+const DEFAULT_HOME: &str = "/home/root";
+const FILETIME_EPOCH_INTERVALS: u64 = 11_644_473_600 * 10_000_000;
+const INTERVALS_PER_SECOND: u64 = 10_000_000;
+const NANOSECONDS_PER_INTERVAL: u64 = 100;
 
 fn syscall(number: usize, arguments: [usize; 6]) -> Result<usize, Errno> {
     // SAFETY: every caller passes buffers it owns and borrows for the call, sized as the call
@@ -345,6 +359,90 @@ fn wall_clock() -> (u64, u32) {
         Ok(_) => (time[0], time[1] as u32),
         Err(_) => (0, 0),
     }
+}
+
+fn filetime_now() -> u64 {
+    let (seconds, nanoseconds) = wall_clock();
+    seconds * INTERVALS_PER_SECOND
+        + u64::from(nanoseconds) / NANOSECONDS_PER_INTERVAL
+        + FILETIME_EPOCH_INTERVALS
+}
+
+fn effective_user() -> u32 {
+    syscall(number::GETEUID, [0; 6]).unwrap_or(0) as u32
+}
+
+fn windows_layer_installed() -> bool {
+    LinuxFiles::new()
+        .status_following(eggos_mcp::tools::WINDOWS_LAYER.as_bytes())
+        .is_ok()
+}
+
+fn components_read() -> ComponentsRead {
+    let mut files = LinuxFiles::new();
+    let arch = eggos_app::linux::machine().name();
+    let store = component_manager::find_store(&mut files, arch);
+    let rows = component_command::rows(&mut files, store.as_ref());
+    let runs_this_window = rows
+        .iter()
+        .filter(|row| row.state == "installed")
+        .find(|row| component_manager::runs_this_program(&mut files, &row.component))
+        .map(|row| row.component.name.clone());
+    ComponentsRead {
+        store,
+        rows,
+        runs_this_window,
+    }
+}
+
+fn check_component_remove(name: &str) -> Result<Option<Component>, Refusal> {
+    let mut files = LinuxFiles::new();
+    let installed = component_manager::installed(&mut files);
+    component_manager::check_remove(&mut files, &installed, name)
+}
+
+fn locked_failure(refusal: Refusal) -> Failure {
+    match refusal {
+        Refusal::NotAllowed => Failure::NotAllowed,
+        _ => Failure::Errno(Errno::EBUSY),
+    }
+}
+
+fn install_component(name: &str, cancelled: bool) -> Result<(), Failure> {
+    let mut files = LinuxFiles::new();
+    let arch = eggos_app::linux::machine().name();
+    let store = component_manager::find_store(&mut files, arch).ok_or(Failure::Detached)?;
+    let component = store
+        .index
+        .component(name)
+        .cloned()
+        .ok_or(Failure::Detached)?;
+    let pid = syscall(number::GETPID, [0; 6]).unwrap_or(0) as u32;
+    component_manager::lock(&mut files, &component.title, false, pid).map_err(locked_failure)?;
+    let installed =
+        component_manager::install(&mut files, &store, &component, &mut |_, _| !cancelled);
+    component_manager::unlock(&mut files);
+    if installed.is_ok() {
+        eggos_app::linux::apps_changed();
+    }
+    installed
+}
+
+fn remove_component(name: &str) -> Result<(), Failure> {
+    let mut files = LinuxFiles::new();
+    let installed = component_manager::installed(&mut files);
+    let title = installed
+        .iter()
+        .find(|component| component.name == name)
+        .map_or_else(|| String::from(name), |component| component.title.clone());
+    let pid = syscall(number::GETPID, [0; 6]).unwrap_or(0) as u32;
+    component_manager::lock(&mut files, &title, true, pid).map_err(locked_failure)?;
+    let removed = component_manager::remove(&mut files, name);
+    component_manager::unlock(&mut files);
+    if removed.is_ok() {
+        eggos_app::linux::apps_changed();
+    }
+    removed
 }
 
 fn hardware_clock_s() -> Option<u64> {
@@ -894,6 +992,12 @@ impl command::Machine for Machine {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComponentWork {
+    Install,
+    Remove,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum DiskWork {
     Check(&'static str, CheckMode),
@@ -1029,6 +1133,7 @@ struct Settings {
     uptime_at_start: u64,
     unsaved_profile: Option<usize>,
     disk_work: Option<DiskWork>,
+    component_work: Option<ComponentWork>,
     clock_sync_child: Option<usize>,
 }
 
@@ -1169,6 +1274,20 @@ impl Application<CAPACITY> for Settings {
                         .paired(agent, outcome, grants, network_read(), now_ms);
                 }
             }
+            Some(Request::ReadComponents) => self.window.show_components(components_read()),
+            Some(Request::CheckComponentRemove) => {
+                if let Some(name) = self.window.components_pane().to_check().map(String::from) {
+                    let checked = check_component_remove(&name);
+                    self.window.show_remove_check(checked, now_ms);
+                }
+            }
+            Some(Request::InstallComponent) => self.component_work = Some(ComponentWork::Install),
+            Some(Request::RemoveComponent) => self.component_work = Some(ComponentWork::Remove),
+            Some(Request::CopyToClipboard) => {
+                if let Some(server) = self.server.as_ref() {
+                    let _ = server.set_clipboard(self.window.windows_pane().to_copy());
+                }
+            }
             None => self.show_clock(now_ms),
         }
         if self.window.pane() == KEYBOARD {
@@ -1181,7 +1300,10 @@ impl Application<CAPACITY> for Settings {
     }
 
     fn deadline(&self, now_ms: u32) -> Option<u32> {
-        if self.unsaved_profile.is_some() || self.disk_work.is_some() {
+        if self.unsaved_profile.is_some()
+            || self.disk_work.is_some()
+            || self.component_work.is_some()
+        {
             return Some(now_ms);
         }
         if self.window.pairing_counting_down() {
@@ -1206,6 +1328,7 @@ impl Application<CAPACITY> for Settings {
     fn tick(&mut self, now_ms: u32) {
         self.save_unsaved();
         self.do_disk_work(now_ms);
+        self.do_component_work();
         self.show_clock(now_ms);
         self.clock_sync_running();
         if self.window.pairing_counting_down() {
@@ -1214,6 +1337,7 @@ impl Application<CAPACITY> for Settings {
     }
 
     fn focused(&mut self, _now_ms: u32) {
+        self.show_windows_layer();
         if self.unsaved_profile.is_some() {
             return;
         }
@@ -1266,9 +1390,45 @@ impl Settings {
                 self.window
                     .show_devices(read.map(|length| &text[..length]));
             }
+            Some(Request::ReadComponents) => self.window.show_components(components_read()),
             _ if pane == NETWORK => self.window.show_network_adapter(network_adapter()),
             _ => {}
         }
+    }
+
+    fn show_windows_layer(&mut self) {
+        if let Some(Request::ReadComponents) =
+            self.window.show_windows_layer(windows_layer_installed())
+        {
+            self.window.show_components(components_read());
+        }
+    }
+
+    fn do_component_work(&mut self) {
+        let Some(work) = self.component_work.take() else {
+            return;
+        };
+        let pane = self.window.components_pane();
+        match work {
+            ComponentWork::Install => {
+                let Some(name) = pane.to_install().map(String::from) else {
+                    return;
+                };
+                let installed = install_component(&name, pane.cancelled());
+                let next = self.window.show_installed(installed, components_read());
+                if next == Some(Request::InstallComponent) {
+                    self.component_work = Some(ComponentWork::Install);
+                }
+            }
+            ComponentWork::Remove => {
+                let Some(name) = pane.to_remove().map(String::from) else {
+                    return;
+                };
+                let removed = remove_component(&name);
+                self.window.show_removed(removed, components_read());
+            }
+        }
+        self.show_windows_layer();
     }
 
     fn keyboard(&self) -> Option<Keyboard> {
@@ -1511,7 +1671,7 @@ fn grant_prompt() -> i32 {
     view.finish()
 }
 
-fn open_window(pairing: Option<PairingAsked<'_>>, pane: Option<usize>) -> i32 {
+fn open_window(pairing: Option<PairingAsked<'_>>, pane: Option<usize>, home: &str) -> i32 {
     let (width, height) = DEFAULT_SIZE;
     let mut window = match Window::create(TITLE, width, height, MINIMUM_SIZE) {
         Ok(window) => window,
@@ -1528,8 +1688,16 @@ fn open_window(pairing: Option<PairingAsked<'_>>, pane: Option<usize>) -> i32 {
         uptime_at_start: facts.uptime_s,
         unsaved_profile: None,
         disk_work: None,
+        component_work: None,
         clock_sync_child: None,
     };
+    settings.window.attach_registry(Box::new(FileStore::new(
+        LinuxFiles::new(),
+        home,
+        effective_user(),
+        filetime_now,
+    )));
+    settings.show_windows_layer();
     if let Some(asked) = pairing {
         let grants = grants_read(settings.window.facts().on_disk);
         settings
@@ -1878,9 +2046,15 @@ pub fn run(startup: &Startup) -> i32 {
         arguments[count] = argument;
         count += 1;
     }
+    let home = startup
+        .environment()
+        .find_map(|variable| variable.to_bytes().strip_prefix(HOME_VARIABLE))
+        .and_then(|home| core::str::from_utf8(home).ok())
+        .filter(|home| !home.is_empty())
+        .unwrap_or(DEFAULT_HOME);
     match command::window_asked(&arguments[..count]) {
-        WindowAsked::Pairing(asked) => return open_window(Some(asked), None),
-        WindowAsked::Pane(pane) => return open_window(None, Some(pane)),
+        WindowAsked::Pairing(asked) => return open_window(Some(asked), None, home),
+        WindowAsked::Pane(pane) => return open_window(None, Some(pane), home),
         WindowAsked::FirstRun => return open_first_run(),
         WindowAsked::Usage => {
             write_all(STANDARD_ERROR, USAGE.as_bytes());
@@ -1889,7 +2063,7 @@ pub fn run(startup: &Startup) -> i32 {
         WindowAsked::Other => {}
     }
     match count {
-        0 => open_window(None, None),
+        0 => open_window(None, None, home),
         _ => {
             let mut machine = Machine {
                 server: WindowServer::open().ok(),

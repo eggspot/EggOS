@@ -118,6 +118,8 @@ struct Node {
     drag_source: bool,
     drop: Option<DropMode>,
     drag_text: Text<48>,
+    accessible_name: Text<64>,
+    accessible_value: Text<64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,6 +312,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             drag_source: false,
             drop: None,
             drag_text: Text::new(),
+            accessible_name: Text::new(),
+            accessible_value: Text::new(),
         });
         self.count += 1;
         if let Kind::TextArea(area) = kind {
@@ -532,6 +536,23 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     pub fn set_person_only(&mut self, id: WidgetId, person_only: bool) {
         if let Some(node) = self.node_mut(id) {
             node.person_only = person_only;
+        }
+    }
+
+    /// Gives widget `id` the name an agent and a screen reader read for it instead of its
+    /// drawn text (docs/ux/components-v0.3.md section 11): `Install Windows apps` for a button
+    /// that draws `Install`; at most 64 bytes, and `""` for its drawn text again.
+    pub fn set_accessible_name(&mut self, id: WidgetId, name: &str) {
+        if let Some(node) = self.node_mut(id) {
+            node.accessible_name = Text::from(name);
+        }
+    }
+
+    /// Gives widget `id` the value an agent and a screen reader read for it instead of the
+    /// one its kind gives; at most 64 bytes, and `""` for its kind's value again.
+    pub fn set_accessible_value(&mut self, id: WidgetId, value: &str) {
+        if let Some(node) = self.node_mut(id) {
+            node.accessible_value = Text::from(value);
         }
     }
 

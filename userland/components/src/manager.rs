@@ -379,6 +379,22 @@ fn runs_component<F: Files>(
         .is_ok_and(|length| names_component_file(&target[..length], component))
 }
 
+/// Whether this process runs one of `component`'s files: `/proc/self/exe`, or the link that
+/// names, is the file at its fixed or installed path.
+pub fn runs_this_program<F: Files>(files: &mut F, component: &Component) -> bool {
+    let mut target = vec![0u8; MAX_COMMAND_LINE];
+    let Ok(length) = files.read_link(b"/proc/self/exe", &mut target) else {
+        return false;
+    };
+    if names_component_file(&target[..length], component) {
+        return true;
+    }
+    let executable = target[..length].to_vec();
+    files
+        .read_link(&executable, &mut target)
+        .is_ok_and(|length| names_component_file(&target[..length], component))
+}
+
 fn names_a_program(word: &[u8]) -> bool {
     word.contains(&b'/') || PROGRAM_SUFFIXES.iter().any(|suffix| word.ends_with(suffix))
 }

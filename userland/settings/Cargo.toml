@@ -26,6 +26,7 @@ eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
 eggos-terminal-window = { path = "../terminal" }
 eggos-toolkit = { path = "../toolkit" }
+eggos-windows-registry = { path = "../windows-registry" }
 
 [dev-dependencies]
 eggos-files = { path = "../files", features = ["window", "storage", "memory"] }

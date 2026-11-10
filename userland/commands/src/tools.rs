@@ -272,13 +272,15 @@ impl Confirmation {
     }
 }
 
-/// What a tool's successful result holds, which its `outputSchema` declares (D226): every tool
-/// declares one, and a refused or failed call's `structuredContent` is `{"error":{...}}`.
+/// What a tool's successful result holds (D226). A tool whose `structuredContent` carries the
+/// result's data declares it in an `outputSchema`, which also covers the `{"error":{...}}` of
+/// a refused or failed call ([`ToolResult::declares_output_schema`]); a text tool declares
+/// none, so a client that shows its model only `structuredContent` still shows the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolResult {
     /// The data notice, then the twin's output as text (or the server's summary of it for
-    /// `tee` and `trash`); `structuredContent` is `{}`, or where the page stands for a tool
-    /// that pages.
+    /// `tee` and `trash`); `structuredContent` only says where the page stands, for a call
+    /// that pages, or holds the error of a refused or failed call.
     Text,
     /// The data notice and the twin's JSON lines as text, and in `structuredContent` the
     /// `items` envelope: `{"items":[...],"truncated":...}` with `truncated_by` and
@@ -287,11 +289,20 @@ pub enum ToolResult {
     /// The data notice and the PNG, with `width`, `height`, `image_width`, `image_height` and
     /// `scale` in `structuredContent` (`wm_capture`).
     Image,
-    /// The PNG alone; `structuredContent` is `{}` (`app_icon`).
+    /// The PNG alone (`app_icon`).
     Icon,
     /// The program's output and errors, with `exitCode`, `signal`, `timedOut` and `outputCut`
     /// in `structuredContent` (`run`, D137).
     Run,
+}
+
+impl ToolResult {
+    /// Whether the tool lists an `outputSchema`: its `structuredContent` carries the result's
+    /// data (the items, the capture's sizes, the program's ending), so every successful call
+    /// has it.
+    pub const fn declares_output_schema(self) -> bool {
+        matches!(self, ToolResult::Items(_) | ToolResult::Image | ToolResult::Run)
+    }
 }
 
 /// The fields of a command's JSON records, for a tool whose result is
@@ -1345,7 +1356,8 @@ pub const CLOCK_SET: ToolDefinition = ToolDefinition {
                       clock, so the time lasts across a restart. The time is UTC, as \
                       YYYY-MM-DDTHH:MM:SSZ, in the years 2000 to 2099. Every program and file \
                       time on the machine follows it. Needs the run grant. Asks the user first, \
-                      or needs confirm: true when the client cannot ask.",
+                      or needs confirm: true when the client cannot ask. dry_run: true says what \
+                      it would set, and sets nothing.",
     command: &["date"],
     fixed: &["-u", "-s"],
     arguments: &[
@@ -1357,6 +1369,7 @@ pub const CLOCK_SET: ToolDefinition = ToolDefinition {
             "The new date and time in UTC, as YYYY-MM-DDTHH:MM:SSZ.",
         )),
         confirm(GUARD),
+        DRY_RUN,
     ],
     max_effect: Effect::Destroy,
     grant: Some(Grant::Run),

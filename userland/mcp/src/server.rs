@@ -13,8 +13,9 @@
 //! registry's one rule (`elicitation/create` when the client can ask, else `confirm: true`);
 //! then `started`, the CLI twin, and its outcome. A list tool's page is the twin's, its next
 //! cursor read from the twin's last line of errors (D164). The answer is what the twin
-//! printed, framed as data from the machine; `wm_capture`'s is the PNG its twin wrote, as an
-//! image after a text that frames it (D143).
+//! printed, framed as data from the machine, and for a tool whose twin writes JSON records,
+//! those records again as `structuredContent.items` (D226); `wm_capture`'s is the PNG its twin
+//! wrote, as an image after a text that frames it (D143).
 
 #![deny(
     clippy::indexing_slicing,
@@ -45,7 +46,7 @@ use crate::tools::{
     self, BUSY_STATUS, CAPTURE_PATH, Confirmation, Kind, MAX_IMAGE_BYTES, Operand, Output, Program,
     Stdin, Tool,
 };
-use eggos_commands::{Category, ErrorDefinition, errors};
+use eggos_commands::{Category, ErrorDefinition, errors, tools::ToolResult};
 use eggos_runtime::errno::Errno;
 
 /// The most bytes of a command's output an answer carries.
@@ -3458,6 +3459,11 @@ fn would_text(
             size(&mut text);
             text.put(" for good");
         }
+        (Kind::ClockSet, _) => {
+            text.put(" would set the machine's clock and its hardware clock to ");
+            text.put(checked.time.as_ref().map_or("", |time| time.as_str()));
+            text.put(" (UTC)");
+        }
         (Kind::DiskFormat, _) => {
             text.put(" would erase everything on ");
             text.put(shown);
@@ -4171,6 +4177,47 @@ pub fn write_page_cut(out: &mut JsonWriter<'_>) {
     out.end_object();
 }
 
+/// Writes a list tool's `structuredContent`, the items envelope (D226):
+/// `{"items":[...],"truncated":false}` with each of `records`' lines that is a JSON object as
+/// an item (a last line the output limit cut is left out), `"truncated_by":"bytes"` when the
+/// output was `cut`, and `"truncated_by":"limit"` with `next_cursor` when more follow.
+pub fn write_items(
+    out: &mut JsonWriter<'_>,
+    records: &[u8],
+    cut: bool,
+    next_cursor: Option<&str>,
+) {
+    out.begin_object();
+    out.key("items");
+    out.begin_array();
+    for line in records.split(|&byte| byte == b'\n') {
+        if let Ok(crate::json::Parsed {
+            value: Value::Object(record),
+            ..
+        }) = crate::json::parse(line)
+        {
+            out.raw(record.text());
+        }
+    }
+    out.end_array();
+    out.key("truncated");
+    out.bool(cut || next_cursor.is_some());
+    match (cut, next_cursor) {
+        (true, _) => {
+            out.key("truncated_by");
+            out.string("bytes");
+        }
+        (false, Some(cursor)) => {
+            out.key("truncated_by");
+            out.string("limit");
+            out.key("next_cursor");
+            out.string(cursor);
+        }
+        (false, None) => {}
+    }
+    out.end_object();
+}
+
 fn text_item(out: &mut JsonWriter<'_>, text: &str) {
     out.begin_object();
     out.key("type");
@@ -4503,7 +4550,12 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
                 write_error(out, error, message);
             }
         }
-        if answer.paged && !failed {
+        let lists_items = matches!(tool.definition.result, ToolResult::Items(_));
+        if lists_items && !failed {
+            out.key("structuredContent");
+            let cut = outcome.stdout_cut || (answer.paged && page_cut);
+            write_items(out, answer.stdout, cut, next_cursor);
+        } else if answer.paged && !failed {
             out.key("structuredContent");
             match page_cut {
                 true => write_page_cut(out),

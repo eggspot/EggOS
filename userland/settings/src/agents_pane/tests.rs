@@ -149,7 +149,7 @@ fn written(window: &SettingsWindow, agent: &str) -> AgentGrants {
 fn the_agents_pane_comes_after_date_and_time_and_is_found_by_its_words() {
     assert_eq!(PANES[AGENTS], "Agents");
     assert_eq!(PANES[AGENTS - 1], "Date & time");
-    assert_eq!(PANES[AGENTS + 1], "Components");
+    assert_eq!(PANES[AGENTS + 1], "Windows");
     for word in [
         "agent",
         "grant",
@@ -448,7 +448,7 @@ fn an_agent_cannot_change_grants_through_the_element_tree() {
     assert!(window.grants_to_write().get(&id("tv")).is_none());
 }
 
-const ABOUT_ROW_Y: i32 = 44 + ABOUT as i32 * 32 + 10;
+const ABOUT_ROW_Y: i32 = 44 + (ABOUT as i32 - 1) * 32 + 10;
 const GRANTS_VIEW: usize = 0;
 const ACTIVITY: usize = 1;
 

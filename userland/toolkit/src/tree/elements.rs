@@ -284,6 +284,17 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     }
                 }
             };
+            let element = match node.accessible_name.is_empty() {
+                true => element,
+                false => element.named(node.accessible_name.as_str().as_bytes()),
+            };
+            let element = match node.accessible_value.is_empty() {
+                true => element,
+                false => element.valued(for_agents(
+                    node.person_only,
+                    node.accessible_value.as_str().as_bytes(),
+                )),
+            };
             if !tree.push(&element) || !self.describe_parts(id, tree) {
                 return;
             }

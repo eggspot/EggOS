@@ -2,7 +2,8 @@
 //! section 11): the sidebar with its search and its panes, and the panes: Appearance with the
 //! profile picker, Display, Keyboard (D185, docs/ux/keyboard-v0.3.md), Mouse, Storage (D192,
 //! docs/ux/storage-v0.3.md), Date & time (D150, docs/ux/date-time-v0.3.md), Agents (D193,
-//! docs/ux/agents-v0.3.md), Components and About. It holds only widgets and answers what the user does with what the
+//! docs/ux/agents-v0.3.md), Windows (D231, docs/ux/windows-registry-v0.3.md), Components (D235,
+//! docs/ux/components-v0.3.md) and About. It holds only widgets and answers what the user does with what the
 //! program must do; the program talks to the system.
 
 use crate::about_pane::AboutPane;
@@ -11,16 +12,21 @@ use crate::activity::{ActivityQuery, ActivityRead};
 use crate::agents_pane::{self, AgentsPane, GrantsRead};
 use crate::art;
 use crate::automatic_clock::{Adapter, AutomaticClock, ClockWidgets};
+use crate::components_pane::{self, ComponentsPane, ComponentsRead};
 use crate::facts::Facts;
 use crate::input_panes::{self, DisplayPane, InputPanes};
 use crate::keys::{DisplayChange, InputChange, KeysChange};
 use crate::network_pane::NetworkPane;
 use crate::network_view::NetworkRead;
 use crate::storage_pane::{Reply, StoragePane};
+use crate::windows_pane::{self, WindowsPane};
 use crate::zone_picker::{self, ZonePicker};
 use alloc::vec::Vec;
 use core::fmt::Write;
+use alloc::boxed::Box;
 use eggos_calendar::{ParseError, parse_local_setting};
+use eggos_components::index::Component;
+use eggos_components::manager::{Failure, Refusal};
 use eggos_eggfs::{CheckMode, DiskCheck};
 use eggos_files::storage::{DiskRecord, StorageError};
 use eggos_mcp::grant_files::SaveError;
@@ -35,6 +41,7 @@ use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
+use eggos_windows_registry::registry::Store as RegistryFiles;
 
 /// The window's title.
 pub const TITLE: &str = "Settings";
@@ -43,7 +50,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 211;
+pub const CAPACITY: usize = 209 + 1 + windows_pane::WIDGETS + components_pane::WIDGETS;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -125,7 +132,7 @@ const NO_KEYBOARD: &str = "No keyboard attached.";
 const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
 
 /// The panes, in the sidebar's order.
-pub const PANES: [&str; 11] = [
+pub const PANES: [&str; 12] = [
     "Appearance",
     "Network",
     "Display",
@@ -135,6 +142,7 @@ pub const PANES: [&str; 11] = [
     "Storage",
     "Date & time",
     "Agents",
+    "Windows",
     "Components",
     "About",
 ];
@@ -154,14 +162,18 @@ pub const STORAGE: usize = 6;
 pub const DATE_AND_TIME: usize = 7;
 /// The `Agents` pane's place in [`PANES`] (D193, docs/ux/agents-v0.3.md).
 pub const AGENTS: usize = 8;
-const COMPONENTS: usize = 9;
+/// The `Windows` pane's place in [`PANES`] (D231, docs/ux/windows-registry-v0.3.md): its row
+/// shows only while the Windows layer is installed.
+pub const WINDOWS: usize = 9;
+/// The `Components` pane's place in [`PANES`] (D235, docs/ux/components-v0.3.md).
+pub const COMPONENTS: usize = 10;
 /// The `About` pane's place in [`PANES`].
-pub const ABOUT: usize = 10;
+pub const ABOUT: usize = 11;
 
 const EVERY_PANE_SYNONYMS: [&str; 4] =
     ["Control Panel", "System Settings", "Preferences", "options"];
 
-const PANE_WORDS: [&[&str]; 11] = [
+const PANE_WORDS: [&[&str]; 12] = [
     &[
         "theme",
         "dark",
@@ -362,7 +374,64 @@ const PANE_WORDS: [&[&str]; 11] = [
         "Add",
         "Revoke all",
     ],
-    &["layers", "apps", "Remove"],
+    &[
+        "registry",
+        "regedit",
+        "Registry Editor",
+        "reg",
+        "hive",
+        "HKEY",
+        "HKCU",
+        "HKLM",
+        "HKCR",
+        "HKEY_CURRENT_USER",
+        "HKEY_LOCAL_MACHINE",
+        "HKEY_CLASSES_ROOT",
+        "key",
+        "value",
+        "REG_SZ",
+        "DWORD",
+        "QWORD",
+        "binary",
+        "string",
+        "Win32",
+        "exe",
+        ".exe",
+        "Windows programs",
+        "New key",
+        "New value",
+        "Edit",
+        "Delete",
+        "Refresh",
+        "Copy path",
+    ],
+    &[
+        "component",
+        "components",
+        "install",
+        "uninstall",
+        "remove",
+        "add or remove",
+        "Add/Remove Programs",
+        "Programs and Features",
+        "Apps & features",
+        "Optional features",
+        "Windows features",
+        "Software",
+        "store",
+        "component store",
+        "layer",
+        "layers",
+        "compatibility",
+        "Windows apps",
+        "Mac apps",
+        "Built-in apps",
+        "Desktop",
+        "size",
+        "disk space",
+        "Install",
+        "Remove",
+    ],
     &[
         "version",
         "system",
@@ -459,6 +528,20 @@ pub enum Request {
     /// Read `/proc/driver/devices` and show it in About ([`SettingsWindow::show_devices`])
     /// (D220).
     ReadDevices,
+    /// Read the component store and the installed components and show them
+    /// ([`SettingsWindow::show_components`]) (D235).
+    ReadComponents,
+    /// Check that the component [`ComponentsPane::to_check`] names may be removed, then show
+    /// how ([`SettingsWindow::show_remove_check`]).
+    CheckComponentRemove,
+    /// Install the component [`ComponentsPane::to_install`] names, then show how it went with
+    /// the components read again ([`SettingsWindow::show_installed`]).
+    InstallComponent,
+    /// Remove the component [`ComponentsPane::to_remove`] names, then show how it went with
+    /// the components read again ([`SettingsWindow::show_removed`]).
+    RemoveComponent,
+    /// Put [`WindowsPane::to_copy`] on the clipboard (D231).
+    CopyToClipboard,
 }
 
 /// How setting the clock went, as the `Date & time` pane's status line says it.
@@ -526,8 +609,15 @@ pub struct SettingsWindow {
     accessibility: AccessibilityPane,
     about: AboutPane,
     network: NetworkPane,
+    windows: WindowsPane,
+    components: ComponentsPane,
+    windows_layer: bool,
     facts: Facts,
     pane: usize,
+}
+
+fn every_pane_but_windows() -> u32 {
+    ((1u32 << PANES.len()) - 1) & !(1 << WINDOWS)
 }
 
 fn lowercase_contains(haystack: &str, needle: &str) -> bool {
@@ -857,14 +947,6 @@ impl SettingsWindow {
         let keyboard_no_disk =
             build.label(keyboard, PADDING, NO_DISK_LINE, NO_DISK, Token::TextDim);
 
-        build.heading(panes[COMPONENTS], PANES[COMPONENTS]);
-        build.label(
-            panes[COMPONENTS],
-            PADDING,
-            FIRST_ROW,
-            "Coming in a later version.",
-            Token::TextDim,
-        );
 
         let date_and_time = panes[DATE_AND_TIME];
         build.heading(date_and_time, PANES[DATE_AND_TIME]);
@@ -972,6 +1054,9 @@ impl SettingsWindow {
         );
 
         let storage = StoragePane::build(&mut tree, panes[STORAGE], set_button);
+        let windows = WindowsPane::build(&mut tree, panes[WINDOWS], set_button);
+        let components =
+            ComponentsPane::build(&mut tree, panes[COMPONENTS], PANE_HEIGHT, set_button);
         let agents = AgentsPane::build(&mut tree, panes[AGENTS], set_button);
         let display = DisplayPane::build(&mut tree, panes[DISPLAY], &facts);
         let inputs = InputPanes::build(
@@ -1015,6 +1100,7 @@ impl SettingsWindow {
         for (index, pane) in panes.iter().enumerate() {
             tree.set_shown(*pane, index == APPEARANCE);
         }
+        tree.set_shown_items(list, every_pane_but_windows());
         tree.set_focus(Some(search), 0);
         let (width, height) = DEFAULT_SIZE;
         tree.resize(width as i32, height as i32);
@@ -1055,6 +1141,9 @@ impl SettingsWindow {
             accessibility,
             about: about_devices,
             network,
+            windows,
+            components,
+            windows_layer: false,
             facts,
             pane: APPEARANCE,
         };
@@ -1192,7 +1281,82 @@ impl SettingsWindow {
             self.about.reset(&mut self.tree);
             return Some(Request::ReadDevices);
         }
+        if pane == WINDOWS {
+            self.windows.reset(&mut self.tree);
+        }
+        if pane == COMPONENTS {
+            self.components.reset(&mut self.tree);
+            return Some(Request::ReadComponents);
+        }
         None
+    }
+
+    /// Shows whether the Windows layer is installed (D231): the `Windows` row shows only while
+    /// it is; when it goes while its pane shows, `Components` shows instead.
+    pub fn show_windows_layer(&mut self, installed: bool) -> Option<Request> {
+        if installed == self.windows_layer {
+            return None;
+        }
+        self.windows_layer = installed;
+        let request = match (installed, self.pane == WINDOWS) {
+            (false, true) => self.open_pane(COMPONENTS),
+            _ => None,
+        };
+        self.filter_list();
+        request
+    }
+
+    /// Whether the `Windows` row shows.
+    pub fn windows_layer_shown(&self) -> bool {
+        self.windows_layer
+    }
+
+    /// Gives the Windows pane the registry's files (D231).
+    pub fn attach_registry(&mut self, files: Box<dyn RegistryFiles>) {
+        self.windows.attach(&mut self.tree, files);
+    }
+
+    /// The Windows pane.
+    pub fn windows_pane(&self) -> &WindowsPane {
+        &self.windows
+    }
+
+    /// The Components pane.
+    pub fn components_pane(&self) -> &ComponentsPane {
+        &self.components
+    }
+
+    /// Shows the component store and the installed components just read (D235).
+    pub fn show_components(&mut self, read: ComponentsRead) {
+        self.components.show_components(&mut self.tree, read);
+    }
+
+    /// Shows how checking a component's remove went, at `now_ms`.
+    pub fn show_remove_check(&mut self, checked: Result<Option<Component>, Refusal>, now_ms: u32) {
+        self.components
+            .show_remove_check(&mut self.tree, checked, now_ms);
+    }
+
+    /// Shows an install's progress: `received` of `total` bytes.
+    pub fn show_install_progress(&mut self, received: u64, total: u64) {
+        self.components
+            .show_install_progress(&mut self.tree, received, total);
+    }
+
+    /// Shows how an install went, with the components read after; the next install of a plan
+    /// when there is one.
+    pub fn show_installed(
+        &mut self,
+        result: Result<(), Failure>,
+        read: ComponentsRead,
+    ) -> Option<Request> {
+        self.components.show_installed(&mut self.tree, result, read)
+    }
+
+    /// Shows how a remove went, with the components read after.
+    pub fn show_removed(&mut self, result: Result<(), Failure>, read: ComponentsRead) {
+        self.components
+            .show_removed(&mut self.tree, result, read);
     }
 
     /// Shows the devices just read from `/proc/driver/devices` in About (D220).
@@ -1703,7 +1867,7 @@ impl SettingsWindow {
         &self.facts
     }
 
-    fn filter(&mut self) -> Option<Request> {
+    fn filter_list(&mut self) -> u32 {
         let query = Text::<255>::from(self.tree.text_of(self.widgets.search).unwrap_or(""));
         let mut shown = 0u32;
         for pane in 0..PANES.len() {
@@ -1711,7 +1875,15 @@ impl SettingsWindow {
                 shown |= 1 << pane;
             }
         }
+        if !self.windows_layer {
+            shown &= every_pane_but_windows();
+        }
         self.tree.set_shown_items(self.widgets.list, shown);
+        shown
+    }
+
+    fn filter(&mut self) -> Option<Request> {
+        let shown = self.filter_list();
         match self.tree.selected(self.widgets.list) {
             Some(selected) if shown != 0 => self.show_pane(selected),
             _ => None,
@@ -1722,6 +1894,16 @@ impl SettingsWindow {
     pub fn respond(&mut self, response: Response, now_ms: u32) -> Option<Request> {
         if self.about.respond(&mut self.tree, response) {
             return None;
+        }
+        if let components_pane::Reply::Done(request) =
+            self.components.respond(&mut self.tree, response, now_ms)
+        {
+            return request;
+        }
+        if let windows_pane::Reply::Done(copy) =
+            self.windows.respond(&mut self.tree, response, now_ms)
+        {
+            return copy.then_some(Request::CopyToClipboard);
         }
         if let Reply::Done(request) = self.storage.respond(&mut self.tree, response, now_ms) {
             return request;
@@ -1911,7 +2093,7 @@ mod tests {
     #[test]
     fn the_sidebar_switches_panes_and_the_search_filters_them_by_synonyms() {
         let mut window = SettingsWindow::new(Facts::example());
-        click(&mut window, 40, LIST_TOP + ABOUT as i32 * SIDEBAR_ROW + 10);
+        click(&mut window, 40, LIST_TOP + (ABOUT as i32 - 1) * SIDEBAR_ROW + 10);
         assert_eq!(window.pane(), ABOUT);
         assert!(window.widgets().rect(window.widgets.uptime).is_some());
         click(&mut window, 40, 20);

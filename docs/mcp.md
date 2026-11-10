@@ -214,7 +214,7 @@ specification's OAuth sign-in comes later.
 | `folder_create` | Makes the folder `path` below `/home/root`; `parents: true` makes the missing folders above it and accepts one already there; never replaces anything (no `confirm`) (D226) | `mkdir [-p] -- <path>` | `write` |
 | `file_remove` | Deletes `path` below `/home/root` for good, without the Trash; a folder needs `recursive: true`; asks the user first (`confirm`, `dry_run`); answers `Deleted <path> for good.` (D226) | `rm [-r] -- <path>` | `write` |
 | `run` | Runs a program (`program`, an absolute path; `arguments`; `timeout_seconds`, 1 to 60, 10 by default) and returns its output, errors and exit status | the program itself | `run` |
-| `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`); asks the user first (D150) | `date -u -s <time>` | `run` |
+| `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`; `dry_run`, D226); asks the user first (D150) | `date -u -s <time>` | `run` |
 | `clock_sync` | Sets the machine's clock and its hardware clock from a time server (SNTP, `pool.ntp.org`) and says how far it moved; 15 seconds at most (D159) | `date -u --sync` | `run` |
 | `settings_set` | Sets a setting (`key`, `value`) and applies it at once, as the Settings window would: `shell.profile` takes `windows`, `macos` or `linux`, the desktop's layout, and `keyboard.layout` a keyboard layout's name (`us`, `us-intl`, `us-mac`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `be`, `ca`, `de`, `ch`, `it`, `no`, `br`, `pt`, `es`, `latam` or `se`, D185, D221), `keyboard.layouts` one to four of them separated by commas and `keyboard.switch_key` `profile`, `super+space`, `ctrl+space`, `alt+shift`, `ctrl+shift` or `none` (D221), `time.zone` an IANA zone such as `Europe/Paris` or `UTC`, `display.scale` 1 or 2 (from the next boot), `mouse.buttons` `right` or `left`, `mouse.scrolling` `traditional` or `natural`, `mouse.speed` 1 to 10, `keyboard.repeat_delay_ms` 150 to 2000, `keyboard.repeat_rate` 2 to 60, `accessibility.sticky_keys` and `accessibility.slow_keys` `true` or `false` and `accessibility.slow_keys_ms` 100 to 1000; the other keys fail with `setting_read_only` (D163); answers `Set <key> to <value>.`, and with `dry_run` what would change (D164) | `settings set [--dry-run] -- <key> <value>` | `run` |
 | `app_install` | Installs an app from `/media/host` (`path`); a `.zip` holding several programs needs `entry`, the path of one inside it (D148); `arguments` gives the words it opens with (D172), `environment` the `NAME=value` words set for it (D176) | `app install [--entry <entry>] [--arguments <arguments>] [--environment <environment>] -- <path>` | `install` |
@@ -358,8 +358,9 @@ Replacing an existing file with `tee` (not adding to it with `append`, not creat
   gets every destructive call refused after 120 s.
 - While a call waits for your answer, other calls that need a grant are refused; reading
   goes on.
-- **Dry runs** (D164): `tee`, `trash` and `app_uninstall` take `dry_run: true`, which EggOS
-  answers itself from the path, the file and the app it checked (`Dry run: trash would move
+- **Dry runs** (D164): `tee`, `trash`, `app_uninstall` and `clock_set` (D226) take
+  `dry_run: true`, which EggOS answers itself from the path, the file, the app and the time it
+  checked (`Dry run: trash would move
   /home/root/notes.txt (812 bytes) to the Trash. Nothing was changed and the user was not
   asked.`), without running the command or asking you, since nothing changes; the call still
   needs its grant and is logged with `dry_run: nothing changed`. `settings_set` passes
@@ -376,6 +377,19 @@ keeps its text and adds `structuredContent`: `{"truncated":true,"truncated_by":"
 the output was cut before the page's end, so call again with a smaller `limit`. The cursor is
 the page's last name or id as the command wrote it (`my%20notes` for `my notes`); a call
 without `limit` and `after` answers exactly as before.
+
+## Structured results
+
+`run`, `wm_capture` and the tools whose twin writes JSON records (`df`, `device_list`,
+`disk_list`, `agent_list`, `wm_desktop_list`, `download_list`, `component_list` and
+`windows_registry_get`) list an `outputSchema` (D226): `oneOf` their `structuredContent` and
+the `{"error":{...}}` of a refused or failed call, so every successful call has
+`structuredContent` and a client can check it. A list tool's is the items envelope,
+`{"items":[...],"truncated":false}`, each item one of its twin's records with the fields the
+command model declares (the text keeps them as JSON lines too), and
+`{"items":[...],"truncated":true,"truncated_by":"bytes"}` when the output was cut at 128 KiB,
+the cut last record left out. The other tools list none: their result is their text, which a
+client that shows its model only `structuredContent` would hide.
 
 ## Text from EggOS is data
 
@@ -516,8 +530,8 @@ clock at boot (D150). The log in Settings comes after the release.
 
 Asking the client in the 2026-07-28 version (`input_required`), resources for files and apps, `subscriptions/listen`; tools for the commands that have none
 (the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
-is returned as before); `outputSchema`; pages for tools added
-later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
+is returned as before); pages for tools added
+later, and dry runs for `fetch` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
 terminal's window; OAuth sign-in, an event stream and session ids for MCP over the network; the grant prompt on a phone (a bottom sheet), centred and kept above other windows (it opens
 where the window server puts a new window). A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.

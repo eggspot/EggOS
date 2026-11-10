@@ -936,7 +936,8 @@ pub const ERROR_REQUIRED: [&str; 4] = ["code", "category", "message", "fix"];
 
 /// Writes a tool's `outputSchema` (D226): `oneOf` what its `structuredContent` holds when it
 /// succeeds, which its registry [`ToolResult`] declares, and the `{"error":{...}}` of a
-/// refused or failed call.
+/// refused or failed call. `tools/list` lists it only for a tool whose result
+/// [`ToolResult::declares_output_schema`]; a text tool's would be the empty object.
 pub fn write_output_schema(out: &mut JsonWriter<'_>, definition: &ToolDefinition) {
     out.begin_object();
     out.key("type");
@@ -956,12 +957,7 @@ fn write_result_schema(out: &mut JsonWriter<'_>, definition: &ToolDefinition) {
     out.key("properties");
     out.begin_object();
     let required: &[&str] = match definition.result {
-        ToolResult::Text | ToolResult::Icon => {
-            if definition.page_limit().is_some() {
-                write_page_properties(out);
-            }
-            &[]
-        }
+        ToolResult::Text | ToolResult::Icon => &[],
         ToolResult::Items(fields) => {
             out.key("items");
             out.begin_object();
@@ -1125,8 +1121,10 @@ pub fn write_list(out: &mut JsonWriter<'_>, present: &mut dyn FnMut(&'static str
         out.string(definition.description);
         out.key("inputSchema");
         write_input_schema(out, definition);
-        out.key("outputSchema");
-        write_output_schema(out, definition);
+        if definition.result.declares_output_schema() {
+            out.key("outputSchema");
+            write_output_schema(out, definition);
+        }
         out.key("annotations");
         out.begin_object();
         out.key("title");

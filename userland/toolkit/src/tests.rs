@@ -782,6 +782,42 @@ fn a_person_only_label_s_text_and_field_s_value_stay_out_of_the_tree() {
 }
 
 #[test]
+fn an_accessible_name_and_value_replace_what_a_widget_draws_for_agents_only() {
+    let mut form = form();
+    let find = |tree: &WidgetTree<24>, id: WidgetId| {
+        described(tree)
+            .into_iter()
+            .find(|element| element.0 == element_of(id))
+            .unwrap()
+    };
+    assert_eq!(find(&form.tree, form.ok).4, "OK");
+    form.tree.set_accessible_name(form.ok, "Install Windows apps");
+    form.tree.set_accessible_name(form.scroll, "Windows apps");
+    form.tree
+        .set_accessible_value(form.scroll, "windows-apps not-installed 1.8 MB");
+    let ok = find(&form.tree, form.ok);
+    assert_eq!((ok.2, ok.4.as_str()), (Role::Button, "Install Windows apps"));
+    assert_eq!(form.tree.text_of(form.ok), Some("OK"));
+    let group = find(&form.tree, form.scroll);
+    assert_eq!(
+        (group.2, group.4.as_str(), group.5.as_str()),
+        (
+            Role::Group,
+            "Windows apps",
+            "windows-apps not-installed 1.8 MB"
+        )
+    );
+    form.tree.set_person_only(form.scroll, true);
+    assert_eq!(find(&form.tree, form.scroll).5, "");
+    form.tree.set_accessible_name(form.ok, "");
+    assert_eq!(find(&form.tree, form.ok).4, "OK");
+    assert_eq!(
+        form.tree.act(element_of(form.ok), Action::Invoke, "", 0),
+        (Outcome::Done, Response::Activated(form.ok))
+    );
+}
+
+#[test]
 fn acting_on_an_element_does_what_a_person_s_input_does() {
     let mut form = form();
     let cards = element_of(form.cards);

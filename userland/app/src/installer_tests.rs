@@ -1425,3 +1425,74 @@ fn a_preview_says_a_leftover_folder_would_be_replaced() {
         Some(&Node::File(b"half".to_vec(), 0o755))
     );
 }
+
+fn run_app_example(files: &mut FakeFiles, words: &[&[u8]]) -> (i32, String) {
+    use crate::command::{Command, FAILED, parse};
+    use crate::messages;
+    let said = match parse(words) {
+        Some(Command::Install {
+            path,
+            name,
+            entry,
+            dry_run: true,
+            ..
+        }) => plan_entry(files, path, name, entry, X86_64)
+            .map_err(|refused| refused.problem)
+            .and_then(|plan| {
+                let preview = preview(files, &plan)?;
+                Ok(messages::would_install(&plan, preview, X86_64))
+            }),
+        Some(Command::Install {
+            path, name, entry, ..
+        }) => plan_entry(files, path, name, entry, X86_64)
+            .map_err(|refused| refused.problem)
+            .and_then(|plan| {
+                install(files, plan, &mut [0u8; 4096])?;
+                Ok(messages::installed(&plan))
+            }),
+        Some(Command::Uninstall {
+            name,
+            dry_run: true,
+            ..
+        }) => {
+            let shown = core::str::from_utf8(name).unwrap();
+            match installed_names(files).iter().any(|installed| installed == shown) {
+                true => Ok(messages::would_uninstall(shown)),
+                false => Err(Problem::NotInstalled),
+            }
+        }
+        Some(Command::Uninstall { name, .. }) => uninstall(files, name)
+            .map(|()| messages::uninstalled(core::str::from_utf8(name).unwrap())),
+        other => panic!("no example runner for {other:?}"),
+    };
+    match said {
+        Ok(line) => (0, format!("{}\n", line.as_str())),
+        Err(_) => (FAILED, String::new()),
+    }
+}
+
+#[test]
+fn the_registry_s_app_examples_run_as_written() {
+    let mut ran = 0;
+    for command in eggos_commands::COMMANDS
+        .iter()
+        .filter(|command| command.words[0] == "app")
+    {
+        for example in command.examples {
+            let mut files = host_with("/media/host/hello", &linux_program(62));
+            files.file("/media/host/notes.txt", b"eggs\nmilk\nbread\n");
+            files.file("/media/host/paint", &linux_program(62));
+            let plan = planned(&mut files, "/media/host/paint", X86_64);
+            install(&mut files, plan, &mut [0u8; 4096]).unwrap();
+            let words: Vec<&[u8]> = example.line.split(' ').skip(1).map(str::as_bytes).collect();
+            assert_eq!(
+                run_app_example(&mut files, &words),
+                (example.status, example.output.to_owned()),
+                "{}",
+                example.line
+            );
+            ran += 1;
+        }
+    }
+    assert_eq!(ran, 5);
+}

@@ -296,20 +296,111 @@ pub fn install_failure_line(failure: &Failure, component: &Component) -> String 
     }
 }
 
-/// `Could not remove Windows apps: <reason>. It stays installed.`.
-pub fn remove_failure_line(failure: &Failure, component: &Component) -> String {
+/// What a failed remove says: the first line and the second (`""` for none), as the
+/// Components list shows them.
+pub fn remove_failure(failure: &Failure, component: &Component) -> (String, &'static str) {
     let reason = match failure {
         Failure::Errno(errno) => errno_text(*errno),
         Failure::NotAllowed => {
-            return String::from("Not allowed: only root installs or removes components.");
+            return (
+                String::from("Not allowed: only root installs or removes components."),
+                "",
+            );
         }
         _ => String::from("it could not be moved away"),
     };
-    format!(
-        "Could not remove {}: {reason}. {STAYS_INSTALLED}",
-        component.title
+    (
+        format!("Could not remove {}: {reason}.", component.title),
+        STAYS_INSTALLED,
     )
 }
+
+/// `Could not remove Windows apps: <reason>. It stays installed.`.
+pub fn remove_failure_line(failure: &Failure, component: &Component) -> String {
+    match remove_failure(failure, component) {
+        (first, "") => first,
+        (first, second) => format!("{first} {second}"),
+    }
+}
+
+/// What removing the component the desktop runs from says while the desktop runs: from its
+/// own window, the first line and the second; from a console, one line.
+pub fn desktop_in_use(from_its_window: bool) -> (String, &'static str) {
+    match from_its_window {
+        true => (
+            String::from("In use: the desktop is running, and this window is part of it."),
+            BOOT_TO_REMOVE,
+        ),
+        false => (
+            format!("In use: the desktop is running. {BOOT_TO_REMOVE}"),
+            "",
+        ),
+    }
+}
+
+/// How the component the desktop runs from is removed.
+pub const BOOT_TO_REMOVE: &str = "Boot with run-eggos.sh --serial and remove it from there.";
+
+/// The Components list's three lines while no store is attached.
+pub const NO_STORE_LINES: [&str; 3] = [
+    "No component store is attached.",
+    "Attach the store disk, or put the .img in the host share.",
+    "run-eggos.sh and run-eggos.ps1 attach it automatically.",
+];
+
+/// `Component store: EggOS 0.3.0, x86_64`.
+pub fn store_title(store: &Store) -> String {
+    format!(
+        "Component store: EggOS {}, {}",
+        store.index.version, store.index.arch
+    )
+}
+
+/// `eggos-0.3.0-x86_64-components.img on /dev/vdc`, or `... in the host share`.
+pub fn store_place(store: &Store) -> String {
+    format!("{} {}", store.file_name(), where_text(store))
+}
+
+/// `2 of 4 installed · 3.7 MB on disk`, or `Nothing installed · 0 B on disk`.
+pub fn count_line(installed: usize, shown: usize, installed_bytes: u64) -> String {
+    let size = size_text(installed_bytes);
+    match installed {
+        0 => format!("Nothing installed \u{b7} {size} on disk"),
+        _ => format!("{installed} of {shown} installed \u{b7} {size} on disk"),
+    }
+}
+
+/// `Installed · 1.8 MB`.
+pub fn installed_state(size: u64) -> String {
+    format!("Installed \u{b7} {}", size_text(size))
+}
+
+/// `Not installed · 1.8 MB`.
+pub fn not_installed_state(size: u64) -> String {
+    format!("Not installed \u{b7} {}", size_text(size))
+}
+
+/// `Installing 42 %`, from the bytes copied of the total, floored.
+pub fn installing_state(received: u64, total: u64) -> String {
+    format!("Installing {} %", percent(received, total))
+}
+
+/// The percent copied, floored: `received x 100 / total`.
+pub fn percent(received: u64, total: u64) -> u64 {
+    received.saturating_mul(100) / total.max(1)
+}
+
+/// `0 B of 1.8 MB`.
+pub fn copied_of(received: u64, total: u64) -> String {
+    format!("{} of {}", size_text(received), size_text(total))
+}
+
+/// The state of a component being removed.
+pub const REMOVING_STATE: &str = "Removing...";
+/// The state of a component whose last install failed.
+pub const FAILED_STATE: &str = "Failed";
+/// The state of a component another program is installing.
+pub const INSTALLING_ELSEWHERE_STATE: &str = "Installing...";
 
 fn errno_text(errno: eggos_runtime::errno::Errno) -> String {
     String::from_utf8_lossy(errno.message()).into_owned()

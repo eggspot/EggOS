@@ -505,6 +505,7 @@ fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
         [
             "tee",
             "trash",
+            "clock_set",
             "app_uninstall",
             "settings_set",
             "disk_repair",

@@ -97,6 +97,7 @@ fn network_is_the_second_pane_and_its_sidebar_row_is_76_to_107() {
             "Storage",
             "Date & time",
             "Agents",
+            "Windows",
             "Components",
             "About",
         ]

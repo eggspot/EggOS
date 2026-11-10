@@ -477,11 +477,7 @@ mod program {
         match installer::install(&mut files, plan, buffer()) {
             Ok(()) => {
                 linux::apps_changed();
-                let mut line = Line::new();
-                let _ = write!(line, "Installed {} in ", plan.name());
-                line.push_bytes(plan.folder().as_bytes());
-                let _ = line.write_str(".");
-                say(STANDARD_OUTPUT, line.as_str());
+                say(STANDARD_OUTPUT, messages::installed(&plan).as_str());
                 if let Some(ahead) = crate::translation::ahead_of_launch(&plan, machine) {
                     translate(&mut files, &plan, machine, ahead);
                 }
@@ -649,9 +645,7 @@ mod program {
         match installer::uninstall(&mut files, name) {
             Ok(()) => {
                 linux::apps_changed();
-                let mut line = Line::new();
-                let _ = write!(line, "Uninstalled {}.", shown.as_str());
-                say(STANDARD_OUTPUT, line.as_str());
+                say(STANDARD_OUTPUT, messages::uninstalled(shown.as_str()).as_str());
                 0
             }
             Err(problem) => {
@@ -691,15 +685,13 @@ mod program {
     fn preview_uninstall(name: &[u8]) -> i32 {
         let mut files = LinuxFiles::new();
         let shown = installer::Name::new(name);
-        let mut line = Line::new();
         if !is_installed(&mut files, name) {
+            let mut line = Line::new();
             let _ = write!(line, "{} is not installed", shown.as_str());
             report(false, &errors::NO_SUCH_APP, line.as_str());
             return FAILED;
         }
-        let _ = write!(line, "would uninstall {}: removes ", shown.as_str());
-        line.push_bytes(APPLICATIONS);
-        let _ = write!(line, "/{} and everything in it", shown.as_str());
+        let mut line = messages::would_uninstall(shown.as_str());
         let mut kept: crate::translation::RecordBuffer = [0; translation::LARGEST + 1];
         let record = crate::translation::read_record(&mut files, name, &mut kept)
             .and_then(|length| translation::parse(&kept[..length]));
