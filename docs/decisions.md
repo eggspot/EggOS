@@ -19552,3 +19552,21 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; RISC-V's console still assumes QEMU `virt`'s UART0 (an
   NS16550 found through `stdout-path` also needs its `reg-shift` and a check that it lies in the
   boot direct map); other UARTs (the 8250 family on Arm boards, `snps,dw-apb-uart`).
+
+## D267 x86_64: IBRS on every kernel entry for Intel CPUs without enhanced IBRS, against Spectre v2 and Retbleed (D260's follow-up; M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** D260 set IBRS once on CPUs with enhanced IBRS. Older Intel CPUs (Skylake to Comet
+  Lake) have IBRS but not its enhanced form, and on them a program can train the predictions the
+  kernel's indirect branches use, and, when the return stack underflows, its returns too
+  (Retbleed, CVE-2022-29901). The fix Intel documents for them is IBRS while the kernel runs.
+- **Decision.** On an Intel CPU with IBRS and IBPB (CPUID 7 EDX[26]) but without enhanced IBRS,
+  `IA32_SPEC_CTRL.IBRS` is set at boot, set again by the entry code on every entry from user mode
+  (after the registers are saved, with `wrmsr`), and cleared right before every return to user
+  mode (both the `iretq` and the `sysretq` paths), so the kernel always runs with it and programs
+  never pay for it. Enhanced IBRS keeps D260's single write; CPUs with neither are unchanged.
+  Labels in the entry code are named (`.Lx86_64_entry_predictions_set`), as the global assembly
+  already reuses its numbered ones.
+- **Not yet.** Building and running; measuring the two `wrmsr`s per system call; AMD's Retbleed
+  mitigations (an IBPB on entry or the untrained return thunk, CVE-2022-29900) and SRSO; filling
+  the return stack buffer on context switch; STIBP for SMT siblings; KPTI for CPUs Meltdown
+  affects (separate user page tables, D47).

@@ -199,6 +199,13 @@ user_exception_save:
     pushq   %r15
     // The program's direction flag is its own; the kernel's code needs it clear.
     cld
+    cmpb    $0, {ibrs_on_entry}(%rip)
+    je      .Lx86_64_entry_predictions_set
+    movl    ${ia32_spec_ctrl}, %ecx
+    movl    ${spec_ctrl_ibrs}, %eax
+    xorl    %edx, %edx
+    wrmsr
+.Lx86_64_entry_predictions_set:
     movq    {kernel_rsp}(%rsp), %rsp
     popq    %r15
     popq    %r14
@@ -246,7 +253,14 @@ x86_64_enter_user:
     movq    {segment_bases_id}(%rdi), %rax
     cmpq    %rax, %gs:{cpu_segment_bases_id}
     jne     2f
-3:  cmpq    ${syscall_vector}, {vector}(%rdi)
+3:  cmpb    $0, {ibrs_on_entry}(%rip)
+    je      .Lx86_64_exit_predictions_cleared
+    movl    ${ia32_spec_ctrl}, %ecx
+    xorl    %eax, %eax
+    xorl    %edx, %edx
+    wrmsr
+.Lx86_64_exit_predictions_cleared:
+    cmpq    ${syscall_vector}, {vector}(%rdi)
     je      1f
     movq    %rdi, %rsp
     popq    %r15
@@ -1258,6 +1272,9 @@ x86_64_user_test_end:
     ia32_kernel_gs_base = const IA32_KERNEL_GS_BASE,
     tss_rsp0 = const TSS_RSP0_OFFSET,
     clear_buffers = sym CLEAR_CPU_BUFFERS,
+    ibrs_on_entry = sym IBRS_ON_ENTRY,
+    ia32_spec_ctrl = const IA32_SPEC_CTRL,
+    spec_ctrl_ibrs = const SPEC_CTRL_IBRS,
     smap = sym SMAP_ON,
     verw_selector = sym VERW_SELECTOR,
     user_rsp = const USER_RSP_OFFSET,
@@ -1642,6 +1659,11 @@ static SMAP_ON: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new
 /// enhanced IBRS, and an `IA32_PRED_CMD.IBPB` barrier when the kernel switches between programs'
 /// address spaces where the CPU has IBPB.
 static PREDICTION_BARRIER: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Whether every entry from user mode sets `IA32_SPEC_CTRL.IBRS` and every return clears it
+/// (D267): on CPUs with IBRS but not enhanced IBRS, so neither a program's indirect branches nor
+/// its returns (Retbleed) steer the kernel's. Read by the entry code.
+static IBRS_ON_ENTRY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 const IA32_SPEC_CTRL: u32 = 0x48;
 const IA32_PRED_CMD: u32 = 0x49;
 const SPEC_CTRL_IBRS: u64 = 1;
@@ -1660,12 +1682,23 @@ fn set_up_branch_predictions() {
     PREDICTION_BARRIER.store(1, core::sync::atomic::Ordering::Relaxed);
     let enhanced = edx & CPUID_ARCH_CAPABILITIES != 0
         && super::read_msr(IA32_ARCH_CAPABILITIES) & ARCH_CAPABILITIES_ENHANCED_IBRS != 0;
-    if enhanced {
-        // SAFETY: `IA32_SPEC_CTRL` exists when CPUID 7 EDX[26] says so (checked); with enhanced
-        // IBRS, setting IBRS once keeps lower-privilege predictions from steering the kernel's
-        // indirect branches and changes nothing else.
-        unsafe { super::write_msr(IA32_SPEC_CTRL, SPEC_CTRL_IBRS) };
+    let on_entry = !enhanced && is_intel();
+    if !enhanced && !on_entry {
+        return;
     }
+    if on_entry {
+        IBRS_ON_ENTRY.store(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    // SAFETY: `IA32_SPEC_CTRL` exists when CPUID 7 EDX[26] says so (checked); setting IBRS keeps
+    // lower-privilege predictions from steering the kernel's indirect branches and changes
+    // nothing else. With enhanced IBRS it stays set; without it the kernel runs with it set and
+    // the entry code clears it only while a program runs.
+    unsafe { super::write_msr(IA32_SPEC_CTRL, SPEC_CTRL_IBRS) };
+}
+
+fn is_intel() -> bool {
+    let [_, ebx, ecx, edx] = super::timer::cpuid(0, 0);
+    [ebx, edx, ecx] == [u32::from_le_bytes(*b"Genu"), u32::from_le_bytes(*b"ineI"), u32::from_le_bytes(*b"ntel")]
 }
 
 /// Issues an indirect branch prediction barrier where the CPU has one, so a program cannot
