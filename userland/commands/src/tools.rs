@@ -2200,6 +2200,35 @@ pub const COMPONENT_INSTALL: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
+/// `component_edition` (D258): installs an edition's components.
+pub const COMPONENT_EDITION: ToolDefinition = ToolDefinition {
+    name: "component_edition",
+    title: "Install an edition",
+    description: "Installs every component of an edition (server, personal, professional, \
+                  enterprise) that the store offers for this machine and that is not installed \
+                  yet, as `component edition <name>` does. Needs the install grant. dry_run: true \
+                  says what it would install.",
+    command: &["component", "edition"],
+    fixed: &[],
+    arguments: &[
+        required(lengths(
+            described(
+                optional("name", JsonType::String, Mapping::Operand),
+                "The edition's name, as component edition lists it (personal).",
+            ),
+            Some(1),
+            32,
+        )),
+        DRY_RUN,
+    ],
+    max_effect: Effect::Change,
+    grant: Some(Grant::Install),
+    idempotent: true,
+    open_world: false,
+    confirm: Confirmation::Never,
+    result: ToolResult::Text,
+};
+
 /// `component_remove` (D235).
 pub const COMPONENT_REMOVE: ToolDefinition = ToolDefinition {
     name: "component_remove",
@@ -2364,7 +2393,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
 /// D204's, D226's, D225's, D235's and D231's.
-pub const TOOLS: [ToolDefinition; 73] = [
+pub const TOOLS: [ToolDefinition; 74] = [
     LS,
     CAT,
     PS,
@@ -2432,6 +2461,7 @@ pub const TOOLS: [ToolDefinition; 73] = [
     DOWNLOAD_CANCEL,
     DOWNLOAD_CLEAR,
     COMPONENT_LIST,
+    COMPONENT_EDITION,
     COMPONENT_INSTALL,
     COMPONENT_REMOVE,
     WINDOWS_REGISTRY_GET,
