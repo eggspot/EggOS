@@ -19761,3 +19761,29 @@ the license, by an explicit instruction recorded here.
     added it in part 2 did not apply.
 - **Not yet.** Building and running; the PNVM's data itself (the platform's tuning) and 6 GHz
   channels; more than one command in flight; then scanning, association and data (part 5).
+
+## D276 The Intel Wi-Fi driver, part 5: readying the firmware and scanning; `/proc/driver/wifi` lists the networks heard (D275's next; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from OpenBSD's `iwx(4)` under D272's exception)
+
+- **Decision.**
+  - `scan::configure` sends what the reference sends after the NVM: the valid transmit antennas
+    (the firmware's PHY chains masked by the NVM's), Bluetooth coexistence as Wi-Fi only, the
+    SoC configuration (discrete, or the crystal's low-latency flag and latency on integrated
+    adapters; the reference's latency-tolerance delay bits mask to nothing, so none are sent),
+    the dedicated command queue where the firmware supports DQA, power saving off, the world
+    regulatory domain (`ZZ`) when the firmware chooses the domain itself, the reduced scan
+    configuration (required: API bit 56), and beacon filtering off.
+  - `scan::scan` sends `SCAN_REQ_UMAC` version 14: passive on every channel the NVM allows (at
+    most the firmware's scan channel limit), adaptive dwell, all beacons and probe responses
+    passed up, with the probe request (broadcast, the adapter's address, the 2.4 and 5 GHz
+    rates) the request carries. It collects `REPLY_RX_MPDU` packets, unwrapping each frame from
+    its descriptor (48 bytes on the AX200 family, 64 on the AX210 family; CRC and overrun checked,
+    the firmware's 2-byte pad after the header removed) with its channel and signal, until
+    `SCAN_COMPLETE_UMAC` or 15 seconds. The firmware's notification list now holds 256 packets.
+  - The kernel's bring-up thread configures the firmware, then scans every 30 seconds (not while
+    the radio's switch is off), parses each frame with `eggos_wifi::frames::network`, keeps one
+    entry per BSSID at its strongest signal, and `/proc/driver/wifi` lists them under its status
+    line: BSSID, channel, signal, security and SSID. The kernel depends on `eggos-wifi` for it.
+- **Not yet.** Building and running; scan request version 17 (firmware that asks for it);
+  active and directed scans; 6 GHz; then association: the MAC, PHY and binding contexts, the
+  station, authentication and association frames, WPA2's handshake through `eggos-wifi`, keys,
+  and the data path (part 6); the `wifi` CLI, MCP tools and the Network pane (D22).

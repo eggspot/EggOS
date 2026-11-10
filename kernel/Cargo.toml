@@ -12,6 +12,7 @@ eggos-eggfs = { path = "../eggfs" }
 eggos-gpt = { path = "../gpt" }
 eggos-hal = { path = "../hal" }
 eggos-net = { path = "../net" }
+eggos-wifi = { path = "../wifi" }
 eggos-settings-file = { path = "../settings-file" }
 eggos-android-properties = { path = "../android-properties" }
 eggos-android-log = { path = "../android-log" }

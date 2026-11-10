@@ -15,7 +15,9 @@ use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
 use eggos_drivers::wifi::iwx::devices::{self, Adapter, VENDOR_INTEL};
 use eggos_drivers::wifi::iwx::firmware::Firmware;
-use eggos_drivers::wifi::iwx::nvm::{self, Nvm};
+use eggos_drivers::wifi::iwx::nvm;
+use eggos_drivers::wifi::iwx::scan;
+use eggos_wifi::frames::{self as wifi_frames, Network};
 use eggos_drivers::wifi::iwx::transport::{self, Transport, Wait};
 use eggos_hal::Platform;
 
@@ -28,6 +30,8 @@ const FIRMWARE_RETRY: Duration = Duration::from_secs(10);
 const LOAD_TIMEOUT_MS: u64 = 1000;
 const START_TIMEOUT_MS: u64 = 2000;
 const INIT_TIMEOUT_MS: u64 = 4000;
+const SCAN_TIMEOUT_MS: u64 = 15_000;
+const SCAN_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Intel's Wi-Fi adapters (PCI class 02h, subclass 80h, vendor 8086h).
 pub static INTEL_WIFI_DRIVER: DriverDescriptor = DriverDescriptor {
@@ -52,30 +56,52 @@ unsafe impl Send for Found {}
 static FOUND: SpinLock<Option<Found>> = SpinLock::new(None);
 static STATUS: SpinLock<&'static str> = SpinLock::new("no Intel Wi-Fi adapter");
 static RUNNING: SpinLock<Option<Running>> = SpinLock::new(None);
+static NETWORKS: SpinLock<Vec<Seen>> = SpinLock::new(Vec::new());
 
 struct Running {
-    _transport: Transport<Mmio, DmaRegion>,
     firmware: (u8, u8, u8),
-    nvm: Nvm,
+    address: [u8; 6],
+    channels: usize,
 }
 
-// SAFETY: as `Found`: the transport's registers and DMA memory are the adapter's alone.
-unsafe impl Send for Running {}
+/// A network the last scan heard: what its beacon or probe response said, and how strongly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Seen {
+    pub network: Network,
+    pub signal: i8,
+}
+
+/// The networks the last scan heard, strongest first.
+pub fn networks() -> Vec<Seen> {
+    NETWORKS.lock().clone()
+}
+
+fn address_text(address: [u8; 6]) -> alloc::string::String {
+    let [a, b, c, d, e, f] = address;
+    alloc::format!("{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}")
+}
 
 /// What the Wi-Fi adapter reached, for `/proc/driver/wifi`: the state, and once the NVM is
-/// read the adapter's MAC address and how many channels it may use.
+/// read the adapter's MAC address, how many channels it may use and the networks the last
+/// scan heard, one a line (`<BSSID> <channel> <signal> dBm <security> <SSID>`).
 pub fn status() -> alloc::string::String {
     let state = *STATUS.lock();
-    match RUNNING.lock().as_ref() {
-        Some(running) => {
-            let [a, b, c, d, e, f] = running.nvm.address;
-            alloc::format!(
-                "{state}; address {a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}; {} channels",
-                running.nvm.channels.len()
-            )
-        }
-        None => state.into(),
+    let Some((address, channels)) = RUNNING.lock().as_ref().map(|running| (running.address, running.channels)) else {
+        return state.into();
+    };
+    let mut text = alloc::format!("{state}; address {}; {channels} channels", address_text(address));
+    for seen in networks() {
+        let network = seen.network;
+        text.push_str(&alloc::format!(
+            "\n{} {} {} dBm {:?} {}",
+            address_text(network.bssid),
+            network.channel.unwrap_or(0),
+            seen.signal,
+            network.security,
+            alloc::string::String::from_utf8_lossy(network.ssid())
+        ));
     }
+    text
 }
 
 fn set_status(words: &'static str) {
@@ -209,15 +235,48 @@ fn bring_up<P: Platform>(found: Found) {
         Ok(nvm) => nvm,
         Err(error) => return set_status(error.description()),
     };
-    set_status(match transport.radio_killed() {
-        true => "ready; the radio is switched off",
-        false => "ready",
-    });
+    if let Err(error) = scan::configure(&mut transport, &firmware, &adapter, &nvm, &mut Pauses::<P>::within(INIT_TIMEOUT_MS)) {
+        return set_status(error.description());
+    }
     *RUNNING.lock() = Some(Running {
-        _transport: transport,
         firmware: firmware.version,
-        nvm,
+        address: nvm.address,
+        channels: nvm.channels.len(),
     });
+    loop {
+        if transport.radio_killed() {
+            set_status("ready; the radio is switched off");
+        } else {
+            set_status("scanning");
+            match scan::scan(&mut transport, &firmware, &adapter, &nvm, &mut Pauses::<P>::within(SCAN_TIMEOUT_MS)) {
+                Ok(heard) => {
+                    publish(&heard);
+                    set_status("ready");
+                }
+                Err(error) => set_status(error.description()),
+            }
+        }
+        crate::thread::sleep::<P>(SCAN_INTERVAL);
+    }
+}
+
+fn publish(heard: &[scan::Heard]) {
+    let mut seen: Vec<Seen> = Vec::new();
+    for frame in heard {
+        let Some(mut network) = wifi_frames::network(&frame.frame) else {
+            continue;
+        };
+        network.channel = network.channel.or(Some(frame.channel));
+        match seen.iter_mut().find(|known| known.network.bssid == network.bssid) {
+            Some(known) => known.signal = known.signal.max(frame.signal),
+            None => seen.push(Seen {
+                network,
+                signal: frame.signal,
+            }),
+        }
+    }
+    seen.sort_by_key(|known| core::cmp::Reverse(known.signal));
+    *NETWORKS.lock() = seen;
 }
 
 /// The running firmware's major, minor and API version.
