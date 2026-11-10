@@ -18555,7 +18555,9 @@ the license, by an explicit instruction recorded here.
     of the layer's that names itself, words its messages and compares equal to the program's
     own; `std::mutex` and the recursive and timed mutexes over `_Mtx_*` in the program's own
     80-byte object, `std::condition_variable` over `_Cnd_*`, `_Thrd_join`, `_Thrd_detach`,
-    `_Thrd_id`, `_Thrd_hardware_concurrency` and the sleeps, `_Query_perf_counter`,
+    `_Thrd_id`, `_Thrd_hardware_concurrency` and the sleeps (`_Thrd_join` and `_Thrd_detach`
+    take the 16-byte `_Thrd_t` as x64 passes it, the address of the caller's copy, and as ARM64
+    passes it, in two registers), `_Query_perf_counter`,
     `_Query_perf_frequency` and `_Xtime_get_ticks`; `_Syserror_map`, the generic category's
     message for each `std::errc` value (`cpp_errors::GENERIC_MESSAGES`, the enumerator's name
     in words, `unknown error` otherwise), which the program's own `std::generic_category()`

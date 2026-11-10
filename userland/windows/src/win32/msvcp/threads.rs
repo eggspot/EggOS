@@ -43,9 +43,28 @@ struct Time {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct ThreadHandle {
     handle: usize,
     id: u32,
+}
+
+#[cfg(target_arch = "x86_64")]
+type PassedThreadHandle = *const ThreadHandle;
+
+#[cfg(target_arch = "aarch64")]
+type PassedThreadHandle = ThreadHandle;
+
+#[cfg(target_arch = "x86_64")]
+fn received(thread: PassedThreadHandle) -> ThreadHandle {
+    // SAFETY: the x64 calling convention passes a 16-byte `_Thrd_t` as the address of the
+    // caller's copy, which stays in place for the call.
+    unsafe { thread.read_unaligned() }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn received(thread: PassedThreadHandle) -> ThreadHandle {
+    thread
 }
 
 fn word(mutex: usize, offset: usize) -> &'static AtomicI32 {
@@ -253,7 +272,8 @@ extern "efiapi" fn condition_broadcast(condition: usize) -> i32 {
     result::SUCCESS
 }
 
-extern "efiapi" fn thread_join(thread: ThreadHandle, code: *mut i32) -> i32 {
+extern "efiapi" fn thread_join(thread: PassedThreadHandle, code: *mut i32) -> i32 {
+    let thread = received(thread);
     if thread.id == thread_id() {
         return result::ERROR;
     }
@@ -273,8 +293,8 @@ extern "efiapi" fn thread_join(thread: ThreadHandle, code: *mut i32) -> i32 {
     result::SUCCESS
 }
 
-extern "efiapi" fn thread_detach(thread: ThreadHandle) -> i32 {
-    match file::close_handle(thread.handle) {
+extern "efiapi" fn thread_detach(thread: PassedThreadHandle) -> i32 {
+    match file::close_handle(received(thread).handle) {
         FALSE => result::ERROR,
         _ => result::SUCCESS,
     }
