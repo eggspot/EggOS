@@ -21,6 +21,7 @@
 //! - **Interrupts** ([`interrupts`], D184): a driver connects its device's line, whose handler
 //!   quiets the device and wakes the driver's thread.
 
+mod acpi_bus;
 pub mod dma;
 mod fdt_bus;
 pub mod interrupts;
@@ -88,7 +89,7 @@ pub enum Match {
     PciIdRange { vendor: u16, first: u16, last: u16 },
     /// A PCI function's class and subclass.
     PciClass { class: u8, subclass: u8 },
-    /// An ACPI `_HID`; nothing is discovered from ACPI's namespace yet (AML is M13's).
+    /// An ACPI `_HID` or `_CID` (D252).
     AcpiHid(&'static [u8]),
     /// A virtio device type, behind any transport.
     VirtioId(u32),
@@ -125,6 +126,13 @@ impl Match {
             }
             (Match::VirtioId(wanted), Identity::Virtio { device_type, .. }) => {
                 (*device_type == wanted).then_some(0)
+            }
+            (Match::AcpiHid(wanted), Identity::Acpi { hid, cid, .. }) => {
+                if acpi_bus::text(hid) == wanted {
+                    Some(0)
+                } else {
+                    (acpi_bus::text(cid) == wanted).then_some(1)
+                }
             }
             _ => None,
         }
@@ -247,6 +255,13 @@ pub enum Identity {
     /// A virtio device behind a transport its parent's driver set up; `transport` is that
     /// driver's handle for it.
     Virtio { device_type: u32, transport: u8 },
+    /// A device the ACPI namespace declares (D252): its `_HID` and `_CID`, NUL-padded, and its
+    /// namespace path.
+    Acpi {
+        hid: [u8; acpi_bus::ID_BYTES],
+        cid: [u8; acpi_bus::ID_BYTES],
+        path: [u8; acpi_bus::PATH_BYTES],
+    },
 }
 
 /// Whether a device's DMA sees the CPU's caches.
@@ -494,6 +509,9 @@ pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
     {
         report.discovery_error = Some(error);
     }
+    if let Some(dsdt) = P::acpi_dsdt() {
+        acpi_bus::discover(dsdt, probe.table);
+    }
     probe_all(&mut probe, BUILTIN);
     table.nodes.shrink_to_fit();
     summarize(table, report)
@@ -577,6 +595,7 @@ pub fn class(identity: &Identity) -> &'static str {
             _ => "other",
         },
         Identity::DeviceTree { compatible, .. } => device_tree_class(compatible),
+        Identity::Acpi { hid, .. } => acpi_bus::class(&hid),
     }
 }
 
@@ -671,6 +690,12 @@ pub fn write_device_line(
             let name = eggos_drivers::virtio::device_type_name(device_type);
             write!(text, "virtio\t{class}\t{name}\tvirtio {name}")?;
         }
+        Identity::Acpi { hid, path, .. } => {
+            write!(text, "acpi\t{class}\t")?;
+            write_printable(text, acpi_bus::text(&path))?;
+            text.write_str("\t")?;
+            write_printable(text, acpi_bus::text(&hid))?;
+        }
     }
     let delivery = match (node.binding, node.delivery) {
         (Binding::Bound(_), _) if matches!(class, "bus" | "interrupt-controller") => "-",
@@ -720,6 +745,13 @@ impl core::fmt::Display for DeviceNode {
                 "virtio {} (type {device_type})",
                 eggos_drivers::virtio::device_type_name(device_type)
             )?,
+            Identity::Acpi { hid, path, .. } => {
+                f.write_str("acpi ")?;
+                write_ascii(f, acpi_bus::text(&path))?;
+                f.write_str(" (")?;
+                write_ascii(f, acpi_bus::text(&hid))?;
+                f.write_str(")")?;
+            }
         }
         for region in self.regions() {
             write!(f, " {region}")?;

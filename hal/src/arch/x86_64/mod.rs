@@ -809,6 +809,11 @@ impl Platform for X86_64 {
         acpi_table(signature)
     }
 
+    fn acpi_dsdt() -> Option<&'static [u8]> {
+        let fadt = acpi_table(b"FACP").and_then(acpi::parse_fadt)?;
+        table(fadt.dsdt, b"DSDT")
+    }
+
     unsafe fn platform_clock(wait_duty: fn(), clock: &mut dyn FnMut(&dyn RealTimeClock)) {
         let acpi::CmosClock::Present { century_register } = cmos_clock() else {
             return;

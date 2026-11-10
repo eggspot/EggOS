@@ -15,6 +15,7 @@ compile_error!(
 compile_error!("a bare-metal build of the HAL needs `--cfg eggos_kernel` (.cargo/config.toml)");
 
 pub mod acpi;
+pub mod aml;
 pub mod arch;
 pub mod command_line;
 pub mod cpu;
@@ -230,6 +231,12 @@ pub trait Platform: 'static {
     /// checksum validated, for device discovery (D110): `MCFG` for PCI Express. `None` on a
     /// machine without ACPI (the default) or without that table.
     fn acpi_table(_signature: &[u8; 4]) -> Option<&'static [u8]> {
+        None
+    }
+
+    /// The ACPI DSDT, the definition block the `FADT` names, validated, for the namespace walk
+    /// ([`aml::devices`], D252); `None` on a machine without ACPI.
+    fn acpi_dsdt() -> Option<&'static [u8]> {
         None
     }
 

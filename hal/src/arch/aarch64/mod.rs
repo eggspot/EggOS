@@ -667,6 +667,21 @@ impl Platform for Aarch64 {
         acpi_table_from(crate::handoff::handoff::<Self>()?.rsdp, signature)
     }
 
+    fn acpi_dsdt() -> Option<&'static [u8]> {
+        let fadt = Self::acpi_table(b"FACP").and_then(crate::acpi::parse_fadt)?;
+        crate::acpi::table_at(fadt.dsdt, b"DSDT", &|address, length| {
+            let end = address.checked_add(length as u64)?;
+            if end > BOOT_DIRECT_MAP_END {
+                return None;
+            }
+            // SAFETY: the firmware's DSDT is in RAM the direct map covers (checked) and nothing
+            // writes it.
+            Some(unsafe {
+                core::slice::from_raw_parts((address as usize).wrapping_add(DIRECT_MAP_OFFSET) as *const u8, length)
+            })
+        })
+    }
+
     fn device_apertures(aperture: &mut dyn FnMut(PhysicalRange)) {
         let Some(mcfg) = Self::acpi_table(b"MCFG") else {
             return;
