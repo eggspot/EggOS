@@ -38,6 +38,8 @@ pub mod usb;
 pub mod ethernet;
 #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
 pub mod intel_display;
+#[cfg(any(test, feature = "intel-wifi"))]
+pub mod intel_wifi;
 #[cfg(any(test, feature = "virtio"))]
 pub mod virtio;
 pub mod window;
@@ -244,7 +246,23 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &ethernet::ETHERNET_DRIVER,
     #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
     &intel_display::INTEL_DISPLAY_DRIVER,
+    #[cfg(any(test, feature = "intel-wifi"))]
+    &intel_wifi::INTEL_WIFI_DRIVER,
 ];
+
+/// What the Wi-Fi adapter reached, for `/proc/driver/wifi` (D274).
+pub fn wifi_status() -> &'static str {
+    #[cfg(any(test, feature = "intel-wifi"))]
+    return intel_wifi::status();
+    #[cfg(not(any(test, feature = "intel-wifi")))]
+    return "no Wi-Fi driver in this kernel";
+}
+
+/// Starts bringing the Wi-Fi adapter up once the file systems are mounted (D274).
+pub fn start_wifi<P: eggos_hal::Platform>() {
+    #[cfg(any(test, feature = "intel-wifi"))]
+    let _ = intel_wifi::start::<P>();
+}
 
 /// What a device is, as the bus that found it says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

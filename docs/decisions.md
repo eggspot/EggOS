@@ -19715,3 +19715,21 @@ the license, by an explicit instruction recorded here.
   before it can read the firmware from `/usr/lib/firmware`; the PNVM for the AX210 family; the
   receive ring's used-descriptor order on the AX210 family (read in order here); interrupts and
   MSI-X; then commands, the NVM, scanning and association.
+
+## D274 The Intel Wi-Fi driver, part 3: the kernel's probe, and the firmware started once the file systems are mounted (D273's next; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** Probes run before any disk is mounted, and the adapters' firmware comes from the
+  optional `wifi-firmware` component under `/usr/lib/firmware/intel/iwlwifi/` (D265), which a
+  user may install long after boot.
+- **Decision.** The kernel's `intel_wifi` driver (feature `intel-wifi`, on by default) matches
+  PCI class 02h subclass 80h from Intel, reads the subsystem id and `CSR_HW_REV`, and keeps the
+  mapped registers and the adapter `devices::identify` named, refusing ones it does not run.
+  After the file systems are mounted, `devices::start_wifi` starts a kernel thread that reads the
+  adapter's firmware file (at most 4 MiB), retrying every 10 seconds until the component is
+  installed, parses it, allocates the rings, powers the adapter up and loads the firmware,
+  each section in DMA memory of its own. Waits between register polls spin for whole
+  milliseconds, the clock's smallest deadline. `/proc/driver/wifi` says what the adapter reached:
+  waiting for the file systems or the component, starting, `firmware running` (with whether the
+  radio's switch is off), or why it stopped.
+- **Not yet.** Building and running; microsecond pauses; the AX210 family's PNVM and every host
+  command (part 4); restarting the adapter after a firmware error.

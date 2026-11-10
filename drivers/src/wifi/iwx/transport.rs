@@ -235,6 +235,12 @@ fn dma<M: DmaMemory>(memory: &M, at: usize) -> u64 {
     memory.dma_addr().get() + at as u64
 }
 
+/// `CSR_HW_REV` (`raw`) in the older layout the adapter table compares against: the step moved
+/// into bits 2 and 3.
+pub fn older_hw_rev(raw: u32) -> u32 {
+    (raw & 0xfff0) | ((raw & 0x3) << 2)
+}
+
 /// The adapter's host interface, its rings and the firmware's sections while it loads them.
 pub struct Transport<R: RegisterIo, M: DmaMemory> {
     regs: R,
@@ -253,11 +259,11 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
     /// The interface behind `regs` for `adapter`, with `rings` ([`RING_BYTES`]) and
     /// `rx_buffers` ([`RX_BUFFER_AREA_BYTES`]), both zeroed.
     pub fn new(regs: R, adapter: Adapter, rings: M, rx_buffers: M) -> Self {
-        let raw = regs.read32(CSR_HW_REV);
+        let hw_rev = older_hw_rev(regs.read32(CSR_HW_REV));
         Self {
             regs,
             adapter,
-            hw_rev: (raw & 0xfff0) | ((raw & 0x3) << 2),
+            hw_rev,
             nic_locks: 0,
             rings,
             rx_buffers,
