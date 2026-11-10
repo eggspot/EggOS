@@ -142,6 +142,15 @@ jobs:
           EGGOS_WINDOWS_PROGRAMS: ${{ github.event_name == 'pull_request' && matrix.arch != 'riscv64' && 'target/windows-programs' || '' }}
         run: cargo xtask qemu --arch ${{ matrix.arch }}
 
+      - name: Keep the QEMU boot tests' screenshots when they fail
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qemu-screenshots-${{ matrix.arch }}
+          path: target/screendump-${{ matrix.arch }}*.ppm
+          retention-days: 7
+          if-no-files-found: ignore
+
       - uses: actions/cache/save@v6
         if: github.event_name == 'push'
         with:

@@ -1,14 +1,14 @@
-//! The GTK app boot test (D176), on x86_64 and aarch64: one boot of the release kernel with a
-//! blank disk and a host folder holding `mousepad.zip` (`gtk_app.rs`). The shell installs it
-//! with `app install --entry --environment --arguments`, which lists it and links its fonts
-//! into `/Applications/.fonts`, and compiles its GSettings schemas with the GLib tool it
-//! carries. It writes `alpha` into the note, and in `/tmp` `app open` opens Mousepad on it, as
-//! its icon does; its window appears on the display, a click on its title bar focuses it, and
-//! keys edit the note: Ctrl+End and `beta`, then Ctrl+A and Ctrl+C copy everything, Ctrl+End
-//! and Ctrl+V paste it at the end (the window changes each time), Ctrl+S saves and Ctrl+Q
-//! quits, so the shell's prompt comes back. The note then holds `alpha` and `beta` twice, the
-//! copy pasted right after the first `beta`; `wm list` has no Mousepad window, and after the
-//! power-off the disk's manifest names the loader, the environment and the arguments.
+//! The GTK app boot test (D176), on x86_64 and aarch64: one boot of the release kernel with a blank
+//! disk and a host folder holding `mousepad.zip` (`gtk_app.rs`). The shell installs it with `app
+//! install --no-console --entry --environment --arguments`, which lists it and links its fonts into
+//! `/Applications/.fonts`, and compiles its GSettings schemas with the GLib tool it carries. It
+//! writes `alpha` into the note, and in `/tmp` `app open` opens Mousepad on it, as its icon does;
+//! its window appears on the display, a click on its title bar focuses it, and keys edit the note:
+//! Ctrl+End and `beta`, then Ctrl+A and Ctrl+C copy everything, Ctrl+End and Ctrl+V paste it at the
+//! end (the window changes each time), Ctrl+S saves and Ctrl+Q quits, so the shell's prompt comes
+//! back. The note then holds `alpha` and `beta` twice, the copy pasted right after the first
+//! `beta`; `wm list` has no Mousepad window, and after the power-off the disk's manifest names the
+//! loader, the environment and the arguments.
 
 use super::install::{file_at, image_volume};
 use super::settings::{Boot, Screen};
@@ -42,8 +42,8 @@ fn loader_path(arch: &str) -> String {
 
 fn install_line() -> String {
     format!(
-        "app install --entry {APP} --environment '{}' --arguments '{}' /media/host/{ARCHIVE}; \
-         echo {STATUS_PREFIX}install $?\r",
+        "app install --no-console --entry {APP} --environment '{}' --arguments '{}' \
+         /media/host/{ARCHIVE}; echo {STATUS_PREFIX}install $?\r",
         install_environment(),
         install_arguments()
     )
@@ -388,8 +388,9 @@ mod tests {
     #[test]
     fn the_typed_lines_install_compile_open_and_read_back() {
         assert!(install_line().starts_with(
-            "app install --entry mousepad --environment 'XDG_DATA_DIRS=/Applications/mousepad/share \
-             NO_AT_BRIDGE=1 XKB_CONFIG_ROOT=/Applications/mousepad/xkb' --arguments \
+            "app install --no-console --entry mousepad --environment \
+             'XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1 \
+             XKB_CONFIG_ROOT=/Applications/mousepad/xkb' --arguments \
              '--disable-server /tmp/note.txt' /media/host/mousepad.zip;"
         ));
         assert!(schemas_line("aarch64").starts_with(
