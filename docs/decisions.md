@@ -19301,3 +19301,13 @@ the license, by an explicit instruction recorded here.
   checks are 0. A UEFI firmware that left other bits set (D236 keeps EL1's value from the
   firmware) no longer passes them on. Secondary CPUs use the same code.
 - **Not yet.** Building and running; `PAN`, `TCO`, `DIT` and `SSBS` (D49).
+
+## D251 x86_64: SMEP and UMIP where the CPU has them (D45's and D47's follow-ups; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Each CPU, as it sets user mode up, also turns on `CR4.SMEP` (CPUID 7 EBX[7]): the
+  kernel never executes a user page, so a jump into program memory faults instead of running it;
+  and `CR4.UMIP` (CPUID 7 ECX[2]): `SGDT`, `SIDT`, `SLDT`, `SMSW` and `STR` fault in ring 3, so
+  programs cannot learn the kernel's table addresses. Neither costs anything on a hot path.
+- **Not yet.** Building and running; SMAP, which needs `stac`/`clac` around every user access and
+  `clac` on every entry; emulating the five instructions for the rare Windows or Linux program that
+  uses one (Linux emulates them).
