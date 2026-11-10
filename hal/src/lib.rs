@@ -71,6 +71,24 @@ pub trait Platform: 'static {
         Err("this machine has no power button EggOS answers yet")
     }
 
+    /// Starts the PC's 8042 keyboard controller and its PS/2 keyboard and mouse, polled, where
+    /// the machine has one (D239): what answered. None by default.
+    fn start_legacy_input() -> eggos_drivers::input::ps2::Found {
+        eggos_drivers::input::ps2::Found::default()
+    }
+
+    /// Hands `event` what the PS/2 devices sent since the last call, at most `budget` bytes'
+    /// worth, and returns how many bytes it took. Called by the kernel's input poller only, once
+    /// [`Self::start_legacy_input`] found a device.
+    fn poll_legacy_input(_budget: usize, _event: &mut dyn FnMut(eggos_drivers::input::RawEvent)) -> usize {
+        0
+    }
+
+    /// Shows the lock lights on the PS/2 keyboard; `false` when it could not take them now.
+    fn set_legacy_lights(_lights: eggos_drivers::input::LockLights) -> bool {
+        true
+    }
+
     /// Routes the device interrupt `specifier` names (a device-tree interrupt of the machine's
     /// interrupt controller: a GIC shared peripheral interrupt, a PLIC source) to the boot CPU and
     /// enables it: from then on it raises [`Interrupt::Device`] with the line returned. A

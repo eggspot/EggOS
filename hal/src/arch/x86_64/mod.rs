@@ -13,6 +13,7 @@
 mod console_input;
 mod exception;
 mod fp;
+mod legacy_input;
 mod message_interrupts;
 mod port;
 mod power_button;
@@ -628,6 +629,18 @@ impl Platform for X86_64 {
 
     fn enable_power_button() -> Result<(), &'static str> {
         power_button::enable()
+    }
+
+    fn start_legacy_input() -> eggos_drivers::input::ps2::Found {
+        legacy_input::start()
+    }
+
+    fn poll_legacy_input(budget: usize, event: &mut dyn FnMut(eggos_drivers::input::RawEvent)) -> usize {
+        legacy_input::poll(budget, event)
+    }
+
+    fn set_legacy_lights(lights: eggos_drivers::input::LockLights) -> bool {
+        legacy_input::set_lights(lights)
     }
 
     fn message_interrupt() -> Result<(crate::DeviceLine, crate::InterruptMessage), &'static str> {

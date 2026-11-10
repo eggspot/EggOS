@@ -3,7 +3,9 @@
 //! to), what a device can report, the US keymap ([`keymap`]), the keyboard layouts with their
 //! dead keys and third level ([`layout`], D185) and the pointer's scaling.
 
+pub mod hid;
 pub mod layout;
+pub mod ps2;
 
 pub use eggos_terminal::{key, keymap};
 

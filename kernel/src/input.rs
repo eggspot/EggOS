@@ -1695,3 +1695,45 @@ pub fn start<P: Platform>() -> Result<Option<Watching>, crate::thread::SpawnErro
 
 #[cfg(test)]
 mod tests;
+
+/// The PC's PS/2 keyboard and mouse behind the 8042 (D239), polled through the HAL.
+pub struct LegacyInput<P: Platform> {
+    capabilities: Capabilities,
+    platform: core::marker::PhantomData<fn() -> P>,
+}
+
+impl<P: Platform> InputDevice for LegacyInput<P> {
+    fn capabilities(&self) -> Capabilities {
+        self.capabilities
+    }
+
+    fn poll(&mut self, budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize {
+        P::poll_legacy_input(budget, event)
+    }
+
+    fn set_lock_lights(&mut self, lights: LockLights) -> bool {
+        P::set_legacy_lights(lights)
+    }
+}
+
+/// Starts the PS/2 devices where the machine has them and installs them as one input device:
+/// what they report, or `None` when nothing answered or there was no room.
+pub fn start_legacy<P: Platform>() -> Option<Capabilities> {
+    let found = P::start_legacy_input();
+    if !found.keyboard && !found.mouse {
+        return None;
+    }
+    let capabilities = Capabilities {
+        keyboard: found.keyboard,
+        buttons: found.mouse,
+        relative: found.mouse,
+        wheel: found.wheel,
+        absolute: None,
+    };
+    install(Box::new(LegacyInput::<P> {
+        capabilities,
+        platform: core::marker::PhantomData,
+    }))
+    .ok()?;
+    Some(capabilities)
+}
