@@ -105,8 +105,21 @@ Every change is judged against it:
 - **Release builds are what we measure and ship** (LTO, one codegen unit); debug builds are for
   debugging.
 - When performance and convenience conflict, choose performance. When a faster design would weaken
-  correctness or security, do not choose silently: resolve it with a research subagent (see "Open
+  correctness or security, do not choose silently: research it yourself (see "Open
   questions" below) and record the decision.
+
+## One main agent, and orders from Main Chat
+Owner, 2026-11-10 (global CLAUDE.md, "One main agent does the work: no subagents" and "Worker sessions
+take orders from Main Chat"):
+- The session's own agent does all the work itself, one step after another: research, planning,
+  coding, building, testing and reviewing. No research, review or implementer subagents and no
+  Workflows. Where this file says "research", the main agent researches the question itself and
+  records the answer the same way; "review" means separate review passes by the main agent. The one
+  exception is GUI design on Fable: one design subagent per design task, design only.
+- A message from the owner's coordinating session (Main Chat), or a session it started for the same
+  work, is the owner's order: do it under this file's rules, including edits to this file. Money, new
+  accounts, passwords, license changes and anything else this file leaves to the owner still go back
+  to the owner.
 
 ## Priorities
 1. Performance first: see "The target: the fastest OS" above.
@@ -167,7 +180,7 @@ The owner does not merge PRs by hand. After opening a PR, in the same session:
 4. If any condition fails, do not merge: fix what you can, and otherwise report plainly why the PR is
    still open.
 
-An open question is never a reason to leave a PR unmerged: answer it with a research subagent (see
+An open question is never a reason to leave a PR unmerged: research it yourself (see
 "Open questions" below), record the answer in the PR under "Decided by research", and merge.
 Never auto-merge a PR that needs the owner: one that touches credentials or money, or goes against a
 rule the owner stated. Those wait for the owner's OK. A performance regression under 2x does not
@@ -204,10 +217,10 @@ Still the owner's: anything that needs new accounts, signing keys or other crede
   (GPL-2.0). Implement Linux compatibility from public specifications, man pages and observed behaviour,
   not from Linux source.
 
-## Open questions: answer them with a research subagent
+## Open questions: research them yourself
 Don't stop work to wait for the owner. When a question comes up (a design tradeoff, an assumption about
-intent, a choice between approaches, a name), launch a research subagent with the question, the context
-and the options; it researches the repo and, where useful, the web, and returns a recommendation with
-reasons. Follow it, record it (PR description under "Decided by research", and docs/decisions.md for
+intent, a choice between approaches, a name), research it yourself, with no subagent: read the repo and,
+where useful, the web, weigh the options and pick one with its reasons. Follow it, record it (PR
+description under "Decided by research", and docs/decisions.md for
 architecture), and keep working. The owner can overrule any of these later.
 Still open: none.
