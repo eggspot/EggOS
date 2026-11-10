@@ -197,20 +197,36 @@ mod tests {
     #[test]
     fn to_unicode_types_the_layout_s_dead_keys_and_altgr() {
         let mut german = typist("de");
-        assert_eq!(to_unicode(&mut german, VK_OEM_PLUS, PLAIN), Translated::Dead(0xb4));
+        assert_eq!(
+            to_unicode(&mut german, VK_OEM_PLUS, PLAIN),
+            Translated::Dead(0xb4)
+        );
         assert_eq!(to_unicode(&mut german, b'E', PLAIN), typed("é"));
         assert_eq!(to_unicode(&mut german, b'E', ALT_GR), typed("€"));
         assert_eq!(to_unicode(&mut german, b'Q', ALT_GR), typed("@"));
         assert_eq!(to_unicode(&mut german, b'Y', PLAIN), typed("z"));
-        assert_eq!(to_unicode(&mut german, VK_OEM_PLUS, PLAIN), Translated::Dead(0xb4));
+        assert_eq!(
+            to_unicode(&mut german, VK_OEM_PLUS, PLAIN),
+            Translated::Dead(0xb4)
+        );
         assert_eq!(to_unicode(&mut german, b'2', PLAIN), typed("´2"));
         let mut swiss = typist("ch");
-        assert_eq!(to_unicode(&mut swiss, VK_OEM_6, PLAIN), Translated::Dead(0xa8));
+        assert_eq!(
+            to_unicode(&mut swiss, VK_OEM_6, PLAIN),
+            Translated::Dead(0xa8)
+        );
         assert_eq!(to_unicode(&mut swiss, b'U', SHIFT), typed("Ü"));
         let mut us = typist("us");
         assert_eq!(to_unicode(&mut us, b'E', ALT_GR), Translated::Nothing);
         assert_eq!(
-            to_unicode(&mut us, b'C', Modifiers { control: true, ..PLAIN }),
+            to_unicode(
+                &mut us,
+                b'C',
+                Modifiers {
+                    control: true,
+                    ..PLAIN
+                }
+            ),
             typed("\u{3}")
         );
         assert_eq!(to_unicode(&mut us, 0x0d, PLAIN), typed("\r"));
@@ -220,7 +236,10 @@ mod tests {
     fn vk_key_scan_finds_the_key_and_shift_state_on_the_layout() {
         let german = typist("de");
         assert_eq!(key_for(&german, u16::from(b'z')), Some(u16::from(b'Y')));
-        assert_eq!(key_for(&german, u16::from(b'Z')), Some(0x100 | u16::from(b'Y')));
+        assert_eq!(
+            key_for(&german, u16::from(b'Z')),
+            Some(0x100 | u16::from(b'Y'))
+        );
         assert_eq!(key_for(&german, 0x20ac), Some(0x600 | u16::from(b'E')));
         assert_eq!(key_for(&german, u16::from(b'\r')), Some(0x0d));
         assert_eq!(key_for(&german, 0x1234), None);

@@ -122,7 +122,12 @@ fn label(
 }
 
 fn value(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, y: i32, words: &str) -> WidgetId {
-    add(tree, parent, Place::right(PADDING, y), Kind::label(words, Token::Text))
+    add(
+        tree,
+        parent,
+        Place::right(PADDING, y),
+        Kind::label(words, Token::Text),
+    )
 }
 
 fn button(tree: &mut WidgetTree<CAPACITY>, root: WidgetId, x: i32, words: &str) -> WidgetId {
@@ -439,7 +444,10 @@ impl FirstRunWindow {
         if self.page != ZONE_PAGE {
             return None;
         }
-        match self.zones.respond(&mut self.tree, response, now_ms, widgets.next) {
+        match self
+            .zones
+            .respond(&mut self.tree, response, now_ms, widgets.next)
+        {
             zone_picker::Reply::Done(request) => request.map(FirstRunRequest::Choose),
             zone_picker::Reply::NotMine => None,
         }
@@ -484,12 +492,10 @@ impl FirstRunWindow {
         };
         let mut line = Text::<80>::new();
         let _ = match error {
-            Errno::EPERM | Errno::EACCES => {
-                core::fmt::Write::write_fmt(
-                    &mut line,
-                    format_args!("Not allowed: this user may not set the {what}."),
-                )
-            }
+            Errno::EPERM | Errno::EACCES => core::fmt::Write::write_fmt(
+                &mut line,
+                format_args!("Not allowed: this user may not set the {what}."),
+            ),
             _ => core::fmt::Write::write_fmt(
                 &mut line,
                 format_args!("No disk attached: the {what} could not be saved."),
@@ -633,10 +639,7 @@ mod tests {
         click(&mut saved, 576, 410);
         assert_eq!(saved.page(), 2);
         assert_eq!(saved.widgets().focus(), Some(saved.zones.field()));
-        assert_eq!(
-            saved.widgets().text_of(saved.widgets.next),
-            Some("Done")
-        );
+        assert_eq!(saved.widgets().text_of(saved.widgets.next), Some("Done"));
         assert_eq!(
             click(&mut saved, 576, 410),
             Some(FirstRunRequest::Finish { save_profile: None })
@@ -705,7 +708,10 @@ mod tests {
         assert_eq!(press(&mut window, key::TAB, 0), None);
         assert_eq!(window.widgets().focus(), Some(window.widgets.try_field));
         type_text(&mut window, "x");
-        assert_eq!(window.widgets().text_of(window.widgets.try_field), Some("x"));
+        assert_eq!(
+            window.widgets().text_of(window.widgets.try_field),
+            Some("x")
+        );
         assert_eq!(press(&mut window, key::ENTER, 0), None);
         assert_eq!(window.page(), 2);
         assert!(window.shows_the_clock());

@@ -26,8 +26,7 @@ use crate::cxx_data::{
     flags as cxx_flags,
 };
 use crate::cxx_walk::{
-    self, Caught, Displacement, FrameRole, ObjectMemory, RunningCatch, Thrown,
-    OUTSIDE_EVERY_STATE,
+    self, Caught, Displacement, FrameRole, OUTSIDE_EVERY_STATE, ObjectMemory, RunningCatch, Thrown,
 };
 use crate::library::Export;
 use crate::unwind::Image;
@@ -296,7 +295,13 @@ fn catch(
         && handler.catch_object != 0
     {
         let slot = frame.wrapping_add(handler.catch_object);
-        build_catch_object(&thrown_image, slot, record.parameters[1], &handler, &catchable);
+        build_catch_object(
+            &thrown_image,
+            slot,
+            record.parameters[1],
+            &handler,
+            &catchable,
+        );
     }
     let enclosing_state = function
         .unwind_entry(block.low)

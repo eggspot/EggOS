@@ -13,10 +13,10 @@ use eggos_files::storage::{
     sizes_text, used_permille,
 };
 use eggos_toolkit::canvas::{Canvas, INSET_R6};
-use eggos_toolkit::theme::Token;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::{ELLIPSIS, Text};
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 
@@ -480,12 +480,7 @@ impl StoragePane {
             }
             return;
         };
-        show_line(
-            tree,
-            widgets.contents,
-            &contents_text(&record),
-            Token::Text,
-        );
+        show_line(tree, widgets.contents, &contents_text(&record), Token::Text);
         show_line(tree, widgets.sizes, &sizes_text(&record), Token::Text);
         show_line(tree, widgets.place, &place_text(&record), Token::Text);
         tree.set_shown(widgets.read_only, record.read_only);
@@ -549,12 +544,7 @@ impl StoragePane {
             Token::Text,
         );
         show_line(tree, widgets.erases, &erases_text(record), Token::TextDim);
-        show_line(
-            tree,
-            widgets.confirm,
-            &confirm_text(record),
-            Token::TextDim,
-        );
+        show_line(tree, widgets.confirm, &confirm_text(record), Token::TextDim);
         let placeholder = confirm_placeholder(record.device);
         tree.change(widgets.confirm_field, |kind| {
             if let Kind::TextField(field) = kind {
@@ -616,12 +606,7 @@ impl StoragePane {
         ] {
             tree.set_enabled(id, false);
         }
-        show_line(
-            tree,
-            widgets.confirm,
-            &formatting_text(device),
-            Token::Text,
-        );
+        show_line(tree, widgets.confirm, &formatting_text(device), Token::Text);
         Some(Request::FormatDisk(device))
     }
 

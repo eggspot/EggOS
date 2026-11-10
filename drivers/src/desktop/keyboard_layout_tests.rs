@@ -1,4 +1,4 @@
-use super::protocol::{DiscardEvents, EventRecord, DEAD_KEY_CHARACTER};
+use super::protocol::{DEAD_KEY_CHARACTER, DiscardEvents, EventRecord};
 use super::tests::{fnv, painted};
 use super::*;
 use crate::input::keymap::Modifiers;
@@ -168,12 +168,18 @@ fn a_press_on_the_indicator_opens_its_menu_under_the_top_bar() {
     assert_eq!(press_at(&mut desktop, 1230, 14), Action::None);
     assert!(desktop.keyboard_layout_menu_open());
     let menu = desktop.keyboard_layout_menu().unwrap();
-    assert_eq!(menu, Rect::new(1244 - LAYOUT_MENU_WIDTH, 32, LAYOUT_MENU_WIDTH, 106));
+    assert_eq!(
+        menu,
+        Rect::new(1244 - LAYOUT_MENU_WIDTH, 32, LAYOUT_MENU_WIDTH, 106)
+    );
     assert!(!desktop.keys_go_to_terminal());
     let german = desktop
         .keyboard_layout_menu_row(LayoutMenuRow::Layout(1))
         .unwrap();
-    assert_eq!(press_in(&mut desktop, german), Action::ChooseKeyboardLayout(11));
+    assert_eq!(
+        press_in(&mut desktop, german),
+        Action::ChooseKeyboardLayout(11)
+    );
     assert!(!desktop.keyboard_layout_menu_open());
 }
 

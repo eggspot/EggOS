@@ -106,12 +106,9 @@ pub fn shown_title<'a>(
 pub fn drawn_rect(frame: Frame, height: i32, family: Family) -> Rect {
     let rect = control_rect(frame, height);
     match family {
-        Family::Checkbox | Family::Radio => Rect::new(
-            rect.x,
-            rect.y,
-            rect.width.max(MARK_SIZE),
-            rect.height,
-        ),
+        Family::Checkbox | Family::Radio => {
+            Rect::new(rect.x, rect.y, rect.width.max(MARK_SIZE), rect.height)
+        }
         Family::Push | Family::Toggle => rect,
     }
 }
@@ -154,7 +151,12 @@ fn paint_checkbox(canvas: &mut Canvas<'_>, rect: Rect, title: &str, state: isize
     if rect.width >= LABEL_OFFSET {
         held.set(title);
     }
-    widget::paint(canvas, &Kind::checkbox(held.as_str(), state != OFF), rect, look);
+    widget::paint(
+        canvas,
+        &Kind::checkbox(held.as_str(), state != OFF),
+        rect,
+        look,
+    );
     if state != MIXED {
         return;
     }
@@ -304,7 +306,11 @@ mod tests {
             let frame_top = 16.0;
             let y = HEIGHT as f64 - frame_top - frame_height;
             let frame = Frame::new(16.0, y, 160.0, frame_height);
-            assert_eq!(drawn_rect(frame, HEIGHT, Family::Checkbox).y, top, "{frame_height}");
+            assert_eq!(
+                drawn_rect(frame, HEIGHT, Family::Checkbox).y,
+                top,
+                "{frame_height}"
+            );
         }
     }
 
@@ -400,8 +406,14 @@ mod tests {
         assert_eq!(shown_title(TOGGLE, ON, false, "Off", "On"), "On");
         assert_eq!(shown_title(TOGGLE, OFF, false, "Off", "On"), "Off");
         assert_eq!(shown_title(TOGGLE, ON, false, "Off", ""), "Off");
-        assert_eq!(shown_title(MOMENTARY_CHANGE, OFF, true, "Go", "Going"), "Going");
-        assert_eq!(shown_title(MOMENTARY_CHANGE, OFF, false, "Go", "Going"), "Go");
+        assert_eq!(
+            shown_title(MOMENTARY_CHANGE, OFF, true, "Go", "Going"),
+            "Going"
+        );
+        assert_eq!(
+            shown_title(MOMENTARY_CHANGE, OFF, false, "Go", "Going"),
+            "Go"
+        );
         assert_eq!(shown_title(PUSH_ON_PUSH_OFF, ON, true, "Go", "Going"), "Go");
     }
 

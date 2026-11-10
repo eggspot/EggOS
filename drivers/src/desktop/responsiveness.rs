@@ -332,7 +332,10 @@ impl Desktop {
             .window_at(slot)
             .outside()
             .clipped(self.width, self.height);
-        let (width, height) = (END_APP_SIZE.0.min(work.width), END_APP_SIZE.1.min(work.height));
+        let (width, height) = (
+            END_APP_SIZE.0.min(work.width),
+            END_APP_SIZE.1.min(work.height),
+        );
         let centre = |start: u32, size: u32, room_start: u32, room: u32, wanted: u32| {
             let at = i64::from(start) + i64::from(size) / 2 - i64::from(wanted) / 2;
             let last = i64::from(room_start) + i64::from(room.saturating_sub(wanted));

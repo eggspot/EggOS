@@ -2,11 +2,11 @@
 //! for, where its parts are, and how it is drawn in each state.
 
 use crate::canvas::{Canvas, INSET_R2, INSET_R3, INSET_R4, INSET_R6, INSET_R8, SQUARE};
-use crate::theme::{Palette, Token};
 use crate::geometry::Rect;
 use crate::input::key;
 use crate::menu;
 use crate::text::{self, Text};
+use crate::theme::{Palette, Token};
 
 /// Height of push buttons, text fields, checkboxes and radio rows.
 pub const CONTROL_HEIGHT: i32 = 28;
@@ -759,7 +759,6 @@ pub fn scroll_bar(rect: Rect, content: i32, offset: i32) -> Option<(Rect, Rect)>
         Rect::new(track.x, rect.y + position, SCROLL_BAR_WIDTH, length),
     ))
 }
-
 
 /// Where a horizontal scroll bar goes along the bottom of `rect` over content `content` wide
 /// scrolled by `offset`: the track and the thumb; `None` when the content fits
@@ -1655,7 +1654,11 @@ fn chevron(canvas: &mut Canvas<'_>, left: i32, top: i32, down: bool, colour: u32
 
 fn paint_menu_button(canvas: &mut Canvas<'_>, button: &menu::Button, rect: Rect, look: Look) {
     let palette = canvas.palette();
-    let fill = match (look.enabled, button.open || look.pressed.is_some(), look.hovered) {
+    let fill = match (
+        look.enabled,
+        button.open || look.pressed.is_some(),
+        look.hovered,
+    ) {
         (false, _, _) => palette.button,
         (true, true, _) => palette.button_pressed,
         (true, false, Some(_)) => palette.button_hover,

@@ -212,12 +212,7 @@ extern "efiapi" fn set_scroll_range(
 ) -> Bool {
     match control_of(window, bar) {
         Ok(control) => {
-            gui::send(
-                control,
-                SBM_SETRANGE,
-                minimum as usize,
-                maximum as usize,
-            );
+            gui::send(control, SBM_SETRANGE, minimum as usize, maximum as usize);
             TRUE
         }
         Err(code) => fail(code, FALSE),

@@ -62,7 +62,12 @@ fn widget(window: &SettingsWindow, number: usize) -> WidgetId {
 }
 
 fn text(window: &SettingsWindow, number: usize) -> String {
-    String::from(window.widgets().text_of(widget(window, number)).unwrap_or(""))
+    String::from(
+        window
+            .widgets()
+            .text_of(widget(window, number))
+            .unwrap_or(""),
+    )
 }
 
 fn shown(window: &SettingsWindow, number: usize) -> bool {
@@ -104,7 +109,12 @@ fn network_is_the_second_pane_and_its_sidebar_row_is_76_to_107() {
     );
     assert_eq!(pane_named("network"), Some(NETWORK));
     assert_eq!(pane_named("date-and-time"), Some(DATE_AND_TIME));
-    for (y, pane) in [(76, NETWORK), (107, NETWORK), (108, NETWORK + 1), (75, APPEARANCE)] {
+    for (y, pane) in [
+        (76, NETWORK),
+        (107, NETWORK),
+        (108, NETWORK + 1),
+        (75, APPEARANCE),
+    ] {
         let mut window = SettingsWindow::new(Facts::example());
         window.open_pane(ABOUT);
         click(&mut window, 40, y);
@@ -141,7 +151,9 @@ fn the_search_finds_network_by_its_words_and_by_wi_fi() {
 fn the_window_s_tree_is_full_with_the_pane_s_container_and_15_widgets() {
     assert_eq!(WIDGETS, 15);
     let mut window = SettingsWindow::new(Facts::example());
-    let spare = window.tree().add(None, Place::fill(), Kind::label("", Token::Text));
+    let spare = window
+        .tree()
+        .add(None, Place::fill(), Kind::label("", Token::Text));
     assert_eq!(spare, None);
 }
 
@@ -156,13 +168,26 @@ fn connected_the_pane_shows_every_row_where_the_design_puts_it() {
     assert_eq!(text(&window, 3), "Connected");
     assert!(!shown(&window, 4));
     let rows = [
-        (5, 116, "IPv4 address", "10.0.2.15/24 \u{b7} mask 255.255.255.0"),
+        (
+            5,
+            116,
+            "IPv4 address",
+            "10.0.2.15/24 \u{b7} mask 255.255.255.0",
+        ),
         (7, 156, "Router", "10.0.2.2"),
         (9, 196, "DNS servers", "10.0.2.3"),
-        (11, 236, "DHCP server", "10.0.2.2 \u{b7} 23 h 59 min of lease left"),
+        (
+            11,
+            236,
+            "DHCP server",
+            "10.0.2.2 \u{b7} 23 h 59 min of lease left",
+        ),
     ];
     for (name, y, name_text, value_text) in rows {
-        assert!(shown(&window, name) && shown(&window, name + 1), "{name_text}");
+        assert!(
+            shown(&window, name) && shown(&window, name + 1),
+            "{name_text}"
+        );
         assert_eq!(left_at(&window, name), (PANE_LEFT, y), "{name_text}");
         assert_eq!(text(&window, name), name_text);
         assert_eq!(
@@ -173,7 +198,11 @@ fn connected_the_pane_shows_every_row_where_the_design_puts_it() {
         assert_eq!(text(&window, name + 1), value_text);
     }
     let lines = [
-        (13, 276, "Hardware address 52:54:00:12:34:56 \u{b7} MTU 1500"),
+        (
+            13,
+            276,
+            "Hardware address 52:54:00:12:34:56 \u{b7} MTU 1500",
+        ),
         (14, 296, "Received 3.4 MB (2,905 packets)"),
         (15, 316, "Sent 1.2 MB (812 packets)"),
     ];
@@ -291,7 +320,10 @@ fn nothing_is_shown_again_while_another_pane_shows_but_the_facts_follow() {
     window.show_network_adapter(changed(" up ", " down "));
     assert_eq!(window.pane(), APPEARANCE);
     assert_eq!(
-        window.facts().network_adapter.map(|adapter| adapter.link_up),
+        window
+            .facts()
+            .network_adapter
+            .map(|adapter| adapter.link_up),
         Some(false)
     );
     window.open_pane(NETWORK);

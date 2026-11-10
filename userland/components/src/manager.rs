@@ -410,12 +410,7 @@ fn program_name(path: &[u8]) -> String {
 
 /// Takes the one-action-at-a-time lock for installing or removing `title`, after removing a
 /// lock whose process is gone; who holds it otherwise.
-pub fn lock<F: Files>(
-    files: &mut F,
-    title: &str,
-    removing: bool,
-    pid: u32,
-) -> Result<(), Refusal> {
+pub fn lock<F: Files>(files: &mut F, title: &str, removing: bool, pid: u32) -> Result<(), Refusal> {
     for _ in 0..2 {
         match files.create(LOCK.as_bytes(), 0o600) {
             Ok(handle) => {
@@ -530,10 +525,11 @@ pub fn install<F: Files>(
             free: space.available,
         });
     }
-    let staging = join(COMPONENTS, &[STAGING_PREFIX, component.name.as_str()].concat());
-    files
-        .make_directory(staging.as_bytes())
-        .map_err(failure)?;
+    let staging = join(
+        COMPONENTS,
+        &[STAGING_PREFIX, component.name.as_str()].concat(),
+    );
+    files.make_directory(staging.as_bytes()).map_err(failure)?;
     let copied = copy_component(files, store, component, &staging, total, progress);
     let committed = copied.and_then(|()| {
         let target = component_folder(&component.name);

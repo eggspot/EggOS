@@ -61,7 +61,9 @@ impl Key {
 
     /// The subkey named `name`.
     pub fn subkey(&self, name: &[u16]) -> Option<&Key> {
-        self.subkey_index(name).ok().map(|index| &self.subkeys[index])
+        self.subkey_index(name)
+            .ok()
+            .map(|index| &self.subkeys[index])
     }
 
     /// The key `names` below this one.
@@ -85,7 +87,9 @@ impl Key {
 
     /// The value named `name`.
     pub fn value(&self, name: &[u16]) -> Option<&Value> {
-        self.values.iter().find(|value| same_name(&value.name, name))
+        self.values
+            .iter()
+            .find(|value| same_name(&value.name, name))
     }
 
     /// How many keys and values are below this key, itself not counted.
@@ -161,9 +165,8 @@ impl Hive {
         while let Some(key) = pending.pop() {
             total = total.saturating_add(KEY_FIXED_BYTES + key.name.len() * 2);
             for value in &key.values {
-                total = total.saturating_add(
-                    VALUE_FIXED_BYTES + value.name.len() * 2 + value.data.len(),
-                );
+                total = total
+                    .saturating_add(VALUE_FIXED_BYTES + value.name.len() * 2 + value.data.len());
             }
             pending.extend(key.subkeys.iter());
         }
@@ -268,7 +271,9 @@ fn read_key(reader: &mut Reader<'_>) -> Result<Key, Error> {
 /// Whether `name` may name a key: 1 to [`MAX_KEY_NAME_UNITS`] units, no `\` and no NUL.
 pub fn is_key_name(name: &[u16]) -> bool {
     (1..=MAX_KEY_NAME_UNITS).contains(&name.len())
-        && !name.iter().any(|unit| *unit == u16::from(b'\\') || *unit == 0)
+        && !name
+            .iter()
+            .any(|unit| *unit == u16::from(b'\\') || *unit == 0)
 }
 
 /// Whether `name` may name a value: at most [`MAX_VALUE_NAME_UNITS`] units and no NUL.

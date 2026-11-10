@@ -27,7 +27,11 @@ fn line_1(record: Option<&Record>, adapter: Adapter, zone: usize) -> Status {
 }
 
 fn says(status: Status) -> (String, Token, Option<&'static str>) {
-    (String::from(status.line_1.as_str()), status.ink, status.remedy)
+    (
+        String::from(status.line_1.as_str()),
+        status.ink,
+        status.remedy,
+    )
 }
 
 #[test]
@@ -276,14 +280,8 @@ fn the_row_goes_under_now_and_everything_under_it_moves_down() {
     let line_2 = rect(&window, widgets.line_2);
     assert_eq!((line_2.x, line_2.y), (192, 216));
     let zones = window.zone_picker();
-    assert_eq!(
-        rect(&window, zones.field()),
-        Rect::new(192, 284, 304, 28)
-    );
-    assert_eq!(
-        rect(&window, zones.list()),
-        Rect::new(192, 320, 432, 72)
-    );
+    assert_eq!(rect(&window, zones.field()), Rect::new(192, 284, 304, 28));
+    assert_eq!(rect(&window, zones.list()), Rect::new(192, 320, 432, 72));
     let pane = |window: &SettingsWindow, pane: usize| rect(window, window.pane_widget(pane));
     assert_eq!(pane(&window, DATE_AND_TIME).height, 408);
     assert_eq!(pane(&window, KEYBOARD).height, 348);
@@ -311,10 +309,7 @@ fn while_the_network_clock_is_in_charge_set_to_is_disabled_and_skipped() {
     press(&mut window, key::TAB, 0);
     assert_eq!(window.widgets().focus(), Some(widgets.check_box));
     press(&mut window, key::TAB, 0);
-    assert_eq!(
-        window.widgets().focus(),
-        Some(window.zone_picker().field())
-    );
+    assert_eq!(window.widgets().focus(), Some(window.zone_picker().field()));
 
     let window = shown(adapter_facts(false, Some(crate::facts::EXAMPLE_ADAPTER)));
     assert!(!ticked(&window));
@@ -345,7 +340,10 @@ fn the_lines_follow_the_record_and_retitle_only_what_changed() {
     let waiting = window.facts().network_adapter;
     assert_eq!(
         lines(&window),
-        [Some("Waiting for a network address to set the clock."), None]
+        [
+            Some("Waiting for a network address to set the clock."),
+            None
+        ]
     );
     let connected = eggos_net::status::parse_interface(crate::facts::EXAMPLE_ADAPTER.as_bytes());
     window.show_clock_sync(None, connected, false);

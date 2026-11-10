@@ -201,7 +201,10 @@ pub fn state_of(object: Id) -> isize {
 }
 
 fn group_key(object: Id) -> (usize, usize) {
-    (view::fields(object).superview as usize, control(object).action)
+    (
+        view::fields(object).superview as usize,
+        control(object).action,
+    )
 }
 
 fn set_button_state(object: Id, state: isize) {

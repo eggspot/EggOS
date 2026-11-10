@@ -3,8 +3,8 @@ use crate::facts::Facts;
 use crate::settings_window::{AGENTS, COMPONENTS, PANES, STORAGE, SettingsWindow, pane_matches};
 use eggos_components::index::{File, Index};
 use eggos_components::manager::Source;
-use eggos_toolkit::elements::{MAX_TREE_BYTES, Role, TreeWriter, elements};
 use eggos_toolkit::elements::{Action, Outcome};
+use eggos_toolkit::elements::{MAX_TREE_BYTES, Role, TreeWriter, elements};
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::{Input, Modifiers};
 use eggos_toolkit::tree::element_of;
@@ -195,7 +195,11 @@ fn components_is_found_by_its_words_and_its_row_is_the_tenth_shown() {
         "layer",
     ] {
         for pane in 0..PANES.len() {
-            assert_eq!(pane_matches(pane, word), pane == COMPONENTS, "{word} {pane}");
+            assert_eq!(
+                pane_matches(pane, word),
+                pane == COMPONENTS,
+                "{word} {pane}"
+            );
         }
     }
     for (word, other) in [("install", AGENTS), ("space", STORAGE)] {
@@ -287,7 +291,10 @@ fn installing_shows_the_bar_under_the_row_and_moves_the_rows_below() {
     assert_eq!(window.widgets().focus(), Some(row_button(&window, 3)));
     press(&mut window, key::UP);
     assert_eq!(window.widgets().focus(), Some(row_button(&window, 2)));
-    assert_eq!(press(&mut window, key::ENTER), Some(Request::InstallComponent));
+    assert_eq!(
+        press(&mut window, key::ENTER),
+        Some(Request::InstallComponent)
+    );
     assert_eq!(window.components_pane().to_install(), Some("windows-apps"));
     assert_eq!(
         rows(&window)[2],
@@ -304,13 +311,20 @@ fn installing_shows_the_bar_under_the_row_and_moves_the_rows_below() {
     window.show_install_progress(792_724, WINDOWS_BYTES);
     assert_eq!(rows(&window)[2][1], "Installing 42 %");
     assert_eq!(
-        window.widgets().kind(ids.bar).copied().map(|kind| match kind {
-            Kind::Progress { permille } => permille,
-            _ => 0,
-        }),
+        window
+            .widgets()
+            .kind(ids.bar)
+            .copied()
+            .map(|kind| match kind {
+                Kind::Progress { permille } => permille,
+                _ => 0,
+            }),
         Some(420)
     );
-    assert_eq!(notes(&window), [messages::copied_of(792_724, WINDOWS_BYTES)]);
+    assert_eq!(
+        notes(&window),
+        [messages::copied_of(792_724, WINDOWS_BYTES)]
+    );
     let next = window.show_installed(Ok(()), read(&["desktop", "builtin-apps", "windows-apps"]));
     assert_eq!(next, None);
     assert_eq!(
@@ -343,10 +357,15 @@ fn removing_is_refused_or_confirmed_as_the_cli_answers() {
     );
     assert_eq!(window.components_pane().to_check(), Some("desktop"));
     window.show_remove_check(
-        Err(Refusal::NeededBy(alloc::vec![String::from("Built-in apps")])),
+        Err(Refusal::NeededBy(alloc::vec![String::from(
+            "Built-in apps"
+        )])),
         0,
     );
-    assert_eq!(notes(&window), ["Needed by Built-in apps: remove that first."]);
+    assert_eq!(
+        notes(&window),
+        ["Needed by Built-in apps: remove that first."]
+    );
 
     activate(&mut window, row_button(&window, 1));
     window.show_remove_check(
@@ -388,7 +407,10 @@ fn removing_is_refused_or_confirmed_as_the_cli_answers() {
 
     activate(&mut window, row_button(&window, 1));
     window.show_remove_check(Ok(Some(four()[1].clone())), 0);
-    assert_eq!(press(&mut window, key::ENTER), Some(Request::RemoveComponent));
+    assert_eq!(
+        press(&mut window, key::ENTER),
+        Some(Request::RemoveComponent)
+    );
     assert_eq!(window.components_pane().to_remove(), Some("builtin-apps"));
     assert_eq!(rows(&window)[1][1], "Removing...");
     assert!(!window.widgets().is_enabled(row_button(&window, 1)));
@@ -415,7 +437,10 @@ fn a_missing_dependency_is_confirmed_then_installed_first() {
     assert_eq!(window.widgets().text_of(ids.confirm), Some("Install both"));
     assert!(!window.widgets().is_person_only(ids.confirm));
     assert_eq!(window.widgets().focus(), Some(ids.confirm));
-    assert_eq!(press(&mut window, key::ENTER), Some(Request::InstallComponent));
+    assert_eq!(
+        press(&mut window, key::ENTER),
+        Some(Request::InstallComponent)
+    );
     assert_eq!(window.components_pane().to_install(), Some("desktop"));
     assert_eq!(rows(&window)[0][1], "Installing 0 %");
     assert_eq!(rect(&window, ids.bar).y, 124 + 48 + 8);
@@ -440,7 +465,10 @@ fn a_failed_or_cancelled_install_says_why_and_installs_nothing() {
         Err(Failure::Damaged(String::from("windows-apps.component"))),
         read(&["desktop", "builtin-apps"]),
     );
-    assert_eq!(rows(&window)[2], row_texts("Windows apps", "Failed", "Install"));
+    assert_eq!(
+        rows(&window)[2],
+        row_texts("Windows apps", "Failed", "Install")
+    );
     assert_eq!(
         notes(&window),
         [
@@ -525,7 +553,11 @@ fn an_agent_reads_the_rows_and_may_not_say_yes_to_a_remove() {
     let group = find(ids.rows[2].panel).unwrap();
     assert_eq!(
         (group.1, group.2.as_str(), group.3.as_str()),
-        (Role::Group, "Windows apps", "windows-apps not-installed 1.8 MB")
+        (
+            Role::Group,
+            "Windows apps",
+            "windows-apps not-installed 1.8 MB"
+        )
     );
     let install = find(ids.rows[2].button).unwrap();
     assert_eq!(
@@ -569,7 +601,10 @@ fn every_line_of_the_pane_fits_a_label() {
         messages::count_line(4, 4, 999 << 20),
         messages::not_installed_state(999 << 20),
     ];
-    for line in lines.iter().chain(messages::NO_STORE_LINES.map(String::from).iter()) {
+    for line in lines
+        .iter()
+        .chain(messages::NO_STORE_LINES.map(String::from).iter())
+    {
         assert!(line.len() <= 64, "{line}");
     }
     let long = "Could not install Windows apps: a reason far longer than a label holds.";

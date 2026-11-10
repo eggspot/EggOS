@@ -95,14 +95,16 @@ pub fn source_pixel(
         return None;
     }
     let index = position * i64::from(axis.pixels) / (i64::from(axis.himetric) * scale);
-    u32::try_from(index).ok().filter(|&index| index < axis.pixels)
+    u32::try_from(index)
+        .ok()
+        .filter(|&index| index < axis.pixels)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::com::memory_stream::{self, Stream};
     use crate::com::allocate;
+    use crate::com::memory_stream::{self, Stream};
 
     fn table() -> &'static [usize; 4] {
         static TABLE: std::sync::OnceLock<[usize; 4]> = std::sync::OnceLock::new();
@@ -136,9 +138,15 @@ mod tests {
         assert_eq!(part.as_deref(), Ok(&content[..10]));
         let stream = stream_over(&content) as usize;
         // SAFETY: as above.
-        assert_eq!(unsafe { read_stream(stream, None, 1000) }, Err(E_OUTOFMEMORY));
+        assert_eq!(
+            unsafe { read_stream(stream, None, 1000) },
+            Err(E_OUTOFMEMORY)
+        );
         // SAFETY: as above.
-        assert_eq!(unsafe { read_stream(stream, Some(1001), 1000) }, Err(E_OUTOFMEMORY));
+        assert_eq!(
+            unsafe { read_stream(stream, Some(1001), 1000) },
+            Err(E_OUTOFMEMORY)
+        );
         let empty = stream_over(&[]) as usize;
         // SAFETY: as above.
         assert_eq!(unsafe { read_stream(empty, None, 1000) }, Ok(Vec::new()));
@@ -168,7 +176,10 @@ mod tests {
             from_far_end: false,
         };
         let doubled = |column| source_pixel(columns, column, 8, 0, columns.himetric);
-        assert_eq!([doubled(0), doubled(1), doubled(7)], [Some(0), Some(0), Some(3)]);
+        assert_eq!(
+            [doubled(0), doubled(1), doubled(7)],
+            [Some(0), Some(0), Some(3)]
+        );
         assert_eq!(source_pixel(columns, 0, 0, 0, columns.himetric), None);
         assert_eq!(source_pixel(columns, 9, 8, 0, columns.himetric), None);
     }

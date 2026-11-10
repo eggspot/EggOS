@@ -46,7 +46,10 @@ fn a_record_is_read_and_written_back_byte_for_byte() {
 
 #[test]
 fn a_record_missing_a_required_line_or_with_a_bad_number_is_none() {
-    assert_eq!(Record::parse(b"url=x\npath=/a\nstate=done\nstarted=1\n"), None);
+    assert_eq!(
+        Record::parse(b"url=x\npath=/a\nstate=done\nstarted=1\n"),
+        None
+    );
     assert_eq!(
         Record::parse(b"url=x\npath=/a\nreceived=1x\nstate=done\nstarted=1\n"),
         None
@@ -112,12 +115,12 @@ fn the_columns_read_as_the_window_writes_them() {
     assert_eq!(words(|out| grown.write_size(out)), "6.0 MB of 12 MB");
     assert_eq!(words(|out| grown.write_state(out)), "Downloading, 50 %");
     assert_eq!(grown.permille(), Some(500));
-    let unsized = Record {
+    let without_size = Record {
         total: None,
         ..running
     };
-    assert_eq!(words(|out| unsized.write_state(out)), "Downloading");
-    assert_eq!(words(|out| unsized.write_short_state(out)), "3.4 MB");
+    assert_eq!(words(|out| without_size.write_state(out)), "Downloading");
+    assert_eq!(words(|out| without_size.write_short_state(out)), "3.4 MB");
     assert_eq!(words(|out| running.write_short_state(out)), "28 %");
 }
 
@@ -133,7 +136,10 @@ fn the_detail_line_has_the_whole_path_or_reason() {
     );
     assert_eq!(detail(DONE), "Saved to /home/root/Downloads/notes.txt");
     assert_eq!(detail(FAILED), "Failed: certificate not trusted");
-    assert_eq!(detail(CANCELLED), "Cancelled: the partial file was removed.");
+    assert_eq!(
+        detail(CANCELLED),
+        "Cancelled: the partial file was removed."
+    );
 }
 
 #[test]
@@ -171,9 +177,20 @@ fn ids_are_plain_decimal_file_names() {
 
 #[test]
 fn the_list_is_newest_first_then_by_the_larger_id() {
-    let mut order = [(1_793_282_600, 58), (1_793_282_650, 61), (1_793_282_650, 70)];
+    let mut order = [
+        (1_793_282_600, 58),
+        (1_793_282_650, 61),
+        (1_793_282_650, 70),
+    ];
     order.sort_by(|first, second| newest_first(*first, *second));
-    assert_eq!(order, [(1_793_282_650, 70), (1_793_282_650, 61), (1_793_282_600, 58)]);
+    assert_eq!(
+        order,
+        [
+            (1_793_282_650, 70),
+            (1_793_282_650, 61),
+            (1_793_282_600, 58)
+        ]
+    );
 }
 
 #[test]
@@ -182,7 +199,10 @@ fn a_reason_is_what_follows_the_place_on_one_line() {
         reason_of(b"bad.example.net:443: certificate not trusted\n"),
         b"certificate not trusted"
     );
-    assert_eq!(reason_of(b"the URL is longer than 2048 bytes"), b"the URL is longer than 2048 bytes");
+    assert_eq!(
+        reason_of(b"the URL is longer than 2048 bytes"),
+        b"the URL is longer than 2048 bytes"
+    );
     assert_eq!(reason_of(&[b'x'; 400]).len(), MAX_REASON_BYTES);
 }
 
@@ -208,7 +228,9 @@ fn cancelling_signals_only_a_running_download() {
     );
     let done = Record::parse(DONE).unwrap();
     assert_eq!(
-        cancel(Some(&done), 58, |_, _| panic!("signalled an ended download")),
+        cancel(Some(&done), 58, |_, _| panic!(
+            "signalled an ended download"
+        )),
         Err(CancelError::AlreadyEnded)
     );
     assert_eq!(

@@ -99,7 +99,10 @@ mod tests {
     #[test]
     fn a_fresh_disk_without_a_profile_asks_and_a_saved_profile_does_not() {
         assert!(wanted(FRESH, None));
-        assert!(wanted(FRESH, Some(b"eggos-settings 1\nkeyboard.layout=de\n")));
+        assert!(wanted(
+            FRESH,
+            Some(b"eggos-settings 1\nkeyboard.layout=de\n")
+        ));
         assert!(!wanted(
             FRESH,
             Some(b"eggos-settings 1\nshell.profile=windows\n")
@@ -137,7 +140,9 @@ mod tests {
     #[test]
     fn the_skip_word_counts_only_as_a_whole_word_of_the_command_line() {
         assert!(skipped_by(b"eggos.first_run=skip"));
-        assert!(skipped_by(b"eggos.display=offscreen eggos.first_run=skip\n"));
+        assert!(skipped_by(
+            b"eggos.display=offscreen eggos.first_run=skip\n"
+        ));
         assert!(skipped_by(b"eggos.first_run=skip\0"));
         assert!(!skipped_by(b""));
         assert!(!skipped_by(b"eggos.first_run=ask"));

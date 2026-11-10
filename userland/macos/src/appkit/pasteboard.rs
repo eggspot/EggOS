@@ -6,14 +6,13 @@
 
 use super::{NSPASTEBOARD, NSPASTEBOARD_META, server, store, with_text};
 use crate::foundation::{
-    self, NSARRAY, NSDATA, NSSTRING, PASTEBOARD_NAME_GENERAL, PASTEBOARD_TYPE_STRING,
-    class_pointer,
+    self, NSARRAY, NSDATA, NSSTRING, PASTEBOARD_NAME_GENERAL, PASTEBOARD_TYPE_STRING, class_pointer,
 };
 use crate::libsystem::{Exclusive, heap};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{dispose, objc_release};
-use crate::objc::{Runtime, methods, root, sel, send, send1, send2, send_bool};
+use crate::objc::{Runtime, methods, root, sel, send, send_bool, send1, send2};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_macos_gui::pasteboard::{MAX_TEXT_BYTES, is_text_type, unique_name};
 
@@ -242,7 +241,9 @@ extern "C" fn set_string(this: Id, _: Sel, string: Id, kind: Id) -> u8 {
     if string.is_null() || !foundation::is_string(string) || !is_text_type_object(kind) {
         return 0;
     }
-    u8::from(foundation::with_utf8(string, |bytes| write_text(this, bytes)))
+    u8::from(foundation::with_utf8(string, |bytes| {
+        write_text(this, bytes)
+    }))
 }
 
 extern "C" fn set_data(this: Id, _: Sel, data: Id, kind: Id) -> u8 {
@@ -382,4 +383,3 @@ pub fn define(runtime: &mut Runtime) -> bool {
         &class,
     )
 }
-

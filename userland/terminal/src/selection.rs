@@ -150,7 +150,10 @@ pub fn logical_line_at(terminal: &Terminal, line: LineNumber) -> (Boundary, Boun
             line: start,
             column: 0,
         },
-        Boundary { line: end, column: columns },
+        Boundary {
+            line: end,
+            column: columns,
+        },
     )
 }
 

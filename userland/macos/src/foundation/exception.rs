@@ -223,7 +223,12 @@ pub fn raise_named(name: &[u8], reason: &[&[u8]]) -> ! {
     let reason_object = string_from_utf8(text.as_slice());
     text.free();
     let class = class_pointer(&NSEXCEPTION).cast();
-    let object = new_exception(class, string_from_utf8(name), reason_object, core::ptr::null_mut());
+    let object = new_exception(
+        class,
+        string_from_utf8(name),
+        reason_object,
+        core::ptr::null_mut(),
+    );
     if object.is_null() {
         terminate_uncaught(name, reason);
     }

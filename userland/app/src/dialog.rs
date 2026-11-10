@@ -14,10 +14,10 @@ use eggos_app_manifest::Source;
 use eggos_app_manifest::icon::{LARGE, LARGE_PIXELS};
 use eggos_toolkit::canvas::{Canvas, INSET_R4, INSET_R6};
 use eggos_toolkit::colour;
-use eggos_toolkit::theme::Token;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{CONTROL_HEIGHT, Kind, Length, PROGRESS_DONE, Place};
 
@@ -518,10 +518,7 @@ impl Dialog {
         let mut line = Line::new();
         let _ = core::fmt::Write::write_fmt(&mut line, format_args!("Installed {name}."));
         dialog.line(line.as_str(), Token::Text);
-        dialog.line(
-            "It is in the launcher and on the desktop.",
-            Token::TextDim,
-        );
+        dialog.line("It is in the launcher and on the desktop.", Token::TextDim);
         dialog.bottom_buttons(&[("Close", Request::Close), ("Open", Request::Open)]);
         dialog.finish()
     }

@@ -1243,8 +1243,7 @@ impl Server {
         let target_length = target.length;
         let state = target.state;
         let destination = target_text(tool, scratch.resolved, target_length).unwrap_or("");
-        if let Err(message) =
-            second_path(tool, &mut checked, destination, system, scratch.content)
+        if let Err(message) = second_path(tool, &mut checked, destination, system, scratch.content)
         {
             let outcome = match message.code {
                 Some(_) => Outcome::Error,
@@ -1272,13 +1271,8 @@ impl Server {
             let shown_target = arguments::registry_key_text(&checked, scratch.content)
                 .or(target)
                 .unwrap_or("");
-            let would_length = would_text(
-                tool,
-                &checked,
-                state,
-                (shown_target, source),
-                &mut would,
-            );
+            let would_length =
+                would_text(tool, &checked, state, (shown_target, source), &mut would);
             let would = text_prefix(&would, would_length);
             let mut detail = [0u8; MAX_PATH_BYTES + 64];
             let mut text = Text::new(&mut detail);
@@ -2317,12 +2311,10 @@ impl Server {
                 .map(|target| (target, prepared.checked.symbolic)),
             source: arguments::source_text(&prepared.checked, buffers.content),
             recursive: prepared.checked.recursive,
-            registry: arguments::registry_key_text(&prepared.checked, buffers.content).map(
-                |key| {
-                    let name = arguments::registry_name_text(&prepared.checked, buffers.content);
-                    (key, name)
-                },
-            ),
+            registry: arguments::registry_key_text(&prepared.checked, buffers.content).map(|key| {
+                let name = arguments::registry_name_text(&prepared.checked, buffers.content);
+                (key, name)
+            }),
             machine: prepared.checked.machine,
         };
         answer_with_output(out, &answer);
@@ -2371,7 +2363,13 @@ impl Server {
             .iter()
             .any(|needle| stderr.windows(needle.len()).any(|part| part == *needle));
         if outcome.ended == Ended::Exited(BUSY_STATUS) && not_responding {
-            self.record_outcome(system, buffers, prepared, Outcome::Refused, "not responding");
+            self.record_outcome(
+                system,
+                buffers,
+                prepared,
+                Outcome::Refused,
+                "not responding",
+            );
             refused(out, id, &errors::NOT_RESPONDING, NOT_RESPONDING);
             return;
         }
@@ -4181,12 +4179,7 @@ pub fn write_page_cut(out: &mut JsonWriter<'_>) {
 /// `{"items":[...],"truncated":false}` with each of `records`' lines that is a JSON object as
 /// an item (a last line the output limit cut is left out), `"truncated_by":"bytes"` when the
 /// output was `cut`, and `"truncated_by":"limit"` with `next_cursor` when more follow.
-pub fn write_items(
-    out: &mut JsonWriter<'_>,
-    records: &[u8],
-    cut: bool,
-    next_cursor: Option<&str>,
-) {
+pub fn write_items(out: &mut JsonWriter<'_>, records: &[u8], cut: bool, next_cursor: Option<&str>) {
     out.begin_object();
     out.key("items");
     out.begin_array();

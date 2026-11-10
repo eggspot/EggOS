@@ -381,7 +381,11 @@ pub(super) unsafe extern "efiapi" fn save_as_file(
         return E_FAIL;
     };
     let mut written = 0u32;
-    let arguments = [found.original as usize, length as usize, &raw mut written as usize];
+    let arguments = [
+        found.original as usize,
+        length as usize,
+        &raw mut written as usize,
+    ];
     // SAFETY: the caller's duty; `Write` is a stream's fifth method, reading `length` bytes.
     let status = unsafe { crate::com::call_method(stream, WRITE_SLOT, arguments) } as u32 as i32;
     if status < 0 {

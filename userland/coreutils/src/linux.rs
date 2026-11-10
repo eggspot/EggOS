@@ -991,14 +991,7 @@ impl System for Linux {
         let action = termination_action();
         call(
             number::RT_SIGACTION,
-            [
-                SIGTERM,
-                &raw const action as usize,
-                0,
-                SIGSET_BYTES,
-                0,
-                0,
-            ],
+            [SIGTERM, &raw const action as usize, 0, SIGSET_BYTES, 0, 0],
         )?;
         let terminate = 1u64 << (SIGTERM - 1);
         call(

@@ -1536,8 +1536,14 @@ mod tests {
             "does not match its checksum in SHA256SUMS: download it again",
         ];
         for refused in refusals {
-            assert!(shell.contains(&format!("$store_file {refused}")), "{refused}");
-            assert!(powershell.contains(&format!("$StoreFile {refused}")), "{refused}");
+            assert!(
+                shell.contains(&format!("$store_file {refused}")),
+                "{refused}"
+            );
+            assert!(
+                powershell.contains(&format!("$StoreFile {refused}")),
+                "{refused}"
+            );
         }
         for arch in &arches {
             let attach = double_quoted(&arch.shell_store);

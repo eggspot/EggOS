@@ -202,8 +202,7 @@ pub struct TypeTable {
 const _: () = assert!(
     size_of::<TypeTable>()
         == COUNT
-            * (size_of::<TypeDescriptor>()
-                + 4 * (4 + 1 + MAX_BASES + 7 + 6 + 4 + MAX_BASES + 7))
+            * (size_of::<TypeDescriptor>() + 4 * (4 + 1 + MAX_BASES + 7 + 6 + 4 + MAX_BASES + 7))
 );
 const _: () = assert!(size_of::<TypeDescriptor>() == 16 + NAME_LENGTH);
 
@@ -464,7 +463,10 @@ mod tests {
             Some(address)
         );
         let bad_cast = descriptor(&table, StdException::BadCast);
-        assert_eq!(rtti::dynamic_cast(&Real, address, 0, source, bad_cast), None);
+        assert_eq!(
+            rtti::dynamic_cast(&Real, address, 0, source, bad_cast),
+            None
+        );
     }
 
     #[test]

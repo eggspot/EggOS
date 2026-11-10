@@ -71,7 +71,10 @@ mod tests {
             web_address("  https://example.com/eggos.elf \n"),
             Some("https://example.com/eggos.elf")
         );
-        assert_eq!(web_address("HTTP://10.0.2.2:8000/a"), Some("HTTP://10.0.2.2:8000/a"));
+        assert_eq!(
+            web_address("HTTP://10.0.2.2:8000/a"),
+            Some("HTTP://10.0.2.2:8000/a")
+        );
         assert_eq!(web_address("example.com/x"), None);
         assert_eq!(web_address("ftp://example.com/x"), None);
         assert_eq!(web_address("https://"), None);

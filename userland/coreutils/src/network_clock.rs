@@ -306,8 +306,7 @@ fn synchronize<S: System, W: Witness<S>>(
         }
         Verdict::NeedsProof => match prove(output, witness, server_time_ns, reply_us, offset_ms) {
             Proof::Proven(hosts) => {
-                let synced =
-                    step_clock(output, server_time_ns, reply_us, Outcome::Confirmed, 0)?;
+                let synced = step_clock(output, server_time_ns, reply_us, Outcome::Confirmed, 0)?;
                 write_moved(output, server, &stratum, synced.moved_ms);
                 output.write(b" (confirmed over HTTPS by ");
                 for (index, &host) in hosts.iter().enumerate() {
@@ -520,7 +519,8 @@ pub fn imf_fixdate(text: &[u8]) -> Option<i64> {
     };
     let month = MONTHS
         .iter()
-        .position(|name| name.as_bytes()[..3] == [month_0, month_1, month_2])? as u32
+        .position(|name| name.as_bytes()[..3] == [month_0, month_1, month_2])?
+        as u32
         + 1;
     let year = i64::from(two(century_tens, century_ones)? * 100 + two(year_tens, year_ones)?);
     let day = two(day_tens, day_ones)?;
@@ -550,8 +550,7 @@ pub struct Https;
 
 impl<S: System> Witness<S> for Https {
     fn testify(&mut self, output: &mut Output<S>, host: &[u8], at: i64) -> Testimony {
-        let deadline_us =
-            output.system.monotonic_us() + u64::from(PROOF_HOST_TIMEOUT_MS) * 1000;
+        let deadline_us = output.system.monotonic_us() + u64::from(PROOF_HOST_TIMEOUT_MS) * 1000;
         let Ok(address) = resolve(output, host) else {
             return Testimony::Unreachable;
         };
@@ -649,7 +648,13 @@ fn ask_date<S: System>(
         shown: &shown,
     };
     let mut roots = RootsFile { output: &cell };
-    let connected = client::connect(&mut socket, &mut buffers, &settings, &randomness, &mut roots);
+    let connected = client::connect(
+        &mut socket,
+        &mut buffers,
+        &settings,
+        &randomness,
+        &mut roots,
+    );
     match connected {
         Ok(mut session) => read_date(&mut session, &mut socket, host),
         Err(error) => {

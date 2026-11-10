@@ -179,7 +179,9 @@ pub fn decode_animation(bytes: &[u8], limits: &Limits) -> Result<Animation, Erro
     }
     let image = decode(bytes, limits)?;
     let mut frames = Vec::new();
-    frames.try_reserve_exact(1).map_err(|_| Error::OutOfMemory)?;
+    frames
+        .try_reserve_exact(1)
+        .map_err(|_| Error::OutOfMemory)?;
     frames.push(Frame { image, delay_ms: 0 });
     Ok(Animation {
         frames,

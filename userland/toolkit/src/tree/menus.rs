@@ -49,7 +49,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
         match bar.menus[menu].get(entry) {
             Some(Entry::Item {
-                enabled: true, id: item, ..
+                enabled: true,
+                id: item,
+                ..
             }) => {
                 self.close_menu();
                 Response::Invoked(id, *item)
@@ -446,7 +448,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         };
         match entries.get(index) {
             Some(Entry::Item {
-                enabled: true, id: item, ..
+                enabled: true,
+                id: item,
+                ..
             }) => {
                 let item = *item;
                 if self.menu == Some(id) {

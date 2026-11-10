@@ -67,11 +67,13 @@ use crate::vfs::{
 use crate::vfs::{Refused, WriteAt};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use eggos_settings_file::{KEYBOARD_LAYOUT_SET_CAPACITY, KEYBOARD_LAYOUTS, KeyboardLayoutSet, SwitchKey};
 use core::fmt::Write;
 use core::marker::PhantomData;
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
+use eggos_settings_file::{
+    KEYBOARD_LAYOUT_SET_CAPACITY, KEYBOARD_LAYOUTS, KeyboardLayoutSet, SwitchKey,
+};
 
 const ROOT: u64 = 1;
 
@@ -174,7 +176,10 @@ pub enum KeyboardControl {
 }
 
 fn is_control_file(node: u64) -> bool {
-    matches!(node, KEYBOARD_LAYOUT | KEYBOARD_LAYOUTS_IN_USE | KEYBOARD_SWITCH_KEY)
+    matches!(
+        node,
+        KEYBOARD_LAYOUT | KEYBOARD_LAYOUTS_IN_USE | KEYBOARD_SWITCH_KEY
+    )
 }
 
 /// Whether a caller with `credentials` may write `/proc/sys/eggos`'s control files (D221): only
@@ -194,8 +199,12 @@ pub fn may_write_control_files(
 pub fn keyboard_control(node: u64, value: &[u8]) -> Option<KeyboardControl> {
     let value = value.strip_suffix(b"\n").unwrap_or(value);
     match node {
-        KEYBOARD_LAYOUT => eggos_settings_file::keyboard_layout_named(value).map(KeyboardControl::Layout),
-        KEYBOARD_LAYOUTS_IN_USE => KeyboardLayoutSet::parse(value).ok().map(KeyboardControl::Layouts),
+        KEYBOARD_LAYOUT => {
+            eggos_settings_file::keyboard_layout_named(value).map(KeyboardControl::Layout)
+        }
+        KEYBOARD_LAYOUTS_IN_USE => KeyboardLayoutSet::parse(value)
+            .ok()
+            .map(KeyboardControl::Layouts),
         KEYBOARD_SWITCH_KEY => SwitchKey::named(value).map(KeyboardControl::SwitchKey),
         _ => None,
     }
@@ -1009,7 +1018,13 @@ impl<P: Platform> FileSystem for Proc<P> {
         }
     }
 
-    fn write(&self, node: u64, at: WriteAt, bytes: &[u8], _now: u64) -> Result<(usize, u64), Refused> {
+    fn write(
+        &self,
+        node: u64,
+        at: WriteAt,
+        bytes: &[u8],
+        _now: u64,
+    ) -> Result<(usize, u64), Refused> {
         if !is_control_file(node) {
             return Err(Refused::ReadOnly);
         }
@@ -1292,7 +1307,10 @@ mod tests {
         assert_eq!(may_write_control_files(&root), Ok(()));
         let mut user = Credentials::new();
         user.set_ids(Kind::User, Ids::all(1000)).unwrap();
-        assert_eq!(may_write_control_files(&user), Err(super::super::Errno::EACCES));
+        assert_eq!(
+            may_write_control_files(&user),
+            Err(super::super::Errno::EACCES)
+        );
         let mut root_group_only = Credentials::new();
         root_group_only.set_ids(Kind::User, Ids::all(1000)).unwrap();
         root_group_only.set_ids(Kind::Group, Ids::ROOT).unwrap();

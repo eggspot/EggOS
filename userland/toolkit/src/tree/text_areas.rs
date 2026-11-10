@@ -219,8 +219,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     /// Puts `text` in text area `id` in place of its selection, as [`Response::PasteWanted`]
     /// asked.
     pub(super) fn area_paste(&mut self, id: WidgetId, text: &str, now_ms: u32) -> Response {
-        let changed =
-            self.edit_area(id, now_ms, |area, store| Self::replace_selection(area, store, text));
+        let changed = self.edit_area(id, now_ms, |area, store| {
+            Self::replace_selection(area, store, text)
+        });
         match changed {
             true => Response::Edited(id),
             false => Response::Nothing,
@@ -316,9 +317,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             return Response::Nothing;
         }
         let edited = match code {
-            key::ENTER => {
-                self.edit_area(id, now_ms, |area, store| Self::replace_selection(area, store, "\n"))
-            }
+            key::ENTER => self.edit_area(id, now_ms, |area, store| {
+                Self::replace_selection(area, store, "\n")
+            }),
             key::BACKSPACE | key::DELETE => self.edit_area(id, now_ms, |area, store| {
                 if area.caret == area.anchor {
                     area.anchor = match code {
@@ -337,7 +338,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 };
                 let mut bytes = [0; 4];
                 let typed = typed.encode_utf8(&mut bytes);
-                self.edit_area(id, now_ms, |area, store| Self::replace_selection(area, store, typed))
+                self.edit_area(id, now_ms, |area, store| {
+                    Self::replace_selection(area, store, typed)
+                })
             }
         };
         match edited {

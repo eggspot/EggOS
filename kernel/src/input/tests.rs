@@ -1093,7 +1093,6 @@ fn a_lock_light_the_device_could_not_take_is_asked_again_until_it_does() {
     assert_eq!(*asked.lock().unwrap(), [NUM_ON, NUM_ON, caps_on]);
 }
 
-
 const KEYPAD_7: u16 = 71;
 const KEYPAD_5: u16 = 76;
 

@@ -6,8 +6,8 @@ use crate::canvas::{Canvas, INSET_R4};
 use crate::geometry::Rect;
 use crate::text;
 use crate::widget::{
-    LINE_HEIGHT, Look, SCROLL_BAR_WIDTH, TEXT_AREA_CAPACITY, TEXT_AREA_LINE_PITCH,
-    TEXT_AREA_LINES, TEXT_AREA_PADDING, TEXT_AREA_TAB, TEXT_AREA_TOP, focus_ring, scroll_bar,
+    LINE_HEIGHT, Look, SCROLL_BAR_WIDTH, TEXT_AREA_CAPACITY, TEXT_AREA_LINE_PITCH, TEXT_AREA_LINES,
+    TEXT_AREA_PADDING, TEXT_AREA_TAB, TEXT_AREA_TOP, focus_ring, scroll_bar,
 };
 
 /// A text area's state; its text is in the tree's store `store`.
@@ -262,17 +262,16 @@ impl Store {
         let mut opportunity: Option<(usize, i32)> = None;
         let length = self.length;
         while position < length {
-            let character = match core::str::from_utf8(
-                &self.bytes[position..(position + 4).min(length)],
-            ) {
-                Ok(rest) => rest.chars().next(),
-                Err(error) if error.valid_up_to() > 0 => {
-                    core::str::from_utf8(&self.bytes[position..position + error.valid_up_to()])
-                        .ok()
-                        .and_then(|rest| rest.chars().next())
-                }
-                Err(_) => None,
-            };
+            let character =
+                match core::str::from_utf8(&self.bytes[position..(position + 4).min(length)]) {
+                    Ok(rest) => rest.chars().next(),
+                    Err(error) if error.valid_up_to() > 0 => {
+                        core::str::from_utf8(&self.bytes[position..position + error.valid_up_to()])
+                            .ok()
+                            .and_then(|rest| rest.chars().next())
+                    }
+                    Err(_) => None,
+                };
             let Some(character) = character else {
                 position += 1;
                 continue;

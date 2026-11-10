@@ -13,9 +13,9 @@
 use super::dib;
 use super::gdi;
 use super::icon::{self, Decoded};
-use crate::com::picture;
 use super::paint;
 use super::{error, heap};
+use crate::com::picture;
 use crate::library::Export;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_image::Error as ImageError;
@@ -561,7 +561,10 @@ mod tests {
         let refused = decode_file(b"plain text").err();
         assert_eq!(refused, Some(status::UNKNOWN_IMAGE_FORMAT));
         assert_eq!(decode_file(b"GIF89a").err(), Some(status::GENERIC_ERROR));
-        assert_eq!(image_status(ImageError::Unsupported), status::UNKNOWN_IMAGE_FORMAT);
+        assert_eq!(
+            image_status(ImageError::Unsupported),
+            status::UNKNOWN_IMAGE_FORMAT
+        );
         assert_eq!(image_status(ImageError::TooLarge), status::OUT_OF_MEMORY);
     }
 }

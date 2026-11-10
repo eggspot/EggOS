@@ -311,4 +311,3 @@ pub fn define(runtime: &mut Runtime) -> bool {
         &class,
     )
 }
-

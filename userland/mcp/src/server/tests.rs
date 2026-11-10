@@ -475,7 +475,10 @@ fn a_failing_twin_s_coded_error_line_becomes_structured_content_and_leaves_the_t
     assert!(is_error(&answer));
     assert_eq!(harness.system.asking_codes.last(), Some(&true));
     let last = texts_last(&answer);
-    assert!(last.starts_with("wm: 7: no such window\n  try: wm list\n"), "{last}");
+    assert!(
+        last.starts_with("wm: 7: no such window\n  try: wm list\n"),
+        "{last}"
+    );
     assert!(!last.contains("{\"error\""), "{last}");
     let error = parsed(&answer)
         .get("result")
@@ -4053,21 +4056,60 @@ fn file_copy_and_file_move_refuse_what_they_cannot_do_exactly() {
     const NEW: &str = "/home/root/p";
     const TRASHED: &str = "/home/root/.local/share/Trash/files/a";
     for (id, tool, source, destination, words) in [
-        (1, "file_copy", "/etc/passwd", NEW, "outside /home, /media/host"),
+        (
+            1,
+            "file_copy",
+            "/etc/passwd",
+            NEW,
+            "outside /home, /media/host",
+        ),
         (2, "file_move", "/media/host/a", NEW, "outside /home/root"),
         (3, "file_move", TRASHED, NEW, "in the Trash"),
         (4, "file_copy", "/home/root/linked/a", NEW, "symbolic link"),
-        (5, "file_copy", "/home/root/missing", NEW, "nothing is at source"),
-        (6, "file_move", "/home/root/a.txt", "/home/root/./a.txt", "same path"),
-        (7, "file_copy", "/home/root/a.txt", "/home/root/dir", "is a folder"),
-        (8, "file_move", "/home/root/dir", "/home/root/dir/in", "into itself"),
-        (9, "file_copy", "/home/root/a.txt", "/etc/a", "outside /home/root"),
+        (
+            5,
+            "file_copy",
+            "/home/root/missing",
+            NEW,
+            "nothing is at source",
+        ),
+        (
+            6,
+            "file_move",
+            "/home/root/a.txt",
+            "/home/root/./a.txt",
+            "same path",
+        ),
+        (
+            7,
+            "file_copy",
+            "/home/root/a.txt",
+            "/home/root/dir",
+            "is a folder",
+        ),
+        (
+            8,
+            "file_move",
+            "/home/root/dir",
+            "/home/root/dir/in",
+            "into itself",
+        ),
+        (
+            9,
+            "file_copy",
+            "/home/root/a.txt",
+            "/etc/a",
+            "outside /home/root",
+        ),
         (10, "file_copy", "a.txt", NEW, "absolute"),
     ] {
         let arguments = format!(r#"{{"source":"{source}","destination":"{destination}"}}"#);
         let answer = harness.call(id, tool, &arguments);
         assert!(is_error(&answer), "{tool} {source}");
-        assert!(texts(&answer)[0].contains(words), "{tool} {source}: {answer}");
+        assert!(
+            texts(&answer)[0].contains(words),
+            "{tool} {source}: {answer}"
+        );
     }
     assert!(harness.system.runs.is_empty());
     let answer = harness.call(11, "file_copy", r#"{"destination":"/home/root/p"}"#);
@@ -4084,7 +4126,10 @@ fn file_move_moves_and_renames_below_the_home_folder() {
     let arguments = r#"{"source":"/home/root/a.txt","destination":"/home/root/b.txt"}"#;
     let answer = harness.call(1, "file_move", arguments);
     assert!(!is_error(&answer), "{answer}");
-    assert_eq!(texts(&answer)[1], "Moved /home/root/a.txt to /home/root/b.txt.");
+    assert_eq!(
+        texts(&answer)[1],
+        "Moved /home/root/a.txt to /home/root/b.txt."
+    );
     assert_eq!(
         harness.system.runs.last().unwrap(),
         &["/bin/mv", "/home/root/a.txt", "--", "/home/root/b.txt"]
@@ -4118,7 +4163,10 @@ fn folder_create_makes_folders_and_their_parents_without_asking() {
         r#"{"path":"/home/root/c","parents":false}"#
     );
     let answer = harness.call(3, "folder_create", r#"{"path":"/home/root"}"#);
-    assert!(texts(&answer)[0].contains("names /home/root itself"), "{answer}");
+    assert!(
+        texts(&answer)[0].contains("names /home/root itself"),
+        "{answer}"
+    );
 }
 
 #[test]
@@ -4164,7 +4212,11 @@ fn file_remove_deletes_for_good_only_when_confirmed_and_folders_only_when_recurs
         r#"{"path":"/home/root/a.txt","confirm":true}"#,
     );
     assert!(texts(&answer)[0].contains("nothing is there to delete"));
-    let answer = harness.call(5, "file_remove", r#"{"path":"/home/root/d","confirm":true}"#);
+    let answer = harness.call(
+        5,
+        "file_remove",
+        r#"{"path":"/home/root/d","confirm":true}"#,
+    );
     assert!(texts(&answer)[0].contains("recursive: true"), "{answer}");
     assert!(answer.contains(r#""code":"is_a_folder""#), "{answer}");
     let answer = harness.call(
@@ -4231,7 +4283,11 @@ fn with_elicitation_file_remove_and_a_replacing_copy_ask_the_user_naming_both_pa
         message.contains("delete /home/root/a.txt (3 bytes) for good, without the Trash"),
         "{message}"
     );
-    reply(&mut harness, &question_of(&lines[0]), r#"{"action":"decline"}"#);
+    reply(
+        &mut harness,
+        &question_of(&lines[0]),
+        r#"{"action":"decline"}"#,
+    );
     assert!(harness.system.runs.is_empty());
     let arguments = r#"{"source":"/home/root/a.txt","destination":"/home/root/b.txt"}"#;
     let lines = harness.call_lines(2, "file_copy", arguments);
@@ -4340,7 +4396,14 @@ fn component_install_needs_the_install_grant_and_component_remove_asks_first() {
     assert!(!is_error(&answer), "{answer}");
     assert_eq!(
         harness.system.runs.last().unwrap(),
-        &["/bin/component", "remove", "--yes", "--json", "--", "windows-apps"]
+        &[
+            "/bin/component",
+            "remove",
+            "--yes",
+            "--json",
+            "--",
+            "windows-apps"
+        ]
     );
     let mut harness = granted_only(&[crate::grants::Grant::Write]);
     let answer = harness.call(
@@ -4361,15 +4424,22 @@ fn tool_names(harness: &mut Harness) -> Vec<String> {
     };
     tools
         .elements()
-        .map(|tool| tool.get("name").unwrap().as_str().unwrap().chars().collect())
+        .map(|tool| {
+            tool.get("name")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .chars()
+                .collect()
+        })
         .collect()
 }
 
 fn with_windows_layer(mut harness: Harness) -> Harness {
-    harness
-        .system
-        .files
-        .insert(crate::tools::WINDOWS_LAYER.into(), b"\x7fELF layer".to_vec());
+    harness.system.files.insert(
+        crate::tools::WINDOWS_LAYER.into(),
+        b"\x7fELF layer".to_vec(),
+    );
     harness
 }
 
@@ -4383,7 +4453,11 @@ fn the_registry_tools_exist_only_while_the_windows_layer_is_installed() {
     ];
     let mut harness = Harness::initialized();
     let names = tool_names(&mut harness);
-    assert!(registry_tools.iter().all(|tool| !names.iter().any(|name| name == tool)));
+    assert!(
+        registry_tools
+            .iter()
+            .all(|tool| !names.iter().any(|name| name == tool))
+    );
     let answer = harness.call(1, "windows_registry_get", r#"{"key":"HKCU"}"#);
     assert_eq!(error_code(&answer), INVALID_PARAMS, "{answer}");
     assert!(harness.system.runs.is_empty());
@@ -4441,7 +4515,15 @@ fn windows_registry_get_reads_freely_with_the_key_and_the_name_after_the_options
     assert!(!is_error(&answer), "{answer}");
     assert_eq!(
         harness.system.runs.last().unwrap(),
-        &["/bin/windows", "registry", "get", "--json", "--", "HKCU", "@"]
+        &[
+            "/bin/windows",
+            "registry",
+            "get",
+            "--json",
+            "--",
+            "HKCU",
+            "@"
+        ]
     );
     for refused in [
         r#"{}"#,
@@ -4509,11 +4591,21 @@ fn windows_registry_set_needs_the_write_grant_and_passes_type_and_data_as_operan
             "b"
         ]
     );
-    let answer = harness.call(4, "windows_registry_set", r#"{"key":"HKCU\\Software\\New"}"#);
+    let answer = harness.call(
+        4,
+        "windows_registry_set",
+        r#"{"key":"HKCU\\Software\\New"}"#,
+    );
     assert!(!is_error(&answer), "{answer}");
     assert_eq!(
         harness.system.runs.last().unwrap(),
-        &["/bin/windows", "registry", "set", "--", "HKCU\\Software\\New"]
+        &[
+            "/bin/windows",
+            "registry",
+            "set",
+            "--",
+            "HKCU\\Software\\New"
+        ]
     );
     for refused in [
         r#"{"key":"HKCU","name":"x","type":"REG_NONE"}"#,
@@ -4580,7 +4672,11 @@ fn windows_registry_delete_and_reset_ask_first_and_dry_runs_change_nothing() {
     let answer = harness.call(4, "windows_registry_reset", r#"{"machine":true}"#);
     assert!(is_error(&answer), "{answer}");
     assert_eq!(harness.system.runs.len(), 1);
-    let answer = harness.call(5, "windows_registry_reset", r#"{"machine":true,"confirm":true}"#);
+    let answer = harness.call(
+        5,
+        "windows_registry_reset",
+        r#"{"machine":true,"confirm":true}"#,
+    );
     assert!(!is_error(&answer), "{answer}");
     assert_eq!(
         harness.system.runs.last().unwrap(),
@@ -4593,7 +4689,11 @@ fn windows_registry_delete_and_reset_ask_first_and_dry_runs_change_nothing() {
         "{answer}"
     );
     let mut harness = with_windows_layer(granted_only(&[crate::grants::Grant::View]));
-    let answer = harness.call(6, "windows_registry_delete", r#"{"key":"HKCU","confirm":true}"#);
+    let answer = harness.call(
+        6,
+        "windows_registry_delete",
+        r#"{"key":"HKCU","confirm":true}"#,
+    );
     assert!(is_error(&answer), "{answer}");
     assert!(harness.system.runs.is_empty());
 }
@@ -4658,7 +4758,10 @@ fn conforms(value: Value<'_>, schema: Value<'_>) -> Result<(), String> {
                     conforms(member, property).map_err(|why| format!("{key}: {why}"))?;
                 }
                 None if closed => {
-                    return Err(format!("{} has {key}, which its schema does not name", shown()));
+                    return Err(format!(
+                        "{} has {key}, which its schema does not name",
+                        shown()
+                    ));
                 }
                 None => {}
             }
@@ -4750,7 +4853,11 @@ fn record_line(fields: &[eggos_commands::Field], nulls: bool, padding: usize) ->
 fn twin_output(tool: &Tool) -> String {
     match tool.definition.result {
         ToolResult::Items(fields) => {
-            format!("{}{}", record_line(fields, false, 0), record_line(fields, true, 0))
+            format!(
+                "{}{}",
+                record_line(fields, false, 0),
+                record_line(fields, true, 0)
+            )
         }
         _ => "output\n".to_owned(),
     }
@@ -4816,17 +4923,52 @@ fn every_tool_s_structured_content_matches_its_own_output_schema() {
         let oops: &[u8] = b"oops\n";
         let mut cases: Vec<(&str, Ended, &[u8], bool, &[u8], bool)> = vec![
             ("success", Ended::Exited(0), output, false, nothing, false),
-            ("output cut", Ended::Signalled(9), cut_output, true, nothing, false),
-            ("failed with a code", Ended::Exited(1), nothing, false, CODED_FAILURE, false),
+            (
+                "output cut",
+                Ended::Signalled(9),
+                cut_output,
+                true,
+                nothing,
+                false,
+            ),
+            (
+                "failed with a code",
+                Ended::Exited(1),
+                nothing,
+                false,
+                CODED_FAILURE,
+                false,
+            ),
             ("failed", Ended::Exited(1), nothing, false, oops, false),
             ("timed out", Ended::TimedOut, output, false, nothing, false),
         ];
         if tool.definition.page_limit().is_some() {
             let more: &[u8] = b"more: --after 7\n";
             cases.extend([
-                ("a page with more after it", Ended::Exited(0), output, false, more, true),
-                ("the last page", Ended::Exited(0), output, false, nothing, true),
-                ("a page cut", Ended::Signalled(9), cut_output, true, nothing, true),
+                (
+                    "a page with more after it",
+                    Ended::Exited(0),
+                    output,
+                    false,
+                    more,
+                    true,
+                ),
+                (
+                    "the last page",
+                    Ended::Exited(0),
+                    output,
+                    false,
+                    nothing,
+                    true,
+                ),
+                (
+                    "a page cut",
+                    Ended::Signalled(9),
+                    cut_output,
+                    true,
+                    nothing,
+                    true,
+                ),
             ]);
         }
         for (case, ended, stdout, stdout_cut, stderr, paged) in cases {
@@ -4872,7 +5014,12 @@ fn every_tool_s_structured_content_matches_its_own_output_schema() {
                 let Some(Value::Array(items)) = structured.get("items") else {
                     panic!("{}, {case}: {answer}", tool.name);
                 };
-                assert_eq!(items.elements().count(), 2, "{}, {case}: {answer}", tool.name);
+                assert_eq!(
+                    items.elements().count(),
+                    2,
+                    "{}, {case}: {answer}",
+                    tool.name
+                );
                 assert_eq!(
                     structured.get("truncated"),
                     Some(Value::Bool(stdout_cut)),
@@ -4961,7 +5108,12 @@ fn every_tool_with_an_output_schema_answers_it_from_its_twin() {
             if case == "failed" && tool.kind != Kind::Run {
                 let error = structured_of(&answer).unwrap().get("error").unwrap();
                 assert!(
-                    error.get("code").unwrap().as_str().unwrap().equals("no_such_file"),
+                    error
+                        .get("code")
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .equals("no_such_file"),
                     "{name}: {answer}"
                 );
             }

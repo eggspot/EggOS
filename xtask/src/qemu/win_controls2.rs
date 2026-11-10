@@ -472,9 +472,7 @@ mod tests {
             control: false,
         };
         for _ in 0..3 {
-            frame
-                .word
-                .key_with(VK_LEFT, held, visible(&scene::WORD));
+            frame.word.key_with(VK_LEFT, held, visible(&scene::WORD));
         }
         assert_eq!(frame.word.selection(), (4, 7));
         Frame::typed(&mut frame.word, &scene::WORD, "x");

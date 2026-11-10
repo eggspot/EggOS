@@ -170,7 +170,11 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 42] = [
         r#"{"source":"/home/root/x","destination":"/home/root/y","confirm":true}"#,
         "write",
     ),
-    ("folder_create", r#"{"path":"/home/root/x-folder"}"#, "write"),
+    (
+        "folder_create",
+        r#"{"path":"/home/root/x-folder"}"#,
+        "write",
+    ),
     (
         "file_remove",
         r#"{"path":"/home/root/x","confirm":true}"#,
@@ -1669,7 +1673,8 @@ fn win_controls_session(client: &mut Client) -> Result<(), String> {
     let tree = shown_until(client, window, "its edit", |tree| {
         tree.contains(" text-field ")
     })?;
-    let missing = |what: &str| client.fail(format!("wm_show of win-controls lists no {what}: {tree}"));
+    let missing =
+        |what: &str| client.fail(format!("wm_show of win-controls lists no {what}: {tree}"));
     let name = tree
         .lines()
         .find_map(|line| {
@@ -1698,9 +1703,15 @@ fn win_controls_session(client: &mut Client) -> Result<(), String> {
         .ok_or_else(|| client.fail("the egg row vanished"))?;
     act(client, window, egg, "select")?;
     act(client, window, upper, "invoke")?;
-    shown_until(client, window, "egg selected and Upper case checked", |tree| {
-        element_line(tree, egg).contains("selected") && element_line(tree, upper).contains("checked")
-    })?;
+    shown_until(
+        client,
+        window,
+        "egg selected and Upper case checked",
+        |tree| {
+            element_line(tree, egg).contains("selected")
+                && element_line(tree, upper).contains("checked")
+        },
+    )?;
     run_program(client, &["/bin/wm", "close", &window.to_string()])?;
     let deadline = Instant::now() + WINDOW_TIMEOUT;
     while wm_list_rows(client)?
@@ -2007,13 +2018,8 @@ pub fn check(
     linux_gui_program: &Path,
     controls_program: &Path,
 ) -> Result<(), String> {
-    let (script, apps, disk) = prepare(
-        arch,
-        kernel,
-        programs,
-        linux_gui_program,
-        controls_program,
-    )?;
+    let (script, apps, disk) =
+        prepare(arch, kernel, programs, linux_gui_program, controls_program)?;
     eprintln!("xtask: {}: running {} --mcp", arch.name, script.display());
     let mut client = Client::start(arch, &script, &apps, &disk, None)?;
     let outcome = session(&mut client);

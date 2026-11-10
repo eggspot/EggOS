@@ -68,8 +68,14 @@ mod tests {
     #[test]
     fn thread_results_name_the_errors_msvc_throws() {
         assert_eq!(cpp_error_of(result::BUSY), DEVICE_OR_RESOURCE_BUSY);
-        assert_eq!(cpp_error_of(result::TIMED_OUT), RESOURCE_UNAVAILABLE_TRY_AGAIN);
-        assert_eq!(cpp_error_of(result::NO_MEMORY), RESOURCE_UNAVAILABLE_TRY_AGAIN);
+        assert_eq!(
+            cpp_error_of(result::TIMED_OUT),
+            RESOURCE_UNAVAILABLE_TRY_AGAIN
+        );
+        assert_eq!(
+            cpp_error_of(result::NO_MEMORY),
+            RESOURCE_UNAVAILABLE_TRY_AGAIN
+        );
         assert_eq!(cpp_error_of(result::ERROR), INVALID_ARGUMENT);
         assert_eq!(result::SUCCESS, 0);
         assert_eq!(generic_message(36), b"resource deadlock would occur");

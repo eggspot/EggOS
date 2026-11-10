@@ -103,8 +103,7 @@ pub(crate) fn exp_parts(high: f64, low: f64) -> f64 {
     let reduced_high = high - multiple * LN2_HIGH;
     let reduced_low = multiple * LN2_LOW - low;
     let reduced = reduced_high - reduced_low;
-    let minus_one =
-        reduced_high + (reduced * reduced * horner(reduced, &EXP_TAIL) - reduced_low);
+    let minus_one = reduced_high + (reduced * reduced * horner(reduced, &EXP_TAIL) - reduced_low);
     times_power_of_two(1.0 + minus_one, multiple as i32)
 }
 
@@ -160,8 +159,7 @@ pub fn expm1(x: f64) -> f64 {
     let reduced_high = x - multiple * LN2_HIGH;
     let reduced_low = multiple * LN2_LOW;
     let reduced = reduced_high - reduced_low;
-    let minus_one =
-        reduced_high + (reduced * reduced * horner(reduced, &EXP_TAIL) - reduced_low);
+    let minus_one = reduced_high + (reduced * reduced * horner(reduced, &EXP_TAIL) - reduced_low);
     let scale = power_of_two(multiple as i32);
     (scale - 1.0) + scale * minus_one
 }
@@ -192,9 +190,7 @@ pub(crate) fn log_double_double(x: f64) -> (f64, f64) {
     let multiple = f64::from(exponent);
     let (sum, sum_error) = two_sum(multiple * LN2_HIGH, 2.0 * s);
     let (sum, second_error) = two_sum(sum, third_term.0);
-    let low = sum_error
-        + second_error
-        + (2.0 * s_low + third_term.1 + rest + multiple * LN2_LOW);
+    let low = sum_error + second_error + (2.0 * s_low + third_term.1 + rest + multiple * LN2_LOW);
     fast_two_sum(sum, low)
 }
 
@@ -290,7 +286,11 @@ pub fn pow(x: f64, y: f64) -> f64 {
     }
     if x.is_infinite() {
         let magnitude = if y > 0.0 { f64::INFINITY } else { 0.0 };
-        return if x < 0.0 && odd { -magnitude } else { magnitude };
+        return if x < 0.0 && odd {
+            -magnitude
+        } else {
+            magnitude
+        };
     }
     if x < 0.0 && !is_integer(y) {
         return f64::NAN;

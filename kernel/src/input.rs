@@ -34,10 +34,10 @@ use eggos_drivers::input::{
     Capabilities, LockLights, RawEvent, SYN_REPORT, absolute, button, event_type, relative,
     scale_to_screen,
 };
-use eggos_settings_file::{KeyboardLayoutSet, MAX_KEYBOARD_LAYOUTS, SwitchKey};
 use eggos_drivers::terminal::WHEEL_LINES;
 use eggos_hal::Platform;
 use eggos_hal::time::mul_div_ceil;
+use eggos_settings_file::{KeyboardLayoutSet, MAX_KEYBOARD_LAYOUTS, SwitchKey};
 
 pub use eggos_drivers::input::keymap::Modifiers;
 
@@ -963,8 +963,7 @@ impl InputState {
         };
         if let Some(chord) = space_chord {
             let without_shift = held & !Modifiers::SHIFT.bits();
-            if code != key::SPACE || change != KeyChange::Pressed || without_shift != chord.bits()
-            {
+            if code != key::SPACE || change != KeyChange::Pressed || without_shift != chord.bits() {
                 return false;
             }
             let backwards = held & Modifiers::SHIFT.bits() != 0;
@@ -977,7 +976,8 @@ impl InputState {
             SwitchKey::CtrlShift => (Modifiers::CTRL, [key::LEFT_CTRL, key::RIGHT_CTRL]),
             _ => return false,
         };
-        let chord_key = matches!(code, key::LEFT_SHIFT | key::RIGHT_SHIFT) || second_keys.contains(&code);
+        let chord_key =
+            matches!(code, key::LEFT_SHIFT | key::RIGHT_SHIFT) || second_keys.contains(&code);
         match change {
             KeyChange::Pressed => {
                 self.switch_armed = chord_key && held == chord.with(Modifiers::SHIFT).bits();
@@ -1088,9 +1088,7 @@ impl InputState {
             }
         }
         let character = match press {
-            Press::Dead => {
-                self.typist.pending_accent().map_or(0, u32::from) | DEAD_KEY_CHARACTER
-            }
+            Press::Dead => self.typist.pending_accent().map_or(0, u32::from) | DEAD_KEY_CHARACTER,
             _ => press.character(code, modifiers),
         };
         sink.event(InputEvent::Key {
@@ -1159,7 +1157,10 @@ impl InputState {
             send_latched_modifiers(latched, false, self.keyboard.modifiers(), sink);
         }
         let (wheel, sideways) = match NATURAL_SCROLLING.load(Ordering::Relaxed) {
-            true => (report.wheel.saturating_neg(), report.sideways.saturating_neg()),
+            true => (
+                report.wheel.saturating_neg(),
+                report.sideways.saturating_neg(),
+            ),
             false => (report.wheel, report.sideways),
         };
         if wheel != 0 {
@@ -1584,7 +1585,8 @@ fn poll_devices<P: Platform>(
             }
             let switched = input.state.layout() as u8;
             if switched != wanted {
-                let _ = LAYOUT.compare_exchange(wanted, switched, Ordering::Relaxed, Ordering::Relaxed);
+                let _ =
+                    LAYOUT.compare_exchange(wanted, switched, Ordering::Relaxed, Ordering::Relaxed);
             }
             let lights_taken = input.show_lock_lights();
             let last = !more || round == MAX_POLL_ROUNDS;

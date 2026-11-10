@@ -901,9 +901,10 @@ fn measure_entries<S: System>(
                 continue;
             }
             let child = Path::join(directory, name).ok_or(Errno::ENAMETOOLONG)?;
-            let status = output
-                .system
-                .status(None, child.as_c_str(), SymbolicLinks::DoNotFollow)?;
+            let status =
+                output
+                    .system
+                    .status(None, child.as_c_str(), SymbolicLinks::DoNotFollow)?;
             if status.is_directory() {
                 tree.folders += 1;
                 measure_tree(output, child.as_bytes(), tree)?;
@@ -1378,13 +1379,19 @@ mod tests {
         let (real, fake) = run(mv, held(), &[c"/nope", c"/home/a"]);
         assert_eq!(
             (real, fake.errors().as_str()),
-            (1, "t: cannot move '/nope' to '/home/a': No such file or directory\n")
+            (
+                1,
+                "t: cannot move '/nope' to '/home/a': No such file or directory\n"
+            )
         );
         let read_only = sized(files(), "/tmp", 1_000_000, true);
         let (status, fake) = dry(mv, read_only, &[c"--dry-run", c"/tmp/x", c"/home/x"]);
         assert_eq!(
             (status, fake.errors().as_str()),
-            (1, "t: cannot move '/tmp/x' to '/home/x': Read-only file system\n")
+            (
+                1,
+                "t: cannot move '/tmp/x' to '/home/x': Read-only file system\n"
+            )
         );
     }
 
@@ -1397,11 +1404,7 @@ mod tests {
         if let Some((_, status)) = across.nodes.get_mut(&b"/home"[..]) {
             status.device = 7;
         }
-        let (status, fake) = dry(
-            mv,
-            across,
-            &[c"--dry-run", c"/tmp/x", c"/tmp/d", c"/home"],
-        );
+        let (status, fake) = dry(mv, across, &[c"--dry-run", c"/tmp/x", c"/tmp/d", c"/home"]);
         assert_eq!((status, fake.errors().as_str()), (0, ""));
         assert_eq!(
             fake.output(),
@@ -1426,7 +1429,10 @@ mod tests {
         let (status, fake) = dry(rm, tree(), &[c"--dry-run", c"/tmp/x", c"/home/u"]);
         assert_eq!(status, 1);
         assert_eq!(fake.output(), "would delete '/tmp/x' (4 bytes) for good\n");
-        assert_eq!(fake.errors(), "t: cannot remove '/home/u': Is a directory\n");
+        assert_eq!(
+            fake.errors(),
+            "t: cannot remove '/home/u': Is a directory\n"
+        );
         let (status, fake) = dry(rm, tree(), &[c"--dry-run", c"-r", c"/home/u"]);
         assert_eq!((status, fake.errors().as_str()), (0, ""));
         assert_eq!(
@@ -1440,13 +1446,19 @@ mod tests {
         let (status, fake) = dry(rm, files(), &[c"--dry-run", c"/missing"]);
         assert_eq!(
             (status, fake.errors().as_str()),
-            (1, "t: cannot remove '/missing': No such file or directory\n")
+            (
+                1,
+                "t: cannot remove '/missing': No such file or directory\n"
+            )
         );
         let (status, fake) = dry(rm, files(), &[c"--dry-run", c"-f", c"/missing"]);
         assert_eq!((status, fake.output().as_str()), (0, ""));
         let (status, fake) = dry(rm, files(), &[c"--dry-run", c"-r", c"/tmp/.."]);
         assert_eq!(status, 1);
-        assert!(fake.errors().starts_with("t: refusing to remove '.' or '..'"));
+        assert!(
+            fake.errors()
+                .starts_with("t: refusing to remove '.' or '..'")
+        );
         let read_only = sized(files(), "/tmp", 1_000_000, true);
         let (status, fake) = dry(rm, read_only, &[c"--dry-run", c"/tmp/x"]);
         assert_eq!(

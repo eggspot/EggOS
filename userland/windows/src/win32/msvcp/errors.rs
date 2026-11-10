@@ -209,4 +209,3 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"?_Throw_C_error@std@@YAXH@Z" => throw_c_error_entry [direct],
     b"?_Throw_Cpp_error@std@@YAXH@Z" => throw_cpp_error_entry [direct],
 ];
-

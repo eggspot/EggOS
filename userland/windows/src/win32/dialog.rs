@@ -33,9 +33,9 @@ fn is_radio(window: &windows::Window) -> bool {
 }
 
 fn is_edit(gui: &gui::Gui, window: usize) -> bool {
-    gui.windows.get(window).is_some_and(|entry| {
-        matches!(entry.procedure, Procedure::Control(ControlKind::Edit, _))
-    })
+    gui.windows
+        .get(window)
+        .is_some_and(|entry| matches!(entry.procedure, Procedure::Control(ControlKind::Edit, _)))
 }
 
 /// Where Tab lands when it reaches `stop`: a radio button's group's selected radio, else

@@ -296,7 +296,10 @@ fn inflate_strip(source: &[u8], out: &mut [u8]) -> Result<(), Error> {
 
 fn strips(file: &File<'_>, tags: &Tags, layout: &Layout) -> Result<Vec<u8>, Error> {
     let compression = first(file, tags.compression, UNCOMPRESSED)?;
-    if !matches!(compression, UNCOMPRESSED | LZW | DEFLATE | DEFLATE_OLD | PACKBITS) {
+    if !matches!(
+        compression,
+        UNCOMPRESSED | LZW | DEFLATE | DEFLATE_OLD | PACKBITS
+    ) {
         return Err(Error::Unsupported);
     }
     let total = layout
@@ -411,7 +414,10 @@ fn colour_map(file: &File<'_>, tags: &Tags, bits: u32) -> Result<Vec<u32>, Error
     }
     let mut colours = crate::buffer(size as usize, 0u32)?;
     for (index, colour) in (0..size).zip(colours.iter_mut()) {
-        let channel = |part: u32| file.value(entry, part * size + index).map(|v| (v >> 8) as u8);
+        let channel = |part: u32| {
+            file.value(entry, part * size + index)
+                .map(|v| (v >> 8) as u8)
+        };
         *colour = crate::rgb(channel(0)?, channel(1)?, channel(2)?);
     }
     Ok(colours)

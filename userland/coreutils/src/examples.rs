@@ -174,7 +174,12 @@ fn the_examples_that_change_files_change_them() {
 #[test]
 fn the_fetch_example_saves_the_page_and_records_the_download() {
     let mut fake = machine();
-    let line = [c"fetch", c"-o", c"/home/root/hello.txt", c"http://eggos.test/hello.txt"];
+    let line = [
+        c"fetch",
+        c"-o",
+        c"/home/root/hello.txt",
+        c"http://eggos.test/hello.txt",
+    ];
     assert_eq!(run(&mut fake, &line), 0);
     assert_eq!(fake.contents("/home/root/hello.txt"), b"Hello, EggOS!\n");
     let text = fake.contents("/run/eggos/downloads/77");

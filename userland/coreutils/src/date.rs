@@ -619,7 +619,10 @@ mod tests {
                 &[c"--utc=yes"][..],
                 "date: option '--utc' doesn't allow an argument\n",
             ),
-            (&[c"--set"][..], "date: option '--set' requires an argument\n"),
+            (
+                &[c"--set"][..],
+                "date: option '--set' requires an argument\n",
+            ),
             (&[c"--automatic"][..], "date: --automatic needs --sync\n"),
             (&[c"--dry-run"][..], "date: --dry-run needs -s\n"),
             (&[c"--sync", c"--dry-run"][..], "date: --dry-run needs -s\n"),
@@ -668,7 +671,10 @@ mod tests {
         );
         let (status, _, errors, _) = run(at_now(), &[c"--dry-run", c"-s", c"2030-01-02 03:04"]);
         assert_eq!(status, 1);
-        assert_eq!(errors, "date: /proc/self/status: No such file or directory\n");
+        assert_eq!(
+            errors,
+            "date: /proc/self/status: No such file or directory\n"
+        );
     }
 
     #[test]

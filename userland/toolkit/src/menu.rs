@@ -8,9 +8,7 @@ use crate::canvas::{Canvas, INSET_R6};
 use crate::geometry::Rect;
 use crate::input::key;
 use crate::text::{self, Text};
-use crate::widget::{
-    LINE_HEIGHT, Look, MAX_MENUS, MENU_KEY_GAP, MENU_TITLE_PADDING,
-};
+use crate::widget::{LINE_HEIGHT, Look, MAX_MENUS, MENU_KEY_GAP, MENU_TITLE_PADDING};
 
 /// The most entries a menu holds, separators included: what `SET_MENU` takes.
 pub const MAX_ENTRIES: usize = 16;
@@ -73,11 +71,7 @@ pub fn mnemonic(label: &str) -> Option<(char, i32, i32)> {
             continue;
         }
         if marked && character != '&' {
-            return Some((
-                character.to_ascii_lowercase(),
-                x,
-                text::advance(character),
-            ));
+            return Some((character.to_ascii_lowercase(), x, text::advance(character)));
         }
         marked = false;
         x += text::advance(character);
@@ -460,7 +454,13 @@ impl Bar {
                         let label = plain_label(label);
                         let mark: &[u8] = if *enabled { b"I" } else { b"D" };
                         put(
-                            &[mark, label.as_str().as_bytes(), b"\t", key.as_bytes(), b"\n"],
+                            &[
+                                mark,
+                                label.as_str().as_bytes(),
+                                b"\t",
+                                key.as_bytes(),
+                                b"\n",
+                            ],
                             &mut length,
                         )
                     }

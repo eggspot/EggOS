@@ -101,7 +101,9 @@ fn check_two(
     inputs: &[(f64, f64)],
     bound: u128,
 ) {
-    let specials = SPECIALS.iter().flat_map(|&x| SPECIALS.iter().map(move |&y| (x, y)));
+    let specials = SPECIALS
+        .iter()
+        .flat_map(|&x| SPECIALS.iter().map(move |&y| (x, y)));
     for (x, y) in inputs.iter().copied().chain(specials) {
         let (got, wanted) = (ours(x, y), host(x, y));
         let distance = ulps(got, wanted);
@@ -124,7 +126,15 @@ fn rounding_and_bit_functions_are_exact() {
     let inputs = wide_inputs(1);
     let mut random = Random(2);
     let mut small = random.uniform(-1e6, 1e6, 4000);
-    small.extend([0.5, 1.5, 2.5, -0.5, -2.5, 4503599627370495.5, 0.49999999999999994]);
+    small.extend([
+        0.5,
+        1.5,
+        2.5,
+        -0.5,
+        -2.5,
+        4503599627370495.5,
+        0.49999999999999994,
+    ]);
     for set in [&inputs, &small] {
         check("floor", floor, f64::floor, set, 0);
         check("ceil", ceil, f64::ceil, set, 0);
@@ -141,8 +151,15 @@ fn rounding_and_bit_functions_are_exact() {
             assert_eq!(ldexp(fraction, exponent), x, "ldexp(frexp({x:e}))");
             assert_eq!(ilogb(x), exponent - 1, "ilogb({x:e})");
         }
-        assert_eq!(nextafter(x, f64::INFINITY).to_bits(), x.next_up().to_bits(), "{x:e}");
-        assert_eq!(nextafter(x, f64::NEG_INFINITY).to_bits(), x.next_down().to_bits());
+        assert_eq!(
+            nextafter(x, f64::INFINITY).to_bits(),
+            x.next_up().to_bits(),
+            "{x:e}"
+        );
+        assert_eq!(
+            nextafter(x, f64::NEG_INFINITY).to_bits(),
+            x.next_down().to_bits()
+        );
         let (fraction, whole) = modf(x);
         if x.is_finite() {
             assert_eq!(whole, x.trunc());
@@ -175,7 +192,10 @@ fn fmod_and_remainder_are_exact() {
             continue;
         }
         assert_eq!(rest, remainder(x, y));
-        assert!(rest.abs() <= y.abs() / 2.0, "remainder({x:e}, {y:e}) = {rest:e}");
+        assert!(
+            rest.abs() <= y.abs() / 2.0,
+            "remainder({x:e}, {y:e}) = {rest:e}"
+        );
         let host_fmod = x % y;
         let difference = (rest - host_fmod).abs();
         assert!(
@@ -201,7 +221,11 @@ fn trigonometric_functions_are_within_their_bounds() {
     let mut inputs = random.uniform(-10.0, 10.0, 20000);
     inputs.extend(random.magnitudes(-30, 1023, 20000));
     inputs.extend((1..2000).map(|k| f64::from(k) * std::f64::consts::FRAC_PI_2));
-    inputs.extend([1e22, 6381956970095103.0 * 2f64.powi(797), 5.319372648326541e255]);
+    inputs.extend([
+        1e22,
+        6381956970095103.0 * 2f64.powi(797),
+        5.319372648326541e255,
+    ]);
     check("sin", sin, f64::sin, &inputs, 2);
     check("cos", cos, f64::cos, &inputs, 2);
     check("tan", tan, f64::tan, &inputs, 3);
@@ -254,9 +278,18 @@ fn pow_follows_c_and_is_within_its_bound() {
         pairs.push((random.any_finite().abs(), random.between(-3.0, 3.0)));
     }
     for _ in 0..5000 {
-        pairs.push((random.between(-10.0, 0.0), f64::from(random.next() as u8) - 128.0));
+        pairs.push((
+            random.between(-10.0, 0.0),
+            f64::from(random.next() as u8) - 128.0,
+        ));
     }
-    pairs.extend([(-8.0, 1.0 / 3.0), (2.0, 0.5), (-2.0, 3.0), (10.0, 308.0), (2.0, -1074.0)]);
+    pairs.extend([
+        (-8.0, 1.0 / 3.0),
+        (2.0, 0.5),
+        (-2.0, 3.0),
+        (10.0, 308.0),
+        (2.0, -1074.0),
+    ]);
     check_two("pow", pow, f64::powf, &pairs, 3);
     let mut hypotenuses: Vec<(f64, f64)> = Vec::new();
     for _ in 0..20000 {
@@ -285,7 +318,12 @@ fn hyperbolic_functions_are_within_their_bounds() {
     check("tanh", tanh, f64::tanh, &inputs, 3);
     check("asinh", asinh, f64::asinh, &wide_inputs(11), 3);
     let mut above_one = random.uniform(1.0, 100.0, 20000);
-    above_one.extend(random.magnitudes(0, 1023, 5000).iter().map(|x| x.abs() + 1.0));
+    above_one.extend(
+        random
+            .magnitudes(0, 1023, 5000)
+            .iter()
+            .map(|x| x.abs() + 1.0),
+    );
     check("acosh", acosh, f64::acosh, &above_one, 3);
     let unit = random.uniform(-1.0, 1.0, 20000);
     check("atanh", atanh, f64::atanh, &unit, 3);
@@ -377,7 +415,10 @@ fn check_vectors(name: &str, function: fn(f64) -> f64, vectors: &[(u64, u64)], b
         let (x, wanted) = (f64::from_bits(input), f64::from_bits(expected));
         let got = function(x);
         let distance = ulps(got, wanted);
-        assert!(distance <= bound, "{name}({x:e}) = {got:e}, not {wanted:e}: {distance} ulps");
+        assert!(
+            distance <= bound,
+            "{name}({x:e}) = {got:e}, not {wanted:e}: {distance} ulps"
+        );
     }
 }
 
@@ -415,7 +456,10 @@ fn c_s_special_cases_hold() {
     assert!(pow(-2.0, 0.5).is_nan());
     assert_eq!(atan2(0.0, -0.0), std::f64::consts::PI);
     assert_eq!(atan2(-0.0, 1.0).to_bits(), (-0.0f64).to_bits());
-    assert_eq!(atan2(f64::INFINITY, f64::NEG_INFINITY), 3.0 * std::f64::consts::FRAC_PI_4);
+    assert_eq!(
+        atan2(f64::INFINITY, f64::NEG_INFINITY),
+        3.0 * std::f64::consts::FRAC_PI_4
+    );
     assert_eq!(hypot(f64::NAN, f64::INFINITY), f64::INFINITY);
     assert!(sin(f64::INFINITY).is_nan());
     assert_eq!(sin(-0.0).to_bits(), (-0.0f64).to_bits());
@@ -482,7 +526,10 @@ fn the_float_twins_are_within_one_unit() {
             } else {
                 single_distance(got, wanted)
             };
-            assert!(distance <= 1, "{name}({x:e}) = {got:e}, the host's {wanted:e}");
+            assert!(
+                distance <= 1,
+                "{name}({x:e}) = {got:e}, the host's {wanted:e}"
+            );
         }
     }
     assert_eq!(powf(2.0, 10.0), 1024.0);

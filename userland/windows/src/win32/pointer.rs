@@ -88,4 +88,3 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"GetCursor" => get_cursor,
     b"ShowCursor" => show_cursor,
 ];
-

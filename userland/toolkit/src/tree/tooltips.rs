@@ -42,8 +42,9 @@ impl Tip {
 impl<const N: usize, const A: usize> WidgetTree<N, A> {
     fn tooltip_of(&self, owner: WidgetId) -> Option<WidgetId> {
         self.ids().find(|&id| {
-            self.node(id)
-                .is_some_and(|node| node.parent == Some(owner) && matches!(node.kind, Kind::Tooltip(_)))
+            self.node(id).is_some_and(|node| {
+                node.parent == Some(owner) && matches!(node.kind, Kind::Tooltip(_))
+            })
         })
     }
 
@@ -195,7 +196,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
         match (self.tip.shown, self.tip.until) {
             (true, until) => until,
-            (false, _) if self.tip.owner.is_some() && !self.tip.spent && !self.tooltip_blocked() => {
+            (false, _)
+                if self.tip.owner.is_some() && !self.tip.spent && !self.tooltip_blocked() =>
+            {
                 Some(self.tip.since.wrapping_add(TOOLTIP_DELAY_MS))
             }
             _ => None,

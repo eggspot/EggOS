@@ -927,7 +927,9 @@ pub(super) fn write<P: Platform>(
         job_control::Access::Refused => Err(Errno::EIO),
         job_control::Access::Allowed => loop {
             let attempt = match end.side {
-                Side::Controlling => type_into_or_wait::<P>(process, thread, file, terminal, buffers)?,
+                Side::Controlling => {
+                    type_into_or_wait::<P>(process, thread, file, terminal, buffers)?
+                }
                 Side::Program => write_output_or_wait(process, thread, file, terminal, buffers)?,
             };
             match attempt {
@@ -1267,7 +1269,11 @@ mod tests {
         terminal.state.lock().discipline.set_settings(raw, false);
         assert_eq!(controlling_side.events(event::OUT), event::OUT);
         terminal.receive(&[b'x'; 1100]);
-        assert_eq!(controlling_side.events(event::OUT), 0, "under WRITE_ROOM left");
+        assert_eq!(
+            controlling_side.events(event::OUT),
+            0,
+            "under WRITE_ROOM left"
+        );
         let mut taken = [0u8; 1100];
         assert_eq!(Line::take(&*terminal, &mut taken).length, 1100);
         assert_eq!(controlling_side.events(event::OUT), event::OUT);

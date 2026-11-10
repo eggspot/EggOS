@@ -64,15 +64,10 @@ fn describe_entries(
         let name = plain_label(label);
         let flags = disabled | if *enabled { 0 } else { flags::DISABLED };
         tree.push(
-            &Element::new(
-                id,
-                parent,
-                Role::MenuItem,
-                bounds(menu.entry_rect(index)),
-            )
-            .named(name.as_str().as_bytes())
-            .valued(key.as_bytes())
-            .flagged(flags),
+            &Element::new(id, parent, Role::MenuItem, bounds(menu.entry_rect(index)))
+                .named(name.as_str().as_bytes())
+                .valued(key.as_bytes())
+                .flagged(flags),
         )
     })
 }
@@ -408,8 +403,14 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                         crate::widget::TABLE_HEADER_HEIGHT,
                     );
                     tree.push(
-                        &part(column, Role::ColumnHeader, rect, held.title, sorted.is_some())
-                            .valued(sorted.map_or(&b""[..], |(_, order)| order.name().as_bytes())),
+                        &part(
+                            column,
+                            Role::ColumnHeader,
+                            rect,
+                            held.title,
+                            sorted.is_some(),
+                        )
+                        .valued(sorted.map_or(&b""[..], |(_, order)| order.name().as_bytes())),
                     )
                 });
                 let shown = table.shown_rows(node.rect);
@@ -429,7 +430,14 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                         )
                         .named(for_agents(node.person_only, name.as_str().as_bytes()))
                         .valued(for_agents(node.person_only, cells.as_str().as_bytes()))
-                        .flagged(disabled | if row == table.selected { flags::SELECTED } else { 0 });
+                        .flagged(
+                            disabled
+                                | if row == table.selected {
+                                    flags::SELECTED
+                                } else {
+                                    0
+                                },
+                        );
                         tree.push(&element)
                     })
             }
@@ -585,9 +593,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                         Ok(width) => {
                             let before = table.columns[part].width;
                             self.set_column_width(id, part, width);
-                            let after = self
-                                .table_column_width(id, part)
-                                .unwrap_or(before);
+                            let after = self.table_column_width(id, part).unwrap_or(before);
                             match after == before {
                                 true => (Outcome::Done, Response::Nothing),
                                 false => (Outcome::Done, Response::ColumnResized(id, part, after)),

@@ -10,8 +10,8 @@ use crate::settings_window::{CAPACITY, Request};
 use core::fmt::Write;
 use eggos_runtime::errno::Errno;
 use eggos_settings_file::InputPreferences;
-use eggos_toolkit::theme::Token;
 use eggos_toolkit::text::Text;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{CONTROL_HEIGHT, Horizontal, Kind, Length, Place};
 

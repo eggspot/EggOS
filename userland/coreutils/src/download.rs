@@ -12,8 +12,8 @@ use crate::system::System;
 use core::ffi::CStr;
 use eggos_commands::{ErrorDefinition, commands, errors};
 use eggos_download_list::{
-    CancelError, ClearError, MAX_DOWNLOADS, MAX_RECORD_BYTES, Record, State, cancel,
-    clear_refusal, id_of, newest_first, process_running, write_cleared,
+    CancelError, ClearError, MAX_DOWNLOADS, MAX_RECORD_BYTES, Record, State, cancel, clear_refusal,
+    id_of, newest_first, process_running, write_cleared,
 };
 use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
@@ -24,7 +24,8 @@ const PROCESSES_BYTES: usize = 32 * 1024;
 const RECORD_PATH_BYTES: usize = 48;
 const DIRECTORY_PIECE: usize = 4096;
 const JSON_BYTES: usize = MAX_RECORD_BYTES + 1024;
-const USAGE: &[u8] = b"usage: download list [--json] | download cancel <id> | download clear [<id>...]";
+const USAGE: &[u8] =
+    b"usage: download list [--json] | download cancel <id> | download clear [<id>...]";
 
 const ID_WIDTH: usize = 6;
 const NAME_WIDTH: usize = 24;
@@ -249,11 +250,11 @@ fn write_row<S: System>(output: &mut Output<S>, id: u32, record: &Record<'_>) {
 fn write_json<S: System>(output: &mut Output<S>, id: u32, record: &Record<'_>) {
     let mut buffer = [0u8; JSON_BYTES];
     let mut out = JsonWriter::new(&mut buffer);
-    let time = |out: &mut JsonWriter<'_>, seconds: Option<u64>| {
-        match seconds.and_then(|seconds| eggos_calendar::rfc3339(seconds as i64)) {
-            Some(text) => out.string_lossy(&text),
-            None => out.null(),
-        }
+    let time = |out: &mut JsonWriter<'_>, seconds: Option<u64>| match seconds
+        .and_then(|seconds| eggos_calendar::rfc3339(seconds as i64))
+    {
+        Some(text) => out.string_lossy(&text),
+        None => out.null(),
     };
     out.begin_object();
     out.key("id");

@@ -256,7 +256,9 @@ impl Parser<'_> {
     }
 
     fn simple_name(&mut self) -> Option<Vec<u8>> {
-        let length = self.input[self.at..].iter().position(|byte| *byte == b'@')?;
+        let length = self.input[self.at..]
+            .iter()
+            .position(|byte| *byte == b'@')?;
         let name = &self.input[self.at..self.at + length];
         if name.is_empty()
             || !name
@@ -277,7 +279,9 @@ impl Parser<'_> {
         let part = if self.eat(b"?$") {
             self.template()?
         } else if self.eat(b"?A") {
-            let length = self.input[self.at..].iter().position(|byte| *byte == b'@')?;
+            let length = self.input[self.at..]
+                .iter()
+                .position(|byte| *byte == b'@')?;
             self.at += length + 1;
             ANONYMOUS_NAMESPACE.to_vec()
         } else {
@@ -335,7 +339,9 @@ impl Parser<'_> {
                     if !(b'A'..=b'P').contains(&digit) {
                         return None;
                     }
-                    value = value.checked_mul(16)?.checked_add(i64::from(digit - b'A'))?;
+                    value = value
+                        .checked_mul(16)?
+                        .checked_add(i64::from(digit - b'A'))?;
                     digit = self.next()?;
                 }
                 value
@@ -397,10 +403,7 @@ mod tests {
             name(".PEAPEBD").as_deref(),
             Some("char const * __ptr64 * __ptr64")
         );
-        assert_eq!(
-            name(".QEBD").as_deref(),
-            Some("char const * __ptr64 const")
-        );
+        assert_eq!(name(".QEBD").as_deref(), Some("char const * __ptr64 const"));
         assert_eq!(name(".AEAH").as_deref(), Some("int & __ptr64"));
         assert_eq!(name(".$$QEAH").as_deref(), Some("int && __ptr64"));
     }

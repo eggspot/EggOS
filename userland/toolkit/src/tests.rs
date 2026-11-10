@@ -1,8 +1,8 @@
 use crate::canvas::Canvas;
 use crate::colour;
-use crate::theme::Token;
 use crate::geometry::Rect;
 use crate::input::{Input, Modifiers, MouseButton, key};
+use crate::theme::Token;
 use crate::tree::{PointerShape, ROOT_ELEMENT, Response, WidgetId, WidgetTree, element_of};
 use crate::widget::{Escape, Kind, Length, Place, card_rect, scroll_bar};
 use eggos_element_tree::{Action, MAX_TREE_BYTES, Outcome, Role, TreeWriter, elements, flags};
@@ -55,11 +55,7 @@ fn form() -> Form {
         )
         .unwrap();
     let scroll = tree
-        .add(
-            Some(pane),
-            Place::fill(),
-            Kind::scroll_view(),
-        )
+        .add(Some(pane), Place::fill(), Kind::scroll_view())
         .unwrap();
     let cards = tree
         .add(
@@ -517,7 +513,11 @@ fn reduce_motion_draws_the_caret_steady_and_asks_for_no_blink() {
     tree.tick(1500);
     tree.take_damage();
     tree.set_reduce_motion(true);
-    assert_eq!(tree.take_damage().rects().len(), 1, "the blanked caret is drawn again");
+    assert_eq!(
+        tree.take_damage().rects().len(),
+        1,
+        "the blanked caret is drawn again"
+    );
     assert_eq!(tree.next_deadline(1600), None);
     for at in [1600, 2100, 2600] {
         tree.tick(at);
@@ -791,12 +791,16 @@ fn an_accessible_name_and_value_replace_what_a_widget_draws_for_agents_only() {
             .unwrap()
     };
     assert_eq!(find(&form.tree, form.ok).4, "OK");
-    form.tree.set_accessible_name(form.ok, "Install Windows apps");
+    form.tree
+        .set_accessible_name(form.ok, "Install Windows apps");
     form.tree.set_accessible_name(form.scroll, "Windows apps");
     form.tree
         .set_accessible_value(form.scroll, "windows-apps not-installed 1.8 MB");
     let ok = find(&form.tree, form.ok);
-    assert_eq!((ok.2, ok.4.as_str()), (Role::Button, "Install Windows apps"));
+    assert_eq!(
+        (ok.2, ok.4.as_str()),
+        (Role::Button, "Install Windows apps")
+    );
     assert_eq!(form.tree.text_of(form.ok), Some("OK"));
     let group = find(&form.tree, form.scroll);
     assert_eq!(

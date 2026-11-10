@@ -642,7 +642,10 @@ mod tests {
     fn a_dwarf_encoding_names_its_fde_offset() {
         assert_eq!(arm64_dwarf_offset(ARM64_DWARF | 0x1234), Some(0x1234));
         assert_eq!(arm64_dwarf_offset(ARM64_FRAME | 0x1234), None);
-        assert_eq!(x86_64_dwarf_offset(X86_64_DWARF | 0xab_cdef), Some(0xab_cdef));
+        assert_eq!(
+            x86_64_dwarf_offset(X86_64_DWARF | 0xab_cdef),
+            Some(0xab_cdef)
+        );
         assert_eq!(x86_64_dwarf_offset(X86_64_RBP_FRAME), None);
     }
 

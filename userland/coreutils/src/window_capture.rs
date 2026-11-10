@@ -540,7 +540,10 @@ mod tests {
                 &[c"capture", c"--scale", c"2", c"129"][..],
                 "wm: unrecognized option '--scale'\n",
             ),
-            (&[c"capture", c"-o"][..], "wm: option requires an argument -- 'o'\n"),
+            (
+                &[c"capture", c"-o"][..],
+                "wm: option requires an argument -- 'o'\n",
+            ),
             (
                 &[c"capture", c"129", c"--max-width"][..],
                 "wm: option '--max-width' requires an argument\n",

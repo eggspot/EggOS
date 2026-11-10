@@ -1080,8 +1080,8 @@ pub fn map<P: Platform>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::process_table::name_of;
+    use super::*;
 
     #[test]
     fn only_eggway_serves_every_linux_window_app() {

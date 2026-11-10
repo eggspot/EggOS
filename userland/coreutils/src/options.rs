@@ -298,8 +298,10 @@ mod tests {
 
     #[test]
     fn an_optional_value_is_taken_only_attached() {
-        let (operands, seen, errors) =
-            given_to(&commands::DATE, &[c"--sync", c"+%s", c"--sync=10.0.2.2:123"]);
+        let (operands, seen, errors) = given_to(
+            &commands::DATE,
+            &[c"--sync", c"+%s", c"--sync=10.0.2.2:123"],
+        );
         assert_eq!(operands, Ok(vec!["+%s".to_owned()]));
         assert_eq!(seen, ["sync=", "sync=10.0.2.2:123"]);
         assert_eq!(errors, "");

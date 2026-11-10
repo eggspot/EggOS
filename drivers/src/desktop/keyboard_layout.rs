@@ -101,7 +101,12 @@ impl KeyboardLayouts {
             self.tooltip[length..end].copy_from_slice(&part.as_bytes()[..end - length]);
             length = end;
         };
-        if let Some(choice) = self.choices.get(self.in_force.unwrap_or(0)).copied().flatten() {
+        if let Some(choice) = self
+            .choices
+            .get(self.in_force.unwrap_or(0))
+            .copied()
+            .flatten()
+        {
             push(choice.title);
             if let Some(chord) = self.chord {
                 push(TOOLTIP_SEPARATOR);

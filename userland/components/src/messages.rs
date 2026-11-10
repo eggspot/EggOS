@@ -213,7 +213,10 @@ pub fn refusal(refusal: &Refusal, file_name: &str) -> (String, &'static ErrorDef
 /// `In use: Notepad is running. Quit it, then remove.`, or the several programs' form.
 pub fn in_use(names: &[String], count: usize) -> String {
     match count {
-        1 => format!("In use: {} is running. Quit it, then remove.", joined(names)),
+        1 => format!(
+            "In use: {} is running. Quit it, then remove.",
+            joined(names)
+        ),
         2 if names.len() == 2 => format!(
             "In use: {} are running. Quit them, then remove.",
             joined(names)

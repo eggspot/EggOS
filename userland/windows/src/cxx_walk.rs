@@ -211,7 +211,8 @@ pub fn find_handler(
                         else {
                             break;
                         };
-                        if cxx_data::handler_catches(images, &handler, &catchable, info.attributes) {
+                        if cxx_data::handler_catches(images, &handler, &catchable, info.attributes)
+                        {
                             return Some(Caught {
                                 block,
                                 handler,
@@ -315,11 +316,23 @@ mod tests {
             0x100,
             &[0x1993_0522, 4, 0x200, 2, 0x240, 5, 0x2c0, 0, 0, flags_word],
         );
-        put(&mut bytes, 0x200, &[u32::MAX, 0, 0, 0x1500, 1, 0, 2, 0x1510]);
+        put(
+            &mut bytes,
+            0x200,
+            &[u32::MAX, 0, 0, 0x1500, 1, 0, 2, 0x1510],
+        );
         put(&mut bytes, 0x240, &[2, 3, 3, 1, 0x280]);
         put(&mut bytes, 0x254, &[1, 3, 3, 2, 0x290]);
-        put(&mut bytes, 0x280, &[flags::HANDLER_REFERENCE, 0x400, 0x28, 0x1600, 0]);
-        put(&mut bytes, 0x290, &[flags::HANDLER_REFERENCE, 0x4c0, 0x30, 0x1700, 0]);
+        put(
+            &mut bytes,
+            0x280,
+            &[flags::HANDLER_REFERENCE, 0x400, 0x28, 0x1600, 0],
+        );
+        put(
+            &mut bytes,
+            0x290,
+            &[flags::HANDLER_REFERENCE, 0x4c0, 0x30, 0x1700, 0],
+        );
         put(&mut bytes, 0x2a4, &[0, 0, 0, 0x1800, 0]);
         put(
             &mut bytes,
@@ -378,8 +391,14 @@ mod tests {
             outer.catchable.map(|derived| derived.type_descriptor),
             Some(BASE + 0x480)
         );
-        assert_eq!(find_handler(&images, &function, BEGIN, 0, Thrown::Cxx(info)), None);
-        assert_eq!(find_handler(&images, &function, BEGIN, 4, Thrown::Cxx(info)), None);
+        assert_eq!(
+            find_handler(&images, &function, BEGIN, 0, Thrown::Cxx(info)),
+            None
+        );
+        assert_eq!(
+            find_handler(&images, &function, BEGIN, 4, Thrown::Cxx(info)),
+            None
+        );
     }
 
     #[test]
@@ -388,7 +407,10 @@ mod tests {
         let image_s = image(&synchronous);
         let function = data().read(image_s).unwrap();
         let images = Images::same(image_s);
-        assert_eq!(find_handler(&images, &function, BEGIN, 1, Thrown::Structured), None);
+        assert_eq!(
+            find_handler(&images, &function, BEGIN, 1, Thrown::Structured),
+            None
+        );
         let asynchronous = function_bytes(0);
         let image_a = image(&asynchronous);
         let function = data().read(image_a).unwrap();

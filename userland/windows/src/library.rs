@@ -218,7 +218,10 @@ mod tests {
         assert_eq!(library(b"WS2_32.dll"), Some(Library::Ws2_32));
         assert_eq!(library(b"MSVCP140.dll"), Some(Library::Msvcp140));
         assert_eq!(library(b"msvcp140_1.dll"), Some(Library::Msvcp140));
-        assert_eq!(library(b"MSVCP140_ATOMIC_WAIT.dll"), Some(Library::Msvcp140));
+        assert_eq!(
+            library(b"MSVCP140_ATOMIC_WAIT.dll"),
+            Some(Library::Msvcp140)
+        );
         assert_eq!(
             library(b"api-ms-win-core-synch-l1-2-0.dll"),
             Some(Library::Kernel32)

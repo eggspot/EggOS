@@ -56,8 +56,9 @@ mod lines {
     }
 
     fn write_first_wait<P: Platform>(ticks: u64, used: u64) {
-        let memory =
-            format!("\r\n{MARKER} {IDLE_MEMORY} iterations=1 ticks={used} frequency=1000000000\r\n");
+        let memory = format!(
+            "\r\n{MARKER} {IDLE_MEMORY} iterations=1 ticks={used} frequency=1000000000\r\n"
+        );
         P::console_write(memory.as_bytes());
         let line = format!(
             "{MARKER} {NAME} iterations=1 ticks={ticks} frequency={}\r\n",

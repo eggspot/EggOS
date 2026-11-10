@@ -185,7 +185,10 @@ fn has_hover_look(gui: &Gui, window: usize) -> bool {
     gui.windows.get(window).is_some_and(|entry| {
         matches!(
             entry.procedure,
-            Procedure::Control(ControlKind::Button | ControlKind::Edit | ControlKind::ScrollBar, _)
+            Procedure::Control(
+                ControlKind::Button | ControlKind::Edit | ControlKind::ScrollBar,
+                _
+            )
         )
     })
 }
@@ -370,7 +373,8 @@ pub(super) extern "efiapi" fn track_mouse_event(record: usize) -> Bool {
                 HOVER_DEFAULT => HOVER_TIME_MS,
                 delay => delay,
             };
-            gui.hover.track_hover(track.window, delay, super::user32::now_ms());
+            gui.hover
+                .track_hover(track.window, delay, super::user32::now_ms());
         }
         Ok(())
     });

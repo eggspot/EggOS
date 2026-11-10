@@ -1456,7 +1456,10 @@ fn run_app_example(files: &mut FakeFiles, words: &[&[u8]]) -> (i32, String) {
             ..
         }) => {
             let shown = core::str::from_utf8(name).unwrap();
-            match installed_names(files).iter().any(|installed| installed == shown) {
+            match installed_names(files)
+                .iter()
+                .any(|installed| installed == shown)
+            {
                 true => Ok(messages::would_uninstall(shown)),
                 false => Err(Problem::NotInstalled),
             }

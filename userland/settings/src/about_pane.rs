@@ -293,7 +293,9 @@ impl AboutPane {
         for (row, &index) in order[..shown].iter().enumerate() {
             let device = &devices[index];
             let cells = &ROW_SLOTS[slot].rows[row];
-            cells.kind.store(device.kind_order() as u8, Ordering::Relaxed);
+            cells
+                .kind
+                .store(device.kind_order() as u8, Ordering::Relaxed);
             cells
                 .device
                 .store(written(|out| device.write_device(out)).as_str().as_bytes());

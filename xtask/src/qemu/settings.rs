@@ -637,7 +637,10 @@ fn after_the_reboot(
 fn first_run_images(window: &FirstRunWindow) -> Vec<u32> {
     let (width, height) = first_run::SIZE;
     let mut pixels = vec![0; (width * height) as usize];
-    window.widgets().clone().render(&mut pixels, width, height, 1);
+    window
+        .widgets()
+        .clone()
+        .render(&mut pixels, width, height, 1);
     pixels
 }
 

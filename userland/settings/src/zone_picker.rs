@@ -8,9 +8,9 @@ use crate::settings_window::{CAPACITY, Request};
 use core::fmt::Write;
 use eggos_calendar::format::{is_numeric_abbreviation, utc_offset};
 use eggos_calendar::zone::{self, Rule, ZONES};
-use eggos_toolkit::theme::Token;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 

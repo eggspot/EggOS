@@ -38,29 +38,98 @@ const TGAMMA_UNDERFLOW: f64 = -184.0;
 
 /// `erfc(k/4)` for `k` from 2 to 24, as double-doubles.
 const ERFC_QUARTERS: [(f64, f64); 23] = [
-    (f64::from_bits(0x3fde_b021_47ce_245c), f64::from_bits(0xbc75_e809_f1a3_1a28)),
-    (f64::from_bits(0x3fd2_7c6d_14c5_e341), f64::from_bits(0x3c63_af34_34d0_eeab)),
-    (f64::from_bits(0x3fc4_2261_62fb_ddd5), f64::from_bits(0xbc4b_4044_3f6e_c34a)),
-    (f64::from_bits(0x3fb3_bcd1_33aa_0ffc), f64::from_bits(0xbc18_9da8_2345_938b)),
-    (f64::from_bits(0x3fa1_5aaa_8ec8_5205), f64::from_bits(0xbc2e_86ee_834d_a4ce)),
-    (f64::from_bits(0x3f8b_4be2_01ca_a4b4), f64::from_bits(0xbc26_abde_927f_9cdd)),
-    (f64::from_bits(0x3f73_28f5_ec35_0e67), f64::from_bits(0xbc1c_a006_412e_68d0)),
-    (f64::from_bits(0x3f57_f713_f9cc_9784), f64::from_bits(0xbbf4_2071_4320_2515)),
-    (f64::from_bits(0x3f3a_ab85_9b20_ac9e), f64::from_bits(0x3bd8_8f4f_f748_376b)),
-    (f64::from_bits(0x3f1a_609f_7584_d32b), f64::from_bits(0x3bbd_92f3_f7ab_9ef5)),
-    (f64::from_bits(0x3ef7_29df_6503_422a), f64::from_bits(0x3b67_84ca_4c42_9a15)),
-    (f64::from_bits(0x3ed2_0c13_0355_0f0e), f64::from_bits(0xbb62_0ee8_0d2c_8d09)),
-    (f64::from_bits(0x3ea8_ef2a_9a18_d857), f64::from_bits(0xbb42_d76d_c03e_80a5)),
-    (f64::from_bits(0x3e7e_8747_0e4f_4246), f64::from_bits(0xbadc_afa3_aa5b_4314)),
-    (f64::from_bits(0x3e50_8ddd_13bd_35e7), f64::from_bits(0xbaf6_15db_4031_9381)),
-    (f64::from_bits(0x3e1f_cae9_3fb7_323c), f64::from_bits(0x3ab3_5a35_9669_2c9c)),
-    (f64::from_bits(0x3deb_05cf_e2e9_9435), f64::from_bits(0xba8a_071e_d805_52c6)),
-    (f64::from_bits(0x3db4_5314_1082_302a), f64::from_bits(0xba51_a101_007d_8742)),
-    (f64::from_bits(0x3d7b_0c1a_759f_7739), f64::from_bits(0xba1b_2856_8855_c7a1)),
-    (f64::from_bits(0x3d3f_d5f0_8ad2_b29a), f64::from_bits(0x39ce_5b1d_0c5b_f934)),
-    (f64::from_bits(0x3d00_9182_b326_b229), f64::from_bits(0xb992_2e85_b13a_8e1d)),
-    (f64::from_bits(0x3cbe_7eea_02e4_ed88), f64::from_bits(0xb958_24cc_1e23_39a2)),
-    (f64::from_bits(0x3c78_cf81_557d_20b6), f64::from_bits(0x38fa_7fff_0cc7_32c0)),
+    (
+        f64::from_bits(0x3fde_b021_47ce_245c),
+        f64::from_bits(0xbc75_e809_f1a3_1a28),
+    ),
+    (
+        f64::from_bits(0x3fd2_7c6d_14c5_e341),
+        f64::from_bits(0x3c63_af34_34d0_eeab),
+    ),
+    (
+        f64::from_bits(0x3fc4_2261_62fb_ddd5),
+        f64::from_bits(0xbc4b_4044_3f6e_c34a),
+    ),
+    (
+        f64::from_bits(0x3fb3_bcd1_33aa_0ffc),
+        f64::from_bits(0xbc18_9da8_2345_938b),
+    ),
+    (
+        f64::from_bits(0x3fa1_5aaa_8ec8_5205),
+        f64::from_bits(0xbc2e_86ee_834d_a4ce),
+    ),
+    (
+        f64::from_bits(0x3f8b_4be2_01ca_a4b4),
+        f64::from_bits(0xbc26_abde_927f_9cdd),
+    ),
+    (
+        f64::from_bits(0x3f73_28f5_ec35_0e67),
+        f64::from_bits(0xbc1c_a006_412e_68d0),
+    ),
+    (
+        f64::from_bits(0x3f57_f713_f9cc_9784),
+        f64::from_bits(0xbbf4_2071_4320_2515),
+    ),
+    (
+        f64::from_bits(0x3f3a_ab85_9b20_ac9e),
+        f64::from_bits(0x3bd8_8f4f_f748_376b),
+    ),
+    (
+        f64::from_bits(0x3f1a_609f_7584_d32b),
+        f64::from_bits(0x3bbd_92f3_f7ab_9ef5),
+    ),
+    (
+        f64::from_bits(0x3ef7_29df_6503_422a),
+        f64::from_bits(0x3b67_84ca_4c42_9a15),
+    ),
+    (
+        f64::from_bits(0x3ed2_0c13_0355_0f0e),
+        f64::from_bits(0xbb62_0ee8_0d2c_8d09),
+    ),
+    (
+        f64::from_bits(0x3ea8_ef2a_9a18_d857),
+        f64::from_bits(0xbb42_d76d_c03e_80a5),
+    ),
+    (
+        f64::from_bits(0x3e7e_8747_0e4f_4246),
+        f64::from_bits(0xbadc_afa3_aa5b_4314),
+    ),
+    (
+        f64::from_bits(0x3e50_8ddd_13bd_35e7),
+        f64::from_bits(0xbaf6_15db_4031_9381),
+    ),
+    (
+        f64::from_bits(0x3e1f_cae9_3fb7_323c),
+        f64::from_bits(0x3ab3_5a35_9669_2c9c),
+    ),
+    (
+        f64::from_bits(0x3deb_05cf_e2e9_9435),
+        f64::from_bits(0xba8a_071e_d805_52c6),
+    ),
+    (
+        f64::from_bits(0x3db4_5314_1082_302a),
+        f64::from_bits(0xba51_a101_007d_8742),
+    ),
+    (
+        f64::from_bits(0x3d7b_0c1a_759f_7739),
+        f64::from_bits(0xba1b_2856_8855_c7a1),
+    ),
+    (
+        f64::from_bits(0x3d3f_d5f0_8ad2_b29a),
+        f64::from_bits(0x39ce_5b1d_0c5b_f934),
+    ),
+    (
+        f64::from_bits(0x3d00_9182_b326_b229),
+        f64::from_bits(0xb992_2e85_b13a_8e1d),
+    ),
+    (
+        f64::from_bits(0x3cbe_7eea_02e4_ed88),
+        f64::from_bits(0xb958_24cc_1e23_39a2),
+    ),
+    (
+        f64::from_bits(0x3c78_cf81_557d_20b6),
+        f64::from_bits(0x38fa_7fff_0cc7_32c0),
+    ),
 ];
 
 /// The coefficients of `lgamma(1 + e)` in powers of `e` from the first: `-γ`, then
@@ -272,7 +341,14 @@ pub fn lgamma_r(x: f64) -> (f64, i32) {
         return (x, 1);
     }
     if x.is_infinite() || x == 0.0 || (x < 0.0 && is_integer(x)) {
-        return (f64::INFINITY, if x.is_sign_negative() && x == 0.0 { -1 } else { 1 });
+        return (
+            f64::INFINITY,
+            if x.is_sign_negative() && x == 0.0 {
+                -1
+            } else {
+                1
+            },
+        );
     }
     if x > 0.0 {
         return (log_gamma_of_positive(x), 1);
@@ -285,7 +361,10 @@ pub fn lgamma_r(x: f64) -> (f64, i32) {
     }
     let reflected = log_gamma_positive(two_sum(1.0, magnitude));
     let log_sine = log_double_double(fabs(sine));
-    let value = add(add(LN_PI, (-log_sine.0, -log_sine.1)), (-reflected.0, -reflected.1));
+    let value = add(
+        add(LN_PI, (-log_sine.0, -log_sine.1)),
+        (-reflected.0, -reflected.1),
+    );
     (value.0 + value.1, sign)
 }
 
@@ -338,6 +417,9 @@ pub fn tgamma(x: f64) -> f64 {
     }
     let reflected = log_gamma_positive(two_sum(1.0, -x));
     let log_sine = log_double_double(fabs(sine));
-    let (high, low) = add(add(LN_PI, (-log_sine.0, -log_sine.1)), (-reflected.0, -reflected.1));
+    let (high, low) = add(
+        add(LN_PI, (-log_sine.0, -log_sine.1)),
+        (-reflected.0, -reflected.1),
+    );
     copysign(exp_parts(high, low), sine)
 }

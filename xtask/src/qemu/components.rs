@@ -172,12 +172,7 @@ fn listed_nothing(arch: &Arch, console: &str) -> Result<(), String> {
     }
 }
 
-fn boot(
-    arch: &Arch,
-    kernel: &Path,
-    args: &[String],
-    session: &[String],
-) -> Result<String, String> {
+fn boot(arch: &Arch, kernel: &Path, args: &[String], session: &[String]) -> Result<String, String> {
     let mut boot = Boot::start(arch, kernel, args)?;
     let session: Vec<&[u8]> = session.iter().map(|line| line.as_bytes()).collect();
     for _ in 0..session.len() {
@@ -299,18 +294,17 @@ fn enabled_button(tree: &str, name: &str) -> Option<u32> {
     element_of(tree, "button", name).filter(|&id| !element_line(tree, id).contains(DISABLED))
 }
 
-fn open_window(
-    boot: &mut Boot<'_>,
-    command: &str,
-    title: &str,
-    step: &str,
-) -> Result<u32, String> {
+fn open_window(boot: &mut Boot<'_>, command: &str, title: &str, step: &str) -> Result<u32, String> {
     start_in_background(boot, command)?;
     poll(boot, "wm list", step, |listed| window_titled(listed, title))
 }
 
 fn close_window(boot: &mut Boot<'_>, window: u32, title: &str, step: &str) -> Result<(), String> {
-    succeeds(boot, &format!("wm close {window}"), &format!("{step}-close"))?;
+    succeeds(
+        boot,
+        &format!("wm close {window}"),
+        &format!("{step}-close"),
+    )?;
     poll(boot, "wm list", step, |listed| {
         window_titled(listed, title).is_none().then_some(())
     })?;

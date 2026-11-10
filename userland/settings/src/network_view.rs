@@ -13,8 +13,8 @@ use eggos_mcp::pairing::{
     CODE_LIFETIME_S, Code, DEFAULT_PORT, FINGERPRINT_TEXT_BYTES, MAX_WRONG_CODES, NetworkState,
     PairError, PendingPairing, code_text,
 };
-use eggos_toolkit::theme::Token;
 use eggos_toolkit::input::key;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 
@@ -367,12 +367,7 @@ impl NetworkView {
                 tree.set_shown(widgets.lines[3], tree.is_shown(widgets.pair));
             }
             None => {
-                show_line(
-                    tree,
-                    widgets.lines[1],
-                    NO_CERTIFICATE_LINE,
-                    Token::TextDim,
-                );
+                show_line(tree, widgets.lines[1], NO_CERTIFICATE_LINE, Token::TextDim);
                 tree.set_shown(widgets.lines[2], false);
                 tree.set_shown(widgets.lines[3], false);
             }

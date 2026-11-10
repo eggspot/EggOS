@@ -150,7 +150,8 @@ impl Files for FakeFiles {
         if self.nodes.contains_key(path) {
             return Err(Errno::EEXIST);
         }
-        self.nodes.insert(path.to_vec(), Node::Link(target.to_vec()));
+        self.nodes
+            .insert(path.to_vec(), Node::Link(target.to_vec()));
         Ok(())
     }
 

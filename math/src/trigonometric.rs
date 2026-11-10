@@ -65,14 +65,38 @@ const TWO_OVER_PI: [u64; 20] = [
 /// `atan(k/8)` for `k` from 0 to 8, as double-doubles.
 const ATAN_EIGHTHS: [(f64, f64); 9] = [
     (0.0, 0.0),
-    (f64::from_bits(0x3fbf_d5ba_9aac_2f6e), f64::from_bits(0xbc4c_d376_8676_0c17)),
-    (f64::from_bits(0x3fcf_5b75_f92c_80dd), f64::from_bits(0x3c68_ab6e_3cf7_afbd)),
-    (f64::from_bits(0x3fd6_f619_41e4_def1), f64::from_bits(0xbc7c_63aa_e6f6_e918)),
-    (f64::from_bits(0x3fdd_ac67_0561_bb4f), f64::from_bits(0x3c7a_2b7f_222f_65e2)),
-    (f64::from_bits(0x3fe1_e00b_abde_feb4), f64::from_bits(0xbc59_28df_287a_668f)),
-    (f64::from_bits(0x3fe4_978f_a326_9ee1), f64::from_bits(0x3c72_419a_87f2_a458)),
-    (f64::from_bits(0x3fe7_00a7_c578_4634), f64::from_bits(0xbc78_c34d_25aa_def6)),
-    (f64::from_bits(0x3fe9_21fb_5444_2d18), f64::from_bits(0x3c81_a626_3314_5c07)),
+    (
+        f64::from_bits(0x3fbf_d5ba_9aac_2f6e),
+        f64::from_bits(0xbc4c_d376_8676_0c17),
+    ),
+    (
+        f64::from_bits(0x3fcf_5b75_f92c_80dd),
+        f64::from_bits(0x3c68_ab6e_3cf7_afbd),
+    ),
+    (
+        f64::from_bits(0x3fd6_f619_41e4_def1),
+        f64::from_bits(0xbc7c_63aa_e6f6_e918),
+    ),
+    (
+        f64::from_bits(0x3fdd_ac67_0561_bb4f),
+        f64::from_bits(0x3c7a_2b7f_222f_65e2),
+    ),
+    (
+        f64::from_bits(0x3fe1_e00b_abde_feb4),
+        f64::from_bits(0xbc59_28df_287a_668f),
+    ),
+    (
+        f64::from_bits(0x3fe4_978f_a326_9ee1),
+        f64::from_bits(0x3c72_419a_87f2_a458),
+    ),
+    (
+        f64::from_bits(0x3fe7_00a7_c578_4634),
+        f64::from_bits(0xbc78_c34d_25aa_def6),
+    ),
+    (
+        f64::from_bits(0x3fe9_21fb_5444_2d18),
+        f64::from_bits(0x3c81_a626_3314_5c07),
+    ),
 ];
 
 const SIN_TAIL: [f64; 8] = alternating_inverse_factorials(3, true);
@@ -348,7 +372,10 @@ fn complement_root(a: f64) -> (f64, f64) {
         return (0.0, 0.0);
     }
     let (square, error) = two_product(root, root);
-    (root, (((product.0 - square) - error) + product.1) / (2.0 * root))
+    (
+        root,
+        (((product.0 - square) - error) + product.1) / (2.0 * root),
+    )
 }
 
 /// `atan`: the arctangent, in [-π/2, π/2].

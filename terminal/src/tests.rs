@@ -1096,7 +1096,11 @@ fn wrapped_rows_are_flagged_and_line_feeds_and_erases_clear_the_flag() {
     let mut terminal = fed(4, 3, b"abcdef");
     assert_eq!(terminal.row_flags(1), line_flags::WRAPPED);
     terminal.feed(b"\x1b[1;1H\x1b[K");
-    assert_eq!(terminal.row_flags(1), 0, "erasing row 0's end ends the line");
+    assert_eq!(
+        terminal.row_flags(1),
+        0,
+        "erasing row 0's end ends the line"
+    );
     let mut terminal = fed(4, 3, b"abcd\r\nx");
     assert_eq!(terminal.row_flags(1), 0, "a line feed before the wrap");
     terminal.feed(b"\x1b[1;1Habcdefgh");
@@ -1104,7 +1108,10 @@ fn wrapped_rows_are_flagged_and_line_feeds_and_erases_clear_the_flag() {
     terminal.feed(b"\x1b[2J");
     assert_eq!(terminal.row_flags(1), 0);
     let mut terminal = fed(4, 2, b"abcdefgh\n");
-    assert_eq!(terminal.numbered_line(1).map(|(_, flags)| flags), Some(line_flags::WRAPPED));
+    assert_eq!(
+        terminal.numbered_line(1).map(|(_, flags)| flags),
+        Some(line_flags::WRAPPED)
+    );
     assert_eq!(terminal.first_line_number(), 0);
     terminal.feed(b"\x1bc");
     assert!(terminal.take_selection_reset());
@@ -1120,7 +1127,12 @@ fn lines_keep_their_numbers_while_output_scrolls() {
     assert_eq!(terminal.row_of_line_number(2), Some(1));
     assert_eq!(terminal.row_of_line_number(0), None);
     assert_eq!(terminal.first_line_number(), 0);
-    assert_eq!(terminal.numbered_line(0).map(|(cells, _)| text(&cells[..1])), Some("a".to_string()));
+    assert_eq!(
+        terminal
+            .numbered_line(0)
+            .map(|(cells, _)| text(&cells[..1])),
+        Some("a".to_string())
+    );
     terminal.move_view(ViewMove::Back(1));
     assert_eq!(terminal.line_number_of_view_row(0), 0);
     assert_eq!(terminal.view_row_of_line_number(2), Some(2));
@@ -1146,7 +1158,10 @@ fn highlighted_cells_are_filled_with_the_selection_and_bright_black_is_drawn_bri
         foreground: DIM_ON_SELECTION,
         ..Cell::BLANK
     };
-    assert_eq!(dim.colours_selected(true), (TERM_FOREGROUND, TERM_SELECTION));
+    assert_eq!(
+        dim.colours_selected(true),
+        (TERM_FOREGROUND, TERM_SELECTION)
+    );
     assert_eq!(dim.colours_selected(false), dim.colours());
     let highlight = Highlight {
         start: (1, 4),

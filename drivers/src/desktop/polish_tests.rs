@@ -116,7 +116,11 @@ fn wm_list_reports_the_negative_x_and_a_smaller_work_area_clamps_again() {
     let listed = desktop.listed_window(1).unwrap();
     assert_eq!(listed.id, id);
     assert_eq!(listed.rect.x, -542);
-    assert_eq!(desktop.window_rect(id).unwrap().x, 0, "the part on the screen");
+    assert_eq!(
+        desktop.window_rect(id).unwrap().x,
+        0,
+        "the part on the screen"
+    );
     move_to(&mut desktop, id, 5000, 100);
     desktop.set_profile(Profile::Macos, &mut Damage::new(), &mut DiscardEvents);
     let work = desktop.work_area();
@@ -153,8 +157,14 @@ fn a_hanging_window_is_hit_drawn_and_damaged_by_its_signed_position() {
     let slot = desktop.find(id).unwrap();
     let window = *desktop.window_at(slot);
     assert_eq!(window.bounds().x, -542);
-    assert_eq!(window.outside(), Rect::new(0, 100, 116, window.outside().height));
-    assert_eq!(window.content_origin(), (-541, 100 + 1 + i64::from(TITLE_HEIGHT)));
+    assert_eq!(
+        window.outside(),
+        Rect::new(0, 100, 116, window.outside().height)
+    );
+    assert_eq!(
+        window.content_origin(),
+        (-541, 100 + 1 + i64::from(TITLE_HEIGHT))
+    );
     let content_top = 100 + 1 + TITLE_HEIGHT;
     assert_eq!(
         window.part_at(0, content_top + 5, ControlSide::Right),
@@ -164,7 +174,11 @@ fn a_hanging_window_is_hit_drawn_and_damaged_by_its_signed_position() {
         window.part_at(0, 110, ControlSide::Right),
         Some(Part::TitleBar)
     );
-    assert_eq!(window.resize_edges(0, content_top + 50), 0, "the left edge is off screen");
+    assert_eq!(
+        window.resize_edges(0, content_top + 50),
+        0,
+        "the left edge is off screen"
+    );
     assert_eq!(window.resize_edges(116, content_top + 50), edge::RIGHT);
     assert!(
         window
@@ -230,7 +244,11 @@ fn working_takes_the_arrow_s_place_until_the_window_maps_the_app_ends_or_5_s_pas
     tick(&mut desktop, 13_000);
     desktop.launch(AppId::Settings, &mut damage, &mut DiscardEvents);
     tick(&mut desktop, 17_999);
-    assert_eq!(shape(&desktop), PointerShape::Working, "the second start restarts it");
+    assert_eq!(
+        shape(&desktop),
+        PointerShape::Working,
+        "the second start restarts it"
+    );
     tick(&mut desktop, 18_000);
     assert_eq!(shape(&desktop), PointerShape::Arrow);
     tick(&mut desktop, 20_000);
@@ -238,7 +256,11 @@ fn working_takes_the_arrow_s_place_until_the_window_maps_the_app_ends_or_5_s_pas
     assert_eq!(shape(&desktop), PointerShape::Working);
     shown(&mut desktop, 400);
     desktop.pointer_moved(5, 400, &mut damage, &mut DiscardEvents);
-    assert_eq!(shape(&desktop), PointerShape::Arrow, "the first window mapped");
+    assert_eq!(
+        shape(&desktop),
+        PointerShape::Arrow,
+        "the first window mapped"
+    );
     tick(&mut desktop, 30_000);
     desktop.launch(AppId::Settings, &mut damage, &mut DiscardEvents);
     assert!(desktop.is_app_starting());
@@ -258,7 +280,11 @@ fn working_yields_to_every_more_specific_shape() {
     assert_eq!(shape(&desktop), PointerShape::Working, "over a title bar");
     let (x, y) = content_point(&desktop, id);
     desktop.pointer_moved(x, y, &mut damage, &mut DiscardEvents);
-    assert_eq!(shape(&desktop), PointerShape::Working, "content whose client chose the arrow");
+    assert_eq!(
+        shape(&desktop),
+        PointerShape::Working,
+        "content whose client chose the arrow"
+    );
     desktop
         .set_pointer(CLIENT, u32::from(id), 7, &mut damage)
         .unwrap();
@@ -266,7 +292,11 @@ fn working_yields_to_every_more_specific_shape() {
     desktop
         .set_pointer(CLIENT, u32::from(id), 9, &mut damage)
         .unwrap();
-    assert_eq!(shape(&desktop), PointerShape::Working, "a client's own Working");
+    assert_eq!(
+        shape(&desktop),
+        PointerShape::Working,
+        "a client's own Working"
+    );
     desktop
         .set_pointer(CLIENT, u32::from(id), 0, &mut damage)
         .unwrap();
@@ -319,12 +349,18 @@ fn a_client_with_an_event_unread_for_2_s_is_not_responding_until_it_reads() {
         Err(WindowError::NotResponding)
     );
     assert_eq!(
-        desktop.not_responding_window(u32::from(id)).map(|window| window.id),
+        desktop
+            .not_responding_window(u32::from(id))
+            .map(|window| window.id),
         Some(id)
     );
     let title = desktop.title_bar_of(id).unwrap();
     desktop.pointer_moved(title.x + 100, title.y + 10, &mut damage, &mut DiscardEvents);
-    assert_eq!(shape(&desktop), PointerShape::Arrow, "the title bar keeps the arrow");
+    assert_eq!(
+        shape(&desktop),
+        PointerShape::Arrow,
+        "the title bar keeps the arrow"
+    );
     desktop.pointer_moved(x, y, &mut damage, &mut DiscardEvents);
     tick(&mut desktop, 9000);
     desktop.set_unread_since(CLIENT, None, &mut damage);
@@ -340,10 +376,16 @@ fn a_client_with_an_event_unread_for_2_s_is_not_responding_until_it_reads() {
     tick(&mut desktop, 13_499);
     assert!(!desktop.is_not_responding(id));
     tick(&mut desktop, 13_500);
-    assert!(desktop.is_not_responding(id), "the oldest unread event's clock");
+    assert!(
+        desktop.is_not_responding(id),
+        "the oldest unread event's clock"
+    );
     desktop.set_unread_since(CLIENT, None, &mut damage);
     tick(&mut desktop, 1_000_000);
-    assert!(!desktop.is_not_responding(id), "no pending event: idle, not busy");
+    assert!(
+        !desktop.is_not_responding(id),
+        "no pending event: idle, not busy"
+    );
     assert_eq!(desktop.next_change_ms(), None);
 }
 
@@ -473,7 +515,10 @@ fn the_end_app_dialog_of_eggway_says_every_linux_window_app_ends_with_it() {
     tick(&mut desktop, 1000);
     let mut damage = Damage::new();
     desktop.set_unread_since(CLIENT, Some(1000), &mut damage);
-    tick(&mut desktop, 1000 + UNREAD_EVENTS_BUSY_MS + END_APP_OFFER_MS);
+    tick(
+        &mut desktop,
+        1000 + UNREAD_EVENTS_BUSY_MS + END_APP_OFFER_MS,
+    );
     assert_eq!(desktop.end_app_warnings(), None);
     click(&mut desktop, x, y);
     assert_eq!(
@@ -490,13 +535,21 @@ fn the_end_app_dialog_of_eggway_says_every_linux_window_app_ends_with_it() {
             ][..]
         )
     );
-    let cells = super::responsiveness::END_APP_LINUX_APPS_WARNING.chars().count() as u32;
+    let cells = super::responsiveness::END_APP_LINUX_APPS_WARNING
+        .chars()
+        .count() as u32;
     let width = cells * crate::font::GLYPH_WIDTH as u32;
     assert!(12 + width <= END_APP_SIZE.0 - 12, "fits its line");
-    assert!(60 + crate::font::GLYPH_HEIGHT as u32 <= 80, "above the buttons");
+    assert!(
+        60 + crate::font::GLYPH_HEIGHT as u32 <= 80,
+        "above the buttons"
+    );
     desktop.forget_client(CLIENT, &mut damage);
     desktop.set_unread_since(CLIENT, Some(20_000), &mut damage);
-    tick(&mut desktop, 20_000 + UNREAD_EVENTS_BUSY_MS + END_APP_OFFER_MS);
+    tick(
+        &mut desktop,
+        20_000 + UNREAD_EVENTS_BUSY_MS + END_APP_OFFER_MS,
+    );
     click(&mut desktop, x, y);
     assert_eq!(
         desktop.end_app_warnings(),
@@ -539,7 +592,11 @@ fn the_launcher_s_caret_blinks_then_stays_and_reduce_motion_keeps_it_shown() {
     for after in [10_000, 10_250, 10_500, 60_000] {
         assert!(drawn(&mut desktop, t0 + 700 + after), "{after}");
     }
-    assert_eq!(desktop.next_change_ms(), None, "no timer while it is steady");
+    assert_eq!(
+        desktop.next_change_ms(),
+        None,
+        "no timer while it is steady"
+    );
     desktop.set_time(t0 + 70_000);
     desktop.key(
         key::BACKSPACE,
@@ -559,7 +616,14 @@ fn the_launcher_s_caret_blinks_then_stays_and_reduce_motion_keeps_it_shown() {
 fn tap(desktop: &mut Desktop, code: u16, modifiers: Modifiers) -> Action {
     let mut damage = Damage::new();
     let action = desktop.key_typing(code, true, modifiers, 0, &mut damage, &mut DiscardEvents);
-    desktop.key_typing(code, false, Modifiers::NONE, 0, &mut damage, &mut DiscardEvents);
+    desktop.key_typing(
+        code,
+        false,
+        Modifiers::NONE,
+        0,
+        &mut damage,
+        &mut DiscardEvents,
+    );
     action
 }
 
@@ -568,7 +632,10 @@ fn shift_tapped_five_times_within_two_seconds_each_toggles_sticky_keys() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let mut damage = Damage::new();
     for _ in 0..4 {
-        assert_eq!(tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT), Action::None);
+        assert_eq!(
+            tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT),
+            Action::None
+        );
     }
     assert_eq!(
         tap(&mut desktop, key::RIGHT_SHIFT, Modifiers::SHIFT),
@@ -578,12 +645,18 @@ fn shift_tapped_five_times_within_two_seconds_each_toggles_sticky_keys() {
         tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT);
     }
     tap(&mut desktop, 30, Modifiers::NONE);
-    assert_eq!(tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT), Action::None);
+    assert_eq!(
+        tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT),
+        Action::None
+    );
     for _ in 0..3 {
         tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT);
     }
     desktop.tick(STICKY_TOGGLE_WITHIN_MS + 1, &mut damage, &mut DiscardEvents);
-    assert_eq!(tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT), Action::None);
+    assert_eq!(
+        tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT),
+        Action::None
+    );
     for _ in 0..3 {
         tap(&mut desktop, key::LEFT_SHIFT, Modifiers::SHIFT);
     }

@@ -614,13 +614,7 @@ extern "C" fn cancel_previous_requests(_: Id, _: Sel, target: Id) {
     cancel_performs(target, None);
 }
 
-extern "C" fn cancel_previous_requests_for(
-    _: Id,
-    _: Sel,
-    target: Id,
-    selector: Sel,
-    argument: Id,
-) {
+extern "C" fn cancel_previous_requests_for(_: Id, _: Sel, target: Id, selector: Sel, argument: Id) {
     cancel_performs(target, Some((selector as usize, argument)));
 }
 

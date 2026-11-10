@@ -121,7 +121,8 @@ pub fn add_image(
     let (info, info_size) = unwind_info.unwrap_or((0, 0));
     let (frames, frames_size) = eh_frame.unwrap_or((0, 0));
     slot.start.store(start, Ordering::Relaxed);
-    slot.end.store(start.saturating_add(size), Ordering::Relaxed);
+    slot.end
+        .store(start.saturating_add(size), Ordering::Relaxed);
     slot.unwind_info.store(info, Ordering::Relaxed);
     slot.unwind_info_size.store(info_size, Ordering::Relaxed);
     slot.eh_frame.store(frames, Ordering::Relaxed);
@@ -921,7 +922,6 @@ core::arch::global_asm!(
     "mov rsp, [rdi + 56]",
     "jmp rcx",
 );
-
 
 /// Defines `$entry`, a guard stub for the layer's function `$target` (a method or C function
 /// with no arguments on the stack): it links a pass-through boundary holding the program's

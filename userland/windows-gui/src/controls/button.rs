@@ -124,7 +124,12 @@ fn paint_group_box(
     surface.clip_to(rect);
     outline(
         surface,
-        Rect::new(rect.left, rect.top + GROUP_LINE_TOP, rect.right, rect.bottom),
+        Rect::new(
+            rect.left,
+            rect.top + GROUP_LINE_TOP,
+            rect.right,
+            rect.bottom,
+        ),
         palette.group_border,
     );
     if !cells.is_empty() {
@@ -622,27 +627,51 @@ mod tests {
             hovered: true,
             ..look(ButtonKind::Push)
         };
-        paint(&mut surface, Rect::new(0, 0, 88, 24), &units("Add"), hovered, &LIGHT);
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 88, 24),
+            &units("Add"),
+            hovered,
+            &LIGHT,
+        );
         assert_eq!(surface.get(0, 0), Some(LIGHT.button_hover_border));
         assert_eq!(surface.get(4, 4), Some(LIGHT.button_hover_fill));
         let pressed = ButtonLook {
             pressed: true,
             ..hovered
         };
-        paint(&mut surface, Rect::new(0, 0, 88, 24), &units("Add"), pressed, &LIGHT);
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 88, 24),
+            &units("Add"),
+            pressed,
+            &LIGHT,
+        );
         assert_eq!(surface.get(4, 4), Some(LIGHT.button_pressed_fill));
         let check = ButtonLook {
             hovered: true,
             ..look(ButtonKind::AutoCheckBox)
         };
-        paint(&mut surface, Rect::new(0, 0, 160, 24), &units("Upper"), check, &LIGHT);
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 160, 24),
+            &units("Upper"),
+            check,
+            &LIGHT,
+        );
         assert_eq!(surface.get(2, 5), Some(LIGHT.box_hover_border));
         assert_eq!(surface.get(5, 8), Some(LIGHT.box_fill));
         let disabled = ButtonLook {
             enabled: false,
             ..check
         };
-        paint(&mut surface, Rect::new(0, 0, 160, 24), &units("Upper"), disabled, &LIGHT);
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 160, 24),
+            &units("Upper"),
+            disabled,
+            &LIGHT,
+        );
         assert_eq!(surface.get(2, 5), Some(LIGHT.box_disabled_border));
     }
 

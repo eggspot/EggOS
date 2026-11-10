@@ -486,7 +486,8 @@ pub fn cie_at(
         None => {}
         Some(b'z') => {
             cie.augmented = true;
-            let data_length = usize::try_from(cursor.unsigned()?).map_err(|_| CfiError::Truncated)?;
+            let data_length =
+                usize::try_from(cursor.unsigned()?).map_err(|_| CfiError::Truncated)?;
             let data_end = cursor
                 .at
                 .checked_add(data_length)
@@ -1278,7 +1279,15 @@ mod tests {
             (0x5ff0, 0xd8d8),
         ];
         let read = memory(&cells);
-        step(&bytes, BASE, &parsed, FUNCTION + 0x10, &mut registers, &read).unwrap();
+        step(
+            &bytes,
+            BASE,
+            &parsed,
+            FUNCTION + 0x10,
+            &mut registers,
+            &read,
+        )
+        .unwrap();
         assert_eq!(registers.pc, 0x1_0000_3333);
         assert_eq!(registers.x[30], 0x1_0000_3333);
         assert_eq!(registers.x[29], 0x6100);

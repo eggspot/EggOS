@@ -250,7 +250,14 @@ pub fn label(
     if !colour.visible {
         return;
     }
-    widget::label_text(canvas, pixel_rect(frame, height), words, colour.pixel, 1, align);
+    widget::label_text(
+        canvas,
+        pixel_rect(frame, height),
+        words,
+        colour.pixel,
+        1,
+        align,
+    );
 }
 
 #[cfg(test)]

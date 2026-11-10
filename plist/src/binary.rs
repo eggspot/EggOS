@@ -84,7 +84,9 @@ impl<'b> Table<'b> {
         let start = self.table + object * self.offset_width;
         let entry = self.bytes.get(start..start + self.offset_width)?;
         let offset = usize::try_from(big_endian(entry)?).ok()?;
-        (MAGIC.len()..self.table).contains(&offset).then_some(offset)
+        (MAGIC.len()..self.table)
+            .contains(&offset)
+            .then_some(offset)
     }
 
     fn marker(&self, object: usize) -> Option<(u8, u8, usize)> {

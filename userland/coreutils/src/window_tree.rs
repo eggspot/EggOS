@@ -546,7 +546,11 @@ mod tests {
             ),
         ] {
             let (status, fake) = run(arguments, settings());
-            assert_eq!((status, fake.errors().as_str()), (2, error), "{arguments:?}");
+            assert_eq!(
+                (status, fake.errors().as_str()),
+                (2, error),
+                "{arguments:?}"
+            );
             assert!(fake.acted.is_empty());
         }
         let (status, _) = run(&[c"show", c"129", c"130"], settings());

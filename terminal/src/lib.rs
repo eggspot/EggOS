@@ -77,7 +77,11 @@ impl Highlight {
         if line < self.start.0 || line > self.end.0 {
             return 0..0;
         }
-        let from = if line == self.start.0 { self.start.1 } else { 0 };
+        let from = if line == self.start.0 {
+            self.start.1
+        } else {
+            0
+        };
         let to = if line == self.end.0 {
             self.end.1
         } else {
@@ -580,8 +584,7 @@ impl Terminal {
 
     /// The number of the scrollback's oldest line kept; lines before it were dropped.
     pub fn first_line_number(&self) -> LineNumber {
-        self.pushed
-            .wrapping_sub(self.history_length as LineNumber)
+        self.pushed.wrapping_sub(self.history_length as LineNumber)
     }
 
     /// The number of the live screen's row `row`.
@@ -642,7 +645,10 @@ impl Terminal {
         for changed in [self.highlight, highlight].into_iter().flatten() {
             let top = self.line_number_of_view_row(0);
             let first = changed.start.0.max(top);
-            let last = changed.end.0.min(self.line_number_of_view_row(self.rows - 1));
+            let last = changed
+                .end
+                .0
+                .min(self.line_number_of_view_row(self.rows - 1));
             let mut line = first;
             while line <= last {
                 if let Some(row) = self.view_row_of_line_number(line) {
@@ -959,7 +965,10 @@ impl Terminal {
         screen[first..first + moved].fill(erased);
         let (top_row, end_row) = (usize::from(top), usize::from(bottom) + 1);
         let flags = &mut self.row_flags[self.active];
-        flags.copy_within(top_row..end_row - usize::from(lines), top_row + usize::from(lines));
+        flags.copy_within(
+            top_row..end_row - usize::from(lines),
+            top_row + usize::from(lines),
+        );
         flags[top_row..top_row + usize::from(lines)].fill(0);
         self.touch_rows(top, bottom);
     }

@@ -394,7 +394,11 @@ impl Deadline {
     /// whether the deadline was still ahead. Read `seen` ([`interrupts::DeviceEvents::raised`])
     /// before the first look at the device. Call it as
     /// [`interrupts::DeviceEvents::wait`] is called: with no lock held.
-    pub fn sleep_until_raised(&mut self, events: &interrupts::DeviceEvents, seen: &mut u64) -> bool {
+    pub fn sleep_until_raised(
+        &mut self,
+        events: &interrupts::DeviceEvents,
+        seen: &mut u64,
+    ) -> bool {
         if (self.ticks)() >= self.end {
             return false;
         }

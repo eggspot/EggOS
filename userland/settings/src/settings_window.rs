@@ -21,9 +21,9 @@ use crate::network_view::NetworkRead;
 use crate::storage_pane::{Reply, StoragePane};
 use crate::windows_pane::{self, WindowsPane};
 use crate::zone_picker::{self, ZonePicker};
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::Write;
-use alloc::boxed::Box;
 use eggos_calendar::{ParseError, parse_local_setting};
 use eggos_components::index::Component;
 use eggos_components::manager::{Failure, Refusal};
@@ -36,9 +36,9 @@ use eggos_net::status::InterfaceStatus;
 use eggos_runtime::errno::Errno;
 use eggos_settings_file::clock_sync::Record;
 use eggos_settings_file::{KEYBOARD_LAYOUTS, KeyboardLayoutSet, MAX_KEYBOARD_LAYOUTS, SwitchKey};
-use eggos_toolkit::theme::{Theme, Token};
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
+use eggos_toolkit::theme::{Theme, Token};
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 use eggos_windows_registry::registry::Store as RegistryFiles;
@@ -796,11 +796,7 @@ impl SettingsWindow {
             Place::at(SIDEBAR_WIDTH, 0, Length::Fill(0), Length::Fill(0)),
             Kind::panel(Token::Menu),
         );
-        let scroll = build.add(
-            Some(pane_area),
-            Place::fill(),
-            Kind::scroll_view(),
-        );
+        let scroll = build.add(Some(pane_area), Place::fill(), Kind::scroll_view());
         let panes: [WidgetId; PANES.len()] = core::array::from_fn(|pane| match pane {
             ABOUT => build.pane(scroll, Length::Fill(0)),
             DATE_AND_TIME => build.pane(scroll, Length::Px(DATE_AND_TIME_PANE_HEIGHT)),
@@ -907,11 +903,7 @@ impl SettingsWindow {
         let switch_key = build.add(
             Some(keyboard),
             at(SWITCH_KEY),
-            Kind::dropdown(
-                "Switch key",
-                &SwitchKey::LABELS,
-                facts.switch_key.number(),
-            ),
+            Kind::dropdown("Switch key", &SwitchKey::LABELS, facts.switch_key.number()),
         );
         let third_level = build.label(
             keyboard,
@@ -946,7 +938,6 @@ impl SettingsWindow {
         );
         let keyboard_no_disk =
             build.label(keyboard, PADDING, NO_DISK_LINE, NO_DISK, Token::TextDim);
-
 
         let date_and_time = panes[DATE_AND_TIME];
         build.heading(date_and_time, PANES[DATE_AND_TIME]);
@@ -1355,8 +1346,7 @@ impl SettingsWindow {
 
     /// Shows how a remove went, with the components read after.
     pub fn show_removed(&mut self, result: Result<(), Failure>, read: ComponentsRead) {
-        self.components
-            .show_removed(&mut self.tree, result, read);
+        self.components.show_removed(&mut self.tree, result, read);
     }
 
     /// Shows the devices just read from `/proc/driver/devices` in About (D220).
@@ -1572,7 +1562,8 @@ impl SettingsWindow {
         self.tree.set_selected(widgets.add_layout, 0);
         self.tree
             .set_selected(widgets.switch_key, self.facts.switch_key.number());
-        self.tree.set_enabled(widgets.switch_key, self.facts.keyboard);
+        self.tree
+            .set_enabled(widgets.switch_key, self.facts.keyboard);
         let status = widgets.keyboard_status;
         let (text, shown) = match full {
             true => (FOUR_LAYOUTS, true),
@@ -2066,7 +2057,12 @@ mod tests {
         let pane = window.tree.rect(window.widgets.panes[APPEARANCE]).unwrap();
         let radios = window.tree.rect(window.widgets.theme).unwrap();
         assert_eq!(
-            (radios.x - pane.x, radios.y - pane.y, radios.width, radios.height),
+            (
+                radios.x - pane.x,
+                radios.y - pane.y,
+                radios.width,
+                radios.height
+            ),
             (331, 272, 117, 28)
         );
         assert_eq!(window.tree.selected(window.widgets.theme), Some(0));
@@ -2093,7 +2089,11 @@ mod tests {
     #[test]
     fn the_sidebar_switches_panes_and_the_search_filters_them_by_synonyms() {
         let mut window = SettingsWindow::new(Facts::example());
-        click(&mut window, 40, LIST_TOP + (ABOUT as i32 - 1) * SIDEBAR_ROW + 10);
+        click(
+            &mut window,
+            40,
+            LIST_TOP + (ABOUT as i32 - 1) * SIDEBAR_ROW + 10,
+        );
         assert_eq!(window.pane(), ABOUT);
         assert!(window.widgets().rect(window.widgets.uptime).is_some());
         click(&mut window, 40, 20);
@@ -2132,7 +2132,8 @@ mod tests {
         let with_disk = render(true);
         let without = render(false);
         let line = |pixels: &[u32]| {
-            (316..332).any(|y| (192..500).any(|x| pixels[y * 640 + x] == eggos_toolkit::colour::TEXT_DIM))
+            (316..332)
+                .any(|y| (192..500).any(|x| pixels[y * 640 + x] == eggos_toolkit::colour::TEXT_DIM))
         };
         assert!(!line(&with_disk));
         assert!(line(&without));
@@ -2342,10 +2343,7 @@ mod tests {
                 in_force: german
             })
         );
-        assert_eq!(
-            window.keyboard_layout_titles(),
-            ["English (US)", "German"]
-        );
+        assert_eq!(window.keyboard_layout_titles(), ["English (US)", "German"]);
         assert_eq!(window.keyboard_layout_shown(), Some(german));
         assert_eq!(window.tree.selected(widgets.add_layout), Some(0));
         assert_eq!(
@@ -2384,7 +2382,10 @@ mod tests {
         );
         window.show_keyboard_layouts(KeyboardLayoutSet::parse(b"us,de,fr,es").unwrap(), 0);
         assert!(!window.tree.is_enabled(widgets.add_layout));
-        assert_eq!(window.tree.text_of(widgets.keyboard_status), Some(FOUR_LAYOUTS));
+        assert_eq!(
+            window.tree.text_of(widgets.keyboard_status),
+            Some(FOUR_LAYOUTS)
+        );
         assert_eq!(
             window.respond(Response::Chosen(widgets.switch_key, 3), 0),
             Some(Request::SetSwitchKey(SwitchKey::AltShift))

@@ -16,9 +16,9 @@ use eggos_mcp::grants::{
     AgentGrants, AgentId, AgentName, Grant, GrantStore, Grants, LOCAL_AGENT_ID, MAX_AGENTS,
     Permission, StoreError, StoreState,
 };
-use eggos_toolkit::theme::Token;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::{ELLIPSIS, Text};
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 

@@ -347,8 +347,8 @@ mod program {
     use crate::messages::{self, Line};
     use core::ffi::CStr;
     use core::fmt::Write;
-    use eggos_commands::page::{self, MAX_CURSOR_BYTES, MAX_KEY_BYTES, MORE_PREFIX};
     use core::sync::atomic::{AtomicBool, Ordering};
+    use eggos_commands::page::{self, MAX_CURSOR_BYTES, MAX_KEY_BYTES, MORE_PREFIX};
     use eggos_png::EncoderWorkspace;
     use eggos_runtime::startup::Startup;
 
@@ -413,21 +413,20 @@ mod program {
             environment,
             console,
         } = request;
-        let planned =
-            installer::plan_entry(files, path, name, entry, machine).and_then(|plan| {
-                match arguments {
-                    Some(arguments) => plan.with_arguments(arguments),
-                    None => Ok(plan),
-                }
-                .and_then(|plan| match environment {
-                    Some(environment) => plan.with_environment(environment),
-                    None => Ok(plan),
-                })
-                .map(|plan| match console {
-                    Some(console) => plan.with_console(console),
-                    None => plan,
-                })
-            });
+        let planned = installer::plan_entry(files, path, name, entry, machine).and_then(|plan| {
+            match arguments {
+                Some(arguments) => plan.with_arguments(arguments),
+                None => Ok(plan),
+            }
+            .and_then(|plan| match environment {
+                Some(environment) => plan.with_environment(environment),
+                None => Ok(plan),
+            })
+            .map(|plan| match console {
+                Some(console) => plan.with_console(console),
+                None => plan,
+            })
+        });
         match planned {
             Ok(plan) => Some(plan),
             Err(refused) => {
@@ -645,7 +644,10 @@ mod program {
         match installer::uninstall(&mut files, name) {
             Ok(()) => {
                 linux::apps_changed();
-                say(STANDARD_OUTPUT, messages::uninstalled(shown.as_str()).as_str());
+                say(
+                    STANDARD_OUTPUT,
+                    messages::uninstalled(shown.as_str()).as_str(),
+                );
                 0
             }
             Err(problem) => {

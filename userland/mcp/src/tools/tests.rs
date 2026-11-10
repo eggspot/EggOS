@@ -444,7 +444,11 @@ fn the_agent_tools_read_grants_and_only_agent_show_names_the_caller() {
 
 #[test]
 fn the_file_tools_run_cp_mv_mkdir_and_rm_on_paths_the_write_tools_reach() {
-    let write = (&crate::paths::WRITE_ROOTS[..], true, &[crate::paths::TRASH][..]);
+    let write = (
+        &crate::paths::WRITE_ROOTS[..],
+        true,
+        &[crate::paths::TRASH][..],
+    );
     for (name, kind, program, words, operand, confirmation) in [
         (
             "file_copy",
@@ -491,11 +495,7 @@ fn the_file_tools_run_cp_mv_mkdir_and_rm_on_paths_the_write_tools_reach() {
         assert_eq!(tool.grant, Some(Grant::Write), "{name}");
         assert_eq!(tool.confirmation, confirmation, "{name}");
         assert_eq!(tool.hints.destructive, kind != Kind::FolderCreate, "{name}");
-        assert_eq!(
-            tool.takes("dry_run"),
-            kind != Kind::FolderCreate,
-            "{name}"
-        );
+        assert_eq!(tool.takes("dry_run"), kind != Kind::FolderCreate, "{name}");
         assert!(!tool.hints.open_world, "{name}");
     }
     let copy = crate::tools::COPY_SOURCE;
@@ -508,15 +508,17 @@ fn the_file_tools_run_cp_mv_mkdir_and_rm_on_paths_the_write_tools_reach() {
         (moved.name, moved.roots, moved.strictly, moved.excluded),
         ("source", write.0, write.1, write.2)
     );
-    assert!(schema_of(find("file_copy").unwrap()).ends_with(
-        r#""required":["source","destination"],"additionalProperties":false}"#
-    ));
+    assert!(
+        schema_of(find("file_copy").unwrap())
+            .ends_with(r#""required":["source","destination"],"additionalProperties":false}"#)
+    );
     assert!(schema_of(find("file_remove").unwrap()).contains(
         r#""recursive":{"type":"boolean","description":"Delete a folder and everything in it.","default":false}"#
     ));
-    assert!(schema_of(find("folder_create").unwrap()).ends_with(
-        r#""required":["path"],"additionalProperties":false}"#
-    ));
+    assert!(
+        schema_of(find("folder_create").unwrap())
+            .ends_with(r#""required":["path"],"additionalProperties":false}"#)
+    );
 }
 
 #[test]
@@ -557,9 +559,10 @@ fn the_download_tools_run_download_with_the_grants_the_design_names() {
         assert_eq!(tool.hints.destructive, destructive, "{name}");
         assert!(!tool.hints.open_world, "{name}");
     }
-    assert!(schema_of(find("download_cancel").unwrap()).ends_with(
-        r#""required":["pid"],"additionalProperties":false}"#
-    ));
+    assert!(
+        schema_of(find("download_cancel").unwrap())
+            .ends_with(r#""required":["pid"],"additionalProperties":false}"#)
+    );
 }
 
 #[test]
@@ -595,7 +598,11 @@ fn the_component_tools_run_component_with_the_grants_the_design_names() {
     ] {
         let tool = find(name).unwrap();
         assert_eq!(tool.kind, kind, "{name}");
-        assert_eq!(tool.twin.program, Program::Fixed("/bin/component"), "{name}");
+        assert_eq!(
+            tool.twin.program,
+            Program::Fixed("/bin/component"),
+            "{name}"
+        );
         assert_eq!(tool.twin.words, words, "{name}");
         assert_eq!(tool.twin.operand, operand, "{name}");
         assert_eq!(tool.grant, grant, "{name}");

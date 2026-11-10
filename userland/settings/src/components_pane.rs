@@ -478,7 +478,13 @@ impl ComponentsPane {
 
     /// Whether the person cancelled the install in progress.
     pub fn cancelled(&self) -> bool {
-        matches!(self.work, Work::Installing { cancelled: true, .. })
+        matches!(
+            self.work,
+            Work::Installing {
+                cancelled: true,
+                ..
+            }
+        )
     }
 
     /// Whether the pane waits for an install or a remove, so the program reads the rows once a
@@ -860,7 +866,9 @@ impl ComponentsPane {
             }
             None => {
                 let inks = [Token::Text, Token::TextDim, Token::TextDim];
-                for ((id, words), ink) in widgets.store.iter().zip(messages::NO_STORE_LINES).zip(inks) {
+                for ((id, words), ink) in
+                    widgets.store.iter().zip(messages::NO_STORE_LINES).zip(inks)
+                {
                     show_line(tree, *id, words, ink);
                 }
             }
@@ -891,7 +899,12 @@ impl ComponentsPane {
             );
             show_line(tree, row_widgets.title, &component.title, Token::Text);
             show_line(tree, row_widgets.state, &look.state, Token::Text);
-            show_line(tree, row_widgets.summary, &component.summary, Token::TextDim);
+            show_line(
+                tree,
+                row_widgets.summary,
+                &component.summary,
+                Token::TextDim,
+            );
             tree.set_text(row_widgets.button, look.button);
             tree.set_enabled(row_widgets.button, look.enabled);
             tree.set_accessible_name(
@@ -914,7 +927,12 @@ impl ComponentsPane {
         let bottom = ROWS_TOP + ROW_HEIGHT * shown as i32 + note_height + BOTTOM_MARGIN;
         tree.set_place(
             widgets.pane,
-            Place::at(0, 0, Length::Fill(0), Length::Px(bottom.max(self.min_height))),
+            Place::at(
+                0,
+                0,
+                Length::Fill(0),
+                Length::Px(bottom.max(self.min_height)),
+            ),
         );
     }
 
@@ -993,9 +1011,7 @@ impl ComponentsPane {
 
     /// The store's three lines.
     pub fn store_lines<'a>(&self, tree: &'a WidgetTree<CAPACITY>) -> [&'a str; 3] {
-        self.widgets
-            .store
-            .map(|id| tree.text_of(id).unwrap_or(""))
+        self.widgets.store.map(|id| tree.text_of(id).unwrap_or(""))
     }
 
     /// Each shown row's title, state and button text.
@@ -1004,9 +1020,7 @@ impl ComponentsPane {
             .rows
             .iter()
             .filter(|row| tree.is_shown(row.panel))
-            .map(|row| {
-                [row.title, row.state, row.button].map(|id| tree.text_of(id).unwrap_or(""))
-            })
+            .map(|row| [row.title, row.state, row.button].map(|id| tree.text_of(id).unwrap_or("")))
             .collect()
     }
 

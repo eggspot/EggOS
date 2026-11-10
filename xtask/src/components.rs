@@ -45,7 +45,9 @@ pub const OFFERED: [Offered; 2] = [
 
 /// The components the store of `arch` offers.
 pub fn offered(arch: &str) -> impl Iterator<Item = &'static Offered> {
-    OFFERED.iter().filter(move |offered| (offered.runs_on)(arch))
+    OFFERED
+        .iter()
+        .filter(move |offered| (offered.runs_on)(arch))
 }
 
 /// The links the base image of `arch` holds: each offered file's fixed path, pointing into

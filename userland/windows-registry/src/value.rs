@@ -68,7 +68,10 @@ pub fn type_from_name(name: &str) -> Option<u32> {
 /// The strings of string data: the UTF-16 units up to the first NUL, or all of them.
 pub fn string_of(data: &[u8]) -> String {
     let units: Vec<u16> = units_of(data);
-    let end = units.iter().position(|unit| *unit == 0).unwrap_or(units.len());
+    let end = units
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(units.len());
     utf8(&units[..end])
 }
 
@@ -140,10 +143,7 @@ pub fn hex_text(data: &[u8], separator: &str) -> String {
 
 /// A string as `REG_SZ` data: UTF-16 with its NUL.
 pub fn string_data(text: &str) -> Vec<u8> {
-    let mut data: Vec<u8> = utf16(text)
-        .into_iter()
-        .flat_map(u16::to_le_bytes)
-        .collect();
+    let mut data: Vec<u8> = utf16(text).into_iter().flat_map(u16::to_le_bytes).collect();
     data.extend_from_slice(&[0, 0]);
     data
 }
@@ -202,10 +202,7 @@ pub fn parse_data(kind: u32, texts: &[&str]) -> Result<Vec<u8>, Error> {
 
 /// A whole number in decimal, or in hex after `0x`.
 pub fn parse_number(text: &str) -> Option<u64> {
-    match text
-        .strip_prefix("0x")
-        .or_else(|| text.strip_prefix("0X"))
-    {
+    match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
         Some(hex) if !hex.is_empty() => u64::from_str_radix(hex, 16).ok(),
         Some(_) => None,
         None if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) => {

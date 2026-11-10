@@ -421,9 +421,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_objc_opt_self" => objc_opt_self as *const () as usize,
         b"_objc_opt_isKindOfClass" => objc_opt_is_kind_of_class as *const () as usize,
         b"_objc_opt_respondsToSelector" => objc_opt_responds_to_selector as *const () as usize,
-        b"_objc_enumerationMutation" => {
-            eggos_guarded_enumeration_mutation as *const () as usize
-        }
+        b"_objc_enumerationMutation" => eggos_guarded_enumeration_mutation as *const () as usize,
         b"_objc_getProperty" => objc_get_property as *const () as usize,
         b"_objc_setProperty" => objc_set_property as *const () as usize,
         b"_objc_setProperty_atomic" => objc_set_property_atomic as *const () as usize,

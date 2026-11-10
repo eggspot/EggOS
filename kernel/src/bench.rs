@@ -18,13 +18,9 @@ use alloc::sync::Arc;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::hint::black_box;
-use eggos_toolkit::text::Text as ToolkitText;
-use eggos_toolkit::text_area::Store;
-use eggos_toolkit::tree::WidgetTree;
-use eggos_toolkit::widget::{Align, Column, Kind, Place, TEXT_AREA_CAPACITY};
 use core::ops::ControlFlow;
-use core::time::Duration;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use eggos_drivers::desktop::protocol::DiscardEvents;
 use eggos_drivers::desktop::{Contents, Desktop, WindowId};
 use eggos_drivers::display::{Damage, Mode, Rect};
@@ -44,6 +40,10 @@ use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Attributes;
 use eggos_hal::user::{UserContext, UserExit};
 use eggos_hal::{MemoryMap, PhysicalRange, Platform};
+use eggos_toolkit::text::Text as ToolkitText;
+use eggos_toolkit::text_area::Store;
+use eggos_toolkit::tree::WidgetTree;
+use eggos_toolkit::widget::{Align, Column, Kind, Place, TEXT_AREA_CAPACITY};
 
 /// Starts every benchmark result line. The xtask bench runner parses these lines.
 pub const MARKER: &str = "EGGOS-BENCH:";
@@ -1211,7 +1211,10 @@ fn image_decode_jpeg_640x480(n: u64) {
     let limits = eggos_image::Limits::DEFAULT;
     let mut decoded = None;
     for _ in 0..n {
-        decoded = Some(black_box(eggos_image::decode(black_box(PHOTO_640X480), &limits)));
+        decoded = Some(black_box(eggos_image::decode(
+            black_box(PHOTO_640X480),
+            &limits,
+        )));
     }
     assert!(
         decoded.is_none_or(|image| image.is_ok()),

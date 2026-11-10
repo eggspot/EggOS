@@ -233,7 +233,11 @@ mod tests {
         assert_eq!(queue.unread_since(), Some(1000), "the oldest record's time");
         queue.pop();
         queue.note_read(2000);
-        assert_eq!(queue.unread_since(), Some(2000), "a read restarts the clock");
+        assert_eq!(
+            queue.unread_since(),
+            Some(2000),
+            "a read restarts the clock"
+        );
         queue.pop();
         queue.note_read(2100);
         assert_eq!(queue.unread_since(), None, "nothing waits");

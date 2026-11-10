@@ -7,9 +7,9 @@
 use super::string_encoding;
 use super::string_text::{self, Text};
 use super::{
-    CONSTANT_STRING, CONSTANT_STRING_META, Definition, NSMUTABLESTRING, NSMUTABLESTRING_META,
-    NSSTRING, NSSTRING_META, UTF8_BUFFER, UTF8_BUFFER_META, autoreleased, class_pointer,
-    NSDATA, define as define_class, is_data, is_string, new_instance,
+    CONSTANT_STRING, CONSTANT_STRING_META, Definition, NSDATA, NSMUTABLESTRING,
+    NSMUTABLESTRING_META, NSSTRING, NSSTRING_META, UTF8_BUFFER, UTF8_BUFFER_META, autoreleased,
+    class_pointer, define as define_class, is_data, is_string, new_instance,
 };
 use crate::format::{self, Output};
 use crate::libsystem::heap;
@@ -412,7 +412,12 @@ extern "C" fn data_using_encoding_lossy(this: Id, _: Sel, encoding: usize, lossy
 }
 
 extern "C" fn can_be_converted(this: Id, _: Sel, encoding: usize) -> u8 {
-    u8::from(string_encoding::encode(&text_of(this), encoding, false, &mut |_| {}))
+    u8::from(string_encoding::encode(
+        &text_of(this),
+        encoding,
+        false,
+        &mut |_| {},
+    ))
 }
 
 extern "C" fn init_with_string(this: Id, _: Sel, other: Id) -> Id {

@@ -384,10 +384,7 @@ mod tests {
     }
     #[test]
     fn working_is_the_arrow_with_a_small_hourglass_clear_of_its_tail() {
-        assert_eq!(
-            size_and_hotspot(PointerShape::Working),
-            ((22, 19), (0, 0))
-        );
+        assert_eq!(size_and_hotspot(PointerShape::Working), ((22, 19), (0, 0)));
         assert!(WORKING.iter().all(|row| row.len() == 22));
         let at = (100, 50);
         for row in 0..19 {

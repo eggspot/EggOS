@@ -380,7 +380,9 @@ impl Loader<'_, '_, '_> {
             let class = self
                 .archive
                 .string(index, b"NSClassName")
-                .map_or(core::ptr::null_mut(), |name| allowed_class(name, &VIEW_CLASSES));
+                .map_or(core::ptr::null_mut(), |name| {
+                    allowed_class(name, &VIEW_CLASSES)
+                });
             return match descends(class, &NSVIEW) {
                 true => class,
                 false => core::ptr::null_mut(),
@@ -466,13 +468,18 @@ impl Loader<'_, '_, '_> {
         let class = self
             .archive
             .string(index, b"NSWindowClass")
-            .map_or(core::ptr::null_mut(), |name| allowed_class(name, &WINDOW_CLASSES));
+            .map_or(core::ptr::null_mut(), |name| {
+                allowed_class(name, &WINDOW_CLASSES)
+            });
         let class = match descends(class, &NSWINDOW) {
             true => class,
             false => class_pointer(&NSWINDOW),
         };
         let frame = frame_from(self.archive.string(index, b"NSWindowRect")).unwrap_or_default();
-        let style = self.archive.integer(index, b"NSWindowStyleMask").unwrap_or(0) as u64;
+        let style = self
+            .archive
+            .integer(index, b"NSWindowStyleMask")
+            .unwrap_or(0) as u64;
         let allocated = send(class.cast(), sel!("alloc"));
         if allocated.is_null() {
             return allocated;
@@ -556,7 +563,11 @@ impl Loader<'_, '_, '_> {
             send1(item, sel!("setSubmenu:"), submenu as usize);
             return item;
         }
-        if let Some(action) = self.archive.string(index, b"NSAction").and_then(selector_of) {
+        if let Some(action) = self
+            .archive
+            .string(index, b"NSAction")
+            .and_then(selector_of)
+        {
             send1(item, sel!("setAction:"), action as usize);
             let target = self.reference(index, b"NSTarget");
             send1(item, sel!("setTarget:"), target as usize);
@@ -786,6 +797,10 @@ pub fn extend_bundle(runtime: &mut crate::objc::Runtime) -> bool {
     let instance = crate::objc::methods!["loadNibNamed:owner:topLevelObjects:" => load_nib_named];
     let class_methods = crate::objc::methods!["loadNibNamed:owner:" => load_nib_named_owner];
     let awaking = crate::objc::methods!["awakeFromNib" => awake_from_nib];
-    class::extend(runtime, &crate::foundation::NSBUNDLE, &instance, &class_methods)
-        && class::extend(runtime, &root::NSOBJECT, &awaking, &[])
+    class::extend(
+        runtime,
+        &crate::foundation::NSBUNDLE,
+        &instance,
+        &class_methods,
+    ) && class::extend(runtime, &root::NSOBJECT, &awaking, &[])
 }

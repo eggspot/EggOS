@@ -2,14 +2,14 @@
 //! the check box, `Set to` disabled while the network clock is in charge, and the pane's two
 //! status lines, the second read from the network clock's record.
 
-use crate::agents_pane::{show_line, shortened};
+use crate::agents_pane::{shortened, show_line};
 use crate::facts::Facts;
 use crate::settings_window::{CAPACITY, Request, shown_status};
 use core::fmt::Write;
 use eggos_calendar::zone::{self, ZONES};
 use eggos_calendar::{DateTime, MONTHS, SECONDS_PER_DAY};
-use eggos_runtime::errno::Errno;
 use eggos_net::status::{InterfaceStatus, State};
+use eggos_runtime::errno::Errno;
 use eggos_settings_file::clock_sync::{Outcome, Record};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Token;
@@ -92,7 +92,12 @@ pub fn moved_text(ms: u64) -> Text<32> {
             seconds % SECONDS_PER_HOUR / SECONDS_PER_MINUTE
         )
     } else {
-        write!(text, "{} d {} h", seconds / day, seconds % day / SECONDS_PER_HOUR)
+        write!(
+            text,
+            "{} d {} h",
+            seconds / day,
+            seconds % day / SECONDS_PER_HOUR
+        )
     };
     text
 }

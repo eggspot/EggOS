@@ -12,8 +12,8 @@ use eggos_windows_registry::command::{self, CODED_ERRORS_ENVIRONMENT, Console};
 use eggos_windows_registry::hive::Value;
 use eggos_windows_registry::path::{KeyPath, Root};
 use eggos_windows_registry::registry::{
-    DAMAGED_SUFFIX, HiveFile, MACHINE_HIVE_PATH, Registry, Store, StoreError,
-    TEMPORARY_SUFFIX, USER_HIVE_PATH,
+    DAMAGED_SUFFIX, HiveFile, MACHINE_HIVE_PATH, Registry, Store, StoreError, TEMPORARY_SUFFIX,
+    USER_HIVE_PATH,
 };
 use eggos_windows_registry::value::{
     REG_BINARY, REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_NONE, REG_QWORD, REG_SZ,
@@ -108,11 +108,8 @@ impl Store for LayerStore {
                 let _ = linux::make_directory(&folder);
             }
         }
-        let fd = linux::open(
-            &path,
-            linux::O_WRONLY | linux::O_CREAT | linux::O_TRUNC,
-        )
-        .map_err(store_error)?;
+        let fd = linux::open(&path, linux::O_WRONLY | linux::O_CREAT | linux::O_TRUNC)
+            .map_err(store_error)?;
         let written = linux::write_all(fd, bytes).and_then(|()| match linux::sync_file(fd) {
             Ok(_) | Err(eggos_runtime::errno::Errno::ENOSYS) => Ok(()),
             Err(errno) => Err(errno),
@@ -122,13 +119,21 @@ impl Store for LayerStore {
     }
 
     fn replace_with_temporary(&mut self, file: HiveFile) -> Result<(), StoreError> {
-        linux::rename(&hive_path(file, TEMPORARY_SUFFIX), &hive_path(file, ""), false)
-            .map(|_| ())
-            .map_err(store_error)
+        linux::rename(
+            &hive_path(file, TEMPORARY_SUFFIX),
+            &hive_path(file, ""),
+            false,
+        )
+        .map(|_| ())
+        .map_err(store_error)
     }
 
     fn set_aside(&mut self, file: HiveFile) -> Result<(), StoreError> {
-        match linux::rename(&hive_path(file, ""), &hive_path(file, DAMAGED_SUFFIX), false) {
+        match linux::rename(
+            &hive_path(file, ""),
+            &hive_path(file, DAMAGED_SUFFIX),
+            false,
+        ) {
             Ok(_) | Err(eggos_runtime::errno::Errno::ENOENT) => Ok(()),
             Err(errno) => Err(store_error(errno)),
         }
@@ -154,7 +159,13 @@ static OPENED: SpinLock<Opened> = SpinLock::new(Opened {
 });
 
 fn with_registry<R>(work: impl FnOnce(&mut Registry<LayerStore>) -> R) -> R {
-    OPENED.with(|opened| work(opened.registry.get_or_insert_with(|| Registry::new(LayerStore))))
+    OPENED.with(|opened| {
+        work(
+            opened
+                .registry
+                .get_or_insert_with(|| Registry::new(LayerStore)),
+        )
+    })
 }
 
 struct TerminalConsole {
@@ -187,7 +198,10 @@ impl Console for TerminalConsole {
                 length += 1;
             }
         }
-        Some(matches!(&answer[..length], b"y" | b"Y" | b"yes" | b"Yes" | b"YES"))
+        Some(matches!(
+            &answer[..length],
+            b"y" | b"Y" | b"yes" | b"Yes" | b"YES"
+        ))
     }
 
     fn wants_coded_errors(&self) -> bool {
@@ -543,9 +557,7 @@ unsafe fn give_name(name: &[u16], out: *mut u8, size: *mut u32, text: Text) -> u
                 return ERROR_MORE_DATA;
             }
             // SAFETY: `out` holds `room` units, more than the name's.
-            unsafe {
-                core::ptr::copy_nonoverlapping(name.as_ptr(), out.cast::<u16>(), name.len())
-            };
+            unsafe { core::ptr::copy_nonoverlapping(name.as_ptr(), out.cast::<u16>(), name.len()) };
             // SAFETY: as above: the unit after the name.
             unsafe { out.cast::<u16>().wrapping_add(name.len()).write(0) };
             // SAFETY: as above.

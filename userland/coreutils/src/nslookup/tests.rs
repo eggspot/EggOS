@@ -93,10 +93,12 @@ fn options_come_from_the_registry_with_bind_s_words() {
         assert_eq!(status, 0, "{arguments:?}");
         assert!(out.starts_with(five_three_five_three), "{out}");
     }
-    let usage =
-        "nslookup: usage: nslookup [-port=<port>] [-timeout=<seconds>] <name> [<server>]\n";
+    let usage = "nslookup: usage: nslookup [-port=<port>] [-timeout=<seconds>] <name> [<server>]\n";
     for (arguments, expected) in [
-        (&[c"-port=x", c"eggos.test"][..], "nslookup: invalid port 'x'\n"),
+        (
+            &[c"-port=x", c"eggos.test"][..],
+            "nslookup: invalid port 'x'\n",
+        ),
         (
             &[c"--timeout=0", c"eggos.test"][..],
             "nslookup: invalid timeout '0'\n",
@@ -109,7 +111,10 @@ fn options_come_from_the_registry_with_bind_s_words() {
             &[c"--timeout"][..],
             "nslookup: option '--timeout' requires an argument\n",
         ),
-        (&[c"-x", c"eggos.test"][..], "nslookup: invalid option -- 'x'\n"),
+        (
+            &[c"-x", c"eggos.test"][..],
+            "nslookup: invalid option -- 'x'\n",
+        ),
         (&[c"a.test", c"10.0.2.2", c"b"][..], usage),
     ] {
         let (status, out, errors) = run(network(), arguments);

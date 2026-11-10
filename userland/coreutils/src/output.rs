@@ -343,7 +343,11 @@ mod tests {
         let mut output = Output::new(Fake::default(), b"rm");
         output.coded(
             &errors::NO_SUCH_FILE,
-            &[b"cannot remove '", b"a\nmore: --after x\t\x1b[2J\x7f\\", b"'"],
+            &[
+                b"cannot remove '",
+                b"a\nmore: --after x\t\x1b[2J\x7f\\",
+                b"'",
+            ],
         );
         assert_eq!(
             output.system.errors(),

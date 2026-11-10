@@ -4,9 +4,7 @@ use crate::menu::{Entry, POOL_CAPACITY};
 use crate::text::Text;
 use crate::theme::{self, DARK, LIGHT, LIGHT_HIGH_CONTRAST, Palette, Token};
 use crate::tree::{PointerShape, Response, WidgetId, WidgetTree};
-use crate::widget::{
-    Align, Column, DropMode, Escape, FormFactor, Kind, Length, Place, SortOrder,
-};
+use crate::widget::{Align, Column, DropMode, Escape, FormFactor, Kind, Length, Place, SortOrder};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_element_tree::{Action, MAX_TREE_BYTES, Outcome, Role, TreeWriter, elements, flags};
 
@@ -179,7 +177,10 @@ fn a_tooltip_shows_below_its_owner_after_600_ms_and_is_listed_whether_or_not_it_
     assert_eq!(tree.rect(fixture.save_tip), Some(Rect::new(22, 92, 84, 24)));
     let listed = with_role(&described(tree), Role::Tooltip);
     assert_eq!(listed.len(), 2);
-    assert_eq!((listed[0].4.as_str(), listed[0].5.as_str()), ("Save", "Mod+S"));
+    assert_eq!(
+        (listed[0].4.as_str(), listed[0].5.as_str()),
+        ("Save", "Mod+S")
+    );
     assert_eq!(moved(tree, 60, 70, 0), Response::Nothing);
     tree.tick(599);
     assert_eq!(tree.shown_tooltip(), None);
@@ -268,7 +269,11 @@ fn a_tooltip_follows_the_keyboard_focus_and_goes_above_or_inside_the_window_when
         )
         .unwrap();
     let edge_tip = tree
-        .add(Some(edge), Place::fill(), Kind::tooltip("A longer name", ""))
+        .add(
+            Some(edge),
+            Place::fill(),
+            Kind::tooltip("A longer name", ""),
+        )
         .unwrap();
     tree.resize(WIDTH, HEIGHT);
     assert_eq!(tree.rect(low_tip).unwrap().y, 330 - 4 - 24);
@@ -357,11 +362,16 @@ fn the_menu_bar_opens_by_a_press_switches_by_hover_and_chooses_by_a_release() {
     assert_eq!(at(&open, 10, 20), DARK.menu_hover);
     assert_eq!(at(&open, 2, 60), DARK.menu);
     let listed = described(tree);
-    let bar = listed.iter().find(|element| element.2 == Role::MenuBar).unwrap();
+    let bar = listed
+        .iter()
+        .find(|element| element.2 == Role::MenuBar)
+        .unwrap();
     assert_ne!(bar.3 & flags::EXPANDED, 0);
-    assert!(listed.iter().any(|element| element.2 == Role::MenuItem
-        && element.4 == "New"
-        && element.5 == "Mod+N"));
+    assert!(
+        listed.iter().any(|element| element.2 == Role::MenuItem
+            && element.4 == "New"
+            && element.5 == "Mod+N")
+    );
     assert_eq!(button(tree, 20, 14, false, 10), Response::Nothing);
     moved(tree, 60, 14, 20);
     let cut = 29 + 1 + 32 + 16;
@@ -545,7 +555,10 @@ fn a_table_draws_its_header_rows_and_both_bars_and_lists_its_shown_rows() {
         .iter()
         .find(|element| element.0 == crate::tree::element_of(table))
         .unwrap();
-    assert_eq!((element.2, element.4.as_str(), element.5.as_str()), (Role::Table, "Files", "row 1 of 1000"));
+    assert_eq!(
+        (element.2, element.4.as_str(), element.5.as_str()),
+        (Role::Table, "Files", "row 1 of 1000")
+    );
     assert_eq!(with_role(&listed, Role::ColumnHeader).len(), 3);
     let rows = with_role(&listed, Role::Row);
     assert_eq!(rows.len(), 8);
@@ -564,8 +577,14 @@ fn a_table_selects_by_clicks_and_keys_and_opens_by_a_double_click_or_enter() {
     assert_eq!(key(&mut tree, key::PAGE_UP), Response::Chosen(table, 992));
     assert_eq!(key(&mut tree, key::HOME), Response::Chosen(table, 0));
     assert_eq!(table_of(&tree, table).offset_y, 0);
-    assert_eq!(click(&mut tree, 100, 100, 5000).0, Response::Chosen(table, 1));
-    assert_eq!(click(&mut tree, 100, 100, 5100).0, Response::Opened(table, 1));
+    assert_eq!(
+        click(&mut tree, 100, 100, 5000).0,
+        Response::Chosen(table, 1)
+    );
+    assert_eq!(
+        click(&mut tree, 100, 100, 5100).0,
+        Response::Opened(table, 1)
+    );
     assert_eq!(key(&mut tree, key::ENTER), Response::Opened(table, 1));
 }
 
@@ -638,7 +657,14 @@ fn a_column_resizes_by_its_handle_down_to_its_minimum_and_esc_puts_it_back() {
 #[test]
 fn a_table_scrolls_both_ways_by_the_wheel_shift_and_the_sideways_wheel() {
     let (mut tree, table) = table_fixture(1000);
-    tree.handle(Input::Wheel { x: 100, y: 150, notches: -1 }, 0);
+    tree.handle(
+        Input::Wheel {
+            x: 100,
+            y: 150,
+            notches: -1,
+        },
+        0,
+    );
     assert_eq!(table_of(&tree, table).offset_y, 72);
     tree.handle(
         Input::Key {
@@ -649,7 +675,14 @@ fn a_table_scrolls_both_ways_by_the_wheel_shift_and_the_sideways_wheel() {
         },
         0,
     );
-    tree.handle(Input::Wheel { x: 100, y: 150, notches: -1 }, 0);
+    tree.handle(
+        Input::Wheel {
+            x: 100,
+            y: 150,
+            notches: -1,
+        },
+        0,
+    );
     assert_eq!(table_of(&tree, table).offset_x, 48);
     tree.handle(
         Input::Key {
@@ -660,9 +693,23 @@ fn a_table_scrolls_both_ways_by_the_wheel_shift_and_the_sideways_wheel() {
         },
         0,
     );
-    tree.handle(Input::SidewaysWheel { x: 100, y: 150, notches: 1 }, 0);
+    tree.handle(
+        Input::SidewaysWheel {
+            x: 100,
+            y: 150,
+            notches: 1,
+        },
+        0,
+    );
     assert_eq!(table_of(&tree, table).offset_x, 48);
-    tree.handle(Input::SidewaysWheel { x: 100, y: 150, notches: -1 }, 0);
+    tree.handle(
+        Input::SidewaysWheel {
+            x: 100,
+            y: 150,
+            notches: -1,
+        },
+        0,
+    );
     assert_eq!(table_of(&tree, table).offset_x, 0);
     click(&mut tree, 100, 100, 0);
     key(&mut tree, key::RIGHT);
@@ -761,7 +808,14 @@ fn enter_makes_a_line_and_the_bar_appears_without_changing_the_wrap() {
     assert_eq!(area_of(&tree, area).lines, 6);
     assert_eq!(area_of(&tree, area).scroll, 40);
     assert_eq!(at(&pixels(&tree), 210, 60), DARK.progress_track);
-    tree.handle(Input::Wheel { x: 100, y: 60, notches: 1 }, 0);
+    tree.handle(
+        Input::Wheel {
+            x: 100,
+            y: 60,
+            notches: 1,
+        },
+        0,
+    );
     assert_eq!(area_of(&tree, area).scroll, 0);
     assert_eq!(tree.text_of(area).map(str::len), Some(PANGRAM.len() + 5));
 }
@@ -769,7 +823,10 @@ fn enter_makes_a_line_and_the_bar_appears_without_changing_the_wrap() {
 #[test]
 fn a_word_wider_than_the_line_breaks_between_characters_and_the_store_has_a_limit() {
     let (mut tree, area) = area_fixture();
-    tree.set_text(area, "supercalifragilisticexpialidocioussupercalifragilistic again");
+    tree.set_text(
+        area,
+        "supercalifragilisticexpialidocioussupercalifragilistic again",
+    );
     assert_eq!(area_of(&tree, area).lines, 2);
     let long = "x".repeat(70_000);
     tree.set_text(area, &long);
@@ -803,10 +860,19 @@ fn a_text_area_selects_copies_cuts_and_pastes_and_keeps_line_breaks() {
     );
     assert_eq!(area_of(&tree, area).caret, 34);
     assert_eq!(area_of(&tree, area).anchor, 7);
-    assert_eq!(key_with(&mut tree, key::C, 'c' as u32, Modifiers::CTRL), Response::Copied(area));
+    assert_eq!(
+        key_with(&mut tree, key::C, 'c' as u32, Modifiers::CTRL),
+        Response::Copied(area)
+    );
     assert_eq!(tree.copied(), "ick brown fox jumps over th");
-    assert_eq!(key_with(&mut tree, key::X, 'x' as u32, Modifiers::CTRL), Response::Cut(area));
-    assert_eq!(key_with(&mut tree, key::V, 'v' as u32, Modifiers::CTRL), Response::PasteWanted(area));
+    assert_eq!(
+        key_with(&mut tree, key::X, 'x' as u32, Modifiers::CTRL),
+        Response::Cut(area)
+    );
+    assert_eq!(
+        key_with(&mut tree, key::V, 'v' as u32, Modifiers::CTRL),
+        Response::PasteWanted(area)
+    );
     tree.set_text(area, "");
     assert_eq!(tree.paste(area, "a\tb\r\nc", 0), Response::Edited(area));
     assert_eq!(tree.text_of(area), Some("a\tb\nc"));
@@ -842,8 +908,14 @@ fn tab_leaves_esc_goes_to_the_window_and_mod_enter_reaches_the_default_button() 
         (Outcome::Done, Response::Edited(area))
     );
     let listed = described(&tree);
-    let shown = listed.iter().find(|element| element.2 == Role::TextArea).unwrap();
-    assert_eq!((shown.4.as_str(), shown.5.as_str()), ("Describe it", "hello"));
+    let shown = listed
+        .iter()
+        .find(|element| element.2 == Role::TextArea)
+        .unwrap();
+    assert_eq!(
+        (shown.4.as_str(), shown.5.as_str()),
+        ("Describe it", "hello")
+    );
     tree.set_text(area, &"y".repeat(300));
     let shown = with_role(&described(&tree), Role::TextArea);
     assert_eq!(shown[0].5.len(), 255);
@@ -851,7 +923,10 @@ fn tab_leaves_esc_goes_to_the_window_and_mod_enter_reaches_the_default_button() 
     key(&mut tree, key::TAB);
     assert_eq!(tree.focus(), Some(ok));
     let mut without = WidgetTree::<16>::new();
-    assert_eq!(without.add(None, Place::fill(), Kind::text_area(0, "")), None);
+    assert_eq!(
+        without.add(None, Place::fill(), Kind::text_area(0, "")),
+        None
+    );
 }
 
 #[test]
@@ -889,10 +964,24 @@ fn a_scroll_view_scrolls_sideways_with_its_own_bar_and_the_wheel_goes_to_the_inn
     let pixels = pixels(&tree);
     assert_eq!(at(&pixels, 314, 50), DARK.bar_pressed);
     assert_eq!(at(&pixels, 50, 196), DARK.bar_pressed);
-    tree.handle(Input::SidewaysWheel { x: 100, y: 20, notches: 1 }, 0);
+    tree.handle(
+        Input::SidewaysWheel {
+            x: 100,
+            y: 20,
+            notches: 1,
+        },
+        0,
+    );
     assert_eq!(tree.scroll(view), Some((72, 0)));
     assert_eq!(tree.rect(wide).unwrap().x, -72);
-    tree.handle(Input::SidewaysWheel { x: 100, y: 20, notches: 10 }, 0);
+    tree.handle(
+        Input::SidewaysWheel {
+            x: 100,
+            y: 20,
+            notches: 10,
+        },
+        0,
+    );
     assert_eq!(tree.scroll(view), Some((288, 0)));
     tree.set_scroll(view, 0, 0);
     button(&mut tree, 100, 196, true, 0);
@@ -900,9 +989,23 @@ fn a_scroll_view_scrolls_sideways_with_its_own_bar_and_the_wheel_goes_to_the_inn
     button(&mut tree, 200, 196, false, 0);
     assert_eq!(tree.scroll(view), Some((192, 0)));
     tree.set_scroll(view, 0, 0);
-    tree.handle(Input::SidewaysWheel { x: 100, y: 100, notches: 1 }, 0);
+    tree.handle(
+        Input::SidewaysWheel {
+            x: 100,
+            y: 100,
+            notches: 1,
+        },
+        0,
+    );
     assert_eq!(tree.scroll(view), Some((72, 0)));
-    tree.handle(Input::Wheel { x: 100, y: 100, notches: -1 }, 0);
+    tree.handle(
+        Input::Wheel {
+            x: 100,
+            y: 100,
+            notches: -1,
+        },
+        0,
+    );
     assert_eq!(tree.scroll(list), Some((0, 72)));
     assert_eq!(tree.scroll(view), Some((72, 0)));
 }
@@ -939,9 +1042,15 @@ fn a_row_dragged_past_the_threshold_shows_a_ghost_and_drops_between_rows() {
     let (mut tree, list, _) = drag_fixture();
     button(&mut tree, 100, 76, true, 0);
     assert_eq!(moved(&mut tree, 103, 78, 0), Response::Nothing);
-    assert_eq!(button(&mut tree, 103, 78, false, 0), Response::Chosen(list, 1));
+    assert_eq!(
+        button(&mut tree, 103, 78, false, 0),
+        Response::Chosen(list, 1)
+    );
     button(&mut tree, 100, 76, true, 1000);
-    assert_eq!(moved(&mut tree, 100, 83, 1000), Response::DragStarted(list, 1));
+    assert_eq!(
+        moved(&mut tree, 100, 83, 1000),
+        Response::DragStarted(list, 1)
+    );
     assert_eq!(tree.pointer_shape(), PointerShape::Hand);
     assert_eq!(at(&pixels(&tree), 112, 107), DARK.menu_border);
     moved(&mut tree, 100, 130, 1000);
@@ -979,13 +1088,19 @@ fn a_row_drops_onto_another_list_and_every_other_ending_cancels() {
     button(&mut tree, 100, 76, true, 0);
     moved(&mut tree, 100, 90, 0);
     moved(&mut tree, 300, 110, 0);
-    assert_eq!(button(&mut tree, 300, 110, false, 0), Response::DragCancelled(list));
+    assert_eq!(
+        button(&mut tree, 300, 110, false, 0),
+        Response::DragCancelled(list)
+    );
     button(&mut tree, 100, 76, true, 0);
     moved(&mut tree, 100, 90, 0);
     assert_eq!(key(&mut tree, key::ESC), Response::DragCancelled(list));
     button(&mut tree, 100, 76, true, 0);
     moved(&mut tree, 100, 90, 0);
-    assert_eq!(tree.handle(Input::FocusOut, 0), Response::DragCancelled(list));
+    assert_eq!(
+        tree.handle(Input::FocusOut, 0),
+        Response::DragCancelled(list)
+    );
     tree.handle(Input::FocusIn, 0);
     button(&mut tree, 100, 76, true, 0);
     assert_eq!(moved(&mut tree, 100, 90, 0), Response::DragStarted(list, 1));

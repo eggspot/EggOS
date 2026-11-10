@@ -91,7 +91,10 @@ fn a_failed_download_is_recorded_with_its_reason_in_a_few_words() {
         machine(),
         &[c"http://10.0.2.2/missing", c"/home/root/missing"],
     );
-    assert_eq!((status, errors.as_str()), (1, "fetch: 10.0.2.2:80/missing: 404 Not Found\n"));
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "fetch: 10.0.2.2:80/missing: 404 Not Found\n")
+    );
     let text = record_of(&fake);
     let record = Record::parse(&text).unwrap();
     assert_eq!(record.state, State::Failed);
@@ -103,10 +106,7 @@ fn a_failed_download_is_recorded_with_its_reason_in_a_few_words() {
 fn a_terminated_download_removes_its_partial_file_and_is_recorded_cancelled() {
     let mut fake = machine();
     fake.termination_requested = true;
-    let (status, errors, fake) = run(
-        fake,
-        &[c"http://10.0.2.2/stream", c"/home/root/stream"],
-    );
+    let (status, errors, fake) = run(fake, &[c"http://10.0.2.2/stream", c"/home/root/stream"]);
     assert_eq!(
         (status, errors.as_str()),
         (1, "fetch: cancelled: the partial file was removed\n")

@@ -896,27 +896,31 @@ mod agent {
         let memory = DmaRegion::allocate(MEMORY_BYTES)
             .map_err(|_| ProbeError::Refused("no memory for the device's queues"))?;
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
-        let mut console = match VirtioConsole::new(transport, memory, &mut || deadline.keep_waiting())
-        {
-            Ok(console) => console,
-            Err((error, transport, memory)) => {
-                if let Some(memory) = memory {
-                    // SAFETY: `VirtioConsole::new` hands the memory back only when the device
-                    // never had it or was reset after.
-                    unsafe { memory.free() };
+        let mut console =
+            match VirtioConsole::new(transport, memory, &mut || deadline.keep_waiting()) {
+                Ok(console) => console,
+                Err((error, transport, memory)) => {
+                    if let Some(memory) = memory {
+                        // SAFETY: `VirtioConsole::new` hands the memory back only when the device
+                        // never had it or was reset after.
+                        unsafe { memory.free() };
+                    }
+                    give_back_transport(&node.identity, transport);
+                    return Err(ProbeError::Refused(error.description()));
                 }
-                give_back_transport(&node.identity, transport);
-                return Err(ProbeError::Refused(error.description()));
-            }
-        };
+            };
         if console.name() != agent_channel::PORT_NAME {
             return Err(ProbeError::Refused(
                 "its port is not named org.eggos.mcp, the agent channel's name",
             ));
         }
-        let interrupting =
-            connect_interrupt(probe, id, console.transport(), &agent_channel::DEVICE_EVENTS)
-                .is_ok();
+        let interrupting = connect_interrupt(
+            probe,
+            id,
+            console.transport(),
+            &agent_channel::DEVICE_EVENTS,
+        )
+        .is_ok();
         if interrupting {
             console.enable_interrupts();
         }
@@ -1092,9 +1096,7 @@ mod entropy {
     /// no lock held.
     pub fn read_random(bytes: &mut [u8], deadline: &mut Deadline) -> Option<usize> {
         let mut rng = RNG.lock().take()?;
-        let events = INTERRUPTING
-            .load(Ordering::Acquire)
-            .then_some(&RNG_EVENTS);
+        let events = INTERRUPTING.load(Ordering::Acquire).then_some(&RNG_EVENTS);
         let read = rng.read(bytes, &mut waiting_for(events, deadline)).ok();
         *RNG.lock() = Some(rng);
         read

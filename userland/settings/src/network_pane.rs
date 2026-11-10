@@ -122,8 +122,7 @@ pub fn hardware_text(adapter: &InterfaceStatus) -> Line {
     let _ = write!(
         line,
         "Hardware address {}{DOT}MTU {}",
-        adapter.mac,
-        adapter.mtu
+        adapter.mac, adapter.mtu
     );
     line
 }
@@ -196,10 +195,7 @@ impl NetworkPane {
                 .expect("the Settings window fits its tree")
         };
         let mut widgets = [add(at(PADDING, HEADING_TOP), Kind::heading(title)); WIDGETS];
-        widgets[ADAPTER_LINE] = add(
-            at(PADDING, row_top(0)),
-            Kind::label(ETHERNET, Token::Text),
-        );
+        widgets[ADAPTER_LINE] = add(at(PADDING, row_top(0)), Kind::label(ETHERNET, Token::Text));
         widgets[STATE_VALUE] = add(
             Place::right(PADDING, row_top(0)),
             Kind::label("", Token::Text),

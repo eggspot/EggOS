@@ -290,7 +290,9 @@ fn verdict(arch: &str, console: &str, ports: &Ports, clean_exit: bool) -> Result
         }
     }
     if !clean_exit {
-        return Err(format!("{arch}: QEMU did not exit cleanly after `poweroff`"));
+        return Err(format!(
+            "{arch}: QEMU did not exit cleanly after `poweroff`"
+        ));
     }
     Ok(())
 }
@@ -301,10 +303,7 @@ fn type_line(boot: &mut Boot<'_>, line: &[u8]) -> Result<(), String> {
         .write_all(line)
         .and_then(|()| boot.keyboard.flush());
     typed.map_err(|e| {
-        let message = format!(
-            "{}: could not type on the console: {e}",
-            boot.arch.name
-        );
+        let message = format!("{}: could not type on the console: {e}", boot.arch.name);
         boot.fail(message)
     })
 }
@@ -425,7 +424,9 @@ mod tests {
         assert_eq!(get(trusted_port, &roots, now), Ok(wanted));
         assert_eq!(
             get(untrusted_port, &roots, now),
-            Err(client::Error::Certificate(CertificateError::UntrustedIssuer))
+            Err(client::Error::Certificate(
+                CertificateError::UntrustedIssuer
+            ))
         );
         assert_eq!(
             get(trusted_port, &roots, now + 2 * VALIDITY_MARGIN_SECONDS),

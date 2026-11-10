@@ -17,7 +17,7 @@ use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
 use crate::objc::weak::{objc_destroy_weak, objc_init_weak, objc_load_weak_retained};
-use crate::objc::{Runtime, methods, sel, send, send1, send_bool};
+use crate::objc::{Runtime, methods, sel, send, send_bool, send1};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[repr(C)]
@@ -373,13 +373,7 @@ extern "C" fn post_notification_name(_: Id, _: Sel, name: Id, sender: Id) {
     post_named(name, sender, core::ptr::null_mut());
 }
 
-extern "C" fn post_notification_name_user_info(
-    _: Id,
-    _: Sel,
-    name: Id,
-    sender: Id,
-    user_info: Id,
-) {
+extern "C" fn post_notification_name_user_info(_: Id, _: Sel, name: Id, sender: Id, user_info: Id) {
     post_named(name, sender, user_info);
 }
 

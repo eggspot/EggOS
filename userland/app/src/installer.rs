@@ -1882,9 +1882,7 @@ pub fn preview(files: &mut impl Files, plan: &Plan) -> Result<Preview, Problem> 
         Ok(_) => return Err(Problem::Failed(Errno::ENOTDIR)),
         Err(error) => return Err(Problem::from_errno(error)),
     }
-    files
-        .may_write(APPLICATIONS)
-        .map_err(Problem::from_errno)?;
+    files.may_write(APPLICATIONS).map_err(Problem::from_errno)?;
     let folder = app_folder(plan.name.as_bytes()).ok_or(Problem::PathTooLong)?;
     if plan.leftover {
         files

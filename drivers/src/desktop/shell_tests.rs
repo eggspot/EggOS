@@ -499,7 +499,12 @@ fn the_switch_key_s_hint_shows_the_layout_s_title_for_one_second() {
     assert!(desktop.notice_area().is_none());
     key(&mut desktop, key::LEFT_SUPER, true, Modifiers::SUPER);
     desktop.show_layout_hint("German", &mut damage);
-    key(&mut desktop, key::LEFT_SUPER, false, Modifiers::from_bits(0));
+    key(
+        &mut desktop,
+        key::LEFT_SUPER,
+        false,
+        Modifiers::from_bits(0),
+    );
     assert!(!desktop.launcher_open());
 }
 

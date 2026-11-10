@@ -35,9 +35,9 @@ const CR_TO_GREEN: i32 = 46_802;
 const CB_TO_BLUE: i32 = 116_130;
 
 const ZIGZAG: [usize; 64] = [
-    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27,
-    20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58,
-    59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
 const BASIS: [[i32; 4]; 8] = [
@@ -210,7 +210,8 @@ impl<'a> Bits<'a> {
             let code = (self.buffer >> (64 - length)) as i32;
             if code <= table.max_code[length] {
                 self.consume(length as u32);
-                let at = usize::try_from(code + table.offset[length]).map_err(|_| Error::Corrupt)?;
+                let at =
+                    usize::try_from(code + table.offset[length]).map_err(|_| Error::Corrupt)?;
                 return table.values.get(at).copied().ok_or(Error::Corrupt);
             }
         }
@@ -351,7 +352,9 @@ fn saturated(value: i32) -> i16 {
 }
 
 fn sample(value: i32) -> u8 {
-    ((value + (1 << 14)) >> 15).saturating_add(128).clamp(0, 255) as u8
+    ((value + (1 << 14)) >> 15)
+        .saturating_add(128)
+        .clamp(0, 255) as u8
 }
 
 fn idct(input: &[i32; 64], plane: &mut [u8], at: usize, stride: usize) {
@@ -473,7 +476,9 @@ fn ac_first(
         let Some(&at) = ZIGZAG.get(k) else {
             return Err(Error::Corrupt);
         };
-        let value = bits.extend(size)?.clamp(-COEFFICIENT_LIMIT, COEFFICIENT_LIMIT);
+        let value = bits
+            .extend(size)?
+            .clamp(-COEFFICIENT_LIMIT, COEFFICIENT_LIMIT);
         coefficients[at] = saturated(value << spectral.low);
         k += 1;
     }
@@ -575,7 +580,13 @@ fn decode_block(
             let table = part.dc.ok_or(Error::Corrupt)?;
             let mut prediction = component.prediction;
             let coefficients = component.coefficients_of(block_x, block_y);
-            dc_first(bits, table, &mut prediction, spectral.low, &mut coefficients[0])?;
+            dc_first(
+                bits,
+                table,
+                &mut prediction,
+                spectral.low,
+                &mut coefficients[0],
+            )?;
             component.prediction = prediction;
         }
         Pass::DcRefine => {
@@ -586,12 +597,24 @@ fn decode_block(
         Pass::AcFirst => {
             let table = part.ac.ok_or(Error::Corrupt)?;
             let coefficients = component.coefficients_of(block_x, block_y);
-            ac_first(bits, table, spectral, &mut progress.end_of_bands, coefficients)?;
+            ac_first(
+                bits,
+                table,
+                spectral,
+                &mut progress.end_of_bands,
+                coefficients,
+            )?;
         }
         Pass::AcRefine => {
             let table = part.ac.ok_or(Error::Corrupt)?;
             let coefficients = component.coefficients_of(block_x, block_y);
-            ac_refine(bits, table, spectral, &mut progress.end_of_bands, coefficients)?;
+            ac_refine(
+                bits,
+                table,
+                spectral,
+                &mut progress.end_of_bands,
+                coefficients,
+            )?;
         }
     }
     Ok(())
@@ -979,11 +1002,7 @@ fn upsample_row(
 }
 
 fn ycc(luma: u8, blue: u8, red: u8) -> (u8, u8, u8) {
-    let (luma, blue, red) = (
-        i32::from(luma),
-        i32::from(blue) - 128,
-        i32::from(red) - 128,
-    );
+    let (luma, blue, red) = (i32::from(luma), i32::from(blue) - 128, i32::from(red) - 128);
     let channel = |value: i32| value.clamp(0, 255) as u8;
     (
         channel(luma + ((CR_TO_RED * red + FIXED_ONE_HALF) >> 16)),

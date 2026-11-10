@@ -493,7 +493,10 @@ impl<'b> NibArchive<'b, '_> {
     /// The objects whose parent is the root (File's Owner): the nib's top-level objects, in
     /// the order the nib lists them, the root itself left out.
     pub fn top_level_objects(&self, data: &ObjectData) -> impl Iterator<Item = usize> {
-        let keys = data.objects_keys.into_iter().flat_map(|keys| self.members(keys));
+        let keys = data
+            .objects_keys
+            .into_iter()
+            .flat_map(|keys| self.members(keys));
         let values = data
             .objects_values
             .into_iter()
@@ -563,17 +566,22 @@ mod tests {
             varint(&mut object_table, value_count);
             varint(&mut object_table, fields.len());
             for (key, value) in fields {
-                let index = keys.iter().position(|known| known == key).unwrap_or_else(|| {
-                    keys.push(key);
-                    keys.len() - 1
-                });
+                let index = keys
+                    .iter()
+                    .position(|known| known == key)
+                    .unwrap_or_else(|| {
+                        keys.push(key);
+                        keys.len() - 1
+                    });
                 varint(&mut value_table, index);
                 match value {
                     Put::Int(number) => {
                         value_table.push(kind::INT64);
                         value_table.extend_from_slice(&number.to_le_bytes());
                     }
-                    Put::Bool(flag) => value_table.push(if *flag { kind::TRUE } else { kind::FALSE }),
+                    Put::Bool(flag) => {
+                        value_table.push(if *flag { kind::TRUE } else { kind::FALSE })
+                    }
                     Put::Double(number) => {
                         value_table.push(kind::DOUBLE);
                         value_table.extend_from_slice(&number.to_le_bytes());
@@ -628,7 +636,10 @@ mod tests {
         bytes
     }
 
-    fn with_archive<R>(bytes: &[u8], work: impl FnOnce(NibArchive<'_, '_>) -> R) -> Result<R, NibError> {
+    fn with_archive<R>(
+        bytes: &[u8],
+        work: impl FnOnce(NibArchive<'_, '_>) -> R,
+    ) -> Result<R, NibError> {
         let counts = counts(bytes)?;
         let mut objects = vec![ObjectEntry::default(); counts.objects];
         let mut keys = vec![Span::default(); counts.keys];
@@ -661,7 +672,13 @@ mod tests {
         write(
             &classes,
             &[
-                (0, vec![("IB.objectdata", Put::Object(1)), ("IB.systemFontUpdateVersion", Put::Int(1))]),
+                (
+                    0,
+                    vec![
+                        ("IB.objectdata", Put::Object(1)),
+                        ("IB.systemFontUpdateVersion", Put::Int(1)),
+                    ],
+                ),
                 (
                     1,
                     vec![
@@ -674,14 +691,54 @@ mod tests {
                 (2, vec![("NSClassName", Put::Object(3))]),
                 string("NSApplication"),
                 (2, vec![("NSClassName", Put::Object(9))]),
-                (4, vec![("NSInlinedValue", Put::Bool(false)), ("UINibEncoderEmptyKey", Put::Object(6)), ("UINibEncoderEmptyKey", Put::Object(8))]),
-                (5, vec![("NSSource", Put::Object(2)), ("NSDestination", Put::Object(4)), ("NSLabel", Put::Object(7))]),
+                (
+                    4,
+                    vec![
+                        ("NSInlinedValue", Put::Bool(false)),
+                        ("UINibEncoderEmptyKey", Put::Object(6)),
+                        ("UINibEncoderEmptyKey", Put::Object(8)),
+                    ],
+                ),
+                (
+                    5,
+                    vec![
+                        ("NSSource", Put::Object(2)),
+                        ("NSDestination", Put::Object(4)),
+                        ("NSLabel", Put::Object(7)),
+                    ],
+                ),
                 string("delegate"),
-                (6, vec![("NSSource", Put::Object(12)), ("NSLabel", Put::Object(13)), ("NSDouble", Put::Double(0.5)), ("NSNothing", Put::Nil)]),
+                (
+                    6,
+                    vec![
+                        ("NSSource", Put::Object(12)),
+                        ("NSLabel", Put::Object(13)),
+                        ("NSDouble", Put::Double(0.5)),
+                        ("NSNothing", Put::Nil),
+                    ],
+                ),
                 string("NibDelegate"),
-                (4, vec![("UINibEncoderEmptyKey", Put::Object(4)), ("UINibEncoderEmptyKey", Put::Object(12))]),
-                (4, vec![("UINibEncoderEmptyKey", Put::Object(2)), ("UINibEncoderEmptyKey", Put::Object(2))]),
-                (7, vec![("NSWindowRect", Put::Object(14)), ("NSWindowStyleMask", Put::Int(7))]),
+                (
+                    4,
+                    vec![
+                        ("UINibEncoderEmptyKey", Put::Object(4)),
+                        ("UINibEncoderEmptyKey", Put::Object(12)),
+                    ],
+                ),
+                (
+                    4,
+                    vec![
+                        ("UINibEncoderEmptyKey", Put::Object(2)),
+                        ("UINibEncoderEmptyKey", Put::Object(2)),
+                    ],
+                ),
+                (
+                    7,
+                    vec![
+                        ("NSWindowRect", Put::Object(14)),
+                        ("NSWindowStyleMask", Put::Int(7)),
+                    ],
+                ),
                 string("terminate:"),
                 string("{{200, 300}, {320, 120}}"),
             ],
@@ -695,20 +752,37 @@ mod tests {
             assert_eq!(archive.object_count(), 15);
             let data = archive.object_data().unwrap();
             assert_eq!(data.root, 2);
-            assert_eq!(archive.string(data.root, b"NSClassName"), Some(&b"NSApplication"[..]));
+            assert_eq!(
+                archive.string(data.root, b"NSClassName"),
+                Some(&b"NSApplication"[..])
+            );
             assert_eq!(archive.integer(0, b"IB.systemFontUpdateVersion"), Some(1));
             assert_eq!(
                 archive.connection(6),
-                Some(Connection::Outlet { source: 2, destination: 4, name: b"delegate" })
+                Some(Connection::Outlet {
+                    source: 2,
+                    destination: 4,
+                    name: b"delegate"
+                })
             );
             assert_eq!(
                 archive.connection(8),
-                Some(Connection::Action { source: 12, destination: None, action: b"terminate:" })
+                Some(Connection::Action {
+                    source: 12,
+                    destination: None,
+                    action: b"terminate:"
+                })
             );
             assert_eq!(archive.field(8, b"NSDouble"), Some(NibValue::Real(0.5)));
             assert_eq!(archive.field(8, b"NSNothing"), Some(NibValue::Nil));
-            assert_eq!(archive.field(5, b"NSInlinedValue"), Some(NibValue::Boolean(false)));
-            assert_eq!(archive.top_level_objects(&data).collect::<Vec<_>>(), [4, 12]);
+            assert_eq!(
+                archive.field(5, b"NSInlinedValue"),
+                Some(NibValue::Boolean(false))
+            );
+            assert_eq!(
+                archive.top_level_objects(&data).collect::<Vec<_>>(),
+                [4, 12]
+            );
             assert_eq!(archive.class_name(12), Some(&b"NSWindowTemplate"[..]));
             let rect = archive.string(12, b"NSWindowRect").unwrap();
             assert_eq!(numbers::<4>(rect), Some([200.0, 300.0, 320.0, 120.0]));
@@ -748,7 +822,10 @@ mod tests {
             }
         }
         let dangling = write(&["NSObject"], &[(0, vec![("x", Put::Object(9))])]);
-        assert_eq!(with_archive(&dangling, |_| ()).err(), Some(NibError::Damaged));
+        assert_eq!(
+            with_archive(&dangling, |_| ()).err(),
+            Some(NibError::Damaged)
+        );
     }
 
     #[test]
@@ -762,7 +839,10 @@ mod tests {
 
     #[test]
     fn a_nib_ibtool_compiles_from_our_xib_reads_back() {
-        let xib = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/macos-nib/MainMenu.xib");
+        let xib = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/macos-nib/MainMenu.xib"
+        );
         let output = std::env::temp_dir().join(format!("eggos-mac-nib-{}.nib", std::process::id()));
         let compiled = std::process::Command::new("xcrun")
             .args(["ibtool", "--compile"])
@@ -777,7 +857,10 @@ mod tests {
         let bytes = std::fs::read(&output).unwrap();
         with_archive(&bytes, |archive| {
             let data = archive.object_data().unwrap();
-            assert_eq!(archive.string(data.root, b"NSClassName"), Some(&b"NSApplication"[..]));
+            assert_eq!(
+                archive.string(data.root, b"NSClassName"),
+                Some(&b"NSApplication"[..])
+            );
             let top: Vec<_> = archive
                 .top_level_objects(&data)
                 .filter_map(|object| archive.class_name(object))
@@ -787,7 +870,10 @@ mod tests {
             let field = (0..archive.object_count())
                 .find(|&object| archive.class_name(object) == Some(&b"NSTextField"[..]))
                 .unwrap();
-            assert_eq!(archive.field(field, b"NSEnabled"), Some(NibValue::Boolean(true)));
+            assert_eq!(
+                archive.field(field, b"NSEnabled"),
+                Some(NibValue::Boolean(true))
+            );
             let connections: Vec<_> = archive
                 .members(data.connections.unwrap())
                 .filter_map(|member| match member {
@@ -797,15 +883,26 @@ mod tests {
                 .collect();
             assert!(connections.iter().any(|connection| matches!(
                 connection,
-                Connection::Outlet { name: b"delegate", .. }
+                Connection::Outlet {
+                    name: b"delegate",
+                    ..
+                }
             )));
             assert!(connections.iter().any(|connection| matches!(
                 connection,
-                Connection::Action { action: b"greet:", destination: Some(_), .. }
+                Connection::Action {
+                    action: b"greet:",
+                    destination: Some(_),
+                    ..
+                }
             )));
             assert!(connections.iter().any(|connection| matches!(
                 connection,
-                Connection::Action { action: b"terminate:", destination: None, .. }
+                Connection::Action {
+                    action: b"terminate:",
+                    destination: None,
+                    ..
+                }
             )));
         })
         .unwrap();

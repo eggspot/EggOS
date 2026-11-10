@@ -116,7 +116,9 @@ pub fn agentlog<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         None => 0,
     };
     let start = skip.max(usize::try_from(after.unwrap_or(0)).unwrap_or(usize::MAX));
-    let limit = page.limit.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX));
+    let limit = page
+        .limit
+        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX));
     let mut seen = 0usize;
     let mut shown = 0usize;
     let mut more = false;

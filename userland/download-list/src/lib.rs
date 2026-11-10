@@ -135,7 +135,11 @@ impl Writer<'_> {
         self.put(key)?;
         self.put(b"=")?;
         for &byte in value {
-            self.put(&[if byte < b' ' || byte == 0x7f { b'?' } else { byte }])?;
+            self.put(&[if byte < b' ' || byte == 0x7f {
+                b'?'
+            } else {
+                byte
+            }])?;
         }
         self.put(b"\n")
     }

@@ -38,7 +38,10 @@ fn decoded(bytes: &[u8]) -> Image {
 }
 
 fn difference(ours: &Image, reference: &Image) -> (f64, u32) {
-    assert_eq!((ours.width, ours.height), (reference.width, reference.height));
+    assert_eq!(
+        (ours.width, ours.height),
+        (reference.width, reference.height)
+    );
     let (mut total, mut largest) = (0u64, 0u32);
     for (&a, &b) in ours.pixels.iter().zip(&reference.pixels) {
         for shift in [0, 8, 16] {
@@ -107,7 +110,10 @@ fn formats_are_told_apart_by_their_first_bytes() {
     assert_eq!(sniff(&icon_file(1, (0, 0))), Some(Format::Icon));
     assert_eq!(sniff(&icon_file(2, (1, 0))), Some(Format::Cursor));
     assert_eq!(sniff(b"plain text"), None);
-    assert_eq!(decode(b"plain text", &Limits::DEFAULT), Err(Error::UnknownFormat));
+    assert_eq!(
+        decode(b"plain text", &Limits::DEFAULT),
+        Err(Error::UnknownFormat)
+    );
 }
 
 #[test]
@@ -116,7 +122,10 @@ fn baseline_jpeg_matches_a_reference_decoder() {
         &decoded(BASELINE_444_RESTART),
         &decoded(BASELINE_444_RESTART_DECODED),
     );
-    assert!(mean < 1.5 && largest <= 24, "4:4:4 off by {mean} on average, {largest} at most");
+    assert!(
+        mean < 1.5 && largest <= 24,
+        "4:4:4 off by {mean} on average, {largest} at most"
+    );
     let (mean, _) = difference(&decoded(BASELINE_420), &decoded(BASELINE_420_DECODED));
     assert!(mean < 4.0, "4:2:0 off by {mean} on average");
 }
@@ -131,12 +140,18 @@ fn progressive_jpeg_matches_a_reference_decoder_and_its_baseline_twin() {
         &decoded(PROGRESSIVE_422_RESTART),
         &decoded(PROGRESSIVE_422_RESTART_DECODED),
     );
-    assert!(mean < 4.0, "progressive 4:2:2 with restarts off by {mean} on average");
+    assert!(
+        mean < 4.0,
+        "progressive 4:2:2 with restarts off by {mean} on average"
+    );
     let (mean, largest) = difference(
         &decoded(GREY_PROGRESSIVE),
         &decoded(GREY_PROGRESSIVE_DECODED),
     );
-    assert!(mean < 1.5 && largest <= 24, "grey off by {mean} on average, {largest} at most");
+    assert!(
+        mean < 1.5 && largest <= 24,
+        "grey off by {mean} on average, {largest} at most"
+    );
 }
 
 #[test]
@@ -163,10 +178,20 @@ fn gif_matches_its_reference_and_keeps_wide_codes() {
 fn animated_gif_frames_follow_their_disposal() {
     let animation = decode_animation(ANIMATED_GIF, &Limits::DEFAULT).unwrap();
     assert_eq!(animation.loop_count, Some(0));
-    let delays: Vec<u32> = animation.frames.iter().map(|frame| frame.delay_ms).collect();
+    let delays: Vec<u32> = animation
+        .frames
+        .iter()
+        .map(|frame| frame.delay_ms)
+        .collect();
     assert_eq!(delays, [100, 200, 0, 0]);
     let at = |frame: usize, x: u32, y: u32| animation.frames[frame].image.pixel(x, y).unwrap();
-    assert!(animation.frames[0].image.pixels.iter().all(|&pixel| pixel == RED));
+    assert!(
+        animation.frames[0]
+            .image
+            .pixels
+            .iter()
+            .all(|&pixel| pixel == RED)
+    );
     assert_eq!(at(1, 2, 1), GREEN);
     assert_eq!(at(1, 4, 1), RED);
     assert_eq!(at(1, 5, 2), GREEN);
@@ -184,7 +209,10 @@ fn animated_gif_frames_follow_their_disposal() {
         max_frames: 2,
         ..Limits::DEFAULT
     };
-    assert_eq!(decode_animation(ANIMATED_GIF, &two).unwrap().frames.len(), 2);
+    assert_eq!(
+        decode_animation(ANIMATED_GIF, &two).unwrap().frames.len(),
+        2
+    );
 }
 
 #[test]
@@ -226,7 +254,10 @@ fn icons_and_cursors_list_and_mask_their_images() {
     let image = decoded(&icon);
     assert_eq!(image.pixels, [RED, GREEN, BLUE, 0]);
     assert_eq!(decode_icon_entry(&icon, 0, &Limits::DEFAULT), Ok(image));
-    assert_eq!(decode_icon_entry(&icon, 1, &Limits::DEFAULT), Err(Error::Corrupt));
+    assert_eq!(
+        decode_icon_entry(&icon, 1, &Limits::DEFAULT),
+        Err(Error::Corrupt)
+    );
     let cursor = icon_file(2, (1, 0));
     assert_eq!(icon_entries(&cursor).unwrap()[0].hotspot, Some((1, 0)));
 }
@@ -237,7 +268,13 @@ fn limits_refuse_large_images_in_every_format() {
         max_side: 8,
         ..Limits::DEFAULT
     };
-    for bytes in [PATTERN, BASELINE_420, PROGRESSIVE_420, GRADIENT_GIF, TIFF_NONE] {
+    for bytes in [
+        PATTERN,
+        BASELINE_420,
+        PROGRESSIVE_420,
+        GRADIENT_GIF,
+        TIFF_NONE,
+    ] {
         assert_eq!(decode(bytes, &tiny), Err(Error::TooLarge));
     }
     let few = Limits {

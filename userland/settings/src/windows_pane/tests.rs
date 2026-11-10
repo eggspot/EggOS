@@ -243,7 +243,10 @@ fn the_windows_row_shows_only_with_the_layer_and_its_words_find_it() {
     window.show_windows_layer(true);
     click(&mut window);
     assert_eq!(window.pane(), WINDOWS);
-    assert_eq!(window.show_windows_layer(false), Some(Request::ReadComponents));
+    assert_eq!(
+        window.show_windows_layer(false),
+        Some(Request::ReadComponents)
+    );
     assert_eq!(window.pane(), COMPONENTS);
 }
 
@@ -319,10 +322,7 @@ fn a_key_opens_by_enter_or_by_its_typed_path_and_shows_its_values() {
             .contains(&String::from("        + AutoHotkey"))
     );
     go_to(&mut window, "HKCU\\Software\\Nothing");
-    assert_eq!(
-        status(&window),
-        "No such key: HKCU\\Software\\Nothing."
-    );
+    assert_eq!(status(&window), "No such key: HKCU\\Software\\Nothing.");
     assert_eq!(window.windows_pane().selected_path(), AUTOHOTKEY);
 }
 
@@ -337,8 +337,14 @@ fn editing_a_number_switches_bases_checks_it_and_saves_it_through_the_registry()
     press(&mut window, key::DOWN);
     assert_eq!(press(&mut window, key::ENTER), None);
     assert!(window.windows_pane().panel_open());
-    assert_eq!(rect(&window, widgets.edit_panel), Rect::new(208, 70, 400, 208));
-    assert_eq!(window.widgets().text_of(widgets.edit_title), Some("Edit Count"));
+    assert_eq!(
+        rect(&window, widgets.edit_panel),
+        Rect::new(208, 70, 400, 208)
+    );
+    assert_eq!(
+        window.widgets().text_of(widgets.edit_title),
+        Some("Edit Count")
+    );
     assert_eq!(window.widgets().text_of(widgets.edit_field), Some("2a"));
     assert_eq!(window.widgets().selected(widgets.edit_bases), Some(0));
     window.tree().set_selected(widgets.edit_bases, 1);
@@ -357,13 +363,19 @@ fn editing_a_number_switches_bases_checks_it_and_saves_it_through_the_registry()
     let writes = store.0.borrow().writes;
     press(&mut window, key::ENTER);
     assert!(!window.windows_pane().panel_open());
-    assert_eq!(value_rows(&window)[2], cells("Count", "REG_DWORD", "0x0000002b (43)"));
+    assert_eq!(
+        value_rows(&window)[2],
+        cells("Count", "REG_DWORD", "0x0000002b (43)")
+    );
     assert_eq!(status(&window), "Saved Count.");
     assert_eq!(store.0.borrow().writes, writes + 1);
     let saved = registry_of(&store)
         .value(&path(AUTOHOTKEY), &utf16("Count"))
         .unwrap();
-    assert_eq!((saved.kind, saved.data), (REG_DWORD, 43u32.to_le_bytes().to_vec()));
+    assert_eq!(
+        (saved.kind, saved.data),
+        (REG_DWORD, 43u32.to_le_bytes().to_vec())
+    );
 }
 
 #[test]
@@ -373,7 +385,10 @@ fn new_keys_and_values_are_checked_then_made() {
     go_to(&mut window, AUTOHOTKEY);
     let widgets = ids(&window);
     activate(&mut window, widgets.new_key);
-    assert_eq!(rect(&window, widgets.name_panel), Rect::new(208, 88, 400, 172));
+    assert_eq!(
+        rect(&window, widgets.name_panel),
+        Rect::new(208, 88, 400, 172)
+    );
     assert!(!window.widgets().is_enabled(widgets.name_create));
     replace_text(&mut window, widgets.name_field, "Set\\tings");
     assert_eq!(
@@ -402,21 +417,25 @@ fn new_keys_and_values_are_checked_then_made() {
 
     go_to(&mut window, AUTOHOTKEY);
     activate(&mut window, widgets.new_value);
-    assert_eq!(rect(&window, widgets.name_panel), Rect::new(208, 70, 400, 208));
+    assert_eq!(
+        rect(&window, widgets.name_panel),
+        Rect::new(208, 70, 400, 208)
+    );
     replace_text(&mut window, widgets.name_field, "Flag");
     window.tree().set_selected(widgets.name_type, 3);
     window.respond(Response::Chosen(widgets.name_type, 3), 0);
     window.tree().set_focus(Some(widgets.name_field), 0);
     press(&mut window, key::ENTER);
     assert!(window.windows_pane().panel_open());
-    assert_eq!(window.widgets().text_of(widgets.edit_title), Some("Edit Flag"));
+    assert_eq!(
+        window.widgets().text_of(widgets.edit_title),
+        Some("Edit Flag")
+    );
     assert_eq!(window.widgets().focus(), Some(widgets.edit_field));
     press(&mut window, key::ESC);
     press(&mut window, key::ESC);
     assert!(!window.windows_pane().panel_open());
-    assert!(
-        value_rows(&window).contains(&cells("Flag", "REG_DWORD", "0x00000000 (0)"))
-    );
+    assert!(value_rows(&window).contains(&cells("Flag", "REG_DWORD", "0x00000000 (0)")));
     assert_eq!(status(&window), "Created Flag with no data.");
 }
 
@@ -428,7 +447,10 @@ fn deleting_a_key_asks_first_then_selects_its_parent() {
     let widgets = ids(&window);
     window.tree().set_focus(Some(widgets.keys), 0);
     press(&mut window, key::DELETE);
-    assert_eq!(rect(&window, widgets.confirm_panel), Rect::new(208, 98, 400, 152));
+    assert_eq!(
+        rect(&window, widgets.confirm_panel),
+        Rect::new(208, 98, 400, 152)
+    );
     assert_eq!(
         [
             widgets.confirm_title,
@@ -475,12 +497,18 @@ fn the_machine_s_keys_are_read_only_for_a_user_but_their_path_copies() {
         assert!(!window.widgets().is_enabled(id));
     }
     assert_eq!(status(&window), MACHINE_WIDE_LINE);
-    assert_eq!(activate(&mut window, widgets.copy), Some(Request::CopyToClipboard));
+    assert_eq!(
+        activate(&mut window, widgets.copy),
+        Some(Request::CopyToClipboard)
+    );
     assert_eq!(
         window.windows_pane().to_copy(),
         "HKEY_LOCAL_MACHINE\\Software\\Vendor"
     );
-    assert_eq!(status(&window), "Copied HKEY_LOCAL_MACHINE\\Software\\Vendor.");
+    assert_eq!(
+        status(&window),
+        "Copied HKEY_LOCAL_MACHINE\\Software\\Vendor."
+    );
 }
 
 #[test]
@@ -516,7 +544,10 @@ fn a_write_that_fails_keeps_the_panel_open_with_the_reason() {
     window.tree().set_focus(Some(widgets.values), 0);
     press(&mut window, key::END);
     press(&mut window, key::ENTER);
-    assert_eq!(window.widgets().text_of(widgets.edit_title), Some("Edit Version"));
+    assert_eq!(
+        window.widgets().text_of(widgets.edit_title),
+        Some("Edit Version")
+    );
     store.0.borrow_mut().disk_full = true;
     activate(&mut window, widgets.edit_save);
     assert!(window.windows_pane().panel_open());

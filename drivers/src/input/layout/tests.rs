@@ -314,8 +314,26 @@ fn the_twenty_layouts_are_in_the_table_s_order() {
     assert_eq!(
         names,
         [
-            "us", "us-intl", "us-mac", "gb", "us-dvorak", "us-colemak", "dk", "fi", "fr", "be",
-            "ca", "de", "ch", "it", "no", "br", "pt", "es", "latam", "se",
+            "us",
+            "us-intl",
+            "us-mac",
+            "gb",
+            "us-dvorak",
+            "us-colemak",
+            "dk",
+            "fi",
+            "fr",
+            "be",
+            "ca",
+            "de",
+            "ch",
+            "it",
+            "no",
+            "br",
+            "pt",
+            "es",
+            "latam",
+            "se",
         ]
     );
     assert_eq!(named(b"us-mac"), Some(2));
@@ -325,24 +343,39 @@ fn the_twenty_layouts_are_in_the_table_s_order() {
 #[test]
 fn the_new_layouts_type_their_dead_keys() {
     let mut canadian = typist("ca");
-    assert_eq!(typed(&mut canadian, &[(RIGHT_BRACKET, NONE), (C, NONE)]), "ç");
+    assert_eq!(
+        typed(&mut canadian, &[(RIGHT_BRACKET, NONE), (C, NONE)]),
+        "ç"
+    );
     assert_eq!(
         typed(&mut canadian, &[(RIGHT_BRACKET, NONE), (key::SPACE, NONE)]),
         "¸"
     );
-    assert_eq!(typed(&mut canadian, &[(RIGHT_BRACKET, NONE), (K, NONE)]), "¸k");
+    assert_eq!(
+        typed(&mut canadian, &[(RIGHT_BRACKET, NONE), (K, NONE)]),
+        "¸k"
+    );
     let mut portuguese = typist("pt");
     assert_eq!(typed(&mut portuguese, &[(BACKSLASH, NONE), (A, NONE)]), "ã");
     let mut swiss = typist("ch");
     assert_eq!(typed(&mut swiss, &[(RIGHT_BRACKET, NONE), (A, NONE)]), "ä");
     assert_eq!(typed(&mut swiss, &[(RIGHT_BRACKET, NONE), (A, SHIFT)]), "Ä");
     let mut belgian = typist("be");
-    assert_eq!(typed(&mut belgian, &[(APOSTROPHE, ALT_GRAPH), (E, NONE)]), "é");
+    assert_eq!(
+        typed(&mut belgian, &[(APOSTROPHE, ALT_GRAPH), (E, NONE)]),
+        "é"
+    );
     let mut latin_american = typist("latam");
-    assert_eq!(typed(&mut latin_american, &[(LEFT_BRACKET, NONE), (E, NONE)]), "é");
+    assert_eq!(
+        typed(&mut latin_american, &[(LEFT_BRACKET, NONE), (E, NONE)]),
+        "é"
+    );
     let mut international = typist("us-intl");
     assert_eq!(
-        typed(&mut international, &[(APOSTROPHE_ON_US, SHIFT), (Y_ON_US, NONE)]),
+        typed(
+            &mut international,
+            &[(APOSTROPHE_ON_US, SHIFT), (Y_ON_US, NONE)]
+        ),
         "ÿ"
     );
 }

@@ -7,9 +7,9 @@
 
 use alloc::vec::Vec;
 use core::fmt::Write;
-use eggos_toolkit::theme::Token;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 
@@ -165,7 +165,13 @@ fn add(
         .expect("the Task Manager fits its tree")
 }
 
-fn label(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, x: i32, y: i32, ink: Token) -> WidgetId {
+fn label(
+    tree: &mut WidgetTree<CAPACITY>,
+    parent: WidgetId,
+    x: i32,
+    y: i32,
+    ink: Token,
+) -> WidgetId {
     add(
         tree,
         Some(parent),

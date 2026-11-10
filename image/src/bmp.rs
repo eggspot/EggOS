@@ -21,9 +21,8 @@ const DEFAULT_32_BIT: [u32; 3] = [0x00ff_0000, 0x0000_ff00, 0x0000_00ff];
 
 pub(crate) fn is_bmp(bytes: &[u8]) -> bool {
     bytes.starts_with(b"BM")
-        && le32(bytes, FILE_HEADER).is_ok_and(|size| {
-            HEADER_SIZES.contains(&size) || size == OS2_HEADER
-        })
+        && le32(bytes, FILE_HEADER)
+            .is_ok_and(|size| HEADER_SIZES.contains(&size) || size == OS2_HEADER)
 }
 
 pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, Error> {

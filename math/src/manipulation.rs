@@ -178,7 +178,11 @@ pub fn ilogb(x: f64) -> i32 {
         return crate::ILOGB_ZERO;
     }
     if field == 0x7ff {
-        return if x.is_nan() { crate::ILOGB_NAN } else { i32::MAX };
+        return if x.is_nan() {
+            crate::ILOGB_NAN
+        } else {
+            i32::MAX
+        };
     }
     if field == 0 {
         return ilogb(x * TWO_POW_54) - 54;

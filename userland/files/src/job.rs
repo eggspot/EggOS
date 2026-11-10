@@ -326,7 +326,9 @@ impl Job {
             Kind::Directory => preview.folders += 1,
             Kind::File => {
                 if copies {
-                    let file = files.open(path.as_bytes()).map_err(|error| (error, *path))?;
+                    let file = files
+                        .open(path.as_bytes())
+                        .map_err(|error| (error, *path))?;
                     files.close(file);
                 }
                 preview.files += 1;
@@ -817,10 +819,7 @@ mod tests {
             })
         );
         let job = Job::delete(&path("/home/root/Work"));
-        assert_eq!(
-            job.preview(&mut files).map(|preview| preview.files),
-            Ok(3)
-        );
+        assert_eq!(job.preview(&mut files).map(|preview| preview.files), Ok(3));
         assert_eq!(files.paths_under("/"), before);
         assert_eq!(files.open_count(), 0);
         let refused = |files: &mut MemoryFiles, job: Job| match job.preview(files) {
@@ -832,10 +831,7 @@ mod tests {
         let job = Job::copy(&path("/home/root/Work"), &path("/home/root/Work/Deep"));
         assert_eq!(refused(&mut files, job).0, Errno::EINVAL);
         let job = Job::copy(&path("/home/root/Work"), &path("/tmp"));
-        assert_eq!(
-            refused(&mut files, job),
-            (Errno::EEXIST, "/tmp".to_owned())
-        );
+        assert_eq!(refused(&mut files, job), (Errno::EEXIST, "/tmp".to_owned()));
         let job = Job::copy(&path("/home/root/Work"), &path("/nowhere/Work"));
         assert_eq!(
             refused(&mut files, job),

@@ -999,12 +999,16 @@ mod tests {
             machine(),
         );
         assert_eq!(status, 0);
-        assert_eq!(
-            fake.sent_input,
-            [[129, KIND_WHEEL, 5, 6, 0, -1i32 as u32]]
-        );
+        assert_eq!(fake.sent_input, [[129, KIND_WHEEL, 5, 6, 0, -1i32 as u32]]);
         let (status, fake) = run(
-            &[c"click", c"129", c"10", c"20", c"--button=right", c"--double"],
+            &[
+                c"click",
+                c"129",
+                c"10",
+                c"20",
+                c"--button=right",
+                c"--double",
+            ],
             machine(),
         );
         assert_eq!(status, 0);
@@ -1031,7 +1035,11 @@ mod tests {
             ),
         ] {
             let (status, fake) = run(arguments, machine());
-            assert_eq!((status, fake.errors().as_str()), (2, error), "{arguments:?}");
+            assert_eq!(
+                (status, fake.errors().as_str()),
+                (2, error),
+                "{arguments:?}"
+            );
             assert!(fake.sent_input.is_empty());
         }
     }

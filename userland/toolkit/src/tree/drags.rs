@@ -414,7 +414,10 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if self.popup.is_some_and(|popup| self.is_within(popup, id)) {
             self.close_popup();
         }
-        if self.pick.is_some_and(|pick| self.is_within(pick.source, id)) {
+        if self
+            .pick
+            .is_some_and(|pick| self.is_within(pick.source, id))
+        {
             self.cancel_drag();
         }
         if self
@@ -423,7 +426,10 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         {
             self.end_column_drag(true);
         }
-        if self.hover.is_some_and(|hover: Target| self.is_within(hover.widget, id)) {
+        if self
+            .hover
+            .is_some_and(|hover: Target| self.is_within(hover.widget, id))
+        {
             self.set_hover(None);
         }
     }

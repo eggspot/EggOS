@@ -188,7 +188,9 @@ fn poll_forever<P: Platform>() {
             DEVICE_EVENTS.wait::<P>(seen, ticks_after::<P>(due));
             continue;
         }
-        thread::sleep::<P>(Duration::from_millis(timers_due.clamp(ACTIVE_POLL_MS, interval)));
+        thread::sleep::<P>(Duration::from_millis(
+            timers_due.clamp(ACTIVE_POLL_MS, interval),
+        ));
     }
 }
 
@@ -270,7 +272,11 @@ fn deliver<P: Platform>(delivery: Delivery<'_>, link_mss: u16) -> bool {
 }
 
 fn indicator_state(interface: &Interface) -> NetworkState {
-    match (interface.is_link_up(), interface.dhcp(), interface.address()) {
+    match (
+        interface.is_link_up(),
+        interface.dhcp(),
+        interface.address(),
+    ) {
         (false, _, _) => NetworkState::CableUnplugged,
         (true, _, Some(address)) => NetworkState::Connected(address.0),
         (true, Dhcp::NoAddress, None) => NetworkState::NoAddress,

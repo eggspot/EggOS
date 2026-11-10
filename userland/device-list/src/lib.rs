@@ -34,7 +34,8 @@ const RECOGNISED: [&str; 8] = [
 
 /// An example of the file on an aarch64 `virt` machine, five devices of which the default
 /// list shows three: what the front-ends' tests read.
-pub const EXAMPLE: &[u8] = b"0\t-\tdevicetree\tserial\tpl011@9000000\tarm,pl011\t-\tunbound\t-\t-\n\
+pub const EXAMPLE: &[u8] =
+    b"0\t-\tdevicetree\tserial\tpl011@9000000\tarm,pl011\t-\tunbound\t-\t-\n\
 1\t-\tdevicetree\tclock\tpl031@9010000\tarm,pl031\tpl031\tbound\tpolled\t-\n\
 2\t-\tdevicetree\tbus\tvirtio_mmio@a000000\tvirtio,mmio\tvirtio-mmio\tbound\t-\t-\n\
 3\t-\tdevicetree\tbus\tvirtio_mmio@a000200\tvirtio,mmio\t-\tunbound\t-\t-\n\

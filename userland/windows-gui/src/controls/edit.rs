@@ -422,7 +422,10 @@ pub fn paint(
         let selected = selection_shown && (start..end).contains(&(first + index));
         let glyph_colour = match selected {
             true => {
-                surface.fill(Rect::sized(x, top, CELL_WIDTH, CELL_HEIGHT), palette.highlight);
+                surface.fill(
+                    Rect::sized(x, top, CELL_WIDTH, CELL_HEIGHT),
+                    palette.highlight,
+                );
                 palette.highlight_text
             }
             false => colour,
@@ -605,7 +608,15 @@ mod tests {
         let mut star = vec![0u32; 8 * 16];
         let mut star_surface = Surface::new(&mut star, 8, 16).unwrap();
         star_surface.fill(Rect::new(0, 0, 8, 16), 0x00ff_ffff);
-        text::glyph(&mut star_surface, 0, 0, font::glyph_id(0x2a), false, 0, None);
+        text::glyph(
+            &mut star_surface,
+            0,
+            0,
+            font::glyph_id(0x2a),
+            false,
+            0,
+            None,
+        );
         for y in 0..16 {
             for x in 0..8 {
                 assert_eq!(surface.get(4 + x, 4 + y), star_surface.get(x, y));
@@ -639,14 +650,26 @@ mod tests {
             enabled: true,
             hovered: false,
         };
-        paint(&mut surface, Rect::new(0, 0, 100, 24), &edit, focused, &LIGHT);
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 100, 24),
+            &edit,
+            focused,
+            &LIGHT,
+        );
         assert_eq!(surface.get(4, 4), Some(LIGHT.highlight));
         assert_eq!(surface.get(13, 4), Some(LIGHT.field_fill));
         let unfocused = EditLook {
             focused: false,
             ..focused
         };
-        paint(&mut surface, Rect::new(0, 0, 100, 24), &edit, unfocused, &LIGHT);
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 100, 24),
+            &edit,
+            unfocused,
+            &LIGHT,
+        );
         assert_eq!(surface.get(4, 4), Some(LIGHT.field_fill));
     }
 
@@ -660,13 +683,25 @@ mod tests {
             enabled: true,
             hovered: true,
         };
-        paint(&mut surface, Rect::new(0, 0, 100, 24), &edit, hovered, &LIGHT);
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 100, 24),
+            &edit,
+            hovered,
+            &LIGHT,
+        );
         assert_eq!(surface.get(0, 0), Some(LIGHT.field_hover_border));
         let focused = EditLook {
             focused: true,
             ..hovered
         };
-        paint(&mut surface, Rect::new(0, 0, 100, 24), &edit, focused, &LIGHT);
+        paint(
+            &mut surface,
+            Rect::new(0, 0, 100, 24),
+            &edit,
+            focused,
+            &LIGHT,
+        );
         assert_eq!(surface.get(0, 0), Some(LIGHT.field_focus_border));
     }
 }

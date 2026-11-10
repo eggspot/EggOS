@@ -1,7 +1,7 @@
 use super::*;
-use alloc::string::String;
 use crate::facts::Facts;
 use crate::settings_window::{ABOUT, DATE_AND_TIME, PANES, SettingsWindow, pane_matches};
+use alloc::string::String;
 use eggos_toolkit::input::{Input, MouseButton};
 
 const ABOUT_ROW_Y: i32 = 44 + (ABOUT as i32 - 1) * 32 + 10;
@@ -59,7 +59,6 @@ fn toggle(window: &mut SettingsWindow) {
         .unwrap();
     click(window, rect.x + 8, rect.y + 8);
 }
-
 
 #[test]
 fn about_shows_the_devices_people_recognise_in_the_lists_order_and_words() {
@@ -134,7 +133,11 @@ fn a_default_view_that_shows_everything_disables_the_box() {
     let only = b"0\t-\tvirtio\tdisplay\tgpu\tvirtio gpu\tvirtio-gpu\tbound\tinterrupts\t-\n";
     let window = opened(Ok(&only[..]));
     assert_eq!(window.about_pane().shown(), [0]);
-    assert!(!window.widgets().is_enabled(window.about_pane().show_all_box()));
+    assert!(
+        !window
+            .widgets()
+            .is_enabled(window.about_pane().show_all_box())
+    );
     let window = opened(Ok(&b""[..]));
     assert_eq!(table_of(&window).empty_text, NONE_BY_DEFAULT);
 }

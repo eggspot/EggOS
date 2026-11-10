@@ -591,11 +591,11 @@ pub const NOUN_VERBS: [(&str, &[&str]); 7] = [
 /// definition all the same (the spec's list, checked against the code).
 pub const KEPT_NAMES: [&str; 54] = [
     "agent", "agentlog", "app", "cat", "chmod", "clip", "cp", "date", "device", "df", "disk",
-    "download", "echo", "edit", "false", "fetch", "free", "getprop", "grep", "halt", "head", "help",
-    "hwclock", "ip", "kill", "ln", "logcat", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff",
-    "ps", "readlink", "reboot", "rm", "setprop", "settings", "sleep", "stty", "sync", "tail",
-    "taskset", "tee", "terminal", "touch", "trash", "true", "uname", "uptime", "wc", "windows",
-    "wm",
+    "download", "echo", "edit", "false", "fetch", "free", "getprop", "grep", "halt", "head",
+    "help", "hwclock", "ip", "kill", "ln", "logcat", "ls", "mkdir", "mv", "nslookup", "ping",
+    "poweroff", "ps", "readlink", "reboot", "rm", "setprop", "settings", "sleep", "stty", "sync",
+    "tail", "taskset", "tee", "terminal", "touch", "trash", "true", "uname", "uptime", "wc",
+    "windows", "wm",
 ];
 
 /// `eggsh`'s built-ins: CLI only, defined in [`shell::SHELL_COMMANDS`] for the docs and the

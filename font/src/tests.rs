@@ -328,16 +328,14 @@ fn egg_mono_draws_latin_extended_a_from_the_design_file() {
     assert!(covers(0x141));
     assert!(!covers(0x180));
     assert_eq!(glyph_rows(0x110), glyph_rows(0xd0));
-    let capital_bodies_kept = |accented: u32, plain: u8| {
-        glyph_rows(accented)[2..=12] == rows(plain)[2..=12]
-    };
+    let capital_bodies_kept =
+        |accented: u32, plain: u8| glyph_rows(accented)[2..=12] == rows(plain)[2..=12];
     assert!(capital_bodies_kept(0x100, b'A'));
     assert!(capital_bodies_kept(0x160, b'S'));
     assert!(capital_bodies_kept(0x178, b'Y'));
     assert!(capital_bodies_kept(0x104, b'A'));
-    let small_bodies_kept = |accented: u32, plain: u8| {
-        glyph_rows(accented)[5..=12] == rows(plain)[5..=12]
-    };
+    let small_bodies_kept =
+        |accented: u32, plain: u8| glyph_rows(accented)[5..=12] == rows(plain)[5..=12];
     assert!(small_bodies_kept(0x101, b'a'));
     assert!(small_bodies_kept(0x161, b's'));
     assert!(small_bodies_kept(0x17e, b'z'));
@@ -374,7 +372,8 @@ fn folding_forgives_case_and_accents_both_ways() {
         for query in ["f", "EDIT", "xt e", "q", "Terminals", ""] {
             assert_eq!(
                 contains_folded(text, query),
-                text.to_ascii_lowercase().contains(&query.to_ascii_lowercase()),
+                text.to_ascii_lowercase()
+                    .contains(&query.to_ascii_lowercase()),
                 "{text} {query}"
             );
         }

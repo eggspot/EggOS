@@ -313,7 +313,8 @@ impl ScrollBar {
 
     /// The position the dragged thumb shows (`SIF_TRACKPOS`), `nPos` when not dragging.
     pub fn track_position(&self) -> i32 {
-        self.track.map_or(self.info.position, |track| track.position)
+        self.track
+            .map_or(self.info.position, |track| track.position)
     }
 
     /// `SetScrollInfo`: the parts of `given` that `fields` names replace the bar's; the
@@ -491,12 +492,21 @@ pub fn paint(
             (false, false) => {}
         }
         if arrow >= WIDTH {
-            draw_chevron(surface, button.left + at.0, button.top + at.1, chevron, colour);
+            draw_chevron(
+                surface,
+                button.left + at.0,
+                button.top + at.1,
+                chevron,
+                colour,
+            );
         }
     }
     if let Some((start, size)) = placed {
         let thumb_rect = along(start, size);
-        let fill = match (bar.pressed, look.hovered && bar.hovered == Some(Part::Thumb)) {
+        let fill = match (
+            bar.pressed,
+            look.hovered && bar.hovered == Some(Part::Thumb),
+        ) {
             (Some(Part::Thumb), _) => palette.scroll_thumb_pressed,
             (_, true) => palette.scroll_thumb_hover,
             _ => palette.scroll_thumb,
@@ -609,9 +619,15 @@ mod tests {
                 None
             ]
         );
-        assert_eq!(bar.button_down(150, 200).map(|s| s.code), Some(request::PAGE_DOWN));
+        assert_eq!(
+            bar.button_down(150, 200).map(|s| s.code),
+            Some(request::PAGE_DOWN)
+        );
         bar.button_up();
-        assert_eq!(bar.button_down(199, 200).map(|s| s.code), Some(request::LINE_DOWN));
+        assert_eq!(
+            bar.button_down(199, 200).map(|s| s.code),
+            Some(request::LINE_DOWN)
+        );
         bar.button_up();
         assert_eq!(bar.pressed(), None);
     }
@@ -672,7 +688,13 @@ mod tests {
             focused: false,
             hovered: false,
         };
-        paint(&mut surface, Rect::sized(0, 0, 200, 16), &bar, disabled, &LIGHT);
+        paint(
+            &mut surface,
+            Rect::sized(0, 0, 200, 16),
+            &bar,
+            disabled,
+            &LIGHT,
+        );
         assert_eq!(surface.get(17, 1), Some(LIGHT.scroll_track));
         assert_eq!(surface.get(0, 0), Some(LIGHT.scroll_track));
     }

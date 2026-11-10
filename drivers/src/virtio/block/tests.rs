@@ -47,8 +47,7 @@ impl FakeDisk {
         let mut batch = 0;
         while let Some(head) = device.next_available() {
             batch += 1;
-            self.largest_batch
-                .set(self.largest_batch.get().max(batch));
+            self.largest_batch.set(self.largest_batch.get().max(batch));
             let (header, header_len, flags, data_index) = device.descriptor(head);
             assert_eq!(header_len as usize, HEADER_BYTES);
             assert_eq!(flags, DESCRIPTOR_NEXT);

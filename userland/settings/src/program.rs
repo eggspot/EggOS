@@ -5,17 +5,14 @@
 use crate::disk_system::LinuxDisks;
 use alloc::boxed::Box;
 use alloc::string::String;
+use core::ffi::CStr;
+use core::fmt::Write;
 use eggos_app::files::Files;
 use eggos_app::linux::LinuxFiles;
 use eggos_components::command as component_command;
 use eggos_components::index::Component;
 use eggos_components::manager::{self as component_manager, Failure, Refusal};
-use eggos_settings::components_pane::ComponentsRead;
-use eggos_settings::windows_pane::FileStore;
-use core::ffi::CStr;
-use core::fmt::Write;
 use eggos_eggfs::CheckMode;
-use eggos_net::status::{self as network_status, InterfaceStatus};
 use eggos_files::storage;
 use eggos_mcp::audit::calls::LogFiles;
 use eggos_mcp::grant_files::{self, GrantFiles, SaveError};
@@ -24,7 +21,9 @@ use eggos_mcp::grant_prompt::{
 };
 use eggos_mcp::grants::{self, AgentId, Grant};
 use eggos_mcp::pairing::{self, PairingFiles};
+use eggos_net::status::{self as network_status, InterfaceStatus};
 use eggos_runtime::errno::Errno;
+use eggos_runtime::process::{self, ChildStack, Spawn};
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{call, number, write_all};
 use eggos_settings::activity::read_activity;
@@ -32,6 +31,7 @@ use eggos_settings::agents_pane::GrantsRead;
 use eggos_settings::command::{
     self, MAX_ARGUMENTS, PairingAsked, USAGE, USAGE_STATUS, WindowAsked,
 };
+use eggos_settings::components_pane::ComponentsRead;
 use eggos_settings::facts::Facts;
 use eggos_settings::first_run::{self, FirstRunRequest, FirstRunWindow};
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
@@ -45,19 +45,19 @@ use eggos_settings::settings_window::{
 use eggos_settings::task_manager::{
     self, ProcessFact, Request as TaskRequest, Snapshot, TaskManager, WindowFact,
 };
-use eggos_runtime::process::{self, ChildStack, Spawn};
+use eggos_settings::windows_pane::FileStore;
 use eggos_settings_file::clock_sync::{self, Record};
 use eggos_settings_file::{
     self as settings_file, DIRECTORIES, DisplayAccessibility, InputPreferences, KeyAccessibility,
     LARGEST, PATH, TEMPORARY_PATH_CAPACITY, TIME_AUTOMATIC,
 };
-use eggos_toolkit::theme::{Theme, palette_index, theme_of};
 use eggos_toolkit::application::{self, Application, View};
 use eggos_toolkit::canvas::Canvas;
 use eggos_toolkit::damage::Damage;
 use eggos_toolkit::elements::{Action, Outcome, TreeWriter};
 use eggos_toolkit::input::Input;
 use eggos_toolkit::text::Text;
+use eggos_toolkit::theme::{Theme, palette_index, theme_of};
 use eggos_toolkit::tree::{PointerShape, Response, WidgetTree};
 use eggos_toolkit::window::{
     FIXED_SIZE, Keyboard, PERSON_INPUT_ONLY, Window, WindowServer, now_ms,
@@ -526,8 +526,8 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         .map_or(saved, |profile| profile as usize);
     let area = server.and_then(|server| server.work_area().ok());
     let saved_layouts = settings_file::keyboard_layout_set(&file[..length]);
-    let saved_layout = settings_file::keyboard_layout(&file[..length])
-        .unwrap_or_else(|| saved_layouts.keeping(0));
+    let saved_layout =
+        settings_file::keyboard_layout(&file[..length]).unwrap_or_else(|| saved_layouts.keeping(0));
     let keyboard = server.and_then(|server| server.keyboard().ok());
     Facts {
         version: env!("CARGO_PKG_VERSION"),
@@ -737,7 +737,10 @@ fn apply_keyboard(choice: KeyboardChoice, server: Option<&WindowServer>) -> Resu
         KEYBOARD_LAYOUTS_CONTROL,
         choice.layouts.write(&mut layouts).as_bytes(),
     )?;
-    write_file(KEYBOARD_SWITCH_KEY_CONTROL, choice.switch_key.name().as_bytes())?;
+    write_file(
+        KEYBOARD_SWITCH_KEY_CONTROL,
+        choice.switch_key.name().as_bytes(),
+    )?;
     write_file(KEYBOARD_LAYOUT_CONTROL, in_force.as_bytes())
 }
 
@@ -854,7 +857,11 @@ fn saved_display(file: &[u8], server: Option<&WindowServer>) -> DisplayAccessibi
 
 fn choose_theme(theme: Theme, server: Option<&WindowServer>) {
     if let Err(error) = apply_theme(theme, server) {
-        say_error(&[APPEARANCE_THEME.as_bytes(), b": not applied: ", error.message()]);
+        say_error(&[
+            APPEARANCE_THEME.as_bytes(),
+            b": not applied: ",
+            error.message(),
+        ]);
     }
     if let Err(error) = save_through_a_temporary_file(APPEARANCE_THEME, theme.name()) {
         say_error(&[PATH.as_bytes(), b": ", error.message()]);
@@ -1262,8 +1269,7 @@ impl Application<CAPACITY> for Settings {
             Some(Request::ReadDevices) => {
                 let mut text = alloc::vec![0u8; DEVICES_TEXT_CAPACITY];
                 let read = read_file(eggos_device_list::DEVICES_FILE, &mut text);
-                self.window
-                    .show_devices(read.map(|length| &text[..length]));
+                self.window.show_devices(read.map(|length| &text[..length]));
             }
             Some(Request::BeginPairing) => {
                 if let Some((agent, name)) = self.window.to_pair() {
@@ -1321,7 +1327,9 @@ impl Application<CAPACITY> for Settings {
             }
             _ => None,
         };
-        let reap_tick = self.clock_sync_child.map(|_| now_ms.wrapping_add(SECOND_MS));
+        let reap_tick = self
+            .clock_sync_child
+            .map(|_| now_ms.wrapping_add(SECOND_MS));
         pane_tick.or(reap_tick)
     }
 
@@ -1387,8 +1395,7 @@ impl Settings {
             Some(Request::ReadDevices) => {
                 let mut text = alloc::vec![0u8; DEVICES_TEXT_CAPACITY];
                 let read = read_file(eggos_device_list::DEVICES_FILE, &mut text);
-                self.window
-                    .show_devices(read.map(|length| &text[..length]));
+                self.window.show_devices(read.map(|length| &text[..length]));
             }
             Some(Request::ReadComponents) => self.window.show_components(components_read()),
             _ if pane == NETWORK => self.window.show_network_adapter(network_adapter()),

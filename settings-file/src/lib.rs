@@ -277,7 +277,13 @@ const fn entry(
 /// `/dev/window`'s `GET_KEYBOARD_LAYOUT` and `SET_KEYBOARD_LAYOUT` and in the kernel's table.
 pub const KEYBOARD_LAYOUTS: [KeyboardLayout; 20] = [
     entry("us", "English (US)", "US", false, ""),
-    entry("us-intl", "English (US, international)", "UI", true, "´ ` ^ ¨ ~"),
+    entry(
+        "us-intl",
+        "English (US, international)",
+        "UI",
+        true,
+        "´ ` ^ ¨ ~",
+    ),
     entry("us-mac", "English (US, Mac)", "UM", true, "´ ` ^ ¨ ~"),
     entry("gb", "English (UK)", "GB", true, ""),
     entry("us-dvorak", "English (US, Dvorak)", "DV", false, ""),
@@ -383,7 +389,8 @@ impl KeyboardLayoutSet {
         let mut start = 0;
         for name in value.split(|&byte| byte == b',') {
             let end = start + name.len();
-            let number = keyboard_layout_named(name).ok_or(LayoutSetRefusal::Unknown { start, end });
+            let number =
+                keyboard_layout_named(name).ok_or(LayoutSetRefusal::Unknown { start, end });
             start = end + 1;
             let number = number?;
             if numbers[..count.min(MAX_KEYBOARD_LAYOUTS)].contains(&number) {
@@ -746,7 +753,10 @@ mod tests {
         assert!(!time_automatic(off, b""));
         assert!(time_automatic(off, on));
         assert!(!time_automatic(on, off));
-        assert!(time_automatic(b"eggos-settings 1\ntime.automatic=maybe\n", b""));
+        assert!(time_automatic(
+            b"eggos-settings 1\ntime.automatic=maybe\n",
+            b""
+        ));
     }
 
     #[test]
@@ -960,8 +970,26 @@ accessibility.high_contrast=true
         assert_eq!(keyboard_layout_named(b"us-mac"), Some(2));
         assert_eq!(keyboard_layout_named(b"gb"), Some(3));
         let ids: [&str; 20] = [
-            "us", "us-intl", "us-mac", "gb", "us-dvorak", "us-colemak", "dk", "fi", "fr", "be",
-            "ca", "de", "ch", "it", "no", "br", "pt", "es", "latam", "se",
+            "us",
+            "us-intl",
+            "us-mac",
+            "gb",
+            "us-dvorak",
+            "us-colemak",
+            "dk",
+            "fi",
+            "fr",
+            "be",
+            "ca",
+            "de",
+            "ch",
+            "it",
+            "no",
+            "br",
+            "pt",
+            "es",
+            "latam",
+            "se",
         ];
         for (index, layout) in KEYBOARD_LAYOUTS.iter().enumerate() {
             assert_eq!(layout.name, ids[index]);
@@ -992,11 +1020,17 @@ accessibility.high_contrast=true
             KeyboardLayoutSet::parse(b"us,xx"),
             Err(LayoutSetRefusal::Unknown { start: 3, end: 5 })
         );
-        assert_eq!(keyboard_layout_set(b"eggos-settings 1\n"), KeyboardLayoutSet::DEFAULT);
+        assert_eq!(
+            keyboard_layout_set(b"eggos-settings 1\n"),
+            KeyboardLayoutSet::DEFAULT
+        );
         let mut text = [0u8; KEYBOARD_LAYOUT_SET_CAPACITY];
         assert_eq!(set.write(&mut text), "us,de");
         let longest = KeyboardLayoutSet::of(&[4, 5, 1, 2]).unwrap();
-        assert_eq!(longest.write(&mut text), "us-dvorak,us-colemak,us-intl,us-mac");
+        assert_eq!(
+            longest.write(&mut text),
+            "us-dvorak,us-colemak,us-intl,us-mac"
+        );
     }
 
     #[test]
@@ -1005,13 +1039,16 @@ accessibility.high_contrast=true
         let mut text = [0u8; KEYBOARD_LAYOUT_SET_CAPACITY];
         let us_de = KeyboardLayoutSet::parse(b"us,de").unwrap();
         assert_eq!(
-            us_de.with_chosen(named(b"fr"), named(b"us")).write(&mut text),
+            us_de
+                .with_chosen(named(b"fr"), named(b"us"))
+                .write(&mut text),
             "us,de,fr"
         );
         let full = KeyboardLayoutSet::parse(b"us,de,fr,es").unwrap();
         assert_eq!(full.with_chosen(named(b"fr"), named(b"de")), full);
         assert_eq!(
-            full.with_chosen(named(b"it"), named(b"de")).write(&mut text),
+            full.with_chosen(named(b"it"), named(b"de"))
+                .write(&mut text),
             "us,it,fr,es"
         );
         let one = KeyboardLayoutSet::DEFAULT;
@@ -1028,7 +1065,10 @@ accessibility.high_contrast=true
 
     #[test]
     fn the_switch_key_is_the_profile_s_unless_chosen() {
-        assert_eq!(keyboard_switch_key(b"eggos-settings 1\n"), SwitchKey::Profile);
+        assert_eq!(
+            keyboard_switch_key(b"eggos-settings 1\n"),
+            SwitchKey::Profile
+        );
         assert_eq!(
             keyboard_switch_key(b"eggos-settings 1\nkeyboard.switch_key=alt+shift\n"),
             SwitchKey::AltShift

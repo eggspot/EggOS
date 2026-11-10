@@ -91,7 +91,10 @@ impl Desktop {
         let mut x = strip.x;
         for (modifier, latched, locked) in STICKY_CHIPS {
             let bits = modifier.bits();
-            let word = match (self.sticky.locked & bits != 0, self.sticky.latched & bits != 0) {
+            let word = match (
+                self.sticky.locked & bits != 0,
+                self.sticky.latched & bits != 0,
+            ) {
                 (true, _) => locked,
                 (false, true) => latched,
                 (false, false) => continue,

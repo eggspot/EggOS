@@ -757,7 +757,8 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
                 Action::None
             }
             InputEvent::LayoutChanged(number) => {
-                if let Some(layout) = eggos_settings_file::KEYBOARD_LAYOUTS.get(usize::from(number)) {
+                if let Some(layout) = eggos_settings_file::KEYBOARD_LAYOUTS.get(usize::from(number))
+                {
                     desktop.show_layout_hint(layout.title, damage);
                 }
                 Action::None

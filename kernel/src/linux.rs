@@ -1285,7 +1285,10 @@ fn write_out_of_line<P: Platform>(
                 ControlFlow::Continue(())
             }
             FileKind::Snapshot(snapshot)
-                if snapshot.node.file_system().is_node_writable(snapshot.node.id()) =>
+                if snapshot
+                    .node
+                    .file_system()
+                    .is_node_writable(snapshot.node.id()) =>
             {
                 let node = snapshot.node;
                 let allowed = proc::may_write_control_files(

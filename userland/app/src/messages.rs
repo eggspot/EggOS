@@ -378,7 +378,10 @@ mod tests {
             "would install win-paint (Windows program, x86_64) from /media/host/win-paint.exe \
              into /Applications/win-paint: 1 file, 1 byte"
         );
-        let two = Preview { files: 2, bytes: 70 };
+        let two = Preview {
+            files: 2,
+            bytes: 70,
+        };
         assert!(
             would_install(&plan, two, Architecture::Aarch64)
                 .as_str()

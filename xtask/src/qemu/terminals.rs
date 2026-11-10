@@ -77,7 +77,9 @@ fn verdict(arch: &str, console: &str, windows: &[(u32, String)]) -> Result<(), S
     let (columns, rows) = grid_of(screen)
         .ok_or_else(|| format!("{arch}: the `screen` value `{screen}` is no grid"))?;
     if screen == FIRST_GRID {
-        return Err(format!("{arch}: the resized terminal's grid is still {screen}"));
+        return Err(format!(
+            "{arch}: the resized terminal's grid is still {screen}"
+        ));
     }
     let stty = format!("{rows} {columns}");
     let rows_text: Vec<&str> = console

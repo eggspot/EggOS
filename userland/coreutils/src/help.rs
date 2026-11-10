@@ -78,7 +78,9 @@ fn command_key(index: usize, out: &mut [u8; MAX_KEY_BYTES]) -> usize {
 }
 
 fn list<S: System>(output: &mut Output<S>, json: bool, page: &Page) -> i32 {
-    let limit = page.limit.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX));
+    let limit = page
+        .limit
+        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX));
     let after = page.after();
     for (index, command) in COMMANDS.iter().enumerate() {
         if page.is_paged() {
@@ -583,7 +585,8 @@ mod tests {
     }
 
     fn names(line: &str, words: &str) -> bool {
-        line.strip_prefix(words).is_some_and(|rest| rest.starts_with(' '))
+        line.strip_prefix(words)
+            .is_some_and(|rest| rest.starts_with(' '))
     }
 
     #[test]
@@ -595,7 +598,12 @@ mod tests {
         assert_eq!(first.len(), 3, "{output}");
         let positions: Vec<usize> = first
             .iter()
-            .map(|words| COMMANDS.iter().position(|c| c.words.join(" ") == *words).unwrap())
+            .map(|words| {
+                COMMANDS
+                    .iter()
+                    .position(|c| c.words.join(" ") == *words)
+                    .unwrap()
+            })
             .collect();
         assert!(
             positions.windows(2).all(|pair| pair[0] < pair[1]),

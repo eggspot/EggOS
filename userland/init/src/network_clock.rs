@@ -68,7 +68,9 @@ impl Schedule {
 /// address.
 pub fn has_address(interfaces: &[u8]) -> bool {
     interfaces.split(|&byte| byte == b'\n').any(|line| {
-        let mut fields = line.split(|&byte| byte == b' ').filter(|field| !field.is_empty());
+        let mut fields = line
+            .split(|&byte| byte == b' ')
+            .filter(|field| !field.is_empty());
         let name = fields.next();
         let subnet = fields.nth(4);
         name.is_some_and(|name| name != b"lo") && subnet.is_some_and(|subnet| subnet != b"-")
@@ -88,7 +90,10 @@ mod tests {
             SYNC_ARGUMENTS[0],
             SYNC_ARGUMENTS[1],
         ] {
-            assert_eq!(text.iter().position(|&byte| byte == 0), Some(text.len() - 1));
+            assert_eq!(
+                text.iter().position(|&byte| byte == 0),
+                Some(text.len() - 1)
+            );
         }
         assert_eq!(
             &SESSION_SETTINGS[..SESSION_SETTINGS.len() - 1],

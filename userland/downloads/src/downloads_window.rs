@@ -157,11 +157,7 @@ pub struct DownloadsWindow {
     next_refresh_ms: u32,
 }
 
-fn add(
-    tree: &mut WidgetTree<CAPACITY>,
-    parent: Option<WidgetId>,
-    kind: Kind,
-) -> WidgetId {
+fn add(tree: &mut WidgetTree<CAPACITY>, parent: Option<WidgetId>, kind: Kind) -> WidgetId {
     tree.add(parent, Place::fill(), kind)
         .expect("the Downloads window fits its tree")
 }
@@ -488,9 +484,10 @@ impl DownloadsWindow {
                     .set_column_width(table, 0, room - PHONE_STATE_WIDTH);
                 self.tree.set_column_width(table, 1, PHONE_STATE_WIDTH);
             }
-            false => self
-                .tree
-                .set_column_width(table, 0, room - SIZE_WIDTH - STATE_WIDTH - FROM_WIDTH),
+            false => {
+                self.tree
+                    .set_column_width(table, 0, room - SIZE_WIDTH - STATE_WIDTH - FROM_WIDTH)
+            }
         }
         self.show_line();
     }

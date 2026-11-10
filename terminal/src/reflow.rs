@@ -15,7 +15,10 @@ impl<'a> Source<'a> {
             (terminal.history_line(index), terminal.history_flags[slot])
         } else {
             let row = (index - terminal.history_length) as u16;
-            (terminal.line_of(MAIN, row), terminal.row_flags[MAIN][usize::from(row)])
+            (
+                terminal.line_of(MAIN, row),
+                terminal.row_flags[MAIN][usize::from(row)],
+            )
         }
     }
 

@@ -155,8 +155,8 @@ mod manager {
 
         fn push(&mut self, name: &[u8]) -> bool {
             let saved = self.length;
-            let joined = (self.text().ends_with(b"/") || self.push_bytes(b"/"))
-                && self.push_bytes(name);
+            let joined =
+                (self.text().ends_with(b"/") || self.push_bytes(b"/")) && self.push_bytes(name);
             if !joined {
                 self.truncate(saved);
             }
@@ -295,8 +295,7 @@ mod manager {
                 // SAFETY: the block holds `DIRECTORY_BUFFER` bytes, the kernel filled `end`,
                 // and they stay until the next read, which needs `self` borrowed again.
                 let filled: &[u8] = unsafe { core::slice::from_raw_parts(self.buffer, self.end) };
-                let Some((_, _, _, name, record)) = darwin::linux_dirent(&filled[self.at..])
-                else {
+                let Some((_, _, _, name, record)) = darwin::linux_dirent(&filled[self.at..]) else {
                     return Err(Errno::EIO);
                 };
                 if record == 0 {
@@ -352,9 +351,9 @@ mod manager {
         let flags = linux_flags(
             WRITE_ONLY | darwin::open::CREAT | darwin::open::EXCL | darwin::open::CLOEXEC,
         );
-        let output = match flags.and_then(|flags| {
-            linux::open(target.with_nul(), flags, (mode & PERMISSIONS) as usize)
-        }) {
+        let output = match flags
+            .and_then(|flags| linux::open(target.with_nul(), flags, (mode & PERMISSIONS) as usize))
+        {
             Ok(fd) => fd,
             Err(errno) => {
                 let _ = linux::close(input);
@@ -486,7 +485,10 @@ mod manager {
         }
         let posix = darwin::darwin_errno(errno.0) as isize;
         let underlying = new_error(POSIX_ERROR_DOMAIN, posix, core::ptr::null_mut());
-        let mut keys = [constants::string(UNDERLYING_ERROR_KEY), core::ptr::null_mut()];
+        let mut keys = [
+            constants::string(UNDERLYING_ERROR_KEY),
+            core::ptr::null_mut(),
+        ];
         let mut objects = [underlying, core::ptr::null_mut()];
         let mut count = 1;
         if !path.is_null() {
@@ -585,7 +587,9 @@ mod manager {
     }
 
     unsafe extern "C" fn contents_of_folder(_: Id, _: Sel, path: Id, error: *mut Id) -> Id {
-        let result = Path::of(path).ok_or(Errno::ENOENT).and_then(|at| contents_of(&at));
+        let result = Path::of(path)
+            .ok_or(Errno::ENOENT)
+            .and_then(|at| contents_of(&at));
         match result {
             Ok(array) => autoreleased(send(array, sel!("copy"))),
             Err(errno) => {

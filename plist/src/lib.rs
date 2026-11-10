@@ -369,7 +369,13 @@ impl<'b> Iterator for Entries<'b> {
                 let value = table.reference_at(*keys, count.checked_add(*index)?)?;
                 *index += 1;
                 let source = Source::Binary(*table);
-                Some((Object { source, node: key }, Object { source, node: value }))
+                Some((
+                    Object { source, node: key },
+                    Object {
+                        source,
+                        node: value,
+                    },
+                ))
             }
             EntriesInner::Xml(children) => {
                 let bytes = children.bytes();
@@ -379,7 +385,13 @@ impl<'b> Iterator for Entries<'b> {
                 }
                 let value = children.next()?;
                 let source = Source::Xml(bytes);
-                Some((Object { source, node: key }, Object { source, node: value }))
+                Some((
+                    Object { source, node: key },
+                    Object {
+                        source,
+                        node: value,
+                    },
+                ))
             }
         }
     }

@@ -533,8 +533,9 @@ fn show_changed<S: System>(output: &mut Output<S>, settings: &Settings, width: u
         for mode in all_modes().filter(|mode| mode.word == group) {
             let on = settings.has(mode);
             if mode.is_choice() {
-                let sane_choice = all_modes()
-                    .find(|other| other.mask == mode.mask && other.word == mode.word && other.sane == Sane::Set);
+                let sane_choice = all_modes().find(|other| {
+                    other.mask == mode.mask && other.word == mode.word && other.sane == Sane::Set
+                });
                 if on && sane_choice.is_some_and(|sane| sane.bits != mode.bits) {
                     out.item(mode.name.as_bytes());
                 }
@@ -825,7 +826,11 @@ fn change<S: System>(
                     _ => size_changes[1] = Some(SizeChange::Columns(number as u16)),
                 }
             }
-            (false, bare) if CHARACTERS.iter().any(|(known, _, _)| known.as_bytes() == bare) => {
+            (false, bare)
+                if CHARACTERS
+                    .iter()
+                    .any(|(known, _, _)| known.as_bytes() == bare) =>
+            {
                 let Some(text) = value() else {
                     output.coded(&errors::USAGE, &[b"missing argument to '", bare, b"'"]);
                     return FAILURE;
@@ -833,8 +838,9 @@ fn change<S: System>(
                 let Some(character) = parse_character(text) else {
                     return invalid(output, text);
                 };
-                if let Some((_, slot, _)) =
-                    CHARACTERS.iter().find(|(known, _, _)| known.as_bytes() == bare)
+                if let Some((_, slot, _)) = CHARACTERS
+                    .iter()
+                    .find(|(known, _, _)| known.as_bytes() == bare)
                 {
                     settings.characters[*slot] = character;
                 }
@@ -856,7 +862,10 @@ fn change<S: System>(
     }
     if size_changes.iter().any(Option::is_some) {
         let mut size = [0u8; WINDOW_SIZE_SIZE];
-        if let Err(errno) = output.system.device_control(descriptor, TIOCGWINSZ, &mut size) {
+        if let Err(errno) = output
+            .system
+            .device_control(descriptor, TIOCGWINSZ, &mut size)
+        {
             output.error(&[b"'", name, b"': ", errno.message()]);
             return FAILURE;
         }
@@ -866,7 +875,10 @@ fn change<S: System>(
                 SizeChange::Columns(columns) => size[2..4].copy_from_slice(&columns.to_ne_bytes()),
             }
         }
-        if let Err(errno) = output.system.device_control(descriptor, TIOCSWINSZ, &mut size) {
+        if let Err(errno) = output
+            .system
+            .device_control(descriptor, TIOCSWINSZ, &mut size)
+        {
             output.error(&[b"'", name, b"': ", errno.message()]);
             return FAILURE;
         }
@@ -960,7 +972,9 @@ mod tests {
     fn modes_characters_and_the_window_size_are_set() {
         let (status, _, _, fake) = run(
             terminal(),
-            &[c"-echo", c"intr", c"^X", c"erase", c"undef", c"min", c"5", c"cols", c"100"],
+            &[
+                c"-echo", c"intr", c"^X", c"erase", c"undef", c"min", c"5", c"cols", c"100",
+            ],
         );
         assert_eq!(status, 0);
         let terminal = fake.terminal.as_ref().unwrap();
@@ -970,14 +984,20 @@ mod tests {
         assert_eq!(settings.characters[2], DISABLED);
         assert_eq!(settings.characters[VMIN], 5);
         assert_eq!(terminal.window_size(), (24, 100));
-        assert_eq!(terminal.window_size_changes, 1, "SIGWINCH goes to the foreground");
+        assert_eq!(
+            terminal.window_size_changes, 1,
+            "SIGWINCH goes to the foreground"
+        );
     }
 
     #[test]
     fn it_says_what_is_wrong_as_gnu_does() {
         let (status, _, errors, _) = run(Fake::default(), &[c"size"]);
         assert_eq!(status, 1);
-        assert_eq!(errors, "stty: 'standard input': Inappropriate ioctl for device\n");
+        assert_eq!(
+            errors,
+            "stty: 'standard input': Inappropriate ioctl for device\n"
+        );
         let (status, _, errors, _) = run(terminal(), &[c"frob"]);
         assert_eq!(status, 1);
         assert_eq!(errors, "stty: invalid argument 'frob'\n");

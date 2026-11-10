@@ -141,11 +141,17 @@ pub fn dynamic_cast(
 ) -> Option<u64> {
     let locator = locator(memory, object)?;
     let complete = complete_object(memory, object, &locator);
-    let source_offset = object.wrapping_sub(vfptr_offset as u64).wrapping_sub(complete);
+    let source_offset = object
+        .wrapping_sub(vfptr_offset as u64)
+        .wrapping_sub(complete);
     let bases = base_classes(memory, &locator);
     let offsets: Vec<u64> = bases
         .iter()
-        .map(|base| base.displacement.apply(complete, memory).wrapping_sub(complete))
+        .map(|base| {
+            base.displacement
+                .apply(complete, memory)
+                .wrapping_sub(complete)
+        })
         .collect();
     let source_index = (0..bases.len()).find(|index| {
         offsets[*index] == source_offset && same_type(memory, bases[*index].type_descriptor, source)
@@ -335,7 +341,10 @@ mod tests {
             dynamic_cast(&memory, OBJECT_C, 0, a, b_elsewhere),
             Some(OBJECT_C + 8)
         );
-        assert_eq!(dynamic_cast(&memory, OBJECT_C, 0, a, descriptor(TYPE_X)), None);
+        assert_eq!(
+            dynamic_cast(&memory, OBJECT_C, 0, a, descriptor(TYPE_X)),
+            None
+        );
     }
 
     #[test]

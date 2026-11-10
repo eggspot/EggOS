@@ -74,7 +74,11 @@ fn a_dead_key_shows_its_accent_on_the_accent_colour_in_place_of_the_caret() {
     typed(&mut tree, A_KEY, 'a');
     let (x, y) = caret_cell(&tree, id, "a");
     let before = pixels(&tree);
-    assert_eq!(at(&before, x - 1, y + LINE_HEIGHT - 1), DARK.text, "the caret");
+    assert_eq!(
+        at(&before, x - 1, y + LINE_HEIGHT - 1),
+        DARK.text,
+        "the caret"
+    );
     tree.take_damage();
     dead(&mut tree, Some('´'));
     assert_eq!(tree.dead_key(), Some('´'));
@@ -87,7 +91,11 @@ fn a_dead_key_shows_its_accent_on_the_accent_colour_in_place_of_the_caret() {
         at(&shown, cell.right() - 1, y + LINE_HEIGHT - 1),
         DARK.accent
     );
-    assert_ne!(at(&shown, x - 1, y + LINE_HEIGHT - 1), DARK.text, "no caret");
+    assert_ne!(
+        at(&shown, x - 1, y + LINE_HEIGHT - 1),
+        DARK.text,
+        "no caret"
+    );
     let accent_ink = (cell.x..cell.right())
         .flat_map(|column| (cell.y..cell.bottom()).map(move |row| (column, row)))
         .filter(|&(column, row)| at(&shown, column, row) == DARK.icon_dark)
@@ -175,10 +183,7 @@ fn a_text_area_shows_the_accent_at_its_caret() {
     let inner = text_area::inner(rect);
     let x = inner.x + text::width(&"ab"[..caret.caret]);
     let cell = widget::dead_key_cell(x, inner.y, '`');
-    assert_eq!(
-        at(&shown, cell.x, cell.bottom() - 1),
-        DARK.accent
-    );
+    assert_eq!(at(&shown, cell.x, cell.bottom() - 1), DARK.accent);
     assert_ne!(shown, before);
     typed(&mut tree, key::SPACE, '`');
     assert_eq!(tree.dead_key(), None);

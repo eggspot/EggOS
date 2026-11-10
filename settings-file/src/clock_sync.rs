@@ -184,7 +184,10 @@ impl Record {
             Outcome::Unconfirmed => writer.number(b"offset_ms=", self.moved_ms)?,
             _ => {}
         }
-        writer.number(b"unproven_ms=", self.unproven_ms.min(i64::MAX as u64) as i64)?;
+        writer.number(
+            b"unproven_ms=",
+            self.unproven_ms.min(i64::MAX as u64) as i64,
+        )?;
         if !self.reason().is_empty() {
             writer.put(&[b"reason=", self.reason(), b"\n"])?;
         }

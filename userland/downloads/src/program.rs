@@ -138,7 +138,14 @@ impl DownloadSystem for LinuxDownloads {
         let path = with_nul(path);
         let quiet = call(
             number::OPENAT,
-            [AT_FDCWD, NULL_DEVICE.as_ptr() as usize, O_RDWR_CLOEXEC, 0, 0, 0],
+            [
+                AT_FDCWD,
+                NULL_DEVICE.as_ptr() as usize,
+                O_RDWR_CLOEXEC,
+                0,
+                0,
+                0,
+            ],
         );
         let streams = match quiet {
             Ok(descriptor) => [descriptor; 3],

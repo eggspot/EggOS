@@ -301,7 +301,10 @@ impl ToolResult {
     /// data (the items, the capture's sizes, the program's ending), so every successful call
     /// has it.
     pub const fn declares_output_schema(self) -> bool {
-        matches!(self, ToolResult::Items(_) | ToolResult::Image | ToolResult::Run)
+        matches!(
+            self,
+            ToolResult::Items(_) | ToolResult::Image | ToolResult::Run
+        )
     }
 }
 

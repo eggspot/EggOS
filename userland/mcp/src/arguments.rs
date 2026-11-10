@@ -84,8 +84,7 @@ pub const MAX_LINK_TARGET_BYTES: usize = eggos_commands::tools::MAX_LINK_TARGET_
 /// The longest registry key a call names, in bytes (D231).
 pub const MAX_REGISTRY_KEY_BYTES: usize = eggos_commands::tools::MAX_REGISTRY_KEY_BYTES as usize;
 /// The longest registry value name a call names, in bytes (D231).
-pub const MAX_REGISTRY_NAME_BYTES: usize =
-    eggos_commands::tools::MAX_REGISTRY_NAME_BYTES as usize;
+pub const MAX_REGISTRY_NAME_BYTES: usize = eggos_commands::tools::MAX_REGISTRY_NAME_BYTES as usize;
 /// Where a registry tool's value name starts in the content buffer, after its key (D231).
 pub const REGISTRY_NAME_AT: usize = MAX_REGISTRY_KEY_BYTES;
 /// `windows_registry_set`'s types, as the tool and its twin's `--type` name them (D231).
@@ -2342,7 +2341,11 @@ mod tests {
         let (result, _) = checked("folder_create", r#"{"path":"/home/root/d","parents":true}"#);
         assert!(result.unwrap().parents);
         assert_eq!(
-            checked("folder_create", r#"{"path":"/home/root/d","parents":"yes"}"#).0,
+            checked(
+                "folder_create",
+                r#"{"path":"/home/root/d","parents":"yes"}"#
+            )
+            .0,
             Err(ArgumentProblem::WrongType("parents"))
         );
         assert_eq!(

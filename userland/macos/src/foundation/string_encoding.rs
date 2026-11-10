@@ -265,9 +265,21 @@ mod tests {
     #[test]
     fn every_encoding_round_trips() {
         let text = "Egg é \u{1F95A}";
-        for encoding in [UTF8, UTF16, UTF16_BIG, UTF16_LITTLE, UTF32, UTF32_BIG, UTF32_LITTLE] {
+        for encoding in [
+            UTF8,
+            UTF16,
+            UTF16_BIG,
+            UTF16_LITTLE,
+            UTF32,
+            UTF32_BIG,
+            UTF32_LITTLE,
+        ] {
             let bytes = encoded(text, encoding, false).unwrap();
-            assert_eq!(decoded(&bytes, encoding).as_deref(), Some(text), "{encoding:#x}");
+            assert_eq!(
+                decoded(&bytes, encoding).as_deref(),
+                Some(text),
+                "{encoding:#x}"
+            );
         }
         let latin = encoded("café", LATIN1, false).unwrap();
         assert_eq!(latin, b"caf\xe9");

@@ -124,7 +124,9 @@ impl FakeInput {
             let mut bytes = [0u8; 8];
             // SAFETY: a status buffer the driver submitted, inside the test's HostDma, whose
             // device address is its host address.
-            unsafe { std::ptr::copy_nonoverlapping(address.get() as *const u8, bytes.as_mut_ptr(), 8) };
+            unsafe {
+                std::ptr::copy_nonoverlapping(address.get() as *const u8, bytes.as_mut_ptr(), 8)
+            };
             events.push(RawEvent::new(
                 u16::from_le_bytes([bytes[0], bytes[1]]),
                 u16::from_le_bytes([bytes[2], bytes[3]]),
@@ -493,10 +495,7 @@ fn only_the_lights_the_keyboard_has_are_written_and_a_full_queue_is_asked_again(
     assert!(input.set_lock_lights(NUM_ON));
     assert!(input.transport().status_events().is_empty());
     for on in [true, false, true, false] {
-        let lights = LockLights {
-            caps: on,
-            ..NUM_ON
-        };
+        let lights = LockLights { caps: on, ..NUM_ON };
         assert!(input.set_lock_lights(lights));
     }
     let lights = LockLights {

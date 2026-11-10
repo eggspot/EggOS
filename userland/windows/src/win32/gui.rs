@@ -629,7 +629,10 @@ fn input_event(device: &Device, root: usize, thread: u32, input: &Input) -> Opti
             };
         }
         let hovers = is_mouse(number)
-            && !matches!(number, message::MOUSE_WHEEL | message::MOUSE_HORIZONTAL_WHEEL);
+            && !matches!(
+                number,
+                message::MOUSE_WHEEL | message::MOUSE_HORIZONTAL_WHEEL
+            );
         let combo = super::combo_box::input(gui, root, number, wparam, point, input.character);
         if let Some(effect) = combo {
             if hovers {
@@ -691,7 +694,12 @@ fn under_pointer(gui: &Gui, root: usize, point: (i32, i32)) -> Option<(usize, (i
     if point.1 < top.menu_height {
         return None;
     }
-    Some(windows::child_at(&gui.windows, root, point.0, point.1 - top.menu_height))
+    Some(windows::child_at(
+        &gui.windows,
+        root,
+        point.0,
+        point.1 - top.menu_height,
+    ))
 }
 
 fn is_mouse(number: u32) -> bool {

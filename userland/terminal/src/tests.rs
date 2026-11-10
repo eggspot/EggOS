@@ -392,28 +392,44 @@ fn agents_read_the_screen_as_rows_of_text() {
     assert!(contains(b"row 1") && contains(b"eggsh:/# echo hi"));
     assert!(contains(b"row 24"));
     assert_eq!(window.act(2, Action::Invoke), Outcome::NotSupported);
-    assert_eq!(
-        window.act(2 + 24, Action::Invoke),
-        Outcome::NotSupported
-    );
-    assert_eq!(
-        window.act(2 + 25, Action::Invoke),
-        Outcome::NoSuchElement
-    );
+    assert_eq!(window.act(2 + 24, Action::Invoke), Outcome::NotSupported);
+    assert_eq!(window.act(2 + 25, Action::Invoke), Outcome::NoSuchElement);
 }
 
 #[test]
 fn a_drag_selects_boundary_to_boundary_and_a_click_selects_nothing() {
     let mut window = open_window();
-    shell_writes(&mut window, b"\r\n\r\n0123456789abcdefghij\x1b[90mXY\x1b[0m", 1);
+    shell_writes(
+        &mut window,
+        b"\r\n\r\n0123456789abcdefghij\x1b[90mXY\x1b[0m",
+        1,
+    );
     click(&mut window, 8 + 8 * 10 + 3, cell_y(2), 10);
     assert!(window.selection().is_none());
-    assert!(window.handle(button(8 + 8 * 10 + 3, cell_y(2), MouseButton::Left, true), 1000));
+    assert!(window.handle(
+        button(8 + 8 * 10 + 3, cell_y(2), MouseButton::Left, true),
+        1000
+    ));
     assert_eq!(span(&window), ((2, 10), (2, 10)));
-    assert!(window.handle(Input::PointerMove { x: 8 + 8 * 10 + 5, y: cell_y(2) }, 1001));
+    assert!(window.handle(
+        Input::PointerMove {
+            x: 8 + 8 * 10 + 5,
+            y: cell_y(2)
+        },
+        1001
+    ));
     assert_eq!(span(&window), ((2, 10), (2, 11)));
-    assert!(window.handle(Input::PointerMove { x: 8 + 8 * 20 + 3, y: cell_y(2) }, 1002));
-    assert!(window.handle(button(8 + 8 * 20 + 3, cell_y(2), MouseButton::Left, false), 1003));
+    assert!(window.handle(
+        Input::PointerMove {
+            x: 8 + 8 * 20 + 3,
+            y: cell_y(2)
+        },
+        1002
+    ));
+    assert!(window.handle(
+        button(8 + 8 * 20 + 3, cell_y(2), MouseButton::Left, false),
+        1003
+    ));
     assert_eq!(span(&window), ((2, 10), (2, 20)));
     assert_eq!(window.selected_text(), "abcdefghij");
     let rows = described(&window);
@@ -424,7 +440,10 @@ fn a_drag_selects_boundary_to_boundary_and_a_click_selects_nothing() {
     };
     assert!(flagged("row 3"));
     assert!(!flagged("row 2"));
-    assert!(rows.iter().any(|(name, value, _)| name == "selection" && value == "abcdefghij"));
+    assert!(
+        rows.iter()
+            .any(|(name, value, _)| name == "selection" && value == "abcdefghij")
+    );
     window.take_damage();
     assert_eq!(pixel(&window, cell_x(10), 8 + 32), TERM_SELECTION);
     assert_ne!(pixel(&window, cell_x(9), 8 + 32), TERM_SELECTION);
@@ -468,7 +487,10 @@ fn a_double_click_selects_a_word_and_a_drag_after_it_extends_by_words() {
     shell_writes(&mut window, b"ls /home/mea/a.txt x=(1,2)   end", 1);
     double_click(&mut window, 0, 5, 1000);
     assert_eq!(window.selected_text(), "/home/mea/a.txt");
-    assert_eq!(window.selection().map(|selection| selection.mode), Some(SelectionMode::Words));
+    assert_eq!(
+        window.selection().map(|selection| selection.mode),
+        Some(SelectionMode::Words)
+    );
     double_click(&mut window, 0, 19, 2000);
     assert_eq!(window.selected_text(), "x=");
     double_click(&mut window, 0, 21, 3000);
@@ -476,9 +498,21 @@ fn a_double_click_selects_a_word_and_a_drag_after_it_extends_by_words() {
     double_click(&mut window, 0, 27, 4000);
     assert_eq!(span(&window), ((0, 26), (0, 29)));
     click(&mut window, cell_x(19) + 3, cell_y(0), 5000);
-    assert!(window.handle(button(cell_x(19) + 3, cell_y(0), MouseButton::Left, true), 5100));
-    assert!(window.handle(Input::PointerMove { x: cell_x(30) + 3, y: cell_y(0) }, 5101));
-    assert!(window.handle(button(cell_x(30) + 3, cell_y(0), MouseButton::Left, false), 5102));
+    assert!(window.handle(
+        button(cell_x(19) + 3, cell_y(0), MouseButton::Left, true),
+        5100
+    ));
+    assert!(window.handle(
+        Input::PointerMove {
+            x: cell_x(30) + 3,
+            y: cell_y(0)
+        },
+        5101
+    ));
+    assert!(window.handle(
+        button(cell_x(30) + 3, cell_y(0), MouseButton::Left, false),
+        5102
+    ));
     assert_eq!(span(&window), ((0, 19), (0, 32)));
 }
 
@@ -577,7 +611,11 @@ fn a_paste_is_made_safe_bracketed_on_request_and_written_a_chunk_per_room() {
     assert!(window.is_pasting());
     assert!(window.deadline(1).is_some());
     assert!(window.handle(press(30, 0, 'z'), 2));
-    assert_eq!(window.shell().written.len(), 3 * PASTE_CHUNK, "typing waits behind the paste");
+    assert_eq!(
+        window.shell().written.len(),
+        3 * PASTE_CHUNK,
+        "typing waits behind the paste"
+    );
     window.shell_mut().room_for = None;
     window.tick(20);
     assert!(!window.is_pasting());
@@ -714,12 +752,18 @@ fn a_command_that_succeeds_closes_its_window_and_one_that_fails_leaves_a_line() 
     assert!(!window.is_watching_the_shell());
     assert!(window.handle(press(KEY_C, CTRL | SHIFT, 'C'), 3));
     assert!(window.handle(press(KEY_A, CTRL | SHIFT, 'A'), 4));
-    assert!(!window.handle(press(30, 0, 'a'), 5), "a key that would send closes");
+    assert!(
+        !window.handle(press(30, 0, 'a'), 5),
+        "a key that would send closes"
+    );
     let mut window = command_window(ProcessEnd::Signalled(11));
     assert!(window.read_shell(2));
     assert_eq!(row(&window, 2), "[process ended by signal 11 (SIGSEGV)]");
     assert!(window.close_requested(3), "nothing runs: no question");
-    assert_eq!(exit_line(ProcessEnd::Signalled(99)), "[process ended by signal 99]");
+    assert_eq!(
+        exit_line(ProcessEnd::Signalled(99)),
+        "[process ended by signal 99]"
+    );
     let mut window = open_window();
     window.run_command();
     window.shell_mut().program_running = true;
@@ -733,13 +777,22 @@ fn a_command_that_succeeds_closes_its_window_and_one_that_fails_leaves_a_line() 
 
 #[test]
 fn a_command_that_closes_its_side_and_keeps_running_is_waited_for_on_the_tick_never_blocking() {
-    for (end, closes) in [(ProcessEnd::Exited(0), true), (ProcessEnd::Exited(3), false)] {
+    for (end, closes) in [
+        (ProcessEnd::Exited(0), true),
+        (ProcessEnd::Exited(3), false),
+    ] {
         let mut window = command_window(end);
         window.shell_mut().child_running = true;
-        assert!(window.read_shell(2), "the window stays while the program runs");
+        assert!(
+            window.read_shell(2),
+            "the window stays while the program runs"
+        );
         assert_eq!(window.shell_mut().end_asked, 1);
         assert!(!window.is_closing());
-        assert!(!window.is_watching_the_shell(), "no busy loop on the hung-up side");
+        assert!(
+            !window.is_watching_the_shell(),
+            "no busy loop on the hung-up side"
+        );
         assert_eq!(window.deadline(2), Some(2 + PROGRAM_END_CHECK_MS));
         assert!(window.read_shell(3));
         assert_eq!(window.shell_mut().end_asked, 1, "a read does not ask again");
@@ -757,7 +810,10 @@ fn a_command_that_closes_its_side_and_keeps_running_is_waited_for_on_the_tick_ne
         match closes {
             true => {
                 assert!(window.is_closing());
-                assert!(window.is_watching_the_shell(), "the hung-up side wakes the loop");
+                assert!(
+                    window.is_watching_the_shell(),
+                    "the hung-up side wakes the loop"
+                );
                 assert!(!window.read_shell(again + 1), "and the window closes");
             }
             false => {
@@ -792,7 +848,11 @@ fn a_new_size_reflows_the_grid_and_clears_the_selection() {
 #[test]
 fn the_folder_a_shell_reports_is_listed_and_new_windows_open_in_it() {
     let mut window = open_window();
-    assert!(!described(&window).iter().any(|(name, _, _)| name == "folder"));
+    assert!(
+        !described(&window)
+            .iter()
+            .any(|(name, _, _)| name == "folder")
+    );
     shell_writes(&mut window, b"\x1b]7;file:///home/mea/Documents\x07", 1);
     assert!(
         described(&window)

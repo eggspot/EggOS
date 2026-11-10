@@ -284,13 +284,11 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             }
         }
         if tooltip && let Some(parent) = parent {
-            let previous = self
-                .ids()
-                .find(|&id| {
-                    self.node(id).is_some_and(|node| {
-                        node.parent == Some(parent) && matches!(node.kind, Kind::Tooltip(_))
-                    })
-                });
+            let previous = self.ids().find(|&id| {
+                self.node(id).is_some_and(|node| {
+                    node.parent == Some(parent) && matches!(node.kind, Kind::Tooltip(_))
+                })
+            });
             if let Some(previous) = previous {
                 if let Some(node) = self.node_mut(previous) {
                     node.kind = kind;
@@ -757,8 +755,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     } => {
                         let view = widget::viewport(rect, (*content_width, *content_height));
                         let clamped = (*offset).clamp(0, (*content_height - view.height).max(0));
-                        let clamped_x =
-                            (*offset_x).clamp(0, (*content_width - view.width).max(0));
+                        let clamped_x = (*offset_x).clamp(0, (*content_width - view.width).max(0));
                         moved |= clamped != *offset || clamped_x != *offset_x;
                         *offset = clamped;
                         *offset_x = clamped_x;
@@ -783,7 +780,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             && self.focus == Some(id)
             && self.window_focused
             && self.menu_keyboard().is_none()
-            && self.node(id).is_some_and(|node| node.enabled && node.kind.is_text())
+            && self
+                .node(id)
+                .is_some_and(|node| node.enabled && node.kind.is_text())
     }
 
     fn show_dead_key(&mut self, accent: Option<char>) {
@@ -864,7 +863,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         Look {
             hovered: self.landing_hover(id).or(hovered),
             pressed: column.or(thumb).or(pressed),
-            focused: self.window_focused && self.focus == Some(id) && self.menu_keyboard().is_none(),
+            focused: self.window_focused
+                && self.focus == Some(id)
+                && self.menu_keyboard().is_none(),
             enabled: node.enabled,
             caret_shown: self.caret_shown && !self.shows_dead_key(id),
         }
@@ -1204,10 +1205,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     fn focused_field(&self) -> bool {
         self.window_focused
             && self.focus.is_some_and(|id| {
-                matches!(
-                    self.kind(id),
-                    Some(Kind::TextField(_) | Kind::TextArea(_))
-                )
+                matches!(self.kind(id), Some(Kind::TextField(_) | Kind::TextArea(_)))
             })
     }
 
@@ -1479,10 +1477,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         let node = self.node(id)?;
         let rect = node.rect;
         match (&node.kind, horizontal) {
-            (Kind::List(list), false) => Some((
-                list.offset,
-                (list.content_height() - rect.height).max(0),
-            )),
+            (Kind::List(list), false) => {
+                Some((list.offset, (list.content_height() - rect.height).max(0)))
+            }
             (
                 Kind::ScrollView {
                     offset,
@@ -1502,7 +1499,10 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 let view = table.view(rect);
                 Some(match horizontal {
                     true => (table.offset_x, (table.content_width() - view.width).max(0)),
-                    false => (table.offset_y, (table.content_height() - view.height).max(0)),
+                    false => (
+                        table.offset_y,
+                        (table.content_height() - view.height).max(0),
+                    ),
                 })
             }
             (Kind::TextArea(area), false) => {
@@ -1588,7 +1588,10 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 && self.node(id).is_some_and(|node| {
                     matches!(
                         node.kind,
-                        Kind::List(_) | Kind::ScrollView { .. } | Kind::Table(_) | Kind::TextArea(_)
+                        Kind::List(_)
+                            | Kind::ScrollView { .. }
+                            | Kind::Table(_)
+                            | Kind::TextArea(_)
                     ) && node.visible.contains(x, y)
                         && node.rect.contains(x, y)
                 })
@@ -1603,9 +1606,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             return;
         };
         let step = match self.kind(id) {
-            Some(Kind::TextArea(_)) => {
-                widget::TEXT_AREA_WHEEL_LINES * widget::TEXT_AREA_LINE_PITCH
-            }
+            Some(Kind::TextArea(_)) => widget::TEXT_AREA_WHEEL_LINES * widget::TEXT_AREA_LINE_PITCH,
             _ => WHEEL_STEP,
         };
         let wanted = match horizontal {
@@ -1967,7 +1968,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         character: u32,
         time_ms: u32,
     ) -> Response {
-        self.alt_alone = matches!(code, key::LEFT_ALT | key::RIGHT_ALT) && self.menu_bar().is_some();
+        self.alt_alone =
+            matches!(code, key::LEFT_ALT | key::RIGHT_ALT) && self.menu_bar().is_some();
         if code == key::ESC && self.column.is_some() {
             return self.end_column_drag(true);
         }

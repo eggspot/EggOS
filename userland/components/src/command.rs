@@ -123,13 +123,30 @@ pub fn run<F: Files, C: Console>(
             name,
             dry_run,
             json,
-        } => install(files, &mut out, store.as_ref(), context.pid, name, dry_run, json),
+        } => install(
+            files,
+            &mut out,
+            store.as_ref(),
+            context.pid,
+            name,
+            dry_run,
+            json,
+        ),
         Command::Remove {
             name,
             yes,
             dry_run,
             json,
-        } => remove(files, &mut out, store.as_ref(), context.pid, name, yes, dry_run, json),
+        } => remove(
+            files,
+            &mut out,
+            store.as_ref(),
+            context.pid,
+            name,
+            yes,
+            dry_run,
+            json,
+        ),
     }
 }
 
@@ -519,9 +536,7 @@ fn remove<F: Files, C: Console>(
         out.console.write_error(question.as_bytes());
         let mut answer = [0u8; ANSWER_BYTES];
         let length = out.console.read_answer(&mut answer);
-        let answer = core::str::from_utf8(&answer[..length])
-            .unwrap_or("")
-            .trim();
+        let answer = core::str::from_utf8(&answer[..length]).unwrap_or("").trim();
         if !matches!(answer, "y" | "Y" | "yes" | "Yes" | "YES") {
             return out.fail(json, &errors::DECLINED_BY_USER, messages::DECLINED);
         }
@@ -539,9 +554,9 @@ fn remove<F: Files, C: Console>(
         );
     }
     match json {
-        true => out.json(|writer| {
-            write_removed(writer, Some(&component.name), component.size_bytes())
-        }),
+        true => {
+            out.json(|writer| write_removed(writer, Some(&component.name), component.size_bytes()))
+        }
         false => out.say(&messages::removed(&component)),
     }
     0

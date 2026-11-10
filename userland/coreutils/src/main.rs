@@ -25,11 +25,11 @@ mod date;
 #[cfg(any(test, eggos_user))]
 mod device;
 #[cfg(any(test, eggos_user))]
-mod download;
-#[cfg(any(test, eggos_user))]
 mod df;
 #[cfg(any(test, eggos_user))]
 mod disk;
+#[cfg(any(test, eggos_user))]
+mod download;
 #[cfg(any(test, eggos_user))]
 mod echo;
 #[cfg(test)]

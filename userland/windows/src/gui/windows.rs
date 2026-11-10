@@ -672,7 +672,10 @@ pub fn group_of(table: &WindowTable, handle: usize) -> ([usize; MAX_WINDOWS], us
             .get(kid)
             .is_some_and(|window| window.style & WS_GROUP != 0)
     };
-    let first = (0..=at).rev().find(|&index| starts(kids[index])).unwrap_or(0);
+    let first = (0..=at)
+        .rev()
+        .find(|&index| starts(kids[index]))
+        .unwrap_or(0);
     let end = (at + 1..kids.len())
         .find(|&index| starts(kids[index]))
         .unwrap_or(kids.len());

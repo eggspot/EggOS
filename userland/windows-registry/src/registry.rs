@@ -330,8 +330,16 @@ impl<S: Store> Registry<S> {
             subkeys: subkeys.len(),
             values: values.len(),
             longest_subkey: subkeys.iter().map(Vec::len).max().unwrap_or(0),
-            longest_value_name: values.iter().map(|value| value.name.len()).max().unwrap_or(0),
-            longest_data: values.iter().map(|value| value.data.len()).max().unwrap_or(0),
+            longest_value_name: values
+                .iter()
+                .map(|value| value.name.len())
+                .max()
+                .unwrap_or(0),
+            longest_data: values
+                .iter()
+                .map(|value| value.data.len())
+                .max()
+                .unwrap_or(0),
             last_write,
         })
     }
@@ -426,7 +434,11 @@ impl<S: Store> Registry<S> {
         let place = self.write_place(path)?;
         self.change(place.file, |hive, now| {
             let key = ensure_key(&mut hive.root, &place.names, now);
-            match key.values.iter_mut().find(|value| same_name(&value.name, name)) {
+            match key
+                .values
+                .iter_mut()
+                .find(|value| same_name(&value.name, name))
+            {
                 Some(value) => {
                     value.kind = kind;
                     value.data = data;

@@ -153,7 +153,11 @@ fn rest(desktop: &mut Desktop, (x, y): (u32, u32)) {
     let mut damage = Damage::new();
     desktop.set_time(1000);
     desktop.pointer_moved(x, y, &mut damage, &mut DiscardEvents);
-    desktop.tick(1000 + TOOLTIP_DELAY_MS + 100, &mut damage, &mut DiscardEvents);
+    desktop.tick(
+        1000 + TOOLTIP_DELAY_MS + 100,
+        &mut damage,
+        &mut DiscardEvents,
+    );
 }
 
 fn click(desktop: &mut Desktop, (x, y): (u32, u32)) -> Action {
@@ -262,7 +266,10 @@ fn each_state_draws_its_map_on_every_bar_and_the_four_glyphs_differ() {
             hashes.push(fnv(&glyph_pixels(&desktop, 1)));
         }
         for (index, hash) in hashes.iter().enumerate() {
-            assert!(!hashes[..index].contains(hash), "{profile:?}: state {index}");
+            assert!(
+                !hashes[..index].contains(hash),
+                "{profile:?}: state {index}"
+            );
         }
     }
 }
@@ -539,7 +546,10 @@ fn the_keys_reach_the_indicator_in_the_bar_s_order_and_enter_clicks_it() {
         while desktop.panel_focus_ring() != Some(ring) {
             press(&mut desktop, key::RIGHT, Modifiers::NONE);
             steps += 1;
-            assert!(steps < 64, "{profile:?}: the ring never reached the indicator");
+            assert!(
+                steps < 64,
+                "{profile:?}: the ring never reached the indicator"
+            );
         }
         press(&mut desktop, key::RIGHT, Modifiers::NONE);
         assert_eq!(

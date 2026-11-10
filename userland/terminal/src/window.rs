@@ -9,8 +9,7 @@
 use crate::keys::{KeyAction, key_action};
 use crate::paste::{PASTE_CAPACITY, PendingPaste, prepare};
 use crate::selection::{
-    Boundary, DOUBLE_CLICK_MS, Selection, SelectionMode, copied_text, logical_line_at,
-    select_all,
+    Boundary, DOUBLE_CLICK_MS, Selection, SelectionMode, copied_text, logical_line_at, select_all,
 };
 use crate::title::Title;
 use alloc::boxed::Box;
@@ -154,10 +153,37 @@ pub fn grid_for(width: i32, height: i32) -> (u16, u16) {
 /// The name the shell (D181) gives signal `number`, `None` for one it has no name for.
 pub fn signal_name(number: u8) -> Option<&'static str> {
     const NAMES: [&str; 31] = [
-        "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGBUS", "SIGFPE",
-        "SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGSTKFLT",
-        "SIGCHLD", "SIGCONT", "SIGSTOP", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGURG", "SIGXCPU",
-        "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH", "SIGIO", "SIGPWR", "SIGSYS",
+        "SIGHUP",
+        "SIGINT",
+        "SIGQUIT",
+        "SIGILL",
+        "SIGTRAP",
+        "SIGABRT",
+        "SIGBUS",
+        "SIGFPE",
+        "SIGKILL",
+        "SIGUSR1",
+        "SIGSEGV",
+        "SIGUSR2",
+        "SIGPIPE",
+        "SIGALRM",
+        "SIGTERM",
+        "SIGSTKFLT",
+        "SIGCHLD",
+        "SIGCONT",
+        "SIGSTOP",
+        "SIGTSTP",
+        "SIGTTIN",
+        "SIGTTOU",
+        "SIGURG",
+        "SIGXCPU",
+        "SIGXFSZ",
+        "SIGVTALRM",
+        "SIGPROF",
+        "SIGWINCH",
+        "SIGIO",
+        "SIGPWR",
+        "SIGSYS",
     ];
     NAMES.get(usize::from(number).checked_sub(1)?).copied()
 }
@@ -915,7 +941,10 @@ impl<S: Shell> TerminalWindow<S> {
             return self.handle_question(input);
         }
         if let Input::Key {
-            code, modifiers, pressed, ..
+            code,
+            modifiers,
+            pressed,
+            ..
         } = input
         {
             self.shift_held = match is_shift(code) {
@@ -1097,9 +1126,9 @@ impl<S: Shell> TerminalWindow<S> {
             paste,
             self.end_check_at,
         ]
-            .into_iter()
-            .flatten()
-            .min_by_key(|at| at.wrapping_sub(now_ms) as i32)
+        .into_iter()
+        .flatten()
+        .min_by_key(|at| at.wrapping_sub(now_ms) as i32)
     }
 
     /// Whether nothing blinks (`accessibility.reduce_motion`, D224): the cursor is a steady
@@ -1354,7 +1383,9 @@ impl<S: Shell> TerminalWindow<S> {
                 }
                 None => Outcome::NotSupported,
             },
-            (row, Action::Select) if (SCREEN_ELEMENT + 1..=SCREEN_ELEMENT + rows).contains(&row) => {
+            (row, Action::Select)
+                if (SCREEN_ELEMENT + 1..=SCREEN_ELEMENT + rows).contains(&row) =>
+            {
                 let view_row = (row - SCREEN_ELEMENT - 1) as u16;
                 let line = self.terminal.line_number_of_view_row(view_row);
                 let (anchor, anchor_end) = logical_line_at(&self.terminal, line);

@@ -150,7 +150,10 @@ fn options_come_from_the_registry_with_iproute2_s_words() {
         (1, "ip: unrecognized option '--bogus'\n")
     );
     let (status, _, errors) = run(&both, &[c"-x"]);
-    assert_eq!((status, errors.as_str()), (1, "ip: invalid option -- 'x'\n"));
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "ip: invalid option -- 'x'\n")
+    );
     for extra in [&[c"addr", c"show", c"dev"][..], &[c"addr", c"flush"][..]] {
         let (status, _, errors) = run(&both, extra);
         assert_eq!((status, errors), (1, format!("ip: {usage}")), "{extra:?}");

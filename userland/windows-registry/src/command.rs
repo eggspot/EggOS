@@ -54,9 +54,9 @@ pub fn message(error: Error, path: &str, name: &str) -> String {
         ),
         Error::RootKey => String::from("Roots cannot be created, deleted or edited."),
         Error::HasSubkeys => format!("Not deleted: {path} has subkeys."),
-        Error::BadName => format!(
-            "Key names cannot contain \\ and are {MAX_KEY_NAME_UNITS} characters at most."
-        ),
+        Error::BadName => {
+            format!("Key names cannot contain \\ and are {MAX_KEY_NAME_UNITS} characters at most.")
+        }
         Error::BadData => String::from(
             "Not saved: the data does not fit the type (a whole number in decimal or after 0x, \
              or pairs of hex digits for binary).",
@@ -188,7 +188,7 @@ pub fn run<S: Store, C: Console>(
                 console,
                 json: false,
             }
-            .usage("usage: windows registry get|set|delete|reset ...")
+            .usage("usage: windows registry get|set|delete|reset ...");
         }
     };
     let Some(options) = options(rest) else {
@@ -347,9 +347,7 @@ fn set<S: Store, C: Console>(
         Some(word) => match type_from_name(word) {
             Some(kind) => kind,
             None => {
-                return run.usage(
-                    "--type takes sz, expand_sz, multi_sz, dword, qword or binary",
-                );
+                return run.usage("--type takes sz, expand_sz, multi_sz, dword, qword or binary");
             }
         },
     };
@@ -475,7 +473,10 @@ fn reset<S: Store, C: Console>(
     }
     let (file, name) = match options.machine {
         true => (HiveFile::Machine, "machine.hive"),
-        false => (HiveFile::User, USER_HIVE_PATH.rsplit('/').next().unwrap_or("user.hive")),
+        false => (
+            HiveFile::User,
+            USER_HIVE_PATH.rsplit('/').next().unwrap_or("user.hive"),
+        ),
     };
     if options.dry_run {
         run.console.out(

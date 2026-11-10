@@ -40,7 +40,9 @@ impl Store for FakeStore {
     }
 
     fn stamp(&mut self, file: HiveFile) -> Option<u64> {
-        self.files[slot(file)].as_ref().map(|_| self.stamps[slot(file)])
+        self.files[slot(file)]
+            .as_ref()
+            .map(|_| self.stamps[slot(file)])
     }
 
     fn write_temporary(&mut self, file: HiveFile, bytes: &[u8]) -> Result<(), StoreError> {
@@ -115,12 +117,24 @@ fn key(text: &str) -> KeyPath {
 fn sample() -> Registry<FakeStore> {
     let mut registry = Registry::new(FakeStore::default());
     let autohotkey = key("HKCU\\Software\\AutoHotkey");
-    registry.create_key(&autohotkey.join(&utf16("Settings")).unwrap()).unwrap();
     registry
-        .set_value(&autohotkey, &utf16("Version"), REG_SZ, string_data("2.0.19"))
+        .create_key(&autohotkey.join(&utf16("Settings")).unwrap())
         .unwrap();
     registry
-        .set_value(&autohotkey, &utf16("Count"), REG_DWORD, 42u32.to_le_bytes().to_vec())
+        .set_value(
+            &autohotkey,
+            &utf16("Version"),
+            REG_SZ,
+            string_data("2.0.19"),
+        )
+        .unwrap();
+    registry
+        .set_value(
+            &autohotkey,
+            &utf16("Count"),
+            REG_DWORD,
+            42u32.to_le_bytes().to_vec(),
+        )
         .unwrap();
     registry
 }
@@ -176,7 +190,11 @@ fn a_damaged_hive_file_is_an_error_at_every_length_and_byte() {
     let mut registry = sample();
     let bytes = registry.store().files[0].clone().unwrap();
     for length in 0..bytes.len() {
-        assert_eq!(Hive::decode(&bytes[..length]), Err(Error::HiveDamaged), "{length}");
+        assert_eq!(
+            Hive::decode(&bytes[..length]),
+            Err(Error::HiveDamaged),
+            "{length}"
+        );
     }
     for index in 0..bytes.len() {
         let mut damaged = bytes.clone();
@@ -219,8 +237,14 @@ fn checked_files_with_bad_structure_are_refused() {
         Hive::decode(&with_payload(&payload))
     };
     assert!(tree(&[(0, ""), (1, "a"), (2, "b"), (1, "c")]).is_ok());
-    assert_eq!(tree(&[(0, ""), (1, "b"), (1, "a")]), Err(Error::HiveDamaged));
-    assert_eq!(tree(&[(0, ""), (1, "a"), (1, "A")]), Err(Error::HiveDamaged));
+    assert_eq!(
+        tree(&[(0, ""), (1, "b"), (1, "a")]),
+        Err(Error::HiveDamaged)
+    );
+    assert_eq!(
+        tree(&[(0, ""), (1, "a"), (1, "A")]),
+        Err(Error::HiveDamaged)
+    );
     assert_eq!(tree(&[(0, ""), (2, "a")]), Err(Error::HiveDamaged));
     assert_eq!(tree(&[(1, "a")]), Err(Error::HiveDamaged));
     assert_eq!(tree(&[(0, "named")]), Err(Error::HiveDamaged));
@@ -249,10 +273,7 @@ fn writes_go_through_a_temporary_file_so_a_failed_rename_keeps_the_old_hive() {
     assert_eq!(data_text(value.kind, &value.data), "2.0.19");
     registry.store().fail_rename = false;
     registry.store().disk_full = true;
-    assert_eq!(
-        registry.create_key(&key("HKCU\\New")),
-        Err(Error::DiskFull)
-    );
+    assert_eq!(registry.create_key(&key("HKCU\\New")), Err(Error::DiskFull));
     assert!(!registry.key_exists(&key("HKCU\\New")).unwrap());
 }
 
@@ -285,8 +306,14 @@ fn the_machine_s_hive_is_read_only_but_to_root() {
     );
     assert_eq!(registry.reset(HiveFile::Machine), Err(Error::ReadOnlyKey));
     registry.store().user_id = 0;
-    assert_eq!(registry.create_key(&key("HKLM\\Software\\Vendor")), Ok(true));
-    assert_eq!(registry.create_key(&key("HKLM\\Software\\vendor")), Ok(false));
+    assert_eq!(
+        registry.create_key(&key("HKLM\\Software\\Vendor")),
+        Ok(true)
+    );
+    assert_eq!(
+        registry.create_key(&key("HKLM\\Software\\vendor")),
+        Ok(false)
+    );
     registry.store().user_id = 1000;
     assert!(registry.key_exists(&key("HKLM\\Software\\Vendor")).unwrap());
     assert_eq!(
@@ -320,10 +347,7 @@ fn classes_root_merges_the_user_s_classes_over_the_machine_s_and_writes_the_user
         "mine"
     );
     assert_eq!(
-        data_text(
-            REG_SZ,
-            &registry.value(&machine, &[]).unwrap().data
-        ),
+        data_text(REG_SZ, &registry.value(&machine, &[]).unwrap().data),
         "txtfile"
     );
     registry
@@ -349,7 +373,11 @@ fn users_holds_the_user_s_hive_under_its_sid() {
     );
     let through_users = key(&alloc::format!("HKU\\{sid}\\Software\\AutoHotkey"));
     assert!(registry.value(&through_users, &utf16("Count")).is_ok());
-    assert!(!registry.key_exists(&key("HKU\\S-1-5-18\\Software")).unwrap());
+    assert!(
+        !registry
+            .key_exists(&key("HKU\\S-1-5-18\\Software"))
+            .unwrap()
+    );
     assert_eq!(
         registry.delete_key(&key(&alloc::format!("HKU\\{sid}")), true),
         Err(Error::RootKey)
@@ -371,13 +399,22 @@ fn limits_on_names_depth_and_size_hold() {
     );
     let root = KeyPath::root(Root::CurrentUser);
     assert_eq!(
-        registry.set_value(&root, &[], REG_BINARY, alloc::vec![0; crate::MAX_DATA_BYTES + 1]),
+        registry.set_value(
+            &root,
+            &[],
+            REG_BINARY,
+            alloc::vec![0; crate::MAX_DATA_BYTES + 1]
+        ),
         Err(Error::ValueTooLarge)
     );
     for index in 0..(MAX_HIVE_BYTES / crate::MAX_DATA_BYTES) {
         let name = utf16(&alloc::format!("blob{index}"));
-        let result =
-            registry.set_value(&root, &name, REG_BINARY, alloc::vec![7; crate::MAX_DATA_BYTES]);
+        let result = registry.set_value(
+            &root,
+            &name,
+            REG_BINARY,
+            alloc::vec![7; crate::MAX_DATA_BYTES],
+        );
         if index + 1 < MAX_HIVE_BYTES / crate::MAX_DATA_BYTES {
             assert_eq!(result, Ok(()), "{index}");
         } else {
@@ -404,7 +441,10 @@ fn deleting_a_key_with_subkeys_needs_the_tree() {
 
 #[test]
 fn data_is_shown_and_typed_in_regedit_s_words() {
-    assert_eq!(data_text(REG_DWORD, &42u32.to_le_bytes()), "0x0000002a (42)");
+    assert_eq!(
+        data_text(REG_DWORD, &42u32.to_le_bytes()),
+        "0x0000002a (42)"
+    );
     assert_eq!(
         data_text(REG_QWORD, &42u64.to_le_bytes()),
         "0x000000000000002a (42)"
@@ -417,10 +457,16 @@ fn data_is_shown_and_typed_in_regedit_s_words() {
     );
     assert_eq!(data_text(REG_EXPAND_SZ, &string_data("%HOME%")), "%HOME%");
     assert_eq!(data_text(99, &[1, 2]), "01 02");
-    assert_eq!(parse_data(REG_DWORD, &["0x2A"]), Ok(42u32.to_le_bytes().to_vec()));
+    assert_eq!(
+        parse_data(REG_DWORD, &["0x2A"]),
+        Ok(42u32.to_le_bytes().to_vec())
+    );
     assert_eq!(parse_data(REG_DWORD, &["4294967296"]), Err(Error::BadData));
     assert_eq!(parse_data(REG_DWORD, &["-1"]), Err(Error::BadData));
-    assert_eq!(parse_data(REG_BINARY, &["4a 00", "ff"]), Ok([0x4a, 0, 0xff].to_vec()));
+    assert_eq!(
+        parse_data(REG_BINARY, &["4a 00", "ff"]),
+        Ok([0x4a, 0, 0xff].to_vec())
+    );
     assert_eq!(parse_data(REG_BINARY, &["4"]), Err(Error::BadData));
     assert_eq!(parse_data(REG_MULTI_SZ, &["a", ""]), Err(Error::BadData));
     assert_eq!(type_from_name("dword"), Some(REG_DWORD));
@@ -432,8 +478,16 @@ fn data_is_shown_and_typed_in_regedit_s_words() {
 fn the_command_reads_writes_and_deletes_with_confirmation() {
     let mut registry = sample();
     assert_eq!(
-        run(&mut registry, "registry get HKCU\\Software\\AutoHotkey Count", None),
-        (0, String::from("Count  REG_DWORD  0x0000002a (42)\n"), String::new())
+        run(
+            &mut registry,
+            "registry get HKCU\\Software\\AutoHotkey Count",
+            None
+        ),
+        (
+            0,
+            String::from("Count  REG_DWORD  0x0000002a (42)\n"),
+            String::new()
+        )
     );
     assert_eq!(
         run(
@@ -468,13 +522,30 @@ fn the_command_reads_writes_and_deletes_with_confirmation() {
         console.asked,
         ["Delete HKEY_CURRENT_USER\\Software\\AutoHotkey, 1 subkey and 3 values? [y/N] "]
     );
-    assert!(registry.key_exists(&key("HKCU\\Software\\AutoHotkey")).unwrap());
+    assert!(
+        registry
+            .key_exists(&key("HKCU\\Software\\AutoHotkey"))
+            .unwrap()
+    );
     assert_eq!(
-        run(&mut registry, "registry delete HKCU\\Software\\AutoHotkey", Some(true)).0,
+        run(
+            &mut registry,
+            "registry delete HKCU\\Software\\AutoHotkey",
+            Some(true)
+        )
+        .0,
         0
     );
-    assert!(!registry.key_exists(&key("HKCU\\Software\\AutoHotkey")).unwrap());
-    let (status, _, err) = run(&mut registry, "registry get HKCU\\Software\\AutoHotkey", None);
+    assert!(
+        !registry
+            .key_exists(&key("HKCU\\Software\\AutoHotkey"))
+            .unwrap()
+    );
+    let (status, _, err) = run(
+        &mut registry,
+        "registry get HKCU\\Software\\AutoHotkey",
+        None,
+    );
     assert_eq!(status, 1);
     assert_eq!(
         err,
@@ -523,7 +594,10 @@ fn a_damaged_hive_is_reported_and_reset_keeps_it_beside_the_new_one() {
             String::new()
         )
     );
-    assert_eq!(registry.store().damaged[0].as_deref(), Some(&b"not a hive"[..]));
+    assert_eq!(
+        registry.store().damaged[0].as_deref(),
+        Some(&b"not a hive"[..])
+    );
     assert_eq!(run(&mut registry, "registry get HKCU", None).0, 0);
 }
 

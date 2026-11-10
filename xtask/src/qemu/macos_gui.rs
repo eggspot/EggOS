@@ -159,13 +159,15 @@ fn before_marker<'c>(console: &'c str, step: &str) -> Option<&'c str> {
 fn nib_window(console: &str, step: &str) -> Option<u32> {
     let before = before_marker(console, step)?;
     let start = before.rfind(WM_LIST_HEADER)?;
-    before[start + WM_LIST_HEADER.len()..].lines().find_map(|line| {
-        let fields: Vec<&str> = line.trim().splitn(8, ' ').collect();
-        match fields.get(7) {
-            Some(title) if title.trim() == crate::macos::NIB_APP => fields[0].parse().ok(),
-            _ => None,
-        }
-    })
+    before[start + WM_LIST_HEADER.len()..]
+        .lines()
+        .find_map(|line| {
+            let fields: Vec<&str> = line.trim().splitn(8, ' ').collect();
+            match fields.get(7) {
+                Some(title) if title.trim() == crate::macos::NIB_APP => fields[0].parse().ok(),
+                _ => None,
+            }
+        })
 }
 
 fn nib_tree(console: &str, step: &str) -> Vec<String> {

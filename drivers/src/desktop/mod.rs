@@ -98,10 +98,10 @@ pub use shell::{DOCK_ICON, TASKBAR_ITEM, TOOLTIP_DELAY_MS};
 pub use shortcuts::{Profile, Shortcut, shortcut};
 pub use sticky_keys::{STICKY_CHIPS, STICKY_KEYS_OFF, STICKY_KEYS_ON};
 pub use windows::{
-    Bounds, CASCADE_STEP, CHROME, ControlSide, DEFAULT_MARGIN, DOUBLE_CLICK_DISTANCE, DOUBLE_CLICK_MS,
-    KERNEL_CLIENT, MINIMUM_OUTSIDE, Part, RESTORE_DRAG_DISTANCE, WindowId, clamp_content_size,
-    clamp_resized_content, edge, is_double_click, minimum_outside, resize_edges, resize_pointer,
-    resized, slot_of,
+    Bounds, CASCADE_STEP, CHROME, ControlSide, DEFAULT_MARGIN, DOUBLE_CLICK_DISTANCE,
+    DOUBLE_CLICK_MS, KERNEL_CLIENT, MINIMUM_OUTSIDE, Part, RESTORE_DRAG_DISTANCE, WindowId,
+    clamp_content_size, clamp_resized_content, edge, is_double_click, minimum_outside,
+    resize_edges, resize_pointer, resized, slot_of,
 };
 
 use crate::display::{Damage, Rect};
@@ -1684,10 +1684,7 @@ impl Desktop {
     fn content_point(&self, slot: usize) -> (i32, i32) {
         let (left, top) = self.window_at(slot).content_origin();
         let (x, y) = self.pointer;
-        (
-            (i64::from(x) - left) as i32,
-            (i64::from(y) - top) as i32,
-        )
+        ((i64::from(x) - left) as i32, (i64::from(y) - top) as i32)
     }
 
     /// The pointer moved to (`x`, `y`): drags or resizes the window while a drag or resize is
@@ -2345,7 +2342,11 @@ impl Desktop {
         if let Some(slot) = self.content_holding(clip) {
             let window = self.window_at(slot);
             let shift = window.overhang();
-            self.draw_content(&mut canvas.shifted(shift), &window.moved_right(shift), contents);
+            self.draw_content(
+                &mut canvas.shifted(shift),
+                &window.moved_right(shift),
+                contents,
+            );
             self.draw_agent_pointer(&mut canvas);
             if with_pointer {
                 self.draw_pointer(&mut canvas);

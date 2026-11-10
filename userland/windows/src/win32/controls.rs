@@ -18,6 +18,7 @@ use crate::gui::objects::{self, Object};
 use crate::gui::windows::{self, ControlKind, Procedure, Window};
 use crate::text::equal_ignoring_ascii_case;
 use eggos_element_tree::Action;
+use eggos_windows_gui::colour::{colour_ref, pixel, system_colour};
 use eggos_windows_gui::controls::button::{self, Button, ButtonKind, ButtonLook, ButtonOutcome};
 use eggos_windows_gui::controls::edit::{
     self, Edit, EditLook, EditOutcome, Modifiers, visible_cells,
@@ -26,7 +27,6 @@ use eggos_windows_gui::controls::image::{self, Picture};
 use eggos_windows_gui::controls::label::{self, LabelLook};
 use eggos_windows_gui::controls::list_box::{self, ITEM_HEIGHT, ListBox, ListLook, visible_rows};
 use eggos_windows_gui::controls::scroll_bar::{self as bar_model, BarLook, ScrollBar};
-use eggos_windows_gui::colour::{colour_ref, pixel, system_colour};
 use eggos_windows_gui::controls::{DARK, LIGHT, Palette};
 use eggos_windows_gui::surface::{Rect, Surface};
 
@@ -1026,9 +1026,7 @@ fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
             set_capture(window);
             let extend = held(VK_SHIFT);
             let outcome = with_state(window, |entry, state| match state {
-                State::Edit(edit) => {
-                    Some(edit.click(x, extend, visible_cells(entry.width as i32)))
-                }
+                State::Edit(edit) => Some(edit.click(x, extend, visible_cells(entry.width as i32))),
                 _ => None,
             })
             .flatten();
@@ -1069,7 +1067,8 @@ fn repeat_after(window: usize, interval: u32) {
     with(|gui| {
         let thread = gui.windows.get(window)?.thread;
         let now = super::user32::now_ms();
-        gui.timers.set(window, SCROLL_REPEAT_TIMER, interval, 0, thread, now)
+        gui.timers
+            .set(window, SCROLL_REPEAT_TIMER, interval, 0, thread, now)
     });
     gui::wake();
 }

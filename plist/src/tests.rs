@@ -267,8 +267,13 @@ fn damaged_xml_is_an_error_or_none_never_a_panic() {
         if let Ok(document) = Document::parse(&XML[..cut]) {
             let top = document.top();
             let _ = top.count();
-            let _ = top.get(b"Bytes").and_then(|data| data.data()).map(|data| data.len());
-            let _ = top.get(b"Kinds").map(|kinds| kinds.items().map(Iterator::count));
+            let _ = top
+                .get(b"Bytes")
+                .and_then(|data| data.data())
+                .map(|data| data.len());
+            let _ = top
+                .get(b"Kinds")
+                .map(|kinds| kinds.items().map(Iterator::count));
         }
     }
     let bad = b"<plist><dict><key>A</key><data>A*B=</data><key>B</key><integer>x</integer></dict></plist>";

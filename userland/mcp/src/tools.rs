@@ -772,7 +772,11 @@ pub const TOOLS: [Tool; 72] = [
     tool(
         &registry::COMPONENT_REMOVE,
         Kind::ComponentRemove,
-        twin("/bin/component", &["remove", "--yes", "--json"], Operand::Name),
+        twin(
+            "/bin/component",
+            &["remove", "--yes", "--json"],
+            Operand::Name,
+        ),
     ),
     of_component(
         tool(
@@ -1110,7 +1114,10 @@ pub fn write_list(out: &mut JsonWriter<'_>, present: &mut dyn FnMut(&'static str
     out.begin_object();
     out.key("tools");
     out.begin_array();
-    for tool in TOOLS.iter().filter(|tool| tool.needs.is_none_or(&mut *present)) {
+    for tool in TOOLS
+        .iter()
+        .filter(|tool| tool.needs.is_none_or(&mut *present))
+    {
         let definition = tool.definition;
         out.begin_object();
         out.key("name");

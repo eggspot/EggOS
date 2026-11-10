@@ -112,14 +112,18 @@ fn command_due(console: &str, typed: usize, count: usize) -> bool {
 const FINISHED_SYNCS: [&str; 4] = ["set ", "confirmed ", "unconfirmed ", "no-answer "];
 
 fn is_automatic_sync(line: &str) -> bool {
-    FINISHED_SYNCS.iter().any(|outcome| line.starts_with(outcome))
+    FINISHED_SYNCS
+        .iter()
+        .any(|outcome| line.starts_with(outcome))
         && line.contains(" pool.ntp.org ")
 }
 
 fn clock_verdict(arch: &str, console: &str) -> Result<(), String> {
     let mut lines = console.lines().map(str::trim_end);
     if !lines.clone().any(|line| line == "on") {
-        return Err(format!("{arch}: `settings get time.automatic` did not print `on`"));
+        return Err(format!(
+            "{arch}: `settings get time.automatic` did not print `on`"
+        ));
     }
     if !lines.any(is_automatic_sync) {
         return Err(format!(
@@ -357,14 +361,16 @@ mod tests {
         assert!(with("on\nnone\n").is_err());
         assert!(with("on\nsyncing 2026-10-29T14:05:00Z pool.ntp.org 0\n").is_err());
         assert!(with("off\nset 2026-10-29T14:05:09Z pool.ntp.org 12000\n").is_err());
-        assert!(commands(&Ports {
-            dns: 53,
-            echo: 7,
-            tcp_echo: 8,
-            http: 8080,
-            ntp: 1123,
-        })[1]
-            .starts_with("settings get time.automatic; sleep 10; settings get time.sync;"));
+        assert!(
+            commands(&Ports {
+                dns: 53,
+                echo: 7,
+                tcp_echo: 8,
+                http: 8080,
+                ntp: 1123,
+            })[1]
+                .starts_with("settings get time.automatic; sleep 10; settings get time.sync;")
+        );
     }
 
     #[test]

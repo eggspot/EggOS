@@ -49,7 +49,10 @@ pub fn hwclock<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         return FAILURE;
     };
     if let Some(extra) = operands.all().first() {
-        output.coded(&errors::USAGE, &[b"extra operand '", extra.to_bytes(), b"'"]);
+        output.coded(
+            &errors::USAGE,
+            &[b"extra operand '", extra.to_bytes(), b"'"],
+        );
         return FAILURE;
     }
     let hardware = match read_clock(output) {

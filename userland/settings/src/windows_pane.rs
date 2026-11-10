@@ -48,7 +48,8 @@ pub const MAX_KEY_ROWS: usize = 1000;
 /// The most values the table holds.
 pub const MAX_VALUE_ROWS: usize = 256;
 /// The status line of a writable key.
-pub const NORMAL_LINE: &str = "Enter edits a value, Delete removes it, F5 reads the registry again.";
+pub const NORMAL_LINE: &str =
+    "Enter edits a value, Delete removes it, F5 reads the registry again.";
 /// The status line while a root is selected.
 pub const ROOT_LINE: &str = "Roots are always there: add a key under one.";
 /// The status line before any Windows program saved settings.
@@ -554,8 +555,19 @@ fn line(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, x: i32, y: i32, width
     )
 }
 
-fn button(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, x: i32, y: i32, text: &str) -> WidgetId {
-    add(tree, parent, at(x, y, BUTTON.0, BUTTON.1), Kind::button(text, false))
+fn button(
+    tree: &mut WidgetTree<CAPACITY>,
+    parent: WidgetId,
+    x: i32,
+    y: i32,
+    text: &str,
+) -> WidgetId {
+    add(
+        tree,
+        parent,
+        at(x, y, BUTTON.0, BUTTON.1),
+        Kind::button(text, false),
+    )
 }
 
 fn show_line(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, words: &str, ink: Token) {
@@ -803,12 +815,7 @@ impl WindowsPane {
         let edit_bases = add(
             tree,
             edit_panel,
-            Place::at(
-                PADDING,
-                PANEL_SECOND_ROW,
-                Length::Content,
-                Length::Content,
-            ),
+            Place::at(PADDING, PANEL_SECOND_ROW, Length::Content, Length::Content),
             Kind::radios(&BASES, 0, true),
         );
         let edit_line = panel_line(tree, edit_panel, PANEL_LOW_LINE);
@@ -1214,10 +1221,7 @@ impl WindowsPane {
         if let Some(said) = &self.said {
             return said.clone();
         }
-        let machine = matches!(
-            self.selected.root,
-            Root::LocalMachine | Root::CurrentConfig
-        );
+        let machine = matches!(self.selected.root, Root::LocalMachine | Root::CurrentConfig);
         if machine && self.machine_damaged {
             return (String::from(MACHINE_DAMAGED_LINE), Token::Text);
         }
@@ -1272,10 +1276,7 @@ impl WindowsPane {
         tree.set_enabled(widgets.new_key, free && writable);
         tree.set_enabled(widgets.new_value, free && writable);
         tree.set_enabled(widgets.edit, free && writable && !root);
-        tree.set_enabled(
-            widgets.delete,
-            free && writable && (deletes_value || !root),
-        );
+        tree.set_enabled(widgets.delete, free && writable && (deletes_value || !root));
         tree.set_enabled(widgets.replace, free);
         for id in [
             widgets.path,
@@ -1337,10 +1338,7 @@ impl WindowsPane {
                 tree.set_text(self.widgets.path, &shown);
             }
             _ => {
-                self.said = Some((
-                    command::message(Error::NoSuchKey, &typed, ""),
-                    Token::Text,
-                ));
+                self.said = Some((command::message(Error::NoSuchKey, &typed, ""), Token::Text));
                 self.refresh(tree);
             }
         }
@@ -1462,7 +1460,12 @@ impl WindowsPane {
         };
         tree.set_place(
             widgets.edit_line,
-            Place::at(PADDING, line_top, Length::Px(PANEL_TEXT_WIDTH), Length::Content),
+            Place::at(
+                PADDING,
+                line_top,
+                Length::Px(PANEL_TEXT_WIDTH),
+                Length::Content,
+            ),
         );
         let buttons_top = height - PANEL_BUTTONS_FROM_BOTTOM;
         tree.set_place(
@@ -1543,9 +1546,7 @@ impl WindowsPane {
     fn switch_base(&mut self, tree: &mut WidgetTree<CAPACITY>, hexadecimal_now: bool) {
         let field = self.widgets.edit_field;
         let Panel::Edit {
-            hexadecimal,
-            value,
-            ..
+            hexadecimal, value, ..
         } = &mut self.panel
         else {
             return;
@@ -1646,7 +1647,12 @@ impl WindowsPane {
         };
         tree.set_place(
             widgets.name_line,
-            Place::at(PADDING, line_top, Length::Px(PANEL_TEXT_WIDTH), Length::Content),
+            Place::at(
+                PADDING,
+                line_top,
+                Length::Px(PANEL_TEXT_WIDTH),
+                Length::Content,
+            ),
         );
         let buttons_top = height - PANEL_BUTTONS_FROM_BOTTOM;
         tree.set_place(
@@ -1748,12 +1754,12 @@ impl WindowsPane {
         let selected = self.selected.clone();
         match self.panel {
             Panel::NewKey => {
-                let made = selected.join(&name).and_then(|path| {
-                    match self.registry.as_mut() {
+                let made = selected
+                    .join(&name)
+                    .and_then(|path| match self.registry.as_mut() {
                         Some(registry) => registry.create_key(&path).map(|_| path),
                         None => Err(Error::WriteFailed),
-                    }
-                });
+                    });
                 match made {
                     Ok(path) => {
                         self.close_panel(tree, Some(now_ms));
@@ -1786,8 +1792,7 @@ impl WindowsPane {
                         self.open_edit(tree, Value { name, kind, data }, true, now_ms);
                     }
                     Err(error) => {
-                        let message =
-                            command::message(error, &selected.text(), &name_text(&name));
+                        let message = command::message(error, &selected.text(), &name_text(&name));
                         show_line(tree, widgets.name_line, &message, Token::Text);
                     }
                 }
@@ -2031,7 +2036,9 @@ impl WindowsPane {
             Response::Activated(id) if id == widgets.edit_save => self.save(tree, now_ms),
             Response::Activated(id) if id == widgets.edit_cancel => self.cancel_edit(tree, now_ms),
             Response::Activated(id) if id == widgets.name_create => self.create(tree, now_ms),
-            Response::Activated(id) if id == widgets.name_cancel || id == widgets.confirm_cancel => {
+            Response::Activated(id)
+                if id == widgets.name_cancel || id == widgets.confirm_cancel =>
+            {
                 self.close_panel(tree, Some(now_ms));
             }
             Response::Activated(id) if id == widgets.confirm_primary => {

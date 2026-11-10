@@ -9,8 +9,8 @@ use eggos_net::status::{InterfaceStatus, State, state_word};
 use eggos_settings_file::clock_sync::Record;
 use eggos_settings_file::{
     DisplayAccessibility, InputPreferences, KEYBOARD_LAYOUT_SET_CAPACITY, KEYBOARD_LAYOUTS,
-    KeyAccessibility,
-    KeyboardLayoutSet, LayoutSetRefusal, MAX_KEYBOARD_LAYOUTS, PROFILES, SwitchKey,
+    KeyAccessibility, KeyboardLayoutSet, LayoutSetRefusal, MAX_KEYBOARD_LAYOUTS, PROFILES,
+    SwitchKey,
 };
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Theme;
@@ -672,7 +672,9 @@ pub fn layouts_refusal<'a>(value: &'a str, refusal: LayoutSetRefusal) -> (&'a st
             value
         }
         LayoutSetRefusal::Repeated(number) => {
-            let name = KEYBOARD_LAYOUTS.get(number).map_or("?", |layout| layout.name);
+            let name = KEYBOARD_LAYOUTS
+                .get(number)
+                .map_or("?", |layout| layout.name);
             let _ = write!(reason, "'{name}' is listed twice");
             value
         }
@@ -772,7 +774,13 @@ mod tests {
         let unplugged = EXAMPLE_ADAPTER.replacen(" up ", " down ", 1);
         assert_eq!(
             network_values(&unplugged),
-            ["cable-unplugged", "none", "none", "none", "52:54:00:12:34:56"]
+            [
+                "cable-unplugged",
+                "none",
+                "none",
+                "none",
+                "52:54:00:12:34:56"
+            ]
         );
         let asking = "eth0 up 52:54:00:12:34:56 1500 asking - - - - - - 3 900 0 0 3 1026 0\n";
         assert_eq!(network_values(asking)[0], "getting-address");
@@ -904,7 +912,11 @@ mod tests {
             Ok((Key::KeyboardLayouts, Change::KeyboardLayouts(us_de)))
         );
         for (value, quoted, reason) in [
-            ("us,de,fr,es,it", "us,de,fr,es,it", "at most 4 layouts".to_owned()),
+            (
+                "us,de,fr,es,it",
+                "us,de,fr,es,it",
+                "at most 4 layouts".to_owned(),
+            ),
             ("us,us", "us,us", "'us' is listed twice".to_owned()),
             (
                 "us,xx",
@@ -925,7 +937,10 @@ mod tests {
                 Change::KeyboardSwitchKey(SwitchKey::AltShift)
             ))
         );
-        assert_eq!(change("keyboard.switch_key", "x"), Err(Refusal::InvalidValue));
+        assert_eq!(
+            change("keyboard.switch_key", "x"),
+            Err(Refusal::InvalidValue)
+        );
         assert_eq!(
             Key::KeyboardSwitchKey.choices().as_str(),
             "profile, super+space, ctrl+space, alt+shift, ctrl+shift or none"

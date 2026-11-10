@@ -105,7 +105,8 @@ struct Page {
 
 impl Page {
     fn after(&self) -> Option<&[u8]> {
-        self.after_length.and_then(|length| self.after.get(..length))
+        self.after_length
+            .and_then(|length| self.after.get(..length))
     }
 
     fn is_paged(&self) -> bool {
@@ -414,7 +415,9 @@ fn list(machine: &mut impl Machine, json: bool, page: &Page) -> i32 {
             }
         }
     }
-    let end = page.limit.and_then(|limit| page::page_end(count, limit, after, &key_name));
+    let end = page
+        .limit
+        .and_then(|limit| page::page_end(count, limit, after, &key_name));
     if let Some(key) = end.and_then(|end| Key::ALL.get(end)) {
         more(machine, json, key.name());
     }
@@ -825,7 +828,10 @@ mod tests {
             save_fails: true,
             ..Fake::default()
         };
-        assert_eq!(settings(&mut failing, &["set", "time.automatic", "on"]).0, FAILURE);
+        assert_eq!(
+            settings(&mut failing, &["set", "time.automatic", "on"]).0,
+            FAILURE
+        );
         assert_eq!(failing.syncs_started, 0);
     }
 
@@ -838,14 +844,20 @@ mod tests {
         );
         let (status, _, errors) = settings(&mut fake, &["set", "time.sync", "x"]);
         assert_eq!(status, FAILURE);
-        assert!(errors.starts_with("settings: time.sync: read-only\n"), "{errors}");
+        assert!(
+            errors.starts_with("settings: time.sync: read-only\n"),
+            "{errors}"
+        );
         use eggos_settings_file::clock_sync::{Outcome, Record};
         let mut record = Record::new(Outcome::Set, 1_793_282_700, b"pool.ntp.org");
         record.finished = Some(1_793_282_709);
         record.moved_ms = 12_000;
         let mut value = keys::Value::new();
         keys::write_clock_sync(&mut value, Some(&record)).unwrap();
-        assert_eq!(value.as_str(), "set 2026-10-29T14:05:09Z pool.ntp.org 12000");
+        assert_eq!(
+            value.as_str(),
+            "set 2026-10-29T14:05:09Z pool.ntp.org 12000"
+        );
         let syncing = Record::new(Outcome::Syncing, 1_793_282_709, b"time.example.com:123");
         let mut value = keys::Value::new();
         keys::write_clock_sync(&mut value, Some(&syncing)).unwrap();
@@ -1033,7 +1045,10 @@ mod tests {
             settings(&mut Fake::default(), &["list", "--limit", "1", "--json"]);
         assert_eq!(status, 0);
         assert_eq!(output.lines().count(), 1);
-        assert!(output.starts_with(&format!("{{\"key\":\"{first}\"")), "{output}");
+        assert!(
+            output.starts_with(&format!("{{\"key\":\"{first}\"")),
+            "{output}"
+        );
         assert_eq!(
             errors,
             format!(
@@ -1065,10 +1080,7 @@ mod tests {
         }
         let (status, _, errors) = settings(&mut fake, &["list", "--limit"]);
         assert_eq!(status, 2);
-        assert_eq!(
-            errors,
-            "settings: option '--limit' requires an argument\n"
-        );
+        assert_eq!(errors, "settings: option '--limit' requires an argument\n");
         let (status, _, errors) = settings(&mut fake, &["get", "--limit", "1", "shell.profile"]);
         assert_eq!((status, errors.as_str()), (2, USAGE));
     }
@@ -1167,7 +1179,8 @@ mod tests {
             0
         );
         assert_eq!(
-            fake.display_applied.map(|(_, display)| display.reduce_motion),
+            fake.display_applied
+                .map(|(_, display)| display.reduce_motion),
             Some(true)
         );
         assert_eq!(
@@ -1201,7 +1214,10 @@ mod tests {
     #[test]
     fn the_layouts_and_the_switch_key_are_saved_and_applied_and_refused_with_their_reasons() {
         let mut fake = Fake::default();
-        assert_eq!(settings(&mut fake, &["set", "keyboard.layouts", "gb,se"]).0, 0);
+        assert_eq!(
+            settings(&mut fake, &["set", "keyboard.layouts", "gb,se"]).0,
+            0
+        );
         let choice = fake.layout_applied.unwrap();
         assert_eq!(
             Some(choice.in_force),

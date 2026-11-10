@@ -41,11 +41,7 @@ pub(super) fn folder_title(folder: &[u8], home: Option<&[u8]>, push: &mut impl F
     }
 }
 
-pub(super) fn announce_folder(
-    folder: &[u8],
-    home: Option<&[u8]>,
-    push: &mut impl FnMut(&[u8]),
-) {
+pub(super) fn announce_folder(folder: &[u8], home: Option<&[u8]>, push: &mut impl FnMut(&[u8])) {
     push(OSC_TITLE);
     folder_title(folder, home, push);
     push(BEL);

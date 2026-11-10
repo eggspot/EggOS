@@ -392,7 +392,10 @@ mod tests {
 
     #[test]
     fn a_device_s_short_or_all_zero_read_is_hashed_but_not_credited() {
-        assert_eq!(device_credit(&[7; DEVICE_SEED_BYTES]), 8 * DEVICE_SEED_BYTES as u32);
+        assert_eq!(
+            device_credit(&[7; DEVICE_SEED_BYTES]),
+            8 * DEVICE_SEED_BYTES as u32
+        );
         assert_eq!(device_credit(&[0; DEVICE_SEED_BYTES]), 0);
         assert_eq!(device_credit(&[7; DEVICE_SEED_BYTES - 1]), 0);
         assert_eq!(device_credit(&[]), 0);
@@ -402,7 +405,10 @@ mod tests {
         let generation = GENERATION.load(Ordering::Acquire);
         reseed_from_device::<P>(&[0; DEVICE_SEED_BYTES]);
         reseed_from_device::<P>(&[7; 4]);
-        assert!(GENERATION.load(Ordering::Acquire) > generation, "still hashed and reseeded");
+        assert!(
+            GENERATION.load(Ordering::Acquire) > generation,
+            "still hashed and reseeded"
+        );
     }
 
     #[test]

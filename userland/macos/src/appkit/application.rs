@@ -359,9 +359,7 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
         }
         Input::Resize { width, height } => window::resize(window, width, height),
         Input::PointerLeave => cursor::pointer_left(window),
-        Input::StateChanged { .. }
-        | Input::DeadKey { .. }
-        | Input::Overflow => {}
+        Input::StateChanged { .. } | Input::DeadKey { .. } | Input::Overflow => {}
     }
 }
 

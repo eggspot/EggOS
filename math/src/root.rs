@@ -73,8 +73,8 @@ pub fn cbrt(x: f64) -> f64 {
     let exponent = exponent_field(scaled) - EXPONENT_BIAS;
     let whole = exponent.div_euclid(3);
     let spare = exponent.rem_euclid(3);
-    let significand = f64::from_bits((scaled.to_bits() & FRACTION_MASK) | ONE_BITS)
-        * power_of_two(spare);
+    let significand =
+        f64::from_bits((scaled.to_bits() & FRACTION_MASK) | ONE_BITS) * power_of_two(spare);
     let mut root = f64::from_bits((significand.to_bits() - ONE_BITS) / 3 + ONE_BITS);
     for _ in 0..4 {
         root = (2.0 * root + significand / (root * root)) / 3.0;

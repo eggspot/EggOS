@@ -170,7 +170,10 @@ pub(crate) fn integer(bytes: &[u8], at: usize) -> Option<i128> {
         Some(rest) => (true, rest),
         None => (false, text.strip_prefix('+').unwrap_or(text)),
     };
-    let magnitude = match digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+    let magnitude = match digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
         Some(hex) => i128::from_str_radix(hex, 16).ok()?,
         None => digits.parse::<i128>().ok()?,
     };

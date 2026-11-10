@@ -800,8 +800,8 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             if !no_components {
                 let store = components::build_store(arch)?;
-                let store = std::path::absolute(&store)
-                    .map_err(|e| format!("{}: {e}", store.display()))?;
+                let store =
+                    std::path::absolute(&store).map_err(|e| format!("{}: {e}", store.display()))?;
                 extra_args.extend(qemu::store_disk_args(arch, &store.to_string_lossy()));
                 eprintln!(
                     "xtask: {} is attached read-only: component install installs from it",
@@ -2609,9 +2609,9 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::{
-        APP_PATH, COMPONENT_PATH, COREUTILS, DISK_PATH, EDIT_PATH, SETTINGS_PATH, arch_option,
-        WINDOWS_LAYER_PATH, foreign_layers, host_folder, initramfs, json_string_field, room_bytes,
-        size_in_mebibytes, windows_command, with_value, without_flag,
+        APP_PATH, COMPONENT_PATH, COREUTILS, DISK_PATH, EDIT_PATH, SETTINGS_PATH,
+        WINDOWS_LAYER_PATH, arch_option, foreign_layers, host_folder, initramfs, json_string_field,
+        room_bytes, size_in_mebibytes, windows_command, with_value, without_flag,
     };
 
     #[test]

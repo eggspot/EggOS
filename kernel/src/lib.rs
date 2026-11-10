@@ -615,7 +615,10 @@ fn report_random<W: Write>(console: &mut W, boot_seeds: random::BootSeeds) -> co
 fn report_device_seed<W: Write>(console: &mut W, seeded: Option<bool>) -> core::fmt::Result {
     match seeded {
         Some(true) => writeln!(console, "random: reseeded from virtio-rng"),
-        Some(false) => writeln!(console, "random: reseeded from virtio-rng, still NOT SEEDED"),
+        Some(false) => writeln!(
+            console,
+            "random: reseeded from virtio-rng, still NOT SEEDED"
+        ),
         None => Ok(()),
     }
 }

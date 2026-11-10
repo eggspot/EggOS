@@ -35,8 +35,12 @@ fn with_unproven(fake: Fake, unproven_ms: u64) -> Fake {
     record.unproven_ms = unproven_ms;
     let mut file = [0u8; LARGEST];
     let length = record.write(&mut file).unwrap();
-    fake.with_directory("/run/eggos", 0)
-        .with_file("/run/eggos/clock-sync", 0o644, &file[..length], 0)
+    fake.with_directory("/run/eggos", 0).with_file(
+        "/run/eggos/clock-sync",
+        0o644,
+        &file[..length],
+        0,
+    )
 }
 
 #[derive(Default)]
@@ -315,9 +319,11 @@ fn with_roots_even_an_unset_clock_needs_two_https_dates_to_agree() {
             (b"www.cloudflare.com".to_vec(), NOW)
         ]
     );
-    assert!(synced.out.ends_with(
-        "s (confirmed over HTTPS by www.google.com and www.cloudflare.com)\n"
-    ));
+    assert!(
+        synced
+            .out
+            .ends_with("s (confirmed over HTTPS by www.google.com and www.cloudflare.com)\n")
+    );
     let record = synced.record();
     assert_eq!(
         (record.outcome, record.unproven_ms),
@@ -417,11 +423,19 @@ fn a_refused_step_is_not_allowed_and_no_address_is_said() {
     assert!(synced.fake.network.sent.is_empty());
     let record = synced.record();
     assert_eq!(record.outcome, Outcome::NoAddress);
-    assert_eq!(record.reason(), b"10.0.2.2: the network adapter has no address");
+    assert_eq!(
+        record.reason(),
+        b"10.0.2.2: the network adapter has no address"
+    );
     let silent = clock(NOW - 60, seconds(NOW));
     let mut output = Output::new(silent, b"date");
     assert_eq!(
-        sync(&mut output, b"10.0.2.9", Asker::Automatic, &mut Witnesses::default()),
+        sync(
+            &mut output,
+            b"10.0.2.9",
+            Asker::Automatic,
+            &mut Witnesses::default()
+        ),
         Err(FAILURE)
     );
     let record = Record::parse(&output.system.contents(clock_sync::PATH)).unwrap();
@@ -445,7 +459,10 @@ fn date_takes_automatic_with_sync_only_and_set_forgets_the_unproven_steps() {
         (status, errors, output.system)
     };
     let (status, errors, _) = run(clock(NOW, seconds(NOW)), &[c"--automatic"]);
-    assert_eq!((status, errors.as_str()), (1, "date: --automatic needs --sync\n"));
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "date: --automatic needs --sync\n")
+    );
     let fake = with_unproven(clock(NOW, seconds(NOW)), 3_000_000);
     let (status, _, fake) = run(fake, &[c"-u", c"-s", c"2026-10-29 15:00"]);
     assert_eq!(status, 0);
@@ -468,7 +485,10 @@ fn date_takes_automatic_with_sync_only_and_set_forgets_the_unproven_steps() {
 #[test]
 fn an_imf_fixdate_reads_as_seconds_since_1970() {
     assert_eq!(imf_fixdate(b"Thu, 29 Oct 2026 14:05:09 GMT"), Some(NOW));
-    assert_eq!(imf_fixdate(b"Sun, 06 Nov 1994 08:49:37 GMT"), Some(784_111_777));
+    assert_eq!(
+        imf_fixdate(b"Sun, 06 Nov 1994 08:49:37 GMT"),
+        Some(784_111_777)
+    );
     for wrong in [
         &b"Thu, 29 Oct 2026 14:05:09 UTC"[..],
         b"Thu, 30 Feb 2026 14:05:09 GMT",

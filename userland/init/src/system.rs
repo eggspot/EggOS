@@ -137,7 +137,14 @@ static LOG: AtomicUsize = AtomicUsize::new(CONSOLE);
 fn open_log() {
     let descriptor = call(
         number::OPENAT,
-        [AT_FDCWD, KERNEL_LOG.as_ptr() as usize, O_WRONLY_CLOEXEC, 0, 0, 0],
+        [
+            AT_FDCWD,
+            KERNEL_LOG.as_ptr() as usize,
+            O_WRONLY_CLOEXEC,
+            0,
+            0,
+            0,
+        ],
     );
     if descriptor >= 0 {
         LOG.store(descriptor as usize, Ordering::Relaxed);
@@ -646,7 +653,14 @@ fn keep_clock() -> ! {
     for signal in shutdown::SIGNALS {
         call(
             number::RT_SIGACTION,
-            [signal, &raw const default as usize, 0, SIGNAL_SET_SIZE, 0, 0],
+            [
+                signal,
+                &raw const default as usize,
+                0,
+                SIGNAL_SET_SIZE,
+                0,
+                0,
+            ],
         );
     }
     call(number::SETSID, [0; 6]);

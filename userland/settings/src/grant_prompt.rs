@@ -11,9 +11,9 @@ use eggos_mcp::audit::is_hidden;
 use eggos_mcp::grant_prompt::{PromptAnswer, QuestionRead, offers_always};
 use eggos_mcp::grants::{AgentId, Grant, GrantStore, Permission, StoreState};
 use eggos_mcp::json::{Object, Str, Value};
-use eggos_toolkit::theme::Token;
 use eggos_toolkit::input::{Input, key};
 use eggos_toolkit::text::width;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Kind, Length, Place};
 

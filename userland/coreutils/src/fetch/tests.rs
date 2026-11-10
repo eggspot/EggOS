@@ -259,7 +259,10 @@ fn a_dry_run_checks_the_url_and_the_file_and_touches_neither_the_network_nor_the
     let (status, out, _, _) = run(network(), &[c"--dry-run", c"http://files.test/chunked"]);
     assert_eq!(
         (status, out.as_str()),
-        (0, "would download http://files.test/chunked to standard output\n")
+        (
+            0,
+            "would download http://files.test/chunked to standard output\n"
+        )
     );
 }
 

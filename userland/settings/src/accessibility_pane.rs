@@ -10,8 +10,8 @@ use crate::keys::{DisplayChange, KeysChange};
 use crate::settings_window::{CAPACITY, Request};
 use eggos_runtime::errno::Errno;
 use eggos_settings_file::{DisplayAccessibility, KeyAccessibility};
-use eggos_toolkit::theme::Token;
 use eggos_toolkit::text::Text;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{CONTROL_HEIGHT, Horizontal, Kind, Length, Place};
 
@@ -101,7 +101,13 @@ impl AccessibilityPane {
             Token::TextDim,
         );
         let motion = checkbox(tree, pane, 110, "Reduce motion");
-        meaning(tree, pane, 116, "No blinking, no animation.", Token::TextDim);
+        meaning(
+            tree,
+            pane,
+            116,
+            "No blinking, no animation.",
+            Token::TextDim,
+        );
         let sticky = checkbox(tree, pane, 150, "Sticky keys");
         meaning(
             tree,
@@ -236,9 +242,7 @@ impl AccessibilityPane {
             Response::Toggled(id, on) if id == self.contrast => {
                 Some(DisplayChange::HighContrast(on))
             }
-            Response::Toggled(id, on) if id == self.motion => {
-                Some(DisplayChange::ReduceMotion(on))
-            }
+            Response::Toggled(id, on) if id == self.motion => Some(DisplayChange::ReduceMotion(on)),
             _ => None,
         };
         if let Some(change) = display {

@@ -306,7 +306,10 @@ mod tests {
         for (row, &bits) in mono.iter().enumerate() {
             assert_eq!(sans.rows[row], u16::from(bits) << 8, "row {row}");
         }
-        assert_eq!(width("Łódź"), 8 + u32::from(glyph('ó').advance) + u32::from(glyph('d').advance) + 8);
+        assert_eq!(
+            width("Łódź"),
+            8 + u32::from(glyph('ó').advance) + u32::from(glyph('d').advance) + 8
+        );
     }
 
     #[test]

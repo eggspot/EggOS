@@ -68,7 +68,10 @@ fn index_for(parts: &[Part<'_>], data_start: u64) -> Index {
     Index {
         version: manager::VERSION.into(),
         arch: "x86_64".into(),
-        components: parts.iter().map(|part| component(part, &mut offsets)).collect(),
+        components: parts
+            .iter()
+            .map(|part| component(part, &mut offsets))
+            .collect(),
     }
 }
 
@@ -178,12 +181,17 @@ fn paths_outside_the_allowed_prefixes_are_refused() {
         assert!(!index::is_component_path(path), "{path}");
         let line = format!("file 755 1024 1 {} {path}", digest_text(b"x"));
         assert!(
-            matches!(with_index_text(&one_file_index(&line), 4096), Err(IndexError::Line(_))),
+            matches!(
+                with_index_text(&one_file_index(&line), 4096),
+                Err(IndexError::Line(_))
+            ),
             "{path}"
         );
     }
     assert!(index::is_component_path(WINDOWS_LAYER));
-    assert!(index::is_component_path("usr/lib/eggos/macos.d/Foundation-1.0+x"));
+    assert!(index::is_component_path(
+        "usr/lib/eggos/macos.d/Foundation-1.0+x"
+    ));
 }
 
 #[test]
@@ -276,7 +284,10 @@ fn the_store_is_found_on_a_disk_or_in_the_host_share_for_this_machine_only() {
     let image = files.contents(STORE_DISK).unwrap().to_vec();
     files.nodes.remove(STORE_DISK.as_bytes());
     assert!(manager::find_store(&mut files, "x86_64").is_none());
-    let share = format!("/media/host/{}", manager::store_file_name(manager::VERSION, "x86_64"));
+    let share = format!(
+        "/media/host/{}",
+        manager::store_file_name(manager::VERSION, "x86_64")
+    );
     files.file(&share, &image);
     assert_eq!(store(&mut files).source, Source::Share);
 }
@@ -294,7 +305,10 @@ fn an_install_copies_checks_records_and_renames_into_place() {
     .unwrap();
     assert_eq!(seen, [(18, 18)]);
     let installed = manager::installed_path("windows-apps", WINDOWS_LAYER);
-    assert_eq!(files.contents(&installed), Some(&b"\x7fELF windows layer"[..]));
+    assert_eq!(
+        files.contents(&installed),
+        Some(&b"\x7fELF windows layer"[..])
+    );
     let listed = manager::installed(&mut files);
     assert_eq!(listed, [component]);
     assert!(
@@ -315,11 +329,17 @@ fn a_damaged_file_detached_store_full_disk_or_cancel_leaves_nothing_installed() 
     damaged[offset + 3] ^= 0x20;
     files.file(STORE_DISK, &damaged);
     let result = manager::install(&mut files, &found, &component, &mut |_, _| true);
-    assert_eq!(result, Err(Failure::Damaged("windows-apps.component".into())));
+    assert_eq!(
+        result,
+        Err(Failure::Damaged("windows-apps.component".into()))
+    );
     assert!(files.paths_under(COMPONENTS).is_empty());
     assert!(manager::installed(&mut files).is_empty());
     let (first, second, error) = messages::install_failure(&result.unwrap_err(), &component);
-    assert_eq!(first, "The store's copy of windows-apps.component is damaged.");
+    assert_eq!(
+        first,
+        "The store's copy of windows-apps.component is damaged."
+    );
     assert_eq!(second, "Nothing was installed.");
     assert_eq!(error.code, "store_damaged");
 
@@ -332,7 +352,13 @@ fn a_damaged_file_detached_store_full_disk_or_cancel_leaves_nothing_installed() 
     let mut files = machine(&[WINDOWS]);
     files.available = Some(4);
     let result = manager::install(&mut files, &found, &component, &mut |_, _| true);
-    assert_eq!(result, Err(Failure::NoSpace { needed: 18, free: 4 }));
+    assert_eq!(
+        result,
+        Err(Failure::NoSpace {
+            needed: 18,
+            free: 4
+        })
+    );
     assert_eq!(
         messages::install_failure_line(&result.unwrap_err(), &component),
         "Not enough space: 18 B needed, 4 B free; nothing was installed."
@@ -375,7 +401,11 @@ fn installing_one_that_needs_another_plans_the_needed_one_first() {
     let installed = vec![found.index.component("desktop").unwrap().clone()];
     let plan = manager::plan_install(&found.index, &installed, "builtin-apps").unwrap();
     assert_eq!(plan.len(), 1);
-    assert!(manager::plan_install(&found.index, &installed, "desktop").unwrap().is_empty());
+    assert!(
+        manager::plan_install(&found.index, &installed, "desktop")
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         manager::plan_install(&found.index, &[], "winapps"),
         Err(Refusal::NoSuchComponent("winapps".into()))
@@ -465,7 +495,10 @@ fn a_program_run_through_a_link_or_seen_by_its_executable_keeps_the_component_in
 fn leftovers_of_an_interrupted_install_or_remove_are_tidied_and_never_listed() {
     let mut files = machine(&[WINDOWS]);
     files
-        .file(&format!("{COMPONENTS}/.staging-windows-apps/root/x"), b"half")
+        .file(
+            &format!("{COMPONENTS}/.staging-windows-apps/root/x"),
+            b"half",
+        )
         .file(&format!("{COMPONENTS}/.removing-desktop/component"), b"x")
         .file(&format!("{COMPONENTS}/stray/component"), b"not a record");
     assert!(manager::installed(&mut files).is_empty());
@@ -493,7 +526,10 @@ fn a_second_action_is_refused_while_one_runs_and_a_dead_holder_s_lock_is_taken_o
     );
     files.nodes.remove(&b"/proc/40"[..]);
     assert_eq!(manager::lock(&mut files, "Windows apps", false, 41), Ok(()));
-    assert_eq!(files.contents(manager::LOCK), Some(&b"41 install Windows apps"[..]));
+    assert_eq!(
+        files.contents(manager::LOCK),
+        Some(&b"41 install Windows apps"[..])
+    );
 }
 
 #[derive(Default)]
@@ -547,7 +583,10 @@ fn the_command_lists_installs_and_removes_in_the_design_s_words() {
     assert!(console.error.trim_end().ends_with("x86_64) on /dev/vdc"));
 
     let mut console = FakeConsole::default();
-    assert_eq!(run(&mut files, &mut console, "install --dry-run windows-apps"), 0);
+    assert_eq!(
+        run(&mut files, &mut console, "install --dry-run windows-apps"),
+        0
+    );
     assert_eq!(
         console.output,
         "would install Windows apps (18 B): 18 B in all\n"
@@ -575,13 +614,23 @@ fn the_command_lists_installs_and_removes_in_the_design_s_words() {
         ..FakeConsole::default()
     };
     assert_eq!(run(&mut files, &mut console, "remove windows-apps"), 1);
-    assert!(console.error.starts_with("Remove Windows apps (18 B)? Programs stay in Apps. [y/N] "));
+    assert!(
+        console
+            .error
+            .starts_with("Remove Windows apps (18 B)? Programs stay in Apps. [y/N] ")
+    );
     assert!(console.error.ends_with("Nothing removed.\n"));
     let mut console = FakeConsole::default();
-    assert_eq!(run(&mut files, &mut console, "remove --yes windows-apps"), 0);
+    assert_eq!(
+        run(&mut files, &mut console, "remove --yes windows-apps"),
+        0
+    );
     assert_eq!(console.output, "Removed Windows apps; 18 B freed.\n");
     let mut console = FakeConsole::default();
-    assert_eq!(run(&mut files, &mut console, "remove --yes windows-apps"), 0);
+    assert_eq!(
+        run(&mut files, &mut console, "remove --yes windows-apps"),
+        0
+    );
     assert_eq!(console.output, "Windows apps is not installed.\n");
     assert!(manager::installed(&mut files).is_empty());
 }
@@ -592,7 +641,11 @@ fn the_command_refuses_without_a_store_an_unknown_name_and_a_wrong_command_line(
     files.folder("/var").folder("/run").folder("/proc");
     let mut console = FakeConsole::default();
     assert_eq!(run(&mut files, &mut console, "install windows-apps"), 1);
-    assert!(console.error.starts_with("No component store is attached: attach the store disk"));
+    assert!(
+        console
+            .error
+            .starts_with("No component store is attached: attach the store disk")
+    );
     let mut files = machine(&[WINDOWS]);
     let mut console = FakeConsole::default();
     assert_eq!(run(&mut files, &mut console, "install winapps"), 1);
@@ -626,7 +679,10 @@ fn the_command_refuses_without_a_store_an_unknown_name_and_a_wrong_command_line(
 fn the_json_records_carry_the_design_s_fields() {
     let mut files = machine(&[DESKTOP, APPS]);
     let mut console = FakeConsole::default();
-    assert_eq!(run(&mut files, &mut console, "install --json builtin-apps"), 0);
+    assert_eq!(
+        run(&mut files, &mut console, "install --json builtin-apps"),
+        0
+    );
     assert_eq!(
         console.output,
         "{\"installed\":[\"desktop\",\"builtin-apps\"],\"size_bytes\":31}\n"

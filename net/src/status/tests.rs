@@ -147,7 +147,10 @@ fn the_adapter_is_the_first_interface_that_is_not_lo_and_its_state_has_one_word(
     };
     let file = format!("{}{}", line(&lo), line(&unplugged));
     assert_eq!(adapter(file.as_bytes()), Some(unplugged));
-    assert_eq!(state_word(adapter(file.as_bytes()).as_ref()), "cable-unplugged");
+    assert_eq!(
+        state_word(adapter(file.as_bytes()).as_ref()),
+        "cable-unplugged"
+    );
     assert_eq!(adapter(line(&lo).as_bytes()), None);
     assert_eq!(state_word(None), "none");
     assert_eq!(INTERFACES_PATH, "/proc/net/interfaces");

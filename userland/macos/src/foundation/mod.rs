@@ -282,9 +282,9 @@ mod runtime {
         APPLICATION_WILL_TERMINATE, PASTEBOARD_NAME_GENERAL, PASTEBOARD_TYPE_STRING,
         WINDOW_WILL_CLOSE,
     };
-    pub use super::notification::post;
     pub use super::exception::{raise_named, terminate_with};
     pub use super::log::log_message;
+    pub use super::notification::post;
     pub use super::number::{Exact, exact_value};
     pub use super::string::{string_from_utf8, text_of, with_utf8};
     pub use super::timer::{fire_due, next_due_in_ms};

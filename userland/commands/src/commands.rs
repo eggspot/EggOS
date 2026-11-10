@@ -4,16 +4,16 @@
 //! files of `ps`, `free` and `uptime`, and the link `/proc/self`) and Settings' example facts.
 
 use crate::errors::{
-    COMPONENT_BUSY, DECLINED_BY_USER, IN_USE, INSTALL_FAILED, NEEDED_BY, NEEDS_CONFIRMATION,
-    NO_STORE, NO_SUCH_COMPONENT, REMOVE_FAILED, STORE_DAMAGED, STORE_DETACHED,
-};
-use crate::errors::{
     ALREADY_ENDED, ALREADY_EXISTS, APP_EXISTS, BAD_CURSOR, DAMAGED, DIALOG_OPEN, ELEMENT_CANNOT,
     ELEMENT_DISABLED, FAILED, INVALID_VALUE, IS_A_FOLDER, NO_SPACE, NO_SUCH_APP, NO_SUCH_COMMAND,
     NO_SUCH_DOWNLOAD, NO_SUCH_ELEMENT, NO_SUCH_FILE, NO_SUCH_MENU_ITEM, NO_SUCH_PROCESS,
     NO_SUCH_SETTING, NO_SUCH_WINDOW, NO_WINDOW_SERVER, NOT_A_FOLDER, NOT_A_LINK, NOT_AN_APP,
     NOT_APPLIED, NOT_IN_TRASH, NOT_RESPONDING, PERMISSION_DENIED, PERSON_ACTIVE, PIXELS_ONLY,
     READ_ONLY, SETTING_READ_ONLY, STILL_DOWNLOADING, TIMED_OUT, TOO_MANY_ENTRIES, USAGE,
+};
+use crate::errors::{
+    COMPONENT_BUSY, DECLINED_BY_USER, IN_USE, INSTALL_FAILED, NEEDED_BY, NEEDS_CONFIRMATION,
+    NO_STORE, NO_SUCH_COMPONENT, REMOVE_FAILED, STORE_DAMAGED, STORE_DETACHED,
 };
 use crate::{
     AFTER_OPTION, CommandDefinition, CommandError, Count, DRY_RUN_OPTION, Effect, ErrorDefinition,
@@ -2685,7 +2685,10 @@ pub const TERMINAL: CommandDefinition = CommandDefinition {
             ValueType::Text,
             "The window's title, before \" - Terminal\".",
         ),
-        flag(b'e', "Run the rest of the line, a program and its arguments, instead of the shell."),
+        flag(
+            b'e',
+            "Run the rest of the line, a program and its arguments, instead of the shell.",
+        ),
     ],
     operands: &[operand("program", ValueType::Text, Count::ZeroOrMore)],
     outputs: NOTHING,
@@ -3816,7 +3819,10 @@ pub const WINDOWS_REGISTRY_SET: CommandDefinition = CommandDefinition {
             "windows registry set HKCU\\Software\\AutoHotkey Count --type dword 0x2b",
             "",
         ),
-        example("windows registry set HKCU\\Software\\AutoHotkey\\Hotkeys", ""),
+        example(
+            "windows registry set HKCU\\Software\\AutoHotkey\\Hotkeys",
+            "",
+        ),
         Example {
             line: "windows registry set HKCU\\Software\\AutoHotkey Count --type dword many",
             output: "",

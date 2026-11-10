@@ -109,16 +109,28 @@ fn cancel_sends_term_to_a_running_fetch_and_says_why_it_cannot() {
     assert_eq!((status, out.as_str(), errors.as_str()), (0, "", ""));
     assert_eq!(fake.signals_sent, [(61, 15)]);
     let (status, _, errors, fake) = run(machine(true), &[c"cancel", c"58"]);
-    assert_eq!((status, errors.as_str()), (1, "download: 58: has already ended\n"));
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "download: 58: has already ended\n")
+    );
     assert!(fake.signals_sent.is_empty());
     let (status, _, errors, _) = run(machine(false), &[c"cancel", c"61"]);
-    assert_eq!((status, errors.as_str()), (1, "download: 61: has already ended\n"));
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "download: 61: has already ended\n")
+    );
     let (status, _, errors, _) = run(machine(true), &[c"cancel", c"42"]);
-    assert_eq!((status, errors.as_str()), (1, "download: 42: no such download\n"));
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "download: 42: no such download\n")
+    );
     let mut refusing = machine(true);
     refusing.running.clear();
     let (status, _, errors, _) = run(refusing, &[c"cancel", c"61"]);
-    assert_eq!((status, errors.as_str()), (1, "download: 61: has already ended\n"));
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "download: 61: has already ended\n")
+    );
 }
 
 #[test]
@@ -134,7 +146,11 @@ fn clear_removes_the_records_that_are_over_and_never_the_files() {
     let (status, out, errors, fake) = run(machine(true), &[c"clear", c"61", c"58"]);
     assert_eq!(
         (status, out.as_str(), errors.as_str()),
-        (1, "Cleared 1 download.\n", "download: 61: still downloading\n")
+        (
+            1,
+            "Cleared 1 download.\n",
+            "download: 61: still downloading\n"
+        )
     );
     assert!(fake.nodes.contains_key(&b"/run/eggos/downloads/61"[..]));
     let (status, out, _, _) = run(Fake::default(), &[c"clear"]);

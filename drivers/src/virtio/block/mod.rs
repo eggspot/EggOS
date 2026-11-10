@@ -335,12 +335,7 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
             .ok_or(Error::MemoryTooSmall)
     }
 
-    fn post(
-        &mut self,
-        kind: u32,
-        piece: Piece,
-        job: &mut dyn Job,
-    ) -> Result<Option<usize>, Error> {
+    fn post(&mut self, kind: u32, piece: Piece, job: &mut dyn Job) -> Result<Option<usize>, Error> {
         let descriptors = match piece.bytes {
             0 => DESCRIPTORS_PER_REQUEST - 1,
             _ => DESCRIPTORS_PER_REQUEST,
@@ -350,9 +345,8 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
         {
             return Ok(None);
         }
-        let Some((request, first_slot)) = self
-            .requests
-            .reserve(RequestTable::slots_for(piece.bytes))
+        let Some((request, first_slot)) =
+            self.requests.reserve(RequestTable::slots_for(piece.bytes))
         else {
             return Ok(None);
         };
@@ -509,8 +503,11 @@ struct ReadJob<'r, 'a> {
 impl Job for ReadJob<'_, '_> {
     fn next_piece(&mut self) -> Option<Piece> {
         let reads = &*self.reads;
-        self.cursor
-            .next_piece(&|index| reads.get(index).map(|(sector, buffer)| (*sector, buffer.len())))
+        self.cursor.next_piece(&|index| {
+            reads
+                .get(index)
+                .map(|(sector, buffer)| (*sector, buffer.len()))
+        })
     }
 
     fn take(&mut self, piece: Piece, data: &[u8]) {

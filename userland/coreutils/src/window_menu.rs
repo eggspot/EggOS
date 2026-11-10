@@ -462,10 +462,7 @@ MFile\nIClear\tCmd+K\nDUndo\tCmd+Z\nIClose\tCmd+W\n";
         assert_eq!(fake.errors(), "wm: unrecognized option '--colour'\n");
         let (status, fake) = run(&[c"menu", c"129", c"--choose", c"--label"], machine());
         assert_eq!(status, 2);
-        assert_eq!(
-            fake.errors(),
-            "wm: option '--label' requires an argument\n"
-        );
+        assert_eq!(fake.errors(), "wm: option '--label' requires an argument\n");
     }
 
     #[test]

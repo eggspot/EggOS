@@ -567,18 +567,31 @@ mod tests {
         assert_eq!(status, 0);
         assert_eq!(fake.managed.last(), Some(&[129, 5, -10i32 as u32, 40]));
         for (arguments, error) in [
-            (&[c"focus", c"-x", c"129"][..], "wm: invalid option -- 'x'\n"),
+            (
+                &[c"focus", c"-x", c"129"][..],
+                "wm: invalid option -- 'x'\n",
+            ),
             (
                 &[c"close", c"--force", c"129"][..],
                 "wm: unrecognized option '--force'\n",
             ),
-            (&[c"size", c"129", c"-5", c"10"][..], "wm: invalid option -- '5'\n"),
+            (
+                &[c"size", c"129", c"-5", c"10"][..],
+                "wm: invalid option -- '5'\n",
+            ),
         ] {
             let (status, fake) = run(arguments, windows());
-            assert_eq!((status, fake.errors().as_str()), (2, error), "{arguments:?}");
+            assert_eq!(
+                (status, fake.errors().as_str()),
+                (2, error),
+                "{arguments:?}"
+            );
             assert!(fake.managed.is_empty());
         }
-        for arguments in [&[c"focus", c"129", c"130"][..], &[c"size", c"129", c"5"][..]] {
+        for arguments in [
+            &[c"focus", c"129", c"130"][..],
+            &[c"size", c"129", c"5"][..],
+        ] {
             let (status, fake) = run(arguments, windows());
             assert_eq!(status, 2, "{arguments:?}");
             assert!(fake.errors().starts_with("wm: usage: wm list"));
@@ -633,7 +646,10 @@ mod tests {
         assert_eq!(status, BUSY_STATUS);
         let _ = output.finish(status);
         assert!(
-            output.system.errors().contains("\"code\":\"not_responding\""),
+            output
+                .system
+                .errors()
+                .contains("\"code\":\"not_responding\""),
             "{}",
             output.system.errors()
         );
