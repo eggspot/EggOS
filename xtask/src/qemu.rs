@@ -1668,7 +1668,7 @@ const PROMPT_SESSION: [&[u8]; 28] = [
     PIPELINE_READING_THE_TERMINAL,
     b"echo EGGOS-PIPE interrupted $?\r",
     b"ls /proc/sys/kernel; cd /proc; pwd; cd ..; pwd; grep -c kB /proc/meminfo\r",
-    b"ps | head -n 1; ps | grep ' init$'; ps | grep -c ' R ps$'\r",
+    b"ps | head -n 1; ps | grep '^ *1 .* init$'; ps | grep -c ' R ps$'\r",
     b"free | head -n 1; free | grep -c '^Mem: '; uptime | grep -c '^up [0-9]'\r",
     b"echo a > /tmp/x; echo b >> /tmp/x; cat /tmp/x; cat < /tmp/x\r",
     b"mkdir /home/u; touch /home/u/f; cp /tmp/x /home/u/y; mv /home/u/y /home/u/z; ls /home/u\r",

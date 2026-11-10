@@ -103,12 +103,11 @@ fn first_session() -> Vec<String> {
     ]
 }
 
-fn first_output(arch: &Arch, component: &Component) -> Vec<String> {
+fn first_output(component: &Component) -> Vec<String> {
     let mut lines = vec![
         format!(
-            "app: EggOS cannot run {WINDOWS_PROGRAM} on {}: it needs the Windows layer, which is \
-             not installed: install it with `component install {WINDOWS_APPS}`",
-            arch.name
+            "app: could not install win-paint: it needs the Windows layer, which is not \
+             installed: install it with `component install {WINDOWS_APPS}`"
         ),
         "EGGOS-APP offer 1".to_owned(),
     ];
@@ -433,7 +432,7 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     args.extend(host_folder_args(arch, &folder.to_string_lossy()));
     args.extend(store.args(arch));
     let console = boot(arch, kernel, &args, &first_session())?;
-    lines_in_order(arch, &console, &first_output(arch, component))?;
+    lines_in_order(arch, &console, &first_output(component))?;
     listed_nothing(arch, &console)?;
     let console = boot(arch, kernel, &args, &second_session())?;
     lines_in_order(arch, &console, &second_output())?;
