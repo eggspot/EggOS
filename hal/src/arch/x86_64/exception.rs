@@ -1638,6 +1638,47 @@ const CPUID_7_EBX_SMAP: u32 = 1 << 20;
 /// `with_user_access`, between `stac` and `clac`. Read by the entry code and that function.
 static SMAP_ON: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
+/// Branch-prediction controls (D260): `IA32_SPEC_CTRL.IBRS` set once per CPU where the CPU has
+/// enhanced IBRS, and an `IA32_PRED_CMD.IBPB` barrier when the kernel switches between programs'
+/// address spaces where the CPU has IBPB.
+static PREDICTION_BARRIER: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+const IA32_SPEC_CTRL: u32 = 0x48;
+const IA32_PRED_CMD: u32 = 0x49;
+const SPEC_CTRL_IBRS: u64 = 1;
+const PRED_CMD_IBPB: u64 = 1;
+const CPUID_7_EDX_IBRS_IBPB: u32 = 1 << 26;
+const ARCH_CAPABILITIES_ENHANCED_IBRS: u64 = 1 << 1;
+
+fn set_up_branch_predictions() {
+    if super::timer::cpuid(0, 0)[0] < 7 {
+        return;
+    }
+    let edx = super::timer::cpuid(7, 0)[3];
+    if edx & CPUID_7_EDX_IBRS_IBPB == 0 {
+        return;
+    }
+    PREDICTION_BARRIER.store(1, core::sync::atomic::Ordering::Relaxed);
+    let enhanced = edx & CPUID_ARCH_CAPABILITIES != 0
+        && super::read_msr(IA32_ARCH_CAPABILITIES) & ARCH_CAPABILITIES_ENHANCED_IBRS != 0;
+    if enhanced {
+        // SAFETY: `IA32_SPEC_CTRL` exists when CPUID 7 EDX[26] says so (checked); with enhanced
+        // IBRS, setting IBRS once keeps lower-privilege predictions from steering the kernel's
+        // indirect branches and changes nothing else.
+        unsafe { super::write_msr(IA32_SPEC_CTRL, SPEC_CTRL_IBRS) };
+    }
+}
+
+/// Issues an indirect branch prediction barrier where the CPU has one, so a program cannot
+/// steer the next one's indirect branches (D260).
+pub(super) fn barrier_predictions() {
+    if PREDICTION_BARRIER.load(core::sync::atomic::Ordering::Relaxed) == 0 {
+        return;
+    }
+    // SAFETY: `IA32_PRED_CMD` exists when CPUID 7 EDX[26] says so, which `PREDICTION_BARRIER`
+    // records; writing IBPB only discards learned predictions.
+    unsafe { super::write_msr(IA32_PRED_CMD, PRED_CMD_IBPB) };
+}
+
 /// Whether SMAP is on, so user accesses need `stac` and `clac`.
 pub(super) fn smap_on() -> bool {
     SMAP_ON.load(core::sync::atomic::Ordering::Relaxed) != 0
@@ -1654,6 +1695,7 @@ fn supervisor_protections() -> u64 {
     let [_, ebx, ecx, _] = super::timer::cpuid(7, 0);
     let smep = if ebx & CPUID_7_EBX_SMEP != 0 { CR4_SMEP } else { 0 };
     let umip = if ecx & CPUID_7_ECX_UMIP != 0 { CR4_UMIP } else { 0 };
+    set_up_branch_predictions();
     let smap = if ebx & CPUID_7_EBX_SMAP != 0 {
         SMAP_ON.store(1, core::sync::atomic::Ordering::Relaxed);
         CR4_SMAP

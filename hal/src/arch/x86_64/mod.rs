@@ -898,6 +898,7 @@ impl Platform for X86_64 {
         unsafe {
             core::arch::asm!("mov cr3, {}", in(reg) *root, options(nostack, preserves_flags));
         }
+        exception::barrier_predictions();
     }
 
     unsafe fn switch_address_space(roots: &[u64]) {
