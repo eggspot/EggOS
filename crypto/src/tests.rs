@@ -555,3 +555,23 @@ fn p256_signatures_check_out_and_bad_keys_are_refused() {
     assert!(p256::private_key_from(&[0xff; 32]).is_none());
     assert_eq!(p256::private_key_from(&[7; 32]), Some([7; 32]));
 }
+
+#[test]
+fn decryption_undoes_fips_197_appendix_c() {
+    let key: [u8; 16] = core::array::from_fn(|index| index as u8);
+    let cipher = Aes::new(&key).unwrap();
+    let plain: [u8; 16] = core::array::from_fn(|index| (index as u8) * 0x11);
+    let mut block = plain;
+    cipher.encrypt_block(&mut block);
+    assert_eq!(
+        block,
+        [0x69, 0xc4, 0xe0, 0xd8, 0x6a, 0x7b, 0x04, 0x30, 0xd8, 0xcd, 0xb7, 0x80, 0x70, 0xb4, 0xc5, 0x5a]
+    );
+    cipher.decrypt_block(&mut block);
+    assert_eq!(block, plain);
+    let wide = Aes::new(&[7u8; 32]).unwrap();
+    let mut block = plain;
+    wide.encrypt_block(&mut block);
+    wide.decrypt_block(&mut block);
+    assert_eq!(block, plain);
+}

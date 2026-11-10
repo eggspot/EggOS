@@ -2,7 +2,9 @@
 //! secret: the state's 16 bytes are held as 8 planes of 16 bits (plane `i` holds bit `i` of
 //! every byte, byte `column * 4 + row` at bit `column * 4 + row`), and SubBytes is Boyar and
 //! Peralta's circuit for the S-box, computed on all 16 bytes at once with logic operations.
-//! Only encryption is here: GCM and counter mode need nothing else.
+//! Decryption, which only AES key wrap needs (D246), runs the inverses built from the forward
+//! steps: the inverse S-box as the inverse affine map around the S-box, and the inverse
+//! ShiftRows and MixColumns as their forward steps three times (each has order four).
 
 use core::fmt;
 
@@ -86,6 +88,46 @@ impl Aes {
         shift_rows(&mut state);
         add_round_key(&mut state, &self.round_keys[self.rounds]);
         *block = unbitslice(&state);
+    }
+
+    /// Decrypts one block in place.
+    pub fn decrypt_block(&self, block: &mut [u8; BLOCK_BYTES]) {
+        let mut state = bitslice(block);
+        add_round_key(&mut state, &self.round_keys[self.rounds]);
+        for round in (1..self.rounds).rev() {
+            inverse_shift_rows(&mut state);
+            state = inverse_substitute(state);
+            add_round_key(&mut state, &self.round_keys[round]);
+            inverse_mix_columns(&mut state);
+        }
+        inverse_shift_rows(&mut state);
+        state = inverse_substitute(state);
+        add_round_key(&mut state, &self.round_keys[0]);
+        *block = unbitslice(&state);
+    }
+}
+
+fn inverse_affine(planes: Planes) -> Planes {
+    const CONSTANT: u8 = 0x05;
+    core::array::from_fn(|bit| {
+        let constant = if CONSTANT >> bit & 1 == 1 { u16::MAX } else { 0 };
+        planes[(bit + 2) % 8] ^ planes[(bit + 5) % 8] ^ planes[(bit + 7) % 8] ^ constant
+    })
+}
+
+fn inverse_substitute(planes: Planes) -> Planes {
+    inverse_affine(substitute(inverse_affine(planes)))
+}
+
+fn inverse_shift_rows(state: &mut Planes) {
+    for _ in 0..3 {
+        shift_rows(state);
+    }
+}
+
+fn inverse_mix_columns(state: &mut Planes) {
+    for _ in 0..3 {
+        mix_columns(state);
     }
 }
 
