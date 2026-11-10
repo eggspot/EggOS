@@ -17,6 +17,10 @@ SECTIONS
         KEEP(*(.note.Xen))
     }
 
+    .note.eggos : AT(ADDR(.note.eggos) - KERNEL_VIRTUAL_OFFSET) {
+        KEEP(*(.note.eggos))
+    }
+
     .text : AT(ADDR(.text) - KERNEL_VIRTUAL_OFFSET) ALIGN(4096) {
         KEEP(*(.text.boot))
         *(.text .text.*)

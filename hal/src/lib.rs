@@ -21,6 +21,7 @@ pub mod cpu;
 mod exception;
 pub mod fdt;
 pub mod fp;
+pub mod handoff;
 mod interrupt;
 pub mod memory;
 pub mod paging;
@@ -212,6 +213,22 @@ pub trait Platform: 'static {
     /// machine without ACPI (the default) or without that table.
     fn acpi_table(_signature: &[u8; 4]) -> Option<&'static [u8]> {
         None
+    }
+
+    /// The framebuffer the firmware's graphics output left set up, when EggOS's UEFI loader
+    /// started the kernel and found one it can draw into (D236); `None` otherwise.
+    fn boot_framebuffer() -> Option<handoff::Framebuffer> {
+        handoff::handoff::<Self>()
+            .map(|handoff| handoff.framebuffer)
+            .filter(handoff::Framebuffer::is_usable)
+    }
+
+    /// The GPT unique partition GUID of the partition EggOS's UEFI loader was read from (D236),
+    /// for the installer to find the disk it runs from; `None` when unknown.
+    fn boot_partition() -> Option<[u8; 16]> {
+        handoff::handoff::<Self>()
+            .filter(handoff::Handoff::knows_boot_partition)
+            .map(|handoff| handoff.boot_partition)
     }
 
     /// Calls `clock` with the platform's own real-time clock, one no bus describes, if it has

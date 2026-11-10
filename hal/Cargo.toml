@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+eggos-boot-handoff = { path = "../boot/handoff" }
 eggos-drivers = { path = "../drivers" }
 
 [lints]

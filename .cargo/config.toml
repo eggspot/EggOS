@@ -10,6 +10,12 @@ rustflags = ["--cfg", "eggos_kernel"]
 [target.x86_64-unknown-none]
 rustflags = ["-C", "relocation-model=static", "--cfg", "eggos_kernel"]
 
+[target.x86_64-unknown-uefi]
+rustflags = ["--cfg", "eggos_uefi"]
+
+[target.aarch64-unknown-uefi]
+rustflags = ["--cfg", "eggos_uefi"]
+
 [target.x86_64-unknown-linux-musl]
 linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]

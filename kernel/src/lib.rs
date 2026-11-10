@@ -101,6 +101,12 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 report_device_seed(console, devices::virtio::seed_random::<P>())?;
                 report_wall_clock(console, wall_clock::start::<P>())?;
                 if display::mode().is_none() {
+                    display::boot_framebuffer::report(
+                        console,
+                        display::boot_framebuffer::install::<P>(&mut memory),
+                    )?;
+                }
+                if display::mode().is_none() {
                     display::offscreen::report(
                         console,
                         display::offscreen::install_requested::<P>(),

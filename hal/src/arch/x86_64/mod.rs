@@ -144,6 +144,81 @@ start64_high:
     jmp     3b
     .popsection
 
+    .pushsection .note.eggos, "a", @note
+    .balign 4
+    .long 6
+    .long 8
+    .long 1
+    .asciz "EggOS"
+    .balign 4
+    .quad _start64_uefi - KERNEL_VIRTUAL_OFFSET
+    .popsection
+
+    .pushsection .text.boot, "ax"
+    .code64
+    .global _start64_uefi
+_start64_uefi:
+    cli
+    cld
+    movq    %rdi, %r12
+    movq    %rsi, %r13
+    leaq    __bss_start(%rip), %rdi
+    leaq    __bss_end(%rip), %rcx
+    subq    %rdi, %rcx
+    xorl    %eax, %eax
+    rep stosb
+    leaq    {start_info}(%rip), %rax
+    movl    %r12d, (%rax)
+    leaq    {boot_handoff}(%rip), %rax
+    movq    %r13, (%rax)
+
+    leaq    boot_pml4(%rip), %rdx
+    leaq    boot_pdpt(%rip), %rax
+    orq     $0x3, %rax
+    movq    %rax, (%rdx)
+    movq    %rax, ({direct_map_index} * 8)(%rdx)
+    leaq    boot_pdpt_kernel(%rip), %rax
+    orq     $0x3, %rax
+    movq    %rax, (511 * 8)(%rdx)
+    leaq    boot_pd(%rip), %rax
+    orq     $0x3, %rax
+    leaq    boot_pdpt_kernel(%rip), %rcx
+    movq    %rax, ({kernel_pdpt_index} * 8)(%rcx)
+    leaq    boot_pdpt(%rip), %rsi
+    leaq    boot_pd(%rip), %rbx
+    xorl    %ecx, %ecx
+4:  movq    %rcx, %rax
+    shlq    $12, %rax
+    addq    %rbx, %rax
+    orq     $0x3, %rax
+    movq    %rax, (%rsi, %rcx, 8)
+    incl    %ecx
+    cmpl    $4, %ecx
+    jne     4b
+    xorl    %ecx, %ecx
+5:  movq    %rcx, %rax
+    shlq    $21, %rax
+    orq     $0x83, %rax
+    movq    %rax, (%rbx, %rcx, 8)
+    incl    %ecx
+    cmpl    $2048, %ecx
+    jne     5b
+
+    movq    %cr4, %rax
+    andq    $~(1 << 7), %rax
+    movq    %rax, %cr4
+    movq    %rdx, %cr3
+    movabsq $uefi_start64_high, %rax
+    jmpq    *%rax
+uefi_start64_high:
+    lgdt    boot_gdt_pointer64(%rip)
+    movq    $__stack_top, %rsp
+    pushq   $0x08
+    movabsq $start64_high, %rax
+    pushq   %rax
+    lretq
+    .popsection
+
     // A secondary CPU's 64-bit entry from the trampoline (D40): the `CpuStart`'s address and
     // the kernel's root from it, then the kernel's tables (the boot ones map only 4 GiB, not
     // the `CpuStart` or its stack wherever they are), the stack; then the kernel's GDT
@@ -280,6 +355,7 @@ boot_pd:
     direct_map_index = const paging::index(DIRECT_MAP_OFFSET as u64, 3),
     kernel_pdpt_index = const paging::index(KERNEL_VIRTUAL_OFFSET, 2),
     start_info = sym PVH_START_INFO,
+    boot_handoff = sym crate::handoff::HANDOFF_ADDRESS,
     install_exception_vectors = sym exception::install,
     init_timer = sym timer::init,
     load_idt = sym exception::load,
@@ -1135,7 +1211,10 @@ fn capture_command_line() {
     if COMMAND_LINE.is_taken() {
         return;
     }
-    COMMAND_LINE.store(pvh_command_line().unwrap_or_default());
+    let handoff_line = crate::handoff::handoff::<X86_64>()
+        .map(|handoff| crate::handoff::command_line::<X86_64>(&handoff))
+        .filter(|line| !line.is_empty());
+    COMMAND_LINE.store(handoff_line.or_else(pvh_command_line).unwrap_or_default());
 }
 
 fn pvh_command_line() -> Option<&'static [u8]> {

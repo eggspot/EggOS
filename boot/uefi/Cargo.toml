@@ -1,0 +1,16 @@
+[package]
+name = "eggos-uefi-boot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "eggos-uefi-boot"
+path = "src/main.rs"
+
+[dependencies]
+eggos-boot-handoff = { path = "../handoff" }
+
+[lints]
+workspace = true

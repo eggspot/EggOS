@@ -38,7 +38,7 @@ core::arch::global_asm!(
 
 /// The physical address of the kernel image's byte at virtual address `virt`.
 fn physical(virt: *const u8) -> u64 {
-    (virt as u64).wrapping_sub(KERNEL_VIRTUAL_OFFSET)
+    (virt as u64).wrapping_sub(crate::arch::kernel_virtual_offset())
 }
 
 /// The physical memory the kernel image occupies, `.bss` and boot stack included. The kernel
@@ -53,7 +53,7 @@ pub(crate) fn kernel_image() -> PhysicalRange {
 /// The parts of the kernel image, for its page-table permissions.
 pub(crate) fn kernel_image_parts() -> KernelImage {
     KernelImage {
-        virtual_offset: KERNEL_VIRTUAL_OFFSET,
+        virtual_offset: crate::arch::kernel_virtual_offset(),
         start: physical(&raw const __kernel_start),
         text_start: physical(&raw const __text_start),
         rodata_start: physical(&raw const __rodata_start),

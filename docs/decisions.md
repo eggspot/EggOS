@@ -18910,3 +18910,61 @@ the license, by an explicit instruction recorded here.
   `12.4 MB` the CLI and the pane show: that text is `eggos-components`' `size_text`, and
   `eggos-components` depends on `eggos-mcp`, so the MCP server reads the installed record
   itself (`ComponentRecordSum`), pinned to the writer's format by a test on each side.
+
+## D236 Booting real machines through UEFI: EggOS's own UEFI loader, the handoff, a 64-bit x86_64 entry, an AArch64 kernel placed in any gigabyte, the firmware framebuffer as a display, and the `SPCR` console (M13, first part; code written, unbuilt, untested: code-only mode, owner's order of 2026-11-10) — Decided by the code-only session (engineering)
+
+- **Context.** Until now every kernel booted from QEMU's loaders (PVH on x86_64, the ELF loader with
+  a device tree at the start of RAM on AArch64). Real PCs and AArch64 UEFI machines boot from a disk
+  or a USB stick through UEFI. The owner's M13 order: x86_64 PCs and AArch64 UEFI machines from USB,
+  a GOP framebuffer, ACPI on real machines, then disks, USB input, wired network and an installer.
+- **Decision.**
+  - **The loader** is `boot/uefi` (`eggos-uefi-boot`), our own Rust UEFI application for the
+    `x86_64-unknown-uefi` and `aarch64-unknown-uefi` targets (`cfg(eggos_uefi)`; a stub on the host),
+    with UEFI's types written from the UEFI 2.10 specification (no crate). It is
+    `\EFI\BOOT\BOOTX64.EFI` / `BOOTAA64.EFI` on the EFI system partition, and reads
+    `\EGGOS\KERNEL.ELF` (the release kernel, unchanged) and `\EGGOS\CMDLINE.TXT` (first line, trimmed;
+    optional) from the partition it was loaded from. It turns the watchdog off, picks the graphics
+    mode (the current one when its pixels are blue-green-red and rows packed, else the largest such
+    mode up to 3840x2160), finds the ACPI 2.0 (else 1.0) RSDP and a device tree in the configuration
+    table, the boot partition's GPT GUID in the device path, leaves boot services (retrying with a
+    fresh memory map) and enters the kernel.
+  - **The handoff** is `boot/handoff` (`eggos-boot-handoff`): one `repr(C)` structure (magic
+    `EGGBOOT1`, version 1) with the memory map, the command line, the RSDP, the device tree, the
+    framebuffer, the boot partition, the kernel's and the boot data's ranges and the UEFI system
+    table. Its memory map entries have PVH's `hvm_memmap_table_entry` layout, sorted and merged:
+    loader, boot services and free memory become RAM; runtime services, ACPI, persistent and unusable
+    memory keep kinds of their own; device memory is left out, so it never enters the direct map;
+    the loader's own data (handoff, start info, command line, map) is `BOOT_DATA`, kept by the kernel.
+    The data lies below 4 GiB on x86_64 and below 256 GiB on AArch64, inside each one's boot direct map.
+  - **x86_64** keeps one kernel image for QEMU and PCs. The kernel adds a 64-bit entry,
+    `_start64_uefi`, named by an `EggOS` ELF note (type 1, the entry's physical address) beside the
+    PVH note. The loader places the image at its physical address (1 MiB; refused with a message if the
+    firmware uses it), builds a PVH start info version 1 pointing at the handoff's map, command line
+    and RSDP, and jumps with `rdi` = start info and `rsi` = handoff, on the firmware's identity
+    mapping. The entry zeroes `.bss`, stores both addresses, builds the same boot page tables as the
+    PVH path (with `CR4.PGE` cleared, so no global firmware translation survives), loads them and joins
+    the PVH path's 64-bit code with the kernel's GDT. Everything after reads the PVH start info as
+    before; the command line comes from the handoff. The loader refuses firmware running with 5-level
+    paging.
+  - **AArch64** may run anywhere in RAM: the boot code maps the gigabyte holding the image by its
+    physical address already, so the loader keeps the image's offset inside a gigabyte (2 MiB) and
+    picks the first free gigabyte below 256 GiB (QEMU `virt`'s address first). `_start` records the
+    run-time virtual offset (`kernel_virtual_offset()`, used wherever the constant was), takes the
+    gigabyte it runs in as where RAM starts in the boot direct map, and takes `x0` as the handoff. The
+    loader cleans the image and its data to the point of coherency, turns the MMU and caches off and,
+    from EL2, drops to EL1 (AArch64 EL1, counters open to EL1, GICv3 system registers enabled for EL1
+    when present). With a handoff, the memory map, the direct map, the device tree (the firmware's, or
+    none) and the command line come from it; ACPI tables are found from its RSDP; the console is the
+    PL011 or SBSA UART the `SPCR` names (no console when it names another kind), console input stays
+    QEMU `virt`'s only.
+  - **The firmware framebuffer** becomes the display when no display device was found
+    (`display::boot_framebuffer`, before the offscreen one): mapped as device memory through a device
+    window and drawn into directly, as wide as its stride; flushes only order the writes. Blue-green-
+    red only. `boot: firmware framebuffer <w>x<h>` on the console.
+- **Not yet.** Building, booting under QEMU with OVMF/AAVMF and on real machines (code-only mode);
+  `cargo xtask` steps that build the loader and write a bootable USB image (M13's installer batch);
+  a relocatable x86_64 kernel for firmware that uses 1 MiB; the RGB pixel order; columns past the
+  visible width are drawn though not shown; write-combining for the framebuffer (PAT on x86_64,
+  normal non-cacheable on AArch64), which device memory makes slow; GIC, timer, PSCI conduit, CPUs
+  and console input from ACPI on AArch64 (the next part, D237); UEFI runtime services (the clock, the
+  variables); Secure Boot signing (needs the owner's key).
