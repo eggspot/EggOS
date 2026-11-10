@@ -452,7 +452,10 @@ fn removing_one_that_is_needed_or_in_use_is_refused_and_otherwise_leaves_nothing
             .all(|path| !path.contains("windows"))
     );
     assert_eq!(
-        manager::check_remove(&mut files, &manager::installed(&mut files), "windows-apps"),
+        {
+            let installed = manager::installed(&mut files);
+            manager::check_remove(&mut files, &installed, "windows-apps")
+        },
         Ok(None)
     );
 }
@@ -485,8 +488,11 @@ fn a_program_run_through_a_link_or_seen_by_its_executable_keeps_the_component_in
     files.file("/proc/22/cmdline", b"/bin/ls\0/usr/lib/eggos/windows\0");
     assert_eq!(manager::in_use(&mut files, &component), (Vec::new(), 0));
     assert_eq!(
-        manager::check_remove(&mut files, &manager::installed(&mut files), "windows-apps")
-            .map(|found| found.is_some()),
+        {
+            let installed = manager::installed(&mut files);
+            manager::check_remove(&mut files, &installed, "windows-apps")
+                .map(|found| found.is_some())
+        },
         Ok(true)
     );
 }

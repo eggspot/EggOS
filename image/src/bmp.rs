@@ -280,18 +280,18 @@ fn decode_row(
             }
         }
         16 => {
-            for (pixel, bytes) in target.iter_mut().zip(row.chunks_exact(2)) {
-                *pixel = fields.colour(u32::from(u16::from_le_bytes([bytes[0], bytes[1]])));
+            for (pixel, bytes) in target.iter_mut().zip(row.as_chunks::<2>().0) {
+                *pixel = fields.colour(u32::from(u16::from_le_bytes(*bytes)));
             }
         }
         24 => {
-            for (pixel, bytes) in target.iter_mut().zip(row.chunks_exact(3)) {
+            for (pixel, bytes) in target.iter_mut().zip(row.as_chunks::<3>().0) {
                 *pixel = crate::rgb(bytes[2], bytes[1], bytes[0]);
             }
         }
         _ => {
-            for (pixel, bytes) in target.iter_mut().zip(row.chunks_exact(4)) {
-                let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            for (pixel, bytes) in target.iter_mut().zip(row.as_chunks::<4>().0) {
+                let word = u32::from_le_bytes(*bytes);
                 *pixel = match keep_alpha {
                     true => word,
                     false => fields.colour(word),

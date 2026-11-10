@@ -254,7 +254,7 @@ impl Settings {
         }
     }
 
-    pub fn to_bytes(&self) -> [u8; SETTINGS_SIZE] {
+    pub fn to_bytes(self) -> [u8; SETTINGS_SIZE] {
         let mut bytes = [0; SETTINGS_SIZE];
         for (index, word) in self.words.iter().enumerate() {
             bytes[index * 4..index * 4 + 4].copy_from_slice(&word.to_ne_bytes());

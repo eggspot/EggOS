@@ -6,7 +6,7 @@ use crate::canvas::Canvas;
 use crate::geometry::Rect;
 use crate::text::{self, Text};
 use crate::widget::{
-    Align, LINE_HEIGHT, Look, MAX_COLUMNS, TABLE_ARROW_ROOM, TABLE_CELL_PADDING,
+    Align, LINE_HEIGHT, Look, MAX_COLUMNS, ScrollBars, TABLE_ARROW_ROOM, TABLE_CELL_PADDING,
     TABLE_FIRST_TEXT_X, TABLE_HANDLE, TABLE_HEADER_HEIGHT, TABLE_MARK_X, TABLE_MIN_COLUMN,
     TABLE_ROW_HEIGHT, THUMB, THUMB_X, clipped_text, focus_ring, scroll_bars, sort_arrow, viewport,
 };
@@ -170,7 +170,7 @@ impl Table {
 
     /// Its scroll bars in a table at `rect`: the vertical one's track and thumb, then the
     /// horizontal one's.
-    pub fn bars(&self, rect: Rect) -> (Option<(Rect, Rect)>, Option<(Rect, Rect)>) {
+    pub fn bars(&self, rect: Rect) -> ScrollBars {
         scroll_bars(
             Self::body(rect),
             (self.content_width(), self.content_height()),

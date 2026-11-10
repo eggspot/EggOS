@@ -203,7 +203,7 @@ pub fn translate_written(
             }
         }
         (Translation::Utf16, false) => {
-            for unit in input.chunks_exact(2) {
+            for unit in input.as_chunks::<2>().0 {
                 let bytes: &[u8] = match unit {
                     [LINE_FEED, 0] => &[CARRIAGE_RETURN, 0, LINE_FEED, 0],
                     _ => unit,
@@ -216,8 +216,10 @@ pub fn translate_written(
         }
         _ => {
             let units = input
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_le_bytes(*pair));
             for decoded in char::decode_utf16(units) {
                 let (c, width) = match decoded {
                     Ok(c) => (c, c.len_utf16() * 2),

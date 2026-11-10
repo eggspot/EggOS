@@ -251,10 +251,10 @@ fn add_device(
 /// What a driver whose device may interrupt gives its requests as `keep_waiting`: with `events`,
 /// sleeping until the device's interrupt raises them or `deadline` passes; without, polling
 /// until `deadline`. The count it compares with is read now, before the request is posted.
-pub fn waiting_for(
+pub fn waiting_for<'a>(
     events: Option<&'static DeviceEvents>,
-    deadline: &mut Deadline,
-) -> impl FnMut() -> bool + '_ {
+    deadline: &'a mut Deadline,
+) -> impl FnMut() -> bool + 'a {
     let mut seen = events.map_or(0, DeviceEvents::raised);
     move || match events {
         Some(events) => deadline.sleep_until_raised(events, &mut seen),
@@ -820,7 +820,7 @@ mod disk {
             }
         };
         let events = take_disk_events()
-            .filter(|events| connect_interrupt(probe, id, disk.transport(), *events).is_ok());
+            .filter(|events| connect_interrupt(probe, id, disk.transport(), events).is_ok());
         if events.is_some() {
             disk.enable_interrupts();
         }

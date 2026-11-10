@@ -1,10 +1,11 @@
 //! The About pane's `Devices` section (D220, docs/ux/devices-v0.3.md): the machine's devices in
 //! a toolkit table, the rows, order and words `device list` and the MCP tool `device_list`
 //! give (the shared crate `eggos_device_list`), with `Show all <n> devices` for every one. The
-//! file is read each time the pane is shown ([`Request::ReadDevices`]); the box re-filters
+//! file is read each time the pane is shown
+//! ([`crate::settings_window::Request::ReadDevices`]); the box re-filters
 //! what was read and is unticked whenever the pane opens.
 
-use crate::settings_window::{CAPACITY, Request};
+use crate::settings_window::CAPACITY;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};

@@ -303,6 +303,16 @@ pub struct FileStore<F: Files> {
     clock: fn() -> u64,
 }
 
+impl<F: Files> core::fmt::Debug for FileStore<F> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("FileStore")
+            .field("home", &self.home)
+            .field("user_id", &self.user_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<F: Files> FileStore<F> {
     /// The hives of user `user_id`, whose home folder is `home`, through `files`; `clock`
     /// gives the time in 100 ns since 1601.
@@ -711,7 +721,7 @@ fn parse_typed_binary(text: &str) -> Result<Vec<u8>, &'static str> {
         }
         digits.push_str(word);
     }
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return Err("Binary data has an odd number of hex digits.");
     }
     parse_hex(&digits).ok_or("Binary data is pairs of hex digits, such as 4a 00 ff.")

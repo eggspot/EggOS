@@ -87,7 +87,7 @@ impl<'a> Reader<'a> {
         let count = 2usize << (flags & 0x07);
         let table = self.take(3 * count)?;
         let mut colours = [OPAQUE; 256];
-        for (colour, rgb) in colours.iter_mut().zip(table.chunks_exact(3)) {
+        for (colour, rgb) in colours.iter_mut().zip(table.as_chunks::<3>().0) {
             *colour = crate::rgb(rgb[0], rgb[1], rgb[2]);
         }
         Ok(Palette { colours })
@@ -117,7 +117,7 @@ fn control(reader: &mut Reader<'_>) -> Result<Control, Error> {
 fn loop_count(reader: &mut Reader<'_>) -> Result<Option<u16>, Error> {
     let looping = reader
         .block()?
-        .is_some_and(|name| LOOPING_NAMES.iter().any(|known| *known == name));
+        .is_some_and(|name| LOOPING_NAMES.contains(&name));
     let mut count = None;
     while let Some(data) = reader.block()? {
         if let [LOOPING_BLOCK, low, high, ..] = data
@@ -236,10 +236,7 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits, every_frame: bool) -> Result
     let mut table = Table::new()?;
     let mut data = Vec::new();
     let mut indices = Vec::new();
-    loop {
-        let Ok(introducer) = reader.byte() else {
-            break;
-        };
+    while let Ok(introducer) = reader.byte() {
         match introducer {
             EXTENSION => match reader.byte()? {
                 GRAPHIC_CONTROL => pending = control(&mut reader)?,

@@ -89,8 +89,10 @@ pub fn strings_of(data: &[u8]) -> Vec<String> {
 }
 
 fn units_of(data: &[u8]) -> Vec<u16> {
-    data.chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+    data.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .collect()
 }
 
@@ -215,11 +217,13 @@ pub fn parse_number(text: &str) -> Option<u64> {
 /// Pairs of hex digits, spaces between pairs allowed.
 pub fn parse_hex(text: &str) -> Option<Vec<u8>> {
     let digits: Vec<u8> = text.bytes().filter(|byte| *byte != b' ').collect();
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return None;
     }
     digits
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = char::from(pair[0]).to_digit(16)?;
             let low = char::from(pair[1]).to_digit(16)?;

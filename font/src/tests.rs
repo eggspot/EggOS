@@ -294,7 +294,7 @@ fn every_glyph_names_the_character_that_chose_it() {
     assert_eq!(super::glyph_id(0x4e2d), super::REPLACEMENT);
 }
 
-fn design_glyphs(text: &str) -> Vec<(u32, GlyphRows)> {
+fn design_glyphs_in(text: &str) -> Vec<(u32, GlyphRows)> {
     let lines: Vec<&str> = text.lines().collect();
     let mut glyphs = Vec::new();
     for (at, line) in lines.iter().enumerate() {
@@ -317,7 +317,7 @@ fn design_glyphs(text: &str) -> Vec<(u32, GlyphRows)> {
 
 #[test]
 fn egg_mono_draws_latin_extended_a_from_the_design_file() {
-    let glyphs = design_glyphs(include_str!("../../docs/ux/font-8x16-latin-ext-a.txt"));
+    let glyphs = design_glyphs_in(include_str!("../../docs/ux/font-8x16-latin-ext-a.txt"));
     assert_eq!(glyphs.len(), 128);
     for (index, (code, rows)) in glyphs.iter().enumerate() {
         assert_eq!(*code, 0x100 + index as u32);

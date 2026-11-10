@@ -335,7 +335,7 @@ fn cancel_one<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let cancelled = cancel(record.as_ref(), id, |pid, signal| {
         system
             .send_signal(pid as i32, signal)
-            .map_err(|errno| errno.0)
+            .map_err(|errno| i32::from(errno.0))
     });
     let error = match cancelled {
         Ok(()) => return 0,

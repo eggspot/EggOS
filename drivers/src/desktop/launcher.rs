@@ -956,7 +956,9 @@ impl Desktop {
 /// shown for good after [`CARET_STEADY_AFTER_MS`] or with `reduce_motion`.
 pub fn caret_shown_at(since_ms: u32, now_ms: u32, reduce_motion: bool) -> bool {
     let elapsed = super::responsiveness::waited(now_ms, since_ms);
-    reduce_motion || elapsed >= CARET_STEADY_AFTER_MS || (elapsed / CARET_BLINK_MS) % 2 == 0
+    reduce_motion
+        || elapsed >= CARET_STEADY_AFTER_MS
+        || (elapsed / CARET_BLINK_MS).is_multiple_of(2)
 }
 
 impl Desktop {

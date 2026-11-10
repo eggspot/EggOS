@@ -161,6 +161,11 @@ fn row_button(window: &SettingsWindow, row: usize) -> WidgetId {
     widgets(window).rows[row].button
 }
 
+fn activate_row(window: &mut SettingsWindow, row: usize) -> Option<Request> {
+    let button = row_button(window, row);
+    activate(window, button)
+}
+
 fn rows(window: &SettingsWindow) -> Vec<[String; 3]> {
     window
         .components_pane()
@@ -341,7 +346,7 @@ fn installing_shows_the_bar_under_the_row_and_moves_the_rows_below() {
 #[test]
 fn removing_is_refused_or_confirmed_as_the_cli_answers() {
     let mut window = opened(read(&["desktop", "builtin-apps"]));
-    assert_eq!(activate(&mut window, row_button(&window, 0)), None);
+    assert_eq!(activate_row(&mut window, 0), None);
     assert_eq!(
         notes(&window),
         [
@@ -352,7 +357,7 @@ fn removing_is_refused_or_confirmed_as_the_cli_answers() {
 
     let mut window = opened(read_of(Some(store()), &["desktop", "builtin-apps"], false));
     assert_eq!(
-        activate(&mut window, row_button(&window, 0)),
+        activate_row(&mut window, 0),
         Some(Request::CheckComponentRemove)
     );
     assert_eq!(window.components_pane().to_check(), Some("desktop"));
@@ -367,7 +372,7 @@ fn removing_is_refused_or_confirmed_as_the_cli_answers() {
         ["Needed by Built-in apps: remove that first."]
     );
 
-    activate(&mut window, row_button(&window, 1));
+    activate_row(&mut window, 1);
     window.show_remove_check(
         Err(Refusal::InUse {
             names: alloc::vec![String::from("Text Editor")],
@@ -380,7 +385,7 @@ fn removing_is_refused_or_confirmed_as_the_cli_answers() {
         ["In use: Text Editor is running. Quit it, then remove."]
     );
 
-    activate(&mut window, row_button(&window, 1));
+    activate_row(&mut window, 1);
     window.show_remove_check(Ok(Some(four()[1].clone())), 0);
     let ids = widgets(&window);
     assert_eq!(
@@ -405,7 +410,7 @@ fn removing_is_refused_or_confirmed_as_the_cli_answers() {
     assert_eq!(window.widgets().focus(), Some(row_button(&window, 1)));
     assert_eq!(rect(&window, ids.rows[2].panel).y, 220);
 
-    activate(&mut window, row_button(&window, 1));
+    activate_row(&mut window, 1);
     window.show_remove_check(Ok(Some(four()[1].clone())), 0);
     assert_eq!(
         press(&mut window, key::ENTER),
@@ -425,7 +430,7 @@ fn removing_is_refused_or_confirmed_as_the_cli_answers() {
 #[test]
 fn a_missing_dependency_is_confirmed_then_installed_first() {
     let mut window = opened(read(&[]));
-    assert_eq!(activate(&mut window, row_button(&window, 1)), None);
+    assert_eq!(activate_row(&mut window, 1), None);
     let ids = widgets(&window);
     assert_eq!(
         notes(&window),
@@ -460,7 +465,7 @@ fn a_missing_dependency_is_confirmed_then_installed_first() {
 #[test]
 fn a_failed_or_cancelled_install_says_why_and_installs_nothing() {
     let mut window = opened(read(&["desktop", "builtin-apps"]));
-    activate(&mut window, row_button(&window, 2));
+    activate_row(&mut window, 2);
     window.show_installed(
         Err(Failure::Damaged(String::from("windows-apps.component"))),
         read(&["desktop", "builtin-apps"]),
@@ -477,7 +482,7 @@ fn a_failed_or_cancelled_install_says_why_and_installs_nothing() {
         ]
     );
 
-    activate(&mut window, row_button(&window, 2));
+    activate_row(&mut window, 2);
     let no_space = Failure::NoSpace {
         needed: WINDOWS_BYTES,
         free: 629_146,
@@ -487,16 +492,16 @@ fn a_failed_or_cancelled_install_says_why_and_installs_nothing() {
     assert_eq!(notes(&window)[0], line);
     assert!(line.starts_with("Not enough space: 1.8 MB needed, "));
 
-    activate(&mut window, row_button(&window, 2));
+    activate_row(&mut window, 2);
     window.show_installed(Err(Failure::Detached), read(&["desktop", "builtin-apps"]));
     assert_eq!(
         notes(&window)[0],
         "The store was detached before the copy finished."
     );
 
-    activate(&mut window, row_button(&window, 2));
+    activate_row(&mut window, 2);
     assert_eq!(
-        activate(&mut window, row_button(&window, 2)),
+        activate_row(&mut window, 2),
         None,
         "Cancel asks for nothing more"
     );
@@ -565,7 +570,7 @@ fn an_agent_reads_the_rows_and_may_not_say_yes_to_a_remove() {
         (Role::Button, "Install Windows apps")
     );
 
-    activate(&mut window, row_button(&window, 1));
+    activate_row(&mut window, 1);
     window.show_remove_check(Ok(Some(four()[1].clone())), 0);
     assert_eq!(
         window
@@ -576,7 +581,7 @@ fn an_agent_reads_the_rows_and_may_not_say_yes_to_a_remove() {
     );
 
     let mut window = opened(read(&[]));
-    activate(&mut window, row_button(&window, 1));
+    activate_row(&mut window, 1);
     let (outcome, response) = window
         .tree()
         .act(element_of(ids.confirm), Action::Invoke, "", 0);

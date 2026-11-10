@@ -1,6 +1,6 @@
 use super::*;
 use crate::facts::Facts;
-use crate::settings_window::{ABOUT, DATE_AND_TIME, PANES, SettingsWindow, pane_matches};
+use crate::settings_window::{ABOUT, DATE_AND_TIME, PANES, Request, SettingsWindow, pane_matches};
 use alloc::string::String;
 use eggos_toolkit::input::{Input, MouseButton};
 
@@ -103,7 +103,8 @@ fn ticking_the_box_shows_every_device_and_keeps_the_selected_one() {
     let text = [eggos_device_list::EXAMPLE, REFUSED].concat();
     let mut window = opened(Ok(&text[..]));
     assert_eq!(window.about_pane().shown(), [4, 0, 1, 5]);
-    window.tree().set_selected(window.about_pane().table(), 2);
+    let table = window.about_pane().table();
+    window.tree().set_selected(table, 2);
     toggle(&mut window);
     assert_eq!(window.about_pane().shown(), [4, 0, 1, 2, 3, 5]);
     assert_eq!(table_of(&window).selected, 2);
@@ -111,7 +112,8 @@ fn ticking_the_box_shows_every_device_and_keeps_the_selected_one() {
         row_words(&window, 5)[2],
         String::from("Refused: a legacy device")
     );
-    window.tree().set_selected(window.about_pane().table(), 3);
+    let table = window.about_pane().table();
+    window.tree().set_selected(table, 3);
     toggle(&mut window);
     assert_eq!(window.about_pane().shown(), [4, 0, 1, 5]);
     assert_eq!(table_of(&window).selected, 0);

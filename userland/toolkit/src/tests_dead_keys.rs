@@ -7,7 +7,6 @@ use crate::widget::{self, Escape, Kind, LINE_HEIGHT, Length, Place, field_inner}
 
 const WIDTH: i32 = 320;
 const HEIGHT: i32 = 200;
-const ACUTE_KEY: u16 = 13;
 const E_KEY: u16 = 18;
 const A_KEY: u16 = 30;
 

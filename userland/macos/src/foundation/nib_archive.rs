@@ -417,7 +417,7 @@ pub fn numbers<const N: usize>(text: &[u8]) -> Option<[f64; N]> {
     let text = core::str::from_utf8(text).ok()?;
     let mut values = [0.0; N];
     let mut parts = text
-        .split(|character: char| matches!(character, '{' | '}' | ','))
+        .split(['{', '}', ','])
         .map(str::trim)
         .filter(|part| !part.is_empty());
     for value in values.iter_mut() {

@@ -30,9 +30,6 @@ pub const FIRST_RETRY_S: u64 = 60;
 /// The longest wait after failures.
 pub const LAST_RETRY_S: u64 = 3600;
 
-/// How often the keeper looks again for an address, or for the setting turned on.
-pub const LOOK_AGAIN_S: u64 = 2;
-
 /// When the next sync is due.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Schedule {

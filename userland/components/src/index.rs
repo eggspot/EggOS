@@ -438,8 +438,8 @@ fn parse_digest(word: &str) -> Option<[u8; DIGEST_BYTES]> {
         _ => None,
     };
     let mut digest = [0u8; DIGEST_BYTES];
-    for (at, pair) in bytes.chunks_exact(2).enumerate() {
-        digest[at] = digit(pair[0])? << 4 | digit(pair[1])?;
+    for (at, [high, low]) in bytes.as_chunks::<2>().0.iter().enumerate() {
+        digest[at] = digit(*high)? << 4 | digit(*low)?;
     }
     Some(digest)
 }

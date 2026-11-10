@@ -514,10 +514,10 @@ fn the_float_twins_are_within_one_unit() {
         (roundf, f32::round, "roundf"),
     ];
     let mut random = Random(12);
-    let inputs: Vec<f32> = (0..20000)
+    let mut inputs: Vec<f32> = (0..20000)
         .map(|_| random.between(-20.0, 20.0) as f32)
-        .chain((0..20000).map(|_| f32::from_bits(random.next() as u32)))
         .collect();
+    inputs.extend((0..20000).map(|_| f32::from_bits(random.next() as u32)));
     for (ours, host, name) in unary {
         for &x in &inputs {
             let (got, wanted) = (ours(x), host(x));

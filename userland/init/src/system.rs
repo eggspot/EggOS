@@ -6,12 +6,9 @@ use crate::backoff::Backoff;
 use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
 use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER};
 use crate::first_run::{
-    self, COMMAND_LINE, COMMAND_LINE_BYTES, DISK_DEVICE, FIRST_RUN, Found, INSTALLED_MARK,
-    SETTINGS_FILE,
+    self, COMMAND_LINE, DISK_DEVICE, FIRST_RUN, Found, INSTALLED_MARK, SETTINGS_FILE,
 };
-use crate::network_clock::{
-    self, DATE, INTERFACES, LOOK_AGAIN_S, SESSION_SETTINGS, SYNC_ARGUMENTS, Schedule,
-};
+use crate::network_clock::{self, DATE, INTERFACES, SESSION_SETTINGS, SYNC_ARGUMENTS, Schedule};
 use crate::shutdown::{self, Ending, LOOK_EVERY_MS, Request, Step};
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -39,6 +36,8 @@ const SIGTERM: usize = 15;
 const SIGCONT: usize = 18;
 const ESRCH: isize = 3;
 const EVERY_OTHER_PROCESS: usize = -1isize as usize;
+const COMMAND_LINE_BYTES: usize = 4096;
+const LOOK_AGAIN_S: u64 = 2;
 #[cfg(target_arch = "x86_64")]
 const SA_RESTORER: usize = 0x0400_0000;
 const SIG_DFL: usize = 0;

@@ -2172,7 +2172,7 @@ fn a_clock_set_question_names_the_time() {
         tool,
         &checked,
         FileState::Missing,
-        "",
+        ("", ""),
         &AgentId::LOCAL,
         &mut out,
     );
@@ -3048,7 +3048,7 @@ fn confirmation_texts_name_the_tool_whatever_it_is() {
         tool,
         &Checked::default(),
         FileState::Missing,
-        "",
+        ("", ""),
         &AgentId::LOCAL,
         &mut question,
     );
@@ -4904,6 +4904,8 @@ fn check_structured(tool: &Tool, schema: Option<Value<'_>>, answer: &str, case: 
     }
 }
 
+type TwinCase<'a> = (&'a str, Ended, &'a [u8], bool, &'a [u8], bool);
+
 #[test]
 fn every_tool_s_structured_content_matches_its_own_output_schema() {
     for tool in &tools::TOOLS {
@@ -4921,7 +4923,7 @@ fn every_tool_s_structured_content_matches_its_own_output_schema() {
         let cut_output = cut_output.as_bytes();
         let nothing: &[u8] = b"";
         let oops: &[u8] = b"oops\n";
-        let mut cases: Vec<(&str, Ended, &[u8], bool, &[u8], bool)> = vec![
+        let mut cases: Vec<TwinCase<'_>> = vec![
             ("success", Ended::Exited(0), output, false, nothing, false),
             (
                 "output cut",

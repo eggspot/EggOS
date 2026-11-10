@@ -92,6 +92,7 @@ struct Widgets {
 }
 
 /// The first run's window: its widgets, the page shown and the choices in force.
+#[derive(Debug)]
 pub struct FirstRunWindow {
     tree: WidgetTree<CAPACITY>,
     widgets: Widgets,

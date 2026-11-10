@@ -25,9 +25,6 @@ pub const COMMAND_LINE: &[u8] = b"/proc/cmdline\0";
 /// The kernel command line's word that says not to ask.
 pub const SKIP_WORD: &[u8] = b"eggos.first_run=skip";
 
-/// The longest kernel command line init reads.
-pub const COMMAND_LINE_BYTES: usize = 4096;
-
 /// Whether `command_line` holds [`SKIP_WORD`] as a word of its own.
 pub fn skipped_by(command_line: &[u8]) -> bool {
     command_line

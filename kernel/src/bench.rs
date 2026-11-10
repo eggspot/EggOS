@@ -67,7 +67,7 @@ fn iterations_of(name: &str) -> (u64, u64) {
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 65] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 70] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -235,10 +235,13 @@ fn block_read_4k_qd8<P: Platform>(n: u64) {
         let spread = (disk.sectors() / sectors_per_read).max(1);
         for i in 0..n {
             let mut reads: [(u64, &mut [u8]); QUEUE_DEPTH] = {
-                let mut chunks = buffers.chunks_exact_mut(BLOCK_READ_BYTES);
+                let mut chunks = buffers.as_chunks_mut::<BLOCK_READ_BYTES>().0.iter_mut();
                 core::array::from_fn(|at| {
                     let block = (i * QUEUE_DEPTH as u64 + at as u64 * 37) % spread;
-                    (block * sectors_per_read, chunks.next().unwrap_or_default())
+                    (
+                        block * sectors_per_read,
+                        chunks.next().map_or(&mut [][..], |chunk| &mut chunk[..]),
+                    )
                 })
             };
             let mut deadline = crate::devices::Deadline::after::<P>(1000);
@@ -628,7 +631,6 @@ fn virtio_input_poll_idle(n: u64) {
 static BLOCK_MEMORY: QueueMemory<{ virtio_block::MEMORY_BYTES }> =
     QueueMemory(core::cell::UnsafeCell::new([0; virtio_block::MEMORY_BYTES]));
 
-const BLOCK_READ_BYTES: usize = 4096;
 const BLOCK_DISK_SECTORS: u32 = 1 << 16;
 
 #[derive(Debug, Default)]
@@ -1291,7 +1293,7 @@ const WRAP_WIDTH: i32 = 384;
 fn text_area_wrap_64k(n: u64) {
     let mut text = alloc::string::String::with_capacity(TEXT_AREA_CAPACITY);
     let mut since_break = 0;
-    while text.len() + PANGRAM.len() + 1 <= TEXT_AREA_CAPACITY {
+    while text.len() + PANGRAM.len() < TEXT_AREA_CAPACITY {
         text.push_str(PANGRAM);
         since_break += PANGRAM.len();
         if since_break >= WRAP_BREAK_EVERY {

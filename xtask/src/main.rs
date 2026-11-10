@@ -2610,8 +2610,9 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 mod tests {
     use super::{
         APP_PATH, COMPONENT_PATH, COREUTILS, DISK_PATH, EDIT_PATH, SETTINGS_PATH,
-        WINDOWS_LAYER_PATH, arch_option, foreign_layers, host_folder, initramfs, json_string_field,
-        room_bytes, size_in_mebibytes, windows_command, with_value, without_flag,
+        WINDOWS_COMMAND_PATH, WINDOWS_LAYER_PATH, arch_option, foreign_layers, host_folder,
+        initramfs, json_string_field, room_bytes, size_in_mebibytes, windows_command, with_value,
+        without_flag,
     };
 
     #[test]

@@ -110,10 +110,10 @@ mod tests {
         static TABLE: std::sync::OnceLock<[usize; 4]> = std::sync::OnceLock::new();
         TABLE.get_or_init(|| {
             [
-                memory_stream::query_interface as usize,
-                memory_stream::add_reference as usize,
-                memory_stream::release as usize,
-                memory_stream::read as usize,
+                memory_stream::query_interface as *const () as usize,
+                memory_stream::add_reference as *const () as usize,
+                memory_stream::release as *const () as usize,
+                memory_stream::read as *const () as usize,
             ]
         })
     }
@@ -138,15 +138,11 @@ mod tests {
         assert_eq!(part.as_deref(), Ok(&content[..10]));
         let stream = stream_over(&content) as usize;
         // SAFETY: as above.
-        assert_eq!(
-            unsafe { read_stream(stream, None, 1000) },
-            Err(E_OUTOFMEMORY)
-        );
+        let whole_over_the_limit = unsafe { read_stream(stream, None, 1000) };
+        assert_eq!(whole_over_the_limit, Err(E_OUTOFMEMORY));
         // SAFETY: as above.
-        assert_eq!(
-            unsafe { read_stream(stream, Some(1001), 1000) },
-            Err(E_OUTOFMEMORY)
-        );
+        let part_over_the_limit = unsafe { read_stream(stream, Some(1001), 1000) };
+        assert_eq!(part_over_the_limit, Err(E_OUTOFMEMORY));
         let empty = stream_over(&[]) as usize;
         // SAFETY: as above.
         assert_eq!(unsafe { read_stream(empty, None, 1000) }, Ok(Vec::new()));

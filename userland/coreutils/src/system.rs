@@ -691,6 +691,17 @@ mod tests {
     }
 
     #[test]
+    fn coded_errors_are_asked_for_only_when_the_environment_says_exactly_so() {
+        assert!(asks_for_coded_errors([
+            c"PATH=/bin",
+            c"EGGOS_CODED_ERRORS=1"
+        ]));
+        assert!(!asks_for_coded_errors([c"PATH=/bin"]));
+        assert!(!asks_for_coded_errors([c"EGGOS_CODED_ERRORS=0"]));
+        assert!(!asks_for_coded_errors([c"EGGOS_CODED_ERRORS=1x"]));
+    }
+
+    #[test]
     fn a_system_name_field_ends_at_its_first_nul() {
         let mut bytes = [0u8; UTSNAME_SIZE];
         bytes[..5].copy_from_slice(b"Linux");

@@ -560,7 +560,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 self.set_text(id, text);
                 (Outcome::Done, Response::Edited(id))
             }
-            (Action::Invoke, Kind::MenuBar(bar), Some(part)) => match bar_entry_of(part) {
+            (Action::Invoke, Kind::MenuBar(_), Some(part)) => match bar_entry_of(part) {
                 None => {
                     self.toggle_menu(id, part);
                     (Outcome::Done, Response::Nothing)

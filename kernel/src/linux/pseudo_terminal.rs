@@ -818,6 +818,7 @@ fn take_packet_into<P: Platform>(
 ) -> Option<Result<u64, Errno>> {
     let (base, length) = buffers
         .entries()
+        .iter()
         .map(iovec)
         .find(|&(_, length)| length > 0)?;
     let room = length.min(count).min(CHUNK as u64) as usize;

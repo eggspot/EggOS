@@ -444,7 +444,7 @@ fn dc_first(
 ) -> Result<(), Error> {
     let size = bits.decode(table)?;
     *prediction = prediction.wrapping_add(bits.extend(size)?);
-    let value = prediction.clamp(-COEFFICIENT_LIMIT, COEFFICIENT_LIMIT) << low;
+    let value = (*prediction).clamp(-COEFFICIENT_LIMIT, COEFFICIENT_LIMIT) << low;
     *coefficient = saturated(value);
     Ok(())
 }
@@ -950,7 +950,7 @@ fn upsample_row(
     let last_column = component.width - 1;
     let row = |index: usize| &component.plane[index * stride..index * stride + stride];
     let vertical_factor = frame.vertical_max / component.vertical;
-    let exact = frame.vertical_max % component.vertical == 0;
+    let exact = frame.vertical_max.is_multiple_of(component.vertical);
     match (vertical_factor, exact) {
         (1, true) => {
             for (cell, &value) in scratch.iter_mut().zip(row(y.min(last_row))) {
@@ -975,7 +975,7 @@ fn upsample_row(
         }
     }
     let horizontal_factor = frame.horizontal_max / component.horizontal;
-    let exact = frame.horizontal_max % component.horizontal == 0;
+    let exact = frame.horizontal_max.is_multiple_of(component.horizontal);
     match (horizontal_factor, exact) {
         (1, true) => {
             for (value, &cell) in out.iter_mut().zip(scratch.iter()) {

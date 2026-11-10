@@ -1092,7 +1092,7 @@ mod tests {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn finish_entry(bytes: &mut Vec<u8>, start: usize) {
+    fn finish_entry(bytes: &mut [u8], start: usize) {
         let length = (bytes.len() - start - 4) as u32;
         bytes[start..start + 4].copy_from_slice(&length.to_le_bytes());
     }
@@ -1120,7 +1120,8 @@ mod tests {
         finish_entry(&mut bytes, 0);
         let fde = bytes.len();
         put(&mut bytes, 0);
-        put(&mut bytes, bytes.len() as u32);
+        let cie_distance = bytes.len() as u32;
+        put(&mut bytes, cie_distance);
         let begin = pcrel(&bytes, FUNCTION);
         put(&mut bytes, begin);
         put(&mut bytes, 0x100);

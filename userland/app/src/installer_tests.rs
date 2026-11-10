@@ -1426,6 +1426,7 @@ fn a_preview_says_a_leftover_folder_would_be_replaced() {
     );
 }
 
+#[allow(clippy::result_large_err)]
 fn run_app_example(files: &mut FakeFiles, words: &[&[u8]]) -> (i32, String) {
     use crate::command::{Command, FAILED, parse};
     use crate::messages;

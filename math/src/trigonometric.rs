@@ -230,7 +230,7 @@ fn reduce(x: f64) -> (u32, f64, f64) {
 /// `sin`: the sine of `x` radians.
 pub fn sin(x: f64) -> f64 {
     if !x.is_finite() {
-        return x - x;
+        return f64::NAN;
     }
     if fabs(x) < TWO_POW_MINUS_26 {
         return x;
@@ -247,7 +247,7 @@ pub fn sin(x: f64) -> f64 {
 /// `cos`: the cosine of `x` radians.
 pub fn cos(x: f64) -> f64 {
     if !x.is_finite() {
-        return x - x;
+        return f64::NAN;
     }
     if fabs(x) < TWO_POW_MINUS_27 {
         return 1.0;
@@ -264,7 +264,7 @@ pub fn cos(x: f64) -> f64 {
 /// `tan`: the tangent of `x` radians.
 pub fn tan(x: f64) -> f64 {
     if !x.is_finite() {
-        return x - x;
+        return f64::NAN;
     }
     if fabs(x) < TWO_POW_MINUS_27 {
         return x;
@@ -311,7 +311,7 @@ pub(crate) fn sin_pi(x: f64) -> f64 {
 /// `sinpi`: `sin(π x)`, exact in its reduction, so whole `x` give zeros.
 pub fn sinpi(x: f64) -> f64 {
     if !x.is_finite() {
-        return x - x;
+        return f64::NAN;
     }
     sin_pi(x)
 }
@@ -319,7 +319,7 @@ pub fn sinpi(x: f64) -> f64 {
 /// `cospi`: `cos(π x)`, exact in its reduction, so half-odd `x` give zeros.
 pub fn cospi(x: f64) -> f64 {
     if !x.is_finite() {
-        return x - x;
+        return f64::NAN;
     }
     if fabs(x) >= TWO_POW_52 {
         return 1.0;

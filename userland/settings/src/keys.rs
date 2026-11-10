@@ -664,7 +664,7 @@ fn write_choices(choices: &mut Text<256>, names: &[&str]) {
 
 /// Why `value` was refused for `keyboard.layouts`, as `settings set` says it: the value or
 /// the unknown name in it, and the reason (D221).
-pub fn layouts_refusal<'a>(value: &'a str, refusal: LayoutSetRefusal) -> (&'a str, Text<256>) {
+pub fn layouts_refusal(value: &str, refusal: LayoutSetRefusal) -> (&str, Text<256>) {
     let mut reason = Text::<256>::new();
     let quoted = match refusal {
         LayoutSetRefusal::TooMany => {

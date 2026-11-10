@@ -76,8 +76,8 @@ pub fn nslookup<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         return FAILURE;
     };
     let (name, server) = match operands.all() {
-        &[name] => (name.to_bytes(), None),
-        &[name, server] => (name.to_bytes(), Some(server.to_bytes())),
+        [name] => (name.to_bytes(), None),
+        [name, server] => (name.to_bytes(), Some(server.to_bytes())),
         _ => {
             output.coded(&errors::USAGE, &[USAGE]);
             return FAILURE;

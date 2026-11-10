@@ -1617,7 +1617,7 @@ pub(super) fn element_of(tree: &str, role: &str, name: &str) -> Option<u32> {
     })
 }
 
-pub(super) fn element_line<'a>(tree: &'a str, id: u32) -> &'a str {
+pub(super) fn element_line(tree: &str, id: u32) -> &str {
     tree.lines()
         .find(|line| line.split_whitespace().next() == Some(id.to_string().as_str()))
         .unwrap_or("")

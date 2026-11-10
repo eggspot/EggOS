@@ -239,10 +239,7 @@ pub fn text_between(terminal: &Terminal, start: Boundary, end: Boundary) -> Stri
     }
     let columns = terminal.size().0;
     let mut line = start.line;
-    loop {
-        let Some((cells, _)) = terminal.numbered_line(line) else {
-            break;
-        };
+    while let Some((cells, _)) = terminal.numbered_line(line) {
         let from = match line == start.line {
             true => start.column,
             false => 0,

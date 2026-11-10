@@ -185,6 +185,7 @@ impl Probe for FakeProbe {
         Deadline {
             ticks: || 0,
             end: 1,
+            park: |_, seen, _| seen,
         }
     }
 }

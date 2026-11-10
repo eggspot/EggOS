@@ -185,11 +185,10 @@ fn marked(bytes: &[u8], width: usize, given: Option<Order>) -> (Order, &[u8]) {
 }
 
 fn decode_utf16(bytes: &[u8], order: Order, out: &mut impl FnMut(u16)) -> bool {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return false;
     }
-    for pair in bytes.chunks_exact(2) {
-        let pair = [pair[0], pair[1]];
+    for &pair in bytes.as_chunks::<2>().0 {
         out(match order {
             Order::Big => u16::from_be_bytes(pair),
             Order::Little => u16::from_le_bytes(pair),
@@ -199,11 +198,10 @@ fn decode_utf16(bytes: &[u8], order: Order, out: &mut impl FnMut(u16)) -> bool {
 }
 
 fn decode_utf32(bytes: &[u8], order: Order, out: &mut impl FnMut(u16)) -> bool {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return false;
     }
-    for quad in bytes.chunks_exact(4) {
-        let quad = [quad[0], quad[1], quad[2], quad[3]];
+    for &quad in bytes.as_chunks::<4>().0 {
         let scalar = match order {
             Order::Big => u32::from_be_bytes(quad),
             Order::Little => u32::from_le_bytes(quad),

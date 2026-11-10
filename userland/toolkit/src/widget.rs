@@ -251,6 +251,9 @@ pub type CardArt = fn(&mut Canvas<'_>, usize, Rect);
 /// Draws a custom widget into its rectangle, given the widget's data word.
 pub type Painter = fn(&mut Canvas<'_>, Rect, u32);
 
+/// A view's vertical scroll bar, then its horizontal one, each as its track and thumb when shown.
+pub type ScrollBars = (Option<(Rect, Rect)>, Option<(Rect, Rect)>);
+
 /// A text field's state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Field {
@@ -810,11 +813,7 @@ pub fn viewport(rect: Rect, content: (i32, i32)) -> Rect {
 /// Where both bars of a view at `rect` go over content `content` (width, height) scrolled by
 /// `offset` (x, y): the vertical bar's track and thumb, then the horizontal one's; when both
 /// show, the 8x8 corner where they meet is neither's.
-pub fn scroll_bars(
-    rect: Rect,
-    content: (i32, i32),
-    offset: (i32, i32),
-) -> (Option<(Rect, Rect)>, Option<(Rect, Rect)>) {
+pub fn scroll_bars(rect: Rect, content: (i32, i32), offset: (i32, i32)) -> ScrollBars {
     let (vertical, horizontal) = bars_shown(rect, content);
     let inner = viewport(rect, content);
     let vertical = match vertical {

@@ -636,7 +636,7 @@ fn may_change_in<S: System>(output: &mut Output<S>, path: &[u8], needs: u64) -> 
     has_room(output, path, needs)
 }
 
-fn can_write<S: System>(output: &mut Output<S>, path: &[u8], needs: u64) -> Result<(), Errno> {
+fn has_room<S: System>(output: &mut Output<S>, path: &[u8], needs: u64) -> Result<(), Errno> {
     let folder = Path::of(folder_and_leaf(path).0).ok_or(Errno::ENAMETOOLONG)?;
     match output.system.file_system_usage(folder.as_c_str()) {
         Ok(usage) if usage.read_only => Err(Errno::EROFS),
