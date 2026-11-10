@@ -530,3 +530,11 @@ holds what used to be written in them.
 - **`.github/FUNDING.yml`** shows the "Sponsor" button on the repository page
   (<https://github.com/sponsors/eggspot>). Other platforms (Open Collective, Liberapay, a custom
   URL) are added there once their accounts exist; each takes the account name, not a URL.
+
+## Releases (D242)
+
+A release batch bumps `[workspace.package]`'s version, adds `docs/releases/vX.Y.Z.md`, and is
+squash-merged with a body ending in `Release: vX.Y.Z`. When CI (the workflow must stay named `CI`)
+passes on that commit, "Tag release" runs `cargo xtask release-tag <sha> --push` and calls the
+Release workflow, which publishes the GitHub Release. Retry a failed release by re-running the
+failed jobs, or with `gh workflow run release.yml -f tag=vX.Y.Z` once the tag exists.
