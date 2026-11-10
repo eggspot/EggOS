@@ -65,6 +65,7 @@ struct Frame {
     position: i32,
     focus: Focus,
     over_bar: bool,
+    over_word: bool,
 }
 
 fn units(text: &str) -> Vec<u16> {
@@ -93,6 +94,7 @@ impl Frame {
             position: 0,
             focus: Focus::Word,
             over_bar: false,
+            over_word: true,
         }
     }
 
@@ -173,7 +175,10 @@ fn window_content(frame: &Frame) -> WindowContent {
         &mut surface,
         &scene::WORD,
         &frame.word,
-        (frame.focus == Focus::Word, !frame.over_bar),
+        (
+            frame.focus == Focus::Word,
+            frame.over_word && !frame.over_bar,
+        ),
     );
     paint_edit(
         &mut surface,
@@ -320,6 +325,7 @@ impl Steps<'_> {
 
     fn run(&mut self) -> Result<(), String> {
         self.frame.focus = Focus::Nowhere;
+        self.frame.over_word = false;
         self.check(
             "win-controls2's window shown with no control focused",
             FIRST_FRAME_TIMEOUT,
@@ -327,6 +333,7 @@ impl Steps<'_> {
 
         self.click(scene::WORD_END)?;
         self.frame.focus = Focus::Word;
+        self.frame.over_word = true;
         self.pointer_shape(I_BEAM)?;
         self.check(
             "win-controls2's window, its word edit clicked at the end",
