@@ -19872,8 +19872,8 @@ the license, by an explicit instruction recorded here.
   folder and the host share are mounted so, as a desktop Linux mounts them: those are where a
   user or another machine can put files. The root and the EggFS folders the system installs
   from keep their bits. `vfs::ignores_set_ids_at` tells `/proc/mounts` which.
-- **Not yet.** Building and running; `/proc/mounts` printing `nosuid`; a `mount` system call for
-  programs.
+  `/proc/mounts` lists them with `rw,nosuid` (or `ro,nosuid`).
+- **Not yet.** Building and running; a `mount` system call for programs.
 
 ## D282 The kernel's generator reseeded from virtio-rng every five minutes after boot (M8; D220's follow-up; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
 

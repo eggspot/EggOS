@@ -530,12 +530,16 @@ pub fn mounts_text() -> Option<Vec<u8>> {
         };
         let usage = root.file_system().usage();
         let kind = crate::vfs::type_name(usage.magic);
-        let options = if usage.read_only { "ro" } else { "rw" };
+        let access = if usage.read_only { "ro" } else { "rw" };
+        let set_ids = match crate::vfs::ignores_set_ids_at(point) {
+            true => ",nosuid",
+            false => "",
+        };
         let written = text
             .bytes(kind.as_bytes())
             .and_then(|()| text.bytes(b" "))
             .and_then(|()| text.bytes(&path[start..]))
-            .and_then(|()| writeln!(text, " {kind} {options} 0 0").ok());
+            .and_then(|()| writeln!(text, " {kind} {access}{set_ids} 0 0").ok());
         complete &= written.is_some();
     });
     complete.then_some(text.0)
