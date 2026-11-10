@@ -1,7 +1,7 @@
 //! The firmware's framebuffer (D236): the one UEFI's graphics output left set up, which EggOS's
 //! UEFI loader passes on. With no display device of its own the kernel draws straight into it,
-//! mapped as device memory; the screen shows each pixel as it is written, so a flush only orders
-//! the writes. Rows are the framebuffer's stride long: columns past the visible width are drawn
+//! mapped write-combining (D245); the screen shows each pixel once its writes drain, so a flush
+//! only orders and drains them. Rows are the framebuffer's stride long: columns past the visible width are drawn
 //! but not shown.
 
 use super::{Deadline, Mode, Rect, Scanout};
@@ -75,7 +75,7 @@ pub fn install<P: Platform>(memory: &mut Memory<P>) -> Option<Result<Mode, &'sta
     }
     let mode = mode_of(&framebuffer);
     let region = PhysicalRange::from_start_length(framebuffer.address, mode.bytes() as u64);
-    let Ok(virt) = crate::devices::window::map::<P>(memory, region) else {
+    let Ok(virt) = crate::devices::window::map_write_combining::<P>(memory, region) else {
         return Some(Err("it could not be mapped"));
     };
     let scanout = BootFramebuffer {

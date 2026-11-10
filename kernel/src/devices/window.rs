@@ -8,7 +8,7 @@
 use crate::memory::{FRAMES, Memory};
 use crate::paging::{self, MapError};
 use crate::sync::LeafSpinLock;
-use eggos_hal::paging::{Format, leaf_size};
+use eggos_hal::paging::{Attributes, Format, MemoryType, leaf_size};
 use eggos_hal::{PhysicalRange, Platform};
 
 const REMEMBERED: usize = 32;
@@ -17,6 +17,7 @@ const REMEMBERED: usize = 32;
 struct Window {
     frames: PhysicalRange,
     virt: u64,
+    memory_type: MemoryType,
 }
 
 struct Windows {
@@ -30,6 +31,7 @@ static WINDOWS: LeafSpinLock<Windows> = LeafSpinLock::new_leaf(Windows {
     mapped: [Window {
         frames: PhysicalRange { start: 0, end: 0 },
         virt: 0,
+        memory_type: MemoryType::Device,
     }; REMEMBERED],
     count: 0,
 });
@@ -37,6 +39,22 @@ static WINDOWS: LeafSpinLock<Windows> = LeafSpinLock::new_leaf(Windows {
 /// Maps the registers at `region` and returns the virtual address of `region.start`. Must run on
 /// the boot CPU before any other starts ([`eggos_hal::Platform::make_kernel_mappings_visible`]).
 pub fn map<P: Platform>(memory: &mut Memory<P>, region: PhysicalRange) -> Result<usize, MapError> {
+    map_as(memory, region, Attributes::DEVICE)
+}
+
+/// As [`map`], write-combining: for a framebuffer the CPU writes and a display reads (D245).
+pub fn map_write_combining<P: Platform>(
+    memory: &mut Memory<P>,
+    region: PhysicalRange,
+) -> Result<usize, MapError> {
+    map_as(memory, region, Attributes::FRAMEBUFFER)
+}
+
+fn map_as<P: Platform>(
+    memory: &mut Memory<P>,
+    region: PhysicalRange,
+    attributes: Attributes,
+) -> Result<usize, MapError> {
     if region.is_empty() {
         return Err(MapError::InvalidAddress);
     }
@@ -44,7 +62,11 @@ pub fn map<P: Platform>(memory: &mut Memory<P>, region: PhysicalRange) -> Result
     let mut windows = WINDOWS.lock();
     let reused = windows.mapped[..windows.count]
         .iter()
-        .find(|window| window.frames.start <= frames.start && frames.end <= window.frames.end);
+        .find(|window| {
+            window.memory_type == attributes.memory_type
+                && window.frames.start <= frames.start
+                && frames.end <= window.frames.end
+        });
     if let Some(window) = reused {
         return Ok((window.virt + (region.start - window.frames.start)) as usize);
     }
@@ -68,11 +90,15 @@ pub fn map<P: Platform>(memory: &mut Memory<P>, region: PhysicalRange) -> Result
     windows.next = virt.saturating_add(frames.len());
     memory
         .page_tables
-        .map_device_window(&window, virt, frames.start, frames.len(), allocator)?;
+        .map_window_as(&window, virt, frames.start, frames.len(), allocator, attributes)?;
     P::make_kernel_mappings_visible(virt as usize, frames.len() as usize);
     let count = windows.count;
     if let Some(slot) = windows.mapped.get_mut(count) {
-        *slot = Window { frames, virt };
+        *slot = Window {
+            frames,
+            virt,
+            memory_type: attributes.memory_type,
+        };
         windows.count += 1;
     }
     Ok((virt + (region.start - frames.start)) as usize)

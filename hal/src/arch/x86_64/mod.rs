@@ -425,6 +425,7 @@ const KEYBOARD_CONTROLLER_PULSE_RESET: u8 = 0xfe;
 /// `IA32_EFER` and its no-execute enable bit; `CR0.WP`, which makes read-only pages read-only
 /// for the kernel too.
 const EFER: u32 = 0xc000_0080;
+const IA32_PAT: u32 = 0x277;
 const EFER_NXE: u32 = 1 << 11;
 const CR0_WP: u64 = 1 << 16;
 
@@ -857,6 +858,18 @@ impl Platform for X86_64 {
                 in("ecx") EFER,
                 out("eax") _,
                 out("edx") _,
+                options(nomem, nostack),
+            );
+        }
+        // SAFETY: `IA32_PAT` exists on every x86_64 CPU; the value keeps entries 0, 2 and 3 as at
+        // reset (write-back, uncached-minus, uncached) and turns entry 1 (`PWT` alone, which no
+        // mapping used) into write-combining, the same on every CPU before its tables load.
+        unsafe {
+            core::arch::asm!(
+                "wrmsr",
+                in("ecx") IA32_PAT,
+                in("eax") paging::x86_64::PAT as u32,
+                in("edx") (paging::x86_64::PAT >> 32) as u32,
                 options(nomem, nostack),
             );
         }

@@ -16,7 +16,11 @@ const PRESENT: u64 = 1 << 0;
 const WRITABLE: u64 = 1 << 1;
 /// User/supervisor: user mode may access what the walk maps, if every level along it allows.
 const USER: u64 = 1 << 2;
-/// Page-level write-through and cache disable: with the default PAT, PWT | PCD selects UC.
+/// `IA32_PAT` as the kernel programs it on every CPU (D245): PAT entries 0-3 (and 4-7) are
+/// write-back, write-combining, uncached-minus and uncached, so `PWT` alone selects
+/// write-combining and `PWT | PCD` uncached, as Linux programs it.
+pub const PAT: u64 = 0x0007_0106_0007_0106;
+/// Page-level write-through and cache disable: with [`PAT`], PWT | PCD selects UC.
 const WRITE_THROUGH: u64 = 1 << 3;
 const CACHE_DISABLE: u64 = 1 << 4;
 /// Accessed and dirty, set up front so the CPU never writes them back.
@@ -64,8 +68,10 @@ impl Format for X86_64 {
         if !attributes.executable {
             entry |= NO_EXECUTE;
         }
-        if attributes.memory_type == MemoryType::Device {
-            entry |= WRITE_THROUGH | CACHE_DISABLE;
+        match attributes.memory_type {
+            MemoryType::Device => entry |= WRITE_THROUGH | CACHE_DISABLE,
+            MemoryType::WriteCombining => entry |= WRITE_THROUGH,
+            MemoryType::Normal => {}
         }
         if attributes.user {
             entry |= USER;
@@ -94,10 +100,10 @@ impl Format for X86_64 {
         } else {
             entry & ADDRESS & !LARGE_PAT
         };
-        let memory_type = if entry & (WRITE_THROUGH | CACHE_DISABLE) != 0 {
-            MemoryType::Device
-        } else {
-            MemoryType::Normal
+        let memory_type = match (entry & WRITE_THROUGH != 0, entry & CACHE_DISABLE != 0) {
+            (false, false) => MemoryType::Normal,
+            (true, false) => MemoryType::WriteCombining,
+            _ => MemoryType::Device,
         };
         Entry::Leaf(
             address,
