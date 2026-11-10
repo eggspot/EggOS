@@ -330,6 +330,7 @@ fn every_write_holds_the_hive_s_lock_and_lets_go_after() {
         );
         assert!(disk.holders.is_empty());
     }
+    set(&mut registry, "HKCU\\Software\\AutoHotkey", "Version");
     let mut other = process(&disk, 20, 1000);
     other.lock(HiveFile::User).unwrap();
     let path = key("HKCU\\Software\\AutoHotkey");

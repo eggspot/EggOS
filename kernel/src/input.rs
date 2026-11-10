@@ -1348,10 +1348,10 @@ pub fn set_layout(number: usize) -> bool {
         return false;
     }
     let number = usize::from(number);
-    let _ = LAYOUTS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |word| {
+    LAYOUTS.update(Ordering::Relaxed, Ordering::Relaxed, |word| {
         let (layouts, switch_key) = unpacked_layout_set(word);
         let chosen = layouts.with_chosen(number, in_force_of(word));
-        Some(packed_layouts(&chosen, switch_key, number))
+        packed_layouts(&chosen, switch_key, number)
     });
     true
 }
@@ -1359,9 +1359,9 @@ pub fn set_layout(number: usize) -> bool {
 /// Makes `layouts` the set the switch key cycles through and `switch_key` its key (D221), from
 /// the next poll on; the layout in force stays when listed, else the set's first is in force.
 pub fn set_layouts(layouts: KeyboardLayoutSet, switch_key: SwitchKey) {
-    let _ = LAYOUTS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |word| {
+    LAYOUTS.update(Ordering::Relaxed, Ordering::Relaxed, |word| {
         let in_force = layouts.keeping(in_force_of(word));
-        Some(packed_layouts(&layouts, switch_key, in_force))
+        packed_layouts(&layouts, switch_key, in_force)
     });
 }
 

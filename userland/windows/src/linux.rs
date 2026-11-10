@@ -21,8 +21,6 @@ pub mod number {
     pub const MADVISE: usize = 28;
     pub const MSYNC: usize = 26;
     pub const GETPID: usize = 39;
-    pub const FSYNC: usize = 74;
-    pub const GETUID: usize = 102;
     pub const CLONE: usize = 56;
     pub const EXIT: usize = 60;
     pub const GETCWD: usize = 79;
@@ -88,8 +86,6 @@ pub mod number {
     pub const TGKILL: usize = 131;
     pub const RT_SIGACTION: usize = 134;
     pub const GETPID: usize = 172;
-    pub const FSYNC: usize = 82;
-    pub const GETUID: usize = 174;
     pub const GETTID: usize = 178;
     pub const MUNMAP: usize = 215;
     pub const CLONE: usize = 220;
@@ -629,18 +625,6 @@ pub fn change_directory(path: &[u8]) -> Result<usize, Errno> {
     }
     // SAFETY: `chdir` reads the NUL-terminated path.
     unsafe { syscall(number::CHDIR, [path.as_ptr() as usize, 0, 0, 0, 0, 0]) }
-}
-
-/// Flushes the file's data and metadata to its disk.
-pub fn sync_file(fd: usize) -> Result<usize, Errno> {
-    // SAFETY: `fsync` touches no memory.
-    unsafe { syscall(number::FSYNC, [fd, 0, 0, 0, 0, 0]) }
-}
-
-/// The process's real user id.
-pub fn user_id() -> u32 {
-    // SAFETY: `getuid` touches no memory and cannot fail.
-    unsafe { syscall(number::GETUID, [0; 6]) }.unwrap_or(0) as u32
 }
 
 /// Makes the directory at the NUL-terminated `path`.

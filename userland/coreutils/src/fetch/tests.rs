@@ -318,11 +318,8 @@ fn no_clobber_saves_only_where_nothing_is_and_never_through_a_link() {
     );
     assert_eq!((status, errors.as_str()), (0, ""));
     assert_eq!(fake.contents("/home/new.txt"), b"Hello, chunks");
-    let fake = network()
-        .with_file("/home/old.txt", 0o644, b"old", 0)
-        .with_link("/home/link", "/home/target");
     let (status, _, errors, fake) = run(
-        fake,
+        network().with_file("/home/old.txt", 0o644, b"old", 0),
         &[
             c"--no-clobber",
             c"http://files.test/chunked",
@@ -335,7 +332,7 @@ fn no_clobber_saves_only_where_nothing_is_and_never_through_a_link() {
     );
     assert_eq!(fake.contents("/home/old.txt"), b"old");
     let (status, _, errors, fake) = run(
-        fake,
+        network().with_link("/home/link", "/home/target"),
         &[c"--no-clobber", c"http://files.test/chunked", c"/home/link"],
     );
     assert_eq!(

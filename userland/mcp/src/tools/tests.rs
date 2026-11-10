@@ -393,7 +393,7 @@ fn ln_makes_links_below_the_home_folder_with_its_twin_never_replacing() {
             "link",
             &crate::paths::WRITE_ROOTS[..],
             true,
-            &[crate::paths::TRASH][..]
+            &[crate::paths::TRASH, crate::paths::SETTINGS][..]
         )
     );
     assert_eq!(tool.grant, Some(Grant::Write));
@@ -447,7 +447,7 @@ fn the_file_tools_run_cp_mv_mkdir_and_rm_on_paths_the_write_tools_reach() {
     let write = (
         &crate::paths::WRITE_ROOTS[..],
         true,
-        &[crate::paths::TRASH][..],
+        &[crate::paths::TRASH, crate::paths::SETTINGS][..],
     );
     for (name, kind, program, words, operand, confirmation) in [
         (

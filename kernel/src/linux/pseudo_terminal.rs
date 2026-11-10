@@ -1377,7 +1377,8 @@ mod tests {
         assert_eq!(terminal.state.lock().input_room(), 0);
         assert_eq!(controlling_side.events(event::OUT), 0);
         let mut line = [0u8; 8];
-        assert_eq!(&line[..Line::take(&*terminal, &mut line).length], b"ab\n");
+        let taken = Line::take(&*terminal, &mut line).length;
+        assert_eq!(&line[..taken], b"ab\n");
         assert_eq!(controlling_side.events(event::OUT), event::OUT);
     }
 
