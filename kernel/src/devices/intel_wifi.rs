@@ -15,6 +15,7 @@ use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
 use eggos_drivers::wifi::iwx::devices::{self, Adapter, VENDOR_INTEL};
 use eggos_drivers::wifi::iwx::firmware::Firmware;
+use eggos_drivers::wifi::iwx::nvm::{self, Nvm};
 use eggos_drivers::wifi::iwx::transport::{self, Transport, Wait};
 use eggos_hal::Platform;
 
@@ -26,6 +27,7 @@ const LARGEST_FIRMWARE: usize = 4 << 20;
 const FIRMWARE_RETRY: Duration = Duration::from_secs(10);
 const LOAD_TIMEOUT_MS: u64 = 1000;
 const START_TIMEOUT_MS: u64 = 2000;
+const INIT_TIMEOUT_MS: u64 = 4000;
 
 /// Intel's Wi-Fi adapters (PCI class 02h, subclass 80h, vendor 8086h).
 pub static INTEL_WIFI_DRIVER: DriverDescriptor = DriverDescriptor {
@@ -54,14 +56,26 @@ static RUNNING: SpinLock<Option<Running>> = SpinLock::new(None);
 struct Running {
     _transport: Transport<Mmio, DmaRegion>,
     firmware: (u8, u8, u8),
+    nvm: Nvm,
 }
 
 // SAFETY: as `Found`: the transport's registers and DMA memory are the adapter's alone.
 unsafe impl Send for Running {}
 
-/// What the Wi-Fi adapter reached, for `/proc/driver/wifi`.
-pub fn status() -> &'static str {
-    *STATUS.lock()
+/// What the Wi-Fi adapter reached, for `/proc/driver/wifi`: the state, and once the NVM is
+/// read the adapter's MAC address and how many channels it may use.
+pub fn status() -> alloc::string::String {
+    let state = *STATUS.lock();
+    match RUNNING.lock().as_ref() {
+        Some(running) => {
+            let [a, b, c, d, e, f] = running.nvm.address;
+            alloc::format!(
+                "{state}; address {a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}; {} channels",
+                running.nvm.channels.len()
+            )
+        }
+        None => state.into(),
+    }
 }
 
 fn set_status(words: &'static str) {
@@ -188,19 +202,22 @@ fn bring_up<P: Platform>(found: Found) {
     if let Err(error) = transport.start_hardware(&mut Pauses::<P>::within(START_TIMEOUT_MS)) {
         return set_status(error.description());
     }
-    match transport.load_firmware(&firmware, &bytes, &mut Regions, &mut Pauses::<P>::within(LOAD_TIMEOUT_MS)) {
-        Ok(_) => {
-            set_status(match transport.radio_killed() {
-                true => "firmware running; the radio is switched off",
-                false => "firmware running",
-            });
-            *RUNNING.lock() = Some(Running {
-                _transport: transport,
-                firmware: firmware.version,
-            });
-        }
-        Err(error) => set_status(error.description()),
+    if let Err(error) = transport.load_firmware(&firmware, &bytes, &mut Regions, &mut Pauses::<P>::within(LOAD_TIMEOUT_MS)) {
+        return set_status(error.description());
     }
+    let nvm = match nvm::initialize(&mut transport, &firmware, &mut Pauses::<P>::within(INIT_TIMEOUT_MS)) {
+        Ok(nvm) => nvm,
+        Err(error) => return set_status(error.description()),
+    };
+    set_status(match transport.radio_killed() {
+        true => "ready; the radio is switched off",
+        false => "ready",
+    });
+    *RUNNING.lock() = Some(Running {
+        _transport: transport,
+        firmware: firmware.version,
+        nvm,
+    });
 }
 
 /// The running firmware's major, minor and API version.

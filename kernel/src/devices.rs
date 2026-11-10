@@ -250,12 +250,12 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &intel_wifi::INTEL_WIFI_DRIVER,
 ];
 
-/// What the Wi-Fi adapter reached, for `/proc/driver/wifi` (D274).
-pub fn wifi_status() -> &'static str {
+/// What the Wi-Fi adapter reached, for `/proc/driver/wifi` (D274, D275).
+pub fn wifi_status() -> alloc::string::String {
     #[cfg(any(test, feature = "intel-wifi"))]
     return intel_wifi::status();
     #[cfg(not(any(test, feature = "intel-wifi")))]
-    return "no Wi-Fi driver in this kernel";
+    return alloc::string::String::from("no Wi-Fi driver in this kernel");
 }
 
 /// Starts bringing the Wi-Fi adapter up once the file systems are mounted (D274).

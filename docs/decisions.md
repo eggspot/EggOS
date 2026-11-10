@@ -19733,3 +19733,31 @@ the license, by an explicit instruction recorded here.
   radio's switch is off), or why it stopped.
 - **Not yet.** Building and running; microsecond pauses; the AX210 family's PNVM and every host
   command (part 4); restarting the adapter after a firmware error.
+
+## D275 The Intel Wi-Fi driver, part 4: the command queue, the firmware's packets, the init sequence, the NVM and the MAC address (D274's next; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from OpenBSD's `iwx(4)` under D272's exception)
+
+- **Decision.**
+  - The receive ring is read as the reference reads it: every closed buffer, each packet in it
+    (several per buffer on the AX200 family, aligned to 64 bytes; one on the AX210 family) until
+    an empty or invalid header; a packet whose queue byte lacks bit 7 and names the command
+    queue is the response to the command in that slot, the rest are notifications, kept (at
+    most 32) until something waits for them. The buffers go back to the firmware by the write
+    index, rounded down to 8.
+  - `send_command` writes the command's wide header (code, group, slot, queue, length) and
+    payload into a 4 KiB command buffer, a long-format descriptor with the first 20 bytes in one
+    buffer and the rest in a second, moves the queue's write pointer, and waits for the
+    response; a response with the failure bit is an error. Group 0's commands go as group 1's,
+    as the reference does for firmware API 50 and later. One command is in flight at a time.
+  - After alive: the AX210 family is told to go on without a platform NVM (the PNVM doorbell)
+    and waits for `PNVM_INIT_COMPLETE`; then `INIT_EXTENDED_CFG` asks for the NVM,
+    `NVM_ACCESS_COMPLETE` and the `INIT_COMPLETE` notification end the init, and `NVM_GET_INFO`
+    (version 3 or 4 by the firmware's API bit 48) gives the NVM's version, the bands and
+    standards, the antennas, location-aware regulatory, and the 2.4 and 5 GHz channels' flags
+    (valid, active scan, radar). The MAC address is the strapped one in the CSR block, else the
+    OTP one, checked as the reference checks it.
+  - The kernel's bring-up thread runs it after the firmware, and `/proc/driver/wifi` then says
+    `ready`, the address and the number of channels.
+  - Fixes part 2: `iwx/mod.rs` now declares `transport` (and `nvm`); the edit that should have
+    added it in part 2 did not apply.
+- **Not yet.** Building and running; the PNVM's data itself (the platform's tuning) and 6 GHz
+  channels; more than one command in flight; then scanning, association and data (part 5).
