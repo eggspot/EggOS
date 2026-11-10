@@ -19883,3 +19883,30 @@ the license, by an explicit instruction recorded here.
   reseed does.
 - **Not yet.** Building and running; reseeding from the CPU's instruction (RDSEED, `RNDR`) on the
   same schedule.
+
+## D283 The Network pane's Wi-Fi section, and masked text fields in the toolkit (D280's GUI; design by Claude Fable, docs/ux/wifi-v0.4.md; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (the design by Claude Fable)
+
+- **Decision.** As the design's sections 1 to 6:
+  - Settings > Network gains a Wi-Fi section under the wired one (`wifi_section`, 37 widgets),
+    always shown: the driver's state as a value and a hint (every first line of
+    `/proc/driver/wifi` has its row; a failure is the driver's own sentence, kept as
+    `Trying again...` until the state is connected or the chosen network changes), `Open
+    Components` while the firmware component is missing, and the networks heard, one row a name,
+    six a page with `More`/`Strongest`: name, `<security> · <signal>` in words, and `Join`,
+    `Forget` or a disabled `Cannot join` with one sentence why. The chosen network (`wifi.conf`'s
+    `ssid=`) is row 0; connected, the list is the joined row alone with the accent mark.
+  - `Join` on an open network writes `wifi.conf` at once; on a WPA2 network it opens a note under
+    the row with a masked passphrase field, `Show`, `Cancel` and `Join` (the window's default
+    button while open), checked against `wifi connect`'s 8-to-63 rule. `Forget` removes the file.
+    The program writes and removes the file as `wifi connect` and `wifi forget` do (mode 600).
+  - The wired section's first row reads `Wi-Fi` while the joined network is the adapter, and its
+    hints point at the Wi-Fi section when there is an adapter and no cable.
+  - The toolkit's `Field` gains `masked` (`Kind::masked_text_field`): one `*` a character, the
+    caret and selection measured on the stars, and copy and cut refused; the passphrase field is
+    also person-only, so agents see no value. Settings' widget capacity grows by 37, and the
+    installer dialog's with it.
+- **Deviations from the design, for the next GUI pass.** The rows are not reordered by focus
+  after a scan (the focus stays on the same slot), and Up/Down between row buttons and Esc
+  emptying the field before closing the note follow the toolkit's defaults; accessible names do
+  not carry the network's name yet. The design's backend asks (joining as soon as the file
+  changes, scanning while connected, failure codes) are left for the driver's next part.

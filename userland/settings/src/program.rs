@@ -38,6 +38,7 @@ use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
 use eggos_settings::keys::APPEARANCE_THEME;
 use eggos_settings::keys::{DisplayChange, InputChange, KeyboardChoice, KeysChange};
 use eggos_settings::network_view::NetworkRead;
+use eggos_settings::wifi_section;
 use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, NETWORK, Request,
     SetOutcome, SettingsWindow, TITLE,
@@ -340,6 +341,23 @@ fn uptime_s() -> u64 {
     let mut uptime = [0u8; 64];
     let length = read_file("/proc/uptime", &mut uptime).unwrap_or(0);
     first_number(&uptime[..length]).unwrap_or(0)
+}
+
+const WIFI_SETTINGS_MODE: usize = 0o600;
+const WIFI_TEXT_BYTES: usize = 16 * 1024;
+
+fn wifi_status() -> wifi_section::Status {
+    let mut text = alloc::vec![0u8; WIFI_TEXT_BYTES];
+    match read_file(wifi_section::STATUS_PATH, &mut text) {
+        Ok(length) => wifi_section::parse(core::str::from_utf8(&text[..length]).unwrap_or("")),
+        Err(_) => wifi_section::Status::default(),
+    }
+}
+
+fn wifi_chosen() -> Option<alloc::string::String> {
+    let mut text = [0u8; 512];
+    let length = read_file(wifi_section::SETTINGS_PATH, &mut text).ok()?;
+    wifi_section::chosen_in(core::str::from_utf8(&text[..length]).ok()?)
 }
 
 fn network_adapter() -> Option<InterfaceStatus> {
@@ -1286,6 +1304,22 @@ impl Application<CAPACITY> for Settings {
             }
             Some(Request::InstallComponent) => self.component_work = Some(ComponentWork::Install),
             Some(Request::RemoveComponent) => self.component_work = Some(ComponentWork::Remove),
+            Some(Request::WifiJoin { name, passphrase }) => {
+                let text = alloc::format!("ssid={}\npassphrase={}\n", name.as_str(), passphrase.as_str());
+                let saved = write_file_with_mode(c"/var/lib/eggos/wifi.conf", WIFI_SETTINGS_MODE, text.as_bytes())
+                    .map_err(|error| core::str::from_utf8(error.message()).unwrap_or("the file could not be written"));
+                self.window.wifi_join_saved(saved, now_ms);
+                self.window.show_wifi(wifi_status(), wifi_chosen());
+            }
+            Some(Request::WifiForget) => {
+                let removed = syscall(number::UNLINKAT, [AT_FDCWD, c"/var/lib/eggos/wifi.conf".as_ptr() as usize, 0, 0, 0, 0]);
+                if let Err(error) = removed {
+                    self.window
+                        .wifi_forget_failed(core::str::from_utf8(error.message()).unwrap_or("the file could not be removed"));
+                }
+                self.window.show_wifi(wifi_status(), wifi_chosen());
+            }
+            Some(Request::OpenComponents) => {}
             Some(Request::CopyToClipboard) => {
                 if let Some(server) = self.server.as_ref() {
                     let _ = server.set_clipboard(self.window.windows_pane().to_copy());
@@ -1398,7 +1432,10 @@ impl Settings {
                 self.window.show_devices(read.map(|length| &text[..length]));
             }
             Some(Request::ReadComponents) => self.window.show_components(components_read()),
-            _ if pane == NETWORK => self.window.show_network_adapter(network_adapter()),
+            _ if pane == NETWORK => {
+                self.window.show_network_adapter(network_adapter());
+                self.window.show_wifi(wifi_status(), wifi_chosen());
+            }
             _ => {}
         }
     }
@@ -1496,7 +1533,10 @@ impl Settings {
                         .show_clock_sync(clock_sync_record(), network_adapter(), running);
                 }
             }
-            NETWORK => self.window.show_network_adapter(network_adapter()),
+            NETWORK => {
+                self.window.show_network_adapter(network_adapter());
+                self.window.show_wifi(wifi_status(), wifi_chosen());
+            }
             _ => {}
         }
     }

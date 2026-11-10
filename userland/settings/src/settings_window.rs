@@ -17,6 +17,7 @@ use crate::facts::Facts;
 use crate::input_panes::{self, DisplayPane, InputPanes};
 use crate::keys::{DisplayChange, InputChange, KeysChange};
 use crate::network_pane::NetworkPane;
+use crate::wifi_section::{self, WifiSection};
 use crate::network_view::NetworkRead;
 use crate::storage_pane::{Reply, StoragePane};
 use crate::windows_pane::{self, WindowsPane};
@@ -50,8 +51,11 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize =
-    202 + windows_pane::WIDGETS + components_pane::WIDGETS + crate::storage_pane::INSTALLER_WIDGETS;
+pub const CAPACITY: usize = 202
+    + windows_pane::WIDGETS
+    + components_pane::WIDGETS
+    + crate::storage_pane::INSTALLER_WIDGETS
+    + crate::wifi_section::WIDGETS;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -469,6 +473,16 @@ pub const PROFILE_LABELS: [&str; 3] = ["Windows", "macOS", "Linux"];
 /// What the program must do for the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
+    /// Write `/var/lib/eggos/wifi.conf` naming this network and passphrase, as `wifi connect`
+    /// does, then say how it went ([`SettingsWindow::wifi_join_saved`]) (D283).
+    WifiJoin {
+        name: Text<{ wifi_section::MAX_NAME_BYTES }>,
+        passphrase: Text<{ wifi_section::MAX_PASSPHRASE_BYTES }>,
+    },
+    /// Remove `/var/lib/eggos/wifi.conf`, as `wifi forget` does (D283).
+    WifiForget,
+    /// Show the Components pane (D283: the Wi-Fi firmware is installed there).
+    OpenComponents,
     /// Make the profile at this index of the settings file's `PROFILES` the desktop's and
     /// save it.
     SetProfile(usize),
@@ -621,6 +635,7 @@ pub struct SettingsWindow {
     accessibility: AccessibilityPane,
     about: AboutPane,
     network: NetworkPane,
+    wifi: WifiSection,
     windows: WindowsPane,
     components: ComponentsPane,
     windows_layer: bool,
@@ -1078,6 +1093,7 @@ impl SettingsWindow {
             PANES[NETWORK],
             facts.network_adapter.as_ref(),
         );
+        let wifi = WifiSection::build(&mut tree, panes[NETWORK], set_button);
         let zones = ZonePicker::build(
             &mut tree,
             panes[DATE_AND_TIME],
@@ -1144,6 +1160,7 @@ impl SettingsWindow {
             accessibility,
             about: about_devices,
             network,
+            wifi,
             windows,
             components,
             windows_layer: false,
@@ -1375,6 +1392,25 @@ impl SettingsWindow {
     pub fn show_network_adapter(&mut self, adapter: Option<InterfaceStatus>) {
         self.facts.network_adapter = adapter;
         self.network.show(&mut self.tree, adapter.as_ref());
+    }
+
+    /// Shows the Wi-Fi driver's `status` and the `chosen` network in the Network pane's Wi-Fi
+    /// section, and names the wired section's adapter after it (D283).
+    pub fn show_wifi(&mut self, status: wifi_section::Status, chosen: Option<alloc::string::String>) {
+        self.wifi.show(&mut self.tree, status, chosen);
+        let adapter = self.facts.network_adapter;
+        self.network
+            .show_wifi(&mut self.tree, self.wifi.has_adapter(), self.wifi.connected(), adapter.as_ref());
+    }
+
+    /// The program wrote `wifi.conf` for a join (`Ok`) or could not (`Err` with its words).
+    pub fn wifi_join_saved(&mut self, saved: Result<(), &str>, now_ms: u32) {
+        self.wifi.join_saved(&mut self.tree, saved, now_ms);
+    }
+
+    /// The program could not remove `wifi.conf`.
+    pub fn wifi_forget_failed(&mut self, words: &str) {
+        self.wifi.forget_failed(&mut self.tree, words);
     }
 
     /// The Network pane (D225).
@@ -1907,6 +1943,12 @@ impl SettingsWindow {
     pub fn respond(&mut self, response: Response, now_ms: u32) -> Option<Request> {
         if self.about.respond(&mut self.tree, response) {
             return None;
+        }
+        if let wifi_section::Reply::Done(request) = self.wifi.respond(&mut self.tree, response, now_ms) {
+            return match request {
+                Some(Request::OpenComponents) => self.open_pane(COMPONENTS),
+                other => other,
+            };
         }
         if let components_pane::Reply::Done(request) =
             self.components.respond(&mut self.tree, response, now_ms)

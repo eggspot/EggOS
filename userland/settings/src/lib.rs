@@ -26,5 +26,6 @@ pub mod network_view;
 pub mod settings_window;
 pub mod storage_pane;
 pub mod task_manager;
+pub mod wifi_section;
 pub mod windows_pane;
 pub mod zone_picker;

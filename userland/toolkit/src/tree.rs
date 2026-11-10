@@ -2202,6 +2202,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if key == FieldKey::Unused {
             return unused;
         }
+        if edited.masked && matches!(key, FieldKey::Copied | FieldKey::Cut) {
+            return Response::Nothing;
+        }
         if key == FieldKey::Cut {
             edited.remove_selection();
         }

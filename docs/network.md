@@ -165,14 +165,15 @@ joins the named network after its next scan: open networks and WPA2-Personal (WP
 there yet). `wifi list` (and the MCP tool `wifi_list`) shows where it is: waiting for the
 component, scanning, ready, connecting, connected, or why it stopped, then the networks it
 heard, strongest first. `wifi connect` writes `/var/lib/eggos/wifi.conf`, which only root reads;
-`wifi forget` removes it. Once joined, Wi-Fi is the network's adapter (`eth0`), asking for an
+`wifi forget` removes it. Settings > Network lists the same networks and joins and forgets them
+(D283). Once joined, Wi-Fi is the network's adapter (`eth0`), asking for an
 address by DHCP as a cable does, and the driver encrypts and checks every frame with CCMP on the
 host. The driver is written from OpenBSD's `iwx(4)` by the owner's exception to the clean-room
 rule; its notices are in `/usr/share/licenses/eggos/iwx-NOTICE.md`.
 
 ## Not yet
 
-Wi-Fi and Ethernet together, WPA3-Personal, 6 GHz and the Network pane's Wi-Fi list; IPv6; fragments; static addresses, a second adapter and their routes;
+Wi-Fi and Ethernet together, WPA3-Personal and 6 GHz; IPv6; fragments; static addresses, a second adapter and their routes;
 multicast; reverse lookups; netlink (iproute2 itself and `getifaddrs`); the indicator at 2x and on the phone's
 bar, and downloads kept across boots; TCP window scaling,
 selective acknowledgments, keep-alive, urgent data and Nagle's delay (`TCP_NODELAY` is always

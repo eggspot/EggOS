@@ -30,6 +30,14 @@ pub const NO_ADAPTER_HINT: &str = "EggOS found none at boot: there is nothing to
 pub const ROW_NAMES: [&str; 4] = ["IPv4 address", "Router", "DNS servers", "DHCP server"];
 /// What a row holds when the network gave nothing for it.
 pub const NOTHING_GIVEN: &str = "None";
+/// The first row when the joined Wi-Fi network is the adapter (D283).
+pub const WIFI: &str = "Wi-Fi";
+/// The first row with no wired adapter but a Wi-Fi one (D283).
+pub const NO_WIRED_ADAPTER: &str = "No wired adapter.";
+/// Its hint (D283).
+pub const JOIN_WIFI_HINT: &str = "Join a Wi-Fi network below.";
+/// The unplugged cable's hint when there is a Wi-Fi adapter too (D283).
+pub const CABLE_OR_WIFI_HINT: &str = "Plug in a network cable, or join a Wi-Fi network below.";
 
 const PADDING: i32 = 16;
 const HEADING_TOP: i32 = 16;
@@ -169,6 +177,8 @@ pub fn sent_text(adapter: &InterfaceStatus) -> Line {
 pub struct NetworkPane {
     widgets: [WidgetId; WIDGETS],
     shown: Option<Option<InterfaceStatus>>,
+    wifi_adapter: bool,
+    wifi_connected: bool,
 }
 
 const ADAPTER_LINE: usize = 1;
@@ -215,9 +225,29 @@ impl NetworkPane {
         let mut built = Self {
             widgets,
             shown: None,
+            wifi_adapter: false,
+            wifi_connected: false,
         };
         built.show(tree, adapter);
         built
+    }
+
+    /// Names the adapter after the Wi-Fi section's state (D283, docs/ux/wifi-v0.4.md section 1):
+    /// `Wi-Fi` when joined, and hints that point at the Wi-Fi section when there is an adapter.
+    pub fn show_wifi(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        wifi_adapter: bool,
+        wifi_connected: bool,
+        adapter: Option<&InterfaceStatus>,
+    ) {
+        if (self.wifi_adapter, self.wifi_connected) == (wifi_adapter, wifi_connected) {
+            return;
+        }
+        self.wifi_adapter = wifi_adapter;
+        self.wifi_connected = wifi_connected;
+        self.shown = None;
+        self.show(tree, adapter);
     }
 
     /// The pane's widgets in the design's order (docs/ux/network-v0.3.md section 2): index 0 is
@@ -235,18 +265,22 @@ impl NetworkPane {
         }
         self.shown = Some(adapter.copied());
         let state = adapter.map(InterfaceStatus::state);
-        let first_row = match adapter {
-            Some(_) => ETHERNET,
-            None => NO_ADAPTER,
+        let first_row = match (adapter, self.wifi_adapter) {
+            (Some(_), _) if self.wifi_connected => WIFI,
+            (Some(_), _) => ETHERNET,
+            (None, true) => NO_WIRED_ADAPTER,
+            (None, false) => NO_ADAPTER,
         };
         tree.set_text(self.widgets[ADAPTER_LINE], first_row);
         if let Some(state) = state {
             tree.set_text(self.widgets[STATE_VALUE], state.text());
         }
         tree.set_shown(self.widgets[STATE_VALUE], state.is_some());
-        let explanation = match state {
-            Some(state) => hint(state),
-            None => Some(NO_ADAPTER_HINT),
+        let explanation = match (state, self.wifi_adapter) {
+            (Some(State::CableUnplugged), true) if !self.wifi_connected => Some(CABLE_OR_WIFI_HINT),
+            (Some(state), _) => hint(state),
+            (None, true) => Some(JOIN_WIFI_HINT),
+            (None, false) => Some(NO_ADAPTER_HINT),
         };
         if let Some(explanation) = explanation {
             tree.set_text(self.widgets[HINT], explanation);

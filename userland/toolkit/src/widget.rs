@@ -267,7 +267,11 @@ pub struct Field {
     pub scroll: i32,
     pub placeholder: &'static str,
     pub escape: Escape,
+    /// Whether every character draws as `*` and copy and cut do nothing: a passphrase (D283).
+    pub masked: bool,
 }
+
+const MASK: &str = "****************************************************************************************************************************************************************************************************************************************************************************************";
 
 /// A vertical list of rows in its own scroll view.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -501,6 +505,21 @@ impl Kind {
             scroll: 0,
             placeholder,
             escape,
+            masked: false,
+        })
+    }
+
+    /// An empty text field showing `placeholder` whose characters draw as `*` and whose text
+    /// cannot be copied or cut: a passphrase's (D283).
+    pub const fn masked_text_field(placeholder: &'static str, escape: Escape) -> Self {
+        Self::TextField(Field {
+            text: Text::new(),
+            caret: 0,
+            anchor: 0,
+            scroll: 0,
+            placeholder,
+            escape,
+            masked: true,
         })
     }
 
@@ -862,7 +881,7 @@ pub fn field_inner(rect: Rect) -> Rect {
 /// The caret's rectangle in a text field at `rect`.
 pub fn caret_rect(field: &Field, rect: Rect) -> Rect {
     let inner = field_inner(rect);
-    let before = text::width(&field.text.as_str()[..field.caret]);
+    let before = field.shown_width(field.caret);
     Rect::new(
         inner.x + before - field.scroll - 1,
         rect.y + (rect.height - LINE_HEIGHT) / 2,
@@ -934,7 +953,7 @@ pub fn caret_at(field: &Field, rect: Rect, x: i32) -> usize {
 /// Scrolls `field` at `rect` so its caret is inside it, and no further than its text needs.
 pub fn keep_caret_visible(field: &mut Field, rect: Rect) {
     let inner = field_inner(rect);
-    let before = text::width(&field.text.as_str()[..field.caret]);
+    let before = field.shown_width(field.caret);
     let total = text::width(field.text.as_str());
     if before - field.scroll > inner.width {
         field.scroll = before - inner.width;
@@ -965,6 +984,24 @@ pub enum FieldKey {
 }
 
 impl Field {
+    /// What the field draws for its text: the text, or one `*` a character when masked.
+    pub fn shown(&self) -> &str {
+        match self.masked {
+            true => &MASK[..self.text.as_str().chars().count().min(MASK.len())],
+            false => self.text.as_str(),
+        }
+    }
+
+    /// How wide the field draws its text's first `end` bytes.
+    pub fn shown_width(&self, end: usize) -> i32 {
+        let text = self.text.as_str();
+        let end = end.min(text.len());
+        match self.masked {
+            true => text::width("*") * text[..end].chars().count() as i32,
+            false => text::width(&text[..end]),
+        }
+    }
+
     /// The selection's first and last byte, both within the text and on character boundaries
     /// however `caret` and `anchor` were set.
     pub fn selection(&self) -> (usize, usize) {
@@ -1552,14 +1589,13 @@ fn paint_field(canvas: &mut Canvas<'_>, field: &Field, rect: Rect, look: Look) {
     let y = rect.y + (rect.height - LINE_HEIGHT) / 2;
     let (words, ink) = match field.text.is_empty() {
         true => (field.placeholder, palette.text_dim),
-        false => (field.text.as_str(), palette.text),
+        false => (field.shown(), palette.text),
     };
     let ink = if look.enabled { ink } else { palette.text_dim };
     let (start, end) = field.selection();
     if look.focused && start != end && !field.text.is_empty() {
-        let text = field.text.as_str();
-        let left = inner.x - field.scroll + text::width(&text[..start]);
-        let right = inner.x - field.scroll + text::width(&text[..end]);
+        let left = inner.x - field.scroll + field.shown_width(start);
+        let right = inner.x - field.scroll + field.shown_width(end);
         canvas.fill(
             Rect::new(left, y, right - left, LINE_HEIGHT),
             palette.selection,
