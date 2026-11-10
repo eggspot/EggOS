@@ -90,32 +90,58 @@ impl BlockDevice for NvmeDisk {
     }
 }
 
-struct SataDisk(ahci::AhciDisk<Mmio, DmaRegion>);
+struct SataDisk {
+    disk: ahci::AhciDisk<Mmio, DmaRegion>,
+    events: Option<&'static DeviceEvents>,
+    controller: Option<(usize, usize)>,
+}
+
+impl SataDisk {
+    fn clear_interrupt(&self) {
+        if let (Some((base, port)), Some(_)) = (self.controller, self.events) {
+            // SAFETY: the controller's registers, mapped for good by the probe; only the
+            // controller-wide interrupt status, a write-one-to-clear register, is reached.
+            let regs = unsafe { Mmio::new(base, ahci::PORT_REGISTERS) };
+            ahci::clear_port_interrupt(&regs, port);
+        }
+    }
+}
+
+static SATA_EVENTS: DeviceEvents = DeviceEvents::new();
 
 impl BlockDevice for SataDisk {
     fn sectors(&self) -> u64 {
-        self.0.sectors()
+        self.disk.sectors()
     }
     fn is_read_only(&self) -> bool {
         false
     }
     fn logical_block_bytes(&self) -> usize {
-        self.0.block_bytes()
+        self.disk.block_bytes()
     }
     fn read(&mut self, sector: u64, buffer: &mut [u8], deadline: &mut Deadline) -> Result<(), BlockError> {
-        self.0
-            .read(sector, buffer, &mut || deadline.keep_waiting())
-            .map_err(block_error)
+        let result = self
+            .disk
+            .read(sector, buffer, &mut waiting_for(self.events, deadline))
+            .map_err(block_error);
+        self.clear_interrupt();
+        result
     }
     fn write(&mut self, sector: u64, buffer: &[u8], deadline: &mut Deadline) -> Result<(), BlockError> {
-        self.0
-            .write(sector, buffer, &mut || deadline.keep_waiting())
-            .map_err(block_error)
+        let result = self
+            .disk
+            .write(sector, buffer, &mut waiting_for(self.events, deadline))
+            .map_err(block_error);
+        self.clear_interrupt();
+        result
     }
     fn flush(&mut self, deadline: &mut Deadline) -> Result<(), BlockError> {
-        self.0
-            .flush(&mut || deadline.keep_waiting())
-            .map_err(block_error)
+        let result = self
+            .disk
+            .flush(&mut waiting_for(self.events, deadline))
+            .map_err(block_error);
+        self.clear_interrupt();
+        result
     }
 }
 
@@ -198,6 +224,10 @@ fn probe_ahci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     let controller_regs = unsafe { Mmio::new(base, length) };
     let mut deadline = probe.deadline(START_TIMEOUT_MS);
     let controller = ahci::take_controller(&controller_regs, &mut || deadline.keep_waiting());
+    let interrupting = message_interrupts::connect(probe, id, &SATA_EVENTS).is_ok();
+    if interrupting {
+        ahci::enable_controller_interrupt(&controller_regs);
+    }
     let mut installed = 0;
     let mut last_refusal = "no SATA disk is connected";
     for port in 0..ahci::MAX_PORTS {
@@ -221,8 +251,16 @@ fn probe_ahci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         };
         let mut deadline = probe.deadline(START_TIMEOUT_MS);
         match ahci::AhciDisk::new(regs, memory, controller.addresses_64_bit, &mut || deadline.keep_waiting()) {
-            Ok(disk) => {
-                if crate::block::install(Box::new(SataDisk(disk))).is_ok() {
+            Ok(mut disk) => {
+                if interrupting {
+                    disk.enable_interrupts();
+                }
+                let sata = SataDisk {
+                    disk,
+                    events: interrupting.then_some(&SATA_EVENTS),
+                    controller: Some((base, port)),
+                };
+                if crate::block::install(Box::new(sata)).is_ok() {
                     installed += 1;
                 }
             }

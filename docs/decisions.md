@@ -19458,3 +19458,13 @@ the license, by an explicit instruction recorded here.
   the clock's frequency. The device tree parser now keeps those three properties per node.
 - **Not yet.** Building and running; harts that differ in their extensions; Svinval and the
   vector extension's first-use trap (D54).
+
+## D262 AHCI on MSI (D255's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The AHCI controller gets a message interrupt through `message_interrupts::connect`
+  (MSI-X or MSI, INTx off); `GHC.IE` is turned on and each disk's port asks for its
+  device-to-host register FIS, set-device-bits and task-file-error interrupts. A disk's transfers
+  sleep until the controller's events are raised, and after each transfer the port's bit in the
+  controller-wide `IS` is cleared, so the next completion sends a new message. All the
+  controller's disks share one event, so a completion on one wakes the others to look again.
+- **Not yet.** Building and running; one message per port where the controller has several.
