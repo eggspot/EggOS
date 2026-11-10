@@ -241,3 +241,11 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"_setjmpex" => arch::set_jump [direct],
     b"longjmp" => long_jump_entry [direct],
 ];
+
+/// The names vcruntime140 gives them: MSVC compiles `setjmp` to a call of
+/// `__intrinsic_setjmp` (x64) or `__intrinsic_setjmpex` (ARM64), and imports `longjmp` from it.
+pub(super) const VCRUNTIME_EXPORTS: &[Export] = exports![
+    b"__intrinsic_setjmp" => arch::set_jump [direct],
+    b"__intrinsic_setjmpex" => arch::set_jump [direct],
+    b"longjmp" => long_jump_entry [direct],
+];

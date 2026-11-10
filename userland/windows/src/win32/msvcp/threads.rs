@@ -339,6 +339,8 @@ extern "efiapi" fn end_thread_ex(code: u32) -> ! {
     exit_thread(code)
 }
 
+extern "efiapi" fn broadcast_at_thread_exit_none_registered() {}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"_Mtx_init_in_situ" => mutex_init_in_situ,
     b"_Mtx_destroy_in_situ" => mutex_destroy_in_situ,
@@ -361,6 +363,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"_Cnd_timedwait_for" => condition_timedwait_for,
     b"_Cnd_signal" => condition_signal,
     b"_Cnd_broadcast" => condition_broadcast,
+    b"_Cnd_do_broadcast_at_thread_exit" => broadcast_at_thread_exit_none_registered,
     b"_Thrd_join" => thread_join,
     b"_Thrd_detach" => thread_detach,
     b"_Thrd_id" => thread_id_of_caller,

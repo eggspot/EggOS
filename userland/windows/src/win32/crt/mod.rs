@@ -48,6 +48,7 @@ pub(super) const VCRUNTIME: &[&[Export]] = &[
     super::exception::CXX_EXPORTS,
     super::exception::RTTI_EXPORTS,
     super::exception::TYPE_INFO_EXPORTS,
+    setjmp::VCRUNTIME_EXPORTS,
 ];
 
 /// The Universal C Runtime's functions, whichever API set names them.

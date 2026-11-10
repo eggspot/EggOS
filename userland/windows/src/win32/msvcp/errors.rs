@@ -12,6 +12,7 @@ use super::super::exception::{Context, StdObject, capturing_entry, throw, throw_
 use super::super::heap;
 use crate::cpp_errors::{
     CPP_ERROR_WHAT, CPP_ERRORS, INVALID_ARGUMENT, cpp_error_of, generic_message,
+    generic_message_terminated,
 };
 use crate::library::Export;
 use crate::std_exceptions::StdException;
@@ -158,6 +159,10 @@ pub fn throw_cpp_error(code: i32, context: *mut Context) -> ! {
     throw_object(StdException::SystemError, object, context)
 }
 
+extern "efiapi" fn syserror_map(value: i32) -> *const u8 {
+    generic_message_terminated(value).as_ptr()
+}
+
 capturing_entry!(length_error_entry => length_error);
 capturing_entry!(out_of_range_entry => out_of_range);
 capturing_entry!(invalid_argument_entry => invalid_argument);
@@ -214,4 +219,5 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"?_Xbad_function_call@std@@YAXXZ" => bad_function_call_entry [direct],
     b"?_Throw_C_error@std@@YAXH@Z" => throw_c_error_entry [direct],
     b"?_Throw_Cpp_error@std@@YAXH@Z" => throw_cpp_error_entry [direct],
+    b"?_Syserror_map@std@@YAPEBDH@Z" => syserror_map,
 ];
