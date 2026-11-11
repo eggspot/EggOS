@@ -20220,3 +20220,24 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the other fingers (gestures, pinch), touch events of their
   own for apps, and the touch shell itself.
 
+## D297 M9's remaining architectures: which the pinned stable toolchain can build, and in what order (code-only session; research from Rust's platform-support tiers) — Decided by the code-only session (engineering)
+
+- **The constraint.** EggOS builds on one pinned stable Rust (`rust-toolchain.toml`) with no
+  third-party crates, so a kernel target needs a prebuilt `core` from rustup: tier 2. Bare-metal
+  tier-2 targets exist for AArch64, RISC-V, x86_64 and LoongArch64 (done or in progress, D290),
+  32-bit Arm (`armv7a-none-eabi`) and RV32 (`riscv32imac-unknown-none-elf`). PowerPC64 and
+  s390x have only Linux targets at tier 2 (`powerpc64le-unknown-linux-gnu`,
+  `powerpc64-unknown-linux-gnu`, `s390x-unknown-linux-gnu`), whose prebuilt `core` a `no_std`
+  kernel can link against with its own linker script, as the user programs already do with
+  `*-linux-musl`; MIPS64 and SPARC64 are tier 3 only, so no `core` is shipped and building them
+  needs a nightly toolchain's `build-std`.
+- **Decision.** The order: (1) ppc64le, on QEMU `powernv` (bare metal, OPAL firmware) with the
+  POWER9 radix MMU, through `powerpc64le-unknown-linux-gnu`; (2) s390x on QEMU `s390-ccw-virtio`,
+  the first big-endian one, which brings an endian-aware ELF loader and Linux ABI (`elf.rs`
+  notes it); (3) the 32-bit ones, Arm and RV32, after the kernel's 64-bit assumptions
+  (`usize` as `u64`, 64-bit page tables, a 3 GiB/1 GiB split) are taken out behind the HAL, which
+  is a refactor of its own; (4) MIPS64 and SPARC64 wait: a nightly toolchain goes against the
+  pinned-stable rule, which only the owner can change, so they wait until Rust ships tier-2
+  targets for them or the owner allows `build-std` for those two.
+- **Not yet.** Every one of the ports; the owner's call on MIPS64 and SPARC64.
+
