@@ -56,7 +56,7 @@ impl ConfigSpace for Ecam {
         match self.register(address, offset) {
             // SAFETY: `register` checked the access lies inside the window, which `new`'s
             // contract keeps mapped, and is aligned.
-            Some(register) => unsafe { register.read_volatile() },
+            Some(register) => u32::from_le(unsafe { register.read_volatile() }),
             None => u32::MAX,
         }
     }
@@ -64,7 +64,7 @@ impl ConfigSpace for Ecam {
     fn write32(&self, address: Address, offset: u16, value: u32) {
         if let Some(register) = self.register(address, offset) {
             // SAFETY: as in `read32`.
-            unsafe { register.write_volatile(value) }
+            unsafe { register.write_volatile(value.to_le()) }
         }
     }
 }

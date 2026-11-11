@@ -75,14 +75,14 @@ impl RegisterIo for Mmio {
         let address = self.checked_address(offset, 2);
         // SAFETY: `Mmio::new`'s contract makes every in-bounds offset a valid device register,
         // and `checked_address` has checked bounds and 2-byte alignment.
-        unsafe { core::ptr::read_volatile(address as *const u16) }
+        u16::from_le(unsafe { core::ptr::read_volatile(address as *const u16) })
     }
 
     #[inline]
     fn write16(&self, offset: usize, value: u16) {
         let address = self.checked_address(offset, 2);
         // SAFETY: as in `read16`.
-        unsafe { core::ptr::write_volatile(address as *mut u16, value) }
+        unsafe { core::ptr::write_volatile(address as *mut u16, value.to_le()) }
     }
 
     #[inline]
@@ -90,14 +90,14 @@ impl RegisterIo for Mmio {
         let address = self.checked_address(offset, 4);
         // SAFETY: `Mmio::new`'s contract makes every in-bounds offset a valid device register,
         // and `checked_address` has checked bounds and 4-byte alignment.
-        unsafe { core::ptr::read_volatile(address as *const u32) }
+        u32::from_le(unsafe { core::ptr::read_volatile(address as *const u32) })
     }
 
     #[inline]
     fn write32(&self, offset: usize, value: u32) {
         let address = self.checked_address(offset, 4);
         // SAFETY: as in `read32`.
-        unsafe { core::ptr::write_volatile(address as *mut u32, value) }
+        unsafe { core::ptr::write_volatile(address as *mut u32, value.to_le()) }
     }
 }
 

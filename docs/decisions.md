@@ -20907,3 +20907,13 @@ the license, by an explicit instruction recorded here.
 - **Build-pass notes.** Settings' widget `CAPACITY` grows by 2 (the label and the dropdown);
   the Keyboard pane's tests that count widgets or read positions.
 - **Not yet.** Building and running.
+
+## D318 Big-endian groundwork, step 1: device registers are little-endian whatever the CPU (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `Mmio`'s 16- and 32-bit accesses and ECAM configuration space convert with
+  `from_le`/`to_le`: PCI and virtio registers are little-endian, so a big-endian CPU (SPARC64)
+  reads them right. On every little-endian port the conversions are no-ops.
+- **Next steps.** virtio's ring fields (`virtio/queue.rs`) and its in-memory structures; the
+  ELF loader accepting the native byte order; `abi::code_bytes` in native order; then s390x
+  (channel I/O, DAT geometry) and SPARC64.
+- **Not yet.** Building and running.
