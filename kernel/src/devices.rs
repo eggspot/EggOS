@@ -476,6 +476,7 @@ struct BootProbe<'a, P: Platform> {
     table: &'a mut DeviceTable,
     memory: &'a mut Memory<P>,
     ecam: Option<pci::ecam::Ecam>,
+    firmware: Option<&'static dyn ConfigSpace>,
 }
 
 impl<P: Platform> Probe for BootProbe<'_, P> {
@@ -489,7 +490,10 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
     }
 
     fn pci_config(&self) -> Option<&dyn ConfigSpace> {
-        self.ecam.as_ref().map(|ecam| ecam as &dyn ConfigSpace)
+        match &self.ecam {
+            Some(ecam) => Some(ecam as &dyn ConfigSpace),
+            None => self.firmware,
+        }
     }
 
     fn deadline(&self, milliseconds: u64) -> Deadline {
@@ -526,6 +530,7 @@ pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
         table,
         memory,
         ecam: None,
+        firmware: None,
     };
     if let Some(mcfg) = P::acpi_table(b"MCFG")
         && let Err(error) = pci_bus::discover(&mut probe, mcfg)
@@ -535,6 +540,12 @@ pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
     if probe.ecam.is_none()
         && let Some(blob) = P::device_tree()
         && let Err(error) = pci_bus::discover_device_tree(&mut probe, blob)
+    {
+        report.discovery_error = Some(error);
+    }
+    if probe.ecam.is_none()
+        && let Some(blob) = P::device_tree()
+        && let Err(error) = pci_bus::discover_firmware(&mut probe, blob)
     {
         report.discovery_error = Some(error);
     }

@@ -10,6 +10,7 @@
 use crate::memory::FRAMES;
 use eggos_drivers::dma::{DmaAddr, DmaMemory};
 use eggos_drivers::virtio::ResetDone;
+use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 
 /// Why a region could not be made.
@@ -76,16 +77,25 @@ impl DmaRegion {
     }
 }
 
+/// What devices add to a physical address to reach it ([`eggos_hal::Platform::dma_device_offset`]: POWER's
+/// bypass window, D312); 0 elsewhere.
+static DEVICE_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+/// Sets [`DEVICE_OFFSET`], once, when the PCI host that needs it is discovered.
+pub(super) fn set_device_offset(offset: u64) {
+    DEVICE_OFFSET.store(offset, Ordering::Relaxed);
+}
+
 // SAFETY: the frames are owned by the region from `allocate` until `free`, reached at `virt`
 // through the direct map (normal, cached memory, aligned to at least a frame); the device reaches
-// them at their physical address, which is the device address while there is no IOMMU; and only
-// coherent devices are given regions.
+// them at their physical address plus `DEVICE_OFFSET` (a window without translation: identity
+// with no IOMMU, POWER's bypass window, D312); and only coherent devices are given regions.
 unsafe impl DmaMemory for DmaRegion {
     fn as_mut_ptr(&self) -> *mut u8 {
         self.virt as *mut u8
     }
     fn dma_addr(&self) -> DmaAddr {
-        DmaAddr::new(self.first)
+        DmaAddr::new(self.first + DEVICE_OFFSET.load(Ordering::Relaxed))
     }
     fn len(&self) -> usize {
         (FRAME_SIZE as usize) << self.order

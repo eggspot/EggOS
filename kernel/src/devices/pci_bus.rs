@@ -12,6 +12,8 @@ const SPACE_MEMORY64: u32 = 3 << 24;
 const SPACE_MASK: u32 = 3 << 24;
 const PREFETCHABLE: u32 = 1 << 30;
 const MAX_WINDOWS: usize = 4;
+/// The compatible strings of PCI hosts whose configuration space the firmware serves.
+const FIRMWARE_HOSTS: [&[u8]; 2] = [b"ibm,ioda3-phb", b"ibm,ioda2-phb"];
 
 /// A memory window of a PCI host the kernel hands BAR addresses out of (D291).
 #[derive(Debug, Clone, Copy, Default)]
@@ -65,6 +67,21 @@ pub(super) fn discover_device_tree<P: Platform>(
     // SAFETY: `map_window` mapped the host's window for the buses it serves as device memory, and
     // windows stay mapped for as long as the kernel runs.
     let ecam = unsafe { Ecam::new(mapped, start_bus, end_bus) };
+    add_host_functions(&ecam, start_bus, end_bus, &host, probe.table);
+    probe.ecam = Some(ecam);
+    Ok(())
+}
+
+/// Enumerates the functions of a PCI host whose node is `host`, through `config`, giving every
+/// memory BAR firmware left at 0 an address from the host's `ranges` (D291).
+fn add_host_functions<C: ConfigSpace + ?Sized>(
+    config: &C,
+    start_bus: u8,
+    end_bus: u8,
+    host: &eggos_hal::fdt::Node<'_>,
+    table: &mut DeviceTable,
+) {
+    let cell = |bytes: &[u8], at: usize| bytes.get(at * 4..at * 4 + 4).map(|word| u32::from_be_bytes([word[0], word[1], word[2], word[3]]));
     let mut windows = [BarWindow::default(); MAX_WINDOWS];
     let mut count = 0;
     let parent_cells = host.address_cells as usize;
@@ -93,10 +110,10 @@ pub(super) fn discover_device_tree<P: Platform>(
         count += 1;
     }
     let windows = &mut windows[..count];
-    pci::enumerate(&ecam, start_bus, end_bus, &mut |function| {
+    pci::enumerate(config, start_bus, end_bus, &mut |function| {
         let mut device = DeviceNode::new(Identity::Pci(function));
         device.dma = DmaCoherence::Coherent;
-        for bar in pci::bars(&ecam, function.address, function.header_type)
+        for bar in pci::bars(config, function.address, function.header_type)
             .into_iter()
             .flatten()
         {
@@ -113,7 +130,7 @@ pub(super) fn discover_device_tree<P: Platform>(
                     let Some((bus, cpu)) = chosen else {
                         continue;
                     };
-                    pci::assign(&ecam, function.address, &bar, bus);
+                    pci::assign(config, function.address, &bar, bus);
                     cpu
                 }
                 assigned => windows
@@ -123,9 +140,34 @@ pub(super) fn discover_device_tree<P: Platform>(
             };
             device.regions[usize::from(bar.index)] = PhysicalRange::from_start_length(address, bar.size);
         }
-        probe.table.add(device);
+        table.add(device);
     });
-    probe.ecam = Some(ecam);
+}
+
+/// Discovers the PCI host bridge whose configuration space the firmware serves
+/// ([`Platform::firmware_pci`]: POWER's PHBs through OPAL, D312), enumerating it like an ECAM
+/// host of the device tree with the PHB node's windows; nothing on other machines.
+pub(super) fn discover_firmware<P: Platform>(
+    probe: &mut super::BootProbe<'_, P>,
+    blob: &'static [u8],
+) -> Result<(), &'static str> {
+    let Some(config) = P::firmware_pci() else {
+        return Ok(());
+    };
+    let tree = Fdt::new(blob).map_err(|_| "the device tree's header is not valid")?;
+    let host = tree
+        .nodes()
+        .map_while(Result::ok)
+        .find(|node| node.enabled && FIRMWARE_HOSTS.iter().any(|name| node.is_compatible(name)))
+        .ok_or("the firmware's PCI host has no device tree node")?;
+    let cell = |bytes: &[u8], at: usize| bytes.get(at * 4..at * 4 + 4).map(|word| u32::from_be_bytes([word[0], word[1], word[2], word[3]]));
+    let (start_bus, end_bus) = match (cell(host.bus_range, 0), cell(host.bus_range, 1)) {
+        (Some(first), Some(last)) => (first.min(255) as u8, last.min(255) as u8),
+        _ => (0, 255),
+    };
+    add_host_functions(config, start_bus, end_bus, &host, probe.table);
+    probe.firmware = Some(config);
+    super::dma::set_device_offset(P::dma_device_offset());
     Ok(())
 }
 

@@ -18,8 +18,10 @@
 mod exception;
 mod fp;
 mod opal;
+mod pci;
 mod thread;
 mod timer;
+mod xive;
 
 use crate::arch::boot_memory;
 use crate::cpu::{CpuStart, StartCpuError};
@@ -302,14 +304,16 @@ ppc64_opal_call:
     mr          %r5, %r6
     mr          %r6, %r7
     mr          %r7, %r8
+    mr          %r8, %r9
+    mr          %r9, %r10
     mfmsr       %r31
     bcl         20, 31, 1f
 1:  mflr        %r10
     ld          %r30, (2f - 1b)(%r10)
-    addi        %r9, %r10, (ppc64_opal_return - 1b)
+    addi        %r12, %r10, (ppc64_opal_return - 1b)
     LOAD64      %r11, {offset}
-    sub         %r9, %r9, %r11
-    mtlr        %r9
+    sub         %r12, %r12, %r11
+    mtlr        %r12
     addis       %r12, %r2, {opal_entry}@toc@ha
     ld          %r12, {opal_entry}@toc@l(%r12)
     mtspr       314, %r12
@@ -362,7 +366,7 @@ ppc64_boot_common:      .quad ppc64_common_entry
     process_entry = const PROCESS_ENTRY,
     msr_kernel = const msr::KERNEL,
     msr_opal = const msr::OPAL,
-    lpcr_set = const lpcr::HOST_RADIX | lpcr::PROCESS_TABLES | lpcr::AIL_3,
+    lpcr_set = const lpcr::HOST_RADIX | lpcr::PROCESS_TABLES | lpcr::AIL_3 | lpcr::HYPERVISOR_VIRTUALIZATION_INTERRUPTS,
     lpcr_clear = const lpcr::EXTERNAL_TO_GUEST | lpcr::HYPERVISOR_DECREMENTER,
     init_timer = sym timer::init,
     scratch = sym exception::SCRATCH,
@@ -433,6 +437,8 @@ mod lpcr {
     pub const AIL_3: u64 = 3 << 23;
     pub const EXTERNAL_TO_GUEST: u64 = 1 << 3;
     pub const HYPERVISOR_DECREMENTER: u64 = 1 << 0;
+    /// `HVICE`: XIVE's physical interrupts come as hypervisor virtualization interrupts (0xea0).
+    pub const HYPERVISOR_VIRTUALIZATION_INTERRUPTS: u64 = 1 << 1;
 }
 
 /// A radix directory entry's flags: valid, 9 index bits at the next level.
@@ -517,17 +523,25 @@ impl Platform for Powerpc64 {
     }
 
     fn enable_console_input() -> Result<(), &'static str> {
-        Err("console input interrupts need OPAL events through XIVE (D304 part 2)")
+        Err("console input is polled through OPAL (D312)")
     }
 
     fn route_device_interrupt(
         _specifier: &crate::fdt::InterruptSpecifier,
     ) -> Result<crate::DeviceLine, &'static str> {
-        Err("device interrupts need XIVE (D304 part 2)")
+        Err("POWER devices use message interrupts (D312)")
     }
 
     fn message_interrupt() -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
-        Err("message interrupts need XIVE (D304 part 2)")
+        xive::message()
+    }
+
+    fn firmware_pci() -> Option<&'static dyn eggos_drivers::pci::ConfigSpace> {
+        pci::firmware_pci(Self::device_tree())
+    }
+
+    fn dma_device_offset() -> u64 {
+        pci::dma_offset()
     }
 
     fn exit(status: ExitStatus) -> ! {
@@ -663,7 +677,7 @@ impl Platform for Powerpc64 {
     }
 
     fn early_device_regions(region: &mut dyn FnMut(PhysicalRange)) {
-        let _ = region;
+        xive::prepare(Self::device_tree(), region);
     }
 
     fn device_tree() -> Option<&'static [u8]> {

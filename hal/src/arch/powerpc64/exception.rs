@@ -1269,7 +1269,11 @@ fn interrupt(vector: u64) -> bool {
             crate::interrupt::deliver(Interrupt::Wakeup);
             true
         }
-        EXTERNAL | HYPERVISOR_VIRTUALIZATION | HYPERVISOR_DECREMENTER => true,
+        EXTERNAL | HYPERVISOR_VIRTUALIZATION => {
+            super::xive::handle();
+            true
+        }
+        HYPERVISOR_DECREMENTER => true,
         _ => false,
     }
 }

@@ -96,6 +96,10 @@ pub struct Node<'a> {
     pub dma_coherent: bool,
     /// The node has `dma-noncoherent`.
     pub dma_noncoherent: bool,
+    /// A POWER PCI host bridge's OPAL id (`ibm,opal-phbid`, two cells; D312).
+    pub opal_phb_id: &'a [u8],
+    /// A POWER PCI host bridge's MSI sources (`ibm,opal-msi-ranges`: first, count; D312).
+    pub opal_msi_ranges: &'a [u8],
 }
 
 impl<'a> Node<'a> {
@@ -122,6 +126,8 @@ impl<'a> Node<'a> {
             bus_range: &[],
             dma_coherent: false,
             dma_noncoherent: false,
+            opal_phb_id: &[],
+            opal_msi_ranges: &[],
         }
     }
 
@@ -390,6 +396,8 @@ enum Property {
     TimebaseFrequency,
     Ranges,
     BusRange,
+    OpalPhbId,
+    OpalMsiRanges,
 }
 
 fn property(name: &[u8]) -> Option<Property> {
@@ -412,6 +420,8 @@ fn property(name: &[u8]) -> Option<Property> {
         b"timebase-frequency" => TimebaseFrequency,
         b"ranges" => Ranges,
         b"bus-range" => BusRange,
+        b"ibm,opal-phbid" => OpalPhbId,
+        b"ibm,opal-msi-ranges" => OpalMsiRanges,
         _ => return None,
     })
 }
@@ -439,6 +449,8 @@ fn apply<'a>(node: &mut Node<'a>, own: &mut Level<'a>, name: &[u8], value: &'a [
         Property::DmaNoncoherent => node.dma_noncoherent = true,
         Property::Ranges => node.own_ranges = value,
         Property::BusRange => node.bus_range = value,
+        Property::OpalPhbId => node.opal_phb_id = value,
+        Property::OpalMsiRanges => node.opal_msi_ranges = value,
     }
 }
 

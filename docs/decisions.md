@@ -20586,3 +20586,52 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the QMP check that resizes QEMU's window; a size that does
   not fit the terminal's window, which is left as it was; the GPU's interrupt for the event
   instead of the half-second look.
+
+## D312 ppc64le part 2: XIVE in exploitation mode and the PHB4's PCI through OPAL, DMA by the bypass window (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** POWER9's devices are reached through OPAL, as Linux's powernv platform does,
+  with the smallest set of calls that gives virtio-pci and NVMe their configuration space, DMA
+  and MSI-X:
+  - **XIVE** (`hal/src/arch/powerpc64/xive.rs`):
+    - At boot, `OPAL_XIVE_RESET` puts XIVE in exploitation mode. The boot CPU gets one 4 KiB
+      event queue at priority 7 (`OPAL_XIVE_SET_QUEUE_INFO`, enabled and always notifying).
+    - The TIMA's hypervisor window (second `reg` of `ibm,opal-xive-pe`) and the ESB pages of
+      the first 32 MSIs of the first PHB (`OPAL_XIVE_GET_IRQ_INFO`) are early device regions,
+      mapped in the direct map.
+    - `message_interrupt` takes the next prepared MSI:
+      - OPAL gives its address and data (`OPAL_PCI_SET_XIVE_PE`, `OPAL_GET_MSI_64`);
+      - `OPAL_XIVE_SET_IRQ_CONFIG` routes it to the boot CPU's queue with its source number as
+        the data;
+      - a load at the ESB's `SET_PQ_00` offset unmasks it.
+    - `LPCR.HVICE` is set, so physical interrupts come at 0xea0 (and 0x500 is handled the same).
+      The handler acknowledges at the TIMA (`ACK_HV_REG`) and drains the queue by its
+      generation bit. It hands each source's line to the kernel and EOIs the source by an ESB
+      load, or a store when OPAL says `STORE_EOI`.
+  - **PCI** (`hal/src/arch/powerpc64/pci.rs`):
+    - Configuration space is `OPAL_PCI_CONFIG_READ_WORD` and `WRITE_WORD` on the first
+      `ibm,ioda3-phb` (or `ioda2`) node's `ibm,opal-phbid`.
+    - Every function joins PE 1 (`OPAL_PCI_SET_PE`, all RIDs), with its MSI validation entry
+      enabled.
+    - PE 1's second DMA window bypasses translation from bus address `1 << 59`
+      (`OPAL_PCI_MAP_PE_DMA_WINDOW_REAL`, 1 TiB).
+  - **Platform trait.** `firmware_pci()` (the configuration space, `None` by default) and
+    `dma_device_offset()` (0 by default, `1 << 59` here).
+  - **Kernel.** `pci_bus::discover_firmware` enumerates a firmware-served host with the same
+    BAR assignment as D291's ECAM host (now `add_host_functions`, shared), using the PHB node's
+    `ranges`. `DmaRegion::dma_addr` adds the platform's device offset.
+  - The device tree walker keeps a node's `ibm,opal-phbid` and `ibm,opal-msi-ranges`.
+  - `ppc64_opal_call` passes up to seven arguments (r3–r9); its return address moved to r12.
+- **Why.** QEMU's `powernv9` has no ECAM and no emulated interrupt controller simpler than
+  XIVE, and OPAL already knows the PHB4 and XIVE register layouts. Calling it keeps the
+  register-level drivers (and their unverifiable details) out of EggOS. The bypass window
+  avoids programming a TCE table for coherent DMA.
+- **Known gaps (to check at build time; written from memory of the OPAL API, unverified).**
+  - The tokens (15, 18, 31, 33, 34, 37, 40, 45, 128, 129, 131, 133) and argument orders.
+  - The TIMA register offsets (0x830, 0x31).
+  - The bypass window's base and the window number (`pe << 1 | 1`).
+  - Whether QEMU's PHB4 model implements `MAP_PE_DMA_WINDOW_REAL`; if not, a TCE table is
+    needed.
+  - Only the first PHB and the boot CPU's queue are used, and only 32 MSIs.
+  - The OPAL console's input stays polled; OPAL events through XIVE are not wired.
+- **Not yet.** Building and running on `powernv9` with virtio-pci; secondary CPUs' queues;
+  LSIs; other PHBs.

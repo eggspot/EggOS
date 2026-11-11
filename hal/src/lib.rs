@@ -234,6 +234,19 @@ pub trait Platform: 'static {
         None
     }
 
+    /// The configuration space of a PCI host bridge the firmware serves without ECAM (POWER's
+    /// PHBs through OPAL, D312), set up for the kernel's enumeration; `None` elsewhere.
+    fn firmware_pci() -> Option<&'static dyn eggos_drivers::pci::ConfigSpace> {
+        None
+    }
+
+    /// What a device adds to a physical address to reach it by DMA: 0 where devices see
+    /// physical memory as it is, POWER's bypass window base once [`Self::firmware_pci`] set it
+    /// (D312).
+    fn dma_device_offset() -> u64 {
+        0
+    }
+
     /// The ACPI DSDT, the definition block the `FADT` names, validated, for the namespace walk
     /// ([`aml::devices`], D252); `None` on a machine without ACPI.
     fn acpi_dsdt() -> Option<&'static [u8]> {
