@@ -7,6 +7,7 @@
 mod children;
 pub mod dynamic;
 mod file;
+pub mod dispatch;
 pub mod heap;
 mod locale;
 mod math;
@@ -614,6 +615,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
     data(name)
         .or_else(|| function(name))
         .or_else(|| math::function(name))
+        .or_else(|| dispatch::resolve(name))
         .map(|address| address as u64)
 }
 

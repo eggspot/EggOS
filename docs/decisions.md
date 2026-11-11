@@ -22621,3 +22621,29 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Resilient class stubs (`swift_getObjCClassFromObject` for classes from other
   modules), generic classes' metadata instantiation (`swift_allocateGenericClassMetadata`),
   and Swift's `@objc` property accessors through key-value coding.
+
+## D388 libdispatch in the macOS layer: the main queue on the run loop, and one thread of work (batch part 17, D180's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from libdispatch's documented C API; the threading choice researched against the layer's one-thread AppKit)
+
+- **Decision.** libSystem gains the libdispatch calls programs use most:
+  `_dispatch_main_q` (what `dispatch_get_main_queue()` is), `dispatch_get_global_queue`,
+  `dispatch_queue_create` and its label, `dispatch_async(_f)`, `dispatch_sync(_f)` and the
+  barrier forms, `dispatch_time`, `dispatch_walltime`, `dispatch_after(_f)`,
+  `dispatch_once(_f)`, semaphores, groups (`enter`, `leave`, `async`, `notify`, `wait`),
+  `dispatch_main`, and retain and release (queues live as long as the program).
+  - **The main queue** keeps its work in order and runs it on the main thread's loop: each
+    turn of AppKit's run loop and of `NSRunLoop`'s main loop runs the work that is ready and
+    the delayed work that is due, and AppKit's loop sleeps no longer than the next delayed
+    work; `dispatch_main` is that loop for a program without one.
+  - **Other queues**: the layer runs the program's work on one thread (AppKit's, as on
+    macOS for UI), so a global or private queue's asynchronous work runs at once on the
+    calling thread, in order, done before the caller could wait for it; synchronous work runs
+    at once; delayed work waits for the main loop. Semaphores and groups count without
+    blocking, which is enough when nothing runs concurrently.
+- **Why not threads yet.** Real concurrency needs the layer's Objective-C runtime, autorelease
+  pools and AppKit state to be safe across threads, which they are not built for; running
+  the work at once keeps every program that only offloads work and comes back to the main
+  queue correct.
+- **Not yet.** Queues as Objective-C objects (`OS_dispatch_queue`), which Swift's
+  `DispatchQueue` needs before the Dispatch overlay's entry points (whose argument lowering
+  must first be read from a `swiftc` build), concurrent queues on threads, sources and I/O,
+  `NSRunLoop` waking for delayed work.

@@ -305,6 +305,9 @@ pub fn fire_due() {
 }
 
 fn fire_due_in(run_loop: Id, mode: u8) {
+    if run_loop == main_loop() {
+        crate::libsystem::dispatch::drain_main();
+    }
     let now = date::now();
     let mut due = SCHEDULED.with(|timers| {
         let mut due = Buffer::new();

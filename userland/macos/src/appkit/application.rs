@@ -418,7 +418,14 @@ fn run() {
         let pool = autorelease::push();
         menu::send_if_changed();
         reporting_exceptions(&mut display_all);
-        let waiting = match foundation::next_due_in_ms() {
+        let due = match (
+            foundation::next_due_in_ms(),
+            crate::libsystem::dispatch::next_due_in_ms(),
+        ) {
+            (Some(timer), Some(work)) => Some(timer.min(work)),
+            (timer, work) => timer.or(work),
+        };
+        let waiting = match due {
             Some(due) => server::wait_for_events(due),
             None => true,
         };
@@ -426,6 +433,7 @@ fn run() {
             read_records(&mut |record| reporting_exceptions(&mut || dispatch(record)));
         }
         reporting_exceptions(&mut foundation::fire_due);
+        reporting_exceptions(&mut crate::libsystem::dispatch::drain_main);
         autorelease::pop(pool);
     }
 }
