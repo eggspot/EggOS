@@ -702,6 +702,101 @@ pub(super) unsafe extern "efiapi" fn append_menu_w(
 
 const BITMAP: u32 = 0x4;
 
+/// A standard menu template's item flag: the last item of its level.
+const TEMPLATE_END: u16 = 0x80;
+/// The most levels of drop-downs a template may nest.
+const TEMPLATE_DEPTH: usize = 8;
+
+/// `LoadMenuW`: the menu a standard `RT_MENU` template of `module` describes (D336), its
+/// drop-downs made as `CreatePopupMenu` and `AppendMenuW` would make them. Extended templates
+/// (`MENUEX`, version 1) are refused.
+unsafe extern "efiapi" fn load_menu_w(module: usize, name: *const u16) -> usize {
+    use super::resource::{self, Name, kind, name_from};
+    // SAFETY: `LoadMenuW`'s contract: a resource id or a NUL-terminated name.
+    let name = unsafe { name_from(name as usize) };
+    let Some((address, size)) = resource::find(module, Name::Id(kind::MENU), name) else {
+        return fail(error::RESOURCE_NAME_NOT_FOUND, 0);
+    };
+    // SAFETY: a resource's data is `size` bytes of the program's mapped image.
+    let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, size as usize) };
+    menu_from_template(bytes).unwrap_or_else(|| fail(error::RESOURCE_DATA_NOT_FOUND, 0))
+}
+
+/// The menu a standard template's `bytes` describe: a header of two words (version 0, offset),
+/// then items, each a flags word, a command word unless it opens a drop-down, and a
+/// NUL-terminated UTF-16 label; a drop-down's items follow it, and `MF_END` marks each level's
+/// last.
+fn menu_from_template(bytes: &[u8]) -> Option<usize> {
+    let word = |at: usize| bytes.get(at..at + 2).map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+    if word(0)? != 0 {
+        return None;
+    }
+    let mut at = 4 + usize::from(word(2)?);
+    let root = create();
+    if root == 0 {
+        return None;
+    }
+    let mut levels = [(0usize, false); TEMPLATE_DEPTH];
+    levels[0] = (root, false);
+    let mut depth = 0;
+    loop {
+        let flags = word(at)?;
+        at += 2;
+        let popup = u32::from(flags) & flag::POPUP != 0;
+        let last = flags & TEMPLATE_END != 0;
+        let id = match popup {
+            true => 0,
+            false => {
+                let id = word(at)?;
+                at += 2;
+                usize::from(id)
+            }
+        };
+        let start = at;
+        while word(at)? != 0 {
+            at += 2;
+        }
+        let mut label = [0u16; 128];
+        let units = ((at - start) / 2).min(label.len() - 1);
+        for (index, unit) in label.iter_mut().take(units).enumerate() {
+            *unit = word(start + index * 2)?;
+        }
+        at += 2;
+        let item_flags = u32::from(flags) & !u32::from(TEMPLATE_END);
+        let parent = levels[depth].0;
+        if popup {
+            let child = create();
+            if child == 0 || depth + 1 >= TEMPLATE_DEPTH {
+                return None;
+            }
+            // SAFETY: `label` is NUL-terminated (`units` stops one short of its end).
+            if unsafe { append_menu_w(parent, item_flags, child, label.as_ptr()) } == FALSE {
+                return None;
+            }
+            depth += 1;
+            levels[depth] = (child, last);
+            continue;
+        }
+        // SAFETY: as above.
+        if unsafe { append_menu_w(parent, item_flags, id, label.as_ptr()) } == FALSE {
+            return None;
+        }
+        if !last {
+            continue;
+        }
+        loop {
+            if depth == 0 {
+                return Some(root);
+            }
+            let popup_was_last = levels[depth].1;
+            depth -= 1;
+            if !popup_was_last {
+                break;
+            }
+        }
+    }
+}
+
 /// `SetMenu`'s and `CreateWindowExW`'s work: gives top-level window `root` the menu `menu` (or
 /// none): the client area changes under the bar and the whole window is repainted; the new
 /// client size when it changed.
@@ -915,6 +1010,7 @@ unsafe extern "efiapi" fn get_menu_item_rect(
 
 pub(super) const EXPORTS: &[Export] = exports![
     b"CheckMenuItem" => check_menu_item,
+    b"LoadMenuW" => load_menu_w,
     b"CheckMenuRadioItem" => check_menu_radio_item,
     b"EnableMenuItem" => enable_menu_item,
     b"GetMenuState" => get_menu_state,

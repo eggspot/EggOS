@@ -31,6 +31,7 @@ pub(super) mod kind {
     pub const CURSOR: u16 = 1;
     pub const BITMAP: u16 = 2;
     pub const ICON: u16 = 3;
+    pub const MENU: u16 = 4;
     pub const DIALOG: u16 = 5;
     pub const ACCELERATOR: u16 = 9;
     pub const GROUP_CURSOR: u16 = 12;

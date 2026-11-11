@@ -21548,3 +21548,20 @@ the license, by an explicit instruction recorded here.
   - Submenus.
   - Menus from templates.
   - Scroll bars on windows, multi-line edits, editable combo boxes and word selection.
+
+## D336 Windows menus from templates: `LoadMenuW` (batch part 10's rest, D228's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the documented `MENUITEMTEMPLATEHEADER` and `MENUITEMTEMPLATE` layouts)
+
+- **Decision.** `LoadMenuW(module, name)` finds the program's `RT_MENU` resource (type 4) and
+  builds the menu its standard template describes, through the same `CreatePopupMenu` and
+  `AppendMenuW` work a program would do:
+  - **The template.** A header of two words: version 0, and the offset of the items after it.
+    Then the items, each a flags word, a command word unless it opens a drop-down
+    (`MF_POPUP`), and a NUL-terminated UTF-16 label (cut at 127 units).
+  - **Nesting.** A drop-down's items follow it. `MF_END` (0x80) marks each level's last item,
+    and the level closes; it is not kept in the item's flags. Up to 8 levels nest.
+  - **What it answers.** The menu handle, ready for `SetMenu` or the window class.
+    `ERROR_RESOURCE_NAME_NOT_FOUND` when there is no such resource.
+    `ERROR_RESOURCE_DATA_NOT_FOUND` for a malformed template, or an extended (`MENUEX`,
+    version 1) one, which is not read yet.
+- **Not yet.** Extended templates (`MENUEX`, `LoadMenuIndirectW`), and submenus inside a
+  drop-down: they load, and show grayed as before.

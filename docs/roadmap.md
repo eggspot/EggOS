@@ -852,7 +852,8 @@ yet" naming what it left.
     done; the unbuilt picker is on the branch `wip/eggos-picker`);
   - part 19, drag and drop between windows;
   - part 10's rest: scroll bars on windows (`wip/eggos-window-scroll-bars`), multi-line edits,
-    editable combo boxes, submenus, menus from templates, word selection (D228;
+    editable combo boxes, submenus, word selection (D228; menus from templates, code written,
+    unbuilt, D336;
     `MFT_RADIOCHECK` and `CheckMenuRadioItem`, code written, unbuilt, D334; menu keys, code
     written, unbuilt, D335);
   - part 12's rest: iostreams, stack overflow as an exception, collided unwinds, function
