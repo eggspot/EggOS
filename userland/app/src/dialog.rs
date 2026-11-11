@@ -228,6 +228,14 @@ fn paint_icon(canvas: &mut Canvas<'_>, rect: Rect, data: u32) {
     }
 }
 
+/// The widget that draws `icon`, 48 x 48 (the action window's, D301).
+pub fn icon_kind(icon: AppIcon) -> Kind {
+    Kind::Custom {
+        painter: paint_icon,
+        data: icon.data(),
+    }
+}
+
 /// What a chooser's button shows for `path`: all of it when it fits a button's 32 bytes, else
 /// `...` and as much of its end as fits, so paths that differ only at the end stay apart.
 pub fn choice_label(path: &str) -> Line {

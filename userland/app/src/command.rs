@@ -63,8 +63,10 @@ pub enum Command<'a> {
         json: bool,
     },
     /// `app do <name> <action> [--values <json>] [--confirmed] [<argument>=<value>]...`
-    /// (D292): runs one.
+    /// (D292): runs one; `app do --window <name> [<action>]` chooses, asks and shows the result
+    /// in a window (D301).
     Do {
+        window: bool,
         name: &'a [u8],
         action: &'a [u8],
         values: Option<&'a [u8]>,
@@ -88,7 +90,8 @@ pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] \
                          app show [--json] [--] <name>\n       \
                          app icon [--size 48|32] [-o <file.png>] [--] <name> [<file.png>]\n       \
                          app actions [--json] [<name>]\n       \
-                         app do [--values <json>] [--confirmed] <name> <action> [<argument>=<value>]...\n";
+                         app do [--values <json>] [--confirmed] <name> <action> [<argument>=<value>]...\n       \
+                         app do --window <name> [<action>]\n";
 
 /// The built-in apps `app open` opens by name, which no installed app of the same name stands
 /// in for.
@@ -211,6 +214,7 @@ fn parse_actions<'a>(rest: &[&'a [u8]]) -> Option<Command<'a>> {
 fn parse_do<'a>(rest: &[&'a [u8]]) -> Option<Command<'a>> {
     let mut values = None;
     let mut confirmed = false;
+    let mut window = false;
     let mut operands: [&'a [u8]; 2] = [b""; 2];
     let mut operand_count = 0;
     let mut pairs = [(&b""[..], &b""[..]); MAX_ACTION_PAIRS];
@@ -227,6 +231,7 @@ fn parse_do<'a>(rest: &[&'a [u8]]) -> Option<Command<'a>> {
                 action_given = true;
             }
             b"--confirmed" if !options_end => confirmed = true,
+            b"--window" if !options_end => window = true,
             _ if !options_end && argument.starts_with(b"-") && argument.len() > 1 => return None,
             _ if operand_count == 0 => {
                 operands[0] = argument;
@@ -244,8 +249,9 @@ fn parse_do<'a>(rest: &[&'a [u8]]) -> Option<Command<'a>> {
             }
         }
     }
-    let complete = operand_count == 2 || (operand_count == 1 && action_given);
+    let complete = operand_count == 2 || (operand_count == 1 && (action_given || window));
     complete.then_some(Command::Do {
+        window,
         name: operands[0],
         action: operands[1],
         values,
@@ -997,7 +1003,9 @@ mod program {
                 0
             }
             Some(
-                Command::Install { window: true, .. } | Command::Uninstall { window: true, .. },
+                Command::Install { window: true, .. }
+                | Command::Uninstall { window: true, .. }
+                | Command::Do { window: true, .. },
             ) => open_window(startup, &arguments[..count]),
             Some(Command::Install {
                 path,
@@ -1040,6 +1048,7 @@ mod program {
                 pairs,
                 pair_count,
                 confirmed,
+                ..
             }) => actions::run(name, action, values, &pairs[..pair_count], confirmed),
             None => {
                 write_all(STANDARD_ERROR, USAGE.as_bytes());

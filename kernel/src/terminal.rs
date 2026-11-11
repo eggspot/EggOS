@@ -1047,6 +1047,11 @@ fn run_launch<P: Platform>(action: Action) {
             .as_ref()
             .and_then(|screen| screen.desktop.as_ref()?.uninstall_command(app))
             .map(Launch::Start),
+        Action::AppDo(app, chosen) => SCREEN
+            .lock()
+            .as_ref()
+            .and_then(|screen| screen.desktop.as_ref()?.app_do_command(app, chosen))
+            .map(Launch::Start),
         _ => None,
     };
     match launch {
@@ -1217,7 +1222,7 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
     match drawn.map(|asked| asked.action) {
         Some(Action::PowerOff) => reboot::shut_down::<P>(reboot::Action::PowerOff),
         Some(Action::Restart) => reboot::shut_down::<P>(reboot::Action::Restart),
-        Some(action @ (Action::Start(_) | Action::Type(_) | Action::Uninstall(_))) => {
+        Some(action @ (Action::Start(_) | Action::Type(_) | Action::Uninstall(_) | Action::AppDo(..))) => {
             run_launch::<P>(action)
         }
         Some(Action::ShowAgentLog) => {

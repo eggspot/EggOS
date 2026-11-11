@@ -8,6 +8,11 @@
 
 #![cfg_attr(not(test), no_std)]
 
+#[cfg(all(feature = "window", eggos_user))]
+extern crate alloc;
+
+#[cfg(all(feature = "window", eggos_user))]
+pub mod action_window;
 pub mod architecture;
 pub mod archive;
 pub mod command;

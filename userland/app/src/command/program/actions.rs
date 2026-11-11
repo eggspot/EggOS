@@ -27,7 +27,7 @@ fn file_buffer() -> &'static mut [u8; actions::LARGEST] {
 }
 
 fn path_of(app: &[u8], out: &mut [u8; PATH_BYTES]) -> Option<usize> {
-    let parts: [&[u8]; 4] = [APPLICATIONS.as_bytes(), b"/", app, b"/"];
+    let parts: [&[u8]; 4] = [APPLICATIONS, b"/", app, b"/"];
     let mut length = 0;
     for part in parts.iter().chain([actions::FILE_NAME.as_bytes()].iter()) {
         out.get_mut(length..length + part.len())?.copy_from_slice(part);
@@ -245,7 +245,7 @@ pub fn run(
 
 fn execute(app: &[u8], words: &[u8], count: usize) -> i32 {
     let mut folder = [0u8; PATH_BYTES];
-    let parts: [&[u8]; 3] = [APPLICATIONS.as_bytes(), b"/", app];
+    let parts: [&[u8]; 3] = [APPLICATIONS, b"/", app];
     let mut length = 0;
     for part in parts {
         folder[length..length + part.len()].copy_from_slice(part);
@@ -287,7 +287,7 @@ fn execute(app: &[u8], words: &[u8], count: usize) -> i32 {
         at += words[at..].iter().position(|&byte| byte == 0).unwrap_or(0) + 1;
     }
     pointers[0] = program.as_ptr().cast();
-    let environment = [b"PATH=/bin\0".as_ptr(), core::ptr::null()];
+    let environment = [b"PATH=/bin\0".as_ptr(), b"NO_COLOR=1\0".as_ptr(), core::ptr::null()];
     let request = Spawn::new(program, &pointers[..count + 1], &environment, [0, 1, 2]).in_directory(directory);
     // SAFETY: the program has one thread and starts one child at a time on this stack, which
     // `spawn` uses only until the child's `execve`.

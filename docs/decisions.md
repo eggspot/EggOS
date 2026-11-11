@@ -20310,3 +20310,22 @@ the license, by an explicit instruction recorded here.
   the phone, tablet and TV layouts (section 10), tooltips on disabled buttons and focus on
   `Update all` from the chip are not built; the chip is not in the shell's element tree yet.
 - **Not yet.** Building and running; the deviations above.
+
+## D301 Apps' own actions in the GUI: the app menu lists them and `app do --window` asks and shows the result (docs/ux/app-actions-v0.5.md; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The desktop's catalogue reads each installed app's `app.actions` with its
+  manifest and keeps the first four actions (`MenuAction`: name, label, asks first, destroys).
+  An installed app's menu (launcher row, desktop icon) is 216 wide with `Open`, the `read` and
+  `change` actions, `All actions...`, a separator, the `destroy` actions and `Uninstall...`;
+  separators are 9 tall and skipped by Up/Down. A choice is `Action::AppDo`, which starts
+  `/bin/app do --window <app> [<action>]`. `app do --window` hands over to `app-window do`
+  (`action_window.rs`): the list (a table), the form (text and number fields, boolean
+  dropdowns, checked with `ArgumentType::accepts`), the confirmation (focus on `Cancel`, the
+  action button person-only), and the run, which starts `app do` itself with its output and
+  errors read from a pipe, `Stop`, and the result screen with the status sentence and the
+  output in a text area. `app do` runs actions with `NO_COLOR=1`.
+- **Deviations.** One window height (480 x 400) for every screen; the desktop notice for a
+  quiet success is not built, so every run shows its result window; no `Copy output` button
+  (Mod+C in the area works); typing a letter in the menu does not jump; Files' `Actions...`
+  item, the phone, tablet and TV forms and the area's read-only flag (edits are undone) wait.
+- **Not yet.** Building and running; the deviations above.

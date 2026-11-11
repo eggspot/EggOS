@@ -81,7 +81,16 @@ pub fn catalogue() -> Catalogue {
         else {
             continue;
         };
-        if catalogue.add_installed(name.as_bytes(), &file)
+        let added = catalogue.add_installed(name.as_bytes(), &file);
+        if added
+            && let Some(actions) = node
+                .lookup(manifest::actions::FILE_NAME.as_bytes())
+                .ok()
+                .and_then(|file| read_small_file(file, manifest::actions::LARGEST))
+        {
+            catalogue.set_actions(name.as_bytes(), &actions);
+        }
+        if added
             && let Some(icon) = manifest::parse(&file, name.as_bytes()).and_then(|app| app.icon)
             && let Some(bytes) = vfs::resolve(root, node, icon.as_bytes())
                 .ok()

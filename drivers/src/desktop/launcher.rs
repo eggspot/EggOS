@@ -5,7 +5,7 @@
 //! menu of an app (`Open`, and `Uninstall...` for an installed one); and the short notice a
 //! launch that cannot happen shows.
 
-use super::catalogue::{AppId, Catalogue, MAX_INSTALLED};
+use super::catalogue::{self, AppId, Catalogue, MAX_INSTALLED, MenuAction};
 use super::icons::{IconSize, draw_icon};
 use super::paint::{self, Canvas};
 use super::popups::with_shadow;
@@ -91,38 +91,131 @@ enum Spot {
     Chip(u8),
 }
 
-/// An app's menu: whose it is, where its top-left corner was asked for, and the item under
-/// the pointer or the keys.
+/// An app's menu: whose it is, where its top-left corner was asked for, its items (with an
+/// installed app's own actions, D301) and the item under the pointer or the keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct AppMenu {
     pub app: AppId,
     pub origin: (u32, u32),
     pub hover: Option<usize>,
+    items: [MenuItem; MAX_MENU_ITEMS],
+    count: u8,
+}
+
+/// One row of an app's menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuItem {
+    Open,
+    Action(u8, MenuAction),
+    AllActions,
+    Uninstall,
+    Separator,
+}
+
+const MAX_MENU_ITEMS: usize = 1 + catalogue::MENU_ACTIONS + 1 + 2 + 1;
+const ACTIONS_MENU_WIDTH: u32 = 216;
+const SEPARATOR_HEIGHT: u32 = 9;
+const SEPARATOR_LINE: u32 = 4;
+const SEPARATOR_INSET: u32 = 8;
+const MENU_ALL_ACTIONS: &str = "All actions...";
+
+impl MenuItem {
+    fn height(self) -> u32 {
+        match self {
+            Self::Separator => SEPARATOR_HEIGHT,
+            _ => MENU_ITEM_HEIGHT,
+        }
+    }
+
+    fn label(&self) -> &str {
+        match self {
+            Self::Open => MENU_OPEN,
+            Self::Action(_, action) => action.label(),
+            Self::AllActions => MENU_ALL_ACTIONS,
+            Self::Uninstall => MENU_UNINSTALL,
+            Self::Separator => "",
+        }
+    }
 }
 
 impl AppMenu {
-    fn items(&self) -> &'static [&'static str] {
-        match self.app {
-            AppId::Installed(_) => &[MENU_OPEN, MENU_UNINSTALL],
-            _ => &[MENU_OPEN],
+    /// The menu of `app` asked for at `origin`, `hover` on, with the actions `catalogue` knows
+    /// for it: `read` and `change` ones under `Open`, `All actions...`, then the `destroy` ones
+    /// with `Uninstall...` below a separator (docs/ux/app-actions-v0.5.md section 1).
+    pub fn new(app: AppId, origin: (u32, u32), hover: Option<usize>, catalogue: &Catalogue) -> Self {
+        let mut menu = Self {
+            app,
+            origin,
+            hover,
+            items: [MenuItem::Separator; MAX_MENU_ITEMS],
+            count: 0,
+        };
+        let mut push = |menu: &mut Self, item: MenuItem| {
+            if usize::from(menu.count) < MAX_MENU_ITEMS {
+                menu.items[usize::from(menu.count)] = item;
+                menu.count += 1;
+            }
+        };
+        push(&mut menu, MenuItem::Open);
+        let installed = matches!(app, AppId::Installed(_));
+        if !installed {
+            return menu;
         }
+        if !catalogue.has_actions(app) {
+            push(&mut menu, MenuItem::Uninstall);
+            return menu;
+        }
+        push(&mut menu, MenuItem::Separator);
+        for (index, action) in catalogue.menu_actions(app).enumerate() {
+            if !action.destroys {
+                push(&mut menu, MenuItem::Action(index as u8, *action));
+            }
+        }
+        push(&mut menu, MenuItem::AllActions);
+        push(&mut menu, MenuItem::Separator);
+        for (index, action) in catalogue.menu_actions(app).enumerate() {
+            if action.destroys {
+                push(&mut menu, MenuItem::Action(index as u8, *action));
+            }
+        }
+        push(&mut menu, MenuItem::Uninstall);
+        if menu.hover.is_some() {
+            menu.hover = Some(0);
+        }
+        menu
+    }
+
+    fn items(&self) -> &[MenuItem] {
+        &self.items[..usize::from(self.count)]
+    }
+
+    fn width(&self) -> u32 {
+        match self.items().iter().any(|item| matches!(item, MenuItem::AllActions)) {
+            true => ACTIONS_MENU_WIDTH,
+            false => MENU_WIDTH,
+        }
+    }
+
+    fn item_top(&self, index: usize) -> u32 {
+        1 + self.items()[..index].iter().map(|item| item.height()).sum::<u32>()
     }
 
     /// Where it is, its border included, kept inside `bounds` less 8 px.
     pub fn rect(&self, bounds: Rect) -> Rect {
-        let height = self.items().len() as u32 * MENU_ITEM_HEIGHT + 2;
+        let height = self.items().iter().map(|item| item.height()).sum::<u32>() + 2;
+        let width = self.width();
         let right = bounds.right().saturating_sub(MENU_MARGIN);
         let bottom = bounds.bottom().saturating_sub(MENU_MARGIN);
         Rect::new(
             self.origin
                 .0
-                .min(right.saturating_sub(MENU_WIDTH))
+                .min(right.saturating_sub(width))
                 .max(bounds.x),
             self.origin
                 .1
                 .min(bottom.saturating_sub(height))
                 .max(bounds.y),
-            MENU_WIDTH,
+            width,
             height,
         )
     }
@@ -131,31 +224,61 @@ impl AppMenu {
         if !contains(rect, x, y) {
             return None;
         }
-        let item = (y.saturating_sub(rect.y + 1) / MENU_ITEM_HEIGHT) as usize;
-        (item < self.items().len()).then_some(item)
+        let offset = y.saturating_sub(rect.y);
+        (0..self.items().len()).find(|&index| {
+            let top = self.item_top(index);
+            offset >= top && offset < top + self.items()[index].height() && self.items()[index] != MenuItem::Separator
+        })
     }
 
     fn choice(&self, item: usize) -> MenuChoice {
-        match item {
-            0 => MenuChoice::Open(self.app),
-            _ => MenuChoice::Uninstall(self.app),
+        match self.items().get(item) {
+            Some(MenuItem::Open) => MenuChoice::Open(self.app),
+            Some(MenuItem::Action(index, _)) => MenuChoice::Do(self.app, Some(*index)),
+            Some(MenuItem::AllActions) => MenuChoice::Do(self.app, None),
+            Some(MenuItem::Uninstall) => MenuChoice::Uninstall(self.app),
+            Some(MenuItem::Separator) | None => MenuChoice::Nothing,
         }
     }
 
-    /// Up or Down: the item above or below, wrapping, or the first.
+    /// Up or Down: the item above or below, skipping separators, wrapping, or the first.
     pub fn step(&mut self, back: bool) {
         let count = self.items().len();
-        self.hover = Some(match (self.hover, back) {
-            (None, _) => 0,
-            (Some(item), false) => (item + 1) % count,
-            (Some(item), true) => (item + count - 1) % count,
-        });
+        let mut item = match (self.hover, back) {
+            (None, _) => {
+                self.hover = Some(0);
+                return;
+            }
+            (Some(item), _) => item,
+        };
+        for _ in 0..count {
+            item = match back {
+                false => (item + 1) % count,
+                true => (item + count - 1) % count,
+            };
+            if self.items()[item] != MenuItem::Separator {
+                break;
+            }
+        }
+        self.hover = Some(item);
     }
 
     pub fn draw(&self, canvas: &mut Canvas<'_>, rect: Rect) {
         Desktop::draw_popup_surface(canvas, rect, colour::MENU);
-        for (index, label) in self.items().iter().enumerate() {
-            let top = rect.y + 1 + index as u32 * MENU_ITEM_HEIGHT;
+        for (index, item) in self.items().iter().enumerate() {
+            let top = rect.y + self.item_top(index);
+            if *item == MenuItem::Separator {
+                canvas.fill(
+                    Rect::new(
+                        rect.x + SEPARATOR_INSET,
+                        top + SEPARATOR_LINE,
+                        rect.width.saturating_sub(2 * SEPARATOR_INSET),
+                        1,
+                    ),
+                    colour::MENU_BORDER,
+                );
+                continue;
+            }
             if self.hover == Some(index) {
                 canvas.fill(
                     Rect::new(rect.x + 1, top + 2, rect.width - 2, MENU_ITEM_HEIGHT - 4),
@@ -165,7 +288,7 @@ impl AppMenu {
             canvas.text(
                 rect.x + MENU_TEXT_X,
                 top + (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2,
-                label,
+                item.label(),
                 colour::TEXT,
             );
         }
@@ -177,6 +300,8 @@ impl AppMenu {
 pub(super) enum MenuChoice {
     Open(AppId),
     Uninstall(AppId),
+    /// One of the app's own actions, by its index, or `All actions...` (D301).
+    Do(AppId, Option<u8>),
     Nothing,
     Outside,
 }
@@ -476,6 +601,15 @@ impl Desktop {
         }
     }
 
+    /// Asks to run one of installed app `app`'s own actions, or to list them all (`None`):
+    /// `app do --window` asks what it needs and shows the result (D301).
+    pub fn app_do(&self, app: AppId, action: Option<u8>) -> Action {
+        match self.catalogue.app_do(app, action) {
+            Some(_) => Action::AppDo(app, action),
+            None => Action::None,
+        }
+    }
+
     fn launch_from_launcher(
         &mut self,
         app: AppId,
@@ -512,11 +646,7 @@ impl Desktop {
                 .unwrap_or(self.row_rect(0));
             (row.x + ROW_TEXT_X, row.bottom())
         });
-        launcher.menu = Some(AppMenu {
-            app,
-            origin,
-            hover: at.is_none().then_some(0),
-        });
+        launcher.menu = Some(AppMenu::new(app, origin, at.is_none().then_some(0), &self.catalogue));
     }
 
     /// Key `code` pressed or released with `modifiers` while the launcher is open.
@@ -546,6 +676,10 @@ impl Desktop {
                     MenuChoice::Uninstall(app) => {
                         self.close_launcher(damage, events);
                         return self.uninstall(app);
+                    }
+                    MenuChoice::Do(app, action) => {
+                        self.close_launcher(damage, events);
+                        return self.app_do(app, action);
                     }
                     MenuChoice::Nothing | MenuChoice::Outside => {}
                 },
@@ -634,6 +768,10 @@ impl Desktop {
                 MenuChoice::Uninstall(app) => {
                     self.close_launcher(damage, events);
                     return Some(self.uninstall(app));
+                }
+                MenuChoice::Do(app, action) => {
+                    self.close_launcher(damage, events);
+                    return Some(self.app_do(app, action));
                 }
                 MenuChoice::Nothing => return Some(Action::None),
                 MenuChoice::Outside => {

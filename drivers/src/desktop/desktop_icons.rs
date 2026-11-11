@@ -190,11 +190,12 @@ impl Desktop {
             return;
         };
         self.close_popups(damage, events);
-        let menu = AppMenu {
+        let menu = AppMenu::new(
             app,
-            origin: at.unwrap_or((cell.x + MENU_FROM_CELL.0, cell.y + MENU_FROM_CELL.1)),
-            hover: at.is_none().then_some(0),
-        };
+            at.unwrap_or((cell.x + MENU_FROM_CELL.0, cell.y + MENU_FROM_CELL.1)),
+            at.is_none().then_some(0),
+            &self.catalogue,
+        );
         self.icons.menu = Some(menu);
         damage.add(with_shadow(self.icon_menu_rect(&menu)));
         self.begin_popup(events);
@@ -236,6 +237,10 @@ impl Desktop {
             MenuChoice::Uninstall(app) => {
                 self.close_icon_menu(damage, events);
                 Some(self.uninstall(app))
+            }
+            MenuChoice::Do(app, action) => {
+                self.close_icon_menu(damage, events);
+                Some(self.app_do(app, action))
             }
             MenuChoice::Nothing => Some(Action::None),
             MenuChoice::Outside => {
@@ -283,6 +288,10 @@ impl Desktop {
                 MenuChoice::Uninstall(app) => {
                     self.close_icon_menu(damage, events);
                     return self.uninstall(app);
+                }
+                MenuChoice::Do(app, action) => {
+                    self.close_icon_menu(damage, events);
+                    return self.app_do(app, action);
                 }
                 MenuChoice::Nothing | MenuChoice::Outside => {}
             },

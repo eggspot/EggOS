@@ -264,6 +264,9 @@ pub enum Action {
     Type(AppId),
     /// Start the installer's window to uninstall the app ([`Catalogue::uninstall`]).
     Uninstall(AppId),
+    /// Start `app do --window` for one of the app's own actions, or all of them
+    /// ([`Catalogue::app_do`], D301).
+    AppDo(AppId, Option<u8>),
     /// Focus the terminal and type `agentlog` in it, as the `Agent` chip's click asks
     /// ([`AGENT_LOG_LINE`]).
     ShowAgentLog,
@@ -588,6 +591,11 @@ impl Desktop {
     /// name it.
     pub fn launch_command(&self, app: AppId) -> Option<Launch> {
         self.catalogue.launch(app)
+    }
+
+    /// What [`Action::AppDo`] of `app` and `action` starts: `app do --window` (D301).
+    pub fn app_do_command(&self, app: AppId, action: Option<u8>) -> Option<Command> {
+        self.catalogue.app_do(app, action)
     }
 
     /// What [`Action::Uninstall`] of `app` starts: the installer's window and its arguments.

@@ -2,7 +2,8 @@
 //! <name>] [--entry <path>] <path>` shows the prompt for the program, `.app` or `.zip` at
 //! `path` (for another folder, the chooser of the programs in it; for a `.zip` holding several
 //! and no `--entry`, the chooser of its programs, D148), then the progress and the result;
-//! `app-window uninstall <name>` asks before uninstalling. `app ... --window` and the desktop's
+//! `app-window uninstall <name>` asks before uninstalling; `app-window do <name> [<action>]` is
+//! the window of an app's own actions (D301, [`crate::action_window`]). `app ... --window` and the desktop's
 //! launcher and icon menus start it. It is another name of the toolkit program `/bin/settings`,
 //! so the toolkit and its font are in the image once.
 
@@ -378,6 +379,8 @@ fn first_screen(installer: &mut Installer, command: Command<'_>) {
         | Command::List { .. }
         | Command::Show { .. }
         | Command::Icon { .. }
+        | Command::Actions { .. }
+        | Command::Do { .. }
         | Command::Help => {}
     }
 }
@@ -402,6 +405,10 @@ pub fn run(startup: &Startup) -> i32 {
         count += 1;
     }
     let command = match command::parse(&arguments[..count]) {
+        Some(Command::Do { name, action, .. }) => {
+            let app: &'static [u8] = alloc::boxed::Box::leak(name.to_vec().into_boxed_slice());
+            return crate::action_window::run(app, (!action.is_empty()).then_some(action));
+        }
         Some(command @ (Command::Install { .. } | Command::Uninstall { .. })) => command,
         _ => {
             write_all(STANDARD_ERROR, command::USAGE.as_bytes());

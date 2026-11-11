@@ -12,6 +12,12 @@ use eggos_app_manifest::{self as manifest, NAME_CAPACITY, SYNONYMS_CAPACITY};
 
 /// The most installed apps the shell lists; more are left out.
 pub const MAX_INSTALLED: usize = 32;
+/// The most of an app's own actions its menu lists (docs/ux/app-actions-v0.5.md section 1).
+pub const MENU_ACTIONS: usize = 4;
+const MENU_LABEL_CAPACITY: usize = 24;
+const MENU_LABEL_CUT: usize = 21;
+const ASKS_FIRST_MARK: &str = "...";
+const APP_PROGRAM: &str = "/bin/app";
 /// The longest command a launch hands the kernel, in bytes.
 pub const COMMAND_CAPACITY: usize = 256;
 
@@ -178,6 +184,71 @@ impl Command {
     }
 }
 
+/// One of an installed app's own actions as its menu shows it (D301): its name, its menu
+/// label, whether choosing it asks something first and whether it destroys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuAction {
+    name: [u8; manifest::actions::NAME_CAPACITY],
+    name_length: u8,
+    label: [u8; MENU_LABEL_CAPACITY * 4],
+    label_length: u8,
+    /// Whether it takes arguments or destroys, so its label ends in `...`.
+    pub asks_first: bool,
+    /// Whether its effect is `destroy`, so it sits with `Uninstall...`.
+    pub destroys: bool,
+}
+
+impl MenuAction {
+    fn of(action: &manifest::actions::Action<'_>) -> Option<Self> {
+        let asks_first = action.arguments().next().is_some()
+            || action.effect == manifest::actions::Effect::Destroy;
+        let base = match action.title.is_empty() {
+            true => action.name,
+            false => action.title,
+        };
+        let base = core::str::from_utf8(base).ok()?;
+        let mark = if asks_first { ASKS_FIRST_MARK } else { "" };
+        let glyphs = base.chars().count() + mark.len();
+        let mut label = [0u8; MENU_LABEL_CAPACITY * 4];
+        let mut length = 0;
+        let mut push = |part: &str| {
+            label[length..length + part.len()].copy_from_slice(part.as_bytes());
+            length += part.len();
+        };
+        match glyphs > MENU_LABEL_CAPACITY {
+            true => {
+                let end = base.char_indices().nth(MENU_LABEL_CUT).map_or(base.len(), |(at, _)| at);
+                push(&base[..end]);
+                push(ASKS_FIRST_MARK);
+            }
+            false => {
+                push(base);
+                push(mark);
+            }
+        }
+        let mut name = [0; manifest::actions::NAME_CAPACITY];
+        name.get_mut(..action.name.len())?.copy_from_slice(action.name);
+        Some(Self {
+            name,
+            name_length: action.name.len() as u8,
+            label,
+            label_length: length as u8,
+            asks_first,
+            destroys: action.effect == manifest::actions::Effect::Destroy,
+        })
+    }
+
+    /// Its name, as `app do` takes it.
+    pub fn name(&self) -> &[u8] {
+        &self.name[..usize::from(self.name_length)]
+    }
+
+    /// Its menu label: the title, `...` when it asks first, cut to 24 glyphs.
+    pub fn label(&self) -> &str {
+        core::str::from_utf8(&self.label[..usize::from(self.label_length)]).unwrap_or("")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InstalledApp {
     name: [u8; NAME_CAPACITY],
@@ -189,6 +260,8 @@ struct InstalledApp {
     synonyms_length: u8,
     icon: Option<IconPixels>,
     console: bool,
+    actions: [Option<MenuAction>; MENU_ACTIONS],
+    has_actions: bool,
 }
 
 impl InstalledApp {
@@ -358,6 +431,8 @@ impl Catalogue {
             synonyms_length: app.synonyms.len() as u8,
             icon: None,
             console: app.console,
+            actions: [None; MENU_ACTIONS],
+            has_actions: false,
         };
         entry.name[..app.name.len()].copy_from_slice(app.name.as_bytes());
         entry.synonyms[..app.synonyms.len()].copy_from_slice(app.synonyms.as_bytes());
@@ -377,6 +452,56 @@ impl Catalogue {
         };
         app.icon = IconPixels::from_file(file);
         app.icon.is_some()
+    }
+
+    /// Gives the installed app whose folder is `folder` the actions its `app.actions` file
+    /// `file` offers (D301): the first [`MENU_ACTIONS`] for its menu; returns whether it has any.
+    pub fn set_actions(&mut self, folder: &[u8], file: &[u8]) -> bool {
+        let Some(app) = self
+            .installed
+            .iter_mut()
+            .find(|app| app.name().as_bytes() == folder)
+        else {
+            return false;
+        };
+        let mut offered = manifest::actions::actions(file).peekable();
+        app.has_actions = offered.peek().is_some();
+        app.actions = [None; MENU_ACTIONS];
+        for (slot, action) in app.actions.iter_mut().zip(offered) {
+            *slot = MenuAction::of(&action);
+        }
+        app.has_actions
+    }
+
+    /// The actions installed app `app`'s menu lists, in the file's order.
+    pub fn menu_actions(&self, app: AppId) -> impl Iterator<Item = &MenuAction> {
+        let actions = match app {
+            AppId::Installed(index) => self.installed(index).map(|app| &app.actions[..]),
+            _ => None,
+        };
+        actions.unwrap_or(&[]).iter().flatten()
+    }
+
+    /// Whether installed app `app` offers any action, so its menu has `All actions...`.
+    pub fn has_actions(&self, app: AppId) -> bool {
+        matches!(app, AppId::Installed(index) if self.installed(index).is_some_and(|app| app.has_actions))
+    }
+
+    /// What choosing action `action` (its index in [`Self::menu_actions`]), or `All
+    /// actions...` (`None`), of `app` starts: `/bin/app do --window <app> [<action>]` (D301).
+    pub fn app_do(&self, app: AppId, action: Option<u8>) -> Option<Command> {
+        let AppId::Installed(index) = app else {
+            return None;
+        };
+        let installed = self.installed(index)?;
+        let name = installed.name().as_bytes();
+        match action {
+            Some(chosen) => {
+                let action = installed.actions.get(usize::from(chosen)).copied().flatten()?;
+                Command::program(APP_PROGRAM, &[b"do", b"--window", name, action.name()])
+            }
+            None => Command::program(APP_PROGRAM, &[b"do", b"--window", name]),
+        }
     }
 
     /// Records whether the host's shared folder is mounted at `/media/host`.
