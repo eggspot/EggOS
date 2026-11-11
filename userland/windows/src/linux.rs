@@ -346,6 +346,54 @@ pub fn events_now(fd: usize) -> Result<u16, Errno> {
     Ok((entry >> 48) as u16)
 }
 
+/// One descriptor `poll_now` and `wait_for_events` watch: the events asked for and, after the
+/// call, those it reported.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Watched {
+    pub fd: i32,
+    pub asked: u16,
+    pub reported: u16,
+}
+
+pub const POLL_IN: u16 = 0x001;
+pub const POLL_OUT: u16 = 0x004;
+pub const POLL_ERROR: u16 = 0x008;
+pub const POLL_HANG_UP: u16 = 0x010;
+
+/// The most descriptors one `poll_now` or `wait_for_events` call watches.
+pub const MOST_WATCHED: usize = 72;
+
+/// Waits for the events `watched` asks for, at most `timeout` nanoseconds (none: until one
+/// comes, `Some(0)`: not at all), filling in what each reported; how many reported any.
+pub fn wait_for_events(watched: &mut [Watched], timeout: Option<u64>) -> Result<usize, Errno> {
+    let count = watched.len().min(MOST_WATCHED);
+    let mut entries = [0u64; MOST_WATCHED];
+    for (entry, one) in entries.iter_mut().zip(watched.iter()) {
+        *entry = u64::from(one.fd as u32) | (u64::from(one.asked) << 32);
+    }
+    let time = timeout.map(|nanoseconds| {
+        [
+            (nanoseconds / 1_000_000_000).min(i64::MAX as u64) as i64,
+            (nanoseconds % 1_000_000_000) as i64,
+        ]
+    });
+    let time_pointer = time.as_ref().map_or(0, |time| time.as_ptr() as usize);
+    // SAFETY: `ppoll` reads and writes `count` borrowed `struct pollfd`s (an `int` and two
+    // `short`s each, as each `u64` lays them out in the machine's little-endian order), reads
+    // one `struct timespec` from the borrowed local when there is a time limit, and takes no
+    // signal mask.
+    let ready = unsafe {
+        syscall(
+            number::PPOLL,
+            [entries.as_mut_ptr() as usize, count, time_pointer, 0, 0, 0],
+        )
+    }?;
+    for (one, entry) in watched.iter_mut().zip(entries) {
+        one.reported = (entry >> 48) as u16;
+    }
+    Ok(ready)
+}
+
 /// Sleeps until one of `fds` can be read (a negative one is left out), a signal, an error or,
 /// with a `timeout` in nanoseconds, the time running out.
 pub fn wait_readable(fds: [i32; 2], timeout: Option<u64>) -> Result<usize, Errno> {

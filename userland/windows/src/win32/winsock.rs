@@ -4,8 +4,8 @@
 //! Winsock 1.1's ordinal numbers. A name resolves from a dotted address, `/etc/hosts`, the
 //! machine's own name (its interfaces' addresses) or a DNS query to the servers
 //! `/etc/resolv.conf` names; `hostent`, `servent` and `inet_ntoa`'s text are one buffer per
-//! process that the next call reuses. Windows' message-based notification (`WSAAsyncSelect`)
-//! is not there yet.
+//! process that the next call reuses. `WSAAsyncSelect` posts a socket's network events to a
+//! window (D348, `async_select`).
 
 use super::file::{fd_of, handle_of};
 use super::{SpinLock, fail, thread_environment};
@@ -292,6 +292,7 @@ extern "efiapi" fn socket(family: i32, kind: i32, protocol: i32) -> usize {
 }
 
 extern "efiapi" fn close_socket(socket: usize) -> i32 {
+    super::async_select::forget(socket);
     match socket_fd(socket) {
         Ok(fd) => count_or_error(super::file::close_descriptor(fd)).min(0),
         Err(error) => fail(error, SOCKET_ERROR),
@@ -336,11 +337,11 @@ unsafe extern "efiapi" fn send(socket: usize, buffer: *const u8, length: i32, fl
         // SAFETY: `send`'s contract: `length` readable bytes.
         _ => unsafe { core::slice::from_raw_parts(buffer, length as usize) },
     };
-    count_or_error(linux::send(
-        fd,
-        bytes,
-        (flags & 0x5) as usize | MSG_NOSIGNAL,
-    ))
+    let sent = linux::send(fd, bytes, (flags & 0x5) as usize | MSG_NOSIGNAL);
+    if sent.is_err_and(|errno| sockets::error_for(errno.0) == code::WSAEWOULDBLOCK) {
+        super::async_select::rearm(socket, super::async_select::event::WRITE);
+    }
+    count_or_error(sent)
 }
 
 unsafe extern "efiapi" fn recv(socket: usize, buffer: *mut u8, length: i32, flags: i32) -> i32 {
@@ -360,7 +361,12 @@ unsafe extern "efiapi" fn recv(socket: usize, buffer: *mut u8, length: i32, flag
     if flags & MSG_WAITALL != 0 {
         linux_flags |= LINUX_MSG_WAITALL;
     }
-    count_or_error(linux::receive(fd, bytes, linux_flags))
+    let received = linux::receive(fd, bytes, linux_flags);
+    super::async_select::rearm(
+        socket,
+        super::async_select::event::READ | super::async_select::event::OOB,
+    );
+    count_or_error(received)
 }
 
 extern "efiapi" fn shutdown(socket: usize, how: i32) -> i32 {
@@ -583,14 +589,25 @@ unsafe extern "efiapi" fn gethostname(name: *mut u8, length: i32) -> i32 {
     0
 }
 
+/// `WSAAsyncSelect`: `socket` made non-blocking, its `events` posted to `window` as `message`
+/// (D348); no window or no events stops them.
 extern "efiapi" fn wsa_async_select(
     socket: usize,
-    _window: usize,
-    _message: u32,
-    _events: i32,
+    window: usize,
+    message: u32,
+    events: i32,
 ) -> i32 {
-    match socket_fd(socket) {
-        Ok(_) => fail(code::WSAEOPNOTSUPP, SOCKET_ERROR),
+    let fd = match socket_fd(socket) {
+        Ok(fd) => fd,
+        Err(error) => return fail(error, SOCKET_ERROR),
+    };
+    let non_blocking = linux::control(fd, linux::F_GETFL, 0)
+        .and_then(|flags| linux::control(fd, linux::F_SETFL, flags | O_NONBLOCK));
+    if let Err(errno) = non_blocking {
+        return fail(sockets::error_for(errno.0), SOCKET_ERROR);
+    }
+    match super::async_select::select(socket, fd, window, message, events as u32) {
+        Ok(()) => 0,
         Err(error) => fail(error, SOCKET_ERROR),
     }
 }

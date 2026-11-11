@@ -21,6 +21,7 @@ macro_rules! exports {
 mod accelerator;
 mod advapi32;
 mod ansi;
+mod async_select;
 mod clipboard;
 mod com;
 mod combo_box;

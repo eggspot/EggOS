@@ -879,6 +879,7 @@ pub fn wait_for(filter: Filter, remove: bool, wait: bool, done: &dyn Fn(&Gui) ->
     let filter = Filter { thread, ..filter };
     loop {
         read_events(thread);
+        super::async_select::post_ready();
         if let Some(Some(action)) = with(|gui| handed_over::take_for_thread(&mut gui.queue, thread))
         {
             super::elements::act_handed_over(&action);
@@ -972,7 +973,16 @@ fn sleep(filter: &Filter, done: &dyn Fn(&Gui) -> bool) {
         return;
     }
     if idle {
-        let _ = linux::wait_readable(descriptors, timeout);
+        let mut watched = [linux::Watched::default(); linux::MOST_WATCHED];
+        for (slot, fd) in watched.iter_mut().zip(descriptors) {
+            *slot = linux::Watched {
+                fd,
+                asked: linux::POLL_IN,
+                reported: 0,
+            };
+        }
+        let sockets = super::async_select::watched(&mut watched[descriptors.len()..]);
+        let _ = linux::wait_for_events(&mut watched[..descriptors.len() + sockets], timeout);
     }
     let mut drained = [0u8; 64];
     while matches!(linux::read(descriptors[1] as usize, &mut drained), Ok(1..)) {}

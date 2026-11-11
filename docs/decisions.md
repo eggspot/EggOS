@@ -21797,3 +21797,25 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The layer's C++ frame handlers (`__CxxFrameHandler3` and `4`) ignore the flag:
   a destructor that starts an unwind from inside an unwinding C++ frame may see that frame's
   earlier destructors run again.
+
+## D348 Windows: `WSAAsyncSelect`, a socket's network events as window messages (batch part 13's rest, D231's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Winsock's documented behaviour)
+
+- **Decision.**
+  - `WSAAsyncSelect(socket, window, message, events)` makes the socket non-blocking and
+    registers it (up to 64 sockets, `async_select.rs`); no window or no events forgets it,
+    and `closesocket` does too.
+  - **Watching.** The thread that sleeps on the window server's descriptor (`gui::sleep`) also
+    watches each registered socket for the events still armed (`linux::wait_for_events`, a
+    general `ppoll` over up to 72 descriptors), and every thread checks them, without
+    waiting, whenever it looks for a message (`async_select::post_ready`), so a program that
+    only peeks for messages gets them too.
+  - **The messages.** Each event is posted to the window once, with the socket as `wParam` and
+    `WSAMAKESELECTREPLY(event, error)` as `lParam`: `FD_CONNECT` when a connect finishes
+    (`WSAECONNREFUSED` when it failed), `FD_WRITE` when the socket can take data, `FD_READ`
+    when bytes wait, `FD_CLOSE` when the peer closed (`WSAECONNRESET` when it reset), told
+    apart from data by a peek of one byte.
+  - **Re-enabling**, as on Windows: `recv` re-enables `FD_READ` and `FD_OOB`, a `send` that
+    would have blocked re-enables `FD_WRITE`; `FD_CONNECT` and `FD_CLOSE` come once.
+- **Not yet.** `FD_ACCEPT` (the layer's Winsock has no `listen` and `accept` yet), `FD_OOB` as
+  its own event (urgent data reads as `FD_READ`), `WSAEventSelect` and
+  `WSAEnumNetworkEvents`.
