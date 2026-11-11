@@ -653,7 +653,7 @@ fn gather<P: Platform>(process: &Process<P>, buffers: &Iovecs) -> Result<Vec<u8>
 
 fn is_broadcast(address: Ipv4Address) -> bool {
     address.is_broadcast()
-        || crate::net::subnet_broadcast().is_some_and(|broadcast| broadcast == address)
+        || crate::net::is_subnet_broadcast(address)
 }
 
 fn send<P: Platform>(

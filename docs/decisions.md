@@ -19977,3 +19977,28 @@ the license, by an explicit instruction recorded here.
   SA Query requests, which an access point sends when the station joins again while it still
   holds the old association; PMKSA caching.
 
+## D286 Wi-Fi and Ethernet together: `eth0` and `wlan0`, routes by network then wired first (D279's and D284's follow-up; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Linux's routing and NetworkManager's default metrics)
+
+- **Decision.** The kernel's network keeps a list of adapters instead of one: the wired adapter a
+  driver installs at boot is `eth0`, and the Wi-Fi station attaches as `wlan0` at its first join
+  (`net::attach_wireless`), whether or not there is a wired one. Each has its own interface: its
+  own DHCP lease, ARP table and counters. The network's thread polls all of them and starts once,
+  with whichever comes first.
+  - A packet leaves through the adapter whose network holds its destination; otherwise through
+    the first adapter whose link is up and whose lease names a router, wired before Wi-Fi (Linux
+    distributions' network managers give wired routes metric 100 and Wi-Fi 600); otherwise the
+    first adapter up. A UDP datagram sent from an interface's address leaves through that
+    interface. `source_for` picks the address of the adapter the route leaves through, so a TCP
+    connection's address and its route agree.
+  - Every interface's address is local; a datagram to any interface's broadcast address is a
+    broadcast. DNS servers come from the default adapter's lease, else the first lease naming any.
+  - `/proc/net/interfaces` lists `lo`, `eth0` and `wlan0`; the name says the kind (the design's
+    ask 6). `/proc/net/route` gives each route its interface's metric (100 wired, 600 Wi-Fi), and
+    `/proc/net/arp` lists every interface's neighbours.
+  - The desktop's indicator shows the first adapter that is up with an address, else the first up,
+    else the first.
+  - D284's `ethernet-in-use` failure is gone: Wi-Fi joins beside a cable.
+- **Not yet.** Building and running; moving open TCP connections when the default adapter
+  changes (they keep their address and break if its adapter goes down, as on Linux); a Wi-Fi
+  glyph on the bar; per-interface DNS.
+

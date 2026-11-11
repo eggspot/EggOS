@@ -23,6 +23,8 @@ pub const NAME_BYTES: usize = 15;
 pub const LOOPBACK_NAME: &[u8] = b"lo";
 /// The first Ethernet interface's name.
 pub const ETHERNET_NAME: &[u8] = b"eth0";
+/// The Wi-Fi interface's name (D286).
+pub const WIRELESS_NAME: &[u8] = b"wlan0";
 
 /// An interface's name: 1 to [`NAME_BYTES`] printable ASCII bytes without spaces or colons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,6 +374,16 @@ fn hex(address: Ipv4Address) -> u32 {
 /// Writes `/proc/net/route` in Linux's layout for `interfaces`: each one's network, and its
 /// default route through its router; `lo`'s routes are not listed, as Linux keeps them in its
 /// local table.
+/// A route's metric by its interface, as a desktop Linux's network manager gives them: wired
+/// 100, Wi-Fi 600, so wired routes win (D286).
+pub fn route_metric(name: &InterfaceName) -> u32 {
+    match name.as_bytes() {
+        WIRELESS_NAME => 600,
+        LOOPBACK_NAME => 0,
+        _ => 100,
+    }
+}
+
 pub fn write_routes<'a>(
     out: &mut impl Write,
     interfaces: impl IntoIterator<Item = &'a InterfaceStatus>,
@@ -383,9 +395,10 @@ pub fn write_routes<'a>(
     )?;
     let mut row = |name: &InterfaceName, destination, gateway, flags: u16, mask| {
         let mut line = Line::default();
+        let metric = route_metric(name);
         write!(
             line,
-            "{name}\t{:08X}\t{:08X}\t{flags:04X}\t0\t0\t0\t{:08X}\t0\t0\t0",
+            "{name}\t{:08X}\t{:08X}\t{flags:04X}\t0\t0\t{metric}\t{:08X}\t0\t0\t0",
             hex(destination),
             hex(gateway),
             hex(mask)

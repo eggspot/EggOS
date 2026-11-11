@@ -1,6 +1,8 @@
-//! The network (D157; TCP, D158: [`tcp`]): an IPv4 stack over the first network adapter a
-//! driver lends the kernel ([`NetDevice`]), and the loopback interface `lo`, which always
-//! exists.
+//! The network (D157; TCP, D158: [`tcp`]): an IPv4 stack over the network adapters drivers lend
+//! the kernel ([`NetDevice`]): the first wired one as `eth0` and a Wi-Fi station as `wlan0`, both
+//! at once (D286), and the loopback interface `lo`, which always exists. A packet leaves through
+//! the adapter whose network holds its destination, otherwise through the first adapter with a
+//! router, wired before Wi-Fi as Linux's default metrics order them.
 //!
 //! The protocols are the `eggos-net` crate's ([`eggos_net::interface::Interface`]); this module
 //! owns the adapter and its interface (`eth0`), runs them, and connects them to the endpoints
@@ -37,7 +39,7 @@ use eggos_net::ethernet::{MAX_FRAME_BYTES, MacAddress};
 use eggos_net::interface::{Counters, Datagram, Delivery, Interface, SendError};
 use eggos_net::ipv4::{Ipv4Address, Subnet};
 use eggos_net::status::{
-    Dhcp, ETHERNET_NAME, InterfaceName, InterfaceStatus, LOOPBACK_NAME, Neighbour,
+    Dhcp, ETHERNET_NAME, InterfaceName, InterfaceStatus, LOOPBACK_NAME, Neighbour, WIRELESS_NAME,
 };
 use eggos_net::{icmp, ipv4};
 
@@ -68,14 +70,57 @@ pub trait NetDevice: Send {
 }
 
 struct Adapter {
+    name: &'static [u8],
     device: Box<dyn NetDevice>,
     interface: Interface,
     frame: [u8; MAX_FRAME_BYTES],
 }
 
+impl Adapter {
+    fn new<P: Platform>(name: &'static [u8], device: Box<dyn NetDevice>) -> Box<Self> {
+        let mut seed = [0u8; 8];
+        crate::random::fill::<P>(&mut seed);
+        let mut interface = Interface::new(device.mac(), device.mtu(), u64::from_ne_bytes(seed));
+        interface.set_link(device.is_link_up(), now_ms::<P>());
+        Box::new(Self {
+            name,
+            device,
+            interface,
+            frame: [0; MAX_FRAME_BYTES],
+        })
+    }
+
+    fn has_router(&self) -> bool {
+        self.interface.is_link_up()
+            && self.interface.address().is_some()
+            && self.interface.lease().is_some_and(|lease| lease.router.is_some())
+    }
+
+    fn holds(&self, destination: Ipv4Address) -> bool {
+        self.interface.is_link_up() && self.interface.subnet().is_some_and(|subnet| subnet.contains(destination))
+    }
+}
+
+/// The adapter a packet to `destination` leaves through: the one whose network holds it, else
+/// the first with a router, else the first whose link is up, else the first.
+fn route(adapters: &[Box<Adapter>], destination: Ipv4Address) -> Option<usize> {
+    adapters
+        .iter()
+        .position(|adapter| adapter.holds(destination))
+        .or_else(|| adapters.iter().position(|adapter| adapter.has_router()))
+        .or_else(|| adapters.iter().position(|adapter| adapter.interface.is_link_up()))
+        .or_else(|| (!adapters.is_empty()).then_some(0))
+}
+
+fn default_adapter(adapters: &[Box<Adapter>]) -> Option<&Adapter> {
+    route(adapters, Ipv4Address::new(1, 1, 1, 1)).map(|index| &*adapters[index])
+}
+
 static DEVICE: LeafSpinLock<Option<Box<dyn NetDevice>>> = LeafSpinLock::new_leaf(None);
 
-static ADAPTER: LeafSpinLock<Option<Box<Adapter>>> = LeafSpinLock::new_leaf(None);
+static ADAPTERS: LeafSpinLock<Vec<Box<Adapter>>> = LeafSpinLock::new_leaf(Vec::new());
+
+static POLLING: AtomicBool = AtomicBool::new(false);
 
 static LAST_TRAFFIC_MS: AtomicU64 = AtomicU64::new(0);
 
@@ -98,7 +143,7 @@ const CONNECTED_WORD: u64 = 4;
 const STATE_BITS: u64 = 0xff;
 const ADDRESS_SHIFT: u32 = 8;
 
-/// Lends the stack `device`, the first adapter; gives it back when there already is one.
+/// Lends the stack `device`, the first wired adapter; gives it back when there already is one.
 pub fn install(device: Box<dyn NetDevice>) -> Result<(), Box<dyn NetDevice>> {
     if is_present() {
         return Err(device);
@@ -121,9 +166,26 @@ pub fn install_interrupting(device: Box<dyn NetDevice>) -> Result<(), Box<dyn Ne
     Ok(())
 }
 
-/// Whether a driver lent the stack an adapter.
+/// Whether a driver lent the stack a wired adapter.
 pub fn is_present() -> bool {
-    DEVICE.lock().is_some() || ADAPTER.lock().is_some()
+    DEVICE.lock().is_some() || ADAPTERS.lock().iter().any(|adapter| adapter.name == ETHERNET_NAME)
+}
+
+fn publish_indicator<P: Platform>() {
+    let indicated = word_of(indicator_state(&ADAPTERS.lock()));
+    if INDICATED.swap(indicated, Ordering::Relaxed) != indicated {
+        crate::terminal::network_changed::<P>();
+    }
+}
+
+fn start_polling<P: Platform>() -> Result<(), &'static str> {
+    if POLLING.swap(true, Ordering::AcqRel) {
+        return Ok(());
+    }
+    thread::spawn::<P, _>(poll_forever::<P>).map(|_| ()).map_err(|_| {
+        POLLING.store(false, Ordering::Release);
+        "no thread to run the network"
+    })
 }
 
 /// Milliseconds since boot on platform `P`'s clock.
@@ -142,18 +204,11 @@ pub fn start<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     let Some(device) = DEVICE.lock().take() else {
         return Ok(());
     };
-    let mut seed = [0u8; 8];
-    crate::random::fill::<P>(&mut seed);
     let mac = device.mac();
     let link_up = device.is_link_up();
-    let mut interface = Interface::new(mac, device.mtu(), u64::from_ne_bytes(seed));
-    interface.set_link(link_up, now_ms::<P>());
-    let indicated = word_of(indicator_state(&interface));
-    *ADAPTER.lock() = Some(Box::new(Adapter {
-        device,
-        interface,
-        frame: [0; MAX_FRAME_BYTES],
-    }));
+    let adapter = Adapter::new::<P>(ETHERNET_NAME, device);
+    let indicated = word_of(indicator_state(core::slice::from_ref(&adapter)));
+    ADAPTERS.lock().insert(0, adapter);
     INDICATED.store(indicated, Ordering::Relaxed);
     crate::terminal::network_changed::<P>();
     resolv_conf::mount();
@@ -162,7 +217,7 @@ pub fn start<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
         false => "no cable",
     };
     writeln!(console, "net: eth0 {mac}: {state}")?;
-    if thread::spawn::<P, _>(poll_forever::<P>).is_err() {
+    if start_polling::<P>().is_err() {
         writeln!(
             console,
             "net: no thread to run the network: eth0 stays idle"
@@ -171,28 +226,22 @@ pub fn start<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     Ok(())
 }
 
-/// Lends the stack `device` after boot, when none is in use: a Wi-Fi link that came up once
-/// its network was joined (D279). Starts the network's thread as [`start`] does.
-pub fn attach_late<P: Platform>(device: Box<dyn NetDevice>) -> Result<(), &'static str> {
-    if ADAPTER.lock().is_some() || DEVICE.lock().is_some() {
-        return Err("a network adapter is already in use");
+/// Lends the stack the Wi-Fi station's `device` after boot as `wlan0`, beside a wired adapter
+/// if there is one (D279, D286). Starts the network's thread if [`start`] did not.
+pub fn attach_wireless<P: Platform>(device: Box<dyn NetDevice>) -> Result<(), &'static str> {
+    {
+        let mut adapters = ADAPTERS.lock();
+        if adapters.iter().any(|adapter| adapter.name == WIRELESS_NAME) {
+            return Err("a Wi-Fi adapter is already in use");
+        }
+        if adapters.try_reserve(1).is_err() {
+            return Err("no memory for the Wi-Fi adapter");
+        }
+        adapters.push(Adapter::new::<P>(WIRELESS_NAME, device));
     }
-    let mut seed = [0u8; 8];
-    crate::random::fill::<P>(&mut seed);
-    let mut interface = Interface::new(device.mac(), device.mtu(), u64::from_ne_bytes(seed));
-    interface.set_link(device.is_link_up(), now_ms::<P>());
-    let indicated = word_of(indicator_state(&interface));
-    *ADAPTER.lock() = Some(Box::new(Adapter {
-        device,
-        interface,
-        frame: [0; MAX_FRAME_BYTES],
-    }));
-    INDICATED.store(indicated, Ordering::Relaxed);
-    crate::terminal::network_changed::<P>();
+    publish_indicator::<P>();
     resolv_conf::mount();
-    thread::spawn::<P, _>(poll_forever::<P>)
-        .map(|_| ())
-        .map_err(|_| "no thread to run the network")
+    start_polling::<P>()
 }
 
 fn poll_forever<P: Platform>() {
@@ -227,10 +276,12 @@ pub(crate) fn ticks_after<P: Platform>(milliseconds: u64) -> u64 {
 }
 
 fn next_poll_ms() -> u64 {
-    ADAPTER
+    ADAPTERS
         .lock()
-        .as_ref()
-        .map_or(u64::MAX, |adapter| adapter.interface.next_poll_ms())
+        .iter()
+        .map(|adapter| adapter.interface.next_poll_ms())
+        .min()
+        .unwrap_or(u64::MAX)
 }
 
 /// Takes the frames the adapter received (at most [`FRAMES_PER_POLL`]), runs the interface's
@@ -241,35 +292,38 @@ pub fn poll<P: Platform>() -> bool {
     let mut delivered = false;
     let mut moved = false;
     let indicated = {
-        let mut adapter = ADAPTER.lock();
-        let Some(adapter) = adapter.as_mut() else {
+        let mut adapters = ADAPTERS.lock();
+        if adapters.is_empty() {
             return false;
-        };
-        let Adapter {
-            device,
-            interface,
-            frame,
-        } = &mut **adapter;
-        interface.set_link(device.is_link_up(), now);
-        let link_mss = interface.tcp_mss();
-        for _ in 0..FRAMES_PER_POLL {
-            let Some(length) = device.receive(frame) else {
-                break;
-            };
-            moved = true;
-            interface.receive(
-                &frame[..length],
-                now,
-                &mut |bytes| {
-                    let _ = device.transmit(bytes);
-                },
-                &mut |delivery| delivered |= deliver::<P>(delivery, link_mss),
-            );
         }
-        interface.poll(now, &mut |bytes| {
-            let _ = device.transmit(bytes);
-        });
-        word_of(indicator_state(interface))
+        for adapter in adapters.iter_mut() {
+            let Adapter {
+                device,
+                interface,
+                frame,
+                ..
+            } = &mut **adapter;
+            interface.set_link(device.is_link_up(), now);
+            let link_mss = interface.tcp_mss();
+            for _ in 0..FRAMES_PER_POLL {
+                let Some(length) = device.receive(frame) else {
+                    break;
+                };
+                moved = true;
+                interface.receive(
+                    &frame[..length],
+                    now,
+                    &mut |bytes| {
+                        let _ = device.transmit(bytes);
+                    },
+                    &mut |delivery| delivered |= deliver::<P>(delivery, link_mss),
+                );
+            }
+            interface.poll(now, &mut |bytes| {
+                let _ = device.transmit(bytes);
+            });
+        }
+        word_of(indicator_state(&adapters))
     };
     if INDICATED.swap(indicated, Ordering::Relaxed) != indicated {
         crate::terminal::network_changed::<P>();
@@ -295,7 +349,19 @@ fn deliver<P: Platform>(delivery: Delivery<'_>, link_mss: u16) -> bool {
     }
 }
 
-fn indicator_state(interface: &Interface) -> NetworkState {
+fn indicator_state(adapters: &[Box<Adapter>]) -> NetworkState {
+    let chosen = adapters
+        .iter()
+        .find(|adapter| adapter.interface.is_link_up() && adapter.interface.address().is_some())
+        .or_else(|| adapters.iter().find(|adapter| adapter.interface.is_link_up()))
+        .or(adapters.first());
+    match chosen {
+        Some(adapter) => interface_state(&adapter.interface),
+        None => NetworkState::CableUnplugged,
+    }
+}
+
+fn interface_state(interface: &Interface) -> NetworkState {
     match (
         interface.is_link_up(),
         interface.dhcp(),
@@ -338,12 +404,10 @@ pub fn indicated() -> Option<NetworkState> {
     state_of(INDICATED.load(Ordering::Relaxed))
 }
 
-/// The largest TCP segment the adapter's link carries; [`tcp::MSS`] without an adapter.
+/// The largest TCP segment the default adapter's link carries; [`tcp::MSS`] without an
+/// adapter.
 pub fn tcp_mss() -> u16 {
-    ADAPTER
-        .lock()
-        .as_ref()
-        .map_or(tcp::MSS, |adapter| adapter.interface.tcp_mss())
+    default_adapter(&ADAPTERS.lock()).map_or(tcp::MSS, |adapter| adapter.interface.tcp_mss())
 }
 
 /// Sends `segment`, a TCP segment from the interface's address, to `destination` through the
@@ -354,56 +418,68 @@ pub fn send_tcp<P: Platform>(
     ttl: u8,
 ) -> Result<(), SendError> {
     let now = now_ms::<P>();
-    let mut adapter = ADAPTER.lock();
-    let Some(adapter) = adapter.as_mut() else {
+    let mut adapters = ADAPTERS.lock();
+    let Some(index) = route(&adapters, destination) else {
         return Err(SendError::NoRoute);
     };
     let Adapter {
         device, interface, ..
-    } = &mut **adapter;
+    } = &mut *adapters[index];
     interface.send_tcp(destination, segment, ttl, now, &mut |bytes| {
         let _ = device.transmit(bytes);
     })
 }
 
-/// Whether `address` is this machine's: in `127.0.0.0/8`, or the interface's.
+/// Whether `address` is this machine's: in `127.0.0.0/8`, or an interface's.
 pub fn is_local(address: Ipv4Address) -> bool {
-    address.is_loopback() || local_address() == Some(address)
+    address.is_loopback()
+        || ADAPTERS
+            .lock()
+            .iter()
+            .any(|adapter| adapter.interface.address() == Some(address))
 }
 
-/// The interface's address, if it has one.
+/// The default adapter's address, if it has one.
 pub fn local_address() -> Option<Ipv4Address> {
-    ADAPTER
-        .lock()
-        .as_ref()
-        .and_then(|adapter| adapter.interface.address())
+    default_adapter(&ADAPTERS.lock()).and_then(|adapter| adapter.interface.address())
 }
 
-/// The broadcast address of the interface's network, if it has an address.
+/// The broadcast address of the default adapter's network, if it has an address.
 pub fn subnet_broadcast() -> Option<Ipv4Address> {
-    ADAPTER
-        .lock()
-        .as_ref()
+    default_adapter(&ADAPTERS.lock())
         .and_then(|adapter| adapter.interface.subnet())
         .map(Subnet::broadcast)
 }
 
-/// The DNS servers the interface's lease names.
-pub fn dns_servers() -> [Option<Ipv4Address>; 3] {
-    ADAPTER
+/// Whether `address` is the broadcast address of any interface's network.
+pub fn is_subnet_broadcast(address: Ipv4Address) -> bool {
+    ADAPTERS
         .lock()
-        .as_ref()
-        .and_then(|adapter| adapter.interface.lease().map(|lease| lease.dns))
+        .iter()
+        .filter_map(|adapter| adapter.interface.subnet())
+        .any(|subnet| subnet.broadcast() == address)
+}
+
+/// The DNS servers the default adapter's lease names, else the first lease's that names any.
+pub fn dns_servers() -> [Option<Ipv4Address>; 3] {
+    let adapters = ADAPTERS.lock();
+    let of = |adapter: &Adapter| adapter.interface.lease().map(|lease| lease.dns).filter(|dns| dns.iter().any(Option::is_some));
+    default_adapter(&adapters)
+        .and_then(of)
+        .or_else(|| adapters.iter().find_map(|adapter| of(adapter)))
         .unwrap_or([None; 3])
 }
 
 /// The address a packet to `destination` leaves from: `127.0.0.1` to the loopback network,
-/// the interface's address otherwise (`0.0.0.0` without one).
+/// the address of the adapter its route leaves through otherwise (`0.0.0.0` without one).
 pub fn source_for(destination: Ipv4Address) -> Ipv4Address {
-    match destination.is_loopback() {
-        true => Ipv4Address::LOOPBACK,
-        false => local_address().unwrap_or(Ipv4Address::UNSPECIFIED),
+    if destination.is_loopback() {
+        return Ipv4Address::LOOPBACK;
     }
+    let adapters = ADAPTERS.lock();
+    route(&adapters, destination)
+        .and_then(|index| adapters[index].interface.address())
+        .unwrap_or(Ipv4Address::UNSPECIFIED)
 }
 
 fn count_loopback(bytes: usize) {
@@ -444,13 +520,17 @@ pub fn send_udp<P: Platform>(
         return Ok(());
     }
     let now = now_ms::<P>();
-    let mut adapter = ADAPTER.lock();
-    let Some(adapter) = adapter.as_mut() else {
+    let mut adapters = ADAPTERS.lock();
+    let chosen = adapters
+        .iter()
+        .position(|adapter| !source.is_unspecified() && adapter.interface.address() == Some(source))
+        .or_else(|| route(&adapters, address));
+    let Some(index) = chosen else {
         return Err(SendError::NoRoute);
     };
     let Adapter {
         device, interface, ..
-    } = &mut **adapter;
+    } = &mut *adapters[index];
     interface.send_udp(source_port, address, port, data, ttl, now, &mut |bytes| {
         let _ = device.transmit(bytes);
     })
@@ -496,13 +576,13 @@ pub fn send_echo<P: Platform>(
         return Ok(());
     }
     let now = now_ms::<P>();
-    let mut adapter = ADAPTER.lock();
-    let Some(adapter) = adapter.as_mut() else {
+    let mut adapters = ADAPTERS.lock();
+    let Some(index) = route(&adapters, destination) else {
         return Err(SendError::NoRoute);
     };
     let Adapter {
         device, interface, ..
-    } = &mut **adapter;
+    } = &mut *adapters[index];
     interface.send_echo(
         destination,
         icmp::kind::ECHO_REQUEST,
@@ -542,13 +622,11 @@ fn loopback_status() -> InterfaceStatus {
     }
 }
 
-fn ethernet_status<P: Platform>() -> Option<InterfaceStatus> {
-    let now = now_ms::<P>();
-    let adapter = ADAPTER.lock();
-    let interface = &adapter.as_ref()?.interface;
+fn adapter_status(adapter: &Adapter, now: u64) -> Option<InterfaceStatus> {
+    let interface = &adapter.interface;
     let lease = interface.lease();
     Some(InterfaceStatus {
-        name: InterfaceName::new(ETHERNET_NAME)?,
+        name: InterfaceName::new(adapter.name)?,
         link_up: interface.is_link_up(),
         mac: interface.mac(),
         mtu: interface.mtu() as u32,
@@ -563,12 +641,15 @@ fn ethernet_status<P: Platform>() -> Option<InterfaceStatus> {
     })
 }
 
-/// Every interface's state at this moment: `lo`, then `eth0` when there is an adapter.
+/// Every interface's state at this moment: `lo`, then `eth0` and `wlan0` when there are those
+/// adapters.
 pub fn interfaces<P: Platform>() -> Vec<InterfaceStatus> {
+    let now = now_ms::<P>();
+    let adapters = ADAPTERS.lock();
     let mut interfaces = Vec::new();
-    if interfaces.try_reserve_exact(2).is_ok() {
+    if interfaces.try_reserve_exact(1 + adapters.len()).is_ok() {
         interfaces.push(loopback_status());
-        interfaces.extend(ethernet_status::<P>());
+        interfaces.extend(adapters.iter().filter_map(|adapter| adapter_status(adapter, now)));
     }
     interfaces
 }
@@ -605,19 +686,21 @@ pub fn routes_text<P: Platform>() -> Option<Vec<u8>> {
 pub fn neighbours<P: Platform>() -> Vec<Neighbour> {
     let now = now_ms::<P>();
     let mut neighbours = Vec::new();
-    let adapter = ADAPTER.lock();
-    let (Some(adapter), Some(name)) = (adapter.as_ref(), InterfaceName::new(ETHERNET_NAME)) else {
-        return neighbours;
-    };
-    for (address, mac) in adapter.interface.neighbours(now) {
-        if neighbours.try_reserve(1).is_err() {
-            break;
+    let adapters = ADAPTERS.lock();
+    for adapter in adapters.iter() {
+        let Some(name) = InterfaceName::new(adapter.name) else {
+            continue;
+        };
+        for (address, mac) in adapter.interface.neighbours(now) {
+            if neighbours.try_reserve(1).is_err() {
+                return neighbours;
+            }
+            neighbours.push(Neighbour {
+                address,
+                mac,
+                interface: name,
+            });
         }
-        neighbours.push(Neighbour {
-            address,
-            mac,
-            interface: name,
-        });
     }
     neighbours
 }

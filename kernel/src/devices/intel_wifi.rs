@@ -90,7 +90,6 @@ const WRONG_PASSPHRASE: Failure = Failure::of("wrong-passphrase", "the network d
 const REFUSED: Failure = Failure::of("refused", "the network refused the station");
 const UNSUPPORTED: Failure = Failure::of("unsupported-security", "the network's security is not WPA3-Personal, WPA2-Personal or open");
 const DROPPED: Failure = Failure::of("dropped", "the network ended the connection");
-const ETHERNET_IN_USE: Failure = Failure::of("ethernet-in-use", "a wired adapter is the network's adapter until the next restart");
 
 struct Traffic {
     incoming: VecDeque<Vec<u8>>,
@@ -731,10 +730,10 @@ impl Station {
                 address,
                 platform: core::marker::PhantomData,
             };
-            if crate::net::attach_late::<P>(alloc::boxed::Box::new(device)).is_err() {
+            if let Err(reason) = crate::net::attach_wireless::<P>(alloc::boxed::Box::new(device)) {
                 self.leave::<P>(true);
                 set_status("ready");
-                return Err(ETHERNET_IN_USE);
+                return Err(Failure::adapter(reason));
             }
             self.attached = true;
         }

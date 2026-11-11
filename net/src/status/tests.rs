@@ -170,8 +170,8 @@ fn routes_are_linux_s_hex_layout_padded_to_127_columns() {
     assert_eq!(lines.len(), 3);
     assert!(lines.iter().all(|line| line.len() == 127), "{text}");
     assert!(lines[0].starts_with("Iface\tDestination\tGateway \tFlags"));
-    assert!(lines[1].starts_with("eth0\t00000000\t0202000A\t0003\t0\t0\t0\t00000000\t0\t0\t0"));
-    assert!(lines[2].starts_with("eth0\t0002000A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0"));
+    assert!(lines[1].starts_with("eth0\t00000000\t0202000A\t0003\t0\t0\t100\t00000000\t0\t0\t0"));
+    assert!(lines[2].starts_with("eth0\t0002000A\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0"));
 }
 
 #[test]
