@@ -21443,3 +21443,22 @@ the license, by an explicit instruction recorded here.
   - **The desktop's Display pane.** It has no rotation row; the design gives the shade
     tile only.
   - **Build-pass notes.** Settings' `Key::ALL` is 39. Protocol request 50 is taken.
+
+## D331 The Components pane's edition confirmation under the Edition band, with its plan lines (docs/ux/components-v0.5.md section 4; M16; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Choosing an edition that adds components no longer opens v0.4's one-line
+  confirmation under the first component's row (D300's deviation). The confirmation now opens
+  under the Edition band, as the design draws it:
+  - **Its lines.** `Would install for Personal:` first, then one plan line a component
+    (`Windows apps · 1.8 MB`; up to six, the sixth saying `and n more` when the plan is
+    longer), then `3.2 MB in all.`, then `Cancel` and `Install`.
+  - **Its height.** It is `84 + 20 n` tall, and the rows move down by it.
+  - **How.** `Note::Install` gains the edition's title, and a new anchor, `Anchor::Edition`,
+    places it at the band's foot. Six labels (`plan_lines`) come after the pane's earlier
+    widgets, so those keep their numbers. The pane holds `WIDGETS` + 6.
+- **Not yet.**
+  - Section 10's phone, tablet and TV layouts of the pane.
+  - The band's own messages as notes under it (they still show in the band's summary line).
+  - Focus going back to the dropdown when the confirmation is cancelled.
+- **Build-pass notes.** Settings' `CAPACITY` grows by six through `components_pane::WIDGETS`, and
+  the pane's tests that expected the confirmation under row 0 need the new places.

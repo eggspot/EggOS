@@ -26,7 +26,12 @@ use eggos_toolkit::widget::{Kind, Length, Place};
 /// The most rows the pane shows: the most components a store offers.
 pub const ROWS: usize = MAX_COMPONENTS;
 /// The widgets the pane adds to its container.
-pub const WIDGETS: usize = 4 + 6 * ROWS + 5 + EDITION_WIDGETS + UPDATES_WIDGETS + 1;
+pub const WIDGETS: usize = 4 + 6 * ROWS + 5 + EDITION_WIDGETS + UPDATES_WIDGETS + 1 + PLAN_LINES;
+/// The plan lines the edition confirmation shows, one a component (docs/ux/components-v0.5.md
+/// section 4, D331); a longer plan's last line says how many more.
+const PLAN_LINES: usize = 6;
+/// The pitch of the plan lines.
+const PLAN_LINE_PITCH: i32 = 20;
 /// The Updates band's widgets (docs/ux/components-v0.5.md section 1): panel, line, checkbox,
 /// button.
 const UPDATES_WIDGETS: usize = 4;
@@ -192,6 +197,7 @@ struct Widgets {
     daily: WidgetId,
     updates_button: WidgetId,
     download: WidgetId,
+    plan_lines: [WidgetId; PLAN_LINES],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,6 +217,8 @@ enum Note {
     Install {
         name: String,
         plan: Vec<String>,
+        /// The edition's title when the plan is an edition's, confirmed under its band.
+        edition: Option<&'static str>,
     },
     Band {
         first: String,
@@ -227,6 +235,8 @@ enum Note {
 enum Anchor {
     Store,
     Band,
+    /// Under the Edition band: its confirmation (D331).
+    Edition,
     Row(usize),
 }
 
@@ -445,6 +455,7 @@ impl ComponentsPane {
             Kind::button("Download", false),
         );
         tree.set_accessible_name(download, "Download the component store");
+        let plan_lines = core::array::from_fn(|_| label(tree, pane, line_at(NOTE_X, 0, NOTE_WIDTH)));
         let mut components = Self {
             widgets: Widgets {
                 pane,
@@ -463,6 +474,7 @@ impl ComponentsPane {
                 daily,
                 updates_button,
                 download,
+                plan_lines,
             },
             read: ComponentsRead::default(),
             note: Note::Closed,
@@ -904,14 +916,14 @@ impl ComponentsPane {
             return None;
         }
         let first = plan.first().cloned().unwrap_or_default();
-        let titles: Vec<String> = plan.iter().map(|name| self.title_of(name)).collect();
-        let line = format!("Would install for {}: {}", edition.title, titles.join(", "));
+        let line = format!("Would install for {}:", edition.title);
         let components: Vec<Component> = plan.iter().filter_map(|name| self.component(name)).collect();
         let parts: Vec<&Component> = components.iter().collect();
         show_line(tree, self.widgets.first, &line, Token::Text);
         show_line(tree, self.widgets.second, &messages::in_all(&parts), Token::TextDim);
         self.chosen_edition = Some(edition.name);
-        self.open_confirmation(tree, Note::Install { name: first, plan }, "Install", now_ms);
+        let edition = Some(edition.title);
+        self.open_confirmation(tree, Note::Install { name: first, plan, edition }, "Install", now_ms);
         None
     }
 
@@ -1155,7 +1167,7 @@ impl ComponentsPane {
                 };
                 show_line(tree, self.widgets.first, &also, Token::Text);
                 show_line(tree, self.widgets.second, &in_all, Token::TextDim);
-                self.open_confirmation(tree, Note::Install { name, plan: names }, confirm, now_ms);
+                self.open_confirmation(tree, Note::Install { name, plan: names, edition: None }, confirm, now_ms);
                 None
             }
             Ok(plan) if plan.is_empty() => {
@@ -1276,6 +1288,7 @@ impl ComponentsPane {
             Note::Closed => return None,
             Note::Store { .. } | Note::StoreProgress => return Some(Anchor::Store),
             Note::Band { .. } => return Some(Anchor::Band),
+            Note::Install { edition: Some(_), .. } => return Some(Anchor::Edition),
             Note::Message { name, .. }
             | Note::Progress { name }
             | Note::Remove { name }
@@ -1299,6 +1312,9 @@ impl ComponentsPane {
             }
             Note::Message { .. } | Note::Band { .. } | Note::Store { .. } => TWO_LINE_HEIGHT,
             Note::Progress { .. } => PROGRESS_HEIGHT,
+            Note::Install { edition: Some(_), plan, .. } => {
+                CONFIRMATION_HEIGHT + PLAN_LINE_PITCH * plan.len().min(PLAN_LINES) as i32
+            }
             Note::Remove { .. } | Note::Install { .. } | Note::StoreProgress => CONFIRMATION_HEIGHT,
         }
     }
@@ -1456,6 +1472,10 @@ impl ComponentsPane {
             Some(Anchor::Store | Anchor::Band) => note_height,
             _ => 0,
         };
+        let below_edition = match anchor {
+            Some(Anchor::Store | Anchor::Band | Anchor::Edition) => note_height,
+            _ => 0,
+        };
         tree.set_place(
             widgets.updates_band,
             at(UPDATES_BAND.0, UPDATES_BAND.1 + below_store, UPDATES_BAND.2, UPDATES_BAND.3),
@@ -1475,7 +1495,7 @@ impl ComponentsPane {
                 continue;
             };
             let below = acting.is_some_and(|acting| index > acting);
-            let top = ROWS_TOP + below_band + ROW_HEIGHT * index as i32 + if below { note_height } else { 0 };
+            let top = ROWS_TOP + below_edition + ROW_HEIGHT * index as i32 + if below { note_height } else { 0 };
             tree.set_place(row_widgets.panel, at(PADDING, top, ROW_WIDTH, ROW_HEIGHT));
             tree.set_shown(row_widgets.panel, true);
             let look = self.look(row, others_busy);
@@ -1534,6 +1554,7 @@ impl ComponentsPane {
         let note_top = anchor.map(|anchor| match anchor {
             Anchor::Store => STORE_NOTE_TOP,
             Anchor::Band => BAND_NOTE_TOP,
+            Anchor::Edition => EDITION_BAND.1 + EDITION_BAND.3,
             Anchor::Row(row) => ROWS_TOP + ROW_HEIGHT * (row as i32 + 1),
         });
         self.place_note(tree, note_top);
@@ -1551,6 +1572,7 @@ impl ComponentsPane {
 
     fn place_note(&self, tree: &mut WidgetTree<CAPACITY>, top: Option<i32>) {
         let widgets = self.widgets;
+        let plan_shown = self.show_plan_lines(tree, top);
         let Some(top) = top else {
             for id in [
                 widgets.first,
@@ -1563,6 +1585,7 @@ impl ComponentsPane {
             }
             return;
         };
+        let below_plan = PLAN_LINE_PITCH * plan_shown as i32;
         let mut cancel_shown = false;
         let (first_shown, second_shown, bar_shown, buttons_shown) = match &self.note {
             Note::Closed => (false, false, false, false),
@@ -1632,13 +1655,13 @@ impl ComponentsPane {
         tree.set_place(widgets.first, line_at(NOTE_X, top + first_top, NOTE_WIDTH));
         tree.set_place(
             widgets.second,
-            line_at(NOTE_X, top + SECOND_LINE, NOTE_WIDTH),
+            line_at(NOTE_X, top + SECOND_LINE + below_plan, NOTE_WIDTH),
         );
         tree.set_place(
             widgets.bar,
             at(NOTE_X, top + BAR_TOP, NOTE_WIDTH, BAR_HEIGHT),
         );
-        let buttons_top = top + NOTE_BUTTONS_TOP;
+        let buttons_top = top + NOTE_BUTTONS_TOP + below_plan;
         tree.set_place(
             widgets.cancel,
             at(NOTE_CANCEL.0, buttons_top, NOTE_CANCEL.1, BUTTON_HEIGHT),
@@ -1652,6 +1675,36 @@ impl ComponentsPane {
         tree.set_shown(widgets.bar, bar_shown);
         tree.set_shown(widgets.cancel, buttons_shown || cancel_shown);
         tree.set_shown(widgets.confirm, buttons_shown);
+    }
+
+    /// The edition confirmation's plan lines under its first line, from `top`: one a
+    /// component, `Windows apps · 1.8 MB`, the last saying how many more when they do not fit.
+    /// How many show.
+    fn show_plan_lines(&self, tree: &mut WidgetTree<CAPACITY>, top: Option<i32>) -> usize {
+        let plan = match (&self.note, top) {
+            (Note::Install { edition: Some(_), plan, .. }, Some(_)) => plan.as_slice(),
+            _ => &[],
+        };
+        let shown = plan.len().min(PLAN_LINES);
+        for (index, id) in self.widgets.plan_lines.iter().enumerate() {
+            let Some(name) = plan.get(index).filter(|_| index < shown) else {
+                tree.set_shown(*id, false);
+                continue;
+            };
+            let more = plan.len() - shown;
+            let line = match (index + 1 == shown, more) {
+                (true, 1..) => format!("and {} more", more + 1),
+                _ => match self.component(name) {
+                    Some(component) => format!("{} · {}", component.title, messages::size_text(component.size_bytes())),
+                    None => self.title_of(name),
+                },
+            };
+            let line_top = top.unwrap_or(0) + SECOND_LINE + PLAN_LINE_PITCH * index as i32;
+            tree.set_place(*id, line_at(NOTE_X, line_top, NOTE_WIDTH));
+            show_line(tree, *id, &line, Token::Text);
+            tree.set_shown(*id, true);
+        }
+        shown
     }
 
     /// The store's three lines.
