@@ -69,6 +69,8 @@ pub trait Machine {
     /// Saves the display's scale to the settings file; the kernel shows at it from its next
     /// boot.
     fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]>;
+    /// Saves the display's size for the next boot, `None` for the display's own (D287).
+    fn save_display_resolution(&mut self, size: Option<(u32, u32)>) -> Result<(), &'static [u8]>;
     /// Saves one mouse or key preference to the settings file; the kernel uses it from its
     /// next boot.
     fn save_input(&mut self, change: InputChange) -> Result<(), &'static [u8]>;
@@ -486,6 +488,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::TimeZone(index) => machine.save_time_zone(index),
         Change::Automatic(on) => machine.save_time_automatic(on),
         Change::DisplayScale(scale) => machine.save_display_scale(scale),
+        Change::DisplayResolution(size) => machine.save_display_resolution(size),
         Change::Input(input) => machine.save_input(input),
         Change::Keys(keys) => machine.save_keys(keys),
         Change::Display(display) => machine.save_display(display),
@@ -501,7 +504,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::KeyboardLayout(_) | Change::KeyboardLayouts(_) | Change::KeyboardSwitchKey(_) => {
             keyboard.map_or(Ok(()), |choice| machine.apply_keyboard(choice))
         }
-        Change::TimeZone(_) | Change::DisplayScale(_) | Change::Automatic(false) => Ok(()),
+        Change::TimeZone(_) | Change::DisplayScale(_) | Change::DisplayResolution(_) | Change::Automatic(false) => Ok(()),
         Change::Automatic(true) if saved.is_ok() => machine.start_clock_sync(),
         Change::Automatic(true) => Ok(()),
         Change::Input(input) => {
@@ -698,6 +701,10 @@ mod tests {
 
         fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]> {
             self.scale_saved = Some(scale);
+            Ok(())
+        }
+
+        fn save_display_resolution(&mut self, _size: Option<(u32, u32)>) -> Result<(), &'static [u8]> {
             Ok(())
         }
 

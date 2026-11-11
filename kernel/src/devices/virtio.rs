@@ -472,6 +472,42 @@ mod gpu {
                 .hide_cursor(&mut || deadline.keep_waiting())
                 .map_err(virtio::Error::description)
         }
+
+        fn can_change_mode(&self) -> bool {
+            true
+        }
+
+        fn preferred_mode(&mut self, deadline: &mut Deadline) -> Option<Mode> {
+            if !self.gpu.display_event_pending() {
+                return Some(self.gpu.display_mode());
+            }
+            self.gpu.clear_display_event();
+            self.gpu.preferred_mode(&mut || deadline.keep_waiting()).ok()
+        }
+
+        fn change_mode(&mut self, mode: Mode, deadline: &mut Deadline) -> Result<(), &'static str> {
+            if mode == self.mode {
+                return Ok(());
+            }
+            let framebuffer = DmaRegion::allocate(mode.bytes()).map_err(|_| "no memory for the framebuffer")?;
+            match self.gpu.replace_framebuffer(framebuffer, mode, &mut || deadline.keep_waiting()) {
+                Ok(old) => {
+                    // SAFETY: handed back by `replace_framebuffer` after the device detached and
+                    // destroyed the resource it backed, so the device no longer reads it.
+                    unsafe { old.free() };
+                    self.mode = mode;
+                    Ok(())
+                }
+                Err((error, framebuffer)) => {
+                    if let Some(framebuffer) = framebuffer {
+                        // SAFETY: handed back by `replace_framebuffer`, which does so only when
+                        // the device was never given it.
+                        unsafe { framebuffer.free() };
+                    }
+                    Err(error.description())
+                }
+            }
+        }
     }
 
     fn probe_gpu(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {

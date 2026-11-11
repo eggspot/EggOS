@@ -549,6 +549,8 @@ fn facts(server: Option<&WindowServer>) -> Facts {
                 area.rect.bottom().max(0) as u32 * area.scale.max(1),
             )
         }),
+        resolution_choice: settings_file::display_resolution(&file[..length]).flatten(),
+        resolution_changeable: display_changeable(),
         scale: settings_file::display_scale(&file[..length])
             .unwrap_or_else(|| area.map_or(1, |area| area.scale)),
         scale_in_force: area.map_or(1, |area| area.scale.max(1)),
@@ -688,6 +690,21 @@ fn save_display_scale(scale: u32) -> Result<(), Errno> {
         _ => "1",
     };
     save_through_a_temporary_file(settings_file::DISPLAY_SCALE, value)
+}
+
+fn save_display_resolution(size: Option<(u32, u32)>) -> Result<(), Errno> {
+    let mut text = Text::<16>::new();
+    let _ = match size {
+        Some((width, height)) => core::fmt::Write::write_fmt(&mut text, format_args!("{width}x{height}")),
+        None => core::fmt::Write::write_str(&mut text, "auto"),
+    };
+    save_through_a_temporary_file(settings_file::DISPLAY_RESOLUTION, text.as_str())
+}
+
+fn display_changeable() -> bool {
+    let mut text = [0u8; 128];
+    let length = read_file("/proc/driver/display", &mut text).unwrap_or(0);
+    core::str::from_utf8(&text[..length]).is_ok_and(|text| text.contains("changeable yes"))
 }
 
 fn save_time_zone(index: usize) -> Result<(), Errno> {
@@ -948,6 +965,10 @@ impl command::Machine for Machine {
 
     fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]> {
         save_display_scale(scale).map_err(Errno::message)
+    }
+
+    fn save_display_resolution(&mut self, size: Option<(u32, u32)>) -> Result<(), &'static [u8]> {
+        save_display_resolution(size).map_err(Errno::message)
     }
 
     fn save_input(&mut self, change: InputChange) -> Result<(), &'static [u8]> {

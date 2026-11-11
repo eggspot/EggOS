@@ -28,6 +28,8 @@ pub enum Key {
     AppearanceTheme,
     DisplayScale,
     DisplayResolution,
+    DisplaySize,
+    DisplayResolutionChangeable,
     DisplayPointer,
     KeyboardLayout,
     KeyboardLayouts,
@@ -90,6 +92,8 @@ pub enum Change {
     Automatic(bool),
     /// The display's scale, 1 or 2, from the next boot (D195).
     DisplayScale(u32),
+    /// The display's size from the next boot: `None` for the display's own (D287).
+    DisplayResolution(Option<(u32, u32)>),
     /// One mouse or key preference, used from the next event (D195).
     Input(InputChange),
     /// Sticky keys or slow keys, used from the next key (D205).
@@ -332,11 +336,13 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 34] = [
         Self::ShellProfile,
         Self::AppearanceTheme,
         Self::DisplayScale,
         Self::DisplayResolution,
+        Self::DisplaySize,
+        Self::DisplayResolutionChangeable,
         Self::DisplayPointer,
         Self::KeyboardLayout,
         Self::KeyboardLayouts,
@@ -373,7 +379,9 @@ impl Key {
             Self::ShellProfile => eggos_settings_file::SHELL_PROFILE,
             Self::AppearanceTheme => APPEARANCE_THEME,
             Self::DisplayScale => eggos_settings_file::DISPLAY_SCALE,
-            Self::DisplayResolution => "display.resolution",
+            Self::DisplayResolution => eggos_settings_file::DISPLAY_RESOLUTION,
+            Self::DisplaySize => "display.size",
+            Self::DisplayResolutionChangeable => "display.resolution_changeable",
             Self::DisplayPointer => "display.pointer",
             Self::KeyboardLayout => eggos_settings_file::KEYBOARD_LAYOUT,
             Self::KeyboardLayouts => eggos_settings_file::KEYBOARD_LAYOUT_SET,
@@ -417,6 +425,7 @@ impl Key {
             Self::ShellProfile
                 | Self::AppearanceTheme
                 | Self::DisplayScale
+                | Self::DisplayResolution
                 | Self::KeyboardLayout
                 | Self::KeyboardLayouts
                 | Self::KeyboardSwitchKey
@@ -449,6 +458,12 @@ impl Key {
             }
             Self::DisplayScale => {
                 let _ = choices.write_str("1 or 2");
+            }
+            Self::DisplayResolution => {
+                let _ = choices.write_str("auto");
+                for (width, height) in eggos_settings_file::RESOLUTIONS {
+                    let _ = write!(choices, ", {width}x{height}");
+                }
             }
             Self::TimeAutomatic => {
                 let _ = choices.write_str("on or off");
@@ -492,9 +507,15 @@ impl Key {
             Self::ShellProfile => value.write_str(PROFILES[facts.profile.min(PROFILES.len() - 1)]),
             Self::AppearanceTheme => value.write_str(facts.theme.name()),
             Self::DisplayScale => write!(value, "{}", facts.scale),
-            Self::DisplayResolution => {
-                write!(value, "{}x{}", facts.resolution.0, facts.resolution.1)
-            }
+            Self::DisplayResolution => match facts.resolution_choice {
+                Some((width, height)) => write!(value, "{width}x{height}"),
+                None => value.write_str("auto"),
+            },
+            Self::DisplaySize => write!(value, "{}x{}", facts.resolution.0, facts.resolution.1),
+            Self::DisplayResolutionChangeable => value.write_str(match facts.resolution_changeable {
+                true => "yes",
+                false => "no",
+            }),
             Self::DisplayPointer => value.write_str("software"),
             Self::KeyboardLayout => value.write_str(
                 KEYBOARD_LAYOUTS[facts.keyboard_layout.min(KEYBOARD_LAYOUTS.len() - 1)].name,
@@ -583,6 +604,9 @@ impl Key {
                 "2" => Ok(Change::DisplayScale(2)),
                 _ => Err(Refusal::InvalidValue),
             },
+            Self::DisplayResolution => eggos_settings_file::resolution_named(value.as_bytes())
+                .map(Change::DisplayResolution)
+                .ok_or(Refusal::InvalidValue),
             Self::MouseButtons => match value {
                 "right" => Ok(Change::Input(InputChange::LeftHanded(false))),
                 "left" => Ok(Change::Input(InputChange::LeftHanded(true))),
@@ -709,7 +733,9 @@ mod tests {
                 ("shell.profile", "macos".to_owned()),
                 ("appearance.theme", "dark".to_owned()),
                 ("display.scale", "1".to_owned()),
-                ("display.resolution", "1280x800".to_owned()),
+                ("display.resolution", "auto".to_owned()),
+                ("display.size", "1280x800".to_owned()),
+                ("display.resolution_changeable", "yes".to_owned()),
                 ("display.pointer", "software".to_owned()),
                 ("keyboard.layout", "us".to_owned()),
                 ("keyboard.layouts", "us".to_owned()),

@@ -92,6 +92,19 @@ pub trait Scanout: Send {
     fn hide_pointer(&mut self, _deadline: &mut Deadline) -> Result<(), &'static str> {
         Err("the display draws no pointer")
     }
+    /// Whether [`Self::change_mode`] can work (D287): no for a firmware's framebuffer.
+    fn can_change_mode(&self) -> bool {
+        false
+    }
+    /// The size the display itself prefers, asked again when it says it changed; `None` when
+    /// it has no say.
+    fn preferred_mode(&mut self, _deadline: &mut Deadline) -> Option<Mode> {
+        None
+    }
+    /// Shows a new, blank framebuffer of `mode` in place of the one shown.
+    fn change_mode(&mut self, _mode: Mode, _deadline: &mut Deadline) -> Result<(), &'static str> {
+        Err("this display keeps the size the firmware set")
+    }
 }
 
 /// A display: a driver's [`Scanout`], the damage drawn on it since its last flush, the boot
@@ -108,6 +121,12 @@ pub struct Display {
 
 /// The largest scale a display takes.
 pub const MAX_SCALE: u32 = 2;
+
+/// The smallest size [`Display::change_mode`] sets: the desktop's smallest screen.
+pub const MIN_MODE: Mode = Mode::new(1024, 768);
+
+/// The most bytes [`Display::change_mode`] gives a framebuffer: 3840x2160 at 4 bytes a pixel.
+pub const MAX_MODE_BYTES: usize = 3840 * 2160 * 4;
 
 impl Display {
     /// The display `scanout` shows, nothing damaged yet.
@@ -156,6 +175,47 @@ impl Display {
     /// The scale the display shows at.
     pub fn scale(&self) -> u32 {
         self.scale
+    }
+
+    /// Makes the device show `mode` (D287), before the desktop starts: the framebuffer is new and
+    /// blank, at the scale in force when `mode` divides by it, else at scale 1; the boot screen
+    /// is drawn again if it showed. Refused when the device cannot change or `mode` is outside
+    /// [`MIN_MODE`] and [`MAX_MODE_BYTES`].
+    pub fn change_mode(&mut self, mode: Mode, deadline: &mut Deadline) -> Result<(), &'static str> {
+        if !self.scanout.can_change_mode() {
+            return Err("this display keeps the size the firmware set");
+        }
+        if mode.width < MIN_MODE.width || mode.height < MIN_MODE.height || mode.bytes() > MAX_MODE_BYTES {
+            return Err("a size this display does not take");
+        }
+        self.scanout.change_mode(mode, deadline)?;
+        let booting = self.boot.is_some();
+        let scale = self.scale;
+        self.scale = 1;
+        self.logical = Vec::new();
+        if scale > 1 && eggos_drivers::desktop::Desktop::fits(mode.width / scale, mode.height / scale) {
+            self.set_scale(scale);
+        }
+        self.damage.add(self.mode().rect());
+        if booting {
+            self.draw(|framebuffer| framebuffer.show_boot_screen());
+        }
+        Ok(())
+    }
+
+    /// Whether the device can change size ([`Scanout::can_change_mode`]).
+    pub fn can_change_mode(&self) -> bool {
+        self.scanout.can_change_mode()
+    }
+
+    /// The size the device prefers ([`Scanout::preferred_mode`]).
+    pub fn preferred_mode(&mut self, deadline: &mut Deadline) -> Option<Mode> {
+        self.scanout.preferred_mode(deadline)
+    }
+
+    /// The device's own size, before the scale divides it.
+    pub fn device_mode(&self) -> Mode {
+        self.scanout.mode()
     }
 
     /// Whether the display draws the pointer itself ([`Scanout::draws_pointer`]).
@@ -348,6 +408,47 @@ pub fn set_scale(scale: u32) -> bool {
         .lock()
         .as_mut()
         .is_some_and(|display| display.set_scale(scale))
+}
+
+/// Makes the display show `mode`, or its preferred size for `None` ([`Display::change_mode`]),
+/// before the desktop starts (D287).
+pub fn change_mode<P: Platform>(mode: Option<Mode>) -> Result<(), &'static str> {
+    let mut display = DISPLAY.lock();
+    let display = display.as_mut().ok_or("no display")?;
+    let mut deadline = Deadline::after::<P>(FLUSH_TIMEOUT_MS);
+    let mode = match mode {
+        Some(mode) => mode,
+        None => display.preferred_mode(&mut deadline).ok_or("the display prefers no size")?,
+    };
+    if mode == display.device_mode() {
+        return Ok(());
+    }
+    display.change_mode(mode, &mut deadline)
+}
+
+/// Whether the display can change size; false without one.
+pub fn can_change_mode() -> bool {
+    DISPLAY.lock().as_ref().is_some_and(|display| display.can_change_mode())
+}
+
+/// The device's own size, before the scale divides it; `None` without a display.
+pub fn device_mode() -> Option<Mode> {
+    DISPLAY.lock().as_ref().map(|display| display.device_mode())
+}
+
+/// `/proc/driver/display` (D287): `<width>x<height> scale <n> changeable yes|no`, the device's
+/// size, or `none` without a display.
+pub fn status_text() -> alloc::string::String {
+    let display = DISPLAY.lock();
+    let Some(display) = display.as_ref() else {
+        return alloc::string::String::from("none");
+    };
+    let mode = display.device_mode();
+    let changeable = match display.can_change_mode() {
+        true => "yes",
+        false => "no",
+    };
+    alloc::format!("{}x{} scale {} changeable {changeable}", mode.width, mode.height, display.scale())
 }
 
 /// The scale the display shows at; 1 without a display.

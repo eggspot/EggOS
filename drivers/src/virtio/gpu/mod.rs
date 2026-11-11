@@ -50,6 +50,11 @@ const RESPONSE_SLOT: usize = 32;
 const DISPLAY_INFO: usize = 2560;
 const MAX_BATCH: usize = (RESPONSES - REQUESTS) / REQUEST_SLOT;
 const RESOURCE_ID: u32 = 1;
+const OTHER_RESOURCE_ID: u32 = 3;
+const RESOURCE_ONLY_BYTES: usize = 32;
+const CONFIG_EVENTS_READ_OFFSET: usize = 0;
+const CONFIG_EVENTS_CLEAR_OFFSET: usize = 4;
+const EVENT_DISPLAY: u32 = 1;
 const SCANOUT_ID: u32 = 0;
 const CONFIG_NUM_SCANOUTS_OFFSET: usize = 8;
 const FLAG_FENCE: u32 = 1;
@@ -74,10 +79,12 @@ const _: () = assert!(CURSOR_REQUEST + UPDATE_CURSOR_BYTES <= MEMORY_BYTES);
 mod command {
     pub const GET_DISPLAY_INFO: u32 = 0x0100;
     pub const RESOURCE_CREATE_2D: u32 = 0x0101;
+    pub const RESOURCE_UNREF: u32 = 0x0102;
     pub const SET_SCANOUT: u32 = 0x0103;
     pub const RESOURCE_FLUSH: u32 = 0x0104;
     pub const TRANSFER_TO_HOST_2D: u32 = 0x0105;
     pub const RESOURCE_ATTACH_BACKING: u32 = 0x0106;
+    pub const RESOURCE_DETACH_BACKING: u32 = 0x0107;
     pub const UPDATE_CURSOR: u32 = 0x0300;
     pub const MOVE_CURSOR: u32 = 0x0301;
 }
@@ -105,6 +112,7 @@ struct Scanout<M> {
     framebuffer: M,
     mode: Mode,
     shown: bool,
+    resource: u32,
 }
 
 #[derive(Debug)]
@@ -269,6 +277,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             framebuffer,
             mode,
             shown: false,
+            resource: RESOURCE_ID,
         });
         self.run(1, ATTACH_BACKING_BYTES, keep_waiting)
             .map_err(|error| (error, None))?;
@@ -282,6 +291,99 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             scanout.shown = true;
         }
         Ok(())
+    }
+
+    /// Shows `framebuffer` ([`Mode::bytes`] of `mode` or more) on scanout 0 in place of the
+    /// shown one, as a new resource (D287): the display changes mode. The old framebuffer comes
+    /// back once the device let go of it (its resource detached and destroyed). Refused with
+    /// the new framebuffer handed back when nothing is shown, the mode is empty or too large, or
+    /// the memory too small; once the device was given the new memory it stays with the driver
+    /// on an error, as in [`Self::attach_framebuffer`].
+    pub fn replace_framebuffer(
+        &mut self,
+        framebuffer: M,
+        mode: Mode,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<M, (Error, Option<M>)> {
+        if self.unanswered {
+            return Err((Error::TimedOut, Some(framebuffer)));
+        }
+        let Some(old_resource) = self.shown().map(|scanout| scanout.resource) else {
+            return Err((Error::NoScanout, Some(framebuffer)));
+        };
+        let Ok(length) = u32::try_from(mode.bytes()) else {
+            return Err((Error::UnsupportedMode, Some(framebuffer)));
+        };
+        if mode.rect().is_empty() {
+            return Err((Error::UnsupportedMode, Some(framebuffer)));
+        }
+        if framebuffer.len() < mode.bytes() {
+            return Err((Error::MemoryTooSmall, Some(framebuffer)));
+        }
+        let resource = match old_resource {
+            RESOURCE_ID => OTHER_RESOURCE_ID,
+            _ => RESOURCE_ID,
+        };
+        let request = self.header(0, command::RESOURCE_CREATE_2D);
+        self.put32(request + 24, resource);
+        self.put32(request + 28, FORMAT_B8G8R8X8_UNORM);
+        self.put32(request + 32, mode.width);
+        self.put32(request + 36, mode.height);
+        if let Err(error) = self.run(1, CREATE_2D_BYTES, keep_waiting) {
+            return Err((error, Some(framebuffer)));
+        }
+        let request = self.header(0, command::RESOURCE_ATTACH_BACKING);
+        self.put32(request + 24, resource);
+        self.put32(request + 28, 1);
+        self.put64(request + 32, framebuffer.dma_addr().get());
+        self.put32(request + 40, length);
+        self.put32(request + 44, 0);
+        let replaced = self.scanout.replace(Scanout {
+            framebuffer,
+            mode,
+            shown: false,
+            resource,
+        });
+        let Some(old) = replaced else {
+            return Err((Error::NoScanout, None));
+        };
+        self.run(1, ATTACH_BACKING_BYTES, keep_waiting).map_err(|error| (error, None))?;
+        let request = self.header(0, command::SET_SCANOUT);
+        self.put_rect(request + 24, mode.rect());
+        self.put32(request + 40, SCANOUT_ID);
+        self.put32(request + 44, resource);
+        self.run(1, SET_SCANOUT_BYTES, keep_waiting).map_err(|error| (error, None))?;
+        if let Some(scanout) = self.scanout.as_mut() {
+            scanout.shown = true;
+        }
+        let request = self.header(0, command::RESOURCE_DETACH_BACKING);
+        self.put32(request + 24, old.resource);
+        self.run(1, RESOURCE_ONLY_BYTES, keep_waiting).map_err(|error| (error, None))?;
+        let request = self.header(0, command::RESOURCE_UNREF);
+        self.put32(request + 24, old.resource);
+        self.run(1, RESOURCE_ONLY_BYTES, keep_waiting).map_err(|error| (error, None))?;
+        Ok(old.framebuffer)
+    }
+
+    /// Whether the device says its display changed (a host window resized, a monitor plugged
+    /// in) since [`Self::clear_display_event`] last cleared it.
+    pub fn display_event_pending(&self) -> bool {
+        self.transport.read_config32(CONFIG_EVENTS_READ_OFFSET) & EVENT_DISPLAY != 0
+    }
+
+    /// Clears the display-changed event.
+    pub fn clear_display_event(&self) {
+        self.transport.write_config8(CONFIG_EVENTS_CLEAR_OFFSET, EVENT_DISPLAY as u8);
+    }
+
+    /// Asks the device for scanout 0's preferred mode again, as [`Self::new`] did.
+    pub fn preferred_mode(&mut self, keep_waiting: &mut dyn FnMut() -> bool) -> Result<Mode, Error> {
+        if self.unanswered {
+            return Err(Error::TimedOut);
+        }
+        let mode = self.query_display(keep_waiting)?;
+        self.display = mode;
+        Ok(mode)
     }
 
     /// Whether the device has a cursor queue the driver set up, so [`Self::attach_cursor`] can
@@ -483,6 +585,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<usize, Error> {
         let mode = self.mode().ok_or(Error::NoScanout)?;
+        let resource = self.shown().map_or(RESOURCE_ID, |scanout| scanout.resource);
         let batch = MAX_BATCH.min(usize::from(self.queue.size() / 2));
         let mut shown = 0;
         let mut clipped = rects
@@ -503,14 +606,14 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
                 let offset = rect.y as u64 * mode.stride() as u64
                     + u64::from(rect.x) * u64::from(BYTES_PER_PIXEL);
                 self.put64(request + 40, offset);
-                self.put32(request + 48, RESOURCE_ID);
+                self.put32(request + 48, resource);
                 self.put32(request + 52, 0);
             }
             self.run(count, TRANSFER_TO_HOST_2D_BYTES, keep_waiting)?;
             for (index, rect) in chunk[..count].iter().enumerate() {
                 let request = self.header(index, command::RESOURCE_FLUSH);
                 self.put_rect(request + 24, *rect);
-                self.put32(request + 40, RESOURCE_ID);
+                self.put32(request + 40, resource);
                 self.put32(request + 44, 0);
             }
             self.run(count, RESOURCE_FLUSH_BYTES, keep_waiting)?;

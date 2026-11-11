@@ -86,6 +86,43 @@ pub const SHELL_PROFILE: &str = "shell.profile";
 /// The display's scale from the next boot: `1` or `2`.
 pub const DISPLAY_SCALE: &str = "display.scale";
 
+/// The display's size from the next boot: `auto` (the display's own, the default) or one of
+/// [`RESOLUTIONS`] as `<width>x<height>` (D287).
+pub const DISPLAY_RESOLUTION: &str = "display.resolution";
+
+/// The sizes `display.resolution` takes besides `auto`.
+pub const RESOLUTIONS: [(u32, u32); 12] = [
+    (1024, 768),
+    (1280, 720),
+    (1280, 800),
+    (1366, 768),
+    (1440, 900),
+    (1600, 900),
+    (1680, 1050),
+    (1920, 1080),
+    (1920, 1200),
+    (2560, 1440),
+    (2560, 1600),
+    (3840, 2160),
+];
+
+/// `display.resolution`'s value `value` read: `Some(None)` for `auto`, `Some(Some(size))` for
+/// one of [`RESOLUTIONS`], `None` for anything else.
+pub fn resolution_named(value: &[u8]) -> Option<Option<(u32, u32)>> {
+    if value == b"auto" {
+        return Some(None);
+    }
+    let text = core::str::from_utf8(value).ok()?;
+    let (width, height) = text.split_once('x')?;
+    let size = (width.parse().ok()?, height.parse().ok()?);
+    RESOLUTIONS.contains(&size).then_some(Some(size))
+}
+
+/// The size `display.resolution` holds, if the file holds a valid one ([`resolution_named`]).
+pub fn display_resolution(file: &[u8]) -> Option<Option<(u32, u32)>> {
+    resolution_named(value(file, DISPLAY_RESOLUTION)?)
+}
+
 /// The values of [`SHELL_PROFILE`], each at the index that is its number in `/dev/window`'s
 /// `GET_PROFILE` and `SET_PROFILE` (docs/windows.md).
 pub const PROFILES: [&str; 3] = ["windows", "macos", "linux"];

@@ -165,7 +165,9 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | `shell.profile` | `windows`, `macos` (the default) or `linux` | yes |
 | `appearance.theme` | `dark` (the default) or `light`: every window repaints in it at once (D219; the Appearance pane) | yes |
 | `display.scale` | `1` (the default) or `2`, which doubles everything from the next boot (D195; the Display pane) | yes |
-| `display.resolution` | the screen's size, `1280x800` | no |
+| `display.resolution` | `auto` (the default: the display's own size) or `1024x768`, `1280x720`, `1280x800`, `1366x768`, `1440x900`, `1600x900`, `1680x1050`, `1920x1080`, `1920x1200`, `2560x1440`, `2560x1600` or `3840x2160`, from the next boot (D287); a firmware's framebuffer keeps its size | yes |
+| `display.size` | the screen's size now, `1280x800` | no |
+| `display.resolution_changeable` | `yes` when the display can change size (virtio GPU, the offscreen display), `no` for a firmware's framebuffer (D287) | no |
 | `display.pointer` | `software` | no |
 | `keyboard.layout` | `us` (the default), `us-intl`, `us-mac`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `be`, `ca`, `de`, `ch`, `it`, `no`, `br`, `pt`, `es`, `latam` or `se` (D185, D221, the Keyboard pane, docs/ux/keyboard-v0.3.md); a layout not in `keyboard.layouts` joins it (or takes the place of the one in force in a full set) | yes |
 | `keyboard.layouts` | one to four layouts, in order, separated by commas without spaces (`us,de`), none twice; `us` by default; the layouts the switch key cycles through (D221); with two or more, the bar shows the layout in force's code, whose menu chooses among them | yes |

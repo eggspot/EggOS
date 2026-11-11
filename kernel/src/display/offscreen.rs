@@ -143,6 +143,18 @@ impl Scanout for OffscreenScanout {
     fn flush(&mut self, rects: &[Rect], _deadline: &mut Deadline) -> Result<usize, &'static str> {
         Ok(rects.len())
     }
+
+    fn can_change_mode(&self) -> bool {
+        true
+    }
+
+    fn change_mode(&mut self, mode: Mode, _deadline: &mut Deadline) -> Result<(), &'static str> {
+        if mode.bytes() > MAX_BYTES {
+            return Err(Refusal::TooLarge.description());
+        }
+        *self = Self::new(mode).map_err(Refusal::description)?;
+        Ok(())
+    }
 }
 
 impl core::fmt::Debug for OffscreenScanout {

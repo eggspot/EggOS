@@ -124,6 +124,8 @@ const DRIVER_BOOT_KERNEL: u64 = 28;
 const DRIVER_BOOT_LOADER: u64 = 29;
 /// `driver/wifi` (D274).
 const DRIVER_WIFI: u64 = 30;
+/// `driver/display` (D287).
+const DRIVER_DISPLAY: u64 = 31;
 
 const SYS_EGGOS: u64 = 23;
 
@@ -153,22 +155,24 @@ const NET_FILES: [(&[u8], u64); 4] = [
     (b"route", NET_ROUTE),
 ];
 
-const DRIVER_FILES: [(&[u8], u64); 7] = [
+const DRIVER_FILES: [(&[u8], u64); 8] = [
     (b"boot", DRIVER_BOOT),
     (b"boot-kernel", DRIVER_BOOT_KERNEL),
     (b"boot-loader", DRIVER_BOOT_LOADER),
     (b"devices", DRIVER_DEVICES),
     (b"disks", DRIVER_DISKS),
+    (b"display", DRIVER_DISPLAY),
     (b"rtc", DRIVER_RTC),
     (b"wifi", DRIVER_WIFI),
 ];
 
-const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 6] = [
+const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 7] = [
     (b"boot", DRIVER_BOOT),
     (b"boot-kernel", DRIVER_BOOT_KERNEL),
     (b"boot-loader", DRIVER_BOOT_LOADER),
     (b"devices", DRIVER_DEVICES),
     (b"disks", DRIVER_DISKS),
+    (b"display", DRIVER_DISPLAY),
     (b"wifi", DRIVER_WIFI),
 ];
 
@@ -1086,6 +1090,7 @@ impl<P: Platform> FileSystem for Proc<P> {
             DRIVER_DISKS => crate::block::disks_text(),
             DRIVER_BOOT => boot_text::<P>(),
             DRIVER_WIFI => line(crate::devices::wifi_status().as_bytes()),
+            DRIVER_DISPLAY => line(crate::display::status_text().as_bytes()),
             DRIVER_BOOT_KERNEL => boot_file_bytes::<P>(eggos_hal::handoff::BootFile::Kernel),
             DRIVER_BOOT_LOADER => boot_file_bytes::<P>(eggos_hal::handoff::BootFile::Loader),
             DRIVER_RTC => match crate::wall_clock::read_clock::<P>() {

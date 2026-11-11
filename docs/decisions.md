@@ -20002,3 +20002,29 @@ the license, by an explicit instruction recorded here.
   changes (they keep their address and break if its adapter goes down, as on Linux); a Wi-Fi
   glyph on the bar; per-interface DNS.
 
+## D287 The display's size chosen in settings, applied at boot; virtio GPU mode changes (M8, M11; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from virtio 1.2 5.7)
+
+- **Decision.** A display mode changes at boot, before the desktop starts, as `display.scale`
+  does (D195): the desktop and every window are laid out for one screen size, and changing it
+  live would mean laying all of them out again, which waits for a desktop that can.
+  - `display.resolution` is settable: `auto` (the default, the display's own size) or one of
+    twelve common sizes from 1024x768 to 3840x2160 (`eggos_settings_file::RESOLUTIONS`), saved in
+    the settings file and applied by the kernel's `load_saved_settings` before `display.scale`.
+    `display.size` (read-only) is the size now and `display.resolution_changeable` (read-only)
+    whether the display can change; `/proc/driver/display` says the device's size, its scale and
+    `changeable yes|no`. `settings set` and the `settings_set` MCP tool take it, as every key.
+  - The virtio GPU driver shows a new framebuffer as a second resource (ids 1 and 3 in turn):
+    create, attach backing, set the scanout, then detach the old one's backing and destroy it
+    and hand its memory back (`replace_framebuffer`); flushes name the shown resource. It also
+    reads the device's display-changed event and asks for the preferred mode again
+    (`preferred_mode`), which `auto` uses.
+  - `Scanout` gains `can_change_mode`, `preferred_mode` and `change_mode`; the virtio GPU and the
+    offscreen display change, a firmware's framebuffer (UEFI GOP, D236) and the Intel display at
+    the firmware's mode (D268) do not. `Display::change_mode` refuses sizes below 1024x768 or above
+    3840x2160's bytes, keeps scale 2 only where the desktop fits at half the size, and draws the
+    boot screen again when it showed.
+- **Not yet.** Building and running; the Display pane's control (a Claude Fable design,
+  docs/ux/display-resolution-v0.4.md, then its Rust); a live change without a restart; acting on a
+  host window's resize while the desktop runs; Intel modesetting to other modes (needs the
+  display engine's PLLs and link training).
+

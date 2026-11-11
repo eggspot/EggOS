@@ -68,7 +68,7 @@ pub fn run<P: Platform, W: Write>(
             false
         }
     };
-    terminal::load_saved_settings();
+    terminal::load_saved_settings::<P>();
     writeln!(console, "{BOOT_INIT_LINE}")?;
     let _ = crate::display::light_boot_stages::<P>(crate::display::BOOT_STAGE_INIT);
     if let Some(area) = terminal::start::<P>(terminal::Session::Interactive) {

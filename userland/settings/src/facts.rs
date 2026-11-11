@@ -24,6 +24,11 @@ pub struct Facts {
     pub uptime_s: u64,
     /// The screen's size in pixels.
     pub resolution: (u32, u32),
+    /// The size saved for the next boot, `display.resolution`: `None` for the display's own
+    /// (D287).
+    pub resolution_choice: Option<(u32, u32)>,
+    /// Whether the display can change size (`/proc/driver/display`, D287).
+    pub resolution_changeable: bool,
     /// The display's scale as saved for the next boot (the scale in force when none is saved).
     pub scale: u32,
     /// The scale the display shows at now (D195).
@@ -85,6 +90,8 @@ impl Facts {
             memory_mb: 1024,
             uptime_s: 3725,
             resolution: (1280, 800),
+            resolution_choice: None,
+            resolution_changeable: true,
             scale: 1,
             scale_in_force: 1,
             profile: 1,

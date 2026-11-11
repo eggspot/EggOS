@@ -329,7 +329,7 @@ pub fn set_desktop_profile<P: Platform>(profile: Profile) {
 /// before the desktop starts, so its first frame is already in it, and its keyboard layouts and
 /// switch key the keyboard's (D185, D221), so the first key types in the layout in force; the defaults stay when there is no file, it
 /// holds no known profile or layout, or it cannot be read.
-pub fn load_saved_settings() {
+pub fn load_saved_settings<P: Platform>() {
     let root = vfs::root();
     let Ok(node) = vfs::resolve(root, root, eggos_settings_file::PATH.as_bytes()) else {
         return;
@@ -386,6 +386,10 @@ pub fn load_saved_settings() {
         repeat_delay_ms: input.repeat_delay_ms,
         repeat_rate: input.repeat_rate,
     });
+    if let Some(resolution) = eggos_settings_file::display_resolution(&file[..length]) {
+        let mode = resolution.map(|(width, height)| crate::display::Mode::new(width, height));
+        let _ = crate::display::change_mode::<P>(mode);
+    }
     if let Some(scale) = eggos_settings_file::display_scale(&file[..length])
         && scale != crate::display::scale()
     {
