@@ -11,8 +11,8 @@
 use super::super::exception::{Context, StdObject, capturing_entry, throw, throw_object};
 use super::super::heap;
 use crate::cpp_errors::{
-    CPP_ERROR_WHAT, CPP_ERRORS, INVALID_ARGUMENT, cpp_error_of, generic_message,
-    generic_message_terminated,
+    CPP_ERROR_WHAT, CPP_ERRORS, INVALID_ARGUMENT, cpp_error_of, errc_of_windows_error,
+    generic_message, generic_message_terminated,
 };
 use crate::library::Export;
 use crate::std_exceptions::StdException;
@@ -209,6 +209,70 @@ extern "C" fn throw_cpp_error_call(code: u64, _: u64, _: u64, _: u64, context: *
     throw_cpp_error(code as i32, context)
 }
 
+/// `_Winerror_map`: the `std::errc` value Windows error `code` stands for, 0 when none does.
+extern "efiapi" fn winerror_map(code: i32) -> i32 {
+    errc_of_windows_error(code as u32)
+}
+
+/// `_Winerror_message`: Windows' message for `code` in the `size` bytes at `narrow`,
+/// NUL-terminated; its length, 0 when there is none or it does not fit.
+///
+/// # Safety
+/// `narrow` is null or holds `size` writable bytes.
+unsafe extern "efiapi" fn winerror_message(code: u32, narrow: *mut u8, size: u32) -> u32 {
+    let Some(message) = crate::errors::message(code) else {
+        return 0;
+    };
+    let bytes = message.as_bytes();
+    if narrow.is_null() || bytes.len() >= size as usize {
+        return 0;
+    }
+    // SAFETY: the caller's `size` bytes, more than the message and its NUL need.
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), narrow, bytes.len());
+        narrow.add(bytes.len()).write(0);
+    }
+    bytes.len() as u32
+}
+
+/// `__std_system_error_allocate_message`, which `std::system_category()`'s `message` calls:
+/// Windows' message for `code` in a new block at `*out` (null when there is none), which
+/// `__std_system_error_deallocate_message` frees; its length.
+///
+/// # Safety
+/// `out` is a writable word.
+unsafe extern "efiapi" fn system_error_allocate_message(code: u32, out: *mut *mut u8) -> usize {
+    let message = crate::errors::message(code).map_or(&[][..], str::as_bytes);
+    let block = match message.is_empty() {
+        true => core::ptr::null_mut(),
+        false => heap::allocate(message.len() + 1),
+    };
+    if !block.is_null() {
+        // SAFETY: a new block of the message's length and its NUL.
+        unsafe {
+            core::ptr::copy_nonoverlapping(message.as_ptr(), block, message.len());
+            block.add(message.len()).write(0);
+        }
+    }
+    // SAFETY: the caller's word.
+    unsafe { out.write_unaligned(block) };
+    match block.is_null() {
+        true => 0,
+        false => message.len(),
+    }
+}
+
+/// `__std_system_error_deallocate_message`: frees a message the call above made.
+///
+/// # Safety
+/// `message` is null or a block `__std_system_error_allocate_message` made.
+unsafe extern "efiapi" fn system_error_deallocate_message(message: *mut u8) {
+    if !message.is_null() {
+        // SAFETY: the caller's contract.
+        unsafe { heap::free(message) };
+    }
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"?_Xlength_error@std@@YAXPEBD@Z" => length_error_entry [direct],
     b"?_Xout_of_range@std@@YAXPEBD@Z" => out_of_range_entry [direct],
@@ -220,4 +284,8 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"?_Throw_C_error@std@@YAXH@Z" => throw_c_error_entry [direct],
     b"?_Throw_Cpp_error@std@@YAXH@Z" => throw_cpp_error_entry [direct],
     b"?_Syserror_map@std@@YAPEBDH@Z" => syserror_map,
+    b"?_Winerror_map@std@@YAHH@Z" => winerror_map,
+    b"?_Winerror_message@std@@YAKKPEADK@Z" => winerror_message,
+    b"__std_system_error_allocate_message" => system_error_allocate_message,
+    b"__std_system_error_deallocate_message" => system_error_deallocate_message,
 ];

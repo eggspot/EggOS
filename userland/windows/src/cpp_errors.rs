@@ -138,6 +138,96 @@ pub const GENERIC_MESSAGES: [(i32, &[u8]); 78] = [
 
 const UNKNOWN_ERROR: &[u8] = b"unknown error\0";
 
+/// The `std::errc` value (the UCRT's `errno` number) each Windows error stands for, as
+/// `_Winerror_map` gives it to `std::system_category()`'s `default_error_condition`.
+const WINDOWS_ERRORS: [(u32, i32); 78] = [
+    (1, 40),
+    (2, 2),
+    (3, 2),
+    (4, 24),
+    (5, 13),
+    (6, 22),
+    (8, 12),
+    (12, 13),
+    (14, 12),
+    (15, 19),
+    (16, 13),
+    (17, 18),
+    (19, 13),
+    (20, 19),
+    (21, 11),
+    (25, 5),
+    (29, 5),
+    (30, 5),
+    (32, 13),
+    (33, 39),
+    (39, 28),
+    (55, 19),
+    (80, 17),
+    (82, 13),
+    (110, 5),
+    (111, 38),
+    (112, 28),
+    (123, 2),
+    (131, 22),
+    (142, 16),
+    (145, 41),
+    (170, 16),
+    (183, 17),
+    (206, 38),
+    (212, 39),
+    (267, 20),
+    (995, 105),
+    (998, 13),
+    (1012, 5),
+    (1013, 5),
+    (1237, 11),
+    (2401, 16),
+    (2404, 16),
+    (10004, 4),
+    (10009, 9),
+    (10013, 13),
+    (10014, 14),
+    (10022, 22),
+    (10024, 24),
+    (10035, 140),
+    (10036, 112),
+    (10037, 103),
+    (10038, 128),
+    (10039, 109),
+    (10040, 115),
+    (10041, 136),
+    (10042, 123),
+    (10043, 135),
+    (10045, 130),
+    (10047, 102),
+    (10048, 100),
+    (10049, 101),
+    (10050, 116),
+    (10051, 118),
+    (10052, 117),
+    (10053, 106),
+    (10054, 108),
+    (10055, 119),
+    (10056, 113),
+    (10057, 126),
+    (10060, 138),
+    (10061, 107),
+    (10063, 38),
+    (10065, 110),
+    (10066, 41),
+    (10067, 23),
+    (10070, 2),
+    (10091, 11),
+];
+
+/// `_Winerror_map`: the `std::errc` value Windows error `code` stands for, 0 when none does.
+pub fn errc_of_windows_error(code: u32) -> i32 {
+    WINDOWS_ERRORS
+        .binary_search_by_key(&code, |&(windows, _)| windows)
+        .map_or(0, |at| WINDOWS_ERRORS[at].1)
+}
+
 /// The generic category's message for an `std::errc` value, NUL-terminated: what msvcp140's
 /// `_Syserror_map` returns. `unknown error` for a value that names none.
 pub fn generic_message_terminated(value: i32) -> &'static [u8] {
@@ -213,6 +303,19 @@ mod tests {
             wanted.extend_from_slice(generic_message(value));
             wanted.push(0);
             assert_eq!(*what, &wanted[..]);
+        }
+    }
+
+    #[test]
+    fn windows_errors_map_to_their_generic_conditions() {
+        assert_eq!(errc_of_windows_error(2), 2);
+        assert_eq!(errc_of_windows_error(5), 13);
+        assert_eq!(errc_of_windows_error(183), 17);
+        assert_eq!(errc_of_windows_error(10061), 107);
+        assert_eq!(errc_of_windows_error(0), 0);
+        assert_eq!(errc_of_windows_error(9999), 0);
+        for (_, errc) in WINDOWS_ERRORS {
+            assert!(GENERIC_MESSAGES.iter().any(|(value, _)| *value == errc));
         }
     }
 }

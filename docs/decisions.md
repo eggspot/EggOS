@@ -21729,3 +21729,20 @@ the license, by an explicit instruction recorded here.
   an image); a language handler of generated code that reads its data through the image
   (`__C_specific_handler`, `__CxxFrameHandler*`) is given the table's base, as on Windows, but
   the layer's own copies of those handlers still read the program's image.
+
+## D345 msvcp140: `std::system_category()`'s Windows messages and `std::notify_all_at_thread_exit` (batch part 12's rest, D230's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the documented behaviour of MSVC's standard library)
+
+- **Decision.**
+  - `_Winerror_map` maps a Windows error to the `std::errc` value it stands for (0 when none
+    does), so `std::system_category().default_error_condition` compares equal to the generic
+    conditions programs test for (`ERROR_FILE_NOT_FOUND` to `no_such_file_or_directory`,
+    `ERROR_ACCESS_DENIED` to `permission_denied`, the Winsock errors to their socket
+    conditions; 78 entries, `cpp_errors::errc_of_windows_error`, binary searched).
+  - `_Winerror_message`, `__std_system_error_allocate_message` and
+    `__std_system_error_deallocate_message` give `std::system_category().message` Windows'
+    own wording, from the same table `FormatMessageW` answers from (`errors::message`).
+  - `_Cnd_register_at_thread_exit`, `_Cnd_unregister_at_thread_exit` and
+    `_Cnd_do_broadcast_at_thread_exit`: what a thread registered (up to 64 at once, in a
+    spin-locked table) is done as it ends: the flag set to 1, the mutex unlocked and the
+    condition broadcast, in that order.
+- **Not yet.** iostreams and the rest of msvcp140's out-of-line parts.

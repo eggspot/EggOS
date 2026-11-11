@@ -15,7 +15,7 @@ use super::super::sync::{
 };
 use super::super::thread::{create_thread, exit_thread, get_exit_code_thread};
 use super::super::thread_environment::thread_id;
-use super::super::{FALSE, file, heap, time};
+use super::super::{FALSE, SpinLock, file, heap, time};
 use crate::cpp_errors::result;
 use crate::library::Export;
 use crate::linux::{self, CLOCK_MONOTONIC, CLOCK_REALTIME};
@@ -359,7 +359,69 @@ extern "efiapi" fn end_thread_ex(code: u32) -> ! {
     exit_thread(code)
 }
 
-extern "efiapi" fn broadcast_at_thread_exit_none_registered() {}
+const MOST_AT_THREAD_EXIT: usize = 64;
+
+#[derive(Clone, Copy)]
+struct AtThreadExit {
+    thread: u32,
+    condition: usize,
+    mutex: usize,
+    ready: usize,
+}
+
+static AT_THREAD_EXIT: SpinLock<[Option<AtThreadExit>; MOST_AT_THREAD_EXIT]> =
+    SpinLock::new([None; MOST_AT_THREAD_EXIT]);
+
+/// `_Cnd_register_at_thread_exit`, for `std::notify_all_at_thread_exit`: when this thread
+/// ends, `ready` is set to 1, `mutex` unlocked and `condition` broadcast.
+extern "efiapi" fn register_at_thread_exit(condition: usize, mutex: usize, ready: usize) {
+    let entry = AtThreadExit {
+        thread: thread_id(),
+        condition,
+        mutex,
+        ready,
+    };
+    AT_THREAD_EXIT.with(|entries| {
+        if let Some(slot) = entries.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(entry);
+        }
+    });
+}
+
+/// `_Cnd_unregister_at_thread_exit`: what was registered with `mutex` is forgotten.
+extern "efiapi" fn unregister_at_thread_exit(mutex: usize) {
+    AT_THREAD_EXIT.with(|entries| {
+        for slot in entries.iter_mut() {
+            if slot.is_some_and(|entry| entry.mutex == mutex) {
+                *slot = None;
+            }
+        }
+    });
+}
+
+/// `_Cnd_do_broadcast_at_thread_exit`, which `std::thread` calls as each thread ends: does
+/// what this thread registered.
+extern "efiapi" fn broadcast_at_thread_exit() {
+    let thread = thread_id();
+    loop {
+        let next = AT_THREAD_EXIT.with(|entries| {
+            let slot = entries
+                .iter_mut()
+                .find(|slot| slot.is_some_and(|entry| entry.thread == thread))?;
+            slot.take()
+        });
+        let Some(entry) = next else {
+            return;
+        };
+        if entry.ready != 0 {
+            // SAFETY: `_Cnd_register_at_thread_exit`'s contract: `ready` points to the
+            // program's `int`, alive until the thread ends.
+            unsafe { (entry.ready as *mut i32).write_volatile(1) };
+        }
+        mutex_unlock(entry.mutex);
+        condition_broadcast(entry.condition);
+    }
+}
 
 pub(super) const EXPORTS: &[Export] = exports![
     b"_Mtx_init_in_situ" => mutex_init_in_situ,
@@ -383,7 +445,9 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"_Cnd_timedwait_for" => condition_timedwait_for,
     b"_Cnd_signal" => condition_signal,
     b"_Cnd_broadcast" => condition_broadcast,
-    b"_Cnd_do_broadcast_at_thread_exit" => broadcast_at_thread_exit_none_registered,
+    b"_Cnd_register_at_thread_exit" => register_at_thread_exit,
+    b"_Cnd_unregister_at_thread_exit" => unregister_at_thread_exit,
+    b"_Cnd_do_broadcast_at_thread_exit" => broadcast_at_thread_exit,
     b"_Thrd_join" => thread_join,
     b"_Thrd_detach" => thread_detach,
     b"_Thrd_id" => thread_id_of_caller,

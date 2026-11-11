@@ -858,7 +858,8 @@ yet" naming what it left.
     `MFT_RADIOCHECK` and `CheckMenuRadioItem`, code written, unbuilt, D334; menu keys, code
     written, unbuilt, D335);
   - part 12's rest: iostreams, stack overflow as an exception, collided unwinds (D230; function
-    tables, code written, unbuilt, D344);
+    tables, code written, unbuilt, D344; system category messages and
+    `notify_all_at_thread_exit`, code written, unbuilt, D345);
   - part 13's rest: tooltips, custom drawing, label editing and the other common-control
     breadth, COM out of process, global hooks and hot keys, layered windows, the tray, the
     shell namespace, HTTPS in WinINet, `WSAAsyncSelect`, and the registry pane's outline and
