@@ -7,6 +7,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod app_actions;
 pub mod arguments;
 pub mod audit;
 #[cfg(test)]

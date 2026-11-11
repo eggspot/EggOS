@@ -327,7 +327,7 @@ fn the_shipped_tools_keep_their_annotations() {
 fn the_list_is_valid_json_with_annotations() {
     let mut buffer = vec![0u8; 128 * 1024];
     let mut out = JsonWriter::new(&mut buffer);
-    write_list(&mut out, &mut |_| true);
+    write_list(&mut out, &mut |_| true, &mut |_| {});
     assert!(!out.overflowed());
     let list = json::parse(out.as_bytes()).unwrap().value;
     let Some(Value::Array(tools)) = list.get("tools") else {
@@ -666,7 +666,7 @@ fn the_registry_tools_run_windows_registry_and_exist_only_with_the_windows_layer
     );
     let mut buffer = vec![0u8; 1 << 20];
     let mut out = JsonWriter::new(&mut buffer);
-    write_list(&mut out, &mut |_| false);
+    write_list(&mut out, &mut |_| false, &mut |_| {});
     assert!(!out.overflowed());
     let listed = core::str::from_utf8(out.as_bytes()).unwrap();
     assert!(!listed.contains("windows_registry"), "{listed}");

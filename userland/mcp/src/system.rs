@@ -151,6 +151,11 @@ pub trait System {
         self.close_capture(file);
         read
     }
+    /// Calls `each` with the name of every entry of folder `path`, `.` and `..` left out;
+    /// nothing when it cannot be read (D292: the installed apps whose actions are tools).
+    fn folder_entries(&mut self, path: &str, each: &mut dyn FnMut(&[u8])) {
+        let _ = (path, each);
+    }
     /// Appends `record` to the audit log, durably.
     fn append_audit(&mut self, record: &[u8]) -> Result<(), Errno>;
     /// Reads the agents' grants file ([`crate::grants::STORE_PATH`]) into `out`, at most its

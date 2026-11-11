@@ -17,6 +17,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod actions;
 pub mod icon;
 pub mod translation;
 

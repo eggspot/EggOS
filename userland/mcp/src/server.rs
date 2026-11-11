@@ -675,9 +675,24 @@ impl Server {
                 let now = self.refresh_policy(system);
                 match self.policy.check(&self.agent, None, now) {
                     Decision::Deny(_) => rpc::write_result(out, id, write_no_tools),
-                    _ => rpc::write_result(out, id, |out| {
-                        tools::write_list(out, &mut |file| system.reaches_file(file))
-                    }),
+                    _ => {
+                        let mut present: [(&'static str, bool); 8] = [("", false); 8];
+                        let mut known = 0;
+                        for file in tools::TOOLS.iter().filter_map(|tool| tool.needs) {
+                            if known < present.len() && !present[..known].iter().any(|(seen, _)| *seen == file) {
+                                present[known] = (file, system.reaches_file(file));
+                                known += 1;
+                            }
+                        }
+                        let mut actions_file = [0u8; eggos_app_manifest::actions::LARGEST];
+                        rpc::write_result(out, id, |out| {
+                            tools::write_list(
+                                out,
+                                &mut |file| present[..known].iter().any(|(seen, here)| *seen == file && *here),
+                                &mut |out| crate::app_actions::write_tools(out, system, &mut actions_file),
+                            )
+                        })
+                    }
                 }
             }
             "prompts/list" => rpc::write_result(out, id, prompts::write_list),
@@ -1109,6 +1124,30 @@ impl Server {
         scratch: &mut Scratch<'_>,
         out: &mut JsonWriter<'_>,
     ) {
+        let asked_name = params
+            .and_then(|params| params.get("name"))
+            .and_then(Value::as_str);
+        if let Some(asked) = asked_name {
+            let mut text = [0u8; 128];
+            let (asked, _) = asked.decode_prefix_into(&mut text);
+            if tools::find(asked).is_none() {
+                let mut actions_file = [0u8; eggos_app_manifest::actions::LARGEST];
+                if let Some(found) = crate::app_actions::find(system, asked, &mut actions_file) {
+                    let arguments = params
+                        .and_then(|params| params.get("arguments"))
+                        .and_then(Value::as_object)
+                        .map(|object| object.text());
+                    let mut redirected = [0u8; 8192];
+                    let length = crate::app_actions::redirected(&found, arguments, &mut redirected);
+                    if let Ok(parsed) = crate::json::parse(&redirected[..length])
+                        && let Value::Object(object) = parsed.value
+                    {
+                        self.call(id, Some(object), nested_duplicate, system, scratch, out);
+                        return;
+                    }
+                }
+            }
+        }
         if self.budget_spent {
             refused(out, id, &errors::AUDIT_FULL, BUDGET_USED);
             return;

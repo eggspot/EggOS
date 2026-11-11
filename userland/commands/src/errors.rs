@@ -209,6 +209,13 @@ pub const NO_SUCH_APP: ErrorDefinition = error(
     "Use a name app list shows.",
     Some("app list"),
 );
+/// `app do`: the app offers no action of that name (D292).
+pub const NO_SUCH_ACTION: ErrorDefinition = error(
+    "no_such_action",
+    Category::NotFound,
+    "Use an action app actions shows for the app.",
+    Some("app actions"),
+);
 /// `app install`: an app of that name is installed already.
 pub const APP_EXISTS: ErrorDefinition = error(
     "app_exists",
@@ -586,7 +593,8 @@ pub const REMOVE_FAILED: ErrorDefinition = error(
     None,
 );
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 79] = [
+pub const ALL: [&ErrorDefinition; 80] = [
+    &NO_SUCH_ACTION,
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,

@@ -20132,3 +20132,33 @@ the license, by an explicit instruction recorded here.
   I/O BARs; prefetchable windows kept apart; vectors spread over CPUs; the same PCI discovery
   tried on the AArch64 and RISC-V boots (it runs there too now, untested).
 
+## D292 Apps' own actions: `app.actions`, `app actions`, `app do` and one MCP tool per action (M14 part 70, CLAUDE.md note 6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** An installed app declares what it offers besides opening in `app.actions` in its
+  folder (`eggos_app_manifest::actions`): `eggos-actions 1`, then blocks starting `action=<name>`
+  with `title`, `description`, `run` (the program, absolute or relative to the app's folder, and
+  its words), `effect` (`read`, `change` or `destroy`) and up to eight
+  `argument=<name>:<text|number|boolean>:<required|optional>:<description>` lines. In `run`, a
+  word's `{argument}` is replaced by the argument's value inside that word, and the word is left
+  out when an optional argument has none; values are type-checked and never split or passed to a
+  shell, so a value cannot add words. A separate file keeps `app.manifest` within its 1 KiB and the
+  kernel's launcher, which reads manifests, unchanged; uninstalling removes the folder and with it
+  the actions.
+  - **CLI.** `app actions [--json] [<name>]` lists them; `app do <name> <action>
+    [<argument>=<value>]... [--values <json>]` runs one in the app's folder with `PATH=/bin`,
+    passing its output, errors and exit status through. An action whose effect is `destroy`
+    needs `--confirmed`, given once the user agreed (`needs_confirmation` otherwise). New error
+    `no_such_action`.
+  - **MCP.** `app_actions` (reading), `app_do` (install grant) and `app_do_confirmed` (install
+    grant, always asks the user) are static tools; on top, `tools/list` lists each installed
+    action as its own tool `app_<app>_<action>` (lower case, other bytes as `-`, at most 64
+    bytes) with its arguments as the input schema and its effect as the annotations, read from
+    the files at each list, so installing or uninstalling changes the list at once. Calling one
+    becomes a call of `app_do`, or of `app_do_confirmed` for a `destroy` action, with the
+    arguments as `values`, so grants, the user's yes and the audit log are the generic tools'.
+    The server reads `/Applications` through a new `System::folder_entries`.
+- **Not yet.** Building and running; the GUI front-end (the launcher's app menu listing an app's
+  actions, a Claude Fable design); actions of Windows and macOS apps from their own automation
+  interfaces (COM, AppleScript, App Intents), which D21 names; `notifications/tools/list_changed`
+  when an app is installed or removed.
+

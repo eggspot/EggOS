@@ -314,6 +314,7 @@ version = "0.4.0"
 name = "eggos-mcp"
 version = "0.4.0"
 dependencies = [
+ "eggos-app-manifest",
  "eggos-commands",
  "eggos-crypto",
  "eggos-net",

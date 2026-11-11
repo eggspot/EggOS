@@ -140,6 +140,12 @@ pub enum Kind {
     Logcat,
     /// `app_show`: one app and its translation kept at install (D191).
     AppShow,
+    /// `app_actions`: the actions installed apps offer (D292).
+    AppActions,
+    /// `app_do`: runs an app's action (D292).
+    AppDo,
+    /// `app_do_confirmed`: runs one that deletes or overwrites (D292).
+    AppDoConfirmed,
     /// `app_icon`: an app's own icon as a PNG (D196).
     AppIcon,
     /// `clipboard_get`: the shared clipboard's text (D197).
@@ -437,7 +443,18 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 74] = [
+pub const TOOLS: [Tool; 77] = [
+    tool(
+        &registry::APP_ACTIONS,
+        Kind::AppActions,
+        twin("/bin/app", &["actions", "--json"], Operand::Name),
+    ),
+    tool(&registry::APP_DO, Kind::AppDo, twin("/bin/app", &["do"], Operand::Name)),
+    tool(
+        &registry::APP_DO_CONFIRMED,
+        Kind::AppDoConfirmed,
+        twin("/bin/app", &["do", "--confirmed"], Operand::Name),
+    ),
     tool(
         &registry::LS,
         Kind::Ls,
@@ -1128,7 +1145,11 @@ fn write_error_schema(out: &mut JsonWriter<'_>) {
 
 /// Writes `tools/list`'s result: every tool with its schema and annotations, leaving out a
 /// tool whose component's file `present` does not find (D18).
-pub fn write_list(out: &mut JsonWriter<'_>, present: &mut dyn FnMut(&'static str) -> bool) {
+pub fn write_list(
+    out: &mut JsonWriter<'_>,
+    present: &mut dyn FnMut(&'static str) -> bool,
+    more: &mut dyn FnMut(&mut JsonWriter<'_>),
+) {
     out.begin_object();
     out.key("tools");
     out.begin_array();
@@ -1165,6 +1186,7 @@ pub fn write_list(out: &mut JsonWriter<'_>, present: &mut dyn FnMut(&'static str
         out.end_object();
         out.end_object();
     }
+    more(out);
     out.end_array();
     out.end_object();
 }

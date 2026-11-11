@@ -919,6 +919,44 @@ impl System for Linux {
         Ok(())
     }
 
+    fn folder_entries(&mut self, path: &str, each: &mut dyn FnMut(&[u8])) {
+        const O_DIRECTORY_FLAG: usize = if cfg!(target_arch = "aarch64") { 0o40_000 } else { 0o200_000 };
+        let mut buffer = [0u8; MAX_PATH_BYTES + 1];
+        let Some(path) = c_path(path, &mut buffer) else {
+            return;
+        };
+        let Ok(folder) = open(path, O_RDONLY | O_DIRECTORY_FLAG, 0) else {
+            return;
+        };
+        let mut entries = [0u8; 4096];
+        loop {
+            let read = call(
+                number::GETDENTS64,
+                [folder, entries.as_mut_ptr() as usize, entries.len(), 0, 0, 0],
+            );
+            let Ok(length) = read else {
+                break;
+            };
+            if length == 0 {
+                break;
+            }
+            let mut at = 0;
+            while at + 19 <= length {
+                let record = u16::from_ne_bytes([entries[at + 16], entries[at + 17]]) as usize;
+                if record == 0 || at + record > length {
+                    break;
+                }
+                let name = &entries[at + 19..at + record];
+                let name = &name[..name.iter().position(|&byte| byte == 0).unwrap_or(name.len())];
+                if name != b"." && name != b".." {
+                    each(name);
+                }
+                at += record;
+            }
+        }
+        close(folder);
+    }
+
     fn open_capture(&mut self, path: &str) -> Result<CaptureFile, Errno> {
         let mut buffer = [0u8; 64];
         let path = c_path(path, &mut buffer).ok_or(Errno::EINVAL)?;

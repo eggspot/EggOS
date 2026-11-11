@@ -57,8 +57,26 @@ pub enum Command<'a> {
         output: &'a [u8],
         size: Option<&'a [u8]>,
     },
+    /// `app actions [--json] [<name>]` (D292): the actions installed apps offer.
+    Actions {
+        name: Option<&'a [u8]>,
+        json: bool,
+    },
+    /// `app do <name> <action> [--values <json>] [--confirmed] [<argument>=<value>]...`
+    /// (D292): runs one.
+    Do {
+        name: &'a [u8],
+        action: &'a [u8],
+        values: Option<&'a [u8]>,
+        pairs: [(&'a [u8], &'a [u8]); MAX_ACTION_PAIRS],
+        pair_count: usize,
+        confirmed: bool,
+    },
     Help,
 }
+
+/// The most `<argument>=<value>` operands `app do` takes: an action's most arguments.
+pub const MAX_ACTION_PAIRS: usize = eggos_app_manifest::actions::MAX_ARGUMENTS;
 
 /// The command's usage, printed for `--help` and with a usage error.
 pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] \
@@ -68,7 +86,9 @@ pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] \
                          app open [--] <name>\n       \
                          app list [--json] [--limit <count>] [--after <cursor>]\n       \
                          app show [--json] [--] <name>\n       \
-                         app icon [--size 48|32] [-o <file.png>] [--] <name> [<file.png>]\n";
+                         app icon [--size 48|32] [-o <file.png>] [--] <name> [<file.png>]\n       \
+                         app actions [--json] [<name>]\n       \
+                         app do [--values <json>] [--confirmed] <name> <action> [<argument>=<value>]...\n";
 
 /// The built-in apps `app open` opens by name, which no installed app of the same name stands
 /// in for.
@@ -87,6 +107,11 @@ pub const USAGE_ERROR: i32 = 2;
 /// The command `arguments` (after the program's name) ask for; `None` for a usage error.
 pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
     let (&verb, rest) = arguments.split_first()?;
+    match verb {
+        b"actions" => return parse_actions(rest),
+        b"do" => return parse_do(rest),
+        _ => {}
+    }
     let mut window = false;
     let mut name = None;
     let mut entry = None;
@@ -167,6 +192,67 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
         b"--help" | b"help" if operand.is_none() => Some(Command::Help),
         _ => None,
     }
+}
+
+fn parse_actions<'a>(rest: &[&'a [u8]]) -> Option<Command<'a>> {
+    let mut json = false;
+    let mut name = None;
+    for &argument in rest {
+        match argument {
+            b"--json" => json = true,
+            _ if argument.starts_with(b"-") && argument.len() > 1 => return None,
+            _ if name.is_none() => name = Some(argument),
+            _ => return None,
+        }
+    }
+    Some(Command::Actions { name, json })
+}
+
+fn parse_do<'a>(rest: &[&'a [u8]]) -> Option<Command<'a>> {
+    let mut values = None;
+    let mut confirmed = false;
+    let mut operands: [&'a [u8]; 2] = [b""; 2];
+    let mut operand_count = 0;
+    let mut pairs = [(&b""[..], &b""[..]); MAX_ACTION_PAIRS];
+    let mut pair_count = 0;
+    let mut action_given = false;
+    let mut rest = rest.iter();
+    let mut options_end = false;
+    while let Some(&argument) = rest.next() {
+        match argument {
+            b"--" if !options_end => options_end = true,
+            b"--values" if !options_end => values = Some(*rest.next()?),
+            b"--action" if !options_end && operand_count < 2 => {
+                operands[1] = *rest.next()?;
+                action_given = true;
+            }
+            b"--confirmed" if !options_end => confirmed = true,
+            _ if !options_end && argument.starts_with(b"-") && argument.len() > 1 => return None,
+            _ if operand_count == 0 => {
+                operands[0] = argument;
+                operand_count = 1;
+            }
+            _ if operand_count == 1 && !action_given => {
+                operands[1] = argument;
+                operand_count = 2;
+            }
+            _ => {
+                let at = argument.iter().position(|&byte| byte == b'=')?;
+                let pair = pairs.get_mut(pair_count)?;
+                *pair = (&argument[..at], &argument[at + 1..]);
+                pair_count += 1;
+            }
+        }
+    }
+    let complete = operand_count == 2 || (operand_count == 1 && action_given);
+    complete.then_some(Command::Do {
+        name: operands[0],
+        action: operands[1],
+        values,
+        pairs,
+        pair_count,
+        confirmed,
+    })
 }
 
 /// The most bytes one app's JSON record takes: its fields are at most a path long each.
@@ -351,6 +437,8 @@ mod program {
     use eggos_commands::page::{self, MAX_CURSOR_BYTES, MAX_KEY_BYTES, MORE_PREFIX};
     use eggos_png::EncoderWorkspace;
     use eggos_runtime::startup::Startup;
+
+    mod actions;
 
     const COPY_BUFFER: usize = 64 * 1024;
     const MAX_ARGUMENTS: usize = 12;
@@ -944,6 +1032,15 @@ mod program {
             Some(Command::List { json, limit, after }) => list(json, limit, after),
             Some(Command::Show { name, json }) => show(name, json),
             Some(Command::Icon { name, output, size }) => icon(name, output, size),
+            Some(Command::Actions { name, json }) => actions::list(name, json),
+            Some(Command::Do {
+                name,
+                action,
+                values,
+                pairs,
+                pair_count,
+                confirmed,
+            }) => actions::run(name, action, values, &pairs[..pair_count], confirmed),
             None => {
                 write_all(STANDARD_ERROR, USAGE.as_bytes());
                 USAGE_ERROR
