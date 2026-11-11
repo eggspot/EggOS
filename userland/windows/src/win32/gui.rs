@@ -592,6 +592,14 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
             .map(|(size_kind, size)| to_window(message::SIZE, size_kind, size)),
         Event::StateChanged(state) => state_changed(handle, state)
             .map(|(size_kind, size)| to_window(message::SIZE, size_kind, size)),
+        Event::Tray {
+            message: number,
+            key,
+            point,
+        } => {
+            super::shell_desktop::tray_event(key, number, point);
+            None
+        }
         Event::CloseRequest => Some(to_window(message::SYS_COMMAND, message::SC_CLOSE, 0)),
         Event::FocusIn => {
             with(|gui| gui.active_root = handle);

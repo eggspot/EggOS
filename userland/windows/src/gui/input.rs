@@ -22,6 +22,7 @@ pub mod kind {
     pub const CLOSE_REQUEST: u16 = 9;
     pub const RESIZE: u16 = 10;
     pub const STATE_CHANGED: u16 = 11;
+    pub const TRAY: u16 = 17;
 }
 
 const BUTTON_LEFT: u32 = 0x110;
@@ -111,6 +112,13 @@ pub enum Event {
         height: u32,
     },
     StateChanged(u32),
+    /// A press on notification-area icon `key` (D357): the Windows message it stands for and
+    /// the screen point.
+    Tray {
+        message: u32,
+        key: u32,
+        point: (i32, i32),
+    },
     CloseRequest,
     FocusIn,
     FocusOut,
@@ -386,6 +394,11 @@ impl InputState {
                 height: record.b.max(0) as u32,
             },
             kind::STATE_CHANGED => Event::StateChanged(record.a.max(0) as u32),
+            kind::TRAY => Event::Tray {
+                message: record.a as u32,
+                key: record.b as u32,
+                point: (record.c as i32, record.d as i32),
+            },
             _ => Event::Ignored,
         }
     }

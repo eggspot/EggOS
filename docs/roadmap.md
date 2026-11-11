@@ -862,12 +862,12 @@ yet" naming what it left.
     tables, code written, unbuilt, D344; system category messages and
     `notify_all_at_thread_exit`, code written, unbuilt, D345);
   - part 13's rest: tooltips of other controls (D355 has the control), custom drawing beyond list views, label editing and the other
-    common-control breadth, COM out of process, global hooks, layered windows, the tray, the
-    shell namespace, and the registry pane's outline and phone layouts (D231; `WSAAsyncSelect`, code written,
+    common-control breadth, COM out of process, global hooks, layered windows, the tray's
+    overflow popup, balloons and menus, the shell namespace, and the registry pane's outline and phone layouts (D231; `WSAAsyncSelect`, code written,
     unbuilt, D348; the process's own hooks, code written, unbuilt, D349; HTTPS in WinINet,
     code written, unbuilt, D352; list views' custom draw, code written, unbuilt, D353; list views' label editing, code
     written, unbuilt, D354; the tooltip control, code written, unbuilt, D355; toolbars' tooltips, code written,
-    unbuilt, D356);
+    unbuilt, D356; notification-area icons, code written, unbuilt, D357);
   - part 14's rest: `NSKeyedUnarchiver`, storyboards, NSDictionary's hash index (D232);
   - part 15's rest: scroll views, tables, images, the About panel's icon and credits, the
     alert's element tree, `mac-views.app` (D233);

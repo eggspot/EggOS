@@ -21984,3 +21984,36 @@ the license, by an explicit instruction recorded here.
   no text (`TB_SETMAXTEXTROWS 0`).
 - **Not yet.** `TBSTYLE_EX_MIXEDBUTTONS`' rule for buttons without `BTNS_SHOWTEXT`, list
   views' and tree views' info tips, tab controls' `TCS_TOOLTIPS`.
+
+## D357 Windows programs' notification-area icons in the bar (`Shell_NotifyIconW`) (batch part 13's rest, D231's "Not yet"; M15, M12; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/windows-tooltips-tray-v0.5.md sections 11 to 13) and the code-only session (engineering, the protocol)
+
+- **Decision.**
+  - **Protocol.** `SET_TRAY_ICON` (request 51, 32 bytes: window, the client's key for the icon,
+    flags hidden and remove, the tip's length and address, the pixels' address) adds,
+    changes or removes an icon of one of the caller's windows; the kernel reads the tip
+    (UTF-8, at most 384 bytes) and the 16x16 ARGB pixels from the program's memory. A press
+    comes back as a `Tray` record (event 17: the Windows message, the key, the screen point).
+    `docs/windows.md` lists both.
+  - **The server** (`drivers/src/desktop/tray.rs`) keeps up to 16 icons; they sit in the
+    bar's indicator run directly left of the keyboard and network indicators (28 px targets
+    on the top bar with the icon at (6, 6), 40 px items on the taskbar with the icon at
+    (12, 12), the run 8 px left of its neighbour there), the first added rightmost, at most
+    four shown and, past that, the leftmost cell an overflow button (`Hidden icons`). The
+    Agent and Updates chips and the taskbar's items move left of the run. An icon without
+    pixels is the generic tile with its window title's first letter. Its tooltip is its tip
+    (else its window's title), in the bar's own tooltip. A left, right or middle press sends
+    the window that button's down and up messages at once; the icons of a destroyed window
+    go with it.
+  - **The layer** (`shell_desktop.rs`): `Shell_NotifyIconW` with `NIM_ADD`, `NIM_MODIFY`,
+    `NIM_DELETE`, `NIM_SETVERSION` (0, 3 or 4) and `NIM_SETFOCUS` (accepted), `NIF_MESSAGE`,
+    `NIF_ICON` (rendered to 16x16: scaled down or centred, alpha under half or the mask's set
+    pixels transparent), `NIF_TIP` (64 or 128 units by the structure's size) and `NIF_STATE`'s
+    `NIS_HIDDEN`. A `Tray` record posts the callback message to the icon's window, packed by
+    its version: `uID` and the message for 0 and 3 (3 adds `NIN_SELECT` after a left up),
+    the point and `MAKELONG(message, uID)` for 4, which adds `NIN_SELECT` after a left up
+    and `WM_CONTEXTMENU` after a right up.
+- **Not yet.** The overflow popup (its button shows, a press does nothing), the hover and
+  tooltip messages of version 4 (`NIN_POPUPOPEN`, `WM_MOUSEMOVE`), double clicks, keyboard
+  selection and `NIN_KEYSELECT`, `NIF_INFO` balloons as notices, the program's context menu
+  in the server's chrome (section 14), the phone and tablet shade's `Programs` row,
+  `Shell_NotifyIconGetRect`, 2x pixels.

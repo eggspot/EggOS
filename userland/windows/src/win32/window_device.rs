@@ -22,6 +22,7 @@ const DESTROY: usize = 0x4004_7709;
 const GET_WORK_AREA: usize = 0x8014_770a;
 const GET_PLACEMENT: usize = 0xc014_771c;
 const SET_CLIPBOARD: usize = 0x4010_7720;
+const SET_TRAY_ICON: usize = 0x4020_7733;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const TITLE_CAPACITY: usize = 64;
 const TRY_AGAIN: u16 = 11;
@@ -148,6 +149,25 @@ impl Device {
             height,
             pixels,
         })
+    }
+
+    /// Adds, changes or removes notification-area icon `icon` of `window` (D357): `flags` the
+    /// server's (hidden, removed), its tip and its 16x16 pixels (none: the generic tile).
+    pub fn set_tray_icon(
+        &self,
+        (window, icon, flags): (u32, u32, u32),
+        tip: &str,
+        pixels: Option<&[u32; 256]>,
+    ) -> Result<(), Errno> {
+        let mut argument = [0u8; 32];
+        put(&mut argument, 0, window);
+        put(&mut argument, 4, icon);
+        put(&mut argument, 8, flags);
+        put(&mut argument, 12, tip.len() as u32);
+        argument[16..24].copy_from_slice(&(tip.as_ptr() as u64).to_ne_bytes());
+        let pixels = pixels.map_or(0, |pixels| pixels.as_ptr() as u64);
+        argument[24..32].copy_from_slice(&pixels.to_ne_bytes());
+        self.request(SET_TRAY_ICON, &mut argument)
     }
 
     /// Sets `window`'s title to `title`, cut to the server's 64 bytes at a character boundary.
