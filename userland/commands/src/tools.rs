@@ -1294,11 +1294,12 @@ pub const WIFI_LIST: ToolDefinition = ToolDefinition {
 pub const WIFI_CONNECT: ToolDefinition = ToolDefinition {
     name: "wifi_connect",
     title: "Join a Wi-Fi network",
-    description: "Names the Wi-Fi network to join, as `wifi connect <ssid> [<passphrase>]` does: \
-                  the driver joins it after its next scan; wifi_list then says connected. A \
-                  WPA2-Personal network needs its passphrase (8 to 63 characters); an open one \
-                  none. Asks the user first, or needs confirm: true when the client cannot ask. \
-                  Needs the run grant.",
+    description: "Names the Wi-Fi network to join, as `wifi connect [--hidden] <ssid> \
+                  [<passphrase>]` does: the driver joins it after its next scan; wifi_list then \
+                  says connected. A WPA2- or WPA3-Personal network needs its passphrase (8 to 63 \
+                  characters); an open one none. hidden: true for a network that does not \
+                  announce its name, which the driver then asks for by name. Asks the user first, \
+                  or needs confirm: true when the client cannot ask. Needs the run grant.",
     command: &["wifi", "connect"],
     fixed: &[],
     arguments: &[
@@ -1308,7 +1309,11 @@ pub const WIFI_CONNECT: ToolDefinition = ToolDefinition {
         )),
         described(
             optional("passphrase", JsonType::String, Mapping::Operand),
-            "The network's WPA2 passphrase; leave it out for an open network.",
+            "The network's WPA2 or WPA3 passphrase; leave it out for an open network.",
+        ),
+        described(
+            optional("hidden", JsonType::Boolean, Mapping::Option("--hidden")),
+            "The network hides its name: the driver asks for it by name (D298).",
         ),
         confirm(GUARD),
     ],

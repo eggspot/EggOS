@@ -20924,3 +20924,45 @@ the license, by an explicit instruction recorded here.
   where they are built as native words; then s390x (channel I/O, the DAT geometry) and
   SPARC64.
 - **Not yet.** Building and running.
+
+## D319 Settings > Network: joining a hidden Wi-Fi network (docs/ux/wifi-join-hidden-v0.5.md; M14; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The design brief (Fable, committed with this change) is built in the Wi-Fi
+  section (`wifi_section.rs`):
+  - **The row.** `Join another network` (`Hidden or not listed`, `Join`) is the last row on
+    every page whenever the list shows. It is hidden, not disabled, while the list cannot
+    show.
+  - **The form.** `Join` opens an inline note, 180 tall, under the row: the lead line, a
+    `Network name` field with a live byte count, a `Security` radio pair (`Open`,
+    `WPA2 or WPA3`), and the passphrase note's own field, `Show`, message, `Cancel` and
+    `Join` at their new places.
+    - `Open` disables the passphrase.
+    - The resting message follows the brief: a space at an end, else the open-network line,
+      else the length rule.
+    - A name of 0 or over 32 bytes, or a short passphrase, is refused in `text`, with the
+      focus on the failing field.
+  - **Heard nameless rows.** A heard nameless network that is open, WPA2 or WPA3 now has
+    `Join`, which opens the same form under it, with the security it was heard with.
+  - **Saving.** It writes `hidden=yes` (`Request::WifiJoin.hidden`) unless the last scan heard
+    the name.
+  - **The `Hidden` mark.** The chosen network's detail starts with `Hidden` while `wifi.conf`
+    says `hidden=yes` (`Status.chosen_hidden`, read by the program; `chosen_hidden_in`).
+  - **Failures.** `not-in-range` for it reads `No network here answers to this name. Check its
+    spelling.`
+  - **Retry.** The form opens with a not-yet-connected hidden network's name filled in.
+  - **MCP.** `wifi_connect` gains `hidden` (backend ask 1), mapped to `wifi connect
+    --hidden`, and names WPA3.
+- **Deviations.**
+  - A refused field's text is not selected (focus only).
+  - Forgetting a hidden network leaves the focus where the forget left it, not on the row's
+    `Join`.
+  - Settings' search words for the pane are unchanged.
+  - The touch-form metrics wait for the Wi-Fi section's own phone layout (brief section 5).
+  - Backend asks 2 to 5 (the driver holding to the file's security, `; hidden` in
+    `/proc/driver/wifi`, escaped names in `wifi connect`, counting the passphrase in bytes)
+    are not done.
+- **Build-pass notes.**
+  - `wifi_section::WIDGETS` is 46, which raises Settings' `CAPACITY` and the installer's with it.
+  - `Request::WifiJoin` has a new field, and its tests construct it.
+  - The fake driver's tests gain `chosen_hidden`.
+- **Not yet.** Building and running; the acceptance list of the brief's section 8.

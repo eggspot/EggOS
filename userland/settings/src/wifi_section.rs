@@ -15,7 +15,7 @@ use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 
 /// The section's widgets: the design's 16 to 52.
-pub const WIDGETS: usize = 37;
+pub const WIDGETS: usize = 46;
 /// The Wi-Fi driver's state file.
 pub const STATUS_PATH: &str = "/proc/driver/wifi";
 /// The file naming the network to join, as `wifi connect` writes it.
@@ -45,6 +45,19 @@ const DOT: &str = " \u{b7} ";
 
 const CANNOT_JOIN_REASON: &str = "EggOS joins open, WPA2 and WPA3 networks. WEP and WPA are not safe to join.";
 const LENGTH_RULE: &str = "Use 8 to 63 characters.";
+const HIDDEN_NOTE_HEIGHT: i32 = 180;
+const OTHER_ROW_NAME: &str = "Join another network";
+const OTHER_ROW_DETAIL: &str = "Hidden or not listed";
+const HIDDEN_LEAD: &str = "EggOS looks for it by sending its name, which others can hear.";
+const NAME_RULE: &str = "Use 1 to 32 bytes for the name.";
+const OPEN_RULE: &str = "An open network has no passphrase.";
+const SPACE_RULE: &str = "The name has a space at an end.";
+const SECURITY_LABELS: [&str; 2] = ["Open", "WPA2 or WPA3"];
+const OPEN_CHOICE: usize = 0;
+const PROTECTED_CHOICE: usize = 1;
+const HIDDEN_WORD: &str = "Hidden";
+const NOT_IN_RANGE: &str = "not-in-range";
+const NOT_IN_RANGE_HIDDEN_SENTENCE: &str = "No network here answers to this name. Check its spelling.";
 
 /// How a network protects its traffic, as the driver names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +119,8 @@ pub struct Status {
     pub failure: Option<Failed>,
     /// One network a name, the strongest of each, strongest first.
     pub networks: Vec<Heard>,
+    /// `wifi.conf` marks the chosen network `hidden=yes` (D298, D319); not the driver's.
+    pub chosen_hidden: bool,
 }
 
 /// A failed try to join: the driver's code and its sentence (D284).
@@ -207,6 +222,11 @@ pub fn chosen_in(text: &str) -> Option<String> {
     text.lines().find_map(|line| line.strip_prefix("ssid=")).map(String::from)
 }
 
+/// Whether `wifi.conf`'s `text` marks its network `hidden=yes` (D298).
+pub fn chosen_hidden_in(text: &str) -> bool {
+    text.lines().any(|line| line == "hidden=yes")
+}
+
 /// Whether `passphrase` is one `wifi connect` takes: 8 to 63 characters on one line.
 pub fn passphrase_fits(passphrase: &str) -> bool {
     (SMALLEST_PASSPHRASE..=LARGEST_PASSPHRASE).contains(&passphrase.chars().count()) && !passphrase.contains('\n')
@@ -253,6 +273,7 @@ struct Row {
     detail_strong: bool,
     button: Button,
     needs_passphrase: bool,
+    nameless: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -279,6 +300,20 @@ struct Widgets {
     message: WidgetId,
     cancel: WidgetId,
     join: WidgetId,
+    other: RowWidgets,
+    lead: WidgetId,
+    name_field: WidgetId,
+    count: WidgetId,
+    security_label: WidgetId,
+    security: WidgetId,
+}
+
+/// Where the hidden-network form is open (D319): under `Join another network`, or under a
+/// heard nameless row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HiddenNote {
+    UnderOther,
+    UnderRow(usize),
 }
 
 /// What the section did with an input.
@@ -297,6 +332,7 @@ pub struct WifiSection {
     page: usize,
     rows: Vec<Row>,
     note: Option<usize>,
+    hidden_note: Option<HiddenNote>,
 }
 
 fn at(x: i32, y: i32) -> Place {
@@ -343,6 +379,19 @@ impl WifiSection {
         let message = add(Place::at(40, 0, Length::Px(192), Length::Content), Kind::label(LENGTH_RULE, Token::TextDim));
         let cancel = add(sized(248, 0, BUTTON.0, BUTTON.1), Kind::button("Cancel", false));
         let join = add(sized(352, 0, BUTTON.0, BUTTON.1), Kind::button("Join", true));
+        let other_panel = add_to(tree, pane, sized(PADDING, FIRST_ROW, ROW_WIDTH, ROW_HEIGHT), Kind::panel(Token::Menu));
+        let other = RowWidgets {
+            panel: other_panel,
+            name: add_to(tree, other_panel, sized(24, 10, 200, 16), Kind::label(OTHER_ROW_NAME, Token::Text)),
+            detail: add_to(tree, other_panel, Place::right(ROW_WIDTH - 320, 10), Kind::label(OTHER_ROW_DETAIL, Token::TextDim)),
+            button: add_to(tree, other_panel, sized(336, 4, BUTTON.0, BUTTON.1), Kind::button("Join", false)),
+        };
+        let mut add = |place: Place, kind: Kind| add_to(tree, pane, place, kind);
+        let lead = add(Place::at(40, 0, Length::Px(392), Length::Content), Kind::label(HIDDEN_LEAD, Token::TextDim));
+        let name_field = add(sized(40, 0, 288, BUTTON.1), Kind::text_field("Network name", Escape::Clear));
+        let count = add(at(344, 0), Kind::label("0 of 32 bytes", Token::TextDim));
+        let security_label = add(at(40, 0), Kind::label("Security", Token::Text));
+        let security = add(Place::at(96, 0, Length::Content, Length::Px(BUTTON.1)), Kind::radios(&SECURITY_LABELS, PROTECTED_CHOICE, true));
         let widgets = Widgets {
             title,
             value,
@@ -358,6 +407,12 @@ impl WifiSection {
             message,
             cancel,
             join,
+            other,
+            lead,
+            name_field,
+            count,
+            security_label,
+            security,
         };
         tree.set_person_only(field, true);
         let mut section = Self {
@@ -369,6 +424,7 @@ impl WifiSection {
             page: 0,
             rows: Vec::new(),
             note: None,
+            hidden_note: None,
         };
         section.lay_out(tree);
         section
@@ -399,6 +455,7 @@ impl WifiSection {
         if let Some(failed) = &status.failure {
             self.failure = Some(match failed.code.as_str() {
                 WRONG_PASSPHRASE => String::from(WRONG_PASSPHRASE_SENTENCE),
+                NOT_IN_RANGE if status.chosen_hidden => String::from(NOT_IN_RANGE_HIDDEN_SENTENCE),
                 _ => failed.words.clone(),
             });
         } else if !self.is_driver_progress(&status.state) {
@@ -407,8 +464,22 @@ impl WifiSection {
         let changed = status != self.status || chosen != self.chosen;
         self.status = status;
         self.chosen = chosen;
-        if changed && self.note.is_none() {
+        if changed && self.note.is_none() && self.hidden_note.is_none() {
             self.lay_out(tree);
+        }
+    }
+
+    fn listing(&self) -> bool {
+        !matches!(
+            self.status.state.as_str(),
+            "" | "no Intel Wi-Fi adapter" | "no Wi-Fi driver in this kernel" | "waiting for the file systems" | "waiting for the wifi-firmware component" | "starting the adapter"
+        ) && !self.status.radio_off
+    }
+
+    fn hidden_detail(&self, detail: &str) -> String {
+        match self.status.chosen_hidden {
+            true => alloc::format!("{HIDDEN_WORD}{DOT}{detail}"),
+            false => String::from(detail),
         }
     }
 
@@ -474,19 +545,20 @@ impl WifiSection {
                 Some(signal) => alloc::format!("Connected{DOT}{}", signal_words(signal)),
                 None => String::from("Connected"),
             };
+            let detail = match self.chosen.as_ref() == Some(name) {
+                true => self.hidden_detail(&detail),
+                false => detail,
+            };
             rows.push(Row {
                 name: name.clone(),
                 detail,
                 detail_strong: true,
                 button: if self.chosen.is_some() { Button::Forget } else { Button::Forgotten },
                 needs_passphrase: false,
+                nameless: false,
             });
         }
-        let listing = !matches!(
-            state,
-            "" | "no Intel Wi-Fi adapter" | "no Wi-Fi driver in this kernel" | "waiting for the file systems" | "waiting for the wifi-firmware component" | "starting the adapter"
-        ) && !self.status.radio_off;
-        if !listing {
+        if !self.listing() {
             return Vec::new();
         }
         if let Some(chosen) = self.chosen.as_ref().filter(|_| joined.is_none()) {
@@ -497,10 +569,11 @@ impl WifiSection {
             };
             rows.push(Row {
                 name: chosen.clone(),
-                detail: String::from(detail),
+                detail: self.hidden_detail(detail),
                 detail_strong: true,
                 button: Button::Forget,
                 needs_passphrase: false,
+                nameless: false,
             });
         }
         for heard in &self.status.networks {
@@ -515,11 +588,12 @@ impl WifiSection {
                 },
                 detail: alloc::format!("{}{DOT}{}", heard.security.words(), signal_words(heard.signal)),
                 detail_strong: false,
-                button: match heard.security.joinable() && !hidden {
+                button: match heard.security.joinable() {
                     true => Button::Join,
                     false => Button::CannotJoin,
                 },
                 needs_passphrase: matches!(heard.security, Security::Wpa2 | Security::Wpa3),
+                nameless: hidden,
             });
         }
         rows
@@ -556,7 +630,8 @@ impl WifiSection {
             };
             tree.set_text(row_widgets.button, words);
             tree.set_enabled(row_widgets.button, matches!(row.button, Button::Join | Button::Forget));
-            tree.set_shown(row_widgets.button, self.note != Some(index));
+            let under_hidden = self.hidden_note == Some(HiddenNote::UnderRow(index));
+            tree.set_shown(row_widgets.button, self.note != Some(index) && !under_hidden);
             cannot |= row.button == Button::CannotJoin;
             bottom = top + ROW_HEIGHT;
             top += ROW_PITCH;
@@ -564,6 +639,22 @@ impl WifiSection {
                 self.place_note(tree, bottom + 4);
                 bottom += NOTE_HEIGHT;
                 top += NOTE_HEIGHT;
+            }
+            if under_hidden {
+                self.place_hidden_note(tree, bottom + 4);
+                bottom += HIDDEN_NOTE_HEIGHT;
+                top += HIDDEN_NOTE_HEIGHT;
+            }
+        }
+        let listing = self.listing();
+        tree.set_shown(widgets.other.panel, listing);
+        if listing {
+            tree.set_place(widgets.other.panel, sized(PADDING, top, ROW_WIDTH, ROW_HEIGHT));
+            tree.set_shown(widgets.other.button, self.hidden_note != Some(HiddenNote::UnderOther));
+            bottom = top + ROW_HEIGHT;
+            if self.hidden_note == Some(HiddenNote::UnderOther) {
+                self.place_hidden_note(tree, bottom + 4);
+                bottom += HIDDEN_NOTE_HEIGHT;
             }
         }
         let connected = self.connected() && !self.rows.is_empty();
@@ -587,9 +678,124 @@ impl WifiSection {
             let reason_top = footer + 6 + if paged { 34 } else { 0 };
             tree.set_place(widgets.reason, Place::at(PADDING, reason_top, Length::Px(ROW_WIDTH), Length::Content));
         }
+        let any_note = self.note.is_some() || self.hidden_note.is_some();
         for id in [widgets.field, widgets.show, widgets.message, widgets.cancel, widgets.join] {
-            tree.set_shown(id, self.note.is_some());
+            tree.set_shown(id, any_note);
         }
+        for id in [widgets.lead, widgets.name_field, widgets.count, widgets.security_label, widgets.security] {
+            tree.set_shown(id, self.hidden_note.is_some());
+        }
+    }
+
+    fn place_hidden_note(&self, tree: &mut WidgetTree<CAPACITY>, top: i32) {
+        let widgets = self.widgets;
+        tree.set_place(widgets.lead, Place::at(40, top + 6, Length::Px(392), Length::Content));
+        tree.set_place(widgets.name_field, sized(40, top + 28, 288, BUTTON.1));
+        tree.set_place(widgets.count, at(344, top + 34));
+        tree.set_place(widgets.security_label, at(40, top + 70));
+        tree.set_place(widgets.security, Place::at(96, top + 64, Length::Content, Length::Px(BUTTON.1)));
+        tree.set_place(widgets.field, sized(40, top + 100, 288, BUTTON.1));
+        tree.set_place(widgets.show, at(344, top + 104));
+        tree.set_place(widgets.message, Place::at(40, top + 142, Length::Px(192), Length::Content));
+        tree.set_place(widgets.cancel, sized(248, top + 136, BUTTON.0, BUTTON.1));
+        tree.set_place(widgets.join, sized(352, top + 136, BUTTON.0, BUTTON.1));
+    }
+
+    fn security_choice(&self, tree: &WidgetTree<CAPACITY>) -> usize {
+        tree.selected(self.widgets.security).unwrap_or(PROTECTED_CHOICE)
+    }
+
+    fn hidden_resting_message(&self, tree: &mut WidgetTree<CAPACITY>) {
+        let name = tree.text_of(self.widgets.name_field).unwrap_or("");
+        let words = if name.starts_with(' ') || name.ends_with(' ') {
+            SPACE_RULE
+        } else if self.security_choice(tree) == OPEN_CHOICE {
+            OPEN_RULE
+        } else {
+            LENGTH_RULE
+        };
+        ink(tree, self.widgets.message, words, Token::TextDim);
+    }
+
+    fn show_name_count(&self, tree: &mut WidgetTree<CAPACITY>, strong: bool) {
+        let bytes = tree.text_of(self.widgets.name_field).map_or(0, str::len);
+        let words = alloc::format!("{bytes} of {MAX_NAME_BYTES} bytes");
+        ink(tree, self.widgets.count, &words, if strong { Token::Text } else { Token::TextDim });
+    }
+
+    fn set_security(&self, tree: &mut WidgetTree<CAPACITY>, choice: usize) {
+        tree.set_selected(self.widgets.security, choice);
+        let protected = choice != OPEN_CHOICE;
+        tree.set_enabled(self.widgets.field, protected);
+        tree.set_enabled(self.widgets.show, protected);
+        self.hidden_resting_message(tree);
+    }
+
+    fn open_hidden_note(&mut self, tree: &mut WidgetTree<CAPACITY>, at: HiddenNote, now_ms: u32) {
+        self.note = None;
+        self.hidden_note = Some(at);
+        let retry = match (at, &self.chosen) {
+            (HiddenNote::UnderOther, Some(chosen)) if self.status.chosen_hidden && !self.connected() => chosen.clone(),
+            _ => String::new(),
+        };
+        tree.set_text(self.widgets.name_field, &retry);
+        tree.set_text(self.widgets.field, "");
+        tree.change(self.widgets.show, |kind| {
+            if let Kind::Checkbox { checked, .. } = kind {
+                *checked = false;
+            }
+        });
+        set_masked(tree, self.widgets.field, true);
+        let choice = match at {
+            HiddenNote::UnderRow(row) if self.rows.get(row).is_some_and(|row| !row.needs_passphrase) => OPEN_CHOICE,
+            _ => PROTECTED_CHOICE,
+        };
+        self.set_security(tree, choice);
+        self.show_name_count(tree, false);
+        tree.set_default_button(self.widgets.join);
+        self.lay_out(tree);
+        tree.set_focus(Some(self.widgets.name_field), now_ms);
+    }
+
+    fn close_hidden_note(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) {
+        let at = self.hidden_note.take();
+        tree.set_text(self.widgets.field, "");
+        tree.set_text(self.widgets.name_field, "");
+        tree.set_enabled(self.widgets.field, true);
+        tree.set_enabled(self.widgets.show, true);
+        tree.set_default_button(self.default_button);
+        self.lay_out(tree);
+        let back = match at {
+            Some(HiddenNote::UnderRow(row)) => self.widgets.rows[row].button,
+            _ => self.widgets.other.button,
+        };
+        tree.set_focus(Some(back), now_ms);
+    }
+
+    fn join_from_hidden_note(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) -> Option<Request> {
+        let name = String::from(tree.text_of(self.widgets.name_field).unwrap_or(""));
+        if name.is_empty() || name.len() > MAX_NAME_BYTES {
+            ink(tree, self.widgets.message, NAME_RULE, Token::Text);
+            self.show_name_count(tree, true);
+            tree.set_focus(Some(self.widgets.name_field), now_ms);
+            return None;
+        }
+        let open = self.security_choice(tree) == OPEN_CHOICE;
+        let passphrase = match open {
+            true => String::new(),
+            false => String::from(tree.text_of(self.widgets.field).unwrap_or("")),
+        };
+        if !open && !passphrase_fits(&passphrase) {
+            ink(tree, self.widgets.message, LENGTH_RULE, Token::Text);
+            tree.set_focus(Some(self.widgets.field), now_ms);
+            return None;
+        }
+        let heard = self.status.networks.iter().any(|network| network.name == name);
+        Some(Request::WifiJoin {
+            name: Text::from(name.as_str()),
+            passphrase: Text::from(passphrase.as_str()),
+            hidden: !heard,
+        })
     }
 
     fn place_note(&self, tree: &mut WidgetTree<CAPACITY>, top: i32) {
@@ -637,6 +843,7 @@ impl WifiSection {
         Some(Request::WifiJoin {
             name: Text::from(name.as_str()),
             passphrase: Text::from(passphrase.as_str()),
+            hidden: false,
         })
     }
 
@@ -644,7 +851,10 @@ impl WifiSection {
     pub fn join_saved(&mut self, tree: &mut WidgetTree<CAPACITY>, saved: Result<(), &str>, now_ms: u32) {
         match saved {
             Ok(()) => {
-                self.close_note(tree, now_ms);
+                match self.hidden_note.is_some() {
+                    true => self.close_hidden_note(tree, now_ms),
+                    false => self.close_note(tree, now_ms),
+                }
                 tree.set_focus(Some(self.widgets.rows[0].button), now_ms);
             }
             Err(words) => ink(tree, self.widgets.message, &alloc::format!("Could not save: {words}."), Token::Text),
@@ -659,9 +869,54 @@ impl WifiSection {
     /// Acts on `response` when it is the section's.
     pub fn respond(&mut self, tree: &mut WidgetTree<CAPACITY>, response: Response, now_ms: u32) -> Reply {
         let widgets = self.widgets;
+        let in_note = |id: Option<WidgetId>| id.is_some_and(|id| [widgets.field, widgets.show, widgets.cancel, widgets.join].contains(&id));
+        let in_hidden_note = |id: Option<WidgetId>| {
+            in_note(id) || id.is_some_and(|id| [widgets.name_field, widgets.security].contains(&id))
+        };
+        if self.hidden_note.is_some() {
+            let request = match response {
+                Response::Activated(id) if id == widgets.cancel => {
+                    self.close_hidden_note(tree, now_ms);
+                    None
+                }
+                Response::Activated(id) if id == widgets.join => self.join_from_hidden_note(tree, now_ms),
+                Response::Chosen(id, choice) if id == widgets.security => {
+                    self.set_security(tree, choice);
+                    None
+                }
+                Response::Edited(id) if id == widgets.name_field => {
+                    self.show_name_count(tree, false);
+                    self.hidden_resting_message(tree);
+                    None
+                }
+                Response::Edited(id) if id == widgets.field => {
+                    self.hidden_resting_message(tree);
+                    None
+                }
+                Response::Toggled(id, checked) if id == widgets.show => {
+                    set_masked(tree, widgets.field, !checked);
+                    None
+                }
+                Response::Unused { code: key::ESC, .. } if in_hidden_note(tree.focus()) => {
+                    self.close_hidden_note(tree, now_ms);
+                    None
+                }
+                _ => return self.respond_outside_notes(tree, response, now_ms),
+            };
+            return Reply::Done(request);
+        }
+        self.respond_outside_notes(tree, response, now_ms)
+    }
+
+    fn respond_outside_notes(&mut self, tree: &mut WidgetTree<CAPACITY>, response: Response, now_ms: u32) -> Reply {
+        let widgets = self.widgets;
         let row_of = |id: WidgetId| widgets.rows.iter().position(|row| row.button == id);
         let in_note = |id: Option<WidgetId>| id.is_some_and(|id| [widgets.field, widgets.show, widgets.cancel, widgets.join].contains(&id));
         let request = match response {
+            Response::Activated(id) if id == widgets.other.button => {
+                self.open_hidden_note(tree, HiddenNote::UnderOther, now_ms);
+                None
+            }
             Response::Activated(id) if id == widgets.components => Some(Request::OpenComponents),
             Response::Activated(id) if id == widgets.more => {
                 let pages = self.all_rows().len().div_ceil(ROWS).max(1);
@@ -676,6 +931,10 @@ impl WifiSection {
                 };
                 match chosen.button {
                     Button::Forget => Some(Request::WifiForget),
+                    Button::Join if chosen.nameless => {
+                        self.open_hidden_note(tree, HiddenNote::UnderRow(row), now_ms);
+                        None
+                    }
                     Button::Join if chosen.needs_passphrase => {
                         self.open_note(tree, row, now_ms);
                         None
@@ -683,6 +942,7 @@ impl WifiSection {
                     Button::Join => Some(Request::WifiJoin {
                         name: Text::from(chosen.name.as_str()),
                         passphrase: Text::new(),
+                        hidden: false,
                     }),
                     _ => None,
                 }

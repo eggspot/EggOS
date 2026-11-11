@@ -349,10 +349,16 @@ const WIFI_TEXT_BYTES: usize = 16 * 1024;
 
 fn wifi_status() -> wifi_section::Status {
     let mut text = alloc::vec![0u8; WIFI_TEXT_BYTES];
-    match read_file(wifi_section::STATUS_PATH, &mut text) {
+    let mut status = match read_file(wifi_section::STATUS_PATH, &mut text) {
         Ok(length) => wifi_section::parse(core::str::from_utf8(&text[..length]).unwrap_or("")),
         Err(_) => wifi_section::Status::default(),
-    }
+    };
+    let mut settings = [0u8; 512];
+    status.chosen_hidden = read_file(wifi_section::SETTINGS_PATH, &mut settings)
+        .ok()
+        .and_then(|length| core::str::from_utf8(&settings[..length]).ok())
+        .is_some_and(wifi_section::chosen_hidden_in);
+    status
 }
 
 fn wifi_chosen() -> Option<alloc::string::String> {
@@ -1463,8 +1469,9 @@ impl Application<CAPACITY> for Settings {
             Some(Request::InstallComponent) => self.component_work = Some(ComponentWork::Install),
             Some(Request::RemoveComponent) => self.component_work = Some(ComponentWork::Remove),
             Some(Request::StartComponentJob) => self.start_component_job(),
-            Some(Request::WifiJoin { name, passphrase }) => {
-                let text = alloc::format!("ssid={}\npassphrase={}\n", name.as_str(), passphrase.as_str());
+            Some(Request::WifiJoin { name, passphrase, hidden }) => {
+                let marked = if hidden { "hidden=yes\n" } else { "" };
+                let text = alloc::format!("ssid={}\npassphrase={}\n{marked}", name.as_str(), passphrase.as_str());
                 let saved = write_file_with_mode(c"/var/lib/eggos/wifi.conf", WIFI_SETTINGS_MODE, text.as_bytes())
                     .map_err(|error| core::str::from_utf8(error.message()).unwrap_or("the file could not be written"));
                 self.window.wifi_join_saved(saved, now_ms);

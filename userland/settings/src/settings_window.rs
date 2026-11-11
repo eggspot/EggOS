@@ -490,6 +490,8 @@ pub enum Request {
     WifiJoin {
         name: Text<{ wifi_section::MAX_NAME_BYTES }>,
         passphrase: Text<{ wifi_section::MAX_PASSPHRASE_BYTES }>,
+        /// Mark it `hidden=yes`, so the driver asks for it by name (D298, D319).
+        hidden: bool,
     },
     /// Remove `/var/lib/eggos/wifi.conf`, as `wifi forget` does (D283).
     WifiForget,
