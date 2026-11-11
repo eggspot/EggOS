@@ -269,9 +269,16 @@ pub mod flags {
     /// The window takes the `Back` key and says when it did not use it (`BackUnused`), so
     /// the shell goes back past it (D305).
     pub const HANDLES_BACK: u32 = 16;
+    /// The window moves its own focus with the arrows, so a TV drives it by keys; without
+    /// it, a TV drives it with a pointer the arrows move (D309).
+    pub const FOCUS_NAVIGABLE: u32 = 32;
     /// Every flag there is.
-    pub const KNOWN: u32 =
-        FIXED_SIZE | TAKES_CTRL_KEYS | PERSON_INPUT_ONLY | PERSON_VIEW_ONLY | HANDLES_BACK;
+    pub const KNOWN: u32 = FIXED_SIZE
+        | TAKES_CTRL_KEYS
+        | PERSON_INPUT_ONLY
+        | PERSON_VIEW_ONLY
+        | HANDLES_BACK
+        | FOCUS_NAVIGABLE;
     /// The flags `ChangeFlags` may turn on or off on a live window.
     pub const CHANGEABLE: u32 = PERSON_VIEW_ONLY | HANDLES_BACK;
 }

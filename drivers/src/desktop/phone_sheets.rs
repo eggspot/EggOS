@@ -287,6 +287,10 @@ impl Desktop {
 
     /// Draws the open sheet over the home screen or the shown window.
     pub(super) fn draw_phone_overlays(&self, canvas: &mut Canvas<'_>, contents: &dyn Contents) {
+        if self.form == super::Form::Tv {
+            self.draw_pointer_menu(canvas);
+            return;
+        }
         if !self.touch_form() {
             return;
         }

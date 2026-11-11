@@ -20536,3 +20536,21 @@ the license, by an explicit instruction recorded here.
 - **Deviations.** The hold that turns the upward swipe into `Apps`, the swipe up on the shade
   and dragging a switcher card away wait for the touch path's timing.
 - **Not yet.** Building and running.
+
+## D309 M12: the TV's pointer mode for apps not driven by focus (docs/ux/adaptive-shell-tv-v0.5.md sections 5.3 and 5.4; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Toolkit windows are created with the new `FOCUS_NAVIGABLE` flag, which the
+  console terminal counts as having. On a TV, a shown window without it is driven in pointer
+  mode:
+  - the arrows move a pointer 8 px a press (the window gets each move), and OK clicks the
+    primary button there;
+  - `Back` sends Esc;
+  - Menu opens the pointer menu: `Right click`, `Scroll up` and `Scroll down` (three notches,
+    the menu staying open), `Send arrows to the app` (keys mode, whose row then reads
+    `Move the pointer with arrows`) and `Close app`.
+
+  Keys mode is per window.
+- **Deviations.** The pointer does not accelerate when the key is held (no key repeat
+  timing in the shell yet); the first-show notice, the pointer drawn while hidden in keys
+  mode, and holding OK to drag are not built.
+- **Not yet.** Building and running.

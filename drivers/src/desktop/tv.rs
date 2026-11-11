@@ -85,7 +85,8 @@ enum Menu {
 }
 
 /// The TV's own state: the focus, each row's remembered tile and scroll, the view's scroll,
-/// the open menu.
+/// the open menu; for apps driven by a pointer, its place, which windows are in keys mode and
+/// the pointer menu's row.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct TvState {
     focus: Focus,
@@ -94,7 +95,15 @@ pub(super) struct TvState {
     scroll: [usize; 3],
     view: usize,
     menu: Option<Menu>,
+    pointer: Option<(u32, u32)>,
+    keys_mode: u64,
+    pointer_menu: Option<usize>,
 }
+
+/// The pointer menu's rows (section 5.4).
+const POINTER_ROWS: usize = 5;
+const POINTER_STEP: u32 = 8;
+const SCROLL_NOTCHES: i32 = 3;
 
 impl Desktop {
     /// Whether windows fill the work area without chrome: the touch forms and the TV.
@@ -337,7 +346,13 @@ impl Desktop {
             self.tv.scroll = [0; 3];
             return Some(Action::None);
         }
-        if self.phone_shown_window().is_some() {
+        if let Some(slot) = self.phone_shown_window() {
+            let window = self.window_at(slot);
+            let pointer_app = window.flags & super::protocol::flags::FOCUS_NAVIGABLE == 0
+                && window.client != super::KERNEL_CLIENT;
+            if pointer_app {
+                return self.pointer_app_key(slot, code, damage, events);
+            }
             if code == key::BACK {
                 self.phone_back(damage, events);
                 return Some(Action::None);
@@ -398,6 +413,119 @@ impl Desktop {
             _ => return None,
         }
         Some(Action::None)
+    }
+
+    fn keys_mode(&self, slot: usize) -> bool {
+        self.tv.keys_mode & (1 << (slot % 64)) != 0
+    }
+
+    fn send_key_to(&mut self, slot: usize, code: u16, events: &mut dyn EventSink) {
+        for pressed in [1, 0] {
+            let record = super::protocol::EventRecord::new(super::protocol::event::KEY, 0, i32::from(code), pressed, 0, 0);
+            self.send(slot, record, events);
+        }
+    }
+
+    /// Key `code` while an app without `FOCUS_NAVIGABLE` is shown (section 5.3): arrows move
+    /// the pointer and OK clicks, unless keys mode passes them on; Back sends Esc; Menu opens
+    /// the pointer menu.
+    fn pointer_app_key(&mut self, slot: usize, code: u16, damage: &mut Damage, events: &mut dyn EventSink) -> Option<Action> {
+        if let Some(row) = self.tv.pointer_menu {
+            damage.add(self.screen());
+            return Some(self.pointer_menu_key(slot, row, code, damage, events));
+        }
+        let (x, y) = self.tv.pointer.unwrap_or((self.width / 2, self.height / 2));
+        let keys = self.keys_mode(slot);
+        match code {
+            key::BACK | key::ESC => {
+                self.send_key_to(slot, key::ESC, events);
+                Some(Action::None)
+            }
+            key::COMPOSE => {
+                self.tv.pointer_menu = Some(0);
+                damage.add(self.screen());
+                Some(Action::None)
+            }
+            key::UP | key::DOWN | key::LEFT | key::RIGHT if !keys => {
+                let (x, y) = match code {
+                    key::UP => (x, y.saturating_sub(POINTER_STEP)),
+                    key::DOWN => (x, (y + POINTER_STEP).min(self.height - 1)),
+                    key::LEFT => (x.saturating_sub(POINTER_STEP), y),
+                    _ => ((x + POINTER_STEP).min(self.width - 1), y),
+                };
+                self.tv.pointer = Some((x, y));
+                self.pointer_moved(x, y, damage, events);
+                Some(Action::None)
+            }
+            key::ENTER | key::KEYPAD_ENTER if !keys => {
+                self.pointer_moved(x, y, damage, events);
+                self.button(crate::input::button::LEFT, true, damage, events);
+                self.button(crate::input::button::LEFT, false, damage, events);
+                Some(Action::None)
+            }
+            _ => None,
+        }
+    }
+
+    fn pointer_menu_key(&mut self, slot: usize, row: usize, code: u16, damage: &mut Damage, events: &mut dyn EventSink) -> Action {
+        match code {
+            key::UP => self.tv.pointer_menu = Some(row.saturating_sub(1)),
+            key::DOWN => self.tv.pointer_menu = Some((row + 1).min(POINTER_ROWS - 1)),
+            key::ESC | key::BACK | key::COMPOSE => self.tv.pointer_menu = None,
+            key::ENTER | key::KEYPAD_ENTER => {
+                let (x, y) = self.tv.pointer.unwrap_or((self.width / 2, self.height / 2));
+                match row {
+                    0 => {
+                        self.tv.pointer_menu = None;
+                        self.pointer_moved(x, y, damage, events);
+                        self.button(crate::input::button::RIGHT, true, damage, events);
+                        self.button(crate::input::button::RIGHT, false, damage, events);
+                    }
+                    1 | 2 => {
+                        self.pointer_moved(x, y, damage, events);
+                        let notches = if row == 1 { SCROLL_NOTCHES } else { -SCROLL_NOTCHES };
+                        self.wheel(notches, events);
+                    }
+                    3 => {
+                        self.tv.pointer_menu = None;
+                        self.tv.keys_mode ^= 1 << (slot % 64);
+                    }
+                    _ => {
+                        self.tv.pointer_menu = None;
+                        self.request_close(slot, events);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// Draws the pointer menu over a pointer app (section 5.4).
+    pub(super) fn draw_pointer_menu(&self, canvas: &mut Canvas<'_>) {
+        let (Some(row), Some(slot)) = (self.tv.pointer_menu, self.phone_shown_window()) else {
+            return;
+        };
+        let arrows = match self.keys_mode(slot) {
+            true => "Move the pointer with arrows",
+            false => "Send arrows to the app",
+        };
+        let rows = ["Right click", "Scroll up", "Scroll down", arrows, "Close app"];
+        let height = MENU_ROW * rows.len() as u32 + 8;
+        let rect = Rect::new((self.width - MENU_WIDTH) / 2, (self.height - height) / 2, MENU_WIDTH, height);
+        canvas.shadow(rect);
+        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2), &paint::INSET_R6, true, true, colour::MENU);
+        for (index, label) in rows.iter().enumerate() {
+            let top = rect.y + 4 + MENU_ROW * index as u32;
+            if index == row {
+                let line = Rect::new(rect.x + 1, top, rect.width - 2, MENU_ROW);
+                canvas.fill(line, colour::FOCUS_RING);
+                canvas.fill(Rect::new(line.x + RING, line.y + RING, line.width - 2 * RING, line.height - 2 * RING), colour::SELECTION);
+                canvas.text(rect.x + 8, top + 8, ">", colour::TEXT);
+            }
+            canvas.text(rect.x + 24, top + 8, label, colour::TEXT);
+        }
     }
 
     fn focused_tile(&self, rows: &[(RowKind, Vec<TileKind>)]) -> Option<TileKind> {

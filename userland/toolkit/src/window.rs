@@ -38,6 +38,8 @@ const GET_FORM: usize = 0x800c_772c;
 const BACK_UNUSED: usize = 0x4004_772f;
 /// `Create`'s flag: the window takes `Back` and reports when it did not use it (D305).
 const HANDLES_BACK: u32 = 16;
+/// `Create`'s flag: the window moves its own focus with the arrows (D309).
+const FOCUS_NAVIGABLE: u32 = 32;
 const SET_FORM: usize = 0x4004_772d;
 const MENU_POOL: usize = 8;
 const CAPS_LOCK_FLAG: u32 = 1;
@@ -413,7 +415,7 @@ impl Window {
         let mut create = [0u8; 32];
         put(&mut create, 8, width * scale);
         put(&mut create, 12, height * scale);
-        put(&mut create, 16, flags | HANDLES_BACK);
+        put(&mut create, 16, flags | HANDLES_BACK | FOCUS_NAVIGABLE);
         server.ioctl(CREATE, &mut create)?;
         let offset = u64::from_ne_bytes(create[24..32].try_into().unwrap_or([0; 8])) as usize;
         let mut window = Self {

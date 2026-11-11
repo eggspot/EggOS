@@ -2476,7 +2476,7 @@ impl Desktop {
             .tooltip_area
             .is_some_and(|rect| rect.overlaps(&clip));
         let panels = self.layout.panels().any(|panel| panel.overlaps(&clip));
-        if self.phone_overlay_open() {
+        if self.phone_overlay_open() || self.form == form::Form::Tv {
             return None;
         }
         if (self.menu_open && self.menu_with_shadow().overlaps(&clip))
