@@ -850,7 +850,7 @@ yet" naming what it left.
   - part 17, Minesweeper (Swift on AppKit, D180's "Not yet"; `NSUserDefaults` and property
     lists written as XML, code written, unbuilt, D381; `NSScreen` and `NSTrackingArea`, code
     written, unbuilt, D382; `NSSound` from WAV data, silent until EggOS has audio, code written,
-    unbuilt, D383);
+    unbuilt, D383; `NSAttributedString`, code written, unbuilt, D384);
   - part 18, Files and the Text Editor grow up and one file picker `/bin/pick` (its design is
     done; the unbuilt picker is on the branch `wip/eggos-picker`);
   - part 19, drag and drop between windows;

@@ -14,6 +14,7 @@
 mod about;
 mod alert;
 mod application;
+mod attributed_string;
 mod control;
 mod cursor;
 mod drawing;
@@ -74,6 +75,8 @@ class_pairs! {
     NSSCREEN, NSSCREEN_META;
     NSTRACKINGAREA, NSTRACKINGAREA_META;
     NSSOUND, NSSOUND_META;
+    NSATTRIBUTEDSTRING, NSATTRIBUTEDSTRING_META;
+    NSMUTABLEATTRIBUTEDSTRING, NSMUTABLEATTRIBUTEDSTRING_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -191,6 +194,7 @@ pub fn set_up() -> bool {
             && screen::define(runtime)
             && tracking::define(runtime)
             && sound::define(runtime)
+            && attributed_string::define(runtime)
     });
     defined && drawing::set_up()
 }
@@ -253,6 +257,10 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSTrackingArea" => class(&NSTRACKINGAREA_META),
         b"_OBJC_CLASS_$_NSSound" => class(&NSSOUND),
         b"_OBJC_METACLASS_$_NSSound" => class(&NSSOUND_META),
+        b"_OBJC_CLASS_$_NSAttributedString" => class(&NSATTRIBUTEDSTRING),
+        b"_OBJC_METACLASS_$_NSAttributedString" => class(&NSATTRIBUTEDSTRING_META),
+        b"_OBJC_CLASS_$_NSMutableAttributedString" => class(&NSMUTABLEATTRIBUTEDSTRING),
+        b"_OBJC_METACLASS_$_NSMutableAttributedString" => class(&NSMUTABLEATTRIBUTEDSTRING_META),
         _ => application::resolve(name).or_else(|| drawing::resolve(name)),
     }
 }

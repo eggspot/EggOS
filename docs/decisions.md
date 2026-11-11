@@ -22542,3 +22542,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Playing through an audio device (none exists: an audio stack, its driver
   model, the server's mixing and a capability with its three front-ends need their own
   roadmap item); AIFF, MP3 and AAC; `sound:didFinishPlaying:`.
+
+## D384 NSAttributedString and NSMutableAttributedString (batch part 17, D180's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Foundation's and AppKit's documented behaviour)
+
+- **Decision.** An attributed string keeps its text (a private mutable copy) and runs that
+  cover it end to end in UTF-16 units, each with its own copied attribute dictionary.
+  `attributesAtIndex:effectiveRange:` and `attribute:atIndex:effectiveRange:` answer a run's
+  dictionary and range; the mutable class splits runs at a range's edges to
+  `setAttributes:range:`, `addAttribute:value:range:`, `addAttributes:range:` and
+  `removeAttribute:range:`, shifts and drops runs as `replaceCharactersInRange:withString:`
+  edits the text, and appends and replaces whole attributed strings. AppKit draws one
+  (`drawAtPoint:`, `drawInRect:`, `size`) run after run with each run's font and colour
+  through NSString's drawing (D147). `NSTextField`'s `attributedStringValue` and
+  `NSButton`'s `attributedTitle` take the plain text, as the layer's controls draw one
+  style. The classes live with AppKit, so a Foundation-only program does not find them yet.
+- **Not yet.** Attributes beyond font and colour (paragraph styles, underline, links),
+  `enumerateAttributesInRange:`, RTF and HTML import, archiving.
