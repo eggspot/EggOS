@@ -21484,3 +21484,27 @@ the license, by an explicit instruction recorded here.
   the queue (D289).
 - **Cost.** One `wrmsr` per entry on affected AMD CPUs, measured by the weekly performance pass
   (D122).
+
+## D333 Settings > Display gains a Rotation row (docs/ux/display-rotation-v0.5.md by Claude Fable; M12; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, design by Fable)
+
+- **Decision.** The desktop's GUI front-end of `display.rotation` (D330; D22's third face beside
+  `settings set` and `settings_set`), as Fable's brief draws it:
+  - **The row.** Between `Scale`'s status line and `Pointer`: the `Rotation` label at
+    (16, 236), a 160-wide dropdown (`Automatic`, `Upright`, `90° clockwise`, `Upside down`,
+    `90° counter-clockwise`, in `DISPLAY_ROTATIONS`' order), and its state line at (16, 276).
+    `Pointer` and `Layout` move down 80. The Display pane is 428 tall
+    (`DISPLAY_PANE_HEIGHT`), and the window's `CAPACITY` base rises by 3.
+  - **Choosing.** It asks for `Request::SetDisplayRotation`. The program saves, then sends
+    `SET_ROTATION`, and the pane says how both went (`display_rotation_saved`, the
+    section 3 lines: not allowed, not saved, saved but no memory, saved but not taken).
+  - **No revert countdown.** A turn never loses the screen, as the brief explains.
+  - **Search words.** Display's list gains `Rotation`, `Orientation`, `rotate`, `turn`,
+    `portrait`, `landscape`, `upside down` and `sideways`.
+- **Backend ask taken.** `SET_ROTATION` now fails with `ENOMEM` when the display has no memory
+  to turn (`terminal::RotationRefused`), instead of reporting success with the screen
+  unturned. `display::set_rotation` returns that error.
+- **Not yet** (the brief's other asks).
+  - `display.rotation_in_force` for the `Automatic` line.
+  - The phone, tablet and TV places of the row, and the keyboard jump letters.
+  - The desktop's resize keeping windows inside the new work area: it does what resolution
+    changes do today.

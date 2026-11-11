@@ -24,7 +24,14 @@ const SCROLLING: [&str; 2] = ["Traditional", "Natural"];
 
 const SCALE_HINT: &str = "Takes effect at the next restart";
 const RESOLUTION_WIDTH: i32 = 160;
-const LAYOUT_TOP: i32 = 276;
+const LAYOUT_TOP: i32 = 356;
+/// The Rotation row (docs/ux/display-rotation-v0.5.md, D333).
+const ROTATION_TOP: i32 = 236;
+const POINTER_TOP: i32 = 316;
+/// The Rotation dropdown's options, in `DISPLAY_ROTATIONS`' order.
+const ROTATION_OPTIONS: [&str; 5] = ["Automatic", "Upright", "90° clockwise", "Upside down", "90° counter-clockwise"];
+/// The Rotation dropdown's width.
+const ROTATION_WIDTH: i32 = 160;
 const LAYOUT_OPTIONS: [&str; 5] = ["Automatic", "Desktop", "Tablet", "Phone", "TV"];
 const AUTOMATIC: &str = "Automatic";
 /// The smallest screen the desktop is laid out for, which a size at 2x must not go under.
@@ -295,6 +302,8 @@ pub struct DisplayPane {
     resolution_status: WidgetId,
     scales: WidgetId,
     status: WidgetId,
+    rotation: WidgetId,
+    rotation_status: WidgetId,
 }
 
 impl DisplayPane {
@@ -325,11 +334,19 @@ impl DisplayPane {
             Kind::label(SCALE_HINT, Token::TextDim),
         );
         let status = label(tree, pane, PADDING, 196, "");
-        label(tree, pane, PADDING, 236, "Pointer");
+        label(tree, pane, PADDING, ROTATION_TOP, "Rotation");
+        let rotation = add(
+            tree,
+            pane,
+            from_right(PADDING, ROTATION_TOP - 6, ROTATION_WIDTH, CONTROL_HEIGHT),
+            Kind::dropdown("Rotation", &ROTATION_OPTIONS, 0),
+        );
+        let rotation_status = label(tree, pane, PADDING, ROTATION_TOP + 40, "");
+        label(tree, pane, PADDING, POINTER_TOP, "Pointer");
         add(
             tree,
             pane,
-            Place::right(PADDING, 236),
+            Place::right(PADDING, POINTER_TOP),
             Kind::label("Software", Token::Text),
         );
         label(tree, pane, PADDING, LAYOUT_TOP, "Layout");
@@ -348,6 +365,8 @@ impl DisplayPane {
             resolution_status,
             scales,
             status,
+            rotation,
+            rotation_status,
         };
         display.show(tree, facts);
         display
@@ -373,7 +392,41 @@ impl DisplayPane {
             false => Token::TextDim,
         };
         show_status(tree, self.status, Some((line.as_str(), ink)));
+        self.show_rotation(tree, facts);
         self.show_layout(tree, facts);
+    }
+
+    /// The Rotation row: the saved value and its state line (the design's section 3).
+    fn show_rotation(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts) {
+        tree.set_selected(self.rotation, facts.rotation.min(ROTATION_OPTIONS.len() - 1));
+        let line = match (facts.on_disk, facts.rotation) {
+            (false, _) => "No disk attached: the rotation lasts until power-off.",
+            (_, 0) => "Automatic follows the device's orientation; with no sensor it stays upright.",
+            (_, 1) => "The screen is upright.",
+            (_, 2) => "The screen is turned 90° clockwise.",
+            (_, 3) => "The screen is upside down.",
+            _ => "The screen is turned 90° counter-clockwise.",
+        };
+        show_status(tree, self.rotation_status, Some((line, Token::TextDim)));
+    }
+
+    /// How choosing a rotation went: saved, then applied (the design's section 3).
+    pub fn rotation_saved(
+        &self,
+        tree: &mut WidgetTree<CAPACITY>,
+        facts: &Facts,
+        saved: Result<(), Errno>,
+        applied: Result<(), Errno>,
+    ) {
+        self.show_rotation(tree, facts);
+        let refusal = match (saved, applied) {
+            (Err(Errno::EPERM | Errno::EACCES), _) => "Not allowed: this user may not turn the screen.",
+            (Err(_), _) => "No disk attached: the rotation could not be saved.",
+            (Ok(()), Err(Errno::ENOMEM)) => "Saved, but there is not enough memory to turn the screen now.",
+            (Ok(()), Err(_)) => "Saved for the next boot, but the window server did not take it.",
+            (Ok(()), Ok(())) => return,
+        };
+        show_status(tree, self.rotation_status, Some((refusal, Token::Text)));
     }
 
     fn show_layout(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts) {
@@ -471,6 +524,9 @@ impl DisplayPane {
             Response::Chosen(id, choice) if id == self.scales => {
                 let scale = if choice == 1 { 2 } else { 1 };
                 Reply::Done((scale != facts.scale).then_some(Request::SetDisplayScale(scale)))
+            }
+            Response::Chosen(id, choice) if id == self.rotation => {
+                Reply::Done((choice != facts.rotation).then_some(Request::SetDisplayRotation(choice)))
             }
             Response::Chosen(id, choice) if id == self.layout => {
                 Reply::Done((choice != facts.form_setting).then_some(Request::SetShellForm(choice)))

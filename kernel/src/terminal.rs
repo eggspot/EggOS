@@ -279,24 +279,33 @@ pub fn rotation_setting() -> u32 {
     u32::from(CHOSEN_ROTATION.load(Ordering::Relaxed))
 }
 
+/// Why `SET_ROTATION` refused (D330, D333).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RotationRefused {
+    NoSuchValue,
+    NoMemory,
+}
+
 /// Makes `display.rotation` the value numbered `index` in
 /// [`eggos_settings_file::DISPLAY_ROTATIONS`] and turns the screen at once: the display's
-/// picture, then the desktop at its new size; `false` for no such value.
-pub fn set_rotation_setting<P: Platform>(index: u32) -> bool {
+/// picture, then the desktop at its new size.
+pub fn set_rotation_setting<P: Platform>(index: u32) -> Result<(), RotationRefused> {
     if index as usize >= eggos_settings_file::DISPLAY_ROTATIONS.len() {
-        return false;
+        return Err(RotationRefused::NoSuchValue);
     }
     CHOSEN_ROTATION.store(index as u8, Ordering::Relaxed);
     let degrees = eggos_settings_file::rotation_degrees(index as usize);
-    let Some(rotation) = crate::display::Rotation::of_degrees(degrees) else {
-        return false;
-    };
-    if let Some(mode) = crate::display::set_rotation(rotation) {
-        with_windows::<P, _>(|desktop, _, damage, events| {
-            desktop.resize(mode.width, mode.height, damage, events);
-        });
+    let rotation = crate::display::Rotation::of_degrees(degrees).ok_or(RotationRefused::NoSuchValue)?;
+    match crate::display::set_rotation(rotation) {
+        Ok(Some(mode)) => {
+            with_windows::<P, _>(|desktop, _, damage, events| {
+                desktop.resize(mode.width, mode.height, damage, events);
+            });
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(_) => Err(RotationRefused::NoMemory),
     }
-    true
 }
 
 /// Sets `keyboard.on_screen` (D314): auto, always, never as 0 to 2, from the next frame on.
@@ -473,7 +482,7 @@ pub fn load_saved_settings<P: Platform>() {
         CHOSEN_ROTATION.store(index as u8, Ordering::Relaxed);
         let degrees = eggos_settings_file::rotation_degrees(index);
         if let Some(rotation) = crate::display::Rotation::of_degrees(degrees) {
-            crate::display::set_rotation(rotation);
+            let _ = crate::display::set_rotation(rotation);
         }
     }
     if let Some(mode) = eggos_settings_file::value(&file[..length], eggos_settings_file::KEYBOARD_ON_SCREEN)

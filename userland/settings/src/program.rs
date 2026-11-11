@@ -1387,6 +1387,16 @@ impl Application<CAPACITY> for Settings {
                     .map_or(0, |(in_use, _, _)| in_use as usize);
                 self.window.shell_form_saved(setting, in_use, applied);
             }
+            Some(Request::SetDisplayRotation(index)) => {
+                let name = settings_file::DISPLAY_ROTATIONS[index.min(4)];
+                let saved = save_through_a_temporary_file(settings_file::DISPLAY_ROTATION, name);
+                let applied = match (saved, self.server.as_ref()) {
+                    (Ok(()), Some(server)) => server.set_rotation(index as u32),
+                    (Ok(()), None) => Err(Errno::EIO),
+                    (Err(error), _) => Err(error),
+                };
+                self.window.display_rotation_saved(index, saved, applied);
+            }
             Some(Request::SetDisplayResolution(size)) => {
                 self.window
                     .display_resolution_saved(size, save_display_resolution(size));

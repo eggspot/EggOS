@@ -51,7 +51,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 204
+pub const CAPACITY: usize = 207
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
@@ -84,6 +84,8 @@ const SET_BUTTON: (i32, i32, i32, i32) = (352, 150, 96, 28);
 const STATUS_LINE: i32 = 196;
 const REMEDY_LINE: i32 = 216;
 const DATE_AND_TIME_PANE_HEIGHT: i32 = 408;
+/// The Display pane's height, its Rotation row included (docs/ux/display-rotation-v0.5.md).
+const DISPLAY_PANE_HEIGHT: i32 = 428;
 
 const LAYOUT_LIST: (i32, i32, i32, i32) = (16, 64, 208, 96);
 const LAYOUT_ROW: i32 = 24;
@@ -252,6 +254,14 @@ const PANE_WORDS: [&[&str]; 12] = [
         "zoom",
         "size of text",
         "restart",
+        "Rotation",
+        "Orientation",
+        "rotate",
+        "turn",
+        "portrait",
+        "landscape",
+        "upside down",
+        "sideways",
     ],
     &[
         "Layout",
@@ -534,6 +544,10 @@ pub enum Request {
     /// Save and apply `shell.form` as the setting numbered this in
     /// [`crate::facts::FORM_SETTINGS`] (D303).
     SetShellForm(usize),
+    /// Save, then apply, `display.rotation` as the value numbered this in
+    /// `DISPLAY_ROTATIONS`, then say how both went ([`SettingsWindow::display_rotation_saved`],
+    /// D333).
+    SetDisplayRotation(usize),
     /// Save this mouse or key preference, then apply it, then say how both went
     /// ([`SettingsWindow::input_changed`]) (D195).
     ChangeInput(InputChange),
@@ -854,6 +868,7 @@ impl SettingsWindow {
         let panes: [WidgetId; PANES.len()] = core::array::from_fn(|pane| match pane {
             ABOUT => build.pane(scroll, Length::Fill(0)),
             DATE_AND_TIME => build.pane(scroll, Length::Px(DATE_AND_TIME_PANE_HEIGHT)),
+            DISPLAY => build.pane(scroll, Length::Px(DISPLAY_PANE_HEIGHT)),
             _ => build.pane(scroll, Length::Px(PANE_HEIGHT)),
         });
         let profile = facts.profile.min(PROFILE_LABELS.len() - 1);
@@ -1291,6 +1306,15 @@ impl SettingsWindow {
         }
         self.facts.form_in_use = form_in_use;
         self.display.layout_saved(&mut self.tree, &self.facts, saved);
+    }
+
+    /// How setting `display.rotation` went ([`Request::SetDisplayRotation`]): saved, then
+    /// applied (D333).
+    pub fn display_rotation_saved(&mut self, index: usize, saved: Result<(), Errno>, applied: Result<(), Errno>) {
+        if saved.is_ok() {
+            self.facts.rotation = index;
+        }
+        self.display.rotation_saved(&mut self.tree, &self.facts, saved, applied);
     }
 
     /// How saving the display's size went ([`Request::SetDisplayResolution`]).

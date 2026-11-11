@@ -609,16 +609,21 @@ pub fn rotation() -> Rotation {
     }
 }
 
-/// Turns the display's picture ([`Display::set_rotation`]); the mode the desktop now draws at,
-/// or `None` without a display or memory, or when it already turned so.
-pub fn set_rotation(rotation: Rotation) -> Option<Mode> {
+/// Turns the display's picture ([`Display::set_rotation`]): the mode the desktop now draws at,
+/// `None` without a display or when it already turned so; an error without memory for it.
+pub fn set_rotation(rotation: Rotation) -> Result<Option<Mode>, &'static str> {
     let mut display = DISPLAY.lock();
-    let display = display.as_mut()?;
-    if display.rotation() == rotation || !display.set_rotation(rotation) {
-        return None;
+    let Some(display) = display.as_mut() else {
+        return Ok(None);
+    };
+    if display.rotation() == rotation {
+        return Ok(None);
+    }
+    if !display.set_rotation(rotation) {
+        return Err("no memory to turn the screen");
     }
     ROTATION.store(rotation as u8, core::sync::atomic::Ordering::Relaxed);
-    Some(display.mode())
+    Ok(Some(display.mode()))
 }
 
 /// Makes the display show at `scale` ([`Display::set_scale`]); whether it could.
