@@ -5,6 +5,7 @@
 
 pub mod abi;
 pub mod cache;
+pub mod cxx_types;
 pub mod lsda;
 pub mod selector;
 pub mod unwind_dwarf;
@@ -47,6 +48,8 @@ pub mod block;
 pub mod buffer;
 #[cfg(eggos_user)]
 pub mod class;
+#[cfg(eggos_user)]
+pub mod cxx_abi;
 #[cfg(eggos_user)]
 pub mod exception;
 #[cfg(eggos_user)]
@@ -156,6 +159,7 @@ mod runtime {
             .or_else(|| message::resolve(name))
             .or_else(|| autorelease::resolve(name))
             .or_else(|| exception::resolve(name))
+            .or_else(|| cxx_abi::resolve(name))
             .or_else(|| block::resolve(name))
             .or_else(|| weak::resolve(name))
     }

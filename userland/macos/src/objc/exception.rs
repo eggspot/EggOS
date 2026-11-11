@@ -170,6 +170,36 @@ pub struct Raised {
     handler_boundary: u64,
     rethrown: bool,
     next: *mut Raised,
+    cxx: CxxThrown,
+}
+
+/// What a C++ `throw` adds (D380): the thrown type's `type_info`, its destructor, how many
+/// handlers hold it and the address the matching `catch` receives. `type_info` 0 for an
+/// Objective-C exception.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct CxxThrown {
+    type_info: u64,
+    destructor: usize,
+    handlers: usize,
+    adjusted: u64,
+}
+
+impl CxxThrown {
+    const NONE: Self = Self {
+        type_info: 0,
+        destructor: 0,
+        handlers: 0,
+        adjusted: 0,
+    };
+}
+
+/// The bytes before a C++ exception's object: its record, rounded to 16.
+pub const CXX_HEADER: usize = core::mem::size_of::<Raised>().next_multiple_of(16);
+
+fn is_cxx(raised: *mut Raised) -> bool {
+    // SAFETY: a live exception record.
+    unsafe { (*raised).cxx.type_info != 0 }
 }
 
 #[repr(C)]
@@ -329,6 +359,9 @@ fn function_at(pc: u64) -> Lookup {
 fn catches(type_info: u64, raised: *mut Raised) -> bool {
     // SAFETY: a live exception record.
     let object = unsafe { (*raised).object };
+    if is_cxx(raised) {
+        return catches_cxx(type_info, raised);
+    }
     if type_info == 0 || type_info == &raw const OBJC_EHTYPE_ID as u64 {
         return true;
     }
@@ -341,6 +374,28 @@ fn catches(type_info: u64, raised: *mut Raised) -> bool {
         return false;
     }
     info.class.is_null() || root::is_kind_of(object, info.class)
+}
+
+fn is_objc_type(type_info: u64) -> bool {
+    type_info == &raw const OBJC_EHTYPE_ID as u64
+        || type_info == &raw const OBJC_EHTYPE_NSEXCEPTION as u64
+        || image_word(type_info) == Some(vtable_pointer() as u64)
+}
+
+fn catches_cxx(type_info: u64, raised: *mut Raised) -> bool {
+    if type_info != 0 && is_objc_type(type_info) {
+        return false;
+    }
+    // SAFETY: a live exception record.
+    let (thrown, object) = unsafe { ((*raised).cxx.type_info, (*raised).object as u64) };
+    match super::cxx_types::catches(type_info, thrown, object) {
+        Some(adjusted) => {
+            // SAFETY: as above.
+            unsafe { (*raised).cxx.adjusted = adjusted };
+            true
+        }
+        None => false,
+    }
 }
 
 fn landing(function: &Function, pc: u64, raised: *mut Raised) -> Found {
@@ -627,9 +682,125 @@ fn new_raised(object: Id) -> *mut Raised {
             handler_boundary: 0,
             rethrown: false,
             next: core::ptr::null_mut(),
+            cxx: CxxThrown::NONE,
         })
     };
     raised
+}
+
+/// `__cxa_allocate_exception`: room for a thrown object of `size` bytes, its record before
+/// it; the object's address, zeroed.
+pub extern "C" fn cxa_allocate_exception(size: usize) -> *mut u8 {
+    let block = heap::allocate(CXX_HEADER.saturating_add(size), true);
+    if block.is_null() {
+        crate::libsystem::write_error(b"libc++abi: out of memory throwing an exception\n");
+        crate::libsystem::abort()
+    }
+    block.wrapping_add(CXX_HEADER)
+}
+
+/// `__cxa_free_exception`: an exception allocated but never thrown.
+pub extern "C" fn cxa_free_exception(object: *mut u8) {
+    if !object.is_null() {
+        heap::release(object.wrapping_sub(CXX_HEADER));
+    }
+}
+
+fn record_of(object: *mut u8) -> *mut Raised {
+    object.wrapping_sub(CXX_HEADER).cast::<Raised>()
+}
+
+extern "C" fn cxa_throw(
+    object: *mut u8,
+    type_info: u64,
+    destructor: usize,
+    registers: *const Registers,
+) -> ! {
+    if object.is_null() || type_info == 0 {
+        crate::libsystem::abort()
+    }
+    let raised = record_of(object);
+    // SAFETY: `object` came from `cxa_allocate_exception`, which left room for the record.
+    unsafe {
+        raised.write(Raised {
+            object: object.cast(),
+            handler_frame: 0,
+            handler_boundary: 0,
+            rethrown: false,
+            next: core::ptr::null_mut(),
+            cxx: CxxThrown {
+                type_info,
+                destructor,
+                handlers: 0,
+                adjusted: object as u64,
+            },
+        })
+    };
+    // SAFETY: as in `throw_from`.
+    let start = unsafe { *registers };
+    raise(raised, start)
+}
+
+extern "C" fn cxa_rethrow(registers: *const Registers) -> ! {
+    let top = caught();
+    if top.is_null() {
+        crate::libsystem::write_error(b"libc++abi: terminating: rethrow with no exception\n");
+        crate::libsystem::abort()
+    }
+    // SAFETY: the record of the exception the innermost handler is handling.
+    unsafe { (*top).rethrown = true };
+    // SAFETY: as in `throw_from`.
+    let start = unsafe { *registers };
+    raise(top, start)
+}
+
+extern "C" fn cxa_begin_catch(raised: *mut Raised) -> *mut u8 {
+    if raised.is_null() {
+        return core::ptr::null_mut();
+    }
+    let object = begin_catch(raised);
+    match is_cxx(raised) {
+        true => {
+            // SAFETY: a record a landing pad got from the unwinder.
+            unsafe { (*raised).cxx.handlers += 1 };
+            // SAFETY: as above.
+            unsafe { (*raised).cxx.adjusted as *mut u8 }
+        }
+        false => object.cast(),
+    }
+}
+
+extern "C" fn cxa_get_exception_ptr(raised: *mut Raised) -> *mut u8 {
+    if raised.is_null() {
+        return core::ptr::null_mut();
+    }
+    match is_cxx(raised) {
+        // SAFETY: as above.
+        true => unsafe { (*raised).cxx.adjusted as *mut u8 },
+        // SAFETY: as above.
+        false => unsafe { (*raised).object.cast() },
+    }
+}
+
+extern "C" fn cxa_current_exception_type() -> u64 {
+    let top = caught();
+    match top.is_null() {
+        true => 0,
+        // SAFETY: the record of the exception the innermost handler is handling.
+        false => unsafe { (*top).cxx.type_info },
+    }
+}
+
+fn destroy_cxx(raised: *mut Raised) {
+    // SAFETY: a C++ exception's record no handler holds any more.
+    let (object, destructor) = unsafe { ((*raised).object, (*raised).cxx.destructor) };
+    if destructor != 0 {
+        let destructor = crate::callback::native_callable(destructor);
+        // SAFETY: the destructor the program's `throw` gave for the thrown object's type.
+        let destructor: extern "C" fn(Id) = unsafe { core::mem::transmute(destructor) };
+        destructor(object);
+    }
+    heap::release(raised.cast());
 }
 
 /// Throws `object` from the frame whose registers an exception stub saved at `registers`.
@@ -721,6 +892,21 @@ extern "C" fn end_catch() {
     let rethrown = unsafe { (*top).rethrown };
     // SAFETY: as above.
     let object = unsafe { (*top).object };
+    if is_cxx(top) {
+        // SAFETY: as above.
+        let handlers = unsafe {
+            (*top).cxx.handlers = (*top).cxx.handlers.saturating_sub(1);
+            (*top).cxx.handlers
+        };
+        if handlers > 0 {
+            return;
+        }
+        set_caught(next);
+        if !rethrown {
+            destroy_cxx(top);
+        }
+        return;
+    }
     set_caught(next);
     if !rethrown {
         objc_autorelease(object);
@@ -738,8 +924,12 @@ impl Caught {
         raise(self.0, frame::layer_start(current_stack()))
     }
 
-    /// Ends it: the object thrown, autoreleased.
+    /// Ends it: the object thrown, autoreleased; nil for a C++ exception, which is destroyed.
     pub fn finish(self) -> Id {
+        if is_cxx(self.0) {
+            destroy_cxx(self.0);
+            return core::ptr::null_mut();
+        }
         // SAFETY: a record the unwinder handed to the boundary, owned by it now.
         let object = unsafe { (*self.0).object };
         objc_autorelease(object);
@@ -770,6 +960,11 @@ pub fn catching(mut work: &mut dyn FnMut()) -> Option<Caught> {
 }
 
 fn report_uncaught(raised: *mut Raised) -> ! {
+    if is_cxx(raised) {
+        // SAFETY: a live exception record.
+        let type_info = unsafe { (*raised).cxx.type_info };
+        super::cxx_abi::terminate_uncaught(type_info);
+    }
     // SAFETY: a live exception record.
     report_uncaught_object(unsafe { (*raised).object })
 }
@@ -876,6 +1071,8 @@ pub(crate) use capture;
 capture!(eggos_objc_exception_throw => throw, "x1", "rsi");
 capture!(eggos_objc_exception_rethrow => rethrow, "x1", "rsi");
 capture!(eggos_unwind_resume => resume, "x1", "rsi");
+capture!(eggos_cxa_throw => cxa_throw, "x3", "rcx");
+capture!(eggos_cxa_rethrow => cxa_rethrow, "x0", "rdi");
 
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
@@ -1099,6 +1296,15 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_objc_ehtype_vtable" => &raw const EHTYPE_VTABLE as usize,
         b"_OBJC_EHTYPE_id" => &raw const OBJC_EHTYPE_ID as usize,
         b"_OBJC_EHTYPE_$_NSException" => &raw const OBJC_EHTYPE_NSEXCEPTION as usize,
+        b"___cxa_allocate_exception" => cxa_allocate_exception as *const () as usize,
+        b"___cxa_free_exception" => cxa_free_exception as *const () as usize,
+        b"___cxa_throw" => eggos_cxa_throw as *const () as usize,
+        b"___cxa_rethrow" => eggos_cxa_rethrow as *const () as usize,
+        b"___cxa_begin_catch" => cxa_begin_catch as *const () as usize,
+        b"___cxa_end_catch" => end_catch as *const () as usize,
+        b"___cxa_get_exception_ptr" => cxa_get_exception_ptr as *const () as usize,
+        b"___cxa_current_exception_type" => cxa_current_exception_type as *const () as usize,
+        b"___gxx_personality_v0" => personality as *const () as usize,
         _ => return None,
     };
     Some(address as u64)

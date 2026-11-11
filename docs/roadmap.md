@@ -880,7 +880,8 @@ yet" naming what it left.
     panel's icon and credits, code written, unbuilt, D375; raising instead of re-creating,
     code written, unbuilt, D376; the alert's element tree, code written, unbuilt, D377; scroll views and tables for
     agents, code written, unbuilt, D378);
-  - part 16's rest: C++ exceptions on macOS and UDCalc (D234);
+  - part 16's rest: UDCalc and a C++ test program on macOS (D234; C++ exceptions and the
+    libc++abi basics, code written, unbuilt, D380);
   - part 6's screendump checks, part 7's indicator check and part 9's wheel and list-item
     checks in QEMU (D224, D225, D227);
   - the desktop and built-in apps as components (D235, parts 65 and 66).

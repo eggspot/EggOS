@@ -22454,3 +22454,36 @@ the license, by an explicit instruction recorded here.
   (`encode_rgba_png`), and archives it as `mac-views.zip`.
 - **Not yet.** Section 18.2's host renders (`mac_views.rs`) and 18.3's QEMU steps, and
   `NSImage` reading the bundle's `.icns` (D374's "Not yet").
+
+## D380 C++ exceptions on macOS and the libc++abi basics (batch part 16's rest, D234's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the Itanium C++ ABI's exception handling and RTTI layouts that macOS uses)
+
+- **Decision.**
+  - **One unwinder for both languages.** A C++ exception is the same record D175's unwinder
+    already walks (`Raised`), placed in the 16-byte-rounded header in front of the object
+    `__cxa_allocate_exception` returns, with the thrown `type_info`, the destructor, a count
+    of the handlers holding it and the address the matching `catch` receives. `__cxa_throw`
+    and `__cxa_rethrow` are register-capturing entries like `objc_exception_throw`; the
+    search and cleanup phases, the LSDA reading and `_Unwind_Resume` are shared; the layer
+    still reads every LSDA itself, so `__gxx_personality_v0` is only a symbol to bind.
+  - **Matching** (`objc/cxx_types.rs`, host-tested): `catch (...)` takes everything; a type
+    takes itself (same record, or same mangled name, the non-unique bit masked); a class
+    takes a derived class through `__si_class_type_info` and the public bases of
+    `__vmi_class_type_info` (virtual bases through the object's vtable), the handler getting
+    the adjusted address; a pointer type takes a pointer whose qualifiers it has, of the same
+    or a derived pointee, or `void`. An Objective-C `@catch` never takes a C++ exception, and
+    a C++ `catch` of a type never takes an Objective-C one (`catch (...)` takes both).
+  - **Handlers.** `__cxa_begin_catch` answers the adjusted object, `__cxa_end_catch` destroys
+    the object and frees it when the last handler ends and it was not rethrown;
+    `__cxa_get_exception_ptr`, `__cxa_current_exception_type`, `__cxa_free_exception`. AppKit's
+    run-loop boundary destroys a C++ exception it takes. Uncaught, the program ends with
+    libc++abi's line and the type's name.
+  - **libc++abi basics** (`objc/cxx_abi.rs`): `operator new` and `delete` (plain, sized,
+    aligned, `nothrow`; a failing `new` throws `std::bad_alloc`), static locals' guards,
+    `__cxa_atexit` (run at `exit`, last first), pure and deleted virtual calls,
+    `std::terminate`, `std::exception` and `std::bad_alloc` (vtables, type information,
+    constructors, destructors, `what`), the five `type_info` vtables and the fundamental
+    types' and `const char *`'s records.
+- **Not yet.** `std::exception_ptr` and `std::rethrow_exception`, `dynamic_cast`
+  (`__dynamic_cast`), the rest of libc++ (`std::runtime_error` and the other standard
+  exceptions, strings, streams), foreign-exception interop with Swift, a C++ test program in
+  CI's macOS programs, and UDCalc with its Sparkle framework.
