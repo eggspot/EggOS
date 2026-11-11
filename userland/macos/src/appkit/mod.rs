@@ -26,6 +26,7 @@ mod pasteboard;
 mod screen;
 mod scroll_view;
 mod server;
+mod sound;
 mod table_view;
 mod tracking;
 mod view;
@@ -72,6 +73,7 @@ class_pairs! {
     NSIMAGEVIEW, NSIMAGEVIEW_META;
     NSSCREEN, NSSCREEN_META;
     NSTRACKINGAREA, NSTRACKINGAREA_META;
+    NSSOUND, NSSOUND_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -188,6 +190,7 @@ pub fn set_up() -> bool {
             && image::define(runtime)
             && screen::define(runtime)
             && tracking::define(runtime)
+            && sound::define(runtime)
     });
     defined && drawing::set_up()
 }
@@ -248,6 +251,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSScreen" => class(&NSSCREEN_META),
         b"_OBJC_CLASS_$_NSTrackingArea" => class(&NSTRACKINGAREA),
         b"_OBJC_METACLASS_$_NSTrackingArea" => class(&NSTRACKINGAREA_META),
+        b"_OBJC_CLASS_$_NSSound" => class(&NSSOUND),
+        b"_OBJC_METACLASS_$_NSSound" => class(&NSSOUND_META),
         _ => application::resolve(name).or_else(|| drawing::resolve(name)),
     }
 }

@@ -22528,3 +22528,17 @@ the license, by an explicit instruction recorded here.
     are accepted; areas act while their window takes the pointer.
 - **Not yet.** Cursor updates through areas (`NSTrackingCursorUpdate`), enter and exit
     while dragging, `NSEvent`'s `trackingArea` and `userData`, more than one screen.
+
+## D383 AppKit's NSSound from WAV data, silent until EggOS has an audio device (batch part 17, D180's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, researched: EggOS has no audio driver or audio API yet, and no roadmap item names one)
+
+- **Decision.** `NSSound` reads WAV data (RIFF `WAVE`, PCM, float or extensible samples, 1 to
+  8 channels, 8 to 32 bits; `eggos-macos-gui`'s `sound`, host-tested) from memory
+  (`initWithData:`), a file or URL, or a name in the bundle's resources (`soundNamed:`, with
+  `.wav` and `.wave` tried), keeps the bytes and answers `duration`, `volume`, `loops`,
+  `name` and `delegate` as macOS does. With no audio device in EggOS, `play` answers NO
+  (macOS's answer for a sound that could not start), `isPlaying` is NO and nothing is heard;
+  an app such as Minesweeper that plays its effects carries on without them. Data that is
+  not a WAV this reads makes the initializer answer nil, as macOS does for undecodable data.
+- **Not yet.** Playing through an audio device (none exists: an audio stack, its driver
+  model, the server's mixing and a capability with its three front-ends need their own
+  roadmap item); AIFF, MP3 and AAC; `sound:didFinishPlaying:`.

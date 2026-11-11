@@ -288,6 +288,11 @@ mod runtime {
         notification::notification(constants::string(name), object, core::ptr::null_mut())
     }
 
+    /// The bytes of the data object `object`.
+    pub fn data_bytes(object: Id) -> &'static [u8] {
+        data::bytes_of(object)
+    }
+
     /// A new autoreleased notification named `name` (a string) about `object`.
     pub fn notification_with_name(name: Id, object: Id) -> Id {
         notification::notification(name, object, core::ptr::null_mut())
