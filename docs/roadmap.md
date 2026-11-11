@@ -852,7 +852,8 @@ yet" naming what it left.
     written, unbuilt, D382; `NSSound` from WAV data, silent until EggOS has audio, code written,
     unbuilt, D383; `NSAttributedString`, code written, unbuilt, D384; `NSGridView`, code
     written, unbuilt, D385; CoreGraphics drawing behind `NSGraphicsContext`, code written,
-    unbuilt, D386);
+    unbuilt, D386; Swift subclasses of AppKit's classes laid out at run time, code written,
+    unbuilt, D387);
   - part 18, Files and the Text Editor grow up and one file picker `/bin/pick` (its design is
     done; the unbuilt picker is on the branch `wip/eggos-picker`);
   - part 19, drag and drop between windows;

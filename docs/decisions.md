@@ -22602,3 +22602,22 @@ the license, by an explicit instruction recorded here.
   fills (a colour is opaque or invisible, as the layer's other drawing), images
   (`CGContextDrawImage`), text through CoreText, gradients and shadows, and `CGPath`
   objects.
+
+## D387 Swift subclasses of the layer's AppKit classes, laid out at run time (batch part 17, D180's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Swift's class metadata ABI)
+
+- **Context.** A Swift class that inherits from an Objective-C class whose size the compiler
+  cannot fix (Apple's AppKit classes, and the layer's own, which are not Apple's size) is
+  finished at run time: its metadata accessor calls `swift_initClassMetadata2` or
+  `swift_updateClassMetadata2` with its fields' type layouts and the field offset vector to
+  fill. The Objective-C runtime's ivar sliding (D175) already moves statically laid out
+  classes; these two entry points were missing.
+- **Decision.** Both lay the class's stored properties out from its superclass's instance
+  size as the layer's runtime has it (realizing the superclass; a Swift superclass's own
+  metadata otherwise), each field at its type's alignment (`field_layout`, host-tested),
+  write the offsets into the field offset vector, the metadata's instance size and
+  alignment mask, and the class's `class_ro_t` (`instanceStart`, `instanceSize`) and ivar
+  offset variables, then realize the class in the Objective-C runtime and answer that the
+  metadata is complete. `swift_getInitializedObjCClass` realizes a class and answers it.
+- **Not yet.** Resilient class stubs (`swift_getObjCClassFromObject` for classes from other
+  modules), generic classes' metadata instantiation (`swift_allocateGenericClassMetadata`),
+  and Swift's `@objc` property accessors through key-value coding.

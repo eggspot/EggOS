@@ -11,6 +11,7 @@
 pub mod case_mapping;
 pub mod conformance_layout;
 pub mod enum_tag;
+pub mod field_layout;
 pub mod grapheme;
 pub mod hash_table;
 pub mod hasher;
@@ -22,6 +23,8 @@ pub mod string_object;
 
 #[cfg(eggos_user)]
 mod cast;
+#[cfg(eggos_user)]
+mod class_metadata;
 #[cfg(eggos_user)]
 mod characters;
 #[cfg(eggos_user)]
@@ -113,6 +116,7 @@ mod runtime {
             .or_else(|| failures::resolve(name))
             .or_else(|| type_name::resolve(name))
             .or_else(|| overlays::resolve(name))
+            .or_else(|| class_metadata::resolve(name))
     }
 
     fn report(prefix: &[u8], parts: &[&[u8]]) {
