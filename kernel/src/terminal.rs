@@ -1312,6 +1312,17 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
         }
         Some(Action::OpenSettingsPane(pane)) => open_settings_pane::<P>(pane),
         Some(Action::ToggleStickyKeys) => toggle_sticky_keys::<P>(),
+        Some(Action::SetSetting { key, value }) => {
+            let command = SCREEN
+                .lock()
+                .as_ref()
+                .and_then(|screen| screen.desktop.as_ref()?.setting_command(key, value));
+            if let Some(command) = command
+                && crate::apps::start_program(command.as_bytes()).is_err()
+            {
+                launch_failed::<P>();
+            }
+        }
         Some(Action::None) | None => {}
     }
     if drawn.is_some_and(|asked| asked.catalogue) {

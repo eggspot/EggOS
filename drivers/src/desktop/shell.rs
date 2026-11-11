@@ -767,6 +767,11 @@ impl Desktop {
         self.catalogue.settings_pane(pane.name())
     }
 
+    /// What [`Action::SetSetting`] starts: `settings set <key> <value>` (D305).
+    pub fn setting_command(&self, key: &str, value: &str) -> Option<super::Command> {
+        self.catalogue.settings_set(key, value)
+    }
+
     /// What [`Action::ToggleStickyKeys`] starts to turn sticky keys `on` or off: `settings set
     /// accessibility.sticky_keys true|false`, so the pane, the CLI and the next boot agree.
     pub fn sticky_keys_command(&self, on: bool) -> Option<super::Command> {

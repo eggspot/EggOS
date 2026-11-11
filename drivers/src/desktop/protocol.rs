@@ -91,6 +91,7 @@ pub mod size {
     pub const GET_FORM: usize = 12;
     pub const SET_FORM: usize = 4;
     pub const SHELL_NAVIGATE: usize = 4;
+    pub const BACK_UNUSED: usize = 4;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -146,6 +147,7 @@ pub mod request {
     pub const GET_FORM: u32 = encode(READ, 44, size::GET_FORM);
     pub const SET_FORM: u32 = encode(WRITE, 45, size::SET_FORM);
     pub const SHELL_NAVIGATE: u32 = encode(WRITE, 46, size::SHELL_NAVIGATE);
+    pub const BACK_UNUSED: u32 = encode(WRITE, 47, size::BACK_UNUSED);
 }
 
 /// `GET_FORM`'s reply (D303): the form in use, the setting and the input kinds, one word each.
@@ -264,10 +266,14 @@ pub mod flags {
     /// The window's pixels are for the person's eyes only: `CaptureWindow` of it is refused
     /// with `PersonViewOnly` (a pairing code on screen, D193).
     pub const PERSON_VIEW_ONLY: u32 = 8;
+    /// The window takes the `Back` key and says when it did not use it (`BackUnused`), so
+    /// the shell goes back past it (D305).
+    pub const HANDLES_BACK: u32 = 16;
     /// Every flag there is.
-    pub const KNOWN: u32 = FIXED_SIZE | TAKES_CTRL_KEYS | PERSON_INPUT_ONLY | PERSON_VIEW_ONLY;
+    pub const KNOWN: u32 =
+        FIXED_SIZE | TAKES_CTRL_KEYS | PERSON_INPUT_ONLY | PERSON_VIEW_ONLY | HANDLES_BACK;
     /// The flags `ChangeFlags` may turn on or off on a live window.
-    pub const CHANGEABLE: u32 = PERSON_VIEW_ONLY;
+    pub const CHANGEABLE: u32 = PERSON_VIEW_ONLY | HANDLES_BACK;
 }
 
 /// The kinds of event records.
@@ -508,6 +514,9 @@ pub enum Request {
     ShellNavigate {
         to: u32,
     },
+    BackUnused {
+        window: u32,
+    },
     AppsChanged,
     OpenApp {
         length: u32,
@@ -681,6 +690,7 @@ impl Request {
             request::GET_FORM => size::GET_FORM,
             request::SET_FORM => size::SET_FORM,
             request::SHELL_NAVIGATE => size::SHELL_NAVIGATE,
+            request::BACK_UNUSED => size::BACK_UNUSED,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::GET_LAUNCH => size::GET_LAUNCH,
@@ -790,6 +800,7 @@ impl Request {
             request::GET_FORM => Self::GetForm,
             request::SET_FORM => Self::SetForm { setting: at(0) },
             request::SHELL_NAVIGATE => Self::ShellNavigate { to: at(0) },
+            request::BACK_UNUSED => Self::BackUnused { window: at(0) },
             request::SET_REDUCE_MOTION => Self::SetReduceMotion { reduce: at(0) },
             request::APPS_CHANGED => Self::AppsChanged,
             request::OPEN_APP => {

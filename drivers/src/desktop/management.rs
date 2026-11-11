@@ -275,6 +275,7 @@ impl Desktop {
     /// `PaletteChanged`, with whether motion is reduced (D224), and the whole screen is drawn
     /// again.
     pub fn set_palette(&mut self, index: u32, damage: &mut Damage, events: &mut dyn EventSink) {
+        self.palette = index;
         let reduce = i32::from(self.reduce_motion);
         for slot in 0..self.windows.len() {
             if self.windows[slot].is_some() {

@@ -20441,3 +20441,29 @@ the license, by an explicit instruction recorded here.
 - **Not yet (part 2).** XIVE for device interrupts, console input through OPAL events and
   wake-ups between cores beyond what doorbells reach; PCI host bridges (PHB4) from the device
   tree; building and running.
+
+## D305 M12 adaptive shell, slice 2: the phone's switcher, shade and `Back` for apps (docs/ux/adaptive-shell-v0.5.md sections 2.5 to 2.7; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - **Switcher.** `Apps` (and its glyph, now drawn) opens the switcher: one column of cards,
+    most recently focused first, each the window scaled to 156x300 from its buffer, its title
+    and a 44 px `Close` target. `Close all` sits under the last card, and `No open apps.`
+    shows when there are none. The wheel scrolls the cards.
+  - **Shade.** The status bar opens the shade:
+    - the `Network`, `Dark theme`, `High contrast` and `Rotation` tiles, each a setting (the
+      two themes through a new `Action::SetSetting`, which runs `settings set` as the
+      sticky-keys shortcut does), on tiles marked by fill, an accent mark and their word;
+    - `Settings`, and `Power` with its `Power off` and `Restart` sheet;
+    - the last four notices with `Clear`.
+
+    `Back`, the bar or a press below the sheet closes it.
+  - **`Back` for apps.** Every toolkit window is created with the new `HANDLES_BACK` flag.
+    `Back` sends such a window the key `Back` (158); the toolkit treats it as Esc, then asks
+    the program (`Application::back`), and when neither used it tells the shell with the new
+    `BACK_UNUSED` request, and the shell minimises the window (rule 4 of section 2.6). A
+    window without the flag is minimised at once.
+  - The desktop keeps the palette index it was given, which the theme tiles read.
+- **Deviations.** `Rotation` reads `Locked` and does nothing until there is an orientation
+  sensor; the gestures, landscape, the touch path and the 44 px toolkit sizes wait for the
+  touch backend (asks 1 to 3); cards are not dragged sideways to close.
+- **Not yet.** Building and running; the deviations above.

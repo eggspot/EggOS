@@ -389,6 +389,12 @@ pub fn ioctl<P: Platform>(
                 return Err(Errno::EINVAL);
             }
         }
+        Request::BackUnused { window } => {
+            on_windows::<P, _>(|desktop, _, damage, events| {
+                desktop.back_unused(client, window, damage, events);
+                Ok::<(), WindowError>(())
+            })?;
+        }
         Request::ShellNavigate { to } => {
             if !crate::terminal::shell_navigate::<P>(to) {
                 return Err(Errno::EINVAL);

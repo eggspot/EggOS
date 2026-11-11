@@ -58,6 +58,12 @@ pub trait Application<const N: usize, const A: usize = 0> {
     /// pick up what changed outside the program meanwhile.
     fn focused(&mut self, _now_ms: u32) {}
 
+    /// `Back` reached the window and no widget used it as Esc: whether the program used it
+    /// (closed a pane of its own); if not, the shell goes back past the window (D305).
+    fn back(&mut self, _now_ms: u32) -> bool {
+        false
+    }
+
     /// Whether the window shows something for the person's eyes only now, such as a pairing
     /// code: while it does, no agent may capture its pixels (`PERSON_VIEW_ONLY`, D193).
     fn person_view_only(&self) -> bool {
@@ -196,6 +202,11 @@ pub trait View {
         true
     }
 
+    /// `Back` (D305): whether the view used it, as Esc first; `false` lets the shell go back.
+    fn back(&mut self, _time_ms: u32) -> bool {
+        false
+    }
+
     /// The window's new title, once after it changes.
     fn take_title(&mut self) -> Option<&str> {
         None
@@ -303,6 +314,23 @@ impl<P: Application<N, A>, const N: usize, const A: usize> View for Tree<'_, P, 
             self.0.focused(time_ms);
         }
         true
+    }
+
+    fn back(&mut self, time_ms: u32) -> bool {
+        let escape = Input::Key {
+            code: crate::input::key::ESC,
+            pressed: true,
+            modifiers: crate::input::Modifiers(0),
+            character: 0,
+        };
+        let response = self.0.tree().handle(escape, time_ms);
+        match response {
+            Response::Unused { code: crate::input::key::ESC, .. } | Response::Nothing => self.0.back(time_ms),
+            other => {
+                self.0.respond(other, time_ms);
+                true
+            }
+        }
     }
 
     fn take_damage(&mut self) -> Damage {
@@ -490,6 +518,11 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
                     let (width, height) = window.size();
                     view.resize((width / scale) as i32, (height / scale) as i32);
                     everything = true;
+                }
+                Input::Key { code: crate::input::key::BACK, pressed, .. } => {
+                    if pressed && !view.back(event.time_ms) {
+                        window.back_unused()?;
+                    }
                 }
                 other => {
                     if other == Input::FocusIn {

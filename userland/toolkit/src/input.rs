@@ -11,6 +11,8 @@ pub mod key {
     pub const C: u16 = 46;
     pub const V: u16 = 47;
     pub const ESC: u16 = 1;
+    /// The phone and TV forms' `Back` (D305): treated as Esc, then the shell's.
+    pub const BACK: u16 = 158;
     pub const BACKSPACE: u16 = 14;
     pub const TAB: u16 = 15;
     pub const ENTER: u16 = 28;

@@ -17,6 +17,7 @@
 mod agent;
 pub mod form;
 mod phone;
+mod phone_sheets;
 pub mod boot_screen;
 mod catalogue;
 mod desktop_icons;
@@ -267,6 +268,12 @@ pub enum Action {
     Type(AppId),
     /// Start the installer's window to uninstall the app ([`Catalogue::uninstall`]).
     Uninstall(AppId),
+    /// Save and apply a setting as `settings set <key> <value>` does: a tile of the phone's
+    /// shade (D305).
+    SetSetting {
+        key: &'static str,
+        value: &'static str,
+    },
     /// Start `app do --window` for one of the app's own actions, or all of them
     /// ([`Catalogue::app_do`], D301).
     AppDo(AppId, Option<u8>),
@@ -412,6 +419,7 @@ pub struct Desktop {
     current_desktop: u8,
     responsiveness: responsiveness::Responsiveness,
     reduce_motion: bool,
+    palette: u32,
 }
 
 impl Desktop {
@@ -511,6 +519,7 @@ impl Desktop {
             current_desktop: 0,
             responsiveness: responsiveness::Responsiveness::default(),
             reduce_motion: false,
+            palette: 0,
         };
         let content = (WINDOW_WIDTH - CHROME.0, WINDOW_HEIGHT - CHROME.1);
         let mut terminal = Window::new(
@@ -2413,6 +2422,7 @@ impl Desktop {
             }
         }
         self.draw_panels(&mut canvas);
+        self.draw_phone_overlays(&mut canvas, contents);
         self.draw_main_menu(&mut canvas);
         if self.menu_open {
             canvas.shadow(self.menu());
@@ -2451,6 +2461,9 @@ impl Desktop {
             .tooltip_area
             .is_some_and(|rect| rect.overlaps(&clip));
         let panels = self.layout.panels().any(|panel| panel.overlaps(&clip));
+        if self.phone_overlay_open() {
+            return None;
+        }
         if (self.menu_open && self.menu_with_shadow().overlaps(&clip))
             || self.keyboard_layout_menu_overlaps(clip)
             || self.popups_overlap(clip)

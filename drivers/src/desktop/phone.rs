@@ -66,6 +66,13 @@ pub(super) struct PhoneState {
     query_length: usize,
     search_focused: bool,
     pressed: Option<Target>,
+    pub(super) switcher: bool,
+    pub(super) switcher_scroll: u32,
+    pub(super) shade: bool,
+    pub(super) power_sheet: bool,
+    pub(super) notices: [&'static str; super::phone_sheets::NOTICES_KEPT],
+    pub(super) notice_count: usize,
+    awaiting_back: Option<u8>,
 }
 
 impl Default for PhoneState {
@@ -76,6 +83,13 @@ impl Default for PhoneState {
             query_length: 0,
             search_focused: false,
             pressed: None,
+            switcher: false,
+            switcher_scroll: 0,
+            shade: false,
+            power_sheet: false,
+            notices: [""; super::phone_sheets::NOTICES_KEPT],
+            notice_count: 0,
+            awaiting_back: None,
         }
     }
 }
@@ -104,7 +118,9 @@ impl Desktop {
         self.close_notice(damage);
         let leaving_phone = self.form == Form::Phone;
         self.form = form;
+        let notices = (self.phone.notices, self.phone.notice_count);
         self.phone = PhoneState::default();
+        (self.phone.notices, self.phone.notice_count) = notices;
         self.layout = layout_in_form(self.width, self.height, 1, self.profile, form);
         self.reset_panels();
         match form {
@@ -234,6 +250,9 @@ impl Desktop {
     /// `Home`: the shown window is minimised and the home screen shows; on the home screen the
     /// grid goes back to the top and the search empties (section 2.5, `wm home`).
     pub fn phone_home(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {
+        if self.close_phone_overlays() {
+            damage.add(self.screen());
+        }
         match self.phone_shown_window() {
             Some(slot) => self.minimise(slot, damage, events),
             None => {
@@ -250,11 +269,21 @@ impl Desktop {
     /// on the home screen with nothing open, does nothing. Returns whether it did something.
     pub fn phone_back(&mut self, damage: &mut Damage, events: &mut dyn EventSink) -> bool {
         damage.add(self.screen());
+        if self.close_phone_overlays() {
+            return true;
+        }
         if let Some(dialog) = self.phone_dialog() {
             self.request_close(dialog, events);
             return true;
         }
         if let Some(slot) = self.phone_shown_window() {
+            let handles_back = self.window_at(slot).flags & super::protocol::flags::HANDLES_BACK != 0;
+            if handles_back && self.phone.awaiting_back != Some(slot as u8) {
+                self.phone.awaiting_back = Some(slot as u8);
+                self.send_back_key(slot, events);
+                return true;
+            }
+            self.phone.awaiting_back = None;
             self.minimise(slot, damage, events);
             return true;
         }
@@ -271,7 +300,27 @@ impl Desktop {
 
     /// Whether `Back` would do something now, so its glyph is `text`, not `text.dim`.
     pub fn phone_can_go_back(&self) -> bool {
-        self.phone_shown_window().is_some() || self.phone.query_length > 0 || self.phone.search_focused
+        self.phone_overlay_open()
+            || self.phone_shown_window().is_some()
+            || self.phone.query_length > 0
+            || self.phone.search_focused
+    }
+
+    /// The shown window did not use the `Back` key it was sent (`BackUnused`, rule 4 of
+    /// section 2.6): the shell goes back past it, minimising it.
+    pub fn back_unused(&mut self, client: u16, window: u32, damage: &mut Damage, events: &mut dyn EventSink) {
+        let Ok(id) = super::WindowId::try_from(window) else {
+            return;
+        };
+        let Some(slot) = self.find(id).filter(|&slot| self.window_at(slot).client == client) else {
+            return;
+        };
+        if self.form != Form::Phone || self.phone.awaiting_back != Some(slot as u8) {
+            return;
+        }
+        self.phone.awaiting_back = None;
+        self.minimise(slot, damage, events);
+        damage.add(self.screen());
     }
 
     /// A press at (`x`, `y`) in the phone form: the shell's when it is on a bar, the home
@@ -285,7 +334,18 @@ impl Desktop {
     ) -> Option<Action> {
         if self.layout.status_bar.is_some_and(|bar| contains(bar, x, y)) {
             self.phone.pressed = Some(Target::StatusBar);
+            let open = !self.phone.shade;
+            self.close_phone_overlays();
+            self.phone.shade = open;
+            damage.add(self.screen());
             return Some(Action::None);
+        }
+        let on_bar = self.layout.navigation_bar.is_some_and(|bar| contains(bar, x, y));
+        if self.phone.shade && !on_bar {
+            return Some(self.shade_press(x, y, damage));
+        }
+        if self.phone.switcher && !on_bar {
+            return Some(self.switcher_press(x, y, damage, events));
         }
         if self.layout.navigation_bar.is_some_and(|bar| contains(bar, x, y)) {
             let zone = (0..NAVIGATION_ZONES).find(|&index| self.navigation_zone(index).is_some_and(|zone| contains(zone, x, y)))?;
@@ -301,7 +361,14 @@ impl Desktop {
                     self.phone.pressed = Some(Target::Home);
                     self.phone_home(damage, events);
                 }
-                _ => self.phone.pressed = Some(Target::Apps),
+                _ => {
+                    self.phone.pressed = Some(Target::Apps);
+                    let open = !self.phone.switcher;
+                    self.close_phone_overlays();
+                    self.phone.switcher = open;
+                    self.phone.switcher_scroll = 0;
+                    damage.add(self.screen());
+                }
             }
             return Some(Action::None);
         }
@@ -361,6 +428,9 @@ impl Desktop {
     /// A wheel turn on the phone's home grid scrolls it, not the bars; returns whether it
     /// did, so the wheel goes to a window otherwise.
     pub fn home_scroll(&mut self, notches: i32, damage: &mut Damage) -> bool {
+        if self.form == Form::Phone && self.switcher_scroll(notches, damage) {
+            return true;
+        }
         if self.form != Form::Phone || self.phone_shown_window().is_some() || self.phone.query_length > 0 {
             return false;
         }

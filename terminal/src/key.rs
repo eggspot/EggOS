@@ -51,5 +51,7 @@ pub const DELETE: u16 = 111;
 pub const LEFT_SUPER: u16 = 125;
 pub const RIGHT_SUPER: u16 = 126;
 pub const COMPOSE: u16 = 127;
+/// `KEY_BACK`: the phone and TV forms' `Back` (D303, D305).
+pub const BACK: u16 = 158;
 /// The highest key or button code.
 pub const MAX: u16 = 0x2ff;

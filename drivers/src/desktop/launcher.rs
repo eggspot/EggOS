@@ -1036,6 +1036,7 @@ impl Desktop {
 
     fn show_notice_for(&mut self, text: &'static str, milliseconds: u32, damage: &mut Damage) {
         self.close_notice(damage);
+        self.remember_notice(text);
         self.notice = Some(Notice {
             text,
             until_ms: self.now_ms.wrapping_add(milliseconds),
