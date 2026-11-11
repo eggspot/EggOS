@@ -93,6 +93,7 @@ pub fn new_state(list_height: i32, style: u32) -> Option<usize> {
     }
     let combo = match style & model::style::TYPE {
         model::style::DROP_DOWN => ComboBox::editable(list_height),
+        model::style::SIMPLE => ComboBox::simple(list_height),
         _ => ComboBox::new(list_height),
     };
     // SAFETY: a new, 16-byte aligned heap block the size of a `ComboBox`.
@@ -125,10 +126,14 @@ pub fn shown_text(gui: &Gui, window: usize) -> &[u16] {
 
 /// The edit field's visible cells in combo box `window`, for its caret's scrolling (D340).
 fn edit_cells(gui: &Gui, window: usize) -> usize {
-    gui.windows.get(window).map_or(0, |entry| {
-        let area = model::edit_area(entry.client());
-        eggos_windows_gui::controls::edit::visible_cells(area.right - area.left)
-    })
+    let cells = || {
+        let entry = gui.windows.get(window)?;
+        let address = address_of(gui, window)?;
+        // SAFETY: as `model`, a shared reference while the lock is held.
+        let area = model::field_area(entry.client(), unsafe { &*(address as *const ComboBox) });
+        Some(eggos_windows_gui::controls::edit::visible_cells(area.right - area.left))
+    };
+    cells().unwrap_or(0)
 }
 
 /// Applies `work` to editable combo box `window`'s edit field; whether it was editable, and
@@ -163,10 +168,18 @@ fn edited(window: usize, outcome: eggos_windows_gui::controls::edit::EditOutcome
 }
 
 fn is_editable(window: usize) -> bool {
+    reads(window, |combo| combo.edit.is_some())
+}
+
+fn is_simple(window: usize) -> bool {
+    reads(window, ComboBox::is_simple)
+}
+
+fn reads(window: usize, question: impl FnOnce(&ComboBox) -> bool) -> bool {
     with(|gui| {
         let address = address_of(gui, window)?;
         // SAFETY: as `model`, a shared reference while the lock is held.
-        Some(unsafe { &*(address as *const ComboBox) }.edit.is_some())
+        Some(question(unsafe { &*(address as *const ComboBox) }))
     })
     .flatten()
     .unwrap_or(false)
@@ -429,7 +442,7 @@ fn is_open(window: usize) -> bool {
     with(|gui| gui.combo.is_some_and(|tracking| tracking.combo == window)).unwrap_or(false)
 }
 
-fn left_button_down(window: usize, x: i32) {
+fn left_button_down(window: usize, (x, y): (i32, i32)) {
     let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled()));
     if enabled != Some(true) {
         return;
@@ -437,11 +450,11 @@ fn left_button_down(window: usize, x: i32) {
     set_focus(window);
     let in_field = with(|gui| {
         let entry = gui.windows.get(window)?;
-        let area = model::edit_area(entry.client());
         let address = address_of(gui, window)?;
         // SAFETY: as `model`, a shared reference while the lock is held.
-        let editable = unsafe { &*(address as *const ComboBox) }.edit.is_some();
-        Some(editable && x < area.right)
+        let combo = unsafe { &*(address as *const ComboBox) };
+        let area = model::field_area(entry.client(), combo);
+        Some(combo.edit.is_some() && x < area.right && y < area.bottom)
     })
     .flatten()
     .unwrap_or(false);
@@ -454,6 +467,10 @@ fn left_button_down(window: usize, x: i32) {
         }
         return;
     }
+    if is_simple(window) {
+        simple_list_press(window, (x, y));
+        return;
+    }
     if is_open(window) {
         close_and_notify(window, false);
         return;
@@ -462,7 +479,31 @@ fn left_button_down(window: usize, x: i32) {
     open(window);
 }
 
+/// A press on a simple combo box's list (D343): a row selects its item at once, the scroll
+/// bar scrolls the list.
+fn simple_list_press(window: usize, (x, y): (i32, i32)) {
+    let pressed = with(|gui| {
+        let list = model::simple_list_rect(gui.windows.get(window)?.client());
+        let address = address_of(gui, window)?;
+        // SAFETY: as `model`.
+        let combo = unsafe { model(address) };
+        Some(match model::list_part_at(list, combo, x, y)? {
+            ListPart::Row(row) => (combo.choose_row(row), true),
+            ListPart::ScrollBar(part) => (false, scroll(combo, part)),
+        })
+    })
+    .flatten();
+    match pressed {
+        Some((true, _)) => selection_moved(window, Some(true)),
+        Some((false, true)) => invalidate(window),
+        _ => {}
+    }
+}
+
 fn toggle(window: usize) {
+    if is_simple(window) {
+        return;
+    }
     match is_open(window) {
         true => close_and_notify(window, false),
         false => {
@@ -568,6 +609,7 @@ fn combo_message(window: usize, number: u32, wparam: usize, lparam: usize) -> us
         code::CB_SHOWDROPDOWN => {
             let open_now = is_open(window);
             match (wparam != 0, open_now) {
+                (true, false) if is_simple(window) => {}
                 (true, false) => {
                     notify(window, code::CBN_DROPDOWN);
                     open(window);
@@ -708,7 +750,7 @@ pub fn procedure(window: usize, number: u32, wparam: usize, lparam: usize) -> us
             0
         }
         message::LEFT_BUTTON_DOWN => {
-            left_button_down(window, lparam as u16 as i16 as i32);
+            left_button_down(window, (lparam as u16 as i16 as i32, (lparam >> 16) as u16 as i16 as i32));
             0
         }
         message::SET_TEXT if is_editable(window) => {

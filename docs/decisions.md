@@ -21684,3 +21684,21 @@ the license, by an explicit instruction recorded here.
   - `EnableScrollBar`, `ScrollWindowEx` and `ScrollWindow`, and the bars' own window menu.
   - An `EDIT`'s and a `LISTBOX`'s bars as non-client bars (they draw inside themselves).
   - `WM_NCHITTEST` answering `HTVSCROLL` and `HTHSCROLL`.
+
+## D343 Windows controls: simple combo boxes (`CBS_SIMPLE`) (batch part 10's rest, D340's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' combo box behaviour; the look reuses the design's edit field and drop-down list, docs/ux/windows-controls-v0.3.md section 10)
+
+- **Decision.** A `COMBOBOX` with `CBS_SIMPLE` is made with an edit field and a list that is
+  always shown (`ComboBox::simple`). The window keeps the whole height the program gave it
+  (drop-down combo boxes still shrink to the 24 pixel box): the edit field fills the top
+  24 pixels across the whole width (no button), and the list fills the rest, 2 pixels below,
+  drawn inside the control rather than over the window's content.
+  - **The list.** Its rows are as many as its height holds; it highlights the selection and
+    scrolls to keep it shown. A press on a row selects its item at once, puts its text in the
+    field selected whole and sends `CBN_SELENDOK` then `CBN_SELCHANGE`; a press on its scroll
+    bar scrolls it.
+  - **Keys.** The field takes typing as in `CBS_DROPDOWN` (D340); Up, Down and the page keys
+    move the selection. F4, Alt+Up/Down and `CB_SHOWDROPDOWN` open nothing.
+  - Fixed on the way: the control-state path (`controls::new_state`) called
+    `combo_box::new_state` without the style D340 added.
+- **Not yet.** The list's own scroll repeat while the pointer holds an arrow, and the mouse
+  wheel over the list.

@@ -1,7 +1,8 @@
 //! `COMBOBOX` with `CBS_DROPDOWNLIST` (section 10 of the design, D174): the [`ComboBox`] model
 //! (its items and selection in a [`ListBox`], whether its list is open, the row the list
 //! highlights and the selection to go back to on a cancel), the closed box, and the list laid
-//! out in the window's content and painted over it, as a menu's drop-down is.
+//! out in the window's content and painted over it, as a menu's drop-down is; `CBS_DROPDOWN`'s
+//! edit field (D340) and `CBS_SIMPLE`'s list always shown under it (D343).
 
 use super::edit::{self, Edit, EditLook};
 use super::list_box::{ITEM_HEIGHT, ListBox};
@@ -25,6 +26,7 @@ const ROW_TEXT_TOP: i32 = 2;
 const MOST_ROWS: i32 = 30;
 const LIST_ALLOWANCE: i32 = 26;
 const LIST_BORDERS: i32 = 2;
+const SIMPLE_GAP: i32 = 2;
 
 /// `COMBOBOX`'s styles this layer reads.
 pub mod style {
@@ -71,6 +73,7 @@ pub struct ComboBox {
     /// `CBS_DROPDOWN`'s edit field, which the closed box shows instead of the selected item
     /// (D340); `None` for a drop-down list.
     pub edit: Option<Edit>,
+    simple: bool,
 }
 
 impl ComboBox {
@@ -84,6 +87,7 @@ impl ComboBox {
             at_opening: None,
             top: 0,
             edit: None,
+            simple: false,
         }
     }
 
@@ -93,6 +97,20 @@ impl ComboBox {
             edit: Some(Edit::with_style(0)),
             ..ComboBox::new(list_height)
         }
+    }
+
+    /// A `CBS_SIMPLE` combo box (D343): an edit field over a list that is always shown, the
+    /// window's `height` pixels holding both.
+    pub fn simple(height: i32) -> ComboBox {
+        ComboBox {
+            simple: true,
+            ..ComboBox::editable(height - BOX_HEIGHT - SIMPLE_GAP)
+        }
+    }
+
+    /// Whether its list is always shown under its edit field (`CBS_SIMPLE`).
+    pub fn is_simple(&self) -> bool {
+        self.simple
     }
 
     /// The text the closed box shows: the edit's, or the selected item's.
@@ -124,9 +142,12 @@ impl ComboBox {
         self.items.selected()
     }
 
-    /// The row the open list highlights.
+    /// The row the open list highlights; a simple combo box's list highlights the selection.
     pub fn highlighted(&self) -> Option<usize> {
-        self.highlighted
+        match self.simple {
+            true => self.items.selected(),
+            false => self.highlighted,
+        }
     }
 
     /// The first item the open list shows.
@@ -134,15 +155,18 @@ impl ComboBox {
         self.top
     }
 
-    /// The rows the list shows.
+    /// The rows the list shows: a simple combo box's as many as its list's height holds.
     pub fn rows(&self) -> usize {
-        list_rows(self.list_height, self.items.count())
+        match self.simple {
+            true => ((self.list_height - LIST_BORDERS) / ITEM_HEIGHT).max(1) as usize,
+            false => list_rows(self.list_height, self.items.count()),
+        }
     }
 
     /// `CB_SETCURSEL`: `None` clears; whether the index was valid.
     pub fn select(&mut self, index: Option<usize>) -> bool {
         let valid = self.items.select(index, 1);
-        if self.open {
+        if self.open || self.simple {
             self.highlighted = self.items.selected();
             self.scroll_to_highlight();
         }
@@ -191,6 +215,17 @@ impl ComboBox {
         true
     }
 
+    /// A press on shown row `row` of a simple combo box's list: its item selected; whether
+    /// the selection changed.
+    pub fn choose_row(&mut self, row: usize) -> bool {
+        let index = self.top + row;
+        if index >= self.items.count() || self.items.selected() == Some(index) {
+            return false;
+        }
+        self.select(Some(index));
+        true
+    }
+
     /// Scrolls the open list by `rows` (up when negative); whether it moved.
     pub fn scroll_by(&mut self, rows: isize) -> bool {
         let last_top = self.items.count().saturating_sub(self.rows());
@@ -223,6 +258,10 @@ impl ComboBox {
         };
         let changed = self.items.selected() != Some(target);
         self.items.select(Some(target), 1);
+        if self.simple {
+            self.highlighted = Some(target);
+            self.scroll_to_highlight();
+        }
         changed
     }
 
@@ -372,7 +411,22 @@ pub fn edit_area(rect: Rect) -> Rect {
     Rect::new(rect.left, rect.top, rect.right - ARROW_AREA, rect.bottom)
 }
 
-/// Paints the closed box of the combo box at `rect` (24 pixels of it).
+/// Where a simple combo box at `rect` shows its list (D343): under its edit field.
+pub fn simple_list_rect(rect: Rect) -> Rect {
+    Rect::new(rect.left, rect.top + BOX_HEIGHT + SIMPLE_GAP, rect.right, rect.bottom)
+}
+
+/// The edit field of an editable combo box at `rect`: the whole closed box for a simple one,
+/// all but the arrow button for a drop-down.
+pub fn field_area(rect: Rect, combo: &ComboBox) -> Rect {
+    match combo.simple {
+        true => closed_box(rect),
+        false => edit_area(rect),
+    }
+}
+
+/// Paints the closed box of the combo box at `rect` (24 pixels of it); a simple combo box's
+/// edit field and the list under it.
 pub fn paint_closed(
     surface: &mut Surface<'_>,
     rect: Rect,
@@ -380,6 +434,16 @@ pub fn paint_closed(
     look: ComboLook,
     palette: &Palette,
 ) {
+    if let (true, Some(field)) = (combo.simple, &combo.edit) {
+        let edit_look = EditLook {
+            focused: look.focused,
+            enabled: look.enabled,
+            hovered: false,
+        };
+        edit::paint(surface, closed_box(rect), field, edit_look, palette);
+        paint_list(surface, simple_list_rect(rect), combo, palette);
+        return;
+    }
     if let Some(field) = &combo.edit {
         let field_rect = edit_area(rect);
         let edit_look = EditLook {
@@ -628,5 +692,25 @@ mod tests {
         assert_eq!(surface.get(113, 11), Some(LIGHT.highlight));
         assert_eq!(surface.get(113, 31), Some(LIGHT.field_fill));
         assert_eq!(surface.get(351, 71), Some(LIGHT.field_border));
+    }
+
+    #[test]
+    fn a_simple_combo_box_shows_its_list_under_the_field_and_selects_on_a_press() {
+        let mut combo = ComboBox::simple(BOX_HEIGHT + SIMPLE_GAP + LIST_BORDERS + 2 * ITEM_HEIGHT);
+        for name in ["Cross", "Octagon", "Random"] {
+            combo.items.add(&units(name), false);
+        }
+        assert!(combo.is_simple() && combo.edit.is_some());
+        assert_eq!(combo.rows(), 2);
+        assert!(combo.choose_row(1));
+        assert_eq!((combo.selected(), combo.highlighted()), (Some(1), Some(1)));
+        assert!(!combo.choose_row(1));
+        assert!(!combo.choose_row(5));
+        assert!(combo.key_closed(key::DOWN));
+        assert_eq!((combo.selected(), combo.top()), (Some(2), 1));
+        let rect = Rect::new(0, 0, 120, 70);
+        assert_eq!(simple_list_rect(rect).top, BOX_HEIGHT + SIMPLE_GAP);
+        assert_eq!(field_area(rect, &combo), closed_box(rect));
+        assert!(!combo.is_open());
     }
 }

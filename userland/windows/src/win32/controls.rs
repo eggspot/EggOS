@@ -243,7 +243,7 @@ pub fn new_state(kind: ControlKind, style: u32) -> Option<usize> {
             unsafe { address.write(ListBox::new()) };
             Some(address as usize)
         }
-        ControlKind::ComboBox => super::combo_box::new_state(0),
+        ControlKind::ComboBox => super::combo_box::new_state(0, style),
         ControlKind::Common(kind) => super::common_controls::new_state(kind, style),
     }
 }
