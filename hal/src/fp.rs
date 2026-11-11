@@ -35,6 +35,8 @@ pub struct FpState {
     pub(crate) arch: Powerpc64State,
     #[cfg(target_arch = "s390x")]
     pub(crate) arch: S390xState,
+    #[cfg(target_arch = "sparc64")]
+    pub(crate) arch: Sparc64State,
     #[cfg(target_arch = "x86_64")]
     pub(crate) arch: X86_64State,
 }
@@ -82,6 +84,8 @@ impl FpState {
         let arch = Mips64State { f: [0; 32], fcsr: 0 };
         #[cfg(target_arch = "s390x")]
         let arch = S390xState { f: [0; 16], fpc: 0 };
+        #[cfg(target_arch = "sparc64")]
+        let arch = Sparc64State { d: [0; 32], fsr: 0, gsr: 0 };
         #[cfg(target_arch = "powerpc64")]
         let arch = Powerpc64State {
             vsr: [0; 64],
@@ -257,6 +261,40 @@ impl FpState {
     }
 }
 
+#[cfg(target_arch = "sparc64")]
+impl FpState {
+    /// `%d0`-`%d62`: the 32 double registers, which hold `%f0`-`%f63`.
+    pub fn d(&self) -> &[u64; 32] {
+        &self.arch.d
+    }
+
+    /// `%d0`-`%d62`, to change.
+    pub fn d_mut(&mut self) -> &mut [u64; 32] {
+        &mut self.arch.d
+    }
+
+    /// `%fsr`: the condition codes, trap enables, the accrued and current exceptions and the
+    /// rounding mode.
+    pub fn fsr(&self) -> u64 {
+        self.arch.fsr
+    }
+
+    /// Sets `%fsr`.
+    pub fn set_fsr(&mut self, fsr: u64) {
+        self.arch.fsr = fsr;
+    }
+
+    /// `%gsr`, the VIS graphics status register.
+    pub fn gsr(&self) -> u64 {
+        self.arch.gsr
+    }
+
+    /// Sets `%gsr`.
+    pub fn set_gsr(&mut self, gsr: u64) {
+        self.arch.gsr = gsr;
+    }
+}
+
 impl Default for FpState {
     fn default() -> Self {
         Self::new()
@@ -286,6 +324,16 @@ pub(crate) struct Aarch64State {
 pub(crate) struct Riscv64State {
     pub(crate) f: [u64; 32],
     pub(crate) fcsr: u64,
+}
+
+/// SPARC64: `%d0`-`%d62`, then `%fsr` and `%gsr`, as the save routine stores them (D326).
+#[cfg(target_arch = "sparc64")]
+#[derive(Clone)]
+#[repr(C)]
+pub(crate) struct Sparc64State {
+    pub(crate) d: [u64; 32],
+    pub(crate) fsr: u64,
+    pub(crate) gsr: u64,
 }
 
 /// LoongArch64: `f0`-`f31` (64 bits each), the condition flags, then `fcsr0`, as the save

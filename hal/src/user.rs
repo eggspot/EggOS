@@ -49,6 +49,8 @@ pub struct UserContext {
     pub(crate) arch: powerpc64::Registers,
     #[cfg(target_arch = "s390x")]
     pub(crate) arch: s390x::Registers,
+    #[cfg(target_arch = "sparc64")]
+    pub(crate) arch: sparc64::Registers,
     #[cfg(target_arch = "x86_64")]
     pub(crate) arch: x86_64::Registers,
     /// Host builds: the exception a test platform's `run_user` last returned
@@ -221,6 +223,10 @@ use mips64::Registers;
 pub use mips64::UserRegisters;
 #[cfg(target_arch = "mips64")]
 pub use mips64::mips_errno;
+#[cfg(target_arch = "sparc64")]
+use sparc64::Registers;
+#[cfg(target_arch = "sparc64")]
+pub use sparc64::UserRegisters;
 #[cfg(target_arch = "s390x")]
 use s390x::Registers;
 #[cfg(target_arch = "s390x")]
@@ -968,6 +974,162 @@ pub(crate) mod s390x {
             self.gpr[NUMBER] = number;
             self.set_syscall_arguments(arguments);
             self.pc = pc;
+        }
+    }
+}
+
+#[cfg(target_arch = "sparc64")]
+pub(crate) mod sparc64 {
+    /// What the way out of user mode saves (`exception.rs`, D326), and what the way in needs.
+    /// The entry code stores by offset: keep the layout in step with it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[repr(C)]
+    pub(crate) struct Registers {
+        /// The program's current window and globals: `%g0`-`%g7`, `%o0`-`%o7`, `%l0`-`%l7`,
+        /// `%i0`-`%i7`; `r[0]` is unused. Its other windows are on its stack.
+        pub(crate) r: [u64; 32],
+        pub(crate) pc: u64,
+        pub(crate) npc: u64,
+        /// `TSTATE`'s condition codes (`CCR`, bits 39 to 32) and `ASI`; the kernel chooses the
+        /// rest.
+        pub(crate) tstate: u64,
+        pub(crate) y: u64,
+        /// The kernel's stack pointer (biased) while the program runs.
+        pub(crate) kernel_sp: u64,
+        /// After an exception: its trap type, the fault address and the fault status, kept by
+        /// the way out of `run_user`.
+        pub(crate) trap_type: u64,
+        pub(crate) fault_address: u64,
+        pub(crate) fault_status: u64,
+        /// `%o0` as the program passed it to its last system call, which the result
+        /// overwrites: a restart puts it back.
+        pub(crate) syscall_o0: u64,
+    }
+
+    /// [`super::UserContext::registers`] on SPARC64.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct UserRegisters {
+        pub pc: u64,
+        pub npc: u64,
+        /// `%g0`-`%g7`, `%o0`-`%o7`, `%l0`-`%l7`, `%i0`-`%i7`.
+        pub r: [u64; 32],
+        pub tstate: u64,
+        pub y: u64,
+    }
+
+    const _: () = assert!(core::mem::offset_of!(Registers, pc) == 256);
+    const _: () = assert!(core::mem::offset_of!(Registers, kernel_sp) == 288);
+
+    const G1: usize = 1;
+    const G7: usize = 7;
+    const O0: usize = 8;
+    const SP: usize = 14;
+    /// The carry bits of `TSTATE.CCR` (`xcc.C` and `icc.C`): set when a system call failed.
+    const CARRY: u64 = 1 << 36 | 1 << 32;
+    /// The `TSTATE` bits a program sets: `CCR` and `ASI`.
+    const PROGRAM_STATE: u64 = 0xff << 32 | 0xff << 24;
+    /// The highest error number a system call returns, as Linux's `-MAX_ERRNO`.
+    const LARGEST_ERROR: u64 = 4095;
+    const TRAP_SIZE: u64 = 4;
+    /// The `%asi` a program starts with, as on Linux: `ASI_PRIMARY_NOFAULT`.
+    const INITIAL_ASI: u64 = 0x82;
+
+    impl Registers {
+        pub(crate) fn new(pc: u64, stack: u64) -> Self {
+            let mut r = [0; 32];
+            r[SP] = stack;
+            Self {
+                r,
+                pc,
+                npc: pc + 4,
+                tstate: INITIAL_ASI << 24,
+                y: 0,
+                kernel_sp: 0,
+                trap_type: 0,
+                fault_address: 0,
+                fault_status: 0,
+                syscall_o0: 0,
+            }
+        }
+        /// `%g7`, Linux's thread pointer on SPARC64.
+        pub(crate) fn thread_pointer(&self) -> u64 {
+            self.r[G7]
+        }
+        pub(crate) fn set_thread_pointer(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
+            self.r[G7] = value;
+            Ok(())
+        }
+        pub(crate) fn pc(&self) -> u64 {
+            self.pc
+        }
+        /// `%o6`, biased by 2047 as the ABI keeps it.
+        pub(crate) fn stack(&self) -> u64 {
+            self.r[SP]
+        }
+        pub(crate) fn set_stack(&mut self, stack: u64) {
+            self.r[SP] = stack;
+        }
+        pub(crate) fn syscall_number(&self) -> u64 {
+            self.r[G1]
+        }
+        pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
+            [self.syscall_o0, self.r[O0 + 1], self.r[O0 + 2], self.r[O0 + 3], self.r[O0 + 4], self.r[O0 + 5]]
+        }
+        pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
+            self.syscall_o0 = arguments[0];
+            self.r[O0..O0 + 6].copy_from_slice(&arguments);
+        }
+        /// The result in `%o0`, as SPARC's Linux returns it: an error as a positive number with
+        /// the carry bits set.
+        pub(crate) fn set_syscall_result(&mut self, value: u64) {
+            if value.wrapping_neg() <= LARGEST_ERROR && value != 0 {
+                self.r[O0] = value.wrapping_neg();
+                self.tstate |= CARRY;
+            } else {
+                self.r[O0] = value;
+                self.tstate &= !CARRY;
+            }
+        }
+        /// Back to the `ta` instruction the entry stepped over.
+        pub(crate) fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+            self.r[G1] = number;
+            self.r[O0] = first_argument;
+            self.pc = self.pc.wrapping_sub(TRAP_SIZE);
+            self.npc = self.pc + TRAP_SIZE;
+        }
+        pub(crate) fn registers(&self) -> UserRegisters {
+            UserRegisters {
+                pc: self.pc,
+                npc: self.npc,
+                r: self.r,
+                tstate: self.tstate,
+                y: self.y,
+            }
+        }
+        pub(crate) fn set_registers(&mut self, registers: &UserRegisters) {
+            self.pc = registers.pc;
+            self.npc = registers.npc;
+            self.r = registers.r;
+            self.r[0] = 0;
+            self.tstate = registers.tstate & PROGRAM_STATE;
+            self.y = registers.y;
+        }
+        #[cfg(not(eggos_kernel))]
+        pub(crate) fn result(&self) -> u64 {
+            match self.tstate & CARRY != 0 {
+                true => self.r[O0].wrapping_neg(),
+                false => self.r[O0],
+            }
+        }
+        #[cfg(not(eggos_kernel))]
+        pub(crate) fn simulate_syscall(&mut self, number: u64, arguments: [u64; 6], pc: u64) {
+            self.r[G1] = number;
+            self.set_syscall_arguments(arguments);
+            self.pc = pc;
+            self.npc = pc + TRAP_SIZE;
         }
     }
 }

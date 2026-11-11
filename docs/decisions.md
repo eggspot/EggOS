@@ -21222,3 +21222,66 @@ the license, by an explicit instruction recorded here.
   of the PowerPC programs, and they test rather than add what users get.
 - **Known gaps (to check at build time).** `liointc`'s register offsets and route-byte
   format, and MIPS's `termbits.h` values, are from memory of QEMU's and Linux's sources.
+
+## D326 SPARC64 part 1: the HAL on QEMU `sun4u` (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - **Machine and boot.** QEMU `sun4u` (UltraSPARC IIi, one CPU) with OpenBIOS.
+    - `_start` runs at the image's physical address, 4 MiB, on OpenBIOS's identity mapping.
+      It locks two 4 MiB TLB entries (instruction and data) that map the image at the top
+      2 GiB (`KERNEL_VIRTUAL_OFFSET`), and jumps there.
+    - `sparc64_boot` asks Open Firmware's client interface for `/memory`'s `available`
+      ranges, the CPU node's `clock-frequency` and `/chosen`'s `bootargs` (`firmware.rs`).
+    - Then the HAL takes the traps over (`%tba`, its window registers, empty roots) and enters
+      `kernel_main`.
+    - The HAL writes a device tree (memory, the CPU, the EBus 16550 at `0x1fe020003f8`),
+      as for MIPS64.
+  - **Console.** The 16550 through physical loads and stores (`ASI_PHYS_BYPASS_EC_E`), which
+    need no mapping.
+  - **Translation** (`paging/sparc64.rs`, `exception.rs`).
+    - The MMU's TLBs are loaded by software, on the MMU globals (`%g6` the program's root,
+      `%g7` the kernel's).
+    - The direct map (2 TiB from `0xffff_f800_0000_0000`, the 44-bit high half) gets 4 MiB
+      entries computed from the address. The device window is walked through the kernel's
+      root.
+    - Leaves are 4 KiB in the TTE's own layout, with software bits for user, executable and
+      kept. The MMU's smallest page is 8 KiB, so an aligned pair of 4 KiB leaves that are both
+      present, physically contiguous and alike becomes one 8 KiB entry. Any other miss is a
+      fault.
+    - Kernel pages are global and privileged. Programs get a fresh context (1 to 8191) at
+      every switch, with the TLB flushed when the contexts wrap.
+  - **Traps.** A 32 KiB table with the kernel's and programs' spill, fill and clean-window
+    handlers (`%wstate` 0 and 1, programs' through `ASI_AS_IF_USER_PRIMARY`) and the TLB
+    misses, at both trap levels.
+    - **From the kernel** (where it opens interrupts, or a fault): the trap saves the state on
+      a new kernel window, drops to TL 0 and calls `sparc64_kernel_exception`. It returns with
+      `retry`, or `done` after a trap instruction.
+    - **From a program:** the trap flushes the program's windows to its stack, saves its
+      current window, globals, `%pc`, `%npc`, `TSTATE` and `%y` into the context, and returns
+      from `sparc64_enter_user` on the kernel stack.
+    - System calls are `ta 0x6d`. Errors return positive with the carry bits set, as SPARC's
+      Linux does, and `%g7` is the thread pointer.
+  - **Other pieces.**
+    - The timer is `%tick` and `TICK_COMPARE` (level 14).
+    - Lazy FP through `%fprs.FEF`: `fp_disabled` is reported as an illegal instruction (D54).
+    - The thread switch flushes the windows and keeps `%sp` and `%i7`. A new thread's two
+      initial frames take 320 bytes, so `INITIAL_FRAME_MAX` grows to 320.
+- **Known gaps (to check at build time; written from memory of the UltraSPARC IIi manual,
+  QEMU's board and OpenBIOS, unverified).**
+  - **4 KiB pages on an MMU with 8 KiB pages.** User memory works only where the kernel maps
+    4 KiB pages in aligned, contiguous pairs. The kernel does not do that yet; that is part 3.
+    Until then, a miss on half a pair loops between the fault and the stale-entry retry.
+  - Whether OpenBIOS enters an ELF image at its physical address with an identity mapping.
+  - The TTE bit positions and the MMU register addresses.
+  - LLVM's acceptance of `%hh`/`%hm` in `sethi`, and of `clobber_abi("C")` on SPARC64.
+  - A fault while spilling or filling a program's window, at trap level 2, stops the CPU.
+  - OpenBIOS's own locked entries stay in the TLB.
+  - No device interrupts (the PCI bridge's interrupt mapping), no PCI bus, so no virtio
+    devices. Console input is polled.
+  - The Linux test programs past `linux_hello`, and `checks` and `fp_registers`, exit with 1.
+  - The kernel's `compile_error!` for an architecture without a Linux ABI still fires: that
+    ABI is part 2.
+- **Next.** Part 2: SPARC64's Linux ABI (its table, its error numbers, which differ from 35
+  on, its `stat`, signal frames with the register windows) and the user runtime, with the
+  build entries. Part 3: the kernel's user memory in 8 KiB granules where the format asks for
+  it.

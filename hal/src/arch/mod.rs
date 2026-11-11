@@ -83,6 +83,17 @@ pub(crate) use riscv64::doorbell_barrier;
 #[cfg(all(eggos_kernel, target_arch = "riscv64"))]
 pub(crate) use riscv64::zero;
 
+#[cfg(all(eggos_kernel, target_arch = "sparc64"))]
+pub mod sparc64;
+#[cfg(all(eggos_kernel, target_arch = "sparc64"))]
+pub(crate) use sparc64::KERNEL_VIRTUAL_OFFSET;
+#[cfg(all(eggos_kernel, target_arch = "sparc64"))]
+pub use sparc64::Sparc64 as CurrentPlatform;
+#[cfg(all(eggos_kernel, target_arch = "sparc64"))]
+pub(crate) use sparc64::doorbell_barrier;
+#[cfg(all(eggos_kernel, target_arch = "sparc64"))]
+pub(crate) use sparc64::zero;
+
 #[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub mod x86_64;
 #[cfg(all(eggos_kernel, target_arch = "x86_64"))]
@@ -95,6 +106,7 @@ pub(crate) use x86_64::KERNEL_VIRTUAL_OFFSET;
         target_arch = "powerpc64",
         target_arch = "riscv64",
         target_arch = "s390x",
+        target_arch = "sparc64",
         target_arch = "x86_64"
     )
 ))]
@@ -117,6 +129,7 @@ pub(crate) use x86_64::zero;
         target_arch = "powerpc64",
         target_arch = "riscv64",
         target_arch = "s390x",
+        target_arch = "sparc64",
         target_arch = "x86_64"
     ))
 ))]
@@ -137,6 +150,8 @@ pub enum TestMachine {
     Loongson3Virt,
     /// s390x's `s390-ccw-virtio` (D321).
     S390CcwVirtio,
+    /// SPARC64's `sun4u` (D326).
+    Sun4u,
 }
 
 /// The machine this kernel's self-tests expect; `None` in host builds.
@@ -154,6 +169,9 @@ pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::Loongson3Virt);
 /// The machine this kernel's self-tests expect; `None` in host builds.
 #[cfg(all(eggos_kernel, target_arch = "s390x"))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::S390CcwVirtio);
+/// The machine this kernel's self-tests expect; `None` in host builds.
+#[cfg(all(eggos_kernel, target_arch = "sparc64"))]
+pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::Sun4u);
 /// The machine this kernel's self-tests expect; `None` in host builds.
 #[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::Q35);

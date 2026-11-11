@@ -16,6 +16,7 @@ pub mod mips64;
 pub mod powerpc64;
 pub mod riscv64;
 pub mod s390x;
+pub mod sparc64;
 pub mod x86_64;
 
 use crate::memory::PhysicalRange;

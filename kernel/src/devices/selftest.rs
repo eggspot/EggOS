@@ -160,6 +160,13 @@ pub(crate) fn devices_are_discovered<P: Platform>(
             .any(|node| compatible(node, b"ns16550a"))
             .then_some(())
             .ok_or("the device tree did not give the NS16550 UART"),
+        Some(TestMachine::Sun4u) => {
+            return found
+                .iter()
+                .any(|node| compatible(node, b"ns16550a"))
+                .then_some(())
+                .ok_or("the device tree did not give the NS16550 UART");
+        }
         Some(TestMachine::S390CcwVirtio) | None => return Ok(()),
     };
     machine?;

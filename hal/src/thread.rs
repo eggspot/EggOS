@@ -11,9 +11,9 @@
 //! "return address" is the architecture's thread trampoline, and two of the restored registers
 //! hold the entry function and its argument, which the trampoline passes on.
 
-/// The most bytes any architecture's initial frame takes below the stack top; a thread's stack
-/// must be larger.
-pub const INITIAL_FRAME_MAX: usize = 128;
+/// The most bytes any architecture's initial frame takes below the stack top (SPARC64's two
+/// frames, D326); a thread's stack must be larger.
+pub const INITIAL_FRAME_MAX: usize = 320;
 
 /// Writes `frame` (lowest address first) at the top of the stack that ends at `stack_top`,
 /// rounded down to 16 bytes, and returns its address: the new thread's saved context. The frame
