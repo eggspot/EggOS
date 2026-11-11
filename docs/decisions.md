@@ -22176,3 +22176,14 @@ the license, by an explicit instruction recorded here.
   stages follow (`toolbar::paint_custom`, sharing `list_view::RowDraw`).
 - **Not yet.** The item states in `uItemState` (checked, pressed, hot), `TBCDRF_*` flags,
   and custom draw for headers and trackbars.
+
+## D368 Windows common controls: custom draw for headers (`NM_CUSTOMDRAW`) (batch part 13's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from comctl32's documented custom draw for headers)
+
+- **Decision.** A header control's paint runs custom draw with a plain `NMCUSTOMDRAW`
+  (headers have no colour fields): `CDDS_PREPAINT`, then, with `CDRF_NOTIFYITEMDRAW`,
+  `CDDS_ITEMPREPAINT` for each item (up to 64) with its index and rectangle. An answer with
+  `CDRF_NEWFONT` takes the text colour the program set on the paint's device context with
+  `SetTextColor`; `CDRF_SKIPDEFAULT` leaves the item to the program; the post-paint stages
+  follow. `list_view::paint_header_custom` draws the items, sharing `RowDraw`.
+- **Not yet.** The font of `CDRF_NEWFONT` (the layer draws one font), custom draw of the
+  header a list view paints itself when it has no header window, and trackbars.

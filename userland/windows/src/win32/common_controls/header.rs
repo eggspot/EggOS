@@ -11,7 +11,7 @@ use super::super::window_text;
 use super::list_view::{self, Win32Rect, text_at, write_rect};
 use super::{
     Model, NotifyHeader, allocate, default_procedure, invalidate, item_element, notify_parent,
-    paint_with, read_state, utf8, with_state,
+    read_state, utf8, with_state,
 };
 use crate::gui::message;
 use crate::gui::windows::{self, CommonKind, Window};
@@ -19,7 +19,8 @@ use eggos_element_tree::{Action, Bounds, Element, MAX_LABEL_BYTES, Outcome, Role
 use eggos_windows_gui::controls::LIGHT;
 use eggos_windows_gui::controls::common::COMMON_LIGHT;
 use eggos_windows_gui::controls::list_view::{
-    Columns, HEADER_HEIGHT, HeaderLook, header_item_at, header_item_rect, paint_header,
+    Columns, HEADER_HEIGHT, HeaderLook, RowDraw, header_item_at, header_item_rect,
+    paint_header_custom,
 };
 use eggos_windows_gui::surface::Rect;
 
@@ -162,22 +163,109 @@ fn change<R>(window: usize, work: impl FnOnce(&mut Columns) -> R) -> Option<R> {
     }
 }
 
+const NM_CUSTOMDRAW: i32 = -12;
+const CDDS_PREPAINT: u32 = 0x1;
+const CDDS_POSTPAINT: u32 = 0x2;
+const CDDS_ITEMPREPAINT: u32 = 0x1_0001;
+const CDDS_ITEMPOSTPAINT: u32 = 0x1_0002;
+const CDRF_NEWFONT: usize = 0x2;
+const CDRF_SKIPDEFAULT: usize = 0x4;
+const CDRF_NOTIFYPOSTPAINT: usize = 0x10;
+const CDRF_NOTIFYITEMDRAW: usize = 0x20;
+const MOST_CUSTOM_ITEMS: usize = 64;
+
+/// `NMCUSTOMDRAW`, which a header sends as it is.
+#[repr(C)]
+struct NmCustomDraw {
+    header: NotifyHeader,
+    stage: u32,
+    hdc: usize,
+    rect: [i32; 4],
+    item: usize,
+    item_state: u32,
+    item_lparam: usize,
+}
+
+fn custom_draw(window: usize, stage: u32, hdc: usize, item: usize, rect: Rect) -> usize {
+    let draw = |header| NmCustomDraw {
+        header,
+        stage,
+        hdc,
+        rect: [rect.left, rect.top, rect.right, rect.bottom],
+        item,
+        item_state: 0,
+        item_lparam: 0,
+    };
+    super::notify_parent_keeping(window, NM_CUSTOMDRAW, draw).0
+}
+
+fn text_colour_of(hdc: usize) -> Option<u32> {
+    let colour_ref = with(|gui| gui.contexts.get(hdc).map(|context| context.text_colour));
+    let colour_ref = colour_ref.flatten()?;
+    Some((colour_ref & 0xff) << 16 | (colour_ref & 0xff00) | (colour_ref >> 16 & 0xff))
+}
+
+/// Custom draw around a header's paint (D368): `CDDS_PREPAINT`, then `CDDS_ITEMPREPAINT` for
+/// each item when asked; `CDRF_NEWFONT` takes the text colour the program set on the device
+/// context, `CDRF_SKIPDEFAULT` leaves the item to the program.
 fn paint(window: usize) {
-    paint_with::<HeaderState>(window, |surface, rect, _, control, gui| {
+    let Ok((hdc, _, _)) = super::super::paint::begin(window) else {
+        return;
+    };
+    let mut rects = [Rect::default(); MOST_CUSTOM_ITEMS];
+    let rect = client_of(window);
+    let count = read(window, |columns, hpos, _| {
+        let count = columns.count().min(MOST_CUSTOM_ITEMS);
+        for (index, slot) in rects.iter_mut().enumerate().take(count) {
+            *slot = header_item_rect(columns, rect, hpos, index);
+        }
+        count
+    })
+    .unwrap_or(0);
+    let mut draws = [RowDraw::default(); MOST_CUSTOM_ITEMS];
+    let mut after = [false; MOST_CUSTOM_ITEMS];
+    let first = custom_draw(window, CDDS_PREPAINT, hdc, 0, rect);
+    if first & CDRF_NOTIFYITEMDRAW != 0 {
+        for index in 0..count {
+            let answer = custom_draw(window, CDDS_ITEMPREPAINT, hdc, index, rects[index]);
+            draws[index] = RowDraw {
+                text: (answer & CDRF_NEWFONT != 0).then(|| text_colour_of(hdc)).flatten(),
+                background: None,
+                skip: answer & CDRF_SKIPDEFAULT != 0,
+            };
+            after[index] = answer & CDRF_NOTIFYPOSTPAINT != 0;
+        }
+    }
+    let _ = super::super::paint::draw_in(hdc, |surface, _, gui| {
+        let Some(surface) = surface else {
+            return;
+        };
+        let Some(control) = read_state::<HeaderState, _>(gui, window, |_, control| {
+            (control.pressed.filter(|_| control.inside), control.list != 0)
+        }) else {
+            return;
+        };
         let enabled = windows::enabled_in_tree(&gui.windows, window);
-        let pressed = control.pressed.filter(|_| control.inside);
-        let of_list = control.list != 0;
         view(gui, window, |columns, hpos, buttons| {
             let look = HeaderLook {
-                pressed,
+                pressed: control.0,
                 hot: None,
                 buttons,
                 enabled,
-                of_list,
+                of_list: control.1,
             };
-            paint_header(surface, rect, columns, hpos, look, &LIGHT, &COMMON_LIGHT);
+            let items = |index: usize| draws.get(index).copied().unwrap_or_default();
+            let colours = (&LIGHT, &COMMON_LIGHT);
+            paint_header_custom(surface, (rect, columns, hpos), look, colours, &items);
         });
     });
+    for index in (0..count).filter(|&index| after[index]) {
+        custom_draw(window, CDDS_ITEMPOSTPAINT, hdc, index, rects[index]);
+    }
+    if first & CDRF_NOTIFYPOSTPAINT != 0 {
+        custom_draw(window, CDDS_POSTPAINT, hdc, 0, rect);
+    }
+    super::super::paint::finish(hdc);
 }
 
 fn client_of(window: usize) -> Rect {

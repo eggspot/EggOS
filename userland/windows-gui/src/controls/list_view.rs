@@ -1481,6 +1481,19 @@ pub fn paint_header(
     palette: &Palette,
     common: &CommonPalette,
 ) {
+    let plain = |_: usize| RowDraw::default();
+    paint_header_custom(surface, (rect, columns, hpos), look, (palette, common), &plain);
+}
+
+/// Paints a header as [`paint_header`] does, each item as `items` says the program asked by
+/// custom draw (D368): its text colour, its fill, or nothing when it drew the item itself.
+pub fn paint_header_custom(
+    surface: &mut Surface<'_>,
+    (rect, columns, hpos): (Rect, &Columns, i32),
+    look: HeaderLook,
+    (palette, common): (&Palette, &CommonPalette),
+    items: &dyn Fn(usize) -> RowDraw,
+) {
     let saved = surface.clip();
     surface.clip_to(rect);
     surface.fill(rect, common.header_fill);
@@ -1490,6 +1503,13 @@ pub fn paint_header(
     };
     for index in 0..columns.count() {
         let item = header_item_rect(columns, rect, hpos, index);
+        let draw = items(index);
+        if draw.skip {
+            continue;
+        }
+        if let Some(fill) = draw.background {
+            surface.fill(item, fill);
+        }
         if look.enabled && look.buttons {
             if look.pressed == Some(index) {
                 surface.fill(item, common.header_pressed_fill);
@@ -1515,7 +1535,7 @@ pub fn paint_header(
             0,
             rect.top + HEADER_TEXT_TOP,
             columns.text(index),
-            colour,
+            draw.text.filter(|_| look.enabled).unwrap_or(colour),
         );
         surface.set_clip(clip);
     }
