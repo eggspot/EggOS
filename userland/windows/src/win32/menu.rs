@@ -21,6 +21,10 @@ use eggos_windows_gui::surface::{Rect, Surface};
 
 const VK_ESCAPE: usize = 0x1b;
 const VK_RETURN: usize = 0x0d;
+const VK_LEFT: usize = 0x25;
+const VK_UP: usize = 0x26;
+const VK_RIGHT: usize = 0x27;
+const VK_DOWN: usize = 0x28;
 const NO_ID: u32 = u32::MAX;
 
 /// An open drop-down: the window, its bar entry, the menu it shows, the item under the pointer
@@ -245,6 +249,19 @@ pub fn input(
         });
     }
     let Some(tracking) = gui.tracking.filter(|tracking| tracking.root == root) else {
+        if number == message::SYS_KEY_DOWN {
+            let entry = mnemonic_entry(gui, root, wparam)?;
+            return Some(match bar_command(gui, root, entry) {
+                Some(id) => Effect {
+                    commit: None,
+                    command: Some(id),
+                },
+                None => Effect {
+                    commit: open(gui, root, entry),
+                    command: None,
+                },
+            });
+        }
         let pressed = match number {
             message::LEFT_BUTTON_DOWN => true,
             message::LEFT_BUTTON_UP => false,
@@ -309,9 +326,104 @@ pub fn input(
             }
         }
         message::KEY_DOWN if wparam == VK_ESCAPE => effect.commit = close(gui, root),
+        message::KEY_DOWN | message::SYS_KEY_DOWN => return Some(drop_down_key(gui, &tracking, wparam)),
         _ => {}
     }
     Some(effect)
+}
+
+/// The key of a mnemonic (`&File`'s `F`), as a virtual-key code: an ASCII letter's capital or a
+/// digit.
+fn mnemonic(label: &[u16]) -> Option<usize> {
+    let at = label.windows(2).position(|pair| pair[0] == u16::from(b'&') && pair[1] != u16::from(b'&'))?;
+    let character = char::from_u32(u32::from(label[at + 1]))?;
+    character.is_ascii_alphanumeric().then(|| character.to_ascii_uppercase() as usize)
+}
+
+/// The enabled bar entry of `root` whose mnemonic is key `key` (D335).
+fn mnemonic_entry(gui: &Gui, root: usize, key: usize) -> Option<usize> {
+    let window = gui.windows.get(root)?;
+    let bar = table(gui)?.get(window.menu)?;
+    bar.items()
+        .iter()
+        .position(|item| !item.is_grayed() && mnemonic(item.label()) == Some(key))
+}
+
+/// A key while a bar drop-down is open (D335): Up and Down move the highlight over the items
+/// that can be chosen, Left and Right open the next bar entry, Enter chooses the highlighted
+/// item, and an item's mnemonic chooses it.
+fn drop_down_key(gui: &mut Gui, tracking: &Tracking, key: usize) -> Effect {
+    let root = tracking.root;
+    let Some(items) = table(gui).and_then(|table| table.get(tracking.popup)) else {
+        return Effect::default();
+    };
+    let choosable = |item: &menus::MenuItem| !item.is_grayed() && !item.is_separator() && item.popup().is_none();
+    let count = items.count;
+    let mut entries = [(false, 0usize, None::<usize>); MAX_ITEMS];
+    for (entry, item) in entries.iter_mut().zip(items.items()) {
+        *entry = (choosable(item), item.id, mnemonic(item.label()));
+    }
+    let entries = &entries[..count.min(MAX_ITEMS)];
+    let chosen = match key {
+        VK_DOWN | VK_UP => {
+            let step = |at: usize| match key {
+                VK_DOWN => (at + 1) % count.max(1),
+                _ => (at + count.max(1) - 1) % count.max(1),
+            };
+            let start = tracking.highlighted.unwrap_or(if key == VK_DOWN { count.max(1) - 1 } else { 0 });
+            let mut at = start;
+            let next = (0..count).find_map(|_| {
+                at = step(at);
+                entries.get(at).is_some_and(|entry| entry.0).then_some(at)
+            });
+            if next.is_some() && next != tracking.highlighted {
+                gui.tracking = Some(Tracking {
+                    highlighted: next,
+                    ..*tracking
+                });
+                return Effect {
+                    commit: paint_open_drop_down(gui, root),
+                    command: None,
+                };
+            }
+            None
+        }
+        VK_LEFT | VK_RIGHT => {
+            let bar_count = gui
+                .windows
+                .get(root)
+                .and_then(|window| table(gui)?.get(window.menu))
+                .map_or(0, |bar| bar.count);
+            if bar_count < 2 {
+                return Effect::default();
+            }
+            let entry = match key {
+                VK_RIGHT => (tracking.entry + 1) % bar_count,
+                _ => (tracking.entry + bar_count - 1) % bar_count,
+            };
+            let closed = close(gui, root).unwrap_or_default();
+            return Effect {
+                commit: Some(open(gui, root, entry).map_or(closed, |opened| opened.union(&closed))),
+                command: None,
+            };
+        }
+        VK_RETURN => tracking
+            .highlighted
+            .and_then(|at| entries.get(at))
+            .filter(|entry| entry.0)
+            .map(|entry| entry.1),
+        _ => entries
+            .iter()
+            .find(|entry| entry.0 && entry.2 == Some(key))
+            .map(|entry| entry.1),
+    };
+    match chosen {
+        Some(id) => Effect {
+            commit: close(gui, root),
+            command: Some(id),
+        },
+        None => Effect::default(),
+    }
 }
 
 fn context_item(gui: &Gui, tracking: &Tracking, index: usize) -> Option<usize> {

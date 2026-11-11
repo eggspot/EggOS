@@ -21526,3 +21526,25 @@ the license, by an explicit instruction recorded here.
       they show nothing.
 - **Left of part 10's rest:** scroll bars on windows, multi-line edits, editable combo boxes,
   submenus, menu keys, menus from templates, word selection.
+
+## D335 Windows menus: menu keys (batch part 10's rest, D228's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' menu keyboard behaviour)
+
+- **Decision.** A Windows program's menu bar answers the keyboard as on Windows:
+  - **With no drop-down open**, Alt and a letter or digit (`WM_SYSKEYDOWN`) that is a bar
+    entry's mnemonic (`&File`'s `F`, a doubled `&&` being no mnemonic) opens that entry's
+    drop-down, or sends its command when the entry has no drop-down. Keys that are no
+    mnemonic stay the program's.
+  - **With a bar drop-down open:**
+    - Down and Up move the highlight over the items that can be chosen (enabled, not
+      separators, not submenus), wrapping.
+    - Right and Left close it and open the next or previous bar entry, wrapping.
+    - Enter chooses the highlighted item.
+    - An item's mnemonic chooses it, with or without Alt.
+    - Escape closes it, as before.
+  - Context menus keep their keys (Escape and Enter).
+- **Left of part 10's rest:**
+  - Alt alone and F10 to select the bar, and the underlines shown only after Alt (they are
+    always drawn).
+  - Submenus.
+  - Menus from templates.
+  - Scroll bars on windows, multi-line edits, editable combo boxes and word selection.
