@@ -21970,3 +21970,17 @@ the license, by an explicit instruction recorded here.
   `TTM_GETCURRENTTOOLW`, `TTM_GETBUBBLESIZE`, `TTM_ADJUSTRECT`, resource-id texts (shown as
   callbacks), touch's long-press, and `TTS_ALWAYSTIP`'s inactive-window rule. The tray
   (design sections 11 to 19) is its own decision.
+
+## D356 Windows common controls: toolbars' tooltips (`TBSTYLE_TOOLTIPS`) (batch part 13's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/windows-tooltips-tray-v0.5.md section 8) and the code-only session (engineering)
+
+- **Decision.** A toolbar made with `TBSTYLE_TOOLTIPS` makes its own tooltip control (D355)
+  on `WM_CREATE`; `TB_GETTOOLTIPS` answers it and `TB_SETTOOLTIPS` replaces it
+  (`Toolbar::tooltips`). Before each paint the toolbar keeps one callback tool per shown
+  button in it, its rect the button's and its id the command id (`tooltip::replace_tools`).
+  When a tip is due, the tooltip's `TTN_GETDISPINFOW` reaches the toolbar, which tries, in
+  the design's order: `TBN_GETINFOTIPW` to its parent (an 80-unit buffer, the command id, the
+  button's data), then the same `TTN_GETDISPINFOW` passed on to its parent (`idFrom` the
+  command id, as Win32 sends it there), then the button's own string when the toolbar draws
+  no text (`TB_SETMAXTEXTROWS 0`).
+- **Not yet.** `TBSTYLE_EX_MIXEDBUTTONS`' rule for buttons without `BTNS_SHOWTEXT`, list
+  views' and tree views' info tips, tab controls' `TCS_TOOLTIPS`.

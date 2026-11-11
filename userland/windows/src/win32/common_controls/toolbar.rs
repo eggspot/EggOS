@@ -7,7 +7,7 @@
 
 use super::super::dialog::{release_capture, set_capture};
 use super::super::gui::{self, Delivery, Gui, with};
-use super::super::user32::Win32Rect;
+use super::super::user32::{Win32Rect, create_child};
 use super::super::{FALSE, TRUE, file, thread_environment, window_text};
 use super::image_list::{LayerImages, image_size};
 use super::status_bar::dock;
@@ -17,7 +17,7 @@ use super::{
     read_state, utf8, with_state,
 };
 use crate::gui::message;
-use crate::gui::windows::{self, CommonKind, Window};
+use crate::gui::windows::{self, CommonKind, ControlKind, Window};
 use eggos_element_tree::{
     Action, Bounds, Element, MAX_LABEL_BYTES, Outcome, Role, TreeWriter, flags,
 };
@@ -77,6 +77,13 @@ const TB_GETPADDING: u32 = WM_USER + 86;
 const TB_SETPADDING: u32 = WM_USER + 87;
 const TB_GETSTRINGW: u32 = WM_USER + 91;
 const TB_LAST: u32 = WM_USER + 92;
+const TB_GETTOOLTIPS: u32 = WM_USER + 35;
+const TB_SETTOOLTIPS: u32 = WM_USER + 36;
+const TBSTYLE_TOOLTIPS: u32 = 0x0100;
+const TBN_GETINFOTIPW: i32 = -719;
+const TTN_GETDISPINFOW: u32 = -530i32 as u32;
+const INFO_TIP_UNITS: usize = 80;
+const WS_CHILD: u32 = 0x4000_0000;
 const TBIF_IMAGE: u32 = 0x1;
 const TBIF_TEXT: u32 = 0x2;
 const TBIF_STATE: u32 = 0x4;
@@ -156,6 +163,17 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
     match number {
         message::CREATE => {
             dock_toolbar(window);
+            make_tooltips(window);
+            0
+        }
+        TB_GETTOOLTIPS => with_state::<Toolbar, _>(window, |_, model| model.tooltips).unwrap_or(0),
+        TB_SETTOOLTIPS => {
+            with_state::<Toolbar, _>(window, |_, model| model.tooltips = wparam);
+            invalidate(window);
+            0
+        }
+        super::WM_NOTIFY if is_from_tooltips(window, lparam) => {
+            info_tip(window, lparam);
             0
         }
         message::SIZE => {
@@ -663,6 +681,7 @@ fn set_button_info(model: &mut Toolbar, id: usize, info: usize) -> usize {
 }
 
 fn paint(window: usize) {
+    sync_tools(window);
     paint_with::<Toolbar>(window, |surface, rect, entry, model, gui| {
         let look = ToolbarLook {
             style: entry.style,
@@ -773,4 +792,132 @@ pub(super) fn act(window: usize, item: Option<usize>, action: Action, ours: bool
         gui::deliver(&delivery, thread_environment::thread_id());
     }
     Outcome::Done
+}
+
+/// A `TBSTYLE_TOOLTIPS` toolbar's tooltip control (D356), made with the toolbar.
+fn make_tooltips(window: usize) {
+    let wanted = with(|gui| {
+        gui.windows
+            .get(window)
+            .is_some_and(|entry| entry.style & TBSTYLE_TOOLTIPS != 0)
+    })
+    .unwrap_or(false);
+    if !wanted {
+        return;
+    }
+    let kind = ControlKind::Common(CommonKind::Tooltip);
+    let made = create_child(window, kind, WS_CHILD, Rect::default(), 0, &[]);
+    if let Some(tooltips) = made {
+        with_state::<Toolbar, _>(window, |_, model| model.tooltips = tooltips);
+    }
+}
+
+/// One callback tool per shown button of `window` in its tooltip control, named by the
+/// button's command id, kept as the buttons change (called before each paint).
+fn sync_tools(window: usize) {
+    let mut tools = [(0usize, Rect::default()); 64];
+    let found = with_state::<Toolbar, _>(window, |entry, model| {
+        let layout = layout_of(model, entry.style);
+        let mut count = 0;
+        for index in 0..model.count() {
+            let Some(button) = model.button(index).filter(|button| !button.is_separator()) else {
+                continue;
+            };
+            let Some(rect) = model.button_rect(index, entry.style, &layout) else {
+                continue;
+            };
+            if count < tools.len() {
+                tools[count] = (button.command as usize, rect);
+                count += 1;
+            }
+        }
+        (model.tooltips, count)
+    });
+    if let Some((tooltips, count)) = found.filter(|(tooltips, _)| *tooltips != 0) {
+        super::tooltip::replace_tools(tooltips, window, &tools[..count]);
+    }
+}
+
+fn is_from_tooltips(window: usize, lparam: usize) -> bool {
+    if lparam == 0 {
+        return false;
+    }
+    // SAFETY: `WM_NOTIFY`'s `lParam` is an `NMHDR` at least.
+    let header = unsafe { (lparam as *const super::NotifyHeader).read_unaligned() };
+    header.code == TTN_GETDISPINFOW
+        && with_state::<Toolbar, _>(window, |_, model| model.tooltips == header.from)
+            .unwrap_or(false)
+}
+
+/// `NMTBGETINFOTIPW`.
+#[repr(C)]
+struct GetInfoTip {
+    header: super::NotifyHeader,
+    text: usize,
+    room: i32,
+    item: i32,
+    lparam: usize,
+}
+
+/// The text of a toolbar button's tip, as the design's section 8 tries it: `TBN_GETINFOTIPW`
+/// to the parent, else the tooltip's `TTN_GETDISPINFOW` passed on to the parent, else the
+/// button's own string when the toolbar draws no text.
+fn info_tip(window: usize, lparam: usize) {
+    let info = lparam as *mut super::tooltip::DisplayInfo;
+    // SAFETY: the tooltip control's own `NMTTDISPINFOW`, alive for this call.
+    let command = unsafe { (*info).header.id };
+    let mut buffer = [0u16; INFO_TIP_UNITS];
+    let data = with_state::<Toolbar, _>(window, |_, model| {
+        (0..model.count())
+            .filter_map(|index| model.button(index))
+            .find(|button| button.command as usize == command)
+            .map_or(0, |button| button.data)
+    })
+    .unwrap_or(0);
+    super::notify_parent(window, TBN_GETINFOTIPW, |header| GetInfoTip {
+        header,
+        text: buffer.as_mut_ptr() as usize,
+        room: INFO_TIP_UNITS as i32,
+        item: command as i32,
+        lparam: data,
+    });
+    let length = buffer.iter().position(|&unit| unit == 0).unwrap_or(INFO_TIP_UNITS);
+    let put = |units: &[u16]| {
+        let length = units.len().min(INFO_TIP_UNITS - 1);
+        // SAFETY: as above; its 80-unit buffer takes the text and a NUL.
+        unsafe {
+            (*info).buffer[..length].copy_from_slice(&units[..length]);
+            (*info).buffer[length] = 0;
+            (*info).text = (*info).buffer.as_ptr() as usize;
+        }
+    };
+    if length > 0 {
+        put(&buffer[..length]);
+        return;
+    }
+    let parent = with(|gui| gui.windows.get(window).map(|entry| entry.parent)).flatten();
+    if let Some(parent) = parent.filter(|parent| *parent != 0) {
+        gui::send(parent, super::WM_NOTIFY, command, lparam);
+    }
+    // SAFETY: as above.
+    let answered =
+        unsafe { (*info).text != (*info).buffer.as_ptr() as usize || (*info).buffer[0] != 0 };
+    if answered {
+        return;
+    }
+    let mut own = [0u16; INFO_TIP_UNITS];
+    let own_length = with_state::<Toolbar, _>(window, |_, model| {
+        if model.max_text_rows != 0 {
+            return 0;
+        }
+        let index = (0..model.count()).find(|&index| {
+            model.button(index).is_some_and(|button| button.command as usize == command)
+        });
+        let text = index.map_or(&[][..], |index| model.text(index));
+        let length = text.len().min(INFO_TIP_UNITS);
+        own[..length].copy_from_slice(&text[..length]);
+        length
+    })
+    .unwrap_or(0);
+    put(&own[..own_length]);
 }

@@ -380,13 +380,13 @@ fn notify_tip(control: usize, tool: usize, code: i32) -> usize {
 
 /// `NMTTDISPINFOW`.
 #[repr(C)]
-struct DisplayInfo {
-    header: NotifyHeader,
-    text: usize,
-    buffer: [u16; 80],
-    instance: usize,
-    flags: u32,
-    lparam: usize,
+pub(super) struct DisplayInfo {
+    pub(super) header: NotifyHeader,
+    pub(super) text: usize,
+    pub(super) buffer: [u16; 80],
+    pub(super) instance: usize,
+    pub(super) flags: u32,
+    pub(super) lparam: usize,
 }
 
 fn asked_text(control: usize, tool: usize) -> Option<([u16; TEXT_UNITS], usize, bool)> {
@@ -797,4 +797,29 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
         | TTM_GETTEXTW | TTM_UPDATETIPTEXTW => tool_message(window, number, wparam, lparam),
         _ => default_procedure(window, number, wparam, lparam),
     }
+}
+
+/// Replaces `owner`'s tools in tooltip control `control` by one callback tool per rectangle
+/// (D356), each named by its id: the tools a toolbar keeps for its buttons.
+pub(super) fn replace_tools(control: usize, owner: usize, tools: &[(usize, Rect)]) {
+    with_state::<TipState, _>(control, |_, state| {
+        for slot in state.tools.iter_mut() {
+            if slot.is_some_and(|tool| tool.owner == owner) {
+                *slot = None;
+            }
+        }
+        let free = state.tools.iter_mut().filter(|slot| slot.is_none());
+        for (slot, &(id, rect)) in free.zip(tools) {
+            *slot = Some(Tool {
+                owner,
+                id,
+                rect: [rect.left, rect.top, rect.right, rect.bottom],
+                flags: 0,
+                text: [0; TEXT_UNITS],
+                length: 0,
+                callback: true,
+                lparam: 0,
+            });
+        }
+    });
 }

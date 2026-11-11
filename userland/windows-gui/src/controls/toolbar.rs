@@ -142,6 +142,8 @@ pub struct Toolbar {
     pub max_text_rows: i32,
     pub bitmaps: i32,
     pub struct_size: usize,
+    /// The tooltip control the layer made for a `TBSTYLE_TOOLTIPS` toolbar (D356), 0 for none.
+    pub tooltips: usize,
 }
 
 impl Default for Toolbar {
@@ -170,6 +172,7 @@ impl Toolbar {
             max_text_rows: 1,
             bitmaps: 0,
             struct_size: 0,
+            tooltips: 0,
         }
     }
 
