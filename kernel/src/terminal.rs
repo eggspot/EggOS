@@ -268,6 +268,12 @@ pub fn desktop_profile() -> Profile {
 }
 
 static CHOSEN_FORM: AtomicU8 = AtomicU8::new(0);
+static CHOSEN_ON_SCREEN_KEYBOARD: AtomicU8 = AtomicU8::new(0);
+
+/// Sets `keyboard.on_screen` (D314): auto, always, never as 0 to 2, from the next frame on.
+pub fn set_on_screen_keyboard_mode(mode: u32) {
+    CHOSEN_ON_SCREEN_KEYBOARD.store(mode.min(2) as u8, Ordering::Relaxed);
+}
 
 /// The setting `shell.form` (D303): what the settings file held at boot or the last
 /// `SET_FORM` set; `auto` until one is chosen.
@@ -427,6 +433,15 @@ pub fn load_saved_settings<P: Platform>() {
         })
     {
         CHOSEN_FORM.store(index as u8, Ordering::Relaxed);
+    }
+    if let Some(mode) = eggos_settings_file::value(&file[..length], eggos_settings_file::KEYBOARD_ON_SCREEN)
+        .and_then(|chosen| {
+            eggos_settings_file::KEYBOARD_ON_SCREEN_MODES
+                .iter()
+                .position(|mode| mode.as_bytes() == chosen)
+        })
+    {
+        CHOSEN_ON_SCREEN_KEYBOARD.store(mode as u8, Ordering::Relaxed);
     }
     let switch_key = eggos_settings_file::keyboard_switch_key(&file[..length]);
     crate::input::set_layouts(
@@ -873,6 +888,22 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
     }
     desktop.set_agent_connected(AGENT_CONNECTED.load(Ordering::Relaxed), damage);
     apply_form(desktop, damage, &mut queues);
+    let preferences = input::preferences();
+    desktop.set_on_screen_keyboard(
+        eggos_drivers::desktop::OnScreenKeyboardMode::from_number(u32::from(
+            CHOSEN_ON_SCREEN_KEYBOARD.load(Ordering::Relaxed),
+        )),
+        input::present_kinds().keyboard,
+        preferences.repeat_delay_ms,
+        1000 / preferences.repeat_rate.max(1),
+        damage,
+        &mut queues,
+    );
+    desktop.on_screen_keyboard_tick(damage, &mut queues);
+    let screen_keys = desktop.take_screen_keys();
+    if !screen_keys.is_empty() {
+        input::type_from_screen::<P>(&screen_keys);
+    }
     let (count, bytes) = unpack_updates(STORED_UPDATES.load(Ordering::Relaxed));
     desktop.set_updates(count, bytes, damage);
     desktop.set_network(crate::net::indicated(), damage);

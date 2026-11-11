@@ -74,6 +74,8 @@ pub struct Facts {
     pub form_in_use: usize,
     /// The input kinds present: touch 1, keyboard 2, pointer 4, remote 8 (D303).
     pub input_kinds: u32,
+    /// `keyboard.on_screen`: its index in `KEYBOARD_ON_SCREEN_MODES` (D314).
+    pub on_screen_keyboard: usize,
 }
 
 /// The values `shell.form` takes, in `SET_FORM`'s numbering (D303).
@@ -128,6 +130,7 @@ impl Facts {
             },
             network_adapter: eggos_net::status::parse_interface(EXAMPLE_ADAPTER.as_bytes()),
             form_setting: 0,
+            on_screen_keyboard: 0,
             form_in_use: 0,
             input_kinds: 6,
         }

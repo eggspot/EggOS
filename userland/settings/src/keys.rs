@@ -37,6 +37,7 @@ pub enum Key {
     KeyboardLayout,
     KeyboardLayouts,
     KeyboardSwitchKey,
+    KeyboardOnScreen,
     TimeZone,
     TimeAutomatic,
     TimeSync,
@@ -91,6 +92,9 @@ pub enum Change {
     KeyboardLayouts(KeyboardLayoutSet),
     /// The key that switches layouts (D221).
     KeyboardSwitchKey(SwitchKey),
+    /// When the on-screen keyboard shows: its index in `KEYBOARD_ON_SCREEN_MODES`, applied at
+    /// once (D314).
+    OnScreenKeyboard(usize),
     /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
     TimeZone(usize),
     /// Whether the clock is set from the network; turning it on syncs at once (D225).
@@ -341,7 +345,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 38] = [
         Self::ShellProfile,
         Self::ShellForm,
         Self::ShellFormInUse,
@@ -355,6 +359,7 @@ impl Key {
         Self::KeyboardLayout,
         Self::KeyboardLayouts,
         Self::KeyboardSwitchKey,
+        Self::KeyboardOnScreen,
         Self::TimeZone,
         Self::TimeAutomatic,
         Self::TimeSync,
@@ -397,6 +402,7 @@ impl Key {
             Self::KeyboardLayout => eggos_settings_file::KEYBOARD_LAYOUT,
             Self::KeyboardLayouts => eggos_settings_file::KEYBOARD_LAYOUT_SET,
             Self::KeyboardSwitchKey => eggos_settings_file::KEYBOARD_SWITCH_KEY,
+            Self::KeyboardOnScreen => eggos_settings_file::KEYBOARD_ON_SCREEN,
             Self::TimeZone => eggos_settings_file::TIME_ZONE,
             Self::TimeAutomatic => eggos_settings_file::TIME_AUTOMATIC,
             Self::TimeSync => "time.sync",
@@ -441,6 +447,7 @@ impl Key {
                 | Self::KeyboardLayout
                 | Self::KeyboardLayouts
                 | Self::KeyboardSwitchKey
+                | Self::KeyboardOnScreen
                 | Self::TimeZone
                 | Self::TimeAutomatic
                 | Self::MouseButtons
@@ -465,6 +472,7 @@ impl Key {
                 write_choices(&mut choices, &names);
             }
             Self::KeyboardSwitchKey => write_choices(&mut choices, &SwitchKey::NAMES),
+            Self::KeyboardOnScreen => write_choices(&mut choices, &eggos_settings_file::KEYBOARD_ON_SCREEN_MODES),
             Self::TimeZone => {
                 let _ = choices.write_str(ZONE_CHOICES);
             }
@@ -561,6 +569,9 @@ impl Key {
                 value.write_str(facts.keyboard_layouts.write(&mut text))
             }
             Self::KeyboardSwitchKey => value.write_str(facts.switch_key.name()),
+            Self::KeyboardOnScreen => value.write_str(
+                eggos_settings_file::KEYBOARD_ON_SCREEN_MODES[facts.on_screen_keyboard.min(2)],
+            ),
             Self::TimeZone => value.write_str(
                 eggos_calendar::zone::ZONES
                     .get(facts.time_zone)
@@ -629,6 +640,11 @@ impl Key {
             Self::KeyboardLayouts => KeyboardLayoutSet::parse(value.as_bytes())
                 .map(Change::KeyboardLayouts)
                 .map_err(Refusal::InvalidLayouts),
+            Self::KeyboardOnScreen => eggos_settings_file::KEYBOARD_ON_SCREEN_MODES
+                .iter()
+                .position(|mode| *mode == value)
+                .map(Change::OnScreenKeyboard)
+                .ok_or(Refusal::InvalidValue),
             Self::KeyboardSwitchKey => SwitchKey::named(value.as_bytes())
                 .map(Change::KeyboardSwitchKey)
                 .ok_or(Refusal::InvalidValue),

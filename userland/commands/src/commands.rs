@@ -134,6 +134,58 @@ pub const WM_BACK: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("the navigation bar's Back button"),
 };
 
+const KEYBOARD_ERRORS: [CommandError; 3] = [
+    exits(&USAGE, 2),
+    exits(&NO_WINDOW_SERVER, 1),
+    exits(&NOT_APPLIED, 1),
+];
+
+/// `wm keyboard` (D314).
+pub const WM_KEYBOARD: CommandDefinition = CommandDefinition {
+    words: &["wm", "keyboard"],
+    summary: "Says whether the on-screen keyboard shows, and where.",
+    description: "Prints `shown` and the panel's x, y, width and height, or `hidden`. Typing \
+                  never needs the keyboard: `wm type` and `wm press` work shown or hidden.",
+    options: &[],
+    operands: &[],
+    outputs: NOTHING,
+    max_effect: Effect::Read,
+    errors: &KEYBOARD_ERRORS,
+    examples: &[],
+    surface: Surface::Gui("the on-screen keyboard"),
+};
+
+/// `wm keyboard show` (D314).
+pub const WM_KEYBOARD_SHOW: CommandDefinition = CommandDefinition {
+    words: &["wm", "keyboard", "show"],
+    summary: "Shows the on-screen keyboard for the focused text field.",
+    description: "In the phone, tablet and TV forms, shows the keyboard as a tap in the field \
+                  does; refused with not_applied when keyboard.on_screen is never or no text \
+                  field has the focus.",
+    options: &[],
+    operands: &[],
+    outputs: NOTHING,
+    max_effect: Effect::Change,
+    errors: &KEYBOARD_ERRORS,
+    examples: &[],
+    surface: Surface::Gui("a tap in a text field"),
+};
+
+/// `wm keyboard hide` (D314).
+pub const WM_KEYBOARD_HIDE: CommandDefinition = CommandDefinition {
+    words: &["wm", "keyboard", "hide"],
+    summary: "Hides the on-screen keyboard.",
+    description: "Hides the keyboard as its Hide keyboard key and Back do; the field keeps the \
+                  focus. Nothing happens when it is hidden already.",
+    options: &[],
+    operands: &[],
+    outputs: NOTHING,
+    max_effect: Effect::Change,
+    errors: &KEYBOARD_ERRORS,
+    examples: &[],
+    surface: Surface::Gui("the keyboard's Hide keyboard key"),
+};
+
 const TYPING_ERRORS: [CommandError; 5] = [
     exits(&USAGE, 2),
     exits(&NO_SUCH_WINDOW, 1),
@@ -4234,7 +4286,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 113] = [
+pub static COMMANDS: [CommandDefinition; 116] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -4337,6 +4389,9 @@ pub static COMMANDS: [CommandDefinition; 113] = [
     WM_DRAG,
     WM_FOCUS,
     WM_HOME,
+    WM_KEYBOARD,
+    WM_KEYBOARD_HIDE,
+    WM_KEYBOARD_SHOW,
     WM_LIST,
     WM_MAXIMISE,
     WM_MENU,

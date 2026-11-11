@@ -8,6 +8,7 @@ use crate::input::{self, Input, RECORD_SIZE};
 use crate::menu::POOL_CAPACITY;
 use crate::theme;
 use crate::tree::{COPIED_BYTES, PointerShape, ROOT_ELEMENT, Response, WidgetTree};
+use crate::widget::Kind;
 use crate::window::{Window, WindowServer, now_ms};
 use eggos_element_tree::{
     Action, Bounds, Element, MAX_TEXT_BYTES, MAX_TREE_BYTES, Outcome, Query, Role, TreeWriter,
@@ -207,6 +208,13 @@ pub trait View {
         false
     }
 
+    /// What has the text focus, as the window tells the shell for the on-screen keyboard
+    /// (`SetTextFocus`, D314): the field's kind (0 none, 1 text, 2 multiline, 3 masked,
+    /// 8 terminal) and its Enter word (0 `Enter`).
+    fn text_focus(&mut self) -> (u32, u32) {
+        (0, 0)
+    }
+
     /// The window's new title, once after it changes.
     fn take_title(&mut self) -> Option<&str> {
         None
@@ -314,6 +322,17 @@ impl<P: Application<N, A>, const N: usize, const A: usize> View for Tree<'_, P, 
             self.0.focused(time_ms);
         }
         true
+    }
+
+    fn text_focus(&mut self) -> (u32, u32) {
+        let tree = self.0.tree();
+        let kind = match tree.focus().and_then(|id| tree.kind(id)) {
+            Some(Kind::TextField(field)) if field.masked => TEXT_FOCUS_MASKED,
+            Some(Kind::TextField(_)) => TEXT_FOCUS_TEXT,
+            Some(Kind::TextArea(_)) => TEXT_FOCUS_MULTILINE,
+            _ => TEXT_FOCUS_NONE,
+        };
+        (kind, 0)
     }
 
     fn back(&mut self, time_ms: u32) -> bool {
@@ -457,6 +476,7 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
     let mut global = window.server().desktop_profile() == Ok(MACOS_PROFILE);
     view.set_global_menu(global);
     let mut sent_menu: Option<([u8; POOL_CAPACITY], usize)> = None;
+    let mut sent_text_focus = (TEXT_FOCUS_NONE, 0);
     loop {
         sync_main_menu(window, view, global, &mut sent_menu);
         if let Some(title) = view.take_title() {
@@ -536,8 +556,27 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
                     if !view.handle(in_scale_1(other, scale as i32), event.time_ms) {
                         return Ok(());
                     }
+                    let focus = view.text_focus();
+                    let cause = match other {
+                        Input::Button { pressed: true, .. } => Some(FOCUS_BY_TAP),
+                        Input::Key { code: crate::input::key::ENTER, pressed: true, .. } => Some(FOCUS_BY_ACTIVATE),
+                        _ => None,
+                    };
+                    let asked = cause.is_some() && focus.0 != TEXT_FOCUS_NONE;
+                    if focus != sent_text_focus || asked {
+                        let _ = window.set_text_focus(focus.0, focus.1, cause.unwrap_or(FOCUS_OTHERWISE));
+                        sent_text_focus = focus;
+                    }
                 }
             }
         }
     }
 }
+
+const TEXT_FOCUS_NONE: u32 = 0;
+const TEXT_FOCUS_TEXT: u32 = 1;
+const TEXT_FOCUS_MULTILINE: u32 = 2;
+const TEXT_FOCUS_MASKED: u32 = 3;
+const FOCUS_BY_TAP: u32 = 0;
+const FOCUS_BY_ACTIVATE: u32 = 1;
+const FOCUS_OTHERWISE: u32 = 2;

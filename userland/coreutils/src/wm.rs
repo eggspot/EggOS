@@ -12,6 +12,10 @@ use eggos_runtime::errno::Errno;
 pub const DEVICE: &CStr = c"/dev/window";
 pub const LIST_WINDOW: u32 = 0xc060_770b;
 pub const MANAGE_WINDOW: u32 = 0x4010_770c;
+/// `/dev/window`'s `ON_SCREEN_KEYBOARD` (D314): 0 status, 1 show, 2 hide; the reply says whether
+/// it shows and where.
+pub const ON_SCREEN_KEYBOARD: u32 = 0xc014_7731;
+
 /// `/dev/window`'s `SHELL_NAVIGATE` (D303): 0 home, 1 back.
 pub const SHELL_NAVIGATE: u32 = 0x4004_772e;
 const FIXED_BY_FORM_ERRNO: Errno = Errno(30);
@@ -345,6 +349,9 @@ pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         };
         output.system.close(device);
         return status;
+    }
+    if verb == b"keyboard" {
+        return keyboard(output, rest);
     }
     if verb == b"list" {
         let mut page = Page::default();
@@ -696,4 +703,55 @@ mod tests {
             output.system.errors()
         );
     }
+}
+
+fn keyboard<S: System>(output: &mut Output<S>, rest: &[&CStr]) -> i32 {
+    let (definition, action, rest) = match rest.split_first().map(|(word, rest)| (word.to_bytes(), rest)) {
+        Some((b"show", rest)) => (&commands::WM_KEYBOARD_SHOW, 1u32, rest),
+        Some((b"hide", rest)) => (&commands::WM_KEYBOARD_HIDE, 2u32, rest),
+        _ => (&commands::WM_KEYBOARD, 0u32, rest),
+    };
+    let Ok(operands) = parse_defined(output, rest, definition, |_, _| Ok(())) else {
+        return USAGE_STATUS;
+    };
+    if !operands.all().is_empty() {
+        return usage(output);
+    }
+    let Some(device) = open_device(output) else {
+        return FAILURE;
+    };
+    let mut request = [0u8; 20];
+    request[..4].copy_from_slice(&action.to_ne_bytes());
+    let status = match output.system.device_control(device, ON_SCREEN_KEYBOARD, &mut request) {
+        Ok(()) if action == 0 => {
+            let word = |at: usize| u32::from_ne_bytes([request[at], request[at + 1], request[at + 2], request[at + 3]]);
+            match word(0) {
+                0 => output.write(b"hidden\n"),
+                _ => {
+                    output.write(b"shown");
+                    for at in [4, 8, 12, 16] {
+                        let mut digits = [0u8; 20];
+                        output.write(b" ");
+                        output.write(decimal(u64::from(word(at)), &mut digits));
+                    }
+                    output.write(b"\n");
+                }
+            }
+            0
+        }
+        Ok(()) => 0,
+        Err(Errno::EOPNOTSUPP) => {
+            output.coded(
+                &errors::NOT_APPLIED,
+                &[b"keyboard show: no text field has the focus, or keyboard.on_screen is never"],
+            );
+            FAILURE
+        }
+        Err(errno) => {
+            output.coded(error_for(errno), &[b"keyboard: ", errno.message()]);
+            FAILURE
+        }
+    };
+    output.system.close(device);
+    status
 }

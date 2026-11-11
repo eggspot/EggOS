@@ -312,6 +312,7 @@ impl Desktop {
     /// `Home`: the shown window is minimised and the home screen shows; on the home screen the
     /// grid goes back to the top and the search empties (section 2.5, `wm home`).
     pub fn phone_home(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {
+        self.hide_on_screen_keyboard(damage, events);
         if self.close_phone_overlays() {
             damage.add(self.screen());
         }
@@ -330,6 +331,9 @@ impl Desktop {
     /// focus from it; asks the shown window's dialog to close; minimises the shown window;
     /// on the home screen with nothing open, does nothing. Returns whether it did something.
     pub fn phone_back(&mut self, damage: &mut Damage, events: &mut dyn EventSink) -> bool {
+        if self.on_screen_keyboard_back(damage, events) {
+            return true;
+        }
         damage.add(self.screen());
         if self.close_phone_overlays() {
             return true;
@@ -492,6 +496,7 @@ impl Desktop {
             Target::StatusBar if down >= SWIPE || inside(self.layout.status_bar) => {
                 let open = !self.phone.shade;
                 self.close_phone_overlays();
+                self.hide_on_screen_keyboard(damage, events);
                 self.phone.shade = open;
             }
             Target::Back | Target::Home | Target::Apps if up >= SWIPE_UP => {
@@ -504,6 +509,7 @@ impl Desktop {
             Target::Apps if inside(self.navigation_zone(2)) => {
                 let open = !self.phone.switcher;
                 self.close_phone_overlays();
+                self.hide_on_screen_keyboard(damage, events);
                 self.phone.switcher = open;
                 self.phone.switcher_scroll = 0;
             }

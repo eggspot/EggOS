@@ -235,6 +235,22 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    pub(super) fn character_doubled(&mut self, x: u32, y: u32, character: char, colour: u32) {
+        let cell = Rect::new(x, y, 2 * GLYPH_WIDTH as u32, 2 * GLYPH_HEIGHT as u32);
+        if !cell.overlaps(&self.clip) || character == ' ' {
+            return;
+        }
+        for (row, &bits) in font::glyph_rows(u32::from(character)).iter().enumerate() {
+            for column in 0..GLYPH_WIDTH {
+                if bits & (0x80 >> column) != 0 {
+                    let (left, top) = (x + 2 * column as u32, y + 2 * row as u32);
+                    self.row(top, left, left + 2, colour);
+                    self.row(top + 1, left, left + 2, colour);
+                }
+            }
+        }
+    }
+
     pub(super) fn glyph_at(&mut self, x: u32, y: u32, id: u8, colour: u32) {
         self.glyph(x, y, id, colour);
     }

@@ -4029,7 +4029,10 @@ fn succeeded(tool: &Tool, outcome: &RunOutcome, content_length: usize) -> bool {
         | Kind::WmAct
         | Kind::WmDrag
         | Kind::WmHome
-        | Kind::WmBack => outcome.ended == Ended::Exited(0) && !outcome.stdout_cut,
+        | Kind::WmBack
+        | Kind::WmKeyboard
+        | Kind::WmKeyboardShow
+        | Kind::WmKeyboardHide => outcome.ended == Ended::Exited(0) && !outcome.stdout_cut,
         _ => outcome.stdout_cut || outcome.ended == Ended::Exited(0),
     }
 }

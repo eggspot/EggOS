@@ -20712,3 +20712,85 @@ the license, by an explicit instruction recorded here.
     `+noabicalls` and the static relocation model.
   - The page tables still map the direct map and the image although nothing walks them there
     (2 MiB of tables per GiB of RAM).
+
+## D314 The on-screen keyboard, slice 1: a server-drawn panel whose keys go through the kernel's typist (docs/ux/on-screen-keyboard-v0.5.md; M12; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The design brief (Fable, committed with this change) is built in two slices.
+  Slice 1:
+  - **The panel** (`drivers/src/desktop/osk.rs`). It sits at the bottom of the work area in
+    the phone (portrait 260, landscape 176), tablet (300) and TV (204) forms.
+    - While it shows, the work area ends at its top, and every shown window is fitted again
+      (one `Resize`). A layout recomputed by a form or size change gets the panel back on the
+      next frame.
+    - The zones come from one function per form, following the brief's rules (4.1 to 4.4, 8):
+      the phone's pitch from the widest row, the tablet's and landscape phone's unit, and the
+      TV's 12 by 4 grid. Host tests pin the brief's numbers for `us` and `de`.
+  - **Pages.** `Letters` is read from `LAYOUTS` (the new `Layout::plain_letter`): letter keys
+    with a Latin-1 capital from codes 16–27, 30–40 and 86, 44–53, 43, plus `ß`. `Numbers` and
+    `Symbols` are the same for every layout. The seven accent keys come from `DEAD_ACCENTS`.
+    Email and URL fields change key 18, and number fields open on `Numbers`.
+  - **Keys.**
+    - Character keys type on release, the key under the finger. Backspace and the arrows act
+      on the press and repeat at `keyboard.repeat_delay_ms` and `keyboard.repeat_rate`.
+    - Shift cycles `off`, `once`, `locked`; Ctrl and Alt latch for one key.
+    - A key held 500 ms (or right-clicked) opens its Latin-1 alternates; the strip stays open
+      when the finger lifts without choosing. The phone's portrait preview is drawn too.
+    - The layout key cycles the chosen layouts (`Action::ChooseKeyboardLayout`).
+    - Hide keyboard, `Back` (navigation bar, key or `wm back`), Home, the shade, the switcher,
+      and the field losing the focus all hide the panel.
+  - **Typing.** The panel queues `ScreenKey`s (a key code with modifiers, a character, or an
+    accent). Each frame the kernel takes them (`Desktop::take_screen_keys`) and feeds them to
+    `InputState::screen_key` under the input lock:
+    - a key goes through the `Typist` as a USB key would;
+    - a character becomes a key-less character event;
+    - an accent becomes pending through the new `Typist::set_pending_accent`, whatever the
+      layout, with the dead key's event.
+
+    Their events reach the window like a keyboard's. Bytes meant for the console wait in
+    `SCREEN_BYTES` until the next input poll, so the desktop's lock is never held while the
+    console takes them. Shifted letters are sent with Shift, else Caps Lock, else as the
+    capital character, so `ü` gives `Ü` on `ch` (the brief's 3.3).
+  - **TV.** On the TV, the arrows walk the grid without wrapping, OK types, Menu (Compose)
+    opens the alternates, Back closes or hides, and Enter hides except in multi-line and
+    terminal fields. The panel's own keys coming back through `key_typing` are not taken as
+    remote presses (`own_keys`), and the toolkit's `activate` that the panel's own Enter causes
+    does not show the keyboard again.
+  - **Window protocol.**
+    - `SET_TEXT_FOCUS` (48) carries the window, the field kind (none, text, multiline, masked,
+      number, email, url, search, terminal), the Enter word (six) and the cause (tap, activate,
+      other).
+    - `ON_SCREEN_KEYBOARD` (49) takes 0 status, 1 show, 2 hide, or 3 + the mode to set
+      `keyboard.on_screen`, and replies whether the keyboard shows and its panel.
+    - The toolkit sends the text focus after every event that changes it, and on each tap or
+      Enter while a field has it (`View::text_focus`: text, masked and multi-line fields).
+  - **Setting.** `keyboard.on_screen` (`auto`, `always`, `never`) is in the settings file, the
+    `settings` keys (`ALL` 38) and the kernel (read at boot, set at once).
+  - **Agents (D22).**
+    - `wm keyboard` prints `shown x y w h` or `hidden`; `wm keyboard show` and
+      `wm keyboard hide` act. `show` is refused with `not_applied` (the server's `Unsupported`)
+      with no focused field or in `never`.
+    - MCP has `wm_keyboard`, `wm_keyboard_show` and `wm_keyboard_hide`.
+    - Typing stays `wm type` and `wm press`, shown or hidden.
+- **Deviations from the brief (slice 2 or later).**
+  - The caret and selection handles (section 7, toolkit asks 6–7).
+  - The second contact (5.1, ask 3): the touch path still gives one contact, so a second
+    finger is not tracked.
+  - Settings' Keyboard pane row: the setting has its CLI and MCP twins, and the row comes with
+    slice 2.
+  - The Terminal's `terminal` kind: the console window is the server's own and sends no text
+    focus yet.
+  - The layout key's long-press menu sheet: a tap cycles.
+  - `wm show shell`'s keyboard group: the shell has no element tree yet;
+    `Desktop::on_screen_keyboard_key_names` lists the keys for when it does.
+  - Space remembering its column on the TV.
+  - The landscape phone's panel spans the full width: the navigation bar stays at the bottom
+    in this build (D303), not on the right.
+  - Drawn caps have square corners, not the push button's corner table.
+  - Scale 2 is not doubled: the shell's layout runs at scale 1 throughout (D303).
+- **Build-pass notes.**
+  - Counts: `COMMANDS` 116, registry `TOOLS` 86, MCP `TOOLS` 83, settings `ALL` 38; update
+    `docs/mcp.md` and `docs/coreutils.md`.
+  - The desktop's `colour` module gains the toolkit's existing button tokens (`BUTTON`,
+    `BUTTON_PRESSED`, `BUTTON_PRIMARY`, `BUTTON_PRIMARY_HOVER`), the same values.
+  - `Canvas::character_doubled` draws any Egg Mono character at 2x.
+- **Not yet.** Building and running; the acceptance list of the brief's section 13.

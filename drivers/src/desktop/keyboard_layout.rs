@@ -223,6 +223,27 @@ impl Desktop {
         self.keyboard_layouts.in_force_choice()
     }
 
+    /// The layout in force among the chosen ones, indicator or not.
+    pub(super) fn keyboard_layout_in_force(&self) -> Option<KeyboardLayoutChoice> {
+        self.keyboard_layouts.in_force_choice()
+    }
+
+    /// How many layouts are chosen.
+    pub(super) fn keyboard_layout_count(&self) -> usize {
+        self.keyboard_layouts.count()
+    }
+
+    /// The number of the chosen layout after the one in force, as the switch key cycles; `None`
+    /// with fewer than two.
+    pub(super) fn next_keyboard_layout(&self) -> Option<u8> {
+        let count = self.keyboard_layouts.count();
+        if count < 2 {
+            return None;
+        }
+        let next = self.keyboard_layouts.in_force.map_or(0, |index| (index + 1) % count);
+        self.keyboard_layouts.choices.get(next).copied().flatten().map(|choice| choice.number)
+    }
+
     /// Whether the indicator's menu is open.
     pub fn keyboard_layout_menu_open(&self) -> bool {
         self.keyboard_layouts.menu_open

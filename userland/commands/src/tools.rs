@@ -1795,6 +1795,43 @@ pub const WM_BACK: ToolDefinition = managing(
     ToolResult::Text,
 );
 
+/// `wm_keyboard` (D314).
+pub const WM_KEYBOARD: ToolDefinition = reading(
+    "wm_keyboard",
+    "On-screen keyboard status",
+    "Says whether the on-screen keyboard shows (`shown x y width height`) or not (`hidden`), as \
+         `wm keyboard` does. Typing needs no keyboard: wm_type and wm_press work either way.",
+    &["wm", "keyboard"],
+    &[],
+    &[],
+    ToolResult::Text,
+);
+
+/// `wm_keyboard_show` (D314).
+pub const WM_KEYBOARD_SHOW: ToolDefinition = managing(
+    "wm_keyboard_show",
+    "Show the on-screen keyboard",
+    "Shows the on-screen keyboard for the focused text field in the phone, tablet and TV \
+         forms, as `wm keyboard show` does. Refused with not_applied when keyboard.on_screen is \
+         never or no text field has the focus. Needs the run grant.",
+    &["wm", "keyboard", "show"],
+    &[],
+    true,
+    ToolResult::Text,
+);
+
+/// `wm_keyboard_hide` (D314).
+pub const WM_KEYBOARD_HIDE: ToolDefinition = managing(
+    "wm_keyboard_hide",
+    "Hide the on-screen keyboard",
+    "Hides the on-screen keyboard as its Hide keyboard key does, as `wm keyboard hide` does; the \
+         field keeps the focus. Needs the run grant.",
+    &["wm", "keyboard", "hide"],
+    &[],
+    true,
+    ToolResult::Text,
+);
+
 /// `wm_menu_list`.
 pub const WM_MENU_LIST: ToolDefinition = reading(
     "wm_menu_list",
@@ -2586,7 +2623,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
 /// D204's, D226's, D225's, D235's and D231's.
-pub const TOOLS: [ToolDefinition; 83] = [
+pub const TOOLS: [ToolDefinition; 86] = [
     COMPONENT_UPDATE,
     APP_ACTIONS,
     APP_DO,
@@ -2629,6 +2666,9 @@ pub const TOOLS: [ToolDefinition; 83] = [
     WM_DRAG,
     WM_HOME,
     WM_BACK,
+    WM_KEYBOARD,
+    WM_KEYBOARD_SHOW,
+    WM_KEYBOARD_HIDE,
     SETTINGS_LIST,
     SETTINGS_GET,
     SETTINGS_SET,

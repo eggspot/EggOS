@@ -223,6 +223,16 @@ impl Layout {
         Some([u16::from(plain), u16::from(shifted), 0, 0])
     }
 
+    /// The character key `code` types at its first level, when that is a character and not a
+    /// dead key's accent: the on-screen keyboard's `Letters` page reads its caps from it (D314).
+    pub fn plain_letter(&self, code: u16) -> Option<char> {
+        let symbol = self.levels(code)?[0];
+        if symbol == 0 || COMBINING_MARKS.contains(&symbol) {
+            return None;
+        }
+        char::from_u32(u32::from(symbol))
+    }
+
     /// Whether key `code` types characters in this layout (the main block, the space bar and
     /// the keypad's character keys).
     pub fn is_character_key(&self, code: u16) -> bool {
@@ -1031,6 +1041,19 @@ impl Typist {
                 pending: (bits >> 8) as u16,
             },
             false => Self::new(),
+        }
+    }
+
+    /// Makes the dead accent `accent`, given as its spacing character ([`DEAD_ACCENTS`]), wait
+    /// for the next key whatever the layout, as the on-screen keyboard's accent keys do (D314);
+    /// `false` for a character that is no dead accent.
+    pub fn set_pending_accent(&mut self, accent: char) -> bool {
+        match DEAD_ACCENTS.iter().position(|&dead| dead == accent) {
+            Some(index) => {
+                self.pending = DEAD_MARKS[index];
+                true
+            }
+            None => false,
         }
     }
 

@@ -85,6 +85,12 @@ pub const SHELL_PROFILE: &str = "shell.profile";
 /// The key of the shell's form (D303): `auto`, `desktop`, `tablet`, `phone` or `tv`.
 pub const SHELL_FORM: &str = "shell.form";
 
+/// When the on-screen keyboard shows (D314): `auto`, `always` or `never`.
+pub const KEYBOARD_ON_SCREEN: &str = "keyboard.on_screen";
+
+/// The values of [`KEYBOARD_ON_SCREEN`], in the numbering the window server takes.
+pub const KEYBOARD_ON_SCREEN_MODES: [&str; 3] = ["auto", "always", "never"];
+
 /// The display's scale from the next boot: `1` or `2`.
 pub const DISPLAY_SCALE: &str = "display.scale";
 

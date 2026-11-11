@@ -92,6 +92,8 @@ pub mod size {
     pub const SET_FORM: usize = 4;
     pub const SHELL_NAVIGATE: usize = 4;
     pub const BACK_UNUSED: usize = 4;
+    pub const SET_TEXT_FOCUS: usize = 16;
+    pub const ON_SCREEN_KEYBOARD: usize = 20;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -148,6 +150,20 @@ pub mod request {
     pub const SET_FORM: u32 = encode(WRITE, 45, size::SET_FORM);
     pub const SHELL_NAVIGATE: u32 = encode(WRITE, 46, size::SHELL_NAVIGATE);
     pub const BACK_UNUSED: u32 = encode(WRITE, 47, size::BACK_UNUSED);
+    pub const SET_TEXT_FOCUS: u32 = encode(WRITE, 48, size::SET_TEXT_FOCUS);
+    pub const ON_SCREEN_KEYBOARD: u32 = encode(READ | WRITE, 49, size::ON_SCREEN_KEYBOARD);
+}
+
+/// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
+/// keyboard shows, then the panel's x, y, width and height.
+pub mod on_screen_keyboard {
+    pub const STATUS: u32 = 0;
+    pub const SHOW: u32 = 1;
+    pub const HIDE: u32 = 2;
+    /// This word plus the mode (auto, always, never as 0 to 2) sets `keyboard.on_screen`.
+    pub const SET_MODE: u32 = 3;
+    pub const SHOWN: usize = 0;
+    pub const PANEL: usize = 4;
 }
 
 /// `GET_FORM`'s reply (D303): the form in use, the setting and the input kinds, one word each.
@@ -524,6 +540,18 @@ pub enum Request {
     BackUnused {
         window: u32,
     },
+    /// The window's text focus is a field of `kind` whose Enter does `enter`, taken for `cause`
+    /// (D314): the on-screen keyboard's cue.
+    SetTextFocus {
+        window: u32,
+        kind: u32,
+        enter: u32,
+        cause: u32,
+    },
+    /// `wm keyboard`: the on-screen keyboard's status, or show or hide it (D314).
+    OnScreenKeyboard {
+        action: u32,
+    },
     AppsChanged,
     OpenApp {
         length: u32,
@@ -698,6 +726,8 @@ impl Request {
             request::SET_FORM => size::SET_FORM,
             request::SHELL_NAVIGATE => size::SHELL_NAVIGATE,
             request::BACK_UNUSED => size::BACK_UNUSED,
+            request::SET_TEXT_FOCUS => size::SET_TEXT_FOCUS,
+            request::ON_SCREEN_KEYBOARD => size::ON_SCREEN_KEYBOARD,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::GET_LAUNCH => size::GET_LAUNCH,
@@ -808,6 +838,13 @@ impl Request {
             request::SET_FORM => Self::SetForm { setting: at(0) },
             request::SHELL_NAVIGATE => Self::ShellNavigate { to: at(0) },
             request::BACK_UNUSED => Self::BackUnused { window: at(0) },
+            request::SET_TEXT_FOCUS => Self::SetTextFocus {
+                window: at(0),
+                kind: at(4),
+                enter: at(8),
+                cause: at(12),
+            },
+            request::ON_SCREEN_KEYBOARD => Self::OnScreenKeyboard { action: at(0) },
             request::SET_REDUCE_MOTION => Self::SetReduceMotion { reduce: at(0) },
             request::APPS_CHANGED => Self::AppsChanged,
             request::OPEN_APP => {

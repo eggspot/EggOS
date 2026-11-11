@@ -939,6 +939,72 @@ impl InputState {
         self.typed(code, modifiers, press, timing, sink);
     }
 
+    /// One key of the on-screen keyboard (D314), as [`type_from_screen`] types it: a key's
+    /// press through the typist and its release, a character with no key, or an accent left
+    /// waiting with the dead key's event.
+    pub fn screen_key(&mut self, key: eggos_drivers::desktop::ScreenKey, sink: &mut dyn InputSink) {
+        use eggos_drivers::desktop::ScreenKey;
+        match key {
+            ScreenKey::Key { code, modifiers } => {
+                let press = match self.typist.plain_character(code, modifiers) {
+                    Some(character) => Press::typed(character),
+                    None => self.typist.press(code, modifiers),
+                };
+                if press != Press::Cancelled {
+                    let bytes = press.terminal_bytes(code, modifiers, self.cursor_keys);
+                    sink.bytes(bytes.as_bytes());
+                    if let Press::Typed { typed, .. } = press
+                        && let Some(accent) = typed.before_last()
+                    {
+                        for pressed in [true, false] {
+                            sink.event(InputEvent::Key {
+                                code: 0,
+                                pressed,
+                                modifiers,
+                                character: u32::from(accent),
+                            });
+                        }
+                    }
+                }
+                let character = match press {
+                    Press::Cancelled => DEAD_KEY_CHARACTER,
+                    _ => press.character(code, modifiers),
+                };
+                for pressed in [true, false] {
+                    sink.event(InputEvent::Key {
+                        code: if press == Press::Cancelled { 0 } else { code },
+                        pressed,
+                        modifiers,
+                        character,
+                    });
+                }
+            }
+            ScreenKey::Character(character) => {
+                let mut encoded = [0u8; 4];
+                sink.bytes(character.encode_utf8(&mut encoded).as_bytes());
+                for pressed in [true, false] {
+                    sink.event(InputEvent::Key {
+                        code: 0,
+                        pressed,
+                        modifiers: Modifiers::NONE,
+                        character: u32::from(character),
+                    });
+                }
+            }
+            ScreenKey::Accent(accent) => {
+                if self.typist.set_pending_accent(accent) {
+                    let waiting = self.typist.pending_accent().map_or(0, u32::from);
+                    sink.event(InputEvent::Key {
+                        code: 0,
+                        pressed: true,
+                        modifiers: Modifiers::NONE,
+                        character: waiting | DEAD_KEY_CHARACTER,
+                    });
+                }
+            }
+        }
+    }
+
     #[cold]
     #[inline(never)]
     fn toggle_lock(&mut self, code: u16) {
@@ -1594,11 +1660,62 @@ impl InputSink for PollSink {
     }
 }
 
+/// Types the on-screen keyboard's keys (D314) as the keyboard's own: each key through the
+/// typist with the layout in force (a letter types the layout's character, a dead accent
+/// waits), each character as a key of its own, each accent left waiting; the events go to the
+/// queue the desktop reads, the bytes to the console when it has the keys.
+pub fn type_from_screen<P: Platform>(keys: &[eggos_drivers::desktop::ScreenKey]) {
+    let mut sink = PollSink {
+        bytes: [0; POLL_BUDGET_BYTES],
+        length: 0,
+        queue: subscribed_events(),
+        views: [None; POLL_VIEW_MOVES],
+        queued: false,
+    };
+    {
+        let mut input = INPUT.lock();
+        let Some(input) = input.as_mut() else {
+            return;
+        };
+        let wanted = in_force_of(LAYOUTS.load(Ordering::Relaxed));
+        input.state.set_layout(wanted, terminal::desktop_profile());
+        for &key in keys {
+            input.state.screen_key(key, &mut sink);
+        }
+    }
+    if terminal::keys_go_to_console() && sink.length > 0 {
+        let mut waiting = SCREEN_BYTES.lock();
+        let (bytes, length) = &mut *waiting;
+        let taken = sink.length.min(bytes.len() - *length);
+        bytes[*length..*length + taken].copy_from_slice(&sink.bytes[..taken]);
+        *length += taken;
+    }
+}
+
+/// The on-screen keyboard's bytes for the console, typed while the desktop's lock was held:
+/// the next poll hands them over, as a keyboard's.
+static SCREEN_BYTES: LeafSpinLock<([u8; POLL_BUDGET_BYTES], usize)> =
+    LeafSpinLock::new_leaf(([0; POLL_BUDGET_BYTES], 0));
+
+fn hand_over_screen_bytes<P: Platform>() {
+    let (bytes, length) = {
+        let mut waiting = SCREEN_BYTES.lock();
+        let taken = *waiting;
+        waiting.1 = 0;
+        taken
+    };
+    if length > 0 && terminal::keys_go_to_console() {
+        terminal::move_view::<P>(ViewMove::Live);
+        console::receive_from_keyboard::<P>(&bytes[..length]);
+    }
+}
+
 /// Polls every input device: in rounds of at most 16 events each, the console fed between
 /// rounds, until the devices have nothing more or [`MAX_POLL_ROUNDS`] rounds ran; then sends the
 /// held key's repeat if it is due, and returns the clock tick to poll again at, which an input
 /// thread woken by interrupts also keeps when events were left. `None` without input devices.
 pub fn poll<P: Platform>() -> Option<u64> {
+    hand_over_screen_bytes::<P>();
     poll_devices::<P>(&INPUT, subscribed_events(), screen(), Timing::now::<P>())
 }
 

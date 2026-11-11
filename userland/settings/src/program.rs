@@ -632,6 +632,13 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         form_setting: form.map_or(0, |(_, setting, _)| setting as usize),
         form_in_use: form.map_or(0, |(in_use, _, _)| in_use as usize),
         input_kinds: form.map_or(0, |(_, _, kinds)| kinds),
+        on_screen_keyboard: settings_file::value(&file[..length], settings_file::KEYBOARD_ON_SCREEN)
+            .and_then(|chosen| {
+                settings_file::KEYBOARD_ON_SCREEN_MODES
+                    .iter()
+                    .position(|mode| mode.as_bytes() == chosen)
+            })
+            .unwrap_or(0),
     }
 }
 
@@ -982,6 +989,23 @@ impl command::Machine for Machine {
     fn save_form(&mut self, index: usize) -> Result<(), &'static [u8]> {
         let name = eggos_settings::facts::FORM_SETTINGS[index];
         save_through_a_temporary_file(settings_file::SHELL_FORM, name).map_err(Errno::message)
+    }
+
+    fn save_on_screen_keyboard(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let mode = settings_file::KEYBOARD_ON_SCREEN_MODES[index.min(2)];
+        save_through_a_temporary_file(settings_file::KEYBOARD_ON_SCREEN, mode).map_err(Errno::message)
+    }
+
+    fn apply_on_screen_keyboard(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let opened;
+        let server = match self.server.as_ref() {
+            Some(server) => server,
+            None => {
+                opened = WindowServer::open().map_err(Errno::message)?;
+                &opened
+            }
+        };
+        server.set_on_screen_keyboard_mode(index as u32).map_err(Errno::message)
     }
 
     fn apply_form(&mut self, index: usize) -> Result<(), &'static [u8]> {

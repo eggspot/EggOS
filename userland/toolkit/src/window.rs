@@ -41,6 +41,9 @@ const HANDLES_BACK: u32 = 16;
 /// `Create`'s flag: the window moves its own focus with the arrows (D309).
 const FOCUS_NAVIGABLE: u32 = 32;
 const SET_FORM: usize = 0x4004_772d;
+const SET_TEXT_FOCUS: usize = 0x4010_7730;
+const ON_SCREEN_KEYBOARD: usize = 0xc014_7731;
+const ON_SCREEN_KEYBOARD_SET_MODE: u32 = 3;
 const MENU_POOL: usize = 8;
 const CAPS_LOCK_FLAG: u32 = 1;
 const KEYBOARD_FLAG: u32 = 2;
@@ -284,6 +287,21 @@ impl WindowServer {
         self.ioctl(SET_FORM, &mut setting.to_ne_bytes())
     }
 
+    /// The on-screen keyboard (`ON_SCREEN_KEYBOARD`, D314) after `action` (0 status, 1 show,
+    /// 2 hide): its panel's x, y, width and height while it shows.
+    pub fn on_screen_keyboard(&self, action: u32) -> Result<Option<[u32; 4]>, Errno> {
+        let mut request = [0u8; 20];
+        request[..4].copy_from_slice(&action.to_ne_bytes());
+        self.ioctl(ON_SCREEN_KEYBOARD, &mut request)?;
+        let panel = [word(&request, 4), word(&request, 8), word(&request, 12), word(&request, 16)];
+        Ok((word(&request, 0) != 0).then_some(panel))
+    }
+
+    /// Makes `keyboard.on_screen` mode `mode` (auto, always, never as 0 to 2), at once (D314).
+    pub fn set_on_screen_keyboard_mode(&self, mode: u32) -> Result<(), Errno> {
+        self.on_screen_keyboard(ON_SCREEN_KEYBOARD_SET_MODE + mode.min(2)).map(|_| ())
+    }
+
     /// Makes profile `profile` the desktop's, at once.
     pub fn set_desktop_profile(&self, profile: u32) -> Result<(), Errno> {
         self.ioctl(SET_PROFILE, &mut profile.to_ne_bytes())
@@ -386,6 +404,18 @@ impl Window {
     /// D305), so it goes back past the window.
     pub fn back_unused(&self) -> Result<(), Errno> {
         self.server.ioctl(BACK_UNUSED, &mut self.id.to_ne_bytes())
+    }
+
+    /// Tells the shell what has this window's text focus (`SetTextFocus`, D314): the field's
+    /// kind (0 none, 1 text, 2 multiline, 3 masked, 4 number, 5 email, 6 url, 7 search,
+    /// 8 terminal), its Enter word (0 Enter, 1 Go, 2 Search, 3 Next, 4 Done, 5 Send) and the
+    /// cause (0 a tap, 1 OK on a TV, 2 anything else), for the on-screen keyboard.
+    pub fn set_text_focus(&self, kind: u32, enter: u32, cause: u32) -> Result<(), Errno> {
+        let mut request = [0u8; 16];
+        for (index, value) in [self.id, kind, enter, cause].into_iter().enumerate() {
+            request[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+        }
+        self.server.ioctl(SET_TEXT_FOCUS, &mut request)
     }
 }
 

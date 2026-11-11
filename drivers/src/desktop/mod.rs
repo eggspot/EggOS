@@ -16,6 +16,7 @@
 
 mod agent;
 pub mod form;
+mod osk;
 mod phone;
 mod phone_sheets;
 mod tablet;
@@ -68,6 +69,7 @@ mod window_tests;
 
 pub use updates::UPDATES_LABEL;
 pub use form::{Form, FormSetting, InputKinds};
+pub use osk::{EnterWord, FieldKind, FocusCause, LONG_PRESS_MS, OnScreenKeyboardMode, ScreenKey};
 pub use agent::{AGENT_ACTING_MS, AGENT_LABEL, AGENT_LOG_LINE, AGENT_SUFFIX, AGENT_TOOLTIP};
 pub use catalogue::{
     ARGUMENT_SEPARATOR, AppId, COMMAND_CAPACITY, Catalogue, Command, INSTALLER_PROGRAM, Launch,
@@ -163,6 +165,10 @@ pub mod colour {
     pub const WINDOW_BACKGROUND: u32 = 0x0012_161d;
     pub const FIELD: u32 = 0x000b_0e13;
     pub const BUTTON_BORDER: u32 = 0x003a_4454;
+    pub const BUTTON: u32 = 0x002a_3440;
+    pub const BUTTON_PRESSED: u32 = 0x0020_2833;
+    pub const BUTTON_PRIMARY: u32 = 0x00f2_b33d;
+    pub const BUTTON_PRIMARY_HOVER: u32 = 0x00f6_c25c;
     pub const ICON_TILE: u32 = 0x0026_303f;
     pub const ICON_TILE_BORDER: u32 = 0x003a_4454;
     pub const ICON_PROMPT: u32 = 0x005f_b865;
@@ -417,6 +423,7 @@ pub struct Desktop {
     phone: phone::PhoneState,
     tablet: tablet::TabletState,
     tv: tv::TvState,
+    osk: osk::OskState,
     updates: updates::UpdatesState,
     sticky: sticky_keys::StickyChips,
     panel_focus: Option<panel_focus::PanelFocus>,
@@ -505,6 +512,7 @@ impl Desktop {
             phone: phone::PhoneState::default(),
             tablet: tablet::TabletState::default(),
             tv: tv::TvState::default(),
+            osk: osk::OskState::default(),
             updates: updates::UpdatesState::default(),
             sticky: sticky_keys::StickyChips::default(),
             panel_focus: None,
@@ -1789,6 +1797,9 @@ impl Desktop {
         self.note_person_motion(x, y);
         self.pointer = (x, y);
         self.pointer_visible = true;
+        if self.on_screen_keyboard_holds() {
+            self.on_screen_keyboard_move(x, y, damage);
+        }
         self.tablet_drag(x, damage);
         if let Some(resize) = self.resize {
             self.resize_to(resize, x, y, damage, events);
@@ -1933,6 +1944,10 @@ impl Desktop {
         let bit = 1u8 << bit;
         if !pressed {
             self.buttons &= !bit;
+            if matches!(code, button::LEFT | button::RIGHT) && self.on_screen_keyboard_holds() {
+                let (x, y) = self.pointer;
+                return self.on_screen_keyboard_release(x, y, damage, events);
+            }
             if code == button::LEFT {
                 self.phone_release(damage, events);
                 self.tablet_release(damage, events);
@@ -1969,6 +1984,11 @@ impl Desktop {
         let (x, y) = self.pointer;
         self.super_alone = false;
         self.close_notice(damage);
+        if matches!(code, button::LEFT | button::RIGHT) && self.on_screen_keyboard_takes(x, y) {
+            self.on_screen_keyboard_press(x, y, code == button::RIGHT, damage);
+            return Action::None;
+        }
+        self.close_keyboard_strip(damage);
         if self.touch_form()
             && code == button::LEFT
             && let Some(action) = self.phone_press(x, y, damage, events)
@@ -2213,6 +2233,13 @@ impl Desktop {
     ) -> Action {
         self.typed = character;
         self.note_person_input();
+        let own_key = pressed && self.take_own_screen_key(code);
+        if pressed && !own_key && let Some(action) = self.on_screen_keyboard_tv_key(code, damage, events) {
+            return action;
+        }
+        if pressed && !own_key && code == key::BACK && self.on_screen_keyboard_back(damage, events) {
+            return Action::None;
+        }
         if pressed && let Some(action) = self.tv_key(code, damage, events) {
             return action;
         }
@@ -2480,6 +2507,7 @@ impl Desktop {
             }
         }
         self.draw_panels(&mut canvas);
+        self.draw_on_screen_keyboard(&mut canvas);
         self.draw_phone_overlays(&mut canvas, contents);
         self.draw_main_menu(&mut canvas);
         if self.menu_open {
@@ -2523,6 +2551,7 @@ impl Desktop {
             return None;
         }
         if (self.menu_open && self.menu_with_shadow().overlaps(&clip))
+            || self.on_screen_keyboard_overlaps(clip)
             || self.keyboard_layout_menu_overlaps(clip)
             || self.popups_overlap(clip)
             || tooltip

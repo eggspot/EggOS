@@ -124,6 +124,12 @@ pub enum Kind {
     WmHome,
     /// `wm_back` (D303).
     WmBack,
+    /// `wm_keyboard` (D314).
+    WmKeyboard,
+    /// `wm_keyboard_show` (D314).
+    WmKeyboardShow,
+    /// `wm_keyboard_hide` (D314).
+    WmKeyboardHide,
     /// `settings_list`: every setting and its value (D163).
     SettingsList,
     /// `settings_get`: one setting's value (D163).
@@ -449,7 +455,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 80] = [
+pub const TOOLS: [Tool; 83] = [
     tool(
         &registry::COMPONENT_UPDATE,
         Kind::ComponentUpdate,
@@ -623,6 +629,9 @@ pub const TOOLS: [Tool; 80] = [
     tool(&registry::WM_DRAG, Kind::WmDrag, window_twin(&["drag"])),
     tool(&registry::WM_HOME, Kind::WmHome, twin("/bin/wm", &["home"], Operand::None)),
     tool(&registry::WM_BACK, Kind::WmBack, twin("/bin/wm", &["back"], Operand::None)),
+    tool(&registry::WM_KEYBOARD, Kind::WmKeyboard, twin("/bin/wm", &["keyboard"], Operand::None)),
+    tool(&registry::WM_KEYBOARD_SHOW, Kind::WmKeyboardShow, twin("/bin/wm", &["keyboard", "show"], Operand::None)),
+    tool(&registry::WM_KEYBOARD_HIDE, Kind::WmKeyboardHide, twin("/bin/wm", &["keyboard", "hide"], Operand::None)),
     tool(
         &registry::SETTINGS_LIST,
         Kind::SettingsList,

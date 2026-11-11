@@ -395,6 +395,55 @@ pub fn ioctl<P: Platform>(
                 Ok::<(), WindowError>(())
             })?;
         }
+        Request::SetTextFocus {
+            window,
+            kind,
+            enter,
+            cause,
+        } => {
+            use eggos_drivers::desktop::{EnterWord, FieldKind, FocusCause};
+            on_windows::<P, _>(|desktop, _, damage, events| {
+                if desktop.owner_of(window)? != client {
+                    return Err(WindowError::NoSuchWindow);
+                }
+                desktop.set_text_focus(
+                    window as u16,
+                    FieldKind::from_number(kind),
+                    EnterWord::from_number(enter),
+                    FocusCause::from_number(cause),
+                    damage,
+                    events,
+                );
+                Ok(())
+            })?;
+        }
+        Request::OnScreenKeyboard { action } => {
+            use eggos_drivers::desktop::protocol::on_screen_keyboard;
+            if action >= on_screen_keyboard::SET_MODE {
+                if action - on_screen_keyboard::SET_MODE > 2 {
+                    return Err(Errno::EINVAL);
+                }
+                crate::terminal::set_on_screen_keyboard_mode(action - on_screen_keyboard::SET_MODE);
+            }
+            let panel = on_windows::<P, _>(|desktop, _, damage, events| {
+                match action {
+                    on_screen_keyboard::SHOW => desktop
+                        .show_on_screen_keyboard_by_request(damage, events)
+                        .map_err(|()| WindowError::Unsupported)?,
+                    on_screen_keyboard::HIDE => desktop.hide_on_screen_keyboard(damage, events),
+                    _ => {}
+                }
+                Ok::<_, WindowError>(desktop.on_screen_keyboard_rect())
+            })?;
+            put_word(bytes, on_screen_keyboard::SHOWN, u32::from(panel.is_some()));
+            let panel = panel.unwrap_or_default();
+            for (index, value) in [panel.x, panel.y, panel.width, panel.height].into_iter().enumerate() {
+                put_word(bytes, on_screen_keyboard::PANEL + 4 * index, value);
+            }
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
         Request::ShellNavigate { to } => {
             if !crate::terminal::shell_navigate::<P>(to) {
                 return Err(Errno::EINVAL);
