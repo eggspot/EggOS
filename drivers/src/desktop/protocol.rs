@@ -347,6 +347,8 @@ pub mod set_tray_icon_request {
 pub mod layered_flags {
     pub const ALPHA: u32 = 1;
     pub const COLOUR_KEY: u32 = 2;
+    /// Each pixel's top byte is its own alpha, the colour already multiplied by it (D369).
+    pub const PIXEL_ALPHA: u32 = 4;
 }
 
 /// `SET_TRAY_ICON`'s flags.
@@ -597,7 +599,8 @@ pub enum Request {
     },
     /// How `window`'s content blends over what is under it (D358): with
     /// [`layered_flags::ALPHA`] at `alpha` (0 to 255), with [`layered_flags::COLOUR_KEY`]
-    /// showing through where it is exactly `key` (`0x00RRGGBB`).
+    /// showing through where it is exactly `key` (`0x00RRGGBB`), with
+    /// [`layered_flags::PIXEL_ALPHA`] each pixel by its own premultiplied alpha (D369).
     SetLayered {
         window: u32,
         alpha: u32,

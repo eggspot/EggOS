@@ -22187,3 +22187,23 @@ the license, by an explicit instruction recorded here.
   follow. `list_view::paint_header_custom` draws the items, sharing `RowDraw`.
 - **Not yet.** The font of `CDRF_NEWFONT` (the layer draws one font), custom draw of the
   header a list view paints itself when it has no header window, and trackbars.
+
+## D369 Windows: per-pixel alpha in `UpdateLayeredWindow` (`AC_SRC_ALPHA`) (batch part 13's rest, D366's "Not yet"; M15, M11; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented `BLENDFUNCTION`)
+
+- **Decision.**
+  - **The server.** `SET_LAYERED` gains the flag 4, `PIXEL_ALPHA`: the window's content
+    carries each pixel's alpha in its top byte, its colour already multiplied by it, as
+    Windows' 32-bit premultiplied bitmaps do (`Window::pixel_alpha`). The compositor scales
+    such a pixel and its alpha by the window's constant opacity and adds it to what is under
+    it times one minus that alpha (`mix_premultiplied`), rounded per channel and clamped; the
+    colour key still wins where the colour matches. One `Blend` value (opacity, key, pixel
+    alpha) now says how a window's row is drawn, so the opaque path stays a plain copy.
+  - **The layer.** `UpdateLayeredWindow` with `ULW_ALPHA` and `BLENDFUNCTION.AlphaFormat`
+    `AC_SRC_ALPHA` copies the source with its top byte kept (`gdi::copy_with_alpha`; every
+    other GDI copy keeps clearing it, as `BitBlt` does) and sets the server's `PIXEL_ALPHA`;
+    `SetLayeredWindowAttributes` turns it off again, as switching a window back to constant
+    alpha does on Windows.
+- **Why premultiplied.** `AC_SRC_ALPHA` is documented to take premultiplied pixels, so the
+  server adds the colour as it is instead of multiplying it, one multiply per channel fewer.
+- **Not yet.** `UpdateLayeredWindowIndirect` and `prcDirty`; GDI drawing that writes alpha
+  (`AlphaBlend` into a layered window); child layered windows.

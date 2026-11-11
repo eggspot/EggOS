@@ -1099,18 +1099,20 @@ impl Desktop {
     /// Gives `client`'s window `id` the title `title` (at most [`TITLE_CAPACITY`] bytes of
     /// UTF-8).
     /// `SET_LAYERED` (D358): how client `client`'s window `id`'s content blends over what is
-    /// under it, a constant `alpha` and a colour `key` that shows through; the window damaged.
+    /// under it, a constant `alpha` and a colour `key` that shows through, and with
+    /// `pixel_alpha` each pixel's own premultiplied alpha (D369); the window damaged.
     pub fn set_layered(
         &mut self,
         client: u16,
         id: u32,
-        (alpha, key): (Option<u8>, Option<u32>),
+        (alpha, key, pixel_alpha): (Option<u8>, Option<u32>, bool),
         damage: &mut Damage,
     ) -> Result<(), WindowError> {
         let slot = self.owned(client, id)?;
         let window = self.windows[slot].as_mut().ok_or(WindowError::Invalid)?;
         window.opacity = alpha.unwrap_or(u8::MAX);
         window.colour_key = key.map(|key| key & 0x00ff_ffff);
+        window.pixel_alpha = pixel_alpha;
         let outside = self.window_at(slot).outside();
         damage.add(outside);
         Ok(())
@@ -2779,9 +2781,14 @@ impl Desktop {
             canvas.row(row, copy_right, right, fill);
             if let Some(out) = canvas.row_pixels(row, copy_left, copy_right) {
                 let at = (copy_left - buffer.x, row - buffer.y);
-                match (window.opacity, window.colour_key) {
-                    (u8::MAX, None) => contents.copy_row(window.id, at.0, at.1, out),
-                    (opacity, key) => blend_row(contents, window.id, at, out, (opacity, key)),
+                let blend = Blend {
+                    opacity: window.opacity,
+                    key: window.colour_key,
+                    pixel_alpha: window.pixel_alpha,
+                };
+                match blend.is_opaque() {
+                    true => contents.copy_row(window.id, at.0, at.1, out),
+                    false => blend_row(contents, window.id, at, out, blend),
                 }
             }
         }
@@ -2962,15 +2969,37 @@ impl<'a> Writer<'a> {
 
 const BLEND_CHUNK: usize = 64;
 
+/// How a layered window's content goes over what is under it (D358, D369).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Blend {
+    opacity: u8,
+    key: Option<u32>,
+    pixel_alpha: bool,
+}
+
+impl Blend {
+    fn is_opaque(&self) -> bool {
+        self.opacity == u8::MAX && self.key.is_none() && !self.pixel_alpha
+    }
+
+    fn pixel(&self, over: u32, under: u32) -> u32 {
+        match self.key {
+            Some(key) if over & 0x00ff_ffff == key => under,
+            _ if self.pixel_alpha => mix_premultiplied(over, under, self.opacity),
+            _ => mix(over, under, self.opacity),
+        }
+    }
+}
+
 /// Copies `out.len()` pixels of `window`'s content row from `at` over the pixels already in
-/// `out` (what is under the window), blended at `opacity` and showing through where the
-/// content is exactly `key` (a layered window, D358), in chunks small enough for the stack.
+/// `out` (what is under the window), as `blend` says (a layered window, D358, D369), in
+/// chunks small enough for the stack.
 fn blend_row(
     contents: &dyn Contents,
     window: WindowId,
     at: (u32, u32),
     out: &mut [u32],
-    (opacity, key): (u8, Option<u32>),
+    blend: Blend,
 ) {
     let mut under = [0u32; BLEND_CHUNK];
     let mut start = 0;
@@ -2980,10 +3009,7 @@ fn blend_row(
         under[..part.len()].copy_from_slice(part);
         contents.copy_row(window, at.0 + start as u32, at.1, part);
         for (pixel, &below) in part.iter_mut().zip(&under) {
-            *pixel = match key {
-                Some(key) if *pixel & 0x00ff_ffff == key => below,
-                _ => mix(*pixel, below, opacity),
-            };
+            *pixel = blend.pixel(*pixel, below);
         }
         start = end;
     }
@@ -2996,5 +3022,18 @@ fn mix(over: u32, under: u32, alpha: u8) -> u32 {
         let top = over >> shift & 0xff;
         let bottom = under >> shift & 0xff;
         mixed | ((top * alpha + bottom * (255 - alpha) + 127) / 255) << shift
+    })
+}
+
+/// `over`, whose top byte is its alpha and whose colour is already multiplied by it, scaled
+/// by `opacity` and put over `under` (Windows' `AC_SRC_ALPHA` blend, D369); opaque.
+fn mix_premultiplied(over: u32, under: u32, opacity: u8) -> u32 {
+    let opacity = u32::from(opacity);
+    let scale = |value: u32| (value * opacity + 127) / 255;
+    let alpha = scale(over >> 24);
+    [16, 8, 0].into_iter().fold(0, |mixed, shift| {
+        let top = scale(over >> shift & 0xff);
+        let bottom = under >> shift & 0xff;
+        mixed | (top + (bottom * (255 - alpha) + 127) / 255).min(255) << shift
     })
 }

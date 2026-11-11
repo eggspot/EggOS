@@ -400,8 +400,9 @@ pub fn ioctl<P: Platform>(
         } => {
             let alpha = (flags & protocol::layered_flags::ALPHA != 0).then(|| alpha.min(255) as u8);
             let key = (flags & protocol::layered_flags::COLOUR_KEY != 0).then_some(key);
+            let pixel_alpha = flags & protocol::layered_flags::PIXEL_ALPHA != 0;
             on_windows::<P, _>(|desktop, _, damage, _| {
-                desktop.set_layered(client, window, (alpha, key), damage)
+                desktop.set_layered(client, window, (alpha, key, pixel_alpha), damage)
             })?;
         }
         Request::SetTrayIcon {

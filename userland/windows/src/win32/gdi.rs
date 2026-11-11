@@ -529,6 +529,7 @@ unsafe fn copy(
     start: (i32, i32),
     operation: u32,
     fill: Fill,
+    keep_alpha: bool,
 ) {
     let width = landed.width() as usize;
     let height = landed.height();
@@ -574,6 +575,11 @@ unsafe fn copy(
             let target = unsafe { core::slice::from_raw_parts_mut(target_start, length) };
             let pixels = target.iter_mut().zip(chunk_buffer.iter());
             match fill {
+                _ if keep_alpha => {
+                    for (pixel, source) in pixels {
+                        *pixel = *source;
+                    }
+                }
                 Fill::Solid(pattern) => {
                     for (pixel, source) in pixels {
                         *pixel = blit::combine(operation, pattern, *source, *pixel);
@@ -600,6 +606,7 @@ fn transfer(
     (x, y, width, height): (i32, i32, i32, i32),
     source: Option<(usize, i32, i32)>,
     operation: u32,
+    keep_alpha: bool,
 ) -> Result<(), u32> {
     try_with(|gui| {
         let target = *gui.contexts.get(destination).ok_or(error::INVALID_HANDLE)?;
@@ -644,6 +651,7 @@ fn transfer(
                 start,
                 operation,
                 fill,
+                keep_alpha,
             )
         };
         if let Some(bitmap) = memory_bitmap(&target) {
@@ -669,7 +677,23 @@ pub(super) extern "efiapi" fn bit_blt(
     operation: u32,
 ) -> Bool {
     let source = blit::uses_source(operation).then_some((source, source_x, source_y));
-    match transfer(destination, (x, y, width, height), source, operation) {
+    match transfer(destination, (x, y, width, height), source, operation, false) {
+        Ok(()) => TRUE,
+        Err(code) => fail(code, FALSE),
+    }
+}
+
+const SRCCOPY: u32 = 0x00cc_0020;
+
+/// `BitBlt`'s `SRCCOPY` keeping each source pixel's top byte, its alpha, as
+/// `UpdateLayeredWindow` with `AC_SRC_ALPHA` needs (D369).
+pub(super) fn copy_with_alpha(
+    destination: usize,
+    (x, y, width, height): (i32, i32, i32, i32),
+    (source, source_x, source_y): (usize, i32, i32),
+) -> Bool {
+    let source = Some((source, source_x, source_y));
+    match transfer(destination, (x, y, width, height), source, SRCCOPY, true) {
         Ok(()) => TRUE,
         Err(code) => fail(code, FALSE),
     }
@@ -686,7 +710,7 @@ extern "efiapi" fn pat_blt(
     if blit::uses_source(operation) {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
-    match transfer(destination, (x, y, width, height), None, operation) {
+    match transfer(destination, (x, y, width, height), None, operation, false) {
         Ok(()) => TRUE,
         Err(code) => fail(code, FALSE),
     }

@@ -96,6 +96,9 @@ const WS_EX_LAYERED: u32 = 0x0008_0000;
 const LWA_COLORKEY: u32 = 0x1;
 const LWA_ALPHA: u32 = 0x2;
 const MOST_LAYERED: usize = 16;
+const SERVER_ALPHA: u32 = 1;
+const SERVER_COLOUR_KEY: u32 = 2;
+const SERVER_PIXEL_ALPHA: u32 = 4;
 
 /// The layered windows' attributes, as `SetLayeredWindowAttributes` set them (D358).
 static LAYERED: SpinLock<[Option<(usize, u32, u8, u32)>; MOST_LAYERED]> =
@@ -114,6 +117,10 @@ extern "efiapi" fn set_layered_window_attributes(
     alpha: u8,
     flags: u32,
 ) -> Bool {
+    set_layered(window, key, alpha, flags, false)
+}
+
+fn set_layered(window: usize, key: u32, alpha: u8, flags: u32, pixel_alpha: bool) -> Bool {
     let found = try_with(|gui| {
         let entry = gui.window(window)?;
         if entry.ex_style & WS_EX_LAYERED == 0 || entry.is_child() {
@@ -127,10 +134,13 @@ extern "efiapi" fn set_layered_window_attributes(
     };
     let mut server_flags = 0;
     if flags & LWA_ALPHA != 0 {
-        server_flags |= 1;
+        server_flags |= SERVER_ALPHA;
     }
     if flags & LWA_COLORKEY != 0 {
-        server_flags |= 2;
+        server_flags |= SERVER_COLOUR_KEY;
+    }
+    if pixel_alpha {
+        server_flags |= SERVER_PIXEL_ALPHA;
     }
     if let Some(device) = device
         && device
@@ -159,6 +169,7 @@ extern "efiapi" fn set_layered_window_attributes(
 
 const ULW_COLORKEY: u32 = 0x1;
 const ULW_ALPHA: u32 = 0x2;
+const AC_SRC_ALPHA: u32 = 0x1;
 const SRCCOPY: u32 = 0x00cc_0020;
 const SET_SIZE_ONLY: u32 = 0x0002 | 0x0004 | 0x0010;
 const SET_POSITION_ONLY: u32 = 0x0001 | 0x0004 | 0x0010;
@@ -182,7 +193,8 @@ unsafe fn pair(address: *const Pair) -> Option<(i32, i32)> {
 
 /// `UpdateLayeredWindow` (D366): a top-level `WS_EX_LAYERED` window moved to `destination`,
 /// sized to `size`, its client area copied from `source` at `source_point`, and blended by
-/// `BLENDFUNCTION`'s constant alpha (`ULW_ALPHA`) or the colour key (`ULW_COLORKEY`), as
+/// `BLENDFUNCTION`'s constant alpha (`ULW_ALPHA`), with `AC_SRC_ALPHA` each source pixel's
+/// own premultiplied alpha too (D369), or the colour key (`ULW_COLORKEY`), as
 /// `SetLayeredWindowAttributes` sets them (D358).
 #[allow(clippy::too_many_arguments)]
 unsafe extern "efiapi" fn update_layered_window(
@@ -199,6 +211,14 @@ unsafe extern "efiapi" fn update_layered_window(
     if let Err(code) = try_with(|gui| gui.window(window).map(|_| ())) {
         return fail(code, FALSE);
     }
+    let blend = match blend.is_null() {
+        true => u32::from(u8::MAX) << 16,
+        // SAFETY: the caller's `BLENDFUNCTION`, four bytes: operation, flags, constant alpha
+        // and alpha format.
+        false => unsafe { blend.read_unaligned() },
+    };
+    let alpha = (blend >> 16) as u8;
+    let pixel_alpha = flags & ULW_ALPHA != 0 && (blend >> 24) & AC_SRC_ALPHA != 0;
     // SAFETY: the caller's `POINT`s and `SIZE`, each null or readable.
     let (destination, size, source_point) =
         unsafe { (pair(destination), pair(size), pair(source_point)) };
@@ -219,15 +239,13 @@ unsafe extern "efiapi" fn update_layered_window(
         let (x, y) = source_point.unwrap_or((0, 0));
         let hdc = super::paint::get_dc(window);
         if hdc != 0 {
-            super::gdi::bit_blt(hdc, 0, 0, width, height, source, x, y, SRCCOPY);
+            match pixel_alpha {
+                true => super::gdi::copy_with_alpha(hdc, (0, 0, width, height), (source, x, y)),
+                false => super::gdi::bit_blt(hdc, 0, 0, width, height, source, x, y, SRCCOPY),
+            };
             super::paint::release_dc(window, hdc);
         }
     }
-    let alpha = match blend.is_null() {
-        true => u8::MAX,
-        // SAFETY: the caller's `BLENDFUNCTION`, four bytes; the constant alpha is the third.
-        false => (unsafe { blend.read_unaligned() } >> 16) as u8,
-    };
     let mut layered = 0;
     if flags & ULW_ALPHA != 0 {
         layered |= LWA_ALPHA;
@@ -235,8 +253,9 @@ unsafe extern "efiapi" fn update_layered_window(
     if flags & ULW_COLORKEY != 0 {
         layered |= LWA_COLORKEY;
     }
-    set_layered_window_attributes(window, key, alpha, layered)
+    set_layered(window, key, alpha, layered, pixel_alpha)
 }
+
 /// `GetLayeredWindowAttributes`: what `SetLayeredWindowAttributes` set.
 unsafe extern "efiapi" fn get_layered_window_attributes(
     window: usize,

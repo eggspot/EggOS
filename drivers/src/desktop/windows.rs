@@ -152,6 +152,8 @@ pub(super) struct Window {
     pub opacity: u8,
     /// The colour its content shows through where it has exactly this colour (D358).
     pub colour_key: Option<u32>,
+    /// Its content's top byte is each pixel's premultiplied alpha (D369).
+    pub pixel_alpha: bool,
     pub hidden_by_show_desktop: bool,
     /// The virtual desktop a normal window is on, from 0 (D204).
     pub desktop: u8,
@@ -192,6 +194,7 @@ impl Window {
             focus_serial: 0,
             opacity: u8::MAX,
             colour_key: None,
+            pixel_alpha: false,
             hidden_by_show_desktop: false,
             desktop: 0,
             view_only_turns: 0,
