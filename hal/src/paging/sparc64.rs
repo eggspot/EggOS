@@ -45,6 +45,7 @@ impl Format for Sparc64 {
     const MAX_LEAF_LEVEL: usize = 0;
     const ENCODES_MEMORY_TYPE: bool = true;
     const USER_END: u64 = 1 << 43;
+    const PAIRED_PAGES: bool = true;
 
     fn root(virt: u64) -> Option<usize> {
         match virt {

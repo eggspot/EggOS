@@ -236,6 +236,10 @@ pub trait Format {
     /// (it may stop short of the half's end). A root-level entry whose range starts at or above
     /// it belongs to the kernel.
     const USER_END: u64;
+    /// Whether the MMU maps a program's pages in aligned pairs of frames, its smallest page
+    /// being 8 KiB (SPARC64, D328): the kernel then keeps both pages of a pair mapped, from one
+    /// physically contiguous, 8 KiB-aligned block, and alike.
+    const PAIRED_PAGES: bool = false;
 
     /// Which root translates `virt`; `None` if `virt` is not a valid (canonical) address.
     fn root(virt: u64) -> Option<usize>;

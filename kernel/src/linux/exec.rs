@@ -350,7 +350,7 @@ pub fn load_program<P: Platform>(
     let auxiliary = [
         (auxv::MINSIGSTKSZ, signals::MIN_STACK_SIZE),
         (auxv::HWCAP, hwcap),
-        (auxv::PAGESZ, FRAME_SIZE),
+        (auxv::PAGESZ, crate::linux::abi::REPORTED_PAGE_SIZE),
         (auxv::CLKTCK, CLOCK_TICKS_PER_SECOND),
         (auxv::PHDR, program_headers.wrapping_add(bias)),
         (auxv::PHENT, elf::PROGRAM_HEADER_SIZE as u64),

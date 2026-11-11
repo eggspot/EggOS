@@ -57,6 +57,9 @@ use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
 use eggos_hal::{ExceptionKind, Platform};
 
+/// The bytes of a pair of pages where the MMU maps them in pairs ([`Format::PAIRED_PAGES`]).
+const PAIR_BYTES: u64 = 2 * FRAME_SIZE;
+
 /// [`Process::first_thread_status`] before the first thread has ended: no status, which is 8 bits.
 const NO_STATUS: u32 = u32::MAX;
 
@@ -1774,8 +1777,84 @@ impl<P: Platform> Process<P> {
         address: u64,
         fault: PageFault,
     ) -> Result<(), UnresolvedFault> {
+        if <P::PageTableFormat as Format>::PAIRED_PAGES {
+            return self.resolve_paired_page_fault(address, fault);
+        }
+        self.resolve_page(address & !(FRAME_SIZE - 1), fault)
+    }
+
+    /// [`Self::resolve_page_fault`] where the MMU maps pages in pairs ([`Format::PAIRED_PAGES`],
+    /// D328): the fault names the pair, whose pages are each resolved, then given one
+    /// contiguous block. Resolved when either page was.
+    #[cold]
+    #[inline(never)]
+    fn resolve_paired_page_fault(&self, address: u64, fault: PageFault) -> Result<(), UnresolvedFault> {
+        let pair = address & !(PAIR_BYTES - 1);
+        let first = self.resolve_page(pair, fault);
+        let second = self.resolve_page(pair + FRAME_SIZE, fault);
+        if first.is_err() && second.is_err() {
+            return first;
+        }
         let memory = &*self.memory;
-        let page = address & !(FRAME_SIZE - 1);
+        {
+            let _regions = memory.regions.lock();
+            Self::join_pair(memory, pair);
+        }
+        P::drop_user_translations(pair, PAIR_BYTES);
+        Ok(())
+    }
+
+    /// Moves the two pages of the pair at `pair` into one 8 KiB-aligned block, when both are
+    /// mapped alike and their frames are not already such a block: copies both, maps the block,
+    /// and lets the old frames go as copy-on-write does. With the regions' lock held. Pages a
+    /// `MAP_SHARED` mapping shares with others become private copies (D328's known gap).
+    fn join_pair(memory: &Memory<P>, pair: u64) {
+        let (Some((first, attributes)), Some((second, second_attributes))) =
+            (memory.space.translate(pair), memory.space.translate(pair + FRAME_SIZE))
+        else {
+            return;
+        };
+        if attributes != second_attributes
+            || (first % PAIR_BYTES == 0 && second == first + FRAME_SIZE)
+        {
+            return;
+        }
+        let block = {
+            let mut frames = memory::FRAMES.lock();
+            match frames.as_mut().and_then(|frames| frames.allocate_contiguous_for_user(1)) {
+                Some(block) => block,
+                None => return,
+            }
+        };
+        let at = |frame: u64| (frame as usize).wrapping_add(memory.frame_offset) as *mut u8;
+        // SAFETY: both old frames are mapped by this address space, which the regions' lock
+        // keeps mapped, and the block was just allocated, so nothing else uses it; all three
+        // are reached through the frame allocator's offset.
+        unsafe {
+            ptr::copy_nonoverlapping(at(first), at(block), FRAME_SIZE as usize);
+            ptr::copy_nonoverlapping(at(second), at(block + FRAME_SIZE), FRAME_SIZE as usize);
+        }
+        if attributes.executable {
+            P::make_instructions_visible(at(block) as usize, PAIR_BYTES as usize);
+        }
+        let unmapped = memory
+            .space
+            .change_pages(pair, PAIR_BYTES, |_, _| PageChange::Unmap, |_| ());
+        if unmapped.is_err() || memory.space.map(pair, block, PAIR_BYTES, attributes).is_err() {
+            free_frame(block);
+            free_frame(block + FRAME_SIZE);
+            return;
+        }
+        for old in [first, second] {
+            if !shared_frames::is_shared(old) || shared_frames::release(old) {
+                free_frame(old);
+            }
+        }
+    }
+
+    /// Resolves the fault on the one page `page` ([`Self::resolve_page_fault`]).
+    fn resolve_page(&self, page: u64, fault: PageFault) -> Result<(), UnresolvedFault> {
+        let memory = &*self.memory;
         let regions = memory.regions.lock();
         if memory.has_records(record::FILES) {
             Self::resolve_page_fault_reading_files(memory, regions, page, fault)?;
@@ -2629,8 +2708,9 @@ fn free_frame(frame: u64) {
         .as_mut()
         .expect("the frame came from the frame allocator");
     // SAFETY: every caller's frame came from this allocator for a user page and nothing maps it
-    // any more: one that could not be mapped (`Process::map_frame`, `map_read_file_page`), or one
-    // copy on write unmapped and released as the last address space mapping it.
+    // any more: one that could not be mapped (`Process::map_frame`, `map_read_file_page`, a half
+    // of a block `join_pair` could not map), or one copy on write or `join_pair` unmapped and
+    // released as the last address space mapping it.
     unsafe { frames.free(frame) };
 }
 

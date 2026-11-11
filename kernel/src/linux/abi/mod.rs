@@ -102,6 +102,11 @@ pub mod signal {
     pub const SIGSYS: u32 = 31;
 }
 
+/// The page size programs are told (`AT_PAGESZ`): the kernel's 4 KiB everywhere but on
+/// SPARC64, whose MMU maps 8 KiB pairs (D328).
+#[cfg(not(target_arch = "sparc64"))]
+pub const REPORTED_PAGE_SIZE: u64 = eggos_hal::memory::FRAME_SIZE;
+
 /// `clone` takes the flags first and the stack second everywhere but on s390x.
 #[cfg(not(target_arch = "s390x"))]
 pub const CLONE_STACK_FIRST: bool = false;

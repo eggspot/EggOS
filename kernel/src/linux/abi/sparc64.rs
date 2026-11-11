@@ -292,6 +292,9 @@ pub const SIGACTION_HAS_RESTORER: bool = true;
 pub const REWRITES_ARGUMENTS: bool = true;
 /// `MINSIGSTKSZ`.
 pub const MIN_SIGNAL_STACK_SIZE: u64 = 4096;
+/// The page size programs are told (`AT_PAGESZ`): the MMU's 8 KiB, so that they keep their
+/// mappings in whole pairs (D328).
+pub const REPORTED_PAGE_SIZE: u64 = 8192;
 
 const MOV_RT_SIGRETURN_G1: u32 = 0x8210_2000 | number::RT_SIGRETURN as u32;
 const TA_0X6D: u32 = 0x91d0_206d;

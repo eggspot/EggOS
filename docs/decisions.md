@@ -21351,3 +21351,35 @@ the license, by an explicit instruction recorded here.
   - A program's `clone` stack is taken as a real address, not biased.
 - **Next (part 3).** The kernel's user memory in 8 KiB granules, so that every program page
   has its pair (D326).
+
+## D328 SPARC64 part 3: a program's pages in 8 KiB pairs (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **The problem (D326).** The UltraSPARC's smallest page is 8 KiB, and the kernel's frames
+  and pages are 4 KiB. The TLB loads map an aligned pair of 4 KiB pages only when both are
+  present, alike and in one physically contiguous, 8 KiB-aligned block.
+- **Decision.**
+  - **Pairs in the format.** `Format::PAIRED_PAGES` (default `false`; `true` for SPARC64)
+    says the MMU maps a program's pages in pairs. The rest of the kernel keeps its 4 KiB
+    pages; only the page-fault path knows about pairs.
+  - **Resolving a fault.** With pairs, `Process::resolve_page_fault` takes the fault as one on
+    the pair. It resolves each page as before (demand paging, files, copy on write), and
+    succeeds when either could be resolved. Then `join_pair` gives the two pages one block:
+    - when both are mapped alike and their frames are not already a block, it allocates an
+      aligned 8 KiB block (order 1, the user's reserve applied);
+    - copies both pages into it and maps it;
+    - lets the old frames go as copy on write does (freed, or released from their sharers).
+
+    The pair's translations are dropped, and the retried access finds a pair the TLB loads
+    can map.
+  - **Nothing changes on other architectures.** The new path is behind a constant that is
+    `false` everywhere else, out of line and cold.
+- **Known gaps.**
+  - A page of a `MAP_SHARED` mapping that another process or the page cache shares becomes
+    a private copy when it is paired. Writes to it are then not seen by the others: shared
+    writable mappings are not coherent on SPARC64 until frames are allocated in pairs from
+    the start.
+  - A pair whose pages differ in protection, or that is half outside any mapping, cannot be
+    mapped, and an access to it faults again. So SPARC64 tells programs its pages are 8 KiB
+    (`AT_PAGESZ`, `abi::REPORTED_PAGE_SIZE`), as SPARC64's Linux does, and programs that
+    align their mappings to it never split a pair. The kernel itself still takes 4 KiB
+    `mmap` and `mprotect` ranges there.
