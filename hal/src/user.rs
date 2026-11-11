@@ -43,6 +43,8 @@ pub struct UserContext {
     pub(crate) arch: riscv64::Registers,
     #[cfg(target_arch = "loongarch64")]
     pub(crate) arch: loongarch64::Registers,
+    #[cfg(target_arch = "powerpc64")]
+    pub(crate) arch: powerpc64::Registers,
     #[cfg(target_arch = "x86_64")]
     pub(crate) arch: x86_64::Registers,
     /// Host builds: the exception a test platform's `run_user` last returned
@@ -203,6 +205,10 @@ pub use aarch64::UserRegisters;
 use loongarch64::Registers;
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch64::UserRegisters;
+#[cfg(target_arch = "powerpc64")]
+use powerpc64::Registers;
+#[cfg(target_arch = "powerpc64")]
+pub use powerpc64::UserRegisters;
 #[cfg(target_arch = "riscv64")]
 use riscv64::Registers;
 #[cfg(target_arch = "riscv64")]
@@ -636,6 +642,151 @@ pub(crate) mod loongarch64 {
             self.r[A7] = number;
             self.r[4..10].copy_from_slice(&arguments);
             self.pc = pc;
+        }
+    }
+}
+
+#[cfg(target_arch = "powerpc64")]
+pub(crate) mod powerpc64 {
+    /// What the way out of problem state saves (`exception.rs`, D304), and what the way in
+    /// needs. The entry code stores by offset: keep the layout in step with it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[repr(C)]
+    pub(crate) struct Registers {
+        /// `r0` to `r31`.
+        pub(crate) gpr: [u64; 32],
+        /// `SRR0`: the program counter.
+        pub(crate) nip: u64,
+        /// `SRR1`: the program's `MSR`; its user-settable bits are none, the kernel chooses.
+        pub(crate) msr: u64,
+        pub(crate) ctr: u64,
+        pub(crate) lr: u64,
+        pub(crate) xer: u64,
+        pub(crate) cr: u64,
+        /// The kernel's stack pointer while the program runs.
+        pub(crate) kernel_sp: u64,
+        /// The vector that ended the run (bit 0: an `HSRR` one), `DAR` and `DSISR` then.
+        pub(crate) trap: u64,
+        pub(crate) dar: u64,
+        pub(crate) dsisr: u64,
+    }
+
+    /// [`super::UserContext::registers`] on POWER.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct UserRegisters {
+        pub pc: u64,
+        pub gpr: [u64; 32],
+        pub msr: u64,
+        pub ctr: u64,
+        pub lr: u64,
+        pub xer: u64,
+        pub cr: u64,
+    }
+
+    const _: () = assert!(core::mem::offset_of!(Registers, nip) == 256);
+    const _: () = assert!(core::mem::offset_of!(Registers, kernel_sp) == 304);
+    const _: () = assert!(core::mem::offset_of!(Registers, dsisr) == 328);
+
+    const SP: usize = 1;
+    const RESULT: usize = 3;
+    const ENTRY: usize = 12;
+    const THREAD_POINTER: usize = 13;
+    /// `CR0.SO`: Linux's mark of a failed system call.
+    const SUMMARY_OVERFLOW: u64 = 0x1000_0000;
+    /// The highest error number a system call returns, as Linux's `-MAX_ERRNO`.
+    const LARGEST_ERROR: u64 = 4095;
+    const MSR_USER: u64 = 0x8000_0000_0000_d033;
+
+    impl Registers {
+        pub(crate) fn new(pc: u64, stack: u64) -> Self {
+            let mut gpr = [0; 32];
+            gpr[SP] = stack;
+            gpr[ENTRY] = pc;
+            Self {
+                gpr,
+                nip: pc,
+                msr: MSR_USER,
+                ctr: 0,
+                lr: 0,
+                xer: 0,
+                cr: 0,
+                kernel_sp: 0,
+                trap: 0,
+                dar: 0,
+                dsisr: 0,
+            }
+        }
+        /// `r13`, which programs set themselves.
+        pub(crate) fn thread_pointer(&self) -> u64 {
+            self.gpr[THREAD_POINTER]
+        }
+        pub(crate) fn set_thread_pointer(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
+            self.gpr[THREAD_POINTER] = value;
+            Ok(())
+        }
+        pub(crate) fn pc(&self) -> u64 {
+            self.nip
+        }
+        pub(crate) fn stack(&self) -> u64 {
+            self.gpr[SP]
+        }
+        pub(crate) fn set_stack(&mut self, stack: u64) {
+            self.gpr[SP] = stack;
+        }
+        pub(crate) fn syscall_number(&self) -> u64 {
+            self.gpr[0]
+        }
+        pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
+            [self.gpr[3], self.gpr[4], self.gpr[5], self.gpr[6], self.gpr[7], self.gpr[8]]
+        }
+        /// A negative error becomes Linux's: the error number in `r3` and `CR0.SO` set.
+        pub(crate) fn set_syscall_result(&mut self, value: u64) {
+            if value.wrapping_neg() <= LARGEST_ERROR && value != 0 {
+                self.gpr[RESULT] = value.wrapping_neg();
+                self.cr |= SUMMARY_OVERFLOW;
+            } else {
+                self.gpr[RESULT] = value;
+                self.cr &= !SUMMARY_OVERFLOW;
+            }
+        }
+        pub(crate) fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+            const SYSCALL_SIZE: u64 = 4;
+            self.gpr[0] = number;
+            self.gpr[RESULT] = first_argument;
+            self.cr &= !SUMMARY_OVERFLOW;
+            self.nip = self.nip.wrapping_sub(SYSCALL_SIZE);
+        }
+        pub(crate) fn registers(&self) -> UserRegisters {
+            UserRegisters {
+                pc: self.nip,
+                gpr: self.gpr,
+                msr: self.msr,
+                ctr: self.ctr,
+                lr: self.lr,
+                xer: self.xer,
+                cr: self.cr,
+            }
+        }
+        pub(crate) fn set_registers(&mut self, registers: &UserRegisters) {
+            self.gpr = registers.gpr;
+            self.nip = registers.pc;
+            self.ctr = registers.ctr;
+            self.lr = registers.lr;
+            self.xer = registers.xer;
+            self.cr = registers.cr & 0xffff_ffff;
+        }
+        #[cfg(not(eggos_kernel))]
+        pub(crate) fn result(&self) -> u64 {
+            self.gpr[RESULT]
+        }
+        #[cfg(not(eggos_kernel))]
+        pub(crate) fn simulate_syscall(&mut self, number: u64, arguments: [u64; 6], pc: u64) {
+            self.gpr[0] = number;
+            self.gpr[3..9].copy_from_slice(&arguments);
+            self.nip = pc;
         }
     }
 }

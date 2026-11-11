@@ -29,6 +29,8 @@ pub struct FpState {
     pub(crate) arch: Riscv64State,
     #[cfg(target_arch = "loongarch64")]
     pub(crate) arch: Loongarch64State,
+    #[cfg(target_arch = "powerpc64")]
+    pub(crate) arch: Powerpc64State,
     #[cfg(target_arch = "x86_64")]
     pub(crate) arch: X86_64State,
 }
@@ -71,6 +73,13 @@ impl FpState {
             f: [0; 32],
             fcc: 0,
             fcsr: 0,
+        };
+        #[cfg(target_arch = "powerpc64")]
+        let arch = Powerpc64State {
+            vsr: [0; 64],
+            fpscr: 0,
+            vscr: 0,
+            vrsave: 0,
         };
         Self { arch }
     }
@@ -234,6 +243,61 @@ pub(crate) struct Loongarch64State {
     pub(crate) f: [u64; 32],
     pub(crate) fcc: u64,
     pub(crate) fcsr: u64,
+}
+
+/// POWER: the 64 VSX registers (the FP registers are the first 32's high doublewords, the
+/// vector registers the last 32), `FPSCR`, `VSCR` and `VRSAVE`, as `fp.rs` saves them (D304).
+#[cfg(target_arch = "powerpc64")]
+#[derive(Clone)]
+#[repr(C)]
+pub(crate) struct Powerpc64State {
+    pub(crate) vsr: [u128; 64],
+    pub(crate) fpscr: u64,
+    pub(crate) vscr: u32,
+    pub(crate) vrsave: u32,
+}
+
+#[cfg(target_arch = "powerpc64")]
+impl FpState {
+    /// The 64 VSX registers.
+    pub fn vsr(&self) -> &[u128; 64] {
+        &self.arch.vsr
+    }
+
+    /// The 64 VSX registers, to change.
+    pub fn vsr_mut(&mut self) -> &mut [u128; 64] {
+        &mut self.arch.vsr
+    }
+
+    /// `FPSCR`.
+    pub fn fpscr(&self) -> u64 {
+        self.arch.fpscr
+    }
+
+    /// Sets `FPSCR`.
+    pub fn set_fpscr(&mut self, value: u64) {
+        self.arch.fpscr = value;
+    }
+
+    /// `VSCR`.
+    pub fn vscr(&self) -> u32 {
+        self.arch.vscr
+    }
+
+    /// Sets `VSCR`.
+    pub fn set_vscr(&mut self, value: u32) {
+        self.arch.vscr = value;
+    }
+
+    /// `VRSAVE`.
+    pub fn vrsave(&self) -> u32 {
+        self.arch.vrsave
+    }
+
+    /// Sets `VRSAVE`.
+    pub fn set_vrsave(&mut self, value: u32) {
+        self.arch.vrsave = value;
+    }
 }
 
 /// x86_64: `FXSAVE64`'s image (Intel SDM Vol. 1, 10.5.1).

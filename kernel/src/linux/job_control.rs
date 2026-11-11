@@ -184,18 +184,18 @@ pub fn hang_up<P: Platform>(terminal: Terminal) {
     }
 }
 
-/// The terminal `ioctl` requests of job control, the generic numbers, which AArch64, RISC-V
-/// and x86_64 share.
+/// The terminal `ioctl` requests of job control, each architecture's
+/// numbers ([`crate::linux::abi::tty`]).
 pub mod request {
     /// Make the terminal the caller's session's controlling terminal (an `int`: 1 to take it
     /// from another session, privileged).
-    pub const TIOCSCTTY: u32 = 0x540e;
+    pub const TIOCSCTTY: u32 = crate::linux::abi::tty::TIOCSCTTY;
     /// Read the foreground process group (a `pid_t`).
-    pub const TIOCGPGRP: u32 = 0x540f;
+    pub const TIOCGPGRP: u32 = crate::linux::abi::tty::TIOCGPGRP;
     /// Set the foreground process group (a `pid_t`).
-    pub const TIOCSPGRP: u32 = 0x5410;
+    pub const TIOCSPGRP: u32 = crate::linux::abi::tty::TIOCSPGRP;
     /// Read the terminal's session (a `pid_t`).
-    pub const TIOCGSID: u32 = 0x5429;
+    pub const TIOCGSID: u32 = crate::linux::abi::tty::TIOCGSID;
 }
 
 mod option {

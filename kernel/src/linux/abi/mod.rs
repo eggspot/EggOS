@@ -20,6 +20,11 @@ mod loongarch64;
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch64::*;
 
+#[cfg(target_arch = "powerpc64")]
+mod powerpc64;
+#[cfg(target_arch = "powerpc64")]
+pub use powerpc64::*;
+
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
 #[cfg(target_arch = "riscv64")]
@@ -33,6 +38,7 @@ pub use x86_64::*;
 #[cfg(not(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "powerpc64",
     target_arch = "riscv64",
     target_arch = "x86_64"
 )))]
@@ -41,6 +47,38 @@ compile_error!("EggOS has no Linux ABI for this architecture: add kernel/src/lin
 /// What the architectures on Linux's generic ABI (`asm-generic`) share: AArch64, RISC-V and
 /// the later ones (LoongArch).
 pub mod generic {
+    /// The terminal and descriptor `ioctl` numbers the generic architectures and x86_64 share
+    /// (`asm-generic/ioctls.h`); PowerPC has its own.
+    pub mod tty {
+        pub const TCGETS: u32 = 0x5401;
+        pub const TCSETS: u32 = 0x5402;
+        pub const TCSETSW: u32 = 0x5403;
+        pub const TCSETSF: u32 = 0x5404;
+        pub const TCFLSH: u32 = 0x540b;
+        pub const TIOCGWINSZ: u32 = 0x5413;
+        pub const TIOCSWINSZ: u32 = 0x5414;
+        pub const FIONREAD: u32 = 0x541b;
+        pub const TCGETS2: u32 = 0x802c_542a;
+        pub const TCSETS2: u32 = 0x402c_542b;
+        pub const TCSETSW2: u32 = 0x402c_542c;
+        pub const TCSETSF2: u32 = 0x402c_542d;
+        pub const FIONBIO: u32 = 0x5421;
+        pub const FIONCLEX: u32 = 0x5450;
+        pub const FIOCLEX: u32 = 0x5451;
+        pub const FIOASYNC: u32 = 0x5452;
+        pub const TIOCSCTTY: u32 = 0x540e;
+        pub const TIOCGPGRP: u32 = 0x540f;
+        pub const TIOCSPGRP: u32 = 0x5410;
+        pub const TIOCGSID: u32 = 0x5429;
+        pub const TIOCGPTN: u32 = 0x8004_5430;
+        pub const TIOCSPTLCK: u32 = 0x4004_5431;
+        pub const TIOCGPTLCK: u32 = 0x8004_5439;
+        pub const TIOCPKT: u32 = 0x5420;
+        pub const TIOCGPKT: u32 = 0x8004_5438;
+        pub const TIOCGPTPEER: u32 = 0x5441;
+        pub const TIOCSTI: u32 = 0x5412;
+    }
+
     /// The generic system-call table (`asm-generic/unistd.h`), without the calls an
     /// architecture adds through its `wants`.
     pub mod number {

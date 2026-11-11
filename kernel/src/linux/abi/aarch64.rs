@@ -13,6 +13,9 @@ pub mod number {
     pub const RENAMEAT: u64 = 38;
 }
 
+/// The terminal and descriptor `ioctl` numbers: the generic ones.
+pub use super::generic::tty;
+
 /// The architecture, as `uname` names it.
 pub const MACHINE: &str = "aarch64";
 /// The `e_machine` of the programs the kernel runs natively (D17).

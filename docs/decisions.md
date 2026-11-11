@@ -20374,3 +20374,64 @@ the license, by an explicit instruction recorded here.
   - The console is not switched to when a touch screen is too small.
   - Keys go to the home screen's search only while no window is shown.
 - **Not yet.** Building and running; slices 2 to 5; the deviations above.
+
+## D304 M9: 64-bit little-endian PowerPC (POWER9, QEMU `powernv9`), part 1: boot, radix page tables, timer, CPUs, exceptions, user mode and the Linux ABI (D297's first port; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - **Target.** The kernel builds for `powerpc64le-unknown-linux-gnu` (tier 2, D297) with a
+    static relocation model, soft float, `rust-lld` and the HAL's linker script. Programs build
+    for `powerpc64le-unknown-linux-musl`. Rust names the architecture `powerpc64`, so the HAL
+    folder, the paging format and the Linux ABI file use that name; `uname` says `ppc64le`.
+  - **Boot.** skiboot enters `_start` big-endian in hypervisor real mode with the device tree,
+    OPAL's base and its entry in `r3`, `r8` and `r9`. The entry code:
+    - turns the CPU little-endian (Linux's `FIXUP_ENDIAN` words);
+    - moves the image to its linked physical address `0x2001_0000` if skiboot put it
+      elsewhere;
+    - zeroes `.bss`;
+    - copies the interrupt vectors to physical `0x4000`;
+    - builds a boot radix tree (512 GiB of 1 GiB pages at `0xc000...`) with the partition and
+      process tables;
+    - sets `PTCR`, `LPCR` (host radix, process tables, `AIL` 3) and `PIDR`, and `rfid`s into
+      translation.
+
+    Kernel and direct map share quadrant 3 (`0xc000...`), as on Linux:
+    `KERNEL_VIRTUAL_OFFSET` is `0xc000_0000_0000_0000`.
+  - **Page tables.** POWER9 walks only 52-bit trees, so the format has five levels: a root
+    whose process table entry says 4 index bits (16 entries), then four levels of 512.
+    Entries are stored byte-swapped, because the hardware reads them big-endian. Root 0 is a
+    program's tree, quadrant 0, through process table entry `1 + PIR`; root 1 is the kernel's,
+    entry 0. Address-space switches rewrite the CPU's own entry and invalidate by PID.
+  - **Interrupts.** The interrupts relocate to `0xc000...4000` plus the vector. Each vector
+    keeps `r13` in `HSPRG1`, takes the CPU's scratch area from `HSPRG0` and jumps to one
+    common entry. From problem state, the entry saves the program's registers into its
+    `UserContext` and returns from `run_user` (D47); from the kernel, it saves a frame below the
+    288-byte red zone and returns with `hrfid`. The per-CPU block is `r13`.
+  - **Timer and wake-ups.** The decrementer, over the 512 MHz time base, is the timer.
+    Wake-ups are hypervisor doorbells (`msgsnd`). Idle is `stop` with `PSSCR` 0.
+  - **Firmware calls.** The console, power-off, reset and secondary CPUs (`OPAL_START_CPU`)
+    are OPAL calls made in big-endian real mode; their buffers are in the kernel image, whose
+    physical addresses are known.
+  - **FP.** The FP, vector and VSX registers are lazy as elsewhere (D54): all 64 VSX
+    registers, `FPSCR`, `VSCR` and `VRSAVE`, with the facilities turned on for programs by a
+    per-CPU flag the way into user mode reads.
+  - **Linux ABI.** The table is PowerPC's own: legacy calls and `renameat`, no `arch_prctl`.
+    A failed call sets `CR0.SO` with the error number positive, and the HAL converts it.
+    `struct stat` is x86_64's layout. `O_DIRECTORY` and `O_NOFOLLOW` are Arm's. The terminal
+    `ioctl` numbers are PowerPC's, so the kernel's request numbers moved into the ABI files
+    (`abi::tty`) and userland's into `eggos_runtime::syscall::tty`. Signal frames are
+    PowerPC's `rt_sigframe`: `gp_regs`, `fp_regs` and the vector and VSX areas, the
+    `li r0, 172; sc` trampoline, and the handler's frame 128 below with its back chain. The
+    user test programs are written in PowerPC assembly.
+  - **CI.** It joins the CI boot matrix as LoongArch did.
+- **Known gaps for the build pass.**
+  - The prebuilt `core` of the Linux target is hard-float, and the kernel provides `memcpy`
+    and its siblings itself.
+  - The kernel's `termios` and userland's raw-mode code use the generic layout, which
+    PowerPC orders differently (`c_cc` before `c_line`, other `VMIN`/`VTIME` indices).
+  - std-selftest and the Windows and macOS layers keep the generic tty numbers (those layers
+    do not run here).
+  - Whether skiboot loads the image as one blob (the relocation copy assumes it may) is
+    checked at the first boot.
+- **Not yet (part 2).** XIVE for device interrupts, console input through OPAL events and
+  wake-ups between cores beyond what doorbells reach; PCI host bridges (PHB4) from the device
+  tree; building and running.

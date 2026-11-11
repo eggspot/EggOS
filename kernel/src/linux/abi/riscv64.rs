@@ -12,6 +12,9 @@ pub mod number {
     pub use crate::linux::abi::generic::number::*;
 }
 
+/// The terminal and descriptor `ioctl` numbers: the generic ones.
+pub use super::generic::tty;
+
 /// The architecture, as `uname` names it.
 pub const MACHINE: &str = "riscv64";
 /// The `e_machine` of the programs the kernel runs natively (D17).

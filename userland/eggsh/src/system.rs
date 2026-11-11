@@ -50,18 +50,18 @@ const SIG_BLOCK: usize = 0;
 const SIG_SETMASK: usize = 2;
 const INTERRUPT_MASK: u64 = 1 << (SIGINT - 1);
 const POLLIN: i16 = 1;
-const TCGETS: usize = 0x5401;
-const TCSETS: usize = 0x5402;
+const TCGETS: usize = eggos_runtime::syscall::tty::TCGETS;
+const TCSETS: usize = eggos_runtime::syscall::tty::TCSETS;
 const LOCAL_FLAGS: usize = 12;
 const ICANON: u32 = 0o2;
 const ECHO: u32 = 0o10;
 const CONTROL_CHARACTERS: usize = 17;
 const VTIME: usize = 5;
 const VMIN: usize = 6;
-const TIOCSPGRP: usize = 0x5410;
+const TIOCSPGRP: usize = eggos_runtime::syscall::tty::TIOCSPGRP;
 const TERMIOS_SIZE: usize = 64;
 const STAT_SIZE: usize = 144;
-const MODE_OFFSET: usize = if cfg!(target_arch = "x86_64") { 24 } else { 16 };
+const MODE_OFFSET: usize = if cfg!(any(target_arch = "x86_64", target_arch = "powerpc64")) { 24 } else { 16 };
 const FILE_TYPE: u32 = 0o170_000;
 const DIRECTORY: u32 = 0o040_000;
 const REGULAR_FILE: u32 = 0o100_000;
@@ -114,7 +114,7 @@ impl SignalAction {
                 process::restore_after_signal as *const () as usize,
             ),
         };
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "powerpc64"))]
         let (flags, restorer) = (0, 0);
         #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
         let flags = 0;

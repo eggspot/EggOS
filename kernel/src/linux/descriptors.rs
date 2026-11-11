@@ -92,17 +92,17 @@ pub mod close_range_flag {
     pub const CLOEXEC: u32 = 1 << 2;
 }
 
-/// The `ioctl`s every descriptor answers, whatever it names, the generic numbers, which x86_64
-/// shares.
+/// The `ioctl`s every descriptor answers, whatever it names, each architecture's numbers
+/// ([`crate::linux::abi::tty`]).
 pub mod request {
     /// Set or clear `O_NONBLOCK` (an `int`, set if not 0).
-    pub const FIONBIO: u32 = 0x5421;
+    pub const FIONBIO: u32 = crate::linux::abi::tty::FIONBIO;
     /// Clear the descriptor's close-on-exec flag.
-    pub const FIONCLEX: u32 = 0x5450;
+    pub const FIONCLEX: u32 = crate::linux::abi::tty::FIONCLEX;
     /// Set the descriptor's close-on-exec flag.
-    pub const FIOCLEX: u32 = 0x5451;
+    pub const FIOCLEX: u32 = crate::linux::abi::tty::FIOCLEX;
     /// Set or clear `O_ASYNC` (an `int`): read and ignored, as `F_SETFL` ignores `O_ASYNC`.
-    pub const FIOASYNC: u32 = 0x5452;
+    pub const FIOASYNC: u32 = crate::linux::abi::tty::FIOASYNC;
 }
 
 /// What an open file description names: the console, a side of a pseudo-terminal (D187), a

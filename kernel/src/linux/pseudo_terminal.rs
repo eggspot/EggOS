@@ -63,25 +63,25 @@ pub const SPEED: u32 = 38_400;
 /// a paste's chunk (docs/ux/terminal-selection-v0.3.md section 1.3).
 pub const WRITE_ROOM: usize = 1024;
 
-/// The requests only the controlling side answers, the generic numbers, which AArch64, RISC-V
-/// and x86_64 share.
+/// The requests only the controlling side answers, each architecture's
+/// numbers ([`crate::linux::abi::tty`]).
 pub mod request {
     /// The terminal's number (an `unsigned int`): `_IOR('T', 0x30, 4 bytes)`.
-    pub const TIOCGPTN: u32 = 0x8004_5430;
+    pub const TIOCGPTN: u32 = crate::linux::abi::tty::TIOCGPTN;
     /// Lock (non-zero) or unlock (0) the program side (an `int`): `_IOW('T', 0x31, 4 bytes)`.
-    pub const TIOCSPTLCK: u32 = 0x4004_5431;
+    pub const TIOCSPTLCK: u32 = crate::linux::abi::tty::TIOCSPTLCK;
     /// Whether the program side is locked (an `int`): `_IOR('T', 0x39, 4 bytes)`.
-    pub const TIOCGPTLCK: u32 = 0x8004_5439;
+    pub const TIOCGPTLCK: u32 = crate::linux::abi::tty::TIOCGPTLCK;
     /// Packet mode on (non-zero) or off (an `int`): `0x5420`.
-    pub const TIOCPKT: u32 = 0x5420;
+    pub const TIOCPKT: u32 = crate::linux::abi::tty::TIOCPKT;
     /// Whether packet mode is on (an `int`): `_IOR('T', 0x38, 4 bytes)`.
-    pub const TIOCGPKT: u32 = 0x8004_5438;
+    pub const TIOCGPKT: u32 = crate::linux::abi::tty::TIOCGPKT;
     /// Opens the program side and returns its descriptor, the argument being `open`'s flags:
     /// `_IO('T', 0x41)`.
-    pub const TIOCGPTPEER: u32 = 0x5441;
+    pub const TIOCGPTPEER: u32 = crate::linux::abi::tty::TIOCGPTPEER;
     /// Types the byte the argument points to into the program side's input: `0x5412`, answered
     /// by the program side.
-    pub const TIOCSTI: u32 = 0x5412;
+    pub const TIOCSTI: u32 = crate::linux::abi::tty::TIOCSTI;
 }
 
 /// The status bytes a packet-mode read returns alone ([`request::TIOCPKT`]).

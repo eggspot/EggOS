@@ -48,32 +48,32 @@ use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::user::UserContext;
 
-/// The requests answered, the generic numbers, which AArch64, RISC-V and x86_64 share.
+/// The requests answered, each architecture's numbers ([`crate::linux::abi::tty`]).
 pub mod request {
     /// Read the settings (`struct termios`).
-    pub const TCGETS: u32 = 0x5401;
+    pub const TCGETS: u32 = crate::linux::abi::tty::TCGETS;
     /// Change the settings.
-    pub const TCSETS: u32 = 0x5402;
+    pub const TCSETS: u32 = crate::linux::abi::tty::TCSETS;
     /// Change the settings once output is written.
-    pub const TCSETSW: u32 = 0x5403;
+    pub const TCSETSW: u32 = crate::linux::abi::tty::TCSETSW;
     /// Change the settings once output is written, discarding the unread input.
-    pub const TCSETSF: u32 = 0x5404;
+    pub const TCSETSF: u32 = crate::linux::abi::tty::TCSETSF;
     /// Discard unread input or unwritten output (an `int` saying which).
-    pub const TCFLSH: u32 = 0x540b;
+    pub const TCFLSH: u32 = crate::linux::abi::tty::TCFLSH;
     /// Read the window size (`struct winsize`).
-    pub const TIOCGWINSZ: u32 = 0x5413;
+    pub const TIOCGWINSZ: u32 = crate::linux::abi::tty::TIOCGWINSZ;
     /// Set the window size.
-    pub const TIOCSWINSZ: u32 = 0x5414;
+    pub const TIOCSWINSZ: u32 = crate::linux::abi::tty::TIOCSWINSZ;
     /// How many bytes wait to be read (an `int`).
-    pub const FIONREAD: u32 = 0x541b;
+    pub const FIONREAD: u32 = crate::linux::abi::tty::FIONREAD;
     /// Read the settings with their speeds (`struct termios2`): `_IOR('T', 0x2a, 44 bytes)`.
-    pub const TCGETS2: u32 = 0x802c_542a;
+    pub const TCGETS2: u32 = crate::linux::abi::tty::TCGETS2;
     /// [`TCSETS`] with a `struct termios2`: `_IOW('T', 0x2b, 44 bytes)`.
-    pub const TCSETS2: u32 = 0x402c_542b;
+    pub const TCSETS2: u32 = crate::linux::abi::tty::TCSETS2;
     /// [`TCSETSW`] with a `struct termios2`.
-    pub const TCSETSW2: u32 = 0x402c_542c;
+    pub const TCSETSW2: u32 = crate::linux::abi::tty::TCSETSW2;
     /// [`TCSETSF`] with a `struct termios2`.
-    pub const TCSETSF2: u32 = 0x402c_542d;
+    pub const TCSETSF2: u32 = crate::linux::abi::tty::TCSETSF2;
 }
 
 mod flush {

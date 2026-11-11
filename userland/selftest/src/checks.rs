@@ -406,6 +406,22 @@ fn read_thread_pointer() -> usize {
     value
 }
 
+#[cfg(target_arch = "powerpc64")]
+fn set_thread_pointer(address: usize) -> bool {
+    // SAFETY: `r13` is the program's thread pointer; nothing here uses thread-local storage
+    // through it.
+    unsafe { core::arch::asm!("mr 13, {}", in(reg) address, options(nostack, nomem)) };
+    true
+}
+
+#[cfg(target_arch = "powerpc64")]
+fn read_thread_pointer() -> usize {
+    let value: usize;
+    // SAFETY: reading `r13` has no side effect.
+    unsafe { core::arch::asm!("mr {}, 13", out(reg) value, options(nostack, nomem)) };
+    value
+}
+
 fn stack_limit(_: &Startup) -> bool {
     const RLIMIT_STACK: usize = 3;
     let mut limit = [0u64; 2];
@@ -722,12 +738,12 @@ fn floating_point(_: &Startup) -> bool {
 }
 
 fn console(_: &Startup) -> bool {
-    const TIOCGWINSZ: usize = 0x5413;
+    const TIOCGWINSZ: usize = eggos_runtime::syscall::tty::TIOCGWINSZ;
     const S_IFMT: u32 = 0o170_000;
     const S_IFCHR: u32 = 0o020_000;
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
     const MODE_OFFSET: usize = 24;
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "powerpc64")))]
     const MODE_OFFSET: usize = 16;
     let mut window = [0u16; 4];
     let mut status = [0u8; 144];

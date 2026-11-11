@@ -68,6 +68,26 @@ global_asm!(
     start = sym start,
 );
 
+#[cfg(target_arch = "powerpc64")]
+global_asm!(
+    ".globl _start",
+    ".type _start, @function",
+    "_start:",
+    "addis 2, 12, (.TOC. - _start)@ha",
+    "addi 2, 2, (.TOC. - _start)@l",
+    "mr 3, 1",
+    "addis 4, 2, _DYNAMIC@toc@ha",
+    "addi 4, 4, _DYNAMIC@toc@l",
+    "clrrdi 1, 1, 4",
+    "li 0, 0",
+    "mtlr 0",
+    "stdu 0, -32(1)",
+    "bl {start}",
+    "nop",
+    "trap",
+    start = sym start,
+);
+
 unsafe extern "C" fn start(stack: *const usize, dynamic: *const [usize; 2]) -> ! {
     // SAFETY: `_start` passes the stack as Linux laid it out, which stays for good.
     let startup = unsafe { Startup::from_stack(stack) };

@@ -101,7 +101,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [aarch64, riscv64, x86_64, loongarch64]
+        arch: [aarch64, riscv64, x86_64, loongarch64, ppc64le]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -139,7 +139,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EGGOS_MACOS_PROGRAMS: ${{ github.event_name == 'pull_request' && 'target/macos-programs' || '' }}
-          EGGOS_WINDOWS_PROGRAMS: ${{ github.event_name == 'pull_request' && matrix.arch != 'riscv64' && matrix.arch != 'loongarch64' && 'target/windows-programs' || '' }}
+          EGGOS_WINDOWS_PROGRAMS: ${{ github.event_name == 'pull_request' && matrix.arch != 'riscv64' && matrix.arch != 'loongarch64' && matrix.arch != 'ppc64le' && 'target/windows-programs' || '' }}
         run: cargo xtask qemu --arch ${{ matrix.arch }}
 
       - name: Keep the QEMU boot tests' screenshots when they fail

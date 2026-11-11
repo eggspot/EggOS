@@ -81,6 +81,31 @@ pub unsafe fn clone_onto_stack(
             in("t1") child, in("t2") argument,
         );
     }
+    #[cfg(target_arch = "powerpc64")]
+    // SAFETY: Linux's PowerPC `clone` (D304): a failure sets CR0.SO with the error number
+    // positive; the child starts on its own stack with r3 0 and never comes back here.
+    unsafe {
+        asm!(
+            "sc",
+            "bns 1f",
+            "neg 3, 3",
+            "b 2f",
+            "1:",
+            "cmpdi 3, 0",
+            "bne 2f",
+            "mr 3, 15",
+            "mr 12, 14",
+            "mtctr 14",
+            "bctrl",
+            "trap",
+            "2:",
+            in("r0") number::CLONE,
+            inlateout("r3") flags as isize => result,
+            in("r4") stack_top, in("r5") 0usize, in("r6") 0usize, in("r7") 0usize,
+            in("r14") child, in("r15") argument,
+            out("cr0") _,
+        );
+    }
     #[cfg(target_arch = "loongarch64")]
     // SAFETY: Linux's LoongArch `clone` (D290): the caller's registers are as before but `$a0`;
     // the child starts on its own stack and never comes back here.
@@ -120,7 +145,7 @@ pub const CHILD_STACK_BYTES: usize = 16 * 1024;
 
 const SIGCHLD: usize = 17;
 const SIGPIPE: usize = 13;
-const TIOCSCTTY: usize = 0x540e;
+const TIOCSCTTY: usize = crate::syscall::tty::TIOCSCTTY;
 const SIGNAL_SET_BYTES: usize = 8;
 const NOT_RUN: i32 = 127;
 const FIRST_OTHER_DESCRIPTOR: usize = 3;

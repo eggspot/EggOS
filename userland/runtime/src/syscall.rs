@@ -171,6 +171,123 @@ pub mod number {
     pub const FACCESSAT: usize = 48;
 }
 
+/// Linux's system-call numbers on 64-bit PowerPC (D304).
+#[cfg(target_arch = "powerpc64")]
+pub mod number {
+    pub const READ: usize = 3;
+    pub const WRITE: usize = 4;
+    pub const CLOSE: usize = 6;
+    pub const FSTAT: usize = 108;
+    pub const MMAP: usize = 90;
+    pub const MPROTECT: usize = 125;
+    pub const MUNMAP: usize = 91;
+    pub const BRK: usize = 45;
+    pub const RT_SIGACTION: usize = 173;
+    pub const RT_SIGRETURN: usize = 172;
+    pub const IOCTL: usize = 54;
+    pub const GETPID: usize = 20;
+    pub const CLONE: usize = 120;
+    pub const EXECVE: usize = 11;
+    pub const WAIT4: usize = 114;
+    pub const UNAME: usize = 122;
+    pub const SETSID: usize = 66;
+    pub const RT_SIGSUSPEND: usize = 178;
+    pub const SIGALTSTACK: usize = 185;
+    pub const REBOOT: usize = 88;
+    pub const GETTID: usize = 207;
+    pub const FUTEX: usize = 221;
+    pub const SET_TID_ADDRESS: usize = 232;
+    pub const CLOCK_SETTIME: usize = 245;
+    pub const CLOCK_GETTIME: usize = 246;
+    pub const CLOCK_NANOSLEEP: usize = 248;
+    pub const EXIT_GROUP: usize = 234;
+    pub const OPENAT: usize = 286;
+    pub const PPOLL: usize = 281;
+    pub const SET_ROBUST_LIST: usize = 300;
+    pub const PRLIMIT64: usize = 325;
+    pub const GETRANDOM: usize = 359;
+    pub const RT_SIGPROCMASK: usize = 174;
+    pub const GETCWD: usize = 182;
+    pub const CHDIR: usize = 12;
+    pub const GETEUID: usize = 49;
+    pub const SETPGID: usize = 57;
+    pub const GETPGID: usize = 132;
+    pub const NEWFSTATAT: usize = 291;
+    pub const GETDENTS64: usize = 202;
+    pub const STATX: usize = 383;
+    pub const DUP3: usize = 316;
+    pub const CLOSE_RANGE: usize = 436;
+    pub const FCNTL: usize = 55;
+    pub const PIPE2: usize = 317;
+    pub const MKDIRAT: usize = 287;
+    pub const UNLINKAT: usize = 292;
+    pub const UTIMENSAT: usize = 304;
+    pub const RENAMEAT2: usize = 357;
+    pub const SYNC: usize = 36;
+    pub const SCHED_GETAFFINITY: usize = 223;
+    pub const SCHED_SETAFFINITY: usize = 222;
+    pub const FSYNC: usize = 118;
+    pub const KILL: usize = 37;
+    pub const SOCKET: usize = 326;
+    pub const CONNECT: usize = 328;
+    pub const SENDTO: usize = 335;
+    pub const RECVFROM: usize = 337;
+    pub const GETSOCKNAME: usize = 331;
+    pub const SETSOCKOPT: usize = 339;
+    pub const SENDMSG: usize = 341;
+    pub const RECVMSG: usize = 342;
+    pub const BIND: usize = 327;
+    pub const LISTEN: usize = 329;
+    pub const ACCEPT4: usize = 344;
+    pub const MEMFD_CREATE: usize = 360;
+    pub const FTRUNCATE: usize = 93;
+    pub const PREAD64: usize = 179;
+    pub const PWRITE64: usize = 180;
+    pub const READLINKAT: usize = 296;
+    pub const SYMLINKAT: usize = 295;
+    pub const LINKAT: usize = 294;
+    pub const OPENAT2: usize = 437;
+    pub const FCHMODAT: usize = 297;
+    pub const FCHMODAT2: usize = 452;
+    pub const STATFS: usize = 99;
+    pub const FSTATFS: usize = 100;
+    pub const LSEEK: usize = 19;
+    pub const FACCESSAT: usize = 298;
+}
+
+/// Linux's terminal `ioctl` numbers: the generic ones, or PowerPC's own (D304).
+pub mod tty {
+    #[cfg(not(target_arch = "powerpc64"))]
+    mod values {
+        pub const TCGETS: usize = 0x5401;
+        pub const TCSETS: usize = 0x5402;
+        pub const TCSETSW: usize = 0x5403;
+        pub const TIOCSCTTY: usize = 0x540e;
+        pub const TIOCGPGRP: usize = 0x540f;
+        pub const TIOCSPGRP: usize = 0x5410;
+        pub const TIOCGWINSZ: usize = 0x5413;
+        pub const TIOCSWINSZ: usize = 0x5414;
+        pub const FIONREAD: usize = 0x541b;
+        pub const TIOCGPTN: usize = 0x8004_5430;
+        pub const TIOCSPTLCK: usize = 0x4004_5431;
+    }
+    #[cfg(target_arch = "powerpc64")]
+    mod values {
+        pub const TCGETS: usize = 0x402c_7413;
+        pub const TCSETS: usize = 0x802c_7414;
+        pub const TCSETSW: usize = 0x802c_7415;
+        pub const TIOCSCTTY: usize = 0x540e;
+        pub const TIOCGPGRP: usize = 0x4004_7477;
+        pub const TIOCSPGRP: usize = 0x8004_7476;
+        pub const TIOCGWINSZ: usize = 0x4008_7468;
+        pub const TIOCSWINSZ: usize = 0x8008_7467;
+        pub const FIONREAD: usize = 0x4004_667f;
+        pub const TIOCGPTN: usize = 0x4004_5430;
+        pub const TIOCSPTLCK: usize = 0x8004_5431;
+    }
+    pub use values::*;
+}
+
 /// Makes Linux system call `number` with `arguments` and returns its result: a negative errno
 /// on failure.
 ///
@@ -216,6 +333,26 @@ pub unsafe fn call(number: usize, arguments: [usize; 6]) -> isize {
             in("a7") number,
             inlateout("a0") a as isize => result,
             in("a1") b, in("a2") c, in("a3") d, in("a4") e, in("a5") f,
+            options(nostack),
+        );
+    }
+    #[cfg(target_arch = "powerpc64")]
+    // SAFETY: Linux's PowerPC system-call convention (D304): a failure sets CR0.SO with the
+    // error number positive in r3, which becomes the negative errno the callers expect; the
+    // kernel may change r0 and r4 to r12, CR0 and the memory the arguments name, which the
+    // caller owns.
+    unsafe {
+        asm!(
+            "sc",
+            "bns 1f",
+            "neg 3, 3",
+            "1:",
+            inlateout("r0") number => _,
+            inlateout("r3") a as isize => result,
+            inlateout("r4") b => _, inlateout("r5") c => _, inlateout("r6") d => _,
+            inlateout("r7") e => _, inlateout("r8") f => _,
+            lateout("r9") _, lateout("r10") _, lateout("r11") _, lateout("r12") _,
+            lateout("cr0") _,
             options(nostack),
         );
     }

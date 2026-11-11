@@ -45,8 +45,8 @@ const SIG_IGN: usize = 1;
 const SIG_BLOCK: usize = 0;
 const SIGNAL_SET_SIZE: usize = 8;
 const IGNORED_SIGNALS: [usize; 8] = [1, 2, 3, 13, 15, 20, 21, 22];
-const TIOCSCTTY: usize = 0x540e;
-const TIOCSPGRP: usize = 0x5410;
+const TIOCSCTTY: usize = eggos_runtime::syscall::tty::TIOCSCTTY;
+const TIOCSPGRP: usize = eggos_runtime::syscall::tty::TIOCSPGRP;
 const STEAL_THE_CONSOLE: usize = 1;
 const CLOCK_MONOTONIC: usize = 1;
 const COMMAND_NOT_RUN: i32 = 127;
@@ -117,7 +117,7 @@ impl SignalAction {
             SA_RESTORER,
             eggos_runtime::process::restore_after_signal as *const () as usize,
         );
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "powerpc64"))]
         let (flags, restorer) = (0, 0);
         #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
         let flags = 0;

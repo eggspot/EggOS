@@ -4,10 +4,10 @@ use core::ffi::CStr;
 use eggos_commands::errors;
 use eggos_runtime::errno::Errno;
 
-pub const TCGETS: u32 = 0x5401;
-pub const TCSETSW: u32 = 0x5403;
-pub const TIOCGWINSZ: u32 = 0x5413;
-pub const TIOCSWINSZ: u32 = 0x5414;
+pub const TCGETS: u32 = eggos_runtime::syscall::tty::TCGETS as u32;
+pub const TCSETSW: u32 = eggos_runtime::syscall::tty::TCSETSW as u32;
+pub const TIOCGWINSZ: u32 = eggos_runtime::syscall::tty::TIOCGWINSZ as u32;
+pub const TIOCSWINSZ: u32 = eggos_runtime::syscall::tty::TIOCSWINSZ as u32;
 pub const SETTINGS_SIZE: usize = 17 + CONTROL_CHARACTERS;
 pub const WINDOW_SIZE_SIZE: usize = 8;
 pub const CONTROL_CHARACTERS: usize = 19;

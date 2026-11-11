@@ -197,6 +197,9 @@ pub mod number {
     pub const LAST: u64 = FCHMODAT2;
 }
 
+/// The terminal and descriptor `ioctl` numbers: the generic ones.
+pub use super::generic::tty;
+
 /// The architecture, as `uname` names it.
 pub const MACHINE: &str = "x86_64";
 /// The `e_machine` of the programs the kernel runs natively (D17).

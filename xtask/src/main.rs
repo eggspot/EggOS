@@ -217,7 +217,7 @@ commands:
                          session over the script's piped standard input and output, as
                          `qemu` runs it (<arch> may be `all`)
 
-architectures: aarch64, riscv64, x86_64, loongarch64";
+architectures: aarch64, riscv64, x86_64, loongarch64, ppc64le";
 
 /// A kernel architecture: its Rust target and how to boot it in QEMU.
 #[derive(Debug)]
@@ -337,6 +337,26 @@ pub const ARCHES: &[Arch] = &[
             "-device",
             "virtio-rng-pci,disable-legacy=on",
         ],
+        display_args: &["-device", "virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800"],
+        input_args: &[
+            "-device",
+            "virtio-keyboard-pci,disable-legacy=on",
+            "-device",
+            "virtio-tablet-pci,disable-legacy=on",
+            "-device",
+            "virtio-mouse-pci,disable-legacy=on",
+        ],
+        offscreen_args: &[],
+        disk_device: "virtio-blk-pci,disable-legacy=on",
+        agent_bus_device: "virtio-serial-pci,disable-legacy=on",
+        network_device: "virtio-net-pci,disable-legacy=on",
+    },
+    Arch {
+        name: "ppc64le",
+        target: "powerpc64le-unknown-linux-gnu",
+        user_target: "powerpc64le-unknown-linux-musl",
+        qemu: "qemu-system-ppc64",
+        machine_args: &["-machine", "powernv9", "-device", "virtio-rng-pci,disable-legacy=on"],
         display_args: &["-device", "virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800"],
         input_args: &[
             "-device",

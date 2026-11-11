@@ -39,6 +39,17 @@ pub(crate) use loongarch64::doorbell_barrier;
 #[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
 pub(crate) use loongarch64::zero;
 
+#[cfg(all(eggos_kernel, target_arch = "powerpc64"))]
+pub mod powerpc64;
+#[cfg(all(eggos_kernel, target_arch = "powerpc64"))]
+pub(crate) use powerpc64::KERNEL_VIRTUAL_OFFSET;
+#[cfg(all(eggos_kernel, target_arch = "powerpc64"))]
+pub use powerpc64::Powerpc64 as CurrentPlatform;
+#[cfg(all(eggos_kernel, target_arch = "powerpc64"))]
+pub(crate) use powerpc64::doorbell_barrier;
+#[cfg(all(eggos_kernel, target_arch = "powerpc64"))]
+pub(crate) use powerpc64::zero;
+
 #[cfg(all(eggos_kernel, target_arch = "riscv64"))]
 pub mod riscv64;
 #[cfg(all(eggos_kernel, target_arch = "riscv64"))]
@@ -56,7 +67,12 @@ pub mod x86_64;
 pub(crate) use x86_64::KERNEL_VIRTUAL_OFFSET;
 #[cfg(all(
     eggos_kernel,
-    any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "x86_64")
+    any(
+        target_arch = "loongarch64",
+        target_arch = "powerpc64",
+        target_arch = "riscv64",
+        target_arch = "x86_64"
+    )
 ))]
 pub(crate) const fn kernel_virtual_offset() -> u64 {
     KERNEL_VIRTUAL_OFFSET
@@ -73,6 +89,7 @@ pub(crate) use x86_64::zero;
     not(any(
         target_arch = "aarch64",
         target_arch = "loongarch64",
+        target_arch = "powerpc64",
         target_arch = "riscv64",
         target_arch = "x86_64"
     ))

@@ -19,17 +19,17 @@ const O_CREAT: usize = 0o100;
 const O_TRUNC: usize = 0o1000;
 const O_APPEND: usize = 0o2000;
 const O_EXCL: usize = 0o200;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "powerpc64"))]
 const O_NOFOLLOW: usize = 0o100_000;
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", target_arch = "powerpc64")))]
 const O_NOFOLLOW: usize = 0o400_000;
 const AT_REMOVEDIR: usize = 0x200;
 const W_OK: usize = 2;
 const STATX_BASIC_STATS: usize = 0x7ff;
 const O_PATH: usize = 0o10_000_000;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "powerpc64"))]
 const O_DIRECTORY: usize = 0o40_000;
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", target_arch = "powerpc64")))]
 const O_DIRECTORY: usize = 0o200_000;
 const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
 const RESOLVE_NO_SYMLINKS: u64 = 0x04;
@@ -85,7 +85,7 @@ fn termination_action() -> SignalAction {
         SA_RESTORER,
         eggos_runtime::process::restore_after_signal as *const () as usize,
     );
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "powerpc64"))]
     let (flags, restorer) = (0, 0);
     #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
     let flags = 0;
@@ -98,7 +98,7 @@ fn termination_action() -> SignalAction {
     }
 }
 const INIT: usize = 1;
-const TIOCGWINSZ: usize = 0x5413;
+const TIOCGWINSZ: usize = eggos_runtime::syscall::tty::TIOCGWINSZ;
 
 #[repr(C)]
 struct PollFd {

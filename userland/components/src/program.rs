@@ -8,7 +8,7 @@ use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{call, number, write_all};
 
-const TCGETS: usize = 0x5401;
+const TCGETS: usize = eggos_runtime::syscall::tty::TCGETS;
 const TERMIOS_SIZE: usize = 64;
 const STANDARD_INPUT: usize = 0;
 const STANDARD_OUTPUT: usize = 1;
