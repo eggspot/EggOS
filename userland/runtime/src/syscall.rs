@@ -87,8 +87,8 @@ pub mod number {
     pub const FACCESSAT: usize = 269;
 }
 
-/// Linux's system-call numbers: the generic table AArch64 and RISC-V share.
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+/// Linux's system-call numbers: the generic table AArch64, RISC-V and LoongArch share.
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
 pub mod number {
     pub const IOCTL: usize = 29;
     pub const OPENAT: usize = 56;
@@ -216,6 +216,18 @@ pub unsafe fn call(number: usize, arguments: [usize; 6]) -> isize {
             in("a7") number,
             inlateout("a0") a as isize => result,
             in("a1") b, in("a2") c, in("a3") d, in("a4") e, in("a5") f,
+            options(nostack),
+        );
+    }
+    #[cfg(target_arch = "loongarch64")]
+    // SAFETY: Linux's LoongArch system-call convention: the kernel changes only `$a0`, and only
+    // the memory the arguments name, which the caller owns.
+    unsafe {
+        asm!(
+            "syscall 0",
+            in("$a7") number,
+            inlateout("$a0") a as isize => result,
+            in("$a1") b, in("$a2") c, in("$a3") d, in("$a4") e, in("$a5") f,
             options(nostack),
         );
     }

@@ -81,6 +81,23 @@ pub unsafe fn clone_onto_stack(
             in("t1") child, in("t2") argument,
         );
     }
+    #[cfg(target_arch = "loongarch64")]
+    // SAFETY: Linux's LoongArch `clone` (D290): the caller's registers are as before but `$a0`;
+    // the child starts on its own stack and never comes back here.
+    unsafe {
+        asm!(
+            "syscall 0",
+            "bnez $a0, 2f",
+            "move $a0, $t2",
+            "jirl $ra, $t1, 0",
+            ".word 0",
+            "2:",
+            in("$a7") number::CLONE,
+            inlateout("$a0") flags as isize => result,
+            in("$a1") stack_top, in("$a2") 0usize, in("$a3") 0usize, in("$a4") 0usize,
+            in("$t1") child, in("$t2") argument,
+        );
+    }
     result
 }
 

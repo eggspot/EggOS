@@ -2,17 +2,17 @@
 //! from the linker script, and the memory and CPUs a device tree describes.
 
 use crate::arch::KERNEL_VIRTUAL_OFFSET;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
 use crate::fdt::{self, Fdt};
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
 use crate::memory::MemoryMap;
 use crate::memory::PhysicalRange;
 use crate::paging::KernelImage;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
 use crate::{Platform, arch::CurrentPlatform};
 
 /// Largest device tree read, against a corrupt size field (QEMU's are 1 MiB at most).
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
 pub(crate) const MAX_DEVICE_TREE_SIZE: usize = 16 << 20;
 
 unsafe extern "C" {
@@ -72,7 +72,7 @@ pub(crate) fn kernel_image_parts() -> KernelImage {
 /// [`fdt::HEADER_LENGTH`] bytes and, if those hold an FDT header, for as many bytes as it
 /// declares (up to [`MAX_DEVICE_TREE_SIZE`]): the firmware's device tree, which nothing writes
 /// while the kernel runs but [`device_tree_take_seeds`], once, at boot.
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
 unsafe fn device_tree(address: usize) -> Option<(Fdt<'static>, usize)> {
     if address == 0 || !address.is_multiple_of(8) {
         return None;
@@ -90,7 +90,7 @@ unsafe fn device_tree(address: usize) -> Option<(Fdt<'static>, usize)> {
     Some((Fdt::new(blob).ok()?, size))
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
 pub(crate) unsafe fn device_tree_blob(address: usize) -> Option<&'static [u8]> {
     // SAFETY: guaranteed by the caller.
     let (_, size) = unsafe { device_tree(address) }?;
@@ -106,7 +106,7 @@ pub(crate) unsafe fn device_tree_blob(address: usize) -> Option<&'static [u8]> {
 ///
 /// # Safety
 /// As for [`device_tree`].
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
 pub(crate) unsafe fn device_tree_memory_map(address: usize) -> MemoryMap {
     let mut map = MemoryMap::new();
     // SAFETY: guaranteed by the caller.
@@ -142,7 +142,7 @@ pub(crate) unsafe fn device_tree_memory_map(address: usize) -> MemoryMap {
 ///
 /// # Safety
 /// As for [`device_tree`].
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
 pub(crate) unsafe fn device_tree_ram(address: usize) -> MemoryMap {
     let mut map = MemoryMap::new();
     // SAFETY: guaranteed by the caller.
@@ -163,7 +163,7 @@ pub(crate) unsafe fn device_tree_ram(address: usize) -> MemoryMap {
 ///
 /// # Safety
 /// As for [`device_tree`].
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
 pub(crate) unsafe fn device_tree_cpus(address: usize, cpu: &mut dyn FnMut(u64)) {
     // SAFETY: guaranteed by the caller.
     let Some((tree, _)) = (unsafe { device_tree(address) }) else {
@@ -197,7 +197,7 @@ pub(crate) unsafe fn device_tree_plic_supervisor_context(
 /// As for [`device_tree`], and the tree must also be writable there; the call must come
 /// before anything else reads the tree on another CPU, and no reference to the tree may be
 /// alive (the boot CPU at boot, between the HAL's other reads).
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
 pub(crate) unsafe fn device_tree_take_seeds(
     address: usize,
     seed: &mut dyn FnMut(crate::random::SeedSource, &[u8]),

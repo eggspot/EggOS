@@ -71,7 +71,7 @@ struct Services {
     clock: AgentServer,
 }
 
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
 #[repr(C)]
 struct SignalAction {
     handler: usize,
@@ -80,7 +80,7 @@ struct SignalAction {
     mask: u64,
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
 #[repr(C)]
 struct SignalAction {
     handler: usize,
@@ -93,7 +93,7 @@ impl SignalAction {
         Self {
             handler,
             flags: 0,
-            #[cfg(not(target_arch = "riscv64"))]
+            #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
             restorer: 0,
             mask: 0,
         }
@@ -107,12 +107,12 @@ impl SignalAction {
         );
         #[cfg(target_arch = "aarch64")]
         let (flags, restorer) = (0, 0);
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
         let flags = 0;
         Self {
             handler: handler as usize,
             flags,
-            #[cfg(not(target_arch = "riscv64"))]
+            #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
             restorer,
             mask,
         }

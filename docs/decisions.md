@@ -20061,3 +20061,52 @@ the license, by an explicit instruction recorded here.
   allocated as 8 KiB pairs); written blind, an error there stops every x86_64 boot, and only
   pre-2019 Intel cores (no `RDCL_NO`) need it.
 
+## D290 LoongArch64, part 1: boot, translation, timer, CPUs, exceptions, user mode and the Linux ABI (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the LoongArch Reference Manual volume 1, Linux's LoongArch boot protocol and QEMU's `virt` board)
+
+- **Decision.** LoongArch64 is M9's first new architecture: QEMU emulates it well (`virt`,
+  LA464), Rust has its kernel (`loongarch64-unknown-none-softfloat`) and Linux
+  (`loongarch64-unknown-linux-musl`) targets, and its Linux ABI is the generic one AArch64 and
+  RISC-V already use. Part 1 is everything a kernel binary for it needs:
+  - **Boot.** QEMU loads the image at 2 MiB and enters `_start` in direct address mode with the
+    command line and the EFI system table it builds in the first megabyte; the entry turns on
+    `DMW0` (uncached, `0x8000...`) and `DMW1` (cached, `0x9000...`), moves to its cached alias,
+    turns translation on, finds the device tree in the system table's configuration tables
+    (`DEVICE_TREE_GUID`), copies the command line, then zeroes physical page 0 and builds boot
+    tables (a 512 GiB direct map of 1 GiB pages and the kernel's gigabyte) before jumping to the
+    top 2 GiB. The first 2 MiB stay out of the frame allocator. `DMW1` is turned off once the
+    kernel's own tables load; `DMW0` stays for the console's UART, which is reached uncached
+    from the first instruction on.
+  - **Translation.** Four levels of 512 entries (48-bit addresses), `PGDL` for programs and
+    `PGDH` for the kernel (two roots, as AArch64), 4 KiB pages and 2 MiB and 1 GiB huge pages
+    (`paging::loongarch64`, with host tests). The TLB refill handler walks them with `lddir` and
+    `ldpte` in direct address mode. The walk does not check directory entries, so an empty one
+    (0) leads it to physical page 0, which stays zeroed: the walk ends at an invalid leaf and the
+    access raises a page-invalid exception, a page fault that may be stale. Kernel pages are
+    global, programs' are not: a switch drops non-global translations only (`invtlb 3`).
+  - **Timer and CPUs.** The stable counter (`rdtime.d`) at the frequency `CPUCFG` words 4 and 5
+    give, each core's one-shot `TCFG` timer (interrupt 11), wake-ups as IPIs through the IOCSR
+    block (interrupt 12), and secondary CPUs started through QEMU's boot code: their entry's
+    physical address in mailbox 0 and their `CpuStart` in mailbox 1, then an IPI. Power-off and
+    reset write QEMU's generic event device.
+  - **Exceptions and user mode.** One entry for every exception and interrupt (`ECFG.VS` 0),
+    which `EENTRY` points at; while a program runs `EENTRY` points at the user entry instead,
+    which saves its registers into its `UserContext` (`SAVE0` holds it), as RISC-V's `stvec`
+    does. The per-CPU block lives in `$r21`, which the psABI reserves; the user entry puts the
+    kernel's back. The FP unit is off until a program's first FP instruction (`EUEN.FPE`, the
+    FP-disabled exception reported as an illegal instruction for the kernel's lazy start); LSX
+    and LASX stay off and are not in `AT_HWCAP`. Every test program of the self-tests is
+    translated.
+  - **Linux ABI.** `kernel/src/linux/abi/loongarch64.rs`: the generic table, `uname` machine
+    `loongarch64`, ELF machine 258, the generic `stat`, no `sa_restorer` (the kernel's
+    trampoline), signal frames of 880 bytes whose `uc_mcontext` holds `sc_pc`, `sc_regs` and
+    `sc_flags` and then the FPU context record (`f0`-`f31`, the condition flags, `fcsr0`) and the
+    end record; faults as RISC-V's, FP exceptions `SIGFPE`.
+  - **Programs and the build.** The user runtime's `_start`, system calls and `clone`, the
+    programs' signal actions and thread pointer, the kernel and Linux targets in
+    `rust-toolchain.toml` and `.cargo/config.toml`, xtask's architecture table (`-machine virt
+    -cpu la464`, PCI virtio devices) and the CI boot job.
+- **Not yet.** Building and running; the interrupt controllers (EIOINTC, PCH-PIC, PCH-MSI), so
+  console input, device interrupts and MSI wait; PCI discovery from the device tree on
+  LoongArch, so the virtio devices are not found yet; LSX and LASX for programs; `RDCL`-style
+  speculation controls; QEMU 9.0 or later is needed for the device tree in the system table.
+

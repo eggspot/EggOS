@@ -20,6 +20,8 @@ pub const RELATIVE: u32 = 8;
 pub const RELATIVE: u32 = 1027;
 #[cfg(target_arch = "riscv64")]
 pub const RELATIVE: u32 = 3;
+#[cfg(target_arch = "loongarch64")]
+pub const RELATIVE: u32 = 3;
 
 /// An ELF-64 relocation with an addend.
 #[derive(Debug, Clone, Copy)]

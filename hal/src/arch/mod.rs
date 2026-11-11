@@ -28,6 +28,17 @@ pub(crate) use aarch64::doorbell_barrier;
 #[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub(crate) use aarch64::zero;
 
+#[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
+pub mod loongarch64;
+#[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
+pub(crate) use loongarch64::KERNEL_VIRTUAL_OFFSET;
+#[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
+pub use loongarch64::Loongarch64 as CurrentPlatform;
+#[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
+pub(crate) use loongarch64::doorbell_barrier;
+#[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
+pub(crate) use loongarch64::zero;
+
 #[cfg(all(eggos_kernel, target_arch = "riscv64"))]
 pub mod riscv64;
 #[cfg(all(eggos_kernel, target_arch = "riscv64"))]
@@ -43,7 +54,10 @@ pub(crate) use riscv64::zero;
 pub mod x86_64;
 #[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub(crate) use x86_64::KERNEL_VIRTUAL_OFFSET;
-#[cfg(all(eggos_kernel, any(target_arch = "riscv64", target_arch = "x86_64")))]
+#[cfg(all(
+    eggos_kernel,
+    any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "x86_64")
+))]
 pub(crate) const fn kernel_virtual_offset() -> u64 {
     KERNEL_VIRTUAL_OFFSET
 }
@@ -58,6 +72,7 @@ pub(crate) use x86_64::zero;
     eggos_kernel,
     not(any(
         target_arch = "aarch64",
+        target_arch = "loongarch64",
         target_arch = "riscv64",
         target_arch = "x86_64"
     ))
@@ -73,6 +88,8 @@ pub enum TestMachine {
     RiscvVirt,
     /// x86_64's `q35`.
     Q35,
+    /// LoongArch64's `virt` (D290).
+    LoongarchVirt,
 }
 
 /// The machine this kernel's self-tests expect; `None` in host builds.
@@ -81,6 +98,9 @@ pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::ArmVirt);
 /// The machine this kernel's self-tests expect; `None` in host builds.
 #[cfg(all(eggos_kernel, target_arch = "riscv64"))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::RiscvVirt);
+/// The machine this kernel's self-tests expect; `None` in host builds.
+#[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
+pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::LoongarchVirt);
 /// The machine this kernel's self-tests expect; `None` in host builds.
 #[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::Q35);

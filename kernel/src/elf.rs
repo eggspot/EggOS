@@ -16,6 +16,8 @@ pub mod machine {
     pub const X86_64: u16 = 62;
     pub const AARCH64: u16 = 183;
     pub const RISCV: u16 = 243;
+    /// LoongArch (D290).
+    pub const LOONGARCH: u16 = 258;
 
     /// The machine the kernel runs on: the only one whose programs it runs natively (D17).
     pub const NATIVE: u16 = crate::linux::abi::ELF_MACHINE;

@@ -53,6 +53,21 @@ global_asm!(
     start = sym start,
 );
 
+#[cfg(target_arch = "loongarch64")]
+global_asm!(
+    ".globl _start",
+    ".type _start, @function",
+    "_start:",
+    "move $fp, $zero",
+    "move $ra, $zero",
+    "move $a0, $sp",
+    "la.pcrel $a1, _DYNAMIC",
+    "bstrins.d $sp, $zero, 3, 0",
+    "bl {start}",
+    ".word 0",
+    start = sym start,
+);
+
 unsafe extern "C" fn start(stack: *const usize, dynamic: *const [usize; 2]) -> ! {
     // SAFETY: `_start` passes the stack as Linux laid it out, which stays for good.
     let startup = unsafe { Startup::from_stack(stack) };

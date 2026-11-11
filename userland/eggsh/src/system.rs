@@ -87,7 +87,7 @@ const DIRECTORY_ENTRY_LENGTH: usize = 16;
 const COMMAND_NOT_RUN: i32 = 127;
 const NOT_EXECUTABLE: i32 = 126;
 
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
 #[repr(C)]
 struct SignalAction {
     handler: usize,
@@ -96,7 +96,7 @@ struct SignalAction {
     mask: u64,
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
 #[repr(C)]
 struct SignalAction {
     handler: usize,
@@ -116,12 +116,12 @@ impl SignalAction {
         };
         #[cfg(target_arch = "aarch64")]
         let (flags, restorer) = (0, 0);
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
         let flags = 0;
         Self {
             handler,
             flags,
-            #[cfg(not(target_arch = "riscv64"))]
+            #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
             restorer,
             mask: 0,
         }

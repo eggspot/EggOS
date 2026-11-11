@@ -390,6 +390,22 @@ fn read_thread_pointer() -> usize {
     value
 }
 
+#[cfg(target_arch = "loongarch64")]
+fn set_thread_pointer(address: usize) -> bool {
+    // SAFETY: `$tp` is the program's thread pointer; nothing here uses thread-local storage
+    // through it.
+    unsafe { core::arch::asm!("move $tp, {}", in(reg) address, options(nostack, nomem)) };
+    true
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn read_thread_pointer() -> usize {
+    let value: usize;
+    // SAFETY: reading `$tp` has no side effect.
+    unsafe { core::arch::asm!("move {}, $tp", out(reg) value, options(nostack, nomem)) };
+    value
+}
+
 fn stack_limit(_: &Startup) -> bool {
     const RLIMIT_STACK: usize = 3;
     let mut limit = [0u64; 2];
@@ -432,7 +448,7 @@ fn standard_descriptors(_: &Startup) -> bool {
             .all(|descriptor| descriptor.returned_events & POLLNVAL == 0)
 }
 
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
 #[repr(C)]
 #[derive(Default)]
 struct SignalAction {
@@ -442,7 +458,7 @@ struct SignalAction {
     mask: u64,
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
 #[repr(C)]
 #[derive(Default)]
 struct SignalAction {

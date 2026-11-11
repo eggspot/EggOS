@@ -58,7 +58,7 @@ const SA_RESTORER: usize = 0x0400_0000;
 
 static TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
 #[repr(C)]
 struct SignalAction {
     handler: usize,
@@ -67,7 +67,7 @@ struct SignalAction {
     mask: u64,
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
 #[repr(C)]
 struct SignalAction {
     handler: usize,
@@ -87,12 +87,12 @@ fn termination_action() -> SignalAction {
     );
     #[cfg(target_arch = "aarch64")]
     let (flags, restorer) = (0, 0);
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
     let flags = 0;
     SignalAction {
         handler: note_termination as *const () as usize,
         flags,
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
         restorer,
         mask: 0,
     }

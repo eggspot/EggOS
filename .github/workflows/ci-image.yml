@@ -62,7 +62,7 @@ jobs:
               rustup target list --installed | grep -qx "$target" || { echo "missing $target"; exit 1; }
             done &&
             qemu-system-aarch64 --version && qemu-system-riscv64 --version &&
-            qemu-system-x86_64 --version && test -d /usr/lib/riscv64-linux-gnu/opensbi &&
+            qemu-system-x86_64 --version && qemu-system-loongarch64 --version && test -d /usr/lib/riscv64-linux-gnu/opensbi &&
             cc --version && zstd --version && gh --version && git --version'
 
       - name: Push
