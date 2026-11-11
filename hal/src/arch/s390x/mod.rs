@@ -12,6 +12,7 @@ mod channel;
 mod exception;
 mod fp;
 mod sclp;
+mod smp;
 mod thread;
 mod timer;
 
@@ -177,7 +178,6 @@ static mut BOOT_THIRDS: ThirdTables = ThirdTables([0; 4096]);
 static mut BOOT_SEGMENTS: RegionTable = RegionTable([0; 2048]);
 
 const SIGP_STOP: u64 = 0x05;
-const SIGP_STORE_ADDRESS: u64 = 0;
 
 /// This CPU's address.
 pub(super) fn cpu_address() -> u64 {
@@ -449,16 +449,16 @@ impl Platform for S390x {
     }
 
     fn cpus(cpu: &mut dyn FnMut(u64)) {
-        cpu(Self::boot_cpu());
+        smp::cpus(cpu);
     }
 
     fn boot_cpu() -> u64 {
         cpu_address()
     }
 
-    unsafe fn start_cpu(_cpu: u64, _start: &CpuStart) -> Result<(), StartCpuError> {
-        let _ = SIGP_STORE_ADDRESS;
-        Err(StartCpuError::InvalidCpu)
+    unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCpuError> {
+        // SAFETY: the caller's guarantees are `start_cpu`'s.
+        unsafe { smp::start_cpu(cpu, start) }
     }
 
     unsafe fn set_cpu_local(block: usize) {

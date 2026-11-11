@@ -217,7 +217,7 @@ commands:
                          session over the script's piped standard input and output, as
                          `qemu` runs it (<arch> may be `all`)
 
-architectures: aarch64, riscv64, x86_64, loongarch64, ppc64le; mips64el only by name, with\nthe nightly toolchain (D297)";
+architectures: aarch64, riscv64, x86_64, loongarch64, ppc64le; mips64el and s390x only by\nname, with the nightly toolchain (D297, D324)";
 
 /// A kernel architecture: its Rust target and how to boot it in QEMU.
 #[derive(Debug)]
@@ -402,14 +402,39 @@ pub const NIGHTLY_ARCHES: &[Arch] = &[Arch {
     disk_device: "virtio-blk-pci,disable-legacy=on",
     agent_bus_device: "virtio-serial-pci,disable-legacy=on",
     network_device: "virtio-net-pci,disable-legacy=on",
+}, Arch {
+    name: "s390x",
+    target: "s390x-unknown-linux-gnu",
+    user_target: "s390x-unknown-linux-musl",
+    qemu: "qemu-system-s390x",
+    machine_args: &["-machine", "s390-ccw-virtio", "-cpu", "max", "-device", "virtio-rng-ccw"],
+    display_args: &["-device", "virtio-gpu-ccw,xres=1280,yres=800"],
+    input_args: &[
+        "-device",
+        "virtio-keyboard-ccw",
+        "-device",
+        "virtio-tablet-ccw",
+        "-device",
+        "virtio-mouse-ccw",
+    ],
+    offscreen_args: &[],
+    disk_device: "virtio-blk-ccw",
+    agent_bus_device: "virtio-serial-ccw",
+    network_device: "virtio-net-ccw",
 }];
 
+/// The targets of [`NIGHTLY_ARCHES`] that ship no prebuilt `core` (tier 3): s390x's kernel
+/// target is tier 2 and builds on the pinned toolchain; its user target is not (D324).
+const TIER_3_TARGETS: &[&str] = &[
+    "mips64el-unknown-linux-gnuabi64",
+    "mips64el-unknown-linux-muslabi64",
+    "s390x-unknown-linux-musl",
+];
+
 /// The arguments and environment that build `core`, `alloc` and the compiler's builtins from
-/// source with the nightly toolchain, when `args` name a [`NIGHTLY_ARCHES`] target.
+/// source with the nightly toolchain, when `args` name one of [`TIER_3_TARGETS`].
 fn nightly_build_std(args: &[&str]) -> Option<([&'static str; 2], (&'static str, &'static str))> {
-    let nightly = NIGHTLY_ARCHES
-        .iter()
-        .any(|arch| args.contains(&arch.target) || args.contains(&arch.user_target));
+    let nightly = TIER_3_TARGETS.iter().any(|target| args.contains(target));
     nightly.then_some((
         [
             "-Zbuild-std=core,alloc,compiler_builtins",

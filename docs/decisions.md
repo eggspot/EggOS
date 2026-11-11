@@ -21153,3 +21153,39 @@ the license, by an explicit instruction recorded here.
   - The vector registers are not saved: programs get no vector facility (CR0's AFP only).
 - **Next (part 3c).** Secondary CPUs through SIGP (set prefix, initial CPU reset, restart),
   and the xtask, toolchain and CI entries.
+
+## D324 s390x part 3c: secondary CPUs and the build entries (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Rust's platform-support tiers)
+
+- **Decision.**
+  - **Secondary CPUs** (`hal/src/arch/s390x/smp.rs`).
+    - `cpus` lists the boot CPU and every address up to 16 that answers `SIGP SENSE`.
+    - **Preparing a CPU.** `start_cpu` gives the CPU an 8 KiB lowcore of its own (its prefix
+      area, one of 16 in `.bss`). The lowcore gets:
+      - a copy of the boot CPU's new PSWs and continuation PSWs (`lowcore::COPIED`);
+      - a restart PSW into `s390x_secondary_real`;
+      - in `lowcore::CPU_START`, the absolute address of a start block holding CR0 (with
+        the AFP control off), the root's ASCE, the stack and the kernel entry PSW.
+    - **Starting it.** Then `SIGP` does an initial CPU reset, sets the prefix and restarts
+      the CPU.
+    - **On the new CPU.** In real mode it loads CR0, CR1 and CR13 from the block, takes the
+      stack and enters the kernel in the home space. There `secondary_started` sets the home
+      and program roots, purges the TLB, disarms the clock comparator and calls the entry.
+  - **Build entries: s390x joins MIPS64 under D297's nightly rule.**
+    - The kernel builds on the pinned stable toolchain for `s390x-unknown-linux-gnu` (tier 2,
+      added to `rust-toolchain.toml`), with the vector facility off and soft float.
+    - Rust has no tier-2 user target for s390x: `s390x-unknown-linux-musl` is tier 3. So
+      the user programs need a nightly toolchain's `build-std`.
+    - **What changes in xtask.** s390x is a `NIGHTLY_ARCHES` entry (QEMU `s390-ccw-virtio`,
+      `-cpu max`, the `-ccw` virtio devices). `nightly_build_std` now goes by a list of
+      tier-3 targets, so s390x's kernel still builds on stable.
+    - **What waits for the owner.** As for MIPS64 (D297 revised), the owner decides at
+      test-and-fix time whether to allow nightly for it. Until then s390x stays out of CI
+      and the release matrix; it is built with `--arch s390x` only.
+    - This replaces D321's plan of a CI entry like ppc64le's: that needed a tier-2 user
+      target, which s390x does not have.
+- **Known gaps (to check at build time).**
+  - The SIGP orders' codes, the prefix's 2 GiB limit, and whether QEMU's restarted CPU
+    loads the restart PSW from its new prefix area were written from memory.
+  - Whether `+soft-float` is a valid s390x target feature on the pinned toolchain.
+- **M9 s390x: written.** Parts 1 to 3c (D320 to D324) are the whole port. What is left is
+  building it, running it, and interrupts for the channel subsystem.
