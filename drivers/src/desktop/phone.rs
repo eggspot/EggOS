@@ -48,6 +48,8 @@ const WHEEL_STEP: u32 = 48;
 const BACK_ARROW: (u32, u32, u32) = (57, 819, 16);
 const HOME_MARK: (u32, u32) = (14, 20);
 const NAVIGATION_ZONES: u32 = 3;
+const TABLET_SEARCH_WIDTH: u32 = 480;
+const TABLET_CELL_WIDTH: u32 = 112;
 
 /// What the person pressed in the phone's shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +119,10 @@ impl Desktop {
         self.close_popups(damage, events);
         self.close_notice(damage);
         let leaving_phone = self.form == Form::Phone;
+        if self.form == Form::Tablet && form != Form::Phone {
+            self.pair_to_halves(damage, events);
+        }
+        self.tablet = super::tablet::TabletState::default();
         self.form = form;
         let notices = (self.phone.notices, self.phone.notice_count);
         self.phone = PhoneState::default();
@@ -124,7 +130,7 @@ impl Desktop {
         self.layout = layout_in_form(self.width, self.height, 1, self.profile, form);
         self.reset_panels();
         match form {
-            Form::Phone => {
+            Form::Phone | Form::Tablet => {
                 let shown = self.focused_normal();
                 for slot in 0..self.windows.len() {
                     let Some(window) = self.windows[slot] else {
@@ -148,6 +154,11 @@ impl Desktop {
     }
 
     fn phone_geometry(&self, slot: usize) -> Geometry {
+        if self.form == Form::Tablet
+            && let Some(geometry) = self.tablet_geometry(slot)
+        {
+            return geometry;
+        }
         let work = self.layout.work_area;
         let window = self.window_at(slot);
         let (top, height) = match window.role {
@@ -168,6 +179,10 @@ impl Desktop {
     /// Gives window `slot` its place in the phone form: a normal window the whole work area,
     /// the others it covered minimised; a dialog the bottom of it, full width (section 2.5).
     pub(super) fn fit_to_phone(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
+        let placed = match (self.form, self.window_at(slot).role) {
+            (Form::Tablet, Role::Normal) => self.tablet_place(slot),
+            _ => None,
+        };
         let old = self.window_at(slot).with_shadow();
         let geometry = self.phone_geometry(slot);
         self.window_mut(slot).maximised = true;
@@ -175,8 +190,15 @@ impl Desktop {
         if self.window_at(slot).role != Role::Normal {
             return;
         }
+        if let Some(replaced) = placed {
+            if let Some(old) = replaced.filter(|&old| old != slot) {
+                self.minimise(old, damage, events);
+            }
+            damage.add(self.screen());
+        }
+        let partner = self.pair_partner(slot);
         for other in 0..self.windows.len() {
-            if other == slot {
+            if other == slot || Some(other) == partner {
                 continue;
             }
             let Some(window) = self.windows[other] else {
@@ -202,7 +224,10 @@ impl Desktop {
         self.top_dialog(shown)
     }
 
-    fn navigation_zone(&self, index: u32) -> Option<Rect> {
+    pub(super) fn navigation_zone(&self, index: u32) -> Option<Rect> {
+        if self.form == Form::Tablet {
+            return self.tablet_navigation_zone(index);
+        }
         let bar = self.layout.navigation_bar?;
         let width = bar.width / NAVIGATION_ZONES;
         Some(Rect::new(bar.x + width * index, bar.y, width, bar.height))
@@ -210,7 +235,34 @@ impl Desktop {
 
     fn search_field(&self) -> Rect {
         let work = self.layout.work_area;
+        if self.form == Form::Tablet {
+            return Rect::new(work.x + (work.width - TABLET_SEARCH_WIDTH) / 2, work.y + SEARCH.0, TABLET_SEARCH_WIDTH, SEARCH.2);
+        }
         Rect::new(SEARCH.0, work.y + SEARCH.1, work.width.saturating_sub(2 * SEARCH.0), SEARCH.2)
+    }
+
+    fn grid_columns(&self) -> u32 {
+        match self.form {
+            Form::Tablet => (self.layout.work_area.width.saturating_sub(32) / TABLET_CELL_WIDTH).max(1),
+            _ => GRID_COLUMNS,
+        }
+    }
+
+    fn cell_width(&self) -> u32 {
+        match self.form {
+            Form::Tablet => TABLET_CELL_WIDTH,
+            _ => CELL.0,
+        }
+    }
+
+    fn grid_left(&self) -> u32 {
+        match self.form {
+            Form::Tablet => {
+                let work = self.layout.work_area;
+                work.x + (work.width - self.grid_columns() * TABLET_CELL_WIDTH) / 2
+            }
+            _ => GRID_LEFT,
+        }
     }
 
     fn grid_area(&self) -> Rect {
@@ -220,11 +272,12 @@ impl Desktop {
 
     fn cell(&self, index: usize) -> Rect {
         let area = self.grid_area();
-        let (column, row) = (index as u32 % GRID_COLUMNS, index as u32 / GRID_COLUMNS);
+        let columns = self.grid_columns();
+        let (column, row) = (index as u32 % columns, index as u32 / columns);
         Rect::new(
-            GRID_LEFT + CELL.0 * column,
+            self.grid_left() + self.cell_width() * column,
             (area.y + CELL.1 * row).saturating_sub(self.phone.scroll),
-            CELL.0,
+            self.cell_width(),
             CELL.1,
         )
     }
@@ -242,7 +295,7 @@ impl Desktop {
     }
 
     fn most_scroll(&self) -> u32 {
-        let rows = (self.catalogue.desktop_apps().count() as u32).div_ceil(GRID_COLUMNS);
+        let rows = (self.catalogue.desktop_apps().count() as u32).div_ceil(self.grid_columns());
         let content = rows * CELL.1 + 16;
         content.saturating_sub(self.grid_area().height)
     }
@@ -315,7 +368,7 @@ impl Desktop {
         let Some(slot) = self.find(id).filter(|&slot| self.window_at(slot).client == client) else {
             return;
         };
-        if self.form != Form::Phone || self.phone.awaiting_back != Some(slot as u8) {
+        if !self.touch_form() || self.phone.awaiting_back != Some(slot as u8) {
             return;
         }
         self.phone.awaiting_back = None;
@@ -332,6 +385,12 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Option<Action> {
+        if self.form == Form::Tablet
+            && !self.phone_overlay_open()
+            && let Some(action) = self.tablet_press(x, y, damage, events)
+        {
+            return Some(action);
+        }
         if self.layout.status_bar.is_some_and(|bar| contains(bar, x, y)) {
             self.phone.pressed = Some(Target::StatusBar);
             let open = !self.phone.shade;
@@ -405,10 +464,10 @@ impl Desktop {
         let app = chosen?;
         self.phone.query_length = 0;
         self.phone.search_focused = false;
-        Some(self.phone_open(app, damage, events))
+        Some(self.phone_open_app(app, damage, events))
     }
 
-    fn phone_open(&mut self, app: AppId, damage: &mut Damage, events: &mut dyn EventSink) -> Action {
+    pub(super) fn phone_open_app(&mut self, app: AppId, damage: &mut Damage, events: &mut dyn EventSink) -> Action {
         let mut windows = [0u8; MAX_WINDOWS];
         match self.app_windows(app, &mut windows) {
             0 => self.launch(app, damage, events),
@@ -428,10 +487,10 @@ impl Desktop {
     /// A wheel turn on the phone's home grid scrolls it, not the bars; returns whether it
     /// did, so the wheel goes to a window otherwise.
     pub fn home_scroll(&mut self, notches: i32, damage: &mut Damage) -> bool {
-        if self.form == Form::Phone && self.switcher_scroll(notches, damage) {
+        if self.touch_form() && self.switcher_scroll(notches, damage) {
             return true;
         }
-        if self.form != Form::Phone || self.phone_shown_window().is_some() || self.phone.query_length > 0 {
+        if !self.touch_form() || self.phone_shown_window().is_some() || self.phone.query_length > 0 {
             return false;
         }
         let step = notches.unsigned_abs() * WHEEL_STEP;
@@ -464,7 +523,7 @@ impl Desktop {
                 let app = self.matching_apps().next().filter(|_| self.phone.query_length > 0)?;
                 self.phone.query_length = 0;
                 self.phone.search_focused = false;
-                Some(self.phone_open(app, damage, events))
+                Some(self.phone_open_app(app, damage, events))
             }
             _ => {
                 let character = self.typed;
@@ -599,6 +658,10 @@ impl Desktop {
             canvas.text(chip.x + AGENT_TEXT_INSET.0, chip.y + AGENT_TEXT_INSET.1, super::AGENT_LABEL, text);
             right = chip.x;
         }
+        if self.form == Form::Tablet {
+            self.draw_title_buttons(canvas);
+            return;
+        }
         if let Some(slot) = self.phone_shown_window() {
             let room = (right.saturating_sub(TITLE_GAP + TITLE_X) / GLYPH_WIDTH as u32) as usize;
             let (text, cut) = windows::cut_title(self.window_at(slot).title(), room.saturating_sub(3));
@@ -633,7 +696,9 @@ impl Desktop {
             true => colour::TEXT,
             false => colour::TEXT_DIM,
         };
-        let (x, y, length) = (BACK_ARROW.0, bar.y + (BACK_ARROW.1 - 796), BACK_ARROW.2);
+        let back = self.navigation_zone(0).unwrap_or(bar);
+        let length = BACK_ARROW.2;
+        let (x, y) = (back.x + (back.width - length) / 2, back.y + back.height / 2 - 1);
         canvas.fill(Rect::new(x, y, length, 2), ink);
         for step in 1..=5u32 {
             canvas.fill(Rect::new(x + step, y.saturating_sub(step), 2, 2), ink);
@@ -643,6 +708,9 @@ impl Desktop {
             let left = home.x + (home.width - HOME_MARK.0) / 2 - 1;
             let top = home.y + (home.height - HOME_MARK.1) / 2;
             Self::draw_egg_mark(canvas, left, top, HOME_MARK.1, self.width);
+        }
+        if self.form == Form::Tablet {
+            self.draw_dock_apps(canvas);
         }
     }
 

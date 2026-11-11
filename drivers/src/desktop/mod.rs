@@ -18,6 +18,7 @@ mod agent;
 pub mod form;
 mod phone;
 mod phone_sheets;
+mod tablet;
 pub mod boot_screen;
 mod catalogue;
 mod desktop_icons;
@@ -410,6 +411,7 @@ pub struct Desktop {
     agent: agent::AgentState,
     form: form::Form,
     phone: phone::PhoneState,
+    tablet: tablet::TabletState,
     updates: updates::UpdatesState,
     sticky: sticky_keys::StickyChips,
     panel_focus: Option<panel_focus::PanelFocus>,
@@ -510,6 +512,7 @@ impl Desktop {
             agent: agent::AgentState::default(),
             form: form::Form::Desktop,
             phone: phone::PhoneState::default(),
+            tablet: tablet::TabletState::default(),
             updates: updates::UpdatesState::default(),
             sticky: sticky_keys::StickyChips::default(),
             panel_focus: None,
@@ -1365,7 +1368,7 @@ impl Desktop {
     fn show(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
         self.place(slot);
         self.window_mut(slot).shown = true;
-        if self.form == form::Form::Phone
+        if self.touch_form()
             && matches!(self.window_at(slot).role, Role::Normal | Role::Dialog)
             && !self.window_at(slot).minimised
         {
@@ -1692,7 +1695,7 @@ impl Desktop {
             return;
         }
         self.window_mut(slot).minimised = false;
-        if self.form == form::Form::Phone && self.window_at(slot).role == Role::Normal {
+        if self.touch_form() && self.window_at(slot).role == Role::Normal {
             self.fit_to_phone(slot, damage, events);
         }
         self.damage_window_list(damage);
@@ -1737,6 +1740,7 @@ impl Desktop {
         self.note_person_motion(x, y);
         self.pointer = (x, y);
         self.pointer_visible = true;
+        self.tablet_drag(x, damage);
         if let Some(resize) = self.resize {
             self.resize_to(resize, x, y, damage, events);
         }
@@ -1882,6 +1886,7 @@ impl Desktop {
             self.buttons &= !bit;
             if code == button::LEFT {
                 self.phone_release(damage);
+                self.tablet_release(damage, events);
                 self.drag = None;
                 self.resize = None;
                 self.panel_release(damage);
@@ -1915,7 +1920,7 @@ impl Desktop {
         let (x, y) = self.pointer;
         self.super_alone = false;
         self.close_notice(damage);
-        if self.form == form::Form::Phone
+        if self.touch_form()
             && code == button::LEFT
             && let Some(action) = self.phone_press(x, y, damage, events)
         {
@@ -2159,7 +2164,7 @@ impl Desktop {
     ) -> Action {
         self.typed = character;
         self.note_person_input();
-        if self.form == form::Form::Phone
+        if self.touch_form()
             && pressed
             && let Some(action) = self.phone_key(code, damage, events)
         {
@@ -2404,9 +2409,9 @@ impl Desktop {
             return;
         }
         self.draw_wallpaper(&mut canvas);
-        match self.form {
-            form::Form::Phone => self.draw_phone_home(&mut canvas),
-            _ => self.draw_desktop_icons(&mut canvas),
+        match self.touch_form() {
+            true => self.draw_phone_home(&mut canvas),
+            false => self.draw_desktop_icons(&mut canvas),
         }
         for &slot in &self.stack[..self.stack_length] {
             let slot = usize::from(slot);
@@ -2516,7 +2521,7 @@ impl Desktop {
         window: &Window,
         contents: &dyn Contents,
     ) {
-        if self.form == form::Form::Phone && matches!(window.role, Role::Normal | Role::Dialog) {
+        if self.touch_form() && matches!(window.role, Role::Normal | Role::Dialog) {
             self.draw_phone_window_frame(canvas, window);
             self.draw_content(canvas, window, contents);
             if window.role == Role::Dialog {

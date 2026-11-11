@@ -37,6 +37,7 @@ const SHEET_END: u32 = 16;
 const POWER_ROWS: [(&str, Action); 2] = [("Power off", Action::PowerOff), ("Restart", Action::Restart)];
 const POWER_ROW_HEIGHT: u32 = 48;
 const NOTICE_GLYPHS: usize = 40;
+const SHADE_WIDTH: u32 = 390;
 
 /// A shade tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,11 +160,18 @@ impl Desktop {
         true
     }
 
+    fn sheet_left(&self) -> u32 {
+        match self.form {
+            super::Form::Tablet => self.width.saturating_sub(SHADE_WIDTH),
+            _ => 0,
+        }
+    }
+
     fn tile_rect(&self, index: usize) -> Rect {
         let work = self.layout.work_area;
         let (column, row) = (index as u32 % 2, index as u32 / 2);
         Rect::new(
-            SIDE + (TILE.0 + TILE_GAP) * column,
+            self.sheet_left() + SIDE + (TILE.0 + TILE_GAP) * column,
             work.y + TILE_GAP + (TILE.1 + TILE_GAP) * row,
             TILE.0,
             TILE.1,
@@ -172,12 +180,12 @@ impl Desktop {
 
     fn settings_button(&self) -> Rect {
         let tile = self.tile_rect(TILES.len());
-        Rect::new(SIDE, tile.y, 2 * TILE.0 + TILE_GAP, TILE.1)
+        Rect::new(tile.x, tile.y, 2 * TILE.0 + TILE_GAP, TILE.1)
     }
 
     fn power_button_rect(&self) -> Rect {
         let above = self.settings_button();
-        Rect::new(SIDE, above.bottom() + TILE_GAP, above.width, POWER_HEIGHT)
+        Rect::new(above.x, above.bottom() + TILE_GAP, above.width, POWER_HEIGHT)
     }
 
     fn notices_top(&self) -> u32 {
@@ -191,7 +199,7 @@ impl Desktop {
 
     fn notice_row(&self, index: usize) -> Rect {
         let power = self.power_button_rect();
-        Rect::new(SIDE, self.notices_top() + 36 + NOTICE_ROW.1 * index as u32, power.width, NOTICE_ROW.0)
+        Rect::new(power.x, self.notices_top() + 36 + NOTICE_ROW.1 * index as u32, power.width, NOTICE_ROW.0)
     }
 
     fn shade_rect(&self) -> Rect {
@@ -200,7 +208,8 @@ impl Desktop {
             0 => self.notices_top() + 50,
             count => self.notice_row(count - 1).bottom(),
         };
-        Rect::new(0, work.y, self.width, (last + SHEET_END).saturating_sub(work.y).min(work.height))
+        let width = self.width - self.sheet_left();
+        Rect::new(self.sheet_left(), work.y, width, (last + SHEET_END).saturating_sub(work.y).min(work.height))
     }
 
     fn power_sheet_rect(&self) -> Rect {
@@ -278,10 +287,14 @@ impl Desktop {
 
     /// Draws the open sheet over the home screen or the shown window.
     pub(super) fn draw_phone_overlays(&self, canvas: &mut Canvas<'_>, contents: &dyn Contents) {
-        if self.form != super::Form::Phone {
+        if !self.touch_form() {
             return;
         }
         self.draw_apps_glyph(canvas);
+        if self.form == super::Form::Tablet {
+            self.draw_pair(canvas);
+            self.draw_tablet_menu(canvas);
+        }
         if self.phone.switcher {
             self.draw_switcher_cards(canvas, contents);
         }
@@ -301,11 +314,10 @@ impl Desktop {
     }
 
     fn draw_apps_glyph(&self, canvas: &mut Canvas<'_>) {
-        let Some(bar) = self.layout.navigation_bar else {
+        let Some(zone) = self.navigation_zone(2) else {
             return;
         };
-        let zone_width = bar.width / 3;
-        let (side, x, y) = (14, bar.x + 2 * zone_width + (zone_width - 14) / 2, bar.y + (bar.height - 14) / 2);
+        let (side, x, y) = (14, zone.x + (zone.width - 14) / 2, zone.y + (zone.height - 14) / 2);
         let ink = colour::TEXT;
         canvas.fill(Rect::new(x, y, side, 1), ink);
         canvas.fill(Rect::new(x, y + side - 1, side, 1), ink);
@@ -401,9 +413,10 @@ impl Desktop {
         let power = self.power_button_rect();
         canvas.rounded(power, &paint::INSET_R4, true, true, colour::BUTTON_INACTIVE);
         canvas.text(power.x + TILE_LINES.0, power.y + 14, "Power", colour::TEXT);
-        canvas.text(SIDE, self.notices_top(), "Notices", colour::TEXT_DIM);
+        let left = self.sheet_left() + SIDE;
+        canvas.text(left, self.notices_top(), "Notices", colour::TEXT_DIM);
         if self.phone.notice_count == 0 {
-            canvas.text(SIDE, self.notices_top() + 50, "No notices.", colour::TEXT_DIM);
+            canvas.text(left, self.notices_top() + 50, "No notices.", colour::TEXT_DIM);
             return;
         }
         let clear = self.clear_button();

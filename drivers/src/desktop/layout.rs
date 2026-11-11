@@ -24,6 +24,8 @@ pub const LAUNCHER_GAP: u32 = 8;
 pub const STATUS_BAR_HEIGHT: u32 = 44;
 /// Height of the phone form's navigation bar, its edge line included, at scale 1 (D303).
 pub const NAVIGATION_BAR_HEIGHT: u32 = 48;
+/// Height of the tablet form's dock, its edge line included, at scale 1 (D306).
+pub const DOCK_BAR_HEIGHT: u32 = 64;
 
 /// The side of the work area the desktop icons' first column is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,12 +147,14 @@ pub fn layout_in_form(
     form: Form,
 ) -> Layout {
     let desktop = layout(screen_width, screen_height, scale, profile);
-    if form != Form::Phone {
-        return desktop;
-    }
+    let bottom_bar = match form {
+        Form::Phone => NAVIGATION_BAR_HEIGHT,
+        Form::Tablet => DOCK_BAR_HEIGHT,
+        _ => return desktop,
+    };
     let scale = if scale == 2 { 2 } else { 1 };
     let status = (STATUS_BAR_HEIGHT * scale).min(screen_height / 2);
-    let navigation = (NAVIGATION_BAR_HEIGHT * scale).min(screen_height / 2);
+    let navigation = (bottom_bar * scale).min(screen_height / 2);
     let status_bar = Rect::new(0, 0, screen_width, status);
     let navigation_bar = Rect::new(0, screen_height - navigation, screen_width, navigation);
     let work_area = Rect::new(0, status, screen_width, screen_height - status - navigation);

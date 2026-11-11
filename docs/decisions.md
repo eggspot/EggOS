@@ -20467,3 +20467,36 @@ the license, by an explicit instruction recorded here.
   sensor; the gestures, landscape, the touch path and the 44 px toolkit sizes wait for the
   touch backend (asks 1 to 3); cards are not dragged sideways to close.
 - **Not yet.** Building and running; the deviations above.
+
+## D306 M12 adaptive shell, slice 3: the tablet form (docs/ux/adaptive-shell-tablet-v0.5.md; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The tablet form shares the phone's code (`touch_form`) at its own numbers:
+  - **Frame.** A 44 px status bar and a 64 px dock (`layout_in_form`).
+  - **Dock.** `Back`, `Home` and `Apps` in 64 px zones at the left. The centred app group is
+    the pinned Terminal, Files and Settings, then a separator and the apps with windows, as
+    many as fit, with running and focus marks.
+  - **Home screen.** A centred 480 px search and 112 px columns.
+  - **Shade.** The shade sits 390 wide under the bar's right end.
+  - **Title buttons and window menu.** Each shown window has a title button (centred over it,
+    the focused one underlined in the accent, with a caret) that opens the window menu:
+    `Full screen`, `Split left`, `Split right`, and while split `Make wider`,
+    `Make narrower` and `Swap sides`, then `Close`.
+  - **Split windows.** Windows are full or one side of the pair, at a third, a half or two
+    thirds (`(W - 8) / 3` rounded down to 4 px; a half only when a third would be under
+    320). A new window takes the focused side, or the side the chooser waits on. The chooser
+    lists the apps.
+  - **Divider.** The divider is dragged from its 8 px or its 44x88 pad and snaps to the
+    nearest place on release, or ends the pair within 160 px of an edge.
+  - **Ending a pair.** A pair whose window went away or was minimised ends, and the other
+    window is full.
+  - **Leaving the tablet.** Leaving the tablet for the desktop tiles the pair's windows to the
+    halves of the work area.
+  - **`wm`.** `wm home`, `wm back` and `fixed_by_form` apply here too.
+- **Deviations.**
+  - The chooser shows apps only, not window cards.
+  - The dock's icon menu (long press), the keyboard focus stops, Super+Shift+Left/Right, the
+    pair as one switcher card and the tablet switcher's columns are not built.
+  - `wm move` and `wm size` are refused (`fixed_by_form`) instead of picking a side or a
+    share.
+  - The notice's place and dialogs centred on a wide side keep the phone's rules.
+- **Not yet.** Building and running; the deviations above.

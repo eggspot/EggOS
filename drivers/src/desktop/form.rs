@@ -33,7 +33,7 @@ impl Form {
 
     /// Whether windows fill the work area without chrome and cannot be moved or sized.
     pub const fn fixes_windows(self) -> bool {
-        matches!(self, Self::Phone | Self::Tv)
+        matches!(self, Self::Phone | Self::Tablet | Self::Tv)
     }
 }
 
