@@ -188,6 +188,7 @@ impl Program {
                 }
                 Request::Install(path) => self.start_installer(c"install", path.as_bytes()),
                 Request::Uninstall(name) => self.start_installer(c"uninstall", name.as_bytes()),
+                Request::Actions(name) => self.start_installer(c"do", name.as_bytes()),
                 Request::OpenInEditor(path) => self.start_editor(path.as_bytes()),
             }
         }

@@ -20329,3 +20329,12 @@ the license, by an explicit instruction recorded here.
   (Mod+C in the area works); typing a letter in the menu does not jump; Files' `Actions...`
   item, the phone, tablet and TV forms and the area's read-only flag (edits are undone) wait.
 - **Not yet.** Building and running; the deviations above.
+
+## D302 Files' `Actions...` on an installed app (docs/ux/app-actions-v0.5.md section 1; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** When Files reads a folder, it notes which installed-app rows have an
+  `app.actions` file offering at least one action; their menu reads `Open`, `Actions...`,
+  `Uninstall...`, then `Properties`. `Actions...` starts `app-window do <name>`, the list of
+  D301. `app-window` takes `do <name> [<action>]` directly, the words `app do --window` passes
+  it, so both front-ends open the same window.
+- **Not yet.** Building and running.

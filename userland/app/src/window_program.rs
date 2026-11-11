@@ -404,6 +404,16 @@ pub fn run(startup: &Startup) -> i32 {
         arguments[count] = argument.to_bytes();
         count += 1;
     }
+    if let [b"do", rest @ ..] = &arguments[..count] {
+        let operands: [&[u8]; 2] = [rest.first().copied().unwrap_or(b""), rest.get(1).copied().unwrap_or(b"")];
+        let shown = operands.iter().filter(|operand| !operand.starts_with(b"-")).count();
+        if operands[0].is_empty() || shown == 0 {
+            write_all(STANDARD_ERROR, command::USAGE.as_bytes());
+            return command::USAGE_ERROR;
+        }
+        let app: &'static [u8] = alloc::boxed::Box::leak(operands[0].to_vec().into_boxed_slice());
+        return crate::action_window::run(app, (!operands[1].is_empty()).then_some(operands[1]));
+    }
     let command = match command::parse(&arguments[..count]) {
         Some(Command::Do { name, action, .. }) => {
             let app: &'static [u8] = alloc::boxed::Box::leak(name.to_vec().into_boxed_slice());

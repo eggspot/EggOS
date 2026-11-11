@@ -135,6 +135,7 @@ mod item {
     pub const RESTORE: u8 = 14;
     pub const MAKE_LINK: u8 = 15;
     pub const SHOW_ORIGINAL: u8 = 16;
+    pub const ACTIONS: u8 = 17;
 }
 
 /// A place in the sidebar.
@@ -213,6 +214,8 @@ pub enum Request {
     Install(Path),
     /// Start the installer's window asking to uninstall this app.
     Uninstall(Name),
+    /// Start `app do --window` listing this app's own actions (D302).
+    Actions(Name),
     /// Open this installed app as its icon does (`OPEN_APP`).
     OpenApp(Name),
     /// Open this text file in a Text Editor window of its own (D149).
@@ -354,6 +357,7 @@ pub struct FilesWindow {
     history: [Location; HISTORY],
     history_length: usize,
     listing: Listing,
+    rows_with_actions: alloc::vec::Vec<bool>,
     free_space: FreeSpace,
     selected: Option<usize>,
     offset: i32,
@@ -419,6 +423,7 @@ impl FilesWindow {
             history: [home; HISTORY],
             history_length: 0,
             listing: Listing::new(),
+            rows_with_actions: alloc::vec::Vec::new(),
             free_space: FreeSpace::Unknown,
             selected: None,
             offset: 0,
@@ -792,6 +797,9 @@ impl FilesWindow {
             Location::Trash => self.listing.read_trash(files, &self.trash),
         }
         self.free_space = self.read_free_space(files);
+        self.rows_with_actions = (0..self.listing.len())
+            .map(|index| self.is_installed_app(index) && self.offers_actions(files, index))
+            .collect();
         self.selected = keep.and_then(|name| self.listing.find(name.as_bytes()));
         if self
             .rename
@@ -1949,6 +1957,9 @@ impl FilesWindow {
                     .map_or((Kind::Other, Link::None), |entry| (entry.kind, entry.link));
                 if self.is_installed_app(index) {
                     add(item("Open", true, item::OPEN));
+                    if self.rows_with_actions.get(index).copied().unwrap_or(false) {
+                        add(item("Actions...", true, item::ACTIONS));
+                    }
                     add(item("Uninstall...", true, item::UNINSTALL));
                     add(Entry::Separator);
                     add(item("Properties", true, item::PROPERTIES));
@@ -1999,6 +2010,11 @@ impl FilesWindow {
                 }
             }
             (item::UNINSTALL, Some(index)) => self.uninstall(index),
+            (item::ACTIONS, Some(index)) => {
+                if let Some(name) = Name::from(self.listing.name(index)) {
+                    self.ask(Request::Actions(name));
+                }
+            }
             (item::CUT, Some(_)) => self.clip(true),
             (item::COPY, Some(_)) => self.clip(false),
             (item::PASTE, Some(index)) => {
@@ -2023,6 +2039,28 @@ impl FilesWindow {
             (item::SHOW_ORIGINAL, Some(index)) => self.show_original(files, index),
             _ => {}
         }
+    }
+
+    fn offers_actions(&self, files: &mut impl Files, index: usize) -> bool {
+        let Some(folder) = self.entry_path(index) else {
+            return false;
+        };
+        let Some(path) = folder.join(eggos_app_manifest::actions::FILE_NAME.as_bytes()) else {
+            return false;
+        };
+        let Ok(handle) = files.open(path.as_bytes()) else {
+            return false;
+        };
+        let mut file = alloc::vec![0u8; eggos_app_manifest::actions::LARGEST + 1];
+        let mut filled = 0;
+        while filled < file.len() {
+            match files.read(handle, &mut file[filled..]) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => filled += count,
+            }
+        }
+        files.close(handle);
+        eggos_app_manifest::actions::actions(&file[..filled]).next().is_some()
     }
 
     fn is_installed_app(&self, index: usize) -> bool {
