@@ -33,6 +33,9 @@ behaviour. A UX regression is treated like a performance regression.
 - `network-v0.3.md`: the Settings `Network` pane and the bar's network indicator (D157):
   the five states named once for the GUI, `ip` and `net_status`, the pane's rows, the
   indicator's glyph, tooltip and click (designed; not built yet).
+- `windows-tooltips-tray-v0.5.md`: Windows programs' tooltips (`tooltips_class32`, balloons,
+  titled tips) and their notification-area icons in the bar (D355): look, placement, timing,
+  clicks and the messages programs get, balloons as notices, and what the server needs.
 - `date-time-v0.3.md`: the Settings `Date & time` pane and the bar's clock once the real-time
   clock sets it (item 29, D150).
 - `command-model.md`: the Egg command model shared with EggDB (D160): the words, the JSON
@@ -107,6 +110,3 @@ motion, sticky/slow keys, live captions later.
 ## Open questions (for the owner, when the desktop milestone gets close)
 - Default profile when the user skips first-run setup.
 - Whether to ship a global menu bar outside the macOS profile.
-- `windows-tooltips-tray-v0.5.md`: Windows programs' tooltips (`tooltips_class32`, balloons,
-  titled tips) and their notification-area icons in the bar (D355): look, placement, timing,
-  clicks and the messages programs get, balloons as notices, and what the server needs.
