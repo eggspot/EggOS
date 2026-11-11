@@ -2,7 +2,8 @@
 //! client of the window server may change it (`SetActiveWindow`, `BringWindowToTop`,
 //! `FlashWindow`), the shapes the server does not draw (`SetWindowRgn`), a layered window's
 //! translucency and colour key (`SetLayeredWindowAttributes`, D358), what waits to be painted
-//! (`RedrawWindow`, `GetUpdateRect`, `ScrollWindow`) and window properties (`SetPropW`, `GetPropW`, `RemovePropW`).
+//! (`RedrawWindow`, `GetUpdateRect`, `ScrollWindow`) and window properties (`SetPropW`,
+//! `GetPropW`, `RemovePropW`).
 
 use super::gui::{self, Gui, try_with, with};
 use super::user32::Win32Rect;
