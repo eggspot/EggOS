@@ -20239,7 +20239,13 @@ the license, by an explicit instruction recorded here.
   is a refactor of its own; (4) MIPS64 and SPARC64 wait: a nightly toolchain goes against the
   pinned-stable rule, which only the owner can change, so they wait until Rust ships tier-2
   targets for them or the owner allows `build-std` for those two.
-- **Not yet.** Every one of the ports; the owner's call on MIPS64 and SPARC64.
+- **Revised (Main Chat for the owner, 2026-11-11).** Code-only mode builds nothing, so the
+  toolchain does not hold the code back: the MIPS64 and SPARC64 HALs are written now, in this
+  order, like every other port. They need a nightly toolchain's `build-std`, which the
+  pinned-stable rule does not allow today. At test-and-fix time the owner decides whether to
+  allow nightly for those two or to wait for tier-2 targets. Until then they stay out of CI and
+  the release matrix.
+- **Not yet.** Every one of the ports; the owner's call on nightly for MIPS64 and SPARC64.
 
 ## D298 Hidden Wi-Fi networks and network names that read back exactly (the Wi-Fi design's asks 8 and 9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Linux iwlwifi's scan request layout and iwx(4))
 
