@@ -9,7 +9,7 @@
 //! handler walks the tables with `lddir` and `ldpte`. The FP unit is off for the kernel, which is
 //! soft-float, and on for a program only once it used it (`fp`, D54).
 
-use super::{csr, csr_read, timer};
+use super::{csr, csr_read, interrupts, timer};
 use crate::Interrupt;
 use crate::exception::{Exception, ExceptionKind, deliver};
 use crate::user::{self, TestProgram, UserContext, UserExit};
@@ -1093,7 +1093,7 @@ fn subcode(estat: u64) -> u64 {
 extern "C" fn loongarch64_exception(frame: &mut TrapFrame) {
     let estat = csr_read!(csr::ESTAT);
     let badv = csr_read!(csr::BADV);
-    if ecode(estat) == ECODE_INTERRUPT && interrupt(estat) {
+    if ecode(estat) == ECODE_INTERRUPT && interrupt(estat, frame.era) {
         return;
     }
     let exception = decode(estat, badv, frame.era);
@@ -1106,7 +1106,11 @@ extern "C" fn loongarch64_exception(frame: &mut TrapFrame) {
 /// Handles the pending interrupts `estat` names that the kernel takes; returns whether there
 /// was one (if not, the interrupt is reported).
 #[inline(always)]
-fn interrupt(estat: u64) -> bool {
+fn interrupt(estat: u64, pc: u64) -> bool {
+    let devices = estat & interrupts::PIN_INTERRUPT != 0;
+    if devices {
+        interrupts::handle(pc);
+    }
     let (timer_due, wakeup) = timer::pending(estat);
     if timer_due {
         timer::end_timer_interrupt();
@@ -1116,7 +1120,7 @@ fn interrupt(estat: u64) -> bool {
         timer::end_wakeup();
         crate::interrupt::deliver(Interrupt::Wakeup);
     }
-    timer_due || wakeup
+    timer_due || wakeup || devices
 }
 
 unsafe extern "C" {
@@ -1167,7 +1171,7 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
             registers.pc += INSTRUCTION_SIZE;
             return UserExit::Syscall;
         }
-        ECODE_INTERRUPT if interrupt(estat) => return UserExit::Interrupt,
+        ECODE_INTERRUPT if interrupt(estat, registers.pc) => return UserExit::Interrupt,
         _ => {}
     }
     registers.estat = estat;

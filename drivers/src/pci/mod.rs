@@ -12,7 +12,7 @@ pub mod mcfg;
 pub mod msi;
 pub mod msix;
 
-pub use bar::{Bar, BarKind, bars};
+pub use bar::{Bar, BarKind, assign, bars};
 
 /// A function's place on the bus: bus, device (0-31) and function (0-7) numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

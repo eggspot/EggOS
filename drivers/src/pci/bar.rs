@@ -27,6 +27,18 @@ const MEMORY_FLAGS: u32 = 0b1111;
 const MEMORY_TYPE_64: u32 = 0b10 << 1;
 const PREFETCHABLE: u32 = 1 << 3;
 
+/// Points `bar` of the function at `address` at bus address `bus_address` (D291): where no
+/// firmware assigned BARs (a device-tree PCI host booted without UEFI), the kernel does. Writes
+/// both halves of a 64-bit BAR; leaves decoding as it is.
+pub fn assign<C: ConfigSpace + ?Sized>(config: &C, address: Address, bar: &Bar, bus_address: u64) {
+    let offset = BAR0 + 4 * u16::from(bar.index);
+    let flags = config.read32(address, offset) & MEMORY_FLAGS;
+    config.write32(address, offset, (bus_address as u32 & !MEMORY_FLAGS) | flags);
+    if bar.kind == BarKind::Memory64 {
+        config.write32(address, offset + 4, (bus_address >> 32) as u32);
+    }
+}
+
 /// The BARs of the function at `address`, by slot: 6 for a type 0 header, 2 for a type 1
 /// (bridge) header, none for others (`header_type`'s low 7 bits). Each is sized the standard
 /// way: all ones written, the mask read back, the original value restored, with I/O and memory

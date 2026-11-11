@@ -532,6 +532,12 @@ pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
     {
         report.discovery_error = Some(error);
     }
+    if probe.ecam.is_none()
+        && let Some(blob) = P::device_tree()
+        && let Err(error) = pci_bus::discover_device_tree(&mut probe, blob)
+    {
+        report.discovery_error = Some(error);
+    }
     if let Some(dsdt) = P::acpi_dsdt() {
         acpi_bus::discover(dsdt, probe.table);
     }

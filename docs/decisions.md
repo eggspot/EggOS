@@ -20110,3 +20110,25 @@ the license, by an explicit instruction recorded here.
   LoongArch, so the virtio devices are not found yet; LSX and LASX for programs; `RDCL`-style
   speculation controls; QEMU 9.0 or later is needed for the device tree in the system table.
 
+## D291 PCI hosts from the device tree with BARs the kernel assigns, and LoongArch's interrupt controllers (M5, M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the device-tree PCI binding, the PCI Local Bus specification and Loongson's 7A and 3A5000 manuals)
+
+- **Decision.**
+  - **PCI from the device tree.** Where no ACPI `MCFG` gave a configuration space, the kernel
+    looks for a `pci-host-ecam-generic` node (QEMU's `virt` boards on AArch64, RISC-V and
+    LoongArch): its ECAM window from `reg`, its buses from `bus-range`, its 32-bit and 64-bit
+    memory windows from `ranges`. It enumerates the functions as on x86_64, and every memory BAR
+    left at 0 (no firmware ran: QEMU's direct kernel boot) gets an address from a window, aligned
+    to its size, 64-bit BARs from a 64-bit window first (`pci::assign`); a BAR firmware assigned
+    keeps its address, translated from the bus's addresses to the CPU's. The device table holds
+    CPU addresses, so drivers do not change. The device tree parser keeps a node's own `ranges`
+    and `bus-range` for this.
+  - **LoongArch's interrupts.** EIOINTC (through IOCSR) routes all 256 vectors to the boot CPU's
+    hardware interrupt 1 and enables them; its pending words are read, cleared and handed to the
+    kernel vector by vector. PCH-PIC lines are made level, active-high and routed to the vector
+    of the same number (the UART's line 2 is the console's input); PCH-MSI's doorbell turns a
+    device's write of vectors 32 to 255 into those vectors, which `message_interrupt` hands out,
+    so virtio-pci's MSI-X works. Device-tree specifiers name PCH-PIC lines.
+- **Not yet.** Building and running; bridges below the host bus (no bus numbers are assigned);
+  I/O BARs; prefetchable windows kept apart; vectors spread over CPUs; the same PCI discovery
+  tried on the AArch64 and RISC-V boots (it runs there too now, untested).
+

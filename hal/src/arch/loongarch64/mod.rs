@@ -14,6 +14,7 @@
 
 mod exception;
 mod fp;
+mod interrupts;
 mod thread;
 mod timer;
 
@@ -441,6 +442,13 @@ fn write_ged(register: usize, value: u8) {
 #[derive(Debug)]
 pub struct Loongarch64;
 
+impl Loongarch64 {
+    /// The boot CPU's core number within its node, which EIOINTC routes by.
+    pub(super) fn boot_cpu_index() -> u32 {
+        (csr_read!(csr::CPUID) & 0x1ff) as u32
+    }
+}
+
 impl Platform for Loongarch64 {
     const ARCH: &'static str = "loongarch64";
 
@@ -454,7 +462,19 @@ impl Platform for Loongarch64 {
     }
 
     fn enable_console_input() -> Result<(), &'static str> {
-        Err("console input interrupts wait for the LoongArch interrupt controllers")
+        interrupts::enable_console()?;
+        uart().enable_receive_interrupt();
+        Ok(())
+    }
+
+    fn route_device_interrupt(
+        specifier: &crate::fdt::InterruptSpecifier,
+    ) -> Result<crate::DeviceLine, &'static str> {
+        interrupts::route_device(specifier.cells())
+    }
+
+    fn message_interrupt() -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
+        interrupts::message()
     }
 
     fn exit(status: ExitStatus) -> ! {
@@ -597,6 +617,7 @@ impl Platform for Loongarch64 {
     }
 
     fn early_device_regions(region: &mut dyn FnMut(PhysicalRange)) {
+        region(PhysicalRange::from_start_length(0x1000_0000, 0x400));
         region(PhysicalRange::from_start_length(
             UART_BASE as u64,
             Ns16550::<Mmio>::register_block_size(UART_REG_SHIFT) as u64,

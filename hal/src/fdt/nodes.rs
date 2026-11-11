@@ -87,6 +87,11 @@ pub struct Node<'a> {
     pub interrupt_cells: Option<u32>,
     /// `status` is absent, `"okay"` or `"ok"`.
     pub enabled: bool,
+    /// The node's own raw `ranges` (a bus's windows: for a PCI host, its three-cell PCI
+    /// addresses, the parent's addresses and sizes; D291).
+    pub own_ranges: &'a [u8],
+    /// The raw `bus-range` property: a PCI host's first and last bus numbers.
+    pub bus_range: &'a [u8],
     /// The node has `dma-coherent`.
     pub dma_coherent: bool,
     /// The node has `dma-noncoherent`.
@@ -113,6 +118,8 @@ impl<'a> Node<'a> {
             phandle: None,
             interrupt_cells: None,
             enabled: true,
+            own_ranges: &[],
+            bus_range: &[],
             dma_coherent: false,
             dma_noncoherent: false,
         }
@@ -381,6 +388,8 @@ enum Property {
     Isa,
     IsaExtensions,
     TimebaseFrequency,
+    Ranges,
+    BusRange,
 }
 
 fn property(name: &[u8]) -> Option<Property> {
@@ -401,6 +410,8 @@ fn property(name: &[u8]) -> Option<Property> {
         b"riscv,isa" => Isa,
         b"riscv,isa-extensions" => IsaExtensions,
         b"timebase-frequency" => TimebaseFrequency,
+        b"ranges" => Ranges,
+        b"bus-range" => BusRange,
         _ => return None,
     })
 }
@@ -426,6 +437,8 @@ fn apply<'a>(node: &mut Node<'a>, own: &mut Level<'a>, name: &[u8], value: &'a [
         Property::Status => node.enabled = value == b"okay\0" || value == b"ok\0",
         Property::DmaCoherent => node.dma_coherent = true,
         Property::DmaNoncoherent => node.dma_noncoherent = true,
+        Property::Ranges => node.own_ranges = value,
+        Property::BusRange => node.bus_range = value,
     }
 }
 
