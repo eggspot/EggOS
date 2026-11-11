@@ -419,6 +419,119 @@ pub const FAILED_STATE: &str = "Failed";
 /// The state of a component another program is installing.
 pub const INSTALLING_ELSEWHERE_STATE: &str = "Installing...";
 
+/// The Updates band's line before any check (docs/ux/components-v0.5.md section 2).
+pub const NOT_CHECKED: &str = "Not checked yet";
+/// The Updates band's line while a check runs.
+pub const CHECKING: &str = "Checking for updates...";
+/// The Updates band's line with nothing installed.
+pub const NOTHING_TO_UPDATE: &str = "Nothing installed, so nothing to update";
+/// The first line of a failed check's note.
+pub const CHECK_FAILED: &str = "Could not check for updates.";
+/// The second line of a check that got no answer.
+pub const RELEASE_SILENT: &str = "The release did not answer.";
+/// The second line of an update that failed or was cancelled.
+pub const INSTALLED_COPY_STAYS: &str = "The installed copy stays.";
+/// The note under a row updated while programs use it.
+pub const UPDATED_RESTART: &str = "Updated. Running programs use it after a restart.";
+/// The first line of a failed store download.
+pub const STORE_DOWNLOAD_FAILED: &str = "Could not download the component store.";
+/// The second line of a failed or cancelled store download.
+pub const NOTHING_DOWNLOADED: &str = "Nothing was downloaded.";
+/// The no-store lines with the download offered (section 5): network up, then down.
+pub const DOWNLOAD_STORE_LINES: [[&str; 3]; 2] = [
+    [
+        "No component store on this computer.",
+        "Download it to see what you can install.",
+        "From the EggOS release.",
+    ],
+    [
+        "No component store on this computer.",
+        "Connect, or attach the store disk.",
+        "run-eggos.sh attaches it automatically.",
+    ],
+];
+
+const DAY_S: u64 = 86_400;
+const HOUR_S: u64 = 3_600;
+const MINUTE_S: u64 = 60;
+
+/// When a check ran, at `at` seconds, seen at `now` seconds (local time, or `None` with no
+/// wall clock): `today at 09:14`, `yesterday at 09:14`, `3 days ago`, `since this start`.
+pub fn checked_when(at: u64, now: Option<u64>) -> String {
+    let Some(now) = now.filter(|now| *now >= at && at > 0) else {
+        return String::from("since this start");
+    };
+    let clock = format!("{:02}:{:02}", at % DAY_S / HOUR_S, at % HOUR_S / MINUTE_S);
+    match now / DAY_S - at / DAY_S {
+        0 => format!("today at {clock}"),
+        1 => format!("yesterday at {clock}"),
+        days => format!("{days} days ago"),
+    }
+}
+
+/// `Up to date · checked today at 09:14`.
+pub fn up_to_date(when: &str) -> String {
+    format!("Up to date \u{b7} checked {when}")
+}
+
+/// `2 updates · 0.7 MB to download`, `1 update · 0.4 MB to copy` from a store on a disk.
+pub fn updates_line(count: usize, bytes: u64, from_disk: bool) -> String {
+    let noun = if count == 1 { "update" } else { "updates" };
+    format!("{count} {noun} \u{b7} {} {}", size_text(bytes), to_fetch(from_disk))
+}
+
+/// `Update: 0.4 MB to download`, a row's line while it has an update.
+pub fn update_row_line(bytes: u64, from_disk: bool) -> String {
+    format!("Update: {} {}", size_text(bytes), to_fetch(from_disk))
+}
+
+fn to_fetch(from_disk: bool) -> &'static str {
+    match from_disk {
+        true => "to copy",
+        false => "to download",
+    }
+}
+
+/// `Updating 1 of 2: Windows apps`.
+pub fn updating_all(at: usize, of: usize, title: &str) -> String {
+    format!("Updating {at} of {of}: {title}")
+}
+
+/// `Updating 42 %`.
+pub fn updating_state(percent: u64) -> String {
+    format!("Updating {percent} %")
+}
+
+/// A running job's phase and bytes: `Downloading: 0.2 MB of 0.4 MB`, `Copying: 1.1 MB of 1.8
+/// MB`, `Swapping in...`, `Finishing...`.
+pub fn job_phase_line(phase: &str, done: u64, total: u64) -> String {
+    match phase {
+        "downloading" => format!("Downloading: {}", copied_of(done, total)),
+        "swapping" => String::from("Swapping in..."),
+        "finishing" => String::from("Finishing..."),
+        _ => format!("Copying: {}", copied_of(done, total)),
+    }
+}
+
+/// `Downloading the component store: 12.4 MB of 31.0 MB`, or `... 12.4 MB` with no length.
+pub fn downloading_store(done: u64, total: u64) -> String {
+    match total {
+        0 => format!("Downloading the component store: {}", size_text(done)),
+        _ => format!("Downloading the component store: {}", copied_of(done, total)),
+    }
+}
+
+/// `Could not update Windows apps.`
+pub fn update_failed(title: &str) -> String {
+    format!("Could not update {title}.")
+}
+
+/// The bar's chip tooltip: `2 component updates, 0.7 MB. Click to open Components.`
+pub fn updates_tooltip(count: usize, bytes: u64) -> String {
+    let noun = if count == 1 { "update" } else { "updates" };
+    format!("{count} component {noun}, {}. Click to open Components.", size_text(bytes))
+}
+
 fn errno_text(errno: eggos_runtime::errno::Errno) -> String {
     String::from_utf8_lossy(errno.message()).into_owned()
 }

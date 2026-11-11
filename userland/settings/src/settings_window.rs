@@ -578,6 +578,10 @@ pub enum Request {
     RemoveComponent,
     /// Put [`WindowsPane::to_copy`] on the clipboard (D231).
     CopyToClipboard,
+    /// Start the job [`SettingsWindow::take_component_job`] gives as `component ...` outside
+    /// the window, and read the components every 100 ms while one the pane waits for runs;
+    /// then [`SettingsWindow::show_component_job_ended`] (D300).
+    StartComponentJob,
 }
 
 /// How setting the clock went, as the `Date & time` pane's status line says it.
@@ -1383,6 +1387,16 @@ impl SettingsWindow {
         read: ComponentsRead,
     ) -> Option<Request> {
         self.components.show_installed(&mut self.tree, result, read)
+    }
+
+    /// The job the Components pane asked for, taken once (D300).
+    pub fn take_component_job(&mut self) -> Option<crate::components_pane::ComponentJob> {
+        self.components.take_job()
+    }
+
+    /// Shows how the component job the pane waited for ended, with what was read after.
+    pub fn show_component_job_ended(&mut self, succeeded: bool, read: ComponentsRead) {
+        self.components.show_job_ended(&mut self.tree, succeeded, read);
     }
 
     /// The edition the Components pane finished installing, to record (D263).

@@ -86,6 +86,8 @@ pub(super) enum PanelItem {
     MenuTitle(u8),
     /// The `Agent` chip, while an MCP client is connected (14.1).
     Agent,
+    /// The `Updates` chip, while the stored check found updates (D300).
+    Updates,
     /// The keyboard layout indicator, while two or more layouts are chosen (D221).
     KeyboardLayout,
     /// The network indicator, while the machine has a network adapter (D225).
@@ -378,6 +380,7 @@ impl Desktop {
         let group = count * (TASKBAR_ITEM + TASKBAR_GAP) - TASKBAR_GAP;
         let leftmost = self
             .sticky_strip()
+            .or(self.updates_chip())
             .or(self.agent_chip())
             .or(self.keyboard_layout_indicator())
             .or(self.network_indicator());
@@ -419,6 +422,9 @@ impl Desktop {
         self.for_each_chip(|slot, rect| item(PanelItem::Chip(slot as u8), rect));
         if let Some(chip) = self.agent_chip() {
             item(PanelItem::Agent, chip);
+        }
+        if let Some(chip) = self.updates_chip() {
+            item(PanelItem::Updates, chip);
         }
         if let Some(indicator) = self.keyboard_layout_indicator() {
             item(PanelItem::KeyboardLayout, indicator);
@@ -679,6 +685,9 @@ impl Desktop {
                 self.activate(super::TERMINAL_SLOT, damage, events);
                 Action::ShowAgentLog
             }
+            PanelItem::Updates => {
+                self.open_settings_pane(super::SettingsPane::Components, damage, events)
+            }
             PanelItem::KeyboardLayout => {
                 self.open_keyboard_layout_menu(damage);
                 Action::None
@@ -844,6 +853,7 @@ impl Desktop {
             (PanelItem::System, Profile::Macos) => Some(APPS_TOOLTIP),
             (PanelItem::System, Profile::Linux) => Some(ACTIVITIES_TOOLTIP),
             (PanelItem::Agent, _) => Some(super::AGENT_TOOLTIP),
+            (PanelItem::Updates, _) => Some(self.updates_tooltip()),
             (PanelItem::KeyboardLayout, _) => self.keyboard_layout_tooltip(),
             (PanelItem::Network, _) => self.network_indicator_name(),
             (PanelItem::Power, Profile::Windows) => Some(POWER_TOOLTIP),
@@ -1024,6 +1034,7 @@ impl Desktop {
         self.draw_menu_titles(canvas);
         self.draw_clock(canvas);
         self.draw_agent_chip(canvas, self.agent_chip_hovered());
+        self.draw_updates_chip(canvas, self.updates_chip_hovered());
         self.draw_sticky_chips(canvas);
         self.draw_keyboard_layout_item(canvas);
         self.draw_network_item(canvas);
@@ -1034,6 +1045,10 @@ impl Desktop {
         let open = self.keyboard_layout_menu_open();
         let fill = self.item_fill(PanelItem::KeyboardLayout, open);
         self.draw_keyboard_layout_indicator(canvas, fill);
+    }
+
+    fn updates_chip_hovered(&self) -> bool {
+        self.panels.hover == Some(PanelItem::Updates) || self.panels.pressed == Some(PanelItem::Updates)
     }
 
     fn agent_chip_hovered(&self) -> bool {
@@ -1113,6 +1128,7 @@ impl Desktop {
         });
         self.draw_clock(canvas);
         self.draw_agent_chip(canvas, self.agent_chip_hovered());
+        self.draw_updates_chip(canvas, self.updates_chip_hovered());
         self.draw_sticky_chips(canvas);
         self.draw_keyboard_layout_item(canvas);
         self.draw_network_item(canvas);

@@ -1,4 +1,5 @@
-//! Settings' Components pane (D235, docs/ux/components-v0.3.md): the components the attached
+//! Settings' Components pane (D235, docs/ux/components-v0.3.md, with v0.5's Updates band,
+//! updates and the store download, D300): the components the attached
 //! store offers and the machine has installed, each with `Install` or `Remove`, in the words
 //! and with the rules `component` and the MCP tools `component_*` use (`eggos_components`). It
 //! holds only widgets and what was last read; the program reads the store and the installed
@@ -15,6 +16,7 @@ use eggos_components::command::Row;
 use eggos_components::index::{Component, MAX_COMPONENTS};
 use eggos_components::manager::{self, Failure, Refusal, RemoveError, Store};
 use eggos_components::messages;
+use eggos_components::state::{Checked, Job};
 use eggos_toolkit::input::key;
 use eggos_toolkit::text;
 use eggos_toolkit::theme::Token;
@@ -24,11 +26,26 @@ use eggos_toolkit::widget::{Kind, Length, Place};
 /// The most rows the pane shows: the most components a store offers.
 pub const ROWS: usize = MAX_COMPONENTS;
 /// The widgets the pane adds to its container.
-pub const WIDGETS: usize = 4 + 5 * ROWS + 5 + EDITION_WIDGETS;
+pub const WIDGETS: usize = 4 + 6 * ROWS + 5 + EDITION_WIDGETS + UPDATES_WIDGETS + 1;
+/// The Updates band's widgets (docs/ux/components-v0.5.md section 1): panel, line, checkbox,
+/// button.
+const UPDATES_WIDGETS: usize = 4;
+const UPDATES_BAND: (i32, i32, i32, i32) = (16, 124, 432, 48);
+const UPDATES_LINE: (i32, i32, i32) = (24, 6, 296);
+const DAILY_BOX: (i32, i32) = (24, 24);
+const UPDATES_BUTTON: (i32, i32, i32, i32) = (336, 10, 96, 28);
+const ROW_UPDATE: (i32, i32, i32, i32) = (232, 10, 96, 28);
+const UPDATE_TEXT_END: i32 = 216;
+const DOWNLOAD: (i32, i32, i32, i32) = (352, 66, 96, 28);
+const STORE_NOTE_TOP: i32 = 116;
+const BAND_NOTE_TOP: i32 = 172;
+const OFFLINE: &str = "The network is offline.";
+const OFFLINE_RETRY: &str = "Connect or attach the store disk, then try again.";
+const UPDATING: &str = "updating";
 /// The edition band's widgets (docs/ux/editions-v0.4.md section 1): panel, label, dropdown,
 /// summary.
 const EDITION_WIDGETS: usize = 4;
-const EDITION_BAND: (i32, i32, i32, i32) = (16, 124, 432, 64);
+const EDITION_BAND: (i32, i32, i32, i32) = (16, 180, 432, 64);
 const EDITION_LABEL: (i32, i32) = (24, 10);
 const EDITION_DROPDOWN: (i32, i32, i32, i32) = (272, 4, 160, 28);
 const EDITION_SUMMARY: (i32, i32, i32) = (24, 38, 408);
@@ -36,7 +53,7 @@ const EDITION_TITLES: [&str; 4] = ["Server", "Personal", "Professional", "Enterp
 const EDITION_TITLES_WITH_CUSTOM: [&str; 5] = ["Custom", "Server", "Personal", "Professional", "Enterprise"];
 const CUSTOM_SUMMARY: &str = "Your own set of components: no edition matches it exactly.";
 /// Row `r`'s top in the pane, with no note open above it: `ROWS_TOP + ROW_HEIGHT * r`.
-pub const ROWS_TOP: i32 = 196;
+pub const ROWS_TOP: i32 = 252;
 /// A row's height.
 pub const ROW_HEIGHT: i32 = 48;
 /// The height of a one-line message note.
@@ -87,6 +104,55 @@ pub struct ComponentsRead {
     pub runs_this_window: Option<String>,
     /// The edition recorded as last chosen (D263).
     pub recorded_edition: Option<String>,
+    /// The last update check's stored result (D299).
+    pub checked: Option<Checked>,
+    /// Whether the daily check is on.
+    pub daily: bool,
+    /// The component job running, whoever started it.
+    pub job: Option<Job>,
+    /// The wall clock in seconds, when the machine has one.
+    pub now_s: Option<u64>,
+    /// Whether a network is up, so the store can be downloaded.
+    pub network_up: bool,
+}
+
+/// A job the pane asks the program to start as `component ...` outside its window (D300).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentJob {
+    /// `component update --dry-run --json`.
+    Check,
+    /// `component update [<name>]`.
+    Update(Option<String>),
+    /// `component update --daily on|off`.
+    Daily(bool),
+    /// `component list --download`.
+    Download,
+    /// `component cancel`.
+    Cancel,
+}
+
+impl ComponentJob {
+    /// The words after `component`.
+    pub fn words(&self) -> Vec<String> {
+        let words: &[&str] = match self {
+            Self::Check => &["update", "--dry-run", "--json"],
+            Self::Update(_) => &["update"],
+            Self::Daily(true) => &["update", "--daily", "on"],
+            Self::Daily(false) => &["update", "--daily", "off"],
+            Self::Download => &["list", "--download"],
+            Self::Cancel => &["cancel"],
+        };
+        let mut words: Vec<String> = words.iter().map(|word| String::from(*word)).collect();
+        if let Self::Update(Some(name)) = self {
+            words.push(name.clone());
+        }
+        words
+    }
+
+    /// Whether the pane waits for it to end.
+    pub fn is_awaited(&self) -> bool {
+        matches!(self, Self::Check | Self::Update(_) | Self::Download)
+    }
 }
 
 /// What the pane did with a response.
@@ -105,6 +171,7 @@ struct RowWidgets {
     state: WidgetId,
     summary: WidgetId,
     button: WidgetId,
+    update: WidgetId,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -119,6 +186,12 @@ struct Widgets {
     confirm: WidgetId,
     edition: WidgetId,
     edition_summary: WidgetId,
+    edition_band: WidgetId,
+    updates_band: WidgetId,
+    updates_line: WidgetId,
+    daily: WidgetId,
+    updates_button: WidgetId,
+    download: WidgetId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +212,22 @@ enum Note {
         name: String,
         plan: Vec<String>,
     },
+    Band {
+        first: String,
+        second: String,
+    },
+    Store {
+        first: String,
+        second: String,
+    },
+    StoreProgress,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    Store,
+    Band,
+    Row(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,11 +241,28 @@ enum Work {
         cancelled: bool,
     },
     Removing(String),
+    CheckingUpdates,
+    Updating {
+        plan: Vec<String>,
+        current: String,
+        cancelling: bool,
+    },
+    DownloadingStore {
+        cancelling: bool,
+    },
 }
 
 struct Look {
     state: String,
     word: String,
+    button: &'static str,
+    action: &'static str,
+    enabled: bool,
+    update: Option<UpdateLook>,
+}
+
+struct UpdateLook {
+    line: String,
     button: &'static str,
     action: &'static str,
     enabled: bool,
@@ -174,6 +280,7 @@ pub struct ComponentsPane {
     default_button: WidgetId,
     /// The edition being installed from the band, recorded once its plan is done (D263).
     chosen_edition: Option<&'static str>,
+    asked: Option<ComponentJob>,
 }
 
 fn add(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, place: Place, kind: Kind) -> WidgetId {
@@ -221,6 +328,26 @@ impl ComponentsPane {
             Kind::heading("Components"),
         );
         let store = STORE_LINES.map(|y| label(tree, pane, line_at(PADDING, y, LINE_WIDTH)));
+        let updates_band = add(
+            tree,
+            pane,
+            at(UPDATES_BAND.0, UPDATES_BAND.1, UPDATES_BAND.2, UPDATES_BAND.3),
+            Kind::panel(Token::Menu),
+        );
+        tree.set_accessible_name(updates_band, "Updates");
+        let updates_line = label(tree, updates_band, line_at(UPDATES_LINE.0, UPDATES_LINE.1, UPDATES_LINE.2));
+        let daily = add(
+            tree,
+            updates_band,
+            Place::at(DAILY_BOX.0, DAILY_BOX.1, Length::Content, Length::Content),
+            Kind::checkbox("Check every day", true),
+        );
+        let updates_button = add(
+            tree,
+            updates_band,
+            at(UPDATES_BUTTON.0, UPDATES_BUTTON.1, UPDATES_BUTTON.2, UPDATES_BUTTON.3),
+            Kind::button("Check now", false),
+        );
         let band = add(
             tree,
             pane,
@@ -265,6 +392,12 @@ impl ComponentsPane {
                 line_at(ROW_TEXT_X, SUMMARY_TOP, STATE_END - ROW_TEXT_X),
                 Kind::label("", Token::TextDim),
             );
+            let update = add(
+                tree,
+                panel,
+                at(ROW_UPDATE.0, ROW_UPDATE.1, ROW_UPDATE.2, ROW_UPDATE.3),
+                Kind::button("Update", false),
+            );
             let button = add(
                 tree,
                 panel,
@@ -277,6 +410,7 @@ impl ComponentsPane {
                 state,
                 summary,
                 button,
+                update,
             }
         });
         let first = label(tree, pane, line_at(NOTE_X, 0, NOTE_WIDTH));
@@ -304,6 +438,13 @@ impl ComponentsPane {
             at(NOTE_CONFIRM.0, 0, NOTE_CONFIRM.1, BUTTON_HEIGHT),
             Kind::button("Remove", true),
         );
+        let download = add(
+            tree,
+            pane,
+            at(DOWNLOAD.0, DOWNLOAD.1, DOWNLOAD.2, DOWNLOAD.3),
+            Kind::button("Download", false),
+        );
+        tree.set_accessible_name(download, "Download the component store");
         let mut components = Self {
             widgets: Widgets {
                 pane,
@@ -316,6 +457,12 @@ impl ComponentsPane {
                 confirm,
                 edition,
                 edition_summary,
+                edition_band: band,
+                updates_band,
+                updates_line,
+                daily,
+                updates_button,
+                download,
             },
             read: ComponentsRead::default(),
             note: Note::Closed,
@@ -324,6 +471,7 @@ impl ComponentsPane {
             min_height,
             default_button,
             chosen_edition: None,
+            asked: None,
         };
         components.refresh(tree);
         components
@@ -335,7 +483,7 @@ impl ComponentsPane {
         if self.confirming() {
             tree.set_default_button(self.default_button);
         }
-        if !matches!(self.note, Note::Progress { .. }) {
+        if !matches!(self.note, Note::Progress { .. } | Note::StoreProgress) {
             self.note = Note::Closed;
         }
         self.failed = None;
@@ -345,6 +493,78 @@ impl ComponentsPane {
     /// Shows what the program just read.
     pub fn show_components(&mut self, tree: &mut WidgetTree<CAPACITY>, read: ComponentsRead) {
         self.read = read;
+        self.follow_job();
+        self.refresh(tree);
+    }
+
+    fn follow_job(&mut self) {
+        let Some(job) = self.read.job.clone() else {
+            return;
+        };
+        if let Work::Updating { current, .. } = &mut self.work
+            && job.kind == UPDATING
+            && *current != job.name
+        {
+            current.clone_from(&job.name);
+            if matches!(self.note, Note::Progress { .. }) {
+                self.note = Note::Progress { name: job.name };
+            }
+        }
+    }
+
+    /// The job the program must start now, taken once.
+    pub fn take_job(&mut self) -> Option<ComponentJob> {
+        self.asked.take()
+    }
+
+    /// Whether the pane waits for a job it asked for to end, so the program reads the
+    /// components every 100 ms.
+    pub fn awaits_job(&self) -> bool {
+        matches!(
+            self.work,
+            Work::CheckingUpdates | Work::Updating { .. } | Work::DownloadingStore { .. }
+        )
+    }
+
+    /// Shows how the job the pane waited for ended, with what was read after.
+    pub fn show_job_ended(&mut self, tree: &mut WidgetTree<CAPACITY>, succeeded: bool, read: ComponentsRead) {
+        let work = core::mem::replace(&mut self.work, Work::Idle);
+        self.read = read;
+        self.note = match work {
+            Work::CheckingUpdates if !succeeded => Note::Band {
+                first: String::from(messages::CHECK_FAILED),
+                second: String::from(match self.read.network_up {
+                    true => messages::RELEASE_SILENT,
+                    false => OFFLINE,
+                }),
+            },
+            Work::Updating {
+                current,
+                cancelling: true,
+                ..
+            } => Note::Message {
+                name: current,
+                first: String::from(messages::CANCELLED),
+                second: String::from(messages::INSTALLED_COPY_STAYS),
+            },
+            Work::Updating { current, .. } if !succeeded => {
+                let title = self.title_of(&current);
+                Note::Message {
+                    name: current,
+                    first: messages::update_failed(&title),
+                    second: String::from(messages::INSTALLED_COPY_STAYS),
+                }
+            }
+            Work::DownloadingStore { cancelling: true } => Note::Store {
+                first: String::from(messages::CANCELLED),
+                second: String::from(messages::NOTHING_DOWNLOADED),
+            },
+            Work::DownloadingStore { .. } if !succeeded => Note::Store {
+                first: String::from(messages::STORE_DOWNLOAD_FAILED),
+                second: String::from(messages::NOTHING_DOWNLOADED),
+            },
+            _ => Note::Closed,
+        };
         self.refresh(tree);
     }
 
@@ -539,8 +759,40 @@ impl ComponentsPane {
     ) -> Reply {
         let widgets = self.widgets;
         let row_of = |id: WidgetId| widgets.rows.iter().position(|row| row.button == id);
+        let update_of = |id: WidgetId| widgets.rows.iter().position(|row| row.update == id);
         let request = match response {
             Response::Chosen(id, option) if id == widgets.edition => self.choose_edition(tree, option, now_ms),
+            Response::Activated(id) if id == widgets.updates_button => self.press_updates(tree),
+            Response::Toggled(id, on) if id == widgets.daily => {
+                self.read.daily = on;
+                self.asked = Some(ComponentJob::Daily(on));
+                Some(Request::StartComponentJob)
+            }
+            Response::Activated(id) if update_of(id).is_some() => {
+                self.press_update(tree, update_of(id).unwrap_or(0))
+            }
+            Response::Activated(id) if id == widgets.download => self.press_download(tree),
+            Response::Activated(id) if id == widgets.cancel && self.note == Note::StoreProgress => {
+                self.cancel_job(tree)
+            }
+            Response::Unused { code, .. }
+                if matches!(code, key::LEFT | key::RIGHT)
+                    && tree.focus().is_some_and(|id| row_of(id).is_some() || update_of(id).is_some()) =>
+            {
+                let focus = tree.focus().unwrap_or(widgets.pane);
+                let row = row_of(focus).or_else(|| update_of(focus)).unwrap_or(0);
+                let target = match code {
+                    key::LEFT => widgets.rows[row].update,
+                    _ => widgets.rows[row].button,
+                };
+                if tree.is_shown(target) && tree.is_enabled(target) {
+                    tree.set_focus(Some(target), now_ms);
+                }
+                None
+            }
+            Response::Unused {
+                code: key::DELETE, ..
+            } if tree.focus().and_then(update_of).is_some_and(|row| self.updating_row(row)) => self.cancel_job(tree),
             Response::Activated(id) if row_of(id).is_some() => {
                 self.press_row(tree, row_of(id).unwrap_or(0), now_ms)
             }
@@ -663,6 +915,155 @@ impl ComponentsPane {
         None
     }
 
+    fn updating_row(&self, row: usize) -> bool {
+        self.read
+            .rows
+            .get(row)
+            .is_some_and(|row| matches!(&self.work, Work::Updating { current, .. } if *current == row.component.name))
+    }
+
+    fn rows_with_updates(&self) -> Vec<&Row> {
+        self.read
+            .rows
+            .iter()
+            .filter(|row| row.state == INSTALLED && row.update.is_some())
+            .collect()
+    }
+
+    fn press_updates(&mut self, tree: &mut WidgetTree<CAPACITY>) -> Option<Request> {
+        if self.others_busy() || self.installed().is_empty() {
+            return None;
+        }
+        if matches!(self.note, Note::Band { .. }) {
+            self.note = Note::Closed;
+        }
+        let plan: Vec<String> = self
+            .rows_with_updates()
+            .iter()
+            .map(|row| row.component.name.clone())
+            .collect();
+        let job = match plan.first().cloned() {
+            Some(current) => {
+                self.note = Note::Progress { name: current.clone() };
+                self.work = Work::Updating {
+                    plan,
+                    current,
+                    cancelling: false,
+                };
+                ComponentJob::Update(None)
+            }
+            None => {
+                self.work = Work::CheckingUpdates;
+                ComponentJob::Check
+            }
+        };
+        self.asked = Some(job);
+        self.refresh(tree);
+        Some(Request::StartComponentJob)
+    }
+
+    fn press_update(&mut self, tree: &mut WidgetTree<CAPACITY>, row: usize) -> Option<Request> {
+        if self.updating_row(row) {
+            return self.cancel_job(tree);
+        }
+        let name = self.read.rows.get(row)?.component.name.clone();
+        if self.others_busy() {
+            return None;
+        }
+        if self.confirming() {
+            tree.set_default_button(self.default_button);
+        }
+        self.note = Note::Progress { name: name.clone() };
+        self.work = Work::Updating {
+            plan: alloc::vec![name.clone()],
+            current: name.clone(),
+            cancelling: false,
+        };
+        self.asked = Some(ComponentJob::Update(Some(name)));
+        self.refresh(tree);
+        Some(Request::StartComponentJob)
+    }
+
+    fn press_download(&mut self, tree: &mut WidgetTree<CAPACITY>) -> Option<Request> {
+        if self.read.store.is_some() || self.others_busy() {
+            return None;
+        }
+        if !self.read.network_up {
+            self.note = Note::Store {
+                first: String::from(OFFLINE),
+                second: String::from(OFFLINE_RETRY),
+            };
+            self.refresh(tree);
+            return None;
+        }
+        self.work = Work::DownloadingStore { cancelling: false };
+        self.note = Note::StoreProgress;
+        self.asked = Some(ComponentJob::Download);
+        self.refresh(tree);
+        Some(Request::StartComponentJob)
+    }
+
+    fn cancel_job(&mut self, tree: &mut WidgetTree<CAPACITY>) -> Option<Request> {
+        let swapping = self.read.job.as_ref().is_some_and(|job| job.phase == "swapping");
+        match &mut self.work {
+            Work::Updating { cancelling, .. } | Work::DownloadingStore { cancelling } if !*cancelling && !swapping => {
+                *cancelling = true;
+            }
+            _ => return None,
+        }
+        self.asked = Some(ComponentJob::Cancel);
+        self.refresh(tree);
+        Some(Request::StartComponentJob)
+    }
+
+    fn show_updates_band(&self, tree: &mut WidgetTree<CAPACITY>) {
+        let widgets = self.widgets;
+        let others_busy = self.others_busy();
+        let with_updates = self.rows_with_updates();
+        let bytes: u64 = with_updates
+            .iter()
+            .filter_map(|row| row.update.as_ref())
+            .map(|update| update.fetch_bytes)
+            .sum();
+        let from_disk = self.read.checked.as_ref().is_some_and(|checked| checked.source == "disk");
+        let (line, button, enabled) = match (&self.work, &self.read.checked) {
+            _ if self.installed().is_empty() => (String::from(messages::NOTHING_TO_UPDATE), "Check now", false),
+            (Work::CheckingUpdates, _) => (String::from(messages::CHECKING), "Check now", false),
+            (Work::Updating { plan, current, .. }, _) if plan.len() > 1 => {
+                let at = plan.iter().position(|name| name == current).unwrap_or(0) + 1;
+                (messages::updating_all(at, plan.len(), &self.title_of(current)), "Update all", false)
+            }
+            (_, None) => (String::from(messages::NOT_CHECKED), "Check now", !others_busy),
+            _ if !with_updates.is_empty() => (
+                messages::updates_line(with_updates.len(), bytes, from_disk),
+                "Update all",
+                !others_busy,
+            ),
+            (_, Some(checked)) => (
+                messages::up_to_date(&messages::checked_when(checked.at, self.read.now_s)),
+                "Check now",
+                !others_busy,
+            ),
+        };
+        show_line(tree, widgets.updates_line, &line, Token::Text);
+        tree.set_text(widgets.updates_button, button);
+        tree.set_enabled(widgets.updates_button, enabled);
+        tree.set_accessible_name(
+            widgets.updates_button,
+            match button {
+                "Update all" => "Update all components",
+                _ => "Check for updates now",
+            },
+        );
+        tree.set_selected(widgets.daily, usize::from(self.read.daily));
+        tree.set_enabled(widgets.daily, !self.awaits_job());
+        let value = match &self.read.checked {
+            None => String::from("unchecked"),
+            Some(_) => format!("{}", with_updates.len()),
+        };
+        tree.set_accessible_value(widgets.updates_band, &value);
+    }
+
     fn installing_here(&self, name: &str) -> bool {
         matches!(&self.work, Work::Installing { plan, .. } if plan.first().is_some_and(|first| first == name))
     }
@@ -698,11 +1099,12 @@ impl ComponentsPane {
 
     fn others_busy(&self) -> bool {
         self.busy()
+            || self.read.job.is_some()
             || self
                 .read
                 .rows
                 .iter()
-                .any(|row| row.state == INSTALLING || row.state == REMOVING)
+                .any(|row| row.state == INSTALLING || row.state == REMOVING || row.state == UPDATING)
     }
 
     fn press_row(
@@ -869,9 +1271,11 @@ impl ComponentsPane {
         }
     }
 
-    fn note_row(&self) -> Option<usize> {
+    fn note_anchor(&self) -> Option<Anchor> {
         let name = match &self.note {
             Note::Closed => return None,
+            Note::Store { .. } | Note::StoreProgress => return Some(Anchor::Store),
+            Note::Band { .. } => return Some(Anchor::Band),
             Note::Message { name, .. }
             | Note::Progress { name }
             | Note::Remove { name }
@@ -882,15 +1286,20 @@ impl ComponentsPane {
             .iter()
             .position(|row| &row.component.name == name)
             .filter(|&row| row < ROWS)
+            .map(Anchor::Row)
     }
 
     fn note_height(&self) -> i32 {
         match &self.note {
             Note::Closed => 0,
-            Note::Message { second, .. } if second.is_empty() => MESSAGE_HEIGHT,
-            Note::Message { .. } => TWO_LINE_HEIGHT,
+            Note::Message { second, .. } | Note::Band { second, .. } | Note::Store { second, .. }
+                if second.is_empty() =>
+            {
+                MESSAGE_HEIGHT
+            }
+            Note::Message { .. } | Note::Band { .. } | Note::Store { .. } => TWO_LINE_HEIGHT,
             Note::Progress { .. } => PROGRESS_HEIGHT,
-            Note::Remove { .. } | Note::Install { .. } => CONFIRMATION_HEIGHT,
+            Note::Remove { .. } | Note::Install { .. } | Note::StoreProgress => CONFIRMATION_HEIGHT,
         }
     }
 
@@ -912,6 +1321,7 @@ impl ComponentsPane {
                 button: "Cancel",
                 action: "Cancel installing",
                 enabled: !cancelled,
+                update: None,
             };
         }
         if self.to_remove() == Some(component.name.as_str()) || row.state == REMOVING {
@@ -921,6 +1331,7 @@ impl ComponentsPane {
                 button: "Remove",
                 action: "Remove",
                 enabled: false,
+                update: None,
             };
         }
         if row.state == INSTALLING {
@@ -930,15 +1341,47 @@ impl ComponentsPane {
                 button: "Install",
                 action: "Install",
                 enabled: false,
+                update: None,
+            };
+        }
+        let updating_here = matches!(&self.work, Work::Updating { current, .. } if *current == component.name);
+        let job_here = row.job.as_ref().filter(|job| job.kind == UPDATING);
+        if updating_here || job_here.is_some() || row.state == UPDATING {
+            let percent = job_here.map_or(0, Job::percent);
+            let cancelling = matches!(&self.work, Work::Updating { cancelling: true, .. });
+            let swapping = job_here.is_some_and(|job| job.phase == "swapping");
+            return Look {
+                state: messages::installed_state(size),
+                word: format!("{UPDATING} {percent}"),
+                button: "Remove",
+                action: "Remove",
+                enabled: false,
+                update: Some(UpdateLook {
+                    line: messages::updating_state(percent),
+                    button: "Cancel",
+                    action: "Cancel updating",
+                    enabled: updating_here && !cancelling && !swapping,
+                }),
             };
         }
         if row.state == INSTALLED {
+            let from_disk = self.read.checked.as_ref().is_some_and(|checked| checked.source == "disk");
+            let update = row.update.as_ref().map(|update| UpdateLook {
+                line: messages::update_row_line(update.fetch_bytes, from_disk),
+                button: "Update",
+                action: "Update",
+                enabled: !others_busy,
+            });
             return Look {
                 state: messages::installed_state(size),
-                word: String::from(INSTALLED),
+                word: match &row.update {
+                    Some(update) => format!("{INSTALLED} {} update {}", messages::size_text(size), messages::size_text(update.fetch_bytes)),
+                    None => String::from(INSTALLED),
+                },
                 button: "Remove",
                 action: "Remove",
                 enabled: !others_busy,
+                update,
             };
         }
         let state = match self.failed.as_deref() == Some(component.name.as_str()) {
@@ -951,6 +1394,7 @@ impl ComponentsPane {
             button: "Install",
             action: "Install",
             enabled: can_install,
+            update: None,
         }
     }
 
@@ -992,18 +1436,37 @@ impl ComponentsPane {
             }
             None => {
                 let inks = [Token::Text, Token::TextDim, Token::TextDim];
-                for ((id, words), ink) in
-                    widgets.store.iter().zip(messages::NO_STORE_LINES).zip(inks)
-                {
+                let lines = messages::DOWNLOAD_STORE_LINES[usize::from(!self.read.network_up)];
+                for ((id, words), ink) in widgets.store.iter().zip(lines).zip(inks) {
                     show_line(tree, *id, words, ink);
                 }
             }
         }
+        tree.set_shown(widgets.download, self.read.store.is_none() && self.note != Note::StoreProgress);
+        tree.set_enabled(widgets.download, !self.others_busy());
+        self.show_updates_band(tree);
         let shown = self.read.rows.len().min(ROWS);
-        let acting = self.note_row();
-        let note_height = match acting {
+        let anchor = self.note_anchor();
+        let note_height = match anchor {
             Some(_) => self.note_height(),
             None => 0,
+        };
+        let below_store = if anchor == Some(Anchor::Store) { note_height } else { 0 };
+        let below_band = match anchor {
+            Some(Anchor::Store | Anchor::Band) => note_height,
+            _ => 0,
+        };
+        tree.set_place(
+            widgets.updates_band,
+            at(UPDATES_BAND.0, UPDATES_BAND.1 + below_store, UPDATES_BAND.2, UPDATES_BAND.3),
+        );
+        tree.set_place(
+            widgets.edition_band,
+            at(EDITION_BAND.0, EDITION_BAND.1 + below_band, EDITION_BAND.2, EDITION_BAND.3),
+        );
+        let acting = match anchor {
+            Some(Anchor::Row(row)) => Some(row),
+            _ => None,
         };
         let others_busy = self.others_busy();
         for (index, row_widgets) in widgets.rows.iter().enumerate() {
@@ -1012,25 +1475,45 @@ impl ComponentsPane {
                 continue;
             };
             let below = acting.is_some_and(|acting| index > acting);
-            let top = ROWS_TOP + ROW_HEIGHT * index as i32 + if below { note_height } else { 0 };
+            let top = ROWS_TOP + below_band + ROW_HEIGHT * index as i32 + if below { note_height } else { 0 };
             tree.set_place(row_widgets.panel, at(PADDING, top, ROW_WIDTH, ROW_HEIGHT));
             tree.set_shown(row_widgets.panel, true);
             let look = self.look(row, others_busy);
             let component = &row.component;
-            let state_width = text::width(&look.state);
-            let title_width = (STATE_END - STATE_GAP - state_width - ROW_TEXT_X).max(0);
+            let title_width = match &look.update {
+                Some(_) => UPDATE_TEXT_END - ROW_TEXT_X,
+                None => (STATE_END - STATE_GAP - text::width(&look.state) - ROW_TEXT_X).max(0),
+            };
             tree.set_place(
                 row_widgets.title,
                 line_at(ROW_TEXT_X, TITLE_TOP, title_width),
             );
             show_line(tree, row_widgets.title, &component.title, Token::Text);
             show_line(tree, row_widgets.state, &look.state, Token::Text);
-            show_line(
-                tree,
-                row_widgets.summary,
-                &component.summary,
-                Token::TextDim,
-            );
+            tree.set_shown(row_widgets.state, look.update.is_none());
+            match &look.update {
+                Some(update) => {
+                    tree.set_place(
+                        row_widgets.summary,
+                        line_at(ROW_TEXT_X, SUMMARY_TOP, UPDATE_TEXT_END - ROW_TEXT_X),
+                    );
+                    show_line(tree, row_widgets.summary, &update.line, Token::Text);
+                    tree.set_text(row_widgets.update, update.button);
+                    tree.set_enabled(row_widgets.update, update.enabled);
+                    tree.set_accessible_name(
+                        row_widgets.update,
+                        &format!("{} {}", update.action, component.title),
+                    );
+                }
+                None => {
+                    tree.set_place(
+                        row_widgets.summary,
+                        line_at(ROW_TEXT_X, SUMMARY_TOP, STATE_END - ROW_TEXT_X),
+                    );
+                    show_line(tree, row_widgets.summary, &component.summary, Token::TextDim);
+                }
+            }
+            tree.set_shown(row_widgets.update, look.update.is_some());
             tree.set_text(row_widgets.button, look.button);
             tree.set_enabled(row_widgets.button, look.enabled);
             tree.set_accessible_name(
@@ -1048,7 +1531,11 @@ impl ComponentsPane {
                 ),
             );
         }
-        let note_top = acting.map(|row| ROWS_TOP + ROW_HEIGHT * (row as i32 + 1));
+        let note_top = anchor.map(|anchor| match anchor {
+            Anchor::Store => STORE_NOTE_TOP,
+            Anchor::Band => BAND_NOTE_TOP,
+            Anchor::Row(row) => ROWS_TOP + ROW_HEIGHT * (row as i32 + 1),
+        });
         self.place_note(tree, note_top);
         let bottom = ROWS_TOP + ROW_HEIGHT * shown as i32 + note_height + BOTTOM_MARGIN;
         tree.set_place(
@@ -1076,12 +1563,40 @@ impl ComponentsPane {
             }
             return;
         };
+        let mut cancel_shown = false;
         let (first_shown, second_shown, bar_shown, buttons_shown) = match &self.note {
             Note::Closed => (false, false, false, false),
-            Note::Message { first, second, .. } => {
+            Note::Message { first, second, .. }
+            | Note::Band { first, second }
+            | Note::Store { first, second } => {
                 show_line(tree, widgets.first, first, Token::Text);
                 show_line(tree, widgets.second, second, Token::TextDim);
                 (true, !second.is_empty(), false, false)
+            }
+            Note::StoreProgress => {
+                let (done, total) = self.read.job.as_ref().map_or((0, 0), |job| (job.done, job.total));
+                let permille = done.saturating_mul(PERMILLE) / total.max(1);
+                tree.set_progress(widgets.bar, permille.min(PERMILLE) as u16);
+                tree.set_accessible_name(widgets.bar, "Downloading the component store");
+                show_line(tree, widgets.first, &messages::downloading_store(done, total), Token::Text);
+                let cancelling = matches!(self.work, Work::DownloadingStore { cancelling: true });
+                tree.set_text(widgets.cancel, "Cancel");
+                tree.set_enabled(widgets.cancel, !cancelling);
+                cancel_shown = true;
+                (true, false, total > 0, false)
+            }
+            Note::Progress { name } if matches!(self.work, Work::Updating { .. }) => {
+                let job = self.read.job.as_ref().filter(|job| job.name == *name);
+                let (phase, done, total) = job.map_or(("copying", 0, 0), |job| (job.phase.as_str(), job.done, job.total));
+                let total = match (job, self.component(name)) {
+                    (None, Some(component)) => component.size_bytes(),
+                    _ => total,
+                };
+                let permille = done.saturating_mul(PERMILLE) / total.max(1);
+                tree.set_progress(widgets.bar, permille.min(PERMILLE) as u16);
+                tree.set_accessible_name(widgets.bar, &format!("Updating {}", self.title_of(name)));
+                show_line(tree, widgets.first, &messages::job_phase_line(phase, done, total), Token::Text);
+                (true, false, true, false)
             }
             Note::Progress { name } => {
                 let (received, total) = match &self.work {
@@ -1104,10 +1619,14 @@ impl ComponentsPane {
                 );
                 (true, false, total > 0, false)
             }
-            Note::Remove { .. } | Note::Install { .. } => (true, true, false, true),
+            Note::Remove { .. } | Note::Install { .. } => {
+                tree.set_text(widgets.cancel, "Cancel");
+                tree.set_enabled(widgets.cancel, true);
+                (true, true, false, true)
+            }
         };
         let first_top = match &self.note {
-            Note::Progress { .. } => BYTES_LINE,
+            Note::Progress { .. } | Note::StoreProgress => BYTES_LINE,
             _ => FIRST_LINE,
         };
         tree.set_place(widgets.first, line_at(NOTE_X, top + first_top, NOTE_WIDTH));
@@ -1131,7 +1650,7 @@ impl ComponentsPane {
         tree.set_shown(widgets.first, first_shown);
         tree.set_shown(widgets.second, second_shown);
         tree.set_shown(widgets.bar, bar_shown);
-        tree.set_shown(widgets.cancel, buttons_shown);
+        tree.set_shown(widgets.cancel, buttons_shown || cancel_shown);
         tree.set_shown(widgets.confirm, buttons_shown);
     }
 

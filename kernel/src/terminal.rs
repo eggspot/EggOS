@@ -217,6 +217,8 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static RENDER_PENDING: AtomicBool = AtomicBool::new(false);
 
 static AGENT_CONNECTED: AtomicBool = AtomicBool::new(false);
+static STORED_UPDATES: AtomicU64 = AtomicU64::new(0);
+static UPDATES_READ_AT: AtomicU64 = AtomicU64::new(0);
 static APPLICATION_CURSOR_KEYS: AtomicBool = AtomicBool::new(false);
 static DRAWER: AtomicPtr<WaitQueue> = AtomicPtr::new(core::ptr::null_mut());
 static KEYS_TO_TERMINAL: AtomicBool = AtomicBool::new(false);
@@ -706,6 +708,57 @@ impl Asked {
     };
 }
 
+const UPDATES_PATH: &[u8] = b"/var/lib/eggos/updates";
+const UPDATES_READ_EVERY_MS: u64 = 60_000;
+const UPDATES_FILE_LARGEST: usize = 8192;
+const UPDATES_BYTES_BITS: u32 = 48;
+
+fn pack_updates(count: usize, bytes: u64) -> u64 {
+    ((count.min(0xffff) as u64) << UPDATES_BYTES_BITS) | (bytes & ((1 << UPDATES_BYTES_BITS) - 1))
+}
+
+fn unpack_updates(packed: u64) -> (usize, u64) {
+    ((packed >> UPDATES_BYTES_BITS) as usize, packed & ((1 << UPDATES_BYTES_BITS) - 1))
+}
+
+/// Reads the last stored component update check (`component update --dry-run`, D299) at most
+/// once a minute, for the bar's `Updates` chip (D300).
+fn read_stored_updates<P: Platform>() {
+    let now = P::clock_ticks();
+    let every = mul_div_ceil(UPDATES_READ_EVERY_MS, P::clock_frequency(), 1000);
+    let last = UPDATES_READ_AT.load(Ordering::Relaxed);
+    if last != 0 && now.wrapping_sub(last) < every {
+        return;
+    }
+    UPDATES_READ_AT.store(now.max(1), Ordering::Relaxed);
+    let root = vfs::root();
+    let Ok(node) = vfs::resolve(root, root, UPDATES_PATH) else {
+        STORED_UPDATES.store(0, Ordering::Relaxed);
+        return;
+    };
+    let mut file = alloc::vec![0u8; UPDATES_FILE_LARGEST];
+    let mut length = 0;
+    while length < file.len() {
+        match node
+            .file_system()
+            .read_into(node.id(), length as u64, &mut file[length..])
+        {
+            Ok(0) | Err(_) => break,
+            Ok(read) => length += read,
+        }
+    }
+    let (count, bytes) = file[..length]
+        .split(|&byte| byte == b'\n')
+        .filter_map(|line| {
+            let mut words = line.split(|&byte| byte == b' ');
+            (words.next()? == b"update").then_some(())?;
+            words.next()?;
+            core::str::from_utf8(words.next()?).ok()?.parse::<u64>().ok()
+        })
+        .fold((0usize, 0u64), |(count, bytes), fetch| (count + 1, bytes.saturating_add(fetch)));
+    STORED_UPDATES.store(pack_updates(count, bytes), Ordering::Relaxed);
+}
+
 fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
     let Screen {
         desktop,
@@ -725,6 +778,8 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
         desktop.set_unread_since(client.id(), client.unread_since(), damage);
     }
     desktop.set_agent_connected(AGENT_CONNECTED.load(Ordering::Relaxed), damage);
+    let (count, bytes) = unpack_updates(STORED_UPDATES.load(Ordering::Relaxed));
+    desktop.set_updates(count, bytes, damage);
     desktop.set_network(crate::net::indicated(), damage);
     let (latched, locked) = input::sticky_modifiers();
     desktop.set_latched(latched, locked, damage);
@@ -1145,6 +1200,7 @@ pub fn send_to_terminal<P: Platform>(input: TerminalInput) {
 /// ([`reboot::shut_down`]), and does it at once without an init.
 pub fn show<P: Platform>() -> Result<usize, &'static str> {
     AGENT_CONNECTED.store(crate::agent_channel::is_connected(), Ordering::Relaxed);
+    read_stored_updates::<P>();
     let drawn = display::draw(|framebuffer| {
         SCREEN
             .lock()

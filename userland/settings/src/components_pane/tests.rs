@@ -111,6 +111,8 @@ fn read_of(store: Option<Store>, installed: &[&str], runs_this_window: bool) -> 
                 })
                 .map(|other| other.title.clone())
                 .collect(),
+            update: None,
+            job: None,
         })
         .collect();
     ComponentsRead {
@@ -119,6 +121,9 @@ fn read_of(store: Option<Store>, installed: &[&str], runs_this_window: bool) -> 
         runs_this_window: (runs_this_window && installed.contains(&"desktop"))
             .then(|| String::from("desktop")),
         recorded_edition: None,
+        daily: true,
+        network_up: true,
+        ..ComponentsRead::default()
     }
 }
 
@@ -259,13 +264,13 @@ fn the_pane_is_laid_out_as_the_design_says() {
         assert_eq!((at.x, at.y), (192, y));
     }
     let row = ids.rows[0];
-    assert_eq!(rect(&window, row.panel), Rect::new(192, 124, 432, 48));
+    assert_eq!(rect(&window, row.panel), Rect::new(192, 252, 432, 48));
     let title = rect(&window, row.title);
-    assert_eq!((title.x, title.y), (216, 130));
+    assert_eq!((title.x, title.y), (216, 258));
     let state = rect(&window, row.state);
-    assert_eq!((state.right(), state.y), (512, 130));
+    assert_eq!((state.right(), state.y), (512, 258));
     let summary = rect(&window, row.summary);
-    assert_eq!((summary.x, summary.y), (216, 150));
+    assert_eq!((summary.x, summary.y), (216, 278));
     assert_eq!(rect(&window, row.button), Rect::new(528, 134, 96, 28));
     for (index, y) in [(1, 172), (2, 220), (3, 268)] {
         assert_eq!(rect(&window, ids.rows[index].panel).y, y);
@@ -457,12 +462,12 @@ fn a_missing_dependency_is_confirmed_then_installed_first() {
     );
     assert_eq!(window.components_pane().to_install(), Some("desktop"));
     assert_eq!(rows(&window)[0][1], "Installing 0 %");
-    assert_eq!(rect(&window, ids.bar).y, 124 + 48 + 8);
+    assert_eq!(rect(&window, ids.bar).y, 252 + 48 + 8);
     let next = window.show_installed(Ok(()), read_of(Some(store()), &["desktop"], false));
     assert_eq!(next, Some(Request::InstallComponent));
     assert_eq!(window.components_pane().to_install(), Some("builtin-apps"));
     assert_eq!(rows(&window)[1][1], "Installing 0 %");
-    assert_eq!(rect(&window, ids.bar).y, 124 + 2 * 48 + 8);
+    assert_eq!(rect(&window, ids.bar).y, 252 + 2 * 48 + 8);
     let done = window.show_installed(
         Ok(()),
         read_of(Some(store()), &["desktop", "builtin-apps"], false),

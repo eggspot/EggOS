@@ -20279,3 +20279,34 @@ the license, by an explicit instruction recorded here.
   and remove); download progress in bytes (the fetch runs as a separate program); `download` on
   the `component_list` tool.
 
+
+## D300 Settings' Components pane gets the Updates band, `Update` on a row, the store download and the bar's `Updates` chip (docs/ux/components-v0.5.md sections 1 to 3, 5 and 7; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The pane follows the v0.5 design's layout: the Updates band at y 124 (its line,
+  `Check every day` and `Check now` / `Update all`), the Edition band moved to 180 and the rows to
+  252. A row with a stored update shows `Update` at panel x 232 and `Update: 0.4 MB to download`
+  in place of its summary and state. With no store the three lines offer the download, with a
+  `Download` button at (352, 66).
+  - Check, update, the daily switch, the download and cancel run as `/bin/component ...`
+    children in their own session (`ComponentJob`, `Request::StartComponentJob`). While one
+    the pane waits for runs, Settings reads the components every 100 ms (the job file gives the
+    phase and bytes for the bar and `Updating 42 %`), and its exit status ends it:
+    `show_job_ended` shows the design's notes (`Could not check for updates.`, `Could not update
+    <title>.` over `The installed copy stays.`, `Cancelled.`, the store download's lines).
+  - A note now opens under one of three anchors (the store lines at 116, the Updates band at 172,
+    or a row), and what is below it moves down.
+  - Every new sentence is a function or constant in `eggos_components::messages`, shared with
+    the command.
+  - The bar's `Updates` chip (`Desktop::set_updates`, `drivers/src/desktop/updates.rs`) sits 8
+    left of the `Agent` chip, or where that chip would stand; its tooltip names the count and
+    bytes, and a click opens Settings on Components (`SettingsPane::Components`). The kernel
+    reads `/var/lib/eggos/updates` at most once a minute, outside the screen lock, and tells
+    the desktop on each frame.
+- **Deviations.** Install and remove still run inside the window's tick, so the design's
+  per-install cancel and live install bar (section 6) wait for install jobs; the failure note
+  says `Could not update <title>.` for every failure, since the pane sees only the exit status
+  (section 3's per-cause lines need the command's failure codes, ask 7); check times are shown
+  from the wall clock without the time zone; the edition confirmation keeps v0.4's one-line plan;
+  the phone, tablet and TV layouts (section 10), tooltips on disabled buttons and focus on
+  `Update all` from the chip are not built; the chip is not in the shell's element tree yet.
+- **Not yet.** Building and running; the deviations above.

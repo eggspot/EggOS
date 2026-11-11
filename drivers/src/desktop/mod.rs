@@ -37,6 +37,7 @@ mod responsiveness;
 mod shell;
 pub mod shortcuts;
 mod sticky_keys;
+mod updates;
 mod windows;
 
 #[cfg(test)]
@@ -60,6 +61,7 @@ mod tests;
 #[cfg(test)]
 mod window_tests;
 
+pub use updates::UPDATES_LABEL;
 pub use agent::{AGENT_ACTING_MS, AGENT_LABEL, AGENT_LOG_LINE, AGENT_SUFFIX, AGENT_TOOLTIP};
 pub use catalogue::{
     ARGUMENT_SEPARATOR, AppId, COMMAND_CAPACITY, Catalogue, Command, INSTALLER_PROGRAM, Launch,
@@ -292,6 +294,8 @@ pub enum SettingsPane {
     Keyboard,
     /// The Network pane, from the bar's network indicator (D225).
     Network,
+    /// The Components pane, from the bar's `Updates` chip (D300).
+    Components,
 }
 
 impl SettingsPane {
@@ -300,6 +304,7 @@ impl SettingsPane {
         match self {
             Self::Keyboard => "keyboard",
             Self::Network => "network",
+            Self::Components => "components",
         }
     }
 }
@@ -390,6 +395,7 @@ pub struct Desktop {
     clock_length: u8,
     clock_shows_time_of_day: bool,
     agent: agent::AgentState,
+    updates: updates::UpdatesState,
     sticky: sticky_keys::StickyChips,
     panel_focus: Option<panel_focus::PanelFocus>,
     keyboard_layouts: keyboard_layout::KeyboardLayouts,
@@ -486,6 +492,7 @@ impl Desktop {
             clock_length: 0,
             clock_shows_time_of_day: false,
             agent: agent::AgentState::default(),
+            updates: updates::UpdatesState::default(),
             sticky: sticky_keys::StickyChips::default(),
             panel_focus: None,
             keyboard_layouts: keyboard_layout::KeyboardLayouts::default(),

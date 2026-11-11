@@ -12,6 +12,7 @@ use eggos_app::linux::LinuxFiles;
 use eggos_components::command as component_command;
 use eggos_components::index::Component;
 use eggos_components::manager::{self as component_manager, Failure, Refusal, RemoveError};
+use eggos_components::state as component_state;
 use eggos_eggfs::CheckMode;
 use eggos_files::storage;
 use eggos_mcp::audit::calls::LogFiles;
@@ -31,7 +32,7 @@ use eggos_settings::agents_pane::GrantsRead;
 use eggos_settings::command::{
     self, MAX_ARGUMENTS, PairingAsked, USAGE, USAGE_STATUS, WindowAsked,
 };
-use eggos_settings::components_pane::ComponentsRead;
+use eggos_settings::components_pane::{ComponentJob, ComponentsRead};
 use eggos_settings::facts::Facts;
 use eggos_settings::first_run::{self, FirstRunRequest, FirstRunWindow};
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
@@ -394,11 +395,64 @@ fn components_read() -> ComponentsRead {
         .find(|row| component_manager::runs_this_program(&mut files, &row.component))
         .map(|row| row.component.name.clone());
     let recorded_edition = component_command::recorded_edition(&mut files);
+    let now_s = Some(wall_clock().0).filter(|now| *now >= FIRST_PLAUSIBLE_CLOCK_S);
     ComponentsRead {
         store,
         rows,
         runs_this_window,
         recorded_edition,
+        checked: component_state::last_check(&mut files),
+        daily: component_state::daily(&mut files),
+        job: component_state::job(&mut files),
+        now_s,
+        network_up: network_adapter().is_some_and(|adapter| adapter.link_up && adapter.subnet.is_some())
+            || wifi_status().joined.is_some(),
+    }
+}
+
+const FIRST_PLAUSIBLE_CLOCK_S: u64 = 1_577_836_800;
+const COMPONENT_JOB_POLL_MS: u32 = 100;
+
+fn start_component_job(job: &ComponentJob) -> Result<usize, Errno> {
+    let null = CPath::new("/dev/null");
+    let quiet = syscall(
+        number::OPENAT,
+        [AT_FDCWD, null.pointer(), O_RDWR_CLOEXEC, 0, 0, 0],
+    );
+    let streams = match quiet {
+        Ok(fd) => [fd, fd, fd],
+        Err(_) => [0, 1, 2],
+    };
+    let words: alloc::vec::Vec<alloc::vec::Vec<u8>> = core::iter::once(String::from("component"))
+        .chain(job.words())
+        .map(|word| {
+            let mut bytes = word.into_bytes();
+            bytes.push(0);
+            bytes
+        })
+        .collect();
+    let mut arguments: alloc::vec::Vec<*const u8> = words.iter().map(|word| word.as_ptr()).collect();
+    arguments.push(core::ptr::null());
+    let environment = [core::ptr::null()];
+    let request = Spawn::new(c"/bin/component", &arguments, &environment, streams).in_own_session();
+    let mut stack = alloc::boxed::Box::new(ChildStack::new());
+    let started = process::spawn(&mut stack, &request);
+    if let Ok(fd) = quiet {
+        close(fd);
+    }
+    started
+}
+
+fn child_ended(child: usize) -> Option<bool> {
+    let mut status = 0i32;
+    let waited = syscall(
+        number::WAIT4,
+        [child, &raw mut status as usize, WNOHANG, 0, 0, 0],
+    );
+    match waited {
+        Ok(0) | Err(Errno::EINTR) => None,
+        Ok(_) => Some(status & 0x7f == 0 && (status >> 8) & 0xff == 0),
+        Err(_) => Some(false),
     }
 }
 
@@ -1172,6 +1226,8 @@ struct Settings {
     disk_work: Option<DiskWork>,
     component_work: Option<ComponentWork>,
     clock_sync_child: Option<usize>,
+    component_job_child: Option<usize>,
+    component_side_children: alloc::vec::Vec<usize>,
 }
 
 const SECOND_MS: u32 = 1000;
@@ -1329,6 +1385,7 @@ impl Application<CAPACITY> for Settings {
             }
             Some(Request::InstallComponent) => self.component_work = Some(ComponentWork::Install),
             Some(Request::RemoveComponent) => self.component_work = Some(ComponentWork::Remove),
+            Some(Request::StartComponentJob) => self.start_component_job(),
             Some(Request::WifiJoin { name, passphrase }) => {
                 let text = alloc::format!("ssid={}\npassphrase={}\n", name.as_str(), passphrase.as_str());
                 let saved = write_file_with_mode(c"/var/lib/eggos/wifi.conf", WIFI_SETTINGS_MODE, text.as_bytes())
@@ -1385,14 +1442,19 @@ impl Application<CAPACITY> for Settings {
         };
         let reap_tick = self
             .clock_sync_child
+            .or(self.component_side_children.first().copied())
             .map(|_| now_ms.wrapping_add(SECOND_MS));
-        pane_tick.or(reap_tick)
+        let job_tick = self
+            .component_job_child
+            .map(|_| now_ms.wrapping_add(COMPONENT_JOB_POLL_MS));
+        job_tick.or(pane_tick).or(reap_tick)
     }
 
     fn tick(&mut self, now_ms: u32) {
         self.save_unsaved();
         self.do_disk_work(now_ms);
         self.do_component_work();
+        self.follow_component_job();
         self.show_clock(now_ms);
         self.clock_sync_running();
         if self.window.pairing_counting_down() {
@@ -1470,6 +1532,34 @@ impl Settings {
             self.window.show_windows_layer(windows_layer_installed())
         {
             self.window.show_components(components_read());
+        }
+    }
+
+    fn start_component_job(&mut self) {
+        let Some(job) = self.window.take_component_job() else {
+            return;
+        };
+        let started = start_component_job(&job);
+        match (started, job.is_awaited()) {
+            (Ok(child), true) => self.component_job_child = Some(child),
+            (Ok(child), false) => self.component_side_children.push(child),
+            (Err(_), true) => self.window.show_component_job_ended(false, components_read()),
+            (Err(_), false) => {}
+        }
+    }
+
+    fn follow_component_job(&mut self) {
+        self.component_side_children.retain(|child| child_ended(*child).is_none());
+        let Some(child) = self.component_job_child else {
+            return;
+        };
+        match child_ended(child) {
+            None => self.window.show_components(components_read()),
+            Some(succeeded) => {
+                self.component_job_child = None;
+                self.window.show_component_job_ended(succeeded, components_read());
+                self.show_windows_layer();
+            }
         }
     }
 
@@ -1772,6 +1862,8 @@ fn open_window(pairing: Option<PairingAsked<'_>>, pane: Option<usize>, home: &st
         disk_work: None,
         component_work: None,
         clock_sync_child: None,
+        component_job_child: None,
+        component_side_children: alloc::vec::Vec::new(),
     };
     settings
         .window

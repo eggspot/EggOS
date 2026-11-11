@@ -131,7 +131,8 @@ impl Desktop {
 
     fn sticky_strip_of(&self, width: u32) -> Option<Rect> {
         let neighbour = self
-            .agent_chip()
+            .updates_chip()
+            .or(self.agent_chip())
             .or(self.keyboard_layout_indicator())
             .or(self.network_indicator());
         let (right, y) = match (self.layout.taskbar, self.layout.top_bar) {
