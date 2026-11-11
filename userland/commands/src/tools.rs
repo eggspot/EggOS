@@ -1768,6 +1768,33 @@ pub const WM_DRAG: ToolDefinition = operating(
     ToolResult::Text,
 );
 
+/// `wm_home` (D303).
+pub const WM_HOME: ToolDefinition = managing(
+    "wm_home",
+    "Show the home screen",
+    "In the phone form, minimises the shown window and shows the home screen, as `wm home` \
+         and the navigation bar's Home do. Refused with not_in_this_form in other forms. Needs \
+         the run grant: keys typed afterwards go to the home screen's search.",
+    &["wm", "home"],
+    &[],
+    true,
+    ToolResult::Text,
+);
+
+/// `wm_back` (D303).
+pub const WM_BACK: ToolDefinition = managing(
+    "wm_back",
+    "Go back",
+    "In the phone form, does what the navigation bar's Back does, as `wm back` does: closes the \
+         shown window's dialog, else minimises the shown window; on the home screen empties the \
+         search. Never closes an app. Refused with not_in_this_form in other forms. Needs the \
+         run grant.",
+    &["wm", "back"],
+    &[],
+    false,
+    ToolResult::Text,
+);
+
 /// `wm_menu_list`.
 pub const WM_MENU_LIST: ToolDefinition = reading(
     "wm_menu_list",
@@ -2559,7 +2586,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
 /// D204's, D226's, D225's, D235's and D231's.
-pub const TOOLS: [ToolDefinition; 81] = [
+pub const TOOLS: [ToolDefinition; 83] = [
     COMPONENT_UPDATE,
     APP_ACTIONS,
     APP_DO,
@@ -2600,6 +2627,8 @@ pub const TOOLS: [ToolDefinition; 81] = [
     WM_SHOW,
     WM_ACT,
     WM_DRAG,
+    WM_HOME,
+    WM_BACK,
     SETTINGS_LIST,
     SETTINGS_GET,
     SETTINGS_SET,

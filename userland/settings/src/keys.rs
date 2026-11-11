@@ -25,6 +25,9 @@ pub type Value = Text<64>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     ShellProfile,
+    ShellForm,
+    ShellFormInUse,
+    InputPresent,
     AppearanceTheme,
     DisplayScale,
     DisplayResolution,
@@ -78,6 +81,8 @@ pub enum Refusal {
 pub enum Change {
     /// The desktop's layout profile: its index in [`PROFILES`].
     Profile(usize),
+    /// The shell's form: its index in [`crate::facts::FORM_SETTINGS`], applied at once (D303).
+    Form(usize),
     /// The desktop's theme, applied at once (D219).
     Theme(Theme),
     /// The keyboard layout: its index in the settings file's `KEYBOARD_LAYOUTS` (D185).
@@ -336,8 +341,11 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 37] = [
         Self::ShellProfile,
+        Self::ShellForm,
+        Self::ShellFormInUse,
+        Self::InputPresent,
         Self::AppearanceTheme,
         Self::DisplayScale,
         Self::DisplayResolution,
@@ -377,6 +385,9 @@ impl Key {
     pub const fn name(self) -> &'static str {
         match self {
             Self::ShellProfile => eggos_settings_file::SHELL_PROFILE,
+            Self::ShellForm => eggos_settings_file::SHELL_FORM,
+            Self::ShellFormInUse => "shell.form_in_use",
+            Self::InputPresent => "input.present",
             Self::AppearanceTheme => APPEARANCE_THEME,
             Self::DisplayScale => eggos_settings_file::DISPLAY_SCALE,
             Self::DisplayResolution => eggos_settings_file::DISPLAY_RESOLUTION,
@@ -423,6 +434,7 @@ impl Key {
         matches!(
             self,
             Self::ShellProfile
+                | Self::ShellForm
                 | Self::AppearanceTheme
                 | Self::DisplayScale
                 | Self::DisplayResolution
@@ -459,6 +471,7 @@ impl Key {
             Self::DisplayScale => {
                 let _ = choices.write_str("1 or 2");
             }
+            Self::ShellForm => write_choices(&mut choices, &crate::facts::FORM_SETTINGS),
             Self::DisplayResolution => {
                 let _ = choices.write_str("auto");
                 for (width, height) in eggos_settings_file::RESOLUTIONS {
@@ -505,6 +518,29 @@ impl Key {
         let connected = connected(facts);
         let _ = match self {
             Self::ShellProfile => value.write_str(PROFILES[facts.profile.min(PROFILES.len() - 1)]),
+            Self::ShellForm => value.write_str(
+                crate::facts::FORM_SETTINGS[facts.form_setting.min(crate::facts::FORM_SETTINGS.len() - 1)],
+            ),
+            Self::ShellFormInUse => value.write_str(
+                crate::facts::FORMS_IN_USE[facts.form_in_use.min(crate::facts::FORMS_IN_USE.len() - 1)],
+            ),
+            Self::InputPresent => {
+                let mut first = true;
+                for (bit, name) in crate::facts::INPUT_KINDS.iter().enumerate() {
+                    if facts.input_kinds & (1 << bit) == 0 {
+                        continue;
+                    }
+                    if !first {
+                        let _ = value.write_str(",");
+                    }
+                    first = false;
+                    let _ = value.write_str(name);
+                }
+                match first {
+                    true => value.write_str("none"),
+                    false => Ok(()),
+                }
+            }
             Self::AppearanceTheme => value.write_str(facts.theme.name()),
             Self::DisplayScale => write!(value, "{}", facts.scale),
             Self::DisplayResolution => match facts.resolution_choice {
@@ -578,6 +614,11 @@ impl Key {
                 .iter()
                 .position(|profile| *profile == value)
                 .map(Change::Profile)
+                .ok_or(Refusal::InvalidValue),
+            Self::ShellForm => crate::facts::FORM_SETTINGS
+                .iter()
+                .position(|form| *form == value)
+                .map(Change::Form)
                 .ok_or(Refusal::InvalidValue),
             Self::AppearanceTheme => Theme::named(value)
                 .map(Change::Theme)

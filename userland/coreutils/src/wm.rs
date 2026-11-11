@@ -12,6 +12,9 @@ use eggos_runtime::errno::Errno;
 pub const DEVICE: &CStr = c"/dev/window";
 pub const LIST_WINDOW: u32 = 0xc060_770b;
 pub const MANAGE_WINDOW: u32 = 0x4010_770c;
+/// `/dev/window`'s `SHELL_NAVIGATE` (D303): 0 home, 1 back.
+pub const SHELL_NAVIGATE: u32 = 0x4004_772e;
+const FIXED_BY_FORM_ERRNO: Errno = Errno(30);
 pub const CAPTURE_WINDOW: u32 = 0xc028_7713;
 pub const SEND_INPUT: u32 = 0xc018_7714;
 pub const GET_MENU: u32 = 0xc100_7716;
@@ -116,6 +119,13 @@ pub fn refused<S: System>(output: &mut Output<S>, window: &[u8], errno: Errno) -
         }
         Errno::ENOENT => {
             output.coded(&errors::NO_SUCH_WINDOW, &[window, b": no such window"]);
+            FAILURE
+        }
+        FIXED_BY_FORM_ERRNO => {
+            output.coded(
+                &errors::FIXED_BY_FORM,
+                &[window, b": each window fills the screen in this form; show it with wm focus"],
+            );
             FAILURE
         }
         NOT_RESPONDING_ERRNO => {
@@ -304,6 +314,38 @@ pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         return usage(output);
     };
     let verb = verb.to_bytes();
+    if let Some((definition, to)) = match verb {
+        b"home" => Some((&commands::WM_HOME, 0u32)),
+        b"back" => Some((&commands::WM_BACK, 1u32)),
+        _ => None,
+    } {
+        let Ok(operands) = parse_defined(output, rest, definition, |_, _| Ok(())) else {
+            return USAGE_STATUS;
+        };
+        if !operands.all().is_empty() {
+            return usage(output);
+        }
+        let Some(device) = open_device(output) else {
+            return FAILURE;
+        };
+        let mut request = to.to_ne_bytes();
+        let status = match output.system.device_control(device, SHELL_NAVIGATE, &mut request) {
+            Ok(()) => 0,
+            Err(Errno::EINVAL) => {
+                output.coded(
+                    &errors::NOT_IN_THIS_FORM,
+                    &[verb, b": the shell shows no home screen in this form"],
+                );
+                FAILURE
+            }
+            Err(errno) => {
+                output.coded(error_for(errno), &[verb, b": ", errno.message()]);
+                FAILURE
+            }
+        };
+        output.system.close(device);
+        return status;
+    }
     if verb == b"list" {
         let mut page = Page::default();
         let parsed = parse_defined(output, rest, &commands::WM_LIST, |output, given| {

@@ -88,6 +88,9 @@ pub mod size {
     pub const SET_KEYBOARD_LAYOUTS: usize = 12;
     pub const GET_REDUCE_MOTION: usize = 4;
     pub const SET_REDUCE_MOTION: usize = 4;
+    pub const GET_FORM: usize = 12;
+    pub const SET_FORM: usize = 4;
+    pub const SHELL_NAVIGATE: usize = 4;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -140,6 +143,35 @@ pub mod request {
     pub const GET_REDUCE_MOTION: u32 = encode(READ, 41, size::GET_REDUCE_MOTION);
     pub const SET_REDUCE_MOTION: u32 = encode(WRITE, 42, size::SET_REDUCE_MOTION);
     pub const GET_LAUNCH: u32 = encode(READ | WRITE, 43, size::GET_LAUNCH);
+    pub const GET_FORM: u32 = encode(READ, 44, size::GET_FORM);
+    pub const SET_FORM: u32 = encode(WRITE, 45, size::SET_FORM);
+    pub const SHELL_NAVIGATE: u32 = encode(WRITE, 46, size::SHELL_NAVIGATE);
+}
+
+/// `GET_FORM`'s reply (D303): the form in use, the setting and the input kinds, one word each.
+pub mod get_form_reply {
+    pub const FORM: usize = 0;
+    pub const SETTING: usize = 4;
+    pub const INPUTS: usize = 8;
+    /// The form numbers, in this order.
+    pub const FORMS: [crate::desktop::Form; 5] = [
+        crate::desktop::Form::Desktop,
+        crate::desktop::Form::Tablet,
+        crate::desktop::Form::Phone,
+        crate::desktop::Form::Tv,
+        crate::desktop::Form::Console,
+    ];
+    /// The input kinds' bits: touch, keyboard, pointer, remote.
+    pub const TOUCH: u32 = 1;
+    pub const KEYBOARD: u32 = 2;
+    pub const POINTER: u32 = 4;
+    pub const REMOTE: u32 = 8;
+}
+
+/// `SHELL_NAVIGATE`'s word: what the shell does, as `wm home` and `wm back` ask (D303).
+pub mod shell_navigate {
+    pub const HOME: u32 = 0;
+    pub const BACK: u32 = 1;
 }
 
 /// What `StartMoveOrResize` starts.
@@ -396,6 +428,9 @@ pub enum WindowError {
     /// The window's app has left an event unread for [`super::UNREAD_EVENTS_BUSY_MS`]: it is not
     /// responding, so nothing is asked of it (`ENOTCONN`, D222).
     NotResponding,
+    /// A move or a size in a form whose windows fill the work area (`EROFS`, `fixed_by_form`,
+    /// D303).
+    FixedByForm,
 }
 
 /// A request and its arguments, as the caller wrote them.
@@ -465,6 +500,13 @@ pub enum Request {
     GetReduceMotion,
     SetReduceMotion {
         reduce: u32,
+    },
+    GetForm,
+    SetForm {
+        setting: u32,
+    },
+    ShellNavigate {
+        to: u32,
     },
     AppsChanged,
     OpenApp {
@@ -636,6 +678,9 @@ impl Request {
             request::MANAGE_WINDOW => size::MANAGE_WINDOW,
             request::GET_PROFILE => size::GET_PROFILE,
             request::SET_PROFILE => size::SET_PROFILE,
+            request::GET_FORM => size::GET_FORM,
+            request::SET_FORM => size::SET_FORM,
+            request::SHELL_NAVIGATE => size::SHELL_NAVIGATE,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::GET_LAUNCH => size::GET_LAUNCH,
@@ -742,6 +787,9 @@ impl Request {
             request::GET_PALETTE => Self::GetPalette,
             request::SET_PALETTE => Self::SetPalette { palette: at(0) },
             request::GET_REDUCE_MOTION => Self::GetReduceMotion,
+            request::GET_FORM => Self::GetForm,
+            request::SET_FORM => Self::SetForm { setting: at(0) },
+            request::SHELL_NAVIGATE => Self::ShellNavigate { to: at(0) },
             request::SET_REDUCE_MOTION => Self::SetReduceMotion { reduce: at(0) },
             request::APPS_CHANGED => Self::AppsChanged,
             request::OPEN_APP => {

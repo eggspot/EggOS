@@ -39,8 +39,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::{DiscardEvents, EventSink, PointerShape};
 use eggos_drivers::desktop::{
-    Action, AppId, Contents, Desktop, GRID_SIZE, KeyboardLayoutChoice, Launch, MAX_SHOWN_LAYOUTS,
-    Profile, TerminalInput, WindowId, colour, shortcut,
+    Action, AppId, Contents, Desktop, Form, FormSetting, GRID_SIZE, KeyboardLayoutChoice, Launch,
+    MAX_SHOWN_LAYOUTS, Profile, TerminalInput, WindowId, colour, shortcut,
 };
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
@@ -267,6 +267,69 @@ pub fn desktop_profile() -> Profile {
     }
 }
 
+static CHOSEN_FORM: AtomicU8 = AtomicU8::new(0);
+
+/// The setting `shell.form` (D303): what the settings file held at boot or the last
+/// `SET_FORM` set; `auto` until one is chosen.
+pub fn form_setting() -> FormSetting {
+    let index = usize::from(CHOSEN_FORM.load(Ordering::Relaxed));
+    eggos_drivers::desktop::form::FORM_SETTING_NAMES
+        .get(index)
+        .and_then(|name| FormSetting::named(name.as_bytes()))
+        .unwrap_or_default()
+}
+
+/// Makes `shell.form` the setting numbered `index` in
+/// [`eggos_drivers::desktop::form::FORM_SETTING_NAMES`] and applies it at once; `false` for no
+/// such setting.
+pub fn set_form_setting<P: Platform>(index: u32) -> bool {
+    if index as usize >= eggos_drivers::desktop::form::FORM_SETTING_NAMES.len() {
+        return false;
+    }
+    CHOSEN_FORM.store(index as u8, Ordering::Relaxed);
+    with_windows::<P, _>(|desktop, _, damage, events| apply_form(desktop, damage, events));
+    true
+}
+
+fn apply_form(desktop: &mut Desktop, damage: &mut Damage, events: &mut dyn EventSink) {
+    let (width, height) = (desktop.screen().width, desktop.screen().height);
+    let (form, _) = eggos_drivers::desktop::form::in_use(form_setting(), width, height, input::present_kinds());
+    if form != Form::Console {
+        desktop.set_form(form, damage, events);
+    }
+}
+
+/// The form on screen, the setting and the input kinds present, for `GET_FORM`.
+pub fn form_in_use() -> (Form, FormSetting, eggos_drivers::desktop::InputKinds) {
+    let form = SCREEN
+        .lock()
+        .as_ref()
+        .and_then(|screen| screen.desktop.as_ref().map(Desktop::form))
+        .unwrap_or(Form::Console);
+    (form, form_setting(), input::present_kinds())
+}
+
+/// `wm home` and `wm back` (D303): what the phone's `Home` and `Back` do; `false` outside the
+/// phone form.
+pub fn shell_navigate<P: Platform>(to: u32) -> bool {
+    with_windows::<P, _>(|desktop, _, damage, events| {
+        if desktop.form() != Form::Phone {
+            return false;
+        }
+        match to {
+            eggos_drivers::desktop::protocol::shell_navigate::HOME => {
+                desktop.phone_home(damage, events);
+                true
+            }
+            _ => {
+                desktop.phone_back(damage, events);
+                true
+            }
+        }
+    })
+    .unwrap_or(false)
+}
+
 static CHOSEN_PALETTE: AtomicU8 = AtomicU8::new(0);
 
 /// How many palettes the desktop has: the dark and light themes, each with and without high
@@ -355,6 +418,15 @@ pub fn load_saved_settings<P: Platform>() {
         .and_then(|number| Profile::from_number(number as u32))
     {
         remember_profile(profile);
+    }
+    if let Some(index) = eggos_settings_file::value(&file[..length], eggos_settings_file::SHELL_FORM)
+        .and_then(|chosen| {
+            eggos_drivers::desktop::form::FORM_SETTING_NAMES
+                .iter()
+                .position(|name| name.as_bytes() == chosen)
+        })
+    {
+        CHOSEN_FORM.store(index as u8, Ordering::Relaxed);
     }
     let switch_key = eggos_settings_file::keyboard_switch_key(&file[..length]);
     crate::input::set_layouts(
@@ -778,6 +850,7 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
         desktop.set_unread_since(client.id(), client.unread_since(), damage);
     }
     desktop.set_agent_connected(AGENT_CONNECTED.load(Ordering::Relaxed), damage);
+    apply_form(desktop, damage, &mut queues);
     let (count, bytes) = unpack_updates(STORED_UPDATES.load(Ordering::Relaxed));
     desktop.set_updates(count, bytes, damage);
     desktop.set_network(crate::net::indicated(), damage);
@@ -808,7 +881,9 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
                 character,
             } => desktop.key_typing(code, pressed, modifiers, character, damage, &mut queues),
             InputEvent::Wheel { delta } => {
-                desktop.wheel(delta, &mut queues);
+                if !desktop.home_scroll(delta, damage) {
+                    desktop.wheel(delta, &mut queues);
+                }
                 Action::None
             }
             InputEvent::SidewaysWheel { delta } => {

@@ -4027,7 +4027,9 @@ fn succeeded(tool: &Tool, outcome: &RunOutcome, content_length: usize) -> bool {
         | Kind::WmRestore
         | Kind::WmClose
         | Kind::WmAct
-        | Kind::WmDrag => outcome.ended == Ended::Exited(0) && !outcome.stdout_cut,
+        | Kind::WmDrag
+        | Kind::WmHome
+        | Kind::WmBack => outcome.ended == Ended::Exited(0) && !outcome.stdout_cut,
         _ => outcome.stdout_cut || outcome.ended == Ended::Exited(0),
     }
 }

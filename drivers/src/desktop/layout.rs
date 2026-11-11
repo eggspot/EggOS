@@ -3,6 +3,7 @@
 //! where the launcher opens and which side the desktop icons start from. Nothing else in the
 //! shell knows the screen's size, so a shell in user space can use the same function.
 
+use super::form::Form;
 use super::shortcuts::Profile;
 use crate::display::Rect;
 
@@ -19,6 +20,10 @@ pub const DOCK_MARGIN: u32 = 8;
 pub const LAUNCHER_SIZE: (u32, u32) = (480, 400);
 /// The room between the launcher and the taskbar, at scale 1.
 pub const LAUNCHER_GAP: u32 = 8;
+/// Height of the phone form's status bar, its edge line included, at scale 1 (D303).
+pub const STATUS_BAR_HEIGHT: u32 = 44;
+/// Height of the phone form's navigation bar, its edge line included, at scale 1 (D303).
+pub const NAVIGATION_BAR_HEIGHT: u32 = 48;
 
 /// The side of the work area the desktop icons' first column is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,14 +51,24 @@ pub struct Layout {
     pub launcher: Rect,
     /// Which side the desktop icons start from.
     pub icon_side: IconSide,
+    /// The phone form's status bar (D303).
+    pub status_bar: Option<Rect>,
+    /// The phone form's navigation bar (D303).
+    pub navigation_bar: Option<Rect>,
 }
 
 impl Layout {
     /// The panels there are, each once.
     pub fn panels(&self) -> impl Iterator<Item = Rect> + '_ {
-        [self.top_bar, self.taskbar, self.dock_band]
-            .into_iter()
-            .flatten()
+        [
+            self.top_bar,
+            self.taskbar,
+            self.dock_band,
+            self.status_bar,
+            self.navigation_bar,
+        ]
+        .into_iter()
+        .flatten()
     }
 }
 
@@ -113,6 +128,42 @@ pub fn layout(screen_width: u32, screen_height: u32, scale: u32, profile: Profil
         work_area,
         launcher: Rect::new(x, y, width, height),
         icon_side,
+        status_bar: None,
+        navigation_bar: None,
+    }
+}
+
+/// The shell's layout in `form` (D303): the desktop's for the desktop form, and for the tablet
+/// and TV forms until their slices; for the phone form a status bar on top, a navigation bar
+/// at the bottom and the work area between, the same in every profile, with the launcher
+/// being the home screen in the work area.
+pub fn layout_in_form(
+    screen_width: u32,
+    screen_height: u32,
+    scale: u32,
+    profile: Profile,
+    form: Form,
+) -> Layout {
+    let desktop = layout(screen_width, screen_height, scale, profile);
+    if form != Form::Phone {
+        return desktop;
+    }
+    let scale = if scale == 2 { 2 } else { 1 };
+    let status = (STATUS_BAR_HEIGHT * scale).min(screen_height / 2);
+    let navigation = (NAVIGATION_BAR_HEIGHT * scale).min(screen_height / 2);
+    let status_bar = Rect::new(0, 0, screen_width, status);
+    let navigation_bar = Rect::new(0, screen_height - navigation, screen_width, navigation);
+    let work_area = Rect::new(0, status, screen_width, screen_height - status - navigation);
+    Layout {
+        screen: desktop.screen,
+        top_bar: None,
+        taskbar: None,
+        dock_band: None,
+        work_area,
+        launcher: work_area,
+        icon_side: IconSide::Left,
+        status_bar: Some(status_bar),
+        navigation_bar: Some(navigation_bar),
     }
 }
 
@@ -212,6 +263,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_phone_form_has_a_status_bar_a_navigation_bar_and_the_work_area_between() {
+        for profile in Profile::ALL {
+            let phone = layout_in_form(390, 844, 1, profile, Form::Phone);
+            assert_eq!(phone.status_bar, Some(Rect::new(0, 0, 390, 44)));
+            assert_eq!(phone.work_area, Rect::new(0, 44, 390, 752));
+            assert_eq!(phone.navigation_bar, Some(Rect::new(0, 796, 390, 48)));
+            assert_eq!(layout_in_form(1280, 800, 1, profile, Form::Desktop), layout(1280, 800, 1, profile));
+        }
+        let doubled = layout_in_form(780, 1688, 2, Profile::Windows, Form::Phone);
+        assert_eq!(doubled.status_bar, Some(Rect::new(0, 0, 780, 88)));
     }
 
     #[test]

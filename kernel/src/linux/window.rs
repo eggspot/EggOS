@@ -27,7 +27,7 @@ use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MAX_TREE_BYTES,
     MENU_POOL_CAPACITY, QUERY_ANSWER_MS, Request, TITLE_CAPACITY, WindowError, act_request,
-    capture_reply, create_reply, desktop_action, element_action, get_clipboard_reply,
+    capture_reply, create_reply, desktop_action, element_action, get_clipboard_reply, get_form_reply,
     get_menu_reply, get_tree_reply, input_outcome, keyboard_flags, keyboard_layout_reply,
     list_desktops_reply, list_reply, placement_reply, put_double_word, put_word, query_kind,
     read_query_reply, request, send_input_reply, set_size_reply, size, tree_answer,
@@ -53,6 +53,7 @@ fn errno(error: ServerError) -> Errno {
         ServerError::Refused(WindowError::Busy) => Errno::EBUSY,
         ServerError::Refused(WindowError::QueueFull) => Errno::EAGAIN,
         ServerError::Refused(WindowError::NotResponding) => Errno::ENOTCONN,
+        ServerError::Refused(WindowError::FixedByForm) => Errno::EROFS,
         ServerError::NoServer => Errno::ENXIO,
         ServerError::NoClientSlot => Errno::ENFILE,
         ServerError::OutOfMemory => Errno::ENOMEM,
@@ -103,6 +104,7 @@ pub fn ioctl<P: Platform>(
         && number != request::GET_PROFILE
         && number != request::GET_PALETTE
         && number != request::GET_REDUCE_MOTION
+        && number != request::GET_FORM
         && number != request::GET_KEYBOARD_LAYOUT
         && number != request::APPS_CHANGED
     {
@@ -353,6 +355,44 @@ pub fn ioctl<P: Platform>(
         Request::SetProfile { profile } => {
             let profile = Profile::from_number(profile).ok_or(Errno::EINVAL)?;
             set_desktop_profile::<P>(profile);
+        }
+        Request::GetForm => {
+            let (form, setting, inputs) = crate::terminal::form_in_use();
+            let form_number = get_form_reply::FORMS
+                .iter()
+                .position(|each| *each == form)
+                .unwrap_or(0) as u32;
+            let setting_number = eggos_drivers::desktop::form::FORM_SETTING_NAMES
+                .iter()
+                .position(|name| *name == setting.name())
+                .unwrap_or(0) as u32;
+            let mut kinds = 0;
+            for (present, bit) in [
+                (inputs.touch, get_form_reply::TOUCH),
+                (inputs.keyboard, get_form_reply::KEYBOARD),
+                (inputs.pointer, get_form_reply::POINTER),
+                (inputs.remote, get_form_reply::REMOTE),
+            ] {
+                if present {
+                    kinds |= bit;
+                }
+            }
+            put_word(bytes, get_form_reply::FORM, form_number);
+            put_word(bytes, get_form_reply::SETTING, setting_number);
+            put_word(bytes, get_form_reply::INPUTS, kinds);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::SetForm { setting } => {
+            if !crate::terminal::set_form_setting::<P>(setting) {
+                return Err(Errno::EINVAL);
+            }
+        }
+        Request::ShellNavigate { to } => {
+            if !crate::terminal::shell_navigate::<P>(to) {
+                return Err(Errno::EINVAL);
+            }
         }
         Request::GetPalette => {
             put_word(bytes, 0, crate::terminal::desktop_palette());

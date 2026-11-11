@@ -24,6 +24,8 @@ const SCROLLING: [&str; 2] = ["Traditional", "Natural"];
 
 const SCALE_HINT: &str = "Takes effect at the next restart";
 const RESOLUTION_WIDTH: i32 = 160;
+const LAYOUT_TOP: i32 = 276;
+const LAYOUT_OPTIONS: [&str; 5] = ["Automatic", "Desktop", "Tablet", "Phone", "TV"];
 const AUTOMATIC: &str = "Automatic";
 /// The smallest screen the desktop is laid out for, which a size at 2x must not go under.
 pub const DESKTOP_MINIMUM: (u32, u32) = (640, 400);
@@ -286,6 +288,8 @@ pub fn scale_line(facts: &Facts) -> (Text<96>, bool) {
 /// The Display pane's widgets.
 #[derive(Debug)]
 pub struct DisplayPane {
+    layout: WidgetId,
+    layout_status: WidgetId,
     resolution: WidgetId,
     choice: WidgetId,
     resolution_status: WidgetId,
@@ -328,7 +332,17 @@ impl DisplayPane {
             Place::right(PADDING, 236),
             Kind::label("Software", Token::Text),
         );
+        label(tree, pane, PADDING, LAYOUT_TOP, "Layout");
+        let layout = add(
+            tree,
+            pane,
+            from_right(PADDING, LAYOUT_TOP - 6, RESOLUTION_WIDTH, CONTROL_HEIGHT),
+            Kind::dropdown("Layout", &LAYOUT_OPTIONS, 0),
+        );
+        let layout_status = label(tree, pane, PADDING, LAYOUT_TOP + 40, "");
         let display = Self {
+            layout,
+            layout_status,
             resolution,
             choice,
             resolution_status,
@@ -359,6 +373,34 @@ impl DisplayPane {
             false => Token::TextDim,
         };
         show_status(tree, self.status, Some((line.as_str(), ink)));
+        self.show_layout(tree, facts);
+    }
+
+    fn show_layout(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts) {
+        tree.set_selected(self.layout, facts.form_setting.min(LAYOUT_OPTIONS.len() - 1));
+        let shown = crate::facts::FORMS_IN_USE
+            .get(facts.form_in_use)
+            .copied()
+            .unwrap_or("desktop");
+        let mut line = Text::<96>::new();
+        let _ = write!(line, "Now: {shown}.");
+        let ink = match facts.form_setting {
+            0 => Token::TextDim,
+            setting if crate::facts::FORM_SETTINGS[setting.min(4)] == shown => Token::TextDim,
+            _ => Token::Text,
+        };
+        show_status(tree, self.layout_status, Some((line.as_str(), ink)));
+    }
+
+    /// How setting `shell.form` went: the form now shown, or why it did not change (D303).
+    pub fn layout_saved(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts, saved: Result<(), Errno>) {
+        self.show_layout(tree, facts);
+        let refusal = match saved {
+            Ok(()) => return,
+            Err(Errno::EPERM | Errno::EACCES) => "Not allowed: this user may not set the layout.",
+            Err(_) => "The layout could not be saved.",
+        };
+        show_status(tree, self.layout_status, Some((refusal, Token::Text)));
     }
 
     fn show_resolution(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts) {
@@ -429,6 +471,9 @@ impl DisplayPane {
             Response::Chosen(id, choice) if id == self.scales => {
                 let scale = if choice == 1 { 2 } else { 1 };
                 Reply::Done((scale != facts.scale).then_some(Request::SetDisplayScale(scale)))
+            }
+            Response::Chosen(id, choice) if id == self.layout => {
+                Reply::Done((choice != facts.form_setting).then_some(Request::SetShellForm(choice)))
             }
             Response::Chosen(id, choice) if id == self.choice => {
                 let size = match choice {

@@ -522,6 +522,9 @@ pub enum Request {
     /// Save this size, `None` for the display's own, as `display.resolution` for the next boot,
     /// then say how it went ([`SettingsWindow::display_resolution_saved`]) (D287).
     SetDisplayResolution(Option<(u32, u32)>),
+    /// Save and apply `shell.form` as the setting numbered this in
+    /// [`crate::facts::FORM_SETTINGS`] (D303).
+    SetShellForm(usize),
     /// Save this mouse or key preference, then apply it, then say how both went
     /// ([`SettingsWindow::input_changed`]) (D195).
     ChangeInput(InputChange),
@@ -1256,6 +1259,15 @@ impl SettingsWindow {
         }
         self.accessibility
             .changed(&mut self.tree, Shown::of(&self.facts), saved, applied);
+    }
+
+    /// How setting `shell.form` went ([`Request::SetShellForm`]), with the form shown after.
+    pub fn shell_form_saved(&mut self, setting: usize, form_in_use: usize, saved: Result<(), Errno>) {
+        if saved.is_ok() {
+            self.facts.form_setting = setting;
+        }
+        self.facts.form_in_use = form_in_use;
+        self.display.layout_saved(&mut self.tree, &self.facts, saved);
     }
 
     /// How saving the display's size went ([`Request::SetDisplayResolution`]).

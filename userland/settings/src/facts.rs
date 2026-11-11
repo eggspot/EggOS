@@ -68,7 +68,20 @@ pub struct Facts {
     /// The network adapter as `/proc/net/interfaces` reports it; `None` on a machine without
     /// one (D225).
     pub network_adapter: Option<InterfaceStatus>,
+    /// `shell.form`: its index in [`FORM_SETTINGS`] (D303).
+    pub form_setting: usize,
+    /// The form on screen: its index in [`FORMS_IN_USE`] (D303).
+    pub form_in_use: usize,
+    /// The input kinds present: touch 1, keyboard 2, pointer 4, remote 8 (D303).
+    pub input_kinds: u32,
 }
+
+/// The values `shell.form` takes, in `SET_FORM`'s numbering (D303).
+pub const FORM_SETTINGS: [&str; 5] = ["auto", "desktop", "tablet", "phone", "tv"];
+/// The forms `shell.form_in_use` says, in `GET_FORM`'s numbering (D303).
+pub const FORMS_IN_USE: [&str; 5] = ["desktop", "tablet", "phone", "tv", "console"];
+/// The input kinds `input.present` names, in their bits' order (D303).
+pub const INPUT_KINDS: [&str; 4] = ["touch", "keyboard", "pointer", "remote"];
 
 /// The `/proc/net/interfaces` line of [`Facts::example`]'s adapter: connected as
 /// `10.0.2.15/24` through the router `10.0.2.2` with the DNS server `10.0.2.3`, 86342 of 86400
@@ -114,6 +127,9 @@ impl Facts {
                 reduce_motion: false,
             },
             network_adapter: eggos_net::status::parse_interface(EXAMPLE_ADAPTER.as_bytes()),
+            form_setting: 0,
+            form_in_use: 0,
+            input_kinds: 6,
         }
     }
 }

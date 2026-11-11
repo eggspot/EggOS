@@ -937,6 +937,7 @@ impl Desktop {
 
     pub(super) fn draw_panels(&self, canvas: &mut Canvas<'_>) {
         let clip = canvas.clip();
+        self.draw_phone_bars(canvas);
         if let Some(bar) = self.layout.top_bar
             && bar.overlaps(&clip)
         {
@@ -993,7 +994,7 @@ impl Desktop {
         }
     }
 
-    fn draw_egg_mark(canvas: &mut Canvas<'_>, left: u32, top: u32, height: u32, width: u32) {
+    pub(super) fn draw_egg_mark(canvas: &mut Canvas<'_>, left: u32, top: u32, height: u32, width: u32) {
         let mark_width = round_percent(72, height);
         for row in 0..height {
             let (from, to) = span(left + mark_width / 2, egg_half_width(height, row), width);

@@ -591,6 +591,7 @@ fn facts(server: Option<&WindowServer>) -> Facts {
     let saved_layout =
         settings_file::keyboard_layout(&file[..length]).unwrap_or_else(|| saved_layouts.keeping(0));
     let keyboard = server.and_then(|server| server.keyboard().ok());
+    let form = server.and_then(|server| server.form().ok());
     Facts {
         version: env!("CARGO_PKG_VERSION"),
         architecture: architecture(),
@@ -628,6 +629,9 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         keys: settings_file::key_accessibility(&file[..length]),
         display: saved_display(&file[..length], server),
         network_adapter: network_adapter(),
+        form_setting: form.map_or(0, |(_, setting, _)| setting as usize),
+        form_in_use: form.map_or(0, |(in_use, _, _)| in_use as usize),
+        input_kinds: form.map_or(0, |(_, _, kinds)| kinds),
     }
 }
 
@@ -975,6 +979,33 @@ impl command::Machine for Machine {
         apply_theme(theme, self.server.as_ref()).map_err(Errno::message)
     }
 
+    fn save_form(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let name = eggos_settings::facts::FORM_SETTINGS[index];
+        save_through_a_temporary_file(settings_file::SHELL_FORM, name).map_err(Errno::message)
+    }
+
+    fn apply_form(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let opened;
+        let server = match self.server.as_ref() {
+            Some(server) => server,
+            None => {
+                opened = WindowServer::open().map_err(Errno::message)?;
+                &opened
+            }
+        };
+        server.set_form(index as u32).map_err(Errno::message)?;
+        let (in_use, _, _) = server.form().map_err(Errno::message)?;
+        let wanted = eggos_settings::facts::FORM_SETTINGS[index];
+        let shown = eggos_settings::facts::FORMS_IN_USE
+            .get(in_use as usize)
+            .copied()
+            .unwrap_or("console");
+        match wanted == "auto" || wanted == shown {
+            true => Ok(()),
+            false => Err(b"saved, but that form does not fit this screen; shell.form_in_use says the form shown"),
+        }
+    }
+
     fn save_profile(&mut self, index: usize) -> Result<(), &'static [u8]> {
         let name = settings_file::PROFILES[index];
         save_through_a_temporary_file(settings_file::SHELL_PROFILE, name).map_err(Errno::message)
@@ -1279,6 +1310,20 @@ impl Application<CAPACITY> for Settings {
             Some(Request::SetDisplayScale(scale)) => {
                 self.window
                     .display_scale_saved(scale, save_display_scale(scale));
+            }
+            Some(Request::SetShellForm(setting)) => {
+                let name = eggos_settings::facts::FORM_SETTINGS[setting.min(4)];
+                let saved = save_through_a_temporary_file(settings_file::SHELL_FORM, name);
+                let applied = match (saved, self.server.as_ref()) {
+                    (Ok(()), Some(server)) => server.set_form(setting as u32),
+                    (result, _) => result,
+                };
+                let in_use = self
+                    .server
+                    .as_ref()
+                    .and_then(|server| server.form().ok())
+                    .map_or(0, |(in_use, _, _)| in_use as usize);
+                self.window.shell_form_saved(setting, in_use, applied);
             }
             Some(Request::SetDisplayResolution(size)) => {
                 self.window

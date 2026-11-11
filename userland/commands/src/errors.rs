@@ -149,6 +149,20 @@ pub const NOT_RESPONDING: ErrorDefinition = error(
      and wm close ends a window that stays so.",
     Some("wm list"),
 );
+/// `wm move` and `wm size`: the shell's form fills the screen with each window (D303).
+pub const FIXED_BY_FORM: ErrorDefinition = error(
+    "fixed_by_form",
+    Category::Refused,
+    "In the phone and TV forms each window fills the screen: show it with wm focus instead.",
+    Some("wm focus <id>"),
+);
+/// `wm home` and `wm back`: the shell's form has no home screen or Back (D303).
+pub const NOT_IN_THIS_FORM: ErrorDefinition = error(
+    "not_in_this_form",
+    Category::Refused,
+    "Home and Back belong to the phone form; settings get shell.form_in_use says which form shows.",
+    Some("settings get shell.form_in_use"),
+);
 /// `wm`: there is no window server (`/dev/window` cannot be opened).
 pub const NO_WINDOW_SERVER: ErrorDefinition = error(
     "no_window_server",
@@ -593,7 +607,7 @@ pub const REMOVE_FAILED: ErrorDefinition = error(
     None,
 );
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 80] = [
+pub const ALL: [&ErrorDefinition; 82] = [
     &NO_SUCH_ACTION,
     &USAGE,
     &NO_SUCH_FILE,
@@ -613,6 +627,8 @@ pub const ALL: [&ErrorDefinition; 80] = [
     &NO_SUCH_WINDOW,
     &PERSON_ACTIVE,
     &NOT_RESPONDING,
+    &FIXED_BY_FORM,
+    &NOT_IN_THIS_FORM,
     &NO_WINDOW_SERVER,
     &NO_SUCH_MENU_ITEM,
     &DIALOG_OPEN,

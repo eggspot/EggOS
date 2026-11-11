@@ -129,6 +129,24 @@ impl Desktop {
             .ok_or(WindowError::Invalid)?;
         let action = WindowAction::from_value(action).ok_or(WindowError::Invalid)?;
         let window = *self.window_at(slot);
+        if self.form.fixes_windows() {
+            return match action {
+                WindowAction::Move | WindowAction::Size => Err(WindowError::FixedByForm),
+                WindowAction::Focus | WindowAction::Maximise | WindowAction::Restore => {
+                    self.activate(slot, damage, events);
+                    Ok(())
+                }
+                WindowAction::Minimise if window.role == Role::Normal => {
+                    self.minimise(slot, damage, events);
+                    Ok(())
+                }
+                WindowAction::Close if window.closable => {
+                    self.request_close(slot, events);
+                    Ok(())
+                }
+                _ => Err(WindowError::Invalid),
+            };
+        }
         match action {
             WindowAction::Focus => self.activate(slot, damage, events),
             WindowAction::Minimise if window.role != Role::Normal => {
@@ -195,17 +213,27 @@ impl Desktop {
         self.close_popups(damage, events);
         self.close_notice(damage);
         self.profile = profile;
-        self.layout = super::layout::layout(self.width, self.height, 1, profile);
+        self.layout = super::layout::layout_in_form(self.width, self.height, 1, profile, self.form);
         self.control_hover = None;
         self.control_pressed = None;
         self.reset_panels();
         self.icons.last_press = None;
+        self.refit_windows(damage, events);
+    }
+
+    /// Fits every shown window to the work area after the layout changed: maximised windows
+    /// fill it (in the phone form, its phone place), resizable windows larger than it shrink,
+    /// and every window is moved into it; everything is drawn again.
+    pub(super) fn refit_windows(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {
         let work = self.work_area();
         for slot in 0..self.windows.len() {
             let Some(window) = self.windows[slot] else {
                 continue;
             };
             if !window.shown {
+                continue;
+            }
+            if self.form == super::Form::Phone {
                 continue;
             }
             if window.maximised {

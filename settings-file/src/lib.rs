@@ -82,6 +82,8 @@ pub const LARGEST: usize = 4096;
 
 /// The desktop's layout profile: one of [`PROFILES`].
 pub const SHELL_PROFILE: &str = "shell.profile";
+/// The key of the shell's form (D303): `auto`, `desktop`, `tablet`, `phone` or `tv`.
+pub const SHELL_FORM: &str = "shell.form";
 
 /// The display's scale from the next boot: `1` or `2`.
 pub const DISPLAY_SCALE: &str = "display.scale";

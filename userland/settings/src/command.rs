@@ -45,6 +45,16 @@ pub trait Machine {
     fn facts(&mut self) -> Facts;
     /// Saves the desktop profile `index` to the settings file; the error's text on failure.
     fn save_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
+    /// Saves `shell.form` as the setting `index` of [`crate::facts::FORM_SETTINGS`] (D303).
+    fn save_form(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let _ = index;
+        Ok(())
+    }
+    /// Applies `shell.form` at once; the error's text when it is saved but another form shows.
+    fn apply_form(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let _ = index;
+        Ok(())
+    }
     /// Applies the desktop profile `index` now; the error's text on failure.
     fn apply_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
     /// Saves the desktop's theme to the settings file as `appearance.theme` (D219).
@@ -481,6 +491,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
     let keyboard = change.keyboard_choice(&machine.facts());
     let saved = match change {
         Change::Profile(index) => machine.save_profile(index),
+        Change::Form(index) => machine.save_form(index),
         Change::Theme(theme) => machine.save_theme(theme),
         Change::KeyboardLayout(_) | Change::KeyboardLayouts(_) | Change::KeyboardSwitchKey(_) => {
             keyboard.map_or(Ok(()), |choice| machine.save_keyboard(choice))
@@ -500,6 +511,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
     }
     let applied = match change {
         Change::Profile(index) => machine.apply_profile(index),
+        Change::Form(index) => machine.apply_form(index),
         Change::Theme(theme) => machine.apply_theme(theme),
         Change::KeyboardLayout(_) | Change::KeyboardLayouts(_) | Change::KeyboardSwitchKey(_) => {
             keyboard.map_or(Ok(()), |choice| machine.apply_keyboard(choice))

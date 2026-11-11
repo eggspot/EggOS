@@ -15,6 +15,8 @@
 //! sets a menu ([`Desktop::set_menu`]).
 
 mod agent;
+pub mod form;
+mod phone;
 pub mod boot_screen;
 mod catalogue;
 mod desktop_icons;
@@ -62,6 +64,7 @@ mod tests;
 mod window_tests;
 
 pub use updates::UPDATES_LABEL;
+pub use form::{Form, FormSetting, InputKinds};
 pub use agent::{AGENT_ACTING_MS, AGENT_LABEL, AGENT_LOG_LINE, AGENT_SUFFIX, AGENT_TOOLTIP};
 pub use catalogue::{
     ARGUMENT_SEPARATOR, AppId, COMMAND_CAPACITY, Catalogue, Command, INSTALLER_PROGRAM, Launch,
@@ -398,6 +401,8 @@ pub struct Desktop {
     clock_length: u8,
     clock_shows_time_of_day: bool,
     agent: agent::AgentState,
+    form: form::Form,
+    phone: phone::PhoneState,
     updates: updates::UpdatesState,
     sticky: sticky_keys::StickyChips,
     panel_focus: Option<panel_focus::PanelFocus>,
@@ -495,6 +500,8 @@ impl Desktop {
             clock_length: 0,
             clock_shows_time_of_day: false,
             agent: agent::AgentState::default(),
+            form: form::Form::Desktop,
+            phone: phone::PhoneState::default(),
             updates: updates::UpdatesState::default(),
             sticky: sticky_keys::StickyChips::default(),
             panel_focus: None,
@@ -1349,6 +1356,12 @@ impl Desktop {
     fn show(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
         self.place(slot);
         self.window_mut(slot).shown = true;
+        if self.form == form::Form::Phone
+            && matches!(self.window_at(slot).role, Role::Normal | Role::Dialog)
+            && !self.window_at(slot).minimised
+        {
+            self.fit_to_phone(slot, damage, events);
+        }
         let window = self.window_at(slot);
         if window.role == Role::Normal && window.client != KERNEL_CLIENT {
             self.end_app_starting(damage);
@@ -1670,6 +1683,9 @@ impl Desktop {
             return;
         }
         self.window_mut(slot).minimised = false;
+        if self.form == form::Form::Phone && self.window_at(slot).role == Role::Normal {
+            self.fit_to_phone(slot, damage, events);
+        }
         self.damage_window_list(damage);
         self.raise(slot, damage);
         damage.add(self.window_at(slot).with_shadow());
@@ -1856,6 +1872,7 @@ impl Desktop {
         if !pressed {
             self.buttons &= !bit;
             if code == button::LEFT {
+                self.phone_release(damage);
                 self.drag = None;
                 self.resize = None;
                 self.panel_release(damage);
@@ -1889,6 +1906,12 @@ impl Desktop {
         let (x, y) = self.pointer;
         self.super_alone = false;
         self.close_notice(damage);
+        if self.form == form::Form::Phone
+            && code == button::LEFT
+            && let Some(action) = self.phone_press(x, y, damage, events)
+        {
+            return action;
+        }
         if let Some(action) = self.end_app_press(x, y, damage, events) {
             return action;
         }
@@ -2127,6 +2150,12 @@ impl Desktop {
     ) -> Action {
         self.typed = character;
         self.note_person_input();
+        if self.form == form::Form::Phone
+            && pressed
+            && let Some(action) = self.phone_key(code, damage, events)
+        {
+            return action;
+        }
         if self.shift_tapped_to_toggle_sticky_keys(code, pressed, modifiers) {
             return Action::ToggleStickyKeys;
         }
@@ -2366,7 +2395,10 @@ impl Desktop {
             return;
         }
         self.draw_wallpaper(&mut canvas);
-        self.draw_desktop_icons(&mut canvas);
+        match self.form {
+            form::Form::Phone => self.draw_phone_home(&mut canvas),
+            _ => self.draw_desktop_icons(&mut canvas),
+        }
         for &slot in &self.stack[..self.stack_length] {
             let slot = usize::from(slot);
             let window = self.window_at(slot);
@@ -2471,6 +2503,15 @@ impl Desktop {
         window: &Window,
         contents: &dyn Contents,
     ) {
+        if self.form == form::Form::Phone && matches!(window.role, Role::Normal | Role::Dialog) {
+            self.draw_phone_window_frame(canvas, window);
+            self.draw_content(canvas, window, contents);
+            if window.role == Role::Dialog {
+                let content = window.content();
+                canvas.fill(Rect::new(content.x, content.y, content.width, 1), colour::MENU_BORDER);
+            }
+            return;
+        }
         let outside = window.outside();
         let focused = self.focus == Some(slot);
         let (border, title, title_text) = if focused {

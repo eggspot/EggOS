@@ -234,6 +234,7 @@ impl<const N: usize> EventQueue<N> {
     /// Adds `event` at the back; `false` when the queue was full, so its oldest event was dropped
     /// and counted to make room. Only one producer may push at a time.
     pub fn push(&self, event: InputEvent) -> bool {
+        note_kind_of(&event);
         let tail = self.tail.load(Ordering::Relaxed);
         let mut head = self.head.load(Ordering::Acquire);
         let mut kept_all = true;
@@ -1326,6 +1327,36 @@ static TOUCH_SCREEN: AtomicBool = AtomicBool::new(false);
 /// Whether a touch screen reported a touch since boot (D296).
 pub fn has_touch_screen() -> bool {
     TOUCH_SCREEN.load(Ordering::Relaxed)
+}
+
+static KEYBOARD_SEEN: AtomicBool = AtomicBool::new(false);
+static POINTER_SEEN: AtomicBool = AtomicBool::new(false);
+static REMOTE_PRETENDED: AtomicBool = AtomicBool::new(false);
+
+fn note_kind_of(event: &InputEvent) {
+    match event {
+        InputEvent::Key { .. } => KEYBOARD_SEEN.store(true, Ordering::Relaxed),
+        InputEvent::PointerMove { .. } | InputEvent::Wheel { .. } => {
+            POINTER_SEEN.store(true, Ordering::Relaxed)
+        }
+        _ => {}
+    }
+}
+
+/// A boot option's pretend TV remote, for testing the TV form (D303).
+pub fn pretend_remote(present: bool) {
+    REMOTE_PRETENDED.store(present, Ordering::Relaxed);
+}
+
+/// The kinds of input device seen since boot, for the shell's form and `input.present`
+/// (docs/ux/adaptive-shell-v0.5.md section 1.1, D303).
+pub fn present_kinds() -> eggos_drivers::desktop::InputKinds {
+    eggos_drivers::desktop::InputKinds {
+        touch: has_touch_screen(),
+        keyboard: KEYBOARD_SEEN.load(Ordering::Relaxed),
+        pointer: POINTER_SEEN.load(Ordering::Relaxed) && !has_touch_screen(),
+        remote: REMOTE_PRETENDED.load(Ordering::Relaxed),
+    }
 }
 
 static NUM_LOCK_OFF: AtomicBool = AtomicBool::new(false);

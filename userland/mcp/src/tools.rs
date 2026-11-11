@@ -120,6 +120,10 @@ pub enum Kind {
     WmAct,
     /// `wm_drag` (D162).
     WmDrag,
+    /// `wm_home` (D303).
+    WmHome,
+    /// `wm_back` (D303).
+    WmBack,
     /// `settings_list`: every setting and its value (D163).
     SettingsList,
     /// `settings_get`: one setting's value (D163).
@@ -445,7 +449,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 78] = [
+pub const TOOLS: [Tool; 80] = [
     tool(
         &registry::COMPONENT_UPDATE,
         Kind::ComponentUpdate,
@@ -617,6 +621,8 @@ pub const TOOLS: [Tool; 78] = [
     tool(&registry::WM_SHOW, Kind::WmShow, window_twin(&["show"])),
     tool(&registry::WM_ACT, Kind::WmAct, window_twin(&["act"])),
     tool(&registry::WM_DRAG, Kind::WmDrag, window_twin(&["drag"])),
+    tool(&registry::WM_HOME, Kind::WmHome, twin("/bin/wm", &["home"], Operand::None)),
+    tool(&registry::WM_BACK, Kind::WmBack, twin("/bin/wm", &["back"], Operand::None)),
     tool(
         &registry::SETTINGS_LIST,
         Kind::SettingsList,

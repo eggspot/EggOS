@@ -151,6 +151,16 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Halves every pixel of `rect` inside the clip: the rows a sheet darkens (D303).
+    pub(super) fn dim(&mut self, rect: Rect) {
+        let clip = self.clip;
+        for y in rect.y.max(clip.y)..rect.bottom().min(clip.bottom()) {
+            for x in rect.x.max(clip.x)..rect.right().min(clip.right()) {
+                self.darken(x, y, |pixel| (pixel >> 1) & 0x007f_7f7f);
+            }
+        }
+    }
+
     fn darken(&mut self, x: u32, y: u32, darkening: fn(u32) -> u32) {
         let clip = self.clip;
         if x >= clip.x && x < clip.right() && y >= clip.y && y < clip.bottom() {

@@ -34,6 +34,8 @@ const SET_PALETTE: usize = 0x4004_7728;
 const GET_REDUCE_MOTION: usize = 0x8004_7729;
 const SET_REDUCE_MOTION: usize = 0x4004_772a;
 const SET_MENU: usize = 0x4100_7715;
+const GET_FORM: usize = 0x800c_772c;
+const SET_FORM: usize = 0x4004_772d;
 const MENU_POOL: usize = 8;
 const CAPS_LOCK_FLAG: u32 = 1;
 const KEYBOARD_FLAG: u32 = 2;
@@ -260,6 +262,21 @@ impl WindowServer {
         put(&mut request, 4, length as u32);
         request[MENU_POOL..MENU_POOL + length].copy_from_slice(&pool[..length]);
         self.ioctl(SET_MENU, &mut request)
+    }
+
+    /// The shell's form (`GET_FORM`, D303): the form in use (desktop, tablet, phone, tv,
+    /// console as 0 to 4), the setting (auto, desktop, tablet, phone, tv as 0 to 4) and the
+    /// input kinds' bits (touch 1, keyboard 2, pointer 4, remote 8).
+    pub fn form(&self) -> Result<(u32, u32, u32), Errno> {
+        let mut reply = [0u8; 12];
+        self.ioctl(GET_FORM, &mut reply)?;
+        Ok((word(&reply, 0), word(&reply, 4), word(&reply, 8)))
+    }
+
+    /// Makes `shell.form` the setting numbered `setting` (auto, desktop, tablet, phone, tv as 0
+    /// to 4), at once (`SET_FORM`, D303).
+    pub fn set_form(&self, setting: u32) -> Result<(), Errno> {
+        self.ioctl(SET_FORM, &mut setting.to_ne_bytes())
     }
 
     /// Makes profile `profile` the desktop's, at once.

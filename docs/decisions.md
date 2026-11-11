@@ -20338,3 +20338,39 @@ the license, by an explicit instruction recorded here.
   D301. `app-window` takes `do <name> [<action>]` directly, the words `app do --window` passes
   it, so both front-ends open the same window.
 - **Not yet.** Building and running.
+
+## D303 M12 adaptive shell, slice 1: the form setting and the phone form (docs/ux/adaptive-shell-v0.5.md sections 1, 2 and 9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** One shell, four forms. `drivers/src/desktop/form.rs` chooses the form from the
+  screen's logical size and the input kinds seen (`automatic`, section 1.2's rows), or from the
+  setting `shell.form` (`in_use`: a forced form that does not fit is saved and the fitting one
+  shows). `layout_in_form` gives the phone form a 44 px status bar, a 48 px navigation bar and
+  the work area between them, the same in every profile. The tablet and TV forms use the
+  desktop layout until slices 3 and 4.
+  - **Phone shell** (`phone.rs`): the status bar shows the clock, the shown window's title, the
+    network glyph and the `Agent` chip. The navigation bar has `Back`, `Home` and an empty
+    `Apps` zone. The home screen is the launcher: a search field and a four-column grid of the
+    desktop's apps (88 x 104 cells, a running mark, labels cut at 10 glyphs), scrolled by the
+    wheel. Typing filters it into 48 px rows, and Enter opens the first.
+  - **Phone windows:** one normal window at a time fills the work area with no chrome: its
+    geometry hides the frame under the bars, and the phone draws only its content. A dialog is
+    a full-width bottom sheet over darkened rows, and a tap above it is `Back`. `Back` follows
+    rules 2, 3, 5 and 6, `Home` minimises the shown window, and the pointer acts as the finger.
+  - **Kernel:** the kernel notes the input kinds it sees (touch, keyboard, pointer, a pretend
+    remote), reads `shell.form` from the settings file, applies the form on each frame, and
+    answers `GET_FORM`, `SET_FORM` and `SHELL_NAVIGATE`.
+  - **Window commands:** `wm move` and `wm size` are refused with `fixed_by_form` in the phone
+    and TV forms. `wm focus`, `maximise` and `restore` show the window there.
+  - **D22 front-ends:** `wm home` and `wm back` (with the MCP tools `wm_home` and `wm_back`), the
+    settings `shell.form`, `shell.form_in_use` and `input.present`, and the Display pane's
+    `Layout` row.
+- **Deviations.**
+  - The `Layout` row is a dropdown (`Automatic`, `Desktop`, `Tablet`, `Phone`, `TV`), not five
+    radios, and its line says only the form shown, not why.
+  - `not_applied`'s message is generic.
+  - `wm show shell` and the shell's element tree are not built, nor the long-press menu, the
+    grid's half-shown seventh row, the arrow keys on the grid or the `Back` glyph at 2x (drawn
+    from rectangles).
+  - The console is not switched to when a touch screen is too small.
+  - Keys go to the home screen's search only while no window is shown.
+- **Not yet.** Building and running; slices 2 to 5; the deviations above.

@@ -88,6 +88,52 @@ const WINDOW_ERRORS: [CommandError; 4] = [
     exits(&NO_WINDOW_SERVER, 1),
 ];
 
+const PLACING_ERRORS: [CommandError; 5] = [
+    exits(&USAGE, 2),
+    exits(&NO_SUCH_WINDOW, 1),
+    exits(&PERSON_ACTIVE, 75),
+    exits(&NO_WINDOW_SERVER, 1),
+    exits(&FIXED_BY_FORM, 1),
+];
+
+const SHELL_ERRORS: [CommandError; 3] = [
+    exits(&USAGE, 2),
+    exits(&NO_WINDOW_SERVER, 1),
+    exits(&NOT_IN_THIS_FORM, 1),
+];
+
+/// `wm home` (D303).
+pub const WM_HOME: CommandDefinition = CommandDefinition {
+    words: &["wm", "home"],
+    summary: "Shows the home screen.",
+    description: "In the phone form, minimises the shown window and shows the home screen, as \
+                  the navigation bar's Home does; on the home screen, scrolls the apps to the \
+                  top and empties the search.",
+    options: &[],
+    operands: &[],
+    outputs: NOTHING,
+    max_effect: Effect::Change,
+    errors: &SHELL_ERRORS,
+    examples: &[],
+    surface: Surface::Gui("the navigation bar's Home button"),
+};
+
+/// `wm back` (D303).
+pub const WM_BACK: CommandDefinition = CommandDefinition {
+    words: &["wm", "back"],
+    summary: "Goes back, as the navigation bar's Back does.",
+    description: "In the phone form: asks the shown window's dialog to close, else minimises \
+                  the shown window and shows the home screen; on the home screen, empties the \
+                  search, then takes the focus from it. Back never closes an app.",
+    options: &[],
+    operands: &[],
+    outputs: NOTHING,
+    max_effect: Effect::Change,
+    errors: &SHELL_ERRORS,
+    examples: &[],
+    surface: Surface::Gui("the navigation bar's Back button"),
+};
+
 const TYPING_ERRORS: [CommandError; 5] = [
     exits(&USAGE, 2),
     exits(&NO_SUCH_WINDOW, 1),
@@ -440,7 +486,7 @@ pub const WM_MOVE: CommandDefinition = CommandDefinition {
     ],
     outputs: NOTHING,
     max_effect: Effect::Change,
-    errors: &WINDOW_ERRORS,
+    errors: &PLACING_ERRORS,
     examples: &[],
     surface: Surface::Gui("dragging the title bar"),
 };
@@ -459,7 +505,7 @@ pub const WM_SIZE: CommandDefinition = CommandDefinition {
     ],
     outputs: NOTHING,
     max_effect: Effect::Change,
-    errors: &WINDOW_ERRORS,
+    errors: &PLACING_ERRORS,
     examples: &[],
     surface: Surface::Gui("dragging the window's edges"),
 };
@@ -4188,7 +4234,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 111] = [
+pub static COMMANDS: [CommandDefinition; 113] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -4279,6 +4325,7 @@ pub static COMMANDS: [CommandDefinition; 111] = [
     WINDOWS_REGISTRY_RESET,
     WINDOWS_REGISTRY_SET,
     WM_ACT,
+    WM_BACK,
     WM_CAPTURE,
     WM_CLICK,
     WM_CLOSE,
@@ -4289,6 +4336,7 @@ pub static COMMANDS: [CommandDefinition; 111] = [
     WM_DESKTOP_SWITCH,
     WM_DRAG,
     WM_FOCUS,
+    WM_HOME,
     WM_LIST,
     WM_MAXIMISE,
     WM_MENU,
