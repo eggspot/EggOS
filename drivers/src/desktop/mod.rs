@@ -1891,7 +1891,7 @@ impl Desktop {
         if !pressed {
             self.buttons &= !bit;
             if code == button::LEFT {
-                self.phone_release(damage);
+                self.phone_release(damage, events);
                 self.tablet_release(damage, events);
                 self.drag = None;
                 self.resize = None;

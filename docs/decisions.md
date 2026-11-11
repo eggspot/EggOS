@@ -20522,3 +20522,17 @@ the license, by an explicit instruction recorded here.
   chip in the strip, the notice's TV place, a boot option that sets `input::pretend_remote`,
   and an attached pointer's clicks on the home screen are not built yet.
 - **Not yet.** Building and running; the deviations above.
+
+## D308 M12: the phone's bars act on release, and the gestures of section 2.8 with the pointer as the finger (docs/ux/adaptive-shell-v0.5.md section 2.8; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The status bar and the navigation bar act when the finger (the pointer's
+  button, until the touch path) lifts, not when it touches, so a press can become a swipe:
+  - a swipe down of 48 px from the status bar opens the shade, as a tap does;
+  - a swipe up of 64 px from the navigation bar is `Home`, whichever zone it started on;
+  - a swipe right of 48 px from the left 16 px of the work area is `Back`, and that edge
+    belongs to the shell.
+
+  A tap on a zone acts only when the finger lifts inside the same zone.
+- **Deviations.** The hold that turns the upward swipe into `Apps`, the swipe up on the shade
+  and dragging a switcher card away wait for the touch path's timing.
+- **Not yet.** Building and running.

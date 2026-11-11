@@ -58,7 +58,14 @@ enum Target {
     Back,
     Home,
     Apps,
+    LeftEdge,
 }
+
+/// How far a finger moves for a swipe (section 2.8): from the status bar or the left edge, and
+/// up from the navigation bar.
+const SWIPE: u32 = 48;
+const SWIPE_UP: u32 = 64;
+const EDGE: u32 = 16;
 
 /// The phone shell's own state: the grid's scroll, the search, the pressed zone.
 #[derive(Debug, Clone, Copy)]
@@ -68,6 +75,7 @@ pub(super) struct PhoneState {
     query_length: usize,
     search_focused: bool,
     pressed: Option<Target>,
+    press_at: (u32, u32),
     pub(super) switcher: bool,
     pub(super) switcher_scroll: u32,
     pub(super) shade: bool,
@@ -85,6 +93,7 @@ impl Default for PhoneState {
             query_length: 0,
             search_focused: false,
             pressed: None,
+            press_at: (0, 0),
             switcher: false,
             switcher_scroll: 0,
             shade: false,
@@ -393,10 +402,14 @@ impl Desktop {
         }
         if self.layout.status_bar.is_some_and(|bar| contains(bar, x, y)) {
             self.phone.pressed = Some(Target::StatusBar);
-            let open = !self.phone.shade;
-            self.close_phone_overlays();
-            self.phone.shade = open;
-            damage.add(self.screen());
+            self.phone.press_at = (x, y);
+            damage.add(self.layout.status_bar.unwrap_or(self.screen()));
+            return Some(Action::None);
+        }
+        let in_work = contains(self.layout.work_area, x, y);
+        if in_work && x < EDGE && !self.phone_overlay_open() {
+            self.phone.pressed = Some(Target::LeftEdge);
+            self.phone.press_at = (x, y);
             return Some(Action::None);
         }
         let on_bar = self.layout.navigation_bar.is_some_and(|bar| contains(bar, x, y));
@@ -411,24 +424,12 @@ impl Desktop {
             if let Some(rect) = self.layout.navigation_bar {
                 damage.add(rect);
             }
-            match zone {
-                0 => {
-                    self.phone.pressed = Some(Target::Back);
-                    self.phone_back(damage, events);
-                }
-                1 => {
-                    self.phone.pressed = Some(Target::Home);
-                    self.phone_home(damage, events);
-                }
-                _ => {
-                    self.phone.pressed = Some(Target::Apps);
-                    let open = !self.phone.switcher;
-                    self.close_phone_overlays();
-                    self.phone.switcher = open;
-                    self.phone.switcher_scroll = 0;
-                    damage.add(self.screen());
-                }
-            }
+            self.phone.pressed = Some(match zone {
+                0 => Target::Back,
+                1 => Target::Home,
+                _ => Target::Apps,
+            });
+            self.phone.press_at = (x, y);
             return Some(Action::None);
         }
         if let Some(dialog) = self.phone_dialog() {
@@ -476,11 +477,40 @@ impl Desktop {
     }
 
     /// The left button went up: a pressed bar zone is drawn as before.
-    pub(super) fn phone_release(&mut self, damage: &mut Damage) {
-        if self.phone.pressed.take().is_some() {
-            for bar in [self.layout.status_bar, self.layout.navigation_bar].into_iter().flatten() {
-                damage.add(bar);
+    pub(super) fn phone_release(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {
+        let Some(target) = self.phone.pressed.take() else {
+            return;
+        };
+        damage.add(self.screen());
+        let (x0, y0) = self.phone.press_at;
+        let (x, y) = self.pointer;
+        let up = y0.saturating_sub(y);
+        let down = y.saturating_sub(y0);
+        let right = x.saturating_sub(x0);
+        let inside = |rect: Option<Rect>| rect.is_some_and(|rect| contains(rect, x, y));
+        match target {
+            Target::StatusBar if down >= SWIPE || inside(self.layout.status_bar) => {
+                let open = !self.phone.shade;
+                self.close_phone_overlays();
+                self.phone.shade = open;
             }
+            Target::Back | Target::Home | Target::Apps if up >= SWIPE_UP => {
+                self.phone_home(damage, events);
+            }
+            Target::Back if inside(self.navigation_zone(0)) => {
+                self.phone_back(damage, events);
+            }
+            Target::Home if inside(self.navigation_zone(1)) => self.phone_home(damage, events),
+            Target::Apps if inside(self.navigation_zone(2)) => {
+                let open = !self.phone.switcher;
+                self.close_phone_overlays();
+                self.phone.switcher = open;
+                self.phone.switcher_scroll = 0;
+            }
+            Target::LeftEdge if right >= SWIPE => {
+                self.phone_back(damage, events);
+            }
+            _ => {}
         }
     }
 
