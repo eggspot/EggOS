@@ -114,6 +114,9 @@ pub enum InputEvent {
     /// The switch key made layout number `.0` (an index of [`layout::LAYOUTS`]) the one in
     /// force (D221).
     LayoutChanged(u8),
+    /// A touch screen's second finger went down at (`x`, `y`), or lifted there (D329): what
+    /// the on-screen keyboard types with while the first holds a key.
+    SecondTouch { x: u32, y: u32, down: bool },
 }
 
 const KEY: u64 = 1;
@@ -122,6 +125,8 @@ const BUTTON: u64 = 3;
 const WHEEL: u64 = 4;
 const LAYOUT_CHANGED: u64 = 5;
 const SIDEWAYS_WHEEL: u64 = 6;
+const SECOND_TOUCH: u64 = 7;
+const SECOND_TOUCH_DOWN: u64 = 1 << 56;
 const COORDINATE_MASK: u32 = 0x00ff_ffff;
 const CHARACTER_MASK: u32 = 0x00ff_ffff;
 
@@ -163,6 +168,20 @@ impl InputEvent {
             InputEvent::Wheel { delta } => WHEEL | (delta as u32 as u64) << 32,
             InputEvent::SidewaysWheel { delta } => SIDEWAYS_WHEEL | (delta as u32 as u64) << 32,
             InputEvent::LayoutChanged(number) => LAYOUT_CHANGED | (number as u64) << 8,
+            InputEvent::SecondTouch { x, y, down } => {
+                let x = if x > COORDINATE_MASK {
+                    COORDINATE_MASK
+                } else {
+                    x
+                };
+                let y = if y > COORDINATE_MASK {
+                    COORDINATE_MASK
+                } else {
+                    y
+                };
+                let down = if down { SECOND_TOUCH_DOWN } else { 0 };
+                SECOND_TOUCH | (x as u64) << 8 | (y as u64) << 32 | down
+            }
         }
     }
 
@@ -194,6 +213,11 @@ impl InputEvent {
             LAYOUT_CHANGED => InputEvent::LayoutChanged(field(word, 8, 0xff) as u8),
             SIDEWAYS_WHEEL => InputEvent::SidewaysWheel {
                 delta: field(word, 32, 0xffff_ffff) as u32 as i32,
+            },
+            SECOND_TOUCH => InputEvent::SecondTouch {
+                x: field(word, 8, COORDINATE_MASK as u64) as u32,
+                y: field(word, 32, COORDINATE_MASK as u64) as u32,
+                down: word & SECOND_TOUCH_DOWN != 0,
             },
             _ => return None,
         })
@@ -356,6 +380,10 @@ pub struct PendingReport {
     y: Option<i32>,
     presses: u8,
     releases: u8,
+    /// The second finger's positions and whether it went down or lifted (D329).
+    second_x: Option<i32>,
+    second_y: Option<i32>,
+    second_down: Option<bool>,
     pending: bool,
 }
 
@@ -379,6 +407,8 @@ pub struct InputState {
     slow: Option<(u16, u64)>,
     cursor_keys: CursorKeys,
     pointer: (u32, u32),
+    /// Where the touch screen's second finger is, while it is down (D329).
+    second_touch: Option<(u32, u32)>,
     buttons_held: u8,
     last_event: u64,
     layouts: KeyboardLayoutSet,
@@ -716,6 +746,7 @@ impl InputState {
             slow: None,
             cursor_keys: CursorKeys::Normal,
             pointer: (0, 0),
+            second_touch: None,
             buttons_held: 0,
             last_event: 0,
             layouts: KeyboardLayoutSet::DEFAULT,
@@ -1247,6 +1278,39 @@ impl InputState {
         if sideways != 0 {
             sink.event(InputEvent::SidewaysWheel { delta: sideways });
         }
+        self.second_touch_report(capabilities, &report, screen, sink);
+    }
+
+    /// The second finger's part of a report: where it is, and an event when it went down or
+    /// lifted.
+    fn second_touch_report(
+        &mut self,
+        capabilities: &Capabilities,
+        report: &PendingReport,
+        screen: Option<(u32, u32)>,
+        sink: &mut dyn InputSink,
+    ) {
+        let (Some((width, height)), Some((x_range, y_range))) = (
+            screen.filter(|&(width, height)| width > 0 && height > 0),
+            capabilities.absolute,
+        ) else {
+            return;
+        };
+        let at = self.second_touch.unwrap_or(self.pointer);
+        let x = report.second_x.map_or(at.0, |value| scale_to_screen(value, x_range, width));
+        let y = report.second_y.map_or(at.1, |value| scale_to_screen(value, y_range, height));
+        match report.second_down {
+            Some(true) if self.second_touch.is_none() => {
+                self.second_touch = Some((x, y));
+                sink.event(InputEvent::SecondTouch { x, y, down: true });
+            }
+            Some(false) if self.second_touch.is_some() => {
+                self.second_touch = None;
+                sink.event(InputEvent::SecondTouch { x, y, down: false });
+            }
+            _ if self.second_touch.is_some() => self.second_touch = Some((x, y)),
+            _ => {}
+        }
     }
 
     /// Translates `event` from a device with `capabilities` whose report so far is `report`,
@@ -1300,6 +1364,18 @@ impl InputState {
             }
             (event_type::ABS, absolute::MT_POSITION_Y) if report.touch_slot == PRIMARY_TOUCH => {
                 report.y = Some(event.value);
+                report.pending = true;
+            }
+            (event_type::ABS, absolute::MT_POSITION_X) if report.touch_slot == SECOND_TOUCH_SLOT => {
+                report.second_x = Some(event.value);
+                report.pending = true;
+            }
+            (event_type::ABS, absolute::MT_POSITION_Y) if report.touch_slot == SECOND_TOUCH_SLOT => {
+                report.second_y = Some(event.value);
+                report.pending = true;
+            }
+            (event_type::ABS, absolute::MT_TRACKING_ID) if report.touch_slot == SECOND_TOUCH_SLOT => {
+                report.second_down = Some(event.value >= 0);
                 report.pending = true;
             }
 
@@ -1386,6 +1462,8 @@ static CAPS_LOCK: AtomicBool = AtomicBool::new(false);
 /// The multi-touch slot whose finger moves the pointer and presses its left button: the first
 /// finger down, as a single-touch screen behaves (D296).
 const PRIMARY_TOUCH: i32 = 0;
+/// The multi-touch slot of the second finger, which the on-screen keyboard types with (D329).
+const SECOND_TOUCH_SLOT: i32 = 1;
 
 /// Whether a touch screen reported a touch since boot: what the shell's form looks at (M12).
 static TOUCH_SCREEN: AtomicBool = AtomicBool::new(false);

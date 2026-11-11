@@ -1278,7 +1278,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 if let Some((id, grab)) = self.slide {
                     return self.slide_to(id, x - grab);
                 }
-                if self.handles_moved(x, time_ms) {
+                if self.handles_moved(x, y, time_ms) {
                     return Response::Nothing;
                 }
                 if let Some(id) = self.selecting {
@@ -1717,6 +1717,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             Some(Kind::TextArea(_)) => {
                 self.area_pressed(id, x, y, time_ms);
                 self.selecting = Some(id);
+                if self.clicks == 1 && !self.shift_held {
+                    self.field_tapped(id, x, time_ms);
+                }
                 Response::Nothing
             }
             Some(Kind::Custom { .. }) if self.is_drag_source(id) => {

@@ -275,6 +275,8 @@ pub(super) struct OskState {
     keys: Vec<Key>,
     built_for: Option<(Rect, usize, Page, bool, FieldKind)>,
     pressed: Option<usize>,
+    /// The key the second finger is on, while it is down (D329).
+    second: Option<usize>,
     pressed_at_ms: u32,
     repeat_at_ms: Option<u32>,
     strip: Option<Strip>,
@@ -1012,6 +1014,66 @@ impl Desktop {
                 Action::None
             }
         }
+    }
+
+    /// The touch screen's second finger went down at (`x`, `y`), or lifted (D329): two-finger
+    /// typing. Going down on the panel commits the key the first finger holds, as its lift
+    /// would (so `Shift` held and a letter tapped types a capital), and holds the key under
+    /// the second finger; lifting types that key, as a character key types wherever on the
+    /// panel it is lifted and a function key only in its own zone. Elsewhere it does nothing.
+    pub fn second_touch(
+        &mut self,
+        x: u32,
+        y: u32,
+        down: bool,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
+        if !down {
+            let Some(index) = self.osk.second.take() else {
+                return Action::None;
+            };
+            let Some(key) = self.osk.keys.get(index).copied() else {
+                return Action::None;
+            };
+            damage.add(key.zone);
+            let typed = match key.cap.is_character() {
+                true => contains(self.osk.panel, x, y),
+                false => contains(key.zone, x, y),
+            };
+            if !typed {
+                return Action::None;
+            }
+            return match key.cap {
+                Cap::Hide => {
+                    self.hide_on_screen_keyboard(damage, events);
+                    Action::None
+                }
+                Cap::Layout => self.next_layout(damage),
+                cap => {
+                    self.act(cap, damage);
+                    Action::None
+                }
+            };
+        }
+        if !self.osk.shown || self.osk.strip.is_some() || !contains(self.osk.panel, x, y) {
+            return Action::None;
+        }
+        self.rebuild_keys();
+        if let Some(held) = self.osk.pressed.take() {
+            self.osk.repeat_at_ms = None;
+            let cap = self.osk.keys[held].cap;
+            damage.add(self.osk.keys[held].zone);
+            damage.add(self.preview_rect(held));
+            if !cap.repeats() && !matches!(cap, Cap::Hide | Cap::Layout) {
+                self.act(cap, damage);
+            }
+        }
+        if let Some(index) = self.key_at(x, y) {
+            self.osk.second = Some(index);
+            damage.add(self.osk.keys[index].zone);
+        }
+        Action::None
     }
 
     fn next_layout(&mut self, damage: &mut Damage) -> Action {

@@ -1,14 +1,16 @@
-//! A text field's touch handles (docs/ux/on-screen-keyboard-v0.5.md section 7, D317): in the
-//! touch form, a tap in a field shows a caret handle under the caret, which a drag moves; a
-//! long press on a word selects it and shows a handle at each end, each of which a drag moves.
-//! A typed key, or a tap elsewhere, hides them. Only a field's single line has them; a masked
-//! field shows the caret handle and selects no word.
+//! The touch handles of a text field or a text area (docs/ux/on-screen-keyboard-v0.5.md section
+//! 7, D317, D329): in the touch form, a tap in one shows a caret handle under the caret, which a
+//! drag moves; a long press on a word selects it and shows a handle at each end, each of which
+//! a drag moves, across a text area's lines too. A typed key, or a tap elsewhere, hides them. A
+//! masked field shows the caret handle and selects no word.
 
+use super::text_areas::word_around;
 use super::{Kind, WidgetId, WidgetTree};
 use crate::canvas::Canvas;
 use crate::geometry::Rect;
 use crate::text;
-use crate::widget::{self, FormFactor, LINE_HEIGHT};
+use crate::text_area;
+use crate::widget::{self, FormFactor, LINE_HEIGHT, TEXT_AREA_LINE_PITCH};
 
 /// How long a finger rests on a word before it is selected.
 const LONG_PRESS_MS: u32 = 500;
@@ -32,7 +34,8 @@ enum End {
 pub(super) struct Handles {
     field: WidgetId,
     selection: bool,
-    dragging: Option<(End, i32)>,
+    /// The end being dragged, and where the finger grabbed it from its point.
+    dragging: Option<(End, i32, i32)>,
     rest: Option<(i32, u32)>,
 }
 
@@ -42,6 +45,18 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     }
 
     fn handle_point(&self, field: WidgetId, end: End) -> Option<(i32, i32)> {
+        if let (Some(Kind::TextArea(area)), Some(rect)) = (self.kind(field), self.rect(field)) {
+            let store = self.stores.get(area.store)?;
+            let at = match end {
+                End::Caret => area.caret,
+                End::Anchor => area.anchor,
+            };
+            let inner = text_area::inner(rect);
+            let line = store.line_of(at);
+            let x = inner.x + store.x_of(line, at);
+            let bottom = inner.y + line as i32 * TEXT_AREA_LINE_PITCH - area.scroll + LINE_HEIGHT;
+            return Some((x, bottom));
+        }
         let (Some(Kind::TextField(edited)), Some(rect)) = (self.kind(field), self.rect(field)) else {
             return None;
         };
@@ -93,7 +108,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             );
             if target.contains(x, y) {
                 self.handles = Some(Handles {
-                    dragging: Some((end, x - handle_x)),
+                    dragging: Some((end, x - handle_x, y - bottom)),
                     ..handles
                 });
                 return true;
@@ -104,8 +119,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         false
     }
 
-    /// A tap that placed the caret in field `id`: the caret handle shows there, and a press
-    /// that rests becomes a word selection.
+    /// A tap that placed the caret in field or text area `id`: the caret handle shows there,
+    /// and a press that rests becomes a word selection.
     pub(super) fn field_tapped(&mut self, id: WidgetId, x: i32, time_ms: u32) {
         if !self.touch_form() {
             return;
@@ -120,9 +135,10 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.damage_handles();
     }
 
-    /// The finger moved: a grabbed handle follows it, by the offset it was grabbed at; a
-    /// resting press that moves is no long press. `true` when a handle took the move.
-    pub(super) fn handles_moved(&mut self, x: i32, time_ms: u32) -> bool {
+    /// The finger moved to (`x`, `y`): a grabbed handle follows it, by the offset it was
+    /// grabbed at, along a field's line or across a text area's lines; a resting press that
+    /// moves is no long press. `true` when a handle took the move.
+    pub(super) fn handles_moved(&mut self, x: i32, y: i32, time_ms: u32) -> bool {
         let Some(mut handles) = self.handles else {
             return false;
         };
@@ -132,9 +148,27 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             handles.rest = None;
             self.handles = Some(handles);
         }
-        let Some((end, grab)) = handles.dragging else {
+        let Some((end, grab_x, grab_y)) = handles.dragging else {
             return false;
         };
+        if let Some(Kind::TextArea(_)) = self.kind(handles.field) {
+            let line_y = y - grab_y - LINE_HEIGHT / 2;
+            let Some((_, at)) = self.area_point(handles.field, x - grab_x, line_y) else {
+                return false;
+            };
+            self.damage_handles();
+            self.edit_area(handles.field, time_ms, |area, _| {
+                match end {
+                    End::Caret => area.caret = at,
+                    End::Anchor => area.anchor = at,
+                }
+                area.wanted_x = None;
+                false
+            });
+            self.damage_handles();
+            return true;
+        }
+        let grab = grab_x;
         let (Some(Kind::TextField(field)), Some(rect)) = (self.kind(handles.field).copied(), self.rect(handles.field))
         else {
             return false;
@@ -161,8 +195,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
     }
 
-    /// The time moved on: a press resting [`LONG_PRESS_MS`] on a field selects the word under
-    /// it (not in a masked field) and shows both handles.
+    /// The time moved on: a press resting [`LONG_PRESS_MS`] on a field or a text area selects
+    /// the word under it (not in a masked field) and shows both handles.
     pub(super) fn handles_tick(&mut self, now_ms: u32) {
         let Some(handles) = self.handles else {
             return;
@@ -171,6 +205,21 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             return;
         };
         if now_ms.wrapping_sub(since) < LONG_PRESS_MS {
+            return;
+        }
+        if let Some(Kind::TextArea(_)) = self.kind(handles.field) {
+            self.damage_handles();
+            self.edit_area(handles.field, now_ms, |area, store| {
+                (area.anchor, area.caret) = word_around(store.text(), area.caret);
+                false
+            });
+            self.selecting = None;
+            self.handles = Some(Handles {
+                selection: true,
+                rest: None,
+                ..handles
+            });
+            self.damage_handles();
             return;
         }
         let Some(Kind::TextField(field)) = self.kind(handles.field).copied() else {

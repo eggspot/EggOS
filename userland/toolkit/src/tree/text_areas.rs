@@ -7,6 +7,32 @@ use crate::text::Text;
 use crate::text_area::{self, Store, TextArea};
 use crate::widget::TEXT_AREA_LINE_PITCH;
 
+/// The word of `text` around byte `at`, as a field's double click finds it, within the line
+/// and 255 bytes around `at`: its start and end.
+pub(super) fn word_around(text: &str, at: usize) -> (usize, usize) {
+    let mut field = crate::widget::Field {
+        text: Text::new(),
+        caret: 0,
+        anchor: 0,
+        scroll: 0,
+        placeholder: "",
+        escape: crate::widget::Escape::Clear,
+    };
+    let line_start = text[..at].rfind('\n').map_or(0, |index| index + 1);
+    let line_end = text[at..].find('\n').map_or(text.len(), |index| at + index);
+    let mut start = at.saturating_sub(127).max(line_start);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    let mut stop = (start + 255).min(line_end);
+    while !text.is_char_boundary(stop) {
+        stop -= 1;
+    }
+    field.text.set(&text[start..stop]);
+    let (word_start, word_end) = field.word_at(at.saturating_sub(start));
+    (start + word_start, start + word_end)
+}
+
 impl<const N: usize, const A: usize> WidgetTree<N, A> {
     /// Applies `edit` to text area `id` and its store; when it says the text changed, the
     /// lines are wrapped again from the edit's first byte, `from`. Then the caret is kept in
@@ -81,7 +107,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         area.scroll = first.clamp(0, most) * TEXT_AREA_LINE_PITCH;
     }
 
-    fn area_point(&self, id: WidgetId, x: i32, y: i32) -> Option<(usize, usize)> {
+    pub(super) fn area_point(&self, id: WidgetId, x: i32, y: i32) -> Option<(usize, usize)> {
         let rect = self.rect(id)?;
         let Some(Kind::TextArea(area)) = self.kind(id) else {
             return None;
@@ -102,30 +128,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.edit_area(id, now_ms, |area, store| {
             let text = store.text();
             match clicks {
-                2 => {
-                    let mut field = crate::widget::Field {
-                        text: Text::new(),
-                        caret: 0,
-                        anchor: 0,
-                        scroll: 0,
-                        placeholder: "",
-                        escape: crate::widget::Escape::Clear,
-                    };
-                    let line_start = text[..at].rfind('\n').map_or(0, |index| index + 1);
-                    let line_end = text[at..].find('\n').map_or(text.len(), |index| at + index);
-                    let mut start = at.saturating_sub(127).max(line_start);
-                    while !text.is_char_boundary(start) {
-                        start += 1;
-                    }
-                    let mut stop = (start + 255).min(line_end);
-                    while !text.is_char_boundary(stop) {
-                        stop -= 1;
-                    }
-                    field.text.set(&text[start..stop]);
-                    let (word_start, word_end) = field.word_at(at.saturating_sub(start));
-                    area.anchor = start + word_start;
-                    area.caret = start + word_end;
-                }
+                2 => (area.anchor, area.caret) = word_around(text, at),
                 3 => {
                     area.anchor = text[..at].rfind('\n').map_or(0, |index| index + 1);
                     area.caret = text[at..].find('\n').map_or(text.len(), |index| at + index);

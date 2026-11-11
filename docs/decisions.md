@@ -21383,3 +21383,28 @@ the license, by an explicit instruction recorded here.
     (`AT_PAGESZ`, `abi::REPORTED_PAGE_SIZE`), as SPARC64's Linux does, and programs that
     align their mappings to it never split a pair. The kernel itself still takes 4 KiB
     `mmap` and `mprotect` ranges there.
+
+## D329 The on-screen keyboard, slice 3: two-finger typing and the touch handles in text areas (docs/ux/on-screen-keyboard-v0.5.md; M12; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - **Two-finger typing.**
+    - **Input layer.** It follows multi-touch slot 1, the second finger: its positions and
+      its tracking id (down at an id, lifted at -1). It sends `InputEvent::SecondTouch { x,
+      y, down }` when that finger goes down or lifts, at the screen position scaled as the
+      first finger's.
+    - **Desktop** (`Desktop::second_touch`). The second finger going down on the panel
+      commits the key the first finger holds, as its lift would, and holds the key under the
+      second finger.
+      - So `Shift` held and a letter tapped types a capital, and fast typists' overlapping
+        taps are not lost.
+      - Lifting types the held key: a character key wherever on the panel, a function key
+        only in its own zone, as a lift by the first finger does.
+      - Elsewhere the second finger does nothing (gestures come later).
+    - The first finger's own release then finds nothing held and types nothing twice.
+  - **Handles in text areas** (`toolkit/src/tree/handles.rs`). A tap that places the caret
+    in a text area (one click, no Shift) shows the caret handle under it, on its line. A
+    press resting 500 ms selects the word under it, with the same word rule as a double
+    click (`text_areas::word_around`, now shared), and shows both handles. A drag moves an
+    end across lines too: handles now keep the grab's vertical offset as well.
+- **Not yet.** The second finger's key is not drawn pressed. The orientation of the screen
+  (`display.rotation`) is the next slice.
