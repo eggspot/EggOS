@@ -26,6 +26,8 @@ pub const ROOT: &str = "root";
 pub const STAGING_PREFIX: &str = ".staging-";
 /// The name prefix of a remove in progress.
 pub const REMOVING_PREFIX: &str = ".removing-";
+/// The prefix an updated component's old folder takes while the new one moves in (D293).
+pub const REPLACED_PREFIX: &str = ".replaced-";
 /// The disks a store may be attached as.
 pub const DISKS: [&str; 4] = ["/dev/vda", "/dev/vdb", "/dev/vdc", "/dev/vdd"];
 /// The host share, where a store may also be.
@@ -597,15 +599,46 @@ pub fn unlock<F: Files>(files: &mut F) {
     let _ = files.remove_file(LOCK.as_bytes());
 }
 
-/// Finishes what an interrupted install or remove left: removes every staging and removing
-/// folder.
+/// Finishes what an interrupted update left (D293) before anything is removed: a component
+/// whose folder is gone while its old copy waits under the replaced prefix gets the new copy
+/// when the staged one is complete (it holds its record), else the old one back.
+fn finish_swaps<F: Files>(files: &mut F) {
+    let mut name = [0u8; NAME_BYTES];
+    let mut at = 0;
+    while let Ok(Some(length)) = files.entry(COMPONENTS.as_bytes(), at, &mut name) {
+        at += 1;
+        let entry = String::from_utf8_lossy(&name[..length]).into_owned();
+        let Some(component) = entry.strip_prefix(REPLACED_PREFIX) else {
+            continue;
+        };
+        let folder = component_folder(component);
+        if files.status(folder.as_bytes()).is_ok() {
+            continue;
+        }
+        let staged = join(COMPONENTS, &[STAGING_PREFIX, component].concat());
+        let staged_record = join(&staged, RECORD);
+        let back = match files.status(staged_record.as_bytes()) {
+            Ok(_) => staged,
+            Err(_) => join(COMPONENTS, &entry),
+        };
+        if files.rename(back.as_bytes(), folder.as_bytes()).is_ok() {
+            files.sync();
+            at = 0;
+        }
+    }
+}
+
+/// Finishes what an interrupted install, update or remove left: finishes an update's swap,
+/// then removes every staging and removing folder.
 pub fn tidy<F: Files>(files: &mut F) {
+    finish_swaps(files);
     let mut name = [0u8; NAME_BYTES];
     let mut at = 0;
     while let Ok(Some(length)) = files.entry(COMPONENTS.as_bytes(), at, &mut name) {
         let entry = &name[..length];
         if entry.starts_with(STAGING_PREFIX.as_bytes())
             || entry.starts_with(REMOVING_PREFIX.as_bytes())
+            || entry.starts_with(REPLACED_PREFIX.as_bytes())
         {
             let path = join(COMPONENTS, &String::from_utf8_lossy(entry));
             if remove_tree(files, &path, 0).is_ok() {
@@ -789,6 +822,175 @@ fn copy_bytes<F: Files>(
         return Err(Failure::Damaged(String::new()));
     }
     files.sync_file(target).map_err(written_failure)
+}
+
+/// What updating an installed component to the store's copy changes (D293).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdatePlan<'a> {
+    /// The store's copy.
+    pub component: &'a Component,
+    /// Its files whose bytes differ from the installed ones, or that are new: the only ones read
+    /// from the store, so only they are downloaded.
+    pub changed: Vec<&'a index::File>,
+    /// How many files stay as they are, copied from the installed folder.
+    pub kept: usize,
+    /// The installed files the store's copy no longer has.
+    pub dropped: Vec<String>,
+}
+
+impl UpdatePlan<'_> {
+    /// The bytes read from the store.
+    pub fn changed_bytes(&self) -> u64 {
+        self.changed.iter().map(|file| file.length).sum()
+    }
+}
+
+/// The update of `installed` to `available`, the store's copy of the same component; `None`
+/// when they are the same.
+pub fn plan_update<'a>(installed: &Component, available: &'a Component) -> Option<UpdatePlan<'a>> {
+    let same_file = |file: &index::File| {
+        installed
+            .files
+            .iter()
+            .any(|old| old.path == file.path && old.sha256 == file.sha256 && old.mode == file.mode)
+    };
+    let changed: Vec<&index::File> = available.files.iter().filter(|file| !same_file(file)).collect();
+    let dropped: Vec<String> = installed
+        .files
+        .iter()
+        .filter(|old| !available.files.iter().any(|file| file.path == old.path))
+        .map(|old| old.path.clone())
+        .collect();
+    let described_alike = installed.title == available.title
+        && installed.summary == available.summary
+        && installed.on_remove == available.on_remove
+        && installed.needs == available.needs;
+    if changed.is_empty() && dropped.is_empty() && described_alike {
+        return None;
+    }
+    Some(UpdatePlan {
+        component: available,
+        kept: available.files.len() - changed.len(),
+        changed,
+        dropped,
+    })
+}
+
+/// Updates the installed component to `plan`'s copy (D293): a new folder is staged with the
+/// unchanged files copied from the installed one and the changed ones from `store`, every file
+/// checked against its digest, then swapped in: the old folder is renamed to the replaced
+/// prefix, the staged one into its place, and the old one removed. [`tidy`] finishes a swap a
+/// crash cut short. `progress` sees the bytes copied and the total, as in [`install`]. Nothing
+/// changes unless all of it is staged.
+pub fn update<F: Files>(
+    files: &mut F,
+    store: Option<&Store>,
+    plan: &UpdatePlan<'_>,
+    progress: &mut dyn FnMut(u64, u64) -> bool,
+) -> Result<(), Failure> {
+    prepare_folders(files)?;
+    tidy(files);
+    let component = plan.component;
+    let total = component.size_bytes();
+    if let Ok(space) = files.space(COMPONENTS.as_bytes())
+        && space.available < total
+    {
+        return Err(Failure::NoSpace {
+            needed: total,
+            free: space.available,
+        });
+    }
+    let name = component.name.as_str();
+    let staging = join(COMPONENTS, &[STAGING_PREFIX, name].concat());
+    files.make_directory(staging.as_bytes()).map_err(failure)?;
+    let staged = stage_update(files, store, plan, &staging, total, progress);
+    if staged.is_err() {
+        let _ = remove_tree(files, &staging, 0);
+        files.sync();
+        return staged;
+    }
+    let folder = component_folder(name);
+    let old = join(COMPONENTS, &[REPLACED_PREFIX, name].concat());
+    files.sync();
+    files.rename(folder.as_bytes(), old.as_bytes()).map_err(failure)?;
+    files.sync();
+    if let Err(errno) = files.rename(staging.as_bytes(), folder.as_bytes()) {
+        let _ = files.rename(old.as_bytes(), folder.as_bytes());
+        files.sync();
+        return Err(failure(errno));
+    }
+    files.sync();
+    let _ = remove_tree(files, &old, 0);
+    files.sync();
+    Ok(())
+}
+
+fn stage_update<F: Files>(
+    files: &mut F,
+    store: Option<&Store>,
+    plan: &UpdatePlan<'_>,
+    staging: &str,
+    total: u64,
+    progress: &mut dyn FnMut(u64, u64) -> bool,
+) -> Result<(), Failure> {
+    let component = plan.component;
+    let root = join(staging, ROOT);
+    files.make_directory(root.as_bytes()).map_err(failure)?;
+    let mut buffer = vec![0u8; COPY_CHUNK];
+    let mut done = 0u64;
+    let source = match plan.changed.is_empty() {
+        true => None,
+        false => {
+            let store = store.ok_or(Failure::Detached)?;
+            Some(files.open(store.path.as_bytes()).map_err(|_| Failure::Detached)?)
+        }
+    };
+    let mut result = Ok(());
+    for file in &component.files {
+        let changed = plan.changed.iter().any(|changed| core::ptr::eq(*changed, file));
+        result = match (changed, source) {
+            (true, Some(source)) => copy_file(files, source, file, &root, &mut buffer, &mut |piece| {
+                done += piece;
+                progress(done, total)
+            }),
+            (true, None) => Err(Failure::Detached),
+            (false, _) => {
+                let path = installed_path(&component.name, &file.path);
+                match files.open(path.as_bytes()) {
+                    Ok(local) => {
+                        let at_start = index::File {
+                            offset: 0,
+                            ..file.clone()
+                        };
+                        let copied = copy_file(files, local, &at_start, &root, &mut buffer, &mut |piece| {
+                            done += piece;
+                            progress(done, total)
+                        });
+                        files.close(local);
+                        copied
+                    }
+                    Err(errno) => Err(failure(errno)),
+                }
+            }
+        };
+        if result.is_err() {
+            break;
+        }
+    }
+    if let Some(source) = source {
+        files.close(source);
+    }
+    result.map_err(|failure| match failure {
+        Failure::Damaged(_) => Failure::Damaged([component.name.as_str(), ".component"].concat()),
+        other => other,
+    })?;
+    let mut record = String::new();
+    component.write_block(&mut record);
+    let path = join(staging, RECORD);
+    let handle = files.create(path.as_bytes(), 0o644).map_err(failure)?;
+    let written = files.write(handle, record.as_bytes()).and_then(|()| files.sync_file(handle));
+    files.close(handle);
+    written.map_err(written_failure)
 }
 
 /// Removes the installed component `name`: its folder is renamed away first, so it is no longer

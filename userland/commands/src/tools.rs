@@ -2336,6 +2336,32 @@ pub const COMPONENT_INSTALL: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
+/// `component_update` (D293): updates the installed components.
+pub const COMPONENT_UPDATE: ToolDefinition = ToolDefinition {
+    name: "component_update",
+    title: "Update the installed components",
+    description: "Brings every installed component, or the one named, to the component store's \
+                  copy, as `component update` does: only changed files are fetched, each \
+                  component is staged whole, checked against the store's SHA-256 and swapped in. \
+                  Returns {\"updated\": [names], \"fetched_bytes\": n}. Needs the install grant. \
+                  dry_run: true says what would change.",
+    command: &["component", "update"],
+    fixed: &["--json"],
+    arguments: &[
+        described(
+            optional("name", JsonType::String, Mapping::Operand),
+            "Only this installed component, by its name as component_list shows it.",
+        ),
+        DRY_RUN,
+    ],
+    max_effect: Effect::Change,
+    grant: Some(Grant::Install),
+    idempotent: true,
+    open_world: true,
+    confirm: Confirmation::Never,
+    result: ToolResult::Text,
+};
+
 /// `component_edition` (D258): installs an edition's components.
 pub const COMPONENT_EDITION: ToolDefinition = ToolDefinition {
     name: "component_edition",
@@ -2529,7 +2555,8 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
 /// D204's, D226's, D225's, D235's and D231's.
-pub const TOOLS: [ToolDefinition; 80] = [
+pub const TOOLS: [ToolDefinition; 81] = [
+    COMPONENT_UPDATE,
     APP_ACTIONS,
     APP_DO,
     APP_DO_CONFIRMED,

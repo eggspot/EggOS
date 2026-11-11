@@ -142,6 +142,8 @@ pub enum Kind {
     AppShow,
     /// `app_actions`: the actions installed apps offer (D292).
     AppActions,
+    /// `component_update`: updates the installed components (D293).
+    ComponentUpdate,
     /// `app_do`: runs an app's action (D292).
     AppDo,
     /// `app_do_confirmed`: runs one that deletes or overwrites (D292).
@@ -443,7 +445,12 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 77] = [
+pub const TOOLS: [Tool; 78] = [
+    tool(
+        &registry::COMPONENT_UPDATE,
+        Kind::ComponentUpdate,
+        twin("/bin/component", &["update", "--json"], Operand::Name),
+    ),
     tool(
         &registry::APP_ACTIONS,
         Kind::AppActions,

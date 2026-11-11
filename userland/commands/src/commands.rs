@@ -1932,6 +1932,45 @@ pub const COMPONENT_INSTALL: CommandDefinition = CommandDefinition {
     surface: COMPONENT_SURFACE,
 };
 
+/// `component update`'s object (D293).
+pub const COMPONENT_UPDATED_FIELDS: [Field; 2] = [
+    field("updated", FieldType::List),
+    field("fetched_bytes", FieldType::Integer),
+];
+
+/// `component update` (D293).
+pub const COMPONENT_UPDATE: CommandDefinition = CommandDefinition {
+    words: &["component", "update"],
+    summary: "Updates the installed components to the store's copies.",
+    description: "Brings every installed component, or the one named, to the copy the \
+                  component store for this EggOS has, fetching only the files whose bytes \
+                  changed (a range request each when the store comes from the release) and \
+                  copying the others from the installed folder. Each component is staged whole, \
+                  every file checked against its SHA-256, then swapped in, so a failure or a \
+                  power cut leaves the old copy or the new one, never a mix. Only root updates. \
+                  --dry-run says what would change and how much would be fetched.",
+    options: &[DRY_RUN_OPTION, JSON_OPTION],
+    operands: &[operand("name", ValueType::Text, Count::ZeroOrOne)],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Object(&COMPONENT_UPDATED_FIELDS),
+    },
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&NO_STORE, 1),
+        exits(&NO_SUCH_COMPONENT, 1),
+        exits(&COMPONENT_BUSY, 1),
+        exits(&STORE_DAMAGED, 1),
+        exits(&STORE_DETACHED, 1),
+        exits(&NO_SPACE, 1),
+        exits(&INSTALL_FAILED, 1),
+        exits(&PERMISSION_DENIED, 1),
+    ],
+    examples: &[],
+    surface: COMPONENT_SURFACE,
+};
+
 /// `component remove` (D235).
 pub const COMPONENT_REMOVE: CommandDefinition = CommandDefinition {
     words: &["component", "remove"],
@@ -4121,7 +4160,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 109] = [
+pub static COMMANDS: [CommandDefinition; 110] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -4144,6 +4183,7 @@ pub static COMMANDS: [CommandDefinition; 109] = [
     CLIP_SET,
     COMPONENT_EDITION,
     COMPONENT_INSTALL,
+    COMPONENT_UPDATE,
     COMPONENT_LIST,
     COMPONENT_REMOVE,
     CP,

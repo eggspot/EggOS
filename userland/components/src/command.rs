@@ -17,7 +17,8 @@ use eggos_mcp::json::JsonWriter;
 /// The command's usage.
 pub const USAGE: &str = "usage: component list [--json]\n       component install [--dry-run] \
                          [--json] <name>\n       component remove [--yes] [--dry-run] [--json] \
-                         <name>\n       component edition [--dry-run] [<name>]\n";
+                         <name>\n       component edition [--dry-run] [<name>]\n       \
+                         component update [--dry-run] [--json] [<name>]\n";
 /// The exit status of a command line written wrongly.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of a refusal or a failure.
@@ -68,6 +69,13 @@ pub enum Command<'a> {
     },
     /// `component edition`: the editions, or the components of `name` installed (D258).
     Edition { name: Option<&'a str>, dry_run: bool },
+    /// `component update`: the installed components, or `name`, brought to the store's copy,
+    /// only their changed files fetched (D293).
+    Update {
+        name: Option<&'a str>,
+        dry_run: bool,
+        json: bool,
+    },
     /// `component remove`.
     Remove {
         name: &'a str,
@@ -96,6 +104,7 @@ pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
     }
     match verb {
         "list" => Some(Command::List { json }),
+        "update" => Some(Command::Update { name, dry_run, json }),
         "edition" if !json => Some(Command::Edition { name, dry_run }),
         "install" => Some(Command::Install {
             name: name?,
@@ -133,6 +142,9 @@ pub fn run<F: Files, C: Console>(
     {
         store = partial_store(files, context.arch, name, download_range);
     }
+    if let (None, Command::Update { name, .. }, Some(download_range)) = (&store, command, context.download_range) {
+        store = update_store(files, context.arch, name, download_range);
+    }
     if store.is_none() && wants_store && let Some(download) = context.download {
         let path = manager::downloaded_store_path(manager::VERSION, context.arch);
         if download(&manager::store_url(manager::VERSION, context.arch), &path) {
@@ -153,6 +165,7 @@ pub fn run<F: Files, C: Console>(
     match command {
         Command::List { json } => list(files, &mut out, store.as_ref(), json),
         Command::Edition { name, dry_run } => edition(files, &mut out, store.as_ref(), context.pid, name, dry_run),
+        Command::Update { name, dry_run, json } => update(files, &mut out, store.as_ref(), context.pid, name, dry_run, json),
         Command::Install {
             name,
             dry_run,
@@ -268,6 +281,155 @@ fn partial_store<F: Files>(
     let path = manager::partial_store_path(manager::VERSION, arch, name);
     write_whole(files, &path, &image)?;
     manager::read_store(files, &path, manager::Source::Downloaded, arch).ok()
+}
+
+/// A store holding only what updating the installed components (or `only`) needs (D293): the
+/// release's index, then the changed files' bytes, each fetched with a range request and
+/// checked against its digest, packed with the index's records. `None` when the index cannot be
+/// fetched or a file does not match.
+fn update_store<F: Files>(
+    files: &mut F,
+    arch: &str,
+    only: Option<&str>,
+    download_range: fn(&str, &str, u64, u64) -> bool,
+) -> Option<Store> {
+    let url = manager::store_url(manager::VERSION, arch);
+    let head = manager::partial_piece_path(manager::VERSION, arch, "index");
+    let index_end = index::SECTOR + u64::from(index::MAX_INDEX_BYTES) - 1;
+    if !download_range(&url, &head, 0, index_end) {
+        return None;
+    }
+    let bytes = read_whole(files, &head)?;
+    let header = index::Header::parse(&bytes).ok()?;
+    let text = bytes.get(index::SECTOR as usize..)?.get(..header.index_bytes as usize)?;
+    let whole = index::parse_index(&header, text, u64::MAX).ok()?;
+    if whole.arch != arch {
+        return None;
+    }
+    let installed = manager::installed(files);
+    let mut packed = Vec::new();
+    for old in installed.iter().filter(|old| only.is_none_or(|name| name == old.name)) {
+        let Some(available) = whole.component(&old.name) else {
+            continue;
+        };
+        let Some(plan) = manager::plan_update(old, available) else {
+            continue;
+        };
+        let mut contents = Vec::new();
+        for (number, file) in available.files.iter().enumerate() {
+            let changed = plan.changed.iter().any(|changed| core::ptr::eq(*changed, file));
+            if !changed || file.length == 0 {
+                contents.push(Vec::new());
+                continue;
+            }
+            let piece = manager::partial_piece_path(manager::VERSION, arch, &format!("{}-update-{number}", available.name));
+            if !download_range(&url, &piece, file.offset, file.offset + file.length - 1) {
+                return None;
+            }
+            let bytes = read_whole(files, &piece)?;
+            if bytes.len() as u64 != file.length || index::sha256(&bytes) != file.sha256 {
+                return None;
+            }
+            contents.push(bytes);
+        }
+        packed.push(index::Packed {
+            component: available.clone(),
+            contents,
+        });
+    }
+    let image = index::store_image(&packed, &whole.version, arch);
+    let path = manager::partial_store_path(manager::VERSION, arch, "update");
+    write_whole(files, &path, &image)?;
+    manager::read_store(files, &path, manager::Source::Downloaded, arch).ok()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update<F: Files, C: Console>(
+    files: &mut F,
+    out: &mut Out<'_, C>,
+    store: Option<&Store>,
+    pid: u32,
+    only: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) -> i32 {
+    let installed = manager::installed(files);
+    if let Some(name) = only
+        && !installed.iter().any(|component| component.name == name)
+    {
+        return out.refuse(json, &Refusal::NoSuchComponent(name.into()));
+    }
+    let Some(store) = store else {
+        return out.refuse(json, &Refusal::NoStore);
+    };
+    let plans: Vec<manager::UpdatePlan<'_>> = installed
+        .iter()
+        .filter(|old| only.is_none_or(|name| name == old.name))
+        .filter_map(|old| manager::plan_update(old, store.index.component(&old.name)?))
+        .collect();
+    let fetched: u64 = plans.iter().map(manager::UpdatePlan::changed_bytes).sum();
+    let write_summary = |writer: &mut JsonWriter<'_>, key: &str| {
+        writer.begin_object();
+        writer.key(key);
+        writer.begin_array();
+        for plan in &plans {
+            writer.string(&plan.component.name);
+        }
+        writer.end_array();
+        writer.key("fetched_bytes");
+        writer.u64(fetched);
+        writer.end_object();
+    };
+    if plans.is_empty() {
+        match json {
+            true => out.json(|writer| write_summary(writer, "updated")),
+            false => out.say("Every installed component is up to date."),
+        }
+        return 0;
+    }
+    if dry_run {
+        match json {
+            true => out.json(|writer| write_summary(writer, "would_update")),
+            false => {
+                for plan in &plans {
+                    out.say(&format!(
+                        "would update {}: {} changed, {} kept, {} gone, {} to fetch",
+                        messages::titled(plan.component),
+                        plan.changed.len(),
+                        plan.kept,
+                        plan.dropped.len(),
+                        messages::size_text(plan.changed_bytes())
+                    ));
+                }
+            }
+        }
+        return 0;
+    }
+    if let Err(refusal) = manager::lock(files, "update", false, pid) {
+        return out.refuse(json, &refusal);
+    }
+    for plan in &plans {
+        if !json {
+            out.say(&format!("Updating {}...", messages::titled(plan.component)));
+        }
+        if let Err(failure) = manager::update(files, Some(store), plan, &mut |_, _| true) {
+            manager::unlock(files);
+            let line = messages::install_failure_line(&failure, plan.component);
+            let (_, _, error) = messages::install_failure(&failure, plan.component);
+            return out.fail(json, error, &line);
+        }
+    }
+    manager::unlock(files);
+    match json {
+        true => out.json(|writer| write_summary(writer, "updated")),
+        false => out.say(&format!(
+            "Updated {} component{}, {} fetched.",
+            plans.len(),
+            if plans.len() == 1 { "" } else { "s" },
+            messages::size_text(fetched)
+        )),
+    }
+    0
 }
 
 fn upstream_store<F: Files>(

@@ -20162,3 +20162,26 @@ the license, by an explicit instruction recorded here.
   interfaces (COM, AppleScript, App Intents), which D21 names; `notifications/tools/list_changed`
   when an app is installed or removed.
 
+## D293 Component updates: only changed files fetched, each component staged whole and swapped in (M14 part 64, D69; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `component update [--dry-run] [--json] [<name>]` and the MCP tool
+  `component_update` (install grant) bring the installed components to the copies in the
+  component store for this EggOS:
+  - **What changes** (`manager::plan_update`): a file whose path, mode and SHA-256 match the
+    installed record is kept; the others are changed; installed files the new copy lacks are
+    dropped; a component whose files and description are the same is up to date.
+  - **Delta download.** With no store on a disk, the command fetches the release store's index
+    with one range request, then each changed file's bytes with one range request each, checks
+    them against the index's digests and packs them into a small local store
+    (`update_store`). Unchanged files are never downloaded: they are copied from the installed
+    folder, each checked against its digest again.
+  - **Atomic swap.** Each component is staged whole in `.staging-<name>` (its record last); then
+    the installed folder is renamed to `.replaced-<name>`, the staged one into its place, and
+    the old one removed. `tidy`, which runs before every install, update and remove, finishes a
+    swap a crash cut short: the new copy when its record is there, else the old one back. A
+    separate prefix keeps an interrupted remove from ever being brought back.
+- **Not yet.** Building and running; updating in the background on a schedule with the
+  Components pane's update button and progress (a Claude Fable design) and the bar's notice;
+  binary deltas inside a file (whole changed files are fetched); verifying a release store's
+  signature beyond its digests (D257's limit).
+
