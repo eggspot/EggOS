@@ -16,6 +16,7 @@ mod alert;
 mod application;
 mod attributed_string;
 mod control;
+mod core_graphics;
 mod cursor;
 mod drawing;
 mod elements;
@@ -82,6 +83,7 @@ class_pairs! {
     NSGRIDROW, NSGRIDROW_META;
     NSGRIDCOLUMN, NSGRIDCOLUMN_META;
     NSGRIDCELL, NSGRIDCELL_META;
+    NSGRAPHICSCONTEXT, NSGRAPHICSCONTEXT_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -201,6 +203,7 @@ pub fn set_up() -> bool {
             && sound::define(runtime)
             && attributed_string::define(runtime)
             && grid_view::define(runtime)
+            && core_graphics::define(runtime)
     });
     defined && drawing::set_up()
 }
@@ -275,6 +278,10 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSGridColumn" => class(&NSGRIDCOLUMN_META),
         b"_OBJC_CLASS_$_NSGridCell" => class(&NSGRIDCELL),
         b"_OBJC_METACLASS_$_NSGridCell" => class(&NSGRIDCELL_META),
-        _ => application::resolve(name).or_else(|| drawing::resolve(name)),
+        b"_OBJC_CLASS_$_NSGraphicsContext" => class(&NSGRAPHICSCONTEXT),
+        b"_OBJC_METACLASS_$_NSGraphicsContext" => class(&NSGRAPHICSCONTEXT_META),
+        _ => application::resolve(name)
+            .or_else(|| drawing::resolve(name))
+            .or_else(|| core_graphics::resolve(name)),
     }
 }

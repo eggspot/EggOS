@@ -56,6 +56,7 @@ static BACKGROUND_COLOUR_NAME: AtomicUsize = AtomicUsize::new(0);
 /// Starts drawing into `buffer` for a view whose bounds' origin is `origin` in the window,
 /// clipped to `clip`; the colours start black, as each view's do on macOS.
 pub fn begin(buffer: server::Buffer, origin: Point, clip: Rect) {
+    super::core_graphics::reset();
     CONTEXT.with(|context| {
         *context = Context {
             buffer: Some(buffer),

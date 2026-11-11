@@ -851,7 +851,8 @@ yet" naming what it left.
     lists written as XML, code written, unbuilt, D381; `NSScreen` and `NSTrackingArea`, code
     written, unbuilt, D382; `NSSound` from WAV data, silent until EggOS has audio, code written,
     unbuilt, D383; `NSAttributedString`, code written, unbuilt, D384; `NSGridView`, code
-    written, unbuilt, D385);
+    written, unbuilt, D385; CoreGraphics drawing behind `NSGraphicsContext`, code written,
+    unbuilt, D386);
   - part 18, Files and the Text Editor grow up and one file picker `/bin/pick` (its design is
     done; the unbuilt picker is on the branch `wip/eggos-picker`);
   - part 19, drag and drop between windows;

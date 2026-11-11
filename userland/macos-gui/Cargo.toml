@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+eggos-math = { path = "../../math" }
 eggos-toolkit = { path = "../toolkit" }
 
 [lints]

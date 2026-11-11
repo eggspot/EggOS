@@ -22575,3 +22575,30 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Merged cells, padding, hidden rows and columns, inserting and moving rows and
   columns, `rowAlignment` by baselines, and views that change size after layout without the
   app calling `layout`.
+
+## D386 CoreGraphics drawing behind NSGraphicsContext (batch part 17, D180's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from CoreGraphics' documented C API)
+
+- **Decision.**
+  - **Paths** (`eggos-macos-gui`'s `path`, host-tested): moves, lines, cubic curves (16
+    segments), arcs (64 segments a turn, either direction), `AddArcToPoint`'s tangent arcs,
+    rectangles and ellipses (48 segments) are flattened to polygons under the context's
+    affine transform (translate, scale, rotate; sine and cosine from our `eggos-math`), filled
+    by scanlines at pixel centres with the non-zero or even-odd rule, and stroked as 1-pixel
+    lines or, wider, as filled quadrilaterals per segment, clipped to the view.
+  - **The context.** One `CGContext` (a token pointer), which `NSGraphicsContext`'s
+    `currentContext.CGContext` and `graphicsPort` answer; each view's `drawRect:` starts from
+    a fresh graphics state (identity transform in the view's coordinates, black fill and
+    stroke, width 1) and an empty path. `CGContextSaveGState` and `RestoreGState` keep up to
+    64 states; `NSGraphicsContext`'s `saveGraphicsState` and `restoreGraphicsState` use them.
+  - **Functions**: the state (`SetRGB`/`Gray`/`...WithColor` fill and stroke, `SetLineWidth`,
+    `TranslateCTM`, `ScaleCTM`, `RotateCTM`), the path (`BeginPath`, `MoveToPoint`,
+    `AddLineToPoint`, `AddCurveToPoint`, `AddArc`, `AddArcToPoint`, `ClosePath`, `AddRect`,
+    `AddEllipseInRect`) and painting (`FillPath`, `EOFillPath`, `StrokePath`, `DrawPath`,
+    `FillRect`, `StrokeRect`, `ClearRect` to the window background, `FillEllipseInRect`,
+    `StrokeEllipseInRect`). `CGColor` values are interned records (`CGColorCreateGenericRGB`,
+    `CreateSRGB`, `CreateGenericGray`, `GetAlpha`, `GetComponents`; retain and release keep
+    them) and `NSColor.CGColor` answers one.
+- **Not yet.** Clipping paths, dashes, caps and joins, anti-aliasing and alpha blending of
+  fills (a colour is opaque or invisible, as the layer's other drawing), images
+  (`CGContextDrawImage`), text through CoreText, gradients and shadows, and `CGPath`
+  objects.

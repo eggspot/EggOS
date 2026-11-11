@@ -22,6 +22,7 @@ pub mod image_view;
 pub mod keys;
 pub mod menu;
 pub mod paint;
+pub mod path;
 pub mod pasteboard;
 pub mod scroll_view;
 pub mod sound;
