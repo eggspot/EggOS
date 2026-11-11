@@ -11,6 +11,7 @@ mod autohotkey;
 mod bench;
 mod ci_artifact;
 mod cocoa_app;
+mod swift_app;
 mod components;
 mod dynamic_linking;
 mod elf;
@@ -181,6 +182,10 @@ commands:
                          SHA-256), and boot the release image: install it from its .zip,
                          open it, move its player and eat the food, read its element tree,
                          open its About panel, quit with Cmd+Q, and compare the frames
+  swift-app --arch <arch>
+                         download Minesweeper, a real Swift Mac app (test data, pinned
+                         SHA-256), and boot the release image: install it from its .zip,
+                         open it, open a cell, start a new game and quit with Cmd+Q
                          (aarch64 and x86_64)
   gtk-app --arch <arch>  download Mousepad, a real GTK 3 app, and its libraries and fonts
                          from Alpine (test data, pinned SHA-256s), pack them into
@@ -856,6 +861,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("cocoa-app") => {
             for arch in arch()? {
                 cocoa_app::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("swift-app") => {
+            for arch in arch()? {
+                swift_app::check(arch)?;
             }
             Ok(())
         }

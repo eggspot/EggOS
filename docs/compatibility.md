@@ -306,4 +306,7 @@ works.
   and CoreGraphics overlays, Swift subclasses of NSView and the CoreGraphics drawing it uses
   are carried to the next plan (batch part 17), with
   `cargo xtask swift-app` and CI's `swift-app` job, which will install it, open a cell, flag one
-  and start a new game. D180's "Not yet" lists what remains.
+  and start a new game. D180's "Not yet" lists what remains. Code written, unbuilt (D381 to
+  D389): `NSUserDefaults`, `NSScreen`, `NSTrackingArea`, `NSSound`, `NSAttributedString`,
+  `NSGridView`, CoreGraphics drawing, Swift subclasses laid out at run time, libdispatch's main
+  queue, and `cargo xtask swift-app` with a CI job outside `check`'s needs until the app runs.

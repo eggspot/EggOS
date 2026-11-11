@@ -22647,3 +22647,21 @@ the license, by an explicit instruction recorded here.
   `DispatchQueue` needs before the Dispatch overlay's entry points (whose argument lowering
   must first be read from a `swiftc` build), concurrent queues on threads, sources and I/O,
   `NSRunLoop` waking for delayed work.
+
+## D389 `cargo xtask swift-app`: Minesweeper 1.0.0 as the Swift app check (batch part 17, D180's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, the app chosen by D180's research)
+
+- **Decision.** `cargo xtask swift-app --arch <aarch64|x86_64>` downloads Minesweeper 1.0.0's
+  release archive (pinned URL and SHA-256 from docs/compatibility.md; test data, never
+  shipped or committed), builds the release kernel with the layers and boots it with the
+  archive in the host folder: `app install` and `app open` must report success, the app's
+  window must appear and be listed by `wm list`, a click on the middle of its board must
+  change the window (a cell opened), Cmd+N must change it again (a new game), and Cmd+Q must
+  leave none of its windows before the power-off. CI gains a `swift-app` job on both
+  architectures, **outside `check`'s needs** until the app runs, so it reports without
+  holding `main` red.
+- **Why these steps.** Flagging a cell and the exact pixels of the board need the app run once
+  to read its layout and its flagging gesture (right click or Ctrl+click), which code-only
+  mode cannot do; the frame comparisons and the flag step are added then, as CocoaGame's
+  check (D175) has them.
+- **Not yet.** Flagging a cell, frame comparisons against host renders, the About panel step,
+  and moving the job into `check`'s needs once it passes.

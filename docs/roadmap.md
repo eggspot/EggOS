@@ -854,7 +854,9 @@ yet" naming what it left.
     written, unbuilt, D385; CoreGraphics drawing behind `NSGraphicsContext`, code written,
     unbuilt, D386; Swift subclasses of AppKit's classes laid out at run time, code written,
     unbuilt, D387; libdispatch's main queue and the calls around it, code written, unbuilt,
-    D388);
+    D388; `cargo xtask swift-app` and its CI job, code written, unbuilt, D389; still to come: the
+    Swift Foundation, Dispatch and CoreGraphics overlays' entry points, read from a `swiftc`
+    build first);
   - part 18, Files and the Text Editor grow up and one file picker `/bin/pick` (its design is
     done; the unbuilt picker is on the branch `wip/eggos-picker`);
   - part 19, drag and drop between windows;
