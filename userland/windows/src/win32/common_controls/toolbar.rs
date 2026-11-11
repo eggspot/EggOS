@@ -13,8 +13,8 @@ use super::image_list::{LayerImages, image_size};
 use super::status_bar::dock;
 use super::style::CCS_BOTTOM;
 use super::{
-    Model, allocate, command_parent, default_procedure, invalidate, item_element, paint_with,
-    read_state, utf8, with_state,
+    Model, allocate, command_parent, default_procedure, invalidate, item_element, read_state,
+    utf8, with_state,
 };
 use crate::gui::message;
 use crate::gui::windows::{self, CommonKind, ControlKind, Window};
@@ -23,6 +23,7 @@ use eggos_element_tree::{
 };
 use eggos_windows_gui::controls::LIGHT;
 use eggos_windows_gui::controls::common::COMMON_LIGHT;
+use eggos_windows_gui::controls::list_view::RowDraw;
 use eggos_windows_gui::controls::toolbar::{
     self, Button, ButtonText, Layout, Toolbar, ToolbarLook, state as button_state,
 };
@@ -680,22 +681,196 @@ fn set_button_info(model: &mut Toolbar, id: usize, info: usize) -> usize {
     TRUE as usize
 }
 
+const NM_CUSTOMDRAW: i32 = -12;
+const CDDS_PREPAINT: u32 = 0x1;
+const CDDS_POSTPAINT: u32 = 0x2;
+const CDDS_ITEMPREPAINT: u32 = 0x1_0001;
+const CDDS_ITEMPOSTPAINT: u32 = 0x1_0002;
+const CDRF_SKIPDEFAULT: usize = 0x4;
+const CDRF_NOTIFYPOSTPAINT: usize = 0x10;
+const CDRF_NOTIFYITEMDRAW: usize = 0x20;
+const CLR_DEFAULT: u32 = 0xff00_0000;
+const MOST_CUSTOM_BUTTONS: usize = 64;
+
+/// `NMTBCUSTOMDRAW`: `NMCUSTOMDRAW`, then the toolbar's brushes, pens and colours.
+#[repr(C)]
+struct NmToolbarCustomDraw {
+    header: super::NotifyHeader,
+    stage: u32,
+    hdc: usize,
+    rect: [i32; 4],
+    item: usize,
+    item_state: u32,
+    item_lparam: usize,
+    mono_dither: usize,
+    lines_brush: usize,
+    lines_pen: usize,
+    text: u32,
+    mark: u32,
+    text_highlight: u32,
+    face: u32,
+    face_highlight: u32,
+    hot_track: u32,
+    text_rect: [i32; 4],
+    background_mode: i32,
+    highlight_background_mode: i32,
+    list_gap: i32,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ShownButton {
+    index: usize,
+    command: usize,
+    rect: [i32; 4],
+    data: usize,
+}
+
+/// What the parent asked, by custom draw, for the buttons this paint shows (D367).
+struct CustomButtons {
+    buttons: [ShownButton; MOST_CUSTOM_BUTTONS],
+    draws: [RowDraw; MOST_CUSTOM_BUTTONS],
+    after: [bool; MOST_CUSTOM_BUTTONS],
+    count: usize,
+    after_all: bool,
+}
+
+impl CustomButtons {
+    fn draw(&self, index: usize) -> RowDraw {
+        self.buttons[..self.count]
+            .iter()
+            .position(|button| button.index == index)
+            .map_or_else(RowDraw::default, |at| self.draws[at])
+    }
+}
+
+fn custom_draw(
+    window: usize,
+    stage: u32,
+    hdc: usize,
+    button: ShownButton,
+) -> (usize, Option<NmToolbarCustomDraw>) {
+    super::notify_parent_keeping(window, NM_CUSTOMDRAW, |header| NmToolbarCustomDraw {
+        header,
+        stage,
+        hdc,
+        rect: button.rect,
+        item: button.command,
+        item_state: 0,
+        item_lparam: button.data,
+        mono_dither: 0,
+        lines_brush: 0,
+        lines_pen: 0,
+        text: CLR_DEFAULT,
+        mark: CLR_DEFAULT,
+        text_highlight: CLR_DEFAULT,
+        face: CLR_DEFAULT,
+        face_highlight: CLR_DEFAULT,
+        hot_track: CLR_DEFAULT,
+        text_rect: button.rect,
+        background_mode: 0,
+        highlight_background_mode: 0,
+        list_gap: 0,
+    })
+}
+
+fn chosen_colour(colour_ref: u32) -> Option<u32> {
+    let swapped = (colour_ref & 0xff) << 16 | (colour_ref & 0xff00) | (colour_ref >> 16 & 0xff);
+    (colour_ref & CLR_DEFAULT == 0).then_some(swapped)
+}
+
+fn custom_buttons(window: usize, hdc: usize) -> CustomButtons {
+    let mut custom = CustomButtons {
+        buttons: [ShownButton::default(); MOST_CUSTOM_BUTTONS],
+        draws: [RowDraw::default(); MOST_CUSTOM_BUTTONS],
+        after: [false; MOST_CUSTOM_BUTTONS],
+        count: 0,
+        after_all: false,
+    };
+    let found = with_state::<Toolbar, _>(window, |entry, model| {
+        let client = entry.client();
+        let layout = layout_of(model, entry.style);
+        let mut count = 0;
+        for index in 0..model.count() {
+            let Some(button) = model.button(index).filter(|button| !button.is_separator()) else {
+                continue;
+            };
+            let Some(rect) = model.button_rect(index, entry.style, &layout) else {
+                continue;
+            };
+            if count < MOST_CUSTOM_BUTTONS {
+                custom.buttons[count] = ShownButton {
+                    index,
+                    command: button.command as usize,
+                    rect: [rect.left, rect.top, rect.right, rect.bottom],
+                    data: button.data,
+                };
+                count += 1;
+            }
+        }
+        (count, [client.left, client.top, client.right, client.bottom])
+    });
+    let Some((count, whole)) = found else {
+        return custom;
+    };
+    let everything = ShownButton {
+        rect: whole,
+        ..ShownButton::default()
+    };
+    let (answer, _) = custom_draw(window, CDDS_PREPAINT, hdc, everything);
+    custom.after_all = answer & CDRF_NOTIFYPOSTPAINT != 0;
+    if answer & CDRF_NOTIFYITEMDRAW == 0 {
+        return custom;
+    }
+    custom.count = count;
+    for at in 0..count {
+        let (answer, data) = custom_draw(window, CDDS_ITEMPREPAINT, hdc, custom.buttons[at]);
+        let Some(data) = data else {
+            continue;
+        };
+        custom.draws[at] = RowDraw {
+            text: chosen_colour(data.text),
+            background: chosen_colour(data.face),
+            skip: answer & CDRF_SKIPDEFAULT != 0,
+        };
+        custom.after[at] = answer & CDRF_NOTIFYPOSTPAINT != 0;
+    }
+    custom
+}
+
 fn paint(window: usize) {
     sync_tools(window);
-    paint_with::<Toolbar>(window, |surface, rect, entry, model, gui| {
-        let look = ToolbarLook {
-            style: entry.style,
-            enabled: windows::enabled_in_tree(&gui.windows, window),
+    let Ok((hdc, _, _)) = super::super::paint::begin(window) else {
+        return;
+    };
+    let custom = custom_buttons(window, hdc);
+    let _ = super::super::paint::draw_in(hdc, |surface, _, gui| {
+        let Some(surface) = surface else {
+            return;
         };
-        toolbar::paint(
-            surface,
-            rect,
-            model,
-            look,
-            (&LIGHT, &COMMON_LIGHT),
-            &LayerImages,
-        );
+        read_state::<Toolbar, ()>(gui, window, |entry, model| {
+            let look = ToolbarLook {
+                style: entry.style,
+                enabled: windows::enabled_in_tree(&gui.windows, window),
+            };
+            toolbar::paint_custom(
+                surface,
+                entry.client(),
+                model,
+                look,
+                (&LIGHT, &COMMON_LIGHT),
+                (&LayerImages, &|index| custom.draw(index)),
+            );
+        });
     });
+    for at in 0..custom.count {
+        if custom.after[at] {
+            custom_draw(window, CDDS_ITEMPOSTPAINT, hdc, custom.buttons[at]);
+        }
+    }
+    if custom.after_all {
+        custom_draw(window, CDDS_POSTPAINT, hdc, ShownButton::default());
+    }
+    super::super::paint::finish(hdc);
 }
 
 /// A toolbar's role in agents' tree.

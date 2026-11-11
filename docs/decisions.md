@@ -22165,3 +22165,14 @@ the license, by an explicit instruction recorded here.
   ninth argument is on the stack on ARM64, so the export copies the caller's stack words.
 - **Not yet.** Per-pixel alpha (`AC_SRC_ALPHA`): the source's alpha channel is not used,
   only the constant alpha; `UpdateLayeredWindowIndirect` and `prcDirty`.
+
+## D367 Windows common controls: custom draw for toolbars (`NM_CUSTOMDRAW`) (batch part 13's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, as D353 does for list views)
+
+- **Decision.** A toolbar's paint runs custom draw around its own drawing with
+  `NMTBCUSTOMDRAW`: `CDDS_PREPAINT`, then, with `CDRF_NOTIFYITEMDRAW`, `CDDS_ITEMPREPAINT`
+  for each shown button (up to 64) with its command id, rectangle and data; the parent's
+  `clrText` colours an enabled button's text, its `clrBtnFace` fills the button when the
+  toolbar would not, and `CDRF_SKIPDEFAULT` leaves the button to the program; the post-paint
+  stages follow (`toolbar::paint_custom`, sharing `list_view::RowDraw`).
+- **Not yet.** The item states in `uItemState` (checked, pressed, hot), `TBCDRF_*` flags,
+  and custom draw for headers and trackbars.

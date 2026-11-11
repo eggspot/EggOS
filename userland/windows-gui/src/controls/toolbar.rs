@@ -4,6 +4,7 @@
 //! `x = 2`, `y = 4`, one button height, uniform or autosized widths) and its painting.
 
 use super::common::{CommonPalette, Images, TextArena, plain_cells};
+use super::list_view::RowDraw;
 use super::{MAX_LABEL_CELLS, Palette, draw_fitted, outline};
 use crate::surface::{Rect, Surface};
 use crate::text::{CELL_HEIGHT, CELL_WIDTH, Cell};
@@ -594,13 +595,28 @@ fn draw_content(
 
 /// Paints `toolbar` over the whole of `rect` (a toolbar whose top-left is (0, 0)) with the
 /// images of `images`.
+/// Paints `toolbar` over `rect` with each button as the toolbar says.
 pub fn paint(
     surface: &mut Surface<'_>,
     rect: Rect,
     toolbar: &Toolbar,
     look: ToolbarLook,
-    (palette, common): (&Palette, &CommonPalette),
+    colours: (&Palette, &CommonPalette),
     images: &dyn Images,
+) {
+    let plain = |_: usize| RowDraw::default();
+    paint_custom(surface, rect, toolbar, look, colours, (images, &plain));
+}
+
+/// Paints `toolbar` over `rect`, each button as `buttons` says the program asked by custom draw
+/// (D367): its text colour, its fill, or nothing when it drew the button itself.
+pub fn paint_custom(
+    surface: &mut Surface<'_>,
+    rect: Rect,
+    toolbar: &Toolbar,
+    look: ToolbarLook,
+    (palette, common): (&Palette, &CommonPalette),
+    (images, buttons): (&dyn Images, &dyn Fn(usize) -> RowDraw),
 ) {
     let saved = surface.clip();
     surface.clip_to(rect);
@@ -634,8 +650,12 @@ pub fn paint(
             );
             continue;
         }
+        let draw = buttons(index);
+        if draw.skip {
+            continue;
+        }
         let (fill, border, greyed) = button_colours(toolbar, index, look.enabled, palette, common);
-        if let Some(fill) = fill {
+        if let Some(fill) = fill.or(draw.background) {
             surface.fill(button, fill);
         }
         if let Some(border) = border {
@@ -643,7 +663,7 @@ pub fn paint(
         }
         let colour = match greyed {
             true => palette.text_disabled,
-            false => palette.text,
+            false => draw.text.unwrap_or(palette.text),
         };
         draw_content(
             surface,
