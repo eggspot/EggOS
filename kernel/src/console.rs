@@ -153,6 +153,23 @@ pub fn write<P: Platform>(bytes: &[u8]) {
     } else {
         P::console_write(bytes);
     }
+    write_mirror(bytes);
+}
+
+/// Where the console's session is written besides the platform's console: a virtio console the
+/// host reads (D310).
+static MIRROR: LeafSpinLock<Option<fn(&[u8])>> = LeafSpinLock::new_leaf(None);
+
+/// Writes the console's session to `mirror` as well, from now on.
+pub fn mirror_output(mirror: fn(&[u8])) {
+    *MIRROR.lock() = Some(mirror);
+}
+
+fn write_mirror(bytes: &[u8]) {
+    let mirror = *MIRROR.lock();
+    if let Some(mirror) = mirror {
+        mirror(bytes);
+    }
 }
 
 /// Wakes every thread waiting on [`INPUT_KEY`], which looks again.

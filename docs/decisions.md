@@ -20554,3 +20554,19 @@ the license, by an explicit instruction recorded here.
   timing in the shell yet); the first-show notice, the pointer drawn while hidden in keys
   mode, and holding OK to drag are not built.
 - **Not yet.** Building and running.
+
+## D310 virtio-console input as the console: a virtio console whose port is not the agent channel is the machine's console, as `hvc0` is Linux's (M8; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** A virtio console whose port is not named `org.eggos.mcp` (one with no name
+  included, QEMU's plain `virtconsole`) is no longer refused: the first such device becomes the
+  host console.
+  - Everything `console::write` writes (programs' output and the input's echo) is written to
+    it too (`console::mirror_output`).
+  - A kernel thread passes what the host types into it to the console's input, through the line
+    discipline, as a keyboard's typing goes (`receive_from_keyboard`). The thread waits on the
+    device's interrupts where the machine routes them, else reads every 20 ms.
+
+  This gives machines without a UART the kernel reads (POWER's OPAL console without XIVE
+  events, D304) and hosts that prefer virtio a full console.
+- **Not yet.** Building and running; several host consoles; the kernel's own messages
+  (`PlatformConsole`) on it.

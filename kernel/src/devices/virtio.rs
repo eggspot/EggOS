@@ -866,7 +866,7 @@ mod disk {
 }
 
 #[cfg(any(test, feature = "virtio-console"))]
-pub use agent::CONSOLE_DRIVER;
+pub use agent::{CONSOLE_DRIVER, start_host_console};
 
 #[cfg(any(test, feature = "virtio-console"))]
 mod agent {
@@ -877,6 +877,69 @@ mod agent {
     type Console = VirtioConsole<AnyTransport, DmaRegion>;
 
     const ANSWER_TIMEOUT_MS: u64 = 1000;
+    /// How often a host console without interrupts is read.
+    const HOST_CONSOLE_POLL: core::time::Duration = core::time::Duration::from_millis(20);
+    const HOST_CONSOLE_CHUNK: usize = 64;
+
+    /// A virtio console whose port is not the agent channel: the machine's console, as `hvc0`
+    /// is Linux's (D310): the console's output is written to it as well, and what the host
+    /// types into it reaches the console's input.
+    static HOST_CONSOLE: LeafSpinLock<Option<Box<Console>>> = LeafSpinLock::new_leaf(None);
+    static HOST_CONSOLE_EVENTS: DeviceEvents = DeviceEvents::new();
+    static HOST_CONSOLE_INTERRUPTING: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+
+    fn host_console_write(bytes: &[u8]) {
+        let mut console = HOST_CONSOLE.lock();
+        let Some(console) = console.as_mut() else {
+            return;
+        };
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let staged = console.stage(rest);
+            if console.send_staged().is_err() || staged == 0 {
+                return;
+            }
+            rest = &rest[staged..];
+        }
+    }
+
+    /// Starts the thread that passes what the host types into the host console to the console's
+    /// input (D310); whether there is a host console.
+    pub fn start_host_console<P: eggos_hal::Platform>() -> bool {
+        if HOST_CONSOLE.lock().is_none() {
+            return false;
+        }
+        crate::console::mirror_output(host_console_write);
+        crate::thread::spawn::<P, _>(|| loop {
+            let seen = HOST_CONSOLE_EVENTS.raised();
+            let mut bytes = [0u8; HOST_CONSOLE_CHUNK];
+            let read = {
+                let mut console = HOST_CONSOLE.lock();
+                match console.as_mut() {
+                    Some(console) => {
+                        console.poll_control();
+                        match console.has_input() {
+                            true => console.receive(&mut bytes),
+                            false => 0,
+                        }
+                    }
+                    None => 0,
+                }
+            };
+            if read > 0 {
+                crate::console::receive_from_keyboard::<P>(&bytes[..read]);
+                continue;
+            }
+            match HOST_CONSOLE_INTERRUPTING.load(core::sync::atomic::Ordering::Relaxed) {
+                true => {
+                    HOST_CONSOLE_EVENTS.wait::<P>(seen, u64::MAX);
+                }
+                false => crate::thread::sleep::<P>(HOST_CONSOLE_POLL),
+            }
+        })
+        .is_ok()
+    }
 
     /// The virtio console device (virtio 1.2, 5.3) with multiple ports, whose port named
     /// [`agent_channel::PORT_NAME`] becomes the agent channel (D136), on interrupts where the
@@ -946,9 +1009,17 @@ mod agent {
                 }
             };
         if console.name() != agent_channel::PORT_NAME {
-            return Err(ProbeError::Refused(
-                "its port is not named org.eggos.mcp, the agent channel's name",
-            ));
+            if HOST_CONSOLE.lock().is_some() {
+                return Err(ProbeError::Refused("a host console is already in use"));
+            }
+            let interrupting =
+                connect_interrupt(probe, id, console.transport(), &HOST_CONSOLE_EVENTS).is_ok();
+            if interrupting {
+                console.enable_interrupts();
+            }
+            HOST_CONSOLE_INTERRUPTING.store(interrupting, core::sync::atomic::Ordering::Relaxed);
+            *HOST_CONSOLE.lock() = Some(Box::new(console));
+            return Ok(());
         }
         let interrupting = connect_interrupt(
             probe,
