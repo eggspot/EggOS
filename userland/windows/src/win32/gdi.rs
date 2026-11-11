@@ -657,7 +657,7 @@ fn transfer(
 }
 
 #[allow(clippy::too_many_arguments)]
-extern "efiapi" fn bit_blt(
+pub(super) extern "efiapi" fn bit_blt(
     destination: usize,
     x: i32,
     y: i32,

@@ -313,7 +313,7 @@ unsafe extern "efiapi" fn end_paint(_window: usize, paint: *const PaintStruct) -
     TRUE
 }
 
-extern "efiapi" fn get_dc(window: usize) -> usize {
+pub(super) extern "efiapi" fn get_dc(window: usize) -> usize {
     let made = try_with(|gui| {
         let clip = match window {
             0 => Rect::default(),
@@ -329,7 +329,7 @@ extern "efiapi" fn get_dc(window: usize) -> usize {
     }
 }
 
-extern "efiapi" fn release_dc(_window: usize, hdc: usize) -> i32 {
+pub(super) extern "efiapi" fn release_dc(_window: usize, hdc: usize) -> i32 {
     i32::from(finish(hdc))
 }
 

@@ -156,6 +156,87 @@ extern "efiapi" fn set_layered_window_attributes(
     TRUE
 }
 
+
+const ULW_COLORKEY: u32 = 0x1;
+const ULW_ALPHA: u32 = 0x2;
+const SRCCOPY: u32 = 0x00cc_0020;
+const SET_SIZE_ONLY: u32 = 0x0002 | 0x0004 | 0x0010;
+const SET_POSITION_ONLY: u32 = 0x0001 | 0x0004 | 0x0010;
+
+/// Win32's `POINT` and `SIZE`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Pair {
+    first: i32,
+    second: i32,
+}
+
+unsafe fn pair(address: *const Pair) -> Option<(i32, i32)> {
+    if address.is_null() {
+        return None;
+    }
+    // SAFETY: the callers pass the program's `POINT` or `SIZE`, here not null.
+    let pair = unsafe { address.read_unaligned() };
+    Some((pair.first, pair.second))
+}
+
+/// `UpdateLayeredWindow` (D366): a top-level `WS_EX_LAYERED` window moved to `destination`,
+/// sized to `size`, its client area copied from `source` at `source_point`, and blended by
+/// `BLENDFUNCTION`'s constant alpha (`ULW_ALPHA`) or the colour key (`ULW_COLORKEY`), as
+/// `SetLayeredWindowAttributes` sets them (D358).
+#[allow(clippy::too_many_arguments)]
+unsafe extern "efiapi" fn update_layered_window(
+    window: usize,
+    _destination_context: usize,
+    destination: *const Pair,
+    size: *const Pair,
+    source: usize,
+    source_point: *const Pair,
+    key: u32,
+    blend: *const u32,
+    flags: u32,
+) -> Bool {
+    if let Err(code) = try_with(|gui| gui.window(window).map(|_| ())) {
+        return fail(code, FALSE);
+    }
+    // SAFETY: the caller's `POINT`s and `SIZE`, each null or readable.
+    let (destination, size, source_point) =
+        unsafe { (pair(destination), pair(size), pair(source_point)) };
+    if let Some((x, y)) = destination {
+        super::placement::set_window_pos(window, 0, x, y, 0, 0, SET_POSITION_ONLY);
+    }
+    if let Some((width, height)) = size {
+        super::placement::set_window_pos(window, 0, 0, 0, width, height, SET_SIZE_ONLY);
+    }
+    if source != 0 {
+        let (width, height) = size.unwrap_or_else(|| {
+            let found = with(|gui| {
+                let entry = gui.windows.get(window)?;
+                Some((entry.width as i32, entry.height as i32))
+            });
+            found.flatten().unwrap_or((0, 0))
+        });
+        let (x, y) = source_point.unwrap_or((0, 0));
+        let hdc = super::paint::get_dc(window);
+        if hdc != 0 {
+            super::gdi::bit_blt(hdc, 0, 0, width, height, source, x, y, SRCCOPY);
+            super::paint::release_dc(window, hdc);
+        }
+    }
+    let alpha = match blend.is_null() {
+        true => u8::MAX,
+        // SAFETY: the caller's `BLENDFUNCTION`, four bytes; the constant alpha is the third.
+        false => (unsafe { blend.read_unaligned() } >> 16) as u8,
+    };
+    let mut layered = 0;
+    if flags & ULW_ALPHA != 0 {
+        layered |= LWA_ALPHA;
+    }
+    if flags & ULW_COLORKEY != 0 {
+        layered |= LWA_COLORKEY;
+    }
+    set_layered_window_attributes(window, key, alpha, layered)
+}
 /// `GetLayeredWindowAttributes`: what `SetLayeredWindowAttributes` set.
 unsafe extern "efiapi" fn get_layered_window_attributes(
     window: usize,
@@ -444,6 +525,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"SetWindowRgn" => set_window_rgn,
     b"SetLayeredWindowAttributes" => set_layered_window_attributes,
     b"GetLayeredWindowAttributes" => get_layered_window_attributes,
+    b"UpdateLayeredWindow" => update_layered_window [two_stack_arguments],
     b"RedrawWindow" => redraw_window,
     b"GetUpdateRect" => get_update_rect,
     b"ScrollWindow" => scroll_window,

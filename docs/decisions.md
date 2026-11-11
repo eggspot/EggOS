@@ -22154,3 +22154,14 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The binary property list format (macOS's default output; readers accept
   XML), the class hierarchy in `$classes` past the class itself, mutable strings as
   `NSMutableString` (they are written as plain strings), and errors for unencodable objects.
+
+## D366 Windows: `UpdateLayeredWindow` (batch part 13's rest, D358's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented behaviour)
+
+- **Decision.** `UpdateLayeredWindow` on a top-level `WS_EX_LAYERED` window moves it to
+  `pptDst`, sizes it to `psize`, copies `hdcSrc`'s pixels from `pptSrc` into its client area
+  (`BitBlt` with `SRCCOPY` through the window's device context, which commits them), and then
+  blends it as `SetLayeredWindowAttributes` does (D358): `ULW_ALPHA` with
+  `BLENDFUNCTION.SourceConstantAlpha`, `ULW_COLORKEY` with `crKey`, `ULW_OPAQUE` opaque. Its
+  ninth argument is on the stack on ARM64, so the export copies the caller's stack words.
+- **Not yet.** Per-pixel alpha (`AC_SRC_ALPHA`): the source's alpha channel is not used,
+  only the constant alpha; `UpdateLayeredWindowIndirect` and `prcDirty`.

@@ -212,7 +212,7 @@ pub(super) fn place(
 }
 
 #[allow(clippy::too_many_arguments)]
-extern "efiapi" fn set_window_pos(
+pub(super) extern "efiapi" fn set_window_pos(
     window: usize,
     _insert_after: usize,
     x: i32,
