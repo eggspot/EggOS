@@ -877,7 +877,8 @@ yet" naming what it left.
   - part 15's rest: the About panel in `NSApp.windows`, `mac-views.app` (D233; scroll views, code written, unbuilt, D372;
     tables, code written, unbuilt, D373; images, code written, unbuilt, D374; the About
     panel's icon and credits, code written, unbuilt, D375; raising instead of re-creating,
-    code written, unbuilt, D376; the alert's element tree, code written, unbuilt, D377);
+    code written, unbuilt, D376; the alert's element tree, code written, unbuilt, D377; scroll views and tables for
+    agents, code written, unbuilt, D378);
   - part 16's rest: C++ exceptions on macOS and UDCalc (D234);
   - part 6's screendump checks, part 7's indicator check and part 9's wheel and list-item
     checks in QEMU (D224, D225, D227);

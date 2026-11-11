@@ -110,6 +110,11 @@ pub fn bounds_origin(view: Id) -> Point {
     Point::new(f64::from(fields.offset.0), f64::from(y))
 }
 
+/// The clip view of scroll view `this`.
+pub fn clip_of_scroll_view(this: Id) -> Id {
+    scroll_view(this).clip
+}
+
 /// A clip view's offset from its document's top-left and its size, or `None` for a view that
 /// is not a clip view.
 pub fn clip_offset(view: Id) -> Option<((i32, i32), (i32, i32))> {

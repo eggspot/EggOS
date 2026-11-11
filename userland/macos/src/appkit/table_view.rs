@@ -969,6 +969,125 @@ extern "C" fn index_set_copy(this: Id, _: Sel, _: usize) -> Id {
     objc_retain(this)
 }
 
+/// A table as agents see it (D378): its selected row (-1 for none), its rows and whether it
+/// is disabled.
+pub fn summary(this: Id) -> (isize, usize, bool) {
+    (table(this).selected, row_count(this), table(this).disabled)
+}
+
+/// The rows shown now: first and one past the last.
+pub fn shown_rows(this: Id) -> (usize, usize) {
+    let ((_, offset), _) = clip_of(this);
+    geometry::shown_rows(row_count(this), body_height(this), offset)
+}
+
+/// The header cells shown, each the column and its rect in the table's own pixels (top-left
+/// origin), kept at the top of the visible part; none without a header.
+pub fn header_cells(this: Id, work: &mut dyn FnMut(usize, Id, Rect) -> bool) -> bool {
+    if !table(this).header {
+        return true;
+    }
+    let ((_, offset), _) = clip_of(this);
+    let (widths, which, count) = shown_widths(this);
+    let lefts: [i32; MOST_COLUMNS] = geometry::column_lefts(&widths[..count], 0);
+    for shown in 0..count {
+        let rect = Rect::new(lefts[shown], offset, widths[shown], TABLE_HEADER_HEIGHT);
+        if !work(shown, columns(this)[which[shown]], rect) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Row `row`'s rect in the table's own pixels.
+pub fn row_rect(this: Id, row: usize) -> Rect {
+    let width = round(view::fields(this).frame.width);
+    let top = geometry::body_top(table(this).header) + row as i32 * TABLE_ROW_HEIGHT;
+    Rect::new(0, top, width, TABLE_ROW_HEIGHT)
+}
+
+/// The table's own pixel rect's top-left in its window's content pixels.
+pub fn origin_pixel(this: Id) -> (i32, i32) {
+    let origin = view::origin_in_window(this);
+    let frame = view::fields(this).frame;
+    let window = view::fields(this).window;
+    let height = match window.is_null() {
+        true => 0,
+        false => window::fields(window).buffer.height as i32,
+    };
+    let rect = pixel_rect(Frame::new(origin.x, origin.y, frame.width, frame.height), height);
+    (rect.x, rect.y)
+}
+
+/// Runs `work` with row `row`'s first cell and every cell joined by tabs, into `joined`.
+pub fn with_row_text<R>(this: Id, row: usize, joined: &mut [u8], work: impl FnOnce(&str, &str) -> R) -> R {
+    let (_, which, count) = shown_widths(this);
+    let mut length = 0;
+    let mut first_end = 0;
+    for shown in 0..count {
+        if shown > 0 && length < joined.len() {
+            joined[length] = b'\t';
+            length += 1;
+        }
+        cell_text(this, columns(this)[which[shown]], row, |cell| {
+            let mut take = cell.len().min(joined.len() - length);
+            while !cell.is_char_boundary(take) {
+                take -= 1;
+            }
+            joined[length..length + take].copy_from_slice(&cell.as_bytes()[..take]);
+            length += take;
+        });
+        if shown == 0 {
+            first_end = length;
+        }
+    }
+    let all = core::str::from_utf8(&joined[..length]).unwrap_or("");
+    work(&all[..first_end.min(all.len())], all)
+}
+
+/// An agent's `select` on row `row`: chosen as a click chooses it, `action` sent; false when
+/// refused.
+pub fn agent_select(this: Id, row: usize, double: bool) -> bool {
+    if table(this).disabled || row >= row_count(this) {
+        return false;
+    }
+    table(this).clicked_row = row as isize;
+    table(this).clicked_column = NO_INDEX;
+    if !select(this, row as isize, true) {
+        return false;
+    }
+    send_action(this, double);
+    true
+}
+
+/// An agent's `set-text` on header cell `shown`: the column's width set as a drag sets it;
+/// false when it refuses resizing.
+pub fn agent_resize(this: Id, shown: usize, width: i32) -> bool {
+    let (_, which, count) = shown_widths(this);
+    if shown >= count {
+        return false;
+    }
+    let each = columns(this)[which[shown]];
+    let fields = column(each);
+    if fields.resizing & USER_RESIZING == 0 {
+        return false;
+    }
+    let width = geometry::resized(width, 0, round(fields.minimum), round(fields.maximum));
+    fields.width = f64::from(width);
+    fit_frame(this);
+    notify(
+        this,
+        "NSTableViewColumnDidResizeNotification",
+        sel!("tableViewColumnDidResize:"),
+    );
+    true
+}
+
+/// The title of column `object`.
+pub fn column_title(object: Id) -> Id {
+    column(object).title
+}
+
 pub fn define(runtime: &mut Runtime) -> bool {
     let table_methods = methods![
         "initWithFrame:" => init_with_frame,

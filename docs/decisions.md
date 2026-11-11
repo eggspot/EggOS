@@ -22415,3 +22415,26 @@ the license, by an explicit instruction recorded here.
   buttons is `NoSuchElement`. The parent windows still answer their trees and refuse actions
   (`Disabled`), as before. The toolkit's panel gains the accessors this needs (button count,
   titles, focus, default, line cells).
+
+## D378 What agents see of scroll views and tables (batch part 15's rest, D233's "Not yet"; M15, M14; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/macos-gui-v0.3.md section 17) and the code-only session (engineering)
+
+- **Decision.** The window's element walk (`elements.rs`) becomes one walk that both writes
+  the tree and finds an element by id, so the numbering of views and of the elements that
+  are not views always agrees.
+  - **Scroll view**: a `group` valued `<x>,<y>`, its offset in document pixels; the clip view
+    has no element; the document view and its subviews are its children, their bounds
+    clipped to the clip view, and one wholly outside gets its width and height 0 at the clip
+    view's top or bottom edge (the Windows layer's rule). `set-text "<x>,<y>"` scrolls there,
+    clamped; other text is `NotSupported`.
+  - **Table**: a `table` valued `row <n> of <rows>`, `no row of <rows>` or `0 rows`,
+    `focusable`, `focused`, `disabled`; `set-text "<n>"` selects row n (from 1) as a click
+    does, scrolled into view, its action sent and the delegate told (`Done` with no change
+    out of range); `focus` makes it the first responder. Its children are the header cells
+    (`columnheader`, named by the title; `set-text "<width>"` resizes as a drag, clamped,
+    `NotSupported` when the column refuses resizing) and then the **shown** rows only (`row`,
+    named by the first cell, valued every cell joined by tabs, `selected`; `select` as a
+    click, `invoke` as a double click).
+  - Checkboxes, radios and toggle buttons were already described and acted on (D233); image
+    views as D374 says.
+- **Not yet.** `accessibilityLabel` as a name, rows beyond the tree's size, the element tree
+  checks of `mac-views.app` (section 18).
