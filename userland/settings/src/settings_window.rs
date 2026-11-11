@@ -51,7 +51,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 202
+pub const CAPACITY: usize = 204
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
@@ -228,6 +228,13 @@ const PANE_WORDS: [&[&str]; 12] = [
     ],
     &[
         "Resolution",
+        "screen size",
+        "mode",
+        "1080p",
+        "1440p",
+        "4K",
+        "Full HD",
+        "Automatic",
         "Scale",
         "HiDPI",
         "Pointer",
@@ -512,6 +519,9 @@ pub enum Request {
     /// Save this scale, 1 or 2, as `display.scale` for the next boot, then say how it went
     /// ([`SettingsWindow::display_scale_saved`]) (D195).
     SetDisplayScale(u32),
+    /// Save this size, `None` for the display's own, as `display.resolution` for the next boot,
+    /// then say how it went ([`SettingsWindow::display_resolution_saved`]) (D287).
+    SetDisplayResolution(Option<(u32, u32)>),
     /// Save this mouse or key preference, then apply it, then say how both went
     /// ([`SettingsWindow::input_changed`]) (D195).
     ChangeInput(InputChange),
@@ -1242,6 +1252,14 @@ impl SettingsWindow {
         }
         self.accessibility
             .changed(&mut self.tree, Shown::of(&self.facts), saved, applied);
+    }
+
+    /// How saving the display's size went ([`Request::SetDisplayResolution`]).
+    pub fn display_resolution_saved(&mut self, size: Option<(u32, u32)>, saved: Result<(), Errno>) {
+        if saved.is_ok() {
+            self.facts.resolution_choice = size;
+        }
+        self.display.resolution_saved(&mut self.tree, &self.facts, saved);
     }
 
     /// How saving the display's scale went ([`Request::SetDisplayScale`]).

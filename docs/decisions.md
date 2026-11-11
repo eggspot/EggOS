@@ -20028,3 +20028,21 @@ the license, by an explicit instruction recorded here.
   host window's resize while the desktop runs; Intel modesetting to other modes (needs the
   display engine's PLLs and link training).
 
+## D288 The Display pane's resolution control (D287's GUI; design by Claude Fable, docs/ux/display-resolution-v0.4.md; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (the design by Claude Fable)
+
+- **Decision.** As the design's sections 1 to 4: the `Resolution` row gains the toolkit's
+  dropdown (`Automatic`, then the sizes smallest first, written `1920 × 1080`) at the row's right,
+  the size in force moves before it, and a resolution line sits under the row; `Scale`, its line
+  and `Pointer` move down 40 px. Choosing writes `display.resolution` at once
+  (`Request::SetDisplayResolution`, the same write as `settings set`), with no Apply button. At
+  saved scale 2x the sizes that do not fit the desktop's 640x400 minimum at half size are left out
+  of the list (a second static option list, swapped into the dropdown); at 1x with such a size
+  chosen the `Scale` group is disabled with the design's sentence. On a display that cannot change
+  size the dropdown is hidden and the line says so; without a disk it is disabled. Search finds
+  the pane by `screen size`, `mode`, `1080p`, `1440p`, `4K`, `Full HD` and `Automatic`. Settings'
+  widget capacity grows by 2, and the app dialog's with it (317).
+- **Deviations, for the next GUI pass.** The desktop minimum is a constant in the pane, not a
+  fact from the kernel (ask 3); `Automatic`'s pending line (the display's own size, ask 2) is not
+  shown, since the kernel does not report the preferred size yet; the phone, tablet and TV layouts
+  and the dropdown's digit keys (`2` to `2560 × 1440`) follow the toolkit's defaults.
+

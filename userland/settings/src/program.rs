@@ -1224,6 +1224,10 @@ impl Application<CAPACITY> for Settings {
                 self.window
                     .display_scale_saved(scale, save_display_scale(scale));
             }
+            Some(Request::SetDisplayResolution(size)) => {
+                self.window
+                    .display_resolution_saved(size, save_display_resolution(size));
+            }
             Some(Request::ChangeKeys(change)) => {
                 let (key, value) = change.saved();
                 let saved = save_through_a_temporary_file(key, value.as_str());

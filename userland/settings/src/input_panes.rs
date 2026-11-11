@@ -23,6 +23,41 @@ const HANDS: [&str; 2] = ["Right-handed", "Left-handed"];
 const SCROLLING: [&str; 2] = ["Traditional", "Natural"];
 
 const SCALE_HINT: &str = "Takes effect at the next restart";
+const RESOLUTION_WIDTH: i32 = 160;
+const AUTOMATIC: &str = "Automatic";
+/// The smallest screen the desktop is laid out for, which a size at 2x must not go under.
+pub const DESKTOP_MINIMUM: (u32, u32) = (640, 400);
+const RESOLUTION_OPTIONS: [&str; 13] = [
+    AUTOMATIC,
+    "1024 \u{d7} 768",
+    "1280 \u{d7} 720",
+    "1280 \u{d7} 800",
+    "1366 \u{d7} 768",
+    "1440 \u{d7} 900",
+    "1600 \u{d7} 900",
+    "1680 \u{d7} 1050",
+    "1920 \u{d7} 1080",
+    "1920 \u{d7} 1200",
+    "2560 \u{d7} 1440",
+    "2560 \u{d7} 1600",
+    "3840 \u{d7} 2160",
+];
+const RESOLUTION_OPTIONS_AT_2X: [&str; 10] = [
+    AUTOMATIC,
+    "1280 \u{d7} 800",
+    "1440 \u{d7} 900",
+    "1600 \u{d7} 900",
+    "1680 \u{d7} 1050",
+    "1920 \u{d7} 1080",
+    "1920 \u{d7} 1200",
+    "2560 \u{d7} 1440",
+    "2560 \u{d7} 1600",
+    "3840 \u{d7} 2160",
+];
+const FIXED_SIZE: &str = "This display's size is set by the computer and cannot be changed.";
+const NO_DISK_FOR_RESOLUTION: &str = "No disk attached: the resolution cannot be saved for a restart.";
+const RESTING: &str = "Automatic uses the display's own size.";
+const SMALL_SIZES_LEFT_OUT: &str = "Scale 2x leaves out the smallest sizes. Choose 1x to use them.";
 const NO_DISK_FOR_SCALE: &str = "No disk attached: the scale cannot be saved for a restart.";
 const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
 const NOT_TAKEN: &str = "Saved for the next boot, but the window server did not take it.";
@@ -143,6 +178,55 @@ fn halvable(resolution: (u32, u32)) -> bool {
     resolution.0.is_multiple_of(2) && resolution.1.is_multiple_of(2)
 }
 
+/// Whether size `size` is offered at scale `scale` (docs/ux/display-resolution-v0.4.md): whole
+/// when divided by it and not under [`DESKTOP_MINIMUM`].
+pub fn offered(size: (u32, u32), scale: u32) -> bool {
+    let scale = scale.max(1);
+    size.0.is_multiple_of(scale)
+        && size.1.is_multiple_of(scale)
+        && size.0 / scale >= DESKTOP_MINIMUM.0
+        && size.1 / scale >= DESKTOP_MINIMUM.1
+}
+
+fn sizes_offered(scale: u32) -> impl Iterator<Item = (u32, u32)> {
+    eggos_settings_file::RESOLUTIONS.into_iter().filter(move |size| offered(*size, scale))
+}
+
+fn options_for(scale: u32) -> &'static [&'static str] {
+    match scale {
+        2 => &RESOLUTION_OPTIONS_AT_2X,
+        _ => &RESOLUTION_OPTIONS,
+    }
+}
+
+fn size_at_next_restart(facts: &Facts) -> (u32, u32) {
+    facts.resolution_choice.unwrap_or(facts.resolution)
+}
+
+/// The resolution line for `facts` (the design's section 3), and whether the user caused it.
+pub fn resolution_line(facts: &Facts) -> (Text<96>, bool) {
+    let mut text = Text::new();
+    if !facts.resolution_changeable {
+        let _ = text.write_str(FIXED_SIZE);
+        return (text, false);
+    }
+    if !facts.on_disk {
+        let _ = text.write_str(NO_DISK_FOR_RESOLUTION);
+        return (text, false);
+    }
+    if let Some(size) = facts.resolution_choice
+        && size != facts.resolution
+    {
+        let _ = text.write_str("From the next restart the display is ");
+        size_text(&mut text, size);
+        let _ = text.write_str(".");
+        return (text, true);
+    }
+    let left_out = facts.scale == 2 && sizes_offered(2).count() < eggos_settings_file::RESOLUTIONS.len();
+    let _ = text.write_str(if left_out { SMALL_SIZES_LEFT_OUT } else { RESTING });
+    (text, false)
+}
+
 fn size_text(text: &mut Text<96>, (width, height): (u32, u32)) {
     let _ = write!(text, "{width} \u{d7} {height}");
 }
@@ -151,8 +235,16 @@ fn size_text(text: &mut Text<96>, (width, height): (u32, u32)) {
 /// user caused (drawn in `text` rather than `text.dim`).
 pub fn scale_line(facts: &Facts) -> (Text<96>, bool) {
     let device = facts.resolution;
+    let next = size_at_next_restart(facts);
     let half = (device.0 / 2, device.1 / 2);
+    let next_half = (next.0 / 2, next.1 / 2);
     let mut text = Text::new();
+    if facts.scale != 2 && !offered(next, 2) && halvable(device) && facts.on_disk {
+        let _ = text.write_str("2x is not available at ");
+        size_text(&mut text, next);
+        let _ = text.write_str(": choose a larger size first.");
+        return (text, false);
+    }
     if !halvable(device) {
         let _ = text.write_str("2x is not available: ");
         size_text(&mut text, device);
@@ -174,27 +266,29 @@ pub fn scale_line(facts: &Facts) -> (Text<96>, bool) {
         }
         (2, _) => {
             let _ = text.write_str("From the next restart the desktop looks like ");
-            size_text(&mut text, half);
+            size_text(&mut text, next_half);
             let _ = text.write_str(".");
         }
         (_, 2) => {
             let _ = text.write_str("From the next restart the desktop looks like ");
-            size_text(&mut text, device);
+            size_text(&mut text, next);
             let _ = text.write_str(".");
         }
         _ => {
             let _ = text.write_str("At 2x the desktop looks like ");
-            size_text(&mut text, half);
+            size_text(&mut text, next_half);
             let _ = text.write_str(".");
         }
     }
-    (text, caused)
+    (text, caused || next != device)
 }
 
 /// The Display pane's widgets.
 #[derive(Debug)]
 pub struct DisplayPane {
     resolution: WidgetId,
+    choice: WidgetId,
+    resolution_status: WidgetId,
     scales: WidgetId,
     status: WidgetId,
 }
@@ -209,26 +303,35 @@ impl DisplayPane {
             Place::right(PADDING, 76),
             Kind::label("", Token::Text),
         );
-        label(tree, pane, PADDING, 116, "Scale");
+        let choice = add(
+            tree,
+            pane,
+            from_right(PADDING, 70, RESOLUTION_WIDTH, CONTROL_HEIGHT),
+            Kind::dropdown("Resolution", &RESOLUTION_OPTIONS, 0),
+        );
+        let resolution_status = label(tree, pane, PADDING, 116, "");
+        label(tree, pane, PADDING, 156, "Scale");
         let radios = Kind::radios(&SCALES, 0, true);
         let radios_width = radios.content_size().0;
-        let scales = add(tree, pane, Place::right(PADDING, 110), radios);
+        let scales = add(tree, pane, Place::right(PADDING, 150), radios);
         add(
             tree,
             pane,
-            Place::right(PADDING + radios_width + PADDING, 116),
+            Place::right(PADDING + radios_width + PADDING, 156),
             Kind::label(SCALE_HINT, Token::TextDim),
         );
-        let status = label(tree, pane, PADDING, 156, "");
-        label(tree, pane, PADDING, 196, "Pointer");
+        let status = label(tree, pane, PADDING, 196, "");
+        label(tree, pane, PADDING, 236, "Pointer");
         add(
             tree,
             pane,
-            Place::right(PADDING, 196),
+            Place::right(PADDING, 236),
             Kind::label("Software", Token::Text),
         );
         let display = Self {
             resolution,
+            choice,
+            resolution_status,
             scales,
             status,
         };
@@ -241,7 +344,9 @@ impl DisplayPane {
         let mut size = Text::<96>::new();
         size_text(&mut size, facts.resolution);
         tree.set_text(self.resolution, size.as_str());
-        let choosable = facts.on_disk && halvable(facts.resolution);
+        self.show_resolution(tree, facts);
+        let next = size_at_next_restart(facts);
+        let choosable = facts.on_disk && halvable(facts.resolution) && (facts.scale == 2 || offered(next, 2));
         let shown = match choosable {
             true => facts.scale,
             false => facts.scale_in_force,
@@ -254,6 +359,47 @@ impl DisplayPane {
             false => Token::TextDim,
         };
         show_status(tree, self.status, Some((line.as_str(), ink)));
+    }
+
+    fn show_resolution(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts) {
+        let changeable = facts.resolution_changeable;
+        tree.set_shown(self.choice, changeable);
+        let size_right = match changeable {
+            true => PADDING + RESOLUTION_WIDTH + PADDING,
+            false => PADDING,
+        };
+        tree.set_place(self.resolution, Place::right(size_right, 76));
+        let scale = facts.scale.max(1);
+        let options = options_for(scale);
+        tree.change(self.choice, |kind| {
+            if let Kind::Dropdown(dropdown) = kind {
+                dropdown.options = options;
+            }
+        });
+        let selected = match facts.resolution_choice {
+            Some(size) if offered(size, scale) => sizes_offered(scale).position(|offered| offered == size).map_or(0, |index| index + 1),
+            _ => 0,
+        };
+        tree.set_selected(self.choice, selected);
+        tree.set_enabled(self.choice, facts.on_disk);
+        let (line, caused) = resolution_line(facts);
+        let ink = match caused {
+            true => Token::Text,
+            false => Token::TextDim,
+        };
+        show_status(tree, self.resolution_status, Some((line.as_str(), ink)));
+    }
+
+    /// How saving the size went: `facts` hold the saved size when it worked.
+    pub fn resolution_saved(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts, saved: Result<(), Errno>) {
+        self.show(tree, facts);
+        let refusal = match saved {
+            Ok(()) => return,
+            Err(Errno::EPERM | Errno::EACCES) => "Not allowed: this user may not set the resolution.",
+            Err(Errno::EINVAL) => "This size cannot be used with the scale chosen below.",
+            Err(_) => "No disk attached: the resolution could not be saved.",
+        };
+        show_status(tree, self.resolution_status, Some((refusal, Token::Text)));
     }
 
     /// How saving the scale went: `facts` hold the saved scale when it worked.
@@ -283,6 +429,13 @@ impl DisplayPane {
             Response::Chosen(id, choice) if id == self.scales => {
                 let scale = if choice == 1 { 2 } else { 1 };
                 Reply::Done((scale != facts.scale).then_some(Request::SetDisplayScale(scale)))
+            }
+            Response::Chosen(id, choice) if id == self.choice => {
+                let size = match choice {
+                    0 => None,
+                    index => sizes_offered(facts.scale.max(1)).nth(index - 1),
+                };
+                Reply::Done((size != facts.resolution_choice).then_some(Request::SetDisplayResolution(size)))
             }
             _ => Reply::NotMine,
         }
