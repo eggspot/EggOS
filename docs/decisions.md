@@ -22133,3 +22133,24 @@ the license, by an explicit instruction recorded here.
   one.
 - **Not yet.** `NIN_BALLOONTIMEOUT` and `NIN_BALLOONHIDE`, the phone shade keeping balloons
   among its notices, and the icon kinds of `dwInfoFlags` (one notice look, as designed).
+
+## D365 macOS Foundation: NSKeyedArchiver, keyed archives written as XML property lists (batch part 14's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the keyed archive format D360 reads)
+
+- **Decision.** `NSKeyedArchiver` (a subclass of NSCoder, `keyed_archiver.rs`) writes the
+  layout `NSKeyedUnarchiver` reads: `$archiver` `NSKeyedArchiver`, `$version` 100000, `$top`
+  with `root`'s UID, and `$objects` with `$null` first. Each object is written once, found by
+  identity, and referred to by its UID: strings, integers, reals, booleans and data plainly;
+  arrays and sets (`NS.objects`), dictionaries (`NS.keys`, `NS.objects`), dates (`NS.time`)
+  and NSNull as dictionaries naming their class (the mutable classes by their mutable
+  names); any other object by the keys its `encodeWithCoder:` writes through
+  `encodeObject:forKey:`, `encodeConditionalObject:forKey:`, `encodeInteger`, `Int64`, `Int`,
+  `Int32`, `Bool`, `Double` and `Float:forKey:`. Each class is written once,
+  `{$classname, $classes: [name, NSObject]}`. Reals are written with 17 significant digits,
+  so they read back exactly (`number::exact_decimal`), and data in Base64.
+- **API.** `+archivedDataWithRootObject:`,
+  `+archivedDataWithRootObject:requiringSecureCoding:error:`, `+archiveRootObject:toFile:`;
+  `-init`, `-initRequiringSecureCoding:`, `encodeObject:forKey:` of `root` for the archive's
+  root, `-encodedData`, `-finishEncoding`, `-setOutputFormat:` (accepted; always XML).
+- **Not yet.** The binary property list format (macOS's default output; readers accept
+  XML), the class hierarchy in `$classes` past the class itself, mutable strings as
+  `NSMutableString` (they are written as plain strings), and errors for unencodable objects.

@@ -871,7 +871,7 @@ yet" naming what it left.
     colour key, code written, unbuilt, D358; tree views' custom draw and label editing, code
     written, unbuilt, D361; list views' info tips, code written, unbuilt, D362; tree views' info tips, code
     written, unbuilt, D363; tray balloons as notices, code written, unbuilt, D364);
-  - part 14's rest: storyboards, `NSKeyedArchiver` (D232; NSDictionary's hash index, code
+  - part 14's rest: storyboards (D232; `NSKeyedArchiver`, code written, unbuilt, D365; NSDictionary's hash index, code
     written, unbuilt, D359; `NSKeyedUnarchiver`, code written, unbuilt, D360);
   - part 15's rest: scroll views, tables, images, the About panel's icon and credits, the
     alert's element tree, `mac-views.app` (D233);

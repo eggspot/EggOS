@@ -28,7 +28,7 @@ struct DateObject {
     seconds: f64,
 }
 
-fn seconds_of(date: Id) -> f64 {
+pub fn seconds_of(date: Id) -> f64 {
     // SAFETY: the callers pass NSDate instances, whose memory starts with these fields.
     unsafe { (*date.cast::<DateObject>()).seconds }
 }

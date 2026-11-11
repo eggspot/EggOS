@@ -269,6 +269,13 @@ fn formatted(format_text: &[u8], value: u64) -> Text {
     text
 }
 
+/// `value` in decimal with 17 significant digits (`%.17g`), which reads back exactly; for
+/// keyed archives (D365).
+pub fn exact_decimal(value: f64, out: &mut dyn FnMut(&[u8])) {
+    let text = formatted(b"%.17g", value.to_bits());
+    out(&text.bytes[..text.length]);
+}
+
 fn description_text(this: Id) -> Text {
     match value_of(this) {
         Value::Signed(value) => formatted(b"%lld", value as u64),

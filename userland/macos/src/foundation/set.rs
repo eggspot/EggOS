@@ -165,7 +165,7 @@ fn new_set(class: *mut ClassObject, objects: &[Id]) -> Id {
     set
 }
 
-fn objects_of(other: Id) -> Buffer<Id> {
+pub fn objects_of(other: Id) -> Buffer<Id> {
     if other.is_null() {
         return Buffer::new();
     }

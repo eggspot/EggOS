@@ -30,6 +30,8 @@ mod error;
 #[cfg(eggos_user)]
 mod exception;
 #[cfg(eggos_user)]
+mod keyed_archiver;
+#[cfg(eggos_user)]
 mod keyed_unarchiver;
 #[cfg(eggos_user)]
 mod log;
@@ -102,6 +104,7 @@ mod runtime {
         NSFILEMANAGER, NSFILEMANAGER_META;
         NSCODER, NSCODER_META;
         NSKEYEDUNARCHIVER, NSKEYEDUNARCHIVER_META;
+        NSKEYEDARCHIVER, NSKEYEDARCHIVER_META;
     }
 
     /// The class object `class` as the pointer the runtime takes.
@@ -199,6 +202,7 @@ mod runtime {
                 && super::uuid::define(runtime)
                 && super::file_manager::define(runtime)
                 && keyed_unarchiver::define(runtime)
+                && keyed_archiver::define(runtime)
                 && super::description::extend_object(runtime)
         }) && number::set_up_booleans()
             && array::set_up_empty()
