@@ -229,7 +229,7 @@ fn set(this: Id, object: Id, key_object: Id) {
     }
 }
 
-fn new_dictionary(class: *mut ClassObject, objects: &[Id], keys: &[Id]) -> Id {
+pub fn new_dictionary(class: *mut ClassObject, objects: &[Id], keys: &[Id]) -> Id {
     let object = new_instance(class);
     if object.is_null() {
         return object;

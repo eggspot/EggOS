@@ -22050,3 +22050,33 @@ the license, by an explicit instruction recorded here.
   one rebuilds it (the positions move); `dealloc` frees it. Keys are copied when stored, so
   their hashes do not change, and equal keys hash alike by Foundation's contract.
 - **Not yet.** The `nsdictionary_lookup` benchmark, and an index for NSSet and NSCountedSet.
+
+## D360 macOS Foundation: NSCoder and NSKeyedUnarchiver (batch part 14's rest, D232's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the keyed archive format: a property list with `$archiver`, `$top`, `$objects` and UIDs)
+
+- **Decision.** `NSCoder` (`allowsKeyedCoding`) and its subclass `NSKeyedUnarchiver`
+  (`keyed_unarchiver.rs`):
+  - **Reading.** The archive is a binary or XML property list (`eggos-plist`) whose
+    `$archiver` is `NSKeyedArchiver`; `$top`'s `root` names the root object. Objects are
+    decoded by UID once each and kept in a cache the unarchiver owns, so shared objects stay
+    shared. `$null` (object 0) is nil; plain strings, integers, reals, booleans and data are
+    NSString, NSNumber (`new_integer`, `new_double`), the boolean objects and NSData. A
+    dictionary names its class by `$class` (`{$classname, $classes}`): NSString and
+    NSMutableString (`NS.string`), NSArray, NSMutableArray, NSSet and NSMutableSet
+    (`NS.objects`), NSDictionary and NSMutableDictionary (`NS.keys`, `NS.objects`), NSData
+    (`NS.data`), NSDate (`NS.time`) and NSNull decode natively; any other class is allocated
+    and sent `initWithCoder:` with the unarchiver, whose `decode...ForKey:` then read that
+    object's keys (the decoding object is a stack, so nested `initWithCoder:` calls read
+    their own).
+  - **Untrusted input.** Every UID is checked against `$objects`, at most 2^20 objects; a
+    cycle through natively decoded objects decodes as nil instead of recursing.
+  - **API.** `unarchiveObjectWithData:`, `unarchiveObjectWithFile:`,
+    `unarchivedObjectOfClass:fromData:error:`, `unarchivedObjectOfClasses:fromData:error:`,
+    `unarchiveTopLevelObjectWithData:error:`, `initForReadingWithData:`,
+    `initForReadingFromData:error:` (secure coding on); `decodeObjectForKey:`,
+    `decodeObjectOfClass(es):forKey:`, `decodeInteger`, `Int`, `Int32`, `Int64`, `Bool`,
+    `Double` and `FloatForKey:`, `containsValueForKey:`, `requiresSecureCoding` and its
+    setter, `finishDecoding`.
+- **Not yet.** `NSKeyedArchiver` (writing), `NSError`s for a damaged archive (the error is
+  nil and the result nil), the allowed-classes check of secure coding, `NSURL` and `NSUUID`
+  archives, `decodeBytesForKey:returnedLength:`, and an object referring to itself through
+  `initWithCoder:` (it gets nil, where macOS gives the object being decoded).

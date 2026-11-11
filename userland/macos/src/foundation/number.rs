@@ -114,6 +114,16 @@ fn new_number(class: *mut ClassObject, encoding: &'static core::ffi::CStr, value
     object
 }
 
+/// A new NSNumber holding the integer `value` (`q`), counted once.
+pub fn new_integer(value: i64) -> Id {
+    new_number(number_class(), c"q", value as u64)
+}
+
+/// A new NSNumber holding the double `value` (`d`), counted once.
+pub fn new_double(value: f64) -> Id {
+    new_number(number_class(), c"d", value.to_bits())
+}
+
 fn number_class() -> *mut ClassObject {
     (&raw const NSNUMBER).cast_mut()
 }
