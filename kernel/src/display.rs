@@ -392,6 +392,35 @@ impl core::fmt::Debug for Display {
 
 static DISPLAY: LeafSpinLock<Option<Box<Display>>> = LeafSpinLock::new_leaf(None);
 
+/// Whether the display follows the size the device asks for (a host window resized), which it
+/// does unless a size is chosen in Settings (D311).
+static FOLLOWS_DEVICE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// Makes the display follow the device's size, or keep the one chosen.
+pub fn set_follows_device(follows: bool) {
+    FOLLOWS_DEVICE.store(follows, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// When the device asked for another size since the last look (virtio-gpu's display event)
+/// and no size is chosen, changes to it; the new mode, as the desktop sees it (D311).
+pub fn follow_device<P: Platform>() -> Option<Mode> {
+    if !FOLLOWS_DEVICE.load(core::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    let mut display = DISPLAY.lock();
+    let display = display.as_mut()?;
+    if !display.can_change_mode() {
+        return None;
+    }
+    let mut deadline = Deadline::after::<P>(FLUSH_TIMEOUT_MS);
+    let wanted = display.preferred_mode(&mut deadline)?;
+    if wanted == display.device_mode() {
+        return None;
+    }
+    display.change_mode(wanted, &mut deadline).ok()?;
+    Some(display.mode())
+}
+
 /// Makes `scanout` the kernel's display. Refused, and handed back, when there is one already.
 pub fn install<S: Scanout + 'static>(scanout: S) -> Result<(), S> {
     let mut display = DISPLAY.lock();

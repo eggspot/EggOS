@@ -461,6 +461,7 @@ pub fn load_saved_settings<P: Platform>() {
         repeat_rate: input.repeat_rate,
     });
     if let Some(resolution) = eggos_settings_file::display_resolution(&file[..length]) {
+        crate::display::set_follows_device(resolution.is_none());
         let mode = resolution.map(|(width, height)| crate::display::Mode::new(width, height));
         let _ = crate::display::change_mode::<P>(mode);
     }
@@ -778,6 +779,27 @@ impl Asked {
         pointer: None,
         look_again_at: NO_LOOK,
     };
+}
+
+static DISPLAY_LOOKED_AT: AtomicU64 = AtomicU64::new(0);
+const DISPLAY_LOOK_EVERY_MS: u64 = 500;
+
+/// Looks at most twice a second whether the display's device asked for another size (a host
+/// window resized, D311); when the display changed to it, the desktop is laid out for it.
+fn follow_display_size<P: Platform>() {
+    let now = P::clock_ticks();
+    let every = mul_div_ceil(DISPLAY_LOOK_EVERY_MS, P::clock_frequency(), 1000);
+    let last = DISPLAY_LOOKED_AT.load(Ordering::Relaxed);
+    if last != 0 && now.wrapping_sub(last) < every {
+        return;
+    }
+    DISPLAY_LOOKED_AT.store(now.max(1), Ordering::Relaxed);
+    let Some(mode) = crate::display::follow_device::<P>() else {
+        return;
+    };
+    with_windows::<P, _>(|desktop, _, damage, events| {
+        desktop.resize(mode.width, mode.height, damage, events);
+    });
 }
 
 const UPDATES_PATH: &[u8] = b"/var/lib/eggos/updates";
@@ -1281,6 +1303,7 @@ pub fn send_to_terminal<P: Platform>(input: TerminalInput) {
 pub fn show<P: Platform>() -> Result<usize, &'static str> {
     AGENT_CONNECTED.store(crate::agent_channel::is_connected(), Ordering::Relaxed);
     read_stored_updates::<P>();
+    follow_display_size::<P>();
     let drawn = display::draw(|framebuffer| {
         SCREEN
             .lock()

@@ -447,21 +447,7 @@ impl Desktop {
         if !Self::fits(width, height) {
             return None;
         }
-        let gradient = (0..height).map(|row| gradient_pixel(row, height)).collect();
-        let egg_height = height;
-        let egg_top = round_percent(25, height);
-        let centre = round_percent(82, width);
-        let egg = (0..height)
-            .map(|row| match row.checked_sub(egg_top) {
-                Some(row) => span(centre, egg_half_width(egg_height, row), width),
-                None => (0, 0),
-            })
-            .collect();
-        let yolk = (
-            centre,
-            egg_top + round_percent(62, height),
-            round_percent(9, height),
-        );
+        let (gradient, egg, yolk) = Self::wallpaper(width, height);
         let mut windows = Vec::new();
         windows.resize(MAX_WINDOWS, None);
         let mut desktop = Self {
@@ -552,6 +538,63 @@ impl Desktop {
         desktop.set_uptime(0, &mut damage);
         Some(desktop)
     }
+
+    /// The wallpaper of a `width` by `height` screen: the gradient's rows, the egg's spans and
+    /// the yolk's centre and radius.
+    #[allow(clippy::type_complexity)]
+    fn wallpaper(width: u32, height: u32) -> (Vec<u32>, Vec<(u32, u32)>, (u32, u32, u32)) {
+        let gradient = (0..height).map(|row| gradient_pixel(row, height)).collect();
+        let egg_height = height;
+        let egg_top = round_percent(25, height);
+        let centre = round_percent(82, width);
+        let egg = (0..height)
+            .map(|row| match row.checked_sub(egg_top) {
+                Some(row) => span(centre, egg_half_width(egg_height, row), width),
+                None => (0, 0),
+            })
+            .collect();
+        let yolk = (
+            centre,
+            egg_top + round_percent(62, height),
+            round_percent(9, height),
+        );
+        (gradient, egg, yolk)
+    }
+
+    /// The screen became `width` by `height` (the display changed size, D311): the wallpaper is
+    /// drawn for it, the shell is laid out again, maximised windows fill the new work area and
+    /// the others move into it, and everything is drawn again. `false`, with nothing changed,
+    /// when the terminal's window does not fit.
+    pub fn resize(&mut self, width: u32, height: u32, damage: &mut Damage, events: &mut dyn EventSink) -> bool {
+        if !Self::fits(width, height) {
+            return false;
+        }
+        if (width, height) == (self.width, self.height) {
+            return true;
+        }
+        self.close_popups(damage, events);
+        let (gradient, egg, yolk) = Self::wallpaper(width, height);
+        self.width = width;
+        self.height = height;
+        self.gradient = gradient;
+        self.egg = egg;
+        self.yolk = yolk;
+        self.layout = layout::layout_in_form(width, height, 1, self.profile, self.form);
+        self.reset_panels();
+        let (x, y) = self.pointer;
+        self.pointer = (x.min(width - 1), y.min(height - 1));
+        self.refit_windows(damage, events);
+        if self.fills_form() {
+            for slot in 0..self.windows.len() {
+                if self.windows[slot].is_some_and(|window| window.shown && !window.minimised) {
+                    self.fit_to_phone(slot, damage, events);
+                }
+            }
+        }
+        damage.add(self.screen());
+        true
+    }
+
 
     fn id_for(&self, slot: usize) -> WindowId {
         self.generations[slot] << SLOT_BITS | slot as u16

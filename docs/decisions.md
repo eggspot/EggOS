@@ -20570,3 +20570,19 @@ the license, by an explicit instruction recorded here.
   events, D304) and hosts that prefer virtio a full console.
 - **Not yet.** Building and running; several host consoles; the kernel's own messages
   (`PlatformConsole`) on it.
+
+## D311 The display follows the host window's size: virtio-gpu's display event changes the mode and the desktop is laid out again (M11's display events; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Twice a second at most, the drawing path asks the display whether its device
+  raised a display event (QEMU's window resized). It does so only while no size is chosen in
+  Settings (`display.resolution` `auto`; a chosen size keeps the display at that size). On an
+  event:
+  - the device's preferred mode becomes the display's (D287's `change_mode`);
+  - the desktop is laid out for the new logical size: the wallpaper for that size, the panels
+    of the profile and form, maximised windows filling the new work area, the others moved into
+    it, chromeless windows refitted in the touch and TV forms
+    (`Desktop::resize`, `Desktop::new` now sharing its wallpaper code);
+  - everything is drawn again.
+- **Not yet.** Building and running; the QMP check that resizes QEMU's window; a size that does
+  not fit the terminal's window, which is left as it was; the GPU's interrupt for the event
+  instead of the half-second look.
