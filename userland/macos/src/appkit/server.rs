@@ -23,6 +23,7 @@ const SET_MENU: usize = 0x4100_7715;
 const GET_PLACEMENT: usize = 0xc014_771c;
 const SET_CLIPBOARD: usize = 0x4010_7720;
 const GET_CLIPBOARD: usize = 0xc020_7721;
+const RAISE_WINDOW: usize = 0x4004_7736;
 const TITLE_CAPACITY: usize = 64;
 const MENU_REQUEST_SIZE: usize = 256;
 const PIXEL_BYTES: usize = 4;
@@ -227,6 +228,14 @@ pub fn set_position(window: u32, x: i32, y: i32) {
     put(&mut position, 4, x as u32);
     put(&mut position, 8, y as u32);
     let _ = request(SET_POSITION, &mut position);
+}
+
+/// Raises and focuses the caller's own `window` (D376); false when the server refuses, as it
+/// does while another app has the focus.
+pub fn raise(window: u32) -> bool {
+    let mut argument = [0u8; 4];
+    put(&mut argument, 0, window);
+    request(RAISE_WINDOW, &mut argument).is_ok()
 }
 
 /// A rectangle on the screen: x, y, width and height.

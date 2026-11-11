@@ -530,12 +530,21 @@ extern "C" fn set_content_view(this: Id, _: Sel, content: Id) {
     mark_dirty(this);
 }
 
+fn show_or_raise(window: Id) {
+    match fields(window).buffer.window {
+        0 => show(window),
+        id => {
+            let _ = server::raise(id);
+        }
+    }
+}
+
 extern "C" fn make_key_and_order_front(this: Id, _: Sel, _: Id) {
-    show(this);
+    show_or_raise(this);
 }
 
 extern "C" fn order_front(this: Id, _: Sel) {
-    show(this);
+    show_or_raise(this);
 }
 
 extern "C" fn order_out(this: Id, _: Sel, _: Id) {

@@ -98,6 +98,7 @@ pub mod size {
     pub const SET_TRAY_ICON: usize = super::set_tray_icon_request::PIXELS + 8;
     pub const SET_LAYERED: usize = 16;
     pub const SHOW_SHELL_MENU: usize = 16;
+    pub const RAISE_WINDOW: usize = 4;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -160,6 +161,7 @@ pub mod request {
     pub const SET_TRAY_ICON: u32 = encode(WRITE, 51, size::SET_TRAY_ICON);
     pub const SET_LAYERED: u32 = encode(WRITE, 52, size::SET_LAYERED);
     pub const SHOW_SHELL_MENU: u32 = encode(WRITE, 53, size::SHOW_SHELL_MENU);
+    pub const RAISE_WINDOW: u32 = encode(WRITE, 54, size::RAISE_WINDOW);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -646,6 +648,11 @@ pub enum Request {
         length: u32,
         entries: u64,
     },
+    /// The caller's own `window` raised and focused, only while the caller owns the focused
+    /// window or none is focused (D376).
+    RaiseWindow {
+        window: u32,
+    },
     AppsChanged,
     OpenApp {
         length: u32,
@@ -826,6 +833,7 @@ impl Request {
             request::SET_TRAY_ICON => size::SET_TRAY_ICON,
             request::SET_LAYERED => size::SET_LAYERED,
             request::SHOW_SHELL_MENU => size::SHOW_SHELL_MENU,
+            request::RAISE_WINDOW => size::RAISE_WINDOW,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::GET_LAUNCH => size::GET_LAUNCH,
@@ -950,6 +958,7 @@ impl Request {
                 key: at(8),
                 flags: at(12),
             },
+            request::RAISE_WINDOW => Self::RaiseWindow { window: at(0) },
             request::SHOW_SHELL_MENU => Self::ShowShellMenu {
                 window: at(0),
                 length: at(4),

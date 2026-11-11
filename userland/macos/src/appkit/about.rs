@@ -31,6 +31,8 @@ const IMAGE_ICON: &[u8] = b"image";
 const CREDITS_FILE: &str = "/Credits.txt";
 const CREDITS_NAME: &[u8] = b"Credits";
 const LINE_VALUE_BYTES: usize = 32;
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IconSource {
@@ -90,6 +92,24 @@ impl AboutPanel {
 
     fn lines(&self) -> &[(usize, usize)] {
         &self.lines[..self.line_count]
+    }
+
+    fn content_hash(&self) -> u64 {
+        let mut hash = FNV_OFFSET;
+        let mut add = |bytes: &[u8]| {
+            for &byte in bytes {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME);
+            }
+        };
+        add(self.name.as_str().as_bytes());
+        add(self.version.as_str().as_bytes());
+        add(self.copyright.as_str().as_bytes());
+        add(self.credits.as_str().as_bytes());
+        add(&[self.icon_source as u8]);
+        for pixel in self.icon {
+            add(&pixel.to_le_bytes());
+        }
+        hash
     }
 
     fn paint(&self) {
@@ -316,14 +336,26 @@ fn title_of(name: &str) -> Text<NAME_BYTES> {
 }
 
 /// Shows the panel, with `options` (an NSDictionary, or nil) overriding what the bundle says:
-/// a panel already shown is destroyed and made again at its place.
+/// a panel already shown with the same content is raised (D376), one whose content changed is
+/// destroyed and made again at its place.
 pub fn show(options: Id) {
     let previous = PANEL.with(|panel| panel.buffer.map(|buffer| buffer.window));
-    let place = previous.and_then(server::placement);
-    PANEL.with(|panel| {
-        destroy(panel);
+    let unchanged = PANEL.with(|panel| {
+        let before = panel.content_hash();
+        let offset = panel.offset;
         gather(panel, options);
+        let same = before == panel.content_hash();
+        if same {
+            panel.offset = offset;
+        }
+        same
     });
+    if let (Some(window), true) = (previous, unchanged) {
+        let _ = server::raise(window);
+        return;
+    }
+    let place = previous.and_then(server::placement);
+    PANEL.with(destroy);
     let height = PANEL.with(|panel| panel.height());
     let Ok(buffer) = server::create(
         server::ROLE_NORMAL,

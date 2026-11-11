@@ -75,6 +75,32 @@ pub(super) struct Resize {
 }
 
 impl Desktop {
+    /// `RAISE_WINDOW` (D376): client `client`'s own window `id` raised and focused (restored
+    /// when minimised), only while the client owns the focused window or none is focused, so
+    /// an app in the background cannot take the focus.
+    pub fn raise_window(
+        &mut self,
+        client: u16,
+        id: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Result<(), WindowError> {
+        let id = super::WindowId::try_from(id).map_err(|_| WindowError::NoSuchWindow)?;
+        let slot = self.find(id).ok_or(WindowError::NoSuchWindow)?;
+        if self.window_at(slot).client != client {
+            return Err(WindowError::NotAllowed);
+        }
+        if let Some(focused) = self.focus
+            && self.window_at(focused).client != client
+        {
+            return Err(WindowError::Busy);
+        }
+        self.activate(slot, damage, events);
+        Ok(())
+    }
+}
+
+impl Desktop {
     /// The time on the monotonic clock, in milliseconds, that the next events happen at:
     /// double-clicks and close requests are timed by it.
     pub fn set_time(&mut self, now_ms: u32) {

@@ -22386,3 +22386,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Dragging the credits' thumb, `set-text` on the credits group, an
   `applicationIconImage` made from `app.icon` when none was set; raising the panel instead of
   re-creating it and the panel in `NSApp.windows` (sections 15.3 and 15.4).
+
+## D376 `RAISE_WINDOW`: an app raises its own window, and the About panel is raised, not re-created (batch part 15's rest; M15, M11; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/macos-gui-v0.3.md section 15.3) and the code-only session (engineering)
+
+- **Decision.**
+  - **Protocol.** `RAISE_WINDOW` (request 54, 4 bytes: the window) raises and focuses one
+    of the caller's own windows as `ManageWindow Focus` does (restoring a minimised one),
+    only while the caller owns the focused window or none is focused: `EPERM` for another
+    client's window, `ENOENT` for none, `EBUSY` while another client has the focus, so an
+    app in the background cannot take it (what `makeKeyAndOrderFront:` from a background
+    app does on macOS too).
+  - **AppKit.** `makeKeyAndOrderFront:` and `orderFront:` on a window already on the server
+    send it instead of doing nothing. The About panel gathers its content again; when
+    nothing changed (name, version, copyright, credits, icon) it is raised where the person
+    left it, its credits' scroll kept; when the content changed it is destroyed and made
+    again at its place, as before.
+- **Not yet.** The About panel as an `NSPanel` in `NSApp.windows` (section 15.4).

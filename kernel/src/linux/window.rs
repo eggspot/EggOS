@@ -405,6 +405,11 @@ pub fn ioctl<P: Platform>(
                 desktop.set_layered(client, window, (alpha, key, pixel_alpha), damage)
             })?;
         }
+        Request::RaiseWindow { window } => {
+            on_windows::<P, _>(|desktop, _, damage, events| {
+                desktop.raise_window(client, window, damage, events)
+            })?;
+        }
         Request::ShowShellMenu {
             window,
             length,
