@@ -292,7 +292,8 @@ pub(super) unsafe extern "efiapi" fn create_window_ex_w(
             ex_style,
         };
         let create = &raw const create as usize;
-        if send(handle, message::NC_CREATE, 0, create) == 0
+        if super::hooks::creation_refused(handle, create)
+            || send(handle, message::NC_CREATE, 0, create) == 0
             || send(handle, message::CREATE, 0, create) as isize == -1
         {
             destroy_tree(handle);
@@ -396,7 +397,8 @@ pub(super) unsafe extern "efiapi" fn create_window_ex_w(
         ex_style,
     };
     let create = &raw const create as usize;
-    if send(handle, message::NC_CREATE, 0, create) == 0
+    if super::hooks::creation_refused(handle, create)
+        || send(handle, message::NC_CREATE, 0, create) == 0
         || send(handle, message::CREATE, 0, create) as isize == -1
     {
         destroy_tree(handle);
@@ -516,6 +518,7 @@ pub fn destroy_tree(handle: usize) {
         return;
     };
     for &member in &handles[..count] {
+        super::hooks::destroying(member);
         send(member, message::DESTROY, 0, 0);
     }
     for &member in handles[..count].iter().rev() {
@@ -995,12 +998,18 @@ unsafe extern "efiapi" fn get_message_w(
         Ok(filter) => filter,
         Err(code) => return fail(code, -1),
     };
-    let Some(message) = gui::next_message(filter, true, true) else {
-        return fail(error::NOT_ENOUGH_MEMORY, -1);
-    };
-    // SAFETY: the caller passes a writable `MSG`.
-    unsafe { write_message(out, &message) };
-    Bool::from(message.message != message::QUIT)
+    loop {
+        let Some(message) = gui::next_message(filter, true, true) else {
+            return fail(error::NOT_ENOUGH_MEMORY, -1);
+        };
+        // SAFETY: the caller passes a writable `MSG`.
+        unsafe { write_message(out, &message) };
+        if !super::hooks::retrieved(out, true) {
+            // SAFETY: as above, the `MSG` the hooks may have changed.
+            let message = unsafe { read_message(out) };
+            return Bool::from(message.message != message::QUIT);
+        }
+    }
 }
 
 unsafe extern "efiapi" fn peek_message_w(
@@ -1014,13 +1023,19 @@ unsafe extern "efiapi" fn peek_message_w(
         Ok(filter) => filter,
         Err(code) => return fail(code, FALSE),
     };
-    match gui::next_message(filter, remove & PM_REMOVE != 0, false) {
-        Some(message) => {
-            // SAFETY: the caller passes a writable `MSG`.
-            unsafe { write_message(out, &message) };
-            TRUE
+    let removing = remove & PM_REMOVE != 0;
+    loop {
+        let Some(message) = gui::next_message(filter, removing, false) else {
+            return FALSE;
+        };
+        // SAFETY: the caller passes a writable `MSG`.
+        unsafe { write_message(out, &message) };
+        if !super::hooks::retrieved(out, removing) {
+            return TRUE;
         }
-        None => FALSE,
+        if !removing {
+            gui::next_message(filter, true, false);
+        }
     }
 }
 

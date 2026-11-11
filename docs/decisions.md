@@ -21819,3 +21819,29 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** `FD_ACCEPT` (the layer's Winsock has no `listen` and `accept` yet), `FD_OOB` as
   its own event (urgent data reads as `FD_READ`), `WSAEventSelect` and
   `WSAEnumNetworkEvents`.
+
+## D349 Windows: hooks over the process's own messages and input (`SetWindowsHookEx`) (batch part 13's rest, D231's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented hook behaviour)
+
+- **Context.** `SetWindowsHookExW` failed, so programs that rely on hooks did not run: MFC
+  attaches its window objects in a `WH_CBT` hook, toolkits filter keys with `WH_KEYBOARD` and
+  `WH_GETMESSAGE`, and remote-control and accessibility tools watch input with the low-level
+  hooks.
+- **Decision.** `SetWindowsHookExW` and `A` install a hook for one thread or, with thread 0,
+  for every thread of the process (up to 32, `hooks.rs`); `UnhookWindowsHookEx` removes it and
+  `CallNextHookEx` calls the next older hook of the same kind for the calling thread, 0 at the
+  chain's end. The layer calls the newest hook of a kind:
+  - `WH_GETMESSAGE`, then `WH_KEYBOARD` or `WH_MOUSE` (with a `MOUSEHOOKSTRUCT`), as
+    `GetMessage` and `PeekMessage` return a message (`HC_ACTION`, or `HC_NOREMOVE` for a peek
+    that leaves it); a nonzero answer from the keyboard or mouse hook discards the message and
+    the call takes the next.
+  - `WH_CALLWNDPROC` and `WH_CALLWNDPROCRET` around every sent message (`CWPSTRUCT`,
+    `CWPRETSTRUCT`); the send path checks one counter when no hook is installed.
+  - `WH_KEYBOARD_LL` and `WH_MOUSE_LL` for the window server's input to the process before it
+    is routed (`KBDLLHOOKSTRUCT`, `MSLLHOOKSTRUCT`); a nonzero answer swallows it.
+  - `WH_CBT`'s `HCBT_CREATEWND` before a program window's `WM_NCCREATE` (a nonzero answer
+    refuses the window) and `HCBT_DESTROYWND` before each `WM_DESTROY`.
+  - Hooks of the other kinds are kept and chained but never called.
+- **Not yet.** Hooks into other processes (EggOS gives an app no way into another's input);
+  `WH_CBT`'s other codes (activation, focus, moves); low-level hooks called on the installing
+  thread's message loop, as Windows does (the layer calls them on the thread that reads the
+  input); the injected-input flags.

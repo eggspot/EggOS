@@ -1,7 +1,6 @@
 //! More of the message functions (D178): `SendMessageTimeoutW`, `PostThreadMessageW` and
-//! `GetQueueStatus`; the hooks, which EggOS does not offer (`SetWindowsHookExW` fails, so no
-//! hook ever exists to unhook or chain to); and `ExitWindowsEx`, which an app may not use to
-//! shut EggOS down.
+//! `GetQueueStatus`; the hooks over the process's own messages and input (D349, `hooks`); and
+//! `ExitWindowsEx`, which an app may not use to shut EggOS down.
 
 use super::gui::{self, try_with, with};
 use super::{Bool, FALSE, TRUE, error, fail, thread_environment};
@@ -95,29 +94,39 @@ extern "efiapi" fn get_queue_status(flags: u32) -> u32 {
     .unwrap_or(0)
 }
 
+/// `SetWindowsHookExW` and `A`: a hook of `kind` for `thread` (0: every thread of the process).
 extern "efiapi" fn set_windows_hook_ex_w(
     kind: i32,
-    _procedure: usize,
+    procedure: usize,
     _module: usize,
-    _thread: u32,
+    thread: u32,
 ) -> usize {
-    match (FIRST_HOOK..=LAST_HOOK).contains(&kind) {
-        true => fail(error::ACCESS_DENIED, 0),
-        false => fail(error::INVALID_HOOK_FILTER, 0),
+    if !(FIRST_HOOK..=LAST_HOOK).contains(&kind) {
+        return fail(error::INVALID_HOOK_FILTER, 0);
+    }
+    if procedure == 0 {
+        return fail(error::INVALID_FILTER_PROC, 0);
+    }
+    match super::hooks::install(kind, procedure, thread) {
+        Some(handle) => handle,
+        None => fail(error::NOT_ENOUGH_MEMORY, 0),
     }
 }
 
-extern "efiapi" fn unhook_windows_hook_ex(_hook: usize) -> Bool {
-    fail(error::INVALID_HOOK_HANDLE, FALSE)
+extern "efiapi" fn unhook_windows_hook_ex(hook: usize) -> Bool {
+    match super::hooks::remove(hook) {
+        true => TRUE,
+        false => fail(error::INVALID_HOOK_HANDLE, FALSE),
+    }
 }
 
 extern "efiapi" fn call_next_hook_ex(
-    _hook: usize,
-    _code: i32,
-    _wparam: usize,
-    _lparam: usize,
+    hook: usize,
+    code: i32,
+    wparam: usize,
+    lparam: usize,
 ) -> usize {
-    0
+    super::hooks::call_next(hook, code, wparam, lparam)
 }
 
 extern "efiapi" fn exit_windows_ex(_flags: u32, _reason: u32) -> Bool {
@@ -129,6 +138,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"PostThreadMessageW" => post_thread_message_w,
     b"GetQueueStatus" => get_queue_status,
     b"SetWindowsHookExW" => set_windows_hook_ex_w,
+    b"SetWindowsHookExA" => set_windows_hook_ex_w,
     b"UnhookWindowsHookEx" => unhook_windows_hook_ex,
     b"CallNextHookEx" => call_next_hook_ex,
     b"ExitWindowsEx" => exit_windows_ex,

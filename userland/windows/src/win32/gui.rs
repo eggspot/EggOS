@@ -397,8 +397,19 @@ pub fn wake() {
 
 /// Calls the window procedure of `window` with a message and returns its result (the program's
 /// procedure that subclassed a system control first); 0 for a window that is gone or answered
-/// by the layer.
+/// by the layer. The program's `WH_CALLWNDPROC` and `WH_CALLWNDPROCRET` hooks see it before
+/// and after (D349).
 pub fn send(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
+    if !super::hooks::watching_sends() {
+        return call_procedure(window, number, wparam, lparam);
+    }
+    super::hooks::before_send(window, number, wparam, lparam);
+    let result = call_procedure(window, number, wparam, lparam);
+    super::hooks::after_send(window, number, wparam, lparam, result);
+    result
+}
+
+fn call_procedure(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
     let found = with(|gui| {
         gui.windows
             .get(window)
@@ -619,6 +630,15 @@ pub struct Input {
 }
 
 fn input_event(device: &Device, root: usize, thread: u32, input: &Input) -> Option<Delivery> {
+    if super::hooks::input_swallowed(
+        input.number,
+        input.wparam,
+        input.lparam,
+        input.point,
+        input.time,
+    ) {
+        return None;
+    }
     let routed = with(|gui| {
         gui.last_input = super::user32::now_ms();
         let (number, wparam, point) = (input.number, input.wparam, input.point);

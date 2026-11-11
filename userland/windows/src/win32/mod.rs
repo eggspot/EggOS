@@ -46,6 +46,7 @@ mod gdi;
 mod gdiplus;
 mod gui;
 mod heap;
+mod hooks;
 mod hover;
 mod icon;
 mod keyboard;

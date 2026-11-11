@@ -69,6 +69,7 @@ pub mod code {
     pub const CLIPBOARD_NOT_OPEN: u32 = 1418;
     pub const HOTKEY_NOT_REGISTERED: u32 = 1419;
     pub const INVALID_HOOK_FILTER: u32 = 1426;
+    pub const INVALID_FILTER_PROC: u32 = 1427;
     pub const INVALID_THREAD_ID: u32 = 1444;
     pub const MENU_ITEM_NOT_FOUND: u32 = 1456;
     pub const GEN_FAILURE: u32 = 31;
@@ -175,6 +176,7 @@ pub fn message(code: u32) -> Option<&'static str> {
         code::PRIVILEGE_NOT_HELD => "A required privilege is not held by the client.",
         code::INVALID_ACCEL_HANDLE => "Invalid accelerator table handle.",
         code::INVALID_HOOK_HANDLE => "Invalid hook handle.",
+        code::INVALID_FILTER_PROC => "Invalid hook procedure.",
         code::HOTKEY_ALREADY_REGISTERED => "Hot key is already registered.",
         code::CLIPBOARD_NOT_OPEN => "Thread does not have a clipboard open.",
         code::HOTKEY_NOT_REGISTERED => "Hot key is not registered.",
