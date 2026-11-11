@@ -571,8 +571,10 @@ fn paint_control(window: usize) {
                 button::paint(surface, rect, text, look, palette);
             }
             ControlKind::Edit => {
-                // SAFETY: as above.
-                let model = unsafe { &*(address as *const Edit) };
+                // SAFETY: as above; the lock held makes this the only reference, and fitting
+                // the view only sets where its lines wrap.
+                let model = unsafe { &mut *(address as *mut Edit) };
+                model.fit(edit::view(rect.width(), rect.height()));
                 let look = EditLook {
                     focused,
                     enabled: entry.enabled(),
@@ -1069,7 +1071,13 @@ fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
             set_capture(window);
             let extend = held(VK_SHIFT);
             let outcome = with_state(window, |entry, state| match state {
-                State::Edit(edit) => Some(edit.click((x, y), extend, edit_view(entry))),
+                State::Edit(edit) => {
+                    let view = edit_view(entry);
+                    match edit.press_bar(entry.client(), (x, y), view) {
+                        true => Some(EditOutcome::Moved),
+                        false => Some(edit.click((x, y), extend, view)),
+                    }
+                }
                 _ => None,
             })
             .flatten();

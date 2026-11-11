@@ -21860,3 +21860,23 @@ the license, by an explicit instruction recorded here.
     `EM_REPLACESEL`, cleared by `WM_SETTEXT` (`Edit::modified`).
 - **Still not yet** (D341's list stands): word wrap without `ES_AUTOHSCROLL`, which the
   design wants with part 1's greedy rule, and the edit's own scroll bars inside its border.
+
+## D351 Windows controls: multi-line edits wrap without `ES_AUTOHSCROLL` and draw their own scroll bars (D341's and D350's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (the design, docs/ux/windows-controls-v0.3.md sections 13 and 14)
+
+- **Decision.**
+  - **Wrapping.** A multi-line edit without `ES_AUTOHSCROLL` wraps each line at the text's
+    width with the greedy rule: a display line ends after the last space that fits, or at the
+    width when no space does (`Edit::row`). Its lines (`EM_GETLINECOUNT`, `EM_LINEINDEX`,
+    `EM_LINEFROMCHAR`, `EM_LINELENGTH`, `EM_GETLINE`, Up, Down, Home and End) are the display
+    lines, as on Windows; a caret at a wrap point stands at the start of the next line, and
+    the view never scrolls sideways. With `ES_AUTOHSCROLL` the lines run on as in D341.
+  - **The width** the lines wrap at is the view the control last gave the edit
+    (`Edit::fit`), which every input, message and paint gives it.
+  - **Scroll bars.** `WS_VSCROLL` and `WS_HSCROLL` on a multi-line edit draw the design's bars
+    inside its border (the horizontal one only without wrapping), always shown and disabled
+    while nothing scrolls, fed by (lines, visible lines, the first one shown) and (the widest
+    line, visible cells, the column offset); the text's view is that much smaller
+    (`Edit::inner`), the corner square the track's colour. A press on an arrow scrolls a line,
+    on the track a page, without moving the caret (`Edit::press_bar`).
+- **Not yet.** Dragging the edit's thumb and the arrows' repeat while held; `ES_AUTOVSCROLL`
+  without a bar is the default behaviour already (the view follows the caret).

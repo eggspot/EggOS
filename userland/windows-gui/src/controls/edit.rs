@@ -2,6 +2,7 @@
 //! between an anchor and the caret, scroll in whole cells, `ES_PASSWORD`, `ES_NUMBER` and
 //! `ES_MULTILINE`'s lines) and its painting.
 
+use super::scroll_bar::{self, BarLook, ScrollBar, ScrollInfo, mask};
 use super::{Palette, cell_top, framed, ring};
 use crate::surface::{Rect, Surface};
 use crate::text::{self, CELL_HEIGHT, CELL_WIDTH};
@@ -16,10 +17,15 @@ const LINE_FEED: u16 = 0x0a;
 const CARRIAGE_RETURN: u16 = 0x0d;
 const TAB: u16 = 0x09;
 const LINE_BREAK: [u16; 2] = [CARRIAGE_RETURN, LINE_FEED];
+const SPACE: u16 = 0x20;
+const BAR_CELLS: usize = (scroll_bar::WIDTH / CELL_WIDTH) as usize;
 
 /// `EDIT`'s styles this layer reads.
 pub mod style {
     pub const MULTILINE: u32 = 0x0004;
+    pub const AUTO_HORIZONTAL_SCROLL: u32 = 0x0080;
+    pub const VERTICAL_SCROLL_BAR: u32 = 0x0020_0000;
+    pub const HORIZONTAL_SCROLL_BAR: u32 = 0x0010_0000;
     pub const PASSWORD: u32 = 0x0020;
     pub const NO_HIDE_SELECTION: u32 = 0x0100;
     pub const READ_ONLY: u32 = 0x0800;
@@ -69,6 +75,12 @@ pub struct Edit {
     pub multiline: bool,
     /// Whether the text changed since `WM_SETTEXT` or `EM_SETMODIFY` (`EM_GETMODIFY`).
     pub modified: bool,
+    /// Whether a multi-line edit wraps its lines (no `ES_AUTOHSCROLL`, D351).
+    pub wraps: bool,
+    wrap_cells: usize,
+    /// Whether it draws a vertical and a horizontal scroll bar inside its border
+    /// (`WS_VSCROLL`, `WS_HSCROLL` on a multi-line edit, D351).
+    pub bars: (bool, bool),
 }
 
 /// What a key did to an edit.
@@ -116,6 +128,9 @@ impl Edit {
             keep_selection: false,
             multiline: false,
             modified: false,
+            wraps: false,
+            wrap_cells: 0,
+            bars: (false, false),
         }
     }
 
@@ -126,10 +141,36 @@ impl Edit {
         edit.digits_only = style & style::NUMBER != 0;
         edit.keep_selection = style & style::NO_HIDE_SELECTION != 0;
         edit.multiline = style & style::MULTILINE != 0;
+        edit.wraps = edit.multiline && style & style::AUTO_HORIZONTAL_SCROLL == 0;
+        edit.bars = match edit.multiline {
+            true => (
+                style & style::VERTICAL_SCROLL_BAR != 0,
+                style & style::HORIZONTAL_SCROLL_BAR != 0 && !edit.wraps,
+            ),
+            false => (false, false),
+        };
         if style & style::PASSWORD != 0 && !edit.multiline {
             edit.password = DEFAULT_PASSWORD_CHARACTER;
         }
         edit
+    }
+
+    /// What the text shows in a window that shows `view`: less the scroll bars' cells and row.
+    pub fn inner(&self, view: View) -> View {
+        View {
+            cells: view.cells.saturating_sub(if self.bars.0 { BAR_CELLS } else { 0 }),
+            rows: view.rows.saturating_sub(usize::from(self.bars.1)).max(1),
+        }
+    }
+
+    /// Takes the window's `view`, so the lines wrap at its width: what the text shows.
+    pub fn fit(&mut self, view: impl Into<View>) -> View {
+        let inner = self.inner(view.into());
+        self.wrap_cells = match self.wraps {
+            true => inner.cells.max(1),
+            false => 0,
+        };
+        inner
     }
 
     /// The selection's start and end (equal when nothing is selected); the caret is one end.
@@ -140,6 +181,7 @@ impl Edit {
     /// `EM_SETSEL`: `start` -1 removes the selection, `end` -1 (or past the text) is the text's
     /// end; the caret goes to `end`.
     pub fn set_selection(&mut self, start: isize, end: isize, view: impl Into<View>) {
+        let view = self.fit(view);
         let at = |value: isize| match usize::try_from(value) {
             Ok(value) => self.boundary(value.min(self.length)),
             Err(_) => self.length,
@@ -151,12 +193,17 @@ impl Edit {
                 self.caret = at(end);
             }
         }
-        self.scroll(view.into());
+        self.scroll(view);
     }
 
     /// `EM_REPLACESEL` and typing: the selection replaced by `units`, as many as the limit
     /// leaves room for, the caret after them.
     pub fn replace_selection(&mut self, units: &[u16], view: impl Into<View>) -> EditOutcome {
+        let view = self.fit(view);
+        self.replace(units, view)
+    }
+
+    fn replace(&mut self, units: &[u16], view: View) -> EditOutcome {
         let (start, end) = self.selection();
         let room = self.limit.saturating_sub(self.length - (end - start));
         let inserted = &units[..units.len().min(room)];
@@ -171,7 +218,7 @@ impl Edit {
         self.modified = true;
         self.caret = self.boundary(start + inserted.len());
         self.anchor = self.caret;
-        self.scroll(view.into());
+        self.scroll(view);
         EditOutcome::Changed
     }
 
@@ -213,9 +260,10 @@ impl Edit {
 
     /// Puts the caret after the text, as the picker does after filling in a name.
     pub fn caret_to_end(&mut self, view: impl Into<View>) {
+        let view = self.fit(view);
         self.caret = self.length;
         self.anchor = self.caret;
-        self.scroll(view.into());
+        self.scroll(view);
     }
 
     /// A typed character: a printable one replaces the selection; with `ES_NUMBER` only
@@ -260,21 +308,21 @@ impl Edit {
         held: Modifiers,
         view: impl Into<View>,
     ) -> EditOutcome {
-        let view = view.into();
+        let view = self.fit(view);
         let (start, end) = self.selection();
         let selected = start != end;
         let vertical = matches!(virtual_key, key::UP | key::DOWN | key::PRIOR | key::NEXT);
         let outcome = match virtual_key {
             key::A if held.control => self.select(0, self.length),
             key::BACK | key::DELETE if self.read_only => EditOutcome::Unchanged,
-            key::BACK | key::DELETE if selected => self.replace_selection(&[], view),
+            key::BACK | key::DELETE if selected => self.replace(&[], view),
             key::BACK if self.caret > 0 => {
                 self.anchor = self.step_back(self.caret);
-                self.replace_selection(&[], view)
+                self.replace(&[], view)
             }
             key::DELETE if self.caret < self.length => {
                 self.anchor = self.step_forward(self.caret);
-                self.replace_selection(&[], view)
+                self.replace(&[], view)
             }
             _ if vertical && !self.multiline => EditOutcome::Unchanged,
             key::LEFT | key::RIGHT | key::HOME | key::END | key::UP | key::DOWN | key::PRIOR
@@ -352,11 +400,7 @@ impl Edit {
         unit == LINE_FEED || (unit == CARRIAGE_RETURN && !pair)
     }
 
-    /// Where the line holding `index` starts.
-    pub fn line_start_at(&self, index: usize) -> usize {
-        if !self.multiline {
-            return 0;
-        }
+    fn paragraph_start(&self, index: usize) -> usize {
         let mut at = index.min(self.length);
         while at > 0 && !self.breaks_after(at - 1) {
             at -= 1;
@@ -364,9 +408,7 @@ impl Edit {
         at
     }
 
-    /// Where the line holding `index` ends, before its break (`\r\n`, or a lone `\n` or `\r`).
-    pub fn line_end_at(&self, index: usize) -> usize {
-        let start = self.line_start_at(index);
+    fn paragraph_end(&self, start: usize) -> usize {
         let mut at = start;
         while at < self.length
             && !(self.multiline
@@ -377,23 +419,71 @@ impl Edit {
         at
     }
 
-    fn next_line_start(&self, start: usize) -> Option<usize> {
-        if !self.multiline {
-            return None;
+    fn after_break(&self, at: usize) -> usize {
+        match self.is_line_break_at(at) {
+            true => at + 2,
+            false => at + 1,
         }
-        (start..self.length)
-            .find(|&at| self.breaks_after(at))
-            .map(|at| at + 1)
     }
 
-    /// `EM_LINEFROMCHAR`: the line holding `index`, from 0.
-    pub fn line_of(&self, index: usize) -> usize {
-        match self.multiline {
-            true => (0..index.min(self.length))
-                .filter(|&at| self.breaks_after(at))
-                .count(),
-            false => 0,
+    /// The display line that starts at `start`: where its text ends and where the next one
+    /// starts (none after the last). A line longer than the wrap width breaks after the last
+    /// space that fits, or at the width when no space does (D351, the greedy rule).
+    fn row(&self, start: usize) -> (usize, Option<usize>) {
+        let end = self.paragraph_end(start);
+        let width = self.wrap_cells;
+        if width == 0 || end - start <= width {
+            return (end, (end < self.length).then(|| self.after_break(end)));
         }
+        let limit = start + width;
+        let cut = (start + 1..=limit)
+            .rev()
+            .find(|&at| self.units[at - 1] == SPACE)
+            .unwrap_or(limit);
+        (cut, Some(cut))
+    }
+
+    /// Where the display line holding `index` starts; a caret at a wrapped line's break is at
+    /// the start of the next line.
+    pub fn line_start_at(&self, index: usize) -> usize {
+        if !self.multiline {
+            return 0;
+        }
+        let index = index.min(self.length);
+        let mut start = self.paragraph_start(index);
+        loop {
+            match self.row(start) {
+                (end, Some(next)) if next == end && next <= index && next > start => start = next,
+                _ => return start,
+            }
+        }
+    }
+
+    /// Where the display line holding `index` ends, before its break or wrap.
+    pub fn line_end_at(&self, index: usize) -> usize {
+        self.row(self.line_start_at(index)).0
+    }
+
+    fn next_line_start(&self, start: usize) -> Option<usize> {
+        match self.multiline {
+            true => self.row(start).1,
+            false => None,
+        }
+    }
+
+    /// `EM_LINEFROMCHAR`: the display line holding `index`, from 0.
+    pub fn line_of(&self, index: usize) -> usize {
+        if !self.multiline {
+            return 0;
+        }
+        let index = index.min(self.length);
+        let mut line = 0;
+        let mut start = 0;
+        while let Some(next) = self.row(start).1.filter(|&next| next <= index && next > start) {
+            line += 1;
+            start = next;
+        }
+        line
     }
 
     /// `EM_GETLINECOUNT`: the lines in the text, at least 1.
@@ -435,7 +525,10 @@ impl Edit {
             .top
             .saturating_add_signed(lines)
             .min(self.line_count() - 1);
-        let offset = self.offset.saturating_add_signed(columns).min(EDIT_CAPACITY);
+        let offset = match self.wrap_cells {
+            0 => self.offset.saturating_add_signed(columns).min(EDIT_CAPACITY),
+            _ => 0,
+        };
         let moved = (top, offset) != (self.top, self.offset);
         self.top = top;
         self.offset = offset;
@@ -444,7 +537,98 @@ impl Edit {
 
     /// `EM_SCROLLCARET`: scrolled until the caret shows.
     pub fn scroll_to_caret(&mut self, view: impl Into<View>) {
-        self.scroll(view.into());
+        let view = self.fit(view);
+        self.scroll(view);
+    }
+
+    /// Where a multi-line edit at `rect` draws its scroll bars (D351): inside its border, the
+    /// vertical one at the right, the horizontal one at the bottom.
+    pub fn bar_rects(&self, rect: Rect) -> (Option<Rect>, Option<Rect>) {
+        let inside = rect.inset(1);
+        let width = scroll_bar::WIDTH;
+        let (vertical, horizontal) = self.bars;
+        let right = Rect::new(
+            inside.right - width,
+            inside.top,
+            inside.right,
+            inside.bottom - if horizontal { width } else { 0 },
+        );
+        let bottom = Rect::new(
+            inside.left,
+            inside.bottom - width,
+            inside.right - if vertical { width } else { 0 },
+            inside.bottom,
+        );
+        (vertical.then_some(right), horizontal.then_some(bottom))
+    }
+
+    fn widest_line(&self) -> usize {
+        let mut widest = 0;
+        let mut start = Some(0);
+        while let Some(at) = start {
+            let (end, next) = self.row(at);
+            widest = widest.max(end - at);
+            start = next.filter(|&next| next > at);
+        }
+        widest
+    }
+
+    fn bar_model(&self, vertical: bool, view: View) -> ScrollBar {
+        let info = match vertical {
+            true => ScrollInfo {
+                minimum: 0,
+                maximum: self.line_count() as i32 - 1,
+                page: view.rows as u32,
+                position: self.top as i32,
+            },
+            false => ScrollInfo {
+                minimum: 0,
+                maximum: self.widest_line() as i32,
+                page: view.cells as u32,
+                position: self.offset as i32,
+            },
+        };
+        let mut bar = ScrollBar::new(vertical);
+        bar.set_info(mask::RANGE | mask::PAGE | mask::POSITION, &info);
+        bar
+    }
+
+    /// A press at `at` (pixels in the edit at `rect`, which shows `view`): on one of its scroll
+    /// bars, the edit scrolls as the part pressed asks, a line or a page, without moving the
+    /// caret; whether the press was on a bar.
+    pub fn press_bar(&mut self, rect: Rect, at: (i32, i32), view: impl Into<View>) -> bool {
+        let view = self.fit(view);
+        let (right, bottom) = self.bar_rects(rect);
+        let pressed = [(true, right), (false, bottom)]
+            .into_iter()
+            .find_map(|(vertical, bar)| {
+                bar.filter(|bar| bar.contains(at.0, at.1))
+                    .map(|bar| (vertical, bar))
+            });
+        let Some((vertical, place)) = pressed else {
+            return false;
+        };
+        let mut bar = self.bar_model(vertical, view);
+        let (offset, length) = match vertical {
+            true => (at.1 - place.top, place.height()),
+            false => (at.0 - place.left, place.width()),
+        };
+        let scroll = bar.button_down(offset, length);
+        let _ = bar.button_up();
+        let shown = if vertical { view.rows } else { view.cells };
+        let page = shown.max(2) as isize - 1;
+        let step = match scroll.map(|scroll| scroll.code) {
+            Some(scroll_bar::request::LINE_UP) => -1,
+            Some(scroll_bar::request::LINE_DOWN) => 1,
+            Some(scroll_bar::request::PAGE_UP) => -page,
+            Some(scroll_bar::request::PAGE_DOWN) => page,
+            _ => 0,
+        };
+        match vertical {
+            true => self.scroll_by(0, step),
+            false => self.scroll_by(step, 0),
+        };
+        true
     }
 
     fn line_moved(&self, lines: isize) -> usize {
@@ -505,27 +689,30 @@ impl Edit {
     /// A click at `at`, pixels from the edit's top left: the caret at the nearest cell
     /// boundary, the anchor there too unless `extend` (Shift held).
     pub fn click(&mut self, at: (i32, i32), extend: bool, view: impl Into<View>) -> EditOutcome {
+        let view = self.fit(view);
         let caret = self.position_at(at);
         let anchor = match extend {
             true => self.anchor,
             false => caret,
         };
         let outcome = self.select(anchor, caret);
-        self.scroll(view.into());
+        self.scroll(view);
         outcome
     }
 
     /// The pointer dragged to `at` with the button held: only the caret follows it.
     pub fn drag(&mut self, at: (i32, i32), view: impl Into<View>) -> EditOutcome {
+        let view = self.fit(view);
         let caret = self.position_at(at);
         let outcome = self.select(self.anchor, caret);
-        self.scroll(view.into());
+        self.scroll(view);
         outcome
     }
 
     /// A double-click at `at`: the word under it selected (a run of letters, digits and `_`,
     /// of other glyphs, or of spaces), the caret at its end.
     pub fn select_word(&mut self, at: (i32, i32), view: impl Into<View>) -> EditOutcome {
+        let view = self.fit(view);
         if self.length == 0 {
             return EditOutcome::Unchanged;
         }
@@ -540,7 +727,7 @@ impl Edit {
             end += 1;
         }
         let outcome = self.select(self.boundary(start), self.boundary(end));
-        self.scroll(view.into());
+        self.scroll(view);
         outcome
     }
 
@@ -548,10 +735,13 @@ impl Edit {
         let visible = view.cells.max(1);
         if self.multiline {
             let column = self.caret - self.line_start_at(self.caret);
-            self.offset = self
-                .offset
-                .max((column + 1).saturating_sub(visible))
-                .min(column);
+            self.offset = match self.wrap_cells {
+                0 => self
+                    .offset
+                    .max((column + 1).saturating_sub(visible))
+                    .min(column),
+                _ => 0,
+            };
             let line = self.line_of(self.caret);
             self.top = self
                 .top
@@ -655,6 +845,32 @@ fn paint_run(
     }
 }
 
+fn paint_bars(
+    surface: &mut Surface<'_>,
+    rect: Rect,
+    edit: &Edit,
+    shown: View,
+    enabled: bool,
+    palette: &Palette,
+) {
+    let (right, bottom) = edit.bar_rects(rect);
+    let look = BarLook {
+        enabled,
+        focused: false,
+        hovered: false,
+    };
+    for (vertical, place) in [(true, right), (false, bottom)] {
+        if let Some(place) = place {
+            let bar = edit.bar_model(vertical, shown);
+            scroll_bar::paint(surface, place, &bar, look, palette);
+        }
+    }
+    if let (Some(right), Some(bottom)) = (right, bottom) {
+        let corner = Rect::new(right.left, bottom.top, right.right, bottom.bottom);
+        surface.fill(corner, palette.scroll_track);
+    }
+}
+
 /// Paints `edit` over the whole of `rect`.
 pub fn paint(
     surface: &mut Surface<'_>,
@@ -686,7 +902,7 @@ pub fn paint(
         ring(surface, rect.inset(DARK_FOCUS_INSET), palette.focus);
     }
     surface.clip_to(rect.inset(1));
-    let shown = view(rect.width(), rect.height());
+    let shown = edit.inner(view(rect.width(), rect.height()));
     let selection_shown = look.enabled && (look.focused || edit.keep_selection);
     let run = Run {
         colour,
@@ -715,16 +931,19 @@ pub fn paint(
                 let top = rect.top + LINES_TOP + row as i32 * CELL_HEIGHT;
                 let first = (line_start + edit.offset).min(end);
                 paint_run(surface, (left, top), edit, (first, end), shown.cells, run);
-                let break_selected = run
-                    .selection
-                    .is_some_and(|(from, to)| (from..to).contains(&end) && end < edit.length);
+                let next = edit.next_line_start(line_start);
+                let hard_break = end < edit.length && next != Some(end);
+                let break_selected = hard_break
+                    && run
+                        .selection
+                        .is_some_and(|(from, to)| (from..to).contains(&end));
                 let break_column = (end - line_start).checked_sub(edit.offset);
                 if let (true, Some(column)) = (break_selected, break_column) {
                     let x = left + column as i32 * CELL_WIDTH;
                     let cell = Rect::sized(x, top, CELL_WIDTH, CELL_HEIGHT);
                     surface.fill(cell, palette.highlight);
                 }
-                start = edit.next_line_start(line_start);
+                start = next;
             }
             let line = edit.line_of(edit.caret);
             let column = edit.caret - edit.line_start_at(edit.caret);
@@ -735,6 +954,9 @@ pub fn paint(
                 surface.fill(Rect::sized(x, top, 1, CELL_HEIGHT), palette.caret);
             }
         }
+    }
+    if edit.multiline {
+        paint_bars(surface, rect, edit, shown, look.enabled, palette);
     }
     surface.set_clip(saved);
 }
@@ -1090,5 +1312,42 @@ mod tests {
         let caret_x = TEXT_INSET + 2 * CELL_WIDTH;
         assert_eq!(surface.get(caret_x, TEXT_INSET + CELL_HEIGHT + 1), Some(LIGHT.caret));
         assert_ne!(surface.get(caret_x, TEXT_INSET + 1), Some(LIGHT.caret));
+    }
+
+    fn units(text: &str) -> Vec<u16> {
+        text.encode_utf16().collect()
+    }
+
+    #[test]
+    fn without_autohscroll_lines_wrap_after_the_last_space_that_fits() {
+        let narrow = View { cells: 8, rows: 4 };
+        let mut edit = Edit::with_style(style::MULTILINE);
+        edit.set_text(&units("hello big world"));
+        edit.fit(narrow);
+        assert_eq!(edit.line_count(), 3);
+        assert_eq!((edit.line_index(1), edit.line_index(2)), (Some(6), Some(10)));
+        assert_eq!(edit.line_end_at(7), 10);
+        assert_eq!((edit.line_of(10), edit.line_start_at(10)), (2, 10));
+        let mut word = Edit::with_style(style::MULTILINE);
+        word.set_text(&units("abcdefghij"));
+        word.fit(narrow);
+        assert_eq!((word.line_count(), word.line_index(1)), (2, Some(8)));
+        let mut scrolling =
+            Edit::with_style(style::MULTILINE | style::AUTO_HORIZONTAL_SCROLL);
+        scrolling.set_text(&units("hello big world"));
+        scrolling.fit(narrow);
+        assert_eq!(scrolling.line_count(), 1);
+    }
+
+    #[test]
+    fn the_edit_s_own_vertical_bar_scrolls_it_a_line_from_its_arrow() {
+        let mut edit = Edit::with_style(style::MULTILINE | style::VERTICAL_SCROLL_BAR);
+        assert_eq!(edit.inner(View { cells: 20, rows: 3 }).cells, 18);
+        edit.set_text(&units("1\r2\r3\r4\r5"));
+        let rect = Rect::new(0, 0, 120, 52);
+        assert!(edit.press_bar(rect, (110, 45), view(120, 52)));
+        assert_eq!(edit.first_visible_line(), 1);
+        assert_eq!(edit.caret(), 0);
+        assert!(!edit.press_bar(rect, (10, 10), view(120, 52)));
     }
 }
