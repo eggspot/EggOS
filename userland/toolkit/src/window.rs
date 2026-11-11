@@ -44,6 +44,7 @@ const SET_FORM: usize = 0x4004_772d;
 const SET_TEXT_FOCUS: usize = 0x4010_7730;
 const ON_SCREEN_KEYBOARD: usize = 0xc014_7731;
 const ON_SCREEN_KEYBOARD_SET_MODE: u32 = 3;
+const SET_ROTATION: usize = 0x4004_7732;
 const MENU_POOL: usize = 8;
 const CAPS_LOCK_FLAG: u32 = 1;
 const KEYBOARD_FLAG: u32 = 2;
@@ -285,6 +286,12 @@ impl WindowServer {
     /// to 4), at once (`SET_FORM`, D303).
     pub fn set_form(&self, setting: u32) -> Result<(), Errno> {
         self.ioctl(SET_FORM, &mut setting.to_ne_bytes())
+    }
+
+    /// Makes `display.rotation` its value number `setting` (`auto`, `0`, `90`, `180`, `270`
+    /// as 0 to 4) and turns the screen at once (`SET_ROTATION`, D330).
+    pub fn set_rotation(&self, setting: u32) -> Result<(), Errno> {
+        self.ioctl(SET_ROTATION, &mut setting.to_ne_bytes())
     }
 
     /// The on-screen keyboard (`ON_SCREEN_KEYBOARD`, D314) after `action` (0 status, 1 show,

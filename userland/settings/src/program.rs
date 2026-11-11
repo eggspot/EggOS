@@ -645,6 +645,13 @@ fn facts(server: Option<&WindowServer>) -> Facts {
                     .position(|mode| mode.as_bytes() == chosen)
             })
             .unwrap_or(0),
+        rotation: settings_file::value(&file[..length], settings_file::DISPLAY_ROTATION)
+            .and_then(|chosen| {
+                settings_file::DISPLAY_ROTATIONS
+                    .iter()
+                    .position(|rotation| rotation.as_bytes() == chosen)
+            })
+            .unwrap_or(0),
     }
 }
 
@@ -1012,6 +1019,23 @@ impl command::Machine for Machine {
             }
         };
         server.set_on_screen_keyboard_mode(index as u32).map_err(Errno::message)
+    }
+
+    fn save_rotation(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let rotation = settings_file::DISPLAY_ROTATIONS[index.min(4)];
+        save_through_a_temporary_file(settings_file::DISPLAY_ROTATION, rotation).map_err(Errno::message)
+    }
+
+    fn apply_rotation(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let opened;
+        let server = match self.server.as_ref() {
+            Some(server) => server,
+            None => {
+                opened = WindowServer::open().map_err(Errno::message)?;
+                &opened
+            }
+        };
+        server.set_rotation(index as u32).map_err(Errno::message)
     }
 
     fn apply_form(&mut self, index: usize) -> Result<(), &'static [u8]> {

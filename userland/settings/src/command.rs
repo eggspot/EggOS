@@ -65,6 +65,16 @@ pub trait Machine {
         let _ = index;
         Ok(())
     }
+    /// Saves `display.rotation` as value `index` of `DISPLAY_ROTATIONS` (D330).
+    fn save_rotation(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let _ = index;
+        Ok(())
+    }
+    /// Has the window server turn the screen to `display.rotation` value `index` now.
+    fn apply_rotation(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let _ = index;
+        Ok(())
+    }
     /// Applies the desktop profile `index` now; the error's text on failure.
     fn apply_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
     /// Saves the desktop's theme to the settings file as `appearance.theme` (D219).
@@ -503,6 +513,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::Profile(index) => machine.save_profile(index),
         Change::Form(index) => machine.save_form(index),
         Change::OnScreenKeyboard(index) => machine.save_on_screen_keyboard(index),
+        Change::DisplayRotation(index) => machine.save_rotation(index),
         Change::Theme(theme) => machine.save_theme(theme),
         Change::KeyboardLayout(_) | Change::KeyboardLayouts(_) | Change::KeyboardSwitchKey(_) => {
             keyboard.map_or(Ok(()), |choice| machine.save_keyboard(choice))
@@ -524,6 +535,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::Profile(index) => machine.apply_profile(index),
         Change::Form(index) => machine.apply_form(index),
         Change::OnScreenKeyboard(index) => machine.apply_on_screen_keyboard(index),
+        Change::DisplayRotation(index) => machine.apply_rotation(index),
         Change::Theme(theme) => machine.apply_theme(theme),
         Change::KeyboardLayout(_) | Change::KeyboardLayouts(_) | Change::KeyboardSwitchKey(_) => {
             keyboard.map_or(Ok(()), |choice| machine.apply_keyboard(choice))

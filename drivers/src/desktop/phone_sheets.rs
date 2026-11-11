@@ -229,8 +229,17 @@ impl Desktop {
                 let high = self.palette >= 2;
                 ("High contrast", if high { "On" } else { "Off" }, high)
             }
-            Tile::Rotation => ("Rotation", "Locked", false),
+            Tile::Rotation => match self.phone.rotation {
+                (true, _) => ("Rotation", "Automatic", true),
+                (false, _) => ("Rotation", "Locked", false),
+            },
         }
+    }
+
+    /// Tells the shade `display.rotation`'s state (D330): whether it is `auto`, and the rotation
+    /// in force by its value's name (`0`, `90`, `180`, `270`), which locking keeps.
+    pub fn set_rotation_choice(&mut self, automatic: bool, in_force: &'static str) {
+        self.phone.rotation = (automatic, in_force);
     }
 
     /// A press in the shade: a tile sets its setting or opens its pane, `Settings` opens
@@ -268,7 +277,13 @@ impl Desktop {
                     key: "accessibility.high_contrast",
                     value: if self.palette >= 2 { "false" } else { "true" },
                 },
-                Tile::Rotation => Action::None,
+                Tile::Rotation => Action::SetSetting {
+                    key: "display.rotation",
+                    value: match self.phone.rotation {
+                        (true, in_force) => in_force,
+                        (false, _) => "auto",
+                    },
+                },
             };
         }
         if contains(self.settings_button(), x, y) {

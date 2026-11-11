@@ -91,6 +91,24 @@ pub const KEYBOARD_ON_SCREEN: &str = "keyboard.on_screen";
 /// The values of [`KEYBOARD_ON_SCREEN`], in the numbering the window server takes.
 pub const KEYBOARD_ON_SCREEN_MODES: [&str; 3] = ["auto", "always", "never"];
 
+/// How far the picture turns clockwise (D330): `auto` (the default: the device's orientation
+/// sensor, or upright without one), `0`, `90`, `180` or `270`.
+pub const DISPLAY_ROTATION: &str = "display.rotation";
+
+/// The values of [`DISPLAY_ROTATION`], in the numbering the window server takes.
+pub const DISPLAY_ROTATIONS: [&str; 5] = ["auto", "0", "90", "180", "270"];
+
+/// The degrees of `display.rotation`'s value number `index`: 0 for `auto` while no device
+/// reports an orientation.
+pub const fn rotation_degrees(index: usize) -> u32 {
+    match index {
+        2 => 90,
+        3 => 180,
+        4 => 270,
+        _ => 0,
+    }
+}
+
 /// The display's scale from the next boot: `1` or `2`.
 pub const DISPLAY_SCALE: &str = "display.scale";
 

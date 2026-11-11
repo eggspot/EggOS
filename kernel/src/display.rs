@@ -116,7 +116,81 @@ pub struct Display {
     boot: Option<BootScreen>,
     pointer: Option<(u32, u32, PointerShape)>,
     scale: u32,
+    rotation: Rotation,
     logical: Vec<u32>,
+}
+
+/// How far the picture turns clockwise on the device (`display.rotation`, D330): the desktop
+/// draws upright at its own size, the device's with width and height swapped for a quarter or
+/// three quarters, and each flush turns what changed onto the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Rotation {
+    #[default]
+    Upright,
+    Quarter,
+    Half,
+    ThreeQuarters,
+}
+
+impl Rotation {
+    /// The rotation of `degrees` (0, 90, 180 or 270).
+    pub const fn of_degrees(degrees: u32) -> Option<Self> {
+        match degrees {
+            0 => Some(Self::Upright),
+            90 => Some(Self::Quarter),
+            180 => Some(Self::Half),
+            270 => Some(Self::ThreeQuarters),
+            _ => None,
+        }
+    }
+
+    /// Whether it swaps width and height.
+    pub const fn swaps(self) -> bool {
+        matches!(self, Self::Quarter | Self::ThreeQuarters)
+    }
+
+    /// The point (`x`, `y`) of an upright picture `width` by `height` once turned: where it
+    /// shows on the device.
+    pub const fn turn(self, x: u32, y: u32, width: u32, height: u32) -> (u32, u32) {
+        match self {
+            Self::Upright => (x, y),
+            Self::Quarter => (height - 1 - y, x),
+            Self::Half => (width - 1 - x, height - 1 - y),
+            Self::ThreeQuarters => (y, width - 1 - x),
+        }
+    }
+
+    /// The point of the upright picture `width` by `height` that shows at device point
+    /// (`x`, `y`): [`Self::turn`] undone.
+    pub const fn unturn(self, x: u32, y: u32, width: u32, height: u32) -> (u32, u32) {
+        match self {
+            Self::Upright => (x, y),
+            Self::Quarter => (y, height - 1 - x),
+            Self::Half => (width - 1 - x, height - 1 - y),
+            Self::ThreeQuarters => (width - 1 - y, x),
+        }
+    }
+
+    /// A movement (`dx`, `dy`) on the device as it reads in the upright picture.
+    pub const fn unturn_delta(self, dx: i32, dy: i32) -> (i32, i32) {
+        match self {
+            Self::Upright => (dx, dy),
+            Self::Quarter => (dy, -dx),
+            Self::Half => (-dx, -dy),
+            Self::ThreeQuarters => (-dy, dx),
+        }
+    }
+
+    /// `rect` of the upright picture `width` by `height` once turned.
+    pub fn turn_rect(self, rect: Rect, width: u32, height: u32) -> Rect {
+        let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
+        match self {
+            Self::Upright => rect,
+            Self::Quarter => Rect::new(height - (y + h), x, h, w),
+            Self::Half => Rect::new(width - (x + w), height - (y + h), w, h),
+            Self::ThreeQuarters => Rect::new(y, width - (x + w), h, w),
+        }
+    }
 }
 
 /// The largest scale a display takes.
@@ -138,8 +212,52 @@ impl Display {
             boot: None,
             pointer: None,
             scale: 1,
+            rotation: Rotation::Upright,
             logical: Vec::new(),
         }
+    }
+
+    /// Whether the desktop draws into the display's own buffer, which flushes scale or turn.
+    fn draws_off_device(&self) -> bool {
+        self.scale > 1 || self.rotation != Rotation::Upright
+    }
+
+    /// Gives the buffer the desktop draws in for the scale and rotation in force: the device's
+    /// own when neither changes the picture. `false` without memory for it.
+    fn reallocate_logical(&mut self) -> bool {
+        if !self.draws_off_device() {
+            self.logical = Vec::new();
+            return true;
+        }
+        let mode = self.mode();
+        let pixels = mode.width as usize * mode.height as usize;
+        let mut logical = Vec::new();
+        if logical.try_reserve_exact(pixels).is_err() {
+            return false;
+        }
+        logical.resize(pixels, 0);
+        self.logical = logical;
+        self.boot = None;
+        self.damage.add(mode.rect());
+        true
+    }
+
+    /// Turns the picture `rotation` clockwise (D330): the framebuffer is new and blank, at the
+    /// size the turn gives; the caller resizes the desktop to [`Self::mode`]. `false` without
+    /// memory for it, the rotation unchanged.
+    pub fn set_rotation(&mut self, rotation: Rotation) -> bool {
+        let previous = self.rotation;
+        self.rotation = rotation;
+        if !self.reallocate_logical() {
+            self.rotation = previous;
+            return false;
+        }
+        true
+    }
+
+    /// The rotation in force.
+    pub fn rotation(&self) -> Rotation {
+        self.rotation
     }
 
     /// Makes the display show at `scale` (1 or 2), drawn at its device's size divided by it;
@@ -148,27 +266,19 @@ impl Display {
     /// starts.
     pub fn set_scale(&mut self, scale: u32) -> bool {
         let device = self.scanout.mode();
-        if scale == 1 {
-            self.scale = 1;
-            self.logical = Vec::new();
-            return true;
-        }
-        if scale != MAX_SCALE
-            || !device.width.is_multiple_of(scale)
-            || !device.height.is_multiple_of(scale)
+        if scale != 1
+            && (scale != MAX_SCALE
+                || !device.width.is_multiple_of(scale)
+                || !device.height.is_multiple_of(scale))
         {
             return false;
         }
-        let pixels = (device.width / scale) as usize * (device.height / scale) as usize;
-        let mut logical = Vec::new();
-        if logical.try_reserve_exact(pixels).is_err() {
+        let previous = self.scale;
+        self.scale = scale;
+        if !self.reallocate_logical() {
+            self.scale = previous;
             return false;
         }
-        logical.resize(pixels, 0);
-        self.logical = logical;
-        self.scale = scale;
-        self.boot = None;
-        self.damage.add(self.mode().rect());
         true
     }
 
@@ -192,9 +302,13 @@ impl Display {
         let booting = self.boot.is_some();
         let scale = self.scale;
         self.scale = 1;
-        self.logical = Vec::new();
         if scale > 1 && eggos_drivers::desktop::Desktop::fits(mode.width / scale, mode.height / scale) {
-            self.set_scale(scale);
+            self.scale = scale;
+        }
+        if !self.reallocate_logical() {
+            self.scale = 1;
+            self.rotation = Rotation::Upright;
+            self.logical = Vec::new();
         }
         self.damage.add(self.mode().rect());
         if booting {
@@ -242,8 +356,8 @@ impl Display {
                 }
             }
             Some((x, y, shape)) if shown == Some(shape) => {
-                self.scanout
-                    .move_pointer((x * self.scale, y * self.scale), deadline)?;
+                let at = self.device_point(x, y);
+                self.scanout.move_pointer(at, deadline)?;
             }
             Some((x, y, shape)) => {
                 let image = self
@@ -252,8 +366,8 @@ impl Display {
                     .ok_or("the display draws no pointer")?;
                 let hotspot =
                     write_cursor_image(shape, image).ok_or("the pointer's image is too small")?;
-                self.scanout
-                    .show_pointer(hotspot, (x * self.scale, y * self.scale), deadline)?;
+                let at = self.device_point(x, y);
+                self.scanout.show_pointer(hotspot, at, deadline)?;
             }
         }
         self.pointer = wanted;
@@ -277,10 +391,21 @@ impl Display {
     }
 
     /// The framebuffer's mode, as the kernel and programs draw in it: the device's divided by
-    /// the scale.
+    /// the scale, width and height swapped when the rotation turns a quarter.
     pub fn mode(&self) -> Mode {
         let device = self.scanout.mode();
-        Mode::new(device.width / self.scale, device.height / self.scale)
+        let (width, height) = (device.width / self.scale, device.height / self.scale);
+        match self.rotation.swaps() {
+            true => Mode::new(height, width),
+            false => Mode::new(width, height),
+        }
+    }
+
+    /// Where the drawn point (`x`, `y`) shows on the device.
+    fn device_point(&self, x: u32, y: u32) -> (u32, u32) {
+        let mode = self.mode();
+        let (x, y) = self.rotation.turn(x.min(mode.width - 1), y.min(mode.height - 1), mode.width, mode.height);
+        (x * self.scale, y * self.scale)
     }
 
     /// How many flushes have shown something.
@@ -291,9 +416,9 @@ impl Display {
     /// Lends `draw` the framebuffer and returns what it returns.
     pub fn draw<R>(&mut self, draw: impl FnOnce(&mut Framebuffer<'_>) -> R) -> R {
         let mode = self.mode();
-        let pixels = match self.scale {
-            1 => self.scanout.pixels(),
-            _ => &mut self.logical[..],
+        let pixels = match self.draws_off_device() {
+            false => self.scanout.pixels(),
+            true => &mut self.logical[..],
         };
         let mut framebuffer = Framebuffer {
             pixels,
@@ -311,6 +436,9 @@ impl Display {
         if self.damage.is_empty() {
             return Ok(0);
         }
+        if self.rotation != Rotation::Upright {
+            return self.flush_turned(deadline);
+        }
         if self.scale > 1 {
             return self.flush_scaled(deadline);
         }
@@ -322,6 +450,42 @@ impl Display {
 }
 
 impl Display {
+    /// Copies what changed onto the device turned by the rotation, each pixel a square of the
+    /// scale, then flushes the device's rectangles.
+    fn flush_turned(&mut self, deadline: &mut Deadline) -> Result<usize, &'static str> {
+        let scale = self.scale;
+        let rotation = self.rotation;
+        let mode = self.mode();
+        let device_width = self.scanout.mode().width as usize;
+        let mut device_damage = Damage::new();
+        let device = self.scanout.pixels();
+        for rect in self.damage.rects() {
+            for y in rect.y..rect.bottom().min(mode.height) {
+                for x in rect.x..rect.right().min(mode.width) {
+                    let pixel = self.logical[(y * mode.width + x) as usize];
+                    let (turned_x, turned_y) = rotation.turn(x, y, mode.width, mode.height);
+                    for row in 0..scale {
+                        let start = (turned_y * scale + row) as usize * device_width + (turned_x * scale) as usize;
+                        if let Some(target) = device.get_mut(start..start + scale as usize) {
+                            target.fill(pixel);
+                        }
+                    }
+                }
+            }
+            let turned = rotation.turn_rect(*rect, mode.width, mode.height);
+            device_damage.add(Rect::new(
+                turned.x * scale,
+                turned.y * scale,
+                turned.width * scale,
+                turned.height * scale,
+            ));
+        }
+        let shown = self.scanout.flush(device_damage.rects(), deadline)?;
+        self.damage.clear();
+        self.flushes += 1;
+        Ok(shown)
+    }
+
     fn flush_scaled(&mut self, deadline: &mut Deadline) -> Result<usize, &'static str> {
         let scale = self.scale;
         let logical_width = self.mode().width as usize;
@@ -429,6 +593,32 @@ pub fn install<S: Scanout + 'static>(scanout: S) -> Result<(), S> {
     }
     *display = Some(Box::new(Display::new(Box::new(scanout))));
     Ok(())
+}
+
+/// The rotation in force (D330), kept apart from the display's lock so the input layer reads
+/// it from anywhere; upright without a display.
+static ROTATION: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// The rotation in force (D330).
+pub fn rotation() -> Rotation {
+    match ROTATION.load(core::sync::atomic::Ordering::Relaxed) {
+        1 => Rotation::Quarter,
+        2 => Rotation::Half,
+        3 => Rotation::ThreeQuarters,
+        _ => Rotation::Upright,
+    }
+}
+
+/// Turns the display's picture ([`Display::set_rotation`]); the mode the desktop now draws at,
+/// or `None` without a display or memory, or when it already turned so.
+pub fn set_rotation(rotation: Rotation) -> Option<Mode> {
+    let mut display = DISPLAY.lock();
+    let display = display.as_mut()?;
+    if display.rotation() == rotation || !display.set_rotation(rotation) {
+        return None;
+    }
+    ROTATION.store(rotation as u8, core::sync::atomic::Ordering::Relaxed);
+    Some(display.mode())
 }
 
 /// Makes the display show at `scale` ([`Display::set_scale`]); whether it could.

@@ -389,6 +389,11 @@ pub fn ioctl<P: Platform>(
                 return Err(Errno::EINVAL);
             }
         }
+        Request::SetRotation { setting } => {
+            if !crate::terminal::set_rotation_setting::<P>(setting) {
+                return Err(Errno::EINVAL);
+            }
+        }
         Request::BackUnused { window } => {
             on_windows::<P, _>(|desktop, _, damage, events| {
                 desktop.back_unused(client, window, damage, events);

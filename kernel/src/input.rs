@@ -1212,20 +1212,25 @@ impl InputState {
         report.touch_slot = touch_slot;
         let report = report_now;
         if let Some((width, height)) = screen.filter(|&(width, height)| width > 0 && height > 0) {
-            let (mut x, mut y) = self.pointer;
+            let rotation = crate::display::rotation();
+            let (mut x, mut y) = (self.pointer.0.min(width - 1), self.pointer.1.min(height - 1));
             if let Some((x_range, y_range)) = capabilities.absolute {
+                let (device_width, device_height) = turned_size(rotation, width, height);
+                let (mut device_x, mut device_y) = rotation.turn(x, y, width, height);
                 if let Some(value) = report.x {
-                    x = scale_to_screen(value, x_range, width);
+                    device_x = scale_to_screen(value, x_range, device_width);
                 }
                 if let Some(value) = report.y {
-                    y = scale_to_screen(value, y_range, height);
+                    device_y = scale_to_screen(value, y_range, device_height);
                 }
+                (x, y) = rotation.unturn(device_x, device_y, width, height);
             }
             let moved =
                 |at: u32, delta: i32, size: u32| at.saturating_add_signed(delta).min(size - 1);
             let speed = POINTER_SPEED.load(Ordering::Relaxed);
-            x = moved(x, sped(report.dx, speed), width);
-            y = moved(y, sped(report.dy, speed), height);
+            let (dx, dy) = rotation.unturn_delta(report.dx, report.dy);
+            x = moved(x, sped(dx, speed), width);
+            y = moved(y, sped(dy, speed), height);
             if (x, y) != self.pointer {
                 self.pointer = (x, y);
                 sink.event(InputEvent::PointerMove { x, y });
@@ -1296,9 +1301,13 @@ impl InputState {
         ) else {
             return;
         };
+        let rotation = crate::display::rotation();
+        let (device_width, device_height) = turned_size(rotation, width, height);
         let at = self.second_touch.unwrap_or(self.pointer);
-        let x = report.second_x.map_or(at.0, |value| scale_to_screen(value, x_range, width));
-        let y = report.second_y.map_or(at.1, |value| scale_to_screen(value, y_range, height));
+        let (at_x, at_y) = rotation.turn(at.0.min(width - 1), at.1.min(height - 1), width, height);
+        let device_x = report.second_x.map_or(at_x, |value| scale_to_screen(value, x_range, device_width));
+        let device_y = report.second_y.map_or(at_y, |value| scale_to_screen(value, y_range, device_height));
+        let (x, y) = rotation.unturn(device_x, device_y, width, height);
         match report.second_down {
             Some(true) if self.second_touch.is_none() => {
                 self.second_touch = Some((x, y));
@@ -1461,6 +1470,15 @@ static CAPS_LOCK: AtomicBool = AtomicBool::new(false);
 
 /// The multi-touch slot whose finger moves the pointer and presses its left button: the first
 /// finger down, as a single-touch screen behaves (D296).
+/// The device's own width and height for a picture `width` by `height` the display turns by
+/// `rotation` (D330): an absolute device's axes are the device's.
+fn turned_size(rotation: crate::display::Rotation, width: u32, height: u32) -> (u32, u32) {
+    match rotation.swaps() {
+        true => (height, width),
+        false => (width, height),
+    }
+}
+
 const PRIMARY_TOUCH: i32 = 0;
 /// The multi-touch slot of the second finger, which the on-screen keyboard types with (D329).
 const SECOND_TOUCH_SLOT: i32 = 1;

@@ -94,6 +94,7 @@ pub mod size {
     pub const BACK_UNUSED: usize = 4;
     pub const SET_TEXT_FOCUS: usize = 16;
     pub const ON_SCREEN_KEYBOARD: usize = 20;
+    pub const SET_ROTATION: usize = 4;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -152,6 +153,7 @@ pub mod request {
     pub const BACK_UNUSED: u32 = encode(WRITE, 47, size::BACK_UNUSED);
     pub const SET_TEXT_FOCUS: u32 = encode(WRITE, 48, size::SET_TEXT_FOCUS);
     pub const ON_SCREEN_KEYBOARD: u32 = encode(READ | WRITE, 49, size::ON_SCREEN_KEYBOARD);
+    pub const SET_ROTATION: u32 = encode(WRITE, 50, size::SET_ROTATION);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -552,6 +554,10 @@ pub enum Request {
     OnScreenKeyboard {
         action: u32,
     },
+    /// `display.rotation` set: its value's number, applied at once (D330).
+    SetRotation {
+        setting: u32,
+    },
     AppsChanged,
     OpenApp {
         length: u32,
@@ -728,6 +734,7 @@ impl Request {
             request::BACK_UNUSED => size::BACK_UNUSED,
             request::SET_TEXT_FOCUS => size::SET_TEXT_FOCUS,
             request::ON_SCREEN_KEYBOARD => size::ON_SCREEN_KEYBOARD,
+            request::SET_ROTATION => size::SET_ROTATION,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::GET_LAUNCH => size::GET_LAUNCH,
@@ -845,6 +852,7 @@ impl Request {
                 cause: at(12),
             },
             request::ON_SCREEN_KEYBOARD => Self::OnScreenKeyboard { action: at(0) },
+            request::SET_ROTATION => Self::SetRotation { setting: at(0) },
             request::SET_REDUCE_MOTION => Self::SetReduceMotion { reduce: at(0) },
             request::APPS_CHANGED => Self::AppsChanged,
             request::OPEN_APP => {

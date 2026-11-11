@@ -21408,3 +21408,38 @@ the license, by an explicit instruction recorded here.
     end across lines too: handles now keep the grab's vertical offset as well.
 - **Not yet.** The second finger's key is not drawn pressed. The orientation of the screen
   (`display.rotation`) is the next slice.
+
+## D330 The screen turns: `display.rotation` (docs/ux/adaptive-shell-v0.5.md 1.4 and 2.10; M12; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - **The display turns the picture** (`kernel/src/display.rs`).
+    - `Rotation`: upright, a quarter, a half, three quarters, clockwise.
+    - When the display turns, the desktop draws upright into the display's own buffer, at
+      the device's size with width and height swapped for a quarter turn. `flush_turned`
+      copies each damaged rectangle onto the device, turned, at the scale in force, and
+      flushes the turned rectangles.
+    - The pointer's position on the device is turned too.
+    - The scale and the turn share one buffer (`reallocate_logical`), given only when either
+      changes the picture.
+  - **Input follows** (`kernel/src/input.rs`). An absolute device's axes are the device's, so
+    the first and second fingers are scaled to the device's size and turned back into the
+    upright picture. A mouse's movement is turned back as well. The rotation sits in an
+    atomic the input layer reads without the display's lock.
+  - **The setting** `display.rotation`: `auto` (the default: an orientation sensor, or
+    upright without one, as no driver reports orientation yet), `0`, `90`, `180`, `270`
+    (`eggos_settings_file::DISPLAY_ROTATIONS`).
+    - **At boot.** The kernel applies it before the desktop starts.
+    - **Set later.** The window server's new `SET_ROTATION` request (50, one word) turns the
+      screen at once and resizes the desktop to the new size. The settings program sends it
+      after saving, as for `keyboard.on_screen`.
+    - **Three front-ends (D22).** `settings set display.rotation 90` (CLI), `settings_set`
+      (MCP), and the phone shade's `Rotation` tile (GUI), which switches between `auto` and
+      the rotation in force (`Automatic`/`Locked`), as the design says.
+- **Not yet.**
+  - **Sensors.** No orientation sensor driver, so `auto` stays upright.
+  - **The pointer sprite.** The pointer's sprite does not turn.
+  - **Holding an orientation.** An app cannot hold the screen in one orientation (the
+    design leaves that for later).
+  - **The desktop's Display pane.** It has no rotation row; the design gives the shade
+    tile only.
+  - **Build-pass notes.** Settings' `Key::ALL` is 39. Protocol request 50 is taken.

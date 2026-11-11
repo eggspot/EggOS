@@ -76,6 +76,8 @@ pub struct Facts {
     pub input_kinds: u32,
     /// `keyboard.on_screen`: its index in `KEYBOARD_ON_SCREEN_MODES` (D314).
     pub on_screen_keyboard: usize,
+    /// `display.rotation`: its index in `DISPLAY_ROTATIONS` (D330).
+    pub rotation: usize,
 }
 
 /// The values `shell.form` takes, in `SET_FORM`'s numbering (D303).
@@ -131,6 +133,7 @@ impl Facts {
             network_adapter: eggos_net::status::parse_interface(EXAMPLE_ADAPTER.as_bytes()),
             form_setting: 0,
             on_screen_keyboard: 0,
+            rotation: 0,
             form_in_use: 0,
             input_kinds: 6,
         }

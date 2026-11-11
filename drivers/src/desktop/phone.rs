@@ -80,6 +80,9 @@ pub(super) struct PhoneState {
     pub(super) switcher_scroll: u32,
     pub(super) shade: bool,
     pub(super) power_sheet: bool,
+    /// `display.rotation`: whether it is `auto`, and the rotation in force by its value's name
+    /// (D330), for the shade's `Rotation` tile.
+    pub(super) rotation: (bool, &'static str),
     pub(super) notices: [&'static str; super::phone_sheets::NOTICES_KEPT],
     pub(super) notice_count: usize,
     awaiting_back: Option<u8>,
@@ -98,6 +101,7 @@ impl Default for PhoneState {
             switcher_scroll: 0,
             shade: false,
             power_sheet: false,
+            rotation: (true, "0"),
             notices: [""; super::phone_sheets::NOTICES_KEPT],
             notice_count: 0,
             awaiting_back: None,

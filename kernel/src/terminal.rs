@@ -270,6 +270,35 @@ pub fn desktop_profile() -> Profile {
 static CHOSEN_FORM: AtomicU8 = AtomicU8::new(0);
 static CHOSEN_ON_SCREEN_KEYBOARD: AtomicU8 = AtomicU8::new(0);
 
+static CHOSEN_ROTATION: AtomicU8 = AtomicU8::new(0);
+
+/// The setting `display.rotation` (D330): its index in
+/// [`eggos_settings_file::DISPLAY_ROTATIONS`], what the file held at boot or the last
+/// `SET_ROTATION` set.
+pub fn rotation_setting() -> u32 {
+    u32::from(CHOSEN_ROTATION.load(Ordering::Relaxed))
+}
+
+/// Makes `display.rotation` the value numbered `index` in
+/// [`eggos_settings_file::DISPLAY_ROTATIONS`] and turns the screen at once: the display's
+/// picture, then the desktop at its new size; `false` for no such value.
+pub fn set_rotation_setting<P: Platform>(index: u32) -> bool {
+    if index as usize >= eggos_settings_file::DISPLAY_ROTATIONS.len() {
+        return false;
+    }
+    CHOSEN_ROTATION.store(index as u8, Ordering::Relaxed);
+    let degrees = eggos_settings_file::rotation_degrees(index as usize);
+    let Some(rotation) = crate::display::Rotation::of_degrees(degrees) else {
+        return false;
+    };
+    if let Some(mode) = crate::display::set_rotation(rotation) {
+        with_windows::<P, _>(|desktop, _, damage, events| {
+            desktop.resize(mode.width, mode.height, damage, events);
+        });
+    }
+    true
+}
+
 /// Sets `keyboard.on_screen` (D314): auto, always, never as 0 to 2, from the next frame on.
 pub fn set_on_screen_keyboard_mode(mode: u32) {
     CHOSEN_ON_SCREEN_KEYBOARD.store(mode.min(2) as u8, Ordering::Relaxed);
@@ -433,6 +462,19 @@ pub fn load_saved_settings<P: Platform>() {
         })
     {
         CHOSEN_FORM.store(index as u8, Ordering::Relaxed);
+    }
+    if let Some(index) = eggos_settings_file::value(&file[..length], eggos_settings_file::DISPLAY_ROTATION)
+        .and_then(|chosen| {
+            eggos_settings_file::DISPLAY_ROTATIONS
+                .iter()
+                .position(|rotation| rotation.as_bytes() == chosen)
+        })
+    {
+        CHOSEN_ROTATION.store(index as u8, Ordering::Relaxed);
+        let degrees = eggos_settings_file::rotation_degrees(index);
+        if let Some(rotation) = crate::display::Rotation::of_degrees(degrees) {
+            crate::display::set_rotation(rotation);
+        }
     }
     if let Some(mode) = eggos_settings_file::value(&file[..length], eggos_settings_file::KEYBOARD_ON_SCREEN)
         .and_then(|chosen| {
@@ -888,6 +930,13 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
     }
     desktop.set_agent_connected(AGENT_CONNECTED.load(Ordering::Relaxed), damage);
     apply_form(desktop, damage, &mut queues);
+    let in_force = match crate::display::rotation() {
+        crate::display::Rotation::Upright => "0",
+        crate::display::Rotation::Quarter => "90",
+        crate::display::Rotation::Half => "180",
+        crate::display::Rotation::ThreeQuarters => "270",
+    };
+    desktop.set_rotation_choice(rotation_setting() == 0, in_force);
     let preferences = input::preferences();
     desktop.set_on_screen_keyboard(
         eggos_drivers::desktop::OnScreenKeyboardMode::from_number(u32::from(

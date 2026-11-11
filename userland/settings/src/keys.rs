@@ -33,6 +33,7 @@ pub enum Key {
     DisplayResolution,
     DisplaySize,
     DisplayResolutionChangeable,
+    DisplayRotation,
     DisplayPointer,
     KeyboardLayout,
     KeyboardLayouts,
@@ -95,6 +96,8 @@ pub enum Change {
     /// When the on-screen keyboard shows: its index in `KEYBOARD_ON_SCREEN_MODES`, applied at
     /// once (D314).
     OnScreenKeyboard(usize),
+    /// How far the screen turns: its index in `DISPLAY_ROTATIONS`, applied at once (D330).
+    DisplayRotation(usize),
     /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
     TimeZone(usize),
     /// Whether the clock is set from the network; turning it on syncs at once (D225).
@@ -345,7 +348,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 39] = [
         Self::ShellProfile,
         Self::ShellForm,
         Self::ShellFormInUse,
@@ -355,6 +358,7 @@ impl Key {
         Self::DisplayResolution,
         Self::DisplaySize,
         Self::DisplayResolutionChangeable,
+        Self::DisplayRotation,
         Self::DisplayPointer,
         Self::KeyboardLayout,
         Self::KeyboardLayouts,
@@ -398,6 +402,7 @@ impl Key {
             Self::DisplayResolution => eggos_settings_file::DISPLAY_RESOLUTION,
             Self::DisplaySize => "display.size",
             Self::DisplayResolutionChangeable => "display.resolution_changeable",
+            Self::DisplayRotation => eggos_settings_file::DISPLAY_ROTATION,
             Self::DisplayPointer => "display.pointer",
             Self::KeyboardLayout => eggos_settings_file::KEYBOARD_LAYOUT,
             Self::KeyboardLayouts => eggos_settings_file::KEYBOARD_LAYOUT_SET,
@@ -444,6 +449,7 @@ impl Key {
                 | Self::AppearanceTheme
                 | Self::DisplayScale
                 | Self::DisplayResolution
+                | Self::DisplayRotation
                 | Self::KeyboardLayout
                 | Self::KeyboardLayouts
                 | Self::KeyboardSwitchKey
@@ -473,6 +479,7 @@ impl Key {
             }
             Self::KeyboardSwitchKey => write_choices(&mut choices, &SwitchKey::NAMES),
             Self::KeyboardOnScreen => write_choices(&mut choices, &eggos_settings_file::KEYBOARD_ON_SCREEN_MODES),
+            Self::DisplayRotation => write_choices(&mut choices, &eggos_settings_file::DISPLAY_ROTATIONS),
             Self::TimeZone => {
                 let _ = choices.write_str(ZONE_CHOICES);
             }
@@ -572,6 +579,9 @@ impl Key {
             Self::KeyboardOnScreen => value.write_str(
                 eggos_settings_file::KEYBOARD_ON_SCREEN_MODES[facts.on_screen_keyboard.min(2)],
             ),
+            Self::DisplayRotation => value.write_str(
+                eggos_settings_file::DISPLAY_ROTATIONS[facts.rotation.min(4)],
+            ),
             Self::TimeZone => value.write_str(
                 eggos_calendar::zone::ZONES
                     .get(facts.time_zone)
@@ -644,6 +654,11 @@ impl Key {
                 .iter()
                 .position(|mode| *mode == value)
                 .map(Change::OnScreenKeyboard)
+                .ok_or(Refusal::InvalidValue),
+            Self::DisplayRotation => eggos_settings_file::DISPLAY_ROTATIONS
+                .iter()
+                .position(|rotation| *rotation == value)
+                .map(Change::DisplayRotation)
                 .ok_or(Refusal::InvalidValue),
             Self::KeyboardSwitchKey => SwitchKey::named(value.as_bytes())
                 .map(Change::KeyboardSwitchKey)
