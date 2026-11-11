@@ -21655,3 +21655,32 @@ the license, by an explicit instruction recorded here.
   - Windows' larger default limit (30,000 characters): the edit still holds `EDIT_CAPACITY`
     (1,024) units.
   - `EM_SETRECT`, `EM_SETTABSTOPS` and `EM_FMTLINES`.
+
+## D342 Windows: a window's own scroll bars (`WS_VSCROLL`, `WS_HSCROLL`) (batch part 10's rest, D228's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' standard scroll bar behaviour; the look is the design's scroll bar, docs/ux/windows-controls-v0.3.md section 14)
+
+- **Decision.** A program's window (top-level or child) with `WS_VSCROLL` or `WS_HSCROLL` has
+  its own bars, `SB_VERT` and `SB_HORZ`, kept in its window entry (`Window::bars`).
+  - **Where.** The vertical bar takes a `scroll_bar::WIDTH` (16 pixel) strip right of the client
+    area and the horizontal one a strip under it; with both, the corner square is the track's
+    colour. `Window::fit_client` sets the client area to the window's size less its menu bar
+    and its bars whenever the size, the menu or the style changes, so `GetClientRect`,
+    painting, clipping and `WM_SIZE` all see the smaller area. The system's controls keep
+    drawing their own bars inside themselves (a list box's, a combo box's list).
+  - **Painting.** The bars are painted on the top-level buffer each time it is shown
+    (`paint::show_pending`, under any open drop-down) and when the program changes one.
+  - **The pointer.** A press on a bar is the bar's, before the program sees it: arrows, the
+    track and the thumb behave as the `SCROLLBAR` control does, and the bar keeps the pointer
+    until the release. Each step posts `WM_VSCROLL` or `WM_HSCROLL` to the window itself with
+    a `lParam` of 0, thumb drags as `SB_THUMBTRACK` and `SB_THUMBPOSITION`, then
+    `SB_ENDSCROLL`.
+  - **Functions.** `SetScrollInfo`, `GetScrollInfo` (with `SIF_TRACKPOS` while dragging),
+    `SetScrollPos`, `GetScrollPos`, `SetScrollRange` and `GetScrollRange` take `SB_HORZ` and
+    `SB_VERT` as well as `SB_CTL`. A new range or page that makes a bar needed shows it, and
+    one that makes it unneeded hides it unless `SIF_DISABLENOSCROLL` is given, as on Windows.
+    `ShowScrollBar` shows or hides `SB_HORZ`, `SB_VERT` and `SB_BOTH` (and a scroll bar
+    control, as a window). A bar shown or hidden refits the client area and sends `WM_SIZE`.
+- **Not yet.**
+  - The arrows' repeat while held (the control's repeat timer is per control window).
+  - `EnableScrollBar`, `ScrollWindowEx` and `ScrollWindow`, and the bars' own window menu.
+  - An `EDIT`'s and a `LISTBOX`'s bars as non-client bars (they draw inside themselves).
+  - `WM_NCHITTEST` answering `HTVSCROLL` and `HTHSCROLL`.

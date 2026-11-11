@@ -152,12 +152,12 @@ fn place_child(
         let (width, height) = size.unwrap_or((old.width(), old.height()));
         let bounds = Rect::sized(x, y, width.max(0), height.max(0));
         entry.bounds = bounds;
-        entry.width = bounds.width() as u32;
-        entry.height = bounds.height() as u32;
+        entry.fit_client();
+        let client = (entry.width as i32, entry.height as i32);
         let parent = entry.parent;
         let changed = old.width() != bounds.width() || old.height() != bounds.height();
         windows::invalidate_tree(&mut gui.windows, parent, Some(old.union(&bounds)), true);
-        Ok(changed.then_some(point_parameter(bounds.width(), bounds.height())))
+        Ok(changed.then_some(point_parameter(client.0, client.1)))
     })?;
     if let Some(size) = resized {
         gui::send(window, message::SIZE, message::SIZE_RESTORED, size);

@@ -4,6 +4,7 @@
 //! `GetWindowLongPtrW` and `SetWindowLongPtrW` read and write.
 
 use super::slots::Slots;
+use eggos_windows_gui::controls::scroll_bar::ScrollBar;
 use eggos_windows_gui::surface::Rect;
 
 /// The most windows a program has at once, child windows included (the window server's limit
@@ -16,6 +17,12 @@ pub const MAX_EXTRA: usize = 256;
 const HANDLE_BASE: usize = 0x1_0000;
 /// The style bit of a window that takes no input (`WS_DISABLED`): its enabled state.
 pub const WS_DISABLED: u32 = 0x0800_0000;
+/// A window with its own vertical scroll bar (D342).
+pub const WS_VSCROLL: u32 = 0x0020_0000;
+/// A window with its own horizontal scroll bar (D342).
+pub const WS_HSCROLL: u32 = 0x0010_0000;
+/// How wide a window's own vertical scroll bar is, and how tall its horizontal one.
+pub const SCROLL_BAR_SIZE: i32 = eggos_windows_gui::controls::scroll_bar::WIDTH;
 
 /// `GetWindowLongPtrW`'s indices below 0.
 pub mod index {
@@ -118,6 +125,16 @@ pub struct Window {
     pub dialog_end: Option<isize>,
     /// The window menu `GetSystemMenu` made for a top-level window, 0 until then.
     pub system_menu: usize,
+    /// Its own scroll bars, `SB_HORZ` and `SB_VERT` (D342), shown by `WS_HSCROLL` and
+    /// `WS_VSCROLL` on the program's windows.
+    pub bars: WindowBars,
+}
+
+/// A window's own scroll bars (D342).
+#[derive(Debug, Clone, Copy)]
+pub struct WindowBars {
+    pub horizontal: ScrollBar,
+    pub vertical: ScrollBar,
 }
 
 /// Where a window draws: its top-level window, the point of that window's buffer its client
@@ -183,6 +200,10 @@ impl Window {
             subclass: 0,
             dialog_end: None,
             system_menu: 0,
+            bars: WindowBars {
+                horizontal: ScrollBar::new(false),
+                vertical: ScrollBar::new(true),
+            },
         }
     }
 
@@ -232,8 +253,55 @@ impl Window {
     /// Sets the menu bar's height and the client area under it.
     pub fn set_menu_height(&mut self, height: i32) {
         self.menu_height = height.clamp(0, self.buffer_height as i32);
-        self.width = self.buffer_width;
-        self.height = self.buffer_height - self.menu_height as u32;
+        self.fit_client();
+    }
+
+    /// Whether its own `vertical` (or horizontal) scroll bar shows: a program's window with
+    /// `WS_VSCROLL` (or `WS_HSCROLL`); the system's controls draw their own.
+    pub fn shows_bar(&self, vertical: bool) -> bool {
+        let bit = match vertical {
+            true => WS_VSCROLL,
+            false => WS_HSCROLL,
+        };
+        self.style & bit != 0 && matches!(self.procedure, Procedure::Program(_))
+    }
+
+    /// Sets the client area to the window's size less its menu bar and its own scroll bars.
+    pub fn fit_client(&mut self) {
+        let (width, height) = match self.is_child() {
+            true => (self.bounds.width(), self.bounds.height()),
+            false => (
+                self.buffer_width as i32,
+                self.buffer_height as i32 - self.menu_height,
+            ),
+        };
+        let less = |shown: bool| if shown { SCROLL_BAR_SIZE } else { 0 };
+        self.width = (width - less(self.shows_bar(true))).max(0) as u32;
+        self.height = (height - less(self.shows_bar(false))).max(0) as u32;
+    }
+
+    /// Where its own `vertical` (or horizontal) scroll bar is, in its client area's
+    /// coordinates: right of the client area or under it.
+    pub fn bar_rect(&self, vertical: bool) -> Option<Rect> {
+        let (width, height) = (self.width as i32, self.height as i32);
+        self.shows_bar(vertical).then(|| match vertical {
+            true => Rect::sized(width, 0, SCROLL_BAR_SIZE, height),
+            false => Rect::sized(0, height, width, SCROLL_BAR_SIZE),
+        })
+    }
+
+    pub fn bar(&self, vertical: bool) -> &ScrollBar {
+        match vertical {
+            true => &self.bars.vertical,
+            false => &self.bars.horizontal,
+        }
+    }
+
+    pub fn bar_mut(&mut self, vertical: bool) -> &mut ScrollBar {
+        match vertical {
+            true => &mut self.bars.vertical,
+            false => &mut self.bars.horizontal,
+        }
     }
 
     /// The client area, `(0, 0)` to its size.
@@ -302,7 +370,10 @@ impl Window {
             index::INSTANCE => self.instance = value,
             index::PARENT => self.owner = value,
             index::ID => self.id = value,
-            index::STYLE => self.style = value as u32,
+            index::STYLE => {
+                self.style = value as u32;
+                self.fit_client();
+            }
             index::EX_STYLE => self.ex_style = value as u32,
             index::USER_DATA => self.user_data = value,
             offset => {
@@ -1073,5 +1144,32 @@ mod tests {
         table.get_mut(third).unwrap().invalidate(None, true);
         assert_eq!(needing_paint(&table, root, 0), Some(third));
         assert_eq!(needing_paint(&table, second, 0), None);
+    }
+
+    #[test]
+    fn a_program_window_s_own_bars_take_their_strips_from_its_client_area() {
+        let mut top = window();
+        top.style = WS_VSCROLL | WS_HSCROLL;
+        top.set_menu_height(24);
+        assert_eq!(
+            (top.width, top.height),
+            (400 - SCROLL_BAR_SIZE as u32, 300 - 24 - SCROLL_BAR_SIZE as u32)
+        );
+        assert_eq!(
+            top.bar_rect(true),
+            Some(Rect::sized(400 - SCROLL_BAR_SIZE, 0, SCROLL_BAR_SIZE, 300 - 24 - SCROLL_BAR_SIZE))
+        );
+        let mut child = child(1, Rect::sized(10, 10, 100, 50));
+        child.set_long(index::STYLE, 4, WS_VSCROLL as usize);
+        assert_eq!((child.width, child.height), (100 - SCROLL_BAR_SIZE as u32, 50));
+        assert_eq!(child.bar_rect(false), None);
+        let mut control = Window::child(
+            Procedure::Control(ControlKind::ListBox, 0),
+            1,
+            Rect::sized(0, 0, 100, 50),
+        );
+        control.style = WS_VSCROLL;
+        control.fit_client();
+        assert_eq!((control.width, control.height), (100, 50));
     }
 }

@@ -88,6 +88,8 @@ pub struct Gui {
     pub menus: usize,
     pub tracking: Option<super::menu::Tracking>,
     pub combo: Option<super::combo_box::Tracking>,
+    /// The window's own scroll bar the pointer holds (D342).
+    pub held_bar: Option<super::window_scroll_bars::Held>,
     pub active_root: usize,
     pub drawn: DrawnTexts,
     /// The item a context menu (`TrackPopupMenuEx`) closed with, 0 for none, until taken.
@@ -122,6 +124,7 @@ impl Gui {
             menus: 0,
             tracking: None,
             combo: None,
+            held_bar: None,
             active_root: 0,
             drawn: DrawnTexts::new(),
             menu_choice: None,
@@ -599,6 +602,7 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
 enum Routed {
     Menu(super::menu::Effect),
     Combo(super::combo_box::Effect),
+    Bars(Option<eggos_windows_gui::surface::Rect>),
     Queued,
     Dropped,
 }
@@ -650,6 +654,12 @@ fn input_event(device: &Device, root: usize, thread: u32, input: &Input) -> Opti
             }
             return Routed::Menu(effect);
         }
+        if let Some(painted) = super::window_scroll_bars::input(gui, root, number, point) {
+            if hovers {
+                super::hover::pointer_input(gui, None, input.time);
+            }
+            return Routed::Bars(painted);
+        }
         if hovers {
             let under = under_pointer(gui, root, point);
             super::hover::pointer_input(gui, under, input.time);
@@ -672,6 +682,10 @@ fn input_event(device: &Device, root: usize, thread: u32, input: &Input) -> Opti
     match routed {
         Some(Routed::Menu(effect)) => super::menu::finish_input(device, root, thread, effect),
         Some(Routed::Combo(effect)) => super::combo_box::finish_input(device, root, effect),
+        Some(Routed::Bars(painted)) => {
+            super::window_scroll_bars::finish_input(root, painted);
+            None
+        }
         _ => None,
     }
 }

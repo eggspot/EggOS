@@ -212,8 +212,9 @@ pub fn finish(hdc: usize) -> bool {
     }
 }
 
-/// Takes `root`'s region to show (all of it at its first commit, with the menu bar), with an
-/// open drop-down painted over it: the commit to make, if any.
+/// Takes `root`'s region to show (all of it at its first commit, with the menu bar), with its
+/// windows' own scroll bars (D342) and an open drop-down painted over it: the commit to make,
+/// if any.
 pub fn show_pending(
     gui: &mut Gui,
     root: usize,
@@ -228,12 +229,13 @@ pub fn show_pending(
     if first {
         super::menu::paint_bar(gui, root);
     }
+    let bars = super::window_scroll_bars::paint_tree(gui, root);
     let dropped = super::menu::paint_open_drop_down(gui, root);
     let listed = super::combo_box::paint_open_list(gui, root);
     match first {
         true => Some((device, server, None)),
         false => {
-            let area = [dropped, listed]
+            let area = [bars, dropped, listed]
                 .into_iter()
                 .flatten()
                 .fold(pending, |area, over| area.union(&over));

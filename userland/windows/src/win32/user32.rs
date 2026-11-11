@@ -364,6 +364,7 @@ pub(super) unsafe extern "efiapi" fn create_window_ex_w(
     window.ex_style = ex_style;
     window.instance = instance;
     window.id = menu;
+    window.fit_client();
     window.owner = parent;
     window.extra_length = class_of.window_extra as usize;
     window.background = class_of.background;
@@ -594,6 +595,7 @@ fn create_program_child(
     window.extra_length = class_of.window_extra as usize;
     window.background = class_of.background;
     window.class_style = class_of.style;
+    window.fit_client();
     window.shown = request.style & WS_VISIBLE != 0;
     insert_child(window, request.text)
 }
