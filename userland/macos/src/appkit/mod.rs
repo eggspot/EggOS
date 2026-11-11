@@ -8,7 +8,7 @@
 //! window, and every window answers agents with its views as an element tree (D175); compiled
 //! nibs are loaded into these classes (D232). `NSCursor` chooses the server's pointer shapes and
 //! `NSPasteboard` reads and writes the clipboard every app shares (D233). `NSScrollView` shows part of
-//! a document view through its clip view (D372).
+//! a document view through its clip view (D372), and `NSTableView` a data source's rows (D373).
 
 mod about;
 mod alert;
@@ -23,6 +23,7 @@ mod nib;
 mod pasteboard;
 mod scroll_view;
 mod server;
+mod table_view;
 mod view;
 mod window;
 
@@ -60,6 +61,9 @@ class_pairs! {
     NSSCROLLVIEW, NSSCROLLVIEW_META;
     NSCLIPVIEW, NSCLIPVIEW_META;
     NSSCROLLER, NSSCROLLER_META;
+    NSTABLEVIEW, NSTABLEVIEW_META;
+    NSTABLECOLUMN, NSTABLECOLUMN_META;
+    NSINDEXSET, NSINDEXSET_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -172,6 +176,7 @@ pub fn set_up() -> bool {
             && pasteboard::define(runtime)
             && scroll_view::define(runtime)
             && scroll_view::extend_views(runtime)
+            && table_view::define(runtime)
     });
     defined && drawing::set_up()
 }
@@ -218,6 +223,12 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSClipView" => class(&NSCLIPVIEW_META),
         b"_OBJC_CLASS_$_NSScroller" => class(&NSSCROLLER),
         b"_OBJC_METACLASS_$_NSScroller" => class(&NSSCROLLER_META),
+        b"_OBJC_CLASS_$_NSTableView" => class(&NSTABLEVIEW),
+        b"_OBJC_METACLASS_$_NSTableView" => class(&NSTABLEVIEW_META),
+        b"_OBJC_CLASS_$_NSTableColumn" => class(&NSTABLECOLUMN),
+        b"_OBJC_METACLASS_$_NSTableColumn" => class(&NSTABLECOLUMN_META),
+        b"_OBJC_CLASS_$_NSIndexSet" => class(&NSINDEXSET),
+        b"_OBJC_METACLASS_$_NSIndexSet" => class(&NSINDEXSET_META),
         _ => application::resolve(name).or_else(|| drawing::resolve(name)),
     }
 }

@@ -97,8 +97,8 @@ fn is_flipped(view: Id) -> bool {
     !view.is_null() && ask(view, sel!("isFlipped"))
 }
 
-/// Where the bounds' origin of `view` is in its own coordinates: a clip view's scroll
-/// position, (0, 0) for every other view.
+/// Where the bounds' origin of `view` is in its own coordinates as the layer draws them, y
+/// growing upward: a clip view's scroll position, (0, 0) for every other view.
 pub fn bounds_origin(view: Id) -> Point {
     if view.is_null() || !super::is(view, &NSCLIPVIEW) {
         return Point::default();
@@ -106,8 +106,46 @@ pub fn bounds_origin(view: Id) -> Point {
     let fields = clip_view(view);
     let content = size_of_frame(fields.view.frame);
     let document = document_size(view);
-    let y = geometry::bounds_y(is_flipped(fields.document), fields.offset.1, content.1, document.1);
+    let y = geometry::bounds_y(false, fields.offset.1, content.1, document.1);
     Point::new(f64::from(fields.offset.0), f64::from(y))
+}
+
+/// A clip view's offset from its document's top-left and its size, or `None` for a view that
+/// is not a clip view.
+pub fn clip_offset(view: Id) -> Option<((i32, i32), (i32, i32))> {
+    if view.is_null() || !super::is(view, &NSCLIPVIEW) {
+        return None;
+    }
+    let fields = clip_view(view);
+    Some((fields.offset, size_of_frame(fields.view.frame)))
+}
+
+/// Scrolls clip view `clip` to `offset` from its document's top-left, through its scroll
+/// view when it has one.
+pub fn scroll_clip(clip: Id, offset: (i32, i32)) {
+    if clip.is_null() || !super::is(clip, &NSCLIPVIEW) {
+        return;
+    }
+    let scroll_view = view::fields(clip).superview;
+    match !scroll_view.is_null() && super::is(scroll_view, &NSSCROLLVIEW) {
+        true => set_offset(scroll_view, offset),
+        false => {
+            clip_view(clip).offset = offset;
+            redraw(clip);
+        }
+    }
+}
+
+/// Lays out the scroll view around clip view `clip` again, after its document changed size.
+pub fn document_resized(clip: Id) {
+    if clip.is_null() || !super::is(clip, &NSCLIPVIEW) {
+        return;
+    }
+    let scroll_view = view::fields(clip).superview;
+    if !scroll_view.is_null() && super::is(scroll_view, &NSSCROLLVIEW) {
+        tile(scroll_view);
+        redraw(scroll_view);
+    }
 }
 
 fn layout_of(this: Id) -> Layout {

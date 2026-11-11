@@ -280,6 +280,11 @@ mod runtime {
         notification::notification(constants::string(name), object, core::ptr::null_mut())
     }
 
+    /// A new autoreleased notification named `name` (a string) about `object`.
+    pub fn notification_with_name(name: Id, object: Id) -> Id {
+        notification::notification(name, object, core::ptr::null_mut())
+    }
+
     /// The exported constant string at `index` of Foundation's list (`constants.rs`).
     pub fn constant(index: usize) -> Id {
         constants::string(index)

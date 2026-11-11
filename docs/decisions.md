@@ -22287,3 +22287,48 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Hover colours on the scroller, the element tree for agents (section 17), a
     table's fixed header beside the scroller (section 11), the render-hash tests of section
     10.4 that need the runtime, re-tiling on `setFrame:` before the next draw.
+
+## D373 AppKit's NSTableView, NSTableColumn and a single-index NSIndexSet (batch part 15's rest, D233's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/macos-gui-v0.3.md section 11) and the code-only session (engineering)
+
+- **Decision.**
+  - **Geometry** in `eggos-macos-gui`'s `table_view` (host-tested): the header's place, the
+    columns' left edges, the 7-pixel resize handles on the separators, a row's rect under
+    the offset, the rows shown, the row under a point, the alternate rows, a resize's clamp
+    (at least the toolkit's 40), how Up, Down, Home, End and the page keys move the
+    selection, and the least scroll that shows a row whole.
+  - **The table is the scroll view's document** (D372), sized to the clip view's width (or
+    its columns' when wider) and `28 + 24 x rows` tall. It draws its header at the top of
+    the visible part of itself, so the header stays put while the rows scroll under it and
+    the scroll range is the rows' height less the body's, as the design's worked example
+    says (222 for 20 rows in a 286-pixel clip view). Header and rows scroll across together.
+  - **Drawing** follows section 11: the surface (`field.bg` or the table's
+    `backgroundColor`), odd rows `menu.bg` with alternation on, the selected row
+    `selection` across the table with `>` in `accent` and, while the table is the first
+    responder, the focus ring; the grid masks' lines in `menu.border`; each cell the data
+    source's object's `description`, asked for every drawn cell at every paint, the first
+    column's text at x + 24, right-aligned columns to their right padding; disabled tables
+    draw their text dim and no mark.
+  - **Input.** A press on a row makes the table the first responder, selects the row (the
+    delegate's `tableView:shouldSelectRow:` may refuse) and sends `action`, or
+    `doubleAction` for a second press on the row within 400 ms; a press below the rows
+    deselects unless empty selection is refused. Keys move the selection and scroll it into
+    view, Enter sends the double action, Left and Right scroll across by 48; other keys go
+    up the responder chain. A press on a header handle of a user-resizable column drags its
+    width live; release tells the delegate (`tableViewColumnDidResize:`), Esc restores it.
+    The wheel reaches the scroll view through NSView's default (D372).
+  - **Selection changes** by pointer, keys, `selectRowIndexes:byExtendingSelection:`,
+    `deselectAll:` or `reloadData` send `tableViewSelectionDidChange:` to the delegate and
+    post `NSTableViewSelectionDidChangeNotification`.
+  - **NSTableColumn** keeps identifier, title, width (100), minimum (10), maximum (1000),
+    resizing mask, alignment and hidden; its `headerCell` and `dataCell` answer the column
+    itself, whose `stringValue` is the title, so `column.headerCell.stringValue = ...` works.
+  - **NSIndexSet** holds at most one index (single selection): `indexSetWithIndex:`,
+    `indexSet`, `firstIndex`, `count`, `containsIndex:`. It lives with AppKit for now, so a
+    program that links Foundation alone does not find it.
+- **Why the table answers `isFlipped` NO.** The layer draws every view with y growing upward
+  (section 0); a table that said YES would make apps' rects for `scrollRectToVisible:` mean
+  something the drawing does not. The scroll position from the top is the same either way.
+- **Not yet.** Row hover (needs `mouseMoved:` for views), the resize pointer over handles,
+  view-based tables (`tableView:viewForTableColumn:row:`), multiple selection and a full
+  NSIndexSet in Foundation, sorting, per-row heights, the element tree for agents, the
+  scroll view's scroller beside the body only, the render-hash tests that need the runtime.

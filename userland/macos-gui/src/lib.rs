@@ -20,3 +20,4 @@ pub mod menu;
 pub mod paint;
 pub mod pasteboard;
 pub mod scroll_view;
+pub mod table_view;

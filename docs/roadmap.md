@@ -874,8 +874,9 @@ yet" naming what it left.
     unbuilt, D370; tray programs' context menus as shell menus, code written, unbuilt, D371);
   - part 14's rest: storyboards (D232; `NSKeyedArchiver`, code written, unbuilt, D365; NSDictionary's hash index, code
     written, unbuilt, D359; `NSKeyedUnarchiver`, code written, unbuilt, D360);
-  - part 15's rest: tables, images, the About panel's icon and credits, the
-    alert's element tree, `mac-views.app` (D233; scroll views, code written, unbuilt, D372);
+  - part 15's rest: images, the About panel's icon and credits, the
+    alert's element tree, `mac-views.app` (D233; scroll views, code written, unbuilt, D372;
+    tables, code written, unbuilt, D373);
   - part 16's rest: C++ exceptions on macOS and UDCalc (D234);
   - part 6's screendump checks, part 7's indicator check and part 9's wheel and list-item
     checks in QEMU (D224, D225, D227);
