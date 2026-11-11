@@ -22362,3 +22362,27 @@ the license, by an explicit instruction recorded here.
     a name tried with those extensions finds nothing until they decode), the system images
     `NSImageName...`, `accessibilityLabel` as the element's name, `lockFocus`,
     `TIFFRepresentation`, `CGImage`, `representations`.
+
+## D375 The About panel's icon image and credits (batch part 15's rest, D233's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/macos-gui-v0.3.md sections 15.1, 15.2, 15.5 and 15.6) and the code-only session (engineering)
+
+- **Decision.**
+  - **Icon.** The panel's 48x48 comes from the options' `ApplicationIcon` (an `NSImage`),
+    then `setApplicationIconImage:`, then the installed `app.icon`, then the generic tile.
+    An image is fitted once when the panel opens (`fit_icon`: proportional and centred, a
+    larger image by area average, a smaller one by the largest whole factor) and blended
+    over the panel as the installed icon is. `setApplicationIconImage:` repaints an open
+    panel; `applicationIconImage` answers what was set (nil otherwise). Nothing else uses
+    it. The tree's icon value gains `image`.
+  - **Credits.** The options' `Credits` (`NSString`, or `NSAttributedString` through its
+    `string`), else the bundle's `Credits.txt`, cut at 4096 bytes; RTF and HTML are not
+    read. The text wraps at words to 232 pixels (newlines and empty lines kept, a word too
+    wide broken at a glyph) in a 256x108 region below the body lines, bordered in
+    `button.border` on `field.bg`; the panel grows to `T + 124`. When the lines overflow,
+    an 8-pixel scroller shows (track 106); the wheel scrolls 60 per notch and a track press
+    82, clamped. Agents see a `Credits` group valued `line <k> of <n>` and one label per
+    line whose whole cell shows.
+  - **Copyright fallback.** `CFBundleGetInfoString`'s first line when there is no
+    `NSHumanReadableCopyright` and no `Copyright` option.
+- **Not yet.** Dragging the credits' thumb, `set-text` on the credits group, an
+  `applicationIconImage` made from `app.icon` when none was set; raising the panel instead of
+  re-creating it and the panel in `NSApp.windows` (sections 15.3 and 15.4).

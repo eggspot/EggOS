@@ -362,6 +362,13 @@ pub fn size_of(object: Id) -> Option<(u32, u32)> {
     (fields.width > 0).then_some((fields.width, fields.height))
 }
 
+/// Runs `work` on image `object`'s premultiplied pixels, width and height; `None` for nil or
+/// an image with no pixels.
+pub fn with_pixels<R>(object: Id, work: impl FnOnce(&[u32], usize, usize) -> R) -> Option<R> {
+    let (width, height) = size_of(object)?;
+    Some(work(image(object).pixels.as_slice(), width as usize, height as usize))
+}
+
 /// What agents call image `object`: its name, else its file's name without folder or
 /// extension, else nothing.
 pub fn with_image_name<R>(object: Id, work: impl FnOnce(&str) -> R) -> R {
