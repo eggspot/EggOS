@@ -1,11 +1,12 @@
 //! virtio devices (virtio 1.2): the transports, the split virtqueue and the device drivers.
 //!
 //! A device driver is generic over [`Transport`], so it runs over virtio-mmio
-//! ([`mmio::MmioTransport`]) and modern virtio-pci ([`pci::PciTransport`]) alike, and against a
-//! fake transport in host tests. Only version 1 (non-legacy) devices are driven:
+//! ([`mmio::MmioTransport`]), modern virtio-pci ([`pci::PciTransport`]) and virtio-ccw
+//! ([`ccw::CcwTransport`]) alike, and against a fake transport in host tests. Only version 1 (non-legacy) devices are driven:
 //! [`feature::VERSION_1`] is required.
 
 pub mod block;
+pub mod ccw;
 pub mod console;
 pub mod gpu;
 pub mod input;
@@ -124,6 +125,8 @@ pub enum Error {
     FrameTooLong,
     /// The GPU has no cursor queue, or the driver has not set its cursor up.
     NoCursor,
+    /// A virtio-ccw channel program failed.
+    Channel(crate::channel::ChannelError),
 }
 
 impl Error {
@@ -159,6 +162,7 @@ impl Error {
             Error::NoHardwareAddress => "the network device does not say its hardware address",
             Error::FrameTooLong => "a frame longer than the network device's buffers",
             Error::NoCursor => "the GPU has no cursor queue, or its cursor is not set up",
+            Error::Channel(error) => error.description(),
         }
     }
 }

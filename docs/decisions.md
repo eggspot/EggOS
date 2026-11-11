@@ -21065,3 +21065,44 @@ the license, by an explicit instruction recorded here.
   the user runtime, and secondary CPUs through SIGP set-prefix and restart.
 - **Not yet.** Building and running; xtask and CI entries (s390x has a tier-2 Linux target,
   `s390x-unknown-linux-gnu`, as ppc64le's).
+
+## D322 s390x part 3a: the channel subsystem and virtio-ccw (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - **The channel subsystem in the drivers crate** (`drivers/src/channel.rs`): the
+    subchannel identification word, the SCHIB, ORB, IRB and SCSW, and format-1 CCWs, all
+    built big-endian with explicit byte orders, so they are tested on little-endian hosts.
+    - The `ChannelSubsystem` trait carries the I/O instructions (`stsch`, `msch`, `ssch`,
+      `tsch`) and virtio-ccw's notification hypercall (`DIAGNOSE 0x500`, function 3). The
+      HAL implements it with inline assembly (`hal/src/arch/s390x/channel.rs`) and hands it
+      out through `Platform::channel_subsystem`, `None` on every other architecture.
+    - `ChannelBuffer` holds one command and its data in one DMA block below 2 GiB (a
+      format-1 CCW's data address has 31 bits), and runs single-command programs to their end.
+      `enable` turns a subchannel on, and `sense_id` reads its control unit.
+  - **Polled, in interruption subclass 3.** Subchannels are enabled in ISC 3 and control
+    register 6 leaves every subclass disabled, so a program's status waits for
+    `TEST SUBCHANNEL`, which the buffer polls. This matches the polled virtio core (D111).
+    Interruptions through virtio-ccw's indicators come later; until then
+    `connect_interrupt` refuses virtio-ccw devices, and their drivers poll.
+  - **The bus** (`kernel/src/devices/channel_bus.rs`). Discovery walks subchannel set 0 from
+    subchannel 0 and stops at the first one that is not there, since QEMU numbers them without
+    gaps. Each I/O subchannel with a device is enabled and asked `SENSE ID`, and becomes an
+    `Identity::Channel` node (subchannel, device number, control unit type and model).
+    `Match::ControlUnit` matches it, and `/proc/driver/devices` lists it on the `ccw` bus.
+  - **virtio-ccw** (`drivers/src/virtio/ccw.rs`, the `virtio-ccw` bus driver): control unit
+    `0x3832`, whose model is the virtio device type.
+    - It sets revision 1, and refuses a device that turns it down as legacy.
+    - It reads and writes the status and the 64 feature bits as two little-endian words.
+    - It reads the queue sizes, sets the queues up with `SET_VQ`'s revision-1 block (three
+      big-endian addresses), and reads the configuration from offset 0 up to the field.
+      Writes rewrite that prefix.
+    - Every virtio driver (block, network, console, input, GPU, entropy) runs on it through
+      `AnyTransport::Ccw` unchanged.
+- **Known gaps (to check at build time).**
+  - The SCHIB field offsets, the ORB's bits and QEMU's reading of the `READ_FEAT` index were
+    written from memory of the Principles of Operation and virtio 1.2, 4.3.
+  - A machine with more than 2 GiB can give the channel buffers memory above 2 GiB. Such
+    devices are refused until the DMA allocator can ask for low memory.
+  - A gap in the subchannel numbers ends discovery early.
+- **Next (part 3b and 3c).** s390x's Linux ABI and user runtime; then secondary CPUs through
+  SIGP, and the xtask, toolchain and CI entries.

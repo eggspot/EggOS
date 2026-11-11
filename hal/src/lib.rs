@@ -240,6 +240,12 @@ pub trait Platform: 'static {
         None
     }
 
+    /// The machine's channel subsystem (s390x, D322), whose subchannels the kernel enumerates
+    /// for devices; `None` elsewhere.
+    fn channel_subsystem() -> Option<&'static dyn eggos_drivers::channel::ChannelSubsystem> {
+        None
+    }
+
     /// Where the kernel maps device registers (D110), when the place below the kernel image's
     /// root entry does not translate: MIPS64's image is in the unmapped `CKSEG0`, below which
     /// nothing is mapped, so its window is in `XKSEG` (D313). `None` elsewhere.

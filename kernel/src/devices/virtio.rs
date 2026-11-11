@@ -16,6 +16,8 @@ use alloc::boxed::Box;
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
 use eggos_drivers::pci::msix::MsixTable;
+use eggos_drivers::channel::{self, SubchannelId};
+use eggos_drivers::virtio::ccw::{self as virtio_ccw, CcwTransport};
 use eggos_drivers::virtio::mmio::MmioTransport;
 use eggos_drivers::virtio::pci::{self as virtio_pci, PciTransport, VirtioPciCapability};
 use eggos_drivers::virtio::{self, QueueAddresses, Transport};
@@ -29,6 +31,7 @@ pub const MAX_TRANSPORTS: usize = 8;
 pub enum AnyTransport {
     Mmio(MmioTransport<Mmio>),
     Pci(PciTransport<Mmio>),
+    Ccw(CcwTransport<DmaRegion>),
 }
 
 macro_rules! each_transport {
@@ -36,6 +39,7 @@ macro_rules! each_transport {
         match $self {
             AnyTransport::Mmio($transport) => $body,
             AnyTransport::Pci($transport) => $body,
+            AnyTransport::Ccw($transport) => $body,
         }
     };
 }
@@ -103,6 +107,14 @@ pub static PCI_DRIVER: DriverDescriptor = DriverDescriptor {
         last: *virtio_pci::MODERN_DEVICE_IDS.end(),
     }],
     probe: probe_pci,
+};
+
+/// virtio-ccw, revision 1 (D322): a channel device whose control unit is virtio's.
+pub static CCW_DRIVER: DriverDescriptor = DriverDescriptor {
+    name: "virtio-ccw",
+    pass: ProbePass::Bus,
+    matches: &[Match::ControlUnit(virtio_ccw::CONTROL_UNIT_TYPE)],
+    probe: probe_ccw,
 };
 
 fn probe_mmio(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
@@ -195,6 +207,35 @@ fn probe_pci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         pci::enable_memory_and_bus_master(config, function.address);
     }
     add_device(probe, id, &node, AnyTransport::Pci(transport))
+}
+
+fn probe_ccw(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+    let node = *probe
+        .table()
+        .get(id)
+        .ok_or(ProbeError::Refused("no such device"))?;
+    let Identity::Channel { subchannel, .. } = node.identity else {
+        return Err(ProbeError::Refused("not a channel device"));
+    };
+    let subchannel = SubchannelId::from_word(subchannel)
+        .ok_or(ProbeError::Refused("not a subchannel"))?;
+    let channels = probe
+        .channel_subsystem()
+        .ok_or(ProbeError::Refused("no channel subsystem"))?;
+    let memory = DmaRegion::allocate(channel::BUFFER_BYTES)
+        .map_err(|_| ProbeError::Refused("no memory for the channel programs"))?;
+    match CcwTransport::new(channels, subchannel, memory) {
+        Ok(transport) => add_device(probe, id, &node, AnyTransport::Ccw(transport)),
+        Err((error, memory)) => {
+            if error != virtio::Error::Channel(channel::ChannelError::TimedOut) {
+                // SAFETY: every channel program run with the region ended, or none started.
+                unsafe { memory.free() };
+            } else {
+                core::mem::forget(memory);
+            }
+            Err(ProbeError::Refused(error.description()))
+        }
+    }
 }
 
 const MMIO_REGISTERS_LENGTH: u64 = 0x100;
@@ -304,6 +345,11 @@ pub fn connect_interrupt(
                     events,
                 },
             )
+        }
+        AnyTransport::Ccw(_) => {
+            return Err(ProbeError::Refused(
+                "virtio-ccw devices are polled: their indicators are not set up yet (D322)",
+            ));
         }
         AnyTransport::Pci(pci_transport) => {
             let Identity::Pci(function) = parent.identity else {

@@ -794,3 +794,64 @@ fn a_pci_device_that_reads_back_no_vector_is_not_routed() {
     common.script_reads(0x10, &[u32::from(crate::virtio::pci::NO_VECTOR)]);
     assert!(!transport.route_interrupts_to(0));
 }
+
+mod ccw_transport {
+    use crate::channel::device_status::{CHANNEL_END, DEVICE_END, UNIT_CHECK};
+    use crate::channel::tests::{THE_SUBCHANNEL, fake};
+    use crate::virtio::Transport;
+    use crate::virtio::ccw::{CcwTransport, command};
+
+    const GOOD: u8 = CHANNEL_END | DEVICE_END;
+
+    fn virtio_net(command: u8, data: &mut [u8]) -> u8 {
+        match command {
+            crate::channel::SENSE_ID => data.copy_from_slice(&[0xff, 0x38, 0x32, 1, 0, 0, 0]),
+            command::SET_REVISION => assert_eq!(&data[..4], &[0, 1, 0, 0]),
+            command::READ_FEATURES => {
+                let word: u32 = if data[4] == 0 { 0x0000_0020 } else { 0x0000_0001 };
+                data[..4].copy_from_slice(&word.to_le_bytes());
+            }
+            command::READ_QUEUE_CONFIG => {
+                assert_eq!(&data[..2], &[0, 1]);
+                data[2..4].copy_from_slice(&256u16.to_be_bytes());
+            }
+            command::READ_CONFIG => {
+                for (index, byte) in data.iter_mut().enumerate() {
+                    *byte = index as u8;
+                }
+            }
+            command::READ_STATUS => data[0] = 0,
+            _ => return GOOD | UNIT_CHECK,
+        }
+        GOOD
+    }
+
+    #[test]
+    fn reads_type_features_queues_and_configuration() {
+        let (channels, memory) = fake(Box::new(virtio_net));
+        let channels = Box::leak(Box::new(channels));
+        let transport = CcwTransport::new(channels, THE_SUBCHANNEL, memory)
+            .map_err(|(error, _)| error)
+            .unwrap();
+        assert_eq!(transport.device_type(), 1);
+        assert_eq!(transport.device_features(), 0x0000_0001_0000_0020);
+        assert_eq!(transport.max_queue_size(1), 256);
+        assert_eq!(transport.read_config32(4), u32::from_le_bytes([4, 5, 6, 7]));
+        assert_eq!(transport.read_config8(9), 9);
+        assert_eq!(transport.status(), 0);
+    }
+
+    #[test]
+    fn a_device_without_revision_1_is_legacy() {
+        let (channels, memory) = fake(Box::new(|command, data| match command {
+            crate::channel::SENSE_ID => {
+                data.copy_from_slice(&[0xff, 0x38, 0x32, 2, 0, 0, 0]);
+                GOOD
+            }
+            _ => GOOD | UNIT_CHECK,
+        }));
+        let channels = Box::leak(Box::new(channels));
+        let refused = CcwTransport::new(channels, THE_SUBCHANNEL, memory).map_err(|(error, _)| error);
+        assert_eq!(refused.err(), Some(crate::virtio::Error::LegacyVersion));
+    }
+}

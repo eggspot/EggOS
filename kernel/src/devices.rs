@@ -22,6 +22,7 @@
 //!   quiets the device and wakes the driver's thread.
 
 mod acpi_bus;
+mod channel_bus;
 pub mod dma;
 mod fdt_bus;
 pub mod interrupts;
@@ -98,6 +99,8 @@ pub enum Match {
     AcpiHid(&'static [u8]),
     /// A virtio device type, behind any transport.
     VirtioId(u32),
+    /// A channel device's control-unit type (D322).
+    ControlUnit(u16),
 }
 
 impl Match {
@@ -131,6 +134,9 @@ impl Match {
             }
             (Match::VirtioId(wanted), Identity::Virtio { device_type, .. }) => {
                 (*device_type == wanted).then_some(0)
+            }
+            (Match::ControlUnit(wanted), Identity::Channel { control_unit, .. }) => {
+                (*control_unit == wanted).then_some(0)
             }
             (Match::AcpiHid(wanted), Identity::Acpi { hid, cid, .. }) => {
                 if acpi_bus::text(hid) == wanted {
@@ -177,6 +183,10 @@ pub trait Probe {
     fn message_interrupt(&mut self) -> Result<(DeviceLine, InterruptMessage), ProbeError> {
         Err(ProbeError::Refused("no message-signalled interrupts"))
     }
+    /// The machine's channel subsystem ([`Platform::channel_subsystem`], D322). None by default.
+    fn channel_subsystem(&self) -> Option<&'static dyn eggos_drivers::channel::ChannelSubsystem> {
+        None
+    }
 }
 
 /// A driver built into the kernel.
@@ -220,6 +230,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &virtio::MMIO_DRIVER,
     #[cfg(any(test, feature = "virtio"))]
     &virtio::PCI_DRIVER,
+    #[cfg(any(test, feature = "virtio"))]
+    &virtio::CCW_DRIVER,
     #[cfg(any(test, feature = "virtio-rng"))]
     &virtio::RNG_DRIVER,
     #[cfg(any(test, feature = "virtio-gpu"))]
@@ -284,6 +296,15 @@ pub enum Identity {
         hid: [u8; acpi_bus::ID_BYTES],
         cid: [u8; acpi_bus::ID_BYTES],
         path: [u8; acpi_bus::PATH_BYTES],
+    },
+    /// A device on an s390x I/O subchannel (D322): the subchannel's identification word, the
+    /// device number, and the control unit's type and model from `SENSE ID` (0 when it did not
+    /// answer).
+    Channel {
+        subchannel: u32,
+        device_number: u16,
+        control_unit: u16,
+        model: u8,
     },
 }
 
@@ -510,6 +531,10 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
     fn message_interrupt(&mut self) -> Result<(DeviceLine, InterruptMessage), ProbeError> {
         P::message_interrupt().map_err(ProbeError::Refused)
     }
+
+    fn channel_subsystem(&self) -> Option<&'static dyn eggos_drivers::channel::ChannelSubsystem> {
+        P::channel_subsystem()
+    }
 }
 
 /// Discovers the devices the firmware describes and probes [`BUILTIN`]'s drivers on them, once,
@@ -551,6 +576,11 @@ pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
     }
     if let Some(dsdt) = P::acpi_dsdt() {
         acpi_bus::discover(dsdt, probe.table);
+    }
+    if let Some(channels) = P::channel_subsystem()
+        && let Err(error) = channel_bus::discover(channels, probe.table)
+    {
+        report.discovery_error = Some(error);
     }
     probe_all(&mut probe, BUILTIN);
     table.nodes.shrink_to_fit();
@@ -636,6 +666,7 @@ pub fn class(identity: &Identity) -> &'static str {
         },
         Identity::DeviceTree { compatible, .. } => device_tree_class(compatible),
         Identity::Acpi { hid, .. } => acpi_bus::class(&hid),
+        Identity::Channel { control_unit, .. } => channel_bus::class(control_unit),
     }
 }
 
@@ -669,7 +700,7 @@ fn device_tree_class(compatible: &[u8]) -> &'static str {
 }
 
 /// `/proc/driver/devices` (D184): one line per device, in discovery order, its fields separated
-/// by tabs: its id, its parent's id or `-`, its bus (`devicetree`, `pci`, `virtio`), its
+/// by tabs: its id, its parent's id or `-`, its bus (`devicetree`, `pci`, `virtio`, `acpi`, `ccw`), its
 /// [`class`], its name (the node's name, the PCI address, the virtio type), its description (the
 /// first `compatible` string, `vendor:device class cccc`, `virtio <type>`), its driver or `-`,
 /// its state (`bound`, `unbound`, `refused`), how its driver hears from it (`interrupts`,
@@ -736,6 +767,16 @@ pub fn write_device_line(
             text.write_str("\t")?;
             write_printable(text, acpi_bus::text(&hid))?;
         }
+        Identity::Channel {
+            subchannel,
+            device_number,
+            control_unit,
+            model,
+        } => write!(
+            text,
+            "ccw\t{class}\t{}\t0.0.{device_number:04x} control unit {control_unit:04x}/{model:02x}",
+            channel_name(subchannel)
+        )?,
     }
     let delivery = match (node.binding, node.delivery) {
         (Binding::Bound(_), _) if matches!(class, "bus" | "interrupt-controller") => "-",
@@ -752,6 +793,11 @@ pub fn write_device_line(
             text.write_str("\n")
         }
     }
+}
+
+fn channel_name(subchannel: u32) -> impl core::fmt::Display {
+    eggos_drivers::channel::SubchannelId::from_word(subchannel)
+        .unwrap_or(eggos_drivers::channel::SubchannelId::new(0, 0))
 }
 
 fn write_printable(text: &mut dyn Write, bytes: &[u8]) -> core::fmt::Result {
@@ -792,6 +838,16 @@ impl core::fmt::Display for DeviceNode {
                 write_ascii(f, acpi_bus::text(&hid))?;
                 f.write_str(")")?;
             }
+            Identity::Channel {
+                subchannel,
+                device_number,
+                control_unit,
+                model,
+            } => write!(
+                f,
+                "ccw {} device 0.0.{device_number:04x} (control unit {control_unit:04x}/{model:02x})",
+                channel_name(subchannel)
+            )?,
         }
         for region in self.regions() {
             write!(f, " {region}")?;

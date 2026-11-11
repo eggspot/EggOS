@@ -5,9 +5,10 @@
 //! at the direct map (`1 << 52`) and at the image's virtual address (the top 2 GiB of the
 //! 53-bit space) with 1 MiB segments, fills the lowcore's new PSWs with the interruption stubs
 //! (`exception.rs`), and enters the kernel in the home space. The SCLP is the console and says
-//! how much memory there is; devices (virtio-ccw on the channel subsystem) come with part 3.
+//! how much memory there is; devices are virtio-ccw on the channel subsystem (D322).
 //! The per-CPU block's address is in the lowcore, which every CPU's prefix makes its own.
 
+mod channel;
 mod exception;
 mod fp;
 mod sclp;
@@ -233,7 +234,7 @@ impl Platform for S390x {
     fn route_device_interrupt(
         _specifier: &crate::fdt::InterruptSpecifier,
     ) -> Result<crate::DeviceLine, &'static str> {
-        Err("s390x devices interrupt through the channel subsystem (D321 part 3)")
+        Err("s390x devices are on the channel subsystem, polled (D322)")
     }
 
     fn message_interrupt() -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
@@ -342,6 +343,10 @@ impl Platform for S390x {
     }
 
     fn early_device_regions(_region: &mut dyn FnMut(PhysicalRange)) {}
+
+    fn channel_subsystem() -> Option<&'static dyn eggos_drivers::channel::ChannelSubsystem> {
+        Some(&channel::INSTRUCTIONS)
+    }
 
     fn device_tree() -> Option<&'static [u8]> {
         None
