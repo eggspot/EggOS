@@ -851,8 +851,9 @@ yet" naming what it left.
   - part 18, Files and the Text Editor grow up and one file picker `/bin/pick` (its design is
     done; the unbuilt picker is on the branch `wip/eggos-picker`);
   - part 19, drag and drop between windows;
-  - part 10's rest: scroll bars on windows (`wip/eggos-window-scroll-bars`), multi-line edits,
-    word selection (D228; editable combo boxes, code written, unbuilt, D340; menus from templates, code written,
+  - part 10's rest: scroll bars on windows (`wip/eggos-window-scroll-bars`), `CBS_SIMPLE`
+    (D228; multi-line edits, code written, unbuilt, D341; word selection already in D228;
+    editable combo boxes, code written, unbuilt, D340; menus from templates, code written,
     unbuilt, D336; submenus one level deep in the bar's drop-downs, code written, unbuilt, D337;
     `MFT_RADIOCHECK` and `CheckMenuRadioItem`, code written, unbuilt, D334; menu keys, code
     written, unbuilt, D335);

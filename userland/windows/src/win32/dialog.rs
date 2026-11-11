@@ -12,11 +12,13 @@ use eggos_windows_gui::controls::button::{ButtonKind, style as button_style};
 
 const VK_TAB: usize = 0x09;
 const VK_RETURN: usize = 0x0d;
+const VK_CONTROL: usize = 0x11;
 const VK_ESCAPE: usize = 0x1b;
 const VK_LEFT: usize = 0x25;
 const VK_UP: usize = 0x26;
 const VK_RIGHT: usize = 0x27;
 const VK_DOWN: usize = 0x28;
+const KEY_DOWN_BIT: u8 = 0x80;
 const BN_CLICKED: usize = 0;
 const EM_SETSEL: u32 = 0x00b1;
 const BM_CLICK: u32 = 0x00f5;
@@ -36,6 +38,25 @@ fn is_edit(gui: &gui::Gui, window: usize) -> bool {
     gui.windows
         .get(window)
         .is_some_and(|entry| matches!(entry.procedure, Procedure::Control(ControlKind::Edit, _)))
+}
+
+fn wants_return(gui: &gui::Gui, window: usize) -> bool {
+    use eggos_windows_gui::controls::edit::style as edit_style;
+    let control_held = gui.keyboard_state()[VK_CONTROL] & KEY_DOWN_BIT != 0;
+    is_edit(gui, window)
+        && gui.windows.get(window).is_some_and(|entry| {
+            entry.style & edit_style::MULTILINE != 0
+                && (entry.style & edit_style::WANT_RETURN != 0 || control_held)
+        })
+}
+
+fn focus_wants_return(dialog: usize) -> bool {
+    with(|gui| {
+        let root = windows::root_of(&gui.windows, dialog)?;
+        Some(wants_return(gui, gui.key_target(root)))
+    })
+    .flatten()
+    .unwrap_or(false)
 }
 
 fn tab_landing(gui: &gui::Gui, stop: usize) -> usize {
@@ -415,6 +436,10 @@ pub fn dialog_message(dialog: usize, message: &crate::gui::queue::Message) -> bo
                     gui::send(next, BM_CLICK, 0, 0);
                 }
             }
+        }
+        (message::KEY_DOWN | message::CHAR, VK_RETURN) if focus_wants_return(dialog) => {
+            translate(message);
+            dispatch(message);
         }
         (message::KEY_DOWN, VK_RETURN) => {
             let (button, id) = default_button(dialog).unwrap_or((0, message::ID_OK));

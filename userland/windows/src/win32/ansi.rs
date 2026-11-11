@@ -35,6 +35,10 @@ mod string_message {
     pub const LB_FINDSTRINGEXACT: u32 = 0x01a2;
 }
 
+mod edit_message {
+    pub const EM_GETLINE: u32 = 0x00c4;
+}
+
 mod item_message {
     pub const CB_GETLBTEXT: u32 = 0x0148;
     pub const CB_GETLBTEXTLEN: u32 = 0x0149;
@@ -324,6 +328,27 @@ pub fn from_narrow(
         unsafe { heap::free(block.cast()) };
         return written;
     }
+    match number {
+        edit_message::EM_GETLINE if lparam != 0 => {
+            // SAFETY: `EM_GETLINE`'s `lParam` is a buffer whose first `WORD` is the bytes it holds.
+            let room = usize::from(unsafe { (lparam as *const u16).read_unaligned() });
+            let Some((block, copied)) = text_of(room, |units, buffer| {
+                let size = units.min(usize::from(u16::MAX)) as u16;
+                // SAFETY: `text_of`'s block holds `units` UTF-16 units.
+                unsafe { (buffer as *mut u16).write(size) };
+                deliver(window, number, wparam, buffer)
+            }) else {
+                return 0;
+            };
+            // SAFETY: `block` holds `copied` units.
+            let units = unsafe { core::slice::from_raw_parts(block, copied) };
+            // SAFETY: the caller's buffer holds `room` bytes.
+            let out = unsafe { core::slice::from_raw_parts_mut(lparam as *mut u8, room) };
+            let (written, _) = text::write_utf8(units, out);
+            // SAFETY: the block `text_of` allocated, used by nothing now.
+            unsafe { heap::free(block.cast()) };
+            written
+        }
     match number {
         message::GET_TEXT => {
             if lparam == 0 || wparam == 0 {

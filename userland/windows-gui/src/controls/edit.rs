@@ -1,6 +1,6 @@
-//! `EDIT`, single line (sections 3 and 13 of the design): the [`Edit`] model (its text, the
-//! selection between an anchor and the caret, scroll in whole cells, `ES_PASSWORD` and
-//! `ES_NUMBER`) and its painting.
+//! `EDIT` (sections 3 and 13 of the design): the [`Edit`] model (its text, the selection
+//! between an anchor and the caret, scroll in whole cells, `ES_PASSWORD`, `ES_NUMBER` and
+//! `ES_MULTILINE`'s lines) and its painting.
 
 use super::{Palette, cell_top, framed, ring};
 use crate::surface::{Rect, Surface};
@@ -11,12 +11,18 @@ use eggos_font as font;
 pub const EDIT_CAPACITY: usize = 1024;
 const TEXT_INSET: i32 = 4;
 const DARK_FOCUS_INSET: i32 = 2;
+const LINE_FEED: u16 = 0x0a;
+const CARRIAGE_RETURN: u16 = 0x0d;
+const TAB: u16 = 0x09;
+const LINE_BREAK: [u16; 2] = [CARRIAGE_RETURN, LINE_FEED];
 
 /// `EDIT`'s styles this layer reads.
 pub mod style {
+    pub const MULTILINE: u32 = 0x0004;
     pub const PASSWORD: u32 = 0x0020;
     pub const NO_HIDE_SELECTION: u32 = 0x0100;
     pub const READ_ONLY: u32 = 0x0800;
+    pub const WANT_RETURN: u32 = 0x1000;
     pub const NUMBER: u32 = 0x2000;
 }
 
@@ -30,7 +36,22 @@ pub struct Modifiers {
     pub control: bool,
 }
 
-/// An edit's text and caret.
+/// What an edit's window shows: whole cells across and, for a multi-line edit, whole lines
+/// down. A bare cell count is a single row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct View {
+    pub cells: usize,
+    pub rows: usize,
+}
+
+impl From<usize> for View {
+    fn from(cells: usize) -> View {
+        View { cells, rows: 1 }
+    }
+}
+
+/// An edit's text and caret. A multi-line edit breaks its lines at `\r\n` (or a lone `\n`)
+/// and never puts the caret between the two.
 #[derive(Debug, Clone)]
 pub struct Edit {
     units: [u16; EDIT_CAPACITY],
@@ -38,11 +59,13 @@ pub struct Edit {
     anchor: usize,
     caret: usize,
     offset: usize,
+    top: usize,
     limit: usize,
     pub read_only: bool,
     pub password: u16,
     pub digits_only: bool,
     pub keep_selection: bool,
+    pub multiline: bool,
 }
 
 /// What a key did to an edit.
@@ -57,10 +80,14 @@ pub enum EditOutcome {
 pub mod key {
     pub const BACK: u32 = 0x08;
     pub const A: u32 = 0x41;
+    pub const PRIOR: u32 = 0x21;
+    pub const NEXT: u32 = 0x22;
     pub const END: u32 = 0x23;
     pub const HOME: u32 = 0x24;
     pub const LEFT: u32 = 0x25;
+    pub const UP: u32 = 0x26;
     pub const RIGHT: u32 = 0x27;
+    pub const DOWN: u32 = 0x28;
     pub const DELETE: u32 = 0x2e;
 }
 
@@ -78,11 +105,13 @@ impl Edit {
             anchor: 0,
             caret: 0,
             offset: 0,
+            top: 0,
             limit: EDIT_CAPACITY,
             read_only: false,
             password: 0,
             digits_only: false,
             keep_selection: false,
+            multiline: false,
         }
     }
 
@@ -92,7 +121,8 @@ impl Edit {
         edit.read_only = style & style::READ_ONLY != 0;
         edit.digits_only = style & style::NUMBER != 0;
         edit.keep_selection = style & style::NO_HIDE_SELECTION != 0;
-        if style & style::PASSWORD != 0 {
+        edit.multiline = style & style::MULTILINE != 0;
+        if style & style::PASSWORD != 0 && !edit.multiline {
             edit.password = DEFAULT_PASSWORD_CHARACTER;
         }
         edit
@@ -105,9 +135,9 @@ impl Edit {
 
     /// `EM_SETSEL`: `start` -1 removes the selection, `end` -1 (or past the text) is the text's
     /// end; the caret goes to `end`.
-    pub fn set_selection(&mut self, start: isize, end: isize, visible: usize) {
+    pub fn set_selection(&mut self, start: isize, end: isize, view: impl Into<View>) {
         let at = |value: isize| match usize::try_from(value) {
-            Ok(value) => value.min(self.length),
+            Ok(value) => self.boundary(value.min(self.length)),
             Err(_) => self.length,
         };
         match start {
@@ -117,12 +147,12 @@ impl Edit {
                 self.caret = at(end);
             }
         }
-        self.scroll(visible);
+        self.scroll(view.into());
     }
 
     /// `EM_REPLACESEL` and typing: the selection replaced by `units`, as many as the limit
     /// leaves room for, the caret after them.
-    pub fn replace_selection(&mut self, units: &[u16], visible: usize) -> EditOutcome {
+    pub fn replace_selection(&mut self, units: &[u16], view: impl Into<View>) -> EditOutcome {
         let (start, end) = self.selection();
         let room = self.limit.saturating_sub(self.length - (end - start));
         let inserted = &units[..units.len().min(room)];
@@ -134,9 +164,9 @@ impl Edit {
             .copy_within(end..self.length, start + inserted.len());
         self.units[start..start + inserted.len()].copy_from_slice(inserted);
         self.length = length;
-        self.caret = start + inserted.len();
+        self.caret = self.boundary(start + inserted.len());
         self.anchor = self.caret;
-        self.scroll(visible);
+        self.scroll(view.into());
         EditOutcome::Changed
     }
 
@@ -172,63 +202,93 @@ impl Edit {
         self.anchor = 0;
         self.caret = 0;
         self.offset = 0;
+        self.top = 0;
     }
 
     /// Puts the caret after the text, as the picker does after filling in a name.
-    pub fn caret_to_end(&mut self, visible: usize) {
+    pub fn caret_to_end(&mut self, view: impl Into<View>) {
         self.caret = self.length;
         self.anchor = self.caret;
-        self.scroll(visible);
+        self.scroll(view.into());
     }
 
     /// A typed character: a printable one replaces the selection; with `ES_NUMBER` only
-    /// digits are taken.
-    pub fn character(&mut self, character: u32, visible: usize) -> EditOutcome {
+    /// digits are taken. A multi-line edit also takes Enter (`\r`, or Ctrl+Enter's `\n`) as a
+    /// line break and Tab as a tab.
+    pub fn character(&mut self, character: u32, view: impl Into<View>) -> EditOutcome {
+        let units = match character {
+            0x0a | 0x0d if self.multiline => &LINE_BREAK[..],
+            0x09 if self.multiline => &[TAB][..],
+            _ => &[],
+        };
         let printable = character >= 0x20 && character != 0x7f && character <= 0xffff;
         let refused = self.digits_only && !(0x30..=0x39).contains(&character);
-        if !printable || refused || self.read_only {
+        if !(printable || !units.is_empty()) || refused || self.read_only {
             return EditOutcome::Unchanged;
         }
+        let typed = [character as u16];
+        let units = match units.is_empty() {
+            true => &typed[..],
+            false => units,
+        };
         let (start, end) = self.selection();
-        if self.length - (end - start) >= self.limit {
+        if self.length - (end - start) + units.len() > self.limit {
             return EditOutcome::Unchanged;
         }
-        self.replace_selection(&[character as u16], visible)
+        self.replace_selection(units, view)
     }
 
     /// A key press without modifiers: Backspace, Delete and the caret's moves.
-    pub fn key(&mut self, virtual_key: u32, visible: usize) -> EditOutcome {
-        self.key_with(virtual_key, Modifiers::default(), visible)
+    pub fn key(&mut self, virtual_key: u32, view: impl Into<View>) -> EditOutcome {
+        self.key_with(virtual_key, Modifiers::default(), view)
     }
 
     /// A key press: Backspace and Delete erase the selection or a character; the arrows, Home
-    /// and End move the caret (by words with Ctrl), Shift extending the selection; Ctrl+A
-    /// selects all.
-    pub fn key_with(&mut self, virtual_key: u32, held: Modifiers, visible: usize) -> EditOutcome {
+    /// and End move the caret (by words with Ctrl, to the text's ends with Ctrl+Home and
+    /// Ctrl+End in a multi-line edit), Shift extending the selection; Ctrl+A selects all. In
+    /// a multi-line edit Up and Down move a line and Page Up and Page Down a window's lines,
+    /// keeping the column.
+    pub fn key_with(
+        &mut self,
+        virtual_key: u32,
+        held: Modifiers,
+        view: impl Into<View>,
+    ) -> EditOutcome {
+        let view = view.into();
         let (start, end) = self.selection();
         let selected = start != end;
+        let vertical = matches!(virtual_key, key::UP | key::DOWN | key::PRIOR | key::NEXT);
         let outcome = match virtual_key {
             key::A if held.control => self.select(0, self.length),
             key::BACK | key::DELETE if self.read_only => EditOutcome::Unchanged,
-            key::BACK | key::DELETE if selected => self.replace_selection(&[], visible),
+            key::BACK | key::DELETE if selected => self.replace_selection(&[], view),
             key::BACK if self.caret > 0 => {
-                self.anchor = self.caret - 1;
-                self.replace_selection(&[], visible)
+                self.anchor = self.step_back(self.caret);
+                self.replace_selection(&[], view)
             }
             key::DELETE if self.caret < self.length => {
-                self.anchor = self.caret + 1;
-                self.replace_selection(&[], visible)
+                self.anchor = self.step_forward(self.caret);
+                self.replace_selection(&[], view)
             }
-            key::LEFT | key::RIGHT | key::HOME | key::END => {
+            _ if vertical && !self.multiline => EditOutcome::Unchanged,
+            key::LEFT | key::RIGHT | key::HOME | key::END | key::UP | key::DOWN | key::PRIOR
+            | key::NEXT => {
+                let lines = view.rows.max(1) as isize;
                 let target = match virtual_key {
                     key::LEFT if held.control => self.previous_word(self.caret),
                     key::RIGHT if held.control => self.next_word(self.caret),
                     key::LEFT if selected && !held.shift => start,
                     key::RIGHT if selected && !held.shift => end,
-                    key::LEFT => self.caret.saturating_sub(1),
-                    key::RIGHT => (self.caret + 1).min(self.length),
-                    key::HOME => 0,
-                    _ => self.length,
+                    key::LEFT => self.step_back(self.caret),
+                    key::RIGHT => self.step_forward(self.caret),
+                    key::HOME if held.control => 0,
+                    key::HOME => self.line_start_at(self.caret),
+                    key::END if held.control => self.length,
+                    key::END => self.line_end_at(self.caret),
+                    key::UP => self.line_moved(-1),
+                    key::DOWN => self.line_moved(1),
+                    key::PRIOR => self.line_moved(-lines),
+                    _ => self.line_moved(lines),
                 };
                 match held.shift {
                     true => self.select(self.anchor, target),
@@ -237,7 +297,7 @@ impl Edit {
             }
             _ => EditOutcome::Unchanged,
         };
-        self.scroll(visible);
+        self.scroll(view);
         outcome
     }
 
@@ -249,6 +309,143 @@ impl Edit {
                 self.caret = caret;
                 EditOutcome::Moved
             }
+        }
+    }
+
+    fn is_line_break_at(&self, index: usize) -> bool {
+        self.multiline
+            && index + 1 < self.length
+            && self.units[index] == CARRIAGE_RETURN
+            && self.units[index + 1] == LINE_FEED
+    }
+
+    fn boundary(&self, index: usize) -> usize {
+        match index > 0 && self.is_line_break_at(index - 1) {
+            true => index - 1,
+            false => index,
+        }
+    }
+
+    fn step_back(&self, from: usize) -> usize {
+        match from >= 2 && self.is_line_break_at(from - 2) {
+            true => from - 2,
+            false => from.saturating_sub(1),
+        }
+    }
+
+    fn step_forward(&self, from: usize) -> usize {
+        match self.is_line_break_at(from) {
+            true => from + 2,
+            false => (from + 1).min(self.length),
+        }
+    }
+
+    /// Where the line holding `index` starts.
+    pub fn line_start_at(&self, index: usize) -> usize {
+        if !self.multiline {
+            return 0;
+        }
+        let mut at = index.min(self.length);
+        while at > 0 && self.units[at - 1] != LINE_FEED {
+            at -= 1;
+        }
+        at
+    }
+
+    /// Where the line holding `index` ends, before its break.
+    pub fn line_end_at(&self, index: usize) -> usize {
+        let start = self.line_start_at(index);
+        let mut at = start;
+        while at < self.length && !(self.multiline && self.units[at] == LINE_FEED) {
+            at += 1;
+        }
+        match at < self.length && at > start && self.units[at - 1] == CARRIAGE_RETURN {
+            true => at - 1,
+            false => at,
+        }
+    }
+
+    fn next_line_start(&self, start: usize) -> Option<usize> {
+        if !self.multiline {
+            return None;
+        }
+        self.units[start..self.length]
+            .iter()
+            .position(|&unit| unit == LINE_FEED)
+            .map(|at| start + at + 1)
+    }
+
+    /// `EM_LINEFROMCHAR`: the line holding `index`, from 0.
+    pub fn line_of(&self, index: usize) -> usize {
+        match self.multiline {
+            true => self.units[..index.min(self.length)]
+                .iter()
+                .filter(|&&unit| unit == LINE_FEED)
+                .count(),
+            false => 0,
+        }
+    }
+
+    /// `EM_GETLINECOUNT`: the lines in the text, at least 1.
+    pub fn line_count(&self) -> usize {
+        self.line_of(self.length) + 1
+    }
+
+    /// `EM_LINEINDEX`: where `line` starts, if the text has it.
+    pub fn line_index(&self, line: usize) -> Option<usize> {
+        let mut start = 0;
+        for _ in 0..line {
+            start = self.next_line_start(start)?;
+        }
+        Some(start)
+    }
+
+    /// `EM_GETLINE`: `line`'s units without its break, if the text has it.
+    pub fn line(&self, line: usize) -> Option<&[u16]> {
+        let start = self.line_index(line)?;
+        Some(&self.units[start..self.line_end_at(start)])
+    }
+
+    /// `EM_GETFIRSTVISIBLELINE`: the top line shown by a multi-line edit, the first character
+    /// shown by a single-line one.
+    pub fn first_visible_line(&self) -> usize {
+        match self.multiline {
+            true => self.top,
+            false => self.offset,
+        }
+    }
+
+    /// `EM_LINESCROLL`: a multi-line edit scrolled by `columns` and `lines`, kept within its
+    /// text; whether it moved.
+    pub fn scroll_by(&mut self, columns: isize, lines: isize) -> bool {
+        if !self.multiline {
+            return false;
+        }
+        let top = self
+            .top
+            .saturating_add_signed(lines)
+            .min(self.line_count() - 1);
+        let offset = self.offset.saturating_add_signed(columns).min(EDIT_CAPACITY);
+        let moved = (top, offset) != (self.top, self.offset);
+        self.top = top;
+        self.offset = offset;
+        moved
+    }
+
+    /// `EM_SCROLLCARET`: scrolled until the caret shows.
+    pub fn scroll_to_caret(&mut self, view: impl Into<View>) {
+        self.scroll(view.into());
+    }
+
+    fn line_moved(&self, lines: isize) -> usize {
+        let line = self.line_of(self.caret);
+        let target = line
+            .saturating_add_signed(lines)
+            .min(self.line_count() - 1);
+        let column = self.caret - self.line_start_at(self.caret);
+        match self.line_index(target) {
+            Some(start) => (start + column).min(self.line_end_at(start)),
+            None => self.caret,
         }
     }
 
@@ -284,39 +481,45 @@ impl Edit {
         at
     }
 
-    fn position_at(&self, x: i32) -> usize {
-        let cells = (x - TEXT_INSET + CELL_WIDTH / 2).max(0) / CELL_WIDTH;
-        (self.offset + cells as usize).min(self.length)
+    fn position_at(&self, (x, y): (i32, i32)) -> usize {
+        let cells = ((x - TEXT_INSET + CELL_WIDTH / 2).max(0) / CELL_WIDTH) as usize;
+        if !self.multiline {
+            return (self.offset + cells).min(self.length);
+        }
+        let row = ((y - TEXT_INSET).max(0) / CELL_HEIGHT) as usize;
+        let line = (self.top + row).min(self.line_count() - 1);
+        let start = self.line_index(line).unwrap_or(self.length);
+        (start + self.offset + cells).min(self.line_end_at(start))
     }
 
-    /// A click at `x` pixels from the edit's left: the caret at the nearest cell boundary, the
-    /// anchor there too unless `extend` (Shift held).
-    pub fn click(&mut self, x: i32, extend: bool, visible: usize) -> EditOutcome {
-        let caret = self.position_at(x);
+    /// A click at `at`, pixels from the edit's top left: the caret at the nearest cell
+    /// boundary, the anchor there too unless `extend` (Shift held).
+    pub fn click(&mut self, at: (i32, i32), extend: bool, view: impl Into<View>) -> EditOutcome {
+        let caret = self.position_at(at);
         let anchor = match extend {
             true => self.anchor,
             false => caret,
         };
         let outcome = self.select(anchor, caret);
-        self.scroll(visible);
+        self.scroll(view.into());
         outcome
     }
 
-    /// The pointer dragged to `x` with the button held: only the caret follows it.
-    pub fn drag(&mut self, x: i32, visible: usize) -> EditOutcome {
-        let caret = self.position_at(x);
+    /// The pointer dragged to `at` with the button held: only the caret follows it.
+    pub fn drag(&mut self, at: (i32, i32), view: impl Into<View>) -> EditOutcome {
+        let caret = self.position_at(at);
         let outcome = self.select(self.anchor, caret);
-        self.scroll(visible);
+        self.scroll(view.into());
         outcome
     }
 
-    /// A double-click at `x`: the word under it selected (a run of letters, digits and `_`, of
-    /// other glyphs, or of spaces), the caret at its end.
-    pub fn select_word(&mut self, x: i32, visible: usize) -> EditOutcome {
+    /// A double-click at `at`: the word under it selected (a run of letters, digits and `_`,
+    /// of other glyphs, or of spaces), the caret at its end.
+    pub fn select_word(&mut self, at: (i32, i32), view: impl Into<View>) -> EditOutcome {
         if self.length == 0 {
             return EditOutcome::Unchanged;
         }
-        let index = self.position_at(x).min(self.length - 1);
+        let index = self.position_at(at).min(self.length - 1);
         let class = self.class_at(index);
         let mut start = index;
         while start > 0 && self.class_at(start - 1) == class {
@@ -326,13 +529,26 @@ impl Edit {
         while end < self.length && self.class_at(end) == class {
             end += 1;
         }
-        let outcome = self.select(start, end);
-        self.scroll(visible);
+        let outcome = self.select(self.boundary(start), self.boundary(end));
+        self.scroll(view.into());
         outcome
     }
 
-    fn scroll(&mut self, visible: usize) {
-        let visible = visible.max(1);
+    fn scroll(&mut self, view: View) {
+        let visible = view.cells.max(1);
+        if self.multiline {
+            let column = self.caret - self.line_start_at(self.caret);
+            self.offset = self
+                .offset
+                .max((column + 1).saturating_sub(visible))
+                .min(column);
+            let line = self.line_of(self.caret);
+            self.top = self
+                .top
+                .max((line + 1).saturating_sub(view.rows.max(1)))
+                .min(line);
+            return;
+        }
         let mut offset = self.offset.max((self.caret + 1).saturating_sub(visible));
         offset = offset.min(self.caret);
         offset = offset.min((self.length + 1).saturating_sub(visible));
@@ -352,7 +568,7 @@ enum WordClass {
 
 fn word_class(unit: u16) -> WordClass {
     match char::from_u32(u32::from(unit)) {
-        Some(' ' | '\t') => WordClass::Space,
+        Some(' ' | '\t' | '\r' | '\n') => WordClass::Space,
         Some(character) if character.is_alphanumeric() || character == '_' => WordClass::Word,
         _ => WordClass::Other,
     }
@@ -363,12 +579,69 @@ pub fn visible_cells(width: i32) -> usize {
     ((width - 2 * TEXT_INSET).max(0) / CELL_WIDTH) as usize
 }
 
+/// The whole lines a multi-line edit `height` tall shows, at least 1.
+pub fn visible_lines(height: i32) -> usize {
+    ((height - 2 * TEXT_INSET).max(0) / CELL_HEIGHT).max(1) as usize
+}
+
+/// What an edit `width` by `height` shows.
+pub fn view(width: i32, height: i32) -> View {
+    View {
+        cells: visible_cells(width),
+        rows: visible_lines(height),
+    }
+}
+
 /// How an edit looks at one moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditLook {
     pub focused: bool,
     pub enabled: bool,
     pub hovered: bool,
+}
+
+#[derive(Clone, Copy)]
+struct Run<'a> {
+    colour: u32,
+    selection: Option<(usize, usize)>,
+    password: u16,
+    palette: &'a Palette,
+}
+
+fn paint_run(
+    surface: &mut Surface<'_>,
+    (left, top): (i32, i32),
+    edit: &Edit,
+    (first, end): (usize, usize),
+    cells: usize,
+    run: Run<'_>,
+) {
+    for (index, character) in char::decode_utf16(edit.units[first..end].iter().copied())
+        .take(cells)
+        .enumerate()
+    {
+        let shown_unit = match run.password {
+            0 => character.map_or(font::REPLACEMENT, |character| {
+                font::glyph_id(u32::from(character))
+            }),
+            password => font::glyph_id(u32::from(password)),
+        };
+        let x = left + index as i32 * CELL_WIDTH;
+        let selected = run
+            .selection
+            .is_some_and(|(start, end)| (start..end).contains(&(first + index)));
+        let glyph_colour = match selected {
+            true => {
+                surface.fill(
+                    Rect::sized(x, top, CELL_WIDTH, CELL_HEIGHT),
+                    run.palette.highlight,
+                );
+                run.palette.highlight_text
+            }
+            false => run.colour,
+        };
+        text::glyph(surface, x, top, shown_unit, false, glyph_colour, None);
+    }
 }
 
 /// Paints `edit` over the whole of `rect`.
@@ -402,40 +675,46 @@ pub fn paint(
         ring(surface, rect.inset(DARK_FOCUS_INSET), palette.focus);
     }
     surface.clip_to(rect.inset(1));
-    let top = cell_top(rect.top, rect.height());
-    let visible = visible_cells(rect.width());
-    let first = edit.offset.min(edit.length);
-    let shown = &edit.text()[first..];
-    let (start, end) = edit.selection();
+    let shown = view(rect.width(), rect.height());
     let selection_shown = look.enabled && (look.focused || edit.keep_selection);
-    for (index, character) in char::decode_utf16(shown.iter().copied())
-        .take(visible)
-        .enumerate()
-    {
-        let shown_unit = match edit.password {
-            0 => character.map_or(font::REPLACEMENT, |character| {
-                font::glyph_id(u32::from(character))
-            }),
-            password => font::glyph_id(u32::from(password)),
-        };
-        let x = rect.left + TEXT_INSET + index as i32 * CELL_WIDTH;
-        let selected = selection_shown && (start..end).contains(&(first + index));
-        let glyph_colour = match selected {
-            true => {
-                surface.fill(
-                    Rect::sized(x, top, CELL_WIDTH, CELL_HEIGHT),
-                    palette.highlight,
-                );
-                palette.highlight_text
+    let run = Run {
+        colour,
+        selection: selection_shown.then(|| edit.selection()),
+        password: edit.password,
+        palette,
+    };
+    let left = rect.left + TEXT_INSET;
+    match edit.multiline {
+        false => {
+            let top = cell_top(rect.top, rect.height());
+            let first = edit.offset.min(edit.length);
+            paint_run(surface, (left, top), edit, (first, edit.length), shown.cells, run);
+            if caret_shown {
+                let x = left + (edit.caret - edit.offset.min(edit.caret)) as i32 * CELL_WIDTH;
+                surface.fill(Rect::sized(x, top, 1, CELL_HEIGHT), palette.caret);
             }
-            false => colour,
-        };
-        text::glyph(surface, x, top, shown_unit, false, glyph_colour, None);
-    }
-    if caret_shown {
-        let x =
-            rect.left + TEXT_INSET + (edit.caret - edit.offset.min(edit.caret)) as i32 * CELL_WIDTH;
-        surface.fill(Rect::sized(x, top, 1, CELL_HEIGHT), palette.caret);
+        }
+        true => {
+            let mut start = edit.line_index(edit.top);
+            for row in 0..shown.rows {
+                let Some(line_start) = start else {
+                    break;
+                };
+                let end = edit.line_end_at(line_start);
+                let top = rect.top + TEXT_INSET + row as i32 * CELL_HEIGHT;
+                let first = (line_start + edit.offset).min(end);
+                paint_run(surface, (left, top), edit, (first, end), shown.cells, run);
+                start = edit.next_line_start(line_start);
+            }
+            let line = edit.line_of(edit.caret);
+            let column = edit.caret - edit.line_start_at(edit.caret);
+            let row = line.wrapping_sub(edit.top);
+            if caret_shown && row < shown.rows && column >= edit.offset {
+                let x = left + (column - edit.offset) as i32 * CELL_WIDTH;
+                let top = rect.top + TEXT_INSET + row as i32 * CELL_HEIGHT;
+                surface.fill(Rect::sized(x, top, 1, CELL_HEIGHT), palette.caret);
+            }
+        }
     }
     surface.set_clip(saved);
 }
@@ -488,11 +767,11 @@ mod tests {
     fn a_click_puts_the_caret_at_the_nearest_boundary() {
         let mut edit = Edit::new();
         typed(&mut edit, "egg", 24);
-        edit.click(4 + 9, false, 24);
+        edit.click((4 + 9, 0), false, 24);
         assert_eq!(edit.caret(), 1);
-        edit.click(4 + 12, false, 24);
+        edit.click((4 + 12, 0), false, 24);
         assert_eq!(edit.caret(), 2);
-        edit.click(500, false, 24);
+        edit.click((500, 0), false, 24);
         assert_eq!(edit.caret(), 3);
     }
 
@@ -629,12 +908,12 @@ mod tests {
     fn a_double_click_selects_the_word_and_a_drag_moves_only_the_caret() {
         let mut edit = Edit::new();
         typed(&mut edit, "big egg.txt", 24);
-        assert_eq!(edit.select_word(4 + 8 * 5, 24), EditOutcome::Moved);
+        assert_eq!(edit.select_word((4 + 8 * 5, 0), 24), EditOutcome::Moved);
         assert_eq!(edit.selection(), (4, 7));
-        edit.click(4, false, 24);
-        edit.drag(4 + 8 * 3, 24);
+        edit.click((4, 0), false, 24);
+        edit.drag((4 + 8 * 3, 0), 24);
         assert_eq!((edit.selection(), edit.caret()), ((0, 3), 3));
-        edit.click(4 + 8 * 5, true, 24);
+        edit.click((4 + 8 * 5, 0), true, 24);
         assert_eq!(edit.selection(), (0, 5));
     }
 
@@ -703,5 +982,89 @@ mod tests {
             &LIGHT,
         );
         assert_eq!(surface.get(0, 0), Some(LIGHT.field_focus_border));
+    }
+
+    const PAGE: View = View { cells: 24, rows: 2 };
+
+    fn multiline(text: &str) -> Edit {
+        let mut edit = Edit::with_style(style::MULTILINE);
+        typed(&mut edit, text, 24);
+        edit
+    }
+
+    #[test]
+    fn enter_breaks_the_line_with_cr_lf_and_the_caret_steps_over_it() {
+        let mut edit = multiline("egg");
+        assert_eq!(edit.character(0x0d, PAGE), EditOutcome::Changed);
+        typed(&mut edit, "os", 24);
+        assert_eq!(text_of(&edit), "egg\r\nos");
+        assert_eq!((edit.line_count(), edit.line_of(edit.caret())), (2, 1));
+        edit.key(key::HOME, PAGE);
+        assert_eq!(edit.caret(), 5);
+        edit.key(key::LEFT, PAGE);
+        assert_eq!(edit.caret(), 3);
+        edit.key(key::RIGHT, PAGE);
+        assert_eq!(edit.caret(), 5);
+        assert_eq!(edit.key(key::BACK, PAGE), EditOutcome::Changed);
+        assert_eq!(text_of(&edit), "eggos");
+        assert_eq!(Edit::new().character(0x0d, 24), EditOutcome::Unchanged);
+    }
+
+    #[test]
+    fn up_and_down_keep_the_column_within_the_shorter_line() {
+        let mut edit = multiline("hello");
+        edit.character(0x0d, PAGE);
+        typed(&mut edit, "hi", 24);
+        edit.character(0x0d, PAGE);
+        typed(&mut edit, "world", 24);
+        edit.key(key::UP, PAGE);
+        assert_eq!(edit.caret(), 9);
+        edit.key(key::UP, PAGE);
+        assert_eq!(edit.caret(), 2);
+        edit.key(key::END, PAGE);
+        edit.key(key::NEXT, PAGE);
+        assert_eq!(edit.caret(), 16);
+        edit.key_with(key::HOME, CONTROL, PAGE);
+        assert_eq!(edit.caret(), 0);
+        edit.key_with(key::END, CONTROL, PAGE);
+        assert_eq!(edit.caret(), edit.text().len());
+    }
+
+    #[test]
+    fn the_lines_scroll_to_keep_the_caret_shown_and_answer_the_line_messages() {
+        let mut edit = multiline("a\rb\rc\rd");
+        assert_eq!(edit.line_count(), 4);
+        edit.scroll_to_caret(PAGE);
+        assert_eq!(edit.first_visible_line(), 3);
+        assert_eq!(edit.line_index(1), Some(3));
+        assert_eq!(edit.line_index(4), None);
+        assert_eq!(edit.line(3), Some(&[u16::from(b'd')][..]));
+        assert_eq!(edit.line_end_at(3), 4);
+        assert!(edit.scroll_by(0, -5));
+        assert_eq!(edit.first_visible_line(), 0);
+        assert!(!edit.scroll_by(0, -1));
+        edit.click((4, 4 + CELL_HEIGHT), false, PAGE);
+        assert_eq!(edit.caret(), 3);
+        edit.set_selection(2, 2, PAGE);
+        assert_eq!(edit.selection(), (1, 1));
+    }
+
+    #[test]
+    fn a_multi_line_edit_paints_each_line_on_its_own_row_with_the_caret_on_the_last() {
+        let mut edit = multiline("ab\rcd");
+        let mut pixels = vec![0u32; 120 * 48];
+        let mut surface = Surface::new(&mut pixels, 120, 48).unwrap();
+        let look = EditLook {
+            focused: true,
+            enabled: true,
+            hovered: false,
+        };
+        assert!(edit.scroll_by(0, -1));
+        edit.scroll_to_caret(view(120, 48));
+        assert_eq!(edit.first_visible_line(), 0);
+        paint(&mut surface, Rect::new(0, 0, 120, 48), &edit, look, &LIGHT);
+        let caret_x = TEXT_INSET + 2 * CELL_WIDTH;
+        assert_eq!(surface.get(caret_x, TEXT_INSET + CELL_HEIGHT + 1), Some(LIGHT.caret));
+        assert_ne!(surface.get(caret_x, TEXT_INSET + 1), Some(LIGHT.caret));
     }
 }

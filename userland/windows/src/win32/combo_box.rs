@@ -449,7 +449,7 @@ fn left_button_down(window: usize, x: i32) {
         if is_open(window) {
             close_and_notify(window, false);
         }
-        if let Some(outcome) = with_edit(window, |field, visible| field.click(x, false, visible)) {
+        if let Some(outcome) = with_edit(window, |field, visible| field.click((x, 0), false, visible)) {
             edited(window, outcome);
         }
         return;

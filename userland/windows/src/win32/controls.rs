@@ -21,7 +21,7 @@ use eggos_element_tree::Action;
 use eggos_windows_gui::colour::{colour_ref, pixel, system_colour};
 use eggos_windows_gui::controls::button::{self, Button, ButtonKind, ButtonLook, ButtonOutcome};
 use eggos_windows_gui::controls::edit::{
-    self, Edit, EditLook, EditOutcome, Modifiers, visible_cells,
+    self, Edit, EditLook, EditOutcome, Modifiers,
 };
 use eggos_windows_gui::controls::image::{self, Picture};
 use eggos_windows_gui::controls::label::{self, LabelLook};
@@ -66,6 +66,14 @@ pub mod code {
     pub const BM_CLICK: u32 = 0x00f5;
     pub const EM_GETSEL: u32 = 0x00b0;
     pub const EM_SETSEL: u32 = 0x00b1;
+    pub const EM_SCROLLCARET: u32 = 0x00b7;
+    pub const EM_LINESCROLL: u32 = 0x00b6;
+    pub const EM_GETLINECOUNT: u32 = 0x00ba;
+    pub const EM_LINEINDEX: u32 = 0x00bb;
+    pub const EM_LINELENGTH: u32 = 0x00c1;
+    pub const EM_GETLINE: u32 = 0x00c4;
+    pub const EM_LINEFROMCHAR: u32 = 0x00c9;
+    pub const EM_GETFIRSTVISIBLELINE: u32 = 0x00ce;
     pub const EM_REPLACESEL: u32 = 0x00c2;
     pub const EM_LIMITTEXT: u32 = 0x00c5;
     pub const EM_SETPASSWORDCHAR: u32 = 0x00cc;
@@ -909,7 +917,7 @@ pub fn procedure(
         message::CHAR => {
             let outcome = with_state(window, |entry, state| match state {
                 State::Edit(edit) => {
-                    Some(edit.character(wparam as u32, visible_cells(entry.width as i32)))
+                    Some(edit.character(wparam as u32, edit_view(entry)))
                 }
                 _ => None,
             })
@@ -928,6 +936,18 @@ pub fn procedure(
             if kind == ControlKind::Edit =>
         {
             selection_message(window, number, wparam, lparam)
+        }
+        code::EM_LINESCROLL
+        | code::EM_SCROLLCARET
+        | code::EM_GETLINECOUNT
+        | code::EM_LINEINDEX
+        | code::EM_LINELENGTH
+        | code::EM_GETLINE
+        | code::EM_LINEFROMCHAR
+        | code::EM_GETFIRSTVISIBLELINE
+            if kind == ControlKind::Edit =>
+        {
+            line_message(window, number, wparam, lparam)
         }
         code::EM_LIMITTEXT | code::EM_GETLIMITTEXT | code::EM_SETREADONLY => {
             with_state(window, |_, state| match (state, number) {
@@ -1038,7 +1058,7 @@ fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
             set_capture(window);
             let extend = held(VK_SHIFT);
             let outcome = with_state(window, |entry, state| match state {
-                State::Edit(edit) => Some(edit.click(x, extend, visible_cells(entry.width as i32))),
+                State::Edit(edit) => Some(edit.click((x, y), extend, edit_view(entry))),
                 _ => None,
             })
             .flatten();
@@ -1155,7 +1175,7 @@ fn double_click(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
             }
             set_focus(window);
             let outcome = with_state(window, |entry, state| match state {
-                State::Edit(edit) => Some(edit.select_word(x, visible_cells(entry.width as i32))),
+                State::Edit(edit) => Some(edit.select_word((x, y), edit_view(entry))),
                 _ => None,
             })
             .flatten();
@@ -1188,7 +1208,7 @@ fn pointer_moved(window: usize, (x, y): (i32, i32)) {
             Effect::Button(button.pointer_moved(entry.client().contains(x, y)))
         }
         State::Edit(edit) if captured => {
-            Effect::Edit(edit.drag(x, visible_cells(entry.width as i32)))
+            Effect::Edit(edit.drag((x, y), edit_view(entry)))
         }
         State::ScrollBar(bar) if captured => {
             let (offset, length) = along(bar, entry, (x, y));
@@ -1225,7 +1245,7 @@ fn selection_message(window: usize, number: u32, wparam: usize, lparam: usize) -
         let State::Edit(edit) = state else {
             return (0, None);
         };
-        let visible = visible_cells(entry.width as i32);
+        let visible = edit_view(entry);
         match number {
             code::EM_GETSEL => {
                 let (start, end) = edit.selection();
@@ -1255,6 +1275,75 @@ fn selection_message(window: usize, number: u32, wparam: usize, lparam: usize) -
     result
 }
 
+
+fn edit_view(entry: &Window) -> edit::View {
+    edit::view(entry.width as i32, entry.height as i32)
+}
+
+/// The edit line messages (D341); a single-line edit is one line. A `wParam` of -1 names the
+/// caret's line, or for `EM_LINELENGTH` the unselected characters of the selection's lines.
+fn line_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
+    let given = match wparam as i32 {
+        -1 => None,
+        value => Some(value as u32 as usize),
+    };
+    let answer = with_state(window, |entry, state| {
+        let State::Edit(edit) = state else {
+            return (0, None);
+        };
+        let (start, end) = edit.selection();
+        match number {
+            code::EM_GETLINECOUNT => (edit.line_count(), None),
+            code::EM_LINEINDEX => {
+                let line = given.unwrap_or_else(|| edit.line_of(edit.caret()));
+                (edit.line_index(line).unwrap_or(usize::MAX), None)
+            }
+            code::EM_LINELENGTH => match given {
+                Some(index) => (edit.line_end_at(index) - edit.line_start_at(index), None),
+                None => (
+                    start - edit.line_start_at(start) + edit.line_end_at(end) - end,
+                    None,
+                ),
+            },
+            code::EM_LINEFROMCHAR => (edit.line_of(given.unwrap_or(start)), None),
+            code::EM_GETLINE => (copy_line(edit, wparam, lparam), None),
+            code::EM_GETFIRSTVISIBLELINE => (edit.first_visible_line(), None),
+            code::EM_LINESCROLL => {
+                let moved = edit.scroll_by(wparam as i32 as isize, lparam as i32 as isize);
+                (usize::from(edit.multiline), moved.then_some(EditOutcome::Moved))
+            }
+            _ => {
+                edit.scroll_to_caret(edit_view(entry));
+                (0, Some(EditOutcome::Moved))
+            }
+        }
+    });
+    let (result, outcome) = answer.unwrap_or((0, None));
+    edit_outcome(window, outcome);
+    result
+}
+
+fn copy_line(edit: &Edit, line: usize, buffer: usize) -> usize {
+    let line = match edit.multiline {
+        true => line,
+        false => 0,
+    };
+    let Some(units) = edit.line(line) else {
+        return 0;
+    };
+    if buffer == 0 {
+        return 0;
+    }
+    // SAFETY: `EM_GETLINE`'s contract: `lParam` points to a buffer whose first `WORD` is the
+    // characters it holds.
+    let room = usize::from(unsafe { (buffer as *const u16).read_unaligned() });
+    let copied = units.len().min(room);
+    // SAFETY: as above, the buffer holds `room` characters, and the edit's text is not in it.
+    unsafe {
+        core::ptr::copy_nonoverlapping(units.as_ptr().cast::<u8>(), buffer as *mut u8, copied * 2)
+    };
+    copied
+}
 fn left_button_up(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
     match kind {
         ControlKind::Edit => {
@@ -1311,7 +1400,7 @@ fn key(window: usize, down: bool, virtual_key: usize) {
         State::Edit(edit) if down => Effect::Edit(Some(edit.key_with(
             virtual_key as u32,
             modifiers,
-            visible_cells(entry.width as i32),
+            edit_view(entry),
         ))),
         State::ScrollBar(bar) if down => Effect::Scroll(bar.key(virtual_key as u32)),
         State::ListBox(list) if down => {
@@ -1492,7 +1581,7 @@ pub fn start_edit_text(window: usize, text: &[u16]) {
 pub fn caret_to_end(window: usize) {
     with_state(window, |entry, state| {
         if let State::Edit(edit) = state {
-            edit.caret_to_end(visible_cells(entry.width as i32));
+            edit.caret_to_end(edit_view(entry));
         }
     });
     invalidate(window);

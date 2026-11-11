@@ -21627,3 +21627,31 @@ the license, by an explicit instruction recorded here.
   - `CB_GETEDITSEL` and `CB_LIMITTEXT`.
   - Auto-completing the field from the list.
   - Selecting the item that matches typed text when the list opens.
+
+## D341 Windows controls: multi-line edits (`ES_MULTILINE`) (batch part 10's rest, D228's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' edit control behaviour; the look is the design's edit field, docs/ux/windows-controls-v0.3.md, with one text row per line)
+
+- **Decision.** An `EDIT` with `ES_MULTILINE` keeps lines in the same model (`Edit::multiline`),
+  broken at `\r\n` as Windows stores them (a lone `\n` breaks a line too). The caret never stands
+  between the `\r` and the `\n`: moves, deletes and `EM_SETSEL` step over the pair.
+  - **Typing.** Enter (`\r`) and Ctrl+Enter (`\n`) insert `\r\n`, Tab a tab. In a dialog, Enter
+    goes to the edit only with `ES_WANTRETURN` (otherwise it is the default button) and
+    Ctrl+Enter always does, as on Windows.
+  - **Keys.** Up and Down move one line and Page Up and Page Down a window's lines, keeping the
+    column within the shorter line; Home and End go to the line's ends, Ctrl+Home and Ctrl+End to
+    the text's.
+  - **The view.** The edit shows whole rows of `CELL_HEIGHT` from 4 pixels in and scrolls by
+    whole lines and cells to keep the caret shown (`edit::View`, cells across and rows down; a
+    bare cell count is the single-line view, so callers of single-line edits are unchanged).
+    Clicks, drags and double-clicks take the row from the pointer's `y`.
+  - **Messages.** `EM_GETLINECOUNT`, `EM_LINEINDEX`, `EM_LINELENGTH` (with -1, the unselected
+    characters of the selection's lines), `EM_LINEFROMCHAR`, `EM_GETLINE` (narrowed to UTF-8 for
+    `SendMessageA`), `EM_GETFIRSTVISIBLELINE`, `EM_LINESCROLL` and `EM_SCROLLCARET`. A
+    single-line edit answers them as one line.
+  - `ES_PASSWORD` is ignored on a multi-line edit, as on Windows.
+- **Not yet.**
+  - Word wrap (a multi-line edit without `ES_AUTOHSCROLL`): lines run past the right edge and
+    the view scrolls sideways.
+  - The edit's own scroll bars (`WS_VSCROLL`, `WS_HSCROLL`), which wait for window scroll bars.
+  - Windows' larger default limit (30,000 characters): the edit still holds `EDIT_CAPACITY`
+    (1,024) units.
+  - `EM_SETRECT`, `EM_SETTABSTOPS` and `EM_FMTLINES`.
