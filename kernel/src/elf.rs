@@ -7,9 +7,13 @@
 //! use, and arithmetic that could overflow is checked too. What the program headers mean (how
 //! segments become mappings) is the loader's business ([`crate::linux::exec`]).
 //!
-//! Only 64-bit little-endian images so far, the byte order of every architecture brought up;
-//! big-endian ones (ppc64, s390x, mips64) come with those architectures (M9). Formats are from
-//! the System V ABI's "Object Files" chapter (the ELF-64 specification).
+//! Only 64-bit images in the kernel's own byte order: the programs it runs natively (D17)
+//! share it, so every field reads in native order, little-endian today and big-endian on the
+//! big-endian ports (D318). Formats are from the System V ABI's "Object Files" chapter (the
+//! ELF-64 specification).
+
+/// `EI_DATA` of the kernel's own byte order: `ELFDATA2LSB` (1) or `ELFDATA2MSB` (2).
+const NATIVE_DATA: u8 = if cfg!(target_endian = "big") { 2 } else { 1 };
 
 /// The `e_machine` of each architecture, and the kernel's own.
 pub mod machine {
@@ -94,7 +98,7 @@ pub struct ProgramHeader {
 }
 
 impl<'a> Elf<'a> {
-    /// Checks `image`'s file header: an ELF-64 little-endian image of `machine`, an executable
+    /// Checks `image`'s file header: an ELF-64 image in the kernel's byte order of `machine`, an executable
     /// or position-independent file, with program headers of the standard size that lie
     /// within the image.
     pub fn parse(image: &'a [u8], machine: u16) -> Result<Self, InvalidElf> {
@@ -104,8 +108,8 @@ impl<'a> Elf<'a> {
         if image[4] != 2 {
             return Err(InvalidElf("not a 64-bit ELF image"));
         }
-        if image[5] != 1 {
-            return Err(InvalidElf("not a little-endian ELF image"));
+        if image[5] != NATIVE_DATA {
+            return Err(InvalidElf("an ELF image in the other byte order"));
         }
         if image[6] != 1 {
             return Err(InvalidElf("an unknown ELF version"));
@@ -221,19 +225,19 @@ impl ProgramHeader {
 
 /// The little-endian `u16` at `offset` of `bytes`, which the caller has checked holds it.
 fn u16_at(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+    u16::from_ne_bytes([bytes[offset], bytes[offset + 1]])
 }
 
 fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     let mut word = [0; 4];
     word.copy_from_slice(&bytes[offset..offset + 4]);
-    u32::from_le_bytes(word)
+    u32::from_ne_bytes(word)
 }
 
 fn u64_at(bytes: &[u8], offset: usize) -> u64 {
     let mut word = [0; 8];
     word.copy_from_slice(&bytes[offset..offset + 8]);
-    u64::from_le_bytes(word)
+    u64::from_ne_bytes(word)
 }
 
 /// Builds small ELF images, for the loader's tests and the boot self-test that runs the HAL's

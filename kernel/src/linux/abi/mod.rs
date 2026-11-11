@@ -349,12 +349,12 @@ pub enum StatLayout {
     Mips64,
 }
 
-/// Three instructions as little-endian code bytes.
+/// Three instructions as code bytes, in the CPU's own byte order (D318).
 pub const fn code_bytes(words: [u32; 3]) -> [u8; 12] {
     let mut bytes = [0; 12];
     let mut index = 0;
     while index < 12 {
-        bytes[index] = words[index / 4].to_le_bytes()[index % 4];
+        bytes[index] = words[index / 4].to_ne_bytes()[index % 4];
         index += 1;
     }
     bytes

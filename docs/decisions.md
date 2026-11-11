@@ -20913,7 +20913,14 @@ the license, by an explicit instruction recorded here.
 - **Decision.** `Mmio`'s 16- and 32-bit accesses and ECAM configuration space convert with
   `from_le`/`to_le`: PCI and virtio registers are little-endian, so a big-endian CPU (SPARC64)
   reads them right. On every little-endian port the conversions are no-ops.
-- **Next steps.** virtio's ring fields (`virtio/queue.rs`) and its in-memory structures; the
-  ELF loader accepting the native byte order; `abi::code_bytes` in native order; then s390x
-  (channel I/O, DAT geometry) and SPARC64.
+- **Step 2.**
+  - **Virtio rings.** Every field of a split virtqueue's rings (descriptors, the available
+    and used rings, their flags and indices) is written `to_le` and read `from_le`, on both
+    the driver's side and the stand-in device's.
+  - **ELF.** The loader takes images in the kernel's own byte order (`EI_DATA` 1 or 2 by
+    `target_endian`) and reads their fields in native order.
+  - **Code bytes.** `abi::code_bytes` lays instructions out in native order.
+- **Next.** Virtio devices' in-memory request structures (block, net, GPU and input headers)
+  where they are built as native words; then s390x (channel I/O, the DAT geometry) and
+  SPARC64.
 - **Not yet.** Building and running.

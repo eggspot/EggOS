@@ -162,7 +162,7 @@ impl SplitQueue {
     /// driver that polls. The spec makes it a hint the device should follow.
     pub fn disable_used_notifications(&mut self) {
         // SAFETY: the available ring's flags field, which only the driver writes.
-        unsafe { self.ring.avail(0).write_volatile(AVAIL_NO_INTERRUPT) };
+        unsafe { self.ring.avail(0).write_volatile(AVAIL_NO_INTERRUPT.to_le()) };
     }
 
     /// Asks the device to notify the driver (an interrupt) when it uses buffers again: for a
@@ -204,14 +204,14 @@ impl SplitQueue {
         let next = self.ring.descriptor(index).wrapping_add(14).cast::<u16>();
         // SAFETY: the `next` field of a descriptor inside the table; the device does not use
         // free descriptors, so only this queue reads or writes it.
-        self.free_head = unsafe { next.read_volatile() };
+        self.free_head = u16::from_le(unsafe { next.read_volatile() });
         index
     }
 
     fn release(&mut self, index: u16) {
         let next = self.ring.descriptor(index).wrapping_add(14).cast::<u16>();
         // SAFETY: as in `allocate`: the descriptor is back in this queue's hands.
-        unsafe { next.write_volatile(self.free_head) };
+        unsafe { next.write_volatile(self.free_head.to_le()) };
         self.free_head = index;
         self.free += 1;
     }
@@ -220,27 +220,27 @@ impl SplitQueue {
         let descriptor = self.ring.descriptor(index);
         // SAFETY: the address field of a descriptor in the table, 8-byte aligned (16-byte
         // entries in a table `new`'s caller aligned to 16 bytes).
-        unsafe { descriptor.cast::<u64>().write_volatile(buffer.addr.get()) };
+        unsafe { descriptor.cast::<u64>().write_volatile(buffer.addr.get().to_le()) };
         // SAFETY: the length field of the same descriptor.
         unsafe {
             descriptor
                 .wrapping_add(8)
                 .cast::<u32>()
-                .write_volatile(buffer.len)
+                .write_volatile(buffer.len.to_le())
         };
         // SAFETY: the flags field of the same descriptor.
         unsafe {
             descriptor
                 .wrapping_add(12)
                 .cast::<u16>()
-                .write_volatile(flags)
+                .write_volatile(flags.to_le())
         };
         // SAFETY: the next field of the same descriptor.
         unsafe {
             descriptor
                 .wrapping_add(14)
                 .cast::<u16>()
-                .write_volatile(next)
+                .write_volatile(next.to_le())
         };
     }
 
@@ -265,12 +265,12 @@ impl SplitQueue {
         self.write_descriptor(current, last, write_flag(last), 0);
         let slot = self.ring.avail_slot(self.avail_idx);
         // SAFETY: a slot of the available ring, which only the driver writes.
-        unsafe { slot.write_volatile(head) };
+        unsafe { slot.write_volatile(head.to_le()) };
         self.avail_idx = self.avail_idx.wrapping_add(1);
         fence(Ordering::Release);
         self.ring
             .index(self.ring.avail(2))
-            .store(self.avail_idx, Ordering::Release);
+            .store(self.avail_idx.to_le(), Ordering::Release);
         Ok(head)
     }
 
@@ -279,22 +279,22 @@ impl SplitQueue {
     pub fn should_notify(&self) -> bool {
         fence(Ordering::SeqCst);
         // SAFETY: the used ring's flags field, which the device writes.
-        let flags = unsafe { self.ring.used(0).read_volatile() };
+        let flags = u16::from_le(unsafe { self.ring.used(0).read_volatile() });
         flags & USED_NO_NOTIFY == 0
     }
 
     /// The next chain the device finished with, its descriptors freed; `None` if there is
     /// none yet.
     pub fn pop_used(&mut self) -> Option<Used> {
-        let used_idx = self.ring.index(self.ring.used(2)).load(Ordering::Acquire);
+        let used_idx = u16::from_le(self.ring.index(self.ring.used(2)).load(Ordering::Acquire));
         if used_idx == self.last_used {
             return None;
         }
         let element = self.ring.used_element(self.last_used);
         // SAFETY: the id field of a used ring element the device published.
-        let id = unsafe { element.read_volatile() };
+        let id = u32::from_le(unsafe { element.read_volatile() });
         // SAFETY: the length field of the same element.
-        let len = unsafe { element.wrapping_add(1).read_volatile() };
+        let len = u32::from_le(unsafe { element.wrapping_add(1).read_volatile() });
         self.last_used = self.last_used.wrapping_add(1);
         let head = id as u16;
         if id < u32::from(self.ring.size) {
@@ -311,9 +311,9 @@ impl SplitQueue {
             }
             let descriptor = self.ring.descriptor(index);
             // SAFETY: the flags field of a descriptor the device handed back.
-            let flags = unsafe { descriptor.wrapping_add(12).cast::<u16>().read_volatile() };
+            let flags = u16::from_le(unsafe { descriptor.wrapping_add(12).cast::<u16>().read_volatile() });
             // SAFETY: the next field of the same descriptor.
-            let next = unsafe { descriptor.wrapping_add(14).cast::<u16>().read_volatile() };
+            let next = u16::from_le(unsafe { descriptor.wrapping_add(14).cast::<u16>().read_volatile() });
             self.release(index);
             if flags & DESCRIPTOR_NEXT == 0 {
                 return;
@@ -356,27 +356,27 @@ impl DeviceSide {
 
     /// The head of the next chain the driver made available, if any.
     pub fn next_available(&mut self) -> Option<u16> {
-        let avail_idx = self.ring.index(self.ring.avail(2)).load(Ordering::Acquire);
+        let avail_idx = u16::from_le(self.ring.index(self.ring.avail(2)).load(Ordering::Acquire));
         if avail_idx == self.last_avail {
             return None;
         }
         let slot = self.ring.avail_slot(self.last_avail);
         self.last_avail = self.last_avail.wrapping_add(1);
         // SAFETY: a slot of the available ring the driver published.
-        Some(unsafe { slot.read_volatile() })
+        Some(u16::from_le(unsafe { slot.read_volatile() }))
     }
 
     /// Descriptor `index`: address, length, flags and next.
     pub fn descriptor(&self, index: u16) -> (DmaAddr, u32, u16, u16) {
         let descriptor = self.ring.descriptor(index % self.ring.size);
         // SAFETY: the address field of a descriptor in the table.
-        let addr = unsafe { descriptor.cast::<u64>().read_volatile() };
+        let addr = u64::from_le(unsafe { descriptor.cast::<u64>().read_volatile() });
         // SAFETY: the length field of the same descriptor.
-        let len = unsafe { descriptor.wrapping_add(8).cast::<u32>().read_volatile() };
+        let len = u32::from_le(unsafe { descriptor.wrapping_add(8).cast::<u32>().read_volatile() });
         // SAFETY: the flags field of the same descriptor.
-        let flags = unsafe { descriptor.wrapping_add(12).cast::<u16>().read_volatile() };
+        let flags = u16::from_le(unsafe { descriptor.wrapping_add(12).cast::<u16>().read_volatile() });
         // SAFETY: the next field of the same descriptor.
-        let next = unsafe { descriptor.wrapping_add(14).cast::<u16>().read_volatile() };
+        let next = u16::from_le(unsafe { descriptor.wrapping_add(14).cast::<u16>().read_volatile() });
         (DmaAddr::new(addr), len, flags, next)
     }
 
@@ -384,20 +384,20 @@ impl DeviceSide {
     pub fn put_used(&mut self, head: u16, len: u32) {
         let element = self.ring.used_element(self.used_idx);
         // SAFETY: the id field of a used ring element, which only the device writes.
-        unsafe { element.write_volatile(head.into()) };
+        unsafe { element.write_volatile(u32::from(head).to_le()) };
         // SAFETY: the length field of the same element.
-        unsafe { element.wrapping_add(1).write_volatile(len) };
+        unsafe { element.wrapping_add(1).write_volatile(len.to_le()) };
         self.used_idx = self.used_idx.wrapping_add(1);
         fence(Ordering::Release);
         self.ring
             .index(self.ring.used(2))
-            .store(self.used_idx, Ordering::Release);
+            .store(self.used_idx.to_le(), Ordering::Release);
     }
 
     /// Whether the driver asked not to be notified of used buffers.
     pub fn used_notifications_disabled(&self) -> bool {
         // SAFETY: the available ring's flags field, which the driver writes.
-        let flags = unsafe { self.ring.avail(0).read_volatile() };
+        let flags = u16::from_le(unsafe { self.ring.avail(0).read_volatile() });
         flags & AVAIL_NO_INTERRUPT != 0
     }
 
@@ -405,6 +405,6 @@ impl DeviceSide {
     pub fn set_no_notify(&mut self, on: bool) {
         let flags = if on { USED_NO_NOTIFY } else { 0 };
         // SAFETY: the used ring's flags field, which only the device writes.
-        unsafe { self.ring.used(0).write_volatile(flags) };
+        unsafe { self.ring.used(0).write_volatile(flags.to_le()) };
     }
 }
