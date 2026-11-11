@@ -10,6 +10,7 @@ use eggos_font as font;
 /// The most UTF-16 units an edit holds.
 pub const EDIT_CAPACITY: usize = 1024;
 const TEXT_INSET: i32 = 4;
+const LINES_TOP: i32 = 2;
 const DARK_FOCUS_INSET: i32 = 2;
 const LINE_FEED: u16 = 0x0a;
 const CARRIAGE_RETURN: u16 = 0x0d;
@@ -66,6 +67,8 @@ pub struct Edit {
     pub digits_only: bool,
     pub keep_selection: bool,
     pub multiline: bool,
+    /// Whether the text changed since `WM_SETTEXT` or `EM_SETMODIFY` (`EM_GETMODIFY`).
+    pub modified: bool,
 }
 
 /// What a key did to an edit.
@@ -112,6 +115,7 @@ impl Edit {
             digits_only: false,
             keep_selection: false,
             multiline: false,
+            modified: false,
         }
     }
 
@@ -164,6 +168,7 @@ impl Edit {
             .copy_within(end..self.length, start + inserted.len());
         self.units[start..start + inserted.len()].copy_from_slice(inserted);
         self.length = length;
+        self.modified = true;
         self.caret = self.boundary(start + inserted.len());
         self.anchor = self.caret;
         self.scroll(view.into());
@@ -203,6 +208,7 @@ impl Edit {
         self.caret = 0;
         self.offset = 0;
         self.top = 0;
+        self.modified = false;
     }
 
     /// Puts the caret after the text, as the picker does after filling in a name.
@@ -246,8 +252,8 @@ impl Edit {
     /// A key press: Backspace and Delete erase the selection or a character; the arrows, Home
     /// and End move the caret (by words with Ctrl, to the text's ends with Ctrl+Home and
     /// Ctrl+End in a multi-line edit), Shift extending the selection; Ctrl+A selects all. In
-    /// a multi-line edit Up and Down move a line and Page Up and Page Down a window's lines,
-    /// keeping the column.
+    /// a multi-line edit Up and Down move a line and Page Up and Page Down a window's lines less
+    /// one, keeping the column.
     pub fn key_with(
         &mut self,
         virtual_key: u32,
@@ -273,7 +279,7 @@ impl Edit {
             _ if vertical && !self.multiline => EditOutcome::Unchanged,
             key::LEFT | key::RIGHT | key::HOME | key::END | key::UP | key::DOWN | key::PRIOR
             | key::NEXT => {
-                let lines = view.rows.max(1) as isize;
+                let lines = view.rows.max(2) as isize - 1;
                 let target = match virtual_key {
                     key::LEFT if held.control => self.previous_word(self.caret),
                     key::RIGHT if held.control => self.next_word(self.caret),
@@ -340,47 +346,51 @@ impl Edit {
         }
     }
 
+    fn breaks_after(&self, index: usize) -> bool {
+        let unit = self.units[index];
+        let pair = index + 1 < self.length && self.units[index + 1] == LINE_FEED;
+        unit == LINE_FEED || (unit == CARRIAGE_RETURN && !pair)
+    }
+
     /// Where the line holding `index` starts.
     pub fn line_start_at(&self, index: usize) -> usize {
         if !self.multiline {
             return 0;
         }
         let mut at = index.min(self.length);
-        while at > 0 && self.units[at - 1] != LINE_FEED {
+        while at > 0 && !self.breaks_after(at - 1) {
             at -= 1;
         }
         at
     }
 
-    /// Where the line holding `index` ends, before its break.
+    /// Where the line holding `index` ends, before its break (`\r\n`, or a lone `\n` or `\r`).
     pub fn line_end_at(&self, index: usize) -> usize {
         let start = self.line_start_at(index);
         let mut at = start;
-        while at < self.length && !(self.multiline && self.units[at] == LINE_FEED) {
+        while at < self.length
+            && !(self.multiline
+                && (self.units[at] == LINE_FEED || self.units[at] == CARRIAGE_RETURN))
+        {
             at += 1;
         }
-        match at < self.length && at > start && self.units[at - 1] == CARRIAGE_RETURN {
-            true => at - 1,
-            false => at,
-        }
+        at
     }
 
     fn next_line_start(&self, start: usize) -> Option<usize> {
         if !self.multiline {
             return None;
         }
-        self.units[start..self.length]
-            .iter()
-            .position(|&unit| unit == LINE_FEED)
-            .map(|at| start + at + 1)
+        (start..self.length)
+            .find(|&at| self.breaks_after(at))
+            .map(|at| at + 1)
     }
 
     /// `EM_LINEFROMCHAR`: the line holding `index`, from 0.
     pub fn line_of(&self, index: usize) -> usize {
         match self.multiline {
-            true => self.units[..index.min(self.length)]
-                .iter()
-                .filter(|&&unit| unit == LINE_FEED)
+            true => (0..index.min(self.length))
+                .filter(|&at| self.breaks_after(at))
                 .count(),
             false => 0,
         }
@@ -486,7 +496,7 @@ impl Edit {
         if !self.multiline {
             return (self.offset + cells).min(self.length);
         }
-        let row = ((y - TEXT_INSET).max(0) / CELL_HEIGHT) as usize;
+        let row = ((y - LINES_TOP).max(0) / CELL_HEIGHT) as usize;
         let line = (self.top + row).min(self.line_count() - 1);
         let start = self.line_index(line).unwrap_or(self.length);
         (start + self.offset + cells).min(self.line_end_at(start))
@@ -579,9 +589,10 @@ pub fn visible_cells(width: i32) -> usize {
     ((width - 2 * TEXT_INSET).max(0) / CELL_WIDTH) as usize
 }
 
-/// The whole lines a multi-line edit `height` tall shows, at least 1.
+/// The whole lines a multi-line edit `height` tall shows, at least 1: its lines start 2 pixels
+/// down and end 2 pixels above its bottom.
 pub fn visible_lines(height: i32) -> usize {
-    ((height - 2 * TEXT_INSET).max(0) / CELL_HEIGHT).max(1) as usize
+    ((height - 2 * LINES_TOP).max(0) / CELL_HEIGHT).max(1) as usize
 }
 
 /// What an edit `width` by `height` shows.
@@ -696,14 +707,23 @@ pub fn paint(
         }
         true => {
             let mut start = edit.line_index(edit.top);
-            for row in 0..shown.rows {
+            for row in 0..=shown.rows {
                 let Some(line_start) = start else {
                     break;
                 };
                 let end = edit.line_end_at(line_start);
-                let top = rect.top + TEXT_INSET + row as i32 * CELL_HEIGHT;
+                let top = rect.top + LINES_TOP + row as i32 * CELL_HEIGHT;
                 let first = (line_start + edit.offset).min(end);
                 paint_run(surface, (left, top), edit, (first, end), shown.cells, run);
+                let break_selected = run
+                    .selection
+                    .is_some_and(|(from, to)| (from..to).contains(&end) && end < edit.length);
+                let break_column = (end - line_start).checked_sub(edit.offset);
+                if let (true, Some(column)) = (break_selected, break_column) {
+                    let x = left + column as i32 * CELL_WIDTH;
+                    let cell = Rect::sized(x, top, CELL_WIDTH, CELL_HEIGHT);
+                    surface.fill(cell, palette.highlight);
+                }
                 start = edit.next_line_start(line_start);
             }
             let line = edit.line_of(edit.caret);
@@ -711,7 +731,7 @@ pub fn paint(
             let row = line.wrapping_sub(edit.top);
             if caret_shown && row < shown.rows && column >= edit.offset {
                 let x = left + (column - edit.offset) as i32 * CELL_WIDTH;
-                let top = rect.top + TEXT_INSET + row as i32 * CELL_HEIGHT;
+                let top = rect.top + LINES_TOP + row as i32 * CELL_HEIGHT;
                 surface.fill(Rect::sized(x, top, 1, CELL_HEIGHT), palette.caret);
             }
         }
@@ -1008,6 +1028,10 @@ mod tests {
         assert_eq!(edit.key(key::BACK, PAGE), EditOutcome::Changed);
         assert_eq!(text_of(&edit), "eggos");
         assert_eq!(Edit::new().character(0x0d, 24), EditOutcome::Unchanged);
+        assert!(edit.modified);
+        edit.set_text(&"a\rb\nc".encode_utf16().collect::<Vec<_>>());
+        assert!(!edit.modified);
+        assert_eq!((edit.line_count(), edit.line_index(2)), (3, Some(4)));
     }
 
     #[test]
@@ -1023,7 +1047,7 @@ mod tests {
         assert_eq!(edit.caret(), 2);
         edit.key(key::END, PAGE);
         edit.key(key::NEXT, PAGE);
-        assert_eq!(edit.caret(), 16);
+        assert_eq!(edit.caret(), 9);
         edit.key_with(key::HOME, CONTROL, PAGE);
         assert_eq!(edit.caret(), 0);
         edit.key_with(key::END, CONTROL, PAGE);

@@ -21845,3 +21845,18 @@ the license, by an explicit instruction recorded here.
   `WH_CBT`'s other codes (activation, focus, moves); low-level hooks called on the installing
   thread's message loop, as Windows does (the layer calls them on the thread that reads the
   input); the injected-input flags.
+
+## D350 Windows controls: multi-line edits follow the controls design's section 13 (amends D341; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (the design, docs/ux/windows-controls-v0.3.md section 13)
+
+- **Context.** D341 was written before reading the design's section 13, which already specifies
+  `ES_MULTILINE`. Where they differed, the design wins.
+- **Decision.**
+  - Lines start 2 pixels down and are 16 apart; `R = (h - 4) / 16` whole lines show, and the
+    partial line below them is drawn, clipped (D341 started them 4 pixels down).
+  - Page Up and Page Down move `R - 1` lines (D341: `R`).
+  - A lone `\r`, like a lone `\n` or `\r\n`, ends a line, as `WM_SETTEXT` may set it.
+  - A selected line end fills one extra cell after the line's last glyph.
+  - `EM_GETMODIFY` and `EM_SETMODIFY`: the flag is set by any change of the text by typing or
+    `EM_REPLACESEL`, cleared by `WM_SETTEXT` (`Edit::modified`).
+- **Still not yet** (D341's list stands): word wrap without `ES_AUTOHSCROLL`, which the
+  design wants with part 1's greedy rule, and the edit's own scroll bars inside its border.

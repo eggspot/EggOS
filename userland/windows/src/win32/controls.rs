@@ -74,6 +74,8 @@ pub mod code {
     pub const EM_GETLINE: u32 = 0x00c4;
     pub const EM_LINEFROMCHAR: u32 = 0x00c9;
     pub const EM_GETFIRSTVISIBLELINE: u32 = 0x00ce;
+    pub const EM_GETMODIFY: u32 = 0x00b8;
+    pub const EM_SETMODIFY: u32 = 0x00b9;
     pub const EM_REPLACESEL: u32 = 0x00c2;
     pub const EM_LIMITTEXT: u32 = 0x00c5;
     pub const EM_SETPASSWORDCHAR: u32 = 0x00cc;
@@ -949,8 +951,17 @@ pub fn procedure(
         {
             line_message(window, number, wparam, lparam)
         }
-        code::EM_LIMITTEXT | code::EM_GETLIMITTEXT | code::EM_SETREADONLY => {
+        code::EM_LIMITTEXT
+        | code::EM_GETLIMITTEXT
+        | code::EM_SETREADONLY
+        | code::EM_GETMODIFY
+        | code::EM_SETMODIFY => {
             with_state(window, |_, state| match (state, number) {
+                (State::Edit(edit), code::EM_GETMODIFY) => usize::from(edit.modified),
+                (State::Edit(edit), code::EM_SETMODIFY) => {
+                    edit.modified = wparam != 0;
+                    0
+                }
                 (State::Edit(edit), code::EM_LIMITTEXT) => {
                     edit.set_limit(wparam);
                     0
