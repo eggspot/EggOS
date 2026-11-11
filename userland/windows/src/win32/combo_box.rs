@@ -62,6 +62,9 @@ pub mod code {
     pub const CBN_CLOSEUP: usize = 8;
     pub const CBN_SELENDOK: usize = 9;
     pub const CBN_SELENDCANCEL: usize = 10;
+    pub const CBN_EDITCHANGE: usize = 5;
+    pub const CBN_EDITUPDATE: usize = 6;
+    pub const CB_SETEDITSEL: u32 = 0x0142;
 }
 
 /// An open list: the top-level window it is drawn over, the combo box, and where it is in the
@@ -83,13 +86,17 @@ pub struct Effect {
 
 /// A new combo box's state for a list the program gave `list_height` pixels; `None` without
 /// memory.
-pub fn new_state(list_height: i32) -> Option<usize> {
+pub fn new_state(list_height: i32, style: u32) -> Option<usize> {
     let block = heap::allocate(core::mem::size_of::<ComboBox>()).cast::<ComboBox>();
     if block.is_null() {
         return None;
     }
+    let combo = match style & model::style::TYPE {
+        model::style::DROP_DOWN => ComboBox::editable(list_height),
+        _ => ComboBox::new(list_height),
+    };
     // SAFETY: a new, 16-byte aligned heap block the size of a `ComboBox`.
-    unsafe { block.write(ComboBox::new(list_height)) };
+    unsafe { block.write(combo) };
     Some(block as usize)
 }
 
@@ -113,10 +120,56 @@ pub fn shown_text(gui: &Gui, window: usize) -> &[u16] {
     };
     // SAFETY: as `model`, a shared reference for the time `gui` is borrowed.
     let combo = unsafe { &*(address as *const ComboBox) };
-    combo
-        .selected()
-        .and_then(|index| combo.items.text(index))
-        .unwrap_or(&[])
+    combo.shown_text()
+}
+
+/// The edit field's visible cells in combo box `window`, for its caret's scrolling (D340).
+fn edit_cells(gui: &Gui, window: usize) -> usize {
+    gui.windows.get(window).map_or(0, |entry| {
+        let area = model::edit_area(entry.client());
+        eggos_windows_gui::controls::edit::visible_cells(area.right - area.left)
+    })
+}
+
+/// Applies `work` to editable combo box `window`'s edit field; whether it was editable, and
+/// the outcome.
+fn with_edit(
+    window: usize,
+    work: impl FnOnce(&mut eggos_windows_gui::controls::edit::Edit, usize) -> eggos_windows_gui::controls::edit::EditOutcome,
+) -> Option<eggos_windows_gui::controls::edit::EditOutcome> {
+    with(|gui| {
+        let visible = edit_cells(gui, window);
+        let address = address_of(gui, window)?;
+        // SAFETY: as `model`.
+        let field = unsafe { model(address) }.edit.as_mut()?;
+        Some(work(field, visible))
+    })
+    .flatten()
+}
+
+/// What an edit of the field did: repainted, and `CBN_EDITUPDATE` then `CBN_EDITCHANGE` when
+/// its text changed.
+fn edited(window: usize, outcome: eggos_windows_gui::controls::edit::EditOutcome) {
+    use eggos_windows_gui::controls::edit::EditOutcome;
+    match outcome {
+        EditOutcome::Unchanged => {}
+        EditOutcome::Moved => invalidate(window),
+        EditOutcome::Changed => {
+            invalidate(window);
+            notify(window, code::CBN_EDITUPDATE);
+            notify(window, code::CBN_EDITCHANGE);
+        }
+    }
+}
+
+fn is_editable(window: usize) -> bool {
+    with(|gui| {
+        let address = address_of(gui, window)?;
+        // SAFETY: as `model`, a shared reference while the lock is held.
+        Some(unsafe { &*(address as *const ComboBox) }.edit.is_some())
+    })
+    .flatten()
+    .unwrap_or(false)
 }
 
 fn with_root_surface<R>(
@@ -204,7 +257,11 @@ fn close_list(gui: &mut Gui, window: usize, choose: bool) -> Option<Closed> {
     gui.combo = None;
     let address = address_of(gui, window)?;
     // SAFETY: as `model`; no other reference to the state is made meanwhile.
-    let closed = unsafe { model(address) }.close(choose);
+    let combo = unsafe { model(address) };
+    let closed = combo.close(choose);
+    if matches!(closed, Closed::Chosen { .. }) {
+        combo.show_selection_in_edit();
+    }
     let menu_height = gui.windows.get(tracking.root)?.menu_height;
     let under = tracking.rect.offset(0, -menu_height);
     windows::invalidate_tree(&mut gui.windows, tracking.root, Some(under), true);
@@ -372,12 +429,31 @@ fn is_open(window: usize) -> bool {
     with(|gui| gui.combo.is_some_and(|tracking| tracking.combo == window)).unwrap_or(false)
 }
 
-fn left_button_down(window: usize) {
+fn left_button_down(window: usize, x: i32) {
     let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled()));
     if enabled != Some(true) {
         return;
     }
     set_focus(window);
+    let in_field = with(|gui| {
+        let entry = gui.windows.get(window)?;
+        let area = model::edit_area(entry.client());
+        let address = address_of(gui, window)?;
+        // SAFETY: as `model`, a shared reference while the lock is held.
+        let editable = unsafe { &*(address as *const ComboBox) }.edit.is_some();
+        Some(editable && x < area.right)
+    })
+    .flatten()
+    .unwrap_or(false);
+    if in_field {
+        if is_open(window) {
+            close_and_notify(window, false);
+        }
+        if let Some(outcome) = with_edit(window, |field, visible| field.click(x, false, visible)) {
+            edited(window, outcome);
+        }
+        return;
+    }
     if is_open(window) {
         close_and_notify(window, false);
         return;
@@ -398,6 +474,12 @@ fn toggle(window: usize) {
 
 fn selection_moved(window: usize, moved: Option<bool>) {
     if moved == Some(true) {
+        with(|gui| {
+            let address = address_of(gui, window)?;
+            // SAFETY: as `model`.
+            unsafe { model(address) }.show_selection_in_edit();
+            Some(())
+        });
         invalidate(window);
         notify(window, code::CBN_SELENDOK);
         notify(window, code::CBN_SELCHANGE);
@@ -407,6 +489,12 @@ fn selection_moved(window: usize, moved: Option<bool>) {
 fn key_down(window: usize, virtual_key: u32) {
     if virtual_key == key::F4 {
         toggle(window);
+        return;
+    }
+    if !matches!(virtual_key, key::UP | key::DOWN | key::PAGE_UP | key::PAGE_DOWN)
+        && let Some(outcome) = with_edit(window, |field, visible| field.key(virtual_key, visible))
+    {
+        edited(window, outcome);
         return;
     }
     let moved = with(|gui| {
@@ -420,6 +508,10 @@ fn key_down(window: usize, virtual_key: u32) {
 
 fn character(window: usize, character: usize) {
     if character < 0x20 {
+        return;
+    }
+    if let Some(outcome) = with_edit(window, |field, visible| field.character(character as u32, visible)) {
+        edited(window, outcome);
         return;
     }
     let moved = with(|gui| {
@@ -616,8 +708,28 @@ pub fn procedure(window: usize, number: u32, wparam: usize, lparam: usize) -> us
             0
         }
         message::LEFT_BUTTON_DOWN => {
-            left_button_down(window);
+            left_button_down(window, lparam as u16 as i16 as i32);
             0
+        }
+        message::SET_TEXT if is_editable(window) => {
+            // SAFETY: `WM_SETTEXT`'s contract: `lParam` is a NUL-terminated string or null.
+            let text = unsafe { text_at(lparam) };
+            with_edit(window, |field, _| {
+                field.set_text(text);
+                eggos_windows_gui::controls::edit::EditOutcome::Changed
+            });
+            invalidate(window);
+            1
+        }
+        code::CB_SETEDITSEL if is_editable(window) => {
+            let start = lparam as u16 as i16 as isize;
+            let end = (lparam >> 16) as u16 as i16 as isize;
+            with_edit(window, |field, visible| {
+                field.set_selection(start, end, visible);
+                eggos_windows_gui::controls::edit::EditOutcome::Moved
+            });
+            invalidate(window);
+            1
         }
         message::KEY_DOWN => {
             key_down(window, wparam as u32);

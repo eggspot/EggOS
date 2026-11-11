@@ -610,7 +610,7 @@ pub fn create_child(
 ) -> Option<usize> {
     let (state, bounds) = match kind {
         ControlKind::ComboBox => (
-            super::combo_box::new_state(bounds.height())?,
+            super::combo_box::new_state(bounds.height(), style)?,
             eggos_windows_gui::controls::combo_box::closed_box(bounds),
         ),
         _ => (controls::new_state(kind, style)?, bounds),

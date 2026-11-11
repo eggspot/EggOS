@@ -21605,3 +21605,25 @@ the license, by an explicit instruction recorded here.
 - **Deviation.** Windows selects the bar without opening a drop-down, and opens one only on
   Down or Enter. Here the drop-down opens at once, since the bar has no selected-but-closed
   look. The mnemonic underlines stay always drawn.
+
+## D340 Windows controls: editable combo boxes (`CBS_DROPDOWN`) (batch part 10's rest, D228's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' combo box behaviour; the look reuses the design's edit field and drop-down button, docs/ux/windows-controls-v0.3.md)
+
+- **Decision.** A `COMBOBOX` with `CBS_DROPDOWN` is made with an edit field
+  (`ComboBox::editable`, `edit: Some(Edit)`).
+  - **The closed box.** It is the edit field, painted as an `EDIT` (caret and selection when
+    focused), beside the drop-down button with the chevron.
+  - **The pointer.** A click in the field places the caret, closing the list if it is open. A
+    click on the button opens or closes the list.
+  - **Typing.** Characters, Backspace, Delete and the caret keys go to the field. Up, Down
+    and the page keys move the selection, and F4 or Alt+Up/Down toggle the list. Each change
+    of text sends `CBN_EDITUPDATE` then `CBN_EDITCHANGE`.
+  - **Choosing.** Choosing a row in the list, or moving the selection with the keys, puts the
+    item's text in the field, selected whole.
+  - **Messages.** `WM_SETTEXT` sets the field, and `WM_GETTEXT` and `WM_GETTEXTLENGTH` read it.
+    `CB_SETEDITSEL` sets its selection.
+  - Drop-down lists (`CBS_DROPDOWNLIST`) are unchanged.
+- **Not yet.**
+  - `CBS_SIMPLE`'s always-shown list.
+  - `CB_GETEDITSEL` and `CB_LIMITTEXT`.
+  - Auto-completing the field from the list.
+  - Selecting the item that matches typed text when the list opens.

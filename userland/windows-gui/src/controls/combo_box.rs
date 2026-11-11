@@ -3,6 +3,7 @@
 //! highlights and the selection to go back to on a cancel), the closed box, and the list laid
 //! out in the window's content and painted over it, as a menu's drop-down is.
 
+use super::edit::{self, Edit, EditLook};
 use super::list_box::{ITEM_HEIGHT, ListBox};
 use super::scroll_bar::{self, CHEVRON_DOWN, ScrollInfo, draw_chevron};
 use super::{MAX_LABEL_CELLS, Palette, dotted_outline, draw_fitted, framed, label_cells, ring};
@@ -67,6 +68,9 @@ pub struct ComboBox {
     highlighted: Option<usize>,
     at_opening: Option<usize>,
     top: usize,
+    /// `CBS_DROPDOWN`'s edit field, which the closed box shows instead of the selected item
+    /// (D340); `None` for a drop-down list.
+    pub edit: Option<Edit>,
 }
 
 impl ComboBox {
@@ -79,6 +83,36 @@ impl ComboBox {
             highlighted: None,
             at_opening: None,
             top: 0,
+            edit: None,
+        }
+    }
+
+    /// A `CBS_DROPDOWN` combo box (D340): an edit field and its list.
+    pub fn editable(list_height: i32) -> ComboBox {
+        ComboBox {
+            edit: Some(Edit::with_style(0)),
+            ..ComboBox::new(list_height)
+        }
+    }
+
+    /// The text the closed box shows: the edit's, or the selected item's.
+    pub fn shown_text(&self) -> &[u16] {
+        match &self.edit {
+            Some(edit) => edit.text(),
+            None => self.selected().and_then(|index| self.items.text(index)).unwrap_or(&[]),
+        }
+    }
+
+    /// Puts the selected item's text in the edit field, selected whole, as Windows does when
+    /// a row is chosen or the arrows move the selection.
+    pub fn show_selection_in_edit(&mut self) {
+        let mut copy = [0u16; edit::EDIT_CAPACITY];
+        let chosen = self.selected().and_then(|index| self.items.text(index)).unwrap_or(&[]);
+        let length = chosen.len().min(copy.len());
+        copy[..length].copy_from_slice(&chosen[..length]);
+        if let Some(field) = &mut self.edit {
+            field.set_text(&copy[..length]);
+            field.set_selection(0, -1, edit::EDIT_CAPACITY);
         }
     }
 
@@ -331,6 +365,13 @@ fn selected_cells(combo: &ComboBox, cells: &mut [Cell; MAX_LABEL_CELLS]) -> usiz
     label_cells(text, false, cells)
 }
 
+/// The edit field's part of an editable combo box's closed box at `rect`: all but the arrow
+/// button (D340).
+pub fn edit_area(rect: Rect) -> Rect {
+    let rect = closed_box(rect);
+    Rect::new(rect.left, rect.top, rect.right - ARROW_AREA, rect.bottom)
+}
+
 /// Paints the closed box of the combo box at `rect` (24 pixels of it).
 pub fn paint_closed(
     surface: &mut Surface<'_>,
@@ -339,6 +380,25 @@ pub fn paint_closed(
     look: ComboLook,
     palette: &Palette,
 ) {
+    if let Some(field) = &combo.edit {
+        let field_rect = edit_area(rect);
+        let edit_look = EditLook {
+            focused: look.focused && !combo.is_open(),
+            enabled: look.enabled,
+            hovered: false,
+        };
+        edit::paint(surface, field_rect, field, edit_look, palette);
+        let button = closed_box(rect);
+        let button = Rect::new(field_rect.right, button.top, button.right, button.bottom);
+        let (fill, border, chevron) = match (look.enabled, combo.is_open()) {
+            (false, _) => (palette.button_disabled_fill, palette.button_disabled_border, palette.text_disabled),
+            (true, true) => (palette.button_pressed_fill, palette.button_pressed_border, palette.text),
+            (true, false) => (palette.button_fill, palette.button_border, palette.text),
+        };
+        framed(surface, button, palette.rounded, border, fill);
+        draw_chevron(surface, button.right - CHEVRON_FROM_RIGHT, button.top + CHEVRON_TOP, &CHEVRON_DOWN, chevron);
+        return;
+    }
     let rect = closed_box(rect);
     let saved = surface.clip();
     surface.clip_to(rect);
