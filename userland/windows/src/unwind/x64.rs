@@ -72,6 +72,18 @@ fn function_at(image: &Image<'_>, rva: u64) -> Option<Function> {
 /// The function whose code holds `pc_rva`, from the table of `RUNTIME_FUNCTION`s at
 /// `table_rva` (`table_size` bytes, sorted by start, as the linker writes it).
 pub fn lookup(image: &Image<'_>, table_rva: u32, table_size: u32, pc_rva: u64) -> Option<Function> {
+    lookup_in(image, table_rva, table_size, image, pc_rva)
+}
+
+/// As [`lookup`], with the table in `image` and the code `pc_rva` is relative to in `_code`
+/// (a table the program registered at run time, D344); the entry's place is `image`'s.
+pub fn lookup_in(
+    image: &Image<'_>,
+    table_rva: u32,
+    table_size: u32,
+    _code: &Image<'_>,
+    pc_rva: u64,
+) -> Option<Function> {
     let count = u64::from(table_size) / RUNTIME_FUNCTION_SIZE;
     let (mut low, mut high) = (0u64, count);
     while low < high {
@@ -534,6 +546,27 @@ mod tests {
         assert_eq!(lookup(&image, PDATA as u32, 36, 0x1050), None);
         assert_eq!(lookup(&image, PDATA as u32, 36, 0x1180), None);
         assert_eq!(lookup(&image, PDATA as u32, 0, 0x1000), None);
+    }
+
+    #[test]
+    fn a_registered_table_may_lie_outside_the_code_it_describes() {
+        let mut entries = Vec::new();
+        for (begin, end, unwind) in [(0x10u32, 0x20u32, 0x40u32), (0x20, 0x30, 0x50)] {
+            for word in [begin, end, unwind] {
+                entries.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        let table = Image {
+            base: 0x9000,
+            bytes: &entries,
+        };
+        let code = Image {
+            base: 0x1000,
+            bytes: &[0; 0x60],
+        };
+        let found = lookup_in(&table, 0, 24, &code, 0x24).unwrap();
+        assert_eq!((found.begin, found.unwind_info, found.entry), (0x20, 0x50, 12));
+        assert_eq!(lookup_in(&table, 0, 24, &code, 0x30), None);
     }
 
     fn pushes_and_allocation() -> Builder {

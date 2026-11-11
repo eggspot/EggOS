@@ -438,15 +438,15 @@ extern "C" fn local_unwind(frame: u64, ip: u64, _: u64, _: u64, context: *mut Co
 }
 
 pub(super) extern "efiapi" fn lookup_function_entry(pc: u64, image_base: *mut u64, _: u64) -> u64 {
-    let Some(function) = frames::lookup(pc) else {
+    let Some((image, function)) = frames::lookup(pc) else {
         return 0;
     };
-    let base = frames::image().base;
+    let base = image.base;
     if !image_base.is_null() {
         // SAFETY: `RtlLookupFunctionEntry`'s contract: a writable word for the image base.
         unsafe { image_base.write_unaligned(base) };
     }
-    base + function.entry
+    base.wrapping_add(function.entry)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -460,8 +460,7 @@ pub(super) unsafe extern "efiapi" fn virtual_unwind(
     establisher: *mut u64,
     _context_pointers: u64,
 ) -> u64 {
-    let image = frames::image();
-    let Some(function) = frames::lookup(pc) else {
+    let Some((image, function)) = frames::lookup(pc) else {
         return 0;
     };
     if context.is_null() || image_base != image.base {

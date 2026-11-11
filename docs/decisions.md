@@ -21702,3 +21702,30 @@ the license, by an explicit instruction recorded here.
     `combo_box::new_state` without the style D340 added.
 - **Not yet.** The list's own scroll repeat while the pointer holds an arrow, and the mouse
   wheel over the list.
+
+## D344 Windows: function tables registered at run time (`RtlAddFunctionTable`, growable tables and table callbacks) (batch part 12's rest, D230's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented behaviour)
+
+- **Context.** Programs that generate code (JavaScript engines, .NET, LuaJIT, emulators) tell
+  Windows how to unwind it with run-time function tables. Without them an exception thrown
+  through generated code ends the walk, and the program's `__try` and C++ handlers above it
+  never run.
+- **Decision.**
+  - kernel32 and ntdll export `RtlAddFunctionTable` and `RtlDeleteFunctionTable`, and
+    `RtlInstallFunctionTableCallback`; ntdll also `RtlAddGrowableFunctionTable`,
+    `RtlGrowFunctionTable` and `RtlDeleteGrowableFunctionTable`. Up to 64 tables are
+    registered at once (`function_tables.rs`, a spin-locked array copied out before a search,
+    so a program's callback never runs under the lock).
+  - **The search.** `frames::lookup` looks in the program's exception directory first, then
+    in the registered tables whose code range holds the address: a table's entries are
+    searched as `.pdata` is (`unwinder::lookup_in`, the table and the code in separate
+    `Image`s, so the table may lie anywhere, even below its base); a callback is asked for the
+    one entry. `lookup` now answers with the image the function's addresses are relative to,
+    and each `Frame` carries that base (`Frame::image_base`), which the dispatcher context,
+    `RtlLookupFunctionEntry` and `RtlVirtualUnwind` use.
+  - **The code's extent.** The bytes the unwinder may read run from the table's base to the end
+    of the run of pages that holds the end of the code: the given range for growable tables
+    and callbacks, the base's own run for `RtlAddFunctionTable`, which gives no length.
+- **Not yet.** `RtlPcToFileHeader` for generated code (it answers 0, as for any address outside
+  an image); a language handler of generated code that reads its data through the image
+  (`__C_specific_handler`, `__CxxFrameHandler*`) is given the table's base, as on Windows, but
+  the layer's own copies of those handlers still read the program's image.

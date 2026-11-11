@@ -58,6 +58,19 @@ fn function_length(image: &Image<'_>, unwind: u32) -> Option<u32> {
 /// The function whose code holds `pc_rva`, from the `.pdata` table at `table_rva`
 /// (`table_size` bytes, sorted by start).
 pub fn lookup(image: &Image<'_>, table_rva: u32, table_size: u32, pc_rva: u64) -> Option<Function> {
+    lookup_in(image, table_rva, table_size, image, pc_rva)
+}
+
+/// As [`lookup`], with the table in `image` and the code `pc_rva` is relative to, with its
+/// `.xdata`, in `code` (a table the program registered at run time, D344); the entry's place
+/// is `image`'s.
+pub fn lookup_in(
+    image: &Image<'_>,
+    table_rva: u32,
+    table_size: u32,
+    code: &Image<'_>,
+    pc_rva: u64,
+) -> Option<Function> {
     let count = u64::from(table_size) / RUNTIME_FUNCTION_SIZE;
     let begin_of = |index: u64| image.u32_at(u64::from(table_rva) + index * RUNTIME_FUNCTION_SIZE);
     let (mut low, mut high) = (0u64, count);
@@ -72,7 +85,7 @@ pub fn lookup(image: &Image<'_>, table_rva: u32, table_size: u32, pc_rva: u64) -
     let entry = u64::from(table_rva) + low.checked_sub(1)? * RUNTIME_FUNCTION_SIZE;
     let begin = image.u32_at(entry)?;
     let unwind = image.u32_at(entry + 4)?;
-    let length = function_length(image, unwind)?;
+    let length = function_length(code, unwind)?;
     (pc_rva < u64::from(begin) + u64::from(length)).then_some(Function {
         entry,
         begin,

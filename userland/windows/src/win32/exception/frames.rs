@@ -57,16 +57,20 @@ pub fn in_layer(pc: u64) -> bool {
     (LAYER_CODE[0].load(Ordering::Relaxed)..LAYER_CODE[1].load(Ordering::Relaxed)).contains(&pc)
 }
 
-/// The function whose code holds `pc`, from the program's exception directory.
-pub fn lookup(pc: u64) -> Option<unwinder::Function> {
+/// The function whose code holds `pc`, with the image its addresses are relative to: from the
+/// program's exception directory, else from a table the program registered at run time
+/// (D344).
+pub fn lookup(pc: u64) -> Option<(Image<'static>, unwinder::Function)> {
     let image = image();
-    let rva = image.rva_of(pc)?;
+    let Some(rva) = image.rva_of(pc) else {
+        return super::function_tables::lookup(pc);
+    };
     let table = TABLE.load(Ordering::Relaxed);
     let (start, size) = ((table >> 32) as u32, table as u32);
     if size == 0 {
         return None;
     }
-    unwinder::lookup(&image, start, size, rva)
+    unwinder::lookup(&image, start, size, rva).map(|function| (image, function))
 }
 
 /// Reads the thread's stack for the unwinder: only the aligned words of the stack range a walk
@@ -462,11 +466,12 @@ impl Walk {
             };
         }
         let lookup_pc = if self.unwound { pc.wrapping_sub(1) } else { pc };
-        let image = image();
-        let function = match image.rva_of(lookup_pc) {
-            Some(_) => lookup(lookup_pc),
-            None if in_layer(pc) || pc == 0 => return Event::End,
-            None => None,
+        if image().rva_of(lookup_pc).is_none() && (in_layer(pc) || pc == 0) {
+            return Event::End;
+        }
+        let (image, function) = match lookup(lookup_pc) {
+            Some((image, function)) => (image, Some(function)),
+            None => (image(), None),
         };
         let before = self.context;
         let mut registers = before.registers();
@@ -504,6 +509,7 @@ impl Walk {
             context: before,
             caller,
             function,
+            image_base: image.base,
             handler: unwound.handler,
             handler_data: unwound.handler_data,
             establisher: unwound.establisher,

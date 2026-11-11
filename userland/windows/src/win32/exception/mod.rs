@@ -17,6 +17,7 @@ mod cxx;
 mod dispatch;
 mod exception_ptr;
 mod frames;
+mod function_tables;
 mod rtti;
 mod signal;
 mod thrown;
@@ -130,13 +131,13 @@ const _: () = assert!(core::mem::offset_of!(DispatcherContext, control_pc_is_unw
 
 impl DispatcherContext {
     fn of(frame: &Frame, context: &mut Context, target_ip: u64) -> Self {
-        let image_base = frames::image().base;
+        let image_base = frame.image_base;
         Self {
             control_pc: frame.context.pc(),
             image_base,
             function_entry: frame
                 .function
-                .map_or(0, |function| image_base + function.entry),
+                .map_or(0, |function| image_base.wrapping_add(function.entry)),
             establisher_frame: frame.establisher,
             target_ip,
             context_record: context,
@@ -172,6 +173,9 @@ pub struct Frame {
     pub context: Context,
     pub caller: Context,
     pub function: Option<unwinder::Function>,
+    /// The base the function's addresses are relative to: the program's image, or a table the
+    /// program registered (D344).
+    pub image_base: u64,
     pub handler: Option<u64>,
     pub handler_data: u64,
     pub establisher: u64,
@@ -202,6 +206,9 @@ pub(super) const KERNEL32_EXPORTS: &[Export] = exports![
     b"RtlUnwind" => dispatch::unwind_entry [direct],
     b"RtlUnwindEx" => dispatch::unwind_ex_entry [direct],
     b"RtlPcToFileHeader" => dispatch::pc_to_file_header,
+    b"RtlAddFunctionTable" => function_tables::add_function_table,
+    b"RtlDeleteFunctionTable" => function_tables::delete_function_table,
+    b"RtlInstallFunctionTableCallback" => function_tables::install_function_table_callback,
     b"AddVectoredExceptionHandler" => vectored::add_exception_handler,
     b"RemoveVectoredExceptionHandler" => vectored::remove_exception_handler,
     b"AddVectoredContinueHandler" => vectored::add_continue_handler,
@@ -220,6 +227,12 @@ pub(super) const NTDLL_EXPORTS: &[Export] = exports![
     b"RtlUnwind" => dispatch::unwind_entry [direct],
     b"RtlUnwindEx" => dispatch::unwind_ex_entry [direct],
     b"RtlPcToFileHeader" => dispatch::pc_to_file_header,
+    b"RtlAddFunctionTable" => function_tables::add_function_table,
+    b"RtlDeleteFunctionTable" => function_tables::delete_function_table,
+    b"RtlInstallFunctionTableCallback" => function_tables::install_function_table_callback,
+    b"RtlAddGrowableFunctionTable" => function_tables::add_growable_function_table,
+    b"RtlGrowFunctionTable" => function_tables::grow_function_table,
+    b"RtlDeleteGrowableFunctionTable" => function_tables::delete_growable_function_table,
     b"RtlAddVectoredExceptionHandler" => vectored::add_exception_handler,
     b"RtlRemoveVectoredExceptionHandler" => vectored::remove_exception_handler,
 ];
