@@ -22703,3 +22703,38 @@ the license, by an explicit instruction recorded here.
   classes of section 16, the host tests of section 17, and section 14: the Windows layer's
   `GetOpenFileNameW` and friends, AppKit's `NSOpenPanel` and `NSSavePanel`, the Text Editor
   and Files starting `pick` instead of their own pickers.
+
+## D392 The layers, the Text Editor and Files open the system file picker (batch part 18; M12, M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/file-picker-v0.3.md section 14, text-editor-v0.3.md section 17.6, desktop-v0.3-gui.md section 8.1 item 24) and the code-only session (engineering)
+
+- **Decision.**
+  - **Windows layer.** `GetOpenFileNameW` and `GetSaveFileNameW` (and the ANSI forms through
+    them) start `/bin/pick` with the request's title, initial folder, `lpstrFilter` pairs
+    (`description|patterns`) and `nFilterIndex`, and for Save its file name, default
+    extension and `--overwrite` unless `OFN_OVERWRITEPROMPT`; the owner is disabled and the
+    thread's messages keep running while the picker is open (`win32/pick_process.rs`); the
+    first chosen path is written back as before (`C:\...`, offsets, title). When `pick`
+    cannot start or show (a headless install without the desktop component, exit 2 or 3),
+    the layer's own picker serves instead, so it stays as the fallback rather than being
+    removed. `processes.rs` gains `spawn_with_output`.
+  - **AppKit.** New `NSSavePanel` and `NSOpenPanel` keep what the app sets (title or message,
+    prompt, name, directory URL, allowed file types as `*.<type>` filters, files or folders,
+    multiple selection) and `runModal`, `beginWithCompletionHandler:` and
+    `beginSheetModalForWindow:completionHandler:` run `pick` through `posix_spawn` with its
+    output on a pipe, the app's windows still drawing and its input set aside, answering
+    `NSModalResponseOK` with `URL`/`URLs` or Cancel. Foundation gains a file-URL `NSURL`
+    (`fileURLWithPath:`, `URLWithString:` of `file://`, `path`, `absoluteString`,
+    `lastPathComponent`, `pathExtension`, appending and deleting components).
+  - **The Text Editor**: when `/bin/pick` is in the image, Open and Save As ask its program to
+    run `pick open|save` with the text filters, the document's folder and, for Save As, its
+    name and `--extension txt`; the path bar stays for an image without the picker. Save
+    As's replace question is the picker's; a chosen file to open while the document is
+    modified still asks to save first, after the choice.
+  - **Files**: a link row's menu gains `Change Target...`, which runs `pick open --folders`
+    in the stored target's folder (else the link's) and makes the new link beside the old one
+    and renames it over it, so the link is never missing; errors are `Could not change the
+    target of <name> (<errno>).`
+  - `eggos-app` gains `linux::run_with_output` for starting a program with its output on a
+    pipe; the picker runs with an empty environment, as the installer's translation does.
+- **Not yet.** `--over` from each caller, `SHBrowseForFolder` and `IFileDialog`, multiple
+  selection written back to `lpstrFile`, `allowedContentTypes`, the editor and Files ignoring
+  input and drawing unfocused while the picker is open (their loops block until it ends).

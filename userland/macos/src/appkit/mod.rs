@@ -25,6 +25,7 @@ mod grid_view;
 mod image;
 mod menu;
 mod nib;
+mod open_panel;
 mod pasteboard;
 mod screen;
 mod scroll_view;
@@ -84,6 +85,8 @@ class_pairs! {
     NSGRIDCOLUMN, NSGRIDCOLUMN_META;
     NSGRIDCELL, NSGRIDCELL_META;
     NSGRAPHICSCONTEXT, NSGRAPHICSCONTEXT_META;
+    NSSAVEPANEL, NSSAVEPANEL_META;
+    NSOPENPANEL, NSOPENPANEL_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -204,6 +207,7 @@ pub fn set_up() -> bool {
             && attributed_string::define(runtime)
             && grid_view::define(runtime)
             && core_graphics::define(runtime)
+            && open_panel::define(runtime)
     });
     defined && drawing::set_up()
 }
@@ -278,6 +282,10 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSGridColumn" => class(&NSGRIDCOLUMN_META),
         b"_OBJC_CLASS_$_NSGridCell" => class(&NSGRIDCELL),
         b"_OBJC_METACLASS_$_NSGridCell" => class(&NSGRIDCELL_META),
+        b"_OBJC_CLASS_$_NSSavePanel" => class(&NSSAVEPANEL),
+        b"_OBJC_METACLASS_$_NSSavePanel" => class(&NSSAVEPANEL_META),
+        b"_OBJC_CLASS_$_NSOpenPanel" => class(&NSOPENPANEL),
+        b"_OBJC_METACLASS_$_NSOpenPanel" => class(&NSOPENPANEL_META),
         b"_OBJC_CLASS_$_NSGraphicsContext" => class(&NSGRAPHICSCONTEXT),
         b"_OBJC_METACLASS_$_NSGraphicsContext" => class(&NSGRAPHICSCONTEXT_META),
         _ => application::resolve(name)

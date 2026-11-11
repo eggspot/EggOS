@@ -64,6 +64,7 @@ mod nls;
 mod overlapped;
 mod paint;
 mod pipe;
+mod pick_process;
 mod placement;
 mod pointer;
 mod private_profile;

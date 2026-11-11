@@ -482,7 +482,7 @@ request, now also a menu item). F10, Alt and Alt+letter reach the bar (toolkit v
 
 ### 17.6 Open and Save As through the system file picker
 
-Status: design; not built (next batch).
+Status: code written, unbuilt (D392).
 
 `/bin/pick` (`file-picker-v0.3.md`) replaces section 7's path bar when it is in the image
 (it is part of the base, so always, but the bar stays as the fallback for an image without it).

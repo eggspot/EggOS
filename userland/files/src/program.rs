@@ -7,7 +7,7 @@
 use crate::files_window::{DEFAULT_SIZE, FilesWindow, LINE_CAPACITY, MINIMUM_SIZE, Request, TITLE};
 use core::cell::UnsafeCell;
 use core::ffi::CStr;
-use eggos_app::files::PATH_CAPACITY;
+use eggos_app::files::{PATH_CAPACITY, Path};
 use eggos_app::linux::{self, LinuxFiles, STANDARD_ERROR, WINDOW_PROGRAM, write_all};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::process::{self, CLONE_VFORK, CLONE_VM};
@@ -190,6 +190,10 @@ impl Program {
                 Request::Uninstall(name) => self.start_installer(c"uninstall", name.as_bytes()),
                 Request::Actions(name) => self.start_installer(c"do", name.as_bytes()),
                 Request::OpenInEditor(path) => self.start_editor(path.as_bytes()),
+                Request::ChangeTarget(link, folder) => {
+                    let chosen = ask_new_target(&link, &folder);
+                    self.window.change_target(&mut self.files, link, chosen);
+                }
             }
         }
         while let Ok(child) = call(number::WAIT4, [usize::MAX, 0, WNOHANG, 0, 0, 0]) {
@@ -198,6 +202,30 @@ impl Program {
             }
         }
     }
+}
+
+fn ask_new_target(link: &Path, folder: &Path) -> Option<Path> {
+    let mut title = [0u8; 96];
+    let prefix = b"Change target of ";
+    let name = link.as_bytes().rsplit(|&byte| byte == b'/').next().unwrap_or(b"");
+    let name = &name[..name.len().min(title.len() - prefix.len())];
+    title[..prefix.len()].copy_from_slice(prefix);
+    title[prefix.len()..prefix.len() + name.len()].copy_from_slice(name);
+    let arguments: [&[u8]; 7] = [
+        b"pick",
+        b"open",
+        b"--folders",
+        b"--title",
+        &title[..prefix.len() + name.len()],
+        b"--folder",
+        folder.as_bytes(),
+    ];
+    let mut output = [0u8; PATH_CAPACITY + 1];
+    let (length, status) = linux::run_with_output(b"/bin/pick", &arguments, &mut output).ok()?;
+    if status != 0 {
+        return None;
+    }
+    Path::from(output[..length].split(|&byte| byte == b'\n').next()?)
 }
 
 impl View for Program {

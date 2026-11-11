@@ -13,7 +13,7 @@ use super::directory::{for_each_entry, working_directory, write_windows_path};
 use super::gui::{self, Gui, Next, device, with};
 use super::user32::{create_child, def_window_proc_w, destroy_tree, dispatch, translate};
 use super::window_device::{FIXED_SIZE, ROLE_DIALOG, ROLE_NORMAL};
-use super::{Bool, FALSE, error_for, heap, paint, thread_environment};
+use super::{Bool, FALSE, error_for, heap, paint, pick_process, thread_environment};
 use crate::gui::message;
 use crate::gui::picker;
 use crate::gui::queue::{Filter, Message};
@@ -708,6 +708,129 @@ fn show(
     Ok(chosen)
 }
 
+const OFN_OVERWRITEPROMPT: u32 = 0x2;
+const PICK_OUTPUT_BYTES: usize = 16 * 1024;
+
+fn utf8_of(units: &[u16], out: &mut [u8]) -> usize {
+    text::write_utf8(units, out).0
+}
+
+fn push_filters(request: &OpenFileName, arguments: &mut pick_process::Arguments) -> bool {
+    if request.filter.is_null() {
+        return false;
+    }
+    let mut units = [0u16; FILTER_UNITS];
+    let mut length = 0;
+    while length < FILTER_UNITS {
+        // SAFETY: `lpstrFilter` is pairs of NUL-terminated strings ended by an empty one; the
+        // read stops there or at the local's end.
+        let unit = unsafe { request.filter.wrapping_add(length).read() };
+        units[length] = unit;
+        length += 1;
+        if unit == 0 && (length == 1 || units[length - 2] == 0) {
+            break;
+        }
+    }
+    let mut pieces = units[..length].split(|unit| *unit == 0).filter(|piece| !piece.is_empty());
+    let mut any = false;
+    while let (Some(description), Some(patterns)) = (pieces.next(), pieces.next()) {
+        let mut joined = [0u8; PATTERN_BYTES * 2];
+        let written = utf8_of(description, &mut joined[..PATTERN_BYTES]);
+        joined[written] = b'|';
+        let more = utf8_of(patterns, &mut joined[written + 1..]);
+        any |= arguments.option(b"--filter", &joined[..written + 1 + more]);
+    }
+    any
+}
+
+fn push_number(arguments: &mut pick_process::Arguments, name: &[u8], value: u32) {
+    let mut digits = [0u8; 10];
+    let mut at = digits.len();
+    let mut rest = value;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let _ = arguments.option(name, &digits[at..]);
+}
+
+/// The dialog as the system file picker (D392, file-picker-v0.3.md section 14): `pick` with
+/// the request's title, folder, filters, name, extension and overwrite question; `Err` when
+/// `pick` could not show, so the layer's own picker serves instead.
+fn show_with_pick(
+    request: &OpenFileName,
+    kind: PickerKind,
+) -> Result<Option<(usize, [u8; PATH_CAPACITY])>, u32> {
+    let mode: &[u8] = match kind {
+        PickerKind::Open => b"open",
+        PickerKind::Save => b"save",
+    };
+    let mut arguments = pick_process::Arguments::new(mode);
+    if !request.title.is_null() {
+        // SAFETY: `lpstrTitle` is a NUL-terminated string.
+        let units = unsafe { super::file::wide_string(request.title) };
+        let mut title = [0u8; TITLE_BYTES];
+        let length = utf8_of(units, &mut title);
+        let _ = arguments.option(b"--title", &title[..length]);
+    }
+    let mut folder = [0u8; PATH_CAPACITY];
+    if let Some(length) = initial_folder(request, &mut folder) {
+        let _ = arguments.option(b"--folder", &folder[..length]);
+    }
+    if push_filters(request, &mut arguments) && request.filter_index > 0 {
+        push_number(&mut arguments, b"--filter-index", request.filter_index);
+    }
+    if kind == PickerKind::Save {
+        if !request.file.is_null() {
+            // SAFETY: `lpstrFile` is a NUL-terminated string (empty for none).
+            let given = unsafe { super::file::wide_string(request.file) };
+            let name = given
+                .iter()
+                .rposition(|unit| *unit == u16::from(b'\\') || *unit == u16::from(b'/'))
+                .map_or(given, |at| &given[at + 1..]);
+            let mut bytes = [0u8; PATH_CAPACITY];
+            let length = utf8_of(name, &mut bytes);
+            if length > 0 {
+                let _ = arguments.option(b"--name", &bytes[..length]);
+            }
+        }
+        if !request.default_extension.is_null() {
+            // SAFETY: `lpstrDefExt` is a NUL-terminated string.
+            let units = unsafe { super::file::wide_string(request.default_extension) };
+            let mut bytes = [0u8; 64];
+            let length = utf8_of(units, &mut bytes);
+            if length > 0 {
+                let _ = arguments.option(b"--extension", &bytes[..length]);
+            }
+        }
+        if request.flags & OFN_OVERWRITEPROMPT == 0 {
+            let _ = arguments.push(b"--overwrite");
+        }
+    }
+    let owner = owner_root(request.owner);
+    set_modal(owner, true);
+    let mut output = [0u8; PICK_OUTPUT_BYTES];
+    let picked = pick_process::run(&arguments, &mut output);
+    set_modal(owner, false);
+    match picked? {
+        pick_process::Picked::Cancelled => Ok(None),
+        pick_process::Picked::Chosen(length) => {
+            let first = output[..length]
+                .split(|&byte| byte == b'\n')
+                .next()
+                .filter(|line| !line.is_empty() && line.len() < PATH_CAPACITY)
+                .ok_or(CDERR_INITIALIZATION)?;
+            let mut path = [0u8; PATH_CAPACITY];
+            path[..first.len()].copy_from_slice(first);
+            Ok(Some((first.len(), path)))
+        }
+    }
+}
+
 unsafe fn write_result(request: &mut OpenFileName, path: &[u8]) -> Result<(), u32> {
     let mut windows_form = [0u16; PATH_CAPACITY];
     let length = write_windows_path(path, &mut windows_form).map_err(|_| FNERR_BUFFERTOOSMALL)?;
@@ -766,7 +889,8 @@ unsafe fn pick(request: *mut OpenFileName, kind: PickerKind) -> Bool {
     };
     // SAFETY: as above: every byte of the local is now a valid field value.
     let mut local = unsafe { copy.assume_init() };
-    let outcome = show(&local, kind).and_then(|chosen| match chosen {
+    let shown = show_with_pick(&local, kind).or_else(|_| show(&local, kind));
+    let outcome = shown.and_then(|chosen| match chosen {
         // SAFETY: the request's buffers are the caller's, as `OPENFILENAMEW` describes them.
         Some((length, path)) => unsafe { write_result(&mut local, &path[..length]) }.map(|_| true),
         None => Ok(false),

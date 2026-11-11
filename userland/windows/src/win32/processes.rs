@@ -575,6 +575,23 @@ fn environment_table(environment: Environment) -> Option<StringTable> {
 }
 
 /// Starts the program `launch` describes as a child: its process handle and id.
+/// Starts the Linux program `program` with `arguments` (null-ended) and the inherited
+/// environment, its standard output on `output` and only its standard streams kept (D392);
+/// its process id.
+pub(super) fn spawn_with_output(
+    program: &CStr,
+    arguments: &[*const u8],
+    output: usize,
+) -> Result<u32, u32> {
+    let environment = environment_table(Environment::Inherited).ok_or(error::NOT_ENOUGH_MEMORY)?;
+    let request = Spawn::new(program, arguments, environment.pointers(), [0, output, 2])
+        .inheriting_only_streams();
+    CHILD_STACK
+        .with(|stack| spawn(stack, &request))
+        .map(|id| id as u32)
+        .map_err(error_for)
+}
+
 pub(super) fn launch(launch: &Launch<'_>) -> Result<(usize, u32), u32> {
     let (flat, units) = split_arguments(launch.command_line).ok_or(error::NOT_ENOUGH_MEMORY)?;
     // SAFETY: `split_arguments` filled `units` units of the block.

@@ -4,7 +4,7 @@
 //! clipboard) is mapped when it starts and costs only the pages the document touches.
 
 use crate::editor::{Editor, MEMORY_SIZES, Memory};
-use crate::editor_window::{DEFAULT_SIZE, EditorWindow, MINIMUM_SIZE};
+use crate::editor_window::{DEFAULT_SIZE, EditorWindow, MINIMUM_SIZE, PickRequest};
 use core::ffi::CStr;
 use eggos_app::files::{PATH_CAPACITY, Path};
 use eggos_app::linux::{LinuxFiles, STANDARD_ERROR, write_all};
@@ -121,6 +121,69 @@ impl Program<'_> {
     }
 }
 
+const PICK_PROGRAM: &[u8] = b"/bin/pick";
+const AT_FDCWD: usize = -100isize as usize;
+const PICK_OUTPUT_BYTES: usize = 4096;
+const TEXT_FILTER: &[u8] = b"Text files|*.txt;*.md;*.log;*.csv;*.json;*.toml";
+const ALL_FILTER: &[u8] = b"All files|*";
+
+fn picker_available() -> bool {
+    let mut status = [0u8; 256];
+    // SAFETY: `newfstatat` writes at most one `struct stat` (under 256 bytes) into the
+    // borrowed buffer and reads the NUL-terminated path.
+    let found = unsafe {
+        syscall::call(
+            number::NEWFSTATAT,
+            [AT_FDCWD, c"/bin/pick".as_ptr() as usize, status.as_mut_ptr() as usize, 0, 0, 0],
+        )
+    };
+    found == 0
+}
+
+fn ask_picker(request: &PickRequest) -> Option<Path> {
+    let mode: &[u8] = if request.save { b"save" } else { b"open" };
+    let title: &[u8] = if request.save { b"Save As" } else { b"Open" };
+    let folder = request.folder;
+    let name = request.name;
+    let mut all: [&[u8]; 16] = [b""; 16];
+    let fixed: [&[u8]; 10] = [
+        b"pick",
+        mode,
+        b"--title",
+        title,
+        b"--filter",
+        TEXT_FILTER,
+        b"--filter",
+        ALL_FILTER,
+        b"--folder",
+        folder.as_bytes(),
+    ];
+    all[..fixed.len()].copy_from_slice(&fixed);
+    let mut count = fixed.len();
+    if request.save {
+        let more: [&[u8]; 4] = [b"--name", name.as_bytes(), b"--extension", b"txt"];
+        all[count..count + more.len()].copy_from_slice(&more);
+        count += more.len();
+    }
+    let mut output = [0u8; PICK_OUTPUT_BYTES];
+    let (length, status) =
+        eggos_app::linux::run_with_output(PICK_PROGRAM, &all[..count], &mut output).ok()?;
+    if status != 0 {
+        return None;
+    }
+    let line = output[..length].split(|&byte| byte == b'\n').next()?;
+    Path::from(line)
+}
+
+impl Program<'_> {
+    fn serve_picks(&mut self) {
+        while let Some(request) = self.window.take_pick() {
+            let chosen = ask_picker(&request);
+            self.window.picked(&mut self.files, request, chosen);
+        }
+    }
+}
+
 impl View for Program<'_> {
     fn resize(&mut self, width: i32, height: i32) {
         self.window.resize(width, height);
@@ -135,6 +198,7 @@ impl View for Program<'_> {
         }
         let handled = self.window.handle(&mut self.files, input, time_ms);
         self.give_copied();
+        self.serve_picks();
         handled
     }
 
@@ -172,7 +236,9 @@ impl View for Program<'_> {
     }
 
     fn act(&mut self, element: u32, action: Action, text: &str, _time_ms: u32) -> Outcome {
-        self.window.act(element, action, text)
+        let outcome = self.window.act(element, action, text);
+        self.serve_picks();
+        outcome
     }
 }
 
@@ -199,12 +265,13 @@ pub fn run(startup: &Startup) -> i32 {
         Err(error) => return complain(b"no memory for the document: ", error),
     };
     let mut files = LinuxFiles::new();
-    let view = EditorWindow::new(
+    let mut view = EditorWindow::new(
         Editor::new(memory),
         &mut files,
         path.as_ref().map(Path::as_bytes),
         now_ms(),
     );
+    view.set_picker_available(picker_available());
     let (width, height) = DEFAULT_SIZE;
     let mut window = match Window::create(view.title(), width, height, MINIMUM_SIZE) {
         Ok(window) => window,

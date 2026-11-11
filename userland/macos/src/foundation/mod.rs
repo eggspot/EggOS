@@ -36,6 +36,8 @@ mod keyed_unarchiver;
 #[cfg(eggos_user)]
 mod property_list;
 #[cfg(eggos_user)]
+mod url;
+#[cfg(eggos_user)]
 mod user_defaults;
 #[cfg(eggos_user)]
 mod log;
@@ -110,6 +112,7 @@ mod runtime {
         NSKEYEDUNARCHIVER, NSKEYEDUNARCHIVER_META;
         NSKEYEDARCHIVER, NSKEYEDARCHIVER_META;
         NSUSERDEFAULTS, NSUSERDEFAULTS_META;
+        NSURL, NSURL_META;
     }
 
     /// The class object `class` as the pointer the runtime takes.
@@ -209,6 +212,7 @@ mod runtime {
                 && keyed_unarchiver::define(runtime)
                 && keyed_archiver::define(runtime)
                 && super::user_defaults::define(runtime)
+                && super::url::define(runtime)
                 && super::description::extend_object(runtime)
         }) && number::set_up_booleans()
             && array::set_up_empty()
@@ -272,6 +276,8 @@ mod runtime {
             b"_OBJC_METACLASS_$_NSFileManager" => class(&NSFILEMANAGER_META),
             b"_OBJC_CLASS_$_NSUserDefaults" => class(&NSUSERDEFAULTS),
             b"_OBJC_METACLASS_$_NSUserDefaults" => class(&NSUSERDEFAULTS_META),
+            b"_OBJC_CLASS_$_NSURL" => class(&NSURL),
+            b"_OBJC_METACLASS_$_NSURL" => class(&NSURL_META),
             b"___NSArray0__struct" => Some(array::empty_address()),
             b"___NSDictionary0__struct" => Some(dictionary::empty_address()),
             b"___kCFBooleanTrue" => Some(number::boolean_object(true)),

@@ -341,6 +341,101 @@ pub fn run_translation(
     }
 }
 
+/// The most arguments [`run_with_output`] passes.
+pub const MOST_ARGUMENTS: usize = 32;
+const ARGUMENT_BYTES: usize = 8192;
+
+/// Runs `program` with `arguments` (the program's name first) and an empty environment, its
+/// standard output read into `output` (what does not fit is read and dropped): how many bytes
+/// it printed that fit, and its exit status (D392).
+pub fn run_with_output(
+    program: &[u8],
+    arguments: &[&[u8]],
+    output: &mut [u8],
+) -> Result<(usize, i32), Errno> {
+    if arguments.len() >= MOST_ARGUMENTS {
+        return Err(Errno::E2BIG);
+    }
+    let program = CPath::new(program)?;
+    let mut arena = [0u8; ARGUMENT_BYTES];
+    let mut starts = [0usize; MOST_ARGUMENTS];
+    let mut used = 0;
+    for (start, argument) in starts.iter_mut().zip(arguments) {
+        let end = used + argument.len() + 1;
+        if end > ARGUMENT_BYTES || argument.contains(&0) {
+            return Err(Errno::E2BIG);
+        }
+        arena[used..end - 1].copy_from_slice(argument);
+        *start = used;
+        used = end;
+    }
+    let mut pointers = [0usize; MOST_ARGUMENTS];
+    for (pointer, &start) in pointers.iter_mut().zip(&starts[..arguments.len()]) {
+        *pointer = arena[start..].as_ptr() as usize;
+    }
+    let environment = [0usize];
+    let mut ends = [0i32; 2];
+    call(
+        number::PIPE2,
+        [ends.as_mut_ptr() as usize, O_CLOEXEC, 0, 0, 0, 0],
+    )?;
+    let (reading, writing) = (ends[0] as usize, ends[1] as usize);
+    let child = match call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]) {
+        Ok(child) => child,
+        Err(error) => {
+            close_descriptor(reading);
+            close_descriptor(writing);
+            return Err(error);
+        }
+    };
+    if child == 0 {
+        let _ = call(number::DUP3, [writing, STANDARD_OUTPUT, 0, 0, 0, 0]);
+        let _ = call(
+            number::EXECVE,
+            [
+                program.pointer(),
+                pointers.as_ptr() as usize,
+                environment.as_ptr() as usize,
+                0,
+                0,
+                0,
+            ],
+        );
+        syscall::exit(EXEC_FAILED);
+    }
+    close_descriptor(writing);
+    let mut filled = 0;
+    let mut dropped = [0u8; 256];
+    loop {
+        let fits = filled < output.len();
+        let room: &mut [u8] = match fits {
+            true => &mut output[filled..],
+            false => &mut dropped,
+        };
+        match call(
+            number::READ,
+            [reading, room.as_mut_ptr() as usize, room.len(), 0, 0, 0],
+        ) {
+            Ok(0) => break,
+            Ok(count) if fits => filled += count,
+            Ok(_) | Err(Errno::EINTR) => {}
+            Err(_) => break,
+        }
+    }
+    close_descriptor(reading);
+    let mut status = 0i32;
+    loop {
+        match call(
+            number::WAIT4,
+            [child, (&raw mut status) as usize, 0, 0, 0, 0],
+        ) {
+            Ok(_) => return Ok((filled, (status >> 8) & 0xff)),
+            Err(Errno::EINTR) => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 struct Cursor {
     directory: Path,
     fd: usize,

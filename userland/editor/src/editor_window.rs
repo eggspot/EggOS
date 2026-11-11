@@ -250,6 +250,19 @@ pub struct EditorWindow<'a> {
     title_changed: bool,
     closing: bool,
     damage: Damage,
+    picker_available: bool,
+    wanted_pick: Option<Bar>,
+}
+
+/// What the program is asked to pick through `/bin/pick` (D392, section 17.6).
+#[derive(Debug, Clone, Copy)]
+pub struct PickRequest {
+    /// Whether a name to save under is asked for, not a file to open.
+    pub save: bool,
+    /// The folder the picker opens in.
+    pub folder: Path,
+    /// The name Save As offers.
+    pub name: Path,
 }
 
 fn field(placeholder: &'static str) -> Field {
@@ -335,6 +348,8 @@ impl<'a> EditorWindow<'a> {
             path_field: field(""),
             pending: None,
             file_to_open: Path::new(),
+            picker_available: false,
+            wanted_pick: None,
             panel: None,
             menu: None,
             notice: None,
@@ -1012,7 +1027,51 @@ impl<'a> EditorWindow<'a> {
         }
     }
 
+    /// Whether `/bin/pick` is in the image: Open and Save As then ask it instead of the path
+    /// bar (D392).
+    pub fn set_picker_available(&mut self, available: bool) {
+        self.picker_available = available;
+    }
+
+    /// What the program should ask `/bin/pick` now, once.
+    pub fn take_pick(&mut self) -> Option<PickRequest> {
+        let bar = self.wanted_pick.take()?;
+        let save = bar == Bar::SaveAs;
+        let folder = Path::from(self.path().map_or(HOME, folder_of)).unwrap_or_else(Path::new);
+        let name = match self.path() {
+            Some(path) => Path::from(shown_name(path).as_bytes()),
+            None => Path::from(UNTITLED_PATH.rsplit('/').next().unwrap_or("Untitled.txt").as_bytes()),
+        }
+        .unwrap_or_else(Path::new);
+        Some(PickRequest { save, folder, name })
+    }
+
+    /// What `/bin/pick` answered for `request`: the path chosen, or none for Cancel.
+    pub fn picked(&mut self, files: &mut impl Files, request: PickRequest, chosen: Option<Path>) {
+        let Some(path) = chosen else {
+            if request.save {
+                self.pending = None;
+            }
+            self.damage_all();
+            return;
+        };
+        match request.save {
+            true => self.save_as(files, path),
+            false if self.editor.is_modified() => {
+                self.file_to_open = path;
+                self.ask_to_save(Then::OpenFile);
+            }
+            false => self.open_path(files, path.as_bytes(), false),
+        }
+        self.damage_all();
+    }
+
     fn open_bar(&mut self, bar: Bar) {
+        if self.picker_available && matches!(bar, Bar::Open | Bar::SaveAs) {
+            self.menu = None;
+            self.wanted_pick = Some(bar);
+            return;
+        }
         self.bar = bar;
         self.menu = None;
         match bar {

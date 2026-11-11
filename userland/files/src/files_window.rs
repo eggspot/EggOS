@@ -136,6 +136,7 @@ mod item {
     pub const MAKE_LINK: u8 = 15;
     pub const SHOW_ORIGINAL: u8 = 16;
     pub const ACTIONS: u8 = 17;
+    pub const CHANGE_TARGET: u8 = 18;
 }
 
 /// A place in the sidebar.
@@ -220,6 +221,9 @@ pub enum Request {
     OpenApp(Name),
     /// Open this text file in a Text Editor window of its own (D149).
     OpenInEditor(Path),
+    /// Ask `/bin/pick` for the new target of this link, starting in this folder, then give the
+    /// answer to [`FilesWindow::change_target`] (D392).
+    ChangeTarget(Path, Path),
 }
 
 /// A line to type in the Terminal, at most [`LINE_CAPACITY`] bytes of printable text.
@@ -1975,6 +1979,7 @@ impl FilesWindow {
                         false => "Show Original",
                     };
                     add(item(label, link == Link::Sound, item::SHOW_ORIGINAL));
+                    add(item("Change Target...", !share, item::CHANGE_TARGET));
                 }
                 add(Entry::Separator);
                 add(item("Cut", !share, item::CUT));
@@ -2037,6 +2042,7 @@ impl FilesWindow {
             (item::RESTORE, Some(index)) => self.restore(files, index),
             (item::MAKE_LINK, Some(index)) => self.make_link(files, index),
             (item::SHOW_ORIGINAL, Some(index)) => self.show_original(files, index),
+            (item::CHANGE_TARGET, Some(index)) => self.ask_new_target(files, index),
             _ => {}
         }
     }
@@ -2141,6 +2147,57 @@ impl FilesWindow {
         };
         let name = Name::from(original.file_name()).unwrap_or_default();
         self.go_selecting(files, Location::Folder(above), Some(name.as_bytes()));
+    }
+
+    fn ask_new_target(&mut self, files: &mut impl Files, index: usize) {
+        let (Some(folder), Some(path)) = (self.folder().copied(), self.entry_path(index)) else {
+            return;
+        };
+        let mut target = [0u8; files::PATH_CAPACITY];
+        let stored_folder = files
+            .read_link(path.as_bytes(), &mut target)
+            .ok()
+            .and_then(|length| link_target_path(folder.as_bytes(), &target[..length]))
+            .and_then(|original| Path::from(parent(original.as_bytes())))
+            .filter(|above| {
+                files
+                    .status(above.as_bytes())
+                    .is_ok_and(|status| status.kind == files::Kind::Directory)
+            });
+        self.ask(Request::ChangeTarget(path, stored_folder.unwrap_or(folder)));
+    }
+
+    /// What `/bin/pick` answered for the link `link`: its new target `chosen`, stored absolute
+    /// in a new link beside it and renamed over it, so the link never goes missing; none for
+    /// Cancel (D392, docs/ux/desktop-v0.3-gui.md section 8.1 item 24).
+    pub fn change_target(&mut self, files: &mut impl Files, link: Path, chosen: Option<Path>) {
+        let Some(target) = chosen else {
+            return;
+        };
+        let Some(above) = Path::from(parent(link.as_bytes())) else {
+            return;
+        };
+        let mut spare = Name::default();
+        let _ = core::fmt::Write::write_fmt(
+            &mut spare,
+            format_args!(".{}.retarget", Shown(link.file_name())),
+        );
+        let Some(beside) = above.join(spare.as_bytes()) else {
+            return;
+        };
+        let changed = files
+            .make_link(target.as_bytes(), beside.as_bytes())
+            .and_then(|()| files.rename(beside.as_bytes(), link.as_bytes()));
+        if let Err(error) = changed {
+            let _ = files.remove_file(beside.as_bytes());
+            self.show_notice(format_args!(
+                "Could not change the target of {} ({}).",
+                Shown(link.file_name()),
+                errno_text(error)
+            ));
+            return;
+        }
+        self.reload(files);
     }
 
     fn broken_link(&mut self, files: &mut impl Files, path: &Path, name: &[u8]) {

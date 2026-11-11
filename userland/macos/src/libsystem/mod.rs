@@ -4,9 +4,9 @@
 //! that names it and ends the program with status 127 when it is called, so a program whose
 //! unused imports are missing still runs.
 
-mod children;
+pub mod children;
 pub mod dynamic;
-mod file;
+pub mod file;
 pub mod dispatch;
 pub mod heap;
 mod locale;
