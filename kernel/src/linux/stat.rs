@@ -239,11 +239,28 @@ fn put(bytes: &mut [u8], offset: usize, value: &[u8]) {
 }
 
 const STAT_TIMES: [usize; 3] = [72, 104, 88];
+const MIPS64_STAT_TIMES: [usize; 3] = [64, 72, 80];
 const STATX_TIMES: [usize; 3] = [64, 96, 112];
 
 /// `status` as the architecture's `struct stat`, every time its modification time.
 pub fn stat_bytes(status: &Status) -> [u8; STAT_SIZE] {
     let mut bytes = [0; STAT_SIZE];
+    if crate::linux::abi::stat::LAYOUT == crate::linux::abi::StatLayout::Mips64 {
+        put(&mut bytes, 0, &(status.device.encoded() as u32).to_ne_bytes());
+        put(&mut bytes, 16, &status.inode.to_ne_bytes());
+        put(&mut bytes, 24, &status.mode.to_ne_bytes());
+        put(&mut bytes, 28, &status.links.to_ne_bytes());
+        put(&mut bytes, 32, &status.owner.to_ne_bytes());
+        put(&mut bytes, 36, &status.group.to_ne_bytes());
+        put(&mut bytes, 40, &(status.represented_device.encoded() as u32).to_ne_bytes());
+        put(&mut bytes, 56, &status.size.to_ne_bytes());
+        for offset in MIPS64_STAT_TIMES {
+            put(&mut bytes, offset, &(status.modified as u32).to_ne_bytes());
+        }
+        put(&mut bytes, 88, &status.block_size.to_ne_bytes());
+        put(&mut bytes, 96, &status.blocks.to_ne_bytes());
+        return bytes;
+    }
     put(&mut bytes, 0, &status.device.encoded().to_ne_bytes());
     put(&mut bytes, 8, &status.inode.to_ne_bytes());
     if crate::linux::abi::stat::LAYOUT == crate::linux::abi::StatLayout::X86_64 {

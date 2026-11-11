@@ -92,6 +92,12 @@ impl UserContext {
         self.arch.syscall_arguments()
     }
 
+    /// Replaces the system call's six arguments, for an ABI whose values the kernel rewrites
+    /// into the generic ones before it dispatches (MIPS's flags, D315).
+    pub fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
+        self.arch.set_syscall_arguments(arguments);
+    }
+
     /// Sets the value the system call returns when the program runs again.
     pub fn set_syscall_result(&mut self, value: u64) {
         self.arch.set_syscall_result(value);
@@ -510,6 +516,9 @@ pub(crate) mod aarch64 {
                 self.x[0], self.x[1], self.x[2], self.x[3], self.x[4], self.x[5],
             ]
         }
+        pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
+            self.x[..6].copy_from_slice(&arguments);
+        }
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.x[0] = value;
         }
@@ -620,6 +629,9 @@ pub(crate) mod loongarch64 {
         pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
             [self.r[4], self.r[5], self.r[6], self.r[7], self.r[8], self.r[9]]
         }
+        pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
+            self.r[4..10].copy_from_slice(&arguments);
+        }
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.r[A0] = value;
         }
@@ -700,6 +712,29 @@ pub(crate) mod mips64 {
     /// The highest error number a system call returns, as Linux's `-MAX_ERRNO`.
     const LARGEST_ERROR: u64 = 4095;
 
+    /// MIPS's error numbers for the generic ones from 35 on (`asm/errno.h`), in the generic
+    /// order; 0 where MIPS has none and the generic number stays.
+    const MIPS_ERRORS: [u16; 99] = [
+        45, 78, 46, 89, 93, 90, 0, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 50, 51, 52, 53, 54,
+        55, 0, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 74, 73, 77, 79, 80, 81, 82, 83,
+        84, 85, 86, 87, 88, 91, 92, 94, 95, 96, 97, 98, 99, 120, 121, 122, 123, 124, 125, 126,
+        127, 128, 129, 130, 131, 132, 133, 134, 143, 144, 145, 146, 147, 148, 149, 150, 151, 135,
+        137, 138, 139, 140, 1133, 159, 160, 158, 161, 162, 163, 164, 165, 166, 167, 168,
+    ];
+
+    /// The number MIPS gives generic error `generic`.
+    fn mips_errno(generic: u64) -> u64 {
+        let mapped = generic
+            .checked_sub(35)
+            .and_then(|index| MIPS_ERRORS.get(index as usize))
+            .copied()
+            .unwrap_or(0);
+        match mapped {
+            0 => generic,
+            number => u64::from(number),
+        }
+    }
+
     impl Registers {
         pub(crate) fn new(pc: u64, stack: u64) -> Self {
             let mut r = [0; 32];
@@ -743,10 +778,16 @@ pub(crate) mod mips64 {
         pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
             [self.r[4], self.r[5], self.r[6], self.syscall_a3, self.r[8], self.r[9]]
         }
-        /// A negative error becomes Linux's: the error number in `v0` and `a3` 1; else `a3` 0.
+        pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
+            let [a0, a1, a2, a3, a4, a5] = arguments;
+            [self.r[4], self.r[5], self.r[6], self.r[8], self.r[9]] = [a0, a1, a2, a4, a5];
+            self.syscall_a3 = a3;
+        }
+        /// A negative error becomes Linux's: MIPS's number for it (D315) in `v0` and `a3` 1;
+        /// else `a3` 0.
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             if value.wrapping_neg() <= LARGEST_ERROR && value != 0 {
-                self.r[V0] = value.wrapping_neg();
+                self.r[V0] = mips_errno(value.wrapping_neg());
                 self.r[A3] = 1;
             } else {
                 self.r[V0] = value;
@@ -890,6 +931,9 @@ pub(crate) mod powerpc64 {
         pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
             [self.gpr[3], self.gpr[4], self.gpr[5], self.gpr[6], self.gpr[7], self.gpr[8]]
         }
+        pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
+            self.gpr[3..9].copy_from_slice(&arguments);
+        }
         /// A negative error becomes Linux's: the error number in `r3` and `CR0.SO` set.
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             if value.wrapping_neg() <= LARGEST_ERROR && value != 0 {
@@ -1008,6 +1052,9 @@ pub(crate) mod riscv64 {
             [
                 self.x[10], self.x[11], self.x[12], self.x[13], self.x[14], self.x[15],
             ]
+        }
+        pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
+            self.x[10..16].copy_from_slice(&arguments);
         }
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.x[10] = value;
@@ -1211,6 +1258,9 @@ pub(crate) mod x86_64 {
         }
         pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
             [self.rdi, self.rsi, self.rdx, self.r10, self.r8, self.r9]
+        }
+        pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
+            [self.rdi, self.rsi, self.rdx, self.r10, self.r8, self.r9] = arguments;
         }
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.rax = value;

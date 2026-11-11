@@ -20,6 +20,11 @@ mod loongarch64;
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch64::*;
 
+#[cfg(target_arch = "mips64")]
+mod mips64;
+#[cfg(target_arch = "mips64")]
+pub use mips64::*;
+
 #[cfg(target_arch = "powerpc64")]
 mod powerpc64;
 #[cfg(target_arch = "powerpc64")]
@@ -38,11 +43,90 @@ pub use x86_64::*;
 #[cfg(not(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64",
     target_arch = "x86_64"
 )))]
 compile_error!("EggOS has no Linux ABI for this architecture: add kernel/src/linux/abi/<arch>.rs");
+
+/// The signal numbers every architecture but MIPS shares (`asm-generic/signal.h`, x86's and
+/// PowerPC's too); MIPS has its own (D315).
+#[cfg(not(target_arch = "mips64"))]
+pub mod signal {
+    pub const SIGHUP: u32 = 1;
+    pub const SIGINT: u32 = 2;
+    pub const SIGQUIT: u32 = 3;
+    pub const SIGILL: u32 = 4;
+    pub const SIGTRAP: u32 = 5;
+    pub const SIGABRT: u32 = 6;
+    pub const SIGBUS: u32 = 7;
+    pub const SIGFPE: u32 = 8;
+    pub const SIGKILL: u32 = 9;
+    pub const SIGUSR1: u32 = 10;
+    pub const SIGSEGV: u32 = 11;
+    pub const SIGUSR2: u32 = 12;
+    pub const SIGPIPE: u32 = 13;
+    pub const SIGALRM: u32 = 14;
+    pub const SIGTERM: u32 = 15;
+    pub const SIGSTKFLT: u32 = 16;
+    pub const SIGCHLD: u32 = 17;
+    pub const SIGCONT: u32 = 18;
+    pub const SIGSTOP: u32 = 19;
+    pub const SIGTSTP: u32 = 20;
+    pub const SIGTTIN: u32 = 21;
+    pub const SIGTTOU: u32 = 22;
+    pub const SIGURG: u32 = 23;
+    pub const SIGXCPU: u32 = 24;
+    pub const SIGXFSZ: u32 = 25;
+    pub const SIGVTALRM: u32 = 26;
+    pub const SIGPROF: u32 = 27;
+    pub const SIGWINCH: u32 = 28;
+    pub const SIGIO: u32 = 29;
+    pub const SIGPWR: u32 = 30;
+    pub const SIGSYS: u32 = 31;
+}
+
+/// `struct sigaction`'s handler comes first everywhere but on MIPS.
+#[cfg(not(target_arch = "mips64"))]
+pub const SIGACTION_FLAGS_FIRST: bool = false;
+/// `stack_t` is `ss_sp`, `ss_flags`, `ss_size` everywhere but on MIPS.
+#[cfg(not(target_arch = "mips64"))]
+pub const STACK_T_SIZE_BEFORE_FLAGS: bool = false;
+/// `sigset_t` as the calls take it: 64 signals in 8 bytes everywhere but on MIPS.
+#[cfg(not(target_arch = "mips64"))]
+pub const SIGSET_SIZE: u64 = 8;
+/// Whether some calls' arguments are rewritten before dispatch: only on MIPS.
+#[cfg(not(target_arch = "mips64"))]
+pub const REWRITES_ARGUMENTS: bool = false;
+
+/// Rewrites a call's arguments into the generic values: nothing to do here.
+#[cfg(not(target_arch = "mips64"))]
+#[inline(always)]
+pub fn arguments_in(_number: u64, _arguments: &mut [u64; 6]) -> bool {
+    false
+}
+
+/// A call's result in the architecture's values: the generic ones here.
+#[cfg(not(target_arch = "mips64"))]
+#[inline(always)]
+pub fn result_out(_number: u64, _arguments: [u64; 6], result: u64) -> u64 {
+    result
+}
+
+/// `sa_flags` as the kernel takes them: as given here.
+#[cfg(not(target_arch = "mips64"))]
+#[inline(always)]
+pub fn sigaction_flags_in(flags: u64) -> u64 {
+    flags
+}
+
+/// `sa_flags` as a program reads them: as kept here.
+#[cfg(not(target_arch = "mips64"))]
+#[inline(always)]
+pub fn sigaction_flags_out(flags: u64) -> u64 {
+    flags
+}
 
 /// What the architectures on Linux's generic ABI (`asm-generic`) share: AArch64, RISC-V and
 /// the later ones (LoongArch).
@@ -261,6 +345,8 @@ pub enum StatLayout {
     X86_64,
     /// The generic one: `st_mode` then a 32-bit `st_nlink`, a 32-bit `st_blksize`.
     Generic,
+    /// MIPS n64's: a 32-bit `st_dev` and `st_rdev` with padding, 32-bit times (D315).
+    Mips64,
 }
 
 /// Three instructions as little-endian code bytes.

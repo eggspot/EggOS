@@ -8,13 +8,13 @@
 //! sends, does nothing, so init is not taken down by accident.
 
 /// `SIGUSR1`.
-pub const SIGUSR1: usize = 10;
+pub const SIGUSR1: usize = eggos_runtime::signal::SIGUSR1 as usize;
 
 /// `SIGUSR2`.
-pub const SIGUSR2: usize = 12;
+pub const SIGUSR2: usize = eggos_runtime::signal::SIGUSR2 as usize;
 
 /// `SIGRTMIN` as C libraries number it, the first two real-time signals being theirs.
-pub const SIGRTMIN: usize = 34;
+pub const SIGRTMIN: usize = eggos_runtime::signal::SIGRTMIN as usize;
 
 /// The signals init takes as requests ([`Request::of_signal`]).
 pub const SIGNALS: [usize; 5] = [SIGUSR1, SIGUSR2, SIGRTMIN + 3, SIGRTMIN + 4, SIGRTMIN + 5];

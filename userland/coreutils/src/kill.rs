@@ -12,21 +12,24 @@ const USAGE: &[u8] = b"usage: kill [-s <signal> | -<signal>] [--] <pid>... | kil
 const USAGE_STATUS: i32 = 2;
 
 /// The signals `kill` names, with their numbers.
-pub const SIGNALS: [(&str, u32); 13] = [
-    ("HUP", 1),
-    ("INT", 2),
-    ("QUIT", 3),
-    ("KILL", 9),
-    ("USR1", 10),
-    ("USR2", 12),
-    ("PIPE", 13),
-    ("ALRM", 14),
-    ("TERM", 15),
-    ("CHLD", 17),
-    ("CONT", 18),
-    ("STOP", 19),
-    ("TSTP", 20),
-];
+pub const SIGNALS: [(&str, u32); 13] = {
+    use eggos_runtime::signal::*;
+    [
+        ("HUP", SIGHUP),
+        ("INT", SIGINT),
+        ("QUIT", SIGQUIT),
+        ("KILL", SIGKILL),
+        ("USR1", SIGUSR1),
+        ("USR2", SIGUSR2),
+        ("PIPE", SIGPIPE),
+        ("ALRM", SIGALRM),
+        ("TERM", SIGTERM),
+        ("CHLD", SIGCHLD),
+        ("CONT", SIGCONT),
+        ("STOP", SIGSTOP),
+        ("TSTP", SIGTSTP),
+    ]
+};
 
 /// The signal `text` names: a name, `SIG` optional, any case, or a number from 0 to 64.
 pub fn signal_named(text: &[u8]) -> Option<u32> {

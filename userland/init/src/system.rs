@@ -30,10 +30,10 @@ const O_RDONLY_CLOEXEC: usize = 0o2_000_000;
 const EINTR: isize = 4;
 const ECHILD: isize = 10;
 const WNOHANG: usize = 1;
-const SIGCHLD: usize = 17;
-const SIGKILL: usize = 9;
-const SIGTERM: usize = 15;
-const SIGCONT: usize = 18;
+const SIGCHLD: usize = eggos_runtime::signal::SIGCHLD as usize;
+const SIGKILL: usize = eggos_runtime::signal::SIGKILL as usize;
+const SIGTERM: usize = eggos_runtime::signal::SIGTERM as usize;
+const SIGCONT: usize = eggos_runtime::signal::SIGCONT as usize;
 const ESRCH: isize = 3;
 const EVERY_OTHER_PROCESS: usize = -1isize as usize;
 const COMMAND_LINE_BYTES: usize = 4096;
@@ -83,7 +83,16 @@ const FIRST_CHECK_S: u64 = 600;
 const CHECK_EVERY_S: u64 = 24 * 60 * 60;
 const LOOK_AGAIN_LATER_S: u64 = 60 * 60;
 
-#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
+#[cfg(target_arch = "mips64")]
+#[repr(C)]
+struct SignalAction {
+    flags: usize,
+    handler: usize,
+    mask: u64,
+    mask_high: u64,
+}
+
+#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
 #[repr(C)]
 struct SignalAction {
     handler: usize,
@@ -105,8 +114,10 @@ impl SignalAction {
         Self {
             handler,
             flags: 0,
-            #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
+            #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
             restorer: 0,
+            #[cfg(target_arch = "mips64")]
+            mask_high: 0,
             mask: 0,
         }
     }
@@ -119,13 +130,15 @@ impl SignalAction {
         );
         #[cfg(any(target_arch = "aarch64", target_arch = "powerpc64"))]
         let (flags, restorer) = (0, 0);
-        #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
+        #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64"))]
         let flags = 0;
         Self {
             handler: handler as usize,
             flags,
-            #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
+            #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
             restorer,
+            #[cfg(target_arch = "mips64")]
+            mask_high: 0,
             mask,
         }
     }

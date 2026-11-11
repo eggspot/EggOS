@@ -24,6 +24,30 @@ pub const RELATIVE: u32 = 3;
 pub const RELATIVE: u32 = 3;
 #[cfg(target_arch = "powerpc64")]
 pub const RELATIVE: u32 = 22;
+#[cfg(target_arch = "mips64")]
+pub const RELATIVE: u32 = 3;
+
+/// MIPS64's dynamic tags for its `DT_REL` table and its local GOT entries (D315).
+#[cfg(target_arch = "mips64")]
+mod mips {
+    pub const PLTGOT: usize = 3;
+    pub const RELSZ: usize = 18;
+    pub const RELENT: usize = 19;
+    pub const LOCAL_GOTNO: usize = 0x7000_000a;
+    /// `R_MIPS_64`, the second type of a 64-bit `R_MIPS_REL32`.
+    pub const TYPE_64: u64 = 18;
+    /// `GOT[1]`'s mark that it is the GNU module pointer, not a local entry.
+    pub const GOT1_MODULE: usize = 1 << 63;
+}
+
+/// Whether n64's `r_info` (the symbol in its low 32 bits, then `r_ssym`, `r_type3`, `r_type2`
+/// and `r_type` one byte each) is a relative relocation: no symbol, `R_MIPS_REL32`, then
+/// `R_MIPS_64` or nothing.
+#[cfg(target_arch = "mips64")]
+fn is_mips_relative(info: u64) -> bool {
+    let (symbol, third, second, first) = (info as u32, (info >> 40) as u8, (info >> 48) as u8, (info >> 56) as u8);
+    symbol == 0 && third == 0 && u32::from(first) == RELATIVE && matches!(u64::from(second), 0 | mips::TYPE_64)
+}
 
 /// An ELF-64 relocation with an addend.
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +81,84 @@ pub enum RelocationError {
 /// `bias` plus its address, and every relocation names a writable word of the program,
 /// which nothing else uses yet.
 pub unsafe fn relocate(bias: usize, dynamic: *const [usize; 2]) -> Result<(), RelocationError> {
+    #[cfg(target_arch = "mips64")]
+    {
+        // SAFETY: the caller's guarantees are `relocate_mips`'s.
+        return unsafe { relocate_mips(bias, dynamic) };
+    }
+    #[cfg(not(target_arch = "mips64"))]
+    // SAFETY: the caller's guarantees are `relocate_rela`'s.
+    unsafe {
+        relocate_rela(bias, dynamic)
+    }
+}
+
+/// MIPS64's static PIE (D315): a `DT_REL` table of relative relocations, whose addends are the
+/// words they name, then the local GOT entries, which no relocation names, each moved by
+/// `bias`, from the first after the reserved ones.
+///
+/// # Safety
+///
+/// As for [`relocate`]; the GOT `DT_PLTGOT` names is the program's, writable.
+#[cfg(target_arch = "mips64")]
+unsafe fn relocate_mips(bias: usize, dynamic: *const [usize; 2]) -> Result<(), RelocationError> {
+    let (mut table, mut size, mut entry_size, mut got, mut local) = (0, 0, 16, 0, 0);
+    let mut entry = dynamic;
+    loop {
+        // SAFETY: the section ends with `DT_NULL`, which stops the walk.
+        let [kind, value] = unsafe { entry.read() };
+        match kind {
+            tag::NULL => break,
+            tag::REL => table = value,
+            mips::RELSZ => size = value,
+            mips::RELENT => entry_size = value,
+            mips::PLTGOT => got = value,
+            mips::LOCAL_GOTNO => local = value,
+            tag::RELA | tag::RELR => return Err(RelocationError::UnsupportedTable),
+            _ => {}
+        }
+        entry = entry.wrapping_add(1);
+    }
+    if entry_size != 16 {
+        return Err(RelocationError::EntrySize);
+    }
+    if size % 16 != 0 || (size != 0 && table == 0) {
+        return Err(RelocationError::TableSize);
+    }
+    let relocations = bias.wrapping_add(table) as *const [u64; 2];
+    for index in 0..size / 16 {
+        // SAFETY: the caller's `DT_REL` table, `DT_RELSZ` bytes long, at `bias` plus its address.
+        let [offset, info] = unsafe { relocations.wrapping_add(index).read_unaligned() };
+        if !is_mips_relative(info) {
+            return Err(RelocationError::UnsupportedType);
+        }
+        let target = bias.wrapping_add(offset as usize) as *mut usize;
+        // SAFETY: the caller promised each relocation names a writable word of the program.
+        unsafe { target.write_unaligned(target.read_unaligned().wrapping_add(bias)) };
+    }
+    if got != 0 {
+        let got = bias.wrapping_add(got) as *mut usize;
+        // SAFETY: `GOT[1]`, a word of the program's GOT.
+        let first = match unsafe { got.wrapping_add(1).read() } & mips::GOT1_MODULE {
+            0 => 1,
+            _ => 2,
+        };
+        for index in first..local {
+            let slot = got.wrapping_add(index);
+            // SAFETY: a local GOT entry of the program, writable, which nothing used yet.
+            unsafe { slot.write(slot.read().wrapping_add(bias)) };
+        }
+    }
+    Ok(())
+}
+
+/// The `DT_RELA` table every other architecture's static PIE has.
+///
+/// # Safety
+///
+/// As for [`relocate`].
+#[cfg_attr(target_arch = "mips64", allow(dead_code))]
+unsafe fn relocate_rela(bias: usize, dynamic: *const [usize; 2]) -> Result<(), RelocationError> {
     let mut table = 0;
     let mut size = 0;
     let mut entry_size = size_of::<Rela>();

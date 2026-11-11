@@ -106,6 +106,33 @@ pub unsafe fn clone_onto_stack(
             out("cr0") _,
         );
     }
+    #[cfg(target_arch = "mips64")]
+    // SAFETY: Linux's MIPS n64 `clone` (D315): a failure sets `a3` with the error number
+    // positive in `v0`; the child starts on its own stack with `v0` 0 and never comes back here;
+    // the parent's registers are as before but `v0` and `a3`.
+    unsafe {
+        asm!(
+            "syscall",
+            "bnez $7, 1f",
+            "nop",
+            "bnez $2, 2f",
+            "nop",
+            "move $4, $17",
+            "move $25, $16",
+            "jalr $25",
+            "nop",
+            "teq $0, $0",
+            "1:",
+            "dsubu $2, $0, $2",
+            "2:",
+            inlateout("$2") number::CLONE as isize => result,
+            inlateout("$4") flags => _,
+            in("$5") stack_top, in("$6") 0usize,
+            inlateout("$7") 0usize => _,
+            in("$8") 0usize,
+            in("$16") child, in("$17") argument,
+        );
+    }
     #[cfg(target_arch = "loongarch64")]
     // SAFETY: Linux's LoongArch `clone` (D290): the caller's registers are as before but `$a0`;
     // the child starts on its own stack and never comes back here.

@@ -255,9 +255,93 @@ pub mod number {
     pub const FACCESSAT: usize = 298;
 }
 
+/// Linux's system-call numbers on MIPS64 n64, from 5000 (D315).
+#[cfg(target_arch = "mips64")]
+pub mod number {
+    pub const READ: usize = 5000;
+    pub const WRITE: usize = 5001;
+    pub const CLOSE: usize = 5003;
+    pub const FSTAT: usize = 5005;
+    pub const MMAP: usize = 5009;
+    pub const MPROTECT: usize = 5010;
+    pub const MUNMAP: usize = 5011;
+    pub const BRK: usize = 5012;
+    pub const RT_SIGACTION: usize = 5013;
+    pub const RT_SIGRETURN: usize = 5211;
+    pub const IOCTL: usize = 5015;
+    pub const GETPID: usize = 5038;
+    pub const CLONE: usize = 5055;
+    pub const EXECVE: usize = 5057;
+    pub const WAIT4: usize = 5059;
+    pub const UNAME: usize = 5061;
+    pub const SETSID: usize = 5110;
+    pub const RT_SIGSUSPEND: usize = 5128;
+    pub const SIGALTSTACK: usize = 5129;
+    pub const REBOOT: usize = 5164;
+    pub const GETTID: usize = 5178;
+    pub const FUTEX: usize = 5194;
+    pub const SET_TID_ADDRESS: usize = 5212;
+    pub const CLOCK_SETTIME: usize = 5221;
+    pub const CLOCK_GETTIME: usize = 5222;
+    pub const CLOCK_NANOSLEEP: usize = 5224;
+    pub const EXIT_GROUP: usize = 5205;
+    pub const OPENAT: usize = 5247;
+    pub const PPOLL: usize = 5261;
+    pub const SET_ROBUST_LIST: usize = 5268;
+    pub const PRLIMIT64: usize = 5297;
+    pub const GETRANDOM: usize = 5313;
+    pub const RT_SIGPROCMASK: usize = 5014;
+    pub const GETCWD: usize = 5077;
+    pub const CHDIR: usize = 5078;
+    pub const GETEUID: usize = 5105;
+    pub const SETPGID: usize = 5107;
+    pub const GETPGID: usize = 5119;
+    pub const NEWFSTATAT: usize = 5252;
+    pub const GETDENTS64: usize = 5308;
+    pub const STATX: usize = 5326;
+    pub const DUP3: usize = 5286;
+    pub const CLOSE_RANGE: usize = 5436;
+    pub const FCNTL: usize = 5070;
+    pub const PIPE2: usize = 5287;
+    pub const MKDIRAT: usize = 5248;
+    pub const UNLINKAT: usize = 5253;
+    pub const UTIMENSAT: usize = 5275;
+    pub const RENAMEAT2: usize = 5311;
+    pub const SYNC: usize = 5157;
+    pub const SCHED_GETAFFINITY: usize = 5196;
+    pub const SCHED_SETAFFINITY: usize = 5195;
+    pub const FSYNC: usize = 5072;
+    pub const KILL: usize = 5060;
+    pub const SOCKET: usize = 5040;
+    pub const CONNECT: usize = 5041;
+    pub const SENDTO: usize = 5043;
+    pub const RECVFROM: usize = 5044;
+    pub const GETSOCKNAME: usize = 5050;
+    pub const SETSOCKOPT: usize = 5053;
+    pub const SENDMSG: usize = 5045;
+    pub const RECVMSG: usize = 5046;
+    pub const BIND: usize = 5048;
+    pub const LISTEN: usize = 5049;
+    pub const ACCEPT4: usize = 5293;
+    pub const MEMFD_CREATE: usize = 5314;
+    pub const FTRUNCATE: usize = 5075;
+    pub const PREAD64: usize = 5016;
+    pub const PWRITE64: usize = 5017;
+    pub const READLINKAT: usize = 5257;
+    pub const SYMLINKAT: usize = 5256;
+    pub const LINKAT: usize = 5255;
+    pub const OPENAT2: usize = 5437;
+    pub const FCHMODAT: usize = 5258;
+    pub const FCHMODAT2: usize = 5452;
+    pub const STATFS: usize = 5134;
+    pub const FSTATFS: usize = 5135;
+    pub const LSEEK: usize = 5008;
+    pub const FACCESSAT: usize = 5259;
+}
+
 /// Linux's terminal `ioctl` numbers: the generic ones, or PowerPC's own (D304).
 pub mod tty {
-    #[cfg(not(target_arch = "powerpc64"))]
+    #[cfg(not(any(target_arch = "powerpc64", target_arch = "mips64")))]
     mod values {
         pub const TCGETS: usize = 0x5401;
         pub const TCSETS: usize = 0x5402;
@@ -282,6 +366,20 @@ pub mod tty {
         pub const TIOCGWINSZ: usize = 0x4008_7468;
         pub const TIOCSWINSZ: usize = 0x8008_7467;
         pub const FIONREAD: usize = 0x4004_667f;
+        pub const TIOCGPTN: usize = 0x4004_5430;
+        pub const TIOCSPTLCK: usize = 0x8004_5431;
+    }
+    #[cfg(target_arch = "mips64")]
+    mod values {
+        pub const TCGETS: usize = 0x540d;
+        pub const TCSETS: usize = 0x540e;
+        pub const TCSETSW: usize = 0x540f;
+        pub const TIOCSCTTY: usize = 0x5480;
+        pub const TIOCGPGRP: usize = 0x4004_7477;
+        pub const TIOCSPGRP: usize = 0x8004_7476;
+        pub const TIOCGWINSZ: usize = 0x4008_7468;
+        pub const TIOCSWINSZ: usize = 0x8008_7467;
+        pub const FIONREAD: usize = 0x467f;
         pub const TIOCGPTN: usize = 0x4004_5430;
         pub const TIOCSPTLCK: usize = 0x8004_5431;
     }
@@ -367,6 +465,29 @@ pub unsafe fn call(number: usize, arguments: [usize; 6]) -> isize {
             in("$a1") b, in("$a2") c, in("$a3") d, in("$a4") e, in("$a5") f,
             options(nostack),
         );
+    }
+    #[cfg(target_arch = "mips64")]
+    {
+        let [a, b, c, d, e, f] = crate::mips_abi::arguments_out(number, [a, b, c, d, e, f]);
+        let (value, failed): (isize, usize);
+        // SAFETY: Linux's MIPS n64 system-call convention (D315): the number in `v0`, the
+        // arguments in `a0` to `a5`; the kernel changes `v0` and `a3` (set when the call failed,
+        // with the error number positive in `v0`) and the memory the arguments name, which the
+        // caller owns.
+        unsafe {
+            asm!(
+                "syscall",
+                inlateout("$2") number as isize => value,
+                in("$4") a, in("$5") b, in("$6") c,
+                inlateout("$7") d => failed,
+                in("$8") e, in("$9") f,
+                options(nostack),
+            );
+        }
+        result = match failed {
+            0 => crate::mips_abi::result_in(number, [a, b, c, d, e, f], value),
+            _ => -(crate::mips_abi::generic_errno(value as usize) as isize),
+        };
     }
     result
 }

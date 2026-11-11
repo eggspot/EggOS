@@ -20794,3 +20794,64 @@ the license, by an explicit instruction recorded here.
     `BUTTON_PRESSED`, `BUTTON_PRIMARY`, `BUTTON_PRIMARY_HOVER`), the same values.
   - `Canvas::character_doubled` draws any Egg Mono character at 2x.
 - **Not yet.** Building and running; the acceptance list of the brief's section 13.
+
+## D315 MIPS64 part 2: n64's Linux ABI, its values translated at the boundary (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** MIPS's Linux ABI differs from every other port's in values, not only call
+  numbers. The kernel keeps working in the generic values and translates at the edges:
+  - **Numbers.** `kernel/src/linux/abi/mips64.rs` holds n64's table (5000 on). `time` and
+    `vfork`, which n64 lacks, get numbers past `LAST`, which answers `ENOSYS` before any
+    lookup.
+  - **Errors.** The HAL's `set_syscall_result` gives an error its MIPS number (`MIPS_ERRORS`,
+    generic 35–133 to MIPS's; `ENOSYS` 89), sets `a3` and leaves the number positive in `v0`.
+  - **Arguments in, results out.** A new HAL call, `UserContext::set_syscall_arguments`
+    (every architecture), lets the dispatcher rewrite arguments before it dispatches, when the
+    ABI's `REWRITES_ARGUMENTS` is set (only MIPS; the check compiles away elsewhere).
+    `abi::arguments_in` rewrites:
+    - `open`/`openat` and `F_SETFL` flags, and `mmap` flags;
+    - `fcntl`'s `F_GETLK`, `F_SETOWN` and `F_GETOWN`;
+    - the `O_NONBLOCK` of `pipe2`, `dup3`, `inotify_init1`, `eventfd2`, `timerfd_create`,
+      `signalfd4` and `accept4`;
+    - socket types (`SOCK_STREAM` and `SOCK_DGRAM` swapped);
+    - `SOL_SOCKET` (`0xffff`) and its options.
+
+    `abi::result_out` gives `F_GETFL`'s flags back.
+  - **Signals.** The numbers are now the ABI's (`abi::signal`, the generic module elsewhere,
+    MIPS's own here, `SIGEMT` standing in for `SIGSTKFLT`), so masks, default actions and wait
+    statuses follow.
+  - **Signal structures.**
+    - `sigset_t` is 16 bytes (`SIGSET_SIZE`): the kernel reads the first 8 and writes zeros
+      after them.
+    - `struct sigaction` is flags first, no restorer (`SIGACTION_FLAGS_FIRST`), with
+      `SA_SIGINFO` and `SA_NOCLDWAIT` translated.
+    - `stack_t` puts the size before the flags (`STACK_T_SIZE_BEFORE_FLAGS`).
+    - The signal frame is n64's `rt_sigframe`: `sigcontext` with the 32 registers, the FP
+      registers, `hi`/`lo`, the PC and `FCSR`; the handler gets `a0`–`a2`, `t9` and `ra`.
+  - **`struct stat`.** n64's 104 bytes (`StatLayout::Mips64`: a 32-bit device, 32-bit times).
+  - **Terminal `ioctl` numbers.** MIPS's.
+  - **`set_thread_area`.** It sets `UserLocal` (a new want, `SET_THREAD_AREA`).
+  - **The user runtime.**
+    - n64 numbers, and a `syscall` stub that translates its arguments out and its errors and
+      `F_GETFL` back (`mips_abi.rs`, the same tables), so EggOS's programs keep the generic
+      values.
+    - `_start` finds `$gp` from `t9` and the load bias from the unrelocated GOT; the
+      relocation applies the `DT_REL` table of `R_MIPS_REL32`/`R_MIPS_64` and the local GOT
+      entries.
+    - `clone`, the terminal numbers, and per-architecture signal numbers in
+      `eggos_runtime::signal`, which `kill`, init, the coreutils and eggway now use.
+    - init's and eggsh's `struct sigaction` for MIPS, and the `st_mode` offset (24).
+- **Part 3 (left, so MIPS64 programs beyond the basics work).**
+  - The other programs' `struct sigaction` and 8-byte signal sets (coreutils, eggway, the
+    runtime's own, selftest, mcp): on MIPS the kernel wants 16-byte sets, so those calls fail
+    with `EINVAL`.
+  - `termios` (MIPS's `c_cc` order, 23 entries and `c_lflag` bits).
+  - `siginfo_t`'s `si_code` and `si_errno` swapped on MIPS.
+  - `poll`'s `POLLWRNORM`/`POLLWRBAND`, and `getsockopt` values coming back (`SO_TYPE`,
+    `SO_ERROR`).
+  - `pipe`'s two results in `v0`/`v1`.
+  - The Linux test programs past `linux_hello`, and Loongson's `liointc` for device
+    interrupts.
+- **Known gaps (unverified, from memory of `asm/errno.h`, `asm/signal.h`, `asm/stat.h`,
+  `asm/ioctls.h`, `asm/fcntl.h`, `asm/mman.h`, `asm/socket.h` and the n64 table).** Every
+  value table above; LLVM's MIPS assembler accepting the runtime's `%gp_rel`/`%got_disp`
+  `_start`.

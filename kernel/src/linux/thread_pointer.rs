@@ -27,7 +27,6 @@ pub mod code {
     pub const ARCH_SET_CPUID: u32 = 0x1012;
 }
 
-// The HAL's test program sets its FS base with this code.
 const _: () = assert!(eggos_hal::user::TestProgram::LINUX_ARCH_SET_FS == code::ARCH_SET_FS as u64);
 
 /// `arch_prctl(code, address)` (x86_64): sets or reads the calling thread's FS base, its
@@ -41,8 +40,6 @@ pub fn arch_prctl<P: Platform>(
     address: u64,
 ) -> Result<u64, Errno> {
     match code as u32 {
-        // Any user address, mapped or not; nothing above, where the FS base would point into
-        // the kernel's half or be non-canonical (the HAL refuses those too).
         code::ARCH_SET_FS if address < <P::PageTableFormat as Format>::USER_END => context
             .set_thread_pointer(address)
             .map(|()| 0)
@@ -58,10 +55,22 @@ pub fn arch_prctl<P: Platform>(
         code::ARCH_SET_GS => Err(Errno::EPERM),
         code::ARCH_GET_GS => write_word(process, address, gs_base(context)),
         code::ARCH_GET_CPUID => Ok(1),
-        // CPUID faulting is not offered, whatever the CPU has.
         code::ARCH_SET_CPUID => Err(Errno::ENODEV),
         _ => Err(Errno::EINVAL),
     }
+}
+
+/// `set_thread_area(address)` (MIPS, D315): the calling thread's thread pointer, `UserLocal`,
+/// which programs read with `rdhwr $3, $29`; any user address, mapped or not.
+#[cfg_attr(not(linux_abi_set_thread_area), allow(dead_code))]
+pub fn set_thread_area<P: Platform>(context: &mut UserContext, address: u64) -> Result<u64, Errno> {
+    if address >= <P::PageTableFormat as Format>::USER_END {
+        return Err(Errno::EPERM);
+    }
+    context
+        .set_thread_pointer(address)
+        .map(|()| 0)
+        .map_err(|_| Errno::EPERM)
 }
 
 fn gs_base(context: &UserContext) -> u64 {

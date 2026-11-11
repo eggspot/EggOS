@@ -18,8 +18,11 @@ pub mod errno;
 pub mod futex;
 #[cfg(eggos_user)]
 mod memory;
+#[cfg(target_arch = "mips64")]
+mod mips_abi;
 pub mod process;
 pub mod relocation;
+pub mod signal;
 pub mod startup;
 pub mod syscall;
 

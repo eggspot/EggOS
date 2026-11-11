@@ -51,7 +51,17 @@ pub const FIRST_REAL_TIME: u32 = 32;
 
 /// The size of a signal set (`sigset_t` as the kernel takes it): the calls' `sigsetsize`
 /// must be this, but `rt_sigpending`'s may be smaller.
-pub const SET_SIZE: u64 = 8;
+pub const SET_SIZE: u64 = crate::linux::abi::SIGSET_SIZE;
+
+/// The bytes of a set that hold the kernel's 64 signals: the first 8 of a larger `sigset_t`.
+const SET_WORD: usize = 8;
+
+/// `set` as `SET_SIZE` bytes: its 64 signals, then zeros for the signals past them.
+fn set_bytes(set: u64) -> [u8; SET_SIZE as usize] {
+    let mut bytes = [0; SET_SIZE as usize];
+    bytes[..SET_WORD].copy_from_slice(&set.to_ne_bytes());
+    bytes
+}
 
 /// `SIG_DFL`: the signal's default action.
 pub const DEFAULT: u64 = 0;
@@ -92,7 +102,11 @@ pub const HAS_RESTORER: bool = crate::linux::abi::SIGACTION_HAS_RESTORER;
 
 /// The size of the kernel's `struct sigaction` on the architecture: handler, flags, restorer
 /// (if [`HAS_RESTORER`]) and mask, each a 64-bit word.
-const ACTION_SIZE: usize = if HAS_RESTORER { 32 } else { 24 };
+const ACTION_SIZE: usize = if HAS_RESTORER || FLAGS_FIRST { 32 } else { 24 };
+
+/// Whether `struct sigaction` starts with its flags, then the handler and a 16-byte mask (MIPS,
+/// D315).
+const FLAGS_FIRST: bool = crate::linux::abi::SIGACTION_FLAGS_FIRST;
 
 /// What a signal does when it arrives: the kernel's `struct sigaction`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -109,7 +123,9 @@ pub struct Action {
 impl Action {
     /// The structure as the program sees it.
     fn to_bytes(self) -> [u8; ACTION_SIZE] {
-        let words = if HAS_RESTORER {
+        let words = if FLAGS_FIRST {
+            [crate::linux::abi::sigaction_flags_out(self.flags) & 0xffff_ffff, self.handler, self.mask, 0]
+        } else if HAS_RESTORER {
             [self.handler, self.flags, self.restorer, self.mask]
         } else {
             [self.handler, self.flags, self.mask, 0]
@@ -124,6 +140,14 @@ impl Action {
     fn from_bytes(bytes: [u8; ACTION_SIZE]) -> Self {
         let words = bytes.as_chunks::<8>().0;
         let word = |index: usize| u64::from_ne_bytes(words[index]);
+        if FLAGS_FIRST {
+            return Self {
+                handler: word(1),
+                flags: crate::linux::abi::sigaction_flags_in(word(0) & 0xffff_ffff),
+                restorer: 0,
+                mask: word(2),
+            };
+        }
         if HAS_RESTORER {
             Self {
                 handler: word(0),
@@ -537,9 +561,10 @@ impl AlternateStack {
             flags |= stack_flag::AUTODISARM;
         }
         let mut bytes = [0; STACK_SIZE];
+        let (flags_at, size_at) = stack_t_offsets();
         bytes[..8].copy_from_slice(&self.base.to_ne_bytes());
-        bytes[8..12].copy_from_slice(&flags.to_ne_bytes());
-        bytes[16..].copy_from_slice(&self.size.to_ne_bytes());
+        bytes[flags_at..flags_at + 4].copy_from_slice(&flags.to_ne_bytes());
+        bytes[size_at..size_at + 8].copy_from_slice(&self.size.to_ne_bytes());
         bytes
     }
 }
@@ -1556,7 +1581,7 @@ pub fn rt_sigprocmask<P: Platform>(
     let set = match pointer(set) {
         None => None,
         Some(address) => {
-            let mut bytes = [0; SET_SIZE as usize];
+            let mut bytes = [0; SET_WORD];
             process
                 .read_user_memory(address, &mut bytes)
                 .map_err(|_| Errno::EFAULT)?;
@@ -1584,7 +1609,7 @@ pub fn rt_sigprocmask<P: Platform>(
     };
     if let Some(address) = pointer(old) {
         process
-            .write_user_memory(address, &previous.to_ne_bytes())
+            .write_user_memory(address, &set_bytes(previous))
             .map_err(|_| Errno::EFAULT)?;
     }
     Ok(0)
@@ -1634,10 +1659,20 @@ pub fn sigaltstack<P: Platform>(
 
 /// A `stack_t`'s base, flags and size.
 fn parse_stack(bytes: [u8; STACK_SIZE]) -> (u64, u32, u64) {
+    let (flags_at, size_at) = stack_t_offsets();
     let base = u64::from_ne_bytes(bytes[..8].try_into().unwrap());
-    let flags = u32::from_ne_bytes(bytes[8..12].try_into().unwrap());
-    let size = u64::from_ne_bytes(bytes[16..].try_into().unwrap());
+    let flags = u32::from_ne_bytes(bytes[flags_at..flags_at + 4].try_into().unwrap());
+    let size = u64::from_ne_bytes(bytes[size_at..size_at + 8].try_into().unwrap());
     (base, flags, size)
+}
+
+/// Where a `stack_t` keeps `ss_flags` and `ss_size`: after `ss_sp` in that order, or the other
+/// way round on MIPS (D315).
+const fn stack_t_offsets() -> (usize, usize) {
+    match crate::linux::abi::STACK_T_SIZE_BEFORE_FLAGS {
+        true => (16, 8),
+        false => (8, 16),
+    }
 }
 
 fn send_to_self<P: Platform>(
@@ -2286,7 +2321,7 @@ pub fn read_set<P: Platform>(
     if set_size != SET_SIZE {
         return Err(Errno::EINVAL);
     }
-    let mut bytes = [0; SET_SIZE as usize];
+    let mut bytes = [0; SET_WORD];
     process
         .read_user_memory(address, &mut bytes)
         .map_err(|_| Errno::EFAULT)?;
@@ -2518,10 +2553,11 @@ pub fn rt_sigpending<P: Platform>(
         return Err(Errno::EFAULT);
     }
     take_in_sent(process, thread);
-    let pending = thread
-        .signals(&mut process.signals().lock())
-        .blocked_pending()
-        .to_ne_bytes();
+    let pending = set_bytes(
+        thread
+            .signals(&mut process.signals().lock())
+            .blocked_pending(),
+    );
     process
         .write_user_memory(set, &pending[..set_size as usize])
         .map(|()| 0)

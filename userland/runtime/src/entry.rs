@@ -88,6 +88,32 @@ global_asm!(
     start = sym start,
 );
 
+#[cfg(target_arch = "mips64")]
+global_asm!(
+    ".globl _start",
+    ".type _start, @function",
+    ".set noreorder",
+    "_start:",
+    "lui $28, %hi(%neg(%gp_rel(_start)))",
+    "daddu $28, $28, $25",
+    "daddiu $28, $28, %lo(%neg(%gp_rel(_start)))",
+    "ld $16, %got_disp(_start)($28)",
+    "dsubu $16, $25, $16",
+    "ld $5, %got_disp(_DYNAMIC)($28)",
+    "daddu $5, $5, $16",
+    "ld $25, %got_disp({start})($28)",
+    "daddu $25, $25, $16",
+    "move $4, $29",
+    "daddiu $12, $0, -16",
+    "and $29, $29, $12",
+    "move $31, $0",
+    "jalr $25",
+    "nop",
+    "teq $0, $0",
+    ".set reorder",
+    start = sym start,
+);
+
 unsafe extern "C" fn start(stack: *const usize, dynamic: *const [usize; 2]) -> ! {
     // SAFETY: `_start` passes the stack as Linux laid it out, which stays for good.
     let startup = unsafe { Startup::from_stack(stack) };
