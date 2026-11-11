@@ -8,6 +8,8 @@
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
 pub mod about;
 pub mod alert;
 pub mod button;
@@ -15,6 +17,7 @@ pub mod clicks;
 pub mod colour;
 pub mod cursor;
 pub mod geometry;
+pub mod image_view;
 pub mod keys;
 pub mod menu;
 pub mod paint;

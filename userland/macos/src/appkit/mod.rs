@@ -8,7 +8,8 @@
 //! window, and every window answers agents with its views as an element tree (D175); compiled
 //! nibs are loaded into these classes (D232). `NSCursor` chooses the server's pointer shapes and
 //! `NSPasteboard` reads and writes the clipboard every app shares (D233). `NSScrollView` shows part of
-//! a document view through its clip view (D372), and `NSTableView` a data source's rows (D373).
+//! a document view through its clip view (D372), and `NSTableView` a data source's rows (D373);
+//! `NSImage` and `NSImageView` show pictures decoded by our own PNG reader (D374).
 
 mod about;
 mod alert;
@@ -18,6 +19,7 @@ mod cursor;
 mod drawing;
 mod elements;
 mod event;
+mod image;
 mod menu;
 mod nib;
 mod pasteboard;
@@ -64,6 +66,8 @@ class_pairs! {
     NSTABLEVIEW, NSTABLEVIEW_META;
     NSTABLECOLUMN, NSTABLECOLUMN_META;
     NSINDEXSET, NSINDEXSET_META;
+    NSIMAGE, NSIMAGE_META;
+    NSIMAGEVIEW, NSIMAGEVIEW_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -177,6 +181,7 @@ pub fn set_up() -> bool {
             && scroll_view::define(runtime)
             && scroll_view::extend_views(runtime)
             && table_view::define(runtime)
+            && image::define(runtime)
     });
     defined && drawing::set_up()
 }
@@ -229,6 +234,10 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSTableColumn" => class(&NSTABLECOLUMN_META),
         b"_OBJC_CLASS_$_NSIndexSet" => class(&NSINDEXSET),
         b"_OBJC_METACLASS_$_NSIndexSet" => class(&NSINDEXSET_META),
+        b"_OBJC_CLASS_$_NSImage" => class(&NSIMAGE),
+        b"_OBJC_METACLASS_$_NSImage" => class(&NSIMAGE_META),
+        b"_OBJC_CLASS_$_NSImageView" => class(&NSIMAGEVIEW),
+        b"_OBJC_METACLASS_$_NSImageView" => class(&NSIMAGEVIEW_META),
         _ => application::resolve(name).or_else(|| drawing::resolve(name)),
     }
 }

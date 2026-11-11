@@ -13,7 +13,10 @@
 //! the first responder, `set-text` replaces a text field's text; disabled controls refuse.
 //! While an alert runs, trees are answered and actions refused, as the app is modal.
 
-use super::{NSBUTTON, NSTEXTFIELD, NSVIEW, about, application, control, is, server, view, window};
+use super::{
+    NSBUTTON, NSIMAGEVIEW, NSTEXTFIELD, NSVIEW, about, application, control, image, is, server,
+    view, window,
+};
 use crate::libsystem::heap;
 use crate::objc::abi::Id;
 use crate::objc::{class, root, sel, send1};
@@ -206,6 +209,17 @@ fn classify(window: Id, view: Id) -> Described {
         }
         return described;
     }
+    if is(view, &NSIMAGEVIEW) {
+        let shown = image::image_of_view(view);
+        let mut value = [0u8; 24];
+        let value = match image::size_of(shown) {
+            Some((width, height)) => size_text(width, height, &mut value),
+            None => "none",
+        };
+        return image::with_image_name(shown, |name| {
+            Described::new(Role::Graphic).named(name).valued(value)
+        });
+    }
     if class::class_of(view) == (&raw const NSVIEW).cast_mut() {
         return Described::new(Role::Group);
     }
@@ -218,6 +232,32 @@ fn classify(window: Id, view: Id) -> Described {
         }
     }
     described
+}
+
+fn size_text(width: u32, height: u32, out: &mut [u8; 24]) -> &str {
+    let mut at = 0;
+    for (index, number) in [width, height].into_iter().enumerate() {
+        if index == 1 {
+            out[at] = b'x';
+            at += 1;
+        }
+        let mut digits = [0u8; 10];
+        let mut count = 0;
+        let mut rest = number;
+        loop {
+            digits[count] = b'0' + (rest % 10) as u8;
+            count += 1;
+            rest /= 10;
+            if rest == 0 {
+                break;
+            }
+        }
+        for &digit in digits[..count].iter().rev() {
+            out[at] = digit;
+            at += 1;
+        }
+    }
+    core::str::from_utf8(&out[..at]).unwrap_or("")
 }
 
 fn bounds_of(view: Id, height: i32) -> Rect {

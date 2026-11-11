@@ -22332,3 +22332,33 @@ the license, by an explicit instruction recorded here.
   view-based tables (`tableView:viewForTableColumn:row:`), multiple selection and a full
   NSIndexSet in Foundation, sorting, per-row heights, the element tree for agents, the
   scroll view's scroller beside the body only, the render-hash tests that need the runtime.
+
+## D374 AppKit's NSImage and NSImageView (batch part 15's rest, D233's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/macos-gui-v0.3.md section 12) and the code-only session (engineering)
+
+- **Decision.**
+  - **NSImage** decodes PNG once with our own `eggos-png` row decoder into premultiplied
+    `0xAARRGGBB` (at most 4096 a side and 16 M pixels, else nil; a damaged file is nil).
+    `imageNamed:` looks in the bundle's resources for the name as given and with each of the
+    design's extensions, keeps what it found under that name, and `setName:` registers an
+    image; `initWithContentsOfFile:`, `initByReferencingFile:`, `initWithContentsOfURL:`
+    (file URLs), `initWithData:` and `initWithSize:` (transparent) make one. Drawing from
+    `drawRect:` blits at a point unscaled, or scales into a rect by nearest neighbour after
+    cropping to a non-zero `fromRect`; `fraction` scales alpha and the premultiplied colour;
+    `NSCompositingOperationCopy` writes without blending, every other operation blends
+    source-over (`s + (d x (255 - a) + 127) / 255`).
+  - **The toolkit canvas** gains `composite`, the premultiplied blit with that blend, at the
+    canvas's scale, so 2x pixel-doubles like every bitmap.
+  - **NSImageView** draws its frame style (a `menu.border` line for photo and groove, a
+    `button.border` line around `button.bg` for bezel and button, the image area inset by
+    2), then the image placed by `imageScaling` and `imageAlignment` as the design's tables
+    say, clipped to the image area. The scaled pixels are kept until the image or the drawn
+    size changes, so a repaint is a blit and a blend.
+  - **Agents** see an image view as `graphic`, named by the image's name or its file's name
+    without folder and extension, valued `<w>x<h>` or `none`.
+  - **Geometry** (`eggos-macos-gui`'s `image_view`, host-tested): the limits, the image
+    area, the drawn size under each scaling, the place under each alignment, nearest
+    scaling, fading and premultiplying.
+- **Not yet.** JPEG, GIF, TIFF, BMP, `.ico` and `.icns` decoding (the design's `eggos-image`;
+    a name tried with those extensions finds nothing until they decode), the system images
+    `NSImageName...`, `accessibilityLabel` as the element's name, `lockFocus`,
+    `TIFFRepresentation`, `CGImage`, `representations`.

@@ -187,6 +187,32 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Puts `image` (premultiplied `0xAARRGGBB`, rows `width` pixels apart, scale 1) with its
+    /// top-left at (`x`, `y`) over the clipped canvas, each pixel a scale by scale square:
+    /// blended source-over, or with `copy` replacing what is there (D374).
+    pub fn composite(&mut self, (x, y): (i32, i32), image: &[u32], width: usize, copy: bool) {
+        if width == 0 {
+            return;
+        }
+        let scale = self.scale;
+        let height = (image.len() / width) as i32;
+        let area = Rect::new(x, y, width as i32, height)
+            .scaled(scale)
+            .intersection(&self.clip);
+        for row in area.y..area.bottom() {
+            let source_row = (row.div_euclid(scale) - y) as usize * width;
+            let start = row as usize * self.width as usize;
+            for column in area.x..area.right() {
+                let source = image[source_row + (column.div_euclid(scale) - x) as usize];
+                let target = &mut self.pixels[start + column as usize];
+                *target = match copy {
+                    true => source & 0x00ff_ffff,
+                    false => over(source, *target),
+                };
+            }
+        }
+    }
+
     /// Fills one pixel.
     pub fn pixel(&mut self, x: i32, y: i32, colour: u32) {
         self.row(y, x, x + 1, colour);
@@ -410,4 +436,17 @@ mod tests {
         assert_eq!(&rows[6][..12], "....##......");
         assert_eq!(rows[6], rows[7]);
     }
+}
+
+/// Premultiplied `source` over `target`: each channel `s + (d x (255 - a) + 127) / 255`.
+pub fn over(source: u32, target: u32) -> u32 {
+    let alpha = source >> 24;
+    if alpha == 0xff {
+        return source & 0x00ff_ffff;
+    }
+    [16, 8, 0].into_iter().fold(0, |mixed, shift| {
+        let top = source >> shift & 0xff;
+        let bottom = target >> shift & 0xff;
+        mixed | (top + (bottom * (255 - alpha) + 127) / 255).min(255) << shift
+    })
 }
