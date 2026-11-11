@@ -73,7 +73,8 @@ impl Desktop {
         }
         let width = AGENT_LABEL.len() as u32 * GLYPH_WIDTH as u32 + 2 * CHIP_PADDING;
         let indicator = self
-            .keyboard_layout_indicator()
+            .tray_run()
+            .or(self.keyboard_layout_indicator())
             .or(self.network_indicator());
         match (self.layout.taskbar, self.layout.top_bar) {
             (Some(bar), _) => Some(Rect::new(

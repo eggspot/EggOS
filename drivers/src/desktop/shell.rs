@@ -92,6 +92,10 @@ pub(super) enum PanelItem {
     KeyboardLayout,
     /// The network indicator, while the machine has a network adapter (D225).
     Network,
+    /// A Windows program's notification-area icon, by its place in the tray (D357).
+    Tray(u8),
+    /// The tray's overflow button, past four icons (D357).
+    TrayOverflow,
 }
 
 /// The panels' pointer state: the item under the pointer and since when, the one pressed,
@@ -382,6 +386,7 @@ impl Desktop {
             .sticky_strip()
             .or(self.updates_chip())
             .or(self.agent_chip())
+            .or(self.tray_run())
             .or(self.keyboard_layout_indicator())
             .or(self.network_indicator());
         let limit = match leftmost {
@@ -432,6 +437,7 @@ impl Desktop {
         if let Some(indicator) = self.network_indicator() {
             item(PanelItem::Network, indicator);
         }
+        self.for_each_tray_item(&mut item);
         self.for_each_taskbar_item(&mut item);
         self.for_each_dock_item(&mut item);
     }
@@ -695,6 +701,11 @@ impl Desktop {
             PanelItem::Network => {
                 self.open_settings_pane(super::SettingsPane::Network, damage, events)
             }
+            PanelItem::Tray(at) => {
+                self.tray_press(at, super::tray::TrayButton::Left, events);
+                Action::None
+            }
+            PanelItem::TrayOverflow => Action::None,
         }
     }
 
@@ -861,6 +872,7 @@ impl Desktop {
             (PanelItem::Updates, _) => Some(self.updates_tooltip()),
             (PanelItem::KeyboardLayout, _) => self.keyboard_layout_tooltip(),
             (PanelItem::Network, _) => self.network_indicator_name(),
+            (PanelItem::Tray(_) | PanelItem::TrayOverflow, _) => self.tray_name(item),
             (PanelItem::Power, Profile::Windows) => Some(POWER_TOOLTIP),
             (PanelItem::DockApp(app), _) => Some(self.catalogue.name(app)),
             (PanelItem::TaskbarWindow(slot) | PanelItem::DockWindow(slot), _) => self
@@ -1044,6 +1056,7 @@ impl Desktop {
         self.draw_sticky_chips(canvas);
         self.draw_keyboard_layout_item(canvas);
         self.draw_network_item(canvas);
+        self.draw_tray(canvas);
         self.draw_power(canvas, bar);
     }
 
@@ -1138,6 +1151,7 @@ impl Desktop {
         self.draw_sticky_chips(canvas);
         self.draw_keyboard_layout_item(canvas);
         self.draw_network_item(canvas);
+        self.draw_tray(canvas);
         self.draw_power(canvas, bar);
     }
 

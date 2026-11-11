@@ -95,6 +95,7 @@ pub mod size {
     pub const SET_TEXT_FOCUS: usize = 16;
     pub const ON_SCREEN_KEYBOARD: usize = 20;
     pub const SET_ROTATION: usize = 4;
+    pub const SET_TRAY_ICON: usize = super::set_tray_icon_request::PIXELS + 8;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -154,6 +155,7 @@ pub mod request {
     pub const SET_TEXT_FOCUS: u32 = encode(WRITE, 48, size::SET_TEXT_FOCUS);
     pub const ON_SCREEN_KEYBOARD: u32 = encode(READ | WRITE, 49, size::ON_SCREEN_KEYBOARD);
     pub const SET_ROTATION: u32 = encode(WRITE, 50, size::SET_ROTATION);
+    pub const SET_TRAY_ICON: u32 = encode(WRITE, 51, size::SET_TRAY_ICON);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -323,7 +325,32 @@ pub mod event {
     /// The desktop's palette changed to index `a` (D219), or whether motion is reduced to `b`
     /// (1 reduced, D224): repaint the whole window.
     pub const PALETTE_CHANGED: u16 = 16;
+    /// A pointer event on notification-area icon `b` of the window (D357): `a` the Windows
+    /// message it stands for (`WM_LBUTTONUP`, ...), `c` and `d` the screen point.
+    pub const TRAY: u16 = 17;
 }
+
+/// `SET_TRAY_ICON`'s argument (D357): the window, the icon's key within its client, the
+/// flags, the tip's length and address, the pixels' address.
+pub mod set_tray_icon_request {
+    pub const WINDOW: usize = 0;
+    pub const ICON: usize = 4;
+    pub const FLAGS: usize = 8;
+    pub const TIP_LENGTH: usize = 12;
+    pub const TIP: usize = 16;
+    pub const PIXELS: usize = 24;
+}
+
+/// `SET_TRAY_ICON`'s flags.
+pub mod tray_flags {
+    pub const HIDDEN: u32 = 1;
+    pub const REMOVE: u32 = 2;
+}
+
+/// The longest tip a notification-area icon carries, in bytes of UTF-8.
+pub const TRAY_TIP_CAPACITY: usize = 384;
+/// A notification-area icon's side, in pixels at scale 1.
+pub const TRAY_ICON_SIDE: usize = 16;
 
 /// The modifier bits of a `Key` record's `c`.
 pub mod modifier {
@@ -558,6 +585,17 @@ pub enum Request {
     SetRotation {
         setting: u32,
     },
+    /// A notification-area icon of `window`'s client (D357): added or changed, or removed
+    /// with [`tray_flags::REMOVE`]; its tip (UTF-8, `tip_length` bytes at `tip`) and its
+    /// 16x16 ARGB pixels at `pixels` (0: the generic tile).
+    SetTrayIcon {
+        window: u32,
+        icon: u32,
+        flags: u32,
+        tip_length: u32,
+        tip: u64,
+        pixels: u64,
+    },
     AppsChanged,
     OpenApp {
         length: u32,
@@ -735,6 +773,7 @@ impl Request {
             request::SET_TEXT_FOCUS => size::SET_TEXT_FOCUS,
             request::ON_SCREEN_KEYBOARD => size::ON_SCREEN_KEYBOARD,
             request::SET_ROTATION => size::SET_ROTATION,
+            request::SET_TRAY_ICON => size::SET_TRAY_ICON,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::GET_LAUNCH => size::GET_LAUNCH,
@@ -853,6 +892,14 @@ impl Request {
             },
             request::ON_SCREEN_KEYBOARD => Self::OnScreenKeyboard { action: at(0) },
             request::SET_ROTATION => Self::SetRotation { setting: at(0) },
+            request::SET_TRAY_ICON => Self::SetTrayIcon {
+                window: at(set_tray_icon_request::WINDOW),
+                icon: at(set_tray_icon_request::ICON),
+                flags: at(set_tray_icon_request::FLAGS),
+                tip_length: at(set_tray_icon_request::TIP_LENGTH),
+                tip: double_word(bytes, set_tray_icon_request::TIP),
+                pixels: double_word(bytes, set_tray_icon_request::PIXELS),
+            },
             request::SET_REDUCE_MOTION => Self::SetReduceMotion { reduce: at(0) },
             request::APPS_CHANGED => Self::AppsChanged,
             request::OPEN_APP => {

@@ -43,6 +43,7 @@ mod responsiveness;
 mod shell;
 pub mod shortcuts;
 mod sticky_keys;
+mod tray;
 mod updates;
 mod windows;
 
@@ -429,6 +430,7 @@ pub struct Desktop {
     panel_focus: Option<panel_focus::PanelFocus>,
     keyboard_layouts: keyboard_layout::KeyboardLayouts,
     network: network::NetworkIndicator,
+    tray: tray::Tray,
     desktops: u8,
     current_desktop: u8,
     responsiveness: responsiveness::Responsiveness,
@@ -518,6 +520,7 @@ impl Desktop {
             panel_focus: None,
             keyboard_layouts: keyboard_layout::KeyboardLayouts::default(),
             network: network::NetworkIndicator::default(),
+            tray: tray::Tray::default(),
             desktops: 1,
             current_desktop: 0,
             responsiveness: responsiveness::Responsiveness::default(),
@@ -1368,6 +1371,7 @@ impl Desktop {
     }
 
     fn destroy_slot(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
+        self.forget_tray_icons(slot, damage);
         for dialog in 0..MAX_WINDOWS {
             if self.windows[dialog].is_some_and(|window| window.parent == Some(slot as u8)) {
                 self.destroy_slot(dialog, damage, events);
@@ -2123,6 +2127,14 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) -> Action {
         let (x, y) = self.pointer;
+        if let Some(shell::PanelItem::Tray(at)) = self.panel_item_at(x, y) {
+            let button = match code {
+                button::RIGHT => tray::TrayButton::Right,
+                _ => tray::TrayButton::Middle,
+            };
+            self.tray_press(at, button, events);
+            return Action::None;
+        }
         if self.menu_open || self.over_panel(x, y) {
             return Action::None;
         }

@@ -23,6 +23,7 @@ use crate::window::{
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
+use eggos_drivers::desktop::protocol;
 use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MAX_TREE_BYTES,
@@ -37,6 +38,8 @@ use eggos_drivers::display::Damage;
 use eggos_hal::Platform;
 use eggos_hal::paging::Attributes;
 use eggos_hal::user::UserContext;
+
+const TRAY_PIXELS: usize = protocol::TRAY_ICON_SIDE * protocol::TRAY_ICON_SIDE;
 
 const READ_RECORDS: usize = 16;
 
@@ -388,6 +391,50 @@ pub fn ioctl<P: Platform>(
             if !crate::terminal::set_form_setting::<P>(setting) {
                 return Err(Errno::EINVAL);
             }
+        }
+        Request::SetTrayIcon {
+            window,
+            icon,
+            flags,
+            tip_length,
+            tip,
+            pixels,
+        } => {
+            let tip_length = usize::try_from(tip_length)
+                .ok()
+                .filter(|&length| length <= protocol::TRAY_TIP_CAPACITY)
+                .ok_or(Errno::EINVAL)?;
+            let mut text = [0u8; protocol::TRAY_TIP_CAPACITY];
+            process
+                .read_user_memory(tip, &mut text[..tip_length])
+                .map_err(|_| Errno::EFAULT)?;
+            let mut image = [0u32; TRAY_PIXELS];
+            let given = match pixels {
+                0 => None,
+                address => {
+                    let mut bytes = [0u8; TRAY_PIXELS * 4];
+                    process
+                        .read_user_memory(address, &mut bytes)
+                        .map_err(|_| Errno::EFAULT)?;
+                    for (pixel, word) in image.iter_mut().zip(bytes.chunks_exact(4)) {
+                        *pixel = u32::from_ne_bytes([word[0], word[1], word[2], word[3]]);
+                    }
+                    Some(&image)
+                }
+            };
+            let hidden = flags & protocol::tray_flags::HIDDEN != 0;
+            let remove = flags & protocol::tray_flags::REMOVE != 0;
+            on_windows::<P, _>(|desktop, _, damage, _| {
+                desktop.set_tray_icon(
+                    client,
+                    window,
+                    icon,
+                    (hidden, remove),
+                    &text[..tip_length],
+                    given,
+                    damage,
+                )
+            })?;
         }
         Request::SetRotation { setting } => match crate::terminal::set_rotation_setting::<P>(setting) {
             Ok(()) => {}
