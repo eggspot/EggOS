@@ -22665,3 +22665,13 @@ the license, by an explicit instruction recorded here.
   check (D175) has them.
 - **Not yet.** Flagging a cell, frame comparisons against host renders, the About panel step,
   and moving the job into `check`'s needs once it passes.
+
+## D390 NSImage decodes every format our `eggos-image` reads (D374's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** D374 wrote `NSImage`'s decoding against `eggos-png` alone and listed the other
+  formats as not yet, unaware that the workspace's own `eggos-image` (D231) already decodes
+  PNG, JPEG (baseline, extended, progressive), GIF, TIFF, BMP and `.ico` from untrusted bytes
+  with capped sides, pixels and buffers. `NSImage` now decodes through it, its limits set to
+  the design's 4096 a side and 16 M pixels, and the macOS layer depends on `eggos-image`
+  instead of `eggos-png`. So `imageNamed:`'s extension list finds every format it names
+  except `.icns`, which stays not yet.

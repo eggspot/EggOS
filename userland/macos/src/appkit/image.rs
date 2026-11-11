@@ -1,6 +1,6 @@
 //! NSImage and NSImageView (D374, docs/ux/macos-gui-v0.3.md section 12): an image decoded once
-//! by our own PNG reader into premultiplied pixels, found by name in the bundle's resources or
-//! read from a file or data, drawn from `drawRect:` unscaled, cropped or scaled by nearest
+//! by our own `eggos-image` (PNG, JPEG, GIF, TIFF, BMP, `.ico`; D390) into premultiplied
+//! pixels, found by name in the bundle's resources or read from a file or data, drawn from `drawRect:` unscaled, cropped or scaled by nearest
 //! neighbour with a fraction of its alpha; and a view that shows one image in its frame by
 //! `imageScaling`, `imageAlignment` and `imageFrameStyle`, keeping the scaled pixels until
 //! the image or the drawn size changes.
@@ -16,11 +16,9 @@ use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
 use crate::objc::{Runtime, message, methods, sel, send, send1};
-use alloc::boxed::Box;
 use eggos_macos_gui::geometry::{Frame, Point, Size, pixel_rect, round};
 use eggos_macos_gui::image_view::{self as geometry, faded, fits, frame_style, premultiplied};
-use eggos_png::inflate::SliceSource;
-use eggos_png::rows::{RowDecoder, RowWorkspace};
+use eggos_image::Limits;
 use eggos_toolkit::colour;
 use eggos_toolkit::geometry::Rect;
 
@@ -67,32 +65,23 @@ fn image_view(object: Id) -> &'static mut ImageViewFields {
     unsafe { &mut *object.cast::<ImageViewFields>() }
 }
 
-fn decode_png(bytes: &[u8], out: &mut Buffer<u32>) -> Option<(u32, u32)> {
-    let mut source = SliceSource::new(bytes);
-    let decoder = RowDecoder::open(&mut source).ok()?;
-    let header = decoder.header();
-    if !fits(header.width, header.height) {
+fn decode_image(bytes: &[u8], out: &mut Buffer<u32>) -> Option<(u32, u32)> {
+    let limits = Limits {
+        max_side: geometry::MAX_SIDE,
+        max_pixels: geometry::MAX_PIXELS,
+        ..Limits::default()
+    };
+    let decoded = eggos_image::decode(bytes, &limits).ok()?;
+    if !fits(decoded.width, decoded.height) || !out.reserve(decoded.pixels.len()) {
         return None;
     }
-    let count = header.width as usize * header.height as usize;
-    if !out.reserve(count) {
-        return None;
-    }
-    let mut work = Box::new(RowWorkspace::new());
-    let mut complete = true;
-    decoder
-        .read_rows(&mut work, |_, row| {
-            for &pixel in row {
-                complete &= out.push(premultiplied(pixel));
-            }
-        })
-        .ok()?;
-    (complete && out.len() == count).then_some((header.width, header.height))
+    let complete = decoded.pixels.iter().all(|&pixel| out.push(premultiplied(pixel)));
+    complete.then_some((decoded.width, decoded.height))
 }
 
 fn load(this: Id, bytes: &[u8]) -> Id {
     let fields = image(this);
-    match decode_png(bytes, &mut fields.pixels) {
+    match decode_image(bytes, &mut fields.pixels) {
         Some((width, height)) => {
             fields.width = width;
             fields.height = height;

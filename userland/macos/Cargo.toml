@@ -16,7 +16,7 @@ eggos-element-tree = { path = "../element-tree" }
 eggos-macos-gui = { path = "../macos-gui" }
 eggos-math = { path = "../../math" }
 eggos-plist = { path = "../../plist" }
-eggos-png = { path = "../../png" }
+eggos-image = { path = "../../image" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
 eggos-toolkit = { path = "../toolkit" }
