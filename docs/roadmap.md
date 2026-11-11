@@ -847,7 +847,8 @@ yet" naming what it left.
   first slice, button types, cursors and the pasteboard (D233); part 16's first slice,
   exceptions on macOS (D234); part 20, the component manager's first part (D235).
 - **next** (carried to the next plan, numbered from the next free decision when built):
-  - part 17, Minesweeper (Swift on AppKit, D180's "Not yet");
+  - part 17, Minesweeper (Swift on AppKit, D180's "Not yet"; `NSUserDefaults` and property
+    lists written as XML, code written, unbuilt, D381);
   - part 18, Files and the Text Editor grow up and one file picker `/bin/pick` (its design is
     done; the unbuilt picker is on the branch `wip/eggos-picker`);
   - part 19, drag and drop between windows;

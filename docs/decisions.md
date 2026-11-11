@@ -22487,3 +22487,24 @@ the license, by an explicit instruction recorded here.
   (`__dynamic_cast`), the rest of libc++ (`std::runtime_error` and the other standard
   exceptions, strings, streams), foreign-exception interop with Swift, a C++ test program in
   CI's macOS programs, and UDCalc with its Sparkle framework.
+
+## D381 Foundation's NSUserDefaults, and property-list objects written as XML (batch part 17, D180's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Foundation's documented behaviour)
+
+- **Decision.**
+  - **Property lists** (`foundation/property_list.rs`): a parsed property list (XML or
+    binary, our `eggos-plist`) is made into Foundation's immutable strings, numbers,
+    booleans (`kCFBooleanTrue`/`False`), dates, data, arrays and dictionaries, 64 levels deep
+    at most; those objects are written back as an XML property list (Apple's header and
+    DTD, `&`, `<` and `>` escaped, data in base64, dates as UTC `YYYY-MM-DDTHH:MM:SSZ`,
+    reals as their exact shortest decimal); anything else makes the write fail.
+  - **NSUserDefaults** keeps the app's settings in
+    `~/Library/Preferences/<CFBundleIdentifier>.plist` (the program's name without a bundle
+    identifier), read once when `standardUserDefaults` is first asked for and written back,
+    folder made, atomically, after every change; `registerDefaults:` values answer for keys
+    never set and are never written. `objectForKey:`, the typed getters (`integerForKey:`,
+    `boolForKey:`, `doubleForKey:`, `floatForKey:` reading numbers or strings;
+    `stringForKey:`, `arrayForKey:`, `dictionaryForKey:`, `dataForKey:` answering nil for
+    another type), the setters, `removeObjectForKey:`, `synchronize`,
+    `dictionaryRepresentation`; `init` answers the standard defaults.
+- **Not yet.** Suites (`initWithSuiteName:`), the global and argument domains, key-value
+    observing of defaults, `NSUserDefaultsDidChangeNotification`, `URLForKey:`.

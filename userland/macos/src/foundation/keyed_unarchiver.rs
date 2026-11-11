@@ -92,7 +92,7 @@ fn value_for<'b>(this: Id, document: &Document<'b>, key: Id) -> Option<Object<'b
     current_object(this, document)?.get(&bytes[..length])
 }
 
-fn string_of(object: &Object<'_>) -> Id {
+pub(super) fn string_of(object: &Object<'_>) -> Id {
     let Some(text) = object.text() else {
         return core::ptr::null_mut();
     };
@@ -114,7 +114,7 @@ fn string_of(object: &Object<'_>) -> Id {
     }
 }
 
-fn data_of(object: &Object<'_>) -> Id {
+pub(super) fn data_of(object: &Object<'_>) -> Id {
     let Some(data) = object.data() else {
         return core::ptr::null_mut();
     };
