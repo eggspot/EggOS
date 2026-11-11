@@ -4,6 +4,7 @@
 //! default, Esc for the button titled `Cancel` (none: Esc does nothing).
 
 use eggos_toolkit::canvas::Canvas;
+use eggos_toolkit::elements::{Action, Bounds, Element, Outcome, Role, TreeWriter, flags};
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::key;
 use eggos_toolkit::panel::{self, Panel, PanelResponse};
@@ -105,11 +106,86 @@ impl Alert {
         FIRST_BUTTON_RETURN + index as isize
     }
 
+    fn first_button_element(&self) -> u32 {
+        2 + self.lines as u32
+    }
+
+    /// Writes its element tree (D377, section 16): the window named `title`, the message and
+    /// informative lines as labels, then the buttons left to right; false when the tree is
+    /// full.
+    pub fn describe(&self, title: &str, focused: bool, tree: &mut TreeWriter<'_>) -> bool {
+        let area = self.area();
+        let root = Element::new(1, 0, Role::Window, bounds(area)).named(title.as_bytes());
+        if !tree.push(&root) {
+            return false;
+        }
+        for line in 0..self.lines {
+            let text = self.panel.line(line);
+            let element = Element::new(
+                2 + line as u32,
+                1,
+                Role::Label,
+                bounds(self.panel.line_rect(area, line)),
+            )
+            .named(text.as_bytes());
+            if !tree.push(&element) {
+                return false;
+            }
+        }
+        for shown in 0..self.panel.button_count() {
+            let mut state = flags::FOCUSABLE;
+            if focused && self.panel.focused() == shown {
+                state |= flags::FOCUSED;
+            }
+            if self.panel.primary() == Some(shown) {
+                state |= flags::DEFAULT;
+            }
+            let element = Element::new(
+                self.first_button_element() + shown as u32,
+                1,
+                Role::Button,
+                bounds(self.panel.button_rect(area, shown)),
+            )
+            .named(self.panel.button_title(shown).as_bytes())
+            .flagged(state);
+            if !tree.push(&element) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// An agent's `action` on `element`: what it did, and the button chosen by the order
+    /// added when it pressed one.
+    pub fn act(&mut self, element: u32, action: Action) -> (Outcome, Option<usize>) {
+        let first = self.first_button_element();
+        let last = first + self.panel.button_count() as u32;
+        if element == 0 || element >= last {
+            return (Outcome::NoSuchElement, None);
+        }
+        if element < first {
+            return (Outcome::NotSupported, None);
+        }
+        let shown = (element - first) as usize;
+        match action {
+            Action::Invoke => (Outcome::Done, Some(self.buttons - 1 - shown)),
+            Action::Focus => {
+                self.panel.set_focused(shown);
+                (Outcome::Done, None)
+            }
+            Action::SetText | Action::Select => (Outcome::NotSupported, None),
+        }
+    }
+
     /// Draws it over the whole content, its focused button ringed when the dialog has the
     /// keyboard.
     pub fn paint(&self, canvas: &mut Canvas<'_>, focused: bool) {
         self.panel.paint(canvas, self.area(), focused);
     }
+}
+
+fn bounds(rect: Rect) -> Bounds {
+    Bounds::new(rect.x, rect.y, rect.width, rect.height)
 }
 
 #[cfg(test)]
@@ -143,5 +219,29 @@ mod tests {
         let mut canvas = Canvas::new(&mut pixels, 400, 92, 1).unwrap();
         alert.paint(&mut canvas, true);
         assert_eq!(pixels[10 * 400 + 200], eggos_toolkit::colour::MENU);
+    }
+
+    #[test]
+    fn invoking_a_button_answers_its_order_added() {
+        let mut alert = Alert::new("mac-paint", "Info.", &["OK", "Cancel"]);
+        assert_eq!(alert.act(4, Action::Invoke), (Outcome::Done, Some(1)));
+        assert_eq!(alert.act(5, Action::Invoke), (Outcome::Done, Some(0)));
+        assert_eq!(alert.act(5, Action::SetText), (Outcome::NotSupported, None));
+        assert_eq!(alert.act(2, Action::Invoke), (Outcome::NotSupported, None));
+        assert_eq!(alert.act(6, Action::Invoke), (Outcome::NoSuchElement, None));
+    }
+
+    #[test]
+    fn focus_moves_the_ring_and_invoke_still_answers_the_button() {
+        let mut alert = Alert::new("mac-paint", "Info.", &["OK", "Cancel"]);
+        assert_eq!(alert.act(4, Action::Focus), (Outcome::Done, None));
+        assert_eq!(alert.panel.focused(), 0);
+        assert_eq!(alert.act(5, Action::Invoke), (Outcome::Done, Some(0)));
+    }
+
+    #[test]
+    fn a_one_line_alert_s_button_is_element_three() {
+        let mut alert = Alert::new("Saved.", "", &[]);
+        assert_eq!(alert.act(3, Action::Invoke), (Outcome::Done, Some(0)));
     }
 }

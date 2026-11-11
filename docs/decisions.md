@@ -22402,3 +22402,16 @@ the license, by an explicit instruction recorded here.
     left it, its credits' scroll kept; when the content changed it is destroyed and made
     again at its place, as before.
 - **Not yet.** The About panel as an `NSPanel` in `NSApp.windows` (section 15.4).
+
+## D377 NSAlert's element tree and agents' actions on it (batch part 15's rest, D233's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/macos-gui-v0.3.md section 16) and the code-only session (engineering)
+
+- **Decision.** While `runModal` runs, the dialog window answers `wm show` itself: element 1
+  the window named by the app's name, then the message and informative lines as labels at
+  their drawn cells (the informative one absent when empty), then the buttons left to right
+  at their drawn rects, each `focusable`, `focused` on the ringed one while the dialog has
+  the keyboard, `default` on the default button. `invoke` on a button answers `runModal`
+  exactly as a click does and closes the dialog; `focus` moves the ring; `select` and
+  `set-text`, and every action on the window or a label, are `NotSupported`; an id past the
+  buttons is `NoSuchElement`. The parent windows still answer their trees and refuse actions
+  (`Disabled`), as before. The toolkit's panel gains the accessors this needs (button count,
+  titles, focus, default, line cells).

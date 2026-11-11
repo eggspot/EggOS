@@ -104,6 +104,47 @@ impl Panel {
         }
     }
 
+    /// How many buttons it has, left to right.
+    pub fn button_count(&self) -> usize {
+        self.button_count
+    }
+
+    /// Button `index`'s title, left to right.
+    pub fn button_title(&self, index: usize) -> &str {
+        self.buttons[..self.button_count]
+            .get(index)
+            .map_or("", |title| title.as_str())
+    }
+
+    /// The button with the focus ring.
+    pub fn focused(&self) -> usize {
+        self.focused
+    }
+
+    /// Moves the focus ring to button `index`, when there is one.
+    pub fn set_focused(&mut self, index: usize) {
+        if index < self.button_count {
+            self.focused = index;
+        }
+    }
+
+    /// The default button (Enter), if any.
+    pub fn primary(&self) -> Option<usize> {
+        self.primary
+    }
+
+    /// Where line `index`'s cell is when the panel is centred in `area`.
+    pub fn line_rect(&self, area: Rect, index: usize) -> Rect {
+        let rect = self.rect(area);
+        let text = self.line(index);
+        Rect::new(
+            rect.x + PADDING,
+            rect.y + PADDING + LINE_PITCH * index as i32,
+            crate::text::width(text),
+            16,
+        )
+    }
+
     /// Where the panel is when centred in `area`.
     pub fn rect(&self, area: Rect) -> Rect {
         let height = self.height();

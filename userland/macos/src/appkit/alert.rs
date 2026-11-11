@@ -13,7 +13,7 @@ use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::root::NSOBJECT;
 use crate::objc::{Runtime, autorelease, methods, sel, send, send1, send2};
-use eggos_element_tree::{Query, tree_answer};
+use eggos_element_tree::{MAX_TREE_BYTES, Outcome, Query, TreeWriter, query_kind, tree_answer};
 use eggos_macos_gui::alert::{Alert, FIRST_BUTTON_RETURN, MAX_BUTTONS};
 use eggos_macos_gui::geometry::Frame;
 use eggos_macos_gui::menu::Chosen;
@@ -131,13 +131,42 @@ struct Modal {
 }
 
 impl Modal {
+    fn answer(&mut self, query: &Query) {
+        if query.kind == query_kind::TREE {
+            let block = crate::libsystem::heap::allocate(MAX_TREE_BYTES, false);
+            if block.is_null() {
+                server::answer_query(query.serial, tree_answer::PIXELS_ONLY, &[]);
+                return;
+            }
+            // SAFETY: a new block of `MAX_TREE_BYTES` bytes, this function's until it is
+            // freed below.
+            let bytes = unsafe { core::slice::from_raw_parts_mut(block, MAX_TREE_BYTES) };
+            let mut tree = TreeWriter::new(&mut *bytes);
+            let _ = self.alert.describe(super::app_name(), self.focused, &mut tree);
+            let length = tree.bytes().len();
+            server::answer_query(query.serial, tree_answer::TREE, &bytes[..length]);
+            crate::libsystem::heap::release(block);
+            return;
+        }
+        let (outcome, chosen) = match query.action() {
+            Some(action) => self.alert.act(query.element, action),
+            None => (Outcome::NotSupported, None),
+        };
+        server::answer_query(query.serial, outcome.value(), &[]);
+        match chosen {
+            Some(chosen) => self.chosen = Some(chosen),
+            None if outcome == Outcome::Done => paint(&self.alert, &self.buffer, self.focused),
+            None => {}
+        }
+    }
+
     fn handle(&mut self, record: &[u8; RECORD_SIZE]) {
         if self.chosen.is_some() {
             return;
         }
         if let Some(query) = Query::from_record(record) {
             match query.window == self.buffer.window {
-                true => server::answer_query(query.serial, tree_answer::PIXELS_ONLY, &[]),
+                true => self.answer(&query),
                 false => elements::answer_while_modal(&query),
             }
             return;
