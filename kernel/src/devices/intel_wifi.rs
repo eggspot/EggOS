@@ -100,6 +100,7 @@ struct Connection {
     link: Link<DmaRegion>,
     keys: Option<Keys>,
     management_protected: bool,
+    supplicant: Option<Supplicant>,
 }
 
 /// The station's adapter as the network stack sees it (D279, D284): frames go through queues
@@ -160,9 +161,40 @@ struct Joined {
     last_group: u64,
     management_protected: bool,
     last_management: u64,
+    supplicant: Option<Supplicant>,
+}
+
+/// What a received data frame is to the station.
+enum Received {
+    /// An Ethernet frame for the network stack.
+    Ethernet(Vec<u8>),
+    /// An EAPOL frame for the supplicant: the group key handshake (D294).
+    Eapol(Vec<u8>),
 }
 
 impl Joined {
+    /// Answers the access point's group key message `eapol` and starts using the new group key
+    /// (D294); a message that does not check out is dropped.
+    fn rekey(&mut self, eapol: &[u8]) -> Option<Vec<u8>> {
+        let answer = self.supplicant.as_mut()?.receive_group(eapol).ok()?;
+        let fresh = answer.keys?;
+        let keys = self.keys.as_mut()?;
+        keys.gtk = fresh.gtk;
+        keys.gtk_bytes = fresh.gtk_bytes;
+        keys.gtk_index = fresh.gtk_index;
+        if fresh.igtk.is_some() {
+            keys.igtk = fresh.igtk;
+        }
+        self.last_group = 0;
+        let (own, bssid) = (self.link.address(), self.link.target().bssid);
+        let mut ethernet = Vec::with_capacity(ETHERNET_HEADER_BYTES + answer.length);
+        ethernet.extend_from_slice(&bssid);
+        ethernet.extend_from_slice(&own);
+        ethernet.extend_from_slice(&client::ETHERTYPE_EAPOL.to_be_bytes());
+        ethernet.extend_from_slice(&answer.frame[..answer.length]);
+        self.wire_frame(&ethernet).ok()
+    }
+
     fn ended(&mut self, frame: &[u8]) -> bool {
         let (own, bssid) = (self.link.address(), self.link.target().bssid);
         if !self.management_protected {
@@ -185,7 +217,7 @@ impl Joined {
         true
     }
 
-    fn ethernet_of(&mut self, frame: &[u8]) -> Option<Vec<u8>> {
+    fn received(&mut self, frame: &[u8]) -> Option<Received> {
         let header = client::data_header_bytes(frame)?;
         let bssid = self.link.target().bssid;
         let mut body = alloc::vec![0u8; frame.len()];
@@ -215,14 +247,14 @@ impl Joined {
         };
         let (destination, source, ethertype, payload) = client::ethernet_from(frame, body, bssid)?;
         if ethertype == client::ETHERTYPE_EAPOL {
-            return None;
+            return Some(Received::Eapol(payload));
         }
         let mut ethernet = Vec::with_capacity(ETHERNET_HEADER_BYTES + payload.len());
         ethernet.extend_from_slice(&destination);
         ethernet.extend_from_slice(&source);
         ethernet.extend_from_slice(&ethertype.to_be_bytes());
         ethernet.extend_from_slice(&payload);
-        Some(ethernet)
+        Some(Received::Ethernet(ethernet))
     }
 
     fn wire_frame(&mut self, frame: &[u8]) -> Result<Vec<u8>, &'static str> {
@@ -366,7 +398,7 @@ fn connect<P: Platform>(
     let joining_failed = |error: station::JoinError| Failure::adapter(error.description());
     let mut link = station::join(transport, firmware, adapter, own, target, &mut Regions, &mut Pauses::<P>::within(INIT_TIMEOUT_MS))
         .map_err(joining_failed)?;
-    let mut attempt = || -> Result<Option<Keys>, Failure> {
+    let mut attempt = || -> Result<(Option<Keys>, Option<Supplicant>), Failure> {
         let mut sae_pmk = None;
         if akm == Some(Akm::Sae) {
             let mut random = |out: &mut [u8]| crate::random::fill::<P>(out);
@@ -421,7 +453,7 @@ fn connect<P: Platform>(
         }
         station::associated(transport, &link, association, &mut Pauses::<P>::within(INIT_TIMEOUT_MS)).map_err(joining_failed)?;
         let Some(akm) = akm else {
-            return Ok(None);
+            return Ok((None, None));
         };
         let pmk = match sae_pmk {
             Some(pmk) => pmk,
@@ -444,15 +476,16 @@ fn connect<P: Platform>(
             link.send(transport, &frame).map_err(joining_failed)?;
             answered = true;
             if let Some(keys) = reply.keys {
-                return Ok(Some(keys));
+                return Ok((Some(keys), Some(supplicant)));
             }
         }
     };
     match attempt() {
-        Ok(keys) => Ok(Connection {
+        Ok((keys, supplicant)) => Ok(Connection {
             link,
             keys,
             management_protected: akm == Some(Akm::Sae),
+            supplicant,
         }),
         Err(failure) => {
             let _ = link.send(transport, &client::deauthentication(own, bssid, LEAVING));
@@ -724,6 +757,7 @@ impl Station {
             last_group: 0,
             management_protected: joined.management_protected,
             last_management: 0,
+            supplicant: joined.supplicant,
         });
         if !self.attached {
             let device = WifiDevice::<P> {
@@ -766,12 +800,20 @@ impl Station {
             if joined.ended(&heard.frame) {
                 return Err(DROPPED);
             }
-            if let Some(ethernet) = joined.ethernet_of(&heard.frame) {
-                let mut traffic = TRAFFIC.lock();
-                if traffic.incoming.len() < MAX_PENDING_FRAMES {
-                    traffic.incoming.push_back(ethernet);
-                    arrived = true;
+            match joined.received(&heard.frame) {
+                Some(Received::Ethernet(ethernet)) => {
+                    let mut traffic = TRAFFIC.lock();
+                    if traffic.incoming.len() < MAX_PENDING_FRAMES {
+                        traffic.incoming.push_back(ethernet);
+                        arrived = true;
+                    }
                 }
+                Some(Received::Eapol(eapol)) => {
+                    if let Some(answer) = joined.rekey(&eapol) {
+                        let _ = joined.link.send(&self.transport, &answer);
+                    }
+                }
+                None => {}
             }
         }
         if arrived {

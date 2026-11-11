@@ -419,6 +419,47 @@ pub fn integrity_group_key(data: &[u8]) -> Option<([u8; IGTK_BYTES], u16)> {
     None
 }
 
+impl Supplicant {
+    /// Answers message 1 of the group key handshake an access point sends when it changes the
+    /// group key (IEEE 802.11-2020, 12.7.7; D294), after the four-way handshake: checks its MIC
+    /// with this handshake's KCK and its replay counter, unwraps the new GTK (and IGTK) with the
+    /// KEK, and answers message 2. The new keys come back in the answer for the adapter to use.
+    pub fn receive_group(&mut self, frame: &[u8]) -> Result<Answer, HandshakeError> {
+        let key = key_frame(frame).ok_or(HandshakeError::Unexpected)?;
+        let wanted = KEY_INFO_ACK | KEY_INFO_MIC | KEY_INFO_SECURE | KEY_INFO_ENCRYPTED_DATA;
+        if key.info & KEY_INFO_PAIRWISE != 0 || key.info & wanted != wanted {
+            return Err(HandshakeError::Unexpected);
+        }
+        let ptk = self.ptk.clone().ok_or(HandshakeError::Unexpected)?;
+        if !equal(&mic_for(self.akm, &ptk.kck, frame), &key.mic) {
+            return Err(HandshakeError::BadMic);
+        }
+        self.check_replay(key.replay_counter)?;
+        let kek = Aes::new(&ptk.kek).map_err(|_| HandshakeError::BadKeyData)?;
+        let mut data = [0u8; 248];
+        let unwrapped = key.data.len().checked_sub(8).filter(|&length| length <= data.len()).ok_or(HandshakeError::BadKeyData)?;
+        key_wrap::unwrap(&kek, key.data, &mut data[..unwrapped]).map_err(|_| HandshakeError::BadKeyData)?;
+        let (gtk_index, gtk) = group_key(&data[..unwrapped]).ok_or(HandshakeError::BadKeyData)?;
+        let mut keys = Keys {
+            tk: ptk.tk,
+            gtk: [0; MAX_GTK_BYTES],
+            gtk_bytes: gtk.len(),
+            gtk_index,
+            igtk: integrity_group_key(&data[..unwrapped]),
+        };
+        keys.gtk[..gtk.len()].copy_from_slice(gtk);
+        let mut answer = Answer {
+            frame: [0; MAX_KEY_FRAME_BYTES],
+            length: 0,
+            keys: None,
+        };
+        let info = self.akm.key_info_version() | KEY_INFO_MIC | KEY_INFO_SECURE;
+        answer.length = write_key_frame_for(self.akm, &mut answer.frame, info, key.replay_counter, &[0; NONCE_BYTES], &[], Some(&ptk.kck));
+        answer.keys = Some(keys);
+        Ok(answer)
+    }
+}
+
 /// The group key KDE in unwrapped key data: its key index and the key.
 pub fn group_key(data: &[u8]) -> Option<(u8, &[u8])> {
     let mut rest = data;

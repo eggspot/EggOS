@@ -20185,3 +20185,16 @@ the license, by an explicit instruction recorded here.
   binary deltas inside a file (whole changed files are fetched); verifying a release store's
   signature beyond its digests (D257's limit).
 
+## D294 Wi-Fi group-key rekeying: the group key handshake answered while joined (D279's follow-up; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from IEEE 802.11-2020 12.7.7)
+
+- **Decision.** Access points change the group key on a timer (often hourly) and when a station
+  leaves; a station that misses it stops hearing broadcasts and multicasts, ARP and DHCP
+  renewals among them. The station keeps its four-way handshake's supplicant while joined; an
+  EAPOL frame from the access point (decrypted with the pairwise key, as every frame then is) goes
+  to `Supplicant::receive_group`, which checks the MIC with the handshake's KCK and the replay
+  counter, unwraps the new GTK (and IGTK on WPA3) with the KEK and writes message 2. The answer
+  goes back protected like any data frame, the new group key replaces the old one and its replay
+  counter starts again. A message that does not check out is dropped.
+- **Not yet.** Building and running; keeping the old group key for frames still in flight under
+  it (one key index at a time); pairwise rekeying (a new four-way handshake while joined).
+
