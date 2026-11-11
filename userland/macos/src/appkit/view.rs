@@ -61,8 +61,21 @@ pub fn origin_in_window(view: Id) -> Point {
         origin.x += fields.frame.x;
         origin.y += fields.frame.y;
         current = fields.superview;
+        let scrolled = super::scroll_view::bounds_origin(current);
+        origin.x -= scrolled.x;
+        origin.y -= scrolled.y;
     }
     origin
+}
+
+/// `point` in `view`'s coordinates as a point in `other`'s (the window's for nil).
+pub fn convert_to(view: Id, point: Point, other: Id) -> Point {
+    let from = origin_in_window(view);
+    let to = match other.is_null() {
+        true => Point::default(),
+        false => origin_in_window(other),
+    };
+    Point::new(point.x + from.x - to.x, point.y + from.y - to.y)
 }
 
 fn assign_window(view: Id, window: Id) {
@@ -347,6 +360,20 @@ extern "C" fn hit_test_method(this: Id, _: Sel, point: Point) -> Id {
 
 extern "C" fn ignore_word(_: Id, _: Sel, _: usize) {}
 
+extern "C" fn to_superview_scroll_wheel(this: Id, _: Sel, event: Id) {
+    let superview = fields(this).superview;
+    if !superview.is_null() {
+        send1(superview, sel!("scrollWheel:"), event as usize);
+    }
+}
+
+extern "C" fn to_superview_key_down(this: Id, _: Sel, event: Id) {
+    let superview = fields(this).superview;
+    if !superview.is_null() {
+        send1(superview, sel!("keyDown:"), event as usize);
+    }
+}
+
 /// The deepest shown view of the tree at `view` whose frame holds `point`, in `view`'s
 /// superview's coordinates; later subviews are on top.
 pub fn hit_test(view: Id, point: Point) -> Option<Id> {
@@ -354,7 +381,11 @@ pub fn hit_test(view: Id, point: Point) -> Option<Id> {
     if fields.hidden || !fields.frame.contains(point) {
         return None;
     }
-    let inner = Point::new(point.x - fields.frame.x, point.y - fields.frame.y);
+    let scrolled = super::scroll_view::bounds_origin(view);
+    let inner = Point::new(
+        point.x - fields.frame.x + scrolled.x,
+        point.y - fields.frame.y + scrolled.y,
+    );
     for &child in fields.subviews.as_slice().iter().rev() {
         if let Some(found) = hit_test(child, inner) {
             return Some(found);
@@ -404,9 +435,11 @@ pub fn draw_tree(view: Id, origin: Point, clip: Rect, buffer: server::Buffer) {
     }
     drawing::begin(buffer, Point::new(frame.x, frame.y), area);
     send_frame(view, sel!("drawRect:"), fields(view).frame.at_origin());
+    let scrolled = super::scroll_view::bounds_origin(view);
+    let inner = Point::new(frame.x - scrolled.x, frame.y - scrolled.y);
     let mut index = 0;
     while let Some(&child) = fields(view).subviews.as_slice().get(index) {
-        draw_tree(child, Point::new(frame.x, frame.y), area, buffer);
+        draw_tree(child, inner, area, buffer);
         index += 1;
     }
 }
@@ -469,6 +502,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "setTranslatesAutoresizingMaskIntoConstraints:" => ignore_word,
         "viewDidMoveToWindow" => nothing,
         "viewWillMoveToWindow:" => nothing_with,
+        "scrollWheel:" => to_superview_scroll_wheel,
+        "keyDown:" => to_superview_key_down,
     ];
     super::define(
         runtime,

@@ -22254,3 +22254,36 @@ the license, by an explicit instruction recorded here.
     `TPM_RETURNCMD`, as before.
 - **Not yet.** Submenus and owner-drawn items in shell menus, `TPM_*` alignment (the anchor
   is the icon), keyboard access to tray icons (`NIN_KEYSELECT`, `NIM_SETFOCUS`).
+
+## D372 AppKit's NSScrollView, NSClipView and NSScroller (batch part 15's rest, D233's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/macos-gui-v0.3.md section 10) and the code-only session (engineering)
+
+- **Decision.**
+  - **Geometry** lives in `eggos-macos-gui`'s `scroll_view` (host-tested): the border's four
+    lines, the clip view and `contentSize` with the scrollers shown (8 pixels, autohiding when
+    asked), the thumb (`track * view / document`, at least 24), the offset's clamp, the wheel
+    (72 per notch), paging (`view - 24`), a track press, a thumb drag and the least scroll that
+    reveals a rect. Offsets count from the document's top, so every document shows its top
+    first; `bounds_y` turns one into AppKit's bounds origin (from the bottom for a document
+    that is not flipped).
+  - **The classes.** `NSScrollView` makes its `NSClipView` as its one subview; the clip view
+    holds the document view as its one subview and keeps the offset. The scroll view lays the
+    clip view out (`tile`) whenever its scrollers, border or document change and before it
+    draws, and draws the border (`button.border`), the tracks (`progress.track`), the thumbs
+    (`bar.pressed`, `button.inactive` while dragged, r4) and the corner. The clip view fills
+    its background (`field.bg` or its `backgroundColor`) when it draws one.
+  - **The view tree.** A clip view's bounds origin shifts its subviews in `draw_tree`,
+    `hit_test` and `origin_in_window` (so `convertPoint:` and `setNeedsDisplay:` follow the
+    scroll); the clip view's frame clips the document's drawing and hit-testing.
+  - **Input.** NSView's `scrollWheel:` and `keyDown:` now pass the event to the superview,
+    as AppKit's responder chain does, so the innermost scroll view that can scroll takes the
+    wheel (Shift or the sideways wheel scroll across), and Page Up, Page Down, Home and End
+    reach the scroll view when its document leaves them unhandled. Presses on a scroller page
+    or grab the thumb; drags follow the grab.
+  - **API.** `contentView`, `documentView`, the scroller, border, background and autohide
+    properties, `contentSize`, `documentVisibleRect`, `tile`, `reflectScrolledClipView:`,
+    `scrollToPoint:`, `scrollPoint:`, `scrollRectToVisible:`, `enclosingScrollView`, and
+    `NSScroller`'s `floatValue`, `knobProportion` and `scrollerWidth`; rulers, magnification,
+    elasticity and knob styles are accepted and ignored.
+- **Not yet.** Hover colours on the scroller, the element tree for agents (section 17), a
+    table's fixed header beside the scroller (section 11), the render-hash tests of section
+    10.4 that need the runtime, re-tiling on `setFrame:` before the next draw.

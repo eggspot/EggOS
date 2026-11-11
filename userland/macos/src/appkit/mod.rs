@@ -7,7 +7,8 @@
 //! `NSMenu` is shown by the server in the top bar, the standard About panel is the layer's own
 //! window, and every window answers agents with its views as an element tree (D175); compiled
 //! nibs are loaded into these classes (D232). `NSCursor` chooses the server's pointer shapes and
-//! `NSPasteboard` reads and writes the clipboard every app shares (D233).
+//! `NSPasteboard` reads and writes the clipboard every app shares (D233). `NSScrollView` shows part of
+//! a document view through its clip view (D372).
 
 mod about;
 mod alert;
@@ -20,6 +21,7 @@ mod event;
 mod menu;
 mod nib;
 mod pasteboard;
+mod scroll_view;
 mod server;
 mod view;
 mod window;
@@ -55,6 +57,9 @@ class_pairs! {
     NSMENUITEM, NSMENUITEM_META;
     NSCURSOR, NSCURSOR_META;
     NSPASTEBOARD, NSPASTEBOARD_META;
+    NSSCROLLVIEW, NSSCROLLVIEW_META;
+    NSCLIPVIEW, NSCLIPVIEW_META;
+    NSSCROLLER, NSSCROLLER_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -165,6 +170,8 @@ pub fn set_up() -> bool {
             && cursor::define(runtime)
             && cursor::extend_views(runtime)
             && pasteboard::define(runtime)
+            && scroll_view::define(runtime)
+            && scroll_view::extend_views(runtime)
     });
     defined && drawing::set_up()
 }
@@ -205,6 +212,12 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSCursor" => class(&NSCURSOR_META),
         b"_OBJC_CLASS_$_NSPasteboard" => class(&NSPASTEBOARD),
         b"_OBJC_METACLASS_$_NSPasteboard" => class(&NSPASTEBOARD_META),
+        b"_OBJC_CLASS_$_NSScrollView" => class(&NSSCROLLVIEW),
+        b"_OBJC_METACLASS_$_NSScrollView" => class(&NSSCROLLVIEW_META),
+        b"_OBJC_CLASS_$_NSClipView" => class(&NSCLIPVIEW),
+        b"_OBJC_METACLASS_$_NSClipView" => class(&NSCLIPVIEW_META),
+        b"_OBJC_CLASS_$_NSScroller" => class(&NSSCROLLER),
+        b"_OBJC_METACLASS_$_NSScroller" => class(&NSSCROLLER_META),
         _ => application::resolve(name).or_else(|| drawing::resolve(name)),
     }
 }
