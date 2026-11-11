@@ -28,6 +28,8 @@ pub mod machine {
     pub const MIPS: u16 = 8;
     /// s390x (D323).
     pub const S390: u16 = 22;
+    /// SPARC V9, 64-bit (D327).
+    pub const SPARCV9: u16 = 43;
 
     /// The machine the kernel runs on: the only one whose programs it runs natively (D17).
     pub const NATIVE: u16 = crate::linux::abi::ELF_MACHINE;

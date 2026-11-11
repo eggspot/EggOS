@@ -23,6 +23,8 @@ mod mips_abi;
 pub mod process;
 pub mod relocation;
 pub mod signal;
+#[cfg(target_arch = "sparc64")]
+mod sparc_abi;
 pub mod startup;
 pub mod syscall;
 

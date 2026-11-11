@@ -6,6 +6,8 @@
 //! before it is dispatched and [`result_out`] the few results that carry flags back; the HAL
 //! gives an error its MIPS number (`a3` set, the number positive in `v0`).
 
+use super::translate::{FlagPairs, flags_to_architecture as flags_to_mips, flags_to_generic, value_to_generic};
+
 /// The calls n64 keeps beyond the generic table: the ones older than the `*at` family,
 /// `renameat`, and `set_thread_area`, which sets the thread pointer (`UserLocal`).
 pub mod wants {
@@ -334,8 +336,6 @@ pub mod mmap {
     }
 }
 
-/// The pairs (MIPS, generic) of one kind of flag word; bits in neither pass unchanged.
-type FlagPairs = &'static [(u64, u64)];
 
 const OPEN_FLAGS: FlagPairs = &[
     (0x0008, 0o2000),
@@ -396,25 +396,6 @@ const FCNTL_COMMANDS: FlagPairs = &[(14, 5), (24, 8), (23, 9)];
 const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
 
-fn flags_to_generic(value: u64, pairs: FlagPairs) -> u64 {
-    let known = pairs.iter().fold(0, |known, &(mips, _)| known | mips);
-    pairs
-        .iter()
-        .filter(|&&(mips, _)| value & mips == mips)
-        .fold(value & !known, |out, &(_, generic)| out | generic)
-}
-
-fn flags_to_mips(value: u64, pairs: FlagPairs) -> u64 {
-    let known = pairs.iter().fold(0, |known, &(_, generic)| known | generic);
-    pairs
-        .iter()
-        .filter(|&&(_, generic)| value & generic == generic)
-        .fold(value & !known, |out, &(mips, _)| out | mips)
-}
-
-fn value_to_generic(value: u64, pairs: FlagPairs) -> u64 {
-    pairs.iter().find(|&&(mips, _)| mips == value).map_or(value, |&(_, generic)| generic)
-}
 
 fn nonblock(value: u64) -> u64 {
     match value & NONBLOCK_MIPS {

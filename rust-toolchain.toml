@@ -8,6 +8,8 @@ targets = [
     "loongarch64-unknown-none-softfloat",
     "powerpc64le-unknown-linux-gnu",
     "s390x-unknown-linux-gnu",
+    "sparcv9-sun-solaris",
+    "sparc64-unknown-linux-gnu",
     "x86_64-unknown-uefi",
     "aarch64-unknown-uefi",
     "aarch64-unknown-linux-musl",

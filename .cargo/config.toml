@@ -41,6 +41,17 @@ rustflags = [
     "--cfg", "eggos_kernel",
 ]
 
+[target.sparcv9-sun-solaris]
+linker = "rust-lld"
+rustflags = [
+    "-C", "linker-flavor=ld.lld",
+    "-C", "panic=abort",
+    "-C", "relocation-model=static",
+    "-C", "code-model=medium",
+    "-C", "target-feature=+soft-float",
+    "--cfg", "eggos_kernel",
+]
+
 [target.x86_64-unknown-none]
 rustflags = ["-C", "relocation-model=static", "--cfg", "eggos_kernel"]
 
@@ -75,5 +86,9 @@ linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]
 
 [target.s390x-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]
+
+[target.sparc64-unknown-linux-gnu]
 linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]

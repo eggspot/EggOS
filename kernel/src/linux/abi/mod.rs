@@ -35,6 +35,14 @@ mod s390x;
 #[cfg(target_arch = "s390x")]
 pub use s390x::*;
 
+#[cfg(target_arch = "sparc64")]
+mod sparc64;
+#[cfg(target_arch = "sparc64")]
+pub use sparc64::*;
+
+#[cfg(any(target_arch = "mips64", target_arch = "sparc64"))]
+mod translate;
+
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
 #[cfg(target_arch = "riscv64")]
@@ -52,13 +60,14 @@ pub use x86_64::*;
     target_arch = "powerpc64",
     target_arch = "riscv64",
     target_arch = "s390x",
+    target_arch = "sparc64",
     target_arch = "x86_64"
 )))]
 compile_error!("EggOS has no Linux ABI for this architecture: add kernel/src/linux/abi/<arch>.rs");
 
 /// The signal numbers every architecture but MIPS shares (`asm-generic/signal.h`, x86's and
-/// PowerPC's too); MIPS has its own (D315).
-#[cfg(not(target_arch = "mips64"))]
+/// PowerPC's too); MIPS (D315) and SPARC64 (D327) have their own.
+#[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]
 pub mod signal {
     pub const SIGHUP: u32 = 1;
     pub const SIGINT: u32 = 2;
@@ -110,32 +119,32 @@ pub const STACK_T_SIZE_BEFORE_FLAGS: bool = false;
 #[cfg(not(target_arch = "mips64"))]
 pub const SIGSET_SIZE: u64 = 8;
 /// Whether some calls' arguments are rewritten before dispatch: only on MIPS.
-#[cfg(not(target_arch = "mips64"))]
+#[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]
 pub const REWRITES_ARGUMENTS: bool = false;
 
 /// Rewrites a call's arguments into the generic values: nothing to do here.
-#[cfg(not(target_arch = "mips64"))]
+#[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]
 #[inline(always)]
 pub fn arguments_in(_number: u64, _arguments: &mut [u64; 6]) -> bool {
     false
 }
 
 /// A call's result in the architecture's values: the generic ones here.
-#[cfg(not(target_arch = "mips64"))]
+#[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]
 #[inline(always)]
 pub fn result_out(_number: u64, _arguments: [u64; 6], result: u64) -> u64 {
     result
 }
 
 /// `sa_flags` as the kernel takes them: as given here.
-#[cfg(not(target_arch = "mips64"))]
+#[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]
 #[inline(always)]
 pub fn sigaction_flags_in(flags: u64) -> u64 {
     flags
 }
 
 /// `sa_flags` as a program reads them: as kept here.
-#[cfg(not(target_arch = "mips64"))]
+#[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]
 #[inline(always)]
 pub fn sigaction_flags_out(flags: u64) -> u64 {
     flags
@@ -148,14 +157,14 @@ pub fn sigaction_flags_out(flags: u64) -> u64 {
 pub fn reorder_siginfo(_info: &mut [u8]) {}
 
 /// `struct pollfd`'s requested events as the kernel takes them: as given everywhere but on MIPS.
-#[cfg(not(target_arch = "mips64"))]
+#[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]
 #[inline(always)]
 pub fn poll_events_in(events: u16) -> u16 {
     events
 }
 
 /// `struct pollfd`'s returned events as the program reads them: as kept everywhere but on MIPS.
-#[cfg(not(target_arch = "mips64"))]
+#[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]
 #[inline(always)]
 pub fn poll_events_out(events: u16) -> u16 {
     events
@@ -163,7 +172,7 @@ pub fn poll_events_out(events: u16) -> u16 {
 
 /// The `int` a `SOL_SOCKET` option `name` reads back, in the architecture's values: as kept
 /// everywhere but on MIPS.
-#[cfg(not(target_arch = "mips64"))]
+#[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]
 #[inline(always)]
 pub fn socket_option_out(_name: u32, value: u32) -> u32 {
     value
@@ -171,7 +180,7 @@ pub fn socket_option_out(_name: u32, value: u32) -> u32 {
 
 /// `struct termios` as programs pass it to `TCGETS` and `TCSETS*`: the kernel's own layout
 /// everywhere but on MIPS.
-#[cfg(not(target_arch = "mips64"))]
+#[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]
 pub mod termios {
     use crate::console::line_discipline::Termios;
 
@@ -411,6 +420,9 @@ pub enum StatLayout {
     /// s390x's: x86_64's first fields, then the times before `st_blksize` and `st_blocks`
     /// (D323).
     S390x,
+    /// SPARC64's: a 32-bit `st_dev` and `st_rdev`, a 16-bit `st_nlink`, whole-second times
+    /// (D327).
+    Sparc64,
 }
 
 /// Three instructions as code bytes, in the CPU's own byte order (D318).

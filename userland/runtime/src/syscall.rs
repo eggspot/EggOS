@@ -339,6 +339,90 @@ pub mod number {
     pub const FACCESSAT: usize = 300;
 }
 
+/// Linux's system-call numbers on SPARC64 (D327).
+#[cfg(target_arch = "sparc64")]
+pub mod number {
+    pub const READ: usize = 3;
+    pub const WRITE: usize = 4;
+    pub const CLOSE: usize = 6;
+    pub const FSTAT: usize = 62;
+    pub const MMAP: usize = 71;
+    pub const MPROTECT: usize = 74;
+    pub const MUNMAP: usize = 73;
+    pub const BRK: usize = 17;
+    pub const RT_SIGACTION: usize = 102;
+    pub const RT_SIGRETURN: usize = 101;
+    pub const IOCTL: usize = 54;
+    pub const GETPID: usize = 20;
+    pub const CLONE: usize = 217;
+    pub const EXECVE: usize = 59;
+    pub const WAIT4: usize = 7;
+    pub const UNAME: usize = 189;
+    pub const SETSID: usize = 175;
+    pub const RT_SIGSUSPEND: usize = 107;
+    pub const SIGALTSTACK: usize = 28;
+    pub const REBOOT: usize = 55;
+    pub const GETTID: usize = 143;
+    pub const FUTEX: usize = 142;
+    pub const SET_TID_ADDRESS: usize = 166;
+    pub const CLOCK_SETTIME: usize = 256;
+    pub const CLOCK_GETTIME: usize = 257;
+    pub const CLOCK_NANOSLEEP: usize = 259;
+    pub const EXIT_GROUP: usize = 188;
+    pub const OPENAT: usize = 284;
+    pub const PPOLL: usize = 298;
+    pub const SET_ROBUST_LIST: usize = 300;
+    pub const PRLIMIT64: usize = 331;
+    pub const GETRANDOM: usize = 347;
+    pub const RT_SIGPROCMASK: usize = 103;
+    pub const GETCWD: usize = 119;
+    pub const CHDIR: usize = 12;
+    pub const GETEUID: usize = 49;
+    pub const SETPGID: usize = 185;
+    pub const GETPGID: usize = 224;
+    pub const NEWFSTATAT: usize = 289;
+    pub const GETDENTS64: usize = 154;
+    pub const STATX: usize = 360;
+    pub const DUP3: usize = 320;
+    pub const CLOSE_RANGE: usize = 436;
+    pub const FCNTL: usize = 92;
+    pub const PIPE2: usize = 321;
+    pub const MKDIRAT: usize = 285;
+    pub const UNLINKAT: usize = 290;
+    pub const UTIMENSAT: usize = 310;
+    pub const RENAMEAT2: usize = 345;
+    pub const SYNC: usize = 36;
+    pub const SCHED_GETAFFINITY: usize = 260;
+    pub const SCHED_SETAFFINITY: usize = 261;
+    pub const FSYNC: usize = 95;
+    pub const KILL: usize = 37;
+    pub const SOCKET: usize = 97;
+    pub const CONNECT: usize = 98;
+    pub const SENDTO: usize = 133;
+    pub const RECVFROM: usize = 125;
+    pub const GETSOCKNAME: usize = 150;
+    pub const SETSOCKOPT: usize = 355;
+    pub const SENDMSG: usize = 114;
+    pub const RECVMSG: usize = 113;
+    pub const BIND: usize = 353;
+    pub const LISTEN: usize = 354;
+    pub const ACCEPT4: usize = 323;
+    pub const MEMFD_CREATE: usize = 348;
+    pub const FTRUNCATE: usize = 130;
+    pub const PREAD64: usize = 67;
+    pub const PWRITE64: usize = 68;
+    pub const READLINKAT: usize = 294;
+    pub const SYMLINKAT: usize = 293;
+    pub const LINKAT: usize = 292;
+    pub const OPENAT2: usize = 437;
+    pub const FCHMODAT: usize = 295;
+    pub const FCHMODAT2: usize = 452;
+    pub const STATFS: usize = 157;
+    pub const FSTATFS: usize = 158;
+    pub const LSEEK: usize = 19;
+    pub const FACCESSAT: usize = 296;
+}
+
 /// Linux's system-call numbers on MIPS64 n64, from 5000 (D315).
 #[cfg(target_arch = "mips64")]
 pub mod number {
@@ -423,9 +507,10 @@ pub mod number {
     pub const FACCESSAT: usize = 5259;
 }
 
-/// Linux's terminal `ioctl` numbers: the generic ones, or PowerPC's own (D304).
+/// Linux's terminal `ioctl` numbers: the generic ones, or PowerPC's (D304), MIPS's (D315) or
+/// SPARC's (D327) own.
 pub mod tty {
-    #[cfg(not(any(target_arch = "powerpc64", target_arch = "mips64")))]
+    #[cfg(not(any(target_arch = "powerpc64", target_arch = "mips64", target_arch = "sparc64")))]
     mod values {
         pub const TCGETS: usize = 0x5401;
         pub const TCSETS: usize = 0x5402;
@@ -452,6 +537,20 @@ pub mod tty {
         pub const FIONREAD: usize = 0x4004_667f;
         pub const TIOCGPTN: usize = 0x4004_5430;
         pub const TIOCSPTLCK: usize = 0x8004_5431;
+    }
+    #[cfg(target_arch = "sparc64")]
+    mod values {
+        pub const TCGETS: usize = 0x4024_5408;
+        pub const TCSETS: usize = 0x8024_5409;
+        pub const TCSETSW: usize = 0x8024_540a;
+        pub const TIOCSCTTY: usize = 0x2000_7484;
+        pub const TIOCGPGRP: usize = 0x4004_7483;
+        pub const TIOCSPGRP: usize = 0x8004_7482;
+        pub const TIOCGWINSZ: usize = 0x4008_7468;
+        pub const TIOCSWINSZ: usize = 0x8008_7467;
+        pub const FIONREAD: usize = 0x4004_667f;
+        pub const TIOCGPTN: usize = 0x4004_7486;
+        pub const TIOCSPTLCK: usize = 0x8004_7487;
     }
     #[cfg(target_arch = "mips64")]
     mod values {
@@ -571,6 +670,33 @@ pub unsafe fn call(number: usize, arguments: [usize; 6]) -> isize {
                 options(nostack),
             );
         }
+    }
+    #[cfg(target_arch = "sparc64")]
+    {
+        let [a, b, c, d, e, f] = crate::sparc_abi::arguments_out(number, [a, b, c, d, e, f]);
+        let (value, failed): (isize, usize);
+        // SAFETY: Linux's SPARC64 system-call convention (D327): the number in `%g1` (which
+        // LLVM keeps nothing in across an instruction), the arguments in `%o0` to `%o5`; the
+        // kernel changes `%o0` and `%o1`, the condition codes (carry set when the call failed,
+        // with the error number positive in `%o0`) and the memory the arguments name, which
+        // the caller owns.
+        unsafe {
+            asm!(
+                "mov {number}, %g1",
+                "ta 0x6d",
+                "movcs %xcc, 1, {failed}",
+                number = in(reg) number,
+                failed = inout(reg) 0usize => failed,
+                inlateout("o0") a as isize => value,
+                inlateout("o1") b => _,
+                in("o2") c, in("o3") d, in("o4") e, in("o5") f,
+                options(nostack),
+            );
+        }
+        result = match failed {
+            0 => crate::sparc_abi::result_in(number, [a, b, c, d, e, f], value),
+            _ => -(crate::sparc_abi::generic_errno(value as usize) as isize),
+        };
     }
     #[cfg(target_arch = "mips64")]
     {

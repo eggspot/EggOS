@@ -24,10 +24,12 @@ const MAP_ANONYMOUS: usize = 0x20;
 const SIGSEGV: usize = 11;
 const SIGPIPE: usize = 13;
 const SIG_IGN: usize = 1;
-#[cfg(not(target_arch = "mips64"))]
+#[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]
 const SA_SIGINFO: usize = 4;
 #[cfg(target_arch = "mips64")]
 const SA_SIGINFO: usize = 8;
+#[cfg(target_arch = "sparc64")]
+const SA_SIGINFO: usize = 0x200;
 const SA_ONSTACK: usize = 0x0800_0000;
 #[cfg(target_arch = "x86_64")]
 const SA_RESTORER: usize = 0x0400_0000;
@@ -406,6 +408,22 @@ fn read_thread_pointer() -> usize {
     let value: usize;
     // SAFETY: reading `$tp` has no side effect.
     unsafe { core::arch::asm!("move {}, $tp", out(reg) value, options(nostack, nomem)) };
+    value
+}
+
+#[cfg(target_arch = "sparc64")]
+fn set_thread_pointer(address: usize) -> bool {
+    // SAFETY: `%g7` is the program's thread pointer, which LLVM reserves for the system and
+    // never allocates; nothing here uses thread-local storage through it.
+    unsafe { core::arch::asm!("mov {}, %g7", in(reg) address, options(nostack, nomem)) };
+    true
+}
+
+#[cfg(target_arch = "sparc64")]
+fn read_thread_pointer() -> usize {
+    let value: usize;
+    // SAFETY: reading `%g7` has no side effect.
+    unsafe { core::arch::asm!("mov %g7, {}", out(reg) value, options(nostack, nomem)) };
     value
 }
 

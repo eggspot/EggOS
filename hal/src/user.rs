@@ -227,6 +227,8 @@ pub use mips64::mips_errno;
 use sparc64::Registers;
 #[cfg(target_arch = "sparc64")]
 pub use sparc64::UserRegisters;
+#[cfg(target_arch = "sparc64")]
+pub use sparc64::sparc_errno;
 #[cfg(target_arch = "s390x")]
 use s390x::Registers;
 #[cfg(target_arch = "s390x")]
@@ -1031,13 +1033,46 @@ pub(crate) mod sparc64 {
     /// The highest error number a system call returns, as Linux's `-MAX_ERRNO`.
     const LARGEST_ERROR: u64 = 4095;
     const TRAP_SIZE: u64 = 4;
+    /// The 64-bit ABI's stack bias.
+    const STACK_BIAS: u64 = 2047;
     /// The `%asi` a program starts with, as on Linux: `ASI_PRIMARY_NOFAULT`.
     const INITIAL_ASI: u64 = 0x82;
+
+    /// SPARC's error numbers for the generic ones from 35 on (`asm/errno.h`, SunOS's), in the
+    /// generic order; 0 where SPARC has none and the generic number stays.
+    const SPARC_ERRORS: [u16; 99] = [
+        78, 63, 79, 90, 66, 62, 0, 75, 77, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105,
+        106, 107, 108, 109, 72, 111, 73, 74, 80, 113, 71, 82, 83, 84, 85, 86, 87, 88, 76, 92,
+        115, 93, 89, 114, 112, 124, 123, 110, 122, 116, 91, 68, 38, 39, 40, 41, 42, 43, 44, 45,
+        46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 65, 37, 36, 70, 117,
+        118, 119, 120, 121, 69, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135,
+    ];
+
+    /// The generic number of SPARC's error `sparc`.
+    #[cfg(not(eggos_kernel))]
+    fn generic_errno(sparc: u64) -> u64 {
+        (35..35 + SPARC_ERRORS.len() as u64)
+            .find(|&generic| sparc_errno(generic) == sparc)
+            .unwrap_or(sparc)
+    }
+
+    /// The number SPARC gives generic error `generic`.
+    pub fn sparc_errno(generic: u64) -> u64 {
+        let mapped = generic
+            .checked_sub(35)
+            .and_then(|index| SPARC_ERRORS.get(index as usize))
+            .copied()
+            .unwrap_or(0);
+        match mapped {
+            0 => generic,
+            number => u64::from(number),
+        }
+    }
 
     impl Registers {
         pub(crate) fn new(pc: u64, stack: u64) -> Self {
             let mut r = [0; 32];
-            r[SP] = stack;
+            r[SP] = stack.wrapping_sub(STACK_BIAS);
             Self {
                 r,
                 pc,
@@ -1065,12 +1100,13 @@ pub(crate) mod sparc64 {
         pub(crate) fn pc(&self) -> u64 {
             self.pc
         }
-        /// `%o6`, biased by 2047 as the ABI keeps it.
+        /// The stack's real address: `%o6` holds it less the ABI's 2047 bias, which the kernel
+        /// never sees.
         pub(crate) fn stack(&self) -> u64 {
-            self.r[SP]
+            self.r[SP].wrapping_add(STACK_BIAS)
         }
         pub(crate) fn set_stack(&mut self, stack: u64) {
-            self.r[SP] = stack;
+            self.r[SP] = stack.wrapping_sub(STACK_BIAS);
         }
         pub(crate) fn syscall_number(&self) -> u64 {
             self.r[G1]
@@ -1082,11 +1118,11 @@ pub(crate) mod sparc64 {
             self.syscall_o0 = arguments[0];
             self.r[O0..O0 + 6].copy_from_slice(&arguments);
         }
-        /// The result in `%o0`, as SPARC's Linux returns it: an error as a positive number with
-        /// the carry bits set.
+        /// The result in `%o0`, as SPARC's Linux returns it: an error as a positive number,
+        /// SPARC's own ([`sparc_errno`]), with the carry bits set.
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             if value.wrapping_neg() <= LARGEST_ERROR && value != 0 {
-                self.r[O0] = value.wrapping_neg();
+                self.r[O0] = sparc_errno(value.wrapping_neg());
                 self.tstate |= CARRY;
             } else {
                 self.r[O0] = value;
@@ -1120,7 +1156,7 @@ pub(crate) mod sparc64 {
         #[cfg(not(eggos_kernel))]
         pub(crate) fn result(&self) -> u64 {
             match self.tstate & CARRY != 0 {
-                true => self.r[O0].wrapping_neg(),
+                true => generic_errno(self.r[O0]).wrapping_neg(),
                 false => self.r[O0],
             }
         }

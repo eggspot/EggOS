@@ -28,6 +28,8 @@ pub const RELATIVE: u32 = 22;
 pub const RELATIVE: u32 = 3;
 #[cfg(target_arch = "s390x")]
 pub const RELATIVE: u32 = 12;
+#[cfg(target_arch = "sparc64")]
+pub const RELATIVE: u32 = 22;
 
 /// MIPS64's dynamic tags for its `DT_REL` table and its local GOT entries (D315).
 #[cfg(target_arch = "mips64")]

@@ -88,6 +88,24 @@ global_asm!(
     start = sym start,
 );
 
+#[cfg(target_arch = "sparc64")]
+global_asm!(
+    ".globl _start",
+    ".type _start, @function",
+    "_start:",
+    "add %sp, 2047 + 128, %o0",
+    "1: rd %pc, %o1",
+    "sethi %hi(_DYNAMIC - 1b), %o2",
+    "or %o2, %lo(_DYNAMIC - 1b), %o2",
+    "add %o1, %o2, %o1",
+    "sub %sp, 192, %sp",
+    "mov 0, %fp",
+    "call {start}",
+    " nop",
+    "illtrap 0",
+    start = sym start,
+);
+
 #[cfg(target_arch = "s390x")]
 global_asm!(
     ".globl _start",

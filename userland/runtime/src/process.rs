@@ -133,6 +133,33 @@ pub unsafe fn clone_onto_stack(
             in("$16") child, in("$17") argument,
         );
     }
+    #[cfg(target_arch = "sparc64")]
+    // SAFETY: Linux's SPARC64 `clone` (D327): a failure sets the carry with the error number
+    // positive; the child starts on its own stack (the kernel takes `stack_top` as the real
+    // address) with `%o0` 0, keeps the ABI's 192-byte frame below it, and never comes back here;
+    // the parent's registers are as before but `%o0`, `%o1` and the condition codes.
+    unsafe {
+        asm!(
+            "mov {number}, %g1",
+            "ta 0x6d",
+            "bcs,pn %xcc, 1f",
+            " nop",
+            "brnz %o0, 2f",
+            " nop",
+            "sub %sp, 192, %sp",
+            "mov %l1, %o0",
+            "call %l0",
+            " nop",
+            "illtrap 0",
+            "1: sub %g0, %o0, %o0",
+            "2:",
+            number = in(reg) number::CLONE,
+            inlateout("o0") flags as isize => result,
+            inlateout("o1") stack_top => _,
+            in("o2") 0usize, in("o3") 0usize, in("o4") 0usize,
+            in("l0") child, in("l1") argument,
+        );
+    }
     #[cfg(target_arch = "s390x")]
     // SAFETY: Linux's s390x `clone` (D323): the stack first, then the flags; the caller's
     // registers are as before but `r2`; the child starts on its own stack, below which it keeps

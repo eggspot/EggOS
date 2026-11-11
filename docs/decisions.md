@@ -21285,3 +21285,69 @@ the license, by an explicit instruction recorded here.
   on, its `stat`, signal frames with the register windows) and the user runtime, with the
   build entries. Part 3: the kernel's user memory in 8 KiB granules where the format asks for
   it.
+
+## D327 SPARC64 part 2: its Linux ABI, the user runtime and the build entries (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Rust's platform-support tiers)
+
+- **Decision.**
+  - **`kernel/src/linux/abi/sparc64.rs`.**
+    - **System calls.** SPARC64's table (the 64-bit entries) with the legacy calls and
+      `renameat`; `time`, 32-bit only, gets a number past `LAST`.
+    - **Values that differ, as on MIPS (D315).** SPARC's values differ from the generic ones
+      in:
+      - the signal numbers (SunOS's: `SIGUSR1` 30, `SIGCHLD` 20, `SIGSTOP` 17);
+      - `sa_flags`;
+      - `open`'s flags, `mmap`'s `MAP_NORESERVE`, `MAP_LOCKED` and `MAP_GROWSDOWN`, and
+        `fcntl`'s lock and owner commands;
+      - `O_NONBLOCK` and `O_CLOEXEC` wherever they are taken;
+      - `SOL_SOCKET` (0xffff) and its options;
+      - `poll`'s write bits (as MIPS's);
+      - `SO_ERROR`'s error number;
+      - `struct termios`: 17 control characters, with `VMIN`/`VTIME` sharing `VEOF`/`VEOL`'s
+        places by `ICANON`, and `FLUSHO` at its own bit;
+      - its `ioctl` numbers (PowerPC's `_IOC`);
+      - the error numbers from 35 on. The HAL's `sparc_errno` gives them, positive with the
+        carry set.
+
+      `arguments_in` and `result_out` translate at the boundary, and the kernel stays
+      generic. `rt_sigaction`'s fourth argument, a restorer, gives way to the set size.
+      Handlers return through the kernel's trampoline (`mov 101, %g1; ta 0x6d`), what
+      glibc's restorer does too.
+    - **Shared helpers.** MIPS's and SPARC's flag translation now share
+      `abi/translate.rs` (`flags_to_generic`, `flags_to_architecture`, `value_to_generic`,
+      `value_to_architecture`).
+    - **Structures.** `struct stat` is `StatLayout::Sparc64`: 104 bytes, a 32-bit `st_dev`
+      and `st_rdev`, a 16-bit `st_nlink`, whole-second times. ELF machine 43
+      (`EM_SPARCV9`).
+    - **Signal frames.** `rt_signal_frame`: the handler's window save area, `siginfo_t`,
+      `pt_regs` (globals, outs, `TSTATE`, `%pc`, `%npc`, `%y`, the magic word),
+      `fpu_save`, `stack_t` and the mask, then the FP state.
+      - The handler gets `%o0` the signal, `%o1` and `%o2` the `siginfo_t`, `%o7` the
+        restorer less 8, and `%sp` the frame less the bias.
+      - The interrupted window's locals and ins go to its stack's save area, where a spill
+        would put them, and are read back from there on `rt_sigreturn`.
+  - **The HAL hides the stack bias.** `UserContext`'s stack pointer is the real address; `%o6`
+    holds it less 2047.
+  - **The user runtime.**
+    - `ta 0x6d` with `%g1`, the carry giving the error.
+    - `sparc_abi` translates the flags, options and errors as `mips_abi` does.
+    - `_start` hands `start` `argc`'s address (above the 128-byte save area) and `_DYNAMIC`.
+      `R_SPARC_RELATIVE` is 22.
+    - `clone_onto_stack` keeps the 192-byte frame.
+    - The signal numbers, `SA_SIGINFO` 0x200, `%g7` as the self-test's thread pointer, and
+      init's, eggsh's and the coreutils' signal actions.
+  - **Build entries.** Rust has two tier-2 targets for this, so no nightly is needed.
+    - The kernel builds for `sparcv9-sun-solaris` (target arch `sparc64`, `no_std` with
+      `rust-lld`, the medium code model, soft float, `eggos_kernel`).
+    - The user programs build for `sparc64-unknown-linux-gnu` (`eggos_user`, static PIE).
+    - This corrects D297, which counted SPARC64 as tier 3 only. It stays out of `all`, CI and
+      the release matrix, with MIPS64 and s390x, until the owner's call at test time:
+      `NIGHTLY_ARCHES` becomes `NAMED_ONLY_ARCHES`, and only `TIER_3_TARGETS` take
+      nightly's `build-std`.
+- **Known gaps (to check at build time).**
+  - The table, the constants and the frame layout are written from memory of Linux's SPARC
+    headers.
+  - A Linux `clone` child gets `%o1` 1 and the parent `%o1` 0. The kernel returns the
+    generic 0 and pid only, which EggOS's runtime reads but glibc does not.
+  - A program's `clone` stack is taken as a real address, not biased.
+- **Next (part 3).** The kernel's user memory in 8 KiB granules, so that every program page
+  has its pair (D326).

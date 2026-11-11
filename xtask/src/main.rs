@@ -217,7 +217,7 @@ commands:
                          session over the script's piped standard input and output, as
                          `qemu` runs it (<arch> may be `all`)
 
-architectures: aarch64, riscv64, x86_64, loongarch64, ppc64le; mips64el and s390x only by\nname, with the nightly toolchain (D297, D324)";
+architectures: aarch64, riscv64, x86_64, loongarch64, ppc64le; mips64el, s390x and sparc64\nonly by name (D297, D324, D327)";
 
 /// A kernel architecture: its Rust target and how to boot it in QEMU.
 #[derive(Debug)]
@@ -373,10 +373,11 @@ pub const ARCHES: &[Arch] = &[
     },
 ];
 
-/// Architectures whose Rust targets ship no prebuilt `core` (tier 3): built with a nightly
-/// toolchain's `build-std`, which the pinned-stable rule allows only once the owner says so
-/// (D297). Named with `--arch` only: `all`, CI and the release matrix leave them out.
-pub const NIGHTLY_ARCHES: &[Arch] = &[Arch {
+/// Architectures built only when `--arch` names them: `all`, CI and the release matrix leave
+/// them out until the owner's call at test time (D297). MIPS64's targets and s390x's user target
+/// ship no prebuilt `core` and build with a nightly toolchain's `build-std` ([`TIER_3_TARGETS`],
+/// D324); SPARC64's are tier 2 (D327).
+pub const NAMED_ONLY_ARCHES: &[Arch] = &[Arch {
     name: "mips64el",
     target: "mips64el-unknown-linux-gnuabi64",
     user_target: "mips64el-unknown-linux-muslabi64",
@@ -421,10 +422,23 @@ pub const NIGHTLY_ARCHES: &[Arch] = &[Arch {
     disk_device: "virtio-blk-ccw",
     agent_bus_device: "virtio-serial-ccw",
     network_device: "virtio-net-ccw",
+}, Arch {
+    name: "sparc64",
+    target: "sparcv9-sun-solaris",
+    user_target: "sparc64-unknown-linux-gnu",
+    qemu: "qemu-system-sparc64",
+    machine_args: &["-machine", "sun4u"],
+    display_args: &[],
+    input_args: &[],
+    offscreen_args: &[],
+    disk_device: "virtio-blk-pci,disable-legacy=on",
+    agent_bus_device: "virtio-serial-pci,disable-legacy=on",
+    network_device: "virtio-net-pci,disable-legacy=on",
 }];
 
-/// The targets of [`NIGHTLY_ARCHES`] that ship no prebuilt `core` (tier 3): s390x's kernel
-/// target is tier 2 and builds on the pinned toolchain; its user target is not (D324).
+/// The targets of [`NAMED_ONLY_ARCHES`] that ship no prebuilt `core` (tier 3): s390x's kernel
+/// target is tier 2 and builds on the pinned toolchain; its user target is not (D324). SPARC64's
+/// two are tier 2 (D327).
 const TIER_3_TARGETS: &[&str] = &[
     "mips64el-unknown-linux-gnuabi64",
     "mips64el-unknown-linux-muslabi64",
@@ -1165,7 +1179,7 @@ fn arch_option(args: &[String]) -> Result<Vec<&'static Arch>, String> {
     }
     ARCHES
         .iter()
-        .chain(NIGHTLY_ARCHES)
+        .chain(NAMED_ONLY_ARCHES)
         .find(|a| a.name == name)
         .map(|a| vec![a])
         .ok_or_else(|| format!("unknown architecture `{name}`\n\n{USAGE}"))
