@@ -8,7 +8,7 @@
 use super::common::{CommonPalette, Images, TextArena, draw_plain, plain_width_cells};
 use super::list_box::compare_names;
 use super::list_view::{
-    CHECK_BOX_SIZE, draw_check_box, horizontal_part_at, paint_scroll_bars, stable_sort,
+    CHECK_BOX_SIZE, RowDraw, draw_check_box, horizontal_part_at, paint_scroll_bars, stable_sort,
 };
 use super::scroll_bar::{self, Part, ScrollInfo, WIDTH as BAR};
 use super::{Palette, dotted_outline, fit_cells, outline};
@@ -1160,6 +1160,7 @@ pub struct TreeLook {
 
 /// Paints `tree` over the whole of `rect`: the frame, the visible items with their lines,
 /// boxes, check boxes, images and labels, and the scroll bars.
+/// Paints `tree` over `rect` with each item as the tree says.
 pub fn paint(
     surface: &mut Surface<'_>,
     rect: Rect,
@@ -1168,6 +1169,20 @@ pub fn paint(
     images: &dyn Images,
     palette: &Palette,
     common: &CommonPalette,
+) {
+    let plain = |_: usize| RowDraw::default();
+    paint_custom(surface, rect, tree, look, (images, palette, common), &plain);
+}
+
+/// Paints `tree` over `rect`, each item as `items` says the program asked by custom draw
+/// (D361): its text and label background colours, or nothing when it drew the item itself.
+pub fn paint_custom(
+    surface: &mut Surface<'_>,
+    rect: Rect,
+    tree: &TreeView,
+    look: TreeLook,
+    (images, palette, common): (&dyn Images, &Palette, &CommonPalette),
+    items: &dyn Fn(usize) -> RowDraw,
 ) {
     let saved = surface.clip();
     surface.clip_to(rect);
@@ -1182,9 +1197,19 @@ pub fn paint(
         if tree.row_rect(&layout, place).top >= layout.rows.bottom {
             break;
         }
-        paint_item(
-            surface, tree, &layout, index, place, look, images, palette, common,
-        );
+        let draw = items(index);
+        if !draw.skip {
+            paint_item(
+                surface,
+                tree,
+                &layout,
+                (index, place),
+                (look, draw),
+                images,
+                palette,
+                common,
+            );
+        }
         surface.set_clip(rows_clip);
         at = tree.next_visible(index);
         place += 1;
@@ -1209,9 +1234,8 @@ fn paint_item(
     surface: &mut Surface<'_>,
     tree: &TreeView,
     layout: &TreeLayout,
-    index: usize,
-    place: usize,
-    look: TreeLook,
+    (index, place): (usize, usize),
+    (look, draw): (TreeLook, RowDraw),
     images: &dyn Images,
     palette: &Palette,
     common: &CommonPalette,
@@ -1220,7 +1244,7 @@ fn paint_item(
     let row = geometry.row;
     let line = tree.line_colour.unwrap_or(common.tree_line);
     let text = match look.enabled {
-        true => tree.text_colour.unwrap_or(palette.text),
+        true => draw.text.or(tree.text_colour).unwrap_or(palette.text),
         false => palette.text_disabled,
     };
     let indent = tree.indent;
@@ -1311,7 +1335,7 @@ fn paint_item(
         ),
         () => (None, text),
     };
-    if let Some(fill) = fill {
+    if let Some(fill) = fill.or(draw.background) {
         surface.fill(area, fill);
     }
     draw_plain(

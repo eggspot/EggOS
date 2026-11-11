@@ -22080,3 +22080,22 @@ the license, by an explicit instruction recorded here.
   nil and the result nil), the allowed-classes check of secure coding, `NSURL` and `NSUUID`
   archives, `decodeBytesForKey:returnedLength:`, and an object referring to itself through
   `initWithCoder:` (it gets nil, where macOS gives the object being decoded).
+
+## D361 Windows common controls: tree views' custom draw and label editing (batch part 13's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, as D353 and D354 do for list views)
+
+- **Decision.**
+  - **Custom draw.** A tree view's paint runs `NM_CUSTOMDRAW` around its own drawing as a list
+    view's does (D353), with `NMTVCUSTOMDRAW`: `CDDS_PREPAINT`, then `CDDS_ITEMPREPAINT` for
+    each shown item (up to 64) with its `HTREEITEM`, row, selected state, `lParam` and level;
+    the colours the parent writes replace the item's text colour and fill its label's
+    background, `CDRF_SKIPDEFAULT` leaves the item to the program, and the post-paint stages
+    follow (`tree_view::paint_custom`, sharing `list_view::RowDraw`).
+  - **Label editing.** `TVM_EDITLABELW`, and F2 on the selected item with `TVS_EDITLABELS`,
+    ask `TVN_BEGINLABELEDITW` and put an `EDIT` over the item's label (at least 8 cells wide),
+    as a list view does (D354); Enter or the focus leaving keeps the text, Escape and
+    `TVM_ENDEDITLABELNOW` with `TRUE` cancel, `TVN_ENDLABELEDITW` reports it and the parent's
+    nonzero answer sets the label. `TVM_GETEDITCONTROL` answers the edit. The edit's key and
+    focus hooks (`common_controls::label_editor_key`, `label_editor_left`,
+    `is_label_editor`) now serve both views.
+- **Not yet.** Starting an edit by a slow second click; custom draw for toolbars, headers and
+  trackbars; `CDRF_NEWFONT`.

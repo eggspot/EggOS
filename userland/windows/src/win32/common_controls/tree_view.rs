@@ -7,27 +7,30 @@
 
 use super::super::controls::point;
 use super::super::dialog::{has_focus, release_capture, set_capture, set_focus};
-use super::super::gui::Gui;
-use super::super::user32::now_ms;
+use super::super::gui::{self, Gui, with};
+use super::super::user32::{create_child, now_ms};
 use super::super::{call_program, window_text};
 use super::list_view::{self, text_at, write_rect};
 use super::{
     Model, NotifyHeader, allocate, code, default_procedure, image_list, invalidate, item_element,
-    notify_parent, paint_with, read_state, utf8, with_state,
+    notify_parent, read_state, utf8, with_state,
 };
 use crate::gui::message;
-use crate::gui::windows::{self, CommonKind, Window};
+use crate::gui::windows::{self, CommonKind, ControlKind, Window};
 use eggos_element_tree::{
     Action, Bounds, Element, MAX_LABEL_BYTES, Outcome, Role, TreeWriter, flags,
 };
 use eggos_windows_gui::controls::LIGHT;
 use eggos_windows_gui::controls::common::COMMON_LIGHT;
-use eggos_windows_gui::controls::list_view::{stable_sort, state as state_image, thumb_position};
+use eggos_windows_gui::controls::list_view::{
+    RowDraw, stable_sort, state as state_image, thumb_position,
+};
 use eggos_windows_gui::controls::scroll_bar::{self, Part};
 use eggos_windows_gui::controls::tree_view::{
     self as model, HORIZONTAL_LINE, ITEM_HEIGHT, NewItem, Place, TREE_CAPACITY, TreeHit,
     TreeLayout, TreeLook, TreePart, TreeView, key, state, style,
 };
+use eggos_windows_gui::surface::Rect;
 
 const TVM_FIRST: u32 = 0x1100;
 const TVM_LAST: u32 = 0x11ff;
@@ -59,6 +62,8 @@ const TVM_GETLINECOLOR: u32 = 0x1129;
 const TVM_SETEXTENDEDSTYLE: u32 = 0x112c;
 const TVM_GETEXTENDEDSTYLE: u32 = 0x112d;
 const TVM_INSERTITEMW: u32 = 0x1132;
+const TVM_ENDEDITLABELNOW: u32 = 0x1116;
+const TVM_EDITLABELW: u32 = 0x1141;
 const TVM_GETITEMW: u32 = 0x113e;
 const TVM_SETITEMW: u32 = 0x113f;
 const CCM_GETUNICODEFORMAT: u32 = 0x2006;
@@ -216,6 +221,8 @@ struct TreeState {
     extended: u32,
     last_down: Option<(u32, i32, i32, usize)>,
     drag: Option<Drag>,
+    /// The edit over the label being edited (D361) and the item's index.
+    editing: Option<(usize, usize)>,
 }
 
 impl Model for TreeState {
@@ -229,6 +236,7 @@ pub(super) fn new_state(_style: u32) -> Option<usize> {
         extended: 0,
         last_down: None,
         drag: None,
+        editing: None,
     })
 }
 
@@ -611,6 +619,17 @@ fn expand_all(window: usize, index: usize) {
 }
 
 fn key_down(window: usize, virtual_key: u32) {
+    if virtual_key == VK_F2 {
+        let selected = with_state::<TreeState, _>(window, |entry, control| {
+            let editable = entry.style & TVS_EDITLABELS != 0;
+            control.tree.selected().filter(|_| editable)
+        })
+        .flatten();
+        if let Some(index) = selected {
+            begin_label_edit(window, index);
+            return;
+        }
+    }
     notify_parent(window, TVN_KEYDOWN, |header| NmTreeKeyDown {
         header,
         key: virtual_key as u16,
@@ -816,23 +835,193 @@ fn scroll_message(window: usize, vertical: bool, wparam: usize) {
     invalidate(window);
 }
 
-fn paint(window: usize) {
-    paint_with::<TreeState>(window, |surface, rect, entry, control, gui| {
-        let look = TreeLook {
-            style: entry.style,
-            focused: has_focus(gui, window),
-            enabled: windows::enabled_in_tree(&gui.windows, window),
+const NM_CUSTOMDRAW: i32 = -12;
+const CDDS_PREPAINT: u32 = 0x1;
+const CDDS_POSTPAINT: u32 = 0x2;
+const CDDS_ITEMPREPAINT: u32 = 0x1_0001;
+const CDDS_ITEMPOSTPAINT: u32 = 0x1_0002;
+const CDRF_SKIPDEFAULT: usize = 0x4;
+const CDRF_NOTIFYPOSTPAINT: usize = 0x10;
+const CDRF_NOTIFYITEMDRAW: usize = 0x20;
+const CDIS_SELECTED: u32 = 0x1;
+const CLR_DEFAULT: u32 = 0xff00_0000;
+const MOST_CUSTOM_ITEMS: usize = 64;
+
+/// `NMTVCUSTOMDRAW`: `NMCUSTOMDRAW`, then the text colours and the item's level.
+#[repr(C)]
+struct NmTreeCustomDraw {
+    header: NotifyHeader,
+    stage: u32,
+    hdc: usize,
+    rect: [i32; 4],
+    item: usize,
+    item_state: u32,
+    item_lparam: usize,
+    text: u32,
+    text_background: u32,
+    level: i32,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ShownItem {
+    index: usize,
+    handle: usize,
+    rect: [i32; 4],
+    state: u32,
+    lparam: usize,
+    level: i32,
+}
+
+/// What the parent asked, by custom draw, for the items this paint shows (D361).
+struct CustomItems {
+    items: [ShownItem; MOST_CUSTOM_ITEMS],
+    draws: [RowDraw; MOST_CUSTOM_ITEMS],
+    after: [bool; MOST_CUSTOM_ITEMS],
+    count: usize,
+    after_all: bool,
+}
+
+impl CustomItems {
+    fn draw(&self, index: usize) -> RowDraw {
+        self.items[..self.count]
+            .iter()
+            .position(|item| item.index == index)
+            .map_or_else(RowDraw::default, |at| self.draws[at])
+    }
+}
+
+fn custom_draw(
+    window: usize,
+    stage: u32,
+    hdc: usize,
+    item: ShownItem,
+) -> (usize, Option<NmTreeCustomDraw>) {
+    let item_state = match item.state & model::state::SELECTED != 0 {
+        true => CDIS_SELECTED,
+        false => 0,
+    };
+    super::notify_parent_keeping(window, NM_CUSTOMDRAW, |header| NmTreeCustomDraw {
+        header,
+        stage,
+        hdc,
+        rect: item.rect,
+        item: item.handle,
+        item_state,
+        item_lparam: item.lparam,
+        text: CLR_DEFAULT,
+        text_background: CLR_DEFAULT,
+        level: item.level,
+    })
+}
+
+fn chosen_colour(colour_ref: u32) -> Option<u32> {
+    let swapped = (colour_ref & 0xff) << 16 | (colour_ref & 0xff00) | (colour_ref >> 16 & 0xff);
+    (colour_ref & CLR_DEFAULT == 0).then_some(swapped)
+}
+
+fn shown_items(window: usize, out: &mut [ShownItem; MOST_CUSTOM_ITEMS]) -> (usize, [i32; 4]) {
+    with_state::<TreeState, _>(window, |entry, control| {
+        let client = entry.client();
+        let whole = [client.left, client.top, client.right, client.bottom];
+        let tree = &control.tree;
+        let layout = layout_of(entry, tree);
+        let mut place = tree.top();
+        let mut at = tree.visible_at(place);
+        let mut count = 0;
+        while let Some(index) = at {
+            let row = tree.row_rect(&layout, place);
+            if row.top >= layout.rows.bottom || count == out.len() {
+                break;
+            }
+            out[count] = ShownItem {
+                index,
+                handle: tree.handle(index),
+                rect: [row.left, row.top, row.right, row.bottom],
+                state: tree.state(index),
+                lparam: tree.lparam(index),
+                level: tree.depth(index) as i32,
+            };
+            count += 1;
+            at = tree.next_visible(index);
+            place += 1;
+        }
+        (count, whole)
+    })
+    .unwrap_or((0, [0; 4]))
+}
+
+fn custom_items(window: usize, hdc: usize) -> CustomItems {
+    let mut custom = CustomItems {
+        items: [ShownItem::default(); MOST_CUSTOM_ITEMS],
+        draws: [RowDraw::default(); MOST_CUSTOM_ITEMS],
+        after: [false; MOST_CUSTOM_ITEMS],
+        count: 0,
+        after_all: false,
+    };
+    let (count, whole) = shown_items(window, &mut custom.items);
+    let everything = ShownItem {
+        rect: whole,
+        ..ShownItem::default()
+    };
+    let (answer, _) = custom_draw(window, CDDS_PREPAINT, hdc, everything);
+    custom.after_all = answer & CDRF_NOTIFYPOSTPAINT != 0;
+    if answer & CDRF_NOTIFYITEMDRAW == 0 {
+        return custom;
+    }
+    custom.count = count;
+    for at in 0..count {
+        let (answer, data) = custom_draw(window, CDDS_ITEMPREPAINT, hdc, custom.items[at]);
+        let Some(data) = data else {
+            continue;
         };
-        model::paint(
-            surface,
-            rect,
-            &control.tree,
-            look,
-            &image_list::LayerImages,
-            &LIGHT,
-            &COMMON_LIGHT,
-        );
+        custom.draws[at] = RowDraw {
+            text: chosen_colour(data.text),
+            background: chosen_colour(data.text_background),
+            skip: answer & CDRF_SKIPDEFAULT != 0,
+        };
+        custom.after[at] = answer & CDRF_NOTIFYPOSTPAINT != 0;
+    }
+    custom
+}
+
+fn custom_after(window: usize, hdc: usize, custom: &CustomItems) {
+    for at in 0..custom.count {
+        if custom.after[at] {
+            custom_draw(window, CDDS_ITEMPOSTPAINT, hdc, custom.items[at]);
+        }
+    }
+    if custom.after_all {
+        custom_draw(window, CDDS_POSTPAINT, hdc, ShownItem::default());
+    }
+}
+
+fn paint(window: usize) {
+    let Ok((hdc, _, _)) = super::super::paint::begin(window) else {
+        return;
+    };
+    let custom = custom_items(window, hdc);
+    let _ = super::super::paint::draw_in(hdc, |surface, _, gui| {
+        let Some(surface) = surface else {
+            return;
+        };
+        read_state::<TreeState, ()>(gui, window, |entry, control| {
+            let look = TreeLook {
+                style: entry.style,
+                focused: has_focus(gui, window),
+                enabled: windows::enabled_in_tree(&gui.windows, window),
+            };
+            model::paint_custom(
+                surface,
+                entry.client(),
+                &control.tree,
+                look,
+                (&image_list::LayerImages, &LIGHT, &COMMON_LIGHT),
+                &|index| custom.draw(index),
+            );
+        });
     });
+    custom_after(window, hdc, &custom);
+    super::super::paint::finish(hdc);
 }
 
 fn handle_parameter(tree: &TreeView, value: usize) -> Option<usize> {
@@ -1371,7 +1560,21 @@ fn tree_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usi
         TVM_GETEXTENDEDSTYLE => {
             with_state::<TreeState, _>(window, |_, control| control.extended as usize).unwrap_or(0)
         }
-        TVM_GETEDITCONTROL => 0,
+        TVM_GETEDITCONTROL => with_state::<TreeState, _>(window, |_, control| {
+            control.editing.map_or(0, |(editor, _)| editor)
+        })
+        .unwrap_or(0),
+        TVM_EDITLABELW => {
+            let index = with_state::<TreeState, _>(window, |_, control| {
+                handle_parameter(&control.tree, lparam)
+            })
+            .flatten();
+            index.map_or(0, |index| begin_label_edit(window, index))
+        }
+        TVM_ENDEDITLABELNOW => {
+            end_label_edit(window, wparam == 0);
+            1
+        }
         _ => 0,
     }
 }
@@ -1545,4 +1748,171 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
         }
         _ => default_procedure(window, number, wparam, lparam),
     }
+}
+
+const TVS_EDITLABELS: u32 = 0x0008;
+const TVN_BEGINLABELEDITW: i32 = -459;
+const TVN_ENDLABELEDITW: i32 = -460;
+const TVIF_TEXT: u32 = 0x1;
+const TVIF_PARAM: u32 = 0x4;
+const TVIF_STATE: u32 = 0x8;
+const TVIF_HANDLE: u32 = 0x10;
+const LABEL_EDITOR_ID: usize = 1;
+const LABEL_UNITS: usize = 260;
+const ES_AUTOHSCROLL: u32 = 0x0080;
+const LABEL_WS_CHILD: u32 = 0x4000_0000;
+const LABEL_WS_VISIBLE: u32 = 0x1000_0000;
+const VK_RETURN: usize = 0x0d;
+const VK_ESCAPE: usize = 0x1b;
+const VK_F2: u32 = 0x71;
+
+/// `TVITEMW`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LabelItem {
+    mask: u32,
+    item: usize,
+    state: u32,
+    state_mask: u32,
+    text: usize,
+    text_max: i32,
+    image: i32,
+    selected_image: i32,
+    children: i32,
+    lparam: usize,
+}
+
+/// `NMTVDISPINFOW`.
+#[repr(C)]
+struct TreeDisplayInfo {
+    header: NotifyHeader,
+    item: LabelItem,
+}
+
+fn label_item(control: &TreeState, index: usize, text: usize) -> LabelItem {
+    LabelItem {
+        mask: TVIF_TEXT | TVIF_PARAM | TVIF_STATE | TVIF_HANDLE,
+        item: control.tree.handle(index),
+        state: control.tree.state(index),
+        state_mask: !0,
+        text,
+        text_max: LABEL_UNITS as i32,
+        image: 0,
+        selected_image: 0,
+        children: 0,
+        lparam: control.tree.lparam(index),
+    }
+}
+
+/// `TVM_EDITLABELW` and F2 with `TVS_EDITLABELS` (D361): an edit over item `index`'s label,
+/// once the parent's `TVN_BEGINLABELEDITW` lets it, as a list view's (D354); its handle, 0
+/// when refused.
+fn begin_label_edit(window: usize, index: usize) -> usize {
+    end_label_edit(window, true);
+    let mut label = [0u16; LABEL_UNITS + 1];
+    let found = with_state::<TreeState, _>(window, |entry, control| {
+        let place = control.tree.visible_index(index)?;
+        let text = control.tree.text(index);
+        let length = text.len().min(LABEL_UNITS);
+        label[..length].copy_from_slice(&text[..length]);
+        let layout = layout_of(entry, &control.tree);
+        let geometry = control.tree.geometry(&layout, entry.style, index, place);
+        let row = geometry.row;
+        let width = geometry.room.max(eggos_windows_gui::text::CELL_WIDTH * 8);
+        let bounds = Rect::sized(geometry.label_x, row.top, width, row.height());
+        Some((bounds, label_item(control, index, 0), length))
+    })
+    .flatten();
+    let Some((bounds, mut item, length)) = found else {
+        return 0;
+    };
+    item.text = label.as_ptr() as usize;
+    let refused = notify_parent(window, TVN_BEGINLABELEDITW, |header| TreeDisplayInfo {
+        header,
+        item,
+    });
+    if refused != 0 {
+        return 0;
+    }
+    let style = LABEL_WS_CHILD | LABEL_WS_VISIBLE | ES_AUTOHSCROLL;
+    let kind = ControlKind::Edit;
+    let made = create_child(window, kind, style, bounds, LABEL_EDITOR_ID, &label[..length]);
+    let Some(editor) = made else {
+        return 0;
+    };
+    with_state::<TreeState, _>(window, |_, control| control.editing = Some((editor, index)));
+    set_focus(editor);
+    gui::send(editor, super::super::controls::code::EM_SETSEL, 0, usize::MAX);
+    editor
+}
+
+/// Ends tree view `window`'s label edit, if one runs, as a list view's does (D354), with
+/// `TVN_ENDLABELEDITW`; the parent's nonzero answer to a kept edit sets the label.
+fn end_label_edit(window: usize, accept: bool) {
+    let editing = with_state::<TreeState, _>(window, |_, control| control.editing.take()).flatten();
+    let Some((editor, index)) = editing else {
+        return;
+    };
+    let mut text = [0u16; LABEL_UNITS + 1];
+    let length = match accept {
+        true => gui::send(
+            editor,
+            message::GET_TEXT,
+            text.len(),
+            text.as_mut_ptr() as usize,
+        )
+        .min(LABEL_UNITS),
+        false => 0,
+    };
+    let had_focus = with(|gui| has_focus(gui, editor)).unwrap_or(false);
+    super::super::user32::destroy_tree(editor);
+    let item = with_state::<TreeState, _>(window, |_, control| {
+        let pointer = if accept { text.as_ptr() as usize } else { 0 };
+        label_item(control, index, pointer)
+    });
+    if let Some(item) = item {
+        let answer = notify_parent(window, TVN_ENDLABELEDITW, |header| TreeDisplayInfo {
+            header,
+            item,
+        });
+        if accept && answer != 0 {
+            with_state::<TreeState, _>(window, |_, control| {
+                control.tree.set_text(index, &text[..length])
+            });
+        }
+    }
+    if had_focus {
+        set_focus(window);
+    }
+    invalidate(window);
+}
+
+fn editing_tree(editor: usize) -> Option<usize> {
+    let parent = with(|gui| gui.windows.get(editor).map(|entry| entry.parent)).flatten()?;
+    let editing = with_state::<TreeState, _>(parent, |_, control| control.editing).flatten()?;
+    (editing.0 == editor).then_some(parent)
+}
+
+/// A key the edit over a tree view's label got: Enter keeps, Escape cancels; whether it was.
+pub(super) fn label_editor_key(editor: usize, virtual_key: usize) -> bool {
+    if !matches!(virtual_key, VK_RETURN | VK_ESCAPE) {
+        return false;
+    }
+    let Some(tree) = editing_tree(editor) else {
+        return false;
+    };
+    end_label_edit(tree, virtual_key == VK_RETURN);
+    true
+}
+
+/// The edit over a tree view's label lost the focus: the edit ends, keeping the text.
+pub(super) fn label_editor_left(editor: usize) {
+    if let Some(tree) = editing_tree(editor) {
+        end_label_edit(tree, true);
+    }
+}
+
+/// Whether `window` is the edit over a tree view's label.
+pub(super) fn is_label_editor(window: usize) -> bool {
+    editing_tree(window).is_some()
 }

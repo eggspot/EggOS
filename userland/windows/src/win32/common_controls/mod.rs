@@ -12,7 +12,23 @@ mod header;
 mod image_list;
 mod list_view;
 
-pub(in crate::win32) use list_view::{is_label_editor, label_editor_key, label_editor_left};
+/// A key the edit over a list or tree view's label got (D354, D361): Enter keeps the edit,
+/// Escape cancels it; whether the key was one of those for such an edit.
+pub(in crate::win32) fn label_editor_key(editor: usize, virtual_key: usize) -> bool {
+    list_view::label_editor_key(editor, virtual_key)
+        || tree_view::label_editor_key(editor, virtual_key)
+}
+
+/// The edit over a list or tree view's label lost the focus: the edit ends, kept.
+pub(in crate::win32) fn label_editor_left(editor: usize) {
+    list_view::label_editor_left(editor);
+    tree_view::label_editor_left(editor);
+}
+
+/// Whether `window` is the edit over a list or tree view's label.
+pub(in crate::win32) fn is_label_editor(window: usize) -> bool {
+    list_view::is_label_editor(window) || tree_view::is_label_editor(window)
+}
 mod progress;
 mod status_bar;
 mod tab_control;
