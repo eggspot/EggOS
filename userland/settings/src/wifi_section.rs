@@ -43,7 +43,7 @@ const STRONG_DBM: i32 = -60;
 const GOOD_DBM: i32 = -72;
 const DOT: &str = " \u{b7} ";
 
-const CANNOT_JOIN_REASON: &str = "EggOS joins open and WPA2 networks. WPA3 is not there yet.";
+const CANNOT_JOIN_REASON: &str = "EggOS joins open, WPA2 and WPA3 networks. WEP and WPA are not safe to join.";
 const LENGTH_RULE: &str = "Use 8 to 63 characters.";
 
 /// How a network protects its traffic, as the driver names it.
@@ -78,7 +78,7 @@ impl Security {
     }
 
     fn joinable(self) -> bool {
-        matches!(self, Security::Open | Security::Wpa2)
+        matches!(self, Security::Open | Security::Wpa2 | Security::Wpa3)
     }
 }
 
@@ -485,7 +485,7 @@ impl WifiSection {
                     true => Button::Join,
                     false => Button::CannotJoin,
                 },
-                needs_passphrase: heard.security == Security::Wpa2,
+                needs_passphrase: matches!(heard.security, Security::Wpa2 | Security::Wpa3),
             });
         }
         rows

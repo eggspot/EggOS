@@ -186,6 +186,16 @@ impl Modulus {
         self.multiply(a, &[1, 0, 0, 0])
     }
 
+    fn power(&self, a: &Limbs, exponent: &Limbs) -> Limbs {
+        let mut result = self.to_montgomery(&[1, 0, 0, 0]);
+        for bit in (0..256).rev() {
+            result = self.multiply(&result, &result);
+            let multiplied = self.multiply(&result, a);
+            result = select((exponent[bit / 64] >> (bit % 64)) & 1, &multiplied, &result);
+        }
+        result
+    }
+
     fn invert(&self, a: &Limbs) -> Limbs {
         let (exponent, _) = subtract_limbs(&self.value, &[2, 0, 0, 0]);
         let mut result = self.to_montgomery(&[1, 0, 0, 0]);
@@ -287,11 +297,14 @@ impl Curve {
     }
 
     fn multiply_base(&self, scalar: &Limbs) -> Point {
-        let base = self.base();
+        self.multiply_point(&self.base(), scalar)
+    }
+
+    fn multiply_point(&self, base: &Point, scalar: &Limbs) -> Point {
         let mut sum = self.identity();
         for bit in (0..256).rev() {
             sum = self.add(&sum, &sum);
-            let added = self.add(&sum, &base);
+            let added = self.add(&sum, base);
             let chosen = (scalar[bit / 64] >> (bit % 64)) & 1;
             sum = Point {
                 x: select(chosen, &added.x, &sum.x),
@@ -309,6 +322,141 @@ impl Curve {
             f.from_montgomery(&f.multiply(&point.x, &inverse)),
             f.from_montgomery(&f.multiply(&point.y, &inverse)),
         )
+    }
+
+    fn from_affine(&self, point: &AffinePoint) -> Point {
+        Point {
+            x: self.field.to_montgomery(&from_be(&point.x)),
+            y: self.field.to_montgomery(&from_be(&point.y)),
+            z: self.field.to_montgomery(&[1, 0, 0, 0]),
+        }
+    }
+
+    fn to_affine(&self, point: &Point) -> Option<AffinePoint> {
+        if is_zero(&point.z) == 1 {
+            return None;
+        }
+        let (x, y) = self.affine(point);
+        Some(AffinePoint { x: to_be(&x), y: to_be(&y) })
+    }
+
+    fn right_side(&self, x: &Limbs) -> Limbs {
+        let f = &self.field;
+        let x = f.to_montgomery(x);
+        let cubed = f.multiply(&f.multiply(&x, &x), &x);
+        let tripled = f.add(&f.add(&x, &x), &x);
+        f.add(&f.subtract(&cubed, &tripled), &self.b)
+    }
+}
+
+/// A point of P-256 other than the identity, its affine coordinates big-endian: the group
+/// WPA3's SAE runs in (IEEE 802.11 group 19; D285).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AffinePoint {
+    pub x: [u8; SCALAR_BYTES],
+    pub y: [u8; SCALAR_BYTES],
+}
+
+fn shifted_right(value: &Limbs, bits: u32) -> Limbs {
+    core::array::from_fn(|index| {
+        let high = value.get(index + 1).map_or(0, |next| next << (64 - bits));
+        (value[index] >> bits) | high
+    })
+}
+
+fn below(value: &Limbs, bound: &Limbs) -> bool {
+    subtract_limbs(value, bound).1 == 1
+}
+
+/// The field's prime, big-endian.
+pub fn prime() -> [u8; SCALAR_BYTES] {
+    to_be(&PRIME)
+}
+
+/// The group's order, big-endian.
+pub fn order() -> [u8; SCALAR_BYTES] {
+    to_be(&ORDER)
+}
+
+/// Whether `value` (big-endian) is below the field's prime.
+pub fn below_prime(value: &[u8; SCALAR_BYTES]) -> bool {
+    below(&from_be(value), &PRIME)
+}
+
+/// Whether `value` (big-endian) is a scalar SAE accepts: above 1 and below the order.
+pub fn scalar_in_range(value: &[u8; SCALAR_BYTES]) -> bool {
+    let limbs = from_be(value);
+    below(&limbs, &ORDER) && below(&[1, 0, 0, 0], &limbs)
+}
+
+/// `a + b` modulo the order; both must be below it.
+pub fn scalar_add(a: &[u8; SCALAR_BYTES], b: &[u8; SCALAR_BYTES]) -> [u8; SCALAR_BYTES] {
+    let order = Modulus::new(ORDER);
+    to_be(&order.add(&from_be(a), &from_be(b)))
+}
+
+/// Whether `x³ - 3x + b` is a square modulo the prime for `x` below it: whether a point has
+/// that x-coordinate. Constant time in `x`.
+pub fn has_point_at(x: &[u8; SCALAR_BYTES]) -> bool {
+    let curve = Curve::new();
+    let f = &curve.field;
+    let value = curve.right_side(&from_be(x));
+    let (minus_one, _) = subtract_limbs(&PRIME, &[1, 0, 0, 0]);
+    let symbol = f.from_montgomery(&f.power(&value, &shifted_right(&minus_one, 1)));
+    (is_zero(&value) | is_zero(&subtract_limbs(&symbol, &[1, 0, 0, 0]).0)) == 1
+}
+
+/// The point with x-coordinate `x` whose y-coordinate's lowest bit is `odd`, if there is one.
+pub fn point_at(x: &[u8; SCALAR_BYTES], odd: bool) -> Option<AffinePoint> {
+    if !below_prime(x) {
+        return None;
+    }
+    let curve = Curve::new();
+    let f = &curve.field;
+    let value = curve.right_side(&from_be(x));
+    let (plus_one, _) = add_limbs(&PRIME, &[1, 0, 0, 0]);
+    let root = f.power(&value, &shifted_right(&plus_one, 2));
+    if f.multiply(&root, &root) != value {
+        return None;
+    }
+    let root = f.from_montgomery(&root);
+    let negated = f.subtract(&[0; 4], &root);
+    let flip = (root[0] & 1) ^ u64::from(odd);
+    Some(AffinePoint {
+        x: *x,
+        y: to_be(&select(flip, &negated, &root)),
+    })
+}
+
+/// Whether `point`'s coordinates are below the prime and satisfy the curve's equation.
+pub fn on_curve(point: &AffinePoint) -> bool {
+    if !below_prime(&point.x) || !below_prime(&point.y) {
+        return false;
+    }
+    let curve = Curve::new();
+    let f = &curve.field;
+    let y = f.to_montgomery(&from_be(&point.y));
+    f.multiply(&y, &y) == curve.right_side(&from_be(&point.x))
+}
+
+/// `scalar · point`, or `None` for the identity. Constant time in the scalar.
+pub fn multiply(point: &AffinePoint, scalar: &[u8; SCALAR_BYTES]) -> Option<AffinePoint> {
+    let curve = Curve::new();
+    curve.to_affine(&curve.multiply_point(&curve.from_affine(point), &from_be(scalar)))
+}
+
+/// `a + b`, or `None` for the identity.
+pub fn add(a: &AffinePoint, b: &AffinePoint) -> Option<AffinePoint> {
+    let curve = Curve::new();
+    curve.to_affine(&curve.add(&curve.from_affine(a), &curve.from_affine(b)))
+}
+
+/// `-point`.
+pub fn negate(point: &AffinePoint) -> AffinePoint {
+    let field = Modulus::new(PRIME);
+    AffinePoint {
+        x: point.x,
+        y: to_be(&field.subtract(&[0; 4], &from_be(&point.y))),
     }
 }
 
@@ -429,3 +577,35 @@ pub fn sign(
 pub fn private_key_from(randomness: &[u8; SCALAR_BYTES]) -> Option<[u8; SCALAR_BYTES]> {
     private_scalar(randomness).ok().map(|_| *randomness)
 }
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+
+    #[test]
+    fn the_group_operations_agree_with_each_other() {
+        let base = AffinePoint {
+            x: to_be(&BASE_X),
+            y: to_be(&BASE_Y),
+        };
+        assert!(on_curve(&base));
+        assert!(has_point_at(&base.x));
+        assert_eq!(point_at(&base.x, base.y[31] & 1 == 1), Some(base));
+        let mut two = [0u8; 32];
+        two[31] = 2;
+        let mut three = [0u8; 32];
+        three[31] = 3;
+        let doubled = multiply(&base, &two).unwrap();
+        assert_eq!(add(&base, &base), Some(doubled));
+        assert_eq!(add(&doubled, &base), multiply(&base, &three));
+        assert_eq!(add(&base, &negate(&base)), None);
+        assert!(scalar_in_range(&two) && !scalar_in_range(&order()));
+        let (minus_one, _) = subtract_limbs(&ORDER, &[1, 0, 0, 0]);
+        assert_eq!(scalar_add(&to_be(&minus_one), &two), {
+            let mut one = [0u8; 32];
+            one[31] = 1;
+            one
+        });
+    }
+}
+

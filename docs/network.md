@@ -161,8 +161,11 @@ wifi connect home 'correct horse battery'
 ```
 
 The driver loads the firmware once the component is installed, scans every 30 seconds, and
-joins the named network after its next scan: open networks and WPA2-Personal (WPA3 is not
-there yet). `wifi list` (and the MCP tool `wifi_list`) shows where it is: waiting for the
+joins the named network within seconds of `wifi connect`: open networks, WPA2-Personal and
+WPA3-Personal (SAE, with protected management frames; D285). It leaves the network when the
+file is removed or names another one, keeps scanning while joined, and joins again when the
+access point ends the connection (D284). The first line of `wifi list` names a failure by a short
+code (`wrong-passphrase`, `not-in-range`, `no-answer`, ...) before its sentence. `wifi list` (and the MCP tool `wifi_list`) shows where it is: waiting for the
 component, scanning, ready, connecting, connected, or why it stopped, then the networks it
 heard, strongest first. `wifi connect` writes `/var/lib/eggos/wifi.conf`, which only root reads;
 `wifi forget` removes it. Settings > Network lists the same networks and joins and forgets them
@@ -173,7 +176,7 @@ rule; its notices are in `/usr/share/licenses/eggos/iwx-NOTICE.md`.
 
 ## Not yet
 
-Wi-Fi and Ethernet together, WPA3-Personal and 6 GHz; IPv6; fragments; static addresses, a second adapter and their routes;
+Wi-Fi and Ethernet together and 6 GHz; IPv6; fragments; static addresses, a second adapter and their routes;
 multicast; reverse lookups; netlink (iproute2 itself and `getifaddrs`); the indicator at 2x and on the phone's
 bar, and downloads kept across boots; TCP window scaling,
 selective acknowledgments, keep-alive, urgent data and Nagle's delay (`TCP_NODELAY` is always

@@ -1,6 +1,8 @@
 //! CCMP (IEEE 802.11-2020, 12.5.3): data frames encrypted and authenticated with AES-CCM under
 //! the temporal key, with the packet number in the CCMP header and the MAC header in the AAD.
-//! Frames with a fourth address (between access points) are not taken.
+//! Frames with a fourth address (between access points) are not taken. With management frame
+//! protection (WPA3, D285) unicast management frames are protected the same way, their nonce
+//! flags marking them as management frames.
 
 use eggos_crypto::aes::Aes;
 use eggos_crypto::ccm::{self, NONCE_BYTES, TAG_BYTES};
@@ -24,8 +26,17 @@ pub enum ProtectionError {
     Forged,
 }
 
+const NONCE_MANAGEMENT: u8 = 1 << 4;
+
+fn is_management(header: &[u8]) -> bool {
+    header[0] & 0x0c == 0
+}
+
 fn header_length(frame: &[u8]) -> Option<usize> {
     let control = crate::frames::frame_control(frame)?;
+    if control.kind == crate::frames::FRAME_TYPE_MANAGEMENT {
+        return Some(DATA_HEADER_BYTES);
+    }
     if control.kind != crate::frames::FRAME_TYPE_DATA || (control.to_ds && control.from_ds) {
         return None;
     }
@@ -34,8 +45,9 @@ fn header_length(frame: &[u8]) -> Option<usize> {
 }
 
 fn aad(header: &[u8], out: &mut [u8; MAX_AAD_BYTES]) -> usize {
-    let qos = header[0] & QOS_SUBTYPE_BIT != 0;
-    out[0] = header[0] & 0x8f;
+    let management = is_management(header);
+    let qos = !management && header[0] & QOS_SUBTYPE_BIT != 0;
+    out[0] = if management { header[0] } else { header[0] & 0x8f };
     out[1] = (header[1] & !0x38 & if qos { 0x7f } else { 0xff }) | PROTECTED;
     out[2..20].copy_from_slice(&header[4..22]);
     out[20] = header[22] & 0x0f;
@@ -51,7 +63,9 @@ fn aad(header: &[u8], out: &mut [u8; MAX_AAD_BYTES]) -> usize {
 
 fn nonce(header: &[u8], packet_number: u64) -> [u8; NONCE_BYTES] {
     let mut nonce = [0u8; NONCE_BYTES];
-    if header[0] & QOS_SUBTYPE_BIT != 0 {
+    if is_management(header) {
+        nonce[0] = NONCE_MANAGEMENT;
+    } else if header[0] & QOS_SUBTYPE_BIT != 0 {
         nonce[0] = header[24] & 0x0f;
     }
     nonce[1..7].copy_from_slice(&header[10..16]);

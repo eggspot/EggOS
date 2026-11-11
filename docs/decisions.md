@@ -19944,3 +19944,36 @@ the license, by an explicit instruction recorded here.
   `/proc/net/interfaces` naming the adapter's kind (ask 6); the radio switch's kind (ask 7);
   hidden networks and names as escaped bytes (asks 8 and 9); group-key rekeying.
 
+## D285 WPA3-Personal: SAE on P-256, the SHA-256 handshake and protected management frames (D284's ask 8; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from IEEE 802.11-2020 12.4, 12.7 and RFC 4493)
+
+- **Decision.** A network whose RSN element offers SAE and no PSK is joined as WPA3-Personal
+  (`Security::Wpa3Personal`); a transition-mode network offering both stays WPA2-Personal, which
+  it accepts.
+  - `eggos_crypto::p256` gains the group operations SAE needs, all on the existing constant-time
+    Montgomery field and complete addition formulas: points multiplied (the same ladder as the base
+    point's), added and negated, a point found from its x-coordinate (square root as
+    `a^((p+1)/4)`, the Legendre symbol as `a^((p-1)/2)`, by a constant-time exponentiation), the
+    curve equation checked, and scalars added modulo the order. `eggos_crypto::cmac` is AES-CMAC
+    (RFC 4493's vectors as tests).
+  - `eggos_wifi::sae` runs SAE on group 19 with hunting-and-pecking: all 40 rounds whatever the
+    password, the password element from `max(addresses) || min(addresses)`, a commit of
+    `(rand + mask) mod r` and `-(mask · PWE)`, the peer's commit checked (range, curve, not our own
+    reflected), the shared x-coordinate through HMAC-SHA-256 and KDF-SHA-256 to the KCK and PMK,
+    and confirms over both commits. Anti-clogging tokens are sent back as asked, up to three
+    commits. Hash-to-element (needed for 6 GHz) is not written: hunting-and-pecking is what every
+    WPA3-Personal access point takes on 2.4 and 5 GHz.
+  - `eggos_wifi::kdf` is IEEE 802.11's KDF over HMAC-SHA-256. The handshake takes an `Akm`: for
+    SAE the PTK comes from KDF-SHA-256, EAPOL-Key frames carry key descriptor version 0 with
+    AES-CMAC MICs, message 2 carries WPA3's RSN element (SAE, management frame protection capable
+    and required, BIP-CMAC-128), and message 3 must hold the IGTK KDE, kept in `Keys::igtk`.
+  - The station sends SAE authentication frames (algorithm 3) instead of open-system ones, and a
+    wrong password shows as `wrong-passphrase`: the access point never confirms. With management
+    frames protected, CCMP covers unicast management frames too (nonce flag bit 4), and only a
+    protected disassociation or deauthentication addressed to the station, decrypted and newer
+    than the last, ends the link; unprotected ones are ignored.
+  - The Network pane offers `Join` with the passphrase note on WPA3 networks.
+- **Not yet.** Building and running; hash-to-element and 6 GHz; checking BIP on group management
+  frames (they are ignored instead) and noticing a silent access point by lost beacons; answering
+  SA Query requests, which an access point sends when the station joins again while it still
+  holds the old association; PMKSA caching.
+

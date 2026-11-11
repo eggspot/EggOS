@@ -23,7 +23,8 @@ use eggos_drivers::wifi::iwx::scan;
 use eggos_drivers::wifi::iwx::station::{self, Link, Target};
 use eggos_wifi::client;
 use eggos_wifi::frames::{self as wifi_frames, Network, Security};
-use eggos_wifi::handshake::{self, Keys, Supplicant};
+use eggos_wifi::handshake::{self, Akm, Keys, Supplicant};
+use eggos_wifi::sae::{self, Sae};
 use eggos_drivers::wifi::iwx::transport::{self, Transport, Wait};
 use eggos_hal::Platform;
 
@@ -40,6 +41,7 @@ const SCAN_TIMEOUT_MS: u64 = 15_000;
 const SCAN_INTERVAL_MS: u64 = 30_000;
 const ANSWER_TIMEOUT_MS: u64 = 2000;
 const HANDSHAKE_TIMEOUT_MS: u64 = 5000;
+const SAE_COMMIT_TRIES: usize = 3;
 /// The file that names the network to join (D278): `ssid=<name>` and `passphrase=<words>` lines.
 pub const SETTINGS_PATH: &str = "/var/lib/eggos/wifi.conf";
 const LARGEST_SETTINGS: usize = 4096;
@@ -86,7 +88,7 @@ const NOT_IN_RANGE: Failure = Failure::of("not-in-range", "the network is not in
 const NO_ANSWER: Failure = Failure::of("no-answer", "the network did not answer");
 const WRONG_PASSPHRASE: Failure = Failure::of("wrong-passphrase", "the network did not accept the passphrase");
 const REFUSED: Failure = Failure::of("refused", "the network refused the station");
-const UNSUPPORTED: Failure = Failure::of("unsupported-security", "the network's security is not WPA2-Personal or open");
+const UNSUPPORTED: Failure = Failure::of("unsupported-security", "the network's security is not WPA3-Personal, WPA2-Personal or open");
 const DROPPED: Failure = Failure::of("dropped", "the network ended the connection");
 const ETHERNET_IN_USE: Failure = Failure::of("ethernet-in-use", "a wired adapter is the network's adapter until the next restart");
 
@@ -98,6 +100,7 @@ struct Traffic {
 struct Connection {
     link: Link<DmaRegion>,
     keys: Option<Keys>,
+    management_protected: bool,
 }
 
 /// The station's adapter as the network stack sees it (D279, D284): frames go through queues
@@ -156,9 +159,33 @@ struct Joined {
     packet_number: u64,
     last_unicast: u64,
     last_group: u64,
+    management_protected: bool,
+    last_management: u64,
 }
 
 impl Joined {
+    fn ended(&mut self, frame: &[u8]) -> bool {
+        let (own, bssid) = (self.link.address(), self.link.target().bssid);
+        if !self.management_protected {
+            return client::ended_by(frame, own, bssid).is_some();
+        }
+        let Some(keys) = &self.keys else {
+            return false;
+        };
+        if !client::is_protected_ending(frame) || frame.get(4..10) != Some(&own[..]) || frame.get(10..16) != Some(&bssid[..]) {
+            return false;
+        }
+        let mut body = [0u8; 64];
+        let Ok((length, number)) = eggos_wifi::protection::decrypt(&keys.tk, frame, &mut body) else {
+            return false;
+        };
+        if length < 2 || (number <= self.last_management && self.last_management != 0) {
+            return false;
+        }
+        self.last_management = number;
+        true
+    }
+
     fn ethernet_of(&mut self, frame: &[u8]) -> Option<Vec<u8>> {
         let header = client::data_header_bytes(frame)?;
         let bssid = self.link.target().bssid;
@@ -311,10 +338,16 @@ fn connect<P: Platform>(
         .find(|channel| Some(channel.number) == network.channel)
         .copied()
         .ok_or(Failure::of("channel", "the network's channel is not one the adapter may use"))?;
-    let protected = match network.security {
-        Security::Open => false,
-        Security::Wpa2Personal => true,
+    let akm = match network.security {
+        Security::Open => None,
+        Security::Wpa2Personal => Some(Akm::Psk),
+        Security::Wpa3Personal => Some(Akm::Sae),
         _ => return Err(UNSUPPORTED),
+    };
+    let rsn: Option<&[u8]> = match akm {
+        None => None,
+        Some(Akm::Psk) => Some(&wifi_frames::WPA2_PERSONAL_RSN),
+        Some(Akm::Sae) => Some(&wifi_frames::WPA3_PERSONAL_RSN),
     };
     let (own, bssid) = (nvm.address, network.bssid);
     let ax210 = adapter.family == devices::Family::Ax210;
@@ -335,14 +368,51 @@ fn connect<P: Platform>(
     let mut link = station::join(transport, firmware, adapter, own, target, &mut Regions, &mut Pauses::<P>::within(INIT_TIMEOUT_MS))
         .map_err(joining_failed)?;
     let mut attempt = || -> Result<Option<Keys>, Failure> {
-        link.send(transport, &client::authentication_request(own, bssid)).map_err(joining_failed)?;
-        let status = wait_frame::<P, _>(transport, answer(NO_ANSWER, REFUSED, ANSWER_TIMEOUT_MS), |frame| {
-            client::authentication_status(frame, bssid)
-        })?;
-        if status != 0 {
-            return Err(REFUSED);
+        let mut sae_pmk = None;
+        if akm == Some(Akm::Sae) {
+            let mut random = |out: &mut [u8]| crate::random::fill::<P>(out);
+            let mut exchange = Sae::new(passphrase, own, bssid, &mut random).map_err(|_| Failure::adapter("SAE could not start"))?;
+            let mut token: Vec<u8> = Vec::new();
+            let mut committed = false;
+            for _ in 0..SAE_COMMIT_TRIES {
+                link.send(transport, &client::sae_authentication(own, bssid, 1, 0, &exchange.commit_body(&token))).map_err(joining_failed)?;
+                let (_, status, body) = wait_frame::<P, _>(transport, answer(NO_ANSWER, REFUSED, ANSWER_TIMEOUT_MS), |frame| {
+                    client::sae_answer(frame, bssid).filter(|(sequence, _, _)| *sequence == 1)
+                })?;
+                if status == sae::ANTI_CLOGGING_TOKEN_REQUIRED {
+                    token = body.get(2..).unwrap_or_default().to_vec();
+                    continue;
+                }
+                if status != 0 {
+                    return Err(REFUSED);
+                }
+                exchange.receive_commit(&body).map_err(|_| REFUSED)?;
+                committed = true;
+                break;
+            }
+            if !committed {
+                return Err(REFUSED);
+            }
+            let confirm = exchange.confirm_body(1).ok_or(REFUSED)?;
+            link.send(transport, &client::sae_authentication(own, bssid, 2, 0, &confirm)).map_err(joining_failed)?;
+            let (_, status, body) = wait_frame::<P, _>(transport, answer(WRONG_PASSPHRASE, WRONG_PASSPHRASE, ANSWER_TIMEOUT_MS), |frame| {
+                client::sae_answer(frame, bssid).filter(|(sequence, _, _)| *sequence == 2)
+            })?;
+            if status != 0 {
+                return Err(WRONG_PASSPHRASE);
+            }
+            let (pmk, _) = exchange.receive_confirm(&body).map_err(|_| WRONG_PASSPHRASE)?;
+            sae_pmk = Some(pmk);
+        } else {
+            link.send(transport, &client::authentication_request(own, bssid)).map_err(joining_failed)?;
+            let status = wait_frame::<P, _>(transport, answer(NO_ANSWER, REFUSED, ANSWER_TIMEOUT_MS), |frame| {
+                client::authentication_status(frame, bssid)
+            })?;
+            if status != 0 {
+                return Err(REFUSED);
+            }
         }
-        let request = client::association_request(own, bssid, network.ssid(), protected);
+        let request = client::association_request(own, bssid, network.ssid(), rsn);
         link.send(transport, &request).map_err(joining_failed)?;
         let (status, association) = wait_frame::<P, _>(transport, answer(NO_ANSWER, REFUSED, ANSWER_TIMEOUT_MS), |frame| {
             client::association_answer(frame, bssid)
@@ -351,13 +421,16 @@ fn connect<P: Platform>(
             return Err(REFUSED);
         }
         station::associated(transport, &link, association, &mut Pauses::<P>::within(INIT_TIMEOUT_MS)).map_err(joining_failed)?;
-        if !protected {
+        let Some(akm) = akm else {
             return Ok(None);
-        }
-        let pmk = handshake::pmk_from_passphrase(passphrase, network.ssid()).ok_or(WRONG_PASSPHRASE)?;
+        };
+        let pmk = match sae_pmk {
+            Some(pmk) => pmk,
+            None => handshake::pmk_from_passphrase(passphrase, network.ssid()).ok_or(WRONG_PASSPHRASE)?,
+        };
         let mut nonce = [0u8; handshake::NONCE_BYTES];
         crate::random::fill::<P>(&mut nonce);
-        let mut supplicant = Supplicant::new(pmk, own, bssid, nonce);
+        let mut supplicant = Supplicant::for_akm(akm, pmk, own, bssid, nonce);
         let mut answered = false;
         loop {
             let timed_out = if answered { WRONG_PASSPHRASE } else { NO_ANSWER };
@@ -377,7 +450,11 @@ fn connect<P: Platform>(
         }
     };
     match attempt() {
-        Ok(keys) => Ok(Connection { link, keys }),
+        Ok(keys) => Ok(Connection {
+            link,
+            keys,
+            management_protected: akm == Some(Akm::Sae),
+        }),
         Err(failure) => {
             let _ = link.send(transport, &client::deauthentication(own, bssid, LEAVING));
             let _ = station::leave(transport, firmware, link, &mut Pauses::<P>::within(INIT_TIMEOUT_MS));
@@ -646,6 +723,8 @@ impl Station {
             packet_number: 0,
             last_unicast: 0,
             last_group: 0,
+            management_protected: joined.management_protected,
+            last_management: 0,
         });
         if !self.attached {
             let device = WifiDevice::<P> {
@@ -677,7 +756,6 @@ impl Station {
                 let _ = joined.link.send(&self.transport, &wire);
             }
         }
-        let (own, bssid) = (joined.link.address(), joined.link.target().bssid);
         let mut arrived = false;
         for packet in self.transport.take_notifications() {
             if packet.code != scan::RX_MPDU {
@@ -686,7 +764,7 @@ impl Station {
             let Some(heard) = scan::received_frame(&packet.payload, ax210) else {
                 continue;
             };
-            if client::ended_by(&heard.frame, own, bssid).is_some() {
+            if joined.ended(&heard.frame) {
                 return Err(DROPPED);
             }
             if let Some(ethernet) = joined.ethernet_of(&heard.frame) {

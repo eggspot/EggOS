@@ -2,7 +2,7 @@
 //! authentication and the association request it sends, the answers it reads, and data frames
 //! to and from the access point, carrying Ethernet payloads behind an LLC/SNAP header.
 
-use crate::frames::{Address, WPA2_PERSONAL_RSN};
+use crate::frames::Address;
 use alloc::vec::Vec;
 
 const HEADER_BYTES: usize = 24;
@@ -19,6 +19,8 @@ const TO_DS: u8 = 0x01;
 const FROM_DS: u8 = 0x02;
 const PROTECTED: u8 = 0x40;
 const OPEN_SYSTEM: u16 = 0;
+const SAE: u16 = 3;
+const PROTECTED_FLAG: u8 = 0x40;
 const SUCCESS: u16 = 0;
 const CAPABILITY_ESS: u16 = 1 << 0;
 const CAPABILITY_PRIVACY: u16 = 1 << 4;
@@ -55,11 +57,33 @@ pub fn authentication_request(own: Address, bssid: Address) -> Vec<u8> {
     frame
 }
 
-/// The association request `own` sends to `bssid` for network `ssid`, offering WPA2-Personal
-/// when `protected`.
-pub fn association_request(own: Address, bssid: Address, ssid: &[u8], protected: bool) -> Vec<u8> {
+/// An SAE authentication frame `own` sends to `bssid` (D285): transaction `sequence` (1 for a
+/// commit, 2 for a confirm), its status and its SAE body.
+pub fn sae_authentication(own: Address, bssid: Address, sequence: u16, status: u16, body: &[u8]) -> Vec<u8> {
+    let mut frame = header(SUBTYPE_AUTHENTICATION, 0, bssid, own, bssid);
+    frame.extend_from_slice(&SAE.to_le_bytes());
+    frame.extend_from_slice(&sequence.to_le_bytes());
+    frame.extend_from_slice(&status.to_le_bytes());
+    frame.extend_from_slice(body);
+    frame
+}
+
+/// The transaction sequence, status and SAE body of `frame` when it is `bssid`'s SAE
+/// authentication frame.
+pub fn sae_answer(frame: &[u8], bssid: Address) -> Option<(u16, u16, Vec<u8>)> {
+    let body = from(frame, bssid, SUBTYPE_AUTHENTICATION)?;
+    if half(body, 0)? != SAE {
+        return None;
+    }
+    Some((half(body, 2)?, half(body, 4)?, body.get(6..)?.to_vec()))
+}
+
+/// The association request `own` sends to `bssid` for network `ssid`, with the RSN element
+/// `rsn` for a protected network (WPA2's or WPA3's) or none for an open one.
+pub fn association_request(own: Address, bssid: Address, ssid: &[u8], rsn: Option<&[u8]>) -> Vec<u8> {
     let mut frame = header(SUBTYPE_ASSOCIATION_REQUEST, 0, bssid, own, bssid);
     let mut capability = CAPABILITY_ESS | CAPABILITY_SHORT_SLOT;
+    let protected = rsn.is_some();
     if protected {
         capability |= CAPABILITY_PRIVACY;
     }
@@ -71,8 +95,8 @@ pub fn association_request(own: Address, bssid: Address, ssid: &[u8], protected:
     frame.extend_from_slice(&RATES);
     frame.extend_from_slice(&[ELEMENT_EXTENDED_RATES, EXTENDED_RATES.len() as u8]);
     frame.extend_from_slice(&EXTENDED_RATES);
-    if protected {
-        frame.extend_from_slice(&WPA2_PERSONAL_RSN);
+    if let Some(rsn) = rsn {
+        frame.extend_from_slice(rsn);
     }
     frame
 }
@@ -94,6 +118,13 @@ pub fn deauthentication(own: Address, bssid: Address, reason: u16) -> Vec<u8> {
     let mut frame = header(SUBTYPE_DEAUTHENTICATION, 0, bssid, own, bssid);
     frame.extend_from_slice(&reason.to_le_bytes());
     frame
+}
+
+/// Whether `frame` is a disassociation or deauthentication frame with its protected bit set:
+/// with management frame protection (WPA3) only such a frame, decrypted, ends the link.
+pub fn is_protected_ending(frame: &[u8]) -> bool {
+    matches!(frame.first(), Some(&SUBTYPE_DEAUTHENTICATION | &SUBTYPE_DISASSOCIATION))
+        && frame.get(1).is_some_and(|flags| flags & PROTECTED_FLAG != 0)
 }
 
 /// The reason code of `frame` when it is `bssid` ending the station's association or
@@ -186,9 +217,14 @@ mod tests {
         assert_eq!(auth.len(), 30);
         assert_eq!((auth[0], &auth[4..10], &auth[10..16]), (0xb0, &AP[..], &OWN[..]));
         assert_eq!(&auth[24..30], &[0, 0, 1, 0, 0, 0]);
-        let association = association_request(OWN, AP, b"home", true);
+        let association = association_request(OWN, AP, b"home", Some(&crate::frames::WPA2_PERSONAL_RSN));
         assert_eq!(&association[28..34], &[0, 4, b'h', b'o', b'm', b'e']);
-        assert!(association.ends_with(&WPA2_PERSONAL_RSN));
+        assert!(association.ends_with(&crate::frames::WPA2_PERSONAL_RSN));
+        let commit = sae_authentication(OWN, AP, 1, 0, &[19, 0, 9]);
+        assert_eq!(&commit[24..], &[3, 0, 1, 0, 0, 0, 19, 0, 9]);
+        let mut answer = header(SUBTYPE_AUTHENTICATION, 0, OWN, AP, AP);
+        answer.extend_from_slice(&[3, 0, 2, 0, 0, 0, 7, 7]);
+        assert_eq!(sae_answer(&answer, AP), Some((2, 0, vec![7, 7])));
         assert_ne!(u16::from_le_bytes([association[24], association[25]]) & CAPABILITY_PRIVACY, 0);
     }
 

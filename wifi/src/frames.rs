@@ -148,6 +148,14 @@ pub const WPA2_PERSONAL_RSN: [u8; 22] = [
     0, 0,
 ];
 
+/// The RSN element a WPA3-Personal station sends (D285): version 1, CCMP group and pairwise,
+/// SAE, management frame protection capable and required, BIP-CMAC-128 for group management
+/// frames.
+pub const WPA3_PERSONAL_RSN: [u8; 28] = [
+    ELEMENT_RSN, 26, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 8,
+    0xc0, 0x00, 0, 0, 0x00, 0x0f, 0xac, 6,
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
