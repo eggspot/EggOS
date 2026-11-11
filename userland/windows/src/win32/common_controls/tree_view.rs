@@ -64,6 +64,8 @@ const TVM_GETEXTENDEDSTYLE: u32 = 0x112d;
 const TVM_INSERTITEMW: u32 = 0x1132;
 const TVM_ENDEDITLABELNOW: u32 = 0x1116;
 const TVM_EDITLABELW: u32 = 0x1141;
+const TVM_SETTOOLTIPS: u32 = 0x1118;
+const TVM_GETTOOLTIPS: u32 = 0x1119;
 const TVM_GETITEMW: u32 = 0x113e;
 const TVM_SETITEMW: u32 = 0x113f;
 const CCM_GETUNICODEFORMAT: u32 = 0x2006;
@@ -223,6 +225,8 @@ struct TreeState {
     drag: Option<Drag>,
     /// The edit over the label being edited (D361) and the item's index.
     editing: Option<(usize, usize)>,
+    /// The tooltip control of `TVS_INFOTIP` (D363), 0 for none.
+    tips: usize,
 }
 
 impl Model for TreeState {
@@ -237,6 +241,7 @@ pub(super) fn new_state(_style: u32) -> Option<usize> {
         last_down: None,
         drag: None,
         editing: None,
+        tips: 0,
     })
 }
 
@@ -1698,9 +1703,24 @@ pub(super) fn push_items(
 pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
     match number {
         message::NC_CREATE => 1,
-        message::CREATE => 0,
+        message::CREATE => {
+            make_info_tips(window);
+            0
+        }
         message::PAINT => {
+            sync_info_tips(window);
             paint(window);
+            0
+        }
+        TVM_GETTOOLTIPS => {
+            with_state::<TreeState, _>(window, |_, control| control.tips).unwrap_or(0)
+        }
+        TVM_SETTOOLTIPS => with_state::<TreeState, _>(window, |_, control| {
+            core::mem::replace(&mut control.tips, wparam)
+        })
+        .unwrap_or(0),
+        super::WM_NOTIFY if is_from_tips(window, lparam) => {
+            info_tip(window, lparam);
             0
         }
         message::SIZE | message::ENABLE => {
@@ -1915,4 +1935,98 @@ pub(super) fn label_editor_left(editor: usize) {
 /// Whether `window` is the edit over a tree view's label.
 pub(super) fn is_label_editor(window: usize) -> bool {
     editing_tree(window).is_some()
+}
+
+const TVS_INFOTIP: u32 = 0x0800;
+const TVN_GETINFOTIPW: i32 = -414;
+const TTN_GETDISPINFOW: u32 = -530i32 as u32;
+const INFO_TIP_UNITS: usize = 1024;
+const SHOWN_TIP_UNITS: usize = 79;
+
+/// A tree view made with `TVS_INFOTIP` makes its tooltip control (D363).
+fn make_info_tips(window: usize) {
+    let wanted = with(|gui| {
+        gui.windows
+            .get(window)
+            .is_some_and(|entry| entry.style & TVS_INFOTIP != 0)
+    })
+    .unwrap_or(false);
+    if !wanted {
+        return;
+    }
+    let kind = ControlKind::Common(CommonKind::Tooltip);
+    let made = create_child(window, kind, LABEL_WS_CHILD, Rect::default(), 0, &[]);
+    if let Some(tips) = made {
+        with_state::<TreeState, _>(window, |_, control| control.tips = tips);
+    }
+}
+
+/// One callback tool per shown item, named by its index, kept before each paint.
+fn sync_info_tips(window: usize) {
+    let tips = with_state::<TreeState, _>(window, |_, control| control.tips).unwrap_or(0);
+    if tips == 0 {
+        return;
+    }
+    let mut items = [ShownItem::default(); MOST_CUSTOM_ITEMS];
+    let (count, _) = shown_items(window, &mut items);
+    let mut tools = [(0usize, Rect::default()); MOST_CUSTOM_ITEMS];
+    for (tool, item) in tools.iter_mut().zip(&items[..count]) {
+        let [left, top, right, bottom] = item.rect;
+        *tool = (item.index, Rect::new(left, top, right, bottom));
+    }
+    super::tooltip::replace_tools(tips, window, &tools[..count]);
+}
+
+fn is_from_tips(window: usize, lparam: usize) -> bool {
+    if lparam == 0 {
+        return false;
+    }
+    // SAFETY: `WM_NOTIFY`'s `lParam` is an `NMHDR` at least.
+    let header = unsafe { (lparam as *const NotifyHeader).read_unaligned() };
+    header.code == TTN_GETDISPINFOW
+        && with_state::<TreeState, _>(window, |_, control| control.tips == header.from)
+            .unwrap_or(false)
+}
+
+/// `NMTVGETINFOTIPW`.
+#[repr(C)]
+struct GetInfoTip {
+    header: NotifyHeader,
+    text: usize,
+    room: i32,
+    item: usize,
+    lparam: usize,
+}
+
+/// The tip of the item the tooltip asks about (D363): `TVN_GETINFOTIPW` to the parent with a
+/// 1024-unit buffer holding the item's text; an empty answer shows none.
+fn info_tip(window: usize, lparam: usize) {
+    let info = lparam as *mut super::tooltip::DisplayInfo;
+    // SAFETY: the tooltip control's own `NMTTDISPINFOW`, alive for this call.
+    let index = unsafe { (*info).header.id };
+    let mut buffer = [0u16; INFO_TIP_UNITS];
+    let item = with_state::<TreeState, _>(window, |_, control| {
+        let text = control.tree.text(index);
+        let length = text.len().min(INFO_TIP_UNITS - 1);
+        buffer[..length].copy_from_slice(&text[..length]);
+        (control.tree.handle(index), control.tree.lparam(index))
+    });
+    let Some((handle, item_lparam)) = item else {
+        return;
+    };
+    notify_parent(window, TVN_GETINFOTIPW, |header| GetInfoTip {
+        header,
+        text: buffer.as_mut_ptr() as usize,
+        room: INFO_TIP_UNITS as i32,
+        item: handle,
+        lparam: item_lparam,
+    });
+    let length = buffer.iter().position(|&unit| unit == 0).unwrap_or(INFO_TIP_UNITS);
+    let shown = length.min(SHOWN_TIP_UNITS);
+    // SAFETY: as above; its 80-unit buffer takes the text and a NUL.
+    unsafe {
+        (*info).buffer[..shown].copy_from_slice(&buffer[..shown]);
+        (*info).buffer[shown] = 0;
+        (*info).text = (*info).buffer.as_ptr() as usize;
+    }
 }

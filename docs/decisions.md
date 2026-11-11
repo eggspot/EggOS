@@ -22110,3 +22110,13 @@ the license, by an explicit instruction recorded here.
   answer is the tip, an empty one shows none.
 - **Not yet.** Tips longer than 79 units are cut (the tooltip's display buffer), the
   `LVGIT_UNFOLDED` flag and `LVS_EX_LABELTIP`'s unfolding labels, tree views' `TVS_INFOTIP`.
+
+## D363 Windows common controls: tree views' info tips (`TVS_INFOTIP`) (batch part 13's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/windows-tooltips-tray-v0.5.md section 8) and the code-only session (engineering)
+
+- **Decision.** A tree view made with `TVS_INFOTIP` makes its own tooltip control (D355) on
+  `WM_CREATE`; `TVM_GETTOOLTIPS` answers it and `TVM_SETTOOLTIPS` replaces it. Before each
+  paint the tree keeps one callback tool per shown item; when a tip is due it asks its parent
+  with `TVN_GETINFOTIPW` (`NMTVGETINFOTIPW`: a 1024-unit buffer holding the item's text, its
+  `HTREEITEM` and `lParam`), and a non-empty answer is the tip.
+- **Not yet.** Tips past 79 units are cut, as for list views (D362); the tool covers the
+  item's whole row rather than its label alone.
