@@ -22034,3 +22034,19 @@ the license, by an explicit instruction recorded here.
     `GetLayeredWindowAttributes` answers what was set (a table of 16 windows).
 - **Not yet.** `UpdateLayeredWindow` and per-pixel alpha (`ULW_ALPHA` with `AC_SRC_ALPHA`),
   child layered windows, and the frame fading with the content.
+
+## D359 macOS Foundation: NSDictionary's hash index (batch part 14's rest, D232's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Context.** Every lookup compared the wanted key with each key in turn (`isEqual:`), so a
+  dictionary of `n` keys cost `n` message sends per lookup, which large plists and caches
+  make slow.
+- **Decision.** The dictionaries the layer builds (immutable or mutable; not clang's constant
+  literals, which keep their layout) carry an open-addressing index next to their keys
+  (`MutableDictionaryObject::index`): once a dictionary holds 8 keys, a power-of-two table at
+  least twice the count holds each key's position plus one, placed by the key's `hash` and
+  probed linearly. A lookup probes it and compares by identity, then `isEqual:`, only the
+  keys of its probe run; smaller and constant dictionaries still compare every key. Adding a
+  key inserts it while the table stays at most half full and rebuilds it otherwise; removing
+  one rebuilds it (the positions move); `dealloc` frees it. Keys are copied when stored, so
+  their hashes do not change, and equal keys hash alike by Foundation's contract.
+- **Not yet.** The `nsdictionary_lookup` benchmark, and an index for NSSet and NSCountedSet.

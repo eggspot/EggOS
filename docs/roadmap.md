@@ -869,7 +869,8 @@ yet" naming what it left.
     written, unbuilt, D354; the tooltip control, code written, unbuilt, D355; toolbars' tooltips, code written,
     unbuilt, D356; notification-area icons, code written, unbuilt, D357; layered windows' alpha and
     colour key, code written, unbuilt, D358);
-  - part 14's rest: `NSKeyedUnarchiver`, storyboards, NSDictionary's hash index (D232);
+  - part 14's rest: `NSKeyedUnarchiver`, storyboards (D232; NSDictionary's hash index, code
+    written, unbuilt, D359);
   - part 15's rest: scroll views, tables, images, the About panel's icon and credits, the
     alert's element tree, `mac-views.app` (D233);
   - part 16's rest: C++ exceptions on macOS and UDCalc (D234);

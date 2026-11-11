@@ -1,8 +1,10 @@
 //! NSDictionary, NSMutableDictionary, the constant dictionary clang's `@{...}` literals use and
 //! the empty dictionary (`___NSDictionary0__struct`). They share clang's
 //! `NSConstantDictionary` layout, `{isa, options, count, keys, objects}`; mutable dictionaries
-//! add a mutation count, and the dictionaries the layer builds have room for a capacity too. Keys are copied when stored and kept in insertion
-//! order; a lookup compares by identity, then `isEqual:` (a hash index is not there yet).
+//! add a mutation count, and the dictionaries the layer builds have room for a capacity and a
+//! hash index too (D359). Keys are copied when stored and kept in insertion order; a lookup in
+//! a dictionary of 8 keys or more probes the index by the key's `hash`, then compares by
+//! identity, then `isEqual:`; a smaller or constant one compares every key.
 
 use super::array::{FastEnumerationState, new_array, objects_slice};
 use super::{
@@ -41,6 +43,63 @@ pub struct MutableDictionaryObject {
     dictionary: DictionaryObject,
     capacity: usize,
     mutations: usize,
+    index: *mut u32,
+    index_size: usize,
+}
+
+const INDEXED_FROM: usize = 8;
+const SMALLEST_INDEX: usize = 16;
+const EMPTY_SLOT: u32 = 0;
+
+fn layer_built(object: Id) -> bool {
+    !root::is_kind_of(object, &CONSTANT_DICTIONARY)
+}
+
+fn hash_of(key_object: Id) -> usize {
+    send(key_object, sel!("hash")) as usize
+}
+
+fn index_insert(mutable: &mut MutableDictionaryObject, position: usize, hash: usize) {
+    let mask = mutable.index_size - 1;
+    let mut at = hash & mask;
+    // SAFETY: the index holds `index_size` slots and is kept at most half full, so an empty
+    // slot comes.
+    while unsafe { mutable.index.add(at).read() } != EMPTY_SLOT {
+        at = (at + 1) & mask;
+    }
+    // SAFETY: as above.
+    unsafe { mutable.index.add(at).write(position as u32 + 1) };
+}
+
+/// Rebuilds `this`'s hash index (D359): none below 8 keys, else a power of two at least twice
+/// the count, each slot the position of a key plus one (0 empty), probed linearly.
+fn reindex(this: Id) {
+    let count = count_of(this);
+    let mutable = mutable_fields(this);
+    if count < INDEXED_FROM {
+        heap::release(mutable.index.cast());
+        mutable.index = core::ptr::null_mut();
+        mutable.index_size = 0;
+        return;
+    }
+    let size = (count * 2).next_power_of_two().max(SMALLEST_INDEX);
+    if size != mutable.index_size {
+        heap::release(mutable.index.cast());
+        mutable.index = heap::allocate(size * core::mem::size_of::<u32>(), false).cast();
+        mutable.index_size = match mutable.index.is_null() {
+            true => 0,
+            false => size,
+        };
+    }
+    if mutable.index.is_null() {
+        return;
+    }
+    // SAFETY: the index holds `size` slots.
+    unsafe { core::ptr::write_bytes(mutable.index, 0, size) };
+    for position in 0..count {
+        let hash = hash_of(key(this, position));
+        index_insert(mutable_fields(this), position, hash);
+    }
 }
 
 fn fields(object: Id) -> *mut DictionaryObject {
@@ -72,10 +131,28 @@ pub fn value(object: Id, index: usize) -> Id {
     unsafe { objects.wrapping_add(index).read() }
 }
 
-/// Where `wanted` is among the keys.
+/// Where `wanted` is among the keys: by the hash index when the dictionary has one (D359).
 pub fn position(object: Id, wanted: Id) -> Option<usize> {
     if wanted.is_null() {
         return None;
+    }
+    if layer_built(object) && !mutable_fields(object).index.is_null() {
+        let mutable = mutable_fields(object);
+        let mask = mutable.index_size - 1;
+        let mut at = hash_of(wanted) & mask;
+        loop {
+            // SAFETY: the index holds `index_size` slots.
+            let slot = unsafe { mutable.index.add(at).read() };
+            if slot == EMPTY_SLOT {
+                return None;
+            }
+            let index = slot as usize - 1;
+            let candidate = key(object, index);
+            if candidate == wanted || send_bool(candidate, sel!("isEqual:"), wanted as usize) {
+                return Some(index);
+            }
+            at = (at + 1) & mask;
+        }
     }
     let mut index = 0;
     while index < count_of(object) {
@@ -145,6 +222,11 @@ fn set(this: Id, object: Id, key_object: Id) {
     // SAFETY: as above.
     unsafe { dictionary.objects.wrapping_add(count).write(object) };
     dictionary.count = count + 1;
+    let mutable = mutable_fields(this);
+    match !mutable.index.is_null() && (count + 1) * 2 <= mutable.index_size {
+        true => index_insert(mutable, count, hash_of(copied)),
+        false => reindex(this),
+    }
 }
 
 fn new_dictionary(class: *mut ClassObject, objects: &[Id], keys: &[Id]) -> Id {
@@ -289,6 +371,7 @@ extern "C" fn dealloc(this: Id, _: Sel) {
     let dictionary = unsafe { &mut *fields(this) };
     heap::release(dictionary.keys.cast());
     heap::release(dictionary.objects.cast());
+    heap::release(mutable_fields(this).index.cast());
     crate::objc::reference_count::dispose(this);
 }
 
@@ -451,6 +534,7 @@ fn remove_at(this: Id, index: usize) {
             .copy_to(dictionary.objects.wrapping_add(index), after)
     };
     dictionary.count -= 1;
+    reindex(this);
     objc_release(key_object);
     objc_release(object);
 }
