@@ -19,6 +19,7 @@ pub mod form;
 mod phone;
 mod phone_sheets;
 mod tablet;
+mod tv;
 pub mod boot_screen;
 mod catalogue;
 mod desktop_icons;
@@ -310,6 +311,8 @@ pub enum SettingsPane {
     Network,
     /// The Components pane, from the bar's `Updates` chip (D300).
     Components,
+    /// Any pane by the name `settings open` takes: the TV's `Settings` row (D307).
+    Named(&'static str),
 }
 
 impl SettingsPane {
@@ -319,6 +322,7 @@ impl SettingsPane {
             Self::Keyboard => "keyboard",
             Self::Network => "network",
             Self::Components => "components",
+            Self::Named(name) => name,
         }
     }
 }
@@ -412,6 +416,7 @@ pub struct Desktop {
     form: form::Form,
     phone: phone::PhoneState,
     tablet: tablet::TabletState,
+    tv: tv::TvState,
     updates: updates::UpdatesState,
     sticky: sticky_keys::StickyChips,
     panel_focus: Option<panel_focus::PanelFocus>,
@@ -513,6 +518,7 @@ impl Desktop {
             form: form::Form::Desktop,
             phone: phone::PhoneState::default(),
             tablet: tablet::TabletState::default(),
+            tv: tv::TvState::default(),
             updates: updates::UpdatesState::default(),
             sticky: sticky_keys::StickyChips::default(),
             panel_focus: None,
@@ -1368,7 +1374,7 @@ impl Desktop {
     fn show(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
         self.place(slot);
         self.window_mut(slot).shown = true;
-        if self.touch_form()
+        if self.fills_form()
             && matches!(self.window_at(slot).role, Role::Normal | Role::Dialog)
             && !self.window_at(slot).minimised
         {
@@ -1695,7 +1701,7 @@ impl Desktop {
             return;
         }
         self.window_mut(slot).minimised = false;
-        if self.touch_form() && self.window_at(slot).role == Role::Normal {
+        if self.fills_form() && self.window_at(slot).role == Role::Normal {
             self.fit_to_phone(slot, damage, events);
         }
         self.damage_window_list(damage);
@@ -2164,6 +2170,9 @@ impl Desktop {
     ) -> Action {
         self.typed = character;
         self.note_person_input();
+        if pressed && let Some(action) = self.tv_key(code, damage, events) {
+            return action;
+        }
         if self.touch_form()
             && pressed
             && let Some(action) = self.phone_key(code, damage, events)
@@ -2409,9 +2418,10 @@ impl Desktop {
             return;
         }
         self.draw_wallpaper(&mut canvas);
-        match self.touch_form() {
-            true => self.draw_phone_home(&mut canvas),
-            false => self.draw_desktop_icons(&mut canvas),
+        match (self.form, self.touch_form()) {
+            (form::Form::Tv, _) => self.draw_tv_home(&mut canvas, contents),
+            (_, true) => self.draw_phone_home(&mut canvas),
+            (_, false) => self.draw_desktop_icons(&mut canvas),
         }
         for &slot in &self.stack[..self.stack_length] {
             let slot = usize::from(slot);
@@ -2521,7 +2531,7 @@ impl Desktop {
         window: &Window,
         contents: &dyn Contents,
     ) {
-        if self.touch_form() && matches!(window.role, Role::Normal | Role::Dialog) {
+        if self.fills_form() && matches!(window.role, Role::Normal | Role::Dialog) {
             self.draw_phone_window_frame(canvas, window);
             self.draw_content(canvas, window, contents);
             if window.role == Role::Dialog {

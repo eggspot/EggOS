@@ -130,7 +130,7 @@ impl Desktop {
         self.layout = layout_in_form(self.width, self.height, 1, self.profile, form);
         self.reset_panels();
         match form {
-            Form::Phone | Form::Tablet => {
+            Form::Phone | Form::Tablet | Form::Tv => {
                 let shown = self.focused_normal();
                 for slot in 0..self.windows.len() {
                     let Some(window) = self.windows[slot] else {

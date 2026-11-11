@@ -313,7 +313,7 @@ pub fn form_in_use() -> (Form, FormSetting, eggos_drivers::desktop::InputKinds) 
 /// phone form.
 pub fn shell_navigate<P: Platform>(to: u32) -> bool {
     with_windows::<P, _>(|desktop, _, damage, events| {
-        if !matches!(desktop.form(), Form::Phone | Form::Tablet) {
+        if !matches!(desktop.form(), Form::Phone | Form::Tablet | Form::Tv) {
             return false;
         }
         match to {

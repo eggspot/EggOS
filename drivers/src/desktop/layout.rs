@@ -150,6 +150,19 @@ pub fn layout_in_form(
     let bottom_bar = match form {
         Form::Phone => NAVIGATION_BAR_HEIGHT,
         Form::Tablet => DOCK_BAR_HEIGHT,
+        Form::Tv => {
+            return Layout {
+                screen: desktop.screen,
+                top_bar: None,
+                taskbar: None,
+                dock_band: None,
+                work_area: desktop.screen,
+                launcher: desktop.screen,
+                icon_side: IconSide::Left,
+                status_bar: None,
+                navigation_bar: None,
+            };
+        }
         _ => return desktop,
     };
     let scale = if scale == 2 { 2 } else { 1 };

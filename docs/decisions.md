@@ -20500,3 +20500,25 @@ the license, by an explicit instruction recorded here.
     share.
   - The notice's place and dialogs centred on a wide side keep the phone's rules.
 - **Not yet.** Building and running; the deviations above.
+
+## D307 M12 adaptive shell, slice 4: the TV form (docs/ux/adaptive-shell-tv-v0.5.md; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The TV form has no panels; windows fill the screen without chrome (as on the
+  phone and tablet: `fills_form`).
+  - **Home screen.** The top strip has the egg mark, `Settings` and `Power` drawn as small
+    tiles, and the clock. The rows are `Open` (the windows, most recently shown first, as
+    thumbnails scaled from their buffers), `Apps` and `Settings` (the twelve panes, each
+    opening `settings open <pane>` through the new `SettingsPane::Named`), on title pills,
+    with `3 of 24` on the focused row when it has more tiles than fit.
+  - **Focus.** Exactly one element has the focus: fill, ring and label together, and the tile
+    does not grow. Arrows move without wrapping and keep each row's remembered tile and
+    scroll. Up from the first row reaches the strip.
+  - **Keys.** OK opens; Menu opens the tile menu (`Open`, then `Close` or `Uninstall...`);
+    `Power` opens `Power off` and `Restart`. The remote's `Home` (key 172, new) shows the
+    home screen from anywhere with every scroll at 0; `Back` over an app follows the phone's
+    rules, including `HANDLES_BACK`. `wm home` and `wm back` work in this form.
+- **Deviations.** Pointer mode and its menu for apps without `FOCUS_NAVIGABLE`, keys mode,
+  centred dialogs with chrome, the toolkit's (48, 28) padding, the network glyph and `Agent`
+  chip in the strip, the notice's TV place, a boot option that sets `input::pretend_remote`,
+  and an attached pointer's clicks on the home screen are not built yet.
+- **Not yet.** Building and running; the deviations above.
