@@ -17,6 +17,27 @@ eggos_switch_thread:
     pushq   %r15
     movq    %rsp, (%rdi)
     movq    %rsi, %rsp
+    cmpb    $0, {rsb_fill}(%rip)
+    je      .Lx86_64_switch_rsb_kept
+    movl    $16, %eax
+.Lx86_64_switch_rsb_pair:
+    call    .Lx86_64_switch_rsb_second
+.Lx86_64_switch_rsb_trap_first:
+    pause
+    lfence
+    jmp     .Lx86_64_switch_rsb_trap_first
+.Lx86_64_switch_rsb_second:
+    call    .Lx86_64_switch_rsb_next
+.Lx86_64_switch_rsb_trap_second:
+    pause
+    lfence
+    jmp     .Lx86_64_switch_rsb_trap_second
+.Lx86_64_switch_rsb_next:
+    decl    %eax
+    jnz     .Lx86_64_switch_rsb_pair
+    addq    $256, %rsp
+    lfence
+.Lx86_64_switch_rsb_kept:
     popq    %r15
     popq    %r14
     popq    %r13
@@ -33,6 +54,7 @@ eggos_thread_start:
     ud2
     .popsection
 "#,
+    rsb_fill = sym super::exception::RSB_FILL_ON_SWITCH,
     options(att_syntax)
 );
 

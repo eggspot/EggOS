@@ -1664,6 +1664,12 @@ static PREDICTION_BARRIER: core::sync::atomic::AtomicU8 = core::sync::atomic::At
 /// (D267): on CPUs with IBRS but not enhanced IBRS, so neither a program's indirect branches nor
 /// its returns (Retbleed) steer the kernel's. Read by the entry code.
 static IBRS_ON_ENTRY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Whether every kernel thread switch fills the return stack buffer with 32 harmless entries
+/// (D289): on CPUs without enhanced IBRS, so a `ret` after the switch never predicts from what
+/// the last thread (or a program before it) left there, and an empty buffer never falls back to
+/// the indirect predictor (Skylake's underflow). Read by the switch code.
+pub(super) static RSB_FILL_ON_SWITCH: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 const IA32_SPEC_CTRL: u32 = 0x48;
 const IA32_PRED_CMD: u32 = 0x49;
 const SPEC_CTRL_IBRS: u64 = 1;
@@ -1682,6 +1688,9 @@ fn set_up_branch_predictions() {
     PREDICTION_BARRIER.store(1, core::sync::atomic::Ordering::Relaxed);
     let enhanced = edx & CPUID_ARCH_CAPABILITIES != 0
         && super::read_msr(IA32_ARCH_CAPABILITIES) & ARCH_CAPABILITIES_ENHANCED_IBRS != 0;
+    if !enhanced {
+        RSB_FILL_ON_SWITCH.store(1, core::sync::atomic::Ordering::Relaxed);
+    }
     let on_entry = !enhanced && is_intel();
     if !enhanced && !on_entry {
         return;

@@ -20046,3 +20046,18 @@ the license, by an explicit instruction recorded here.
   shown, since the kernel does not report the preferred size yet; the phone, tablet and TV layouts
   and the dropdown's digit keys (`2` to `2560 × 1440`) follow the toolkit's defaults.
 
+## D289 The return stack buffer filled at every thread switch on CPUs without enhanced IBRS (D49's speculation follow-ups; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's and AMD's Spectre v2 guidance)
+
+- **Decision.** Where the CPU has IBRS and IBPB but not enhanced IBRS (D260, D267), the x86_64
+  thread switch, once on the new thread's stack, calls 32 times in pairs to `pause; lfence` traps
+  and drops the 32 return addresses, so the returns that follow the switch predict only those
+  traps: never an entry the previous thread or a program trained, and never an empty buffer that
+  older Intel cores answer from the indirect predictor. It costs about 32 calls a switch on those
+  CPUs and nothing elsewhere (one byte compared).
+- **Moved to the end of the code-only queue** (written last, then built and tested first in the
+  build pass): KPTI and AMD's SRSO mitigation. KPTI changes every x86_64 entry and exit (a
+  trampoline stack in the entry area, the CR3 switch before any kernel memory is touched, a
+  user view of PML4 511 holding only the entry text, the IDT and the per-CPU tables, and roots
+  allocated as 8 KiB pairs); written blind, an error there stops every x86_64 boot, and only
+  pre-2019 Intel cores (no `RDCL_NO`) need it.
+
