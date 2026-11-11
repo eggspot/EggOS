@@ -19,6 +19,7 @@
 mod exception;
 mod fp;
 mod lefi;
+mod liointc;
 mod thread;
 mod timer;
 
@@ -412,17 +413,19 @@ impl Platform for Mips64 {
     }
 
     fn enable_console_input() -> Result<(), &'static str> {
-        Err("the UART's interrupt goes through the Loongson interrupt controller, not wired yet (D313)")
+        liointc::enable_console()?;
+        uart().enable_receive_interrupt();
+        Ok(())
     }
 
     fn route_device_interrupt(
-        _specifier: &crate::fdt::InterruptSpecifier,
+        specifier: &crate::fdt::InterruptSpecifier,
     ) -> Result<crate::DeviceLine, &'static str> {
-        Err("device interrupts need the Loongson interrupt controller (D313 part 2)")
+        liointc::route_device(specifier.cells())
     }
 
     fn message_interrupt() -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
-        Err("message interrupts need the Loongson interrupt controller (D313 part 2)")
+        Err("loongson3-virt's PCI Express has no MSI controller: its devices use INTx (D325)")
     }
 
     fn exit(status: ExitStatus) -> ! {

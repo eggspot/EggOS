@@ -21189,3 +21189,36 @@ the license, by an explicit instruction recorded here.
   - Whether `+soft-float` is a valid s390x target feature on the pinned toolchain.
 - **M9 s390x: written.** Parts 1 to 3c (D320 to D324) are the whole port. What is left is
   building it, running it, and interrupts for the channel subsystem.
+
+## D325 MIPS64 part 4: Loongson's `liointc`, and the structures foreign MIPS programs read (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - **`liointc`** (`hal/src/arch/mips64/liointc.rs`). QEMU `loongson3-virt`'s legacy I/O
+    interrupt controller at `0x3ff01400`: 32 level-triggered inputs, the UART on input 0.
+    - A routed input's route byte names the boot core and `IP2`, and its enable bit is set.
+      The interrupt entry reads the core's pending register when `Cause.IP2` is set and
+      hands each input to the kernel: the console's input, or the routed device's line.
+    - An input nobody asked for is turned off.
+    - `enable_console_input` now works, and `route_device_interrupt` takes a `liointc`
+      specifier (its input).
+    - `message_interrupt` stays refused: the board's PCI Express has no MSI controller, so
+      its devices need INTx (inputs 2 to 5), which the kernel's PCI layer does not route yet
+      (M8's INTx item).
+  - **What foreign MIPS programs read** (D316 left these generic, which EggOS's own programs
+    agree on). New hooks in `abi/mod.rs` are no-ops on every other architecture.
+    - `reorder_siginfo`: MIPS's `siginfo_t` has `si_code` before `si_errno`. It is
+      applied to every `siginfo_t` the kernel writes (`Info::to_bytes`, `fault_info`) and
+      reads (`rt_sigqueueinfo`).
+    - `poll_events_in` and `poll_events_out`: MIPS's `POLLWRNORM` is `POLLOUT` and its
+      `POLLWRBAND` 0x100; the generic ones are 0x100 and 0x200.
+    - `socket_option_out`: `SO_TYPE` answers MIPS's socket types and `SO_ERROR` MIPS's
+      error numbers. The HAL's `mips_errno` is now public for it.
+    - `termios::to_program` and `from_program`: MIPS's `struct termios` has 23 control
+      characters in its own order (`VMIN` 4, `VEOF` 16, `VEOL` 17, `VEOL2` 6), and
+      `IEXTEN`, `TOSTOP` and `FLUSHO` at its own bits. `TCGETS`, `TCGETS2` and `TCSETS*`
+      go through them.
+- **Moved.** The HAL's MIPS64 Linux test programs past `linux_hello` move to one later batch,
+  with s390x's (D321 left those exiting with 1). Both are hand-written assembly translations
+  of the PowerPC programs, and they test rather than add what users get.
+- **Known gaps (to check at build time).** `liointc`'s register offsets and route-byte
+  format, and MIPS's `termbits.h` values, are from memory of QEMU's and Linux's sources.

@@ -551,7 +551,11 @@ fn interrupt(cause: u64) -> bool {
         timer::end_wakeup();
         crate::interrupt::deliver(Interrupt::Wakeup);
     }
-    timer_due || wakeup
+    let device = cause & super::liointc::PENDING != 0;
+    if device {
+        super::liointc::handle();
+    }
+    timer_due || wakeup || device
 }
 
 unsafe extern "C" {

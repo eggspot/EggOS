@@ -141,6 +141,54 @@ pub fn sigaction_flags_out(flags: u64) -> u64 {
     flags
 }
 
+/// Puts `siginfo_t`'s `si_errno` and `si_code` in the architecture's order: as the kernel
+/// keeps them (`si_errno` first) everywhere but on MIPS. Its own inverse.
+#[cfg(not(target_arch = "mips64"))]
+#[inline(always)]
+pub fn reorder_siginfo(_info: &mut [u8]) {}
+
+/// `struct pollfd`'s requested events as the kernel takes them: as given everywhere but on MIPS.
+#[cfg(not(target_arch = "mips64"))]
+#[inline(always)]
+pub fn poll_events_in(events: u16) -> u16 {
+    events
+}
+
+/// `struct pollfd`'s returned events as the program reads them: as kept everywhere but on MIPS.
+#[cfg(not(target_arch = "mips64"))]
+#[inline(always)]
+pub fn poll_events_out(events: u16) -> u16 {
+    events
+}
+
+/// The `int` a `SOL_SOCKET` option `name` reads back, in the architecture's values: as kept
+/// everywhere but on MIPS.
+#[cfg(not(target_arch = "mips64"))]
+#[inline(always)]
+pub fn socket_option_out(_name: u32, value: u32) -> u32 {
+    value
+}
+
+/// `struct termios` as programs pass it to `TCGETS` and `TCSETS*`: the kernel's own layout
+/// everywhere but on MIPS.
+#[cfg(not(target_arch = "mips64"))]
+pub mod termios {
+    use crate::console::line_discipline::Termios;
+
+    /// Its size.
+    pub const SIZE: usize = Termios::SIZE;
+
+    /// `settings` as a program reads them.
+    pub fn to_program(settings: &Termios) -> [u8; SIZE] {
+        settings.to_bytes()
+    }
+
+    /// The settings a program wrote.
+    pub fn from_program(bytes: &[u8; SIZE]) -> Termios {
+        Termios::from_bytes(bytes)
+    }
+}
+
 /// What the architectures on Linux's generic ABI (`asm-generic`) share: AArch64, RISC-V and
 /// the later ones (LoongArch).
 pub mod generic {

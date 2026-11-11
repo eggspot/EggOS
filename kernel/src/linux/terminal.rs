@@ -40,6 +40,7 @@ use super::thread::{LinuxThread, unless_signalled_or_ended};
 use super::{Errno, Iovecs, MAX_RW_COUNT, iovec, job_control, poll};
 use crate::console;
 use crate::console::line_discipline::{Taken, Termios};
+use crate::linux::abi::termios as abi_termios;
 use crate::process::Process;
 use crate::sync::SpinLock;
 use alloc::sync::Arc;
@@ -82,7 +83,7 @@ mod flush {
     pub const BOTH: u32 = 2;
 }
 
-const TERMIOS_AND_TWO_SPEEDS_SIZE: usize = Termios::SIZE + 8;
+const TERMIOS_AND_TWO_SPEEDS_SIZE: usize = abi_termios::SIZE + 8;
 
 const SERIAL_CONSOLE_BAUD: u32 = 115_200;
 
@@ -269,24 +270,24 @@ pub fn ioctl<P: Platform, L: Line>(
             .map_err(|_| Errno::EFAULT)
     };
     let set = |flush: bool| {
-        let mut bytes = [0; Termios::SIZE];
+        let mut bytes = [0; abi_termios::SIZE];
         process
             .read_user_memory(argument, &mut bytes)
             .map_err(|_| Errno::EFAULT)?;
-        line.set_settings::<P>(Termios::from_bytes(&bytes), flush);
+        line.set_settings::<P>(abi_termios::from_program(&bytes), flush);
         Ok(0)
     };
     if let Some(result) = job_control::ioctl(process, line.terminal(), request as u32, argument) {
         return result;
     }
     match request as u32 {
-        request::TCGETS => write(&line.settings().to_bytes()),
+        request::TCGETS => write(&abi_termios::to_program(&line.settings())),
         request::TCGETS2 => {
             let speed = line.speed().to_ne_bytes();
             let mut bytes = [0; TERMIOS_AND_TWO_SPEEDS_SIZE];
-            bytes[..Termios::SIZE].copy_from_slice(&line.settings().to_bytes());
-            bytes[Termios::SIZE..Termios::SIZE + 4].copy_from_slice(&speed);
-            bytes[Termios::SIZE + 4..].copy_from_slice(&speed);
+            bytes[..abi_termios::SIZE].copy_from_slice(&abi_termios::to_program(&line.settings()));
+            bytes[abi_termios::SIZE..abi_termios::SIZE + 4].copy_from_slice(&speed);
+            bytes[abi_termios::SIZE + 4..].copy_from_slice(&speed);
             write(&bytes)
         }
         request::TCSETS | request::TCSETSW | request::TCSETS2 | request::TCSETSW2 => set(false),

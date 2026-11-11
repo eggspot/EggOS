@@ -500,6 +500,7 @@ impl Info {
     pub fn to_bytes(self) -> [u8; INFO_SIZE] {
         let mut bytes = [0; INFO_SIZE];
         bytes[..KEPT_INFO_SIZE].copy_from_slice(&self.0);
+        crate::linux::abi::reorder_siginfo(&mut bytes);
         bytes
     }
 }
@@ -2158,6 +2159,7 @@ fn read_queued_info<P: Platform>(
     process
         .read_user_memory(address, &mut bytes)
         .map_err(|_| Errno::EFAULT)?;
+    crate::linux::abi::reorder_siginfo(&mut bytes);
     if i32::from_ne_bytes(bytes[8..12].try_into().unwrap()) == code::GROUP_STOP {
         return Err(Errno::EPERM);
     }

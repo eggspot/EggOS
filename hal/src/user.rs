@@ -219,6 +219,8 @@ pub use loongarch64::UserRegisters;
 use mips64::Registers;
 #[cfg(target_arch = "mips64")]
 pub use mips64::UserRegisters;
+#[cfg(target_arch = "mips64")]
+pub use mips64::mips_errno;
 #[cfg(target_arch = "s390x")]
 use s390x::Registers;
 #[cfg(target_arch = "s390x")]
@@ -729,7 +731,7 @@ pub(crate) mod mips64 {
     ];
 
     /// The number MIPS gives generic error `generic`.
-    fn mips_errno(generic: u64) -> u64 {
+    pub fn mips_errno(generic: u64) -> u64 {
         let mapped = generic
             .checked_sub(35)
             .and_then(|index| MIPS_ERRORS.get(index as usize))

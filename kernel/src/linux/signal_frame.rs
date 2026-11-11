@@ -44,6 +44,7 @@ pub fn fault_info(fault: &Fault) -> [u8; INFO_SIZE] {
     info[..4].copy_from_slice(&(fault.signal as i32).to_ne_bytes());
     info[8..12].copy_from_slice(&fault.code.to_ne_bytes());
     info[16..24].copy_from_slice(&fault.address.to_ne_bytes());
+    crate::linux::abi::reorder_siginfo(&mut info);
     info
 }
 

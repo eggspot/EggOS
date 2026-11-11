@@ -549,12 +549,12 @@ fn agent_events(requested: u16) -> u16 {
 fn pollfd(entry: &[u8; POLLFD_SIZE]) -> (i32, u16) {
     (
         i32::from_ne_bytes(entry[..4].try_into().unwrap()),
-        u16::from_ne_bytes(entry[4..6].try_into().unwrap()),
+        crate::linux::abi::poll_events_in(u16::from_ne_bytes(entry[4..6].try_into().unwrap())),
     )
 }
 
 fn set_returned(entry: &mut [u8; POLLFD_SIZE], returned: u16) {
-    entry[6..].copy_from_slice(&returned.to_ne_bytes());
+    entry[6..].copy_from_slice(&crate::linux::abi::poll_events_out(returned).to_ne_bytes());
 }
 
 type Count = fn(u16, u16) -> u64;

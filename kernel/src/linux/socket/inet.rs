@@ -558,6 +558,10 @@ pub(super) fn getsockopt<P: Platform>(
     let options = &socket.options;
     let int = |value: u32| {
         let mut bytes = [0u8; TIMEVAL_SIZE];
+        let value = match level as u32 == SOL_SOCKET {
+            true => crate::linux::abi::socket_option_out(name as u32, value),
+            false => value,
+        };
         bytes[..4].copy_from_slice(&value.to_ne_bytes());
         (bytes, 4)
     };

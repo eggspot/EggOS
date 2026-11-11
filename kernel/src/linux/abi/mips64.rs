@@ -484,6 +484,117 @@ pub fn sigaction_flags_out(flags: u64) -> u64 {
     flags_to_mips(flags, SIGACTION_FLAGS)
 }
 
+/// MIPS's `siginfo_t` has `si_code` before `si_errno`: swaps the two (D325).
+pub fn reorder_siginfo(info: &mut [u8]) {
+    if info.len() >= 12 {
+        let (errno, code) = info[4..12].split_at_mut(4);
+        errno.swap_with_slice(code);
+    }
+}
+
+/// MIPS's `POLLWRNORM` is `POLLOUT` and its `POLLWRBAND` is 0x100; the generic ones are 0x100
+/// and 0x200.
+const POLL_WRITE_BAND_MIPS: u16 = 0x100;
+const POLL_WRITE_NORMAL_GENERIC: u16 = 0x100;
+const POLL_WRITE_BAND_GENERIC: u16 = 0x200;
+const POLL_OUT: u16 = 0x4;
+
+/// Requested `poll` events in the generic values.
+pub fn poll_events_in(events: u16) -> u16 {
+    let band = if events & POLL_WRITE_BAND_MIPS != 0 { POLL_WRITE_BAND_GENERIC } else { 0 };
+    (events & !POLL_WRITE_BAND_MIPS) | band
+}
+
+/// Returned `poll` events in MIPS's values.
+pub fn poll_events_out(events: u16) -> u16 {
+    let normal = if events & POLL_WRITE_NORMAL_GENERIC != 0 { POLL_OUT } else { 0 };
+    let band = if events & POLL_WRITE_BAND_GENERIC != 0 { POLL_WRITE_BAND_MIPS } else { 0 };
+    (events & !(POLL_WRITE_NORMAL_GENERIC | POLL_WRITE_BAND_GENERIC)) | normal | band
+}
+
+const SO_TYPE: u32 = 3;
+const SO_ERROR: u32 = 4;
+
+/// A `SOL_SOCKET` option's `int` in MIPS's values: `SO_TYPE`'s socket type and `SO_ERROR`'s
+/// error number. `name` is the generic option, as [`arguments_in`] made it.
+pub fn socket_option_out(name: u32, value: u32) -> u32 {
+    match name {
+        SO_TYPE => SOCKET_TYPES
+            .iter()
+            .find(|&&(_, generic)| generic == u64::from(value))
+            .map_or(value, |&(mips, _)| mips as u32),
+        SO_ERROR => eggos_hal::user::mips_errno(u64::from(value)) as u32,
+        _ => value,
+    }
+}
+
+/// MIPS's `struct termios`: 23 control characters in their own order, and the local flags
+/// `IEXTEN`, `TOSTOP` and `FLUSHO` at their own bits (`asm/termbits.h`).
+pub mod termios {
+    use super::{FlagPairs, flags_to_generic, flags_to_mips};
+    use crate::console::line_discipline::{CONTROL_CHARACTERS, Termios};
+
+    const CONTROL_CHARACTERS_MIPS: usize = 23;
+    /// Its size.
+    pub const SIZE: usize = 17 + CONTROL_CHARACTERS_MIPS;
+    /// (MIPS index, generic index) of each control character.
+    const INDEXES: [(usize, usize); 17] = [
+        (0, 0),
+        (1, 1),
+        (2, 2),
+        (3, 3),
+        (4, 6),
+        (5, 5),
+        (6, 16),
+        (7, 7),
+        (8, 8),
+        (9, 9),
+        (10, 10),
+        (12, 12),
+        (13, 13),
+        (14, 14),
+        (15, 15),
+        (16, 4),
+        (17, 11),
+    ];
+    const LOCAL_FLAGS: FlagPairs = &[(0x100, 0x8000), (0x8000, 0x100), (0x2000, 0x1000)];
+
+    /// `settings` as a MIPS program reads them.
+    pub fn to_program(settings: &Termios) -> [u8; SIZE] {
+        let mut bytes = [0; SIZE];
+        let local = flags_to_mips(u64::from(settings.local), LOCAL_FLAGS) as u32;
+        for (index, word) in [settings.input, settings.output, settings.control, local].into_iter().enumerate() {
+            bytes[index * 4..][..4].copy_from_slice(&word.to_ne_bytes());
+        }
+        bytes[16] = settings.line;
+        for (mips, generic) in INDEXES {
+            if generic < CONTROL_CHARACTERS {
+                bytes[17 + mips] = settings.control_characters[generic];
+            }
+        }
+        bytes
+    }
+
+    /// The settings a MIPS program wrote.
+    pub fn from_program(bytes: &[u8; SIZE]) -> Termios {
+        let word = |index: usize| u32::from_ne_bytes(bytes[index * 4..][..4].try_into().unwrap());
+        let mut settings = Termios {
+            input: word(0),
+            output: word(1),
+            control: word(2),
+            local: flags_to_generic(u64::from(word(3)), LOCAL_FLAGS) as u32,
+            line: bytes[16],
+            ..Termios::OFF
+        };
+        for (mips, generic) in INDEXES {
+            if generic < CONTROL_CHARACTERS {
+                settings.control_characters[generic] = bytes[17 + mips];
+            }
+        }
+        settings
+    }
+}
+
 /// `struct rt_sigframe { u32 rs_ass[4]; u32 rs_pad[2]; siginfo_t rs_info; struct ucontext
 /// rs_uc; }`. The `ucontext` holds `uc_flags`, `uc_link` and `uc_stack`, then `uc_mcontext`,
 /// the 64-bit `struct sigcontext` (`sc_regs[32]`, `sc_fpregs[32]`, `sc_mdhi`, `sc_hi1` to
