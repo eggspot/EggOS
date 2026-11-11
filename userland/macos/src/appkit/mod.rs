@@ -20,6 +20,7 @@ mod cursor;
 mod drawing;
 mod elements;
 mod event;
+mod grid_view;
 mod image;
 mod menu;
 mod nib;
@@ -77,6 +78,10 @@ class_pairs! {
     NSSOUND, NSSOUND_META;
     NSATTRIBUTEDSTRING, NSATTRIBUTEDSTRING_META;
     NSMUTABLEATTRIBUTEDSTRING, NSMUTABLEATTRIBUTEDSTRING_META;
+    NSGRIDVIEW, NSGRIDVIEW_META;
+    NSGRIDROW, NSGRIDROW_META;
+    NSGRIDCOLUMN, NSGRIDCOLUMN_META;
+    NSGRIDCELL, NSGRIDCELL_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -195,6 +200,7 @@ pub fn set_up() -> bool {
             && tracking::define(runtime)
             && sound::define(runtime)
             && attributed_string::define(runtime)
+            && grid_view::define(runtime)
     });
     defined && drawing::set_up()
 }
@@ -261,6 +267,14 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSAttributedString" => class(&NSATTRIBUTEDSTRING_META),
         b"_OBJC_CLASS_$_NSMutableAttributedString" => class(&NSMUTABLEATTRIBUTEDSTRING),
         b"_OBJC_METACLASS_$_NSMutableAttributedString" => class(&NSMUTABLEATTRIBUTEDSTRING_META),
+        b"_OBJC_CLASS_$_NSGridView" => class(&NSGRIDVIEW),
+        b"_OBJC_METACLASS_$_NSGridView" => class(&NSGRIDVIEW_META),
+        b"_OBJC_CLASS_$_NSGridRow" => class(&NSGRIDROW),
+        b"_OBJC_METACLASS_$_NSGridRow" => class(&NSGRIDROW_META),
+        b"_OBJC_CLASS_$_NSGridColumn" => class(&NSGRIDCOLUMN),
+        b"_OBJC_METACLASS_$_NSGridColumn" => class(&NSGRIDCOLUMN_META),
+        b"_OBJC_CLASS_$_NSGridCell" => class(&NSGRIDCELL),
+        b"_OBJC_METACLASS_$_NSGridCell" => class(&NSGRIDCELL_META),
         _ => application::resolve(name).or_else(|| drawing::resolve(name)),
     }
 }

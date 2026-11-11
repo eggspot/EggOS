@@ -17,6 +17,7 @@ pub mod clicks;
 pub mod colour;
 pub mod cursor;
 pub mod geometry;
+pub mod grid_view;
 pub mod image_view;
 pub mod keys;
 pub mod menu;

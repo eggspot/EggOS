@@ -22558,3 +22558,20 @@ the license, by an explicit instruction recorded here.
   style. The classes live with AppKit, so a Foundation-only program does not find them yet.
 - **Not yet.** Attributes beyond font and colour (paragraph styles, underline, links),
   `enumerateAttributesInRange:`, RTF and HTML import, archiving.
+
+## D385 AppKit's NSGridView, NSGridRow, NSGridColumn and NSGridCell (batch part 17, D180's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from AppKit's documented behaviour, without Auto Layout)
+
+- **Decision.** A grid keeps its views row by row (`gridViewWithViews:`,
+  `gridViewWithNumberOfColumns:rows:`, `addRowWithViews:`, `NSGridCell.contentView`), each a
+  subview; `emptyContentView` is a placeholder that leaves its cell empty. The layer has no
+  Auto Layout, so the grid lays itself out by frames (`eggos-macos-gui`'s `grid_view`,
+  host-tested): each column as wide and each row as tall as its largest view's frame unless
+  the app set the column's `width` or the row's `height`, the grid's spacing between them
+  (6 by default), and each view kept at its own size, or stretched with `Fill`, at the
+  leading, trailing or centre of its cell by the cell's, else its column's or row's, else
+  the grid's placement. It lays out after every change and when it first draws, and a grid
+  with no size takes the size its cells need (`fittingSize`, `intrinsicContentSize`).
+  `NSGridRow`, `NSGridColumn` and `NSGridCell` are small objects pointing back at their grid.
+- **Not yet.** Merged cells, padding, hidden rows and columns, inserting and moving rows and
+  columns, `rowAlignment` by baselines, and views that change size after layout without the
+  app calling `layout`.
