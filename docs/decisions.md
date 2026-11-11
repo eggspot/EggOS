@@ -20198,3 +20198,13 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; keeping the old group key for frames still in flight under
   it (one key index at a time); pairwise rekeying (a new four-way handshake while joined).
 
+## D295 A process's exit and signals interrupt only the CPUs that have its address space loaded (M6's follow-up of D95; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `exit`, `end_for_exec` and `record_signal_sent` interrupted every other CPU so a
+  thread running the program somewhere came back to the kernel. Only a CPU whose active address
+  space is the process's can be running its program, so only those are asked to reschedule and
+  woken; a CPU that switches the address space in afterwards still looks for sent signals and
+  the end before it runs the program (`after_look`, D95), so nothing is missed. On a machine
+  with many CPUs a signal no longer costs an interrupt on each of them.
+- **Not yet.** Building and running; a measured cost on a many-CPU machine.
+

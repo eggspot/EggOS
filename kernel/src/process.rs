@@ -2328,7 +2328,7 @@ impl<P: Platform> Process<P> {
             ended
         };
         if ended && self.threads() > 1 {
-            interrupt_other_cpus::<P>();
+            self.interrupt_cpus_running_it();
         }
         ended
     }
@@ -2346,7 +2346,7 @@ impl<P: Platform> Process<P> {
             self.ended.store(true, Ordering::Relaxed);
         }
         if self.threads() > 1 {
-            interrupt_other_cpus::<P>();
+            self.interrupt_cpus_running_it();
         }
         true
     }
@@ -2403,11 +2403,11 @@ impl<P: Platform> Process<P> {
 
     /// Records that a thread sent another a signal, now in the process's signal state, or
     /// that its pending signals may have changed (another thread ignored a signal), and
-    /// interrupts every other CPU, as [`Self::exit`] does, so a thread running the program
+    /// interrupts the other CPUs that have its address space loaded, as [`Self::exit`] does, so a thread running the program
     /// there comes back to the kernel to see it ([`spawn`]'s handler gets the interrupt).
     pub fn record_signal_sent(&self) {
         self.signals_sent.fetch_add(1, Ordering::Release);
-        interrupt_other_cpus::<P>();
+        self.interrupt_cpus_running_it();
     }
 
     /// Records whether signals sent to its threads wait in its signal state for one to take
@@ -2715,12 +2715,19 @@ fn leave_program<P: Platform>(
 /// user mode, or switched in there next, looks first ([`run`]).
 #[cold]
 #[inline(never)]
-fn interrupt_other_cpus<P: Platform>() {
-    let here = cpu::current::<P>();
-    for &other in cpu::CPUS.all() {
-        if !core::ptr::eq(other, here) && other.is_online() {
-            other.request_reschedule();
-            cpu::wake::<P>(other);
+impl<P: Platform> Process<P> {
+    /// Interrupts the other CPUs that have the process's address space loaded (D295): only
+    /// they can be running its program, so a thread there comes back to the kernel to see an
+    /// exit or a signal; a CPU that loads it later looks before it runs the program
+    /// ([`Self::after_look`]). The rest of the machine is left alone.
+    fn interrupt_cpus_running_it(&self) {
+        let root = self.memory.space.root();
+        let here = cpu::current::<P>();
+        for &other in cpu::CPUS.all() {
+            if !core::ptr::eq(other, here) && other.is_online() && other.active_address_space() == root {
+                other.request_reschedule();
+                cpu::wake::<P>(other);
+            }
         }
     }
 }
