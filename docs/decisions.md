@@ -21592,3 +21592,16 @@ the license, by an explicit instruction recorded here.
   (arrows, Enter, mnemonics, Escape). A window without a menu bar leaves F10 to the program.
 - **Not yet.** Alt pressed and released alone, which on Windows selects the bar without
   opening it, and mnemonic underlines shown only once Alt is pressed (they are always drawn).
+
+## D339 Windows menus: Alt pressed and released alone opens the menu bar (batch part 10's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** In a window with a menu bar and no drop-down open:
+  - Alt going down (`WM_SYSKEYDOWN` `VK_MENU`) is remembered for that window (`Gui::alt_alone`),
+    and still reaches the program.
+  - Any other key or a button press in between forgets it, so Alt+letter (D335) and Alt+F4
+    stay what they were.
+  - Alt coming back up alone opens the first enabled bar entry with a drop-down, as F10 does
+    (D338), and D335's keys go on from there.
+- **Deviation.** Windows selects the bar without opening a drop-down, and opens one only on
+  Down or Enter. Here the drop-down opens at once, since the bar has no selected-but-closed
+  look. The mnemonic underlines stay always drawn.

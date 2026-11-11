@@ -92,6 +92,9 @@ pub struct Gui {
     pub drawn: DrawnTexts,
     /// The item a context menu (`TrackPopupMenuEx`) closed with, 0 for none, until taken.
     pub menu_choice: Option<usize>,
+    /// The top-level window where Alt went down with no key after it yet: its release opens
+    /// the menu bar (D339).
+    pub alt_alone: Option<usize>,
     /// The tick count of the last input from the window server or the program itself.
     pub last_input: u32,
     /// The `QS_` bits `GetQueueStatus` last reported.
@@ -122,6 +125,7 @@ impl Gui {
             active_root: 0,
             drawn: DrawnTexts::new(),
             menu_choice: None,
+            alt_alone: None,
             last_input: super::user32::now_ms(),
             queue_reported: 0,
             input: InputState::default(),

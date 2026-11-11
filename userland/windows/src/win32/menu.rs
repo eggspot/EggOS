@@ -26,6 +26,7 @@ const VK_UP: usize = 0x26;
 const VK_RIGHT: usize = 0x27;
 const VK_DOWN: usize = 0x28;
 const VK_F10: usize = 0x79;
+const VK_MENU: usize = 0x12;
 const NO_ID: u32 = u32::MAX;
 
 /// An open drop-down: the window, its bar entry, the menu it shows, the item under the pointer
@@ -339,6 +340,23 @@ pub fn input(
         });
     }
     let Some(tracking) = gui.tracking.filter(|tracking| tracking.root == root) else {
+        let alt = wparam == VK_MENU;
+        match number {
+            message::SYS_KEY_DOWN if alt => {
+                gui.alt_alone = Some(root);
+                return None;
+            }
+            message::SYS_KEY_UP | message::KEY_UP if alt && gui.alt_alone == Some(root) => {
+                gui.alt_alone = None;
+                let entry = first_open_entry(gui, root)?;
+                return Some(Effect {
+                    commit: open(gui, root, entry),
+                    command: None,
+                });
+            }
+            message::KEY_DOWN | message::SYS_KEY_DOWN | message::LEFT_BUTTON_DOWN => gui.alt_alone = None,
+            _ => {}
+        }
         if number == message::SYS_KEY_DOWN && wparam == VK_F10 {
             let entry = first_open_entry(gui, root)?;
             return Some(Effect {
