@@ -600,6 +600,10 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
             super::shell_desktop::tray_event(key, number, point);
             None
         }
+        Event::ShellMenu { chosen } => {
+            super::shell_menu::answered(chosen);
+            None
+        }
         Event::CloseRequest => Some(to_window(message::SYS_COMMAND, message::SC_CLOSE, 0)),
         Event::FocusIn => {
             with(|gui| gui.active_root = handle);

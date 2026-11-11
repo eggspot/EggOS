@@ -405,6 +405,23 @@ pub fn ioctl<P: Platform>(
                 desktop.set_layered(client, window, (alpha, key, pixel_alpha), damage)
             })?;
         }
+        Request::ShowShellMenu {
+            window,
+            length,
+            entries,
+        } => {
+            let length = usize::try_from(length)
+                .ok()
+                .filter(|&length| length <= protocol::SHELL_MENU_CAPACITY)
+                .ok_or(Errno::EINVAL)?;
+            let mut bytes = [0u8; protocol::SHELL_MENU_CAPACITY];
+            process
+                .read_user_memory(entries, &mut bytes[..length])
+                .map_err(|_| Errno::EFAULT)?;
+            on_windows::<P, _>(|desktop, _, damage, events| {
+                desktop.show_shell_menu(client, window, &bytes[..length], damage, events)
+            })?;
+        }
         Request::SetTrayIcon {
             window,
             icon,

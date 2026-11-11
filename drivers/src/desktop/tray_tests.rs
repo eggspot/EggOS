@@ -1,4 +1,4 @@
-use super::protocol::{DiscardEvents, EventRecord};
+use super::protocol::{DiscardEvents, EventRecord, WindowError, shell_menu_flags};
 use super::*;
 use crate::input::keymap::Modifiers;
 use alloc::vec::Vec;
@@ -160,4 +160,117 @@ fn esc_closes_the_popup_and_a_removed_icon_closes_it_too() {
         )
         .unwrap();
     assert!(!desktop.tray_overflow_open());
+}
+
+const OPEN: &[u8] = &[0, 4, b'O', b'p', b'e', b'n'];
+const GRAYED_QUIT: &[u8] = &[shell_menu_flags::GRAYED, 4, b'Q', b'u', b'i', b't'];
+const SEPARATOR: &[u8] = &[shell_menu_flags::SEPARATOR, 0];
+const EXIT: &[u8] = &[shell_menu_flags::CHECKED, 4, b'E', b'x', b'i', b't'];
+
+fn entries(parts: &[&[u8]]) -> Vec<u8> {
+    parts.iter().flat_map(|part| part.iter().copied()).collect()
+}
+
+fn shell_menu_answers(events: &Recorded) -> Vec<i32> {
+    events
+        .0
+        .iter()
+        .filter(|(_, record)| record.kind == event::SHELL_MENU)
+        .map(|(_, record)| record.a)
+        .collect()
+}
+
+fn icon_rect(desktop: &Desktop, at: u8) -> Rect {
+    desktop.tray_target(at).unwrap()
+}
+
+fn menu_after_right_click(profile: Profile) -> (Desktop, WindowId) {
+    let (mut desktop, window) = with_icons(profile, 1);
+    let icon = icon_rect(&desktop, 0);
+    press(&mut desktop, button::RIGHT, icon, &mut Recorded::default());
+    let bytes = entries(&[OPEN, GRAYED_QUIT, SEPARATOR, EXIT]);
+    desktop
+        .show_shell_menu(
+            CLIENT,
+            u32::from(window),
+            &bytes,
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        )
+        .unwrap();
+    (desktop, window)
+}
+
+#[test]
+fn a_shell_menu_is_anchored_to_the_icon_last_pressed() {
+    for profile in Profile::ALL {
+        let (desktop, _) = menu_after_right_click(profile);
+        let icon = icon_rect(&desktop, 0);
+        let menu = desktop.shell_menu_rect().unwrap();
+        assert_eq!(menu.right(), icon.right(), "{profile:?}");
+        assert_eq!(menu.width, 160, "{profile:?}");
+        assert_eq!(menu.height, 3 * MENU_ITEM_HEIGHT + 8 + 2, "{profile:?}");
+        match desktop.layout.taskbar {
+            Some(bar) => assert_eq!(menu.bottom() + MENU_GAP, bar.y),
+            None => assert_eq!(menu.y, icon.bottom() + MENU_GAP),
+        }
+    }
+}
+
+#[test]
+fn a_click_on_an_entry_answers_its_index_from_one() {
+    let (mut desktop, _) = menu_after_right_click(Profile::Windows);
+    let row = desktop.shell_menu_row(3).unwrap();
+    let mut events = Recorded::default();
+    press(&mut desktop, button::LEFT, row, &mut events);
+    assert!(!desktop.shell_menu_open());
+    assert_eq!(shell_menu_answers(&events), [4]);
+}
+
+#[test]
+fn a_grayed_entry_or_a_separator_cannot_be_chosen() {
+    let (mut desktop, _) = menu_after_right_click(Profile::Macos);
+    let mut events = Recorded::default();
+    for index in [1, 2] {
+        let row = desktop.shell_menu_row(index).unwrap();
+        press(&mut desktop, button::LEFT, row, &mut events);
+        assert!(desktop.shell_menu_open());
+    }
+    assert!(shell_menu_answers(&events).is_empty());
+}
+
+#[test]
+fn keys_skip_what_cannot_be_chosen_and_esc_answers_nothing() {
+    let (mut desktop, _) = menu_after_right_click(Profile::Linux);
+    let mut events = Recorded::default();
+    for code in [key::DOWN, key::DOWN] {
+        desktop.key(code, true, Modifiers::NONE, &mut Damage::new(), &mut events);
+    }
+    assert_eq!(desktop.shell_menu_highlight(), Some(3));
+    desktop.key(key::ESC, true, Modifiers::NONE, &mut Damage::new(), &mut events);
+    assert_eq!(shell_menu_answers(&events), [0]);
+}
+
+#[test]
+fn a_click_elsewhere_closes_the_shell_menu_with_nothing_chosen() {
+    let (mut desktop, _) = menu_after_right_click(Profile::Windows);
+    let mut events = Recorded::default();
+    press(&mut desktop, button::LEFT, Rect::new(300, 300, 1, 1), &mut events);
+    assert!(!desktop.shell_menu_open());
+    assert_eq!(shell_menu_answers(&events), [0]);
+}
+
+#[test]
+fn malformed_entries_are_refused() {
+    let (mut desktop, window) = with_icons(Profile::Windows, 1);
+    for bytes in [&[][..], &[0, 9, b'x'][..], &[0, 2, 0xff, 0xfe][..]] {
+        let shown = desktop.show_shell_menu(
+            CLIENT,
+            u32::from(window),
+            bytes,
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        );
+        assert_eq!(shown, Err(WindowError::Invalid));
+    }
 }

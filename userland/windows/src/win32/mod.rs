@@ -77,6 +77,7 @@ mod scroll_bar;
 mod send_input;
 mod shell;
 mod shell_desktop;
+mod shell_menu;
 mod shell_files;
 mod shell_folders;
 mod shlwapi;

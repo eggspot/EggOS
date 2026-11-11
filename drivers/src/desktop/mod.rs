@@ -43,6 +43,7 @@ mod responsiveness;
 mod shell;
 pub mod shortcuts;
 mod sticky_keys;
+mod shell_menu;
 mod tray;
 mod updates;
 mod windows;
@@ -433,6 +434,7 @@ pub struct Desktop {
     keyboard_layouts: keyboard_layout::KeyboardLayouts,
     network: network::NetworkIndicator,
     tray: tray::Tray,
+    shell_menu: Option<shell_menu::ShellMenu>,
     desktops: u8,
     current_desktop: u8,
     responsiveness: responsiveness::Responsiveness,
@@ -523,6 +525,7 @@ impl Desktop {
             keyboard_layouts: keyboard_layout::KeyboardLayouts::default(),
             network: network::NetworkIndicator::default(),
             tray: tray::Tray::default(),
+            shell_menu: None,
             desktops: 1,
             current_desktop: 0,
             responsiveness: responsiveness::Responsiveness::default(),
@@ -744,6 +747,7 @@ impl Desktop {
             && !self.menu_open
             && !self.keyboard_layout_menu_open()
             && !self.tray_overflow_open()
+            && !self.shell_menu_open()
             && self.open_main_menu.is_none()
             && !self.popup_open()
     }
@@ -1395,6 +1399,7 @@ impl Desktop {
 
     fn destroy_slot(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
         self.forget_tray_icons(slot, damage);
+        self.forget_shell_menu(slot, damage);
         for dialog in 0..MAX_WINDOWS {
             if self.windows[dialog].is_some_and(|window| window.parent == Some(slot as u8)) {
                 self.destroy_slot(dialog, damage, events);
@@ -1846,6 +1851,7 @@ impl Desktop {
         self.launcher_hover(x, y, damage);
         self.keyboard_layout_menu_hover(x, y, damage);
         self.tray_overflow_hover(x, y, damage);
+        self.shell_menu_hover(x, y, damage);
         self.icon_menu_hover(x, y, damage);
         self.update_panel_hover(x, y, damage);
         let hit = self.hit(x, y);
@@ -2044,6 +2050,9 @@ impl Desktop {
             return action;
         }
         if let Some(action) = self.tray_overflow_press(code, x, y, damage, events) {
+            return action;
+        }
+        if let Some(action) = self.shell_menu_press(x, y, damage, events) {
             return action;
         }
         let opener = self.panel_item_at(x, y);
@@ -2360,6 +2369,7 @@ impl Desktop {
             self.close_menu_if_open(damage);
             self.close_keyboard_layout_menu(damage);
             self.close_tray_overflow(damage);
+            self.dismiss_shell_menu(damage, events);
             self.toggle_launcher(damage, events);
             return Action::None;
         }
@@ -2384,6 +2394,9 @@ impl Desktop {
         }
         if self.keyboard_layout_menu_open() {
             return self.keyboard_layout_menu_key(code, pressed, damage, events);
+        }
+        if self.shell_menu_open() {
+            return self.shell_menu_key(code, pressed, damage, events);
         }
         if self.tray_overflow_open() {
             let shifted = modifiers.contains(Modifiers::SHIFT);
@@ -2567,6 +2580,7 @@ impl Desktop {
         }
         self.draw_keyboard_layout_menu(&mut canvas);
         self.draw_tray_overflow(&mut canvas);
+        self.draw_shell_menu(&mut canvas);
         self.draw_popups(&mut canvas);
         self.draw_tooltip(&mut canvas);
         self.draw_agent_pointer(&mut canvas);
@@ -2606,6 +2620,7 @@ impl Desktop {
             || self.on_screen_keyboard_overlaps(clip)
             || self.keyboard_layout_menu_overlaps(clip)
             || self.tray_overflow_overlaps(clip)
+            || self.shell_menu_overlaps(clip)
             || self.popups_overlap(clip)
             || tooltip
             || panels

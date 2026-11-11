@@ -856,6 +856,7 @@ impl Desktop {
             || self.menu_open
             || self.keyboard_layout_menu_open()
             || self.tray_overflow_open()
+            || self.shell_menu_open()
             || self.open_main_menu.is_some();
         if self.panels.tooltip.is_some() || !rested || blocked {
             return;

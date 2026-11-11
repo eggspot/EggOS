@@ -23,6 +23,7 @@ pub mod kind {
     pub const RESIZE: u16 = 10;
     pub const STATE_CHANGED: u16 = 11;
     pub const TRAY: u16 = 17;
+    pub const SHELL_MENU: u16 = 18;
 }
 
 const BUTTON_LEFT: u32 = 0x110;
@@ -118,6 +119,10 @@ pub enum Event {
         message: u32,
         key: u32,
         point: (i32, i32),
+    },
+    /// The shell menu the window showed closed (D371): the chosen entry from 1, 0 for none.
+    ShellMenu {
+        chosen: u32,
     },
     CloseRequest,
     FocusIn,
@@ -398,6 +403,9 @@ impl InputState {
                 message: record.a as u32,
                 key: record.b as u32,
                 point: (record.c as i32, record.d as i32),
+            },
+            kind::SHELL_MENU => Event::ShellMenu {
+                chosen: record.a.max(0) as u32,
             },
             _ => Event::Ignored,
         }

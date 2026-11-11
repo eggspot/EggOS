@@ -24,6 +24,7 @@ const GET_PLACEMENT: usize = 0xc014_771c;
 const SET_CLIPBOARD: usize = 0x4010_7720;
 const SET_TRAY_ICON: usize = 0x4020_7733;
 const SET_LAYERED: usize = 0x4010_7734;
+const SHOW_SHELL_MENU: usize = 0x4010_7735;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const TITLE_CAPACITY: usize = 64;
 const TRY_AGAIN: u16 = 11;
@@ -180,6 +181,16 @@ impl Device {
         let pixels = pixels.map_or(0, |pixels| pixels.as_ptr() as u64);
         argument[24..32].copy_from_slice(&pixels.to_ne_bytes());
         self.request(SET_TRAY_ICON, &mut argument)
+    }
+
+    /// Shows `entries` (the server's shell menu encoding) as `window`'s shell menu (D371); the
+    /// choice comes back as a `SHELL_MENU` event.
+    pub fn show_shell_menu(&self, window: u32, entries: &[u8]) -> Result<(), Errno> {
+        let mut argument = [0u8; 16];
+        put(&mut argument, 0, window);
+        put(&mut argument, 4, entries.len() as u32);
+        argument[8..16].copy_from_slice(&(entries.as_ptr() as u64).to_ne_bytes());
+        self.request(SHOW_SHELL_MENU, &mut argument)
     }
 
     /// Sets `window`'s title to `title`, cut to the server's 64 bytes at a character boundary.

@@ -61,6 +61,7 @@ pub(super) struct Tray {
     next_order: u32,
     overflow_open: bool,
     overflow_hover: Option<usize>,
+    last_pressed: Option<u8>,
 }
 
 impl Default for Tray {
@@ -70,6 +71,7 @@ impl Default for Tray {
             next_order: 0,
             overflow_open: false,
             overflow_hover: None,
+            last_pressed: None,
             balloon: [0; BALLOON_BYTES],
             balloon_length: 0,
             balloon_owner: None,
@@ -281,7 +283,8 @@ impl Desktop {
             if !rect.overlaps(&canvas.clip()) {
                 return;
             }
-            let open = item == PanelItem::TrayOverflow && self.tray.overflow_open;
+            let open = (item == PanelItem::TrayOverflow && self.tray.overflow_open)
+                || self.anchors_shell_menu(item);
             let fill = match taskbar {
                 true => self.item_fill(item, open),
                 false => (open || self.panels.pressed == Some(item)).then_some(colour::BAR_PRESSED),
@@ -314,6 +317,7 @@ impl Desktop {
         let Some(icon) = self.tray.icons.get(usize::from(at)).copied().flatten() else {
             return;
         };
+        self.tray.last_pressed = Some(at);
         let (down, up) = match button {
             TrayButton::Left => (WM_LBUTTONDOWN, WM_LBUTTONUP),
             TrayButton::Right => (WM_RBUTTONDOWN, WM_RBUTTONUP),
@@ -328,6 +332,25 @@ impl Desktop {
 }
 
 impl Desktop {
+    /// The icon last pressed, while it is still there, and its window's slot.
+    pub(super) fn tray_last_pressed(&self) -> Option<(u8, usize)> {
+        let at = self.tray.last_pressed?;
+        let icon = self.tray.icons.get(usize::from(at)).copied().flatten()?;
+        Some((at, icon.slot))
+    }
+
+    /// Where icon `at` is in the bar, or the overflow button's place when it is hidden in it.
+    pub(super) fn tray_target(&self, at: u8) -> Option<Rect> {
+        let mut found = None;
+        let mut overflow = None;
+        self.for_each_tray_item(|item, rect| match item {
+            PanelItem::Tray(shown) if shown == at => found = Some(rect),
+            PanelItem::TrayOverflow => overflow = Some(rect),
+            _ => {}
+        });
+        found.or(overflow)
+    }
+
     /// Whether the tray's overflow popup is open.
     pub fn tray_overflow_open(&self) -> bool {
         self.tray.overflow_open

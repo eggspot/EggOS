@@ -97,6 +97,7 @@ pub mod size {
     pub const SET_ROTATION: usize = 4;
     pub const SET_TRAY_ICON: usize = super::set_tray_icon_request::PIXELS + 8;
     pub const SET_LAYERED: usize = 16;
+    pub const SHOW_SHELL_MENU: usize = 16;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -158,6 +159,7 @@ pub mod request {
     pub const SET_ROTATION: u32 = encode(WRITE, 50, size::SET_ROTATION);
     pub const SET_TRAY_ICON: u32 = encode(WRITE, 51, size::SET_TRAY_ICON);
     pub const SET_LAYERED: u32 = encode(WRITE, 52, size::SET_LAYERED);
+    pub const SHOW_SHELL_MENU: u32 = encode(WRITE, 53, size::SHOW_SHELL_MENU);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -330,6 +332,9 @@ pub mod event {
     /// A pointer event on notification-area icon `b` of the window (D357): `a` the Windows
     /// message it stands for (`WM_LBUTTONUP`, ...), `c` and `d` the screen point.
     pub const TRAY: u16 = 17;
+    /// The shell menu the window showed closed (D371): `a` the chosen entry's index plus 1, 0
+    /// when nothing was chosen; `c` and `d` the screen point.
+    pub const SHELL_MENU: u16 = 18;
 }
 
 /// `SET_TRAY_ICON`'s argument (D357): the window, the icon's key within its client, the
@@ -350,6 +355,22 @@ pub mod layered_flags {
     /// Each pixel's top byte is its own alpha, the colour already multiplied by it (D369).
     pub const PIXEL_ALPHA: u32 = 4;
 }
+
+/// A shell menu entry's flags byte (D371): each entry is this byte, its label's length in
+/// bytes and the label (UTF-8).
+pub mod shell_menu_flags {
+    pub const GRAYED: u8 = 1;
+    pub const CHECKED: u8 = 2;
+    pub const RADIO: u8 = 4;
+    pub const SEPARATOR: u8 = 8;
+}
+
+/// The most entries a shell menu holds.
+pub const SHELL_MENU_ENTRIES: usize = 32;
+/// The longest shell menu label, in bytes of UTF-8.
+pub const SHELL_MENU_LABEL_CAPACITY: usize = 64;
+/// The most bytes a shell menu's entries take.
+pub const SHELL_MENU_CAPACITY: usize = SHELL_MENU_ENTRIES * (SHELL_MENU_LABEL_CAPACITY + 2);
 
 /// `SET_TRAY_ICON`'s flags.
 pub mod tray_flags {
@@ -618,6 +639,13 @@ pub enum Request {
         tip: u64,
         pixels: u64,
     },
+    /// `window`'s context menu shown by the shell (D371): `length` bytes of entries at
+    /// `entries` ([`shell_menu_flags`]).
+    ShowShellMenu {
+        window: u32,
+        length: u32,
+        entries: u64,
+    },
     AppsChanged,
     OpenApp {
         length: u32,
@@ -797,6 +825,7 @@ impl Request {
             request::SET_ROTATION => size::SET_ROTATION,
             request::SET_TRAY_ICON => size::SET_TRAY_ICON,
             request::SET_LAYERED => size::SET_LAYERED,
+            request::SHOW_SHELL_MENU => size::SHOW_SHELL_MENU,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::GET_LAUNCH => size::GET_LAUNCH,
@@ -920,6 +949,11 @@ impl Request {
                 alpha: at(4),
                 key: at(8),
                 flags: at(12),
+            },
+            request::SHOW_SHELL_MENU => Self::ShowShellMenu {
+                window: at(0),
+                length: at(4),
+                entries: double_word(bytes, 8),
             },
             request::SET_TRAY_ICON => Self::SetTrayIcon {
                 window: at(set_tray_icon_request::WINDOW),

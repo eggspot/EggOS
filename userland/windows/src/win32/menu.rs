@@ -799,6 +799,13 @@ extern "efiapi" fn track_popup_menu_ex(
     let Some(root) = with(|gui| windows::root_of(&gui.windows, window)).flatten() else {
         return fail(error::INVALID_WINDOW_HANDLE, 0);
     };
+    if super::shell_menu::is_shells(root, (x, y)) {
+        let choice = match super::shell_menu::track(root, menu) {
+            Ok(choice) => choice,
+            Err(code) => return fail(code, 0),
+        };
+        return finish_tracking(window, choice, flags);
+    }
     let (left, top) = match super::placement::content_origin(root) {
         Ok(origin) => origin,
         Err(code) => return fail(code, 0),
@@ -834,6 +841,10 @@ extern "efiapi" fn track_popup_menu_ex(
         }
     }
     let choice = with(|gui| gui.menu_choice.take()).flatten().unwrap_or(0);
+    finish_tracking(window, choice, flags)
+}
+
+fn finish_tracking(window: usize, choice: usize, flags: u32) -> i32 {
     if flags & TPM_RETURNCMD != 0 {
         return choice as i32;
     }

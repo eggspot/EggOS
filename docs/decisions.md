@@ -22224,3 +22224,33 @@ the license, by an explicit instruction recorded here.
   not reach the terminal. Removing an icon, or its window going away, closes it.
 - **Not yet.** The program's context menu as a shell menu (section 14), `NIN_POPUPOPEN`,
   double clicks, `NIN_KEYSELECT`, `Shell_NotifyIconGetRect`.
+
+## D371 Tray programs' context menus as shell menus (batch part 13's rest, D357's "Not yet"; M15, M12; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/windows-tooltips-tray-v0.5.md section 14) and the code-only session (engineering, the protocol)
+
+- **Decision.**
+  - **When.** `TrackPopupMenu(Ex)` whose top-level window is hidden or minimised, or whose
+    point lies outside that window's content, is a shell menu: a tray program's menu, opened
+    at the pointer on the bar for a window usually never shown. Inside the content nothing
+    changes (the menu is drawn in the window's buffer).
+  - **Protocol.** `SHOW_SHELL_MENU` (request 53, 16 bytes: window, length, address) carries
+    the entries, each a flags byte (1 grayed, 2 checked, 4 radio, 8 separator), a length byte
+    and the label in UTF-8: at most 32 entries of 64 bytes; the kernel reads them from the
+    program's memory. When the menu closes the window gets a `SHELL_MENU` event (18): the
+    chosen entry's index plus 1, or 0 for none. A new shell menu dismisses an open one (it
+    answers 0), and the window going away forgets it.
+  - **Server.** The menu is anchored to the tray icon the same client pressed last (its
+    place, or the overflow button's when it is hidden there), otherwise under the pointer;
+    the power menu's chrome, width `max(160, 8 * widest + 48)`, rows of 32 and separators of
+    8, the label at x + 24, grayed labels `TEXT_DIM`, a tick for a checked entry and a 6-pixel
+    dot for a radio one; under the top bar with its right edge at the icon's, or 4 above the
+    taskbar, clipped to the screen. The icon is drawn pressed while it is open. A click on an
+    entry that can be chosen chooses it; a click on a grayed entry or a separator does
+    nothing; a click elsewhere answers 0 and goes on to what is under it, except on the
+    icon itself. Up and Down skip what cannot be chosen, Enter and Space choose, Esc answers 0.
+  - **Layer.** The labels lose their `&` marks (`&&` stays one `&`) and the tab before an
+    accelerator becomes two spaces. An item that opens a submenu is sent grayed (submenus in
+    shell menus are not in this version, as section 14 says). The call runs the thread's
+    messages until the answer comes, then posts `WM_COMMAND` or returns the id with
+    `TPM_RETURNCMD`, as before.
+- **Not yet.** Submenus and owner-drawn items in shell menus, `TPM_*` alignment (the anchor
+  is the icon), keyboard access to tray icons (`NIN_KEYSELECT`, `NIM_SETFOCUS`).
