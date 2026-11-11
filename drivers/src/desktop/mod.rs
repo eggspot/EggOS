@@ -66,6 +66,8 @@ mod shell_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tray_tests;
+#[cfg(test)]
 mod window_tests;
 
 pub use updates::UPDATES_LABEL;
@@ -741,6 +743,7 @@ impl Desktop {
             && self.is_visible(TERMINAL_SLOT)
             && !self.menu_open
             && !self.keyboard_layout_menu_open()
+            && !self.tray_overflow_open()
             && self.open_main_menu.is_none()
             && !self.popup_open()
     }
@@ -1842,6 +1845,7 @@ impl Desktop {
         self.window_menu_hover(x, y, damage);
         self.launcher_hover(x, y, damage);
         self.keyboard_layout_menu_hover(x, y, damage);
+        self.tray_overflow_hover(x, y, damage);
         self.icon_menu_hover(x, y, damage);
         self.update_panel_hover(x, y, damage);
         let hit = self.hit(x, y);
@@ -2037,6 +2041,9 @@ impl Desktop {
             return action;
         }
         if let Some(action) = self.keyboard_layout_menu_press(code, x, y, damage, events) {
+            return action;
+        }
+        if let Some(action) = self.tray_overflow_press(code, x, y, damage, events) {
             return action;
         }
         let opener = self.panel_item_at(x, y);
@@ -2352,6 +2359,7 @@ impl Desktop {
         if alone_released && self.window_menu.is_none() && self.icons.menu.is_none() {
             self.close_menu_if_open(damage);
             self.close_keyboard_layout_menu(damage);
+            self.close_tray_overflow(damage);
             self.toggle_launcher(damage, events);
             return Action::None;
         }
@@ -2376,6 +2384,10 @@ impl Desktop {
         }
         if self.keyboard_layout_menu_open() {
             return self.keyboard_layout_menu_key(code, pressed, damage, events);
+        }
+        if self.tray_overflow_open() {
+            let shifted = modifiers.contains(Modifiers::SHIFT);
+            return self.tray_overflow_key(code, pressed, shifted, damage, events);
         }
         if pressed && self.panel_focus.is_some() && !self.menu_open {
             return self.panel_focus_key(code, modifiers, damage, events);
@@ -2554,6 +2566,7 @@ impl Desktop {
             self.draw_menu(&mut canvas);
         }
         self.draw_keyboard_layout_menu(&mut canvas);
+        self.draw_tray_overflow(&mut canvas);
         self.draw_popups(&mut canvas);
         self.draw_tooltip(&mut canvas);
         self.draw_agent_pointer(&mut canvas);
@@ -2592,6 +2605,7 @@ impl Desktop {
         if (self.menu_open && self.menu_with_shadow().overlaps(&clip))
             || self.on_screen_keyboard_overlaps(clip)
             || self.keyboard_layout_menu_overlaps(clip)
+            || self.tray_overflow_overlaps(clip)
             || self.popups_overlap(clip)
             || tooltip
             || panels

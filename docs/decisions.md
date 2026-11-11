@@ -22207,3 +22207,20 @@ the license, by an explicit instruction recorded here.
   server adds the colour as it is instead of multiplying it, one multiply per channel fewer.
 - **Not yet.** `UpdateLayeredWindowIndirect` and `prcDirty`; GDI drawing that writes alpha
   (`AlphaBlend` into a layered window); child layered windows.
+
+## D370 The tray's overflow popup (batch part 13's rest, D357's "Not yet"; M15, M12; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/windows-tooltips-tray-v0.5.md section 11) and the code-only session (engineering)
+
+- **Decision.** A press on the bar's overflow button (`Hidden icons`, from the fifth icon)
+  opens the overflow popup: the power menu's chrome, 256 wide, one 32-pixel row per icon the
+  button stands for, in the order they were added; the icon at the row's (8, 8), its name
+  (the tip, or the window's title) at x + 32, cut with `...` at 26 glyphs; the hovered or
+  keyboard row in `MENU_HOVER`. It is anchored as the keyboard layout menu: under the top bar
+  with its right edge at the button's, or 4 pixels above the taskbar. A left, right or middle
+  press on a row closes the popup first and then is the same press on that icon in the bar
+  (its window gets the button's messages); a press on the button again, or anywhere else,
+  closes it, and a press elsewhere goes on to what is under it. Up and Down move the
+  highlight, Enter and Space are a left click, Shift+F10 and the Menu key a right click, Esc
+  closes. While it is open the button is drawn pressed, the bar's tooltips wait and keys do
+  not reach the terminal. Removing an icon, or its window going away, closes it.
+- **Not yet.** The program's context menu as a shell menu (section 14), `NIN_POPUPOPEN`,
+  double clicks, `NIN_KEYSELECT`, `Shell_NotifyIconGetRect`.

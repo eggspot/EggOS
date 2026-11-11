@@ -5,13 +5,17 @@
 //! an overflow button past that), their drawing, their names, and the pointer's presses on
 //! them, reported to the icon's window as the Windows message each stands for.
 
-use super::paint::Canvas;
+use super::paint::{self, Canvas};
+use super::popups::with_shadow;
 use super::protocol::{
     EventRecord, EventSink, TRAY_ICON_SIDE, TRAY_TIP_CAPACITY, WindowError, event,
 };
 use super::shell::{PanelItem, TASKBAR_ITEM};
-use super::{Desktop, colour};
+use super::windows::{cut_title, ellipsis};
+use super::{Action, Desktop, MENU_GAP, MENU_ITEM_HEIGHT, colour, contains};
 use crate::display::{Damage, Rect};
+use crate::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
+use crate::input::{button, key};
 
 /// The most notification-area icons the bar holds.
 pub const MOST_TRAY_ICONS: usize = 16;
@@ -31,6 +35,11 @@ const WM_MBUTTONUP: i32 = 0x0208;
 const NIN_BALLOONSHOW: i32 = 0x0402;
 const NIN_BALLOONUSERCLICK: i32 = 0x0405;
 const BALLOON_GLYPHS: usize = 36;
+/// The overflow popup's width (docs/ux/windows-tooltips-tray-v0.5.md section 11).
+pub const TRAY_OVERFLOW_WIDTH: u32 = 256;
+const OVERFLOW_ICON_AT: u32 = 8;
+const OVERFLOW_TEXT_X: u32 = 32;
+const OVERFLOW_GLYPHS: usize = 26;
 const BALLOON_BYTES: usize = BALLOON_GLYPHS * 4 + 3;
 
 #[derive(Debug, Clone, Copy)]
@@ -50,6 +59,8 @@ struct TrayIcon {
 pub(super) struct Tray {
     icons: [Option<TrayIcon>; MOST_TRAY_ICONS],
     next_order: u32,
+    overflow_open: bool,
+    overflow_hover: Option<usize>,
 }
 
 impl Default for Tray {
@@ -57,6 +68,8 @@ impl Default for Tray {
         Tray {
             icons: [None; MOST_TRAY_ICONS],
             next_order: 0,
+            overflow_open: false,
+            overflow_hover: None,
             balloon: [0; BALLOON_BYTES],
             balloon_length: 0,
             balloon_owner: None,
@@ -99,6 +112,7 @@ impl Desktop {
             .position(|icon| icon.is_some_and(|icon| icon.client == client && icon.key == key));
         if remove {
             if let Some(at) = found {
+                self.close_tray_overflow(damage);
                 self.tray.icons[at] = None;
             }
             self.damage_tray(damage);
@@ -139,6 +153,7 @@ impl Desktop {
     /// Forgets the icons of the window in `slot`, which is gone.
     pub(super) fn forget_tray_icons(&mut self, slot: usize, damage: &mut Damage) {
         if self.tray.icons.iter().flatten().any(|icon| icon.slot == slot) {
+            self.close_tray_overflow(damage);
             self.damage_tray(damage);
             for icon in self.tray.icons.iter_mut() {
                 if icon.is_some_and(|icon| icon.slot == slot) {
@@ -154,9 +169,8 @@ impl Desktop {
         }
     }
 
-    /// The shown icons, rightmost first (the oldest), and whether an overflow button stands
-    /// for the rest.
-    fn shown_tray(&self) -> ([usize; SHOWN], usize, bool) {
+    /// The icons not hidden by their program, oldest first, and how many there are.
+    fn ordered_tray(&self) -> ([usize; MOST_TRAY_ICONS], usize) {
         let mut order = [(u32::MAX, 0usize); MOST_TRAY_ICONS];
         let mut count = 0;
         for (at, icon) in self.tray.icons.iter().enumerate() {
@@ -166,13 +180,34 @@ impl Desktop {
             }
         }
         order[..count].sort_unstable();
+        let mut indices = [0; MOST_TRAY_ICONS];
+        for (index, &(_, at)) in indices.iter_mut().zip(&order[..count]) {
+            *index = at;
+        }
+        (indices, count)
+    }
+
+    /// The shown icons, rightmost first (the oldest), and whether an overflow button stands
+    /// for the rest.
+    fn shown_tray(&self) -> ([usize; SHOWN], usize, bool) {
+        let (ordered, count) = self.ordered_tray();
         let overflow = count > SHOWN;
         let shown = if overflow { SHOWN - 1 } else { count };
         let mut indices = [0; SHOWN];
-        for (index, &(_, at)) in indices.iter_mut().zip(&order[..shown]) {
-            *index = at;
-        }
+        indices[..shown].copy_from_slice(&ordered[..shown]);
         (indices, shown, overflow)
+    }
+
+    /// The icons the overflow button stands for, in the order they were added, and how many.
+    fn overflowed_tray(&self) -> ([usize; MOST_TRAY_ICONS], usize) {
+        let (ordered, count) = self.ordered_tray();
+        if count <= SHOWN {
+            return ([0; MOST_TRAY_ICONS], 0);
+        }
+        let mut indices = [0; MOST_TRAY_ICONS];
+        let rest = count - (SHOWN - 1);
+        indices[..rest].copy_from_slice(&ordered[SHOWN - 1..count]);
+        (indices, rest)
     }
 
     fn tray_cell(&self) -> Option<(u32, u32, u32)> {
@@ -246,9 +281,10 @@ impl Desktop {
             if !rect.overlaps(&canvas.clip()) {
                 return;
             }
+            let open = item == PanelItem::TrayOverflow && self.tray.overflow_open;
             let fill = match taskbar {
-                true => self.item_fill(item, false),
-                false => (self.panels.pressed == Some(item)).then_some(colour::BAR_PRESSED),
+                true => self.item_fill(item, open),
+                false => (open || self.panels.pressed == Some(item)).then_some(colour::BAR_PRESSED),
             };
             if let Some(fill) = fill {
                 canvas.fill(rect, fill);
@@ -288,6 +324,269 @@ impl Desktop {
             let record = EventRecord::new(event::TRAY, 0, message, icon.key as i32, x, y);
             self.send(icon.slot, record, events);
         }
+    }
+}
+
+impl Desktop {
+    /// Whether the tray's overflow popup is open.
+    pub fn tray_overflow_open(&self) -> bool {
+        self.tray.overflow_open
+    }
+
+    fn tray_overflow_button(&self) -> Option<Rect> {
+        let mut button = None;
+        self.for_each_tray_item(|item, rect| {
+            if item == PanelItem::TrayOverflow {
+                button = Some(rect);
+            }
+        });
+        button
+    }
+
+    /// The overflow popup, its border included, while the overflow button shows: under the
+    /// top bar with its right edge at the button's, or above the taskbar (section 11).
+    pub fn tray_overflow(&self) -> Option<Rect> {
+        let button = self.tray_overflow_button()?;
+        let (_, rows) = self.overflowed_tray();
+        let height = rows as u32 * MENU_ITEM_HEIGHT + 2;
+        let y = match self.layout.taskbar {
+            Some(bar) => bar.y.saturating_sub(MENU_GAP + height),
+            None => button.bottom() + MENU_GAP,
+        };
+        Some(Rect::new(
+            button.right().saturating_sub(TRAY_OVERFLOW_WIDTH),
+            y,
+            TRAY_OVERFLOW_WIDTH,
+            height,
+        ))
+    }
+
+    /// The rectangle of the overflow popup's row `index`.
+    pub fn tray_overflow_row(&self, index: usize) -> Option<Rect> {
+        let popup = self.tray_overflow()?;
+        let (_, rows) = self.overflowed_tray();
+        if index >= rows {
+            return None;
+        }
+        Some(Rect::new(
+            popup.x + 1,
+            popup.y + 1 + index as u32 * MENU_ITEM_HEIGHT,
+            popup.width - 2,
+            MENU_ITEM_HEIGHT,
+        ))
+    }
+
+    fn tray_overflow_row_at(&self, x: u32, y: u32) -> Option<usize> {
+        let (_, rows) = self.overflowed_tray();
+        (0..rows).find(|&index| {
+            self.tray_overflow_row(index)
+                .is_some_and(|rect| contains(rect, x, y))
+        })
+    }
+
+    fn damage_tray_overflow(&self, damage: &mut Damage) {
+        if self.tray.overflow_open
+            && let Some(popup) = self.tray_overflow()
+        {
+            damage.add(with_shadow(popup));
+        }
+        if let Some(button) = self.tray_overflow_button() {
+            damage.add(button);
+        }
+    }
+
+    /// Opens the overflow popup, its row under the pointer highlighted.
+    pub(super) fn open_tray_overflow(&mut self, damage: &mut Damage) {
+        if self.tray_overflow_button().is_none() {
+            return;
+        }
+        let (x, y) = self.pointer;
+        self.tray.overflow_open = true;
+        self.tray.overflow_hover = self.tray_overflow_row_at(x, y);
+        self.damage_tray_overflow(damage);
+    }
+
+    /// Closes the overflow popup if it is open.
+    pub fn close_tray_overflow(&mut self, damage: &mut Damage) {
+        if !self.tray.overflow_open {
+            return;
+        }
+        self.damage_tray_overflow(damage);
+        self.tray.overflow_open = false;
+        self.tray.overflow_hover = None;
+    }
+
+    fn press_tray_overflow_row(
+        &mut self,
+        index: usize,
+        button: TrayButton,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
+        let (overflowed, rows) = self.overflowed_tray();
+        self.close_tray_overflow(damage);
+        if index < rows {
+            self.tray_press(overflowed[index] as u8, button, events);
+        }
+    }
+
+    /// A button press at (`x`, `y`) while the overflow popup is open: the popup closes first,
+    /// and a press on a row is the same press on that icon in the bar (section 11). `None`
+    /// when the press was not the popup's, so it goes on to whatever is under it.
+    pub(super) fn tray_overflow_press(
+        &mut self,
+        code: u16,
+        x: u32,
+        y: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Option<Action> {
+        if !self.tray.overflow_open {
+            return None;
+        }
+        let row = self.tray_overflow_row_at(x, y);
+        let on_popup = self.tray_overflow().is_some_and(|popup| contains(popup, x, y));
+        let on_button = self
+            .tray_overflow_button()
+            .is_some_and(|rect| contains(rect, x, y));
+        let pressed = match code {
+            button::LEFT => TrayButton::Left,
+            button::RIGHT => TrayButton::Right,
+            _ => TrayButton::Middle,
+        };
+        match row {
+            Some(index) => {
+                self.press_tray_overflow_row(index, pressed, damage, events);
+                Some(Action::None)
+            }
+            None => {
+                self.close_tray_overflow(damage);
+                (on_popup || on_button).then_some(Action::None)
+            }
+        }
+    }
+
+    /// The pointer moved to (`x`, `y`): the popup's row under it is drawn hovered.
+    pub(super) fn tray_overflow_hover(&mut self, x: u32, y: u32, damage: &mut Damage) {
+        if !self.tray.overflow_open {
+            return;
+        }
+        let hover = self.tray_overflow_row_at(x, y);
+        if hover != self.tray.overflow_hover {
+            self.tray.overflow_hover = hover;
+            self.damage_tray_overflow(damage);
+        }
+    }
+
+    /// Key `code` went down (`pressed`) or up while the overflow popup is open: Up and Down
+    /// move the highlight, Enter and Space are a left click on its icon, Shift+F10 and the
+    /// Menu key a right click, Esc closes.
+    pub(super) fn tray_overflow_key(
+        &mut self,
+        code: u16,
+        pressed: bool,
+        shifted: bool,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
+        if !pressed {
+            return Action::None;
+        }
+        let (_, rows) = self.overflowed_tray();
+        if rows == 0 {
+            self.close_tray_overflow(damage);
+            return Action::None;
+        }
+        let hover = self.tray.overflow_hover;
+        match code {
+            key::ESC => self.close_tray_overflow(damage),
+            key::UP => {
+                self.tray.overflow_hover =
+                    Some(hover.map_or(rows - 1, |index| index.saturating_sub(1)));
+                self.damage_tray_overflow(damage);
+            }
+            key::DOWN => {
+                self.tray.overflow_hover =
+                    Some(hover.map_or(0, |index| (index + 1).min(rows - 1)));
+                self.damage_tray_overflow(damage);
+            }
+            key::ENTER | key::KEYPAD_ENTER | key::SPACE => {
+                if let Some(index) = hover {
+                    self.press_tray_overflow_row(index, TrayButton::Left, damage, events);
+                }
+            }
+            key::F10 if shifted => {
+                if let Some(index) = hover {
+                    self.press_tray_overflow_row(index, TrayButton::Right, damage, events);
+                }
+            }
+            key::COMPOSE => {
+                if let Some(index) = hover {
+                    self.press_tray_overflow_row(index, TrayButton::Right, damage, events);
+                }
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    pub(super) fn tray_overflow_overlaps(&self, clip: Rect) -> bool {
+        self.tray.overflow_open
+            && self
+                .tray_overflow()
+                .is_some_and(|popup| with_shadow(popup).overlaps(&clip))
+    }
+
+    pub(super) fn draw_tray_overflow(&self, canvas: &mut Canvas<'_>) {
+        if !self.tray.overflow_open {
+            return;
+        }
+        let Some(popup) = self.tray_overflow() else {
+            return;
+        };
+        if !with_shadow(popup).overlaps(&canvas.clip()) {
+            return;
+        }
+        canvas.shadow(popup);
+        canvas.rounded(popup, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(
+            Rect::new(popup.x + 1, popup.y + 1, popup.width - 2, popup.height - 2),
+            &paint::INSET_INSIDE_R6,
+            true,
+            true,
+            colour::MENU,
+        );
+        let (overflowed, rows) = self.overflowed_tray();
+        let text_y = (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2;
+        for (index, &at) in overflowed[..rows].iter().enumerate() {
+            let Some(row) = self.tray_overflow_row(index) else {
+                continue;
+            };
+            if self.tray.overflow_hover == Some(index) {
+                canvas.fill(row, colour::MENU_HOVER);
+            }
+            let Some(icon) = self.tray.icons[at] else {
+                continue;
+            };
+            let icon_at = (popup.x + OVERFLOW_ICON_AT, row.y + OVERFLOW_ICON_AT);
+            let name = self.tray_name(PanelItem::Tray(at as u8)).unwrap_or("");
+            match icon.pixels {
+                Some(pixels) => draw_pixels(canvas, icon_at, &pixels),
+                None => draw_tile(canvas, icon_at, self.window_at(icon.slot).title()),
+            }
+            let (text, cut) = cut_title(name, OVERFLOW_GLYPHS);
+            let x = popup.x + OVERFLOW_TEXT_X;
+            canvas.text(x, row.y + text_y, text, colour::TEXT);
+            if cut {
+                let after = x + text.chars().count() as u32 * GLYPH_WIDTH as u32;
+                canvas.text(after, row.y + text_y, ellipsis(), colour::TEXT);
+            }
+        }
+    }
+
+    /// The overflow popup's row drawn highlighted, if any.
+    pub fn tray_overflow_highlight(&self) -> Option<usize> {
+        self.tray.overflow_hover
     }
 }
 
