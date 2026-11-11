@@ -281,6 +281,38 @@ pub fn connected_network() -> Option<alloc::string::String> {
     CONNECTED.lock().clone()
 }
 
+/// Whether `wifi.conf` says the chosen network hides its name (`hidden=yes`, D298).
+fn wanted_hidden() -> bool {
+    let root = vfs::root();
+    let Ok(node) = vfs::resolve(root, root, SETTINGS_PATH.as_bytes()) else {
+        return false;
+    };
+    let size = node.attributes().size;
+    if node.kind() != NodeKind::Regular || size > LARGEST_SETTINGS as u64 {
+        return false;
+    }
+    let Ok(bytes) = ProgramBytes::read(node, size, size) else {
+        return false;
+    };
+    bytes.bytes().split(|&byte| byte == b'\n').any(|line| line == b"hidden=yes")
+}
+
+/// `name` as `/proc/driver/wifi` writes it (D298): printable ASCII as it is but `\`, the
+/// rest, and a space at either end, as `\xHH`, so a name with any bytes reads back the same.
+pub fn escaped_name(name: &[u8]) -> alloc::string::String {
+    let mut text = alloc::string::String::new();
+    for (index, &byte) in name.iter().enumerate() {
+        let edge_space = byte == b' ' && (index == 0 || index + 1 == name.len());
+        match byte {
+            b'\\' => text.push_str("\\\\"),
+            0x21..=0x7e => text.push(byte as char),
+            b' ' if !edge_space => text.push(' '),
+            _ => text.push_str(&alloc::format!("\\x{byte:02x}")),
+        }
+    }
+    text
+}
+
 fn wanted() -> Option<(Vec<u8>, Vec<u8>)> {
     let root = vfs::root();
     let node = vfs::resolve(root, root, SETTINGS_PATH.as_bytes()).ok()?;
@@ -579,7 +611,7 @@ pub fn status() -> alloc::string::String {
             network.channel.unwrap_or(0),
             seen.signal,
             network.security,
-            alloc::string::String::from_utf8_lossy(network.ssid())
+            escaped_name(network.ssid())
         ));
     }
     text
@@ -720,7 +752,18 @@ impl Station {
         if self.joined.is_none() {
             set_status("scanning");
         }
-        let result = scan::scan(&mut self.transport, &self.firmware, &self.adapter, &self.nvm, &mut Pauses::<P>::within(SCAN_TIMEOUT_MS));
+        let hidden = match (self.joined.is_none(), wanted_hidden(), wanted()) {
+            (true, true, Some((ssid, _))) => Some(ssid),
+            _ => None,
+        };
+        let result = scan::scan(
+            &mut self.transport,
+            &self.firmware,
+            &self.adapter,
+            &self.nvm,
+            hidden.as_deref(),
+            &mut Pauses::<P>::within(SCAN_TIMEOUT_MS),
+        );
         match result {
             Ok(heard) => publish(&heard),
             Err(error) => *FAILURE.lock() = Some(Failure::adapter(error.description())),
@@ -772,7 +815,7 @@ impl Station {
             self.attached = true;
         }
         SIGNAL.store(i32::from(seen.signal), Ordering::Relaxed);
-        *CONNECTED.lock() = Some(alloc::string::String::from_utf8_lossy(ssid).into());
+        *CONNECTED.lock() = Some(escaped_name(ssid));
         LINK_UP.store(true, Ordering::Release);
         set_status("connected");
         Ok(())
@@ -898,7 +941,7 @@ fn run<P: Platform>(mut station: Station) {
             let settings = wanted();
             if settings != chosen {
                 chosen = settings;
-                *JOINING.lock() = chosen.as_ref().map(|(ssid, _)| alloc::string::String::from_utf8_lossy(ssid).into());
+                *JOINING.lock() = chosen.as_ref().map(|(ssid, _)| escaped_name(ssid));
                 if station.joined.is_some() && !station.joined_matches(&chosen) {
                     station.leave::<P>(true);
                     set_status("ready");

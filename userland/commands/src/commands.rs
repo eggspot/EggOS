@@ -3337,8 +3337,9 @@ pub const WIFI_CONNECT: CommandDefinition = CommandDefinition {
     description: "Names the network to join, by its name and, for WPA2-Personal, its \
                   passphrase (8 to 63 characters), in /var/lib/eggos/wifi.conf, which only root \
                   reads; the Wi-Fi driver joins it after its next scan, and wifi list then says \
-                  connected. An open network takes no passphrase.",
-    options: &[],
+                  connected. An open network takes no passphrase; --hidden joins a network that \
+                  hides its name, probing for it by name (D298).",
+    options: &[long_flag("hidden", "The network hides its name: probe for it by name.")],
     operands: &[WIFI_SSID, WIFI_PASSPHRASE],
     outputs: TEXT_ONLY,
     max_effect: Effect::Change,

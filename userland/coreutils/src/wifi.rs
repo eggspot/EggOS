@@ -41,7 +41,7 @@ fn show<S: System>(output: &mut Output<S>) -> i32 {
     status
 }
 
-fn connect<S: System>(output: &mut Output<S>, ssid: &[u8], passphrase: &[u8]) -> i32 {
+fn connect<S: System>(output: &mut Output<S>, ssid: &[u8], passphrase: &[u8], hidden: bool) -> i32 {
     if ssid.is_empty() || ssid.len() > LARGEST_SSID || ssid.contains(&b'\n') {
         output.error(&[b"a network's name is 1 to 32 bytes on one line"]);
         return FAILURE;
@@ -59,7 +59,8 @@ fn connect<S: System>(output: &mut Output<S>, ssid: &[u8], passphrase: &[u8]) ->
             return FAILURE;
         }
     };
-    let written = [&b"ssid="[..], ssid, b"\npassphrase=", passphrase, b"\n"]
+    let hidden_line: &[u8] = if hidden { b"hidden=yes\n" } else { b"" };
+    let written = [&b"ssid="[..], ssid, b"\npassphrase=", passphrase, b"\n", hidden_line]
         .iter()
         .try_for_each(|part| output.system.write(descriptor, part))
         .and_then(|()| output.system.sync_file(descriptor));
@@ -100,14 +101,18 @@ pub fn wifi<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             return FAILURE;
         }
     };
-    let Ok(operands) = parse_defined(output, rest, definition, |_, _| Ok(())) else {
+    let mut hidden = false;
+    let Ok(operands) = parse_defined(output, rest, definition, |_, given| {
+        hidden |= given.option.long == Some("hidden");
+        Ok(())
+    }) else {
         return FAILURE;
     };
     match (verb.to_bytes(), operands.all()) {
         (b"list", []) => show(output),
         (b"forget", []) => forget(output),
-        (b"connect", [ssid]) => connect(output, ssid.to_bytes(), b""),
-        (b"connect", [ssid, passphrase]) => connect(output, ssid.to_bytes(), passphrase.to_bytes()),
+        (b"connect", [ssid]) => connect(output, ssid.to_bytes(), b"", hidden),
+        (b"connect", [ssid, passphrase]) => connect(output, ssid.to_bytes(), passphrase.to_bytes(), hidden),
         _ => {
             output.coded(&errors::USAGE, &[USAGE]);
             FAILURE

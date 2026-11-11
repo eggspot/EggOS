@@ -66,6 +66,13 @@ const CHANNELS: usize = GENERAL + 36;
 const PERIODIC: usize = CHANNELS + 4 + MAX_SCAN_CHANNEL_ENTRIES * 8;
 const PROBE: usize = PERIODIC + 12;
 const PROBE_BUFFER: usize = PROBE + 20;
+/// The probe parameters' directed SSIDs, after the 532-byte probe template and four bytes of
+/// counts: element id, length, 32 bytes of name each (D298).
+const DIRECT_SSIDS: usize = PROBE + 532 + 4;
+const SSID_ELEMENT: u8 = 0;
+const MAX_SSID_BYTES: usize = 32;
+/// A channel's flag asking the firmware to probe for directed SSID 0 there.
+const PROBE_DIRECT_SSID_0: u32 = 1 << 0;
 
 const RATES_2_4: [u8; 8] = [0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24];
 const EXTENDED_RATES_2_4: [u8; 4] = [0x30, 0x48, 0x60, 0x6c];
@@ -197,12 +204,17 @@ fn probe_request(request: &mut [u8], address: [u8; 6], five: bool) {
     request[PROBE_BUFFER..PROBE_BUFFER + frame.len()].copy_from_slice(&frame);
 }
 
-/// The `SCAN_REQ_UMAC` version 14 request for a passive scan of `nvm`'s channels, at most
-/// `channel_limit` of them.
-pub fn scan_request(nvm: &Nvm, channel_limit: usize, extended_channels: bool) -> Vec<u8> {
+/// The `SCAN_REQ_UMAC` version 14 request for a scan of `nvm`'s channels, at most
+/// `channel_limit` of them: passive, or active with probe requests naming `hidden` (a network
+/// whose beacons hide its name, D298).
+pub fn scan_request(nvm: &Nvm, channel_limit: usize, extended_channels: bool, hidden: Option<&[u8]>) -> Vec<u8> {
     let mut request = vec![0u8; SCAN_REQUEST_BYTES];
     put32(&mut request, 4, SCAN_PRIORITY_EXT_6);
-    let flags = SCAN_FLAG_FORCE_PASSIVE | SCAN_FLAG_PASS_ALL | SCAN_FLAG_NOTIFY_ITERATION | SCAN_FLAG_ADAPTIVE_DWELL;
+    let hidden = hidden.filter(|ssid| !ssid.is_empty() && ssid.len() <= MAX_SSID_BYTES);
+    let mut flags = SCAN_FLAG_PASS_ALL | SCAN_FLAG_NOTIFY_ITERATION | SCAN_FLAG_ADAPTIVE_DWELL;
+    if hidden.is_none() {
+        flags |= SCAN_FLAG_FORCE_PASSIVE;
+    }
     put16(&mut request, GENERAL, flags);
     request[GENERAL + 4] = DWELL_ACTIVE;
     request[GENERAL + 5] = DWELL_ACTIVE;
@@ -220,6 +232,9 @@ pub fn scan_request(nvm: &Nvm, channel_limit: usize, extended_channels: bool) ->
     request[CHANNELS + 3] = APS_SOCIAL;
     for (index, channel) in channels.iter().enumerate() {
         let entry = CHANNELS + 4 + index * 8;
+        if hidden.is_some() {
+            put32(&mut request, entry, PROBE_DIRECT_SSID_0);
+        }
         request[entry + 4] = channel.number;
         match extended_channels {
             true => {
@@ -235,6 +250,11 @@ pub fn scan_request(nvm: &Nvm, channel_limit: usize, extended_channels: bool) ->
     request[PERIODIC + 2] = 1;
     let five = nvm.channels.iter().any(|channel| channel.band == Band::Five);
     probe_request(&mut request, nvm.address, five);
+    if let Some(ssid) = hidden {
+        request[DIRECT_SSIDS] = SSID_ELEMENT;
+        request[DIRECT_SSIDS + 1] = ssid.len() as u8;
+        request[DIRECT_SSIDS + 2..DIRECT_SSIDS + 2 + ssid.len()].copy_from_slice(ssid);
+    }
     request
 }
 
@@ -275,9 +295,10 @@ pub fn scan<R: RegisterIo, M: DmaMemory>(
     firmware: &Firmware,
     adapter: &Adapter,
     nvm: &Nvm,
+    hidden: Option<&[u8]>,
     wait: &mut dyn Wait,
 ) -> Result<Vec<Heard>, TransportError> {
-    let request = scan_request(nvm, firmware.scan_channels as usize, firmware.has_api(API_SCAN_EXTENDED_CHANNEL));
+    let request = scan_request(nvm, firmware.scan_channels as usize, firmware.has_api(API_SCAN_EXTENDED_CHANNEL), hidden);
     transport.send_command(LONG_GROUP, SCAN_REQUEST, &request, wait)?;
     let ax210 = adapter.family == Family::Ax210;
     let mut frames = Vec::new();
@@ -328,7 +349,7 @@ mod tests {
 
     #[test]
     fn the_scan_request_names_each_channel_and_carries_a_probe_request() {
-        let request = scan_request(&nvm(), 67, true);
+        let request = scan_request(&nvm(), 67, true, None);
         assert_eq!(request.len(), SCAN_REQUEST_BYTES);
         assert_eq!(request[CHANNELS + 1], 2);
         assert_eq!(&request[CHANNELS + 4 + 4..CHANNELS + 4 + 7], &[1, PHY_BAND_2_4, 1]);
@@ -337,7 +358,7 @@ mod tests {
         assert_eq!(&request[PROBE_BUFFER + 10..PROBE_BUFFER + 16], &nvm().address);
         let flags = u16::from_le_bytes([request[GENERAL], request[GENERAL + 1]]);
         assert_ne!(flags & SCAN_FLAG_FORCE_PASSIVE, 0);
-        assert_eq!(scan_request(&nvm(), 1, false)[CHANNELS + 1], 1);
+        assert_eq!(scan_request(&nvm(), 1, false, None)[CHANNELS + 1], 1);
     }
 
     #[test]

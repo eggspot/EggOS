@@ -119,6 +119,40 @@ pub struct Failed {
 pub const WRONG_PASSPHRASE: &str = "wrong-passphrase";
 const WRONG_PASSPHRASE_SENTENCE: &str = "The network did not accept this passphrase.";
 
+/// A name as the driver writes it (D298): `\\` for a backslash and `\\xHH` for a byte that is
+/// not printable or a space at an end; bytes that are not UTF-8 come back as U+FFFD.
+pub fn unescaped(name: &str) -> String {
+    let bytes = name.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        match (bytes[at], bytes.get(at + 1)) {
+            (b'\\', Some(b'\\')) => {
+                out.push(b'\\');
+                at += 2;
+            }
+            (b'\\', Some(b'x')) => {
+                let value = bytes.get(at + 2..at + 4).and_then(|hex| core::str::from_utf8(hex).ok()).and_then(|hex| u8::from_str_radix(hex, 16).ok());
+                match value {
+                    Some(value) => {
+                        out.push(value);
+                        at += 4;
+                    }
+                    None => {
+                        out.push(b'\\');
+                        at += 1;
+                    }
+                }
+            }
+            (byte, _) => {
+                out.push(byte);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Reads `/proc/driver/wifi`'s `text`; lines it cannot read are skipped.
 pub fn parse(text: &str) -> Status {
     let mut lines = text.lines();
@@ -133,9 +167,9 @@ pub fn parse(text: &str) -> Status {
         if part == "the radio is switched off" {
             status.radio_off = true;
         } else if let Some(name) = part.strip_prefix("network ") {
-            status.joined = Some(String::from(name));
+            status.joined = Some(unescaped(name));
         } else if let Some(name) = part.strip_prefix("joining ") {
-            status.joining = Some(String::from(name));
+            status.joining = Some(unescaped(name));
         } else if let Some(signal) = part.strip_prefix("signal ").and_then(|rest| rest.strip_suffix(" dBm")) {
             status.signal = signal.parse().ok();
         } else if let Some((code, words)) = part.strip_prefix("failed ").and_then(|rest| rest.split_once(": ")) {
@@ -155,7 +189,7 @@ pub fn parse(text: &str) -> Status {
         let Ok(signal) = signal.parse::<i32>() else {
             continue;
         };
-        let name = String::from(fields.next().unwrap_or(""));
+        let name = unescaped(fields.next().unwrap_or(""));
         if status.networks.iter().any(|known| known.name == name && !name.is_empty()) {
             continue;
         }

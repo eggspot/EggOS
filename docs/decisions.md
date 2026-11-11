@@ -20241,3 +20241,18 @@ the license, by an explicit instruction recorded here.
   targets for them or the owner allows `build-std` for those two.
 - **Not yet.** Every one of the ports; the owner's call on MIPS64 and SPARC64.
 
+## D298 Hidden Wi-Fi networks and network names that read back exactly (the Wi-Fi design's asks 8 and 9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Linux iwlwifi's scan request layout and iwx(4))
+
+- **Decision.**
+  - `wifi connect --hidden <name> [<passphrase>]` adds `hidden=yes` to `wifi.conf`. While not
+    joined, the driver's scans for such a network are active: the scan request names it in its
+    first directed SSID (after the probe template and its counts) and every channel probes for it,
+    so the access point answers with a probe response that carries the name, which the join uses
+    as any other. A network not marked hidden is scanned passively as before.
+  - `/proc/driver/wifi` writes network names with printable ASCII as it is, `\\` for a backslash
+    and `\xHH` for any other byte and for a space at either end; the Network pane reads them back
+    (`wifi_section::unescaped`), so a name with spaces at its ends, line breaks or other bytes is
+    the same in the pane, the CLI and the driver.
+- **Not yet.** Building and running; the pane's `Join another network` row (the design's ask 8
+  GUI); several hidden networks at once; `wifi connect` naming a network by escaped bytes.
+
