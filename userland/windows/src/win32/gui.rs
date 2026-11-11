@@ -90,6 +90,8 @@ pub struct Gui {
     pub combo: Option<super::combo_box::Tracking>,
     /// The window's own scroll bar the pointer holds (D342).
     pub held_bar: Option<super::window_scroll_bars::Held>,
+    /// Where the pointer rests among the tooltip controls' tools, and the tip shown (D355).
+    pub tip: super::common_controls::tooltip::Tracking,
     pub active_root: usize,
     pub drawn: DrawnTexts,
     /// The item a context menu (`TrackPopupMenuEx`) closed with, 0 for none, until taken.
@@ -125,6 +127,7 @@ impl Gui {
             tracking: None,
             combo: None,
             held_bar: None,
+            tip: super::common_controls::tooltip::Tracking::new(),
             active_root: 0,
             drawn: DrawnTexts::new(),
             menu_choice: None,
@@ -683,6 +686,18 @@ fn input_event(device: &Device, root: usize, thread: u32, input: &Input) -> Opti
         if hovers {
             let under = under_pointer(gui, root, point);
             super::hover::pointer_input(gui, under, input.time);
+            super::common_controls::tooltip::pointer_moved(gui, root, point, input.time);
+        }
+        let pressed = matches!(
+            number,
+            message::LEFT_BUTTON_DOWN
+                | message::RIGHT_BUTTON_DOWN
+                | message::MIDDLE_BUTTON_DOWN
+                | message::KEY_DOWN
+                | message::SYS_KEY_DOWN
+        );
+        if pressed {
+            super::common_controls::tooltip::dismiss(gui, root, input.time);
         }
         match route_input(gui, root, number, wparam, input.lparam, point, input.time) {
             Some(message) => {
@@ -900,6 +915,7 @@ pub fn wait_for(filter: Filter, remove: bool, wait: bool, done: &dyn Fn(&Gui) ->
     loop {
         read_events(thread);
         super::async_select::post_ready();
+        super::common_controls::tooltip::tick();
         if let Some(Some(action)) = with(|gui| handed_over::take_for_thread(&mut gui.queue, thread))
         {
             super::elements::act_handed_over(&action);
@@ -965,10 +981,8 @@ fn sleep(filter: &Filter, done: &dyn Fn(&Gui) -> bool) {
         let now = super::user32::now_ms();
         let timer = gui.timers.next_due(filter, now);
         let hover = super::hover::next_due(gui, filter, now);
-        match (timer, hover) {
-            (Some(timer), Some(hover)) => Some(timer.min(hover)),
-            (timer, hover) => timer.or(hover),
-        }
+        let tip = super::common_controls::tooltip::next_due(gui, now);
+        [timer, hover, tip].into_iter().flatten().min()
     })
     .flatten()
     .map(|milliseconds| u64::from(milliseconds) * NANOSECONDS_PER_MILLISECOND);

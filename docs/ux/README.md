@@ -107,3 +107,6 @@ motion, sticky/slow keys, live captions later.
 ## Open questions (for the owner, when the desktop milestone gets close)
 - Default profile when the user skips first-run setup.
 - Whether to ship a global menu bar outside the macOS profile.
+- `windows-tooltips-tray-v0.5.md`: Windows programs' tooltips (`tooltips_class32`, balloons,
+  titled tips) and their notification-area icons in the bar (D355): look, placement, timing,
+  clicks and the messages programs get, balloons as notices, and what the server needs.

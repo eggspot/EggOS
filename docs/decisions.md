@@ -21932,3 +21932,41 @@ the license, by an explicit instruction recorded here.
     Escape instead of the dialog's default and cancel buttons.
 - **Not yet.** Starting an edit by a slow second click on the selected item, tree views'
   label editing (`TVM_EDITLABEL`), and the edit growing as the text gets longer.
+
+## D355 Windows common controls: tooltips (`tooltips_class32`) (batch part 13's rest, D231's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/windows-tooltips-tray-v0.5.md, sections 1 to 7) and the code-only session (engineering)
+
+- **Design.** Claude Fable designed Windows tooltips and the notification area
+  (`docs/ux/windows-tooltips-tray-v0.5.md`): a white tile with a grey border in the Light
+  palette, `w = 8n + 16`, 24 tall for a line, one line until `TTM_SETMAXTIPWIDTH`, a title
+  row with an `i`, `!` or `x` circle for `TTM_SETTITLEW`, balloons as rounded titled tips
+  without a stem, placed 20 px under the pointer (above when it does not fit), centred on the
+  tool for `TTF_CENTERTIP` and balloons, Win32's 500, 100 and 5000 ms delays. (The design's
+  table gives 88 px for two 8-cell lines; its own formula gives 80, which the code follows.)
+- **Decision.**
+  - `eggos_windows_gui::controls::tooltip`: the lines, the size, the placement and the
+    painting, with host tests of the design's sizes.
+  - `CreateWindowExW` of `tooltips_class32` (a `WS_POPUP`) makes a hidden child of its owner
+    (or of the active window when it has none) with no rect, so it lives in its owner's tree
+    and dies with it; its state holds up to 64 tools.
+  - **Messages**: `TTM_ADDTOOLW`, `TTM_DELTOOLW`, `TTM_NEWTOOLRECTW`, `TTM_UPDATETIPTEXTW`,
+    `TTM_SETTOOLINFOW`, `TTM_GETTOOLINFOW`, `TTM_GETTEXTW`, `TTM_GETTOOLCOUNT`,
+    `TTM_ACTIVATE`, `TTM_SETDELAYTIME` (with `TTDT_AUTOMATIC`'s ratios) and
+    `TTM_GETDELAYTIME`, `TTM_SETMAXTIPWIDTH` and `TTM_GETMAXTIPWIDTH`, `TTM_SETTITLEW`,
+    `TTM_POP`, `TTM_POPUP`, `TTM_UPDATE`, `TTM_TRACKACTIVATE`, `TTM_TRACKPOSITION`;
+    `TTM_RELAYEVENT` is accepted and changes nothing (the layer tracks the pointer itself).
+  - **Showing.** The pointer's moves (`tooltip::pointer_moved`, from the input routing) pick
+    the newest tool under it; after the initial delay (the reshow delay right after another
+    tip hid) the tip shows: a callback tool is asked with `TTN_GETDISPINFOW`
+    (`TTF_DI_SETITEM` keeps the answer), `TTN_SHOW` goes to the owner, and the tip is painted
+    over the top-level window's buffer at each commit (`tooltip::paint_shown`, after open
+    drop-downs and combo lists). It hides after the autopop delay (`TTN_POP`), when the
+    pointer leaves the tool, and on any press or key (`tooltip::dismiss`), the tool then spent
+    until the pointer leaves it; the window repaints under it. Tracking tools show only by
+    `TTM_TRACKACTIVATE`, at `TTM_TRACKPOSITION`'s point (exactly there with `TTF_ABSOLUTE`).
+  - `TTS_NOPREFIX` clear strips mnemonic ampersands. The tooltip is a `tooltip` element in
+    agents' tree.
+- **Not yet.** Tools other controls register (toolbars' `TBSTYLE_TOOLTIPS`, list views' info
+  tips, tree views' `TVS_INFOTIP`, design section 8), `TTM_HITTESTW`, `TTM_ENUMTOOLSW`,
+  `TTM_GETCURRENTTOOLW`, `TTM_GETBUBBLESIZE`, `TTM_ADJUSTRECT`, resource-id texts (shown as
+  callbacks), touch's long-press, and `TTS_ALWAYSTIP`'s inactive-window rule. The tray
+  (design sections 11 to 19) is its own decision.

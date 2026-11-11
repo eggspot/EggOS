@@ -17,6 +17,7 @@ mod progress;
 mod status_bar;
 mod tab_control;
 mod toolbar;
+pub(in crate::win32) mod tooltip;
 mod tree_view;
 
 use super::gui::{self, Gui, with};
@@ -92,6 +93,7 @@ pub fn class_of(name: &[u16]) -> Option<CommonKind> {
         () if is("SysHeader32") => Some(CommonKind::Header),
         () if is("SysTreeView32") => Some(CommonKind::TreeView),
         () if is("ToolbarWindow32") => Some(CommonKind::Toolbar),
+        () if is("tooltips_class32") => Some(CommonKind::Tooltip),
         () => None,
     }
 }
@@ -117,6 +119,7 @@ pub fn new_state(kind: CommonKind, style: u32) -> Option<usize> {
         CommonKind::Header => header::new_state(style),
         CommonKind::TreeView => tree_view::new_state(style),
         CommonKind::Toolbar => toolbar::new_state(style),
+        CommonKind::Tooltip => tooltip::new_state(style),
     }
 }
 
@@ -277,6 +280,7 @@ pub fn procedure(
         CommonKind::Header => header::procedure(window, number, wparam, lparam),
         CommonKind::TreeView => tree_view::procedure(window, number, wparam, lparam),
         CommonKind::Toolbar => toolbar::procedure(window, number, wparam, lparam),
+        CommonKind::Tooltip => tooltip::procedure(window, number, wparam, lparam),
     }
 }
 
@@ -290,6 +294,7 @@ pub fn role_of(kind: CommonKind, window: &Window) -> (Role, u16) {
         CommonKind::Header => header::role(window),
         CommonKind::TreeView => tree_view::role(window),
         CommonKind::Toolbar => toolbar::role(window),
+        CommonKind::Tooltip => tooltip::role(window),
     }
 }
 
@@ -321,6 +326,7 @@ pub fn push_items(
         CommonKind::Header => header::push_items(gui, window, element, origin, tree),
         CommonKind::TreeView => tree_view::push_items(gui, window, element, origin, tree),
         CommonKind::Toolbar => toolbar::push_items(gui, window, element, origin, tree),
+        CommonKind::Tooltip => true,
     }
 }
 
@@ -335,7 +341,9 @@ pub fn act(
     ours: bool,
 ) -> Outcome {
     match kind {
-        CommonKind::StatusBar | CommonKind::Progress => Outcome::NotSupported,
+        CommonKind::StatusBar | CommonKind::Progress | CommonKind::Tooltip => {
+            Outcome::NotSupported
+        }
         CommonKind::TabControl => tab_control::act(window, item, action, ours),
         CommonKind::ListView => list_view::act(window, item, action, ours),
         CommonKind::Header => header::act(window, item, action, ours),

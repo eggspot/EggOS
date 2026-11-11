@@ -232,10 +232,11 @@ pub fn show_pending(
     let bars = super::window_scroll_bars::paint_tree(gui, root);
     let dropped = super::menu::paint_open_drop_down(gui, root);
     let listed = super::combo_box::paint_open_list(gui, root);
+    let tip = super::common_controls::tooltip::paint_shown(gui, root);
     match first {
         true => Some((device, server, None)),
         false => {
-            let area = [bars, dropped, listed]
+            let area = [bars, dropped, listed, tip]
                 .into_iter()
                 .flatten()
                 .fold(pending, |area, over| area.union(&over));

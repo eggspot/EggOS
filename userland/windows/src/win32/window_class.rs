@@ -84,6 +84,7 @@ fn common_name(kind: CommonKind) -> &'static str {
         CommonKind::Header => "SysHeader32",
         CommonKind::TreeView => "SysTreeView32",
         CommonKind::Toolbar => "ToolbarWindow32",
+        CommonKind::Tooltip => "tooltips_class32",
     }
 }
 
@@ -122,7 +123,7 @@ fn system_atom(kind: ControlKind) -> u16 {
     }
 }
 
-const SYSTEM_KINDS: [ControlKind; 13] = [
+const SYSTEM_KINDS: [ControlKind; 14] = [
     ControlKind::Button,
     ControlKind::Edit,
     ControlKind::Static,
@@ -136,6 +137,7 @@ const SYSTEM_KINDS: [ControlKind; 13] = [
     ControlKind::Common(CommonKind::Header),
     ControlKind::Common(CommonKind::TreeView),
     ControlKind::Common(CommonKind::Toolbar),
+    ControlKind::Common(CommonKind::Tooltip),
 ];
 
 /// The system control class whose atom is `atom`, the atom `GetClassInfoExW` answers for it,

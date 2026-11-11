@@ -15,7 +15,7 @@ use crate::gui::classes::{Class, ClassError, ClassName};
 use crate::gui::message::{self, point_parameter};
 use crate::gui::objects;
 use crate::gui::queue::{Filter, Message};
-use crate::gui::windows::{self, ControlKind, MAX_EXTRA, Procedure, Window};
+use crate::gui::windows::{self, CommonKind, ControlKind, MAX_EXTRA, Procedure, Window};
 use crate::library::Export;
 use crate::linux;
 use crate::text;
@@ -247,6 +247,18 @@ pub(super) unsafe extern "efiapi" fn create_window_ex_w(
         // SAFETY: the window name is the caller's NUL-terminated string.
         false => unsafe { super::file::wide_string(window_name) },
     };
+    if program_class.is_err()
+        && system_class == Some(ControlKind::Common(CommonKind::Tooltip))
+    {
+        let owner = match parent {
+            0 => with(|gui| gui.active_root).unwrap_or(0),
+            owner => owner,
+        };
+        let kind = ControlKind::Common(CommonKind::Tooltip);
+        let hidden = (style & !WS_VISIBLE) | WS_CHILD;
+        return create_child(owner, kind, hidden, Rect::default(), 0, window_text)
+            .unwrap_or_else(|| fail(error::NOT_ENOUGH_MEMORY, 0));
+    }
     if style & WS_CHILD != 0 {
         let created = match (program_class, system_class) {
             (Ok((atom, class_of)), _) => create_program_child(

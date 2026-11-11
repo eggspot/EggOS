@@ -57,6 +57,7 @@ pub enum CommonKind {
     Header,
     TreeView,
     Toolbar,
+    Tooltip,
 }
 
 /// Who answers a window's messages: the program's window procedure, the layer's message box
