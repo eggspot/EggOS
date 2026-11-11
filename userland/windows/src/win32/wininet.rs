@@ -2,20 +2,24 @@
 //! HTTP/1.1 `GET` over a TCP socket, as EggOS's `fetch` does with the same protocol code
 //! (`eggos_net::http`, D158): the host resolves as wsock32's names do, redirects are followed
 //! (at most five) unless the program says not to, and `InternetReadFile` hands out the body
-//! decoded (by its length, in chunks, or to the connection's close). `https://` needs TLS,
-//! which the layer does not have yet (`ERROR_INTERNET_SECURE_CHANNEL_ERROR`), and there are no
-//! proxies, other schemes or asynchronous handles.
+//! decoded (by its length, in chunks, or to the connection's close). `https://` runs the same
+//! over EggOS's TLS 1.3 client (D352), the server's certificate checked against the machine's
+//! roots; there are no proxies, other schemes or asynchronous handles.
 
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap};
 use crate::library::Export;
 use crate::linux::{self, AF_INET, MSG_NOSIGNAL};
 use crate::text;
 use eggos_net::http::{self, Body, Framing, Redirect};
+use eggos_tls::chain::{NoRoots, TrustAnchors};
+use eggos_tls::client::{self, Buffers, RANDOMNESS_BYTES, Session, Settings, Stopped, Transport};
+use eggos_tls::pem::Certificates;
 
 const ERROR_INTERNET_TIMEOUT: u32 = 12002;
 const ERROR_INTERNET_INVALID_URL: u32 = 12005;
 const ERROR_INTERNET_UNRECOGNIZED_SCHEME: u32 = 12006;
 const ERROR_INTERNET_NAME_NOT_RESOLVED: u32 = 12007;
+const ERROR_INTERNET_INVALID_CA: u32 = 12045;
 const ERROR_INTERNET_CANNOT_CONNECT: u32 = 12029;
 const ERROR_INTERNET_CONNECTION_ABORTED: u32 = 12030;
 const ERROR_HTTP_INVALID_SERVER_RESPONSE: u32 = 12152;
@@ -41,7 +45,7 @@ struct Session {
 }
 
 struct Request {
-    fd: usize,
+    link: Link,
     body: Body,
     ended: bool,
     ready: (usize, usize),
@@ -60,8 +64,8 @@ static HANDLES: SpinLock<[usize; MAX_HANDLES]> = SpinLock::new([0; MAX_HANDLES])
 fn register(internet: Internet) -> usize {
     let block = heap::allocate(core::mem::size_of::<Internet>()).cast::<Internet>();
     if block.is_null() {
-        if let Internet::Request(request) = internet {
-            let _ = linux::close(request.fd);
+        if let Internet::Request(mut request) = internet {
+            request.link.close();
         }
         return fail(error::NOT_ENOUGH_MEMORY, 0);
     }
@@ -83,8 +87,8 @@ fn register(internet: Internet) -> usize {
 
 fn release(block: *mut Internet) {
     // SAFETY: the block is a live `Internet` no table names any more, used by no one else.
-    if let Internet::Request(request) = unsafe { &*block } {
-        let _ = linux::close(request.fd);
+    if let Internet::Request(request) = unsafe { &mut *block } {
+        request.link.close();
     }
     // SAFETY: as above.
     unsafe { heap::free(block.cast()) };
@@ -148,6 +152,156 @@ fn receive_some(fd: usize, buffer: &mut [u8]) -> Result<usize, u32> {
     linux::receive(fd, buffer, 0).map_err(|_| ERROR_INTERNET_CONNECTION_ABORTED)
 }
 
+const ROOTS: [&[u8]; 2] = [b"/etc/ssl/roots.pem\0", b"/media/host/roots.pem\0"];
+const ROOTS_PIECE: usize = 4096;
+const CERTIFICATE_BYTES: usize = 8192;
+const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
+
+struct Socket {
+    fd: usize,
+}
+
+impl Transport for Socket {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), Stopped> {
+        send_all(self.fd, bytes).map_err(|_| Stopped)
+    }
+
+    fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Stopped> {
+        receive_some(self.fd, buffer).map_err(|_| Stopped)
+    }
+}
+
+struct RootsFile;
+
+impl TrustAnchors for RootsFile {
+    fn each(&mut self, visit: &mut dyn FnMut(&[u8]) -> bool) -> Result<bool, NoRoots> {
+        let fd = ROOTS
+            .iter()
+            .find_map(|path| linux::open(path, linux::O_RDONLY).ok())
+            .ok_or(NoRoots)?;
+        let mut der = [0u8; CERTIFICATE_BYTES];
+        let mut decoder = Certificates::new(&mut der);
+        let mut text = [0u8; ROOTS_PIECE];
+        let found = loop {
+            match linux::read(fd, &mut text) {
+                Ok(0) => break decoder.finish(visit),
+                Ok(count) if decoder.feed(&text[..count], visit) => break true,
+                Ok(_) => {}
+                Err(errno) if errno.0 == EINTR => {}
+                Err(_) => break false,
+            }
+        };
+        let _ = linux::close(fd);
+        Ok(found)
+    }
+}
+
+/// An `https://` connection's TLS session, over buffers in their own heap block, which the
+/// session borrows until the link closes.
+struct Secure {
+    session: Session<'static>,
+    buffers: *mut Buffers,
+}
+
+/// A request's connection: plain TCP for `http://`, TLS over it for `https://` (D352).
+struct Link {
+    fd: usize,
+    secure: Option<Secure>,
+}
+
+impl Link {
+    fn plain(fd: usize) -> Link {
+        Link { fd, secure: None }
+    }
+
+    /// The TLS handshake with `host` over connected `fd`, the server's certificate checked
+    /// against the machine's roots; the descriptor is closed when it fails.
+    fn secure(fd: usize, host: &[u8]) -> Result<Link, u32> {
+        let failed = |code: u32| {
+            let _ = linux::close(fd);
+            Err(code)
+        };
+        let block = heap::allocate(core::mem::size_of::<Buffers>()).cast::<Buffers>();
+        if block.is_null() {
+            return failed(error::NOT_ENOUGH_MEMORY);
+        }
+        // SAFETY: a fresh, 16-byte aligned heap block the size of `Buffers`, freed only when
+        // the link closes, after the session that borrows it.
+        let buffers: &'static mut Buffers = unsafe {
+            block.write(Buffers::default());
+            &mut *block
+        };
+        let mut randomness = [0u8; RANDOMNESS_BYTES];
+        if linux::random_bytes(&mut randomness).is_err() {
+            // SAFETY: the block made above, which nothing borrows any more.
+            unsafe { heap::free(block.cast()) };
+            return failed(ERROR_INTERNET_SECURE_CHANNEL_ERROR);
+        }
+        let settings = Settings {
+            host,
+            now: (linux::clock_nanoseconds(linux::CLOCK_REALTIME) / NANOSECONDS_PER_SECOND) as i64,
+        };
+        let mut socket = Socket { fd };
+        match client::connect(&mut socket, buffers, &settings, &randomness, &mut RootsFile) {
+            Ok(session) => Ok(Link {
+                fd,
+                secure: Some(Secure {
+                    session,
+                    buffers: block,
+                }),
+            }),
+            Err(failure) => {
+                // SAFETY: the session that borrowed the block is gone with the error.
+                unsafe { heap::free(block.cast()) };
+                failed(tls_error(failure))
+            }
+        }
+    }
+
+    fn send(&mut self, bytes: &[u8]) -> Result<(), u32> {
+        let mut socket = Socket { fd: self.fd };
+        match self.secure.as_mut() {
+            Some(secure) => secure
+                .session
+                .write(&mut socket, bytes)
+                .map_err(|_| ERROR_INTERNET_CONNECTION_ABORTED),
+            None => send_all(self.fd, bytes),
+        }
+    }
+
+    fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, u32> {
+        let mut socket = Socket { fd: self.fd };
+        match self.secure.as_mut() {
+            Some(secure) => secure
+                .session
+                .read(&mut socket, buffer)
+                .map_err(|_| ERROR_INTERNET_CONNECTION_ABORTED),
+            None => receive_some(self.fd, buffer),
+        }
+    }
+
+    /// Ends the session (TLS's close notice), frees its buffers and closes the descriptor.
+    fn close(&mut self) {
+        if let Some(mut secure) = self.secure.take() {
+            let mut socket = Socket { fd: self.fd };
+            let _ = secure.session.close(&mut socket);
+            let block = secure.buffers;
+            drop(secure);
+            // SAFETY: the block `secure` made; the session that borrowed it is dropped.
+            unsafe { heap::free(block.cast()) };
+        }
+        let _ = linux::close(self.fd);
+    }
+}
+
+fn tls_error(failure: client::Error) -> u32 {
+    match failure {
+        client::Error::Transport => ERROR_INTERNET_CONNECTION_ABORTED,
+        client::Error::Certificate(_) => ERROR_INTERNET_INVALID_CA,
+        _ => ERROR_INTERNET_SECURE_CHANNEL_ERROR,
+    }
+}
+
 fn connect(url: &http::Url<'_>) -> Result<usize, u32> {
     let mut addresses = [[0u8; 4]; super::winsock::MAX_ADDRESSES];
     let count = super::winsock::resolve(url.host, &mut addresses)
@@ -176,7 +330,7 @@ struct Answer {
     head_length: usize,
 }
 
-fn read_head(fd: usize, buffer: &mut [u8], filled: &mut usize) -> Result<Answer, u32> {
+fn read_head(link: &mut Link, buffer: &mut [u8], filled: &mut usize) -> Result<Answer, u32> {
     loop {
         if let Some(end) = http::head_end(&buffer[..*filled]) {
             let head =
@@ -195,7 +349,7 @@ fn read_head(fd: usize, buffer: &mut [u8], filled: &mut usize) -> Result<Answer,
         if *filled == buffer.len() {
             return Err(ERROR_HTTP_INVALID_SERVER_RESPONSE);
         }
-        match receive_some(fd, &mut buffer[*filled..])? {
+        match link.receive(&mut buffer[*filled..])? {
             0 => return Err(ERROR_HTTP_INVALID_SERVER_RESPONSE),
             read => *filled += read,
         }
@@ -223,7 +377,7 @@ fn redirected_url(
     match http::redirect(location).map_err(|_| ERROR_HTTP_REDIRECT_FAILED)? {
         Redirect::Absolute(_) => put(location)?,
         Redirect::Path(path) => {
-            put(b"http://")?;
+            put(if current.secure { b"https://" } else { b"http://" })?;
             put(current.host)?;
             let mut port = [0u8; 6];
             port[0] = b':';
@@ -257,7 +411,7 @@ fn open_url(
     flags: u32,
 ) -> Result<Request, u32> {
     let mut request = Request {
-        fd: 0,
+        link: Link::plain(0),
         body: Body::new(Framing::Length(0)),
         ended: false,
         ready: (0, 0),
@@ -267,32 +421,33 @@ fn open_url(
     for _ in 0..=MAX_REDIRECTS {
         let copy = *url_text;
         let url = http::parse_url(&copy[..length]).map_err(url_error)?;
-        if url.secure {
-            return Err(ERROR_INTERNET_SECURE_CHANNEL_ERROR);
-        }
         let fd = connect(&url)?;
+        let mut link = match url.secure {
+            true => Link::secure(fd, url.host)?,
+            false => Link::plain(fd),
+        };
         let mut message = [0u8; REQUEST_CAPACITY];
         let answer = http::write_request(&mut message, &url, agent)
             .ok_or(ERROR_INTERNET_INVALID_URL)
-            .and_then(|size| send_all(fd, &message[..size]))
+            .and_then(|size| link.send(&message[..size]))
             .and_then(|()| {
                 let mut filled = 0;
-                let answer = read_head(fd, &mut request.buffer, &mut filled)?;
+                let answer = read_head(&mut link, &mut request.buffer, &mut filled)?;
                 Ok((answer, filled))
             });
         let (answer, filled) = match answer {
             Ok(answer) => answer,
             Err(code) => {
-                let _ = linux::close(fd);
+                link.close();
                 return Err(code);
             }
         };
         if answer.redirect && flags & INTERNET_FLAG_NO_AUTO_REDIRECT == 0 {
-            let _ = linux::close(fd);
+            link.close();
             length = redirected_url(&request.buffer, answer.head_length, &url, url_text)?;
             continue;
         }
-        request.fd = fd;
+        request.link = link;
         request.body = Body::new(answer.framing);
         request.raw = (answer.head_length, filled);
         return Ok(request);
@@ -361,7 +516,7 @@ fn read_body(request: &mut Request, out: &mut [u8]) -> Result<usize, u32> {
         }
         request.ready = (0, 0);
         request.raw = (0, 0);
-        match receive_some(request.fd, &mut request.buffer)? {
+        match request.link.receive(&mut request.buffer)? {
             0 => {
                 request.ended = true;
                 request

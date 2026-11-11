@@ -21880,3 +21880,19 @@ the license, by an explicit instruction recorded here.
     on the track a page, without moving the caret (`Edit::press_bar`).
 - **Not yet.** Dragging the edit's thumb and the arrows' repeat while held; `ES_AUTOVSCROLL`
   without a bar is the default behaviour already (the view follows the caret).
+
+## D352 Windows: HTTPS in WinINet (batch part 13's rest, D231's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, reusing EggOS's TLS 1.3 client, D159)
+
+- **Decision.** `InternetOpenUrlW` fetches `https://` URLs over EggOS's own TLS 1.3 client
+  (`eggos-tls`, now a dependency of the Windows layer), the same way `fetch` does:
+  - A request's connection is a `Link`: plain TCP, or a TLS session over it whose buffers live
+    in their own heap block (freed when the link closes, after the session that borrows them).
+    The request is written and the head and body read through the link, so redirects, chunked
+    bodies and `InternetReadFile` are unchanged; a relative redirect keeps the scheme.
+  - The handshake checks the server's certificate against the machine's roots
+    (`/etc/ssl/roots.pem`, else `/media/host/roots.pem`, as `fetch` reads them) at the wall
+    clock's time, with randomness from `getrandom`. A refused certificate is
+    `ERROR_INTERNET_INVALID_CA`, any other handshake failure
+    `ERROR_INTERNET_SECURE_CHANNEL_ERROR`; closing the handle sends TLS's close notice.
+- **Not yet.** `INTERNET_FLAG_IGNORE_CERT_*` and the security flags of `InternetSetOption`,
+  client certificates, and TLS 1.2 servers (the client speaks 1.3 only, D159).

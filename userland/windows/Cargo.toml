@@ -20,6 +20,7 @@ eggos-net = { path = "../../net" }
 eggos-png = { path = "../../png" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
+eggos-tls = { path = "../../tls" }
 eggos-translation-loader = { path = "../translation-loader" }
 eggos-windows-gui = { path = "../windows-gui" }
 eggos-windows-registry = { path = "../windows-registry" }
