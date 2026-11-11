@@ -49,6 +49,7 @@ pub mod status {
     pub const INTEGER_OVERFLOW: u32 = 0xc000_0095;
     pub const IO_DEVICE_ERROR: u32 = 0xc000_0185;
     pub const ASSERTION_FAILURE: u32 = 0xc000_0420;
+    pub const STACK_OVERFLOW: u32 = 0xc000_00fd;
     pub const STACK_BUFFER_OVERRUN: u32 = 0xc000_0409;
 }
 
@@ -159,6 +160,63 @@ pub fn delivery(fault: &Signalled, arm64: bool) -> Delivery {
         SIGTRAP => exception(status::BREAKPOINT, pc, &[0]),
         _ => exception(status::ILLEGAL_INSTRUCTION, pc, &[]),
     }
+}
+
+/// A thread's stack as its TEB describes it (D346): the lowest usable address (`StackLimit`),
+/// the bottom of its mapping (`DeallocationStack`, 0 for a stack the layer did not map), and
+/// the sizes of the hard guard at that bottom and of the reserve above it, which the layer
+/// opens once when the stack runs into it so the program's handlers have room to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadStack {
+    pub limit: u64,
+    pub deallocation: u64,
+    pub guard: u64,
+    pub reserve: u64,
+}
+
+impl ThreadStack {
+    /// The limit while the reserve is closed.
+    pub fn closed_limit(&self) -> u64 {
+        self.deallocation + self.guard + self.reserve
+    }
+
+    /// The limit once the reserve is open.
+    pub fn open_limit(&self) -> u64 {
+        self.deallocation + self.guard
+    }
+}
+
+/// What a memory fault at `address` is to a thread's stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackFault {
+    /// Not the stack's: an access violation.
+    Elsewhere,
+    /// The stack ran into its closed reserve: `STATUS_STACK_OVERFLOW`, with the reserve opened.
+    IntoReserve,
+    /// The stack ran past its open reserve into the hard guard: the process ends with
+    /// `STATUS_STACK_OVERFLOW`, as on Windows.
+    Exhausted,
+}
+
+/// What a memory fault at `address` is to the thread whose stack is `stack`.
+pub fn stack_fault(address: u64, stack: &ThreadStack) -> StackFault {
+    if stack.deallocation == 0 {
+        return StackFault::Elsewhere;
+    }
+    let closed = stack.closed_limit();
+    match () {
+        () if stack.limit == closed && (stack.open_limit()..closed).contains(&address) => {
+            StackFault::IntoReserve
+        }
+        () if (stack.deallocation..stack.limit).contains(&address) => StackFault::Exhausted,
+        () => StackFault::Elsewhere,
+    }
+}
+
+/// The exception a stack running into its reserve becomes: `STATUS_STACK_OVERFLOW` at `pc`,
+/// with the access and the address, as Windows reports it.
+pub fn stack_overflow(pc: u64, access: u64, address: u64) -> Delivery {
+    exception(status::STACK_OVERFLOW, pc, &[access, address])
 }
 
 /// The faults the layer reports, each a signal the kernel sends for one.
@@ -498,5 +556,32 @@ mod tests {
             address: 0,
         };
         assert_eq!(report(&path, IMAGE, fault).as_bytes().len(), 512);
+    }
+
+    #[test]
+    fn a_stack_running_into_its_reserve_overflows_once_then_ends() {
+        let mut stack = ThreadStack {
+            limit: 0x10_5000,
+            deallocation: 0x10_0000,
+            guard: 0x1000,
+            reserve: 0x4000,
+        };
+        assert_eq!(stack.closed_limit(), 0x10_5000);
+        assert_eq!(stack_fault(0x10_4ff8, &stack), StackFault::IntoReserve);
+        assert_eq!(stack_fault(0x10_0800, &stack), StackFault::Exhausted);
+        assert_eq!(stack_fault(0x10_6000, &stack), StackFault::Elsewhere);
+        assert_eq!(stack_fault(0x0f_f000, &stack), StackFault::Elsewhere);
+        stack.limit = stack.open_limit();
+        assert_eq!(stack_fault(0x10_0ff8, &stack), StackFault::Exhausted);
+        assert_eq!(stack_fault(0x10_1008, &stack), StackFault::Elsewhere);
+        stack.deallocation = 0;
+        assert_eq!(stack_fault(0x10_0ff8, &stack), StackFault::Elsewhere);
+        match stack_overflow(0x40_1000, access::WRITE, 0x10_4ff8) {
+            Delivery::Exception(exception) => {
+                assert_eq!(exception.code, status::STACK_OVERFLOW);
+                assert_eq!(exception.parameters[..2], [access::WRITE, 0x10_4ff8]);
+            }
+            Delivery::FailFast => panic!("a stack overflow is an exception"),
+        }
     }
 }

@@ -740,6 +740,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"_cexit" => cexit,
     b"_c_exit" => c_exit,
     b"abort" => abort,
+    b"_resetstkoflw" => super::super::thread::reset_stack_overflow,
     b"_invalid_parameter_noinfo" => invalid_parameter,
     b"_invalid_parameter_noinfo_noreturn" => invalid_parameter,
     b"_errno" => errno_location,

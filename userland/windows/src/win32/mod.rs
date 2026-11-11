@@ -113,7 +113,7 @@ pub use exception::{deliver_fault, in_layer as in_layer_code, set_image as set_e
 pub use heap::{allocate as heap_allocate, free as heap_free, process_heap};
 pub use memory::flip_write_execute_page;
 pub use process::set_process;
-pub use thread::finish as end_thread;
+pub use thread::{finish as end_thread, stack_fault_opening_reserve};
 
 pub type Bool = i32;
 pub const TRUE: Bool = 1;

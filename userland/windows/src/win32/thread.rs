@@ -1,4 +1,5 @@
-//! Threads: `CreateThread` maps a stack (with a guard page below it) and a TEB, and starts a
+//! Threads: `CreateThread` maps a stack (with a guard page below it, and above that a reserve
+//! the layer opens once when the stack overflows, D346) and a TEB, and starts a
 //! Linux thread of the process on them that points GS at its TEB and calls the start routine;
 //! its return value, or `ExitThread`'s code, is the exit code its waiters see. The process ends
 //! when its last thread does, with that thread's code, as on Windows.
@@ -16,6 +17,8 @@ const DEFAULT_STACK: usize = 1 << 20;
 const STACK_GRANULARITY: usize = 64 << 10;
 const MAX_STACK: usize = 256 << 20;
 const GUARD: usize = linux::PAGE_SIZE;
+const OVERFLOW_RESERVE: usize = 64 << 10;
+const BELOW_STACK: usize = GUARD + OVERFLOW_RESERVE;
 const THREAD_PRIORITY_NORMAL: i32 = 0;
 const RUN: u32 = 1;
 
@@ -44,15 +47,17 @@ pub(super) unsafe extern "efiapi" fn create_thread(
     let Some(length) = stack_length(stack_size) else {
         return fail(error::NOT_ENOUGH_MEMORY, 0);
     };
-    let Ok(stack) = linux::map_anonymous(0, length + GUARD, PROT_READ | PROT_WRITE, false) else {
+    let Ok(stack) = linux::map_anonymous(0, length + BELOW_STACK, PROT_READ | PROT_WRITE, false)
+    else {
         return fail(error::NOT_ENOUGH_MEMORY, 0);
     };
     let unmap_stack = || {
         // SAFETY: the new stack is not used by any thread.
-        let _ = unsafe { linux::unmap(stack, length + GUARD) };
+        let _ = unsafe { linux::unmap(stack, length + BELOW_STACK) };
     };
-    // SAFETY: the guard page is the bottom of the new mapping, which nothing uses yet.
-    let _ = unsafe { linux::protect(stack, GUARD, PROT_NONE) };
+    // SAFETY: the guard page and the reserve are the bottom of the new mapping, which nothing
+    // uses yet.
+    let _ = unsafe { linux::protect(stack, BELOW_STACK, PROT_NONE) };
     let Some(slots) = thread_environment::new_thread_local_storage() else {
         unmap_stack();
         return fail(error::NOT_ENOUGH_MEMORY, 0);
@@ -70,7 +75,7 @@ pub(super) unsafe extern "efiapi" fn create_thread(
             ended: false,
             exit_code: 0,
             stack,
-            stack_length: length + GUARD,
+            stack_length: length + BELOW_STACK,
             teb: 0,
             thread_local_storage: slots,
             start,
@@ -84,9 +89,10 @@ pub(super) unsafe extern "efiapi" fn create_thread(
         unmap_stack();
         return 0;
     }
-    let top = stack + GUARD + length;
-    let Ok(teb) = thread_environment::create_for_thread(top, stack + GUARD, slots, object as usize)
-    else {
+    let top = stack + BELOW_STACK + length;
+    let limit = stack + BELOW_STACK;
+    let placed = thread_environment::create_for_thread(top, limit, stack, slots, object as usize);
+    let Ok(teb) = placed else {
         abandon(handle);
         return fail(error::NOT_ENOUGH_MEMORY, 0);
     };
@@ -163,6 +169,7 @@ extern "C" fn thread_main(object: usize) -> ! {
     while run.load(Ordering::Acquire) != RUN {
         let _ = linux::futex_wait(run, 0, None);
     }
+    crate::fault_handler::give_thread_signal_stack();
     // SAFETY: the TEB `CreateThread` made for this thread.
     unsafe { thread_environment::enter(start.teb) };
     // SAFETY: `CreateThread`'s contract: `start` is a `LPTHREAD_START_ROUTINE`.
@@ -182,6 +189,7 @@ pub fn finish(code: u32) -> ! {
     if LIVE_THREADS.fetch_sub(1, Ordering::AcqRel) == 1 {
         linux::exit(code);
     }
+    crate::fault_handler::take_thread_signal_stack();
     linux::exit_thread()
 }
 
@@ -293,3 +301,70 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"GetThreadPriority" => get_thread_priority,
     b"SetThreadDescription" => set_thread_description,
 ];
+
+fn current_stack() -> Option<(usize, crate::fault::ThreadStack)> {
+    let teb = thread_environment::current();
+    if teb == 0 {
+        return None;
+    }
+    let word = |offset: usize| {
+        // SAFETY: the words are the calling thread's TEB's, which only this thread writes.
+        unsafe { ((teb + offset) as *const u64).read() }
+    };
+    let stack = crate::fault::ThreadStack {
+        limit: word(thread_environment::teb::STACK_LIMIT),
+        deallocation: word(thread_environment::teb::DEALLOCATION_STACK),
+        guard: GUARD as u64,
+        reserve: OVERFLOW_RESERVE as u64,
+    };
+    Some((teb, stack))
+}
+
+/// What a memory fault at `address` is to the calling thread's stack (D346), opening the
+/// stack's reserve, and lowering its TEB's limit to the reserve's bottom, when the stack ran
+/// into it. Called from the fault handler, on the thread's signal stack.
+pub fn stack_fault_opening_reserve(address: u64) -> crate::fault::StackFault {
+    use crate::fault::StackFault;
+    let Some((teb, stack)) = current_stack() else {
+        return StackFault::Elsewhere;
+    };
+    let found = crate::fault::stack_fault(address, &stack);
+    if found == StackFault::IntoReserve {
+        let open = stack.open_limit();
+        // SAFETY: the reserve is part of this thread's stack mapping, which only it uses.
+        let opened =
+            unsafe { linux::protect(open as usize, OVERFLOW_RESERVE, PROT_READ | PROT_WRITE) };
+        if opened.is_err() {
+            return StackFault::Exhausted;
+        }
+        // SAFETY: the calling thread's TEB word, which only this thread writes.
+        unsafe { ((teb + thread_environment::teb::STACK_LIMIT) as *mut u64).write(open) };
+    }
+    found
+}
+
+/// `_resetstkoflw`: closes the calling thread's stack reserve again after a handled overflow,
+/// once the stack is back above it, so the next overflow is caught too; nonzero when the
+/// reserve is closed.
+pub(super) extern "efiapi" fn reset_stack_overflow() -> i32 {
+    let Some((teb, stack)) = current_stack() else {
+        return 0;
+    };
+    let closed = stack.closed_limit();
+    if stack.deallocation == 0 || stack.limit == closed {
+        return 1;
+    }
+    let marker = 0u8;
+    if ((&raw const marker) as u64) < closed + linux::PAGE_SIZE as u64 {
+        return 0;
+    }
+    // SAFETY: the reserve is part of this thread's stack mapping and the stack is above it.
+    let closed_again =
+        unsafe { linux::protect(stack.open_limit() as usize, OVERFLOW_RESERVE, PROT_NONE) };
+    if closed_again.is_err() {
+        return 0;
+    }
+    // SAFETY: the calling thread's TEB word, which only this thread writes.
+    unsafe { ((teb + thread_environment::teb::STACK_LIMIT) as *mut u64).write(closed) };
+    1
+}

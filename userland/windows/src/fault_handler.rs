@@ -39,6 +39,7 @@ const PAGE_FAULT: u64 = 14;
 #[cfg(target_arch = "aarch64")]
 const INSTRUCTION_SIZE: u64 = 4;
 const SIGNAL_STATUS_BASE: u32 = 128;
+const SIGNAL_STACK_LENGTH: usize = 64 << 10;
 
 static PROGRAM: AtomicUsize = AtomicUsize::new(0);
 static PROGRAM_LENGTH: AtomicUsize = AtomicUsize::new(0);
@@ -52,8 +53,35 @@ pub fn install(program: &'static [u8], image: Image) {
     PROGRAM_LENGTH.store(program.len(), Ordering::Relaxed);
     IMAGE_BASE.store(image.base, Ordering::Relaxed);
     IMAGE_SIZE.store(image.size, Ordering::Release);
+    give_thread_signal_stack();
     for signal in fault::SIGNALS {
-        let _ = linux::handle_signal(signal, on_fault);
+        let _ = linux::handle_signal_on_signal_stack(signal, on_fault);
+    }
+}
+
+/// Gives the calling thread a signal stack of its own (D346), where its fault handler runs
+/// when its stack is full; a thread without one still gets its other faults.
+pub fn give_thread_signal_stack() {
+    let length = SIGNAL_STACK_LENGTH + linux::PAGE_SIZE;
+    let Ok(mapping) = linux::map_anonymous(0, length, linux::PROT_READ | linux::PROT_WRITE, false)
+    else {
+        return;
+    };
+    // SAFETY: the guard page is the bottom of the new mapping, which nothing uses yet.
+    let _ = unsafe { linux::protect(mapping, linux::PAGE_SIZE, linux::PROT_NONE) };
+    if linux::set_signal_stack(mapping + linux::PAGE_SIZE, SIGNAL_STACK_LENGTH).is_err() {
+        // SAFETY: the mapping was never given to the kernel as a signal stack.
+        let _ = unsafe { linux::unmap(mapping, length) };
+    }
+}
+
+/// Takes the calling thread's signal stack away and unmaps it, as the thread ends.
+pub fn take_thread_signal_stack() {
+    if let Ok(Some(stack)) = linux::remove_signal_stack() {
+        let mapping = stack.base - linux::PAGE_SIZE;
+        // SAFETY: the stack `give_thread_signal_stack` mapped, with its guard page; the thread
+        // no longer has it, and runs on its own stack.
+        let _ = unsafe { linux::unmap(mapping, stack.length + linux::PAGE_SIZE) };
     }
 }
 
@@ -194,6 +222,20 @@ extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
     }
     if from_the_processor && signal == fault::SIGILL && completed_current_el_read(pc, context) {
         return;
+    }
+    if from_the_processor && signal == fault::SIGSEGV && dispatches(pc) {
+        match win32::stack_fault_opening_reserve(address) {
+            fault::StackFault::IntoReserve => {
+                if let Delivery::Exception(exception) =
+                    fault::stack_overflow(pc, access(context), address)
+                {
+                    win32::deliver_fault(context, info.cast_mut(), &exception, signal);
+                }
+                return;
+            }
+            fault::StackFault::Exhausted => end_with_exception(fault::status::STACK_OVERFLOW, pc),
+            fault::StackFault::Elsewhere => {}
+        }
     }
     if from_the_processor && dispatches(pc) {
         let fetching = matches!(signal, fault::SIGSEGV | fault::SIGBUS) && address == pc;

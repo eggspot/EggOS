@@ -21746,3 +21746,33 @@ the license, by an explicit instruction recorded here.
     spin-locked table) is done as it ends: the flag set to 1, the mutex unlocked and the
     condition broadcast, in that order.
 - **Not yet.** iostreams and the rest of msvcp140's out-of-line parts.
+
+## D346 Windows: a stack overflow is `STATUS_STACK_OVERFLOW`, with signal stacks and a stack reserve the layer manages (batch part 12's rest, D230's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented guard-page behaviour)
+
+- **Context.** A thread that overflowed its stack faulted with no room for the kernel to
+  deliver the signal, so the process died with no Windows exception, while on Windows the
+  program's `__try`/`__except` and vectored handlers see `STATUS_STACK_OVERFLOW` and may
+  recover with `_resetstkoflw`.
+- **Decision.**
+  - **Signal stacks.** Every thread the layer runs gets a 64 KiB signal stack (with a guard page)
+    when it starts (`fault_handler::give_thread_signal_stack`; the main thread at install,
+    `CreateThread`'s threads in `thread_main`), unmapped when the thread ends. The fault
+    signals are handled with `SA_ONSTACK` (`linux::handle_signal_on_signal_stack`).
+  - **The dispatch stays on the thread's stack.** A fault's signal frame on the signal stack
+    is copied below the faulting stack pointer and its red zone (`frame_on_thread_stack`,
+    x86_64's `fpstate` pointer moved with it, `relocate_signal_frame`) and the dispatch
+    enters below the copy, so the walk, the handlers and the unwinds run on the program's
+    stack as before, and a later signal cannot overwrite the frame first.
+  - **The reserve.** `CreateThread` maps a hard guard page, then a 64 KiB reserve, both
+    inaccessible, under the stack; the TEB's `StackLimit` is the reserve's top and its
+    `DeallocationStack` (0x1478) the mapping's bottom. A fault in the closed reserve opens it
+    (read-write, `StackLimit` lowered to its bottom) and is dispatched as
+    `STATUS_STACK_OVERFLOW` with the access and the address (`fault::stack_fault`,
+    `thread::stack_fault_opening_reserve`); a fault in the hard guard, or in the open reserve's
+    guard again, ends the process with `STATUS_STACK_OVERFLOW`, as Windows does for an
+    overflow with no room left.
+  - `_resetstkoflw` closes the reserve again once the stack is back above it, and answers
+    nonzero when the reserve is closed.
+- **Not yet.** The main thread runs on the Linux process stack, which the kernel grows: its
+  overflow still ends the process (as an access violation report). `SetThreadStackGuarantee`
+  and `GetThreadStackLimits` over the reserve.

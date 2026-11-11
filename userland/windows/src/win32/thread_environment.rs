@@ -31,6 +31,7 @@ pub mod teb {
     pub const THREAD_LOCAL_STORAGE_POINTER: usize = 0x58;
     pub const PROCESS_ENVIRONMENT_BLOCK: usize = 0x60;
     pub const LAST_ERROR: usize = 0x68;
+    pub const DEALLOCATION_STACK: usize = 0x1478;
     pub const TLS_SLOTS: usize = 0x1480;
     pub const TLS_SLOT_COUNT: usize = 64;
     pub const GUARANTEED_STACK_BYTES: usize = 0x1748;
@@ -206,11 +207,13 @@ pub fn create(blocks: Blocks) -> Result<usize, Errno> {
 }
 
 /// Maps and fills a new thread's TEB, which shares the PEB, for the stack between
-/// `stack_limit` and `stack_base`, the static TLS copy `slots` and the thread's object; the
-/// thread fills in its own id when it starts.
+/// `stack_limit` and `stack_base` in the mapping that starts at `stack_mapping` (its guard and
+/// overflow reserve below the limit, D346), the static TLS copy `slots` and the thread's
+/// object; the thread fills in its own id when it starts.
 pub fn create_for_thread(
     stack_base: usize,
     stack_limit: usize,
+    stack_mapping: usize,
     slots: usize,
     object: usize,
 ) -> Result<usize, Errno> {
@@ -222,6 +225,7 @@ pub fn create_for_thread(
     };
     put(teb::STACK_BASE, stack_base as u64);
     put(teb::STACK_LIMIT, stack_limit as u64);
+    put(teb::DEALLOCATION_STACK, stack_mapping as u64);
     put(teb::SELF, teb as u64);
     put(teb::PROCESS_ID, u64::from(linux::process_id()));
     put(teb::THREAD_LOCAL_STORAGE_POINTER, slots as u64);

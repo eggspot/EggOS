@@ -5,6 +5,7 @@ use eggos_runtime::syscall::call;
 
 #[cfg(target_arch = "x86_64")]
 pub mod number {
+    pub const SIGALTSTACK: usize = 131;
     pub const READ: usize = 0;
     pub const WRITE: usize = 1;
     pub const CLOSE: usize = 3;
@@ -58,6 +59,7 @@ pub mod number {
 
 #[cfg(target_arch = "aarch64")]
 pub mod number {
+    pub const SIGALTSTACK: usize = 132;
     pub const GETCWD: usize = 17;
     pub const IOCTL: usize = 29;
     pub const MKDIRAT: usize = 34;
@@ -476,6 +478,9 @@ pub type SignalHandler = extern "C" fn(i32, *const u8, *mut u8);
 const SIGNAL_DEFAULT: usize = 0;
 const SIGNAL_IGNORE: usize = 1;
 const SA_SIGINFO: u64 = 4;
+const SA_ONSTACK: u64 = 0x0800_0000;
+const SS_ONSTACK: u64 = 1;
+const SS_DISABLE: u64 = 2;
 #[cfg(target_arch = "x86_64")]
 const SA_RESTORER: u64 = 0x0400_0000;
 const SIGNAL_SET_BYTES: usize = 8;
@@ -509,6 +514,55 @@ fn set_signal_action(signal: i32, handler: usize, flags: u64) -> Result<usize, E
 /// Has `handler` run on `signal`, for every thread of the process.
 pub fn handle_signal(signal: i32, handler: SignalHandler) -> Result<usize, Errno> {
     set_signal_action(signal, handler as usize, SA_SIGINFO)
+}
+
+/// Has `handler` run on `signal`, for every thread of the process, on the thread's signal
+/// stack when it has one (D346), so a fault on a full stack still reaches it.
+pub fn handle_signal_on_signal_stack(signal: i32, handler: SignalHandler) -> Result<usize, Errno> {
+    set_signal_action(signal, handler as usize, SA_SIGINFO | SA_ONSTACK)
+}
+
+/// A thread's signal stack (`stack_t`): where it is, how long, and whether the thread runs on
+/// it now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalStack {
+    pub base: usize,
+    pub length: usize,
+    pub in_use: bool,
+}
+
+fn exchange_signal_stack(new: Option<[u64; 3]>) -> Result<Option<SignalStack>, Errno> {
+    let mut old = [0u64; 3];
+    let new_address = new.as_ref().map_or(0, |words| words.as_ptr() as usize);
+    // SAFETY: `sigaltstack` reads one `stack_t` from the borrowed words, when given, and
+    // writes the old one into `old`.
+    unsafe {
+        syscall(
+            number::SIGALTSTACK,
+            [new_address, old.as_mut_ptr() as usize, 0, 0, 0, 0],
+        )
+    }?;
+    let disabled = old[1] & SS_DISABLE != 0;
+    Ok((!disabled).then_some(SignalStack {
+        base: old[0] as usize,
+        length: old[2] as usize,
+        in_use: old[1] & SS_ONSTACK != 0,
+    }))
+}
+
+/// Gives the calling thread the signal stack of `length` bytes at `base`.
+pub fn set_signal_stack(base: usize, length: usize) -> Result<(), Errno> {
+    exchange_signal_stack(Some([base as u64, 0, length as u64])).map(|_| ())
+}
+
+/// Takes the calling thread's signal stack away: the one it had, if any.
+pub fn remove_signal_stack() -> Result<Option<SignalStack>, Errno> {
+    exchange_signal_stack(Some([0, SS_DISABLE, 0]))
+}
+
+/// The calling thread's signal stack, if it has one.
+pub fn signal_stack() -> Result<Option<SignalStack>, Errno> {
+    exchange_signal_stack(None)
 }
 
 /// Gives `signal` back its default action.

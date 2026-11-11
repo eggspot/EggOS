@@ -9,8 +9,8 @@
 
 use super::super::thread_environment::{self, teb};
 use super::context::{
-    Context, UCONTEXT_ARGUMENTS, UCONTEXT_PC, UCONTEXT_SP, capturing_entry, fault_entry, restore,
-    unwinder,
+    Context, UCONTEXT_ARGUMENTS, UCONTEXT_PC, UCONTEXT_SP, capturing_entry, fault_entry,
+    relocate_signal_frame, restore, unwinder,
 };
 use super::frames::{self, Bridge, Event, ThreadMemory, Walk};
 use super::{
@@ -25,6 +25,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 static UNHANDLED_EXCEPTION_FILTER: AtomicUsize = AtomicUsize::new(0);
 const STACK_GAP: u64 = 128;
 const SIGINFO_SIZE: usize = 128;
+const RED_ZONE: u64 = 128;
+const FRAME_ALIGNMENT: u64 = 64;
 
 /// A dispatch in progress on this thread: its `CONTEXT`, and whether the `CONTEXT`'s `pc` is a
 /// return address (a raised exception) rather than a faulting instruction.
@@ -319,26 +321,67 @@ fn ucontext_word(ucontext: *mut u8, offset: usize) -> *mut u64 {
     ucontext.wrapping_add(offset).cast::<u64>()
 }
 
+/// The signal frame from `bottom` up to the end of the signal stack it is on, copied onto the
+/// faulting thread's own stack below its stack pointer and red zone (D346), so the dispatch
+/// runs where the program's frames are, and nothing a later signal puts on the signal stack
+/// overwrites the frame before the dispatch has read it: the copy's `ucontext_t`, `siginfo_t`
+/// and bottom. `None` when the frame is not on the signal stack.
+fn frame_on_thread_stack(
+    ucontext: *mut u8,
+    info: *mut u8,
+    bottom: u64,
+) -> Option<(*mut u8, *mut u8, u64)> {
+    let stack = crate::linux::signal_stack().ok()??;
+    let top = (stack.base + stack.length) as u64;
+    if !stack.in_use || !(stack.base as u64..top).contains(&bottom) {
+        return None;
+    }
+    // SAFETY: the kernel's `ucontext_t` for this signal holds the faulting stack pointer.
+    let sp = unsafe { ucontext_word(ucontext, UCONTEXT_SP).read_unaligned() };
+    let length = top - bottom;
+    let new_bottom = sp.checked_sub(RED_ZONE + length)? & !(FRAME_ALIGNMENT - 1);
+    // SAFETY: the frame is the kernel's, intact on the signal stack; the copy goes below the
+    // faulting thread's stack pointer and red zone, onto its stack that nothing uses.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            bottom as *const u8,
+            new_bottom as *mut u8,
+            length as usize,
+        )
+    };
+    let delta = new_bottom.wrapping_sub(bottom);
+    let moved = |address: *mut u8| (address as u64).wrapping_add(delta) as *mut u8;
+    let copy = moved(ucontext);
+    // SAFETY: the copy's `ucontext_t`, just written.
+    unsafe { relocate_signal_frame(copy, bottom..top, delta) };
+    Some((copy, moved(info), new_bottom))
+}
+
 /// Points the faulting thread of the signal frame whose `ucontext_t` is `ucontext` and whose
 /// `siginfo_t` is `info` at the dispatch of `exception`: the exception and the faulting values
 /// of the registers rewritten here go into the frame's `siginfo_t`, which nothing reads once
 /// the handler has, and the frame is rewritten so that returning from the signal handler
 /// enters `dispatch_fault` with its stack pointer below the whole frame. The frame then stays
 /// intact, above the stack pointer, for `dispatch_fault` to read; nothing is written below it
-/// while the handler, whose own frames are there, runs.
+/// while the handler, whose own frames are there, runs. A frame on the thread's signal stack
+/// is first copied onto the thread's own stack, and the dispatch enters below the copy.
 pub fn deliver_fault(ucontext: *mut u8, info: *mut u8, exception: &fault::Exception, signal: i32) {
+    let kernel_frame = ucontext;
+    let frame_bottom = (ucontext as u64).min(info as u64);
+    let (ucontext, info, frame_bottom) = frame_on_thread_stack(ucontext, info, frame_bottom)
+        .unwrap_or((ucontext, info, frame_bottom));
     let mut delivered = DeliveredFault {
         exception: *exception,
         rewritten: [0; REWRITTEN.len()],
     };
     for (saved, offset) in delivered.rewritten.iter_mut().zip(REWRITTEN) {
-        // SAFETY: the kernel's `ucontext_t` for this signal holds these registers.
+        // SAFETY: the signal's `ucontext_t` (the kernel's or its copy) holds these registers.
         *saved = unsafe { ucontext_word(ucontext, offset).read_unaligned() };
     }
-    // SAFETY: the kernel's `siginfo_t` for this signal, `SIGINFO_SIZE` bytes in the signal
-    // frame, which `DeliveredFault` fits; `rt_sigreturn` reads only the `ucontext_t`.
+    // SAFETY: the signal's `siginfo_t` (the kernel's or its copy), `SIGINFO_SIZE` bytes in
+    // the frame, which `DeliveredFault` fits; `rt_sigreturn` reads only the kernel's
+    // `ucontext_t`.
     unsafe { info.cast::<DeliveredFault>().write_unaligned(delivered) };
-    let frame_bottom = (ucontext as u64).min(info as u64);
     let values = [
         frame_bottom.wrapping_sub(STACK_GAP) & !15,
         fault_entry as *const () as u64,
@@ -348,7 +391,7 @@ pub fn deliver_fault(ucontext: *mut u8, info: *mut u8, exception: &fault::Except
     ];
     for (offset, value) in REWRITTEN.into_iter().zip(values) {
         // SAFETY: as above; `rt_sigreturn` loads these registers back.
-        unsafe { ucontext_word(ucontext, offset).write_unaligned(value) };
+        unsafe { ucontext_word(kernel_frame, offset).write_unaligned(value) };
     }
 }
 

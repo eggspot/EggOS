@@ -857,7 +857,8 @@ yet" naming what it left.
     unbuilt, D336; submenus one level deep in the bar's drop-downs, code written, unbuilt, D337;
     `MFT_RADIOCHECK` and `CheckMenuRadioItem`, code written, unbuilt, D334; menu keys, code
     written, unbuilt, D335);
-  - part 12's rest: iostreams, stack overflow as an exception, collided unwinds (D230; function
+  - part 12's rest: iostreams, collided unwinds (D230; stack overflow as an exception, code
+    written, unbuilt, D346; function
     tables, code written, unbuilt, D344; system category messages and
     `notify_all_at_thread_exit`, code written, unbuilt, D345);
   - part 13's rest: tooltips, custom drawing, label editing and the other common-control

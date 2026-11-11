@@ -319,6 +319,21 @@ mod arch {
         )
     }
 
+    /// Points a copy of a signal frame at its own parts (D346): the `fpstate` pointer of the
+    /// copied `ucontext_t`, when it pointed into the frame that spanned `old`, moves by `delta`.
+    ///
+    /// # Safety
+    /// `ucontext` is the copy's `ucontext_t`, writable.
+    pub unsafe fn relocate_signal_frame(ucontext: *mut u8, old: core::ops::Range<u64>, delta: u64) {
+        let pointer = ucontext.wrapping_add(UCONTEXT_FPSTATE).cast::<u64>();
+        // SAFETY: the caller's `ucontext_t` holds the `fpstate` word.
+        let fpstate = unsafe { pointer.read_unaligned() };
+        if old.contains(&fpstate) {
+            // SAFETY: as above.
+            unsafe { pointer.write_unaligned(fpstate.wrapping_add(delta)) };
+        }
+    }
+
     /// The `ucontext_t` offsets of `rsp`, `rip` and the first three argument registers.
     pub const UCONTEXT_SP: usize = UCONTEXT_GREGS + 15 * 8;
     pub const UCONTEXT_PC: usize = UCONTEXT_GREGS + GREG_RIP * 8;
@@ -633,6 +648,18 @@ mod arch {
         )
     }
 
+    /// Points a copy of a signal frame at its own parts (D346): an ARM64 `ucontext_t` keeps its
+    /// records inline, so there is nothing to move.
+    ///
+    /// # Safety
+    /// `ucontext` is the copy's `ucontext_t`.
+    pub unsafe fn relocate_signal_frame(
+        _ucontext: *mut u8,
+        _old: core::ops::Range<u64>,
+        _delta: u64,
+    ) {
+    }
+
     /// The `ucontext_t` offsets of `sp`, `pc` and the first three argument registers.
     pub const UCONTEXT_SP: usize = UCONTEXT_FAULT_SP;
     pub const UCONTEXT_PC: usize = UCONTEXT_FAULT_PC;
@@ -642,7 +669,8 @@ mod arch {
 
 pub(in crate::win32) use arch::capturing_entry;
 pub use arch::{
-    Context, UCONTEXT_ARGUMENTS, UCONTEXT_PC, UCONTEXT_SP, capture, fault_entry, restore,
+    Context, UCONTEXT_ARGUMENTS, UCONTEXT_PC, UCONTEXT_SP, capture, fault_entry,
+    relocate_signal_frame, restore,
 };
 
 impl Context {
