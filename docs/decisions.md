@@ -21565,3 +21565,22 @@ the license, by an explicit instruction recorded here.
     version 1) one, which is not read yet.
 - **Not yet.** Extended templates (`MENUEX`, `LoadMenuIndirectW`), and submenus inside a
   drop-down: they load, and show grayed as before.
+
+## D337 Windows menus: submenus in the bar's drop-downs (batch part 10's rest, D228's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' cascading menu behaviour)
+
+- **Decision.** An item of a bar drop-down that opens a menu (`MF_POPUP`, from `AppendMenuW`
+  or a template, D336) is no longer grayed. It shows an arrow at its right and opens its
+  submenu:
+  - **Where.** Beside the drop-down: at its right edge, overlapping by 2, or flipped to its
+    left when that would leave the window. The submenu's first item is level with the parent
+    item (`layout::cascade_rect`).
+  - **With the pointer.** Hovering opens it. Hovering in it highlights its items, and
+    releasing on one sends that item's command. Hovering another drop-down item closes it.
+    Releasing on the parent item sends nothing.
+  - **With the keys.** Right or Enter on the highlighted parent opens it with its first item
+    that can be chosen highlighted. In it, Up and Down move and Enter or a mnemonic chooses.
+    Left or Escape close it alone.
+  - `Tracking` gains `cascade: Option<Cascade>`. Closing the drop-down also leaves the
+    submenu's area for the program to repaint.
+- **Limits.** One level: a submenu's own submenu items stay grayed. Context menus
+  (`TrackPopupMenuEx`) open no submenus yet.

@@ -21,6 +21,12 @@ const DROP_DOWN_EXTRA_WIDTH: i32 = 48;
 const ITEM_TEXT_LEFT: i32 = 28;
 const CHECK_LEFT: i32 = 7;
 const CHECK_TOP: i32 = 5;
+/// The submenu arrow: a triangle 4 wide and 7 tall, its right edge this far from the row's.
+const ARROW_RIGHT: i32 = 10;
+const ARROW_TOP: i32 = 8;
+const ARROW_HEIGHT: i32 = 7;
+/// How far a submenu overlaps its parent drop-down.
+const CASCADE_OVERLAP: i32 = 2;
 
 /// One bar entry or drop-down item as the layout sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +37,8 @@ pub struct MenuLabel<'a> {
     pub checked: bool,
     /// `MFT_RADIOCHECK`: the check is a dot (D334).
     pub radio: bool,
+    /// The item opens a submenu, drawn with an arrow at its right (D337).
+    pub submenu: bool,
 }
 
 impl MenuLabel<'_> {
@@ -143,6 +151,28 @@ fn item_rows<'a>(
     })
 }
 
+/// The top of item `index`'s row in the drop-down at `rect`.
+pub fn item_top(rect: Rect, items: &[MenuLabel<'_>], index: usize) -> Option<i32> {
+    item_rows(rect, items)
+        .find(|(at, _, _)| *at == index)
+        .map(|(_, row, _)| row.top)
+}
+
+/// The submenu of `items` that the item whose row starts at `row_top` of the drop-down at
+/// `parent` opens (D337): at the parent's right edge, its first item level with that row,
+/// flipped to the parent's left when it would leave a content `content_width` wide.
+pub fn cascade_rect(items: &[MenuLabel<'_>], parent: Rect, row_top: i32, content_width: i32) -> Rect {
+    let sized = drop_down_rect(items, 0, content_width);
+    let width = sized.right - sized.left;
+    let height = sized.bottom - sized.top;
+    let right_side = parent.right - CASCADE_OVERLAP;
+    let left = match right_side + width > content_width {
+        true => (parent.left + CASCADE_OVERLAP - width).max(0),
+        false => right_side,
+    };
+    Rect::sized(left, row_top - DROP_DOWN_PADDING_TOP, width, height)
+}
+
 /// The enabled item at (`x`, `y`) of the content in the drop-down at `rect`.
 pub fn item_at(rect: Rect, items: &[MenuLabel<'_>], x: i32, y: i32) -> Option<usize> {
     item_rows(rect, items)
@@ -186,6 +216,13 @@ pub fn paint_drop_down(
             (true, false) => tick(surface, rect.left + CHECK_LEFT, row.top + CHECK_TOP, colour),
             _ => {}
         }
+        if item.submenu {
+            let tip = row.right - ARROW_RIGHT;
+            for step in 0..=ARROW_HEIGHT / 2 {
+                let length = ARROW_HEIGHT - 2 * step;
+                surface.fill(Rect::sized(tip - ARROW_HEIGHT / 2 + step, row.top + ARROW_TOP + step, 1, length), colour);
+            }
+        }
         let mut cells = [Cell::Space; MAX_LABEL_CELLS];
         let count = item.cells(&mut cells);
         text::draw_cells(
@@ -211,6 +248,7 @@ mod tests {
             grayed: false,
             checked: false,
             radio: false,
+            submenu: false,
         }
     }
 

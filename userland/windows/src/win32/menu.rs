@@ -39,6 +39,18 @@ pub struct Tracking {
     pub rect: Rect,
     pub context: bool,
     pub right_button: bool,
+    /// The submenu open from one of the drop-down's items (D337).
+    pub cascade: Option<Cascade>,
+}
+
+/// A submenu open from item `parent` of a bar drop-down (D337): the menu it shows, its
+/// rectangle in the window's content and the item under the pointer or the keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cascade {
+    pub popup: usize,
+    pub parent: usize,
+    pub rect: Rect,
+    pub highlighted: Option<usize>,
 }
 
 /// What an input did to a menu: the content rectangle to show and the item chosen.
@@ -71,20 +83,29 @@ pub(super) fn table_mut(gui: &mut Gui) -> Option<&mut MenuTable> {
 }
 
 fn labels(menu: &Menu, nested: bool) -> [MenuLabel<'_>; MAX_ITEMS] {
+    labels_with(menu, nested, false)
+}
+
+/// A drop-down's labels: in a bar drop-down (`submenus`) an item that opens a submenu shows its
+/// arrow (D337); in a context menu or a submenu it stays grayed, as no deeper level opens.
+fn labels_with(menu: &Menu, nested: bool, submenus: bool) -> [MenuLabel<'_>; MAX_ITEMS] {
     let mut labels = [MenuLabel {
         label: &[],
         separator: false,
         grayed: false,
         checked: false,
         radio: false,
+        submenu: false,
     }; MAX_ITEMS];
     for (label, item) in labels.iter_mut().zip(menu.items()) {
+        let opens = item.popup().is_some();
         *label = MenuLabel {
             label: item.label(),
             separator: item.is_separator(),
-            grayed: item.is_grayed() || (nested && item.popup().is_some()),
+            grayed: item.is_grayed() || (nested && opens && !submenus),
             checked: item.flags & flag::CHECKED != 0,
             radio: item.flags & flag::RADIO_CHECK != 0,
+            submenu: nested && opens && submenus,
         };
     }
     labels
@@ -133,8 +154,21 @@ pub fn paint_bar(gui: &mut Gui, root: usize) -> Option<Rect> {
 /// Paints `root`'s open drop-down over its content, if one is open; its rectangle.
 pub fn paint_open_drop_down(gui: &mut Gui, root: usize) -> Option<Rect> {
     let tracking = gui.tracking.filter(|tracking| tracking.root == root)?;
-    let items = table(gui)?.get(tracking.popup)?;
+    let main = paint_drop_down_of(gui, root, &tracking)?;
+    let Some(cascade) = tracking.cascade else {
+        return Some(main);
+    };
+    let items = table(gui)?.get(cascade.popup)?;
     let labels = labels(items, true);
+    with_root_surface(gui, root, |surface| {
+        layout::paint_drop_down(surface, cascade.rect, &labels[..items.count], cascade.highlighted, &LIGHT);
+    })?;
+    Some(main.union(&cascade.rect))
+}
+
+fn paint_drop_down_of(gui: &mut Gui, root: usize, tracking: &Tracking) -> Option<Rect> {
+    let items = table(gui)?.get(tracking.popup)?;
+    let labels = labels_with(items, true, !tracking.context);
     with_root_surface(gui, root, |surface| {
         layout::paint_drop_down(
             surface,
@@ -178,6 +212,7 @@ fn open(gui: &mut Gui, root: usize, entry: usize) -> Option<Rect> {
         rect,
         context: false,
         right_button: false,
+        cascade: None,
     });
     let bar_rect = paint_bar(gui, root).unwrap_or_default();
     let drop = paint_open_drop_down(gui, root).unwrap_or_default();
@@ -190,12 +225,11 @@ pub fn close(gui: &mut Gui, root: usize) -> Option<Rect> {
     let tracking = gui.tracking.filter(|tracking| tracking.root == root)?;
     gui.tracking = None;
     let menu_height = gui.windows.get(root)?.menu_height;
-    windows::invalidate_tree(
-        &mut gui.windows,
-        root,
-        Some(tracking.rect.offset(0, -menu_height)),
-        true,
-    );
+    let covered = match tracking.cascade {
+        Some(cascade) => tracking.rect.union(&cascade.rect),
+        None => tracking.rect,
+    };
+    windows::invalidate_tree(&mut gui.windows, root, Some(covered.offset(0, -menu_height)), true);
     let bar = paint_bar(gui, root)?;
     let window = gui.windows.get_mut(root)?;
     window.pending = window.pending.union(&bar);
@@ -207,6 +241,61 @@ fn drop_down_item_at(gui: &Gui, tracking: &Tracking, point: (i32, i32)) -> Optio
     let labels = labels(items, true);
     let index = layout::item_at(tracking.rect, &labels[..items.count], point.0, point.1)?;
     Some((index, items.items()[index].id))
+}
+
+/// The bar drop-down's item at `point` that opens a submenu, if any (D337).
+fn submenu_item_at(gui: &Gui, tracking: &Tracking, point: (i32, i32)) -> Option<usize> {
+    let items = table(gui)?.get(tracking.popup)?;
+    let labels = labels_with(items, true, true);
+    let index = layout::item_at(tracking.rect, &labels[..items.count], point.0, point.1)?;
+    labels[index].submenu.then_some(index)
+}
+
+/// The submenu's command item at `point`, if one is open there.
+fn cascade_item_at(gui: &Gui, cascade: &Cascade, point: (i32, i32)) -> Option<(usize, usize)> {
+    let items = table(gui)?.get(cascade.popup)?;
+    let labels = labels(items, true);
+    let index = layout::item_at(cascade.rect, &labels[..items.count], point.0, point.1)?;
+    Some((index, items.items()[index].id))
+}
+
+/// Opens the submenu of item `parent` of the open bar drop-down, with `highlighted` in it;
+/// the content to show.
+fn open_cascade(gui: &mut Gui, tracking: &Tracking, parent: usize, highlighted: Option<usize>) -> Option<Rect> {
+    let width = gui.windows.get(tracking.root)?.buffer_width as i32;
+    let menu = table(gui)?.get(tracking.popup)?;
+    let popup = menu.items().get(parent)?.popup()?;
+    let parent_labels = labels_with(menu, true, true);
+    let row_top = layout::item_top(tracking.rect, &parent_labels[..menu.count], parent)?;
+    let items = table(gui)?.get(popup)?;
+    let cascade_labels = labels(items, true);
+    let rect = layout::cascade_rect(&cascade_labels[..items.count], tracking.rect, row_top, width);
+    let previous = tracking.cascade.map(|cascade| cascade.rect);
+    gui.tracking = Some(Tracking {
+        highlighted: Some(parent),
+        cascade: Some(Cascade {
+            popup,
+            parent,
+            rect,
+            highlighted,
+        }),
+        ..*tracking
+    });
+    let shown = paint_open_drop_down(gui, tracking.root)?;
+    Some(previous.map_or(shown, |previous| shown.union(&previous)))
+}
+
+/// Closes the submenu, if one is open, keeping the drop-down; the content to show.
+fn close_cascade(gui: &mut Gui, tracking: &Tracking) -> Option<Rect> {
+    let cascade = tracking.cascade?;
+    gui.tracking = Some(Tracking {
+        cascade: None,
+        ..*tracking
+    });
+    let menu_height = gui.windows.get(tracking.root)?.menu_height;
+    windows::invalidate_tree(&mut gui.windows, tracking.root, Some(cascade.rect.offset(0, -menu_height)), true);
+    let shown = paint_open_drop_down(gui, tracking.root)?;
+    Some(shown.union(&cascade.rect))
 }
 
 fn bar_entry_at(gui: &Gui, root: usize, point: (i32, i32)) -> Option<usize> {
@@ -298,17 +387,40 @@ pub fn input(
                 effect.commit = open(gui, root, entry).map(|opened| opened.union(&closed));
                 return Some(effect);
             }
+            if let Some(cascade) = tracking.cascade.filter(|cascade| cascade.rect.contains(point.0, point.1)) {
+                let highlighted = cascade_item_at(gui, &cascade, point).map(|(index, _)| index);
+                if highlighted != cascade.highlighted {
+                    gui.tracking = Some(Tracking {
+                        cascade: Some(Cascade { highlighted, ..cascade }),
+                        ..tracking
+                    });
+                    effect.commit = paint_open_drop_down(gui, root);
+                }
+                return Some(effect);
+            }
+            if let Some(parent) = submenu_item_at(gui, &tracking, point) {
+                if tracking.cascade.map(|cascade| cascade.parent) != Some(parent) {
+                    effect.commit = open_cascade(gui, &tracking, parent, None);
+                }
+                return Some(effect);
+            }
             let highlighted = over_item.map(|(index, _)| index);
-            if highlighted != tracking.highlighted {
+            if highlighted != tracking.highlighted || (tracking.cascade.is_some() && tracking.rect.contains(point.0, point.1)) {
+                let closed = match tracking.rect.contains(point.0, point.1) {
+                    true => close_cascade(gui, &tracking),
+                    false => None,
+                };
+                let current = gui.tracking.unwrap_or(tracking);
                 gui.tracking = Some(Tracking {
                     highlighted,
-                    ..tracking
+                    ..current
                 });
-                effect.commit = paint_open_drop_down(gui, root);
+                effect.commit = paint_open_drop_down(gui, root).map(|shown| shown.union(&closed.unwrap_or_default()));
             }
         }
         message::LEFT_BUTTON_DOWN => {
-            if tracking.rect.contains(point.0, point.1) {
+            let in_cascade = tracking.cascade.is_some_and(|cascade| cascade.rect.contains(point.0, point.1));
+            if tracking.rect.contains(point.0, point.1) || in_cascade {
                 return Some(effect);
             }
             let closed = close(gui, root);
@@ -320,16 +432,90 @@ pub fn input(
             };
         }
         message::LEFT_BUTTON_UP => {
-            if let Some((_, id)) = over_item {
+            let chosen = match tracking.cascade.filter(|cascade| cascade.rect.contains(point.0, point.1)) {
+                Some(cascade) => cascade_item_at(gui, &cascade, point).map(|(_, id)| id),
+                None if submenu_item_at(gui, &tracking, point).is_some() => None,
+                None => over_item.map(|(_, id)| id),
+            };
+            if let Some(id) = chosen {
                 effect.commit = close(gui, root);
                 effect.command = Some(id);
             }
         }
-        message::KEY_DOWN if wparam == VK_ESCAPE => effect.commit = close(gui, root),
+        message::KEY_DOWN if wparam == VK_ESCAPE && tracking.cascade.is_none() => {
+            effect.commit = close(gui, root)
+        }
         message::KEY_DOWN | message::SYS_KEY_DOWN => return Some(drop_down_key(gui, &tracking, wparam)),
         _ => {}
     }
     Some(effect)
+}
+
+/// The first item that can be chosen in the submenu of item `parent` of the drop-down.
+fn first_choosable(gui: &Gui, tracking: &Tracking, parent: usize) -> Option<usize> {
+    let popup = table(gui)?.get(tracking.popup)?.items().get(parent)?.popup()?;
+    table(gui)?
+        .get(popup)?
+        .items()
+        .iter()
+        .position(|item| !item.is_grayed() && !item.is_separator() && item.popup().is_none())
+}
+
+/// A key while a submenu is open (D337): Up and Down move in it, Left and Escape close it,
+/// Enter or a mnemonic choose in it.
+fn cascade_key(gui: &mut Gui, tracking: &Tracking, cascade: &Cascade, key: usize) -> Effect {
+    if matches!(key, VK_LEFT | VK_ESCAPE) {
+        return Effect {
+            commit: close_cascade(gui, tracking),
+            command: None,
+        };
+    }
+    let Some(items) = table(gui).and_then(|table| table.get(cascade.popup)) else {
+        return Effect::default();
+    };
+    let count = items.count.min(MAX_ITEMS);
+    let mut entries = [(false, 0usize, None::<usize>); MAX_ITEMS];
+    for (entry, item) in entries.iter_mut().zip(items.items()) {
+        let choosable = !item.is_grayed() && !item.is_separator() && item.popup().is_none();
+        *entry = (choosable, item.id, mnemonic(item.label()));
+    }
+    let entries = &entries[..count];
+    let chosen = match key {
+        VK_DOWN | VK_UP if count > 0 => {
+            let mut at = cascade.highlighted.unwrap_or(if key == VK_DOWN { count - 1 } else { 0 });
+            let next = (0..count).find_map(|_| {
+                at = match key {
+                    VK_DOWN => (at + 1) % count,
+                    _ => (at + count - 1) % count,
+                };
+                entries[at].0.then_some(at)
+            });
+            gui.tracking = Some(Tracking {
+                cascade: Some(Cascade {
+                    highlighted: next,
+                    ..*cascade
+                }),
+                ..*tracking
+            });
+            return Effect {
+                commit: paint_open_drop_down(gui, tracking.root),
+                command: None,
+            };
+        }
+        VK_RETURN => cascade
+            .highlighted
+            .and_then(|at| entries.get(at))
+            .filter(|entry| entry.0)
+            .map(|entry| entry.1),
+        _ => entries.iter().find(|entry| entry.0 && entry.2 == Some(key)).map(|entry| entry.1),
+    };
+    match chosen {
+        Some(id) => Effect {
+            commit: close(gui, tracking.root),
+            command: Some(id),
+        },
+        None => Effect::default(),
+    }
 }
 
 /// The key of a mnemonic (`&File`'s `F`), as a virtual-key code: an ASCII letter's capital or a
@@ -354,6 +540,22 @@ fn mnemonic_entry(gui: &Gui, root: usize, key: usize) -> Option<usize> {
 /// item, and an item's mnemonic chooses it.
 fn drop_down_key(gui: &mut Gui, tracking: &Tracking, key: usize) -> Effect {
     let root = tracking.root;
+    if let Some(cascade) = tracking.cascade {
+        return cascade_key(gui, tracking, &cascade, key);
+    }
+    if matches!(key, VK_RIGHT | VK_RETURN)
+        && let Some(parent) = tracking.highlighted.filter(|&at| {
+            table(gui)
+                .and_then(|table| table.get(tracking.popup))
+                .and_then(|menu| menu.items().get(at))
+                .is_some_and(|item| item.popup().is_some() && !item.is_grayed())
+        })
+    {
+        return Effect {
+            commit: open_cascade(gui, tracking, parent, first_choosable(gui, tracking, parent)),
+            command: None,
+        };
+    }
     let Some(items) = table(gui).and_then(|table| table.get(tracking.popup)) else {
         return Effect::default();
     };
@@ -535,6 +737,7 @@ fn open_context(
         rect: Rect::sized(left, top, size.0, size.1),
         context: true,
         right_button: flags & TPM_RIGHTBUTTON != 0,
+        cascade: None,
     });
     Ok(paint_open_drop_down(gui, root))
 }
