@@ -25,6 +25,7 @@ const VK_LEFT: usize = 0x25;
 const VK_UP: usize = 0x26;
 const VK_RIGHT: usize = 0x27;
 const VK_DOWN: usize = 0x28;
+const VK_F10: usize = 0x79;
 const NO_ID: u32 = u32::MAX;
 
 /// An open drop-down: the window, its bar entry, the menu it shows, the item under the pointer
@@ -338,6 +339,13 @@ pub fn input(
         });
     }
     let Some(tracking) = gui.tracking.filter(|tracking| tracking.root == root) else {
+        if number == message::SYS_KEY_DOWN && wparam == VK_F10 {
+            let entry = first_open_entry(gui, root)?;
+            return Some(Effect {
+                commit: open(gui, root, entry),
+                command: None,
+            });
+        }
         if number == message::SYS_KEY_DOWN {
             let entry = mnemonic_entry(gui, root, wparam)?;
             return Some(match bar_command(gui, root, entry) {
@@ -524,6 +532,15 @@ fn mnemonic(label: &[u16]) -> Option<usize> {
     let at = label.windows(2).position(|pair| pair[0] == u16::from(b'&') && pair[1] != u16::from(b'&'))?;
     let character = char::from_u32(u32::from(label[at + 1]))?;
     character.is_ascii_alphanumeric().then(|| character.to_ascii_uppercase() as usize)
+}
+
+/// The first enabled bar entry of `root` that opens a drop-down, which F10 opens (D338).
+fn first_open_entry(gui: &Gui, root: usize) -> Option<usize> {
+    let window = gui.windows.get(root)?;
+    let bar = table(gui)?.get(window.menu)?;
+    bar.items()
+        .iter()
+        .position(|item| !item.is_grayed() && item.popup().is_some())
 }
 
 /// The enabled bar entry of `root` whose mnemonic is key `key` (D335).

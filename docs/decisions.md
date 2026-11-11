@@ -21584,3 +21584,11 @@ the license, by an explicit instruction recorded here.
     submenu's area for the program to repaint.
 - **Limits.** One level: a submenu's own submenu items stay grayed. Context menus
   (`TrackPopupMenuEx`) open no submenus yet.
+
+## D338 Windows menus: F10 opens the menu bar (batch part 10's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** F10 (`WM_SYSKEYDOWN` `VK_F10`) in a window with a menu bar and no drop-down
+  open opens the first enabled bar entry that has a drop-down. From there, D335's keys move
+  (arrows, Enter, mnemonics, Escape). A window without a menu bar leaves F10 to the program.
+- **Not yet.** Alt pressed and released alone, which on Windows selects the bar without
+  opening it, and mnemonic underlines shown only once Alt is pressed (they are always drawn).
