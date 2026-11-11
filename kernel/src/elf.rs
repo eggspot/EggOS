@@ -101,7 +101,6 @@ impl<'a> Elf<'a> {
         if image.len() < HEADER_SIZE || image[..4] != *b"\x7fELF" {
             return Err(InvalidElf("not an ELF image"));
         }
-        // `e_ident`: class, byte order, version.
         if image[4] != 2 {
             return Err(InvalidElf("not a 64-bit ELF image"));
         }
@@ -139,7 +138,6 @@ impl<'a> Elf<'a> {
             image,
             kind,
             entry,
-            // Within the image, so it fits.
             program_header_offset: program_header_offset as usize,
             program_header_count,
         })
@@ -206,7 +204,6 @@ impl<'a> Elf<'a> {
                 flags: u32_at(header, 4),
                 offset: u64_at(header, 8),
                 virt: u64_at(header, 16),
-                // `p_paddr` (24) means nothing to a user program.
                 file_size: u64_at(header, 32),
                 memory_size: u64_at(header, 40),
                 align: u64_at(header, 48),
@@ -263,7 +260,6 @@ pub mod build {
             .fold(table_end, usize::max);
         let mut image = vec![0u8; end];
         image[..4].copy_from_slice(b"\x7fELF");
-        // 64-bit, little-endian, version 1.
         image[4..7].copy_from_slice(&[2, 1, 1]);
         image[16..18].copy_from_slice(&kind.to_le_bytes());
         image[18..20].copy_from_slice(&machine.to_le_bytes());
@@ -340,7 +336,6 @@ mod tests {
         );
         assert_eq!(headers[1].file_bytes(&image), Some(&b"datadata"[..]));
         assert_eq!(headers[0].file_bytes(&image).unwrap().len(), 0x1010);
-        // Past the end, overflowing: not within the image.
         assert_eq!(load(0x1010, 0, 9, 9).file_bytes(&image), None);
         assert_eq!(load(u64::MAX, 0, 2, 2).file_bytes(&image), None);
     }
@@ -400,7 +395,6 @@ mod tests {
             Err(InvalidElf("not a little-endian ELF image"))
         );
         assert_eq!(with(6, &[0]), Err(InvalidElf("an unknown ELF version")));
-        // A relocatable object and a core file are not programs.
         for kind in [1u16, 4] {
             assert_eq!(
                 with(16, &kind.to_le_bytes()),
@@ -427,7 +421,6 @@ mod tests {
                 Err(InvalidElf("no program headers, or too many"))
             );
         }
-        // A table that runs past the end, or whose offset wraps.
         assert_eq!(
             with(56, &MAX_PROGRAM_HEADERS.to_le_bytes()),
             Err(InvalidElf("the program headers are not within the image"))
@@ -436,7 +429,6 @@ mod tests {
             with(32, &u64::MAX.to_le_bytes()),
             Err(InvalidElf("the program headers are not within the image"))
         );
-        // Too short for a header at all.
         assert_eq!(
             Elf::parse(&good[..HEADER_SIZE - 1], machine::NATIVE).map(|_| ()),
             Err(InvalidElf("not an ELF image"))

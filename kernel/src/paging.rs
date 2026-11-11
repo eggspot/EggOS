@@ -178,7 +178,6 @@ impl<F: Format> PageTables<F> {
             match F::decode(entry, top) {
                 Entry::Table(next) => self.free_table_tree(next, top - 1, frames, &mut leaf),
                 Entry::Leaf(phys, _) => leaf(frames, phys, top),
-                // Only at level 0.
                 Entry::Kept(_) | Entry::Empty => {}
             }
         });
@@ -267,8 +266,6 @@ impl<F: Format> PageTables<F> {
             .ok_or(MapError::InvalidAddress)?;
         phys.checked_add(length - 1)
             .ok_or(MapError::InvalidAddress)?;
-        // Valid addresses form one range per half of the address space, so a range whose ends
-        // are valid and in the same half is valid throughout.
         if F::root(virt).is_none() || F::root(last).is_none() || (virt ^ last) >> 63 != 0 {
             return Err(MapError::InvalidAddress);
         }
@@ -630,10 +627,6 @@ impl<F: Format> PageTables<F> {
         attributes: Attributes,
         frames: &mut FrameAllocator,
     ) -> Result<(), MapError> {
-        // A user address space's tables gain mappings while other CPUs may walk them (D52):
-        // whatever was written to the frame before (a page's contents, a new table's zeros) must
-        // be seen by any CPU that sees the entry. A walker on another CPU is an observer as any
-        // other, so a release fence orders it (`dmb ish` on AArch64, `fence rw,w` on RISC-V).
         fence(Ordering::Release);
         let entry = self.leaf_table_entry(virt, leaf_level, attributes.user, frames)?;
         if entry.read() != 0 {
@@ -807,8 +800,6 @@ pub fn kernel_page_tables<P: Platform>(
     )?;
     let normal_memory = without_early_devices::<P>(physical_memory)?;
     map_direct_map(&mut tables, &normal_memory, offset, &image, frames)?;
-    // Page by page: two register blocks may share a page. A page mapped already is compared
-    // with a device leaf as the format decodes it (RISC-V does not record the memory type).
     let device_leaf = match <P::PageTableFormat as Format>::decode(
         <P::PageTableFormat as Format>::leaf(0, 0, Attributes::DEVICE),
         0,
@@ -1045,11 +1036,9 @@ mod tests {
     fn maps_and_translates<F: Format>(high: u64) {
         let mut frames = frames(64);
         let mut tables = PageTables::<F>::new(&mut frames).unwrap();
-        // 4 KiB pages: a 3-page range not aligned to anything larger.
         tables
             .map(0x40_3000, 0x8000_3000, 3 * K, Attributes::TEXT, &mut frames)
             .unwrap();
-        // A large range in the high half with 1 GiB-aligned ends: the largest leaves.
         let big = 2 << 30;
         tables
             .map(high, 0, big, Attributes::READ_WRITE, &mut frames)
@@ -1071,7 +1060,6 @@ mod tests {
         let device = tables.translate(0x900_0010).unwrap();
         assert_eq!(device.0, 0x900_0010);
         assert!(device.1.writable && !device.1.executable);
-        // Tables used: the roots, plus one table per level above the leaves for each region.
         let used = 64 - frames.free_frames();
         let largest = leaf_size(F::MAX_LEAF_LEVEL);
         assert_eq!(big % largest, 0);
@@ -1092,8 +1080,6 @@ mod tests {
     fn large_leaves_are_used_where_aligned_and_small_ones_at_the_edges() {
         let mut frames = frames(16);
         let mut tables = PageTables::<X86_64>::new(&mut frames).unwrap();
-        // 4 KiB below a 2 MiB boundary, then 2 MiB, then 4 KiB above: x86_64's largest leaf
-        // here is 2 MiB, so one page directory and two page tables.
         let start = (2 << 20) - K;
         tables
             .map(
@@ -1104,8 +1090,6 @@ mod tests {
                 &mut frames,
             )
             .unwrap();
-        // Root, PDPT, page directory, two page tables.
-        // (One of the 16 frames holds the buddy allocator's bitmap.)
         assert_eq!(15 - frames.free_frames(), 5);
         for virt in [start, 2 << 20, (4 << 20) + K - 1] {
             assert_eq!(tables.translate(virt).map(|t| t.0), Some(virt));
@@ -1117,8 +1101,6 @@ mod tests {
         let mut frames = frames(64);
         let mut tables = PageTables::<X86_64>::new(&mut frames).unwrap();
         let mb = 1 << 20;
-        // 8 MiB of RAM in two ranges; the image sits inside the first, away from 2 MiB
-        // boundaries.
         let mut ram = MemoryMap::new();
         ram.add_ram(PhysicalRange::from_start_length(0, 6 * mb));
         ram.add_ram(PhysicalRange::from_start_length(8 * mb, 2 * mb));
@@ -1164,8 +1146,6 @@ mod tests {
             );
             assert_eq!(alias(phys).map(|t| t.1), expected, "{phys:#x}");
         }
-        // Away from the image, the largest leaves still map it: no page table under the
-        // second range's 2 MiB entry, nor under the first range's last.
         for phys in [4 * mb, 8 * mb] {
             let walk = |level| {
                 let mut table = tables.roots()[0];
@@ -1295,8 +1275,6 @@ mod tests {
         let mut frames = frames(64);
         let mut tables = PageTables::<Riscv64Sv39>::new(&mut frames).unwrap();
         let gb = 1 << 30;
-        // The image in the second GiB, across two RAM ranges with a one-page hole in its data
-        // part; the first and third GiBs hold no image.
         let base = gb + (5 << 20);
         let image = KernelImage {
             virtual_offset: 0xffff_ffff_8000_0000,
@@ -1330,7 +1308,6 @@ mod tests {
         ] {
             assert_eq!(alias(phys), expected, "{phys:#x}");
         }
-        // The image-free GiBs keep a 1 GiB leaf; the image's GiB is split into tables.
         let root = |phys: u64| {
             Riscv64Sv39::decode(tables.entry(tables.roots()[0], offset + phys, 2).read(), 2)
         };
@@ -1353,8 +1330,6 @@ mod tests {
     #[test]
     fn a_device_page_inside_reported_memory_is_mapped_as_a_device_only() {
         use crate::tests::TestPlatform;
-        // The device page with free frames on both sides, as a reserved firmware range
-        // around the x86 local APIC would be.
         let tables =
             test_platform_tables(&[PhysicalRange::from_start_length(0x9_f000, 3 * K)]).unwrap();
         let offset = TestPlatform::direct_map_offset() as u64;
@@ -1378,7 +1353,6 @@ mod tests {
     #[test]
     fn leaving_a_device_out_of_a_full_memory_map_fails_instead_of_losing_memory() {
         use eggos_hal::memory::MAX_RANGES;
-        // Splitting the range around the device page needs one range more than the map holds.
         let mut extra = vec![PhysicalRange::from_start_length(0x9_f000, 3 * K)];
         let full = MAX_RANGES - crate::tests::TestPlatform::physical_memory().ranges().len();
         extra.extend((1..full as u64).map(|i| PhysicalRange::from_start_length(i << 32, K)));
@@ -1396,7 +1370,6 @@ mod tests {
             map.add_ram(PhysicalRange::from_start_length(start, length));
             map
         };
-        // The test platform's device registers are at 0xa_0000..0xa_0100 and 0xa_0800..0xa_0900.
         assert!(overlaps_early_devices::<TestPlatform>(&free(
             0x9_f000,
             2 * K
@@ -1412,7 +1385,6 @@ mod tests {
         let mut tables = PageTables::<Aarch64>::new(&mut frames).unwrap();
         let rw = Attributes::READ_WRITE;
         tables.map(2 << 20, 0, 2 << 20, rw, &mut frames).unwrap();
-        // Inside the 2 MiB block, and a block over an existing page table.
         assert_eq!(
             tables.map((2 << 20) + K, 0, K, rw, &mut frames),
             Err(MapError::AlreadyMapped)
@@ -1437,7 +1409,6 @@ mod tests {
             tables.map(0, 0, K / 2, rw, &mut frames),
             Err(MapError::Unaligned)
         );
-        // Non-canonical, and a range from the low half across the hole.
         assert_eq!(
             tables.map(0x8000_0000_0000, 0, K, rw, &mut frames),
             Err(MapError::InvalidAddress)
@@ -1450,8 +1421,6 @@ mod tests {
             tables.map(u64::MAX - K + 1, 0, 2 * K, rw, &mut frames),
             Err(MapError::InvalidAddress)
         );
-        // Nothing was allocated beyond the root.
-        // 16 frames, less the buddy allocator's bitmap and the root.
         assert_eq!(frames.free_frames(), 14);
         assert_eq!(tables.map(0, 0, 0, rw, &mut frames), Ok(()));
     }

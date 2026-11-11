@@ -53,7 +53,6 @@ unsafe extern "C" {
     static __kernel_end: u8;
 }
 
-// The HAL's kernel virtual offset, for `linker.ld` to check its own against.
 core::arch::global_asm!(
     ".globl __kernel_virtual_offset_hal",
     ".set __kernel_virtual_offset_hal, {offset}",
@@ -155,7 +154,6 @@ pub(crate) unsafe fn device_tree_memory_map(address: usize) -> MemoryMap {
     let Some((tree, size)) = (unsafe { device_tree(address) }) else {
         return map;
     };
-    // All RAM first, then every reservation (a reservation only removes RAM already added).
     if tree
         .memory(&mut |ram| map.add_ram(ram), &mut |_| {})
         .is_err()
@@ -223,7 +221,6 @@ pub(crate) unsafe fn device_tree_cpus(address: usize, cpu: &mut dyn FnMut(u64)) 
     let Some((tree, _)) = (unsafe { device_tree(address) }) else {
         return;
     };
-    // A tree that is malformed further on reports nothing, not a partial list.
     if tree.cpus(&mut |_| {}).is_ok() {
         let _ = tree.cpus(cpu);
     }
