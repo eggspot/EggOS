@@ -861,7 +861,8 @@ yet" naming what it left.
     done; `/bin/pick` itself, its model taken from the branch `wip/eggos-picker`, code written,
     unbuilt, D391; the layers' file dialogs, the Text Editor's Open and Save As and Files'
     `Change Target...` through it, code written, unbuilt, D392);
-  - part 19, drag and drop between windows;
+  - part 19, drag and drop between windows (the server carrying a drag between windows, code
+    written, unbuilt, D393);
   - part 10's rest: done in code (D228; `CBS_SIMPLE`, code written, unbuilt, D343; scroll bars on windows, code written, unbuilt, D342;
     multi-line edits, code written, unbuilt, D341, D350, D351; word selection already in D228;
     editable combo boxes, code written, unbuilt, D340; menus from templates, code written,

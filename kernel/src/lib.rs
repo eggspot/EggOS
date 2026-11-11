@@ -17,6 +17,7 @@ pub mod bench;
 pub mod block;
 pub mod boot_clock;
 pub mod clipboard;
+pub mod drag_payload;
 pub mod component_store;
 pub mod console;
 pub mod cpu;

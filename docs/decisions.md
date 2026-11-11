@@ -22738,3 +22738,27 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** `--over` from each caller, `SHBrowseForFolder` and `IFileDialog`, multiple
   selection written back to `lpstrFile`, `allowedContentTypes`, the editor and Files ignoring
   input and drawing unfocused while the picker is open (their loops block until it ends).
+
+## D393 The window server carries a drag between windows (batch part 19; M11, M12; code written, unbuilt, untested: code-only mode) — Decided by the toolkit's design (docs/ux/toolkit-v0.5.md section 7.2: the later slice, its model the shared clipboard) and the code-only session (engineering, the protocol)
+
+- **Decision.**
+  - **Hand-over.** A window that holds the pointer with the left button down (its in-window
+    drag left its content) sends `START_DRAG` (request 55): the payload's kind (paths one
+    per line, or UTF-8 text), its bytes (at most 1 MiB, kept by the kernel like the
+    clipboard, with a serial counting drags) and the ghost's words. The server takes the drag
+    over: the window no longer holds the pointer.
+  - **Carrying.** The ghost is the toolkit's (section 7.2: `menu.bg`, 1-pixel `menu.border`,
+    r4, 24 tall, text at +8, top-left at the pointer + 12), drawn by the server above every
+    window and popup. The window under the pointer hears `DragOver` (event 19, with the
+    content point, the kind and the serial) as it moves, and `DragLeave` (20) when the
+    pointer leaves it.
+  - **Ending.** Releasing the left button sends `Drop` (21) to the window under the pointer,
+    which reads the payload with `GET_DRAG` (request 56, as `GET_CLIPBOARD`), and
+    `DragEnded` (22) to the source, 1 when it landed on a window and 0 otherwise; Esc
+    cancels (the window it was over hears `DragLeave`, the source `DragEnded` 0); the source
+    window going away ends it without telling anyone.
+- **Why the server.** Only the server sees every window and the pointer between them; the
+  in-window protocol (section 7) stays as it is, and the toolkit adds a drop from a foreign
+  source on the same targets (next decision).
+- **Not yet.** Dropping on the desktop and the dock, copy-versus-move with a modifier, the
+  touch form's long press, D162's `wm drag` across windows, and more payload kinds.

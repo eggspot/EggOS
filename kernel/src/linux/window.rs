@@ -405,6 +405,52 @@ pub fn ioctl<P: Platform>(
                 desktop.set_layered(client, window, (alpha, key, pixel_alpha), damage)
             })?;
         }
+        Request::StartDrag {
+            window,
+            kind,
+            length,
+            payload,
+            text_length,
+            text,
+        } => {
+            let length = usize::try_from(length)
+                .ok()
+                .filter(|&length| length <= crate::drag_payload::CAPACITY)
+                .ok_or(Errno::E2BIG)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
+            bytes.resize(length, 0);
+            process
+                .read_user_memory(payload, &mut bytes)
+                .map_err(|_| Errno::EFAULT)?;
+            let serial = crate::drag_payload::set(kind, bytes);
+            let words = text.get(..text_length as usize).ok_or(Errno::EINVAL)?;
+            on_windows::<P, _>(|desktop, _, damage, events| {
+                desktop.start_carry(client, window, (kind, serial), words, damage, events)
+            })?;
+        }
+        Request::GetDrag {
+            buffer,
+            length,
+            offset,
+        } => {
+            use eggos_drivers::desktop::protocol::get_drag_reply;
+            let (payload, kind, serial) = crate::drag_payload::get();
+            let payload = payload.as_deref().map_or(&[][..], Vec::as_slice);
+            let rest = payload.get(offset as usize..).unwrap_or_default();
+            let copied = rest.len().min(length as usize);
+            if copied > 0 {
+                process
+                    .write_user_memory(buffer, &rest[..copied])
+                    .map_err(|_| Errno::EFAULT)?;
+            }
+            put_word(bytes, get_drag_reply::LENGTH, payload.len() as u32);
+            put_word(bytes, get_drag_reply::KIND, kind);
+            put_word(bytes, get_drag_reply::SERIAL, serial);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
         Request::RaiseWindow { window } => {
             on_windows::<P, _>(|desktop, _, damage, events| {
                 desktop.raise_window(client, window, damage, events)

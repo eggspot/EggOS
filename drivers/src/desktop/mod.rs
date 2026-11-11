@@ -43,6 +43,7 @@ mod responsiveness;
 mod shell;
 pub mod shortcuts;
 mod sticky_keys;
+mod carry;
 mod shell_menu;
 mod tray;
 mod updates;
@@ -64,6 +65,8 @@ mod panel_keys_tests;
 mod polish_tests;
 #[cfg(test)]
 mod shell_tests;
+#[cfg(test)]
+mod carry_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -435,6 +438,7 @@ pub struct Desktop {
     network: network::NetworkIndicator,
     tray: tray::Tray,
     shell_menu: Option<shell_menu::ShellMenu>,
+    carried: Option<carry::Carry>,
     desktops: u8,
     current_desktop: u8,
     responsiveness: responsiveness::Responsiveness,
@@ -526,6 +530,7 @@ impl Desktop {
             network: network::NetworkIndicator::default(),
             tray: tray::Tray::default(),
             shell_menu: None,
+            carried: None,
             desktops: 1,
             current_desktop: 0,
             responsiveness: responsiveness::Responsiveness::default(),
@@ -1400,6 +1405,7 @@ impl Desktop {
     fn destroy_slot(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
         self.forget_tray_icons(slot, damage);
         self.forget_shell_menu(slot, damage);
+        self.forget_in_carry(slot, damage, events);
         for dialog in 0..MAX_WINDOWS {
             if self.windows[dialog].is_some_and(|window| window.parent == Some(slot as u8)) {
                 self.destroy_slot(dialog, damage, events);
@@ -1829,6 +1835,7 @@ impl Desktop {
         self.note_person_motion(x, y);
         self.pointer = (x, y);
         self.pointer_visible = true;
+        self.carry_motion(x, y, damage, events);
         if self.on_screen_keyboard_holds() {
             self.on_screen_keyboard_move(x, y, damage);
         }
@@ -1976,6 +1983,11 @@ impl Desktop {
             return Action::None;
         };
         let bit = 1u8 << bit;
+        if !pressed && code == button::LEFT && self.carrying() {
+            self.buttons &= !bit;
+            self.carry_release(damage, events);
+            return Action::None;
+        }
         if !pressed {
             self.buttons &= !bit;
             if matches!(code, button::LEFT | button::RIGHT) && self.on_screen_keyboard_holds() {
@@ -2350,6 +2362,10 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Action {
+        if pressed && code == key::ESC && self.carrying() {
+            self.cancel_carry(damage, events);
+            return Action::None;
+        }
         if let Some(action) = self.end_app_key(code, pressed, damage, events) {
             return action;
         }
@@ -2582,6 +2598,7 @@ impl Desktop {
         self.draw_tray_overflow(&mut canvas);
         self.draw_shell_menu(&mut canvas);
         self.draw_popups(&mut canvas);
+        self.draw_carry(&mut canvas);
         self.draw_tooltip(&mut canvas);
         self.draw_agent_pointer(&mut canvas);
         if with_pointer {
@@ -2621,6 +2638,7 @@ impl Desktop {
             || self.keyboard_layout_menu_overlaps(clip)
             || self.tray_overflow_overlaps(clip)
             || self.shell_menu_overlaps(clip)
+            || self.carry_overlaps(clip)
             || self.popups_overlap(clip)
             || tooltip
             || panels

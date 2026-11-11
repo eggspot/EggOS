@@ -99,6 +99,8 @@ pub mod size {
     pub const SET_LAYERED: usize = 16;
     pub const SHOW_SHELL_MENU: usize = 16;
     pub const RAISE_WINDOW: usize = 4;
+    pub const START_DRAG: usize = super::start_drag_request::TEXT + super::CARRY_TEXT_BYTES;
+    pub const GET_DRAG: usize = 32;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -162,6 +164,8 @@ pub mod request {
     pub const SET_LAYERED: u32 = encode(WRITE, 52, size::SET_LAYERED);
     pub const SHOW_SHELL_MENU: u32 = encode(WRITE, 53, size::SHOW_SHELL_MENU);
     pub const RAISE_WINDOW: u32 = encode(WRITE, 54, size::RAISE_WINDOW);
+    pub const START_DRAG: u32 = encode(WRITE, 55, size::START_DRAG);
+    pub const GET_DRAG: u32 = encode(READ | WRITE, 56, size::GET_DRAG);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -337,6 +341,46 @@ pub mod event {
     /// The shell menu the window showed closed (D371): `a` the chosen entry's index plus 1, 0
     /// when nothing was chosen; `c` and `d` the screen point.
     pub const SHELL_MENU: u16 = 18;
+    /// A drag between windows is over this window (D393): `a` and `b` the content point, `c`
+    /// the payload's kind, `d` its serial.
+    pub const DRAG_OVER: u16 = 19;
+    /// The drag between windows left this window.
+    pub const DRAG_LEAVE: u16 = 20;
+    /// The drag between windows was let go over this window: read its payload with
+    /// `GET_DRAG`; the fields as [`DRAG_OVER`].
+    pub const DROP: u16 = 21;
+    /// This window's drag between windows ended: `a` 1 when it was dropped on a window, 0
+    /// when it was cancelled; `c` and `d` as [`DRAG_OVER`].
+    pub const DRAG_ENDED: u16 = 22;
+}
+
+/// `START_DRAG`'s argument (D393): the window, the payload's kind, its length and address,
+/// and the ghost's words (UTF-8, `text_length` bytes).
+pub mod start_drag_request {
+    pub const WINDOW: usize = 0;
+    pub const KIND: usize = 4;
+    pub const LENGTH: usize = 8;
+    pub const TEXT_LENGTH: usize = 12;
+    pub const PAYLOAD: usize = 16;
+    pub const TEXT: usize = 24;
+}
+
+/// What a drag between windows carries (D393).
+pub mod carry_kind {
+    /// Absolute paths, one per line.
+    pub const PATHS: u32 = 1;
+    /// UTF-8 text.
+    pub const TEXT: u32 = 2;
+}
+
+/// The longest ghost text `START_DRAG` carries, in bytes.
+pub const CARRY_TEXT_BYTES: usize = 64;
+
+/// Where `GET_DRAG` writes the payload's whole length, its kind and its serial.
+pub mod get_drag_reply {
+    pub const LENGTH: usize = 20;
+    pub const KIND: usize = 24;
+    pub const SERIAL: usize = 28;
 }
 
 /// `SET_TRAY_ICON`'s argument (D357): the window, the icon's key within its client, the
@@ -774,6 +818,22 @@ pub enum Request {
         length: u64,
         offset: u64,
     },
+    /// The caller's `window`, holding the pointer with the left button down, hands its drag to
+    /// the server (D393): `length` bytes of payload of `kind` at `payload`, the ghost's words.
+    StartDrag {
+        window: u32,
+        kind: u32,
+        length: u32,
+        payload: u64,
+        text_length: u32,
+        text: [u8; CARRY_TEXT_BYTES],
+    },
+    /// Reads the current drag's payload into `buffer` (`length` bytes from `offset`).
+    GetDrag {
+        buffer: u64,
+        length: u32,
+        offset: u32,
+    },
     /// Sets the caller's window `window`'s flags named in `mask` (only [`flags::CHANGEABLE`]
     /// ones) to their bits in `values` (D193).
     ChangeFlags {
@@ -834,6 +894,8 @@ impl Request {
             request::SET_LAYERED => size::SET_LAYERED,
             request::SHOW_SHELL_MENU => size::SHOW_SHELL_MENU,
             request::RAISE_WINDOW => size::RAISE_WINDOW,
+            request::START_DRAG => size::START_DRAG,
+            request::GET_DRAG => size::GET_DRAG,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::GET_LAUNCH => size::GET_LAUNCH,
@@ -959,6 +1021,25 @@ impl Request {
                 flags: at(12),
             },
             request::RAISE_WINDOW => Self::RaiseWindow { window: at(0) },
+            request::START_DRAG => {
+                let mut text = [0u8; CARRY_TEXT_BYTES];
+                text.copy_from_slice(
+                    &bytes[start_drag_request::TEXT..start_drag_request::TEXT + CARRY_TEXT_BYTES],
+                );
+                Self::StartDrag {
+                    window: at(start_drag_request::WINDOW),
+                    kind: at(start_drag_request::KIND),
+                    length: at(start_drag_request::LENGTH),
+                    payload: double_word(bytes, start_drag_request::PAYLOAD),
+                    text_length: at(start_drag_request::TEXT_LENGTH),
+                    text,
+                }
+            }
+            request::GET_DRAG => Self::GetDrag {
+                buffer: double_word(bytes, 0),
+                length: at(8),
+                offset: at(12),
+            },
             request::SHOW_SHELL_MENU => Self::ShowShellMenu {
                 window: at(0),
                 length: at(4),
