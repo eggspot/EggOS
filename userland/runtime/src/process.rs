@@ -173,7 +173,7 @@ pub const CHILD_STACK_BYTES: usize = 16 * 1024;
 const SIGCHLD: usize = 17;
 const SIGPIPE: usize = 13;
 const TIOCSCTTY: usize = crate::syscall::tty::TIOCSCTTY;
-const SIGNAL_SET_BYTES: usize = 8;
+const SIGNAL_SET_BYTES: usize = crate::signal::SET_BYTES;
 const NOT_RUN: i32 = 127;
 const FIRST_OTHER_DESCRIPTOR: usize = 3;
 

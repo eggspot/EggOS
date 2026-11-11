@@ -24,13 +24,16 @@ const MAP_ANONYMOUS: usize = 0x20;
 const SIGSEGV: usize = 11;
 const SIGPIPE: usize = 13;
 const SIG_IGN: usize = 1;
+#[cfg(not(target_arch = "mips64"))]
 const SA_SIGINFO: usize = 4;
+#[cfg(target_arch = "mips64")]
+const SA_SIGINFO: usize = 8;
 const SA_ONSTACK: usize = 0x0800_0000;
 #[cfg(target_arch = "x86_64")]
 const SA_RESTORER: usize = 0x0400_0000;
 const SEGV_ACCERR: i32 = 2;
 const SS_DISABLE: i32 = 2;
-const SIGNAL_SET_SIZE: usize = 8;
+const SIGNAL_SET_SIZE: usize = eggos_runtime::signal::SET_BYTES;
 const ALTERNATE_STACK_SIZE: usize = 4 * PAGE;
 
 type Check = (&'static str, fn(&Startup) -> bool);
@@ -170,7 +173,7 @@ pub mod process_loop_status {
 
 const CLONE_VM: usize = 0x100;
 const CLONE_VFORK: usize = 0x4000;
-const SIGCHLD: usize = 17;
+const SIGCHLD: usize = eggos_runtime::signal::SIGCHLD as usize;
 
 fn fork_loop(startup: &Startup, touch: bool) -> i32 {
     let Some(count) = startup.arguments().nth(2).and_then(decimal) else {
@@ -464,7 +467,17 @@ fn standard_descriptors(_: &Startup) -> bool {
             .all(|descriptor| descriptor.returned_events & POLLNVAL == 0)
 }
 
-#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
+#[cfg(target_arch = "mips64")]
+#[repr(C)]
+#[derive(Default)]
+struct SignalAction {
+    flags: usize,
+    handler: usize,
+    mask: u64,
+    mask_high: u64,
+}
+
+#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
 #[repr(C)]
 #[derive(Default)]
 struct SignalAction {

@@ -4,6 +4,25 @@
 /// `SIGRTMIN` as C libraries number it, the first two real-time signals being theirs.
 pub const SIGRTMIN: u32 = 34;
 
+/// `SIG_IGN`.
+pub const IGNORE: usize = 1;
+
+/// The `sigsetsize` the calls take: 8 bytes, or MIPS's 16, whose first 8 hold the 64 signals
+/// the kernel has (D315).
+#[cfg(not(target_arch = "mips64"))]
+pub const SET_BYTES: usize = 8;
+#[cfg(target_arch = "mips64")]
+pub const SET_BYTES: usize = 16;
+
+/// A `struct sigaction` with `handler`, no flags, no restorer and an empty mask, in the
+/// architecture's layout: the handler first, or MIPS's flags first (D315).
+pub const fn action(handler: usize) -> [usize; 4] {
+    match cfg!(target_arch = "mips64") {
+        true => [0, handler, 0, 0],
+        false => [handler, 0, 0, 0],
+    }
+}
+
 #[cfg(not(target_arch = "mips64"))]
 mod numbers {
     pub const SIGHUP: u32 = 1;

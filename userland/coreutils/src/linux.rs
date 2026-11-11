@@ -49,7 +49,7 @@ const MSG_NOSIGNAL: usize = 0x4000;
 const IPPROTO_ICMP: usize = 1;
 const MSG_DONTWAIT: usize = 0x40;
 const POLLIN: i16 = 1;
-const SIGSET_BYTES: usize = 8;
+const SIGSET_BYTES: usize = eggos_runtime::signal::SET_BYTES;
 const SOCKADDR_IN_SIZE: usize = 16;
 const SIGTERM: usize = eggos_runtime::signal::SIGTERM as usize;
 const SIG_UNBLOCK: usize = 1;
@@ -58,7 +58,16 @@ const SA_RESTORER: usize = 0x0400_0000;
 
 static TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
+#[cfg(target_arch = "mips64")]
+#[repr(C)]
+struct SignalAction {
+    flags: usize,
+    handler: usize,
+    mask: u64,
+    mask_high: u64,
+}
+
+#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
 #[repr(C)]
 struct SignalAction {
     handler: usize,
@@ -87,13 +96,15 @@ fn termination_action() -> SignalAction {
     );
     #[cfg(any(target_arch = "aarch64", target_arch = "powerpc64"))]
     let (flags, restorer) = (0, 0);
-    #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
+    #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64"))]
     let flags = 0;
     SignalAction {
         handler: note_termination as *const () as usize,
         flags,
-        #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
+        #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
         restorer,
+        #[cfg(target_arch = "mips64")]
+        mask_high: 0,
         mask: 0,
     }
 }

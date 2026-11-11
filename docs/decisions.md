@@ -20855,3 +20855,22 @@ the license, by an explicit instruction recorded here.
   `asm/ioctls.h`, `asm/fcntl.h`, `asm/mman.h`, `asm/socket.h` and the n64 table).** Every
   value table above; LLVM's MIPS assembler accepting the runtime's `%gp_rel`/`%got_disp`
   `_start`.
+
+## D316 MIPS64 part 3: EggOS's own programs use the architecture's signal-set size and `struct sigaction` (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `eggos_runtime::signal` gains `SET_BYTES` (8, or MIPS's 16), `IGNORE` and
+  `action(handler)`, a `struct sigaction` in the architecture's layout (handler first, or MIPS's
+  flags first). Every program that sets a signal's action or mask uses them instead of its
+  own 8 and `[handler, 0, 0, 0]`: init, eggsh, the coreutils, eggway, mcp, selftest and the
+  runtime's `spawn`.
+  - init, eggsh, the coreutils and selftest gain a MIPS `SignalAction` (flags, handler, a
+    16-byte mask).
+  - selftest's `SA_SIGINFO` is MIPS's 8 there, and its `SIGCHLD` comes from the runtime.
+  - No program passes an old-set pointer to an 8-byte buffer, which the kernel's 16-byte
+    writes on MIPS would overrun.
+- **Why the rest waits.** `termios`, `siginfo_t`'s field order, `poll`'s write bits and
+  `getsockopt`'s values stay generic between the kernel and EggOS's own programs, which agree
+  on them. Only a foreign MIPS program would read them wrongly; translating them is part 4,
+  with Loongson's `liointc` (the UART's and PCI's interrupts) and the HAL's Linux test
+  programs past `linux_hello`.
+- **Not yet.** Building and running.
