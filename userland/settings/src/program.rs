@@ -1335,6 +1335,14 @@ impl Application<CAPACITY> for Settings {
                 self.window
                     .display_scale_saved(scale, save_display_scale(scale));
             }
+            Some(Request::SetOnScreenKeyboard(mode)) => {
+                let name = settings_file::KEYBOARD_ON_SCREEN_MODES[mode.min(2)];
+                if save_through_a_temporary_file(settings_file::KEYBOARD_ON_SCREEN, name).is_ok()
+                    && let Some(server) = self.server.as_ref()
+                {
+                    let _ = server.set_on_screen_keyboard_mode(mode as u32);
+                }
+            }
             Some(Request::SetShellForm(setting)) => {
                 let name = eggos_settings::facts::FORM_SETTINGS[setting.min(4)];
                 let saved = save_through_a_temporary_file(settings_file::SHELL_FORM, name);

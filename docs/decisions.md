@@ -20874,3 +20874,36 @@ the license, by an explicit instruction recorded here.
   with Loongson's `liointc` (the UART's and PCI's interrupts) and the HAL's Linux test
   programs past `linux_hello`.
 - **Not yet.** Building and running.
+
+## D317 The on-screen keyboard, slice 2: the Keyboard pane's row, the Terminal's focus, the layout menu and the touch handles (docs/ux/on-screen-keyboard-v0.5.md 1.1, 5.5, 5.6, 7; M12; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - **Settings > Keyboard.** The pane gains `On-screen keyboard`, a dropdown of `Automatic`,
+    `Always` and `Never` below `Switch key` (label at (16, 318), control (16, 336, 208, 28)).
+    It saves `keyboard.on_screen` and applies it through `ON_SCREEN_KEYBOARD` (3 + mode),
+    which completes D314's D22 twins: GUI, `settings set` and MCP's `settings_set`.
+  - **The Terminal.** A tap in the console terminal's content, the server's own window, which
+    sends no text focus, counts as a field of kind `terminal` (`Desktop::terminal_tapped`), so
+    the keyboard shows there too.
+  - **The layout key.** A long press (500 ms) or a right click opens the keyboard-layout menu
+    the bar's indicator opens (`open_keyboard_layout_menu`); a tap still cycles.
+  - **Touch handles** (`toolkit/src/tree/handles.rs`), in the touch form factor (`Phone`):
+    - A tap in a text field shows the caret handle (a 6-row point on a 12x8 block in
+      `accent`, its point at the caret's bottom), grabbed within a 44x44 square and dragged by
+      the offset it was grabbed at.
+    - A press resting 500 ms within 8 px selects the word under it and shows a handle at each
+      end; each one drags its end. A masked field shows the caret handle and selects no word.
+    - A key or a tap elsewhere hides them, and they draw only while their field has the
+      focus. The long press is one more deadline of `next_deadline`, so idle costs nothing.
+- **Deviations from the brief.**
+  - Text areas get no handles yet: only single-line fields do.
+  - Dragging a handle past the field's edge does not scroll its text further than the caret
+    placement already does.
+  - The handles' ends do not swap when dragged across each other: the caret and the anchor
+    stay what they are, which selects backwards.
+  - The layout menu opens where the indicator's opens, not as a bottom sheet over the panel.
+  - The second contact (brief 5.1, ask 3) still waits for a touch path that reports more than
+    one.
+- **Build-pass notes.** Settings' widget `CAPACITY` grows by 2 (the label and the dropdown);
+  the Keyboard pane's tests that count widgets or read positions.
+- **Not yet.** Building and running.

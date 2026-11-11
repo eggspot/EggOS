@@ -97,6 +97,11 @@ const MOVE_DOWN: (i32, i32, i32, i32) = (124, 204, 100, 28);
 const REMOVE: (i32, i32, i32, i32) = (16, 240, 96, 28);
 const SWITCH_KEY_LABEL: (i32, i32) = (16, 282);
 const SWITCH_KEY: (i32, i32, i32, i32) = (96, 276, 128, 28);
+const ON_SCREEN_LABEL: (i32, i32) = (16, 318);
+const ON_SCREEN: (i32, i32, i32, i32) = (16, 336, 208, 28);
+/// The on-screen keyboard's modes as the Keyboard pane offers them, in `keyboard.on_screen`'s
+/// order (docs/ux/on-screen-keyboard-v0.5.md 1.1, D317).
+const ON_SCREEN_LABELS: [&str; 3] = ["Automatic", "Always", "Never"];
 const NO_ROWS: [&str; MAX_KEYBOARD_LAYOUTS] = [""; MAX_KEYBOARD_LAYOUTS];
 const FOUR_LAYOUTS: &str = "Four layouts is the most.";
 const KEYBOARD_FACTS_X: i32 = 240;
@@ -509,6 +514,8 @@ pub enum Request {
     },
     /// Make this the key that switches layouts and save it (D221).
     SetSwitchKey(SwitchKey),
+    /// Save and apply `keyboard.on_screen` as mode `0` to `2` (auto, always, never) (D317).
+    SetOnScreenKeyboard(usize),
     /// Save the time zone at this index of `eggos_calendar::zone::ZONES` as `time.zone`, then
     /// say how it went ([`SettingsWindow::time_zone_saved`]) (D194).
     SetTimeZone(usize),
@@ -631,6 +638,7 @@ struct Widgets {
     move_down: WidgetId,
     remove: WidgetId,
     switch_key: WidgetId,
+    on_screen_keyboard: WidgetId,
     keyboard_status: WidgetId,
     third_level: WidgetId,
     dead_keys: WidgetId,
@@ -949,6 +957,18 @@ impl SettingsWindow {
             at(SWITCH_KEY),
             Kind::dropdown("Switch key", &SwitchKey::LABELS, facts.switch_key.number()),
         );
+        build.label(
+            keyboard,
+            ON_SCREEN_LABEL.0,
+            ON_SCREEN_LABEL.1,
+            "On-screen keyboard",
+            Token::Text,
+        );
+        let on_screen_keyboard = build.add(
+            Some(keyboard),
+            at(ON_SCREEN),
+            Kind::dropdown("On-screen keyboard", &ON_SCREEN_LABELS, facts.on_screen_keyboard.min(2)),
+        );
         let third_level = build.label(
             keyboard,
             KEYBOARD_FACTS_X,
@@ -1162,6 +1182,7 @@ impl SettingsWindow {
                 move_down,
                 remove,
                 switch_key,
+                on_screen_keyboard,
                 keyboard_status: keyboard_no_disk,
                 third_level,
                 dead_keys,
@@ -2051,6 +2072,13 @@ impl SettingsWindow {
             Response::Activated(id) if id == widgets.move_up => self.move_layout(false),
             Response::Activated(id) if id == widgets.move_down => self.move_layout(true),
             Response::Activated(id) if id == widgets.remove => self.remove_layout(),
+            Response::Chosen(id, number) if id == widgets.on_screen_keyboard => {
+                if number == self.facts.on_screen_keyboard {
+                    return None;
+                }
+                self.facts.on_screen_keyboard = number;
+                Some(Request::SetOnScreenKeyboard(number))
+            }
             Response::Chosen(id, number) if id == widgets.switch_key => {
                 let switch_key = SwitchKey::from_number(number);
                 if switch_key == self.facts.switch_key {

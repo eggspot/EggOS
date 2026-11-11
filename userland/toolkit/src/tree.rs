@@ -89,6 +89,7 @@ pub enum PointerShape {
 
 mod drags;
 mod elements;
+mod handles;
 mod menus;
 mod tables;
 mod text_areas;
@@ -150,6 +151,7 @@ pub struct WidgetTree<const N: usize, const A: usize = 0> {
     drag: Option<Drag>,
     slide: Option<(WidgetId, i32)>,
     selecting: Option<WidgetId>,
+    handles: Option<handles::Handles>,
     popup: Option<WidgetId>,
     popup_pressed: bool,
     clicks: u8,
@@ -202,6 +204,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             drag: None,
             slide: None,
             selecting: None,
+            handles: None,
             popup: None,
             popup_pressed: false,
             clicks: 0,
@@ -922,6 +925,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             widget::paint_popup(canvas, &dropdown, popup, rows);
             canvas.restore(previous);
         }
+        self.paint_handles(canvas, clip);
         self.paint_menu(canvas, clip);
         self.paint_tooltip(canvas, clip);
         self.paint_ghost(canvas, clip);
@@ -1222,6 +1226,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             }
         }
         self.tooltip_tick(now_ms);
+        self.handles_tick(now_ms);
         self.pick_tick(now_ms)
     }
 
@@ -1231,7 +1236,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             let elapsed = now_ms.wrapping_sub(self.caret_epoch_ms);
             now_ms.wrapping_add(CARET_BLINK_MS - elapsed % CARET_BLINK_MS)
         });
-        [caret, self.tooltip_deadline(), self.pick_deadline()]
+        [caret, self.tooltip_deadline(), self.pick_deadline(), self.handles_deadline()]
             .into_iter()
             .flatten()
             .min_by_key(|deadline| deadline.wrapping_sub(now_ms) as i32)
@@ -1272,6 +1277,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 }
                 if let Some((id, grab)) = self.slide {
                     return self.slide_to(id, x - grab);
+                }
+                if self.handles_moved(x, time_ms) {
+                    return Response::Nothing;
                 }
                 if let Some(id) = self.selecting {
                     self.select_to(id, x, y, time_ms);
@@ -1353,6 +1361,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 character,
             } => match pressed {
                 true => {
+                    self.hide_handles();
                     self.resolve_dead_key(code);
                     self.shift_held = modifiers.shift() || matches!(code, LEFT_SHIFT | RIGHT_SHIFT);
                     self.shortcut_held = modifiers.control_or_super();
@@ -1636,6 +1645,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             }
             return Response::Nothing;
         }
+        if self.handles_pressed(x, y) {
+            return Response::Nothing;
+        }
         let Some(target) = self.hit(x, y) else {
             return Response::Nothing;
         };
@@ -1725,6 +1737,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     false
                 });
                 self.selecting = Some(id);
+                self.field_tapped(id, x, time_ms);
                 Response::Nothing
             }
             _ => {
@@ -1878,6 +1891,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
 
     fn left_released(&mut self, x: i32, y: i32, time_ms: u32) -> Response {
         self.selecting = None;
+        self.handles_released();
         if self.column.is_some() {
             return self.end_column_drag(false);
         }

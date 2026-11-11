@@ -755,6 +755,18 @@ impl Desktop {
         }
     }
 
+    /// A tap in window `slot`'s content: the console terminal, which is the server's own and
+    /// sends no text focus, takes it as a field of kind `terminal` (brief 5.5).
+    pub(super) fn terminal_tapped(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
+        let Some(window) = self.windows[slot] else {
+            return;
+        };
+        if window.id != self.terminal_window() {
+            return;
+        }
+        self.set_text_focus(window.id, FieldKind::Terminal, EnterWord::Enter, FocusCause::Tap, damage, events);
+    }
+
     /// Shows the keyboard for the focused window's field, as `wm keyboard show` asks; refused
     /// in the `never` mode, or with no field or form to show it for.
     pub fn show_on_screen_keyboard_by_request(
@@ -888,6 +900,10 @@ impl Desktop {
         };
         let cap = self.osk.keys[index].cap;
         damage.add(self.osk.keys[index].zone);
+        if right && cap == Cap::Layout {
+            self.open_keyboard_layout_menu(damage);
+            return;
+        }
         if right && cap.is_character() {
             self.open_strip(index, damage);
             if let Some(strip) = &mut self.osk.strip {
@@ -1043,6 +1059,12 @@ impl Desktop {
             self.osk.repeat_at_ms = Some(at.wrapping_add(self.osk.repeat_interval_ms));
         }
         let held = self.now_ms.wrapping_sub(self.osk.pressed_at_ms) >= LONG_PRESS_MS;
+        if held && cap == Cap::Layout {
+            self.osk.pressed = None;
+            damage.add(self.osk.keys[pressed].zone);
+            self.open_keyboard_layout_menu(damage);
+            return;
+        }
         if held && cap.is_character() && self.osk.strip.is_none() && !self.osk.control && !self.osk.alt {
             self.open_strip(pressed, damage);
         }

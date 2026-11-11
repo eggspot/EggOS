@@ -2142,7 +2142,10 @@ impl Desktop {
             Some(Part::Content) if self.offers_end_app(slot) => {
                 self.open_end_app(slot, damage, events)
             }
-            Some(Part::Content) => self.press_in_content(slot, code, events),
+            Some(Part::Content) => {
+                self.terminal_tapped(slot, damage, events);
+                self.press_in_content(slot, code, events)
+            }
             Some(Part::TitleBar) if code == button::RIGHT => {
                 self.open_window_menu(slot, Some((x, y)), damage, events)
             }
