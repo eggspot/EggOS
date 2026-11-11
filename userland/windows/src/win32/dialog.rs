@@ -50,6 +50,15 @@ fn wants_return(gui: &gui::Gui, window: usize) -> bool {
         })
 }
 
+fn focused_label_editor(dialog: usize) -> bool {
+    let focus = with(|gui| {
+        let root = windows::root_of(&gui.windows, dialog)?;
+        Some(gui.key_target(root))
+    })
+    .flatten();
+    focus.is_some_and(super::common_controls::is_label_editor)
+}
+
 fn focus_wants_return(dialog: usize) -> bool {
     with(|gui| {
         let root = windows::root_of(&gui.windows, dialog)?;
@@ -436,6 +445,12 @@ pub fn dialog_message(dialog: usize, message: &crate::gui::queue::Message) -> bo
                     gui::send(next, BM_CLICK, 0, 0);
                 }
             }
+        }
+        (message::KEY_DOWN | message::CHAR, VK_RETURN | VK_ESCAPE)
+            if focused_label_editor(dialog) =>
+        {
+            translate(message);
+            dispatch(message);
         }
         (message::KEY_DOWN | message::CHAR, VK_RETURN) if focus_wants_return(dialog) => {
             translate(message);

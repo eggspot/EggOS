@@ -11,6 +11,8 @@
 mod header;
 mod image_list;
 mod list_view;
+
+pub(in crate::win32) use list_view::{is_label_editor, label_editor_key, label_editor_left};
 mod progress;
 mod status_bar;
 mod tab_control;

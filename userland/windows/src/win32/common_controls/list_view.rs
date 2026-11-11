@@ -81,6 +81,9 @@ const LVM_SETCOLUMNW: u32 = 0x1060;
 const LVM_INSERTCOLUMNW: u32 = 0x1061;
 const LVM_GETITEMTEXTW: u32 = 0x1073;
 const LVM_SETITEMTEXTW: u32 = 0x1074;
+const LVM_GETEDITCONTROL: u32 = 0x1018;
+const LVM_EDITLABELW: u32 = 0x1076;
+const LVM_CANCELEDITLABEL: u32 = 0x10b3;
 const LVM_SETVIEW: u32 = 0x108e;
 const LVM_GETVIEW: u32 = 0x108f;
 const CCM_GETUNICODEFORMAT: u32 = 0x2006;
@@ -276,6 +279,8 @@ struct ListState {
     pressed: Option<(i32, i32)>,
     last_down: Option<(u32, i32, i32, usize)>,
     drag: Option<Drag>,
+    /// The edit over the label being edited (D354) and the item's index.
+    editing: Option<(usize, usize)>,
 }
 
 impl Model for ListState {
@@ -290,6 +295,7 @@ pub(super) fn new_state(_style: u32) -> Option<usize> {
         pressed: None,
         last_down: None,
         drag: None,
+        editing: None,
     })
 }
 
@@ -762,6 +768,17 @@ fn key_flags(ctrl: bool, shift: bool) -> u32 {
 }
 
 fn key_down(window: usize, virtual_key: u32) {
+    if virtual_key == VK_F2 {
+        let focused = with_state::<ListState, _>(window, |entry, control| {
+            let editable = entry.style & LVS_EDITLABELS != 0;
+            control.list.focused().filter(|_| editable)
+        })
+        .flatten();
+        if let Some(index) = focused {
+            begin_label_edit(window, index);
+            return;
+        }
+    }
     notify_parent(window, LVN_KEYDOWN, |header| NmListKeyDown {
         header,
         key: virtual_key as u16,
@@ -1960,6 +1977,15 @@ fn read(window: usize, work: impl FnOnce(&Window, &ListView) -> usize) -> usize 
 
 fn list_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
     match number {
+        LVM_EDITLABELW => begin_label_edit(window, wparam),
+        LVM_GETEDITCONTROL => with_state::<ListState, _>(window, |_, control| {
+            control.editing.map_or(0, |(editor, _)| editor)
+        })
+        .unwrap_or(0),
+        LVM_CANCELEDITLABEL => {
+            end_label_edit(window, false);
+            0
+        }
         LVM_GETITEMCOUNT => read(window, |_, list| list.count()),
         LVM_GETSELECTEDCOUNT => read(window, |_, list| list.selected_count()),
         LVM_GETTOPINDEX => read(window, |_, list| list.top()),
@@ -2136,4 +2162,160 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
         }
         _ => default_procedure(window, number, wparam, lparam),
     }
+}
+
+const LVS_EDITLABELS: u32 = 0x0200;
+const LVN_BEGINLABELEDITW: i32 = -175;
+const LVN_ENDLABELEDITW: i32 = -176;
+const LABEL_EDITOR_ID: usize = 1;
+const LABEL_UNITS: usize = 260;
+const ES_AUTOHSCROLL: u32 = 0x0080;
+const VK_RETURN: usize = 0x0d;
+const VK_ESCAPE: usize = 0x1b;
+const VK_F2: u32 = 0x71;
+
+/// `NMLVDISPINFOW`.
+#[repr(C)]
+struct NmListDisplayInfo {
+    header: NotifyHeader,
+    item: ItemHead,
+}
+
+fn label_item(control: &ListState, index: usize, text: usize) -> ItemHead {
+    ItemHead {
+        mask: LVIF_TEXT | LVIF_PARAM | LVIF_STATE,
+        item: index as i32,
+        sub_item: 0,
+        state: control.list.state(index),
+        state_mask: !0,
+        text,
+        text_max: LABEL_UNITS as i32,
+        image: 0,
+        lparam: control.list.lparam(index),
+    }
+}
+
+/// `LVM_EDITLABELW`: an edit over item `index`'s label (D354), once the parent's
+/// `LVN_BEGINLABELEDITW` lets it, focused with its text selected; its handle, 0 when refused.
+fn begin_label_edit(window: usize, index: usize) -> usize {
+    end_label_edit(window, true);
+    let mut label = [0u16; LABEL_UNITS + 1];
+    let found = with_state::<ListState, _>(window, |entry, control| {
+        if index >= control.list.count() {
+            return None;
+        }
+        let text = control.list.text(index, 0);
+        let length = text.len().min(LABEL_UNITS);
+        label[..length].copy_from_slice(&text[..length]);
+        let layout = layout_of(entry, &control.list);
+        let (left, width, _) = control.list.column_span(&layout, 0);
+        let top = control.list.row_top(&layout, index);
+        let bounds = Rect::sized(left, top, width.max(CELL_WIDTH * 4), ROW_HEIGHT);
+        Some((bounds, label_item(control, index, 0), length))
+    })
+    .flatten();
+    let Some((bounds, mut item, length)) = found else {
+        return 0;
+    };
+    item.text = label.as_ptr() as usize;
+    let refused = notify_parent(window, LVN_BEGINLABELEDITW, |header| NmListDisplayInfo {
+        header,
+        item,
+    });
+    if refused != 0 {
+        return 0;
+    }
+    let style = WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL;
+    let Some(editor) = create_child(
+        window,
+        ControlKind::Edit,
+        style,
+        bounds,
+        LABEL_EDITOR_ID,
+        &label[..length],
+    ) else {
+        return 0;
+    };
+    with_state::<ListState, _>(window, |_, control| control.editing = Some((editor, index)));
+    set_focus(editor);
+    gui::send(editor, super::super::controls::code::EM_SETSEL, 0, usize::MAX);
+    editor
+}
+
+/// Ends the label edit of list view `window`, if one runs: `LVN_ENDLABELEDITW` with the
+/// edit's text when `accept` (Enter, or the focus leaving), none when cancelled (Escape); the
+/// parent's nonzero answer to an accepted edit sets the label. The edit is destroyed.
+fn end_label_edit(window: usize, accept: bool) {
+    let editing = with_state::<ListState, _>(window, |_, control| control.editing.take()).flatten();
+    let Some((editor, index)) = editing else {
+        return;
+    };
+    let mut text = [0u16; LABEL_UNITS + 1];
+    let length = match accept {
+        true => gui::send(
+            editor,
+            message::GET_TEXT,
+            text.len(),
+            text.as_mut_ptr() as usize,
+        )
+        .min(LABEL_UNITS),
+        false => 0,
+    };
+    let had_focus = has_focus_in(editor);
+    super::super::user32::destroy_tree(editor);
+    let item = with_state::<ListState, _>(window, |_, control| {
+        let pointer = if accept { text.as_ptr() as usize } else { 0 };
+        (index < control.list.count()).then(|| label_item(control, index, pointer))
+    })
+    .flatten();
+    if let Some(item) = item {
+        let answer = notify_parent(window, LVN_ENDLABELEDITW, |header| NmListDisplayInfo {
+            header,
+            item,
+        });
+        if accept && answer != 0 {
+            with_state::<ListState, _>(window, |_, control| {
+                control.list.set_text(index, 0, &text[..length])
+            });
+        }
+    }
+    if had_focus {
+        set_focus(window);
+    }
+    invalidate(window);
+}
+
+fn has_focus_in(window: usize) -> bool {
+    with(|gui| has_focus(gui, window)).unwrap_or(false)
+}
+
+fn editing_list(editor: usize) -> Option<usize> {
+    let parent = with(|gui| gui.windows.get(editor).map(|entry| entry.parent)).flatten()?;
+    let editing = with_state::<ListState, _>(parent, |_, control| control.editing).flatten()?;
+    (editing.0 == editor).then_some(parent)
+}
+
+/// A key the edit over a list view's label got: Enter ends the edit keeping the text, Escape
+/// cancels it; whether the key was one of those for such an edit.
+pub(in crate::win32) fn label_editor_key(editor: usize, virtual_key: usize) -> bool {
+    if !matches!(virtual_key, VK_RETURN | VK_ESCAPE) {
+        return false;
+    }
+    let Some(list) = editing_list(editor) else {
+        return false;
+    };
+    end_label_edit(list, virtual_key == VK_RETURN);
+    true
+}
+
+/// The edit over a list view's label lost the focus: the edit ends, keeping the text.
+pub(in crate::win32) fn label_editor_left(editor: usize) {
+    if let Some(list) = editing_list(editor) {
+        end_label_edit(list, true);
+    }
+}
+
+/// Whether `window` is the edit over a list view's label, which takes Enter and Escape itself.
+pub(in crate::win32) fn is_label_editor(window: usize) -> bool {
+    editing_list(window).is_some()
 }

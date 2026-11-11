@@ -21915,3 +21915,20 @@ the license, by an explicit instruction recorded here.
     filled.
 - **Not yet.** Per-subitem custom draw (`CDRF_NOTIFYSUBITEMDRAW`), `CDRF_NEWFONT`, and custom
   draw for tree views, toolbars, headers and trackbars.
+
+## D354 Windows common controls: editing a list view item's label (`LVS_EDITLABELS`) (batch part 13's rest, D231's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from comctl32's documented label editing; the editor is the design's `EDIT`, section 3)
+
+- **Decision.**
+  - `LVM_EDITLABELW`, and F2 on the focused item of a list view with `LVS_EDITLABELS`, ask the
+    parent with `LVN_BEGINLABELEDITW` (a nonzero answer refuses); then an `EDIT` child
+    (`ES_AUTOHSCROLL`, id 1) is made over the item's first column with its text, focused with
+    the text selected. `LVM_GETEDITCONTROL` answers it.
+  - **Ending.** Enter, or the focus leaving the edit, ends the edit keeping its text; Escape
+    and `LVM_CANCELEDITLABEL` cancel it. The parent gets `LVN_ENDLABELEDITW` with the text
+    (null when cancelled) and its nonzero answer to a kept edit sets the label. The edit is
+    destroyed and the focus goes back to the list when the edit had it.
+  - The edit's procedure hands Enter and Escape to its list (`label_editor_key`) and its
+    focus loss (`label_editor_left`); `IsDialogMessageW` lets the label edit have Enter and
+    Escape instead of the dialog's default and cancel buttons.
+- **Not yet.** Starting an edit by a slow second click on the selected item, tree views'
+  label editing (`TVM_EDITLABEL`), and the edit growing as the text gets longer.

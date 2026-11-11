@@ -876,7 +876,10 @@ pub fn procedure(
             invalidate(window);
             match (kind, gained) {
                 (ControlKind::Edit, true) => notify(window, code::EN_SETFOCUS),
-                (ControlKind::Edit, false) => notify(window, code::EN_KILLFOCUS),
+                (ControlKind::Edit, false) => {
+                    notify(window, code::EN_KILLFOCUS);
+                    super::common_controls::label_editor_left(window);
+                }
                 (ControlKind::ListBox, focus) => {
                     let notifies = with(|gui| {
                         gui.windows
@@ -912,6 +915,12 @@ pub fn procedure(
         }
         message::LEFT_BUTTON_UP => {
             left_button_up(window, kind, point(lparam));
+            0
+        }
+        message::KEY_DOWN
+            if kind == ControlKind::Edit
+                && super::common_controls::label_editor_key(window, wparam) =>
+        {
             0
         }
         message::KEY_DOWN | message::KEY_UP => {
