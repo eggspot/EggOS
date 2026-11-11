@@ -599,6 +599,8 @@ const VAR_PATH: &str = "var";
 
 const FILES_PATH: &str = "bin/files";
 
+const PICK_PATH: &str = "bin/pick";
+
 const TEXT_EDITOR_PATH: &str = "bin/text-editor";
 
 const TASK_MANAGER_PATH: &str = "bin/task-manager";
@@ -1866,6 +1868,7 @@ fn initramfs_with(
         (SETTINGS_PATH, initramfs::Content::Program(&settings)),
         (APP_WINDOW_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (FILES_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (PICK_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (
             TEXT_EDITOR_PATH,
             initramfs::Content::HardLink(SETTINGS_PATH),

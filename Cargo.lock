@@ -330,6 +330,16 @@ name = "eggos-net"
 version = "0.4.0"
 
 [[package]]
+name = "eggos-picker"
+version = "0.4.0"
+dependencies = [
+ "eggos-app",
+ "eggos-files",
+ "eggos-runtime",
+ "eggos-toolkit",
+]
+
+[[package]]
 name = "eggos-plist"
 version = "0.4.0"
 
@@ -364,6 +374,7 @@ dependencies = [
  "eggos-font",
  "eggos-mcp",
  "eggos-net",
+ "eggos-picker",
  "eggos-runtime",
  "eggos-settings-file",
  "eggos-terminal-window",

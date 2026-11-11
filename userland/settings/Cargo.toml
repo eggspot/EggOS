@@ -17,6 +17,7 @@ eggos-components = { path = "../components" }
 eggos-device-list = { path = "../device-list" }
 eggos-downloads = { path = "../downloads" }
 eggos-editor = { path = "../editor", features = ["window"] }
+eggos-picker = { path = "../picker" }
 eggos-files = { path = "../files", features = ["window", "storage"] }
 eggos-eggfs = { path = "../../eggfs" }
 eggos-font = { path = "../../font" }

@@ -1,0 +1,15 @@
+[package]
+name = "eggos-picker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eggos-app = { path = "../app" }
+eggos-files = { path = "../files" }
+eggos-runtime = { path = "../runtime" }
+eggos-toolkit = { path = "../toolkit" }
+
+[lints]
+workspace = true

@@ -26,7 +26,9 @@ pub mod key {
     pub const DOWN: u16 = 108;
     pub const PAGE_DOWN: u16 = 109;
     pub const DELETE: u16 = 111;
+    pub const F5: u16 = 63;
     pub const F10: u16 = 68;
+    pub const KEYPAD_ENTER: u16 = 96;
     pub const LEFT_SHIFT: u16 = 42;
     pub const RIGHT_SHIFT: u16 = 54;
     pub const LEFT_ALT: u16 = 56;

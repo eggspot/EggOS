@@ -22675,3 +22675,31 @@ the license, by an explicit instruction recorded here.
   the design's 4096 a side and 16 M pixels, and the macOS layer depends on `eggos-image`
   instead of `eggos-png`. So `imageNamed:`'s extension list finds every format it names
   except `.icns`, which stays not yet.
+
+## D391 The system file picker, `/bin/pick` (batch part 18; M12, M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/file-picker-v0.3.md) and the code-only session (engineering)
+
+- **Decision.**
+  - **A crate of its own**, `eggos-picker`: the command line (`options`), the filters
+    (`filter`) and what each step of choosing does (`state`, the `Picker`), taken as they were
+    written, unbuilt, on the branch `wip/eggos-picker` before that branch paused, plus the
+    window and the program written now.
+  - **The window** is built on the toolkit's widget tree (section 4): the toolbar with `<`, `^`
+    and the path field; the `Places` list; the `Entries` table (`Name`, `Size` right-aligned,
+    `Modified`; sortable; cells from the picker); the empty or error line; in `save` mode the
+    name row, prefilled with `--name` and its stem selected; the bottom band with
+    `Hidden files`, the filter drop-down when there are filters, `Cancel` and the primary
+    button (the default). Notices show for 3 s and close on a key or a press; `Replace
+    <name>?` asks with `Cancel` and `Replace`. Enter commits the focused field or presses the
+    primary, Esc closes a question or cancels, F5 reloads, the close control cancels.
+  - **The person chooses** (section 11): the window is created `PERSON_INPUT_ONLY`, and the
+    table, the name field, the primary button and `Replace` take no agent's action; an agent
+    can still see the picker and move it between folders through the places, the path field,
+    back and up. The MCP server has no `pick` tool, by design.
+  - **The program** is another name of the Settings program (`/bin/pick`, a hard link, so the
+    toolkit is in the image once): exit 0 with the chosen paths, one per line; 1 for Cancel;
+    2 with `pick: ...` for a usage error; 3 with `pick: cannot show a window`.
+  - The toolkit's key names gain `F5` and the keypad's Enter.
+- **Not yet.** `--over` placement over the app's window, Mod+L, Mod+H, type-ahead, the device
+  classes of section 16, the host tests of section 17, and section 14: the Windows layer's
+  `GetOpenFileNameW` and friends, AppKit's `NSOpenPanel` and `NSSavePanel`, the Text Editor
+  and Files starting `pick` instead of their own pickers.

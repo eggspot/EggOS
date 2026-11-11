@@ -858,7 +858,9 @@ yet" naming what it left.
     Swift Foundation, Dispatch and CoreGraphics overlays' entry points, read from a `swiftc`
     build first);
   - part 18, Files and the Text Editor grow up and one file picker `/bin/pick` (its design is
-    done; the unbuilt picker is on the branch `wip/eggos-picker`);
+    done; `/bin/pick` itself, its model taken from the branch `wip/eggos-picker`, code written,
+    unbuilt, D391; still to come: the layers' file dialogs, the Text Editor and Files opening
+    it, section 14);
   - part 19, drag and drop between windows;
   - part 10's rest: done in code (D228; `CBS_SIMPLE`, code written, unbuilt, D343; scroll bars on windows, code written, unbuilt, D342;
     multi-line edits, code written, unbuilt, D341, D350, D351; word selection already in D228;
