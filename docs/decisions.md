@@ -20635,3 +20635,80 @@ the license, by an explicit instruction recorded here.
   - The OPAL console's input stays polled; OPAL events through XIVE are not wired.
 - **Not yet.** Building and running on `powernv9` with virtio-pci; secondary CPUs' queues;
   LSIs; other PHBs.
+
+## D313 MIPS64 part 1: the HAL on QEMU `loongson3-virt`, with a device tree the HAL writes and a software TLB refill (M9; code written, unbuilt, untested: code-only mode; nightly `build-std` per D297) — Decided by the code-only session (engineering)
+
+- **Order (changes D297's).** MIPS64 comes before s390x. It is little-endian, and its TLB is
+  filled by software, so the generic page tables fit it as they are. s390x needs two refactors
+  of its own first: big-endian ELF and Linux ABI, and DAT tables whose levels are not 512
+  entries of 9 bits each. SPARC64 shares the first refactor. The order is now MIPS64 (parts 1
+  and 2), the big-endian groundwork, s390x, then SPARC64.
+- **Decision.** The machine:
+  - **Target and build.** QEMU `loongson3-virt` with a `Loongson-3A4000` (MIPS64 Release 2,
+    little-endian). The kernel is built for `mips64el-unknown-linux-gnuabi64` as a static,
+    non-`abicalls`, soft-float image with nightly `build-std`. xtask's `NIGHTLY_ARCHES` holds
+    it, named only with `--arch mips64el`; `all`, CI and the release matrix leave it out.
+  - **Boot.** QEMU enters `_start` in `CKSEG0` with Linux's `a0`/`a1` argument table (the
+    command line) and the Loongson boot parameters in `a2` (`lefi.rs`: the RAM map, the CPU
+    count and the clock).
+  - **Device tree.** The board gives none, so the HAL writes one into a 4 KiB buffer in its
+    image. `fdt::writer` is a new allocation-free device-tree writer with tests. The tree holds
+    the RAM, the CPUs, the NS16550 UART and the generic ECAM PCI host with QEMU's windows.
+    Memory, CPU and device discovery read it like any firmware's.
+  - **Translation.**
+    - The image runs in `CKSEG0` and the direct map is the cached `XKPHYS` window, both
+      unmapped.
+    - Programs (`XUSEG`) and the device window go through the TLB. The device window is one
+      root entry of `XKSEG` at `0xc000_ff00_0000_0000`; the new `Platform::device_window` hook
+      overrides the generic place, which would be an address error here.
+    - `paging::mips64` keeps four levels of 512 entries. Directory entries are cached-window
+      pointers, and leaves are `EntryLo` words with two software bits (user, kept) in the bits
+      the hardware drops. Only 4 KiB leaves.
+    - The refill handler walks the tables with `k0`/`k1`: a program's root comes from
+      `KScratch1`, the kernel's from a static. Where nothing is mapped it writes an invalid
+      pair, so the kernel sees a TLB-invalid fault.
+    - Every address-space switch takes a new ASID, and the whole TLB is flushed when the ASIDs
+      wrap. A long `drop_user_translations` takes a new ASID; a short one probes and
+      invalidates each pair.
+  - **Exceptions.**
+    - The general vector saves the registers on the kernel stack. It clears `EXL`, so the
+      handler can take refills, and restores everything on the way out.
+    - From user mode, the registers go to the `UserContext` that `KScratch2` names, as on the
+      other ports (D47). `UserLocal` is the thread pointer, and `syscall_a3` keeps the
+      program's fourth argument for restarts.
+    - n64 system calls: `v0` holds the number, `a0`–`a5` the arguments. An error sets `a3` to
+      1 and leaves the error number positive in `v0`.
+  - **Timer and CPUs.**
+    - The 32-bit `Count` and `Compare` are extended to one 64-bit clock shared by all CPUs.
+      With no deadline, `Compare` stays half a wrap ahead.
+    - Wake-ups are IPIs through the Loongson IPI block. Secondary CPUs start through its
+      mailboxes, which QEMU's boot code polls.
+  - **Lazy FP.** `Status.CU1`, with 32 64-bit FP registers (`FR`) and `FCSR`.
+  - **Per-CPU block.** `$gp`, which a static, non-`abicalls` kernel leaves alone; the switch
+    does not save it.
+  - **Fixes on the way.**
+    - The device self-test's machine match lacked LoongArch's `virt` and did not cover every
+      machine; it now covers it and `loongson3-virt` (the NS16550 must be found).
+    - PowerPC's `rt_sigreturn` trampoline passed two words to the three-word `code_bytes`; a
+      `nop` fills it.
+- **Part 2 (next).** MIPS's Linux ABI differs from every other port's in values, not only
+  numbers. The error numbers (`ENOSYS` is 89), the signal numbers, `sigset_t` (128 signals,
+  16 bytes) and `struct sigaction` (flags first, no restorer) all differ. So do the `open`,
+  `mmap`, `fcntl` and socket constants, `struct stat` and the terminal `ioctl` numbers. The
+  Linux layer gains per-architecture tables for each, then `abi/mips64.rs`, the user runtime
+  and the Linux test programs. Until then, `TestProgram`'s Linux programs beyond `linux_hello`
+  exit with 1, and the kernel's `compile_error!` for an architecture without a Linux ABI
+  still fires for MIPS64. Device interrupts (Loongson's `liointc` and PCI MSIs) also come in
+  part 2.
+- **Known gaps (to check at build time; written from memory of QEMU's board and Loongson's
+  boot parameters, unverified).**
+  - The board's addresses: the UART, the PCI windows, the power-management block (writing
+    `0xff` powers off, `0x00` resets), the IPI block and its mailbox protocol.
+  - The `boot_params` offsets.
+  - Whether the `Loongson-3A4000` model has `KScratch1`/`KScratch2`, `UserLocal`, `RI`/`XI`
+    and 48 `SEGBITS`.
+  - That the counter runs at half the CPU clock.
+  - That `EntryLo` drops the software bits, and that LLVM never uses `$gp` with
+    `+noabicalls` and the static relocation model.
+  - The page tables still map the direct map and the image although nothing walks them there
+    (2 MiB of tables per GiB of RAM).

@@ -43,6 +43,8 @@ pub struct UserContext {
     pub(crate) arch: riscv64::Registers,
     #[cfg(target_arch = "loongarch64")]
     pub(crate) arch: loongarch64::Registers,
+    #[cfg(target_arch = "mips64")]
+    pub(crate) arch: mips64::Registers,
     #[cfg(target_arch = "powerpc64")]
     pub(crate) arch: powerpc64::Registers,
     #[cfg(target_arch = "x86_64")]
@@ -205,6 +207,10 @@ pub use aarch64::UserRegisters;
 use loongarch64::Registers;
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch64::UserRegisters;
+#[cfg(target_arch = "mips64")]
+use mips64::Registers;
+#[cfg(target_arch = "mips64")]
+pub use mips64::UserRegisters;
 #[cfg(target_arch = "powerpc64")]
 use powerpc64::Registers;
 #[cfg(target_arch = "powerpc64")]
@@ -641,6 +647,148 @@ pub(crate) mod loongarch64 {
         pub(crate) fn simulate_syscall(&mut self, number: u64, arguments: [u64; 6], pc: u64) {
             self.r[A7] = number;
             self.r[4..10].copy_from_slice(&arguments);
+            self.pc = pc;
+        }
+    }
+}
+
+#[cfg(target_arch = "mips64")]
+pub(crate) mod mips64 {
+    /// What the way out of user mode saves (`exception.rs`, D313), and what the way in needs.
+    /// The entry code stores by offset: keep the layout in step with it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[repr(C)]
+    pub(crate) struct Registers {
+        /// `$0` to `$31` by register number; `r[0]` is unused.
+        pub(crate) r: [u64; 32],
+        /// `EPC`: the program counter.
+        pub(crate) pc: u64,
+        pub(crate) hi: u64,
+        pub(crate) lo: u64,
+        /// `UserLocal`: the thread pointer programs read with `rdhwr $3, $29`.
+        pub(crate) user_local: u64,
+        /// The kernel's stack pointer while the program runs.
+        pub(crate) kernel_sp: u64,
+        /// After an exception, `Cause` and `BadVAddr`, kept by the way out of `run_user` for
+        /// [`super::UserContext::last_exception`].
+        pub(crate) cause: u64,
+        pub(crate) bad_address: u64,
+        /// `a3` as the program passed it to its last system call, which the result overwrites
+        /// with the error flag: a restart puts it back.
+        pub(crate) syscall_a3: u64,
+    }
+
+    /// [`super::UserContext::registers`] on MIPS64.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct UserRegisters {
+        pub pc: u64,
+        /// `$0` to `$31` by register number; `r[0]` is always zero.
+        pub r: [u64; 32],
+        pub hi: u64,
+        pub lo: u64,
+    }
+
+    const _: () = assert!(core::mem::offset_of!(Registers, pc) == 256);
+    const _: () = assert!(core::mem::offset_of!(Registers, user_local) == 280);
+    const _: () = assert!(core::mem::offset_of!(Registers, kernel_sp) == 288);
+
+    const V0: usize = 2;
+    const A0: usize = 4;
+    const A3: usize = 7;
+    const T9: usize = 25;
+    const SP: usize = 29;
+    /// The highest error number a system call returns, as Linux's `-MAX_ERRNO`.
+    const LARGEST_ERROR: u64 = 4095;
+
+    impl Registers {
+        pub(crate) fn new(pc: u64, stack: u64) -> Self {
+            let mut r = [0; 32];
+            r[SP] = stack;
+            r[T9] = pc;
+            Self {
+                r,
+                pc,
+                hi: 0,
+                lo: 0,
+                user_local: 0,
+                kernel_sp: 0,
+                cause: 0,
+                bad_address: 0,
+                syscall_a3: 0,
+            }
+        }
+        /// `UserLocal`, which `set_thread_area` sets.
+        pub(crate) fn thread_pointer(&self) -> u64 {
+            self.user_local
+        }
+        pub(crate) fn set_thread_pointer(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
+            self.user_local = value;
+            Ok(())
+        }
+        pub(crate) fn pc(&self) -> u64 {
+            self.pc
+        }
+        pub(crate) fn stack(&self) -> u64 {
+            self.r[SP]
+        }
+        pub(crate) fn set_stack(&mut self, stack: u64) {
+            self.r[SP] = stack;
+        }
+        pub(crate) fn syscall_number(&self) -> u64 {
+            self.r[V0]
+        }
+        pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
+            [self.r[4], self.r[5], self.r[6], self.syscall_a3, self.r[8], self.r[9]]
+        }
+        /// A negative error becomes Linux's: the error number in `v0` and `a3` 1; else `a3` 0.
+        pub(crate) fn set_syscall_result(&mut self, value: u64) {
+            if value.wrapping_neg() <= LARGEST_ERROR && value != 0 {
+                self.r[V0] = value.wrapping_neg();
+                self.r[A3] = 1;
+            } else {
+                self.r[V0] = value;
+                self.r[A3] = 0;
+            }
+        }
+        pub(crate) fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+            const SYSCALL_SIZE: u64 = 4;
+            self.r[V0] = number;
+            self.r[A0] = first_argument;
+            self.r[A3] = self.syscall_a3;
+            self.pc = self.pc.wrapping_sub(SYSCALL_SIZE);
+        }
+        pub(crate) fn registers(&self) -> UserRegisters {
+            let mut r = self.r;
+            r[0] = 0;
+            UserRegisters {
+                pc: self.pc,
+                r,
+                hi: self.hi,
+                lo: self.lo,
+            }
+        }
+        pub(crate) fn set_registers(&mut self, registers: &UserRegisters) {
+            self.r = registers.r;
+            self.r[0] = 0;
+            self.pc = registers.pc;
+            self.hi = registers.hi;
+            self.lo = registers.lo;
+        }
+        #[cfg(not(eggos_kernel))]
+        pub(crate) fn result(&self) -> u64 {
+            match self.r[A3] {
+                0 => self.r[V0],
+                _ => self.r[V0].wrapping_neg(),
+            }
+        }
+        #[cfg(not(eggos_kernel))]
+        pub(crate) fn simulate_syscall(&mut self, number: u64, arguments: [u64; 6], pc: u64) {
+            self.r[V0] = number;
+            self.r[4..10].copy_from_slice(&arguments);
+            self.syscall_a3 = arguments[3];
             self.pc = pc;
         }
     }

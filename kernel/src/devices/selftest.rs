@@ -155,6 +155,11 @@ pub(crate) fn devices_are_discovered<P: Platform>(
                 .ok_or("the device tree did not give the PLIC")
         }),
         Some(TestMachine::Q35) => q35_functions(&found),
+        Some(TestMachine::LoongarchVirt | TestMachine::Loongson3Virt) => found
+            .iter()
+            .any(|node| compatible(node, b"ns16550a"))
+            .then_some(())
+            .ok_or("the device tree did not give the NS16550 UART"),
         None => return Ok(()),
     };
     machine?;

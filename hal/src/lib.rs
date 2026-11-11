@@ -240,6 +240,13 @@ pub trait Platform: 'static {
         None
     }
 
+    /// Where the kernel maps device registers (D110), when the place below the kernel image's
+    /// root entry does not translate: MIPS64's image is in the unmapped `CKSEG0`, below which
+    /// nothing is mapped, so its window is in `XKSEG` (D313). `None` elsewhere.
+    fn device_window() -> Option<core::ops::Range<u64>> {
+        None
+    }
+
     /// What a device adds to a physical address to reach it by DMA: 0 where devices see
     /// physical memory as it is, POWER's bypass window base once [`Self::firmware_pci`] set it
     /// (D312).

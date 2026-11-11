@@ -759,8 +759,12 @@ fn kernel_half_root_entries<F: Format>() -> core::ops::Range<usize> {
 
 /// The kernel's device window for platform `P` (D110): the addresses one root-level entry maps,
 /// the entry just below the one that maps the kernel image (512 GiB on AArch64 and x86_64, 1 GiB
-/// on RISC-V Sv39). The direct map must end below it.
+/// on RISC-V Sv39), or where the platform puts it ([`Platform::device_window`]). The direct map
+/// must end below it.
 pub fn device_window<P: Platform>() -> core::ops::Range<u64> {
+    if let Some(window) = P::device_window() {
+        return window;
+    }
     let image = P::kernel_image();
     let size = paging::leaf_size(<P::PageTableFormat as Format>::LEVELS - 1);
     let image_entry = image.virtual_address(image.start) & !(size - 1);

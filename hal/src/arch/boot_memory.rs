@@ -5,6 +5,7 @@ use crate::arch::KERNEL_VIRTUAL_OFFSET;
 #[cfg(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64"
 ))]
@@ -12,6 +13,7 @@ use crate::fdt::{self, Fdt};
 #[cfg(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64"
 ))]
@@ -21,6 +23,7 @@ use crate::paging::KernelImage;
 #[cfg(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64"
 ))]
@@ -30,6 +33,7 @@ use crate::{Platform, arch::CurrentPlatform};
 #[cfg(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64"
 ))]
@@ -95,6 +99,7 @@ pub(crate) fn kernel_image_parts() -> KernelImage {
 #[cfg(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64"
 ))]
@@ -118,6 +123,7 @@ unsafe fn device_tree(address: usize) -> Option<(Fdt<'static>, usize)> {
 #[cfg(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64"
 ))]
@@ -139,6 +145,7 @@ pub(crate) unsafe fn device_tree_blob(address: usize) -> Option<&'static [u8]> {
 #[cfg(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64"
 ))]
@@ -180,6 +187,7 @@ pub(crate) unsafe fn device_tree_memory_map(address: usize) -> MemoryMap {
 #[cfg(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64"
 ))]
@@ -206,6 +214,7 @@ pub(crate) unsafe fn device_tree_ram(address: usize) -> MemoryMap {
 #[cfg(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64"
 ))]
@@ -245,6 +254,7 @@ pub(crate) unsafe fn device_tree_plic_supervisor_context(
 #[cfg(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",
+    target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64"
 ))]

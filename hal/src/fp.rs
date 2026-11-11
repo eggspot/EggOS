@@ -29,6 +29,8 @@ pub struct FpState {
     pub(crate) arch: Riscv64State,
     #[cfg(target_arch = "loongarch64")]
     pub(crate) arch: Loongarch64State,
+    #[cfg(target_arch = "mips64")]
+    pub(crate) arch: Mips64State,
     #[cfg(target_arch = "powerpc64")]
     pub(crate) arch: Powerpc64State,
     #[cfg(target_arch = "x86_64")]
@@ -74,6 +76,8 @@ impl FpState {
             fcc: 0,
             fcsr: 0,
         };
+        #[cfg(target_arch = "mips64")]
+        let arch = Mips64State { f: [0; 32], fcsr: 0 };
         #[cfg(target_arch = "powerpc64")]
         let arch = Powerpc64State {
             vsr: [0; 64],
@@ -203,6 +207,29 @@ impl FpState {
     }
 }
 
+#[cfg(target_arch = "mips64")]
+impl FpState {
+    /// `$f0`-`$f31`, 64 bits each (`Status.FR` 1).
+    pub fn f(&self) -> &[u64; 32] {
+        &self.arch.f
+    }
+
+    /// `$f0`-`$f31`, to change.
+    pub fn f_mut(&mut self) -> &mut [u64; 32] {
+        &mut self.arch.f
+    }
+
+    /// `FCSR`: the condition bits, the cause, enables and flags and the rounding mode.
+    pub fn fcsr(&self) -> u32 {
+        self.arch.fcsr as u32
+    }
+
+    /// Sets `FCSR`.
+    pub fn set_fcsr(&mut self, fcsr: u32) {
+        self.arch.fcsr = fcsr.into();
+    }
+}
+
 impl Default for FpState {
     fn default() -> Self {
         Self::new()
@@ -242,6 +269,15 @@ pub(crate) struct Riscv64State {
 pub(crate) struct Loongarch64State {
     pub(crate) f: [u64; 32],
     pub(crate) fcc: u64,
+    pub(crate) fcsr: u64,
+}
+
+/// MIPS64: `$f0`-`$f31` (64 bits each), then `FCSR`, as `fp.rs` saves them (D313).
+#[cfg(target_arch = "mips64")]
+#[derive(Clone)]
+#[repr(C)]
+pub(crate) struct Mips64State {
+    pub(crate) f: [u64; 32],
     pub(crate) fcsr: u64,
 }
 

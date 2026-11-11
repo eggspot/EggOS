@@ -251,8 +251,10 @@ pub const MIN_SIGNAL_STACK_SIZE: u64 = 8192;
 
 const LI_R0_RT_SIGRETURN: u32 = 0x3800_0000 | number::RT_SIGRETURN as u32;
 const SC: u32 = 0x4400_0002;
-/// The kernel's `rt_sigreturn` trampoline: `li r0, 172` and `sc`.
-pub const SIGRETURN_TRAMPOLINE: Option<&[u8]> = Some(&super::code_bytes([LI_R0_RT_SIGRETURN, SC]));
+const NOP: u32 = 0x6000_0000;
+/// The kernel's `rt_sigreturn` trampoline: `li r0, 172`, `sc` and a `nop` that fills the
+/// three words.
+pub const SIGRETURN_TRAMPOLINE: Option<&[u8]> = Some(&super::code_bytes([LI_R0_RT_SIGRETURN, SC, NOP]));
 
 /// Linux's `stat` here: the same 144 bytes as x86_64's.
 pub mod stat {

@@ -217,7 +217,7 @@ commands:
                          session over the script's piped standard input and output, as
                          `qemu` runs it (<arch> may be `all`)
 
-architectures: aarch64, riscv64, x86_64, loongarch64, ppc64le";
+architectures: aarch64, riscv64, x86_64, loongarch64, ppc64le; mips64el only by name, with\nthe nightly toolchain (D297)";
 
 /// A kernel architecture: its Rust target and how to boot it in QEMU.
 #[derive(Debug)]
@@ -372,6 +372,52 @@ pub const ARCHES: &[Arch] = &[
         network_device: "virtio-net-pci,disable-legacy=on",
     },
 ];
+
+/// Architectures whose Rust targets ship no prebuilt `core` (tier 3): built with a nightly
+/// toolchain's `build-std`, which the pinned-stable rule allows only once the owner says so
+/// (D297). Named with `--arch` only: `all`, CI and the release matrix leave them out.
+pub const NIGHTLY_ARCHES: &[Arch] = &[Arch {
+    name: "mips64el",
+    target: "mips64el-unknown-linux-gnuabi64",
+    user_target: "mips64el-unknown-linux-muslabi64",
+    qemu: "qemu-system-mips64el",
+    machine_args: &[
+        "-machine",
+        "loongson3-virt",
+        "-cpu",
+        "Loongson-3A4000",
+        "-device",
+        "virtio-rng-pci,disable-legacy=on",
+    ],
+    display_args: &["-device", "virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800"],
+    input_args: &[
+        "-device",
+        "virtio-keyboard-pci,disable-legacy=on",
+        "-device",
+        "virtio-tablet-pci,disable-legacy=on",
+        "-device",
+        "virtio-mouse-pci,disable-legacy=on",
+    ],
+    offscreen_args: &[],
+    disk_device: "virtio-blk-pci,disable-legacy=on",
+    agent_bus_device: "virtio-serial-pci,disable-legacy=on",
+    network_device: "virtio-net-pci,disable-legacy=on",
+}];
+
+/// The arguments and environment that build `core`, `alloc` and the compiler's builtins from
+/// source with the nightly toolchain, when `args` name a [`NIGHTLY_ARCHES`] target.
+fn nightly_build_std(args: &[&str]) -> Option<([&'static str; 2], (&'static str, &'static str))> {
+    let nightly = NIGHTLY_ARCHES
+        .iter()
+        .any(|arch| args.contains(&arch.target) || args.contains(&arch.user_target));
+    nightly.then_some((
+        [
+            "-Zbuild-std=core,alloc,compiler_builtins",
+            "-Zbuild-std-features=compiler-builtins-mem",
+        ],
+        ("RUSTUP_TOOLCHAIN", "nightly"),
+    ))
+}
 
 const MMIO_DISK_DEVICE: &str = "virtio-blk-device";
 
@@ -1094,6 +1140,7 @@ fn arch_option(args: &[String]) -> Result<Vec<&'static Arch>, String> {
     }
     ARCHES
         .iter()
+        .chain(NIGHTLY_ARCHES)
         .find(|a| a.name == name)
         .map(|a| vec![a])
         .ok_or_else(|| format!("unknown architecture `{name}`\n\n{USAGE}"))
@@ -2610,10 +2657,13 @@ fn build_executable(
     let mut args = args.to_vec();
     args.extend(["--release", "--message-format=json-render-diagnostics"]);
     let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let nightly = nightly_build_std(&args);
     eprintln!("xtask: cargo {}", args.join(" "));
     let output = Command::new(&cargo_bin)
         .args(&args)
+        .args(nightly.iter().flat_map(|(flags, _)| flags.iter()))
         .envs(env.iter().copied())
+        .envs(nightly.iter().map(|(_, toolchain)| *toolchain))
         .current_dir(workspace_root())
         .stderr(std::process::Stdio::inherit())
         .output()
@@ -2686,10 +2736,13 @@ fn cargo(args: &[&str]) -> Result<(), String> {
 
 pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let nightly = nightly_build_std(args);
     eprintln!("xtask: cargo {}", args.join(" "));
     let status = Command::new(&cargo)
         .args(args)
+        .args(nightly.iter().flat_map(|(flags, _)| flags.iter()))
         .envs(env.iter().copied())
+        .envs(nightly.iter().map(|(_, toolchain)| *toolchain))
         .current_dir(workspace_root())
         .status()
         .map_err(|e| format!("could not run {cargo}: {e}"))?;

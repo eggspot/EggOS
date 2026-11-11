@@ -21,6 +21,16 @@ rustflags = [
     "--cfg", "eggos_kernel",
 ]
 
+[target.mips64el-unknown-linux-gnuabi64]
+linker = "rust-lld"
+rustflags = [
+    "-C", "linker-flavor=ld.lld",
+    "-C", "panic=abort",
+    "-C", "relocation-model=static",
+    "-C", "target-feature=+soft-float,+noabicalls",
+    "--cfg", "eggos_kernel",
+]
+
 [target.x86_64-unknown-none]
 rustflags = ["-C", "relocation-model=static", "--cfg", "eggos_kernel"]
 
@@ -47,5 +57,9 @@ linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]
 
 [target.powerpc64le-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]
+
+[target.mips64el-unknown-linux-muslabi64]
 linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]

@@ -20,6 +20,8 @@ pub mod machine {
     pub const LOONGARCH: u16 = 258;
     /// 64-bit PowerPC (D304).
     pub const PPC64: u16 = 21;
+    /// MIPS (D313).
+    pub const MIPS: u16 = 8;
 
     /// The machine the kernel runs on: the only one whose programs it runs natively (D17).
     pub const NATIVE: u16 = crate::linux::abi::ELF_MACHINE;

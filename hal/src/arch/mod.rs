@@ -39,6 +39,17 @@ pub(crate) use loongarch64::doorbell_barrier;
 #[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
 pub(crate) use loongarch64::zero;
 
+#[cfg(all(eggos_kernel, target_arch = "mips64"))]
+pub mod mips64;
+#[cfg(all(eggos_kernel, target_arch = "mips64"))]
+pub(crate) use mips64::KERNEL_VIRTUAL_OFFSET;
+#[cfg(all(eggos_kernel, target_arch = "mips64"))]
+pub use mips64::Mips64 as CurrentPlatform;
+#[cfg(all(eggos_kernel, target_arch = "mips64"))]
+pub(crate) use mips64::doorbell_barrier;
+#[cfg(all(eggos_kernel, target_arch = "mips64"))]
+pub(crate) use mips64::zero;
+
 #[cfg(all(eggos_kernel, target_arch = "powerpc64"))]
 pub mod powerpc64;
 #[cfg(all(eggos_kernel, target_arch = "powerpc64"))]
@@ -69,6 +80,7 @@ pub(crate) use x86_64::KERNEL_VIRTUAL_OFFSET;
     eggos_kernel,
     any(
         target_arch = "loongarch64",
+        target_arch = "mips64",
         target_arch = "powerpc64",
         target_arch = "riscv64",
         target_arch = "x86_64"
@@ -89,6 +101,7 @@ pub(crate) use x86_64::zero;
     not(any(
         target_arch = "aarch64",
         target_arch = "loongarch64",
+        target_arch = "mips64",
         target_arch = "powerpc64",
         target_arch = "riscv64",
         target_arch = "x86_64"
@@ -107,6 +120,8 @@ pub enum TestMachine {
     Q35,
     /// LoongArch64's `virt` (D290).
     LoongarchVirt,
+    /// MIPS64's `loongson3-virt` (D313).
+    Loongson3Virt,
 }
 
 /// The machine this kernel's self-tests expect; `None` in host builds.
@@ -118,6 +133,9 @@ pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::RiscvVirt);
 /// The machine this kernel's self-tests expect; `None` in host builds.
 #[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::LoongarchVirt);
+/// The machine this kernel's self-tests expect; `None` in host builds.
+#[cfg(all(eggos_kernel, target_arch = "mips64"))]
+pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::Loongson3Virt);
 /// The machine this kernel's self-tests expect; `None` in host builds.
 #[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::Q35);

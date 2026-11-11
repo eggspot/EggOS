@@ -14,6 +14,7 @@
 //! the AArch64 kernel's `strict-align` build needs (D10).
 
 mod nodes;
+pub mod writer;
 
 pub use nodes::{
     InterruptSpecifier, InterruptSpecifiers, MAX_INTERRUPT_CELLS, MAX_NODE_DEPTH, MAX_TRANSLATIONS, Node, Ranges,
