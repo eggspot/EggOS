@@ -345,6 +345,8 @@ pub fn dropped_events() -> u64 {
 /// What a device reported since the end of its last report, applied at the end of the next.
 #[derive(Debug, Default)]
 pub struct PendingReport {
+    /// The multi-touch slot the device's last `ABS_MT_SLOT` named, kept across reports (D296).
+    touch_slot: i32,
     dx: i32,
     dy: i32,
     wheel: i32,
@@ -1107,7 +1109,10 @@ impl InputState {
         screen: Option<(u32, u32)>,
         sink: &mut dyn InputSink,
     ) {
-        let report = core::mem::take(report);
+        let touch_slot = report.touch_slot;
+        let report_now = core::mem::take(report);
+        report.touch_slot = touch_slot;
+        let report = report_now;
         if let Some((width, height)) = screen.filter(|&(width, height)| width > 0 && height > 0) {
             let (mut x, mut y) = self.pointer;
             if let Some((x_range, y_range)) = capabilities.absolute {
@@ -1190,6 +1195,11 @@ impl InputState {
     ) {
         self.last_event = timing.now;
         match (event.kind, event.code) {
+            (event_type::KEY, button::TOUCH) => {
+                TOUCH_SCREEN.store(true, Ordering::Relaxed);
+                let finger = RawEvent::new(event_type::KEY, button::LEFT, event.value);
+                self.key(finger, report, timing, sink);
+            }
             (event_type::KEY, _) => self.key(event, report, timing, sink),
             (event_type::REL, relative::X) => {
                 report.dx = report.dx.saturating_add(event.value);
@@ -1215,6 +1225,17 @@ impl InputState {
                 report.y = Some(event.value);
                 report.pending = true;
             }
+            (event_type::ABS, absolute::MT_SLOT) => report.touch_slot = event.value,
+            (event_type::ABS, absolute::MT_POSITION_X) if report.touch_slot == PRIMARY_TOUCH => {
+                TOUCH_SCREEN.store(true, Ordering::Relaxed);
+                report.x = Some(event.value);
+                report.pending = true;
+            }
+            (event_type::ABS, absolute::MT_POSITION_Y) if report.touch_slot == PRIMARY_TOUCH => {
+                report.y = Some(event.value);
+                report.pending = true;
+            }
+
             (event_type::SYN, SYN_REPORT) if report.pending => {
                 self.end_report(capabilities, report, screen, sink)
             }
@@ -1294,6 +1315,18 @@ impl Input {
 static LAYOUTS: AtomicU64 = AtomicU64::new((layout::US_LAYOUT as u64) << IN_FORCE_SHIFT);
 
 static CAPS_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// The multi-touch slot whose finger moves the pointer and presses its left button: the first
+/// finger down, as a single-touch screen behaves (D296).
+const PRIMARY_TOUCH: i32 = 0;
+
+/// Whether a touch screen reported a touch since boot: what the shell's form looks at (M12).
+static TOUCH_SCREEN: AtomicBool = AtomicBool::new(false);
+
+/// Whether a touch screen reported a touch since boot (D296).
+pub fn has_touch_screen() -> bool {
+    TOUCH_SCREEN.load(Ordering::Relaxed)
+}
 
 static NUM_LOCK_OFF: AtomicBool = AtomicBool::new(false);
 

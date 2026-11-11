@@ -20208,3 +20208,15 @@ the license, by an explicit instruction recorded here.
   with many CPUs a signal no longer costs an interrupt on each of them.
 - **Not yet.** Building and running; a measured cost on a many-CPU machine.
 
+## D296 Touch screens drive the pointer: the first finger moves it and presses its left button (M12's first backend piece; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Linux's multi-touch protocol B)
+
+- **Decision.** A virtio-input device that reports multi-touch positions (`ABS_MT_POSITION_X`
+  and `_Y`) but no plain `ABS_X`/`ABS_Y` takes the multi-touch ranges as its absolute ranges,
+  so QEMU's `virtio-multitouch` is a pointer device. The input layer follows the protocol's
+  slots: the first slot's positions move the pointer, and `BTN_TOUCH` presses and releases the
+  left button, as a single-touch screen behaves, so the desktop, its menus and every app work by
+  touch today. `input::has_touch_screen` says a touch screen was used, for the shell's form
+  (docs/ux/adaptive-shell-v0.5.md, being designed).
+- **Not yet.** Building and running; the other fingers (gestures, pinch), touch events of their
+  own for apps, and the touch shell itself.
+

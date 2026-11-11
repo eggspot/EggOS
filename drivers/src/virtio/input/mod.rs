@@ -369,13 +369,18 @@ pub fn read_capabilities<T: Transport + ?Sized>(transport: &T) -> Capabilities {
     let keys = bitmap(transport, config::EVENT_BITS, event_type::KEY as u8);
     let relatives = bitmap(transport, config::EVENT_BITS, event_type::REL as u8);
     let absolutes = bitmap(transport, config::EVENT_BITS, event_type::ABS as u8);
-    let absolute =
-        (has_bit(&absolutes, absolute::X) && has_bit(&absolutes, absolute::Y)).then(|| {
-            (
-                axis_range(transport, absolute::X),
-                axis_range(transport, absolute::Y),
-            )
-        });
+    let touch_screen = has_bit(&absolutes, absolute::MT_POSITION_X) && has_bit(&absolutes, absolute::MT_POSITION_Y);
+    let absolute = match (has_bit(&absolutes, absolute::X) && has_bit(&absolutes, absolute::Y), touch_screen) {
+        (true, _) => Some((
+            axis_range(transport, absolute::X),
+            axis_range(transport, absolute::Y),
+        )),
+        (false, true) => Some((
+            axis_range(transport, absolute::MT_POSITION_X),
+            axis_range(transport, absolute::MT_POSITION_Y),
+        )),
+        (false, false) => None,
+    };
     Capabilities {
         keyboard: (key::ESC..=key::F12).any(|code| has_bit(&keys, code)),
         buttons: has_bit(&keys, button::LEFT),

@@ -56,6 +56,8 @@ pub mod button {
     pub const LEFT: u16 = 0x110;
     pub const RIGHT: u16 = 0x111;
     pub const MIDDLE: u16 = 0x112;
+    /// A touch screen's finger down or up (Linux's `BTN_TOUCH`, D296).
+    pub const TOUCH: u16 = 0x14a;
 }
 
 /// Relative axes.
@@ -72,6 +74,13 @@ pub mod relative {
 pub mod absolute {
     pub const X: u16 = 0x00;
     pub const Y: u16 = 0x01;
+    /// The multi-touch protocol's slot the next events are about (D296).
+    pub const MT_SLOT: u16 = 0x2f;
+    /// A touch's position on the screen.
+    pub const MT_POSITION_X: u16 = 0x35;
+    pub const MT_POSITION_Y: u16 = 0x36;
+    /// A touch's id, or -1 when its finger left the screen.
+    pub const MT_TRACKING_ID: u16 = 0x39;
 }
 
 /// The values an absolute axis reports, from `min` to `max`.
