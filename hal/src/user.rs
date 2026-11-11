@@ -47,6 +47,8 @@ pub struct UserContext {
     pub(crate) arch: mips64::Registers,
     #[cfg(target_arch = "powerpc64")]
     pub(crate) arch: powerpc64::Registers,
+    #[cfg(target_arch = "s390x")]
+    pub(crate) arch: s390x::Registers,
     #[cfg(target_arch = "x86_64")]
     pub(crate) arch: x86_64::Registers,
     /// Host builds: the exception a test platform's `run_user` last returned
@@ -217,6 +219,10 @@ pub use loongarch64::UserRegisters;
 use mips64::Registers;
 #[cfg(target_arch = "mips64")]
 pub use mips64::UserRegisters;
+#[cfg(target_arch = "s390x")]
+use s390x::Registers;
+#[cfg(target_arch = "s390x")]
+pub use s390x::UserRegisters;
 #[cfg(target_arch = "powerpc64")]
 use powerpc64::Registers;
 #[cfg(target_arch = "powerpc64")]
@@ -830,6 +836,135 @@ pub(crate) mod mips64 {
             self.r[V0] = number;
             self.r[4..10].copy_from_slice(&arguments);
             self.syscall_a3 = arguments[3];
+            self.pc = pc;
+        }
+    }
+}
+
+#[cfg(target_arch = "s390x")]
+pub(crate) mod s390x {
+    /// What the way out of problem state saves (`exception.rs`, D321), and what the way in
+    /// needs. The entry code stores by offset: keep the layout in step with it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[repr(C)]
+    pub(crate) struct Registers {
+        pub(crate) gpr: [u64; 16],
+        /// The PSW: its mask, which the kernel chooses, and the address.
+        pub(crate) mask: u64,
+        pub(crate) pc: u64,
+        /// The access registers; `a0` and `a1` hold the thread pointer, high word first.
+        pub(crate) access: [u32; 16],
+        /// The kernel's stack pointer while the program runs.
+        pub(crate) kernel_sp: u64,
+        /// After an exception: the interruption's class, its code and the translation-exception
+        /// identification, kept by the way out of `run_user`.
+        pub(crate) class: u64,
+        pub(crate) code: u64,
+        pub(crate) teid: u64,
+        /// `r2` as the program passed it to its last system call, which the result overwrites:
+        /// a restart puts it back (Linux's `orig_gpr2`).
+        pub(crate) syscall_r2: u64,
+    }
+
+    /// [`super::UserContext::registers`] on s390x.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct UserRegisters {
+        pub pc: u64,
+        pub gpr: [u64; 16],
+        pub mask: u64,
+        pub access: [u32; 16],
+    }
+
+    const _: () = assert!(core::mem::offset_of!(Registers, mask) == 128);
+    const _: () = assert!(core::mem::offset_of!(Registers, access) == 144);
+    const _: () = assert!(core::mem::offset_of!(Registers, kernel_sp) == 208);
+
+    const NUMBER: usize = 1;
+    const RESULT: usize = 2;
+    const SP: usize = 15;
+    /// The PSW mask of a program: DAT on, I/O and external interruptions on, key 0, problem
+    /// state, the primary space, 64-bit addressing.
+    pub(crate) const USER_MASK: u64 = 1 << 58 | 1 << 57 | 1 << 56 | 1 << 48 | 1 << 32 | 1 << 31;
+
+    impl Registers {
+        pub(crate) fn new(pc: u64, stack: u64) -> Self {
+            let mut gpr = [0; 16];
+            gpr[SP] = stack;
+            Self {
+                gpr,
+                mask: USER_MASK,
+                pc,
+                access: [0; 16],
+                kernel_sp: 0,
+                class: 0,
+                code: 0,
+                teid: 0,
+                syscall_r2: 0,
+            }
+        }
+        /// `a0:a1`, which programs set themselves (`sar`).
+        pub(crate) fn thread_pointer(&self) -> u64 {
+            u64::from(self.access[0]) << 32 | u64::from(self.access[1])
+        }
+        pub(crate) fn set_thread_pointer(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
+            self.access[0] = (value >> 32) as u32;
+            self.access[1] = value as u32;
+            Ok(())
+        }
+        pub(crate) fn pc(&self) -> u64 {
+            self.pc
+        }
+        pub(crate) fn stack(&self) -> u64 {
+            self.gpr[SP]
+        }
+        pub(crate) fn set_stack(&mut self, stack: u64) {
+            self.gpr[SP] = stack;
+        }
+        pub(crate) fn syscall_number(&self) -> u64 {
+            self.gpr[NUMBER]
+        }
+        pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
+            [self.syscall_r2, self.gpr[3], self.gpr[4], self.gpr[5], self.gpr[6], self.gpr[7]]
+        }
+        pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
+            self.syscall_r2 = arguments[0];
+            self.gpr[RESULT] = arguments[0];
+            self.gpr[3..8].copy_from_slice(&arguments[1..]);
+        }
+        pub(crate) fn set_syscall_result(&mut self, value: u64) {
+            self.gpr[RESULT] = value;
+        }
+        pub(crate) fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+            const SVC_SIZE: u64 = 2;
+            self.gpr[NUMBER] = number;
+            self.gpr[RESULT] = first_argument;
+            self.pc = self.pc.wrapping_sub(SVC_SIZE);
+        }
+        pub(crate) fn registers(&self) -> UserRegisters {
+            UserRegisters {
+                pc: self.pc,
+                gpr: self.gpr,
+                mask: self.mask,
+                access: self.access,
+            }
+        }
+        pub(crate) fn set_registers(&mut self, registers: &UserRegisters) {
+            self.gpr = registers.gpr;
+            self.pc = registers.pc;
+            self.access = registers.access;
+            self.mask = USER_MASK | registers.mask & (0xf << 40);
+        }
+        #[cfg(not(eggos_kernel))]
+        pub(crate) fn result(&self) -> u64 {
+            self.gpr[RESULT]
+        }
+        #[cfg(not(eggos_kernel))]
+        pub(crate) fn simulate_syscall(&mut self, number: u64, arguments: [u64; 6], pc: u64) {
+            self.gpr[NUMBER] = number;
+            self.set_syscall_arguments(arguments);
             self.pc = pc;
         }
     }

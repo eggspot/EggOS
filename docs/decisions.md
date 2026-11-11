@@ -21001,3 +21001,67 @@ the license, by an explicit instruction recorded here.
   interrupts, problem state, the floating-point registers, SIGP for CPUs, and the spaces
   above. Then virtio-ccw (channel I/O), and s390x's Linux ABI and runtime, big-endian.
 - **Not yet.** Building and running.
+
+## D321 s390x part 2: the HAL on QEMU `s390-ccw-virtio` (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - **Empty entries.** `Format::empty(level)` is the entry that translates nothing: 0 for
+    every format but s390x's, whose hardware takes 0 as valid and needs the invalid bit. The
+    page-table code fills new tables with it, clears entries to it, and compares against it.
+  - **Boot.** QEMU starts `_start` in real mode at its physical address (`_start_physical`,
+    1 MiB). In real mode, `_start`:
+    - zeroes `.bss`;
+    - builds a region-second root, region-third tables and one segment table of 1 MiB leaves
+      mapping the first 2 GiB, at the direct map (`1 << 52`) and at the image's virtual
+      address (`0x001f_ffff_8000_0000` above its physical one);
+    - sets CR0 (EDAT-1, and the clock comparator's, emergency signals' and service signal's
+      subclasses);
+    - loads CR1 and CR13;
+    - fills the lowcore's new PSWs and the HAL's continuation PSWs;
+
+    then it enters the kernel in the home space.
+  - **Interruptions** (`exception.rs`).
+    - Every class's new PSW enters a real-mode stub. It saves the registers and the old PSW in
+      the lowcore (`0x200`/`0x280`, the class, code and TEID after them), then either:
+      - loads the kernel continuation PSW, which copies them to a frame on the kernel stack,
+        calls `s390x_exception` and returns through the real-mode `s390x_kernel_return_real`;
+      - or, from problem state, copies them into the `UserContext` (its real address in the
+        lowcore) and loads the PSW that returns from `run_user`.
+    - Programs are entered through real mode too (`s390x_to_user_real`: access registers,
+      then `lmg`, then `lpswe`).
+    - A wait PSW's wait bit and interruption masks are cleared in the old PSW, so the kernel
+      goes on with interruptions off.
+  - **Spaces (D320's design).** The kernel runs in the home space through the process's whole
+    root (CR13). Programs run in the primary space through a per-CPU program root (CR1)
+    holding the user half's root entries. It is copied on each switch, purging the TLB, and
+    refreshed when a program's region-translation exception finds an entry the whole root
+    gained since.
+  - **Console and memory.** The SCLP: write and read event data for the ASCII console, `READ
+    SCP INFO` for the RAM's size. `servc` completes in QEMU before it returns, so the response
+    code is polled.
+  - **Timer and wake-ups.** The TOD clock (4.096 GHz) and the clock comparator; wake-ups are
+    SIGP emergency signals.
+  - **Other pieces.**
+    - Lazy FP through CR0's AFP control: `f0`, `f2`, `f4` and `f6` stay usable without it, so
+      the kernel's load of a fresh state before a program without FP state is what keeps them
+      from leaking.
+    - The per-CPU block's address is in the lowcore, which the prefix makes each CPU's own.
+    - Exit and halt stop the CPU with `sigp stop` (QEMU ends when every CPU is stopped).
+    - The thread switch keeps r6–r14 below the ABI's 160-byte save area.
+- **Known gaps (to check at build time; written from memory of the Principles of Operation
+  and QEMU's s390x machine, unverified).**
+  - The lowcore offsets and the stubs' real-mode reach.
+  - The SCLP SCCB layouts and `READ SCP INFO`'s fields.
+  - Where QEMU leaves the command line for an ELF kernel (`0x10480` assumed).
+  - The PSW mask bits and the entries' bit values.
+  - Secondary CPUs are not started (`start_cpu` refuses).
+  - `restart` stops instead of re-IPLing.
+  - The breakpoint is delivered without a trap.
+  - The program-check PC is the old PSW's (after the instruction for suppressing
+    exceptions).
+  - The user test programs past the basic ones exit with 1.
+- **Next (part 3).** The channel subsystem and virtio-ccw (block, network, GPU, input,
+  console). Then s390x's Linux ABI (its own table, big-endian structures, `struct stat`) and
+  the user runtime, and secondary CPUs through SIGP set-prefix and restart.
+- **Not yet.** Building and running; xtask and CI entries (s390x has a tier-2 Linux target,
+  `s390x-unknown-linux-gnu`, as ppc64le's).

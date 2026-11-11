@@ -273,6 +273,13 @@ pub trait Format {
         0
     }
 
+    /// An entry at `level` that translates nothing and holds nothing: 0, but for s390x, whose
+    /// hardware takes 0 as a valid entry and needs its invalid bit (D321).
+    fn empty(level: usize) -> u64 {
+        let _ = level;
+        0
+    }
+
     /// Bytes a leaf at `level` maps.
     fn leaf_bytes(level: usize) -> u64 {
         1 << Self::index_shift(level)

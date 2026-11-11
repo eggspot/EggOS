@@ -174,7 +174,7 @@ impl<F: Format> PageTables<F> {
         let root = self.roots[user_root];
         let top = F::LEVELS - 1;
         let user_entries = kernel_half_root_entries::<F>().start;
-        self.for_each_used_entry(root, 0..user_entries, |entry| {
+        self.for_each_used_entry(root, top, 0..user_entries, |entry| {
             match F::decode(entry, top) {
                 Entry::Table(next) => self.free_table_tree(next, top - 1, frames, &mut leaf),
                 Entry::Leaf(phys, _) => leaf(frames, phys, top),
@@ -196,7 +196,7 @@ impl<F: Format> PageTables<F> {
         frames: &mut FrameAllocator,
         leaf: &mut impl FnMut(&mut FrameAllocator, u64, usize),
     ) {
-        self.for_each_used_entry(table, 0..F::entries(level), |entry| {
+        self.for_each_used_entry(table, level, 0..F::entries(level), |entry| {
             match F::decode(entry, level) {
                 Entry::Table(next) if level > 0 => {
                     self.free_table_tree(next, level - 1, frames, leaf)
@@ -305,7 +305,7 @@ impl<F: Format> PageTables<F> {
             if !virt.is_multiple_of(size) || end - virt < size {
                 return Err(MapError::PartOfLargePage);
             }
-            entry.write(0);
+            entry.write(F::empty(level));
             virt += size;
         }
         Ok(())
@@ -338,7 +338,7 @@ impl<F: Format> PageTables<F> {
         self.for_each_user_page(virt, length, |_, entry, phys, attributes| {
             match change(phys, attributes) {
                 PageChange::Unmap => {
-                    entry.write(0);
+                    entry.write(F::empty(0));
                     unmapped(phys);
                 }
                 PageChange::Map(attributes) if attributes.user => {
@@ -401,7 +401,7 @@ impl<F: Format> PageTables<F> {
         self.for_each_user_page(from, length, |virt, entry, _, _| {
             let destination = self.leaf_table_entry(virt - from + to, 0, true, frames)?;
             destination.write(entry.read());
-            entry.write(0);
+            entry.write(F::empty(0));
             *moved_end = virt + FRAME_SIZE;
             Ok(())
         })
@@ -467,7 +467,7 @@ impl<F: Format> PageTables<F> {
         }
         fence(Ordering::Release);
         let entry = self.leaf_table_entry(virt, 0, true, frames)?;
-        if entry.read() != 0 {
+        if entry.read() != F::empty(0) {
             return Err(MapError::AlreadyMapped);
         }
         entry.write(match attributes {
@@ -594,7 +594,7 @@ impl<F: Format> PageTables<F> {
                 .unwrap_or(0);
             fence(Ordering::Release);
             let entry = self.leaf_table_entry(virt, level, false, frames)?;
-            if entry.read() != 0 {
+            if entry.read() != F::empty(level) {
                 return Err(MapError::AlreadyMapped);
             }
             entry.write(F::leaf(phys, level, attributes));
@@ -629,7 +629,7 @@ impl<F: Format> PageTables<F> {
     ) -> Result<(), MapError> {
         fence(Ordering::Release);
         let entry = self.leaf_table_entry(virt, leaf_level, attributes.user, frames)?;
-        if entry.read() != 0 {
+        if entry.read() != F::empty(leaf_level) {
             return Err(MapError::AlreadyMapped);
         }
         entry.write(F::leaf(phys, leaf_level, attributes));
@@ -676,21 +676,23 @@ impl<F: Format> PageTables<F> {
     fn for_each_used_entry(
         &self,
         table: u64,
+        level: usize,
         indices: core::ops::Range<usize>,
         mut used: impl FnMut(u64),
     ) {
+        let empty = F::empty(level);
         let mut index = indices.start;
         while index + 4 <= indices.end {
             let entries = [
-                self.entry_at(table, index).read(),
-                self.entry_at(table, index + 1).read(),
-                self.entry_at(table, index + 2).read(),
-                self.entry_at(table, index + 3).read(),
+                self.entry_at(table, index).read() ^ empty,
+                self.entry_at(table, index + 1).read() ^ empty,
+                self.entry_at(table, index + 2).read() ^ empty,
+                self.entry_at(table, index + 3).read() ^ empty,
             ];
             if entries[0] | entries[1] | entries[2] | entries[3] != 0 {
                 for entry in entries {
                     if entry != 0 {
-                        used(entry);
+                        used(entry ^ empty);
                     }
                 }
             }
@@ -698,7 +700,7 @@ impl<F: Format> PageTables<F> {
         }
         for index in index..indices.end {
             let entry = self.entry_at(table, index).read();
-            if entry != 0 {
+            if entry != empty {
                 used(entry);
             }
         }
@@ -779,6 +781,14 @@ fn new_table<F: Format>(frames: &mut FrameAllocator, level: usize) -> Result<u64
     // SAFETY: the frames were just allocated, so this code owns them; the allocator's offset
     // reaches them. Linking the table in orders these stores before the entry (`map`).
     unsafe { eggos_hal::memory::zero(start, (FRAME_SIZE as usize) << order) };
+    let empty = F::empty(level);
+    if empty != 0 {
+        let entries = start.cast::<u64>();
+        for index in 0..((FRAME_SIZE as usize) << order) / 8 {
+            // SAFETY: an entry of the table just allocated and zeroed above, which this code owns.
+            unsafe { entries.add(index).write(empty) };
+        }
+    }
     Ok(table)
 }
 

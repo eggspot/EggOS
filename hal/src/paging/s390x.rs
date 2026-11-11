@@ -45,7 +45,7 @@ const SOFT_KEPT: u64 = 1 << 1;
 const SOFT_WRITABLE: u64 = 1 << 2;
 
 /// The `ASCE` designation type of a region-second table and its length, for the HAL.
-pub const ASCE_REGION_SECOND: u64 = (TYPE_REGION_SECOND + 1) << TABLE_TYPE_SHIFT | TABLE_LENGTH_FULL;
+pub const ASCE_REGION_SECOND: u64 = TYPE_REGION_SECOND << TABLE_TYPE_SHIFT | TABLE_LENGTH_FULL;
 
 impl Format for S390x {
     const LEVELS: usize = 4;
@@ -79,6 +79,15 @@ impl Format for S390x {
         match level {
             0 => 0,
             _ => 2,
+        }
+    }
+
+    fn empty(level: usize) -> u64 {
+        match level {
+            0 => PAGE_INVALID,
+            1 => INVALID_REGION,
+            2 => INVALID_REGION | TYPE_REGION_THIRD << TABLE_TYPE_SHIFT,
+            _ => INVALID_REGION | TYPE_REGION_SECOND << TABLE_TYPE_SHIFT,
         }
     }
 
@@ -188,6 +197,8 @@ mod tests {
         assert_eq!(S390x::decode(S390x::table(0x8000, 1, true), 1), Entry::Table(0x8000));
         assert_eq!(S390x::decode(S390x::table(0x10_0000, 3, false), 3), Entry::Table(0x10_0000));
         assert_eq!(S390x::decode(0, 2), Entry::Empty);
+        assert_eq!(S390x::decode(S390x::empty(0), 0), Entry::Empty);
+        assert_eq!(S390x::decode(S390x::empty(3), 3), Entry::Empty);
         assert_eq!(S390x::root(1 << 53), None);
     }
 }
