@@ -84,6 +84,8 @@ const LVM_SETITEMTEXTW: u32 = 0x1074;
 const LVM_GETEDITCONTROL: u32 = 0x1018;
 const LVM_EDITLABELW: u32 = 0x1076;
 const LVM_CANCELEDITLABEL: u32 = 0x10b3;
+const LVM_SETTOOLTIPS: u32 = 0x104a;
+const LVM_GETTOOLTIPS: u32 = 0x104e;
 const LVM_SETVIEW: u32 = 0x108e;
 const LVM_GETVIEW: u32 = 0x108f;
 const CCM_GETUNICODEFORMAT: u32 = 0x2006;
@@ -281,6 +283,8 @@ struct ListState {
     drag: Option<Drag>,
     /// The edit over the label being edited (D354) and the item's index.
     editing: Option<(usize, usize)>,
+    /// The tooltip control of `LVS_EX_INFOTIP` (D362), 0 for none.
+    tips: usize,
 }
 
 impl Model for ListState {
@@ -296,6 +300,7 @@ pub(super) fn new_state(_style: u32) -> Option<usize> {
         last_down: None,
         drag: None,
         editing: None,
+        tips: 0,
     })
 }
 
@@ -561,6 +566,7 @@ fn custom_after(window: usize, hdc: usize, custom: &CustomRows) {
 }
 
 fn paint(window: usize) {
+    sync_info_tips(window);
     let Ok((hdc, _, _)) = super::super::paint::begin(window) else {
         return;
     };
@@ -2074,6 +2080,7 @@ fn list_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usi
                 old
             })
             .unwrap_or(0);
+            make_info_tips(window);
             refresh(window);
             old as usize
         }
@@ -2114,6 +2121,17 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
         }
         message::PAINT => {
             paint(window);
+            0
+        }
+        LVM_GETTOOLTIPS => {
+            with_state::<ListState, _>(window, |_, control| control.tips).unwrap_or(0)
+        }
+        LVM_SETTOOLTIPS => with_state::<ListState, _>(window, |_, control| {
+            core::mem::replace(&mut control.tips, wparam)
+        })
+        .unwrap_or(0),
+        WM_NOTIFY if is_from_tips(window, lparam) => {
+            info_tip(window, lparam);
             0
         }
         message::SIZE | WM_STYLECHANGED | message::ENABLE => {
@@ -2318,4 +2336,103 @@ pub(in crate::win32) fn label_editor_left(editor: usize) {
 /// Whether `window` is the edit over a list view's label, which takes Enter and Escape itself.
 pub(in crate::win32) fn is_label_editor(window: usize) -> bool {
     editing_list(window).is_some()
+}
+
+const LVS_EX_INFOTIP: u32 = 0x0400;
+const LVN_GETINFOTIPW: i32 = -158;
+const TTN_GETDISPINFOW: u32 = -530i32 as u32;
+const INFO_TIP_UNITS: usize = 1024;
+const SHOWN_TIP_UNITS: usize = 79;
+
+/// A list view given `LVS_EX_INFOTIP` makes its tooltip control (D362), once.
+fn make_info_tips(window: usize) {
+    let wanted = with_state::<ListState, _>(window, |_, control| {
+        control.list.extended & LVS_EX_INFOTIP != 0 && control.tips == 0
+    })
+    .unwrap_or(false);
+    if !wanted {
+        return;
+    }
+    let kind = ControlKind::Common(CommonKind::Tooltip);
+    if let Some(tips) = create_child(window, kind, WS_CHILD, Rect::default(), 0, &[]) {
+        with_state::<ListState, _>(window, |_, control| control.tips = tips);
+    }
+}
+
+/// One callback tool per shown row of an info-tip list view, named by the row's index, kept as
+/// the rows move (before each paint).
+fn sync_info_tips(window: usize) {
+    let tips = with_state::<ListState, _>(window, |_, control| control.tips).unwrap_or(0);
+    if tips == 0 {
+        return;
+    }
+    let mut rows = [VisibleRow::default(); MOST_CUSTOM_ROWS];
+    let (count, _) = visible_rows(window, &mut rows);
+    let mut tools = [(0usize, Rect::default()); MOST_CUSTOM_ROWS];
+    for (tool, row) in tools.iter_mut().zip(&rows[..count]) {
+        let [left, top, right, bottom] = row.rect;
+        *tool = (row.index, Rect::new(left, top, right, bottom));
+    }
+    super::tooltip::replace_tools(tips, window, &tools[..count]);
+}
+
+fn is_from_tips(window: usize, lparam: usize) -> bool {
+    if lparam == 0 {
+        return false;
+    }
+    // SAFETY: `WM_NOTIFY`'s `lParam` is an `NMHDR` at least.
+    let header = unsafe { (lparam as *const NotifyHeader).read_unaligned() };
+    header.code == TTN_GETDISPINFOW
+        && with_state::<ListState, _>(window, |_, control| control.tips == header.from)
+            .unwrap_or(false)
+}
+
+/// `NMLVGETINFOTIPW`.
+#[repr(C)]
+struct GetInfoTip {
+    header: NotifyHeader,
+    flags: u32,
+    text: usize,
+    room: i32,
+    item: i32,
+    sub_item: i32,
+    lparam: usize,
+}
+
+/// The tip of the row the tooltip asks about (D362): `LVN_GETINFOTIPW` to the parent with a
+/// 1024-unit buffer holding the row's text, whose answer the tip shows (an empty answer, none).
+fn info_tip(window: usize, lparam: usize) {
+    let info = lparam as *mut super::tooltip::DisplayInfo;
+    // SAFETY: the tooltip control's own `NMTTDISPINFOW`, alive for this call.
+    let index = unsafe { (*info).header.id };
+    let mut buffer = [0u16; INFO_TIP_UNITS];
+    let row = with_state::<ListState, _>(window, |_, control| {
+        (index < control.list.count()).then(|| {
+            let text = control.list.text(index, 0);
+            let length = text.len().min(INFO_TIP_UNITS - 1);
+            buffer[..length].copy_from_slice(&text[..length]);
+            control.list.lparam(index)
+        })
+    })
+    .flatten();
+    let Some(row_lparam) = row else {
+        return;
+    };
+    notify_parent(window, LVN_GETINFOTIPW, |header| GetInfoTip {
+        header,
+        flags: 0,
+        text: buffer.as_mut_ptr() as usize,
+        room: INFO_TIP_UNITS as i32,
+        item: index as i32,
+        sub_item: 0,
+        lparam: row_lparam,
+    });
+    let length = buffer.iter().position(|&unit| unit == 0).unwrap_or(INFO_TIP_UNITS);
+    let shown = length.min(SHOWN_TIP_UNITS);
+    // SAFETY: as above; its 80-unit buffer takes the text and a NUL.
+    unsafe {
+        (*info).buffer[..shown].copy_from_slice(&buffer[..shown]);
+        (*info).buffer[shown] = 0;
+        (*info).text = (*info).buffer.as_ptr() as usize;
+    }
 }

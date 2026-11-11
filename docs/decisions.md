@@ -22099,3 +22099,14 @@ the license, by an explicit instruction recorded here.
     `is_label_editor`) now serve both views.
 - **Not yet.** Starting an edit by a slow second click; custom draw for toolbars, headers and
   trackbars; `CDRF_NEWFONT`.
+
+## D362 Windows common controls: list views' info tips (`LVS_EX_INFOTIP`) (batch part 13's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/windows-tooltips-tray-v0.5.md section 8) and the code-only session (engineering)
+
+- **Decision.** Setting `LVS_EX_INFOTIP` makes the list view's own tooltip control (D355),
+  which `LVM_GETTOOLTIPS` answers and `LVM_SETTOOLTIPS` replaces. Before each paint the list
+  keeps one callback tool per shown row (its rect the row's, its id the row's index). When a
+  tip is due, the list asks its parent with `LVN_GETINFOTIPW` (`NMLVGETINFOTIPW`: a 1024-unit
+  buffer holding the row's text, the index, sub-item 0, the row's `lParam`); a non-empty
+  answer is the tip, an empty one shows none.
+- **Not yet.** Tips longer than 79 units are cut (the tooltip's display buffer), the
+  `LVGIT_UNFOLDED` flag and `LVS_EX_LABELTIP`'s unfolding labels, tree views' `TVS_INFOTIP`.

@@ -861,7 +861,7 @@ yet" naming what it left.
     overflow as an exception, code written, unbuilt, D346; function
     tables, code written, unbuilt, D344; system category messages and
     `notify_all_at_thread_exit`, code written, unbuilt, D345);
-  - part 13's rest: list and tree views' info tips, custom drawing of toolbars and headers, the
+  - part 13's rest: tree views' info tips, custom drawing of toolbars and headers, the
     other common-control breadth, COM out of process, global hooks, `UpdateLayeredWindow`, the tray's
     overflow popup, balloons and menus, the shell namespace, and the registry pane's outline and phone layouts (D231; `WSAAsyncSelect`, code written,
     unbuilt, D348; the process's own hooks, code written, unbuilt, D349; HTTPS in WinINet,
@@ -869,7 +869,7 @@ yet" naming what it left.
     written, unbuilt, D354; the tooltip control, code written, unbuilt, D355; toolbars' tooltips, code written,
     unbuilt, D356; notification-area icons, code written, unbuilt, D357; layered windows' alpha and
     colour key, code written, unbuilt, D358; tree views' custom draw and label editing, code
-    written, unbuilt, D361);
+    written, unbuilt, D361; list views' info tips, code written, unbuilt, D362);
   - part 14's rest: storyboards, `NSKeyedArchiver` (D232; NSDictionary's hash index, code
     written, unbuilt, D359; `NSKeyedUnarchiver`, code written, unbuilt, D360);
   - part 15's rest: scroll views, tables, images, the About panel's icon and credits, the
