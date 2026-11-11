@@ -1098,6 +1098,24 @@ impl Desktop {
 
     /// Gives `client`'s window `id` the title `title` (at most [`TITLE_CAPACITY`] bytes of
     /// UTF-8).
+    /// `SET_LAYERED` (D358): how client `client`'s window `id`'s content blends over what is
+    /// under it, a constant `alpha` and a colour `key` that shows through; the window damaged.
+    pub fn set_layered(
+        &mut self,
+        client: u16,
+        id: u32,
+        (alpha, key): (Option<u8>, Option<u32>),
+        damage: &mut Damage,
+    ) -> Result<(), WindowError> {
+        let slot = self.owned(client, id)?;
+        let window = self.windows[slot].as_mut().ok_or(WindowError::Invalid)?;
+        window.opacity = alpha.unwrap_or(u8::MAX);
+        window.colour_key = key.map(|key| key & 0x00ff_ffff);
+        let outside = self.window_at(slot).outside();
+        damage.add(outside);
+        Ok(())
+    }
+
     pub fn set_title(
         &mut self,
         client: u16,
@@ -2756,7 +2774,11 @@ impl Desktop {
             canvas.row(row, left, copy_left, fill);
             canvas.row(row, copy_right, right, fill);
             if let Some(out) = canvas.row_pixels(row, copy_left, copy_right) {
-                contents.copy_row(window.id, copy_left - buffer.x, row - buffer.y, out);
+                let at = (copy_left - buffer.x, row - buffer.y);
+                match (window.opacity, window.colour_key) {
+                    (u8::MAX, None) => contents.copy_row(window.id, at.0, at.1, out),
+                    (opacity, key) => blend_row(contents, window.id, at, out, (opacity, key)),
+                }
             }
         }
     }
@@ -2932,4 +2954,43 @@ impl<'a> Writer<'a> {
             }
         }
     }
+}
+
+const BLEND_CHUNK: usize = 64;
+
+/// Copies `out.len()` pixels of `window`'s content row from `at` over the pixels already in
+/// `out` (what is under the window), blended at `opacity` and showing through where the
+/// content is exactly `key` (a layered window, D358), in chunks small enough for the stack.
+fn blend_row(
+    contents: &dyn Contents,
+    window: WindowId,
+    at: (u32, u32),
+    out: &mut [u32],
+    (opacity, key): (u8, Option<u32>),
+) {
+    let mut under = [0u32; BLEND_CHUNK];
+    let mut start = 0;
+    while start < out.len() {
+        let end = (start + BLEND_CHUNK).min(out.len());
+        let part = &mut out[start..end];
+        under[..part.len()].copy_from_slice(part);
+        contents.copy_row(window, at.0 + start as u32, at.1, part);
+        for (pixel, &below) in part.iter_mut().zip(&under) {
+            *pixel = match key {
+                Some(key) if *pixel & 0x00ff_ffff == key => below,
+                _ => mix(*pixel, below, opacity),
+            };
+        }
+        start = end;
+    }
+}
+
+/// `over` at `alpha` (0 to 255) over `under`, per channel.
+fn mix(over: u32, under: u32, alpha: u8) -> u32 {
+    let alpha = u32::from(alpha);
+    [16, 8, 0].into_iter().fold(0, |mixed, shift| {
+        let top = over >> shift & 0xff;
+        let bottom = under >> shift & 0xff;
+        mixed | ((top * alpha + bottom * (255 - alpha) + 127) / 255) << shift
+    })
 }

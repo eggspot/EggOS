@@ -96,6 +96,7 @@ pub mod size {
     pub const ON_SCREEN_KEYBOARD: usize = 20;
     pub const SET_ROTATION: usize = 4;
     pub const SET_TRAY_ICON: usize = super::set_tray_icon_request::PIXELS + 8;
+    pub const SET_LAYERED: usize = 16;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -156,6 +157,7 @@ pub mod request {
     pub const ON_SCREEN_KEYBOARD: u32 = encode(READ | WRITE, 49, size::ON_SCREEN_KEYBOARD);
     pub const SET_ROTATION: u32 = encode(WRITE, 50, size::SET_ROTATION);
     pub const SET_TRAY_ICON: u32 = encode(WRITE, 51, size::SET_TRAY_ICON);
+    pub const SET_LAYERED: u32 = encode(WRITE, 52, size::SET_LAYERED);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -339,6 +341,12 @@ pub mod set_tray_icon_request {
     pub const TIP_LENGTH: usize = 12;
     pub const TIP: usize = 16;
     pub const PIXELS: usize = 24;
+}
+
+/// `SET_LAYERED`'s flags (D358).
+pub mod layered_flags {
+    pub const ALPHA: u32 = 1;
+    pub const COLOUR_KEY: u32 = 2;
 }
 
 /// `SET_TRAY_ICON`'s flags.
@@ -585,6 +593,15 @@ pub enum Request {
     SetRotation {
         setting: u32,
     },
+    /// How `window`'s content blends over what is under it (D358): with
+    /// [`layered_flags::ALPHA`] at `alpha` (0 to 255), with [`layered_flags::COLOUR_KEY`]
+    /// showing through where it is exactly `key` (`0x00RRGGBB`).
+    SetLayered {
+        window: u32,
+        alpha: u32,
+        key: u32,
+        flags: u32,
+    },
     /// A notification-area icon of `window`'s client (D357): added or changed, or removed
     /// with [`tray_flags::REMOVE`]; its tip (UTF-8, `tip_length` bytes at `tip`) and its
     /// 16x16 ARGB pixels at `pixels` (0: the generic tile).
@@ -774,6 +791,7 @@ impl Request {
             request::ON_SCREEN_KEYBOARD => size::ON_SCREEN_KEYBOARD,
             request::SET_ROTATION => size::SET_ROTATION,
             request::SET_TRAY_ICON => size::SET_TRAY_ICON,
+            request::SET_LAYERED => size::SET_LAYERED,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::GET_LAUNCH => size::GET_LAUNCH,
@@ -892,6 +910,12 @@ impl Request {
             },
             request::ON_SCREEN_KEYBOARD => Self::OnScreenKeyboard { action: at(0) },
             request::SET_ROTATION => Self::SetRotation { setting: at(0) },
+            request::SET_LAYERED => Self::SetLayered {
+                window: at(0),
+                alpha: at(4),
+                key: at(8),
+                flags: at(12),
+            },
             request::SET_TRAY_ICON => Self::SetTrayIcon {
                 window: at(set_tray_icon_request::WINDOW),
                 icon: at(set_tray_icon_request::ICON),

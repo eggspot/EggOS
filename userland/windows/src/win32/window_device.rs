@@ -23,6 +23,7 @@ const GET_WORK_AREA: usize = 0x8014_770a;
 const GET_PLACEMENT: usize = 0xc014_771c;
 const SET_CLIPBOARD: usize = 0x4010_7720;
 const SET_TRAY_ICON: usize = 0x4020_7733;
+const SET_LAYERED: usize = 0x4010_7734;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const TITLE_CAPACITY: usize = 64;
 const TRY_AGAIN: u16 = 11;
@@ -149,6 +150,17 @@ impl Device {
             height,
             pixels,
         })
+    }
+
+    /// How `window`'s content blends over what is under it (D358): `flags` 1 for the constant
+    /// `alpha`, 2 for the colour `key` (`0x00RRGGBB`) that shows through.
+    pub fn set_layered(&self, window: u32, alpha: u8, key: u32, flags: u32) -> Result<(), Errno> {
+        let mut argument = [0u8; 16];
+        put(&mut argument, 0, window);
+        put(&mut argument, 4, u32::from(alpha));
+        put(&mut argument, 8, key);
+        put(&mut argument, 12, flags);
+        self.request(SET_LAYERED, &mut argument)
     }
 
     /// Adds, changes or removes notification-area icon `icon` of `window` (D357): `flags` the

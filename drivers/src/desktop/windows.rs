@@ -148,6 +148,10 @@ pub(super) struct Window {
     pub close_requested_ms: Option<u32>,
     pub not_responding: bool,
     pub focus_serial: u32,
+    /// How opaque its content is, 255 fully (a layered window's constant alpha, D358).
+    pub opacity: u8,
+    /// The colour its content shows through where it has exactly this colour (D358).
+    pub colour_key: Option<u32>,
     pub hidden_by_show_desktop: bool,
     /// The virtual desktop a normal window is on, from 0 (D204).
     pub desktop: u8,
@@ -186,6 +190,8 @@ impl Window {
             close_requested_ms: None,
             not_responding: false,
             focus_serial: 0,
+            opacity: u8::MAX,
+            colour_key: None,
             hidden_by_show_desktop: false,
             desktop: 0,
             view_only_turns: 0,

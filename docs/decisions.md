@@ -22017,3 +22017,20 @@ the license, by an explicit instruction recorded here.
   selection and `NIN_KEYSELECT`, `NIF_INFO` balloons as notices, the program's context menu
   in the server's chrome (section 14), the phone and tablet shade's `Programs` row,
   `Shell_NotifyIconGetRect`, 2x pixels.
+
+## D358 Windows: layered windows (`WS_EX_LAYERED`, `SetLayeredWindowAttributes`) (batch part 13's rest, D231's "Not yet"; M15, M11; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented behaviour)
+
+- **Decision.**
+  - **The server** keeps each window's content opacity (255 by default) and colour key
+    (`Window::opacity`, `colour_key`). `SET_LAYERED` (request 52, 16 bytes: window, alpha,
+    key `0x00RRGGBB`, flags 1 alpha and 2 key) sets them for one of the caller's windows. The
+    compositor blends such a window's content over what it already drew under it
+    (`blend_row`: per channel, rounded; in 64-pixel chunks so the kernel stack holds the
+    pixels underneath), and leaves what is under it where the content is exactly the key.
+    The window frame and the fill outside the buffer stay opaque. Nothing in the server culls
+    what a window covers, so a translucent window shows what is under it.
+  - **The layer.** `SetLayeredWindowAttributes` on a top-level `WS_EX_LAYERED` window sends
+    `LWA_ALPHA`'s alpha and `LWA_COLORKEY`'s key (COLORREF turned into the server's RGB);
+    `GetLayeredWindowAttributes` answers what was set (a table of 16 windows).
+- **Not yet.** `UpdateLayeredWindow` and per-pixel alpha (`ULW_ALPHA` with `AC_SRC_ALPHA`),
+  child layered windows, and the frame fading with the content.

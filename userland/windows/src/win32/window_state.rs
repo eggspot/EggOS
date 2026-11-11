@@ -1,12 +1,12 @@
 //! A window's state beyond its place (D178): `IsZoomed` and `IsIconic`, activation as far as a
 //! client of the window server may change it (`SetActiveWindow`, `BringWindowToTop`,
-//! `FlashWindow`), the shapes and translucency the server does not draw (`SetWindowRgn`,
-//! `SetLayeredWindowAttributes`), what waits to be painted (`RedrawWindow`, `GetUpdateRect`,
-//! `ScrollWindow`) and window properties (`SetPropW`, `GetPropW`, `RemovePropW`).
+//! `FlashWindow`), the shapes the server does not draw (`SetWindowRgn`), a layered window's
+//! translucency and colour key (`SetLayeredWindowAttributes`, D358), what waits to be painted
+//! (`RedrawWindow`, `GetUpdateRect`, `ScrollWindow`) and window properties (`SetPropW`, `GetPropW`, `RemovePropW`).
 
 use super::gui::{self, Gui, try_with, with};
 use super::user32::Win32Rect;
-use super::{Bool, FALSE, TRUE, error, fail};
+use super::{Bool, FALSE, SpinLock, TRUE, error, fail};
 use crate::gui::message;
 use crate::gui::windows::{self, MAX_WINDOWS};
 use crate::library::Export;
@@ -91,28 +91,103 @@ extern "efiapi" fn set_window_rgn(window: usize, region: usize, _redraw: Bool) -
     }
 }
 
-extern "efiapi" fn set_layered_window_attributes(
-    window: usize,
-    _key: u32,
-    _alpha: u8,
-    _flags: u32,
-) -> Bool {
-    match try_with(|gui| gui.window(window).map(|_| ())) {
-        Ok(()) => fail(error::NOT_SUPPORTED, FALSE),
-        Err(code) => fail(code, FALSE),
-    }
+const WS_EX_LAYERED: u32 = 0x0008_0000;
+const LWA_COLORKEY: u32 = 0x1;
+const LWA_ALPHA: u32 = 0x2;
+const MOST_LAYERED: usize = 16;
+
+/// The layered windows' attributes, as `SetLayeredWindowAttributes` set them (D358).
+static LAYERED: SpinLock<[Option<(usize, u32, u8, u32)>; MOST_LAYERED]> =
+    SpinLock::new([None; MOST_LAYERED]);
+
+fn swap_red_blue(colour: u32) -> u32 {
+    (colour & 0xff) << 16 | (colour & 0xff00) | (colour >> 16 & 0xff)
 }
 
-extern "efiapi" fn get_layered_window_attributes(
+/// `SetLayeredWindowAttributes` (D358): a top-level `WS_EX_LAYERED` window's content blends
+/// over what is under it at `alpha` (`LWA_ALPHA`) and shows through where it is `key`
+/// (`LWA_COLORKEY`), as the window server draws it.
+extern "efiapi" fn set_layered_window_attributes(
     window: usize,
-    _key: *mut u32,
-    _alpha: *mut u8,
-    _flags: *mut u32,
+    key: u32,
+    alpha: u8,
+    flags: u32,
 ) -> Bool {
-    match try_with(|gui| gui.window(window).map(|_| ())) {
-        Ok(()) => fail(error::INVALID_PARAMETER, FALSE),
-        Err(code) => fail(code, FALSE),
+    let found = try_with(|gui| {
+        let entry = gui.window(window)?;
+        if entry.ex_style & WS_EX_LAYERED == 0 || entry.is_child() {
+            return Err(error::INVALID_PARAMETER);
+        }
+        Ok((entry.server, gui.device))
+    });
+    let (server, device) = match found {
+        Ok(found) => found,
+        Err(code) => return fail(code, FALSE),
+    };
+    let mut server_flags = 0;
+    if flags & LWA_ALPHA != 0 {
+        server_flags |= 1;
     }
+    if flags & LWA_COLORKEY != 0 {
+        server_flags |= 2;
+    }
+    if let Some(device) = device
+        && device
+            .set_layered(server, alpha, swap_red_blue(key), server_flags)
+            .is_err()
+    {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    LAYERED.with(|layered| {
+        let slot = layered
+            .iter_mut()
+            .find(|slot| slot.is_some_and(|(handle, ..)| handle == window));
+        let entry = Some((window, key, alpha, flags));
+        match slot {
+            Some(slot) => *slot = entry,
+            None => {
+                if let Some(free) = layered.iter_mut().find(|slot| slot.is_none()) {
+                    *free = entry;
+                }
+            }
+        }
+    });
+    TRUE
+}
+
+/// `GetLayeredWindowAttributes`: what `SetLayeredWindowAttributes` set.
+unsafe extern "efiapi" fn get_layered_window_attributes(
+    window: usize,
+    key: *mut u32,
+    alpha: *mut u8,
+    flags: *mut u32,
+) -> Bool {
+    if let Err(code) = try_with(|gui| gui.window(window).map(|_| ())) {
+        return fail(code, FALSE);
+    }
+    let found = LAYERED.with(|layered| {
+        layered
+            .iter()
+            .flatten()
+            .find(|(handle, ..)| *handle == window)
+            .copied()
+    });
+    let Some((_, colour, opacity, set)) = found else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    // SAFETY: `GetLayeredWindowAttributes`' contract: each non-null pointer is writable.
+    unsafe {
+        if !key.is_null() {
+            key.write_unaligned(colour);
+        }
+        if !alpha.is_null() {
+            alpha.write(opacity);
+        }
+        if !flags.is_null() {
+            flags.write_unaligned(set);
+        }
+    }
+    TRUE
 }
 
 fn rect_from(rect: *const Win32Rect) -> Option<Rect> {
