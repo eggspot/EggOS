@@ -17,6 +17,7 @@ pub mod scroll_bar;
 pub mod status_bar;
 pub mod tab_control;
 pub mod toolbar;
+pub mod tooltip;
 pub mod tree_view;
 
 use crate::surface::{Rect, Surface};
