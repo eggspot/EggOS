@@ -69,7 +69,19 @@ struct Services {
     network: AgentServer,
     display: AgentServer,
     clock: AgentServer,
+    updates: AgentServer,
 }
+
+/// The component manager, which checks for updates once a day (D299).
+const COMPONENT: &[u8] = b"/bin/component\0";
+/// Its arguments for the check, each with its NUL.
+const CHECK_ARGUMENTS: [&[u8]; 3] = [b"update\0", b"--dry-run\0", b"--json\0"];
+/// `off` there turns the daily check off.
+const UPDATES_DAILY: &[u8] = b"/var/lib/eggos/updates-daily\0";
+/// How long after the network comes up the first check waits, and between checks.
+const FIRST_CHECK_S: u64 = 600;
+const CHECK_EVERY_S: u64 = 24 * 60 * 60;
+const LOOK_AGAIN_LATER_S: u64 = 60 * 60;
 
 #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
 #[repr(C)]
@@ -186,6 +198,9 @@ pub fn run(_startup: &Startup) -> i32 {
     }
     if exists(DATE) {
         start_clock_keeper(&mut services.clock);
+    }
+    if exists(COMPONENT) {
+        start_update_checker(&mut services.updates);
     }
     call(
         number::MKDIRAT,
@@ -676,6 +691,84 @@ fn keep_clock() -> ! {
     }
 }
 
+fn start_update_checker(updates: &mut AgentServer) {
+    let child = call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]);
+    match child {
+        0 => check_updates_daily(),
+        1.. => updates.started(child as usize, now_ms()),
+        _ => say(&[b"init: could not start the update checker\n"]),
+    }
+}
+
+/// The daily update check (D299, docs/ux/components-v0.5.md section 7): ten minutes after the
+/// network has an address, then every 24 hours, `component update --dry-run --json`, which
+/// stores what it finds; nothing is installed. Off while `updates-daily` says `off`.
+fn check_updates_daily() -> ! {
+    set_signal_actions(SIG_DFL);
+    call(number::SETSID, [0; 6]);
+    loop {
+        while !network_has_address() {
+            sleep_seconds(LOOK_AGAIN_S);
+        }
+        sleep_seconds(FIRST_CHECK_S);
+        loop {
+            if daily_check_on() {
+                let _ = run_logged(COMPONENT, &CHECK_ARGUMENTS);
+                sleep_seconds(CHECK_EVERY_S);
+            } else {
+                sleep_seconds(LOOK_AGAIN_LATER_S);
+            }
+            if !network_has_address() {
+                break;
+            }
+        }
+    }
+}
+
+fn daily_check_on() -> bool {
+    let mut text = [0u8; 16];
+    let length = read_file(UPDATES_DAILY, &mut text).unwrap_or(0);
+    text[..length].trim_ascii() != b"off"
+}
+
+/// Runs `program` with `arguments` (each NUL-terminated), its output in init's log; whether it
+/// ended with status 0.
+fn run_logged(program: &[u8], arguments: &[&[u8]]) -> bool {
+    let mut pointers = [ptr::null::<u8>(); 8];
+    pointers[0] = program.as_ptr();
+    for (slot, argument) in pointers[1..].iter_mut().zip(arguments) {
+        *slot = argument.as_ptr();
+    }
+    let mut environment = [ptr::null::<u8>(); ENVIRONMENT.len() + 1];
+    for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
+        *slot = variable.as_ptr();
+    }
+    let child = call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]);
+    match child {
+        0 => {
+            let log = LOG.load(Ordering::Relaxed);
+            call(number::DUP3, [log, 1, 0, 0, 0, 0]);
+            call(number::DUP3, [log, 2, 0, 0, 0, 0]);
+            call(
+                number::EXECVE,
+                [program.as_ptr() as usize, pointers.as_ptr() as usize, environment.as_ptr() as usize, 0, 0, 0],
+            );
+            syscall::exit(COMMAND_NOT_RUN)
+        }
+        1.. => {
+            let mut status = 0;
+            loop {
+                match call(number::WAIT4, [child as usize, &raw mut status as usize, 0, 0, 0, 0]) {
+                    ended if ended == child => return status == 0,
+                    error if error == -EINTR => {}
+                    _ => return false,
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
 fn clock_is_automatic() -> bool {
     let mut disk = [0u8; eggos_settings_file::LARGEST + 1];
     let disk_length = read_file(SETTINGS_FILE, &mut disk).unwrap_or(0);
@@ -797,6 +890,11 @@ fn notice_end(services: &mut Services, ended: isize) {
         Some(AfterEnd::GiveUp) => {
             say(&[b"init: the clock keeper keeps ending; the clock is not set from the network\n"])
         }
+        None => {}
+    }
+    match services.updates.ended(ended as usize, now_ms()) {
+        Some(AfterEnd::Restart) => start_update_checker(&mut services.updates),
+        Some(AfterEnd::GiveUp) => say(&[b"init: the update checker keeps ending; components are not checked for updates\n"]),
         None => {}
     }
     match services.display.ended(ended as usize, now_ms()) {

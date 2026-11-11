@@ -731,6 +731,7 @@ const CONTEXT: Context<'static> = Context {
     coded: false,
     download: None,
     download_range: None,
+    now_s: 0,
 };
 
 fn run(files: &mut FakeFiles, console: &mut FakeConsole, line: &str) -> i32 {

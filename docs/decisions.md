@@ -20256,3 +20256,26 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the pane's `Join another network` row (the design's ask 8
   GUI); several hidden networks at once; `wifi connect` naming a network by escaped bytes.
 
+## D299 The Components design's backend: a stored update check, the daily check, job progress and `component cancel` (docs/ux/components-v0.5.md section 12, asks 1 to 3 and 6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `eggos_components::state` keeps small text files every front-end reads:
+  - `/var/lib/eggos/updates`: the last full `component update --dry-run` (when, from `release`
+    or `disk`, and each component's bytes to fetch and files changed). `component list --json`
+    gives it back: `updates_checked`, `updates_source` and `updates_daily` on the store line,
+    `update` (or `null`) and the running job's `percent` and `phase` on each row, whose state is
+    `updating` while one runs.
+  - `/var/lib/eggos/updates-daily`: `component update --daily on|off` (and `daily` on
+    `component_update`); on unless turned off. init starts an update checker that runs the dry run
+    ten minutes after the network has an address, then every 24 hours, while it is on; nothing
+    is installed by it.
+  - `/run/eggos/component-job`: the running job's kind, component, phase and bytes, written as
+    it copies; `/run/eggos/component-cancel`: `component cancel` asks it to stop, and the
+    update's progress callback stops at its next piece (the installed copy stays). The progress
+    callbacks now get the file system, so they can write and look.
+  - `component list --download` fetches the release's store into the cache when no store is
+    attached, recorded as a `downloading` job.
+- **Not yet.** Building and running; the pane's rework, the bar's `Updates` chip
+  (`Desktop::set_updates`) and the per-install cancel through the same file (ask 1 for install
+  and remove); download progress in bytes (the fetch runs as a separate program); `download` on
+  the `component_list` tool.
+

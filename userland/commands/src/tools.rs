@@ -2353,6 +2353,10 @@ pub const COMPONENT_UPDATE: ToolDefinition = ToolDefinition {
             "Only this installed component, by its name as component_list shows it.",
         ),
         DRY_RUN,
+        described(
+            optional("daily", JsonType::String, Mapping::Option("--daily")),
+            "on or off: turns the daily check for updates on or off instead of updating.",
+        ),
     ],
     max_effect: Effect::Change,
     grant: Some(Grant::Install),

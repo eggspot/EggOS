@@ -15,10 +15,11 @@ use eggos_commands::{ErrorDefinition, errors};
 use eggos_mcp::json::JsonWriter;
 
 /// The command's usage.
-pub const USAGE: &str = "usage: component list [--json]\n       component install [--dry-run] \
+pub const USAGE: &str = "usage: component list [--json] [--download]\n       component cancel\n       component install [--dry-run] \
                          [--json] <name>\n       component remove [--yes] [--dry-run] [--json] \
                          <name>\n       component edition [--dry-run] [<name>]\n       \
-                         component update [--dry-run] [--json] [<name>]\n";
+                         component update [--dry-run] [--json] [<name>]\n       \
+                         component update --daily on|off\n";
 /// The exit status of a command line written wrongly.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of a refusal or a failure.
@@ -54,13 +55,17 @@ pub struct Context<'a> {
     /// Downloads bytes `first` to `last` (both included) of `url` into the file `path`, when the
     /// system can: the store's index and the files of the component asked for (D271).
     pub download_range: Option<fn(&str, &str, u64, u64) -> bool>,
+    /// The wall clock's seconds, for the stored update check (D299).
+    pub now_s: u64,
 }
 
 /// A parsed command line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command<'a> {
-    /// `component list`.
-    List { json: bool },
+    /// `component list`, or with `download` the release's store fetched first (D299).
+    List { json: bool, download: bool },
+    /// `component cancel`: asks the running job to stop (D299).
+    Cancel,
     /// `component install`.
     Install {
         name: &'a str,
@@ -75,6 +80,8 @@ pub enum Command<'a> {
         name: Option<&'a str>,
         dry_run: bool,
         json: bool,
+        /// `--daily on|off`: turns the daily check on or off instead (D299).
+        daily: Option<bool>,
     },
     /// `component remove`.
     Remove {
@@ -89,9 +96,19 @@ pub enum Command<'a> {
 pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
     let (&verb, rest) = arguments.split_first()?;
     let (mut json, mut dry_run, mut yes, mut name) = (false, false, false, None);
+    let (mut download, mut daily) = (false, None);
     let mut operands_only = false;
-    for &word in rest {
+    let mut words = rest.iter();
+    while let Some(&word) = words.next() {
         match word {
+            "--download" if !operands_only && verb == "list" => download = true,
+            "--daily" if !operands_only && verb == "update" => {
+                daily = Some(match *words.next()? {
+                    "on" => true,
+                    "off" => false,
+                    _ => return None,
+                });
+            }
             "--json" if !operands_only => json = true,
             "--dry-run" if !operands_only && verb != "list" => dry_run = true,
             "--yes" if !operands_only && verb == "remove" => yes = true,
@@ -103,8 +120,9 @@ pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
         }
     }
     match verb {
-        "list" => Some(Command::List { json }),
-        "update" => Some(Command::Update { name, dry_run, json }),
+        "list" => Some(Command::List { json, download }),
+        "cancel" if name.is_none() => Some(Command::Cancel),
+        "update" => Some(Command::Update { name, dry_run, json, daily }),
         "edition" if !json => Some(Command::Edition { name, dry_run }),
         "install" => Some(Command::Install {
             name: name?,
@@ -145,11 +163,24 @@ pub fn run<F: Files, C: Console>(
     if let (None, Command::Update { name, .. }, Some(download_range)) = (&store, command, context.download_range) {
         store = update_store(files, context.arch, name, download_range);
     }
+    let wants_store = wants_store || matches!(command, Command::List { download: true, .. });
     if store.is_none() && wants_store && let Some(download) = context.download {
+        crate::state::record_job(
+            files,
+            &crate::state::Job {
+                pid: context.pid,
+                kind: "downloading".into(),
+                name: "store".into(),
+                phase: "downloading".into(),
+                done: 0,
+                total: 0,
+            },
+        );
         let path = manager::downloaded_store_path(manager::VERSION, context.arch);
         if download(&manager::store_url(manager::VERSION, context.arch), &path) {
             store = manager::read_store(files, &path, manager::Source::Downloaded, context.arch).ok();
         }
+        crate::state::end_job(files);
     }
     if let (Command::Install { name, dry_run: false, .. }, Some(download)) = (command, context.download)
         && store.as_ref().is_none_or(|store| store.index.component(name).is_none())
@@ -163,9 +194,13 @@ pub fn run<F: Files, C: Console>(
         file_name: manager::store_file_name(manager::VERSION, context.arch),
     };
     match command {
-        Command::List { json } => list(files, &mut out, store.as_ref(), json),
+        Command::List { json, .. } => list(files, &mut out, store.as_ref(), json),
+        Command::Cancel => cancel(files, &mut out),
         Command::Edition { name, dry_run } => edition(files, &mut out, store.as_ref(), context.pid, name, dry_run),
-        Command::Update { name, dry_run, json } => update(files, &mut out, store.as_ref(), context.pid, name, dry_run, json),
+        Command::Update { daily: Some(on), json, .. } => set_daily(files, &mut out, on, json),
+        Command::Update { name, dry_run, json, .. } => {
+            update(files, &mut out, store.as_ref(), context, name, dry_run, json)
+        }
         Command::Install {
             name,
             dry_run,
@@ -343,16 +378,51 @@ fn update_store<F: Files>(
     manager::read_store(files, &path, manager::Source::Downloaded, arch).ok()
 }
 
+fn set_daily<F: Files, C: Console>(files: &mut F, out: &mut Out<'_, C>, on: bool, json: bool) -> i32 {
+    if !crate::state::set_daily(files, on) {
+        return out.fail(json, &eggos_commands::errors::FAILED, "could not save the daily check's setting");
+    }
+    match json {
+        true => out.json(|writer| {
+            writer.begin_object();
+            writer.key("updates_daily");
+            writer.bool(on);
+            writer.end_object();
+        }),
+        false => out.say(if on {
+            "Components are checked for updates every day."
+        } else {
+            "Components are no longer checked for updates every day."
+        }),
+    }
+    0
+}
+
+fn cancel<F: Files, C: Console>(files: &mut F, out: &mut Out<'_, C>) -> i32 {
+    match crate::state::job(files) {
+        Some(job) => {
+            crate::state::request_cancel(files);
+            out.say(&format!("Cancelling {} {}...", job.kind, job.name));
+            0
+        }
+        None => {
+            out.say("Nothing is running.");
+            0
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn update<F: Files, C: Console>(
     files: &mut F,
     out: &mut Out<'_, C>,
     store: Option<&Store>,
-    pid: u32,
+    context: Context<'_>,
     only: Option<&str>,
     dry_run: bool,
     json: bool,
 ) -> i32 {
+    let pid = context.pid;
     let installed = manager::installed(files);
     if let Some(name) = only
         && !installed.iter().any(|component| component.name == name)
@@ -368,6 +438,13 @@ fn update<F: Files, C: Console>(
         .filter_map(|old| manager::plan_update(old, store.index.component(&old.name)?))
         .collect();
     let fetched: u64 = plans.iter().map(manager::UpdatePlan::changed_bytes).sum();
+    if dry_run && only.is_none() {
+        let source = match store.source {
+            manager::Source::Disk(_) | manager::Source::Share => "disk",
+            _ => "release",
+        };
+        crate::state::store_check(files, &crate::state::Checked::of(&plans, context.now_s, source));
+    }
     let write_summary = |writer: &mut JsonWriter<'_>, key: &str| {
         writer.begin_object();
         writer.key(key);
@@ -412,7 +489,26 @@ fn update<F: Files, C: Console>(
         if !json {
             out.say(&format!("Updating {}...", messages::titled(plan.component)));
         }
-        if let Err(failure) = manager::update(files, Some(store), plan, &mut |_, _| true) {
+        let name = plan.component.name.clone();
+        let updated = manager::update(files, Some(store), plan, &mut |files, done, total| {
+            if crate::state::cancel_requested(files) {
+                return false;
+            }
+            crate::state::record_job(
+                files,
+                &crate::state::Job {
+                    pid,
+                    kind: "updating".into(),
+                    name: name.clone(),
+                    phase: "copying".into(),
+                    done,
+                    total,
+                },
+            );
+            true
+        });
+        crate::state::end_job(files);
+        if let Err(failure) = updated {
             manager::unlock(files);
             let line = messages::install_failure_line(&failure, plan.component);
             let (_, _, error) = messages::install_failure(&failure, plan.component);
@@ -512,14 +608,25 @@ pub struct Row {
     pub state: &'static str,
     /// The titles of the installed components that need it.
     pub needed_by: Vec<String>,
+    /// The update the last check found for it, if it is installed and one was found (D299).
+    pub update: Option<crate::state::CheckedItem>,
+    /// The running job about it, if any (D299).
+    pub job: Option<crate::state::Job>,
 }
 
 /// The rows to show: the store's components in its order, then installed ones it lacks.
 pub fn rows<F: Files>(files: &mut F, store: Option<&Store>) -> Vec<Row> {
     let installed = manager::installed(files);
     let busy = busy_with(files);
+    let checked = crate::state::last_check(files);
+    let job = crate::state::job(files);
+    let job_of = |name: &str| job.clone().filter(|job| job.name == name);
+    let update_of = |name: &str, is_installed: bool| {
+        checked.as_ref().filter(|_| is_installed).and_then(|checked| checked.item(name).cloned())
+    };
     let state = |component: &Component, is_installed: bool| match &busy {
         Some((title, true)) if *title == component.title => "removing",
+        _ if job.as_ref().is_some_and(|job| job.name == component.name && job.kind == "updating") => "updating",
         Some((title, false)) if *title == component.title => "installing",
         _ if is_installed => "installed",
         _ => "not-installed",
@@ -538,6 +645,8 @@ pub fn rows<F: Files>(files: &mut F, store: Option<&Store>) -> Vec<Row> {
             rows.push(Row {
                 state: state(component, is_installed),
                 needed_by: needed_by(&component.name),
+                update: update_of(&component.name, is_installed),
+                job: job_of(&component.name),
                 component: component.clone(),
             });
         }
@@ -547,6 +656,8 @@ pub fn rows<F: Files>(files: &mut F, store: Option<&Store>) -> Vec<Row> {
             rows.push(Row {
                 state: state(component, true),
                 needed_by: needed_by(&component.name),
+                update: update_of(&component.name, true),
+                job: job_of(&component.name),
                 component: component.clone(),
             });
         }
@@ -575,7 +686,29 @@ pub fn write_row(writer: &mut JsonWriter<'_>, row: &Row) {
     writer.key("state");
     writer.string(row.state);
     writer.key("percent");
-    writer.null();
+    match &row.job {
+        Some(job) => writer.u64(job.percent()),
+        None => writer.null(),
+    }
+    writer.key("phase");
+    match &row.job {
+        Some(job) => writer.string(&job.phase),
+        None => writer.null(),
+    }
+    writer.key("update");
+    match &row.update {
+        Some(item) => {
+            writer.begin_object();
+            writer.key("fetch_bytes");
+            writer.u64(item.fetch_bytes);
+            writer.key("changed_bytes");
+            writer.u64(item.changed_bytes);
+            writer.key("changed_files");
+            writer.u64(item.changed_files as u64);
+            writer.end_object();
+        }
+        None => writer.null(),
+    }
     writer.key("size_bytes");
     writer.u64(component.size_bytes());
     writer.key("size_text");
@@ -597,8 +730,21 @@ pub fn write_row(writer: &mut JsonWriter<'_>, row: &Row) {
     writer.end_object();
 }
 
-fn write_store(writer: &mut JsonWriter<'_>, store: Option<&Store>) {
+fn write_store<F: Files>(writer: &mut JsonWriter<'_>, files: &mut F, store: Option<&Store>) {
     writer.begin_object();
+    let checked = crate::state::last_check(files);
+    writer.key("updates_checked");
+    match &checked {
+        Some(checked) => writer.u64(checked.at),
+        None => writer.null(),
+    }
+    writer.key("updates_source");
+    match &checked {
+        Some(checked) => writer.string(&checked.source),
+        None => writer.null(),
+    }
+    writer.key("updates_daily");
+    writer.bool(crate::state::daily(files));
     writer.key("store");
     match store {
         None => writer.null(),
@@ -637,7 +783,7 @@ fn list<F: Files, C: Console>(
     if json {
         let mut record = [0u8; RECORD_BYTES];
         let mut writer = JsonWriter::new(&mut record);
-        write_store(&mut writer, store);
+        write_store(&mut writer, files, store);
         writer.end_line();
         out.console.write_error(writer.as_bytes());
         for row in &rows {

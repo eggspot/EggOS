@@ -1949,7 +1949,17 @@ pub const COMPONENT_UPDATE: CommandDefinition = CommandDefinition {
                   every file checked against its SHA-256, then swapped in, so a failure or a \
                   power cut leaves the old copy or the new one, never a mix. Only root updates. \
                   --dry-run says what would change and how much would be fetched.",
-    options: &[DRY_RUN_OPTION, JSON_OPTION],
+    options: &[
+        DRY_RUN_OPTION,
+        JSON_OPTION,
+        valued(
+            None,
+            Some("daily"),
+            "on|off",
+            ValueType::Text,
+            "Turn the daily check for updates on or off instead (D299).",
+        ),
+    ],
     operands: &[operand("name", ValueType::Text, Count::ZeroOrOne)],
     outputs: Outputs {
         text: Output::Text,
@@ -1967,6 +1977,23 @@ pub const COMPONENT_UPDATE: CommandDefinition = CommandDefinition {
         exits(&INSTALL_FAILED, 1),
         exits(&PERMISSION_DENIED, 1),
     ],
+    examples: &[],
+    surface: COMPONENT_SURFACE,
+};
+
+/// `component cancel` (D299).
+pub const COMPONENT_CANCEL: CommandDefinition = CommandDefinition {
+    words: &["component", "cancel"],
+    summary: "Stops the running install, update or download.",
+    description: "Asks the component job another front-end started (the Components pane, \
+                  another command, an agent) to stop at its next step; one that is swapping a \
+                  component in finishes first. An install stopped leaves nothing installed; an \
+                  update stopped keeps the installed copy.",
+    options: &[],
+    operands: &[],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[exits(&USAGE, 2)],
     examples: &[],
     surface: COMPONENT_SURFACE,
 };
@@ -4161,7 +4188,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 110] = [
+pub static COMMANDS: [CommandDefinition; 111] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -4183,6 +4210,7 @@ pub static COMMANDS: [CommandDefinition; 110] = [
     CLIP_GET,
     CLIP_SET,
     COMPONENT_EDITION,
+    COMPONENT_CANCEL,
     COMPONENT_INSTALL,
     COMPONENT_UPDATE,
     COMPONENT_LIST,

@@ -732,7 +732,7 @@ fn copy_component<F: Files>(
         if result.is_err() {
             break;
         }
-        result = copy_file(files, source, file, &root, &mut buffer, &mut |piece| {
+        result = copy_file(files, source, file, &root, &mut buffer, &mut |_, piece| {
             done += piece;
             progress(done, total)
         })
@@ -769,7 +769,7 @@ fn copy_file<F: Files>(
     file: &index::File,
     root: &str,
     buffer: &mut [u8],
-    progress: &mut dyn FnMut(u64) -> bool,
+    progress: &mut dyn FnMut(&mut F, u64) -> bool,
 ) -> Result<(), Failure> {
     let mut folder = String::from(root);
     let parts: Vec<&str> = file.path.split('/').collect();
@@ -799,7 +799,7 @@ fn copy_bytes<F: Files>(
     target: Handle,
     file: &index::File,
     buffer: &mut [u8],
-    progress: &mut dyn FnMut(u64) -> bool,
+    progress: &mut dyn FnMut(&mut F, u64) -> bool,
 ) -> Result<(), Failure> {
     let mut hash = Sha256::new();
     let mut at = 0u64;
@@ -814,7 +814,7 @@ fn copy_bytes<F: Files>(
             .write(target, &buffer[..read])
             .map_err(written_failure)?;
         at += read as u64;
-        if !progress(read as u64) {
+        if !progress(files, read as u64) {
             return Err(Failure::Cancelled);
         }
     }
@@ -886,7 +886,7 @@ pub fn update<F: Files>(
     files: &mut F,
     store: Option<&Store>,
     plan: &UpdatePlan<'_>,
-    progress: &mut dyn FnMut(u64, u64) -> bool,
+    progress: &mut dyn FnMut(&mut F, u64, u64) -> bool,
 ) -> Result<(), Failure> {
     prepare_folders(files)?;
     tidy(files);
@@ -931,7 +931,7 @@ fn stage_update<F: Files>(
     plan: &UpdatePlan<'_>,
     staging: &str,
     total: u64,
-    progress: &mut dyn FnMut(u64, u64) -> bool,
+    progress: &mut dyn FnMut(&mut F, u64, u64) -> bool,
 ) -> Result<(), Failure> {
     let component = plan.component;
     let root = join(staging, ROOT);
@@ -949,9 +949,9 @@ fn stage_update<F: Files>(
     for file in &component.files {
         let changed = plan.changed.iter().any(|changed| core::ptr::eq(*changed, file));
         result = match (changed, source) {
-            (true, Some(source)) => copy_file(files, source, file, &root, &mut buffer, &mut |piece| {
+            (true, Some(source)) => copy_file(files, source, file, &root, &mut buffer, &mut |files, piece| {
                 done += piece;
-                progress(done, total)
+                progress(files, done, total)
             }),
             (true, None) => Err(Failure::Detached),
             (false, _) => {
@@ -962,9 +962,9 @@ fn stage_update<F: Files>(
                             offset: 0,
                             ..file.clone()
                         };
-                        let copied = copy_file(files, local, &at_start, &root, &mut buffer, &mut |piece| {
+                        let copied = copy_file(files, local, &at_start, &root, &mut buffer, &mut |files, piece| {
                             done += piece;
-                            progress(done, total)
+                            progress(files, done, total)
                         });
                         files.close(local);
                         copied

@@ -100,6 +100,7 @@ pub fn run(startup: &Startup) -> i32 {
         coded,
         download: Some(download_with_fetch),
         download_range: Some(download_range_with_fetch),
+        now_s: wall_clock_s(),
     };
     command::run(
         &mut LinuxFiles::new(),
@@ -107,6 +108,15 @@ pub fn run(startup: &Startup) -> i32 {
         context,
         &arguments[..count],
     )
+}
+
+fn wall_clock_s() -> u64 {
+    const CLOCK_REALTIME: usize = 0;
+    let mut time = [0i64; 2];
+    match syscall(number::CLOCK_GETTIME, [CLOCK_REALTIME, time.as_mut_ptr() as usize, 0, 0, 0, 0]) {
+        Ok(_) => time[0].max(0) as u64,
+        Err(_) => 0,
+    }
 }
 
 const FETCH: &CStr = c"/bin/fetch";
