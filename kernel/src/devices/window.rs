@@ -8,7 +8,7 @@
 use crate::memory::{FRAMES, Memory};
 use crate::paging::{self, MapError};
 use crate::sync::LeafSpinLock;
-use eggos_hal::paging::{Attributes, Format, MemoryType, leaf_size};
+use eggos_hal::paging::{Attributes, Format, MemoryType};
 use eggos_hal::{PhysicalRange, Platform};
 
 const REMEMBERED: usize = 32;
@@ -75,9 +75,9 @@ fn map_as<P: Platform>(
         .min(<P::PageTableFormat as Format>::LEVELS - 2);
     let alignment = (0..=largest)
         .rev()
-        .map(leaf_size)
+        .map(<P::PageTableFormat as Format>::leaf_bytes)
         .find(|&size| frames.start.is_multiple_of(size) && frames.len() >= size)
-        .unwrap_or(leaf_size(0));
+        .unwrap_or(<P::PageTableFormat as Format>::leaf_bytes(0));
     if windows.next == 0 {
         windows.next = window.start;
     }

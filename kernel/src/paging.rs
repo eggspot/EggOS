@@ -32,7 +32,7 @@ use crate::memory::{self, FrameAllocator, Memory};
 use core::marker::PhantomData;
 use core::sync::atomic::{Ordering, fence};
 use eggos_hal::memory::FRAME_SIZE;
-use eggos_hal::paging::{self, Attributes, Entry, Format, KernelImage};
+use eggos_hal::paging::{Attributes, Entry, Format, KernelImage};
 use eggos_hal::{MemoryMap, PhysicalRange, Platform};
 
 /// Most roots any [`Format`] has.
@@ -102,7 +102,7 @@ impl<F: Format> PageTables<F> {
         const { assert!(F::ROOTS <= MAX_ROOTS && F::MAX_LEAF_LEVEL < F::LEVELS) };
         let mut roots = [0; MAX_ROOTS];
         for root in &mut roots[..F::ROOTS] {
-            *root = new_table(frames)?;
+            *root = new_table::<F>(frames, F::LEVELS - 1)?;
         }
         Ok(Self {
             roots,
@@ -134,7 +134,7 @@ impl<F: Format> PageTables<F> {
         );
         let user_root = F::root(0).expect("address 0 is valid on every format");
         let mut roots = kernel.roots;
-        roots[user_root] = new_table(frames)?;
+        roots[user_root] = new_table::<F>(frames, F::LEVELS - 1)?;
         let tables = Self {
             roots,
             physical_memory_offset: kernel.physical_memory_offset,
@@ -144,7 +144,7 @@ impl<F: Format> PageTables<F> {
         };
         let top = F::LEVELS - 1;
         for index in kernel_half_root_entries::<F>() {
-            let virt = index as u64 * paging::leaf_size(top);
+            let virt = index as u64 * F::leaf_bytes(top);
             let entry = kernel.entry(kernel.roots[user_root], virt, top).read();
             tables.entry(roots[user_root], virt, top).write(entry);
         }
@@ -184,7 +184,7 @@ impl<F: Format> PageTables<F> {
         // SAFETY: the root came from `frames` in `new_sharing_kernel_half`, and nothing walks
         // it any more (the caller guarantees it is not active, and that `self` is not used
         // again).
-        unsafe { frames.free(root) };
+        unsafe { free_table::<F>(frames, root, top) };
     }
 
     /// Frees the table at physical `table`, at `level`, and every table below it, handing
@@ -196,7 +196,7 @@ impl<F: Format> PageTables<F> {
         frames: &mut FrameAllocator,
         leaf: &mut impl FnMut(&mut FrameAllocator, u64, usize),
     ) {
-        self.for_each_used_entry(table, 0..paging::ENTRIES, |entry| {
+        self.for_each_used_entry(table, 0..F::entries(level), |entry| {
             match F::decode(entry, level) {
                 Entry::Table(next) if level > 0 => {
                     self.free_table_tree(next, level - 1, frames, leaf)
@@ -208,7 +208,7 @@ impl<F: Format> PageTables<F> {
         });
         // SAFETY: a table of the low half, allocated from `frames` by `map_leaf`, reached once
         // (a table hangs from one entry), and walked by nothing any more (see `free_user_half`).
-        unsafe { frames.free(table) };
+        unsafe { free_table::<F>(frames, table, level) };
     }
 
     /// Records that the tables are in use: [`Self::map`] refuses to change them from then on.
@@ -275,13 +275,13 @@ impl<F: Format> PageTables<F> {
             let level = (0..=F::MAX_LEAF_LEVEL)
                 .rev()
                 .find(|&level| {
-                    let size = paging::leaf_size(level);
+                    let size = F::leaf_bytes(level);
                     (virt | phys).is_multiple_of(size) && remaining >= size
                 })
                 .unwrap_or(0);
             self.map_leaf(virt, phys, level, attributes, frames)?;
-            virt = virt.wrapping_add(paging::leaf_size(level));
-            phys = phys.wrapping_add(paging::leaf_size(level));
+            virt = virt.wrapping_add(F::leaf_bytes(level));
+            phys = phys.wrapping_add(F::leaf_bytes(level));
         }
         Ok(())
     }
@@ -301,7 +301,7 @@ impl<F: Format> PageTables<F> {
         let end = virt.checked_add(length).ok_or(MapError::InvalidAddress)?;
         while virt < end {
             let (entry, level) = self.leaf_entry(virt)?;
-            let size = paging::leaf_size(level);
+            let size = F::leaf_bytes(level);
             if !virt.is_multiple_of(size) || end - virt < size {
                 return Err(MapError::PartOfLargePage);
             }
@@ -503,7 +503,7 @@ impl<F: Format> PageTables<F> {
                     Entry::Kept(phys) => (phys, None),
                     Entry::Leaf(..) => return Err(MapError::PartOfLargePage),
                     Entry::Empty | Entry::Table(_) => {
-                        let size = paging::leaf_size(level);
+                        let size = F::leaf_bytes(level);
                         virt = (virt & !(size - 1)).saturating_add(size);
                         continue 'pages;
                     }
@@ -588,7 +588,7 @@ impl<F: Format> PageTables<F> {
             let level = (0..=largest)
                 .rev()
                 .find(|&level| {
-                    let size = paging::leaf_size(level);
+                    let size = F::leaf_bytes(level);
                     (virt | phys).is_multiple_of(size) && remaining >= size
                 })
                 .unwrap_or(0);
@@ -598,8 +598,8 @@ impl<F: Format> PageTables<F> {
                 return Err(MapError::AlreadyMapped);
             }
             entry.write(F::leaf(phys, level, attributes));
-            virt += paging::leaf_size(level);
-            phys += paging::leaf_size(level);
+            virt += F::leaf_bytes(level);
+            phys += F::leaf_bytes(level);
         }
         Ok(())
     }
@@ -612,7 +612,7 @@ impl<F: Format> PageTables<F> {
                 Entry::Empty | Entry::Kept(_) => return None,
                 Entry::Table(next) => table = next,
                 Entry::Leaf(phys, attributes) => {
-                    return Some((phys + virt % paging::leaf_size(level), attributes));
+                    return Some((phys + virt % F::leaf_bytes(level), attributes));
                 }
             }
         }
@@ -654,7 +654,7 @@ impl<F: Format> PageTables<F> {
                 Entry::Table(next) => next,
                 Entry::Leaf(..) | Entry::Kept(_) => return Err(MapError::AlreadyMapped),
                 Entry::Empty => {
-                    let next = new_table(frames)?;
+                    let next = new_table::<F>(frames, level - 1)?;
                     fence(Ordering::Release);
                     entry.write(F::table(next, level, user));
                     next
@@ -666,7 +666,7 @@ impl<F: Format> PageTables<F> {
 
     /// The entry for `virt` in the table at physical `table`, which is at `level`.
     fn entry(&self, table: u64, virt: u64, level: usize) -> TableEntry {
-        self.entry_at(table, paging::index(virt, level))
+        self.entry_at(table, F::index(virt, level))
     }
 
     /// Hands every entry of `indices` in the table at physical `table` that is not 0 to
@@ -704,7 +704,7 @@ impl<F: Format> PageTables<F> {
         }
     }
 
-    /// Entry `index` (below [`paging::ENTRIES`]) of the table at physical `table`.
+    /// Entry `index` (below [`Format::entries`]) of the table at physical `table`.
     fn entry_at(&self, table: u64, index: usize) -> TableEntry {
         let table = (table as usize).wrapping_add(self.physical_memory_offset) as *mut u64;
         TableEntry(table.wrapping_add(index))
@@ -745,9 +745,10 @@ impl TableEntry {
 /// those whose range starts at or above [`Format::USER_END`] (none on AArch64, whose user root
 /// maps the low half alone).
 fn kernel_half_root_entries<F: Format>() -> core::ops::Range<usize> {
-    let per_entry = paging::leaf_size(F::LEVELS - 1);
-    let first = F::USER_END.div_ceil(per_entry).min(paging::ENTRIES as u64) as usize;
-    first..paging::ENTRIES
+    let per_entry = F::leaf_bytes(F::LEVELS - 1);
+    let entries = F::entries(F::LEVELS - 1);
+    let first = F::USER_END.div_ceil(per_entry).min(entries as u64) as usize;
+    first..entries
 }
 
 /// The kernel's device window for platform `P` (D110): the addresses one root-level entry maps,
@@ -759,20 +760,40 @@ pub fn device_window<P: Platform>() -> core::ops::Range<u64> {
         return window;
     }
     let image = P::kernel_image();
-    let size = paging::leaf_size(<P::PageTableFormat as Format>::LEVELS - 1);
+    let size = <P::PageTableFormat as Format>::leaf_bytes(<P::PageTableFormat as Format>::LEVELS - 1);
     let image_entry = image.virtual_address(image.start) & !(size - 1);
     let start = image_entry.wrapping_sub(size);
     start..image_entry
 }
 
-/// A zeroed table frame from `frames`.
-fn new_table(frames: &mut FrameAllocator) -> Result<u64, MapError> {
-    let table = frames.allocate().ok_or(MapError::OutOfMemory)?;
+/// A zeroed table for `level` from `frames`: one frame, or the contiguous frames the format's
+/// table at that level takes ([`Format::table_order`]).
+fn new_table<F: Format>(frames: &mut FrameAllocator, level: usize) -> Result<u64, MapError> {
+    let order = F::table_order(level);
+    let table = match order {
+        0 => frames.allocate(),
+        order => frames.allocate_contiguous(order),
+    }
+    .ok_or(MapError::OutOfMemory)?;
     let start = (table as usize).wrapping_add(frames.physical_memory_offset()) as *mut u8;
-    // SAFETY: the frame was just allocated, so this code owns it; the allocator's offset
-    // reaches it. Linking it in orders these stores before the entry (`map`).
-    unsafe { eggos_hal::memory::zero(start, FRAME_SIZE as usize) };
+    // SAFETY: the frames were just allocated, so this code owns them; the allocator's offset
+    // reaches them. Linking the table in orders these stores before the entry (`map`).
+    unsafe { eggos_hal::memory::zero(start, (FRAME_SIZE as usize) << order) };
     Ok(table)
+}
+
+/// Gives table `table` at `level` back to `frames`.
+///
+/// # Safety
+/// As for [`FrameAllocator::free`]: `table` came from [`new_table`] for `level` with `frames`
+/// and nothing uses it any more.
+unsafe fn free_table<F: Format>(frames: &mut FrameAllocator, table: u64, level: usize) {
+    match F::table_order(level) {
+        // SAFETY: the caller's guarantees.
+        0 => unsafe { frames.free(table) },
+        // SAFETY: the caller's guarantees, for the table's contiguous frames.
+        order => unsafe { frames.free_contiguous(table, order) },
+    }
 }
 
 /// The kernel's page tables for platform `P` (see the module documentation), with the direct

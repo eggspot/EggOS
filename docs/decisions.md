@@ -20966,3 +20966,38 @@ the license, by an explicit instruction recorded here.
   - `Request::WifiJoin` has a new field, and its tests construct it.
   - The fake driver's tests gain `chosen_hidden`.
 - **Not yet.** Building and running; the acceptance list of the brief's section 8.
+
+## D320 s390x part 1: page tables of each format's own geometry, and z/Architecture's DAT format (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - **Per-format geometry.** The page-table code no longer assumes 512-entry tables of 9 bits
+    a level. `Format` gains provided methods with the old values as defaults: `index_shift`,
+    `entries`, `table_order` (the frames a table takes, as a power of two), and the
+    `leaf_bytes` and `index` built from them.
+    - `kernel/src/paging.rs` walks, allocates (`new_table::<F>(frames, level)`, contiguous
+      frames above order 0), frees (`free_table`) and scans tables through them, and the
+      device window aligns with `leaf_bytes`.
+    - The free functions `paging::index`/`leaf_size` stay for the boot code of the 512-entry
+      formats.
+  - **`paging::s390x`.** A region-second root (53-bit addresses), region-third and segment
+    tables of 2048 entries (16 KiB, order 2), and page tables of 256 entries (2 KiB in a 4 KiB
+    frame).
+    - Leaves are 4 KiB pages and EDAT-1 1 MiB segments (kernel-only).
+    - Page entries keep three software bits in the low byte, which the hardware ignores:
+      user, kept and writable.
+    - No memory type: s390x memory is coherent, and I/O is not memory-mapped.
+  - **Keeping programs out of the kernel half (for the HAL, part 2).** DAT has no privilege
+    bit, so the HAL will:
+    - run the kernel in the home space, through the process's whole root (the generic code's
+      single root, kernel half shared);
+    - run programs in the primary space, through a per-CPU root that holds the user half's
+      root entries alone, sharing the process's lower tables. It is copied on each switch,
+      and refreshed when a program's region-translation exception finds an entry the whole
+      root has gained since.
+
+    The kernel then reaches user memory directly in the home space, as on every other port.
+- **Next (part 2).** The HAL on QEMU `s390-ccw-virtio`: the IPL entry and the lowcore's PSWs,
+  the SCLP console, the CPU timer and clock comparator, external, program, SVC and I/O
+  interrupts, problem state, the floating-point registers, SIGP for CPUs, and the spaces
+  above. Then virtio-ccw (channel I/O), and s390x's Linux ABI and runtime, big-endian.
+- **Not yet.** Building and running.

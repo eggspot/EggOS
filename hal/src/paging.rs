@@ -15,6 +15,7 @@ pub mod loongarch64;
 pub mod mips64;
 pub mod powerpc64;
 pub mod riscv64;
+pub mod s390x;
 pub mod x86_64;
 
 use crate::memory::PhysicalRange;
@@ -252,6 +253,35 @@ pub trait Format {
     /// decodes as [`Entry::Kept`]: a page whose contents stay while the program may not touch
     /// it (D53).
     fn kept(phys: u64) -> u64;
+
+    /// The lowest address bit `level`'s index takes: 12 plus 9 a level, the 512-entry tables
+    /// of every format but s390x's, whose levels take 8 and 11 bits (D320).
+    fn index_shift(level: usize) -> u32 {
+        12 + 9 * level as u32
+    }
+
+    /// The entries of a table at `level`.
+    fn entries(level: usize) -> usize {
+        let _ = level;
+        ENTRIES
+    }
+
+    /// The frames a table at `level` takes, as a power of two: 0, one 4 KiB frame, but for
+    /// s390x's 16 KiB region and segment tables (D320).
+    fn table_order(level: usize) -> u32 {
+        let _ = level;
+        0
+    }
+
+    /// Bytes a leaf at `level` maps.
+    fn leaf_bytes(level: usize) -> u64 {
+        1 << Self::index_shift(level)
+    }
+
+    /// The index of `virt` in a table at `level`.
+    fn index(virt: u64, level: usize) -> usize {
+        ((virt >> Self::index_shift(level)) as usize) % Self::entries(level)
+    }
 
     /// Decodes an entry found at `level`. A leaf's attributes are what the hardware will
     /// enforce; where an architecture cannot express a [`MemoryType`] in the entry (RISC-V
