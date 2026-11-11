@@ -148,6 +148,15 @@ pub enum Input {
     StateChanged { state: u32 },
     /// Records were dropped.
     Overflow,
+    /// A drag between windows is over the window at (`x`, `y`) (D393): its payload's `kind`
+    /// and `serial`.
+    DragOver { x: i32, y: i32, kind: u32, serial: u32 },
+    /// The drag between windows left the window.
+    DragLeave,
+    /// The drag between windows was let go over the window at (`x`, `y`).
+    Drop { x: i32, y: i32, kind: u32, serial: u32 },
+    /// The window's own drag between windows ended, `landed` on a window or not.
+    DragEnded { landed: bool },
 }
 
 /// One record: the window it is for, when, and what.
@@ -219,6 +228,20 @@ pub fn decode(record: &[u8; RECORD_SIZE]) -> Option<Event> {
         },
         11 => Input::StateChanged { state: a as u32 },
         13 => Input::Overflow,
+        19 => Input::DragOver {
+            x: a,
+            y: b,
+            kind: c,
+            serial: d,
+        },
+        20 => Input::DragLeave,
+        21 => Input::Drop {
+            x: a,
+            y: b,
+            kind: c,
+            serial: d,
+        },
+        22 => Input::DragEnded { landed: a != 0 },
         _ => return None,
     };
     Some(Event {

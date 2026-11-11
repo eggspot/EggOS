@@ -1244,3 +1244,27 @@ fn set_place_moves_a_widget_and_what_it_holds_and_draws_both_places_again() {
     tree.set_place(bottom, Place::at(0, 200, Length::Fill(0), Length::Px(40)));
     assert!(tree.take_damage().is_empty());
 }
+
+#[test]
+fn a_drag_that_leaves_the_window_is_handed_over_when_the_source_allows_it() {
+    let (mut tree, list, _) = drag_fixture();
+    tree.set_drag_out(list, true);
+    button(&mut tree, 100, 76, true, 0);
+    assert_eq!(moved(&mut tree, 100, 83, 0), Response::DragStarted(list, 1));
+    assert_eq!(moved(&mut tree, -5, 83, 0), Response::DragLeftWindow(list, 1));
+    assert_eq!(tree.drag_words(list, 1).as_str(), ORDERED[1]);
+}
+
+#[test]
+fn a_drag_from_another_window_lands_on_the_same_targets() {
+    let (mut tree, _, places) = drag_fixture();
+    let over = Input::DragOver { x: 300, y: 76, kind: 1, serial: 9 };
+    assert_eq!(tree.handle(over, 0), Response::Nothing);
+    let dropped = Input::Drop { x: 300, y: 76, kind: 1, serial: 9 };
+    assert_eq!(
+        tree.handle(dropped, 0),
+        Response::ForeignDropped { target: places, at: 1, kind: 1, serial: 9 }
+    );
+    let missed = Input::Drop { x: 600, y: 300, kind: 1, serial: 9 };
+    assert_eq!(tree.handle(missed, 0), Response::Nothing);
+}

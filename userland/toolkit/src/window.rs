@@ -29,6 +29,10 @@ const SET_CLIPBOARD: usize = 0x4010_7720;
 const SET_KEY_ACCESSIBILITY: usize = 0x400c_7724;
 const CHANGE_FLAGS: usize = 0x400c_7725;
 const GET_CLIPBOARD: usize = 0xc020_7721;
+const START_DRAG: usize = 0x4058_7737;
+const GET_DRAG: usize = 0xc020_7738;
+const START_DRAG_BYTES: usize = 88;
+const DRAG_WORDS: usize = 64;
 const GET_PALETTE: usize = 0x8004_7727;
 const SET_PALETTE: usize = 0x4004_7728;
 const GET_REDUCE_MOTION: usize = 0x8004_7729;
@@ -211,6 +215,36 @@ impl WindowServer {
             u32::from_ne_bytes([reply[at], reply[at + 1], reply[at + 2], reply[at + 3]])
         };
         Ok((word(24) as usize, word(28)))
+    }
+
+    /// Hands the drag of `window`, which holds the pointer with the left button down, to the
+    /// server (`START_DRAG`, D393): `payload` of `kind` (1 paths one per line, 2 text), the
+    /// ghost showing `words`.
+    pub fn start_drag(&self, window: u32, kind: u32, payload: &[u8], words: &str) -> Result<(), Errno> {
+        let mut argument = [0u8; START_DRAG_BYTES];
+        let mut length = words.len().min(DRAG_WORDS);
+        while !words.is_char_boundary(length) {
+            length -= 1;
+        }
+        argument[0..4].copy_from_slice(&window.to_ne_bytes());
+        argument[4..8].copy_from_slice(&kind.to_ne_bytes());
+        argument[8..12].copy_from_slice(&(payload.len() as u32).to_ne_bytes());
+        argument[12..16].copy_from_slice(&(length as u32).to_ne_bytes());
+        argument[16..24].copy_from_slice(&(payload.as_ptr() as u64).to_ne_bytes());
+        argument[24..24 + length].copy_from_slice(&words.as_bytes()[..length]);
+        self.ioctl(START_DRAG, &mut argument)
+    }
+
+    /// Copies the payload of the drag dropped on this client from byte `offset` on into
+    /// `into` (`GET_DRAG`, D393): its whole length, its kind and its serial.
+    pub fn drag_payload(&self, offset: usize, into: &mut [u8]) -> Result<(usize, u32, u32), Errno> {
+        let mut argument = [0u8; 32];
+        argument[0..8].copy_from_slice(&(into.as_mut_ptr() as u64).to_ne_bytes());
+        argument[8..12].copy_from_slice(&(into.len() as u32).to_ne_bytes());
+        argument[12..16].copy_from_slice(&(offset as u32).to_ne_bytes());
+        self.ioctl(GET_DRAG, &mut argument)?;
+        let word = |at: usize| u32::from_ne_bytes([argument[at], argument[at + 1], argument[at + 2], argument[at + 3]]);
+        Ok((word(20) as usize, word(24), word(28)))
     }
 
     /// Where windows go and the scale.

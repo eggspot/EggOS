@@ -22762,3 +22762,22 @@ the license, by an explicit instruction recorded here.
   source on the same targets (next decision).
 - **Not yet.** Dropping on the desktop and the dock, copy-versus-move with a modifier, the
   touch form's long press, D162's `wm drag` across windows, and more payload kinds.
+
+## D394 The toolkit hands a drag to the server and takes drops from other windows (batch part 19; M12; code written, unbuilt, untested: code-only mode) — Decided by the toolkit's design (docs/ux/toolkit-v0.5.md section 7.2) and the code-only session (engineering)
+
+- **Decision.**
+  - **Leaving the window.** A drag source may let its drags leave (`set_drag_out`): when the
+    pointer crosses the window's edge during its drag, the tree ends the drag here and
+    answers `Response::DragLeftWindow(source, part)`; the program then hands it to the server
+    with `WindowServer::start_drag` (the payload, its kind, and the ghost's words, which
+    `drag_words` gives as the in-window ghost showed them). The end comes back as
+    `Input::DragEnded`, answered `Response::CarriedEnded { landed }`.
+  - **Arriving.** `Input::DragOver` from the server highlights the drop target under the
+    point exactly as an in-window drag does (no source, so nothing is "its own row");
+    `Input::DragLeave` clears it; `Input::Drop` answers `Response::ForeignDropped { target,
+    at, kind, serial }` on a target, the program reading the payload with
+    `WindowServer::drag_payload`. The targets' declarations are unchanged, as section 7.2
+    asked.
+  - The input decoder reads the four new records (19 to 22).
+- **Not yet.** A program that uses it: Files' drags need their design first (Claude Fable,
+  next); `Application` programs reach the server themselves for the hand-over.

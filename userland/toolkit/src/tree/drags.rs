@@ -28,7 +28,66 @@ pub(super) struct Pick {
     landing: Option<(WidgetId, Landing)>,
 }
 
+/// A drag from another window over this one (D394): where it would land.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Foreign {
+    landing: Option<(WidgetId, Landing)>,
+}
+
 impl<const N: usize, const A: usize> WidgetTree<N, A> {
+    /// Lets a drag from `id` leave the window: crossing the window's edge then answers
+    /// [`Response::DragLeftWindow`] and ends the drag here (D394).
+    pub fn set_drag_out(&mut self, id: WidgetId, out: bool) {
+        if let Some(node) = self.node_mut(id) {
+            node.drag_out = out;
+        }
+    }
+
+    /// The words a drag of `part` of `source` shows, for the server's ghost.
+    pub fn drag_words(&self, source: WidgetId, part: usize) -> Text<64> {
+        self.ghost_text(source, part)
+    }
+
+    pub(super) fn foreign_over(&mut self, x: i32, y: i32) {
+        self.damage_foreign();
+        let landing = self.landing_for(None, x, y);
+        self.foreign = Some(Foreign { landing });
+        self.damage_foreign();
+    }
+
+    pub(super) fn foreign_left(&mut self) {
+        self.damage_foreign();
+        self.foreign = None;
+    }
+
+    pub(super) fn foreign_dropped(&mut self, x: i32, y: i32, kind: u32, serial: u32) -> Response {
+        self.damage_foreign();
+        self.foreign = None;
+        match self.landing_for(None, x, y) {
+            Some((target, landing)) => Response::ForeignDropped {
+                target,
+                at: match landing {
+                    Landing::Onto { row, .. } => row,
+                    Landing::Between { at, .. } => at,
+                },
+                kind,
+                serial,
+            },
+            None => Response::Nothing,
+        }
+    }
+
+    fn damage_foreign(&mut self) {
+        if let Some(Foreign {
+            landing: Some((target, landing)),
+            ..
+        }) = self.foreign
+        {
+            self.damage.add(landing.rect().inset(-2));
+            self.damage_widget(target);
+        }
+    }
+
     /// Lets the rows of list or table `id`, or the whole of custom widget `id`, be picked up
     /// and dragged.
     pub fn set_drag_source(&mut self, id: WidgetId, source: bool) {
@@ -124,6 +183,15 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     }
 
     fn landing_at(&self, pick: &Pick, x: i32, y: i32) -> Option<(WidgetId, Landing)> {
+        self.landing_for(Some((pick.source, pick.part)), x, y)
+    }
+
+    fn landing_for(
+        &self,
+        source: Option<(WidgetId, usize)>,
+        x: i32,
+        y: i32,
+    ) -> Option<(WidgetId, Landing)> {
         let id = self.ids().rev().find(|&id| {
             self.node(id).is_some_and(|node| {
                 node.drop.is_some()
@@ -134,7 +202,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         })?;
         let node = self.node(id)?;
         let mode = node.drop?;
-        let own = id == pick.source;
+        let own = source.is_some_and(|(source, _)| source == id);
+        let part = source.map_or(usize::MAX, |(_, part)| part);
         let rect = node.rect;
         let (rows, first_top, row_height, view) = match &node.kind {
             Kind::List(list) => (
@@ -168,7 +237,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     return None;
                 }
                 let item = item_of(row)?;
-                if own && item == pick.part {
+                if own && item == part {
                     return None;
                 }
                 let rect = Rect::new(
@@ -185,8 +254,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     return None;
                 };
                 let source_row = match &node.kind {
-                    Kind::List(list) => list.row_of(pick.part),
-                    _ => Some(pick.part),
+                    Kind::List(list) => list.row_of(part),
+                    _ => Some(part),
                 };
                 if own && source_row.is_some_and(|row| at == row || at == row + 1) {
                     return None;
@@ -220,6 +289,11 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 return self.begin_drag(pick);
             }
             return Response::Nothing;
+        }
+        let outside = x < 0 || y < 0 || x >= self.size.0 || y >= self.size.1;
+        if outside && self.node(pick.source).is_some_and(|node| node.drag_out) {
+            self.cancel_drag();
+            return Response::DragLeftWindow(pick.source, pick.part);
         }
         self.damage_pick();
         pick.landing = self.landing_at(&pick, x, y);
@@ -362,8 +436,11 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
 
     /// The row of `id` a drag would land on, drawn hovered under the highlight.
     pub(super) fn landing_hover(&self, id: WidgetId) -> Option<usize> {
-        let pick = self.pick.filter(|pick| pick.started)?;
-        match pick.landing? {
+        let landing = match (self.pick.filter(|pick| pick.started), self.foreign) {
+            (Some(pick), _) => pick.landing,
+            (None, foreign) => foreign?.landing,
+        };
+        match landing? {
             (target, Landing::Onto { row, .. }) if target == id => match self.kind(id)? {
                 Kind::List(_) => Some(row),
                 Kind::Table(_) => Some(ROW_HIT + row),
@@ -374,10 +451,12 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     }
 
     pub(super) fn paint_landing(&self, canvas: &mut Canvas<'_>, clip: Rect) {
-        let Some(pick) = self.pick.filter(|pick| pick.started) else {
-            return;
+        let landing = match (self.pick.filter(|pick| pick.started), self.foreign) {
+            (Some(pick), _) => pick.landing,
+            (None, Some(foreign)) => foreign.landing,
+            (None, None) => return,
         };
-        if let Some((target, landing)) = pick.landing
+        if let Some((target, landing)) = landing
             && let Some(node) = self.node(target)
         {
             let previous = canvas.narrow(node.visible.intersection(&clip));

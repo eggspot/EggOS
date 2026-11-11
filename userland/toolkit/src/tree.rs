@@ -62,6 +62,20 @@ pub enum Response {
     /// A drag of this source's part (a row, or 0 for a whole widget) started: call
     /// [`WidgetTree::cancel_drag`] to refuse it.
     DragStarted(WidgetId, usize),
+    /// A drag of this source's part left the window, and the source lets drags leave it
+    /// ([`WidgetTree::set_drag_out`]): hand it to the server with
+    /// [`crate::window::WindowServer::start_drag`] (D394).
+    DragLeftWindow(WidgetId, usize),
+    /// A drag from another window was let go on `target` at `at` (as [`Response::Dropped`]):
+    /// read its payload of `kind` with [`crate::window::WindowServer::drag_payload`] (D394).
+    ForeignDropped {
+        target: WidgetId,
+        at: usize,
+        kind: u32,
+        serial: u32,
+    },
+    /// The window's drag that left it ended, `landed` on a window or not.
+    CarriedEnded { landed: bool },
     /// The drag of `source`'s `part` was let go over `target` at `at`: the row for
     /// [`DropMode::Onto`] (0 for a whole widget), the insertion index for
     /// [`DropMode::Between`].
@@ -117,6 +131,7 @@ struct Node {
     enabled: bool,
     person_only: bool,
     drag_source: bool,
+    drag_out: bool,
     drop: Option<DropMode>,
     drag_text: Text<48>,
     accessible_name: Text<64>,
@@ -177,6 +192,7 @@ pub struct WidgetTree<const N: usize, const A: usize = 0> {
     tip: tooltips::Tip,
     column: Option<tables::ColumnDrag>,
     pick: Option<drags::Pick>,
+    foreign: Option<drags::Foreign>,
     stores: [Store; A],
 }
 
@@ -230,6 +246,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             tip: tooltips::Tip::NONE,
             column: None,
             pick: None,
+            foreign: None,
             stores: [Store::EMPTY; A],
         }
     }
@@ -313,6 +330,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             drag_source: false,
             drop: None,
             drag_text: Text::new(),
+            drag_out: false,
             accessible_name: Text::new(),
             accessible_value: Text::new(),
         });
@@ -1258,6 +1276,16 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     /// Hands the tree `input`, which happened at `time_ms`: what the program should act on.
     pub fn handle(&mut self, input: Input, time_ms: u32) -> Response {
         match input {
+            Input::DragOver { x, y, .. } => {
+                self.foreign_over(x, y);
+                Response::Nothing
+            }
+            Input::DragLeave => {
+                self.foreign_left();
+                Response::Nothing
+            }
+            Input::Drop { x, y, kind, serial } => self.foreign_dropped(x, y, kind, serial),
+            Input::DragEnded { landed } => Response::CarriedEnded { landed },
             Input::PointerMove { x, y } => {
                 if let Some(column) = self.column {
                     return self.column_moved(column, x);
