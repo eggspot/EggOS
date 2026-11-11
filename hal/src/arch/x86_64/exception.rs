@@ -206,6 +206,13 @@ user_exception_save:
     xorl    %edx, %edx
     wrmsr
 .Lx86_64_entry_predictions_set:
+    cmpb    $0, {ibpb_on_entry}(%rip)
+    je      .Lx86_64_entry_returns_flushed
+    movl    ${ia32_pred_cmd}, %ecx
+    movl    ${pred_cmd_ibpb}, %eax
+    xorl    %edx, %edx
+    wrmsr
+.Lx86_64_entry_returns_flushed:
     movq    {kernel_rsp}(%rsp), %rsp
     popq    %r15
     popq    %r14
@@ -1275,6 +1282,9 @@ x86_64_user_test_end:
     ibrs_on_entry = sym IBRS_ON_ENTRY,
     ia32_spec_ctrl = const IA32_SPEC_CTRL,
     spec_ctrl_ibrs = const SPEC_CTRL_IBRS,
+    ibpb_on_entry = sym IBPB_ON_ENTRY,
+    ia32_pred_cmd = const IA32_PRED_CMD,
+    pred_cmd_ibpb = const PRED_CMD_IBPB,
     smap = sym SMAP_ON,
     verw_selector = sym VERW_SELECTOR,
     user_rsp = const USER_RSP_OFFSET,
@@ -1665,6 +1675,17 @@ static PREDICTION_BARRIER: core::sync::atomic::AtomicU8 = core::sync::atomic::At
 /// its returns (Retbleed) steer the kernel's. Read by the entry code.
 static IBRS_ON_ENTRY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
+/// Whether every entry from user mode issues an `IA32_PRED_CMD.IBPB` barrier (D332): on AMD Zen
+/// 1 to 4 without `SRSO_NO`, whose return predictions a program can train to steer the kernel's
+/// returns (Speculative Return Stack Overflow), where the barrier flushes them: always on Zen 1
+/// and 2, with `IBPB_BRTYPE` on Zen 3 and 4. Read by the entry code.
+static IBPB_ON_ENTRY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+const CPUID_EXTENDED_IBPB: u32 = 1 << 12;
+const CPUID_EXTENDED_IBPB_BRTYPE: u32 = 1 << 28;
+const CPUID_EXTENDED_SRSO_NO: u32 = 1 << 29;
+const AMD_ZEN_1_2: u32 = 0x17;
+const AMD_ZEN_3_4: u32 = 0x19;
+
 /// Whether every kernel thread switch fills the return stack buffer with 32 harmless entries
 /// (D289): on CPUs without enhanced IBRS, so a `ret` after the switch never predicts from what
 /// the last thread (or a program before it) left there, and an empty buffer never falls back to
@@ -1705,6 +1726,31 @@ fn set_up_branch_predictions() {
     unsafe { super::write_msr(IA32_SPEC_CTRL, SPEC_CTRL_IBRS) };
 }
 
+/// Turns [`IBPB_ON_ENTRY`] on where SRSO needs it (D332).
+fn set_up_return_predictions() {
+    if !is_amd() || super::timer::cpuid(0x8000_0000, 0)[0] < 0x8000_0008 {
+        return;
+    }
+    let signature = super::timer::cpuid(1, 0)[0];
+    let family = ((signature >> 8) & 0xf) + ((signature >> 20) & 0xff);
+    let extended = super::timer::cpuid(0x8000_0008, 0)[1];
+    let srso_no = super::timer::cpuid(0x8000_0000, 0)[0] >= 0x8000_0021
+        && super::timer::cpuid(0x8000_0021, 0)[0] & CPUID_EXTENDED_SRSO_NO != 0;
+    let flushes_returns = match family {
+        AMD_ZEN_1_2 => true,
+        AMD_ZEN_3_4 => extended & CPUID_EXTENDED_IBPB_BRTYPE != 0,
+        _ => false,
+    };
+    if !srso_no && flushes_returns && extended & CPUID_EXTENDED_IBPB != 0 {
+        IBPB_ON_ENTRY.store(1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn is_amd() -> bool {
+    let [_, ebx, ecx, edx] = super::timer::cpuid(0, 0);
+    [ebx, edx, ecx] == [u32::from_le_bytes(*b"Auth"), u32::from_le_bytes(*b"enti"), u32::from_le_bytes(*b"cAMD")]
+}
+
 fn is_intel() -> bool {
     let [_, ebx, ecx, edx] = super::timer::cpuid(0, 0);
     [ebx, edx, ecx] == [u32::from_le_bytes(*b"Genu"), u32::from_le_bytes(*b"ineI"), u32::from_le_bytes(*b"ntel")]
@@ -1738,6 +1784,7 @@ fn supervisor_protections() -> u64 {
     let smep = if ebx & CPUID_7_EBX_SMEP != 0 { CR4_SMEP } else { 0 };
     let umip = if ecx & CPUID_7_ECX_UMIP != 0 { CR4_UMIP } else { 0 };
     set_up_branch_predictions();
+    set_up_return_predictions();
     let smap = if ebx & CPUID_7_EBX_SMAP != 0 {
         SMAP_ON.store(1, core::sync::atomic::Ordering::Relaxed);
         CR4_SMAP

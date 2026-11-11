@@ -21462,3 +21462,25 @@ the license, by an explicit instruction recorded here.
   - Focus going back to the dropdown when the confirmation is cancelled.
 - **Build-pass notes.** Settings' `CAPACITY` grows by six through `components_pane::WIDGETS`, and
   the pane's tests that expected the confirmation under row 0 need the new places.
+
+## D332 AMD's Speculative Return Stack Overflow (SRSO): a prediction barrier on every entry from user mode (code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from AMD's SRSO whitepaper and Linux's `srso=ibpb` mode)
+
+- **Decision.** On AMD Zen 1 to 4 (families 0x17 and 0x19) without `SRSO_NO` (CPUID
+  0x80000021 EAX bit 29), a program can train the return predictions the kernel's `ret`s use.
+  Every entry from user mode (exceptions, interrupts and `syscall`, all through
+  `user_exception_save`) then writes `IA32_PRED_CMD.IBPB`, which flushes them:
+  - always on Zen 1 and 2;
+  - on Zen 3 and 4 only with `IBPB_BRTYPE` (CPUID 0x80000008 EBX bit 28), the microcode that
+    makes IBPB flush return predictions too.
+
+  Like `IBRS_ON_ENTRY` (D267), it is one flag the entry code reads (`IBPB_ON_ENTRY`), set once
+  at start-up (`set_up_return_predictions`), and nothing on other CPUs.
+- **Why IBPB and not "safe RET".** Linux's default rewrites every `ret` into a return thunk.
+  That needs the compiler's `-Zfunction-return=thunk-extern`, which the pinned stable toolchain
+  does not have. IBPB on entry is Linux's `srso=ibpb`: costlier per entry, but complete without
+  compiler support.
+- **Left.** Zen 3 and 4 without the `IBPB_BRTYPE` microcode stay exposed, as under Linux's
+  `ibpb` mode, with no other option on stable Rust. KPTI is the one item still at the end of
+  the queue (D289).
+- **Cost.** One `wrmsr` per entry on affected AMD CPUs, measured by the weekly performance pass
+  (D122).
