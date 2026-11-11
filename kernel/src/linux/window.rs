@@ -436,6 +436,13 @@ pub fn ioctl<P: Platform>(
             };
             let hidden = flags & protocol::tray_flags::HIDDEN != 0;
             let remove = flags & protocol::tray_flags::REMOVE != 0;
+            if flags & protocol::tray_flags::BALLOON != 0 {
+                let text = &text[..tip_length];
+                on_windows::<P, _>(|desktop, _, damage, events| {
+                    desktop.show_tray_balloon(client, window, icon, text, damage, events)
+                })?;
+                return Ok(0);
+            }
             on_windows::<P, _>(|desktop, _, damage, _| {
                 desktop.set_tray_icon(
                     client,

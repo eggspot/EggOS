@@ -127,6 +127,12 @@ const NIF_MESSAGE: u32 = 0x01;
 const NIF_ICON: u32 = 0x02;
 const NIF_TIP: u32 = 0x04;
 const NIF_STATE: u32 = 0x08;
+const NIF_INFO: u32 = 0x10;
+const DATA_INFO: usize = 304;
+const DATA_INFO_TITLE: usize = 820;
+const INFO_UNITS: usize = 256;
+const INFO_TITLE_UNITS: usize = 64;
+const TRAY_BALLOON: u32 = 4;
 const NIS_HIDDEN: u32 = 0x01;
 const NIN_SELECT: u32 = 0x0400;
 const WM_LBUTTONUP: u32 = 0x0202;
@@ -351,6 +357,10 @@ unsafe extern "efiapi" fn shell_notify_icon_w(message: u32, data: *const u8) -> 
     if let Err(code) = show(&entry, false) {
         return fail(code, FALSE);
     }
+    if flags & NIF_INFO != 0 && size >= DATA_INFO_TITLE + INFO_TITLE_UNITS * 2 {
+        // SAFETY: as above; the structure is long enough for the balloon's text and title.
+        let _ = unsafe { show_balloon(&entry, data) };
+    }
     let stored = TRAY.with(|icons| {
         let slot = match found {
             Some(at) => &mut icons[at],
@@ -368,6 +378,59 @@ unsafe extern "efiapi" fn shell_notify_icon_w(message: u32, data: *const u8) -> 
     }
 }
 
+
+unsafe fn units_at(data: *const u8, offset: usize, room: usize, out: &mut [u16]) -> usize {
+    let mut length = 0;
+    while length < room.min(out.len()) {
+        // SAFETY: the caller's contract: `room` units at `offset`.
+        let unit = unsafe { field::<u16>(data, offset + length * 2) };
+        if unit == 0 {
+            break;
+        }
+        out[length] = unit;
+        length += 1;
+    }
+    length
+}
+
+/// `NIF_INFO` (D364): the balloon's title and text, joined by `: ` when both are set, sent to
+/// the shell's notice; an empty text closes the icon's balloon.
+///
+/// # Safety
+/// `data` is a `NOTIFYICONDATAW` long enough for its balloon fields.
+unsafe fn show_balloon(entry: &TrayEntry, data: *const u8) -> Result<(), u32> {
+    let mut info = [0u16; INFO_UNITS];
+    let mut title = [0u16; INFO_TITLE_UNITS];
+    // SAFETY: the caller's contract.
+    let info_length = unsafe { units_at(data, DATA_INFO, INFO_UNITS, &mut info) };
+    // SAFETY: as above.
+    let title_length = unsafe { units_at(data, DATA_INFO_TITLE, INFO_TITLE_UNITS, &mut title) };
+    let mut joined = [0u16; INFO_UNITS + INFO_TITLE_UNITS + 2];
+    let mut length = 0;
+    let mut put = |units: &[u16]| {
+        for &unit in units {
+            if length < joined.len() {
+                joined[length] = unit;
+                length += 1;
+            }
+        }
+    };
+    if info_length > 0 {
+        put(&title[..title_length]);
+        if title_length > 0 {
+            put(&[u16::from(b':'), u16::from(b' ')]);
+        }
+        put(&info[..info_length]);
+    }
+    let server = server_window(entry.window).ok_or(error::INVALID_WINDOW_HANDLE)?;
+    let device = super::gui::device()?;
+    let mut text = [0u8; TIP_BYTES];
+    let (written, _) = text::write_utf8(&joined[..length], &mut text);
+    let text = core::str::from_utf8(&text[..written]).unwrap_or("");
+    device
+        .set_tray_icon((server, entry.key, TRAY_BALLOON), text, None)
+        .map_err(|_| error::NOT_ENOUGH_MEMORY)
+}
 /// A press the server reported on icon `key` (D357): the icon's callback message posted to its
 /// window, packed by its version: `uID` and the message for versions 0 and 3 (3 adds
 /// `NIN_SELECT` after a left button's up), the point and `MAKELONG(message, uID)` for version

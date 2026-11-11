@@ -2005,7 +2005,11 @@ impl Desktop {
         }
         let (x, y) = self.pointer;
         self.super_alone = false;
+        let balloon = self.balloon_pressed(events);
         self.close_notice(damage);
+        if balloon {
+            return Action::None;
+        }
         if matches!(code, button::LEFT | button::RIGHT) && self.on_screen_keyboard_takes(x, y) {
             self.on_screen_keyboard_press(x, y, code == button::RIGHT, damage);
             return Action::None;

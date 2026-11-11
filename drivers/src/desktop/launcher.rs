@@ -403,6 +403,8 @@ impl Launcher {
 pub(super) struct Notice {
     pub text: &'static str,
     pub until_ms: u32,
+    /// Whether it shows a notification-area icon's balloon, whose text the tray keeps (D364).
+    pub balloon: bool,
 }
 
 impl Desktop {
@@ -441,8 +443,11 @@ impl Desktop {
     }
 
     /// The notice shown now, its text.
-    pub fn notice_text(&self) -> Option<&'static str> {
-        self.notice.map(|notice| notice.text)
+    pub fn notice_text(&self) -> Option<&str> {
+        self.notice.map(|notice| match notice.balloon {
+            true => self.balloon_text(),
+            false => notice.text,
+        })
     }
 
     fn content_x(&self) -> u32 {
@@ -1040,8 +1045,29 @@ impl Desktop {
         self.notice = Some(Notice {
             text,
             until_ms: self.now_ms.wrapping_add(milliseconds),
+            balloon: false,
         });
         damage.add(with_shadow(self.notice_rect()));
+    }
+
+    pub(super) fn show_balloon_notice(&mut self, damage: &mut Damage) {
+        self.close_notice(damage);
+        self.notice = Some(Notice {
+            text: "",
+            until_ms: self.now_ms.wrapping_add(NOTICE_MS),
+            balloon: true,
+        });
+        damage.add(with_shadow(self.notice_rect()));
+    }
+
+    /// Whether the notice shows a balloon and `(x, y)` is on it.
+    pub(super) fn balloon_at(&self, x: u32, y: u32) -> bool {
+        let rect = self.notice_rect();
+        self.notice.is_some_and(|notice| notice.balloon)
+            && x >= rect.x
+            && x < rect.x + rect.width
+            && y >= rect.y
+            && y < rect.y + rect.height
     }
 
     pub(super) fn close_notice(&mut self, damage: &mut Damage) {
@@ -1075,16 +1101,16 @@ impl Desktop {
     }
 
     pub(super) fn draw_notice(&self, canvas: &mut Canvas<'_>) {
-        let Some(notice) = self.notice else {
+        let Some(text) = self.notice_text() else {
             return;
         };
         let rect = self.notice_rect();
         Self::draw_popup_surface(canvas, rect, colour::MENU);
-        let width = notice.text.len() as u32 * GLYPH_WIDTH as u32;
+        let width = text.chars().count() as u32 * GLYPH_WIDTH as u32;
         canvas.text(
             rect.x + rect.width.saturating_sub(width) / 2,
             rect.y + NOTICE_TEXT_Y,
-            notice.text,
+            text,
             colour::TEXT,
         );
     }

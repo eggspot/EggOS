@@ -22120,3 +22120,16 @@ the license, by an explicit instruction recorded here.
   `HTREEITEM` and `lParam`), and a non-empty answer is the tip.
 - **Not yet.** Tips past 79 units are cut, as for list views (D362); the tool covers the
   item's whole row rather than its label alone.
+
+## D364 Windows notification-area balloons as the shell's notice (`NIF_INFO`) (batch part 13's rest, D357's "Not yet"; M15, M12; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/windows-tooltips-tray-v0.5.md section 15) and the code-only session (engineering)
+
+- **Decision.** `Shell_NotifyIconW` with `NIF_INFO` joins `szInfoTitle`, `: ` and `szInfo`
+  (the one that is set when only one is) and sends it with `SET_TRAY_ICON`'s new `BALLOON`
+  flag (4), the tip field carrying the text. The server shows it in the shell's notice (a
+  line feed as a space, cut at 36 glyphs with `...`, closed after 3000 ms like any notice;
+  `Notice::balloon`, its text kept by the tray) and the icon's window gets `NIN_BALLOONSHOW`;
+  a press on the notice is consumed and sends `NIN_BALLOONUSERCLICK`. An empty `szInfo`
+  closes the icon's balloon when it is the one showing. A later balloon replaces the earlier
+  one.
+- **Not yet.** `NIN_BALLOONTIMEOUT` and `NIN_BALLOONHIDE`, the phone shade keeping balloons
+  among its notices, and the icon kinds of `dwInfoFlags` (one notice look, as designed).

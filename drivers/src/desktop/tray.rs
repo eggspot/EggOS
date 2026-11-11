@@ -6,7 +6,9 @@
 //! them, reported to the icon's window as the Windows message each stands for.
 
 use super::paint::Canvas;
-use super::protocol::{EventRecord, EventSink, TRAY_ICON_SIDE, TRAY_TIP_CAPACITY, WindowError, event};
+use super::protocol::{
+    EventRecord, EventSink, TRAY_ICON_SIDE, TRAY_TIP_CAPACITY, WindowError, event,
+};
 use super::shell::{PanelItem, TASKBAR_ITEM};
 use super::{Desktop, colour};
 use crate::display::{Damage, Rect};
@@ -26,6 +28,10 @@ const WM_RBUTTONDOWN: i32 = 0x0204;
 const WM_RBUTTONUP: i32 = 0x0205;
 const WM_MBUTTONDOWN: i32 = 0x0207;
 const WM_MBUTTONUP: i32 = 0x0208;
+const NIN_BALLOONSHOW: i32 = 0x0402;
+const NIN_BALLOONUSERCLICK: i32 = 0x0405;
+const BALLOON_GLYPHS: usize = 36;
+const BALLOON_BYTES: usize = BALLOON_GLYPHS * 4 + 3;
 
 #[derive(Debug, Clone, Copy)]
 struct TrayIcon {
@@ -51,6 +57,9 @@ impl Default for Tray {
         Tray {
             icons: [None; MOST_TRAY_ICONS],
             next_order: 0,
+            balloon: [0; BALLOON_BYTES],
+            balloon_length: 0,
+            balloon_owner: None,
         }
     }
 }
@@ -302,4 +311,81 @@ fn draw_tile(canvas: &mut Canvas<'_>, (x, y): (u32, u32), title: &str) {
         .map_or('?', |letter| letter.to_ascii_uppercase());
     let mut buffer = [0u8; 4];
     canvas.text(x + 4, y, letter.encode_utf8(&mut buffer), colour::TEXT);
+}
+
+impl Desktop {
+    /// A balloon of client `client`'s icon `key` (D364): `text` (UTF-8, its title and text
+    /// already joined) shows in the shell's notice, cut at 36 glyphs with `...`, and the icon's
+    /// window gets `NIN_BALLOONSHOW`; an empty text closes the icon's balloon if it shows.
+    pub fn show_tray_balloon(
+        &mut self,
+        client: u16,
+        window: u32,
+        key: u32,
+        text: &[u8],
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Result<(), WindowError> {
+        let slot = self.owned(client, window)?;
+        let text = core::str::from_utf8(text).map_err(|_| WindowError::Invalid)?;
+        let known = self
+            .tray
+            .icons
+            .iter()
+            .flatten()
+            .any(|icon| icon.client == client && icon.key == key);
+        if !known {
+            return Err(WindowError::Invalid);
+        }
+        if text.is_empty() {
+            if self.tray.balloon_owner == Some((slot, key)) {
+                self.close_notice(damage);
+                self.tray.balloon_owner = None;
+            }
+            return Ok(());
+        }
+        let mut length = 0;
+        let mut glyphs = 0;
+        for character in text.chars() {
+            if glyphs == BALLOON_GLYPHS {
+                for _ in 0..3 {
+                    self.tray.balloon[length] = b'.';
+                    length += 1;
+                }
+                break;
+            }
+            let shown = if character == '\n' { ' ' } else { character };
+            let mut bytes = [0u8; 4];
+            let encoded = shown.encode_utf8(&mut bytes).as_bytes();
+            self.tray.balloon[length..length + encoded.len()].copy_from_slice(encoded);
+            length += encoded.len();
+            glyphs += 1;
+        }
+        self.tray.balloon_length = length;
+        self.tray.balloon_owner = Some((slot, key));
+        self.show_balloon_notice(damage);
+        let (x, y) = self.pointer;
+        let record = EventRecord::new(event::TRAY, 0, NIN_BALLOONSHOW, key as i32, x, y);
+        self.send(slot, record, events);
+        Ok(())
+    }
+
+    /// The balloon's text, for the notice that shows it.
+    pub(super) fn balloon_text(&self) -> &str {
+        core::str::from_utf8(&self.tray.balloon[..self.tray.balloon_length]).unwrap_or("")
+    }
+
+    /// A press on the notice while it shows a balloon (D364): the balloon's window gets
+    /// `NIN_BALLOONUSERCLICK`; whether the press was one.
+    pub(super) fn balloon_pressed(&mut self, events: &mut dyn EventSink) -> bool {
+        let (x, y) = self.pointer;
+        if !self.balloon_at(x, y) {
+            return false;
+        }
+        if let Some((slot, key)) = self.tray.balloon_owner.take() {
+            let record = EventRecord::new(event::TRAY, 0, NIN_BALLOONUSERCLICK, key as i32, x, y);
+            self.send(slot, record, events);
+        }
+        true
+    }
 }

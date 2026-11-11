@@ -353,6 +353,8 @@ pub mod layered_flags {
 pub mod tray_flags {
     pub const HIDDEN: u32 = 1;
     pub const REMOVE: u32 = 2;
+    /// The tip carries a balloon for the shell's notice instead (D364).
+    pub const BALLOON: u32 = 4;
 }
 
 /// The longest tip a notification-area icon carries, in bytes of UTF-8.
