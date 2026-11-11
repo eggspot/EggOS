@@ -368,7 +368,8 @@ pub mod flag {
 }
 
 /// `clone`'s arguments, in the architecture's order: x86_64 has the child's id word before
-/// the thread pointer, AArch64 and RISC-V after it (Linux's `CLONE_BACKWARDS` there).
+/// the thread pointer, AArch64 and RISC-V after it (Linux's `CLONE_BACKWARDS` there); s390x
+/// has the stack before the flags too (`CLONE_BACKWARDS2`).
 #[derive(Debug, Clone, Copy)]
 pub struct Arguments {
     pub flags: u64,
@@ -381,7 +382,12 @@ pub struct Arguments {
 
 impl Arguments {
     fn of(context: &UserContext) -> Self {
-        let [flags, stack, parent_tid, fourth, fifth, _] = context.syscall_arguments();
+        let [first, second, parent_tid, fourth, fifth, _] = context.syscall_arguments();
+        let (flags, stack) = if crate::linux::abi::CLONE_STACK_FIRST {
+            (second, first)
+        } else {
+            (first, second)
+        };
         let (child_tid, tls) = if crate::linux::abi::CLONE_CHILD_TID_BEFORE_TLS {
             (fourth, fifth)
         } else {

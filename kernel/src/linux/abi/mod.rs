@@ -30,6 +30,11 @@ mod powerpc64;
 #[cfg(target_arch = "powerpc64")]
 pub use powerpc64::*;
 
+#[cfg(target_arch = "s390x")]
+mod s390x;
+#[cfg(target_arch = "s390x")]
+pub use s390x::*;
+
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
 #[cfg(target_arch = "riscv64")]
@@ -46,6 +51,7 @@ pub use x86_64::*;
     target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64",
+    target_arch = "s390x",
     target_arch = "x86_64"
 )))]
 compile_error!("EggOS has no Linux ABI for this architecture: add kernel/src/linux/abi/<arch>.rs");
@@ -86,6 +92,13 @@ pub mod signal {
     pub const SIGPWR: u32 = 30;
     pub const SIGSYS: u32 = 31;
 }
+
+/// `clone` takes the flags first and the stack second everywhere but on s390x.
+#[cfg(not(target_arch = "s390x"))]
+pub const CLONE_STACK_FIRST: bool = false;
+/// `mmap` takes its arguments in registers everywhere but on s390x.
+#[cfg(not(target_arch = "s390x"))]
+pub const MMAP_ARGUMENTS_IN_MEMORY: bool = false;
 
 /// `struct sigaction`'s handler comes first everywhere but on MIPS.
 #[cfg(not(target_arch = "mips64"))]
@@ -347,6 +360,9 @@ pub enum StatLayout {
     Generic,
     /// MIPS n64's: a 32-bit `st_dev` and `st_rdev` with padding, 32-bit times (D315).
     Mips64,
+    /// s390x's: x86_64's first fields, then the times before `st_blksize` and `st_blocks`
+    /// (D323).
+    S390x,
 }
 
 /// Three instructions as code bytes, in the CPU's own byte order (D318).

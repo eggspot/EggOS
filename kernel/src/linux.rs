@@ -700,6 +700,17 @@ fn syscall<P: Platform>(
     ControlFlow::Continue(())
 }
 
+/// The six `mmap` arguments a program on s390x passes in memory at `block` (D323).
+fn mmap_arguments<P: Platform>(process: &Process<P>, block: u64) -> Result<[u64; 6], Errno> {
+    let mut bytes = [0u8; 48];
+    process
+        .read_user_memory(block, &mut bytes)
+        .map_err(|_| Errno::EFAULT)?;
+    Ok(core::array::from_fn(|index| {
+        u64::from_ne_bytes(bytes[index * 8..][..8].try_into().unwrap())
+    }))
+}
+
 /// Memory call `number` with `arguments` ([`memory`]): out of line, with the arguments it
 /// needs read there, so the other calls' path stays as short as it was.
 #[inline(never)]
@@ -711,6 +722,11 @@ fn memory_call<P: Platform>(
 ) -> Result<u64, Errno> {
     match number {
         number::BRK => Ok(memory::brk::<P>(process, first)),
+        number::MMAP if abi::MMAP_ARGUMENTS_IN_MEMORY => {
+            let [first, second, third, fourth, fifth, sixth] = mmap_arguments(process, first)?;
+            let file = memory::MappedFile { files, fd: fifth };
+            memory::mmap_file::<P>(process, first, second, third, fourth, file, sixth)
+        }
         number::MMAP => {
             let file = memory::MappedFile { files, fd: fifth };
             memory::mmap_file::<P>(process, first, second, third, fourth, file, sixth)

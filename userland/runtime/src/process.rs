@@ -133,6 +133,26 @@ pub unsafe fn clone_onto_stack(
             in("$16") child, in("$17") argument,
         );
     }
+    #[cfg(target_arch = "s390x")]
+    // SAFETY: Linux's s390x `clone` (D323): the stack first, then the flags; the caller's
+    // registers are as before but `r2`; the child starts on its own stack, below which it keeps
+    // the ABI's 160-byte save area, and never comes back here.
+    unsafe {
+        asm!(
+            "svc 0",
+            "ltgr %r2, %r2",
+            "jnz 2f",
+            "aghi %r15, -160",
+            "lgr %r2, %r9",
+            "basr %r14, %r8",
+            ".short 0",
+            "2:",
+            in("r1") number::CLONE,
+            inlateout("r2") stack_top as isize => result,
+            in("r3") flags, in("r4") 0usize, in("r5") 0usize, in("r6") 0usize,
+            in("r8") child, in("r9") argument,
+        );
+    }
     #[cfg(target_arch = "loongarch64")]
     // SAFETY: Linux's LoongArch `clone` (D290): the caller's registers are as before but `$a0`;
     // the child starts on its own stack and never comes back here.

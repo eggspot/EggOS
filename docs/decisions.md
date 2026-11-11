@@ -21106,3 +21106,50 @@ the license, by an explicit instruction recorded here.
   - A gap in the subchannel numbers ends discovery early.
 - **Next (part 3b and 3c).** s390x's Linux ABI and user runtime; then secondary CPUs through
   SIGP, and the xtask, toolchain and CI entries.
+
+## D323 s390x part 3b: its Linux ABI and the user runtime (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.**
+  - **`kernel/src/linux/abi/s390x.rs`.**
+    - **System calls.** s390x's own table, the 64-bit entries, with the legacy calls and
+      `renameat`. `time` and `accept` exist only for 31-bit programs or through
+      `socketcall`, so their names get numbers past `LAST`, which answer `ENOSYS`.
+    - **Structures.** The generic terminal numbers, `open` flags and signal numbers.
+      `struct sigaction` has `sa_restorer`. `struct stat` is a new `StatLayout::S390x`: 144
+      bytes, x86_64's first fields, then the three times before `st_blksize` and
+      `st_blocks`.
+    - **Calls that differ.**
+      - `mmap` takes one pointer to its six arguments (Linux's `old_mmap`):
+        `MMAP_ARGUMENTS_IN_MEMORY`, read in `memory_call`.
+      - `clone` takes the stack before the flags (`CLONE_BACKWARDS2`): `CLONE_STACK_FIRST`,
+        read in `clone`'s `Arguments::of`.
+
+      Both are `false` on every other architecture (defaults in `abi/mod.rs`), so their
+      paths fold away there.
+    - **Signal frames.** `rt_sigframe`: the 160-byte save area with the back chain, the
+      `svc 173` halfword, `siginfo_t`, then the `ucontext`. That holds `_sigregs` (PSW, `r0`
+      to `r15`, `a0` to `a15`, the FP control word and `f0` to `f15`) and `uc_sigmask`, then
+      a zero vector extension. Handlers get `r2` the signal, `r3` the info, `r4` the context,
+      `r14` the restorer (the kernel's `svc 173` trampoline without `SA_RESTORER`) and `r15`
+      the frame.
+    - **ELF machine** 22 (`EM_S390`).
+  - **The user runtime.**
+    - `svc 0` with the number in `r1` and the arguments in `r2` to `r7`. `call` passes
+      `mmap`'s six arguments in a block on its stack and swaps `clone`'s first two, so its
+      callers stay the same on every architecture.
+    - `_start` hands `start` the stack and `_DYNAMIC`, with a 160-byte save area and a zero
+      back chain. `R_390_RELATIVE` is 12.
+    - `clone_onto_stack` keeps the child's save area.
+    - The self-test reads and sets the thread pointer in `a0:a1`. The signal actions and the
+      `stat` mode offset of init, eggsh, coreutils and the self-test take s390x's.
+  - **Fix on the way.** The PowerPC runtime's `readlinkat`, `symlinkat`, `linkat`, `openat2`,
+    `fchmodat`, `fchmodat2`, `statfs`, `fstatfs`, `lseek` and `faccessat` carried MIPS's
+    numbers. They now carry PowerPC's.
+- **Known gaps (to check at build time).**
+  - Every syscall number and frame offset is written from memory of Linux's s390x headers
+    and table.
+  - The kernel's own self-tests that make `mmap` calls pass registers. On s390x they need
+    the block.
+  - The vector registers are not saved: programs get no vector facility (CR0's AFP only).
+- **Next (part 3c).** Secondary CPUs through SIGP (set prefix, initial CPU reset, restart),
+  and the xtask, toolchain and CI entries.

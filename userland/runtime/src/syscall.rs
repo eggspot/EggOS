@@ -255,6 +255,90 @@ pub mod number {
     pub const FACCESSAT: usize = 298;
 }
 
+/// Linux's system-call numbers on s390x (D323).
+#[cfg(target_arch = "s390x")]
+pub mod number {
+    pub const READ: usize = 3;
+    pub const WRITE: usize = 4;
+    pub const CLOSE: usize = 6;
+    pub const FSTAT: usize = 108;
+    pub const MMAP: usize = 90;
+    pub const MPROTECT: usize = 125;
+    pub const MUNMAP: usize = 91;
+    pub const BRK: usize = 45;
+    pub const RT_SIGACTION: usize = 174;
+    pub const RT_SIGRETURN: usize = 173;
+    pub const IOCTL: usize = 54;
+    pub const GETPID: usize = 20;
+    pub const CLONE: usize = 120;
+    pub const EXECVE: usize = 11;
+    pub const WAIT4: usize = 114;
+    pub const UNAME: usize = 122;
+    pub const SETSID: usize = 66;
+    pub const RT_SIGSUSPEND: usize = 179;
+    pub const SIGALTSTACK: usize = 186;
+    pub const REBOOT: usize = 88;
+    pub const GETTID: usize = 236;
+    pub const FUTEX: usize = 238;
+    pub const SET_TID_ADDRESS: usize = 252;
+    pub const CLOCK_SETTIME: usize = 259;
+    pub const CLOCK_GETTIME: usize = 260;
+    pub const CLOCK_NANOSLEEP: usize = 262;
+    pub const EXIT_GROUP: usize = 248;
+    pub const OPENAT: usize = 288;
+    pub const PPOLL: usize = 302;
+    pub const SET_ROBUST_LIST: usize = 304;
+    pub const PRLIMIT64: usize = 334;
+    pub const GETRANDOM: usize = 349;
+    pub const RT_SIGPROCMASK: usize = 175;
+    pub const GETCWD: usize = 183;
+    pub const CHDIR: usize = 12;
+    pub const GETEUID: usize = 201;
+    pub const SETPGID: usize = 57;
+    pub const GETPGID: usize = 132;
+    pub const NEWFSTATAT: usize = 293;
+    pub const GETDENTS64: usize = 220;
+    pub const STATX: usize = 379;
+    pub const DUP3: usize = 326;
+    pub const CLOSE_RANGE: usize = 436;
+    pub const FCNTL: usize = 55;
+    pub const PIPE2: usize = 325;
+    pub const MKDIRAT: usize = 289;
+    pub const UNLINKAT: usize = 294;
+    pub const UTIMENSAT: usize = 315;
+    pub const RENAMEAT2: usize = 347;
+    pub const SYNC: usize = 36;
+    pub const SCHED_GETAFFINITY: usize = 240;
+    pub const SCHED_SETAFFINITY: usize = 239;
+    pub const FSYNC: usize = 118;
+    pub const KILL: usize = 37;
+    pub const SOCKET: usize = 359;
+    pub const CONNECT: usize = 362;
+    pub const SENDTO: usize = 369;
+    pub const RECVFROM: usize = 371;
+    pub const GETSOCKNAME: usize = 367;
+    pub const SETSOCKOPT: usize = 366;
+    pub const SENDMSG: usize = 370;
+    pub const RECVMSG: usize = 372;
+    pub const BIND: usize = 361;
+    pub const LISTEN: usize = 363;
+    pub const ACCEPT4: usize = 364;
+    pub const MEMFD_CREATE: usize = 350;
+    pub const FTRUNCATE: usize = 93;
+    pub const PREAD64: usize = 180;
+    pub const PWRITE64: usize = 181;
+    pub const READLINKAT: usize = 298;
+    pub const SYMLINKAT: usize = 297;
+    pub const LINKAT: usize = 296;
+    pub const OPENAT2: usize = 437;
+    pub const FCHMODAT: usize = 299;
+    pub const FCHMODAT2: usize = 452;
+    pub const STATFS: usize = 99;
+    pub const FSTATFS: usize = 100;
+    pub const LSEEK: usize = 19;
+    pub const FACCESSAT: usize = 300;
+}
+
 /// Linux's system-call numbers on MIPS64 n64, from 5000 (D315).
 #[cfg(target_arch = "mips64")]
 pub mod number {
@@ -465,6 +549,28 @@ pub unsafe fn call(number: usize, arguments: [usize; 6]) -> isize {
             in("$a1") b, in("$a2") c, in("$a3") d, in("$a4") e, in("$a5") f,
             options(nostack),
         );
+    }
+    #[cfg(target_arch = "s390x")]
+    {
+        let block = [a, b, c, d, e, f];
+        let [a, b, c, d, e, f] = match number {
+            number::MMAP => [block.as_ptr() as usize, 0, 0, 0, 0, 0],
+            number::CLONE => [b, a, c, d, e, f],
+            _ => block,
+        };
+        // SAFETY: Linux's s390x system-call convention (D323): the number in `r1`, the
+        // arguments in `r2` to `r7`, the result in `r2`; the kernel changes only `r2` and the
+        // memory the arguments name (for `mmap`, it reads `block`, which lives across the call),
+        // which the caller owns.
+        unsafe {
+            asm!(
+                "svc 0",
+                in("r1") number,
+                inlateout("r2") a as isize => result,
+                in("r3") b, in("r4") c, in("r5") d, in("r6") e, in("r7") f,
+                options(nostack),
+            );
+        }
     }
     #[cfg(target_arch = "mips64")]
     {

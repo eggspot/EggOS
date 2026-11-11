@@ -88,6 +88,22 @@ global_asm!(
     start = sym start,
 );
 
+#[cfg(target_arch = "s390x")]
+global_asm!(
+    ".globl _start",
+    ".type _start, @function",
+    "_start:",
+    "lgr %r2, %r15",
+    "larl %r3, _DYNAMIC",
+    "nill %r15, 0xfff0",
+    "aghi %r15, -160",
+    "lghi %r0, 0",
+    "stg %r0, 0(%r15)",
+    "brasl %r14, {start}",
+    ".short 0",
+    start = sym start,
+);
+
 #[cfg(target_arch = "mips64")]
 global_asm!(
     ".globl _start",

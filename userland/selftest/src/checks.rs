@@ -409,6 +409,39 @@ fn read_thread_pointer() -> usize {
     value
 }
 
+#[cfg(target_arch = "s390x")]
+fn set_thread_pointer(address: usize) -> bool {
+    // SAFETY: `a0:a1` is the program's thread pointer; nothing here uses thread-local storage
+    // through it.
+    unsafe {
+        core::arch::asm!(
+            "srlg {high}, {address}, 32",
+            "sar %a0, {high}",
+            "sar %a1, {address}",
+            address = in(reg) address,
+            high = out(reg) _,
+            options(nostack, nomem),
+        )
+    };
+    true
+}
+
+#[cfg(target_arch = "s390x")]
+fn read_thread_pointer() -> usize {
+    let value: usize;
+    // SAFETY: reading `a0` and `a1` has no side effect.
+    unsafe {
+        core::arch::asm!(
+            "ear {value}, %a0",
+            "sllg {value}, {value}, 32",
+            "ear {value}, %a1",
+            value = out(reg) value,
+            options(nostack, nomem),
+        )
+    };
+    value
+}
+
 #[cfg(target_arch = "powerpc64")]
 fn set_thread_pointer(address: usize) -> bool {
     // SAFETY: `r13` is the program's thread pointer; nothing here uses thread-local storage
@@ -754,9 +787,9 @@ fn console(_: &Startup) -> bool {
     const TIOCGWINSZ: usize = eggos_runtime::syscall::tty::TIOCGWINSZ;
     const S_IFMT: u32 = 0o170_000;
     const S_IFCHR: u32 = 0o020_000;
-    #[cfg(any(target_arch = "x86_64", target_arch = "powerpc64", target_arch = "mips64"))]
+    #[cfg(any(target_arch = "x86_64", target_arch = "powerpc64", target_arch = "mips64", target_arch = "s390x"))]
     const MODE_OFFSET: usize = 24;
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "powerpc64", target_arch = "mips64")))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "powerpc64", target_arch = "mips64", target_arch = "s390x")))]
     const MODE_OFFSET: usize = 16;
     let mut window = [0u16; 4];
     let mut status = [0u8; 144];

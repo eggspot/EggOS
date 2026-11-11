@@ -26,6 +26,8 @@ pub mod machine {
     pub const PPC64: u16 = 21;
     /// MIPS (D313).
     pub const MIPS: u16 = 8;
+    /// s390x (D323).
+    pub const S390: u16 = 22;
 
     /// The machine the kernel runs on: the only one whose programs it runs natively (D17).
     pub const NATIVE: u16 = crate::linux::abi::ELF_MACHINE;
