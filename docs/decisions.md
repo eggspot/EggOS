@@ -21776,3 +21776,24 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The main thread runs on the Linux process stack, which the kernel grows: its
   overflow still ends the process (as an access violation report). `SetThreadStackGuarantee`
   and `GetThreadStackLimits` over the reserve.
+
+## D347 Windows: collided unwinds (batch part 12's rest, D230's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented `EXCEPTION_COLLIDED_UNWIND` behaviour)
+
+- **Context.** A termination handler (a `__finally` block, a C++ destructor) can start an unwind
+  of its own (a `return` or `goto` out of a `__finally`, a `longjmp`). That unwind walks out
+  of the handler into the frame whose handlers the first unwind was running. Before, it went
+  on from that frame's caller, so the frame's handlers the first unwind had not reached yet
+  never ran.
+- **Decision.** As on Windows, the second unwind collides with the first:
+  - Each call of a language handler to unwind a frame (`dispatch::unwind_frame`) goes through
+    a bridge that remembers the frame and that call's dispatcher context
+    (`Bridge::collided`, `frames::Collided`).
+  - A walk for termination handlers that crosses such a bridge reports it
+    (`Event::Bridge(Some(collided))`), and the unwind calls the frame's handler again with
+    `EXCEPTION_COLLIDED_UNWIND` (0x40) and the earlier call's scope index, so
+    `__C_specific_handler` runs only the `__finally` blocks the first unwind had not reached
+    (it sets the index past each block before calling it). The walk then goes on from the
+    frame's caller; when the frame is the second unwind's target, the unwind ends there.
+- **Not yet.** The layer's C++ frame handlers (`__CxxFrameHandler3` and `4`) ignore the flag:
+  a destructor that starts an unwind from inside an unwinding C++ frame may see that frame's
+  earlier destructors run again.

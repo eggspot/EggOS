@@ -12,10 +12,10 @@ use super::context::{
     Context, UCONTEXT_ARGUMENTS, UCONTEXT_PC, UCONTEXT_SP, capturing_entry, fault_entry,
     relocate_signal_frame, restore, unwinder,
 };
-use super::frames::{self, Bridge, Event, ThreadMemory, Walk};
+use super::frames::{self, Bridge, Collided, Event, ThreadMemory, Walk};
 use super::{
-    DispatcherContext, ExceptionPointers, ExceptionRecord, MAX_PARAMETERS, cxx, disposition,
-    filter, flag, status, vectored,
+    DispatcherContext, ExceptionPointers, ExceptionRecord, Frame, MAX_PARAMETERS, cxx,
+    disposition, filter, flag, status, vectored,
 };
 use crate::fault;
 use crate::unwind::HandlerKinds;
@@ -118,7 +118,7 @@ pub fn dispatch(record: *mut ExceptionRecord, context: *mut Context, origin: Ori
     loop {
         match walk.next() {
             Event::End => break,
-            Event::Bridge | Event::Catch { .. } => {}
+            Event::Bridge(_) | Event::Catch { .. } => {}
             Event::Frame(frame) => {
                 let Some(handler) = frame.handler else {
                     continue;
@@ -226,7 +226,17 @@ pub fn unwind(
                 },
                 start.pc(),
             ),
-            Event::Bridge => {}
+            Event::Bridge(None) => {}
+            Event::Bridge(Some(collided)) => {
+                // SAFETY: the earlier unwind's dispatcher context lives in its `unwind_frame`
+                // call, which waits under this walk while its bridge is linked.
+                let scope_index = unsafe { (*collided.dispatcher).scope_index };
+                let frame = collided.frame;
+                unwind_frame(&frame, record, target, Some(scope_index));
+                if frame.establisher == target.frame {
+                    break frame.context;
+                }
+            }
             Event::Catch {
                 catch,
                 function_skipped,
@@ -237,38 +247,8 @@ pub fn unwind(
                 }
             }
             Event::Frame(frame) => {
-                let is_target = frame.establisher == target.frame;
-                if let Some(handler) = frame.handler {
-                    // SAFETY: the caller's record.
-                    let flags = unsafe { (*record).flags };
-                    let marked = match is_target {
-                        true => flags | flag::TARGET_UNWIND,
-                        false => flags,
-                    };
-                    // SAFETY: as above.
-                    unsafe { (*record).flags = marked };
-                    let mut frame_context = frame.context;
-                    let mut dispatcher =
-                        DispatcherContext::of(&frame, &mut frame_context, target.ip);
-                    let mut bridge = Bridge::new(Some(frame.caller), None);
-                    // SAFETY: the frame's language handler, called as Windows calls it to
-                    // unwind the frame.
-                    unsafe {
-                        frames::call_program(
-                            &mut bridge,
-                            handler,
-                            [
-                                record as u64,
-                                frame.establisher,
-                                &raw mut frame_context as u64,
-                                &raw mut dispatcher as u64,
-                            ],
-                        )
-                    };
-                    // SAFETY: as above.
-                    unsafe { (*record).flags = flags };
-                }
-                if is_target {
+                unwind_frame(&frame, record, target, None);
+                if frame.establisher == target.frame {
                     break frame.context;
                 }
             }
@@ -277,6 +257,58 @@ pub fn unwind(
     // SAFETY: as when it was set.
     unsafe { unwind_slot.write(previous) };
     reached
+}
+
+/// Calls `frame`'s language handler, if it has one, to unwind it toward `target`, as Windows
+/// does: `EXCEPTION_TARGET_UNWIND` when it is the target's frame, and for a frame an earlier
+/// unwind collided in (D347), `EXCEPTION_COLLIDED_UNWIND` with the earlier call's scope index,
+/// so only the handlers that call had not run yet run. The bridge into the handler remembers
+/// the frame, so an unwind the handler starts collides with this one.
+fn unwind_frame(
+    frame: &Frame,
+    record: *mut ExceptionRecord,
+    target: &UnwindTarget,
+    collided_at: Option<u32>,
+) {
+    let Some(handler) = frame.handler else {
+        return;
+    };
+    // SAFETY: the caller's record.
+    let flags = unsafe { (*record).flags };
+    let mut marked = flags;
+    if frame.establisher == target.frame {
+        marked |= flag::TARGET_UNWIND;
+    }
+    if collided_at.is_some() {
+        marked |= flag::COLLIDED_UNWIND;
+    }
+    // SAFETY: as above.
+    unsafe { (*record).flags = marked };
+    let mut frame_context = frame.context;
+    let mut dispatcher = DispatcherContext::of(frame, &mut frame_context, target.ip);
+    if let Some(scope_index) = collided_at {
+        dispatcher.scope_index = scope_index;
+    }
+    let mut bridge = Bridge::new(Some(frame.caller), None);
+    bridge.collided = Some(Collided {
+        frame: *frame,
+        dispatcher: &raw const dispatcher,
+    });
+    // SAFETY: the frame's language handler, called as Windows calls it to unwind the frame.
+    unsafe {
+        frames::call_program(
+            &mut bridge,
+            handler,
+            [
+                record as u64,
+                frame.establisher,
+                &raw mut frame_context as u64,
+                &raw mut dispatcher as u64,
+            ],
+        )
+    };
+    // SAFETY: as above.
+    unsafe { (*record).flags = flags };
 }
 
 /// Whether unwinding from `start` (whose `pc` is a return address) reaches a frame whose
@@ -295,7 +327,7 @@ pub fn reaches_frame(start: &Context, establisher: u64) -> bool {
                 catch,
                 function_skipped: true,
             } if catch.parent_frame == establisher => return true,
-            Event::Frame(_) | Event::Bridge | Event::Catch { .. } => {}
+            Event::Frame(_) | Event::Bridge(_) | Event::Catch { .. } => {}
         }
     }
 }

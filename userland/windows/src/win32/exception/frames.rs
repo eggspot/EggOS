@@ -12,7 +12,7 @@
 
 use super::super::thread_environment::{self, teb};
 use super::context::{Context, unwinder};
-use super::{CatchState, Frame};
+use super::{CatchState, DispatcherContext, Frame};
 use crate::cxx_walk::funclet_stands_in;
 use crate::unwind::{HandlerKinds, Image, Memory, StackRange};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -136,6 +136,18 @@ pub struct Bridge {
     /// `pc` is a return address: an unwind started in an exception handler goes on from the
     /// frame the exception was raised in, through every frame the dispatch walked.
     pub unwind_resume: Option<(Context, bool)>,
+    /// The frame whose termination handlers an unwind was running through this bridge (D347):
+    /// a later unwind that reaches the bridge collides with that one, and runs the frame's
+    /// remaining handlers before it goes on.
+    pub collided: Option<Collided>,
+}
+
+/// An unwind a later one collided with: the frame whose language handler it was running, and
+/// that call's dispatcher context, whose scope index says which handlers already ran.
+#[derive(Clone, Copy)]
+pub struct Collided {
+    pub frame: Frame,
+    pub dispatcher: *const DispatcherContext,
 }
 
 impl Bridge {
@@ -147,6 +159,7 @@ impl Bridge {
             resume,
             catch,
             unwind_resume: None,
+            collided: None,
         }
     }
 
@@ -401,8 +414,9 @@ unsafe fn enter(
 #[allow(clippy::large_enum_variant)]
 pub enum Event {
     Frame(Frame),
-    /// It left the program code a bridge called and continued where the bridge says.
-    Bridge,
+    /// It left the program code a bridge called and continued where the bridge says; for an
+    /// unwind, the earlier unwind it collided with there, if the bridge ran one (D347).
+    Bridge(Option<Collided>),
     /// It left the funclet of the running catch block `catch` and continued in the catch's
     /// function, or in that function's caller when `function_skipped` (the funclet's handler
     /// stood in for the function).
@@ -460,7 +474,7 @@ impl Walk {
                     self.context = resume;
                     self.unwound = unwound;
                     self.last_frame_had_handler = false;
-                    Event::Bridge
+                    Event::Bridge(bridge.collided.filter(|_| self.kinds.termination))
                 }
                 None => Event::End,
             };
@@ -564,7 +578,7 @@ pub fn caller_of(context: &Context, unwound: bool) -> Option<Context> {
     let mut walk = Walk::new(context, unwound, kinds);
     match walk.next() {
         Event::Frame(frame) => Some(frame.caller),
-        Event::Bridge | Event::Catch { .. } => Some(walk.context),
+        Event::Bridge(_) | Event::Catch { .. } => Some(walk.context),
         Event::End => None,
     }
 }

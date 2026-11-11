@@ -39,6 +39,7 @@ pub mod flag {
     pub const UNWINDING: u32 = 0x02;
     pub const EXIT_UNWIND: u32 = 0x04;
     pub const TARGET_UNWIND: u32 = 0x20;
+    pub const COLLIDED_UNWIND: u32 = 0x40;
 }
 
 /// What a language handler returns (`EXCEPTION_DISPOSITION`).
