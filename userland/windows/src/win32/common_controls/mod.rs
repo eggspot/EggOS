@@ -209,6 +209,32 @@ pub fn notify_parent<T>(window: usize, code: i32, build: impl FnOnce(NotifyHeade
     gui::send(parent, WM_NOTIFY, id, &raw mut data as usize)
 }
 
+/// As [`notify_parent`], keeping the structure the parent got, so the caller reads what the
+/// parent wrote into it (custom draw's colours, D353): the answer and the structure, none
+/// when the window has no parent.
+pub fn notify_parent_keeping<T>(
+    window: usize,
+    code: i32,
+    build: impl FnOnce(NotifyHeader) -> T,
+) -> (usize, Option<T>) {
+    let target = with(|gui| {
+        let entry = gui.windows.get(window)?;
+        Some((entry.parent, entry.id))
+    })
+    .flatten();
+    let Some((parent, id)) = target.filter(|(parent, _)| *parent != 0) else {
+        return (0, None);
+    };
+    let header = NotifyHeader {
+        from: window,
+        id,
+        code: code as u32,
+    };
+    let mut data = build(header);
+    let answer = gui::send(parent, WM_NOTIFY, id, &raw mut data as usize);
+    (answer, Some(data))
+}
+
 /// `WM_COMMAND` from `window` to its parent with `command` in its low word, as a toolbar's
 /// button click sends it.
 pub fn command_parent(window: usize, command: usize) {

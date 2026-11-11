@@ -13,7 +13,7 @@ use super::super::user32::{create_child, now_ms};
 use super::super::{call_program, file, thread_environment, window_text};
 use super::{
     Model, NotifyHeader, allocate, code, default_procedure, image_list, invalidate, item_element,
-    notify_parent, paint_with, read_state, utf8, with_state,
+    notify_parent, notify_parent_keeping, read_state, utf8, with_state,
 };
 use crate::gui::message;
 use crate::gui::windows::{self, CommonKind, ControlKind, Window};
@@ -370,28 +370,222 @@ fn create_header(window: usize) {
     refresh(window);
 }
 
-fn paint(window: usize) {
-    paint_with::<ListState>(window, |surface, rect, entry, control, gui| {
-        let header_window = gui
-            .windows
-            .get(control.header)
-            .is_some_and(|header| header.shown);
-        let look = ListLook {
-            style: entry.style,
-            focused: has_focus(gui, window),
-            enabled: windows::enabled_in_tree(&gui.windows, window),
-            header_window,
+const NM_CUSTOMDRAW: i32 = -12;
+const CDDS_PREPAINT: u32 = 0x1;
+const CDDS_POSTPAINT: u32 = 0x2;
+const CDDS_ITEMPREPAINT: u32 = 0x1_0001;
+const CDDS_ITEMPOSTPAINT: u32 = 0x1_0002;
+const CDRF_SKIPDEFAULT: usize = 0x4;
+const CDRF_NOTIFYPOSTPAINT: usize = 0x10;
+const CDRF_NOTIFYITEMDRAW: usize = 0x20;
+const CDIS_SELECTED: u32 = 0x1;
+const CDIS_FOCUS: u32 = 0x10;
+const CLR_DEFAULT: u32 = 0xff00_0000;
+const MOST_CUSTOM_ROWS: usize = 64;
+
+/// `NMCUSTOMDRAW`.
+#[repr(C)]
+struct NmCustomDraw {
+    header: NotifyHeader,
+    stage: u32,
+    hdc: usize,
+    rect: [i32; 4],
+    item: usize,
+    item_state: u32,
+    item_lparam: usize,
+}
+
+/// `NMLVCUSTOMDRAW`.
+#[repr(C)]
+struct NmListCustomDraw {
+    draw: NmCustomDraw,
+    text: u32,
+    text_background: u32,
+    sub_item: i32,
+    item_type: u32,
+    face: u32,
+    icon_effect: i32,
+    icon_phase: i32,
+    part: i32,
+    state: i32,
+    text_rect: [i32; 4],
+    align: u32,
+}
+
+#[derive(Clone, Copy, Default)]
+struct VisibleRow {
+    index: usize,
+    rect: [i32; 4],
+    state: u32,
+    lparam: usize,
+}
+
+/// What the parent asked, by custom draw, for the rows this paint shows (D353).
+struct CustomRows {
+    rows: [VisibleRow; MOST_CUSTOM_ROWS],
+    draws: [model::RowDraw; MOST_CUSTOM_ROWS],
+    after: [bool; MOST_CUSTOM_ROWS],
+    count: usize,
+    after_all: bool,
+}
+
+impl CustomRows {
+    fn draw(&self, index: usize) -> model::RowDraw {
+        self.rows[..self.count]
+            .iter()
+            .position(|row| row.index == index)
+            .map_or_else(model::RowDraw::default, |at| self.draws[at])
+    }
+}
+
+fn custom_draw(
+    window: usize,
+    stage: u32,
+    hdc: usize,
+    row: VisibleRow,
+) -> (usize, Option<NmListCustomDraw>) {
+    let mut item_state = 0;
+    if row.state & state::SELECTED != 0 {
+        item_state |= CDIS_SELECTED;
+    }
+    if row.state & state::FOCUSED != 0 {
+        item_state |= CDIS_FOCUS;
+    }
+    notify_parent_keeping(window, NM_CUSTOMDRAW, |header| NmListCustomDraw {
+        draw: NmCustomDraw {
+            header,
+            stage,
+            hdc,
+            rect: row.rect,
+            item: row.index,
+            item_state,
+            item_lparam: row.lparam,
+        },
+        text: CLR_DEFAULT,
+        text_background: CLR_DEFAULT,
+        sub_item: 0,
+        item_type: 0,
+        face: CLR_DEFAULT,
+        icon_effect: 0,
+        icon_phase: 0,
+        part: 0,
+        state: 0,
+        text_rect: row.rect,
+        align: 0,
+    })
+}
+
+fn chosen_colour(colour_ref: u32) -> Option<u32> {
+    (colour_ref & CLR_DEFAULT == 0).then(|| swap_red_blue(colour_ref))
+}
+
+fn visible_rows(window: usize, out: &mut [VisibleRow; MOST_CUSTOM_ROWS]) -> (usize, [i32; 4]) {
+    with_state::<ListState, _>(window, |entry, control| {
+        let client = entry.client();
+        let whole = [client.left, client.top, client.right, client.bottom];
+        let list = &control.list;
+        let layout = layout_of(entry, list);
+        let mut count = 0;
+        for index in list.top()..list.count() {
+            let top = list.row_top(&layout, index);
+            if top >= layout.rows.bottom || count == out.len() {
+                break;
+            }
+            out[count] = VisibleRow {
+                index,
+                rect: [layout.rows.left, top, layout.rows.right, top + ROW_HEIGHT],
+                state: list.state(index),
+                lparam: list.lparam(index),
+            };
+            count += 1;
+        }
+        (count, whole)
+    })
+    .unwrap_or((0, [0; 4]))
+}
+
+/// Custom draw's first half, before the list paints: `CDDS_PREPAINT`, then, when the parent
+/// asks, `CDDS_ITEMPREPAINT` for each row shown, whose colours and `CDRF_SKIPDEFAULT` the
+/// paint follows.
+fn custom_rows(window: usize, hdc: usize) -> CustomRows {
+    let mut custom = CustomRows {
+        rows: [VisibleRow::default(); MOST_CUSTOM_ROWS],
+        draws: [model::RowDraw::default(); MOST_CUSTOM_ROWS],
+        after: [false; MOST_CUSTOM_ROWS],
+        count: 0,
+        after_all: false,
+    };
+    let (count, whole) = visible_rows(window, &mut custom.rows);
+    let everything = VisibleRow {
+        rect: whole,
+        ..VisibleRow::default()
+    };
+    let (answer, _) = custom_draw(window, CDDS_PREPAINT, hdc, everything);
+    custom.after_all = answer & CDRF_NOTIFYPOSTPAINT != 0;
+    if answer & CDRF_NOTIFYITEMDRAW == 0 {
+        return custom;
+    }
+    custom.count = count;
+    for at in 0..count {
+        let (answer, data) = custom_draw(window, CDDS_ITEMPREPAINT, hdc, custom.rows[at]);
+        let Some(data) = data else {
+            continue;
         };
-        model::paint(
-            surface,
-            rect,
-            &control.list,
-            look,
-            &image_list::LayerImages,
-            &LIGHT,
-            &COMMON_LIGHT,
-        );
+        custom.draws[at] = model::RowDraw {
+            text: chosen_colour(data.text),
+            background: chosen_colour(data.text_background),
+            skip: answer & CDRF_SKIPDEFAULT != 0,
+        };
+        custom.after[at] = answer & CDRF_NOTIFYPOSTPAINT != 0;
+    }
+    custom
+}
+
+/// Custom draw's second half, after the list painted: `CDDS_ITEMPOSTPAINT` for the rows that
+/// asked, then `CDDS_POSTPAINT` when the first answer asked.
+fn custom_after(window: usize, hdc: usize, custom: &CustomRows) {
+    for at in 0..custom.count {
+        if custom.after[at] {
+            custom_draw(window, CDDS_ITEMPOSTPAINT, hdc, custom.rows[at]);
+        }
+    }
+    if custom.after_all {
+        custom_draw(window, CDDS_POSTPAINT, hdc, VisibleRow::default());
+    }
+}
+
+fn paint(window: usize) {
+    let Ok((hdc, _, _)) = super::super::paint::begin(window) else {
+        return;
+    };
+    let custom = custom_rows(window, hdc);
+    let _ = super::super::paint::draw_in(hdc, |surface, _, gui| {
+        let Some(surface) = surface else {
+            return;
+        };
+        read_state::<ListState, ()>(gui, window, |entry, control| {
+            let header_window = gui
+                .windows
+                .get(control.header)
+                .is_some_and(|header| header.shown);
+            let look = ListLook {
+                style: entry.style,
+                focused: has_focus(gui, window),
+                enabled: windows::enabled_in_tree(&gui.windows, window),
+                header_window,
+            };
+            model::paint_custom(
+                surface,
+                entry.client(),
+                &control.list,
+                look,
+                (&image_list::LayerImages, &LIGHT, &COMMON_LIGHT),
+                &|index| custom.draw(index),
+            );
+        });
     });
+    custom_after(window, hdc, &custom);
+    super::super::paint::finish(hdc);
 }
 
 fn send_change(window: usize, code: i32, change: &StateChange) -> usize {

@@ -21896,3 +21896,22 @@ the license, by an explicit instruction recorded here.
     `ERROR_INTERNET_SECURE_CHANNEL_ERROR`; closing the handle sends TLS's close notice.
 - **Not yet.** `INTERNET_FLAG_IGNORE_CERT_*` and the security flags of `InternetSetOption`,
   client certificates, and TLS 1.2 servers (the client speaks 1.3 only, D159).
+
+## D353 Windows common controls: custom draw for list views (`NM_CUSTOMDRAW`) (batch part 13's rest, D231's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from comctl32's documented custom-draw protocol)
+
+- **Context.** Programs colour rows (errors in red, alternating backgrounds) or draw rows
+  themselves through `NM_CUSTOMDRAW`; without it they show the plain list.
+- **Decision.** A list view's paint runs custom draw around the layer's own drawing, outside
+  the GUI lock, with the paint's device context in each `NMLVCUSTOMDRAW`:
+  - `CDDS_PREPAINT` for the whole control; with `CDRF_NOTIFYITEMDRAW`, `CDDS_ITEMPREPAINT`
+    for each row shown (up to 64), with its index, rectangle, selected and focused states and
+    `lParam`, and `CLR_DEFAULT` in `clrText` and `clrTextBk`.
+  - The colours the parent wrote replace the list's for that row (the text of an unselected
+    row, the row's background), and `CDRF_SKIPDEFAULT` leaves the row to the program
+    (`list_view::RowDraw`, `paint_custom`).
+  - After the paint, `CDDS_ITEMPOSTPAINT` for the rows that asked with
+    `CDRF_NOTIFYPOSTPAINT`, then `CDDS_POSTPAINT` when the first answer asked.
+  - `notify_parent_keeping` sends a notification and gives back the structure the parent
+    filled.
+- **Not yet.** Per-subitem custom draw (`CDRF_NOTIFYSUBITEMDRAW`), `CDRF_NEWFONT`, and custom
+  draw for tree views, toolbars, headers and trackbars.

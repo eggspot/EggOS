@@ -1539,6 +1539,16 @@ pub struct ListLook {
 
 /// Paints `list` over the whole of `rect`: the frame, the header (unless it is a window of its
 /// own), the rows and the scroll bars.
+/// What the program asked for one row by custom draw (`NM_CUSTOMDRAW`, D353): its text and
+/// background colours instead of the list's, or nothing at all (it drew the row itself).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RowDraw {
+    pub text: Option<u32>,
+    pub background: Option<u32>,
+    pub skip: bool,
+}
+
+/// Paints `list` over `rect` with each row as the list says.
 pub fn paint(
     surface: &mut Surface<'_>,
     rect: Rect,
@@ -1547,6 +1557,19 @@ pub fn paint(
     images: &dyn Images,
     palette: &Palette,
     common: &CommonPalette,
+) {
+    let plain = |_: usize| RowDraw::default();
+    paint_custom(surface, rect, list, look, (images, palette, common), &plain);
+}
+
+/// Paints `list` over `rect`, each row as `rows` says the program asked (D353).
+pub fn paint_custom(
+    surface: &mut Surface<'_>,
+    rect: Rect,
+    list: &ListView,
+    look: ListLook,
+    (images, palette, common): (&dyn Images, &Palette, &CommonPalette),
+    rows: &dyn Fn(usize) -> RowDraw,
 ) {
     let saved = surface.clip();
     surface.clip_to(rect);
@@ -1603,7 +1626,10 @@ pub fn paint(
         if y >= layout.rows.bottom {
             break;
         }
-        paint_row(surface, list, &layout, index, look, images, palette, common);
+        let draw = rows(index);
+        if !draw.skip {
+            paint_row(surface, list, &layout, index, (look, draw), images, palette, common);
+        }
         surface.set_clip(rows_clip);
         index += 1;
     }
@@ -1642,7 +1668,7 @@ fn paint_row(
     list: &ListView,
     layout: &ListLayout,
     index: usize,
-    look: ListLook,
+    (look, draw): (ListLook, RowDraw),
     images: &dyn Images,
     palette: &Palette,
     common: &CommonPalette,
@@ -1652,7 +1678,7 @@ fn paint_row(
     let row = list.rows[index];
     let full_row = list.extended & extended::FULL_ROW_SELECT != 0;
     let area = list.selection_area(layout, index, full_row);
-    if let Some(colour) = list.text_background {
+    if let Some(colour) = draw.background.or(list.text_background) {
         surface.fill(
             Rect::sized(layout.inner.left - list.hpos, y, layout.total, ROW_HEIGHT),
             colour,
@@ -1673,7 +1699,7 @@ fn paint_row(
         surface.fill(area, colour);
     }
     let plain_text = match look.enabled {
-        true => list.text_colour.unwrap_or(palette.text),
+        true => draw.text.or(list.text_colour).unwrap_or(palette.text),
         false => palette.text_disabled,
     };
     for column in 0..list.shown_columns(layout) {
@@ -2230,5 +2256,34 @@ mod tests {
         assert!(cell_has(&pixels, 19, 67, 0x00ff_ffff));
         assert_eq!(at(&pixels, 400, 70), 0x0000_78d7);
         assert_eq!(list.row_bounds(&layout, 1), Rect::sized(13, 85, 454, 20));
+    }
+
+    #[test]
+    fn custom_draw_recolours_a_row_and_skips_one_the_program_drew() {
+        let list = example();
+        let rect = Rect::sized(12, 64, 456, 208);
+        let layout = list.layout(rect, AHK_STYLE);
+        let rows = |index: usize| match index {
+            1 => RowDraw {
+                text: Some(0x00aa_0000),
+                background: Some(0x0000_00bb),
+                skip: false,
+            },
+            2 => RowDraw {
+                skip: true,
+                ..RowDraw::default()
+            },
+            _ => RowDraw::default(),
+        };
+        let mut pixels = vec![0x00f0_f0f0u32; (WIDTH * HEIGHT) as usize];
+        let mut surface = Surface::new(&mut pixels, WIDTH, HEIGHT).unwrap();
+        let look = focused_look();
+        paint_custom(&mut surface, rect, &list, look, (&NoImages, &LIGHT, &COMMON_LIGHT), &rows);
+        let second = list.row_top(&layout, 1);
+        let third = list.row_top(&layout, 2);
+        let x = layout.inner.left + 4;
+        assert_eq!(at(&pixels, layout.inner.left + 150, second + 1), 0x0000_00bb);
+        assert!(cell_has(&pixels, x, second + 2, 0x00aa_0000));
+        assert!(!cell_has(&pixels, x, third + 2, LIGHT.text));
     }
 }
