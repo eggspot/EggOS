@@ -10,6 +10,8 @@ const QOS_HEADER_BYTES: usize = 26;
 const SUBTYPE_ASSOCIATION_REQUEST: u8 = 0x00;
 const SUBTYPE_ASSOCIATION_RESPONSE: u8 = 0x10;
 const SUBTYPE_AUTHENTICATION: u8 = 0xb0;
+const SUBTYPE_DISASSOCIATION: u8 = 0xa0;
+const SUBTYPE_DEAUTHENTICATION: u8 = 0xc0;
 const TYPE_DATA: u8 = 0x08;
 const TYPE_QOS_DATA: u8 = 0x88;
 const TYPE_MASK: u8 = 0x0c;
@@ -84,6 +86,29 @@ fn from(frame: &[u8], bssid: Address, subtype: u8) -> Option<&[u8]> {
 
 fn half(bytes: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
+}
+
+/// The deauthentication frame `own` sends to `bssid` when it leaves the network, with Wi-Fi's
+/// `reason` code (3: the station is leaving).
+pub fn deauthentication(own: Address, bssid: Address, reason: u16) -> Vec<u8> {
+    let mut frame = header(SUBTYPE_DEAUTHENTICATION, 0, bssid, own, bssid);
+    frame.extend_from_slice(&reason.to_le_bytes());
+    frame
+}
+
+/// The reason code of `frame` when it is `bssid` ending the station's association or
+/// authentication (a disassociation or deauthentication frame addressed to `own` or to
+/// everyone).
+pub fn ended_by(frame: &[u8], own: Address, bssid: Address) -> Option<u16> {
+    let subtype = *frame.first()?;
+    if subtype != SUBTYPE_DEAUTHENTICATION && subtype != SUBTYPE_DISASSOCIATION {
+        return None;
+    }
+    let destination = frame.get(4..10)?;
+    if destination != own && destination != [0xff; 6] {
+        return None;
+    }
+    half(from(frame, bssid, subtype)?, 0)
 }
 
 /// The status of `frame` when it is `bssid`'s answer to an open-system authentication request.
@@ -176,6 +201,20 @@ mod tests {
         let mut association = header(SUBTYPE_ASSOCIATION_RESPONSE, 0, OWN, AP, AP);
         association.extend_from_slice(&[0x11, 0x04, 0, 0, 0x05, 0xc0]);
         assert_eq!(association_answer(&association, AP), Some((0, 5)));
+    }
+
+    #[test]
+    fn leaving_and_being_sent_away_carry_their_reason() {
+        let leave = deauthentication(OWN, AP, 3);
+        assert_eq!((leave[0], &leave[4..10], &leave[24..26]), (0xc0, &AP[..], &[3, 0][..]));
+        let mut sent_away = header(SUBTYPE_DISASSOCIATION, 0, OWN, AP, AP);
+        sent_away.extend_from_slice(&8u16.to_le_bytes());
+        assert_eq!(ended_by(&sent_away, OWN, AP), Some(8));
+        assert_eq!(ended_by(&sent_away, AP, AP), None);
+        assert_eq!(ended_by(&sent_away, OWN, OWN), None);
+        let mut everyone = header(SUBTYPE_DEAUTHENTICATION, 0, [0xff; 6], AP, AP);
+        everyone.extend_from_slice(&1u16.to_le_bytes());
+        assert_eq!(ended_by(&everyone, OWN, AP), Some(1));
     }
 
     #[test]

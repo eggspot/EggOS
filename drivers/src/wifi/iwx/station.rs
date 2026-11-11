@@ -15,6 +15,7 @@ const PHY_CONTEXT: u8 = 0x08;
 const MAC_CONTEXT: u8 = 0x28;
 const BINDING_CONTEXT: u8 = 0x2b;
 const ADD_STATION: u8 = 0x18;
+const REMOVE_STATION: u8 = 0x19;
 const TX_QUEUE_CONFIG: u8 = 0x1d;
 const TX_COMMAND: u8 = 0x1c;
 const DATA_PATH_GROUP: u8 = 0x5;
@@ -25,6 +26,8 @@ const SESSION_PROTECTION: u8 = 0x05;
 
 const ACTION_ADD: u32 = 1;
 const ACTION_MODIFY: u32 = 2;
+const ACTION_REMOVE: u32 = 3;
+const SCD_QUEUE_REMOVE: u32 = 1;
 const CONTEXT_INVALID: u32 = 0xffff_ffff;
 const MAC_TYPE_BSS_STATION: u32 = 5;
 const FILTER_ACCEPT_GROUP: u32 = 1 << 2;
@@ -198,9 +201,9 @@ fn mac_context(link_address: [u8; 6], target: &Target, action: u32, association:
     command
 }
 
-fn binding(channel: &Channel, firmware: &Firmware) -> [u8; 28] {
+fn binding(channel: &Channel, firmware: &Firmware, action: u32) -> [u8; 28] {
     let mut command = [0u8; 28];
-    put32(&mut command, 4, ACTION_ADD);
+    put32(&mut command, 4, action);
     put32(&mut command, 12, CONTEXT_INVALID);
     put32(&mut command, 16, CONTEXT_INVALID);
     put32(&mut command, 24, lmac(channel, firmware));
@@ -241,7 +244,7 @@ pub fn join<R: RegisterIo, M: DmaMemory, A: DmaAllocator<Memory = M>>(
         transport.send_command(DATA_PATH_GROUP, RLC_CONFIG, &rlc, wait)?;
     }
     transport.send_command(LEGACY_GROUP, MAC_CONTEXT, &mac_context(address, &target, ACTION_ADD, None), wait)?;
-    let bound = binding(&target.channel, firmware);
+    let bound = binding(&target.channel, firmware, ACTION_ADD);
     let status = status_of(&transport.send_command(LEGACY_GROUP, BINDING_CONTEXT, &bound, wait)?);
     if status != 0 {
         return Err(JoinError::Refused(status));
@@ -308,6 +311,50 @@ pub fn associated<R: RegisterIo, M: DmaMemory>(
         ADD_STATION_SUCCESS => Ok(()),
         _ => Err(JoinError::Refused(status)),
     }
+}
+
+fn queue_off(firmware: &Firmware) -> (u8, u8, alloc::vec::Vec<u8>) {
+    match firmware.command_version(DATA_PATH_GROUP, SCD_QUEUE_CONFIG) {
+        Some(3) => {
+            let mut config = alloc::vec![0u8; 36];
+            put32(&mut config, 0, SCD_QUEUE_REMOVE);
+            put32(&mut config, 4, 1 << STATION_ID);
+            config[8] = MANAGEMENT_TID;
+            (DATA_PATH_GROUP, SCD_QUEUE_CONFIG, config)
+        }
+        _ => {
+            let mut config = alloc::vec![0u8; 24];
+            config[0] = STATION_ID;
+            config[1] = MANAGEMENT_TID;
+            (LEGACY_GROUP, TX_QUEUE_CONFIG, config)
+        }
+    }
+}
+
+/// Undoes [`join`]: ends session protection, turns the management queue off, removes the
+/// access point's station, the binding, the MAC context and the PHY context, in that order, so
+/// the adapter can scan and join another network. The link's queue memory is freed after the
+/// firmware let go of it.
+pub fn leave<R: RegisterIo, M: DmaMemory>(
+    transport: &mut Transport<R, M>,
+    firmware: &Firmware,
+    link: Link<M>,
+    wait: &mut dyn Wait,
+) -> Result<(), JoinError> {
+    let mut session = [0u8; 24];
+    put32(&mut session, 4, ACTION_REMOVE);
+    put32(&mut session, 8, SESSION_CONFIG_ASSOC);
+    transport.send_command(MAC_CONF_GROUP, SESSION_PROTECTION, &session, wait)?;
+    let (group, code, config) = queue_off(firmware);
+    transport.send_command(group, code, &config, wait)?;
+    transport.send_command(LEGACY_GROUP, REMOVE_STATION, &[STATION_ID, 0, 0, 0], wait)?;
+    let unbound = binding(&link.target.channel, firmware, ACTION_REMOVE);
+    transport.send_command(LEGACY_GROUP, BINDING_CONTEXT, &unbound, wait)?;
+    let mac = mac_context(link.address, &link.target, ACTION_REMOVE, None);
+    transport.send_command(LEGACY_GROUP, MAC_CONTEXT, &mac, wait)?;
+    transport.send_command(LEGACY_GROUP, PHY_CONTEXT, &phy_context(&link.target.channel, firmware, ACTION_REMOVE), wait)?;
+    drop(link);
+    Ok(())
 }
 
 fn header_bytes(frame: &[u8]) -> usize {

@@ -98,9 +98,26 @@ pub struct Status {
     pub radio_off: bool,
     /// The network it joined, from `; network <name>`.
     pub joined: Option<String>,
+    /// The chosen network it has not joined yet, from `; joining <name>` (D284).
+    pub joining: Option<String>,
+    /// The joined network's signal, from `; signal <n> dBm` (D284).
+    pub signal: Option<i32>,
+    /// The last try's failure until the next try ends, from `; failed <code>: <words>` (D284).
+    pub failure: Option<Failed>,
     /// One network a name, the strongest of each, strongest first.
     pub networks: Vec<Heard>,
 }
+
+/// A failed try to join: the driver's code and its sentence (D284).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failed {
+    pub code: String,
+    pub words: String,
+}
+
+/// The code the driver gives a passphrase the network did not accept.
+pub const WRONG_PASSPHRASE: &str = "wrong-passphrase";
+const WRONG_PASSPHRASE_SENTENCE: &str = "The network did not accept this passphrase.";
 
 /// Reads `/proc/driver/wifi`'s `text`; lines it cannot read are skipped.
 pub fn parse(text: &str) -> Status {
@@ -109,16 +126,23 @@ pub fn parse(text: &str) -> Status {
     let mut parts = first.split("; ");
     let state = String::from(parts.next().unwrap_or(""));
     let mut status = Status {
-        radio_off: false,
-        joined: None,
-        networks: Vec::new(),
         state,
+        ..Status::default()
     };
     for part in parts {
         if part == "the radio is switched off" {
             status.radio_off = true;
         } else if let Some(name) = part.strip_prefix("network ") {
             status.joined = Some(String::from(name));
+        } else if let Some(name) = part.strip_prefix("joining ") {
+            status.joining = Some(String::from(name));
+        } else if let Some(signal) = part.strip_prefix("signal ").and_then(|rest| rest.strip_suffix(" dBm")) {
+            status.signal = signal.parse().ok();
+        } else if let Some((code, words)) = part.strip_prefix("failed ").and_then(|rest| rest.split_once(": ")) {
+            status.failure = Some(Failed {
+                code: String::from(code),
+                words: String::from(words),
+            });
         }
     }
     for line in lines {
@@ -338,7 +362,12 @@ impl WifiSection {
         if chosen != self.chosen || status.state == "connected" {
             self.failure = None;
         }
-        if !self.is_driver_progress(&status.state) {
+        if let Some(failed) = &status.failure {
+            self.failure = Some(match failed.code.as_str() {
+                WRONG_PASSPHRASE => String::from(WRONG_PASSPHRASE_SENTENCE),
+                _ => failed.words.clone(),
+            });
+        } else if !self.is_driver_progress(&status.state) {
             self.failure = Some(status.state.clone());
         }
         let changed = status != self.status || chosen != self.chosen;
@@ -389,7 +418,7 @@ impl WifiSection {
             _ => match (&self.failure, chosen) {
                 (Some(failure), _) if failure.as_str() == state => ("Not connected", sentence(failure), true),
                 (Some(failure), Some(_)) => ("Trying again...", sentence(failure), true),
-                (None, Some(name)) => ("Connecting...", alloc::format!("Joining {name} after the next scan, up to 30 seconds."), false),
+                (None, Some(name)) => ("Connecting...", alloc::format!("Joining {name}."), false),
                 (_, None) if state == "scanning" && self.status.networks.is_empty() => ("Searching...", String::from("Listening for networks."), false),
                 (_, None) if self.status.networks.is_empty() => {
                     ("Not connected", String::from("No networks heard. EggOS listens again every 30 seconds."), false)
@@ -401,15 +430,23 @@ impl WifiSection {
 
     fn all_rows(&self) -> Vec<Row> {
         let state = self.status.state.as_str();
-        if state == "connected" {
-            let name = self.status.joined.clone().unwrap_or_default();
-            return alloc::vec![Row {
-                name,
-                detail: String::from("Connected"),
+        let mut rows = Vec::new();
+        let joined = match state == "connected" {
+            true => self.status.joined.clone(),
+            false => None,
+        };
+        if let Some(name) = &joined {
+            let detail = match self.status.signal {
+                Some(signal) => alloc::format!("Connected{DOT}{}", signal_words(signal)),
+                None => String::from("Connected"),
+            };
+            rows.push(Row {
+                name: name.clone(),
+                detail,
                 detail_strong: true,
                 button: if self.chosen.is_some() { Button::Forget } else { Button::Forgotten },
                 needs_passphrase: false,
-            }];
+            });
         }
         let listing = !matches!(
             state,
@@ -418,8 +455,7 @@ impl WifiSection {
         if !listing {
             return Vec::new();
         }
-        let mut rows = Vec::new();
-        if let Some(chosen) = &self.chosen {
+        if let Some(chosen) = self.chosen.as_ref().filter(|_| joined.is_none()) {
             let detail = match (self.failure.is_some(), self.status.networks.iter().any(|heard| &heard.name == chosen)) {
                 (true, _) => "Not joined",
                 (false, false) if state != "connecting" => "Not in range",
@@ -434,7 +470,7 @@ impl WifiSection {
             });
         }
         for heard in &self.status.networks {
-            if self.chosen.as_ref() == Some(&heard.name) {
+            if self.chosen.as_ref() == Some(&heard.name) || joined.as_ref() == Some(&heard.name) {
                 continue;
             }
             let hidden = heard.name.is_empty() || heard.name.len() > MAX_NAME_BYTES;
@@ -673,6 +709,12 @@ mod tests {
         let joined = parse("connected; address 00:11:22:33:44:55; 37 channels; network home\n");
         assert_eq!(joined.joined.as_deref(), Some("home"));
         assert!(parse("ready; the radio is switched off; address x; 1 channels").radio_off);
+        let joined = parse("connected; address x; 37 channels; network home; signal -51 dBm\n");
+        assert_eq!(joined.signal, Some(-51));
+        let failed = parse("ready; address x; 37 channels; joining home; failed wrong-passphrase: the network did not accept the passphrase\n");
+        assert_eq!(failed.joining.as_deref(), Some("home"));
+        let failure = failed.failure.expect("the failure segment");
+        assert_eq!((failure.code.as_str(), failure.words.as_str()), (WRONG_PASSPHRASE, "the network did not accept the passphrase"));
     }
 
     #[test]

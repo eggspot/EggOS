@@ -218,7 +218,7 @@ fn poll_forever<P: Platform>() {
     }
 }
 
-fn ticks_after<P: Platform>(milliseconds: u64) -> u64 {
+pub(crate) fn ticks_after<P: Platform>(milliseconds: u64) -> u64 {
     if milliseconds == u64::MAX {
         return u64::MAX;
     }

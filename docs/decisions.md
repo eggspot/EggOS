@@ -19910,3 +19910,37 @@ the license, by an explicit instruction recorded here.
   emptying the field before closing the note follow the toolkit's defaults; accessible names do
   not carry the network's name yet. The design's backend asks (joining as soon as the file
   changes, scanning while connected, failure codes) are left for the driver's next part.
+
+## D284 The Wi-Fi driver acts on `wifi.conf` at once, scans while joined, leaves and rejoins, and names its failures (D283's backend asks 1 to 5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the design's section 8)
+
+- **Decision.** The Wi-Fi thread keeps the adapter for good and the network stack gets a device
+  that only moves frames through two queues the thread serves (`TRAFFIC`, a leaf lock, 64 frames
+  each way), so one thread can scan, leave and join while the stack keeps its interface:
+  - It reads `wifi.conf` every second. A changed file scans at once and joins the chosen network
+    after that scan; a removed or changed file while joined sends a deauthentication frame
+    (reason 3) and undoes the firmware's contexts (`station::leave`: session protection, the
+    management queue, the station, binding, MAC and PHY contexts), so leaving or changing network
+    needs no restart.
+  - It scans every 30 seconds, joined or not (the firmware's UMAC scan works while associated),
+    and refreshes the joined network's signal from the scan.
+  - A disassociation or deauthentication from the access point ends the link (`dropped`) and the
+    thread joins again at once. A failed join is tried again after the next scan.
+  - While joined it moves frames every 2 ms, or at once when the stack queues one (its own
+    `DeviceEvents`), and raises the stack's events when frames arrive. The device is attached to
+    the stack at the first join and stays; its link is down while nothing is joined, so DHCP runs
+    again on each join.
+  - `/proc/driver/wifi`'s first line gains `joining <name>` while the chosen network is not
+    joined, `signal <n> dBm` after `network <name>`, and `failed <code>: <words>` for the last
+    failure until the next try ends. Codes: `not-in-range`, `no-answer`, `wrong-passphrase`
+    (message 2 of the handshake went unanswered, or the access point sent the station away during
+    the handshake, which is how a wrong passphrase shows from the station's side), `refused`,
+    `unsupported-security`, `dropped`, `ethernet-in-use` (a wired adapter is already the stack's),
+    `channel` and `adapter` (the firmware or the adapter failed). A failed join leaves the
+    firmware's contexts before the next try.
+  - The Network pane reads the new segments: the failure's sentence (`The network did not accept
+    this passphrase.` for `wrong-passphrase`), the joined row's signal, and the other networks
+    listed under the joined row instead of the joined row alone.
+- **Not yet.** Building and running; the note reopening by itself on `wrong-passphrase`;
+  `/proc/net/interfaces` naming the adapter's kind (ask 6); the radio switch's kind (ask 7);
+  hidden networks and names as escaped bytes (asks 8 and 9); group-key rekeying.
+
