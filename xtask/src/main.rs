@@ -2338,6 +2338,25 @@ fn write_mac_nib(
     Ok(())
 }
 
+fn write_mac_views(
+    programs: &macos::Programs,
+    cpu: &str,
+    folder: &std::path::Path,
+) -> Result<(), String> {
+    let app = macos::objc_program(macos::VIEWS_APP)
+        .ok_or_else(|| format!("{} is not an Objective-C test program", macos::VIEWS_APP))?;
+    let bundle = macos::assemble_app(
+        folder,
+        macos::VIEWS_APP,
+        &macos::source_folder(&app).join(macos::INFO_PLIST),
+        &programs.path(macos::VIEWS_APP, cpu),
+    )?;
+    macos::add_test_icon(&bundle)?;
+    macos::add_egg_image(&bundle)?;
+    macos::archive_app(&bundle)?;
+    Ok(())
+}
+
 fn build_program_windows_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
     let hello_window = build_runtime_program(arch, "eggos-hello-window")?;
     let extra = [
@@ -2444,6 +2463,7 @@ fn build_macos_gui_folder(arch: &Arch) -> Result<Option<std::path::PathBuf>, Str
     std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     write_mac_paint(&programs, cpu, &folder)?;
     write_mac_nib(&programs, cpu, &folder)?;
+    write_mac_views(&programs, cpu, &folder)?;
     Ok(Some(std::path::PathBuf::from(host_folder(
         &folder.to_string_lossy(),
     )?)))

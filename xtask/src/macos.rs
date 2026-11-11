@@ -46,6 +46,13 @@ pub const GUI_APP: &str = "mac-paint";
 /// compiled nib beside the programs (`<name>.nib`).
 pub const NIB_APP: &str = "mac-nib";
 
+/// The views test app's name (D379, docs/ux/macos-gui-v0.3.md section 18): its program and
+/// its bundle's folder without `.app`.
+pub const VIEWS_APP: &str = "mac-views";
+
+/// The picture `mac-views` loads with `imageNamed:`, in `Contents/Resources`.
+pub const EGG_IMAGE: &str = "egg.png";
+
 /// The nib test app's interface, `tests/macos-nib/<NIB_SOURCE>`, which `ibtool` compiles.
 pub const NIB_SOURCE: &str = "MainMenu.xib";
 
@@ -53,7 +60,7 @@ pub const NIB_SOURCE: &str = "MainMenu.xib";
 pub const MAIN_NIB: &str = "MainMenu.nib";
 
 /// The programs built from Objective-C sources with Apple's clang.
-pub const OBJC_PROGRAMS: [ObjcProgram; 3] = [
+pub const OBJC_PROGRAMS: [ObjcProgram; 4] = [
     ObjcProgram {
         name: "macos-objc",
         folder: "macos-objc",
@@ -67,6 +74,11 @@ pub const OBJC_PROGRAMS: [ObjcProgram; 3] = [
     ObjcProgram {
         name: NIB_APP,
         folder: "macos-nib",
+        frameworks: &["AppKit", "Foundation"],
+    },
+    ObjcProgram {
+        name: VIEWS_APP,
+        folder: "macos-views",
         frameworks: &["AppKit", "Foundation"],
     },
 ];
@@ -177,6 +189,50 @@ pub fn test_icns() -> Result<Vec<u8>, String> {
     file.extend_from_slice(&(body.len() as u32 + 8).to_be_bytes());
     file.extend_from_slice(&body);
     Ok(file)
+}
+
+const EGG_SIDE: u32 = 48;
+const EGG_WIDTH: i64 = 34;
+const EGG_HEIGHT: i64 = 44;
+const EGG_COLOUR: u32 = 0xfff6_f1e7;
+const EGG_DROP: i64 = 4;
+const EGG_TAPER: i64 = 3;
+
+fn egg_pixel(x: u32, y: u32) -> u32 {
+    let centre_x = i64::from(EGG_SIDE);
+    let centre_y = i64::from(EGG_SIDE) + EGG_DROP;
+    let (dx, dy) = (i64::from(x) * 2 + 1 - centre_x, i64::from(y) * 2 + 1 - centre_y);
+    let half_width = match dy < 0 {
+        true => EGG_WIDTH - EGG_WIDTH * -dy / (EGG_HEIGHT * EGG_TAPER),
+        false => EGG_WIDTH,
+    };
+    let inside = dx * dx * EGG_HEIGHT * EGG_HEIGHT + dy * dy * half_width * half_width
+        <= half_width * half_width * EGG_HEIGHT * EGG_HEIGHT;
+    match inside {
+        true => EGG_COLOUR,
+        false => 0,
+    }
+}
+
+/// `mac-views`' `egg.png`: the boot screen's egg at 48 pixels over transparency, straight
+/// alpha.
+pub fn egg_png() -> Result<Vec<u8>, String> {
+    let pixels: Vec<u32> = (0..EGG_SIDE * EGG_SIDE)
+        .map(|index| egg_pixel(index % EGG_SIDE, index / EGG_SIDE))
+        .collect();
+    crate::release::encode_rgba_png(&Picture {
+        width: EGG_SIDE,
+        height: EGG_SIDE,
+        pixels,
+    })
+}
+
+/// Writes `egg_png` into the bundle at `bundle` as `Contents/Resources/egg.png`.
+pub fn add_egg_image(bundle: &Path) -> Result<(), String> {
+    let resources = bundle.join("Contents").join("Resources");
+    std::fs::create_dir_all(&resources).map_err(|e| format!("{}: {e}", resources.display()))?;
+    let path = resources.join(EGG_IMAGE);
+    std::fs::write(&path, egg_png()?).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Writes `test_icns` into the bundle at `bundle` as `Contents/Resources/AppIcon.icns`.
@@ -759,5 +815,21 @@ mod tests {
         entries.sort();
         assert_eq!(entries, ["Info.plist", "MacOS"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_egg_is_opaque_in_the_middle_and_clear_in_the_corners() {
+        assert_eq!(egg_pixel(24, 26), EGG_COLOUR);
+        assert_eq!(egg_pixel(0, 0), 0);
+        assert_eq!(egg_pixel(47, 47), 0);
+        let png = egg_png().unwrap();
+        assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']);
+    }
+
+    #[test]
+    fn mac_views_is_an_objective_c_app_with_its_info_plist() {
+        let app = objc_program(VIEWS_APP).unwrap();
+        assert!(source_folder(&app).join("main.m").is_file());
+        assert!(source_folder(&app).join(INFO_PLIST).is_file());
     }
 }

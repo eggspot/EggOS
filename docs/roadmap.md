@@ -874,7 +874,8 @@ yet" naming what it left.
     unbuilt, D370; tray programs' context menus as shell menus, code written, unbuilt, D371);
   - part 14's rest: storyboards (D232; `NSKeyedArchiver`, code written, unbuilt, D365; NSDictionary's hash index, code
     written, unbuilt, D359; `NSKeyedUnarchiver`, code written, unbuilt, D360);
-  - part 15's rest: the About panel in `NSApp.windows`, `mac-views.app` (D233; scroll views, code written, unbuilt, D372;
+  - part 15's rest: the About panel in `NSApp.windows`, `mac-views.app`'s host renders and
+    QEMU steps (D233; `mac-views.app` itself, code written, unbuilt, D379; scroll views, code written, unbuilt, D372;
     tables, code written, unbuilt, D373; images, code written, unbuilt, D374; the About
     panel's icon and credits, code written, unbuilt, D375; raising instead of re-creating,
     code written, unbuilt, D376; the alert's element tree, code written, unbuilt, D377; scroll views and tables for

@@ -22438,3 +22438,19 @@ the license, by an explicit instruction recorded here.
     views as D374 says.
 - **Not yet.** `accessibilityLabel` as a name, rows beyond the tree's size, the element tree
   checks of `mac-views.app` (section 18).
+
+## D379 The views test app `mac-views.app` (batch part 15's rest, D233's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/macos-gui-v0.3.md section 18) and the code-only session (engineering)
+
+- **Decision.** `tests/macos-views/main.m` is our own Objective-C app, built on CI's macOS
+  runner like `mac-paint` (`OBJC_PROGRAMS` gains it): one fixed 480x360 window with the
+  checkbox, the two radios, the push-on-push-off `Bold`, an `NSImageView` subclass with a
+  hand cursor rect showing `egg`, a text field, a bezel-bordered scroll view holding a
+  20-row two-column table with alternating rows, `Copy` and `Paste` through the general
+  pasteboard and a result label, as section 18.1 lays them out; its main menu has `About
+  mac-views` (opening the About panel with `ApplicationIcon` `egg` and section 15.7's
+  `Credits`) and the Edit menu. `Info.plist` gives `mac-views`, version `0.3.0` and
+  `© 2026 EggOS`. xtask writes the bundle into the macOS GUI test folder with the test icon
+  and `Contents/Resources/egg.png`, a 48x48 egg over transparency it draws itself
+  (`encode_rgba_png`), and archives it as `mac-views.zip`.
+- **Not yet.** Section 18.2's host renders (`mac_views.rs`) and 18.3's QEMU steps, and
+  `NSImage` reading the bundle's `.icns` (D374's "Not yet").

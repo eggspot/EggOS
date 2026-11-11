@@ -123,6 +123,23 @@ pub fn encode_png(picture: &Picture) -> Result<Vec<u8>, String> {
     Ok(encoder.finish().map_err(failed)?.0)
 }
 
+/// `picture`, whose pixels are straight-alpha `0xAARRGGBB`, as an RGBA PNG.
+pub fn encode_rgba_png(picture: &Picture) -> Result<Vec<u8>, String> {
+    let failed = |error| format!("encoding the picture: {error:?}");
+    let mut work = Box::new(EncoderWorkspace::new());
+    let mut encoder = Encoder::new_rgba(
+        picture.width,
+        picture.height,
+        &mut work,
+        PngBytes(Vec::new()),
+    )
+    .map_err(failed)?;
+    for row in picture.pixels.chunks(picture.width.max(1) as usize) {
+        encoder.write_row(row).map_err(failed)?;
+    }
+    Ok(encoder.finish().map_err(failed)?.0)
+}
+
 /// Boots `arch`'s release image headless and writes the desktop at the shell's prompt to
 /// `docs/images/desktop.png`.
 pub fn screenshot(arch: &Arch) -> Result<(), String> {
