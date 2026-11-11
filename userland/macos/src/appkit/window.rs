@@ -446,7 +446,10 @@ extern "C" fn send_event(this: Id, _: Sel, event: Id) {
                 send1(view, sel, event as usize);
             }
         }
-        kind::MOUSE_MOVED => pointer_moved(this, location),
+        kind::MOUSE_MOVED => {
+            pointer_moved(this, location);
+            super::tracking::pointer_moved(this, location, event::fields(event).time_ms);
+        }
         kind::KEY_DOWN => key_down(this, event),
         kind::KEY_UP => to_responder(this, sel!("keyUp:"), event),
         kind::FLAGS_CHANGED => to_responder(this, sel!("flagsChanged:"), event),

@@ -22508,3 +22508,23 @@ the license, by an explicit instruction recorded here.
     `dictionaryRepresentation`; `init` answers the standard defaults.
 - **Not yet.** Suites (`initWithSuiteName:`), the global and argument domains, key-value
     observing of defaults, `NSUserDefaultsDidChangeNotification`, `URLForKey:`.
+
+## D382 AppKit's NSScreen and NSTrackingArea (batch part 17, D180's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from AppKit's documented behaviour)
+
+- **Decision.**
+  - **NSScreen**: one screen. `visibleFrame` is the server's work area in AppKit's
+    bottom-left coordinates; `frame` runs from the screen's origin to the work area's far
+    edges (the server tells clients the work area, not the panels outside it, so a bar on
+    the far side is not counted); `backingScaleFactor` 1; `mainScreen`, `deepestScreen` and
+    `screens` answer it.
+  - **NSTrackingArea** (`initWithRect:options:owner:userInfo:`, `rect`, `options`, `owner`,
+    `userInfo`) and NSView's `addTrackingArea:`, `removeTrackingArea:`, `trackingAreas`,
+    `updateTrackingAreas`. The layer keeps the added areas in one table; on each pointer move
+    in a window the areas of its views (their rect, or the view's bounds with
+    `NSTrackingInVisibleRect`) send their owner `mouseEntered:` and `mouseExited:` as the
+    pointer crosses their edge (`NSTrackingMouseEnteredAndExited`) and `mouseMoved:` inside
+    (`NSTrackingMouseMoved`); the pointer leaving the window exits them. A view being freed
+    takes its areas with it. The activity options (`ActiveAlways`, `ActiveInKeyWindow`, ...)
+    are accepted; areas act while their window takes the pointer.
+- **Not yet.** Cursor updates through areas (`NSTrackingCursorUpdate`), enter and exit
+    while dragging, `NSEvent`'s `trackingArea` and `userData`, more than one screen.

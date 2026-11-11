@@ -23,9 +23,11 @@ mod image;
 mod menu;
 mod nib;
 mod pasteboard;
+mod screen;
 mod scroll_view;
 mod server;
 mod table_view;
+mod tracking;
 mod view;
 mod window;
 
@@ -68,6 +70,8 @@ class_pairs! {
     NSINDEXSET, NSINDEXSET_META;
     NSIMAGE, NSIMAGE_META;
     NSIMAGEVIEW, NSIMAGEVIEW_META;
+    NSSCREEN, NSSCREEN_META;
+    NSTRACKINGAREA, NSTRACKINGAREA_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -182,6 +186,8 @@ pub fn set_up() -> bool {
             && scroll_view::extend_views(runtime)
             && table_view::define(runtime)
             && image::define(runtime)
+            && screen::define(runtime)
+            && tracking::define(runtime)
     });
     defined && drawing::set_up()
 }
@@ -238,6 +244,10 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSImage" => class(&NSIMAGE_META),
         b"_OBJC_CLASS_$_NSImageView" => class(&NSIMAGEVIEW),
         b"_OBJC_METACLASS_$_NSImageView" => class(&NSIMAGEVIEW_META),
+        b"_OBJC_CLASS_$_NSScreen" => class(&NSSCREEN),
+        b"_OBJC_METACLASS_$_NSScreen" => class(&NSSCREEN_META),
+        b"_OBJC_CLASS_$_NSTrackingArea" => class(&NSTRACKINGAREA),
+        b"_OBJC_METACLASS_$_NSTrackingArea" => class(&NSTRACKINGAREA_META),
         _ => application::resolve(name).or_else(|| drawing::resolve(name)),
     }
 }

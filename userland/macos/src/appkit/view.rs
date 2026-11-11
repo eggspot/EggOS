@@ -242,6 +242,7 @@ extern "C" fn set_frame_size(this: Id, _: Sel, size: Size) {
 /// superview and window), then its memory. A subclass's `dealloc` releases its own fields first.
 pub fn dispose(view: Id) {
     super::cursor::discard_rects(view);
+    super::tracking::forget_view(view);
     let mut subviews = core::mem::replace(&mut fields(view).subviews, Buffer::new());
     for &child in subviews.as_slice() {
         fields(child).superview = core::ptr::null_mut();

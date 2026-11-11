@@ -358,7 +358,10 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
             send1(window, sel!("performClose:"), 0);
         }
         Input::Resize { width, height } => window::resize(window, width, height),
-        Input::PointerLeave => cursor::pointer_left(window),
+        Input::PointerLeave => {
+            cursor::pointer_left(window);
+            super::tracking::pointer_left(window, time);
+        }
         Input::StateChanged { .. } | Input::DeadKey { .. } | Input::Overflow => {}
     }
 }
