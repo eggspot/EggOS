@@ -18,6 +18,8 @@ pub mod flag {
     pub const GRAYED: u32 = 0x1;
     pub const DISABLED: u32 = 0x2;
     pub const CHECKED: u32 = 0x8;
+    /// `MFT_RADIOCHECK`: a checked item shows a dot instead of a tick (D334).
+    pub const RADIO_CHECK: u32 = 0x200;
     pub const POPUP: u32 = 0x10;
     pub const OWNER_DRAW: u32 = 0x100;
     pub const SEPARATOR: u32 = 0x800;

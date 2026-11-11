@@ -72,6 +72,7 @@ fn labels(menu: &Menu, nested: bool) -> [MenuLabel<'_>; MAX_ITEMS] {
         separator: false,
         grayed: false,
         checked: false,
+        radio: false,
     }; MAX_ITEMS];
     for (label, item) in labels.iter_mut().zip(menu.items()) {
         *label = MenuLabel {
@@ -79,6 +80,7 @@ fn labels(menu: &Menu, nested: bool) -> [MenuLabel<'_>; MAX_ITEMS] {
             separator: item.is_separator(),
             grayed: item.is_grayed() || (nested && item.popup().is_some()),
             checked: item.flags & flag::CHECKED != 0,
+            radio: item.flags & flag::RADIO_CHECK != 0,
         };
     }
     labels
@@ -721,6 +723,23 @@ extern "efiapi" fn check_menu_item(menu: usize, item: u32, flags: u32) -> u32 {
     change_item(menu, item, flags, flag::CHECKED, flags & flag::CHECKED)
 }
 
+/// `CheckMenuRadioItem`: checks item `check` of the items `first` to `last` (commands, or
+/// positions with `MF_BYPOSITION`) with a dot (`MFT_RADIOCHECK`) and unchecks the others; `FALSE`
+/// when `check` is not one of them or not in the menu (D334).
+extern "efiapi" fn check_menu_radio_item(menu: usize, first: u32, last: u32, check: u32, flags: u32) -> Bool {
+    if !(first..=last).contains(&check) {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    let radio = flag::CHECKED | flag::RADIO_CHECK;
+    if change_item(menu, check, flags, radio, radio) == NO_SUCH_ITEM {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    for item in (first..=last).filter(|&item| item != check) {
+        change_item(menu, item, flags, flag::CHECKED, 0);
+    }
+    TRUE
+}
+
 extern "efiapi" fn enable_menu_item(menu: usize, item: u32, flags: u32) -> i32 {
     let states = flag::GRAYED | flag::DISABLED;
     change_item(menu, item, flags, states, flags & states) as i32
@@ -784,6 +803,7 @@ unsafe extern "efiapi" fn get_menu_item_rect(
 
 pub(super) const EXPORTS: &[Export] = exports![
     b"CheckMenuItem" => check_menu_item,
+    b"CheckMenuRadioItem" => check_menu_radio_item,
     b"EnableMenuItem" => enable_menu_item,
     b"GetMenuState" => get_menu_state,
     b"GetMenuItemRect" => get_menu_item_rect,

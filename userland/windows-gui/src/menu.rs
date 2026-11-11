@@ -1,7 +1,7 @@
 //! The menu bar and its drop-downs (section 6 of the design): their layout from the labels,
 //! hit tests and painting, inside the window's content above and over its client area.
 
-use crate::controls::button::tick;
+use crate::controls::button::{dot, tick};
 use crate::controls::{MAX_LABEL_CELLS, Palette, label_cells, outline};
 use crate::surface::{Rect, Surface};
 use crate::text::{self, CELL_WIDTH, Cell};
@@ -29,6 +29,8 @@ pub struct MenuLabel<'a> {
     pub separator: bool,
     pub grayed: bool,
     pub checked: bool,
+    /// `MFT_RADIOCHECK`: the check is a dot (D334).
+    pub radio: bool,
 }
 
 impl MenuLabel<'_> {
@@ -179,8 +181,10 @@ pub fn paint_drop_down(
             true => palette.menu_text_disabled,
             false => palette.menu_text,
         };
-        if item.checked {
-            tick(surface, rect.left + CHECK_LEFT, row.top + CHECK_TOP, colour);
+        match (item.checked, item.radio) {
+            (true, true) => dot(surface, rect.left + CHECK_LEFT, row.top + CHECK_TOP, colour),
+            (true, false) => tick(surface, rect.left + CHECK_LEFT, row.top + CHECK_TOP, colour),
+            _ => {}
         }
         let mut cells = [Cell::Space; MAX_LABEL_CELLS];
         let count = item.cells(&mut cells);
@@ -206,6 +210,7 @@ mod tests {
             separator: false,
             grayed: false,
             checked: false,
+            radio: false,
         }
     }
 

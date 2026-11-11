@@ -21508,3 +21508,21 @@ the license, by an explicit instruction recorded here.
   - The phone, tablet and TV places of the row, and the keyboard jump letters.
   - The desktop's resize keeping windows inside the new work area: it does what resolution
     changes do today.
+
+## D334 Windows menus: `MFT_RADIOCHECK` and `CheckMenuRadioItem` (batch part 10's rest, D228's "Not yet"; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the Win32 documentation of `MENUITEMINFO` and `CheckMenuRadioItem`)
+
+- **Decision.**
+  - **The dot.** A menu item with `MFT_RADIOCHECK` (0x200, kept with its flags as given to
+    `AppendMenuW`) that is checked shows a dot where a checked item shows its tick. It is the
+    radio button's 6 px dot (`controls::button::dot`) in the item's text colour, at the tick's
+    place. `MenuLabel` gains `radio` for it.
+  - **`CheckMenuRadioItem(menu, first, last, check, flags)`** (now exported by user32). Of the
+    items `first` to `last` (commands, or positions with `MF_BYPOSITION`), it checks `check`
+    with `MFT_RADIOCHECK` and unchecks the others.
+    - Items of the range that do not exist are skipped.
+    - It answers `FALSE` with `ERROR_INVALID_PARAMETER` when `check` is outside the range or
+      not in the menu.
+    - Unlike Windows, it does not take the radio flag off the others: they are unchecked, so
+      they show nothing.
+- **Left of part 10's rest:** scroll bars on windows, multi-line edits, editable combo boxes,
+  submenus, menu keys, menus from templates, word selection.
