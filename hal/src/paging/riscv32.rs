@@ -12,6 +12,8 @@ pub struct Riscv32Sv32;
 
 /// `satp.MODE` for Sv32 (bit 31 of the 32-bit `satp`).
 pub const SATP_MODE_SV32: u32 = 1 << 31;
+/// The flags of the boot table's megapages: valid, read, write, execute, accessed and dirty.
+pub const BOOT_MEGAPAGE: u32 = 0xcf;
 
 const VALID: u64 = 1 << 0;
 const READ: u64 = 1 << 1;

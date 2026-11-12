@@ -24269,3 +24269,21 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The HAL modules for `arm` and `riscv32` (boot, vectors, timers, context switch)
   and the rest of the core's assumptions (pointers kept in `u64`, the direct map's size, the
   Linux ABI's 32-bit system-call tables).
+
+## D475 RV32, part 2: the boot path on QEMU `virt` (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `hal::arch::riscv32` boots under OpenSBI: `.bss` zeroed in words, the device
+  tree and boot hart kept, one Sv32 root of 4 MiB megapages built (D474): the direct map, RAM
+  from `0x8000_0000` at `0xc000_0000` on (896 MiB, Linux's "lowmem" split, the top gigabyte
+  holding the kernel image, linked at `0xc040_0000` inside the direct map, so
+  `KERNEL_VIRTUAL_OFFSET` and the direct map's offset are the same `0x4000_0000`), the image's
+  megapage again at its physical address for the jump, and the UART's megapage at its
+  physical address; translation on, the jump to the virtual address, the stack, and
+  `early_main`, which reports on the console and stops the machine through SBI's system
+  reset. The module also reads the 64-bit `time` counter as its two halves until the high one
+  holds still, and asks SBI for timer interrupts with the deadline split across `a0` and `a1`.
+- **Why the direct map holds the kernel.** A 32-bit address space has no room for a 64-bit
+  kernel's separate top-2-GiB image (D33) beside a direct map: one gigabyte for the kernel
+  means one mapping for both.
+- **Not yet.** Exceptions and interrupts, threads, user mode, secondary harts and the rest of
+  `Platform` (RV32 part 3), RAM beyond 896 MiB, and the core's remaining 64-bit assumptions.
