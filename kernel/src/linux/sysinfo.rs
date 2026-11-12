@@ -1,9 +1,10 @@
 //! `sysinfo` (D176): how long EggOS has run, its memory and how many processes exist, which C
 //! libraries read for `sysconf(_SC_PHYS_PAGES)` and `_SC_AVPHYS_PAGES` (musl and glibc both),
-//! and GLib for its memory monitor. One layout, Linux's `struct sysinfo` on 64-bit machines:
-//! the uptime in whole seconds (rounded up, as Linux), three load averages (0 here: EggOS keeps
-//! none yet), total and free memory in units of `mem_unit` (1 byte), no shared, buffer, swap or
-//! high memory, and the process count.
+//! and GLib for its memory monitor. Linux's `struct sysinfo`, its `long`s a word of the
+//! program's width (D493): the uptime in whole seconds (rounded up, as Linux), three load
+//! averages (0 here: EggOS keeps none yet), total and free memory in units of `mem_unit` (1
+//! byte, or a page when a 32-bit word cannot hold the total, as Linux), no shared, buffer,
+//! swap or high memory, and the process count.
 
 use super::Errno;
 use super::process_table::TABLE;
@@ -12,15 +13,22 @@ use crate::process::Process;
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 
-/// The size of `struct sysinfo`.
-pub const SYSINFO_SIZE: usize = 112;
+const W: usize = super::abi::WORD_BYTES;
+
+/// The size of `struct sysinfo`: 112 bytes on 64-bit programs, 64 on 32-bit ones.
+pub const SYSINFO_SIZE: usize = (offset::MEMORY_UNIT + 20 - 2 * W).next_multiple_of(W);
+const _: () = assert!(W != 8 || SYSINFO_SIZE == 112);
+const _: () = assert!(W != 4 || SYSINFO_SIZE == 64);
 
 mod offset {
+    use super::W;
+
     pub const UPTIME: usize = 0;
-    pub const TOTAL_RAM: usize = 32;
-    pub const FREE_RAM: usize = 40;
-    pub const PROCESSES: usize = 80;
-    pub const MEMORY_UNIT: usize = 104;
+    pub const TOTAL_RAM: usize = 4 * W;
+    pub const FREE_RAM: usize = 5 * W;
+    pub const PROCESSES: usize = 10 * W;
+    pub const MEMORY_UNIT: usize = (PROCESSES + 2).next_multiple_of(W) + 2 * W;
+    const _: () = assert!(W != 8 || TOTAL_RAM == 32 && PROCESSES == 80 && MEMORY_UNIT == 104);
 }
 
 /// What `sysinfo` reports.
@@ -35,13 +43,18 @@ pub struct Snapshot {
 /// `snapshot` as `struct sysinfo`.
 pub fn sysinfo_bytes(snapshot: &Snapshot) -> [u8; SYSINFO_SIZE] {
     let mut bytes = [0u8; SYSINFO_SIZE];
-    let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_ne_bytes());
+    let unit = match W == 4 && snapshot.total_bytes > u64::from(u32::MAX) {
+        true => FRAME_SIZE,
+        false => 1,
+    };
+    let mut put = |at: usize, value: u64| super::abi::put_word(&mut bytes[at..], value);
     put(offset::UPTIME, snapshot.uptime_seconds);
-    put(offset::TOTAL_RAM, snapshot.total_bytes);
-    put(offset::FREE_RAM, snapshot.free_bytes);
+    put(offset::TOTAL_RAM, snapshot.total_bytes / unit);
+    put(offset::FREE_RAM, snapshot.free_bytes / unit);
     bytes[offset::PROCESSES..offset::PROCESSES + 2]
         .copy_from_slice(&snapshot.processes.to_ne_bytes());
-    bytes[offset::MEMORY_UNIT..offset::MEMORY_UNIT + 4].copy_from_slice(&1u32.to_ne_bytes());
+    bytes[offset::MEMORY_UNIT..offset::MEMORY_UNIT + 4]
+        .copy_from_slice(&(unit as u32).to_ne_bytes());
     bytes
 }
 

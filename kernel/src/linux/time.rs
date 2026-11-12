@@ -246,7 +246,11 @@ fn cpu_clock<P: Platform>(process: &Process<P>, clock_id: u64) -> Option<u64> {
 const RUSAGE_SELF: i64 = 0;
 const RUSAGE_CHILDREN: i64 = -1;
 const RUSAGE_THREAD: i64 = 1;
-const RUSAGE_SIZE: usize = 144;
+const W: usize = super::abi::WORD_BYTES;
+/// `struct rusage`: two `struct timeval`s and 14 `long`s, 18 words (D493).
+pub const RUSAGE_SIZE: usize = 18 * W;
+/// `struct tms`: four `clock_t`s.
+const TMS_SIZE: usize = 4 * W;
 const USER_HZ: u64 = 100;
 
 /// `getrusage(who, usage)` (D198): the calling process's (`RUSAGE_SELF`) or thread's
@@ -261,8 +265,8 @@ pub fn getrusage<P: Platform>(process: &Process<P>, who: u64, usage: u64) -> Res
         _ => return Err(Errno::EINVAL),
     };
     let mut bytes = [0u8; RUSAGE_SIZE];
-    bytes[..8].copy_from_slice(&(nanoseconds / NANOSECONDS_PER_SECOND).to_ne_bytes());
-    bytes[8..16].copy_from_slice(&(nanoseconds % NANOSECONDS_PER_SECOND / 1000).to_ne_bytes());
+    super::abi::put_word(&mut bytes, nanoseconds / NANOSECONDS_PER_SECOND);
+    super::abi::put_word(&mut bytes[W..], nanoseconds % NANOSECONDS_PER_SECOND / 1000);
     write(process, usage, &bytes)?;
     Ok(0)
 }
@@ -273,8 +277,8 @@ pub fn getrusage<P: Platform>(process: &Process<P>, who: u64, usage: u64) -> Res
 pub fn times<P: Platform>(process: &Process<P>, buf: u64) -> Result<u64, Errno> {
     if buf != 0 {
         let spent = cpu_clock(process, clock::PROCESS_CPUTIME_ID as u64).unwrap_or(0);
-        let mut bytes = [0u8; 32];
-        bytes[..8].copy_from_slice(&(spent / (NANOSECONDS_PER_SECOND / USER_HZ)).to_ne_bytes());
+        let mut bytes = [0u8; TMS_SIZE];
+        super::abi::put_word(&mut bytes, spent / (NANOSECONDS_PER_SECOND / USER_HZ));
         write(process, buf, &bytes)?;
     }
     Ok(monotonic_nanoseconds::<P>() / (NANOSECONDS_PER_SECOND / USER_HZ))

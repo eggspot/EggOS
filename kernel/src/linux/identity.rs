@@ -64,8 +64,9 @@ const UTSNAME: [u8; 6 * utsname::FIELD] = {
     image
 };
 
-/// The size of Linux's `struct robust_list_head` on 64-bit architectures: three words.
-pub const ROBUST_LIST_HEAD_SIZE: u64 = 24;
+/// The size of Linux's `struct robust_list_head`: three words of the program's width, 24 or
+/// 12 bytes (D493).
+pub const ROBUST_LIST_HEAD_SIZE: u64 = 3 * super::abi::WORD_BYTES as u64;
 
 /// `getpid()`: the process's id.
 pub fn getpid<P: Platform>(process: &Process<P>) -> u64 {
@@ -269,9 +270,15 @@ pub fn get_robust_list<P: Platform>(
     if tid != 0 && tid != thread.id() {
         return Err(Errno::ESRCH);
     }
+    let word = |value: u64| {
+        let mut bytes = [0; 8];
+        super::abi::put_word(&mut bytes, value);
+        bytes
+    };
+    let size = super::abi::WORD_BYTES;
     process
-        .write_user_memory(head, &thread.robust_list().to_ne_bytes())
-        .and_then(|()| process.write_user_memory(length, &ROBUST_LIST_HEAD_SIZE.to_ne_bytes()))
+        .write_user_memory(head, &word(thread.robust_list())[..size])
+        .and_then(|()| process.write_user_memory(length, &word(ROBUST_LIST_HEAD_SIZE)[..size]))
         .map_err(|_| Errno::EFAULT)?;
     Ok(0)
 }

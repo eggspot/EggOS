@@ -16,6 +16,7 @@ use super::process_table::{
 };
 use super::signals::{self, Info, Interrupted};
 use super::thread::{LinuxThread, unless_signalled_or_ended};
+use super::time::RUSAGE_SIZE;
 use super::{Errno, credentials};
 use crate::process::{Process, ProcessExit};
 use alloc::sync::Arc;
@@ -58,8 +59,6 @@ const WAITID_OPTIONS: u32 = option::WNOHANG
     | option::WNOTHREAD
     | option::WALL
     | option::WCLONE;
-
-const RUSAGE_SIZE: usize = 144;
 
 const SIGINFO_SIZE: usize = 128;
 

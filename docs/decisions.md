@@ -24557,3 +24557,17 @@ the license, by an explicit instruction recorded here.
   exists in host test builds.
 - **Not yet word-sized**: `times`, `getrusage`, `wait4`'s `rusage`, `sysinfo` and the robust
   futex list, whose structures hold `long`s or pointers (D493).
+
+## D493 The Linux layer's word size, part 8: `rusage`, `tms`, `sysinfo` and the robust list (M9, the 32-bit audit; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The last structures of `long`s and pointers the Linux layer writes or walks take
+  the program's word: `struct rusage` is 18 words (144 or 72 bytes, `getrusage` and `wait4`),
+  `struct tms` four `clock_t`s, `struct sysinfo` 112 or 64 bytes with its `long`s a word and
+  its `mem_unit` a page when a 32-bit word cannot hold the memory's size in bytes, as Linux
+  does; `struct robust_list_head` is three words (`set_robust_list` takes 24 or 12), its
+  pointers read at the word's width and its offset sign-extended, the addresses cut to the
+  word. 32-bit C libraries convert `rusage`'s 32-bit `timeval`s themselves (there is no
+  `time64` `getrusage`).
+- With D485 to D493 the 32-bit Linux layer's structures are those of RV32 and 32-bit Arm. What
+  stays 64-bit is what 32-bit programs reach only through calls past the table (D492) or
+  through `ioctl`s and `/proc` files whose layouts have no `long` in them.

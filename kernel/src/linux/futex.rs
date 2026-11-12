@@ -605,6 +605,8 @@ impl Call {
     }
 }
 
+const POINTER_MASK: u64 = u64::MAX >> (64 - 8 * super::abi::WORD_BYTES);
+
 /// The bits of a robust lock's word ([`release_robust_list`]): a waiter may be blocked on it,
 /// its owner died holding it, and the owner's thread id.
 pub mod robust {
@@ -628,7 +630,7 @@ pub fn release_robust_list<P: Platform>(process: &Process<P>, tid: u32, head: u6
     let Ok([first, offset, pending]) = read_user_words::<P, 3>(process, head) else {
         return;
     };
-    let address = |entry: u64| entry & !robust::PRIORITY_INHERITANCE;
+    let address = |entry: u64| entry & !robust::PRIORITY_INHERITANCE & POINTER_MASK;
     let mut entry = first;
     for _ in 0..robust::LIST_LIMIT {
         if address(entry) == head {
@@ -655,7 +657,7 @@ fn release_robust_lock<P: Platform>(
     entry: u64,
     offset: u64,
 ) -> Result<(), Errno> {
-    let address = (entry & !robust::PRIORITY_INHERITANCE).wrapping_add(offset);
+    let address = (entry & !robust::PRIORITY_INHERITANCE).wrapping_add(offset) & POINTER_MASK;
     if !address.is_multiple_of(WORD_SIZE)
         || address > <P::PageTableFormat as Format>::USER_END - WORD_SIZE
     {
@@ -683,15 +685,23 @@ fn release_robust_lock<P: Platform>(
     Ok(())
 }
 
+/// `N` pointers or `long`s at `address`, each a word of the program's width (D493), the
+/// signed ones sign-extended so offsets below an entry stay negative.
 fn read_user_words<P: Platform, const N: usize>(
     process: &Process<P>,
     address: u64,
 ) -> Result<[u64; N], Errno> {
+    const W: usize = super::abi::WORD_BYTES;
     let mut bytes = [[0; 8]; N];
-    process
-        .read_user_memory(address, bytes.as_flattened_mut())
-        .map_err(|_| Errno::EFAULT)?;
-    Ok(bytes.map(u64::from_ne_bytes))
+    for (index, word) in bytes.iter_mut().enumerate() {
+        process
+            .read_user_memory(address.wrapping_add((index * W) as u64), &mut word[..W])
+            .map_err(|_| Errno::EFAULT)?;
+    }
+    Ok(bytes.map(|word| match W {
+        4 => i64::from(i32::from_ne_bytes(word[..4].try_into().unwrap())) as u64,
+        _ => u64::from_ne_bytes(word),
+    }))
 }
 
 fn check_word<P: Platform>(process: &Process<P>, address: u64, shared: bool) -> Result<(), Errno> {
