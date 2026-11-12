@@ -22986,3 +22986,23 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** `A` notifications to ANSI parents (the layer answers `WM_NOTIFYFORMAT` with
   Unicode, so parents get `W` ones), `TTM_GETTOOLINFOA`, `SB_GETTIPTEXTA`,
   `LVM_GETISEARCHSTRINGA` and `TB_SAVERESTOREA`.
+
+## D403 List and tree views ask for callback items, and headers draw sort arrows (batch part 13's rest, the common-control breadth; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: Microsoft's documentation of `LPSTR_TEXTCALLBACK`, `I_IMAGECALLBACK`, `I_CHILDRENCALLBACK`, `LVN_GETDISPINFO`, `TVN_GETDISPINFO`, `LVIF_DI_SETITEM` and `HDF_SORTUP`)
+
+- **Question.** Items inserted with `LPSTR_TEXTCALLBACKW` drew empty, image and children
+  callbacks were ignored (a lazily filled tree showed no expand buttons), and `HDF_SORTUP`
+  and `HDF_SORTDOWN` drew nothing.
+- **Decision.** A callback text is kept in the model as a mark no text holds (U+FFFF);
+  readers (agents, `LVM_GETITEMTEXT`, `TVM_GETITEM`) see it as empty. Before a list view or
+  tree view paints, it asks its parent `LVN_GETDISPINFOW` or `TVN_GETDISPINFOW` (the GUI
+  lock let go, as for every notification) for each callback cell, image or children count
+  of the rows it shows, puts the answers in for the paint and the marks back after it,
+  unless the parent set `LVIF_DI_SETITEM`/`TVIF_DI_SETITEM`, which keeps them as Windows
+  does. Asking only for shown rows keeps a large virtual list as cheap as its view.
+- **Headers** draw an up or down arrow 14 px from a column's right edge for `HDF_SORTUP` and
+  `HDF_SORTDOWN`; alignment reads only the justify bits, so the sort bits change nothing
+  else.
+- **Fix.** `tree_view.rs` declared `TVIF_TEXT`, `TVIF_PARAM`, `TVIF_STATE` and `TVIF_HANDLE`
+  twice (D361's batch, unbuilt); the second declarations are gone.
+- **Not yet.** `LVS_OWNERDATA` virtual lists (their rows exist only as callbacks),
+  callback texts in agents' tree, and `LVN_ODCACHEHINT`.

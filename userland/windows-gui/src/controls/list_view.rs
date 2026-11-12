@@ -120,6 +120,25 @@ pub mod format {
     pub const RIGHT: u32 = 0x1;
     pub const CENTER: u32 = 0x2;
     pub const JUSTIFY_MASK: u32 = 0x3;
+    /// `HDF_SORTDOWN`: the arrow points down (D403).
+    pub const SORT_DOWN: u32 = 0x200;
+    /// `HDF_SORTUP`: the arrow points up.
+    pub const SORT_UP: u32 = 0x400;
+}
+
+const SORT_ARROW_FROM_RIGHT: i32 = 14;
+const SORT_ARROW_TOP: i32 = 9;
+const SORT_ARROW_ROWS: i32 = 4;
+
+fn sort_arrow(surface: &mut Surface<'_>, item: Rect, top: i32, up: bool, colour: u32) {
+    let middle = item.right - SORT_ARROW_FROM_RIGHT;
+    for row in 0..SORT_ARROW_ROWS {
+        let half = match up {
+            true => row,
+            false => SORT_ARROW_ROWS - 1 - row,
+        };
+        surface.fill(Rect::sized(middle - half, top + row, 2 * half + 1, 1), colour);
+    }
 }
 
 /// The keys a list reads, as Windows' virtual keys.
@@ -1537,6 +1556,11 @@ pub fn paint_header_custom(
             columns.text(index),
             draw.text.filter(|_| look.enabled).unwrap_or(colour),
         );
+        let sorted = columns.format(index) & (format::SORT_UP | format::SORT_DOWN);
+        if sorted != 0 {
+            let up = sorted & format::SORT_UP != 0;
+            sort_arrow(surface, item, rect.top + SORT_ARROW_TOP, up, colour);
+        }
         surface.set_clip(clip);
     }
     surface.fill(

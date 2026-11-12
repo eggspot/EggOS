@@ -567,6 +567,13 @@ fn custom_after(window: usize, hdc: usize, custom: &CustomRows) {
 
 fn paint(window: usize) {
     sync_info_tips(window);
+    let asked = ask_callbacks(window);
+    swap_asked(window, &asked, true);
+    paint_rows(window);
+    swap_asked(window, &asked, false);
+}
+
+fn paint_rows(window: usize) {
     let Ok((hdc, _, _)) = super::super::paint::begin(window) else {
         return;
     };
@@ -1204,7 +1211,7 @@ fn join_cells<'b>(list: &ListView, index: usize, out: &'b mut [u16; JOINED_UNITS
             out[length] = TAB;
             length += 1;
         }
-        for &unit in list.text(index, column) {
+        for &unit in cell_text(list, index, column) {
             if length == out.len() {
                 break;
             }
@@ -1238,7 +1245,7 @@ pub(super) fn push_items(
                 rect.height(),
             );
             let mut name = [0u8; MAX_LABEL_BYTES];
-            let name = utf8(list.text(index, 0), &mut name);
+            let name = utf8(cell_text(list, index, 0), &mut name);
             let mut joined = [0u16; JOINED_UNITS];
             let joined = join_cells(list, index, &mut joined);
             let mut value = [0u8; MAX_LABEL_BYTES];
@@ -1316,6 +1323,131 @@ pub(super) fn delete_column(window: usize, index: usize) -> bool {
     deleted
 }
 
+const LVN_GETDISPINFOW: i32 = -177;
+const LVIF_DI_SETITEM: u32 = 0x1000;
+const IMAGE_CALLBACK: i32 = -1;
+const CALLBACK_MARK: [u16; 1] = [0xffff];
+const ASKED_UNITS: usize = 260;
+
+/// A row's text the program gives when asked (`LPSTR_TEXTCALLBACKW`, D403) is kept as this
+/// mark, which no text holds; readers see it as empty.
+fn cell_text(list: &ListView, index: usize, column: usize) -> &[u16] {
+    match list.text(index, column) {
+        text if text == CALLBACK_MARK => &[],
+        text => text,
+    }
+}
+
+/// The text an item message's `pszText` gives the list: the callback mark for
+/// `LPSTR_TEXTCALLBACKW`.
+///
+/// # Safety
+/// As [`text_at`].
+unsafe fn item_text_at<'a>(pointer: usize) -> &'a [u16] {
+    match pointer {
+        TEXT_CALLBACK => &CALLBACK_MARK,
+        // SAFETY: the caller's duty.
+        pointer => unsafe { text_at(pointer) },
+    }
+}
+
+/// A callback cell's text or image as the parent answered `LVN_GETDISPINFOW` for one paint;
+/// `keep` when it asked the list to keep it (`LVIF_DI_SETITEM`).
+struct Asked {
+    row: usize,
+    column: usize,
+    text: Option<alloc::vec::Vec<u16>>,
+    image: Option<i32>,
+    keep: bool,
+}
+
+fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
+    let wanted = with_state::<ListState, _>(window, |entry, control| {
+        let list = &control.list;
+        let layout = list.layout(entry.client(), entry.style);
+        let top = list.top();
+        let end = (top + layout.visible + 1).min(list.count());
+        let columns = list.columns().count().max(1);
+        let mut cells = alloc::vec::Vec::new();
+        for row in top..end {
+            for column in 0..columns {
+                let text = list.text(row, column) == CALLBACK_MARK;
+                let image = column == 0 && list.image(row) == IMAGE_CALLBACK;
+                if text || image {
+                    cells.push((row, column, text, image, list.lparam(row)));
+                }
+            }
+        }
+        cells
+    })
+    .unwrap_or_default();
+    let mut asked = alloc::vec::Vec::new();
+    for (row, column, text, image, lparam) in wanted {
+        let mut buffer = [0u16; ASKED_UNITS];
+        let place = buffer.as_mut_ptr() as usize;
+        let mask = match (text, image) {
+            (true, true) => LVIF_TEXT | LVIF_IMAGE,
+            (true, false) => LVIF_TEXT,
+            _ => LVIF_IMAGE,
+        };
+        let (_, answer) = super::notify_parent_keeping(window, LVN_GETDISPINFOW, |header| {
+            NmListDisplayInfo {
+                header,
+                item: ItemHead {
+                    mask,
+                    item: row as i32,
+                    sub_item: column as i32,
+                    state: 0,
+                    state_mask: 0,
+                    text: place,
+                    text_max: ASKED_UNITS as i32,
+                    image: 0,
+                    lparam,
+                },
+            }
+        });
+        let Some(answer) = answer else {
+            break;
+        };
+        let given = text.then(|| match answer.item.text {
+            pointer if pointer == place => {
+                let end = buffer.iter().position(|unit| *unit == 0).unwrap_or(ASKED_UNITS);
+                buffer[..end].to_vec()
+            }
+            // SAFETY: the parent pointed `pszText` at its own NUL-terminated text.
+            pointer => unsafe { text_at(pointer) }.to_vec(),
+        });
+        asked.push(Asked {
+            row,
+            column,
+            text: given,
+            image: image.then_some(answer.item.image),
+            keep: answer.item.mask & LVIF_DI_SETITEM != 0,
+        });
+    }
+    asked
+}
+
+/// Puts the asked texts and images into the list for a paint (`shown`), or the callback marks
+/// back after it, but for those the parent asked the list to keep.
+fn swap_asked(window: usize, asked: &[Asked], shown: bool) {
+    if asked.is_empty() {
+        return;
+    }
+    with_state::<ListState, _>(window, |_, control| {
+        for one in asked {
+            let given = shown || one.keep;
+            if let Some(text) = &one.text {
+                let units = if given { text.as_slice() } else { &CALLBACK_MARK[..] };
+                control.list.set_text(one.row, one.column, units);
+            }
+            if let Some(image) = one.image {
+                control.list.set_image(one.row, if given { image } else { IMAGE_CALLBACK });
+            }
+        }
+    });
+}
+
 /// The text a control message's `pszText` points to: empty for none or
 /// `LPSTR_TEXTCALLBACKW`.
 ///
@@ -1347,7 +1479,7 @@ fn insert_item(window: usize, lparam: usize) -> usize {
     let text = match item.mask & LVIF_TEXT {
         0 => &[][..],
         // SAFETY: with `LVIF_TEXT`, `pszText` is a NUL-terminated string or the callback value.
-        _ => unsafe { text_at(item.text) },
+        _ => unsafe { item_text_at(item.text) },
     };
     let inserted = with_state::<ListState, _>(window, |entry, control| {
         let sorting = entry.style & (style::SORT_ASCENDING | style::SORT_DESCENDING);
@@ -1423,7 +1555,7 @@ fn set_item(window: usize, index: Option<usize>, lparam: usize, text_only: bool)
     let text = match mask & LVIF_TEXT {
         0 => &[][..],
         // SAFETY: with `LVIF_TEXT`, `pszText` is a NUL-terminated string or the callback value.
-        _ => unsafe { text_at(item.text) },
+        _ => unsafe { item_text_at(item.text) },
     };
     let done = with_state::<ListState, _>(window, |_, control| {
         if index >= control.list.count() {
@@ -1489,7 +1621,7 @@ fn get_item(window: usize, index: Option<usize>, lparam: usize, text_only: bool)
             // SAFETY: `pszText` holds `cchTextMax` writable units, the messages' contract.
             copied = unsafe {
                 window_text::copy_out(
-                    list.text(index, column),
+                    cell_text(list, index, column),
                     item.text,
                     item.text_max.max(0) as usize,
                 )
@@ -1884,7 +2016,7 @@ fn find_item(window: usize, wparam: usize, lparam: usize) -> usize {
             .map(|step| (start + step) % count.max(1))
             .find(|&index| match find.flags & LVFI_PARAM {
                 0 => {
-                    let text = list.text(index, 0);
+                    let text = cell_text(list, index, 0);
                     let prefix = text.len() >= wanted.len()
                         && text.iter().zip(wanted).all(|(a, b)| fold(*a) == fold(*b));
                     match find.flags & LVFI_PARTIAL {
@@ -2226,7 +2358,7 @@ fn begin_label_edit(window: usize, index: usize) -> usize {
         if index >= control.list.count() {
             return None;
         }
-        let text = control.list.text(index, 0);
+        let text = cell_text(&control.list, index, 0);
         let length = text.len().min(LABEL_UNITS);
         label[..length].copy_from_slice(&text[..length]);
         let layout = layout_of(entry, &control.list);
@@ -2412,7 +2544,7 @@ fn info_tip(window: usize, lparam: usize) {
     let mut buffer = [0u16; INFO_TIP_UNITS];
     let row = with_state::<ListState, _>(window, |_, control| {
         (index < control.list.count()).then(|| {
-            let text = control.list.text(index, 0);
+            let text = cell_text(&control.list, index, 0);
             let length = text.len().min(INFO_TIP_UNITS - 1);
             buffer[..length].copy_from_slice(&text[..length]);
             control.list.lparam(index)

@@ -227,6 +227,8 @@ struct TreeState {
     editing: Option<(usize, usize)>,
     /// The tooltip control of `TVS_INFOTIP` (D363), 0 for none.
     tips: usize,
+    /// The items whose children the parent tells when asked (`I_CHILDRENCALLBACK`, D403).
+    children_asked: alloc::vec::Vec<usize>,
 }
 
 impl Model for TreeState {
@@ -242,6 +244,7 @@ pub(super) fn new_state(_style: u32) -> Option<usize> {
         drag: None,
         editing: None,
         tips: 0,
+        children_asked: alloc::vec::Vec::new(),
     })
 }
 
@@ -1023,7 +1026,159 @@ fn custom_after(window: usize, hdc: usize, custom: &CustomItems) {
     }
 }
 
+const TVN_GETDISPINFOW: i32 = -452;
+const TVIF_DI_SETITEM: u32 = 0x1000;
+const IMAGE_CALLBACK: i32 = -1;
+const CHILDREN_CALLBACK: i32 = -1;
+const CALLBACK_MARK: [u16; 1] = [0xffff];
+const ASKED_UNITS: usize = 260;
+
+/// `NMTVDISPINFOW`.
+#[repr(C)]
+struct NmTreeDisplayInfo {
+    header: NotifyHeader,
+    item: TreeItem,
+}
+
+/// An item's text the program gives when asked (`LPSTR_TEXTCALLBACKW`, D403) is kept as this
+/// mark; readers see it as empty.
+fn item_text(tree: &TreeView, index: usize) -> &[u16] {
+    match tree.text(index) {
+        text if text == CALLBACK_MARK => &[],
+        text => text,
+    }
+}
+
+/// # Safety
+/// As [`text_at`].
+unsafe fn item_text_at<'a>(pointer: usize) -> &'a [u16] {
+    match pointer {
+        usize::MAX => &CALLBACK_MARK,
+        // SAFETY: the caller's duty.
+        pointer => unsafe { text_at(pointer) },
+    }
+}
+
+/// An item's text, images and children as the parent answered `TVN_GETDISPINFOW`.
+struct Asked {
+    handle: usize,
+    text: Option<alloc::vec::Vec<u16>>,
+    images: Option<(i32, i32)>,
+    children: Option<bool>,
+    keep: bool,
+}
+
+fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
+    let wanted = with_state::<TreeState, _>(window, |entry, control| {
+        let tree = &control.tree;
+        let layout = tree.layout(entry.client(), entry.style);
+        let mut items = alloc::vec::Vec::new();
+        for place in tree.top()..tree.top() + layout.visible + 1 {
+            let Some(index) = tree.visible_at(place) else {
+                break;
+            };
+            let handle = tree.handle(index);
+            let text = tree.text(index) == CALLBACK_MARK;
+            let images = tree.image(index) == IMAGE_CALLBACK
+                || tree.selected_image(index) == IMAGE_CALLBACK;
+            let children = control.children_asked.contains(&handle);
+            if text || images || children {
+                items.push((handle, text, images, children, tree.lparam(index), tree.state(index)));
+            }
+        }
+        items
+    })
+    .unwrap_or_default();
+    let mut asked = alloc::vec::Vec::new();
+    for (handle, text, images, children, lparam, state) in wanted {
+        let mut buffer = [0u16; ASKED_UNITS];
+        let place = buffer.as_mut_ptr() as usize;
+        let mut mask = 0;
+        if text {
+            mask |= TVIF_TEXT;
+        }
+        if images {
+            mask |= TVIF_IMAGE | TVIF_SELECTEDIMAGE;
+        }
+        if children {
+            mask |= TVIF_CHILDREN;
+        }
+        let (_, answer) = super::notify_parent_keeping(window, TVN_GETDISPINFOW, |header| {
+            NmTreeDisplayInfo {
+                header,
+                item: TreeItem {
+                    mask,
+                    item: handle,
+                    state,
+                    state_mask: 0,
+                    text: place,
+                    text_max: ASKED_UNITS as i32,
+                    image: 0,
+                    selected_image: 0,
+                    children: 0,
+                    lparam,
+                },
+            }
+        });
+        let Some(answer) = answer else {
+            break;
+        };
+        let given = text.then(|| match answer.item.text {
+            pointer if pointer == place => {
+                let end = buffer.iter().position(|unit| *unit == 0).unwrap_or(ASKED_UNITS);
+                buffer[..end].to_vec()
+            }
+            // SAFETY: the parent pointed `pszText` at its own NUL-terminated text.
+            pointer => unsafe { text_at(pointer) }.to_vec(),
+        });
+        asked.push(Asked {
+            handle,
+            text: given,
+            images: images.then_some((answer.item.image, answer.item.selected_image)),
+            children: children.then_some(answer.item.children != 0),
+            keep: answer.item.mask & TVIF_DI_SETITEM != 0,
+        });
+    }
+    asked
+}
+
+fn swap_asked(window: usize, asked: &[Asked], shown: bool) {
+    if asked.is_empty() {
+        return;
+    }
+    with_state::<TreeState, _>(window, |_, control| {
+        for one in asked {
+            let Some(index) = control.tree.index_of(one.handle) else {
+                continue;
+            };
+            let given = shown || one.keep;
+            if let Some(text) = &one.text {
+                let units = if given { text.as_slice() } else { &CALLBACK_MARK[..] };
+                control.tree.set_text(index, units);
+            }
+            if let Some((image, selected)) = one.images {
+                let (image, selected) = match given {
+                    true => (image, selected),
+                    false => (IMAGE_CALLBACK, IMAGE_CALLBACK),
+                };
+                control.tree.set_image(index, image);
+                control.tree.set_selected_image(index, selected);
+            }
+            if let Some(children) = one.children {
+                control.tree.set_declared_children(index, Some(children));
+            }
+        }
+    });
+}
+
 fn paint(window: usize) {
+    let asked = ask_callbacks(window);
+    swap_asked(window, &asked, true);
+    paint_items(window);
+    swap_asked(window, &asked, false);
+}
+
+fn paint_items(window: usize) {
     let Ok((hdc, _, _)) = super::super::paint::begin(window) else {
         return;
     };
@@ -1067,8 +1222,9 @@ fn insert_item(window: usize, lparam: usize) -> usize {
     let text = match item.mask & TVIF_TEXT {
         0 => &[][..],
         // SAFETY: with `TVIF_TEXT`, `pszText` is a NUL-terminated string or the callback value.
-        _ => unsafe { text_at(item.text) },
+        _ => unsafe { item_text_at(item.text) },
     };
+    let asks_children = item.mask & TVIF_CHILDREN != 0 && item.children == CHILDREN_CALLBACK;
     let new = NewItem {
         text,
         image: match item.mask & TVIF_IMAGE {
@@ -1107,6 +1263,9 @@ fn insert_item(window: usize, lparam: usize) -> usize {
             handle => handle_parameter(tree, handle as usize).map_or(Place::Last, Place::After),
         };
         let index = tree.insert(parent, place, &new)?;
+        if asks_children {
+            control.children_asked.push(tree.handle(index));
+        }
         let checks = entry.style & style::CHECK_BOXES != 0;
         if checks && state_image::image_of(new.state) == 0 {
             let bits = state_image::image_bits(state_image::UNCHECKED);
@@ -1135,7 +1294,8 @@ fn get_item(window: usize, lparam: usize) -> usize {
             // SAFETY: `pszText` holds `cchTextMax` writable units when `TVIF_TEXT` asks for the
             // label.
             unsafe {
-                window_text::copy_out(tree.text(index), item.text, item.text_max.max(0) as usize)
+                let capacity = item.text_max.max(0) as usize;
+                window_text::copy_out(item_text(tree, index), item.text, capacity)
             };
         }
         if item.mask & TVIF_IMAGE != 0 {
@@ -1184,8 +1344,16 @@ fn set_item(window: usize, lparam: usize) -> usize {
     let text = match item.mask & TVIF_TEXT {
         0 => &[][..],
         // SAFETY: with `TVIF_TEXT`, `pszText` is a NUL-terminated string or the callback value.
-        _ => unsafe { text_at(item.text) },
+        _ => unsafe { item_text_at(item.text) },
     };
+    if item.mask & TVIF_CHILDREN != 0 {
+        with_state::<TreeState, _>(window, |_, control| {
+            control.children_asked.retain(|handle| *handle != item.item);
+            if item.children == CHILDREN_CALLBACK {
+                control.children_asked.push(item.item);
+            }
+        });
+    }
     let done = with_state::<TreeState, _>(window, |_, control| {
         let tree = &mut control.tree;
         let Some(index) = tree.index_of(item.item) else {
@@ -1800,10 +1968,6 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
 const TVS_EDITLABELS: u32 = 0x0008;
 const TVN_BEGINLABELEDITW: i32 = -459;
 const TVN_ENDLABELEDITW: i32 = -460;
-const TVIF_TEXT: u32 = 0x1;
-const TVIF_PARAM: u32 = 0x4;
-const TVIF_STATE: u32 = 0x8;
-const TVIF_HANDLE: u32 = 0x10;
 const LABEL_EDITOR_ID: usize = 1;
 const LABEL_UNITS: usize = 260;
 const ES_AUTOHSCROLL: u32 = 0x0080;
@@ -1859,7 +2023,7 @@ fn begin_label_edit(window: usize, index: usize) -> usize {
     let mut label = [0u16; LABEL_UNITS + 1];
     let found = with_state::<TreeState, _>(window, |entry, control| {
         let place = control.tree.visible_index(index)?;
-        let text = control.tree.text(index);
+        let text = item_text(&control.tree, index);
         let length = text.len().min(LABEL_UNITS);
         label[..length].copy_from_slice(&text[..length]);
         let layout = layout_of(entry, &control.tree);
@@ -2033,7 +2197,7 @@ fn info_tip(window: usize, lparam: usize) {
     let index = unsafe { (*info).header.id };
     let mut buffer = [0u16; INFO_TIP_UNITS];
     let item = with_state::<TreeState, _>(window, |_, control| {
-        let text = control.tree.text(index);
+        let text = item_text(&control.tree, index);
         let length = text.len().min(INFO_TIP_UNITS - 1);
         buffer[..length].copy_from_slice(&text[..length]);
         (control.tree.handle(index), control.tree.lparam(index))
