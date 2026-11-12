@@ -25631,3 +25631,27 @@ the license, by an explicit instruction recorded here.
     a stopped coprocessor; a poll takes at most 256 messages.
 - **Not yet.** The DCP's framebuffer endpoint and its swap protocol (part 2), the DART that
   maps shared memory for the coprocessors, and the crash log's contents.
+
+## D544 Apple silicon's coprocessors, part 2: the DART (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from m1n1 1.9.9's MIT-licensed `dart.c`)
+
+- **Decision.** `eggos_drivers::apple::dart` drives one stream of a DART, the IOMMU that
+  puts each coprocessor's view of memory in front of it.
+  - **Generations.** Three, chosen by `compatible`: T8020 (M1), T6000 (M1 Pro and Max) and
+    T8110 (M2 on), with their places for the enabled-streams bits, the per-stream
+    translation control and table-base registers, the lock bit and the TLB invalidate
+    command. Pages are 16 KiB, and tables have two levels of 2048 entries. A page entry
+    holds the physical address (shifted on T6000 and T8110, for addresses past 40 bits) with
+    full subpage permissions and the valid bit.
+  - **Locked DARTs.** One the firmware locked (the DCP's, set up by iBoot) keeps its tables,
+    which the driver reaches through `DartMemory::table_at` and adds to. Translation is left
+    as the firmware set it.
+  - **Operations.** `map` and `unmap` work in whole pages and invalidate the stream's TLB
+    after; a failed map takes back the pages it mapped. `translate` follows an address, and
+    `find_free` finds unmapped device addresses for a new buffer.
+  - **Memory.** Table memory comes through the unsafe `DartMemory`: zeroed, 16 KiB-aligned
+    tables, and the CPU address of a table the firmware made. The kernel gives both from
+    its frames and direct map.
+- **Licence.** m1n1 is GPL from 2.0.0 on. Only its last MIT release, 1.9.9, is read, and its
+  notice is in `drivers/src/apple/APPLE-NOTICE.md`.
+- **Not yet.** The DCP's framebuffer endpoint (part 3), and DARTs for devices that are not
+  coprocessors.
