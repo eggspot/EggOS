@@ -25604,3 +25604,30 @@ the license, by an explicit instruction recorded here.
   may name them so the OS keeps them on; firmware leaves them on and EggOS does not turn
   them off), and the vendors' own display engines (Apple's DCP, Qualcomm's DPU, Rockchip's
   VOP), which mode setting and second screens need.
+
+## D543 Apple silicon's coprocessors, part 1: the ASC mailbox and RTKit (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the Asahi Linux contributors' MIT-licensed drivers)
+
+- **Decision.** Apple's display engine is driven through a coprocessor, the DCP, whose
+  firmware speaks RTKit over a mailbox. So do the system management controller and the NVMe
+  controller's ANS. Their shared base comes first, in `eggos_drivers::apple`:
+  - **`mailbox`.** The ASC mailbox's three register layouts, chosen from the node's
+    `compatible`: `apple,asc-mailbox-v4`, `apple,t8015-asc-mailbox` and
+    `apple,m3-mailbox-v2`. A message is a 64-bit payload and an endpoint, written and read
+    through each direction's FIFO, with the full and empty flags in its control register.
+    `RegisterIo` gains `read64`/`write64` (two 32-bit halves by default, one access for
+    `Mmio`), which these FIFOs need.
+  - **`rtkit`.** The management handshake, run from `poll`:
+    1. agree a protocol version (11 to 12);
+    2. answer the endpoint map page by page;
+    3. start the crash log, system log, debug, I/O report and OS log endpoints the
+       coprocessor has, without which it refuses to boot;
+    4. once the coprocessor reports itself on, set the application processor's power state
+       on.
+
+    It also lends shared memory for each system endpoint's buffer request through the
+    driver's `SharedMemory` (at the coprocessor's DART address, or the one it named),
+    acknowledges system-log entries and the I/O report messages it waits on, and notes a
+    crash. Messages for application endpoints go to the coprocessor's driver. `wake` starts
+    a stopped coprocessor; a poll takes at most 256 messages.
+- **Not yet.** The DCP's framebuffer endpoint and its swap protocol (part 2), the DART that
+  maps shared memory for the coprocessors, and the crash log's contents.

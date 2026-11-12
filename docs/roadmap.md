@@ -1200,7 +1200,7 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 |-----|--------|
 | virtio-gpu | **done**: 2D, polled, one scanout (D112); cursor (D287), interrupts (D414) and 3D part 1, the virgl transport (D415): code written, unbuilt |
 | Intel, AMD, NVIDIA | code written, unbuilt (M13: their display engines at the firmware's mode, mode setting, link training and a second screen; docs/decisions.md D268 to D530) |
-| Apple, Arm Mali, Qualcomm Adreno | the screen the firmware lit, from the device tree's `simple-framebuffer` (m1n1, U-Boot): code written, unbuilt (D542); their own display engines and rendering: planned (M13) |
+| Apple, Arm Mali, Qualcomm Adreno | the screen the firmware lit, from the device tree's `simple-framebuffer` (m1n1, U-Boot): code written, unbuilt (D542); Apple's coprocessors, the ASC mailbox and RTKit: code written, unbuilt (D543); their own display engines (Apple's DCP, Qualcomm's DPU, the Rockchip and other display controllers beside Mali): planned (M13) |
 
 ### Device classes
 | Class | Status |

@@ -13,6 +13,19 @@ pub trait RegisterIo {
     fn write16(&self, offset: usize, value: u16);
     fn read32(&self, offset: usize) -> u32;
     fn write32(&self, offset: usize, value: u32);
+
+    /// The 64-bit register at `offset`: its low word, then its high one, unless the block
+    /// reaches it in one access (D543).
+    fn read64(&self, offset: usize) -> u64 {
+        u64::from(self.read32(offset)) | u64::from(self.read32(offset + 4)) << 32
+    }
+
+    /// Writes the 64-bit register at `offset`: its low word, then its high one, unless the
+    /// block writes it in one access.
+    fn write64(&self, offset: usize, value: u64) {
+        self.write32(offset, value as u32);
+        self.write32(offset + 4, (value >> 32) as u32);
+    }
 }
 
 /// A memory-mapped register block. Every access checks its offset against the block's size and
@@ -98,6 +111,21 @@ impl RegisterIo for Mmio {
         let address = self.checked_address(offset, 4);
         // SAFETY: as in `read32`.
         unsafe { core::ptr::write_volatile(address as *mut u32, value.to_le()) }
+    }
+
+    #[inline]
+    fn read64(&self, offset: usize) -> u64 {
+        let address = self.checked_address(offset, 8);
+        // SAFETY: `Mmio::new`'s contract makes every in-bounds offset a valid device register,
+        // and `checked_address` has checked bounds and 8-byte alignment.
+        u64::from_le(unsafe { core::ptr::read_volatile(address as *const u64) })
+    }
+
+    #[inline]
+    fn write64(&self, offset: usize, value: u64) {
+        let address = self.checked_address(offset, 8);
+        // SAFETY: as in `read64`.
+        unsafe { core::ptr::write_volatile(address as *mut u64, value.to_le()) }
     }
 }
 
