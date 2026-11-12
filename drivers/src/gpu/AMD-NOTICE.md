@@ -26,3 +26,10 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
 THE COPYRIGHT HOLDER(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
 AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## AMD's DMUB service
+
+`amd_dmcub.rs` (D514) loads the display microcontroller as AMD's DMUB service does
+(`drivers/gpu/drm/amd/display/dmub/src/dmub_srv.c` and `dmub_dcn31.c` in the Linux source tree,
+which AMD publishes under the MIT licence above, copyright 2019 and 2020 Advanced Micro Devices,
+Inc.): the same windows, regions and order of register writes, written in EggOS's own code.

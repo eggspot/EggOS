@@ -24965,3 +24965,24 @@ the license, by an explicit instruction recorded here.
 - **Not yet (part 4 on).** Version 2 descriptors (Turing), SEC2's booter with GSP's image and
   its WPR metadata, GSP's libos arguments and message queues, its remote calls and the display
   through them.
+
+## D514 AMD's display microcontroller (DMCUB) loaded on DCN 3.x (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from AMD's MIT-licensed register headers and DMUB service)
+
+- **Decision.** `amd_dmcub` starts DMCUB as AMD's DMUB service does on DCN 3.1: the
+  firmware's instructions and constants (without the security processor's header and footer,
+  D468), a 128 KiB stack, its data, a 128 KiB video BIOS area, a 16 KiB mailbox (inbox and
+  outbox), a 64 KiB trace buffer and 64 KiB of state, each 256-byte aligned in one block of
+  video memory. Loading stops a running DMCUB (soft reset, DMUIF reset, disabled) and clears
+  its ring pointers, sets the instruction and stack windows under the security reset with
+  their video memory places (GPU address less the frame buffer's base plus its offset), then
+  the other windows, region 5 for the trace, the inbox and outboxes, releases the resets with
+  the trace port on, and waits for the firmware's status (running, mailbox ready).
+- **Where.** The AMD display (D496) keeps 2 MiB of video memory after the cursor, 1 MiB
+  aligned, in the same write-combining mapping. Once the file systems are mounted a thread
+  waits for `/usr/lib/firmware/amdgpu/dcn_<version>_dmcub.bin` from the `display-firmware`
+  component (D265), copies it in and starts DMCUB through the scanout's `load_firmware`.
+- **Sources.** AMD's `dcn_3_1_2` register headers and its DMUB service (`dmub_srv.c`,
+  `dmub_dcn31.c`), MIT; `drivers/src/gpu/AMD-NOTICE.md` names them.
+- **Not yet.** The video BIOS copied into its area, the PSP version in scratch 15, commands
+  through the inbox (DMCUB's own mode setting, panel self refresh, cursor offload), the other
+  DCN versions' register places, and setting modes.

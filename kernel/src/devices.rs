@@ -309,10 +309,13 @@ pub fn display_hardware_text() -> alloc::string::String {
     return alloc::string::String::new();
 }
 
-/// Starts loading the Intel display's firmware once the file systems are mounted (D444).
+/// Starts loading the Intel display's firmware (D444), or AMD's display microcontroller's
+/// (D514), once the file systems are mounted.
 pub fn start_display_firmware<P: eggos_hal::Platform>() {
     #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
     let _ = intel_display::start_firmware::<P>();
+    #[cfg(any(test, feature = "vendor-gpus"))]
+    let _ = amd_display::start_firmware::<P>();
 }
 
 /// Starts bringing the Wi-Fi adapter up once the file systems are mounted (D274).
