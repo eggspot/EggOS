@@ -39,6 +39,8 @@ pub mod usb;
 pub mod ethernet;
 #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
 pub mod intel_display;
+#[cfg(any(test, feature = "amd-display"))]
+pub mod amd_display;
 #[cfg(any(test, feature = "intel-wifi"))]
 pub mod intel_wifi;
 #[cfg(any(test, feature = "virtio"))]
@@ -264,6 +266,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &usb::XHCI_DRIVER,
     #[cfg(any(test, feature = "ethernet"))]
     &ethernet::ETHERNET_DRIVER,
+    #[cfg(any(test, feature = "amd-display"))]
+    &amd_display::AMD_DISPLAY_DRIVER,
     #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
     &intel_display::INTEL_DISPLAY_DRIVER,
     #[cfg(any(test, feature = "intel-wifi"))]
@@ -276,6 +280,14 @@ pub fn wifi_status() -> alloc::string::String {
     return intel_wifi::status();
     #[cfg(not(any(test, feature = "intel-wifi")))]
     return alloc::string::String::from("no Wi-Fi driver in this kernel");
+}
+
+/// What the GPUs without a display driver of their own said at probe (D448): one line each.
+pub fn display_hardware_text() -> alloc::string::String {
+    #[cfg(any(test, feature = "amd-display"))]
+    return amd_display::summary();
+    #[cfg(not(any(test, feature = "amd-display")))]
+    return alloc::string::String::new();
 }
 
 /// Starts loading the Intel display's firmware once the file systems are mounted (D444).

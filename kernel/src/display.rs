@@ -806,7 +806,8 @@ pub fn status_text() -> alloc::string::String {
         true => "yes",
         false => "no",
     };
-    let sinks = display.scanout.sinks();
+    let mut sinks = display.scanout.sinks();
+    sinks.push_str(&crate::devices::display_hardware_text());
     match sinks.is_empty() {
         true => alloc::format!("{}x{} scale {} changeable {changeable}", mode.width, mode.height, display.scale()),
         false => alloc::format!(

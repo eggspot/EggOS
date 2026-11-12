@@ -23806,3 +23806,22 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The kernel calling it (a second screen, or a mode other than the firmware's on
   the first), port A's eDP on its own PLL and transcoder, the combo and Type-C PHYs of
   display 11 and later, HDMI (GMBUS EDID, TMDS PLL, infoframes), and power wells.
+
+## D448 AMD graphics, part 1: the video BIOS's ATOM tables (M13, D245's order; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** AMD's display engine (DCN) is set up from its video BIOS's tables and
+  needs the DMCUB firmware to run; where to start without a board to test on.
+- **Decision.** Start with what every later part needs and what can be checked on the host:
+  `gpu::amd_atom` reads an ATOM BIOS image (the expansion ROM signature, the ATOM ROM header,
+  the master list of data tables), the firmware table (revision, boot engine clock) and the
+  display object table at 1.4 and 1.5 (each path's connector, encoder and device tag), from
+  the layout AMD publishes in `atomfirmware.h` under the MIT licence; host-tested on a built
+  image. A new `amd-display` driver (in the default kernel) takes AMD's PCI functions of the
+  display class ahead of the class's other drivers, reads the card's expansion ROM through
+  its ROM BAR (enabled for the copy, then off again) and keeps a line for
+  `/proc/driver/display`: `amd 73bf firmware 00110022 engine 800 MHz DisplayPort HDMI`.
+  The firmware's framebuffer (D236) stays the display.
+- **Next.** The video BIOS from ACPI's `VFCT` when the ROM BAR is unassigned (UEFI shadows
+  it there), running ATOM command tables (the interpreter AMD's design needs for the
+  display's power-up), the DMCUB firmware from the component store (D265), then DCN's pipes,
+  planes and flips.
