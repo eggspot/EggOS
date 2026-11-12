@@ -34,8 +34,9 @@ pub use arch::FpPart;
 /// The size of a `siginfo_t`.
 pub const INFO_SIZE: usize = 128;
 
-/// The size of a `stack_t`.
-pub const STACK_SIZE: usize = 24;
+/// The size of a `stack_t`: the base, the flags (an `int`, padded to a word) and the size,
+/// each a word of the program's width (D487).
+pub const STACK_SIZE: usize = 3 * crate::linux::abi::WORD_BYTES;
 
 /// The `siginfo_t` of `fault`: `si_signo`, `si_errno` 0, `si_code` and `si_addr`, the
 /// sender's fields' place.

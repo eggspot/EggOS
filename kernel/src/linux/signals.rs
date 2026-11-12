@@ -101,9 +101,18 @@ pub mod flag {
 /// (its handlers return through the vDSO).
 pub const HAS_RESTORER: bool = crate::linux::abi::SIGACTION_HAS_RESTORER;
 
-/// The size of the kernel's `struct sigaction` on the architecture: handler, flags, restorer
-/// (if [`HAS_RESTORER`]) and mask, each a 64-bit word.
-const ACTION_SIZE: usize = if HAS_RESTORER || FLAGS_FIRST { 32 } else { 24 };
+const W: usize = crate::linux::abi::WORD_BYTES;
+
+/// The size of the kernel's `struct sigaction` on the architecture: handler, flags and
+/// restorer (if [`HAS_RESTORER`]), each a word of the program's width, then the 64-bit mask
+/// (D487); MIPS's is 32 bytes.
+const ACTION_SIZE: usize = if FLAGS_FIRST {
+    32
+} else if HAS_RESTORER {
+    3 * W + 8
+} else {
+    2 * W + 8
+};
 
 /// Whether `struct sigaction` starts with its flags, then the handler and a 16-byte mask (MIPS,
 /// D315).
@@ -124,24 +133,33 @@ pub struct Action {
 impl Action {
     /// The structure as the program sees it.
     fn to_bytes(self) -> [u8; ACTION_SIZE] {
-        let words = if FLAGS_FIRST {
-            [crate::linux::abi::sigaction_flags_out(self.flags) & 0xffff_ffff, self.handler, self.mask, 0]
-        } else if HAS_RESTORER {
-            [self.handler, self.flags, self.restorer, self.mask]
-        } else {
-            [self.handler, self.flags, self.mask, 0]
-        };
         let mut bytes = [0; ACTION_SIZE];
-        for (chunk, word) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(words) {
-            *chunk = word.to_ne_bytes();
+        if FLAGS_FIRST {
+            let flags = crate::linux::abi::sigaction_flags_out(self.flags) & 0xffff_ffff;
+            for (chunk, word) in bytes
+                .as_chunks_mut::<8>()
+                .0
+                .iter_mut()
+                .zip([flags, self.handler, self.mask])
+            {
+                *chunk = word.to_ne_bytes();
+            }
+            return bytes;
         }
+        let put = crate::linux::abi::put_word;
+        put(&mut bytes[..], self.handler);
+        put(&mut bytes[W..], self.flags);
+        if HAS_RESTORER {
+            put(&mut bytes[2 * W..], self.restorer);
+        }
+        bytes[ACTION_SIZE - 8..].copy_from_slice(&self.mask.to_ne_bytes());
         bytes
     }
 
     fn from_bytes(bytes: [u8; ACTION_SIZE]) -> Self {
-        let words = bytes.as_chunks::<8>().0;
-        let word = |index: usize| u64::from_ne_bytes(words[index]);
         if FLAGS_FIRST {
+            let words = bytes.as_chunks::<8>().0;
+            let word = |index: usize| u64::from_ne_bytes(words[index]);
             return Self {
                 handler: word(1),
                 flags: crate::linux::abi::sigaction_flags_in(word(0) & 0xffff_ffff),
@@ -149,20 +167,12 @@ impl Action {
                 mask: word(2),
             };
         }
-        if HAS_RESTORER {
-            Self {
-                handler: word(0),
-                flags: word(1),
-                restorer: word(2),
-                mask: word(3),
-            }
-        } else {
-            Self {
-                handler: word(0),
-                flags: word(1),
-                restorer: 0,
-                mask: word(2),
-            }
+        let word = |at: usize| crate::linux::abi::word(&bytes[at..]);
+        Self {
+            handler: word(0),
+            flags: word(W),
+            restorer: if HAS_RESTORER { word(2 * W) } else { 0 },
+            mask: u64::from_ne_bytes(bytes[ACTION_SIZE - 8..].try_into().unwrap()),
         }
     }
 }
@@ -564,9 +574,9 @@ impl AlternateStack {
         }
         let mut bytes = [0; STACK_SIZE];
         let (flags_at, size_at) = stack_t_offsets();
-        bytes[..8].copy_from_slice(&self.base.to_ne_bytes());
+        crate::linux::abi::put_word(&mut bytes[..], self.base);
         bytes[flags_at..flags_at + 4].copy_from_slice(&flags.to_ne_bytes());
-        bytes[size_at..size_at + 8].copy_from_slice(&self.size.to_ne_bytes());
+        crate::linux::abi::put_word(&mut bytes[size_at..], self.size);
         bytes
     }
 }
@@ -1662,18 +1672,18 @@ pub fn sigaltstack<P: Platform>(
 /// A `stack_t`'s base, flags and size.
 fn parse_stack(bytes: [u8; STACK_SIZE]) -> (u64, u32, u64) {
     let (flags_at, size_at) = stack_t_offsets();
-    let base = u64::from_ne_bytes(bytes[..8].try_into().unwrap());
+    let base = crate::linux::abi::word(&bytes);
     let flags = u32::from_ne_bytes(bytes[flags_at..flags_at + 4].try_into().unwrap());
-    let size = u64::from_ne_bytes(bytes[size_at..size_at + 8].try_into().unwrap());
+    let size = crate::linux::abi::word(&bytes[size_at..]);
     (base, flags, size)
 }
 
-/// Where a `stack_t` keeps `ss_flags` and `ss_size`: after `ss_sp` in that order, or the other
-/// way round on MIPS (D315).
+/// Where a `stack_t` keeps `ss_flags` and `ss_size`: after `ss_sp` in that order, a word
+/// each, or the other way round on MIPS (D315, D487).
 const fn stack_t_offsets() -> (usize, usize) {
     match crate::linux::abi::STACK_T_SIZE_BEFORE_FLAGS {
-        true => (16, 8),
-        false => (8, 16),
+        true => (2 * W, W),
+        false => (W, 2 * W),
     }
 }
 

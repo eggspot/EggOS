@@ -24453,3 +24453,13 @@ the license, by an explicit instruction recorded here.
   bytes on 64-bit programs as before, 28 and 12 on 32-bit ones. `sendmsg`, `recvmsg` on every
   socket kind, `SCM_RIGHTS` messages built and parsed, and the header fields written back
   (name length, control length, flags) all take their places from the word size.
+
+## D487 The Linux layer's word size, part 3: `sigaction` and `stack_t` (M9, the 32-bit audit; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The kernel's `struct sigaction` is the handler, the flags and, where the
+  architecture has one, the restorer, each a word of the program's width, then the 64-bit
+  signal mask: 32 or 24 bytes on 64-bit programs as before, 20 on 32-bit Arm and 16 on RV32.
+  MIPS keeps its own flags-first layout (D315). `stack_t` is three words, the flags an `int`
+  at the second (padded on 64-bit), the size at the third, or the other way round on MIPS: 24
+  bytes on 64-bit programs, 12 on 32-bit ones. `rt_sigaction`, `sigaltstack` and every signal
+  frame's `uc_stack` take these sizes; the 32-bit frames themselves are D490's work.
