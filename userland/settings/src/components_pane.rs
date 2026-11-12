@@ -353,6 +353,7 @@ const STACKED_TEXT: (i32, i32, i32, i32) = (16, 8, 28, 48);
 const PHONE_GAP: i32 = 16;
 const TOUCH_BUTTON: i32 = 48;
 const NOTE_X_PHONE: i32 = 24;
+const FINISHING: &str = "finishing";
 
 impl Metrics {
     fn of(layout: Layout) -> Self {
@@ -1543,6 +1544,15 @@ impl ComponentsPane {
         }
     }
 
+    /// Whether the install the pane waits for is moving its checked copy into place, when
+    /// it can no longer be cancelled (components-v0.5.md section 6).
+    fn install_finishing(&self) -> bool {
+        matches!(&self.work, Work::Installing { plan, .. }
+            if self.read.job.as_ref().is_some_and(|job| {
+                job.kind == INSTALLING && job.phase == FINISHING && plan.first() == Some(&job.name)
+            }))
+    }
+
     /// What a confirmation's buttons add to its note on a phone, where they stack full width
     /// (components-v0.5.md section 10): two 48 px buttons 8 apart in place of one 28 px row.
     fn stacked_buttons(&self) -> i32 {
@@ -1569,7 +1579,7 @@ impl ComponentsPane {
                 word: format!("{INSTALLING} {}", messages::percent(*received, *total)),
                 button: "Cancel",
                 action: "Cancel installing",
-                enabled: !cancelled,
+                enabled: !cancelled && !self.install_finishing(),
                 reason: messages::CANCELLING_REASON,
                 update: None,
             };
@@ -1922,12 +1932,11 @@ impl ComponentsPane {
                     widgets.bar,
                     &format!("Installing {}", self.title_of(name)),
                 );
-                show_line(
-                    tree,
-                    widgets.first,
-                    &messages::copied_of(received, total),
-                    Token::Text,
-                );
+                let line = match self.install_finishing() {
+                    true => messages::job_phase_line(FINISHING, received, total),
+                    false => messages::copied_of(received, total),
+                };
+                show_line(tree, widgets.first, &line, Token::Text);
                 (true, false, total > 0, false)
             }
             Note::Remove { .. } | Note::Install { .. } => {

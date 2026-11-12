@@ -961,7 +961,7 @@ fn install<F: Files, C: Console>(
                     pid,
                     kind: "installing".into(),
                     name: name.clone(),
-                    phase: "copying".into(),
+                    phase: if copied >= total { "finishing" } else { "copying" }.into(),
                     done: copied,
                     total,
                 },

@@ -23917,3 +23917,6 @@ the license, by an explicit instruction recorded here.
   less 48, and a confirmation's `Cancel` and primary button stack full width, 48 tall and 8
   apart with the primary last; the note grows by what the stacked buttons add, so the rows
   below move down by it. Elsewhere the notes keep their places.
+- **`Finishing...` (D454's "Not yet", same batch as D455).** The install job's last piece marks
+  its phase `finishing`; the pane then says `Finishing...` on the note and disables the row's
+  `Cancel`, since the job ends in moments one way or the other.
