@@ -32,6 +32,7 @@ mod name;
 mod namespace;
 mod object;
 mod opcodes;
+pub mod resources;
 mod stream;
 
 #[cfg(test)]

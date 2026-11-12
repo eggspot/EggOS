@@ -13,6 +13,7 @@ pub mod desktop;
 pub mod display;
 pub mod display_port;
 pub mod edid;
+pub mod embedded_controller;
 pub mod dma;
 pub mod ethernet;
 pub mod gpu;

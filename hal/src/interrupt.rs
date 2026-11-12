@@ -27,6 +27,10 @@ pub enum Interrupt {
     /// The machine's power button was pressed, once [`crate::Platform::enable_power_button`]
     /// turned its interrupt on (D202).
     PowerButton,
+    /// The ACPI system control interrupt for another event, a general-purpose event or the
+    /// embedded controller's, once [`crate::Platform::enable_system_control`] routed it
+    /// (D539). It stays masked until [`crate::Platform::unmask_system_control`].
+    SystemControl,
     /// A device interrupt the kernel routed with [`crate::Platform::route_device_interrupt`] or
     /// [`crate::Platform::message_interrupt`], by the line the call gave. The kernel quiets the
     /// device before it returns (a level-triggered line stays asserted until then); the HAL

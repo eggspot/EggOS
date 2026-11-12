@@ -73,6 +73,19 @@ pub trait Platform: 'static {
         Err("this machine has no power button EggOS answers yet")
     }
 
+    /// Switches the machine to ACPI mode if it is not and routes the system control interrupt
+    /// (D539): from then on any cause but the fixed power button raises
+    /// [`Interrupt::SystemControl`], with the interrupt masked until
+    /// [`Self::unmask_system_control`], so the kernel can look at the event registers from a
+    /// thread. Fails on a machine without ACPI's fixed hardware (the default).
+    fn enable_system_control() -> Result<(), &'static str> {
+        Err("this machine has no ACPI system control interrupt")
+    }
+
+    /// Unmasks the system control interrupt once the kernel has handled the events it raised.
+    /// Nothing by default.
+    fn unmask_system_control() {}
+
     /// Starts the PC's 8042 keyboard controller and its PS/2 keyboard and mouse, polled, where
     /// the machine has one (D239): what answered. None by default.
     fn start_legacy_input() -> eggos_drivers::input::ps2::Found {

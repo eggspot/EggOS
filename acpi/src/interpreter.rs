@@ -282,10 +282,33 @@ impl<H: Host> Interpreter<H> {
     /// Whether the device at `path` is a PCI host bridge: its `_HID` or one of its `_CID`s is
     /// `PNP0A03` or `PNP0A08`.
     pub fn is_pci_host_bridge(&mut self, path: &Path) -> bool {
-        let bridges = [eisa_id(b"PNP0A03"), eisa_id(b"PNP0A08")];
+        self.device_has_id(path, &[b"PNP0A03", b"PNP0A08"])
+    }
+
+    /// Every device whose `_HID` or one of whose `_CID`s is one of `ids`, in path order.
+    pub fn devices_with_id(&mut self, ids: &[&[u8; 7]]) -> Vec<Path> {
+        let devices: Vec<Path> = self
+            .namespace
+            .iter()
+            .filter(|(path, node)| {
+                matches!(self.namespace.get(*node), Some(Object::Device))
+                    && self.namespace.path_of(*node) == Some(*path)
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        devices
+            .into_iter()
+            .filter(|path| self.device_has_id(path, ids))
+            .collect()
+    }
+
+    /// Whether the device at `path` answers to one of `ids`, seven-character IDs such as
+    /// `PNP0C09`, through its `_HID` or one of its `_CID`s, given as a string or a compressed
+    /// EISA ID.
+    pub fn device_has_id(&mut self, path: &Path, ids: &[&[u8; 7]]) -> bool {
         let names = |object: &Object| match object {
-            Object::Integer(value) => bridges.iter().any(|&id| u64::from(id) == *value),
-            Object::String(text) => text == b"PNP0A03" || text == b"PNP0A08",
+            Object::Integer(value) => ids.iter().any(|id| u64::from(eisa_id(id)) == *value),
+            Object::String(text) => ids.iter().any(|id| text.as_slice() == id.as_slice()),
             _ => false,
         };
         let hid = self.evaluate_child(path, b"_HID", &[]).ok().flatten();
@@ -293,8 +316,8 @@ impl<H: Host> Interpreter<H> {
             return true;
         }
         match self.evaluate_child(path, b"_CID", &[]).ok().flatten() {
-            Some(Object::Package(ids)) => ids.iter().any(names),
-            Some(id) => names(&id),
+            Some(Object::Package(compatible)) => compatible.iter().any(names),
+            Some(compatible) => names(&compatible),
             None => false,
         }
     }

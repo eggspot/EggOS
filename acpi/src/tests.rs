@@ -334,6 +334,26 @@ fn a_table_shorter_than_its_header_says_is_refused() {
 }
 
 #[test]
+fn devices_are_found_by_their_hid_or_cid() {
+    let body = cat(&[
+        &device(b"EC0_", &cat(&[&[0x08], b"_HID", &[0x0c, 0x41, 0xd0, 0x0c, 0x09]])),
+        &device(b"PWRB", &cat(&[&[0x08], b"_CID", &[0x0d], b"PNP0C0C", &[0x00]])),
+    ]);
+    let mut interpreter = loaded(&body);
+    assert_eq!(interpreter.devices_with_id(&[b"PNP0C09"]), vec![path(b"\\EC0_")]);
+    assert_eq!(interpreter.devices_with_id(&[b"PNP0C0C"]), vec![path(b"\\PWRB")]);
+    assert!(interpreter.devices_with_id(&[b"PNP0A03"]).is_empty());
+}
+
+#[test]
+fn io_ports_come_from_io_and_fixed_io_descriptors_in_order() {
+    let template = [
+        0x47, 0x01, 0x62, 0x00, 0x62, 0x00, 0x00, 0x01, 0x4b, 0x66, 0x00, 0x01, 0x79, 0x00,
+    ];
+    assert_eq!(resources::io_ports(&template), vec![0x62, 0x66]);
+}
+
+#[test]
 fn eisa_ids_compress_as_hid_gives_them() {
     assert_eq!(eisa_id(b"PNP0A03"), 0x030a_d041);
     assert_eq!(eisa_id(b"PNP0A08"), 0x080a_d041);

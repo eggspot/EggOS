@@ -147,6 +147,10 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 mount_system_file_systems::<P>();
                 devices::start_wifi::<P>();
                 devices::start_display_firmware::<P>();
+                let wants_events = BOOT_MODE == BootMode::Init;
+                if wants_events && devices::acpi_namespace::start_events::<P>().is_ok() {
+                    writeln!(console, "acpi events: ready")?;
+                }
                 linux::properties::load_build_properties();
                 if BOOT_MODE == BootMode::Init {
                     net::start::<P>(console)?;

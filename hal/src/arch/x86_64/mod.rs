@@ -633,6 +633,14 @@ impl Platform for X86_64 {
         power_button::enable()
     }
 
+    fn enable_system_control() -> Result<(), &'static str> {
+        power_button::forward_events()
+    }
+
+    fn unmask_system_control() {
+        power_button::set_masked(false);
+    }
+
     fn start_legacy_input() -> eggos_drivers::input::ps2::Found {
         legacy_input::start()
     }

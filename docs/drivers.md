@@ -14,7 +14,8 @@ D111), device interrupts (D184), the display (D112), input (D113), disks and the
 | `kernel/src/devices.rs` | The model: descriptors, matching, the device table, probe passes, the `devices` capability |
 | `kernel/src/devices/fdt_bus.rs`, `pci_bus.rs` | Discovery: the device-tree platform bus, PCI Express through the MCFG |
 | `acpi/` (`eggos-acpi`) | The ACPI Machine Language interpreter: the namespace, loading the DSDT and SSDTs, running methods, operation regions through a host (D537) |
-| `kernel/src/devices/acpi_namespace.rs` | The namespace the kernel runs: tables loaded at boot, regions mapped, `_PIC`, `_STA`/`_INI`, absent devices, `_PTS` (D538) |
+| `kernel/src/devices/acpi_namespace.rs` | The namespace the kernel runs: tables loaded at boot, regions mapped, `_PIC`, `_STA`/`_INI`, absent devices, `_PTS` (D538); ACPI events and the embedded controller (D539) |
+| `drivers/src/embedded_controller.rs` | The ACPI embedded controller's read, write and query commands (D539) |
 | `kernel/src/devices/window.rs` | Device windows: device registers mapped into the kernel |
 | `kernel/src/devices/interrupts.rs` | Device interrupts: each device line's handler, and `DeviceEvents`, what a driver's thread waits on |
 | `hal/src/interrupt.rs`, `hal/src/arch/*/` | `Interrupt::Device`, `DeviceLine`, and routing per architecture: GIC SPIs (aarch64), PLIC sources (riscv64), MSI-X vectors 0x33-0x52 (x86_64) |

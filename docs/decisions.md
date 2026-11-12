@@ -25515,3 +25515,31 @@ the license, by an explicit instruction recorded here.
   ACPI events (SCI, GPE blocks, `_Lxx`/`_Exx`, and acting on `Notify`), `_PRT` routing through
   the interpreter instead of the static walk, `_CRS` from methods for every device, sleep
   states other than S5, and the global lock's handshake with firmware.
+
+## D539 ACPI events and the embedded controller (M5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the ACPI 6.5 specification)
+
+- **Decision.** The system control interrupt (SCI) now carries every ACPI event, not only the
+  fixed power button.
+  - **HAL.** The x86_64 HAL routes it once (`power_button::enable_events`, shared with the
+    power button). With `Platform::enable_system_control` (new), any cause but a button press
+    masks the SCI's I/O APIC input and raises `Interrupt::SystemControl` (new). The kernel
+    unmasks it (`Platform::unmask_system_control`) once it has looked, so a level-triggered
+    event cannot storm the CPU while AML runs in a thread. `acpi::sci_line` and
+    `acpi::gpe_blocks` read the FADT's SCI line and its GPE0 and GPE1 blocks.
+  - **Kernel.** `acpi_namespace::start_events` runs in init mode once threads can be spawned.
+    It finds the embedded controller (`PNP0C09`), takes its data and command ports from
+    `_CRS` (`eggos_acpi::resources::io_ports`, new) and its event from `_GPE`, and runs its
+    `_REG(3, 1)`, since firmware reads the controller only after that. It turns on every
+    general-purpose event that has a `\_GPE._Exx` or `_Lxx` method, plus the controller's,
+    then starts a thread that waits on the SCI's events. For each enabled event whose status
+    is set, the thread runs `_Exx` after clearing the status (edge) or `_Lxx` before clearing
+    it (level). It answers the controller's event with `QR_EC` queries and their `_Qxx`
+    methods, up to 32 at a time, and turns off an event nothing handles. After that it acts
+    on notifications: `0x80` on a power button device (`PNP0C0C`) is a press, so machines
+    whose button is a control method power off like the others.
+  - **The embedded controller** (`eggos_drivers::embedded_controller`, new) speaks
+    `RD_EC`/`WR_EC`/`QR_EC` with bounded waits on the input and output buffer flags. The
+    interpreter's host now serves `EmbeddedControl` regions through it, byte by byte.
+- **Not yet.** The ECDT, for the controller before the namespace loads; burst mode; wake
+  events and sleep states other than S5; GPE blocks described as devices (`ACPI0006`);
+  acting on other notifications (lid, battery, thermal and docking).

@@ -23,6 +23,10 @@ pub fn handle<P: Platform>(interrupt: Interrupt) {
         crate::linux::reboot::power_button::<P>();
         return;
     }
+    if interrupt == Interrupt::SystemControl {
+        devices::acpi_namespace::SYSTEM_CONTROL_EVENTS.raise::<P>();
+        return;
+    }
     if let Interrupt::Device(line) = interrupt {
         devices::interrupts::handle::<P>(line);
         return;

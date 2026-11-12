@@ -185,6 +185,56 @@ pub fn power_button(fadt: &[u8]) -> Option<PowerButton> {
     })
 }
 
+const FADT_GPE0_BLK: usize = 80;
+const FADT_GPE1_BLK: usize = 84;
+const FADT_GPE0_BLK_LEN: usize = 92;
+const FADT_GPE1_BLK_LEN: usize = 93;
+const FADT_GPE1_BASE: usize = 94;
+
+/// The ISA line of the system control interrupt a validated FADT names (D539).
+pub fn sci_line(fadt: &[u8]) -> Option<u8> {
+    u8::try_from(read_u16(fadt, FADT_SCI_INT)?).ok()
+}
+
+/// One block of general-purpose event registers in I/O space (ACPI 6.5, 4.8.4.1): its status
+/// bytes at `port`, its enable bytes right after them, `length` bytes in all, and the number of
+/// its first event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpeBlock {
+    pub port: u16,
+    pub length: u8,
+    pub base: u16,
+}
+
+impl GpeBlock {
+    /// How many events it holds: eight for each status byte.
+    pub fn events(&self) -> u16 {
+        u16::from(self.length / 2) * 8
+    }
+}
+
+/// The general-purpose event blocks a validated FADT describes, GPE0 then GPE1, each only when
+/// it has a port and an even, nonzero length (D539).
+pub fn gpe_blocks(fadt: &[u8]) -> impl Iterator<Item = GpeBlock> + '_ {
+    let block = |at: usize, length_at: usize, base: Option<u16>| {
+        let port = u16::try_from(read_u32(fadt, at)?).ok()?;
+        let length = *fadt.get(length_at)?;
+        let valid = port != 0 && length != 0 && length % 2 == 0;
+        valid.then_some(GpeBlock {
+            port,
+            length,
+            base: base?,
+        })
+    };
+    let gpe1_base = fadt.get(FADT_GPE1_BASE).map(|&base| u16::from(base));
+    [
+        block(FADT_GPE0_BLK, FADT_GPE0_BLK_LEN, Some(0)),
+        block(FADT_GPE1_BLK, FADT_GPE1_BLK_LEN, gpe1_base),
+    ]
+    .into_iter()
+    .flatten()
+}
+
 const FADT_CENTURY: usize = 108;
 const FADT_IAPC_BOOT_ARCH: usize = 109;
 const IAPC_BOOT_ARCH_CMOS_RTC_NOT_PRESENT: u16 = 1 << 5;

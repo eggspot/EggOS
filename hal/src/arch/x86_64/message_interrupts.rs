@@ -83,7 +83,10 @@ pub(super) fn steer(line: DeviceLine, cpu: u64) -> Result<(), &'static str> {
 
 type Controller = eggos_drivers::interrupt::IoApic<eggos_drivers::io::Mmio>;
 
-fn with_input<R>(global: u32, work: impl FnOnce(u32, &Controller) -> R) -> Option<R> {
+pub(super) fn with_input<R>(
+    global: u32,
+    work: impl FnOnce(u32, &Controller) -> R,
+) -> Option<R> {
     let madt = acpi_table(b"APIC")?;
     let (apic, controller) = acpi::madt_io_apics(madt)
         .map(|apic| (apic, console_input::io_apic(apic)))
