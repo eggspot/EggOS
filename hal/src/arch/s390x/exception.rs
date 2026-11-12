@@ -183,6 +183,43 @@ s390x_user_exit:
     br          %r14
     .popsection
 
+    .macro SYS number
+    lghi        %r1, \number
+    svc         0
+    .endm
+    .macro OK
+    ltgr        %r2, %r2
+    jne         9f
+    .endm
+    .macro FAILED_WITH errno
+    cghi        %r2, -\errno
+    jne         9f
+    .endm
+    .macro LI64 reg, value
+    llihf       \reg, ((\value) >> 32) & 0xffffffff
+    oilf        \reg, (\value) & 0xffffffff
+    .endm
+    .macro EXPECT reg, value
+    LI64        %r0, \value
+    cgr         \reg, %r0
+    jne         9f
+    .endm
+    .macro READ_TP reg
+    lghi        \reg, 0
+    ear         \reg, %a0
+    sllg        \reg, \reg, 32
+    lghi        %r0, 0
+    ear         %r0, %a1
+    ogr         \reg, %r0
+    .endm
+    .macro EXIT_OK_OR_FAIL
+    lghi        %r2, 0
+    SYS         248
+9:  lghi        %r2, 1
+    SYS         248
+8:  j           8b
+    .endm
+
     .pushsection .rodata.user_test, "a"
     .balign 4
     .global s390x_user_test_start
@@ -222,12 +259,686 @@ s390x_user_test_null_syscalls:
     .global s390x_user_test_spin
 s390x_user_test_spin:
 3:  j           3b
-    .global s390x_user_test_linux_pending
-s390x_user_test_linux_pending:
+    .global s390x_user_test_linux_hello
+s390x_user_test_linux_hello:
     lghi        %r2, 1
-    lghi        %r1, {linux_exit_group}
-    svc         0
+    larl        %r3, 9f
+    lghi        %r4, {hello_length}
+    SYS         4
+    lghi        %r6, 0
+    cghi        %r2, {hello_length}
+    je          1f
+    lghi        %r6, 1
+1:  lghi        %r2, 1
+    lghi        %r3, 0
+    lghi        %r4, 1
+    SYS         4
+    cghi        %r2, -14
+    je          2f
+    lghi        %r6, 1
+2:  SYS         {unknown_syscall}
+    cghi        %r2, -38
+    je          3f
+    lghi        %r6, 1
+3:  lgr         %r2, %r6
+    SYS         248
 4:  j           4b
+9:  .ascii      "EGGOS-USER: hello from user mode\n"
+    .balign 4
+
+    .global s390x_user_test_linux_start
+s390x_user_test_linux_start:
+    lgr         %r10, %r15
+    tmll        %r15, 15
+    jne         9f
+    aghi        %r15, -160
+    SYS         20
+    lgr         %r6, %r2
+    SYS         236
+    cgr         %r2, %r6
+    jne         9f
+    la          %r2, 0(%r15)
+    lghi        %r3, 16
+    lghi        %r4, 0
+    SYS         349
+    cghi        %r2, 16
+    jne         9f
+    lg          %r0, 0(%r15)
+    og          %r0, 8(%r15)
+    ltgr        %r0, %r0
+    je          9f
+    lghi        %r2, 0
+    lghi        %r3, 3
+    lghi        %r4, 0
+    la          %r5, 16(%r15)
+    SYS         334
+    OK
+    lg          %r1, 16(%r15)
+    EXPECT      %r1, 0x800000
+    lg          %r1, 24(%r15)
+    EXPECT      %r1, -1
+    mvghi       32(%r15), 1
+    mvghi       40(%r15), 0
+    mvghi       48(%r15), 0
+    mvghi       56(%r15), 0
+    lghi        %r2, 13
+    la          %r3, 32(%r15)
+    lghi        %r4, 0
+    lghi        %r5, 8
+    SYS         174
+    OK
+    lghi        %r2, 13
+    lghi        %r3, 0
+    la          %r4, 64(%r15)
+    lghi        %r5, 8
+    SYS         174
+    OK
+    lg          %r1, 64(%r15)
+    EXPECT      %r1, 1
+    lghi        %r2, 0
+    la          %r3, 96(%r15)
+    SYS         186
+    OK
+    lgf         %r1, 104(%r15)
+    EXPECT      %r1, 2
+    lg          %r6, 0(%r10)
+    la          %r7, 8(%r10)
+    lghi        %r8, 2
+6:  lg          %r3, 0(%r7)
+    aghi        %r7, 8
+    ltgr        %r3, %r3
+    je          8f
+    lghi        %r4, 0
+7:  la          %r1, 0(%r3,%r4)
+    cli         0(%r1), 0
+    je          5f
+    aghi        %r4, 1
+    j           7b
+5:  stg         %r3, 128(%r15)
+    stg         %r4, 136(%r15)
+    lghi        %r2, 1
+    la          %r3, 128(%r15)
+    lghi        %r4, 1
+    SYS         146
+    j           6b
+8:  brctg       %r8, 6b
+    lgr         %r2, %r6
+    SYS         248
+9:  lghi        %r2, 255
+    SYS         248
+4:  j           4b
+    .global s390x_user_test_linux_start_end
+s390x_user_test_linux_start_end:
+
+    .global s390x_user_test_linux_unknown_syscalls
+s390x_user_test_linux_unknown_syscalls:
+    lghi        %r1, {unknown_syscall}
+5:  svc         0
+    j           5b
+
+    .global s390x_user_test_linux_thread_pointer
+s390x_user_test_linux_thread_pointer:
+    READ_TP     %r6
+    SYS         20
+    sllg        %r7, %r2, 12
+    sar         %a1, %r7
+    srlg        %r1, %r7, 32
+    sar         %a0, %r1
+    lghi        %r8, {thread_pointer_rounds}
+7:  SYS         158
+    ogr         %r6, %r2
+    READ_TP     %r1
+    xgr         %r1, %r7
+    ogr         %r6, %r1
+    brctg       %r8, 7b
+    lghi        %r2, 0
+    ltgr        %r6, %r6
+    je          5f
+    lghi        %r2, 1
+5:  SYS         248
+8:  j           8b
+
+    .global s390x_user_test_linux_poll
+s390x_user_test_linux_poll:
+    aghi        %r15, -64
+    mvghi       0(%r15), 0
+    mvhi        8(%r15), 1
+    mvhhi       12(%r15), 4
+    mvhhi       14(%r15), 0
+    mvhi        16(%r15), 2
+    mvhi        20(%r15), 0
+    mvghi       32(%r15), 0
+    mvghi       40(%r15), 0
+    la          %r2, 0(%r15)
+    lghi        %r3, 3
+    la          %r4, 32(%r15)
+    lghi        %r5, 0
+    lghi        %r6, 0
+    SYS         302
+    cghi        %r2, 1
+    jne         9f
+    llgh        %r1, 6(%r15)
+    EXPECT      %r1, 0
+    llgh        %r1, 14(%r15)
+    EXPECT      %r1, 4
+    llgh        %r1, 22(%r15)
+    EXPECT      %r1, 0
+    lghi        %r2, 1
+    lghi        %r3, 0x5413
+    la          %r4, 48(%r15)
+    SYS         54
+    OK
+    mvghi       32(%r15), 0
+    LI64        %r1, {poll_wait}
+    stg         %r1, 40(%r15)
+    lghi        %r2, 0
+    lghi        %r3, 0
+    la          %r4, 32(%r15)
+    lghi        %r5, 0
+    lghi        %r6, 0
+    SYS         302
+    OK
+    lg          %r1, 32(%r15)
+    og          %r1, 40(%r15)
+    EXPECT      %r1, 0
+    EXIT_OK_OR_FAIL
+
+    .global s390x_user_test_linux_signals
+s390x_user_test_linux_signals:
+    aghi        %r15, -64
+    lghi        %r2, 0
+    lghi        %r3, 17
+    SYS         37
+    OK
+    mvghi       0(%r15), 512
+    lghi        %r2, 0
+    la          %r3, 0(%r15)
+    lghi        %r4, 0
+    lghi        %r5, 8
+    SYS         175
+    OK
+    SYS         20
+    lgr         %r3, %r2
+    lghi        %r4, 10
+    SYS         241
+    OK
+    la          %r2, 16(%r15)
+    lghi        %r3, 8
+    SYS         176
+    OK
+    lg          %r1, 16(%r15)
+    EXPECT      %r1, 512
+    lghi        %r2, 1
+    la          %r3, 0(%r15)
+    lghi        %r4, 0
+    lghi        %r5, 8
+    SYS         175
+9:  lghi        %r2, 1
+    SYS         248
+8:  j           8b
+
+    .global s390x_user_test_linux_signal_handler
+s390x_user_test_linux_signal_handler:
+    aghi        %r15, -128
+    lay         %r1, -0x2800(%r15)
+    stg         %r1, 0(%r15)
+    mvghi       8(%r15), 0
+    mvghi       16(%r15), 0x2000
+    la          %r2, 0(%r15)
+    lghi        %r3, 0
+    SYS         186
+    OK
+    larl        %r1, 5f
+    stg         %r1, 32(%r15)
+    LI64        %r1, 0x08000004
+    stg         %r1, 40(%r15)
+    mvghi       48(%r15), 0
+    mvghi       56(%r15), 0
+    lghi        %r2, 10
+    la          %r3, 32(%r15)
+    lghi        %r4, 0
+    lghi        %r5, 8
+    SYS         174
+    OK
+    SYS         20
+    lgr         %r3, %r2
+    lghi        %r4, 10
+    lghi        %r7, 0x5a5
+    lghi        %r6, 1
+    LI64        %r1, {signal_fp_kept}
+    ldgr        %f8, %r1
+    lghi        %r1, {signal_rounding}
+    sfpc        %r1
+    SYS         241
+    OK
+    EXPECT      %r7, 0x5a5
+    EXPECT      %r6, 2
+    lgdr        %r1, %f8
+    EXPECT      %r1, {signal_fp_kept}
+    lgdr        %r1, %f9
+    EXPECT      %r1, {signal_fp_changed}
+    lghi        %r1, 0
+    efpc        %r1
+    lghi        %r0, 3
+    ngr         %r1, %r0
+    EXPECT      %r1, {signal_rounding}
+    lghi        %r2, 0
+    lghi        %r3, 0
+    la          %r4, 64(%r15)
+    lghi        %r5, 8
+    SYS         175
+    OK
+    lg          %r1, 64(%r15)
+    EXPECT      %r1, 0
+    EXIT_OK_OR_FAIL
+5:  cghi        %r2, 10
+    jne         7f
+    lgf         %r1, 0(%r3)
+    cghi        %r1, 10
+    jne         7f
+    lgf         %r1, 8(%r3)
+    cghi        %r1, -6
+    jne         7f
+    lg          %r1, {uc_stack_sp}(%r4)
+    clgr        %r15, %r1
+    jl          7f
+    ag          %r1, {uc_stack_size}(%r4)
+    clgr        %r15, %r1
+    jhe         7f
+    LI64        %r0, {signal_fp_kept}
+    lgdr        %r1, %f8
+    cgr         %r1, %r0
+    jne         7f
+    cg          %r0, {saved_f8}(%r4)
+    jne         7f
+    llgf        %r1, {saved_fpc}(%r4)
+    lghi        %r0, 3
+    ngr         %r1, %r0
+    cghi        %r1, {signal_rounding}
+    jne         7f
+    LI64        %r1, {signal_fp_changed}
+    stg         %r1, {saved_f9}(%r4)
+    lghi        %r1, 0
+    ldgr        %f8, %r1
+    mvghi       {saved_r6}(%r4), 2
+7:  lghi        %r7, 0
+    br          %r14
+
+    .global s390x_user_test_linux_fault_handler
+s390x_user_test_linux_fault_handler:
+    aghi        %r15, -96
+    larl        %r1, 5f
+    stg         %r1, 0(%r15)
+    mvghi       8(%r15), 4
+    mvghi       16(%r15), 0
+    mvghi       24(%r15), 0
+    lghi        %r2, 11
+    la          %r3, 0(%r15)
+    lghi        %r4, 0
+    lghi        %r5, 8
+    SYS         174
+    OK
+    mvghi       32(%r15), 0
+    mvghi       40(%r15), 4096
+    mvghi       48(%r15), 0
+    mvghi       56(%r15), 0x22
+    mvghi       64(%r15), -1
+    mvghi       72(%r15), 0
+    la          %r2, 32(%r15)
+    SYS         90
+    lghi        %r0, -4096
+    clgr        %r2, %r0
+    jhe         9f
+    lgr         %r10, %r2
+    lghi        %r6, 0
+    LI64        %r7, {fault_address}
+    lghi        %r8, 1
+    larl        %r9, 3f
+    lg          %r1, 0(%r7)
+    j           9f
+3:  lgr         %r7, %r10
+    lghi        %r8, 2
+    larl        %r9, 6f
+    lg          %r1, 0(%r7)
+    j           9f
+6:  EXPECT      %r6, 2
+    EXIT_OK_OR_FAIL
+5:  cghi        %r2, 11
+    jne         7f
+    lgf         %r1, 0(%r3)
+    cghi        %r1, 11
+    jne         7f
+    lgf         %r1, 8(%r3)
+    cg          %r1, {saved_r8}(%r4)
+    jne         7f
+    lg          %r1, 16(%r3)
+    cg          %r1, {saved_r7}(%r4)
+    jne         7f
+    lg          %r1, {saved_r6}(%r4)
+    aghi        %r1, 1
+    stg         %r1, {saved_r6}(%r4)
+7:  lg          %r1, {saved_r9}(%r4)
+    stg         %r1, {saved_pc}(%r4)
+    br          %r14
+
+    .global s390x_user_test_linux_signal_queue
+s390x_user_test_linux_signal_queue:
+    aghi        %r15, -320
+    lgr         %r12, %r15
+    LI64        %r1, 1 << ({queued_signal} - 1)
+    stg         %r1, 272(%r12)
+    mvghi       256(%r12), 0
+    mvghi       264(%r12), 0
+    lghi        %r2, 0
+    la          %r3, 272(%r12)
+    lghi        %r4, 0
+    lghi        %r5, 8
+    SYS         175
+    OK
+    SYS         20
+    lgr         %r6, %r2
+    mvhi        128(%r12), {queued_signal}
+    mvhi        132(%r12), 0
+    mvhi        136(%r12), -1
+    mvhi        140(%r12), 0
+    st          %r6, 144(%r12)
+    mvhi        148(%r12), 0
+    LI64        %r1, {first_value}
+    stg         %r1, 152(%r12)
+    lgr         %r2, %r6
+    lghi        %r3, {queued_signal}
+    la          %r4, 128(%r12)
+    SYS         178
+    OK
+    LI64        %r1, {second_value}
+    stg         %r1, 152(%r12)
+    lgr         %r2, %r6
+    lghi        %r3, {queued_signal}
+    la          %r4, 128(%r12)
+    SYS         178
+    OK
+    lgr         %r2, %r6
+    lghi        %r3, {queued_signal}
+    SYS         37
+    OK
+    lghi        %r7, -1
+    LI64        %r8, {first_value}
+    brasl       %r14, 6f
+    LI64        %r8, {second_value}
+    brasl       %r14, 6f
+    lghi        %r7, 0
+    lghi        %r8, 0
+    brasl       %r14, 6f
+    la          %r2, 272(%r12)
+    la          %r3, 0(%r12)
+    la          %r4, 256(%r12)
+    lghi        %r5, 8
+    SYS         177
+    FAILED_WITH 11
+    EXIT_OK_OR_FAIL
+6:  la          %r2, 272(%r12)
+    la          %r3, 0(%r12)
+    la          %r4, 256(%r12)
+    lghi        %r5, 8
+    SYS         177
+    cghi        %r2, {queued_signal}
+    jne         9b
+    lgf         %r1, 0(%r12)
+    cghi        %r1, {queued_signal}
+    jne         9b
+    lgf         %r1, 8(%r12)
+    cgr         %r1, %r7
+    jne         9b
+    lgf         %r1, 16(%r12)
+    cgr         %r1, %r6
+    jne         9b
+    lg          %r1, 24(%r12)
+    cgr         %r1, %r8
+    jne         9b
+    br          %r14
+
+    .global s390x_user_test_linux_signal_suspend
+s390x_user_test_linux_signal_suspend:
+    aghi        %r15, -96
+    larl        %r1, 5f
+    stg         %r1, 0(%r15)
+    mvghi       8(%r15), 4
+    mvghi       16(%r15), 0
+    mvghi       24(%r15), 0
+    lghi        %r2, 10
+    la          %r3, 0(%r15)
+    lghi        %r4, 0
+    lghi        %r5, 8
+    SYS         174
+    OK
+    mvghi       32(%r15), 512
+    mvghi       40(%r15), 0
+    lghi        %r2, 0
+    la          %r3, 32(%r15)
+    lghi        %r4, 0
+    lghi        %r5, 8
+    SYS         175
+    OK
+    SYS         20
+    lgr         %r3, %r2
+    lghi        %r4, 10
+    SYS         241
+    OK
+    lghi        %r6, 1
+    la          %r2, 40(%r15)
+    lghi        %r3, 8
+    SYS         179
+    FAILED_WITH 4
+    EXPECT      %r6, 2
+    lghi        %r2, 0
+    lghi        %r3, 0
+    la          %r4, 48(%r15)
+    lghi        %r5, 8
+    SYS         175
+    OK
+    lg          %r1, 48(%r15)
+    EXPECT      %r1, 512
+    EXIT_OK_OR_FAIL
+5:  cghi        %r2, 10
+    jne         7f
+    lg          %r1, {uc_sigmask}(%r4)
+    cghi        %r1, 512
+    jne         7f
+    mvghi       {saved_r6}(%r4), 2
+7:  br          %r14
+
+    .global s390x_user_test_linux_clock
+s390x_user_test_linux_clock:
+    aghi        %r15, -64
+    lghi        %r2, 1
+    la          %r3, 0(%r15)
+    SYS         260
+    OK
+    mvghi       32(%r15), 0
+    LI64        %r1, {clock_wait}
+    stg         %r1, 40(%r15)
+    la          %r2, 32(%r15)
+    lghi        %r3, 0
+    SYS         162
+    OK
+    lghi        %r2, 1
+    la          %r3, 16(%r15)
+    SYS         260
+    OK
+    lg          %r1, 16(%r15)
+    sg          %r1, 0(%r15)
+    LI64        %r0, 1000000000
+    msgr        %r1, %r0
+    ag          %r1, 24(%r15)
+    sg          %r1, 8(%r15)
+    clg         %r1, 40(%r15)
+    jl          9f
+    lghi        %r2, 2
+    la          %r3, 16(%r15)
+    SYS         260
+    OK
+    EXIT_OK_OR_FAIL
+
+    .global s390x_user_test_linux_stat
+s390x_user_test_linux_stat:
+    aghi        %r15, -272
+    mvi         256(%r15), 0
+    lghi        %r2, 1
+    la          %r3, 0(%r15)
+    SYS         108
+    OK
+    llgf        %r1, 24(%r15)
+    nill        %r1, 0xf000
+    EXPECT      %r1, 0x2000
+    lg          %r1, 40(%r15)
+    EXPECT      %r1, 0x501
+    mvghi       40(%r15), 0
+    lghi        %r2, 1
+    la          %r3, 256(%r15)
+    la          %r4, 0(%r15)
+    lghi        %r5, 0x1000
+    SYS         293
+    OK
+    lg          %r1, 40(%r15)
+    EXPECT      %r1, 0x501
+    mvhhi       28(%r15), 0
+    mvhi        128(%r15), 0
+    lghi        %r2, 1
+    la          %r3, 256(%r15)
+    lghi        %r4, 0x1000
+    lghi        %r5, 0x7ff
+    la          %r6, 0(%r15)
+    SYS         379
+    OK
+    llgh        %r1, 28(%r15)
+    nill        %r1, 0xf000
+    EXPECT      %r1, 0x2000
+    llgf        %r1, 128(%r15)
+    EXPECT      %r1, 5
+    lghi        %r2, 1
+    lghi        %r3, 0
+    lghi        %r4, 1
+    SYS         19
+    FAILED_WITH 29
+    lghi        %r2, 3
+    la          %r3, 0(%r15)
+    SYS         108
+    FAILED_WITH 9
+    EXIT_OK_OR_FAIL
+
+    .global s390x_user_test_linux_credentials
+s390x_user_test_linux_credentials:
+    SYS         201
+    OK
+    lghi        %r2, 1000
+    SYS         213
+    OK
+    SYS         199
+    cghi        %r2, 1000
+    jne         9f
+    lghi        %r2, 0
+    SYS         213
+    FAILED_WITH 1
+    EXIT_OK_OR_FAIL
+
+    .global s390x_user_test_linux_move_and_discard
+s390x_user_test_linux_move_and_discard:
+    aghi        %r15, -64
+    mvghi       0(%r15), 0
+    mvghi       8(%r15), 4096
+    mvghi       16(%r15), 3
+    mvghi       24(%r15), 0x22
+    mvghi       32(%r15), -1
+    mvghi       40(%r15), 0
+    la          %r2, 0(%r15)
+    SYS         90
+    lghi        %r0, -4096
+    clgr        %r2, %r0
+    jhe         9f
+    lgr         %r9, %r2
+    lgr         %r2, %r9
+    lghi        %r3, 4096
+    lghi        %r4, 23
+    SYS         219
+    OK
+    LI64        %r11, 0x12345678
+    stg         %r11, 0(%r9)
+    lgr         %r10, %r9
+    LI64        %r0, 0x100000
+    sgr         %r10, %r0
+    lgr         %r2, %r9
+    lghi        %r3, 4096
+    lghi        %r4, 4096
+    lghi        %r5, 3
+    lgr         %r6, %r10
+    SYS         163
+    cgr         %r2, %r10
+    jne         9f
+    lg          %r1, 0(%r10)
+    cgr         %r1, %r11
+    jne         9f
+    stg         %r9, 0(%r15)
+    mvghi       24(%r15), 0x32
+    la          %r2, 0(%r15)
+    SYS         90
+    cgr         %r2, %r9
+    jne         9f
+    lg          %r1, 0(%r9)
+    EXPECT      %r1, 0
+    lgr         %r2, %r10
+    lghi        %r3, 4096
+    lghi        %r4, 4
+    SYS         219
+    OK
+    lg          %r1, 0(%r10)
+    EXPECT      %r1, 0
+    EXIT_OK_OR_FAIL
+
+    .global s390x_user_test_fp_registers
+s390x_user_test_fp_registers:
+    lghi        %r1, {syscall_first}
+    svc         0
+    lgr         %r6, %r2
+    lghi        %r7, 0
+    .irp        i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    lgdr        %r1, %f\i
+    ogr         %r7, %r1
+    .endr
+    lghi        %r1, 0
+    efpc        %r1
+    ogr         %r7, %r1
+    lgr         %r1, %r6
+    lghi        %r0, 3
+    ngr         %r1, %r0
+    sfpc        %r1
+    .irp        i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    lgr         %r1, %r6
+    aghi        %r1, \i
+    ldgr        %f\i, %r1
+    .endr
+1:  lghi        %r1, {syscall_null}
+    svc         0
+    lgr         %r8, %r2
+    .irp        i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    lgr         %r1, %r6
+    aghi        %r1, \i
+    lgdr        %r0, %f\i
+    xgr         %r0, %r1
+    ogr         %r7, %r0
+    .endr
+    lghi        %r1, 0
+    efpc        %r1
+    lgr         %r0, %r6
+    lghi        %r9, 3
+    ngr         %r0, %r9
+    xgr         %r1, %r0
+    ogr         %r7, %r1
+    ltgr        %r8, %r8
+    je          1b
+    lgr         %r2, %r7
+    lghi        %r1, {syscall_report}
+    svc         0
+2:  j           2b
     .global s390x_user_test_stack_growth
 s390x_user_test_stack_growth:
     lgr         %r3, %r15
@@ -274,8 +985,40 @@ s390x_user_test_end:
     syscall_first = const TestProgram::SYSCALL_FIRST,
     syscall_report = const TestProgram::SYSCALL_REPORT,
     syscall_null = const TestProgram::SYSCALL_NULL,
-    linux_exit_group = const 248,
+    hello_length = const TestProgram::LINUX_HELLO.len(),
+    unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
+    thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
+    poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
+    clock_wait = const TestProgram::LINUX_CLOCK_WAIT_NS,
+    signal_fp_kept = const TestProgram::LINUX_SIGNAL_FP_KEPT,
+    signal_fp_changed = const TestProgram::LINUX_SIGNAL_FP_CHANGED,
+    signal_rounding = const 2,
+    uc_stack_sp = const UC_STACK,
+    uc_stack_size = const UC_STACK + 16,
+    uc_sigmask = const UC_SIGMASK,
+    saved_f8 = const UC_FPRS + 8 * 8,
+    saved_f9 = const UC_FPRS + 9 * 8,
+    saved_fpc = const UC_FPC,
+    saved_r6 = const UC_GPRS + 6 * 8,
+    saved_r7 = const UC_GPRS + 7 * 8,
+    saved_r8 = const UC_GPRS + 8 * 8,
+    saved_r9 = const UC_GPRS + 9 * 8,
+    saved_pc = const UC_PSW_ADDRESS,
+    fault_address = const TestProgram::LINUX_FAULT_ADDRESS,
+    queued_signal = const TestProgram::LINUX_QUEUED_SIGNAL,
+    first_value = const TestProgram::LINUX_QUEUED_VALUES[0],
+    second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
 );
+
+/// Where s390x's `ucontext` keeps what the test programs' handlers read and change: `uc_stack`
+/// after `uc_flags` and `uc_link`, then `_sigregs` (the PSW's mask and address, `gprs[16]`,
+/// `acrs[16]`, the FP control word and a pad, `fprs[16]`), then `uc_sigmask`.
+const UC_STACK: usize = 16;
+const UC_PSW_ADDRESS: usize = 48;
+const UC_GPRS: usize = 56;
+const UC_FPC: usize = UC_GPRS + 16 * 8 + 16 * 4;
+const UC_FPRS: usize = UC_FPC + 8;
+const UC_SIGMASK: usize = UC_FPRS + 16 * 8;
 
 /// The registers the kernel entry keeps on the stack, in the order it stores them.
 #[repr(C)]
@@ -354,7 +1097,22 @@ unsafe extern "C" {
     static s390x_user_test_floating_point: u8;
     static s390x_user_test_null_syscalls: u8;
     static s390x_user_test_spin: u8;
-    static s390x_user_test_linux_pending: u8;
+    static s390x_user_test_linux_hello: u8;
+    static s390x_user_test_linux_start: u8;
+    static s390x_user_test_linux_start_end: u8;
+    static s390x_user_test_linux_unknown_syscalls: u8;
+    static s390x_user_test_linux_thread_pointer: u8;
+    static s390x_user_test_linux_poll: u8;
+    static s390x_user_test_linux_signals: u8;
+    static s390x_user_test_linux_signal_handler: u8;
+    static s390x_user_test_linux_fault_handler: u8;
+    static s390x_user_test_linux_signal_queue: u8;
+    static s390x_user_test_linux_signal_suspend: u8;
+    static s390x_user_test_linux_clock: u8;
+    static s390x_user_test_linux_stat: u8;
+    static s390x_user_test_linux_credentials: u8;
+    static s390x_user_test_linux_move_and_discard: u8;
+    static s390x_user_test_fp_registers: u8;
     static s390x_user_test_stack_growth: u8;
     static s390x_user_test_illegal_instruction: u8;
     static s390x_user_test_end: u8;
@@ -486,8 +1244,8 @@ impl crate::user::s390x::Registers {
     }
 }
 
-/// [`crate::Platform::user_test_program`]. The Linux programs wait for s390x's Linux ABI
-/// (part 3): each exits with 1 until then.
+/// [`crate::Platform::user_test_program`]: every program, the Linux ones in s390x's numbers
+/// (D417).
 pub(super) fn user_test_program() -> TestProgram {
     let start = (&raw const s390x_user_test_start) as usize;
     let end = (&raw const s390x_user_test_end) as usize;
@@ -495,31 +1253,30 @@ pub(super) fn user_test_program() -> TestProgram {
     // SAFETY: the symbols bound the programs' bytes in `.rodata.user_test`, part of the kernel
     // image, read-only and never written, for as long as the kernel runs.
     let code = unsafe { core::slice::from_raw_parts(start as *const u8, end - start) };
-    let pending = at(&raw const s390x_user_test_linux_pending);
     TestProgram {
         code,
         checks: at(&raw const s390x_user_test_checks),
         floating_point: at(&raw const s390x_user_test_floating_point),
         null_syscalls: at(&raw const s390x_user_test_null_syscalls),
         spin: at(&raw const s390x_user_test_spin),
-        fp_registers: pending,
+        fp_registers: at(&raw const s390x_user_test_fp_registers),
         illegal_instruction: at(&raw const s390x_user_test_illegal_instruction),
-        linux_hello: pending,
-        linux_start: pending,
-        linux_start_end: at(&raw const s390x_user_test_stack_growth),
-        linux_unknown_syscalls: pending,
+        linux_hello: at(&raw const s390x_user_test_linux_hello),
+        linux_start: at(&raw const s390x_user_test_linux_start),
+        linux_start_end: at(&raw const s390x_user_test_linux_start_end),
+        linux_unknown_syscalls: at(&raw const s390x_user_test_linux_unknown_syscalls),
         stack_growth: at(&raw const s390x_user_test_stack_growth),
-        linux_thread_pointer: pending,
-        linux_poll: pending,
-        linux_signals: pending,
-        linux_signal_handler: pending,
-        linux_fault_handler: pending,
-        linux_signal_queue: pending,
-        linux_signal_suspend: pending,
-        linux_clock: pending,
-        linux_stat: pending,
-        linux_credentials: pending,
-        linux_move_and_discard: pending,
+        linux_thread_pointer: at(&raw const s390x_user_test_linux_thread_pointer),
+        linux_poll: at(&raw const s390x_user_test_linux_poll),
+        linux_signals: at(&raw const s390x_user_test_linux_signals),
+        linux_signal_handler: at(&raw const s390x_user_test_linux_signal_handler),
+        linux_fault_handler: at(&raw const s390x_user_test_linux_fault_handler),
+        linux_signal_queue: at(&raw const s390x_user_test_linux_signal_queue),
+        linux_signal_suspend: at(&raw const s390x_user_test_linux_signal_suspend),
+        linux_clock: at(&raw const s390x_user_test_linux_clock),
+        linux_stat: at(&raw const s390x_user_test_linux_stat),
+        linux_credentials: at(&raw const s390x_user_test_linux_credentials),
+        linux_move_and_discard: at(&raw const s390x_user_test_linux_move_and_discard),
     }
 }
 

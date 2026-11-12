@@ -23354,3 +23354,20 @@ the license, by an explicit instruction recorded here.
 - **Known gaps (to check at build time).** The delay slots are left to the assembler's
   `reorder` mode, as the existing programs do; LLVM's acceptance of `dli` and of `rdhwr`
   under `.set mips64r2` inside the programs' section.
+
+## D417 s390x's Linux test programs (M9; D321's and D416's "Moved"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** s390x's `TestProgram` had no Linux program at all (each exited with 1): it now
+  has `linux_hello`, `linux_start`, the unknown-call loop, `fp_registers` and every program
+  past them, hand-written from PowerPC's in s390x's numbers (`svc 0` with the number in `r1`,
+  the arguments in `r2` to `r7`, a negative result for an error). `mmap` takes one pointer to
+  its six arguments (`old_mmap`); `struct stat` has `st_rdev` at 40 as a 64-bit word; the
+  thread pointer is `a0:a1`, set with `sar` and read with `ear`; the FP check uses `f8` and
+  `f9` (callee-saved) moved with `ldgr`/`lgdr`, and the rounding mode is the FP control
+  word's low bits (`sfpc`/`efpc`). The handlers read and change the `ucontext` of D323:
+  `_sigregs` 40 bytes in (PSW address at 48, `gprs` at 56, the FP control word at 248,
+  `fprs` at 256) and `uc_sigmask` at 384, and return through `r14`. Every program moves
+  `r15` below the data it keeps (no red zone), and code addresses come from `larl`, so the
+  programs stay position-independent.
+- **Known gaps (to check at build time).** The z10 instructions the programs use (`mvghi`,
+  `mvhi`, `mvhhi`) against the CPU model the build picks for the user programs' section.
