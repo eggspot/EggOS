@@ -5,11 +5,12 @@
 //! branches are patched once every instruction's place is known, and the place of each
 //! instruction is kept, so a runtime can map a code address back to the DEX instruction.
 //!
-//! It compiles moves, constants, int and long arithmetic, comparisons, branches, returns,
-//! method calls, strings, new objects and instance fields, the last ones and division through
-//! the runtime's helpers ([`helper`]), for x86_64; a method using anything else (arrays,
-//! exceptions, static fields, switches) is refused with the opcode and place, and the layer
-//! reports it.
+//! It compiles moves, constants, int and long arithmetic and comparisons, branches and
+//! switches, returns, method calls (virtual and interface ones dispatched on the receiver's
+//! class), strings, objects with their instance and static fields, arrays, casts and `throw`,
+//! the object work and division through the runtime's helpers ([`helper`]), for x86_64 (D471,
+//! D472, D499); a method using anything else (floating point, `filled-new-array`, method
+//! handles) is refused with the opcode and place, and the layer reports it.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -67,8 +68,30 @@ pub mod helper {
     pub const DIVIDE_LONG: usize = 6;
     /// `rem-long`.
     pub const REMAINDER_LONG: usize = 7;
+    /// `invoke-virtual` and `invoke-interface` (D499): the method index in the first word, the
+    /// call's own words after it, the receiver first; calls the receiver's class's method.
+    pub const INVOKE_VIRTUAL: usize = 8;
+    /// `sget`: the static field with the index in the first word, its class initialized first.
+    pub const STATIC_GET: usize = 9;
+    /// `sput`: the second word into the static field with the index in the first word.
+    pub const STATIC_PUT: usize = 10;
+    /// `new-array`: an array of the first word's length, of the type with the index in the
+    /// second word.
+    pub const NEW_ARRAY: usize = 11;
+    /// `array-length`.
+    pub const ARRAY_LENGTH: usize = 12;
+    /// `aget`: the array's element at the index in the second word.
+    pub const ARRAY_GET: usize = 13;
+    /// `aput`: the third word into the array's element at the index in the second word.
+    pub const ARRAY_PUT: usize = 14;
+    /// `throw`: never returns while exceptions are not caught.
+    pub const THROW: usize = 15;
+    /// `check-cast`: the object in the first word to the type with the index in the second.
+    pub const CHECK_CAST: usize = 16;
+    /// `instance-of`: 1 when the object is of the type with the index in the second word.
+    pub const INSTANCE_OF: usize = 17;
     /// How many helpers come before the methods.
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 18;
 }
 
 /// The entry-table place of the method with index `method` in the DEX file's method table.

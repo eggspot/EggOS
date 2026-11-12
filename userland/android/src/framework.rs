@@ -99,6 +99,88 @@ pub fn resolve(dex: &Dex<'_>, method: u32, compiled: &BTreeMap<u32, usize>) -> T
     Target::Missing
 }
 
+fn overriding(
+    dex: &Dex<'_>,
+    class: u32,
+    method: u32,
+    compiled: &BTreeMap<u32, usize>,
+) -> Option<usize> {
+    let name = dex.method_name(method)?;
+    let prototype = dex.method_prototype(method)?;
+    dex.methods(class).iter().find_map(|candidate| {
+        let offset = compiled.get(&candidate.index)?;
+        let same = dex.method_name(candidate.index)? == name
+            && dex.method_prototype(candidate.index)? == prototype;
+        same.then_some(*offset)
+    })
+}
+
+/// Where a virtual or interface call of method `method` on an object of class `receiver` goes
+/// (D499): the first class up the receiver's superclasses that the framework implements the
+/// method for or that defines a compiled method of the same name and prototype; else where
+/// the call would go without dispatch ([`resolve`]).
+pub fn resolve_virtual(
+    dex: &Dex<'_>,
+    receiver: &str,
+    method: u32,
+    compiled: &BTreeMap<u32, usize>,
+) -> Target {
+    let Some(name) = dex.method_name(method) else {
+        return Target::Missing;
+    };
+    let mut class = String::from(receiver);
+    for _ in 0..MOST_ANCESTORS {
+        if let Some(native) = native(&class, &name) {
+            return Target::Native(native);
+        }
+        let Some(index) = dex.class_index(&class) else {
+            break;
+        };
+        if let Some(offset) = overriding(dex, index, method, compiled) {
+            return Target::Compiled(offset);
+        }
+        match dex.superclass(index) {
+            Some(parent) => class = parent,
+            None => break,
+        }
+    }
+    resolve(dex, method, compiled)
+}
+
+/// Whether an object of class `class` is a `wanted` (D499): the same class, or one up its
+/// superclasses the DEX file defines, or `Object`; `None` when its ancestry leaves the file
+/// before deciding (a framework class, or an interface, which the layer does not follow yet).
+pub fn is_instance(dex: &Dex<'_>, class: &str, wanted: &str) -> Option<bool> {
+    if wanted == OBJECT {
+        return Some(true);
+    }
+    let mut class = String::from(class);
+    for _ in 0..MOST_ANCESTORS {
+        if class == wanted {
+            return Some(true);
+        }
+        let index = dex.class_index(&class)?;
+        match dex.superclass(index) {
+            Some(parent) => class = parent,
+            None => return Some(false),
+        }
+    }
+    None
+}
+
+/// An array element `value` as an array of `descriptor` keeps it: narrowed to the element
+/// type's width, signed but for `char` and `boolean`, as Java's stores do.
+pub fn array_element(descriptor: &str, value: u64) -> u64 {
+    match descriptor.as_bytes().get(1) {
+        Some(b'B') => value as u8 as i8 as i32 as u32 as u64,
+        Some(b'S') => value as u16 as i16 as i32 as u32 as u64,
+        Some(b'C') => u64::from(value as u16),
+        Some(b'Z') => value & 1,
+        Some(b'I') => u64::from(value as u32),
+        _ => value,
+    }
+}
+
 /// The descriptor of the activity a manifest names as `name` in package `package`:
 /// `.MainActivity` and `MainActivity` are in the package, `org.example.Main` is whole.
 pub fn activity_descriptor(package: &str, name: &str) -> String {
@@ -110,13 +192,14 @@ pub fn activity_descriptor(package: &str, name: &str) -> String {
     format!("L{};", whole.replace('.', "/"))
 }
 
-/// An object an app made: its class, its fields by field index, and a string's or a text
-/// view's text.
+/// An object an app made: its class, its fields by field index, a string's or a text view's
+/// text, and an array's elements.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Object {
     pub class: String,
     pub fields: BTreeMap<u32, u64>,
     pub text: Option<String>,
+    pub elements: Option<alloc::vec::Vec<u64>>,
 }
 
 #[cfg(test)]
@@ -132,6 +215,15 @@ mod tests {
         );
         assert_eq!(native(TEXT_VIEW, "setText"), Some(Native::SetText));
         assert_eq!(native("Landroid/widget/Button;", "setText"), None);
+    }
+
+    #[test]
+    fn array_elements_are_narrowed_as_java_stores_them() {
+        assert_eq!(array_element("[C", 0xffff_ffff), 0xffff);
+        assert_eq!(array_element("[S", 0xffff), 0xffff_ffff);
+        assert_eq!(array_element("[B", 0x80), 0xffff_ff80);
+        assert_eq!(array_element("[Z", 3), 1);
+        assert_eq!(array_element("[J", u64::MAX), u64::MAX);
     }
 
     #[test]

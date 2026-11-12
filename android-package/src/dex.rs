@@ -16,6 +16,8 @@ const SUPERCLASS: usize = 8;
 const NO_INDEX: u32 = u32::MAX;
 const METHOD_ID_BYTES: usize = 8;
 const METHOD_NAME: usize = 4;
+const METHOD_PROTOTYPE: usize = 2;
+const FIELD_ID_BYTES: usize = 8;
 const CODE_HEADER_BYTES: usize = 16;
 
 /// A method's code (`code_item`, D471): its register count, how many of them hold its
@@ -60,6 +62,7 @@ pub struct Dex<'a> {
     pub version: u32,
     pub strings: (u32, u32),
     pub types: (u32, u32),
+    pub fields: (u32, u32),
     pub methods: (u32, u32),
     pub classes: (u32, u32),
 }
@@ -118,6 +121,7 @@ impl<'a> Dex<'a> {
             version,
             strings: pair(0x38),
             types: pair(0x40),
+            fields: pair(0x50),
             methods: pair(0x58),
             classes: pair(0x60),
         })
@@ -162,6 +166,26 @@ impl<'a> Dex<'a> {
             return None;
         }
         let at = offset as usize + METHOD_ID_BYTES * index as usize;
+        self.type_name(u32::from(half(self.bytes, at)?))
+    }
+
+    /// Method `index`'s prototype, its place in the prototype table: two methods with the same
+    /// name and prototype have the same signature, as a file keeps each prototype once.
+    pub fn method_prototype(&self, index: u32) -> Option<u16> {
+        let (count, offset) = self.methods;
+        if index >= count {
+            return None;
+        }
+        half(self.bytes, offset as usize + METHOD_ID_BYTES * index as usize + METHOD_PROTOTYPE)
+    }
+
+    /// The descriptor of the class field `index` belongs to.
+    pub fn field_class(&self, index: u32) -> Option<String> {
+        let (count, offset) = self.fields;
+        if index >= count {
+            return None;
+        }
+        let at = offset as usize + FIELD_ID_BYTES * index as usize;
         self.type_name(u32::from(half(self.bytes, at)?))
     }
 

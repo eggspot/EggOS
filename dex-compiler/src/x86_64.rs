@@ -6,7 +6,8 @@
 //! `ecx`/`rcx`, so no register allocation is needed; a 32-bit value is the slot's low half, a
 //! wide or object value the whole slot. A call writes its argument words at the bottom of the
 //! frame and calls through the table: a runtime helper's entry or a method's
-//! ([`crate::helper`], [`crate::method_entry`]); `r12` and `r13` survive it.
+//! ([`crate::helper`], [`crate::method_entry`]); `r12` and `r13` survive it. A virtual call
+//! writes the method's index first and its own words after it, for the dispatch helper (D499).
 
 use crate::{CompileError, Compiled, helper, method_entry};
 use alloc::vec::Vec;
@@ -21,6 +22,10 @@ const EXTENDED_BASE: u8 = 0x41;
 const WIDE_EXTENDED_BASE: u8 = 0x49;
 const SLOT_BYTES: usize = 8;
 const HELPER_WORDS: usize = 3;
+const MOST_FILLED_ELEMENTS: usize = 4096;
+const PACKED_SWITCH: u16 = 0x0100;
+const SPARSE_SWITCH: u16 = 0x0200;
+const ARRAY_DATA: u16 = 0x0300;
 const PROLOGUE: [u8; 7] = [0x41, 0x54, 0x41, 0x55, 0x49, 0x89, 0xf4];
 const EPILOGUE_POPS: [u8; 5] = [0x41, 0x5d, 0x41, 0x5c, 0xc3];
 
@@ -121,7 +126,7 @@ impl Emitter {
     }
 
     fn prologue(&mut self, registers: u16, ins: u16, outs: u16) {
-        let out_words = usize::from(outs).max(HELPER_WORDS);
+        let out_words = (usize::from(outs) + 1).max(HELPER_WORDS);
         let bytes = (out_words + usize::from(registers)) * SLOT_BYTES;
         self.frame_bytes = (bytes.next_multiple_of(16) + 8) as u32;
         self.bytes(&PROLOGUE);
@@ -153,6 +158,12 @@ impl Emitter {
         self.bytes(&[WIDE, 0xc7, 0x84, 0x24]);
         self.bytes(&((word * SLOT_BYTES) as u32).to_le_bytes());
         self.bytes(&(value as i32).to_le_bytes());
+    }
+
+    fn argument_wide_constant(&mut self, word: usize, value: i64) {
+        self.constant(Width::Long, EAX, value);
+        self.bytes(&[WIDE, 0x89, 0x84, 0x24]);
+        self.bytes(&((word * SLOT_BYTES) as u32).to_le_bytes());
     }
 
     fn call_entry(&mut self, entry: usize) {
@@ -202,9 +213,77 @@ fn is_shift(operation: Operation) -> bool {
 
 fn field_width(opcode: u8) -> Width {
     match opcode {
-        0x53 | 0x54 | 0x5a | 0x5b => Width::Long,
+        0x53 | 0x54 | 0x5a | 0x5b | 0x61 | 0x62 | 0x45 | 0x46 => Width::Long,
         _ => Width::Int,
     }
+}
+
+fn payload<'a>(code: &Code<'a>, at: usize, offset: i64, kind: u16) -> Option<usize> {
+    let start = branch_target(at, offset)?;
+    (code.unit(start)? == kind).then_some(start)
+}
+
+fn payload_word(code: &Code<'_>, at: usize) -> Option<u32> {
+    Some(u32::from(code.unit(at)?) | u32::from(code.unit(at + 1)?) << 16)
+}
+
+fn switch(
+    emitter: &mut Emitter,
+    code: &Code<'_>,
+    instruction: &Instruction,
+    at: usize,
+) -> Option<()> {
+    let sparse = instruction.opcode == 0x2c;
+    let kind = if sparse { SPARSE_SWITCH } else { PACKED_SWITCH };
+    let start = payload(code, at, instruction.literal, kind)?;
+    let size = usize::from(code.unit(start + 1)?);
+    emitter.load(Width::Int, EAX, instruction.a);
+    let first_key = payload_word(code, start + 2)? as i32;
+    let targets = match sparse {
+        true => start + 2 + size * 2,
+        false => start + 4,
+    };
+    for case in 0..size {
+        let key = match sparse {
+            true => payload_word(code, start + 2 + case * 2)? as i32,
+            false => first_key.wrapping_add(case as i32),
+        };
+        let offset = payload_word(code, targets + case * 2)? as i32;
+        let target = branch_target(at, i64::from(offset))?;
+        emitter.byte(0x3d);
+        emitter.bytes(&key.to_le_bytes());
+        emitter.jump_to(&[0x0f, 0x84], at, target);
+    }
+    Some(())
+}
+
+fn fill_array(
+    emitter: &mut Emitter,
+    code: &Code<'_>,
+    instruction: &Instruction,
+    at: usize,
+) -> Option<()> {
+    let start = payload(code, at, instruction.literal, ARRAY_DATA)?;
+    let width = usize::from(code.unit(start + 1)?);
+    let count = payload_word(code, start + 2)? as usize;
+    if !matches!(width, 1 | 2 | 4 | 8) || count > MOST_FILLED_ELEMENTS {
+        return None;
+    }
+    let mut bytes = alloc::vec::Vec::new();
+    for unit in 0..(width * count).div_ceil(2) {
+        bytes.extend_from_slice(&code.unit(start + 4 + unit)?.to_le_bytes());
+    }
+    for (index, element) in bytes.chunks(width).take(count).enumerate() {
+        let mut value = [0u8; 8];
+        value[..width].copy_from_slice(element);
+        let shift = 64 - 8 * width as u32;
+        let value = i64::from_le_bytes(value) << shift >> shift;
+        emitter.argument_from(0, instruction.a);
+        emitter.argument_constant(1, index as i64);
+        emitter.argument_wide_constant(2, value);
+        emitter.call_entry(helper::ARRAY_PUT);
+    }
+    Some(())
 }
 
 const CONDITIONS: [u8; 6] = [0x84, 0x85, 0x8c, 0x8d, 0x8f, 0x8e];
@@ -230,7 +309,7 @@ pub fn compile(code: &Code<'_>) -> Result<Compiled, CompileError> {
         }
         let instruction = dalvik::decode(code, at).ok_or(CompileError::Truncated)?;
         places.push((at as u32, emitter.code.len() as u32));
-        emit(&mut emitter, &instruction, at)?;
+        emit(&mut emitter, code, &instruction, at)?;
         at += instruction.length;
     }
     for &(field, from, target) in &emitter.fixups {
@@ -245,6 +324,17 @@ pub fn compile(code: &Code<'_>) -> Result<Compiled, CompileError> {
         code: emitter.code,
         places,
     })
+}
+
+fn is_virtual(opcode: u8) -> bool {
+    matches!(opcode, 0x6e | 0x72 | 0x74 | 0x78)
+}
+
+fn call_method(emitter: &mut Emitter, opcode: u8, method: u32) {
+    match is_virtual(opcode) {
+        true => emitter.call_entry(helper::INVOKE_VIRTUAL),
+        false => emitter.call_entry(method_entry(method)),
+    }
 }
 
 fn arithmetic(
@@ -279,7 +369,12 @@ fn divide(
     emitter.store(width, EAX, target);
 }
 
-fn emit(emitter: &mut Emitter, instruction: &Instruction, at: usize) -> Result<(), CompileError> {
+fn emit(
+    emitter: &mut Emitter,
+    code: &Code<'_>,
+    instruction: &Instruction,
+    at: usize,
+) -> Result<(), CompileError> {
     let opcode = instruction.opcode;
     let unsupported = CompileError::Unsupported { opcode, at };
     let bad_branch = CompileError::BadBranch { at };
@@ -296,6 +391,10 @@ fn emit(emitter: &mut Emitter, instruction: &Instruction, at: usize) -> Result<(
         }
         0x0a => emitter.store(Width::Int, EAX, a),
         0x0b | 0x0c => emitter.store(Width::Long, EAX, a),
+        0x0d => {
+            emitter.bytes(&[0x31, 0xc0]);
+            emitter.store(Width::Long, EAX, a);
+        }
         0x0e => {
             emitter.bytes(&[0x31, 0xc0]);
             emitter.epilogue();
@@ -324,6 +423,54 @@ fn emit(emitter: &mut Emitter, instruction: &Instruction, at: usize) -> Result<(
             emitter.argument_constant(0, i64::from(instruction.index));
             emitter.call_entry(entry);
             emitter.store(Width::Long, EAX, a);
+        }
+        0x1d | 0x1e => {}
+        0x1f => {
+            emitter.argument_from(0, a);
+            emitter.argument_constant(1, i64::from(instruction.index));
+            emitter.call_entry(helper::CHECK_CAST);
+        }
+        0x20 => {
+            emitter.argument_from(0, b);
+            emitter.argument_constant(1, i64::from(instruction.index));
+            emitter.call_entry(helper::INSTANCE_OF);
+            emitter.store(Width::Int, EAX, a);
+        }
+        0x21 => {
+            emitter.argument_from(0, b);
+            emitter.call_entry(helper::ARRAY_LENGTH);
+            emitter.store(Width::Int, EAX, a);
+        }
+        0x23 => {
+            emitter.argument_from(0, b);
+            emitter.argument_constant(1, i64::from(instruction.index));
+            emitter.call_entry(helper::NEW_ARRAY);
+            emitter.store(Width::Long, EAX, a);
+        }
+        0x26 => fill_array(emitter, code, instruction, at).ok_or(unsupported)?,
+        0x27 => {
+            emitter.argument_from(0, a);
+            emitter.call_entry(helper::THROW);
+        }
+        0x2b | 0x2c => switch(emitter, code, instruction, at).ok_or(bad_branch)?,
+        0x31 => {
+            emitter.load(Width::Long, EAX, b);
+            emitter.load(Width::Long, ECX, c);
+            emitter.bytes(&[WIDE, 0x39, 0xc8, 0x0f, 0x9f, 0xc0, 0x0f, 0x9c, 0xc1]);
+            emitter.bytes(&[0x0f, 0xb6, 0xc0, 0x0f, 0xb6, 0xc9, 0x29, 0xc8]);
+            emitter.store(Width::Int, EAX, a);
+        }
+        0x44..=0x4a => {
+            emitter.argument_from(0, b);
+            emitter.argument_from(1, c);
+            emitter.call_entry(helper::ARRAY_GET);
+            emitter.store(field_width(opcode), EAX, a);
+        }
+        0x4b..=0x51 => {
+            emitter.argument_from(0, b);
+            emitter.argument_from(1, c);
+            emitter.argument_from(2, a);
+            emitter.call_entry(helper::ARRAY_PUT);
         }
         0x28..=0x2a => {
             let target = branch_target(at, instruction.literal).ok_or(bad_branch)?;
@@ -356,18 +503,36 @@ fn emit(emitter: &mut Emitter, instruction: &Instruction, at: usize) -> Result<(
             emitter.argument_from(2, a);
             emitter.call_entry(helper::FIELD_PUT);
         }
+        0x60..=0x66 => {
+            emitter.argument_constant(0, i64::from(instruction.index));
+            emitter.call_entry(helper::STATIC_GET);
+            emitter.store(field_width(opcode), EAX, a);
+        }
+        0x67..=0x6d => {
+            emitter.argument_constant(0, i64::from(instruction.index));
+            emitter.argument_from(1, a);
+            emitter.call_entry(helper::STATIC_PUT);
+        }
         0x6e..=0x72 => {
+            let first = usize::from(is_virtual(opcode));
+            if first == 1 {
+                emitter.argument_constant(0, i64::from(instruction.index));
+            }
             let count = instruction.argument_count;
             for (word, &register) in instruction.arguments[..count].iter().enumerate() {
-                emitter.argument_from(word, u32::from(register));
+                emitter.argument_from(first + word, u32::from(register));
             }
-            emitter.call_entry(method_entry(instruction.index));
+            call_method(emitter, opcode, instruction.index);
         }
         0x74..=0x78 => {
-            for word in 0..instruction.argument_count {
-                emitter.argument_from(word, b + word as u32);
+            let first = usize::from(is_virtual(opcode));
+            if first == 1 {
+                emitter.argument_constant(0, i64::from(instruction.index));
             }
-            emitter.call_entry(method_entry(instruction.index));
+            for word in 0..instruction.argument_count {
+                emitter.argument_from(first + word, b + word as u32);
+            }
+            call_method(emitter, opcode, instruction.index);
         }
         0x7b..=0x7e => {
             let width = match opcode {
@@ -502,8 +667,8 @@ mod tests {
     }
 
     #[test]
-    fn an_invoke_writes_its_arguments_and_calls_the_method_s_entry() {
-        let bytes = units(&[0x206e, 0x0004, 0x0021, 0x000a, 0x000f]);
+    fn a_direct_invoke_writes_its_arguments_and_calls_the_method_s_entry() {
+        let bytes = units(&[0x2070, 0x0004, 0x0021, 0x000a, 0x000f]);
         let compiled = compile(&code(&bytes)).unwrap();
         let entry = ((helper::COUNT + 4) * 8) as u32;
         let call_through = [WIDE, 0x89, 0xe7, 0x4c, 0x89, 0xe6, 0x41, 0xff, 0x94, 0x24];
@@ -512,6 +677,61 @@ mod tests {
         assert!(contains(&compiled.code, &[WIDE, 0x89, 0x84, 0x24, 8, 0, 0, 0]));
         let result = compiled.place_of(3).unwrap();
         assert_eq!(compiled.code[result..result + 3], [0x41, 0x89, 0x85]);
+    }
+
+    #[test]
+    fn a_virtual_invoke_passes_the_method_index_first_to_the_dispatch_helper() {
+        let bytes = units(&[0x206e, 0x0004, 0x0021, 0x000e]);
+        let compiled = compile(&code(&bytes)).unwrap();
+        let index = [WIDE, 0xc7, 0x84, 0x24, 0, 0, 0, 0, 4, 0, 0, 0];
+        assert!(contains(&compiled.code, &index));
+        assert!(contains(&compiled.code, &[WIDE, 0x89, 0x84, 0x24, 16, 0, 0, 0]));
+        let entry = ((helper::INVOKE_VIRTUAL * 8) as u32).to_le_bytes();
+        let call = [[0x41, 0xff, 0x94, 0x24].as_slice(), &entry].concat();
+        assert!(contains(&compiled.code, &call));
+    }
+
+    #[test]
+    fn a_packed_switch_compares_each_key_and_jumps_to_its_case() {
+        let bytes = units(&[
+            0x002b, 0x0005, 0x0000, 0x000e, 0x000e, 0x0100, 0x0002, 0x000a, 0x0000, 0x0003,
+            0x0000, 0x0004, 0x0000,
+        ]);
+        let compiled = compile(&code(&bytes)).unwrap();
+        assert!(contains(&compiled.code, &[0x3d, 10, 0, 0, 0, 0x0f, 0x84]));
+        assert!(contains(&compiled.code, &[0x3d, 11, 0, 0, 0, 0x0f, 0x84]));
+        let first_jump = compiled
+            .code
+            .windows(7)
+            .position(|window| window == [0x3d, 10, 0, 0, 0, 0x0f, 0x84])
+            .unwrap()
+            + 7;
+        let relative =
+            i32::from_le_bytes(compiled.code[first_jump..first_jump + 4].try_into().unwrap());
+        assert_eq!(first_jump as i32 + 4 + relative, compiled.place_of(3).unwrap() as i32);
+    }
+
+    #[test]
+    fn arrays_statics_and_casts_go_through_the_runtime_s_helpers() {
+        let bytes = units(&[
+            0x1023, 0x0007, 0x0021, 0x0044, 0x0100, 0x004b, 0x0100, 0x0060, 0x0002, 0x0067,
+            0x0002, 0x001f, 0x0003, 0x0027, 0x000e,
+        ]);
+        let compiled = compile(&code(&bytes)).unwrap();
+        for entry in [
+            helper::NEW_ARRAY,
+            helper::ARRAY_LENGTH,
+            helper::ARRAY_GET,
+            helper::ARRAY_PUT,
+            helper::STATIC_GET,
+            helper::STATIC_PUT,
+            helper::CHECK_CAST,
+            helper::THROW,
+        ] {
+            let target = ((entry * 8) as u32).to_le_bytes();
+            let call = [[0x41, 0xff, 0x94, 0x24].as_slice(), &target].concat();
+            assert!(contains(&compiled.code, &call), "helper {entry}");
+        }
     }
 
     #[test]
@@ -526,11 +746,11 @@ mod tests {
     }
 
     #[test]
-    fn what_needs_exceptions_or_arrays_is_refused_with_its_place() {
-        let throw = units(&[0x000e, 0x0027]);
+    fn floating_point_is_refused_with_its_place() {
+        let add_float = units(&[0x000e, 0x00a6, 0x0000]);
         assert_eq!(
-            compile(&code(&throw)),
-            Err(CompileError::Unsupported { opcode: 0x27, at: 1 })
+            compile(&code(&add_float)),
+            Err(CompileError::Unsupported { opcode: 0xa6, at: 1 })
         );
         let stray = units(&[0x0228, 0x000e]);
         assert_eq!(compile(&code(&stray)), Err(CompileError::BadBranch { at: 0 }));

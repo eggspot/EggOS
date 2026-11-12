@@ -3,11 +3,14 @@
 //! per method of the app's DEX file: compiled code, a framework native, or the missing-method
 //! stop), the launcher activity created and its `<init>` and `onCreate` called through the
 //! table, and the text view it set shown in a window. Objects are boxes the layer keeps for
-//! the app's life; the app runs on this one thread.
+//! the app's life; the app runs on this one thread. Virtual calls are dispatched on the
+//! receiver's class, each class's static initializer runs on its first static field or new
+//! object, arrays are objects with elements, and an uncaught `throw` stops the app with the
+//! exception's class (D499).
 
 use crate::framework::{self, ACTIVITY_CLASSES, Native, Object, STRING_CLASS, Target};
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -42,6 +45,11 @@ const PADDING: i32 = 16;
 struct State {
     dex: Dex<'static>,
     content: Option<u64>,
+    base: usize,
+    compiled: BTreeMap<u32, usize>,
+    statics: BTreeMap<u32, u64>,
+    initialized: BTreeSet<String>,
+    dispatch: BTreeMap<(String, u32), usize>,
 }
 
 static STATE: AtomicPtr<State> = AtomicPtr::new(core::ptr::null_mut());
@@ -155,9 +163,10 @@ extern "sysv64" fn string(words: *const u64, _: *const usize) -> u64 {
     })
 }
 
-extern "sysv64" fn new_instance(words: *const u64, _: *const usize) -> u64 {
+extern "sysv64" fn new_instance(words: *const u64, table: *const usize) -> u64 {
     let [index] = arguments::<1>(words);
     let class = state().dex.type_name(index as u32).unwrap_or_default();
+    initialize(&class, table);
     new_object(Object {
         class,
         ..Object::default()
@@ -210,6 +219,171 @@ extern "sysv64" fn remainder_long(words: *const u64, _: *const usize) -> u64 {
     (left as i64).wrapping_rem(divisor_of(right) as i64) as u64
 }
 
+fn entry_at(address: usize) -> Entry {
+    // SAFETY: every address the layer calls is a compiled method in the executable block or
+    // one of the layer's `extern "sysv64"` functions, all of type `Entry`.
+    unsafe { core::mem::transmute::<usize, Entry>(address) }
+}
+
+fn target_address(target: Target) -> usize {
+    match target {
+        Target::Compiled(offset) => state().base + offset,
+        Target::Native(native) => native_entry(native) as usize,
+        Target::Missing => missing_method as usize,
+    }
+}
+
+fn initialize(class: &str, table: *const usize) {
+    let address = {
+        let state = state();
+        if !state.initialized.insert(String::from(class)) {
+            return;
+        }
+        let Some(index) = state.dex.class_index(class) else {
+            return;
+        };
+        let initializer = method_named(&state.dex, index, "<clinit>");
+        match initializer.and_then(|method| state.compiled.get(&method)) {
+            Some(&offset) => state.base + offset,
+            None => return,
+        }
+    };
+    let no_arguments = [0u64; 1];
+    entry_at(address)(no_arguments.as_ptr(), table);
+}
+
+extern "sysv64" fn invoke_virtual(words: *const u64, table: *const usize) -> u64 {
+    let [method, receiver] = arguments::<2>(words);
+    let Some(class) = object(receiver).map(|receiver| receiver.class.clone()) else {
+        stop(&[b"android: NullPointerException calling a method"]);
+    };
+    let key = (class, method as u32);
+    let cached = state().dispatch.get(&key).copied();
+    let address = match cached {
+        Some(address) => address,
+        None => {
+            let target = {
+                let state = state();
+                framework::resolve_virtual(&state.dex, &key.0, method as u32, &state.compiled)
+            };
+            let address = target_address(target);
+            state().dispatch.insert(key, address);
+            address
+        }
+    };
+    entry_at(address)(words.wrapping_add(1), table)
+}
+
+fn static_field_class(field: u64, table: *const usize) {
+    if let Some(class) = state().dex.field_class(field as u32) {
+        initialize(&class, table);
+    }
+}
+
+extern "sysv64" fn static_get(words: *const u64, table: *const usize) -> u64 {
+    let [field] = arguments::<1>(words);
+    static_field_class(field, table);
+    state().statics.get(&(field as u32)).copied().unwrap_or(0)
+}
+
+extern "sysv64" fn static_put(words: *const u64, table: *const usize) -> u64 {
+    let [field, value] = arguments::<2>(words);
+    static_field_class(field, table);
+    state().statics.insert(field as u32, value);
+    0
+}
+
+const LARGEST_ARRAY: usize = 1 << 24;
+
+extern "sysv64" fn new_array(words: *const u64, _: *const usize) -> u64 {
+    let [length, index] = arguments::<2>(words);
+    let length = length as u32 as i32;
+    if length < 0 {
+        stop(&[b"android: NegativeArraySizeException"]);
+    }
+    if length as usize > LARGEST_ARRAY {
+        stop(&[b"android: OutOfMemoryError: array too large"]);
+    }
+    let class = state().dex.type_name(index as u32).unwrap_or_default();
+    new_object(Object {
+        class,
+        elements: Some(vec![0; length as usize]),
+        ..Object::default()
+    })
+}
+
+fn elements_of(array: u64) -> &'static mut Object {
+    match object(array) {
+        Some(array) if array.elements.is_some() => array,
+        Some(_) => stop(&[b"android: ClassCastException: not an array"]),
+        None => stop(&[b"android: NullPointerException using an array"]),
+    }
+}
+
+fn element_index(array: &Object, index: u64) -> usize {
+    let length = array.elements.as_ref().map_or(0, Vec::len);
+    match usize::try_from(index as u32 as i32) {
+        Ok(index) if index < length => index,
+        _ => stop(&[b"android: ArrayIndexOutOfBoundsException"]),
+    }
+}
+
+extern "sysv64" fn array_length(words: *const u64, _: *const usize) -> u64 {
+    let [array] = arguments::<1>(words);
+    elements_of(array).elements.as_ref().map_or(0, Vec::len) as u64
+}
+
+extern "sysv64" fn array_get(words: *const u64, _: *const usize) -> u64 {
+    let [array, index] = arguments::<2>(words);
+    let array = elements_of(array);
+    let index = element_index(array, index);
+    array.elements.as_ref().map_or(0, |elements| elements[index])
+}
+
+extern "sysv64" fn array_put(words: *const u64, _: *const usize) -> u64 {
+    let [array, index, value] = arguments::<3>(words);
+    let array = elements_of(array);
+    let index = element_index(array, index);
+    let value = framework::array_element(&array.class, value);
+    if let Some(elements) = array.elements.as_mut() {
+        elements[index] = value;
+    }
+    0
+}
+
+extern "sysv64" fn throw(words: *const u64, _: *const usize) -> u64 {
+    let [exception] = arguments::<1>(words);
+    let Some(exception) = object(exception) else {
+        stop(&[b"android: NullPointerException thrown"]);
+    };
+    stop(&[b"android: uncaught ", exception.class.as_bytes()])
+}
+
+fn class_of(index: u64) -> String {
+    state().dex.type_name(index as u32).unwrap_or_default()
+}
+
+extern "sysv64" fn check_cast(words: *const u64, _: *const usize) -> u64 {
+    let [value, index] = arguments::<2>(words);
+    if let Some(value) = object(value) {
+        let wanted = class_of(index);
+        if framework::is_instance(&state().dex, &value.class, &wanted) == Some(false) {
+            let class = value.class.as_bytes();
+            stop(&[b"android: ClassCastException: ", class, b" is no ", wanted.as_bytes()]);
+        }
+    }
+    0
+}
+
+extern "sysv64" fn instance_of(words: *const u64, _: *const usize) -> u64 {
+    let [value, index] = arguments::<2>(words);
+    let Some(value) = object(value) else {
+        return 0;
+    };
+    let wanted = class_of(index);
+    u64::from(framework::is_instance(&state().dex, &value.class, &wanted) == Some(true))
+}
+
 extern "sysv64" fn missing_method(_: *const u64, _: *const usize) -> u64 {
     stop(&[b"android: the app called a method the Android layer does not provide yet"])
 }
@@ -260,6 +434,16 @@ fn helpers() -> [Entry; helper::COUNT] {
     entries[helper::REMAINDER_INT] = remainder_int;
     entries[helper::DIVIDE_LONG] = divide_long;
     entries[helper::REMAINDER_LONG] = remainder_long;
+    entries[helper::INVOKE_VIRTUAL] = invoke_virtual;
+    entries[helper::STATIC_GET] = static_get;
+    entries[helper::STATIC_PUT] = static_put;
+    entries[helper::NEW_ARRAY] = new_array;
+    entries[helper::ARRAY_LENGTH] = array_length;
+    entries[helper::ARRAY_GET] = array_get;
+    entries[helper::ARRAY_PUT] = array_put;
+    entries[helper::THROW] = throw;
+    entries[helper::CHECK_CAST] = check_cast;
+    entries[helper::INSTANCE_OF] = instance_of;
     entries
 }
 
@@ -296,11 +480,7 @@ fn method_named(dex: &Dex<'_>, class: u32, name: &str) -> Option<u32> {
 }
 
 fn call(table: &[usize], method: u32, words: &[u64]) -> u64 {
-    let address = table[method_entry(method)];
-    // SAFETY: every table entry is a compiled method in the executable block or one of the
-    // layer's `extern "sysv64"` functions, all of type `Entry`.
-    let entry: Entry = unsafe { core::mem::transmute::<usize, Entry>(address) };
-    entry(words.as_ptr(), table.as_ptr())
+    entry_at(table[method_entry(method)])(words.as_ptr(), table.as_ptr())
 }
 
 struct ContentWindow {
@@ -359,15 +539,21 @@ pub fn run(startup: &Startup) -> i32 {
     let Some(base) = executable(&code) else {
         stop(&[b"android: no executable memory for the app's code"]);
     };
+    let targets: Vec<Target> = (0..dex.method_count())
+        .map(|method| framework::resolve(&dex, method, &compiled))
+        .collect();
+    let state = State {
+        dex,
+        content: None,
+        base,
+        compiled,
+        statics: BTreeMap::new(),
+        initialized: BTreeSet::new(),
+        dispatch: BTreeMap::new(),
+    };
+    STATE.store(Box::leak(Box::new(state)), Ordering::Release);
     let mut table: Vec<usize> = helpers().iter().map(|&entry| entry as usize).collect();
-    for method in 0..dex.method_count() {
-        table.push(match framework::resolve(&dex, method, &compiled) {
-            Target::Compiled(offset) => base + offset,
-            Target::Native(native) => native_entry(native) as usize,
-            Target::Missing => missing_method as usize,
-        });
-    }
-    STATE.store(Box::leak(Box::new(State { dex, content: None })), Ordering::Release);
+    table.extend(targets.into_iter().map(target_address));
     let Some(class) = dex.class_index(&activity) else {
         stop(&[b"android: the app does not define its activity ", activity.as_bytes()]);
     };
@@ -376,6 +562,7 @@ pub fn run(startup: &Startup) -> i32 {
     {
         stop(&[b"android: ", activity.as_bytes(), b" is not an activity"]);
     }
+    initialize(&activity, table.as_ptr());
     let this = new_object(Object {
         class: activity.clone(),
         ..Object::default()

@@ -24665,3 +24665,33 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Type-C ports (their PHY ownership, lane assignment, the MG and Dekel PHYs and
   their PLLs), HDMI on display 11 and later, and display 14 (Meteor Lake's C10 and C20 PHYs);
   the firmware-lit screen on any of them is still taken (D268).
+
+## D499 The Android layer, part 2: virtual dispatch, statics, arrays, switches and `throw` (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The DEX compiler and the layer's runtime cover what ordinary app code uses
+  beyond D472's slice:
+  - **Virtual and interface calls** go through a dispatch helper: the call writes the method's
+    index first and its own words after it; the helper takes the receiver's class, finds the
+    first class up its superclasses that the framework implements the method for or that
+    defines a compiled method of the same name and prototype (`Dex::method_prototype`; a file
+    keeps each prototype once, so equal indexes are equal signatures), caches the answer per
+    class and method, and calls it with the call's words. Direct, super and static calls stay
+    direct.
+  - **Static fields** are kept per field, and a class's `<clinit>` runs on its first static
+    field access or new object (`Dex::field_class`), and for the launcher activity before it
+    is created. Static calls do not trigger it yet.
+  - **Arrays** are objects with elements: `new-array` (negative sizes stop with
+    `NegativeArraySizeException`), `array-length`, `aget`/`aput` with Java's bounds check and
+    each element narrowed to its type (`char` and `boolean` unsigned), and `fill-array-data`
+    compiled into stores of its payload (at most 4096 elements).
+  - **Switches**: `packed-switch` and `sparse-switch` become compare-and-jump runs read from
+    their payloads at compile time. `cmp-long` compiles inline.
+  - **Casts**: `check-cast` and `instance-of` follow the DEX file's superclasses; a class whose
+    ancestry leaves the file (framework classes, interfaces) passes `check-cast` and is no
+    instance, until the framework's class tree and interfaces are known.
+  - **Exceptions**: `throw` stops the app naming the exception's class, as an uncaught
+    exception ends an app; `move-exception` compiles (its handler is never reached yet) and
+    `monitor-enter`/`monitor-exit` do nothing on the app's single thread.
+- **Not yet.** Catching exceptions (`try` blocks and the unwinding through compiled frames),
+  floating point, `filled-new-array`, method handles, interfaces in casts, garbage collection,
+  and the framework's views, layouts and resources (D500 on).
