@@ -110,6 +110,42 @@ struct IntelDisplay {
     posted_rects: usize,
 }
 
+static FOUND_DEVICE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+const FIRMWARE_FOLDER: &str = "/usr/lib/firmware/i915";
+const LARGEST_FIRMWARE: u64 = 1 << 20;
+const FIRMWARE_RETRY: core::time::Duration = core::time::Duration::from_secs(10);
+
+fn read_firmware(path: &str) -> Option<Vec<u8>> {
+    let root = crate::vfs::root();
+    let node = crate::vfs::resolve(root, root, path.as_bytes()).ok()?;
+    let size = node.attributes().size;
+    if node.kind() != crate::vfs::NodeKind::Regular || size > LARGEST_FIRMWARE {
+        return None;
+    }
+    let bytes = crate::linux::exec::ProgramBytes::read(node, size, size).ok()?;
+    Some(bytes.bytes().to_vec())
+}
+
+/// Starts the thread that loads the display microcontroller's firmware once the
+/// `display-firmware` component's file is there (D444); whether a display needs one.
+pub fn start_firmware<P: eggos_hal::Platform>() -> bool {
+    let device = FOUND_DEVICE.load(core::sync::atomic::Ordering::Acquire) as u16;
+    let Some(file) = eggos_drivers::gpu::intel_dmc::file_for(device) else {
+        return false;
+    };
+    let path = alloc::format!("{FIRMWARE_FOLDER}/{file}");
+    crate::thread::spawn::<P, _>(move || {
+        let bytes = loop {
+            if let Some(bytes) = read_firmware(&path) {
+                break bytes;
+            }
+            crate::thread::sleep::<P>(FIRMWARE_RETRY);
+        };
+        let _ = crate::display::load_firmware(&bytes);
+    })
+    .is_ok()
+}
+
 static VBLANK_EVENTS: DeviceEvents = DeviceEvents::new();
 
 // SAFETY: the registers and buffers belong to this scanout alone once installed, and the
@@ -205,6 +241,12 @@ impl Scanout for IntelDisplay {
     }
 
     fn abandon_flush(&mut self) {}
+
+    fn load_firmware(&mut self, bytes: &[u8]) -> Result<(), &'static str> {
+        let dmc = eggos_drivers::gpu::intel_dmc::parse(bytes, 0, 0).ok_or("not display firmware for this device")?;
+        self.engine.load_dmc(&dmc);
+        Ok(())
+    }
 
     fn draws_pointer(&self) -> bool {
         true
@@ -313,6 +355,7 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
         events: None,
         posted_rects: 0,
     };
+    FOUND_DEVICE.store(u32::from(function.device_id), core::sync::atomic::Ordering::Release);
     let mut scanout = scanout;
     if super::message_interrupts::connect(probe, id, &VBLANK_EVENTS).is_ok() {
         scanout.engine.interrupt_on_vblank(function.device_id);

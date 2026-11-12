@@ -23742,3 +23742,19 @@ the license, by an explicit instruction recorded here.
 - **Known gaps (to check on hardware).** The pipe interrupt registers' offsets and the
   display-11 master bit are from Intel's public programming references, unverified here;
   the device ids that mark display 11 and later are a short list.
+
+## D444 Intel's display microcontroller firmware is loaded (M13, D268's and D265's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `gpu::intel_dmc::parse` reads a DMC file as Intel publishes them: the CSS header,
+  the package header and its entries (one per stepping, or `*` for any), then the chosen
+  firmware's header (its signature, version, program length and register writes; version 1
+  loads at the program memory's start, later versions say where), host-tested on a built
+  file. `DisplayEngine::load_dmc` writes the program word by word and then the writes that
+  start it. Once the file systems are mounted a kernel thread waits for the device's file
+  from the `display-firmware` component (`/usr/lib/firmware/i915`, the D265 component, which
+  the store downloads on request: Tiger Lake, Alder Lake S and P, Raptor Lake P, Meteor Lake)
+  and hands it to the display (`display::load_firmware`, a new `Scanout` method).
+- **Known gaps (to check on hardware).** The header fields' offsets past version 1, the
+  stepping (any is asked, as the kernel does not read the device's stepping yet), and the
+  power wells and the DC-state enables that let the firmware save power, which come with mode
+  setting.

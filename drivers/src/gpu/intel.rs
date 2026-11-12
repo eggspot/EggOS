@@ -223,6 +223,18 @@ impl<R: RegisterIo> DisplayEngine<R> {
         self.regs.write32(MASTER_INTERRUPT, master | MASTER_ENABLE);
     }
 
+    /// Loads the display microcontroller's firmware (D444): its program into the DMC's program
+    /// memory, word by word, then the register writes that start it.
+    pub fn load_dmc(&self, dmc: &super::intel_dmc::Dmc<'_>) {
+        for (index, word) in dmc.program.chunks_exact(4).enumerate() {
+            let value = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+            self.regs.write32(dmc.program_base as usize + 4 * index, value);
+        }
+        for &(register, value) in &dmc.writes[..dmc.count] {
+            self.regs.write32(register as usize, value);
+        }
+    }
+
     /// Shows the surface at global-GTT address `surface`, rows `stride_bytes` long, from the next
     /// vertical blank.
     pub fn flip(&self, surface: u32, stride_bytes: u32) {

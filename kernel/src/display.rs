@@ -124,6 +124,10 @@ pub trait Scanout: Send {
     }
     /// Gives up on a started flush the device never answered.
     fn abandon_flush(&mut self) {}
+    /// Hands the device firmware it runs on its own (Intel's DMC, D444). Not taken by default.
+    fn load_firmware(&mut self, _bytes: &[u8]) -> Result<(), &'static str> {
+        Err("this display takes no firmware")
+    }
     /// The device's 3D commands, when it takes them (D415).
     fn renderer(&mut self) -> Option<&mut dyn crate::rendering::Renderer> {
         None
@@ -840,6 +844,13 @@ pub fn with_renderer<P: Platform, R>(
         .renderer()
         .ok_or("the display's device takes no 3D commands")?;
     Ok(work(renderer, &mut deadline))
+}
+
+/// Hands the display's device `bytes` of its firmware (D444).
+pub fn load_firmware(bytes: &[u8]) -> Result<(), &'static str> {
+    let mut display = DISPLAY.lock();
+    let display = display.as_mut().ok_or("no display")?;
+    display.scanout.load_firmware(bytes)
 }
 
 /// Waits until a posted 3D command is answered (D438), with the display's lock let go while

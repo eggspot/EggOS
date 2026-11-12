@@ -278,6 +278,12 @@ pub fn wifi_status() -> alloc::string::String {
     return alloc::string::String::from("no Wi-Fi driver in this kernel");
 }
 
+/// Starts loading the Intel display's firmware once the file systems are mounted (D444).
+pub fn start_display_firmware<P: eggos_hal::Platform>() {
+    #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
+    let _ = intel_display::start_firmware::<P>();
+}
+
 /// Starts bringing the Wi-Fi adapter up once the file systems are mounted (D274).
 pub fn start_wifi<P: eggos_hal::Platform>() {
     #[cfg(any(test, feature = "intel-wifi"))]
