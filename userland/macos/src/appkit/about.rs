@@ -1,9 +1,10 @@
 //! The standard About panel (`docs/ux/macos-gui-v0.3.md` section 8, D175):
 //! `orderFrontStandardAboutPanel:` and `orderFrontStandardAboutPanelWithOptions:` show the
 //! layer's own fixed-size window, drawn by `eggos_macos_gui::about`, with the app's icon, name,
-//! version and copyright from its `Info.plist` and the options. It is not one of the app's
-//! windows: it carries the main menu, Esc and the close control destroy it, and choosing About
-//! again makes it anew where it was. Agents read it as an element tree.
+//! version and copyright from its `Info.plist` and the options. It carries the main menu, Esc
+//! and the close control destroy it, and choosing About again makes it anew where it was; in
+//! `[NSApp windows]` an NSPanel stands for it (`panel.rs`, D407). Agents read it as an element
+//! tree.
 
 use super::{application, event, image, menu, responds, server, store, with_text};
 use crate::foundation::{self, LONGEST_PATH};
@@ -383,6 +384,16 @@ pub fn show(options: Id) {
         panel.buffer = Some(buffer);
         panel.paint();
     });
+}
+
+/// The panel's window title, `About <app>`.
+pub fn title() -> Text<NAME_BYTES> {
+    PANEL.with(|panel| title_of(panel.name.as_str()))
+}
+
+/// The panel's content size in points.
+pub fn size() -> (i32, i32) {
+    (WIDTH, PANEL.with(|panel| panel.height()))
 }
 
 /// Destroys the panel, if it is shown.

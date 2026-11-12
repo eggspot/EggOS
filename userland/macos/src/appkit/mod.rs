@@ -27,6 +27,7 @@ mod image;
 mod menu;
 mod nib;
 mod open_panel;
+mod panel;
 mod pasteboard;
 mod screen;
 mod scroll_view;
@@ -92,6 +93,8 @@ class_pairs! {
     NSVIEWCONTROLLER, NSVIEWCONTROLLER_META;
     NSWINDOWCONTROLLER, NSWINDOWCONTROLLER_META;
     NSSTORYBOARD, NSSTORYBOARD_META;
+    NSPANEL, NSPANEL_META;
+    NSABOUTPANEL, NSABOUTPANEL_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -215,6 +218,7 @@ pub fn set_up() -> bool {
             && open_panel::define(runtime)
             && controllers::define(runtime)
             && storyboard::define(runtime)
+            && panel::define(runtime)
     });
     defined && drawing::set_up()
 }
@@ -227,6 +231,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSViewController" => class(&NSVIEWCONTROLLER_META),
         b"_OBJC_CLASS_$_NSWindowController" => class(&NSWINDOWCONTROLLER),
         b"_OBJC_METACLASS_$_NSWindowController" => class(&NSWINDOWCONTROLLER_META),
+        b"_OBJC_CLASS_$_NSPanel" => class(&NSPANEL),
+        b"_OBJC_METACLASS_$_NSPanel" => class(&NSPANEL_META),
         b"_OBJC_CLASS_$_NSStoryboard" => class(&NSSTORYBOARD),
         b"_OBJC_METACLASS_$_NSStoryboard" => class(&NSSTORYBOARD_META),
         b"_OBJC_CLASS_$_NSResponder" => class(&NSRESPONDER),

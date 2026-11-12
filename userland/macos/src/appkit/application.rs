@@ -504,6 +504,9 @@ extern "C" fn windows(_: Id, _: Sel) -> Id {
         snapshot.push(window);
         index += 1;
     }
+    if let Some(panel) = super::panel::about_stand_in() {
+        snapshot.push(panel);
+    }
     let array = send2(
         class_pointer(&NSARRAY).cast(),
         sel!("arrayWithObjects:count:"),

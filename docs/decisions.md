@@ -23101,3 +23101,22 @@ the license, by an explicit instruction recorded here.
   sheet and popover segues), split and tab view controllers, child view controllers and
   their appearance calls, `NSStoryboard`'s creator blocks, and documents
   (`NSDocument`'s window controllers).
+
+## D407 NSPanel, the About panel in `[NSApp windows]`, and mac-views' renders with the first build pass (batch part 15's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: Apple's `NSPanel` and `NSApplication.windows` documentation; D397's rule for checks that need a built system)
+
+- **Question.** D233 and D375 left the About panel outside the app's window list, so an app
+  that walks `[NSApp windows]` (to close everything, or to find the panel) did not see it,
+  and AppKit had no `NSPanel`. D379 left `mac-views.app`'s host renders and QEMU steps.
+- **Decision.** `NSPanel` joins AppKit as an NSWindow subclass with its floating,
+  key-only-if-needed and works-when-modal flags (`appkit/panel.rs`). While the About panel
+  shows, `[NSApp windows]` ends with one NSPanel of a private subclass that stands for it:
+  its title (`About <app>`), visibility, frame (the panel's content size), window number
+  (the panel's server window), and `close`, `performClose:`, `orderOut:`,
+  `makeKeyAndOrderFront:` and `orderFront:` acting on the panel. The panel stays the
+  layer's own drawing (D175); the stand-in only answers for it.
+- **mac-views.** Section 18.2's host renders exist to be compared with section 18.3's QEMU
+  screendumps at every step, and both need the layer built and the app built on CI's macOS
+  runner; they join the first build-and-test pass with the other QEMU-only checks (D397).
+- **Not yet.** Utility-panel styles (`NSWindowStyleMaskUtilityWindow`, HUD), floating
+  panels staying above the app's other windows (a window-server level), and the stand-in's
+  `delegate`.
