@@ -441,12 +441,19 @@ pub mod generic {
     /// for a larger `sigset_t`), then `uc_mcontext`, 16-byte aligned. The assertions hold
     /// Linux's offsets from the frame, written out: what programs read.
     pub mod signal_frame {
-        use crate::linux::signal_frame::INFO_SIZE;
+        use crate::linux::signal_frame::{INFO_SIZE, STACK_SIZE, ucontext};
 
         pub const UCONTEXT: usize = INFO_SIZE;
-        pub const SIGMASK: usize = UCONTEXT + 40;
-        pub const MCONTEXT: usize = UCONTEXT + 176;
-        const _: () = assert!(UCONTEXT == 128 && SIGMASK == 168 && MCONTEXT == 304);
+        pub const SIGMASK: usize = UCONTEXT + ucontext::STACK + STACK_SIZE;
+        pub const MCONTEXT: usize = UCONTEXT + (SIGMASK - UCONTEXT + 128).next_multiple_of(16);
+        const _: () = assert!(
+            super::super::WORD_BYTES != 8
+                || UCONTEXT == 128 && SIGMASK == 168 && MCONTEXT == 304
+        );
+        const _: () = assert!(
+            super::super::WORD_BYTES != 4
+                || UCONTEXT == 128 && SIGMASK == 148 && MCONTEXT == 288
+        );
     }
 }
 

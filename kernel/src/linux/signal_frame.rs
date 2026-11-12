@@ -190,9 +190,9 @@ pub fn put(bytes: &mut [u8], offset: usize, value: u64) {
 }
 
 /// The `ucontext_t` fields every architecture puts first: `uc_flags` at 0 (only x86_64 sets
-/// any), `uc_link` (null) and `uc_stack`.
+/// any), `uc_link` (null) and `uc_stack`, the first two a word each (D490).
 pub mod ucontext {
-    pub const STACK: usize = 16;
+    pub const STACK: usize = 2 * crate::linux::abi::WORD_BYTES;
 }
 
 #[cfg(test)]

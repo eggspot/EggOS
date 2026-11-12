@@ -86,9 +86,16 @@ pub mod signal_frame {
     use eggos_hal::fp::FpState;
     use eggos_hal::user::UserRegisters;
 
-    /// The whole frame: the `ucontext_t` is 960 bytes.
-    pub const SIZE: u64 = (UCONTEXT + 960) as u64;
-    const _: () = assert!(SIZE == 1088);
+    const W: usize = crate::linux::abi::WORD_BYTES;
+    /// `sc_regs`: the PC, then `x1` to `x31`, a word each.
+    const REGISTERS_SIZE: usize = 32 * W;
+    /// `sc_fpregs`, the union of the F, D and Q states: the Q state's 528 bytes.
+    const FP_UNION_SIZE: usize = 528;
+
+    /// The whole frame: the `ucontext_t` is 960 bytes on RV64, 816 on RV32 (D490).
+    pub const SIZE: u64 = (MCONTEXT + REGISTERS_SIZE + FP_UNION_SIZE) as u64;
+    const _: () = assert!(W != 8 || SIZE == 1088);
+    const _: () = assert!(W != 4 || SIZE == 944);
     /// What the kernel writes and reads: all of it.
     pub const WRITTEN: usize = SIZE as usize;
     pub const READ: usize = WRITTEN;
@@ -97,12 +104,12 @@ pub mod signal_frame {
     /// The extensions' header at the end of `sc_fpregs`: a reserved word, then the first
     /// extension's magic number and size, 0 for none.
     pub const EXTENSIONS: usize = WRITTEN - 12;
-    const _: () = assert!(EXTENSIONS == 1076);
+    const _: () = assert!(W != 8 || EXTENSIONS == 1076);
     /// `struct __riscv_d_ext_state`: `f0` to `f31` (64 bits each), then `fcsr` (32 bits).
     pub type FpPart = [u8; 260];
-    pub const FP_PART: usize = MCONTEXT + 256;
+    pub const FP_PART: usize = MCONTEXT + REGISTERS_SIZE;
     pub const FCSR: usize = 256;
-    const _: () = assert!(FP_PART == 560);
+    const _: () = assert!(W != 8 || FP_PART == 560);
 
     pub const HANDLER_STARTS_WITH_INITIAL_FP: bool = false;
 
@@ -141,9 +148,10 @@ pub mod signal_frame {
         frame[..INFO_SIZE].copy_from_slice(info);
         frame[UCONTEXT + ucontext::STACK..][..STACK_SIZE].copy_from_slice(&saved.alternate_stack);
         put(&mut frame, SIGMASK, saved.blocked);
-        put(&mut frame, MCONTEXT, saved.registers.pc);
+        let put_word = crate::linux::abi::put_word;
+        put_word(&mut frame[MCONTEXT..], saved.registers.pc);
         for index in 1..32 {
-            put(&mut frame, MCONTEXT + index * 8, saved.registers.x[index]);
+            put_word(&mut frame[MCONTEXT + index * W..], saved.registers.x[index]);
         }
         frame[FP_PART..][..saved.fp.len()].copy_from_slice(&saved.fp);
         (place(top), frame)
@@ -187,15 +195,13 @@ pub mod signal_frame {
         if frame[EXTENSIONS..] != [0; 12] {
             return None;
         }
+        let register = |index: usize| crate::linux::abi::word(&frame[MCONTEXT + index * W..]);
         let mut x = [0; 32];
         for (index, value) in x.iter_mut().enumerate().skip(1) {
-            *value = word(frame, MCONTEXT + index * 8);
+            *value = register(index);
         }
         Some(Saved {
-            registers: UserRegisters {
-                pc: word(frame, MCONTEXT),
-                x,
-            },
+            registers: UserRegisters { pc: register(0), x },
             blocked: word(frame, SIGMASK),
             alternate_stack: frame[UCONTEXT + ucontext::STACK..][..STACK_SIZE]
                 .try_into()

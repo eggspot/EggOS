@@ -24487,3 +24487,14 @@ the license, by an explicit instruction recorded here.
   from it (whose own layout is the same on every architecture) all use them. `siginfo_t` stays
   128 bytes on both. The boot self-test that queues signals from kernel code keeps its 64-bit
   layout: the 32-bit test programs do not run it yet (D481).
+
+## D490 The Linux layer's word size, part 6: RV32's signal frame (M9, the 32-bit audit; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The shared `ucontext_t` start follows the word size: `uc_flags` and `uc_link`
+  a word each, then `stack_t` (D487), then the 64-bit mask, then the 128-byte `sigset_t` room,
+  `uc_mcontext` 16-byte aligned after it: 304 bytes into the frame on 64-bit programs as before,
+  288 on 32-bit ones. RISC-V's frame takes `sc_regs` as 32 words and `sc_fpregs` (the 528-byte
+  union whose D state RV32 shares with RV64: `f0` to `f31` are 64-bit on both) right after
+  them, so RV32's frame is 944 bytes and RV64's stays 1088. RV32 thus uses RV64's frame code
+  as written, through D484's shared module. 32-bit Arm's frame (`sigcontext` of 21 words and
+  the VFP record in `uc_regspace`) comes with its ABI file (D492).
