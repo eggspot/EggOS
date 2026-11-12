@@ -1207,7 +1207,7 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 |-------|--------|
 | Server, desktop, laptop (QEMU first) | **done** on QEMU: the desktop (M11); real PCs and laptops: code written, unbuilt (M13); the server edition: code written, unbuilt (M16) |
 | Phone, tablet | code written, unbuilt (M12: the phone and tablet forms, D303 to D308) |
-| Embedded | planned |
+| Embedded | code written, unbuilt: headless with only the CLI and MCP (D23), with no screen (D144), as the base-only `server` edition (M16, D258); 32-bit Arm and RV32 CPUs (M9, D474 to D495); device-tree boards and their firmware-lit screens (D110, D542) |
 
 ### Drivers
 | Driver | Status |
