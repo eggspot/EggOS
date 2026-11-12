@@ -48,6 +48,7 @@ const CLASS_RADIOS: (i32, i32) = (242, 206);
 const LASTS_LINE_TOP: i32 = 282;
 const LASTS_RADIOS: (i32, i32, i32) = (158, 276, 290);
 const CONTROL_HEIGHT: i32 = 28;
+const TOUCH_CONTROL: i32 = 48;
 const PANEL: (i32, i32, i32, i32) = (32, 108, 400, 132);
 const PANEL_LINES: [i32; 2] = [16, 36];
 const PANEL_LINE_WIDTH: i32 = 368;
@@ -399,6 +400,65 @@ fn save_error_text(error: SaveError) -> String {
 }
 
 impl AgentsPane {
+    /// Moves the Grants view to one column `content` wide on a narrow page (settings-forms-v0.5.md
+    /// 2: R5, R3, R4 and R7 one per line), or back to the desktop's; returns the narrow pane's
+    /// height.
+    pub fn reflow(&self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) -> i32 {
+        let w = self.widgets;
+        let line_place = |x: i32, y: i32, width: i32| Place::at(x, y, Length::Px(width), Length::Content);
+        let Some(c) = content else {
+            tree.set_place(w.list, at(AGENT_LIST.0, AGENT_LIST.1, AGENT_LIST.2, AGENT_LIST.3));
+            tree.set_row_height(w.list, AGENT_ROW);
+            for (row, id) in w.rows.iter().enumerate() {
+                let y = ROW_LABEL_TOP + row as i32 * AGENT_ROW;
+                tree.set_place(*id, line_place(ROW_LABEL_X, y, ROW_LABEL_WIDTH));
+            }
+            tree.set_place(w.id_field, at(ID_FIELD.0, ID_FIELD.1, ID_FIELD.2, ID_FIELD.3));
+            for (id, (x, y)) in [(w.add, ADD_AT), (w.revoke_all, REVOKE_ALL_AT), (w.forget, FORGET_AT)] {
+                tree.set_place(id, at(x, y, BUTTON_SIZE.0, BUTTON_SIZE.1));
+            }
+            for index in 0..4 {
+                let offset = index as i32 * CLASS_PITCH;
+                tree.set_place(
+                    w.class_lines[index],
+                    line_place(PADDING, CLASS_LINE_TOP + offset, CLASS_LINE_WIDTH),
+                );
+                tree.set_place(
+                    w.class_radios[index],
+                    at(CLASS_RADIOS.0, CLASS_RADIOS_TOP + offset, CLASS_RADIOS.1, CONTROL_HEIGHT),
+                );
+            }
+            tree.set_place(w.lasts_line, line_place(PADDING, LASTS_LINE_TOP, CLASS_LINE_WIDTH));
+            tree.set_place(
+                w.lasts,
+                at(LASTS_RADIOS.0, LASTS_RADIOS.1, LASTS_RADIOS.2, CONTROL_HEIGHT),
+            );
+            tree.set_place(w.status, line_place(PADDING, STATUS_LINE, LINE_WIDTH));
+            return 0;
+        };
+        let row = TOUCH_CONTROL;
+        tree.set_place(w.list, at(PADDING, 64, c, VISIBLE_ROWS as i32 * row));
+        tree.set_row_height(w.list, row);
+        for (index, id) in w.rows.iter().enumerate() {
+            let y = 64 + (row - 16) / 2 + index as i32 * row;
+            tree.set_place(*id, line_place(ROW_LABEL_X, y, c - (ROW_LABEL_X - PADDING) - 8));
+        }
+        tree.set_place(w.id_field, at(PADDING, 224, c, row));
+        tree.set_place(w.add, at(PADDING, 280, c, row));
+        let half = (c - 8) / 2;
+        tree.set_place(w.revoke_all, at(PADDING, 336, half, row));
+        tree.set_place(w.forget, at(PADDING + half + 8, 336, half, row));
+        for index in 0..4 {
+            let y = 400 + 80 * index as i32;
+            tree.set_place(w.class_lines[index], line_place(PADDING, y, c));
+            tree.set_place(w.class_radios[index], at(PADDING, y + 24, CLASS_RADIOS.1, row));
+        }
+        tree.set_place(w.lasts_line, line_place(PADDING, 720, c));
+        tree.set_place(w.lasts, at(PADDING, 744, LASTS_RADIOS.2, row));
+        tree.set_place(w.status, line_place(PADDING, 808, c));
+        840
+    }
+
     /// Builds the pane in `pane`, a container of the window's; `default_button` is the window's
     /// default button, given back when the confirmation panel closes.
     pub fn build(

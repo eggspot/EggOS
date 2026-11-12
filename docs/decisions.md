@@ -23543,3 +23543,13 @@ the license, by an explicit instruction recorded here.
   is 532 tall; the desktop shape puts every place back.
 - **Not yet.** The format and install panels as bottom sheets (R10): on a narrow page they keep
   their desktop places inside the pane.
+
+## D430 The Agents pane's Grants view in one column on narrow pages (settings-forms-v0.5.md section 2: R5, R3, R4, R7; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `AgentsPane::reflow`: on a narrow page the agent list is the content's width with
+  three 48 px rows, the id field and `Add` stack under it (R3), `Revoke all` and `Forget` share
+  a row as an equal pair (R4), each class's line sits over its `Deny`/`Ask`/`Allow` radios,
+  one class per 80 px block (R7's one per line), then `Grants last` over its radios and the
+  status line; the pane is 840 tall. The desktop shape puts every place back.
+- **Not yet.** The Activity and Network views' narrow places and the grant panel as a bottom
+  sheet (R10).
