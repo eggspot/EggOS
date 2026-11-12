@@ -78,6 +78,19 @@ impl<R: RegisterIo> Plic<R> {
         self.sources.write32(enable, others | 1 << (source % 32));
     }
 
+    /// Stops `source` interrupting this context and clears its priority (a line given back,
+    /// D413).
+    pub fn disable(&self, source: u32) {
+        if !(1..=MAX_SOURCE).contains(&source) {
+            return;
+        }
+        let source = source as usize;
+        let enable = ENABLES + self.context * ENABLES_PER_CONTEXT + source / 32 * 4;
+        let others = self.sources.read32(enable);
+        self.sources.write32(enable, others & !(1 << (source % 32)));
+        self.sources.write32(source * 4, 0);
+    }
+
     /// Lets this context take every source whose priority is above `threshold`.
     pub fn set_threshold(&self, threshold: u32) {
         self.context_regs.write32(THRESHOLD, threshold);

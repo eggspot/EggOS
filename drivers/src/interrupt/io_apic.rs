@@ -75,6 +75,23 @@ impl<R: RegisterIo> IoApic<R> {
         self.write(low + 1, u32::from(destination) << DESTINATION_SHIFT);
         self.write(low, entry);
     }
+
+    /// Masks (`masked`) or unmasks line `line`, keeping the rest of its entry (D413): a
+    /// level-triggered device line is masked while its driver looks at the device.
+    pub fn set_masked(&self, line: u32, masked: bool) {
+        if line >= self.lines() {
+            return;
+        }
+        let low = FIRST_REDIRECTION + line * 2;
+        let entry = self.read(low);
+        let wanted = match masked {
+            true => entry | REDIRECTION_MASKED,
+            false => entry & !REDIRECTION_MASKED,
+        };
+        if wanted != entry {
+            self.write(low, wanted);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -83,6 +100,16 @@ mod tests {
     use crate::io::fake::FakeRegs;
 
     const TWENTY_FOUR_LINES: u32 = 23 << 16 | 0x20;
+
+    #[test]
+    fn masking_keeps_the_rest_of_the_entry() {
+        let apic = IoApic::new(FakeRegs::default());
+        apic.regs
+            .script_reads(REGISTER_WINDOW, &[TWENTY_FOUR_LINES, 0x0000_a033]);
+        apic.set_masked(5, true);
+        let writes = apic.regs.writes();
+        assert_eq!(writes.last(), Some(&(REGISTER_WINDOW, 0x0000_a033 | REDIRECTION_MASKED)));
+    }
 
     #[test]
     fn counts_its_lines_from_the_version_register() {

@@ -97,6 +97,9 @@ impl SourceLines {
         if source == 0 {
             return None;
         }
+        if let Some(line) = self.line_of(source) {
+            return Some((line, false));
+        }
         for (index, slot) in self.sources.iter().enumerate() {
             match slot.compare_exchange(0, source, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => return Some((DeviceLine(index as u8), true)),
@@ -107,19 +110,26 @@ impl SourceLines {
         None
     }
 
-    /// The line `source` was routed to, if it was. Lines are taken in order, so the search
-    /// stops at the first free one.
+    /// The line `source` was routed to, if it was. A line given back leaves a hole, so the
+    /// search covers every line.
     #[inline]
     pub(crate) fn line_of(&self, source: u32) -> Option<DeviceLine> {
         use core::sync::atomic::Ordering;
-        for (index, slot) in self.sources.iter().enumerate() {
-            match slot.load(Ordering::Acquire) {
-                0 => return None,
-                held if held == source => return Some(DeviceLine(index as u8)),
-                _ => {}
-            }
+        if source == 0 {
+            return None;
         }
-        None
+        self.sources
+            .iter()
+            .position(|slot| slot.load(Ordering::Acquire) == source)
+            .map(|index| DeviceLine(index as u8))
+    }
+
+    /// Gives `line` back (D413): the source it held, which the controller should stop, or
+    /// `None` when it held none.
+    pub(crate) fn release(&self, line: DeviceLine) -> Option<u32> {
+        use core::sync::atomic::Ordering;
+        let source = self.sources.get(line.index())?.swap(0, Ordering::AcqRel);
+        (source != 0).then_some(source)
     }
 
     /// The source routed to `line`, if any.
@@ -158,6 +168,18 @@ mod tests {
         assert_eq!(lines.line_of(50), None);
         assert_eq!(lines.source_of(DeviceLine(1)), Some(49));
         assert_eq!(lines.source_of(DeviceLine(2)), None);
+    }
+
+    #[test]
+    fn a_line_given_back_is_handed_out_again_and_others_keep_theirs() {
+        let lines = SourceLines::new();
+        lines.claim(40);
+        lines.claim(41);
+        assert_eq!(lines.release(DeviceLine(0)), Some(40));
+        assert_eq!(lines.release(DeviceLine(0)), None);
+        assert_eq!(lines.line_of(41), Some(DeviceLine(1)));
+        assert_eq!(lines.claim(41), Some((DeviceLine(1), false)));
+        assert_eq!(lines.claim(42), Some((DeviceLine(0), true)));
     }
 
     #[test]

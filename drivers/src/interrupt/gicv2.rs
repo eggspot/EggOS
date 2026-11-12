@@ -9,6 +9,7 @@ use crate::io::RegisterIo;
 
 const GICD_CTLR: usize = 0x000;
 const GICD_ISENABLER: usize = 0x100;
+const GICD_ICENABLER: usize = 0x180;
 const GICD_IPRIORITYR: usize = 0x400;
 const GICD_ITARGETSR: usize = 0x800;
 const GICD_ICFGR: usize = 0xc00;
@@ -110,6 +111,16 @@ impl<R: RegisterIo> Gicv2Distributor<R> {
         self.regs.write8(GICD_IPRIORITYR + id, priority);
         self.regs
             .write32(GICD_ISENABLER + id / 32 * 4, 1 << (id % 32));
+    }
+
+    /// Disables interrupt `id`, so it signals nothing more (a line given back, D413).
+    pub fn disable_interrupt(&self, id: u32) {
+        if id > MAX_INTERRUPT_ID {
+            return;
+        }
+        let id = id as usize;
+        self.regs
+            .write32(GICD_ICENABLER + id / 32 * 4, 1 << (id % 32));
     }
 
     /// Routes shared peripheral interrupt `id` (32-1019) to the CPU interfaces in `targets` (a

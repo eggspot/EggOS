@@ -187,6 +187,14 @@ pub trait Probe {
     fn channel_subsystem(&self) -> Option<&'static dyn eggos_drivers::channel::ChannelSubsystem> {
         None
     }
+    /// Routes the legacy interrupt input `global` ([`Platform::route_legacy_interrupt`], a PCI
+    /// function's INTx, D413). None by default.
+    fn legacy_interrupt(&mut self, _global: u32) -> Result<DeviceLine, ProbeError> {
+        Err(ProbeError::Refused("no legacy interrupts"))
+    }
+    /// Disconnects and gives back `line` ([`crate::devices::interrupts::disconnect`], D413).
+    /// Nothing by default.
+    fn release_interrupt(&mut self, _line: DeviceLine) {}
 }
 
 /// A driver built into the kernel.
@@ -534,6 +542,14 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
 
     fn channel_subsystem(&self) -> Option<&'static dyn eggos_drivers::channel::ChannelSubsystem> {
         P::channel_subsystem()
+    }
+
+    fn legacy_interrupt(&mut self, global: u32) -> Result<DeviceLine, ProbeError> {
+        P::route_legacy_interrupt(global, false).map_err(ProbeError::Refused)
+    }
+
+    fn release_interrupt(&mut self, line: DeviceLine) {
+        interrupts::disconnect::<P>(line);
     }
 }
 

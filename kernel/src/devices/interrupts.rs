@@ -10,7 +10,7 @@
 
 use crate::thread::Parker;
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use eggos_hal::{DeviceLine, Platform};
 
 /// What a device line's interrupt does.
@@ -49,6 +49,16 @@ pub fn connect(line: DeviceLine, handler: Handler) -> Result<(), &'static str> {
     }
 }
 
+/// Disconnects `line` and gives it back to the HAL (D413): when a driver lets its device go, or
+/// connecting failed after the line was routed. The handler's few words stay allocated, so an
+/// interrupt already in flight on another CPU never reads freed memory.
+pub fn disconnect<P: Platform>(line: DeviceLine) {
+    if let Some(slot) = HANDLERS.get(line.index()) {
+        slot.store(core::ptr::null_mut(), Ordering::Release);
+    }
+    P::release_device_interrupt(line);
+}
+
 /// Handles the interrupt of `line`, which this CPU took: its handler quiets the device and
 /// raises its events. A line with no handler is ignored (the HAL ends it all the same).
 pub fn handle<P: Platform>(line: DeviceLine) {
@@ -73,6 +83,7 @@ pub struct DeviceEvents {
     raised: AtomicU64,
     waiter: AtomicPtr<Parker>,
     wakes_input_waiters: bool,
+    masked_line: AtomicUsize,
 }
 
 impl Default for DeviceEvents {
@@ -87,7 +98,14 @@ impl DeviceEvents {
             raised: AtomicU64::new(0),
             waiter: AtomicPtr::new(core::ptr::null_mut()),
             wakes_input_waiters: false,
+            masked_line: AtomicUsize::new(0),
         }
+    }
+
+    /// Says the events come from `line`, a level-triggered input the HAL masks when it fires
+    /// (a PCI function's INTx, D413): each wait unmasks it again, the driver having looked.
+    pub fn set_masked_line(&self, line: DeviceLine) {
+        self.masked_line.store(line.index() + 1, Ordering::Release);
     }
 
     /// Events whose raise also wakes the threads waiting for console or device input
@@ -125,6 +143,10 @@ impl DeviceEvents {
     /// count then. One thread waits at a time. Call it as [`crate::thread::yield_now`] is called:
     /// with interrupts masked and no lock held.
     pub fn wait<P: Platform>(&self, seen: u64, deadline: u64) -> u64 {
+        let masked = self.masked_line.load(Ordering::Acquire);
+        if let Some(line) = masked.checked_sub(1).and_then(DeviceLine::from_index) {
+            P::unmask_device_interrupt(line);
+        }
         let parker = Parker::new();
         self.waiter
             .store(core::ptr::from_ref(&parker).cast_mut(), Ordering::SeqCst);

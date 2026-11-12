@@ -533,6 +533,10 @@ impl Platform for Aarch64 {
         timer::route_device_interrupt(id, trigger)
     }
 
+    fn release_device_interrupt(line: crate::DeviceLine) {
+        timer::release_device_interrupt(line);
+    }
+
     fn exit(_status: ExitStatus) -> ! {
         psci_system_call(PSCI_SYSTEM_OFF);
         Self::halt()

@@ -150,6 +150,16 @@ impl<R: RegisterIo> Gicv3Distributor<R> {
         ((lines_field + 1) * 32).min(MAX_SPI_ID + 1)
     }
 
+    /// Disables shared interrupt `id`, so it signals nothing more (a line given back, D413).
+    pub fn disable_shared_interrupt(&self, id: u32) {
+        if !(FIRST_SPI_ID..=MAX_SPI_ID).contains(&id) {
+            return;
+        }
+        let word = (id / 32) as usize * 4;
+        self.regs.write32(GICD_ICENABLER + word, 1u32 << (id % 32));
+        self.wait_for_writes();
+    }
+
     /// Routes shared interrupt `id` to the CPU with MPIDR affinity `affinity` as a group 1
     /// interrupt of `priority`, signalled as `trigger` says, and enables it.
     pub fn route_shared_interrupt(&self, id: u32, priority: u8, affinity: u64, trigger: Trigger) {

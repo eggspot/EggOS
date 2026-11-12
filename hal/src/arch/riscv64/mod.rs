@@ -343,6 +343,14 @@ impl Platform for Riscv64 {
         console_input::route_device(context, source)
     }
 
+    fn release_device_interrupt(line: crate::DeviceLine) {
+        let hart = BOOT_HART.load(Ordering::Relaxed);
+        // SAFETY: as in `memory_map`.
+        let context =
+            unsafe { boot_memory::device_tree_plic_supervisor_context(device_tree(), hart) };
+        console_input::release_device(context, line);
+    }
+
     fn exit(status: ExitStatus) -> ! {
         let reason = match status {
             ExitStatus::Success => SBI_SRST_REASON_NONE,

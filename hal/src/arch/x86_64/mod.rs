@@ -648,6 +648,22 @@ impl Platform for X86_64 {
         message_interrupts::take()
     }
 
+    fn route_legacy_interrupt(global: u32, edge: bool) -> Result<crate::DeviceLine, &'static str> {
+        let signal = eggos_drivers::interrupt::io_apic::LineSignal {
+            active_low: !edge,
+            level_triggered: !edge,
+        };
+        message_interrupts::take_pin(global, signal)
+    }
+
+    fn unmask_device_interrupt(line: crate::DeviceLine) {
+        message_interrupts::unmask(line);
+    }
+
+    fn release_device_interrupt(line: crate::DeviceLine) {
+        message_interrupts::release(line);
+    }
+
     fn exit(_status: ExitStatus) -> ! {
         // ACPI S5 has no exit status; the QEMU runner reads the verdict from the console. If
         // the tables are missing or malformed we fall through and halt.

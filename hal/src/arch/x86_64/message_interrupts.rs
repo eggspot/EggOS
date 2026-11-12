@@ -1,11 +1,16 @@
-//! Message-signalled device interrupts (PCI MSI-X): each line is a vector of the boot CPU's
-//! local APIC, from [`FIRST_DEVICE_VECTOR`] on, which a device raises by writing the vector to
-//! the local APIC's message address (Intel SDM vol. 3A, 11.11: fixed delivery, edge-triggered,
-//! physical destination).
+//! Device interrupt lines: each line is a vector of the boot CPU's local APIC, from
+//! [`FIRST_DEVICE_VECTOR`] on, raised either by a message a PCI function writes to the local
+//! APIC's address (MSI-X or MSI; Intel SDM vol. 3A, 11.11: fixed delivery, edge-triggered,
+//! physical destination) or by an I/O APIC input, a PCI function's legacy INTx pin (D413). A
+//! line is taken from a bitmap and given back when its driver lets the device go. An I/O APIC
+//! line is level-triggered and its driver quiets the device only when its thread looks, so the
+//! input is masked when its interrupt arrives and unmasked when the driver waits again.
 
-use super::timer;
+use super::{acpi_table, console_input, timer};
+use crate::acpi;
 use crate::{DeviceLine, Interrupt, InterruptMessage};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
+use eggos_drivers::interrupt::io_apic::LineSignal;
 
 /// The first device line's vector, right after the console input's.
 pub(super) const FIRST_DEVICE_VECTOR: u8 = 0x33;
@@ -14,36 +19,101 @@ pub(super) const LAST_DEVICE_VECTOR: u8 = FIRST_DEVICE_VECTOR + DeviceLine::COUN
 
 const MESSAGE_ADDRESS: u64 = 0xfee0_0000;
 const DESTINATION_ID_SHIFT: u32 = 12;
+const NO_PIN: u32 = u32::MAX;
 
-static LINES_TAKEN: AtomicUsize = AtomicUsize::new(0);
+static TAKEN: AtomicU32 = AtomicU32::new(0);
+static PINS: [AtomicU32; DeviceLine::COUNT] =
+    [const { AtomicU32::new(NO_PIN) }; DeviceLine::COUNT];
 
-/// Takes the next device line and the message that raises it on the boot CPU.
-pub(super) fn take() -> Result<(DeviceLine, InterruptMessage), &'static str> {
-    let index = LINES_TAKEN
-        .try_update(Ordering::Relaxed, Ordering::Relaxed, |taken| {
-            (taken < DeviceLine::COUNT).then_some(taken + 1)
+fn take_line() -> Result<DeviceLine, &'static str> {
+    let taken = TAKEN
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+            (taken != u32::MAX).then(|| taken | 1 << (!taken).trailing_zeros())
         })
         .map_err(|_| "every device interrupt line is taken")?;
-    let line = DeviceLine::from_index(index).ok_or("every device interrupt line is taken")?;
+    let index = (!taken).trailing_zeros() as usize;
+    DeviceLine::from_index(index).ok_or("every device interrupt line is taken")
+}
+
+fn vector_of(line: DeviceLine) -> u8 {
+    FIRST_DEVICE_VECTOR + line.index() as u8
+}
+
+/// Takes a free device line and the message that raises it on the boot CPU.
+pub(super) fn take() -> Result<(DeviceLine, InterruptMessage), &'static str> {
+    let line = take_line()?;
     let destination = u64::from(timer::boot_apic_id()) << DESTINATION_ID_SHIFT;
     Ok((
         line,
         InterruptMessage {
             address: MESSAGE_ADDRESS | destination,
-            data: u32::from(FIRST_DEVICE_VECTOR) + index as u32,
+            data: u32::from(vector_of(line)),
         },
     ))
 }
 
-/// Hands the device line of `vector` to the kernel, which quiets the device, then ends the
-/// interrupt at the local APIC. Out of line, so the trap paths keep their length.
+type Controller = eggos_drivers::interrupt::IoApic<eggos_drivers::io::Mmio>;
+
+fn with_input<R>(global: u32, work: impl FnOnce(u32, &Controller) -> R) -> Option<R> {
+    let madt = acpi_table(b"APIC")?;
+    let (apic, controller) = acpi::madt_io_apics(madt)
+        .map(|apic| (apic, console_input::io_apic(apic)))
+        .find(|(apic, controller)| {
+            global
+                .checked_sub(apic.first_interrupt)
+                .is_some_and(|input| input < controller.lines())
+        })?;
+    Some(work(global - apic.first_interrupt, &controller))
+}
+
+/// Takes a free device line for the I/O APIC input `global` (a global system interrupt, a PCI
+/// INTx pin's), signalling as `signal` says, and routes it to the boot CPU.
+pub(super) fn take_pin(global: u32, signal: LineSignal) -> Result<DeviceLine, &'static str> {
+    let line = take_line()?;
+    let routed = with_input(global, |input, controller| {
+        controller.route(input, signal, vector_of(line), timer::boot_apic_id());
+    });
+    if routed.is_none() {
+        release(line);
+        return Err("no I/O APIC receives that interrupt");
+    }
+    PINS[line.index()].store(global, Ordering::Release);
+    Ok(line)
+}
+
+/// Gives `line` back: an I/O APIC input is masked first, so the line raises nothing more.
+pub(super) fn release(line: DeviceLine) {
+    let global = PINS[line.index()].swap(NO_PIN, Ordering::AcqRel);
+    if global != NO_PIN {
+        with_input(global, |input, controller| controller.set_masked(input, true));
+    }
+    TAKEN.fetch_and(!(1 << line.index()), Ordering::AcqRel);
+}
+
+/// Unmasks `line`'s I/O APIC input, once its driver has looked at the device; nothing for a
+/// message line.
+pub(super) fn unmask(line: DeviceLine) {
+    let global = PINS[line.index()].load(Ordering::Acquire);
+    if global != NO_PIN {
+        with_input(global, |input, controller| controller.set_masked(input, false));
+    }
+}
+
+/// Hands the device line of `vector` to the kernel, which quiets the device or leaves it to its
+/// driver, then ends the interrupt at the local APIC; an I/O APIC input stays masked until its
+/// driver waits again. Out of line, so the trap paths keep their length.
 #[cold]
 #[inline(never)]
 pub(super) fn interrupt(vector: u64) {
     let index = vector.wrapping_sub(u64::from(FIRST_DEVICE_VECTOR)) as usize;
-    if index < LINES_TAKEN.load(Ordering::Relaxed)
+    if index < DeviceLine::COUNT
+        && TAKEN.load(Ordering::Acquire) & 1 << index != 0
         && let Some(line) = DeviceLine::from_index(index)
     {
+        let global = PINS[index].load(Ordering::Acquire);
+        if global != NO_PIN {
+            with_input(global, |input, controller| controller.set_masked(input, true));
+        }
         crate::interrupt::deliver(Interrupt::Device(line));
     }
     timer::end_of_interrupt();

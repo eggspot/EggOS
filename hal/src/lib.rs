@@ -110,6 +110,23 @@ pub trait Platform: 'static {
         Err("this machine has no message-signalled interrupts")
     }
 
+    /// Routes the legacy interrupt input `global` (an x86 global system interrupt, which a PCI
+    /// function's INTx pin arrives on), level-triggered and active-low as PCI's are unless
+    /// `edge`, to the boot CPU: it raises [`Interrupt::Device`] with the line returned and is
+    /// masked until [`Self::unmask_device_interrupt`] (D413). Fails on a machine without such
+    /// inputs (the default) or when every line is taken.
+    fn route_legacy_interrupt(_global: u32, _edge: bool) -> Result<DeviceLine, &'static str> {
+        Err("this machine routes no legacy interrupts")
+    }
+
+    /// Unmasks `line` after its driver looked at the device: a level-triggered input masked by
+    /// its interrupt; nothing for other lines (D413).
+    fn unmask_device_interrupt(_line: DeviceLine) {}
+
+    /// Gives `line` back when its driver lets the device go or connecting it failed: it raises
+    /// nothing more and may be handed out again (D413). Nothing by default.
+    fn release_device_interrupt(_line: DeviceLine) {}
+
     /// Powers the machine off, reporting `status` to the host when the machine supports it.
     fn exit(status: ExitStatus) -> !;
 

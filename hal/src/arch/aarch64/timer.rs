@@ -355,6 +355,17 @@ pub(super) fn route_device_interrupt(
     Ok(line)
 }
 
+/// Gives `line` back: its shared interrupt is disabled at the distributor (D413).
+pub(super) fn release_device_interrupt(line: crate::DeviceLine) {
+    let Some(id) = DEVICE_LINES.release(line) else {
+        return;
+    };
+    match is_gicv3() {
+        true => gicv3_distributor().disable_shared_interrupt(id),
+        false => distributor().disable_interrupt(id),
+    }
+}
+
 /// This CPU's MPIDR affinity, as the device tree's `/cpus` and the PSCI calls give it: Aff3 in
 /// bits 39:32, Aff2-Aff0 in bits 23:0.
 pub(super) fn affinity() -> u64 {

@@ -96,6 +96,16 @@ pub(super) fn route_device(
     Ok(line)
 }
 
+/// Gives `line` back: its source stops interrupting the boot hart's context (D413).
+pub(super) fn release_device(context: Option<usize>, line: crate::DeviceLine) {
+    let Some(source) = DEVICE_LINES.release(line) else {
+        return;
+    };
+    if let Ok(plic) = context_plic(context) {
+        plic.disable(source);
+    }
+}
+
 /// Claims the pending external interrupt and handles it: UART0's goes to the kernel as console
 /// input, a routed device's as its line, and the kernel quiets the device before the claim is
 /// completed; any other source is reported as an unexpected interrupt at `pc`. Out of line and

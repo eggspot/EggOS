@@ -23246,3 +23246,29 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building the server edition's image with the `desktop` feature off
   (`cargo xtask` builds one kernel for every edition today), and the Task Manager moving
   into `builtin-apps` (D396).
+
+## D413 Device interrupt lines given back, and PCI INTx through the I/O APIC (M8, M5; D184's and D255's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: the I/O APIC's redirection entries, PCI's interrupt line and pin registers, and how Linux masks a level-triggered line until its threaded handler ran)
+
+- **Question.** D184 and D255 left two gaps: a line stayed taken when connecting failed after
+  it was routed (or when a driver let its device go), and a PCI function with neither MSI-X
+  nor MSI (older controllers, some QEMU devices) could only be polled.
+- **Decision: lines given back.** `Platform::release_device_interrupt` frees a line: on
+  x86_64 the lines are a bitmap of the boot CPU's vectors rather than a counter, and an
+  I/O APIC input is masked first; on aarch64 and riscv64 `SourceLines::release` frees the
+  slot (lookups now scan every line, since a release leaves a hole) and the GIC distributor
+  or the PLIC disables the source. `devices::interrupts::disconnect` clears the handler
+  (its few words stay allocated, so an interrupt in flight on another CPU never reads freed
+  memory) and gives the line back; `message_interrupts::connect` gives back a line it took
+  when enabling the message or connecting the handler fails.
+- **Decision: INTx.** A function without MSI-X or MSI uses its INTx pin: the interrupt line
+  register (offset 0x3C, which the firmware fills with the input the pin reaches) names the
+  I/O APIC input, `Platform::route_legacy_interrupt` routes it level-triggered and active
+  low to a free line, and the function's INTx is enabled. The driver quiets its device only
+  when its thread looks, so the HAL masks the input when the interrupt arrives and
+  `DeviceEvents::wait` unmasks it each time the driver waits again (`set_masked_line`), as
+  Linux handles a level line with a threaded handler.
+- **Not yet.** ACPI `_PRT` routing (a firmware that leaves the interrupt line register 0 or
+  255 gets no INTx; reading `_PRT` needs the AML interpreter), INTx on aarch64, riscv64 and
+  the device-tree PCI hosts through `interrupt-map`, MIPS liointc's PCI inputs and sun4u's
+  PCI bridge, shared INTx lines (two functions on one input: the second is refused), lines on
+  CPUs other than the boot CPU, and a line per queue.
