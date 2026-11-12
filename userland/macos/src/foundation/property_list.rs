@@ -31,6 +31,27 @@ fn released_after<R>(objects: &Buffer<Id>, work: impl FnOnce(&[Id]) -> R) -> R {
     made
 }
 
+/// The property list in the file at `path` (an `NSString`), XML or binary, as Foundation's
+/// objects, counted once; nil when it cannot be read (a compiled storyboard's `Info.plist`,
+/// D406).
+pub fn object_of_file(path: Id) -> Id {
+    if path.is_null() {
+        return core::ptr::null_mut();
+    }
+    let data = crate::objc::send1(
+        class_pointer(&NSDATA).cast(),
+        sel!("dataWithContentsOfFile:"),
+        path as usize,
+    );
+    if data.is_null() {
+        return data;
+    }
+    let Ok(document) = eggos_plist::Document::parse(super::data::bytes_of(data)) else {
+        return core::ptr::null_mut();
+    };
+    object_of(&document.top(), 0)
+}
+
 /// The object `object` stands for, counted once; nil for what a property list cannot hold.
 pub fn object_of(object: &Object<'_>, depth: usize) -> Id {
     if depth > MAX_DEPTH {

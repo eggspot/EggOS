@@ -16,6 +16,7 @@ mod alert;
 mod application;
 mod attributed_string;
 mod control;
+mod controllers;
 mod core_graphics;
 mod cursor;
 mod drawing;
@@ -31,6 +32,7 @@ mod screen;
 mod scroll_view;
 mod server;
 mod sound;
+mod storyboard;
 mod table_view;
 mod tracking;
 mod view;
@@ -87,6 +89,9 @@ class_pairs! {
     NSGRAPHICSCONTEXT, NSGRAPHICSCONTEXT_META;
     NSSAVEPANEL, NSSAVEPANEL_META;
     NSOPENPANEL, NSOPENPANEL_META;
+    NSVIEWCONTROLLER, NSVIEWCONTROLLER_META;
+    NSWINDOWCONTROLLER, NSWINDOWCONTROLLER_META;
+    NSSTORYBOARD, NSSTORYBOARD_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -208,6 +213,8 @@ pub fn set_up() -> bool {
             && grid_view::define(runtime)
             && core_graphics::define(runtime)
             && open_panel::define(runtime)
+            && controllers::define(runtime)
+            && storyboard::define(runtime)
     });
     defined && drawing::set_up()
 }
@@ -216,6 +223,12 @@ pub fn set_up() -> bool {
 pub fn resolve(name: &[u8]) -> Option<u64> {
     let class = |object: &'static ClassObject| Some(object as *const ClassObject as u64);
     match name {
+        b"_OBJC_CLASS_$_NSViewController" => class(&NSVIEWCONTROLLER),
+        b"_OBJC_METACLASS_$_NSViewController" => class(&NSVIEWCONTROLLER_META),
+        b"_OBJC_CLASS_$_NSWindowController" => class(&NSWINDOWCONTROLLER),
+        b"_OBJC_METACLASS_$_NSWindowController" => class(&NSWINDOWCONTROLLER_META),
+        b"_OBJC_CLASS_$_NSStoryboard" => class(&NSSTORYBOARD),
+        b"_OBJC_METACLASS_$_NSStoryboard" => class(&NSSTORYBOARD_META),
         b"_OBJC_CLASS_$_NSResponder" => class(&NSRESPONDER),
         b"_OBJC_METACLASS_$_NSResponder" => class(&NSRESPONDER_META),
         b"_OBJC_CLASS_$_NSView" => class(&NSVIEW),

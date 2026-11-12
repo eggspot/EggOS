@@ -887,7 +887,7 @@ yet" naming what it left.
     unbuilt, D368; per-pixel alpha in `UpdateLayeredWindow`, code written, unbuilt, D369; other processes' input
     refused and global hot keys through the window server instead, code written, unbuilt, D398; the tray's overflow popup, code written,
     unbuilt, D370; tray programs' context menus as shell menus, code written, unbuilt, D371);
-  - part 14's rest: storyboards (D232; `NSKeyedArchiver`, code written, unbuilt, D365; NSDictionary's hash index, code
+  - part 14's rest, code written, unbuilt (D232; storyboards with view and window controllers, code written, unbuilt, D406; `NSKeyedArchiver`, code written, unbuilt, D365; NSDictionary's hash index, code
     written, unbuilt, D359; `NSKeyedUnarchiver`, code written, unbuilt, D360);
   - part 15's rest: the About panel in `NSApp.windows`, `mac-views.app`'s host renders and
     QEMU steps (D233; `mac-views.app` itself, code written, unbuilt, D379; scroll views, code written, unbuilt, D372;

@@ -23069,3 +23069,35 @@ the license, by an explicit instruction recorded here.
   (`num_put`, `numpunct`, `codecvt` for programs that call `use_facet` on them), named
   locales, `ios_base::failure` when exceptions are enabled (the state is set, nothing is
   thrown), `iword`/`pword` and callbacks, and locking the streams across threads.
+
+## D406 Storyboards on macOS, with NSViewController and NSWindowController (batch part 14's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: Apple's documentation of `NSStoryboard`, `NSViewController` and `NSWindowController`, and the layout of Xcode's compiled `.storyboardc` folders)
+
+- **Question.** D232 loaded nibs but refused an app whose `Info.plist` names
+  `NSMainStoryboardFile`, which every macOS app template since Xcode 6 does; nor did the
+  layer have view or window controllers.
+- **Decision.** `NSViewController` (lazy `view` through `loadView` from its nib, or a plain
+  NSView, then `viewDidLoad`; title, represented object, identifier, storyboard) and
+  `NSWindowController` (window from its nib on first use with `windowWillLoad` and
+  `windowDidLoad`, `showWindow:`, `close`, and a content view controller whose view becomes
+  the window's content view and whose title its title) join AppKit
+  (`appkit/controllers.rs`). `NSStoryboard` (`appkit/storyboard.rs`) reads
+  `<name>.storyboardc/Info.plist` (binary or XML, through `eggos-plist`):
+  `NSViewControllerIdentifiersToNibNames` names each scene's nib,
+  `NSStoryboardDesignatedEntryPointIdentifier` the initial controller and
+  `NSStoryboardMainMenu` the main menu. A scene's nib loads with the storyboard as File's
+  Owner and gives its first top-level window or view controller; placeholders that stand for
+  another scene's controller are made from the storyboard loading them, so a window
+  controller's content relationship (an outlet to `contentViewController`) is filled. The
+  nib loader also makes controllers named directly and through `NSClassSwapper` (a
+  program's own subclass, else the original class). `NSApplicationMain` runs the main
+  storyboard: its menu, then its initial controller (a window controller shown, a view
+  controller in a window of its own).
+- **To check at the build pass.** The placeholder's class name and identifier key
+  (`NSStoryboardControllerPlaceholder`/`NSStoryboardScenePlaceholder` with
+  `NSStoryboardIdentifier`, `NSIdentifier` or `identifier`) are read from what the
+  compiled files are known to hold, not yet from one: a storyboard app from Xcode's template,
+  compiled by `ibtool` in CI, settles them.
+- **Not yet.** Segues (`performSegueWithIdentifier:sender:`, `prepareForSegue:`, show,
+  sheet and popover segues), split and tab view controllers, child view controllers and
+  their appearance calls, `NSStoryboard`'s creator blocks, and documents
+  (`NSDocument`'s window controllers).

@@ -577,14 +577,18 @@ fn principal_class() -> *mut crate::objc::abi::ClassObject {
 }
 
 extern "C" fn application_main(_: i32, _: usize) -> i32 {
-    if info_string(b"NSMainStoryboardFile").is_some_and(|name| !name.is_empty()) {
-        write_error(
-            b"eggos-macos: this app builds its interface from a storyboard \
-              (NSMainStoryboardFile in its Info.plist), which EggOS cannot load yet\n",
-        );
-        crate::libsystem::exit(NIB_NOT_LOADED);
-    }
     let application = send(principal_class().cast(), sel!("sharedApplication"));
+    if let Some(name) = info_string(b"NSMainStoryboardFile").filter(|name| !name.is_empty()) {
+        if !super::storyboard::run_main(name, application) {
+            write_error(
+                b"eggos-macos: the app's main storyboard (NSMainStoryboardFile in its \
+                  Info.plist) is missing from its bundle's Resources or could not be read\n",
+            );
+            crate::libsystem::exit(NIB_NOT_LOADED);
+        }
+        send(application, sel!("run"));
+        return 0;
+    }
     if let Some(name) = info_string(b"NSMainNibFile").filter(|name| !name.is_empty())
         && nib::load_main(name, application).is_err()
     {

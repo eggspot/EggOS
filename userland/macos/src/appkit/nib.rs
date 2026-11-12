@@ -8,8 +8,8 @@
 //! are connected, `awakeFromNib` is sent, the main menu is set and the visible windows shown.
 
 use super::{
-    NSAPPLICATION, NSBUTTON, NSMENU, NSMENUITEM, NSTEXTFIELD, NSVIEW, NSWINDOW, application,
-    responds, store, view, with_text,
+    NSAPPLICATION, NSBUTTON, NSMENU, NSMENUITEM, NSTEXTFIELD, NSVIEW, NSVIEWCONTROLLER, NSWINDOW,
+    NSWINDOWCONTROLLER, application, responds, store, storyboard, view, with_text,
 };
 use crate::foundation::nib_archive::{
     self, ClassEntry, Connection, NibArchive, NibValue, ObjectEntry, Span, Tables, ValueEntry,
@@ -36,7 +36,13 @@ const CELL_SELECTABLE: i64 = 0x0020_0000;
 const CELL_BEZELED: i64 = 0x0040_0000;
 const MAIN_MENU_NAME: &[u8] = b"_NSMainMenu";
 const VIEW_CLASSES: [&[u8]; 4] = [b"NSView", b"NSControl", b"NSButton", b"NSTextField"];
-const OBJECT_CLASSES: [&[u8]; 2] = [b"NSObject", b"NSApplication"];
+const OBJECT_CLASSES: [&[u8]; 4] = [
+    b"NSObject",
+    b"NSApplication",
+    b"NSViewController",
+    b"NSWindowController",
+];
+const PLACEHOLDER_KEYS: [&[u8]; 3] = [b"NSStoryboardIdentifier", b"NSIdentifier", b"identifier"];
 const WINDOW_CLASSES: [&[u8]; 1] = [b"NSWindow"];
 
 #[derive(Clone, Copy, Default)]
@@ -304,6 +310,12 @@ impl Loader<'_, '_, '_> {
         match class {
             b"NSWindowTemplate" => self.window(index),
             b"NSCustomObject" => self.custom_object(index),
+            b"NSViewController" => new_of(class_pointer(&NSVIEWCONTROLLER)),
+            b"NSWindowController" => new_of(class_pointer(&NSWINDOWCONTROLLER)),
+            b"NSClassSwapper" => self.swapped(index),
+            b"NSStoryboardControllerPlaceholder" | b"NSStoryboardScenePlaceholder" => {
+                self.placeholder(index)
+            }
             b"NSMenu" => self.menu(index),
             b"NSMenuItem" => self.menu_item(index),
             b"NSString" | b"NSMutableString" => self
@@ -366,6 +378,29 @@ impl Loader<'_, '_, '_> {
             return core::ptr::null_mut();
         }
         new_of(class)
+    }
+
+    fn swapped(&mut self, index: usize) -> Id {
+        let named = self.archive.string(index, b"NSClassName");
+        let original = self.archive.string(index, b"NSOriginalClassName");
+        let class = named
+            .map(|name| allowed_class(name, &OBJECT_CLASSES))
+            .filter(|class| !class.is_null())
+            .or_else(|| original.map(|name| allowed_class(name, &OBJECT_CLASSES)))
+            .unwrap_or(core::ptr::null_mut());
+        let controller =
+            descends(class, &NSVIEWCONTROLLER) || descends(class, &NSWINDOWCONTROLLER);
+        match controller {
+            true => new_of(class),
+            false => self.view(index),
+        }
+    }
+
+    fn placeholder(&mut self, index: usize) -> Id {
+        PLACEHOLDER_KEYS
+            .iter()
+            .find_map(|key| self.archive.string(index, key))
+            .map_or(core::ptr::null_mut(), storyboard::controller_for_placeholder)
     }
 
     fn view_class(&self, index: usize) -> *mut ClassObject {
@@ -727,6 +762,15 @@ pub fn load(bytes: &[u8], owner: Id) -> Result<Loaded, LoadError> {
 fn bundle_path(bundle: Id, out: &mut [u8; LONGEST_PATH]) -> Option<usize> {
     let path = send(bundle, sel!("bundlePath"));
     with_text(path, |text| joined(&[text.as_bytes()], out))
+}
+
+/// Reads and loads the nib file at `path` with `owner` as File's Owner (a storyboard's scene,
+/// D406).
+pub fn load_file(path: &[u8], owner: Id) -> Result<Loaded, LoadError> {
+    let mut terminated = [0u8; LONGEST_PATH];
+    let length = joined(&[path], &mut terminated).ok_or(LoadError::NotFound)?;
+    let file = read_file(&terminated[..=length]).ok_or(LoadError::NotFound)?;
+    load(file.as_slice(), owner)
 }
 
 /// Reads and loads the nib `name` (without or with `.nib`) from `bundle`'s resources with
