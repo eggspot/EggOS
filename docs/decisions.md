@@ -25433,3 +25433,50 @@ the license, by an explicit instruction recorded here.
   on the boot CPU. So do the other architectures (LoongArch64, MIPS64, POWER, s390x,
   SPARC64), x2APIC IDs above 255 without interrupt remapping, and APLIC sources above 255.
   Moving lines when CPUs go offline, and balancing by load, are also not done.
+
+## D537 An AML interpreter of our own, part 1: the `eggos-acpi` crate (M5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the ACPI 6.5 specification)
+
+- **Decision.** A new workspace crate, `acpi/` (`eggos-acpi`, `no_std` with `alloc`), holds the
+  full interpreter. It is separate from the HAL's static walk (`hal/src/aml.rs`, D252), which
+  stays for the boot-time paths that run before the heap.
+  - **Namespace.** `Namespace` keeps every object by absolute `Path`, a `BTreeMap` from path to
+    node. It starts with `\_GPE`, `\_PR`, `\_SB`, `\_SI`, `\_TZ`, `\_OSI`, `\_OS`, `\_REV` and
+    `\_GL`, and follows the search rules for single-segment names. Aliases share a node.
+  - **Loading.** `Interpreter::load_table` runs a definition block's terms in the root scope.
+    It defines names, methods, devices, processors, power resources, thermal zones, operation
+    and data-table regions, fields, index and bank fields, mutexes, events and buffer fields,
+    and runs statements outside methods. A DSDT before revision 2 makes integers 32 bits wide.
+  - **Running.** Every chapter 20 opcode but `Load`, `Unload` and `LoadTable` is covered:
+    arithmetic, logic, comparison by the first operand's type, conversions, `Concatenate` and
+    `ConcatenateResTemplate`, `Mid`, `Match`, `Index`, `RefOf`, `DerefOf`, `CondRefOf`,
+    `CopyObject`, `SizeOf`, `ObjectType`, BCD, `Timer`, mutexes and events, `Notify`, `Sleep`,
+    `Stall` and `Fatal`. Methods get seven arguments and eight locals, and the objects they
+    create are removed on return. Values are owned, not shared: a reference is a target (a
+    node, a local, an argument, or an element of one), so writes through `Index` reach the
+    object they name. Calls nest 64 deep and a `While` runs at most 2^20 times, so broken
+    firmware cannot hang the kernel.
+  - **Stores** follow 19.3.5.8. A named integer, string or buffer converts what is stored
+    into it (a buffer keeps its length), a field or buffer field is written, a local is
+    replaced, and an argument holding a reference is written through.
+  - **Fields** are read and written in units of their access width. `AnyAcc` uses the
+    narrowest of 8, 16 and 32 bits whose aligned unit holds the field. A partly covered unit
+    is preserved, filled with ones or filled with zeros by the update rule. Index fields write
+    the unit's byte offset to their index first; bank fields write their bank value.
+    `PCI_Config` regions find their function once: `_ADR` of the device they are declared in,
+    `_BBN` and `_SEG` of the nearest host bridge (`PNP0A03`/`PNP0A08`) at or above it.
+  - **The machine** is a `Host` trait: region reads and writes by space and width, PCI
+    configuration space, `Sleep`, `Stall`, `Timer`, `Notify`, `Debug` and the place of a
+    loaded table. The kernel implements it in part 2.
+  - **`\_OSI`** answers yes to the Windows versions from 2000 to 2022 and the features the
+    interpreter has, and no to anything else. Firmware tests Windows versions to turn on the
+    paths current hardware is validated on; other operating systems answer the same way.
+  - **Devices.** `initialize_devices` runs `\_SB._INI`, then walks by `_STA` (present and
+    functioning when absent), running `_INI` on present devices and going below a device only
+    when it is present or functioning (6.5.1).
+- **Why a separate crate.** The interpreter is host-independent and large. Keeping it out of
+  the HAL keeps the HAL heap-free and lets its unit tests run on the development host with
+  hand-assembled AML and a fake host.
+- **Not yet.** Loading tables from AML, the global lock's hardware handshake (`_GL` is a
+  plain mutex), real waiting on mutexes and events (one thread runs AML at a time), and
+  connection fields for GPIO and serial-bus regions. The kernel's use comes in part 2
+  (D538).

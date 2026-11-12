@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "eggos-acpi"
+version = "0.4.0"
+
+[[package]]
 name = "eggos-android"
 version = "0.4.0"
 dependencies = [
