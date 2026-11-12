@@ -643,3 +643,27 @@ fn every_line_of_the_pane_fits_a_label() {
     assert!(cut.as_str().ends_with("..."));
     assert_eq!(cut.len(), 64);
 }
+
+#[test]
+fn the_last_check_is_shown_in_the_chosen_time_zone() {
+    let checked_utc = 1_767_000_000 - 1_767_000_000 % 86_400 + 8 * 3_600 + 14 * 60;
+    let mut fresh = read(&["desktop"]);
+    fresh.checked = Some(Checked {
+        at: checked_utc,
+        source: String::from("release"),
+        items: Vec::new(),
+    });
+    fresh.now_s = Some(checked_utc + 3_600);
+    let mut window = opened(fresh);
+    let line = widgets(&window).updates_line;
+    assert_eq!(
+        window.widgets().text_of(line),
+        Some("Up to date \u{b7} checked today at 08:14")
+    );
+    let tokyo = crate::facts::zone_index("Asia/Tokyo").unwrap();
+    window.time_zone_saved(tokyo, Ok(()));
+    assert_eq!(
+        window.widgets().text_of(line),
+        Some("Up to date \u{b7} checked today at 17:14")
+    );
+}

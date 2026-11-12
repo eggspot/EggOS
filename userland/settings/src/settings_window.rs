@@ -1225,6 +1225,9 @@ impl SettingsWindow {
         window.show_keyboard(facts.keyboard, facts.caps_lock);
         window.show_layout_set();
         window
+            .components
+            .set_time_zone(&mut window.tree, facts.time_zone);
+        window
     }
 
     /// The window's widgets.
@@ -1879,6 +1882,7 @@ impl SettingsWindow {
         match saved {
             Ok(()) => {
                 self.facts.time_zone = zone;
+                self.components.set_time_zone(&mut self.tree, zone);
                 self.zones.choose(&mut self.tree, zone);
                 self.show_time(self.facts.now_s);
             }

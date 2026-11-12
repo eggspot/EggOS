@@ -23406,3 +23406,11 @@ the license, by an explicit instruction recorded here.
   On a phone a long-press shows it (toolkit v0.5 2.4); on a wearable tooltips stay off.
 - **Toolkit.** `set_text` and `text_of` now take a tooltip, so its words can follow the state,
   and a hidden tooltip (`set_shown(false)`) no longer shows on hover or long-press.
+
+## D420 The Components pane's last check in the chosen time zone (D300's deviation; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `Up to date · checked today at 09:14` now reads the check's time and today's date in
+  the time zone Settings > Date & Time chose, as the clock in the bar does, instead of UTC: the
+  pane keeps the zone (`set_time_zone`, given when Settings starts and whenever a zone is
+  saved) and shifts both instants by the zone's offset at each before `checked_when` compares
+  their days. The CLI's `component list` keeps printing UTC seconds, which a script wants.

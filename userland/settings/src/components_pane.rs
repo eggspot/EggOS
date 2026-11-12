@@ -293,6 +293,7 @@ pub struct ComponentsPane {
     /// The edition being installed from the band, recorded once its plan is done (D263).
     chosen_edition: Option<&'static str>,
     asked: Option<ComponentJob>,
+    time_zone: usize,
 }
 
 fn add(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, place: Place, kind: Kind) -> WidgetId {
@@ -494,9 +495,27 @@ impl ComponentsPane {
             default_button,
             chosen_edition: None,
             asked: None,
+            time_zone: crate::facts::utc_zone(),
         };
         components.refresh(tree);
         components
+    }
+
+    /// Says the time zone the last check's time is shown in, an index of
+    /// `eggos_calendar::zone::ZONES`.
+    pub fn set_time_zone(&mut self, tree: &mut WidgetTree<CAPACITY>, zone: usize) {
+        if self.time_zone != zone {
+            self.time_zone = zone;
+            self.refresh(tree);
+        }
+    }
+
+    fn local(&self, utc: u64) -> u64 {
+        let offset = eggos_calendar::zone::ZONES
+            .get(self.time_zone)
+            .and_then(|(_, rule)| eggos_calendar::zone::parse(rule))
+            .map_or(0, |rule| rule.at(utc as i64).offset);
+        utc.saturating_add_signed(offset)
     }
 
     /// The pane is shown again: messages and a `Failed` state are forgotten, an open
@@ -1062,7 +1081,10 @@ impl ComponentsPane {
                 !others_busy,
             ),
             (_, Some(checked)) => (
-                messages::up_to_date(&messages::checked_when(checked.at, self.read.now_s)),
+                messages::up_to_date(&messages::checked_when(
+                    self.local(checked.at),
+                    self.read.now_s.map(|now| self.local(now)),
+                )),
                 "Check now",
                 !others_busy,
             ),
