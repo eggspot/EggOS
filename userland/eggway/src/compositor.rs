@@ -26,9 +26,9 @@ use eggos_wayland::keymap;
 use eggos_wayland::positioner::{Area, Positioner};
 use eggos_wayland::protocol::{
     self, Interface, SERVER_ID_START, buffer, callback, cursor_shape, decoration, display,
-    fractional_scale, keyboard, linux_dmabuf, output, pointer, registry, seat, server_decoration, shm,
-    subsurface, surface, viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel,
-    xdg_wm_base,
+    fractional_scale, keyboard, linux_dmabuf, output, pointer, registry, seat,
+    server_decoration, shm, subsurface, surface, viewport, xdg_popup, xdg_positioner,
+    xdg_surface, xdg_toplevel, xdg_wm_base,
 };
 use eggos_wayland::wire::{self, Header, MAX_ARGUMENTS, MAX_MESSAGE_SIZE, Value};
 
