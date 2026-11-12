@@ -11,4 +11,5 @@ pub mod intel_dmc;
 pub mod intel_hdmi;
 pub mod intel_modeset;
 pub mod nvidia_bios;
+pub mod nvidia_falcon;
 pub mod nvidia_gsp;

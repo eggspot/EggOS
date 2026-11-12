@@ -14,6 +14,7 @@ use eggos_drivers::gpu::amd_atom_interpreter::Interpreter;
 use eggos_drivers::gpu::amd_dcn;
 use eggos_drivers::gpu::amd_discovery::{OFFSET_FROM_TOP, display_block, dmcub_file_name};
 use eggos_drivers::gpu::nvidia_bios::NvidiaBios;
+use eggos_drivers::gpu::nvidia_falcon;
 use eggos_drivers::gpu::nvidia_gsp::{self, Chip};
 use eggos_hal::PhysicalRange;
 
@@ -31,6 +32,7 @@ static SUMMARY: SpinLock<String> = SpinLock::new(String::new());
 /// AMD's GPUs (PCI vendor 1002h), ahead of the display class's other drivers.
 const ATOM_COMMAND_TABLES: usize = 81;
 const BOOT_0_PAGE: u64 = 4096;
+const GSP_BLOCK_BYTES: u64 = 0x4000;
 
 pub static AMD_DISPLAY_DRIVER: DriverDescriptor = DriverDescriptor {
     name: "amd-display",
@@ -76,6 +78,9 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
     if let Some(config) = probe.pci_config() {
         eggos_drivers::pci::enable_memory_and_bus_master(config, function.address);
     }
+    if let Some((imem, dmem)) = read_gsp_memories(probe, node.regions[0]) {
+        let _ = write!(line, " gsp falcon {} KiB imem {} KiB dmem", imem >> 10, dmem >> 10);
+    }
     if let Some(chip) = read_boot_0(probe, node.regions[0]).map(Chip::of_boot_0) {
         match (chip.name(), chip.signature_family()) {
             (Some(name), Some(family)) if chip.runs_gsp() => {
@@ -106,6 +111,23 @@ fn read_boot_0(probe: &mut dyn Probe, registers: PhysicalRange) -> Option<u32> {
     // SAFETY: `map_window` mapped BAR 0's first page, the GPU's registers, as device memory
     // for good; `PMC_BOOT_0` is a read-only identification register.
     Some(unsafe { core::ptr::read_volatile((start + nvidia_gsp::BOOT_0) as *const u32) })
+}
+
+fn read_gsp_memories(probe: &mut dyn Probe, registers: PhysicalRange) -> Option<(usize, usize)> {
+    let end = nvidia_falcon::GSP_BASE as u64 + GSP_BLOCK_BYTES;
+    if registers.len() < end {
+        return None;
+    }
+    let block = PhysicalRange::from_start_length(
+        registers.start + nvidia_falcon::GSP_BASE as u64,
+        GSP_BLOCK_BYTES,
+    );
+    let start = probe.map_window(block).ok()?;
+    // SAFETY: `map_window` mapped GSP's Falcon block, `GSP_BLOCK_BYTES` long, as device memory
+    // for good; reading its hardware configuration has no side effects.
+    let regs = unsafe { eggos_drivers::io::Mmio::new(start, GSP_BLOCK_BYTES as usize) };
+    let falcon = nvidia_falcon::Falcon::new(regs, 0);
+    Some(falcon.memory_bytes())
 }
 
 fn read_discovery(probe: &mut dyn Probe, aperture: PhysicalRange) -> Option<Vec<u8>> {

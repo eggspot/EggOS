@@ -24628,3 +24628,25 @@ the license, by an explicit instruction recorded here.
 - The `Probe` trait gains `map_write_combining` and `boot_framebuffer`.
 - **Not yet.** Loading DMCUB, setting modes and lighting more outputs (the firmware's mode is
   what the first screen shows), vertical-blank interrupts, DCN 2.x and older engines (DCE).
+
+## D497 NVIDIA's GSP boot, part 1: the Falcon engines (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** From Turing on, NVIDIA's display is driven through the GSP firmware (D469),
+  which only starts after a chain of signed firmware runs on the GPU's Falcon microcontrollers:
+  the video BIOS's FWSEC carves out the protected region (WPR2), SEC2 runs the booter that loads
+  GSP's image into it, and GSP then answers the driver's remote calls. Every link needs to load
+  and run code on a Falcon.
+- **Decision.** `nvidia_falcon` drives one Falcon engine at its block in BAR 0 (GSP's at
+  `0x110000`, SEC2's at `0x840000`): reset through its engine register, wait for the memory
+  scrub, pick the Falcon core over the RISC-V one in the boot core register, let DMA run
+  without a context, copy code into IMEM through the auto-incrementing port with one tag per
+  256-byte block (the secure bit set for heavy-secure code) and data into DMEM, set the boot
+  vector and the two mailboxes, start the core (through `CPUCTL_ALIAS` when the alias is
+  enabled) and wait for it to halt, returning the mailboxes. It refuses code or data that does
+  not fit the memories `HWCFG` reports. The NVIDIA probe reports GSP's IMEM and DMEM sizes.
+- **Sources.** NVIDIA's published register manuals (MIT); `drivers/src/gpu/NVIDIA-NOTICE.md`
+  carries their notice.
+- **Not yet (part 2 on).** Extracting FWSEC from the video BIOS's Falcon ucode table and
+  patching its DMEM command for the WPR2 region, running SEC2's booter with GSP's image and its
+  WPR metadata, GSP's message queues and remote calls, and the display through them. Until
+  then the firmware's framebuffer stays the display on NVIDIA boards (D236).
