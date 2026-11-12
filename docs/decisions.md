@@ -25232,6 +25232,21 @@ the license, by an explicit instruction recorded here.
   updates and completion notifiers, the cursor channel, and checking GSP-RM's head and window
   capabilities before lighting.
 
+## D531 x2APIC and the HPET on x86_64 (M4/M5, the support matrix's "planned"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's SDM and the IA-PC HPET specification)
+
+- **Decision.** When CPUID says the CPU has x2APIC (leaf 1, ECX bit 21), every CPU sets
+  `IA32_APIC_BASE`'s EXTD bit before using its local APIC, and the HAL drives the APIC through
+  its MSRs: `ApicRegisters` takes each xAPIC offset to MSR `0x800 + offset / 16`, reads the
+  x2APIC ID back in xAPIC's place, and joins the interrupt command's two halves into the one
+  64-bit command MSR, so the local APIC driver stays as it is. Firmware that leaves x2APIC on,
+  and machines whose APIC ids need it, work; destinations stay below 256, as with xAPIC.
+- The APIC timer's calibration takes the HPET (from the ACPI `HPET` table, its registers in
+  the boot direct map, its period from the capabilities register, the counter turned on) when
+  the 8254 PIT does not count, before falling back to the ACPI PM timer: newer PCs often have
+  no PIT.
+- **Not yet.** APIC ids of 256 and more (x2APIC destinations through interrupt remapping) and
+  the HPET as a timer of its own.
+
 ## D525 Intel's Type-C ports, part 1: the port, its PHY and its AUX channel (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's MIT-licensed i915 driver)
 
 - **Decision.** On Tiger Lake and on Alder and Raptor Lake-P (`intel_type_c::flavour` by device

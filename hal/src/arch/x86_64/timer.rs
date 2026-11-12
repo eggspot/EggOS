@@ -21,7 +21,8 @@ use crate::Interrupt;
 use crate::cpu::TIMER_DEADLINE_OFFSET;
 use crate::memory::PhysicalRange;
 use crate::time::{mul_div_ceil, ratio_ceil, scale_ceil};
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::cell::Cell;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use eggos_drivers::interrupt::{LegacyPic, LocalApic, i8259, local_apic};
 use eggos_drivers::io::{Mmio, RegisterIo};
 use eggos_drivers::timer::{Pit, i8254};
@@ -146,6 +147,91 @@ fn write_tsc_deadline(deadline: u64) {
 /// Where the kernel reaches the local APIC's registers: their physical address in the direct
 /// map (D33), set by [`init`].
 static APIC_BASE: AtomicUsize = AtomicUsize::new(0);
+static X2APIC: AtomicBool = AtomicBool::new(false);
+const IA32_APIC_BASE_X2APIC: u64 = 1 << 10;
+const CPUID_X2APIC: u32 = 1 << 21;
+const X2APIC_MSRS: u32 = 0x800;
+const X2APIC_ID: u32 = 0x802;
+const X2APIC_COMMAND: u32 = 0x830;
+const XAPIC_ID: usize = 0x020;
+const XAPIC_COMMAND_LOW: usize = 0x300;
+const XAPIC_COMMAND_HIGH: usize = 0x310;
+const XAPIC_ID_SHIFT: u32 = 24;
+const XAPIC_REGISTER_SHIFT: usize = 4;
+
+/// The local APIC's registers (D531): memory-mapped in xAPIC mode, or the x2APIC MSRs, each
+/// xAPIC offset taken to its MSR, the ID read back in xAPIC's place and the two command halves
+/// joined into the one 64-bit command MSR (destinations up to 255, as xAPIC's).
+enum ApicRegisters {
+    Memory(Mmio),
+    Msrs { destination: Cell<u32> },
+}
+
+impl ApicRegisters {
+    fn msr(offset: usize) -> u32 {
+        X2APIC_MSRS + (offset >> XAPIC_REGISTER_SHIFT) as u32
+    }
+}
+
+impl RegisterIo for ApicRegisters {
+    fn read8(&self, offset: usize) -> u8 {
+        self.read32(offset) as u8
+    }
+
+    fn write8(&self, offset: usize, value: u8) {
+        self.write32(offset, value.into());
+    }
+
+    fn read16(&self, offset: usize) -> u16 {
+        self.read32(offset) as u16
+    }
+
+    fn write16(&self, offset: usize, value: u16) {
+        self.write32(offset, value.into());
+    }
+
+    fn read32(&self, offset: usize) -> u32 {
+        match self {
+            Self::Memory(registers) => registers.read32(offset),
+            Self::Msrs { destination } => match offset {
+                XAPIC_ID => (super::read_msr(X2APIC_ID) as u32) << XAPIC_ID_SHIFT,
+                XAPIC_COMMAND_HIGH => destination.get(),
+                _ => super::read_msr(Self::msr(offset)) as u32,
+            },
+        }
+    }
+
+    fn write32(&self, offset: usize, value: u32) {
+        match self {
+            Self::Memory(registers) => registers.write32(offset, value),
+            Self::Msrs { destination } => match offset {
+                XAPIC_COMMAND_HIGH => destination.set(value),
+                XAPIC_COMMAND_LOW => {
+                    let target = u64::from(destination.get() >> XAPIC_ID_SHIFT);
+                    // SAFETY: the x2APIC command MSR exists in x2APIC mode, which `X2APIC`
+                    // says this CPU is in; sending an interrupt is what the caller asked for.
+                    unsafe { super::write_msr(X2APIC_COMMAND, target << 32 | u64::from(value)) };
+                }
+                _ => {
+                    // SAFETY: every register the local APIC driver writes has an x2APIC MSR
+                    // (the task priority, end of interrupt, spurious vector, timer LVT,
+                    // initial count and divide), and writing it does what the xAPIC write does.
+                    unsafe { super::write_msr(Self::msr(offset), value.into()) };
+                }
+            },
+        }
+    }
+}
+
+/// Puts this CPU's local APIC in x2APIC mode when [`X2APIC`] says to (D531).
+fn enter_x2apic_mode() {
+    if X2APIC.load(Ordering::Relaxed) {
+        let base = super::read_msr(IA32_APIC_BASE);
+        // SAFETY: the CPU has x2APIC (`X2APIC` is set only then) and its APIC is enabled, so
+        // setting EXTD moves it from xAPIC to x2APIC mode, a transition the SDM allows.
+        unsafe { super::write_msr(IA32_APIC_BASE, base | IA32_APIC_BASE_X2APIC) };
+    }
+}
 
 /// The boot CPU's local APIC id, read by `init`.
 static BOOT_APIC_ID: AtomicU8 = AtomicU8::new(0);
@@ -231,18 +317,23 @@ fn legacy_pic() -> LegacyPic<PortIo> {
     LegacyPic::new(primary, secondary)
 }
 
-fn local_apic() -> LocalApic<Mmio> {
+fn local_apic() -> LocalApic<ApicRegisters> {
+    if X2APIC.load(Ordering::Relaxed) {
+        return LocalApic::new(ApicRegisters::Msrs {
+            destination: Cell::new(0),
+        });
+    }
     // SAFETY: `APIC_BASE` holds the address `IA32_APIC_BASE` reports (set before any caller
     // runs) in the direct map, which the boot page tables and the kernel's own map there; only
     // this module drives the local APIC. The boot map does not set a memory type, so the
     // firmware's MTRRs keep it uncached, as the SDM requires; the kernel's own page tables map
     // device memory uncached.
-    LocalApic::new(unsafe {
+    LocalApic::new(ApicRegisters::Memory(unsafe {
         Mmio::new(
             APIC_BASE.load(Ordering::Relaxed),
             local_apic::REGISTER_BLOCK_SIZE,
         )
-    })
+    }))
 }
 
 /// Masks the legacy PICs, enables the local APIC and measures the clocks. Called once by the
@@ -266,6 +357,8 @@ pub(super) extern "C" fn init() {
         super::DIRECT_MAP_OFFSET + apic_base as usize,
         Ordering::Relaxed,
     );
+    X2APIC.store(cpuid(1, 0)[2] & CPUID_X2APIC != 0, Ordering::Relaxed);
+    enter_x2apic_mode();
     let apic = local_apic();
     apic.enable(APIC_SPURIOUS_VECTOR);
     BOOT_APIC_ID.store(apic.id(), Ordering::Relaxed);
@@ -308,10 +401,10 @@ pub(super) extern "C" fn init() {
             ),
         )
     } else {
-        let measured = measure_against_pm_timer(&apic);
+        let measured = measure_against_hpet(&apic).or_else(|| measure_against_pm_timer(&apic));
         assert!(
             measured.is_some(),
-            "neither the 8254 PIT nor the ACPI PM timer counted: no reference clock"
+            "neither the 8254 PIT, the HPET nor the ACPI PM timer counted: no reference clock"
         );
         measured.unwrap_or_default()
     };
@@ -363,7 +456,78 @@ fn pm_timer() -> Option<(u16, u32)> {
 
 /// Measures the TSC's and the APIC timer's frequencies against the ACPI PM timer, for machines
 /// whose 8254 does not count (newer PCs gate it off, D237).
-fn measure_against_pm_timer(apic: &LocalApic<Mmio>) -> Option<(u64, u64)> {
+/// The HPET's counter period in femtoseconds at most (ACPI's HPET specification, 2.3.7.1).
+const HPET_LONGEST_PERIOD_FS: u64 = 0x05f5_e100;
+const FEMTOSECONDS_PER_SECOND: u64 = 1_000_000_000_000_000;
+/// About 2 ms of HPET time, as long as the PIT's window.
+const HPET_WINDOW_FS: u64 = 2_000_000_000_000;
+const HPET_TABLE_ADDRESS: usize = 40;
+const HPET_CAPABILITIES_HIGH: usize = 0x004;
+const HPET_CONFIGURATION: usize = 0x010;
+const HPET_COUNTER: usize = 0x0f0;
+const HPET_ENABLE: u32 = 1;
+const HPET_REGISTER_BYTES: usize = 0x400;
+const GAS_SYSTEM_MEMORY: u8 = 0;
+
+/// The HPET's registers, from the ACPI `HPET` table, when they lie in the boot direct map, and
+/// its counter's frequency (D531).
+fn hpet() -> Option<(Mmio, u64)> {
+    let table = super::acpi_table(b"HPET")?;
+    let gas = table.get(HPET_TABLE_ADDRESS..HPET_TABLE_ADDRESS + 12)?;
+    if gas[0] != GAS_SYSTEM_MEMORY {
+        return None;
+    }
+    let base = u64::from_le_bytes(gas[4..12].try_into().ok()?);
+    if base == 0 || base + HPET_REGISTER_BYTES as u64 > super::BOOT_DIRECT_MAP_END {
+        return None;
+    }
+    // SAFETY: the ACPI `HPET` table names this block as the HPET's registers, in the boot
+    // direct map (checked above), which nothing else drives; firmware maps it uncached.
+    let registers = unsafe {
+        Mmio::new(super::DIRECT_MAP_OFFSET + base as usize, HPET_REGISTER_BYTES)
+    };
+    let period = u64::from(registers.read32(HPET_CAPABILITIES_HIGH));
+    if period == 0 || period > HPET_LONGEST_PERIOD_FS {
+        return None;
+    }
+    Some((registers, FEMTOSECONDS_PER_SECOND / period))
+}
+
+/// Measures the TSC's and the APIC timer's frequencies against the HPET's main counter, which
+/// is turned on if the firmware left it off (D531).
+fn measure_against_hpet(apic: &LocalApic<ApicRegisters>) -> Option<(u64, u64)> {
+    let (hpet, hertz) = hpet()?;
+    let configuration = hpet.read32(HPET_CONFIGURATION);
+    hpet.write32(HPET_CONFIGURATION, configuration | HPET_ENABLE);
+    let window = (HPET_WINDOW_FS * hertz / FEMTOSECONDS_PER_SECOND).max(1);
+    let read = || hpet.read32(HPET_COUNTER);
+    let wait_start = now();
+    let first = read();
+    while read() == first {
+        if now().wrapping_sub(wait_start) > MEASUREMENT_TIMEOUT_TSC_TICKS {
+            return None;
+        }
+        core::hint::spin_loop();
+    }
+    let start = read();
+    apic.start_timer(u32::MAX);
+    let (tsc_start, apic_start) = (now(), apic.timer_count());
+    loop {
+        let elapsed = u64::from(read().wrapping_sub(start));
+        if elapsed >= window {
+            let (tsc_end, apic_end) = (now(), apic.timer_count());
+            let tsc = mul_div_ceil(tsc_end.wrapping_sub(tsc_start), hertz, elapsed);
+            let counts = mul_div_ceil(apic_start.saturating_sub(apic_end).into(), hertz, elapsed);
+            return Some((tsc, counts));
+        }
+        if now().wrapping_sub(wait_start) > MEASUREMENT_TIMEOUT_TSC_TICKS {
+            return None;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+fn measure_against_pm_timer(apic: &LocalApic<ApicRegisters>) -> Option<(u64, u64)> {
     let (port, mask) = pm_timer()?;
     // SAFETY: the FADT names this port as the PM timer's 32-bit counter, which nothing else
     // drives; reading it has no side effect.
@@ -399,6 +563,7 @@ fn measure_against_pm_timer(apic: &LocalApic<Mmio>) -> Option<(u64, u64)> {
 /// Enables this CPU's local APIC and sets its timer up, stopped, as [`init`] does for the boot
 /// CPU (D41). Called by each secondary CPU before it runs the kernel's code.
 pub(super) fn init_this_cpu() {
+    enter_x2apic_mode();
     let apic = local_apic();
     apic.enable(APIC_SPURIOUS_VECTOR);
     if TSC_DEADLINE.load(Ordering::Relaxed) {

@@ -1220,7 +1220,7 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | RISC-V PLIC (priorities, per-context enables, claim/complete; the hart's context from the device tree) | **done** (AIA: planned, M5) |
 | Arm generic timer (EL1 virtual timer) | **done** |
 | RISC-V SBI timer and IPI | **done** |
-| x86 local APIC (xAPIC), on every CPU: its timer, INIT/start-up IPIs and fixed IPIs; 8259 PICs (remapped and masked); 8254 PIT (frequency measurement) | **done** (x2APIC, HPET: planned) |
+| x86 local APIC (xAPIC), on every CPU: its timer, INIT/start-up IPIs and fixed IPIs; 8259 PICs (remapped and masked); 8254 PIT (frequency measurement) | **done** (x2APIC and the HPET as the calibration clock: code written, unbuilt, D531) |
 | x86 I/O APIC (lines routed by the MADT's overrides) | **done** (device lines through it: planned, M5) |
 | PCI MSI-X (the capability, the table in a BAR, entries masked while written) | **done** on x86_64 (D184) |
 | virtio core: virtio-mmio (version 2), modern virtio-pci, the split virtqueue (D111); interrupts through the slot's line or MSI-X (D184); block, console, network and entropy on interrupts (D220) | **done** (the GPU's interrupts, a line per queue, lines through the I/O APIC and on other CPUs, lines given back: planned) |
