@@ -24944,3 +24944,24 @@ the license, by an explicit instruction recorded here.
 - **Not yet (part 3 on).** Reading the fuse's ucode version, running FWSEC in heavy-secure mode
   through the boot ROM's PKC registers, checking WPR2, version 2 descriptors (Turing), then
   SEC2's booter, GSP's queues and the display.
+
+## D513 NVIDIA's GSP boot, part 3: FWSEC run and WPR2 set up (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from NVIDIA's MIT-licensed open GPU kernel modules)
+
+- **Decision.** The NVIDIA probe runs FWSEC's FRTS command once FWSEC is found (D512), unless
+  WPR2 is already set up:
+  - The region goes 2 MiB below the top of the usable video memory the firmware reports
+    (`NV_USABLE_FB_SIZE_IN_MB`), 128 KiB aligned, 1 MiB long, leaving the top for the VGA
+    workspace; the later boot steps read it back from WPR2's registers, so they agree.
+  - The fuse's version for FWSEC's ucode id (`NV_FUSE_OPT_FPF_GSP_UCODE<n>_VERSION`, the
+    highest bit set plus one) picks the signature; FWSEC's IMEM and patched DMEM are copied to
+    one DMA region of coherent system memory.
+  - `Falcon::run_secure` loads it the way the boot ROM verifies heavy-secure code: GSP's FBIF
+    set to coherent system memory, physical, without a context; IMEM by DMA in 256-byte blocks
+    marked secure at the code's virtual addresses, DMEM by DMA; the boot ROM told the
+    signature's place in DMEM, the engine mask, the ucode id and RSA-3K; then started at the
+    code's virtual address and waited for.
+  - Success is FWSEC's FRTS status (VBIOS scratch `0x0e`, bits 31 to 16, zero) and WPR2's
+    registers holding a region, which the probe reports.
+- **Not yet (part 4 on).** Version 2 descriptors (Turing), SEC2's booter with GSP's image and
+  its WPR metadata, GSP's libos arguments and message queues, its remote calls and the display
+  through them.

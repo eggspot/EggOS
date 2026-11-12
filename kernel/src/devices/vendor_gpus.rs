@@ -15,6 +15,7 @@ use eggos_drivers::gpu::amd_dcn;
 use eggos_drivers::gpu::amd_discovery::{OFFSET_FROM_TOP, display_block, dmcub_file_name};
 use eggos_drivers::gpu::nvidia_bios::NvidiaBios;
 use eggos_drivers::gpu::{nvidia_falcon, nvidia_fwsec};
+use eggos_drivers::io::RegisterIo;
 use eggos_drivers::gpu::nvidia_gsp::{self, Chip};
 use eggos_hal::PhysicalRange;
 
@@ -34,6 +35,13 @@ const ATOM_COMMAND_TABLES: usize = 81;
 const BOOT_0_PAGE: u64 = 4096;
 const GSP_BLOCK_BYTES: u64 = 0x4000;
 const PROM_START: u64 = 0x30_0000;
+const USABLE_VIDEO_MEMORY_MB: usize = 0x11_83a4;
+const VBIOS_SCRATCH_FRTS: usize = 0x1400 + 4 * 0x0e;
+const WPR2_LOW: usize = 0x1f_a824;
+const WPR2_HIGH: usize = 0x1f_a828;
+const FRTS_BYTES: u64 = 1 << 20;
+const FRTS_ALIGNMENT: u64 = 128 << 10;
+const FWSEC_MS: u64 = 1000;
 const PROM_BYTES: u64 = 0x10_0000;
 
 pub static AMD_DISPLAY_DRIVER: DriverDescriptor = DriverDescriptor {
@@ -91,6 +99,14 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
             " fwsec {} + {} bytes, signature versions {:#06b}",
             fwsec.imem_bytes, fwsec.dmem_bytes, fwsec.signature_versions
         );
+        match run_fwsec(probe, node.regions[0], &fwsec) {
+            Ok(region) => {
+                let _ = write!(line, " wpr2 at {:#x}", region.start);
+            }
+            Err(reason) => {
+                let _ = write!(line, " no wpr2: {reason}");
+            }
+        }
     }
     if let Some(chip) = read_boot_0(probe, node.regions[0]).map(Chip::of_boot_0) {
         match (chip.name(), chip.signature_family()) {
@@ -122,6 +138,80 @@ fn read_boot_0(probe: &mut dyn Probe, registers: PhysicalRange) -> Option<u32> {
     // SAFETY: `map_window` mapped BAR 0's first page, the GPU's registers, as device memory
     // for good; `PMC_BOOT_0` is a read-only identification register.
     Some(unsafe { core::ptr::read_volatile((start + nvidia_gsp::BOOT_0) as *const u32) })
+}
+
+/// Runs FWSEC's FRTS command on GSP's Falcon (D513), so the protected region WPR2 is set up
+/// 2 MiB below the top of the usable video memory (1 MiB long, 128 KiB aligned); the region
+/// the GPU then reports.
+fn run_fwsec(
+    probe: &mut dyn Probe,
+    registers: PhysicalRange,
+    fwsec: &nvidia_fwsec::Fwsec<'_>,
+) -> Result<PhysicalRange, &'static str> {
+    let length = usize::try_from(registers.len()).map_err(|_| "BAR 0 is too large")?;
+    let base = probe
+        .map_window(registers)
+        .map_err(|_| "BAR 0 could not be mapped")?;
+    // SAFETY: `map_window` mapped BAR 0, `length` bytes, as device memory for good; only this
+    // probe drives the GPU's registers.
+    let regs = unsafe { eggos_drivers::io::Mmio::new(base, length) };
+    let wpr2 = |regs: &eggos_drivers::io::Mmio| {
+        let low = u64::from(regs.read32(WPR2_LOW) >> 4) << 12;
+        let high = u64::from(regs.read32(WPR2_HIGH) >> 4) << 12;
+        (high > low).then(|| PhysicalRange {
+            start: low,
+            end: high + (1 << 12),
+        })
+    };
+    if let Some(region) = wpr2(&regs) {
+        return Ok(region);
+    }
+    let video_memory = u64::from(regs.read32(USABLE_VIDEO_MEMORY_MB)) << 20;
+    if video_memory < 4 * FRTS_BYTES {
+        return Err("the usable video memory is not known");
+    }
+    let offset = (video_memory - 2 * FRTS_BYTES) & !(FRTS_ALIGNMENT - 1);
+    let version = nvidia_falcon::fuse_version(&regs, fwsec.ucode_id);
+    let dmem = nvidia_fwsec::prepare_frts(fwsec, offset, version)
+        .map_err(|_| "FWSEC has no interface or no signature for the fuse")?;
+    let imem_bytes = fwsec.imem_bytes as usize;
+    let image = super::dma::DmaRegion::allocate(imem_bytes + dmem.len())
+        .map_err(|_| "no memory for FWSEC")?;
+    // SAFETY: the region holds at least `imem_bytes + dmem.len()` bytes, mapped for the CPU
+    // and owned by this probe until FWSEC has run.
+    unsafe {
+        let target = eggos_drivers::dma::DmaMemory::as_mut_ptr(&image);
+        core::ptr::copy_nonoverlapping(fwsec.ucode.as_ptr(), target, imem_bytes);
+        core::ptr::copy_nonoverlapping(dmem.as_ptr(), target.add(imem_bytes), dmem.len());
+    }
+    // SAFETY: as above, for the Falcon's own use of the same registers.
+    let falcon_regs = unsafe { eggos_drivers::io::Mmio::new(base, length) };
+    let falcon = nvidia_falcon::Falcon::new(falcon_regs, nvidia_falcon::GSP_BASE);
+    let mut deadline = probe.deadline(FWSEC_MS);
+    falcon
+        .reset(&mut || deadline.keep_waiting())
+        .map_err(nvidia_falcon::FalconError::description)?;
+    let program = nvidia_falcon::SecureProgram {
+        image: eggos_drivers::dma::DmaMemory::dma_addr(&image).get(),
+        imem_physical: fwsec.imem_physical,
+        imem_virtual: fwsec.imem_virtual,
+        imem_bytes: fwsec.imem_bytes,
+        dmem_physical: fwsec.dmem_physical,
+        dmem_bytes: dmem.len() as u32,
+        signature_place: fwsec.signature_place,
+        engine_mask: fwsec.engine_mask,
+        ucode_id: fwsec.ucode_id,
+    };
+    let mut deadline = probe.deadline(FWSEC_MS);
+    falcon
+        .run_secure(nvidia_falcon::GSP_FBIF, &program, (0, 0), &mut || {
+            deadline.keep_waiting()
+        })
+        .map_err(nvidia_falcon::FalconError::description)?;
+    if regs.read32(VBIOS_SCRATCH_FRTS) >> 16 != 0 {
+        return Err("FWSEC reported an FRTS error");
+    }
+    wpr2(&regs).ok_or("FWSEC left no WPR2")
 }
 
 /// The video BIOS whole, through BAR 0's `PROM` window (D512): the expansion ROM BAR may show

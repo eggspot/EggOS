@@ -6,6 +6,11 @@
 //! ports, set the boot vector and the two mailboxes, start the core and wait for it to halt.
 //! Register places are from NVIDIA's published `dev_falcon_v4.h`, `dev_riscv_pri.h`,
 //! `dev_gsp.h` and `dev_sec_pri.h` (MIT, `NVIDIA-NOTICE.md`).
+//!
+//! Heavy-secure code (D513), such as FWSEC, is loaded by the engine's own DMA from coherent
+//! system memory, IMEM blocks marked secure, after the boot ROM is told where the code's
+//! RSA-3K signature sits in DMEM, which engines it may run on and its ucode id
+//! (`dev_falcon_second_pri.h`, `dev_fbif_v4.h`, `dev_fuse.h`).
 
 use crate::io::RegisterIo;
 
@@ -33,6 +38,59 @@ const DMEM_CONTROL: usize = 0x1c0;
 const DMEM_DATA: usize = 0x1c4;
 const ENGINE: usize = 0x3c0;
 const BOOT_CORE_CONTROL: usize = RISCV + 0x668;
+const DMA_BASE: usize = 0x110;
+const DMA_MEMORY_OFFSET: usize = 0x114;
+const DMA_COMMAND: usize = 0x118;
+const DMA_SOURCE_OFFSET: usize = 0x11c;
+const DMA_BASE_HIGH: usize = 0x128;
+const DMA_FULL: u32 = 1;
+const DMA_IDLE: u32 = 1 << 1;
+const DMA_SECURE: u32 = 1 << 2;
+const DMA_TO_IMEM: u32 = 1 << 4;
+const DMA_256_BYTES: u32 = 6 << 8;
+const BOOT_ROM_MODULE: usize = RISCV + 0x180;
+const BOOT_ROM_UCODE_ID: usize = RISCV + 0x198;
+const BOOT_ROM_ENGINES: usize = RISCV + 0x19c;
+const BOOT_ROM_SIGNATURE: usize = RISCV + 0x210;
+const RSA_3K: u32 = 1;
+const TRANSFER_CONFIG: usize = 0;
+const FBIF_CONTROL: usize = 0x24;
+const TARGET_COHERENT_SYSTEM_MEMORY: u32 = 1;
+const PHYSICAL: u32 = 1 << 2;
+const ALLOW_PHYSICAL_WITHOUT_CONTEXT: u32 = 1 << 7;
+
+/// GSP's interface to memory (FBIF) in BAR 0.
+pub const GSP_FBIF: usize = 0x11_0600;
+/// The fuse holding GSP's first ucode's version; the others follow a word apart.
+pub const GSP_UCODE_VERSION_FUSE: usize = 0x82_41c0;
+
+/// The version the fuses hold for GSP ucode `ucode_id` (1 on): the highest bit set, plus
+/// one, or 0 for none.
+pub fn fuse_version(regs: &impl RegisterIo, ucode_id: u8) -> u32 {
+    if ucode_id == 0 || ucode_id > 16 {
+        return 0;
+    }
+    match regs.read32(GSP_UCODE_VERSION_FUSE + 4 * (usize::from(ucode_id) - 1)) {
+        0 => 0,
+        value => 32 - value.leading_zeros(),
+    }
+}
+
+/// Heavy-secure code in coherent system memory at physical `image`: its IMEM bytes, then its
+/// DMEM bytes, with where each goes, where in DMEM its signature is, which engines it may run
+/// on and its ucode id.
+#[derive(Debug, Clone, Copy)]
+pub struct SecureProgram {
+    pub image: u64,
+    pub imem_physical: u32,
+    pub imem_virtual: u32,
+    pub imem_bytes: u32,
+    pub dmem_physical: u32,
+    pub dmem_bytes: u32,
+    pub signature_place: u32,
+    pub engine_mask: u16,
+    pub ucode_id: u8,
+}
 
 const ENGINE_RESET: u32 = 1;
 const START_CPU: u32 = 1 << 1;
@@ -158,6 +216,99 @@ impl<R: RegisterIo> Falcon<R> {
         Ok((self.read(MAILBOX_0), self.read(MAILBOX_1)))
     }
 
+    fn dma_wait(&self, mask: u32, wanted: u32, keep_waiting: &mut dyn FnMut() -> bool) -> bool {
+        while self.read(DMA_COMMAND) & mask != wanted {
+            if !keep_waiting() {
+                return false;
+            }
+            core::hint::spin_loop();
+        }
+        true
+    }
+
+    fn dma(
+        &self,
+        source: u64,
+        (destination, memory_offset, bytes): (u32, u32, u32),
+        command: u32,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), FalconError> {
+        if !self.dma_wait(DMA_FULL, 0, keep_waiting) {
+            return Err(FalconError::DidNotHalt);
+        }
+        self.write(DMA_BASE, (source >> 8) as u32);
+        self.write(DMA_BASE_HIGH, (source >> 40) as u32 & 0x1ff);
+        for block in (0..bytes).step_by(BLOCK_BYTES) {
+            if !self.dma_wait(DMA_FULL, 0, keep_waiting) {
+                return Err(FalconError::DidNotHalt);
+            }
+            self.write(DMA_MEMORY_OFFSET, destination + block);
+            self.write(DMA_SOURCE_OFFSET, memory_offset + block);
+            self.write(DMA_COMMAND, command);
+        }
+        match self.dma_wait(DMA_IDLE, DMA_IDLE, keep_waiting) {
+            true => Ok(()),
+            false => Err(FalconError::DidNotHalt),
+        }
+    }
+
+    /// Loads heavy-secure `program` through the engine's DMA (its FBIF at `fbif`), points the
+    /// boot ROM at its signature, starts it at its IMEM virtual address with `mailboxes`, and
+    /// waits for it to halt; its mailboxes then. The engine must be [`Self::reset`] first.
+    pub fn run_secure(
+        &self,
+        fbif: usize,
+        program: &SecureProgram,
+        mailboxes: (u32, u32),
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(u32, u32), FalconError> {
+        let (imem, dmem) = self.memory_bytes();
+        if (program.imem_physical + program.imem_bytes) as usize > imem
+            || (program.dmem_physical + program.dmem_bytes) as usize > dmem
+        {
+            return Err(FalconError::TooLarge);
+        }
+        let config = self.regs.read32(fbif + TRANSFER_CONFIG) & !0x7;
+        self.regs.write32(
+            fbif + TRANSFER_CONFIG,
+            config | TARGET_COHERENT_SYSTEM_MEMORY | PHYSICAL,
+        );
+        let control = self.regs.read32(fbif + FBIF_CONTROL);
+        self.regs.write32(fbif + FBIF_CONTROL, control | ALLOW_PHYSICAL_WITHOUT_CONTEXT);
+        let code_source = program.image.wrapping_sub(u64::from(program.imem_virtual));
+        self.dma(
+            code_source,
+            (program.imem_physical, program.imem_virtual, program.imem_bytes),
+            DMA_256_BYTES | DMA_TO_IMEM | DMA_SECURE,
+            keep_waiting,
+        )?;
+        let data_source = program.image + u64::from(program.imem_bytes);
+        self.dma(
+            data_source,
+            (program.dmem_physical, 0, program.dmem_bytes),
+            DMA_256_BYTES,
+            keep_waiting,
+        )?;
+        self.write(BOOT_ROM_SIGNATURE, program.signature_place);
+        self.write(BOOT_ROM_ENGINES, u32::from(program.engine_mask));
+        self.write(BOOT_ROM_UCODE_ID, u32::from(program.ucode_id));
+        self.write(BOOT_ROM_MODULE, RSA_3K);
+        self.write(BOOT_VECTOR, program.imem_virtual);
+        self.write(MAILBOX_0, mailboxes.0);
+        self.write(MAILBOX_1, mailboxes.1);
+        match self.read(CPU_CONTROL) & ALIAS_ENABLED != 0 {
+            true => self.write(CPU_CONTROL_ALIAS, START_CPU),
+            false => self.write(CPU_CONTROL, START_CPU),
+        }
+        while self.read(CPU_CONTROL) & HALTED == 0 {
+            if !keep_waiting() {
+                return Err(FalconError::DidNotHalt);
+            }
+            core::hint::spin_loop();
+        }
+        Ok((self.read(MAILBOX_0), self.read(MAILBOX_1)))
+    }
+
     fn load_code(&self, program: &Program<'_>) {
         let secure = if program.secure { SECURE } else { 0 };
         self.write(IMEM_CONTROL, program.code_physical | AUTO_INCREMENT_WRITE | secure);
@@ -260,6 +411,34 @@ mod tests {
         assert!(writes.contains(&(BOOT_VECTOR, 0x200)));
         assert!(writes.contains(&(MAILBOX_0, 7)) && writes.contains(&(MAILBOX_1, 8)));
         assert_eq!(writes.last(), Some(&(CPU_CONTROL, START_CPU)));
+    }
+
+    struct Fuse(u32);
+
+    impl RegisterIo for Fuse {
+        fn read8(&self, _: usize) -> u8 {
+            0
+        }
+        fn write8(&self, _: usize, _: u8) {}
+        fn read16(&self, _: usize) -> u16 {
+            0
+        }
+        fn write16(&self, _: usize, _: u16) {}
+        fn read32(&self, offset: usize) -> u32 {
+            match offset == GSP_UCODE_VERSION_FUSE + 4 {
+                true => self.0,
+                false => 0,
+            }
+        }
+        fn write32(&self, _: usize, _: u32) {}
+    }
+
+    #[test]
+    fn the_fuse_version_is_the_highest_bit_set_plus_one() {
+        assert_eq!(fuse_version(&Fuse(0b0110), 2), 3);
+        assert_eq!(fuse_version(&Fuse(0), 2), 0);
+        assert_eq!(fuse_version(&Fuse(0b0110), 1), 0);
+        assert_eq!(fuse_version(&Fuse(1), 0), 0);
     }
 
     #[test]
