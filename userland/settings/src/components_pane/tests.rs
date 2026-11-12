@@ -667,3 +667,39 @@ fn the_last_check_is_shown_in_the_chosen_time_zone() {
         Some("Up to date \u{b7} checked today at 17:14")
     );
 }
+
+#[test]
+fn on_a_phone_the_pane_is_one_column_of_full_width_blocks() {
+    let mut window = opened(read(&["desktop", "builtin-apps"]));
+    window.tree().resize(360, 740);
+    window.set_form_factor(crate::settings_window::SettingsForm::Phone, 360);
+    window.open_pane(COMPONENTS);
+    let ids = widgets(&window);
+    let pane = rect(&window, ids.pane);
+    let at = |id: WidgetId| {
+        let r = rect(&window, id);
+        Rect::new(r.x - pane.x, r.y - pane.y, r.width, r.height)
+    };
+    assert_eq!(at(ids.updates_band), Rect::new(16, 124, 328, 132));
+    assert_eq!(at(ids.edition_band), Rect::new(16, 264, 328, 116));
+    assert_eq!(at(ids.rows[0].panel), Rect::new(16, 388, 328, 128));
+    assert_eq!(at(ids.rows[1].panel).y, 516);
+    let button = rect(&window, ids.rows[0].button);
+    let panel = rect(&window, ids.rows[0].panel);
+    assert_eq!(
+        Rect::new(button.x - panel.x, button.y - panel.y, button.width, button.height),
+        Rect::new(8, 72, 312, 48)
+    );
+}
+
+#[test]
+fn on_a_tablet_the_desktop_layout_takes_forty_pixel_controls() {
+    let mut window = opened(read(&["desktop"]));
+    window.tree().resize(1024, 660);
+    window.set_form_factor(crate::settings_window::SettingsForm::Tablet, 1024);
+    let ids = widgets(&window);
+    let pane = rect(&window, ids.pane);
+    assert_eq!(rect(&window, ids.rows[0].panel).y - pane.y, 268);
+    assert_eq!(rect(&window, ids.rows[0].panel).height, 56);
+    assert_eq!(rect(&window, ids.updates_button).height, 40);
+}

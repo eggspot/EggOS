@@ -23462,3 +23462,20 @@ the license, by an explicit instruction recorded here.
   10 and the Display pane's phone places, `pane_summary`, cards in a column, wrapping labels
   and bottom sheets (asks 1 to 3), and the element tree's `list` `Settings` with its
   summaries.
+
+## D423 The Components pane on a phone and a tablet (docs/ux/components-v0.5.md section 10; D300's deviation, settings-forms-v0.5.md's exception; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** The pane reads its geometry from one `Metrics` table per device class instead of
+  its desktop constants: `Layout::Desktop` (unchanged), `Layout::Tablet` (Updates band 56 tall,
+  Edition band 72 at 188, rows of 56 from 268, every button 40 tall) and `Layout::Phone
+  { width }` (one column `width - 32` wide: `Download` full width at 120 pushing the blocks 56
+  down while it shows, the Updates band 132 tall at 124 with its button full width, the
+  Edition band 116 tall at 264 with its dropdown full width, rows of 128 from 388 with the
+  state under the title and the button full width at 72, and 184 with `Update` at 72 and the
+  row's button at 128). Rows are now placed one under another by their own heights, so a row
+  with an update can be taller, and a note's anchor is the bottom of the row it belongs to.
+  Settings chooses the layout with its shape (D422): pages give the phone's, touch rows the
+  tablet's. A TV keeps the desktop layout at scale 2, as the design says.
+- **Deviations.** The notes keep the desktop's places on a phone (the design's x 24, the bar
+  `width - 48` and stacked buttons are not built), and the wearable's read-only lines are not
+  built.

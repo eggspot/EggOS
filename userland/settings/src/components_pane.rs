@@ -43,7 +43,6 @@ const ROW_UPDATE: (i32, i32, i32, i32) = (232, 10, 96, 28);
 const UPDATE_TEXT_END: i32 = 216;
 const DOWNLOAD: (i32, i32, i32, i32) = (352, 66, 96, 28);
 const STORE_NOTE_TOP: i32 = 116;
-const BAND_NOTE_TOP: i32 = 172;
 const OFFLINE: &str = "The network is offline.";
 const OFFLINE_RETRY: &str = "Connect or attach the store disk, then try again.";
 const UPDATING: &str = "updating";
@@ -193,6 +192,7 @@ struct Widgets {
     cancel: WidgetId,
     confirm: WidgetId,
     edition: WidgetId,
+    edition_label: WidgetId,
     edition_summary: WidgetId,
     edition_band: WidgetId,
     updates_band: WidgetId,
@@ -296,6 +296,7 @@ pub struct ComponentsPane {
     chosen_edition: Option<&'static str>,
     asked: Option<ComponentJob>,
     time_zone: usize,
+    metrics: Metrics,
 }
 
 fn add(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, place: Place, kind: Kind) -> WidgetId {
@@ -309,6 +310,114 @@ fn at(x: i32, y: i32, width: i32, height: i32) -> Place {
 
 fn line_at(x: i32, y: i32, width: i32) -> Place {
     Place::at(x, y, Length::Px(width), Length::Content)
+}
+
+/// The device class the pane lays itself out for (docs/ux/components-v0.5.md section 10): a
+/// phone's pane is `width` wide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Layout {
+    #[default]
+    Desktop,
+    Tablet,
+    Phone { width: i32 },
+}
+
+type Box4 = (i32, i32, i32, i32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Metrics {
+    width: i32,
+    download: Box4,
+    download_shift: i32,
+    updates_band: Box4,
+    updates_line: (i32, i32, i32),
+    daily: (i32, i32),
+    updates_button: Box4,
+    edition_band: Box4,
+    edition_label: (i32, i32),
+    edition_dropdown: Box4,
+    edition_summary: (i32, i32, i32),
+    rows_top: i32,
+    row_height: i32,
+    row_height_with_update: i32,
+    row_button: Box4,
+    row_update: Box4,
+    button_under_update: i32,
+    stacked: bool,
+}
+
+const STACKED_TEXT: (i32, i32, i32, i32) = (16, 8, 28, 48);
+const PHONE_GAP: i32 = 16;
+
+impl Metrics {
+    fn of(layout: Layout) -> Self {
+        match layout {
+            Layout::Desktop => Self {
+                width: ROW_WIDTH,
+                download: DOWNLOAD,
+                download_shift: 0,
+                updates_band: UPDATES_BAND,
+                updates_line: UPDATES_LINE,
+                daily: DAILY_BOX,
+                updates_button: UPDATES_BUTTON,
+                edition_band: EDITION_BAND,
+                edition_label: EDITION_LABEL,
+                edition_dropdown: EDITION_DROPDOWN,
+                edition_summary: EDITION_SUMMARY,
+                rows_top: ROWS_TOP,
+                row_height: ROW_HEIGHT,
+                row_height_with_update: ROW_HEIGHT,
+                row_button: ROW_BUTTON,
+                row_update: ROW_UPDATE,
+                button_under_update: ROW_BUTTON.1,
+                stacked: false,
+            },
+            Layout::Tablet => Self {
+                width: ROW_WIDTH,
+                download: (DOWNLOAD.0, DOWNLOAD.1, DOWNLOAD.2, 40),
+                download_shift: 0,
+                updates_band: (16, 124, ROW_WIDTH, 56),
+                updates_line: (24, 8, 296),
+                daily: (24, 28),
+                updates_button: (336, 8, 96, 40),
+                edition_band: (16, 188, ROW_WIDTH, 72),
+                edition_label: (24, 14),
+                edition_dropdown: (272, 8, 160, 40),
+                edition_summary: (24, 48, 408),
+                rows_top: 268,
+                row_height: 56,
+                row_height_with_update: 56,
+                row_button: (336, 8, 96, 40),
+                row_update: (232, 8, 96, 40),
+                button_under_update: 8,
+                stacked: false,
+            },
+            Layout::Phone { width } => {
+                let band = width - 2 * PADDING;
+                let inner = band - PHONE_GAP;
+                Self {
+                    width: band,
+                    download: (PADDING, 120, band, 48),
+                    download_shift: 56,
+                    updates_band: (PADDING, 124, band, 132),
+                    updates_line: (8, 8, inner),
+                    daily: (8, 28),
+                    updates_button: (8, 76, inner, 48),
+                    edition_band: (PADDING, 264, band, 116),
+                    edition_label: (8, 8),
+                    edition_dropdown: (8, 28, inner, 48),
+                    edition_summary: (8, 84, inner),
+                    rows_top: 388,
+                    row_height: 128,
+                    row_height_with_update: 184,
+                    row_button: (8, 72, inner, 48),
+                    row_update: (8, 72, inner, 48),
+                    button_under_update: 128,
+                    stacked: true,
+                }
+            }
+        }
+    }
 }
 
 fn show_line(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, words: &str, ink: Token) {
@@ -369,7 +478,7 @@ impl ComponentsPane {
             at(EDITION_BAND.0, EDITION_BAND.1, EDITION_BAND.2, EDITION_BAND.3),
             Kind::panel(Token::Menu),
         );
-        add(
+        let edition_label = add(
             tree,
             band,
             line_at(EDITION_LABEL.0, EDITION_LABEL.1, 0),
@@ -480,6 +589,7 @@ impl ComponentsPane {
                 cancel,
                 confirm,
                 edition,
+                edition_label,
                 edition_summary,
                 edition_band: band,
                 updates_band,
@@ -498,9 +608,43 @@ impl ComponentsPane {
             chosen_edition: None,
             asked: None,
             time_zone: crate::facts::utc_zone(),
+            metrics: Metrics::of(Layout::Desktop),
         };
         components.refresh(tree);
         components
+    }
+
+    /// Lays the pane out for `layout`'s device class (docs/ux/components-v0.5.md section 10).
+    pub fn set_layout(&mut self, tree: &mut WidgetTree<CAPACITY>, layout: Layout) {
+        let metrics = Metrics::of(layout);
+        if metrics == self.metrics {
+            return;
+        }
+        self.metrics = metrics;
+        let widgets = self.widgets;
+        let place = |tree: &mut WidgetTree<CAPACITY>, id: WidgetId, (x, y, w, h): Box4| {
+            tree.set_place(id, at(x, y, w, h));
+        };
+        place(tree, widgets.download, metrics.download);
+        let (x, y, w) = metrics.updates_line;
+        tree.set_place(widgets.updates_line, line_at(x, y, w));
+        tree.set_place(
+            widgets.daily,
+            Place::at(metrics.daily.0, metrics.daily.1, Length::Content, Length::Content),
+        );
+        place(tree, widgets.updates_button, metrics.updates_button);
+        tree.set_place(
+            widgets.edition_label,
+            line_at(metrics.edition_label.0, metrics.edition_label.1, 0),
+        );
+        place(tree, widgets.edition, metrics.edition_dropdown);
+        let (x, y, w) = metrics.edition_summary;
+        tree.set_place(widgets.edition_summary, line_at(x, y, w));
+        for row in widgets.rows {
+            place(tree, row.update, metrics.row_update);
+            place(tree, row.button, metrics.row_button);
+        }
+        self.refresh(tree);
     }
 
     /// Says the time zone the last check's time is shown in, an index of
@@ -1541,14 +1685,17 @@ impl ComponentsPane {
             Some(Anchor::Store | Anchor::Band | Anchor::Edition) => note_height,
             _ => 0,
         };
-        tree.set_place(
-            widgets.updates_band,
-            at(UPDATES_BAND.0, UPDATES_BAND.1 + below_store, UPDATES_BAND.2, UPDATES_BAND.3),
-        );
-        tree.set_place(
-            widgets.edition_band,
-            at(EDITION_BAND.0, EDITION_BAND.1 + below_band, EDITION_BAND.2, EDITION_BAND.3),
-        );
+        let m = self.metrics;
+        let shift = match self.read.store.is_none() && self.note != Note::StoreProgress {
+            true => m.download_shift,
+            false => 0,
+        };
+        let (x, y, w, h) = m.updates_band;
+        tree.set_place(widgets.updates_band, at(x, y + shift + below_store, w, h));
+        let (x, y, w, h) = m.edition_band;
+        tree.set_place(widgets.edition_band, at(x, y + shift + below_band, w, h));
+        let mut next_top = m.rows_top + shift + below_edition;
+        let mut row_bottoms = [0i32; ROWS];
         let acting = match anchor {
             Some(Anchor::Row(row)) => Some(row),
             _ => None,
@@ -1559,29 +1706,56 @@ impl ComponentsPane {
                 tree.set_shown(row_widgets.panel, false);
                 continue;
             };
-            let below = acting.is_some_and(|acting| index > acting);
-            let top = ROWS_TOP + below_edition + ROW_HEIGHT * index as i32 + if below { note_height } else { 0 };
-            tree.set_place(row_widgets.panel, at(PADDING, top, ROW_WIDTH, ROW_HEIGHT));
-            tree.set_shown(row_widgets.panel, true);
             let look = self.look(row, others_busy);
+            let height = match look.update.is_some() {
+                true => m.row_height_with_update,
+                false => m.row_height,
+            };
+            let top = next_top;
+            next_top += height;
+            row_bottoms[index] = next_top;
+            if acting == Some(index) {
+                next_top += note_height;
+            }
+            tree.set_place(row_widgets.panel, at(PADDING, top, m.width, height));
+            tree.set_shown(row_widgets.panel, true);
             let component = &row.component;
+            if m.stacked {
+                let (x, title_y, state_y, summary_y) = STACKED_TEXT;
+                tree.set_place(row_widgets.title, line_at(x, title_y, m.width - 2 * x));
+                tree.set_place(
+                    row_widgets.state,
+                    Place::at(x, state_y, Length::Content, Length::Content),
+                );
+                tree.set_place(row_widgets.summary, line_at(x, summary_y, m.width - 2 * x));
+                let (bx, _, bw, bh) = m.row_button;
+                let button_y = match look.update.is_some() {
+                    true => m.button_under_update,
+                    false => m.row_button.1,
+                };
+                tree.set_place(row_widgets.button, at(bx, button_y, bw, bh));
+            }
             let title_width = match &look.update {
                 Some(_) => UPDATE_TEXT_END - ROW_TEXT_X,
                 None => (STATE_END - STATE_GAP - text::width(&look.state) - ROW_TEXT_X).max(0),
             };
-            tree.set_place(
-                row_widgets.title,
-                line_at(ROW_TEXT_X, TITLE_TOP, title_width),
-            );
+            if !m.stacked {
+                tree.set_place(
+                    row_widgets.title,
+                    line_at(ROW_TEXT_X, TITLE_TOP, title_width),
+                );
+            }
             show_line(tree, row_widgets.title, &component.title, Token::Text);
             show_line(tree, row_widgets.state, &look.state, Token::Text);
-            tree.set_shown(row_widgets.state, look.update.is_none());
+            tree.set_shown(row_widgets.state, look.update.is_none() || m.stacked);
             match &look.update {
                 Some(update) => {
-                    tree.set_place(
-                        row_widgets.summary,
-                        line_at(ROW_TEXT_X, SUMMARY_TOP, UPDATE_TEXT_END - ROW_TEXT_X),
-                    );
+                    if !m.stacked {
+                        tree.set_place(
+                            row_widgets.summary,
+                            line_at(ROW_TEXT_X, SUMMARY_TOP, UPDATE_TEXT_END - ROW_TEXT_X),
+                        );
+                    }
                     show_line(tree, row_widgets.summary, &update.line, Token::Text);
                     tree.set_text(row_widgets.update, update.button);
                     tree.set_enabled(row_widgets.update, update.enabled);
@@ -1591,10 +1765,12 @@ impl ComponentsPane {
                     );
                 }
                 None => {
-                    tree.set_place(
-                        row_widgets.summary,
-                        line_at(ROW_TEXT_X, SUMMARY_TOP, STATE_END - ROW_TEXT_X),
-                    );
+                    if !m.stacked {
+                        tree.set_place(
+                            row_widgets.summary,
+                            line_at(ROW_TEXT_X, SUMMARY_TOP, STATE_END - ROW_TEXT_X),
+                        );
+                    }
                     show_line(tree, row_widgets.summary, &component.summary, Token::TextDim);
                 }
             }
@@ -1620,12 +1796,12 @@ impl ComponentsPane {
         }
         let note_top = anchor.map(|anchor| match anchor {
             Anchor::Store => STORE_NOTE_TOP,
-            Anchor::Band => BAND_NOTE_TOP,
-            Anchor::Edition => EDITION_BAND.1 + EDITION_BAND.3,
-            Anchor::Row(row) => ROWS_TOP + ROW_HEIGHT * (row as i32 + 1),
+            Anchor::Band => m.updates_band.1 + shift + m.updates_band.3,
+            Anchor::Edition => m.edition_band.1 + shift + m.edition_band.3,
+            Anchor::Row(row) => row_bottoms.get(row).copied().unwrap_or(next_top),
         });
         self.place_note(tree, note_top);
-        let bottom = ROWS_TOP + ROW_HEIGHT * shown as i32 + note_height + BOTTOM_MARGIN;
+        let bottom = next_top + BOTTOM_MARGIN;
         tree.set_place(
             widgets.pane,
             Place::at(

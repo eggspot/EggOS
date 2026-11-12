@@ -1564,6 +1564,12 @@ impl SettingsWindow {
         };
         self.windows
             .set_drill_down(&mut self.tree, shape == Shape::Pages, pane_width);
+        let layout = match shape {
+            Shape::Pages => crate::components_pane::Layout::Phone { width: pane_width },
+            Shape::Sidebar { row: SIDEBAR_ROW_TOUCH } => crate::components_pane::Layout::Tablet,
+            Shape::Sidebar { .. } => crate::components_pane::Layout::Desktop,
+        };
+        self.components.set_layout(&mut self.tree, layout);
         self.lay_out_frame();
     }
 
