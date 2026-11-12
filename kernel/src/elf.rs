@@ -138,7 +138,8 @@ pub struct ProgramHeader {
 
 impl<'a> Elf<'a> {
     /// Checks `image`'s file header: an image of the kernel's class and byte order for
-    /// `machine`, an executable or position-independent file, with program headers of the standard size that lie
+    /// `machine`, an executable or position-independent file, with program headers of the
+    /// standard size that lie
     /// within the image.
     pub fn parse(image: &'a [u8], machine: u16) -> Result<Self, InvalidElf> {
         if image.len() < HEADER_SIZE || image[..4] != *b"\x7fELF" {

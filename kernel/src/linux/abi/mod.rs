@@ -53,6 +53,11 @@ mod riscv32;
 #[cfg(target_arch = "riscv32")]
 pub use riscv32::*;
 
+#[cfg(target_arch = "arm")]
+mod arm;
+#[cfg(target_arch = "arm")]
+pub use arm::*;
+
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
 #[cfg(target_arch = "x86_64")]
@@ -65,6 +70,7 @@ pub use x86_64::*;
     target_arch = "powerpc64",
     target_arch = "riscv64",
     target_arch = "riscv32",
+    target_arch = "arm",
     target_arch = "s390x",
     target_arch = "sparc64",
     target_arch = "x86_64"
@@ -163,6 +169,10 @@ pub const FADVISE_ADVICE_SECOND: bool = false;
 /// `statfs64` is packed to 4 (D491).
 #[cfg(not(target_arch = "arm"))]
 pub const STATFS_ALIGN: usize = 8;
+/// The number of a private call past the table that sets the thread pointer: 32-bit Arm's
+/// `set_tls` (D492), none elsewhere.
+#[cfg(not(target_arch = "arm"))]
+pub const SET_TLS_NUMBER: Option<u64> = None;
 
 /// `struct sigaction`'s handler comes first everywhere but on MIPS.
 #[cfg(not(target_arch = "mips64"))]

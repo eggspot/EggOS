@@ -60,8 +60,9 @@ pub fn arch_prctl<P: Platform>(
     }
 }
 
-/// `set_thread_area(address)` (MIPS, D315): the calling thread's thread pointer, `UserLocal`,
-/// which programs read with `rdhwr $3, $29`; any user address, mapped or not.
+/// `set_thread_area(address)` (MIPS, D315) and `set_tls(address)` (32-bit Arm, D492): the
+/// calling thread's thread pointer, `UserLocal` or `TPIDRURO`, which programs read with
+/// `rdhwr $3, $29` or `mrc p15, 0, r0, c13, c0, 3`; any user address, mapped or not.
 #[cfg_attr(not(linux_abi_set_thread_area), allow(dead_code))]
 pub fn set_thread_area<P: Platform>(context: &mut UserContext, address: u64) -> Result<u64, Errno> {
     if address >= <P::PageTableFormat as Format>::USER_END {

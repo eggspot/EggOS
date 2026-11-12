@@ -24519,3 +24519,41 @@ the license, by an explicit instruction recorded here.
   commands on the 32-bit ports: `struct flock64` is the 64-bit ports' `struct flock`. The plain
   ones with a 32-bit `struct flock` are not answered (`EINVAL`); musl and 64-bit-offset glibc
   never use them.
+
+## D492 32-bit Arm's Linux ABI (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `kernel/src/linux/abi/arm.rs` is the EABI: its own table (the number in `r7`),
+  with the 32-bit-uid calls (`setuid32` and the rest), the 64-bit-offset ones (`_llseek`,
+  `mmap2`, `ftruncate64`, `fcntl64`, `statfs64`, `arm_fadvise64_64`, D491) and the 64-bit-time
+  ones (`clock_gettime64`, `futex_time64`, `ppoll_time64`, ...) in the places of the generic
+  names, the legacy calls (`open`, `pipe`, `dup2`, `fork`, ...) that musl still makes on Arm,
+  and `renameat`. The calls that exist only with 32-bit time or the old `struct stat64`
+  (`nanosleep`, `gettimeofday`, `settimeofday`, `getrlimit`, `setrlimit`, `stat64`,
+  `fstat64`, `fstatat64`, `_newselect`) get numbers past the table and answer `ENOSYS`:
+  64-bit-time C libraries (glibc 2.34 with `_TIME_BITS=64`, musl 1.2) use the `time64` calls,
+  `prlimit64` and `statx` instead. The table check ignores those past-the-table names.
+- `O_DIRECTORY` is `0o40000` and `O_NOFOLLOW` `0o100000`; `struct sigaction` has a restorer;
+  `uname` says `armv7l` and `AT_PLATFORM` `v7l`; `epoll_event` is 16 bytes.
+- **The signal frame** is Linux's `rt_sigframe`: the `siginfo_t`, `uc_flags`, `uc_link`,
+  `uc_stack`, then `struct sigcontext` (`trap_no` 14 for an abort or 6 for an undefined
+  instruction, `error_code` the fault status with the prefetch mark as Linux's `FSR_LNX_PF`,
+  `oldmask`, `r0` to `r15`, `cpsr`, `fault_address`), then the mask and its 128-byte room,
+  then `uc_regspace` (8-byte aligned) with the VFP record (`VFP_MAGIC`, 288 bytes: `d0` to
+  `d31`, `FPSCR`, `FPEXC` with its enable bit) and a zero end word, then the 16 bytes of
+  return code Linux keeps for handlers without a restorer, unused here: 888 bytes, 8-byte
+  aligned. A handler at an odd address starts in Thumb state with the `IT` bits cleared;
+  `rt_sigreturn` refuses a stack pointer that is not 8-byte aligned and a VFP record whose
+  magic or size is wrong, as Linux does. The kernel's trampoline is `mov r7, #173; svc #0`.
+- **Faults** read the long-descriptor fault status (LPAE, D474): alignment `SIGBUS`
+  `BUS_ADRALN`, external aborts and parity errors `SIGBUS` `BUS_OBJERR`, debug events
+  `SIGTRAP`, translation, access-flag and permission faults by the process's regions; an
+  undefined instruction is `SIGILL`.
+- **`set_tls`** (`0xf0005`, Arm's private range) sets `TPIDRURO` through the same code as
+  MIPS's `set_thread_area`, answered on the past-the-table path so the hot path is unchanged.
+  Arm's other private calls (`cacheflush`, `breakpoint`, `usr26`, `usr32`) and the kuser
+  helper page are not given; ARMv7 C libraries read `TPIDRURO` directly.
+- The HAL's `FpState` gives 32-bit Arm's `d0` to `d31` and `FPSCR` (`d`, `d_mut`, `fpscr`,
+  `set_fpscr`). RV32's ABI file no longer re-exports RV64's host-test support, which only
+  exists in host test builds.
+- **Not yet word-sized**: `times`, `getrusage`, `wait4`'s `rusage`, `sysinfo` and the robust
+  futex list, whose structures hold `long`s or pointers (D493).

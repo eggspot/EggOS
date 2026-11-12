@@ -195,6 +195,29 @@ impl FpState {
     }
 }
 
+#[cfg(target_arch = "arm")]
+impl FpState {
+    /// `d0`-`d31`.
+    pub fn d(&self) -> &[u64; 32] {
+        &self.arch.d
+    }
+
+    /// `d0`-`d31`, to change.
+    pub fn d_mut(&mut self) -> &mut [u64; 32] {
+        &mut self.arch.d
+    }
+
+    /// `FPSCR`: the flags, the exception enables and the rounding mode.
+    pub fn fpscr(&self) -> u32 {
+        self.arch.fpscr
+    }
+
+    /// Sets `FPSCR`.
+    pub fn set_fpscr(&mut self, fpscr: u32) {
+        self.arch.fpscr = fpscr;
+    }
+}
+
 #[cfg(target_arch = "loongarch64")]
 impl FpState {
     /// `f0`-`f31`.

@@ -328,7 +328,7 @@ pub mod number {
         let mut i = 0;
         let mut highest = 0;
         while i < all.len() {
-            if all[i] > highest {
+            if all[i] > highest && all[i] <= LAST {
                 highest = all[i];
             }
             i += 1;
@@ -688,7 +688,13 @@ fn syscall<P: Platform>(
     }
     let [first, second, third, ..] = context.syscall_arguments();
     if number > number::LAST {
-        context.set_syscall_result(Errno::ENOSYS.result());
+        let result = match abi::SET_TLS_NUMBER {
+            Some(set_tls) if number == set_tls => {
+                thread_pointer::set_thread_area::<P>(context, first).unwrap_or_else(Errno::result)
+            }
+            _ => Errno::ENOSYS.result(),
+        };
+        context.set_syscall_result(result);
         return ControlFlow::Continue(());
     }
     let result = match number {

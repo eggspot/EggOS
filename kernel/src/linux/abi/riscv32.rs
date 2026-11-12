@@ -14,7 +14,7 @@ mod rv64;
 pub use rv64::{
     CLONE_CHILD_TID_BEFORE_TLS, ELF_MACHINE, EPOLL_EVENT_SIZE, MIN_SIGNAL_STACK_SIZE,
     RUNS_WINDOWS_AND_MACOS_PROGRAMS, SIGACTION_HAS_RESTORER, SIGRETURN_TRAMPOLINE, fault, mmap,
-    open, signal_frame, stat, test_support, tty, wants,
+    open, signal_frame, stat, tty, wants,
 };
 
 /// The architecture, as `uname` names it.

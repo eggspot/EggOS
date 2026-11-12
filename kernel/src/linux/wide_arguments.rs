@@ -110,7 +110,9 @@ fn result<P: Platform>(
             let count = registers.next();
             let offset = registers.pair();
             match number {
-                number::PREAD64 => files::pread64(process, thread.files(), fd, buffer, count, offset),
+                number::PREAD64 => {
+                    files::pread64(process, thread.files(), fd, buffer, count, offset)
+                }
                 _ => file_changes::pwrite64(process, thread, fd, buffer, count, offset),
             }
         }
