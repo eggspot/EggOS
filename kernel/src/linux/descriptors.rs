@@ -129,6 +129,8 @@ pub enum FileKind {
     Window(crate::window::Connection),
     /// A rendering context on the GPU's render node (`/dev/dri/renderD128`, D415).
     RenderNode(Arc<crate::rendering::Context>),
+    /// A GPU buffer handed out as a file, Linux's `dma-buf` (D441).
+    GpuBuffer(Arc<crate::rendering::Buffer>),
     /// The agent channel's one opener (`/dev/agent`, D136).
     AgentChannel(super::agent_channel::AgentChannelEnd),
     /// An `AF_UNIX` stream socket (D138).
@@ -215,6 +217,7 @@ impl FileKind {
             | Self::Pipe(_)
             | Self::Window(_)
             | Self::RenderNode(_)
+            | Self::GpuBuffer(_)
             | Self::AgentChannel(_)
             | Self::Socket(_)
             | Self::InetSocket(_)

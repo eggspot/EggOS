@@ -170,6 +170,7 @@ fn mapped_file(file: Option<MappedFile<'_>>) -> Result<Arc<OpenFile>, Errno> {
     match open.kind() {
         FileKind::Window(_)
         | FileKind::RenderNode(_)
+        | FileKind::GpuBuffer(_)
         | FileKind::MemoryFile(_)
         | FileKind::Regular(_)
         | FileKind::MemoryDevice(MemoryDevice::Zero, _) => Ok(open),
@@ -322,7 +323,9 @@ fn map_file<P: Platform>(
         return map_regular(process, *node, &file, wanted);
     }
     match file.kind() {
-        FileKind::Window(_) | FileKind::RenderNode(_) if !shared => return Err(Errno::EACCES),
+        FileKind::Window(_) | FileKind::RenderNode(_) | FileKind::GpuBuffer(_) if !shared => {
+            return Err(Errno::EACCES);
+        }
         FileKind::MemoryFile(_) if !shared && attributes.is_some_and(|a| a.writable) => {
             return Err(Errno::ENODEV);
         }
@@ -338,6 +341,9 @@ fn map_file<P: Platform>(
         }
         FileKind::RenderNode(context) => {
             super::render_node::map(process, context, placement, length, attributes, offset)
+        }
+        FileKind::GpuBuffer(buffer) => {
+            super::render_node::map_buffer(process, buffer, placement, length, attributes, offset)
         }
         FileKind::MemoryFile(memory) => super::memfd::map(
             process, memory, placement, length, attributes, offset, shared,

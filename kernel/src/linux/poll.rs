@@ -504,6 +504,7 @@ fn events_of(kind: &FileKind, requested: u16, readable: bool, pending: &dyn Fn()
         | FileKind::MemoryFile(_)
         | FileKind::MemoryDevice(..) => requested & (OUTPUT_EVENTS | INPUT_EVENTS),
         FileKind::RenderNode(_) => requested & OUTPUT_EVENTS,
+        FileKind::GpuBuffer(_) => requested & (OUTPUT_EVENTS | INPUT_EVENTS),
         FileKind::Path(_) => event::NVAL,
         FileKind::Pipe(end) => end.events(requested),
         FileKind::PseudoTerminal(end) => end.events(requested),

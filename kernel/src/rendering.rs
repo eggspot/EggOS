@@ -483,6 +483,32 @@ impl Context {
         Ok((handle, buffer))
     }
 
+    /// Takes `buffer`, handed over as a file from another context or program (PRIME, D441):
+    /// the handle it already has here, or a new one with its resource attached to this
+    /// context.
+    pub fn import<P: Platform>(&self, buffer: Arc<Buffer>) -> Result<u32, RenderError> {
+        let known = self
+            .state
+            .lock()
+            .buffers
+            .iter()
+            .find(|(_, held)| Arc::ptr_eq(held, &buffer))
+            .map(|(handle, _)| *handle);
+        if let Some(handle) = known {
+            return Ok(handle);
+        }
+        self.ensure_created::<P>()?;
+        command::<P>(&ThreeDCommand::AttachResource {
+            context: self.id,
+            resource: buffer.resource,
+        })?;
+        let mut state = self.state.lock();
+        let handle = state.next_handle;
+        state.next_handle = handle.checked_add(1).ok_or(RenderError::NoMemory)?;
+        state.buffers.insert(handle, buffer);
+        Ok(handle)
+    }
+
     /// The buffer with `handle`.
     pub fn buffer(&self, handle: u32) -> Option<Arc<Buffer>> {
         self.state.lock().buffers.get(&handle).cloned()

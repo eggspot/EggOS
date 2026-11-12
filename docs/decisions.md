@@ -23700,3 +23700,17 @@ the license, by an explicit instruction recorded here.
   and `VIRTGPU_PARAM_HOST_VISIBLE` says whether the window exists.
 - **Not yet.** The map's cache type from `OK_MAP_INFO` (mappings are made as normal memory),
   the window on virtio-mmio and virtio-ccw, real fences, PRIME sharing with the window server.
+
+## D441 GPU buffers as files: PRIME export and import (M11 part 2b; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `DRM_IOCTL_PRIME_HANDLE_TO_FD` hands a context's buffer out as a file
+  (`FileKind::GpuBuffer`, Linux's `dma-buf`): it can be mapped (`MAP_SHARED`, from offset 0,
+  the buffer's own frames), polled (always ready), `fstat`ed (a regular file the buffer's size)
+  and passed to another program over a Unix socket like any descriptor. `PRIME_FD_TO_HANDLE`
+  takes such a file back into a context: the handle the buffer already has there, or a new one
+  with its resource attached to that context, so a compositor's context can sample what a
+  client's context rendered. `GET_CAP(PRIME)` reports import and export. The buffer lives
+  while any context, file or mapping holds it.
+- **Not yet.** The window server taking a GPU buffer as a window's pixels (a request on
+  `/dev/window` that shows the buffer after its transfer back from the host, or the
+  `linux-dmabuf` Wayland protocol in `eggway`), and implicit fences on the shared buffer.

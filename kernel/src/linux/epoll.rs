@@ -692,6 +692,7 @@ fn can_be_watched(kind: &FileKind) -> bool {
         | FileKind::Pipe(_)
         | FileKind::Window(_)
         | FileKind::RenderNode(_)
+        | FileKind::GpuBuffer(_)
         | FileKind::AgentChannel(_)
         | FileKind::Socket(_)
         | FileKind::InetSocket(_)

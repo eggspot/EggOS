@@ -37,6 +37,8 @@ mod number {
     pub const VERSION: u32 = 0x00;
     pub const GEM_CLOSE: u32 = 0x09;
     pub const GET_CAP: u32 = 0x0c;
+    pub const PRIME_HANDLE_TO_FD: u32 = 0x2d;
+    pub const PRIME_FD_TO_HANDLE: u32 = 0x2e;
     pub const MAP: u32 = 0x41;
     pub const EXECBUFFER: u32 = 0x42;
     pub const GETPARAM: u32 = 0x43;
@@ -83,6 +85,10 @@ mod execbuffer_flag {
 }
 
 const WAIT_NOWAIT: u32 = 1;
+const PRIME_IMPORT: u64 = 1;
+const PRIME_EXPORT: u64 = 2;
+const PRIME_CLOEXEC: u32 = 0o2_000_000;
+const PRIME_RDWR: u32 = 2;
 
 fn errno(error: RenderError) -> Errno {
     match error {
@@ -178,7 +184,8 @@ pub fn ioctl<P: Platform>(
         },
         number::GET_CAP => {
             let value = match argument.u64_at(0) {
-                capability::DUMB_BUFFER | capability::PRIME => 0,
+                capability::PRIME => PRIME_IMPORT | PRIME_EXPORT,
+                capability::DUMB_BUFFER => 0,
                 capability::TIMESTAMP_MONOTONIC => 1,
                 capability::SYNCOBJ | capability::SYNCOBJ_TIMELINE => 0,
                 _ => return Err(Errno::EINVAL),
@@ -193,6 +200,30 @@ pub fn ioctl<P: Platform>(
             argument.write_back(process, address)
         }
         number::EXECBUFFER => execbuffer(process, thread, context, &mut argument, address),
+        number::PRIME_HANDLE_TO_FD => {
+            let buffer = context.buffer(argument.u32_at(0)).ok_or(Errno::ENOENT)?;
+            let flags = argument.u32_at(4);
+            if flags & !(PRIME_CLOEXEC | PRIME_RDWR) != 0 {
+                return Err(Errno::EINVAL);
+            }
+            let file = Arc::new(OpenFile::new(FileKind::GpuBuffer(buffer), open_flag::RDWR));
+            let limit = open_file_limit(process);
+            let fd = thread
+                .files()
+                .lock()
+                .open(file, flags & PRIME_CLOEXEC != 0, limit)?;
+            argument.set_u32(8, fd);
+            argument.write_back(process, address)
+        }
+        number::PRIME_FD_TO_HANDLE => {
+            let file = thread.files().file(u64::from(argument.u32_at(8)))?;
+            let FileKind::GpuBuffer(buffer) = file.kind() else {
+                return Err(Errno::EINVAL);
+            };
+            let handle = context.import::<P>(Arc::clone(buffer)).map_err(errno)?;
+            argument.set_u32(0, handle);
+            argument.write_back(process, address)
+        }
         number::GETPARAM => {
             let value = parameter_value::<P>(argument.u64_at(0))?;
             write_int(process, argument.u64_at(8), value)
@@ -498,6 +529,30 @@ fn read_name<P: Platform>(
         *place = byte[0];
     }
     Ok(LONGEST_DEBUG_NAME)
+}
+
+/// Maps a GPU buffer handed out as a file (D441) into `process`, from its start.
+pub fn map_buffer<P: Platform>(
+    process: &Process<P>,
+    buffer: &Arc<crate::rendering::Buffer>,
+    placement: Placement,
+    length: u64,
+    attributes: Attributes,
+    offset: u64,
+) -> Result<u64, Errno> {
+    if offset != 0 || length > buffer.size() {
+        return Err(Errno::EINVAL);
+    }
+    process
+        .map_lent_frames(placement, length, attributes, Arc::clone(buffer) as Arc<dyn crate::process::LentFrames>)
+        .map_err(|error| match error {
+            RegionError::Overlaps => Errno::EEXIST,
+            RegionError::Invalid => Errno::EINVAL,
+            RegionError::NotCovered
+            | RegionError::NoRoom
+            | RegionError::OutOfMemory
+            | RegionError::NotWritable => Errno::ENOMEM,
+        })
 }
 
 /// Maps the backing of the resource whose `VIRTGPU_MAP` offset is `offset` into `process`.

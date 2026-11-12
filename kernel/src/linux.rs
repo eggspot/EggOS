@@ -1517,6 +1517,7 @@ fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, 
         | FileKind::Pipe(_)
         | FileKind::Window(_)
         | FileKind::RenderNode(_)
+        | FileKind::GpuBuffer(_)
         | FileKind::AgentChannel(_)
         | FileKind::Socket(_)
         | FileKind::InetSocket(_)

@@ -398,6 +398,14 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
         FileKind::MemoryDevice(_, node) => Ok(node_status(*node)),
         FileKind::Window(_) => Ok(WINDOW),
         FileKind::RenderNode(_) => Ok(RENDER_NODE),
+        FileKind::GpuBuffer(buffer) => Ok(Status {
+            device: MEMORY_FILES,
+            inode: u64::from(buffer.resource()),
+            mode: S_IFREG | 0o600,
+            links: 1,
+            size: buffer.size(),
+            ..CONSOLE
+        }),
         FileKind::AgentChannel(_) => Ok(AGENT),
         FileKind::MemoryFile(memory) => {
             let size = memory.size();
