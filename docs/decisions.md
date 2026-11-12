@@ -24650,3 +24650,18 @@ the license, by an explicit instruction recorded here.
   patching its DMEM command for the WPR2 region, running SEC2's booter with GSP's image and its
   WPR metadata, GSP's message queues and remote calls, and the display through them. Until
   then the firmware's framebuffer stays the display on NVIDIA boards (D236).
+
+## D498 Intel display 12 and 13: mode setting on the combo ports (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Tiger, Rocket, Alder and Raptor Lake (display 12 and 13) light a second screen
+  on their combo ports A and B as display 11 does (D465), with the registers that moved: the
+  combo PLLs' configuration at `0x164284` (eight bytes a PLL), the transcoder's clock select
+  field from bit 28, `TRANS_DDI_FUNC_CTL`'s port select from bit 27 holding the port plus one,
+  and the link-training patterns in the transcoder's `DP_TP_CTL` (`0x60540` plus `0x1000` a
+  transcoder) rather than the port's. `intel::Generation` names the engine (display 9, 11, or
+  12 and 13) and gives each of these places, so `set_mode` and `train_port` (which now takes the
+  pipe) stay one path. Register places are Intel's, from its public graphics programmer's
+  reference manuals.
+- **Not yet.** Type-C ports (their PHY ownership, lane assignment, the MG and Dekel PHYs and
+  their PLLs), HDMI on display 11 and later, and display 14 (Meteor Lake's C10 and C20 PHYs);
+  the firmware-lit screen on any of them is still taken (D268).

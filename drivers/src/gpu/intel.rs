@@ -15,10 +15,64 @@ pub fn is_display_11(device: u16) -> bool {
     DISPLAY_11.contains(&((device >> 8) as u8))
 }
 
-/// Whether [`DisplayEngine::set_mode`] lights a port on device `device`: display 9's and 11's
-/// (D447, D465).
+/// Whether device `device` has a display-12 or display-13 engine (Tiger, Rocket, Alder and
+/// Raptor Lake), which D498 lights like display 11 with its moved registers.
+pub fn is_display_12(device: u16) -> bool {
+    DISPLAY_12_AND_13.contains(&((device >> 8) as u8))
+}
+
+/// Whether [`DisplayEngine::set_mode`] lights a port on device `device`: display 9's, 11's,
+/// 12's and 13's (D447, D465, D498).
 pub fn sets_modes(device: u16) -> bool {
-    is_display_9(device) || is_display_11(device)
+    is_display_9(device) || is_display_11(device) || is_display_12(device)
+}
+
+/// The display engine's generation, for the registers that moved between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Generation {
+    Display9,
+    Display11,
+    Display12,
+}
+
+impl Generation {
+    fn of(device: u16) -> Self {
+        if is_display_12(device) {
+            Self::Display12
+        } else if is_display_11(device) {
+            Self::Display11
+        } else {
+            Self::Display9
+        }
+    }
+
+    fn transcoder_clock_shift(self) -> u32 {
+        match self {
+            Self::Display12 => TRANS_CLK_PORT_SHIFT_12,
+            _ => TRANS_CLK_PORT_SHIFT,
+        }
+    }
+
+    fn port_select(self, port: usize) -> u32 {
+        match self {
+            Self::Display12 => (port as u32 + 1) << DDI_PORT_SHIFT_12,
+            _ => (port as u32) << DDI_PORT_SHIFT,
+        }
+    }
+
+    fn combo_pll_configuration(self) -> usize {
+        match self {
+            Self::Display12 => COMBO_PLL_CONFIGURATION_12,
+            _ => COMBO_PLL_CONFIGURATION,
+        }
+    }
+
+    fn pattern_register(self, port: usize, pipe: usize) -> usize {
+        match self {
+            Self::Display12 => DP_TP_CTL_12 + pipe * TRANSCODER_STRIDE,
+            _ => DP_TP_CTL + port * PORT_REGISTER_STRIDE,
+        }
+    }
 }
 
 /// Intel's PCI vendor id.
@@ -100,6 +154,11 @@ const SCALER_ENABLE: u32 = 1 << 31;
 const SCALER_FILTER_BILINEAR: u32 = 3 << 23;
 const DIGITAL_PORTS: usize = 5;
 const DISPLAY_11: [u8; 2] = [0x8a, 0x4e];
+const DISPLAY_12_AND_13: [u8; 4] = [0x9a, 0x4c, 0x46, 0xa7];
+const COMBO_PLL_CONFIGURATION_12: usize = 0x16_4284;
+const DP_TP_CTL_12: usize = 0x60540;
+const DDI_PORT_SHIFT_12: u32 = 27;
+const TRANS_CLK_PORT_SHIFT_12: u32 = 28;
 const COMBO_PORTS: usize = 2;
 const COMBO_PLL_ENABLES: [usize; 2] = [0x46010, 0x46014];
 const COMBO_PLL_CONFIGURATION: usize = 0x16_4000;
@@ -224,7 +283,7 @@ pub struct DisplayEngine<R: RegisterIo> {
     gtt_offset: usize,
     pipe: usize,
     mirrors: u8,
-    display_11: bool,
+    generation: Generation,
 }
 
 impl<R: RegisterIo> DisplayEngine<R> {
@@ -236,7 +295,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
             gtt_offset: bar_bytes / 2,
             pipe: 0,
             mirrors: 0,
-            display_11: is_display_11(device),
+            generation: Generation::of(device),
         };
         let lit = (0..MAX_PIPES)
             .find(|&pipe| engine.plane(PLANE_CTL, pipe) & PLANE_ENABLE != 0)
@@ -329,12 +388,15 @@ impl<R: RegisterIo> DisplayEngine<R> {
         (link, edid)
     }
 
-    /// Trains the DisplayPort link on digital port `port` (D446): `lanes` lanes at link rate code
-    /// `rate`, the port's training patterns and drive set through its `DP_TP_CTL` and
-    /// `DDI_BUF_CTL`, the sink's side through its AUX channel. The drive it settled on.
+    /// Trains the DisplayPort link on digital port `port`, driven by pipe `pipe`'s transcoder
+    /// (D446): `lanes` lanes at link rate code `rate`, the training patterns set through
+    /// `DP_TP_CTL` (the port's, or the transcoder's from display 12 on, D498) and the drive
+    /// through the port's `DDI_BUF_CTL`, the sink's side through its AUX channel. The drive it
+    /// settled on.
     pub fn train_port(
         &self,
         port: usize,
+        pipe: usize,
         lanes: usize,
         rate: u8,
         keep_waiting: &mut dyn FnMut() -> bool,
@@ -342,6 +404,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
         let mut link = PortLink {
             regs: &self.regs,
             port,
+            pattern_register: self.generation.pattern_register(port, pipe),
             lanes,
             keep_waiting,
         };
@@ -373,9 +436,11 @@ impl<R: RegisterIo> DisplayEngine<R> {
             return Err(ModeError::Unsupported);
         }
         let symbol_khz = symbol_clock_khz(rate).ok_or(ModeError::Unsupported)?;
-        match self.display_11 {
-            true => self.clock_combo_port(port, rate, keep_waiting)?,
-            false => self.clock_display_9_port(port, rate, keep_waiting)?,
+        match self.generation {
+            Generation::Display11 | Generation::Display12 => {
+                self.clock_combo_port(port, rate, keep_waiting)?
+            }
+            Generation::Display9 => self.clock_display_9_port(port, rate, keep_waiting)?,
         }
         let transcoder = TRANSCODER + pipe * TRANSCODER_STRIDE;
         for (index, value) in timing_registers(timing).iter().enumerate() {
@@ -390,9 +455,10 @@ impl<R: RegisterIo> DisplayEngine<R> {
         self.regs.write32(transcoder + DATA_N, data_n);
         self.regs.write32(transcoder + LINK_M, link_m);
         self.regs.write32(transcoder + LINK_N, link_n);
-        self.regs.write32(TRANS_CLK_SEL + 4 * pipe, (port as u32 + 1) << TRANS_CLK_PORT_SHIFT);
+        let clock_shift = self.generation.transcoder_clock_shift();
+        self.regs.write32(TRANS_CLK_SEL + 4 * pipe, (port as u32 + 1) << clock_shift);
         let mut function = DDI_FUNC_ENABLE
-            | (port as u32) << DDI_PORT_SHIFT
+            | self.generation.port_select(port)
             | DDI_MODE_DP_SST
             | ((lanes.clamp(1, 4) as u32 - 1) << DDI_PORT_WIDTH_SHIFT);
         if timing.vertical_sync_positive {
@@ -402,7 +468,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
             function |= DDI_SYNC_HORIZONTAL_HIGH;
         }
         self.regs.write32(DDI_FUNC_CTL + pipe * TRANSCODER_STRIDE, function);
-        self.train_port(port, lanes, rate, keep_waiting)
+        self.train_port(port, pipe, lanes, rate, keep_waiting)
             .map_err(|_| ModeError::LinkTraining)?;
         self.regs.write32(PIPE_CONF + pipe * PIPE_STRIDE, PIPE_CONF_ENABLE);
         let at = |register: usize| register + pipe * PIPE_STRIDE;
@@ -441,7 +507,8 @@ impl<R: RegisterIo> DisplayEngine<R> {
         stride_bytes: u32,
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), ModeError> {
-        if self.display_11 || port == 0 || port > 3 || pipe >= MAX_PIPES - 1 {
+        let display_9 = self.generation == Generation::Display9;
+        if !display_9 || port == 0 || port > 3 || pipe >= MAX_PIPES - 1 {
             return Err(ModeError::Unsupported);
         }
         let settings =
@@ -551,7 +618,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
         };
         self.regs.write32(enable, PLL_POWER_ENABLE);
         wait_for(PLL_POWER_STATE, keep_waiting)?;
-        let configuration = COMBO_PLL_CONFIGURATION + pll * COMBO_PLL_STRIDE;
+        let configuration = self.generation.combo_pll_configuration() + pll * COMBO_PLL_STRIDE;
         self.regs.write32(configuration, settings.configuration_0());
         self.regs.write32(configuration + 4, settings.configuration_1());
         self.regs.write32(enable, PLL_POWER_ENABLE | PLL_ENABLE);
@@ -739,6 +806,11 @@ mod tests {
         assert_eq!(gtt_span(2 << GTT_SIZE_SHIFT), 2 << 30);
         assert_eq!(gtt_span(3 << GTT_SIZE_SHIFT), 4 << 30);
         assert!(is_supported(0x9a49));
+        assert!(is_display_12(0x9a49) && sets_modes(0x9a49) && !is_display_9(0x9a49));
+        assert_eq!(Generation::of(0x9a49).port_select(1), 2 << DDI_PORT_SHIFT_12);
+        assert_eq!(Generation::of(0x8a52).port_select(1), 1 << DDI_PORT_SHIFT);
+        assert_eq!(Generation::of(0x9a49).pattern_register(1, 2), 0x62540);
+        assert_eq!(Generation::of(0x5916).pattern_register(1, 2), 0x64140);
         assert!(!is_supported(0x1234));
     }
 }
@@ -746,6 +818,7 @@ mod tests {
 struct PortLink<'a, R: RegisterIo> {
     regs: &'a R,
     port: usize,
+    pattern_register: usize,
     lanes: usize,
     keep_waiting: &'a mut dyn FnMut() -> bool,
 }
@@ -766,7 +839,7 @@ impl<R: RegisterIo> crate::display_port::Link for PortLink<'_, R> {
             _ => DP_TP_NORMAL,
         };
         self.regs.write32(
-            DP_TP_CTL + self.port * PORT_REGISTER_STRIDE,
+            self.pattern_register,
             DP_TP_ENABLE | code << DP_TP_PATTERN_SHIFT,
         );
     }
