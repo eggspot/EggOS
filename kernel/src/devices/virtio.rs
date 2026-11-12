@@ -483,6 +483,24 @@ mod gpu {
             self.gpu.command_stream().unwrap_or_default()
         }
 
+        fn start(&mut self, command: &ThreeDCommand<'_>) -> Result<(), &'static str> {
+            self.gpu
+                .start_three_d(command)
+                .map_err(virtio::Error::description)
+        }
+
+        fn finish(&mut self) -> Result<bool, &'static str> {
+            self.gpu.finish_three_d().map_err(virtio::Error::description)
+        }
+
+        fn abandon(&mut self) {
+            self.gpu.abandon_three_d();
+        }
+
+        fn events(&self) -> Option<&'static DeviceEvents> {
+            self.events
+        }
+
         fn run(
             &mut self,
             command: &ThreeDCommand<'_>,

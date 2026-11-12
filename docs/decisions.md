@@ -23654,3 +23654,19 @@ the license, by an explicit instruction recorded here.
   scroll view keeps the focused field in view, and a panel that belongs to the window's frame
   would need a toolkit sheet that the window lifts out of the pane (left for the build pass,
   with the Agents pane's grant panel, which keeps its desktop places).
+
+## D438 virtio-gpu 3D, part 2a: command streams posted, waits that sleep on the GPU's interrupt (M11; D415's "Why synchronous"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The driver's 3D command splits as the flush did (D414): `start_three_d` posts
+  and returns, `finish_three_d` collects the answer, `abandon_three_d` gives up on a wedged
+  device, and `run_three_d` is the two with a poll between; while one is posted every 2D post
+  is refused, so the queue never carries both. In the kernel an `EXECBUFFER` posts its stream
+  and returns at once: the program encodes its next frame while the host GPU runs this one.
+  `VIRTGPU_WAIT` (and the next submission, before it posts) sleeps on the GPU's interrupt with
+  no lock held until the answer arrives (`display::settle_renderer_sleeping`, polling on a GPU
+  without one); `VIRTGPU_WAIT_NOWAIT` answers `EBUSY` while it runs. Every other use of the
+  device, 2D included, first settles a posted 3D command (`Display::settle`). Buffers are idle
+  whenever no stream is posted, so a mapping read after a wait sees what the GPU wrote.
+- **Not yet.** Several streams in flight at once and per-buffer fences (a wait waits for the
+  last stream, whatever buffer it names), the out-fence still an already signalled stand-in,
+  blob resources for Venus and PRIME sharing with the window server (part 2b).

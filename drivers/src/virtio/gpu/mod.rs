@@ -156,6 +156,16 @@ pub struct VirtioGpu<T: Transport, M: DmaMemory> {
     started: Option<StartedFlush>,
     features: u64,
     three_d: Option<M>,
+    posted_three_d: Option<PostedThreeD>,
+    answered_three_d: usize,
+}
+
+/// A 3D command [`VirtioGpu::start_three_d`] posted: the answer type it succeeds with and the
+/// answer's length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PostedThreeD {
+    expected: u32,
+    answer_bytes: usize,
 }
 
 /// A flush posted by [`VirtioGpu::start_flush`] and not yet answered (D414).
@@ -233,6 +243,8 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             started: None,
             features,
             three_d: None,
+            posted_three_d: None,
+            answered_three_d: 0,
         };
         match gpu.query_display(keep_waiting) {
             Ok(mode) => {
@@ -822,21 +834,15 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         })
     }
 
-    /// Sends `command` on the control queue and waits for its answer, polling while
-    /// `keep_waiting` says to: a [`ThreeDCommand::Submit`] carries the first `length` bytes of
-    /// [`Self::command_stream`]. Returns the answer's data past its header (the capability
-    /// set's description or bytes; empty for the others). Refused while a flush is posted
-    /// ([`Self::start_flush`]); a device that does not answer in time is treated as in
-    /// [`Self::flush`].
-    pub fn run_three_d(
-        &mut self,
-        command: &ThreeDCommand<'_>,
-        keep_waiting: &mut dyn FnMut() -> bool,
-    ) -> Result<&[u8], Error> {
+    /// Posts `command` on the control queue without waiting (D438): a [`ThreeDCommand::Submit`]
+    /// carries the first `length` bytes of [`Self::command_stream`]. [`Self::finish_three_d`]
+    /// collects the answer, so the caller may sleep on the device's interrupt meanwhile. Refused
+    /// while a flush or another 3D command is posted.
+    pub fn start_three_d(&mut self, command: &ThreeDCommand<'_>) -> Result<(), Error> {
         if self.unanswered {
             return Err(Error::TimedOut);
         }
-        if self.started.is_some() {
+        if self.started.is_some() || self.posted_three_d.is_some() {
             return Err(Error::QueueFull);
         }
         let (pointer, base) = match self.three_d.as_ref() {
@@ -898,21 +904,82 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             None => self.queue.submit(&[request, answer]),
         };
         submitted?;
-        self.wait(1, keep_waiting)?;
-        let answered = self.three_d_word(THREE_D_ANSWER);
-        if answered != three_d::expected_answer(command) {
-            return Err(Error::CommandFailed(answered));
+        if self.queue.should_notify() {
+            self.transport.notify(CONTROL_QUEUE);
         }
-        let data = THREE_D_ANSWER + three_d::HEADER_BYTES;
+        self.posted_three_d = Some(PostedThreeD {
+            expected: three_d::expected_answer(command),
+            answer_bytes,
+        });
+        Ok(())
+    }
+
+    /// Collects the answer of the command [`Self::start_three_d`] posted: `true` once it is
+    /// answered (or when none is posted), `false` while it is not; an error when the device
+    /// refused it.
+    pub fn finish_three_d(&mut self) -> Result<bool, Error> {
+        let Some(posted) = self.posted_three_d else {
+            return Ok(true);
+        };
+        if self.queue.pop_used().is_none() {
+            return Ok(false);
+        }
+        self.posted_three_d = None;
+        self.answered_three_d = posted.answer_bytes;
+        let answered = self.three_d_word(THREE_D_ANSWER);
+        match answered == posted.expected {
+            true => Ok(true),
+            false => Err(Error::CommandFailed(answered)),
+        }
+    }
+
+    /// Gives up on a posted 3D command the device never answered: the device is treated as
+    /// wedged, as when a wait times out.
+    pub fn abandon_three_d(&mut self) {
+        if self.posted_three_d.take().is_some() {
+            self.unanswered = true;
+        }
+    }
+
+    /// Whether a 3D command is posted and not yet collected.
+    pub fn three_d_posted(&self) -> bool {
+        self.posted_three_d.is_some()
+    }
+
+    /// The data past the header of the last 3D command's answer: a capability set's
+    /// description or bytes; empty for the others.
+    pub fn three_d_answer(&self) -> &[u8] {
+        let Some(memory) = self.three_d.as_ref() else {
+            return &[];
+        };
+        let length = self.answered_three_d.saturating_sub(three_d::HEADER_BYTES);
         // SAFETY: the answer's data lies inside the memory (`answer_bytes` is at most
-        // `THREE_D_STREAM - THREE_D_ANSWER`), which the device has handed back with its answer;
-        // the borrow of `self` keeps the next command from overwriting it.
-        Ok(unsafe {
+        // `THREE_D_STREAM - THREE_D_ANSWER`), which the device handed back with its answer; the
+        // borrow of `self` keeps the next command from overwriting it.
+        unsafe {
             core::slice::from_raw_parts(
-                pointer.wrapping_add(data),
-                answer_bytes - three_d::HEADER_BYTES,
+                memory.as_mut_ptr().wrapping_add(THREE_D_ANSWER + three_d::HEADER_BYTES),
+                length,
             )
-        })
+        }
+    }
+
+    /// Sends `command` and waits for its answer, polling while `keep_waiting` says to (see
+    /// [`Self::start_three_d`]); returns [`Self::three_d_answer`]. A device that does not
+    /// answer in time is treated as in [`Self::flush`].
+    pub fn run_three_d(
+        &mut self,
+        command: &ThreeDCommand<'_>,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<&[u8], Error> {
+        self.start_three_d(command)?;
+        while !self.finish_three_d()? {
+            if !keep_waiting() {
+                self.abandon_three_d();
+                return Err(Error::TimedOut);
+            }
+        }
+        Ok(self.three_d_answer())
     }
 
     fn three_d_word(&self, offset: usize) -> u32 {
@@ -1017,6 +1084,9 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
     ) -> Result<(), Error> {
         if self.unanswered {
             return Err(Error::TimedOut);
+        }
+        if self.posted_three_d.is_some() {
+            return Err(Error::QueueFull);
         }
         let at = |offset: usize| {
             self.control

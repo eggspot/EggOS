@@ -1,8 +1,9 @@
 //! Accelerated rendering (D415): rendering contexts on a GPU that takes 3D commands (virtio
 //! GPU with `VIRTIO_GPU_F_VIRGL`), for user-space drivers that encode their own command
 //! streams (Mesa's virgl for OpenGL, Venus for Vulkan). Each opener of the render node gets a
-//! [`Context`]; its buffers are 3D resources backed by DMA memory the program may map, and
-//! every command waits for the device's answer, so a buffer is idle whenever no call runs.
+//! [`Context`]; its buffers are 3D resources backed by DMA memory the program may map. A
+//! command stream is posted and the call returns (D438); every other command first settles
+//! what was posted and waits for its own answer, and [`wait`] sleeps until the GPU is done.
 //! The GPU is the display's device, reached through [`crate::display::with_renderer`].
 
 use crate::devices::Deadline;
@@ -46,6 +47,14 @@ pub trait Renderer {
         answer: &mut [u8],
         deadline: &mut Deadline,
     ) -> Result<usize, &'static str>;
+    /// Posts `command` without waiting (D438); [`Self::finish`] collects it.
+    fn start(&mut self, command: &ThreeDCommand<'_>) -> Result<(), &'static str>;
+    /// Whether the posted command is answered (or none is posted).
+    fn finish(&mut self) -> Result<bool, &'static str>;
+    /// Gives up on a posted command the device never answered.
+    fn abandon(&mut self);
+    /// The events the device's interrupt raises, when it has one connected.
+    fn events(&self) -> Option<&'static crate::devices::interrupts::DeviceEvents>;
 }
 
 /// Why a rendering call failed.
@@ -61,6 +70,8 @@ pub enum RenderError {
     Invalid,
     /// The context was created already.
     AlreadyCreated,
+    /// The GPU is still running what was posted.
+    Busy,
 }
 
 static PRESENT: AtomicBool = AtomicBool::new(false);
@@ -112,6 +123,17 @@ pub fn capsets<P: Platform>() -> Result<Vec<CapsetInfo>, RenderError> {
 pub fn takes_context_init<P: Platform>() -> bool {
     crate::display::with_renderer::<P, _>(|renderer, _| renderer.takes_context_init())
         .unwrap_or(false)
+}
+
+/// Waits until the GPU answered the command stream posted last (D438): sleeps on its interrupt
+/// with no lock held when it has one, polls otherwise. `nowait` only looks: `Busy` while it
+/// runs.
+pub fn wait<P: Platform>(nowait: bool) -> Result<(), RenderError> {
+    match crate::display::settle_renderer_sleeping::<P>(nowait) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(RenderError::Busy),
+        Err(_) => Err(RenderError::Device),
+    }
 }
 
 /// Capability set `id` at `version` into `out`: how many bytes were written.
@@ -318,12 +340,12 @@ impl Context {
             return Err(RenderError::Invalid);
         }
         let context = self.id;
-        crate::display::with_renderer::<P, _>(|renderer, deadline| {
+        wait::<P>(false)?;
+        crate::display::with_renderer::<P, _>(|renderer, _| {
             renderer.command_stream()[..stream.len()].copy_from_slice(stream);
-            renderer.run(&ThreeDCommand::Submit { context, length }, &mut [], deadline)
+            renderer.start(&ThreeDCommand::Submit { context, length })
         })
         .map_err(|_| RenderError::NoDevice)?
-        .map(|_| ())
         .map_err(|_| RenderError::Device)
     }
 

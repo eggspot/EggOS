@@ -257,9 +257,7 @@ impl Display {
     /// and unscaled, the damage moves to the flush in flight and the device gets it without the
     /// caller waiting; otherwise the flush runs to its end here.
     pub fn start_flush(&mut self, deadline: &mut Deadline) -> Result<FlushStart, &'static str> {
-        if self.posted {
-            self.settle(deadline)?;
-        }
+        self.settle(deadline)?;
         let events = self.scanout.flush_events();
         let Some(events) = events.filter(|_| !self.draws_off_device()) else {
             return self.flush(deadline).map(FlushStart::Done);
@@ -309,6 +307,7 @@ impl Display {
     /// Waits, polling, for a posted flush before anything else uses the device; gives it up at
     /// `deadline`.
     fn settle(&mut self, deadline: &mut Deadline) -> Result<(), &'static str> {
+        self.settle_renderer(deadline)?;
         while self.posted {
             if self.finish_flush()?.is_some() {
                 return Ok(());
@@ -321,6 +320,21 @@ impl Display {
                 }
                 self.in_flight.clear();
                 return Err("the display did not answer a flush");
+            }
+        }
+        Ok(())
+    }
+
+    /// Waits, polling, for a posted 3D command (D438) before anything else uses the device;
+    /// gives it up at `deadline`.
+    fn settle_renderer(&mut self, deadline: &mut Deadline) -> Result<(), &'static str> {
+        let Some(renderer) = self.scanout.renderer() else {
+            return Ok(());
+        };
+        while !renderer.finish()? {
+            if !deadline.keep_waiting() {
+                renderer.abandon();
+                return Err("the display did not answer a 3D command");
             }
         }
         Ok(())
@@ -826,6 +840,51 @@ pub fn with_renderer<P: Platform, R>(
         .renderer()
         .ok_or("the display's device takes no 3D commands")?;
     Ok(work(renderer, &mut deadline))
+}
+
+/// Waits until a posted 3D command is answered (D438), with the display's lock let go while
+/// the device works: sleeps on its interrupt, or polls on a device without one. With
+/// `nowait`, only looks. Whether it is answered (`false` only with `nowait`).
+pub fn settle_renderer_sleeping<P: Platform>(nowait: bool) -> Result<bool, &'static str> {
+    let mut deadline = Deadline::after::<P>(RENDER_TIMEOUT_MS);
+    let events = {
+        let mut display = DISPLAY.lock();
+        let Some(renderer) = display.as_mut().and_then(|display| display.scanout.renderer()) else {
+            return Ok(true);
+        };
+        if renderer.finish()? {
+            return Ok(true);
+        }
+        if nowait {
+            return Ok(false);
+        }
+        renderer.events()
+    };
+    let Some(events) = events else {
+        let mut display = DISPLAY.lock();
+        return match display.as_mut() {
+            Some(display) => display.settle_renderer(&mut deadline).map(|()| true),
+            None => Ok(true),
+        };
+    };
+    let mut seen = events.raised();
+    loop {
+        let finished = DISPLAY
+            .lock()
+            .as_mut()
+            .and_then(|display| display.scanout.renderer().map(|renderer| renderer.finish()))
+            .unwrap_or(Ok(true))?;
+        if finished {
+            return Ok(true);
+        }
+        if !deadline.sleep_until_raised(events, &mut seen) {
+            let mut display = DISPLAY.lock();
+            return match display.as_mut() {
+                Some(display) => display.settle_renderer(&mut deadline).map(|()| true),
+                None => Ok(true),
+            };
+        }
+    }
 }
 
 /// Shows what was drawn on the display since the last flush ([`Display::flush`]); 0 without a

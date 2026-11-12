@@ -91,6 +91,7 @@ fn errno(error: RenderError) -> Errno {
         RenderError::Device => Errno::EIO,
         RenderError::Invalid => Errno::EINVAL,
         RenderError::AlreadyCreated => Errno::EEXIST,
+        RenderError::Busy => Errno::EBUSY,
     }
 }
 
@@ -231,10 +232,13 @@ pub fn ioctl<P: Platform>(
         }
         number::WAIT => {
             context.buffer(argument.u32_at(0)).ok_or(Errno::ENOENT)?;
-            if argument.u32_at(4) & !WAIT_NOWAIT != 0 {
+            let flags = argument.u32_at(4);
+            if flags & !WAIT_NOWAIT != 0 {
                 return Err(Errno::EINVAL);
             }
-            Ok(0)
+            crate::rendering::wait::<P>(flags & WAIT_NOWAIT != 0)
+                .map(|()| 0)
+                .map_err(errno)
         }
         number::GET_CAPS => {
             let (id, version) = (argument.u32_at(0), argument.u32_at(4));
