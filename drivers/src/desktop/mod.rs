@@ -44,6 +44,7 @@ mod shell;
 pub mod shortcuts;
 mod sticky_keys;
 mod carry;
+mod hot_keys;
 mod shell_menu;
 mod tray;
 mod updates;
@@ -439,6 +440,7 @@ pub struct Desktop {
     tray: tray::Tray,
     shell_menu: Option<shell_menu::ShellMenu>,
     carried: Option<carry::Carry>,
+    hot_keys: [Option<hot_keys::HotKey>; hot_keys::MOST_HOT_KEYS],
     desktops: u8,
     current_desktop: u8,
     responsiveness: responsiveness::Responsiveness,
@@ -531,6 +533,7 @@ impl Desktop {
             tray: tray::Tray::default(),
             shell_menu: None,
             carried: None,
+            hot_keys: [None; hot_keys::MOST_HOT_KEYS],
             desktops: 1,
             current_desktop: 0,
             responsiveness: responsiveness::Responsiveness::default(),
@@ -1406,6 +1409,7 @@ impl Desktop {
         self.forget_tray_icons(slot, damage);
         self.forget_shell_menu(slot, damage);
         self.forget_in_carry(slot, damage, events);
+        self.forget_hot_keys(slot);
         for dialog in 0..MAX_WINDOWS {
             if self.windows[dialog].is_some_and(|window| window.parent == Some(slot as u8)) {
                 self.destroy_slot(dialog, damage, events);
@@ -2364,6 +2368,9 @@ impl Desktop {
     ) -> Action {
         if pressed && code == key::ESC && self.carrying() {
             self.cancel_carry(damage, events);
+            return Action::None;
+        }
+        if pressed && self.hot_key_pressed(code, modifiers, events) {
             return Action::None;
         }
         if let Some(action) = self.end_app_key(code, pressed, damage, events) {

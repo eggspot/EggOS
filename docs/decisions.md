@@ -22846,3 +22846,21 @@ the license, by an explicit instruction recorded here.
   a check written blind would fail on its first run for reasons unrelated to the feature and
   be rewritten then. The features themselves are written and host-tested; the roadmap lines
   name each check as moved, so the build pass finds them.
+
+## D398 No app sees another's input; global hot keys go through the window server (batch part 13's rest, D349's "Not yet"; M15, M11; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: Windows' global hooks, Wayland's refusal of global input capture, and what programs use global hooks for)
+
+- **Question.** D349 left "hooks into other processes" open: a `WH_KEYBOARD_LL` or
+  `WH_MOUSE_LL` hook installed on Windows sees every key and pointer event of the session.
+- **Decision.** EggOS refuses it, as Wayland does: a global hook is a keylogger, and EggOS's
+  model (D21, D193) is that an app or agent sees only what the person gives it. The low-level
+  hooks keep seeing the program's own input (D349). What programs mostly install them for,
+  a key combination that works whichever window has the focus, becomes a server feature:
+  `RegisterHotKey` on a window also registers the combination with the window server
+  (`REGISTER_HOT_KEY`, request 57), which gives that window a `HotKey` event (23) when the
+  person presses exactly that combination and keeps the key from the focused window; the
+  layer posts `WM_HOTKEY` as before. Only combinations with Ctrl, Alt or Super are taken, none
+  the shell's shortcuts use, one client each (64 at most), and the window's going away
+  frees them, so a hot key tells its program of its own combination and nothing else.
+- **Not yet.** Thread hot keys (window 0) beyond the program's own focus, `MOD_NOREPEAT`,
+  hot keys for the macOS layer (`RegisterEventHotKey`) and the toolkit, a Settings list of
+  the registered hot keys.

@@ -429,6 +429,18 @@ pub fn ioctl<P: Platform>(
                 desktop.start_carry(client, window, (kind, serial), words, damage, events)
             })?;
         }
+        Request::RegisterHotKey {
+            window,
+            hot_key,
+            code,
+            modifiers,
+        } => {
+            let remove = modifiers & protocol::HOT_KEY_REMOVE != 0;
+            let code = u16::try_from(code).map_err(|_| Errno::EINVAL)?;
+            on_windows::<P, _>(|desktop, _, _, _| {
+                desktop.register_hot_key(client, window, (hot_key, code, modifiers as u8), remove)
+            })?;
+        }
         Request::GetDrag {
             buffer,
             length,

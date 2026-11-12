@@ -25,6 +25,8 @@ const SET_CLIPBOARD: usize = 0x4010_7720;
 const SET_TRAY_ICON: usize = 0x4020_7733;
 const SET_LAYERED: usize = 0x4010_7734;
 const SHOW_SHELL_MENU: usize = 0x4010_7735;
+const REGISTER_HOT_KEY: usize = 0x4010_7739;
+const HOT_KEY_REMOVE: u32 = 0x100;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const TITLE_CAPACITY: usize = 64;
 const TRY_AGAIN: u16 = 11;
@@ -191,6 +193,18 @@ impl Device {
         put(&mut argument, 4, entries.len() as u32);
         argument[8..16].copy_from_slice(&(entries.as_ptr() as u64).to_ne_bytes());
         self.request(SHOW_SHELL_MENU, &mut argument)
+    }
+
+    /// Makes Linux key `code` with keymap `modifiers` hot key `id` of `window` for the whole
+    /// desktop, or gives it up with `remove` (D398).
+    pub fn register_hot_key(&self, window: u32, id: u32, code: u16, modifiers: u8, remove: bool) -> Result<(), Errno> {
+        let mut argument = [0u8; 16];
+        put(&mut argument, 0, window);
+        put(&mut argument, 4, id);
+        put(&mut argument, 8, u32::from(code));
+        let flags = if remove { HOT_KEY_REMOVE } else { 0 };
+        put(&mut argument, 12, u32::from(modifiers) | flags);
+        self.request(REGISTER_HOT_KEY, &mut argument)
     }
 
     /// Sets `window`'s title to `title`, cut to the server's 64 bytes at a character boundary.

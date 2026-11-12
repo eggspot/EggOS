@@ -155,6 +155,52 @@ unsafe extern "efiapi" fn set_keyboard_state(state: *const u8) -> Bool {
     }
 }
 
+const MOD_ALT: u32 = 0x1;
+const MOD_CONTROL: u32 = 0x2;
+const MOD_SHIFT: u32 = 0x4;
+const MOD_WIN: u32 = 0x8;
+const KEYMAP_SHIFT: u8 = 1;
+const KEYMAP_ALT: u8 = 2;
+const KEYMAP_CTRL: u8 = 4;
+const KEYMAP_SUPER: u8 = 8;
+
+fn linux_code_of(virtual_key: u32) -> Option<u16> {
+    (1..=255u16).find(|&code| {
+        crate::gui::input::virtual_key(code).is_some_and(|found| u32::from(found.virtual_key) == virtual_key)
+    })
+}
+
+fn keymap_modifiers(modifiers: u32) -> u8 {
+    [(MOD_SHIFT, KEYMAP_SHIFT), (MOD_ALT, KEYMAP_ALT), (MOD_CONTROL, KEYMAP_CTRL), (MOD_WIN, KEYMAP_SUPER)]
+        .into_iter()
+        .filter(|(flag, _)| modifiers & flag != 0)
+        .fold(0, |held, (_, bit)| held | bit)
+}
+
+fn server_of(window: usize) -> Option<(super::window_device::Device, u32)> {
+    with(|gui| {
+        let device = gui.device?;
+        let root = crate::gui::windows::root_of(&gui.windows, window)?;
+        let server = gui.windows.get(root)?.server;
+        (server != 0).then_some((device, server))
+    })
+    .flatten()
+}
+
+fn tell_server(window: usize, id: i32, modifiers: u32, key: u32, remove: bool) {
+    if window == 0 {
+        return;
+    }
+    let code = match remove {
+        true => Some(0),
+        false => linux_code_of(key),
+    };
+    let (Some((device, server)), Some(code)) = (server_of(window), code) else {
+        return;
+    };
+    let _ = device.register_hot_key(server, id as u32, code, keymap_modifiers(modifiers), remove);
+}
+
 extern "efiapi" fn register_hot_key(window: usize, id: i32, modifiers: u32, key: u32) -> Bool {
     let registered = try_with(|gui| {
         let thread = match window {
@@ -183,7 +229,10 @@ extern "efiapi" fn register_hot_key(window: usize, id: i32, modifiers: u32, key:
         Ok(())
     });
     match registered {
-        Ok(()) => TRUE,
+        Ok(()) => {
+            tell_server(window, id, modifiers, key, false);
+            TRUE
+        }
         Err(code) => fail(code, FALSE),
     }
 }
@@ -203,7 +252,10 @@ extern "efiapi" fn unregister_hot_key(window: usize, id: i32) -> Bool {
     })
     .flatten();
     match removed {
-        Some(()) => TRUE,
+        Some(()) => {
+            tell_server(window, id, 0, 0, true);
+            TRUE
+        }
         None => fail(error::HOTKEY_NOT_REGISTERED, FALSE),
     }
 }

@@ -600,6 +600,20 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
             super::shell_desktop::tray_event(key, number, point);
             None
         }
+        Event::HotKey { id } => {
+            with(|gui| {
+                let hot_key = gui
+                    .made_extras()?
+                    .hot_keys
+                    .iter()
+                    .flatten()
+                    .find(|hot_key| hot_key.id as u32 == id)
+                    .copied()?;
+                let lparam = message::word_pair(hot_key.modifiers as usize, hot_key.key as usize);
+                gui.post(hot_key.window, hot_key.thread, message::HOT_KEY, hot_key.id as isize as usize, lparam).ok()
+            });
+            None
+        }
         Event::ShellMenu { chosen } => {
             super::shell_menu::answered(chosen);
             None

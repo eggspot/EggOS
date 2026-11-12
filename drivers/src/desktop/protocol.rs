@@ -101,6 +101,7 @@ pub mod size {
     pub const RAISE_WINDOW: usize = 4;
     pub const START_DRAG: usize = super::start_drag_request::TEXT + super::CARRY_TEXT_BYTES;
     pub const GET_DRAG: usize = 32;
+    pub const REGISTER_HOT_KEY: usize = 16;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -166,6 +167,7 @@ pub mod request {
     pub const RAISE_WINDOW: u32 = encode(WRITE, 54, size::RAISE_WINDOW);
     pub const START_DRAG: u32 = encode(WRITE, 55, size::START_DRAG);
     pub const GET_DRAG: u32 = encode(READ | WRITE, 56, size::GET_DRAG);
+    pub const REGISTER_HOT_KEY: u32 = encode(WRITE, 57, size::REGISTER_HOT_KEY);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -352,7 +354,13 @@ pub mod event {
     /// This window's drag between windows ended: `a` 1 when it was dropped on a window, 0
     /// when it was cancelled; `c` and `d` as [`DRAG_OVER`].
     pub const DRAG_ENDED: u16 = 22;
+    /// A hot key of the window was pressed (D398): `a` its id, `c` the key, `d` the
+    /// modifiers held.
+    pub const HOT_KEY: u16 = 23;
 }
+
+/// `REGISTER_HOT_KEY`'s flag in its modifiers word: give the hot key up.
+pub const HOT_KEY_REMOVE: u32 = 0x100;
 
 /// `START_DRAG`'s argument (D393): the window, the payload's kind, its length and address,
 /// and the ghost's words (UTF-8, `text_length` bytes).
@@ -828,6 +836,14 @@ pub enum Request {
         text_length: u32,
         text: [u8; CARRY_TEXT_BYTES],
     },
+    /// The caller's `window` takes key `code` with `modifiers` as hot key `hot_key`, or gives
+    /// it up with [`HOT_KEY_REMOVE`] in `modifiers` (D398).
+    RegisterHotKey {
+        window: u32,
+        hot_key: u32,
+        code: u32,
+        modifiers: u32,
+    },
     /// Reads the current drag's payload into `buffer` (`length` bytes from `offset`).
     GetDrag {
         buffer: u64,
@@ -896,6 +912,7 @@ impl Request {
             request::RAISE_WINDOW => size::RAISE_WINDOW,
             request::START_DRAG => size::START_DRAG,
             request::GET_DRAG => size::GET_DRAG,
+            request::REGISTER_HOT_KEY => size::REGISTER_HOT_KEY,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::GET_LAUNCH => size::GET_LAUNCH,
@@ -1035,6 +1052,12 @@ impl Request {
                     text,
                 }
             }
+            request::REGISTER_HOT_KEY => Self::RegisterHotKey {
+                window: at(0),
+                hot_key: at(4),
+                code: at(8),
+                modifiers: at(12),
+            },
             request::GET_DRAG => Self::GetDrag {
                 buffer: double_word(bytes, 0),
                 length: at(8),
