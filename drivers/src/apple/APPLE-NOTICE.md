@@ -10,7 +10,11 @@ The notice is reproduced as the licence requires.
 
 The DART's registers, table layout and entry formats (`dart.rs`, D544) are taken from m1n1's
 `src/dart.c` as released in m1n1 1.9.9, the last release under the MIT licence (m1n1 moved
-to the GPL from 2.0.0 on; nothing later is used). Its notice follows the first.
+to the GPL from 2.0.0 on; nothing later is used). So are AFK and EPIC's messages, ring
+layout and command format (`epic.rs`, D545, from `src/afk.c` and `afk.h`) and the binary
+property list format (`properties.rs`, D545, from `src/dcp/parser.c`, Copyright 2021 Alyssa
+Rosenzweig, published under `GPL-2.0-only OR MIT` and used under MIT). Its notice follows the
+first.
 
 ## Apple mailbox and RTKit drivers
 

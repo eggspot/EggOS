@@ -25655,3 +25655,30 @@ the license, by an explicit instruction recorded here.
   notice is in `drivers/src/apple/APPLE-NOTICE.md`.
 - **Not yet.** The DCP's framebuffer endpoint (part 3), and DARTs for devices that are not
   coprocessors.
+
+## D545 Apple silicon's coprocessors, part 3: AFK and EPIC (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from m1n1 1.9.9's MIT-licensed `afk.c` and its dual-licensed property parser)
+
+- **Decision.** `eggos_drivers::apple::epic` speaks AFK, the ring-buffer transport the
+  display coprocessor's services use on top of RTKit, and EPIC, the messages in it.
+  - **Endpoint.** After RTKit starts it, the endpoint sends `INIT`, lends the shared buffer
+    the coprocessor asks for (`GETBUF`, in 64-byte blocks, answered with its device
+    address), places the transmit and receive rings where `INIT_TX` and `INIT_RX` say (each
+    a 192-byte header holding the size, read pointer and write pointer, then the data), and
+    sends `START` once both are set.
+  - **Entries.** Each entry is a 16-byte header (`IOP `, size, channel, kind) and its data,
+    padded to 64 bytes. Reading wraps to the ring's start when an entry would not fit before
+    its end. Writing refuses when the ring has no room and repeats the header at the start
+    when the data wraps. `SEND` carries the new write pointer and `RECV` says entries came.
+  - **Services.** `find_service` waits for a service's announcement, by name or by the
+    `EPICProviderClass` of the property list it carries (`apple::properties`, new: the
+    firmware's binary dictionaries, arrays, integers, strings, blobs and booleans). It then
+    lends the command input and output buffers.
+  - **Commands.** `command` writes an EPIC message: the version-2 header with a sequence
+    number, the version-4 sub-header (category command and the service's type) and the
+    buffers' addresses and lengths. It waits for the reply of that type, passing other
+    entries over, and returns the output, or the result when it is not zero.
+- **The link.** RTKit's messages and shared memory reach the endpoint through the unsafe
+  `Link` trait, so the protocol is tested against host memory and a scripted coprocessor.
+  The kernel implements it over RTKit, the DART and its frames.
+- **Not yet.** Answering the coprocessor's own calls to standard services (`NOTIFY_ACK`); the
+  iBoot display service does not need them.
