@@ -1,9 +1,10 @@
 use crate::compositor::{self, Compositor, MAX_CLIENTS};
 use crate::fake::{Fake, SentEvent, message};
-use crate::system::{Fd, System};
+use crate::system::{Fd, GpuPicture, System};
 use eggos_wayland::protocol::{
     Interface, SERVER_ID_START, activation_token, buffer, callback, cursor_shape, data_device,
-    data_offer, data_source, decoration, display, fractional_scale, keyboard, output, pointer,
+    data_offer, data_source, decoration, display, fractional_scale, keyboard, linux_dmabuf, output,
+    pointer,
     primary_selection_device, primary_selection_offer, primary_selection_source, registry,
     server_decoration, shm, surface, text_input, viewport, xdg_popup, xdg_positioner, xdg_surface,
     xdg_toplevel, xdg_wm_base,
@@ -387,6 +388,67 @@ fn a_toplevel_s_buffer_becomes_a_window_with_its_pixels_opaque() {
     assert_eq!(window.commits, vec![Vec::new()]);
     assert_eq!(session.of(BUFFER, buffer::RELEASE.opcode).len(), 1);
     assert_eq!(session.of(SURFACE, surface::ENTER.opcode).len(), 1);
+    session.end();
+}
+
+#[test]
+fn a_toplevel_s_dma_buf_is_shown_without_a_copy_and_held_until_another_buffer_replaces_it() {
+    const DMABUF: u32 = 30;
+    const PARAMS: u32 = 31;
+    const GPU_BUFFER: u32 = 32;
+    let mut session = Session::new();
+    let id = session.shown();
+    session.bind(16, "zwp_linux_dmabuf_v1", 3, DMABUF);
+    let frame = session
+        .fake
+        .memory_file(vec![0x00ff_0000; (WIDTH * HEIGHT) as usize]);
+    session.send(DMABUF, 1, &[Value::NewId(PARAMS)]);
+    session.send_with(
+        PARAMS,
+        1,
+        &[
+            Value::Fd,
+            Value::Uint(0),
+            Value::Uint(0),
+            Value::Uint(WIDTH * 4),
+            Value::Uint(0),
+            Value::Uint(0),
+        ],
+        vec![frame],
+    );
+    session.send(
+        PARAMS,
+        3,
+        &[
+            Value::NewId(GPU_BUFFER),
+            Value::Int(WIDTH as i32),
+            Value::Int(HEIGHT as i32),
+            Value::Uint(linux_dmabuf::XRGB8888),
+            Value::Uint(0),
+        ],
+    );
+    session.show(GPU_BUFFER, (0, 0, WIDTH as i32, HEIGHT as i32));
+    session.pump();
+    let window = &session.fake.windows[&id];
+    assert_eq!(
+        window.pictures,
+        vec![Some(GpuPicture {
+            descriptor: frame,
+            width: WIDTH,
+            height: HEIGHT,
+            stride: WIDTH * 4,
+            offset: 0,
+        })]
+    );
+    assert_eq!(window.commits.len(), 1, "no copy and no commit of its own");
+    assert!(session.of(GPU_BUFFER, buffer::RELEASE.opcode).is_empty());
+    session.fake.windows.get_mut(&id).unwrap().pixels.fill(0);
+    session.show(BUFFER, (0, 0, 1, 1));
+    session.pump();
+    let window = &session.fake.windows[&id];
+    assert_eq!(window.pictures.last(), Some(&None));
+    assert_eq!(window.pixels[5], 5, "the window's own pixels copied whole again");
+    assert_eq!(session.of(GPU_BUFFER, buffer::RELEASE.opcode).len(), 1);
     session.end();
 }
 

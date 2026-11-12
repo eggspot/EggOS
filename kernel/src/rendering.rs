@@ -315,6 +315,11 @@ impl Buffer {
         self.length
     }
 
+    /// Whether its memory is guest memory the kernel reaches (not a host blob's).
+    pub fn is_in_guest_memory(&self) -> bool {
+        self.memory.is_some()
+    }
+
     /// The fence of the last command stream that used it (0 for none).
     pub fn last_fence(&self) -> u64 {
         self.last_fence.load(Ordering::Acquire)

@@ -7,7 +7,9 @@
 //! ([`EventQueue`]); closing its last descriptor destroys its windows. A window's pixels are a
 //! [`PixelBuffer`]: physically contiguous frames the server owns, zeroed, which the client maps
 //! with `mmap` at the offset `Create` and `SetSize` return ([`Process::map_lent_frames`]) and
-//! the compositor reads through the direct map. A client's buffers, those its windows show and
+//! the compositor reads through the direct map. A window may instead show a GPU buffer's
+//! frames ([`GpuPicture`], D461), which the compositor reads the same way, so a GL or Vulkan
+//! program's frame reaches the screen with no copy of its own. A client's buffers, those its windows show and
 //! those its process still maps, hold at most [`CLIENT_PIXEL_LIMIT`] bytes together, every
 //! client's at most [`PIXEL_MEMORY_SHARE`] of memory, and none takes the free frames below the
 //! reserve programs leave the kernel (D155). `Commit`
@@ -146,6 +148,82 @@ impl PixelBuffer {
         // the copy goes through raw pointers only, as kernel copies of user memory do (D94),
         // into `out`, which is not in the buffer.
         unsafe { ptr::copy_nonoverlapping(self.base().wrapping_add(at), out.as_mut_ptr(), count) };
+    }
+}
+
+/// What a window shows, row by row: its [`PixelBuffer`], or a [`GpuPicture`] (D461).
+pub trait WindowPixels {
+    /// Copies pixels `x..x + out.len()` of row `y` into `out`; what lies outside is the window
+    /// background.
+    fn copy_row(&self, x: u32, y: u32, out: &mut [u32]);
+}
+
+impl WindowPixels for PixelBuffer {
+    fn copy_row(&self, x: u32, y: u32, out: &mut [u32]) {
+        PixelBuffer::copy_row(self, x, y, out);
+    }
+}
+
+/// A GPU buffer's frame a window shows in place of its own pixels (`SHOW_GPU_BUFFER`, D461):
+/// `width` by `height` `0x00RRGGBB` pixels from byte `offset` of the buffer's guest memory,
+/// rows `stride` bytes apart, read where the GPU left them.
+#[derive(Debug)]
+pub struct GpuPicture {
+    buffer: Arc<crate::rendering::Buffer>,
+    width: u32,
+    height: u32,
+    stride: u32,
+    offset: u64,
+}
+
+impl GpuPicture {
+    /// The picture, or `None` when it does not lie inside the buffer's guest memory: a host
+    /// blob, a stride shorter than a row or not a whole number of pixels, or rows past the end.
+    pub fn new(
+        buffer: Arc<crate::rendering::Buffer>,
+        width: u32,
+        height: u32,
+        stride: u32,
+        offset: u64,
+    ) -> Option<Self> {
+        let row = u64::from(width) * 4;
+        let last_row_end = u64::from(height.checked_sub(1)?)
+            .checked_mul(u64::from(stride))?
+            .checked_add(offset)?
+            .checked_add(row)?;
+        let fits = buffer.is_in_guest_memory()
+            && width > 0
+            && u64::from(stride) >= row
+            && stride % 4 == 0
+            && offset % 4 == 0
+            && last_row_end <= buffer.size();
+        fits.then_some(Self {
+            buffer,
+            width,
+            height,
+            stride,
+            offset,
+        })
+    }
+
+    /// Its size in pixels.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
+impl WindowPixels for GpuPicture {
+    fn copy_row(&self, x: u32, y: u32, out: &mut [u32]) {
+        if y >= self.height || x >= self.width {
+            out.fill(colour::WINDOW_BACKGROUND);
+            return;
+        }
+        let count = out.len().min((self.width - x) as usize);
+        out[count..].fill(colour::WINDOW_BACKGROUND);
+        let at = self.offset + u64::from(y) * u64::from(self.stride) + u64::from(x) * 4;
+        if !self.buffer.read_pixels(at, &mut out[..count]) {
+            out[..count].fill(colour::WINDOW_BACKGROUND);
+        }
     }
 }
 
@@ -312,6 +390,7 @@ struct Attached {
     window: WindowId,
     serial: u32,
     buffer: Arc<PixelBuffer>,
+    picture: Option<Arc<GpuPicture>>,
 }
 
 /// The buffer each window shows, by slot, and the serial numbers that make their offsets.
@@ -332,8 +411,8 @@ impl Buffers {
         }
     }
 
-    /// Makes `buffer` window `window`'s, in place of the one it had, and returns the offset
-    /// that maps it.
+    /// Makes `buffer` window `window`'s, in place of the one it had and of any picture it
+    /// showed, and returns the offset that maps it.
     pub fn attach(&mut self, window: WindowId, buffer: Arc<PixelBuffer>) -> u64 {
         let serial = self.next_serial;
         self.next_serial = self.next_serial.wrapping_add(1);
@@ -342,6 +421,7 @@ impl Buffers {
             window,
             serial,
             buffer,
+            picture: None,
         });
         ((slot as u64) << OFFSET_SLOT_SHIFT | u64::from(serial)) * FRAME_SIZE
     }
@@ -352,6 +432,43 @@ impl Buffers {
             .as_ref()
             .filter(|attached| attached.window == window)
             .map(|attached| &*attached.buffer)
+    }
+
+    /// Has window `window` show `picture` in place of its buffer's pixels, or its buffer again
+    /// for `None` (D461); `false` when the window has no buffer.
+    pub fn show_picture(&mut self, window: WindowId, picture: Option<Arc<GpuPicture>>) -> bool {
+        let attached = self.slots[slot_of(window)]
+            .as_mut()
+            .filter(|attached| attached.window == window);
+        match attached {
+            Some(attached) => {
+                attached.picture = picture;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// What window `window` shows: the picture it was given, or its buffer.
+    pub fn pixels(&self, window: WindowId) -> Option<&dyn WindowPixels> {
+        let attached = self.slots[slot_of(window)]
+            .as_ref()
+            .filter(|attached| attached.window == window)?;
+        Some(match attached.picture.as_deref() {
+            Some(picture) => picture,
+            None => &*attached.buffer,
+        })
+    }
+
+    /// What window `window` shows, shared, so it outlives the screen's lock.
+    pub fn shared_pixels(&self, window: WindowId) -> Option<Arc<dyn WindowPixels>> {
+        let attached = self.slots[slot_of(window)]
+            .as_ref()
+            .filter(|attached| attached.window == window)?;
+        Some(match attached.picture.as_ref() {
+            Some(picture) => Arc::clone(picture) as Arc<dyn WindowPixels>,
+            None => Arc::clone(&attached.buffer) as Arc<dyn WindowPixels>,
+        })
     }
 
     /// Window `window`'s buffer, shared, so it outlives the screen's lock.
@@ -519,7 +636,7 @@ const CAPTURE_CHUNK_PIXELS: usize = 256;
 /// start, and stops at its first error.
 pub fn copy_content_rows<E>(
     layout: &ContentLayout,
-    pixels: Option<&PixelBuffer>,
+    pixels: Option<&dyn WindowPixels>,
     first_row: u32,
     rows: u32,
     put: &mut impl FnMut(usize, &[u8]) -> Result<(), E>,
@@ -912,7 +1029,7 @@ mod tests {
             (created.width, created.height)
         );
         let mut copied = alloc::vec::Vec::new();
-        copy_content_rows::<()>(&layout, Some(&shared), 1, 2, &mut |offset, bytes| {
+        copy_content_rows::<()>(&layout, Some(&*shared), 1, 2, &mut |offset, bytes| {
             assert_eq!(offset, copied.len());
             copied.extend_from_slice(bytes);
             Ok(())

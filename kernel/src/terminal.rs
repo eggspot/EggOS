@@ -120,8 +120,8 @@ impl Contents for ScreenContents<'_> {
             }
             return;
         }
-        match self.buffers.of(window) {
-            Some(buffer) => buffer.copy_row(x, y, out),
+        match self.buffers.pixels(window) {
+            Some(pixels) => pixels.copy_row(x, y, out),
             None => out.fill(colour::WINDOW_BACKGROUND),
         }
     }

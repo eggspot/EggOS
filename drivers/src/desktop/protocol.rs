@@ -16,6 +16,8 @@ pub const QUEUE_CAPACITY: usize = 256;
 pub const TITLE_CAPACITY: usize = 64;
 /// The most rectangles one commit names.
 pub const MAX_COMMIT_RECTS: usize = 8;
+/// `ShowGpuBuffer`'s descriptor that shows the window's own pixels again (D461).
+pub const NO_GPU_BUFFER: u32 = u32::MAX;
 /// The longest pool of labels `SetMenu` carries, in bytes.
 pub const MENU_POOL_CAPACITY: usize = 248;
 /// The most menus one window's main menu holds.
@@ -847,8 +849,11 @@ pub enum Request {
         modifiers: u32,
     },
     /// Shows the GPU buffer whose `dma-buf` descriptor is `fd` as the caller's `window`'s
-    /// pixels (D442): `width` by `height` `0x00RRGGBB` pixels from byte `offset`, rows `stride`
-    /// bytes apart, copied in and committed whole.
+    /// pixels from now on (D442, D461): `width` by `height` `0x00RRGGBB` pixels from byte
+    /// `offset`, rows `stride` bytes apart, read by the compositor where the GPU left them once
+    /// the last command stream that used the buffer finished, and committed whole.
+    /// [`NO_GPU_BUFFER`] shows the window's own pixels again; a new buffer from `SetSize` does
+    /// too.
     ShowGpuBuffer {
         window: u32,
         fd: u32,

@@ -4,7 +4,7 @@
 //! every descriptor, so a test can check that nothing leaks.
 
 use crate::client::ClientSlot;
-use crate::system::{Fd, PoolPixels, Received, System, WindowBuffer};
+use crate::system::{Fd, GpuPicture, PoolPixels, Received, System, WindowBuffer};
 use eggos_runtime::errno::Errno;
 use eggos_wayland::blit::{OPAQUE_MASK, Placement, Rect, WindowPixels};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -55,6 +55,7 @@ pub struct FakeWindow {
     pub minimum: (u32, u32),
     pub states: Vec<u32>,
     pub commits: Vec<Vec<Rect>>,
+    pub pictures: Vec<Option<GpuPicture>>,
     pub drags: Vec<(u32, u32)>,
     pub pointer_shapes: Vec<u32>,
     pub destroyed: bool,
@@ -493,6 +494,17 @@ impl System for Fake {
     fn commit(&mut self, _device: Fd, window: u32, rects: &[Rect]) -> Result<(), Errno> {
         let target = self.windows.get_mut(&window).ok_or(Errno::EINVAL)?;
         target.commits.push(rects.to_vec());
+        Ok(())
+    }
+
+    fn show_gpu_buffer(
+        &mut self,
+        _device: Fd,
+        window: u32,
+        picture: Option<GpuPicture>,
+    ) -> Result<(), Errno> {
+        let target = self.windows.get_mut(&window).ok_or(Errno::EINVAL)?;
+        target.pictures.push(picture);
         Ok(())
     }
 

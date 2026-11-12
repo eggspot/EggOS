@@ -14,7 +14,7 @@ use crate::client::{
     Pool, Role, Surface, TITLE_CAPACITY, ViewportState,
 };
 use crate::selection::{self, Delivery, Selections};
-use crate::system::{Fd, PoolPixels, Received, System, WindowBuffer};
+use crate::system::{Fd, GpuPicture, PoolPixels, Received, System, WindowBuffer};
 use crate::text_input;
 use eggos_element_tree::{
     Bounds, Element, HEADER_BYTES, Outcome, Query, Role as ElementRole, TreeWriter,
@@ -955,6 +955,7 @@ fn dmabuf_params_request<S: System>(
                 length,
                 buffers: 1,
                 destroyed: true,
+                gpu: true,
             });
             client.pool_bytes += length;
             shared.pool_bytes += length;
@@ -1020,6 +1021,7 @@ fn shm_request<S: System>(
                 length,
                 buffers: 0,
                 destroyed: false,
+                gpu: false,
             });
             client.pool_bytes += length;
             shared.pool_bytes += length;
@@ -1434,7 +1436,10 @@ fn commit<S: System>(client: &mut ClientSlot, shared: &mut Shared, system: &mut 
             let composed = client.composes || surface.viewport_current.is_active();
             apply_children(client, index, 0);
             present(client, shared, system, index, buffer, damage, composed);
-            if !composed {
+            let held = client
+                .surface(index)
+                .is_some_and(|slot| slot.held == Some(buffer));
+            if !composed && !held {
                 release_buffer(client, buffer);
             }
         }
@@ -1555,11 +1560,28 @@ fn present<S: System>(
         }
         Some(window) => (window, false),
     };
+    let picture = GpuPicture {
+        descriptor: pool.descriptor,
+        width: attached.width,
+        height: attached.height,
+        stride: u32::try_from(attached.stride).unwrap_or(u32::MAX),
+        offset: u32::try_from(attached.offset).unwrap_or(u32::MAX),
+    };
+    let on_gpu = !composed
+        && pool.gpu
+        && system
+            .show_gpu_buffer(device, window.id, Some(picture))
+            .is_ok();
+    let was_on_gpu = surface.shows_gpu;
     if let Some(slot) = client.surface(index) {
         slot.window = Some(window);
         slot.asked_size = size;
+        slot.shows_gpu |= on_gpu;
     }
-    if composed {
+    let everything = everything || was_on_gpu;
+    if on_gpu {
+        hold(client, index, buffer);
+    } else if composed {
         hold(client, index, buffer);
         recompose(client, system, index);
     } else {
@@ -1575,7 +1597,13 @@ fn present<S: System>(
             true => &[],
             false => core::slice::from_ref(&rect),
         };
-        if everything || !rect.is_empty() {
+        if was_on_gpu {
+            let _ = system.show_gpu_buffer(device, window.id, None);
+            if let Some(slot) = client.surface(index) {
+                slot.shows_gpu = false;
+            }
+            let_go(client, index);
+        } else if everything || !rect.is_empty() {
             let _ = system.commit(device, window.id, rects);
         }
     }
@@ -2717,7 +2745,17 @@ fn recompose<S: System>(client: &mut ClientSlot, system: &mut S, root: u16) {
         let at = offset_of(client, index);
         draw_surface(client, system, window, index, at, true);
     }
-    let _ = system.commit(device, window.id, &[]);
+    match surface.shows_gpu {
+        true => {
+            let _ = system.show_gpu_buffer(device, window.id, None);
+            if let Some(slot) = client.surface(root) {
+                slot.shows_gpu = false;
+            }
+        }
+        false => {
+            let _ = system.commit(device, window.id, &[]);
+        }
+    }
 }
 
 fn surface_at(client: &ClientSlot, root: u16, x: i32, y: i32) -> (u16, i32, i32) {

@@ -18,7 +18,8 @@ use crate::terminal::{
     type_in_terminal, with_windows,
 };
 use crate::window::{
-    self, Connection, PixelBuffer, QueryAnswer, QueryRequest, ServerError, copy_content_rows,
+    self, Connection, GpuPicture, PixelBuffer, QueryAnswer, QueryRequest, ServerError,
+    copy_content_rows,
 };
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -27,7 +28,7 @@ use eggos_drivers::desktop::protocol;
 use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MAX_TREE_BYTES,
-    MENU_POOL_CAPACITY, QUERY_ANSWER_MS, Request, TITLE_CAPACITY, WindowError, act_request,
+    MENU_POOL_CAPACITY, NO_GPU_BUFFER, QUERY_ANSWER_MS, Request, TITLE_CAPACITY, WindowError, act_request,
     capture_reply, create_reply, desktop_action, element_action, get_clipboard_reply, get_form_reply,
     get_menu_reply, get_tree_reply, input_outcome, keyboard_flags, keyboard_layout_reply,
     list_desktops_reply, list_reply, placement_reply, put_double_word, put_word, query_kind,
@@ -544,31 +545,35 @@ pub fn ioctl<P: Platform>(
             stride,
             offset,
         } => {
-            let file = thread.files().file(u64::from(fd))?;
-            let FileKind::GpuBuffer(gpu) = file.kind() else {
-                return Err(Errno::EINVAL);
-            };
-            let gpu = Arc::clone(gpu);
             let id = WindowId::try_from(window).map_err(|_| Errno::EINVAL)?;
-            let shared = with_windows::<P, _>(|desktop, buffers, _, _| {
-                desktop.owns(client, id).then(|| buffers.shared(id)).flatten()
+            let picture = match fd {
+                NO_GPU_BUFFER => None,
+                fd => {
+                    let file = thread.files().file(u64::from(fd))?;
+                    let FileKind::GpuBuffer(gpu) = file.kind() else {
+                        return Err(Errno::EINVAL);
+                    };
+                    let picture = GpuPicture::new(
+                        Arc::clone(gpu),
+                        width,
+                        height,
+                        stride,
+                        u64::from(offset),
+                    )
+                    .ok_or(Errno::EINVAL)?;
+                    gpu.wait::<P>(false).map_err(|_| Errno::EIO)?;
+                    Some(Arc::new(picture))
+                }
+            };
+            let (shown_width, shown_height) = with_windows::<P, _>(|desktop, buffers, _, _| {
+                if !desktop.owns(client, id) {
+                    return None;
+                }
+                let size = buffers.of(id)?.size();
+                buffers.show_picture(id, picture).then_some(size)
             })
             .ok_or(Errno::ENXIO)?
             .ok_or(Errno::EINVAL)?;
-            let (shown_width, shown_height) = shared.size();
-            let mut row = Vec::new();
-            let wide = width.min(shown_width) as usize;
-            if row.try_reserve_exact(wide).is_err() {
-                return Err(Errno::ENOMEM);
-            }
-            row.resize(wide, 0u32);
-            for y in 0..height.min(shown_height) {
-                let at = u64::from(offset) + u64::from(y) * u64::from(stride);
-                if !gpu.read_pixels(at, &mut row) {
-                    return Err(Errno::EINVAL);
-                }
-                shared.write_row(y, &row);
-            }
             let whole = [eggos_drivers::display::Rect::new(0, 0, shown_width, shown_height)];
             on_windows::<P, _>(|desktop, _, damage, events| {
                 desktop.commit(client, window, &whole, damage, events)
@@ -1105,7 +1110,7 @@ fn capture<P: Platform>(
         let turns = desktop.person_view_only_turns(window)?;
         let id = WindowId::try_from(window).map_err(|_| WindowError::NoSuchWindow)?;
         desktop.note_agent_action(damage);
-        Ok((layout, buffers.shared(id), turns))
+        Ok((layout, buffers.shared_pixels(id), turns))
     })?;
     let rows = layout
         .height

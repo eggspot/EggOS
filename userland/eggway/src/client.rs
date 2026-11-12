@@ -72,6 +72,8 @@ pub struct Pool {
     pub buffers: u16,
     /// The client destroyed the pool; the mapping stays while buffers use it.
     pub destroyed: bool,
+    /// A GPU buffer's `dma-buf` (D459), which a window may show without a copy (D461).
+    pub gpu: bool,
 }
 
 /// A `wl_buffer`: a rectangle of pixels in a pool.
@@ -193,6 +195,8 @@ pub struct Surface {
     pub fractional_scale: u32,
     /// The `wl_subsurface`, 0 when it is none: while it lives the surface keeps its role.
     pub subsurface: u32,
+    /// Its window shows a GPU buffer in place of its own pixels (D461).
+    pub shows_gpu: bool,
 }
 
 impl Surface {
@@ -251,6 +255,7 @@ impl Surface {
             },
             fractional_scale: 0,
             subsurface: 0,
+            shows_gpu: false,
         }
     }
 

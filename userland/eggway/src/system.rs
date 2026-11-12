@@ -46,6 +46,17 @@ pub struct PoolPixels {
     pub stride: usize,
 }
 
+/// A GPU buffer a window shows in place of its own pixels (D461): its `dma-buf` descriptor,
+/// the picture's width and height, the bytes from one row to the next, and its first byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuPicture {
+    pub descriptor: Fd,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub offset: u32,
+}
+
 /// The machine, as the compositor uses it.
 pub trait System {
     /// The monotonic clock, in milliseconds.
@@ -150,6 +161,15 @@ pub trait System {
     /// Shows `rects` of `window`'s buffer (all of it when empty), and the window on its first
     /// commit.
     fn commit(&mut self, device: Fd, window: u32, rects: &[Rect]) -> Result<(), Errno>;
+    /// Has `window` show `picture` in place of its own pixels from now on, read where the GPU
+    /// left them, or its own pixels again for `None` (`SHOW_GPU_BUFFER`, D461); commits the
+    /// whole window.
+    fn show_gpu_buffer(
+        &mut self,
+        device: Fd,
+        window: u32,
+        picture: Option<GpuPicture>,
+    ) -> Result<(), Errno>;
     /// The work area's width and height.
     fn work_area(&mut self) -> (u32, u32);
     /// Reads event records from `device` without waiting; how many bytes.

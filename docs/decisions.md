@@ -23984,3 +23984,28 @@ the license, by an explicit instruction recorded here.
   and `poll` looks again soon. After 5 s the streams are given up and the device is treated as
   wedged, as a flush that times out is.
 - **Not yet.** Per-context timelines (`ring_idx`), sync objects, and zero-copy composition.
+
+## D461 Zero-copy composition: a window shows a GPU buffer's frames (M11, D442's and D459's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** D442 copied each GPU frame into the window's pixels, and `eggway` (D459)
+  copied a client's `dma-buf` into its window again, so a GL frame was copied twice before
+  the compositor read it a third time.
+- **Decision.** `SHOW_GPU_BUFFER` now makes the window show the GPU buffer's frame from then
+  on (`GpuPicture`: the buffer, size, stride and first byte, checked to lie inside its guest
+  memory): the compositor reads the rows straight from the buffer through the direct map, as
+  it reads a window's own pixels (`WindowPixels`), and captures read them too. Each call
+  first waits for the buffer's last command stream (D460) and commits the whole window; the
+  next frame rendered into the same buffer is shown by calling it again. `NO_GPU_BUFFER`
+  (`0xffffffff`), or a new buffer from `SET_SIZE`, shows the window's own pixels again.
+  `eggway` shows a toplevel's `dma-buf` this way when nothing is composed over it (no
+  subsurfaces, no viewport), holds that `wl_buffer` until another replaces it (releasing it
+  at once would let the client draw into what is on screen), and goes back to copying, whole,
+  when a `wl_shm` buffer or a composed frame comes.
+- **Why not the host scanning the resource out.** `SET_SCANOUT` of a 3D resource would skip
+  even the compositor's read, but only for one full-screen window, and the desktop draws its
+  chrome, cursor and other windows over the frame; reading guest memory keeps every window
+  and the desktop's drawing exactly as they are, at one read per composed pixel, which the
+  window's own pixels cost anyway. Direct scanout of a full-screen window stays a later
+  optimisation.
+- **Not yet.** Host blobs (their memory is the device's, outside the direct map), direct
+  scanout, and frames shown on the display's vertical blank instead of at the call.

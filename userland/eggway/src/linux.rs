@@ -7,7 +7,7 @@
 
 use crate::client::ClientSlot;
 use crate::compositor::{Compositor, MAX_CLIENTS, MAX_RECEIVE_DESCRIPTORS, buffer_bytes};
-use crate::system::{Fd, PoolPixels, Received, System, WindowBuffer};
+use crate::system::{Fd, GpuPicture, PoolPixels, Received, System, WindowBuffer};
 use core::ffi::CStr;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
@@ -75,6 +75,7 @@ mod request {
     pub const GET_WORK_AREA: usize = 0x8014_770a;
     pub const START_MOVE_OR_RESIZE: usize = 0x400c_7712;
     pub const MANAGE_WINDOW: usize = 0x4010_770c;
+    pub const SHOW_GPU_BUFFER: usize = 0x4018_773a;
 }
 
 const FOCUS_ACTION: u32 = 0;
@@ -83,6 +84,7 @@ const WINDOW_DEVICE: &CStr = c"/dev/window";
 const KEYMAP_NAME: &CStr = c"eggway-keymap";
 const TITLE_BYTES: usize = 64;
 const MAX_COMMIT_RECTS: usize = 8;
+const NO_GPU_BUFFER: u32 = u32::MAX;
 
 #[repr(C)]
 struct SocketAddress {
@@ -850,6 +852,30 @@ impl System for Linux {
             }
         }
         ioctl(device, request::COMMIT, &mut commit)
+    }
+
+    fn show_gpu_buffer(
+        &mut self,
+        device: Fd,
+        window: u32,
+        picture: Option<GpuPicture>,
+    ) -> Result<(), Errno> {
+        let mut request = [0u8; 24];
+        let fields = match picture {
+            Some(picture) => [
+                window,
+                picture.descriptor as u32,
+                picture.width,
+                picture.height,
+                picture.stride,
+                picture.offset,
+            ],
+            None => [window, NO_GPU_BUFFER, 0, 0, 0, 0],
+        };
+        for (index, value) in fields.into_iter().enumerate() {
+            put(&mut request, index * 4, value);
+        }
+        ioctl(device, request::SHOW_GPU_BUFFER, &mut request)
     }
 
     fn work_area(&mut self) -> (u32, u32) {
