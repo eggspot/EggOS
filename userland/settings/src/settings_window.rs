@@ -51,7 +51,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 223
+pub const CAPACITY: usize = 225
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
@@ -75,6 +75,9 @@ const PAGE_TEXT_X: i32 = 56;
 const SIDEBAR_TEXT_X: i32 = 16;
 const PAGE_SUMMARY_TOP: i32 = 38;
 const WEARABLE_SUMMARY_TOP: i32 = 32;
+const WEARABLE_FACTS_TOP: i32 = 56;
+/// What a wearable's pane page says under its facts (settings-forms-v0.5.md 1.4).
+pub const WEARABLE_HINT: &str = "Change these from your phone or the CLI.";
 /// A narrow pane's content is at most this wide (settings-forms-v0.5.md 2).
 const PAGE_CONTENT_MAX: i32 = 480;
 /// A control's height on a narrow page: a finger's target.
@@ -757,6 +760,8 @@ pub enum Page {
 
 #[derive(Debug, Clone, Copy)]
 struct Frame {
+    wearable_facts: WidgetId,
+    wearable_hint: WidgetId,
     marks: WidgetId,
     summaries: [WidgetId; PANES.len()],
     sidebar: WidgetId,
@@ -1070,7 +1075,19 @@ impl SettingsWindow {
                 Kind::label("", Token::TextDim),
             )
         });
+        let wearable_facts = build.add(
+            Some(pane_area),
+            Place::at(PADDING, WEARABLE_FACTS_TOP, Length::Fill(PADDING), Length::Content),
+            Kind::label("", Token::Text),
+        );
+        let wearable_hint = build.add(
+            Some(pane_area),
+            Place::at(PADDING, WEARABLE_FACTS_TOP + 20, Length::Fill(PADDING), Length::Content),
+            Kind::label(WEARABLE_HINT, Token::TextDim),
+        );
         let frame = Frame {
+            wearable_facts,
+            wearable_hint,
             marks,
             summaries,
             sidebar,
@@ -1450,6 +1467,8 @@ impl SettingsWindow {
         window.tree.set_accessible_name(frame.back, "Back");
         window.tree.set_shown(frame.bar, false);
         window.tree.set_shown(frame.marks, false);
+        window.tree.set_shown(frame.wearable_facts, false);
+        window.tree.set_shown(frame.wearable_hint, false);
         for summary in frame.summaries {
             window.tree.set_shown(summary, false);
         }
@@ -1888,6 +1907,14 @@ impl SettingsWindow {
                     Place::at(0, bar, Length::Fill(0), Length::Fill(0)),
                 );
             }
+        }
+        let facts_page = self.shape == Shape::Pages && self.page == Page::Pane && wearable;
+        self.tree.set_shown(frame.wearable_facts, facts_page);
+        self.tree.set_shown(frame.wearable_hint, facts_page);
+        self.tree.set_shown(frame.scroll, !facts_page);
+        if facts_page {
+            let facts = pane_summary(self.pane, &self.facts);
+            self.tree.set_text(frame.wearable_facts, facts.as_str());
         }
         self.mark_rows();
     }

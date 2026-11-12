@@ -23920,3 +23920,12 @@ the license, by an explicit instruction recorded here.
 - **`Finishing...` (D454's "Not yet", same batch as D455).** The install job's last piece marks
   its phase `finishing`; the pane then says `Finishing...` on the note and disables the row's
   `Cancel`, since the job ends in moments one way or the other.
+
+## D456 Settings on a wearable is read-only (settings-forms-v0.5.md 1.4; D422's deviation; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** On a wearable a pane's page shows no controls: under its bar, the pane's facts
+  (its summary from `pane_summary`, the same words as its list row) and, dim, `Change these
+  from your phone or the CLI.`; the pane's own widgets stay hidden, so nothing on the watch
+  writes a setting. The window holds two more widgets (`CAPACITY` 225, the dialog's 341).
+- **Deviation.** The design lists every `label: value` row of the pane as its own line; this
+  shows the pane's one-line summary until each pane offers its rows as text.
