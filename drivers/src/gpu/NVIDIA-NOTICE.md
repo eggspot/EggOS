@@ -1,10 +1,13 @@
-# Notices for NVIDIA's Falcon engines (`drivers/src/gpu/nvidia_falcon.rs`)
+# Notices for NVIDIA's Falcon engines and FWSEC (`drivers/src/gpu/nvidia_falcon.rs`, `nvidia_fwsec.rs`)
 
 The register places and fields `nvidia_falcon.rs` uses (D497) are taken from NVIDIA's published
 register manuals in its open GPU kernel modules (`src/common/inc/swref/published/`:
-`dev_falcon_v4.h`, `dev_riscv_pri.h`, `dev_gsp.h` and `dev_sec_pri.h` for Turing and Ampere),
-which NVIDIA publishes under the MIT licence below. No other code from them is used. The notice
-is reproduced as the licence requires.
+`dev_falcon_v4.h`, `dev_riscv_pri.h`, `dev_gsp.h` and `dev_sec_pri.h` for Turing and Ampere).
+The video BIOS layouts `nvidia_fwsec.rs` reads and the FWSEC command it prepares (D512) follow
+the same modules' `src/nvidia/src/kernel/gpu/vbios/kern_vbios.c`,
+`arch/turing/kern_vbios_tu102.c` and `src/nvidia/inc/kernel/platform/pci_exp_table.h`. NVIDIA
+publishes these files under the MIT licence below; EggOS's code is its own, written from them.
+The notice is reproduced as the licence requires.
 
 ## NVIDIA register manuals
 

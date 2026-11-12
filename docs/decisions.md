@@ -24922,3 +24922,25 @@ the license, by an explicit instruction recorded here.
   the usual `getView` that inflates a row layout and fills its text views works.
 - **Not yet.** Row views shown as themselves (images, several texts, buttons in a row), view
   recycling, and `RecyclerView` with its view holders.
+
+## D512 NVIDIA's GSP boot, part 2: FWSEC found and its FRTS command prepared (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from NVIDIA's MIT-licensed open GPU kernel modules)
+
+- **Decision.** `nvidia_fwsec` finds FWSEC in the video BIOS and prepares the command that sets
+  up the FRTS region (WPR2), the first link of GSP's boot chain:
+  - The ROM is read whole through BAR 0's `PROM` window (1 MiB at `0x300000`), as the
+    expansion ROM BAR may show only its first images. Its PCI expansion ROM images are walked
+    (with NVIDIA's data extension's subimage lengths) for the extended image, whose place less
+    the base image's size is where the Falcon table's pointers count from.
+  - The BIT's Falcon data token (`0x70`, version 2) points at the Falcon ucode table; its
+    entry for FWSEC (`0x85`, debug `0x45`, or the older `0x05`) points at a version 3
+    descriptor: the stored size, the PKC signature's place in DMEM, the interface table's
+    place, IMEM and DMEM places and sizes, the engine mask, the ucode id, the signature
+    versions, then one RSA-3K signature per version.
+  - `prepare_frts` copies FWSEC's DMEM and patches it: the DMEM mapper the interface table names
+    (entry id 4) gets the FRTS command (`0x15`) and its argument buffer (the VBIOS read
+    descriptor, then the region's offset in 4 KiB units, its 1 MiB size and frame buffer
+    media), and the signature for the fuse's ucode version is copied to its place.
+  - The NVIDIA probe reports FWSEC's sizes and signature versions.
+- **Not yet (part 3 on).** Reading the fuse's ucode version, running FWSEC in heavy-secure mode
+  through the boot ROM's PKC registers, checking WPR2, version 2 descriptors (Turing), then
+  SEC2's booter, GSP's queues and the display.

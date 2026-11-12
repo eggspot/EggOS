@@ -14,7 +14,7 @@ use eggos_drivers::gpu::amd_atom_interpreter::Interpreter;
 use eggos_drivers::gpu::amd_dcn;
 use eggos_drivers::gpu::amd_discovery::{OFFSET_FROM_TOP, display_block, dmcub_file_name};
 use eggos_drivers::gpu::nvidia_bios::NvidiaBios;
-use eggos_drivers::gpu::nvidia_falcon;
+use eggos_drivers::gpu::{nvidia_falcon, nvidia_fwsec};
 use eggos_drivers::gpu::nvidia_gsp::{self, Chip};
 use eggos_hal::PhysicalRange;
 
@@ -33,6 +33,8 @@ static SUMMARY: SpinLock<String> = SpinLock::new(String::new());
 const ATOM_COMMAND_TABLES: usize = 81;
 const BOOT_0_PAGE: u64 = 4096;
 const GSP_BLOCK_BYTES: u64 = 0x4000;
+const PROM_START: u64 = 0x30_0000;
+const PROM_BYTES: u64 = 0x10_0000;
 
 pub static AMD_DISPLAY_DRIVER: DriverDescriptor = DriverDescriptor {
     name: "amd-display",
@@ -81,6 +83,15 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
     if let Some((imem, dmem)) = read_gsp_memories(probe, node.regions[0]) {
         let _ = write!(line, " gsp falcon {} KiB imem {} KiB dmem", imem >> 10, dmem >> 10);
     }
+    if let Some(rom) = read_prom(probe, node.regions[0])
+        && let Some(fwsec) = nvidia_fwsec::find(&rom, false)
+    {
+        let _ = write!(
+            line,
+            " fwsec {} + {} bytes, signature versions {:#06b}",
+            fwsec.imem_bytes, fwsec.dmem_bytes, fwsec.signature_versions
+        );
+    }
     if let Some(chip) = read_boot_0(probe, node.regions[0]).map(Chip::of_boot_0) {
         match (chip.name(), chip.signature_family()) {
             (Some(name), Some(family)) if chip.runs_gsp() => {
@@ -111,6 +122,25 @@ fn read_boot_0(probe: &mut dyn Probe, registers: PhysicalRange) -> Option<u32> {
     // SAFETY: `map_window` mapped BAR 0's first page, the GPU's registers, as device memory
     // for good; `PMC_BOOT_0` is a read-only identification register.
     Some(unsafe { core::ptr::read_volatile((start + nvidia_gsp::BOOT_0) as *const u32) })
+}
+
+/// The video BIOS whole, through BAR 0's `PROM` window (D512): the expansion ROM BAR may show
+/// only its first images, and FWSEC sits in the extended one.
+fn read_prom(probe: &mut dyn Probe, registers: PhysicalRange) -> Option<Vec<u8>> {
+    if registers.len() < PROM_START + PROM_BYTES {
+        return None;
+    }
+    let window = PhysicalRange::from_start_length(registers.start + PROM_START, PROM_BYTES);
+    let start = probe.map_window(window).ok()?;
+    let mut rom = Vec::new();
+    rom.try_reserve_exact(PROM_BYTES as usize).ok()?;
+    for offset in 0..PROM_BYTES as usize / 4 {
+        // SAFETY: `map_window` mapped the `PROM` window, `PROM_BYTES` long, as device memory for
+        // good; reading it has no side effects.
+        let word = unsafe { core::ptr::read_volatile((start + 4 * offset) as *const u32) };
+        rom.extend_from_slice(&word.to_le_bytes());
+    }
+    Some(rom)
 }
 
 fn read_gsp_memories(probe: &mut dyn Probe, registers: PhysicalRange) -> Option<(usize, usize)> {
