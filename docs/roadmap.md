@@ -903,8 +903,10 @@ yet" naming what it left.
   - part 6's screendump checks, part 7's indicator check and part 9's wheel and list-item
     checks in QEMU (D224, D225, D227; moved to the first build-and-test pass with the other
     QEMU-only checks, D397);
-  - the desktop and built-in apps as components (D235, parts 65 and 66; the built-in apps as
-    the `builtin-apps` component, code written, unbuilt, D396).
+  - the desktop and built-in apps as components, code written, unbuilt (D235, parts 65 and
+    66; the desktop as a component with its window server kept in the kernel, code written,
+    unbuilt, D412; the built-in apps as the `builtin-apps` component, code written, unbuilt,
+    D396).
 
 ## Milestones
 

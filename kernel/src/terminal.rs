@@ -549,6 +549,22 @@ pub fn takes_from_terminal(code: u16, modifiers: Modifiers) -> bool {
 
 static CONSOLE_ALONE: AtomicBool = AtomicBool::new(false);
 
+const NO_DESKTOP_MARKER: &[u8] = b"/var/lib/eggos/components/.no-desktop";
+
+/// Whether the window server starts (D412): never in a kernel built without the `desktop`
+/// feature (the server edition), always for a self-test, and otherwise unless the `desktop`
+/// component was removed, which leaves the component manager's marker on the persistent disk.
+fn desktop_wanted(session: Session) -> bool {
+    if !cfg!(feature = "desktop") {
+        return false;
+    }
+    if session != Session::Interactive {
+        return true;
+    }
+    let root = vfs::root();
+    vfs::resolve(root, root, NO_DESKTOP_MARKER).is_err()
+}
+
 /// Makes the desktop with the terminal's window, blank, or the full-screen console on a display
 /// too small for the desktop, and from then on mirrors the console's output on it; returns the
 /// grid. A self-test session draws it over the whole display at once; an interactive one leaves
@@ -557,7 +573,11 @@ static CONSOLE_ALONE: AtomicBool = AtomicBool::new(false);
 /// cell, or without memory for it.
 pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
     let mode = display::mode()?;
-    let desktop = match Desktop::new(mode.width, mode.height) {
+    let made = match desktop_wanted(session) {
+        true => Desktop::new(mode.width, mode.height),
+        false => None,
+    };
+    let desktop = match made {
         Some(mut desktop) => {
             desktop.set_profile(desktop_profile(), &mut Damage::new(), &mut DiscardEvents);
             desktop.set_reduce_motion(reduce_motion(), &mut Damage::new());

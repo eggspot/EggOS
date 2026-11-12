@@ -23220,3 +23220,29 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** `OS_dispatch_queue` as an Objective-C class (the queues are still plain
   records the runtime never counts), the rest of the overlays' API, and `SetAlgebra`'s
   `insert`, `remove` and `update` witnesses.
+
+## D412 The desktop as a component, its window server kept in the kernel (batch, D235's parts 65 and 66; M14, M11; D18; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: D126's plan to move the window server to user space, how Windows (win32k in the kernel) and macOS (WindowServer in user space) place theirs, and D18's "a component not installed costs nothing")
+
+- **Question.** D235 and D396 left the desktop out of the component manager because the
+  window server runs in the kernel; part 66 planned to move it to user space first.
+- **Decision.** The desktop becomes a component without the move. Moving the 31,000 lines of
+  `drivers/src/desktop` behind a relay would add a context switch to every request and every
+  event (each pointer move, each commit), against EggOS's first priority; Windows keeps its
+  window manager in the kernel for that reason. What D18 asks is that an uninstalled desktop
+  costs nothing, and that holds without the move: the kernel's `desktop` feature (in its
+  default features) gates the window server, so an image built without it carries none of
+  it; and on a kernel that has it, the window server starts at boot unless the `desktop`
+  component was removed. The component manager writes `/var/lib/eggos/components/.no-desktop`
+  when it removes `desktop` and deletes it when it installs it; the kernel reads that marker
+  from the persistent disk (mounted before the terminal starts) and then draws its
+  full-screen text console, as on a display too small for the desktop, with no window server
+  running. A system that never had components keeps its desktop.
+- **The store and the editions.** `desktop` is the store's first component (no files of its
+  own: its code is in the kernel image), `builtin-apps` needs it (D396's deviation ends), and
+  the personal, professional and enterprise editions list it; the server edition does not.
+- **Revisit.** The window server's isolation (a fault in it is a kernel fault) is the cost
+  of this choice; moving it to user space stays possible behind the same `/dev/window`
+  contract (D126) if measurements show the relay is cheap enough.
+- **Not yet.** Building the server edition's image with the `desktop` feature off
+  (`cargo xtask` builds one kernel for every edition today), and the Task Manager moving
+  into `builtin-apps` (D396).

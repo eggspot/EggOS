@@ -23,19 +23,19 @@ pub const EDITIONS: [Edition; 4] = [
         name: "personal",
         title: "Personal",
         summary: "Windows and macOS apps beside EggOS's own.",
-        components: &["builtin-apps", "windows-apps", "mac-apps"],
+        components: &["desktop", "builtin-apps", "windows-apps", "mac-apps"],
     },
     Edition {
         name: "professional",
         title: "Professional",
         summary: "Personal, with every tool for work that the store offers.",
-        components: &["builtin-apps", "windows-apps", "mac-apps"],
+        components: &["desktop", "builtin-apps", "windows-apps", "mac-apps"],
     },
     Edition {
         name: "enterprise",
         title: "Enterprise",
         summary: "Professional, ready for managed fleets.",
-        components: &["builtin-apps", "windows-apps", "mac-apps"],
+        components: &["desktop", "builtin-apps", "windows-apps", "mac-apps"],
     },
 ];
 
@@ -83,12 +83,12 @@ mod tests {
     fn editions_are_found_by_name_and_by_what_is_installed() {
         assert_eq!(
             edition("personal").unwrap().components,
-            &["builtin-apps", "windows-apps", "mac-apps"]
+            &["desktop", "builtin-apps", "windows-apps", "mac-apps"]
         );
         assert!(edition("home").is_none());
         let none: [&str; 0] = [];
         assert_eq!(current(none.iter().copied()).unwrap().name, "server");
-        let both = ["mac-apps", "windows-apps", "builtin-apps"];
+        let both = ["mac-apps", "windows-apps", "builtin-apps", "desktop"];
         assert_eq!(current(both.iter().copied()).unwrap().name, "enterprise");
         let one = ["mac-apps"];
         assert!(current(one.iter().copied()).is_none());

@@ -26,6 +26,11 @@ pub const ROOT: &str = "root";
 pub const STAGING_PREFIX: &str = ".staging-";
 /// The name prefix of a remove in progress.
 pub const REMOVING_PREFIX: &str = ".removing-";
+/// The component whose presence the kernel checks at boot to start the window server (D412).
+pub const DESKTOP: &str = "desktop";
+/// The file that says the desktop was removed, so the kernel starts to its text console
+/// (D412); a system that never had components keeps its desktop.
+pub const NO_DESKTOP: &str = "/var/lib/eggos/components/.no-desktop";
 /// The prefix an updated component's old folder takes while the new one moves in (D293).
 pub const REPLACED_PREFIX: &str = ".replaced-";
 /// The disks a store may be attached as.
@@ -703,6 +708,9 @@ pub fn install<F: Files>(
         files
             .rename(staging.as_bytes(), target.as_bytes())
             .map_err(failure)?;
+        if component.name == DESKTOP {
+            let _ = files.remove_file(NO_DESKTOP.as_bytes());
+        }
         files.sync();
         Ok(())
     });
@@ -1003,6 +1011,11 @@ pub fn remove<F: Files>(files: &mut F, name: &str) -> Result<(), Failure> {
         .rename(folder.as_bytes(), removing.as_bytes())
         .map_err(failure)?;
     files.sync();
+    if name == DESKTOP
+        && let Ok(marker) = files.create(NO_DESKTOP.as_bytes(), 0o644)
+    {
+        files.close(marker);
+    }
     let deleted = remove_tree(files, &removing, 0);
     files.sync();
     deleted.map_err(Failure::FilesLeft)

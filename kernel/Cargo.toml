@@ -33,7 +33,8 @@ eggos-math = { path = "../math" }
 workspace = true
 
 [features]
-default = ["virtio-gpu", "virtio-input", "virtio-blk", "virtio-console", "virtio-net", "rtc", "nvme", "ahci", "xhci", "ethernet", "intel-display", "intel-wifi"]
+default = ["desktop", "virtio-gpu", "virtio-input", "virtio-blk", "virtio-console", "virtio-net", "rtc", "nvme", "ahci", "xhci", "ethernet", "intel-display", "intel-wifi"]
+desktop = []
 virtio = []
 virtio-gpu = ["virtio"]
 virtio-input = ["virtio"]

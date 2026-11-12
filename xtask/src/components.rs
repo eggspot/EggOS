@@ -22,13 +22,22 @@ pub struct Offered {
 }
 
 /// Every component a store may offer, each after those it needs.
-pub const OFFERED: [Offered; 3] = [
+pub const OFFERED: [Offered; 4] = [
+    Offered {
+        name: "desktop",
+        title: "Desktop",
+        summary: "The window server, the shell and its windows",
+        on_remove: "EggOS starts to its text console; apps with windows need it to run.",
+        needs: &[],
+        files: &[],
+        runs_on: |_| true,
+    },
     Offered {
         name: "builtin-apps",
         title: "Built-in apps",
         summary: "Files, Text Editor, Downloads",
         on_remove: "They leave the launcher; your files stay.",
-        needs: &[],
+        needs: &["desktop"],
         files: &[(crate::BUILTIN_APPS_PATH, crate::BUILTIN_APPS_PACKAGE)],
         runs_on: |_| true,
     },
@@ -191,7 +200,7 @@ mod tests {
     #[test]
     fn the_store_xtask_writes_is_the_one_the_component_manager_reads() {
         let parts: Vec<(&Offered, Vec<Vec<u8>>)> = offered("x86_64")
-            .map(|offered| (offered, vec![vec![0x7f; 700]]))
+            .map(|offered| (offered, vec![vec![0x7f; 700]; offered.files.len()]))
             .collect();
         let image = store_image(&parts, "x86_64");
         assert_eq!(image.len() % index::STORE_BLOCK, 0);
@@ -200,13 +209,13 @@ mod tests {
         let text = &image[index::SECTOR as usize..][..header.index_bytes as usize];
         let read = index::parse_index(&header, text, image.len() as u64).unwrap();
         let names: Vec<&str> = read.components.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["builtin-apps", "windows-apps", "mac-apps"]);
-        for component in &read.components {
-            let file = &component.files[0];
+        assert_eq!(names, ["desktop", "builtin-apps", "windows-apps", "mac-apps"]);
+        for file in read.components.iter().flat_map(|component| &component.files) {
             let bytes = &image[file.offset as usize..][..file.length as usize];
             assert_eq!(index::sha256(bytes), file.sha256);
             assert!(index::is_component_path(&file.path));
         }
+        assert!(read.components[0].files.is_empty());
     }
 
     #[test]
