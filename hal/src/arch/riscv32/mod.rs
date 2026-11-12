@@ -12,6 +12,9 @@
 //! stops the machine through SBI. Threads, user mode and the rest of [`crate::Platform`] come
 //! next.
 
+
+mod thread;
+
 use crate::paging::riscv32::{BOOT_MEGAPAGE, SATP_MODE_SV32};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_drivers::io::Mmio;

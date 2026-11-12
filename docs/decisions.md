@@ -24329,3 +24329,13 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Data and prefetch aborts as page faults, undefined instructions, supervisor
   calls from user mode, the other modes' stacks for nesting, GICv3, threads and the rest of
   `Platform`.
+
+## D479 The kernel thread switch on RV32 and 32-bit Arm (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Both ports get D35's switch: RV32's is RV64's with 32-bit words (`ra` and
+  `s0` to `s11`, padded to 64 bytes so `sp` stays 16-byte aligned), and its trampoline calls
+  `s1` with `s2`; 32-bit Arm's pushes `r3` (padding) to `r11` and `lr` in one `PUSH`, stores
+  `sp`, loads the other thread's and pops, 40 bytes, and its trampoline calls `r5` with `r6`.
+  Each module gives the initial frame its trampoline needs, written with
+  `thread::write_initial_frame` like every other architecture's.
+- **Not yet.** Wiring both into a `Platform` implementation with the rest of its methods.

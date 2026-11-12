@@ -13,6 +13,9 @@
 //! vectors and takes a few virtual-timer interrupts through the GICv2 (D478), and powers the
 //! machine off through PSCI. Threads, user mode and the rest of [`crate::Platform`] come next.
 
+
+mod thread;
+
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// The direct map's offset: virtual address = physical address + this, for RAM.
