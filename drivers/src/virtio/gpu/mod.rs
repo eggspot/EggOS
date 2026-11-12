@@ -133,6 +133,15 @@ pub struct VirtioGpu<T: Transport, M: DmaMemory> {
     cursor: Option<Cursor<M>>,
     fence_id: u64,
     unanswered: bool,
+    started: Option<StartedFlush>,
+}
+
+/// A flush posted by [`VirtioGpu::start_flush`] and not yet answered (D414).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StartedFlush {
+    commands: usize,
+    answered: usize,
+    rects: usize,
 }
 
 impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
@@ -197,6 +206,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             cursor: None,
             fence_id: 0,
             unanswered: false,
+            started: None,
         };
         match gpu.query_display(keep_waiting) {
             Ok(mode) => {
@@ -620,6 +630,121 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             shown += count;
         }
         Ok(shown)
+    }
+
+    /// Posts the flush of `rects` without waiting (D414): each rectangle's transfer, then each
+    /// one's flush, in one batch, the rectangles past what one batch holds joined into their
+    /// bounding box; [`Self::finish_flush`] collects the answers, so the caller may sleep on the
+    /// device's interrupt in between. Returns how many rectangles it posted (0 when none shows).
+    pub fn start_flush(&mut self, rects: &[Rect]) -> Result<usize, Error> {
+        if self.started.is_some() {
+            return Err(Error::TimedOut);
+        }
+        let mode = self.mode().ok_or(Error::NoScanout)?;
+        let resource = self.shown().map_or(RESOURCE_ID, |scanout| scanout.resource);
+        let room = (MAX_BATCH / 2).min(usize::from(self.queue.size() / 4)).max(1);
+        let mut chunk = [Rect::default(); MAX_BATCH];
+        let mut count = 0;
+        for rect in rects
+            .iter()
+            .map(|rect| rect.clipped(mode.width, mode.height))
+            .filter(|rect| !rect.is_empty())
+        {
+            match count < room {
+                true => {
+                    chunk[count] = rect;
+                    count += 1;
+                }
+                false => chunk[room - 1] = chunk[room - 1].union(rect),
+            }
+        }
+        if count == 0 {
+            return Ok(0);
+        }
+        for (index, rect) in chunk[..count].iter().enumerate() {
+            let request = self.header(index, command::TRANSFER_TO_HOST_2D);
+            self.put_rect(request + 24, *rect);
+            let offset = rect.y as u64 * mode.stride() as u64
+                + u64::from(rect.x) * u64::from(BYTES_PER_PIXEL);
+            self.put64(request + 40, offset);
+            self.put32(request + 48, resource);
+            self.put32(request + 52, 0);
+        }
+        for (index, rect) in chunk[..count].iter().enumerate() {
+            let request = self.header(count + index, command::RESOURCE_FLUSH);
+            self.put_rect(request + 24, *rect);
+            self.put32(request + 40, resource);
+            self.put32(request + 44, 0);
+        }
+        for index in 0..2 * count {
+            let response = RESPONSES + index * RESPONSE_SLOT;
+            self.put32(response, 0);
+            let bytes = match index < count {
+                true => TRANSFER_TO_HOST_2D_BYTES,
+                false => RESOURCE_FLUSH_BYTES,
+            };
+            let posted = self.post(
+                REQUESTS + index * REQUEST_SLOT,
+                bytes,
+                response,
+                HEADER_BYTES,
+            );
+            if let Err(error) = posted {
+                self.unanswered |= index > 0;
+                return Err(error);
+            }
+        }
+        if self.queue.should_notify() {
+            self.transport.notify(CONTROL_QUEUE);
+        }
+        self.started = Some(StartedFlush {
+            commands: 2 * count,
+            answered: 0,
+            rects: count,
+        });
+        Ok(count)
+    }
+
+    /// Collects the answers of the flush [`Self::start_flush`] posted: `Some` with its count of
+    /// rectangles once every command is answered, `None` while some are not.
+    pub fn finish_flush(&mut self) -> Result<Option<usize>, Error> {
+        let Some(mut started) = self.started else {
+            return Ok(Some(0));
+        };
+        while started.answered < started.commands && self.queue.pop_used().is_some() {
+            started.answered += 1;
+        }
+        if started.answered < started.commands {
+            self.started = Some(started);
+            return Ok(None);
+        }
+        self.started = None;
+        for index in 0..started.commands {
+            let answer = self.get32(RESPONSES + index * RESPONSE_SLOT);
+            if answer != response::OK_NODATA {
+                return Err(Error::CommandFailed(answer));
+            }
+        }
+        Ok(Some(started.rects))
+    }
+
+    /// Gives up on a started flush that was never answered: the device is treated as wedged,
+    /// as when a wait times out.
+    pub fn abandon_flush(&mut self) {
+        if self.started.take().is_some() {
+            self.unanswered = true;
+        }
+    }
+
+    /// Has the device interrupt when it answers a command on the control queue, once the
+    /// kernel connected its interrupt (D414).
+    pub fn interrupt_on_answers(&mut self) {
+        self.queue.enable_used_notifications();
+    }
+
+    /// Whether a flush is posted and not yet collected.
+    pub fn flush_started(&self) -> bool {
+        self.started.is_some()
     }
 
     /// Resets the device and hands back the transport, the control memory and the framebuffer

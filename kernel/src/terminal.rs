@@ -1464,7 +1464,7 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
     if let Some(asked) = drawn.filter(|asked| asked.pointer.is_some()) {
         let _ = display::show_pointer::<P>(asked.pointer);
     }
-    let shown = display::flush::<P>();
+    let shown = display::flush_sleeping::<P>();
     let mut replies = [0u8; REPLY_CAPACITY];
     let length = TERMINAL.lock().as_mut().map_or(0, |terminal| {
         let length = terminal.replies().len();

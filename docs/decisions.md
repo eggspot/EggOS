@@ -23272,3 +23272,24 @@ the license, by an explicit instruction recorded here.
   the device-tree PCI hosts through `interrupt-map`, MIPS liointc's PCI inputs and sun4u's
   PCI bridge, shared INTx lines (two functions on one input: the second is refused), lines on
   CPUs other than the boot CPU, and a line per queue.
+
+## D414 virtio-gpu on interrupts: the display's flush posted under its lock, waited for without it (M11, M8; D112's and D184's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** The GPU was the last virtio driver polling (D220 left it): a flush waits for
+  the device's answers, and the display's lock is a spin lock the flush holds, so its wait
+  cannot sleep.
+- **Decision.** The flush splits in two. `VirtioGpu::start_flush` posts every rectangle's
+  transfer and then its flush in one batch (rectangles past what one batch holds are joined
+  into their bounding box) and returns; `finish_flush` collects the answers. The kernel's
+  `display::flush_sleeping`, which the drawing thread now calls, posts the flush under the
+  lock (the damage moves to the flush in flight, so drawing during the wait keeps its own),
+  lets the lock go and sleeps on the GPU's `DeviceEvents` until its interrupt (or the 1 s
+  deadline), then collects the answer under the lock; a failed flush puts its damage back.
+  Every other use of the device (a synchronous flush, a pointer move, a mode change) first
+  settles a flush in flight by polling. The probe connects the GPU's interrupt as the other
+  virtio drivers' are (D220) and turns its control queue's notifications on; a GPU without a
+  connected interrupt, a rotated or scaled display, or a scanout without the split flush
+  polls as before. The interrupt also carries the device's configuration change, which the
+  display's follow-the-host-size path reads (D287).
+- **Not yet.** The cursor queue on interrupts (pointer moves still poll, briefly), several
+  flushes in flight at once, and the turned and scaled paths posting rather than waiting.

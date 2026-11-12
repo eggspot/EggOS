@@ -19,6 +19,7 @@
 //! show twice as large, as every 2x rule in the designs asks.
 
 use crate::devices::Deadline;
+use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -105,6 +106,31 @@ pub trait Scanout: Send {
     fn change_mode(&mut self, _mode: Mode, _deadline: &mut Deadline) -> Result<(), &'static str> {
         Err("this display keeps the size the firmware set")
     }
+    /// The events the device's interrupt raises, when it has one connected (D414); a display
+    /// without them flushes by polling.
+    fn flush_events(&self) -> Option<&'static DeviceEvents> {
+        None
+    }
+    /// Posts the flush of `rects` without waiting ([`Self::finish_flush`] collects it): how
+    /// many rectangles it posted. Not supported by default.
+    fn start_flush(&mut self, _rects: &[Rect]) -> Result<usize, &'static str> {
+        Err("this display flushes only by waiting")
+    }
+    /// The count of a started flush once the device answered it, `None` while it has not.
+    fn finish_flush(&mut self) -> Result<Option<usize>, &'static str> {
+        Ok(Some(0))
+    }
+    /// Gives up on a started flush the device never answered.
+    fn abandon_flush(&mut self) {}
+}
+
+/// What [`Display::start_flush`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlushStart {
+    /// The flush is done (or there was nothing to show): this many rectangles.
+    Done(usize),
+    /// The device has the flush; wait for its interrupt, then [`Display::finish_flush`].
+    Posted(&'static DeviceEvents),
 }
 
 /// A display: a driver's [`Scanout`], the damage drawn on it since its last flush, the boot
@@ -118,6 +144,8 @@ pub struct Display {
     scale: u32,
     rotation: Rotation,
     logical: Vec<u32>,
+    in_flight: Damage,
+    posted: bool,
 }
 
 /// How far the picture turns clockwise on the device (`display.rotation`, D330): the desktop
@@ -214,7 +242,82 @@ impl Display {
             scale: 1,
             rotation: Rotation::Upright,
             logical: Vec::new(),
+            in_flight: Damage::new(),
+            posted: false,
         }
+    }
+
+    /// Starts showing what was drawn (D414): on a device with its interrupt connected, upright
+    /// and unscaled, the damage moves to the flush in flight and the device gets it without the
+    /// caller waiting; otherwise the flush runs to its end here.
+    pub fn start_flush(&mut self, deadline: &mut Deadline) -> Result<FlushStart, &'static str> {
+        if self.posted {
+            self.settle(deadline)?;
+        }
+        let events = self.scanout.flush_events();
+        let Some(events) = events.filter(|_| !self.draws_off_device()) else {
+            return self.flush(deadline).map(FlushStart::Done);
+        };
+        if self.damage.is_empty() {
+            return Ok(FlushStart::Done(0));
+        }
+        match self.scanout.start_flush(self.damage.rects()) {
+            Ok(0) => {
+                self.damage.clear();
+                Ok(FlushStart::Done(0))
+            }
+            Ok(_) => {
+                self.in_flight = core::mem::replace(&mut self.damage, Damage::new());
+                self.posted = true;
+                Ok(FlushStart::Posted(events))
+            }
+            Err(_) => self.flush(deadline).map(FlushStart::Done),
+        }
+    }
+
+    /// Collects a posted flush: `Some` with its count once the device answered. A failed flush
+    /// puts its damage back for the next one.
+    pub fn finish_flush(&mut self) -> Result<Option<usize>, &'static str> {
+        if !self.posted {
+            return Ok(Some(0));
+        }
+        match self.scanout.finish_flush() {
+            Ok(None) => Ok(None),
+            Ok(Some(shown)) => {
+                self.posted = false;
+                self.in_flight.clear();
+                self.flushes += 1;
+                Ok(Some(shown))
+            }
+            Err(error) => {
+                self.posted = false;
+                for rect in self.in_flight.rects().to_vec() {
+                    self.damage.add(rect);
+                }
+                self.in_flight.clear();
+                Err(error)
+            }
+        }
+    }
+
+    /// Waits, polling, for a posted flush before anything else uses the device; gives it up at
+    /// `deadline`.
+    fn settle(&mut self, deadline: &mut Deadline) -> Result<(), &'static str> {
+        while self.posted {
+            if self.finish_flush()?.is_some() {
+                return Ok(());
+            }
+            if !deadline.keep_waiting() {
+                self.scanout.abandon_flush();
+                self.posted = false;
+                for rect in self.in_flight.rects().to_vec() {
+                    self.damage.add(rect);
+                }
+                self.in_flight.clear();
+                return Err("the display did not answer a flush");
+            }
+        }
+        Ok(())
     }
 
     /// Whether the desktop draws into the display's own buffer, which flushes scale or turn.
@@ -433,6 +536,9 @@ impl Display {
     /// returns how many rectangles that took: 0 when nothing was drawn. When the device fails,
     /// the damage stays for the next flush.
     pub fn flush(&mut self, deadline: &mut Deadline) -> Result<usize, &'static str> {
+        if self.posted {
+            self.settle(deadline)?;
+        }
         if self.damage.is_empty() {
             return Ok(0);
         }
@@ -707,6 +813,42 @@ pub fn flush<P: Platform>() -> Result<usize, &'static str> {
     display
         .as_mut()
         .map_or(Ok(0), |display| display.flush(&mut deadline))
+}
+
+/// Shows what was drawn as [`flush`] does, but with the display's lock let go while the
+/// device works: the flush is posted, the caller sleeps until the device's interrupt (or the
+/// deadline), and the answer is collected (D414). Polls as [`flush`] on a display without an
+/// interrupt. Call it with no lock held, from a thread that may sleep.
+pub fn flush_sleeping<P: Platform>() -> Result<usize, &'static str> {
+    let mut deadline = Deadline::after::<P>(FLUSH_TIMEOUT_MS);
+    let started = {
+        let mut display = DISPLAY.lock();
+        match display.as_mut() {
+            Some(display) => display.start_flush(&mut deadline)?,
+            None => return Ok(0),
+        }
+    };
+    let events = match started {
+        FlushStart::Done(shown) => return Ok(shown),
+        FlushStart::Posted(events) => events,
+    };
+    let mut seen = events.raised();
+    loop {
+        let finished = DISPLAY
+            .lock()
+            .as_mut()
+            .map_or(Ok(Some(0)), |display| display.finish_flush())?;
+        if let Some(shown) = finished {
+            return Ok(shown);
+        }
+        if !deadline.sleep_until_raised(events, &mut seen) {
+            let mut display = DISPLAY.lock();
+            return match display.as_mut() {
+                Some(display) => display.settle(&mut deadline).map(|()| 0),
+                None => Ok(0),
+            };
+        }
+    }
 }
 
 /// Draws the first frame, the boot screen with its first stage lit ([`BootScreen`]), or the

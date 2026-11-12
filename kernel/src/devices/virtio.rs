@@ -463,7 +463,10 @@ mod gpu {
         gpu: Gpu,
         mode: Mode,
         cursor: bool,
+        events: Option<&'static DeviceEvents>,
     }
+
+    static GPU_EVENTS: DeviceEvents = DeviceEvents::new();
 
     impl Scanout for GpuScanout {
         fn mode(&self) -> Mode {
@@ -521,6 +524,24 @@ mod gpu {
 
         fn can_change_mode(&self) -> bool {
             true
+        }
+
+        fn flush_events(&self) -> Option<&'static DeviceEvents> {
+            self.events
+        }
+
+        fn start_flush(&mut self, rects: &[Rect]) -> Result<usize, &'static str> {
+            self.gpu
+                .start_flush(rects)
+                .map_err(virtio::Error::description)
+        }
+
+        fn finish_flush(&mut self) -> Result<Option<usize>, &'static str> {
+            self.gpu.finish_flush().map_err(virtio::Error::description)
+        }
+
+        fn abandon_flush(&mut self) {
+            self.gpu.abandon_flush();
         }
 
         fn preferred_mode(&mut self, deadline: &mut Deadline) -> Option<Mode> {
@@ -588,8 +609,22 @@ mod gpu {
         };
         let shown = attach_framebuffer(&mut gpu, &mut deadline);
         let cursor = shown.is_ok() && attach_cursor(&mut gpu, &mut deadline);
+        let events = shown
+            .is_ok()
+            .then(|| connect_interrupt(probe, id, gpu.transport(), &GPU_EVENTS).is_ok())
+            .filter(|connected| *connected)
+            .map(|_| {
+                gpu.interrupt_on_answers();
+                &GPU_EVENTS
+            });
+        let installed = |gpu, mode| GpuScanout {
+            gpu,
+            mode,
+            cursor,
+            events,
+        };
         let refused = match shown {
-            Ok(mode) => match crate::display::install(GpuScanout { gpu, mode, cursor }) {
+            Ok(mode) => match crate::display::install(installed(gpu, mode)) {
                 Ok(()) => return Ok(()),
                 Err(scanout) => (scanout.gpu, "a display is already in use"),
             },
