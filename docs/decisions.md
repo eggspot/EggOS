@@ -25704,3 +25704,31 @@ the license, by an explicit instruction recorded here.
   and DART from the device tree, the framebuffer mapped in the DCP's and the display pipe's
   DARTs at one address, and flips through swaps. Firmware from macOS 15 on, which m1n1
   leaves alone too, keeps the firmware's mode through the `simple-framebuffer` (D542).
+
+## D547 Apple silicon's display, part 2: the kernel lights the screen through the DCP (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from m1n1 1.9.9's MIT-licensed `dcp.c`, `asc.c` and `display.c`)
+
+- **Decision.** `devices::apple_display` binds to the device tree's `apple,dcp` node. In
+  order, it:
+  1. maps the DCP's coprocessor registers, its mailbox (followed through `mboxes`, layout by
+     `compatible`) and two DARTs: the DCP's own, followed through its `iommus`, and the
+     display pipe's, from `apple,display-subsystem`. Both are taken with their firmware
+     tables kept;
+  2. sets the coprocessor's run bit (`CPU_CONTROL`, `0x44`, bit 4);
+  3. wakes RTKit and answers its handshake, lending shared memory mapped in the DCP's DART;
+  4. starts endpoint `0x23` and finds the iBoot display service;
+  5. powers the screen, checks a screen is attached, and sets the mode
+     `choose_timing`/`choose_color` pick;
+  6. maps a framebuffer of that size from the frame allocator at one device address in
+     both DARTs, as the display pipe and the DCP must agree on it, and shows it with
+     `set_surface`;
+  7. installs it as the display, drawn through a write-combining window.
+
+  The firmware's version (`/chosen/asahi,os-fw-version`, set by m1n1) picks the swap layout
+  of 13.3 on. Until this runs, and when it fails, the screen keeps the firmware's
+  framebuffer (D542). The device tree reaches drivers through `Probe::device_tree` (new),
+  and the node walker keeps `mboxes` and `iommus`, with `fdt::node_with_phandle` and
+  `fdt::enabled_compatible` to follow them.
+- **Not yet.** Keeping RTKit answered after boot (the DCP's system log waits for its
+  acknowledgments), flips through swaps between two framebuffers, mode changes from
+  Settings, external screens on the DCP's second instance (`dcpext`) and their DisplayPort
+  PHYs, and firmware from macOS 15 on, whose iBoot interface m1n1 does not use either.

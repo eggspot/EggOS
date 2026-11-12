@@ -34,7 +34,7 @@ eggos-math = { path = "../math" }
 workspace = true
 
 [features]
-default = ["desktop", "virtio-gpu", "virtio-input", "virtio-blk", "virtio-console", "virtio-net", "rtc", "nvme", "ahci", "xhci", "ethernet", "intel-display", "intel-wifi", "vendor-gpus", "i2c-hid"]
+default = ["desktop", "virtio-gpu", "virtio-input", "virtio-blk", "virtio-console", "virtio-net", "rtc", "nvme", "ahci", "xhci", "ethernet", "intel-display", "intel-wifi", "vendor-gpus", "apple-display", "i2c-hid"]
 desktop = []
 virtio = []
 virtio-gpu = ["virtio"]
@@ -50,6 +50,7 @@ xhci = []
 ethernet = []
 intel-display = []
 vendor-gpus = []
+apple-display = []
 intel-wifi = []
 i2c-hid = []
 qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk", "virtio-console", "virtio-net", "rtc", "nvme", "ahci", "xhci", "ethernet", "intel-display", "intel-wifi", "i2c-hid"]

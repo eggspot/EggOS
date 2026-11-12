@@ -1393,6 +1393,24 @@ pub fn simple_framebuffer(blob: &[u8]) -> Option<crate::handoff::Framebuffer> {
     })
 }
 
+/// The node of `blob` whose `phandle` is `phandle` (D547).
+pub fn node_with_phandle(blob: &[u8], phandle: u32) -> Option<Node<'_>> {
+    Fdt::new(blob)
+        .ok()?
+        .nodes()
+        .map_while(Result::ok)
+        .find(|node| node.phandle == Some(phandle))
+}
+
+/// The first enabled node of `blob` compatible with `compatible` (D547).
+pub fn enabled_compatible<'a>(blob: &'a [u8], compatible: &[u8]) -> Option<Node<'a>> {
+    Fdt::new(blob)
+        .ok()?
+        .nodes()
+        .map_while(Result::ok)
+        .find(|node| node.enabled && node.is_compatible(compatible))
+}
+
 /// The first PL011 UART of `blob`: its registers' physical address; the one `/chosen`'s
 /// `stdout-path` names when it is a PL011 (D266).
 pub fn pl011(blob: &[u8]) -> Option<u64> {

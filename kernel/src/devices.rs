@@ -42,6 +42,8 @@ pub mod ethernet;
 pub mod intel_display;
 #[cfg(any(test, feature = "vendor-gpus"))]
 pub mod amd_display;
+#[cfg(any(test, feature = "apple-display"))]
+pub mod apple_display;
 #[cfg(any(test, feature = "vendor-gpus"))]
 pub mod vendor_gpus;
 #[cfg(any(test, feature = "intel-wifi"))]
@@ -216,6 +218,11 @@ pub trait Probe {
     /// Says `line` was just connected, so it can join the CPUs' turns
     /// ([`crate::devices::interrupts::follow`], D536). Nothing by default.
     fn interrupt_connected(&mut self, _line: DeviceLine) {}
+    /// The machine's device tree ([`Platform::device_tree`]), for a driver that follows a
+    /// node's phandles (D547). None by default.
+    fn device_tree(&self) -> Option<&'static [u8]> {
+        None
+    }
 }
 
 /// A driver built into the kernel.
@@ -287,6 +294,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &ethernet::ETHERNET_DRIVER,
     #[cfg(any(test, feature = "vendor-gpus"))]
     &vendor_gpus::AMD_DISPLAY_DRIVER,
+    #[cfg(any(test, feature = "apple-display"))]
+    &apple_display::APPLE_DISPLAY_DRIVER,
     #[cfg(any(test, feature = "vendor-gpus"))]
     &vendor_gpus::NVIDIA_DISPLAY_DRIVER,
     #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
@@ -651,6 +660,10 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
 
     fn interrupt_connected(&mut self, line: DeviceLine) {
         interrupts::follow::<P>(line);
+    }
+
+    fn device_tree(&self) -> Option<&'static [u8]> {
+        P::device_tree()
     }
 }
 
