@@ -54,3 +54,10 @@ The remote alloc and control call layouts, the object classes and the display co
 commands and parameters `nvidia_gsp_display.rs` uses (D524) are from the same modules' r535
 headers (`g_rpc-structures.h`, `ctrl0073*.h`, `cl0000.h`, `cl0080.h`), under the MIT licence
 above.
+
+The static information layout, the internal display controls (instance memory, display static
+information, channel push buffers), the display and channel classes and the channel
+allocation and method formats `nvidia_gsp_display.rs` uses for the core channel (D529) are from
+the same modules' r535 headers (`gsp_static_config.h`, `ctrl2080internal.h`, `cl0000.h`,
+`clc670.h`, `clc67d.h`, `nvos.h`) and the 535.113.01 release's `gpu_engine_type.h`, under the MIT
+licence above, as nouveau's MIT-licensed `nvkm/subdev/gsp/rm/r535/disp.c` uses them.

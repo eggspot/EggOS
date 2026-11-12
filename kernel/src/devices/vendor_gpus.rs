@@ -64,6 +64,7 @@ struct GspTarget {
     fb_bytes: u64,
     bios_start: u64,
     system: SystemInfo,
+    architecture: u16,
 }
 
 static GSP_TARGET: SpinLock<Option<GspTarget>> = SpinLock::new(None);
@@ -153,7 +154,8 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
                         user_address_top: USER_ADDRESS_TOP,
                         config_mirror: CONFIG_MIRROR,
                     };
-                    match keep_gsp_target(probe, node.regions[0], (name, family), system) {
+                    let chip_names = (name, family, chip.architecture());
+                    match keep_gsp_target(probe, node.regions[0], chip_names, system) {
                         Ok(()) => line.push_str(", gsp-rm boots once its firmware is there"),
                         Err(reason) => {
                             let _ = write!(line, ", gsp-rm cannot boot: {reason}");
@@ -200,7 +202,7 @@ fn video_memory(regs: &eggos_drivers::io::Mmio) -> (u64, u64) {
 fn keep_gsp_target(
     probe: &mut dyn Probe,
     registers: PhysicalRange,
-    (chip, family): (&'static str, &'static str),
+    (chip, family, architecture): (&'static str, &'static str, u16),
     system: SystemInfo,
 ) -> Result<(), &'static str> {
     let length = usize::try_from(registers.len()).map_err(|_| "BAR 0 is too large")?;
@@ -219,6 +221,7 @@ fn keep_gsp_target(
         fb_bytes,
         bios_start,
         system,
+        architecture,
     });
     Ok(())
 }
@@ -405,6 +408,18 @@ fn boot_gsp(
         nvidia_gsp_display::DisplayError::ShortAnswer => "GSP-RM's display answer was short",
     })?;
     let mut line = String::new();
+    match bring_up_display_core(&mut gsp_rm, target, &layout, delay) {
+        Ok(engine) => {
+            let _ = write!(
+                line,
+                " display core up, {} heads, windows {:#x}",
+                engine.heads, engine.windows
+            );
+        }
+        Err(reason) => {
+            let _ = write!(line, " display core not up: {reason}");
+        }
+    }
     for sink in sinks {
         let _ = write!(line, " display {}", sink.display);
         if let Some(edid) = sink.edid.as_deref().and_then(eggos_drivers::edid::Edid::parse) {
@@ -416,6 +431,56 @@ fn boot_gsp(
         }
     }
     Ok(line)
+}
+
+/// Brings the display's core channel up through GSP-RM (D529): GSP-RM's internal handles from
+/// its static information, 64 KiB of instance memory right below the heap outside WPR2, a push
+/// buffer in system memory, then one update pushed and waited for.
+fn bring_up_display_core(
+    gsp_rm: &mut GspRm,
+    target: &GspTarget,
+    layout: &WprLayout,
+    delay: &mut dyn FnMut(u32),
+) -> Result<nvidia_gsp_display::DisplayEngineInfo, &'static str> {
+    use nvidia_gsp_display::{
+        CORE_GET, CORE_PUT, CORE_UPDATE, CoreSetup, INSTANCE_BYTES, STATIC_INFO,
+        STATIC_INFO_BYTES,
+    };
+    let classes = nvidia_gsp_display::display_classes(target.architecture)
+        .ok_or("no display classes for this chip")?;
+    let info = gsp_rm.call(STATIC_INFO, &[0u8; STATIC_INFO_BYTES], delay)?;
+    let (internal_client, _, internal_subdevice) =
+        nvidia_gsp_display::internal_handles(&info).ok_or("GSP-RM's static information is short")?;
+    let mut push = allocate(nvidia_gsp_boot::PAGE_BYTES as usize)?;
+    let push_address = device_address(&push);
+    let setup = CoreSetup {
+        internal_client,
+        internal_subdevice,
+        classes,
+        instance_memory: (layout.non_wpr_heap - INSTANCE_BYTES) & !(INSTANCE_BYTES - 1),
+        push_buffer: (push_address, nvidia_gsp_boot::PAGE_BYTES),
+    };
+    let engine = nvidia_gsp_display::bring_up_core(
+        &mut |function, payload| gsp_rm.call(function, payload, delay),
+        &setup,
+    )
+    .map_err(|_| "GSP-RM refused the display's core channel")?;
+    let words = [nvidia_gsp_display::method(CORE_UPDATE, 1), 0];
+    for (index, word) in words.iter().enumerate() {
+        dma_bytes(&mut push)[4 * index..4 * index + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    GSP_MEMORY.lock().push(push);
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    let put = (4 * words.len()) as u32;
+    gsp_rm.regs.write32(CORE_PUT, put);
+    let mut keep_waiting = polls();
+    while gsp_rm.regs.read32(CORE_GET) != put {
+        if !keep_waiting() {
+            return Err("the display's core channel did not take its update");
+        }
+        core::hint::spin_loop();
+    }
+    Ok(engine)
 }
 
 /// GSP-RM once it runs: its queues, BAR 0 (`length` bytes) and GSP's Falcon.

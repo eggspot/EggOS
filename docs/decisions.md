@@ -25188,6 +25188,27 @@ the license, by an explicit instruction recorded here.
   with their push buffers, mode setting and flips through them, hot plug events, freeing the
   objects; until then the firmware's framebuffer stays what the screen shows.
 
+## D529 NVIDIA's displays through GSP-RM, part 2: the display object and its core channel (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from NVIDIA's MIT-licensed open GPU kernel modules and nouveau's MIT-licensed r535 code)
+
+- **Decision.** After the screens are found (D524), the driver asks GSP-RM's static information
+  (remote call 65, 2168 bytes in the r535 ABI) for GSP-RM's internal client, device and
+  subdevice handles (bytes 2152 to 2163: the layout of `GspStaticConfigInfo` worked out from
+  NVIDIA's r535 header, its engine caps two words long as `RM_ENGINE_TYPE_LAST` is `0x3e` in
+  535). Through the internal subdevice it hands the display 64 KiB of instance memory in video
+  memory (right below the heap outside WPR2, write-combined), asks the display's heads and
+  windows, and registers the core channel's push buffer (a page of coherent system memory).
+  Under its own device it makes the display object (`0xc670` on Ampere, `0xc770` on Ada) and the
+  core channel (`0xc67d` or `0xc77d`, instance 0, PUT and GET starting at 0), pushes one update
+  method (`count << 18 | offset`, the core's update at `0x200`) and moves the channel's PUT in
+  BAR 0 (`0x680000`), then waits for GET (`0x680004`) to reach it. The probe summary says the
+  core is up with its heads and windows.
+- **Why the instance memory there.** GSP-RM keeps the top of video memory for WPR2 and its
+  heaps (D522); the 64 KiB right below them is not handed to anything else by this driver, and
+  the display must have its instance memory in video memory.
+- **Not yet.** Heads, SORs and windows set up through the core and window channels (D530),
+  the hash table of context DMAs in the instance memory, notifiers, interrupts, the cursor
+  channel, and freeing the objects.
+
 ## D525 Intel's Type-C ports, part 1: the port, its PHY and its AUX channel (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's MIT-licensed i915 driver)
 
 - **Decision.** On Tiger Lake and on Alder and Raptor Lake-P (`intel_type_c::flavour` by device

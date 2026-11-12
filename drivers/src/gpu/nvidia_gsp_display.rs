@@ -3,8 +3,14 @@
 //! it, and the display's common object under that, made by remote "alloc" calls; questions go
 //! to an object as remote "control" calls, a command number and its parameters, which GSP-RM
 //! answers in the same call with its status. The display common object says which display ids
-//! the board has, which of them have a screen connected, and each screen's EDID. Layouts and
-//! numbers are NVIDIA's r535 ABI (the MIT-licensed open GPU kernel modules, `NVIDIA-NOTICE.md`).
+//! the board has, which of them have a screen connected, and each screen's EDID.
+//!
+//! Part 2 (D529) brings the display engine's core channel up: GSP-RM's own internal client,
+//! device and subdevice (from its static information) take the display's instance memory and
+//! the core channel's push buffer; the display object and the core channel are made under the
+//! driver's device; methods (`count << 18 | offset`) then go through the push buffer, the
+//! channel's PUT register in BAR 0 moved past them. Layouts and numbers are NVIDIA's r535 ABI
+//! (the MIT-licensed open GPU kernel modules, `NVIDIA-NOTICE.md`).
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -35,6 +41,119 @@ const DEVICE_PARAMETERS_BYTES: usize = 56;
 const NO_PROCESS: u32 = u32::MAX;
 const EDID_HEADER_BYTES: usize = 16;
 const EDID_MOST_BYTES: usize = 2048;
+
+/// The remote call asking GSP-RM's static information.
+pub const STATIC_INFO: u32 = 65;
+/// The bytes of GSP-RM's static information (r535).
+pub const STATIC_INFO_BYTES: usize = 2168;
+const INTERNAL_HANDLES_AT: usize = 2152;
+const WRITE_INSTANCE_MEMORY: u32 = 0x2080_0a49;
+const DISPLAY_STATIC_INFO: u32 = 0x2080_0a01;
+const CHANNEL_PUSH_BUFFER: u32 = 0x2080_0a58;
+const FRAMEBUFFER_MEMORY: u32 = 2;
+const SYSTEM_MEMORY: u32 = 1;
+const WRITE_COMBINED: u32 = 2;
+const CHANNEL_PARAMETERS_BYTES: usize = 32;
+const METHOD_COUNT_SHIFT: u32 = 18;
+/// The core channel's PUT register in BAR 0.
+pub const CORE_PUT: usize = 0x68_0000;
+/// The core channel's GET register in BAR 0.
+pub const CORE_GET: usize = 0x68_0004;
+/// The core channel's update method, which applies what was pushed before it.
+pub const CORE_UPDATE: u32 = 0x0200;
+/// The bytes of the display's instance memory.
+pub const INSTANCE_BYTES: u64 = 0x1_0000;
+
+/// GSP-RM's internal client, device and subdevice handles in its static information `answer`.
+pub fn internal_handles(answer: &[u8]) -> Option<(u32, u32, u32)> {
+    Some((
+        word(answer, INTERNAL_HANDLES_AT)?,
+        word(answer, INTERNAL_HANDLES_AT + 4)?,
+        word(answer, INTERNAL_HANDLES_AT + 8)?,
+    ))
+}
+
+/// The display engine's classes on a chip of architecture `architecture`: the display object,
+/// the core channel, the window channel and the window immediate channel; `None` before
+/// Ampere.
+pub fn display_classes(architecture: u16) -> Option<(u32, u32, u32, u32)> {
+    match architecture {
+        0x17 => Some((0xc670, 0xc67d, 0xc67e, 0xc67b)),
+        0x19 => Some((0xc770, 0xc77d, 0xc67e, 0xc67b)),
+        _ => None,
+    }
+}
+
+/// A method header: `count` data words for the methods from byte offset `offset` on.
+pub fn method(offset: u32, count: u32) -> u32 {
+    count << METHOD_COUNT_SHIFT | offset
+}
+
+/// What part 2 needs: GSP-RM's internal client and subdevice, the chip's display classes, the
+/// display's instance memory in video memory (its offset), and the core channel's push buffer
+/// in system memory (its device address and bytes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreSetup {
+    pub internal_client: u32,
+    pub internal_subdevice: u32,
+    pub classes: (u32, u32, u32, u32),
+    pub instance_memory: u64,
+    pub push_buffer: (u64, u64),
+}
+
+/// What the display engine has: its heads and the windows present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayEngineInfo {
+    pub heads: u32,
+    pub windows: u32,
+}
+
+/// Hands the display its instance memory, asks its heads and windows, makes the display
+/// object, registers the core channel's push buffer and makes the core channel (D529), through
+/// `call`; the [`find_sinks`] objects must exist.
+pub fn bring_up_core(
+    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    setup: &CoreSetup,
+) -> Result<DisplayEngineInfo, DisplayError> {
+    let mut internal = |command: u32, parameters: &[u8]| -> Result<Vec<u8>, DisplayError> {
+        let payload =
+            control_call(setup.internal_client, setup.internal_subdevice, command, parameters);
+        let answer = call(CONTROL, &payload).map_err(DisplayError::Call)?;
+        let returned = answered(&answer, CONTROL_STATUS, CONTROL_HEADER_BYTES)?;
+        returned
+            .get(..parameters.len())
+            .map(<[u8]>::to_vec)
+            .ok_or(DisplayError::ShortAnswer)
+    };
+    let mut instance = [0u8; 24];
+    instance[0..8].copy_from_slice(&setup.instance_memory.to_le_bytes());
+    instance[8..16].copy_from_slice(&INSTANCE_BYTES.to_le_bytes());
+    put(&mut instance, 16, FRAMEBUFFER_MEMORY);
+    put(&mut instance, 20, WRITE_COMBINED);
+    internal(WRITE_INSTANCE_MEMORY, &instance)?;
+    let info = internal(DISPLAY_STATIC_INFO, &[0u8; 28])?;
+    let engine = DisplayEngineInfo {
+        windows: word(&info, 4).ok_or(DisplayError::ShortAnswer)?,
+        heads: word(&info, 12).ok_or(DisplayError::ShortAnswer)?,
+    };
+    let (root, core, _, _) = setup.classes;
+    let mut push = [0u8; 40];
+    put(&mut push, 0, SYSTEM_MEMORY);
+    push[8..16].copy_from_slice(&setup.push_buffer.0.to_le_bytes());
+    push[16..24].copy_from_slice(&(setup.push_buffer.1 - 1).to_le_bytes());
+    put(&mut push, 24, 1);
+    put(&mut push, 28, core);
+    push[36] = 1;
+    internal(CHANNEL_PUSH_BUFFER, &push)?;
+    let mut alloc = |parent: u32, object: u32, class: u32, parameters: &[u8]| {
+        let answer = call(ALLOC, &alloc_call(CLIENT, parent, object, class, parameters))
+            .map_err(DisplayError::Call)?;
+        answered(&answer, ALLOC_STATUS, ALLOC_HEADER_BYTES).map(|_| ())
+    };
+    alloc(DEVICE, root << 16, root, &[])?;
+    alloc(root << 16, core << 16, core, &[0u8; CHANNEL_PARAMETERS_BYTES])?;
+    Ok(engine)
+}
 
 /// Why the screens are not known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +303,36 @@ mod tests {
         assert_eq!(calls[0], (ALLOC, ROOT_CLASS, CLIENT));
         assert_eq!(calls[2], (ALLOC, DISPLAY_COMMON_CLASS, DISPLAY));
         assert_eq!(calls.len(), 6);
+    }
+
+    #[test]
+    fn the_core_comes_up_through_internal_controls_and_two_allocs() {
+        let mut calls = Vec::new();
+        let setup = CoreSetup {
+            internal_client: 0xc1e0_0004,
+            internal_subdevice: 0x5c00_0003,
+            classes: display_classes(0x17).unwrap(),
+            instance_memory: 0x1_ff00_0000,
+            push_buffer: (0x8000_0000, 0x1000),
+        };
+        let engine = bring_up_core(
+            &mut |function, payload| {
+                calls.push((function, word(payload, 0).unwrap(), word(payload, 8).unwrap()));
+                let mut answer = payload.to_vec();
+                if function == CONTROL && word(payload, 8) == Some(DISPLAY_STATIC_INFO) {
+                    put(&mut answer[CONTROL_HEADER_BYTES..], 4, 0xf);
+                    put(&mut answer[CONTROL_HEADER_BYTES..], 12, 4);
+                }
+                Ok(answer)
+            },
+            &setup,
+        )
+        .unwrap();
+        assert_eq!(engine, DisplayEngineInfo { heads: 4, windows: 0xf });
+        assert_eq!(calls[0], (CONTROL, 0xc1e0_0004, WRITE_INSTANCE_MEMORY));
+        assert_eq!(calls[2], (CONTROL, 0xc1e0_0004, CHANNEL_PUSH_BUFFER));
+        assert_eq!(calls[4], (ALLOC, CLIENT, 0xc67d << 16));
+        assert_eq!(method(CORE_UPDATE, 1), 1 << 18 | 0x200);
     }
 
     #[test]
