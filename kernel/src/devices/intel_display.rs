@@ -458,6 +458,12 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
             );
         }
         scanout.sinks.push('\n');
+        if let (Some(mut link), Some(timing)) = (link, edid.and_then(|edid| edid.preferred))
+            && second_screen.is_none()
+        {
+            link.lanes = link.lanes.min(connected.lanes);
+            second_screen = Some((connected.port, link, timing));
+        }
     }
     if let Some((port, link, timing)) = second_screen
         && intel::sets_modes(function.device_id)

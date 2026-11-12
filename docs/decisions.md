@@ -25205,3 +25205,24 @@ the license, by an explicit instruction recorded here.
   (its I/O select bit) and PLL, legacy (fixed-connector) Type-C ports, hot plug, and giving
   the PHY back on unplug.
 - Intel's i915 files used carry the MIT licence; `drivers/src/gpu/INTEL-NOTICE.md` keeps it.
+
+## D526 Intel's Type-C ports, part 2: lighting DisplayPort alternate mode through the Dekel PHY (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's MIT-licensed i915 driver)
+
+- **Decision.** A Type-C port connected in DisplayPort alternate mode (D525) can be the second
+  screen: `set_mode` clocks it through its own PLL in the Dekel PHY instead of a combo PLL.
+  `intel_dekel::pll_setting` finds the post dividers that bring the 8.1 GHz oscillator to the
+  link's port clock (`div1 · div2 · 5 · link = 8.1 GHz`), the feedback divider's integer and
+  22-bit fraction from the 19.2, 24 or 38.4 MHz reference, the reference trim and divider, the
+  target count and the feed-forward gain, each as a value and mask for the PHY's registers,
+  reached through its 4 KiB window and the bank in the HIP index register. The PLL is powered
+  (`0x46030` on Tiger Lake, `0x46038` on Alder Lake-P, one a port), programmed, enabled and
+  waited for; the DDI takes the Type-C PLL as its clock (`DDI_CLK_SEL`), the port's clock gate
+  in `DPCLKA_CFGCR0` opens, the FIA is told the lanes DisplayPort uses, and the PHY's two lane
+  pairs are set to one or two lanes each. During link training the drive levels the sink asks
+  for go to the Dekel transmitters (swing, pre-shoot and de-emphasis from Intel's table, the
+  HBR2 table's stronger 9.5 dB step above HBR), and `DDI_BUF_CTL` keeps Alder Lake-P's PHY
+  ownership bit. The kernel takes the first Type-C screen with a preferred mode as the second
+  screen when no combo port gave one, its lanes capped to what the FIA assigned.
+- **Not yet.** Thunderbolt alternate mode (its fixed-frequency PLL and AUX I/O select), lane
+  reversal and legacy Type-C connectors, HDMI on Type-C, spread spectrum, the AFC start-up
+  override the video BIOS may ask for, and turning the PLL off again.

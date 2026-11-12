@@ -106,6 +106,7 @@ const PORT_REGISTER_STRIDE: usize = 0x100;
 const DDI_BUF_ENABLE: u32 = 1 << 31;
 const DDI_PORT_WIDTH_SHIFT: u32 = 1;
 const DDI_BUF_SWING_SHIFT: u32 = 24;
+const TYPE_C_PHY_OWNERSHIP: u32 = 1 << 6;
 const DP_TP_ENABLE: u32 = 1 << 31;
 const DP_TP_PATTERN_SHIFT: u32 = 8;
 const DP_TP_PATTERN_1: u32 = 0;
@@ -117,6 +118,9 @@ const DPLL_STATUS: usize = 0x6c060;
 const DPLL_ENABLES: [usize; 4] = [0x46010, 0x46014, 0x46040, 0x46060];
 const DPLL_FOR_PORTS: usize = 1;
 const PLL_ENABLE: u32 = 1 << 31;
+const DDI_CLOCK_SELECT: usize = 0x46100;
+const DDI_CLOCK_TYPE_C_PLL: u32 = 0x8 << 28;
+const HBR2: u8 = 0x14;
 const TRANSCODER: usize = 0x60000;
 const TRANSCODER_STRIDE: usize = 0x1000;
 const PIPE_SOURCE: usize = 0x1c;
@@ -431,15 +435,28 @@ impl<R: RegisterIo> DisplayEngine<R> {
         rate: u8,
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<crate::display_port::Drive, crate::display_port::TrainingError> {
+        let buffer = DDI_BUF_CTL + port * PORT_REGISTER_STRIDE;
+        let alder = self.type_c == Some(super::intel_type_c::Flavour::Alder);
+        let type_c = self.is_type_c(port).then(|| TypeCDrive {
+            index: port - super::intel_type_c::FIRST_PORT,
+            high_rate: rate >= HBR2,
+            alder,
+        });
+        let kept = match type_c {
+            Some(_) => self.regs.read32(buffer) & TYPE_C_PHY_OWNERSHIP,
+            None => 0,
+        };
         let mut link = PortLink {
             regs: &self.regs,
             port,
             pattern_register: self.generation.pattern_register(port, pipe),
             lanes,
+            type_c,
+            kept,
             keep_waiting,
         };
-        let buffer = DDI_BUF_CTL + port * PORT_REGISTER_STRIDE;
-        self.regs.write32(buffer, DDI_BUF_ENABLE | ((lanes.clamp(1, 4) as u32 - 1) << DDI_PORT_WIDTH_SHIFT));
+        let width = (lanes.clamp(1, 4) as u32 - 1) << DDI_PORT_WIDTH_SHIFT;
+        self.regs.write32(buffer, DDI_BUF_ENABLE | width | kept);
         crate::display_port::train(&mut link, lanes, rate)
     }
 
@@ -467,6 +484,9 @@ impl<R: RegisterIo> DisplayEngine<R> {
         }
         let symbol_khz = symbol_clock_khz(rate).ok_or(ModeError::Unsupported)?;
         match self.generation {
+            _ if self.is_type_c(port) => {
+                self.clock_type_c_port(port, symbol_khz, lanes, keep_waiting)?
+            }
             Generation::Display11 | Generation::Display12 => {
                 self.clock_combo_port(port, rate, keep_waiting)?
             }
@@ -615,6 +635,46 @@ impl<R: RegisterIo> DisplayEngine<R> {
         let route = 3 * port as u32;
         let routing = self.regs.read32(DPLL_CTRL2) & !(0x7 << route | 1 << (15 + port as u32));
         self.regs.write32(DPLL_CTRL2, routing | 1 << route | (pll as u32) << (route + 1));
+        Ok(())
+    }
+
+    /// A Type-C port in DisplayPort alternate mode (D526): its Dekel PLL powered, set for the
+    /// link's `link_khz` from the reference clock and enabled, the DDI clocked from it and
+    /// ungated, the FIA told the lanes and the PHY's lane pairs set up for them.
+    fn clock_type_c_port(
+        &self,
+        port: usize,
+        link_khz: u32,
+        lanes: usize,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), ModeError> {
+        use super::intel_combo_phy::reference_khz;
+        use super::intel_type_c::{pll_enable, set_lane_count, ungate_clock, FIRST_PORT};
+        let flavour = self.type_c.ok_or(ModeError::Unsupported)?;
+        let index = port - FIRST_PORT;
+        let reference = reference_khz(self.regs.read32(STRAPS) >> REFERENCE_SHIFT & 0x7)
+            .ok_or(ModeError::Unsupported)?;
+        let setting =
+            super::intel_dekel::pll_setting(link_khz, reference).ok_or(ModeError::Unsupported)?;
+        let enable = pll_enable(flavour, index);
+        let wait_for = |bit: u32, keep_waiting: &mut dyn FnMut() -> bool| {
+            while self.regs.read32(enable) & bit == 0 {
+                if !keep_waiting() {
+                    return Err(ModeError::PllUnlocked);
+                }
+            }
+            Ok(())
+        };
+        self.regs.write32(enable, PLL_POWER_ENABLE);
+        wait_for(PLL_POWER_STATE, keep_waiting)?;
+        let dekel = super::intel_dekel::Dekel::new(&self.regs, index);
+        dekel.program_pll(&setting);
+        self.regs.write32(enable, PLL_POWER_ENABLE | PLL_ENABLE);
+        wait_for(PLL_LOCKED, keep_waiting)?;
+        self.regs.write32(DDI_CLOCK_SELECT + 4 * port, DDI_CLOCK_TYPE_C_PLL);
+        ungate_clock(&self.regs, index);
+        set_lane_count(&self.regs, flavour, index, lanes).map_err(|_| ModeError::Unsupported)?;
+        dekel.set_lane_mode(lanes);
         Ok(())
     }
 
@@ -845,11 +905,20 @@ mod tests {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TypeCDrive {
+    index: usize,
+    high_rate: bool,
+    alder: bool,
+}
+
 struct PortLink<'a, R: RegisterIo> {
     regs: &'a R,
     port: usize,
     pattern_register: usize,
     lanes: usize,
+    type_c: Option<TypeCDrive>,
+    kept: u32,
     keep_waiting: &'a mut dyn FnMut() -> bool,
 }
 
@@ -875,12 +944,20 @@ impl<R: RegisterIo> crate::display_port::Link for PortLink<'_, R> {
     }
 
     fn set_drive(&mut self, drive: crate::display_port::Drive) {
-        let level = u32::from(drive.swing) * 4 + u32::from(drive.pre_emphasis);
         let width = (self.lanes.clamp(1, 4) as u32 - 1) << DDI_PORT_WIDTH_SHIFT;
-        self.regs.write32(
-            DDI_BUF_CTL + self.port * PORT_REGISTER_STRIDE,
-            DDI_BUF_ENABLE | width | level << DDI_BUF_SWING_SHIFT,
-        );
+        let buffer = DDI_BUF_CTL + self.port * PORT_REGISTER_STRIDE;
+        if let Some(type_c) = self.type_c {
+            let level = super::intel_dekel::drive_level(drive.swing, drive.pre_emphasis);
+            super::intel_dekel::Dekel::new(self.regs, type_c.index).set_drive(
+                level,
+                type_c.high_rate,
+                type_c.alder,
+            );
+            self.regs.write32(buffer, DDI_BUF_ENABLE | width | self.kept);
+            return;
+        }
+        let level = u32::from(drive.swing) * 4 + u32::from(drive.pre_emphasis);
+        self.regs.write32(buffer, DDI_BUF_ENABLE | width | level << DDI_BUF_SWING_SHIFT);
     }
 
     fn pause(&mut self, microseconds: u32) {

@@ -20,6 +20,10 @@ const PIN_ASSIGNMENT: usize = 0x880;
 const PHY_READY: usize = 0x890;
 const PHY_TAKEN: usize = 0x894;
 const LANE_STATE: usize = 0x8a0;
+const LANES_ENABLED: usize = 0x8c0;
+const PLL_ENABLES: [(usize, usize); 2] = [(0x4_6030, 4), (0x4_6038, 8)];
+const CLOCK_GATES: usize = 0x16_4280;
+const CLOCK_GATE_FIRST: [u32; 2] = [12, 21];
 const MODULAR_FIA: u32 = 1 << 4;
 const LIVE_THUNDERBOLT_BIT: u32 = 6;
 const LIVE_ALTERNATE_BIT: u32 = 5;
@@ -176,6 +180,58 @@ pub fn power_aux(
         true => Ok(()),
         false => Err(TypeCError::NoAuxPower),
     }
+}
+
+/// Where Type-C port `index`'s FIA fields are for a `flavour` engine: the FIA's base and the
+/// port's slot in it; `None` while the PHY is cold.
+pub fn fia_slot(
+    regs: &(impl RegisterIo + ?Sized),
+    flavour: Flavour,
+    index: usize,
+) -> Option<(usize, u32)> {
+    let first = regs.read32(FIA_BASES[0] + LANE_STATE);
+    if first == COLD {
+        return None;
+    }
+    Some(fia(flavour == Flavour::Alder || first & MODULAR_FIA != 0, index))
+}
+
+/// Tells the FIA that DisplayPort uses its first `lanes` lanes (1, 2 or 4) on Type-C port
+/// `index` (D526).
+pub fn set_lane_count(
+    regs: &(impl RegisterIo + ?Sized),
+    flavour: Flavour,
+    index: usize,
+    lanes: usize,
+) -> Result<(), TypeCError> {
+    let (base, slot) = fia_slot(regs, flavour, index).ok_or(TypeCError::Cold)?;
+    let field = match lanes {
+        1 => 0x1,
+        2 => 0x3,
+        _ => 0xf,
+    };
+    let shift = 4 * slot;
+    let value = regs.read32(base + LANES_ENABLED) & !(0xf << shift) | field << shift;
+    regs.write32(base + LANES_ENABLED, value);
+    Ok(())
+}
+
+/// The enable register of Type-C port `index`'s PLL (D526).
+pub fn pll_enable(flavour: Flavour, index: usize) -> usize {
+    let (first, stride) = match flavour {
+        Flavour::Tiger => PLL_ENABLES[0],
+        Flavour::Alder => PLL_ENABLES[1],
+    };
+    first + stride * index
+}
+
+/// Ungates Type-C port `index`'s clock to its DDI (D526).
+pub fn ungate_clock(regs: &(impl RegisterIo + ?Sized), index: usize) {
+    let bit = match index {
+        0..=2 => CLOCK_GATE_FIRST[0] + index as u32,
+        _ => CLOCK_GATE_FIRST[1] + index as u32 - 3,
+    };
+    regs.write32(CLOCK_GATES, regs.read32(CLOCK_GATES) & !(1 << bit));
 }
 
 fn fia(modular: bool, index: usize) -> (usize, u32) {
