@@ -693,17 +693,6 @@ impl<P: Platform> Wait for Pauses<P> {
     }
 }
 
-fn read_firmware(path: &str) -> Option<Vec<u8>> {
-    let root = vfs::root();
-    let node = vfs::resolve(root, root, path.as_bytes()).ok()?;
-    let size = node.attributes().size;
-    if node.kind() != NodeKind::Regular || size > LARGEST_FIRMWARE as u64 {
-        return None;
-    }
-    let bytes = ProgramBytes::read(node, size, size).ok()?;
-    Some(bytes.bytes().to_vec())
-}
-
 /// Starts the thread that brings the adapter the probe found up, once the file systems are
 /// mounted; whether there is one.
 pub fn start<P: Platform>() -> bool {
@@ -877,7 +866,7 @@ fn bring_up<P: Platform>(found: Found) {
     let Found { regs, adapter } = found;
     let path = devices::firmware_path(&adapter);
     let bytes = loop {
-        if let Some(bytes) = read_firmware(&path) {
+        if let Some(bytes) = super::read_firmware(&path, LARGEST_FIRMWARE as u64) {
             break bytes;
         }
         crate::thread::sleep::<P>(FIRMWARE_RETRY);

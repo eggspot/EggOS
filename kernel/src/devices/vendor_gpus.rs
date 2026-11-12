@@ -17,6 +17,9 @@ use eggos_drivers::gpu::nvidia_bios::NvidiaBios;
 use eggos_drivers::gpu::{nvidia_falcon, nvidia_fwsec};
 use eggos_drivers::io::RegisterIo;
 use eggos_drivers::gpu::nvidia_gsp::{self, Chip};
+use eggos_drivers::gpu::nvidia_gsp_boot::{self, SharedMemory, SystemImages, WprLayout};
+use eggos_drivers::dma::DmaMemory;
+use super::dma::DmaRegion;
 use eggos_hal::PhysicalRange;
 
 const VENDOR_AMD: u16 = 0x1002;
@@ -40,7 +43,24 @@ const VBIOS_SCRATCH_FRTS: usize = 0x1400 + 4 * 0x0e;
 const WPR2_LOW: usize = 0x1f_a824;
 const WPR2_HIGH: usize = 0x1f_a828;
 const FRTS_BYTES: u64 = 1 << 20;
-const FRTS_ALIGNMENT: u64 = 128 << 10;
+const AMPERE: u16 = 0x17;
+const GSP_FIRMWARE_FOLDER: &str = "/usr/lib/firmware/nvidia";
+const LARGEST_GSP_FILE: u64 = 64 << 20;
+const GSP_FILE_RETRY: core::time::Duration = core::time::Duration::from_secs(10);
+const GSP_POLLS: u32 = 50_000_000;
+const PAGED_CHUNK_BYTES: usize = 4 << 20;
+
+struct GspTarget {
+    registers: usize,
+    length: usize,
+    chip: &'static str,
+    family: &'static str,
+    fb_bytes: u64,
+    bios_start: u64,
+}
+
+static GSP_TARGET: SpinLock<Option<GspTarget>> = SpinLock::new(None);
+static GSP_MEMORY: SpinLock<Vec<DmaRegion>> = SpinLock::new(Vec::new());
 const FWSEC_MS: u64 = 1000;
 const PROM_BYTES: u64 = 0x10_0000;
 
@@ -91,6 +111,7 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
     if let Some((imem, dmem)) = read_gsp_memories(probe, node.regions[0]) {
         let _ = write!(line, " gsp falcon {} KiB imem {} KiB dmem", imem >> 10, dmem >> 10);
     }
+    let mut wpr2_ready = false;
     if let Some(rom) = read_prom(probe, node.regions[0])
         && let Some(fwsec) = nvidia_fwsec::find(&rom, false)
     {
@@ -101,6 +122,7 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
         );
         match run_fwsec(probe, node.regions[0], &fwsec) {
             Ok(region) => {
+                wpr2_ready = true;
                 let _ = write!(line, " wpr2 at {:#x}", region.start);
             }
             Err(reason) => {
@@ -112,6 +134,14 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
         match (chip.name(), chip.signature_family()) {
             (Some(name), Some(family)) if chip.runs_gsp() => {
                 let _ = write!(line, " chip {name} gsp nvidia/{name}/gsp ({family})");
+                if wpr2_ready && chip.architecture() >= AMPERE {
+                    match keep_gsp_target(probe, node.regions[0], name, family) {
+                        Ok(()) => line.push_str(", gsp-rm boots once its firmware is there"),
+                        Err(reason) => {
+                            let _ = write!(line, ", gsp-rm cannot boot: {reason}");
+                        }
+                    }
+                }
             }
             _ => {
                 let _ = write!(line, " chip {:03x}", chip.id);
@@ -140,9 +170,220 @@ fn read_boot_0(probe: &mut dyn Probe, registers: PhysicalRange) -> Option<u32> {
     Some(unsafe { core::ptr::read_volatile((start + nvidia_gsp::BOOT_0) as *const u32) })
 }
 
+/// The usable video memory's bytes and where the VGA workspace starts in it.
+fn video_memory(regs: &eggos_drivers::io::Mmio) -> (u64, u64) {
+    let bytes = u64::from(regs.read32(USABLE_VIDEO_MEMORY_MB)) << 20;
+    let workspace = regs.read32(nvidia_gsp_boot::VGA_WORKSPACE_REGISTER);
+    (bytes, nvidia_gsp_boot::bios_start(bytes, workspace))
+}
+
+/// Keeps BAR 0 mapped and what the GSP boot needs to know about the board until the file
+/// systems hold its firmware (D522).
+fn keep_gsp_target(
+    probe: &mut dyn Probe,
+    registers: PhysicalRange,
+    chip: &'static str,
+    family: &'static str,
+) -> Result<(), &'static str> {
+    let length = usize::try_from(registers.len()).map_err(|_| "BAR 0 is too large")?;
+    let base = probe
+        .map_window(registers)
+        .map_err(|_| "BAR 0 could not be mapped")?;
+    // SAFETY: `map_window` mapped BAR 0, `length` bytes, as device memory for good; only this
+    // driver drives the GPU's registers.
+    let regs = unsafe { eggos_drivers::io::Mmio::new(base, length) };
+    let (fb_bytes, bios_start) = video_memory(&regs);
+    *GSP_TARGET.lock() = Some(GspTarget {
+        registers: base,
+        length,
+        chip,
+        family,
+        fb_bytes,
+        bios_start,
+    });
+    Ok(())
+}
+
+fn polls() -> impl FnMut() -> bool {
+    let mut left = GSP_POLLS;
+    move || {
+        left = left.saturating_sub(1);
+        left > 0
+    }
+}
+
+fn device_address(region: &DmaRegion) -> u64 {
+    DmaMemory::dma_addr(region).get()
+}
+
+fn dma_bytes(region: &mut DmaRegion) -> &mut [u8] {
+    // SAFETY: the region maps `len()` bytes for the CPU; `&mut` makes the borrow unique, and no
+    // device reaches the region before GSP boots from it.
+    unsafe {
+        core::slice::from_raw_parts_mut(DmaMemory::as_mut_ptr(region), DmaMemory::len(region))
+    }
+}
+
+fn allocate(bytes: usize) -> Result<DmaRegion, &'static str> {
+    DmaRegion::allocate(bytes).map_err(|_| "no memory for GSP-RM")
+}
+
+fn dma_copy(bytes: &[u8]) -> Result<DmaRegion, &'static str> {
+    let mut region = allocate(bytes.len())?;
+    dma_bytes(&mut region)[..bytes.len()].copy_from_slice(bytes);
+    Ok(region)
+}
+
+fn paged_copy(bytes: &[u8], kept: &mut Vec<DmaRegion>) -> Result<Vec<u64>, &'static str> {
+    let mut pages = Vec::new();
+    for chunk in bytes.chunks(PAGED_CHUNK_BYTES) {
+        let region = dma_copy(chunk)?;
+        let start = device_address(&region);
+        let count = (chunk.len() as u64).div_ceil(nvidia_gsp_boot::PAGE_BYTES);
+        pages.extend((0..count).map(|page| start + page * nvidia_gsp_boot::PAGE_BYTES));
+        kept.push(region);
+    }
+    Ok(pages)
+}
+
+/// Boots GSP-RM (D522): its image, boot binary and signature into system memory, the WPR
+/// metadata, libos's regions and the queues' shared memory; GSP's Falcon reset into RISC-V
+/// with libos's arguments in its mailboxes; SEC2's booter, signed for the fuse, run with the
+/// metadata's address, which copies GSP-RM into WPR2 and starts it; then the boot binary's
+/// version told and the RISC-V core seen running. The memory stays GSP-RM's for good.
+fn boot_gsp(
+    target: &GspTarget,
+    gsp: &[u8],
+    boot_file: &[u8],
+    booter_file: &[u8],
+) -> Result<(), &'static str> {
+    let firmware = nvidia_gsp::gsp_firmware(gsp, target.family).ok_or("not a GSP firmware file")?;
+    let (image_at, image_bytes) = firmware.image;
+    let (signature_at, signature_bytes) = firmware
+        .signature
+        .ok_or("the GSP firmware has no signature for this chip")?;
+    let boot = nvidia_gsp_boot::bootloader(boot_file).ok_or("not a GSP boot binary")?;
+    let (boot_at, boot_bytes) = boot.data;
+    let sizes = (boot_bytes as u64, image_bytes as u64);
+    let layout = WprLayout::new(target.fb_bytes, target.bios_start, sizes.0, sizes.1)
+        .ok_or("GSP-RM does not fit the video memory")?;
+    let mut kept = Vec::new();
+    let pages = paged_copy(&gsp[image_at..image_at + image_bytes], &mut kept)?;
+    let table_bytes =
+        nvidia_gsp_boot::radix3_bytes(image_bytes as u64).ok_or("the GSP image is too large")?;
+    let mut radix3 = allocate(table_bytes as usize)?;
+    let radix3_address = device_address(&radix3);
+    nvidia_gsp_boot::write_radix3(dma_bytes(&mut radix3), radix3_address, &pages)
+        .ok_or("radix3 does not fit")?;
+    let bootloader = dma_copy(&boot_file[boot_at..boot_at + boot_bytes])?;
+    let signature = dma_copy(&gsp[signature_at..signature_at + signature_bytes])?;
+    let images = SystemImages {
+        radix3: radix3_address,
+        bootloader: device_address(&bootloader),
+        signature: (device_address(&signature), signature_bytes as u64),
+    };
+    let meta = dma_copy(&nvidia_gsp_boot::wpr_meta(&layout, &images, &boot))?;
+    let mut regions = [(0u64, 0u64); 4];
+    for slot in regions.iter_mut().take(3) {
+        let mut log = allocate(nvidia_gsp_boot::LOG_BYTES)?;
+        let address = device_address(&log);
+        let bytes = &mut dma_bytes(&mut log)[..nvidia_gsp_boot::LOG_BYTES];
+        nvidia_gsp_boot::write_log_pages(bytes, address);
+        *slot = (address, nvidia_gsp_boot::LOG_BYTES as u64);
+        kept.push(log);
+    }
+    let shared = SharedMemory::new();
+    let mut queues = allocate(shared.bytes as usize)?;
+    let queues_address = device_address(&queues);
+    shared.initialize(dma_bytes(&mut queues), queues_address);
+    let rm_arguments = dma_copy(&shared.rm_arguments(queues_address))?;
+    regions[3] = (device_address(&rm_arguments), nvidia_gsp_boot::PAGE_BYTES);
+    let libos = dma_copy(&nvidia_gsp_boot::libos_arguments(&regions))?;
+    // SAFETY: `keep_gsp_target` mapped BAR 0, `length` bytes, as device memory for good, and
+    // only this thread drives the GPU's registers now.
+    let regs = unsafe { eggos_drivers::io::Mmio::new(target.registers, target.length) };
+    // SAFETY: as above, for GSP's Falcon block.
+    let gsp_regs = unsafe { eggos_drivers::io::Mmio::new(target.registers, target.length) };
+    // SAFETY: as above, for SEC2's Falcon block.
+    let sec2_regs = unsafe { eggos_drivers::io::Mmio::new(target.registers, target.length) };
+    let gsp_falcon = nvidia_falcon::Falcon::new(gsp_regs, nvidia_falcon::GSP_BASE);
+    gsp_falcon
+        .reset(&mut polls())
+        .map_err(nvidia_falcon::FalconError::description)?;
+    gsp_falcon.prepare_riscv(device_address(&libos));
+    let (engines, ucode) =
+        nvidia_gsp_boot::booter_identity(booter_file).ok_or("not a booter file")?;
+    let fuse = nvidia_gsp_boot::booter_fuse(engines, ucode).map_or(0, |at| regs.read32(at));
+    let booter = nvidia_gsp_boot::booter(booter_file, fuse)
+        .ok_or("the booter has no signature for the fuse")?;
+    let booter_image = dma_copy(&booter.image)?;
+    let sec2 = nvidia_falcon::Falcon::new(sec2_regs, nvidia_falcon::SEC2_BASE);
+    sec2.reset(&mut polls())
+        .map_err(nvidia_falcon::FalconError::description)?;
+    let program = nvidia_falcon::SecureProgram {
+        image: device_address(&booter_image),
+        imem_physical: 0,
+        imem_virtual: booter.code_virtual,
+        imem_bytes: booter.code_bytes,
+        dmem_physical: 0,
+        dmem_bytes: booter.data_bytes,
+        signature_place: booter.signature_place,
+        engine_mask: booter.engine_mask,
+        ucode_id: booter.ucode_id,
+    };
+    let meta_address = device_address(&meta);
+    let mailboxes = (meta_address as u32, (meta_address >> 32) as u32);
+    let (status, _) = sec2
+        .run_secure(nvidia_falcon::SEC2_FBIF, &program, mailboxes, &mut polls())
+        .map_err(nvidia_falcon::FalconError::description)?;
+    kept.extend([radix3, bootloader, signature, meta, queues, rm_arguments, libos, booter_image]);
+    GSP_MEMORY.lock().append(&mut kept);
+    if status != 0 {
+        return Err("the booter reported an error");
+    }
+    gsp_falcon.set_os_version(boot.app_version);
+    let mut keep_waiting = polls();
+    while !gsp_falcon.riscv_active() {
+        if !keep_waiting() {
+            return Err("GSP's RISC-V core did not start");
+        }
+        core::hint::spin_loop();
+    }
+    Ok(())
+}
+
+/// Starts the thread that boots GSP-RM once the `display-firmware` component's files for the
+/// probed chip are there (D522); whether a board waits for it.
+pub fn start_gsp<P: eggos_hal::Platform>() -> bool {
+    let Some(target) = GSP_TARGET.lock().take() else {
+        return false;
+    };
+    crate::thread::spawn::<P, _>(move || {
+        let version = nvidia_gsp_boot::FIRMWARE_VERSION;
+        let path = |name: &str| {
+            alloc::format!("{GSP_FIRMWARE_FOLDER}/{}/gsp/{name}-{version}.bin", target.chip)
+        };
+        let read = |name: &str| super::read_firmware(&path(name), LARGEST_GSP_FILE);
+        let (gsp, boot, booter) = loop {
+            if let (Some(gsp), Some(boot), Some(booter)) =
+                (read("gsp"), read("bootloader"), read("booter_load"))
+            {
+                break (gsp, boot, booter);
+            }
+            crate::thread::sleep::<P>(GSP_FILE_RETRY);
+        };
+        let line = match boot_gsp(&target, &gsp, &boot, &booter) {
+            Ok(()) => alloc::format!("nvidia {} gsp-rm {version} running\n", target.chip),
+            Err(reason) => alloc::format!("nvidia {} gsp-rm did not start: {reason}\n", target.chip),
+        };
+        SUMMARY.lock().push_str(&line);
+    })
+    .is_ok()
+}
+
 /// Runs FWSEC's FRTS command on GSP's Falcon (D513), so the protected region WPR2 is set up
-/// 2 MiB below the top of the usable video memory (1 MiB long, 128 KiB aligned); the region
-/// the GPU then reports.
+/// where GSP-RM's layout puts FRTS (1 MiB right below WPR2's 128 KiB aligned end, under the
+/// VGA workspace, D522); the region the GPU then reports.
 fn run_fwsec(
     probe: &mut dyn Probe,
     registers: PhysicalRange,
@@ -166,11 +407,11 @@ fn run_fwsec(
     if let Some(region) = wpr2(&regs) {
         return Ok(region);
     }
-    let video_memory = u64::from(regs.read32(USABLE_VIDEO_MEMORY_MB)) << 20;
+    let (video_memory, bios_start) = video_memory(&regs);
     if video_memory < 4 * FRTS_BYTES {
         return Err("the usable video memory is not known");
     }
-    let offset = (video_memory - 2 * FRTS_BYTES) & !(FRTS_ALIGNMENT - 1);
+    let offset = nvidia_gsp_boot::frts_offset(bios_start).ok_or("no room for FRTS")?;
     let version = nvidia_falcon::fuse_version(&regs, fwsec.ucode_id);
     let dmem = nvidia_fwsec::prepare_frts(fwsec, offset, version)
         .map_err(|_| "FWSEC has no interface or no signature for the fuse")?;

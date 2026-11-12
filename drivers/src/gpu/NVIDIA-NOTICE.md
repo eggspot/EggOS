@@ -31,3 +31,15 @@ THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+## GSP-RM's boot (`nvidia_gsp_boot.rs`, D522)
+
+The WPR2 layout, the WPR metadata, radix3, libos's memory regions, the RM arguments and the
+queue headers follow NVIDIA's open GPU kernel modules (`kernel_gsp_tu102.c`,
+`gsp_fw_wpr_meta.h`, `gsp_fw_heap.h`, `gsp_init_args.h`, `libos_init_args.h`,
+`rmRiscvUcode.h`) for the r535 ABI, under the MIT licence above. The firmware files' headers
+(`nvfw_bin_hdr`, `nvfw_hs_header_v2`, `nvfw_hs_load_header_v2`) and how the booter's signature is
+chosen by the fuse are as nouveau's `include/nvfw/fw.h`, `include/nvfw/hs.h`,
+`nvkm/subdev/gsp/ga102.c` and `nvkm/falcon/ga100.c` describe them; those files carry the MIT
+licence, copyright Red Hat Inc. and NVIDIA Corporation, with the same terms as above. No other
+code from them or from the Linux kernel is used; EggOS's code is its own, written from them.

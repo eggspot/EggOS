@@ -25121,3 +25121,29 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Link training and higher rates than the firmware's, HDMI (its PLL instead of
   the DTO), the scaler for sizes other than the timing's, the second pipe, AUX and EDID, and
   computing the watermarks and request timing from the mode library's equations.
+
+## D522 NVIDIA's GSP boot, part 4: GSP-RM's memory and SEC2's booter (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from NVIDIA's MIT-licensed open GPU kernel modules and nouveau's MIT-licensed firmware headers)
+
+- **Decision.** On Ampere and Ada boards whose FWSEC set up WPR2 (D513), the probe keeps BAR 0
+  mapped and, once the file systems are mounted, a thread reads the `display-firmware`
+  component's `nvidia/<chip>/gsp/` files for GSP firmware 535.113.01 (`gsp-`, `bootloader-`,
+  `booter_load-`) and boots GSP-RM. `eggos_drivers::gpu::nvidia_gsp_boot` lays WPR2 out from
+  the VGA workspace down (FRTS, the boot binary, the image, GSP-RM's heap sized from the video
+  memory, the metadata, the heap outside WPR2), writes the 256-byte WPR metadata, the radix3
+  page table for the image (copied into system memory in 4 MiB pieces), libos's arguments
+  page (three 64 KiB log buffers with their page lists and the RM arguments), the RM arguments
+  for a cold boot and the shared memory (its page table, then the command queue, whose header
+  the driver writes, and the status queue). It reads the boot binary's descriptor and the
+  booter's headers, and patches into the booter the signature its fuse names. The kernel resets
+  GSP's Falcon into RISC-V with libos's arguments in its mailboxes, runs the booter on SEC2
+  through the boot ROM (D513's heavy-secure path) with the metadata's address, tells GSP the
+  boot binary's version and waits for the RISC-V core to run.
+- **FRTS where GSP-RM's layout wants it.** D513 put FRTS 2 MiB below the top; FWSEC now puts it
+  right below WPR2's 128 KiB aligned end under the VGA workspace, which the metadata states, so
+  the booter finds the region FWSEC protected.
+- **Which firmware.** 535.113.01 is the GSP release every Turing-to-Ada folder of the public
+  firmware collection carries, and its interface (the r535 ABI) is the one written here; a
+  newer release means a new ABI module, chosen by the file's version.
+- **Not yet.** Turing (its booter loads through the older non-PKC path with a separate
+  non-secure part), reading GSP-RM's messages (the init-done event) and sending its first
+  calls, GSP-RM's logs, the unload booter for shutdown, and suspend and resume.

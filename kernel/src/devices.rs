@@ -310,12 +310,33 @@ pub fn display_hardware_text() -> alloc::string::String {
 }
 
 /// Starts loading the Intel display's firmware (D444), or AMD's display microcontroller's
-/// (D514), once the file systems are mounted.
+/// (D514), or NVIDIA's GSP-RM (D522), once the file systems are mounted.
 pub fn start_display_firmware<P: eggos_hal::Platform>() {
     #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
     let _ = intel_display::start_firmware::<P>();
     #[cfg(any(test, feature = "vendor-gpus"))]
     let _ = amd_display::start_firmware::<P>();
+    #[cfg(any(test, feature = "vendor-gpus"))]
+    let _ = vendor_gpus::start_gsp::<P>();
+}
+
+/// The regular file at `path` whole, when it is there and at most `largest` bytes: the
+/// firmware a driver loads once the file systems are mounted.
+#[cfg(any(
+    test,
+    feature = "vendor-gpus",
+    feature = "intel-wifi",
+    all(target_arch = "x86_64", feature = "intel-display")
+))]
+pub(crate) fn read_firmware(path: &str, largest: u64) -> Option<alloc::vec::Vec<u8>> {
+    let root = crate::vfs::root();
+    let node = crate::vfs::resolve(root, root, path.as_bytes()).ok()?;
+    let size = node.attributes().size;
+    if node.kind() != crate::vfs::NodeKind::Regular || size > largest {
+        return None;
+    }
+    let bytes = crate::linux::exec::ProgramBytes::read(node, size, size).ok()?;
+    Some(bytes.bytes().to_vec())
 }
 
 /// Starts bringing the Wi-Fi adapter up once the file systems are mounted (D274).

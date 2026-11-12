@@ -121,17 +121,6 @@ const FIRMWARE_FOLDER: &str = "/usr/lib/firmware/i915";
 const LARGEST_FIRMWARE: u64 = 1 << 20;
 const FIRMWARE_RETRY: core::time::Duration = core::time::Duration::from_secs(10);
 
-fn read_firmware(path: &str) -> Option<Vec<u8>> {
-    let root = crate::vfs::root();
-    let node = crate::vfs::resolve(root, root, path.as_bytes()).ok()?;
-    let size = node.attributes().size;
-    if node.kind() != crate::vfs::NodeKind::Regular || size > LARGEST_FIRMWARE {
-        return None;
-    }
-    let bytes = crate::linux::exec::ProgramBytes::read(node, size, size).ok()?;
-    Some(bytes.bytes().to_vec())
-}
-
 /// Starts the thread that loads the display microcontroller's firmware once the
 /// `display-firmware` component's file is there (D444); whether a display needs one.
 pub fn start_firmware<P: eggos_hal::Platform>() -> bool {
@@ -142,7 +131,7 @@ pub fn start_firmware<P: eggos_hal::Platform>() -> bool {
     let path = alloc::format!("{FIRMWARE_FOLDER}/{file}");
     crate::thread::spawn::<P, _>(move || {
         let bytes = loop {
-            if let Some(bytes) = read_firmware(&path) {
+            if let Some(bytes) = super::read_firmware(&path, LARGEST_FIRMWARE) {
                 break bytes;
             }
             crate::thread::sleep::<P>(FIRMWARE_RETRY);

@@ -38,6 +38,12 @@ const DMEM_CONTROL: usize = 0x1c0;
 const DMEM_DATA: usize = 0x1c4;
 const ENGINE: usize = 0x3c0;
 const BOOT_CORE_CONTROL: usize = RISCV + 0x668;
+const RISCV_CPU_CONTROL: usize = RISCV + 0x388;
+const OS_VERSION: usize = 0x080;
+const BOOT_CONFIG_VALID: u32 = 1;
+const CORE_SELECT_RISCV: u32 = 1 << 4;
+const BOOT_ROM_FETCH: u32 = 1 << 8;
+const RISCV_ACTIVE: u32 = 1 << 7;
 const DMA_BASE: usize = 0x110;
 const DMA_MEMORY_OFFSET: usize = 0x114;
 const DMA_COMMAND: usize = 0x118;
@@ -61,6 +67,8 @@ const ALLOW_PHYSICAL_WITHOUT_CONTEXT: u32 = 1 << 7;
 
 /// GSP's interface to memory (FBIF) in BAR 0.
 pub const GSP_FBIF: usize = 0x11_0600;
+/// SEC2's interface to memory (FBIF) in BAR 0.
+pub const SEC2_FBIF: usize = 0x84_0600;
 /// The fuse holding GSP's first ucode's version; the others follow a word apart.
 pub const GSP_UCODE_VERSION_FUSE: usize = 0x82_41c0;
 
@@ -157,6 +165,29 @@ impl<R: RegisterIo> Falcon<R> {
 
     fn write(&self, offset: usize, value: u32) {
         self.regs.write32(self.base + offset, value);
+    }
+
+    /// Points a freshly [`Self::reset`] engine's boot at its RISC-V core (D522), which the
+    /// booter starts, and leaves libos's arguments page, at device address `arguments`, in
+    /// its mailboxes.
+    pub fn prepare_riscv(&self, arguments: u64) {
+        let control = self.read(BOOT_CORE_CONTROL);
+        self.write(
+            BOOT_CORE_CONTROL,
+            control | BOOT_CONFIG_VALID | CORE_SELECT_RISCV | BOOT_ROM_FETCH,
+        );
+        self.write(MAILBOX_0, arguments as u32);
+        self.write(MAILBOX_1, (arguments >> 32) as u32);
+    }
+
+    /// Tells the RISC-V firmware the boot binary's version.
+    pub fn set_os_version(&self, version: u32) {
+        self.write(OS_VERSION, version);
+    }
+
+    /// Whether the RISC-V core runs.
+    pub fn riscv_active(&self) -> bool {
+        self.read(RISCV_CPU_CONTROL) & RISCV_ACTIVE != 0
     }
 
     /// IMEM's and DMEM's bytes, from `HWCFG` (256-byte blocks each).
