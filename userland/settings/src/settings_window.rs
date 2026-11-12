@@ -75,6 +75,8 @@ const BAR_TITLE: (i32, i32) = (56, 20);
 const PAGE_CONTENT_MAX: i32 = 480;
 /// A control's height on a narrow page: a finger's target.
 const TOUCH_CONTROL: i32 = 48;
+/// Where the Keyboard pane's repeat rows start on a narrow page, under its last dropdown.
+const KEYBOARD_REPEAT_TOP_NARROW: i32 = 760;
 const LIST_TOP: i32 = 44;
 const SIDEBAR_ROW: i32 = 32;
 const PADDING: i32 = 16;
@@ -1587,6 +1589,21 @@ impl SettingsWindow {
             Shape::Sidebar { .. } => None,
         };
         self.reflow_keyboard(content);
+        let (mouse_height, keyboard_bottom) =
+            self.inputs
+                .reflow(&mut self.tree, content, KEYBOARD_REPEAT_TOP_NARROW);
+        let heights = match content {
+            Some(_) => (mouse_height, keyboard_bottom + PADDING),
+            None => (PANE_HEIGHT, PANE_HEIGHT),
+        };
+        self.tree.set_place(
+            self.widgets.panes[MOUSE],
+            Place::at(0, 0, Length::Fill(0), Length::Px(heights.0)),
+        );
+        self.tree.set_place(
+            self.widgets.panes[KEYBOARD],
+            Place::at(0, 0, Length::Fill(0), Length::Px(heights.1)),
+        );
         self.reflow_date_and_time(content);
         self.lay_out_frame();
     }
@@ -3451,7 +3468,9 @@ mod reflow_tests {
         assert_eq!(at(w.try_field), Rect::new(16, 488, 358, 48));
         assert_eq!(at(w.switch_key), Rect::new(16, 616, 358, 48));
         assert_eq!(at(w.on_screen_keyboard), Rect::new(16, 696, 358, 48));
-        assert_eq!(pane.height, 760);
+        assert_eq!(pane.height, 928);
+        let mouse = window.widgets().rect(w.panes[MOUSE]).unwrap();
+        assert_eq!(mouse.height, 344);
         window.tree().resize(640, 440);
         window.set_form_factor(SettingsForm::Desktop, 640);
         let pane = window.widgets().rect(w.panes[KEYBOARD]).unwrap();

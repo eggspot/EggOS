@@ -23502,3 +23502,12 @@ the license, by an explicit instruction recorded here.
   facts lines, the search field full width and 48 tall, the count line, and the list full
   width with three 48 px rows (R6). `ZonePicker::reflow` moves the picker for either shape
   (the first run's page keeps its own layout); the pane is 616 tall at 390.
+
+## D426 The Mouse pane and the Keyboard pane's repeat rows in one column on narrow pages (settings-forms-v0.5.md section 2: R2, R7; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `InputPanes::reflow` puts each Mouse row's label over its control on a narrow
+  page: `Buttons` and `Scrolling` with their radio pairs under them (both fit one row at 358),
+  `Pointer speed` with its slider the content's width and 48 tall, the status line under it;
+  the pane is 344 tall. The Keyboard pane's `Repeat delay` and `Repeat rate` sliders, which
+  the design's worked example left out, follow its last dropdown the same way from y 760, so
+  the Keyboard pane is 928 tall at 390. The desktop shape puts every place back.

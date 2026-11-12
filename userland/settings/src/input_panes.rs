@@ -160,6 +160,7 @@ pub const RATE: Range = Range {
 };
 
 const SLIDER_WIDTH: i32 = 216;
+const TOUCH_CONTROL: i32 = 48;
 
 fn slider(
     tree: &mut WidgetTree<CAPACITY>,
@@ -546,6 +547,7 @@ impl DisplayPane {
 /// The Mouse pane's widgets and the Keyboard pane's repeat rows.
 #[derive(Debug)]
 pub struct InputPanes {
+    labels: [WidgetId; 5],
     hands: WidgetId,
     scrolling: WidgetId,
     speed: WidgetId,
@@ -565,28 +567,29 @@ impl InputPanes {
         keyboard_status: WidgetId,
         input: InputPreferences,
     ) -> Self {
-        label(tree, mouse, PADDING, 76, "Buttons");
+        let buttons_label = label(tree, mouse, PADDING, 76, "Buttons");
         let hands = add(
             tree,
             mouse,
             Place::right(PADDING, 70),
             Kind::radios(&HANDS, 0, true),
         );
-        label(tree, mouse, PADDING, 116, "Scrolling");
+        let scrolling_label = label(tree, mouse, PADDING, 116, "Scrolling");
         let scrolling = add(
             tree,
             mouse,
             Place::right(PADDING, 110),
             Kind::radios(&SCROLLING, 0, true),
         );
-        label(tree, mouse, PADDING, 156, "Pointer speed");
+        let speed_label = label(tree, mouse, PADDING, 156, "Pointer speed");
         let speed = slider(tree, mouse, 156, SPEED, input.pointer_speed);
         let mouse_status = label(tree, mouse, PADDING, STATUS_LINE, "");
-        label(tree, keyboard, 240, 188, "Repeat delay");
+        let delay_label = label(tree, keyboard, 240, 188, "Repeat delay");
         let delay = slider(tree, keyboard, 188, DELAY, input.repeat_delay_ms);
-        label(tree, keyboard, 240, 228, "Repeat rate");
+        let rate_label = label(tree, keyboard, 240, 228, "Repeat rate");
         let rate = slider(tree, keyboard, 228, RATE, input.repeat_rate);
         let panes = Self {
+            labels: [buttons_label, scrolling_label, speed_label, delay_label, rate_label],
             hands,
             scrolling,
             speed,
@@ -598,6 +601,48 @@ impl InputPanes {
         panes.show(tree, input);
         tree.set_shown(mouse_status, false);
         panes
+    }
+
+    /// Moves the Mouse pane's rows, and the Keyboard pane's repeat rows from `keyboard_top`, to
+    /// one column `content` wide on a narrow page (settings-forms-v0.5.md 2, R2: each label
+    /// over its control, controls 48 tall, blocks 80 apart), or back to the desktop's.
+    /// Returns the Mouse pane's height and the Keyboard pane's bottom.
+    pub fn reflow(
+        &self,
+        tree: &mut WidgetTree<CAPACITY>,
+        content: Option<i32>,
+        keyboard_top: i32,
+    ) -> (i32, i32) {
+        let [buttons, scrolling, speed, delay, rate] = self.labels;
+        let line = |x: i32, y: i32| Place::at(x, y, Length::Content, Length::Content);
+        let Some(c) = content else {
+            tree.set_place(buttons, line(PADDING, 76));
+            tree.set_place(self.hands, Place::right(PADDING, 70));
+            tree.set_place(scrolling, line(PADDING, 116));
+            tree.set_place(self.scrolling, Place::right(PADDING, 110));
+            tree.set_place(speed, line(PADDING, 156));
+            tree.set_place(self.speed, from_right(PADDING, 150, SLIDER_WIDTH, CONTROL_HEIGHT));
+            tree.set_place(self.mouse_status, line(PADDING, STATUS_LINE));
+            tree.set_place(delay, line(240, 188));
+            tree.set_place(self.delay, from_right(PADDING, 182, SLIDER_WIDTH, CONTROL_HEIGHT));
+            tree.set_place(rate, line(240, 228));
+            tree.set_place(self.rate, from_right(PADDING, 222, SLIDER_WIDTH, CONTROL_HEIGHT));
+            return (0, 0);
+        };
+        let control = |y: i32| Place::at(PADDING, y, Length::Px(c), Length::Px(TOUCH_CONTROL));
+        let radios = |y: i32| Place::at(PADDING, y, Length::Content, Length::Content);
+        tree.set_place(buttons, line(PADDING, 64));
+        tree.set_place(self.hands, radios(88));
+        tree.set_place(scrolling, line(PADDING, 144));
+        tree.set_place(self.scrolling, radios(168));
+        tree.set_place(speed, line(PADDING, 224));
+        tree.set_place(self.speed, control(248));
+        tree.set_place(self.mouse_status, line(PADDING, 308));
+        tree.set_place(delay, line(PADDING, keyboard_top));
+        tree.set_place(self.delay, control(keyboard_top + 24));
+        tree.set_place(rate, line(PADDING, keyboard_top + 80));
+        tree.set_place(self.rate, control(keyboard_top + 104));
+        (344, keyboard_top + 104 + TOUCH_CONTROL)
     }
 
     /// Shows `input` in the controls.
