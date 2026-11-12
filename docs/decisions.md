@@ -24401,3 +24401,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Secondary CPUs through PSCI `CPU_ON`, console input and device interrupts,
   ASIDs, PAN, the 32-bit Linux ABI's own system-call table, and the core's remaining 64-bit
   assumptions.
+
+## D483 64-bit atomics on every target: `hal::atomic::AtomicU64` (M9, the core's 64-bit assumptions, part 1; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** The kernel and the HAL keep clocks, counters, generation numbers and per-CPU
+  words in `core::sync::atomic::AtomicU64` (225 uses in 53 files); RV32's `A` extension has no
+  64-bit atomic instructions, so `core` offers no `AtomicU64` there (32-bit Arm has `LDREXD`
+  and keeps it).
+- **Decision.** `hal::atomic::AtomicU64` is `core`'s where the target has 64-bit atomics, and on
+  RV32 a word guarded by a spin lock with the same methods (`load`, `store`, `swap`, the
+  compare-exchanges, the `fetch_*` operations, `get_mut`, `into_inner`), every operation
+  sequentially consistent. The kernel takes interrupts only where it holds no lock (D37), so an
+  interrupt handler never finds the lock held by the code it interrupted. Every user in the
+  HAL and the kernel now imports it from there, so 64-bit targets compile to exactly what they
+  did.
+- **Not yet.** The pointer-width assumptions (addresses and lengths kept in `u64` and cast to
+  `usize`, the direct map's size, user-space limits) and the 32-bit Linux ABIs.

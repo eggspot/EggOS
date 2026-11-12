@@ -9,6 +9,7 @@
 //! thread waiting in `poll`, `epoll_wait` or a read looks again; the file's wake list
 //! ([`WakeList`]) wakes waiters when its set changes.
 
+use eggos_hal::atomic::AtomicU64;
 use super::descriptors::{EventFile, FileKind, OpenFile, open_file_limit, open_flag};
 use super::poll::{self, INPUT_EVENTS, WakeList};
 use super::signal::{SIGBUS, SIGCHLD, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGSTOP, SIGTRAP};
@@ -19,7 +20,7 @@ use super::{Errno, Iovecs};
 use crate::process::Process;
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
 

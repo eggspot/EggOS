@@ -22,6 +22,7 @@
 //!   on top of the open file the close just freed. Only a release that finds no memory at all
 //!   leaves the file until the next mount, which frees it.
 
+use eggos_hal::atomic::AtomicU64;
 use super::{
     Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Refused, StorageError, Usage, WriteAt,
     magic,
@@ -32,7 +33,7 @@ use crate::sync::{LeafSpinLock, SleepLock, Sleeping};
 use crate::thread::WaitQueue;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use eggos_eggfs::{BLOCK_SIZE, Disk, DiskError, Error, Kind, MAX_NAME, Volume};
 
 /// How long one disk request may take before it fails.

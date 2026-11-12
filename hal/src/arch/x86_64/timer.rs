@@ -15,12 +15,13 @@
 //! shared: the TSC and the APIC timer's clock run at the same rate on every CPU of a machine.
 //! The same local APIC sends the wake-up interrupt between CPUs.
 
+use crate::atomic::AtomicU64;
 use super::port::PortIo;
 use crate::Interrupt;
 use crate::cpu::TIMER_DEADLINE_OFFSET;
 use crate::memory::PhysicalRange;
 use crate::time::{mul_div_ceil, ratio_ceil, scale_ceil};
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use eggos_drivers::interrupt::{LegacyPic, LocalApic, i8259, local_apic};
 use eggos_drivers::io::{Mmio, RegisterIo};
 use eggos_drivers::timer::{Pit, i8254};

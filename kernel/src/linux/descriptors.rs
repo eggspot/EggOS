@@ -17,6 +17,7 @@
 //! lock is held only to look a descriptor up or change the table: never while user memory is
 //! copied or a thread waits, and no open file description is dropped under it.
 
+use eggos_hal::atomic::AtomicU64;
 use super::pipe::PipeEnd;
 use super::{Errno, limits};
 use crate::process::Process;
@@ -24,7 +25,7 @@ use crate::sync::{LeafSpinLock, LeafSpinLockGuard};
 use crate::vfs::Node;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 use eggos_hal::Platform;
 
 /// The flags of an open file description (`O_*`), the generic values, which AArch64, RISC-V

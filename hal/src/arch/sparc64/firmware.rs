@@ -2,7 +2,8 @@
 //! traps are still in place (D326): the RAM it leaves available, the CPU's clock and the
 //! command line, kept for the device tree the HAL writes.
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use crate::atomic::AtomicU64;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// The most RAM ranges kept.
 pub(super) const MAX_RAM_RANGES: usize = 8;

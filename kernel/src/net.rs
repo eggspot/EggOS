@@ -24,6 +24,7 @@ pub mod endpoints;
 pub mod resolv_conf;
 pub mod tcp;
 
+use eggos_hal::atomic::AtomicU64;
 use crate::console;
 use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
@@ -31,7 +32,7 @@ use crate::thread;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::Write;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use eggos_drivers::desktop::NetworkState;
 use eggos_hal::Platform;

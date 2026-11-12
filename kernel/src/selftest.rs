@@ -2,6 +2,7 @@
 //! such as "did the architecture entry point zero `.bss`". The QEMU test runner reads the
 //! verdict markers from the console.
 
+use eggos_hal::atomic::AtomicU64;
 use crate::HEAP;
 use crate::address_space::AddressSpace;
 use crate::elf::{self, ProgramHeader, segment};
@@ -15,7 +16,7 @@ use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType};
 use eggos_hal::random::SeedSource;
@@ -3009,7 +3010,7 @@ mod tests {
     /// A platform whose clock runs (100 ms per read) but whose timer never interrupts.
     struct DeadTimer;
 
-    static DEAD_TIMER_CLOCK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    static DEAD_TIMER_CLOCK: eggos_hal::atomic::AtomicU64 = eggos_hal::atomic::AtomicU64::new(0);
 
     impl Platform for DeadTimer {
         const ARCH: &'static str = "dead-timer";

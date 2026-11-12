@@ -518,7 +518,7 @@ pub(super) fn drop_translations(start: u64, length: u64) {
 
 /// The context number the next address space gets: 1 to 8191, handed out round, the TLB
 /// flushed when they wrap so a new one never meets an old one's translations.
-static NEXT_CONTEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+static NEXT_CONTEXT: crate::atomic::AtomicU64 = crate::atomic::AtomicU64::new(1);
 const LAST_CONTEXT: u64 = 8191;
 
 /// Gives the address space just switched to a fresh context, in the primary and secondary

@@ -17,6 +17,7 @@ compile_error!("a bare-metal build of the HAL needs `--cfg eggos_kernel` (.cargo
 pub mod acpi;
 pub mod aml;
 pub mod arch;
+pub mod atomic;
 pub mod command_line;
 pub mod cpu;
 mod exception;
@@ -549,7 +550,7 @@ pub trait Platform: 'static {
         // SAFETY: the caller guarantees an aligned `AtomicU64` at `OFFSET` in the block, which
         // lives as long as the kernel runs, or an aligned word in an `UnsafeCell` (so a shared
         // atomic view of it is allowed) that nothing writes meanwhile.
-        unsafe { &*((Self::cpu_local() + OFFSET) as *const core::sync::atomic::AtomicU64) }
+        unsafe { &*((Self::cpu_local() + OFFSET) as *const crate::atomic::AtomicU64) }
             .load(core::sync::atomic::Ordering::Relaxed)
     }
 

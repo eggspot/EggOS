@@ -10,12 +10,13 @@
 //! [`run_user`] returns (D47). `KScratch1` holds a program's root table and [`KERNEL_ROOT`] the
 //! kernel's, both as cached-window addresses.
 
+use crate::atomic::AtomicU64;
 use super::{CACHED_WINDOW, timer};
 use crate::Interrupt;
 use crate::exception::{Exception, ExceptionKind, deliver};
 use crate::paging::{Access, PageFault};
 use crate::user::{self, TestProgram, UserContext, UserExit};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 
 core::arch::global_asm!(
     r#"

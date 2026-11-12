@@ -13,6 +13,7 @@
 //! `epoll`, are on the pipe's wake list ([`WakeList`]), which every transfer and the last
 //! close of an end wakes; nobody else is woken.
 
+use eggos_hal::atomic::AtomicU64;
 use super::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
 use super::poll::{self, WakeList};
 use super::signals::{self, Interrupted};
@@ -24,7 +25,7 @@ use crate::sync::LeafSpinLock;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
 

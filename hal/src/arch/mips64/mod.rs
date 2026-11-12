@@ -23,13 +23,14 @@ mod liointc;
 mod thread;
 mod timer;
 
+use crate::atomic::AtomicU64;
 use crate::arch::boot_memory;
 use crate::cpu::{CpuStart, StartCpuError};
 use crate::fdt::writer::Writer;
 use crate::memory::PhysicalRange;
 use crate::paging::{self, KernelImage};
 use crate::{ExitStatus, MemoryMap, Platform};
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Ns16550, Uart};
 

@@ -1127,8 +1127,8 @@ struct ShadowRoot([u64; SHADOW_ENTRIES]);
 /// Each CPU's program root: the user half's root entries of the running process's root.
 static mut SHADOWS: [ShadowRoot; super::MAX_CPUS] = [const { ShadowRoot([0; SHADOW_ENTRIES]) }; super::MAX_CPUS];
 /// Each CPU's whole root, as the home space's ASCE names it.
-static ROOTS: [core::sync::atomic::AtomicU64; super::MAX_CPUS] =
-    [const { core::sync::atomic::AtomicU64::new(0) }; super::MAX_CPUS];
+static ROOTS: [crate::atomic::AtomicU64; super::MAX_CPUS] =
+    [const { crate::atomic::AtomicU64::new(0) }; super::MAX_CPUS];
 
 fn shadow_of(cpu: usize) -> *mut u64 {
     // SAFETY: only `cpu`'s own CPU reaches its shadow, with interruptions off.

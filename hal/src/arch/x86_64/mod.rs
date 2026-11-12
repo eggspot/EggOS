@@ -21,6 +21,7 @@ mod random;
 mod thread;
 mod timer;
 
+use crate::atomic::AtomicU64;
 use crate::acpi::{self, RootTable};
 use crate::arch::boot_memory;
 use crate::command_line::{self, CommandLineCopy};
@@ -28,7 +29,7 @@ use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::{MemoryMap, PhysicalRange};
 use crate::paging::{self, KernelImage};
 use crate::{ExitStatus, Platform};
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use eggos_drivers::pci::ecam::ecam_length;
 use eggos_drivers::pci::mcfg;
 use eggos_drivers::rtc::{Cmos, RealTimeClock, cmos};

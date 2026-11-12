@@ -21,13 +21,14 @@
 pub mod blake2s;
 pub mod chacha20;
 
+use eggos_hal::atomic::AtomicU64;
 use crate::cpu;
 use crate::sync::{LeafSpinLock, SpinLock};
 use crate::thread::WaitQueue;
 use blake2s::Blake2s;
 use chacha20::{BLOCK_SIZE, KEY_SIZE};
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering, compiler_fence};
+use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
 use eggos_hal::Platform;
 use eggos_hal::random::SeedSource;
 

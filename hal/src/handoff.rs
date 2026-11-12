@@ -2,9 +2,10 @@
 //! Rust code runs, and what the kernel reads from it through the boot direct map. A machine
 //! started another way (QEMU's PVH or device-tree loaders) has none.
 
+use crate::atomic::AtomicU64;
 use crate::Platform;
 use crate::memory::PhysicalRange;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 pub use eggos_boot_handoff::{
     Framebuffer, HANDOFF_BYTES, Handoff, MEMORY_RANGE_BYTES, MemoryRange, memory_kind,
     pixel_format,

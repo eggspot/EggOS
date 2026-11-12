@@ -2,10 +2,11 @@
 //! virtual timer as the one-shot timer, signalled through the GICv2 as a private interrupt; and
 //! the wake-up interrupt between CPUs, a GICv2 software-generated interrupt (D41).
 
+use crate::atomic::AtomicU64;
 use super::DIRECT_MAP_OFFSET;
 use crate::interrupt::SourceLines;
 use crate::memory::PhysicalRange;
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use eggos_drivers::interrupt::gicv2::{self, Gicv2CpuInterface, Gicv2Distributor, Trigger};
 use eggos_drivers::interrupt::gicv3::{
     self, CpuInterfaceRegisters, Gicv3CpuInterface, Gicv3Distributor, Gicv3Redistributor,

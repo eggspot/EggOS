@@ -25,6 +25,7 @@
 //! to read the console, its prompt written ([`console_waited`]), or [`BOOT_SCREEN_LIMIT_MS`]
 //! after the desktop was made; then one frame draws the whole desktop.
 
+use eggos_hal::atomic::AtomicU64;
 use crate::console;
 use crate::devices::interrupts::DeviceEvents;
 use crate::display;
@@ -36,7 +37,7 @@ use crate::vfs;
 use crate::window::{self, Buffers, Clients, Queues};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 use eggos_drivers::desktop::protocol::{DiscardEvents, EventSink, PointerShape};
 use eggos_drivers::desktop::{
     Action, AppId, Contents, Desktop, Form, FormSetting, GRID_SIZE, KeyboardLayoutChoice, Launch,

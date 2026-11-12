@@ -8,9 +8,10 @@
 //! and raises the device's events, which wakes the thread waiting on them. Everything else
 //! happens in that thread.
 
+use eggos_hal::atomic::AtomicU64;
 use crate::thread::Parker;
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use eggos_hal::{DeviceLine, Platform};
 
 /// What a device line's interrupt does.

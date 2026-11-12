@@ -17,6 +17,7 @@
 //! lock is held: frames are copied into or out of the buffer under the lock, so none is freed
 //! under a copy.
 
+use eggos_hal::atomic::AtomicU64;
 use super::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
 use super::files::{PathBuffer, read_path};
 use super::thread::LinuxThread;
@@ -27,7 +28,7 @@ use crate::regions::RegionError;
 use crate::sync::LeafSpinLock;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Attributes;

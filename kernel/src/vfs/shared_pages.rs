@@ -16,6 +16,7 @@
 //! a file's pages, then the file system's own locks and the frame allocator's. None of them is
 //! a leaf lock, since file systems take locks of their own under them.
 
+use eggos_hal::atomic::AtomicU64;
 use super::{Node, StorageError, WriteAt};
 use crate::heap;
 use crate::memory::FRAMES;
@@ -24,7 +25,7 @@ use crate::sync::SpinLock;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 
 const PAGE: usize = FRAME_SIZE as usize;

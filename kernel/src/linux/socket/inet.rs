@@ -15,6 +15,7 @@
 //! identifier and the checksum filled in, and reads the echo replies with that identifier. A
 //! receive waits until a datagram comes, the socket's timeout passes or a signal comes.
 
+use eggos_hal::atomic::AtomicU64;
 use super::{
     MSGHDR_SIZE, SOL_SOCKET, TIMEVAL_SIZE, deadline, finish, interrupted, message, option,
     read_header, read_int, timeout_nanoseconds, timeval,
@@ -30,7 +31,7 @@ use crate::process::Process;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
 use eggos_net::icmp;

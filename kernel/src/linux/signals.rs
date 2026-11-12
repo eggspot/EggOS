@@ -23,6 +23,7 @@
 //! or ignores it. The signals lock is never held across a copy to or from the program's
 //! memory.
 
+use eggos_hal::atomic::AtomicU64;
 use super::Errno;
 use super::fault::Fault;
 use super::futex::WaitSlot;
@@ -37,7 +38,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::{ControlFlow, Deref, DerefMut};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
 use eggos_hal::fp::FpState;
 use eggos_hal::user::UserContext;

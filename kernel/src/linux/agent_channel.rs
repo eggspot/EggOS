@@ -7,6 +7,7 @@
 //! interrupt cannot be routed it polls the device: every [`ACTIVE_POLL_MS`] while bytes moved
 //! in the last [`ACTIVE_WINDOW_MS`], every [`IDLE_POLL_MS`] otherwise.
 
+use eggos_hal::atomic::AtomicU64;
 use super::descriptors::{FileKind, OpenFile};
 use super::signals::{self, Interrupted};
 use super::terminal::{Waited, wait_for_input};
@@ -16,7 +17,7 @@ use crate::agent_channel::{self, OpenError, Received};
 use crate::process::Process;
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
 use eggos_hal::time::mul_div_ceil;
 use eggos_hal::user::UserContext;

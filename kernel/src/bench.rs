@@ -6,6 +6,7 @@
 //! so the elapsed time is an instruction count: the same on every host and every run, which
 //! is what lets CI compare it against a committed baseline (D27).
 
+use eggos_hal::atomic::AtomicU64;
 use crate::HEAP;
 use crate::devices::interrupts::DeviceEvents;
 use crate::linux::Errno;
@@ -20,7 +21,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::hint::black_box;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use core::time::Duration;
 use eggos_drivers::desktop::protocol::DiscardEvents;
 use eggos_drivers::desktop::{Contents, Desktop, WindowId};
@@ -2014,7 +2015,8 @@ fn fp_process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
 mod tests {
     use super::*;
     use crate::interrupt;
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use eggos_hal::atomic::AtomicU64;
+    use core::sync::atomic::Ordering;
     use eggos_hal::{ExitStatus, Interrupt};
 
     struct CountingPlatform;

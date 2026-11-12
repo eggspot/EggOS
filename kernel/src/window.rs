@@ -19,6 +19,7 @@
 //!
 //! [`Process::map_lent_frames`]: crate::process::Process::map_lent_frames
 
+use eggos_hal::atomic::AtomicU64;
 use crate::memory::FRAMES;
 use crate::process::LentFrames;
 use crate::sync::LeafSpinLock;
@@ -26,7 +27,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EventRecord, EventSink, MAX_CLIENTS, MAX_WINDOWS, WindowError,
 };

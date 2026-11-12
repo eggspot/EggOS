@@ -5,10 +5,11 @@
 //! are XIVE sources, so a device's MSI-X entry writes the address and data OPAL gives for its
 //! source.
 
+use crate::atomic::AtomicU64;
 use super::{DIRECT_MAP_OFFSET, opal, pir};
 use crate::interrupt::{DeviceLine, InterruptMessage, SourceLines};
 use crate::memory::PhysicalRange;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 const PRIORITY: u64 = 7;
 const QUEUE_ORDER: u64 = 12;

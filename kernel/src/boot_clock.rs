@@ -4,7 +4,8 @@
 //! program waits for console input, the shell at its first prompt, and `boot_to_desktop` when
 //! the frame that ends the boot screen is composed, each written once.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use eggos_hal::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
 
 /// Must match `xtask`'s benchmark marker.
@@ -41,7 +42,8 @@ pub fn milliseconds_since_start<P: Platform>() -> u64 {
 mod lines {
     use super::{DESKTOP, IDLE_MEMORY, MARKER, NAME, STARTED};
     use alloc::format;
-    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use eggos_hal::atomic::AtomicU64;
+    use core::sync::atomic::{AtomicBool, Ordering};
     use eggos_hal::Platform;
 
     static REPORTED: AtomicBool = AtomicBool::new(false);

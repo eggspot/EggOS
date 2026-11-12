@@ -17,12 +17,13 @@
 //! held and for [`ACTIVE_WINDOW_MS`] after the last event, every [`IDLE_POLL_MS`] otherwise, and
 //! at each repeat, an idle device costing one load of its used ring's index per poll.
 
+use eggos_hal::atomic::AtomicU64;
 use crate::console;
 use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
 use crate::terminal::{self, ViewMove};
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 use eggos_drivers::desktop::Profile;
 use eggos_drivers::desktop::protocol::DEAD_KEY_CHARACTER;
 use eggos_drivers::input::key;

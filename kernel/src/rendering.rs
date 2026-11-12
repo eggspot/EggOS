@@ -10,6 +10,7 @@
 //! number of threads wait at once. Every other command waits for its own answer. The GPU is
 //! the display's device, reached through [`crate::display::with_renderer`].
 
+use eggos_hal::atomic::AtomicU64;
 use crate::devices::Deadline;
 use crate::devices::dma::DmaRegion;
 use crate::devices::interrupts::DeviceEvents;
@@ -20,7 +21,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::mem::ManuallyDrop;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 pub use eggos_drivers::virtio::gpu::three_d::{
     CapsetInfo, ResourceShape, TexelBox, ThreeDCommand, Transfer, capset_info,
 };

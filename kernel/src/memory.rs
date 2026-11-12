@@ -32,7 +32,7 @@ pub struct Memory<P: Platform> {
 /// Lock order: the heap's lock ([`crate::heap::KernelHeap`]) before this one, never the reverse.
 pub static FRAMES: LeafSpinLock<Option<FrameAllocator>> = LeafSpinLock::new_leaf(None);
 
-static TOTAL_FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static TOTAL_FRAMES: eggos_hal::atomic::AtomicU64 = eggos_hal::atomic::AtomicU64::new(0);
 
 /// Records how many frames the allocator had once the kernel's page tables were built: the
 /// memory programs can have, as `/proc/meminfo`'s `MemTotal` reports it.

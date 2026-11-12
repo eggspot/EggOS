@@ -68,7 +68,7 @@ static WANTED_DEGREES: AtomicU32 = AtomicU32::new(NOTHING_NEW);
 
 const AUTOMATIC: u32 = 0;
 
-static LOOKED_AT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static LOOKED_AT: eggos_hal::atomic::AtomicU64 = eggos_hal::atomic::AtomicU64::new(0);
 const LOOK_EVERY_MS: u64 = 500;
 
 fn due<P: Platform>() -> bool {

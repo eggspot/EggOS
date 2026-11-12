@@ -664,7 +664,8 @@ fn report_memory<W: Write>(console: &mut W, map: &eggos_hal::MemoryMap) -> core:
 pub(crate) mod tests {
     use super::*;
 
-    use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use eggos_hal::atomic::AtomicU64;
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use eggos_hal::user::TestProgram;
     use eggos_hal::{Exception, ExceptionKind, Interrupt};
 

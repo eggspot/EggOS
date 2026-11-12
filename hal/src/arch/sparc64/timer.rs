@@ -2,7 +2,8 @@
 //! `TICK_COMPARE` (`%asr23`), which raises `SOFTINT.TICK_INT` and interrupt level 14 when
 //! `%tick` reaches it. QEMU's `sun4u` has one CPU, so there are no wake-ups between CPUs.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use crate::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
 
 /// `TICK_COMPARE`'s interrupt-disable bit: the comparator raises nothing while it is set.
 const COMPARE_DISABLED: u64 = 1 << 63;

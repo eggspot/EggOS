@@ -23,12 +23,13 @@ mod thread;
 mod timer;
 mod xive;
 
+use crate::atomic::AtomicU64;
 use crate::arch::boot_memory;
 use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::PhysicalRange;
 use crate::paging::{self, KernelImage};
 use crate::{ExitStatus, MemoryMap, Platform};
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 core::arch::global_asm!(
     r#"

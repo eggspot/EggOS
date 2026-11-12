@@ -4,8 +4,9 @@
 //! pointer lives in this module's statics, which are in the kernel image, so their physical
 //! address is their virtual one less the kernel's offset.
 
+use crate::atomic::AtomicU64;
 use super::KERNEL_VIRTUAL_OFFSET;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 unsafe extern "C" {
     /// Calls OPAL `token` with up to five arguments; its return value.

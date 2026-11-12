@@ -8,7 +8,7 @@ pub(super) const TIMEBASE_FREQUENCY: u64 = 10_000_000;
 
 /// The `time` counter's frequency: `/cpus/timebase-frequency` once the boot hart read it (D261),
 /// QEMU `virt`'s until then.
-static FREQUENCY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(TIMEBASE_FREQUENCY);
+static FREQUENCY: crate::atomic::AtomicU64 = crate::atomic::AtomicU64::new(TIMEBASE_FREQUENCY);
 
 /// The `time` counter's frequency.
 #[inline]

@@ -5,8 +5,9 @@
 //! what `Count` moved on since the last read anywhere, which needs a read at least every 2^31
 //! ticks; with no deadline, `Compare` is set half a wrap ahead, so a tick comes by itself.
 
+use crate::atomic::AtomicU64;
 use super::{cpu_number, ipi_register};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 
 /// `Cause.IP` bits of the timer and the IPIs.
 const TIMER_PENDING: u64 = 1 << 15;

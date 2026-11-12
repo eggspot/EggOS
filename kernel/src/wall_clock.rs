@@ -279,7 +279,7 @@ mod tests {
     #[derive(Debug)]
     struct FixedClock {
         nanoseconds: u64,
-        written: alloc::sync::Arc<core::sync::atomic::AtomicU64>,
+        written: alloc::sync::Arc<eggos_hal::atomic::AtomicU64>,
     }
 
     impl RealTimeClock for FixedClock {
@@ -301,7 +301,7 @@ mod tests {
     fn the_wall_clock_reads_the_real_time_clock_plus_the_time_since_and_writes_it_when_set() {
         let _state = crate::thread::host::frames_for_test();
         let now = 1_793_282_709 * NANOSECONDS_PER_SECOND;
-        let written = alloc::sync::Arc::new(core::sync::atomic::AtomicU64::new(0));
+        let written = alloc::sync::Arc::new(eggos_hal::atomic::AtomicU64::new(0));
         let before = CLOCK.lock().take();
         let had_clock = HAS_CLOCK.load(Ordering::Relaxed);
         assert!(register(Box::new(FixedClock {

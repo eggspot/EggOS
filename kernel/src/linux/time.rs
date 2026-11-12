@@ -12,6 +12,7 @@
 //! clocks wait for per-thread CPU time; until then they are invalid, as Linux's are for a
 //! process that does not exist, and `clock()` reports that it cannot tell.
 
+use eggos_hal::atomic::AtomicU64;
 use super::futex;
 use super::signals::{self, Interrupted};
 use super::thread::{self, LinuxThread};
@@ -19,7 +20,7 @@ use super::{Errno, poll};
 use crate::process::Process;
 use crate::sync::LeafSpinLock;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
 use eggos_hal::time::{mul_div_ceil, ratio_ceil};
 use eggos_hal::user::UserContext;

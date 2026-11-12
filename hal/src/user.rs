@@ -1586,8 +1586,8 @@ pub(crate) mod x86_64 {
         pub(crate) gs_base: u64,
     }
 
-    static NEXT_SEGMENT_BASES_ID: core::sync::atomic::AtomicU64 =
-        core::sync::atomic::AtomicU64::new(1);
+    static NEXT_SEGMENT_BASES_ID: crate::atomic::AtomicU64 =
+        crate::atomic::AtomicU64::new(1);
 
     /// [`Registers::vector`] after a `syscall`: above every IDT vector.
     #[cfg_attr(not(eggos_kernel), allow(dead_code))]

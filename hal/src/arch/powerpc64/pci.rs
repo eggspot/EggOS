@@ -3,8 +3,9 @@
 //! (PE 1) whose DMA bypasses translation at bus address `1 << 59` plus the physical address,
 //! and MSIs are the PHB's XIVE sources (`ibm,opal-msi-ranges`).
 
+use crate::atomic::AtomicU64;
 use super::opal;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use eggos_drivers::pci::{Address, ConfigSpace};
 
 const PHB_COMPATIBLE: [&[u8]; 2] = [b"ibm,ioda3-phb", b"ibm,ioda2-phb"];

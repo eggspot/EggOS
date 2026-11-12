@@ -7,10 +7,11 @@
 //! with the proof that its device was reset ([`DmaRegion::free_after_reset`]); one dropped
 //! without it is leaked, since its device may still write it.
 
+use eggos_hal::atomic::AtomicU64;
 use crate::memory::FRAMES;
 use eggos_drivers::dma::{DmaAddr, DmaMemory};
 use eggos_drivers::virtio::ResetDone;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use eggos_hal::memory::FRAME_SIZE;
 
 /// Why a region could not be made.

@@ -3,8 +3,9 @@
 //! frequency and raises interrupt 11; wake-ups between cores are IPIs (interrupt 12) through
 //! the IOCSR interrupt block.
 
+use crate::atomic::AtomicU64;
 use super::{csr, csr_read, csr_write, iocsr};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 
 /// `ECFG.LIE`'s timer and IPI bits.
 const TIMER_INTERRUPT: u64 = 1 << 11;

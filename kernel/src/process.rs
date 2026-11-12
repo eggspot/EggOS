@@ -31,6 +31,7 @@
 //! HAL's test program ([`Process::with_test_program`]) serves the boot self-tests and
 //! benchmarks. Reading images from files comes with the file system (M7).
 
+use eggos_hal::atomic::AtomicU64;
 use crate::address_space::{self, AddressSpace, ForkPage};
 use crate::cpu;
 use crate::linux::credentials::Credentials;
@@ -51,7 +52,7 @@ use alloc::vec::Vec;
 use core::num::{NonZeroU32, NonZeroU64};
 use core::ops::ControlFlow;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
@@ -2830,7 +2831,8 @@ mod tests {
     use crate::tests::{TestPlatform as P, active_root, dropped_translations, set_active_root};
     use crate::thread::host::frames_for_test;
     use alloc::vec::Vec;
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use eggos_hal::atomic::AtomicU64;
+    use core::sync::atomic::Ordering;
     use eggos_hal::{Exception, ExceptionKind};
 
     /// Kernel tables, active (frozen) as the kernel's are.

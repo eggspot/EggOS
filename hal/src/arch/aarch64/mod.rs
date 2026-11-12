@@ -13,12 +13,13 @@ mod fp;
 mod thread;
 mod timer;
 
+use crate::atomic::AtomicU64;
 use crate::arch::boot_memory;
 use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::PhysicalRange;
 use crate::paging::{self, Attributes, KernelImage, MemoryType};
 use crate::{ExitStatus, MemoryMap, Platform};
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Pl011, Uart, pl011};
 
