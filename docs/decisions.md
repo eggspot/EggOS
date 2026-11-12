@@ -25209,6 +25209,29 @@ the license, by an explicit instruction recorded here.
   the hash table of context DMAs in the instance memory, notifiers, interrupts, the cursor
   channel, and freeing the objects.
 
+## D530 NVIDIA's displays through GSP-RM, part 3: a screen lit through the core and window channels (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from NVIDIA's MIT-licensed open GPU kernel modules and class headers, and nouveau's MIT-licensed display code)
+
+- **Decision.** Once the core channel is up (D529), the first screen with a preferred mode is
+  lit on head 0 over DisplayPort, showing the firmware's framebuffer: GSP-RM assigns the
+  display a SOR (`0x731152`); the sink's first DPCD bytes come over GSP-RM's AUX channel
+  (`0x731341`) for its highest rate, lanes and enhanced framing; GSP-RM trains the link
+  (`0x731343`: lane count, rate, enhanced framing, repeaters); the single stream is configured
+  (`0x731362`: the 64-symbol transfer unit and the watermark and blank symbols from NVIDIA's
+  formulas, `nvidia_display_mode::stream_symbols`); a context DMA over the framebuffer (its
+  offset in video memory read from the framebuffer BAR before GSP-RM ran) and its hash table
+  entry (window 0's channel, the object's offset, the client) are written into the display's
+  instance memory through the PRAMIN window (`0x1700`, `0x700000`); window 0's push buffer is
+  registered and its channel (`0xc67e`) made; window 0 gets the surface (size, X8R8G8B8,
+  pitch, context DMA, offset, point and sizes) and its update; the core gets the SOR's owner
+  and DisplayPort protocol, window 0's owner and usage bounds, head 0's output resource
+  (24-bit, sync polarities), pixel clock, usage bounds, viewport and raster (counted from the
+  sync's start), and its update. Methods and fields come from `clc67d.h` and `clc67e.h`.
+- **Not yet.** Flips and the kernel's own surfaces in video memory (the screen shows what the
+  firmware's framebuffer holds, which the kernel keeps drawing into through the BAR), mode
+  changes after the first, more heads and screens, HDMI, DSC and multi-stream, interlocked
+  updates and completion notifiers, the cursor channel, and checking GSP-RM's head and window
+  capabilities before lighting.
+
 ## D525 Intel's Type-C ports, part 1: the port, its PHY and its AUX channel (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's MIT-licensed i915 driver)
 
 - **Decision.** On Tiger Lake and on Alder and Raptor Lake-P (`intel_type_c::flavour` by device

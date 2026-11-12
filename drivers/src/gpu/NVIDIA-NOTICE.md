@@ -61,3 +61,11 @@ allocation and method formats `nvidia_gsp_display.rs` uses for the core channel 
 the same modules' r535 headers (`gsp_static_config.h`, `ctrl2080internal.h`, `cl0000.h`,
 `clc670.h`, `clc67d.h`, `nvos.h`) and the 535.113.01 release's `gpu_engine_type.h`, under the MIT
 licence above, as nouveau's MIT-licensed `nvkm/subdev/gsp/rm/r535/disp.c` uses them.
+
+The display classes' methods and fields `nvidia_display_mode.rs` writes (D530) are from NVIDIA's
+`clc67d.h` and `clc67e.h` (`src/common/sdk/nvidia/inc/class/` in the open GPU kernel modules,
+MIT); the DisplayPort controls' layouts from the same r535 headers (`ctrl0073dfp.h`,
+`ctrl0073dp.h`); the context DMA words, the hash table's hash and entry, the head raster's
+counting and the single-stream watermark and blank symbol formulas as nouveau's MIT-licensed
+`nvkm/engine/dma/usergv100.c`, `nvkm/core/ramht.c`, `dispnv50/headc37d.c`, `dispnv50/wndwc67e.c`
+and `dispnv50/disp.c` (copyright Red Hat Inc.) use them.

@@ -65,6 +65,16 @@ struct GspTarget {
     bios_start: u64,
     system: SystemInfo,
     architecture: u16,
+    surface: Option<FirmwareSurface>,
+}
+
+/// The firmware's framebuffer as video memory: its offset, size and row bytes.
+#[derive(Clone, Copy)]
+struct FirmwareSurface {
+    offset: u64,
+    width: u32,
+    height: u32,
+    pitch: u32,
 }
 
 static GSP_TARGET: SpinLock<Option<GspTarget>> = SpinLock::new(None);
@@ -155,7 +165,9 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
                         config_mirror: CONFIG_MIRROR,
                     };
                     let chip_names = (name, family, chip.architecture());
-                    match keep_gsp_target(probe, node.regions[0], chip_names, system) {
+                    let surface = firmware_surface(probe, node.regions[FRAMEBUFFER_BAR]);
+                    let kept = keep_gsp_target(probe, node.regions[0], chip_names, system, surface);
+                    match kept {
                         Ok(()) => line.push_str(", gsp-rm boots once its firmware is there"),
                         Err(reason) => {
                             let _ = write!(line, ", gsp-rm cannot boot: {reason}");
@@ -204,6 +216,7 @@ fn keep_gsp_target(
     registers: PhysicalRange,
     (chip, family, architecture): (&'static str, &'static str, u16),
     system: SystemInfo,
+    surface: Option<FirmwareSurface>,
 ) -> Result<(), &'static str> {
     let length = usize::try_from(registers.len()).map_err(|_| "BAR 0 is too large")?;
     let base = probe
@@ -222,8 +235,25 @@ fn keep_gsp_target(
         bios_start,
         system,
         architecture,
+        surface,
     });
     Ok(())
+}
+
+/// The firmware's framebuffer, when it lies in the framebuffer BAR `bar`, as an offset into
+/// video memory (the BAR maps it in order before GSP-RM runs).
+fn firmware_surface(probe: &mut dyn Probe, bar: PhysicalRange) -> Option<FirmwareSurface> {
+    let framebuffer = probe.boot_framebuffer()?;
+    let end = framebuffer.address.checked_add(framebuffer.size)?;
+    if framebuffer.address < bar.start || end > bar.end {
+        return None;
+    }
+    Some(FirmwareSurface {
+        offset: framebuffer.address - bar.start,
+        width: framebuffer.width,
+        height: framebuffer.height,
+        pitch: framebuffer.stride_pixels * 4,
+    })
 }
 
 fn polls() -> impl FnMut() -> bool {
@@ -409,12 +439,25 @@ fn boot_gsp(
     })?;
     let mut line = String::new();
     match bring_up_display_core(&mut gsp_rm, target, &layout, delay) {
-        Ok(engine) => {
+        Ok(mut core) => {
             let _ = write!(
                 line,
                 " display core up, {} heads, windows {:#x}",
-                engine.heads, engine.windows
+                core.engine.heads, core.engine.windows
             );
+            match light_screen(&mut gsp_rm, target, &mut core, &sinks, delay) {
+                Ok((display, timing)) => {
+                    let _ = write!(
+                        line,
+                        ", display {display} lit at {}x{}",
+                        timing.width, timing.height
+                    );
+                }
+                Err(reason) => {
+                    let _ = write!(line, ", no screen lit: {reason}");
+                }
+            }
+            GSP_MEMORY.lock().push(core.push);
         }
         Err(reason) => {
             let _ = write!(line, " display core not up: {reason}");
@@ -441,7 +484,7 @@ fn bring_up_display_core(
     target: &GspTarget,
     layout: &WprLayout,
     delay: &mut dyn FnMut(u32),
-) -> Result<nvidia_gsp_display::DisplayEngineInfo, &'static str> {
+) -> Result<DisplayCore, &'static str> {
     use nvidia_gsp_display::{
         CORE_GET, CORE_PUT, CORE_UPDATE, CoreSetup, INSTANCE_BYTES, STATIC_INFO,
         STATIC_INFO_BYTES,
@@ -469,18 +512,136 @@ fn bring_up_display_core(
     for (index, word) in words.iter().enumerate() {
         dma_bytes(&mut push)[4 * index..4 * index + 4].copy_from_slice(&word.to_le_bytes());
     }
-    GSP_MEMORY.lock().push(push);
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     let put = (4 * words.len()) as u32;
     gsp_rm.regs.write32(CORE_PUT, put);
+    wait_for_channel(&gsp_rm.regs, CORE_GET, put)?;
+    Ok(DisplayCore {
+        engine,
+        setup,
+        push,
+        put,
+    })
+}
+
+/// The display's core channel once up (D529): what the engine has, how it was made, its push
+/// buffer and where the next methods go in it.
+struct DisplayCore {
+    engine: nvidia_gsp_display::DisplayEngineInfo,
+    setup: nvidia_gsp_display::CoreSetup,
+    push: DmaRegion,
+    put: u32,
+}
+
+fn wait_for_channel(
+    regs: &eggos_drivers::io::Mmio,
+    get: usize,
+    put: u32,
+) -> Result<(), &'static str> {
     let mut keep_waiting = polls();
-    while gsp_rm.regs.read32(CORE_GET) != put {
+    while regs.read32(get) != put {
         if !keep_waiting() {
-            return Err("the display's core channel did not take its update");
+            return Err("a display channel did not take its methods");
         }
         core::hint::spin_loop();
     }
-    Ok(engine)
+    Ok(())
+}
+
+fn push_methods(
+    regs: &eggos_drivers::io::Mmio,
+    push: &mut DmaRegion,
+    (put, get): (usize, usize),
+    (at, words): (u32, &[u32]),
+) -> Result<u32, &'static str> {
+    let start = at as usize;
+    let bytes = dma_bytes(push);
+    if start + 4 * words.len() > bytes.len() {
+        return Err("a display push buffer is full");
+    }
+    for (index, word) in words.iter().enumerate() {
+        bytes[start + 4 * index..start + 4 * index + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    let end = at + 4 * words.len() as u32;
+    regs.write32(put, end);
+    wait_for_channel(regs, get, end)?;
+    Ok(end)
+}
+
+const PRAMIN_WINDOW: usize = 0x70_0000;
+const PRAMIN_BASE: usize = 0x1700;
+
+fn write_video_memory(regs: &eggos_drivers::io::Mmio, base: u64, offset: u32, words: &[u32]) {
+    regs.write32(PRAMIN_BASE, (base >> 16) as u32);
+    for (index, word) in words.iter().enumerate() {
+        regs.write32(PRAMIN_WINDOW + offset as usize + 4 * index, *word);
+    }
+}
+
+/// Lights the first screen with a preferred mode (D530): a SOR assigned, the sink's DPCD read
+/// over GSP-RM's AUX channel, the link trained at the sink's rate and lanes, the stream
+/// configured, the firmware's framebuffer named by a context DMA in the display's instance
+/// memory (through the PRAMIN window), window 0's channel made and given the surface, and head 0
+/// given the mode through the core channel.
+fn light_screen(
+    gsp_rm: &mut GspRm,
+    target: &GspTarget,
+    core: &mut DisplayCore,
+    sinks: &[nvidia_gsp_display::Sink],
+    delay: &mut dyn FnMut(u32),
+) -> Result<(u32, eggos_drivers::edid::Timing), &'static str> {
+    use eggos_drivers::gpu::nvidia_display_mode as mode;
+    let surface = target.surface.ok_or("no firmware framebuffer to show")?;
+    let (display, timing) = sinks
+        .iter()
+        .find_map(|sink| {
+            let edid = eggos_drivers::edid::Edid::parse(sink.edid.as_deref()?)?;
+            Some((sink.display, edid.preferred?))
+        })
+        .ok_or("no screen with a preferred mode")?;
+    let refused = |_| "GSP-RM refused to light the screen";
+    let mut call = |function: u32, payload: &[u8]| gsp_rm.call(function, payload, delay);
+    let sor = nvidia_gsp_display::assign_sor(&mut call, display).map_err(refused)?;
+    let dpcd = nvidia_gsp_display::read_dpcd(&mut call, display, 0, 3).map_err(refused)?;
+    let (rate, lanes, enhanced) = (dpcd[1], u32::from(dpcd[2] & 0x1f), dpcd[2] & 0x80 != 0);
+    let link_khz = u32::from(rate) * 27_000;
+    let symbols = mode::stream_symbols(&timing, link_khz, lanes, enhanced)
+        .ok_or("the mode does not fit the link")?;
+    nvidia_gsp_display::train_link(&mut call, display, (lanes, u32::from(rate)), enhanced)
+        .map_err(|_| "GSP-RM could not train the link")?;
+    nvidia_gsp_display::configure_stream(&mut call, (0, sor), enhanced, symbols).map_err(refused)?;
+    let instance = core.setup.instance_memory;
+    let bytes = u64::from(surface.pitch) * u64::from(surface.height);
+    let dma = mode::context_dma(surface.offset, bytes);
+    write_video_memory(&gsp_rm.regs, instance, mode::CONTEXT_DMA_OFFSET, &dma);
+    let slot = mode::hash_slot(mode::SURFACE_HANDLE, mode::WINDOW_CHANNEL);
+    let context = mode::hash_context(
+        mode::WINDOW_CHANNEL,
+        mode::CONTEXT_DMA_OFFSET,
+        nvidia_gsp_display::CLIENT,
+    );
+    write_video_memory(&gsp_rm.regs, instance, slot * 8, &[mode::SURFACE_HANDLE, context]);
+    let mut window_push = allocate(nvidia_gsp_boot::PAGE_BYTES as usize)?;
+    let window_address = device_address(&window_push);
+    let setup = core.setup;
+    let mut call = |function: u32, payload: &[u8]| gsp_rm.call(function, payload, delay);
+    nvidia_gsp_display::bring_up_window(
+        &mut call,
+        &setup,
+        (window_address, nvidia_gsp_boot::PAGE_BYTES),
+    )
+    .map_err(refused)?;
+    let shown = (surface.width.min(timing.width), surface.height.min(timing.height));
+    let window = mode::window_methods((shown.0, shown.1, surface.pitch), mode::SURFACE_HANDLE);
+    let channel = (mode::WINDOW_PUT, mode::WINDOW_GET);
+    let pushed = push_methods(&gsp_rm.regs, &mut window_push, channel, (0, &window.words));
+    GSP_MEMORY.lock().push(window_push);
+    pushed?;
+    let methods = mode::core_methods(sor, &timing, shown);
+    let channel = (nvidia_gsp_display::CORE_PUT, nvidia_gsp_display::CORE_GET);
+    core.put = push_methods(&gsp_rm.regs, &mut core.push, channel, (core.put, &methods.words))?;
+    Ok((display, timing))
 }
 
 /// GSP-RM once it runs: its queues, BAR 0 (`length` bytes) and GSP's Falcon.

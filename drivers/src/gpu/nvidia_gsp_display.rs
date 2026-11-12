@@ -63,6 +63,25 @@ pub const CORE_GET: usize = 0x68_0004;
 pub const CORE_UPDATE: u32 = 0x0200;
 /// The bytes of the display's instance memory.
 pub const INSTANCE_BYTES: u64 = 0x1_0000;
+const ASSIGN_SOR: u32 = 0x0073_1152;
+const AUX_CONTROL: u32 = 0x0073_1341;
+const DP_CONTROL: u32 = 0x0073_1343;
+const DP_STREAM: u32 = 0x0073_1362;
+const ASSIGN_SOR_BYTES: usize = 80;
+const ASSIGNED_SORS_AT: usize = 40;
+const MOST_SORS: usize = 4;
+const AUX_BYTES: usize = 48;
+const AUX_DATA_AT: usize = 20;
+const AUX_MOST_DATA: usize = 16;
+const AUX_NATIVE_READ: u32 = 1 << 3 | 1;
+const DP_CONTROL_BYTES: usize = 28;
+const DP_SET_LANE_COUNT: u32 = 1;
+const DP_SET_LINK_RATE: u32 = 1 << 1;
+const DP_SET_ENHANCED_FRAMING: u32 = 1 << 2;
+const DP_TRAIN_REPEATERS: u32 = 1 << 13;
+const DP_LINK_RATE_SHIFT: u32 = 8;
+const DP_STREAM_BYTES: usize = 116;
+const TRANSFER_UNIT: u32 = 64;
 
 /// GSP-RM's internal client, device and subdevice handles in its static information `answer`.
 pub fn internal_handles(answer: &[u8]) -> Option<(u32, u32, u32)> {
@@ -106,6 +125,123 @@ pub struct CoreSetup {
 pub struct DisplayEngineInfo {
     pub heads: u32,
     pub windows: u32,
+}
+
+fn ask(
+    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    command: u32,
+    parameters: &[u8],
+) -> Result<Vec<u8>, DisplayError> {
+    let answer = call(CONTROL, &control_call(CLIENT, DISPLAY, command, parameters))
+        .map_err(DisplayError::Call)?;
+    let returned = answered(&answer, CONTROL_STATUS, CONTROL_HEADER_BYTES)?;
+    returned
+        .get(..parameters.len())
+        .map(<[u8]>::to_vec)
+        .ok_or(DisplayError::ShortAnswer)
+}
+
+/// Has GSP-RM give display `display` (an index into the display masks) a SOR (D530); its index.
+pub fn assign_sor(
+    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    display: u32,
+) -> Result<u32, DisplayError> {
+    let mut question = [0u8; ASSIGN_SOR_BYTES];
+    put(&mut question, 4, 1 << display);
+    let answer = ask(call, ASSIGN_SOR, &question)?;
+    (0..MOST_SORS as u32)
+        .find(|&sor| {
+            let mask = word(&answer, ASSIGNED_SORS_AT + 8 * sor as usize);
+            mask.is_some_and(|mask| mask & 1 << display != 0)
+        })
+        .ok_or(DisplayError::ShortAnswer)
+}
+
+/// Reads `length` (at most 16) bytes of display `display`'s DPCD from `address` over GSP-RM's
+/// AUX channel (D530).
+pub fn read_dpcd(
+    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    display: u32,
+    address: u32,
+    length: usize,
+) -> Result<Vec<u8>, DisplayError> {
+    let length = length.clamp(1, AUX_MOST_DATA);
+    let mut question = [0u8; AUX_BYTES];
+    put(&mut question, 4, 1 << display);
+    put(&mut question, 12, AUX_NATIVE_READ);
+    put(&mut question, 16, address);
+    put(&mut question, 36, length as u32 - 1);
+    let answer = ask(call, AUX_CONTROL, &question)?;
+    Ok(answer[AUX_DATA_AT..AUX_DATA_AT + length].to_vec())
+}
+
+/// Has GSP-RM train display `display`'s link at `lanes` lanes and DPCD link rate code `rate`
+/// (D530), with enhanced framing when the sink has it, repeaters included.
+pub fn train_link(
+    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    display: u32,
+    (lanes, rate): (u32, u32),
+    enhanced: bool,
+) -> Result<(), DisplayError> {
+    let mut command = DP_SET_LANE_COUNT | DP_SET_LINK_RATE | DP_TRAIN_REPEATERS;
+    if enhanced {
+        command |= DP_SET_ENHANCED_FRAMING;
+    }
+    let mut question = [0u8; DP_CONTROL_BYTES];
+    put(&mut question, 4, 1 << display);
+    put(&mut question, 8, command);
+    put(&mut question, 12, lanes | rate << DP_LINK_RATE_SHIFT);
+    let answer = ask(call, DP_CONTROL, &question)?;
+    match word(&answer, 16) {
+        Some(0) => Ok(()),
+        Some(error) => Err(DisplayError::Refused(error)),
+        None => Err(DisplayError::ShortAnswer),
+    }
+}
+
+/// Configures head `head`'s single DisplayPort stream on SOR `sor` (D530): enhanced framing,
+/// the 64-symbol transfer unit, `watermark` and the horizontal and vertical blank symbols.
+pub fn configure_stream(
+    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    (head, sor): (u32, u32),
+    enhanced: bool,
+    (watermark, horizontal, vertical): (u32, u32, u32),
+) -> Result<(), DisplayError> {
+    let mut question = [0u8; DP_STREAM_BYTES];
+    put(&mut question, 4, head);
+    put(&mut question, 8, sor);
+    question[16] = 1;
+    put(&mut question, 24, horizontal);
+    put(&mut question, 28, vertical);
+    question[68] = u8::from(enhanced);
+    put(&mut question, 72, TRANSFER_UNIT);
+    put(&mut question, 76, watermark);
+    ask(call, DP_STREAM, &question).map(|_| ())
+}
+
+/// Registers window 0's push buffer (device address and bytes in system memory) with GSP-RM's
+/// internal subdevice and makes window 0's channel under the display object (D530).
+pub fn bring_up_window(
+    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    setup: &CoreSetup,
+    push_buffer: (u64, u64),
+) -> Result<(), DisplayError> {
+    let (root, _, window, _) = setup.classes;
+    let mut push = [0u8; 40];
+    put(&mut push, 0, SYSTEM_MEMORY);
+    push[8..16].copy_from_slice(&push_buffer.0.to_le_bytes());
+    push[16..24].copy_from_slice(&(push_buffer.1 - 1).to_le_bytes());
+    put(&mut push, 24, 1);
+    put(&mut push, 28, window);
+    push[36] = 1;
+    let payload =
+        control_call(setup.internal_client, setup.internal_subdevice, CHANNEL_PUSH_BUFFER, &push);
+    let answer = call(CONTROL, &payload).map_err(DisplayError::Call)?;
+    answered(&answer, CONTROL_STATUS, CONTROL_HEADER_BYTES)?;
+    let parameters = [0u8; CHANNEL_PARAMETERS_BYTES];
+    let channel = alloc_call(CLIENT, root << 16, window << 16, window, &parameters);
+    let answer = call(ALLOC, &channel).map_err(DisplayError::Call)?;
+    answered(&answer, ALLOC_STATUS, ALLOC_HEADER_BYTES).map(|_| ())
 }
 
 /// Hands the display its instance memory, asks its heads and windows, makes the display
