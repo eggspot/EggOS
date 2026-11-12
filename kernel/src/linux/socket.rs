@@ -8,7 +8,7 @@
 //!
 //! The calls read their arguments as Linux's ABI lays them out on the three architectures:
 //! `struct sockaddr_un` (a family and up to 108 bytes of path), `struct msghdr` and
-//! `struct cmsghdr` with 64-bit lengths, `struct ucred`, and `struct timeval` for the
+//! `struct cmsghdr` with lengths of the program's word size (D486), `struct ucred`, and `struct timeval` for the
 //! timeouts. Errors are Linux's, in Linux's order where it has one. The calls that wait
 //! (`accept`, `connect` on a full backlog, and those that send and receive) wait until their
 //! socket changes, their timeout passes or a signal comes, and restart after a handler with
@@ -107,9 +107,17 @@ pub const SOCKADDR_UN_SIZE: usize = 110;
 
 const FAMILY_SIZE: usize = 2;
 
-const MSGHDR_SIZE: usize = 56;
+const W: usize = super::abi::WORD_BYTES;
 
-const CMSGHDR_SIZE: usize = 16;
+const MSGHDR_SIZE: usize = 7 * W;
+
+const HEADER_NAME_LENGTH: usize = W;
+
+const HEADER_CONTROL_LENGTH: usize = 5 * W;
+
+const HEADER_FLAGS: usize = 6 * W;
+
+const CMSGHDR_SIZE: usize = W + 8;
 
 const MAX_CONTROL: u64 = 20480;
 
@@ -1028,7 +1036,7 @@ struct MessageHeader {
 }
 
 fn word(bytes: &[u8; MSGHDR_SIZE], offset: usize) -> u64 {
-    u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap())
+    super::abi::word(&bytes[offset..])
 }
 
 fn read_header<P: Platform>(process: &Process<P>, address: u64) -> Result<MessageHeader, Errno> {
@@ -1038,11 +1046,11 @@ fn read_header<P: Platform>(process: &Process<P>, address: u64) -> Result<Messag
         .map_err(|_| Errno::EFAULT)?;
     Ok(MessageHeader {
         name: word(&bytes, 0),
-        name_length: word(&bytes, 8) as u32,
-        buffers: word(&bytes, 16),
-        buffer_count: word(&bytes, 24),
-        control: word(&bytes, 32),
-        control_length: word(&bytes, 40),
+        name_length: word(&bytes, W) as u32,
+        buffers: word(&bytes, 2 * W),
+        buffer_count: word(&bytes, 3 * W),
+        control: word(&bytes, 4 * W),
+        control_length: word(&bytes, 5 * W),
     })
 }
 
@@ -1120,9 +1128,9 @@ pub fn parse_rights(bytes: &[u8]) -> Result<Vec<i32>, Errno> {
     let mut offset = 0usize;
     while bytes.len().saturating_sub(offset) >= CMSGHDR_SIZE {
         let header = &bytes[offset..offset + CMSGHDR_SIZE];
-        let length = u64::from_ne_bytes(header[..8].try_into().unwrap());
-        let level = u32::from_ne_bytes(header[8..12].try_into().unwrap());
-        let kind = u32::from_ne_bytes(header[12..16].try_into().unwrap());
+        let length = super::abi::word(header);
+        let level = u32::from_ne_bytes(header[W..W + 4].try_into().unwrap());
+        let kind = u32::from_ne_bytes(header[W + 4..W + 8].try_into().unwrap());
         if length < CMSGHDR_SIZE as u64 || length > (bytes.len() - offset) as u64 {
             return Err(Errno::EINVAL);
         }
@@ -1144,7 +1152,7 @@ pub fn parse_rights(bytes: &[u8]) -> Result<Vec<i32>, Errno> {
                     .map(|fd| i32::from_ne_bytes(*fd)),
             );
         }
-        offset += length.next_multiple_of(8);
+        offset += length.next_multiple_of(W);
     }
     Ok(descriptors)
 }
@@ -1466,7 +1474,8 @@ pub struct Installed {
 pub fn rights_message(descriptors: &[u32]) -> Vec<u8> {
     let length = CMSGHDR_SIZE + 4 * descriptors.len();
     let mut bytes = Vec::with_capacity(length);
-    bytes.extend_from_slice(&(length as u64).to_ne_bytes());
+    bytes.resize(W, 0);
+    super::abi::put_word(&mut bytes, length as u64);
     bytes.extend_from_slice(&SOL_SOCKET.to_ne_bytes());
     bytes.extend_from_slice(&SCM_RIGHTS.to_ne_bytes());
     for descriptor in descriptors {
@@ -1514,7 +1523,7 @@ pub fn install_rights<P: Platform>(
     unix_socket::release_rights(left);
     let used = match descriptors.is_empty() {
         true => 0,
-        false => ((CMSGHDR_SIZE + 4 * descriptors.len()).next_multiple_of(8) as u64).min(room),
+        false => ((CMSGHDR_SIZE + 4 * descriptors.len()).next_multiple_of(W) as u64).min(room),
     };
     Installed {
         descriptors,
@@ -1592,9 +1601,9 @@ fn complete_header<P: Platform>(
         true => message::TRUNC,
         false => 0,
     };
-    written[8..12].copy_from_slice(&name_length.to_ne_bytes());
-    written[40..48].copy_from_slice(&installed.used.to_ne_bytes());
-    written[48..52].copy_from_slice(&flags.to_ne_bytes());
+    written[HEADER_NAME_LENGTH..][..4].copy_from_slice(&name_length.to_ne_bytes());
+    super::abi::put_word(&mut written[HEADER_CONTROL_LENGTH..], installed.used);
+    written[HEADER_FLAGS..][..4].copy_from_slice(&flags.to_ne_bytes());
     if process.write_user_memory(header_at, &written).is_err() {
         undo(&installed);
         return Err(Errno::EFAULT);

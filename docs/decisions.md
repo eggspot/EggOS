@@ -24444,3 +24444,12 @@ the license, by an explicit instruction recorded here.
   vector and the argument and environment pointers `exec` writes, ELF32 programs,
   `siginfo_t`, the 32-bit signal frames, `llseek`, `mmap2` and 64-bit arguments in register
   pairs; then 32-bit Arm's own ABI file.
+
+## D486 The Linux layer's word size, part 2: `msghdr` and `cmsghdr` (M9, the 32-bit audit; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `struct msghdr` is seven words of the program's width (the name pointer, its
+  length, the `iovec` array and its count, the control buffer and its length, the flags) and
+  `struct cmsghdr` a word of length and two `int`s, its messages aligned to a word: 56 and 16
+  bytes on 64-bit programs as before, 28 and 12 on 32-bit ones. `sendmsg`, `recvmsg` on every
+  socket kind, `SCM_RIGHTS` messages built and parsed, and the header fields written back
+  (name length, control length, flags) all take their places from the word size.

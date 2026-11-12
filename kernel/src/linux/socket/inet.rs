@@ -17,7 +17,7 @@
 
 use eggos_hal::atomic::AtomicU64;
 use super::{
-    MSGHDR_SIZE, SOL_SOCKET, TIMEVAL_SIZE, deadline, finish, interrupted, message, option,
+    HEADER_CONTROL_LENGTH, HEADER_FLAGS, HEADER_NAME_LENGTH, MSGHDR_SIZE, SOL_SOCKET, TIMEVAL_SIZE, deadline, finish, interrupted, message, option,
     read_header, read_int, timeout_nanoseconds, timeval,
 };
 use crate::linux::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
@@ -841,12 +841,12 @@ fn recvmsg<P: Platform>(
             process
                 .write_user_memory(header.name, &bytes[..copied])
                 .map_err(|_| Errno::EFAULT)?;
-            written[8..12].copy_from_slice(&(SOCKADDR_IN_SIZE as u32).to_ne_bytes());
+            written[HEADER_NAME_LENGTH..][..4].copy_from_slice(&(SOCKADDR_IN_SIZE as u32).to_ne_bytes());
         }
         let truncated = received.copied < received.length;
         let message_flags = if truncated { MSG_TRUNC } else { 0 };
-        written[40..48].copy_from_slice(&0u64.to_ne_bytes());
-        written[48..52].copy_from_slice(&message_flags.to_ne_bytes());
+        super::super::abi::put_word(&mut written[HEADER_CONTROL_LENGTH..], 0);
+        written[HEADER_FLAGS..][..4].copy_from_slice(&message_flags.to_ne_bytes());
         process
             .write_user_memory(header_at, &written)
             .map_err(|_| Errno::EFAULT)?;
