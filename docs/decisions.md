@@ -24356,3 +24356,23 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The Linux ABI for RV32 (its system-call table is the generic one, with 64-bit
   time calls), floating point state, the user test programs, and the `Platform` implementation
   that ties these together.
+
+## D481 RV32, part 5: the `Platform` implementation and its user test program (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `Riscv32` implements `Platform`, so RV32 is `CurrentPlatform` and its boot calls
+  the kernel's `kernel_main` after enabling the timer and wake-up interrupts. Most of it is
+  RV64's at 32 bits: the console on the NS16550, the SBI timer and system reset, `wfi` and the
+  interrupt window, the memory map, RAM and seeds from the device tree (the shared
+  `boot_memory` code now covers RV32), Sv32 page tables through `satp`, `sstatus.SUM` for user
+  access, `fence.i` and `sfence.vma`, page faults by `scause`, the thread switch (D479), user
+  mode (D480), RV64's floating-point save and restore with 32-bit stores for `fcsr`, `tp` for
+  the CPU-local block, SBI IPIs for wake-ups. Interrupts reach the kernel as RV64's do (the
+  timer disarmed, then `Interrupt::Timer`; the software interrupt cleared, then `Wakeup`), and
+  a kernel exception reaches `kernel_exception`. The user test program has the register
+  check, floating point, null system calls, the spin, the illegal instruction and Linux's
+  hello; the Linux programs not written for RV32 yet exit with status 1, so their self-tests
+  fail plainly.
+- **Not yet.** Secondary harts (`start_cpu` refuses), console input and device interrupts
+  through the PLIC, Sstc, and the core's remaining 64-bit assumptions, first of them
+  `AtomicU64`, which RV32's `A` extension does not have (the CPU-local 64-bit loads, clocks and
+  counters).

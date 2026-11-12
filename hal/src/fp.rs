@@ -25,7 +25,7 @@
 pub struct FpState {
     #[cfg(target_arch = "aarch64")]
     pub(crate) arch: Aarch64State,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
     pub(crate) arch: Riscv64State,
     #[cfg(target_arch = "loongarch64")]
     pub(crate) arch: Loongarch64State,
@@ -69,7 +69,7 @@ impl FpState {
             fpcr: 0,
             fpsr: 0,
         };
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
         let arch = Riscv64State {
             f: [0; 32],
             fcsr: 0,
@@ -159,7 +159,7 @@ impl FpState {
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
 impl FpState {
     /// `f0`-`f31`.
     pub fn f(&self) -> &[u64; 32] {
@@ -318,7 +318,7 @@ pub(crate) struct Aarch64State {
 }
 
 /// RISC-V: `f0`-`f31` (D, 64 bits each), then `fcsr`, as the save routine stores them.
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
 #[derive(Clone)]
 #[repr(C)]
 pub(crate) struct Riscv64State {

@@ -7,7 +7,8 @@ use crate::arch::KERNEL_VIRTUAL_OFFSET;
     target_arch = "loongarch64",
     target_arch = "mips64",
     target_arch = "powerpc64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "riscv32"
 ))]
 use crate::fdt::{self, Fdt};
 #[cfg(any(
@@ -15,7 +16,8 @@ use crate::fdt::{self, Fdt};
     target_arch = "loongarch64",
     target_arch = "mips64",
     target_arch = "powerpc64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "riscv32"
 ))]
 use crate::memory::MemoryMap;
 use crate::memory::PhysicalRange;
@@ -25,7 +27,8 @@ use crate::paging::KernelImage;
     target_arch = "loongarch64",
     target_arch = "mips64",
     target_arch = "powerpc64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "riscv32"
 ))]
 use crate::{Platform, arch::CurrentPlatform};
 
@@ -35,7 +38,8 @@ use crate::{Platform, arch::CurrentPlatform};
     target_arch = "loongarch64",
     target_arch = "mips64",
     target_arch = "powerpc64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "riscv32"
 ))]
 pub(crate) const MAX_DEVICE_TREE_SIZE: usize = 16 << 20;
 
@@ -100,7 +104,8 @@ pub(crate) fn kernel_image_parts() -> KernelImage {
     target_arch = "loongarch64",
     target_arch = "mips64",
     target_arch = "powerpc64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "riscv32"
 ))]
 unsafe fn device_tree(address: usize) -> Option<(Fdt<'static>, usize)> {
     if address == 0 || !address.is_multiple_of(8) {
@@ -124,7 +129,8 @@ unsafe fn device_tree(address: usize) -> Option<(Fdt<'static>, usize)> {
     target_arch = "loongarch64",
     target_arch = "mips64",
     target_arch = "powerpc64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "riscv32"
 ))]
 pub(crate) unsafe fn device_tree_blob(address: usize) -> Option<&'static [u8]> {
     // SAFETY: guaranteed by the caller.
@@ -146,7 +152,8 @@ pub(crate) unsafe fn device_tree_blob(address: usize) -> Option<&'static [u8]> {
     target_arch = "loongarch64",
     target_arch = "mips64",
     target_arch = "powerpc64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "riscv32"
 ))]
 pub(crate) unsafe fn device_tree_memory_map(address: usize) -> MemoryMap {
     let mut map = MemoryMap::new();
@@ -187,7 +194,8 @@ pub(crate) unsafe fn device_tree_memory_map(address: usize) -> MemoryMap {
     target_arch = "loongarch64",
     target_arch = "mips64",
     target_arch = "powerpc64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "riscv32"
 ))]
 pub(crate) unsafe fn device_tree_ram(address: usize) -> MemoryMap {
     let mut map = MemoryMap::new();
@@ -214,7 +222,8 @@ pub(crate) unsafe fn device_tree_ram(address: usize) -> MemoryMap {
     target_arch = "loongarch64",
     target_arch = "mips64",
     target_arch = "powerpc64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "riscv32"
 ))]
 pub(crate) unsafe fn device_tree_cpus(address: usize, cpu: &mut dyn FnMut(u64)) {
     // SAFETY: guaranteed by the caller.
@@ -231,7 +240,7 @@ pub(crate) unsafe fn device_tree_cpus(address: usize, cpu: &mut dyn FnMut(u64)) 
 ///
 /// # Safety
 /// As for [`device_tree`].
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
 pub(crate) unsafe fn device_tree_plic_supervisor_context(
     address: usize,
     hart: u64,
@@ -253,7 +262,8 @@ pub(crate) unsafe fn device_tree_plic_supervisor_context(
     target_arch = "loongarch64",
     target_arch = "mips64",
     target_arch = "powerpc64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "riscv32"
 ))]
 pub(crate) unsafe fn device_tree_take_seeds(
     address: usize,

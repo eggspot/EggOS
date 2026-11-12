@@ -6,17 +6,24 @@
 //! [`DIRECT_MAP_OFFSET`] above it, `0xc000_0000` on, which also holds the kernel image (linked
 //! there); the image's megapage again at its physical address, only for the jump; and the
 //! UART's megapage at its physical address, as device memory. It turns translation on, moves
-//! to the kernel's virtual address, sets the stack and the trap vector, and calls
-//! `early_main`, which reports the boot on the console, waits for a few timer interrupts
-//! (D477: a trap saves every register and the trap CSRs in a [`TrapFrame`] on the stack) and
-//! stops the machine through SBI. Threads, user mode and the rest of [`crate::Platform`] come
-//! next.
+//! to the kernel's virtual address, sets the stack and the trap vector (D477: a trap saves
+//! every register and the trap CSRs in a [`TrapFrame`] on the stack), enables the timer and
+//! wake-up interrupts, and calls the kernel's `kernel_main`, [`Riscv32`] being its
+//! [`crate::Platform`] (D481).
 
 
+mod fp;
+mod test_program;
 mod thread;
 mod user;
 
+use crate::arch::boot_memory;
+use crate::cpu::{CpuStart, StartCpuError};
+use crate::interrupt::Interrupt;
+use crate::memory::PhysicalRange;
 use crate::paging::riscv32::{BOOT_MEGAPAGE, SATP_MODE_SV32};
+use crate::paging::{self, KernelImage};
+use crate::{Exception, ExitStatus, MemoryMap, Platform};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Ns16550, Uart};
@@ -115,7 +122,8 @@ _start:
     csrc    sstatus, t0
     lla     t0, riscv32_trap_entry
     csrw    stvec, t0
-    call    {early_main}
+    call    {enable_timer}
+    call    kernel_main
 5:  wfi
     j       5b
 "#,
@@ -130,7 +138,7 @@ _start:
     offset = const DIRECT_MAP_OFFSET,
     uart = const UART,
     satp_mode = const SATP_MODE_SV32,
-    early_main = sym early_main,
+    enable_timer = sym enable_timer_and_wake_ups,
 );
 
 /// The registers a trap saves on the stack: `x0` to `x31` (`x0` unused, `x2` the stack pointer
@@ -145,44 +153,52 @@ pub struct TrapFrame {
     pub value: u32,
 }
 
-static TICKS: AtomicUsize = AtomicUsize::new(0);
 const INTERRUPT: u32 = 1 << 31;
 const SUPERVISOR_TIMER: u32 = 5;
+const SUPERVISOR_SOFTWARE: u32 = 1;
+const SOFTWARE_PENDING: usize = 1 << 1;
 const TIMER_ENABLE: usize = 1 << 5;
+const SOFTWARE_ENABLE: usize = 1 << 1;
 const INTERRUPTS_ENABLE: usize = 1 << 1;
-const TICKS_A_SECOND: u64 = 100;
-const TICKS_SHOWN: usize = 3;
+const USER_MEMORY_ACCESS: usize = 1 << 18;
+const SBI_IPI: usize = 0x0073_5049;
+const SECONDARY_HARTS_NOT_YET: i64 = 0;
 
-/// Handles interrupt `cause` (`scause`), from the kernel or from user mode: the timer's counts
-/// a tick and asks for the next.
+/// Handles interrupt `cause` (`scause`), from the kernel or from user mode: the timer's is
+/// disarmed and handed to the kernel, as is a wake-up from another hart.
 pub(super) fn interrupt(cause: u32) {
-    if cause & !INTERRUPT == SUPERVISOR_TIMER {
-        TICKS.fetch_add(1, Ordering::Relaxed);
-        set_timer_deadline(clock_ticks() + TIMEBASE_HZ / TICKS_A_SECOND);
+    match cause & !INTERRUPT {
+        SUPERVISOR_TIMER => {
+            set_timer_deadline(u64::MAX);
+            crate::interrupt::deliver(Interrupt::Timer);
+        }
+        SUPERVISOR_SOFTWARE => {
+            // SAFETY: clearing `sip.SSIP` only marks the wake-up handled.
+            unsafe { core::arch::asm!("csrc sip, {}", in(reg) SOFTWARE_PENDING) };
+            crate::interrupt::deliver(Interrupt::Wakeup);
+        }
+        _ => {}
     }
 }
 
 extern "C" fn trap(frame: &mut TrapFrame) {
     match frame.cause & INTERRUPT != 0 {
         true => interrupt(frame.cause),
-        false => {
-            console_write(b"EggOS riscv32: an exception the boot path does not handle\n");
-            shut_down()
-        }
+        false => crate::exception::deliver(&Exception {
+            kind: crate::ExceptionKind::Other,
+            name: "kernel exception",
+            code: u64::from(frame.cause),
+            pc: u64::from(frame.pc),
+            address: Some(u64::from(frame.value)),
+        }),
     }
 }
 
-fn enable_timer_interrupts() {
-    // SAFETY: sets `sie.STIE` and `sstatus.SIE`; the trap vector is installed, so a timer
-    // interrupt reaches `trap`.
-    unsafe {
-        core::arch::asm!(
-            "csrs sie, {timer}",
-            "csrs sstatus, {interrupts}",
-            timer = in(reg) TIMER_ENABLE,
-            interrupts = in(reg) INTERRUPTS_ENABLE,
-        )
-    };
+extern "C" fn enable_timer_and_wake_ups() {
+    set_timer_deadline(u64::MAX);
+    // SAFETY: sets `sie.STIE` and `sie.SSIE`; the trap vector is installed, and `sstatus.SIE`
+    // stays clear but in `wait_for_interrupt`.
+    unsafe { core::arch::asm!("csrs sie, {}", in(reg) TIMER_ENABLE | SOFTWARE_ENABLE) };
 }
 
 core::arch::global_asm!(
@@ -352,18 +368,312 @@ pub fn boot_arguments() -> (usize, usize) {
     )
 }
 
-extern "C" fn early_main() -> ! {
-    console_write(b"EggOS riscv32: translation on, running in the direct map\n");
-    let (_, hart) = boot_arguments();
-    console_write(b"boot hart ");
-    console_write(&[b'0' + (hart % 10) as u8]);
-    console_write(b"\n");
-    set_timer_deadline(clock_ticks() + TIMEBASE_HZ / TICKS_A_SECOND);
-    enable_timer_interrupts();
-    while TICKS.load(Ordering::Relaxed) < TICKS_SHOWN {
-        // SAFETY: waits for the next interrupt; the timer's comes within a tick.
-        unsafe { core::arch::asm!("wfi") };
+/// The image's virtual address minus its physical address, the direct map's offset too.
+pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = DIRECT_MAP_OFFSET as u64;
+const BOOT_DIRECT_MAP_END: u64 = RAM_START as u64 + ((BOOT_DIRECT_MEGAPAGES as u64) << 22);
+
+/// Zeroes the `length` bytes at `start` ([`crate::memory::zero`]).
+///
+/// # Safety
+/// As for [`crate::memory::zero`].
+#[inline]
+pub(crate) unsafe fn zero(start: *mut u8, length: usize) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { crate::memory::zero_by_lines(start, length) }
+}
+
+#[inline]
+pub(crate) fn doorbell_barrier() {
+    // SAFETY: a barrier: it orders stores and touches nothing.
+    unsafe { core::arch::asm!("fence w, o", options(nostack, preserves_flags)) };
+}
+
+fn sbi_call(extension: usize, function: usize, arguments: [usize; 3]) -> (isize, usize) {
+    let error: isize;
+    let value: usize;
+    // SAFETY: an SBI call; the firmware preserves every register but a0 and a1.
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            inlateout("a0") arguments[0] => error,
+            inlateout("a1") arguments[1] => value,
+            in("a2") arguments[2],
+            in("a6") function,
+            in("a7") extension,
+        );
     }
-    console_write(b"timer interrupts arriving\n");
-    shut_down()
+    (error, value)
+}
+
+fn device_tree_address() -> usize {
+    DEVICE_TREE.load(Ordering::Relaxed)
+}
+
+/// RV32 on QEMU `virt` (D481).
+#[derive(Debug)]
+pub struct Riscv32;
+
+impl Platform for Riscv32 {
+    const ARCH: &'static str = "riscv32";
+
+    type PageTableFormat = paging::riscv32::Riscv32Sv32;
+
+    fn console_write(bytes: &[u8]) {
+        console_write(bytes);
+    }
+
+    fn console_read(buffer: &mut [u8]) -> usize {
+        uart().read_bytes(buffer)
+    }
+
+    fn enable_console_input() -> Result<(), &'static str> {
+        Err("RV32 has no console input interrupt yet")
+    }
+
+    fn exit(_status: ExitStatus) -> ! {
+        shut_down()
+    }
+
+    fn restart() -> ! {
+        sbi(SBI_RESET, 0, 1, NO_REASON);
+        Self::halt()
+    }
+
+    fn halt() -> ! {
+        loop {
+            // SAFETY: pauses the hart until an interrupt is pending.
+            unsafe { core::arch::asm!("wfi") };
+        }
+    }
+
+    fn breakpoint() {
+        // SAFETY: traps to the vector installed at boot, which resumes after it.
+        unsafe { core::arch::asm!("ebreak") };
+    }
+
+    fn execute_illegal_instruction() -> ! {
+        // SAFETY: `unimp` traps; the kernel never resumes from it.
+        unsafe { core::arch::asm!("unimp", options(noreturn)) }
+    }
+
+    fn clock_ticks() -> u64 {
+        clock_ticks()
+    }
+
+    fn clock_frequency() -> u64 {
+        TIMEBASE_HZ
+    }
+
+    fn set_timer_deadline(deadline: u64) {
+        set_timer_deadline(deadline);
+    }
+
+    fn wait_for_interrupt() {
+        // SAFETY: as on RV64: `wfi` wakes on an enabled pending interrupt, which setting SIE
+        // takes through the trap vector; clearing SIE masks interrupts again.
+        unsafe { core::arch::asm!("wfi", "csrsi sstatus, 2", "csrci sstatus, 2") };
+    }
+
+    fn interrupt_window() {
+        // SAFETY: as in `wait_for_interrupt`, without the `wfi`.
+        unsafe { core::arch::asm!("csrsi sstatus, 2", "csrci sstatus, 2") };
+    }
+
+    fn memory_map() -> MemoryMap {
+        // SAFETY: OpenSBI passes its device tree's address in `a1`; it stays readable and
+        // unwritten, in RAM the boot direct map covers.
+        let mut map = unsafe { boot_memory::device_tree_memory_map(device_tree_address()) };
+        map.retain_within(PhysicalRange {
+            start: 0,
+            end: BOOT_DIRECT_MAP_END,
+        });
+        map
+    }
+
+    fn physical_memory_offset() -> usize {
+        DIRECT_MAP_OFFSET as usize
+    }
+
+    fn direct_map_offset() -> usize {
+        DIRECT_MAP_OFFSET as usize
+    }
+
+    fn kernel_image() -> KernelImage {
+        boot_memory::kernel_image_parts()
+    }
+
+    fn physical_memory() -> MemoryMap {
+        // SAFETY: as in `memory_map`.
+        let mut map = unsafe { boot_memory::device_tree_ram(device_tree_address()) };
+        map.retain_within(PhysicalRange {
+            start: 0,
+            end: BOOT_DIRECT_MAP_END,
+        });
+        map
+    }
+
+    fn early_device_regions(region: &mut dyn FnMut(PhysicalRange)) {
+        region(PhysicalRange::from_start_length(u64::from(UART), UART_BYTES as u64));
+    }
+
+    fn device_tree() -> Option<&'static [u8]> {
+        // SAFETY: as in `memory_map`.
+        unsafe { boot_memory::device_tree_blob(device_tree_address()) }
+    }
+
+    fn make_kernel_mappings_visible(_start: usize, _length: usize) {
+        // SAFETY: orders the table writes before later walks and drops cached translations.
+        unsafe { core::arch::asm!("fence rw, rw", "sfence.vma") };
+    }
+
+    unsafe fn activate_page_tables(roots: &[u64]) {
+        let [root] = roots else {
+            panic!("Sv32 page tables have one root");
+        };
+        let satp = SATP_MODE_SV32 as usize | (root >> 12) as usize;
+        // SAFETY: the caller guarantees the tables map the kernel and the direct map at the
+        // addresses in use; the fences order the writes and drop the boot table's entries.
+        unsafe { core::arch::asm!("sfence.vma", "csrw satp, {}", "sfence.vma", in(reg) satp) };
+    }
+
+    unsafe fn switch_address_space(roots: &[u64]) {
+        // SAFETY: as on RV64: a full fence, the same switch, then `fence.i` for code other
+        // harts wrote.
+        unsafe {
+            core::arch::asm!("fence rw, rw");
+            Self::activate_page_tables(roots);
+            core::arch::asm!("fence.i");
+        }
+    }
+
+    fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
+        let before: usize;
+        // SAFETY: `sstatus.SUM` only lets S-mode reach U-mode pages, put back below.
+        unsafe {
+            core::arch::asm!("csrrs {}, sstatus, {}", out(reg) before, in(reg) USER_MEMORY_ACCESS)
+        };
+        let result = access();
+        if before & USER_MEMORY_ACCESS == 0 {
+            // SAFETY: closes the window this call opened.
+            unsafe { core::arch::asm!("csrc sstatus, {}", in(reg) USER_MEMORY_ACCESS) };
+        }
+        result
+    }
+
+    unsafe fn run_user(context: &mut crate::user::UserContext) -> crate::user::UserExit {
+        // SAFETY: the caller's guarantees are `run_user`'s.
+        unsafe { user::run_user(context) }
+    }
+
+    fn user_test_program() -> crate::user::TestProgram {
+        test_program::user_test_program()
+    }
+
+    fn linux_hardware_capabilities() -> [u64; 2] {
+        let letter = |extension: u8| 1u64 << (extension - b'A');
+        [
+            letter(b'I') | letter(b'M') | letter(b'A') | letter(b'F') | letter(b'D') | letter(b'C'),
+            0,
+        ]
+    }
+
+    fn random_seeds(seed: &mut dyn FnMut(crate::random::SeedSource, &[u8])) {
+        // SAFETY: as in `memory_map`, once, on the boot hart.
+        unsafe { boot_memory::device_tree_take_seeds(device_tree_address(), seed) };
+    }
+
+    fn make_instructions_visible(_start: usize, _length: usize) {
+        // SAFETY: orders this hart's fetches after its stores.
+        unsafe { core::arch::asm!("fence.i") };
+    }
+
+    fn drop_user_translations(start: u64, length: u64) {
+        let pages = length / crate::memory::FRAME_SIZE;
+        if pages > crate::paging::USER_PAGES_DROPPED_ONE_BY_ONE {
+            // SAFETY: drops every cached translation.
+            unsafe { core::arch::asm!("sfence.vma zero, zero") };
+            return;
+        }
+        for page in 0..pages {
+            let address = (start + page * crate::memory::FRAME_SIZE) as usize;
+            // SAFETY: drops one page's cached translations.
+            unsafe { core::arch::asm!("sfence.vma {}, zero", in(reg) address) };
+        }
+    }
+
+    fn page_fault(_kind: crate::ExceptionKind, code: u64) -> Option<paging::PageFault> {
+        use crate::paging::{Access, PageFault};
+        let access = match code {
+            12 => Access::Execute,
+            13 => Access::Read,
+            15 => Access::Write,
+            _ => return None,
+        };
+        Some(PageFault {
+            access,
+            may_be_stale: true,
+        })
+    }
+
+    unsafe fn prepare_thread(
+        stack_top: usize,
+        entry: extern "C" fn(usize) -> !,
+        argument: usize,
+    ) -> usize {
+        // SAFETY: the frame fits in `INITIAL_FRAME_MAX`, writable and unused below the top.
+        unsafe {
+            crate::thread::write_initial_frame(stack_top, &thread::initial_frame(entry, argument))
+        }
+    }
+
+    unsafe fn switch_thread(save: *mut usize, resume: usize) {
+        // SAFETY: the caller's contract is the switch's.
+        unsafe { thread::eggos_switch_thread(save, resume) }
+    }
+
+    unsafe fn set_user_fp(on: bool) {
+        // SAFETY: the caller's contract is `set_user`'s.
+        unsafe { fp::set_user(on) }
+    }
+
+    unsafe fn save_fp(state: *mut crate::fp::FpState) {
+        // SAFETY: the caller's contract is `save`'s.
+        unsafe { fp::save(state) }
+    }
+
+    unsafe fn restore_fp(state: *const crate::fp::FpState) {
+        // SAFETY: the caller's contract is `restore`'s.
+        unsafe { fp::restore(state) }
+    }
+
+    fn cpus(cpu: &mut dyn FnMut(u64)) {
+        // SAFETY: as in `memory_map`.
+        unsafe { boot_memory::device_tree_cpus(device_tree_address(), cpu) };
+    }
+
+    fn boot_cpu() -> u64 {
+        BOOT_HART.load(Ordering::Relaxed) as u64
+    }
+
+    unsafe fn start_cpu(_cpu: u64, _start: &CpuStart) -> Result<(), StartCpuError> {
+        Err(StartCpuError::Refused(SECONDARY_HARTS_NOT_YET))
+    }
+
+    unsafe fn set_cpu_local(block: usize) {
+        // SAFETY: the kernel keeps no thread-local storage, so `tp` is free for the block.
+        unsafe { core::arch::asm!("mv tp, {}", in(reg) block) };
+    }
+
+    fn cpu_local() -> usize {
+        let block: usize;
+        // SAFETY: reads `tp`.
+        unsafe { core::arch::asm!("mv {}, tp", out(reg) block) };
+        block
+    }
+
+    fn wake_cpu(cpu: u64) {
+        // SAFETY: a barrier only.
+        unsafe { core::arch::asm!("fence rw, rw") };
+        sbi_call(SBI_IPI, 0, [1, cpu as usize, 0]);
+    }
 }

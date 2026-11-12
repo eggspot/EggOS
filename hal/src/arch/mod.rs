@@ -30,6 +30,14 @@ pub(crate) use aarch64::zero;
 
 #[cfg(all(eggos_kernel, target_arch = "riscv32"))]
 pub mod riscv32;
+#[cfg(all(eggos_kernel, target_arch = "riscv32"))]
+pub(crate) use riscv32::KERNEL_VIRTUAL_OFFSET;
+#[cfg(all(eggos_kernel, target_arch = "riscv32"))]
+pub use riscv32::Riscv32 as CurrentPlatform;
+#[cfg(all(eggos_kernel, target_arch = "riscv32"))]
+pub(crate) use riscv32::doorbell_barrier;
+#[cfg(all(eggos_kernel, target_arch = "riscv32"))]
+pub(crate) use riscv32::zero;
 
 #[cfg(all(eggos_kernel, target_arch = "arm"))]
 pub mod arm;
@@ -111,6 +119,7 @@ pub(crate) use x86_64::KERNEL_VIRTUAL_OFFSET;
         target_arch = "mips64",
         target_arch = "powerpc64",
         target_arch = "riscv64",
+        target_arch = "riscv32",
         target_arch = "s390x",
         target_arch = "sparc64",
         target_arch = "x86_64"
@@ -134,6 +143,7 @@ pub(crate) use x86_64::zero;
         target_arch = "mips64",
         target_arch = "powerpc64",
         target_arch = "riscv64",
+        target_arch = "riscv32",
         target_arch = "s390x",
         target_arch = "sparc64",
         target_arch = "x86_64"
@@ -164,7 +174,7 @@ pub enum TestMachine {
 #[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::ArmVirt);
 /// The machine this kernel's self-tests expect; `None` in host builds.
-#[cfg(all(eggos_kernel, target_arch = "riscv64"))]
+#[cfg(all(eggos_kernel, any(target_arch = "riscv64", target_arch = "riscv32")))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::RiscvVirt);
 /// The machine this kernel's self-tests expect; `None` in host builds.
 #[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
