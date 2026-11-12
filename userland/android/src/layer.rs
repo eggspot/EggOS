@@ -13,7 +13,7 @@
 
 use crate::framework::{
     self, ACTIVITY_CLASSES, BUTTON, EDIT_TEXT, IMAGE_VIEW, LINEAR_LAYOUT, LIST_VIEW, Native,
-    Object, STRING_CLASS, TEXT_VIEWS, Target, View,
+    Object, RECYCLER_VIEW, STRING_CLASS, TEXT_VIEWS, Target, VIEW_HOLDER, View,
 };
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -284,6 +284,9 @@ fn target_address(target: Target) -> usize {
 }
 
 fn initialize(class: &str, table: *const usize) {
+    if framework::is_replaced(class) {
+        return;
+    }
     let address = {
         let state = state();
         if !state.initialized.insert(String::from(class)) {
@@ -809,8 +812,38 @@ extern "sysv64" fn set_on_item_click_listener(words: *const u64, _: *const usize
 
 /// The texts a list view shows: its adapter's rows when the adapter is the app's own
 /// ([`adapter_rows`]), else its items, each a string's text or its class.
+/// A recycler view's row `position` (D516): a view holder from the adapter's
+/// `onCreateViewHolder(list, 0)`, bound by `onBindViewHolder(holder, position)`; its item view.
+fn recycler_row(list: u64, adapter: u64, position: usize) -> Option<u64> {
+    let class = object(adapter)?.class.clone();
+    let create = compiled_method(&class, "onCreateViewHolder")?;
+    let bind = compiled_method(&class, "onBindViewHolder")?;
+    let holder = call_at(create, &[adapter, list, 0]);
+    call_at(bind, &[adapter, holder, position as u64]);
+    let field = state().dex.field_named(VIEW_HOLDER, "itemView")?;
+    object(holder)?.fields.get(&field).copied()
+}
+
+/// A recycler view's rows: `getItemCount()` of them (at most 32), each its row's first text.
+fn recycler_rows(list: u64, adapter: u64) -> Option<Vec<String>> {
+    let class = object(adapter)?.class.clone();
+    let count = call_at(compiled_method(&class, "getItemCount")?, &[adapter]) as u32 as usize;
+    let rows = (0..count.min(eggos_toolkit::widget::MAX_ROWS))
+        .map(|position| {
+            recycler_row(list, adapter, position)
+                .and_then(|row| first_text(row, 0))
+                .unwrap_or_default()
+        })
+        .collect();
+    Some(rows)
+}
+
 fn list_items(view: u64) -> Vec<String> {
     let adapter = object(view).map_or(0, |view| view.reference);
+    let recycler = object(view).is_some_and(|view| view.class == RECYCLER_VIEW);
+    if recycler {
+        return recycler_rows(view, adapter).unwrap_or_default();
+    }
     if let Some(rows) = adapter_rows(view, adapter) {
         return rows;
     }
@@ -837,6 +870,13 @@ fn leaked_items(items: Vec<String>) -> &'static [&'static str] {
 }
 
 fn item_clicked(view: u64, position: usize) {
+    if object(view).is_some_and(|shown| shown.class == RECYCLER_VIEW) {
+        let adapter = object(view).map_or(0, |shown| shown.reference);
+        if let Some(row) = recycler_row(view, adapter, position) {
+            click(row);
+        }
+        return;
+    }
     let Some(listener) = object(view).and_then(|view| view.view.as_ref()).map(|view| view.listener)
     else {
         return;
@@ -1163,7 +1203,7 @@ impl ContentWindow {
             let _ = self.tree.add(None, place, painted);
             return height + PADDING;
         }
-        if class.as_str() == LIST_VIEW {
+        if class.as_str() == LIST_VIEW || class.as_str() == RECYCLER_VIEW {
             let items = leaked_items(list_items(view));
             let rows = items.len().min(eggos_toolkit::widget::MAX_ROWS) as i32;
             let height = Length::Px(LIST_ROW * rows.max(1));

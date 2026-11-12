@@ -25001,3 +25001,19 @@ the license, by an explicit instruction recorded here.
   read.
 - **Not yet.** Swipes, pinches and rotations, velocities, several touches at once, and
   recognizers that wait for each other to fail.
+
+## D516 The Android layer, part 10: `RecyclerView` (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** AndroidX's `RecyclerView` and its linear and grid layout managers come inside
+  each app's own DEX file, and their code needs far more of the framework (measuring, layout,
+  drawing, animation) than the layer has; the layer stands in for them instead
+  (`framework::is_replaced`): every call to a method of theirs, direct or virtual, goes to the
+  layer's native or does nothing, and their static initializers are not run. A recycler view is
+  a list view of the layer's (D508): `setAdapter` keeps the app's adapter, and the window shows
+  `getItemCount()` rows (at most 32), each made by the adapter's `onCreateViewHolder(list, 0)`
+  and `onBindViewHolder(holder, position)` and shown as the first text of the holder's
+  `itemView` (found through `RecyclerView$ViewHolder.itemView`, `Dex::field_named`). Choosing
+  a row binds it again and clicks its item view, so the click listener an app sets on it in
+  `onBindViewHolder` runs.
+- **Not yet.** View types, row views shown as themselves, recycling (each refresh creates new
+  holders), item decorations and animations, and grids laid out as grids.

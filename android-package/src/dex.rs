@@ -268,6 +268,17 @@ impl<'a> Dex<'a> {
         self.type_name(u32::from(half(self.bytes, at)?))
     }
 
+    /// The index of field `name` of class `class` in the field table, if the file names it
+    /// (D516).
+    pub fn field_named(&self, class: &str, name: &str) -> Option<u32> {
+        let (count, offset) = self.fields;
+        (0..count).find(|&index| {
+            let at = offset as usize + FIELD_ID_BYTES * index as usize;
+            let named = word(self.bytes, at + 4).and_then(|name_index| self.string(name_index));
+            named.as_deref() == Some(name) && self.field_class(index).as_deref() == Some(class)
+        })
+    }
+
     /// How many methods the method table names.
     pub fn method_count(&self) -> u32 {
         self.methods.0

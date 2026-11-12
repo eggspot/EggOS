@@ -27,6 +27,22 @@ pub const BUTTON: &str = "Landroid/widget/Button;";
 pub const EDIT_TEXT: &str = "Landroid/widget/EditText;";
 /// The framework's linear layout.
 pub const LINEAR_LAYOUT: &str = "Landroid/widget/LinearLayout;";
+/// AndroidX's `RecyclerView`, which apps carry in their own DEX file and the layer stands in for
+/// (D516), with its layout managers.
+pub const RECYCLER_VIEW: &str = "Landroidx/recyclerview/widget/RecyclerView;";
+/// The view holder class whose `itemView` field holds a row's view.
+pub const VIEW_HOLDER: &str = "Landroidx/recyclerview/widget/RecyclerView$ViewHolder;";
+const REPLACED: [&str; 3] = [
+    RECYCLER_VIEW,
+    "Landroidx/recyclerview/widget/LinearLayoutManager;",
+    "Landroidx/recyclerview/widget/GridLayoutManager;",
+];
+
+/// Whether the layer stands in for `class` even when the app's DEX file defines it.
+pub fn is_replaced(class: &str) -> bool {
+    REPLACED.contains(&class)
+}
+
 /// The framework's image view (D509).
 pub const IMAGE_VIEW: &str = "Landroid/widget/ImageView;";
 /// The framework's list view (D508).
@@ -34,7 +50,7 @@ pub const LIST_VIEW: &str = "Landroid/widget/ListView;";
 const ARRAY_LIST: &str = "Ljava/util/ArrayList;";
 const LISTS: [&str; 3] = [ARRAY_LIST, "Ljava/util/List;", "Ljava/util/AbstractList;"];
 const ARRAY_ADAPTER: &str = "Landroid/widget/ArrayAdapter;";
-const ADAPTER_VIEWS: [&str; 2] = [LIST_VIEW, "Landroid/widget/AdapterView;"];
+const ADAPTER_VIEWS: [&str; 3] = [LIST_VIEW, "Landroid/widget/AdapterView;", RECYCLER_VIEW];
 const LAYOUT_INFLATER: &str = "Landroid/view/LayoutInflater;";
 const VIEW: &str = "Landroid/view/View;";
 const VIEW_GROUP: &str = "Landroid/view/ViewGroup;";
@@ -165,7 +181,9 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
     let activity = ACTIVITY_CLASSES.contains(&class);
     let context = activity || CONTEXT_CLASSES.contains(&class);
     let text = TEXT_VIEWS.contains(&class);
-    let view = text || matches!(class, VIEW | VIEW_GROUP | LINEAR_LAYOUT | LIST_VIEW | IMAGE_VIEW);
+    let view = text
+        || matches!(class, VIEW | VIEW_GROUP | LINEAR_LAYOUT | LIST_VIEW | IMAGE_VIEW)
+        || class == RECYCLER_VIEW;
     let list = LISTS.contains(&class);
     let adapter_view = ADAPTER_VIEWS.contains(&class);
     let takes_int = shorty == "VI";
@@ -236,10 +254,16 @@ fn defined_in(
 /// superclasses that defines a compiled method of that name or whose framework method the
 /// layer implements.
 pub fn resolve(dex: &Dex<'_>, method: u32, compiled: &BTreeMap<u32, usize>) -> Target {
+    let class_of_method = dex.method_class(method);
+    if let Some(class) = class_of_method.as_deref().filter(|class| is_replaced(class)) {
+        let name = dex.method_name(method).unwrap_or_default();
+        let shorty = dex.method_shorty(method).unwrap_or_default();
+        return Target::Native(native(class, &name, &shorty).unwrap_or(Native::Nothing));
+    }
     if let Some(&offset) = compiled.get(&method) {
         return Target::Compiled(offset);
     }
-    let (Some(name), Some(mut class)) = (dex.method_name(method), dex.method_class(method)) else {
+    let (Some(name), Some(mut class)) = (dex.method_name(method), class_of_method) else {
         return Target::Missing;
     };
     let shorty = dex.method_shorty(method).unwrap_or_default();
@@ -291,6 +315,9 @@ pub fn resolve_virtual(
         return Target::Missing;
     };
     let shorty = dex.method_shorty(method).unwrap_or_default();
+    if is_replaced(receiver) {
+        return Target::Native(native(receiver, &name, &shorty).unwrap_or(Native::Nothing));
+    }
     let mut class = String::from(receiver);
     for _ in 0..MOST_ANCESTORS {
         if let Some(native) = native(&class, &name, &shorty) {
