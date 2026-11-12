@@ -8,6 +8,7 @@
 //! [`Interface::next_poll_ms`], and sends what both hand its `transmit` closure.
 
 use crate::arp::{self, Cache};
+use crate::checksum::Completion;
 use crate::dhcp::{self, Client, Event, Lease, Phase};
 use crate::ethernet::{self, MacAddress, ether_type};
 use crate::icmp;
@@ -119,6 +120,7 @@ pub struct Interface {
     pending: [Option<Pending>; PENDING_PACKETS],
     identification: u16,
     counters: Counters,
+    transmit_checksums: Completion,
     frame: [u8; ethernet::MAX_FRAME_BYTES],
 }
 
@@ -135,8 +137,15 @@ impl Interface {
             pending: [None; PENDING_PACKETS],
             identification: (seed >> 16) as u16,
             counters: Counters::default(),
+            transmit_checksums: Completion::Full,
             frame: [0; ethernet::MAX_FRAME_BYTES],
         }
+    }
+
+    /// Has every TCP and UDP checksum the interface sends go out whole, or partial for an
+    /// adapter that completes them itself (D535); whole until this says otherwise.
+    pub fn set_transmit_checksums(&mut self, completion: Completion) {
+        self.transmit_checksums = completion;
     }
 
     /// The adapter's hardware address.
@@ -438,7 +447,8 @@ impl Interface {
             source_port,
             destination_port,
         };
-        udp::write_header(datagram, source, destination, header, data.len())
+        let completion = self.transmit_checksums;
+        udp::write_header_with(datagram, source, destination, header, data.len(), completion)
             .ok_or(SendError::TooLong)?;
         let ip = ipv4::Header {
             source,
@@ -482,11 +492,14 @@ impl Interface {
     }
 
     /// Sends `segment`, a TCP segment whose checksum was made for the interface's address and
-    /// `destination` ([`tcp::write_header`]), to `destination`, with time to live `ttl`.
+    /// `destination` ([`tcp::write_header_with`]), whole or partial as `completion` says, to
+    /// `destination`, with time to live `ttl`; its checksum is made whole or partial first
+    /// when the interface sends them the other way.
     pub fn send_tcp(
         &mut self,
         destination: Ipv4Address,
         segment: &[u8],
+        completion: Completion,
         ttl: u8,
         now_ms: u64,
         transmit: &mut dyn FnMut(&[u8]),
@@ -496,7 +509,11 @@ impl Interface {
             NextHop::Broadcast => return Err(SendError::NoRoute),
             hop => hop,
         };
-        self.frame[PAYLOAD_AT..PAYLOAD_AT + segment.len()].copy_from_slice(segment);
+        let carried = &mut self.frame[PAYLOAD_AT..PAYLOAD_AT + segment.len()];
+        carried.copy_from_slice(segment);
+        if completion != self.transmit_checksums {
+            tcp::convert_checksum(carried, source, destination, self.transmit_checksums);
+        }
         let ip = ipv4::Header {
             source,
             destination,

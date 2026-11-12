@@ -1,11 +1,13 @@
 //! UDP (RFC 768): ports, a length and a checksum over a pseudo-header of the IPv4 addresses,
 //! the protocol and the length, then the datagram.
 
-use crate::checksum;
+use crate::checksum::{self, Completion};
 use crate::ipv4::{Ipv4Address, protocol};
 
 /// Bytes of the header.
 pub const HEADER_BYTES: usize = 8;
+/// Where the checksum lies in a datagram.
+pub const CHECKSUM_AT: usize = 6;
 
 /// The ports of a datagram.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,18 +66,33 @@ pub fn write_header(
     header: Header,
     data_bytes: usize,
 ) -> Option<usize> {
+    write_header_with(out, source, destination, header, data_bytes, Completion::Full)
+}
+
+/// [`write_header`], with the checksum written whole or left `completion` says (D535).
+pub fn write_header_with(
+    out: &mut [u8],
+    source: Ipv4Address,
+    destination: Ipv4Address,
+    header: Header,
+    data_bytes: usize,
+    completion: Completion,
+) -> Option<usize> {
     let length = u16::try_from(HEADER_BYTES.checked_add(data_bytes)?).ok()?;
     let datagram = out.get_mut(..usize::from(length))?;
     datagram[0..2].copy_from_slice(&header.source_port.to_be_bytes());
     datagram[2..4].copy_from_slice(&header.destination_port.to_be_bytes());
     datagram[4..6].copy_from_slice(&length.to_be_bytes());
     datagram[6..8].fill(0);
-    let sum = checksum::finish(checksum::add(
-        pseudo_header(source, destination, length),
-        datagram,
-    ));
-    let sum = if sum == 0 { 0xffff } else { sum };
-    datagram[6..8].copy_from_slice(&sum.to_be_bytes());
+    let pseudo = pseudo_header(source, destination, length);
+    let sum = match completion {
+        Completion::Full => match checksum::finish(checksum::add(pseudo, datagram)) {
+            0 => 0xffff,
+            sum => sum,
+        },
+        Completion::Partial => checksum::partial(pseudo),
+    };
+    datagram[CHECKSUM_AT..CHECKSUM_AT + 2].copy_from_slice(&sum.to_be_bytes());
     Some(usize::from(length))
 }
 
@@ -118,5 +135,12 @@ mod tests {
         let mut short = datagram;
         short[5] = 7;
         assert_eq!(parse(source, destination, &short), None);
+        let mut partial = [0u8; HEADER_BYTES + 3];
+        partial[HEADER_BYTES..].copy_from_slice(b"abc");
+        let partially = Completion::Partial;
+        let written = write_header_with(&mut partial, source, destination, header, 3, partially);
+        assert_eq!(written, Some(11));
+        checksum::complete(&mut partial, CHECKSUM_AT);
+        assert_eq!(partial, datagram);
     }
 }

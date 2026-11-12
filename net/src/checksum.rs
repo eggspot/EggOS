@@ -36,6 +36,37 @@ pub fn of(bytes: &[u8]) -> u16 {
     finish(add(0, bytes))
 }
 
+/// Who finishes the TCP or UDP checksum of a segment the stack writes (D535).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Completion {
+    /// The stack writes the whole checksum.
+    Full,
+    /// The checksum field holds only the pseudo-header's sum, folded and not complemented, for
+    /// the adapter, or [`complete`], to finish over the segment.
+    Partial,
+}
+
+/// What a partial checksum field holds for the running sum `sum` of the pseudo-header: the sum
+/// folded to 16 bits, not complemented.
+pub fn partial(sum: u32) -> u16 {
+    fold(sum) as u16
+}
+
+/// Finishes the partial checksum of `segment`, whose field at `field_at` holds [`partial`]'s
+/// pseudo-header sum: the checksum of the whole segment, 0 sent as `0xffff` (the same in ones'
+/// complement, and what UDP needs), written over the field. Nothing when the field lies past
+/// the segment's end.
+pub fn complete(segment: &mut [u8], field_at: usize) {
+    if field_at.checked_add(2).is_none_or(|end| end > segment.len()) {
+        return;
+    }
+    let sum = match of(segment) {
+        0 => 0xffff,
+        sum => sum,
+    };
+    segment[field_at..field_at + 2].copy_from_slice(&sum.to_be_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

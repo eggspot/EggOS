@@ -25374,3 +25374,27 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** UHBR rates (MPLLA, 128b/132b), Thunderbolt alternate mode's AUX I/O select and
   fixed clocks on display 14, legacy Type-C connectors, giving the PHY and the TCSS power
   back, and Lunar Lake's later display versions.
+
+## D535 virtio-net's transmit checksum offload (M8; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the virtio 1.2 specification)
+
+- **Decision.** The driver now also asks for `VIRTIO_NET_F_CSUM`. A device that grants it gets
+  every unfragmented IPv4 TCP or UDP frame with `VIRTIO_NET_HDR_F_NEEDS_CSUM`, `csum_start` at
+  the transport header and `csum_offset` at its checksum field (16 for TCP, 6 for UDP); every
+  other frame keeps a zero header. The stack then writes those checksums partial: the field
+  holds the pseudo-header's sum, folded and not complemented (`checksum::Completion`), so the
+  CPU no longer sums the data it sends. The rule lives in one place, the interface
+  (`Interface::set_transmit_checksums`): when the adapter completes checksums, every TCP and
+  UDP datagram the interface sends goes out partial; otherwise whole. The kernel's TCP streams
+  always write partial checksums, and the path that sends a segment finishes it where the
+  device cannot: `checksum::complete` before loopback delivery (whose receive side checks
+  it), and `tcp::convert_checksum` in `Interface::send_tcp` when the segment's form and the
+  adapter's differ (a whole reset to an offloading adapter, a partial segment to one that is
+  not). A completed checksum of 0 is sent as `0xffff`, the same value in ones' complement and
+  what UDP needs.
+- **Why the stack decides per interface and not per connection.** A connection's route can
+  change between segments (another adapter's lease, a link going down), so the form of the
+  checksum is settled when the segment leaves, by the adapter it leaves through. Writing
+  partial and completing when needed costs no more than writing whole did, and saves the whole
+  sum on every offloading adapter.
+- **Not yet.** Segmentation offloads (TSO, UFO), which need larger transmit buffers, and other
+  adapters' offloads (the Ethernet and Wi-Fi drivers keep whole checksums).

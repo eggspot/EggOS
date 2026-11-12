@@ -14,13 +14,15 @@
 //! dropped and acknowledged with the next byte expected, so the sender resends them; there is
 //! no window scaling, so a window is at most [`MAX_WINDOW`] bytes.
 
-use crate::checksum;
+use crate::checksum::{self, Completion};
 use crate::ipv4::{Ipv4Address, protocol};
 
 /// Bytes of a header without options.
 pub const HEADER_BYTES: usize = 20;
 /// Bytes of the maximum segment size option.
 pub const MSS_OPTION_BYTES: usize = 4;
+/// Where the checksum lies in a segment.
+pub const CHECKSUM_AT: usize = 16;
 /// The largest header the connection writes: with the maximum segment size option.
 pub const MAX_HEADER_BYTES: usize = HEADER_BYTES + MSS_OPTION_BYTES;
 /// The segment size assumed when the peer names none (RFC 9293's default).
@@ -171,6 +173,18 @@ pub fn write_header(
     header: &Header,
     data_bytes: usize,
 ) -> Option<usize> {
+    write_header_with(out, source, destination, header, data_bytes, Completion::Full)
+}
+
+/// [`write_header`], with the checksum written whole or left `completion` says.
+pub fn write_header_with(
+    out: &mut [u8],
+    source: Ipv4Address,
+    destination: Ipv4Address,
+    header: &Header,
+    data_bytes: usize,
+    completion: Completion,
+) -> Option<usize> {
     let header_bytes = header_bytes(header);
     let length = header_bytes.checked_add(data_bytes)?;
     let segment = out.get_mut(..length)?;
@@ -187,12 +201,33 @@ pub fn write_header(
         segment[21] = MSS_OPTION_BYTES as u8;
         segment[22..24].copy_from_slice(&mss.to_be_bytes());
     }
-    let sum = checksum::finish(checksum::add(
-        pseudo_header(source, destination, length),
-        segment,
-    ));
-    segment[16..18].copy_from_slice(&sum.to_be_bytes());
+    let pseudo = pseudo_header(source, destination, length);
+    let sum = match completion {
+        Completion::Full => checksum::finish(checksum::add(pseudo, segment)),
+        Completion::Partial => checksum::partial(pseudo),
+    };
+    segment[CHECKSUM_AT..CHECKSUM_AT + 2].copy_from_slice(&sum.to_be_bytes());
     Some(length)
+}
+
+/// Makes the partial checksum of `segment`, from `source` to `destination`, whole, or a whole
+/// one partial, as `completion` asks (D535).
+pub fn convert_checksum(
+    segment: &mut [u8],
+    source: Ipv4Address,
+    destination: Ipv4Address,
+    completion: Completion,
+) {
+    if segment.len() < HEADER_BYTES {
+        return;
+    }
+    match completion {
+        Completion::Full => checksum::complete(segment, CHECKSUM_AT),
+        Completion::Partial => {
+            let sum = checksum::partial(pseudo_header(source, destination, segment.len()));
+            segment[CHECKSUM_AT..CHECKSUM_AT + 2].copy_from_slice(&sum.to_be_bytes());
+        }
+    }
 }
 
 /// How many bytes `header` takes written: [`HEADER_BYTES`], plus the option when it has one.
@@ -326,6 +361,7 @@ pub struct Connection {
     rtt_variance_ms: u64,
     timed: Option<(u32, u64)>,
     deadline: Option<u64>,
+    checksum: Completion,
 }
 
 /// What a received segment did.
@@ -414,7 +450,19 @@ impl Connection {
             rtt_variance_ms: 0,
             timed: None,
             deadline: None,
+            checksum: Completion::Full,
         }
+    }
+
+    /// Has [`Connection::output`] write its segments' checksums whole or leave them partial
+    /// (D535); whole until this says otherwise.
+    pub fn set_checksum(&mut self, completion: Completion) {
+        self.checksum = completion;
+    }
+
+    /// How [`Connection::output`] writes its segments' checksums.
+    pub fn checksum(&self) -> Completion {
+        self.checksum
     }
 
     /// Its own address and port.
@@ -873,6 +921,11 @@ impl Connection {
         }
     }
 
+    fn write_header(&self, out: &mut [u8], header: &Header, data_bytes: usize) -> Option<usize> {
+        let (source, destination) = (self.local.0, self.remote.0);
+        write_header_with(out, source, destination, header, data_bytes, self.checksum)
+    }
+
     fn wants_window_update(&self, window: u32) -> bool {
         let edge = self.receive_next.wrapping_add(window);
         before(self.advertised_edge, edge)
@@ -903,7 +956,7 @@ impl Connection {
                 window: 0,
                 mss: None,
             };
-            return write_header(out, self.local.0, self.remote.0, &header, 0);
+            return self.write_header(out, &header, 0);
         }
         let window = self.window(buffers);
         match self.state {
@@ -926,7 +979,7 @@ impl Connection {
             header.flags = flags::SYN;
             header.acknowledgment = 0;
         }
-        let length = write_header(out, self.local.0, self.remote.0, &header, 0)?;
+        let length = self.write_header(out, &header, 0)?;
         self.sent(1, now_ms);
         self.advertised_edge = self.receive_next.wrapping_add(window);
         Some(length)
@@ -993,7 +1046,7 @@ impl Connection {
             flags_set |= flags::FIN;
         }
         let header = self.base_header(flags_set, window);
-        let length = write_header(out, self.local.0, self.remote.0, &header, copied)?;
+        let length = self.write_header(out, &header, copied)?;
         if fin {
             self.fin_sent = true;
         }
@@ -1013,7 +1066,7 @@ impl Connection {
         self.ack_due = false;
         self.advertised_edge = self.receive_next.wrapping_add(window);
         let header = self.base_header(0, window);
-        write_header(out, self.local.0, self.remote.0, &header, 0)
+        self.write_header(out, &header, 0)
     }
 }
 

@@ -1,8 +1,9 @@
 //! The virtio network device (virtio 1.2, 5.1), polled: one receive queue whose buffers the
 //! driver keeps posted, and one transmit queue. Every buffer starts with the device's header
-//! (`virtio_net_hdr`, 12 bytes with `VIRTIO_F_VERSION_1`), which the driver leaves zero when
-//! it sends (no checksum offload, no segmentation) and skips when it receives, then holds one
-//! Ethernet frame without its check sequence. The hardware address, the link's state and the
+//! (`virtio_net_hdr`, 12 bytes with `VIRTIO_F_VERSION_1`), which, when the driver sends, asks a
+//! device that offers it to complete the frame's TCP or UDP checksum (D535) and is otherwise
+//! zero (no segmentation), and which it reads when it receives (D533), then holds one Ethernet
+//! frame without its check sequence. The hardware address, the link's state and the
 //! MTU come from the device's configuration when it offers them.
 
 use super::queue::{Buffer, SplitQueue};
@@ -38,6 +39,55 @@ const HEADER_FLAGS: usize = 0;
 const HEADER_CHECKSUM_START: usize = 6;
 const HEADER_CHECKSUM_OFFSET: usize = 8;
 const NEEDS_CHECKSUM: u8 = 1;
+const ETHERNET_HEADER_BYTES: usize = 14;
+const IPV4_ETHERTYPE: [u8; 2] = [0x08, 0x00];
+const IPV4_VERSION: u8 = 4;
+const IPV4_FRAGMENT_FIELD: usize = 6;
+const IPV4_MORE_FRAGMENTS_AND_OFFSET: u16 = 0x3fff;
+const IPV4_PROTOCOL_FIELD: usize = 9;
+const TCP_PROTOCOL: u8 = 6;
+const UDP_PROTOCOL: u8 = 17;
+const TCP_CHECKSUM_OFFSET: u16 = 16;
+const UDP_CHECKSUM_OFFSET: u16 = 6;
+
+/// Where the device completes the checksum of `frame` (D535): the start of an unfragmented
+/// IPv4 packet's TCP or UDP header in the frame and the checksum's offset in that header;
+/// `None` for any other frame, or when the field lies past its end.
+pub fn checksum_place(frame: &[u8]) -> Option<(u16, u16)> {
+    if frame.get(12..ETHERNET_HEADER_BYTES)? != IPV4_ETHERTYPE {
+        return None;
+    }
+    let packet = &frame[ETHERNET_HEADER_BYTES..];
+    let first = *packet.first()?;
+    if first >> 4 != IPV4_VERSION {
+        return None;
+    }
+    let fragment = packet.get(IPV4_FRAGMENT_FIELD..IPV4_FRAGMENT_FIELD + 2)?;
+    if u16::from_be_bytes([fragment[0], fragment[1]]) & IPV4_MORE_FRAGMENTS_AND_OFFSET != 0 {
+        return None;
+    }
+    let offset = match *packet.get(IPV4_PROTOCOL_FIELD)? {
+        TCP_PROTOCOL => TCP_CHECKSUM_OFFSET,
+        UDP_PROTOCOL => UDP_CHECKSUM_OFFSET,
+        _ => return None,
+    };
+    let start = ETHERNET_HEADER_BYTES + usize::from(first & 0x0f) * 4;
+    (start + usize::from(offset) + 2 <= frame.len()).then_some((start as u16, offset))
+}
+
+/// The header the driver sends `frame` with: zero, or, when the device completes checksums,
+/// [`checksum_place`]'s request for it.
+pub fn transmit_header(frame: &[u8], completes_checksums: bool) -> [u8; HEADER_BYTES] {
+    let mut header = [0u8; HEADER_BYTES];
+    if completes_checksums && let Some((start, offset)) = checksum_place(frame) {
+        header[HEADER_FLAGS] = NEEDS_CHECKSUM;
+        header[HEADER_CHECKSUM_START..HEADER_CHECKSUM_START + 2]
+            .copy_from_slice(&start.to_le_bytes());
+        header[HEADER_CHECKSUM_OFFSET..HEADER_CHECKSUM_OFFSET + 2]
+            .copy_from_slice(&offset.to_le_bytes());
+    }
+    header
+}
 
 /// Completes the partial checksum of `frame` (D533): the one's complement sum of the bytes from
 /// `start` on, the pseudo-header sum already in the field at `start + offset`, stored there
@@ -69,6 +119,8 @@ const _: () = assert!(QUEUE_SIZE as usize <= u16::BITS as usize);
 
 /// Feature bits of the network device (virtio 1.2, 5.1.3).
 pub mod feature {
+    /// The device completes the partial checksums of the frames the driver sends (D535).
+    pub const CSUM: u64 = 1 << 0;
     /// The driver takes frames whose checksum the device left partial or already checked
     /// (D533).
     pub const GUEST_CSUM: u64 = 1 << 1;
@@ -102,6 +154,7 @@ pub struct VirtioNet<T: Transport, M: DmaMemory> {
     mac: [u8; 6],
     mtu: u16,
     reports_link: bool,
+    completes_checksums: bool,
     receive_buffer_of_head: [u8; QUEUE_SIZE as usize],
     transmit_buffer_of_head: [u8; QUEUE_SIZE as usize],
     free_transmit_buffers: u16,
@@ -124,7 +177,8 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
         if transport.device_type() != device_type::NETWORK {
             return Err((Error::WrongDeviceType, transport, Some(memory)));
         }
-        let wanted = feature::MAC | feature::STATUS | feature::MTU | feature::GUEST_CSUM;
+        let wanted =
+            feature::MAC | feature::STATUS | feature::MTU | feature::GUEST_CSUM | feature::CSUM;
         let accepted = match super::initialize(&transport, wanted, keep_waiting) {
             Ok(accepted) => accepted,
             Err(error) => return Err((error, transport, Some(memory))),
@@ -195,6 +249,7 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
             mac,
             mtu,
             reports_link: accepted & feature::STATUS != 0,
+            completes_checksums: accepted & feature::CSUM != 0,
             receive_buffer_of_head: [0; QUEUE_SIZE as usize],
             transmit_buffer_of_head: [0; QUEUE_SIZE as usize],
             free_transmit_buffers: ((1u32 << transmit_size) - 1) as u16,
@@ -234,6 +289,12 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
     /// The largest IP packet the link carries: the device's MTU, or [`DEFAULT_MTU`].
     pub fn mtu(&self) -> u16 {
         self.mtu
+    }
+
+    /// Whether the device completes the TCP and UDP checksums of the frames it sends, which then
+    /// carry only their pseudo-header's sum (D535).
+    pub fn completes_checksums(&self) -> bool {
+        self.completes_checksums
     }
 
     /// Whether the link is up; a device that does not report its link is always up.
@@ -338,10 +399,11 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
         let buffer = self.free_transmit_buffers.trailing_zeros() as u8;
         let offset = TRANSMIT_BUFFERS_OFFSET + usize::from(buffer) * BUFFER_BYTES;
         let start = self.memory.as_mut_ptr().wrapping_add(offset);
+        let header = transmit_header(frame, self.completes_checksums);
         // SAFETY: the transmit buffer `buffer` of the driver's DMA memory, `BUFFER_BYTES`
         // long, is free: the device handed it back (or never had it), so only the driver
-        // touches it; the header fits at its start.
-        unsafe { start.write_bytes(0, HEADER_BYTES) };
+        // touches it; the header fits at its start, and `header` is this function's own.
+        unsafe { core::ptr::copy_nonoverlapping(header.as_ptr(), start, HEADER_BYTES) };
         // SAFETY: the same free buffer, which holds the frame after the header
         // (`MAX_FRAME_BYTES` checked above); `frame` is the caller's own memory, apart from it.
         unsafe {

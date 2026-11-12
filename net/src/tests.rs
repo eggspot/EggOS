@@ -1,3 +1,4 @@
+use crate::checksum::Completion;
 use crate::dhcp::server::{Offered, request_type, write_answer};
 use crate::dhcp::{self, Event, message_type};
 use crate::ethernet::{self, MacAddress, ether_type};
@@ -523,7 +524,7 @@ fn tcp_segments_to_our_address_are_delivered_and_ours_go_out_through_arp() {
     );
     interface.receive(&router_answer, 73, &mut sent.transmit(), &mut nothing);
     interface
-        .send_tcp(address(2), &reply, 64, 73, &mut sent.transmit())
+        .send_tcp(address(2), &reply, Completion::Full, 64, 73, &mut sent.transmit())
         .unwrap();
     let (ethernet, payload) = ethernet::parse(sent.0.last().unwrap()).unwrap();
     assert_eq!(ethernet.destination, ROUTER_MAC);
@@ -533,8 +534,30 @@ fn tcp_segments_to_our_address_are_delivered_and_ours_go_out_through_arp() {
         tcp::parse(ip.source, ip.destination, body).unwrap().header,
         reply_header
     );
+    let mut partial = reply;
+    tcp::convert_checksum(&mut partial, address(15), address(2), Completion::Partial);
+    interface
+        .send_tcp(address(2), &partial, Completion::Partial, 64, 73, &mut sent.transmit())
+        .unwrap();
+    let (_, payload) = ethernet::parse(sent.0.last().unwrap()).unwrap();
+    let (ip, body) = ipv4::parse(payload).unwrap();
+    assert!(tcp::parse(ip.source, ip.destination, body).is_some());
+    interface.set_transmit_checksums(Completion::Partial);
+    interface
+        .send_tcp(address(2), &reply, Completion::Full, 64, 73, &mut sent.transmit())
+        .unwrap();
+    let (_, payload) = ethernet::parse(sent.0.last().unwrap()).unwrap();
+    let (_, body) = ipv4::parse(payload).unwrap();
+    assert_eq!(body, partial);
     assert_eq!(
-        interface.send_tcp(Ipv4Address::BROADCAST, &reply, 64, 74, &mut sent.transmit()),
+        interface.send_tcp(
+            Ipv4Address::BROADCAST,
+            &reply,
+            Completion::Full,
+            64,
+            74,
+            &mut sent.transmit()
+        ),
         Err(SendError::NoRoute)
     );
 }

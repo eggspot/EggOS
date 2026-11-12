@@ -1272,6 +1272,9 @@ mod network {
         fn transmit(&mut self, frame: &[u8]) -> Result<(), &'static str> {
             self.0.transmit(frame).map_err(virtio::Error::description)
         }
+        fn completes_checksums(&self) -> bool {
+            self.0.completes_checksums()
+        }
     }
 
     fn probe_net(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {

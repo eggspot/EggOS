@@ -271,3 +271,24 @@ fn a_partial_checksum_is_completed_over_its_bytes() {
     complete_checksum(&mut short, 0, 4);
     assert_eq!(short, [0; 3]);
 }
+
+fn ipv4_frame(protocol: u8, fragment: u16) -> [u8; 54] {
+    let mut frame = [0u8; 54];
+    frame[12..14].copy_from_slice(&[0x08, 0x00]);
+    frame[14] = 0x45;
+    frame[20..22].copy_from_slice(&fragment.to_be_bytes());
+    frame[23] = protocol;
+    frame
+}
+
+#[test]
+fn tcp_and_udp_frames_ask_the_device_for_their_checksum() {
+    assert_eq!(checksum_place(&ipv4_frame(6, 0x4000)), Some((34, 16)));
+    assert_eq!(checksum_place(&ipv4_frame(17, 0)), Some((34, 6)));
+    assert_eq!(checksum_place(&ipv4_frame(1, 0)), None);
+    assert_eq!(checksum_place(&ipv4_frame(6, 0x2000)), None);
+    assert_eq!(checksum_place(&ipv4_frame(6, 0)[..40]), None);
+    let header = transmit_header(&ipv4_frame(6, 0), true);
+    assert_eq!(header, [1, 0, 0, 0, 0, 0, 34, 0, 16, 0, 0, 0]);
+    assert_eq!(transmit_header(&ipv4_frame(6, 0), false), [0; HEADER_BYTES]);
+}

@@ -36,6 +36,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use eggos_drivers::desktop::NetworkState;
 use eggos_hal::Platform;
+use eggos_net::checksum::Completion;
 use eggos_net::ethernet::{MAX_FRAME_BYTES, MacAddress};
 use eggos_net::interface::{Counters, Datagram, Delivery, Interface, SendError};
 use eggos_net::ipv4::{Ipv4Address, Subnet};
@@ -68,6 +69,11 @@ pub trait NetDevice: Send {
     fn receive(&mut self, frame: &mut [u8]) -> Option<usize>;
     /// Hands `frame` to the adapter to send.
     fn transmit(&mut self, frame: &[u8]) -> Result<(), &'static str>;
+    /// Whether it completes the TCP and UDP checksums of the frames it sends, which then carry
+    /// only their pseudo-header's sum (D535).
+    fn completes_checksums(&self) -> bool {
+        false
+    }
 }
 
 struct Adapter {
@@ -83,6 +89,9 @@ impl Adapter {
         crate::random::fill::<P>(&mut seed);
         let mut interface = Interface::new(device.mac(), device.mtu(), u64::from_ne_bytes(seed));
         interface.set_link(device.is_link_up(), now_ms::<P>());
+        if device.completes_checksums() {
+            interface.set_transmit_checksums(Completion::Partial);
+        }
         Box::new(Self {
             name,
             device,
@@ -411,11 +420,12 @@ pub fn tcp_mss() -> u16 {
     default_adapter(&ADAPTERS.lock()).map_or(tcp::MSS, |adapter| adapter.interface.tcp_mss())
 }
 
-/// Sends `segment`, a TCP segment from the interface's address, to `destination` through the
-/// adapter, with time to live `ttl`.
+/// Sends `segment`, a TCP segment from the interface's address whose checksum is whole or
+/// partial as `completion` says, to `destination` through the adapter, with time to live `ttl`.
 pub fn send_tcp<P: Platform>(
     destination: Ipv4Address,
     segment: &[u8],
+    completion: Completion,
     ttl: u8,
 ) -> Result<(), SendError> {
     let now = now_ms::<P>();
@@ -426,7 +436,7 @@ pub fn send_tcp<P: Platform>(
     let Adapter {
         device, interface, ..
     } = &mut *adapters[index];
-    interface.send_tcp(destination, segment, ttl, now, &mut |bytes| {
+    interface.send_tcp(destination, segment, completion, ttl, now, &mut |bytes| {
         let _ = device.transmit(bytes);
     })
 }

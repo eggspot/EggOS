@@ -19,6 +19,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use eggos_hal::Platform;
+use eggos_net::checksum::{self, Completion};
 use eggos_net::ipv4::{self, Ipv4Address};
 use eggos_net::tcp::{self, Buffers, Connection, Error, Segment, State, flags};
 
@@ -132,7 +133,8 @@ pub struct StreamStatus {
 }
 
 impl Stream {
-    fn new(connection: Connection, listener: Option<Weak<Listener>>) -> Arc<Self> {
+    fn new(mut connection: Connection, listener: Option<Weak<Listener>>) -> Arc<Self> {
+        connection.set_checksum(Completion::Partial);
         Arc::new(Self {
             state: LeafSpinLock::new_leaf(StreamState {
                 connection,
@@ -617,11 +619,15 @@ fn accept_syn<P: Platform>(
     true
 }
 
-fn send_segment<P: Platform>(source: Ipv4Address, destination: Ipv4Address, bytes: &[u8]) {
+fn send_segment<P: Platform>(source: Ipv4Address, destination: Ipv4Address, bytes: &mut [u8]) {
     match is_local(destination) {
-        true => queue_outgoing(source, destination, bytes),
+        true => {
+            checksum::complete(bytes, tcp::CHECKSUM_AT);
+            queue_outgoing(source, destination, bytes);
+        }
         false => {
-            let _ = super::send_tcp::<P>(destination, bytes, ipv4::DEFAULT_TTL);
+            let ttl = ipv4::DEFAULT_TTL;
+            let _ = super::send_tcp::<P>(destination, bytes, Completion::Partial, ttl);
         }
     }
 }
@@ -696,7 +702,7 @@ fn run_once<P: Platform>() -> bool {
                 let Some((length, source, destination)) = written else {
                     break;
                 };
-                send_segment::<P>(source, destination, &segment[..length]);
+                send_segment::<P>(source, destination, &mut segment[..length]);
             }
         }
         let mut delivered = false;
@@ -705,8 +711,9 @@ fn run_once<P: Platform>() -> bool {
                 break;
             };
             if !is_local(outgoing.destination) {
+                let (destination, bytes) = (outgoing.destination, &outgoing.bytes);
                 let _ =
-                    super::send_tcp::<P>(outgoing.destination, &outgoing.bytes, ipv4::DEFAULT_TTL);
+                    super::send_tcp::<P>(destination, bytes, Completion::Full, ipv4::DEFAULT_TTL);
                 continue;
             }
             if let Some(arrived) =

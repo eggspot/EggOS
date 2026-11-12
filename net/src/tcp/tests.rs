@@ -162,6 +162,33 @@ fn a_segment_round_trips_with_its_option_and_a_damaged_one_is_refused() {
 }
 
 #[test]
+fn a_partial_checksum_completed_or_made_partial_again_matches_the_whole_one() {
+    let header = Header {
+        source_port: 40000,
+        destination_port: 80,
+        sequence: 1,
+        acknowledgment: 2,
+        flags: flags::ACK | flags::PSH,
+        window: 4096,
+        mss: None,
+    };
+    let mut whole = [0u8; HEADER_BYTES + 5];
+    whole[HEADER_BYTES..].copy_from_slice(b"hello");
+    let mut partial = whole;
+    write_header(&mut whole, CLIENT.0, SERVER.0, &header, 5).unwrap();
+    write_header_with(&mut partial, CLIENT.0, SERVER.0, &header, 5, Completion::Partial)
+        .unwrap();
+    assert_ne!(partial, whole);
+    assert!(parse(CLIENT.0, SERVER.0, &partial).is_none());
+    let mut completed = partial;
+    convert_checksum(&mut completed, CLIENT.0, SERVER.0, Completion::Full);
+    assert!(parse(CLIENT.0, SERVER.0, &completed).is_some());
+    let mut again = whole;
+    convert_checksum(&mut again, CLIENT.0, SERVER.0, Completion::Partial);
+    assert_eq!(again, partial);
+}
+
+#[test]
 fn a_reset_answers_a_segment_no_connection_owns_but_never_a_reset() {
     let (_, _, syn) = pair(4096);
     let segment = parse(CLIENT.0, SERVER.0, &syn).unwrap();
