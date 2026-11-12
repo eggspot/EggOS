@@ -24182,3 +24182,22 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The Android layer itself: compiling DEX ahead of time (D471) and the framework
   the code calls (D472); split APKs and app bundles; the manifest's label and icon as the
   app's name and icon.
+
+## D471 DEX method bodies read and compiled ahead of time to x86_64, part 1 (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `android-package` reads a class's methods from its class data (direct, then
+  virtual, with their access flags) and each method's code item (registers, arguments,
+  outgoing words, `try` blocks, instructions), and `dalvik` decodes instructions by the
+  formats AOSP publishes (all 26, from `10x` to `51l`), stepping over switch and array-data
+  payloads. The new `dex-compiler` crate compiles a method ahead of time, never interpreting
+  it (D17): a frame of 64-bit slots, one per virtual register, whose address the code gets in
+  `rdi`; each instruction becomes loads into `eax`/`ecx`, the operation and a store, a wide
+  value using its pair's first slot whole; branches are patched once every instruction's
+  place is known, and those places are kept for mapping a code address back to its
+  instruction. Part 1 compiles nop, moves, constants (int and wide), returns, `goto`, the
+  twelve `if` forms, negation and not, int/long conversion, and int and long arithmetic,
+  logic and shifts in their three-register, two-address and literal forms; anything else
+  (division, which must throw on zero, objects, fields, arrays, invokes) is refused with its
+  opcode and place.
+- **Not yet.** The rest of the instruction set through calls into the runtime (D472), the
+  aarch64 and riscv64 back ends, register allocation, and exception tables.

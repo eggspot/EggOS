@@ -11,6 +11,44 @@ const MAGIC: &[u8; 4] = b"dex\n";
 const HEADER_BYTES: usize = 0x70;
 const ENDIAN_TAG: u32 = 0x1234_5678;
 const CLASS_DEF_BYTES: usize = 32;
+const CLASS_DATA: usize = 24;
+const METHOD_ID_BYTES: usize = 8;
+const METHOD_NAME: usize = 4;
+const CODE_HEADER_BYTES: usize = 16;
+
+/// A method's code (`code_item`, D471): its register count, how many of them hold its
+/// arguments (the last ones), the outgoing argument words it needs, its `try` blocks, and its
+/// instructions, 16-bit code units in the file's little-endian order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Code<'a> {
+    pub registers: u16,
+    pub ins: u16,
+    pub outs: u16,
+    pub tries: u16,
+    pub instructions: &'a [u8],
+}
+
+impl Code<'_> {
+    /// How many code units it has.
+    pub fn length(&self) -> usize {
+        self.instructions.len() / 2
+    }
+
+    /// Code unit `at`.
+    pub fn unit(&self, at: usize) -> Option<u16> {
+        let bytes = self.instructions.get(2 * at..2 * at + 2)?;
+        Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+}
+
+/// A method a class defines: its index in the method table, its access flags, and its code
+/// unless it is abstract or native.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Method<'a> {
+    pub index: u32,
+    pub access: u32,
+    pub code: Option<Code<'a>>,
+}
 
 /// A DEX file's header and tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +68,11 @@ pub enum DexError {
     NotDex,
     BigEndian,
     Truncated,
+}
+
+fn half(bytes: &[u8], at: usize) -> Option<u16> {
+    let field = bytes.get(at..at + 2)?;
+    Some(u16::from_le_bytes([field[0], field[1]]))
 }
 
 fn word(bytes: &[u8], at: usize) -> Option<u32> {
@@ -100,6 +143,74 @@ impl<'a> Dex<'a> {
         self.string(word(self.bytes, offset as usize + 4 * index as usize)?)
     }
 
+    /// Method `index`'s name (`onCreate`).
+    pub fn method_name(&self, index: u32) -> Option<String> {
+        let (count, offset) = self.methods;
+        if index >= count {
+            return None;
+        }
+        let at = offset as usize + METHOD_ID_BYTES * index as usize + METHOD_NAME;
+        self.string(word(self.bytes, at)?)
+    }
+
+    /// The code item at `offset`.
+    pub fn code(&self, offset: u32) -> Option<Code<'a>> {
+        let at = offset as usize;
+        let units = word(self.bytes, at + 12)? as usize;
+        let start = at + CODE_HEADER_BYTES;
+        Some(Code {
+            registers: half(self.bytes, at)?,
+            ins: half(self.bytes, at + 2)?,
+            outs: half(self.bytes, at + 4)?,
+            tries: half(self.bytes, at + 6)?,
+            instructions: self.bytes.get(start..start.checked_add(units.checked_mul(2)?)?)?,
+        })
+    }
+
+    /// The methods class definition `class` (its place in the class table) defines: direct
+    /// methods, then virtual ones, from its class data. Empty for a class without any.
+    pub fn methods(&self, class: u32) -> Vec<Method<'a>> {
+        self.read_methods(class).unwrap_or_default()
+    }
+
+    fn read_methods(&self, class: u32) -> Option<Vec<Method<'a>>> {
+        let (count, offset) = self.classes;
+        if class >= count {
+            return None;
+        }
+        let definition = offset as usize + CLASS_DEF_BYTES * class as usize;
+        let mut at = word(self.bytes, definition + CLASS_DATA)? as usize;
+        if at == 0 {
+            return Some(Vec::new());
+        }
+        let static_fields = uleb(self.bytes, &mut at)?;
+        let instance_fields = uleb(self.bytes, &mut at)?;
+        let direct = uleb(self.bytes, &mut at)?;
+        let virtual_methods = uleb(self.bytes, &mut at)?;
+        for _ in 0..static_fields.checked_add(instance_fields)? {
+            uleb(self.bytes, &mut at)?;
+            uleb(self.bytes, &mut at)?;
+        }
+        let mut methods = Vec::new();
+        for list in [direct, virtual_methods] {
+            let mut index = 0u32;
+            for _ in 0..list {
+                index = index.checked_add(uleb(self.bytes, &mut at)?)?;
+                let access = uleb(self.bytes, &mut at)?;
+                let code = match uleb(self.bytes, &mut at)? {
+                    0 => None,
+                    offset => Some(self.code(offset)?),
+                };
+                methods.push(Method {
+                    index,
+                    access,
+                    code,
+                });
+            }
+        }
+        Some(methods)
+    }
+
     /// The descriptors of the classes the file defines, in its order.
     pub fn class_names(&self) -> Vec<String> {
         let (count, offset) = self.classes;
@@ -144,6 +255,32 @@ mod tests {
         assert_eq!(dex.version, 35);
         assert_eq!(dex.class_names(), ["Lorg/example/Main;"]);
         assert_eq!(dex.type_name(1), None);
+    }
+
+    #[test]
+    fn a_class_s_methods_come_with_their_code() {
+        let mut file = sample();
+        file.resize(0x200, 0);
+        let put = |file: &mut Vec<u8>, at: usize, value: u32| {
+            file[at..at + 4].copy_from_slice(&value.to_le_bytes())
+        };
+        put(&mut file, 0x20, 0x200);
+        put(&mut file, 0x78 + CLASS_DATA, 0x100);
+        file[0x100..0x10b].copy_from_slice(&[0, 0, 1, 1, 2, 1, 0x80, 0x03, 3, 1, 0]);
+        put(&mut file, 0x180, 0x0001_0003);
+        put(&mut file, 0x184, 0x0000_0001);
+        put(&mut file, 0x18c, 2);
+        file[0x190..0x194].copy_from_slice(&[0x12, 0x10, 0x0f, 0x00]);
+        let dex = Dex::parse(&file).unwrap();
+        let methods = dex.methods(0);
+        assert_eq!(methods.len(), 2);
+        assert_eq!((methods[0].index, methods[0].access), (2, 1));
+        let code = methods[0].code.unwrap();
+        assert_eq!((code.registers, code.ins, code.outs), (3, 1, 1));
+        assert_eq!(code.length(), 2);
+        assert_eq!(code.unit(0), Some(0x1012));
+        assert_eq!((methods[1].index, methods[1].access), (3, 1));
+        assert_eq!(methods[1].code, None);
     }
 
     #[test]
