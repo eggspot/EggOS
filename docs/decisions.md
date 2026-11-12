@@ -23791,3 +23791,18 @@ the license, by an explicit instruction recorded here.
 - **Next (part 3).** The port's PLL for the trained rate, the transcoder's timings and the
   pipe's source size from the EDID's preferred mode, and the plane on the new pipe: a mode the
   firmware did not set, and a second screen.
+
+## D447 Intel mode setting, part 3: the transcoder, M/N and the display-9 PLL (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `gpu::intel_modeset` computes, host-tested: a mode's transcoder timing registers
+  from its EDID timing (totals, blanking, sync and the pipe's source size, each pair less one),
+  the DisplayPort data and link M/N (the payload's share of the lanes, the pixel clock over the
+  symbol clock, halved together until they fit 24 bits), the lanes' symbol clocks, and the
+  display-9 PLL's link-rate codes. `DisplayEngine::set_mode` lights a pipe on port B, C or D:
+  the ports' PLL set to the rate, enabled and locked, routed to the port; the transcoder's
+  timings, M/N with a 64-symbol transfer unit, clock and DDI function (DP SST, lanes, sync
+  polarities); the link trained (D446); then the pipe enabled and its plane given the size,
+  stride, format and surface.
+- **Not yet.** The kernel calling it (a second screen, or a mode other than the firmware's on
+  the first), port A's eDP on its own PLL and transcoder, the combo and Type-C PHYs of
+  display 11 and later, HDMI (GMBUS EDID, TMDS PLL, infoframes), and power wells.

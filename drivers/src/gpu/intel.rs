@@ -41,6 +41,31 @@ const DP_TP_PATTERN_SHIFT: u32 = 8;
 const DP_TP_PATTERN_1: u32 = 0;
 const DP_TP_PATTERN_2: u32 = 1;
 const DP_TP_NORMAL: u32 = 3;
+const DPLL_CTRL1: usize = 0x6c058;
+const DPLL_CTRL2: usize = 0x6c05c;
+const DPLL_STATUS: usize = 0x6c060;
+const DPLL_ENABLES: [usize; 4] = [0x46010, 0x46014, 0x46040, 0x46060];
+const DPLL_FOR_PORTS: usize = 1;
+const PLL_ENABLE: u32 = 1 << 31;
+const TRANSCODER: usize = 0x60000;
+const TRANSCODER_STRIDE: usize = 0x1000;
+const PIPE_SOURCE: usize = 0x1c;
+const DATA_M: usize = 0x30;
+const DATA_N: usize = 0x34;
+const LINK_M: usize = 0x40;
+const LINK_N: usize = 0x44;
+const TU_SHIFT: u32 = 25;
+const DDI_FUNC_CTL: usize = 0x60400;
+const DDI_FUNC_ENABLE: u32 = 1 << 31;
+const DDI_PORT_SHIFT: u32 = 28;
+const DDI_MODE_DP_SST: u32 = 2 << 24;
+const DDI_SYNC_VERTICAL_HIGH: u32 = 1 << 17;
+const DDI_SYNC_HORIZONTAL_HIGH: u32 = 1 << 16;
+const TRANS_CLK_SEL: usize = 0x46140;
+const TRANS_CLK_PORT_SHIFT: u32 = 29;
+const PIPE_CONF: usize = 0x70008;
+const PIPE_CONF_ENABLE: u32 = 1 << 31;
+const BITS_PER_PIXEL: u32 = 24;
 const MASTER_INTERRUPT: usize = 0x44200;
 const MASTER_ENABLE: u32 = 1 << 31;
 const MASTER_PIPE_SHIFT: u32 = 16;
@@ -279,6 +304,78 @@ impl<R: RegisterIo> DisplayEngine<R> {
         crate::display_port::train(&mut link, lanes, rate)
     }
 
+    /// Lights pipe `pipe` on DisplayPort port `port` (B to D, 1 to 3) with `timing` over `lanes`
+    /// lanes at link rate code `rate`, showing the surface at global-GTT address `surface`,
+    /// rows `stride_bytes` long (D447, display 9): the port's PLL set to the rate and routed
+    /// to it, the transcoder's timings, M/N, clock and function, the link trained, then the
+    /// pipe and its plane on. Polls while `keep_waiting` says to.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_mode(
+        &self,
+        pipe: usize,
+        port: usize,
+        timing: &crate::edid::Timing,
+        lanes: usize,
+        rate: u8,
+        surface: u32,
+        stride_bytes: u32,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), ModeError> {
+        use super::intel_modeset::{m_n, skylake_link_rate, symbol_clock_khz, timing_registers, TRANSFER_UNIT};
+        if port == 0 || port > 3 || pipe >= MAX_PIPES - 1 {
+            return Err(ModeError::Unsupported);
+        }
+        let code = skylake_link_rate(rate).ok_or(ModeError::Unsupported)?;
+        let symbol_khz = symbol_clock_khz(rate).ok_or(ModeError::Unsupported)?;
+        let pll = DPLL_FOR_PORTS;
+        let field = 6 * pll as u32;
+        let control = self.regs.read32(DPLL_CTRL1) & !(0x3f << field);
+        self.regs.write32(DPLL_CTRL1, control | 1 << field | code << (field + 1));
+        self.regs.write32(DPLL_ENABLES[pll], PLL_ENABLE);
+        while self.regs.read32(DPLL_STATUS) & 1 << (8 * pll) == 0 {
+            if !keep_waiting() {
+                return Err(ModeError::PllUnlocked);
+            }
+        }
+        let route = 3 * port as u32;
+        let routing = self.regs.read32(DPLL_CTRL2) & !(0x7 << route | 1 << (15 + port as u32));
+        self.regs.write32(DPLL_CTRL2, routing | 1 << route | (pll as u32) << (route + 1));
+        let transcoder = TRANSCODER + pipe * TRANSCODER_STRIDE;
+        for (index, value) in timing_registers(timing).iter().enumerate() {
+            let at = match index {
+                6 => PIPE_SOURCE,
+                index => 4 * index,
+            };
+            self.regs.write32(transcoder + at, *value);
+        }
+        let ((data_m, data_n), (link_m, link_n)) = m_n(timing.clock_khz, BITS_PER_PIXEL, symbol_khz, lanes as u32);
+        self.regs.write32(transcoder + DATA_M, (TRANSFER_UNIT - 1) << TU_SHIFT | data_m);
+        self.regs.write32(transcoder + DATA_N, data_n);
+        self.regs.write32(transcoder + LINK_M, link_m);
+        self.regs.write32(transcoder + LINK_N, link_n);
+        self.regs.write32(TRANS_CLK_SEL + 4 * pipe, (port as u32 + 1) << TRANS_CLK_PORT_SHIFT);
+        let mut function = DDI_FUNC_ENABLE
+            | (port as u32) << DDI_PORT_SHIFT
+            | DDI_MODE_DP_SST
+            | ((lanes.clamp(1, 4) as u32 - 1) << DDI_PORT_WIDTH_SHIFT);
+        if timing.vertical_sync_positive {
+            function |= DDI_SYNC_VERTICAL_HIGH;
+        }
+        if timing.horizontal_sync_positive {
+            function |= DDI_SYNC_HORIZONTAL_HIGH;
+        }
+        self.regs.write32(DDI_FUNC_CTL + pipe * TRANSCODER_STRIDE, function);
+        self.train_port(port, lanes, rate, keep_waiting)
+            .map_err(|_| ModeError::LinkTraining)?;
+        self.regs.write32(PIPE_CONF + pipe * PIPE_STRIDE, PIPE_CONF_ENABLE);
+        let at = |register: usize| register + pipe * PIPE_STRIDE;
+        self.regs.write32(at(PLANE_SIZE), (timing.height - 1) << 16 | (timing.width - 1));
+        self.regs.write32(at(PLANE_STRIDE), stride_bytes / STRIDE_UNIT);
+        self.regs.write32(at(PLANE_CTL), PLANE_ENABLE | PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
+        self.regs.write32(at(PLANE_SURF), surface & SURFACE_MASK);
+        Ok(())
+    }
+
     /// Loads the display microcontroller's firmware (D444): its program into the DMC's program
     /// memory, word by word, then the register writes that start it.
     pub fn load_dmc(&self, dmc: &super::intel_dmc::Dmc<'_>) {
@@ -460,4 +557,15 @@ impl<R: RegisterIo> crate::display_port::Link for PortLink<'_, R> {
             core::hint::spin_loop();
         }
     }
+}
+
+/// Why a mode could not be set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeError {
+    /// A port, pipe or link rate this driver does not light yet.
+    Unsupported,
+    /// The port's PLL did not lock.
+    PllUnlocked,
+    /// The sink's link did not train.
+    LinkTraining,
 }
