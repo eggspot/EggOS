@@ -6,9 +6,15 @@
 //! the app's life; the app runs on this one thread. Virtual calls are dispatched on the
 //! receiver's class, each class's static initializer runs on its first static field or new
 //! object, arrays are objects with elements, and an uncaught `throw` stops the app with the
-//! exception's class (D499).
+//! exception's class (D499). `setContentView(R.layout.…)` inflates the compiled layout the
+//! resource table names into framework views, and the window shows them as labels and buttons
+//! whose clicks call the activity's `android:onClick` method or the view's click listener,
+//! then shows the texts they changed (D500).
 
-use crate::framework::{self, ACTIVITY_CLASSES, Native, Object, STRING_CLASS, Target};
+use crate::framework::{
+    self, ACTIVITY_CLASSES, BUTTON, LINEAR_LAYOUT, Native, Object, STRING_CLASS, TEXT_VIEWS, Target,
+    View,
+};
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
@@ -16,13 +22,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, Ordering};
 use eggos_android_package::dex::Dex;
+use eggos_android_package::layout::{self, Text, ViewNode};
 use eggos_android_package::manifest::Manifest;
+use eggos_android_package::resources::ResourceTable;
 use eggos_dex_compiler::{self as compiler, helper, method_entry};
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
 use eggos_toolkit::application::{self, Application};
 use eggos_toolkit::theme::Token;
-use eggos_toolkit::tree::{Response, WidgetTree};
+use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Kind, Length, Place};
 use eggos_toolkit::window::Window;
 
@@ -39,6 +47,11 @@ const PAGE: usize = 4096;
 const READ_CHUNK: usize = 64 << 10;
 const LARGEST_FILE: usize = 64 << 20;
 const MANIFEST_NAME: &[u8] = b"AndroidManifest.xml";
+const RESOURCES_NAME: &[u8] = b"resources.arsc";
+const MOST_WIDGETS: usize = 64;
+const ROW: i32 = 44;
+const COLUMN: i32 = 160;
+const DEEPEST_VIEW: usize = 32;
 const WINDOW_SIZE: (u32, u32) = (360, 640);
 const PADDING: i32 = 16;
 
@@ -50,6 +63,10 @@ struct State {
     statics: BTreeMap<u32, u64>,
     initialized: BTreeSet<String>,
     dispatch: BTreeMap<(String, u32), usize>,
+    resources: Option<ResourceTable>,
+    folder: Vec<u8>,
+    activity: u64,
+    table: usize,
 }
 
 static STATE: AtomicPtr<State> = AtomicPtr::new(core::ptr::null_mut());
@@ -402,6 +419,7 @@ extern "sysv64" fn text_view_init(words: *const u64, _: *const usize) -> u64 {
     let [view, _] = arguments::<2>(words);
     if let Some(view) = object(view) {
         view.text = Some(String::new());
+        view.view = Some(View::default());
     }
     0
 }
@@ -415,12 +433,162 @@ extern "sysv64" fn set_text(words: *const u64, _: *const usize) -> u64 {
     0
 }
 
+fn resource_string(id: u64) -> Option<String> {
+    let state = state();
+    state.resources.as_ref()?.string(id as u32).map(String::from)
+}
+
+fn new_string(text: String) -> u64 {
+    new_object(Object {
+        class: String::from(STRING_CLASS),
+        text: Some(text),
+        ..Object::default()
+    })
+}
+
+fn text_of(text: &Option<Text>) -> Option<String> {
+    match text.as_ref()? {
+        Text::Literal(text) => Some(text.clone()),
+        Text::Resource(id) => resource_string(u64::from(*id)),
+    }
+}
+
+fn inflate_node(node: &ViewNode, depth: usize) -> u64 {
+    let class = framework::element_class(&node.element);
+    let shows_text = TEXT_VIEWS.contains(&class.as_str());
+    let children = match depth < DEEPEST_VIEW {
+        true => node.children.iter().map(|child| inflate_node(child, depth + 1)).collect(),
+        false => Vec::new(),
+    };
+    let text = text_of(&node.text).or_else(|| shows_text.then(|| text_of(&node.hint)).flatten());
+    new_object(Object {
+        class,
+        text: text.or_else(|| shows_text.then(String::new)),
+        view: Some(View {
+            id: node.id.unwrap_or(0),
+            children,
+            vertical: node.vertical || node.element != "LinearLayout",
+            on_click: node.on_click.clone(),
+            listener: 0,
+        }),
+        ..Object::default()
+    })
+}
+
+fn inflate(layout_id: u64) -> u64 {
+    let Some(path) = resource_string(layout_id) else {
+        stop(&[b"android: no layout resource for setContentView"]);
+    };
+    let file = [state().folder.as_slice(), b"/", path.as_bytes()].concat();
+    let Some(node) = read_file(&file).and_then(|bytes| layout::parse(&bytes)) else {
+        stop(&[b"android: cannot read the layout ", path.as_bytes()]);
+    };
+    inflate_node(&node, 0)
+}
+
+extern "sysv64" fn set_content_layout(words: *const u64, _: *const usize) -> u64 {
+    let [_, layout_id] = arguments::<2>(words);
+    let root = inflate(u64::from(layout_id as u32));
+    state().content = Some(root);
+    0
+}
+
+fn find_view(view: u64, id: u32, depth: usize) -> Option<u64> {
+    let found = object(view)?.view.as_ref()?;
+    if found.id == id {
+        return Some(view);
+    }
+    if depth >= DEEPEST_VIEW {
+        return None;
+    }
+    let children = found.children.clone();
+    children.into_iter().find_map(|child| find_view(child, id, depth + 1))
+}
+
+extern "sysv64" fn find_view_by_id(words: *const u64, _: *const usize) -> u64 {
+    let [this, id] = arguments::<2>(words);
+    let is_view = object(this).is_some_and(|this| this.view.is_some());
+    let root = match is_view {
+        true => Some(this),
+        false => state().content,
+    };
+    root.and_then(|root| find_view(root, id as u32, 0)).unwrap_or(0)
+}
+
+extern "sysv64" fn view_init(words: *const u64, _: *const usize) -> u64 {
+    let [view] = arguments::<1>(words);
+    if let Some(view) = object(view) {
+        let shows_text = TEXT_VIEWS.contains(&view.class.as_str());
+        view.view = Some(View {
+            vertical: view.class.as_str() != LINEAR_LAYOUT,
+            ..View::default()
+        });
+        if shows_text {
+            view.text = Some(String::new());
+        }
+    }
+    0
+}
+
+extern "sysv64" fn set_on_click_listener(words: *const u64, _: *const usize) -> u64 {
+    let [view, listener] = arguments::<2>(words);
+    if let Some(view) = object(view).and_then(|view| view.view.as_mut()) {
+        view.listener = listener;
+    }
+    0
+}
+
+extern "sysv64" fn set_text_resource(words: *const u64, _: *const usize) -> u64 {
+    let [view, id] = arguments::<2>(words);
+    let text = resource_string(u64::from(id as u32)).unwrap_or_default();
+    if let Some(view) = object(view) {
+        view.text = Some(text);
+    }
+    0
+}
+
+extern "sysv64" fn get_text(words: *const u64, _: *const usize) -> u64 {
+    let [view] = arguments::<1>(words);
+    let text = object(view).and_then(|view| view.text.clone()).unwrap_or_default();
+    new_string(text)
+}
+
+extern "sysv64" fn get_string(words: *const u64, _: *const usize) -> u64 {
+    let [_, id] = arguments::<2>(words);
+    new_string(resource_string(u64::from(id as u32)).unwrap_or_default())
+}
+
+extern "sysv64" fn add_view(words: *const u64, _: *const usize) -> u64 {
+    let [group, child] = arguments::<2>(words);
+    if let Some(group) = object(group).and_then(|group| group.view.as_mut()) {
+        group.children.push(child);
+    }
+    0
+}
+
+extern "sysv64" fn set_orientation(words: *const u64, _: *const usize) -> u64 {
+    let [layout, orientation] = arguments::<2>(words);
+    if let Some(layout) = object(layout).and_then(|layout| layout.view.as_mut()) {
+        layout.vertical = orientation as u32 == 1;
+    }
+    0
+}
+
 fn native_entry(native: Native) -> Entry {
     match native {
         Native::Nothing => nothing,
         Native::SetContentView => set_content_view,
         Native::TextViewInit => text_view_init,
         Native::SetText => set_text,
+        Native::SetContentLayout => set_content_layout,
+        Native::FindViewById => find_view_by_id,
+        Native::ViewInit => view_init,
+        Native::SetOnClickListener => set_on_click_listener,
+        Native::SetTextResource => set_text_resource,
+        Native::GetText => get_text,
+        Native::GetString => get_string,
+        Native::AddView => add_view,
+        Native::SetOrientation => set_orientation,
     }
 }
 
@@ -483,26 +651,116 @@ fn call(table: &[usize], method: u32, words: &[u64]) -> u64 {
     entry_at(table[method_entry(method)])(words.as_ptr(), table.as_ptr())
 }
 
-struct ContentWindow {
-    tree: WidgetTree<4>,
+fn compiled_method(class: &str, name: &str) -> Option<usize> {
+    let state = state();
+    let mut class = String::from(class);
+    for _ in 0..DEEPEST_VIEW {
+        let index = state.dex.class_index(&class)?;
+        let found = method_named(&state.dex, index, name)
+            .and_then(|method| state.compiled.get(&method))
+            .map(|&offset| state.base + offset);
+        if found.is_some() {
+            return found;
+        }
+        class = state.dex.superclass(index)?;
+    }
+    None
 }
 
-impl Application<4> for ContentWindow {
-    fn tree(&mut self) -> &mut WidgetTree<4> {
+fn click(view: u64) {
+    let Some(shown) = object(view).and_then(|view| view.view.clone()) else {
+        return;
+    };
+    let (receiver, name) = match shown.on_click {
+        Some(name) if shown.listener == 0 => (state().activity, name),
+        _ => (shown.listener, String::from("onClick")),
+    };
+    let Some(class) = object(receiver).map(|receiver| receiver.class.clone()) else {
+        return;
+    };
+    if let Some(address) = compiled_method(&class, &name) {
+        let words = [receiver, view];
+        entry_at(address)(words.as_ptr(), state().table as *const usize);
+    }
+}
+
+struct ContentWindow {
+    tree: WidgetTree<MOST_WIDGETS>,
+    shown: Vec<(WidgetId, u64)>,
+}
+
+impl ContentWindow {
+    fn add(&mut self, view: u64, x: i32, y: i32, depth: usize) -> i32 {
+        let Some(shown) = object(view).map(|view| view.clone()) else {
+            return 0;
+        };
+        let (class, text, view_state) = (shown.class, shown.text, shown.view);
+        let children = view_state
+            .as_ref()
+            .map_or(Vec::new(), |state| state.children.clone());
+        if !children.is_empty() && depth < DEEPEST_VIEW {
+            let vertical = view_state.as_ref().is_none_or(|state| state.vertical);
+            let mut used = 0;
+            for (index, child) in children.into_iter().enumerate() {
+                match vertical {
+                    true => used += self.add(child, x, y + used, depth + 1),
+                    false => {
+                        let column = x + index as i32 * COLUMN;
+                        used = used.max(self.add(child, column, y, depth + 1));
+                    }
+                }
+            }
+            return used;
+        }
+        let Some(text) = text else {
+            return 0;
+        };
+        let kind = match class.as_str() {
+            BUTTON => Kind::button(&text, false),
+            _ => Kind::label(&text, Token::Text),
+        };
+        let place = Place::at(x, y, Length::Content, Length::Content);
+        if let Some(widget) = self.tree.add(None, place, kind) {
+            self.shown.push((widget, view));
+        }
+        ROW
+    }
+
+    fn refresh(&mut self) {
+        for &(widget, view) in &self.shown {
+            if let Some(text) = object(view).and_then(|view| view.text.clone()) {
+                self.tree.set_text(widget, &text);
+            }
+        }
+    }
+}
+
+impl Application<MOST_WIDGETS> for ContentWindow {
+    fn tree(&mut self) -> &mut WidgetTree<MOST_WIDGETS> {
         &mut self.tree
     }
 
-    fn respond(&mut self, _response: Response, _now_ms: u32) {}
+    fn respond(&mut self, response: Response, _now_ms: u32) {
+        if let Response::Activated(widget) = response
+            && let Some(&(_, view)) = self.shown.iter().find(|(shown, _)| *shown == widget)
+        {
+            click(view);
+            self.refresh();
+        }
+    }
 }
 
-fn show(title: &str, text: &str) -> i32 {
+fn show(title: &str) -> i32 {
     let Ok(mut window) = Window::create(title, WINDOW_SIZE.0, WINDOW_SIZE.1, (160, 120)) else {
         stop(&[b"android: no window for the app"]);
     };
-    let mut tree = WidgetTree::<4>::new();
-    let place = Place::at(PADDING, PADDING, Length::Fill(PADDING), Length::Content);
-    let _ = tree.add(None, place, Kind::label(text, Token::Text));
-    let mut content = ContentWindow { tree };
+    let mut content = ContentWindow {
+        tree: WidgetTree::<MOST_WIDGETS>::new(),
+        shown: Vec::new(),
+    };
+    if let Some(root) = state().content {
+        content.add(root, PADDING, PADDING, 0);
+    }
     match application::run(&mut window, &mut content) {
         Ok(()) => 0,
         Err(_) => 1,
@@ -535,6 +793,8 @@ pub fn run(startup: &Startup) -> i32 {
     let Ok(dex) = Dex::parse(bytes) else {
         stop(&[b"android: ", code_path, b" is not a DEX file"]);
     };
+    let resources_path = [folder, b"/", RESOURCES_NAME].concat();
+    let resources = read_file(&resources_path).and_then(|bytes| ResourceTable::parse(&bytes));
     let (code, compiled) = compile_all(&dex);
     let Some(base) = executable(&code) else {
         stop(&[b"android: no executable memory for the app's code"]);
@@ -550,10 +810,16 @@ pub fn run(startup: &Startup) -> i32 {
         statics: BTreeMap::new(),
         initialized: BTreeSet::new(),
         dispatch: BTreeMap::new(),
+        resources,
+        folder: Vec::from(folder),
+        activity: 0,
+        table: 0,
     };
     STATE.store(Box::leak(Box::new(state)), Ordering::Release);
     let mut table: Vec<usize> = helpers().iter().map(|&entry| entry as usize).collect();
     table.extend(targets.into_iter().map(target_address));
+    let table: &'static [usize] = Box::leak(table.into_boxed_slice());
+    state().table = table.as_ptr() as usize;
     let Some(class) = dex.class_index(&activity) else {
         stop(&[b"android: the app does not define its activity ", activity.as_bytes()]);
     };
@@ -567,16 +833,12 @@ pub fn run(startup: &Startup) -> i32 {
         class: activity.clone(),
         ..Object::default()
     });
+    state().activity = this;
     if let Some(init) = method_named(&dex, class, "<init>") {
-        call(&table, init, &[this]);
+        call(table, init, &[this]);
     }
     if let Some(on_create) = method_named(&dex, class, "onCreate") {
-        call(&table, on_create, &[this, 0]);
+        call(table, on_create, &[this, 0]);
     }
-    let text = state()
-        .content
-        .and_then(object)
-        .and_then(|view| view.text.clone())
-        .unwrap_or_default();
-    show(&manifest.package, &text)
+    show(&manifest.package)
 }

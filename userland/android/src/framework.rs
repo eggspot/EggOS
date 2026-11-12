@@ -1,6 +1,7 @@
-//! The Android framework as the layer provides it, part 1 (D472): the classes an app's first
-//! screen needs (`Object`, `Activity` and its AndroidX forms, `TextView`), each method a
-//! native function of the layer, and where every call an app makes goes: to the app's own
+//! The Android framework as the layer provides it (D472, D500): the classes an app's first
+//! screens need (`Object`, `Activity` and its AndroidX forms, `View`, `TextView`, `Button`,
+//! `EditText`, `LinearLayout`), each method a native function of the layer, told apart by
+//! name and short signature, and where every call an app makes goes: to the app's own
 //! compiled code, found up its class's superclasses, or to the framework.
 
 use alloc::collections::BTreeMap;
@@ -18,6 +19,19 @@ pub const ACTIVITY_CLASSES: [&str; 4] = [
 /// The string class.
 pub const STRING_CLASS: &str = "Ljava/lang/String;";
 const TEXT_VIEW: &str = "Landroid/widget/TextView;";
+/// The framework's views that show text.
+pub const TEXT_VIEWS: [&str; 3] = [TEXT_VIEW, BUTTON, EDIT_TEXT];
+/// The framework's button.
+pub const BUTTON: &str = "Landroid/widget/Button;";
+const EDIT_TEXT: &str = "Landroid/widget/EditText;";
+/// The framework's linear layout.
+pub const LINEAR_LAYOUT: &str = "Landroid/widget/LinearLayout;";
+const VIEW: &str = "Landroid/view/View;";
+const VIEW_GROUP: &str = "Landroid/view/ViewGroup;";
+const CONTEXT_CLASSES: [&str; 2] = [
+    "Landroid/content/Context;",
+    "Landroid/content/ContextWrapper;",
+];
 const OBJECT: &str = "Ljava/lang/Object;";
 const MOST_ANCESTORS: usize = 16;
 
@@ -32,17 +46,49 @@ pub enum Native {
     TextViewInit,
     /// `TextView.setText(CharSequence)`.
     SetText,
+    /// `Activity.setContentView(int)`: the layout resource the activity shows, inflated (D500).
+    SetContentLayout,
+    /// `findViewById(int)`, on an activity or a view: the view with that id in what it shows.
+    FindViewById,
+    /// A view's or layout's constructor: an empty one of the object's class.
+    ViewInit,
+    /// `View.setOnClickListener(OnClickListener)`.
+    SetOnClickListener,
+    /// `TextView.setText(int)`: a string resource's text.
+    SetTextResource,
+    /// `TextView.getText()`: its text, as a string.
+    GetText,
+    /// `getString(int)` on a context: a string resource's text.
+    GetString,
+    /// `ViewGroup.addView(View)`.
+    AddView,
+    /// `LinearLayout.setOrientation(int)`.
+    SetOrientation,
 }
 
-/// The framework's implementation of `class`'s method `name`, if the layer has one.
-pub fn native(class: &str, name: &str) -> Option<Native> {
+/// The framework's implementation of `class`'s method `name` with short signature `shorty`
+/// (`VI` takes an `int`, `VL` an object), if the layer has one.
+pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
     let activity = ACTIVITY_CLASSES.contains(&class);
+    let context = activity || CONTEXT_CLASSES.contains(&class);
+    let text = TEXT_VIEWS.contains(&class);
+    let view = text || matches!(class, VIEW | VIEW_GROUP | LINEAR_LAYOUT);
+    let takes_int = shorty == "VI";
     Some(match (class, name) {
         (OBJECT, "<init>") => Native::Nothing,
         (_, "<init>" | "onCreate" | "onStart" | "onResume") if activity => Native::Nothing,
+        (_, "setContentView") if activity && takes_int => Native::SetContentLayout,
         (_, "setContentView") if activity => Native::SetContentView,
+        (_, "findViewById") if activity || view => Native::FindViewById,
+        (_, "getString") if context => Native::GetString,
         (TEXT_VIEW, "<init>") => Native::TextViewInit,
-        (TEXT_VIEW, "setText") => Native::SetText,
+        (_, "<init>") if view => Native::ViewInit,
+        (_, "setText") if text && takes_int => Native::SetTextResource,
+        (_, "setText") if text => Native::SetText,
+        (_, "getText") if text => Native::GetText,
+        (_, "setOnClickListener") if view => Native::SetOnClickListener,
+        (_, "addView") if view => Native::AddView,
+        (_, "setOrientation") if view => Native::SetOrientation,
         _ => return None,
     })
 }
@@ -81,8 +127,9 @@ pub fn resolve(dex: &Dex<'_>, method: u32, compiled: &BTreeMap<u32, usize>) -> T
     let (Some(name), Some(mut class)) = (dex.method_name(method), dex.method_class(method)) else {
         return Target::Missing;
     };
+    let shorty = dex.method_shorty(method).unwrap_or_default();
     for _ in 0..MOST_ANCESTORS {
-        if let Some(native) = native(&class, &name) {
+        if let Some(native) = native(&class, &name, &shorty) {
             return Target::Native(native);
         }
         let Some(index) = dex.class_index(&class) else {
@@ -128,9 +175,10 @@ pub fn resolve_virtual(
     let Some(name) = dex.method_name(method) else {
         return Target::Missing;
     };
+    let shorty = dex.method_shorty(method).unwrap_or_default();
     let mut class = String::from(receiver);
     for _ in 0..MOST_ANCESTORS {
-        if let Some(native) = native(&class, &name) {
+        if let Some(native) = native(&class, &name, &shorty) {
             return Target::Native(native);
         }
         let Some(index) = dex.class_index(&class) else {
@@ -193,13 +241,36 @@ pub fn activity_descriptor(package: &str, name: &str) -> String {
 }
 
 /// An object an app made: its class, its fields by field index, a string's or a text view's
-/// text, and an array's elements.
+/// text, an array's elements, and a view's state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Object {
     pub class: String,
     pub fields: BTreeMap<u32, u64>,
     pub text: Option<String>,
     pub elements: Option<alloc::vec::Vec<u64>>,
+    pub view: Option<View>,
+}
+
+/// What a view holds (D500): its id, the views inside it (a layout's), whether a linear
+/// layout stacks them, the activity method a click calls by name (`android:onClick`), and the
+/// click listener object set on it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct View {
+    pub id: u32,
+    pub children: alloc::vec::Vec<u64>,
+    pub vertical: bool,
+    pub on_click: Option<String>,
+    pub listener: u64,
+}
+
+/// The framework class a layout element names: `TextView` and the other short names are in
+/// `android.widget` (`View` and `ViewGroup` in `android.view`), a dotted name is whole.
+pub fn element_class(element: &str) -> String {
+    match element {
+        _ if element.contains('.') => format!("L{};", element.replace('.', "/")),
+        "View" | "ViewGroup" => format!("Landroid/view/{element};"),
+        _ => format!("Landroid/widget/{element};"),
+    }
 }
 
 #[cfg(test)]
@@ -208,13 +279,29 @@ mod tests {
 
     #[test]
     fn activities_and_text_views_are_the_framework_s() {
-        assert_eq!(native("Landroid/app/Activity;", "onCreate"), Some(Native::Nothing));
+        assert_eq!(native("Landroid/app/Activity;", "onCreate", "VL"), Some(Native::Nothing));
         assert_eq!(
-            native("Landroidx/appcompat/app/AppCompatActivity;", "setContentView"),
+            native("Landroidx/appcompat/app/AppCompatActivity;", "setContentView", "VL"),
             Some(Native::SetContentView)
         );
-        assert_eq!(native(TEXT_VIEW, "setText"), Some(Native::SetText));
-        assert_eq!(native("Landroid/widget/Button;", "setText"), None);
+        assert_eq!(
+            native("Landroid/app/Activity;", "setContentView", "VI"),
+            Some(Native::SetContentLayout)
+        );
+        assert_eq!(native(TEXT_VIEW, "setText", "VL"), Some(Native::SetText));
+        assert_eq!(native(BUTTON, "setText", "VI"), Some(Native::SetTextResource));
+        assert_eq!(native(BUTTON, "setOnClickListener", "VL"), Some(Native::SetOnClickListener));
+        assert_eq!(native("Landroid/widget/ImageView;", "setText", "VL"), None);
+    }
+
+    #[test]
+    fn layout_elements_name_framework_classes() {
+        assert_eq!(element_class("Button"), "Landroid/widget/Button;");
+        assert_eq!(element_class("View"), "Landroid/view/View;");
+        assert_eq!(
+            element_class("androidx.constraintlayout.widget.ConstraintLayout"),
+            "Landroidx/constraintlayout/widget/ConstraintLayout;"
+        );
     }
 
     #[test]

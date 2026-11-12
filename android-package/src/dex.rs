@@ -18,6 +18,7 @@ const METHOD_ID_BYTES: usize = 8;
 const METHOD_NAME: usize = 4;
 const METHOD_PROTOTYPE: usize = 2;
 const FIELD_ID_BYTES: usize = 8;
+const PROTOTYPE_ID_BYTES: usize = 12;
 const CODE_HEADER_BYTES: usize = 16;
 
 /// A method's code (`code_item`, D471): its register count, how many of them hold its
@@ -62,6 +63,7 @@ pub struct Dex<'a> {
     pub version: u32,
     pub strings: (u32, u32),
     pub types: (u32, u32),
+    pub prototypes: (u32, u32),
     pub fields: (u32, u32),
     pub methods: (u32, u32),
     pub classes: (u32, u32),
@@ -121,6 +123,7 @@ impl<'a> Dex<'a> {
             version,
             strings: pair(0x38),
             types: pair(0x40),
+            prototypes: pair(0x48),
             fields: pair(0x50),
             methods: pair(0x58),
             classes: pair(0x60),
@@ -177,6 +180,17 @@ impl<'a> Dex<'a> {
             return None;
         }
         half(self.bytes, offset as usize + METHOD_ID_BYTES * index as usize + METHOD_PROTOTYPE)
+    }
+
+    /// Method `index`'s short signature: the return type's letter, then each parameter's
+    /// (`VI` for `void f(int)`, `L` for any object).
+    pub fn method_shorty(&self, index: u32) -> Option<String> {
+        let prototype = u32::from(self.method_prototype(index)?);
+        let (count, offset) = self.prototypes;
+        if prototype >= count {
+            return None;
+        }
+        self.string(word(self.bytes, offset as usize + PROTOTYPE_ID_BYTES * prototype as usize)?)
     }
 
     /// The descriptor of the class field `index` belongs to.

@@ -24695,3 +24695,27 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Catching exceptions (`try` blocks and the unwinding through compiled frames),
   floating point, `filled-new-array`, method handles, interfaces in casts, garbage collection,
   and the framework's views, layouts and resources (D500 on).
+
+## D500 The Android layer, part 3: layouts, resources, views and clicks (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** An app's first screens come from its compiled layouts:
+  - `android-package::resources` reads `resources.arsc`: each package's type chunks (plain,
+    sparse and 16-bit-offset entry tables), keeping every simple string value by resource id
+    (`0xPPTTEEEE`), which holds string resources and the paths of layout files; the first
+    configuration to give an entry a value wins (the default one, as the build tools write
+    it). `android-package::layout` reads a compiled layout into a tree of views with their id,
+    text or hint (literal or a string resource), `android:onClick` and orientation. The
+    binary XML reading is the manifest's (D450), shared.
+  - The framework (`userland/android`) gains `View`, `ViewGroup`, `Button`, `EditText` and
+    `LinearLayout`, natives told apart by name and short signature
+    (`Dex::method_shorty`): `setContentView(int)` inflates the layout the resource table
+    names, `findViewById`, view constructors, `setOnClickListener`, `setText(int)`,
+    `getText`, `getString`, `addView` and `setOrientation`. A layout element names its class
+    as Android does (`Button` is `android.widget.Button`, a dotted name is whole).
+  - The window shows the views as toolkit labels and buttons, linear layouts stacked down or
+    across and other layouts stacked down; a click on a button calls the activity's
+    `android:onClick` method, or its click listener's `onClick`, with the view, compiled code
+    found up the class's superclasses, and the window then shows the texts the call changed.
+- **Not yet.** Other resource types (drawables, dimensions, colours, styles), configurations
+  beyond the default, `ConstraintLayout`'s constraints and other layouts' rules, text input
+  in `EditText`, images, lists (`RecyclerView`), fragments, more activities and intents.

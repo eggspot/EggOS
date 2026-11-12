@@ -33,17 +33,17 @@ pub struct Manifest {
     pub launcher_activity: Option<String>,
 }
 
-fn half(bytes: &[u8], at: usize) -> Option<u16> {
+pub(crate) fn half(bytes: &[u8], at: usize) -> Option<u16> {
     let field = bytes.get(at..at + 2)?;
     Some(u16::from_le_bytes([field[0], field[1]]))
 }
 
-fn word(bytes: &[u8], at: usize) -> Option<u32> {
+pub(crate) fn word(bytes: &[u8], at: usize) -> Option<u32> {
     let field = bytes.get(at..at + 4)?;
     Some(u32::from_le_bytes([field[0], field[1], field[2], field[3]]))
 }
 
-fn strings(chunk: &[u8]) -> Option<Vec<String>> {
+pub(crate) fn strings(chunk: &[u8]) -> Option<Vec<String>> {
     let count = word(chunk, 8)? as usize;
     let flags = word(chunk, 16)?;
     let data = word(chunk, 20)? as usize;
