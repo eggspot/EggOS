@@ -25170,3 +25170,20 @@ the license, by an explicit instruction recorded here.
   call, GSP-RM's object allocation and control calls, the display through them, and the
   sequencer's resume step.
 - `nvidia_falcon` gained `start` and `wait_for_halt`, which `run` and `run_secure` now share.
+
+## D524 NVIDIA's displays through GSP-RM, part 1: the screens and their EDIDs (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from NVIDIA's MIT-licensed open GPU kernel modules)
+
+- **Decision.** Once GSP-RM has started (D523), the driver makes its own objects through
+  remote alloc calls (a root client `0xc1d00000`, the GPU's device under it, the display's
+  common object, class `0x73`, under that) and asks the display common object through remote
+  control calls which display ids the board supports (`0x730120`), which have a screen
+  connected (`0x730122`) and each connected screen's EDID (`0x730245`, up to 2 KiB). A call is
+  sent, the doorbell rung, and GSP-RM's messages read until the answer of the same function
+  comes, CPU sequencer requests run on the way; a non-zero status in the answer is a refusal.
+  The probe summary names each connected screen, its maker, name and preferred size.
+- `eggos_drivers::gpu::nvidia_gsp_display` builds the calls and reads the answers through a
+  call function, so it is tested without a GPU; the kernel's `GspRm` keeps the queues, BAR 0 and
+  GSP's Falcon together and does the waiting.
+- **Not yet.** Showing anything: the display's instance memory, the core and window channels
+  with their push buffers, mode setting and flips through them, hot plug events, freeing the
+  objects; until then the firmware's framebuffer stays what the screen shows.

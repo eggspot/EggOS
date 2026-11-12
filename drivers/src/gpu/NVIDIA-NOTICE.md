@@ -49,3 +49,8 @@ information, registry and CPU sequencer formats (D523) follow the r535 headers o
 GPU kernel modules (`rpc_global_enums.h`, `rpc_headers.h`, `message_queue_priv.h`) as nouveau's
 MIT-licensed `nvkm/subdev/gsp/rm/r535/` files (copyright Red Hat Inc. and NVIDIA Corporation)
 use them.
+
+The remote alloc and control call layouts, the object classes and the display control
+commands and parameters `nvidia_gsp_display.rs` uses (D524) are from the same modules' r535
+headers (`g_rpc-structures.h`, `ctrl0073*.h`, `cl0000.h`, `cl0080.h`), under the MIT licence
+above.

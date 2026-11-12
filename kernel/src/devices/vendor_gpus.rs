@@ -18,6 +18,7 @@ use eggos_drivers::gpu::{nvidia_falcon, nvidia_fwsec};
 use eggos_drivers::io::RegisterIo;
 use eggos_drivers::gpu::nvidia_gsp::{self, Chip};
 use eggos_drivers::gpu::nvidia_gsp_boot::{self, SharedMemory, SystemImages, WprLayout};
+use eggos_drivers::gpu::nvidia_gsp_display;
 use eggos_drivers::gpu::nvidia_gsp_queue::{self, Queues, SequencerStep, SystemInfo};
 use eggos_drivers::dma::DmaMemory;
 use super::dma::DmaRegion;
@@ -271,12 +272,13 @@ fn paged_copy(bytes: &[u8], kept: &mut Vec<DmaRegion>) -> Result<Vec<u64>, &'sta
 /// version told and the RISC-V core seen running. The memory stays GSP-RM's for good. The
 /// system information and the registry wait in the command queue before the booter runs
 /// (D523); GSP-RM's messages are then read, its CPU sequencer requests run (`delay` waits a
-/// number of microseconds), until it says it finished starting.
+/// number of microseconds), until it says it finished starting. Then the screens GSP-RM finds
+/// are asked for (D524); a summary of them.
 fn boot_gsp(
     target: &GspTarget,
     (gsp, boot_file, booter_file): (&[u8], &[u8], &[u8]),
     delay: &mut dyn FnMut(u32),
-) -> Result<(), &'static str> {
+) -> Result<String, &'static str> {
     let firmware = nvidia_gsp::gsp_firmware(gsp, target.family).ok_or("not a GSP firmware file")?;
     let (image_at, image_bytes) = firmware.image;
     let (signature_at, signature_bytes) = firmware
@@ -387,28 +389,89 @@ fn boot_gsp(
         }
         core::hint::spin_loop();
     }
-    let mut keep_waiting = polls();
-    loop {
-        let message = channel
-            .receive()
-            .map_err(nvidia_gsp_queue::QueueError::description)?;
-        let Some(message) = message else {
-            if !keep_waiting() {
-                return Err("GSP-RM did not finish starting");
+    let mut gsp_rm = GspRm {
+        channel,
+        regs,
+        length: target.length,
+        falcon: gsp_falcon,
+    };
+    gsp_rm.await_message(nvidia_gsp_queue::event::INIT_DONE, delay)?;
+    let sinks = nvidia_gsp_display::find_sinks(&mut |function, payload| {
+        gsp_rm.call(function, payload, delay)
+    })
+    .map_err(|error| match error {
+        nvidia_gsp_display::DisplayError::Call(reason) => reason,
+        nvidia_gsp_display::DisplayError::Refused(_) => "GSP-RM refused a display call",
+        nvidia_gsp_display::DisplayError::ShortAnswer => "GSP-RM's display answer was short",
+    })?;
+    let mut line = String::new();
+    for sink in sinks {
+        let _ = write!(line, " display {}", sink.display);
+        if let Some(edid) = sink.edid.as_deref().and_then(eggos_drivers::edid::Edid::parse) {
+            let maker = core::str::from_utf8(&edid.maker).unwrap_or("?");
+            let _ = write!(line, " {maker} {}", edid.name());
+            if let Some(mode) = edid.preferred {
+                let _ = write!(line, " preferred {}x{}", mode.width, mode.height);
             }
-            core::hint::spin_loop();
-            continue;
-        };
-        match message.function {
-            nvidia_gsp_queue::event::INIT_DONE => return Ok(()),
-            nvidia_gsp_queue::event::RUN_CPU_SEQUENCER => {
-                let steps = nvidia_gsp_queue::sequencer_steps(&message.payload)
-                    .ok_or("GSP-RM sent an unknown sequencer operation")?;
-                run_sequencer(&regs, target.length, &gsp_falcon, &steps, delay)?;
-            }
-            nvidia_gsp_queue::event::OS_ERROR_LOG => return Err("GSP-RM reported an error"),
-            _ => {}
         }
+    }
+    Ok(line)
+}
+
+/// GSP-RM once it runs: its queues, BAR 0 (`length` bytes) and GSP's Falcon.
+struct GspRm {
+    channel: Queues<eggos_drivers::io::Mmio>,
+    regs: eggos_drivers::io::Mmio,
+    length: usize,
+    falcon: nvidia_falcon::Falcon<eggos_drivers::io::Mmio>,
+}
+
+impl GspRm {
+    /// Reads GSP-RM's messages until one of `function` comes, running its CPU sequencer
+    /// requests on the way (D523); that message.
+    fn await_message(
+        &mut self,
+        function: u32,
+        delay: &mut dyn FnMut(u32),
+    ) -> Result<nvidia_gsp_queue::Message, &'static str> {
+        let mut keep_waiting = polls();
+        loop {
+            let message = self
+                .channel
+                .receive()
+                .map_err(nvidia_gsp_queue::QueueError::description)?;
+            let Some(message) = message else {
+                if !keep_waiting() {
+                    return Err("GSP-RM did not answer in time");
+                }
+                core::hint::spin_loop();
+                continue;
+            };
+            match message.function {
+                found if found == function => return Ok(message),
+                nvidia_gsp_queue::event::RUN_CPU_SEQUENCER => {
+                    let steps = nvidia_gsp_queue::sequencer_steps(&message.payload)
+                        .ok_or("GSP-RM sent an unknown sequencer operation")?;
+                    run_sequencer(&self.regs, self.length, &self.falcon, &steps, delay)?;
+                }
+                nvidia_gsp_queue::event::OS_ERROR_LOG => return Err("GSP-RM reported an error"),
+                _ => {}
+            }
+        }
+    }
+
+    /// Sends remote call `function` with `payload` and waits for its answer's payload (D524).
+    fn call(
+        &mut self,
+        function: u32,
+        payload: &[u8],
+        delay: &mut dyn FnMut(u32),
+    ) -> Result<Vec<u8>, &'static str> {
+        self.channel
+            .send(function, payload)
+            .map_err(nvidia_gsp_queue::QueueError::description)?;
+        self.falcon.announce_command();
+        Ok(self.await_message(function, delay)?.payload)
     }
 }
 
@@ -485,7 +548,9 @@ pub fn start_gsp<P: eggos_hal::Platform>() -> bool {
             crate::thread::sleep::<P>(core::time::Duration::from_micros(microseconds.into()));
         };
         let line = match boot_gsp(&target, (&gsp, &boot, &booter), &mut delay) {
-            Ok(()) => alloc::format!("nvidia {} gsp-rm {version} started\n", target.chip),
+            Ok(sinks) => {
+                alloc::format!("nvidia {} gsp-rm {version} started{sinks}\n", target.chip)
+            }
             Err(reason) => {
                 alloc::format!("nvidia {} gsp-rm did not start: {reason}\n", target.chip)
             }
