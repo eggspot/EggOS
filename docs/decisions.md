@@ -23120,3 +23120,26 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Utility-panel styles (`NSWindowStyleMaskUtilityWindow`, HUD), floating
   panels staying above the app's other windows (a window-server level), and the stand-in's
   `delegate`.
+
+## D408 A C++ test program on macOS, and `__dynamic_cast` (batch part 16's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; the Itanium C++ ABI's `__dynamic_cast` and vtable layout)
+
+- **Question.** D380 gave C++ exceptions and libc++abi's basics on macOS but no C++ program
+  in CI's macOS programs to prove them, and no `dynamic_cast`.
+- **Decision.** `tests/macos-cxx/main.cpp`, our own C++17 program, built on CI's macOS
+  runner with `clang++` like the C programs (`C_PROGRAMS` gains a `source`; `.cpp` builds
+  as C++17), installed as `bin/macos-cxx` in the macOS programs image and run in the
+  `MACOS_PROGRAM_SESSION`: function-local statics' guards, `throw` and `catch` of an `int`,
+  a class derived from `std::exception` caught by base reference with the destructors run
+  inner first, a rethrow, a `const char *`, `catch (...)`, a handler that does not match
+  passing the exception on, `dynamic_cast` down, across (to a second base) and failing,
+  `typeid` comparisons, `new[]`/`delete[]`, `nothrow` new refusing and plain `new` throwing
+  `std::bad_alloc`. Its eighteen expected lines are in `xtask/src/qemu.rs`.
+- **`__dynamic_cast`** (`objc/cxx_types.rs`, host-tested) reads the object's offset to the
+  whole object and its dynamic type from the two words before its vtable's address point,
+  answers the whole object when that is the wanted type, else the public base of the
+  wanted type inside it through the same inheritance walk `catch` uses (a downcast or a
+  cross cast), else null. `__cxa_bad_cast` and `__cxa_bad_typeid` (a cast to a reference
+  failing) end the program as `std::terminate` does until `std::bad_cast` exists.
+- **Not yet.** `std::bad_cast` and `std::bad_typeid` thrown, ambiguous-base and
+  non-public-source checks in `__dynamic_cast` (it takes the first public match), and
+  UDCalc, which needs its bundled Sparkle framework loaded (D409).

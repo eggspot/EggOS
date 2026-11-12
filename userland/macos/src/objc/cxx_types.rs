@@ -3,7 +3,8 @@
 //! multiple inheritance, pointer, fundamental), the fundamental types' and `std::exception`'s
 //! own records, and the match a `catch` clause makes against a thrown type: the same type (by
 //! address or name), a public base found through the inheritance records with the object's
-//! address adjusted to it, or a pointer type's pointee.
+//! address adjusted to it, or a pointer type's pointee; and `__dynamic_cast` over the same
+//! records (D408).
 
 #[cfg(eggos_user)]
 use super::exception::{image_byte, image_word};
@@ -364,9 +365,44 @@ pub fn catches(wanted: u64, thrown: u64, object: u64) -> Option<u64> {
     find_base(wanted, thrown, object, 0)
 }
 
+/// `__dynamic_cast` (D408): the object `sub` points into, seen as `wanted`: the whole object
+/// when that is its dynamic type, else the public base of that type inside it (a downcast or
+/// a cross cast), else 0. The object's vtable gives its offset to the whole object and its
+/// dynamic type, as the Itanium ABI lays them out.
+pub fn dynamic_cast(sub: u64, wanted: u64) -> u64 {
+    if sub == 0 || wanted == 0 {
+        return 0;
+    }
+    // SAFETY: `sub` points at a live polymorphic object, whose first word is its vtable's
+    // address point, the offset to the top and the type record in the two words before it.
+    let (whole, dynamic) = unsafe {
+        let vtable = (sub as *const u64).read_unaligned();
+        let to_top = ((vtable - 16) as *const i64).read_unaligned();
+        let dynamic = ((vtable - 8) as *const u64).read_unaligned();
+        (sub.wrapping_add(to_top as u64), dynamic)
+    };
+    if same_type(wanted, dynamic) {
+        return whole;
+    }
+    find_base(wanted, dynamic, whole, 0).unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dynamic_cast_finds_the_whole_object_or_a_base_or_nothing() {
+        let vtable: [u64; 3] = [0, &raw const TYPE_BAD_ALLOC as u64, 0];
+        let object: [u64; 1] = [(&raw const vtable[2]) as u64];
+        let at = &raw const object as u64;
+        let bad_alloc = &raw const TYPE_BAD_ALLOC as u64;
+        let exception = &raw const TYPE_EXCEPTION as u64;
+        assert_eq!(dynamic_cast(at, bad_alloc), at);
+        assert_eq!(dynamic_cast(at, exception), at);
+        assert_eq!(dynamic_cast(at, &raw const TYPE_INT as u64), 0);
+        assert_eq!(dynamic_cast(0, exception), 0);
+    }
 
     #[test]
     fn the_fundamental_records_know_their_kind_and_name() {

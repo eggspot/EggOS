@@ -96,14 +96,22 @@ pub const SWIFT_PROGRAMS: [SwiftProgram; 1] = [SwiftProgram {
     folder: "macos-swift",
 }];
 
-/// A program built from C source with Apple's clang: `tests/<folder>/main.c`, for macOS
-/// `deployment_target` and later, with `link_flags` for Apple's linker.
+/// A program built from C or C++ source with Apple's clang: `tests/<folder>/<source>`
+/// (`main.cpp` builds as C++17 with `clang++`, D408), for macOS `deployment_target` and later,
+/// with `link_flags` for Apple's linker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CProgram {
     pub name: &'static str,
     pub folder: &'static str,
+    pub source: &'static str,
     pub deployment_target: &'static str,
     pub link_flags: &'static [&'static str],
+}
+
+impl CProgram {
+    fn is_cxx(&self) -> bool {
+        self.source.ends_with(".cpp")
+    }
 }
 
 /// The oldest macOS the older-program test targets: clang raises it to 11.0 for arm64, where
@@ -112,24 +120,34 @@ pub struct CProgram {
 pub const LEGACY_DEPLOYMENT_TARGET: &str = "10.7";
 
 /// The programs built from C sources with Apple's clang.
-pub const C_PROGRAMS: [CProgram; 3] = [
+pub const C_PROGRAMS: [CProgram; 4] = [
     CProgram {
         name: "macos-process",
         folder: "macos-process",
+        source: "main.c",
         deployment_target: DEPLOYMENT_TARGET,
         link_flags: &[],
     },
     CProgram {
         name: "macos-text",
         folder: "macos-text",
+        source: "main.c",
         deployment_target: DEPLOYMENT_TARGET,
         link_flags: &[],
     },
     CProgram {
         name: "macos-legacy",
         folder: "macos-legacy",
+        source: "main.c",
         deployment_target: LEGACY_DEPLOYMENT_TARGET,
         link_flags: &["-Wl,-no_fixup_chains"],
+    },
+    CProgram {
+        name: "macos-cxx",
+        folder: "macos-cxx",
+        source: "main.cpp",
+        deployment_target: DEPLOYMENT_TARGET,
+        link_flags: &[],
     },
 ];
 
@@ -549,10 +567,14 @@ fn build_objc_program(program: ObjcProgram, cpu: &str, output: &Path) -> Result<
 /// The `clang` arguments that build `program`'s `source` for `cpu` into `output`: optimized,
 /// warnings as errors, for the program's macOS version and later, with its link flags.
 pub fn c_arguments(program: &CProgram, source: &Path, cpu: &str, output: &Path) -> Vec<String> {
+    let compiler = if program.is_cxx() { "clang++" } else { "clang" };
     let mut arguments = vec![
-        "clang".to_owned(),
+        compiler.to_owned(),
         format!("-mmacosx-version-min={}", program.deployment_target),
     ];
+    if program.is_cxx() {
+        arguments.push("-std=c++17".to_owned());
+    }
     arguments.extend(
         ["-arch", cpu, "-O2", "-Wall", "-Werror"]
             .iter()
@@ -569,7 +591,7 @@ fn build_c_program(program: CProgram, cpu: &str, output: &Path) -> Result<(), St
     let source = crate::workspace_root()
         .join("tests")
         .join(program.folder)
-        .join("main.c");
+        .join(program.source);
     let arguments = c_arguments(&program, &source, cpu, output);
     let status = std::process::Command::new("xcrun")
         .args(&arguments)
@@ -745,7 +767,10 @@ mod tests {
         assert!(arguments.contains(&"-Werror".to_owned()));
         assert_eq!(&arguments[arguments.len() - 3..], ["-o", "out", "main.c"]);
         let names: Vec<&str> = C_PROGRAMS.iter().map(|program| program.name).collect();
-        assert_eq!(names, ["macos-process", "macos-text", "macos-legacy"]);
+        assert_eq!(names, ["macos-process", "macos-text", "macos-legacy", "macos-cxx"]);
+        let cxx = c_arguments(&C_PROGRAMS[3], Path::new("main.cpp"), "arm64", Path::new("out"));
+        assert_eq!(cxx[0], "clang++");
+        assert!(cxx.contains(&"-std=c++17".to_owned()));
         let legacy = c_arguments(
             &C_PROGRAMS[2],
             Path::new("main.c"),

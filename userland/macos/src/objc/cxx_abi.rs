@@ -237,6 +237,10 @@ fn pointer_record(record: &'static PointerRecord) -> usize {
     record as *const PointerRecord as usize
 }
 
+extern "C" fn dynamic_cast(sub: u64, _source: u64, wanted: u64, _hint: i64) -> u64 {
+    super::cxx_types::dynamic_cast(sub, wanted)
+}
+
 /// The address of the libc++abi function or variable `name`, if the layer has it.
 pub fn resolve(name: &[u8]) -> Option<u64> {
     let address = match name {
@@ -263,6 +267,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"__ZNSt9exceptionD0Ev" | b"__ZNSt9bad_allocD0Ev" => {
             exception_deleting_destructor as *const () as usize
         }
+        b"___dynamic_cast" => dynamic_cast as *const () as usize,
+        b"___cxa_bad_cast" | b"___cxa_bad_typeid" => terminate as *const () as usize,
         b"__ZNKSt9exception4whatEv" => exception_what as *const () as usize,
         b"__ZNKSt9bad_alloc4whatEv" => bad_alloc_what as *const () as usize,
         b"__ZNSt9bad_allocC1Ev" | b"__ZNSt9bad_allocC2Ev" => {

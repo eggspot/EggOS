@@ -963,7 +963,7 @@ const MACOS_CONSOLE_CHECK_LINES: [&str; 23] = [
     "MACOS-CONSOLE status 0",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 25] = [
+const MACOS_PROGRAM_SESSION: [&[u8]; 26] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
@@ -989,6 +989,7 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 25] = [
     b"macos-process; echo MACOS-CONSOLE status $?\r",
     b"macos-text; echo MACOS-CONSOLE status $?\r",
     b"macos-legacy one -v --name=eggos two; echo MACOS-CONSOLE status $?\r",
+    b"macos-cxx; echo MACOS-CONSOLE status $?\r",
     b"exit 7\r",
 ];
 
@@ -1154,6 +1155,27 @@ const TEXT_PROGRAM_LINES: [&str; 21] = [
     "MACOS-TEXT wide scan 1 68 E9 6C 0",
     "MACOS-TEXT C again E9 0 1 1 E9 1",
     "MACOS-TEXT done",
+    "MACOS-CONSOLE status 0",
+];
+
+const CXX_PROGRAM_LINES: [&str; 18] = [
+    "MACOS-CXX statics 10 10 2",
+    "MACOS-CXX int 42",
+    "MACOS-CXX unwind inner",
+    "MACOS-CXX unwind outer",
+    "MACOS-CXX base failure destroyed=2",
+    "MACOS-CXX unwind inner",
+    "MACOS-CXX caught once",
+    "MACOS-CXX rethrown 7",
+    "MACOS-CXX pointer text",
+    "MACOS-CXX any",
+    "MACOS-CXX outer 9",
+    "MACOS-CXX cast 1 1 named circle",
+    "MACOS-CXX cast 1 square",
+    "MACOS-CXX typeid 1 0",
+    "MACOS-CXX memory 10 1",
+    "MACOS-CXX bad_alloc 1",
+    "MACOS-CXX done",
     "MACOS-CONSOLE status 0",
 ];
 
@@ -1398,6 +1420,10 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             .map(|line| Line::Whole((*line).to_owned()))
             .collect(),
         LEGACY_PROGRAM_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).to_owned()))
+            .collect(),
+        CXX_PROGRAM_LINES
             .iter()
             .map(|line| Line::Whole((*line).to_owned()))
             .collect(),
