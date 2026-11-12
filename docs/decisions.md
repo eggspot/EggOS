@@ -25543,3 +25543,18 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The ECDT, for the controller before the namespace loads; burst mode; wake
   events and sleep states other than S5; GPE blocks described as devices (`ACPI0006`);
   acting on other notifications (lid, battery, thermal and docking).
+
+## D540 virtio-pci: a message line per queue (M8; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the virtio 1.2 specification, 4.1.4.3 and 4.1.5.1.2)
+
+- **Decision.** A virtio-pci device with two or more enabled queues and enough MSI-X entries
+  gets one message line per vector (`connect_each_queue`). Configuration changes go to
+  entry 0 and each enabled queue to its own entry, from 1 in queue order
+  (`PciTransport::route_each_queue`, new, which checks every vector reads back). Every line
+  raises the driver's one `DeviceEvents`, so drivers do not change. D536 spreads the lines
+  over the CPUs like any other, so a network card's receive and transmit queues, or a disk's
+  requests, are handled on different CPUs. `MessageTable` now records its entry, so a line
+  moves by rewriting its own entry. A table too small, a device with a single queue, lines
+  running out or a vector refused falls back to D184's single line, after giving back the
+  lines it took.
+- **Not yet.** Several queues per direction (virtio-net's multiqueue, virtio-blk's
+  `num_queues`), whose queues could then follow their CPUs.

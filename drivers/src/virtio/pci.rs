@@ -190,6 +190,34 @@ impl<R: RegisterIo> PciTransport<R> {
         routed
     }
 
+    /// How many queues the driver enabled.
+    pub fn enabled_queues(&self) -> u16 {
+        (0..self.common.read16(NUM_QUEUES))
+            .filter(|&queue| {
+                self.common.write16(QUEUE_SELECT, queue);
+                self.common.read16(QUEUE_ENABLE) != 0
+            })
+            .count() as u16
+    }
+
+    /// Has configuration changes raise MSI-X entry 0 and each enabled queue an entry of its
+    /// own, from 1 on in queue order (D540): whether the device took every vector.
+    pub fn route_each_queue(&self) -> bool {
+        self.common.write16(CONFIG_MSIX_VECTOR, 0);
+        let mut routed = self.common.read16(CONFIG_MSIX_VECTOR) == 0;
+        let mut entry = 1;
+        for queue in 0..self.common.read16(NUM_QUEUES) {
+            self.common.write16(QUEUE_SELECT, queue);
+            if self.common.read16(QUEUE_ENABLE) == 0 {
+                continue;
+            }
+            self.common.write16(QUEUE_MSIX_VECTOR, entry);
+            routed &= self.common.read16(QUEUE_MSIX_VECTOR) == entry;
+            entry += 1;
+        }
+        routed
+    }
+
     fn notify_offset(&self, queue: u16) -> Option<usize> {
         self.common.write16(QUEUE_SELECT, queue);
         let offset = usize::from(self.common.read16(QUEUE_NOTIFY_OFF))

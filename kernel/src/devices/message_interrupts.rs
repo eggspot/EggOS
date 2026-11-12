@@ -82,6 +82,7 @@ fn enable_message(
             address: table,
             bytes: capability.table_bytes(),
             entries: capability.entries,
+            entry: 0,
         };
         let table = MsixTable::new(registers, capability.entries);
         table.set(0, message.address, message.data);

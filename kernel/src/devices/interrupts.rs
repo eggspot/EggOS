@@ -34,13 +34,15 @@ pub struct Handler {
     pub events: &'static DeviceEvents,
 }
 
-/// Where a message-signalled line's device keeps its message: entry 0 of an MSI-X table of
-/// `entries` entries, `bytes` long, mapped as device memory for good at `address` (D536).
+/// Where a message-signalled line's device keeps its message: entry `entry` of an MSI-X table
+/// of `entries` entries, `bytes` long, mapped as device memory for good at `address` (D536,
+/// D540).
 #[derive(Debug, Clone, Copy)]
 pub struct MessageTable {
     pub address: usize,
     pub bytes: usize,
     pub entries: u16,
+    pub entry: u16,
 }
 
 static HANDLERS: [AtomicPtr<Handler>; DeviceLine::COUNT] =
@@ -148,10 +150,11 @@ pub fn steer<P: Platform>(line: DeviceLine, cpu: u64) -> bool {
     let moved = match unsafe { table.as_ref() } {
         Some(table) => P::message_for(line, cpu).is_ok_and(|message| {
             // SAFETY: the table is a function's MSI-X table, mapped as device memory for good
-            // by the driver that connected the line, which writes only its entry 0, and only
-            // when it sets the line up, before connecting it.
+            // by the driver that connected the line, which writes this line's entry only when
+            // it sets the line up, before connecting it.
             let registers = unsafe { Mmio::new(table.address, table.bytes) };
-            MsixTable::new(registers, table.entries).set(0, message.address, message.data)
+            let entries = MsixTable::new(registers, table.entries);
+            entries.set(table.entry, message.address, message.data)
         }),
         None => P::steer_device_interrupt(line, cpu).is_ok(),
     };
@@ -327,6 +330,7 @@ mod tests {
             address: 0,
             bytes: 0,
             entries: 0,
+            entry: 0,
         };
         connect_message(line, handler, table).unwrap();
         assert!(!steer::<P>(line, 1));

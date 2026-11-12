@@ -787,6 +787,25 @@ fn pci_interrupts_go_to_one_msix_entry_for_the_configuration_and_each_enabled_qu
 }
 
 #[test]
+fn each_enabled_queue_gets_an_msix_entry_of_its_own() {
+    let common = FakeRegs::default();
+    let notify = FakeRegs::default();
+    let transport = PciTransport::new(4, Shared(&common), Shared(&notify), 0x1000, 4, None);
+    common.script_reads(0x10, &[0]);
+    common.script_reads(0x12, &[3]);
+    common.script_reads(0x1c, &[1, 0, 1]);
+    common.script_reads(0x1a, &[1, 2]);
+    assert!(transport.route_each_queue());
+    let vectors: Vec<u32> = common
+        .writes()
+        .iter()
+        .filter(|&&(at, _)| at == 0x1a)
+        .map(|&(_, vector)| vector)
+        .collect();
+    assert_eq!(vectors, vec![1, 2]);
+}
+
+#[test]
 fn a_pci_device_that_reads_back_no_vector_is_not_routed() {
     let common = FakeRegs::default();
     let notify = FakeRegs::default();

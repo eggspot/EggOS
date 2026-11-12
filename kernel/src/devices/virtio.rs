@@ -13,6 +13,7 @@ use super::{
 };
 use crate::sync::LeafSpinLock;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
 use eggos_drivers::pci::msix::MsixTable;
@@ -381,11 +382,11 @@ pub fn connect_interrupt(
                 bar.start + u64::from(msix.table_offset),
                 msix.table_bytes() as u64,
             ))?;
-            let (line, message) = probe.message_interrupt()?;
             let kept = interrupts::MessageTable {
                 address: table,
                 bytes: msix.table_bytes(),
                 entries: msix.entries,
+                entry: 0,
             };
             // SAFETY: `map_window` mapped the table as device memory for good, inside the BAR the
             // capability names; only this driver reaches it.
@@ -393,11 +394,18 @@ pub fn connect_interrupt(
                 unsafe { Mmio::new(table, msix.table_bytes()) },
                 msix.entries,
             );
-            table.set(0, message.address, message.data);
             let config = probe
                 .pci_config()
                 .ok_or(ProbeError::Refused("no PCI configuration space"))?;
             msix.enable(config, function.address);
+            if connect_each_queue(probe, pci_transport, &table, kept, events) {
+                if let Some(node) = probe.table().get_mut(id) {
+                    node.delivery = super::Delivery::Interrupts;
+                }
+                return Ok(());
+            }
+            let (line, message) = probe.message_interrupt()?;
+            table.set(0, message.address, message.data);
             if !pci_transport.route_interrupts_to(0) {
                 return Err(ProbeError::Refused("the device took no MSI-X vector"));
             }
@@ -423,6 +431,51 @@ pub fn connect_interrupt(
         node.delivery = super::Delivery::Interrupts;
     }
     Ok(())
+}
+
+/// Gives configuration changes and each enabled queue a message line of its own (D540), all
+/// raising `events`, so the queues' interrupts can go to different CPUs: whether it did. A
+/// table too small for them, a device with one queue, or lines running out leaves the device
+/// to one line.
+fn connect_each_queue(
+    probe: &mut dyn Probe,
+    transport: &PciTransport<Mmio>,
+    table: &MsixTable<Mmio>,
+    kept: interrupts::MessageTable,
+    events: &'static DeviceEvents,
+) -> bool {
+    let wanted = transport.enabled_queues().saturating_add(1);
+    if wanted < 3 || wanted > kept.entries {
+        return false;
+    }
+    let mut lines = Vec::new();
+    for entry in 0..wanted {
+        match probe.message_interrupt() {
+            Ok((line, message)) => {
+                table.set(entry, message.address, message.data);
+                lines.push((line, entry));
+            }
+            Err(_) => break,
+        }
+    }
+    if lines.len() != usize::from(wanted) || !transport.route_each_queue() {
+        for (line, _) in lines {
+            probe.release_interrupt(line);
+        }
+        return false;
+    }
+    for (line, entry) in lines {
+        let handler = Handler {
+            acknowledge: acknowledge_nothing,
+            context: 0,
+            events,
+        };
+        let table = interrupts::MessageTable { entry, ..kept };
+        if interrupts::connect_message(line, handler, table).is_ok() {
+            probe.interrupt_connected(line);
+        }
+    }
+    true
 }
 
 fn acknowledge_mmio(base: usize) {
