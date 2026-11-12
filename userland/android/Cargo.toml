@@ -1,0 +1,19 @@
+[package]
+name = "eggos-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "android"
+path = "src/main.rs"
+
+[dependencies]
+eggos-android-package = { path = "../../android-package" }
+eggos-dex-compiler = { path = "../../dex-compiler" }
+eggos-runtime = { path = "../runtime" }
+eggos-toolkit = { path = "../toolkit" }
+
+[lints]
+workspace = true

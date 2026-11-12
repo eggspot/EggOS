@@ -533,6 +533,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-windows",
     "eggos-windows-gui",
     "eggos-macos",
+    "eggos-android",
 ];
 
 const USER_CRATES_WITHOUT_ALLOCATOR: &[&str] = &["eggos-coreutils"];
@@ -1586,6 +1587,15 @@ const BUILTIN_APPS_LINK: &str = "/usr/libexec/builtin-apps";
 const WINDOWS_COMMAND_PATH: &str = "bin/windows";
 
 const WINDOWS_LAYER_ARCHES: [&str; 2] = ["x86_64", "aarch64"];
+
+/// Where the Android layer lives (D470), the `android-apps` component's one file.
+pub const ANDROID_LAYER_PATH: &str = "usr/lib/eggos/android";
+
+/// The package the Android layer is built from (D472).
+pub const ANDROID_LAYER_PACKAGE: &str = "eggos-android";
+
+/// The architectures the Android layer compiles apps for so far (D472).
+pub const ANDROID_LAYER_ARCHES: [&str; 1] = ["x86_64"];
 
 const WINDOWS_X64_TARGET: &str = "x86_64-pc-windows-msvc";
 

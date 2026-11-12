@@ -12,6 +12,8 @@ const HEADER_BYTES: usize = 0x70;
 const ENDIAN_TAG: u32 = 0x1234_5678;
 const CLASS_DEF_BYTES: usize = 32;
 const CLASS_DATA: usize = 24;
+const SUPERCLASS: usize = 8;
+const NO_INDEX: u32 = u32::MAX;
 const METHOD_ID_BYTES: usize = 8;
 const METHOD_NAME: usize = 4;
 const CODE_HEADER_BYTES: usize = 16;
@@ -151,6 +153,51 @@ impl<'a> Dex<'a> {
         }
         let at = offset as usize + METHOD_ID_BYTES * index as usize + METHOD_NAME;
         self.string(word(self.bytes, at)?)
+    }
+
+    /// The descriptor of the class method `index` belongs to (`Landroid/app/Activity;`).
+    pub fn method_class(&self, index: u32) -> Option<String> {
+        let (count, offset) = self.methods;
+        if index >= count {
+            return None;
+        }
+        let at = offset as usize + METHOD_ID_BYTES * index as usize;
+        self.type_name(u32::from(half(self.bytes, at)?))
+    }
+
+    /// How many methods the method table names.
+    pub fn method_count(&self) -> u32 {
+        self.methods.0
+    }
+
+    /// The place in the class table of the class with descriptor `descriptor`, when the file
+    /// defines it.
+    pub fn class_index(&self, descriptor: &str) -> Option<u32> {
+        let (count, offset) = self.classes;
+        (0..count).find(|&index| {
+            let at = offset as usize + CLASS_DEF_BYTES * index as usize;
+            word(self.bytes, at)
+                .and_then(|type_index| self.type_name(type_index))
+                .is_some_and(|name| name == descriptor)
+        })
+    }
+
+    /// The descriptor of class definition `class`'s superclass, if it has one.
+    pub fn superclass(&self, class: u32) -> Option<String> {
+        let (count, offset) = self.classes;
+        if class >= count {
+            return None;
+        }
+        let at = offset as usize + CLASS_DEF_BYTES * class as usize + SUPERCLASS;
+        match word(self.bytes, at)? {
+            NO_INDEX => None,
+            index => self.type_name(index),
+        }
+    }
+
+    /// How many classes the file defines.
+    pub fn class_count(&self) -> u32 {
+        self.classes.0
     }
 
     /// The code item at `offset`.

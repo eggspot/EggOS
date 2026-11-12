@@ -5,9 +5,11 @@
 //! branches are patched once every instruction's place is known, and the place of each
 //! instruction is kept, so a runtime can map a code address back to the DEX instruction.
 //!
-//! This first part compiles moves, constants, int and long arithmetic but division,
-//! comparisons, conditional and unconditional branches and returns, for x86_64; a method using
-//! anything else is refused with the opcode and place, and the layer reports it.
+//! It compiles moves, constants, int and long arithmetic, comparisons, branches, returns,
+//! method calls, strings, new objects and instance fields, the last ones and division through
+//! the runtime's helpers ([`helper`]), for x86_64; a method using anything else (arrays,
+//! exceptions, static fields, switches) is refused with the opcode and place, and the layer
+//! reports it.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -44,6 +46,34 @@ impl Compiled {
         let index = self.places.binary_search_by_key(&at, |&(unit, _)| unit).ok()?;
         Some(self.places[index].1 as usize)
     }
+}
+
+/// The runtime's helpers, by their place in the entry table a compiled method is called with
+/// (D472): each takes its argument words and returns its result as a method does.
+pub mod helper {
+    /// `const-string`: the string with the index in the first word.
+    pub const STRING: usize = 0;
+    /// `new-instance`: a new object of the type with the index in the first word.
+    pub const NEW_INSTANCE: usize = 1;
+    /// `iget`: the object's field with the index in the second word.
+    pub const FIELD_GET: usize = 2;
+    /// `iput`: the third word into the object's field with the index in the second word.
+    pub const FIELD_PUT: usize = 3;
+    /// `div-int`, throwing `ArithmeticException` on zero.
+    pub const DIVIDE_INT: usize = 4;
+    /// `rem-int`.
+    pub const REMAINDER_INT: usize = 5;
+    /// `div-long`.
+    pub const DIVIDE_LONG: usize = 6;
+    /// `rem-long`.
+    pub const REMAINDER_LONG: usize = 7;
+    /// How many helpers come before the methods.
+    pub const COUNT: usize = 8;
+}
+
+/// The entry-table place of the method with index `method` in the DEX file's method table.
+pub fn method_entry(method: u32) -> usize {
+    helper::COUNT + method as usize
 }
 
 /// Compiles `code` for x86_64.

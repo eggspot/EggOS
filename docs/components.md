@@ -17,6 +17,7 @@ This version's stores offer two components, on x86_64 and aarch64:
 
 - `windows-apps`, the Windows layer;
 - `mac-apps`, the macOS layer.
+- `android-apps`, the Android layer (x86_64 so far, D472).
 
 riscv64's store is empty.
 

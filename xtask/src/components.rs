@@ -22,7 +22,7 @@ pub struct Offered {
 }
 
 /// Every component a store may offer, each after those it needs.
-pub const OFFERED: [Offered; 4] = [
+pub const OFFERED: [Offered; 5] = [
     Offered {
         name: "desktop",
         title: "Desktop",
@@ -58,6 +58,15 @@ pub const OFFERED: [Offered; 4] = [
         needs: &[],
         files: &[(crate::macos::LAYER_PATH, crate::macos::LAYER_PACKAGE)],
         runs_on: crate::macos::layer_runs_on,
+    },
+    Offered {
+        name: "android-apps",
+        title: "Android apps",
+        summary: "Runs Android apps natively, compiled ahead of time, no emulation",
+        on_remove: "Installed Android apps stay in Apps and need it to run.",
+        needs: &["desktop"],
+        files: &[(crate::ANDROID_LAYER_PATH, crate::ANDROID_LAYER_PACKAGE)],
+        runs_on: |arch| crate::ANDROID_LAYER_ARCHES.contains(&arch),
     },
 ];
 
@@ -209,7 +218,10 @@ mod tests {
         let text = &image[index::SECTOR as usize..][..header.index_bytes as usize];
         let read = index::parse_index(&header, text, image.len() as u64).unwrap();
         let names: Vec<&str> = read.components.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["desktop", "builtin-apps", "windows-apps", "mac-apps"]);
+        assert_eq!(
+            names,
+            ["desktop", "builtin-apps", "windows-apps", "mac-apps", "android-apps"]
+        );
         for file in read.components.iter().flat_map(|component| &component.files) {
             let bytes = &image[file.offset as usize..][..file.length as usize];
             assert_eq!(index::sha256(bytes), file.sha256);

@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "eggos-android"
+version = "0.4.0"
+dependencies = [
+ "eggos-android-package",
+ "eggos-dex-compiler",
+ "eggos-runtime",
+ "eggos-toolkit",
+]
+
+[[package]]
 name = "eggos-android-console"
 version = "0.4.0"
 

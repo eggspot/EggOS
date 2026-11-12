@@ -24201,3 +24201,29 @@ the license, by an explicit instruction recorded here.
   opcode and place.
 - **Not yet.** The rest of the instruction set through calls into the runtime (D472), the
   aarch64 and riscv64 back ends, register allocation, and exception tables.
+
+## D472 The Android layer, part 1: calls, objects and a first framework (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The compiler (D471) gets a real calling convention: a compiled method takes
+  its argument words in `rdi` and the runtime's entry table in `rsi`, keeps the table in `r12`,
+  builds its frame on the stack with `r13` at its first register (both survive calls), copies
+  its arguments into its last registers, and returns in `rax` through an epilogue. Calls
+  write their argument words at the frame's bottom and call through the table: `invoke-*`
+  (both forms) to the method's entry, and `const-string`, `new-instance`, `iget`/`iput` and
+  int/long division and remainder to the runtime's helpers, which come first in the table
+  (`dex_compiler::helper`); `move-result` stores `rax`.
+- **The layer.** `userland/android` (`/usr/lib/eggos/android`, the `android-apps` component,
+  x86_64 for now) reads the app's manifest beside `classes.dex`, compiles every method it can,
+  copies the code into memory it then makes executable, and fills the table: each method of
+  the DEX file goes to its compiled code, or, looked up its class's superclasses, to an
+  ancestor's compiled method or to a framework method the layer implements, or to a stop
+  that names nothing found. Part 1's framework: `Object.<init>`; `Activity` and its AndroidX
+  forms' constructors and lifecycle steps, and `setContentView`; `TextView.<init>` and
+  `setText`. It creates the launcher activity, runs its `<init>` and `onCreate`, and shows the
+  text view's text in a window, so an app whose first screen is a `TextView` runs natively.
+  Objects are boxes kept for the app's life; a division by zero or a null field access stops
+  the app with Java's exception name.
+- **Not yet.** Virtual dispatch (calls go to the method the instruction names, up its
+  superclasses), static fields, arrays, exceptions and switches in the compiler, layouts and
+  resources (`R.layout`), more views and input, garbage collection, and the aarch64 and riscv64
+  back ends.
