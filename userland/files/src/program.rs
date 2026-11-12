@@ -19,7 +19,8 @@ use eggos_toolkit::damage::Damage;
 use eggos_toolkit::elements::{Action, Outcome, TreeWriter};
 use eggos_toolkit::input::Input;
 use eggos_toolkit::tree::PointerShape;
-use eggos_toolkit::window::Window;
+use alloc::vec::Vec;
+use eggos_toolkit::window::{Window, WindowServer};
 
 const TYPE_IN_TERMINAL: usize = 0x4104_7711;
 const WINDOW_DEVICE: &CStr = c"/dev/window";
@@ -128,6 +129,21 @@ struct Program {
     window: FilesWindow,
     files: LinuxFiles,
     environment: [usize; MAX_VARIABLES + 1],
+    server: Option<WindowServer>,
+    server_window: u32,
+    arriving_serial: Option<u32>,
+    arriving: Vec<Path>,
+}
+
+const PATHS_KIND: u32 = 1;
+const PAYLOAD_BYTES: usize = 64 * 1024;
+
+fn paths_of(payload: &[u8]) -> Vec<Path> {
+    payload
+        .split(|&byte| byte == b'\n')
+        .filter(|line| line.starts_with(b"/"))
+        .filter_map(Path::from)
+        .collect()
 }
 
 impl Program {
@@ -190,6 +206,15 @@ impl Program {
                 Request::Uninstall(name) => self.start_installer(c"uninstall", name.as_bytes()),
                 Request::Actions(name) => self.start_installer(c"do", name.as_bytes()),
                 Request::OpenInEditor(path) => self.start_editor(path.as_bytes()),
+                Request::CarryOut(path, words) => {
+                    if let Some(server) = self.server.as_ref() {
+                        let mut payload = Vec::with_capacity(path.as_bytes().len() + 1);
+                        payload.extend_from_slice(path.as_bytes());
+                        payload.push(b'\n');
+                        let words = core::str::from_utf8(words.as_bytes()).unwrap_or("");
+                        let _ = server.start_drag(self.server_window, PATHS_KIND, &payload, words);
+                    }
+                }
                 Request::ChangeTarget(link, folder) => {
                     let chosen = ask_new_target(&link, &folder);
                     self.window.change_target(&mut self.files, link, chosen);
@@ -234,6 +259,42 @@ impl View for Program {
     }
 
     fn handle(&mut self, input: Input, time_ms: u32) -> bool {
+        match input {
+            Input::DragOver { x, y, kind, serial } => {
+                if self.arriving_serial != Some(serial) {
+                    self.arriving_serial = Some(serial);
+                    self.arriving = match (kind, self.server.as_ref()) {
+                        (PATHS_KIND, Some(server)) => {
+                            let mut payload = alloc::vec![0u8; PAYLOAD_BYTES];
+                            match server.drag_payload(0, &mut payload) {
+                                Ok((length, _, _)) => paths_of(&payload[..length.min(PAYLOAD_BYTES)]),
+                                Err(_) => Vec::new(),
+                            }
+                        }
+                        _ => Vec::new(),
+                    };
+                }
+                self.window.drag_over(&mut self.files, x, y, serial, &self.arriving);
+                return true;
+            }
+            Input::DragLeave => {
+                self.window.drag_left();
+                return true;
+            }
+            Input::Drop { x, y, .. } => {
+                let modifiers = self.window.held_modifiers();
+                let arriving = core::mem::take(&mut self.arriving);
+                self.arriving_serial = None;
+                self.window.drag_dropped(&mut self.files, x, y, &arriving, modifiers);
+                self.serve();
+                return true;
+            }
+            Input::DragEnded { landed } => {
+                self.window.carried_ended(&mut self.files, landed);
+                return true;
+            }
+            _ => {}
+        }
         let open = self.window.handle(&mut self.files, input, time_ms, clock());
         self.serve();
         open
@@ -295,10 +356,15 @@ pub fn run(startup: &Startup) -> i32 {
     }
     let mut files = LinuxFiles::new();
     let view = FilesWindow::new(&mut files, start, linux::machine(), windows, clock());
+    let server_window = window.id();
     let mut program = Program {
         window: view,
         files,
         environment,
+        server: WindowServer::open().ok(),
+        server_window,
+        arriving_serial: None,
+        arriving: Vec::new(),
     };
     let served = application::run_view(&mut window, &mut program);
     program.window.close(&mut program.files);

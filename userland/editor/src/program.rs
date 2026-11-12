@@ -175,7 +175,32 @@ fn ask_picker(request: &PickRequest) -> Option<Path> {
     Path::from(line)
 }
 
+const DROPPED_PATHS: u32 = 1;
+const DROPPED_BYTES: usize = 8192;
+
 impl Program<'_> {
+    fn open_dropped(&mut self) {
+        let Some(server) = self.server.as_ref() else {
+            return;
+        };
+        let mut payload = [0u8; DROPPED_BYTES];
+        let Ok((length, _, _)) = server.drag_payload(0, &mut payload) else {
+            return;
+        };
+        let first = payload[..length.min(DROPPED_BYTES)]
+            .split(|&byte| byte == b'\n')
+            .find(|line| line.starts_with(b"/"));
+        let Some(path) = first.and_then(Path::from) else {
+            return;
+        };
+        let request = PickRequest {
+            save: false,
+            folder: Path::new(),
+            name: Path::new(),
+        };
+        self.window.picked(&mut self.files, request, Some(path));
+    }
+
     fn serve_picks(&mut self) {
         while let Some(request) = self.window.take_pick() {
             let chosen = ask_picker(&request);
@@ -190,6 +215,10 @@ impl View for Program<'_> {
     }
 
     fn handle(&mut self, input: Input, time_ms: u32) -> bool {
+        if let Input::Drop { kind: DROPPED_PATHS, .. } = input {
+            self.open_dropped();
+            return true;
+        }
         if matches!(
             input,
             Input::Key { pressed: true, .. } | Input::Button { pressed: true, .. }

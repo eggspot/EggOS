@@ -22781,3 +22781,36 @@ the license, by an explicit instruction recorded here.
   - The input decoder reads the four new records (19 to 22).
 - **Not yet.** A program that uses it: Files' drags need their design first (Claude Fable,
   next); `Application` programs reach the server themselves for the hand-over.
+
+## D395 Files' drag and drop, and a file dropped on the Text Editor (batch part 19; M12; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's design (docs/ux/files-drag-v0.5.md) and the code-only session (engineering)
+
+- **Decision.** Files implements the design in its own view (it draws its own table, not the
+  toolkit's widget tree, so the design's toolkit calls — `OntoOrWhole`, `set_drop_row`,
+  `set_drop_whole` — are Files' own rules in `files_window/drag.rs`, with the same
+  highlights):
+  - **Picking up** a row past 6 pixels (not while renaming, a panel or a job shows); the
+    ghost is the toolkit's tooltip tile with the name, cut at 30 glyphs to 27 and `...`.
+  - **Targets**: a folder row (not the dragged folder or one inside it, not on the host
+    share), else the folder shown (not the dragged item's own folder, the Trash view or the
+    share), and the sidebar places (not `Host share`; `Trash` not for items on the share or
+    already in the Trash). A row is filled `menu.hover` with a 2-pixel `accent` outline; the
+    folder shown gets the outline alone.
+  - **The release** reads the modifiers last seen (section 3's map: Mod with Shift or Alt
+    links, Ctrl or Alt copies, Shift or Super moves, else move on one file system and copy
+    across; a drop on `Trash` trashes). A move on one file system is a rename; copies and
+    cross-file-system moves run the paste job and its progress panel; names never overwrite
+    (`<stem> copy`); a link is `Paste Link`'s; out of the Trash it is always a move that
+    forgets the item's `info` entry. Errors are Files' notices.
+  - **Spring-loaded folders**: resting 1000 ms on a folder row or place browses into it.
+  - **Between windows**: a drag crossing the window's edge is handed to the server with the
+    path (`CarryOut`); a drag from another window is read once per serial (paths, kind 1)
+    and lands on the same targets; the source reloads when its drag landed (and, as always,
+    on the next focus). Esc cancels.
+  - **The Text Editor** opens the first dropped path as `Open...` does (the unsaved
+    question first).
+- **Deviations from the design.** One item is dragged (Files' selection is single on
+  `main`; multiple selection, item 17, is not in yet); the modifiers of a drop from another
+  window are the target's last seen, since the keys went to the source; the editor shows no
+  outline while a drag is over it and no `Dropped <N> files` notice yet.
+- **Not yet.** The icon view as a source, touch long press, the editor's outline and notices,
+  a ghost badge for copy or link, and the QEMU check of section 11.

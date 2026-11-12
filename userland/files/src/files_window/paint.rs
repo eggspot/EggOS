@@ -102,6 +102,7 @@ impl FilesWindow {
         self.paint_toolbar(canvas);
         self.paint_sidebar(canvas);
         self.paint_list(canvas);
+        self.paint_drag(canvas);
         self.paint_status(canvas);
         self.paint_notice(canvas);
         if let Some((menu, _)) = &self.menu {

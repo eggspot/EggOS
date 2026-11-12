@@ -7,8 +7,11 @@
 //! the program for what only the system does ([`Request`]), so host tests and the QEMU test's
 //! expected frames run the same code the program shows.
 
+mod drag;
 mod elements;
 mod paint;
+
+pub use drag::{DRAG_SPRING_MS, DropAction, drag_words, drop_action};
 #[cfg(test)]
 mod tests;
 
@@ -224,6 +227,9 @@ pub enum Request {
     /// Ask `/bin/pick` for the new target of this link, starting in this folder, then give the
     /// answer to [`FilesWindow::change_target`] (D392).
     ChangeTarget(Path, Path),
+    /// Hand the window's drag of this path, its ghost showing these words, to the window
+    /// server (D395).
+    CarryOut(Path, Name),
 }
 
 /// A line to type in the Terminal, at most [`LINE_CAPACITY`] bytes of printable text.
@@ -354,6 +360,9 @@ struct Notice {
 pub struct FilesWindow {
     width: i32,
     height: i32,
+    picked: Option<drag::Picked>,
+    arriving: Option<drag::Arriving>,
+    modifiers: Modifiers,
     windows_words: bool,
     machine: Architecture,
     trash: Trash,
@@ -420,6 +429,9 @@ impl FilesWindow {
         let mut window = Self {
             width: DEFAULT_SIZE.0 as i32,
             height: DEFAULT_SIZE.1 as i32,
+            picked: None,
+            arriving: None,
+            modifiers: Modifiers(0),
             windows_words: windows,
             machine,
             trash: Trash::of_home(HOME).expect("the home folder's Trash path fits"),
@@ -535,6 +547,9 @@ impl FilesWindow {
 
     /// The pointer shape now: the I-beam over a text field.
     pub fn pointer_shape(&self) -> PointerShape {
+        if self.dragging() {
+            return PointerShape::Hand;
+        }
         let Some((x, y)) = self
             .pointer
             .filter(|_| self.panel.is_none() && self.menu.is_none())
@@ -1052,6 +1067,9 @@ impl FilesWindow {
         if self.running.is_some() {
             return Some(now_ms);
         }
+        if let Some(spring) = self.drag_deadline() {
+            return Some(spring);
+        }
         let blink = self.editing().map(|_| {
             let since = now_ms.wrapping_sub(self.caret_epoch);
             now_ms.wrapping_add(CARET_BLINK_MS - since % CARET_BLINK_MS)
@@ -1074,6 +1092,7 @@ impl FilesWindow {
     pub fn tick(&mut self, files: &mut impl Files, now_ms: u32, clock: u64) {
         self.now_ms = now_ms;
         self.clock = clock;
+        self.drag_tick(files);
         if let Some(rect) = self.editing() {
             let shown = (now_ms.wrapping_sub(self.caret_epoch) / CARET_BLINK_MS).is_multiple_of(2);
             if shown != self.caret_shown {
@@ -1110,6 +1129,18 @@ impl FilesWindow {
         );
         if closes_notice {
             self.close_notice();
+        }
+        if let Input::Key { modifiers, .. } = input {
+            self.modifiers = modifiers;
+        }
+        if let Input::Key {
+            code: key::ESC,
+            pressed: true,
+            ..
+        } = input
+            && self.drag_cancelled()
+        {
+            return true;
         }
         match input {
             Input::FocusIn | Input::FocusOut => {
@@ -1163,7 +1194,11 @@ impl FilesWindow {
                 modifiers,
                 character,
             } => self.key(files, code, modifiers, character),
-            Input::PointerMove { x, y } => self.pointer_moved(x, y),
+            Input::PointerMove { x, y } => {
+                if !self.drag_moved(files, x, y) {
+                    self.pointer_moved(x, y);
+                }
+            }
             Input::Button {
                 x,
                 y,
@@ -1849,7 +1884,10 @@ impl FilesWindow {
                             self.last_click = None;
                             self.open(files, index);
                         }
-                        false => self.last_click = Some((index, self.now_ms)),
+                        false => {
+                            self.last_click = Some((index, self.now_ms));
+                            self.pick_row(index, x, y);
+                        }
                     }
                 }
                 None => {
@@ -1861,6 +1899,10 @@ impl FilesWindow {
     }
 
     fn left_released(&mut self, files: &mut impl Files, x: i32, y: i32) {
+        let modifiers = self.modifiers;
+        if self.drag_released(files, modifiers) {
+            return;
+        }
         let Some(pressed) = self.pressed.take() else {
             return;
         };

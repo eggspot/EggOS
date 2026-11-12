@@ -863,7 +863,8 @@ yet" naming what it left.
     `Change Target...` through it, code written, unbuilt, D392);
   - part 19, drag and drop between windows (the server carrying a drag between windows, code
     written, unbuilt, D393; the toolkit's hand-over and drops from other windows, code written,
-    unbuilt, D394);
+    unbuilt, D394; Files' drag and drop and the Text Editor taking a dropped file, designed by
+    Claude Fable (docs/ux/files-drag-v0.5.md), code written, unbuilt, D395);
   - part 10's rest: done in code (D228; `CBS_SIMPLE`, code written, unbuilt, D343; scroll bars on windows, code written, unbuilt, D342;
     multi-line edits, code written, unbuilt, D341, D350, D351; word selection already in D228;
     editable combo boxes, code written, unbuilt, D340; menus from templates, code written,
