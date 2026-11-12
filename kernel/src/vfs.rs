@@ -397,6 +397,13 @@ pub trait FileSystem: Sync + Send {
     fn set_modified(&self, _node: u64, _time: u64) -> Result<(), Refused> {
         Err(Refused::ReadOnly)
     }
+    /// When `node` was last read, for a file system that keeps it (D534); `None` makes `stat`
+    /// report the last change instead.
+    fn accessed(&self, _node: u64) -> Option<u64> {
+        None
+    }
+    /// Notes that `node` was read at `now`, for a file system that keeps access times.
+    fn note_read(&self, _node: u64, _now: u64) {}
     /// Entry `position` of `directory`, in a stable order, `.` and `..` not included.
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry>;
     /// Puts every change made so far on stable storage (`sync`, `syncfs`, `fsync`); a file
@@ -524,6 +531,11 @@ impl Node {
     /// Its attributes.
     pub fn attributes(&self) -> Attributes {
         self.file_system.attributes(self.id)
+    }
+
+    /// When it was last read, when its file system keeps that (D534).
+    pub fn accessed(&self) -> Option<u64> {
+        self.file_system.accessed(self.id)
     }
 
     /// The directory that holds it; the root's is the root, and a mounted root's is its

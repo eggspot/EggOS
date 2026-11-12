@@ -657,6 +657,10 @@ fn copy_out_through_buffer<P: Platform>(
         }
         copied += length as u64;
     }
+    if copied > 0 {
+        node.file_system()
+            .note_read(node.id(), super::file_changes::now::<P>());
+    }
     Ok(copied)
 }
 

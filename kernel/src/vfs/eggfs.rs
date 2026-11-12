@@ -526,6 +526,15 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
         self.changing(|volume| volume.set_modified(node, time))
     }
 
+    fn accessed(&self, node: u64) -> Option<u64> {
+        let attributes = self.volume().attributes(node).ok()?;
+        (attributes.accessed != 0).then_some(attributes.accessed)
+    }
+
+    fn note_read(&self, node: u64, now: u64) {
+        let _ = self.changing(|volume| volume.note_read(node, now));
+    }
+
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
         let entry = self.volume().entry(directory, position).ok()??;
         Some(DirectoryEntry {

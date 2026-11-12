@@ -56,6 +56,8 @@ pub struct Attributes {
     pub size: u64,
     /// When its contents last changed, in seconds since the Unix epoch.
     pub modified: u64,
+    /// When it was last read, kept as Linux's `relatime` does (D534); 0 on volumes from before.
+    pub accessed: u64,
 }
 
 /// One entry of a directory.
@@ -161,6 +163,8 @@ fn kind_matches(inode: &Inode, kind: Kind) -> bool {
 fn kind_of_inode(inode: &Inode) -> Kind {
     kind_for(inode.kind)
 }
+
+const ACCESS_TIME_REFRESH_SECONDS: u64 = 24 * 60 * 60;
 
 fn writable_contents(inode: &Inode) -> Result<(), Error> {
     match inode.kind {
@@ -632,6 +636,7 @@ impl<D: Disk> Volume<D> {
             group: inode.group,
             size: inode.size,
             modified: inode.modified,
+            accessed: inode.accessed,
         })
     }
 
@@ -1369,6 +1374,30 @@ impl<D: Disk> Volume<D> {
         self.write_inode(number, &inode)
     }
 
+    fn note_read_changing(&mut self, node: u64, now: u64) -> Result<bool, Error> {
+        if self.writable().is_err() {
+            return Ok(false);
+        }
+        let (number, mut inode) = self.live(node)?;
+        let stale = inode.accessed <= inode.modified
+            || now >= inode.accessed.saturating_add(ACCESS_TIME_REFRESH_SECONDS);
+        if !stale || now == inode.accessed {
+            return Ok(false);
+        }
+        self.ensure_room()?;
+        inode.accessed = now;
+        self.write_inode(number, &inode)?;
+        Ok(true)
+    }
+
+    fn set_accessed_changing(&mut self, node: u64, time: u64) -> Result<(), Error> {
+        self.writable()?;
+        self.ensure_room()?;
+        let (number, mut inode) = self.live(node)?;
+        inode.accessed = time;
+        self.write_inode(number, &inode)
+    }
+
     fn set_modified_changing(&mut self, node: u64, time: u64) -> Result<(), Error> {
         self.writable()?;
         self.ensure_room()?;
@@ -1740,6 +1769,19 @@ impl<D: Disk> Volume<D> {
     /// Sets when `node`'s contents last changed.
     pub fn set_modified(&mut self, node: u64, time: u64) -> Result<(), Error> {
         let result = self.set_modified_changing(node, time);
+        self.mark_broken_on_failure(result)
+    }
+
+    /// Notes that `node` was read at `now` (D534): its access time moves to `now` when it is
+    /// not after its last change or is a day old, as Linux's `relatime`; whether it moved.
+    pub fn note_read(&mut self, node: u64, now: u64) -> Result<bool, Error> {
+        let result = self.note_read_changing(node, now);
+        self.mark_broken_on_failure(result)
+    }
+
+    /// Sets when `node` was last read (`utimensat`'s access time).
+    pub fn set_accessed(&mut self, node: u64, time: u64) -> Result<(), Error> {
+        let result = self.set_accessed_changing(node, time);
         self.mark_broken_on_failure(result)
     }
 

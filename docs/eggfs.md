@@ -89,7 +89,8 @@ Inode *n* is the 128 bytes at offset (*n* mod 32) × 128 of block (inode table s
 | 92 | 4 × 3 | single, double and triple indirect block pointers |
 | 104 | 4 | more names (new in version 2): names a regular file or a symbolic link has beyond its first; 0 for a directory |
 | 108 | 4 | next orphan (new in version 2): the next inode on the orphan chain, 0 ending it; in the root inode, the chain's first |
-| 112 | 12 | unused, zeros |
+| 112 | 8 | last read (D534), seconds since the Unix epoch, kept as Linux's `relatime`; 0 on inodes written before, read as "never" |
+| 120 | 4 | unused, zeros |
 | 124 | 4 | CRC-32C of the inode's number (4 bytes) followed by bytes 0 to 123 |
 
 An inode in use reads back with its checksum right and no unknown flag set; a free inode's

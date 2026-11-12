@@ -25278,6 +25278,21 @@ the license, by an explicit instruction recorded here.
   adapter's offloads passed down. That and TSO are the next step.
 - Several adapters were already one stack per adapter (D157, D240).
 
+## D534 EggFS access times (the support matrix's "access times"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** EggFS keeps when each inode was last read, in its inode's bytes 112 to 119,
+  which were unused zeros, so volumes from before mount unchanged and report "never" (0) until
+  first read. A read moves the access time only when it is not after the last change or is a day
+  old, as Linux's `relatime`, so reading a file costs a journaled inode write at most once a
+  day; a broken (read-only) volume never writes it. `Volume::note_read` and
+  `Volume::set_accessed` do it, `Attributes::accessed` reports it.
+- The VFS's `FileSystem` gains `accessed` and `note_read` (no access time by default, so every
+  other file system is unchanged); a `read` or `readv` that copied bytes notes the read with the
+  wall clock; `stat`, `fstatat` and `statx` report the access time in `st_atime` and
+  `stx_atime` when the file system keeps one and the last change otherwise.
+- **Not yet.** `utimensat`'s access time (its call keeps the modification time only) and the
+  `noatime` and `strictatime` mount options.
+
 ## D525 Intel's Type-C ports, part 1: the port, its PHY and its AUX channel (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's MIT-licensed i915 driver)
 
 - **Decision.** On Tiger Lake and on Alder and Raptor Lake-P (`intel_type_c::flavour` by device

@@ -288,6 +288,7 @@ impl InodeKind {
 const ORPHAN_FLAG: u8 = 1;
 const MORE_NAMES_AT: usize = 104;
 const NEXT_ORPHAN_AT: usize = 108;
+const ACCESSED_AT: usize = 112;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Inode {
@@ -298,6 +299,7 @@ pub struct Inode {
     pub child_directories: u32,
     pub size: u64,
     pub modified: u64,
+    pub accessed: u64,
     pub entries: u32,
     pub owner: u32,
     pub group: u32,
@@ -320,6 +322,7 @@ impl Inode {
             child_directories: 0,
             size: 0,
             modified: now,
+            accessed: now,
             entries: 0,
             owner: 0,
             group: 0,
@@ -350,6 +353,7 @@ impl Inode {
         }
         put_u32(out, MORE_NAMES_AT, self.more_names);
         put_u32(out, NEXT_ORPHAN_AT, self.next_orphan);
+        put_u64(out, ACCESSED_AT, self.accessed);
         let checksum = inode_checksum(number, &out[..INODE_CHECKSUM]);
         put_u32(out, INODE_CHECKSUM, checksum);
     }
@@ -379,6 +383,7 @@ impl Inode {
             child_directories: u32_at(bytes, 12),
             size: u64_at(bytes, 16),
             modified: u64_at(bytes, 24),
+            accessed: u64_at(bytes, ACCESSED_AT),
             entries: u32_at(bytes, 32),
             owner: u32_at(bytes, 36),
             group: u32_at(bytes, 40),
