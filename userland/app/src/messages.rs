@@ -92,6 +92,7 @@ pub fn layer_component(source: Source) -> Option<&'static str> {
         Source::Windows => Some("windows-apps"),
         Source::Macos => Some("mac-apps"),
         Source::Linux => None,
+        Source::Android => Some("android-apps"),
     }
 }
 
@@ -100,6 +101,7 @@ fn layer(source: Source) -> &'static str {
         Source::Windows => "Windows",
         Source::Macos => "macOS",
         Source::Linux => "Linux",
+        Source::Android => "Android",
     }
 }
 
@@ -124,9 +126,9 @@ fn not_runnable(line: &mut Line, reason: NotRunnable) {
         NotRunnable::IosPackage => line.write_str(
             "it is an iOS app package (.ipa), and installing iOS apps is not built yet",
         ),
-        NotRunnable::AndroidPackage => line.write_str(
-            "it is an Android app package (.apk), and installing Android apps is not built yet",
-        ),
+        NotRunnable::AndroidPackage => {
+            line.write_str("it is an Android app package (.apk) without its code (classes.dex)")
+        }
         NotRunnable::ThirtyTwoBit => {
             line.write_str("it is a 32-bit program, and EggOS runs 64-bit programs only")
         }

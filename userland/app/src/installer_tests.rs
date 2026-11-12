@@ -1552,17 +1552,42 @@ fn a_linux_program_needing_a_gui_library_installs_as_a_windowed_app_and_others_a
 }
 
 #[test]
-fn an_android_package_is_named_as_one_and_refused() {
+fn an_android_package_installs_whole_named_after_its_file_and_runs_its_dex() {
     let zip = zip(&[
         stored("AndroidManifest.xml", b"\x03\x00\x08\x00binary xml"),
         stored("classes.dex", b"dex\n035\0"),
+        stored("lib/x86_64/libnotes.so", b"\x7fELF\x02\x01\x01"),
     ]);
     let mut files = host_with("/media/host/Notes.apk", &zip);
+    let plan = planned(&mut files, "/media/host/Notes.apk", X86_64);
+    assert_eq!(plan.program().source, Source::Android);
+    assert_eq!(plan.run(), b"classes.dex");
+    assert!(plan.is_archive());
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    let manifest = manifest_of(&files, "Notes");
+    assert!(manifest.contains("source=android"), "{manifest}");
+    assert!(files.find("/Applications/Notes/lib/x86_64/libnotes.so").is_some());
+}
+
+#[test]
+fn an_android_package_without_its_code_or_its_layer_is_refused() {
+    let without_code = zip(&[stored("AndroidManifest.xml", b"\x03\x00\x08\x00")]);
+    let mut files = host_with("/media/host/Notes.apk", &without_code);
     assert_eq!(
-        plan(&mut files, b"/media/host/Notes.apk", None, X86_64)
-            .unwrap_err()
-            .problem,
+        refused(&mut files, "/media/host/Notes.apk", X86_64),
         Problem::NotRunnable(NotRunnable::AndroidPackage)
+    );
+    let package = zip(&[
+        stored("AndroidManifest.xml", b"\x03\x00\x08\x00"),
+        stored("classes.dex", b"dex\n035\0"),
+    ]);
+    let mut files = host_with("/media/host/Notes.apk", &package);
+    files
+        .nodes
+        .retain(|(path, _)| path.as_slice() != b"/usr/lib/eggos/android");
+    assert_eq!(
+        refused(&mut files, "/media/host/Notes.apk", X86_64),
+        Problem::NotRunnable(NotRunnable::LayerMissing(Source::Android))
     );
 }
 

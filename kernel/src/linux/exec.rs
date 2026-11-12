@@ -1164,10 +1164,17 @@ pub const MACOS_FAT_LAYER: Interpreter = Interpreter {
 
 const MACOS_LAYER_PATH: &[u8] = b"/usr/lib/eggos/macos";
 
+/// The Android layer (D470): an installed app's DEX code (`dex\n`), which the layer compiles
+/// ahead of time for the machine it runs on, so on every architecture.
+pub const ANDROID_LAYER: Interpreter = Interpreter {
+    signature: Signature::Prefix(b"dex\n"),
+    path: b"/usr/lib/eggos/android",
+};
+
 const INTERPRETERS: &[Interpreter] = if crate::linux::abi::RUNS_WINDOWS_AND_MACOS_PROGRAMS {
-    &[WINDOWS_LAYER, MACOS_LAYER, MACOS_FAT_LAYER]
+    &[WINDOWS_LAYER, MACOS_LAYER, MACOS_FAT_LAYER, ANDROID_LAYER]
 } else {
-    &[]
+    &[ANDROID_LAYER]
 };
 const ANY_INTERPRETER: bool = !INTERPRETERS.is_empty();
 
@@ -2338,6 +2345,13 @@ mod tests {
         for image in [&b"\x7fELF"[..], b"#!/bin/eggsh", b"M", b"", b"ZM"] {
             assert_eq!(interpreter_for(image), None);
         }
+    }
+
+    #[test]
+    fn dex_code_starts_through_the_android_layer_everywhere() {
+        assert_eq!(interpreter_for(b"dex\n035\0"), Some(ANDROID_LAYER));
+        assert_eq!(ANDROID_LAYER.path, b"/usr/lib/eggos/android");
+        assert_eq!(interpreter_for(b"dey\n035\0"), None);
     }
 
     #[test]

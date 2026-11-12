@@ -24166,3 +24166,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Booting GSP (the firmware's radix page tables, the booter and FWSEC handover,
   the message queues) and its display interface: the roadmap's GSP and display-engine item
   stays open until they are written.
+
+## D470 `.apk` installs as an app the Android layer opens (M15, D451's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** An `.apk` (a `.zip` holding `AndroidManifest.xml`) now installs like any
+  archive app (D148): the whole package is extracted into `/Applications/<name>/`, named after
+  the `.apk` file, and its manifest says `source=android` and names `classes.dex` as what it
+  runs (made executable). Opening it execs `classes.dex`, whose `dex\n` signature the kernel
+  hands to the Android layer at `/usr/lib/eggos/android` on every architecture (the code is
+  compiled ahead of time for the machine, D17), with the app's folder beside it: manifest,
+  resources, assets and the native libraries of each ABI. `Source` gains `Android` (key
+  `android`, label `Android`, badge `A`), whose layer is the `android-apps` component: without
+  it the installer says which component to install, as for Windows and macOS programs. An
+  `.apk` without `classes.dex` is refused as before.
+- **Not yet.** The Android layer itself: compiling DEX ahead of time (D471) and the framework
+  the code calls (D472); split APKs and app bundles; the manifest's label and icon as the
+  app's name and icon.

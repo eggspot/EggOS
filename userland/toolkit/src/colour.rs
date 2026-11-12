@@ -39,5 +39,6 @@ pub const ICON_TILE_BORDER: u32 = 0x003a_4454;
 pub const ICON_WINDOWS: u32 = 0x004f_8fe0;
 pub const ICON_MAC: u32 = 0x00c9_d1db;
 pub const ICON_LINUX: u32 = 0x00e2_b341;
+pub const ICON_ANDROID: u32 = 0x0078_c257;
 pub const ICON_FOLDER: u32 = 0x00e2_b341;
 pub const ICON_FOLDER_BACK: u32 = 0x00b8_8a24;

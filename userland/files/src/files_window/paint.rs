@@ -37,6 +37,7 @@ fn badge_colour(source: Source) -> u32 {
         Source::Windows => colour::ICON_WINDOWS,
         Source::Macos => colour::ICON_MAC,
         Source::Linux => colour::ICON_LINUX,
+        Source::Android => colour::ICON_ANDROID,
     }
 }
 

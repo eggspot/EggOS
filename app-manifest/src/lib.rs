@@ -70,11 +70,13 @@ pub enum Source {
     Macos,
     /// A Linux program (ELF).
     Linux,
+    /// An Android app (`.apk`, D470): its DEX code, resources and native libraries.
+    Android,
 }
 
 impl Source {
     /// Every source.
-    pub const ALL: [Self; 3] = [Self::Windows, Self::Macos, Self::Linux];
+    pub const ALL: [Self; 4] = [Self::Windows, Self::Macos, Self::Linux, Self::Android];
 
     /// The value of `source=` that names it.
     pub const fn key(self) -> &'static str {
@@ -82,15 +84,17 @@ impl Source {
             Self::Windows => "windows",
             Self::Macos => "macos",
             Self::Linux => "linux",
+            Self::Android => "android",
         }
     }
 
-    /// How the launcher shows it: `Windows`, `macOS` or `Linux`.
+    /// How the launcher shows it: `Windows`, `macOS`, `Linux` or `Android`.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Windows => "Windows",
             Self::Macos => "macOS",
             Self::Linux => "Linux",
+            Self::Android => "Android",
         }
     }
 

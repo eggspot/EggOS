@@ -25,6 +25,7 @@ impl Program {
             Source::Windows => ("Windows program", Some(self.architecture.windows_name())),
             Source::Macos => ("macOS program", Some(self.architecture.apple_name())),
             Source::Linux => ("Linux program", None),
+            Source::Android => ("Android app", None),
         }
     }
 }
@@ -46,8 +47,8 @@ pub enum NotRunnable {
     LayerNotOnThisCpu(Source),
     /// A Windows or macOS program whose layer is not installed (D18).
     LayerMissing(Source),
-    /// An Android app package (`.apk`, D451): its code is compiled ahead of time by the Android
-    /// layer, which does not install app packages yet.
+    /// An Android app package (`.apk`, D451) without `classes.dex`: no code for the Android
+    /// layer to compile (D470).
     AndroidPackage,
     /// An iOS app package (`.ipa`, D452): its UIKit program needs the iOS layer, which does
     /// not install app packages yet.

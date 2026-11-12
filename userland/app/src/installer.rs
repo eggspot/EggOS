@@ -40,6 +40,8 @@ pub const APPLICATIONS: &[u8] = b"/Applications";
 pub const WINDOWS_LAYER: &[u8] = b"/usr/lib/eggos/windows";
 /// The macOS layer's program (D120).
 pub const MACOS_LAYER: &[u8] = b"/usr/lib/eggos/macos";
+/// The Android layer's program (D470), which opens an installed `.apk`'s folder.
+pub const ANDROID_LAYER: &[u8] = b"/usr/lib/eggos/android";
 /// The manifest is written here first, then renamed over `app.manifest`.
 pub const TEMPORARY_MANIFEST: &[u8] = b"app.manifest.tmp";
 /// How deep folders inside an `.app` bundle may nest.
@@ -202,6 +204,7 @@ pub fn layer_path(source: Source) -> Option<&'static [u8]> {
         Source::Windows => Some(WINDOWS_LAYER),
         Source::Macos => Some(MACOS_LAYER),
         Source::Linux => None,
+        Source::Android => Some(ANDROID_LAYER),
     }
 }
 
@@ -1064,6 +1067,8 @@ fn shown_name(name: &[u8], role: Role) -> &[u8] {
 }
 
 const ANDROID_MANIFEST: &[u8] = b"AndroidManifest.xml";
+/// The DEX file an installed `.apk` opens with, which the Android layer runs (D470).
+pub const ANDROID_CODE: &[u8] = b"classes.dex";
 const IPA_PAYLOAD: &[u8] = b"Payload/";
 const APP_FOLDER: &[u8] = b".app/";
 
@@ -1086,12 +1091,17 @@ fn scan(
     let mut listing = Listing::new();
     let mut total = 0u64;
     let mut carries_gui_library = false;
+    let mut android_manifest = false;
+    let mut android_code = None;
     while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
         if is_reserved(entry.name()) {
             return Err(Problem::ReservedName);
         }
         if entry.name() == ANDROID_MANIFEST {
-            return Err(Problem::NotRunnable(NotRunnable::AndroidPackage));
+            android_manifest = true;
+        }
+        if entry.name() == ANDROID_CODE {
+            android_code = Some(entry);
         }
         if is_ios_bundle_entry(entry.name()) {
             return Err(Problem::NotRunnable(NotRunnable::IosPackage));
@@ -1117,6 +1127,22 @@ fn scan(
         if chosen.is_none() {
             chosen = Some((entry, role));
         }
+    }
+    if android_manifest {
+        let code = android_code.ok_or(Problem::NotRunnable(NotRunnable::AndroidPackage))?;
+        let run = Path::from(code.name()).ok_or(Problem::PathTooLong)?;
+        return Ok(Scanned {
+            archive,
+            run,
+            named_after: run,
+            program: Program {
+                source: Source::Android,
+                architecture: machine,
+            },
+            loader: None,
+            console: false,
+            total,
+        });
     }
     let (entry, role) = match (found, chosen) {
         (1, Some(chosen)) => chosen,
@@ -1190,7 +1216,11 @@ fn plan_archive(
         name: fallback,
         problem,
     })?;
-    let name = name.map_or_else(|| derived_name(scanned.named_after.as_bytes()), Name::new);
+    let named_after = match scanned.program.source {
+        Source::Android => source.as_bytes(),
+        _ => scanned.named_after.as_bytes(),
+    };
+    let name = name.map_or_else(|| derived_name(named_after), Name::new);
     let leftover = settle(files, scanned.program, &name, &scanned.run)
         .map_err(|problem| Refused { name, problem })?;
     Ok(Plan {

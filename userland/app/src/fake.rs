@@ -55,6 +55,7 @@ impl FakeFiles {
         files.directory("/usr/lib/eggos");
         files.file("/usr/lib/eggos/windows", b"\x7fELF layer");
         files.file("/usr/lib/eggos/macos", b"\x7fELF layer");
+        files.file("/usr/lib/eggos/android", b"\x7fELF layer");
         files
     }
 

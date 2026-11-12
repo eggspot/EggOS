@@ -192,6 +192,7 @@ impl AppIcon {
             Some(Source::Windows) => 1,
             Some(Source::Macos) => 2,
             Some(Source::Linux) => 3,
+            Some(Source::Android) => 4,
         };
         u32::from(self.letter) | source << 8
     }
@@ -202,6 +203,7 @@ fn badge(source: u32) -> Option<(u32, &'static str, u32)> {
         1 => Some((colour::ICON_WINDOWS, "W", colour::TEXT)),
         2 => Some((colour::ICON_MAC, "M", colour::ICON_DARK)),
         3 => Some((colour::ICON_LINUX, "L", colour::ICON_DARK)),
+        4 => Some((colour::ICON_ANDROID, "A", colour::ICON_DARK)),
         _ => None,
     }
 }
