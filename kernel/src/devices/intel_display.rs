@@ -5,6 +5,7 @@
 //! shown half drawn. The pointer is the engine's 64x64 ARGB cursor plane.
 
 use super::dma::DmaRegion;
+use super::interrupts::DeviceEvents;
 use super::{Deadline, DeviceId, DmaCoherence, DriverDescriptor, Identity, Match, Probe, ProbeError, ProbePass};
 use crate::display::{Mode, Rect, Scanout};
 use alloc::vec;
@@ -105,7 +106,11 @@ struct IntelDisplay {
     cursor: DmaRegion,
     cursor_surface: u32,
     hotspot: (u32, u32),
+    events: Option<&'static DeviceEvents>,
+    posted_rects: usize,
 }
+
+static VBLANK_EVENTS: DeviceEvents = DeviceEvents::new();
 
 // SAFETY: the registers and buffers belong to this scanout alone once installed, and the
 // display's lock serializes every use.
@@ -136,6 +141,21 @@ impl IntelDisplay {
         }
     }
 
+    /// Copies the damage into the hidden buffer and flips to it at the next vertical blank;
+    /// how many rectangles it showed.
+    fn post(&mut self, rects: &[Rect]) -> usize {
+        let hidden = self.front.map_or(0, |front| 1 - front);
+        let missing = core::mem::take(&mut self.missing[hidden]);
+        for rect in missing.iter().chain(rects) {
+            self.copy(hidden, *rect);
+        }
+        fence();
+        Self::remember(&mut self.missing[1 - hidden], rects);
+        self.engine.flip(self.buffers[hidden].surface, self.stride);
+        self.front = Some(hidden);
+        rects.len()
+    }
+
     fn cursor_corner(&self, at: (u32, u32)) -> (i32, i32) {
         (at.0 as i32 - self.hotspot.0 as i32, at.1 as i32 - self.hotspot.1 as i32)
     }
@@ -159,17 +179,32 @@ impl Scanout for IntelDisplay {
                 core::hint::spin_loop();
             }
         }
-        let hidden = self.front.map_or(0, |front| 1 - front);
-        let missing = core::mem::take(&mut self.missing[hidden]);
-        for rect in missing.iter().chain(rects) {
-            self.copy(hidden, *rect);
-        }
-        fence();
-        Self::remember(&mut self.missing[1 - hidden], rects);
-        self.engine.flip(self.buffers[hidden].surface, self.stride);
-        self.front = Some(hidden);
-        Ok(rects.len())
+        Ok(self.post(rects))
     }
+
+    fn flush_events(&self) -> Option<&'static DeviceEvents> {
+        self.events
+    }
+
+    fn start_flush(&mut self, rects: &[Rect]) -> Result<usize, &'static str> {
+        if let Some(front) = self.front
+            && !self.engine.showing(self.buffers[front].surface)
+        {
+            return Err(Refusal::FlipTimedOut.description());
+        }
+        self.posted_rects = self.post(rects);
+        Ok(self.posted_rects)
+    }
+
+    fn finish_flush(&mut self) -> Result<Option<usize>, &'static str> {
+        self.engine.acknowledge_vblank();
+        Ok(match self.front {
+            Some(front) if !self.engine.showing(self.buffers[front].surface) => None,
+            _ => Some(self.posted_rects),
+        })
+    }
+
+    fn abandon_flush(&mut self) {}
 
     fn draws_pointer(&self) -> bool {
         true
@@ -275,7 +310,14 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
         cursor,
         cursor_surface,
         hotspot: (0, 0),
+        events: None,
+        posted_rects: 0,
     };
+    let mut scanout = scanout;
+    if super::message_interrupts::connect(probe, id, &VBLANK_EVENTS).is_ok() {
+        scanout.engine.interrupt_on_vblank(function.device_id);
+        scanout.events = Some(&VBLANK_EVENTS);
+    }
     crate::display::install(scanout).map_err(|_| ProbeError::Refused("a display is already in use"))
 }
 

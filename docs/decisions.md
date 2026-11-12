@@ -23726,3 +23726,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Zero copy (the window server compositing straight from the buffer's frames, or
   the host scanning the resource out), host blobs (their memory is the device's, outside the
   direct map), and `eggway` offering `linux-dmabuf` to Wayland clients on top of it.
+
+## D443 Intel's display flips on the vertical-blank interrupt (M13, D268's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** The Intel display engine driver can have the lit pipe interrupt at each vertical
+  blank (`interrupt_on_vblank`: the pipe's cause cleared, unmasked and enabled in the display
+  engine's pipe interrupt registers, the display's master switch on with the pipe's bit, and on
+  display 11 and later the graphics master's display bit too) and clears the cause when it
+  looks (`acknowledge_vblank`: the master switch off, the cause written back, the switch on).
+  The kernel connects the function's message interrupt (D255) to the scanout's events and
+  takes the display's split flush (D414): `start_flush` copies the damage into the hidden
+  buffer and flips, `finish_flush` answers once the plane's live surface is the new one, so
+  the drawing thread sleeps until the blank instead of spinning on the register. Without a
+  connected interrupt it polls as before.
+- **Known gaps (to check on hardware).** The pipe interrupt registers' offsets and the
+  display-11 master bit are from Intel's public programming references, unverified here;
+  the device ids that mark display 11 and later are a short list.

@@ -30,6 +30,17 @@ const CUR_CTL: usize = 0x70080;
 const CUR_BASE: usize = 0x70084;
 const CUR_POS: usize = 0x70088;
 const GTT_FLUSH: usize = 0x101008;
+const MASTER_INTERRUPT: usize = 0x44200;
+const MASTER_ENABLE: u32 = 1 << 31;
+const MASTER_PIPE_SHIFT: u32 = 16;
+const GFX_MASTER_INTERRUPT: usize = 0x19_0010;
+const GFX_MASTER_DISPLAY: u32 = 1 << 16;
+const PIPE_INTERRUPT_MASK: usize = 0x44404;
+const PIPE_INTERRUPT_IDENTITY: usize = 0x44408;
+const PIPE_INTERRUPT_ENABLE: usize = 0x4440c;
+const PIPE_INTERRUPT_STRIDE: usize = 0x10;
+const PIPE_VBLANK: u32 = 1;
+const DISPLAY_11_AND_LATER: [u8; 8] = [0x8a, 0x4e, 0x9a, 0x4c, 0x46, 0xa7, 0x4f, 0x56];
 
 const PLANE_ENABLE: u32 = 1 << 31;
 const PLANE_FORMAT_SHIFT: u32 = 23;
@@ -185,6 +196,31 @@ impl<R: RegisterIo> DisplayEngine<R> {
         }
         let _ = self.regs.read32(entry - GTT_ENTRY_BYTES as usize);
         self.regs.write32(GTT_FLUSH, GTT_FLUSH_ENABLE);
+    }
+
+    /// Has the lit pipe interrupt at each vertical blank (D443): its interrupt unmasked and
+    /// enabled, and the display's (and, on display 11 and later, the graphics') master switch
+    /// on, for device `device`.
+    pub fn interrupt_on_vblank(&self, device: u16) {
+        let at = PIPE_INTERRUPT_STRIDE * self.pipe;
+        self.regs.write32(PIPE_INTERRUPT_IDENTITY + at, PIPE_VBLANK);
+        self.regs.write32(PIPE_INTERRUPT_MASK + at, !PIPE_VBLANK);
+        self.regs.write32(PIPE_INTERRUPT_ENABLE + at, PIPE_VBLANK);
+        self.regs.write32(MASTER_INTERRUPT, MASTER_ENABLE | 1 << (MASTER_PIPE_SHIFT + self.pipe as u32));
+        if DISPLAY_11_AND_LATER.contains(&((device >> 8) as u8)) {
+            self.regs.write32(GFX_MASTER_INTERRUPT, MASTER_ENABLE | GFX_MASTER_DISPLAY);
+        }
+    }
+
+    /// Clears the lit pipe's vertical-blank cause, so the next one interrupts again: the master
+    /// switch off, the cause written back, the switch on.
+    pub fn acknowledge_vblank(&self) {
+        let master = self.regs.read32(MASTER_INTERRUPT);
+        self.regs.write32(MASTER_INTERRUPT, master & !MASTER_ENABLE);
+        let at = PIPE_INTERRUPT_STRIDE * self.pipe;
+        let cause = self.regs.read32(PIPE_INTERRUPT_IDENTITY + at);
+        self.regs.write32(PIPE_INTERRUPT_IDENTITY + at, cause);
+        self.regs.write32(MASTER_INTERRUPT, master | MASTER_ENABLE);
     }
 
     /// Shows the surface at global-GTT address `surface`, rows `stride_bytes` long, from the next
