@@ -24837,3 +24837,25 @@ the license, by an explicit instruction recorded here.
   `[target action:recognizer]` sent, then possible again.
 - **Not yet.** Double taps, long presses, pans, swipes and pinches, failure requirements
   between recognizers, and recognizers cancelling the view's touches.
+
+## D506 Auto Layout's common part, for Mac and iOS apps (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The macOS layer's AppKit gets `NSLayoutAnchor` and `NSLayoutConstraint`, which
+  UIKit shares (iOS apps link both names): every view answers its ten anchors (left, right,
+  top, bottom, leading, trailing, width, height and both centres) and
+  `translatesAutoresizingMaskIntoConstraints`; anchors make constraints to another anchor
+  (with a constant, a multiplier or both) or to a constant, and the older
+  `constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:` makes the
+  same. `active`, `activateConstraints:` and `deactivateConstraints:` keep a table of 512
+  active constraints. Before a window draws, three passes apply them: each constrained view's
+  wanted low edge, high edge, size and centre per axis are read from the other items' frames,
+  brought into the view's superview's coordinates through their places in the window, and its
+  frame is solved from them (two of edge, edge and size fix both; one edge or the centre keeps
+  the current size, or the intrinsic size of a view whose frame is empty and that answers
+  `intrinsicContentSize`). Leading and trailing are left and right (left-to-right text).
+- **Simplifications.** Inequalities are kept as equalities and priorities are not read, so
+  conflicting constraints settle on the last one read; there is no Cassowary solver. Apps whose
+  layout needs either are listed when they are found.
+- **Not yet.** Priorities and inequalities, layout guides (`safeAreaLayoutGuide`,
+  `layoutMarginsGuide`), stack views (`UIStackView`, `NSStackView`), right-to-left leading and
+  trailing, and layout on resize between draws.

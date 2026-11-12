@@ -154,6 +154,7 @@ pub fn display_if_needed(window: Id) {
         return;
     }
     fields.dirty = false;
+    super::layout::apply();
     let buffer = fields.buffer;
     let content = fields.content_view;
     let background = drawing::colour_of(fields.background)
