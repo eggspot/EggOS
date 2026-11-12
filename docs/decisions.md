@@ -23532,3 +23532,14 @@ the license, by an explicit instruction recorded here.
   dropdown full width under it at 88, its status line at 144, and `Scale` at 176 with its
   radios under it and the restart hint at 232. The pane is 572 tall on a narrow page; the
   desktop shape puts every place back, the scale hint after the radios as built.
+
+## D429 The Storage pane in one column on narrow pages (settings-forms-v0.5.md section 2: R5, R4, R6, R9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `StoragePane::reflow`: on a narrow page the disk list is the content's width with
+  48 px rows (two shown, the rest by scrolling), the disk's facts follow it as lines from 176,
+  the usage bar is the column's width at 260, `Check` and `Repair` share a row at 276 and
+  `Format...` and `Install EggOS...` the next at 332, each half the column less 4, all 48
+  tall; the status, install and report lines follow from 396 at the column's width. The pane
+  is 532 tall; the desktop shape puts every place back.
+- **Not yet.** The format and install panels as bottom sheets (R10): on a narrow page they keep
+  their desktop places inside the pane.

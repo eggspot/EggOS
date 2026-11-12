@@ -1615,6 +1615,16 @@ impl SettingsWindow {
                 Length::Px(if content.is_some() { display } else { DISPLAY_PANE_HEIGHT }),
             ),
         );
+        let storage = self.storage.reflow(&mut self.tree, content);
+        self.tree.set_place(
+            self.widgets.panes[STORAGE],
+            Place::at(
+                0,
+                0,
+                Length::Fill(0),
+                Length::Px(if content.is_some() { storage } else { PANE_HEIGHT }),
+            ),
+        );
         let accessibility = self.accessibility.reflow(&mut self.tree, content);
         self.tree.set_place(
             self.widgets.panes[ACCESSIBILITY],

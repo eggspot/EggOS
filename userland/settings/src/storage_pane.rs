@@ -47,6 +47,7 @@ const STATUS_LINE: i32 = 212;
 const REPORT_TOP: i32 = 232;
 const LINE_PITCH: i32 = 20;
 const LINE_WIDTH: i32 = 432;
+const TOUCH_CONTROL: i32 = 48;
 /// How many report lines the pane shows.
 pub const REPORT_LINES: usize = 5;
 const FORMAT_PANEL: (i32, i32, i32, i32) = (32, 64, 400, 204);
@@ -196,6 +197,70 @@ fn button(
 }
 
 impl StoragePane {
+    /// Moves the pane to one column `content` wide on a narrow page (settings-forms-v0.5.md 2,
+    /// R5, R4 and R9: the disk list, then its facts, the usage bar and two pairs of buttons, the
+    /// status and report lines), or back to the desktop's; returns the narrow pane's height.
+    pub fn reflow(&self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) -> i32 {
+        let w = self.widgets;
+        let facts = [w.contents, w.sizes, w.place, w.read_only];
+        let Some(c) = content else {
+            tree.set_place(w.list, at(DISK_LIST.0, DISK_LIST.1, DISK_LIST.2, DISK_LIST.3));
+            tree.set_row_height(w.list, DISK_ROW);
+            for (id, y) in facts.iter().zip([CONTENTS_LINE, SIZES_LINE, PLACE_LINE]) {
+                tree.set_place(*id, Place::at(FACTS_X, y, Length::Px(FACTS_WIDTH), Length::Content));
+            }
+            tree.set_place(
+                w.read_only,
+                Place::at(FACTS_X, READ_ONLY_LINE, Length::Content, Length::Content),
+            );
+            tree.set_place(w.usage, at(USAGE_BAR.0, USAGE_BAR.1, USAGE_BAR.2, USAGE_BAR.3));
+            for (id, x) in [(w.check, CHECK_X), (w.repair, REPAIR_X), (w.format, FORMAT_X)] {
+                tree.set_place(id, at(x, BUTTONS_TOP, BUTTON_SIZE.0, BUTTON_SIZE.1));
+            }
+            tree.set_place(w.install, at(INSTALL_X, BUTTONS_TOP, INSTALL_WIDTH, BUTTON_SIZE.1));
+            self.place_lines(tree, STATUS_LINE, LINE_WIDTH);
+            return 0;
+        };
+        let row = TOUCH_CONTROL;
+        tree.set_place(w.list, at(PADDING, 64, c, 2 * row));
+        tree.set_row_height(w.list, row);
+        for (index, id) in facts.iter().enumerate() {
+            tree.set_place(
+                *id,
+                Place::at(PADDING, 176 + LINE_PITCH * index as i32, Length::Px(c), Length::Content),
+            );
+        }
+        tree.set_place(w.usage, at(PADDING, 260, c, USAGE_BAR.3));
+        let half = (c - 8) / 2;
+        tree.set_place(w.check, at(PADDING, 276, half, row));
+        tree.set_place(w.repair, at(PADDING + half + 8, 276, half, row));
+        tree.set_place(w.format, at(PADDING, 332, half, row));
+        tree.set_place(w.install, at(PADDING + half + 8, 332, half, row));
+        self.place_lines(tree, 396, c);
+        396 + LINE_PITCH * (1 + REPORT_LINES as i32) + PADDING
+    }
+
+    fn place_lines(&self, tree: &mut WidgetTree<CAPACITY>, status: i32, width: i32) {
+        let w = self.widgets;
+        tree.set_place(w.status, Place::at(PADDING, status, Length::Px(width), Length::Content));
+        let report = status + LINE_PITCH;
+        tree.set_place(
+            w.install_line,
+            Place::at(PADDING, report, Length::Px(width), Length::Content),
+        );
+        for (index, id) in w.report.iter().enumerate() {
+            tree.set_place(
+                *id,
+                Place::at(
+                    PADDING,
+                    report + index as i32 * LINE_PITCH,
+                    Length::Px(width),
+                    Length::Content,
+                ),
+            );
+        }
+    }
+
     /// Builds the pane in `pane`, a container of the window's; `default_button` is the
     /// window's default button, given back when the format panel closes.
     pub fn build(
