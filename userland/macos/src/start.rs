@@ -13,6 +13,7 @@ use crate::dyld_info::{self, DyldInfo, Location, Table};
 use crate::fixups::{ChainedFixups, Source};
 use crate::foundation;
 use crate::libsystem;
+use crate::uikit;
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::macho::{
     self, Cpu, InvalidMachO, MachO, NoSlice, SG_READ_ONLY, Start, VM_PROT_EXECUTE, VM_PROT_READ,
@@ -240,7 +241,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     let uses_appkit = program.libraries().any(|library| {
         matches!(
             Library::provided(library.path),
-            Some(Library::AppKit | Library::Cocoa | Library::CoreGraphics)
+            Some(Library::AppKit | Library::UiKit | Library::Cocoa | Library::CoreGraphics)
         )
     });
     if uses_appkit && !appkit::set_up() {
@@ -868,6 +869,7 @@ enum Library {
     CoreFoundation,
     CoreGraphics,
     AppKit,
+    UiKit,
     Cocoa,
     SwiftCore,
     SwiftCoreFoundation,
@@ -886,6 +888,7 @@ impl Library {
             macho::CORE_FOUNDATION => Self::CoreFoundation,
             macho::CORE_GRAPHICS => Self::CoreGraphics,
             macho::APPKIT => Self::AppKit,
+            macho::UIKIT => Self::UiKit,
             macho::COCOA => Self::Cocoa,
             macho::LIBSWIFT_CORE => Self::SwiftCore,
             macho::LIBSWIFT_CORE_FOUNDATION => Self::SwiftCoreFoundation,
@@ -909,6 +912,7 @@ impl Library {
             Self::CoreFoundation => b"CoreFoundation",
             Self::CoreGraphics => b"CoreGraphics",
             Self::AppKit => b"AppKit",
+            Self::UiKit => b"UIKit",
             Self::Cocoa => b"Cocoa",
             Self::SwiftCore => b"libswiftCore",
             Self::SwiftCoreFoundation => b"libswiftCoreFoundation",
@@ -925,6 +929,7 @@ fn resolve(name: &[u8]) -> Option<u64> {
         .or_else(|| objc::resolve(name))
         .or_else(|| foundation::resolve(name))
         .or_else(|| appkit::resolve(name))
+        .or_else(|| uikit::resolve(name))
         .or_else(|| libsystem::resolve(name))
 }
 

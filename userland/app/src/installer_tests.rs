@@ -1592,7 +1592,7 @@ fn an_android_package_without_its_code_or_its_layer_is_refused() {
 }
 
 #[test]
-fn an_ios_package_is_named_as_one_and_refused() {
+fn an_ios_package_whose_plist_names_no_program_is_refused() {
     let zip = zip(&[
         stored("Payload/Notes.app/Info.plist", b"bplist00"),
         stored("Payload/Notes.app/Notes", b"\xcf\xfa\xed\xfe"),
@@ -1604,4 +1604,19 @@ fn an_ios_package_is_named_as_one_and_refused() {
             .problem,
         Problem::NotRunnable(NotRunnable::IosPackage)
     );
+}
+
+#[test]
+fn an_ios_package_installs_whole_and_runs_its_bundle_s_program_through_the_macos_layer() {
+    let plist = b"<plist><dict><key>CFBundleExecutable</key><string>Notes</string></dict></plist>";
+    let zip = zip(&[
+        stored("Payload/Notes.app/Info.plist", plist),
+        stored("Payload/Notes.app/Notes", &mach_o(0x0100_000c, 2)),
+    ]);
+    let mut files = host_with("/media/host/Notes.ipa", &zip);
+    let plan = planned(&mut files, "/media/host/Notes.ipa", Aarch64);
+    assert_eq!(plan.program().source, Source::Macos);
+    assert_eq!(plan.run(), b"Payload/Notes.app/Notes");
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    assert!(manifest_of(&files, "Notes").contains("source=macos"));
 }

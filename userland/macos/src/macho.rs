@@ -27,6 +27,8 @@ pub const FOUNDATION: &[u8] =
 pub const CORE_FOUNDATION: &[u8] =
     b"/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation";
 pub const APPKIT: &[u8] = b"/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit";
+/// UIKit, as an iOS app links it (D473).
+pub const UIKIT: &[u8] = b"/System/Library/Frameworks/UIKit.framework/UIKit";
 pub const CORE_GRAPHICS: &[u8] =
     b"/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics";
 pub const COCOA: &[u8] = b"/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa";

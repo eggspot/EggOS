@@ -24227,3 +24227,23 @@ the license, by an explicit instruction recorded here.
   superclasses), static fields, arrays, exceptions and switches in the compiler, layouts and
   resources (`R.layout`), more views and input, garbage collection, and the aarch64 and riscv64
   back ends.
+
+## D473 iOS apps, part 1: `.ipa` install and UIKit on AppKit in the macOS layer (M15, D452's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** An iOS app distributed outside the App Store is an arm64 Mach-O program in a
+  bundle, so it runs natively through the macOS layer (D17, D120) on arm64 machines rather
+  than through a layer of its own. The installer now takes an `.ipa`: it finds
+  `Payload/<name>.app/Info.plist` (XML or binary), reads `CFBundleExecutable`, recognises that
+  program, extracts the whole package and names the app after the bundle; the program runs
+  as a macOS program, so on another CPU it is refused as one. The macOS layer provides UIKit
+  (`/System/Library/Frameworks/UIKit.framework/UIKit`): its first classes are bound to AppKit's
+  (`UIApplication`, `UIResponder`, `UIView`, `UIWindow`, `UIViewController`, `UILabel` as a
+  text field, `UIButton`, `UIColor`, `UIFont`, `UIScreen`); a send that finds no method under a
+  UIKit selector tries AppKit's (`setText:` is `setStringValue:`, `makeKeyAndVisible` is
+  `makeKeyAndOrderFront:`, `rootViewController` is `contentViewController`, `bounds` is
+  `frame`), and `-[UIWindow initWithFrame:]` makes a window of that frame.
+  `UIApplicationMain` makes the shared application, makes the delegate of the class it names,
+  sends it `application:didFinishLaunchingWithOptions:` and runs the app.
+- **Not yet.** Scenes (`UISceneDelegate`), touch events as `UITouch`, Auto Layout, storyboards
+  for iOS, view controllers' presentation, the iOS bundle's own Info.plist keys in the layer,
+  and x86_64 machines (iOS programs are arm64 only).

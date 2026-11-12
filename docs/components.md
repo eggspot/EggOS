@@ -13,10 +13,10 @@ images and lists in `SHA256SUMS`. EggOS reads the store from either of two place
 - a disk attached read-only (`/dev/vda` to `/dev/vdd`);
 - the same file in the host share (`/media/host`).
 
-This version's stores offer two components, on x86_64 and aarch64:
+This version's stores offer these layers, on x86_64 and aarch64 unless named:
 
 - `windows-apps`, the Windows layer;
-- `mac-apps`, the macOS layer.
+- `mac-apps`, the macOS layer;
 - `android-apps`, the Android layer (x86_64 so far, D472).
 
 riscv64's store is empty.

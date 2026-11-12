@@ -448,6 +448,17 @@ pub fn extend(
     true
 }
 
+/// What answers UIKit selector `sel` on an AppKit class standing for a UIKit one (D473): the
+/// AppKit method it names, or UIKit's own.
+fn uikit_method(record: &ClassRecord, sel: Sel) -> Option<Imp> {
+    // SAFETY: a selector is its permanent NUL-terminated name.
+    let name = unsafe { core::ffi::CStr::from_ptr(sel.cast()) }.to_bytes();
+    match crate::uikit::appkit_selector(name) {
+        Some(appkit) => find_method(record, super::selector_named(appkit)?),
+        None => crate::uikit::method_for(name),
+    }
+}
+
 /// The IMP for `sel` in `record` or its superclasses.
 pub fn find_method(record: &ClassRecord, sel: Sel) -> Option<Imp> {
     let mut current = record;
@@ -504,7 +515,8 @@ pub fn lookup(class: *mut ClassObject, sel: Sel) -> Option<Imp> {
     };
     initialize(target);
     RUNTIME.with(|_| {
-        let imp = crate::callback::native_callable(find_method(record, sel)?);
+        let found = find_method(record, sel).or_else(|| uikit_method(record, sel));
+        let imp = crate::callback::native_callable(found?);
         if target.state.load(Ordering::Acquire) == INITIALIZED {
             // SAFETY: as in `record_of`.
             fill(unsafe { &*class }, sel, imp);

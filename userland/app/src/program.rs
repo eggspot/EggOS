@@ -50,8 +50,8 @@ pub enum NotRunnable {
     /// An Android app package (`.apk`, D451) without `classes.dex`: no code for the Android
     /// layer to compile (D470).
     AndroidPackage,
-    /// An iOS app package (`.ipa`, D452): its UIKit program needs the iOS layer, which does
-    /// not install app packages yet.
+    /// An iOS app package (`.ipa`, D452) without a bundle whose `Info.plist` names a program
+    /// in it (D473).
     IosPackage,
 }
 

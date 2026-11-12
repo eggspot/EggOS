@@ -1072,6 +1072,48 @@ pub const ANDROID_CODE: &[u8] = b"classes.dex";
 const IPA_PAYLOAD: &[u8] = b"Payload/";
 const APP_FOLDER: &[u8] = b".app/";
 
+const IOS_INFO_PLIST: &[u8] = b"Info.plist";
+const IOS_PLIST_BYTES: usize = 16 << 10;
+
+fn ios_bundle_of_plist(name: &[u8]) -> Option<&[u8]> {
+    let inside = name.strip_prefix(IPA_PAYLOAD)?;
+    let bundle_end = inside
+        .windows(APP_FOLDER.len())
+        .position(|window| window == APP_FOLDER)?;
+    let (bundle, rest) = inside.split_at(bundle_end + APP_FOLDER.len());
+    let folder = &bundle[..bundle.len() - 1];
+    (rest == IOS_INFO_PLIST && !folder.contains(&b'/'))
+        .then(|| &name[..IPA_PAYLOAD.len() + folder.len()])
+}
+
+fn ios_program(
+    zip: &mut impl Reader,
+    archive: &Archive,
+    plist: &Entry,
+    window: &mut Window,
+    machine: Architecture,
+) -> Result<(Path, Path, Program), Problem> {
+    let refused = Problem::NotRunnable(NotRunnable::IosPackage);
+    let bundle = ios_bundle_of_plist(plist.name()).ok_or(refused)?;
+    let mut bytes = [0u8; IOS_PLIST_BYTES];
+    let length = archive::head(zip, plist, window, &mut bytes).map_err(Problem::Archive)?;
+    let mut name = [0u8; icon::PLIST_NAME_BYTES];
+    let executable = icon::plist_executable(&bytes[..length], &mut name).ok_or(refused)?;
+    let bundle = Path::from(bundle).ok_or(Problem::PathTooLong)?;
+    let run = bundle.join(executable).ok_or(Problem::PathTooLong)?;
+    let mut cursor = archive.first();
+    while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
+        if entry.name() != run.as_bytes() {
+            continue;
+        }
+        let mut head = [0u8; program::HEAD_BYTES];
+        let length = archive::head(zip, &entry, window, &mut head).map_err(Problem::Archive)?;
+        let program = program::recognise(&head[..length], machine).map_err(Problem::NotRunnable)?;
+        return Ok((run, bundle, program));
+    }
+    Err(refused)
+}
+
 fn is_ios_bundle_entry(name: &[u8]) -> bool {
     name.strip_prefix(IPA_PAYLOAD)
         .is_some_and(|rest| rest.windows(APP_FOLDER.len()).any(|window| window == APP_FOLDER))
@@ -1093,6 +1135,8 @@ fn scan(
     let mut carries_gui_library = false;
     let mut android_manifest = false;
     let mut android_code = None;
+    let mut ios_bundle = false;
+    let mut ios_plist = None;
     while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
         if is_reserved(entry.name()) {
             return Err(Problem::ReservedName);
@@ -1104,7 +1148,10 @@ fn scan(
             android_code = Some(entry);
         }
         if is_ios_bundle_entry(entry.name()) {
-            return Err(Problem::NotRunnable(NotRunnable::IosPackage));
+            ios_bundle = true;
+            if ios_bundle_of_plist(entry.name()).is_some() {
+                ios_plist = Some(entry);
+            }
         }
         if entry.is_metadata() || entry.is_directory() {
             continue;
@@ -1127,6 +1174,19 @@ fn scan(
         if chosen.is_none() {
             chosen = Some((entry, role));
         }
+    }
+    if ios_bundle {
+        let plist = ios_plist.ok_or(Problem::NotRunnable(NotRunnable::IosPackage))?;
+        let (run, named_after, program) = ios_program(zip, &archive, &plist, window, machine)?;
+        return Ok(Scanned {
+            archive,
+            run,
+            named_after,
+            program,
+            loader: None,
+            console: false,
+            total,
+        });
     }
     if android_manifest {
         let code = android_code.ok_or(Problem::NotRunnable(NotRunnable::AndroidPackage))?;

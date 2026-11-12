@@ -18,6 +18,8 @@ extern crate alloc;
 
 #[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 mod appkit;
+#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
+mod uikit;
 #[cfg(any(
     test,
     all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
