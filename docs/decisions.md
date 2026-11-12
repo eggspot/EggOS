@@ -22814,3 +22814,21 @@ the license, by an explicit instruction recorded here.
   outline while a drag is over it and no `Dropped <N> files` notice yet.
 - **Not yet.** The icon view as a source, touch long press, the editor's outline and notices,
   a ghost badge for copy or link, and the QEMU check of section 11.
+
+## D396 The built-in apps as the `builtin-apps` component (batch, D235's "Not yet", part 65's first half; M14; D18; code written, unbuilt, untested: code-only mode) — Decided by Claude Fable's components design (docs/ux/components-v0.3.md) and the code-only session (engineering)
+
+- **Decision.** Files, the Text Editor with `edit`, and Downloads leave `/bin/settings` for a
+  program of their own, `eggos-builtin-apps`, installed as the `builtin-apps` component at
+  `/usr/libexec/builtin-apps`. The base keeps `/bin/files`, `/bin/text-editor`, `/bin/edit`
+  and `/bin/downloads` as links to it, dangling until the component is installed, so a
+  machine without it has none of them and carries none of their code (D18); an image built
+  with the components embedded (the QEMU tests' `Layers::Embedded`) holds the program at its
+  path, as it does the layers. The store offers `builtin-apps` first ("Files, Text Editor,
+  Downloads"; on removal "They leave the launcher; your files stay."), and the personal,
+  professional and enterprise editions install it; server stays the base alone. Settings no
+  longer links the editor or Downloads.
+- **Deviations from the design.** `needs: desktop` is left out while the desktop is not a
+  component (it runs in the kernel until the window server moves to user space, part 66);
+  the Task Manager stays in `/bin/settings`, its code woven into Settings' panes.
+- **Not yet.** The desktop as a component (part 66), the Task Manager in the component, the
+  launcher hiding the apps' entries when the component is absent.

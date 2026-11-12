@@ -1,0 +1,20 @@
+[package]
+name = "eggos-builtin-apps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "builtin-apps"
+path = "src/main.rs"
+
+[dependencies]
+eggos-app = { path = "../app", features = ["window"] }
+eggos-downloads = { path = "../downloads" }
+eggos-editor = { path = "../editor", features = ["window"] }
+eggos-files = { path = "../files", features = ["window", "storage"] }
+eggos-runtime = { path = "../runtime" }
+
+[lints]
+workspace = true

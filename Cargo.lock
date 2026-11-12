@@ -40,6 +40,17 @@ name = "eggos-build-timer"
 version = "0.4.0"
 
 [[package]]
+name = "eggos-builtin-apps"
+version = "0.4.0"
+dependencies = [
+ "eggos-app",
+ "eggos-downloads",
+ "eggos-editor",
+ "eggos-files",
+ "eggos-runtime",
+]
+
+[[package]]
 name = "eggos-c-format"
 version = "0.4.0"
 
@@ -367,8 +378,6 @@ dependencies = [
  "eggos-commands",
  "eggos-components",
  "eggos-device-list",
- "eggos-downloads",
- "eggos-editor",
  "eggos-eggfs",
  "eggos-files",
  "eggos-font",

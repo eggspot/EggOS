@@ -504,6 +504,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-hello-window",
     "eggos-toolkit",
     "eggos-settings",
+    "eggos-builtin-apps",
     "eggos-app",
     "eggos-mcp",
     "eggos-eggway",
@@ -1562,6 +1563,14 @@ const WINDOWS_LAYER_PACKAGE: &str = "eggos-windows";
 
 const WINDOWS_LAYER_PATH: &str = "usr/lib/eggos/windows";
 
+/// Where the built-in apps' program lives (D396), the `builtin-apps` component's one file.
+pub const BUILTIN_APPS_PATH: &str = "usr/libexec/builtin-apps";
+
+/// The package the built-in apps' program is built from.
+pub const BUILTIN_APPS_PACKAGE: &str = "eggos-builtin-apps";
+
+const BUILTIN_APPS_LINK: &str = "/usr/libexec/builtin-apps";
+
 const WINDOWS_COMMAND_PATH: &str = "bin/windows";
 
 const WINDOWS_LAYER_ARCHES: [&str; 2] = ["x86_64", "aarch64"];
@@ -1852,6 +1861,10 @@ fn initramfs_with(
     let wayland_server = build_runtime_program(arch, "eggos-eggway")?;
     let mut embedded = Vec::new();
     if layers == Layers::Embedded {
+        embedded.push((
+            BUILTIN_APPS_PATH,
+            build_runtime_program(arch, BUILTIN_APPS_PACKAGE)?,
+        ));
         for (path, package) in foreign_layers(arch.name) {
             embedded.push((path, build_runtime_program(arch, package)?));
         }
@@ -1867,20 +1880,20 @@ fn initramfs_with(
         (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
         (SETTINGS_PATH, initramfs::Content::Program(&settings)),
         (APP_WINDOW_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
-        (FILES_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (FILES_PATH, initramfs::Content::SymbolicLink(BUILTIN_APPS_LINK)),
         (PICK_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (
             TEXT_EDITOR_PATH,
-            initramfs::Content::HardLink(SETTINGS_PATH),
+            initramfs::Content::SymbolicLink(BUILTIN_APPS_LINK),
         ),
-        (EDIT_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (EDIT_PATH, initramfs::Content::SymbolicLink(BUILTIN_APPS_LINK)),
         (DISK_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (TERMINAL_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (
             TASK_MANAGER_PATH,
             initramfs::Content::HardLink(SETTINGS_PATH),
         ),
-        (DOWNLOADS_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (DOWNLOADS_PATH, initramfs::Content::SymbolicLink(BUILTIN_APPS_LINK)),
         (APP_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (COMPONENT_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),

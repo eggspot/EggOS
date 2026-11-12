@@ -898,7 +898,8 @@ yet" naming what it left.
     libc++abi basics, code written, unbuilt, D380);
   - part 6's screendump checks, part 7's indicator check and part 9's wheel and list-item
     checks in QEMU (D224, D225, D227);
-  - the desktop and built-in apps as components (D235, parts 65 and 66).
+  - the desktop and built-in apps as components (D235, parts 65 and 66; the built-in apps as
+    the `builtin-apps` component, code written, unbuilt, D396).
 
 ## Milestones
 

@@ -90,10 +90,7 @@ const DIRENT_LENGTH: usize = 16;
 const DIRENT_NAME: usize = 19;
 const WINDOW_PROGRAM_NAME: &[u8] = b"app-window";
 const APP_COMMAND_NAME: &[u8] = b"app";
-const FILES_PROGRAM_NAME: &[u8] = b"files";
-const EDITOR_PROGRAM_NAME: &[u8] = b"text-editor";
 const TASK_MANAGER_PROGRAM_NAME: &[u8] = b"task-manager";
-const DOWNLOADS_PROGRAM_NAME: &[u8] = b"downloads";
 const PICK_PROGRAM_NAME: &[u8] = b"pick";
 const APPS_OPTION: &[u8] = b"--apps";
 const WINDOW_DEVICE: &str = "/dev/window";
@@ -105,7 +102,6 @@ const LIST_SIZE: usize = 96;
 const CLOSE_ACTION: u32 = 4;
 const TASK_LIST_CAPACITY: usize = 16 * 1024;
 const TERMINAL_PROGRAM_NAME: &[u8] = b"terminal";
-const EDIT_COMMAND_NAME: &[u8] = b"edit";
 const DISK_COMMAND_NAME: &[u8] = b"disk";
 const CLOCK_REALTIME: usize = 0;
 const HARDWARE_CLOCK: &str = "/proc/driver/rtc";
@@ -2301,22 +2297,17 @@ fn run_task_manager(startup: &Startup) -> i32 {
 }
 
 /// The program: see the crate's documentation. Started as `app-window`, it is the
-/// installer's window instead (D134); as `app` the `app` command (D134, D214); as `files` the
-/// Files window (D135); as `text-editor` the Text Editor and as `edit` its command (D149); as
-/// `disk` the `disk` command (D192); as `downloads` the Downloads window (D225); as `pick` the
-/// file picker (D391).
+/// installer's window instead (D134); as `app` the `app` command (D134, D214); as `disk` the
+/// `disk` command (D192); as `pick` the file picker (D391). Files, the Text Editor and
+/// Downloads are the `builtin-apps` component's program (D396).
 pub fn run(startup: &Startup) -> i32 {
     let started_as = startup.arguments().next().map_or(&b""[..], CStr::to_bytes);
     match eggos_app::files::file_name(started_as) {
         WINDOW_PROGRAM_NAME => return eggos_app::window_program::run(startup),
         APP_COMMAND_NAME => return eggos_app::command::run(startup),
-        FILES_PROGRAM_NAME => return eggos_files::program::run(startup),
-        EDITOR_PROGRAM_NAME => return eggos_editor::program::run(startup),
-        EDIT_COMMAND_NAME => return eggos_editor::command::run(startup),
         DISK_COMMAND_NAME => return crate::disk_system::run(startup),
         TERMINAL_PROGRAM_NAME => return eggos_terminal_window::program::run(startup),
         TASK_MANAGER_PROGRAM_NAME => return run_task_manager(startup),
-        DOWNLOADS_PROGRAM_NAME => return eggos_downloads::program::run(startup),
         PICK_PROGRAM_NAME => return eggos_picker::program::run(startup),
         _ => {}
     }
