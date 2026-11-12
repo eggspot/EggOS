@@ -102,6 +102,7 @@ pub mod size {
     pub const START_DRAG: usize = super::start_drag_request::TEXT + super::CARRY_TEXT_BYTES;
     pub const GET_DRAG: usize = 32;
     pub const REGISTER_HOT_KEY: usize = 16;
+    pub const SHOW_GPU_BUFFER: usize = 24;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -168,6 +169,7 @@ pub mod request {
     pub const START_DRAG: u32 = encode(WRITE, 55, size::START_DRAG);
     pub const GET_DRAG: u32 = encode(READ | WRITE, 56, size::GET_DRAG);
     pub const REGISTER_HOT_KEY: u32 = encode(WRITE, 57, size::REGISTER_HOT_KEY);
+    pub const SHOW_GPU_BUFFER: u32 = encode(WRITE, 58, size::SHOW_GPU_BUFFER);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -844,6 +846,17 @@ pub enum Request {
         code: u32,
         modifiers: u32,
     },
+    /// Shows the GPU buffer whose `dma-buf` descriptor is `fd` as the caller's `window`'s
+    /// pixels (D442): `width` by `height` `0x00RRGGBB` pixels from byte `offset`, rows `stride`
+    /// bytes apart, copied in and committed whole.
+    ShowGpuBuffer {
+        window: u32,
+        fd: u32,
+        width: u32,
+        height: u32,
+        stride: u32,
+        offset: u32,
+    },
     /// Reads the current drag's payload into `buffer` (`length` bytes from `offset`).
     GetDrag {
         buffer: u64,
@@ -913,6 +926,7 @@ impl Request {
             request::START_DRAG => size::START_DRAG,
             request::GET_DRAG => size::GET_DRAG,
             request::REGISTER_HOT_KEY => size::REGISTER_HOT_KEY,
+            request::SHOW_GPU_BUFFER => size::SHOW_GPU_BUFFER,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::GET_LAUNCH => size::GET_LAUNCH,
@@ -1057,6 +1071,14 @@ impl Request {
                 hot_key: at(4),
                 code: at(8),
                 modifiers: at(12),
+            },
+            request::SHOW_GPU_BUFFER => Self::ShowGpuBuffer {
+                window: at(0),
+                fd: at(4),
+                width: at(8),
+                height: at(12),
+                stride: at(16),
+                offset: at(20),
             },
             request::GET_DRAG => Self::GetDrag {
                 buffer: double_word(bytes, 0),

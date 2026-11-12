@@ -536,6 +536,44 @@ pub fn ioctl<P: Platform>(
                 )
             })?;
         }
+        Request::ShowGpuBuffer {
+            window,
+            fd,
+            width,
+            height,
+            stride,
+            offset,
+        } => {
+            let file = thread.files().file(u64::from(fd))?;
+            let FileKind::GpuBuffer(gpu) = file.kind() else {
+                return Err(Errno::EINVAL);
+            };
+            let gpu = Arc::clone(gpu);
+            let id = WindowId::try_from(window).map_err(|_| Errno::EINVAL)?;
+            let shared = with_windows::<P, _>(|desktop, buffers, _, _| {
+                desktop.owns(client, id).then(|| buffers.shared(id)).flatten()
+            })
+            .ok_or(Errno::ENXIO)?
+            .ok_or(Errno::EINVAL)?;
+            let (shown_width, shown_height) = shared.size();
+            let mut row = Vec::new();
+            let wide = width.min(shown_width) as usize;
+            if row.try_reserve_exact(wide).is_err() {
+                return Err(Errno::ENOMEM);
+            }
+            row.resize(wide, 0u32);
+            for y in 0..height.min(shown_height) {
+                let at = u64::from(offset) + u64::from(y) * u64::from(stride);
+                if !gpu.read_pixels(at, &mut row) {
+                    return Err(Errno::EINVAL);
+                }
+                shared.write_row(y, &row);
+            }
+            let whole = [eggos_drivers::display::Rect::new(0, 0, shown_width, shown_height)];
+            on_windows::<P, _>(|desktop, _, damage, events| {
+                desktop.commit(client, window, &whole, damage, events)
+            })?;
+        }
         Request::SetRotation { setting } => match crate::terminal::set_rotation_setting::<P>(setting) {
             Ok(()) => {}
             Err(crate::terminal::RotationRefused::NoSuchValue) => return Err(Errno::EINVAL),

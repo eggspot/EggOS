@@ -23714,3 +23714,15 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The window server taking a GPU buffer as a window's pixels (a request on
   `/dev/window` that shows the buffer after its transfer back from the host, or the
   `linux-dmabuf` Wayland protocol in `eggway`), and implicit fences on the shared buffer.
+
+## D442 The window server shows a GPU buffer as a window's pixels (M11 part 2b, D441's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `/dev/window` takes `SHOW_GPU_BUFFER` (request 58): the caller's window, a
+  `dma-buf` descriptor (D441), the picture's width, height, stride and starting byte. The
+  kernel copies the rows from the buffer's guest memory into the window's pixels (as many as
+  the window holds) and commits the whole window, so a GL or Vulkan program that rendered
+  through the render node, and transferred its frame back from the host into the buffer,
+  shows it with one call instead of copying it through its own mapping.
+- **Not yet.** Zero copy (the window server compositing straight from the buffer's frames, or
+  the host scanning the resource out), host blobs (their memory is the device's, outside the
+  direct map), and `eggway` offering `linux-dmabuf` to Wayland clients on top of it.

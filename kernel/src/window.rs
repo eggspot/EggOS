@@ -118,6 +118,19 @@ impl PixelBuffer {
         (self.width, self.height)
     }
 
+    /// Writes `row` into row `y` from its first column, as much as fits (D442).
+    pub fn write_row(&self, y: u32, row: &[u32]) {
+        if y >= self.height {
+            return;
+        }
+        let count = row.len().min(self.width as usize);
+        let at = y as usize * self.width as usize;
+        // SAFETY: row `y`, columns `0..count`, are inside the buffer's frames, which stay
+        // allocated while `self` lives; a program mapping them may write them meanwhile, so the
+        // copy goes through raw pointers only, from `row`, which is not in the buffer.
+        unsafe { ptr::copy_nonoverlapping(row.as_ptr(), self.base().wrapping_add(at), count) };
+    }
+
     /// Copies pixels `x..x + out.len()` of row `y` into `out`; what lies outside the buffer is
     /// the window background.
     pub fn copy_row(&self, x: u32, y: u32, out: &mut [u32]) {

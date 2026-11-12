@@ -172,6 +172,26 @@ impl Buffer {
     }
 }
 
+impl Buffer {
+    /// Reads `out.len()` pixels from byte `offset` of the buffer's guest memory into `out`
+    /// (D442); `false` for a host blob, whose memory is the device's, or a range past its end.
+    pub fn read_pixels(&self, offset: u64, out: &mut [u32]) -> bool {
+        let Some(memory) = self.memory.as_ref() else {
+            return false;
+        };
+        let bytes = (out.len() as u64).saturating_mul(4);
+        if offset.checked_add(bytes).is_none_or(|end| end > self.length) || offset % 4 != 0 {
+            return false;
+        }
+        let from = memory.as_mut_ptr().wrapping_add(offset as usize).cast::<u32>();
+        // SAFETY: the range lies inside the buffer's DMA memory (checked), which lives as long
+        // as `self`, reached through the direct map and 4-byte aligned; the GPU or a program
+        // may write it meanwhile, so the copy goes through raw pointers only.
+        unsafe { core::ptr::copy_nonoverlapping(from, out.as_mut_ptr(), out.len()) };
+        true
+    }
+}
+
 impl LentFrames for Buffer {
     fn frame_at(&self, offset: u64) -> u64 {
         self.physical + offset
