@@ -488,6 +488,29 @@ fn delete_item(window: usize, index: usize) -> bool {
     removed
 }
 
+fn forget_all(window: usize) {
+    while let Some(root) =
+        with_state::<TreeState, _>(window, |_, control| control.tree.first_root()).flatten()
+    {
+        let mut doomed = [0u16; TREE_CAPACITY];
+        let count = with_state::<TreeState, _>(window, |_, control| {
+            control.tree.postorder(root, &mut doomed)
+        })
+        .unwrap_or(0);
+        for &item in &doomed[..count] {
+            let old = info_of(window, Some(usize::from(item)));
+            if old.item != 0 {
+                send_tree(window, TVN_DELETEITEMW, 0, old, TreeItem::default());
+            }
+        }
+        let removed = with_state::<TreeState, _>(window, |_, control| control.tree.remove(root))
+            .unwrap_or(false);
+        if !removed {
+            break;
+        }
+    }
+}
+
 fn delete_all(window: usize) -> bool {
     let mut deleted = false;
     while let Some(root) =
@@ -1706,6 +1729,10 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
         message::CREATE => {
             make_info_tips(window);
             0
+        }
+        message::DESTROY => {
+            forget_all(window);
+            default_procedure(window, number, wparam, lparam)
         }
         message::PAINT => {
             sync_info_tips(window);

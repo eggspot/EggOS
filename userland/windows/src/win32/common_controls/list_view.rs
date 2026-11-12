@@ -2119,6 +2119,10 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
             create_header(window);
             0
         }
+        message::DESTROY => {
+            delete_all(window);
+            default_procedure(window, number, wparam, lparam)
+        }
         message::PAINT => {
             paint(window);
             0

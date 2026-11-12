@@ -8,6 +8,7 @@
 //! parent ([`notify_parent`]). Their rows, items, tabs, parts and buttons are elements of
 //! agents' tree with ids from [`item_element`].
 
+mod ansi_messages;
 mod header;
 mod image_list;
 mod list_view;
@@ -288,6 +289,9 @@ pub fn procedure(
     wparam: usize,
     lparam: usize,
 ) -> usize {
+    if let Some(answer) = ansi_messages::translate(window, kind, number, wparam, lparam) {
+        return answer;
+    }
     match kind {
         CommonKind::StatusBar => status_bar::procedure(window, number, wparam, lparam),
         CommonKind::Progress => progress::procedure(window, number, wparam, lparam),

@@ -22964,3 +22964,25 @@ the license, by an explicit instruction recorded here.
   caller of `set_form_factor` yet), rows 40 tall for touch, the wearable's browse-only page
   and its two-line value rows, bottom-sheet panels, long-press context menus, and the
   outline's sideways scroll.
+
+## D402 The common controls' ANSI messages, and their delete notifications at destroy (batch part 13's rest, the common-control breadth; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: Microsoft's documentation of each control's `A` and `W` messages and the structures' 64-bit layouts)
+
+- **Question.** D231 left the controls' ANSI messages and the `*_DELETEITEM` notifications
+  at destroy: a program built for ANSI that sends `LVM_INSERTITEMA` got nothing, and a
+  program that frees each row's `lParam` in `LVN_DELETEITEM` leaked when its window closed.
+- **Decision.** Every common control's `A` message becomes its `W` message before the
+  control sees it (`common_controls/ansi_messages.rs`): list views' item, column, find,
+  item-text and string-width messages, tree views' insert, get and set, headers' and tab
+  controls' items, status bars' text, length and tip text, toolbars' strings, buttons and
+  button text, and tooltips' tool, text and title messages. A structure is copied with its
+  text widened from UTF-8 (the layer's narrow text, D178); a `GET` message's text is
+  narrowed back into the program's buffer, cut at a whole character, and lengths are
+  answered in bytes, as the `A` messages count them. Callbacks
+  (`LPSTR_TEXTCALLBACKA`) and resource numbers pass unchanged. One table names every
+  message, so the controls keep one implementation each.
+- **Destroy.** A list view sends `LVN_DELETEALLITEMS` (and `LVN_DELETEITEM` per row unless
+  the parent answered nonzero) and a tree view `TVN_DELETEITEMW` for every item, children
+  first, when the window is destroyed, as Windows does.
+- **Not yet.** `A` notifications to ANSI parents (the layer answers `WM_NOTIFYFORMAT` with
+  Unicode, so parents get `W` ones), `TTM_GETTOOLINFOA`, `SB_GETTIPTEXTA`,
+  `LVM_GETISEARCHSTRINGA` and `TB_SAVERESTOREA`.
