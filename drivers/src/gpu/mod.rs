@@ -5,3 +5,4 @@ pub mod intel;
 pub mod intel_aux;
 pub mod intel_dmc;
 pub mod intel_modeset;
+pub mod nvidia_bios;

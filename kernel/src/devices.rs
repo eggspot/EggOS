@@ -39,8 +39,8 @@ pub mod usb;
 pub mod ethernet;
 #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
 pub mod intel_display;
-#[cfg(any(test, feature = "amd-display"))]
-pub mod amd_display;
+#[cfg(any(test, feature = "vendor-gpus"))]
+pub mod vendor_gpus;
 #[cfg(any(test, feature = "intel-wifi"))]
 pub mod intel_wifi;
 #[cfg(any(test, feature = "virtio"))]
@@ -266,8 +266,10 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &usb::XHCI_DRIVER,
     #[cfg(any(test, feature = "ethernet"))]
     &ethernet::ETHERNET_DRIVER,
-    #[cfg(any(test, feature = "amd-display"))]
-    &amd_display::AMD_DISPLAY_DRIVER,
+    #[cfg(any(test, feature = "vendor-gpus"))]
+    &vendor_gpus::AMD_DISPLAY_DRIVER,
+    #[cfg(any(test, feature = "vendor-gpus"))]
+    &vendor_gpus::NVIDIA_DISPLAY_DRIVER,
     #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
     &intel_display::INTEL_DISPLAY_DRIVER,
     #[cfg(any(test, feature = "intel-wifi"))]
@@ -284,9 +286,9 @@ pub fn wifi_status() -> alloc::string::String {
 
 /// What the GPUs without a display driver of their own said at probe (D448): one line each.
 pub fn display_hardware_text() -> alloc::string::String {
-    #[cfg(any(test, feature = "amd-display"))]
-    return amd_display::summary();
-    #[cfg(not(any(test, feature = "amd-display")))]
+    #[cfg(any(test, feature = "vendor-gpus"))]
+    return vendor_gpus::summary();
+    #[cfg(not(any(test, feature = "vendor-gpus")))]
     return alloc::string::String::new();
 }
 

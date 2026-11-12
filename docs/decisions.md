@@ -23825,3 +23825,17 @@ the license, by an explicit instruction recorded here.
   it there), running ATOM command tables (the interpreter AMD's design needs for the
   display's power-up), the DMCUB firmware from the component store (D265), then DCN's pipes,
   planes and flips.
+
+## D449 NVIDIA graphics, part 1: the video BIOS's BIT and DCB (M13, D245's order; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `gpu::nvidia_bios` reads an NVIDIA video BIOS from the layouts NVIDIA publishes in
+  `open-gpu-doc` (MIT): the BIOS Information Table found by its signature, its `i` token's
+  BIOS version, and the Display Configuration Block 4.x pointed at from byte 0x36 (its
+  signature checked, each entry's output type, skipped and end entries honoured); host-tested
+  on a built image. The kernel's AMD driver (D448) becomes `vendor_gpus` (feature
+  `vendor-gpus`, default), with an `nvidia-display` driver beside `amd-display` that reads the
+  card's expansion ROM the same way and adds its line to `/proc/driver/display`:
+  `nvidia 2484 bios 86042100 DisplayPort DVI/HDMI`.
+- **Next.** The GSP firmware from the component store (the RISC-V core that runs modern NVIDIA
+  GPUs, D246's firmware question settled by D265), its boot sequence and the display engine's
+  methods, as NVIDIA's `open-gpu-kernel-modules` headers document them (MIT).

@@ -1,7 +1,8 @@
-//! AMD's graphics, part 1 (D448): at probe the card's video BIOS is read from its expansion
-//! ROM and its ATOM tables parsed ([`eggos_drivers::gpu::amd_atom`]), so `/proc/driver/display`
-//! says which connectors the board has and which firmware it carries. The firmware's
-//! framebuffer (D236) stays the display until the display engine (DCN) is driven.
+//! AMD's and NVIDIA's graphics, part 1 (D448, D449): at probe the card's video BIOS is read
+//! from its expansion ROM and its tables parsed (AMD's ATOM tables,
+//! [`eggos_drivers::gpu::amd_atom`]; NVIDIA's BIT and DCB, [`eggos_drivers::gpu::nvidia_bios`]),
+//! so `/proc/driver/display` says which outputs the board has and which firmware it carries.
+//! The firmware's framebuffer (D236) stays the display until the display engines are driven.
 
 use super::{DeviceId, DriverDescriptor, Identity, Match, Probe, ProbeError, ProbePass};
 use crate::sync::SpinLock;
@@ -9,9 +10,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use eggos_drivers::gpu::amd_atom::AtomBios;
+use eggos_drivers::gpu::nvidia_bios::NvidiaBios;
 use eggos_hal::PhysicalRange;
 
 const VENDOR_AMD: u16 = 0x1002;
+const VENDOR_NVIDIA: u16 = 0x10de;
 const DISPLAY_CONTROLLER: u8 = 0x03;
 const EXPANSION_ROM: u16 = 0x30;
 const ROM_ENABLE: u32 = 1;
@@ -32,7 +35,42 @@ pub static AMD_DISPLAY_DRIVER: DriverDescriptor = DriverDescriptor {
     probe: probe_amd_display,
 };
 
-/// What the AMD boards' video BIOSes said, one line each; empty without one.
+/// NVIDIA's GPUs (PCI vendor 10DEh), ahead of the display class's other drivers.
+pub static NVIDIA_DISPLAY_DRIVER: DriverDescriptor = DriverDescriptor {
+    name: "nvidia-display",
+    pass: ProbePass::Device,
+    matches: &[Match::PciIdRange {
+        vendor: VENDOR_NVIDIA,
+        first: 0,
+        last: 0xffff,
+    }],
+    probe: probe_nvidia_display,
+};
+
+fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+    let node = *probe.table().get(id).ok_or(ProbeError::Refused("no such device"))?;
+    let Identity::Pci(function) = node.identity else {
+        return Err(ProbeError::Refused("not a PCI function"));
+    };
+    if function.class != DISPLAY_CONTROLLER {
+        return Err(ProbeError::Refused("not a display controller"));
+    }
+    let image = read_rom(probe, function.address)?;
+    let bios = NvidiaBios::parse(&image).ok_or(ProbeError::Refused("the expansion ROM holds no video BIOS"))?;
+    let mut line = String::new();
+    let _ = write!(line, "nvidia {:04x}", function.device_id);
+    if let Some(version) = bios.version {
+        let _ = write!(line, " bios {version:08x}");
+    }
+    for output in bios.outputs.iter().flatten() {
+        let _ = write!(line, " {}", output.name());
+    }
+    line.push('\n');
+    SUMMARY.lock().push_str(&line);
+    Ok(())
+}
+
+/// What the AMD and NVIDIA boards' video BIOSes said, one line each; empty without one.
 pub fn summary() -> String {
     SUMMARY.lock().clone()
 }
