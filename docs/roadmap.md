@@ -1199,13 +1199,14 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | GPU | Status |
 |-----|--------|
 | virtio-gpu | **done**: 2D, polled, one scanout (D112); cursor (D287), interrupts (D414) and 3D part 1, the virgl transport (D415): code written, unbuilt |
-| Intel, AMD, NVIDIA, Apple, Arm Mali, Qualcomm Adreno | planned (M13) |
+| Intel, AMD, NVIDIA | code written, unbuilt (M13: their display engines at the firmware's mode, mode setting, link training and a second screen; docs/decisions.md D268 to D530) |
+| Apple, Arm Mali, Qualcomm Adreno | planned (M13) |
 
 ### Device classes
 | Class | Status |
 |-------|--------|
-| Server, desktop, laptop (QEMU first) | planned |
-| Phone, tablet | planned |
+| Server, desktop, laptop (QEMU first) | **done** on QEMU: the desktop (M11); real PCs and laptops: code written, unbuilt (M13); the server edition: code written, unbuilt (M16) |
+| Phone, tablet | code written, unbuilt (M12: the phone and tablet forms, D303 to D308) |
 | Embedded | planned |
 
 ### Drivers
@@ -1213,24 +1214,24 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 |--------|--------|
 | PL011 UART (Arm), transmit and interrupt-driven receive | **done** |
 | ACPI tables: RSDP/RSDT/XSDT/FADT, `\_S5` from the DSDT (power-off), MADT local APICs (CPU discovery), I/O APICs and interrupt source overrides | **done** (full AML interpreter: code written, unbuilt, D537; the namespace loaded at boot, `_PIC`, `_STA`/`_INI`, absent devices left out, `_PTS` before power-off: code written, unbuilt, D538; the embedded controller's region and ACPI events (GPEs, `Notify` handling): planned) |
-| Flattened device tree: memory nodes and reservations, `/cpus`, `/chosen` seeds (taken and removed, D56), a hart's PLIC context, every node for device discovery (`compatible`, `reg`, interrupts through `interrupt-parent` and `interrupts-extended`, status, DMA coherence, D110) | **done** (`ranges` translation: planned, M5) |
-| PCI Express: the MCFG, ECAM configuration space, enumeration through bridges, BAR sizing, the capability list (D110) | **done** on x86_64 (PCI on aarch64 and riscv64, a BAR allocator, MSI-X: planned, M5) |
+| Flattened device tree: memory nodes and reservations, `/cpus`, `/chosen` seeds (taken and removed, D56), a hart's PLIC context, every node for device discovery (`compatible`, `reg`, interrupts through `interrupt-parent` and `interrupts-extended`, status, DMA coherence, D110) | **done** (`ranges` translation: code written, unbuilt, D269) |
+| PCI Express: the MCFG, ECAM configuration space, enumeration through bridges, BAR sizing, the capability list (D110) | **done** on x86_64 (MSI-X: done, D184; PCI on aarch64 and riscv64 and a BAR allocator: code written, unbuilt, D291) |
 | NS16550 UART (MMIO, any `reg-shift`, and x86 port I/O), transmit and interrupt-driven receive | **done** |
-| Arm GICv2 (distributor + CPU interface, per-CPU setup, SGIs between CPUs, SPIs routed with their trigger mode) | **done** (GICv3: planned, M5) |
+| Arm GICv2 (distributor + CPU interface, per-CPU setup, SGIs between CPUs, SPIs routed with their trigger mode) | **done** (GICv3 and v4: code written, unbuilt, D237) |
 | RISC-V PLIC (priorities, per-context enables, claim/complete; the hart's context from the device tree) | **done** (AIA, the APLIC in MSI mode with the hart's IMSIC: code written, unbuilt, D532) |
 | Arm generic timer (EL1 virtual timer) | **done** |
 | RISC-V SBI timer and IPI | **done** |
 | x86 local APIC (xAPIC), on every CPU: its timer, INIT/start-up IPIs and fixed IPIs; 8259 PICs (remapped and masked); 8254 PIT (frequency measurement) | **done** (x2APIC and the HPET as the calibration clock: code written, unbuilt, D531) |
-| x86 I/O APIC (lines routed by the MADT's overrides) | **done** (device lines through it: planned, M5) |
+| x86 I/O APIC (lines routed by the MADT's overrides) | **done** (device lines through it: code written, unbuilt, D413) |
 | PCI MSI-X (the capability, the table in a BAR, entries masked while written) | **done** on x86_64 (D184) |
 | virtio core: virtio-mmio (version 2), modern virtio-pci, the split virtqueue (D111); interrupts through the slot's line or MSI-X (D184); block, console, network and entropy on interrupts (D220) | **done** (the GPU's interrupts: code written, unbuilt, D414; lines through the I/O APIC and lines given back: code written, unbuilt, D413; lines spread over the CPUs: code written, unbuilt, D536; a line per queue: planned) |
 | virtio-rng, on interrupts, reseeding the kernel's generator at boot (D111, D220) | **done** |
-| virtio-gpu 2D (polled): display mode, framebuffer on scanout 0, transfers and flushes of damaged rectangles (D112); the cursor queue draws the pointer (D186) | **done** (interrupts, display mode changes: planned) |
+| virtio-gpu 2D (polled): display mode, framebuffer on scanout 0, transfers and flushes of damaged rectangles (D112); the cursor queue draws the pointer (D186) | **done** (interrupts: code written, unbuilt, D414; display mode changes: code written, unbuilt, D287) |
 | virtio-input: keyboard, tablet and mouse on interrupts, capabilities from the device's configuration, 20 keyboard layouts with dead keys and AltGr and up to four at once with a switch key, key repeat, the Caps, Num and Scroll Lock lights, the input event queue (D113, D184, D185, D221) | **done** |
-| Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114); the cursor blinks (D186) | **done** (2x scale: planned) |
+| Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114); the cursor blinks (D186) | **done** (2x scale: done, D195) |
 | virtio-blk: capacity, read-only disks, reads, writes and flushes of 512-byte sectors, up to 15 requests in flight, on interrupts (D130, D220); a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** |
 | EggFS, our own journaled disk file system: `/home` and `/Applications` on a disk image, metadata journal, copy-on-write data, CRC-checked commits, crash recovery at mount, `sync`/`fsync`, symbolic and hard links (D170), an offline check and repair (D192) (D131, docs/eggfs.md) | **done** (several requests in flight: done, D220; access times: code written, unbuilt, D534) |
-| virtio-console (the agent channel's named port, D136), on interrupts (D220) | **done** (its input as a console: planned) |
+| virtio-console (the agent channel's named port, D136), on interrupts (D220) | **done** (its input as a console: code written, unbuilt, D310) |
 | virtio-net: hardware address, link state and MTU from the configuration, 16 receive and 16 transmit buffers (D157), on interrupts (D220) | **done** (several adapters: done, D157, D240; receive checksum offload: code written, unbuilt, D533; transmit checksum offload: code written, unbuilt, D535; segmentation offloads: planned) |
 
 ## Toward "better than macOS, Windows and Linux"
