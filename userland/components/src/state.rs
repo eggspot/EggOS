@@ -17,6 +17,8 @@ pub const DAILY_PATH: &str = "/var/lib/eggos/updates-daily";
 pub const JOB_PATH: &str = "/run/eggos/component-job";
 /// Present while a front-end asks the running job to stop.
 pub const CANCEL_PATH: &str = "/run/eggos/component-cancel";
+/// Why the last update job failed, for the front-ends that see only its exit status (D421).
+pub const FAILURE_PATH: &str = "/run/eggos/component-failure";
 const LARGEST: usize = 8192;
 
 /// One component the check found an update for.
@@ -191,6 +193,61 @@ pub fn end_job<F: Files>(files: &mut F) {
     let _ = files.remove_file(CANCEL_PATH.as_bytes());
 }
 
+/// Records that updating component `name` failed with `failure`.
+pub fn record_failure<F: Files>(files: &mut F, name: &str, failure: &crate::manager::Failure) {
+    let _ = write_text(files, FAILURE_PATH, &format!("{name} {}\n", failure_text(failure)));
+}
+
+/// Forgets the last failure, as a new job starts.
+pub fn clear_failure<F: Files>(files: &mut F) {
+    let _ = files.remove_file(FAILURE_PATH.as_bytes());
+}
+
+/// The component the last update job failed on and why, if one is recorded.
+pub fn last_failure<F: Files>(files: &mut F) -> Option<(String, crate::manager::Failure)> {
+    let text = read_text(files, FAILURE_PATH)?;
+    let (name, rest) = text.trim_end().split_once(' ')?;
+    Some((String::from(name), parse_failure(rest)?))
+}
+
+/// `failure` as one line of words: its kind, then its values.
+pub fn failure_text(failure: &crate::manager::Failure) -> String {
+    use crate::manager::Failure;
+    match failure {
+        Failure::Damaged(file) => format!("damaged {file}"),
+        Failure::Detached => String::from("detached"),
+        Failure::NoSpace { needed, free } => format!("no_space {needed} {free}"),
+        Failure::Cancelled => String::from("cancelled"),
+        Failure::NotAllowed => String::from("not_allowed"),
+        Failure::UnsafeFolder => String::from("unsafe_folder"),
+        Failure::FilesLeft(errno) => format!("files_left {}", errno.0),
+        Failure::Errno(errno) => format!("errno {}", errno.0),
+    }
+}
+
+/// The failure [`failure_text`] wrote.
+pub fn parse_failure(text: &str) -> Option<crate::manager::Failure> {
+    use crate::manager::Failure;
+    use eggos_runtime::errno::Errno;
+    let (kind, rest) = text.split_once(' ').unwrap_or((text, ""));
+    let number = |word: Option<&str>| word?.parse::<u64>().ok();
+    let mut words = rest.split_whitespace();
+    Some(match kind {
+        "damaged" => Failure::Damaged(String::from(rest)),
+        "detached" => Failure::Detached,
+        "no_space" => Failure::NoSpace {
+            needed: number(words.next())?,
+            free: number(words.next())?,
+        },
+        "cancelled" => Failure::Cancelled,
+        "not_allowed" => Failure::NotAllowed,
+        "unsafe_folder" => Failure::UnsafeFolder,
+        "files_left" => Failure::FilesLeft(Errno(u16::try_from(number(words.next())?).ok()?)),
+        "errno" => Failure::Errno(Errno(u16::try_from(number(words.next())?).ok()?)),
+        _ => return None,
+    })
+}
+
 /// Asks the running job to stop at its next step.
 pub fn request_cancel<F: Files>(files: &mut F) -> bool {
     write_text(files, CANCEL_PATH, "cancel\n")
@@ -219,5 +276,28 @@ mod tests {
         };
         assert_eq!(Checked::parse(&checked.text()), Some(checked.clone()));
         assert_eq!(checked.fetch_bytes(), 400_000);
+    }
+
+    #[test]
+    fn every_failure_reads_back_as_written() {
+        use crate::manager::Failure;
+        use eggos_runtime::errno::Errno;
+        for failure in [
+            Failure::Damaged("windows-apps.component payload".into()),
+            Failure::Detached,
+            Failure::NoSpace {
+                needed: 2_306_867,
+                free: 629_145,
+            },
+            Failure::Cancelled,
+            Failure::NotAllowed,
+            Failure::UnsafeFolder,
+            Failure::FilesLeft(Errno(16)),
+            Failure::Errno(Errno(5)),
+        ] {
+            assert_eq!(parse_failure(&failure_text(&failure)), Some(failure));
+        }
+        assert_eq!(parse_failure("no_space 12"), None);
+        assert_eq!(parse_failure("melted"), None);
     }
 }

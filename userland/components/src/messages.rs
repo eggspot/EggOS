@@ -544,6 +544,48 @@ pub fn update_failed(title: &str) -> String {
     format!("Could not update {title}.")
 }
 
+/// A failed update's two lines (docs/ux/components-v0.5.md section 3): what went wrong, then
+/// what became of the installed copy; the second is empty when there is nothing to add.
+pub fn update_failure(failure: &Failure, title: &str) -> (String, &'static str) {
+    match failure {
+        Failure::Damaged(_) => (
+            format!("The downloaded update of {title} is damaged."),
+            INSTALLED_COPY_STAYS,
+        ),
+        Failure::Detached => (
+            String::from("The store was detached before the copy finished."),
+            INSTALLED_COPY_STAYS,
+        ),
+        Failure::NoSpace { needed, free } => (
+            match needed {
+                0 => String::from("Not enough space."),
+                _ => format!(
+                    "Not enough space: {} needed, {} free.",
+                    size_text(*needed),
+                    size_text(*free)
+                ),
+            },
+            INSTALLED_COPY_STAYS,
+        ),
+        Failure::Cancelled => (String::from(CANCELLED), INSTALLED_COPY_STAYS),
+        Failure::NotAllowed => (
+            String::from("Not allowed: only root installs or removes components."),
+            "",
+        ),
+        Failure::UnsafeFolder => (
+            format!(
+                "Could not update {title}: {} is not a real folder.",
+                crate::manager::COMPONENTS
+            ),
+            INSTALLED_COPY_STAYS,
+        ),
+        Failure::Errno(errno) | Failure::FilesLeft(errno) => (
+            format!("Could not update {title}: {}.", errno_text(*errno)),
+            INSTALLED_COPY_STAYS,
+        ),
+    }
+}
+
 /// The bar's chip tooltip: `2 component updates, 0.7 MB. Click to open Components.`
 pub fn updates_tooltip(count: usize, bytes: u64) -> String {
     let noun = if count == 1 { "update" } else { "updates" };

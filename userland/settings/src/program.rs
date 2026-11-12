@@ -407,6 +407,7 @@ fn components_read() -> ComponentsRead {
         checked: component_state::last_check(&mut files),
         daily: component_state::daily(&mut files),
         job: component_state::job(&mut files),
+        failure: component_state::last_failure(&mut files),
         now_s,
         network_up: network_adapter().is_some_and(|adapter| adapter.link_up && adapter.subnet.is_some())
             || wifi_status().joined.is_some(),

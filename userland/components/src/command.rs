@@ -485,6 +485,7 @@ fn update<F: Files, C: Console>(
     if let Err(refusal) = manager::lock(files, "update", false, pid) {
         return out.refuse(json, &refusal);
     }
+    crate::state::clear_failure(files);
     for plan in &plans {
         if !json {
             out.say(&format!("Updating {}...", messages::titled(plan.component)));
@@ -509,6 +510,7 @@ fn update<F: Files, C: Console>(
         });
         crate::state::end_job(files);
         if let Err(failure) = updated {
+            crate::state::record_failure(files, &name, &failure);
             manager::unlock(files);
             let line = messages::install_failure_line(&failure, plan.component);
             let (_, _, error) = messages::install_failure(&failure, plan.component);

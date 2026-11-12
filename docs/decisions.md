@@ -23414,3 +23414,21 @@ the license, by an explicit instruction recorded here.
   pane keeps the zone (`set_time_zone`, given when Settings starts and whenever a zone is
   saved) and shifts both instants by the zone's offset at each before `checked_when` compares
   their days. The CLI's `component list` keeps printing UTC seconds, which a script wants.
+
+## D421 A failed update says why in the pane (D300's deviation; docs/ux/components-v0.5.md section 3 and ask 7; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** The pane runs `component update` as a child and sees only its exit status, so
+  every failure read `Could not update <title>.`; the design gives each cause its own lines.
+- **Decision.** The job says why, in a file beside its progress: `component update` clears
+  `/run/eggos/component-failure` when it takes the lock and, when a component fails, writes
+  the component's name and the failure as words (`no_space 2306867 629145`, `errno 5`;
+  `state::failure_text`, read back by `parse_failure`, host-tested both ways). Settings reads it
+  with the components (`ComponentsRead::failure`), and a failed update of that component shows
+  `messages::update_failure`'s two lines: the downloaded update damaged, the store detached,
+  not enough space with both sizes, cancelled, not allowed (no second line), a folder that is
+  not real, or the error's text; each keeps `The installed copy stays.` under it as the table
+  says. A file rather than the command's coded JSON keeps the child's output where it goes now
+  and works for a job another front-end started.
+- **Not yet.** Telling a fetched file that fails its digest from an installed one (the manager
+  reports both as `Damaged`), and the same for install and remove jobs, which still run in the
+  window's tick (section 6).

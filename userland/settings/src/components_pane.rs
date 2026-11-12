@@ -119,6 +119,8 @@ pub struct ComponentsRead {
     pub now_s: Option<u64>,
     /// Whether a network is up, so the store can be downloaded.
     pub network_up: bool,
+    /// The component the last update job failed on and why (D421).
+    pub failure: Option<(String, Failure)>,
 }
 
 /// A job the pane asks the program to start as `component ...` outside its window (D300).
@@ -590,10 +592,20 @@ impl ComponentsPane {
             },
             Work::Updating { current, .. } if !succeeded => {
                 let title = self.title_of(&current);
+                let (first, second) = match &self.read.failure {
+                    Some((name, failure)) if *name == current => {
+                        let (first, second) = messages::update_failure(failure, &title);
+                        (first, String::from(second))
+                    }
+                    _ => (
+                        messages::update_failed(&title),
+                        String::from(messages::INSTALLED_COPY_STAYS),
+                    ),
+                };
                 Note::Message {
                     name: current,
-                    first: messages::update_failed(&title),
-                    second: String::from(messages::INSTALLED_COPY_STAYS),
+                    first,
+                    second,
                 }
             }
             Work::DownloadingStore { cancelling: true } => Note::Store {
