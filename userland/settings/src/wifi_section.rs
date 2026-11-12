@@ -36,6 +36,8 @@ const ROW_WIDTH: i32 = 432;
 const NOTE_HEIGHT: i32 = 84;
 const ROWS: usize = 6;
 const BUTTON: (i32, i32) = (96, 28);
+const TOUCH_CONTROL: i32 = 48;
+const NARROW_BUTTON_TOP: i32 = 52;
 const SMALLEST_PASSPHRASE: usize = 8;
 const LARGEST_PASSPHRASE: usize = 63;
 const NAME_CHARACTERS_IN_HINT: usize = 24;
@@ -333,6 +335,7 @@ pub struct WifiSection {
     rows: Vec<Row>,
     note: Option<usize>,
     hidden_note: Option<HiddenNote>,
+    narrow: Option<i32>,
 }
 
 fn at(x: i32, y: i32) -> Place {
@@ -425,6 +428,7 @@ impl WifiSection {
             rows: Vec::new(),
             note: None,
             hidden_note: None,
+            narrow: None,
         };
         section.lay_out(tree);
         section
@@ -448,6 +452,44 @@ impl WifiSection {
 
     /// Shows the driver's `status` and the `chosen` network (`wifi.conf`'s), setting only what
     /// changed; the rows stay as they are while the passphrase note is open.
+    /// Lays the rows out for a narrow page `content` wide (settings-forms-v0.5.md 2, Network:
+    /// each row the content's width with the strength under the name and its button full width
+    /// under them, 48 tall), or for the desktop.
+    pub fn reflow(&mut self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) {
+        if self.narrow == content {
+            return;
+        }
+        self.narrow = content;
+        for row in self.widgets.rows.iter().chain([&self.widgets.other]) {
+            let (name, detail, button) = match content {
+                None => (
+                    sized(24, 10, 160, 16),
+                    Place::right(ROW_WIDTH - 320, 10),
+                    sized(336, 4, BUTTON.0, BUTTON.1),
+                ),
+                Some(c) => (
+                    sized(16, 10, c - 32, 16),
+                    at(16, 30),
+                    sized(8, NARROW_BUTTON_TOP, c - 16, TOUCH_CONTROL),
+                ),
+            };
+            tree.set_place(row.name, name);
+            tree.set_place(row.detail, detail);
+            tree.set_place(row.button, button);
+        }
+        self.lay_out(tree);
+    }
+
+    fn row_shape(&self) -> (i32, i32, i32) {
+        match self.narrow {
+            None => (ROW_WIDTH, ROW_HEIGHT, ROW_PITCH),
+            Some(c) => {
+                let height = NARROW_BUTTON_TOP + TOUCH_CONTROL + 8;
+                (c, height, height + 4)
+            }
+        }
+    }
+
     pub fn show(&mut self, tree: &mut WidgetTree<CAPACITY>, status: Status, chosen: Option<String>) {
         if chosen != self.chosen || status.state == "connected" {
             self.failure = None;
@@ -610,6 +652,7 @@ impl WifiSection {
         self.page = self.page.min(pages - 1);
         let first = self.page * ROWS;
         self.rows = all.iter().skip(first).take(ROWS).cloned().collect();
+        let (row_width, row_height, row_pitch) = self.row_shape();
         let mut top = FIRST_ROW;
         let mut bottom = HINT_TOP + 16;
         let mut cannot = false;
@@ -619,7 +662,7 @@ impl WifiSection {
                 continue;
             };
             tree.set_shown(row_widgets.panel, true);
-            tree.set_place(row_widgets.panel, sized(PADDING, top, ROW_WIDTH, ROW_HEIGHT));
+            tree.set_place(row_widgets.panel, sized(PADDING, top, row_width, row_height));
             tree.set_text(row_widgets.name, shortened(&row.name).as_str());
             ink(tree, row_widgets.detail, &row.detail, if row.detail_strong { Token::Text } else { Token::TextDim });
             let words = match row.button {
@@ -633,8 +676,8 @@ impl WifiSection {
             let under_hidden = self.hidden_note == Some(HiddenNote::UnderRow(index));
             tree.set_shown(row_widgets.button, self.note != Some(index) && !under_hidden);
             cannot |= row.button == Button::CannotJoin;
-            bottom = top + ROW_HEIGHT;
-            top += ROW_PITCH;
+            bottom = top + row_height;
+            top += row_pitch;
             if self.note == Some(index) {
                 self.place_note(tree, bottom + 4);
                 bottom += NOTE_HEIGHT;
@@ -649,9 +692,9 @@ impl WifiSection {
         let listing = self.listing();
         tree.set_shown(widgets.other.panel, listing);
         if listing {
-            tree.set_place(widgets.other.panel, sized(PADDING, top, ROW_WIDTH, ROW_HEIGHT));
+            tree.set_place(widgets.other.panel, sized(PADDING, top, row_width, row_height));
             tree.set_shown(widgets.other.button, self.hidden_note != Some(HiddenNote::UnderOther));
-            bottom = top + ROW_HEIGHT;
+            bottom = top + row_height;
             if self.hidden_note == Some(HiddenNote::UnderOther) {
                 self.place_hidden_note(tree, bottom + 4);
                 bottom += HIDDEN_NOTE_HEIGHT;

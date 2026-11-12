@@ -1702,6 +1702,7 @@ impl SettingsWindow {
         self.reflow_date_and_time(content);
         self.reflow_appearance(content);
         self.about.reflow(&mut self.tree, content);
+        self.wifi.reflow(&mut self.tree, content);
         let display = self.display.reflow(&mut self.tree, content, &self.facts);
         self.tree.set_place(
             self.widgets.panes[DISPLAY],

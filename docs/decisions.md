@@ -23595,3 +23595,17 @@ the license, by an explicit instruction recorded here.
 - **Agents (D433 follow-up).** The pane list is named `Settings` in the element tree with the
   value `12 panes` (`11 panes` without the Windows layer, fewer while a search filters), in
   every shape, so `wm show` reads what a person sees (settings-forms-v0.5.md 3).
+
+## D434 The Network pane's Wi-Fi rows on narrow pages (settings-forms-v0.5.md section 2, Network; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `WifiSection::reflow`: on a narrow page each network's row is the content's width
+  with its name on the first line, its strength and security under it, and its button (`Join`,
+  `Forget`, `Cannot join`) full width and 48 tall under them; the rows are 108 tall, 4 apart,
+  and `Join another network` follows the same shape. The notes keep their places under the
+  row they belong to. The desktop shape puts every place back.
+- **Deviation.** The design makes the whole 56 px row the target and hides `Join`. A toolkit
+  panel cannot be pressed, and a button the row's size would cover its lines, so the row keeps
+  a visible full-width button: every action stays one tap, at a target larger than the
+  design's, and nothing on the row needs to be learnt. Making a panel row pressable (a toolkit
+  `Kind::Panel` that answers `Activated`) would let the design's row stand; recorded for the
+  build pass.
