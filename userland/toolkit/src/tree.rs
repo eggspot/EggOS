@@ -429,6 +429,19 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.layout();
     }
 
+    /// Gives list `id` new `items` (at most [`crate::widget::MAX_ROWS`]), every one shown, the
+    /// selection kept where it still names an item (D508).
+    pub fn set_list_items(&mut self, id: WidgetId, items: &'static [&'static str]) {
+        self.change(id, |kind| {
+            if let Kind::List(list) = kind {
+                let count = items.len().min(crate::widget::MAX_ROWS);
+                list.items = items;
+                list.shown = if count == 32 { u32::MAX } else { (1 << count) - 1 };
+                list.selected = list.selected.min(count.saturating_sub(1));
+            }
+        });
+    }
+
     /// Starts list `id`'s text `text_x` from its left edge, as a list with icons asks.
     pub fn set_list_text_x(&mut self, id: WidgetId, text_x: i32) {
         self.change(id, |kind| {

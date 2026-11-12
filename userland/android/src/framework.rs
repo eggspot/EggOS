@@ -27,6 +27,12 @@ pub const BUTTON: &str = "Landroid/widget/Button;";
 pub const EDIT_TEXT: &str = "Landroid/widget/EditText;";
 /// The framework's linear layout.
 pub const LINEAR_LAYOUT: &str = "Landroid/widget/LinearLayout;";
+/// The framework's list view (D508).
+pub const LIST_VIEW: &str = "Landroid/widget/ListView;";
+const ARRAY_LIST: &str = "Ljava/util/ArrayList;";
+const LISTS: [&str; 3] = [ARRAY_LIST, "Ljava/util/List;", "Ljava/util/AbstractList;"];
+const ARRAY_ADAPTER: &str = "Landroid/widget/ArrayAdapter;";
+const ADAPTER_VIEWS: [&str; 2] = [LIST_VIEW, "Landroid/widget/AdapterView;"];
 const VIEW: &str = "Landroid/view/View;";
 const VIEW_GROUP: &str = "Landroid/view/ViewGroup;";
 const CONTEXT_CLASSES: [&str; 2] = [
@@ -67,6 +73,26 @@ pub enum Native {
     SetOrientation,
     /// `TextView.setHint(CharSequence)` on an `EditText` (D507).
     SetHint,
+    /// `ArrayList`'s constructors (D508): an empty list.
+    ListInit,
+    /// `List.add(Object)`.
+    ListAdd,
+    /// `List.get(int)`.
+    ListGet,
+    /// `List.set(int, Object)`.
+    ListSet,
+    /// `List.remove(int)`.
+    ListRemove,
+    /// `List.size()`.
+    ListSize,
+    /// `List.clear()`.
+    ListClear,
+    /// `ArrayAdapter(Context, int, T[] or List)`: the items it shows.
+    AdapterInit,
+    /// `ListView.setAdapter(ListAdapter)`.
+    SetAdapter,
+    /// `AdapterView.setOnItemClickListener(OnItemClickListener)`.
+    SetOnItemClickListener,
     /// An exception's constructor with its message first (D504).
     ExceptionInit,
     /// `Throwable.getMessage()`: its message, or null.
@@ -130,7 +156,9 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
     let activity = ACTIVITY_CLASSES.contains(&class);
     let context = activity || CONTEXT_CLASSES.contains(&class);
     let text = TEXT_VIEWS.contains(&class);
-    let view = text || matches!(class, VIEW | VIEW_GROUP | LINEAR_LAYOUT);
+    let view = text || matches!(class, VIEW | VIEW_GROUP | LINEAR_LAYOUT | LIST_VIEW);
+    let list = LISTS.contains(&class);
+    let adapter_view = ADAPTER_VIEWS.contains(&class);
     let takes_int = shorty == "VI";
     Some(match (class, name) {
         (OBJECT, "<init>") => Native::Nothing,
@@ -148,6 +176,18 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         (_, "addView") if view => Native::AddView,
         (_, "setOrientation") if view => Native::SetOrientation,
         (EDIT_TEXT, "setHint") if !takes_int => Native::SetHint,
+        (ARRAY_LIST, "<init>") => Native::ListInit,
+        (_, "add") if list && shorty == "ZL" => Native::ListAdd,
+        (_, "get") if list => Native::ListGet,
+        (_, "set") if list => Native::ListSet,
+        (_, "remove") if list && shorty == "LI" => Native::ListRemove,
+        (_, "size") if list => Native::ListSize,
+        (_, "clear") if list => Native::ListClear,
+        (ARRAY_ADAPTER, "<init>") if shorty == "VLIL" => Native::AdapterInit,
+        (ARRAY_ADAPTER, "<init>") => Native::Nothing,
+        (ARRAY_ADAPTER, "notifyDataSetChanged") => Native::Nothing,
+        (_, "setAdapter") if adapter_view => Native::SetAdapter,
+        (_, "setOnItemClickListener") if adapter_view => Native::SetOnItemClickListener,
         (_, "<init>") if is_exception(class) && shorty.starts_with("VL") => Native::ExceptionInit,
         (_, "<init>") if is_exception(class) => Native::Nothing,
         (_, "getMessage" | "getLocalizedMessage") if is_exception(class) => Native::GetMessage,
@@ -314,6 +354,8 @@ pub struct Object {
     pub text: Option<String>,
     pub elements: Option<alloc::vec::Vec<u64>>,
     pub view: Option<View>,
+    /// Another object this one stands on: an adapter's items, a list view's adapter (D508).
+    pub reference: u64,
 }
 
 /// What a view holds (D500): its id, the views inside it (a layout's), whether a linear

@@ -12,8 +12,8 @@
 //! then shows the texts they changed (D500).
 
 use crate::framework::{
-    self, ACTIVITY_CLASSES, BUTTON, EDIT_TEXT, LINEAR_LAYOUT, Native, Object, STRING_CLASS,
-    TEXT_VIEWS, Target, View,
+    self, ACTIVITY_CLASSES, BUTTON, EDIT_TEXT, LINEAR_LAYOUT, LIST_VIEW, Native, Object,
+    STRING_CLASS, TEXT_VIEWS, Target, View,
 };
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -51,6 +51,7 @@ const RESOURCES_NAME: &[u8] = b"resources.arsc";
 const MOST_WIDGETS: usize = 64;
 const ROW: i32 = 44;
 const COLUMN: i32 = 160;
+const LIST_ROW: i32 = 32;
 const DEEPEST_VIEW: usize = 32;
 const WINDOW_SIZE: (u32, u32) = (360, 640);
 const PADDING: i32 = 16;
@@ -695,6 +696,152 @@ extern "sysv64" fn set_hint(words: *const u64, _: *const usize) -> u64 {
     0
 }
 
+extern "sysv64" fn list_init(words: *const u64, _: *const usize) -> u64 {
+    let [list] = arguments::<1>(words);
+    if let Some(list) = object(list) {
+        list.elements = Some(Vec::new());
+    }
+    0
+}
+
+fn list_elements(list: u64, table: *const usize) -> Option<&'static mut Vec<u64>> {
+    match object(list).and_then(|list| list.elements.as_mut()) {
+        Some(elements) => Some(elements),
+        None => {
+            raise(table, framework::NULL_POINTER);
+            None
+        }
+    }
+}
+
+fn list_index(elements: &[u64], index: u64, table: *const usize) -> Option<usize> {
+    match usize::try_from(index as u32 as i32) {
+        Ok(index) if index < elements.len() => Some(index),
+        _ => {
+            raise(table, INDEX_OUT_OF_BOUNDS);
+            None
+        }
+    }
+}
+
+const INDEX_OUT_OF_BOUNDS: &str = "Ljava/lang/IndexOutOfBoundsException;";
+
+extern "sysv64" fn list_add(words: *const u64, table: *const usize) -> u64 {
+    let [list, value] = arguments::<2>(words);
+    let Some(elements) = list_elements(list, table) else {
+        return 0;
+    };
+    elements.push(value);
+    1
+}
+
+extern "sysv64" fn list_get(words: *const u64, table: *const usize) -> u64 {
+    let [list, index] = arguments::<2>(words);
+    let Some(elements) = list_elements(list, table) else {
+        return 0;
+    };
+    list_index(elements, index, table).map_or(0, |index| elements[index])
+}
+
+extern "sysv64" fn list_set(words: *const u64, table: *const usize) -> u64 {
+    let [list, index, value] = arguments::<3>(words);
+    let Some(elements) = list_elements(list, table) else {
+        return 0;
+    };
+    match list_index(elements, index, table) {
+        Some(index) => core::mem::replace(&mut elements[index], value),
+        None => 0,
+    }
+}
+
+extern "sysv64" fn list_remove(words: *const u64, table: *const usize) -> u64 {
+    let [list, index] = arguments::<2>(words);
+    let Some(elements) = list_elements(list, table) else {
+        return 0;
+    };
+    match list_index(elements, index, table) {
+        Some(index) => elements.remove(index),
+        None => 0,
+    }
+}
+
+extern "sysv64" fn list_size(words: *const u64, table: *const usize) -> u64 {
+    let [list] = arguments::<1>(words);
+    list_elements(list, table).map_or(0, |elements| elements.len() as u64)
+}
+
+extern "sysv64" fn list_clear(words: *const u64, table: *const usize) -> u64 {
+    let [list] = arguments::<1>(words);
+    if let Some(elements) = list_elements(list, table) {
+        elements.clear();
+    }
+    0
+}
+
+extern "sysv64" fn adapter_init(words: *const u64, _: *const usize) -> u64 {
+    let [adapter, _, _, items] = arguments::<4>(words);
+    if let Some(adapter) = object(adapter) {
+        adapter.reference = items;
+    }
+    0
+}
+
+extern "sysv64" fn set_adapter(words: *const u64, _: *const usize) -> u64 {
+    let [view, adapter] = arguments::<2>(words);
+    if let Some(view) = object(view) {
+        view.reference = adapter;
+    }
+    0
+}
+
+extern "sysv64" fn set_on_item_click_listener(words: *const u64, _: *const usize) -> u64 {
+    let [view, listener] = arguments::<2>(words);
+    if let Some(view) = object(view).and_then(|view| view.view.as_mut()) {
+        view.listener = listener;
+        view.on_click = None;
+    }
+    0
+}
+
+/// The texts a list view shows: its adapter's items, each a string's text or its class.
+fn list_items(view: u64) -> Vec<String> {
+    let adapter = object(view).map_or(0, |view| view.reference);
+    let items = object(adapter).map_or(0, |adapter| adapter.reference);
+    let elements = object(items)
+        .and_then(|items| items.elements.clone())
+        .unwrap_or_default();
+    elements
+        .into_iter()
+        .map(|item| {
+            object(item)
+                .map(|item| item.text.clone().unwrap_or_else(|| item.class.clone()))
+                .unwrap_or_else(|| String::from("null"))
+        })
+        .collect()
+}
+
+fn leaked_items(items: Vec<String>) -> &'static [&'static str] {
+    let texts: Vec<&'static str> = items
+        .into_iter()
+        .map(|text| -> &'static str { Box::leak(text.into_boxed_str()) })
+        .collect();
+    Box::leak(texts.into_boxed_slice())
+}
+
+fn item_clicked(view: u64, position: usize) {
+    let Some(listener) = object(view).and_then(|view| view.view.as_ref()).map(|view| view.listener)
+    else {
+        return;
+    };
+    let Some(class) = object(listener).map(|listener| listener.class.clone()) else {
+        return;
+    };
+    if let Some(address) = compiled_method(&class, "onItemClick") {
+        let position = position as u64;
+        call_at(address, &[listener, view, 0, position, position]);
+    }
+}
+
 extern "sysv64" fn add_view(words: *const u64, _: *const usize) -> u64 {
     let [group, child] = arguments::<2>(words);
     if let Some(group) = object(group).and_then(|group| group.view.as_mut()) {
@@ -727,6 +874,16 @@ fn native_entry(native: Native) -> Entry {
         Native::AddView => add_view,
         Native::SetOrientation => set_orientation,
         Native::SetHint => set_hint,
+        Native::ListInit => list_init,
+        Native::ListAdd => list_add,
+        Native::ListGet => list_get,
+        Native::ListSet => list_set,
+        Native::ListRemove => list_remove,
+        Native::ListSize => list_size,
+        Native::ListClear => list_clear,
+        Native::AdapterInit => adapter_init,
+        Native::SetAdapter => set_adapter,
+        Native::SetOnItemClickListener => set_on_item_click_listener,
         Native::ExceptionInit => exception_init,
         Native::GetMessage => get_message,
     }
@@ -853,6 +1010,7 @@ fn click(view: u64) {
 struct ContentWindow {
     tree: WidgetTree<MOST_WIDGETS>,
     shown: Vec<(WidgetId, u64)>,
+    lists: Vec<(WidgetId, u64)>,
 }
 
 impl ContentWindow {
@@ -877,6 +1035,17 @@ impl ContentWindow {
                 }
             }
             return used;
+        }
+        if class.as_str() == LIST_VIEW {
+            let items = leaked_items(list_items(view));
+            let rows = items.len().min(eggos_toolkit::widget::MAX_ROWS) as i32;
+            let height = Length::Px(LIST_ROW * rows.max(1));
+            let place = Place::at(x, y, Length::Fill(PADDING), height);
+            let list = Kind::list(items, LIST_ROW, 0, PADDING);
+            if let Some(widget) = self.tree.add(None, place, list) {
+                self.lists.push((widget, view));
+            }
+            return LIST_ROW * rows.max(1);
         }
         let Some(text) = text else {
             return 0;
@@ -911,6 +1080,18 @@ impl ContentWindow {
                 self.tree.set_text(widget, &text);
             }
         }
+        for &(widget, view) in &self.lists {
+            let items = list_items(view);
+            let unchanged = match self.tree.kind(widget) {
+                Some(Kind::List(list)) => {
+                    list.items.iter().copied().eq(items.iter().map(String::as_str))
+                }
+                _ => true,
+            };
+            if !unchanged {
+                self.tree.set_list_items(widget, leaked_items(items));
+            }
+        }
     }
 
     fn edited(&mut self, widget: WidgetId) {
@@ -938,6 +1119,12 @@ impl Application<MOST_WIDGETS> for ContentWindow {
                 }
             }
             Response::Edited(widget) => self.edited(widget),
+            Response::Chosen(widget, position) | Response::Opened(widget, position) => {
+                if let Some(&(_, view)) = self.lists.iter().find(|(shown, _)| *shown == widget) {
+                    item_clicked(view, position);
+                    self.refresh();
+                }
+            }
             _ => {}
         }
     }
@@ -950,6 +1137,7 @@ fn show(title: &str) -> i32 {
     let mut content = ContentWindow {
         tree: WidgetTree::<MOST_WIDGETS>::new(),
         shown: Vec::new(),
+        lists: Vec::new(),
     };
     if let Some(root) = state().content {
         content.add(root, PADDING, PADDING, 0);

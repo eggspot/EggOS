@@ -24869,3 +24869,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** `TextWatcher`s and the editor actions (`onEditorAction`), input types (numbers,
   passwords as masked fields), images (`ImageView` with PNG, WebP and vector drawables) and
   lists (`ListView` and `RecyclerView` with their adapters).
+
+## D508 The Android layer, part 7: lists (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `java.util.ArrayList` is a framework class of the layer's, its elements kept as
+  an array's are (D499): its constructors, `add`, `get`, `set`, `remove(int)`, `size` and
+  `clear`, reached through `List` and `AbstractList` too, with `IndexOutOfBoundsException` past
+  its end. `ArrayAdapter(Context, int, T[] or List)` keeps its items, and `ListView` (a view)
+  keeps the adapter `setAdapter` gives it and the listener `setOnItemClickListener` gives it.
+  The window shows a list view as a toolkit list of its items' texts (a string's text, or an
+  object's class), at most 32 rows; choosing a row calls the listener's `onItemClick` with the
+  list view, no row view, the position and the position as the id, and after it the window
+  shows the list again if its items changed (`notifyDataSetChanged` needs nothing more). The
+  toolkit gains `WidgetTree::set_list_items`.
+- **Not yet.** Adapters of the app's own (`BaseAdapter`, `RecyclerView.Adapter`) with their row
+  views, `ArrayAdapter.add` and `remove`, `HashMap` and the rest of `java.util`, and lists past
+  32 rows.
