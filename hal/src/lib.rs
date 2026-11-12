@@ -394,6 +394,31 @@ pub trait Platform: 'static {
     /// nothing may switch this CPU's address space or threads until the call returns.
     unsafe fn run_user(context: &mut user::UserContext) -> user::UserExit;
 
+    /// Whether programs run with a view of the kernel half that maps only what entering and
+    /// leaving the kernel needs (page-table isolation, KPTI, D502): on CPUs that let a program
+    /// read kernel memory speculatively (Meltdown). `false` by default.
+    fn isolates_user_view() -> bool {
+        false
+    }
+
+    /// Calls `range` with each kernel range this CPU's user view maps, by virtual start and
+    /// length: the entry and exit code, the interrupt tables and this CPU's block (its GDT, TSS,
+    /// entry and exception stacks). Nothing by default.
+    fn user_view_ranges(range: &mut dyn FnMut(u64, u64)) {
+        let _ = range;
+    }
+
+    /// Gives this CPU its user view: page tables whose root, at physical `root`, maps the ranges
+    /// [`Self::user_view_ranges`] named in its kernel half; [`Self::run_user`] fills its user
+    /// half from the active tables' at every entry. Nothing by default.
+    ///
+    /// # Safety
+    /// `root` must be such a root, kept for as long as the kernel runs, and this CPU's block set
+    /// ([`Self::set_cpu_local`]); interrupts must be masked.
+    unsafe fn set_user_view(root: u64) {
+        let _ = root;
+    }
+
     /// The user-mode test program for the boot self-tests and benchmarks (D47).
     fn user_test_program() -> user::TestProgram;
 

@@ -24745,3 +24745,40 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Several touches at once (multi-touch screens), gesture recognizers, Auto Layout,
   iOS storyboards and view controllers' presentation, safe areas, and the scene's own
   `UIScreen` and size classes.
+
+## D502 Page-table isolation (KPTI) on x86_64 CPUs open to Meltdown (D49's follow-up, D289's last item; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's guidance on rogue data cache load)
+
+- **Question.** Intel CPUs before 2019 (those without `IA32_ARCH_CAPABILITIES.RDCL_NO`) let a
+  program read kernel memory speculatively through the kernel half of its own page tables.
+  The fix is to run programs on tables whose kernel half maps only what entering and leaving
+  the kernel needs.
+- **Decision.** At boot the HAL turns the user view on for an Intel CPU not reported immune.
+  - **Each CPU** gets its own user view (`kernel::user_view`, through
+    `Platform::isolates_user_view`, `user_view_ranges` and `set_user_view`): a root whose kernel
+    half maps, at their own addresses and frames and never for user mode, the entry and exit
+    code (now on pages of their own, `x86_64_entry_text_start` to `_end`), both IDTs, and the
+    CPU's block up to the end of the HAL's part (its GDT, TSS, the fields the entry code reads
+    through GS, a new 4 KiB entry stack and the interrupt-stack-table stacks). Global pages are
+    turned off on that CPU, so no kernel translation survives a switch. A CPU whose user view
+    could not be built runs programs without it, and the boot CPU says so.
+  - **Entering a program**, `run_user` copies the active root's 256 user-half entries into the
+    user view's root (so mappings added during a call are seen at once), keeps the active root
+    where the entry code finds it (the block, and the top of each interrupt-stack-table stack),
+    and the exit code switches `CR3` last: `sysretq` from the entry stack with the program's
+    `rsp` and `rdi` on it, `iretq` with its frame copied there. `TSS.RSP0` is the entry stack
+    for good; the context's address moves to a field of its own (`context_top`), which
+    `syscall` and the copy into the context use whether or not the view is on.
+  - **Coming back in**, `syscall` and every interrupt from user mode switch to the kernel's
+    root right after `swapgs`, before touching anything else; an interrupt's frame is then
+    copied from the entry stack into the context as an interrupt-stack-table one already was.
+    An NMI, machine check, debug exception or double fault taken in kernel mode while the user
+    view is loaded (the few instructions around the switch) sees the view's `CR3` marker
+    (bit 11, ignored by the CPU without PCIDs), switches to the kernel's root kept at the top
+    of its stack and switches back before `iretq`.
+  - **Without the user view** nothing changes on the way in and out but one compare of a
+    per-CPU field, and `TSS.RSP0` still points into the context.
+- **Costs.** A `CR3` switch and a full TLB flush each way, the 2 KiB copy at each entry, and an
+  interrupt's frame copied twice, only on CPUs that need it. PCIDs (to keep the TLB across
+  switches) and 8 KiB root pairs (to drop the copy) are the follow-ups, as is mapping only the
+  per-CPU block's HAL pages rather than its first pages whole.
+- SRSO, the other item D289 put last, was done by D332 (IBPB on entry on AMD Zen 1 to 4).

@@ -43,6 +43,7 @@ pub mod shared_frames;
 pub mod sync;
 pub mod terminal;
 pub mod thread;
+pub mod user_view;
 pub mod vfs;
 pub mod wall_clock;
 pub mod window;
@@ -99,6 +100,12 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     "paging: kernel page tables active, direct map at {:#x}",
                     P::direct_map_offset()
                 )?;
+                if P::isolates_user_view() {
+                    match user_view::set_up::<P>() {
+                        Ok(()) => writeln!(console, "paging: programs run with the user view")?,
+                        Err(reason) => writeln!(console, "paging: no user view: {reason}")?,
+                    }
+                }
                 report_devices(console, devices::discover_and_probe::<P>(&mut memory))?;
                 #[cfg(feature = "virtio-rng")]
                 report_device_seed(console, devices::virtio::seed_random::<P>())?;

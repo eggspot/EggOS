@@ -949,6 +949,19 @@ impl Platform for X86_64 {
         unsafe { exception::run_user(context) }
     }
 
+    fn isolates_user_view() -> bool {
+        exception::isolates_user_view()
+    }
+
+    fn user_view_ranges(range: &mut dyn FnMut(u64, u64)) {
+        exception::user_view_ranges(Self::cpu_local(), range);
+    }
+
+    unsafe fn set_user_view(root: u64) {
+        // SAFETY: the caller's guarantees are `set_user_view`'s.
+        unsafe { exception::set_user_view(Self::cpu_local(), root) };
+    }
+
     fn user_test_program() -> crate::user::TestProgram {
         exception::user_test_program()
     }

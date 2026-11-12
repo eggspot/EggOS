@@ -29,7 +29,8 @@ use super::timer::{
     TIMER_VECTOR, WAKEUP_VECTOR,
 };
 use crate::cpu::{
-    GDT_ENTRIES, HalCpuLocal, SEGMENT_BASES_ID_OFFSET, TSS_RSP0_OFFSET, Tss, USER_RSP_OFFSET,
+    CONTEXT_TOP_OFFSET, ENTRY_STACK_TOP_OFFSET, GDT_ENTRIES, HalCpuLocal, KERNEL_CR3_OFFSET,
+    SEGMENT_BASES_ID_OFFSET, TSS_RSP0_OFFSET, Tss, USER_CR3_OFFSET, USER_RSP_OFFSET,
 };
 use crate::exception::{Exception, ExceptionKind, deliver};
 use crate::paging::{Format, x86_64::X86_64};
@@ -55,6 +56,9 @@ core::arch::global_asm!(
     .endm
 
     .pushsection .text.exceptions, "ax"
+    .balign 4096
+    .global x86_64_entry_text_start
+x86_64_entry_text_start:
     .balign 16
     .global exception_stubs
 exception_stubs:
@@ -110,6 +114,23 @@ exception_common:
     // From ring 3 (D47)? The code segment the CPU pushed is above the vector and error code.
     testb   $3, 24(%rsp)
     jnz     user_exception
+    pushq   %rax
+    movq    8(%rsp), %rax
+    cmpq    $2, %rax
+    je      8f
+    cmpq    $18, %rax
+    je      8f
+    cmpq    $1, %rax
+    je      8f
+    cmpq    $8, %rax
+    jne     9f
+8:  movq    %cr3, %rax
+    testq   ${user_view_marker}, %rax
+    jz      9f
+    movq    %rax, 64(%rsp)
+    movq    72(%rsp), %rax
+    movq    %rax, %cr3
+9:  popq    %rax
     lfence
     cmpb    $0, {smap}(%rip)
     je      7f
@@ -139,6 +160,22 @@ exception_common:
     popq    %rdx
     popq    %rcx
     popq    %rax
+    pushq   %rax
+    movq    8(%rsp), %rax
+    cmpq    $2, %rax
+    je      8f
+    cmpq    $18, %rax
+    je      8f
+    cmpq    $1, %rax
+    je      8f
+    cmpq    $8, %rax
+    jne     9f
+8:  movq    64(%rsp), %rax
+    testq   %rax, %rax
+    jz      9f
+    movq    $0, 64(%rsp)
+    movq    %rax, %cr3
+9:  popq    %rax
     addq    $16, %rsp               // vector and error code
     iretq
     int3                            // never runs: stops straight-line speculation (D49)
@@ -149,11 +186,17 @@ exception_common:
     // stack it left.
 user_exception:
     swapgs
-    lfence
+    cmpq    $0, %gs:{user_cr3}
+    je      10f
+    pushq   %rax
+    movq    %gs:{kernel_cr3}, %rax
+    movq    %rax, %cr3
+    popq    %rax
+10: lfence
     pushq   %rdx
     pushq   %rcx
     pushq   %rax
-    movq    %gs:{tss_rsp0}, %rax
+    movq    %gs:{context_top}, %rax
     subq    $56, %rax
     leaq    24(%rsp), %rcx
     cmpq    %rax, %rcx
@@ -231,7 +274,11 @@ user_exception_save:
 x86_64_syscall_entry:
     swapgs
     movq    %rsp, %gs:{user_rsp}
-    movq    %gs:{tss_rsp0}, %rsp
+    cmpq    $0, %gs:{user_cr3}
+    je      11f
+    movq    %gs:{kernel_cr3}, %rsp
+    movq    %rsp, %cr3
+11: movq    %gs:{context_top}, %rsp
     pushq   ${user_ss}
     pushq   %gs:{user_rsp}
     pushq   %r11                    // rflags
@@ -256,7 +303,11 @@ x86_64_enter_user:
     pushq   %r15
     movq    %rsp, {kernel_rsp}(%rdi)
     leaq    {kernel_rsp}(%rdi), %rax
+    movq    %rax, %gs:{context_top}
+    cmpq    $0, %gs:{user_cr3}
+    jne     12f
     movq    %rax, %gs:{tss_rsp0}
+12:
     movq    {segment_bases_id}(%rdi), %rax
     cmpq    %rax, %gs:{cpu_segment_bases_id}
     jne     2f
@@ -289,7 +340,32 @@ x86_64_enter_user:
     cmpb    $0, {clear_buffers}(%rip)
     je      5f
     verw    {verw_selector}(%rip)
-5:  swapgs
+5:  cmpq    $0, %gs:{user_cr3}
+    je      13f
+    pushq   %rax
+    pushq   %rdx
+    movq    %gs:{entry_stack_top}, %rax
+    subq    $56, %rax
+    movq    0(%rsp), %rdx
+    movq    %rdx, 0(%rax)
+    movq    8(%rsp), %rdx
+    movq    %rdx, 8(%rax)
+    movq    16(%rsp), %rdx
+    movq    %rdx, 16(%rax)
+    movq    24(%rsp), %rdx
+    movq    %rdx, 24(%rax)
+    movq    32(%rsp), %rdx
+    movq    %rdx, 32(%rax)
+    movq    40(%rsp), %rdx
+    movq    %rdx, 40(%rax)
+    movq    48(%rsp), %rdx
+    movq    %rdx, 48(%rax)
+    movq    %rax, %rsp
+    movq    %gs:{user_cr3}, %rax
+    movq    %rax, %cr3
+    popq    %rdx
+    popq    %rax
+13: swapgs
     iretq
     int3
     // After a system call: `sysretq` takes `rcx` and `r11`, so theirs are not loaded.
@@ -307,12 +383,27 @@ x86_64_enter_user:
     movq    {rax}(%rdi), %rax
     movq    {rip}(%rdi), %rcx
     movq    {rflags}(%rdi), %r11
+    cmpq    $0, %gs:{user_cr3}
+    jne     14f
     movq    {rsp}(%rdi), %rsp       // the program's stack
     movq    {rdi}(%rdi), %rdi
     cmpb    $0, {clear_buffers}(%rip)
     je      6f
     verw    {verw_selector}(%rip)
 6:  swapgs
+    sysretq
+    int3
+14: movq    %gs:{entry_stack_top}, %rsp
+    pushq   {rsp}(%rdi)
+    pushq   {rdi}(%rdi)
+    cmpb    $0, {clear_buffers}(%rip)
+    je      15f
+    verw    {verw_selector}(%rip)
+15: movq    %gs:{user_cr3}, %rdi
+    movq    %rdi, %cr3
+    popq    %rdi
+    popq    %rsp
+    swapgs
     sysretq
     int3
 2:  movq    %rax, %gs:{cpu_segment_bases_id}
@@ -328,6 +419,9 @@ x86_64_enter_user:
     wrmsr
     jmp     3b
     int3
+    .balign 4096
+    .global x86_64_entry_text_end
+x86_64_entry_text_end:
     .popsection
 
     // The user-mode test program (D47, `TestProgram`): position-independent, no stack, no
@@ -1278,6 +1372,11 @@ x86_64_user_test_end:
     gs_base = const core::mem::offset_of!(Registers, gs_base),
     ia32_kernel_gs_base = const IA32_KERNEL_GS_BASE,
     tss_rsp0 = const TSS_RSP0_OFFSET,
+    user_cr3 = const USER_CR3_OFFSET,
+    kernel_cr3 = const KERNEL_CR3_OFFSET,
+    context_top = const CONTEXT_TOP_OFFSET,
+    entry_stack_top = const ENTRY_STACK_TOP_OFFSET,
+    user_view_marker = const USER_VIEW_MARKER,
     clear_buffers = sym CLEAR_CPU_BUFFERS,
     ibrs_on_entry = sym IBRS_ON_ENTRY,
     ia32_spec_ctrl = const IA32_SPEC_CTRL,
@@ -1459,6 +1558,119 @@ static CLEAR_CPU_BUFFERS: core::sync::atomic::AtomicU8 = core::sync::atomic::Ato
 /// A writable data selector, the operand `verw` checks while it clears the buffers.
 static VERW_SELECTOR: u16 = 0x10;
 
+/// Whether programs run with the user view (KPTI, D502): set at boot on an Intel CPU that is
+/// not reported immune to rogue data cache loads (Meltdown) by `IA32_ARCH_CAPABILITIES.RDCL_NO`.
+static USER_VIEW: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+const ARCH_CAPABILITIES_RDCL_NO: u64 = 1;
+/// A user view's root carries this `CR3` bit, which the CPU ignores without PCIDs, so an NMI,
+/// machine check, debug or double fault taken around the switch knows which tables it runs on.
+const USER_VIEW_MARKER: u64 = 1 << 11;
+/// The bytes kept at the top of each interrupt-stack-table stack: the `CR3` an exception taken
+/// with the user view saved, then the kernel's root to switch to.
+const IST_SLOT_BYTES: u64 = 16;
+const CR3_ADDRESS: u64 = 0x000f_ffff_ffff_f000;
+const CR4_GLOBAL_PAGES: u64 = 1 << 7;
+const USER_HALF_ENTRIES: usize = 256;
+
+fn needs_user_view() -> bool {
+    if !is_intel() {
+        return false;
+    }
+    if super::timer::cpuid(0, 0)[0] < 7
+        || super::timer::cpuid(7, 0)[3] & CPUID_ARCH_CAPABILITIES == 0
+    {
+        return true;
+    }
+    super::read_msr(IA32_ARCH_CAPABILITIES) & ARCH_CAPABILITIES_RDCL_NO == 0
+}
+
+/// [`crate::Platform::isolates_user_view`] on x86_64.
+pub(super) fn isolates_user_view() -> bool {
+    USER_VIEW.load(core::sync::atomic::Ordering::Relaxed) != 0
+}
+
+unsafe extern "C" {
+    static x86_64_entry_text_start: u8;
+    static x86_64_entry_text_end: u8;
+}
+
+/// [`crate::Platform::user_view_ranges`] on x86_64, for the CPU whose block is at `block`: the
+/// entry and exit code (its own pages), both IDTs and the block up to the end of its HAL part.
+pub(super) fn user_view_ranges(block: usize, range: &mut dyn FnMut(u64, u64)) {
+    let start = (&raw const x86_64_entry_text_start) as u64;
+    let end = (&raw const x86_64_entry_text_end) as u64;
+    range(start, end - start);
+    let table_bytes = core::mem::size_of::<InterruptDescriptorTable>() as u64;
+    range((&raw const IDT) as u64, table_bytes);
+    range((&raw const IDT_WITH_STACKS) as u64, table_bytes);
+    let block_bytes = crate::cpu::HAL_CPU_LOCAL_OFFSET + core::mem::size_of::<HalCpuLocal>();
+    range(block as u64, block_bytes as u64);
+}
+
+fn tables_of(block: usize) -> *mut crate::cpu::X86Tables {
+    // SAFETY: `block` is a per-CPU block with a `HalCpuLocal` at its offset
+    // (`set_cpu_local`'s contract); only its address is formed here.
+    let hal = unsafe { &*((block + crate::cpu::HAL_CPU_LOCAL_OFFSET) as *const HalCpuLocal) };
+    hal.x86.0.get()
+}
+
+/// [`crate::Platform::set_user_view`] on x86_64: the entry stack becomes `TSS.RSP0` for good,
+/// the root is kept with its marker, and global pages are turned off, so no kernel translation
+/// outlives a switch to the user view.
+///
+/// # Safety
+/// As [`crate::Platform::set_user_view`]; `block` is this CPU's block.
+pub(super) unsafe fn set_user_view(block: usize, root: u64) {
+    let tables = tables_of(block);
+    // SAFETY: the block is this CPU's and interrupts are masked (the caller's duty), so nothing
+    // else reads or writes its tables now; the entry code reads them only from the next entry.
+    unsafe {
+        let top = (&raw const (*tables).entry_stack) as u64 + crate::cpu::ENTRY_STACK_BYTES as u64;
+        (*tables).entry_stack_top = top;
+        (*tables).tss.rsp[0] = top;
+        (*tables).user_cr3 = root & CR3_ADDRESS | USER_VIEW_MARKER;
+        core::arch::asm!(
+            "mov {tmp}, cr4",
+            "and {tmp}, {keep}",
+            "mov cr4, {tmp}",
+            tmp = out(reg) _,
+            keep = in(reg) !CR4_GLOBAL_PAGES,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+/// Before entering a program under the user view: its root's user half becomes the active
+/// tables', and the active root is kept where the way back in finds it (the block and the top
+/// of each interrupt-stack-table stack).
+///
+/// # Safety
+/// Interrupts are masked and the active tables are the program's address space's.
+unsafe fn fill_user_view() {
+    let tables = tables_of(<super::X86_64 as crate::Platform>::cpu_local());
+    // SAFETY: this CPU's block, with interrupts masked (the caller's duty); both roots are page
+    // tables in RAM the direct map covers, the user view's kept for good by the kernel and the
+    // active one live while it is loaded; their user halves are 256 entries each.
+    unsafe {
+        let user_cr3 = (*tables).user_cr3;
+        if user_cr3 == 0 {
+            return;
+        }
+        let kernel_cr3: u64;
+        core::arch::asm!("mov {}, cr3", out(reg) kernel_cr3, options(nostack, preserves_flags));
+        let offset = super::DIRECT_MAP_OFFSET as u64;
+        let from = ((kernel_cr3 & CR3_ADDRESS) + offset) as *const u64;
+        let to = ((user_cr3 & CR3_ADDRESS) + offset) as *mut u64;
+        core::ptr::copy_nonoverlapping(from, to, USER_HALF_ENTRIES);
+        (*tables).kernel_cr3 = kernel_cr3;
+        for slot in 0..crate::cpu::EXCEPTION_STACKS {
+            let stack = (&raw mut (*tables).exception_stacks[slot]) as u64;
+            let top = stack + crate::cpu::EXCEPTION_STACK_BYTES as u64;
+            ((top - 8) as *mut u64).write(kernel_cr3);
+        }
+    }
+}
+
 const CPUID_MD_CLEAR: u32 = 1 << 10;
 const CPUID_ARCH_CAPABILITIES: u32 = 1 << 29;
 const IA32_ARCH_CAPABILITIES: u32 = 0x10a;
@@ -1486,6 +1698,9 @@ pub(super) extern "C" fn install() {
     load();
     if needs_buffer_clearing() {
         CLEAR_CPU_BUFFERS.store(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    if needs_user_view() {
+        USER_VIEW.store(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -1861,7 +2076,7 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
         // it takes one of these exceptions; its end is its top.
         unsafe {
             let stack = &raw const (*tables).exception_stacks[slot];
-            let top = stack as u64 + crate::cpu::EXCEPTION_STACK_BYTES as u64;
+            let top = stack as u64 + crate::cpu::EXCEPTION_STACK_BYTES as u64 - IST_SLOT_BYTES;
             (*tables).tss.ist[usize::from(*index) - 1] = top;
         }
     }
@@ -2003,6 +2218,11 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
     registers.cs = USER_CODE_SELECTOR;
     registers.ss = USER_DATA_SELECTOR;
     registers.rflags = registers.rflags & USER_RFLAGS | RFLAGS_INTERRUPTS | RFLAGS_FIXED;
+    if isolates_user_view() {
+        // SAFETY: interrupts are masked and the active tables are the program's (the caller's
+        // duty).
+        unsafe { fill_user_view() };
+    }
     // SAFETY: interrupts are masked (the caller's duty), so nothing interrupts the way in
     // between `swapgs` and `iretq`/`sysretq`; the trap or `syscall` that ends the program saves
     // its registers into the context, which `&mut` keeps valid and unaliased, switches back to

@@ -99,6 +99,11 @@ impl HalCpuLocal {
                 },
                 user_rsp: 0,
                 segment_bases_id: 0,
+                kernel_cr3: 0,
+                user_cr3: 0,
+                context_top: 0,
+                entry_stack_top: 0,
+                entry_stack: EntryStack([0; ENTRY_STACK_BYTES]),
                 exception_stacks: [const { ExceptionStack([0; EXCEPTION_STACK_BYTES]) }; EXCEPTION_STACKS],
             })),
         }
@@ -128,6 +133,17 @@ pub(crate) struct X86Tables {
     /// The program's `rsp` for the moment between `syscall` and its frame being pushed.
     pub(crate) user_rsp: u64,
     pub(crate) segment_bases_id: u64,
+    /// The kernel's root while a program runs on this CPU (its address space's), for the way in
+    /// under the user view (D502).
+    pub(crate) kernel_cr3: u64,
+    /// The user view's root with its marker, 0 when programs see the whole kernel half.
+    pub(crate) user_cr3: u64,
+    /// Just past the saved part of the running program's context, where its registers go.
+    pub(crate) context_top: u64,
+    /// The top of [`Self::entry_stack`], which `TSS.RSP0` points at under the user view.
+    pub(crate) entry_stack_top: u64,
+    /// Where an interrupt from a program lands under the user view, mapped in both views.
+    pub(crate) entry_stack: EntryStack,
     /// The stacks the double fault, NMI, machine check and debug exceptions run on (D248), so
     /// a kernel stack overflow is reported and an NMI never lands on a program's stack.
     pub(crate) exception_stacks: [ExceptionStack; EXCEPTION_STACKS],
@@ -138,6 +154,22 @@ pub(crate) struct X86Tables {
 pub(crate) const EXCEPTION_STACKS: usize = 4;
 #[cfg(target_arch = "x86_64")]
 pub(crate) const EXCEPTION_STACK_BYTES: usize = 16 * 1024;
+
+/// The entry stack's bytes (D502).
+#[cfg(target_arch = "x86_64")]
+pub(crate) const ENTRY_STACK_BYTES: usize = 4096;
+
+/// The entry stack, 16-byte aligned.
+#[cfg(target_arch = "x86_64")]
+#[repr(C, align(16))]
+pub(crate) struct EntryStack(pub(crate) [u8; ENTRY_STACK_BYTES]);
+
+#[cfg(target_arch = "x86_64")]
+impl core::fmt::Debug for EntryStack {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("EntryStack")
+    }
+}
 
 /// One interrupt-stack-table stack, 16-byte aligned as the CPU aligns it anyway.
 #[cfg(target_arch = "x86_64")]
@@ -202,6 +234,28 @@ pub(crate) const USER_RSP_OFFSET: usize = HAL_CPU_LOCAL_OFFSET
 pub(crate) const SEGMENT_BASES_ID_OFFSET: usize = HAL_CPU_LOCAL_OFFSET
     + core::mem::offset_of!(HalCpuLocal, x86)
     + core::mem::offset_of!(X86Tables, segment_bases_id);
+
+#[cfg(target_arch = "x86_64")]
+const X86_TABLES_OFFSET: usize = HAL_CPU_LOCAL_OFFSET + core::mem::offset_of!(HalCpuLocal, x86);
+
+/// Where the kernel's root, the user view's root, the context's top and the entry stack's top
+/// are in a per-CPU block (x86_64, D502).
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(eggos_kernel), allow(dead_code))]
+pub(crate) const KERNEL_CR3_OFFSET: usize =
+    X86_TABLES_OFFSET + core::mem::offset_of!(X86Tables, kernel_cr3);
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(eggos_kernel), allow(dead_code))]
+pub(crate) const USER_CR3_OFFSET: usize =
+    X86_TABLES_OFFSET + core::mem::offset_of!(X86Tables, user_cr3);
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(eggos_kernel), allow(dead_code))]
+pub(crate) const CONTEXT_TOP_OFFSET: usize =
+    X86_TABLES_OFFSET + core::mem::offset_of!(X86Tables, context_top);
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(eggos_kernel), allow(dead_code))]
+pub(crate) const ENTRY_STACK_TOP_OFFSET: usize =
+    X86_TABLES_OFFSET + core::mem::offset_of!(X86Tables, entry_stack_top);
 
 /// Where the x86_64 timer's deadline is in a per-CPU block.
 #[cfg(target_arch = "x86_64")]

@@ -514,6 +514,7 @@ extern "C" fn secondary_main<P: Platform>(cpu: usize) -> ! {
     // SAFETY: `start_with` passes the address of a leaked `Cpu`, made by `Cpu::new`, whose
     // first word holds that address and whose HAL part is at the offset the HAL expects.
     unsafe { P::set_cpu_local(cpu) };
+    let _ = crate::user_view::set_up::<P>();
     let cpu = current::<P>();
     // A deadline already passed fires at once.
     P::set_timer_deadline(P::clock_ticks());
