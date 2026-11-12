@@ -24824,3 +24824,16 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** `finally` blocks are catch-alls the compiler already handles; stack traces,
   `ExceptionInInitializerError` around a failing static initializer, and exceptions crossing
   the framework's own code.
+
+## D505 iOS apps, part 3: tap gesture recognizers (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `UIGestureRecognizer` and `UITapGestureRecognizer` are classes of the macOS
+  layer's UIKit: `initWithTarget:action:` and `addTarget:action:` keep one target and action,
+  `view`, `state`, `locationInView:`, `enabled` and the tap counts (one) answer as UIKit's.
+  `addGestureRecognizer:` and `removeGestureRecognizer:` on any view attach and detach one in a
+  table of 128 view and recognizer pairs (a view's own fields are AppKit's). When a press is
+  released, after the view's `touchesEnded:withEvent:` (D501), each enabled tap recognizer
+  attached to the view the press began on is fired: its state ended, its place the release's,
+  `[target action:recognizer]` sent, then possible again.
+- **Not yet.** Double taps, long presses, pans, swipes and pinches, failure requirements
+  between recognizers, and recognizers cancelling the view's touches.

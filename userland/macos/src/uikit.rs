@@ -16,6 +16,12 @@
 //! set of one `UITouch` (its place in any view, its phase, its view and window), and a control's
 //! `addTarget:action:forControlEvents:` for a touch up inside or a primary action becomes its
 //! target and action.
+//!
+//! Part 3 (D505): `UITapGestureRecognizer` (and its base `UIGestureRecognizer`) is a class of
+//! the layer's: `initWithTarget:action:` and `addTarget:action:` keep its target and action,
+//! `addGestureRecognizer:` attaches it to a view, and a press released over the view it was
+//! pressed on fires it after the view's own touches, its `state` then ended and its place in
+//! any view the release's.
 
 use crate::appkit::{
     NSAPPLICATION, NSAPPLICATION_META, NSBUTTON, NSBUTTON_META, NSCOLOR, NSCOLOR_META,
@@ -55,12 +61,25 @@ mod phase {
 pub static UITOUCH: ClassObject = ClassObject::EMPTY;
 /// Its metaclass.
 pub static UITOUCH_META: ClassObject = ClassObject::EMPTY;
+/// UIKit's gesture recognizers' base class and the tap recognizer, defined by the layer (D505).
+pub static UIGESTURERECOGNIZER: ClassObject = ClassObject::EMPTY;
+pub static UIGESTURERECOGNIZER_META: ClassObject = ClassObject::EMPTY;
+pub static UITAPGESTURERECOGNIZER: ClassObject = ClassObject::EMPTY;
+pub static UITAPGESTURERECOGNIZER_META: ClassObject = ClassObject::EMPTY;
+
+const MOST_RECOGNIZERS: usize = 128;
+const STATE_POSSIBLE: u64 = 0;
+const STATE_ENDED: u64 = 3;
+
+/// Which recognizer is attached to which view: pairs of addresses, a pair's view 0 when free.
+static ATTACHED: [[AtomicUsize; 2]; MOST_RECOGNIZERS] =
+    [const { [AtomicUsize::new(0), AtomicUsize::new(0)] }; MOST_RECOGNIZERS];
 
 static SCENE: AtomicUsize = AtomicUsize::new(0);
 
 type Pair = (&'static [u8], &'static ClassObject, &'static ClassObject);
 
-const CLASSES: [Pair; 18] = [
+const CLASSES: [Pair; 20] = [
     (b"UIApplication", &NSAPPLICATION, &NSAPPLICATION_META),
     (b"UIResponder", &NSRESPONDER, &NSRESPONDER_META),
     (b"UIView", &NSVIEW, &NSVIEW_META),
@@ -79,6 +98,8 @@ const CLASSES: [Pair; 18] = [
     (b"UIWindowScene", &NSRESPONDER, &NSRESPONDER_META),
     (b"UISceneSession", &NSRESPONDER, &NSRESPONDER_META),
     (b"UISceneConfiguration", &NSRESPONDER, &NSRESPONDER_META),
+    (b"UIGestureRecognizer", &UIGESTURERECOGNIZER, &UIGESTURERECOGNIZER_META),
+    (b"UITapGestureRecognizer", &UITAPGESTURERECOGNIZER, &UITAPGESTURERECOGNIZER_META),
 ];
 
 const SELECTORS: [(&[u8], &[u8]); 7] = [
@@ -125,7 +146,115 @@ pub fn method_for(name: &[u8]) -> Option<usize> {
         b"initWithWindowScene:" => Some(window_init_with_scene as *const () as usize),
         b"addTarget:action:forControlEvents:" => Some(add_target as *const () as usize),
         b"windowScene" => Some(window_scene as *const () as usize),
+        b"addGestureRecognizer:" => Some(add_gesture_recognizer as *const () as usize),
+        b"removeGestureRecognizer:" => Some(remove_gesture_recognizer as *const () as usize),
         _ => None,
+    }
+}
+
+#[repr(C)]
+struct RecognizerFields {
+    isa: usize,
+    target: Id,
+    action: Sel,
+    view: Id,
+    location: Point,
+    state: u64,
+    enabled: u8,
+}
+
+fn recognizer(object: Id) -> &'static mut RecognizerFields {
+    // SAFETY: the callers pass gesture recognizer instances, whose memory starts with these
+    // fields.
+    unsafe { &mut *object.cast::<RecognizerFields>() }
+}
+
+extern "C" fn recognizer_init_with_target(this: Id, _: Sel, target: Id, action: Sel) -> Id {
+    if this.is_null() {
+        return this;
+    }
+    let fields = recognizer(this);
+    fields.target = target;
+    fields.action = action;
+    fields.enabled = 1;
+    this
+}
+
+extern "C" fn recognizer_add_target(this: Id, _: Sel, target: Id, action: Sel) {
+    let fields = recognizer(this);
+    fields.target = target;
+    fields.action = action;
+}
+
+extern "C" fn recognizer_view(this: Id, _: Sel) -> Id {
+    recognizer(this).view
+}
+
+extern "C" fn recognizer_state(this: Id, _: Sel) -> u64 {
+    recognizer(this).state
+}
+
+extern "C" fn recognizer_location_in_view(this: Id, _: Sel, view: Id) -> Point {
+    let fields = recognizer(this);
+    if view.is_null() {
+        return fields.location;
+    }
+    let convert: extern "C" fn(Id, Sel, Point, Id) -> Point = message::msg_send_as();
+    convert(view, sel!("convertPoint:fromView:"), fields.location, core::ptr::null_mut())
+}
+
+extern "C" fn recognizer_is_enabled(this: Id, _: Sel) -> u8 {
+    recognizer(this).enabled
+}
+
+extern "C" fn recognizer_set_enabled(this: Id, _: Sel, enabled: u8) {
+    recognizer(this).enabled = enabled;
+}
+
+extern "C" fn add_gesture_recognizer(this: Id, _: Sel, gesture: Id) {
+    if gesture.is_null() {
+        return;
+    }
+    for pair in &ATTACHED {
+        if pair[0]
+            .compare_exchange(0, this as usize, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            pair[1].store(gesture as usize, Ordering::Release);
+            recognizer(gesture).view = this;
+            return;
+        }
+    }
+}
+
+extern "C" fn remove_gesture_recognizer(this: Id, _: Sel, gesture: Id) {
+    for pair in &ATTACHED {
+        if pair[0].load(Ordering::Acquire) == this as usize
+            && pair[1].load(Ordering::Acquire) == gesture as usize
+        {
+            pair[1].store(0, Ordering::Release);
+            pair[0].store(0, Ordering::Release);
+        }
+    }
+}
+
+fn fire_taps(view: Id, location: Point) {
+    for pair in &ATTACHED {
+        if pair[0].load(Ordering::Acquire) != view as usize {
+            continue;
+        }
+        let gesture = pair[1].load(Ordering::Acquire) as Id;
+        if gesture.is_null() {
+            continue;
+        }
+        let fields = recognizer(gesture);
+        if fields.enabled == 0 || fields.target.is_null() || fields.action.is_null() {
+            continue;
+        }
+        fields.location = location;
+        fields.state = STATE_ENDED;
+        send1(fields.target, fields.action, gesture as usize);
+        fields.state = STATE_POSSIBLE;
     }
 }
 
@@ -193,9 +322,26 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "phase" => touch_phase,
         "tapCount" => one,
     ];
-    foundation::define(
+    let gesture = methods![
+        "initWithTarget:action:" => recognizer_init_with_target,
+        "addTarget:action:" => recognizer_add_target,
+        "view" => recognizer_view,
+        "state" => recognizer_state,
+        "locationInView:" => recognizer_location_in_view,
+        "isEnabled" => recognizer_is_enabled,
+        "setEnabled:" => recognizer_set_enabled,
+        "numberOfTouches" => one,
+    ];
+    let tap = methods![
+        "numberOfTapsRequired" => one,
+        "numberOfTouchesRequired" => one,
+    ];
+    let define = |runtime: &mut Runtime, definition: Definition<'_>| {
+        foundation::define(runtime, &definition)
+    };
+    define(
         runtime,
-        &Definition {
+        Definition {
             name: b"UITouch\0",
             class: &UITOUCH,
             meta: &UITOUCH_META,
@@ -203,6 +349,30 @@ pub fn define(runtime: &mut Runtime) -> bool {
             instance_size: core::mem::size_of::<TouchFields>(),
             flags: 0,
             instance_methods: &instance,
+            class_methods: &[],
+        },
+    ) && define(
+        runtime,
+        Definition {
+            name: b"UIGestureRecognizer\0",
+            class: &UIGESTURERECOGNIZER,
+            meta: &UIGESTURERECOGNIZER_META,
+            superclass: &NSOBJECT,
+            instance_size: core::mem::size_of::<RecognizerFields>(),
+            flags: 0,
+            instance_methods: &gesture,
+            class_methods: &[],
+        },
+    ) && define(
+        runtime,
+        Definition {
+            name: b"UITapGestureRecognizer\0",
+            class: &UITAPGESTURERECOGNIZER,
+            meta: &UITAPGESTURERECOGNIZER_META,
+            superclass: &UIGESTURERECOGNIZER,
+            instance_size: core::mem::size_of::<RecognizerFields>(),
+            flags: 0,
+            instance_methods: &tap,
             class_methods: &[],
         },
     )
@@ -240,9 +410,13 @@ pub extern "C" fn touches_moved(this: Id, _: Sel, event: Id) {
     deliver(this, event, phase::MOVED, sel!("touchesMoved:withEvent:"));
 }
 
-/// A view's `mouseUp:`: `touchesEnded:withEvent:`.
+/// A view's `mouseUp:`: `touchesEnded:withEvent:`, then the view's tap recognizers.
 pub extern "C" fn touches_ended(this: Id, _: Sel, event: Id) {
     deliver(this, event, phase::ENDED, sel!("touchesEnded:withEvent:"));
+    if !this.is_null() && !event.is_null() {
+        let location: extern "C" fn(Id, Sel) -> Point = message::msg_send_as();
+        fire_taps(this, location(event, sel!("locationInWindow")));
+    }
 }
 
 /// The Objective-C name a Swift class `Module.Class` is registered under:
