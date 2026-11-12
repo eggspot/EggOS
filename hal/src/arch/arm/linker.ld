@@ -37,6 +37,10 @@ SECTIONS
     }
 
     __kernel_end = .;
+
+    __text_start = ADDR(.text);
+    __rodata_start = ADDR(.rodata);
+    __data_start = ADDR(.data);
     _start_physical = _start - KERNEL_VIRTUAL_OFFSET;
 
     /DISCARD/ : {
@@ -44,5 +48,7 @@ SECTIONS
     }
 }
 
+ASSERT(KERNEL_VIRTUAL_OFFSET == __kernel_virtual_offset_hal,
+       "KERNEL_VIRTUAL_OFFSET differs from the HAL's (mod.rs)")
 ASSERT((__kernel_start >> 30) == ((__kernel_end - 1) >> 30),
        "the kernel image crosses a 1 GiB block")

@@ -24376,3 +24376,28 @@ the license, by an explicit instruction recorded here.
   through the PLIC, Sstc, and the core's remaining 64-bit assumptions, first of them
   `AtomicU64`, which RV32's `A` extension does not have (the CPU-local 64-bit loads, clocks and
   counters).
+
+## D482 32-bit Arm, part 4: user mode, FP and the `Platform` implementation (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** A program's registers are `r0`-`r14` (user mode's banked `sp` and `lr`
+  included), the program counter, `CPSR`, why it stopped, a fault's status and address, and
+  its thread pointer (`TPIDRURO`), in `hal::user::arm`; system calls follow the EABI (`r7` the
+  number, `r0`-`r5` the arguments, `r0` the result, `svc #0`, two bytes back in Thumb).
+  `arm_enter_user` keeps the kernel's callee-saved registers and the context's address on the
+  SVC stack, sets `TPIDRURO` and `SPSR` (user mode, the program's flags and Thumb bit, IRQs
+  on), loads user mode's registers with `LDM ^` and enters with `MOVS PC, LR`. Every vector
+  stacks its return address and `SPSR` on the SVC stack with `SRSDB` and switches to SVC
+  mode; from user mode it saves the program through `STM ^` and returns into `run_user`
+  with its cause (a system call; an IRQ, then handled; an undefined instruction; a prefetch
+  or data abort, with `IFSR`/`IFAR` or `DFSR`/`DFAR`). In the kernel an IRQ is handled and
+  resumed and anything else stops the machine. `Arm` implements `Platform` like RV32 (D481):
+  LPAE tables through `TTBR0` and `TLBIALL`, the device tree at RAM's start, a direct map of
+  768 MiB and a 2 MiB device window at `0xffc0_0000`, the virtual timer by compare value with
+  its interrupt masked once taken, `TPIDRPRW` for the CPU-local block, data-cache cleaning to
+  the point of unification and `ICIALLUIS` for new code, long-descriptor fault statuses
+  (translation, access flag, permission) as page faults, VFPv3-D32 saved and restored with
+  `FPEXC.EN` gating user use, and a user test program in the EABI (the Linux programs not
+  written yet exit with status 1).
+- **Not yet.** Secondary CPUs through PSCI `CPU_ON`, console input and device interrupts,
+  ASIDs, PAN, the 32-bit Linux ABI's own system-call table, and the core's remaining 64-bit
+  assumptions.

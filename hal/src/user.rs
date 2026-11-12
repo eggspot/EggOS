@@ -53,6 +53,8 @@ pub struct UserContext {
     pub(crate) arch: sparc64::Registers,
     #[cfg(target_arch = "x86_64")]
     pub(crate) arch: x86_64::Registers,
+    #[cfg(target_arch = "arm")]
+    pub(crate) arch: arm::Registers,
     /// Host builds: the exception a test platform's `run_user` last returned
     /// ([`Self::simulate_exception`]), which [`Self::last_exception`] reports.
     #[cfg(not(eggos_kernel))]
@@ -209,6 +211,10 @@ impl UserContext {
     }
 }
 
+#[cfg(target_arch = "arm")]
+use arm::Registers;
+#[cfg(target_arch = "arm")]
+pub use arm::UserRegisters;
 #[cfg(target_arch = "aarch64")]
 use aarch64::Registers;
 #[cfg(target_arch = "aarch64")]
@@ -1419,6 +1425,121 @@ pub(crate) mod riscv64 {
             self.x[17] = number;
             self.x[10..16].copy_from_slice(&arguments);
             self.pc = pc;
+        }
+    }
+}
+
+#[cfg(target_arch = "arm")]
+pub(crate) mod arm {
+    /// What the user-mode exception entries save (`arch/arm/user.rs`), and what the entry to
+    /// user mode needs (D482): `r0` to `r14` (user mode's `sp` and `lr`), the program counter,
+    /// `CPSR`, then why it stopped and a fault's status and address, and the thread pointer
+    /// (`TPIDRURO`). The entry code stores by offset: keep the layout in step with it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[repr(C)]
+    pub(crate) struct Registers {
+        pub(crate) r: [u32; 15],
+        pub(crate) pc: u32,
+        pub(crate) cpsr: u32,
+        pub(crate) cause: u32,
+        pub(crate) fault_status: u32,
+        pub(crate) fault_address: u32,
+        pub(crate) thread_pointer: u32,
+    }
+
+    /// [`super::UserContext::registers`] on 32-bit Arm.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct UserRegisters {
+        pub pc: u64,
+        /// `r0` to `r14`.
+        pub r: [u64; 15],
+        pub cpsr: u64,
+    }
+
+    const STACK: usize = 13;
+    const SYSCALL_NUMBER: usize = 7;
+    const SVC_SIZE: u32 = 4;
+    const THUMB_SVC_SIZE: u32 = 2;
+    const THUMB: u32 = 1 << 5;
+    const PROGRAM_FLAGS: u32 = 0xf800_0000 | 0x000f_0000 | THUMB;
+
+    impl Registers {
+        pub(crate) fn new(pc: u64, stack: u64) -> Self {
+            let mut r = [0; 15];
+            r[STACK] = stack as u32;
+            Self {
+                r,
+                pc: pc as u32,
+                cpsr: 0,
+                cause: 0,
+                fault_status: 0,
+                fault_address: 0,
+                thread_pointer: 0,
+            }
+        }
+        pub(crate) fn thread_pointer(&self) -> u64 {
+            u64::from(self.thread_pointer)
+        }
+        pub(crate) fn set_thread_pointer(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
+            self.thread_pointer = value as u32;
+            Ok(())
+        }
+        pub(crate) fn pc(&self) -> u64 {
+            u64::from(self.pc)
+        }
+        pub(crate) fn stack(&self) -> u64 {
+            u64::from(self.r[STACK])
+        }
+        pub(crate) fn set_stack(&mut self, stack: u64) {
+            self.r[STACK] = stack as u32;
+        }
+        pub(crate) fn syscall_number(&self) -> u64 {
+            u64::from(self.r[SYSCALL_NUMBER])
+        }
+        pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
+            core::array::from_fn(|index| u64::from(self.r[index]))
+        }
+        pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
+            for (register, value) in self.r.iter_mut().zip(arguments) {
+                *register = value as u32;
+            }
+        }
+        pub(crate) fn set_syscall_result(&mut self, value: u64) {
+            self.r[0] = value as u32;
+        }
+        pub(crate) fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+            let size = match self.cpsr & THUMB != 0 {
+                true => THUMB_SVC_SIZE,
+                false => SVC_SIZE,
+            };
+            self.r[SYSCALL_NUMBER] = number as u32;
+            self.r[0] = first_argument as u32;
+            self.pc = self.pc.wrapping_sub(size);
+        }
+        pub(crate) fn registers(&self) -> UserRegisters {
+            UserRegisters {
+                pc: u64::from(self.pc),
+                r: self.r.map(u64::from),
+                cpsr: u64::from(self.cpsr),
+            }
+        }
+        pub(crate) fn set_registers(&mut self, registers: &UserRegisters) {
+            self.r = registers.r.map(|value| value as u32);
+            self.pc = registers.pc as u32;
+            self.cpsr = registers.cpsr as u32 & PROGRAM_FLAGS;
+        }
+        #[cfg(not(eggos_kernel))]
+        pub(crate) fn result(&self) -> u64 {
+            u64::from(self.r[0])
+        }
+        #[cfg(not(eggos_kernel))]
+        pub(crate) fn simulate_syscall(&mut self, number: u64, arguments: [u64; 6], pc: u64) {
+            self.r[SYSCALL_NUMBER] = number as u32;
+            self.set_syscall_arguments(arguments);
+            self.pc = pc as u32;
         }
     }
 }

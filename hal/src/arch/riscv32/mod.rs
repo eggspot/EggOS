@@ -163,6 +163,7 @@ const INTERRUPTS_ENABLE: usize = 1 << 1;
 const USER_MEMORY_ACCESS: usize = 1 << 18;
 const SBI_IPI: usize = 0x0073_5049;
 const SECONDARY_HARTS_NOT_YET: i64 = 0;
+const DEVICE_WINDOW: core::ops::Range<u64> = 0xff80_0000..0xffc0_0000;
 
 /// Handles interrupt `cause` (`scause`), from the kernel or from user mode: the timer's is
 /// disarmed and handed to the kernel, as is a wake-up from another hart.
@@ -519,6 +520,10 @@ impl Platform for Riscv32 {
     fn device_tree() -> Option<&'static [u8]> {
         // SAFETY: as in `memory_map`.
         unsafe { boot_memory::device_tree_blob(device_tree_address()) }
+    }
+
+    fn device_window() -> Option<core::ops::Range<u64>> {
+        Some(DEVICE_WINDOW)
     }
 
     fn make_kernel_mappings_visible(_start: usize, _length: usize) {

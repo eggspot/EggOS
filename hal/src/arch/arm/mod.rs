@@ -9,12 +9,14 @@
 //! first gigabyte of the physical space (the GIC and the PL011 UART among QEMU `virt`'s
 //! devices) at its own address as device memory. It loads `MAIR0`, `TTBCR` (LPAE, `TTBR0`
 //! alone, write-back walks) and `TTBR0`, turns the MMU and caches on, jumps to the virtual
-//! address, sets the stack and calls `early_main`, which reports on the console, installs the
-//! vectors and takes a few virtual-timer interrupts through the GICv2 (D478), and powers the
-//! machine off through PSCI. Threads, user mode and the rest of [`crate::Platform`] come next.
+//! address, sets the stack, installs the vectors (D478, D482) and the GICv2 with the virtual
+//! timer, and calls the kernel's `kernel_main`, [`Arm`] being its [`crate::Platform`].
 
 
+mod fp;
+mod test_program;
 mod thread;
+mod user;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -99,7 +101,8 @@ _start:
 
     ldr     pc, =2f
 2:  ldr     sp, =__stack_top
-    bl      {early_main}
+    bl      {enable}
+    bl      kernel_main
 3:  wfi
     b       3b
     .ltorg
@@ -115,7 +118,7 @@ _start:
     mair0 = const MAIR0,
     ttbcr = const TTBCR_LPAE,
     sctlr = const SCTLR_MMU_AND_CACHES,
-    early_main = sym early_main,
+    enable = sym enable_interrupts_and_fp,
 );
 
 fn uart_register(offset: usize) -> *mut u32 {
@@ -183,6 +186,7 @@ pub fn power_off() -> ! {
 
 const GIC_DISTRIBUTOR: usize = 0x0800_0000;
 const GIC_CPU: usize = 0x0801_0000;
+const GIC_BYTES: u64 = 0x2_0000;
 const DISTRIBUTOR_CONTROL: usize = 0x000;
 const SET_ENABLE: usize = 0x100;
 const PRIORITY: usize = 0x400;
@@ -195,10 +199,19 @@ const VIRTUAL_TIMER: u32 = 27;
 const MIDDLE_PRIORITY: u8 = 0x80;
 const EVERY_PRIORITY: u32 = 0xff;
 const TIMER_ENABLE: u32 = 1;
-const TICKS_A_SECOND: u64 = 100;
-const TICKS_SHOWN: u32 = 3;
+const TIMER_MASKED: u32 = 1 << 1;
+const UART_BYTES: u64 = 0x1000;
+const BOOT_DIRECT_MAP_END: u64 = RAM_START as u64 + (768 << 20);
+const DEVICE_WINDOW: core::ops::Range<u64> = 0xffc0_0000..0xffe0_0000;
+const SECONDARY_CPUS_NOT_YET: i64 = 0;
+const CACHE_LINE: usize = 64;
+const FAULT_STATUS: u64 = 0x3f;
+const TRANSLATION_ACCESS_OR_PERMISSION: [u64; 3] = [0x04, 0x08, 0x0c];
+const WRITE_NOT_READ: u64 = 1 << 11;
+const PREFETCH_MARK: u64 = 1 << 31;
 
-static TICKS: AtomicU32 = AtomicU32::new(0);
+/// The image's virtual address minus its physical address, the direct map's offset too.
+pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = DIRECT_MAP_OFFSET as u64;
 
 core::arch::global_asm!(
     r#"
@@ -208,29 +221,20 @@ core::arch::global_asm!(
     .global arm_vectors
 arm_vectors:
     b       arm_fatal
-    b       arm_fatal
-    b       arm_fatal
-    b       arm_fatal
-    b       arm_fatal
+    b       arm_undefined_entry
+    b       arm_svc_entry
+    b       arm_prefetch_entry
+    b       arm_data_entry
     b       arm_fatal
     b       arm_irq_entry
     b       arm_fatal
 
-arm_irq_entry:
-    sub     lr, lr, #4
-    srsdb   sp!, #0x13
-    cps     #0x13
-    push    {{r0-r3, r12, lr}}
-    bl      {irq}
-    pop     {{r0-r3, r12, lr}}
-    rfeia   sp!
-
+    .global arm_fatal
 arm_fatal:
     ldr     sp, =__stack_top
     bl      {fatal}
     .ltorg
 "#,
-    irq = sym irq,
     fatal = sym fatal,
 );
 
@@ -238,50 +242,54 @@ fn gic(base: usize, offset: usize) -> *mut u32 {
     (base + offset) as *mut u32
 }
 
-fn set_timer(ticks: u32) {
-    // SAFETY: writes `CNTV_TVAL` and `CNTV_CTL`: the virtual timer fires `ticks` from now.
+fn set_compare(deadline: u64, control: u32) {
+    // SAFETY: writes `CNTV_CVAL` and `CNTV_CTL`: the virtual timer fires once the count reaches
+    // `deadline`, unless `control` masks it.
     unsafe {
         core::arch::asm!(
-            "mcr p15, 0, {ticks}, c14, c3, 0",
-            "mcr p15, 0, {enable}, c14, c3, 1",
+            "mcrr p15, 3, {low}, {high}, c14",
+            "mcr p15, 0, {control}, c14, c3, 1",
             "isb",
-            ticks = in(reg) ticks,
-            enable = in(reg) TIMER_ENABLE,
+            low = in(reg) deadline as u32,
+            high = in(reg) (deadline >> 32) as u32,
+            control = in(reg) control,
         )
     };
 }
 
-fn tick_interval() -> u32 {
-    (clock_frequency() / TICKS_A_SECOND) as u32
-}
-
-extern "C" fn irq() {
-    // SAFETY: the GIC's CPU interface, mapped as device memory by the boot table's first
-    // gigabyte; acknowledging and ending an interrupt are this handler's alone.
-    unsafe {
-        let acknowledged = gic(GIC_CPU, ACKNOWLEDGE).read_volatile();
-        if acknowledged & INTERRUPT_ID == VIRTUAL_TIMER {
-            TICKS.fetch_add(1, Ordering::Relaxed);
-            set_timer(tick_interval());
-        }
-        gic(GIC_CPU, END_OF_INTERRUPT).write_volatile(acknowledged);
+/// Handles the interrupt the GIC has for this CPU: the virtual timer's is masked and handed to
+/// the kernel.
+pub(super) extern "C" fn irq() {
+    // SAFETY: the GIC's CPU interface, mapped as device memory; acknowledging and ending an
+    // interrupt are this handler's alone.
+    let acknowledged = unsafe { gic(GIC_CPU, ACKNOWLEDGE).read_volatile() };
+    if acknowledged & INTERRUPT_ID == VIRTUAL_TIMER {
+        set_compare(u64::MAX, TIMER_ENABLE | TIMER_MASKED);
+        crate::interrupt::deliver(crate::interrupt::Interrupt::Timer);
     }
+    // SAFETY: as above.
+    unsafe { gic(GIC_CPU, END_OF_INTERRUPT).write_volatile(acknowledged) };
 }
 
 extern "C" fn fatal() -> ! {
-    console_write(b"EggOS arm: an exception the boot path does not handle\n");
+    console_write(b"EggOS arm: an exception in the kernel\n");
     power_off()
 }
 
-fn enable_timer_interrupts() {
-    // SAFETY: points `VBAR` at the vector table, turns on the GIC's distributor and CPU
-    // interface for the virtual timer's interrupt, arms the timer, and unmasks IRQs; the
-    // vectors and handler are in place first.
+extern "C" fn enable_interrupts_and_fp() {
+    // SAFETY: points `VBAR` at the vector table, gives the kernel's coprocessor access to VFP
+    // (`CPACR`, for the save and restore code only), and turns on the GIC's distributor and CPU
+    // interface for the virtual timer's interrupt with the timer masked; IRQs stay masked in
+    // `CPSR` but in `wait_for_interrupt`.
     unsafe {
         core::arch::asm!(
             "mcr p15, 0, {vectors}, c12, c0, 0",
+            "mrc p15, 0, {access}, c1, c0, 2",
+            "orr {access}, {access}, #0xf00000",
+            "mcr p15, 0, {access}, c1, c0, 2",
             "isb",
             vectors = in(reg) arm_vectors_address(),
+            access = out(reg) _,
         );
         let priority = (GIC_DISTRIBUTOR + PRIORITY + VIRTUAL_TIMER as usize) as *mut u8;
         priority.write_volatile(MIDDLE_PRIORITY);
@@ -289,9 +297,8 @@ fn enable_timer_interrupts() {
         gic(GIC_DISTRIBUTOR, DISTRIBUTOR_CONTROL).write_volatile(1);
         gic(GIC_CPU, PRIORITY_MASK).write_volatile(EVERY_PRIORITY);
         gic(GIC_CPU, CPU_CONTROL).write_volatile(1);
-        set_timer(tick_interval());
-        core::arch::asm!("cpsie i");
     }
+    set_compare(u64::MAX, TIMER_ENABLE | TIMER_MASKED);
 }
 
 fn arm_vectors_address() -> usize {
@@ -301,13 +308,304 @@ fn arm_vectors_address() -> usize {
     &raw const arm_vectors as usize
 }
 
-extern "C" fn early_main() -> ! {
-    console_write(b"EggOS arm: MMU on, running in the direct map\n");
-    enable_timer_interrupts();
-    while TICKS.load(Ordering::Relaxed) < TICKS_SHOWN {
-        // SAFETY: waits for the next interrupt; the timer's comes within a tick.
-        unsafe { core::arch::asm!("wfi") };
+/// Zeroes the `length` bytes at `start` ([`crate::memory::zero`]).
+///
+/// # Safety
+/// As for [`crate::memory::zero`].
+#[inline]
+pub(crate) unsafe fn zero(start: *mut u8, length: usize) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { crate::memory::zero_by_lines(start, length) }
+}
+
+#[inline]
+pub(crate) fn doorbell_barrier() {
+    // SAFETY: a barrier: it orders stores and touches nothing.
+    unsafe { core::arch::asm!("dsb st") };
+}
+
+fn drop_every_translation() {
+    // SAFETY: invalidates this CPU's unified TLB (`TLBIALL`), then waits for it; no memory
+    // changes.
+    unsafe { core::arch::asm!("dsb", "mcr p15, 0, {}, c8, c7, 0", "dsb", "isb", in(reg) 0) };
+}
+
+/// 32-bit Arm on QEMU `virt` with a Cortex-A15 (D482).
+#[derive(Debug)]
+pub struct Arm;
+
+impl crate::Platform for Arm {
+    const ARCH: &'static str = "arm";
+
+    type PageTableFormat = crate::paging::arm::ArmLpae;
+
+    fn console_write(bytes: &[u8]) {
+        console_write(bytes);
     }
-    console_write(b"timer interrupts arriving\n");
-    power_off()
+
+    fn console_read(_buffer: &mut [u8]) -> usize {
+        0
+    }
+
+    fn enable_console_input() -> Result<(), &'static str> {
+        Err("32-bit Arm has no console input interrupt yet")
+    }
+
+    fn exit(_status: crate::ExitStatus) -> ! {
+        power_off()
+    }
+
+    fn restart() -> ! {
+        power_off()
+    }
+
+    fn halt() -> ! {
+        loop {
+            // SAFETY: waits for an interrupt, with no state to keep.
+            unsafe { core::arch::asm!("wfi") };
+        }
+    }
+
+    fn breakpoint() {
+        // SAFETY: `bkpt` takes the prefetch abort vector, which stops the machine in the
+        // kernel; the kernel calls this only in its self-test of that path.
+        unsafe { core::arch::asm!("bkpt #0") };
+    }
+
+    fn execute_illegal_instruction() -> ! {
+        // SAFETY: `udf` is permanently undefined; the kernel never resumes from it.
+        unsafe { core::arch::asm!("udf #0", options(noreturn)) }
+    }
+
+    fn clock_ticks() -> u64 {
+        clock_ticks()
+    }
+
+    fn clock_frequency() -> u64 {
+        clock_frequency()
+    }
+
+    fn set_timer_deadline(deadline: u64) {
+        set_compare(deadline, TIMER_ENABLE);
+    }
+
+    fn wait_for_interrupt() {
+        // SAFETY: `wfi` wakes on a pending interrupt even with IRQs masked; unmasking takes it
+        // through the vectors, and masking again keeps the kernel's invariant.
+        unsafe { core::arch::asm!("wfi", "cpsie i", "cpsid i") };
+    }
+
+    fn interrupt_window() {
+        // SAFETY: as in `wait_for_interrupt`, without the `wfi`.
+        unsafe { core::arch::asm!("cpsie i", "cpsid i") };
+    }
+
+    fn memory_map() -> crate::MemoryMap {
+        // SAFETY: QEMU puts the device tree at RAM's start for an ELF image; it stays readable
+        // and unwritten, in RAM the boot direct map covers.
+        let mut map =
+            unsafe { crate::arch::boot_memory::device_tree_memory_map(RAM_START as usize) };
+        map.retain_within(crate::memory::PhysicalRange {
+            start: 0,
+            end: BOOT_DIRECT_MAP_END,
+        });
+        map
+    }
+
+    fn physical_memory_offset() -> usize {
+        DIRECT_MAP_OFFSET as usize
+    }
+
+    fn direct_map_offset() -> usize {
+        DIRECT_MAP_OFFSET as usize
+    }
+
+    fn kernel_image() -> crate::paging::KernelImage {
+        crate::arch::boot_memory::kernel_image_parts()
+    }
+
+    fn physical_memory() -> crate::MemoryMap {
+        // SAFETY: as in `memory_map`.
+        let mut map = unsafe { crate::arch::boot_memory::device_tree_ram(RAM_START as usize) };
+        map.retain_within(crate::memory::PhysicalRange {
+            start: 0,
+            end: BOOT_DIRECT_MAP_END,
+        });
+        map
+    }
+
+    fn early_device_regions(region: &mut dyn FnMut(crate::memory::PhysicalRange)) {
+        region(crate::memory::PhysicalRange::from_start_length(u64::from(UART), UART_BYTES));
+        region(crate::memory::PhysicalRange::from_start_length(
+            GIC_DISTRIBUTOR as u64,
+            GIC_BYTES,
+        ));
+    }
+
+    fn device_tree() -> Option<&'static [u8]> {
+        // SAFETY: as in `memory_map`.
+        unsafe { crate::arch::boot_memory::device_tree_blob(RAM_START as usize) }
+    }
+
+    fn device_window() -> Option<core::ops::Range<u64>> {
+        Some(DEVICE_WINDOW)
+    }
+
+    fn make_kernel_mappings_visible(_start: usize, _length: usize) {
+        drop_every_translation();
+    }
+
+    unsafe fn activate_page_tables(roots: &[u64]) {
+        let [root] = roots else {
+            panic!("LPAE tables here have one root");
+        };
+        // SAFETY: the caller guarantees the tables map the kernel and the direct map at the
+        // addresses in use; `TTBR0` takes the new root, then the TLB is emptied.
+        unsafe {
+            core::arch::asm!(
+                "dsb",
+                "mcrr p15, 0, {low}, {high}, c2",
+                "isb",
+                low = in(reg) *root as u32,
+                high = in(reg) (*root >> 32) as u32,
+            )
+        };
+        drop_every_translation();
+    }
+
+    unsafe fn switch_address_space(roots: &[u64]) {
+        // SAFETY: the caller's guarantees include `activate_page_tables`'.
+        unsafe { Self::activate_page_tables(roots) };
+    }
+
+    fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
+        access()
+    }
+
+    unsafe fn run_user(context: &mut crate::user::UserContext) -> crate::user::UserExit {
+        // SAFETY: the caller's guarantees are `run_user`'s.
+        unsafe { user::run_user(context) }
+    }
+
+    fn user_test_program() -> crate::user::TestProgram {
+        test_program::user_test_program()
+    }
+
+    fn linux_hardware_capabilities() -> [u64; 2] {
+        const HALF_WORD: u64 = 1 << 1;
+        const THUMB: u64 = 1 << 2;
+        const FAST_MULTIPLY: u64 = 1 << 4;
+        const VFP: u64 = 1 << 6;
+        const EDSP: u64 = 1 << 7;
+        const NEON: u64 = 1 << 12;
+        const VFPV3: u64 = 1 << 13;
+        const TLS: u64 = 1 << 15;
+        const VFPV4: u64 = 1 << 16;
+        const DIVIDE: u64 = 1 << 17 | 1 << 18;
+        const LPAE: u64 = 1 << 20;
+        [
+            HALF_WORD | THUMB | FAST_MULTIPLY | VFP | EDSP | NEON | VFPV3 | TLS | VFPV4 | DIVIDE
+                | LPAE,
+            0,
+        ]
+    }
+
+    fn random_seeds(seed: &mut dyn FnMut(crate::random::SeedSource, &[u8])) {
+        // SAFETY: as in `memory_map`, once, on the boot CPU.
+        unsafe { crate::arch::boot_memory::device_tree_take_seeds(RAM_START as usize, seed) };
+    }
+
+    fn make_instructions_visible(start: usize, length: usize) {
+        let first = start & !(CACHE_LINE - 1);
+        for line in (first..start + length).step_by(CACHE_LINE) {
+            // SAFETY: cleans one data-cache line to the point of unification (`DCCMVAU`), so
+            // instruction fetch can see what was written there; no memory contents change.
+            unsafe { core::arch::asm!("mcr p15, 0, {}, c7, c11, 1", in(reg) line) };
+        }
+        // SAFETY: waits for the cleans, then invalidates every instruction cache in the inner
+        // shareable domain (`ICIALLUIS`); no memory contents change.
+        unsafe { core::arch::asm!("dsb", "mcr p15, 0, {}, c7, c1, 0", "dsb", "isb", in(reg) 0) };
+    }
+
+    fn drop_user_translations(_start: u64, _length: u64) {
+        drop_every_translation();
+    }
+
+    fn page_fault(_kind: crate::ExceptionKind, code: u64) -> Option<crate::paging::PageFault> {
+        use crate::paging::{Access, PageFault};
+        let status = code & FAULT_STATUS & !0b11;
+        if !TRANSLATION_ACCESS_OR_PERMISSION.contains(&status) {
+            return None;
+        }
+        let access = match (code & PREFETCH_MARK != 0, code & WRITE_NOT_READ != 0) {
+            (true, _) => Access::Execute,
+            (false, true) => Access::Write,
+            (false, false) => Access::Read,
+        };
+        Some(PageFault {
+            access,
+            may_be_stale: false,
+        })
+    }
+
+    unsafe fn prepare_thread(
+        stack_top: usize,
+        entry: extern "C" fn(usize) -> !,
+        argument: usize,
+    ) -> usize {
+        // SAFETY: the frame fits in `INITIAL_FRAME_MAX`, writable and unused below the top.
+        unsafe {
+            crate::thread::write_initial_frame(stack_top, &thread::initial_frame(entry, argument))
+        }
+    }
+
+    unsafe fn switch_thread(save: *mut usize, resume: usize) {
+        // SAFETY: the caller's contract is the switch's.
+        unsafe { thread::eggos_switch_thread(save, resume) }
+    }
+
+    unsafe fn set_user_fp(on: bool) {
+        // SAFETY: the caller's contract is `set_user`'s.
+        unsafe { fp::set_user(on) }
+    }
+
+    unsafe fn save_fp(state: *mut crate::fp::FpState) {
+        // SAFETY: the caller's contract is `save`'s.
+        unsafe { fp::save(state) }
+    }
+
+    unsafe fn restore_fp(state: *const crate::fp::FpState) {
+        // SAFETY: the caller's contract is `restore`'s.
+        unsafe { fp::restore(state) }
+    }
+
+    fn cpus(cpu: &mut dyn FnMut(u64)) {
+        // SAFETY: as in `memory_map`.
+        unsafe { crate::arch::boot_memory::device_tree_cpus(RAM_START as usize, cpu) };
+    }
+
+    fn boot_cpu() -> u64 {
+        0
+    }
+
+    unsafe fn start_cpu(
+        _cpu: u64,
+        _start: &crate::cpu::CpuStart,
+    ) -> Result<(), crate::cpu::StartCpuError> {
+        Err(crate::cpu::StartCpuError::Refused(SECONDARY_CPUS_NOT_YET))
+    }
+
+    unsafe fn set_cpu_local(block: usize) {
+        // SAFETY: `TPIDRPRW` is the kernel's alone; user mode cannot read it.
+        unsafe { core::arch::asm!("mcr p15, 0, {}, c13, c0, 4", in(reg) block) };
+    }
+
+    fn cpu_local() -> usize {
+        let block: usize;
+        // SAFETY: reads `TPIDRPRW`.
+        unsafe { core::arch::asm!("mrc p15, 0, {}, c13, c0, 4", out(reg) block) };
+        block
+    }
+
+    fn wake_cpu(_cpu: u64) {}
 }

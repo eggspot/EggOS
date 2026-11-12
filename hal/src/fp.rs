@@ -39,6 +39,8 @@ pub struct FpState {
     pub(crate) arch: Sparc64State,
     #[cfg(target_arch = "x86_64")]
     pub(crate) arch: X86_64State,
+    #[cfg(target_arch = "arm")]
+    pub(crate) arch: ArmState,
 }
 
 impl FpState {
@@ -93,8 +95,19 @@ impl FpState {
             vscr: 0,
             vrsave: 0,
         };
+        #[cfg(target_arch = "arm")]
+        let arch = ArmState { d: [0; 32], fpscr: 0 };
         Self { arch }
     }
+}
+
+/// 32-bit Arm: VFPv3/NEON's `d0`-`d31`, then `FPSCR`, as `vstmia` and `vmrs` store them (D482).
+#[cfg(target_arch = "arm")]
+#[derive(Clone)]
+#[repr(C)]
+pub(crate) struct ArmState {
+    pub(crate) d: [u64; 32],
+    pub(crate) fpscr: u32,
 }
 
 #[cfg(target_arch = "x86_64")]
