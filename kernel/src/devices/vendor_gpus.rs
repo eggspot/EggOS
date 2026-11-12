@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 use eggos_drivers::gpu::amd_atom::AtomBios;
 use eggos_drivers::gpu::amd_atom_interpreter::Interpreter;
+use eggos_drivers::gpu::amd_dcn;
 use eggos_drivers::gpu::amd_discovery::{OFFSET_FROM_TOP, display_block, dmcub_file_name};
 use eggos_drivers::gpu::nvidia_bios::NvidiaBios;
 use eggos_drivers::gpu::nvidia_gsp::{self, Chip};
@@ -23,6 +24,7 @@ const EXPANSION_ROM: u16 = 0x30;
 const ROM_ENABLE: u32 = 1;
 const ROM_ADDRESS_MASK: u32 = 0xffff_f800;
 const ROM_BYTES: usize = 128 << 10;
+const REGISTER_BAR: usize = 5;
 
 static SUMMARY: SpinLock<String> = SpinLock::new(String::new());
 
@@ -174,7 +176,11 @@ fn probe_amd_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeErr
             .count();
         let _ = write!(line, " {tables} command tables");
     }
-    match read_discovery(probe, node.regions[0]).as_deref().and_then(display_block) {
+    if let Some(config) = probe.pci_config() {
+        eggos_drivers::pci::enable_memory_and_bus_master(config, function.address);
+    }
+    let display = read_discovery(probe, node.regions[0]).as_deref().and_then(display_block);
+    match display {
         Some(display) => {
             let (major, minor, revision) = display.version;
             let firmware = dmcub_file_name(display.version);
@@ -184,5 +190,20 @@ fn probe_amd_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeErr
     }
     line.push('\n');
     SUMMARY.lock().push_str(&line);
+    if let Some(display) = display
+        && display.base_count > amd_dcn::SEGMENT
+        && let Ok(segment_base) = u32::try_from(display.bases[amd_dcn::SEGMENT])
+    {
+        let taken = super::amd_display::take(
+            probe,
+            display.version,
+            segment_base,
+            node.regions[REGISTER_BAR],
+            node.regions[0],
+        );
+        if let Ok(sinks) = taken {
+            SUMMARY.lock().push_str(&sinks);
+        }
+    }
     Ok(())
 }

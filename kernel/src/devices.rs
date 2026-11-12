@@ -40,6 +40,8 @@ pub mod ethernet;
 #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
 pub mod intel_display;
 #[cfg(any(test, feature = "vendor-gpus"))]
+pub mod amd_display;
+#[cfg(any(test, feature = "vendor-gpus"))]
 pub mod vendor_gpus;
 #[cfg(any(test, feature = "intel-wifi"))]
 pub mod intel_wifi;
@@ -172,6 +174,17 @@ pub trait Probe {
     fn map_window(&mut self, region: PhysicalRange) -> Result<usize, ProbeError>;
     /// The PCI configuration space discovery found, if any.
     fn pci_config(&self) -> Option<&dyn ConfigSpace>;
+    /// Maps memory a device shows at `region` (video memory behind a BAR) write-combining
+    /// ([`window::map_write_combining`], D245, D496) and returns the virtual address of
+    /// `region.start`. None by default.
+    fn map_write_combining(&mut self, _region: PhysicalRange) -> Result<usize, ProbeError> {
+        Err(ProbeError::Refused("no write-combining mappings"))
+    }
+    /// The framebuffer the firmware lit and the loader passed on (D236), if any. None by
+    /// default.
+    fn boot_framebuffer(&self) -> Option<eggos_hal::handoff::Framebuffer> {
+        None
+    }
     /// A deadline `milliseconds` from now, for polling a device.
     fn deadline(&self, milliseconds: u64) -> Deadline;
     /// Routes the device-tree interrupt `specifier` to the boot CPU
@@ -561,6 +574,15 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
     fn map_window(&mut self, region: PhysicalRange) -> Result<usize, ProbeError> {
         window::map::<P>(self.memory, region)
             .map_err(|error| ProbeError::Refused(error.description()))
+    }
+
+    fn map_write_combining(&mut self, region: PhysicalRange) -> Result<usize, ProbeError> {
+        window::map_write_combining::<P>(self.memory, region)
+            .map_err(|error| ProbeError::Refused(error.description()))
+    }
+
+    fn boot_framebuffer(&self) -> Option<eggos_hal::handoff::Framebuffer> {
+        P::boot_framebuffer()
     }
 
     fn pci_config(&self) -> Option<&dyn ConfigSpace> {

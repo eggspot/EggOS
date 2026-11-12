@@ -24600,3 +24600,31 @@ the license, by an explicit instruction recorded here.
 - With D474 to D495 every part of RV32 and 32-bit Arm on QEMU `virt` is written: page tables,
   boot, traps, threads, user mode, FP, `Platform`, atomics, the Linux ABIs and their build
   entries.
+
+## D496 AMD's display engine at the firmware's mode, DCN 3.x (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** D468 left DCN's pipes undriven until per-version register places were written.
+  Driving a pipe from scratch (DMCUB, clocks through the SMU, DIG encoders, link training, the
+  pipe's HUBP, DPP, MPC, OPP and OTG) is a large driver; the firmware already lit one.
+- **Decision.** As Intel's first step did (D268), the AMD driver takes the pipe the firmware lit
+  at its mode. `amd_dcn` finds the hub (HUBP) whose viewport is the firmware framebuffer's
+  size and whose surface is 32-bit ARGB, sets its flips to happen at the vertical update, flips
+  by writing the surface address (high half first, the low half latching both) and waits for
+  the hub's flip-pending bit; the cursor is the hub's 64x64 straight-alpha ARGB cursor, enabled
+  in the paired DPP too, starting at the screen's edge with its hidden part skipped through the
+  hot spot when it is off the top or left. The places are dwords from the display block's
+  segment 2 base, which IP discovery gives (D468), in the register BAR (BAR 5), and are the same
+  on every DCN 3.0 to 3.5 version for these registers.
+- **Surfaces.** The two surfaces and the cursor are in video memory: the firmware's own
+  framebuffer and the space right after it in the aperture (BAR 0), each 64 KiB aligned, written
+  through one write-combining mapping. Their GPU addresses are the firmware surface's address
+  plus their distance from it, since the aperture maps video memory in order, so no GART or
+  page tables are needed. The kernel draws into a cached frame, copies the damage into the
+  hidden surface, drains the writes and flips, as on Intel. A frame waits for the previous
+  flip (no interrupts yet).
+- **Sources.** The register places and fields are from AMD's published `dcn_*_offset.h` and
+  `_sh_mask.h` headers, MIT-licensed separately from Linux; `drivers/src/gpu/AMD-NOTICE.md`
+  carries their notice. No other code is used.
+- The `Probe` trait gains `map_write_combining` and `boot_framebuffer`.
+- **Not yet.** Loading DMCUB, setting modes and lighting more outputs (the firmware's mode is
+  what the first screen shows), vertical-blank interrupts, DCN 2.x and older engines (DCE).
