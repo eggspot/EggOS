@@ -23564,3 +23564,11 @@ the license, by an explicit instruction recorded here.
   and 8 apart (64 to 416); `Primary modifier`, `Window controls` and `Theme` follow as rows
   from 432 with their values and the theme radios at the right; the no-disk line follows. The
   desktop shape puts the cards back in a row.
+
+## D432 The About pane's devices on narrow pages (settings-forms-v0.5.md section 2: R8, R6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `AboutPane::reflow`: on a narrow page `Show all devices` is a 48 px row the
+  column's width under the `Devices` heading instead of at the heading's right, and the
+  devices table starts under it, the column's width, filling the pane; the egg and its lines
+  stay as they are. The desktop shape puts both back.
+- **Not yet.** The table's 48 px rows and its sideways pan on a narrow page.

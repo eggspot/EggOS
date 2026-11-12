@@ -27,6 +27,7 @@ pub const CHECKBOX_TOP: i32 = 176;
 pub const TABLE_AT: (i32, i32) = (16, 212);
 /// The margin around the section.
 pub const PADDING: i32 = 16;
+const TOUCH_CONTROL: i32 = 48;
 /// The table's columns: `Kind`, `Device` and `Driver`, none sortable.
 pub const COLUMNS: [Column; 3] = [
     fixed("Kind", 128),
@@ -76,6 +77,7 @@ fn written(write: impl FnOnce(&mut dyn FnMut(&[u8]))) -> Text<64> {
 /// The About pane's `Devices` section and the devices last read.
 #[derive(Debug)]
 pub struct AboutPane {
+    heading: WidgetId,
     show_all: WidgetId,
     table: WidgetId,
     text: Vec<u8>,
@@ -93,7 +95,7 @@ impl AboutPane {
             tree.add(Some(pane), place, kind)
                 .expect("the Settings window fits its tree")
         };
-        add(
+        let heading = add(
             Place::at(HEADING.0, HEADING.1, Length::Content, Length::Content),
             Kind::label("Devices", Token::TextDim),
         );
@@ -120,6 +122,7 @@ impl AboutPane {
         );
         tree.set_enabled(show_all, false);
         Self {
+            heading,
             show_all,
             table,
             text: Vec::new(),
@@ -128,6 +131,34 @@ impl AboutPane {
             shown: Vec::new(),
             slot: None,
         }
+    }
+
+    /// Moves the section to one column `content` wide on a narrow page (settings-forms-v0.5.md
+    /// 2, R8 and R6: the box a 48 px row under the heading, the table under it at the column's
+    /// width), or back to the desktop's.
+    pub fn reflow(&self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) {
+        tree.set_place(
+            self.heading,
+            Place::at(HEADING.0, HEADING.1, Length::Content, Length::Content),
+        );
+        let (show_all, table_top) = match content {
+            None => (
+                Place {
+                    height: Length::Px(CONTROL_HEIGHT),
+                    ..Place::right(PADDING, CHECKBOX_TOP)
+                },
+                TABLE_AT.1,
+            ),
+            Some(c) => (
+                Place::at(PADDING, HEADING.1 + 24, Length::Px(c), Length::Px(TOUCH_CONTROL)),
+                HEADING.1 + 24 + TOUCH_CONTROL + 8,
+            ),
+        };
+        tree.set_place(self.show_all, show_all);
+        tree.set_place(
+            self.table,
+            Place::at(TABLE_AT.0, table_top, Length::Fill(PADDING), Length::Fill(PADDING)),
+        );
     }
 
     /// The checkbox, `Show all <n> devices`.
