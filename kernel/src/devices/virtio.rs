@@ -203,18 +203,18 @@ fn probe_pci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         notify.notify_off_multiplier,
         device.map(&mut regs).transpose()?,
     );
-    if device_type == virtio::device_type::GPU {
-        let window = virtio_pci::shared_memory_regions(config, function.address)
-            .find(|region| region.id == eggos_drivers::virtio::gpu::three_d::SHM_HOST_VISIBLE);
-        if let Some(window) = window {
-            let region = node.regions[usize::from(window.bar)];
-            let end = window.offset.checked_add(window.length);
-            if !region.is_empty() && end.is_some_and(|end| end <= region.len()) {
-                crate::rendering::set_host_window(region.start + window.offset, window.length);
+    if let Some(config) = probe.pci_config() {
+        if device_type == virtio::device_type::GPU {
+            let window = virtio_pci::shared_memory_regions(config, function.address)
+                .find(|region| region.id == eggos_drivers::virtio::gpu::three_d::SHM_HOST_VISIBLE);
+            if let Some(window) = window {
+                let region = node.regions[usize::from(window.bar)];
+                let end = window.offset.checked_add(window.length);
+                if !region.is_empty() && end.is_some_and(|end| end <= region.len()) {
+                    crate::rendering::set_host_window(region.start + window.offset, window.length);
+                }
             }
         }
-    }
-    if let Some(config) = probe.pci_config() {
         pci::enable_memory_and_bus_master(config, function.address);
     }
     add_device(probe, id, &node, AnyTransport::Pci(transport))
