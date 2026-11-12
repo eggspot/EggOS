@@ -1085,6 +1085,7 @@ fn remove<F: Files, C: Console>(
         }
         Err(RemoveError::Refused(refusal)) => return out.refuse(json, &refusal),
         Err(RemoveError::Failed(failure)) => {
+            crate::state::record_failure(files, &component.name, &failure);
             return out.fail(
                 json,
                 &errors::REMOVE_FAILED,

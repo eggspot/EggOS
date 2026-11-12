@@ -23935,3 +23935,11 @@ the license, by an explicit instruction recorded here.
 - **Done.** On a narrow page the grant panel takes the pane's full width, its two lines the
   column's width, and `Cancel` and `Grant` an equal pair 48 tall on its last row, like the
   Storage pane's panels (D437); the desktop shape puts it back.
+
+## D458 The Components pane removes through jobs too (D454's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** Once a remove is confirmed, the pane runs `/bin/component remove <name> --yes` as
+  an awaited child (`ComponentJob::Remove`) instead of removing in its window's tick; the
+  removal's failure, which the command now records like an install's (D421), gives the note's
+  own lines, and the rows are read again when it ends. Every change the pane makes to the
+  components now runs outside its window, through the same command the CLI and the tools run.

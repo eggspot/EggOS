@@ -137,6 +137,8 @@ pub enum ComponentJob {
     Cancel,
     /// `component install <name>` (D454).
     Install(String),
+    /// `component remove <name> --yes`, once the pane confirmed it (D458).
+    Remove(String),
 }
 
 impl ComponentJob {
@@ -150,17 +152,21 @@ impl ComponentJob {
             Self::Download => &["list", "--download"],
             Self::Cancel => &["cancel"],
             Self::Install(_) => &["install"],
+            Self::Remove(_) => &["remove"],
         };
         let mut words: Vec<String> = words.iter().map(|word| String::from(*word)).collect();
-        if let Self::Update(Some(name)) | Self::Install(name) = self {
+        if let Self::Update(Some(name)) | Self::Install(name) | Self::Remove(name) = self {
             words.push(name.clone());
+        }
+        if let Self::Remove(_) = self {
+            words.push(String::from("--yes"));
         }
         words
     }
 
     /// Whether the pane waits for it to end.
     pub fn is_awaited(&self) -> bool {
-        matches!(self, Self::Check | Self::Update(_) | Self::Download | Self::Install(_))
+        matches!(self, Self::Check | Self::Update(_) | Self::Download | Self::Install(_) | Self::Remove(_))
     }
 }
 
@@ -728,6 +734,17 @@ impl ComponentsPane {
 
     /// Shows how the job the pane waited for ended, with what was read after.
     pub fn show_job_ended(&mut self, tree: &mut WidgetTree<CAPACITY>, succeeded: bool, read: ComponentsRead) -> Option<Request> {
+        if let Work::Removing(name) = &self.work {
+            let result = match succeeded {
+                true => Ok(()),
+                false => Err(RemoveError::Failed(match &read.failure {
+                    Some((failed, failure)) if failed == name => failure.clone(),
+                    _ => Failure::Errno(eggos_runtime::errno::Errno::EIO),
+                })),
+            };
+            self.show_removed(tree, result, read);
+            return None;
+        }
         if let Work::Installing { plan, cancelled, .. } = &self.work {
             let name = plan.first().cloned().unwrap_or_default();
             let result = match (succeeded, *cancelled) {
@@ -1472,9 +1489,10 @@ impl ComponentsPane {
         tree.set_default_button(self.default_button);
         match note {
             Note::Remove { name } => {
-                self.work = Work::Removing(name);
+                self.work = Work::Removing(name.clone());
                 self.refresh(tree);
-                Some(Request::RemoveComponent)
+                self.asked = Some(ComponentJob::Remove(name));
+                Some(Request::StartComponentJob)
             }
             Note::Install { plan, .. } => self.start_install(tree, plan),
             other => {

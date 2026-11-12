@@ -410,7 +410,7 @@ fn removing_is_refused_or_confirmed_as_the_cli_answers() {
     window.show_remove_check(Ok(Some(four()[1].clone())), 0);
     assert_eq!(
         press(&mut window, key::ENTER),
-        Some(Request::RemoveComponent)
+        Some(Request::StartComponentJob)
     );
     assert_eq!(window.components_pane().to_remove(), Some("builtin-apps"));
     assert_eq!(rows(&window)[1][1], "Removing...");
@@ -431,7 +431,7 @@ fn a_remove_refused_once_confirmed_says_why_and_keeps_the_component() {
     window.show_remove_check(Ok(Some(four()[1].clone())), 0);
     assert_eq!(
         press(&mut window, key::ENTER),
-        Some(Request::RemoveComponent)
+        Some(Request::StartComponentJob)
     );
     window.show_removed(
         Err(RemoveError::Refused(Refusal::InUse {
