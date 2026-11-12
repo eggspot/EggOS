@@ -24417,3 +24417,17 @@ the license, by an explicit instruction recorded here.
   did.
 - **Not yet.** The pointer-width assumptions (addresses and lengths kept in `u64` and cast to
   `usize`, the direct map's size, user-space limits) and the 32-bit Linux ABIs.
+
+## D484 RV32's Linux ABI (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `kernel/src/linux/abi/riscv32.rs` takes RV64's file whole (the generic table,
+  `open` and `mmap` flags, `stat`, fault classification, signal-frame code and test support)
+  and names the machine `riscv32`. RV32 Linux has only 64-bit time, so the generic numbers of
+  the 32-bit-time calls name nothing and their `time64` numbers take their place
+  (`clock_gettime64` 403 and its kin, `timerfd_*64`, `utimensat_time64`, `pselect6_time64`,
+  `ppoll_time64`, `rt_sigtimedwait_time64`, `futex_time64`), the same arguments with 64-bit
+  `timespec`s the kernel's handlers already read.
+- **Not yet.** The 32-bit layouts the generic code reads at 64 bits (`iovec`, `msghdr`,
+  `sigaction`, `stack_t`, `siginfo_t`, the auxiliary vector, RV32's 32-bit signal frame),
+  `llseek`'s split offset, `mmap2`'s page offset, ELF32 programs in `exec`, and RV32's lack of
+  `fstat` and `newfstatat` (programs use `statx`).

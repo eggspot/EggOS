@@ -48,6 +48,11 @@ mod riscv64;
 #[cfg(target_arch = "riscv64")]
 pub use riscv64::*;
 
+#[cfg(target_arch = "riscv32")]
+mod riscv32;
+#[cfg(target_arch = "riscv32")]
+pub use riscv32::*;
+
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
 #[cfg(target_arch = "x86_64")]
@@ -59,6 +64,7 @@ pub use x86_64::*;
     target_arch = "mips64",
     target_arch = "powerpc64",
     target_arch = "riscv64",
+    target_arch = "riscv32",
     target_arch = "s390x",
     target_arch = "sparc64",
     target_arch = "x86_64"
