@@ -23553,3 +23553,14 @@ the license, by an explicit instruction recorded here.
   status line; the pane is 840 tall. The desktop shape puts every place back.
 - **Not yet.** The Activity and Network views' narrow places and the grant panel as a bottom
   sheet (R10).
+
+## D431 The Appearance pane in one column on narrow pages, and cards in a column (settings-forms-v0.5.md section 2: R7, R1; its ask 2; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Toolkit.** `Kind::Cards` gains `column`: the cards stand one under another, each the
+  widget's full width and its own height, `gap` apart, the miniature drawn in each card's rect
+  as before; `card_rect`, the content size, hit-testing and the element tree all follow it,
+  and Up/Down already move the ring. `WidgetTree::set_cards_column` switches it.
+- **Done.** On a narrow page the profile cards stand in a column the content's width, 112 tall
+  and 8 apart (64 to 416); `Primary modifier`, `Window controls` and `Theme` follow as rows
+  from 432 with their values and the theme radios at the right; the no-disk line follows. The
+  desktop shape puts the cards back in a row.

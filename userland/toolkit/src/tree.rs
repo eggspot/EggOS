@@ -410,6 +410,23 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.keep_caret_visible(id);
     }
 
+    /// Stands cards `id` in a column `gap` apart, each the widget's width (or back in a row
+    /// `gap` apart), as a narrow page asks.
+    pub fn set_cards_column(&mut self, id: WidgetId, column: bool, gap: i32) {
+        self.change(id, |kind| {
+            if let Kind::Cards {
+                column: standing,
+                gap: apart,
+                ..
+            } = kind
+            {
+                *standing = column;
+                *apart = gap;
+            }
+        });
+        self.layout();
+    }
+
     /// Gives list `id` rows `height` tall, as a window that changes its form asks.
     pub fn set_row_height(&mut self, id: WidgetId, height: i32) {
         if matches!(self.kind(id), Some(Kind::List(list)) if list.row_height == height) {

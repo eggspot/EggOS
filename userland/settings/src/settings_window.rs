@@ -89,6 +89,7 @@ const NO_DISK_LINE: i32 = 316;
 const PANE_HEIGHT: i32 = 348;
 const CARD: (i32, i32) = (128, 112);
 const CARD_GAP: i32 = 16;
+const CARD_COLUMN_GAP: i32 = 8;
 const ABOUT_TEXT_X: i32 = 80;
 const ABOUT_LINES: i32 = 104;
 const ABOUT_LINE_PITCH: i32 = 20;
@@ -653,6 +654,8 @@ pub const CONTROL_SIDES: [&str; 3] = ["Right", "Left", "Right"];
 
 #[derive(Debug, Clone, Copy)]
 struct Widgets {
+    appearance_labels: [WidgetId; 3],
+    appearance_no_disk: WidgetId,
     set_to: WidgetId,
     remedy: WidgetId,
     switch_label: WidgetId,
@@ -1013,7 +1016,7 @@ impl SettingsWindow {
             ),
         );
         let row_y = |row: i32| APPEARANCE_ROWS + row * SETTING_ROW;
-        build.label(
+        let modifier_label = build.label(
             appearance,
             PADDING,
             row_y(0) + TEXT_IN_ROW,
@@ -1025,7 +1028,7 @@ impl SettingsWindow {
             row_y(0) + TEXT_IN_ROW,
             PRIMARY_MODIFIERS[profile],
         );
-        build.label(
+        let controls_label = build.label(
             appearance,
             PADDING,
             row_y(1) + TEXT_IN_ROW,
@@ -1033,7 +1036,7 @@ impl SettingsWindow {
             Token::Text,
         );
         let controls = build.value(appearance, row_y(1) + TEXT_IN_ROW, CONTROL_SIDES[profile]);
-        build.label(
+        let theme_label = build.label(
             appearance,
             PADDING,
             row_y(2) + TEXT_IN_ROW,
@@ -1306,6 +1309,8 @@ impl SettingsWindow {
         let mut window = Self {
             tree,
             widgets: Widgets {
+                appearance_labels: [modifier_label, controls_label, theme_label],
+                appearance_no_disk: no_disk,
                 set_to,
                 remedy,
                 switch_label,
@@ -1605,6 +1610,7 @@ impl SettingsWindow {
             Place::at(0, 0, Length::Fill(0), Length::Px(heights.1)),
         );
         self.reflow_date_and_time(content);
+        self.reflow_appearance(content);
         let display = self.display.reflow(&mut self.tree, content, &self.facts);
         self.tree.set_place(
             self.widgets.panes[DISPLAY],
@@ -1843,6 +1849,51 @@ impl SettingsWindow {
         self.tree.set_place(
             w.panes[DATE_AND_TIME],
             Place::at(0, 0, Length::Fill(0), Length::Px(picker + 124 + 3 * TOUCH_CONTROL + 16)),
+        );
+    }
+
+    /// Lays the Appearance pane out in one column `content` wide (R7: the profile cards in a
+    /// column, then its rows by R1), or as on the desktop.
+    fn reflow_appearance(&mut self, content: Option<i32>) {
+        let w = self.widgets;
+        let line = |y: i32| Place::at(PADDING, y, Length::Content, Length::Content);
+        let (cards, rows_top, no_disk, height) = match content {
+            None => {
+                self.tree.set_cards_column(w.cards, false, CARD_GAP);
+                (
+                    Place::at(PADDING, FIRST_ROW, Length::Content, Length::Content),
+                    APPEARANCE_ROWS,
+                    NO_DISK_LINE,
+                    PANE_HEIGHT,
+                )
+            }
+            Some(c) => {
+                self.tree.set_cards_column(w.cards, true, CARD_COLUMN_GAP);
+                let stack = 3 * CARD.1 + 2 * CARD_COLUMN_GAP;
+                let rows = FIRST_ROW + stack + PADDING;
+                (
+                    Place::at(PADDING, FIRST_ROW, Length::Px(c), Length::Px(stack)),
+                    rows,
+                    rows + 3 * SETTING_ROW + 8,
+                    rows + 3 * SETTING_ROW + 8 + 20 + PADDING,
+                )
+            }
+        };
+        self.tree.set_place(w.cards, cards);
+        let values = [w.modifier, w.controls];
+        for (row, label) in w.appearance_labels.iter().enumerate() {
+            let y = rows_top + row as i32 * SETTING_ROW;
+            self.tree.set_place(*label, line(y + TEXT_IN_ROW));
+            if let Some(value) = values.get(row) {
+                self.tree.set_place(*value, Place::right(PADDING, y + TEXT_IN_ROW));
+            }
+        }
+        self.tree
+            .set_place(w.theme, Place::right(PADDING, rows_top + 2 * SETTING_ROW));
+        self.tree.set_place(w.appearance_no_disk, line(no_disk));
+        self.tree.set_place(
+            w.panes[APPEARANCE],
+            Place::at(0, 0, Length::Fill(0), Length::Px(height)),
         );
     }
 

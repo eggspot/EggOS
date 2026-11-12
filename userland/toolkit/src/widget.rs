@@ -360,6 +360,8 @@ pub enum Kind {
         card: (i32, i32),
         gap: i32,
         art: CardArt,
+        /// The cards stand in a column, each the widget's width, instead of in a row.
+        column: bool,
     },
     /// A list of rows.
     List(List),
@@ -477,6 +479,7 @@ impl Kind {
             card,
             gap,
             art,
+            column: false,
         }
     }
 
@@ -682,10 +685,20 @@ impl Kind {
                 }
             }
             Self::Cards {
-                count, card, gap, ..
+                count,
+                card,
+                gap,
+                column: false,
+                ..
             } => (
                 card.0 * *count as i32 + gap * (*count as i32 - 1).max(0),
                 card.1,
+            ),
+            Self::Cards {
+                count, card, gap, ..
+            } => (
+                card.0,
+                card.1 * *count as i32 + gap * (*count as i32 - 1).max(0),
             ),
             Self::List(list) => (0, list.content_height()),
             Self::TextField(_) => (BUTTON_MIN_WIDTH, CONTROL_HEIGHT),
@@ -757,9 +770,15 @@ pub fn radio_rect(kind: &Kind, rect: Rect, index: usize) -> Rect {
 
 /// The rectangle of card `index` of a card picker at `rect`.
 pub fn card_rect(kind: &Kind, rect: Rect, index: usize) -> Rect {
-    let Kind::Cards { card, gap, .. } = kind else {
+    let Kind::Cards {
+        card, gap, column, ..
+    } = kind
+    else {
         return Rect::default();
     };
+    if *column {
+        return Rect::new(rect.x, rect.y + (card.1 + gap) * index as i32, rect.width, card.1);
+    }
     Rect::new(
         rect.x + (card.0 + gap) * index as i32,
         rect.y,
