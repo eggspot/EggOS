@@ -24986,3 +24986,18 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The video BIOS copied into its area, the PSP version in scratch 15, commands
   through the inbox (DMCUB's own mode setting, panel self refresh, cursor offload), the other
   DCN versions' register places, and setting modes.
+
+## D515 iOS apps, part 4: long presses and pans (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** UIKit's `UILongPressGestureRecognizer` and `UIPanGestureRecognizer` join the
+  tap recognizer (D505), on the same table of attached recognizers. The press now down keeps
+  where and when it began (from the event's window location and timestamp). A tap fires on a
+  release within 10 points of the press and before 0.5 s; a long press fires (began, then
+  ended) on a release within 10 points held 0.5 s or more, its `minimumPressDuration`; a pan
+  fires began on the press's first move, changed on each later one and ended on the release,
+  and `translationInView:` answers how far the press has moved since it began.
+- **Simplification.** A long press is recognised at the release rather than when its time is
+  reached, as no timer runs between events yet; `setMinimumPressDuration:` is accepted and not
+  read.
+- **Not yet.** Swipes, pinches and rotations, velocities, several touches at once, and
+  recognizers that wait for each other to fail.

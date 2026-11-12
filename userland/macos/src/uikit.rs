@@ -22,6 +22,11 @@
 //! `addGestureRecognizer:` attaches it to a view, and a press released over the view it was
 //! pressed on fires it after the view's own touches, its `state` then ended and its place in
 //! any view the release's.
+//!
+//! Part 4 (D515): `UILongPressGestureRecognizer` fires (began, then ended) when a press held
+//! on the view for its `minimumPressDuration` (0.5 s) is released without moving far, and
+//! `UIPanGestureRecognizer` fires as the press moves (began, changed) and when it is released
+//! (ended), its `translationInView:` how far the press has moved since it began.
 
 use crate::appkit::{
     NSAPPLICATION, NSAPPLICATION_META, NSBUTTON, NSBUTTON_META, NSCOLOR, NSCOLOR_META,
@@ -68,6 +73,18 @@ pub static UIGESTURERECOGNIZER: ClassObject = ClassObject::EMPTY;
 pub static UIGESTURERECOGNIZER_META: ClassObject = ClassObject::EMPTY;
 pub static UITAPGESTURERECOGNIZER: ClassObject = ClassObject::EMPTY;
 pub static UITAPGESTURERECOGNIZER_META: ClassObject = ClassObject::EMPTY;
+pub static UILONGPRESSGESTURERECOGNIZER: ClassObject = ClassObject::EMPTY;
+pub static UILONGPRESSGESTURERECOGNIZER_META: ClassObject = ClassObject::EMPTY;
+pub static UIPANGESTURERECOGNIZER: ClassObject = ClassObject::EMPTY;
+pub static UIPANGESTURERECOGNIZER_META: ClassObject = ClassObject::EMPTY;
+
+const STATE_BEGAN: u64 = 1;
+const STATE_CHANGED: u64 = 2;
+const LONG_PRESS_SECONDS: f64 = 0.5;
+const TAP_SLOP: f64 = 10.0;
+
+/// Where and when the press now down began, in window coordinates and seconds.
+static PRESS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
 
 const MOST_RECOGNIZERS: usize = 128;
 const STATE_POSSIBLE: u64 = 0;
@@ -81,7 +98,7 @@ static SCENE: AtomicUsize = AtomicUsize::new(0);
 
 type Pair = (&'static [u8], &'static ClassObject, &'static ClassObject);
 
-const CLASSES: [Pair; 23] = [
+const CLASSES: [Pair; 25] = [
     (b"UIApplication", &NSAPPLICATION, &NSAPPLICATION_META),
     (b"UIResponder", &NSRESPONDER, &NSRESPONDER_META),
     (b"UIView", &NSVIEW, &NSVIEW_META),
@@ -105,6 +122,12 @@ const CLASSES: [Pair; 23] = [
     (b"NSLayoutConstraint", &NSLAYOUTCONSTRAINT, &NSLAYOUTCONSTRAINT_META),
     (b"NSLayoutAnchor", &NSLAYOUTANCHOR, &NSLAYOUTANCHOR_META),
     (b"UIStackView", &NSSTACKVIEW, &NSSTACKVIEW_META),
+    (
+        b"UILongPressGestureRecognizer",
+        &UILONGPRESSGESTURERECOGNIZER,
+        &UILONGPRESSGESTURERECOGNIZER_META,
+    ),
+    (b"UIPanGestureRecognizer", &UIPANGESTURERECOGNIZER, &UIPANGESTURERECOGNIZER_META),
 ];
 
 const SELECTORS: [(&[u8], &[u8]); 7] = [
@@ -166,6 +189,7 @@ struct RecognizerFields {
     location: Point,
     state: u64,
     enabled: u8,
+    start: Point,
 }
 
 fn recognizer(object: Id) -> &'static mut RecognizerFields {
@@ -243,7 +267,27 @@ extern "C" fn remove_gesture_recognizer(this: Id, _: Sel, gesture: Id) {
     }
 }
 
-fn fire_taps(view: Id, location: Point) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Tap,
+    LongPress,
+    Pan,
+}
+
+fn kind_of(gesture: Id) -> Kind {
+    let is = |class: &ClassObject| {
+        send_bool(gesture, sel!("isKindOfClass:"), class as *const ClassObject as usize)
+    };
+    if is(&UIPANGESTURERECOGNIZER) {
+        Kind::Pan
+    } else if is(&UILONGPRESSGESTURERECOGNIZER) {
+        Kind::LongPress
+    } else {
+        Kind::Tap
+    }
+}
+
+fn each_recognizer(view: Id, mut each: impl FnMut(Id, &'static mut RecognizerFields, Kind)) {
     for pair in &ATTACHED {
         if pair[0].load(Ordering::Acquire) != view as usize {
             continue;
@@ -256,12 +300,76 @@ fn fire_taps(view: Id, location: Point) {
         if fields.enabled == 0 || fields.target.is_null() || fields.action.is_null() {
             continue;
         }
-        fields.location = location;
-        fields.state = STATE_ENDED;
-        send1(fields.target, fields.action, gesture as usize);
-        fields.state = STATE_POSSIBLE;
+        each(gesture, fields, kind_of(gesture));
     }
 }
+
+fn fire(gesture: Id, fields: &mut RecognizerFields, state: u64) {
+    fields.state = state;
+    send1(fields.target, fields.action, gesture as usize);
+}
+
+fn press_started(location: Point, time: f64) {
+    PRESS[0].store(location.x.to_bits() as usize, Ordering::Relaxed);
+    PRESS[1].store(location.y.to_bits() as usize, Ordering::Relaxed);
+    PRESS[2].store(time.to_bits() as usize, Ordering::Relaxed);
+}
+
+fn press() -> (Point, f64) {
+    let read = |index: usize| f64::from_bits(PRESS[index].load(Ordering::Relaxed) as u64);
+    (Point::new(read(0), read(1)), read(2))
+}
+
+fn moved(view: Id, location: Point) {
+    let (start, _) = press();
+    each_recognizer(view, |gesture, fields, kind| {
+        if kind != Kind::Pan {
+            return;
+        }
+        fields.location = location;
+        let state = match fields.state {
+            STATE_BEGAN | STATE_CHANGED => STATE_CHANGED,
+            _ => {
+                fields.start = start;
+                STATE_BEGAN
+            }
+        };
+        fire(gesture, fields, state);
+    });
+}
+
+fn released(view: Id, location: Point, time: f64) {
+    let (start, began) = press();
+    let near = |a: f64, b: f64| (a - b).abs() <= TAP_SLOP;
+    let still = near(location.x, start.x) && near(location.y, start.y);
+    let held = time - began >= LONG_PRESS_SECONDS;
+    each_recognizer(view, |gesture, fields, kind| {
+        fields.location = location;
+        match kind {
+            Kind::Tap if still && !held => fire(gesture, fields, STATE_ENDED),
+            Kind::LongPress if still && held => {
+                fire(gesture, fields, STATE_BEGAN);
+                fire(gesture, fields, STATE_ENDED);
+            }
+            Kind::Pan if matches!(fields.state, STATE_BEGAN | STATE_CHANGED) => {
+                fire(gesture, fields, STATE_ENDED)
+            }
+            _ => {}
+        }
+        fields.state = STATE_POSSIBLE;
+    });
+}
+
+extern "C" fn pan_translation(this: Id, _: Sel, _view: Id) -> Point {
+    let fields = recognizer(this);
+    Point::new(fields.location.x - fields.start.x, fields.location.y - fields.start.y)
+}
+
+extern "C" fn minimum_press_duration(_: Id, _: Sel) -> f64 {
+    LONG_PRESS_SECONDS
+}
+
+extern "C" fn ignore_duration(_: Id, _: Sel, _: f64) {}
 
 extern "C" fn window_init_with_scene(this: Id, sel: Sel, _scene: Id) -> Id {
     window_init_with_frame(this, sel, PHONE_FRAME)
@@ -341,6 +449,13 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "numberOfTapsRequired" => one,
         "numberOfTouchesRequired" => one,
     ];
+    let long_press = methods![
+        "minimumPressDuration" => minimum_press_duration,
+        "setMinimumPressDuration:" => ignore_duration,
+    ];
+    let pan = methods![
+        "translationInView:" => pan_translation,
+    ];
     let define = |runtime: &mut Runtime, definition: Definition<'_>| {
         foundation::define(runtime, &definition)
     };
@@ -380,6 +495,30 @@ pub fn define(runtime: &mut Runtime) -> bool {
             instance_methods: &tap,
             class_methods: &[],
         },
+    ) && define(
+        runtime,
+        Definition {
+            name: b"UILongPressGestureRecognizer\0",
+            class: &UILONGPRESSGESTURERECOGNIZER,
+            meta: &UILONGPRESSGESTURERECOGNIZER_META,
+            superclass: &UIGESTURERECOGNIZER,
+            instance_size: core::mem::size_of::<RecognizerFields>(),
+            flags: 0,
+            instance_methods: &long_press,
+            class_methods: &[],
+        },
+    ) && define(
+        runtime,
+        Definition {
+            name: b"UIPanGestureRecognizer\0",
+            class: &UIPANGESTURERECOGNIZER,
+            meta: &UIPANGESTURERECOGNIZER_META,
+            superclass: &UIGESTURERECOGNIZER,
+            instance_size: core::mem::size_of::<RecognizerFields>(),
+            flags: 0,
+            instance_methods: &pan,
+            class_methods: &[],
+        },
     )
 }
 
@@ -405,22 +544,35 @@ fn deliver(view: Id, event: Id, phase: u64, selector: Sel) {
     send2(view, selector, touches as usize, event as usize);
 }
 
+fn place_and_time(event: Id) -> (Point, f64) {
+    let location: extern "C" fn(Id, Sel) -> Point = message::msg_send_as();
+    let time: extern "C" fn(Id, Sel) -> f64 = message::msg_send_as();
+    (location(event, sel!("locationInWindow")), time(event, sel!("timestamp")))
+}
+
 /// A view's `mouseDown:` (D501): `touchesBegan:withEvent:` when its class answers it.
 pub extern "C" fn touches_began(this: Id, _: Sel, event: Id) {
     deliver(this, event, phase::BEGAN, sel!("touchesBegan:withEvent:"));
+    if !event.is_null() {
+        let (location, time) = place_and_time(event);
+        press_started(location, time);
+    }
 }
 
-/// A view's `mouseDragged:`: `touchesMoved:withEvent:`.
+/// A view's `mouseDragged:`: `touchesMoved:withEvent:`, then its pan recognizers.
 pub extern "C" fn touches_moved(this: Id, _: Sel, event: Id) {
     deliver(this, event, phase::MOVED, sel!("touchesMoved:withEvent:"));
+    if !this.is_null() && !event.is_null() {
+        moved(this, place_and_time(event).0);
+    }
 }
 
-/// A view's `mouseUp:`: `touchesEnded:withEvent:`, then the view's tap recognizers.
+/// A view's `mouseUp:`: `touchesEnded:withEvent:`, then its gesture recognizers.
 pub extern "C" fn touches_ended(this: Id, _: Sel, event: Id) {
     deliver(this, event, phase::ENDED, sel!("touchesEnded:withEvent:"));
     if !this.is_null() && !event.is_null() {
-        let location: extern "C" fn(Id, Sel) -> Point = message::msg_send_as();
-        fire_taps(this, location(event, sel!("locationInWindow")));
+        let (location, time) = place_and_time(event);
+        released(this, location, time);
     }
 }
 
