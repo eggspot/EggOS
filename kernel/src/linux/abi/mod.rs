@@ -71,6 +71,32 @@ pub use x86_64::*;
 )))]
 compile_error!("EggOS has no Linux ABI for this architecture: add kernel/src/linux/abi/<arch>.rs");
 
+/// Bytes of a C `long` and of a pointer in the architecture's user programs: 4 on the 32-bit
+/// ones (D485), 8 elsewhere. The structures the generic code reads (`iovec` first) are laid out
+/// in these words.
+#[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+pub const WORD_BYTES: usize = 4;
+/// Bytes of a C `long` and of a pointer in the architecture's user programs: 4 on the 32-bit
+/// ones (D485), 8 elsewhere.
+#[cfg(not(any(target_arch = "riscv32", target_arch = "arm")))]
+pub const WORD_BYTES: usize = 8;
+
+/// The `long` or pointer at the start of `bytes` ([`WORD_BYTES`] of them), widened.
+pub fn word(bytes: &[u8]) -> u64 {
+    match WORD_BYTES {
+        4 => u64::from(u32::from_ne_bytes(bytes[..4].try_into().unwrap_or_default())),
+        _ => u64::from_ne_bytes(bytes[..8].try_into().unwrap_or_default()),
+    }
+}
+
+/// Writes `value` as a `long` or pointer at the start of `bytes`, cut to [`WORD_BYTES`].
+pub fn put_word(bytes: &mut [u8], value: u64) {
+    match WORD_BYTES {
+        4 => bytes[..4].copy_from_slice(&(value as u32).to_ne_bytes()),
+        _ => bytes[..8].copy_from_slice(&value.to_ne_bytes()),
+    }
+}
+
 /// The signal numbers every architecture but MIPS shares (`asm-generic/signal.h`, x86's and
 /// PowerPC's too); MIPS (D315) and SPARC64 (D327) have their own.
 #[cfg(not(any(target_arch = "mips64", target_arch = "sparc64")))]

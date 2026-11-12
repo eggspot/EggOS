@@ -521,7 +521,7 @@ const MAX_IOVECS: u64 = 1024;
 const STACK_IOVECS: usize = 8;
 
 /// The size of a `struct iovec`: a base address and a length.
-const IOVEC_SIZE: usize = 16;
+const IOVEC_SIZE: usize = 2 * abi::WORD_BYTES;
 
 /// Starts the first thread of `process`, which runs its Linux program from `context` (see
 /// [`handle`]); `clone` starts the others.
@@ -1539,8 +1539,8 @@ struct Iovecs {
 impl Iovecs {
     fn one(base: u64, length: u64) -> Self {
         let mut on_stack = [[0; IOVEC_SIZE]; STACK_IOVECS];
-        on_stack[0][..8].copy_from_slice(&base.to_ne_bytes());
-        on_stack[0][8..].copy_from_slice(&length.to_ne_bytes());
+        abi::put_word(&mut on_stack[0], base);
+        abi::put_word(&mut on_stack[0][abi::WORD_BYTES..], length);
         Self {
             on_stack,
             on_heap: alloc::vec::Vec::new(),
@@ -1599,13 +1599,10 @@ impl Iovecs {
     }
 }
 
-/// A `struct iovec`'s base and length.
+/// A `struct iovec`'s base and length, each a word of the architecture's (D485).
 fn iovec(entry: &[u8; IOVEC_SIZE]) -> (u64, u64) {
-    let (base, length) = entry.split_at(8);
-    (
-        u64::from_ne_bytes(base.try_into().unwrap()),
-        u64::from_ne_bytes(length.try_into().unwrap()),
-    )
+    let (base, length) = entry.split_at(abi::WORD_BYTES);
+    (abi::word(base), abi::word(length))
 }
 
 #[cold]

@@ -24431,3 +24431,16 @@ the license, by an explicit instruction recorded here.
   `sigaction`, `stack_t`, `siginfo_t`, the auxiliary vector, RV32's 32-bit signal frame),
   `llseek`'s split offset, `mmap2`'s page offset, ELF32 programs in `exec`, and RV32's lack of
   `fstat` and `newfstatat` (programs use `statx`).
+
+## D485 The Linux layer's word size, part 1: `abi::WORD_BYTES` and `iovec` (M9, the 32-bit audit; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `linux::abi` says how many bytes a C `long` and a pointer take in the
+  architecture's user programs (`WORD_BYTES`: 4 on RV32 and 32-bit Arm, 8 elsewhere) and
+  reads and writes such words (`word`, `put_word`). The generic structures move to it one at
+  a time; `struct iovec` first, so `readv`, `writev`, `preadv` and every caller of `Iovecs`
+  read a base and a length of the program's width. 64-bit architectures read exactly what
+  they did.
+- **Next in the audit.** `msghdr` and `cmsghdr`, `sigaction` and `stack_t`, the auxiliary
+  vector and the argument and environment pointers `exec` writes, ELF32 programs,
+  `siginfo_t`, the 32-bit signal frames, `llseek`, `mmap2` and 64-bit arguments in register
+  pairs; then 32-bit Arm's own ABI file.
