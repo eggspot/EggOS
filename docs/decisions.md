@@ -23870,3 +23870,15 @@ the license, by an explicit instruction recorded here.
   the same words in the CLI, the GUI and the `app_install` tool; host-tested.
 - **Next.** Installing it: the Android layer's component, the manifest shown (D450), the
   ABI's native libraries kept, and the ahead-of-time compiler.
+
+## D452 An `.ipa` is named as an iOS app when installing (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** An IPA is a zip whose `Payload/<name>.app/` holds an iOS app; the installer's scan
+  now refuses it as `NotRunnable::IosPackage` (`it is an iOS app package (.ipa), and
+  installing iOS apps is not built yet`) instead of failing on its flat bundle, in the CLI, the
+  GUI and the tool alike; host-tested.
+- **Next (iOS part 1 proper).** The bundle installed through the macOS layer's Mach-O loader
+  (an iOS program is arm64 Mach-O with `LC_BUILD_VERSION` naming iOS), its `Info.plist`
+  read, and UIKit's first classes (`UIApplicationMain`, `UIWindow`, `UIView`,
+  `UIViewController`) over the toolkit, as AppKit's were (D17's iOS apps distributed outside
+  the App Store).

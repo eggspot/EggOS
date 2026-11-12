@@ -1565,3 +1565,18 @@ fn an_android_package_is_named_as_one_and_refused() {
         Problem::NotRunnable(NotRunnable::AndroidPackage)
     );
 }
+
+#[test]
+fn an_ios_package_is_named_as_one_and_refused() {
+    let zip = zip(&[
+        stored("Payload/Notes.app/Info.plist", b"bplist00"),
+        stored("Payload/Notes.app/Notes", b"\xcf\xfa\xed\xfe"),
+    ]);
+    let mut files = host_with("/media/host/Notes.ipa", &zip);
+    assert_eq!(
+        plan(&mut files, b"/media/host/Notes.ipa", None, X86_64)
+            .unwrap_err()
+            .problem,
+        Problem::NotRunnable(NotRunnable::IosPackage)
+    );
+}

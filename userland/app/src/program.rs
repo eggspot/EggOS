@@ -49,6 +49,9 @@ pub enum NotRunnable {
     /// An Android app package (`.apk`, D451): its code is compiled ahead of time by the Android
     /// layer, which does not install app packages yet.
     AndroidPackage,
+    /// An iOS app package (`.ipa`, D452): its UIKit program needs the iOS layer, which does
+    /// not install app packages yet.
+    IosPackage,
 }
 
 impl NotRunnable {

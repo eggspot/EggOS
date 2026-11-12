@@ -1064,6 +1064,13 @@ fn shown_name(name: &[u8], role: Role) -> &[u8] {
 }
 
 const ANDROID_MANIFEST: &[u8] = b"AndroidManifest.xml";
+const IPA_PAYLOAD: &[u8] = b"Payload/";
+const APP_FOLDER: &[u8] = b".app/";
+
+fn is_ios_bundle_entry(name: &[u8]) -> bool {
+    name.strip_prefix(IPA_PAYLOAD)
+        .is_some_and(|rest| rest.windows(APP_FOLDER.len()).any(|window| window == APP_FOLDER))
+}
 
 fn scan(
     zip: &mut impl Reader,
@@ -1085,6 +1092,9 @@ fn scan(
         }
         if entry.name() == ANDROID_MANIFEST {
             return Err(Problem::NotRunnable(NotRunnable::AndroidPackage));
+        }
+        if is_ios_bundle_entry(entry.name()) {
+            return Err(Problem::NotRunnable(NotRunnable::IosPackage));
         }
         if entry.is_metadata() || entry.is_directory() {
             continue;
