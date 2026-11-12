@@ -261,3 +261,13 @@ fn reset_hands_back_the_memory_with_its_proof() {
     assert_eq!(fake.status.get(), 0);
     assert_eq!(memory.len(), MEMORY_BYTES);
 }
+
+#[test]
+fn a_partial_checksum_is_completed_over_its_bytes() {
+    let mut frame = [0x00, 0x01, 0xf2, 0x03, 0x12, 0x34, 0x00];
+    complete_checksum(&mut frame, 0, 4);
+    assert_eq!(&frame[4..6], &0xfbc6u16.to_be_bytes());
+    let mut short = [0u8; 3];
+    complete_checksum(&mut short, 0, 4);
+    assert_eq!(short, [0; 3]);
+}

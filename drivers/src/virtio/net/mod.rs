@@ -34,6 +34,31 @@ pub const MEMORY_BYTES: usize = TRANSMIT_BUFFERS_OFFSET + QUEUE_SIZE as usize * 
 pub const DEFAULT_MTU: u16 = 1500;
 
 const RECEIVE_QUEUE: u16 = 0;
+const HEADER_FLAGS: usize = 0;
+const HEADER_CHECKSUM_START: usize = 6;
+const HEADER_CHECKSUM_OFFSET: usize = 8;
+const NEEDS_CHECKSUM: u8 = 1;
+
+/// Completes the partial checksum of `frame` (D533): the one's complement sum of the bytes from
+/// `start` on, the pseudo-header sum already in the field at `start + offset`, stored there
+/// inverted; nothing when the field lies outside the frame.
+pub fn complete_checksum(frame: &mut [u8], start: usize, offset: usize) {
+    let Some(field) = start.checked_add(offset) else {
+        return;
+    };
+    if field + 2 > frame.len() || start >= frame.len() {
+        return;
+    }
+    let mut sum = frame[start..].chunks(2).fold(0u32, |sum, pair| {
+        let word = u32::from(pair[0]) << 8 | u32::from(pair.get(1).copied().unwrap_or(0));
+        sum + word
+    });
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    let folded = !(sum as u16);
+    frame[field..field + 2].copy_from_slice(&folded.to_be_bytes());
+}
 const TRANSMIT_QUEUE: u16 = 1;
 
 const _: () = assert!(super::queue::memory_size(QUEUE_SIZE) <= TRANSMIT_QUEUE_OFFSET);
@@ -44,6 +69,9 @@ const _: () = assert!(QUEUE_SIZE as usize <= u16::BITS as usize);
 
 /// Feature bits of the network device (virtio 1.2, 5.1.3).
 pub mod feature {
+    /// The driver takes frames whose checksum the device left partial or already checked
+    /// (D533).
+    pub const GUEST_CSUM: u64 = 1 << 1;
     /// The device says its MTU.
     pub const MTU: u64 = 1 << 3;
     /// The device says its hardware address.
@@ -96,7 +124,7 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
         if transport.device_type() != device_type::NETWORK {
             return Err((Error::WrongDeviceType, transport, Some(memory)));
         }
-        let wanted = feature::MAC | feature::STATUS | feature::MTU;
+        let wanted = feature::MAC | feature::STATUS | feature::MTU | feature::GUEST_CSUM;
         let accepted = match super::initialize(&transport, wanted, keep_waiting) {
             Ok(accepted) => accepted,
             Err(error) => return Err((error, transport, Some(memory))),
@@ -248,7 +276,19 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
                 .min(BUFFER_BYTES)
                 .saturating_sub(HEADER_BYTES)
                 .min(frame.len());
-            let start = RECEIVE_BUFFERS_OFFSET + usize::from(buffer) * BUFFER_BYTES + HEADER_BYTES;
+            let header_at = RECEIVE_BUFFERS_OFFSET + usize::from(buffer) * BUFFER_BYTES;
+            let start = header_at + HEADER_BYTES;
+            let mut header = [0u8; HEADER_BYTES];
+            // SAFETY: the header lies at the start of the receive buffer `buffer`, which the
+            // device handed back with this used element and does not touch until it is posted
+            // again below; `header` is this function's own memory.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.memory.as_mut_ptr().wrapping_add(header_at),
+                    header.as_mut_ptr(),
+                    HEADER_BYTES,
+                )
+            };
             // SAFETY: the frame lies inside the receive buffer `buffer` of the driver's DMA
             // memory, which the device wrote and handed back with this used element (its index
             // read with acquire ordering) and does not touch until it is posted again below;
@@ -260,6 +300,13 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
                     length,
                 )
             };
+            if header[HEADER_FLAGS] & NEEDS_CHECKSUM != 0 {
+                let field =
+                    |at: usize| usize::from(u16::from_le_bytes([header[at], header[at + 1]]));
+                let (checksum_start, checksum_offset) =
+                    (field(HEADER_CHECKSUM_START), field(HEADER_CHECKSUM_OFFSET));
+                complete_checksum(&mut frame[..length], checksum_start, checksum_offset);
+            }
             let posted = self.post_receive(buffer);
             if self.receive.should_notify() {
                 self.transport.notify(RECEIVE_QUEUE);

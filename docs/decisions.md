@@ -25264,6 +25264,20 @@ the license, by an explicit instruction recorded here.
   IMSICs), MSIs from PCI devices straight into the IMSIC, identities other than the source
   numbers, and interrupts on harts other than the boot hart.
 
+## D533 virtio-net's receive checksum offload (M8, the support matrix's "offloads"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from virtio 1.2, 5.1)
+
+- **Decision.** The virtio network driver now offers `VIRTIO_NET_F_GUEST_CSUM`: the device may
+  hand over frames whose TCP or UDP checksum it left partial (another guest's or the host's
+  traffic that never left the machine) or already checked. A received frame whose header says
+  `NEEDS_CSUM` gets its checksum completed in the driver, the one's complement sum from
+  `csum_start` on (the field holding the pseudo-header sum) stored inverted at `csum_offset`,
+  so the stack's own check passes unchanged; frames marked `DATA_VALID` pass as they are.
+- **Why the transmit side waits.** Offloading transmit checksums only pays when the stack
+  stops computing them, and the TCP code builds a segment, checksum included, before it knows
+  which adapter carries it; the segment builders would need a partial-checksum form and the
+  adapter's offloads passed down. That and TSO are the next step.
+- Several adapters were already one stack per adapter (D157, D240).
+
 ## D525 Intel's Type-C ports, part 1: the port, its PHY and its AUX channel (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's MIT-licensed i915 driver)
 
 - **Decision.** On Tiger Lake and on Alder and Raptor Lake-P (`intel_type_c::flavour` by device
