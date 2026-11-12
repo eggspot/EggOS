@@ -27,6 +27,10 @@
 //! on the view for its `minimumPressDuration` (0.5 s) is released without moving far, and
 //! `UIPanGestureRecognizer` fires as the press moves (began, changed) and when it is released
 //! (ended), its `translationInView:` how far the press has moved since it began.
+//!
+//! Part 5 (D517): `UISwipeGestureRecognizer` fires (ended) when a press released within
+//! half a second has moved at least 50 points, mostly along one axis, in a direction its
+//! `direction` mask allows (right 1, left 2, up 4, down 8; right by default).
 
 use crate::appkit::{
     NSAPPLICATION, NSAPPLICATION_META, NSBUTTON, NSBUTTON_META, NSCOLOR, NSCOLOR_META,
@@ -77,6 +81,15 @@ pub static UILONGPRESSGESTURERECOGNIZER: ClassObject = ClassObject::EMPTY;
 pub static UILONGPRESSGESTURERECOGNIZER_META: ClassObject = ClassObject::EMPTY;
 pub static UIPANGESTURERECOGNIZER: ClassObject = ClassObject::EMPTY;
 pub static UIPANGESTURERECOGNIZER_META: ClassObject = ClassObject::EMPTY;
+pub static UISWIPEGESTURERECOGNIZER: ClassObject = ClassObject::EMPTY;
+pub static UISWIPEGESTURERECOGNIZER_META: ClassObject = ClassObject::EMPTY;
+
+const SWIPE_POINTS: f64 = 50.0;
+const SWIPE_SECONDS: f64 = 0.5;
+const SWIPE_RIGHT: u64 = 1;
+const SWIPE_LEFT: u64 = 2;
+const SWIPE_UP: u64 = 4;
+const SWIPE_DOWN: u64 = 8;
 
 const STATE_BEGAN: u64 = 1;
 const STATE_CHANGED: u64 = 2;
@@ -98,7 +111,7 @@ static SCENE: AtomicUsize = AtomicUsize::new(0);
 
 type Pair = (&'static [u8], &'static ClassObject, &'static ClassObject);
 
-const CLASSES: [Pair; 25] = [
+const CLASSES: [Pair; 26] = [
     (b"UIApplication", &NSAPPLICATION, &NSAPPLICATION_META),
     (b"UIResponder", &NSRESPONDER, &NSRESPONDER_META),
     (b"UIView", &NSVIEW, &NSVIEW_META),
@@ -128,6 +141,7 @@ const CLASSES: [Pair; 25] = [
         &UILONGPRESSGESTURERECOGNIZER_META,
     ),
     (b"UIPanGestureRecognizer", &UIPANGESTURERECOGNIZER, &UIPANGESTURERECOGNIZER_META),
+    (b"UISwipeGestureRecognizer", &UISWIPEGESTURERECOGNIZER, &UISWIPEGESTURERECOGNIZER_META),
 ];
 
 const SELECTORS: [(&[u8], &[u8]); 7] = [
@@ -190,6 +204,7 @@ struct RecognizerFields {
     state: u64,
     enabled: u8,
     start: Point,
+    direction: u64,
 }
 
 fn recognizer(object: Id) -> &'static mut RecognizerFields {
@@ -272,6 +287,7 @@ enum Kind {
     Tap,
     LongPress,
     Pan,
+    Swipe,
 }
 
 fn kind_of(gesture: Id) -> Kind {
@@ -280,6 +296,8 @@ fn kind_of(gesture: Id) -> Kind {
     };
     if is(&UIPANGESTURERECOGNIZER) {
         Kind::Pan
+    } else if is(&UISWIPEGESTURERECOGNIZER) {
+        Kind::Swipe
     } else if is(&UILONGPRESSGESTURERECOGNIZER) {
         Kind::LongPress
     } else {
@@ -343,6 +361,7 @@ fn released(view: Id, location: Point, time: f64) {
     let near = |a: f64, b: f64| (a - b).abs() <= TAP_SLOP;
     let still = near(location.x, start.x) && near(location.y, start.y);
     let held = time - began >= LONG_PRESS_SECONDS;
+    let swiped = swipe_direction(start, location, time - began);
     each_recognizer(view, |gesture, fields, kind| {
         fields.location = location;
         match kind {
@@ -354,10 +373,43 @@ fn released(view: Id, location: Point, time: f64) {
             Kind::Pan if matches!(fields.state, STATE_BEGAN | STATE_CHANGED) => {
                 fire(gesture, fields, STATE_ENDED)
             }
+            Kind::Swipe if swiped & swipe_mask(fields.direction) != 0 => {
+                fire(gesture, fields, STATE_ENDED)
+            }
             _ => {}
         }
         fields.state = STATE_POSSIBLE;
     });
+}
+
+/// The direction a press from `start` to `end` over `seconds` swiped, as a mask bit, or 0.
+fn swipe_direction(start: Point, end: Point, seconds: f64) -> u64 {
+    let (across, along) = (end.x - start.x, end.y - start.y);
+    if seconds > SWIPE_SECONDS {
+        return 0;
+    }
+    match across.abs() >= along.abs() {
+        true if across >= SWIPE_POINTS => SWIPE_RIGHT,
+        true if across <= -SWIPE_POINTS => SWIPE_LEFT,
+        false if along >= SWIPE_POINTS => SWIPE_UP,
+        false if along <= -SWIPE_POINTS => SWIPE_DOWN,
+        _ => 0,
+    }
+}
+
+fn swipe_mask(direction: u64) -> u64 {
+    match direction {
+        0 => SWIPE_RIGHT,
+        mask => mask,
+    }
+}
+
+extern "C" fn swipe_set_direction(this: Id, _: Sel, direction: u64) {
+    recognizer(this).direction = direction;
+}
+
+extern "C" fn swipe_get_direction(this: Id, _: Sel) -> u64 {
+    swipe_mask(recognizer(this).direction)
 }
 
 extern "C" fn pan_translation(this: Id, _: Sel, _view: Id) -> Point {
@@ -456,6 +508,10 @@ pub fn define(runtime: &mut Runtime) -> bool {
     let pan = methods![
         "translationInView:" => pan_translation,
     ];
+    let swipe = methods![
+        "direction" => swipe_get_direction,
+        "setDirection:" => swipe_set_direction,
+    ];
     let define = |runtime: &mut Runtime, definition: Definition<'_>| {
         foundation::define(runtime, &definition)
     };
@@ -517,6 +573,18 @@ pub fn define(runtime: &mut Runtime) -> bool {
             instance_size: core::mem::size_of::<RecognizerFields>(),
             flags: 0,
             instance_methods: &pan,
+            class_methods: &[],
+        },
+    ) && define(
+        runtime,
+        Definition {
+            name: b"UISwipeGestureRecognizer\0",
+            class: &UISWIPEGESTURERECOGNIZER,
+            meta: &UISWIPEGESTURERECOGNIZER_META,
+            superclass: &UIGESTURERECOGNIZER,
+            instance_size: core::mem::size_of::<RecognizerFields>(),
+            flags: 0,
+            instance_methods: &swipe,
             class_methods: &[],
         },
     )
@@ -708,6 +776,15 @@ extern "C" fn application_main(_: i32, _: usize, _: Id, delegate_class: Id) -> i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quick_long_move_along_one_axis_is_a_swipe_that_way() {
+        let start = Point::new(100.0, 100.0);
+        assert_eq!(swipe_direction(start, Point::new(180.0, 110.0), 0.2), SWIPE_RIGHT);
+        assert_eq!(swipe_direction(start, Point::new(100.0, 30.0), 0.2), SWIPE_DOWN);
+        assert_eq!(swipe_direction(start, Point::new(180.0, 110.0), 0.9), 0);
+        assert_eq!(swipe_direction(start, Point::new(120.0, 110.0), 0.2), 0);
+    }
 
     #[test]
     fn swift_classes_are_found_by_their_mangled_names() {

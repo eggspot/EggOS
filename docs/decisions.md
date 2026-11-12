@@ -25017,3 +25017,14 @@ the license, by an explicit instruction recorded here.
   `onBindViewHolder` runs.
 - **Not yet.** View types, row views shown as themselves, recycling (each refresh creates new
   holders), item decorations and animations, and grids laid out as grids.
+
+## D517 iOS apps, part 5: swipes (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `UISwipeGestureRecognizer` joins the layer's recognizers (D505, D515): a press
+  released within half a second that moved at least 50 points, mostly along one axis, is a
+  swipe in that direction (up and down as seen, the window's y growing upwards), and each
+  attached swipe recognizer whose `direction` mask holds it (right when unset, as UIKit's
+  default) fires ended.
+- **Not possible yet.** Pinches and rotations need two touches at once, which EggOS's input
+  does not deliver to programs (one pointer); they wait for multi-touch input (M12's touch
+  path).
