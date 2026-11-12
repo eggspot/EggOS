@@ -403,9 +403,12 @@ fn descriptor_flags(value: u64) -> u64 {
     out
 }
 
+const SIGPROCMASK_HOW: [(u64, u64); 3] = [(1, 0), (2, 1), (4, 2)];
+
 /// Rewrites call `number`'s `arguments` from SPARC's values into the generic ones the kernel
 /// takes; whether it changed any. `rt_sigaction`'s restorer (its fourth argument) gives way to
-/// the signal-set size (its fifth).
+/// the signal-set size (its fifth), and `rt_sigprocmask`'s `how` is SPARC's (`SIG_BLOCK` 1,
+/// `SIG_UNBLOCK` 2, `SIG_SETMASK` 4).
 pub fn arguments_in(number: u64, arguments: &mut [u64; 6]) -> bool {
     let before = *arguments;
     match number {
@@ -432,6 +435,12 @@ pub fn arguments_in(number: u64, arguments: &mut [u64; 6]) -> bool {
             arguments[2] = value_to_generic(arguments[2], SOCKET_OPTIONS);
         }
         number::RT_SIGACTION => arguments[3] = arguments[4],
+        number::RT_SIGPROCMASK => {
+            arguments[0] = SIGPROCMASK_HOW
+                .iter()
+                .find(|&&(sparc, _)| sparc == arguments[0] & 0xffff_ffff)
+                .map_or(u64::MAX, |&(_, generic)| generic);
+        }
         _ => {}
     }
     *arguments != before

@@ -189,6 +189,41 @@ mips64_enter_user:
     // The user-mode test programs (D47, `TestProgram`): position-independent, no data. Copied to
     // a user page, never run where they are linked. The Linux ones use n64's numbers, whose
     // errors set `a3` and leave the error number positive in `v0`.
+    .macro SYS number
+    li          $2, \number
+    syscall
+    .endm
+    .macro OK
+    bnez        $7, 9f
+    bnez        $2, 9f
+    .endm
+    .macro FAILED_WITH errno
+    beqz        $7, 9f
+    li          $12, \errno
+    bne         $2, $12, 9f
+    .endm
+    .macro EXPECT reg, value
+    dli         $13, \value
+    bne         \reg, $13, 9f
+    .endm
+    .macro EXPECT_BACK reg, value
+    dli         $13, \value
+    bne         \reg, $13, 9b
+    .endm
+    .macro READ_TP reg
+    .set        push
+    .set        mips64r2
+    rdhwr       \reg, $29
+    .set        pop
+    .endm
+    .macro EXIT_OK_OR_FAIL
+    li          $4, 0
+    SYS         5205
+9:  li          $4, 1
+    SYS         5205
+8:  b           8b
+    .endm
+
     .pushsection .rodata.user_test, "a"
     .set        hardfloat
     .balign 4
@@ -267,10 +302,85 @@ mips64_user_test_linux_hello:
     .balign 4
     .global mips64_user_test_linux_start
 mips64_user_test_linux_start:
+    andi        $12, $29, 15
+    bnez        $12, 9f
+    SYS         5038
+    move        $16, $2
+    SYS         5178
+    bne         $2, $16, 9f
+    daddiu      $4, $29, -16
+    li          $5, 16
+    li          $6, 0
+    SYS         5313
+    bnez        $7, 9f
+    EXPECT      $2, 16
+    ld          $12, -16($29)
+    ld          $13, -8($29)
+    or          $12, $12, $13
+    beqz        $12, 9f
+    li          $4, 0
+    li          $5, 3
+    li          $6, 0
+    daddiu      $7, $29, -32
+    SYS         5297
+    OK
+    ld          $12, -32($29)
+    EXPECT      $12, 0x800000
+    ld          $12, -24($29)
+    EXPECT      $12, -1
+    sd          $zero, -64($29)
+    li          $12, 1
+    sd          $12, -56($29)
+    sd          $zero, -48($29)
+    sd          $zero, -40($29)
+    li          $4, 13
+    daddiu      $5, $29, -64
+    li          $6, 0
+    li          $7, 16
+    SYS         5013
+    OK
+    li          $4, 13
+    li          $5, 0
+    daddiu      $6, $29, -112
+    li          $7, 16
+    SYS         5013
+    OK
+    ld          $12, -104($29)
+    EXPECT      $12, 1
+    li          $4, 0
+    daddiu      $5, $29, -136
+    SYS         5129
+    OK
+    lw          $12, -120($29)
+    EXPECT      $12, 2
+    ld          $16, 0($29)
+    daddiu      $17, $29, 8
+    li          $18, 2
+6:  ld          $5, 0($17)
+    daddiu      $17, $17, 8
+    beqz        $5, 8f
+    li          $6, 0
+7:  daddu       $12, $5, $6
+    lbu         $12, 0($12)
+    beqz        $12, 5f
+    daddiu      $6, $6, 1
+    b           7b
+5:  daddiu      $29, $29, -16
+    sd          $5, 0($29)
+    sd          $6, 8($29)
     li          $4, 1
-    li          $2, {linux_exit_group}
-    syscall
-6:  b           6b
+    move        $5, $29
+    li          $6, 1
+    SYS         5019
+    daddiu      $29, $29, 16
+    b           6b
+8:  daddiu      $18, $18, -1
+    bnez        $18, 6b
+    move        $4, $16
+    SYS         5205
+9:  li          $4, 255
+    SYS         5205
+4:  b           4b
     .global mips64_user_test_linux_start_end
 mips64_user_test_linux_start_end:
     .global mips64_user_test_linux_unknown_syscalls
@@ -286,12 +396,540 @@ mips64_user_test_stack_growth:
 8:  sd          $12, 0($12)
     dsubu       $12, $12, $13
     b           8b
-    .global mips64_user_test_linux_pending
-mips64_user_test_linux_pending:
+
+    .global mips64_user_test_linux_thread_pointer
+mips64_user_test_linux_thread_pointer:
+    READ_TP     $16
+    SYS         5038
+    dsll        $17, $2, 12
+    move        $4, $17
+    SYS         5242
+    or          $16, $16, $7
+    li          $18, {thread_pointer_rounds}
+7:  SYS         5023
+    or          $16, $16, $7
+    or          $16, $16, $2
+    READ_TP     $12
+    xor         $12, $12, $17
+    or          $16, $16, $12
+    daddiu      $18, $18, -1
+    bnez        $18, 7b
+    sltu        $4, $zero, $16
+    SYS         5205
+8:  b           8b
+
+    .global mips64_user_test_linux_poll
+mips64_user_test_linux_poll:
+    daddiu      $29, $29, -64
+    sd          $zero, 0($29)
+    li          $12, 1
+    sw          $12, 8($29)
+    li          $12, 4
+    sh          $12, 12($29)
+    sh          $zero, 14($29)
+    li          $12, 2
+    sw          $12, 16($29)
+    sw          $zero, 20($29)
+    sd          $zero, 32($29)
+    sd          $zero, 40($29)
+    move        $4, $29
+    li          $5, 3
+    daddiu      $6, $29, 32
+    li          $7, 0
+    li          $8, 0
+    SYS         5261
+    bnez        $7, 9f
+    EXPECT      $2, 1
+    lhu         $12, 6($29)
+    bnez        $12, 9f
+    lhu         $12, 14($29)
+    EXPECT      $12, 4
+    lhu         $12, 22($29)
+    bnez        $12, 9f
     li          $4, 1
-    li          $2, {linux_exit_group}
-    syscall
-9:  b           9b
+    dli         $5, 0x40087468
+    daddiu      $6, $29, 48
+    SYS         5015
+    OK
+    sd          $zero, 32($29)
+    dli         $12, {poll_wait}
+    sd          $12, 40($29)
+    li          $4, 0
+    li          $5, 0
+    daddiu      $6, $29, 32
+    li          $7, 0
+    li          $8, 0
+    SYS         5261
+    OK
+    ld          $12, 32($29)
+    ld          $13, 40($29)
+    or          $12, $12, $13
+    bnez        $12, 9f
+    EXIT_OK_OR_FAIL
+
+    .global mips64_user_test_linux_signals
+mips64_user_test_linux_signals:
+    daddiu      $29, $29, -64
+    li          $4, 0
+    li          $5, 18
+    SYS         5060
+    OK
+    li          $12, 0x8000
+    sd          $12, 0($29)
+    sd          $zero, 8($29)
+    li          $4, 1
+    move        $5, $29
+    li          $6, 0
+    li          $7, 16
+    SYS         5014
+    OK
+    SYS         5038
+    move        $4, $2
+    move        $5, $2
+    li          $6, 16
+    SYS         5225
+    OK
+    daddiu      $4, $29, 16
+    li          $5, 16
+    SYS         5125
+    OK
+    ld          $12, 16($29)
+    EXPECT      $12, 0x8000
+    li          $4, 2
+    move        $5, $29
+    li          $6, 0
+    li          $7, 16
+    SYS         5014
+9:  li          $4, 1
+    SYS         5205
+8:  b           8b
+
+    .global mips64_user_test_linux_signal_handler
+mips64_user_test_linux_signal_handler:
+    daddiu      $29, $29, -128
+    daddiu      $12, $29, -0x2800
+    sd          $12, 0($29)
+    li          $12, 0x2000
+    sd          $12, 8($29)
+    sd          $zero, 16($29)
+    move        $4, $29
+    li          $5, 0
+    SYS         5129
+    OK
+    dli         $12, 0x08000008
+    sw          $12, 32($29)
+    sw          $zero, 36($29)
+    bal         1f
+1:  daddiu      $12, $31, 5f - 1b
+    sd          $12, 40($29)
+    sd          $zero, 48($29)
+    sd          $zero, 56($29)
+    li          $4, 16
+    daddiu      $5, $29, 32
+    li          $6, 0
+    li          $7, 16
+    SYS         5013
+    OK
+    SYS         5038
+    move        $4, $2
+    move        $5, $2
+    li          $6, 16
+    li          $17, 0x5a5
+    li          $16, 1
+    dli         $12, {signal_fp_kept}
+    dmtc1       $12, $f24
+    li          $12, {signal_rounding}
+    ctc1        $12, $31
+    SYS         5225
+    OK
+    EXPECT      $17, 0x5a5
+    EXPECT      $16, 2
+    dmfc1       $12, $f24
+    EXPECT      $12, {signal_fp_kept}
+    dmfc1       $12, $f25
+    EXPECT      $12, {signal_fp_changed}
+    cfc1        $12, $31
+    andi        $12, $12, 3
+    EXPECT      $12, {signal_rounding}
+    li          $4, 1
+    li          $5, 0
+    daddiu      $6, $29, 64
+    li          $7, 16
+    SYS         5014
+    OK
+    ld          $12, 64($29)
+    bnez        $12, 9f
+    EXIT_OK_OR_FAIL
+5:  li          $12, 16
+    bne         $4, $12, 7f
+    lw          $13, 0($5)
+    bne         $13, $12, 7f
+    lw          $13, 4($5)
+    li          $12, -6
+    bne         $13, $12, 7f
+    ld          $12, {uc_stack_sp}($6)
+    sltu        $13, $29, $12
+    bnez        $13, 7f
+    ld          $13, {uc_stack_size}($6)
+    daddu       $12, $12, $13
+    sltu        $13, $29, $12
+    beqz        $13, 7f
+    dli         $12, {signal_fp_kept}
+    dmfc1       $13, $f24
+    bne         $13, $12, 7f
+    ld          $13, {saved_f24}($6)
+    bne         $13, $12, 7f
+    lw          $13, {saved_fcsr}($6)
+    andi        $13, $13, 3
+    li          $12, {signal_rounding}
+    bne         $13, $12, 7f
+    dli         $12, {signal_fp_changed}
+    sd          $12, {saved_f25}($6)
+    dmtc1       $zero, $f24
+    li          $12, 2
+    sd          $12, {saved_r16}($6)
+7:  li          $17, 0
+    jr          $31
+
+    .global mips64_user_test_linux_fault_handler
+mips64_user_test_linux_fault_handler:
+    daddiu      $29, $29, -64
+    li          $12, 8
+    sw          $12, 0($29)
+    sw          $zero, 4($29)
+    bal         1f
+1:  daddiu      $12, $31, 5f - 1b
+    sd          $12, 8($29)
+    sd          $zero, 16($29)
+    sd          $zero, 24($29)
+    li          $4, 11
+    move        $5, $29
+    li          $6, 0
+    li          $7, 16
+    SYS         5013
+    OK
+    li          $4, 0
+    li          $5, 4096
+    li          $6, 0
+    li          $7, 0x802
+    li          $8, -1
+    li          $9, 0
+    SYS         5009
+    bnez        $7, 9f
+    move        $20, $2
+    li          $16, 0
+    dli         $17, {fault_address}
+    li          $18, 1
+    bal         2f
+2:  daddiu      $19, $31, 3f - 2b
+    ld          $12, 0($17)
+    b           9f
+3:  move        $17, $20
+    li          $18, 2
+    bal         4f
+4:  daddiu      $19, $31, 6f - 4b
+    ld          $12, 0($17)
+    b           9f
+6:  EXPECT      $16, 2
+    EXIT_OK_OR_FAIL
+5:  li          $12, 11
+    bne         $4, $12, 7f
+    lw          $13, 0($5)
+    bne         $13, $12, 7f
+    lw          $13, 4($5)
+    ld          $12, {saved_r18}($6)
+    bne         $13, $12, 7f
+    ld          $13, 16($5)
+    ld          $12, {saved_r17}($6)
+    bne         $13, $12, 7f
+    ld          $12, {saved_r16}($6)
+    daddiu      $12, $12, 1
+    sd          $12, {saved_r16}($6)
+7:  ld          $12, {saved_r19}($6)
+    sd          $12, {saved_pc}($6)
+    jr          $31
+
+    .global mips64_user_test_linux_signal_queue
+mips64_user_test_linux_signal_queue:
+    daddiu      $29, $29, -320
+    move        $22, $29
+    dli         $12, 1 << ({queued_signal} - 1)
+    sd          $12, 272($22)
+    sd          $zero, 280($22)
+    sd          $zero, 256($22)
+    sd          $zero, 264($22)
+    li          $4, 1
+    daddiu      $5, $22, 272
+    li          $6, 0
+    li          $7, 16
+    SYS         5014
+    OK
+    SYS         5038
+    move        $16, $2
+    li          $12, {queued_signal}
+    sw          $12, 128($22)
+    li          $12, -1
+    sw          $12, 132($22)
+    sw          $zero, 136($22)
+    sw          $16, 144($22)
+    sw          $zero, 148($22)
+    dli         $12, {first_value}
+    sd          $12, 152($22)
+    move        $4, $16
+    li          $5, {queued_signal}
+    daddiu      $6, $22, 128
+    SYS         5127
+    OK
+    dli         $12, {second_value}
+    sd          $12, 152($22)
+    move        $4, $16
+    li          $5, {queued_signal}
+    daddiu      $6, $22, 128
+    SYS         5127
+    OK
+    move        $4, $16
+    li          $5, {queued_signal}
+    SYS         5060
+    OK
+    li          $17, -1
+    dli         $18, {first_value}
+    bal         6f
+    dli         $18, {second_value}
+    bal         6f
+    li          $17, 0
+    li          $18, 0
+    bal         6f
+    daddiu      $4, $22, 272
+    move        $5, $22
+    daddiu      $6, $22, 256
+    li          $7, 16
+    SYS         5126
+    FAILED_WITH 11
+    EXIT_OK_OR_FAIL
+6:  move        $23, $31
+    daddiu      $4, $22, 272
+    move        $5, $22
+    daddiu      $6, $22, 256
+    li          $7, 16
+    SYS         5126
+    bnez        $7, 9b
+    EXPECT_BACK $2, {queued_signal}
+    lw          $12, 0($22)
+    EXPECT_BACK $12, {queued_signal}
+    lw          $12, 4($22)
+    bne         $12, $17, 9b
+    lw          $12, 16($22)
+    bne         $12, $16, 9b
+    ld          $12, 24($22)
+    bne         $12, $18, 9b
+    jr          $23
+
+    .global mips64_user_test_linux_signal_suspend
+mips64_user_test_linux_signal_suspend:
+    daddiu      $29, $29, -96
+    li          $12, 8
+    sw          $12, 0($29)
+    sw          $zero, 4($29)
+    bal         1f
+1:  daddiu      $12, $31, 5f - 1b
+    sd          $12, 8($29)
+    sd          $zero, 16($29)
+    sd          $zero, 24($29)
+    li          $4, 16
+    move        $5, $29
+    li          $6, 0
+    li          $7, 16
+    SYS         5013
+    OK
+    li          $12, 0x8000
+    sd          $12, 32($29)
+    sd          $zero, 40($29)
+    sd          $zero, 48($29)
+    sd          $zero, 56($29)
+    li          $4, 1
+    daddiu      $5, $29, 32
+    li          $6, 0
+    li          $7, 16
+    SYS         5014
+    OK
+    SYS         5038
+    move        $4, $2
+    move        $5, $2
+    li          $6, 16
+    SYS         5225
+    OK
+    li          $16, 1
+    daddiu      $4, $29, 48
+    li          $5, 16
+    SYS         5128
+    FAILED_WITH 4
+    EXPECT      $16, 2
+    li          $4, 1
+    li          $5, 0
+    daddiu      $6, $29, 64
+    li          $7, 16
+    SYS         5014
+    OK
+    ld          $12, 64($29)
+    EXPECT      $12, 0x8000
+    EXIT_OK_OR_FAIL
+5:  li          $12, 16
+    bne         $4, $12, 7f
+    ld          $12, {uc_sigmask}($6)
+    li          $13, 0x8000
+    bne         $12, $13, 7f
+    li          $12, 2
+    sd          $12, {saved_r16}($6)
+7:  jr          $31
+
+    .global mips64_user_test_linux_clock
+mips64_user_test_linux_clock:
+    daddiu      $29, $29, -64
+    li          $4, 1
+    move        $5, $29
+    SYS         5222
+    OK
+    sd          $zero, 32($29)
+    dli         $12, {clock_wait}
+    sd          $12, 40($29)
+    daddiu      $4, $29, 32
+    li          $5, 0
+    SYS         5034
+    OK
+    li          $4, 1
+    daddiu      $5, $29, 16
+    SYS         5222
+    OK
+    ld          $12, 0($29)
+    ld          $13, 16($29)
+    dsubu       $13, $13, $12
+    dli         $12, 1000000000
+    dmultu      $13, $12
+    mflo        $13
+    ld          $12, 24($29)
+    daddu       $13, $13, $12
+    ld          $12, 8($29)
+    dsubu       $13, $13, $12
+    ld          $12, 40($29)
+    sltu        $12, $13, $12
+    bnez        $12, 9f
+    li          $4, 2
+    daddiu      $5, $29, 16
+    SYS         5222
+    OK
+    EXIT_OK_OR_FAIL
+
+    .global mips64_user_test_linux_stat
+mips64_user_test_linux_stat:
+    daddiu      $29, $29, -272
+    sb          $zero, 256($29)
+    li          $4, 1
+    move        $5, $29
+    SYS         5005
+    OK
+    lwu         $12, 24($29)
+    andi        $12, $12, 0xf000
+    EXPECT      $12, 0x2000
+    lwu         $12, 40($29)
+    EXPECT      $12, 0x501
+    sw          $zero, 40($29)
+    li          $4, 1
+    daddiu      $5, $29, 256
+    move        $6, $29
+    li          $7, 0x1000
+    SYS         5252
+    OK
+    lwu         $12, 40($29)
+    EXPECT      $12, 0x501
+    sh          $zero, 28($29)
+    sw          $zero, 128($29)
+    li          $4, 1
+    daddiu      $5, $29, 256
+    li          $6, 0x1000
+    li          $7, 0x7ff
+    move        $8, $29
+    SYS         5326
+    OK
+    lhu         $12, 28($29)
+    andi        $12, $12, 0xf000
+    EXPECT      $12, 0x2000
+    lwu         $12, 128($29)
+    EXPECT      $12, 5
+    li          $4, 1
+    li          $5, 0
+    li          $6, 1
+    SYS         5008
+    FAILED_WITH 29
+    li          $4, 3
+    move        $5, $29
+    SYS         5005
+    FAILED_WITH 9
+    EXIT_OK_OR_FAIL
+
+    .global mips64_user_test_linux_credentials
+mips64_user_test_linux_credentials:
+    SYS         5105
+    OK
+    li          $4, 1000
+    SYS         5103
+    OK
+    SYS         5100
+    bnez        $7, 9f
+    EXPECT      $2, 1000
+    li          $4, 0
+    SYS         5103
+    FAILED_WITH 1
+    EXIT_OK_OR_FAIL
+
+    .global mips64_user_test_linux_move_and_discard
+mips64_user_test_linux_move_and_discard:
+    li          $4, 0
+    li          $5, 4096
+    li          $6, 3
+    li          $7, 0x802
+    li          $8, -1
+    li          $9, 0
+    SYS         5009
+    bnez        $7, 9f
+    move        $16, $2
+    move        $4, $16
+    li          $5, 4096
+    li          $6, 23
+    SYS         5027
+    OK
+    dli         $18, 0x12345678
+    sd          $18, 0($16)
+    li          $12, 0x100000
+    dsubu       $17, $16, $12
+    move        $4, $16
+    li          $5, 4096
+    li          $6, 4096
+    li          $7, 3
+    move        $8, $17
+    SYS         5024
+    bnez        $7, 9f
+    bne         $2, $17, 9f
+    ld          $12, 0($17)
+    bne         $12, $18, 9f
+    move        $4, $16
+    li          $5, 4096
+    li          $6, 3
+    li          $7, 0x812
+    li          $8, -1
+    li          $9, 0
+    SYS         5009
+    bnez        $7, 9f
+    bne         $2, $16, 9f
+    ld          $12, 0($16)
+    bnez        $12, 9f
+    move        $4, $17
+    li          $5, 4096
+    li          $6, 4
+    SYS         5027
+    OK
+    ld          $12, 0($17)
+    bnez        $12, 9f
+    EXIT_OK_OR_FAIL
     .global mips64_user_test_fp_registers
 mips64_user_test_fp_registers:
     li          $2, {syscall_first}
@@ -348,7 +986,38 @@ mips64_user_test_end:
     efault = const 14,
     enosys = const 89,
     reserved_instruction = const 5,
+    thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
+    poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
+    clock_wait = const TestProgram::LINUX_CLOCK_WAIT_NS,
+    signal_fp_kept = const TestProgram::LINUX_SIGNAL_FP_KEPT,
+    signal_fp_changed = const TestProgram::LINUX_SIGNAL_FP_CHANGED,
+    signal_rounding = const 2,
+    uc_stack_sp = const UC_STACK,
+    uc_stack_size = const UC_STACK + 8,
+    uc_sigmask = const UC_SIGMASK,
+    saved_f24 = const UC_FP_REGS + 24 * 8,
+    saved_f25 = const UC_FP_REGS + 25 * 8,
+    saved_fcsr = const UC_FCSR,
+    saved_r16 = const UC_REGS + 16 * 8,
+    saved_r17 = const UC_REGS + 17 * 8,
+    saved_r18 = const UC_REGS + 18 * 8,
+    saved_r19 = const UC_REGS + 19 * 8,
+    saved_pc = const UC_PC,
+    fault_address = const TestProgram::LINUX_FAULT_ADDRESS,
+    queued_signal = const TestProgram::LINUX_QUEUED_SIGNAL,
+    first_value = const TestProgram::LINUX_QUEUED_VALUES[0],
+    second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
 );
+
+/// Where n64's `ucontext` keeps what the test programs' handlers read and change: `uc_stack`
+/// after `uc_flags` and `uc_link`, then `uc_mcontext`'s `sc_regs[32]`, `sc_fpregs[32]`, the
+/// `hi` and `lo` words, `sc_pc` and `sc_fpc_csr`, then `uc_sigmask`.
+const UC_STACK: usize = 16;
+const UC_REGS: usize = 40;
+const UC_FP_REGS: usize = UC_REGS + 32 * 8;
+const UC_PC: usize = UC_REGS + 576;
+const UC_FCSR: usize = UC_REGS + 584;
+const UC_SIGMASK: usize = UC_REGS + 600;
 
 /// The kernel's root table, as a cached-window address; 0 until the kernel's tables are active.
 static KERNEL_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -574,7 +1243,17 @@ unsafe extern "C" {
     static mips64_user_test_linux_start_end: u8;
     static mips64_user_test_linux_unknown_syscalls: u8;
     static mips64_user_test_stack_growth: u8;
-    static mips64_user_test_linux_pending: u8;
+    static mips64_user_test_linux_thread_pointer: u8;
+    static mips64_user_test_linux_poll: u8;
+    static mips64_user_test_linux_signals: u8;
+    static mips64_user_test_linux_signal_handler: u8;
+    static mips64_user_test_linux_fault_handler: u8;
+    static mips64_user_test_linux_signal_queue: u8;
+    static mips64_user_test_linux_signal_suspend: u8;
+    static mips64_user_test_linux_clock: u8;
+    static mips64_user_test_linux_stat: u8;
+    static mips64_user_test_linux_credentials: u8;
+    static mips64_user_test_linux_move_and_discard: u8;
     static mips64_user_test_end: u8;
 }
 
@@ -612,8 +1291,8 @@ impl crate::user::mips64::Registers {
     }
 }
 
-/// [`crate::Platform::user_test_program`]. The Linux programs beyond `linux_hello` wait for
-/// MIPS's Linux ABI (D313 part 2): each exits with 1 until then.
+/// [`crate::Platform::user_test_program`]: every program, the Linux ones in n64's numbers and
+/// values (D416).
 pub(super) fn user_test_program() -> TestProgram {
     let start = (&raw const mips64_user_test_start) as usize;
     let end = (&raw const mips64_user_test_end) as usize;
@@ -621,7 +1300,6 @@ pub(super) fn user_test_program() -> TestProgram {
     // SAFETY: the symbols bound the programs' bytes in `.rodata.user_test`, part of the kernel
     // image, read-only and never written, for as long as the kernel runs.
     let code = unsafe { core::slice::from_raw_parts(start as *const u8, end - start) };
-    let pending = at(&raw const mips64_user_test_linux_pending);
     TestProgram {
         code,
         checks: at(&raw const mips64_user_test_checks),
@@ -635,17 +1313,17 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_start_end: at(&raw const mips64_user_test_linux_start_end),
         linux_unknown_syscalls: at(&raw const mips64_user_test_linux_unknown_syscalls),
         stack_growth: at(&raw const mips64_user_test_stack_growth),
-        linux_thread_pointer: pending,
-        linux_poll: pending,
-        linux_signals: pending,
-        linux_signal_handler: pending,
-        linux_fault_handler: pending,
-        linux_signal_queue: pending,
-        linux_signal_suspend: pending,
-        linux_clock: pending,
-        linux_stat: pending,
-        linux_credentials: pending,
-        linux_move_and_discard: pending,
+        linux_thread_pointer: at(&raw const mips64_user_test_linux_thread_pointer),
+        linux_poll: at(&raw const mips64_user_test_linux_poll),
+        linux_signals: at(&raw const mips64_user_test_linux_signals),
+        linux_signal_handler: at(&raw const mips64_user_test_linux_signal_handler),
+        linux_fault_handler: at(&raw const mips64_user_test_linux_fault_handler),
+        linux_signal_queue: at(&raw const mips64_user_test_linux_signal_queue),
+        linux_signal_suspend: at(&raw const mips64_user_test_linux_signal_suspend),
+        linux_clock: at(&raw const mips64_user_test_linux_clock),
+        linux_stat: at(&raw const mips64_user_test_linux_stat),
+        linux_credentials: at(&raw const mips64_user_test_linux_credentials),
+        linux_move_and_discard: at(&raw const mips64_user_test_linux_move_and_discard),
     }
 }
 

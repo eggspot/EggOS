@@ -393,9 +393,18 @@ const SOCKET_OPTIONS: FlagPairs = &[
 ];
 
 const FCNTL_COMMANDS: FlagPairs = &[(14, 5), (24, 8), (23, 9)];
+const SIGPROCMASK_HOW: [(u64, u64); 3] = [(1, 0), (2, 1), (3, 2)];
+const UNKNOWN_HOW: u64 = u64::MAX;
 const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
 
+
+fn sigprocmask_how(how: u64) -> u64 {
+    SIGPROCMASK_HOW
+        .iter()
+        .find(|&&(mips, _)| mips == how & 0xffff_ffff)
+        .map_or(UNKNOWN_HOW, |&(_, generic)| generic)
+}
 
 fn nonblock(value: u64) -> u64 {
     match value & NONBLOCK_MIPS {
@@ -412,7 +421,8 @@ fn socket_type(value: u64) -> u64 {
 
 /// Rewrites call `number`'s `arguments` from MIPS's values into the generic ones the kernel
 /// takes: `open` flags, `mmap` flags, `fcntl`'s commands and `F_SETFL`'s flags, the
-/// `O_NONBLOCK` of the calls that take one, socket types and `SOL_SOCKET` options. Whether it
+/// `O_NONBLOCK` of the calls that take one, socket types, `SOL_SOCKET` options and
+/// `rt_sigprocmask`'s `how` (`SIG_BLOCK` is 1, `SIG_UNBLOCK` 2, `SIG_SETMASK` 3). Whether it
 /// changed any.
 pub fn arguments_in(number: u64, arguments: &mut [u64; 6]) -> bool {
     let before = *arguments;
@@ -435,6 +445,7 @@ pub fn arguments_in(number: u64, arguments: &mut [u64; 6]) -> bool {
         number::SIGNALFD4 => arguments[3] = nonblock(arguments[3]),
         number::SOCKET | number::SOCKETPAIR => arguments[1] = socket_type(arguments[1]),
         number::ACCEPT4 => arguments[3] = nonblock(arguments[3]),
+        number::RT_SIGPROCMASK => arguments[0] = sigprocmask_how(arguments[0]),
         number::SETSOCKOPT | number::GETSOCKOPT if arguments[1] == SOL_SOCKET_MIPS => {
             arguments[1] = SOL_SOCKET_GENERIC;
             arguments[2] = value_to_generic(arguments[2], SOCKET_OPTIONS);

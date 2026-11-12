@@ -23330,3 +23330,27 @@ the license, by an explicit instruction recorded here.
   back), sync objects and real fences, several rings, the sysfs nodes Mesa's device enumeration
   reads (`/sys/dev/char/226:128`), and the same render node for the Windows, macOS and Android
   layers' graphics APIs (their D3D, Metal and GLES front ends over the same contexts, D17).
+
+## D416 MIPS64's Linux test programs past `linux_hello`, and `rt_sigprocmask`'s `how` on MIPS and SPARC (M9; D315's "Moved"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** The HAL's MIPS64 `TestProgram` now has every Linux program the other ports run
+  (`linux_start`, the thread pointer, `poll`, signals, the handler on an alternate stack with
+  its FP state, the fault handler, queued signals, `rt_sigsuspend`, the clocks, `stat`,
+  credentials, moving and discarding memory), hand-written in n64's numbers and values from
+  PowerPC's: `a3` flags an error with the number positive in `v0`; `struct sigaction` starts
+  with its 32-bit flags; `stack_t` is pointer, size, flags; `sigset_t` is 16 bytes and
+  `SIGUSR1` 16, `SIGCHLD` 18; `siginfo_t` has `si_code` before `si_errno`; `MAP_ANONYMOUS`
+  is `0x800` and `MAP_FIXED` `0x10`; `struct stat` has a 32-bit `st_rdev` at 40; the thread
+  pointer is `UserLocal`, set by `set_thread_area` and read with `rdhwr $29`. The handlers
+  read and change the `ucontext` the kernel builds (D315): `sc_regs` 40 bytes in, `sc_fpregs`
+  after them, then `sc_pc` and `sc_fpc_csr`, and `uc_sigmask` at 640. n64 has no red zone, so
+  every program but `linux_start` (which no signal reaches) moves its stack pointer below the
+  data it keeps before a handler may run. `$f24` and `$f25`, callee-saved in n64, carry the
+  FP check.
+- **Found on the way.** MIPS numbers `rt_sigprocmask`'s `how` from 1 (`SIG_BLOCK` 1,
+  `SIG_UNBLOCK` 2, `SIG_SETMASK` 3) and SPARC too (`SIG_SETMASK` 4); the kernel took the
+  generic 0 to 2 from both. `arguments_in` now translates it on both, and an unknown value
+  stays `EINVAL`.
+- **Known gaps (to check at build time).** The delay slots are left to the assembler's
+  `reorder` mode, as the existing programs do; LLVM's acceptance of `dli` and of `rdhwr`
+  under `.set mips64r2` inside the programs' section.
