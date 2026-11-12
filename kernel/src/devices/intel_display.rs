@@ -362,6 +362,9 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
     let mut hdmi_screen = None;
     let mut mirrored = false;
     for port in 0..DIGITAL_PORTS {
+        if scanout.engine.is_type_c(port) {
+            continue;
+        }
         let mut deadline = probe.deadline(SINK_ANSWER_MS);
         let (link, edid) = scanout.engine.probe_sink(port, &mut || deadline.keep_waiting());
         let (edid, hdmi) = match (link, edid) {
@@ -402,6 +405,51 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
                     format_args!(" preferred {}x{}@{}", mode.width, mode.height, mode.refresh_mhz() / 1000),
                 );
             }
+        }
+        if let Some(link) = link {
+            let _ = core::fmt::Write::write_fmt(
+                &mut scanout.sinks,
+                format_args!(" dp {}.{} x{}", link.rate_centigbps / 100, link.rate_centigbps % 100, link.lanes),
+            );
+        }
+        scanout.sinks.push('\n');
+    }
+    for index in 0..scanout.engine.type_c_ports() {
+        let mut deadline = probe.deadline(SINK_ANSWER_MS);
+        let connected = scanout.engine.connect_type_c(index, &mut || deadline.keep_waiting());
+        let Ok(connected) = connected else {
+            continue;
+        };
+        let port_name = (b'A' + connected.port as u8) as char;
+        let _ = core::fmt::Write::write_fmt(
+            &mut scanout.sinks,
+            format_args!("port {port_name} type-c"),
+        );
+        match connected.mode {
+            eggos_drivers::gpu::intel_type_c::Mode::Thunderbolt => {
+                scanout.sinks.push_str(" thunderbolt\n");
+                continue;
+            }
+            eggos_drivers::gpu::intel_type_c::Mode::DisplayPortAlternate => {
+                let pin = match connected.pin_assignment {
+                    0 => '-',
+                    pin => (b'A' + pin - 1) as char,
+                };
+                let _ = core::fmt::Write::write_fmt(
+                    &mut scanout.sinks,
+                    format_args!(" dp-alt x{} pin {pin}", connected.lanes),
+                );
+            }
+        }
+        let mut deadline = probe.deadline(SINK_ANSWER_MS);
+        let (link, edid) =
+            scanout.engine.probe_sink(connected.port, &mut || deadline.keep_waiting());
+        if let Some(edid) = edid {
+            let maker = core::str::from_utf8(&edid.maker).unwrap_or("?");
+            let _ = core::fmt::Write::write_fmt(
+                &mut scanout.sinks,
+                format_args!(" {maker} {}", edid.name()),
+            );
         }
         if let Some(link) = link {
             let _ = core::fmt::Write::write_fmt(

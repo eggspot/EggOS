@@ -284,6 +284,7 @@ pub struct DisplayEngine<R: RegisterIo> {
     pipe: usize,
     mirrors: u8,
     generation: Generation,
+    type_c: Option<super::intel_type_c::Flavour>,
 }
 
 impl<R: RegisterIo> DisplayEngine<R> {
@@ -296,6 +297,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
             pipe: 0,
             mirrors: 0,
             generation: Generation::of(device),
+            type_c: super::intel_type_c::flavour(device),
         };
         let lit = (0..MAX_PIPES)
             .find(|&pipe| engine.plane(PLANE_CTL, pipe) & PLANE_ENABLE != 0)
@@ -386,6 +388,34 @@ impl<R: RegisterIo> DisplayEngine<R> {
             .ok()
             .and_then(|()| crate::edid::Edid::parse(&block));
         (link, edid)
+    }
+
+    /// Whether digital port `port` is one of the engine's Type-C ports (D525).
+    pub fn is_type_c(&self, port: usize) -> bool {
+        use super::intel_type_c::{FIRST_PORT, MOST_PORTS};
+        self.type_c.is_some() && (FIRST_PORT..FIRST_PORT + MOST_PORTS).contains(&port)
+    }
+
+    /// The Type-C ports the engine has (D525), counted from port D.
+    pub fn type_c_ports(&self) -> usize {
+        match self.type_c {
+            Some(_) => super::intel_type_c::MOST_PORTS,
+            None => 0,
+        }
+    }
+
+    /// Connects Type-C port `index` (0 for port D) and turns its AUX power on for what it
+    /// carries (D525).
+    pub fn connect_type_c(
+        &self,
+        index: usize,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<super::intel_type_c::Connected, super::intel_type_c::TypeCError> {
+        use super::intel_type_c::{connect, power_aux, TypeCError};
+        let flavour = self.type_c.ok_or(TypeCError::NotConnected)?;
+        let connected = connect(&self.regs, flavour, index, keep_waiting)?;
+        power_aux(&self.regs, index, connected.mode, keep_waiting)?;
+        Ok(connected)
     }
 
     /// Trains the DisplayPort link on digital port `port`, driven by pipe `pipe`'s transcoder

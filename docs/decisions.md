@@ -25187,3 +25187,21 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Showing anything: the display's instance memory, the core and window channels
   with their push buffers, mode setting and flips through them, hot plug events, freeing the
   objects; until then the firmware's framebuffer stays what the screen shows.
+
+## D525 Intel's Type-C ports, part 1: the port, its PHY and its AUX channel (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's MIT-licensed i915 driver)
+
+- **Decision.** On Tiger Lake and on Alder and Raptor Lake-P (`intel_type_c::flavour` by device
+  id), the Intel display connects its Type-C ports D to I before reading their AUX channels:
+  Tiger Lake asks PCODE (mailbox command `0x26`) to keep the Type-C PHYs out of TC-cold; the
+  FIA (at `0x163000`, `0x16e000`, `0x16f000`, two ports each when modular) says whether a
+  DisplayPort alternate mode or a Thunderbolt sink is live; for alternate mode the driver waits
+  for the IOM firmware to hand the PHY over (the FIA's mode-status register on Tiger Lake, the
+  TCSS's ready bit on Alder Lake-P) and takes it (the FIA's not-safe bit, or `DDI_BUF_CTL`'s
+  ownership bit), then reads the lanes DisplayPort got and the pin assignment. The port's AUX
+  power well (Type-C or Thunderbolt) is turned on, and the sink's DPCD and EDID read as on the
+  combo ports (D445). The probe summary names each Type-C sink, its mode, lanes, pin
+  assignment, maker, name and link.
+- **Not yet.** Lighting a Type-C port: the Dekel PHY's PLL and lanes (D526), Thunderbolt's AUX
+  (its I/O select bit) and PLL, legacy (fixed-connector) Type-C ports, hot plug, and giving
+  the PHY back on unplug.
+- Intel's i915 files used carry the MIT licence; `drivers/src/gpu/INTEL-NOTICE.md` keeps it.
