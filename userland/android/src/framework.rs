@@ -35,6 +35,7 @@ const ARRAY_LIST: &str = "Ljava/util/ArrayList;";
 const LISTS: [&str; 3] = [ARRAY_LIST, "Ljava/util/List;", "Ljava/util/AbstractList;"];
 const ARRAY_ADAPTER: &str = "Landroid/widget/ArrayAdapter;";
 const ADAPTER_VIEWS: [&str; 2] = [LIST_VIEW, "Landroid/widget/AdapterView;"];
+const LAYOUT_INFLATER: &str = "Landroid/view/LayoutInflater;";
 const VIEW: &str = "Landroid/view/View;";
 const VIEW_GROUP: &str = "Landroid/view/ViewGroup;";
 const CONTEXT_CLASSES: [&str; 2] = [
@@ -97,6 +98,10 @@ pub enum Native {
     SetOnItemClickListener,
     /// `ImageView.setImageResource(int)` (D509).
     SetImageResource,
+    /// `LayoutInflater.from(Context)` and `getLayoutInflater()` (D511): an inflater.
+    InflaterFrom,
+    /// `LayoutInflater.inflate(int, ViewGroup[, boolean])`: the layout, inflated.
+    Inflate,
     /// An exception's constructor with its message first (D504).
     ExceptionInit,
     /// `Throwable.getMessage()`: its message, or null.
@@ -181,6 +186,9 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         (_, "setOrientation") if view => Native::SetOrientation,
         (EDIT_TEXT, "setHint") if !takes_int => Native::SetHint,
         (IMAGE_VIEW, "setImageResource") if takes_int => Native::SetImageResource,
+        (LAYOUT_INFLATER, "from") => Native::InflaterFrom,
+        (_, "getLayoutInflater") if activity => Native::InflaterFrom,
+        (LAYOUT_INFLATER, "inflate") if shorty.starts_with("LI") => Native::Inflate,
         (ARRAY_LIST, "<init>") => Native::ListInit,
         (_, "add") if list && shorty == "ZL" => Native::ListAdd,
         (_, "get") if list => Native::ListGet,

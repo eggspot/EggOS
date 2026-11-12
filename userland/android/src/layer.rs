@@ -807,9 +807,13 @@ extern "sysv64" fn set_on_item_click_listener(words: *const u64, _: *const usize
     0
 }
 
-/// The texts a list view shows: its adapter's items, each a string's text or its class.
+/// The texts a list view shows: its adapter's rows when the adapter is the app's own
+/// ([`adapter_rows`]), else its items, each a string's text or its class.
 fn list_items(view: u64) -> Vec<String> {
     let adapter = object(view).map_or(0, |view| view.reference);
+    if let Some(rows) = adapter_rows(view, adapter) {
+        return rows;
+    }
     let items = object(adapter).map_or(0, |adapter| adapter.reference);
     let elements = object(items)
         .and_then(|items| items.elements.clone())
@@ -891,6 +895,51 @@ fn paint_image(canvas: &mut Canvas<'_>, rect: Rect, data: u32) {
     }
 }
 
+extern "sysv64" fn inflater_from(_: *const u64, _: *const usize) -> u64 {
+    new_object(Object {
+        class: String::from("Landroid/view/LayoutInflater;"),
+        ..Object::default()
+    })
+}
+
+extern "sysv64" fn inflate_layout(words: *const u64, _: *const usize) -> u64 {
+    let [_, layout_id] = arguments::<2>(words);
+    inflate(u64::from(layout_id as u32))
+}
+
+fn first_text(view: u64, depth: usize) -> Option<String> {
+    let shown = object(view)?;
+    if let Some(text) = shown.text.clone().filter(|text| !text.is_empty()) {
+        return Some(text);
+    }
+    if depth >= DEEPEST_VIEW {
+        return None;
+    }
+    let children = shown.view.as_ref()?.children.clone();
+    children.into_iter().find_map(|child| first_text(child, depth + 1))
+}
+
+/// The rows an adapter of the app's own (D511) gives: `getCount()` rows (at most 32), each
+/// `getView(position, null, list)`'s first text; `None` when it defines neither.
+fn adapter_rows(list: u64, adapter: u64) -> Option<Vec<String>> {
+    let class = object(adapter)?.class.clone();
+    let get_view = compiled_method(&class, "getView")?;
+    let count = match compiled_method(&class, "getCount") {
+        Some(address) => call_at(address, &[adapter]) as u32 as usize,
+        None => {
+            let items = object(adapter)?.reference;
+            object(items)?.elements.as_ref()?.len()
+        }
+    };
+    let rows = (0..count.min(eggos_toolkit::widget::MAX_ROWS))
+        .map(|position| {
+            let row = call_at(get_view, &[adapter, position as u64, 0, list]);
+            first_text(row, 0).unwrap_or_default()
+        })
+        .collect();
+    Some(rows)
+}
+
 extern "sysv64" fn set_image_resource(words: *const u64, _: *const usize) -> u64 {
     let [view, id] = arguments::<2>(words);
     let image = load_image(id as u32);
@@ -943,6 +992,8 @@ fn native_entry(native: Native) -> Entry {
         Native::SetAdapter => set_adapter,
         Native::SetOnItemClickListener => set_on_item_click_listener,
         Native::SetImageResource => set_image_resource,
+        Native::InflaterFrom => inflater_from,
+        Native::Inflate => inflate_layout,
         Native::ExceptionInit => exception_init,
         Native::GetMessage => get_message,
     }

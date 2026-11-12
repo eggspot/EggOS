@@ -24910,3 +24910,15 @@ the license, by an explicit instruction recorded here.
   no system bars or margins inside an EggOS window yet.
 - **Not yet.** Distributions (fill equally, equal spacing) and alignments, baseline alignment,
   margins of 8 or 16 points, and stack views inside scroll views sizing their content.
+
+## D511 The Android layer, part 9: the app's own list adapters (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** A list view whose adapter is a class of the app's (a `BaseAdapter`, or an
+  `ArrayAdapter` subclass) that defines `getView` shows `getCount()` rows (at most 32; an
+  `ArrayAdapter` subclass without its own `getCount` uses its items' count), each the first
+  text found in the view `getView(position, null, list)` returns, its children searched in
+  order. `LayoutInflater.from(Context)` and an activity's `getLayoutInflater()` give an
+  inflater whose `inflate(int, ViewGroup[, boolean])` inflates the layout resource (D500), so
+  the usual `getView` that inflates a row layout and fills its text views works.
+- **Not yet.** Row views shown as themselves (images, several texts, buttons in a row), view
+  recycling, and `RecyclerView` with its view holders.
