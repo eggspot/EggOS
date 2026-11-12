@@ -79,7 +79,7 @@ impl Backing for Descriptor {
 type Buffered = Stream<Descriptor>;
 
 #[repr(C)]
-struct File {
+pub struct File {
     #[allow(dead_code, reason = "MinGW programs reach into it")]
     msvcrt_fields: [u64; msvcrt_layout::FILE_WITH_LOCK_WORDS],
     stream: Buffered,
@@ -824,6 +824,45 @@ unsafe extern "efiapi" fn fileno(stream: *mut File) -> i32 {
 
 fn standard(index: usize) -> *mut File {
     STREAMS.with(|streams| standard_stream(streams, index))
+}
+
+/// Writes `bytes` to the C runtime's stream `stream` (`FILE*`); how many went. msvcp's
+/// iostreams write through it, so `std::cout` and `printf` keep their order, as MSVC's do while
+/// `sync_with_stdio` holds (D405).
+pub fn stream_write(stream: *mut File, bytes: &[u8]) -> usize {
+    with_stream(stream, 0, |file| file.write(bytes))
+}
+
+/// The next byte of stream `stream`, taken (`take`) or left for the next read.
+pub fn stream_read(stream: *mut File, take: bool) -> Option<u8> {
+    with_stream(stream, None, |file| {
+        let byte = file.get_byte()?;
+        if !take {
+            let _ = file.unget(byte);
+        }
+        Some(byte)
+    })
+}
+
+/// Puts `byte` back in front of stream `stream`; whether it went.
+pub fn stream_unget(stream: *mut File, byte: u8) -> bool {
+    with_stream(stream, false, |file| file.unget(byte))
+}
+
+/// Writes out stream `stream`'s buffer; whether it all went.
+pub fn stream_flush(stream: *mut File) -> bool {
+    with_stream(stream, false, |file| file.flush().is_ok())
+}
+
+/// The standard stream `index` (0 input, 1 output, 2 errors).
+pub fn standard_file(index: usize) -> *mut File {
+    standard(index)
+}
+
+/// Opens `path` (NUL-terminated) with `fopen`'s `mode`, as msvcp's `_Fiopen` does.
+pub fn open_file(path: &[u8], mode: &[u8]) -> *mut File {
+    // SAFETY: both are NUL-terminated, as the callers build them.
+    unsafe { fopen(path.as_ptr(), mode.as_ptr()) }
 }
 
 extern "efiapi" fn standard_stream_at(index: u32) -> *mut File {

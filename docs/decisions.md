@@ -23026,3 +23026,46 @@ the license, by an explicit instruction recorded here.
   set), image lists' overlays and drag images, header drag-and-drop reordering
   (`HDS_DRAGDROP`) and `LVS_OWNERDATA` (D403). They wait for the programs that need them,
   as M15's compatibility runs find them.
+
+## D405 iostreams in msvcp140 for `char` (batch part 12's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: MSVC's STL headers `<xiosbase>`, `<ios>`, `<streambuf>`, `<ostream>`, `<istream>`, `<xlocale>` and `<fstream>`, MSVC's 64-bit class layouts with virtual bases, its name decoration, and `num_put`/`num_get`'s classic-locale behaviour)
+
+- **Question.** D230 left iostreams: a program using `std::cout` imports msvcp140's stream
+  objects and out-of-line members, and an import the layer lacks stops the program loading.
+- **Decision.** `win32/msvcp/iostreams.rs` provides them for `char`:
+  - **The standard objects** `cin`, `cout`, `cerr` and `clog`, laid out as MSVC lays out a
+    class with a virtual base on x64 (base-offset table pointer, `vtordisp`, then the
+    `basic_ios`: `ios_base`'s table, flags, precision, width, locale; the buffer, tie and
+    fill), made at compile time so no constructor has to run before `main`. `cerr` is
+    unit-buffered and, like `cin`, tied to `cout`.
+  - **Their buffers** are the layer's own `basic_streambuf`s with empty get and put areas, so
+    every byte goes through their virtual functions, which read and write the C runtime's
+    `stdin`, `stdout` and `stderr`: `std::cout` and `printf` keep their order, as MSVC's do
+    while `sync_with_stdio` holds.
+  - **Members** of `basic_ostream` (every arithmetic `operator<<`, pointers, buffers, the
+    three manipulator forms, `put`, `write`, `flush`, the sentry's `_Osfx`), `basic_istream`
+    (every arithmetic `operator>>`, `get`, `peek`, `getline`, `read`, `ignore`, `gcount`,
+    `putback`, `_Ipfx`), `basic_ios` and `ios_base` (state, flags, width, precision, fill,
+    tie, buffer, `init`, `copyfmt`, `xalloc`, `sync_with_stdio`), and `basic_streambuf`'s
+    constructors, default virtual functions, table and public and protected members, so a
+    program's `basic_stringbuf` and `basic_filebuf` (header templates deriving from it) work;
+    every call reaches a buffer through its table, so a program's own buffers serve too.
+    `endl`, `ends` and `flush`; `_Fiopen` for `basic_filebuf`.
+  - **Numbers** are formatted and read as `num_put` and `num_get` do in the classic locale
+    (`userland/windows/src/stream_format.rs`, tested on the host): bases, `showbase`,
+    `showpos`, `uppercase`, `boolalpha`, padding by `left`, `right` and `internal` with the
+    fill, a negative number in hex as its two's complement, floating point through the C
+    runtime's `printf` rules with the conversion `num_put` builds, reading stopping at the
+    first byte that cannot belong and failing (with the type's limit) on overflow.
+  - **The classic locale** with one facet, `ctype<char>` (id 1, the classification table
+    built at compile time), so the headers' inline `use_facet<ctype<char>>` (for `widen` and
+    `isspace` in `getline` and `operator>>(string&)`) finds it; `_Getcat`, `locale::_Init`,
+    `_Getgloballocale`, `classic`, `id`'s counter, `_Lockit` and `_Facet_Register`.
+- **To check at the build pass.** The layouts and the order of `ctype<char>`'s overloaded
+  virtual functions (MSVC lists an overload set in reverse declaration order) are from the
+  headers and MSVC's rules, not yet from a binary; the first test program (`eggcpp3.exe`:
+  `cout` with every manipulator, `cin` from a pipe, `ostringstream`, `ifstream`) settles
+  them.
+- **Not yet.** `wchar_t` streams (`wcout`, `wcin`), facets other than `ctype<char>`
+  (`num_put`, `numpunct`, `codecvt` for programs that call `use_facet` on them), named
+  locales, `ios_base::failure` when exceptions are enabled (the state is set, nothing is
+  thrown), `iword`/`pword` and callbacks, and locking the streams across threads.

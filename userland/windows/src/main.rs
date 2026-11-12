@@ -105,6 +105,8 @@ mod std_exceptions;
 #[cfg(any(test, runs_windows_programs))]
 mod stream;
 #[cfg(any(test, runs_windows_programs))]
+mod stream_format;
+#[cfg(any(test, runs_windows_programs))]
 mod text;
 #[cfg(any(test, all(runs_windows_programs, target_arch = "aarch64")))]
 mod translated;

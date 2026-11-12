@@ -29,6 +29,9 @@ mod utility;
 use crate::library::Export;
 
 pub use startup::set_processor_features;
+pub(super) use stdio::{
+    File, open_file, standard_file, stream_flush, stream_read, stream_unget, stream_write,
+};
 
 /// Writes out the C runtime's stream buffers as `ExitProcess` ends the process, as the Universal
 /// C Runtime does when the process detaches it; nothing when the program opened no stream.
