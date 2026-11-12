@@ -23943,3 +23943,20 @@ the license, by an explicit instruction recorded here.
   removal's failure, which the command now records like an install's (D421), gives the note's
   own lines, and the rows are read again when it ends. Every change the pane makes to the
   components now runs outside its window, through the same command the CLI and the tools run.
+
+## D459 `eggway` takes GPU buffers: `zwp_linux_dmabuf_v1` (M11, D442's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** Mesa's EGL and Vulkan presentation on Wayland hand the compositor each frame
+  as a `dma-buf` through `zwp_linux_dmabuf_v1`; without it a GL program falls back to
+  copying into `wl_shm` itself, or fails.
+- **Decision.** `eggway` serves the global at version 3: it announces `XRGB8888` and
+  `ARGB8888` with the linear modifier, takes one plane per params object (its `dma-buf`
+  descriptor, offset and stride; other planes and modifiers refused with the protocol's
+  errors) and makes the `wl_buffer` at `create_immed`. The buffer's pixels are the descriptor
+  mapped (D441's files map from offset 0) as a pool of its own that goes when the buffer
+  goes, so commits, damage, subsurfaces and the window's drawing are exactly the `wl_shm`
+  path's. The asynchronous `create` answers `failed`, which clients handle by retrying with
+  `create_immed`. The wire and dispatch tables gain the two interfaces; host tests check
+  their signatures with the rest.
+- **Not yet.** Zero copy (the window server compositing from the GPU's frames, D442's
+  "Not yet"), feedback objects (version 4), and multi-plane formats.

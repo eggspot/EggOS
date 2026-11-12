@@ -29,6 +29,16 @@ pub const MAX_SURFACES: usize = 16;
 pub const MAX_BUFFERS: usize = 64;
 /// Pools per client.
 pub const MAX_POOLS: usize = 8;
+/// The most `zwp_linux_buffer_params_v1` objects a client holds at once.
+pub const MAX_DMABUF_PARAMS: usize = 4;
+
+/// A `zwp_linux_buffer_params_v1`'s one plane (D459): its `dma-buf`, where the pixels start
+/// and how far apart its rows are; `None` until `add`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DmabufParams {
+    pub plane: Option<(Fd, u32, u32)>,
+    pub used: bool,
+}
 /// Frame callbacks waiting per surface.
 pub const MAX_FRAMES: usize = 8;
 /// The longest title kept, in bytes: `/dev/window`'s.
@@ -286,6 +296,7 @@ pub struct ClientSlot {
     /// The objects the compositor made, by their id's offset from [`SERVER_ID_START`].
     pub server_objects: [Object; MAX_SERVER_OBJECTS],
     pub pools: [Option<Pool>; MAX_POOLS],
+    pub dmabuf_params: [Option<DmabufParams>; MAX_DMABUF_PARAMS],
     pub buffers: [Option<Buffer>; MAX_BUFFERS],
     pub surfaces: [Option<Surface>; MAX_SURFACES],
     pub positioners: [Option<Positioner>; MAX_POSITIONERS],
@@ -346,6 +357,7 @@ impl ClientSlot {
             objects,
             server_objects: [Object::default(); MAX_SERVER_OBJECTS],
             pools: [None; MAX_POOLS],
+            dmabuf_params: [None; MAX_DMABUF_PARAMS],
             buffers: [None; MAX_BUFFERS],
             surfaces: [None; MAX_SURFACES],
             positioners: [None; MAX_POSITIONERS],

@@ -242,6 +242,8 @@ fn every_request_table_is_ordered_and_bounded() {
         Interface::ServerDecoration,
         Interface::FractionalScaleManager,
         Interface::FractionalScale,
+        Interface::LinuxDmabuf,
+        Interface::LinuxBufferParams,
     ] {
         for request in protocol::requests(interface) {
             assert!(request.signature.len() <= MAX_ARGUMENTS, "{}", request.name);

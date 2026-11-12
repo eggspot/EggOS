@@ -26,7 +26,7 @@ use eggos_wayland::keymap;
 use eggos_wayland::positioner::{Area, Positioner};
 use eggos_wayland::protocol::{
     self, Interface, SERVER_ID_START, buffer, callback, cursor_shape, decoration, display,
-    fractional_scale, keyboard, output, pointer, registry, seat, server_decoration, shm,
+    fractional_scale, keyboard, linux_dmabuf, output, pointer, registry, seat, server_decoration, shm,
     subsurface, surface, viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel,
     xdg_wm_base,
 };
@@ -701,6 +701,8 @@ fn handle<S: System>(
         Interface::ServerDecoration => server_decoration_request(client, message),
         Interface::FractionalScaleManager => fractional_scale_manager_request(client, message),
         Interface::FractionalScale => fractional_scale_request(client, message),
+        Interface::LinuxDmabuf => dmabuf_request(client, message),
+        Interface::LinuxBufferParams => dmabuf_params_request(client, shared, system, message),
         Interface::Region
         | Interface::Callback
         | Interface::Keyboard
@@ -761,6 +763,15 @@ fn bind<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
         Interface::Shm => {
             for format in [shm::ARGB8888, shm::XRGB8888] {
                 client.post(id, version, shm::FORMAT, &[Value::Uint(format)]);
+            }
+        }
+        Interface::LinuxDmabuf => {
+            for format in [linux_dmabuf::ARGB8888, linux_dmabuf::XRGB8888] {
+                client.post(id, version, linux_dmabuf::FORMAT, &[Value::Uint(format)]);
+                if version >= 3 {
+                    let linear = [Value::Uint(format), Value::Uint(0), Value::Uint(0)];
+                    client.post(id, version, linux_dmabuf::MODIFIER, &linear);
+                }
             }
         }
         Interface::Seat => {
@@ -847,6 +858,119 @@ fn compositor_request(client: &mut ClientSlot, message: &Message) {
         _ => {
             new_object(client, id, Interface::Region, message.version, 0);
         }
+    }
+}
+
+fn dmabuf_request(client: &mut ClientSlot, message: &Message) {
+    if message.opcode != 1 {
+        return;
+    }
+    let id = message.uint(0);
+    let Some(free) = client.dmabuf_params.iter().position(Option::is_none) else {
+        client.protocol_error(id, display::NO_MEMORY, b"too many buffer params");
+        return;
+    };
+    if new_object(client, id, Interface::LinuxBufferParams, message.version, free as u16) {
+        client.dmabuf_params[free] = Some(crate::client::DmabufParams::default());
+    }
+}
+
+/// `zwp_linux_buffer_params_v1` (D459): one plane added with its `dma-buf`, then
+/// `create_immed` makes a `wl_buffer` over the descriptor's mapping, a pool of its own that
+/// goes with the buffer, so a GPU's frame commits like a `wl_shm` buffer. `create` (the
+/// asynchronous form) answers `failed`; other formats than `XRGB8888` and `ARGB8888`, other
+/// planes and modifiers are refused.
+fn dmabuf_params_request<S: System>(
+    client: &mut ClientSlot,
+    shared: &mut Shared,
+    system: &mut S,
+    message: &Message,
+) {
+    let index = usize::from(message.index);
+    let Some(mut params) = client.dmabuf_params.get(index).copied().flatten() else {
+        return;
+    };
+    match message.opcode {
+        0 => {
+            if let Some((descriptor, _, _)) = params.plane {
+                system.close(descriptor);
+            }
+            client.dmabuf_params[index] = None;
+        }
+        1 => {
+            let descriptor = message.descriptors[0];
+            let (plane, offset, stride) = (message.uint(1), message.uint(2), message.uint(3));
+            if plane != 0 || params.plane.is_some() || message.uint(4) != 0 || message.uint(5) != 0 {
+                system.close(descriptor);
+                client.protocol_error(message.object, linux_dmabuf::PLANE_IDX, b"one linear plane only");
+                return;
+            }
+            params.plane = Some((descriptor, offset, stride));
+            client.dmabuf_params[index] = Some(params);
+        }
+        2 => client.post(message.object, message.version, linux_dmabuf::FAILED, &[]),
+        3 => {
+            let (id, width, height, format) =
+                (message.uint(0), message.int(1), message.int(2), message.uint(3));
+            if params.used {
+                client.protocol_error(message.object, linux_dmabuf::ALREADY_USED, b"params used");
+                return;
+            }
+            params.used = true;
+            client.dmabuf_params[index] = Some(params);
+            let Some((descriptor, offset, stride)) = params.plane.take() else {
+                client.protocol_error(message.object, linux_dmabuf::INCOMPLETE, b"no plane");
+                return;
+            };
+            client.dmabuf_params[index] = Some(params);
+            if format != linux_dmabuf::XRGB8888 && format != linux_dmabuf::ARGB8888 {
+                system.close(descriptor);
+                client.protocol_error(message.object, linux_dmabuf::INVALID_FORMAT, b"format");
+                return;
+            }
+            let geometry = (width > 0 && height > 0 && stride >= (width as u32).saturating_mul(4))
+                .then(|| u64::from(offset) + u64::from(stride) * height as u64)
+                .filter(|length| *length as usize <= MAX_POOL_BYTES);
+            let Some(length) = geometry else {
+                system.close(descriptor);
+                client.protocol_error(message.object, linux_dmabuf::INVALID_DIMENSIONS, b"size");
+                return;
+            };
+            let length = length as usize;
+            let pool = client.pools.iter().position(Option::is_none);
+            let buffer = client.buffers.iter().position(Option::is_none);
+            let (Some(pool), Some(buffer)) = (pool, buffer) else {
+                system.close(descriptor);
+                client.protocol_error(id, display::NO_MEMORY, b"too many buffers");
+                return;
+            };
+            let Ok(address) = system.map_pool(descriptor, length) else {
+                system.close(descriptor);
+                client.protocol_error(id, display::NO_MEMORY, b"cannot map the dma-buf");
+                return;
+            };
+            client.pools[pool] = Some(Pool {
+                descriptor,
+                address,
+                length,
+                buffers: 1,
+                destroyed: true,
+            });
+            client.pool_bytes += length;
+            shared.pool_bytes += length;
+            if new_object(client, id, Interface::Buffer, message.version, buffer as u16) {
+                client.buffers[buffer] = Some(Buffer {
+                    id,
+                    pool: pool as u8,
+                    offset: offset as usize,
+                    width: width as u32,
+                    height: height as u32,
+                    stride: stride as usize,
+                    alpha: format == linux_dmabuf::ARGB8888,
+                });
+            }
+        }
+        _ => {}
     }
 }
 

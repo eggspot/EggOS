@@ -55,6 +55,8 @@ pub enum Interface {
     ServerDecoration,
     FractionalScaleManager,
     FractionalScale,
+    LinuxDmabuf,
+    LinuxBufferParams,
 }
 
 impl Interface {
@@ -104,6 +106,8 @@ impl Interface {
             Self::ServerDecoration => "org_kde_kwin_server_decoration",
             Self::FractionalScaleManager => "wp_fractional_scale_manager_v1",
             Self::FractionalScale => "wp_fractional_scale_v1",
+            Self::LinuxDmabuf => "zwp_linux_dmabuf_v1",
+            Self::LinuxBufferParams => "zwp_linux_buffer_params_v1",
         }
     }
 }
@@ -349,6 +353,13 @@ const FRACTIONAL_SCALE_MANAGER: &[Request] = &[
     request("get_fractional_scale", 1, &[NewId, Object]),
 ];
 const FRACTIONAL_SCALE: &[Request] = &[destructor("destroy", 1)];
+const LINUX_DMABUF: &[Request] = &[destructor("destroy", 1), request("create_params", 1, &[NewId])];
+const LINUX_BUFFER_PARAMS: &[Request] = &[
+    destructor("destroy", 1),
+    request("add", 1, &[Fd, Uint, Uint, Uint, Uint, Uint]),
+    request("create", 1, &[Int, Int, Uint, Uint]),
+    request("create_immed", 2, &[NewId, Int, Int, Uint, Uint]),
+];
 
 /// `interface`'s requests, indexed by opcode.
 pub const fn requests(interface: Interface) -> &'static [Request] {
@@ -396,6 +407,8 @@ pub const fn requests(interface: Interface) -> &'static [Request] {
         Interface::ServerDecoration => SERVER_DECORATION,
         Interface::FractionalScaleManager => FRACTIONAL_SCALE_MANAGER,
         Interface::FractionalScale => FRACTIONAL_SCALE,
+        Interface::LinuxDmabuf => LINUX_DMABUF,
+        Interface::LinuxBufferParams => LINUX_BUFFER_PARAMS,
     }
 }
 
@@ -415,7 +428,7 @@ pub struct Global {
 }
 
 /// Every global, in the order the registry announces them.
-pub const GLOBALS: [Global; 15] = [
+pub const GLOBALS: [Global; 16] = [
     Global {
         name: 1,
         interface: Interface::Compositor,
@@ -490,6 +503,11 @@ pub const GLOBALS: [Global; 15] = [
         name: 15,
         interface: Interface::FractionalScaleManager,
         version: 1,
+    },
+    Global {
+        name: 16,
+        interface: Interface::LinuxDmabuf,
+        version: 3,
     },
 ];
 
@@ -854,6 +872,24 @@ pub mod fractional_scale {
     pub const FRACTIONAL_SCALE_EXISTS: u32 = 0;
     /// The denominator of a preferred scale: 120 is a scale of 1.
     pub const DENOMINATOR: u32 = 120;
+}
+
+/// `zwp_linux_dmabuf_v1`'s and `zwp_linux_buffer_params_v1`'s events, formats and errors
+/// (D459): buffers a GPU rendered, handed over as `dma-buf` descriptors.
+pub mod linux_dmabuf {
+    use super::{Event, event};
+    pub const FORMAT: Event = event(0, 1);
+    pub const MODIFIER: Event = event(1, 3);
+    pub const CREATED: Event = event(0, 1);
+    pub const FAILED: Event = event(1, 1);
+    /// DRM's `XRGB8888` and `ARGB8888` four-character codes.
+    pub const XRGB8888: u32 = 0x3432_5258;
+    pub const ARGB8888: u32 = 0x3432_5241;
+    pub const ALREADY_USED: u32 = 0;
+    pub const PLANE_IDX: u32 = 1;
+    pub const INCOMPLETE: u32 = 3;
+    pub const INVALID_FORMAT: u32 = 4;
+    pub const INVALID_DIMENSIONS: u32 = 5;
 }
 
 /// The signatures of the events the test client decodes, by the interface and opcode.
