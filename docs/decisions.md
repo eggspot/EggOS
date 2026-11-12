@@ -23839,3 +23839,24 @@ the license, by an explicit instruction recorded here.
 - **Next.** The GSP firmware from the component store (the RISC-V core that runs modern NVIDIA
   GPUs, D246's firmware question settled by D265), its boot sequence and the display engine's
   methods, as NVIDIA's `open-gpu-kernel-modules` headers document them (MIT).
+
+## D450 Android apps, part 1: reading an APK's manifest and DEX files (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** Android apps (D34, after Linux, Windows and macOS) ship as APKs: Dalvik
+  bytecode in `classes*.dex`, native libraries per ABI, resources and a binary manifest. D17
+  forbids interpreting their code, so the layer compiles the bytecode ahead of time, once, at
+  install, and implements the Android framework natively. Where to start.
+- **Decision.** With what install and the compiler both read, host-tested: a new
+  `eggos-android-package` crate (`no_std`, no dependencies). `manifest` reads the binary XML of
+  `AndroidManifest.xml` (its string pool in UTF-8 or UTF-16, its start and end elements and
+  their typed attributes): the package, version name and code, lowest and target SDK, the
+  permissions asked for, and the activity whose intent filter holds `MAIN` and `LAUNCHER`.
+  `dex` reads a DEX file's header (magic and version 035 to 041, size, the little-endian tag)
+  and its string, type, method and class-definition tables, with MUTF-8 strings after their
+  ULEB128 lengths and the descriptors of the classes it defines. The APK itself is a zip,
+  which `eggos_app::archive` (D148) already reads.
+- **Next.** `app install` of an `.apk` (the Android layer as an optional component, D18): its
+  manifest shown, its ABI's native libraries kept, its permissions asked through the agent
+  permission model; the DEX code's method bodies and the ahead-of-time compiler to the CPU's
+  own code; then the framework: `Activity`, views on the toolkit, and the intents and App
+  Actions that make an app AI-usable (D21).

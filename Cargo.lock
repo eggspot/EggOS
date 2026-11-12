@@ -11,6 +11,10 @@ name = "eggos-android-log"
 version = "0.4.0"
 
 [[package]]
+name = "eggos-android-package"
+version = "0.4.0"
+
+[[package]]
 name = "eggos-android-properties"
 version = "0.4.0"
 
