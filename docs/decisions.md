@@ -23929,3 +23929,9 @@ the license, by an explicit instruction recorded here.
   writes a setting. The window holds two more widgets (`CAPACITY` 225, the dialog's 341).
 - **Deviation.** The design lists every `label: value` row of the pane as its own line; this
   shows the pane's one-line summary until each pane offers its rows as text.
+
+## D457 The Agents pane's grant panel on narrow pages (settings-forms-v0.5.md 2, R10; D430's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** On a narrow page the grant panel takes the pane's full width, its two lines the
+  column's width, and `Cancel` and `Grant` an equal pair 48 tall on its last row, like the
+  Storage pane's panels (D437); the desktop shape puts it back.

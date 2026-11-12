@@ -434,6 +434,12 @@ impl AgentsPane {
                 at(LASTS_RADIOS.0, LASTS_RADIOS.1, LASTS_RADIOS.2, CONTROL_HEIGHT),
             );
             tree.set_place(w.status, line_place(PADDING, STATUS_LINE, LINE_WIDTH));
+            tree.set_place(w.panel, at(PANEL.0, PANEL.1, PANEL.2, PANEL.3));
+            for (id, y) in [w.question, w.meaning].into_iter().zip(PANEL_LINES) {
+                tree.set_place(id, line_place(PADDING, y, PANEL_LINE_WIDTH));
+            }
+            tree.set_place(w.cancel, at(CANCEL_AT.0, CANCEL_AT.1, BUTTON_SIZE.0, BUTTON_SIZE.1));
+            tree.set_place(w.grant, at(GRANT_AT.0, GRANT_AT.1, BUTTON_SIZE.0, BUTTON_SIZE.1));
             return 0;
         };
         let row = TOUCH_CONTROL;
@@ -456,6 +462,16 @@ impl AgentsPane {
         tree.set_place(w.lasts_line, line_place(PADDING, 720, c));
         tree.set_place(w.lasts, at(PADDING, 744, LASTS_RADIOS.2, row));
         tree.set_place(w.status, line_place(PADDING, 808, c));
+        let buttons = PANEL_LINES[1] + 28;
+        tree.set_place(
+            w.panel,
+            Place::at(0, PANEL.1, Length::Fill(0), Length::Px(buttons + row + PADDING)),
+        );
+        for (id, y) in [w.question, w.meaning].into_iter().zip(PANEL_LINES) {
+            tree.set_place(id, line_place(PADDING, y, c));
+        }
+        tree.set_place(w.cancel, at(PADDING, buttons, half, row));
+        tree.set_place(w.grant, at(PADDING + half + 8, buttons, half, row));
         840
     }
 
