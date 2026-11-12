@@ -23511,3 +23511,14 @@ the license, by an explicit instruction recorded here.
   the pane is 344 tall. The Keyboard pane's `Repeat delay` and `Repeat rate` sliders, which
   the design's worked example left out, follow its last dropdown the same way from y 760, so
   the Keyboard pane is 928 tall at 390. The desktop shape puts every place back.
+
+## D427 The Accessibility pane in one column on narrow pages (settings-forms-v0.5.md section 2: R8, R2, R9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `AccessibilityPane::reflow`: on a narrow page each of the four check boxes is a
+  48 px row the content's width (the whole row is the target) with its meaning as a dim line
+  under it, 80 a block; `Hold a key for` sits over its slider, the content's width and 48
+  tall; `Full keyboard navigation` keeps `Always on` at the column's right, and its
+  explanation is held to the column's width. The pane is 552 tall; the desktop shape puts
+  every place back.
+- **Deviation.** The explanation line is cut, not wrapped, at 358 px until labels wrap
+  (the design's ask 3).

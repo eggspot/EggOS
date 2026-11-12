@@ -17,6 +17,7 @@ use eggos_toolkit::widget::{CONTROL_HEIGHT, Horizontal, Kind, Length, Place};
 
 const PADDING: i32 = 16;
 const SLIDER_WIDTH: i32 = 216;
+const TOUCH_CONTROL: i32 = 48;
 const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
 
 fn add(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, place: Place, kind: Kind) -> WidgetId {
@@ -40,13 +41,19 @@ fn label(
     )
 }
 
-fn meaning(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, y: i32, words: &str, ink: Token) {
+fn meaning(
+    tree: &mut WidgetTree<CAPACITY>,
+    pane: WidgetId,
+    y: i32,
+    words: &str,
+    ink: Token,
+) -> WidgetId {
     add(
         tree,
         pane,
         Place::right(PADDING, y),
         Kind::label(words, ink),
-    );
+    )
 }
 
 fn checkbox(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, y: i32, words: &str) -> WidgetId {
@@ -81,6 +88,8 @@ impl Shown {
 /// The Accessibility pane's widgets.
 #[derive(Debug)]
 pub struct AccessibilityPane {
+    meanings: [WidgetId; 4],
+    lines: [WidgetId; 4],
     contrast: WidgetId,
     motion: WidgetId,
     sticky: WidgetId,
@@ -93,7 +102,7 @@ impl AccessibilityPane {
     /// Builds the pane's rows in `pane`, under its heading, showing `shown`.
     pub fn build(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, shown: Shown) -> Self {
         let contrast = checkbox(tree, pane, 70, "High contrast");
-        meaning(
+        let contrast_meaning = meaning(
             tree,
             pane,
             76,
@@ -101,7 +110,7 @@ impl AccessibilityPane {
             Token::TextDim,
         );
         let motion = checkbox(tree, pane, 110, "Reduce motion");
-        meaning(
+        let motion_meaning = meaning(
             tree,
             pane,
             116,
@@ -109,7 +118,7 @@ impl AccessibilityPane {
             Token::TextDim,
         );
         let sticky = checkbox(tree, pane, 150, "Sticky keys");
-        meaning(
+        let sticky_meaning = meaning(
             tree,
             pane,
             156,
@@ -117,14 +126,14 @@ impl AccessibilityPane {
             Token::TextDim,
         );
         let slow = checkbox(tree, pane, 190, "Slow keys");
-        meaning(
+        let slow_meaning = meaning(
             tree,
             pane,
             196,
             "A key counts only when held this long.",
             Token::TextDim,
         );
-        label(tree, pane, 40, 236, "Hold a key for", Token::Text);
+        let hold = label(tree, pane, 40, 236, "Hold a key for", Token::Text);
         let delay = add(
             tree,
             pane,
@@ -143,7 +152,7 @@ impl AccessibilityPane {
                 " ms",
             ),
         );
-        label(
+        let navigation = label(
             tree,
             pane,
             PADDING,
@@ -151,8 +160,8 @@ impl AccessibilityPane {
             "Full keyboard navigation",
             Token::Text,
         );
-        meaning(tree, pane, 276, "Always on", Token::Text);
-        label(
+        let always = meaning(tree, pane, 276, "Always on", Token::Text);
+        let reaches = label(
             tree,
             pane,
             PADDING,
@@ -162,6 +171,8 @@ impl AccessibilityPane {
         );
         let status = label(tree, pane, PADDING, 316, "", Token::TextDim);
         let accessibility = Self {
+            meanings: [contrast_meaning, motion_meaning, sticky_meaning, slow_meaning],
+            lines: [hold, navigation, always, reaches],
             contrast,
             motion,
             sticky,
@@ -172,6 +183,52 @@ impl AccessibilityPane {
         accessibility.show(tree, shown);
         tree.set_shown(status, false);
         accessibility
+    }
+
+    /// Moves the pane to one column `content` wide on a narrow page (settings-forms-v0.5.md 2,
+    /// R8 and R2: each check box a 48 px row with its meaning under it, the slider under its
+    /// label), or back to the desktop's; returns the narrow pane's height.
+    pub fn reflow(&self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) -> i32 {
+        let boxes = [self.contrast, self.motion, self.sticky, self.slow];
+        let [hold, navigation, always, reaches] = self.lines;
+        let line = |x: i32, y: i32| Place::at(x, y, Length::Content, Length::Content);
+        let Some(c) = content else {
+            for (index, (check, meaning)) in boxes.iter().zip(self.meanings).enumerate() {
+                let y = 70 + 40 * index as i32;
+                tree.set_place(*check, Place::at(PADDING, y, Length::Content, Length::Px(CONTROL_HEIGHT)));
+                tree.set_place(meaning, Place::right(PADDING, y + 6));
+            }
+            tree.set_place(hold, line(40, 236));
+            tree.set_place(
+                self.delay,
+                Place {
+                    horizontal: Horizontal::Right(PADDING),
+                    top: 230,
+                    width: Length::Px(SLIDER_WIDTH),
+                    height: Length::Px(CONTROL_HEIGHT),
+                },
+            );
+            tree.set_place(navigation, line(PADDING, 276));
+            tree.set_place(always, Place::right(PADDING, 276));
+            tree.set_place(reaches, line(PADDING, 296));
+            tree.set_place(self.status, line(PADDING, 316));
+            return 0;
+        };
+        for (index, (check, meaning)) in boxes.iter().zip(self.meanings).enumerate() {
+            let y = 64 + 80 * index as i32;
+            tree.set_place(*check, Place::at(PADDING, y, Length::Px(c), Length::Px(TOUCH_CONTROL)));
+            tree.set_place(meaning, line(PADDING, y + 52));
+        }
+        tree.set_place(hold, line(PADDING, 384));
+        tree.set_place(
+            self.delay,
+            Place::at(PADDING, 408, Length::Px(c), Length::Px(TOUCH_CONTROL)),
+        );
+        tree.set_place(navigation, line(PADDING, 472));
+        tree.set_place(always, line(PADDING + c - 72, 472));
+        tree.set_place(reaches, Place::at(PADDING, 492, Length::Px(c), Length::Content));
+        tree.set_place(self.status, line(PADDING, 520));
+        552
     }
 
     /// Shows `shown` in the controls.
