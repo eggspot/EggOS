@@ -1,6 +1,7 @@
 //! A compiled layout, `res/layout/*.xml` in binary XML (D500): its elements as a tree of views,
 //! each with the attributes the Android layer shows (an id, a text given literally or as a
-//! string resource, a click handler's method name, a linear layout's orientation).
+//! string resource, a click handler's method name, a linear layout's orientation, an image
+//! view's drawable).
 
 use crate::manifest::{half, strings, word};
 use alloc::string::String;
@@ -40,6 +41,8 @@ pub struct ViewNode {
     pub on_click: Option<String>,
     /// `android:orientation`: whether a linear layout stacks its children.
     pub vertical: bool,
+    /// `android:src` or `app:srcCompat`: an image view's drawable resource (D509).
+    pub image: Option<u32>,
     pub children: Vec<ViewNode>,
 }
 
@@ -93,6 +96,9 @@ fn node(name: String, attributes: &[Attribute]) -> ViewNode {
             "text" => view.text = text_of(attribute),
             "hint" => view.hint = text_of(attribute),
             "onClick" => view.on_click = attribute.text.clone(),
+            "src" | "srcCompat" if attribute.kind == TYPE_REFERENCE => {
+                view.image = Some(attribute.data)
+            }
             "orientation" => {
                 view.vertical = match attribute.kind {
                     TYPE_INT_DEC | TYPE_INT_HEX => attribute.data == VERTICAL,

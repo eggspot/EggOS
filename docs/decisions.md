@@ -24885,3 +24885,13 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Adapters of the app's own (`BaseAdapter`, `RecyclerView.Adapter`) with their row
   views, `ArrayAdapter.add` and `remove`, `HashMap` and the rest of `java.util`, and lists past
   32 rows.
+
+## D509 The Android layer, part 8: images (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** An `ImageView`'s drawable (`android:src` or `app:srcCompat` in its layout, or
+  `setImageResource`) is found through the resource table as a file of the package; a PNG of
+  any kind EggOS's decoder reads (D148), at most 1024 pixels a side, is decoded once into the
+  layer's images as premultiplied pixels, and the window shows the view at the image's size
+  with a toolkit painter that composites it.
+- **Not yet.** WebP and vector drawables (most current apps' icons), density buckets (the
+  first configuration's file is taken, D500), scaling (`scaleType`), and `setImageBitmap`.

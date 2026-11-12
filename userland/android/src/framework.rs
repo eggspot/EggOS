@@ -27,6 +27,8 @@ pub const BUTTON: &str = "Landroid/widget/Button;";
 pub const EDIT_TEXT: &str = "Landroid/widget/EditText;";
 /// The framework's linear layout.
 pub const LINEAR_LAYOUT: &str = "Landroid/widget/LinearLayout;";
+/// The framework's image view (D509).
+pub const IMAGE_VIEW: &str = "Landroid/widget/ImageView;";
 /// The framework's list view (D508).
 pub const LIST_VIEW: &str = "Landroid/widget/ListView;";
 const ARRAY_LIST: &str = "Ljava/util/ArrayList;";
@@ -93,6 +95,8 @@ pub enum Native {
     SetAdapter,
     /// `AdapterView.setOnItemClickListener(OnItemClickListener)`.
     SetOnItemClickListener,
+    /// `ImageView.setImageResource(int)` (D509).
+    SetImageResource,
     /// An exception's constructor with its message first (D504).
     ExceptionInit,
     /// `Throwable.getMessage()`: its message, or null.
@@ -156,7 +160,7 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
     let activity = ACTIVITY_CLASSES.contains(&class);
     let context = activity || CONTEXT_CLASSES.contains(&class);
     let text = TEXT_VIEWS.contains(&class);
-    let view = text || matches!(class, VIEW | VIEW_GROUP | LINEAR_LAYOUT | LIST_VIEW);
+    let view = text || matches!(class, VIEW | VIEW_GROUP | LINEAR_LAYOUT | LIST_VIEW | IMAGE_VIEW);
     let list = LISTS.contains(&class);
     let adapter_view = ADAPTER_VIEWS.contains(&class);
     let takes_int = shorty == "VI";
@@ -176,6 +180,7 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         (_, "addView") if view => Native::AddView,
         (_, "setOrientation") if view => Native::SetOrientation,
         (EDIT_TEXT, "setHint") if !takes_int => Native::SetHint,
+        (IMAGE_VIEW, "setImageResource") if takes_int => Native::SetImageResource,
         (ARRAY_LIST, "<init>") => Native::ListInit,
         (_, "add") if list && shorty == "ZL" => Native::ListAdd,
         (_, "get") if list => Native::ListGet,
@@ -370,6 +375,8 @@ pub struct View {
     pub listener: u64,
     /// An `EditText`'s hint, shown while it is empty (D507).
     pub hint: Option<String>,
+    /// An image view's picture, its place among the layer's decoded images (D509).
+    pub image: Option<u32>,
 }
 
 /// The framework class a layout element names: `TextView` and the other short names are in

@@ -12,8 +12,8 @@
 //! then shows the texts they changed (D500).
 
 use crate::framework::{
-    self, ACTIVITY_CLASSES, BUTTON, EDIT_TEXT, LINEAR_LAYOUT, LIST_VIEW, Native, Object,
-    STRING_CLASS, TEXT_VIEWS, Target, View,
+    self, ACTIVITY_CLASSES, BUTTON, EDIT_TEXT, IMAGE_VIEW, LINEAR_LAYOUT, LIST_VIEW, Native,
+    Object, STRING_CLASS, TEXT_VIEWS, Target, View,
 };
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -29,6 +29,8 @@ use eggos_dex_compiler::{self as compiler, helper, method_entry};
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
 use eggos_toolkit::application::{self, Application};
+use eggos_toolkit::canvas::Canvas;
+use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
@@ -65,6 +67,7 @@ struct State {
     initialized: BTreeSet<String>,
     dispatch: BTreeMap<(String, u32), usize>,
     resources: Option<ResourceTable>,
+    images: Vec<(usize, Vec<u32>)>,
     folder: Vec<u8>,
     activity: u64,
     table: usize,
@@ -599,6 +602,7 @@ fn inflate_node(node: &ViewNode, depth: usize) -> u64 {
             on_click: node.on_click.clone(),
             listener: 0,
             hint,
+            image: node.image.and_then(load_image),
         }),
         ..Object::default()
     })
@@ -842,6 +846,60 @@ fn item_clicked(view: u64, position: usize) {
     }
 }
 
+const LARGEST_IMAGE: u32 = 1024;
+
+/// Decodes the PNG drawable resource `id` names (D509) into the layer's images, as
+/// premultiplied pixels the canvas composites; its place among them.
+fn load_image(id: u32) -> Option<u32> {
+    let path = resource_string(u64::from(id))?;
+    if !path.ends_with(".png") {
+        return None;
+    }
+    let file = [state().folder.as_slice(), b"/", path.as_bytes()].concat();
+    let bytes = read_file(&file)?;
+    let mut source = eggos_png::inflate::SliceSource::new(&bytes);
+    let decoder = eggos_png::rows::RowDecoder::open(&mut source).ok()?;
+    let header = decoder.header();
+    if header.width > LARGEST_IMAGE || header.height > LARGEST_IMAGE {
+        return None;
+    }
+    let width = header.width as usize;
+    let mut pixels = vec![0u32; width * header.height as usize];
+    let mut work = Box::new(eggos_png::rows::RowWorkspace::new());
+    decoder
+        .read_rows(&mut work, |row, line| {
+            let start = row as usize * width;
+            for (target, &pixel) in pixels[start..start + width].iter_mut().zip(line) {
+                *target = premultiplied(pixel);
+            }
+        })
+        .ok()?;
+    let images = &mut state().images;
+    images.push((width, pixels));
+    u32::try_from(images.len() - 1).ok()
+}
+
+fn premultiplied(pixel: u32) -> u32 {
+    let alpha = pixel >> 24;
+    let scale = |shift: u32| ((pixel >> shift & 0xff) * alpha / 255) << shift;
+    alpha << 24 | scale(16) | scale(8) | scale(0)
+}
+
+fn paint_image(canvas: &mut Canvas<'_>, rect: Rect, data: u32) {
+    if let Some((width, pixels)) = state().images.get(data as usize) {
+        canvas.composite((rect.x, rect.y), pixels, *width, false);
+    }
+}
+
+extern "sysv64" fn set_image_resource(words: *const u64, _: *const usize) -> u64 {
+    let [view, id] = arguments::<2>(words);
+    let image = load_image(id as u32);
+    if let Some(view) = object(view).and_then(|view| view.view.as_mut()) {
+        view.image = image;
+    }
+    0
+}
+
 extern "sysv64" fn add_view(words: *const u64, _: *const usize) -> u64 {
     let [group, child] = arguments::<2>(words);
     if let Some(group) = object(group).and_then(|group| group.view.as_mut()) {
@@ -884,6 +942,7 @@ fn native_entry(native: Native) -> Entry {
         Native::AdapterInit => adapter_init,
         Native::SetAdapter => set_adapter,
         Native::SetOnItemClickListener => set_on_item_click_listener,
+        Native::SetImageResource => set_image_resource,
         Native::ExceptionInit => exception_init,
         Native::GetMessage => get_message,
     }
@@ -1035,6 +1094,23 @@ impl ContentWindow {
                 }
             }
             return used;
+        }
+        if class.as_str() == IMAGE_VIEW {
+            let image = view_state.as_ref().and_then(|state| state.image);
+            let Some((index, (width, pixels))) =
+                image.and_then(|index| Some((index, state().images.get(index as usize)?)))
+            else {
+                return 0;
+            };
+            let height = (pixels.len() / (*width).max(1)) as i32;
+            let size = (Length::Px(*width as i32), Length::Px(height));
+            let place = Place::at(x, y, size.0, size.1);
+            let painted = Kind::Custom {
+                painter: paint_image,
+                data: index,
+            };
+            let _ = self.tree.add(None, place, painted);
+            return height + PADDING;
         }
         if class.as_str() == LIST_VIEW {
             let items = leaked_items(list_items(view));
@@ -1192,6 +1268,7 @@ pub fn run(startup: &Startup) -> i32 {
         initialized: BTreeSet::new(),
         dispatch: BTreeMap::new(),
         resources,
+        images: Vec::new(),
         folder: Vec::from(folder),
         activity: 0,
         table: 0,

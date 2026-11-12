@@ -13,6 +13,7 @@ path = "src/main.rs"
 eggos-android-package = { path = "../../android-package" }
 eggos-dex-compiler = { path = "../../dex-compiler" }
 eggos-math = { path = "../../math" }
+eggos-png = { path = "../../png" }
 eggos-runtime = { path = "../runtime" }
 eggos-toolkit = { path = "../toolkit" }
 
