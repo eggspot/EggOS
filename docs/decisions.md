@@ -24571,3 +24571,16 @@ the license, by an explicit instruction recorded here.
 - With D485 to D493 the 32-bit Linux layer's structures are those of RV32 and 32-bit Arm. What
   stays 64-bit is what 32-bit programs reach only through calls past the table (D492) or
   through `ioctl`s and `/proc` files whose layouts have no `long` in them.
+
+## D494 RV32 and 32-bit Arm's build entries (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** xtask knows both ports by name only, like MIPS64, s390x and SPARC64 (D297):
+  `riscv32` builds the kernel for `riscv32imac-unknown-none-elf` and its programs for
+  `riscv32gc-unknown-linux-musl` (tier 3, so through the nightly `build-std` path, D324) and
+  boots `qemu-system-riscv32 -machine virt -bios default`; `armv7` builds the kernel for
+  `armv7a-none-eabi` (soft-float: the kernel touches VFP only in the HAL's save and restore,
+  whose assembly names the FPU itself) and its programs for `armv7-unknown-linux-musleabihf`,
+  and boots `qemu-system-arm -machine virt,highmem=off,gic-version=2 -cpu cortex-a15`. Both use
+  virtio-mmio devices, as AArch64 and RV64 on `virt` do. `.cargo/config.toml` gives the four
+  targets their `eggos_kernel` and `eggos_user` flags. `all`, CI and the release matrix leave
+  them out until they are tested.

@@ -10,6 +10,12 @@ rustflags = ["--cfg", "eggos_kernel"]
 [target.loongarch64-unknown-none-softfloat]
 rustflags = ["--cfg", "eggos_kernel"]
 
+[target.riscv32imac-unknown-none-elf]
+rustflags = ["--cfg", "eggos_kernel"]
+
+[target.armv7a-none-eabi]
+rustflags = ["-C", "relocation-model=static", "--cfg", "eggos_kernel"]
+
 [target.powerpc64le-unknown-linux-gnu]
 linker = "rust-lld"
 rustflags = [
@@ -90,5 +96,13 @@ linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]
 
 [target.sparc64-unknown-linux-gnu]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]
+
+[target.riscv32gc-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]
+
+[target.armv7-unknown-linux-musleabihf]
 linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie", "--cfg", "eggos_user"]

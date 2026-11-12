@@ -228,7 +228,7 @@ commands:
                          session over the script's piped standard input and output, as
                          `qemu` runs it (<arch> may be `all`)
 
-architectures: aarch64, riscv64, x86_64, loongarch64, ppc64le; mips64el, s390x and sparc64\nonly by name (D297, D324, D327)";
+architectures: aarch64, riscv64, x86_64, loongarch64, ppc64le; mips64el, s390x, sparc64,\nriscv32 and armv7 only by name (D297, D324, D327, D494)";
 
 /// A kernel architecture: its Rust target and how to boot it in QEMU.
 #[derive(Debug)]
@@ -385,9 +385,10 @@ pub const ARCHES: &[Arch] = &[
 ];
 
 /// Architectures built only when `--arch` names them: `all`, CI and the release matrix leave
-/// them out until the owner's call at test time (D297). MIPS64's targets and s390x's user target
-/// ship no prebuilt `core` and build with a nightly toolchain's `build-std` ([`TIER_3_TARGETS`],
-/// D324); SPARC64's are tier 2 (D327).
+/// them out until the owner's call at test time (D297). MIPS64's targets and s390x's and RV32's
+/// user targets ship no prebuilt `core` and build with a nightly toolchain's `build-std`
+/// ([`TIER_3_TARGETS`], D324, D494); SPARC64's are tier 2 (D327), and so are RV32's kernel
+/// target and 32-bit Arm's two (D494).
 pub const NAMED_ONLY_ARCHES: &[Arch] = &[Arch {
     name: "mips64el",
     target: "mips64el-unknown-linux-gnuabi64",
@@ -445,6 +446,48 @@ pub const NAMED_ONLY_ARCHES: &[Arch] = &[Arch {
     disk_device: "virtio-blk-pci,disable-legacy=on",
     agent_bus_device: "virtio-serial-pci,disable-legacy=on",
     network_device: "virtio-net-pci,disable-legacy=on",
+}, Arch {
+    name: "riscv32",
+    target: "riscv32imac-unknown-none-elf",
+    user_target: "riscv32gc-unknown-linux-musl",
+    qemu: "qemu-system-riscv32",
+    machine_args: &[
+        "-machine",
+        "virt",
+        "-bios",
+        "default",
+        "-global",
+        "virtio-mmio.force-legacy=false",
+        "-device",
+        "virtio-rng-device",
+    ],
+    display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
+    input_args: MMIO_INPUT_ARGS,
+    offscreen_args: &[],
+    disk_device: MMIO_DISK_DEVICE,
+    agent_bus_device: "virtio-serial-device",
+    network_device: "virtio-net-device",
+}, Arch {
+    name: "armv7",
+    target: "armv7a-none-eabi",
+    user_target: "armv7-unknown-linux-musleabihf",
+    qemu: "qemu-system-arm",
+    machine_args: &[
+        "-machine",
+        "virt,highmem=off,gic-version=2",
+        "-cpu",
+        "cortex-a15",
+        "-global",
+        "virtio-mmio.force-legacy=false",
+        "-device",
+        "virtio-rng-device",
+    ],
+    display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
+    input_args: MMIO_INPUT_ARGS,
+    offscreen_args: &[],
+    disk_device: MMIO_DISK_DEVICE,
+    agent_bus_device: "virtio-serial-device",
+    network_device: "virtio-net-device",
 }];
 
 /// The targets of [`NAMED_ONLY_ARCHES`] that ship no prebuilt `core` (tier 3): s390x's kernel
@@ -454,6 +497,7 @@ const TIER_3_TARGETS: &[&str] = &[
     "mips64el-unknown-linux-gnuabi64",
     "mips64el-unknown-linux-muslabi64",
     "s390x-unknown-linux-musl",
+    "riscv32gc-unknown-linux-musl",
 ];
 
 /// The arguments and environment that build `core`, `alloc` and the compiler's builtins from
