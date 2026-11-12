@@ -23,4 +23,5 @@ pub mod nvidia_gsp;
 pub mod nvidia_gsp_boot;
 pub mod nvidia_gsp_display;
 pub mod nvidia_gsp_queue;
+pub mod qualcomm_mdp5;
 pub mod rockchip_vop;

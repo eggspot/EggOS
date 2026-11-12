@@ -1,5 +1,6 @@
-//! The display controllers beside Arm Mali GPUs (D548): Rockchip's VOP on the RK3399 and
-//! Allwinner's DE2 mixers on the H3, H5 and A64. Each takes over the plane the firmware lit,
+//! The display controllers beside Arm Mali GPUs (D548), Rockchip's VOP on the RK3399 and
+//! Allwinner's DE2 mixers on the H3, H5 and A64, and Qualcomm's MDP5 beside the Adreno GPUs of
+//! the Snapdragon 400 to 820 (D549). Each takes over the plane the firmware lit,
 //! at its mode, and shows the desktop through two framebuffers in turn
 //! ([`crate::display::flipping`]): the firmware's and one of the kernel's own.
 
@@ -8,6 +9,7 @@ use super::{DeviceId, DriverDescriptor, Match, Probe, ProbeError, ProbePass};
 use crate::display::Mode;
 use crate::display::flipping::{Buffer, FlipEngine, FlippingScanout};
 use eggos_drivers::gpu::allwinner_de2::{self, Mixer};
+use eggos_drivers::gpu::qualcomm_mdp5::{self, Mdp5, Pipe};
 use eggos_drivers::gpu::rockchip_vop::{self, Vop};
 use eggos_drivers::io::Mmio;
 use eggos_hal::PhysicalRange;
@@ -31,6 +33,13 @@ pub static ALLWINNER_DISPLAY_DRIVER: DriverDescriptor = DriverDescriptor {
         Match::Compatible(allwinner_de2::COMPATIBLE[2]),
     ],
     probe: probe_allwinner,
+};
+
+pub static QUALCOMM_DISPLAY_DRIVER: DriverDescriptor = DriverDescriptor {
+    name: "qualcomm-mdp5",
+    pass: ProbePass::Device,
+    matches: &[Match::Compatible(qualcomm_mdp5::COMPATIBLE)],
+    probe: probe_qualcomm,
 };
 
 const FOUR_GIGABYTES: u64 = 1 << 32;
@@ -59,6 +68,21 @@ impl FlipEngine for MixerEngine {
 
     fn flipped(&mut self) -> bool {
         self.mixer.flipped()
+    }
+}
+
+struct Mdp5Engine {
+    mdp: Mdp5<Mmio>,
+    pipe: Pipe,
+}
+
+impl FlipEngine for Mdp5Engine {
+    fn flip(&mut self, address: u64) {
+        self.mdp.flip(self.pipe, address);
+    }
+
+    fn flipped(&mut self) -> bool {
+        self.mdp.flipped(self.pipe)
     }
 }
 
@@ -134,4 +158,18 @@ fn probe_allwinner(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError
         channel: lit.channel,
     };
     take_over(probe, engine, plane, false)
+}
+
+fn probe_qualcomm(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+    let mdp = Mdp5::new(registers(probe, id)?)
+        .ok_or(ProbeError::Refused("the display processor is not an MDP5"))?;
+    let lit = mdp
+        .lit_pipe()
+        .ok_or(ProbeError::Refused("the bootloader lit no 32-bit pipe"))?;
+    let plane = (lit.address, lit.width, lit.height, lit.stride);
+    let engine = Mdp5Engine {
+        mdp,
+        pipe: lit.pipe,
+    };
+    take_over(probe, engine, plane, true)
 }

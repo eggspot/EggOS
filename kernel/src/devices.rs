@@ -302,6 +302,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &soc_display::ROCKCHIP_DISPLAY_DRIVER,
     #[cfg(any(test, feature = "soc-display"))]
     &soc_display::ALLWINNER_DISPLAY_DRIVER,
+    #[cfg(any(test, feature = "soc-display"))]
+    &soc_display::QUALCOMM_DISPLAY_DRIVER,
     #[cfg(any(test, feature = "vendor-gpus"))]
     &vendor_gpus::NVIDIA_DISPLAY_DRIVER,
     #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]

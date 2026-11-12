@@ -25759,3 +25759,29 @@ the license, by an explicit instruction recorded here.
   a `simple-framebuffer` (D542).
 - **Not yet.** Mode setting on these controllers (their clocks, the HDMI, eDP and MIPI
   bridges), VOP2 on the RK356x and RK3588, and the cursor planes.
+
+## D549 Qualcomm's MDP5 at the bootloader's mode with flips, and the DPU left on the firmware's framebuffer (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Qualcomm's BSD-licensed Little Kernel; the DPU's scope decided by research)
+
+- **Decision.** `eggos_drivers::gpu::qualcomm_mdp5` takes over the source pipe the
+  bootloader lit on the display processor beside the Adreno GPUs of the Snapdragon 400 to 820
+  (`qcom,mdp5`). Registers count from the node's base, whose first word is the revision.
+  Revisions up to 1.4 (MSM8974, MSM8226) place control path 0 and the VIG0, RGB0 and DMA0
+  pipes at `0x500`, `0x1100`, `0x1d00` and `0x2900`; from 1.5 on (MSM8994, MSM8916, MSM8953,
+  MSM8996) at `0x1000`, `0x4000`, `0x14000` and `0x24000`. The first of those pipes with a
+  frame address and four bytes a pixel is read back: its size, stride and address. A flip
+  writes the pipe's `SRC0_ADDR` and flushes the pipe, layer mixer 0 and the control path
+  through `CTL_FLUSH`; the flush bits clear once the next frame took them. The kernel shows
+  the desktop through D548's `FlippingScanout`, its second frame below 4 GiB.
+- **The DPU (Snapdragon 845 on), decided by research.**
+  - *The question.* Should the DPU get its own driver?
+  - *What is available.* Its registers and block layouts are described only in GPL sources
+    (Linux's `drm/msm/disp/dpu1`). Qualcomm publishes no manual, and its later bootloaders
+    are closed, so the clean-room rule (D79, CLAUDE.md "License") leaves no source to write
+    it from.
+  - *The answer.* Snapdragon laptops boot through UEFI and keep its graphics output's
+    framebuffer (D236); boards boot with a `simple-framebuffer` (D542). That is where the
+    DPU stays until a permissively licensed or published description exists.
+  - *Who can change it.* The owner can overrule this, for example with an exception like
+    the Wi-Fi driver's (D272).
+- **Not yet.** Mode setting on MDP5 (its clocks and the DSI and HDMI bridges) and the second
+  pipe of a split display.
