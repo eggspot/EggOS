@@ -24859,3 +24859,13 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Priorities and inequalities, layout guides (`safeAreaLayoutGuide`,
   `layoutMarginsGuide`), stack views (`UIStackView`, `NSStackView`), right-to-left leading and
   trailing, and layout on resize between draws.
+
+## D507 The Android layer, part 6: text input (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** An `EditText` shows as a toolkit text field, its hint (`android:hint` or
+  `setHint`) as the field's placeholder and its text as the field's; each edit the user makes
+  becomes the view's text at once, so the app's `getText()` and anything a click reads see what
+  was typed. A layout's hint is no longer taken as an `EditText`'s text.
+- **Not yet.** `TextWatcher`s and the editor actions (`onEditorAction`), input types (numbers,
+  passwords as masked fields), images (`ImageView` with PNG, WebP and vector drawables) and
+  lists (`ListView` and `RecyclerView` with their adapters).

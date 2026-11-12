@@ -12,8 +12,8 @@
 //! then shows the texts they changed (D500).
 
 use crate::framework::{
-    self, ACTIVITY_CLASSES, BUTTON, LINEAR_LAYOUT, Native, Object, STRING_CLASS, TEXT_VIEWS, Target,
-    View,
+    self, ACTIVITY_CLASSES, BUTTON, EDIT_TEXT, LINEAR_LAYOUT, Native, Object, STRING_CLASS,
+    TEXT_VIEWS, Target, View,
 };
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -31,7 +31,7 @@ use eggos_runtime::syscall::{self, number};
 use eggos_toolkit::application::{self, Application};
 use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
-use eggos_toolkit::widget::{Kind, Length, Place};
+use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 use eggos_toolkit::window::Window;
 
 type Entry = extern "sysv64" fn(*const u64, *const usize) -> u64;
@@ -583,7 +583,11 @@ fn inflate_node(node: &ViewNode, depth: usize) -> u64 {
         true => node.children.iter().map(|child| inflate_node(child, depth + 1)).collect(),
         false => Vec::new(),
     };
-    let text = text_of(&node.text).or_else(|| shows_text.then(|| text_of(&node.hint)).flatten());
+    let hint = text_of(&node.hint);
+    let text = match class.as_str() {
+        EDIT_TEXT => text_of(&node.text),
+        _ => text_of(&node.text).or_else(|| shows_text.then(|| hint.clone()).flatten()),
+    };
     new_object(Object {
         class,
         text: text.or_else(|| shows_text.then(String::new)),
@@ -593,6 +597,7 @@ fn inflate_node(node: &ViewNode, depth: usize) -> u64 {
             vertical: node.vertical || node.element != "LinearLayout",
             on_click: node.on_click.clone(),
             listener: 0,
+            hint,
         }),
         ..Object::default()
     })
@@ -681,6 +686,15 @@ extern "sysv64" fn get_string(words: *const u64, _: *const usize) -> u64 {
     new_string(resource_string(u64::from(id as u32)).unwrap_or_default())
 }
 
+extern "sysv64" fn set_hint(words: *const u64, _: *const usize) -> u64 {
+    let [view, hint] = arguments::<2>(words);
+    let hint = object(hint).and_then(|hint| hint.text.clone());
+    if let Some(view) = object(view).and_then(|view| view.view.as_mut()) {
+        view.hint = hint;
+    }
+    0
+}
+
 extern "sysv64" fn add_view(words: *const u64, _: *const usize) -> u64 {
     let [group, child] = arguments::<2>(words);
     if let Some(group) = object(group).and_then(|group| group.view.as_mut()) {
@@ -712,6 +726,7 @@ fn native_entry(native: Native) -> Entry {
         Native::GetString => get_string,
         Native::AddView => add_view,
         Native::SetOrientation => set_orientation,
+        Native::SetHint => set_hint,
         Native::ExceptionInit => exception_init,
         Native::GetMessage => get_message,
     }
@@ -866,12 +881,25 @@ impl ContentWindow {
         let Some(text) = text else {
             return 0;
         };
+        let hint = view_state.as_ref().and_then(|state| state.hint.clone());
         let kind = match class.as_str() {
             BUTTON => Kind::button(&text, false),
+            EDIT_TEXT => {
+                let hint = hint.unwrap_or_default().into_boxed_str();
+                let placeholder: &'static str = Box::leak(hint);
+                Kind::text_field(placeholder, Escape::Revert)
+            }
             _ => Kind::label(&text, Token::Text),
         };
-        let place = Place::at(x, y, Length::Content, Length::Content);
+        let width = match class.as_str() {
+            EDIT_TEXT => Length::Px(COLUMN * 2 - PADDING),
+            _ => Length::Content,
+        };
+        let place = Place::at(x, y, width, Length::Content);
         if let Some(widget) = self.tree.add(None, place, kind) {
+            if class.as_str() == EDIT_TEXT {
+                self.tree.set_text(widget, &text);
+            }
             self.shown.push((widget, view));
         }
         ROW
@@ -884,6 +912,16 @@ impl ContentWindow {
             }
         }
     }
+
+    fn edited(&mut self, widget: WidgetId) {
+        let Some(&(_, view)) = self.shown.iter().find(|(shown, _)| *shown == widget) else {
+            return;
+        };
+        let text = self.tree.text_of(widget).map(String::from);
+        if let (Some(view), Some(text)) = (object(view), text) {
+            view.text = Some(text);
+        }
+    }
 }
 
 impl Application<MOST_WIDGETS> for ContentWindow {
@@ -892,11 +930,15 @@ impl Application<MOST_WIDGETS> for ContentWindow {
     }
 
     fn respond(&mut self, response: Response, _now_ms: u32) {
-        if let Response::Activated(widget) = response
-            && let Some(&(_, view)) = self.shown.iter().find(|(shown, _)| *shown == widget)
-        {
-            click(view);
-            self.refresh();
+        match response {
+            Response::Activated(widget) => {
+                if let Some(&(_, view)) = self.shown.iter().find(|(shown, _)| *shown == widget) {
+                    click(view);
+                    self.refresh();
+                }
+            }
+            Response::Edited(widget) => self.edited(widget),
+            _ => {}
         }
     }
 }

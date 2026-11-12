@@ -23,7 +23,8 @@ const TEXT_VIEW: &str = "Landroid/widget/TextView;";
 pub const TEXT_VIEWS: [&str; 3] = [TEXT_VIEW, BUTTON, EDIT_TEXT];
 /// The framework's button.
 pub const BUTTON: &str = "Landroid/widget/Button;";
-const EDIT_TEXT: &str = "Landroid/widget/EditText;";
+/// The framework's text field.
+pub const EDIT_TEXT: &str = "Landroid/widget/EditText;";
 /// The framework's linear layout.
 pub const LINEAR_LAYOUT: &str = "Landroid/widget/LinearLayout;";
 const VIEW: &str = "Landroid/view/View;";
@@ -64,6 +65,8 @@ pub enum Native {
     AddView,
     /// `LinearLayout.setOrientation(int)`.
     SetOrientation,
+    /// `TextView.setHint(CharSequence)` on an `EditText` (D507).
+    SetHint,
     /// An exception's constructor with its message first (D504).
     ExceptionInit,
     /// `Throwable.getMessage()`: its message, or null.
@@ -144,6 +147,7 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         (_, "setOnClickListener") if view => Native::SetOnClickListener,
         (_, "addView") if view => Native::AddView,
         (_, "setOrientation") if view => Native::SetOrientation,
+        (EDIT_TEXT, "setHint") if !takes_int => Native::SetHint,
         (_, "<init>") if is_exception(class) && shorty.starts_with("VL") => Native::ExceptionInit,
         (_, "<init>") if is_exception(class) => Native::Nothing,
         (_, "getMessage" | "getLocalizedMessage") if is_exception(class) => Native::GetMessage,
@@ -322,6 +326,8 @@ pub struct View {
     pub vertical: bool,
     pub on_click: Option<String>,
     pub listener: u64,
+    /// An `EditText`'s hint, shown while it is empty (D507).
+    pub hint: Option<String>,
 }
 
 /// The framework class a layout element names: `TextView` and the other short names are in
