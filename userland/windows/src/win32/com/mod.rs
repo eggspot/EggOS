@@ -6,20 +6,31 @@
 //! `Scripting.Dictionary`; `CreateStreamOnHGlobal`; `OleLoadPicture`'s pictures (`picture.rs`,
 //! D231); the tables of methods of the layer's
 //! objects, whose entries keep the program's `x18` on aarch64 (`abi.rs`); and oleaut32's
-//! exports (`oleaut32.rs`), which programs import by ordinal. There is no registry, no
-//! out-of-process server, no running object table and no moniker: such calls fail as Windows
-//! reports a class, object or name it cannot find.
+//! exports (`oleaut32.rs`), which programs import by ordinal. Classes a program registers
+//! (`CoRegisterClassObject`) are created in the same process directly and, registered for
+//! `CLSCTX_LOCAL_SERVER`, served to other programs (`local_server.rs`); another program's class
+//! is reached through its socket, its server started from the registry's `LocalServer32`, and
+//! used through proxies (`proxy.rs`, both D400); ProgIDs are read from the registry too. There
+//! is no running object table and no moniker: such calls fail as Windows reports an object or
+//! name it cannot find.
 
+mod channel;
+mod local_server;
 mod oleaut32;
 mod picture;
+mod proxy;
 
+pub(super) use local_server::{
+    reported as reported_class_sockets, serve_ready as serve_class_requests,
+    watched as watched_class_sockets,
+};
 pub(super) use oleaut32::{EXPORTS as OLEAUT32_EXPORTS, by_ordinal as oleaut32_by_ordinal};
 
 use super::{heap, thread_environment};
 use crate::com::guid::{self, Guid, TEXT_LENGTH};
 use crate::com::{
     E_INVALIDARG, E_NOINTERFACE, E_OUTOFMEMORY, E_POINTER, HResult, S_FALSE, S_OK, dictionary,
-    enumerator, memory_stream, wide_text,
+    enumerator, memory_stream, query_interface, release, wide_text,
 };
 use crate::library::Export;
 use core::ptr;
@@ -33,6 +44,7 @@ const REGDB_E_CLASSNOTREG: HResult = 0x8004_0154_u32 as i32;
 const CLASS_E_NOAGGREGATION: HResult = 0x8004_0110_u32 as i32;
 const COINIT_APARTMENTTHREADED: u32 = 0x2;
 const CLSCTX_INPROC_SERVER: u32 = 0x1;
+const CLSCTX_LOCAL_SERVER: u32 = 0x4;
 const MEMCTX_TASK: u32 = 1;
 const TEB_RESERVED_FOR_OLE: usize = 0x1758;
 const COM_COUNT_MASK: u64 = 0xffff_ffff;
@@ -142,6 +154,16 @@ static TASK_ALLOCATOR_TABLE: Table<9> = Table([
 
 static TASK_ALLOCATOR: &Table<9> = &TASK_ALLOCATOR_TABLE;
 
+static PROXY: Table<7> = Table([
+    export_entry!(proxy::query_interface),
+    export_entry!(proxy::add_reference),
+    export_entry!(proxy::release),
+    export_entry!(proxy::get_type_info_count),
+    export_entry!(proxy::get_type_info),
+    export_entry!(proxy::get_ids_of_names),
+    export_entry!(proxy::invoke, two_stack_arguments),
+]);
+
 #[derive(Debug, Clone, Copy)]
 struct Apartment {
     initializations: u32,
@@ -171,6 +193,10 @@ fn set_apartment(apartment: Apartment) {
     }
     // SAFETY: as in `apartment`.
     unsafe { apartment_word().write(word) };
+}
+
+fn is_multithreaded() -> bool {
+    apartment().multithreaded
 }
 
 fn com_is_initialized() -> bool {
@@ -342,7 +368,19 @@ fn class_of_program_id(name: &[u16]) -> Option<Guid> {
             .iter()
             .zip(wanted)
             .all(|(&unit, &byte)| unit < 0x80 && (unit as u8).eq_ignore_ascii_case(&byte));
-    matches.then_some(dictionary::CLASS)
+    if matches {
+        return Some(dictionary::CLASS);
+    }
+    let mut key = alloc::string::String::from("HKEY_CLASSES_ROOT\\");
+    for c in crate::text::utf16_chars(name) {
+        if c == '\\' {
+            return None;
+        }
+        key.push(c);
+    }
+    key.push_str("\\CLSID");
+    let text = super::registry::string_value(&key, &[])?;
+    Guid::parse(&text)
 }
 
 unsafe fn answer_class(result: *mut Guid, class: Option<Guid>) -> HResult {
@@ -433,8 +471,23 @@ unsafe extern "efiapi" fn co_create_instance(
     if !com_is_initialized() {
         return CO_E_NOTINITIALIZED;
     }
+    if let Some(factory) = local_server::registered_factory(&class, context) {
+        // SAFETY: a live class object with the reference `registered_factory` gave; the
+        // interface and result are the caller's.
+        let status = unsafe { local_server::create_with(factory, outer, interface, result) };
+        // SAFETY: as above.
+        unsafe { release(factory) };
+        return status;
+    }
     if class != dictionary::CLASS || context & CLSCTX_INPROC_SERVER == 0 {
-        return REGDB_E_CLASSNOTREG;
+        if context & CLSCTX_LOCAL_SERVER == 0 {
+            return REGDB_E_CLASSNOTREG;
+        }
+        if outer != 0 {
+            return CLASS_E_NOAGGREGATION;
+        }
+        // SAFETY: as above.
+        return unsafe { proxy::create(&class, interface, result) };
     }
     if outer != 0 {
         return CLASS_E_NOAGGREGATION;
@@ -448,6 +501,38 @@ unsafe extern "efiapi" fn co_create_instance(
     // SAFETY: the creation's reference goes; the caller's, if any, keeps it.
     unsafe { dictionary::release(object) };
     answered
+}
+
+unsafe extern "efiapi" fn co_get_class_object(
+    class: *const Guid,
+    context: u32,
+    _server: usize,
+    interface: *const Guid,
+    result: *mut usize,
+) -> HResult {
+    if result.is_null() {
+        return E_POINTER;
+    }
+    // SAFETY: `CoGetClassObject`'s contract: a writable pointer.
+    unsafe { result.write_unaligned(0) };
+    // SAFETY: as above: null or a CLSID.
+    let Some(class) = (unsafe { Guid::read(class) }) else {
+        return E_INVALIDARG;
+    };
+    let Some(factory) = local_server::registered_factory(&class, context) else {
+        return REGDB_E_CLASSNOTREG;
+    };
+    // SAFETY: a live class object with the reference `registered_factory` gave; the interface
+    // and result are the caller's.
+    let status = unsafe { query_interface(factory, &read_interface(interface), result) };
+    // SAFETY: as above.
+    unsafe { release(factory) };
+    status
+}
+
+fn read_interface(interface: *const Guid) -> Guid {
+    // SAFETY: COM's contract: null or an interface id.
+    unsafe { Guid::read(interface) }.unwrap_or(guid::NULL)
 }
 
 unsafe extern "efiapi" fn co_get_object(
@@ -518,6 +603,13 @@ pub(super) const OLE32_EXPORTS: &[Export] = exports![
     b"CLSIDFromProgID" => clsid_from_prog_id,
     b"StringFromGUID2" => string_from_guid2,
     b"CoCreateInstance" => co_create_instance,
+    b"CoGetClassObject" => co_get_class_object,
+    b"CoRegisterClassObject" => local_server::co_register_class_object,
+    b"CoRevokeClassObject" => local_server::co_revoke_class_object,
+    b"CoResumeClassObjects" => local_server::co_resume_class_objects,
+    b"CoSuspendClassObjects" => local_server::co_suspend_class_objects,
+    b"CoAddRefServerProcess" => local_server::co_add_ref_server_process,
+    b"CoReleaseServerProcess" => local_server::co_release_server_process,
     b"CoGetObject" => co_get_object,
     b"CreateStreamOnHGlobal" => create_stream_on_hglobal,
 ];

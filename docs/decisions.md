@@ -22896,3 +22896,43 @@ the license, by an explicit instruction recorded here.
   `BFFCALLBACK` (no dialog window exists to receive `BFFM_SETSELECTION`), keeping the picker
   inside `pidlRoot`, virtual folders (This PC, Network, Recycle Bin) and other drives than
   `C:`.
+
+## D400 COM out of process: automation through a socket per class (batch part 13's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: Microsoft's documentation of local servers, `CoRegisterClassObject`, `REGCLS`, `LocalServer32` and `-Embedding`, `IDispatch::Invoke`, `DISPPARAMS` and `EXCEPINFO`)
+
+- **Question.** The layer created only `Scripting.Dictionary`: a program that registers its
+  classes (`CoRegisterClassObject`) or drives another program's (`CoCreateInstance` with
+  `CLSCTX_LOCAL_SERVER`, Office-style automation) got `REGDB_E_CLASSNOTREG`.
+- **Decision.** Out-of-process COM carries automation, the late-bound `IDispatch` that
+  scripting and most "drive another program" code use, over our own messages
+  (`userland/windows/src/com/wire.rs`, tested on the host), not DCOM's NDR and ORPC: both ends
+  run on our layer, so only they must agree, and VARIANTs, names, results and exceptions are
+  all that `IDispatch` passes. Custom interfaces need their proxies' and stubs' type
+  information (MIDL-generated or a type library) and wait for a later slice.
+- **Server.** `CoRegisterClassObject` keeps the class object; the same process creates its
+  objects directly (`CoCreateInstance`, `CoGetClassObject`). With `CLSCTX_LOCAL_SERVER` it
+  also listens on `~/.local/state/windows/com/{CLSID}`, a Unix socket in the user's own
+  folder, so only the user's programs reach it. Requests are served on the registering
+  thread when it looks for messages, as Windows dispatches a single-threaded apartment's
+  calls through its message loop (any thread that looks, for a class registered from the
+  multithreaded apartment); the message loop's wait watches the sockets as it watches
+  `WSAAsyncSelect`'s (D348), and a socket that reported is not watched again until its thread
+  serves it. `REGCLS_SINGLEUSE`, `REGCLS_SUSPENDED` with `CoResumeClassObjects`,
+  `CoSuspendClassObjects`, `CoAddRefServerProcess` and `CoReleaseServerProcess` (its last
+  release suspends the classes) behave as on Windows. Each connection numbers the objects it
+  was given and releases them when it goes.
+- **Client.** `CoCreateInstance` connects; when nothing listens it starts the registry's
+  `HKEY_CLASSES_ROOT\CLSID\{...}\LocalServer32` command line with ` -Embedding` and retries
+  for 30 seconds (`CO_E_SERVER_EXEC_FAILURE` after). The object is a proxy `IDispatch`
+  (`GetTypeInfoCount` gives 0); objects in results become proxies on the same connection,
+  which closes with the last of them. `CLSIDFromProgID` and `CLSIDFromString` read
+  `HKEY_CLASSES_ROOT\<ProgID>\CLSID`.
+- **Calls into the server's objects.** `GetIDsOfNames` takes six arguments and `Invoke` nine,
+  more than the layer's four-argument call into a program, so `call_program_nine` calls with
+  nine (x86_64: Microsoft's convention; ARM64: eight in registers, one on the stack).
+- **Not yet.** Interfaces other than `IDispatch` (no proxies and stubs from type
+  information), the program's own objects passed to a server (callbacks, events and
+  connection points), by-reference arguments coming back changed, arrays (`VT_ARRAY`),
+  `GetTypeInfo` across processes, the client pumping messages while it waits, the running
+  object table and `GetActiveObject`, servers on another machine, and an x64 server translated
+  on ARM64 (its translation calls with four arguments at most; such calls fail with
+  `E_NOTIMPL`).

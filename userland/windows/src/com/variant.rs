@@ -83,6 +83,33 @@ impl Variant {
     }
 }
 
+/// The DECIMAL a `VT_DECIMAL` holds, which overlays the VARIANT's first sixteen bytes (its
+/// `wReserved` where the kind is, given back as the kind).
+pub fn decimal_bytes(value: &Variant) -> [u8; 16] {
+    let head = u64::from(kind::DECIMAL)
+        | u64::from(value.reserved[0]) << 16
+        | u64::from(value.reserved[1]) << 32
+        | u64::from(value.reserved[2]) << 48;
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&head.to_le_bytes());
+    bytes[8..].copy_from_slice(&value.data[0].to_le_bytes());
+    bytes
+}
+
+/// The `VT_DECIMAL` holding the DECIMAL `bytes`.
+pub fn decimal_variant(bytes: &[u8; 16]) -> Variant {
+    let mut head = [0u8; 8];
+    head.copy_from_slice(&bytes[..8]);
+    let head = u64::from_le_bytes(head);
+    let mut low = [0u8; 8];
+    low.copy_from_slice(&bytes[8..]);
+    Variant {
+        kind: kind::DECIMAL,
+        reserved: [(head >> 16) as u16, (head >> 32) as u16, (head >> 48) as u16],
+        data: [u64::from_le_bytes(low), 0],
+    }
+}
+
 /// How many bytes a value of kind `base` (no `VT_ARRAY` or `VT_BYREF`) takes, for the kinds an
 /// array or a reference may hold.
 pub fn value_size(base: u16) -> Option<usize> {
@@ -329,6 +356,19 @@ pub unsafe extern "efiapi" fn variant_copy_ind(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_decimal_crosses_whole() {
+        let mut bytes = [0u8; 16];
+        bytes[..2].copy_from_slice(&kind::DECIMAL.to_le_bytes());
+        bytes[2] = 4;
+        bytes[3] = 0x80;
+        bytes[4..8].copy_from_slice(&7u32.to_le_bytes());
+        bytes[8..].copy_from_slice(&12_345u64.to_le_bytes());
+        let value = decimal_variant(&bytes);
+        assert_eq!(value.kind, kind::DECIMAL);
+        assert_eq!(decimal_bytes(&value), bytes);
+    }
 
     #[test]
     fn the_value_starts_at_the_eighth_byte() {

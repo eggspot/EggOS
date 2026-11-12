@@ -2,7 +2,8 @@
 //! host: GUIDs and their text (`guid`), BSTRs (`bstr`), VARIANTs (`variant`) and the
 //! conversions between their kinds (`conversion`, with dates in `date`), SAFEARRAYs
 //! (`safe_array`), the `Scripting.Dictionary` class (`dictionary`) with its enumerator
-//! (`enumerator`), and the memory stream `CreateStreamOnHGlobal` makes (`memory_stream`), all
+//! (`enumerator`), the memory stream `CreateStreamOnHGlobal` makes (`memory_stream`) and the
+//! messages of COM out of process (`wire`, D400), all
 //! laid out as COM's binary standard and Microsoft's headers give them for 64-bit Windows. An
 //! object is a heap block whose first word points at its interface's table of methods;
 //! `win32/com` builds the tables, whose entries keep the program's `x18` on aarch64, and exports
@@ -20,6 +21,7 @@ pub mod memory_stream;
 pub mod picture;
 pub mod safe_array;
 pub mod variant;
+pub mod wire;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use guid::Guid;

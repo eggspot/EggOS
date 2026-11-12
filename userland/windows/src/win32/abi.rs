@@ -263,3 +263,61 @@ pub unsafe fn call_program(address: usize, arguments: [usize; 4]) -> usize {
     };
     result
 }
+
+/// Calls the program's function at `address` with nine integer or pointer `arguments`, as
+/// Windows calls it on this CPU (the four or eight in registers, the rest on the stack), and
+/// returns its result register.
+///
+/// # Safety
+/// `address` must be a function of the program that takes at most nine integer or pointer
+/// arguments, called with values it accepts, on a thread whose TEB register is set.
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn call_program_nine(address: usize, arguments: [usize; 9]) -> Option<usize> {
+    type Nine =
+        extern "win64" fn(usize, usize, usize, usize, usize, usize, usize, usize, usize) -> usize;
+    // SAFETY: the caller's duty; under the Microsoft x64 convention a function ignores the
+    // arguments it does not take, and the caller removes the stack's.
+    let function: Nine = unsafe { core::mem::transmute(address) };
+    let [a, b, c, d, e, f, g, h, i] = arguments;
+    Some(function(a, b, c, d, e, f, g, h, i))
+}
+
+/// Calls the program's function at `address` with nine integer or pointer `arguments`, eight
+/// in `x0` to `x7` and the ninth on the stack, with `x18` holding the thread's TEB; `None` for
+/// an x64 program's function on ARM64, whose translation takes at most four.
+///
+/// # Safety
+/// `address` must be a function of the program that takes at most nine integer or pointer
+/// arguments, called with values it accepts, on a thread whose TEB register is set.
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn call_program_nine(address: usize, arguments: [usize; 9]) -> Option<usize> {
+    let address = crate::translation::native_procedure(address).unwrap_or(address);
+    if crate::translation::holds_guest_code(address) {
+        return None;
+    }
+    let result: usize;
+    // SAFETY: the caller's duty; the stack slot the callee reads is this call's own, 16-byte
+    // aligned, and given back after the call; `x18` is declared clobbered.
+    unsafe {
+        core::arch::asm!(
+            "sub sp, sp, #16",
+            "str {ninth}, [sp]",
+            "mrs x18, tpidr_el0",
+            "blr {address}",
+            "add sp, sp, #16",
+            address = in(reg) address,
+            ninth = in(reg) arguments[8],
+            inlateout("x0") arguments[0] => result,
+            in("x1") arguments[1],
+            in("x2") arguments[2],
+            in("x3") arguments[3],
+            in("x4") arguments[4],
+            in("x5") arguments[5],
+            in("x6") arguments[6],
+            in("x7") arguments[7],
+            out("x18") _,
+            clobber_abi("C"),
+        )
+    };
+    Some(result)
+}

@@ -300,8 +300,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   a real registry (D231). iostreams, the rest of Rust's std, other locales, other
   DLLs than the layer's own, multi-line edits, editable combo boxes, menu keys and submenus,
   scroll bars on windows (`WS_VSCROLL`, D228), the common controls' tooltips, custom drawing
-  and label editing, GDI+ beyond images, out-of-process COM and COM
-  classes other than `Scripting.Dictionary`,
+  and label editing, GDI+ beyond images, out-of-process COM beyond automation (`IDispatch`,
+  D400) and in-process COM classes from other DLLs,
   global keyboard and mouse hooks, global hot keys, the tray, HTTPS in WinINet (D178, D231),
   printing (no printers), hatched brushes (drawn solid), fonts other than Egg Mono
   and text beyond ASCII, ARM64 programs on x86_64 and riscv64 do not run yet; the shared clipboard (D197) carries text only (`CF_UNICODETEXT`); names are

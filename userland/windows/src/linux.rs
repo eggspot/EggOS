@@ -45,6 +45,9 @@ pub mod number {
     pub const RENAMEAT2: usize = 316;
     pub const SOCKET: usize = 41;
     pub const CONNECT: usize = 42;
+    pub const BIND: usize = 49;
+    pub const LISTEN: usize = 50;
+    pub const ACCEPT4: usize = 288;
     pub const SENDTO: usize = 44;
     pub const RECVFROM: usize = 45;
     pub const SHUTDOWN: usize = 48;
@@ -103,7 +106,10 @@ pub mod number {
     pub const UTIMENSAT: usize = 88;
     pub const KILL: usize = 129;
     pub const SOCKET: usize = 198;
+    pub const BIND: usize = 200;
+    pub const LISTEN: usize = 201;
     pub const CONNECT: usize = 203;
+    pub const ACCEPT4: usize = 242;
     pub const SENDTO: usize = 206;
     pub const RECVFROM: usize = 207;
     pub const SHUTDOWN: usize = 210;
@@ -951,6 +957,35 @@ pub fn connect(fd: usize, address: &[u8]) -> Result<usize, Errno> {
         syscall(
             number::CONNECT,
             [fd, address.as_ptr() as usize, address.len(), 0, 0, 0],
+        )
+    }
+}
+
+/// Gives socket `fd` the address `address`, a `struct sockaddr`'s bytes.
+pub fn bind(fd: usize, address: &[u8]) -> Result<usize, Errno> {
+    // SAFETY: `bind` reads the borrowed address.
+    unsafe {
+        syscall(
+            number::BIND,
+            [fd, address.as_ptr() as usize, address.len(), 0, 0, 0],
+        )
+    }
+}
+
+/// Has the bound socket `fd` take connections, at most `backlog` waiting.
+pub fn listen(fd: usize, backlog: usize) -> Result<usize, Errno> {
+    // SAFETY: `listen` touches no memory.
+    unsafe { syscall(number::LISTEN, [fd, backlog, 0, 0, 0, 0]) }
+}
+
+/// The next connection waiting on the listening socket `fd`, a new descriptor that closes on
+/// `execve` and also has the `O_NONBLOCK` in `flags`.
+pub fn accept(fd: usize, flags: usize) -> Result<usize, Errno> {
+    // SAFETY: `accept4` without an address buffer writes no memory.
+    unsafe {
+        syscall(
+            number::ACCEPT4,
+            [fd, 0, 0, O_CLOEXEC | (flags & O_NONBLOCK), 0, 0],
         )
     }
 }

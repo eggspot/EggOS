@@ -151,6 +151,22 @@ pub fn run_command(startup: &Startup) -> i32 {
     command::run(&mut registry, &mut TerminalConsole { coded_errors }, &words)
 }
 
+/// The string data of the value `name` (empty for the key's default) of the key at `path`
+/// (`HKEY_CLASSES_ROOT\...`), UTF-16 without its terminating NULs; `None` when there is no
+/// such string.
+pub(super) fn string_value(path: &str, name: &[u16]) -> Option<Vec<u16>> {
+    let path = KeyPath::parse(path).ok()?;
+    let value = with_registry(|registry| registry.value(&path, name)).ok()?;
+    if !is_string(value.kind) {
+        return None;
+    }
+    let mut units = units_of(&value.data);
+    while units.last() == Some(&0) {
+        units.pop();
+    }
+    Some(units)
+}
+
 fn key_of(handle: usize) -> Option<KeyPath> {
     let high = handle >> 32;
     if (high == 0 || high == 0xffff_ffff)

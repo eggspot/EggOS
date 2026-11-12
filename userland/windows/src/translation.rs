@@ -257,6 +257,11 @@ pub fn native_procedure(address: usize) -> Option<usize> {
     (native != 0).then_some(native)
 }
 
+/// Whether `address` is in a translated program's image, so only [`call_guest`] may call it.
+pub fn holds_guest_code(address: usize) -> bool {
+    current().is_some_and(|translation| translation.holds_guest(address as u64))
+}
+
 /// Calls the program's function at `address` with `arguments` in `rcx`, `rdx`, `r8` and `r9`
 /// through the entry trampoline, and returns `rax`; `None` when the program is not
 /// translated or `address` is not in its image (native code is called as it is).

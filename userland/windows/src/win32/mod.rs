@@ -111,7 +111,7 @@ use crate::library::{self, Export, Library};
 use crate::ordinals::Winsock;
 use eggos_runtime::errno::Errno;
 
-pub use abi::call_program;
+pub use abi::{call_program, call_program_nine};
 pub use console::set_gui_program;
 pub use crt::set_processor_features;
 pub use exception::{deliver_fault, in_layer as in_layer_code, set_image as set_exception_image};

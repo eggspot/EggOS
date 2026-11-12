@@ -64,6 +64,28 @@ impl Guid {
         }
     }
 
+    /// The sixteen bytes Windows keeps it in, the first three fields little-endian.
+    pub fn bytes(&self) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        bytes[..4].copy_from_slice(&self.data1.to_le_bytes());
+        bytes[4..6].copy_from_slice(&self.data2.to_le_bytes());
+        bytes[6..8].copy_from_slice(&self.data3.to_le_bytes());
+        bytes[8..].copy_from_slice(&self.data4);
+        bytes
+    }
+
+    /// The GUID whose sixteen bytes, as Windows keeps them, are `bytes`.
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        let mut data4 = [0u8; 8];
+        data4.copy_from_slice(&bytes[8..]);
+        Self {
+            data1: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            data2: u16::from_le_bytes([bytes[4], bytes[5]]),
+            data3: u16::from_le_bytes([bytes[6], bytes[7]]),
+            data4,
+        }
+    }
+
     fn text_bytes(&self) -> [u8; 16] {
         let mut bytes = [0u8; 16];
         bytes[..4].copy_from_slice(&self.data1.to_be_bytes());

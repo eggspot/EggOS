@@ -941,6 +941,7 @@ pub fn wait_for(filter: Filter, remove: bool, wait: bool, done: &dyn Fn(&Gui) ->
     loop {
         read_events(thread);
         super::async_select::post_ready();
+        super::com::serve_class_requests();
         super::common_controls::tooltip::tick();
         if let Some(Some(action)) = with(|gui| handed_over::take_for_thread(&mut gui.queue, thread))
         {
@@ -1042,7 +1043,10 @@ fn sleep(filter: &Filter, done: &dyn Fn(&Gui) -> bool) {
             };
         }
         let sockets = super::async_select::watched(&mut watched[descriptors.len()..]);
-        let _ = linux::wait_for_events(&mut watched[..descriptors.len() + sockets], timeout);
+        let first_class = descriptors.len() + sockets;
+        let classes = super::com::watched_class_sockets(&mut watched[first_class..]);
+        let _ = linux::wait_for_events(&mut watched[..first_class + classes], timeout);
+        super::com::reported_class_sockets(&watched[first_class..first_class + classes]);
     }
     let mut drained = [0u8; 64];
     while matches!(linux::read(descriptors[1] as usize, &mut drained), Ok(1..)) {}
