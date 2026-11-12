@@ -184,6 +184,7 @@ impl Probe for FakeProbe {
     fn deadline(&self, _: u64) -> Deadline {
         Deadline {
             ticks: || 0,
+            frequency: || 1000,
             end: 1,
             park: |_, seen, _| seen,
         }

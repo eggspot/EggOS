@@ -17,6 +17,7 @@ pub mod dma;
 pub mod ethernet;
 pub mod gpu;
 pub use eggos_font as font;
+pub mod i2c;
 pub mod input;
 pub mod interrupt;
 pub mod io;

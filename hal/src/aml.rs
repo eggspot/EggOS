@@ -1,7 +1,11 @@
 //! A walk of the ACPI namespace's static part (ACPI 6.5, chapter 20, AML): the devices a DSDT
 //! declares, with the `_HID`, `_CID`, `_UID`, `_ADR` and `_CRS` they name as data (D252). Methods
 //! are not run: a value a method computes is not seen, and a term this walk does not know ends
-//! its scope's walk there, so nothing past it in that scope is misread.
+//! its scope's walk there, so nothing past it in that scope is misread. A device's I2C connection
+//! is read from the first `I2cSerialBus` descriptor in its buffers or its methods' bodies, where
+//! firmware often builds `_CRS`, and the HID over I2C descriptor's register from its `_DSM`'s
+//! first constant returned after the HID UUID (D462): both stand for what running the methods
+//! would give in the common shapes, and a driver checks what it finds there.
 
 /// The deepest namespace path kept, in name segments.
 pub const MAX_DEPTH: usize = 8;
@@ -23,6 +27,7 @@ const EXTERNAL_OP: u8 = 0x15;
 const DUAL_NAME_PREFIX: u8 = 0x2e;
 const MULTI_NAME_PREFIX: u8 = 0x2f;
 const EXTENDED_PREFIX: u8 = 0x5b;
+const RETURN_OP: u8 = 0xa4;
 const ROOT_CHAR: u8 = b'\\';
 const PARENT_PREFIX: u8 = b'^';
 const IF_OP: u8 = 0xa0;
@@ -127,6 +132,105 @@ pub struct Device<'a> {
     pub address: Option<u64>,
     /// `_CRS`'s resource template, when the namespace names it as a buffer.
     pub resources: Option<&'a [u8]>,
+    /// Its connection to an I2C bus, from the first `I2cSerialBus` descriptor found (D462).
+    pub i2c: Option<I2cConnection<'a>>,
+    /// The HID over I2C descriptor's register its `_DSM` returns, as far as it is read.
+    pub hid_descriptor_register: Option<u16>,
+}
+
+/// A target on an I2C bus (`I2cSerialBusV2`, ACPI 6.5, 6.4.3.8.2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct I2cConnection<'a> {
+    pub address: u16,
+    pub ten_bit: bool,
+    pub speed_hz: u32,
+    /// The controller's namespace path as the descriptor names it, without its NUL.
+    pub controller: &'a [u8],
+}
+
+const SERIAL_BUS_TAG: u8 = 0x8e;
+const SERIAL_BUS_I2C: u8 = 1;
+const I2C_TYPE_DATA_BYTES: usize = 6;
+const I2C_TEN_BIT: u8 = 1;
+const HID_I2C_UUID: [u8; 16] = [
+    0xf7, 0xf6, 0xdf, 0x3c, 0x67, 0x42, 0x55, 0x45, 0xad, 0x05, 0xb3, 0x0a, 0x3d, 0x89, 0x38, 0xde,
+];
+
+/// The first I2C connection an `I2cSerialBus` descriptor in `bytes` names: a resource template,
+/// or a method's body that builds one.
+pub fn i2c_connection(bytes: &[u8]) -> Option<I2cConnection<'_>> {
+    (0..bytes.len()).find_map(|at| {
+        if bytes[at] != SERIAL_BUS_TAG {
+            return None;
+        }
+        let length = usize::from(u16::from_le_bytes([*bytes.get(at + 1)?, *bytes.get(at + 2)?]));
+        let body = bytes.get(at + 3..at + 3 + length)?;
+        if *body.get(2)? != SERIAL_BUS_I2C {
+            return None;
+        }
+        let type_data = usize::from(u16::from_le_bytes([*body.get(7)?, *body.get(8)?]));
+        if type_data < I2C_TYPE_DATA_BYTES {
+            return None;
+        }
+        let speed_hz = u32::from_le_bytes(body.get(9..13)?.try_into().ok()?);
+        let address = u16::from_le_bytes([*body.get(13)?, *body.get(14)?]);
+        let source = body.get(9 + type_data..)?;
+        let end = source.iter().position(|&byte| byte == 0)?;
+        let controller = &source[..end];
+        let starts_a_name = |first: &u8| {
+            matches!(*first, ROOT_CHAR | PARENT_PREFIX | b'_') || first.is_ascii_uppercase()
+        };
+        let named = controller.first().is_some_and(starts_a_name)
+            && controller.iter().all(u8::is_ascii_graphic);
+        named.then_some(I2cConnection {
+            address,
+            ten_bit: body[4] & I2C_TEN_BIT != 0,
+            speed_hz,
+            controller,
+        })
+    })
+}
+
+/// The HID over I2C descriptor's register a `_DSM` method's `body` returns: the first constant
+/// a `Return` gives after the HID over I2C UUID.
+pub fn hid_descriptor_register(body: &[u8]) -> Option<u16> {
+    let uuid = body.windows(HID_I2C_UUID.len()).position(|window| window == HID_I2C_UUID)?;
+    let after = &body[uuid + HID_I2C_UUID.len()..];
+    (0..after.len()).find_map(|at| {
+        if after[at] != RETURN_OP {
+            return None;
+        }
+        match *after.get(at + 1)? {
+            ONE_OP => Some(1),
+            BYTE_PREFIX => after.get(at + 2).map(|&value| u16::from(value)),
+            WORD_PREFIX => Some(u16::from_le_bytes([*after.get(at + 2)?, *after.get(at + 3)?])),
+            _ => None,
+        }
+    })
+}
+
+/// Whether `named`, a path as a descriptor names it (`\_SB_.PCI0.I2C1`, or relative), is the
+/// device at `path`: segments compared without their trailing `_` padding, a relative name by
+/// its last segments.
+pub fn names_path(named: &[u8], path: &Path) -> bool {
+    let absolute = named.first() == Some(&ROOT_CHAR);
+    let text = named.iter().position(|&byte| byte != ROOT_CHAR && byte != PARENT_PREFIX);
+    let Some(text) = text.map(|start| &named[start..]) else {
+        return false;
+    };
+    let segments = text.split(|&byte| byte == b'.');
+    let count = segments.clone().count();
+    if count > path.depth || (absolute && count != path.depth) {
+        return false;
+    }
+    segments
+        .zip(&path.segments[path.depth - count..path.depth])
+        .all(|(named, segment)| unpadded(named) == unpadded(segment))
+}
+
+fn unpadded(segment: &[u8]) -> &[u8] {
+    let length = segment.iter().rposition(|&byte| byte != b'_').map_or(1, |last| last + 1);
+    &segment[..length.min(segment.len())]
 }
 
 /// A value a `Name` gives, as far as the walk reads it.
@@ -300,9 +404,31 @@ fn walk<'a>(
                             b"_CRS" => device.resources = if let Value::Buffer(bytes) = value { Some(bytes) } else { None },
                             _ => {}
                         }
+                        if let Value::Buffer(bytes) = value
+                            && let Some(connection) = i2c_connection(bytes)
+                            && (device.i2c.is_none() || last_segment(&path) == *b"_CRS")
+                        {
+                            device.i2c = Some(connection);
+                        }
                     }
                 }
-                METHOD_OP | IF_OP | ELSE_OP | WHILE_OP => reader.at = reader.package_end()?,
+                METHOD_OP => {
+                    let method_end = reader.package_end()?;
+                    let start = reader.at;
+                    let path = reader.name(scope)?;
+                    if let Some(device) = device.as_deref_mut()
+                        && let Some(body) = reader.aml.get(start..method_end)
+                    {
+                        if device.i2c.is_none() {
+                            device.i2c = i2c_connection(body);
+                        }
+                        if last_segment(&path) == *b"_DSM" {
+                            device.hid_descriptor_register = hid_descriptor_register(body);
+                        }
+                    }
+                    reader.at = method_end;
+                }
+                IF_OP | ELSE_OP | WHILE_OP => reader.at = reader.package_end()?,
                 ALIAS_OP => {
                     reader.name(scope)?;
                     reader.name(scope)?;
@@ -411,9 +537,14 @@ mod tests {
     use super::*;
 
     fn package(body: &[u8]) -> Vec<u8> {
-        let length = body.len() + 1;
-        assert!(length < 64);
-        let mut out = vec![length as u8];
+        let mut out = match body.len() + 1 < 64 {
+            true => vec![(body.len() + 1) as u8],
+            false => {
+                let length = body.len() + 2;
+                assert!(length < 4096);
+                vec![0x40 | (length & 0x0f) as u8, (length >> 4) as u8]
+            }
+        };
         out.extend_from_slice(body);
         out
     }
@@ -483,6 +614,73 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].uid, None);
         assert_eq!(found[1].hid.unwrap().as_bytes(), b"B");
+    }
+
+    fn i2c_descriptor(address: u16, controller: &[u8]) -> Vec<u8> {
+        let mut body = vec![2, 0, SERIAL_BUS_I2C, 0x02, 0, 0, 1, 6, 0];
+        body.extend_from_slice(&400_000u32.to_le_bytes());
+        body.extend_from_slice(&address.to_le_bytes());
+        body.extend_from_slice(controller);
+        body.push(0);
+        let mut out = vec![SERIAL_BUS_TAG];
+        out.extend_from_slice(&(body.len() as u16).to_le_bytes());
+        out.extend(body);
+        out.extend_from_slice(&[0x79, 0]);
+        out
+    }
+
+    #[test]
+    fn an_i2c_connection_is_read_from_its_descriptor() {
+        let template = i2c_descriptor(0x15, b"\\_SB.PCI0.I2C1");
+        let connection = i2c_connection(&template).unwrap();
+        assert_eq!(connection.address, 0x15);
+        assert_eq!(connection.speed_hz, 400_000);
+        assert!(!connection.ten_bit);
+        assert_eq!(connection.controller, b"\\_SB.PCI0.I2C1");
+    }
+
+    #[test]
+    fn a_crs_method_s_body_gives_the_connection_and_the_dsm_the_descriptor_register() {
+        let mut crs = b"_CRS".to_vec();
+        crs.push(0);
+        crs.push(RETURN_OP);
+        crs.extend_from_slice(&[BUFFER_OP, 40, BYTE_PREFIX, 37]);
+        crs.extend(i2c_descriptor(0x2c, b"\\_SB.PCI0.I2C0"));
+        let mut dsm = b"_DSM".to_vec();
+        dsm.push(4);
+        dsm.extend_from_slice(&[IF_OP, 20]);
+        dsm.extend_from_slice(&HID_I2C_UUID);
+        dsm.extend_from_slice(&[RETURN_OP, BYTE_PREFIX, 0x20]);
+        let mut body = vec![NAME_OP];
+        body.extend_from_slice(b"_HID");
+        body.push(STRING_PREFIX);
+        body.extend_from_slice(b"SMO91D0\0");
+        body.push(METHOD_OP);
+        body.extend(package(&crs));
+        body.push(METHOD_OP);
+        body.extend(package(&dsm));
+        let aml = device(b"SENS", &body);
+        let mut found = Vec::new();
+        devices(&aml, &mut |device| found.push(device));
+        assert_eq!(found.len(), 1);
+        let connection = found[0].i2c.unwrap();
+        assert_eq!(connection.address, 0x2c);
+        assert_eq!(connection.controller, b"\\_SB.PCI0.I2C0");
+        assert_eq!(found[0].hid_descriptor_register, Some(0x20));
+    }
+
+    #[test]
+    fn a_named_controller_matches_its_device_s_path_without_padding() {
+        let path = Path::default()
+            .with(*b"_SB_")
+            .and_then(|path| path.with(*b"PCI0"))
+            .and_then(|path| path.with(*b"I2C1"))
+            .unwrap();
+        assert!(names_path(b"\\_SB.PCI0.I2C1", &path));
+        assert!(names_path(b"\\_SB_.PCI0.I2C1", &path));
+        assert!(names_path(b"I2C1", &path));
+        assert!(!names_path(b"\\_SB.PCI0.I2C2", &path));
+        assert!(!names_path(b"\\PCI0.I2C1", &path));
     }
 
     #[test]

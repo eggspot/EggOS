@@ -5,6 +5,7 @@
 
 pub mod hid;
 pub mod hid_report;
+pub mod i2c_hid;
 pub mod layout;
 pub mod orientation;
 pub mod ps2;

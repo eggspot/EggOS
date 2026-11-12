@@ -226,6 +226,26 @@ impl Layout {
             .find(|field| field.page == page && field.is_variable() && field.usage_of(0) == usage)
     }
 
+    /// Writes into `out` the distinct ids of the input reports that carry an accelerometer's
+    /// axes (D435), as many as fit: what a polled sensor is asked for (D462). How many.
+    pub fn sensor_reports(&self, out: &mut [u8]) -> usize {
+        let mut count = 0;
+        let axes = self.fields().iter().filter(|field| {
+            field.page == PAGE_SENSOR
+                && field.is_variable()
+                && (0..field.count).any(|index| {
+                    (USAGE_ACCELERATION_X..=USAGE_ACCELERATION_Z).contains(&field.usage_of(index))
+                })
+        });
+        for field in axes {
+            if count < out.len() && !out[..count].contains(&field.report_id) {
+                out[count] = field.report_id;
+                count += 1;
+            }
+        }
+        count
+    }
+
     /// What a device with this layout reports.
     pub fn capabilities(&self) -> Capabilities {
         let keyboard = self.fields().iter().any(|field| field.page == PAGE_KEYBOARD);

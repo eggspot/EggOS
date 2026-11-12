@@ -43,6 +43,8 @@ pub mod intel_display;
 pub mod vendor_gpus;
 #[cfg(any(test, feature = "intel-wifi"))]
 pub mod intel_wifi;
+#[cfg(any(test, feature = "i2c-hid"))]
+pub mod i2c;
 #[cfg(any(test, feature = "virtio"))]
 pub mod virtio;
 pub mod window;
@@ -274,6 +276,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &intel_display::INTEL_DISPLAY_DRIVER,
     #[cfg(any(test, feature = "intel-wifi"))]
     &intel_wifi::INTEL_WIFI_DRIVER,
+    #[cfg(any(test, feature = "i2c-hid"))]
+    &i2c::I2C_HID_DRIVER,
 ];
 
 /// What the Wi-Fi adapter reached, for `/proc/driver/wifi` (D274, D275).
@@ -318,12 +322,13 @@ pub enum Identity {
     /// A virtio device behind a transport its parent's driver set up; `transport` is that
     /// driver's handle for it.
     Virtio { device_type: u32, transport: u8 },
-    /// A device the ACPI namespace declares (D252): its `_HID` and `_CID`, NUL-padded, and its
-    /// namespace path.
+    /// A device the ACPI namespace declares (D252): its `_HID` and `_CID`, NUL-padded, its
+    /// namespace path, and its place on an I2C bus when it names one (D462).
     Acpi {
         hid: [u8; acpi_bus::ID_BYTES],
         cid: [u8; acpi_bus::ID_BYTES],
         path: [u8; acpi_bus::PATH_BYTES],
+        i2c: Option<acpi_bus::I2cTarget>,
     },
     /// A device on an s390x I/O subchannel (D322): the subchannel's identification word, the
     /// device number, and the control unit's type and model from `SENSE ID` (0 when it did not
@@ -432,6 +437,14 @@ impl DeviceTable {
         self.nodes.get(id.index())
     }
 
+    /// Every device with its id, in discovery order.
+    pub fn iter(&self) -> impl Iterator<Item = (DeviceId, &DeviceNode)> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (DeviceId(index as u16), node))
+    }
+
     pub fn get_mut(&mut self, id: DeviceId) -> Option<&mut DeviceNode> {
         self.nodes.get_mut(id.index())
     }
@@ -470,6 +483,7 @@ impl Default for DeviceTable {
 #[derive(Debug, Clone, Copy)]
 pub struct Deadline {
     ticks: fn() -> u64,
+    frequency: fn() -> u64,
     end: u64,
     park: fn(&interrupts::DeviceEvents, u64, u64) -> u64,
 }
@@ -480,8 +494,19 @@ impl Deadline {
         let ticks = eggos_hal::time::mul_div_ceil(milliseconds, P::clock_frequency(), 1000);
         Self {
             ticks: P::clock_ticks,
+            frequency: P::clock_frequency,
             end: P::clock_ticks().saturating_add(ticks),
             park: interrupts::DeviceEvents::wait::<P>,
+        }
+    }
+
+    /// A deadline `milliseconds` from now on the same clock: for a driver that keeps polling
+    /// after its probe (D462).
+    pub fn again_after(&self, milliseconds: u64) -> Self {
+        let ticks = eggos_hal::time::mul_div_ceil(milliseconds, (self.frequency)(), 1000);
+        Self {
+            end: (self.ticks)().saturating_add(ticks),
+            ..*self
         }
     }
 

@@ -24009,3 +24009,32 @@ the license, by an explicit instruction recorded here.
   optimisation.
 - **Not yet.** Host blobs (their memory is the device's, outside the direct map), direct
   scanout, and frames shown on the display's vertical blank instead of at the call.
+
+## D462 Sensors behind I2C-HID: DesignWare I2C, HID over I2C and ACPI's I2C connections (M12, D435's and D256's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** Tablets and convertibles put their accelerometer (and their touchpad, touch
+  screen and keyboard) on an I2C bus as a HID over I2C device that ACPI declares, not on USB;
+  the kernel had no I2C controller, and the static ACPI walk (D252) read neither a device's
+  I2C connection nor the HID descriptor's register, which firmware gives through methods.
+- **Decision.** `eggos_drivers::i2c` has a bus trait and a polled DesignWare master (Intel's
+  LPSS controllers on PCI and the ACPI-declared ones, such as AMD's): it keeps the firmware's
+  clock counts, or works them out from the controller's input clock, and feeds `IC_DATA_CMD`
+  as the FIFOs allow, a repeated start before the reads and a stop on the last word.
+  `input::i2c_hid` reads the 30-byte HID descriptor (at the register `_DSM` names, else at
+  0x0001, 0x0020 and 0x0000, the values most devices use), the report descriptor, powers the
+  device on and polls each report carrying accelerometer axes with `GET_REPORT`, decoded as a
+  USB HID sensor's (D435). The AML walk takes a device's connection from the first
+  `I2cSerialBus` descriptor in its buffers or in its methods' bodies (firmware builds `_CRS`
+  in a method more often than not) and the descriptor's register from the first constant its
+  `_DSM` returns after the HID over I2C UUID; discovery then resolves the controller by the
+  path the connection names: its own `_CRS` registers, or the root-bus PCI function its
+  `_ADR` names. The kernel's `i2c-hid` driver (feature `i2c-hid`, on by default) shares one
+  controller between the devices on its bus and installs each sensor as an input device
+  polled every 100 ms, a few dozen bytes on the bus each time.
+- **Why polling.** The devices' interrupt lines are GPIO pins (`GpioInt`), and the kernel has
+  no GPIO controller drivers yet; a sensor's reading is a value, so asking for it ten times a
+  second costs little and loses nothing. Touchpads, touch screens and keyboards send reports
+  only when their interrupt says so, so they are refused until GPIO interrupts exist.
+- **Not yet.** GPIO interrupts (Intel and AMD pin controllers) and the devices that need them;
+  sensors whose readings must first be turned on through feature reports (reporting and power
+  state); running `_DSM`, `_CRS` and `_STA` through an AML interpreter.
