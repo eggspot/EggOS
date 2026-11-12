@@ -78,7 +78,6 @@ ppc64_boot_anchor:
     cmpd        %r27, %r28
     beq         3f
 
-    // Not where it is linked: copy the loaded image there, flush it, and go on there.
     addi        %r4, %r28, (_start - ppc64_boot_anchor)
     addi        %r5, %r27, (_start - ppc64_boot_anchor)
     ld          %r6, (ppc64_boot_size - ppc64_boot_anchor)(%r28)
@@ -105,7 +104,6 @@ ppc64_boot_anchor:
     mtctr       %r8
     bctr
 
-    // From here on the code runs at its linked physical address; r27 is that of the anchor.
 3:  PHYS        %r4, ppc64_boot_anchor, __bss_start
     PHYS        %r5, ppc64_boot_anchor, __bss_end
     li          %r6, 0
@@ -122,7 +120,6 @@ ppc64_boot_anchor:
     PHYS        %r4, ppc64_boot_anchor, {opal_entry}
     std         %r29, 0(%r4)
 
-    // The interrupt vectors, to physical 0x4000, where AIL 3 takes interrupts at 0xc000...4000.
     PHYS        %r4, ppc64_boot_anchor, ppc64_vectors_start
     li          %r5, {vectors_physical}
     li          %r6, 0
@@ -137,8 +134,6 @@ ppc64_boot_anchor:
     mr          %r4, %r7
     bl          ppc64_flush_physical
 
-    // The boot radix tree, entries big-endian: the root's entry 0 to the level-3 table, its
-    // entry 0 to the level-2 table, whose 512 entries map 1 GiB each, read, write, execute.
     PHYS        %r4, ppc64_boot_anchor, {boot_root}
     PHYS        %r5, ppc64_boot_anchor, {boot_l3}
     PHYS        %r6, ppc64_boot_anchor, {boot_l2}
@@ -157,8 +152,6 @@ ppc64_boot_anchor:
     addi        %r6, %r6, 8
     bdnz        12b
 
-    // Partition table entry 0: this tree, host radix; the process table. Process table entry
-    // 0: the kernel's tree, for quadrant 3.
     PHYS        %r10, ppc64_boot_anchor, {partition_table}
     PHYS        %r11, ppc64_boot_anchor, {process_table}
     LOAD64      %r7, {partition_entry}
@@ -177,7 +170,6 @@ ppc64_boot_anchor:
     mtspr       27, %r9
     rfid
 
-    // Translation on: the kernel's TOC and stack, this CPU's scratch area, then the kernel.
 ppc64_boot_continue:
     bcl         20, 31, 13f
 13: mflr        %r11
@@ -192,9 +184,6 @@ ppc64_boot_continue:
     nop
 14: b           14b
 
-    // Sets PTCR, LPCR (host radix, process tables in use, AIL 3, external interrupts to the
-    // hypervisor, no hypervisor decrementer) and PIDR 0, and drops every translation. r10:
-    // the partition table's physical address. Clobbers r9, r10, r12.
 ppc64_radix_on:
     mtspr       464, %r10
     mfspr       %r12, 318
@@ -216,7 +205,6 @@ ppc64_radix_on:
     ptesync
     blr
 
-    // Writes back and invalidates the caches over the r4 bytes at physical r3. Clobbers r5, r6.
 ppc64_flush_physical:
     li          %r5, 0
 1:  cmpld       %r5, %r4
@@ -237,8 +225,6 @@ ppc64_flush_physical:
     isync
     blr
 
-    // HSPRG0 = this CPU's exception scratch area (by PIR), holding the common entry's address
-    // and the kernel's TOC. Clobbers r9 to r12.
 ppc64_scratch_setup:
     mflr        %r10
     bcl         20, 31, 1f
@@ -255,8 +241,6 @@ ppc64_scratch_setup:
     std         %r2, 32(%r12)
     blr
 
-    // A secondary CPU, started by OPAL_START_CPU in hypervisor real mode, big-endian, with r3
-    // its PIR; SECONDARY_STARTS[PIR] holds the kernel virtual address of its `CpuStart`.
     .global eggos_secondary_start
 eggos_secondary_start:
     FIXUP_ENDIAN

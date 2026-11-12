@@ -309,7 +309,6 @@ pub(super) extern "C" fn init() {
         )
     } else {
         let measured = measure_against_pm_timer(&apic);
-        // The panic handler reports this on the console; without a clock there is no timer.
         assert!(
             measured.is_some(),
             "neither the 8254 PIT nor the ACPI PM timer counted: no reference clock"

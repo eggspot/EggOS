@@ -67,9 +67,6 @@ loongarch64_kernel_entry:
     addi.d      $sp, $sp, {frame_size}
     ertn
 
-    // `EENTRY` while a program runs (D47). `SAVE0` holds its `UserContext`: the registers go
-    // there, `EENTRY` goes back, and `loongarch64_enter_user` returns on the kernel stack it
-    // left, with the kernel's `$r21`.
     .balign 4096
 loongarch64_user_entry:
     csrwr       $t0, {save0}
@@ -101,9 +98,6 @@ loongarch64_user_entry:
     addi.d      $sp, $sp, 96
     jirl        $zero, $ra, 0
 
-    // `loongarch64_enter_user(context)`: keeps the kernel's callee-saved registers and `$r21`
-    // on its stack and the stack pointer in the context, points `EENTRY` at the user entry and
-    // `SAVE0` at the context, and returns to privilege 3 with the program's registers.
     .global loongarch64_enter_user
 loongarch64_enter_user:
     addi.d      $sp, $sp, -96
@@ -138,8 +132,6 @@ loongarch64_enter_user:
     ertn
     .popsection
 
-    // The user-mode test programs (D47, `TestProgram`): position-independent, no data. Copied to
-    // a user page, never run where they are linked.
     .pushsection .rodata.user_test, "a"
     .balign 4
     .global loongarch64_user_test_start
@@ -198,7 +190,6 @@ loongarch64_user_test_spin:
 3:  b           3b
     .global loongarch64_user_test_linux_hello
 loongarch64_user_test_linux_hello:
-    // Linux's generic numbers: write 64, exit_group 94. s1 collects the differences.
     li.w        $a0, 1
     la.pcrel    $a1, 9f
     li.w        $a2, {hello_length}

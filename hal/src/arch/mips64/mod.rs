@@ -64,9 +64,6 @@ _start:
 3:  wait
     b           3b
 
-    // Kernel mode with interrupts masked: the exception base, user access to `UserLocal` and
-    // the counter through `rdhwr`, 4 KiB pages, read and execute inhibit, an empty TLB. Clobbers
-    // $12 to $15.
 mips64_cpu_setup:
     dla         $12, mips64_vectors
     mtc0        $12, $15, 1
@@ -84,8 +81,6 @@ mips64_cpu_setup:
     daddiu      $29, $29, 16
     jr          $31
 
-    // A secondary CPU, sent here by QEMU's boot code with `a1` its `CpuStart` and `sp` the
-    // stack mailbox 1 held.
     .global eggos_secondary_start
 eggos_secondary_start:
     li          $12, {status_kernel}

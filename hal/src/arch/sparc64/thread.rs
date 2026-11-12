@@ -9,7 +9,6 @@ core::arch::global_asm!(
     .pushsection .text.thread, "ax"
     .balign 4
     .global eggos_switch_thread
-    // %o0: where to save the running thread's context; %o1: the context to resume.
 eggos_switch_thread:
     save        %sp, -{frame}, %sp
     flushw
@@ -21,8 +20,6 @@ eggos_switch_thread:
     ret
      restore
 
-    // A new thread's first switch returns here, its window filled from the frame above the
-    // switch's: %l0 is its entry, %l1 the argument.
     .global eggos_thread_start
 eggos_thread_start:
     mov         %l1, %o0

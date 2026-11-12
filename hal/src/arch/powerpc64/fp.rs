@@ -12,7 +12,6 @@ core::arch::global_asm!(
     .pushsection .text.fp, "ax"
     .machine power9
     .balign 4
-    // r3: the 1040-byte state: 64 registers of 16 bytes, FPSCR, VSCR, VRSAVE.
     .global ppc64_fp_save
 ppc64_fp_save:
     .irp        n, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31

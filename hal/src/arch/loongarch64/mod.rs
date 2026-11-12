@@ -35,7 +35,6 @@ _start:
     move        $r21, $zero
     bl          loongarch64_boot_windows
 
-    // Zero .bss: PC-relative addresses are the cached window's here.
     la.pcrel    $t0, __bss_start
     la.pcrel    $t1, __bss_end
 1:  bgeu        $t0, $t1, 2f
@@ -43,8 +42,6 @@ _start:
     addi.d      $t0, $t0, 8
     b           1b
 
-    // The EFI system table QEMU built: its signature, then the configuration tables, one of
-    // which is the device tree's. Without it there is neither a device tree nor a command line.
 2:  li.d        $t2, {cached_window}
     or          $t3, $a2, $t2
     ld.d        $t4, $t3, 0
@@ -68,7 +65,6 @@ _start:
     addi.d      $t4, $t4, -1
     b           3b
 
-    // The command line, copied before the page it is on is zeroed below.
 4:  or          $t3, $a1, $t2
     la.pcrel    $t4, {command_line}
     li.w        $t5, {command_line_words}
@@ -79,7 +75,6 @@ _start:
     addi.w      $t5, $t5, -1
     bnez        $t5, 7b
 
-    // Physical page 0 becomes the zero table the walk reaches through an empty directory entry.
 6:  move        $t3, $t2
     li.w        $t5, 512
 8:  st.d        $zero, $t3, 0
@@ -87,9 +82,6 @@ _start:
     addi.w      $t5, $t5, -1
     bnez        $t5, 8b
 
-    // The boot page tables (D33): the high root, a level-2 table of 1 GiB leaves for the direct
-    // map's first 512 GiB, read and write, and one for the kernel's gigabyte at its virtual
-    // address, read, write and execute.
     la.pcrel    $t0, {boot_root}
     la.pcrel    $t1, {boot_direct}
     bstrpick.d  $t3, $t1, 47, 0
@@ -117,7 +109,6 @@ _start:
     .balign 8
 10: .dword      11f
 
-    // From here on the kernel runs at its virtual address.
 11: la.pcrel    $sp, __stack_top
     la.pcrel    $t0, loongarch64_kernel_entry
     csrwr       $t0, {csr_eentry}
@@ -127,10 +118,6 @@ _start:
 12: idle        0
     b           12b
 
-    // From direct address mode: turns the direct mapping windows on, moves to this code's
-    // alias in the cached window (direct address mode drops an address's high bits, so the
-    // alias reaches the same instructions), then turns translation on and returns to the
-    // caller's alias. Clobbers t0 and t1.
 loongarch64_boot_windows:
     li.d        $t0, {dmw0}
     csrwr       $t0, {csr_dmw0}
@@ -146,9 +133,6 @@ loongarch64_boot_windows:
     csrwr       $zero, {csr_euen}
     jirl        $zero, $ra, 0
 
-    // Points the TLB refill handler and the page walk at the boot tables: the walk's format,
-    // 4 KiB pages, the refill handler's physical address, the boot high root and the zero
-    // table as the low root; then drops every cached translation. Clobbers t0.
 loongarch64_boot_walker:
     li.d        $t0, {pwcl}
     csrwr       $t0, {csr_pwcl}
@@ -168,8 +152,6 @@ loongarch64_boot_walker:
     invtlb      0, $zero, $zero
     jirl        $zero, $ra, 0
 
-    // A secondary CPU, sent here by QEMU's boot code through mailbox 0 (D40), in direct
-    // address mode; mailbox 1 holds the kernel virtual address of its `CpuStart`.
     .global eggos_secondary_start
 eggos_secondary_start:
     move        $r21, $zero

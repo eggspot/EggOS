@@ -6,7 +6,6 @@ core::arch::global_asm!(
     .pushsection .text.thread, "ax"
     .balign 4
     .global eggos_switch_thread
-    // a0: where to save the running thread's context; a1: the context to resume.
 eggos_switch_thread:
     addi.d      $sp, $sp, -{frame_size}
     st.d        $ra, $sp, 0
@@ -36,7 +35,6 @@ eggos_switch_thread:
     addi.d      $sp, $sp, {frame_size}
     jirl        $zero, $ra, 0
 
-    // A new thread's first switch returns here: s0 is its entry, s1 the argument.
     .global eggos_thread_start
 eggos_thread_start:
     move        $a0, $s1

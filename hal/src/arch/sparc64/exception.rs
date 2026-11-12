@@ -319,7 +319,6 @@ sparc64_trap_common:
     ret
      restore
 
-    // From the kernel, %g1 TSTATE.
 sparc64_kernel_trap:
     save        %sp, -{kernel_trap_frame}, %sp
     rdpr        %tstate, %l0
@@ -359,8 +358,6 @@ sparc64_kernel_trap:
 6:  restore
     done
 
-    // %g1 the trap type: %g2 the fault address (the tag access of a TLB miss, else the data
-    // fault address) and %g3 the data fault status. Clobbers %g4.
 sparc64_fault_registers:
     mov         {tag_access}, %g4
     sub         %g1, {instruction_miss}, %g2
@@ -377,7 +374,6 @@ sparc64_fault_registers:
     retl
      ldxa       [%g4] {asi_dmmu}, %g3
 
-    // %o0 the context, %o1 the program's %fprs.
     .global sparc64_enter_user
 sparc64_enter_user:
     save        %sp, -{frame}, %sp
@@ -416,7 +412,6 @@ sparc64_enter_user:
     .endr
     retry
 
-    // %o0 the program's root, %o1 the kernel's (physical; 0 to keep it): the MMU globals.
     .global sparc64_set_roots
 sparc64_set_roots:
     rdpr        %pstate, %o3

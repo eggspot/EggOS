@@ -121,9 +121,6 @@ mips64_general_entry:
     ld          $29, 29 * 8($29)
     eret
 
-    // From user mode (D47): the registers go into the `UserContext` `KScratch2` holds, then
-    // `mips64_enter_user` returns on the kernel stack it left, with the kernel's callee-saved
-    // registers and `gp`, in kernel mode with `EXL` clear and interrupts masked.
 mips64_user_entry:
     dmfc0       $26, $31, 3
     .irp        n, 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,28,29,30,31
@@ -152,10 +149,6 @@ mips64_user_entry:
     ehb
     jr          $31
 
-    // `mips64_enter_user(context)`: keeps the kernel's callee-saved registers and `gp` on its
-    // stack and the stack pointer in the context, points `KScratch2` at the context, sets
-    // `UserLocal`, `EPC`, `hi` and `lo`, then `Status` to user mode with interrupts enabled
-    // (`EXL` keeps both off until the `eret`), loads the program's registers and returns to it.
     .global mips64_enter_user
 mips64_enter_user:
     daddiu      $29, $29, -96
@@ -187,9 +180,6 @@ mips64_enter_user:
     eret
     .popsection
 
-    // The user-mode test programs (D47, `TestProgram`): position-independent, no data. Copied to
-    // a user page, never run where they are linked. The Linux ones use n64's numbers, whose
-    // errors set `a3` and leave the error number positive in `v0`.
     .macro SYS number
     li          $2, \number
     syscall

@@ -166,8 +166,6 @@ ppc64_common_entry:
     ld          %r1, (32 + 8)(%r1)
     hrfid
 
-    // From problem state: the program's registers into its context, then back to
-    // `ppc64_enter_user`'s caller on the kernel stack it left.
 ppc64_user_exit:
     ld          %r12, 48(%r13)
     std         %r0, 0(%r12)
@@ -217,9 +215,6 @@ ppc64_user_exit:
     mtlr        %r0
     blr
 
-    // `ppc64_enter_user(context)`: keeps the kernel's callee-saved registers on its stack and
-    // the stack pointer in the context, names the context in the scratch area, and returns
-    // to problem state with the program's registers.
     .global ppc64_enter_user
 ppc64_enter_user:
     mflr        %r0
@@ -264,9 +259,6 @@ ppc64_enter_user:
     rfid
     .popsection
 
-    // The user-mode test programs (D47, `TestProgram`): position-independent, no data. Copied
-    // to a user page, never run where they are linked. Linux's PowerPC numbers; a call failed
-    // when CR0.SO is set, with the error number positive in r3.
     .macro SYS number
     li          %r0, \number
     sc
