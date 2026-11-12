@@ -98,6 +98,7 @@ class_pairs! {
     NSABOUTPANEL, NSABOUTPANEL_META;
     NSLAYOUTANCHOR, NSLAYOUTANCHOR_META;
     NSLAYOUTCONSTRAINT, NSLAYOUTCONSTRAINT_META;
+    NSSTACKVIEW, NSSTACKVIEW_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -233,6 +234,8 @@ pub fn set_up() -> bool {
 pub fn resolve(name: &[u8]) -> Option<u64> {
     let class = |object: &'static ClassObject| Some(object as *const ClassObject as u64);
     match name {
+        b"_OBJC_CLASS_$_NSStackView" => class(&NSSTACKVIEW),
+        b"_OBJC_METACLASS_$_NSStackView" => class(&NSSTACKVIEW_META),
         b"_OBJC_CLASS_$_NSLayoutConstraint" => class(&NSLAYOUTCONSTRAINT),
         b"_OBJC_METACLASS_$_NSLayoutConstraint" => class(&NSLAYOUTCONSTRAINT_META),
         b"_OBJC_CLASS_$_NSLayoutAnchor" => class(&NSLAYOUTANCHOR),

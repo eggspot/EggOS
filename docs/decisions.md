@@ -24895,3 +24895,18 @@ the license, by an explicit instruction recorded here.
   with a toolkit painter that composites it.
 - **Not yet.** WebP and vector drawables (most current apps' icons), density buckets (the
   first configuration's file is taken, D500), scaling (`scaleType`), and `setImageBitmap`.
+
+## D510 Stack views and layout guides (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `NSStackView`, which UIKit's `UIStackView` is bound to, is a view class of the
+  layer's: `stackViewWithViews:`, `initWithArrangedSubviews:`, `addArrangedSubview:` (and
+  `addView:inGravity:`) keep up to 32 arranged subviews, also added as subviews; `axis` or
+  `orientation` (1 stacks down) and `spacing` are kept, alignment and distribution are
+  accepted and not read. Each Auto Layout pass (D506) then lays the arranged subviews out one
+  after another from the stack's top (or left), each as tall (or wide) as its frame, or its
+  intrinsic size when its frame is empty, and as wide (or tall) as the stack, skipping hidden
+  ones. A view's `safeAreaLayoutGuide`, `layoutMarginsGuide` and `readableContentGuide` answer
+  the view itself, so constraints to their anchors are constraints to the view's: there are
+  no system bars or margins inside an EggOS window yet.
+- **Not yet.** Distributions (fill equally, equal spacing) and alignments, baseline alignment,
+  margins of 8 or 16 points, and stack views inside scroll views sizing their content.

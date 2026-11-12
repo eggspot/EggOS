@@ -8,10 +8,17 @@
 //! current size along an axis no constraint sizes, or its intrinsic size when it answers one;
 //! three passes settle chains of views placed by their neighbours. Constraints are kept in a
 //! table of 512, the first come.
+//!
+//! Stack views (D510): `NSStackView` and UIKit's `UIStackView` keep up to 32 arranged
+//! subviews, an axis and a spacing, and each pass lays them out one after another from the
+//! stack's top or left, each as tall (or wide) as its frame or intrinsic size and as wide (or
+//! tall) as the stack. A view's `safeAreaLayoutGuide`, `layoutMarginsGuide` and
+//! `readableContentGuide` are the view itself, whose anchors stand for theirs.
 
 use super::view::fields;
 use super::{
-    NSLAYOUTANCHOR, NSLAYOUTANCHOR_META, NSLAYOUTCONSTRAINT, NSLAYOUTCONSTRAINT_META, NSVIEW,
+    NSLAYOUTANCHOR, NSLAYOUTANCHOR_META, NSLAYOUTCONSTRAINT, NSLAYOUTCONSTRAINT_META,
+    NSSTACKVIEW, NSSTACKVIEW_META, NSVIEW,
 };
 use crate::foundation::{class_pointer, new_instance};
 use crate::objc::abi::{Id, Sel};
@@ -371,7 +378,8 @@ fn lay_out(view: Id) {
     };
 }
 
-/// Applies the active constraints to the views they place (before a window draws).
+/// Applies the active constraints to the views they place, and the stack views to their
+/// arranged subviews (before a window draws).
 pub fn apply() {
     for _ in 0..PASSES {
         for slot in &ACTIVE {
@@ -384,7 +392,130 @@ pub fn apply() {
                 lay_out(first);
             }
         }
+        for slot in &STACKS {
+            let stack = slot.load(Ordering::Acquire) as Id;
+            if !stack.is_null() {
+                stack_lay_out(stack);
+            }
+        }
     }
+}
+
+const MOST_ARRANGED: usize = 32;
+const MOST_STACKS: usize = 128;
+
+static STACKS: [AtomicUsize; MOST_STACKS] = [const { AtomicUsize::new(0) }; MOST_STACKS];
+
+#[repr(C)]
+struct StackFields {
+    base: super::view::ViewFields,
+    vertical: u8,
+    spacing: f64,
+    count: usize,
+    arranged: [Id; MOST_ARRANGED],
+}
+
+fn stack(object: Id) -> &'static mut StackFields {
+    // SAFETY: the callers pass stack view instances, whose memory starts with a view's fields
+    // and goes on with these.
+    unsafe { &mut *object.cast::<StackFields>() }
+}
+
+fn register_stack(object: Id) {
+    let known = STACKS.iter().any(|slot| slot.load(Ordering::Acquire) == object as usize);
+    if !known {
+        let _ = STACKS.iter().any(|slot| {
+            slot.compare_exchange(0, object as usize, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        });
+    }
+}
+
+extern "C" fn stack_add_arranged(this: Id, _: Sel, view: Id) {
+    if view.is_null() {
+        return;
+    }
+    register_stack(this);
+    let fields = stack(this);
+    if fields.count < MOST_ARRANGED {
+        fields.arranged[fields.count] = view;
+        fields.count += 1;
+        send1(this, sel!("addSubview:"), view as usize);
+    }
+}
+
+extern "C" fn stack_with_views(class: Id, _: Sel, views: Id) -> Id {
+    let this = send(send(class, sel!("alloc")), sel!("init"));
+    if !this.is_null() {
+        each_in(views, |view| stack_add_arranged(this, sel!("addArrangedSubview:"), view));
+    }
+    this
+}
+
+extern "C" fn stack_init_with_arranged(this: Id, _: Sel, views: Id) -> Id {
+    let this = send(this, sel!("init"));
+    if !this.is_null() {
+        each_in(views, |view| stack_add_arranged(this, sel!("addArrangedSubview:"), view));
+    }
+    this
+}
+
+extern "C" fn stack_set_axis(this: Id, _: Sel, axis: i64) {
+    register_stack(this);
+    stack(this).vertical = u8::from(axis == 1);
+}
+
+extern "C" fn stack_axis(this: Id, _: Sel) -> i64 {
+    i64::from(stack(this).vertical)
+}
+
+extern "C" fn stack_set_spacing(this: Id, _: Sel, spacing: f64) {
+    stack(this).spacing = spacing;
+}
+
+extern "C" fn stack_spacing(this: Id, _: Sel) -> f64 {
+    stack(this).spacing
+}
+
+extern "C" fn ignore_number(_: Id, _: Sel, _: i64) {}
+
+fn stack_lay_out(this: Id) {
+    let fields = stack(this);
+    let bounds = fields.base.frame;
+    let vertical = fields.vertical != 0;
+    let mut used = 0.0;
+    for &view in &fields.arranged[..fields.count] {
+        if view.is_null() || super::view::fields(view).hidden {
+            continue;
+        }
+        let frame = super::view::fields(view).frame;
+        let intrinsic = intrinsic_size(view);
+        let own = match (vertical, intrinsic) {
+            (true, Some(size)) if frame.height <= 0.0 => size.height,
+            (false, Some(size)) if frame.width <= 0.0 => size.width,
+            (true, _) => frame.height,
+            (false, _) => frame.width,
+        };
+        super::view::fields(view).frame = match vertical {
+            true => Frame {
+                x: 0.0,
+                y: bounds.height - used - own,
+                width: bounds.width,
+                height: own,
+            },
+            false => Frame {
+                x: used,
+                y: 0.0,
+                width: own,
+                height: bounds.height,
+            },
+        };
+        used += own + fields.spacing;
+    }
+}
+
+extern "C" fn guide_is_view(this: Id, _: Sel) -> Id {
+    this
 }
 
 /// Gives every view its anchors and `translatesAutoresizingMaskIntoConstraints`.
@@ -402,6 +533,9 @@ pub fn extend_views(runtime: &mut Runtime) -> bool {
         "centerYAnchor" => center_y_anchor,
         "translatesAutoresizingMaskIntoConstraints" => yes,
         "setTranslatesAutoresizingMaskIntoConstraints:" => ignore_flag,
+        "safeAreaLayoutGuide" => guide_is_view,
+        "layoutMarginsGuide" => guide_is_view,
+        "readableContentGuide" => guide_is_view,
     ];
     class::extend(runtime, &NSVIEW, &view_methods, &[])
 }
@@ -431,7 +565,31 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "deactivateConstraints:" => deactivate_constraints,
         "constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:" => with_item,
     ];
+    let stack_methods = methods![
+        "addArrangedSubview:" => stack_add_arranged,
+        "addView:inGravity:" => stack_add_arranged,
+        "initWithArrangedSubviews:" => stack_init_with_arranged,
+        "setAxis:" => stack_set_axis,
+        "axis" => stack_axis,
+        "setOrientation:" => stack_set_axis,
+        "orientation" => stack_axis,
+        "setSpacing:" => stack_set_spacing,
+        "spacing" => stack_spacing,
+        "setAlignment:" => ignore_number,
+        "setDistribution:" => ignore_number,
+    ];
+    let stack_class_methods = methods![
+        "stackViewWithViews:" => stack_with_views,
+    ];
     super::define(
+        runtime,
+        b"NSStackView\0",
+        (&NSSTACKVIEW, &NSSTACKVIEW_META),
+        &NSVIEW,
+        core::mem::size_of::<StackFields>(),
+        &stack_methods,
+        &stack_class_methods,
+    ) && super::define(
         runtime,
         b"NSLayoutAnchor\0",
         (&NSLAYOUTANCHOR, &NSLAYOUTANCHOR_META),
