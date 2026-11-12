@@ -296,6 +296,8 @@ pub fn scale_line(facts: &Facts) -> (Text<96>, bool) {
 /// The Display pane's widgets.
 #[derive(Debug)]
 pub struct DisplayPane {
+    labels: [WidgetId; 7],
+    narrow: Option<i32>,
     layout: WidgetId,
     layout_status: WidgetId,
     resolution: WidgetId,
@@ -310,7 +312,7 @@ pub struct DisplayPane {
 impl DisplayPane {
     /// Builds the pane's rows in `pane` under its heading, showing `facts`.
     pub fn build(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, facts: &Facts) -> Self {
-        label(tree, pane, PADDING, 76, "Resolution");
+        let resolution_label = label(tree, pane, PADDING, 76, "Resolution");
         let resolution = add(
             tree,
             pane,
@@ -324,18 +326,18 @@ impl DisplayPane {
             Kind::dropdown("Resolution", &RESOLUTION_OPTIONS, 0),
         );
         let resolution_status = label(tree, pane, PADDING, 116, "");
-        label(tree, pane, PADDING, 156, "Scale");
+        let scale_label = label(tree, pane, PADDING, 156, "Scale");
         let radios = Kind::radios(&SCALES, 0, true);
         let radios_width = radios.content_size().0;
         let scales = add(tree, pane, Place::right(PADDING, 150), radios);
-        add(
+        let hint = add(
             tree,
             pane,
             Place::right(PADDING + radios_width + PADDING, 156),
             Kind::label(SCALE_HINT, Token::TextDim),
         );
         let status = label(tree, pane, PADDING, 196, "");
-        label(tree, pane, PADDING, ROTATION_TOP, "Rotation");
+        let rotation_label = label(tree, pane, PADDING, ROTATION_TOP, "Rotation");
         let rotation = add(
             tree,
             pane,
@@ -343,14 +345,14 @@ impl DisplayPane {
             Kind::dropdown("Rotation", &ROTATION_OPTIONS, 0),
         );
         let rotation_status = label(tree, pane, PADDING, ROTATION_TOP + 40, "");
-        label(tree, pane, PADDING, POINTER_TOP, "Pointer");
-        add(
+        let pointer_label = label(tree, pane, PADDING, POINTER_TOP, "Pointer");
+        let pointer = add(
             tree,
             pane,
             Place::right(PADDING, POINTER_TOP),
             Kind::label("Software", Token::Text),
         );
-        label(tree, pane, PADDING, LAYOUT_TOP, "Layout");
+        let layout_label = label(tree, pane, PADDING, LAYOUT_TOP, "Layout");
         let layout = add(
             tree,
             pane,
@@ -359,6 +361,16 @@ impl DisplayPane {
         );
         let layout_status = label(tree, pane, PADDING, LAYOUT_TOP + 40, "");
         let display = Self {
+            labels: [
+                resolution_label,
+                scale_label,
+                hint,
+                rotation_label,
+                pointer_label,
+                pointer,
+                layout_label,
+            ],
+            narrow: None,
             layout,
             layout_status,
             resolution,
@@ -371,6 +383,66 @@ impl DisplayPane {
         };
         display.show(tree, facts);
         display
+    }
+
+    /// Moves the pane to one column `content` wide on a narrow page (display-rotation-v0.5.md
+    /// section 5's phone places, R2 for the rows above them), or back to the desktop's; returns
+    /// the narrow pane's height.
+    pub fn reflow(&mut self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>, facts: &Facts) -> i32 {
+        self.narrow = content;
+        let [resolution, scale, hint, rotation, pointer_label, pointer, layout] = self.labels;
+        let line = |y: i32| Place::at(PADDING, y, Length::Content, Length::Content);
+        let height = match content {
+            None => {
+                tree.set_place(resolution, line(76));
+                tree.set_place(
+                    self.choice,
+                    from_right(PADDING, 70, RESOLUTION_WIDTH, CONTROL_HEIGHT),
+                );
+                tree.set_place(self.resolution_status, line(116));
+                tree.set_place(scale, line(156));
+                tree.set_place(self.scales, Place::right(PADDING, 150));
+                let radios_width = tree.rect(self.scales).map_or(0, |rect| rect.width);
+                tree.set_place(hint, Place::right(PADDING + radios_width + PADDING, 156));
+                tree.set_place(self.status, line(196));
+                tree.set_place(rotation, line(ROTATION_TOP));
+                tree.set_place(
+                    self.rotation,
+                    from_right(PADDING, ROTATION_TOP - 6, ROTATION_WIDTH, CONTROL_HEIGHT),
+                );
+                tree.set_place(self.rotation_status, line(ROTATION_TOP + 40));
+                tree.set_place(pointer_label, line(POINTER_TOP));
+                tree.set_place(pointer, Place::right(PADDING, POINTER_TOP));
+                tree.set_place(layout, line(LAYOUT_TOP));
+                tree.set_place(
+                    self.layout,
+                    from_right(PADDING, LAYOUT_TOP - 6, RESOLUTION_WIDTH, CONTROL_HEIGHT),
+                );
+                tree.set_place(self.layout_status, line(LAYOUT_TOP + 40));
+                0
+            }
+            Some(c) => {
+                let control = |y: i32| Place::at(PADDING, y, Length::Px(c), Length::Px(TOUCH_CONTROL));
+                tree.set_place(resolution, line(64));
+                tree.set_place(self.choice, control(88));
+                tree.set_place(self.resolution_status, line(144));
+                tree.set_place(scale, line(176));
+                tree.set_place(self.scales, Place::at(PADDING, 200, Length::Content, Length::Content));
+                tree.set_place(hint, line(232));
+                tree.set_place(self.status, line(256));
+                tree.set_place(rotation, line(296));
+                tree.set_place(self.rotation, control(320));
+                tree.set_place(self.rotation_status, line(380));
+                tree.set_place(pointer_label, line(416));
+                tree.set_place(pointer, Place::right(PADDING, 416));
+                tree.set_place(layout, line(456));
+                tree.set_place(self.layout, control(480));
+                tree.set_place(self.layout_status, line(540));
+                572
+            }
+        };
+        self.show_resolution(tree, facts);
+        height
     }
 
     /// Shows `facts`: the device's size, the saved scale, the state line.
@@ -464,7 +536,12 @@ impl DisplayPane {
             true => PADDING + RESOLUTION_WIDTH + PADDING,
             false => PADDING,
         };
-        tree.set_place(self.resolution, Place::right(size_right, 76));
+        let size_right = match self.narrow {
+            Some(_) => PADDING,
+            None => size_right,
+        };
+        let size_top = if self.narrow.is_some() { 64 } else { 76 };
+        tree.set_place(self.resolution, Place::right(size_right, size_top));
         let scale = facts.scale.max(1);
         let options = options_for(scale);
         tree.change(self.choice, |kind| {

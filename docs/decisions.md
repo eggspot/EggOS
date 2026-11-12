@@ -23522,3 +23522,13 @@ the license, by an explicit instruction recorded here.
   every place back.
 - **Deviation.** The explanation line is cut, not wrapped, at 358 px until labels wrap
   (the design's ask 3).
+
+## D428 The Display pane in one column on narrow pages (display-rotation-v0.5.md section 5, settings-forms-v0.5.md section 2; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `DisplayPane::reflow` takes the rotation brief's phone places: the scale's status
+  line at (16, 256), `Rotation` at 296 with its dropdown full width and 48 tall at 320, the
+  rotation line at 380, `Pointer` at 416, `Layout` at 456 with its dropdown at 480 and its
+  line at 540. Above them, by R2, `Resolution` keeps its size at the row's right with the
+  dropdown full width under it at 88, its status line at 144, and `Scale` at 176 with its
+  radios under it and the restart hint at 232. The pane is 572 tall on a narrow page; the
+  desktop shape puts every place back, the scale hint after the radios as built.
