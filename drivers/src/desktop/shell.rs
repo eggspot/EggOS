@@ -274,6 +274,14 @@ impl Desktop {
             .any(|panel| contains(panel, x, y))
     }
 
+    /// The orientation the focused window's app holds (D436), any when none is focused or its
+    /// app holds none.
+    pub fn focused_orientation(&self) -> eggos_app_manifest::Orientation {
+        self.focus
+            .and_then(|slot| self.app_of(slot))
+            .map_or(eggos_app_manifest::Orientation::Any, |app| self.catalogue.orientation(app))
+    }
+
     /// The app window `slot` belongs to, if the catalogue knows it: the console terminal's
     /// window, and a window titled `Terminal` or ending with ` - Terminal` (the terminal
     /// program's, D187), are Terminal's; a window whose title ends with ` - Text Editor` the

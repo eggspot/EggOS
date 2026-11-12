@@ -23629,3 +23629,18 @@ the license, by an explicit instruction recorded here.
   feature reports), I2C-HID and ACPI-described sensors (the kernel has no I2C controller
   driver yet), the sensor as a device in `devices` and in Settings' Display pane line, and
   apps that hold one orientation (their manifest asking portrait or landscape).
+
+## D436 Apps that hold an orientation (M12; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** An app's manifest may say `orientation=portrait` or `orientation=landscape`
+  (`eggos_app_manifest::orientation`, absent or anything else is any); the desktop's catalogue
+  keeps it for each installed app and `Desktop::focused_orientation` answers for the focused
+  window's app. While `display.rotation` is `auto` and the sensor took a new way up (D435), the
+  screen turns to it only when the picture's shape there (portrait when its height exceeds its
+  width after the turn, from the device's own mode) fits what the focused app holds; when it
+  does not, the screen stays, and the way up the sensor took is looked at again at most twice a
+  second, so the screen turns once the app loses the focus or the device comes round. A locked
+  rotation always wins.
+- **Not yet.** Apps of the foreign layers asking it through their own APIs (Android's
+  `screenOrientation`, iOS's supported orientations), and a phone's shell turning a held app's
+  window inside an unturned screen.

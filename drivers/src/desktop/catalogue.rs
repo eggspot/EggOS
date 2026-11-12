@@ -260,6 +260,7 @@ struct InstalledApp {
     synonyms_length: u8,
     icon: Option<IconPixels>,
     console: bool,
+    orientation: manifest::Orientation,
     actions: [Option<MenuAction>; MENU_ACTIONS],
     has_actions: bool,
 }
@@ -431,6 +432,7 @@ impl Catalogue {
             synonyms_length: app.synonyms.len() as u8,
             icon: None,
             console: app.console,
+            orientation: manifest::orientation(file),
             actions: [None; MENU_ACTIONS],
             has_actions: false,
         };
@@ -438,6 +440,17 @@ impl Catalogue {
         entry.synonyms[..app.synonyms.len()].copy_from_slice(app.synonyms.as_bytes());
         self.installed.insert(at, entry);
         true
+    }
+
+    /// The orientation app `app` holds (D436): what its manifest asks for an installed app,
+    /// any for the built-in ones.
+    pub fn orientation(&self, app: AppId) -> manifest::Orientation {
+        match app {
+            AppId::Installed(index) => self
+                .installed(index)
+                .map_or(manifest::Orientation::Any, |app| app.orientation),
+            _ => manifest::Orientation::Any,
+        }
     }
 
     /// Gives the installed app whose folder is `folder` its own icon, from its `app.icon` file

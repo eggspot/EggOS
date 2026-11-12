@@ -277,6 +277,25 @@ fn last<'a>(file: &'a [u8], key: &str) -> Option<&'a [u8]> {
         .map(|(_, value)| value)
 }
 
+/// The way up an app's windows want on a screen that turns (D436): `orientation=portrait` or
+/// `orientation=landscape` in its manifest; absent or anything else is [`Orientation::Any`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Orientation {
+    #[default]
+    Any,
+    Portrait,
+    Landscape,
+}
+
+/// The orientation manifest `file` asks for.
+pub fn orientation(file: &[u8]) -> Orientation {
+    match last(file, "orientation") {
+        Some(b"portrait") => Orientation::Portrait,
+        Some(b"landscape") => Orientation::Landscape,
+        _ => Orientation::Any,
+    }
+}
+
 fn text(bytes: &[u8]) -> Option<&str> {
     core::str::from_utf8(bytes).ok()
 }
@@ -742,5 +761,13 @@ mod tests {
         assert_eq!(parse(&out[..length], b"top"), Some(parsed));
         let plain = [HEADER, b"\nname=top\nsource=linux\nrun=top\nconsole=yes\n"].concat();
         assert!(!parse(&plain, b"top").unwrap().console);
+    }
+
+    #[test]
+    fn an_app_may_hold_portrait_or_landscape() {
+        assert_eq!(orientation(b"orientation=portrait\n"), Orientation::Portrait);
+        assert_eq!(orientation(b"orientation=landscape\n"), Orientation::Landscape);
+        assert_eq!(orientation(b"orientation=sideways\n"), Orientation::Any);
+        assert_eq!(orientation(b"name=A\n"), Orientation::Any);
     }
 }
