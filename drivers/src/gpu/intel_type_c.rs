@@ -5,7 +5,10 @@
 //! IOM firmware once it says the PHY is ready. Tiger Lake keeps the PHY from its TC-cold power
 //! state through a PCODE request and hands ownership through the FIA; Alder Lake-P and Raptor
 //! Lake-P report readiness through the TCSS and take ownership in the port's `DDI_BUF_CTL`, and
-//! leave TC-cold while the port's AUX power well is on. Register places are from Intel's
+//! leave TC-cold while the port's AUX power well is on. Meteor Lake (display 14, D528) says what
+//! is live in its PICA interrupt status, powers the TCSS and takes ownership in the port's
+//! `PORT_BUF_CTL1`, and leaves TC-cold while the AUX channel's own power request is set.
+//! Register places are from Intel's
 //! MIT-licensed i915 driver (`INTEL-NOTICE.md`).
 
 use crate::io::RegisterIo;
@@ -48,6 +51,13 @@ const AUX_POWER_WELLS: usize = 0x4_5444;
 const AUX_POWER_TYPE_C: usize = 3;
 const AUX_POWER_THUNDERBOLT: usize = 9;
 const COLD: u32 = u32::MAX;
+const METEOR_LAKE: u8 = 0x7d;
+const PICA_STATUS: usize = 0x16_fe50;
+const PICA_ALTERNATE_SHIFT: usize = 16;
+const METEOR_BUFFERS: usize = 0x16_f200;
+const METEOR_BUFFER_STRIDE: usize = 0x200;
+const TCSS_POWER_REQUEST: u32 = 1 << 5;
+const TCSS_POWER_STATE: u32 = 1 << 4;
 const TIGER_LAKE: u8 = 0x9a;
 const ALDER_LAKE_P: [u16; 7] = [0x46a0, 0x46b0, 0x46c0, 0x46d0, 0xa720, 0xa7a0, 0xa7a8];
 const ALDER_LAKE_P_SINGLES: [u16; 6] = [0x4626, 0x4628, 0x462a, 0xa721, 0xa7a1, 0xa7a9];
@@ -59,12 +69,17 @@ pub enum Flavour {
     Tiger,
     /// Alder Lake-P and Raptor Lake-P: readiness in the TCSS, ownership in `DDI_BUF_CTL`.
     Alder,
+    /// Meteor and Arrow Lake: liveness in the PICA, TCSS power and ownership in
+    /// `PORT_BUF_CTL1`.
+    Meteor,
 }
 
 /// The flavour of device `device`'s Type-C ports; `None` when it has none.
 pub fn flavour(device: u16) -> Option<Flavour> {
-    if (device >> 8) as u8 == TIGER_LAKE {
-        return Some(Flavour::Tiger);
+    match (device >> 8) as u8 {
+        TIGER_LAKE => return Some(Flavour::Tiger),
+        METEOR_LAKE => return Some(Flavour::Meteor),
+        _ => {}
     }
     let alder = ALDER_LAKE_P.iter().any(|&base| device & 0xfff0 == base & 0xfff0)
         || ALDER_LAKE_P_SINGLES.contains(&device);
@@ -220,7 +235,7 @@ pub fn set_lane_count(
 pub fn pll_enable(flavour: Flavour, index: usize) -> usize {
     let (first, stride) = match flavour {
         Flavour::Tiger => PLL_ENABLES[0],
-        Flavour::Alder => PLL_ENABLES[1],
+        Flavour::Alder | Flavour::Meteor => PLL_ENABLES[1],
     };
     first + stride * index
 }
@@ -258,7 +273,7 @@ pub fn connect(
     if first == COLD {
         return Err(TypeCError::Cold);
     }
-    let modular = flavour == Flavour::Alder || first & MODULAR_FIA != 0;
+    let modular = flavour != Flavour::Tiger || first & MODULAR_FIA != 0;
     let (base, slot) = fia(modular, index);
     let lane_state = regs.read32(base + LANE_STATE);
     let status_place = TCSS_STATUS + 4 * index;
@@ -278,6 +293,13 @@ pub fn connect(
             status if status & TCSS_LIVE_THUNDERBOLT != 0 => Mode::Thunderbolt,
             _ => return Err(TypeCError::NotConnected),
         },
+        Flavour::Meteor => match regs.read32(PICA_STATUS) {
+            status if status & 1 << (PICA_ALTERNATE_SHIFT + index) != 0 => {
+                Mode::DisplayPortAlternate
+            }
+            status if status & 1 << index != 0 => Mode::Thunderbolt,
+            _ => return Err(TypeCError::NotConnected),
+        },
     };
     let port = FIRST_PORT + index;
     if mode == Mode::Thunderbolt {
@@ -288,9 +310,17 @@ pub fn connect(
             pin_assignment: 0,
         });
     }
+    let meteor_buffer = METEOR_BUFFERS + index * METEOR_BUFFER_STRIDE;
+    if flavour == Flavour::Meteor {
+        regs.write32(meteor_buffer, regs.read32(meteor_buffer) | TCSS_POWER_REQUEST);
+    }
     let ready = match flavour {
         Flavour::Tiger => wait(regs, base + PHY_READY, 1 << slot, 1 << slot, keep_waiting),
         Flavour::Alder => wait(regs, status_place, TCSS_READY, TCSS_READY, keep_waiting),
+        Flavour::Meteor => {
+            wait(regs, status_place, TCSS_READY, TCSS_READY, keep_waiting)
+                && wait(regs, meteor_buffer, TCSS_POWER_STATE, TCSS_POWER_STATE, keep_waiting)
+        }
     };
     if !ready {
         return Err(TypeCError::NotReady);
@@ -303,6 +333,9 @@ pub fn connect(
         Flavour::Alder => {
             let buffer = DDI_BUF_CTL + port * PORT_STRIDE;
             regs.write32(buffer, regs.read32(buffer) | PHY_OWNERSHIP);
+        }
+        Flavour::Meteor => {
+            regs.write32(meteor_buffer, regs.read32(meteor_buffer) | PHY_OWNERSHIP);
         }
     }
     let lanes = (regs.read32(base + LANE_STATE) >> (slot * 8) & LANES_MASK).count_ones() as u8;
@@ -356,6 +389,7 @@ mod tests {
         assert_eq!(flavour(0x9a49), Some(Flavour::Tiger));
         assert_eq!(flavour(0x46a6), Some(Flavour::Alder));
         assert_eq!(flavour(0xa7a1), Some(Flavour::Alder));
+        assert_eq!(flavour(0x7d55), Some(Flavour::Meteor));
         assert_eq!(flavour(0x4680), None);
     }
 

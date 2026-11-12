@@ -25249,3 +25249,23 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The C20 PHYs of display 14's Type-C ports (their SRAM-addressed contexts and
   MPLLA and MPLLB), UHBR rates, spread spectrum, HDMI on C10, eDP's own rates, lane reversal,
   and turning the PHY off.
+
+## D528 Intel display 14, part 2: Meteor Lake's Type-C ports and the C20 PHY (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's MIT-licensed i915 driver)
+
+- **Decision.** Meteor and Arrow Lake are a third Type-C flavour (`intel_type_c::Flavour::Meteor`):
+  the port's AUX channel, which on display 14 sits in the Type-C block (`0x16f210`, `0x200` a
+  port, `intel_aux::Channel`), is powered first (its own power request, which keeps the PHY out
+  of TC-cold); the PICA interrupt status (`0x16fe50`) says whether DisplayPort alternate mode
+  or Thunderbolt is live; for alternate mode the TCSS is powered through `PORT_BUF_CTL1`, the
+  driver waits for the TCSS's ready bit and the power state, and takes ownership in
+  `PORT_BUF_CTL1`; lanes and pin assignment still come from the FIA. `intel_cx0::Cx0` now
+  drives both PHYs from per-block register places (ports A and B, or the Type-C block at
+  `0x16f200`): for the C20 it reads which context is in use, writes Intel's transmit, common
+  and MPLLB words for RBR to HBR3 into the other through the SRAM address and data window,
+  sets the 8b/10b width and the DisplayPort serdes rate, and switches context; only the lanes
+  the display owns are reset and driven (pin assignment D leaves lane 1 to USB), and the
+  C20's drive presets come from its own table. The AUX helpers take a `Channel` rather than a
+  port number.
+- **Not yet.** UHBR rates (MPLLA, 128b/132b), Thunderbolt alternate mode's AUX I/O select and
+  fixed clocks on display 14, legacy Type-C connectors, giving the PHY and the TCSS power
+  back, and Lunar Lake's later display versions.

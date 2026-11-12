@@ -1,4 +1,5 @@
-//! Display 14's C10 PHY on ports A and B (D527), Meteor Lake's: the display reaches the PHY's
+//! Display 14's C10 PHY on ports A and B (D527) and C20 PHY on its Type-C ports (D528),
+//! Meteor Lake's: the display reaches the PHY's
 //! own registers over a message bus, one per PHY lane (a lane serving two transmitters), each
 //! read or write a transaction the PHY acknowledges. Bringing a port up is: the port clock
 //! muxes set (the forwarded clock ungated, the DDI clocked from the PHY's maximum pixel
@@ -6,22 +7,29 @@
 //! twenty configuration bytes for the link rate written to lane 0 (Intel's tables for a
 //! 38.4 MHz reference, spread spectrum off), the unused transmitters disabled, the DDI's
 //! valid frequency set and the PLL requested and acknowledged. Drive levels are presets of
-//! swing, pre-cursor and post-cursor overriding each transmitter's. Places and values are from
-//! Intel's MIT-licensed i915 driver (`INTEL-NOTICE.md`).
+//! swing, pre-cursor and post-cursor overriding each transmitter's. The C20 PHY takes its
+//! transmit, common and MPLLB configuration words through an SRAM address and data window,
+//! into whichever of its two contexts is not in use, then switches context. Places and values
+//! are from Intel's MIT-licensed i915 driver (`INTEL-NOTICE.md`).
 
 use crate::io::RegisterIo;
 
 /// The ports with a C10 PHY: A and B.
 pub const PORTS: usize = 2;
+/// The DDI index of display 14's first Type-C port, whose PHYs are C20s.
+pub const FIRST_TYPE_C_PORT: usize = 3;
+/// Display 14's Type-C ports.
+pub const TYPE_C_PORTS: usize = 4;
 
 const PORT_STRIDE: usize = 0x100;
-const MESSAGE_BUS: usize = 0x64040;
+const TYPE_C_STRIDE: usize = 0x200;
+const BUFFERS: [usize; 2] = [0x64004, 0x16_f200];
+const MESSAGE_BUSES: [usize; 2] = [0x64040, 0x16_f240];
+const MESSAGE_TIMERS: [usize; 2] = [0x640d8, 0x16_f258];
+const CLOCK_CONTROLS: [usize; 2] = [0x640e0, 0x16_f260];
 const MESSAGE_STATUS: usize = 8;
-const MESSAGE_TIMER: usize = 0x640d8;
-const BUFFER_CONTROL_1: usize = 0x64004;
-const BUFFER_CONTROL_2: usize = 0x64008;
-const BUFFER_CONTROL_3: usize = 0x6400c;
-const CLOCK_CONTROL: usize = 0x640e0;
+const BUFFER_CONTROL_2: usize = 4;
+const BUFFER_CONTROL_3: usize = 8;
 const VALID_FREQUENCY: usize = 0x64030;
 const TRANSACTION_PENDING: u32 = 1 << 31;
 const COMMAND_SHIFT: u32 = 27;
@@ -52,6 +60,8 @@ const READY_STATE_MASK: u32 = 0xf << READY_STATE_SHIFT;
 const ACTIVE_AND_STAGGER_MASK: u32 = 0xffff;
 const STATE_RESET: u32 = 0x2;
 const STATE_READY: u32 = 0x2;
+const PIPE_RESET_LANE_0: u32 = 1 << 31;
+const PHY_STATUS_LANE_0: u32 = 1 << 29;
 const PLL_REQUESTS: u32 = 1 << 31 | 1 << 27;
 const PLL_REQUEST_LANE_0: u32 = 1 << 31;
 const PLL_ACKS: u32 = 1 << 30 | 1 << 26;
@@ -83,6 +93,67 @@ const OVERRIDE_TRANSMITTERS: u8 = 1 | 1 << 2;
 const DISABLE_TRANSMITTER: u8 = 1 << 6;
 const SPREAD_BYTES: core::ops::RangeInclusive<usize> = 4..=8;
 const TRIES: usize = 3;
+const SRAM_WRITE_ADDRESS_LOW: u16 = 0xc02;
+const SRAM_WRITE_ADDRESS_HIGH: u16 = 0xc03;
+const SRAM_WRITE_DATA_LOW: u16 = 0xc04;
+const SRAM_WRITE_DATA_HIGH: u16 = 0xc05;
+const SERDES_RATE: u16 = 0xd00;
+const CONTEXT_TOGGLE: u8 = 1;
+const IS_DISPLAY_PORT: u8 = 1 << 6;
+const SERDES_RATE_MASK: u8 = 1 << 7 | 1 << 6 | 0xf << 1;
+const DISPLAY_PORT_RATE_SHIFT: u8 = 1;
+const CONTEXTS: [(u16, u16, u16); 2] = [(0xcf2a, 0xcda5, 0xcb4e), (0xcf2e, 0xcdaa, 0xcb5a)];
+
+/// A C20 configuration: its three transmit, four common and eleven MPLLB words.
+type C20Table = ([u16; 3], [u16; 4], [u16; 11]);
+
+const C20_COMMON: [u16; 4] = [0x0500, 0x0005, 0x0000, 0x0000];
+const C20_RBR: C20Table = (
+    [0xbe88, 0x5800, 0x0000],
+    C20_COMMON,
+    [0x50a8, 0x2120, 0xcd9a, 0xbfc1, 0x5ab8, 0x4c34, 0x2000, 0x0001, 0x6000, 0, 0],
+);
+const C20_HBR: C20Table = (
+    [0xbe88, 0x4800, 0x0000],
+    C20_COMMON,
+    [0x308c, 0x2110, 0xcc9c, 0xbfc1, 0x4b9a, 0x3f81, 0x2000, 0x0001, 0x5000, 0, 0],
+);
+const C20_HBR2: C20Table = (
+    [0xbe88, 0x4800, 0x0000],
+    C20_COMMON,
+    [0x108c, 0x2108, 0xcc9c, 0xbfc1, 0x4b9a, 0x3f81, 0x2000, 0x0001, 0x5000, 0, 0],
+);
+const C20_HBR3: C20Table = (
+    [0xbe88, 0x4800, 0x0000],
+    C20_COMMON,
+    [0x10d2, 0x2108, 0x8d98, 0xbfc1, 0x7166, 0x5f42, 0x2000, 0x0001, 0x7800, 0, 0],
+);
+
+/// The C20's swing, pre-cursor and post-cursor of each DisplayPort drive level.
+const C20_DRIVE_TABLE: [(u8, u8, u8); 10] = [
+    (20, 0, 0),
+    (24, 0, 4),
+    (30, 0, 9),
+    (34, 0, 14),
+    (29, 0, 0),
+    (34, 0, 5),
+    (38, 0, 10),
+    (36, 0, 0),
+    (40, 0, 6),
+    (48, 0, 0),
+];
+
+/// The C20 configuration for a DisplayPort link at `link_khz`, and the rate's index in the
+/// PHY's serdes rate field.
+pub fn c20_table(link_khz: u32) -> Option<(C20Table, u8)> {
+    Some(match link_khz {
+        162_000 => (C20_RBR, 0),
+        270_000 => (C20_HBR, 1),
+        540_000 => (C20_HBR2, 2),
+        810_000 => (C20_HBR3, 3),
+        _ => return None,
+    })
+}
 
 /// A C10 PLL configuration: its twenty PLL bytes, its common byte and its transmit byte.
 type PllTable = ([u8; 20], u8, u8);
@@ -160,35 +231,54 @@ pub enum Cx0Error {
     Unsupported,
 }
 
-/// The C10 PHY of port `port` (0 for A) behind `regs`, waiting while `keep_waiting` allows.
-pub struct C10<'a, R: RegisterIo + ?Sized> {
+/// The PHY of display 14's port `port` (0 for A, [`FIRST_TYPE_C_PORT`] on for its Type-C
+/// ports) behind `regs`, waiting while `keep_waiting` allows; `both_lanes` when the display owns
+/// both PHY lanes (a Type-C port with pin assignment D leaves lane 1 to USB).
+pub struct Cx0<'a, R: RegisterIo + ?Sized> {
     regs: &'a R,
     port: usize,
+    c20: bool,
+    both_lanes: bool,
     keep_waiting: &'a mut dyn FnMut() -> bool,
 }
 
-impl<'a, R: RegisterIo + ?Sized> C10<'a, R> {
+impl<'a, R: RegisterIo + ?Sized> Cx0<'a, R> {
     pub fn new(
         regs: &'a R,
         port: usize,
+        both_lanes: bool,
         keep_waiting: &'a mut dyn FnMut() -> bool,
     ) -> Result<Self, Cx0Error> {
-        if port >= PORTS {
+        let type_c = FIRST_TYPE_C_PORT..FIRST_TYPE_C_PORT + TYPE_C_PORTS;
+        if port >= PORTS && !type_c.contains(&port) {
             return Err(Cx0Error::Unsupported);
         }
         Ok(Self {
             regs,
             port,
+            c20: port >= PORTS,
+            both_lanes: both_lanes || port < PORTS,
             keep_waiting,
         })
     }
 
-    fn at(&self, place: usize) -> usize {
-        place + self.port * PORT_STRIDE
+    fn block(&self, places: [usize; 2]) -> usize {
+        match self.c20 {
+            false => places[0] + self.port * PORT_STRIDE,
+            true => places[1] + (self.port - FIRST_TYPE_C_PORT) * TYPE_C_STRIDE,
+        }
+    }
+
+    fn buffer(&self, register: usize) -> usize {
+        self.block(BUFFERS) + register
     }
 
     fn bus(&self, lane: usize) -> usize {
-        self.at(MESSAGE_BUS) + 4 * lane
+        self.block(MESSAGE_BUSES) + 4 * lane
+    }
+
+    fn owned(&self) -> &'static [usize] {
+        if self.both_lanes { &[0, 1] } else { &[0] }
     }
 
     fn wait(&mut self, place: usize, mask: u32, wanted: u32) -> Result<u32, Cx0Error> {
@@ -313,7 +403,7 @@ impl<'a, R: RegisterIo + ?Sized> C10<'a, R> {
     }
 
     fn change_power_state(&mut self, state: u32) -> Result<(), Cx0Error> {
-        let control = self.at(BUFFER_CONTROL_2);
+        let control = self.buffer(BUFFER_CONTROL_2);
         self.modify_register(control, POWERDOWN_STATES_MASK, state << 20 | state << 16);
         for lane in 0..2 {
             if self.wait(self.bus(lane), TRANSACTION_PENDING, 0).is_err() {
@@ -325,36 +415,33 @@ impl<'a, R: RegisterIo + ?Sized> C10<'a, R> {
     }
 
     fn reset_lanes(&mut self) -> Result<(), Cx0Error> {
-        self.wait(self.at(BUFFER_CONTROL_1), PHY_READY, PHY_READY)?;
-        let control = self.at(BUFFER_CONTROL_2);
-        self.modify_register(control, PIPE_RESETS, PIPE_RESETS);
-        self.wait(control, PHY_STATUSES, PHY_STATUSES)?;
-        let clock = self.at(CLOCK_CONTROL);
+        self.wait(self.buffer(0), PHY_READY, PHY_READY)?;
+        let control = self.buffer(BUFFER_CONTROL_2);
+        let (resets, statuses) = match self.both_lanes {
+            true => (PIPE_RESETS, PHY_STATUSES),
+            false => (PIPE_RESET_LANE_0, PHY_STATUS_LANE_0),
+        };
+        self.modify_register(control, resets, resets);
+        self.wait(control, statuses, statuses)?;
+        let clock = self.block(CLOCK_CONTROLS);
         self.modify_register(clock, REFERENCE_REQUESTS, REFERENCE_REQUEST_LANE_0);
         self.wait(clock, REFERENCE_ACKS, REFERENCE_ACK_LANE_0)?;
         self.change_power_state(STATE_RESET)?;
         self.modify_register(control, READY_STATE_MASK, STATE_READY << READY_STATE_SHIFT);
-        self.modify_register(self.at(BUFFER_CONTROL_3), ACTIVE_AND_STAGGER_MASK, 0);
-        self.modify_register(control, PIPE_RESETS, 0);
-        self.wait(control, PHY_STATUSES, 0).map(|_| ())
+        self.modify_register(self.buffer(BUFFER_CONTROL_3), ACTIVE_AND_STAGGER_MASK, 0);
+        self.modify_register(control, resets, 0);
+        self.wait(control, statuses, 0).map(|_| ())
     }
 
-    /// Brings the PHY up for a DisplayPort link at `link_khz` over `lanes` lanes (1, 2 or 4),
-    /// its PLL locked.
-    pub fn enable(&mut self, link_khz: u32, lanes: usize) -> Result<(), Cx0Error> {
+    fn write_sram(&mut self, address: u16, data: u16) -> Result<(), Cx0Error> {
+        self.write(0, SRAM_WRITE_ADDRESS_HIGH, (address >> 8) as u8, false)?;
+        self.write(0, SRAM_WRITE_ADDRESS_LOW, address as u8, false)?;
+        self.write(0, SRAM_WRITE_DATA_HIGH, (data >> 8) as u8, false)?;
+        self.write(0, SRAM_WRITE_DATA_LOW, data as u8, true)
+    }
+
+    fn program_c10(&mut self, link_khz: u32) -> Result<(), Cx0Error> {
         let (bytes, common, transmit) = pll_table(link_khz).ok_or(Cx0Error::Unsupported)?;
-        self.modify_register(self.at(BUFFER_CONTROL_1), PORT_REVERSAL, 0);
-        self.modify_register(
-            self.at(CLOCK_CONTROL),
-            CLOCK_MUX_MASK,
-            FORWARD_CLOCK_UNGATE | DDI_CLOCK_MAXIMUM_PIXEL_CLOCK,
-        );
-        self.reset_lanes()?;
-        self.change_power_state(STATE_READY)?;
-        for lane in 0..2 {
-            let timer = self.at(MESSAGE_TIMER) + 4 * lane;
-            self.modify_register(timer, TIMER_VALUE_MASK, TIMER_VALUE);
-        }
         self.modify(&[0, 1], VENDOR_CONTROL, 0, BUS_ACCESS)?;
         for (index, byte) in bytes.iter().enumerate() {
             self.write(0, PLL_BYTES + index as u16, *byte, index % 4 == 0)?;
@@ -362,19 +449,71 @@ impl<'a, R: RegisterIo + ?Sized> C10<'a, R> {
         self.write(0, COMMON_BYTES, common, true)?;
         self.write(0, TRANSMIT_BYTES, transmit, true)?;
         self.modify(&[0, 1], CUSTOM_WIDTH, CUSTOM_WIDTH_MASK, 0)?;
-        self.modify(&[0], VENDOR_CONTROL, 0, UPDATE_CONFIGURATION | MASTER_LANE)?;
-        self.modify(&[0, 1], VENDOR_CONTROL, 0, BUS_ACCESS)?;
-        let disabled = (0xf << lanes) & 0xf;
+        self.modify(&[0], VENDOR_CONTROL, 0, UPDATE_CONFIGURATION | MASTER_LANE)
+    }
+
+    fn program_c20(&mut self, link_khz: u32) -> Result<(), Cx0Error> {
+        let ((transmit, common, pll), rate) = c20_table(link_khz).ok_or(Cx0Error::Unsupported)?;
+        let in_use = self.read(0, SERDES_RATE)? & CONTEXT_TOGGLE;
+        let (transmit_at, common_at, pll_at) = CONTEXTS[usize::from(in_use)];
+        for (index, word) in transmit.iter().enumerate() {
+            self.write_sram(transmit_at - index as u16, *word)?;
+        }
+        for (index, word) in common.iter().enumerate() {
+            self.write_sram(common_at - index as u16, *word)?;
+        }
+        for (index, word) in pll.iter().enumerate() {
+            self.write_sram(pll_at - index as u16, *word)?;
+        }
+        let owned = self.owned();
+        self.modify(owned, CUSTOM_WIDTH, CUSTOM_WIDTH_MASK, 0)?;
+        let serdes = IS_DISPLAY_PORT | rate << DISPLAY_PORT_RATE_SHIFT;
+        self.modify(owned, SERDES_RATE, SERDES_RATE_MASK, serdes)?;
+        self.modify(owned, SERDES_RATE, CONTEXT_TOGGLE, CONTEXT_TOGGLE ^ in_use)
+    }
+
+    /// Brings the PHY up for a DisplayPort link at `link_khz` over `lanes` lanes (1, 2 or 4),
+    /// its PLL locked.
+    pub fn enable(&mut self, link_khz: u32, lanes: usize) -> Result<(), Cx0Error> {
+        self.modify_register(self.buffer(0), PORT_REVERSAL, 0);
+        self.modify_register(
+            self.block(CLOCK_CONTROLS),
+            CLOCK_MUX_MASK,
+            FORWARD_CLOCK_UNGATE | DDI_CLOCK_MAXIMUM_PIXEL_CLOCK,
+        );
+        self.reset_lanes()?;
+        self.change_power_state(STATE_READY)?;
+        for lane in 0..2 {
+            let timer = self.block(MESSAGE_TIMERS) + 4 * lane;
+            self.modify_register(timer, TIMER_VALUE_MASK, TIMER_VALUE);
+        }
+        match self.c20 {
+            false => self.program_c10(link_khz)?,
+            true => self.program_c20(link_khz)?,
+        }
+        let owned = self.owned();
+        if !self.c20 {
+            self.modify(owned, VENDOR_CONTROL, 0, BUS_ACCESS)?;
+        }
+        let mut disabled = (0xf << lanes) & 0xf;
+        if self.c20 && lanes == 1 {
+            disabled = disabled & !0x3 | 0x1;
+        }
         for transmitter in 0..4 {
             let lane = transmitter / 2;
+            if !owned.contains(&lane) {
+                continue;
+            }
             let address =
                 TRANSMITTER_CONTROL_2 + (transmitter % 2) as u16 * TRANSMITTER_STRIDE;
             let set = if disabled & 1 << transmitter != 0 { DISABLE_TRANSMITTER } else { 0 };
             self.modify(&[lane], address, DISABLE_TRANSMITTER, set)?;
         }
-        self.modify(&[0, 1], VENDOR_CONTROL, 0, UPDATE_CONFIGURATION)?;
-        self.regs.write32(self.at(VALID_FREQUENCY), link_khz);
-        let clock = self.at(CLOCK_CONTROL);
+        if !self.c20 {
+            self.modify(owned, VENDOR_CONTROL, 0, UPDATE_CONFIGURATION)?;
+        }
+        self.regs.write32(VALID_FREQUENCY + self.port * PORT_STRIDE, link_khz);
+        let clock = self.block(CLOCK_CONTROLS);
         self.modify_register(clock, PLL_REQUESTS, PLL_REQUEST_LANE_0);
         self.wait(clock, PLL_ACKS, PLL_ACK_LANE_0).map(|_| ())
     }
@@ -386,7 +525,7 @@ impl<'a, R: RegisterIo + ?Sized> C10<'a, R> {
             lanes => lanes.clamp(1, 4) as u32 - 1,
         };
         self.modify_register(
-            self.at(BUFFER_CONTROL_1),
+            self.buffer(0),
             PORT_WIDTH_MASK | PORT_DATA_WIDTH_MASK,
             width << PORT_WIDTH_SHIFT,
         );
@@ -400,22 +539,32 @@ impl<'a, R: RegisterIo + ?Sized> C10<'a, R> {
         link_khz: u32,
         lanes: usize,
     ) -> Result<(), Cx0Error> {
-        let (swing, pre_cursor, post_cursor) = DRIVE_TABLE[level.min(DRIVE_TABLE.len() - 1)];
-        let strong = matches!(link_khz, 540_000 | 810_000);
-        let boost = if strong { 5 } else { 4 };
-        let termination = if strong { 5 } else { 2 };
-        self.modify(&[0, 1], VENDOR_CONTROL, 0, BUS_ACCESS)?;
-        self.modify(&[0, 1], COMMON_BYTES + 3, VOLTAGE_BOOST_MASK, boost << 5)?;
-        self.modify(&[0, 1], TRANSMIT_BYTES + 1, TERMINATION_MASK, termination << 5)?;
+        let table = if self.c20 { &C20_DRIVE_TABLE } else { &DRIVE_TABLE };
+        let (swing, pre_cursor, post_cursor) = table[level.min(table.len() - 1)];
+        let owned = self.owned();
+        if !self.c20 {
+            let strong = matches!(link_khz, 540_000 | 810_000);
+            let boost = if strong { 5 } else { 4 };
+            let termination = if strong { 5 } else { 2 };
+            self.modify(owned, VENDOR_CONTROL, 0, BUS_ACCESS)?;
+            self.modify(owned, COMMON_BYTES + 3, VOLTAGE_BOOST_MASK, boost << 5)?;
+            self.modify(owned, TRANSMIT_BYTES + 1, TERMINATION_MASK, termination << 5)?;
+        }
         for transmitter in 0..lanes.min(4) {
             let lane = transmitter / 2;
+            if !owned.contains(&lane) {
+                continue;
+            }
             let base = DRIVE_LEVELS + ((lane ^ (transmitter % 2)) as u16) * 0x10;
             for (control, value) in [pre_cursor, swing, post_cursor].into_iter().enumerate() {
                 self.modify(&[lane], base + control as u16, LEVEL_MASK, value & LEVEL_MASK)?;
             }
         }
-        self.modify(&[0, 1], DRIVE_OVERRIDES, 0, OVERRIDE_TRANSMITTERS)?;
-        self.modify(&[0, 1], VENDOR_CONTROL, 0, UPDATE_CONFIGURATION)
+        self.modify(owned, DRIVE_OVERRIDES, 0, OVERRIDE_TRANSMITTERS)?;
+        match self.c20 {
+            false => self.modify(owned, VENDOR_CONTROL, 0, UPDATE_CONFIGURATION),
+            true => Ok(()),
+        }
     }
 }
 
@@ -432,5 +581,14 @@ mod tests {
         assert_eq!((common, transmit), (0x21, 0x10));
         assert_eq!(pll_table(810_000).unwrap().0[17], 0x0f);
         assert_eq!(pll_table(243_000), None);
+    }
+
+    #[test]
+    fn c20_tables_name_their_serdes_rate() {
+        let ((transmit, _, pll), rate) = c20_table(540_000).unwrap();
+        assert_eq!(rate, 2);
+        assert_eq!(transmit[0] & 1 << 7, 1 << 7);
+        assert_eq!(pll[0], 0x108c);
+        assert_eq!(c20_table(1_000_000), None);
     }
 }

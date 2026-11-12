@@ -15,7 +15,10 @@ pub const RECEIVER_CAPABILITIES: u32 = 0x000;
 pub const EDID_ADDRESS: u32 = 0x50;
 
 const CONTROL: usize = 0x64010;
-const DATA: usize = 0x64014;
+const DATA_OFFSET: usize = 4;
+const METEOR_TYPE_C_CONTROL: usize = 0x16_f210;
+const METEOR_TYPE_C_STRIDE: usize = 0x200;
+const POWER_STATUS: u32 = 1 << 18;
 const POWER_REQUEST: u32 = 1 << 19;
 const PORT_STRIDE: usize = 0x100;
 const SEND_BUSY: u32 = 1 << 31;
@@ -80,17 +83,17 @@ pub fn unpack(words: &[u32; MOST_BYTES / 4]) -> [u8; MOST_BYTES] {
     bytes
 }
 
-/// One AUX transaction on port `port` (0 is port A): sends `message` and puts the reply in
+/// One AUX transaction on `channel`: sends `message` and puts the reply in
 /// `reply`; how many bytes came back. Polls while `keep_waiting` says to.
 pub fn transfer<R: RegisterIo + ?Sized>(
     regs: &R,
-    port: usize,
+    channel: Channel,
     message: &[u8],
     reply: &mut [u8; MOST_BYTES],
     keep_waiting: &mut dyn FnMut() -> bool,
 ) -> Result<usize, AuxError> {
-    let control = CONTROL + port * PORT_STRIDE;
-    let data = DATA + port * PORT_STRIDE;
+    let control = channel.0;
+    let data = channel.0 + DATA_OFFSET;
     for (index, word) in pack(message).iter().enumerate() {
         regs.write32(data + 4 * index, *word);
     }
@@ -133,10 +136,43 @@ pub fn transfer<R: RegisterIo + ?Sized>(
     Ok(length.min(MOST_BYTES))
 }
 
+/// An AUX channel: the place of its control register, its data registers right after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Channel(usize);
+
+impl Channel {
+    /// The channel of digital port `port` (0 for port A).
+    pub fn of_port(port: usize) -> Self {
+        Self(CONTROL + port * PORT_STRIDE)
+    }
+
+    /// Display 14's channel of Type-C port `index` (0 for the first), in the Type-C block
+    /// (D528).
+    pub fn meteor_type_c(index: usize) -> Self {
+        Self(METEOR_TYPE_C_CONTROL + index * METEOR_TYPE_C_STRIDE)
+    }
+
+    /// Asks for display 14's channel power and waits for it (D528); whether it came.
+    pub fn power_up<R: RegisterIo + ?Sized>(
+        self,
+        regs: &R,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> bool {
+        regs.write32(self.0, regs.read32(self.0) | POWER_REQUEST);
+        while regs.read32(self.0) & POWER_STATUS == 0 {
+            if !keep_waiting() {
+                return false;
+            }
+            core::hint::spin_loop();
+        }
+        true
+    }
+}
+
 /// Reads `out.len()` (at most [`MOST_READ`]) bytes of the sink's DPCD from `address`.
 pub fn read_dpcd<R: RegisterIo + ?Sized>(
     regs: &R,
-    port: usize,
+    channel: Channel,
     address: u32,
     out: &mut [u8],
     keep_waiting: &mut dyn FnMut() -> bool,
@@ -145,7 +181,7 @@ pub fn read_dpcd<R: RegisterIo + ?Sized>(
     let message = header(NATIVE_READ, address, length);
     for _ in 0..MOST_TRIES {
         let mut reply = [0u8; MOST_BYTES];
-        let got = transfer(regs, port, &message, &mut reply, keep_waiting)?;
+        let got = transfer(regs, channel, &message, &mut reply, keep_waiting)?;
         match reply[0] >> 4 & 0x3 {
             REPLY_DEFER => continue,
             REPLY_NACK => return Err(AuxError::Refused),
@@ -162,7 +198,7 @@ pub fn read_dpcd<R: RegisterIo + ?Sized>(
 /// Writes `bytes` (at most [`MOST_READ`]) to the sink's DPCD at `address`.
 pub fn write_dpcd<R: RegisterIo + ?Sized>(
     regs: &R,
-    port: usize,
+    channel: Channel,
     address: u32,
     bytes: &[u8],
     keep_waiting: &mut dyn FnMut() -> bool,
@@ -173,7 +209,7 @@ pub fn write_dpcd<R: RegisterIo + ?Sized>(
     message[4..4 + length].copy_from_slice(&bytes[..length]);
     for _ in 0..MOST_TRIES {
         let mut reply = [0u8; MOST_BYTES];
-        transfer(regs, port, &message[..4 + length], &mut reply, keep_waiting)?;
+        transfer(regs, channel, &message[..4 + length], &mut reply, keep_waiting)?;
         match reply[0] >> 4 & 0x3 {
             REPLY_DEFER => continue,
             REPLY_NACK => return Err(AuxError::Refused),
@@ -185,13 +221,13 @@ pub fn write_dpcd<R: RegisterIo + ?Sized>(
 
 fn i2c<R: RegisterIo + ?Sized>(
     regs: &R,
-    port: usize,
+    channel: Channel,
     message: &[u8],
     reply: &mut [u8; MOST_BYTES],
     keep_waiting: &mut dyn FnMut() -> bool,
 ) -> Result<usize, AuxError> {
     for _ in 0..MOST_TRIES {
-        let got = transfer(regs, port, message, reply, keep_waiting)?;
+        let got = transfer(regs, channel, message, reply, keep_waiting)?;
         match (reply[0] >> 4 & 0x3, reply[0] >> 6 & 0x3) {
             (REPLY_DEFER, _) | (_, I2C_REPLY_DEFER) => continue,
             (REPLY_NACK, _) | (_, I2C_REPLY_NACK) => return Err(AuxError::Refused),
@@ -205,24 +241,24 @@ fn i2c<R: RegisterIo + ?Sized>(
 /// the transaction kept open until the last.
 pub fn read_edid<R: RegisterIo + ?Sized>(
     regs: &R,
-    port: usize,
+    channel: Channel,
     out: &mut [u8; crate::edid::BLOCK_BYTES],
     keep_waiting: &mut dyn FnMut() -> bool,
 ) -> Result<(), AuxError> {
     let mut reply = [0u8; MOST_BYTES];
     let [request, high, low, length] = header(I2C_WRITE | MIDDLE_OF_TRANSACTION, EDID_ADDRESS, 1);
     let start = [request, high, low, length, 0];
-    i2c(regs, port, &start, &mut reply, keep_waiting)?;
+    i2c(regs, channel, &start, &mut reply, keep_waiting)?;
     for chunk in 0..crate::edid::BLOCK_BYTES / MOST_READ {
         let message = header(I2C_READ | MIDDLE_OF_TRANSACTION, EDID_ADDRESS, MOST_READ);
-        let got = i2c(regs, port, &message, &mut reply, keep_waiting)?;
+        let got = i2c(regs, channel, &message, &mut reply, keep_waiting)?;
         if got < 1 + MOST_READ {
             return Err(AuxError::Damaged);
         }
         out[chunk * MOST_READ..(chunk + 1) * MOST_READ].copy_from_slice(&reply[1..1 + MOST_READ]);
     }
     let stop = header(I2C_READ, EDID_ADDRESS, 1);
-    let _ = i2c(regs, port, &stop[..3], &mut reply, keep_waiting);
+    let _ = i2c(regs, channel, &stop[..3], &mut reply, keep_waiting);
     Ok(())
 }
 
