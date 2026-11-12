@@ -44,6 +44,8 @@ pub mod intel_display;
 pub mod amd_display;
 #[cfg(any(test, feature = "apple-display"))]
 pub mod apple_display;
+#[cfg(any(test, feature = "soc-display"))]
+pub mod soc_display;
 #[cfg(any(test, feature = "vendor-gpus"))]
 pub mod vendor_gpus;
 #[cfg(any(test, feature = "intel-wifi"))]
@@ -296,6 +298,10 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &vendor_gpus::AMD_DISPLAY_DRIVER,
     #[cfg(any(test, feature = "apple-display"))]
     &apple_display::APPLE_DISPLAY_DRIVER,
+    #[cfg(any(test, feature = "soc-display"))]
+    &soc_display::ROCKCHIP_DISPLAY_DRIVER,
+    #[cfg(any(test, feature = "soc-display"))]
+    &soc_display::ALLWINNER_DISPLAY_DRIVER,
     #[cfg(any(test, feature = "vendor-gpus"))]
     &vendor_gpus::NVIDIA_DISPLAY_DRIVER,
     #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]

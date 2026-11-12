@@ -30,6 +30,7 @@ pub use eggos_drivers::display::{Damage, Mode, Rect};
 use eggos_hal::Platform;
 
 pub mod boot_framebuffer;
+pub mod flipping;
 pub mod offscreen;
 
 /// The boot screen's background, `0x00RRGGBB`: the design's `wallpaper.top` (docs/ux/

@@ -1,5 +1,6 @@
 //! Vendors' graphics engines (M13): Intel's display engine first ([`intel`], D268).
 
+pub mod allwinner_de2;
 pub mod amd_atom;
 pub mod amd_atom_interpreter;
 pub mod amd_dcn;
@@ -22,3 +23,4 @@ pub mod nvidia_gsp;
 pub mod nvidia_gsp_boot;
 pub mod nvidia_gsp_display;
 pub mod nvidia_gsp_queue;
+pub mod rockchip_vop;

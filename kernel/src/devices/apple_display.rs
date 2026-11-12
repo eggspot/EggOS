@@ -8,7 +8,7 @@
 
 use super::dma::DmaRegion;
 use super::{DeviceId, DriverDescriptor, Match, Probe, ProbeError, ProbePass};
-use crate::display::{Deadline as FlushDeadline, Mode, Rect, Scanout};
+use crate::display::{Mode, Rect, Scanout};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use eggos_drivers::apple::dart::{self, Dart, DartMemory, PAGE_BYTES};
@@ -175,7 +175,7 @@ impl Scanout for AppleScanout {
     fn flush(
         &mut self,
         rects: &[Rect],
-        _deadline: &mut FlushDeadline,
+        _deadline: &mut super::Deadline,
     ) -> Result<usize, &'static str> {
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         Ok(rects.len())

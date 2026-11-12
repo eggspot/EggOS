@@ -25732,3 +25732,30 @@ the license, by an explicit instruction recorded here.
   acknowledgments), flips through swaps between two framebuffers, mode changes from
   Settings, external screens on the DCP's second instance (`dcpext`) and their DisplayPort
   PHYs, and firmware from macOS 15 on, whose iBoot interface m1n1 does not use either.
+
+## D548 The display controllers beside Arm Mali GPUs: Rockchip's VOP and Allwinner's DE2, at the firmware's mode with flips (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from FreeBSD's BSD-licensed drm-subtree drivers)
+
+- **Decision.** A Mali GPU only renders; boards show their screen through the SoC's own
+  display controller. Two of those are taken over at the plane the firmware lit, like
+  Intel's first part (D268):
+  - **Rockchip's VOP** on the RK3399 (`rockchip,rk3399-vop-big` and `-lit`; Mali-T860;
+    `eggos_drivers::gpu::rockchip_vop`). Window 0 must be enabled and ARGB8888. Its size,
+    stride and frame address are read back. A flip writes the frame address and
+    `REG_CFG_DONE`, having cleared the raw frame-start bit, and that bit says when the VOP
+    took the new frame. Its frames must lie below 4 GiB.
+  - **Allwinner's DE2 mixers** on the H3, H5 and A64 (Mali-400 and 450;
+    `eggos_drivers::gpu::allwinner_de2`). The first enabled UI channel with a frame address
+    is read back the same way. A flip writes the channel's top address and sets
+    `GLB_DBUFFER`, which the mixer clears once it has applied it.
+  - **The shared scanout.** `display::flipping::FlippingScanout` (new) is the scanout over
+    any such engine, through `FlipEngine`. The kernel draws in ordinary memory. A flush waits
+    for the last flip to land, copies the damage (and what the hidden buffer missed) into the
+    buffer not shown, through a write-combining window, and flips to it. The buffers are the
+    firmware's frame and one of the kernel's own (`devices::soc_display`).
+- **Qualcomm.** Its display engines (MDP5 to Snapdragon 835, DPU after) stay planned. The
+  MDP5 register descriptions are MIT, but each chip's block layout, and everything about the
+  DPU, exists only in GPL sources, which the clean-room rule excludes. Snapdragon laptops
+  boot through UEFI and keep its graphics output's framebuffer (D236), and boards boot with
+  a `simple-framebuffer` (D542).
+- **Not yet.** Mode setting on these controllers (their clocks, the HDMI, eDP and MIPI
+  bridges), VOP2 on the RK356x and RK3588, and the cursor planes.
