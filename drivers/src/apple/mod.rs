@@ -3,6 +3,7 @@
 //! controller and the NVMe controller's ANS all build on these.
 
 pub mod dart;
+pub mod dcp;
 pub mod epic;
 pub mod mailbox;
 pub mod properties;

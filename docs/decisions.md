@@ -25682,3 +25682,25 @@ the license, by an explicit instruction recorded here.
   The kernel implements it over RTKit, the DART and its frames.
 - **Not yet.** Answering the coprocessor's own calls to standard services (`NOTIFY_ACK`); the
   iBoot display service does not need them.
+
+## D546 Apple silicon's display, part 1: the DCP's iBoot display service (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from m1n1 1.9.9's MIT-licensed `dcp_iboot.c` and `display.c`)
+
+- **Decision.** Apple's display engine is driven through the DCP. Of the services its
+  firmware offers, EggOS uses the one iBoot lights the screen with: EPIC endpoint `0x23`,
+  class `disp0-service` (`eggos_drivers::apple::dcp::DisplayService`). It is far smaller
+  than the full framebuffer protocol macOS uses, and it gives what the desktop needs.
+  - **Calls.** Each call is an EPIC command of type `0xc0` whose input starts with the
+    operation and the length, through 16 KiB command buffers. The calls are: power on or off
+    (2), hot-plug state with the count of timing and color modes (3), the timing modes (4,
+    size and refresh in 16.16) and color modes (5), set a mode (6), show a surface at once
+    (1), and a swap (15, 16, 18) that shows it on layer 0 at the next frame.
+  - **Surfaces.** A layer is a planar surface at the display's device address, with its
+    stride, size, format (BGRA for EggOS's framebuffers), colorspace and standard dynamic
+    range. Firmware from macOS 13.3 on takes two more words after the layer in a swap
+    (`Firmware`).
+  - **Modes.** `choose_timing` and `choose_color` pick the mode iBoot would: valid, at most
+    1920 by 1200 at 60 Hz, then the largest; 32 bits or fewer with the most bits, RGB.
+- **Not yet.** The kernel's display device on top of it (part 2, D547): the DCP's mailbox
+  and DART from the device tree, the framebuffer mapped in the DCP's and the display pipe's
+  DARTs at one address, and flips through swaps. Firmware from macOS 15 on, which m1n1
+  leaves alone too, keeps the firmware's mode through the `simple-framebuffer` (D542).
