@@ -193,7 +193,9 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         if transport.device_type() != device_type::GPU {
             return Err((Error::WrongDeviceType, transport, Some(control)));
         }
-        let wanted = three_d::FEATURE_VIRGL | three_d::FEATURE_CONTEXT_INIT;
+        let wanted = three_d::FEATURE_VIRGL
+            | three_d::FEATURE_CONTEXT_INIT
+            | three_d::FEATURE_RESOURCE_BLOB;
         let features = match super::initialize(&transport, wanted, keep_waiting) {
             Ok(features) => features,
             Err(error) => return Err((error, transport, Some(control))),
@@ -788,6 +790,11 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
     /// Whether the device takes 3D commands (`VIRTIO_GPU_F_VIRGL`).
     pub fn takes_three_d(&self) -> bool {
         self.features & three_d::FEATURE_VIRGL != 0
+    }
+
+    /// Whether the device takes blob resources (`VIRTIO_GPU_F_RESOURCE_BLOB`, D439).
+    pub fn takes_blobs(&self) -> bool {
+        self.features & three_d::FEATURE_RESOURCE_BLOB != 0
     }
 
     /// Whether a context is created for one capability set (`VIRTIO_GPU_F_CONTEXT_INIT`).

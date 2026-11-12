@@ -479,6 +479,10 @@ mod gpu {
             self.gpu.takes_context_init()
         }
 
+        fn takes_blobs(&self) -> bool {
+            self.gpu.takes_blobs()
+        }
+
         fn command_stream(&mut self) -> &mut [u8] {
             self.gpu.command_stream().unwrap_or_default()
         }

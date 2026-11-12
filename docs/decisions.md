@@ -23670,3 +23670,17 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Several streams in flight at once and per-buffer fences (a wait waits for the
   last stream, whatever buffer it names), the out-fence still an already signalled stand-in,
   blob resources for Venus and PRIME sharing with the window server (part 2b).
+
+## D439 virtio-gpu 3D, part 2b begun: guest-memory blob resources (M11; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** The driver negotiates `VIRTIO_GPU_F_RESOURCE_BLOB` and encodes
+  `RESOURCE_CREATE_BLOB` for a blob whose only copy is guest memory (`BLOB_MEM_GUEST`, one
+  entry for its DMA backing, host-tested). `Context::create_guest_blob` makes one for a
+  context; the render node answers `VIRTGPU_RESOURCE_CREATE_BLOB` for it (handle and resource
+  back, mapped like any buffer through `VIRTGPU_MAP`) and `VIRTGPU_PARAM_RESOURCE_BLOB` says
+  whether the GPU takes them. A blob is destroyed by its unreference alone, then its memory is
+  freed.
+- **Not yet.** Host blobs (`BLOB_MEM_HOST3D`, which Venus uses for most Vulkan memory): they
+  live in the device's shared memory window, which the virtio transports must map first
+  (`VIRTIO_PCI_CAP_SHARED_MEMORY_CFG`), with `RESOURCE_MAP_BLOB` placing them in it; real
+  fences; PRIME sharing.

@@ -37,6 +37,8 @@ pub trait Renderer {
     fn capset_count(&self) -> u32;
     /// Whether a context is created for one capability set.
     fn takes_context_init(&self) -> bool;
+    /// Whether the device takes blob resources (D439).
+    fn takes_blobs(&self) -> bool;
     /// Where a submission's command stream is written before [`ThreeDCommand::Submit`].
     fn command_stream(&mut self) -> &mut [u8];
     /// Sends `command` and waits for its answer until `deadline`; copies the answer's data
@@ -117,6 +119,11 @@ pub fn capsets<P: Platform>() -> Result<Vec<CapsetInfo>, RenderError> {
         }
     }
     Ok(found)
+}
+
+/// Whether the GPU takes blob resources (D439).
+pub fn takes_blobs<P: Platform>() -> bool {
+    crate::display::with_renderer::<P, _>(|renderer, _| renderer.takes_blobs()).unwrap_or(false)
 }
 
 /// Whether contexts are created for one capability set.
@@ -304,6 +311,44 @@ impl Context {
             context: self.id,
             resource,
         })?;
+        let mut state = self.state.lock();
+        let handle = state.next_handle;
+        state.next_handle = handle.checked_add(1).ok_or(RenderError::NoMemory)?;
+        state.buffers.insert(handle, Arc::clone(&buffer));
+        Ok((handle, buffer))
+    }
+
+    /// A new blob of `size` bytes (whole frames, one at least) whose only copy is DMA memory
+    /// the program may map (`VIRTIO_GPU_BLOB_MEM_GUEST`, D439), for this context, with `flags`
+    /// (mappable, shareable): its handle.
+    pub fn create_guest_blob<P: Platform>(
+        &self,
+        size: u64,
+        flags: u32,
+    ) -> Result<(u32, Arc<Buffer>), RenderError> {
+        self.ensure_created::<P>()?;
+        let size = size.max(1).checked_next_multiple_of(FRAME_SIZE).ok_or(RenderError::NoMemory)?;
+        let length = usize::try_from(size).map_err(|_| RenderError::NoMemory)?;
+        let memory = DmaRegion::allocate(length).map_err(|_| RenderError::NoMemory)?;
+        let address = memory.dma_addr().get();
+        let physical = memory.physical();
+        let resource = NEXT_RESOURCE.fetch_add(1, Ordering::Relaxed);
+        let created = command::<P>(&ThreeDCommand::CreateGuestBlob {
+            context: self.id,
+            resource,
+            flags,
+            address,
+            size,
+        });
+        let buffer = Arc::new(Buffer {
+            resource,
+            physical,
+            length: size,
+            backed: false,
+            memory: ManuallyDrop::new(memory),
+            release: release_resource::<P>,
+        });
+        created?;
         let mut state = self.state.lock();
         let handle = state.next_handle;
         state.next_handle = handle.checked_add(1).ok_or(RenderError::NoMemory)?;

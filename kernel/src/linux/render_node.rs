@@ -252,7 +252,7 @@ pub fn ioctl<P: Platform>(
                 .map(|()| 0)
                 .map_err(|_| Errno::EFAULT)
         }
-        number::RESOURCE_CREATE_BLOB => Err(Errno::EINVAL),
+        number::RESOURCE_CREATE_BLOB => create_blob(process, context, &mut argument, address),
         number::CONTEXT_INIT => context_init(process, context, &argument),
         _ => Err(Errno::EINVAL),
     }
@@ -305,7 +305,8 @@ fn parameter_value<P: Platform>(parameter: u64) -> Result<i32, Errno> {
     Ok(match parameter {
         parameter::THREE_D_FEATURES | parameter::CAPSET_QUERY_FIX => 1,
         parameter::EXPLICIT_DEBUG_NAME => 1,
-        parameter::RESOURCE_BLOB | parameter::HOST_VISIBLE | parameter::CROSS_DEVICE => 0,
+        parameter::RESOURCE_BLOB => i32::from(crate::rendering::takes_blobs::<P>()),
+        parameter::HOST_VISIBLE | parameter::CROSS_DEVICE => 0,
         parameter::CONTEXT_INIT => i32::from(crate::rendering::takes_context_init::<P>()),
         parameter::SUPPORTED_CAPSET_IDS => crate::rendering::capsets::<P>()
             .map_err(errno)?
@@ -338,6 +339,32 @@ fn resource_create<P: Platform>(
     let (handle, buffer) = context.create_buffer::<P>(shape, size).map_err(errno)?;
     argument.set_u32(40, handle);
     argument.set_u32(44, buffer.resource());
+    argument.write_back(process, address).inspect_err(|_| {
+        context.close_buffer::<P>(handle);
+    })
+}
+
+const BLOB_MEM_GUEST: u32 = 1;
+const BLOB_FLAGS_KNOWN: u32 = 0x7;
+
+/// `VIRTGPU_RESOURCE_CREATE_BLOB`: a guest-memory blob (D439); host blobs, which need the
+/// device's shared memory, are refused with `EINVAL` until that window is mapped.
+fn create_blob<P: Platform>(
+    process: &Process<P>,
+    context: &Context,
+    argument: &mut Argument,
+    address: u64,
+) -> Result<u64, Errno> {
+    let (memory, flags, size) = (argument.u32_at(0), argument.u32_at(4), argument.u64_at(16));
+    if memory != BLOB_MEM_GUEST || flags & !BLOB_FLAGS_KNOWN != 0 || size == 0 {
+        return Err(Errno::EINVAL);
+    }
+    if !crate::rendering::takes_blobs::<P>() {
+        return Err(Errno::EINVAL);
+    }
+    let (handle, buffer) = context.create_guest_blob::<P>(size, flags).map_err(errno)?;
+    argument.set_u32(8, handle);
+    argument.set_u32(12, buffer.resource());
     argument.write_back(process, address).inspect_err(|_| {
         context.close_buffer::<P>(handle);
     })

@@ -8,6 +8,14 @@
 pub const FEATURE_VIRGL: u64 = 1 << 0;
 /// `VIRTIO_GPU_F_CONTEXT_INIT`: a context is created for one capability set.
 pub const FEATURE_CONTEXT_INIT: u64 = 1 << 4;
+/// `VIRTIO_GPU_F_RESOURCE_BLOB`: resources made of plain memory, not textures (D439).
+pub const FEATURE_RESOURCE_BLOB: u64 = 1 << 3;
+/// `VIRTIO_GPU_BLOB_MEM_GUEST`: a blob whose only copy is the guest memory backing it.
+pub const BLOB_MEM_GUEST: u32 = 1;
+/// `VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE`.
+pub const BLOB_FLAG_MAPPABLE: u32 = 1;
+/// `VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE`.
+pub const BLOB_FLAG_SHAREABLE: u32 = 2;
 /// `VIRTIO_GPU_CAPSET_VIRGL`.
 pub const CAPSET_VIRGL: u32 = 1;
 /// `VIRTIO_GPU_CAPSET_VIRGL2`.
@@ -24,6 +32,7 @@ pub const HEADER_BYTES: usize = 24;
 const CREATE_CONTEXT_BYTES: usize = 96;
 const RESOURCE_BYTES: usize = 32;
 const CREATE_RESOURCE_BYTES: usize = 72;
+const CREATE_BLOB_BYTES: usize = 72;
 const TRANSFER_BYTES: usize = 72;
 const ATTACH_BACKING_BYTES: usize = 48;
 const CAPSET_BYTES: usize = 32;
@@ -47,6 +56,7 @@ pub mod command {
     pub const TRANSFER_TO_HOST_3D: u32 = 0x0205;
     pub const TRANSFER_FROM_HOST_3D: u32 = 0x0206;
     pub const SUBMIT_3D: u32 = 0x0207;
+    pub const RESOURCE_CREATE_BLOB: u32 = 0x010c;
 }
 
 /// The answer types a 3D command succeeds with.
@@ -116,6 +126,15 @@ pub enum ThreeDCommand<'a> {
     AttachResource { context: u32, resource: u32 },
     DetachResource { context: u32, resource: u32 },
     CreateResource { resource: u32, shape: ResourceShape },
+    /// A blob of `size` bytes in guest memory at `address` (one entry, its backing), for
+    /// `context`, with `flags` ([`BLOB_FLAG_MAPPABLE`], [`BLOB_FLAG_SHAREABLE`]).
+    CreateGuestBlob {
+        context: u32,
+        resource: u32,
+        flags: u32,
+        address: u64,
+        size: u64,
+    },
     /// Guest memory at `address` (a device address), `length` bytes, as the resource's backing.
     AttachBacking { resource: u32, address: u64, length: u32 },
     DetachBacking { resource: u32 },
@@ -236,6 +255,24 @@ pub fn encode(command: &ThreeDCommand<'_>, fence: u64, out: &mut [u8]) -> usize 
                 put32(out, 24 + 4 * index, value);
             }
             CREATE_RESOURCE_BYTES
+        }
+        ThreeDCommand::CreateGuestBlob {
+            context,
+            resource,
+            flags,
+            address,
+            size,
+        } => {
+            put_header(out, command::RESOURCE_CREATE_BLOB, fence, context);
+            put32(out, 24, resource);
+            put32(out, 28, BLOB_MEM_GUEST);
+            put32(out, 32, flags);
+            put32(out, 36, 1);
+            put64(out, 40, 0);
+            put64(out, 48, size);
+            put64(out, 56, address);
+            put32(out, 64, size.min(u64::from(u32::MAX)) as u32);
+            CREATE_BLOB_BYTES
         }
         ThreeDCommand::AttachBacking {
             resource,
@@ -444,6 +481,26 @@ mod tests {
             answer_bytes(&ThreeDCommand::Capset { id: 2, version: 2 }, 1024),
             HEADER_BYTES + 1024
         );
+    }
+
+    #[test]
+    fn a_guest_blob_names_its_memory_in_one_entry() {
+        let (out, length) = encoded(ThreeDCommand::CreateGuestBlob {
+            context: 2,
+            resource: 0x101,
+            flags: BLOB_FLAG_MAPPABLE,
+            address: 0x4000_0000,
+            size: 8192,
+        });
+        assert_eq!(length, 72);
+        assert_eq!(get32(&out, 0), Some(command::RESOURCE_CREATE_BLOB));
+        assert_eq!(get32(&out, 16), Some(2));
+        assert_eq!(get32(&out, 24), Some(0x101));
+        assert_eq!(get32(&out, 28), Some(BLOB_MEM_GUEST));
+        assert_eq!(get32(&out, 36), Some(1));
+        assert_eq!(&out[48..56], &8192u64.to_le_bytes());
+        assert_eq!(&out[56..64], &0x4000_0000u64.to_le_bytes());
+        assert_eq!(get32(&out, 64), Some(8192));
     }
 
     #[test]
