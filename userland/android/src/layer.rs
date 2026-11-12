@@ -896,10 +896,13 @@ const LARGEST_IMAGE: u32 = 1024;
 /// premultiplied pixels the canvas composites; its place among them.
 fn load_image(id: u32) -> Option<u32> {
     let path = resource_string(u64::from(id))?;
+    let file = [state().folder.as_slice(), b"/", path.as_bytes()].concat();
+    if path.ends_with(".xml") {
+        return load_vector(&file);
+    }
     if !path.ends_with(".png") {
         return None;
     }
-    let file = [state().folder.as_slice(), b"/", path.as_bytes()].concat();
     let bytes = read_file(&file)?;
     let mut source = eggos_png::inflate::SliceSource::new(&bytes);
     let decoder = eggos_png::rows::RowDecoder::open(&mut source).ok()?;
@@ -920,6 +923,20 @@ fn load_image(id: u32) -> Option<u32> {
         .ok()?;
     let images = &mut state().images;
     images.push((width, pixels));
+    u32::try_from(images.len() - 1).ok()
+}
+
+/// Draws the vector drawable in the file at `file` (D518) into the layer's images; its place.
+fn load_vector(file: &[u8]) -> Option<u32> {
+    let vector = eggos_android_package::vector::parse(&read_file(file)?)?;
+    let image = crate::vector_raster::rasterize(&vector, |colour| match colour {
+        eggos_android_package::vector::Colour::Value(value) => Some(value),
+        eggos_android_package::vector::Colour::Resource(id) => {
+            state().resources.as_ref()?.colour(id)
+        }
+    })?;
+    let images = &mut state().images;
+    images.push(image);
     u32::try_from(images.len() - 1).ok()
 }
 

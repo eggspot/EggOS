@@ -13,3 +13,4 @@ pub mod dex;
 pub mod layout;
 pub mod manifest;
 pub mod resources;
+pub mod vector;

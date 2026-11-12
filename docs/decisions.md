@@ -25028,3 +25028,18 @@ the license, by an explicit instruction recorded here.
 - **Not possible yet.** Pinches and rotations need two touches at once, which EggOS's input
   does not deliver to programs (one pointer); they wait for multi-touch input (M12's touch
   path).
+
+## D518 The Android layer, part 11: vector drawables (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Most current apps' icons are vector drawables, compiled XML files under
+  `res/drawable`. `android-package::vector` reads one: its size (dimensions decoded from their
+  mantissa and radix), its viewport and each `<path>`'s data, fill colour (a value, or a colour
+  resource the resource table now keeps, D500) and fill type. The layer draws it at its size,
+  one pixel per density-independent pixel: the path data (SVG's commands, absolute and
+  relative, smooth curves reflecting the last control point) is flattened into polygons, curves
+  in 16 steps, then filled by scanlines four to a pixel by the non-zero or even-odd rule, each
+  path composited over the ones before it. An `ImageView` whose drawable is such a file shows it
+  as it shows a PNG (D509).
+- **Simplifications.** Arcs are drawn as a line to their end; strokes, gradients, groups'
+  transforms, clip paths and `tint` are not drawn yet.
+- **Not yet.** WebP images.

@@ -27,11 +27,15 @@ const TYPE_ENTRY_COUNT: usize = 12;
 const TYPE_ENTRIES_START: usize = 16;
 const MOST_ENTRIES: usize = 1 << 16;
 
-/// The string values of a resource table, by resource id.
+/// The string values of a resource table, by resource id, and its colours (D518).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ResourceTable {
     strings: BTreeMap<u32, String>,
+    colours: BTreeMap<u32, u32>,
 }
+
+const FIRST_COLOUR_TYPE: u8 = 0x1c;
+const LAST_COLOUR_TYPE: u8 = 0x1f;
 
 impl ResourceTable {
     /// The table in `bytes`; `None` when it is not one.
@@ -105,7 +109,14 @@ impl ResourceTable {
                 continue;
             }
             let value = at + entry_size;
-            if *chunk.get(value + 3)? != TYPE_STRING {
+            let id_of = |entry: u32| package << 24 | type_id << 16 | entry;
+            let kind = *chunk.get(value + 3)?;
+            if (FIRST_COLOUR_TYPE..=LAST_COLOUR_TYPE).contains(&kind) {
+                let colour = word(chunk, value + 4)?;
+                self.colours.entry(id_of(entry)).or_insert(colour);
+                continue;
+            }
+            if kind != TYPE_STRING {
                 continue;
             }
             let Some(text) = pool.get(word(chunk, value + 4)? as usize) else {
@@ -120,6 +131,11 @@ impl ResourceTable {
     /// Resource `id`'s string value: a string resource's text or a file resource's path.
     pub fn string(&self, id: u32) -> Option<&str> {
         self.strings.get(&id).map(String::as_str)
+    }
+
+    /// Colour resource `id`'s value, `0xAARRGGBB`.
+    pub fn colour(&self, id: u32) -> Option<u32> {
+        self.colours.get(&id).copied()
     }
 }
 
