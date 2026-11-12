@@ -201,6 +201,7 @@ impl StoragePane {
     /// R5, R4 and R9: the disk list, then its facts, the usage bar and two pairs of buttons, the
     /// status and report lines), or back to the desktop's; returns the narrow pane's height.
     pub fn reflow(&self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) -> i32 {
+        self.reflow_panels(tree, content);
         let w = self.widgets;
         let facts = [w.contents, w.sizes, w.place, w.read_only];
         let Some(c) = content else {
@@ -238,6 +239,52 @@ impl StoragePane {
         tree.set_place(w.install, at(PADDING + half + 8, 332, half, row));
         self.place_lines(tree, 396, c);
         396 + LINE_PITCH * (1 + REPORT_LINES as i32) + PADDING
+    }
+
+    /// The format and install panels on a narrow page (settings-forms-v0.5.md 2, R10): the
+    /// pane's full width, their fields the column's width and 48 tall, `Cancel` and the primary
+    /// button an equal pair on the last row; on the desktop as built.
+    fn reflow_panels(&self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) {
+        let w = self.widgets;
+        let panel_width = FORMAT_PANEL.2 - 2 * PADDING;
+        let Some(c) = content else {
+            let panel = at(FORMAT_PANEL.0, FORMAT_PANEL.1, FORMAT_PANEL.2, FORMAT_PANEL.3);
+            tree.set_place(w.panel, panel);
+            tree.set_place(w.install_panel, panel);
+            for (id, y) in [w.question, w.erases, w.confirm].into_iter().zip(PANEL_TEXT_LINES) {
+                tree.set_place(id, Place::at(PADDING, y, Length::Px(panel_width), Length::Content));
+            }
+            for (id, y) in w.install_lines.into_iter().zip(INSTALL_TEXT_LINES) {
+                tree.set_place(id, Place::at(PADDING, y, Length::Px(panel_width), Length::Content));
+            }
+            tree.set_place(w.label_field, at(PADDING, LABEL_FIELD_TOP, PANEL_FIELD_WIDTH, BUTTON_SIZE.1));
+            for field in [w.confirm_field, w.install_field] {
+                tree.set_place(field, at(PADDING, CONFIRM_FIELD_TOP, PANEL_FIELD_WIDTH, BUTTON_SIZE.1));
+            }
+            for (cancel, primary) in [(w.cancel, w.format_now), (w.install_cancel, w.install_now)] {
+                tree.set_place(cancel, at(CANCEL_X, PANEL_BUTTONS_TOP, BUTTON_SIZE.0, BUTTON_SIZE.1));
+                tree.set_place(primary, at(FORMAT_NOW_X, PANEL_BUTTONS_TOP, BUTTON_SIZE.0, BUTTON_SIZE.1));
+            }
+            return;
+        };
+        let row = TOUCH_CONTROL;
+        let half = (c - 8) / 2;
+        let sheet = |height: i32| Place::at(0, FORMAT_PANEL.1, Length::Fill(0), Length::Px(height));
+        tree.set_place(w.panel, sheet(196 + row + PADDING));
+        tree.set_place(w.install_panel, sheet(176 + row + PADDING));
+        for (id, y) in [w.question, w.erases, w.confirm].into_iter().zip(PANEL_TEXT_LINES) {
+            tree.set_place(id, Place::at(PADDING, y, Length::Px(c), Length::Content));
+        }
+        for (id, y) in w.install_lines.into_iter().zip(INSTALL_TEXT_LINES) {
+            tree.set_place(id, Place::at(PADDING, y, Length::Px(c), Length::Content));
+        }
+        tree.set_place(w.label_field, at(PADDING, LABEL_FIELD_TOP, c, row));
+        tree.set_place(w.confirm_field, at(PADDING, LABEL_FIELD_TOP + 56, c, row));
+        tree.set_place(w.install_field, at(PADDING, 120, c, row));
+        for (cancel, primary, top) in [(w.cancel, w.format_now, 196), (w.install_cancel, w.install_now, 176)] {
+            tree.set_place(cancel, at(PADDING, top, half, row));
+            tree.set_place(primary, at(PADDING + half + 8, top, half, row));
+        }
     }
 
     fn place_lines(&self, tree: &mut WidgetTree<CAPACITY>, status: i32, width: i32) {

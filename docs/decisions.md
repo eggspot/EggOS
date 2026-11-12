@@ -23644,3 +23644,13 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Apps of the foreign layers asking it through their own APIs (Android's
   `screenOrientation`, iOS's supported orientations), and a phone's shell turning a held app's
   window inside an unturned screen.
+
+## D437 The Storage pane's format and install panels on narrow pages (settings-forms-v0.5.md section 2, R10; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** On a narrow page the format and install panels take the pane's full width from y
+  64, their lines the column's width, their fields the column's width and 48 tall, and
+  `Cancel` with `Format` (or `Install`) an equal pair on the last row; the desktop shape puts
+  every place back. They stay in the pane rather than at the window's bottom: the pane's
+  scroll view keeps the focused field in view, and a panel that belongs to the window's frame
+  would need a toolkit sheet that the window lifts out of the pane (left for the build pass,
+  with the Agents pane's grant panel, which keeps its desktop places).
