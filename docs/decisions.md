@@ -24584,3 +24584,19 @@ the license, by an explicit instruction recorded here.
   virtio-mmio devices, as AArch64 and RV64 on `virt` do. `.cargo/config.toml` gives the four
   targets their `eggos_kernel` and `eggos_user` flags. `all`, CI and the release matrix leave
   them out until they are tested.
+
+## D495 The core on 32-bit kernels: offsets past a word (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The core keeps addresses, sizes and offsets in `u64` and turns them into `usize`
+  where they index memory. On RV32 and 32-bit Arm a `usize` is 32 bits while file offsets stay
+  64-bit (D491), so a cast could cut an offset past 4 GiB to a small one and reach the wrong
+  page. Memory files (`memfd`) and tmpfs files are therefore at most the pages a `usize` can
+  count (16 TiB on a 32-bit kernel; Linux's largest offset elsewhere, as before): a write or
+  truncation past it is `EFBIG`, and tmpfs counts a size's pages in `u64` before narrowing.
+  The desktop protocol's drag payload offset is narrowed with a check. The other casts index
+  memory that is already bounded by a length checked first (images, archives, user buffers,
+  the direct map, which the 32-bit HALs cap to what their boot tables map: 896 MiB on RV32,
+  768 MiB on 32-bit Arm), so they stay.
+- With D474 to D495 every part of RV32 and 32-bit Arm on QEMU `virt` is written: page tables,
+  boot, traps, threads, user mode, FP, `Platform`, atomics, the Linux ABIs and their build
+  entries.

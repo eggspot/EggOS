@@ -412,6 +412,18 @@ fn check_name(name: &[u8]) -> Result<(), Refused> {
     }
 }
 
+/// The largest file: Linux's largest offset, or on a 32-bit kernel the pages its index can
+/// count (16 TiB, D495).
+const MAX_FILE_SIZE: u64 = {
+    let pages = (usize::MAX as u64).saturating_mul(PAGE_SIZE as u64);
+    if pages < i64::MAX as u64 { pages } else { i64::MAX as u64 }
+};
+
+/// The pages that hold `size` bytes, which [`MAX_FILE_SIZE`] keeps within a `usize`.
+fn pages_for(size: u64) -> usize {
+    usize::try_from(size.div_ceil(PAGE_SIZE as u64)).unwrap_or(usize::MAX)
+}
+
 fn page_range(offset: u64, length: usize) -> (usize, usize, usize) {
     let page = (offset / PAGE_SIZE as u64) as usize;
     let within = (offset % PAGE_SIZE as u64) as usize;
@@ -636,7 +648,7 @@ impl FileSystem for Tmpfs {
         };
         let end = offset
             .checked_add(bytes.len() as u64)
-            .filter(|&end| end <= i64::MAX as u64)
+            .filter(|&end| end <= MAX_FILE_SIZE)
             .ok_or(Refused::TooBig)?;
         let mut written = 0;
         let index_before = pages.len();
@@ -663,7 +675,7 @@ impl FileSystem for Tmpfs {
             written += length;
         }
         let reached = offset + written as u64;
-        let needed = index_before.max((reached.max(*size) as usize).div_ceil(PAGE_SIZE));
+        let needed = index_before.max(pages_for(reached.max(*size)));
         if pages.len() > needed {
             let charged = index_cost(pages);
             pages.truncate(needed);
@@ -682,7 +694,7 @@ impl FileSystem for Tmpfs {
     }
 
     fn truncate(&self, node: u64, length: u64, now: u64) -> Result<(), Refused> {
-        if length > i64::MAX as u64 {
+        if length > MAX_FILE_SIZE {
             return Err(Refused::TooBig);
         }
         let mut state = self.state.lock();
@@ -692,7 +704,7 @@ impl FileSystem for Tmpfs {
             Contents::Directory(_) => return Err(Refused::IsDirectory),
             Contents::Link(_) => return Err(Refused::InvalidArgument),
         };
-        let kept = (length as usize).div_ceil(PAGE_SIZE);
+        let kept = pages_for(length);
         if kept < pages.len() {
             let freed = pages[kept..].iter().flatten().count();
             let charged = index_cost(pages);

@@ -450,7 +450,10 @@ pub fn ioctl<P: Platform>(
             use eggos_drivers::desktop::protocol::get_drag_reply;
             let (payload, kind, serial) = crate::drag_payload::get();
             let payload = payload.as_deref().map_or(&[][..], Vec::as_slice);
-            let rest = payload.get(offset as usize..).unwrap_or_default();
+            let rest = usize::try_from(offset)
+                .ok()
+                .and_then(|offset| payload.get(offset..))
+                .unwrap_or_default();
             let copied = rest.len().min(length as usize);
             if copied > 0 {
                 process

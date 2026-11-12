@@ -76,8 +76,12 @@ pub mod command {
 /// The longest name `memfd_create` takes: `NAME_MAX` less `memfd:`.
 pub const NAME_MAX: usize = 249;
 
-/// The largest size a memory file may have (`EFBIG` past it): the largest offset.
-pub const MAX_SIZE: u64 = i64::MAX as u64;
+/// The largest size a memory file may have (`EFBIG` past it): the largest offset, or on a
+/// 32-bit kernel the pages its index can count (16 TiB, D495).
+pub const MAX_SIZE: u64 = {
+    let pages = (usize::MAX as u64).saturating_mul(FRAME_SIZE);
+    if pages < i64::MAX as u64 { pages } else { i64::MAX as u64 }
+};
 
 const PAGE: usize = FRAME_SIZE as usize;
 
