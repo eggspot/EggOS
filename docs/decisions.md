@@ -25060,3 +25060,32 @@ the license, by an explicit instruction recorded here.
   new `Format::Webp`, so the Windows and macOS layers' picture loaders read WebP too.
 - **Not yet.** Lossy WebP (`VP8 `, the VP8 key-frame decoder) and its alpha chunk (`ALPH`),
   and animated WebP.
+
+## D520 Lossy WebP: the VP8 key-frame decoder and the alpha chunk (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from RFC 6386 and the WebP container specification)
+
+- **Decision.** `eggos-image` decodes lossy WebP with its own VP8 key-frame decoder
+  (`image/src/vp8.rs`, its tables in `vp8_tables.rs`, generated once from RFC 6386's tables).
+  The boolean entropy decoder reads the frame header (segments with absolute or delta
+  quantizers and filter levels, the loop filter's type, level, sharpness and deltas, the token
+  partitions, the six quantizer indices, the coefficient probability updates and the skip
+  probability), then each macroblock's segment, skip flag, 16x16 or 4x4 luma modes (the key
+  frames' context probabilities from the above and left subblock modes, implied modes for
+  16x16 neighbours) and chroma mode. Each macroblock row's coefficients come from its token
+  partition through the token tree, bands, zero/one/more contexts and the six extra-bit
+  categories, dequantized (Y2 DC doubled, Y2 AC at 155/100 and at least 8, chroma DC capped at
+  132). The inverse Walsh-Hadamard transform gives the 16x16 blocks' DC, the inverse DCT the
+  residues added to the prediction, which reads unfiltered neighbours (127 above the frame, 129
+  left of it, above-right from the macroblock row above). The loop filter (normal, or simple
+  on luma only) then runs over the whole frame in RFC order, inner edges skipped for coded-less
+  16x16 macroblocks; BT.601 integer arithmetic gives RGB with each chroma sample covering two
+  by two pixels.
+- **Alpha.** An `ALPH` chunk before `VP8 ` (in `VP8X` files) gives the alpha: raw bytes, or a
+  header-less lossless image (its green channel, through the same stream decoder as VP8L,
+  now `decode_image_stream`), then unfiltered horizontally, vertically or by gradient as the
+  container specification says.
+- **Why our own decoder, in the image library.** Every layer's picture loader (GDI+, `NSImage`,
+  Android drawables) already goes through `eggos-image::decode`, so lossy WebP reaches all of
+  them at once; no crate is allowed.
+- **Not yet.** Inter frames (`VP8 ` in WebP is always a key frame; others are
+  `Error::Unsupported`), animated WebP (`ANIM`/`ANMF`), fancy chroma upsampling (nearest is
+  used), and the SIMD paths the performance pass will measure against libwebp.

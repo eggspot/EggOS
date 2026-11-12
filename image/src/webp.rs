@@ -3,7 +3,8 @@
 //! the transforms (predictor, colour, subtract-green, colour indexing with pixel bundling), the
 //! colour cache, meta prefix codes, canonical prefix codes (simple, or normal through a code
 //! length code), and LZ77 backward references with the 120 short distances. Lossy `VP8 ` images
-//! are [`Error::Unsupported`].
+//! go to the VP8 decoder (D520), their `ALPH` chunk's alpha (raw, or a header-less lossless
+//! image's green, then unfiltered horizontally, vertically or by gradient) laid over them.
 
 use crate::{Error, Image, Limits};
 use alloc::vec;
@@ -44,13 +45,21 @@ pub fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, Error> {
     if !is_webp(bytes) {
         return Err(Error::UnknownFormat);
     }
+    let mut alpha = None;
     let mut at = 12;
     while at + 8 <= bytes.len() {
         let size = chunk_size(bytes, at).ok_or(Error::Truncated)?;
         let body = bytes.get(at + 8..at + 8 + size).ok_or(Error::Truncated)?;
         match &bytes[at..at + 4] {
             b"VP8L" => return decode_lossless(body, limits),
-            b"VP8 " => return Err(Error::Unsupported),
+            b"ALPH" => alpha = Some(body),
+            b"VP8 " => {
+                let mut image = crate::vp8::decode(body, limits)?;
+                if let Some(chunk) = alpha {
+                    apply_alpha(&mut image, chunk)?;
+                }
+                return Ok(image);
+            }
             _ => {}
         }
         at += 8 + size + (size & 1);
@@ -451,6 +460,19 @@ fn decode_lossless(body: &[u8], limits: &Limits) -> Result<Image, Error> {
     {
         return Err(Error::TooLarge);
     }
+    let pixels = decode_image_stream(&mut bits, width, height)?;
+    Ok(Image {
+        width: width as u32,
+        height: height as u32,
+        pixels,
+    })
+}
+
+fn decode_image_stream(
+    bits: &mut Bits<'_>,
+    width: usize,
+    height: usize,
+) -> Result<Vec<u32>, Error> {
     let mut transforms = Vec::new();
     let mut coded_width = width;
     let mut seen = 0u8;
@@ -466,7 +488,7 @@ fn decode_lossless(body: &[u8], limits: &Limits) -> Result<Image, Error> {
                 let block_bits = bits.read(3)? + 2;
                 let block = 1usize << block_bits;
                 let image = decode_stream(
-                    &mut bits,
+                    bits,
                     coded_width.div_ceil(block),
                     height.div_ceil(block),
                     false,
@@ -479,7 +501,7 @@ fn decode_lossless(body: &[u8], limits: &Limits) -> Result<Image, Error> {
             2 => Transform::SubtractGreen,
             _ => {
                 let colours = bits.read(8)? as usize + 1;
-                let mut palette = decode_stream(&mut bits, colours, 1, false)?;
+                let mut palette = decode_stream(bits, colours, 1, false)?;
                 for index in 1..palette.len() {
                     palette[index] = add(palette[index], palette[index - 1]);
                 }
@@ -498,7 +520,7 @@ fn decode_lossless(body: &[u8], limits: &Limits) -> Result<Image, Error> {
         };
         transforms.push((transform, width_at_read));
     }
-    let mut pixels = decode_stream(&mut bits, coded_width, height, true)?;
+    let mut pixels = decode_stream(bits, coded_width, height, true)?;
     for (transform, width_at_read) in transforms.iter().rev() {
         let width_at_read = *width_at_read;
         match transform {
@@ -524,11 +546,53 @@ fn decode_lossless(body: &[u8], limits: &Limits) -> Result<Image, Error> {
             }
         }
     }
-    Ok(Image {
-        width: width as u32,
-        height: height as u32,
-        pixels,
-    })
+    Ok(pixels)
+}
+
+fn apply_alpha(image: &mut Image, chunk: &[u8]) -> Result<(), Error> {
+    let header = *chunk.first().ok_or(Error::Truncated)?;
+    let (width, height) = (image.width as usize, image.height as usize);
+    let mut alpha = match header & 3 {
+        0 => chunk.get(1..1 + width * height).ok_or(Error::Truncated)?.to_vec(),
+        1 => {
+            let mut bits = Bits {
+                bytes: &chunk[1..],
+                bit: 0,
+            };
+            let pixels = decode_image_stream(&mut bits, width, height)?;
+            pixels.iter().map(|pixel| (pixel >> 8) as u8).collect()
+        }
+        _ => return Err(Error::Corrupt),
+    };
+    unfilter_alpha(&mut alpha, width, header >> 2 & 3);
+    for (pixel, value) in image.pixels.iter_mut().zip(alpha) {
+        *pixel = *pixel & 0x00ff_ffff | u32::from(value) << 24;
+    }
+    Ok(())
+}
+
+fn unfilter_alpha(alpha: &mut [u8], width: usize, filter: u8) {
+    if filter == 0 {
+        return;
+    }
+    for index in 1..alpha.len() {
+        let predictor = match (index % width, index / width) {
+            (_, 0) => alpha[index - 1],
+            (0, _) => alpha[index - width],
+            _ => {
+                let (left, above) = (alpha[index - 1], alpha[index - width]);
+                match filter {
+                    1 => left,
+                    2 => above,
+                    _ => {
+                        let corner = i32::from(alpha[index - width - 1]);
+                        (i32::from(left) + i32::from(above) - corner).clamp(0, 255) as u8
+                    }
+                }
+            }
+        };
+        alpha[index] = alpha[index].wrapping_add(predictor);
+    }
 }
 
 #[cfg(test)]

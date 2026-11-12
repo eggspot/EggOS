@@ -3,7 +3,8 @@
 //! baseline, extended and progressive JPEG with Huffman coding (ITU T.81), GIF87a and GIF89a
 //! with every frame composited, TIFF 6.0 strips (uncompressed, PackBits, LZW and Deflate, with
 //! the horizontal predictor), BMP and DIBs (every bit depth, bit fields, RLE4 and RLE8), icons
-//! and cursors (`.ico`, `.cur`, their DIB or PNG images), lossless WebP (D519) and PNG through
+//! and cursors (`.ico`, `.cur`, their DIB or PNG images), lossless and lossy WebP (D519, D520,
+//! with alpha) and PNG through
 //! `eggos-png`. One entry
 //! point, [`decode`], sniffs the format ([`sniff`]); [`decode_animation`] keeps every frame of
 //! an animated GIF; [`icon_entries`] and [`decode_icon_entry`] pick one image of an icon.
@@ -26,6 +27,8 @@ mod jpeg;
 mod lzw;
 mod png;
 mod tiff;
+mod vp8;
+mod vp8_tables;
 mod webp;
 
 #[cfg(test)]
