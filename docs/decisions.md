@@ -24782,3 +24782,19 @@ the license, by an explicit instruction recorded here.
   switches) and 8 KiB root pairs (to drop the copy) are the follow-ups, as is mapping only the
   per-CPU block's HAL pages rather than its first pages whole.
 - SRSO, the other item D289 put last, was done by D332 (IBPB on entry on AMD Zen 1 to 4).
+
+## D503 The Android layer, part 4: floating point (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The DEX compiler's x86_64 back end compiles Dalvik's floating point with SSE on
+  the frame's slots (a float is a slot's low 32 bits, a double the slot): `add`, `sub`, `mul`
+  and `div` for floats and doubles in both forms (`addss`/`addsd` and the rest), `neg-float`
+  and `neg-double` by flipping the sign bit, `cmpl-*` and `cmpg-*` with `ucomiss`/`ucomisd`
+  (NaN gives −1 or 1 as each asks), and the conversions between `int`, `long`, `float` and
+  `double` (`cvtsi2ss`, `cvtsi2sd`, `cvtss2sd`, `cvtsd2ss`), with `int-to-byte`, `-char` and
+  `-short` sign- or zero-extending. `float-to-int` and its three siblings go through runtime
+  helpers, because Java's conversion makes NaN 0 and saturates where the CPU's gives
+  `0x80000000`; Rust's `as` casts are exactly Java's. `rem-float` and `rem-double` are C's
+  `fmod` from EggOS's own math library (D229), as Java's `%` is; a float's is computed in
+  double, which is exact.
+- **Not yet.** `strictfp` differences do not exist on SSE (Java 17 made every method strict), so
+  none remain; the aarch64 and riscv64 back ends, and the rest of D499's list.

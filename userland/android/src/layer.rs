@@ -401,6 +401,45 @@ extern "sysv64" fn instance_of(words: *const u64, _: *const usize) -> u64 {
     u64::from(framework::is_instance(&state().dex, &value.class, &wanted) == Some(true))
 }
 
+fn float_of(word: u64) -> f32 {
+    f32::from_bits(word as u32)
+}
+
+fn double_of(word: u64) -> f64 {
+    f64::from_bits(word)
+}
+
+extern "sysv64" fn remainder_float(words: *const u64, _: *const usize) -> u64 {
+    let [left, right] = arguments::<2>(words);
+    let remainder = eggos_math::fmod(f64::from(float_of(left)), f64::from(float_of(right)));
+    u64::from((remainder as f32).to_bits())
+}
+
+extern "sysv64" fn remainder_double(words: *const u64, _: *const usize) -> u64 {
+    let [left, right] = arguments::<2>(words);
+    eggos_math::fmod(double_of(left), double_of(right)).to_bits()
+}
+
+extern "sysv64" fn float_to_int(words: *const u64, _: *const usize) -> u64 {
+    let [value] = arguments::<1>(words);
+    u64::from(float_of(value) as i32 as u32)
+}
+
+extern "sysv64" fn float_to_long(words: *const u64, _: *const usize) -> u64 {
+    let [value] = arguments::<1>(words);
+    float_of(value) as i64 as u64
+}
+
+extern "sysv64" fn double_to_int(words: *const u64, _: *const usize) -> u64 {
+    let [value] = arguments::<1>(words);
+    u64::from(double_of(value) as i32 as u32)
+}
+
+extern "sysv64" fn double_to_long(words: *const u64, _: *const usize) -> u64 {
+    let [value] = arguments::<1>(words);
+    double_of(value) as i64 as u64
+}
+
 extern "sysv64" fn missing_method(_: *const u64, _: *const usize) -> u64 {
     stop(&[b"android: the app called a method the Android layer does not provide yet"])
 }
@@ -612,6 +651,12 @@ fn helpers() -> [Entry; helper::COUNT] {
     entries[helper::THROW] = throw;
     entries[helper::CHECK_CAST] = check_cast;
     entries[helper::INSTANCE_OF] = instance_of;
+    entries[helper::REMAINDER_FLOAT] = remainder_float;
+    entries[helper::REMAINDER_DOUBLE] = remainder_double;
+    entries[helper::FLOAT_TO_INT] = float_to_int;
+    entries[helper::FLOAT_TO_LONG] = float_to_long;
+    entries[helper::DOUBLE_TO_INT] = double_to_int;
+    entries[helper::DOUBLE_TO_LONG] = double_to_long;
     entries
 }
 

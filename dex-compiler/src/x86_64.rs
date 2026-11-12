@@ -172,6 +172,131 @@ impl Emitter {
     }
 }
 
+const SINGLE: u8 = 0xf3;
+const DOUBLE: u8 = 0xf2;
+const XMM0: u8 = 0;
+const XMM1: u8 = 1;
+
+fn precision(width: Width) -> u8 {
+    match width {
+        Width::Int => SINGLE,
+        Width::Long => DOUBLE,
+    }
+}
+
+impl Emitter {
+    fn sse_frame(&mut self, prefix: u8, wide: bool, opcode: u8, register: u8, slot_of: u32) {
+        let rex = if wide { WIDE_EXTENDED_BASE } else { EXTENDED_BASE };
+        self.bytes(&[prefix, rex, 0x0f, opcode, 0x80 | register << 3 | FRAME_REGISTER]);
+        self.bytes(&slot(slot_of).to_le_bytes());
+    }
+
+    fn load_float(&mut self, width: Width, into: u8, register: u32) {
+        self.sse_frame(precision(width), false, 0x10, into, register);
+    }
+
+    fn store_float(&mut self, width: Width, from: u8, register: u32) {
+        self.sse_frame(precision(width), false, 0x11, from, register);
+    }
+}
+
+fn float_arithmetic(
+    emitter: &mut Emitter,
+    width: Width,
+    index: u8,
+    target: u32,
+    left: u32,
+    right: u32,
+) -> bool {
+    let opcode = match index {
+        0 => 0x58,
+        1 => 0x5c,
+        2 => 0x59,
+        3 => 0x5e,
+        _ => return false,
+    };
+    emitter.load_float(width, XMM0, left);
+    emitter.load_float(width, XMM1, right);
+    emitter.bytes(&[precision(width), 0x0f, opcode, 0xc1]);
+    emitter.store_float(width, XMM0, target);
+    true
+}
+
+fn float_remainder(emitter: &mut Emitter, width: Width, target: u32, left: u32, right: u32) {
+    let entry = match width {
+        Width::Int => helper::REMAINDER_FLOAT,
+        Width::Long => helper::REMAINDER_DOUBLE,
+    };
+    divide(emitter, width, entry, target, left, Ok(right));
+}
+
+fn compare_floats(
+    emitter: &mut Emitter,
+    width: Width,
+    below_on_nan: bool,
+    target: u32,
+    left: u32,
+    right: u32,
+) {
+    emitter.load_float(width, XMM0, left);
+    emitter.load_float(width, XMM1, right);
+    if width == Width::Long {
+        emitter.byte(0x66);
+    }
+    emitter.bytes(&[0x0f, 0x2e, 0xc1]);
+    let unordered: i32 = if below_on_nan { -1 } else { 1 };
+    emitter.byte(0xb8);
+    emitter.bytes(&unordered.to_le_bytes());
+    emitter.bytes(&[0x7a, 0x0e]);
+    emitter.bytes(&[0x0f, 0x97, 0xc1, 0x0f, 0x92, 0xc2, 0x0f, 0xb6, 0xc1, 0x0f, 0xb6, 0xd2]);
+    emitter.bytes(&[0x29, 0xd0]);
+    emitter.store(Width::Int, EAX, target);
+}
+
+fn convert(emitter: &mut Emitter, opcode: u8, target: u32, source: u32) -> Option<()> {
+    let call = |emitter: &mut Emitter, entry: usize, result: Width| {
+        emitter.argument_from(0, source);
+        emitter.call_entry(entry);
+        emitter.store(result, EAX, target);
+    };
+    match opcode {
+        0x82 | 0x83 | 0x85 | 0x86 => {
+            let (prefix, wide_source, result) = match opcode {
+                0x82 => (SINGLE, false, Width::Int),
+                0x83 => (DOUBLE, false, Width::Long),
+                0x85 => (SINGLE, true, Width::Int),
+                _ => (DOUBLE, true, Width::Long),
+            };
+            emitter.sse_frame(prefix, wide_source, 0x2a, XMM0, source);
+            emitter.store_float(result, XMM0, target);
+        }
+        0x89 => {
+            emitter.sse_frame(SINGLE, false, 0x5a, XMM0, source);
+            emitter.store_float(Width::Long, XMM0, target);
+        }
+        0x8c => {
+            emitter.sse_frame(DOUBLE, false, 0x5a, XMM0, source);
+            emitter.store_float(Width::Int, XMM0, target);
+        }
+        0x87 => call(emitter, helper::FLOAT_TO_INT, Width::Int),
+        0x88 => call(emitter, helper::FLOAT_TO_LONG, Width::Long),
+        0x8a => call(emitter, helper::DOUBLE_TO_INT, Width::Int),
+        0x8b => call(emitter, helper::DOUBLE_TO_LONG, Width::Long),
+        0x8d..=0x8f => {
+            emitter.load(Width::Int, EAX, source);
+            let extend = match opcode {
+                0x8d => [0x0f, 0xbe, 0xc0],
+                0x8e => [0x0f, 0xb7, 0xc0],
+                _ => [0x0f, 0xbf, 0xc0],
+            };
+            emitter.bytes(&extend);
+            emitter.store(Width::Int, EAX, target);
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
 fn int_operation(index: u8) -> Option<Operation> {
     Some(match index {
         0 => Operation::Add,
@@ -453,6 +578,21 @@ fn emit(
             emitter.call_entry(helper::THROW);
         }
         0x2b | 0x2c => switch(emitter, code, instruction, at).ok_or(bad_branch)?,
+        0x2d..=0x30 => {
+            let width = if opcode >= 0x2f { Width::Long } else { Width::Int };
+            let below_on_nan = matches!(opcode, 0x2d | 0x2f);
+            compare_floats(emitter, width, below_on_nan, a, b, c);
+        }
+        0x7f => {
+            emitter.load(Width::Int, EAX, b);
+            emitter.bytes(&[0x35, 0, 0, 0, 0x80]);
+            emitter.store(Width::Int, EAX, a);
+        }
+        0x80 => {
+            emitter.load(Width::Long, EAX, b);
+            emitter.bytes(&[WIDE, 0x0f, 0xba, 0xf8, 0x3f]);
+            emitter.store(Width::Long, EAX, a);
+        }
         0x31 => {
             emitter.load(Width::Long, EAX, b);
             emitter.load(Width::Long, ECX, c);
@@ -601,6 +741,29 @@ fn emit(
             emitter.operate(Width::Int, operation);
             emitter.store(Width::Int, EAX, a);
         }
+        0xa6..=0xaf => {
+            let (width, index) = match opcode {
+                0xa6..=0xaa => (Width::Int, opcode - 0xa6),
+                _ => (Width::Long, opcode - 0xab),
+            };
+            if index == 4 {
+                float_remainder(emitter, width, a, b, c);
+            } else if !float_arithmetic(emitter, width, index, a, b, c) {
+                return Err(unsupported);
+            }
+        }
+        0xc6..=0xcf => {
+            let (width, index) = match opcode {
+                0xc6..=0xca => (Width::Int, opcode - 0xc6),
+                _ => (Width::Long, opcode - 0xcb),
+            };
+            if index == 4 {
+                float_remainder(emitter, width, a, a, b);
+            } else if !float_arithmetic(emitter, width, index, a, a, b) {
+                return Err(unsupported);
+            }
+        }
+        0x82 | 0x83 | 0x85..=0x8f => convert(emitter, opcode, a, b).ok_or(unsupported)?,
         _ => return Err(unsupported),
     }
     Ok(())
@@ -746,11 +909,34 @@ mod tests {
     }
 
     #[test]
-    fn floating_point_is_refused_with_its_place() {
-        let add_float = units(&[0x000e, 0x00a6, 0x0000]);
+    fn float_addition_loads_adds_and_stores_with_sse() {
+        let bytes = units(&[0x00a6, 0x0201, 0x000e]);
+        let compiled = compile(&code(&bytes)).unwrap();
+        assert!(contains(&compiled.code, &[SINGLE, 0x41, 0x0f, 0x10, 0x85, 8, 0, 0, 0]));
+        assert!(contains(&compiled.code, &[SINGLE, 0x41, 0x0f, 0x10, 0x8d, 16, 0, 0, 0]));
+        assert!(contains(&compiled.code, &[SINGLE, 0x0f, 0x58, 0xc1]));
+        assert!(contains(&compiled.code, &[SINGLE, 0x41, 0x0f, 0x11, 0x85, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn a_double_comparison_answers_minus_one_for_nan_with_cmpl() {
+        let bytes = units(&[0x002f, 0x0201, 0x000e]);
+        let compiled = compile(&code(&bytes)).unwrap();
+        assert!(contains(&compiled.code, &[0x66, 0x0f, 0x2e, 0xc1, 0xb8, 0xff, 0xff, 0xff, 0xff]));
+        let conversions = units(&[0x0087, 0x008e, 0x000e]);
+        let compiled = compile(&code(&conversions)).unwrap();
+        let entry = ((helper::FLOAT_TO_INT * 8) as u32).to_le_bytes();
+        let call = [[0x41, 0xff, 0x94, 0x24].as_slice(), &entry].concat();
+        assert!(contains(&compiled.code, &call));
+        assert!(contains(&compiled.code, &[0x0f, 0xb7, 0xc0]));
+    }
+
+    #[test]
+    fn method_handles_are_refused_with_their_place() {
+        let handle = units(&[0x000e, 0x00fe, 0x0000]);
         assert_eq!(
-            compile(&code(&add_float)),
-            Err(CompileError::Unsupported { opcode: 0xa6, at: 1 })
+            compile(&code(&handle)),
+            Err(CompileError::Unsupported { opcode: 0xfe, at: 1 })
         );
         let stray = units(&[0x0228, 0x000e]);
         assert_eq!(compile(&code(&stray)), Err(CompileError::BadBranch { at: 0 }));

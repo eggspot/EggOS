@@ -8,9 +8,10 @@
 //! It compiles moves, constants, int and long arithmetic and comparisons, branches and
 //! switches, returns, method calls (virtual and interface ones dispatched on the receiver's
 //! class), strings, objects with their instance and static fields, arrays, casts and `throw`,
-//! the object work and division through the runtime's helpers ([`helper`]), for x86_64 (D471,
-//! D472, D499); a method using anything else (floating point, `filled-new-array`, method
-//! handles) is refused with the opcode and place, and the layer reports it.
+//! float and double arithmetic, comparisons and conversions with SSE (D503), the object work,
+//! division and Java's float conversions through the runtime's helpers ([`helper`]), for
+//! x86_64 (D471, D472, D499); a method using anything else (`filled-new-array`, method handles)
+//! is refused with the opcode and place, and the layer reports it.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -90,8 +91,21 @@ pub mod helper {
     pub const CHECK_CAST: usize = 16;
     /// `instance-of`: 1 when the object is of the type with the index in the second word.
     pub const INSTANCE_OF: usize = 17;
+    /// `rem-float` (D503): the remainder of the first word's float by the second's, as C's
+    /// `fmod`, the bits in each word's low half.
+    pub const REMAINDER_FLOAT: usize = 18;
+    /// `rem-double`.
+    pub const REMAINDER_DOUBLE: usize = 19;
+    /// `float-to-int`, as Java converts: NaN is 0 and values past the range saturate.
+    pub const FLOAT_TO_INT: usize = 20;
+    /// `float-to-long`.
+    pub const FLOAT_TO_LONG: usize = 21;
+    /// `double-to-int`.
+    pub const DOUBLE_TO_INT: usize = 22;
+    /// `double-to-long`.
+    pub const DOUBLE_TO_LONG: usize = 23;
     /// How many helpers come before the methods.
-    pub const COUNT: usize = 18;
+    pub const COUNT: usize = 24;
 }
 
 /// The entry-table place of the method with index `method` in the DEX file's method table.
