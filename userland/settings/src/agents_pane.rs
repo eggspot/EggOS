@@ -434,6 +434,7 @@ impl AgentsPane {
                 at(LASTS_RADIOS.0, LASTS_RADIOS.1, LASTS_RADIOS.2, CONTROL_HEIGHT),
             );
             tree.set_place(w.status, line_place(PADDING, STATUS_LINE, LINE_WIDTH));
+            tree.set_sheet(w.panel, None);
             tree.set_place(w.panel, at(PANEL.0, PANEL.1, PANEL.2, PANEL.3));
             for (id, y) in [w.question, w.meaning].into_iter().zip(PANEL_LINES) {
                 tree.set_place(id, line_place(PADDING, y, PANEL_LINE_WIDTH));
@@ -463,10 +464,7 @@ impl AgentsPane {
         tree.set_place(w.lasts, at(PADDING, 744, LASTS_RADIOS.2, row));
         tree.set_place(w.status, line_place(PADDING, 808, c));
         let buttons = PANEL_LINES[1] + 28;
-        tree.set_place(
-            w.panel,
-            Place::at(0, PANEL.1, Length::Fill(0), Length::Px(buttons + row + PADDING)),
-        );
+        tree.set_sheet(w.panel, Some(buttons + row + PADDING));
         for (id, y) in [w.question, w.meaning].into_iter().zip(PANEL_LINES) {
             tree.set_place(id, line_place(PADDING, y, c));
         }
@@ -1037,6 +1035,16 @@ impl AgentsPane {
         tree.set_default_button(widgets.grant);
         self.refresh(tree);
         tree.set_focus(Some(widgets.cancel), now_ms);
+    }
+
+    /// Closes the grant panel, as `Cancel` does, when it is open: what `Back` does first on a
+    /// narrow page (settings-forms-v0.5.md R10). Whether it closed it.
+    pub fn close_sheet(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) -> bool {
+        if !self.panel_open() {
+            return false;
+        }
+        self.close_panel(tree, Some(now_ms));
+        true
     }
 
     fn close_panel(&mut self, tree: &mut WidgetTree<CAPACITY>, focus_at_ms: Option<u32>) {

@@ -140,6 +140,7 @@ struct Node {
     drag_text: Text<48>,
     accessible_name: Text<64>,
     accessible_value: Text<64>,
+    sheet: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,6 +338,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             drag_out: false,
             accessible_name: Text::new(),
             accessible_value: Text::new(),
+            sheet: None,
         });
         self.count += 1;
         if let Kind::TextArea(area) = kind {
@@ -646,6 +648,42 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         false
     }
 
+    /// Lifts container `id` out of its parent as a bottom sheet `height` tall (D463,
+    /// settings-forms-v0.5.md R10): the window's full width at its bottom, above every other
+    /// widget and taking the input that lands on it, its children laid out in it as before;
+    /// `None` puts it back in its parent's flow.
+    pub fn set_sheet(&mut self, id: WidgetId, height: Option<i32>) {
+        let Some(node) = self.node_mut(id) else {
+            return;
+        };
+        if node.sheet == height || !node.kind.is_container() {
+            return;
+        }
+        node.sheet = height;
+        self.layout();
+        self.damage_all();
+    }
+
+    fn sheet_of(&self, id: WidgetId) -> Option<WidgetId> {
+        let mut at = Some(id);
+        while let Some(current) = at {
+            let node = self.node(current)?;
+            if node.sheet.is_some() {
+                return Some(current);
+            }
+            at = node.parent;
+        }
+        None
+    }
+
+    fn shown_sheet_at(&self, x: i32, y: i32) -> bool {
+        self.ids().any(|id| {
+            self.node(id)
+                .is_some_and(|node| node.sheet.is_some() && node.rect.contains(x, y))
+                && self.is_shown(id)
+        })
+    }
+
     /// Whether widget `id` and every widget holding it are shown.
     pub fn is_shown(&self, id: WidgetId) -> bool {
         let mut at = Some(id);
@@ -707,6 +745,14 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 let rect = widget::tooltip_rect(tooltip, owner, self.size);
                 if let Some(node) = self.nodes[index].as_mut() {
                     node.rect = rect;
+                    node.visible = window;
+                }
+                continue;
+            }
+            if let Some(height) = node.sheet {
+                let height = height.clamp(0, self.size.1.max(0));
+                if let Some(node) = self.nodes[index].as_mut() {
+                    node.rect = Rect::new(0, self.size.1 - height, self.size.0, height);
                     node.visible = window;
                 }
                 continue;
@@ -951,43 +997,11 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         let outer = canvas.palette();
         canvas.set_palette(self.palette);
         let clip = canvas.clip();
-        for id in self.ids() {
-            let Some(node) = self.node(id) else {
-                continue;
-            };
-            if !self.is_shown(id) {
-                continue;
-            }
-            let visible = node.visible.intersection(&clip);
-            let reach = node.rect.inset(-DAMAGE_OUTSET).intersection(&visible);
-            if reach.is_empty() {
-                continue;
-            }
-            let previous = canvas.narrow(visible);
-            match &node.kind {
-                Kind::TextArea(area) => {
-                    if let Some(store) = self.stores.get(area.store) {
-                        crate::text_area::paint(canvas, area, store, node.rect, self.look(id));
-                    }
-                }
-                kind => widget::paint(canvas, kind, node.rect, self.look(id)),
-            }
-            if let Some(accent) = self.dead_key.filter(|_| self.shows_dead_key(id)) {
-                match &node.kind {
-                    Kind::TextField(field) => {
-                        widget::paint_dead_key(canvas, field, node.rect, accent)
-                    }
-                    Kind::TextArea(area) => {
-                        if let Some(store) = self.stores.get(area.store) {
-                            crate::text_area::paint_dead_key(
-                                canvas, area, store, node.rect, accent,
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            canvas.restore(previous);
+        for id in self.ids().filter(|&id| self.sheet_of(id).is_none()) {
+            self.paint_widget(canvas, id, clip);
+        }
+        for id in self.ids().filter(|&id| self.sheet_of(id).is_some()) {
+            self.paint_widget(canvas, id, clip);
         }
         self.paint_landing(canvas, clip);
         if let Some((_, dropdown, popup, rows)) = self.popup_of() {
@@ -1000,6 +1014,41 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.paint_tooltip(canvas, clip);
         self.paint_ghost(canvas, clip);
         canvas.set_palette(outer);
+    }
+
+    fn paint_widget(&self, canvas: &mut Canvas<'_>, id: WidgetId, clip: Rect) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        if !self.is_shown(id) {
+            return;
+        }
+        let visible = node.visible.intersection(&clip);
+        let reach = node.rect.inset(-DAMAGE_OUTSET).intersection(&visible);
+        if reach.is_empty() {
+            return;
+        }
+        let previous = canvas.narrow(visible);
+        match &node.kind {
+            Kind::TextArea(area) => {
+                if let Some(store) = self.stores.get(area.store) {
+                    crate::text_area::paint(canvas, area, store, node.rect, self.look(id));
+                }
+            }
+            kind => widget::paint(canvas, kind, node.rect, self.look(id)),
+        }
+        if let Some(accent) = self.dead_key.filter(|_| self.shows_dead_key(id)) {
+            match &node.kind {
+                Kind::TextField(field) => widget::paint_dead_key(canvas, field, node.rect, accent),
+                Kind::TextArea(area) => {
+                    if let Some(store) = self.stores.get(area.store) {
+                        crate::text_area::paint_dead_key(canvas, area, store, node.rect, accent);
+                    }
+                }
+                _ => {}
+            }
+        }
+        canvas.restore(previous);
     }
 
     fn popup_of(&self) -> Option<(WidgetId, widget::Dropdown, Rect, usize)> {
@@ -1119,14 +1168,20 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     }
 
     fn hit(&self, x: i32, y: i32) -> Option<Target> {
-        let id = self.ids().rev().find(|&id| {
-            self.node(id).is_some_and(|node| {
+        let lands = |id: &WidgetId| {
+            self.node(*id).is_some_and(|node| {
                 node.kind.is_interactive()
                     && node.enabled
                     && node.rect.contains(x, y)
                     && node.visible.contains(x, y)
-            }) && self.is_shown(id)
-        })?;
+            }) && self.is_shown(*id)
+        };
+        let on_sheet = self.shown_sheet_at(x, y);
+        let id = self
+            .ids()
+            .rev()
+            .filter(|&id| self.sheet_of(id).is_some() == on_sheet)
+            .find(lands)?;
         let node = self.node(id)?;
         let part = match &node.kind {
             Kind::Radios { count, .. } => (0..*count)

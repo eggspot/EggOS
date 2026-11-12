@@ -2086,10 +2086,19 @@ impl SettingsWindow {
     }
 
     /// `Back` reached the window (the arrow, the shell's `Back`, Esc with nothing else to
-    /// close): from a pane page the list shows with the pane's row focused; on the list page
-    /// a search is cleared; on a TV the ring goes from the pane back to the sidebar. Whether it
-    /// used it; if not, the window reports `BACK_UNUSED` and the shell goes on.
+    /// close): an open sheet closes first (D463); from a pane page the list shows with the
+    /// pane's row focused; on the list page a search is cleared; on a TV the ring goes from the
+    /// pane back to the sidebar. Whether it used it; if not, the window reports `BACK_UNUSED`
+    /// and the shell goes on.
     pub fn go_back(&mut self) -> bool {
+        let closed = match self.pane {
+            STORAGE => self.storage.close_sheet(&mut self.tree, 0),
+            AGENTS => self.agents.close_sheet(&mut self.tree, 0),
+            _ => false,
+        };
+        if closed {
+            return true;
+        }
         match (self.shape, self.page) {
             (Shape::Pages, Page::Pane) => {
                 self.page = Page::List;

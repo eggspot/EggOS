@@ -24038,3 +24038,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** GPIO interrupts (Intel and AMD pin controllers) and the devices that need them;
   sensors whose readings must first be turned on through feature reports (reporting and power
   state); running `_DSM`, `_CRS` and `_STA` through an AML interpreter.
+
+## D463 Panels lifted out of the pane as true bottom sheets (M12, D437's and D457's "left for the build pass"; settings-forms-v0.5.md R10; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** The toolkit's `WidgetTree::set_sheet(container, height)` lifts a container out
+  of its parent: while lifted it is laid out at the window's bottom, the window's full width
+  and `height` tall, outside its parent's scrolling and clipping and out of its content size;
+  it and its children are painted after every other widget (before popups, menus and
+  tooltips), and a press that lands on it reaches only its own widgets. `None` puts it back
+  in its parent's flow. On a narrow page the Storage pane's format and install panels and the
+  Agents pane's grant panel are now sheets of their narrow height (D437's and D457's places
+  inside them unchanged), and the desktop shape puts them back in the pane. `Back` first
+  closes an open sheet, as its `Cancel` does (R10's "Back closes it"), before going back a
+  page.
+- **Not yet.** A dimmed scrim over the page behind a sheet and a tap above it closing it
+  (the phone shell's own sheets do both); the Wi-Fi join note as a sheet (its rows keep their
+  button, D434).

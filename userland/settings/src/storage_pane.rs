@@ -241,13 +241,16 @@ impl StoragePane {
         396 + LINE_PITCH * (1 + REPORT_LINES as i32) + PADDING
     }
 
-    /// The format and install panels on a narrow page (settings-forms-v0.5.md 2, R10): the
-    /// pane's full width, their fields the column's width and 48 tall, `Cancel` and the primary
-    /// button an equal pair on the last row; on the desktop as built.
+    /// The format and install panels on a narrow page (settings-forms-v0.5.md 2, R10): bottom
+    /// sheets the window's full width (D463), their fields the column's width and 48 tall,
+    /// `Cancel` and the primary button an equal pair on the last row; on the desktop as built,
+    /// inside the pane.
     fn reflow_panels(&self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) {
         let w = self.widgets;
         let panel_width = FORMAT_PANEL.2 - 2 * PADDING;
         let Some(c) = content else {
+            tree.set_sheet(w.panel, None);
+            tree.set_sheet(w.install_panel, None);
             let panel = at(FORMAT_PANEL.0, FORMAT_PANEL.1, FORMAT_PANEL.2, FORMAT_PANEL.3);
             tree.set_place(w.panel, panel);
             tree.set_place(w.install_panel, panel);
@@ -269,9 +272,8 @@ impl StoragePane {
         };
         let row = TOUCH_CONTROL;
         let half = (c - 8) / 2;
-        let sheet = |height: i32| Place::at(0, FORMAT_PANEL.1, Length::Fill(0), Length::Px(height));
-        tree.set_place(w.panel, sheet(196 + row + PADDING));
-        tree.set_place(w.install_panel, sheet(176 + row + PADDING));
+        tree.set_sheet(w.panel, Some(196 + row + PADDING));
+        tree.set_sheet(w.install_panel, Some(176 + row + PADDING));
         for (id, y) in [w.question, w.erases, w.confirm].into_iter().zip(PANEL_TEXT_LINES) {
             tree.set_place(id, Place::at(PADDING, y, Length::Px(c), Length::Content));
         }
@@ -760,6 +762,20 @@ impl StoragePane {
         self.install_open = true;
         self.refresh(tree);
         tree.set_focus(Some(widgets.install_field), now_ms);
+    }
+
+    /// Closes the format or install panel, as `Cancel` does, when one is open and nothing runs:
+    /// what `Back` does first on a narrow page (settings-forms-v0.5.md R10). Whether it closed one.
+    pub fn close_sheet(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) -> bool {
+        if self.busy {
+            return false;
+        }
+        match (self.install_open, self.panel_open) {
+            (true, _) => self.close_install_panel(tree, Some(now_ms)),
+            (false, true) => self.close_panel(tree, Some(now_ms)),
+            (false, false) => return false,
+        }
+        true
     }
 
     fn close_install_panel(&mut self, tree: &mut WidgetTree<CAPACITY>, focus_at_ms: Option<u32>) {

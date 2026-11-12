@@ -1196,3 +1196,44 @@ fn set_text_leaves_no_selection_behind() {
     );
     assert_eq!(tree.text_of(form.field), Some("x"));
 }
+
+#[test]
+fn a_sheet_sits_at_the_window_s_bottom_over_the_widgets_under_it_until_it_goes_back() {
+    let mut tree = WidgetTree::<24>::new();
+    let scroll = tree.add(None, Place::fill(), Kind::scroll_view()).unwrap();
+    tree.add(
+        Some(scroll),
+        Place::at(0, 150, Length::Fill(0), Length::Px(50)),
+        Kind::button("Under", false),
+    )
+    .unwrap();
+    let panel = tree
+        .add(
+            Some(scroll),
+            Place::at(0, 20, Length::Fill(0), Length::Px(60)),
+            Kind::panel(Token::Menu),
+        )
+        .unwrap();
+    let inside = tree
+        .add(
+            Some(panel),
+            Place::at(16, 10, Length::Px(100), Length::Px(40)),
+            Kind::button("Inside", false),
+        )
+        .unwrap();
+    let over = tree
+        .add(
+            Some(scroll),
+            Place::at(0, 140, Length::Fill(0), Length::Px(60)),
+            Kind::button("Over", false),
+        )
+        .unwrap();
+    tree.resize(400, 200);
+    tree.set_sheet(panel, Some(80));
+    assert_eq!(tree.rect(panel), Some(Rect::new(0, 120, 400, 80)));
+    assert_eq!(tree.rect(inside), Some(Rect::new(16, 130, 100, 40)));
+    assert_eq!(click(&mut tree, 20, 140, 0), Response::Activated(inside));
+    tree.set_sheet(panel, None);
+    assert_eq!(tree.rect(panel), Some(Rect::new(0, 20, 400, 60)));
+    assert_eq!(click(&mut tree, 20, 160, 1000), Response::Activated(over));
+}
