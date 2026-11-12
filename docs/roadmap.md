@@ -1232,7 +1232,7 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | virtio-blk: capacity, read-only disks, reads, writes and flushes of 512-byte sectors, up to 15 requests in flight, on interrupts (D130, D220); a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** |
 | EggFS, our own journaled disk file system: `/home` and `/Applications` on a disk image, metadata journal, copy-on-write data, CRC-checked commits, crash recovery at mount, `sync`/`fsync`, symbolic and hard links (D170), an offline check and repair (D192) (D131, docs/eggfs.md) | **done** (several requests in flight: done, D220; access times: code written, unbuilt, D534) |
 | virtio-console (the agent channel's named port, D136), on interrupts (D220) | **done** (its input as a console: code written, unbuilt, D310) |
-| virtio-net: hardware address, link state and MTU from the configuration, 16 receive and 16 transmit buffers (D157), on interrupts (D220) | **done** (several adapters: done, D157, D240; receive checksum offload: code written, unbuilt, D533; transmit checksum offload: code written, unbuilt, D535; segmentation offloads: planned) |
+| virtio-net: hardware address, link state and MTU from the configuration, 16 receive and 16 transmit buffers (D157), on interrupts (D220) | **done** (several adapters: done, D157, D240; receive checksum offload: code written, unbuilt, D533; transmit checksum offload: code written, unbuilt, D535; TCP segmentation offload: code written, unbuilt, D541) |
 
 ## Toward "better than macOS, Windows and Linux"
 

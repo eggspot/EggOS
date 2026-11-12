@@ -26,6 +26,9 @@ pub const ARP_ATTEMPTS: u8 = 3;
 
 const IP_AT: usize = ethernet::HEADER_BYTES;
 const PAYLOAD_AT: usize = IP_AT + ipv4::HEADER_BYTES;
+/// Where the TCP segment lies in a frame [`Interface::frame_large_tcp`] completes: after the
+/// Ethernet and IPv4 headers.
+pub const LARGE_TCP_SEGMENT_AT: usize = PAYLOAD_AT;
 
 /// What the interface counted, as Linux's interface statistics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -121,6 +124,7 @@ pub struct Interface {
     identification: u16,
     counters: Counters,
     transmit_checksums: Completion,
+    segmentation_limit: Option<usize>,
     frame: [u8; ethernet::MAX_FRAME_BYTES],
 }
 
@@ -138,8 +142,82 @@ impl Interface {
             identification: (seed >> 16) as u16,
             counters: Counters::default(),
             transmit_checksums: Completion::Full,
+            segmentation_limit: None,
             frame: [0; ethernet::MAX_FRAME_BYTES],
         }
+    }
+
+    /// Says the adapter cuts TCP segments longer than the MTU into segments itself, in frames
+    /// of up to `limit` bytes (D541), or that it does not (`None`, the default).
+    pub fn set_segmentation_limit(&mut self, limit: Option<usize>) {
+        self.segmentation_limit = limit;
+    }
+
+    /// The longest frame the adapter cuts into TCP segments, if it does.
+    pub fn segmentation_limit(&self) -> Option<usize> {
+        self.segmentation_limit
+    }
+
+    /// The most TCP data one segment for the adapter to cut may hold: its frame limit less the
+    /// Ethernet, IPv4 and TCP headers; `None` when it does not cut segments.
+    pub fn segmentation_data_limit(&self) -> Option<usize> {
+        self.segmentation_limit?
+            .checked_sub(PAYLOAD_AT + tcp::MAX_HEADER_BYTES)
+            .filter(|&bytes| bytes > 0)
+    }
+
+    /// Completes `frame`, whose bytes from [`LARGE_TCP_SEGMENT_AT`] hold a TCP segment of
+    /// `segment_bytes` bytes from the interface's address to `destination`, longer than the
+    /// MTU takes, for the adapter to cut into segments itself (D541): the segment's checksum,
+    /// written as `completion` says, made partial, as the adapter completes each piece's, and
+    /// the IPv4 and Ethernet headers written: the frame's length.
+    /// [`SendError::TooLong`] when the adapter does not cut segments or the frame is longer
+    /// than it takes; [`SendError::NoRoute`] while the next hop's hardware address is not
+    /// known, which TCP's retransmission covers.
+    #[allow(clippy::too_many_arguments)]
+    pub fn frame_large_tcp(
+        &mut self,
+        frame: &mut [u8],
+        destination: Ipv4Address,
+        segment_bytes: usize,
+        completion: Completion,
+        ttl: u8,
+        now_ms: u64,
+    ) -> Result<usize, SendError> {
+        let limit = self.segmentation_limit.ok_or(SendError::TooLong)?;
+        let length = PAYLOAD_AT
+            .checked_add(segment_bytes)
+            .ok_or(SendError::TooLong)?;
+        if length > limit || length > frame.len() {
+            return Err(SendError::TooLong);
+        }
+        let source = self.address().ok_or(SendError::NoAddress)?;
+        let NextHop::Via(hop) = self.route(destination, 0)? else {
+            return Err(SendError::NoRoute);
+        };
+        let next_hop = self.arp.lookup(hop, now_ms).ok_or(SendError::NoRoute)?;
+        if completion == Completion::Full {
+            let segment = &mut frame[PAYLOAD_AT..length];
+            tcp::convert_checksum(segment, source, destination, Completion::Partial);
+        }
+        self.identification = self.identification.wrapping_add(1);
+        let ip = ipv4::Header {
+            source,
+            destination,
+            protocol: ipv4::protocol::TCP,
+            ttl,
+        };
+        ipv4::write_header(&mut frame[IP_AT..], &ip, self.identification, segment_bytes)
+            .ok_or(SendError::TooLong)?;
+        let header = ethernet::Header {
+            destination: next_hop,
+            source: self.mac,
+            ether_type: ether_type::IPV4,
+        };
+        ethernet::write_header(frame, &header);
+        self.counters.sent_packets += 1;
+        self.counters.sent_bytes += length as u64;
+        Ok(length)
     }
 
     /// Has every TCP and UDP checksum the interface sends go out whole, or partial for an

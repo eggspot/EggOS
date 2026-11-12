@@ -38,7 +38,9 @@ use eggos_drivers::desktop::NetworkState;
 use eggos_hal::Platform;
 use eggos_net::checksum::Completion;
 use eggos_net::ethernet::{MAX_FRAME_BYTES, MacAddress};
-use eggos_net::interface::{Counters, Datagram, Delivery, Interface, SendError};
+use eggos_net::interface::{
+    Counters, Datagram, Delivery, Interface, LARGE_TCP_SEGMENT_AT, SendError,
+};
 use eggos_net::ipv4::{Ipv4Address, Subnet};
 use eggos_net::status::{
     Dhcp, ETHERNET_NAME, InterfaceName, InterfaceStatus, LOOPBACK_NAME, Neighbour, WIRELESS_NAME,
@@ -74,6 +76,20 @@ pub trait NetDevice: Send {
     fn completes_checksums(&self) -> bool {
         false
     }
+    /// The longest frame it cuts into TCP segments itself, from a TCP segment longer than the
+    /// MTU (D541); `None` when it does not (the default).
+    fn segmentation_limit(&self) -> Option<usize> {
+        None
+    }
+    /// Hands `frame`, a TCP segment longer than the MTU, to the adapter to cut into segments
+    /// of `segment_size` data bytes and send.
+    fn transmit_segmented(
+        &mut self,
+        _frame: &[u8],
+        _segment_size: u16,
+    ) -> Result<(), &'static str> {
+        Err("the adapter does not cut segments")
+    }
 }
 
 struct Adapter {
@@ -92,6 +108,7 @@ impl Adapter {
         if device.completes_checksums() {
             interface.set_transmit_checksums(Completion::Partial);
         }
+        interface.set_segmentation_limit(device.segmentation_limit());
         Box::new(Self {
             name,
             device,
@@ -439,6 +456,47 @@ pub fn send_tcp<P: Platform>(
     interface.send_tcp(destination, segment, completion, ttl, now, &mut |bytes| {
         let _ = device.transmit(bytes);
     })
+}
+
+/// The most TCP data one segment to `destination` may hold for its adapter to cut into
+/// segments itself (D541); `None` when the adapter does not cut segments.
+pub fn segmentation_data_limit(destination: Ipv4Address) -> Option<usize> {
+    let adapters = ADAPTERS.lock();
+    let index = route(&adapters, destination)?;
+    adapters[index].interface.segmentation_data_limit()
+}
+
+/// Sends `segment`, a TCP segment from the interface's address longer than the MTU, whose
+/// checksum is whole or partial as `completion` says, to `destination` through an adapter that
+/// cuts it into segments of `segment_size` data bytes itself (D541), with time to live `ttl`.
+/// [`SendError::TooLong`] when that adapter does not cut segments.
+pub fn send_large_tcp<P: Platform>(
+    destination: Ipv4Address,
+    segment: &[u8],
+    completion: Completion,
+    segment_size: u16,
+    ttl: u8,
+) -> Result<(), SendError> {
+    let mut frame = Vec::new();
+    let length = LARGE_TCP_SEGMENT_AT + segment.len();
+    if frame.try_reserve_exact(length).is_err() {
+        return Err(SendError::TooLong);
+    }
+    frame.resize(length, 0);
+    frame[LARGE_TCP_SEGMENT_AT..].copy_from_slice(segment);
+    let now = now_ms::<P>();
+    let mut adapters = ADAPTERS.lock();
+    let Some(index) = route(&adapters, destination) else {
+        return Err(SendError::NoRoute);
+    };
+    let Adapter {
+        device, interface, ..
+    } = &mut *adapters[index];
+    let length =
+        interface.frame_large_tcp(&mut frame, destination, segment.len(), completion, ttl, now)?;
+    device
+        .transmit_segmented(&frame[..length], segment_size)
+        .map_err(|_| SendError::TooLong)
 }
 
 /// Whether `address` is this machine's: in `127.0.0.0/8`, or an interface's.

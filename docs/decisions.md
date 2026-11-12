@@ -25558,3 +25558,32 @@ the license, by an explicit instruction recorded here.
   lines it took.
 - **Not yet.** Several queues per direction (virtio-net's multiqueue, virtio-blk's
   `num_queues`), whose queues could then follow their CPUs.
+
+## D541 virtio-net's TCP segmentation offload (M8; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the virtio 1.2 specification, 5.1.6.2)
+
+- **Decision.** virtio-net also asks for `VIRTIO_NET_F_HOST_TSO4`, which needs `CSUM`
+  (D535).
+  - **Driver.** A TCP segment longer than the MTU goes to the device with a `GSO_TCPV4`
+    header: the checksum request, the length of the frame's headers and the segment size to
+    cut at (`segmentation_header`). The frame lies in up to eight contiguous free transmit
+    buffers handed over as one descriptor (`MAX_SEGMENTED_FRAME_BYTES`, about 16 KiB). The
+    driver records each head's buffers as a mask, so a large frame frees all of them when the
+    device is done. The DMA layout and the queue are unchanged.
+  - **Stack.** A connection may put up to `set_segment_limit` bytes of data in one segment,
+    rounded down to whole multiples of the peer's MSS (`segment_data_bytes`). Retransmission,
+    windows and acknowledgments are unchanged. `Interface::frame_large_tcp` completes a frame
+    the kernel provides (the `eggos-net` crate has no allocator): it makes the checksum
+    partial with the full length, as hardware segmentation expects, and writes the IPv4 and
+    Ethernet headers. It refuses while the next hop's address is unresolved, since a large
+    frame does not wait in the ARP queue and TCP's retransmission covers it.
+  - **Kernel.** Each stream decides once, outside its lock (the adapters' lock comes first),
+    whether its route's adapter cuts segments, and takes that adapter's data limit. The TCP
+    loop writes into a kept heap buffer of up to 64 KiB, not the stack. A large segment goes
+    through `net::send_large_tcp` with the connection's MSS as the segment size. If the
+    adapter refuses it (the route changed to one that does not cut), the connection goes back
+    to MSS-sized segments and retransmission sends the data again.
+- **Why.** Bulk sends pay the stack's per-segment cost once per eleven segments at a
+  1460-byte MSS (headers, checksum setup, a doorbell each), which keeps the CPU out of the way
+  of the link's speed.
+- **Not yet.** IPv6 and UDP segmentation, receive-side coalescing
+  (`GUEST_TSO4`/mergeable buffers), and segmentation on the Ethernet and Wi-Fi adapters.

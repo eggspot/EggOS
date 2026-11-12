@@ -1,9 +1,11 @@
 //! The virtio network device (virtio 1.2, 5.1), polled: one receive queue whose buffers the
 //! driver keeps posted, and one transmit queue. Every buffer starts with the device's header
 //! (`virtio_net_hdr`, 12 bytes with `VIRTIO_F_VERSION_1`), which, when the driver sends, asks a
-//! device that offers it to complete the frame's TCP or UDP checksum (D535) and is otherwise
-//! zero (no segmentation), and which it reads when it receives (D533), then holds one Ethernet
-//! frame without its check sequence. The hardware address, the link's state and the
+//! device that offers it to complete the frame's TCP or UDP checksum (D535), or to cut a TCP
+//! segment larger than the MTU into segments of a given size (D541), and is otherwise zero, and
+//! which it reads when it receives (D533), then holds one Ethernet frame without its check
+//! sequence. A frame cut by the device lies in several contiguous transmit buffers, handed over
+//! as one. The hardware address, the link's state and the
 //! MTU come from the device's configuration when it offers them.
 
 use super::queue::{Buffer, SplitQueue};
@@ -39,6 +41,15 @@ const HEADER_FLAGS: usize = 0;
 const HEADER_CHECKSUM_START: usize = 6;
 const HEADER_CHECKSUM_OFFSET: usize = 8;
 const NEEDS_CHECKSUM: u8 = 1;
+const HEADER_SEGMENTATION_TYPE: usize = 1;
+const HEADER_HEADER_LENGTH: usize = 2;
+const HEADER_SEGMENT_SIZE: usize = 4;
+const SEGMENTATION_TCPV4: u8 = 1;
+const TCP_DATA_OFFSET: usize = 12;
+/// The most transmit buffers one segmented frame takes.
+pub const SEGMENTED_FRAME_BUFFERS: usize = 8;
+/// The longest frame the driver hands the device to cut into segments (D541).
+pub const MAX_SEGMENTED_FRAME_BYTES: usize = SEGMENTED_FRAME_BUFFERS * BUFFER_BYTES - HEADER_BYTES;
 const ETHERNET_HEADER_BYTES: usize = 14;
 const IPV4_ETHERTYPE: [u8; 2] = [0x08, 0x00];
 const IPV4_VERSION: u8 = 4;
@@ -73,6 +84,25 @@ pub fn checksum_place(frame: &[u8]) -> Option<(u16, u16)> {
     };
     let start = ETHERNET_HEADER_BYTES + usize::from(first & 0x0f) * 4;
     (start + usize::from(offset) + 2 <= frame.len()).then_some((start as u16, offset))
+}
+
+/// The header the driver sends `frame`, a TCP segment longer than the MTU, with for the device
+/// to cut it into segments of `segment_size` data bytes (D541): [`transmit_header`]'s checksum
+/// request, the TCPv4 type, the length of the frame's headers and the size; `None` for a frame
+/// that is not an unfragmented IPv4 TCP segment.
+pub fn segmentation_header(frame: &[u8], segment_size: u16) -> Option<[u8; HEADER_BYTES]> {
+    let (start, offset) = checksum_place(frame)?;
+    if offset != TCP_CHECKSUM_OFFSET {
+        return None;
+    }
+    let data_offset = *frame.get(usize::from(start) + TCP_DATA_OFFSET)?;
+    let headers = start + u16::from(data_offset >> 4) * 4;
+    let mut header = transmit_header(frame, true);
+    header[HEADER_SEGMENTATION_TYPE] = SEGMENTATION_TCPV4;
+    header[HEADER_HEADER_LENGTH..HEADER_HEADER_LENGTH + 2].copy_from_slice(&headers.to_le_bytes());
+    header[HEADER_SEGMENT_SIZE..HEADER_SEGMENT_SIZE + 2]
+        .copy_from_slice(&segment_size.to_le_bytes());
+    Some(header)
 }
 
 /// The header the driver sends `frame` with: zero, or, when the device completes checksums,
@@ -121,6 +151,8 @@ const _: () = assert!(QUEUE_SIZE as usize <= u16::BITS as usize);
 pub mod feature {
     /// The device completes the partial checksums of the frames the driver sends (D535).
     pub const CSUM: u64 = 1 << 0;
+    /// The device cuts TCP segments over IPv4 larger than the MTU (D541).
+    pub const HOST_TSO4: u64 = 1 << 11;
     /// The driver takes frames whose checksum the device left partial or already checked
     /// (D533).
     pub const GUEST_CSUM: u64 = 1 << 1;
@@ -155,8 +187,9 @@ pub struct VirtioNet<T: Transport, M: DmaMemory> {
     mtu: u16,
     reports_link: bool,
     completes_checksums: bool,
+    segments_tcp: bool,
     receive_buffer_of_head: [u8; QUEUE_SIZE as usize],
-    transmit_buffer_of_head: [u8; QUEUE_SIZE as usize],
+    transmit_buffers_of_head: [u16; QUEUE_SIZE as usize],
     free_transmit_buffers: u16,
 }
 
@@ -177,8 +210,12 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
         if transport.device_type() != device_type::NETWORK {
             return Err((Error::WrongDeviceType, transport, Some(memory)));
         }
-        let wanted =
-            feature::MAC | feature::STATUS | feature::MTU | feature::GUEST_CSUM | feature::CSUM;
+        let wanted = feature::MAC
+            | feature::STATUS
+            | feature::MTU
+            | feature::GUEST_CSUM
+            | feature::CSUM
+            | feature::HOST_TSO4;
         let accepted = match super::initialize(&transport, wanted, keep_waiting) {
             Ok(accepted) => accepted,
             Err(error) => return Err((error, transport, Some(memory))),
@@ -250,8 +287,9 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
             mtu,
             reports_link: accepted & feature::STATUS != 0,
             completes_checksums: accepted & feature::CSUM != 0,
+            segments_tcp: accepted & feature::CSUM != 0 && accepted & feature::HOST_TSO4 != 0,
             receive_buffer_of_head: [0; QUEUE_SIZE as usize],
-            transmit_buffer_of_head: [0; QUEUE_SIZE as usize],
+            transmit_buffers_of_head: [0; QUEUE_SIZE as usize],
             free_transmit_buffers: ((1u32 << transmit_size) - 1) as u16,
         };
         if let Err(error) = (0..receive_size as u8).try_for_each(|buffer| net.post_receive(buffer))
@@ -295,6 +333,12 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
     /// carry only their pseudo-header's sum (D535).
     pub fn completes_checksums(&self) -> bool {
         self.completes_checksums
+    }
+
+    /// The longest frame the device cuts into TCP segments ([`Self::transmit_segmented`],
+    /// D541); `None` when it does not.
+    pub fn segmentation_limit(&self) -> Option<usize> {
+        self.segments_tcp.then_some(MAX_SEGMENTED_FRAME_BYTES)
     }
 
     /// Whether the link is up; a device that does not report its link is always up.
@@ -380,8 +424,8 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
 
     fn reclaim_transmitted(&mut self) {
         while let Some(used) = self.transmit.pop_used() {
-            if let Some(&buffer) = self.transmit_buffer_of_head.get(usize::from(used.head)) {
-                self.free_transmit_buffers |= 1 << buffer;
+            if let Some(&buffers) = self.transmit_buffers_of_head.get(usize::from(used.head)) {
+                self.free_transmit_buffers |= buffers;
             }
         }
     }
@@ -392,20 +436,41 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
         if frame.len() > MAX_FRAME_BYTES {
             return Err(Error::FrameTooLong);
         }
-        self.reclaim_transmitted();
-        if self.free_transmit_buffers == 0 {
-            return Err(Error::QueueFull);
-        }
-        let buffer = self.free_transmit_buffers.trailing_zeros() as u8;
-        let offset = TRANSMIT_BUFFERS_OFFSET + usize::from(buffer) * BUFFER_BYTES;
-        let start = self.memory.as_mut_ptr().wrapping_add(offset);
         let header = transmit_header(frame, self.completes_checksums);
-        // SAFETY: the transmit buffer `buffer` of the driver's DMA memory, `BUFFER_BYTES`
-        // long, is free: the device handed it back (or never had it), so only the driver
-        // touches it; the header fits at its start, and `header` is this function's own.
+        self.hand_over(frame, &header)
+    }
+
+    /// Hands `frame`, a TCP segment longer than the MTU, to the device to cut into segments of
+    /// `segment_size` data bytes and send (D541): [`Error::FrameTooLong`] when the device does
+    /// not cut segments, the frame is not one it cuts, or it is longer than
+    /// [`MAX_SEGMENTED_FRAME_BYTES`].
+    pub fn transmit_segmented(&mut self, frame: &[u8], segment_size: u16) -> Result<(), Error> {
+        if !self.segments_tcp || frame.len() > MAX_SEGMENTED_FRAME_BYTES {
+            return Err(Error::FrameTooLong);
+        }
+        let header = segmentation_header(frame, segment_size).ok_or(Error::FrameTooLong)?;
+        self.hand_over(frame, &header)
+    }
+
+    /// Copies `header` and `frame` into enough contiguous free transmit buffers and hands them
+    /// to the device as one.
+    fn hand_over(&mut self, frame: &[u8], header: &[u8; HEADER_BYTES]) -> Result<(), Error> {
+        self.reclaim_transmitted();
+        let count = (HEADER_BYTES + frame.len()).div_ceil(BUFFER_BYTES).max(1);
+        let run = ((1u32 << count) - 1) as u16;
+        let first = (0..=QUEUE_SIZE as usize - count)
+            .find(|&first| (self.free_transmit_buffers >> first) & run == run)
+            .ok_or(Error::QueueFull)?;
+        let buffers = run << first;
+        let offset = TRANSMIT_BUFFERS_OFFSET + first * BUFFER_BYTES;
+        let start = self.memory.as_mut_ptr().wrapping_add(offset);
+        // SAFETY: the transmit buffers `first..first + count` of the driver's DMA memory,
+        // `BUFFER_BYTES` long each and contiguous, are free: the device handed them back (or
+        // never had them), so only the driver touches them; the header fits at their start,
+        // and `header` is the caller's own.
         unsafe { core::ptr::copy_nonoverlapping(header.as_ptr(), start, HEADER_BYTES) };
-        // SAFETY: the same free buffer, which holds the frame after the header
-        // (`MAX_FRAME_BYTES` checked above); `frame` is the caller's own memory, apart from it.
+        // SAFETY: the same free buffers, which hold the frame after the header (`count` covers
+        // both); `frame` is the caller's own memory, apart from them.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 frame.as_ptr(),
@@ -418,9 +483,9 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
             len: (HEADER_BYTES + frame.len()) as u32,
             device_writes: false,
         }])?;
-        self.free_transmit_buffers &= !(1 << buffer);
-        if let Some(slot) = self.transmit_buffer_of_head.get_mut(usize::from(head)) {
-            *slot = buffer;
+        self.free_transmit_buffers &= !buffers;
+        if let Some(slot) = self.transmit_buffers_of_head.get_mut(usize::from(head)) {
+            *slot = buffers;
         }
         if self.transmit.should_notify() {
             self.transport.notify(TRANSMIT_QUEUE);

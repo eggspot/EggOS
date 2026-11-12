@@ -362,6 +362,7 @@ pub struct Connection {
     timed: Option<(u32, u64)>,
     deadline: Option<u64>,
     checksum: Completion,
+    segment_limit: usize,
 }
 
 /// What a received segment did.
@@ -451,6 +452,7 @@ impl Connection {
             timed: None,
             deadline: None,
             checksum: Completion::Full,
+            segment_limit: 0,
         }
     }
 
@@ -463,6 +465,21 @@ impl Connection {
     /// How [`Connection::output`] writes its segments' checksums.
     pub fn checksum(&self) -> Completion {
         self.checksum
+    }
+
+    /// Lets [`Connection::output`] put up to `data_bytes` of data in one segment, in whole
+    /// multiples of the peer's maximum segment size, for an adapter that cuts it into segments
+    /// of that size itself (D541); `None` keeps every segment to the maximum segment size, as
+    /// at the start.
+    pub fn set_segment_limit(&mut self, data_bytes: Option<usize>) {
+        self.segment_limit = data_bytes.unwrap_or(0);
+    }
+
+    /// The most data one segment holds: the peer's maximum segment size, or as many whole
+    /// multiples of it as [`Connection::set_segment_limit`] allows.
+    pub fn segment_data_bytes(&self) -> usize {
+        let mss = usize::from(self.send_mss);
+        mss.max(self.segment_limit / mss * mss)
     }
 
     /// Its own address and port.
@@ -1021,7 +1038,7 @@ impl Connection {
             usable = 1;
         }
         let room = out.len().saturating_sub(HEADER_BYTES);
-        let count = unsent.min(usable).min(usize::from(self.send_mss)).min(room);
+        let count = unsent.min(usable).min(self.segment_data_bytes()).min(room);
         let closing = matches!(
             self.state,
             State::FinWait1 | State::Closing | State::LastAck

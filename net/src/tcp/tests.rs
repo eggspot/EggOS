@@ -162,6 +162,20 @@ fn a_segment_round_trips_with_its_option_and_a_damaged_one_is_refused() {
 }
 
 #[test]
+fn a_segment_limit_lets_one_segment_carry_whole_multiples_of_the_mss() {
+    let (mut client, _server) = connected(65_535);
+    client.connection.set_segment_limit(Some(5000));
+    assert_eq!(client.connection.segment_data_bytes(), 3 * usize::from(MSS));
+    client.queues.send = vec![7u8; 10_000];
+    let mut out = vec![0u8; MAX_HEADER_BYTES + 5000];
+    let length = client.connection.output(1, &client.queues, &mut out).unwrap();
+    let segment = parse(CLIENT.0, SERVER.0, &out[..length]).unwrap();
+    assert_eq!(segment.data.len(), 3 * usize::from(MSS));
+    client.connection.set_segment_limit(None);
+    assert_eq!(client.connection.segment_data_bytes(), usize::from(MSS));
+}
+
+#[test]
 fn a_partial_checksum_completed_or_made_partial_again_matches_the_whole_one() {
     let header = Header {
         source_port: 40000,

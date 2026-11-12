@@ -292,3 +292,12 @@ fn tcp_and_udp_frames_ask_the_device_for_their_checksum() {
     assert_eq!(header, [1, 0, 0, 0, 0, 0, 34, 0, 16, 0, 0, 0]);
     assert_eq!(transmit_header(&ipv4_frame(6, 0), false), [0; HEADER_BYTES]);
 }
+
+#[test]
+fn a_large_tcp_segment_asks_the_device_to_cut_it() {
+    let mut frame = ipv4_frame(6, 0x4000);
+    frame[46] = 0x50;
+    let header = segmentation_header(&frame, 1460).unwrap();
+    assert_eq!(header, [1, 1, 54, 0, 0xb4, 0x05, 34, 0, 16, 0, 0, 0]);
+    assert_eq!(segmentation_header(&ipv4_frame(17, 0), 1460), None);
+}

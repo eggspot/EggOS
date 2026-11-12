@@ -20,6 +20,7 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use eggos_hal::Platform;
 use eggos_net::checksum::{self, Completion};
+use eggos_net::interface::SendError;
 use eggos_net::ipv4::{self, Ipv4Address};
 use eggos_net::tcp::{self, Buffers, Connection, Error, Segment, State, flags};
 
@@ -40,6 +41,11 @@ pub const LOOPBACK_ROUNDS: usize = 16;
 pub const OUTBOX_SEGMENTS: usize = 1024;
 /// The room a segment takes while it is written.
 pub const SEGMENT_BYTES: usize = tcp::MAX_HEADER_BYTES + MSS as usize;
+/// The room a segment for an adapter that cuts segments itself takes at most (D541): the
+/// largest an IPv4 packet carries.
+pub const LARGE_SEGMENT_BYTES: usize = u16::MAX as usize - ipv4::HEADER_BYTES;
+
+static SEGMENT_SCRATCH: LeafSpinLock<Vec<u8>> = LeafSpinLock::new_leaf(Vec::new());
 
 #[derive(Debug, Default)]
 struct Queues {
@@ -109,6 +115,7 @@ struct StreamState {
     read_closed: bool,
     released: bool,
     error_reported: bool,
+    segmentation_decided: bool,
 }
 
 /// One connection with its bytes.
@@ -143,6 +150,7 @@ impl Stream {
                 read_closed: false,
                 released: false,
                 error_reported: false,
+                segmentation_decided: false,
             }),
         })
     }
@@ -619,17 +627,28 @@ fn accept_syn<P: Platform>(
     true
 }
 
-fn send_segment<P: Platform>(source: Ipv4Address, destination: Ipv4Address, bytes: &mut [u8]) {
-    match is_local(destination) {
-        true => {
-            checksum::complete(bytes, tcp::CHECKSUM_AT);
-            queue_outgoing(source, destination, bytes);
-        }
-        false => {
-            let ttl = ipv4::DEFAULT_TTL;
-            let _ = super::send_tcp::<P>(destination, bytes, Completion::Partial, ttl);
-        }
+/// Sends `bytes`, a segment from `source` to `destination` whose checksum is partial: whether
+/// it went, false only for a segment longer than `segment_size` of data that its adapter does
+/// not cut itself (D541), which TCP sends again in smaller segments.
+fn send_segment<P: Platform>(
+    source: Ipv4Address,
+    destination: Ipv4Address,
+    bytes: &mut [u8],
+    segment_size: u16,
+) -> bool {
+    if is_local(destination) {
+        checksum::complete(bytes, tcp::CHECKSUM_AT);
+        queue_outgoing(source, destination, bytes);
+        return true;
     }
+    let ttl = ipv4::DEFAULT_TTL;
+    if bytes.len() > tcp::MAX_HEADER_BYTES + usize::from(segment_size) {
+        let sent =
+            super::send_large_tcp::<P>(destination, bytes, Completion::Partial, segment_size, ttl);
+        return sent != Err(SendError::TooLong);
+    }
+    let _ = super::send_tcp::<P>(destination, bytes, Completion::Partial, ttl);
+    true
 }
 
 fn sweep() -> bool {
@@ -680,29 +699,83 @@ pub fn run<P: Platform>() {
     }
 }
 
+/// A buffer for the segments [`run_once`] writes: the kept one, grown to
+/// [`LARGE_SEGMENT_BYTES`] when the heap allows, else at least [`SEGMENT_BYTES`]; `None` when
+/// not even that is free.
+fn take_segment_scratch() -> Option<Vec<u8>> {
+    let mut scratch = core::mem::take(&mut *SEGMENT_SCRATCH.lock());
+    for wanted in [LARGE_SEGMENT_BYTES, SEGMENT_BYTES] {
+        if scratch.len() >= wanted {
+            return Some(scratch);
+        }
+        if scratch.try_reserve_exact(wanted - scratch.len()).is_ok() {
+            scratch.resize(wanted, 0);
+            return Some(scratch);
+        }
+    }
+    None
+}
+
+fn give_back_segment_scratch(scratch: Vec<u8>) {
+    let mut kept = SEGMENT_SCRATCH.lock();
+    if kept.len() < scratch.len() {
+        *kept = scratch;
+    }
+}
+
+/// Lets a connection to another machine send segments its adapter cuts itself, once (D541):
+/// decided outside the stream's lock, since the adapters' lock comes before it.
+fn decide_segmentation(stream: &Stream) {
+    let remote = {
+        let state = stream.state.lock();
+        match state.segmentation_decided {
+            true => return,
+            false => state.connection.remote().0,
+        }
+    };
+    let limit = match is_local(remote) {
+        true => None,
+        false => super::segmentation_data_limit(remote),
+    };
+    let mut state = stream.state.lock();
+    state.connection.set_segment_limit(limit);
+    state.segmentation_decided = true;
+}
+
 fn run_once<P: Platform>() -> bool {
     let now = now_ms::<P>();
-    let mut segment = [0u8; SEGMENT_BYTES];
+    let Some(mut segment) = take_segment_scratch() else {
+        return false;
+    };
     let mut changed = false;
     for _ in 0..LOOPBACK_ROUNDS {
         let mut index = 0;
         while let Some(stream) = stream_at(index) {
             index += 1;
             changed |= stream.state.lock().connection.poll(now);
+            decide_segmentation(&stream);
             for _ in 0..SEGMENTS_PER_RUN {
                 let written = {
                     let mut state = stream.state.lock();
                     let StreamState {
                         connection, queues, ..
                     } = &mut *state;
-                    connection
-                        .output(now, queues, &mut segment)
-                        .map(|length| (length, connection.local().0, connection.remote().0))
+                    let room = segment
+                        .len()
+                        .min(tcp::MAX_HEADER_BYTES + connection.segment_data_bytes());
+                    connection.output(now, queues, &mut segment[..room]).map(|length| {
+                        let ends = (connection.local().0, connection.remote().0);
+                        (length, ends, connection.send_mss())
+                    })
                 };
-                let Some((length, source, destination)) = written else {
+                let Some((length, (source, destination), segment_size)) = written else {
                     break;
                 };
-                send_segment::<P>(source, destination, &mut segment[..length]);
+                let bytes = &mut segment[..length];
+                if !send_segment::<P>(source, destination, bytes, segment_size) {
+                    let mut state = stream.state.lock();
+                    state.connection.set_segment_limit(None);
+                }
             }
         }
         let mut delivered = false;
@@ -728,6 +801,7 @@ fn run_once<P: Platform>() -> bool {
             break;
         }
     }
+    give_back_segment_scratch(segment);
     changed | sweep()
 }
 

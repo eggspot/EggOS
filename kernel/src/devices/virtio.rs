@@ -1341,6 +1341,18 @@ mod network {
         fn completes_checksums(&self) -> bool {
             self.0.completes_checksums()
         }
+        fn segmentation_limit(&self) -> Option<usize> {
+            self.0.segmentation_limit()
+        }
+        fn transmit_segmented(
+            &mut self,
+            frame: &[u8],
+            segment_size: u16,
+        ) -> Result<(), &'static str> {
+            self.0
+                .transmit_segmented(frame, segment_size)
+                .map_err(virtio::Error::description)
+        }
     }
 
     fn probe_net(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
