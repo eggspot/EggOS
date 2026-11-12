@@ -9,9 +9,9 @@
 //! first gigabyte of the physical space (the GIC and the PL011 UART among QEMU `virt`'s
 //! devices) at its own address as device memory. It loads `MAIR0`, `TTBCR` (LPAE, `TTBR0`
 //! alone, write-back walks) and `TTBR0`, turns the MMU and caches on, jumps to the virtual
-//! address, sets the stack and calls [`early_main`], which reports on the console and powers
-//! the machine off through PSCI. Exceptions, threads, user mode and the rest of
-//! [`crate::Platform`] are part 2.
+//! address, sets the stack and calls `early_main`, which reports on the console, installs the
+//! vectors and takes a few virtual-timer interrupts through the GICv2 (D478), and powers the
+//! machine off through PSCI. Threads, user mode and the rest of [`crate::Platform`] come next.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -178,11 +178,133 @@ pub fn power_off() -> ! {
     }
 }
 
+const GIC_DISTRIBUTOR: usize = 0x0800_0000;
+const GIC_CPU: usize = 0x0801_0000;
+const DISTRIBUTOR_CONTROL: usize = 0x000;
+const SET_ENABLE: usize = 0x100;
+const PRIORITY: usize = 0x400;
+const CPU_CONTROL: usize = 0x000;
+const PRIORITY_MASK: usize = 0x004;
+const ACKNOWLEDGE: usize = 0x00c;
+const END_OF_INTERRUPT: usize = 0x010;
+const INTERRUPT_ID: u32 = 0x3ff;
+const VIRTUAL_TIMER: u32 = 27;
+const MIDDLE_PRIORITY: u8 = 0x80;
+const EVERY_PRIORITY: u32 = 0xff;
+const TIMER_ENABLE: u32 = 1;
+const TICKS_A_SECOND: u64 = 100;
+const TICKS_SHOWN: u32 = 3;
+
+static TICKS: AtomicU32 = AtomicU32::new(0);
+
+core::arch::global_asm!(
+    r#"
+    .section .text, "ax"
+    .arm
+    .balign 32
+    .global arm_vectors
+arm_vectors:
+    b       arm_fatal
+    b       arm_fatal
+    b       arm_fatal
+    b       arm_fatal
+    b       arm_fatal
+    b       arm_fatal
+    b       arm_irq_entry
+    b       arm_fatal
+
+arm_irq_entry:
+    sub     lr, lr, #4
+    srsdb   sp!, #0x13
+    cps     #0x13
+    push    {{r0-r3, r12, lr}}
+    bl      {irq}
+    pop     {{r0-r3, r12, lr}}
+    rfeia   sp!
+
+arm_fatal:
+    ldr     sp, =__stack_top
+    bl      {fatal}
+    .ltorg
+"#,
+    irq = sym irq,
+    fatal = sym fatal,
+);
+
+fn gic(base: usize, offset: usize) -> *mut u32 {
+    (base + offset) as *mut u32
+}
+
+fn set_timer(ticks: u32) {
+    // SAFETY: writes `CNTV_TVAL` and `CNTV_CTL`: the virtual timer fires `ticks` from now.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {ticks}, c14, c3, 0",
+            "mcr p15, 0, {enable}, c14, c3, 1",
+            "isb",
+            ticks = in(reg) ticks,
+            enable = in(reg) TIMER_ENABLE,
+        )
+    };
+}
+
+fn tick_interval() -> u32 {
+    (clock_frequency() / TICKS_A_SECOND) as u32
+}
+
+extern "C" fn irq() {
+    // SAFETY: the GIC's CPU interface, mapped as device memory by the boot table's first
+    // gigabyte; acknowledging and ending an interrupt are this handler's alone.
+    unsafe {
+        let acknowledged = gic(GIC_CPU, ACKNOWLEDGE).read_volatile();
+        if acknowledged & INTERRUPT_ID == VIRTUAL_TIMER {
+            TICKS.fetch_add(1, Ordering::Relaxed);
+            set_timer(tick_interval());
+        }
+        gic(GIC_CPU, END_OF_INTERRUPT).write_volatile(acknowledged);
+    }
+}
+
+extern "C" fn fatal() -> ! {
+    console_write(b"EggOS arm: an exception the boot path does not handle\n");
+    power_off()
+}
+
+fn enable_timer_interrupts() {
+    // SAFETY: points `VBAR` at the vector table, turns on the GIC's distributor and CPU
+    // interface for the virtual timer's interrupt, arms the timer, and unmasks IRQs; the
+    // vectors and handler are in place first.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {vectors}, c12, c0, 0",
+            "isb",
+            vectors = in(reg) arm_vectors_address(),
+        );
+        let priority = (GIC_DISTRIBUTOR + PRIORITY + VIRTUAL_TIMER as usize) as *mut u8;
+        priority.write_volatile(MIDDLE_PRIORITY);
+        gic(GIC_DISTRIBUTOR, SET_ENABLE).write_volatile(1 << VIRTUAL_TIMER);
+        gic(GIC_DISTRIBUTOR, DISTRIBUTOR_CONTROL).write_volatile(1);
+        gic(GIC_CPU, PRIORITY_MASK).write_volatile(EVERY_PRIORITY);
+        gic(GIC_CPU, CPU_CONTROL).write_volatile(1);
+        set_timer(tick_interval());
+        core::arch::asm!("cpsie i");
+    }
+}
+
+fn arm_vectors_address() -> usize {
+    unsafe extern "C" {
+        static arm_vectors: u8;
+    }
+    &raw const arm_vectors as usize
+}
+
 extern "C" fn early_main() -> ! {
     console_write(b"EggOS arm: MMU on, running in the direct map\n");
-    let ticks_a_second = clock_frequency();
-    let started = clock_ticks();
-    while clock_ticks().wrapping_sub(started) < ticks_a_second / 100 {}
-    console_write(b"timer counting\n");
+    enable_timer_interrupts();
+    while TICKS.load(Ordering::Relaxed) < TICKS_SHOWN {
+        // SAFETY: waits for the next interrupt; the timer's comes within a tick.
+        unsafe { core::arch::asm!("wfi") };
+    }
+    console_write(b"timer interrupts arriving\n");
     power_off()
 }

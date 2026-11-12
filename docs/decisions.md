@@ -24304,3 +24304,28 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Exception vectors and modes (IRQ, abort, undefined, supervisor-call stacks),
   the GIC, threads, user mode, secondary CPUs, the rest of `Platform`, RAM beyond a gigabyte,
   and the core's remaining 64-bit assumptions.
+
+## D477 RV32, part 3: traps and timer interrupts (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** RV32's boot sets `stvec` to a trap entry that saves `x1` to `x31` (with the
+  stack pointer before the trap) and `sepc`, `sstatus`, `scause` and `stval` in a 144-byte
+  `TrapFrame` on the kernel stack, calls the Rust handler with it, restores `sepc`, `sstatus`
+  and the registers, and returns with `sret`. The supervisor timer interrupt counts a tick and
+  asks SBI for the next one, a hundred a second; any other trap reports and stops. The boot
+  path enables `sie.STIE` and `sstatus.SIE` and waits for three ticks before shutting down.
+- **Not yet.** Traps from user mode (`sscratch` and a per-hart stack), external interrupts
+  through the PLIC, threads, and the rest of `Platform`.
+
+## D478 32-bit Arm, part 3: exception vectors, the GICv2 and the virtual timer (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `VBAR` points at an eight-entry vector table; IRQs enter through the usual
+  Armv7 sequence (return address adjusted, `SRSDB` of the return state onto the SVC stack, a
+  switch to SVC mode, the caller-saved registers pushed, the handler, then `RFEIA`), so no
+  mode but SVC needs a stack of its own; every other exception sets a stack, reports and
+  powers off. The handler acknowledges through the GICv2 CPU interface, re-arms the virtual
+  timer (`CNTV_TVAL`, `CNTV_CTL`) on its interrupt (PPI 27) and ends the interrupt. The boot
+  path gives PPI 27 a priority, enables it, the distributor and the CPU interface, arms the
+  timer for a hundredth of a second, unmasks IRQs and waits for three ticks.
+- **Not yet.** Data and prefetch aborts as page faults, undefined instructions, supervisor
+  calls from user mode, the other modes' stacks for nesting, GICv3, threads and the rest of
+  `Platform`.
