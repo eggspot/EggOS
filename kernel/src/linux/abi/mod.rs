@@ -151,6 +151,19 @@ pub const CLONE_STACK_FIRST: bool = false;
 #[cfg(not(target_arch = "s390x"))]
 pub const MMAP_ARGUMENTS_IN_MEMORY: bool = false;
 
+/// Whether a 64-bit value split over two registers starts at an even one (32-bit Arm's EABI,
+/// D491); no other port splits values.
+#[cfg(not(target_arch = "arm"))]
+pub const ALIGNED_REGISTER_PAIRS: bool = false;
+/// Whether `fadvise64_64` takes the advice second, before the offset and length (32-bit Arm's
+/// `arm_fadvise64_64`, D491), rather than last.
+#[cfg(not(target_arch = "arm"))]
+pub const FADVISE_ADVICE_SECOND: bool = false;
+/// The alignment of `struct statfs` (or `statfs64`): 8 everywhere but on 32-bit Arm, whose
+/// `statfs64` is packed to 4 (D491).
+#[cfg(not(target_arch = "arm"))]
+pub const STATFS_ALIGN: usize = 8;
+
 /// `struct sigaction`'s handler comes first everywhere but on MIPS.
 #[cfg(not(target_arch = "mips64"))]
 pub const SIGACTION_FLAGS_FIRST: bool = false;

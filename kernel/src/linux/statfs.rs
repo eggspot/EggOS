@@ -20,8 +20,13 @@ use crate::process::Process;
 use crate::vfs::{NAME_MAX, Usage, magic};
 use eggos_hal::Platform;
 
-/// The size of `struct statfs`.
-pub const STATFS_SIZE: usize = 120;
+const W: usize = super::abi::WORD_BYTES;
+
+/// The size of `struct statfs`, or of `struct statfs64` on the 32-bit ports (D491): the type
+/// and block size a word each, the five counts 64-bit, the id, then the name length, fragment
+/// size and flags a word each and four spare words, padded to the architecture's alignment.
+pub const STATFS_SIZE: usize = (9 * W + 48).next_multiple_of(super::abi::STATFS_ALIGN);
+const _: () = assert!(W != 8 || STATFS_SIZE == 120);
 
 /// `struct statfs`'s `f_flags` (`ST_*`).
 pub mod flag {
@@ -34,34 +39,42 @@ pub mod flag {
 const DEVICE_FILES: (u32, u32) = (0, 5);
 
 mod offset {
+    use super::W;
+
     pub const TYPE: usize = 0;
-    pub const BLOCK_SIZE: usize = 8;
-    pub const BLOCKS: usize = 16;
-    pub const FREE: usize = 24;
-    pub const AVAILABLE: usize = 32;
-    pub const FILES: usize = 40;
-    pub const FREE_FILES: usize = 48;
-    pub const ID: usize = 56;
-    pub const NAME_LENGTH: usize = 64;
-    pub const FRAGMENT_SIZE: usize = 72;
-    pub const FLAGS: usize = 80;
+    pub const BLOCK_SIZE: usize = W;
+    pub const BLOCKS: usize = 2 * W;
+    pub const FREE: usize = BLOCKS + 8;
+    pub const AVAILABLE: usize = BLOCKS + 16;
+    pub const FILES: usize = BLOCKS + 24;
+    pub const FREE_FILES: usize = BLOCKS + 32;
+    pub const ID: usize = BLOCKS + 40;
+    pub const NAME_LENGTH: usize = BLOCKS + 48;
+    pub const FRAGMENT_SIZE: usize = NAME_LENGTH + W;
+    pub const FLAGS: usize = FRAGMENT_SIZE + W;
+    const _: () = assert!(W != 8 || ID == 56 && FRAGMENT_SIZE == 72 && FLAGS == 80);
 }
 
 /// `usage` of the file system with device number `device` as `struct statfs`.
 pub fn statfs_bytes(usage: &Usage, device: (u32, u32)) -> [u8; STATFS_SIZE] {
     let mut bytes = [0u8; STATFS_SIZE];
-    let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_ne_bytes());
-    put(offset::TYPE, usage.magic);
-    put(offset::BLOCK_SIZE, usage.block_size);
-    put(offset::BLOCKS, usage.blocks);
-    put(offset::FREE, usage.free_blocks);
-    put(offset::AVAILABLE, usage.free_blocks);
-    put(offset::FILES, usage.nodes);
-    put(offset::FREE_FILES, usage.free_nodes);
-    put(offset::NAME_LENGTH, NAME_MAX as u64);
-    put(offset::FRAGMENT_SIZE, usage.block_size);
+    let put_word = |bytes: &mut [u8], at: usize, value: u64| {
+        super::abi::put_word(&mut bytes[at..], value);
+    };
+    let put = |bytes: &mut [u8], at: usize, value: u64| {
+        bytes[at..at + 8].copy_from_slice(&value.to_ne_bytes());
+    };
+    put_word(&mut bytes, offset::TYPE, usage.magic);
+    put_word(&mut bytes, offset::BLOCK_SIZE, usage.block_size);
+    put(&mut bytes, offset::BLOCKS, usage.blocks);
+    put(&mut bytes, offset::FREE, usage.free_blocks);
+    put(&mut bytes, offset::AVAILABLE, usage.free_blocks);
+    put(&mut bytes, offset::FILES, usage.nodes);
+    put(&mut bytes, offset::FREE_FILES, usage.free_nodes);
+    put_word(&mut bytes, offset::NAME_LENGTH, NAME_MAX as u64);
+    put_word(&mut bytes, offset::FRAGMENT_SIZE, usage.block_size);
     let read_only = if usage.read_only { flag::RDONLY } else { 0 };
-    put(offset::FLAGS, flag::VALID | read_only);
+    put_word(&mut bytes, offset::FLAGS, flag::VALID | read_only);
     bytes[offset::ID..offset::ID + 4].copy_from_slice(&encoded_device(device).to_ne_bytes());
     bytes
 }

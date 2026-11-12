@@ -69,6 +69,25 @@ pub mod command {
     pub const OFD_SETLK: u32 = 37;
     /// [`SETLKW`] for open-file-description locks.
     pub const OFD_SETLKW: u32 = 38;
+    /// [`GETLK`], [`SETLK`] and [`SETLKW`] with the 64-bit `struct flock64` a 32-bit program
+    /// passes (D491): the layout the 64-bit ports' `struct flock` has.
+    pub const GETLK64: u32 = 12;
+    pub const SETLK64: u32 = 13;
+    pub const SETLKW64: u32 = 14;
+}
+
+/// `fcntl`'s lock command as this module takes it: on the 32-bit ports the `*64` commands are
+/// the record-lock ones and the plain ones, with a 32-bit `struct flock`, are not answered
+/// (D491); elsewhere as given.
+fn record_command(command: u64) -> Option<u32> {
+    let command = command as u32;
+    match (super::abi::WORD_BYTES, command) {
+        (4, command::GETLK64) => Some(command::GETLK),
+        (4, command::SETLK64) => Some(command::SETLK),
+        (4, command::SETLKW64) => Some(command::SETLKW),
+        (4, command::GETLK | command::SETLK | command::SETLKW) => None,
+        _ => Some(command),
+    }
 }
 
 /// `struct flock`'s `l_type` (`F_RDLCK`, `F_WRLCK`, `F_UNLCK`).
@@ -474,15 +493,17 @@ pub fn close(pid: u32, files: &Descriptors, fd: u64) -> Result<u64, Errno> {
 
 /// Whether `fcntl`'s `command` (an `int`) is one of the lock commands this module answers.
 pub fn is_lock_command(command: u64) -> bool {
-    matches!(
-        command as u32,
-        command::GETLK
-            | command::SETLK
-            | command::SETLKW
-            | command::OFD_GETLK
-            | command::OFD_SETLK
-            | command::OFD_SETLKW
-    )
+    record_command(command).is_some_and(|command| {
+        matches!(
+            command,
+            command::GETLK
+                | command::SETLK
+                | command::SETLKW
+                | command::OFD_GETLK
+                | command::OFD_SETLK
+                | command::OFD_SETLKW
+        )
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -560,7 +581,8 @@ pub fn fcntl<P: Platform>(
     context: &mut UserContext,
 ) -> ControlFlow<()> {
     let [fd, command, address, ..] = context.syscall_arguments();
-    let request = record_request(process, thread, fd, command as u32, address);
+    let command = record_command(command).unwrap_or(command as u32);
+    let request = record_request(process, thread, fd, command, address);
     run(process, thread, context, request)
 }
 

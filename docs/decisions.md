@@ -24498,3 +24498,24 @@ the license, by an explicit instruction recorded here.
   them, so RV32's frame is 944 bytes and RV64's stays 1088. RV32 thus uses RV64's frame code
   as written, through D484's shared module. 32-bit Arm's frame (`sigcontext` of 21 words and
   the VFP record in `uc_regspace`) comes with its ABI file (D492).
+
+## D491 The Linux layer's word size, part 7: calls that split 64-bit values (M9, the 32-bit audit; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** A 32-bit program passes a 64-bit file offset or length in two registers, so on
+  the 32-bit ports `linux::wide_arguments` takes `_llseek` (high and low halves, the result
+  written as a 64-bit `loff_t`), `mmap2` (the offset in 4096-byte units), `pread64`,
+  `pwrite64`, `ftruncate64`, `fallocate`, `fadvise64_64`, and `statfs64`/`fstatfs64` (which
+  take the structure's size and refuse any other with `EINVAL`), joins the halves (low first
+  on a little-endian machine) and calls the same handlers the 64-bit ports do. The table sits
+  where those calls have their generic numbers, so a port's number file names them once.
+  32-bit Arm's EABI starts each pair at an even register (`abi::ALIGNED_REGISTER_PAIRS`) and
+  its `arm_fadvise64_64` takes the advice second (`abi::FADVISE_ADVICE_SECOND`); RV32 packs
+  them. The check is one constant-false branch on the 64-bit ports, so their system-call path
+  is unchanged.
+- `struct statfs64` is the type and block size a word each, the five counts 64-bit, then the
+  name length, fragment size, flags and four spares a word each: 120 bytes on the 64-bit
+  ports' `statfs` as before, 88 on RV32, 84 on 32-bit Arm (packed, `abi::STATFS_ALIGN`).
+- `fcntl64`'s `F_GETLK64`, `F_SETLK64` and `F_SETLKW64` (12 to 14) are the record-lock
+  commands on the 32-bit ports: `struct flock64` is the 64-bit ports' `struct flock`. The plain
+  ones with a 32-bit `struct flock` are not answered (`EINVAL`); musl and 64-bit-offset glibc
+  never use them.

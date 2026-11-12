@@ -102,6 +102,7 @@ pub mod timerfd;
 pub mod trampoline;
 pub mod unix_socket;
 pub mod wait;
+pub mod wide_arguments;
 pub mod window;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
@@ -681,6 +682,9 @@ fn syscall<P: Platform>(
         if abi::arguments_in(number, &mut arguments) {
             context.set_syscall_arguments(arguments);
         }
+    }
+    if wide_arguments::SPLITS_WIDE_VALUES && wide_arguments::takes_split_values(number) {
+        return wide_arguments::call::<P>(process, thread, number, context);
     }
     let [first, second, third, ..] = context.syscall_arguments();
     if number > number::LAST {
