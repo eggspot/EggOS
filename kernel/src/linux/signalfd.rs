@@ -13,7 +13,7 @@ use eggos_hal::atomic::AtomicU64;
 use super::descriptors::{EventFile, FileKind, OpenFile, open_file_limit, open_flag};
 use super::poll::{self, INPUT_EVENTS, WakeList};
 use super::signal::{SIGBUS, SIGCHLD, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGSTOP, SIGTRAP};
-use super::signals::{self, Info, code};
+use super::signals::{self, Info, code, info_offset};
 use super::terminal::Waited;
 use super::thread::LinuxThread;
 use super::{Errno, Iovecs};
@@ -141,20 +141,22 @@ pub fn record(info: Info) -> [u8; RECORD_SIZE] {
     let signal = info.signal();
     let code = info.code();
     let fault = [SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP].contains(&signal);
+    let word = |at: usize| crate::linux::abi::word(&siginfo[at..]).to_ne_bytes();
+    let sender = &siginfo[info_offset::PID..][..8];
     match code {
-        _ if fault && code > 0 => record[72..80].copy_from_slice(&siginfo[16..24]),
+        _ if fault && code > 0 => record[72..80].copy_from_slice(&word(info_offset::ADDRESS)),
         _ if signal == SIGCHLD && code > 0 => {
-            record[12..20].copy_from_slice(&siginfo[16..24]);
-            record[40..44].copy_from_slice(&siginfo[24..28]);
-            record[56..64].copy_from_slice(&siginfo[32..40]);
-            record[64..72].copy_from_slice(&siginfo[40..48]);
+            record[12..20].copy_from_slice(sender);
+            record[40..44].copy_from_slice(&siginfo[info_offset::STATUS..][..4]);
+            record[56..64].copy_from_slice(&word(info_offset::USER_TIME));
+            record[64..72].copy_from_slice(&word(info_offset::SYSTEM_TIME));
         }
         code::KERNEL => {}
         _ => {
-            record[12..20].copy_from_slice(&siginfo[16..24]);
+            record[12..20].copy_from_slice(sender);
             if CODES_WITH_VALUE.contains(&code) {
-                record[44..48].copy_from_slice(&siginfo[24..28]);
-                record[48..56].copy_from_slice(&siginfo[24..32]);
+                record[44..48].copy_from_slice(&siginfo[info_offset::VALUE..][..4]);
+                record[48..56].copy_from_slice(&word(info_offset::VALUE));
             }
         }
     }

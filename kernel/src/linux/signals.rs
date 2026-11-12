@@ -408,6 +408,28 @@ const DRAINED_QUEUE_CAPACITY: usize = 32;
 /// `si_code` and the union of fields after them. A program always gets the rest as zeros.
 pub const KEPT_INFO_SIZE: usize = 48;
 
+/// Where a `siginfo_t`'s fields are: `si_signo`, `si_errno` and `si_code` first, then the
+/// union, which starts at the first word boundary after them (16 on 64-bit programs, 12 on
+/// 32-bit ones, D489), its pointers and `long`s a word of the program's width.
+pub mod info_offset {
+    const W: usize = crate::linux::abi::WORD_BYTES;
+
+    pub const SIGNAL: usize = 0;
+    pub const CODE: usize = 8;
+    /// `si_pid`, the union's first field.
+    pub const PID: usize = 12usize.next_multiple_of(W);
+    pub const UID: usize = PID + 4;
+    /// `si_status`, of `SIGCHLD`.
+    pub const STATUS: usize = PID + 8;
+    /// `si_utime` and `si_stime`, of `SIGCHLD`: `clock_t`s.
+    pub const USER_TIME: usize = (PID + 12).next_multiple_of(W);
+    pub const SYSTEM_TIME: usize = USER_TIME + W;
+    /// `si_value`, the `sigval` `sigqueue` sends: an `int` or a pointer.
+    pub const VALUE: usize = PID + 8;
+    /// `si_addr`, of a fault's signal.
+    pub const ADDRESS: usize = PID;
+}
+
 /// `si_code`: who sent a signal, the generic values, which x86_64 shares.
 pub mod code {
     /// With `kill` (`SI_USER`).
@@ -439,8 +461,8 @@ impl Info {
     /// Signal `signal` sent with `code` by process `pid`, whose real user id is `uid`.
     pub fn sent(signal: u32, code: i32, pid: u32, uid: u32) -> Self {
         let mut info = Self::without_sender(signal, code);
-        info.0[16..20].copy_from_slice(&pid.to_ne_bytes());
-        info.0[20..24].copy_from_slice(&uid.to_ne_bytes());
+        info.0[info_offset::PID..][..4].copy_from_slice(&pid.to_ne_bytes());
+        info.0[info_offset::UID..][..4].copy_from_slice(&uid.to_ne_bytes());
         info
     }
 
@@ -453,7 +475,7 @@ impl Info {
             ProcessExit::Killed { signal } => (code::CLD_KILLED, signal),
         };
         let mut info = Self::sent(signal, code, pid, uid);
-        info.0[24..28].copy_from_slice(&status.to_ne_bytes());
+        info.0[info_offset::STATUS..][..4].copy_from_slice(&status.to_ne_bytes());
         info
     }
 
@@ -465,7 +487,7 @@ impl Info {
             JobChange::Continued => (code::CLD_CONTINUED, SIGCONT),
         };
         let mut info = Self::sent(super::signal::SIGCHLD, code, pid, uid);
-        info.0[24..28].copy_from_slice(&status.to_ne_bytes());
+        info.0[info_offset::STATUS..][..4].copy_from_slice(&status.to_ne_bytes());
         info
     }
 
@@ -489,7 +511,7 @@ impl Info {
     fn without_sender(signal: u32, code: i32) -> Self {
         let mut info = Self([0; KEPT_INFO_SIZE]);
         info.0[..4].copy_from_slice(&(signal as i32).to_ne_bytes());
-        info.0[8..12].copy_from_slice(&code.to_ne_bytes());
+        info.0[info_offset::CODE..][..4].copy_from_slice(&code.to_ne_bytes());
         info
     }
 
@@ -504,7 +526,7 @@ impl Info {
 
     /// Its `si_code`.
     pub fn code(&self) -> i32 {
-        i32::from_ne_bytes(self.0[8..12].try_into().unwrap())
+        i32::from_ne_bytes(self.0[info_offset::CODE..][..4].try_into().unwrap())
     }
 
     /// The whole `siginfo_t`, as a handler and `rt_sigtimedwait` give it to the program.
@@ -2171,14 +2193,15 @@ fn read_queued_info<P: Platform>(
         .read_user_memory(address, &mut bytes)
         .map_err(|_| Errno::EFAULT)?;
     crate::linux::abi::reorder_siginfo(&mut bytes);
-    if i32::from_ne_bytes(bytes[8..12].try_into().unwrap()) == code::GROUP_STOP {
+    if i32::from_ne_bytes(bytes[info_offset::CODE..][..4].try_into().unwrap()) == code::GROUP_STOP
+    {
         return Err(Errno::EPERM);
     }
     Ok(bytes)
 }
 
 fn is_reserved_for_kernel_and_kill(bytes: &[u8; KEPT_INFO_SIZE]) -> bool {
-    let code = i32::from_ne_bytes(bytes[8..12].try_into().unwrap());
+    let code = i32::from_ne_bytes(bytes[info_offset::CODE..][..4].try_into().unwrap());
     code >= 0 || code == code::TKILL
 }
 

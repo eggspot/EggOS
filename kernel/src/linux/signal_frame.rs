@@ -23,6 +23,7 @@
 //! there and no `esr_context`.
 
 use super::fault::{Fault, Trap};
+use super::signals::info_offset;
 use crate::process::Process;
 use eggos_hal::Platform;
 use eggos_hal::fp::FpState;
@@ -43,8 +44,8 @@ pub const STACK_SIZE: usize = 3 * crate::linux::abi::WORD_BYTES;
 pub fn fault_info(fault: &Fault) -> [u8; INFO_SIZE] {
     let mut info = [0; INFO_SIZE];
     info[..4].copy_from_slice(&(fault.signal as i32).to_ne_bytes());
-    info[8..12].copy_from_slice(&fault.code.to_ne_bytes());
-    info[16..24].copy_from_slice(&fault.address.to_ne_bytes());
+    info[info_offset::CODE..][..4].copy_from_slice(&fault.code.to_ne_bytes());
+    crate::linux::abi::put_word(&mut info[info_offset::ADDRESS..], fault.address);
     crate::linux::abi::reorder_siginfo(&mut info);
     info
 }

@@ -24476,3 +24476,14 @@ the license, by an explicit instruction recorded here.
   and `envp` pointers and each auxiliary vector entry are words of the program's width, in
   native order; `execve` reads its pointer lists the same way and charges a word per string.
   32-bit Arm's `AT_PLATFORM` is `v7l`, as Linux gives on ARMv7 little-endian; `e_machine` 40.
+
+## D489 The Linux layer's word size, part 5: `siginfo_t` (M9, the 32-bit audit; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `signals::info_offset` names where a `siginfo_t`'s fields are: the three `int`s
+  first, then the union from the first word boundary after them, offset 16 on 64-bit programs
+  and 12 on 32-bit ones, so a sender's ids, a child's status and times, `sigqueue`'s value and a
+  fault's address move with the word size, its pointers and `clock_t`s a word wide. The kept
+  record, the fault `siginfo_t`, `rt_sigqueueinfo`'s checks and the `signalfd_siginfo` built
+  from it (whose own layout is the same on every architecture) all use them. `siginfo_t` stays
+  128 bytes on both. The boot self-test that queues signals from kernel code keeps its 64-bit
+  layout: the 32-bit test programs do not run it yet (D481).
