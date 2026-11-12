@@ -1786,6 +1786,10 @@ impl SettingsWindow {
             true => (0, WEARABLE_ROW, PADDING, WEARABLE_SUMMARY_TOP),
             false => (PAGE_LIST_TOP, PAGE_ROW, PAGE_TEXT_X, PAGE_SUMMARY_TOP),
         };
+        self.tree.set_accessible_name(list, "Settings");
+        let mut count = Text::<16>::new();
+        let _ = write!(count, "{} panes", shown.count_ones());
+        self.tree.set_accessible_value(list, count.as_str());
         let mut position = 0;
         for (pane, summary) in frame.summaries.iter().enumerate() {
             let on = pages && shown & 1 << pane != 0;

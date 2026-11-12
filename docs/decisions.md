@@ -23592,3 +23592,6 @@ the license, by an explicit instruction recorded here.
   rather than + 10 and + 30, as the list draws its own text; Storage, Agents and Keyboard show
   a fixed description where the design counts disks, agents and layouts, which the window does
   not read until the pane opens; the marks do not scroll with a list that scrolls (landscape).
+- **Agents (D433 follow-up).** The pane list is named `Settings` in the element tree with the
+  value `12 panes` (`11 panes` without the Windows layer, fewer while a search filters), in
+  every shape, so `wm show` reads what a person sees (settings-forms-v0.5.md 3).
