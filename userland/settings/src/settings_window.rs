@@ -2147,8 +2147,8 @@ impl SettingsWindow {
     }
 
     /// Shows how the component job the pane waited for ended, with what was read after.
-    pub fn show_component_job_ended(&mut self, succeeded: bool, read: ComponentsRead) {
-        self.components.show_job_ended(&mut self.tree, succeeded, read);
+    pub fn show_component_job_ended(&mut self, succeeded: bool, read: ComponentsRead) -> Option<Request> {
+        self.components.show_job_ended(&mut self.tree, succeeded, read)
     }
 
     /// The edition the Components pane finished installing, to record (D263).

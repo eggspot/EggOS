@@ -23895,3 +23895,18 @@ the license, by an explicit instruction recorded here.
 - **Next.** The Components pane starting installs and removes as `/bin/component` children
   (`ComponentJob::Install` and `Remove`) instead of in its window's tick, its bar and
   `Cancel` read from the job file, and `Finishing...` while the copy is moved into place.
+
+## D454 The Components pane installs through jobs, with live progress and `Cancel` (components-v0.5.md section 6; D300's deviation; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** An install the pane starts (one component, or each of a plan's in turn) is a
+  `/bin/component install <name>` child (`ComponentJob::Install`, awaited) instead of a copy
+  inside the window's tick: the pane keeps drawing, reads the job file every 100 ms and moves
+  the row's bar and `Installing 42 %` from its bytes, and `Cancel` on the row starts
+  `component cancel`, which the job honours at its next piece (D453). When the child ends, its
+  exit status and the failure it recorded (D421's file, now written by installs too) give the
+  note: installed (and the plan's next component started), `Cancelled.`, or the cause's own
+  lines. Leaving the pane does not stop it, and an install another front-end started shows on
+  its row.
+- **Not yet.** Removes still run in the window's tick (they take no time worth a bar), and
+  `Finishing...` with `Cancel` disabled while the copy is moved into place (the job has no
+  phase for it yet).

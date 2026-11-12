@@ -135,6 +135,8 @@ pub enum ComponentJob {
     Download,
     /// `component cancel`.
     Cancel,
+    /// `component install <name>` (D454).
+    Install(String),
 }
 
 impl ComponentJob {
@@ -147,9 +149,10 @@ impl ComponentJob {
             Self::Daily(false) => &["update", "--daily", "off"],
             Self::Download => &["list", "--download"],
             Self::Cancel => &["cancel"],
+            Self::Install(_) => &["install"],
         };
         let mut words: Vec<String> = words.iter().map(|word| String::from(*word)).collect();
-        if let Self::Update(Some(name)) = self {
+        if let Self::Update(Some(name)) | Self::Install(name) = self {
             words.push(name.clone());
         }
         words
@@ -157,7 +160,7 @@ impl ComponentJob {
 
     /// Whether the pane waits for it to end.
     pub fn is_awaited(&self) -> bool {
-        matches!(self, Self::Check | Self::Update(_) | Self::Download)
+        matches!(self, Self::Check | Self::Update(_) | Self::Download | Self::Install(_))
     }
 }
 
@@ -688,6 +691,13 @@ impl ComponentsPane {
         let Some(job) = self.read.job.clone() else {
             return;
         };
+        if let Work::Installing { plan, received, total, .. } = &mut self.work
+            && job.kind == INSTALLING
+            && plan.first() == Some(&job.name)
+        {
+            *received = job.done;
+            *total = job.total.max(*total);
+        }
         if let Work::Updating { current, .. } = &mut self.work
             && job.kind == UPDATING
             && *current != job.name
@@ -714,7 +724,19 @@ impl ComponentsPane {
     }
 
     /// Shows how the job the pane waited for ended, with what was read after.
-    pub fn show_job_ended(&mut self, tree: &mut WidgetTree<CAPACITY>, succeeded: bool, read: ComponentsRead) {
+    pub fn show_job_ended(&mut self, tree: &mut WidgetTree<CAPACITY>, succeeded: bool, read: ComponentsRead) -> Option<Request> {
+        if let Work::Installing { plan, cancelled, .. } = &self.work {
+            let name = plan.first().cloned().unwrap_or_default();
+            let result = match (succeeded, *cancelled) {
+                (true, _) => Ok(()),
+                (false, true) => Err(Failure::Cancelled),
+                (false, false) => Err(match &read.failure {
+                    Some((failed, failure)) if *failed == name => failure.clone(),
+                    _ => Failure::Errno(eggos_runtime::errno::Errno::EIO),
+                }),
+            };
+            return self.show_installed(tree, result, read);
+        }
         let work = core::mem::replace(&mut self.work, Work::Idle);
         self.read = read;
         self.note = match work {
@@ -763,6 +785,7 @@ impl ComponentsPane {
             _ => Note::Closed,
         };
         self.refresh(tree);
+        None
     }
 
     /// Shows how checking the remove the pane asked for went: a refusal under the row, or the
@@ -1021,8 +1044,7 @@ impl ComponentsPane {
                     .is_some_and(|row| self.installing_here(&row.component.name))
             }) =>
             {
-                self.cancel_install(tree);
-                None
+                self.cancel_install(tree)
             }
             _ => return Reply::NotMine,
         };
@@ -1316,8 +1338,7 @@ impl ComponentsPane {
         let shown = self.read.rows.get(row)?.clone();
         let name = shown.component.name.clone();
         if self.installing_here(&name) {
-            self.cancel_install(tree);
-            return None;
+            return self.cancel_install(tree);
         }
         if self.others_busy() {
             return None;
@@ -1392,16 +1413,19 @@ impl ComponentsPane {
             cancelled: false,
         };
         self.failed = None;
-        self.note = Note::Progress { name };
+        self.note = Note::Progress { name: name.clone() };
         self.refresh(tree);
-        Some(Request::InstallComponent)
+        self.asked = Some(ComponentJob::Install(name));
+        Some(Request::StartComponentJob)
     }
 
-    fn cancel_install(&mut self, tree: &mut WidgetTree<CAPACITY>) {
+    fn cancel_install(&mut self, tree: &mut WidgetTree<CAPACITY>) -> Option<Request> {
         if let Work::Installing { cancelled, .. } = &mut self.work {
             *cancelled = true;
         }
         self.refresh(tree);
+        self.asked = Some(ComponentJob::Cancel);
+        Some(Request::StartComponentJob)
     }
 
     fn open_confirmation(

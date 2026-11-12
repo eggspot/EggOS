@@ -937,6 +937,7 @@ fn install<F: Files, C: Console>(
     if let Err(refusal) = manager::lock(files, &wanted.title, false, pid) {
         return out.refuse(json, &refusal);
     }
+    crate::state::clear_failure(files);
     if let (false, Some(also)) = (json, messages::also_installs(&plan)) {
         out.say(&format!("{also} {}", messages::in_all(&plan)));
     }
@@ -981,6 +982,7 @@ fn install<F: Files, C: Console>(
             out.console.write_output(b"\n");
         }
         if let Err(failure) = installed {
+            crate::state::record_failure(files, &component.name, &failure);
             manager::unlock(files);
             let line = messages::install_failure_line(&failure, component);
             let (_, _, error) = messages::install_failure(&failure, component);

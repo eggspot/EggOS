@@ -1668,7 +1668,12 @@ impl Settings {
         match (started, job.is_awaited()) {
             (Ok(child), true) => self.component_job_child = Some(child),
             (Ok(child), false) => self.component_side_children.push(child),
-            (Err(_), true) => self.window.show_component_job_ended(false, components_read()),
+            (Err(_), true) => {
+                let next = self.window.show_component_job_ended(false, components_read());
+                if next == Some(Request::StartComponentJob) {
+                    self.start_component_job();
+                }
+            }
             (Err(_), false) => {}
         }
     }
@@ -1682,8 +1687,11 @@ impl Settings {
             None => self.window.show_components(components_read()),
             Some(succeeded) => {
                 self.component_job_child = None;
-                self.window.show_component_job_ended(succeeded, components_read());
+                let next = self.window.show_component_job_ended(succeeded, components_read());
                 self.show_windows_layer();
+                if next == Some(Request::StartComponentJob) {
+                    self.start_component_job();
+                }
             }
         }
     }

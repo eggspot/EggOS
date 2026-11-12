@@ -304,7 +304,7 @@ fn installing_shows_the_bar_under_the_row_and_moves_the_rows_below() {
     assert_eq!(window.widgets().focus(), Some(row_button(&window, 2)));
     assert_eq!(
         press(&mut window, key::ENTER),
-        Some(Request::InstallComponent)
+        Some(Request::StartComponentJob)
     );
     assert_eq!(window.components_pane().to_install(), Some("windows-apps"));
     assert_eq!(
@@ -465,13 +465,13 @@ fn a_missing_dependency_is_confirmed_then_installed_first() {
     assert_eq!(window.widgets().focus(), Some(ids.confirm));
     assert_eq!(
         press(&mut window, key::ENTER),
-        Some(Request::InstallComponent)
+        Some(Request::StartComponentJob)
     );
     assert_eq!(window.components_pane().to_install(), Some("desktop"));
     assert_eq!(rows(&window)[0][1], "Installing 0 %");
     assert_eq!(rect(&window, ids.bar).y, 252 + 48 + 8);
     let next = window.show_installed(Ok(()), read_of(Some(store()), &["desktop"], false));
-    assert_eq!(next, Some(Request::InstallComponent));
+    assert_eq!(next, Some(Request::StartComponentJob));
     assert_eq!(window.components_pane().to_install(), Some("builtin-apps"));
     assert_eq!(rows(&window)[1][1], "Installing 0 %");
     assert_eq!(rect(&window, ids.bar).y, 252 + 2 * 48 + 8);
@@ -607,7 +607,7 @@ fn an_agent_reads_the_rows_and_may_not_say_yes_to_a_remove() {
         .tree()
         .act(element_of(ids.confirm), Action::Invoke, "", 0);
     assert_eq!(outcome, Outcome::Done);
-    assert_eq!(window.respond(response, 0), Some(Request::InstallComponent));
+    assert_eq!(window.respond(response, 0), Some(Request::StartComponentJob));
 }
 
 #[test]
