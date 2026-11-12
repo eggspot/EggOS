@@ -23910,3 +23910,10 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Removes still run in the window's tick (they take no time worth a bar), and
   `Finishing...` with `Cancel` disabled while the copy is moved into place (the job has no
   phase for it yet).
+
+## D455 The Components pane's notes on a phone (components-v0.5.md section 10; D423's deviation; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** On a phone a note's lines, its plan lines and its bar sit at x 24, the pane's width
+  less 48, and a confirmation's `Cancel` and primary button stack full width, 48 tall and 8
+  apart with the primary last; the note grows by what the stacked buttons add, so the rows
+  below move down by it. Elsewhere the notes keep their places.

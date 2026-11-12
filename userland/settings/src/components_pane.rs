@@ -351,6 +351,8 @@ struct Metrics {
 
 const STACKED_TEXT: (i32, i32, i32, i32) = (16, 8, 28, 48);
 const PHONE_GAP: i32 = 16;
+const TOUCH_BUTTON: i32 = 48;
+const NOTE_X_PHONE: i32 = 24;
 
 impl Metrics {
     fn of(layout: Layout) -> Self {
@@ -1525,9 +1527,28 @@ impl ComponentsPane {
             Note::Message { .. } | Note::Band { .. } | Note::Store { .. } => TWO_LINE_HEIGHT,
             Note::Progress { .. } => PROGRESS_HEIGHT,
             Note::Install { edition: Some(_), plan, .. } => {
-                CONFIRMATION_HEIGHT + PLAN_LINE_PITCH * plan.len().min(PLAN_LINES) as i32
+                CONFIRMATION_HEIGHT + PLAN_LINE_PITCH * plan.len().min(PLAN_LINES) as i32 + self.stacked_buttons()
             }
-            Note::Remove { .. } | Note::Install { .. } | Note::StoreProgress => CONFIRMATION_HEIGHT,
+            Note::Remove { .. } | Note::Install { .. } => CONFIRMATION_HEIGHT + self.stacked_buttons(),
+            Note::StoreProgress => CONFIRMATION_HEIGHT,
+        }
+    }
+
+    /// Where a note's lines and bar go: at x 24 and the pane's width less 48 on a phone
+    /// (components-v0.5.md section 10), as built elsewhere.
+    fn note_column(&self) -> (i32, i32) {
+        match self.metrics.stacked {
+            true => (NOTE_X_PHONE, self.metrics.width + 2 * PADDING - 48),
+            false => (NOTE_X, NOTE_WIDTH),
+        }
+    }
+
+    /// What a confirmation's buttons add to its note on a phone, where they stack full width
+    /// (components-v0.5.md section 10): two 48 px buttons 8 apart in place of one 28 px row.
+    fn stacked_buttons(&self) -> i32 {
+        match self.metrics.stacked {
+            true => 2 * TOUCH_BUTTON + 8 - BUTTON_HEIGHT,
+            false => 0,
         }
     }
 
@@ -1919,24 +1940,37 @@ impl ComponentsPane {
             Note::Progress { .. } | Note::StoreProgress => BYTES_LINE,
             _ => FIRST_LINE,
         };
-        tree.set_place(widgets.first, line_at(NOTE_X, top + first_top, NOTE_WIDTH));
+        let (note_x, note_width) = self.note_column();
+        tree.set_place(widgets.first, line_at(note_x, top + first_top, note_width));
         tree.set_place(
             widgets.second,
-            line_at(NOTE_X, top + SECOND_LINE + below_plan, NOTE_WIDTH),
+            line_at(note_x, top + SECOND_LINE + below_plan, note_width),
         );
         tree.set_place(
             widgets.bar,
-            at(NOTE_X, top + BAR_TOP, NOTE_WIDTH, BAR_HEIGHT),
+            at(note_x, top + BAR_TOP, note_width, BAR_HEIGHT),
         );
         let buttons_top = top + NOTE_BUTTONS_TOP + below_plan;
-        tree.set_place(
-            widgets.cancel,
-            at(NOTE_CANCEL.0, buttons_top, NOTE_CANCEL.1, BUTTON_HEIGHT),
-        );
-        tree.set_place(
-            widgets.confirm,
-            at(NOTE_CONFIRM.0, buttons_top, NOTE_CONFIRM.1, BUTTON_HEIGHT),
-        );
+        match self.metrics.stacked {
+            true => {
+                let width = self.metrics.width;
+                tree.set_place(widgets.cancel, at(PADDING, buttons_top, width, TOUCH_BUTTON));
+                tree.set_place(
+                    widgets.confirm,
+                    at(PADDING, buttons_top + TOUCH_BUTTON + 8, width, TOUCH_BUTTON),
+                );
+            }
+            false => {
+                tree.set_place(
+                    widgets.cancel,
+                    at(NOTE_CANCEL.0, buttons_top, NOTE_CANCEL.1, BUTTON_HEIGHT),
+                );
+                tree.set_place(
+                    widgets.confirm,
+                    at(NOTE_CONFIRM.0, buttons_top, NOTE_CONFIRM.1, BUTTON_HEIGHT),
+                );
+            }
+        }
         tree.set_shown(widgets.first, first_shown);
         tree.set_shown(widgets.second, second_shown);
         tree.set_shown(widgets.bar, bar_shown);
@@ -1967,7 +2001,8 @@ impl ComponentsPane {
                 },
             };
             let line_top = top.unwrap_or(0) + SECOND_LINE + PLAN_LINE_PITCH * index as i32;
-            tree.set_place(*id, line_at(NOTE_X, line_top, NOTE_WIDTH));
+            let (note_x, note_width) = self.note_column();
+            tree.set_place(*id, line_at(note_x, line_top, note_width));
             show_line(tree, *id, &line, Token::Text);
             tree.set_shown(*id, true);
         }
