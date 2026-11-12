@@ -11,6 +11,10 @@
 //! display microcontroller; once the file systems are mounted a thread waits for the
 //! `display-firmware` component's DMCUB file for this DCN version, copies its instructions and
 //! data there, and starts it ([`eggos_drivers::gpu::amd_dmcub`]).
+//!
+//! Modes (D521): when the lit pipe drives a DisplayPort stream on the DTO, the display can
+//! change size: the new size's CVT reduced blanking timing at 60 Hz, up to the firmware mode's
+//! pixel rate and the bytes of the firmware's framebuffer, shown blank from both surfaces.
 
 use super::{Deadline, Probe, ProbeError};
 use crate::display::{Mode, Rect, Scanout};
@@ -19,12 +23,14 @@ use alloc::vec;
 use alloc::vec::Vec;
 use eggos_drivers::gpu::amd_dcn::{self, DisplayEngine, Refusal};
 use eggos_drivers::gpu::amd_discovery::{dmcub_file_name, dmcub_firmware};
+use eggos_drivers::edid::Timing;
 use eggos_drivers::gpu::amd_dmcub::{self, Dmcub};
 use eggos_drivers::io::Mmio;
 use eggos_hal::PhysicalRange;
 use eggos_hal::handoff::pixel_format;
 
 const MAX_PENDING: usize = 16;
+const REFRESH_HZ: u32 = 60;
 
 struct Surface {
     pixels: usize,
@@ -39,6 +45,7 @@ struct AmdDisplay {
     stride: usize,
     frame: Vec<u32>,
     surfaces: [Surface; 2],
+    surface_bytes: usize,
     missing: [Vec<Rect>; 2],
     front: Option<usize>,
     cursor: Surface,
@@ -198,6 +205,40 @@ impl Scanout for AmdDisplay {
         self.engine.hide_cursor();
         Ok(())
     }
+
+    fn can_change_mode(&self) -> bool {
+        self.engine.output().is_some()
+    }
+
+    fn change_mode(&mut self, mode: Mode, deadline: &mut Deadline) -> Result<(), &'static str> {
+        let timing = Timing::reduced_blanking(mode.width, mode.height, REFRESH_HZ)
+            .ok_or(Refusal::UnfitTiming.description())?;
+        let pitch = mode.width.next_multiple_of(amd_dcn::PITCH_ALIGNMENT_PIXELS);
+        let stride = pitch as usize * 4;
+        let bytes = stride.checked_mul(mode.height as usize).ok_or("the mode is too large")?;
+        if bytes > self.surface_bytes {
+            return Err("the mode does not fit the display's surfaces");
+        }
+        let pixels = mode.width as usize * mode.height as usize;
+        let mut frame = Vec::new();
+        frame.try_reserve_exact(pixels).map_err(|_| "no memory for the display's frame")?;
+        frame.resize(pixels, 0);
+        for surface in &self.surfaces {
+            // SAFETY: each surface maps `surface_bytes` of video memory write-combining for
+            // good and `bytes` fits in it; only this scanout writes there.
+            unsafe { core::ptr::write_bytes(surface.pixels as *mut u8, 0, bytes) };
+        }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        self.engine
+            .set_mode(&timing, self.surfaces[0].address, pitch, &mut || deadline.keep_waiting())
+            .map_err(Refusal::description)?;
+        self.mode = mode;
+        self.stride = stride;
+        self.frame = frame;
+        self.front = Some(0);
+        self.missing = [Vec::new(), vec![Rect::new(0, 0, mode.width, mode.height)]];
+        Ok(())
+    }
 }
 
 /// Where the second surface, the cursor and DMCUB's block go after the firmware's
@@ -251,14 +292,14 @@ pub fn start_firmware<P: eggos_hal::Platform>() -> bool {
     .is_ok()
 }
 
-/// Takes the pipe the firmware lit on the AMD GPU whose display block (DCN `version`, segment 2
-/// at `segment_base` dwords) is behind the register BAR `registers`, when the firmware's
+/// Takes the pipe the firmware lit on the AMD GPU whose display block (DCN `version`, segments 2
+/// and 1 at `segment_bases` dwords) is behind the register BAR `registers`, when the firmware's
 /// framebuffer lies in its video memory aperture `aperture` with room after it for a second
 /// surface and the cursor; installs it as the display. Why not, otherwise.
 pub fn take(
     probe: &mut dyn Probe,
     version: (u8, u8, u8),
-    segment_base: u32,
+    segment_bases: (u32, u32),
     registers: PhysicalRange,
     aperture: PhysicalRange,
 ) -> Result<String, ProbeError> {
@@ -289,10 +330,11 @@ pub fn take(
     let regs = unsafe { Mmio::new(base, length) };
     // SAFETY: as above; the microcontroller's registers are the display block's too.
     let dmcub_regs = unsafe { Mmio::new(base, length) };
+    let (segment_base, _) = segment_bases;
     let (engine, lit) = DisplayEngine::take(
         regs,
         version,
-        segment_base,
+        segment_bases,
         (framebuffer.width, framebuffer.height),
     )
     .map_err(|refusal| ProbeError::Refused(refusal.description()))?;
@@ -311,7 +353,7 @@ pub fn take(
         .try_reserve_exact(mode.width as usize * mode.height as usize)
         .map_err(|_| ProbeError::Refused("no memory for the display's frame"))?;
     frame.resize(mode.width as usize * mode.height as usize, 0);
-    let sinks = alloc::format!(
+    let mut sinks = alloc::format!(
         "amd dcn {}.{}.{} pipe {} {}x{} at the firmware's mode\n",
         version.0,
         version.1,
@@ -320,6 +362,14 @@ pub fn take(
         mode.width,
         mode.height
     );
+    if let Some(output) = engine.output() {
+        sinks.push_str(&alloc::format!(
+            "amd dp stream {} on timing generator {}, modes up to {} kHz\n",
+            output.stream,
+            output.timing_generator,
+            output.link_pixel_hz / 1000
+        ));
+    }
     let scanout = AmdDisplay {
         engine,
         dmcub: Dmcub::new(dmcub_regs, segment_base),
@@ -328,6 +378,7 @@ pub fn take(
         stride: stride as usize,
         frame,
         surfaces: [surface(0), surface(second)],
+        surface_bytes: bytes as usize,
         missing: [Vec::new(), vec![Rect::new(0, 0, mode.width, mode.height)]],
         front: Some(0),
         cursor: surface(cursor),

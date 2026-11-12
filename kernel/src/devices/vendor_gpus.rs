@@ -335,11 +335,12 @@ fn probe_amd_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeErr
     if let Some(display) = display
         && display.base_count > amd_dcn::SEGMENT
         && let Ok(segment_base) = u32::try_from(display.bases[amd_dcn::SEGMENT])
+        && let Ok(clock_segment_base) = u32::try_from(display.bases[amd_dcn::CLOCK_SEGMENT])
     {
         let taken = super::amd_display::take(
             probe,
             display.version,
-            segment_base,
+            (segment_base, clock_segment_base),
             node.regions[REGISTER_BAR],
             node.regions[0],
         );

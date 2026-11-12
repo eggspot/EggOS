@@ -33,3 +33,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 (`drivers/gpu/drm/amd/display/dmub/src/dmub_srv.c` and `dmub_dcn31.c` in the Linux source tree,
 which AMD publishes under the MIT licence above, copyright 2019 and 2020 Advanced Micro Devices,
 Inc.): the same windows, regions and order of register writes, written in EggOS's own code.
+
+## AMD's display core (DC)
+
+`amd_dcn.rs`'s mode setting (D521) follows the order and the field meanings of AMD's display
+core (`drivers/gpu/drm/amd/display/dc/` in the Linux source tree, which AMD publishes under the
+MIT licence above): the timing generator's totals, blanks and syncs (`optc1_program_timing`),
+the DisplayPort stream attributes (`enc1_stream_encoder_dp_set_stream_attribute`), the DTO's
+phase and modulo, the scaler's blank positions and the hub's request timing fields as the
+display mode library defines them. They are written in EggOS's own code.

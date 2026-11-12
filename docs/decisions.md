@@ -25089,3 +25089,35 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Inter frames (`VP8 ` in WebP is always a key frame; others are
   `Error::Unsupported`), animated WebP (`ANIM`/`ANMF`), fancy chroma upsampling (nearest is
   used), and the SIMD paths the performance pass will measure against libwebp.
+
+## D521 AMD's display modes on DisplayPort, part 1: the timing generator over the trained link (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from AMD's MIT register headers and display core, and VESA CVT 1.2)
+
+- **Decision.** The AMD display (D496) can change size when the pipe the firmware lit feeds a
+  DisplayPort stream whose pixel clock comes from the DCCG's DisplayPort DTO, the usual case
+  for eDP panels and DP monitors. At take-over the driver finds the enabled timing generator
+  whose active size is the firmware's, the DIG stream encoder sourcing from it with its stream
+  on, and the DTO's phase (the pixel clock in hertz) and modulo (the reference). A new mode:
+  the stream and the generator stop; the DTO's phase becomes the new pixel clock (the
+  firmware's modulo kept); the generator takes the new totals, blanks, syncs and polarities;
+  the hub takes the new viewport and pitch and its request timing (reference-to-pixel ratio,
+  cycles per line and to the blank's end, the vertical blank's end and the next start); the
+  scaler goes to bypass with the recout and blank positions of the new size; the stream takes
+  the new main stream attributes; then the generator and the stream start again.
+- **Where the timing comes from.** `eggos_drivers::edid::Timing::reduced_blanking` makes the
+  VESA CVT 1.2 reduced blanking version 2 timing of any size and refresh (80 blank pixels,
+  460 µs of blank lines at least, kilohertz clock steps), which monitors and panels take
+  without a mode list; the kernel asks for 60 Hz. AMD's AUX channel and the EDID it would give
+  are not read yet.
+- **Bounds.** Only modes whose pixel clock is at most the firmware's: the link stays as the
+  firmware trained it (lanes and rate), so a slower stream always fits it; and only sizes
+  whose surfaces fit the bytes of the firmware's framebuffer, which both surfaces were
+  reserved at. The kernel's `Scanout::change_mode` (D287) clears both surfaces, sets the mode
+  and redraws.
+- **Why scale the hub's request timing instead of computing it.** The display mode library
+  computes those registers from the whole pipe's configuration; the firmware's values are
+  right for its mode, and the ones that depend on the line time are rescaled by the pixel
+  clock ratio (the rest, in lines, kept). That is enough for one plane at a lower rate; the
+  weekly performance pass and the first real-hardware run check for underflow.
+- **Not yet.** Link training and higher rates than the firmware's, HDMI (its PLL instead of
+  the DTO), the scaler for sizes other than the timing's, the second pipe, AUX and EDID, and
+  computing the watermarks and request timing from the mode library's equations.

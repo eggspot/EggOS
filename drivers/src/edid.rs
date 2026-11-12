@@ -1,6 +1,8 @@
 //! A display's EDID (VESA E-EDID 1.4, D445): the 128-byte base block a monitor or panel
 //! describes itself with: its maker, its name and its detailed timings, the first of which is
 //! its preferred mode. [`Edid::parse`] checks the header and checksum and reads those.
+//! [`Timing::reduced_blanking`] makes a timing for any size the way VESA's CVT 1.2 reduced
+//! blanking version 2 does (D521), for a display asked for a size its EDID does not list.
 
 /// The bytes of the base block.
 pub const BLOCK_BYTES: usize = 128;
@@ -9,6 +11,14 @@ const DESCRIPTORS: [usize; 4] = [54, 72, 90, 108];
 const DESCRIPTOR_BYTES: usize = 18;
 const NAME_TAG: u8 = 0xfc;
 const NAME_BYTES: usize = 13;
+const REDUCED_HORIZONTAL_BLANK: u32 = 80;
+const REDUCED_HORIZONTAL_SYNC: u32 = 32;
+const REDUCED_HORIZONTAL_FRONT_PORCH: u32 = 8;
+const REDUCED_VERTICAL_SYNC: u32 = 8;
+const REDUCED_VERTICAL_BACK_PORCH: u32 = 6;
+const REDUCED_VERTICAL_FRONT_PORCH: u32 = 1;
+const REDUCED_LEAST_VERTICAL_BLANK_NS: u64 = 460_000;
+const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 
 /// One detailed timing: the picture's size and its blanking and sync, in pixels and lines, and
 /// the pixel clock in kilohertz.
@@ -35,6 +45,42 @@ impl Timing {
             0 => 0,
             total => (u64::from(self.clock_khz) * 1_000_000 / total) as u32,
         }
+    }
+
+    /// The CVT reduced blanking version 2 timing of `width` by `height` at `refresh_hz`: 80
+    /// blank pixels a line (front porch 8, sync 32, positive), at least 460 microseconds of
+    /// blank lines a frame (sync 8, back porch 6, negative), the pixel clock rounded down to a
+    /// kilohertz. `None` for an empty size, no refresh, or a frame shorter than the blank.
+    pub fn reduced_blanking(width: u32, height: u32, refresh_hz: u32) -> Option<Self> {
+        if width == 0 || height == 0 || refresh_hz == 0 {
+            return None;
+        }
+        let frame_ns = NANOSECONDS_PER_SECOND / u64::from(refresh_hz);
+        let picture_ns = frame_ns
+            .checked_sub(REDUCED_LEAST_VERTICAL_BLANK_NS)
+            .filter(|&ns| ns > 0)?;
+        let blank_lines = REDUCED_LEAST_VERTICAL_BLANK_NS * u64::from(height) / picture_ns + 1;
+        let least_blank =
+            REDUCED_VERTICAL_FRONT_PORCH + REDUCED_VERTICAL_SYNC + REDUCED_VERTICAL_BACK_PORCH;
+        let vertical_blank = u32::try_from(blank_lines).ok()?.max(least_blank);
+        let line = u64::from(width + REDUCED_HORIZONTAL_BLANK);
+        let frame = u64::from(height + vertical_blank);
+        let clock_khz = u32::try_from(u64::from(refresh_hz) * frame * line / 1000).ok()?;
+        Some(Self {
+            clock_khz,
+            width,
+            height,
+            horizontal_blank: REDUCED_HORIZONTAL_BLANK,
+            vertical_blank,
+            horizontal_sync_offset: REDUCED_HORIZONTAL_FRONT_PORCH,
+            horizontal_sync_width: REDUCED_HORIZONTAL_SYNC,
+            vertical_sync_offset: vertical_blank
+                - REDUCED_VERTICAL_SYNC
+                - REDUCED_VERTICAL_BACK_PORCH,
+            vertical_sync_width: REDUCED_VERTICAL_SYNC,
+            horizontal_sync_positive: true,
+            vertical_sync_positive: false,
+        })
     }
 }
 
@@ -144,6 +190,18 @@ mod tests {
         assert_eq!(preferred.vertical_blank, 45);
         assert_eq!(preferred.refresh_mhz(), 60_000);
         assert!(preferred.horizontal_sync_positive && preferred.vertical_sync_positive);
+    }
+
+    #[test]
+    fn reduced_blanking_matches_cvt_for_1080p_at_60() {
+        let timing = Timing::reduced_blanking(1920, 1080, 60).unwrap();
+        assert_eq!(timing.clock_khz, 133_320);
+        assert_eq!((timing.horizontal_blank, timing.vertical_blank), (80, 31));
+        assert_eq!((timing.vertical_sync_offset, timing.vertical_sync_width), (17, 8));
+        assert!(timing.horizontal_sync_positive && !timing.vertical_sync_positive);
+        assert_eq!(Timing::reduced_blanking(640, 2, 60).unwrap().vertical_blank, 15);
+        assert_eq!(Timing::reduced_blanking(0, 1080, 60), None);
+        assert_eq!(Timing::reduced_blanking(1920, 1080, 5000), None);
     }
 
     #[test]
