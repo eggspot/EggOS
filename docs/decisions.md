@@ -23188,3 +23188,35 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Its row in `docs/compatibility.md` (after the first passing run), frame
   comparisons with a host render, and Sparkle's update check (it reaches the network; the
   test has none).
+
+## D411 The Swift overlays' entry points a real app calls (batch part 17's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (read from Minesweeper 1.0.0's imports, the pinned archive of D389, with `nm`; the slots and registers from a `swiftc -O` probe's disassembly and the SDK's `Swift.swiftinterface`)
+
+- **Question.** D389 left the Swift Foundation, Dispatch and CoreGraphics overlays' entry
+  points "to be read from a `swiftc` build first".
+- **What the app imports.** Besides `libswiftCore`, Minesweeper's arm64 slice imports from
+  `libswiftDispatch` (`DispatchQueue.main`, `async(group:qos:flags:execute:)`,
+  `DispatchQoS.unspecified`, the metadata of `DispatchQoS` and `DispatchWorkItemFlags`, and the
+  flags' `SetAlgebra` conformance), `libswiftCoreGraphics` (`CGContext.move(to:)`,
+  `addLine(to:)`, `addArc(center:radius:startAngle:endAngle:clockwise:)`), every overlay's
+  `_swift_FORCE_LOAD_$` marker (eleven overlays, most linked weakly), and from
+  `libswiftCore` `SetAlgebra.init(_:)` (from a sequence) and `_CocoaArrayWrapper`'s
+  `endIndex` and subscript; it links `CoreGraphics.framework` too, which the layer did not
+  list as provided.
+- **Decision.** `swift/dispatch_overlay.rs` provides them: struct metadata and accessors for
+  the two Dispatch types (in a `Dispatch` module descriptor), `unspecified` as case 5 with
+  priority 0, the main queue over libdispatch's `_dispatch_main_q`, `async` (and with a group)
+  over `dispatch_async`/`dispatch_group_async` (QoS and flags do not change the layer's one
+  thread of work, D388); the three CGContext methods over the layer's CoreGraphics (D386);
+  `SetAlgebra` as a resilient protocol of the layer's, base protocols first and then the
+  members in the standard library's order (its `init()` slot 4 and `init(_:)` slot 20, which
+  matches the order swiftc uses for `Hashable`'s witnesses the layer already calls), with
+  `DispatchWorkItemFlags`' witness table (bit operations on its `UInt`; `insert`, `remove` and
+  `update` end the program for now); the dispatch thunks jump through the witness table
+  passed last (x1/rsi for `init()`, x4/r8 for `init(_:)` after the sequence and its type and
+  conformance, as the probe's call shows); `_CocoaArrayWrapper` over `count` and
+  `objectAtIndex:`; every `_swift_FORCE_LOAD_$` marker as one byte of the layer's.
+  `CoreGraphics.framework` joins the provided libraries (and sets up AppKit, which its
+  drawing needs).
+- **Not yet.** `OS_dispatch_queue` as an Objective-C class (the queues are still plain
+  records the runtime never counts), the rest of the overlays' API, and `SetAlgebra`'s
+  `insert`, `remove` and `update` witnesses.

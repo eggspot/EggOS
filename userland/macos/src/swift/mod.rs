@@ -30,6 +30,8 @@ mod characters;
 #[cfg(eggos_user)]
 mod conformance;
 #[cfg(eggos_user)]
+mod dispatch_overlay;
+#[cfg(eggos_user)]
 mod entry;
 #[cfg(eggos_user)]
 mod failures;
@@ -86,6 +88,7 @@ mod runtime {
         metadata::set_up();
         protocols::set_up();
         standard_protocols::set_up();
+        dispatch_overlay::set_up();
         string::set_up();
         storage::set_up();
         true
@@ -116,6 +119,7 @@ mod runtime {
             .or_else(|| failures::resolve(name))
             .or_else(|| type_name::resolve(name))
             .or_else(|| overlays::resolve(name))
+            .or_else(|| dispatch_overlay::resolve(name))
             .or_else(|| class_metadata::resolve(name))
     }
 

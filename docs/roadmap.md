@@ -847,16 +847,15 @@ yet" naming what it left.
   first slice, button types, cursors and the pasteboard (D233); part 16's first slice,
   exceptions on macOS (D234); part 20, the component manager's first part (D235).
 - **next** (carried to the next plan, numbered from the next free decision when built):
-  - part 17, Minesweeper (Swift on AppKit, D180's "Not yet"; `NSUserDefaults` and property
+  - part 17, Minesweeper, code written, unbuilt (Swift on AppKit, D180's "Not yet"; the
+    overlays' entry points read from the app's imports, code written, unbuilt, D411; `NSUserDefaults` and property
     lists written as XML, code written, unbuilt, D381; `NSScreen` and `NSTrackingArea`, code
     written, unbuilt, D382; `NSSound` from WAV data, silent until EggOS has audio, code written,
     unbuilt, D383; `NSAttributedString`, code written, unbuilt, D384; `NSGridView`, code
     written, unbuilt, D385; CoreGraphics drawing behind `NSGraphicsContext`, code written,
     unbuilt, D386; Swift subclasses of AppKit's classes laid out at run time, code written,
     unbuilt, D387; libdispatch's main queue and the calls around it, code written, unbuilt,
-    D388; `cargo xtask swift-app` and its CI job, code written, unbuilt, D389; still to come: the
-    Swift Foundation, Dispatch and CoreGraphics overlays' entry points, read from a `swiftc`
-    build first);
+    D388; `cargo xtask swift-app` and its CI job, code written, unbuilt, D389);
   - part 18, Files and the Text Editor grow up and one file picker `/bin/pick` (its design is
     done; `/bin/pick` itself, its model taken from the branch `wip/eggos-picker`, code written,
     unbuilt, D391; the layers' file dialogs, the Text Editor's Open and Save As and Files'

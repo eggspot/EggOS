@@ -507,6 +507,8 @@ pub static INT16_WITNESSES: ValueWitnessTable = plain_table(2, 2, NO_EXTRA);
 pub static INT32_WITNESSES: ValueWitnessTable = plain_table(4, 4, NO_EXTRA);
 pub static INT64_WITNESSES: ValueWitnessTable = plain_table(8, 8, NO_EXTRA);
 pub static INT128_WITNESSES: ValueWitnessTable = plain_table(16, 16, NO_EXTRA);
+/// Two words of plain data, eight-byte aligned (`DispatchQoS`, D411).
+pub static TWO_WORD_WITNESSES: ValueWitnessTable = plain_table(16, 8, NO_EXTRA);
 pub static EMPTY_WITNESSES: ValueWitnessTable = plain_table(0, 1, NO_EXTRA);
 pub static BOOL_WITNESSES: ValueWitnessTable =
     plain_table(1, 1, (BOOL_EXTRA_INHABITANTS, bool_tag, bool_store_tag));
@@ -843,6 +845,9 @@ impl ModuleDescriptor {
 pub static SWIFT_MODULE: ModuleDescriptor = ModuleDescriptor::new();
 /// The `CoreGraphics` module, whose `CGFloat` the `libswiftCoreFoundation` overlay defines.
 pub static CORE_GRAPHICS_MODULE: ModuleDescriptor = ModuleDescriptor::new();
+/// The `Dispatch` module, whose `DispatchQoS` and `DispatchWorkItemFlags` the
+/// `libswiftDispatch` overlay defines (D411).
+pub static DISPATCH_MODULE: ModuleDescriptor = ModuleDescriptor::new();
 
 macro_rules! standard_structs {
     ($($metadata:ident, $descriptor:ident, $witnesses:ident, $name:literal;)*) => {
@@ -895,6 +900,9 @@ standard_structs! {
     DEFAULT_STRING_INTERPOLATION, DEFAULT_STRING_INTERPOLATION_DESCRIPTOR, STRING_WITNESSES,
         "DefaultStringInterpolation";
     CGFLOAT, CGFLOAT_DESCRIPTOR, INT64_WITNESSES, "CGFloat";
+    DISPATCH_QOS, DISPATCH_QOS_DESCRIPTOR, TWO_WORD_WITNESSES, "DispatchQoS";
+    DISPATCH_WORK_ITEM_FLAGS, DISPATCH_WORK_ITEM_FLAGS_DESCRIPTOR, INT64_WITNESSES,
+        "DispatchWorkItemFlags";
 }
 
 /// The generic standard library types' descriptors: the runtime instantiates their metadata.
@@ -1039,6 +1047,9 @@ pub fn set_up() {
     );
     fill_standard_structs();
     CGFLOAT_DESCRIPTOR.fill_in(&CORE_GRAPHICS_MODULE, b"CGFloat\0");
+    store_relative(&DISPATCH_MODULE.name, c"Dispatch".as_ptr() as usize);
+    DISPATCH_QOS_DESCRIPTOR.fill_in(&DISPATCH_MODULE, b"DispatchQoS\0");
+    DISPATCH_WORK_ITEM_FLAGS_DESCRIPTOR.fill_in(&DISPATCH_MODULE, b"DispatchWorkItemFlags\0");
     OPTIONAL_DESCRIPTOR.fill(b"Optional\0");
     ARRAY_DESCRIPTOR.fill(b"Array\0");
     DICTIONARY_DESCRIPTOR.fill(b"Dictionary\0");
