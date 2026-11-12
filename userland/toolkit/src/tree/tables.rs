@@ -34,22 +34,39 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.damage_widget(id);
     }
 
-    /// Gives table `id` `rows` rows (after the program sorted or filtered what its cells
-    /// read), keeping the selection in range; without a response.
+    /// Gives table or outline `id` `rows` rows (after the program sorted, filtered, opened or
+    /// closed what its rows read), keeping the selection in range; without a response.
     pub fn set_rows(&mut self, id: WidgetId, rows: usize) {
+        if self.outline(id).is_some() {
+            self.change_outline(id, |outline| {
+                outline.rows = rows;
+                outline.selected = outline.selected.min(rows.saturating_sub(1));
+            });
+            return;
+        }
         self.change_table(id, |table| {
             table.rows = rows;
             table.selected = table.selected.min(rows.saturating_sub(1));
         });
     }
 
-    /// Makes `data` what table `id` gives its cell function from now on; without a response.
+    /// Makes `data` what table or outline `id` gives its row function from now on; without
+    /// a response.
     pub fn set_cell_data(&mut self, id: WidgetId, data: u32) {
+        if self.outline(id).is_some() {
+            self.change_outline(id, |outline| outline.data = data);
+            return;
+        }
         self.change_table(id, |table| table.data = data);
     }
 
-    /// Makes `text` what table `id` draws while it has no rows; without a response.
+    /// Makes `text` what table or outline `id` draws while it has no rows; without a
+    /// response.
     pub fn set_empty_text(&mut self, id: WidgetId, text: &'static str) {
+        if self.outline(id).is_some() {
+            self.change_outline(id, |outline| outline.empty_text = text);
+            return;
+        }
         self.change_table(id, |table| table.empty_text = text);
     }
 

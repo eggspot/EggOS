@@ -20,6 +20,7 @@ pub mod drag;
 pub mod geometry;
 pub mod input;
 pub mod menu;
+pub mod outline;
 pub mod panel;
 pub mod table;
 pub mod text;

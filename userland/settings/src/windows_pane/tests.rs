@@ -651,3 +651,40 @@ fn sorting_by_data_orders_the_cells_as_shown_and_long_data_is_cut_to_a_cell() {
         ["(Default)", "Paths", "Blob", "Version", "Count", "Big"]
     );
 }
+
+#[test]
+fn a_phone_browses_one_level_a_page_and_goes_up_by_the_dot_dot_row() {
+    let store = sample();
+    let mut window = opened(&store);
+    let widgets = ids(&window);
+    window.set_form_factor(eggos_toolkit::widget::FormFactor::Phone, 360);
+    assert_eq!(rect(&window, widgets.keys).width, 328);
+    assert_eq!(window.windows_pane().key_rows(), ["..", "  Software"]);
+    window.tree().set_focus(Some(widgets.keys), 0);
+    press(&mut window, key::DOWN);
+    assert_eq!(window.windows_pane().selected_path(), "HKEY_CURRENT_USER");
+    press(&mut window, key::ENTER);
+    assert_eq!(
+        window.windows_pane().selected_path(),
+        "HKEY_CURRENT_USER\\Software"
+    );
+    assert_eq!(window.windows_pane().key_rows()[0], "..");
+    assert!(
+        window
+            .windows_pane()
+            .key_rows()
+            .iter()
+            .any(|row| row == "  AutoHotkey")
+    );
+    press(&mut window, key::ENTER);
+    assert_eq!(window.windows_pane().selected_path(), "HKEY_CURRENT_USER");
+    press(&mut window, key::ENTER);
+    assert_eq!(
+        window.windows_pane().key_rows(),
+        [
+            "  HKEY_CURRENT_USER",
+            "  HKEY_LOCAL_MACHINE",
+            "  HKEY_CLASSES_ROOT"
+        ]
+    );
+}

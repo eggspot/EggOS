@@ -275,6 +275,21 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                             .valued(range.as_str().as_bytes())
                     }
                 }
+                Kind::Outline(outline) => {
+                    let _ = match outline.rows {
+                        0 => core::fmt::Write::write_str(&mut range, "0 rows"),
+                        rows => core::fmt::Write::write_fmt(
+                            &mut range,
+                            format_args!("row {} of {}", outline.selected + 1, rows),
+                        ),
+                    };
+                    Element {
+                        role: Role::Tree,
+                        ..here
+                            .named(outline.name.as_bytes())
+                            .valued(range.as_str().as_bytes())
+                    }
+                }
                 Kind::TextArea(area) => {
                     let text = self.stores.get(area.store).map_or("", |store| store.text());
                     value = cut_value(text);
@@ -451,6 +466,34 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                         tree.push(&element)
                     })
             }
+            Kind::Outline(outline) => {
+                let shown = outline.shown_rows(node.rect);
+                let first = shown.start;
+                shown.take(LAST_PART + 1).all(|row| {
+                    let held = outline.row_of(row);
+                    let path = outline.path_of(row);
+                    let mut state = disabled;
+                    if row == outline.selected {
+                        state |= flags::SELECTED;
+                    }
+                    if held.expandable {
+                        state |= flags::EXPANDABLE;
+                    }
+                    if held.expanded {
+                        state |= flags::EXPANDED;
+                    }
+                    let element = Element::new(
+                        part_element(id, row - first),
+                        element_of(id),
+                        Role::TreeItem,
+                        bounds(outline.row_rect(node.rect, row)),
+                    )
+                    .named(for_agents(node.person_only, held.text.as_str().as_bytes()))
+                    .valued(for_agents(node.person_only, path.as_str().as_bytes()))
+                    .flagged(state);
+                    tree.push(&element)
+                })
+            }
             Kind::List(list) => list.shown_items().enumerate().all(|(row, item)| {
                 let rect = Rect::new(
                     node.rect.x,
@@ -514,6 +557,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 Some((title, entry)) => title < bar.count && entry < bar.menus[title].len(),
             },
             (Kind::MenuButton(button), Some(part)) => part < button.entries.len(),
+            (Kind::Outline(outline), Some(part)) => self
+                .rect(id)
+                .is_some_and(|rect| part < outline.shown_rows(rect).len()),
             (Kind::Table(table), Some(part)) => match part.checked_sub(ROW_PART) {
                 None => part < table.column_count.min(MAX_COLUMNS),
                 Some(row) => self
@@ -583,6 +629,25 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             }
             (Action::Invoke, Kind::MenuButton(_), Some(entry)) => {
                 self.invoke_by_agent(id, 0, entry)
+            }
+            (Action::SetText, Kind::Outline(outline), None) => {
+                match text.trim().parse::<usize>() {
+                    Ok(row) if row >= 1 && row <= outline.rows => {
+                        (Outcome::Done, self.select_outline_row(id, row - 1))
+                    }
+                    Ok(_) => (Outcome::Done, Response::Nothing),
+                    Err(_) => (Outcome::NotSupported, Response::Nothing),
+                }
+            }
+            (action @ (Action::Select | Action::Invoke), Kind::Outline(outline), Some(part)) => {
+                let Some(rect) = self.rect(id) else {
+                    return (Outcome::NoSuchElement, Response::Nothing);
+                };
+                let row = outline.shown_rows(rect).start + part;
+                match action {
+                    Action::Select => (Outcome::Done, self.select_outline_row(id, row)),
+                    _ => (Outcome::Done, self.toggle_outline_row(id, row)),
+                }
             }
             (Action::SetText, Kind::Table(table), None) => match text.trim().parse::<usize>() {
                 Ok(row) if row >= 1 && row <= table.rows => {

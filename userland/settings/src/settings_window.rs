@@ -1422,6 +1422,16 @@ impl SettingsWindow {
         &self.windows
     }
 
+    /// Tells the window the device class it is on and how wide its panes are: a phone or a
+    /// wearable browses the registry one level a page (D401).
+    pub fn set_form_factor(&mut self, form: eggos_toolkit::widget::FormFactor, pane_width: i32) {
+        use eggos_toolkit::widget::FormFactor;
+        self.tree.set_form_factor(form);
+        let drill_down = matches!(form, FormFactor::Phone | FormFactor::Wearable);
+        self.windows
+            .set_drill_down(&mut self.tree, drill_down, pane_width);
+    }
+
     /// The Components pane.
     pub fn components_pane(&self) -> &ComponentsPane {
         &self.components

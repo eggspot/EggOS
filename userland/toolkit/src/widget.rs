@@ -165,6 +165,7 @@ pub fn form_factor(width: i32, height: i32, scale: i32, touch: bool) -> FormFact
 }
 
 pub use crate::drag::DropMode;
+pub use crate::outline::{Outline, OutlineRow, RowPath, RowText};
 pub use crate::table::{CellText, Column, SortOrder, Table};
 pub use crate::text_area::TextArea;
 pub use crate::tooltip::{Tooltip, tooltip_rect};
@@ -382,6 +383,8 @@ pub enum Kind {
     /// Rows of cells under a header of resizable, sortable columns (docs/ux/toolkit-v0.5.md
     /// section 4).
     Table(Table),
+    /// Rows in levels that open and close (D401).
+    Outline(Outline),
     /// Multi-line text that wraps at words (docs/ux/toolkit-v0.5.md section 5).
     TextArea(TextArea),
 }
@@ -599,6 +602,12 @@ impl Kind {
         Self::Table(Table::new(name, columns, rows, cell, data))
     }
 
+    /// An outline named `name` for agents, of `rows` shown rows that `row` describes from the
+    /// program's `data` (D401).
+    pub fn outline(name: &'static str, rows: usize, row: RowText, data: u32) -> Self {
+        Self::Outline(Outline::new(name, rows, row, data))
+    }
+
     /// A text area keeping its text in the tree's text store `store`, showing `placeholder`
     /// while empty.
     pub const fn text_area(store: usize, placeholder: &'static str) -> Self {
@@ -624,6 +633,7 @@ impl Kind {
                 | Self::TextField(_)
                 | Self::MenuButton(_)
                 | Self::Table(_)
+                | Self::Outline(_)
                 | Self::TextArea(_)
         )
     }
@@ -707,6 +717,7 @@ impl Kind {
                 CONTROL_HEIGHT,
             ),
             Self::Table(table) => table.content_size(),
+            Self::Outline(outline) => outline.content_size(),
             Self::TextArea(_) => (240, 2 * TEXT_AREA_TOP + 4 * TEXT_AREA_LINE_PITCH),
             Self::Panel { .. }
             | Self::Column { .. }
@@ -1676,7 +1687,7 @@ impl Dropdown {
     }
 }
 
-fn chevron(canvas: &mut Canvas<'_>, left: i32, top: i32, down: bool, colour: u32) {
+pub(crate) fn chevron(canvas: &mut Canvas<'_>, left: i32, top: i32, down: bool, colour: u32) {
     for index in 0..9 {
         let from_tip = 4 - (index - 4i32).abs();
         let y = match down {
@@ -2042,5 +2053,6 @@ pub fn paint(canvas: &mut Canvas<'_>, kind: &Kind, rect: Rect, look: Look) {
         Kind::MenuBar(bar) => bar.paint(canvas, rect, look),
         Kind::MenuButton(button) => paint_menu_button(canvas, button, rect, look),
         Kind::Table(table) => table.paint(canvas, rect, look),
+        Kind::Outline(outline) => outline.paint(canvas, rect, look),
     }
 }

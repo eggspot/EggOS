@@ -39,6 +39,9 @@ pub enum Response {
     Chosen(WidgetId, usize),
     /// A list's item was opened: a double-click or Enter.
     Opened(WidgetId, usize),
+    /// An outline's row asks to open (`true`) or close: change the rows and call
+    /// [`WidgetTree::set_rows`] (D401).
+    RowToggled(WidgetId, usize, bool),
     /// A text field's text changed.
     Edited(WidgetId),
     /// A slider's value changed to this, by a key, a click or a step of a drag (D199).
@@ -105,6 +108,7 @@ mod drags;
 mod elements;
 mod handles;
 mod menus;
+mod outlines;
 mod tables;
 mod text_areas;
 mod tooltips;
@@ -436,6 +440,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             Kind::List(list) => Some(list.selected),
             Kind::Dropdown(dropdown) => Some(dropdown.selected),
             Kind::Table(table) => Some(table.selected),
+            Kind::Outline(outline) => Some(outline.selected),
             Kind::Checkbox { checked, .. } => Some(usize::from(*checked)),
             _ => None,
         }
@@ -467,11 +472,14 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             }
             Kind::Checkbox { checked, .. } => *checked = index != 0,
             Kind::Table(table) if index < table.rows => table.selected = index,
+            Kind::Outline(outline) if index < outline.rows => outline.selected = index,
             _ => {}
         });
         self.keep_selection_visible(id);
-        if matches!(self.kind(id), Some(Kind::Table(_))) {
-            self.keep_row_visible(id);
+        match self.kind(id) {
+            Some(Kind::Table(_)) => self.keep_row_visible(id),
+            Some(Kind::Outline(_)) => self.keep_outline_row_visible(id),
+            _ => {}
         }
     }
 
@@ -724,9 +732,11 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 *held = (*held).max(right);
             }
             let visible = match node.kind {
-                Kind::ScrollView { .. } | Kind::List(_) | Kind::Table(_) | Kind::TextArea(_) => {
-                    rect.intersection(&parent_visible)
-                }
+                Kind::ScrollView { .. }
+                | Kind::List(_)
+                | Kind::Table(_)
+                | Kind::Outline(_)
+                | Kind::TextArea(_) => rect.intersection(&parent_visible),
                 _ => parent_visible,
             };
             if let Some(node) = self.nodes[index].as_mut() {
@@ -787,6 +797,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                             .clamp(0, (list.content_height() - rect.height).max(0));
                     }
                     Kind::Table(table) => table.clamp_offsets(rect),
+                    Kind::Outline(outline) => outline.clamp_offsets(rect),
                     _ => {}
                 }
             }
@@ -1104,6 +1115,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 _ => return None,
             },
             Kind::Table(table) => table.part_at(node.rect, x, y)?,
+            Kind::Outline(outline) => outline.part_at(node.rect, x, y)?,
             Kind::MenuBar(bar) => bar.title_at(node.rect, x, y)?,
             Kind::TextArea(_) => match self.bar_of(id, false) {
                 Some((track, _)) if track.contains(x, y) => THUMB,
@@ -1490,6 +1502,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 let bars = table.bars(node.rect);
                 if horizontal { bars.1 } else { bars.0 }
             }
+            (Kind::Outline(outline), false) => outline.bars(node.rect).0,
             (Kind::TextArea(area), false) => {
                 let store = self.stores.get(area.store)?;
                 let rect = node.rect;
@@ -1531,6 +1544,13 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     true => (*offset_x, (*content_width - view.width).max(0)),
                     false => (*offset, (*content_height - view.height).max(0)),
                 })
+            }
+            (Kind::Outline(outline), false) => {
+                let view = outline.view(rect);
+                Some((
+                    outline.offset_y,
+                    (outline.content_height() - view.height).max(0),
+                ))
             }
             (Kind::Table(table), _) => {
                 let view = table.view(rect);
@@ -1575,6 +1595,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             (Kind::ScrollView { offset_x: held, .. }, true) => *held = offset,
             (Kind::Table(table), false) => table.offset_y = offset,
             (Kind::Table(table), true) => table.offset_x = offset,
+            (Kind::Outline(outline), false) => outline.offset_y = offset,
             (Kind::TextArea(area), false) => area.scroll = offset,
             _ => {}
         }
@@ -1628,6 +1649,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                         Kind::List(_)
                             | Kind::ScrollView { .. }
                             | Kind::Table(_)
+                            | Kind::Outline(_)
                             | Kind::TextArea(_)
                     ) && node.visible.contains(x, y)
                         && node.rect.contains(x, y)
@@ -1653,6 +1675,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         let wanted = match (self.kind(id), horizontal) {
             (Some(Kind::Table(_)), false) => {
                 wanted / widget::TABLE_ROW_HEIGHT * widget::TABLE_ROW_HEIGHT
+            }
+            (Some(Kind::Outline(_)), false) => {
+                wanted / crate::outline::OUTLINE_ROW_HEIGHT * crate::outline::OUTLINE_ROW_HEIGHT
             }
             _ => wanted,
         };
@@ -1742,6 +1767,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 Response::Nothing
             }
             Some(Kind::Table(_)) => self.table_pressed(id, target.part, x, y, time_ms, double),
+            Some(Kind::Outline(_)) => self.outline_pressed(id, target.part, double),
             Some(Kind::TextArea(_)) => {
                 self.area_pressed(id, x, y, time_ms);
                 self.selecting = Some(id);
@@ -2130,6 +2156,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             Kind::List(list) => self.list_key(id, &list, code, unused),
             Kind::MenuButton(_) => self.menu_button_key(id, code),
             Kind::Table(table) => self.table_key(id, &table, code, unused),
+            Kind::Outline(outline) => self.outline_key(id, &outline, code, character, unused),
             Kind::TextArea(_) => self.area_key(id, code, character, command, time_ms, unused),
             Kind::TextField(_) => self.field_key(id, code, character, command, time_ms, unused),
             _ => unused,

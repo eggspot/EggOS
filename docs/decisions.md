@@ -22936,3 +22936,31 @@ the license, by an explicit instruction recorded here.
   object table and `GetActiveObject`, servers on another machine, and an x64 server translated
   on ARM64 (its translation calls with four arguments at most; such calls fail with
   `E_NOTIMPL`).
+
+## D401 The outline widget, and the registry pane on it with a phone's drill-down (batch part 13's rest; M15, D23; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (the design is Claude Fable's, docs/ux/windows-registry-v0.3.md sections 4 and 7)
+
+- **Question.** D231 left the registry pane's keys as a one-column table of indented text
+  rows and left its phone, TV and wearable layouts for later.
+- **Decision.** The toolkit gains `Kind::Outline` as section 4 designs it
+  (`userland/toolkit/src/outline.rs`, `tree/outlines.rs`): the program keeps the flattened
+  shown rows and answers `RowText` (depth, expandable, expanded, text) and optionally
+  `RowPath` (the value agents read); rows 24 tall, 16 per level, the disclosure chevron right
+  or down (the selected row's in `accent`), a square for a leaf. A press on the glyph or a
+  double-click, Enter, Right on a closed row and Left on an open one answer the new
+  `Response::RowToggled(id, row, open)` (the checkbox's `Toggled` keeps its shape); Left and
+  Backspace go to the parent, typing a letter selects the next row that starts with it, and
+  on a TV Right on a leaf and Left on a root leave the widget. Agents see a `tree` with its
+  shown `treeitem`s (new roles) whose value is the row's path, flagged `selected`,
+  `expanded` and the new `expandable`; `select`, `invoke` and `set-text "<n>"` act as on a
+  table. `set_rows`, `set_cell_data` and `set_empty_text` serve outlines too.
+- **The pane.** The key list is now an outline: the cell store keeps each row's name and its
+  shape (depth and state), and `key_path` rebuilds a row's full path from the rows above it,
+  so no path is stored per row. On a phone or a wearable
+  (`SettingsWindow::set_form_factor`) the outline browses one level a page
+  (`Outline::drill_down`, no glyphs; a tap or Enter opens the row): a `..` row first goes up,
+  the three roots are the top page, and the pane's widgets take section 7's one-column
+  places (`PHONE_HEIGHT` tall, for the window's scroll view).
+- **Not yet.** Settings learning its device class and pane width from the window server (no
+  caller of `set_form_factor` yet), rows 40 tall for touch, the wearable's browse-only page
+  and its two-line value rows, bottom-sheet panels, long-press context menus, and the
+  outline's sideways scroll.

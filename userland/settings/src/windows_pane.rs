@@ -18,7 +18,9 @@ use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
-use eggos_toolkit::widget::{Align, Column, Escape, Kind, Length, Place, SortOrder, Table};
+use eggos_toolkit::widget::{
+    Align, Column, Escape, Kind, Length, Outline, OutlineRow, Place, SortOrder, Table,
+};
 use eggos_windows_registry::command::{self, VALUE_NOT_SET, name_text};
 use eggos_windows_registry::hive::Value;
 use eggos_windows_registry::path::{KeyPath, Root, utf8, utf16};
@@ -109,13 +111,27 @@ const DEEPER: &str = "\u{2026} ";
 const SHOWN_DATA_BYTES: usize = 256;
 const VALUE_CELL_COLUMNS: usize = 3;
 const SLOTS: usize = if cfg!(test) { 64 } else { 2 };
-const KEY_COLUMNS: [Column; 1] = [Column {
-    title: "Keys",
-    width: 168,
-    min_width: 64,
-    align: Align::Start,
-    sortable: false,
-}];
+const KEY_NAME: usize = 0;
+const KEY_SHAPE: usize = 1;
+const KEY_CELL_COLUMNS: usize = 2;
+const SHAPE_EXPANDABLE: u8 = b'e';
+const SHAPE_EXPANDED: u8 = b'o';
+const SHAPE_LEAF: u8 = b'-';
+const UP_ROW: &str = "..";
+const NO_SUBKEYS: &str = "No subkeys.";
+const MOST_PATH_LEVELS: usize = 64;
+const PHONE_WIDTH: i32 = 448;
+const PHONE_COPY_TOP: i32 = 100;
+const PHONE_KEYS_TOP: i32 = 148;
+const PHONE_ROW: i32 = 40;
+const PHONE_LIST_ROWS: i32 = 8;
+const PHONE_GAP: i32 = 8;
+const PHONE_KEYS_HEIGHT: i32 = PHONE_LIST_ROWS * 24;
+const PHONE_VALUES_HEIGHT: i32 = 24 + PHONE_LIST_ROWS * 24;
+const PHONE_BUTTONS_TOP: i32 =
+    PHONE_KEYS_TOP + PHONE_KEYS_HEIGHT + PHONE_GAP + PHONE_VALUES_HEIGHT + PADDING;
+/// The pane's height on a phone: its rows one under another, scrolled by the window.
+pub const PHONE_HEIGHT: i32 = PHONE_BUTTONS_TOP + 2 * (PHONE_ROW + PHONE_GAP) + 48;
 const VALUE_COLUMNS: [Column; 3] = [
     Column {
         min_width: 64,
@@ -144,14 +160,58 @@ const VALUE_PLACEHOLDER: &str = "Value name";
 const DATA_PLACEHOLDER: &str = "Value data";
 const CLASSES: [&str; 2] = ["Software", "Classes"];
 
-static KEY_CELLS: CellStore<SLOTS, MAX_KEY_ROWS, 1> = CellStore::new();
+static KEY_CELLS: CellStore<SLOTS, MAX_KEY_ROWS, KEY_CELL_COLUMNS> = CellStore::new();
 static VALUE_CELLS: CellStore<SLOTS, MAX_VALUE_ROWS, VALUE_CELL_COLUMNS> = CellStore::new();
 
-type KeySlot = CellSlot<'static, SLOTS, MAX_KEY_ROWS, 1>;
+type KeySlot = CellSlot<'static, SLOTS, MAX_KEY_ROWS, KEY_CELL_COLUMNS>;
 type ValueSlot = CellSlot<'static, SLOTS, MAX_VALUE_ROWS, VALUE_CELL_COLUMNS>;
 
-fn key_cell(data: u32, row: usize, _: usize, out: &mut Text<64>) {
-    KEY_CELLS.write(data, row, 0, out);
+fn key_shape(data: u32, row: usize) -> (u8, u8) {
+    let mut shape = Text::<64>::new();
+    KEY_CELLS.write(data, row, KEY_SHAPE, &mut shape);
+    let bytes = shape.as_str().as_bytes();
+    let digits = bytes.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    let depth = bytes[..digits]
+        .iter()
+        .fold(0u32, |sum, digit| sum * 10 + u32::from(digit - b'0'));
+    let state = bytes.get(digits).copied().unwrap_or(SHAPE_LEAF);
+    (depth.min(u32::from(u8::MAX)) as u8, state)
+}
+
+fn key_row(data: u32, row: usize, out: &mut OutlineRow) {
+    KEY_CELLS.write(data, row, KEY_NAME, &mut out.text);
+    let (depth, state) = key_shape(data, row);
+    out.depth = depth;
+    out.expandable = state != SHAPE_LEAF;
+    out.expanded = state == SHAPE_EXPANDED;
+}
+
+fn key_path(data: u32, row: usize, out: &mut Text<256>) {
+    let mut chain = [0usize; MOST_PATH_LEVELS];
+    let mut length = 0;
+    let (mut depth, _) = key_shape(data, row);
+    chain[0] = row;
+    length += 1;
+    let mut above = row;
+    while depth > 0 && above > 0 && length < MOST_PATH_LEVELS {
+        above -= 1;
+        let (level, _) = key_shape(data, above);
+        if level < depth {
+            chain[length] = above;
+            length += 1;
+            depth = level;
+        }
+    }
+    for (index, &held) in chain[..length].iter().rev().enumerate() {
+        if index > 0 && !out.push_str("\\") {
+            return;
+        }
+        let mut name = Text::<64>::new();
+        KEY_CELLS.write(data, held, KEY_NAME, &mut name);
+        if !out.push_str(name.as_str()) {
+            return;
+        }
+    }
 }
 
 fn value_cell(data: u32, row: usize, column: usize, out: &mut Text<64>) {
@@ -275,6 +335,7 @@ struct KeyRow {
     expandable: bool,
     expanded: bool,
     more: usize,
+    up: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,6 +375,8 @@ pub struct WindowsPane {
     rows: Vec<KeyRow>,
     expanded: Vec<KeyPath>,
     selected: KeyPath,
+    drill_down: bool,
+    page: Option<KeyPath>,
     values: Vec<ValueRow>,
     sort: (usize, SortOrder),
     values_focused: bool,
@@ -335,6 +398,10 @@ fn add(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, place: Place, kind: Ki
 
 fn at(x: i32, y: i32, width: i32, height: i32) -> Place {
     Place::at(x, y, Length::Px(width), Length::Px(height))
+}
+
+fn status_place(x: i32, y: i32, width: i32) -> Place {
+    Place::at(x, y, Length::Px(width), Length::Content)
 }
 
 fn line(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, x: i32, y: i32, width: i32) -> WidgetId {
@@ -554,13 +621,14 @@ impl WindowsPane {
         let copy = button(tree, pane, COPY_PATH.0, COPY_PATH.1, "Copy path");
         let refresh = button(tree, pane, REFRESH.0, REFRESH.1, "Refresh");
         let lists_height = HEIGHT - LISTS_ROOM;
-        let mut keys_table = Table::new("Keys", &KEY_COLUMNS, 0, key_cell, 0);
-        keys_table.empty_text = UNREADABLE;
+        let mut keys_outline = Outline::new("Keys", 0, key_row, 0);
+        keys_outline.empty_text = UNREADABLE;
+        keys_outline.path = Some(key_path);
         let keys = add(
             tree,
             pane,
             at(KEYS_X_WIDTH.0, LISTS_TOP, KEYS_X_WIDTH.1, lists_height),
-            Kind::Table(keys_table),
+            Kind::Outline(keys_outline),
         );
         let mut values_table = Table::new("Values", &VALUE_COLUMNS, 0, value_cell, 0);
         values_table.empty_text = UNREADABLE;
@@ -746,6 +814,8 @@ impl WindowsPane {
             rows: Vec::new(),
             expanded: Vec::new(),
             selected: KeyPath::root(Root::CurrentUser),
+            drill_down: false,
+            page: None,
             values: Vec::new(),
             sort: (0, SortOrder::Ascending),
             values_focused: false,
@@ -860,6 +930,7 @@ impl WindowsPane {
             expandable: !children.is_empty(),
             expanded,
             more: 0,
+            up: false,
         });
         if !expanded {
             return;
@@ -877,11 +948,15 @@ impl WindowsPane {
                 expandable: false,
                 expanded: false,
                 more: children.len() - MAX_SUBKEYS_SHOWN,
+                up: false,
             });
         }
     }
 
     fn row_text(row: &KeyRow) -> String {
+        if row.up {
+            return String::from(UP_ROW);
+        }
         let mut text = String::new();
         match row.depth {
             depth if depth <= DEEPEST_INDENTED => {
@@ -912,11 +987,80 @@ impl WindowsPane {
         text
     }
 
+    fn shown_name(row: &KeyRow) -> String {
+        match (row.up, row.more) {
+            (true, _) => String::from(UP_ROW),
+            (false, 0) => row.path.leaf(),
+            (false, more) => format!("and {more} more: windows registry get <key> lists them all."),
+        }
+    }
+
+    fn shape_text(row: &KeyRow) -> String {
+        let state = match (row.expandable, row.expanded) {
+            (true, true) => SHAPE_EXPANDED,
+            (true, false) => SHAPE_EXPANDABLE,
+            (false, _) => SHAPE_LEAF,
+        };
+        format!("{}{}", row.depth.min(usize::from(u8::MAX)), char::from(state))
+    }
+
+    fn page_rows(&mut self, rows: &mut Vec<KeyRow>) {
+        let Some(page) = self.page.clone() else {
+            for root in Root::SHOWN {
+                rows.push(KeyRow {
+                    path: KeyPath::root(root),
+                    depth: 0,
+                    expandable: false,
+                    expanded: false,
+                    more: 0,
+                    up: false,
+                });
+            }
+            return;
+        };
+        rows.push(KeyRow {
+            path: page.clone(),
+            depth: 0,
+            expandable: false,
+            expanded: false,
+            more: 0,
+            up: true,
+        });
+        let children = self.subkeys(&page);
+        for child in children.iter().take(MAX_SUBKEYS_SHOWN) {
+            if let Ok(path) = page.join(child) {
+                rows.push(KeyRow {
+                    path,
+                    depth: 0,
+                    expandable: false,
+                    expanded: false,
+                    more: 0,
+                    up: false,
+                });
+            }
+        }
+        if children.len() > MAX_SUBKEYS_SHOWN {
+            rows.push(KeyRow {
+                path: page,
+                depth: 0,
+                expandable: false,
+                expanded: false,
+                more: children.len() - MAX_SUBKEYS_SHOWN,
+                up: false,
+            });
+        }
+    }
+
     fn fill_keys(&mut self, tree: &mut WidgetTree<CAPACITY>) {
         let mut rows = Vec::new();
         if self.registry.is_some() {
-            for root in Root::SHOWN {
-                self.push_rows(&mut rows, KeyPath::root(root), 0);
+            match self.drill_down {
+                true => self.page_rows(&mut rows),
+                false => {
+                    for root in Root::SHOWN {
+                        self.push_rows(&mut rows, KeyPath::root(root), 0);
+                    }
+                }
             }
         }
         if !rows.is_empty() {
@@ -925,7 +1069,8 @@ impl WindowsPane {
             }
             if let Some(slot) = &self.key_slot {
                 for (index, row) in rows.iter().enumerate() {
-                    slot.set(index, 0, &Self::row_text(row));
+                    slot.set(index, KEY_NAME, &Self::shown_name(row));
+                    slot.set(index, KEY_SHAPE, &Self::shape_text(row));
                 }
             }
             tree.set_cell_data(self.widgets.keys, data_of(self.key_slot.as_ref()));
@@ -940,7 +1085,97 @@ impl WindowsPane {
     fn selected_row(&self) -> Option<usize> {
         self.rows
             .iter()
-            .position(|row| row.more == 0 && same_key(&row.path, &self.selected))
+            .position(|row| row.more == 0 && !row.up && same_key(&row.path, &self.selected))
+    }
+
+    /// Browses one level a page, as a phone does (docs/ux/windows-registry-v0.3.md section 7,
+    /// D401), or the whole outline, with the pane `width` wide.
+    pub fn set_drill_down(&mut self, tree: &mut WidgetTree<CAPACITY>, on: bool, width: i32) {
+        self.drill_down = on;
+        self.page = match on {
+            true => Some(self.selected.clone()),
+            false => None,
+        };
+        let empty = match on {
+            true => NO_SUBKEYS,
+            false => UNREADABLE,
+        };
+        tree.set_empty_text(self.widgets.keys, empty);
+        tree.set_drill_down(self.widgets.keys, on);
+        self.lay_out(tree, width);
+        self.fill_keys(tree);
+        self.fill_values(tree);
+        self.refresh(tree);
+    }
+
+    fn lay_out(&self, tree: &mut WidgetTree<CAPACITY>, width: i32) {
+        let widgets = self.widgets;
+        if !self.drill_down || width >= PHONE_WIDTH {
+            let lists_height = HEIGHT - LISTS_ROOM;
+            let buttons_top = HEIGHT - BUTTONS_FROM_BOTTOM;
+            let places = [
+                (widgets.path, at(PATH_FIELD.0, PATH_FIELD.1, PATH_FIELD.2, PATH_FIELD.3)),
+                (widgets.copy, at(COPY_PATH.0, COPY_PATH.1, BUTTON.0, BUTTON.1)),
+                (widgets.refresh, at(REFRESH.0, REFRESH.1, BUTTON.0, BUTTON.1)),
+                (widgets.keys, at(KEYS_X_WIDTH.0, LISTS_TOP, KEYS_X_WIDTH.1, lists_height)),
+                (widgets.values, at(VALUES_X_WIDTH.0, LISTS_TOP, VALUES_X_WIDTH.1, lists_height)),
+                (widgets.new_key, at(BUTTON_XS[0], buttons_top, BUTTON.0, BUTTON.1)),
+                (widgets.new_value, at(BUTTON_XS[1], buttons_top, BUTTON.0, BUTTON.1)),
+                (widgets.edit, at(BUTTON_XS[2], buttons_top, BUTTON.0, BUTTON.1)),
+                (widgets.delete, at(BUTTON_XS[3], buttons_top, BUTTON.0, BUTTON.1)),
+                (widgets.replace, at(BUTTON_XS[0], buttons_top, REPLACE_WIDTH, BUTTON.1)),
+                (widgets.status, status_place(PADDING, HEIGHT - STATUS_FROM_BOTTOM, LINE_WIDTH)),
+            ];
+            for (id, place) in places {
+                tree.set_place(id, place);
+            }
+            return;
+        }
+        let full = width - 2 * PADDING;
+        let half = (width - 40) / 2;
+        let right = PADDING + half + PHONE_GAP;
+        let values_top = PHONE_KEYS_TOP + PHONE_KEYS_HEIGHT + PHONE_GAP;
+        let second = PHONE_BUTTONS_TOP + PHONE_ROW + PHONE_GAP;
+        let places = [
+            (widgets.path, at(PADDING, PATH_FIELD.1, full, PATH_FIELD.3)),
+            (widgets.copy, at(PADDING, PHONE_COPY_TOP, half, PHONE_ROW)),
+            (widgets.refresh, at(right, PHONE_COPY_TOP, half, PHONE_ROW)),
+            (widgets.keys, at(PADDING, PHONE_KEYS_TOP, full, PHONE_KEYS_HEIGHT)),
+            (widgets.values, at(PADDING, values_top, full, PHONE_VALUES_HEIGHT)),
+            (widgets.new_key, at(PADDING, PHONE_BUTTONS_TOP, half, PHONE_ROW)),
+            (widgets.new_value, at(right, PHONE_BUTTONS_TOP, half, PHONE_ROW)),
+            (widgets.edit, at(PADDING, second, half, PHONE_ROW)),
+            (widgets.delete, at(right, second, half, PHONE_ROW)),
+            (widgets.replace, at(PADDING, PHONE_BUTTONS_TOP, full, PHONE_ROW)),
+            (widgets.status, status_place(PADDING, second + PHONE_ROW + PADDING, full)),
+        ];
+        for (id, place) in places {
+            tree.set_place(id, place);
+        }
+    }
+
+    fn drill(&mut self, tree: &mut WidgetTree<CAPACITY>, row: usize) {
+        let Some(shown) = self.rows.get(row).cloned() else {
+            return;
+        };
+        if shown.more > 0 {
+            return;
+        }
+        let target = match shown.up {
+            true => parent_of(&shown.path),
+            false => Some(shown.path),
+        };
+        self.page = target.clone();
+        if let Some(target) = target {
+            self.selected = target;
+        }
+        self.said = None;
+        self.values_focused = false;
+        self.fill_keys(tree);
+        self.fill_values(tree);
+        tree.set_selected(self.widgets.keys, 0);
+        tree.set_selected(self.widgets.values, 0);
+        self.refresh(tree);
     }
 
     fn sorted(&self, values: Vec<ValueRow>) -> Vec<ValueRow> {
@@ -1800,6 +2035,10 @@ impl WindowsPane {
         let widgets = self.widgets;
         let focus = tree.focus();
         match response {
+            Response::RowToggled(id, row, _) if id == widgets.keys && self.drill_down => {
+                self.drill(tree, row);
+            }
+            Response::Chosen(id, _) if id == widgets.keys && self.drill_down => {}
             Response::Chosen(id, row) if id == widgets.keys => {
                 match self.rows.get(row).cloned() {
                     Some(shown) if shown.more == 0 => self.select(tree, shown.path),
@@ -1811,7 +2050,7 @@ impl WindowsPane {
                 }
                 self.values_focused = false;
             }
-            Response::Opened(id, row) if id == widgets.keys => self.toggle(tree, row),
+            Response::RowToggled(id, row, _) if id == widgets.keys => self.toggle(tree, row),
             Response::Chosen(id, _) if id == widgets.values => {
                 self.values_focused = true;
                 self.said = None;
@@ -1916,7 +2155,8 @@ impl WindowsPane {
         Reply::Done(false)
     }
 
-    /// The key list's rows as drawn.
+    /// The key outline's rows as text: indented by level, `+` before a closed key with
+    /// subkeys and `-` before an open one, as the outline's glyphs show them.
     pub fn key_rows(&self) -> Vec<String> {
         self.rows.iter().map(Self::row_text).collect()
     }

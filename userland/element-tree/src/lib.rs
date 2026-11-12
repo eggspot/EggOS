@@ -168,12 +168,18 @@ pub enum Role {
     ColumnHeader,
     /// Multi-line text: its value its text.
     TextArea,
+    /// An outline of items in levels: its value `row <n> of <rows>`, its shown items its
+    /// children (D401).
+    Tree,
+    /// One shown item of an outline: its value its full path; [`flags::EXPANDED`] when its
+    /// children show, [`flags::EXPANDABLE`] when it has any.
+    TreeItem,
     /// A role this version does not know.
     Unknown,
 }
 
 impl Role {
-    const ALL: [Role; 22] = [
+    const ALL: [Role; 24] = [
         Role::Window,
         Role::Group,
         Role::Label,
@@ -196,6 +202,8 @@ impl Role {
         Role::Row,
         Role::ColumnHeader,
         Role::TextArea,
+        Role::Tree,
+        Role::TreeItem,
     ];
 
     /// Its number on the wire.
@@ -236,6 +244,8 @@ impl Role {
             Role::Row => "row",
             Role::ColumnHeader => "columnheader",
             Role::TextArea => "textarea",
+            Role::Tree => "tree",
+            Role::TreeItem => "treeitem",
             Role::Unknown => "unknown",
         }
     }
@@ -263,8 +273,10 @@ pub mod flags {
     /// The window's app is not responding: the window server answered for it with the window
     /// alone (D222).
     pub const NOT_RESPONDING: u16 = 256;
+    /// It has children to show: a tree item that can open (D401).
+    pub const EXPANDABLE: u16 = 512;
     /// Every flag, with its name as `wm show` writes it, in order.
-    pub const NAMES: [(u16, &str); 9] = [
+    pub const NAMES: [(u16, &str); 10] = [
         (FOCUSED, "focused"),
         (FOCUSABLE, "focusable"),
         (DISABLED, "disabled"),
@@ -274,6 +286,7 @@ pub mod flags {
         (EXPANDED, "expanded"),
         (PERSON_ONLY, "person-only"),
         (NOT_RESPONDING, "not-responding"),
+        (EXPANDABLE, "expandable"),
     ];
 }
 
