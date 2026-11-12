@@ -25043,3 +25043,20 @@ the license, by an explicit instruction recorded here.
 - **Simplifications.** Arcs are drawn as a line to their end; strokes, gradients, groups'
   transforms, clip paths and `tint` are not drawn yet.
 - **Not yet.** WebP images.
+
+## D519 Lossless WebP, for Android's drawables and every layer (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from RFC 9649)
+
+- **Decision.** EggOS's image library (`eggos-image`, D231) reads WebP: the RIFF container
+  (`VP8L` directly, or after `VP8X` and other chunks) and lossless VP8L images as RFC 9649
+  specifies them. The bit reader is least-significant bit first; prefix codes are simple (one
+  or two symbols) or normal (code lengths through the 19-symbol code length code, its order,
+  repeats and zero runs, and an optional count of symbols to read), decoded canonically; the
+  main image may have a colour cache and meta prefix codes per block; LZ77 copies take their
+  lengths and distances from prefix values with extra bits and the 120 short two-dimensional
+  distances. The four transforms are undone in reverse order at the widths they were read at:
+  the 14 predictors (with the left, top and top-right rules on the edges), the colour
+  transform, subtract-green, and colour indexing with pixel bundling.
+- The Android layer shows `.webp` drawables through it (D509). `sniff` and `decode` name the
+  new `Format::Webp`, so the Windows and macOS layers' picture loaders read WebP too.
+- **Not yet.** Lossy WebP (`VP8 `, the VP8 key-frame decoder) and its alpha chunk (`ALPH`),
+  and animated WebP.

@@ -3,7 +3,8 @@
 //! baseline, extended and progressive JPEG with Huffman coding (ITU T.81), GIF87a and GIF89a
 //! with every frame composited, TIFF 6.0 strips (uncompressed, PackBits, LZW and Deflate, with
 //! the horizontal predictor), BMP and DIBs (every bit depth, bit fields, RLE4 and RLE8), icons
-//! and cursors (`.ico`, `.cur`, their DIB or PNG images) and PNG through `eggos-png`. One entry
+//! and cursors (`.ico`, `.cur`, their DIB or PNG images), lossless WebP (D519) and PNG through
+//! `eggos-png`. One entry
 //! point, [`decode`], sniffs the format ([`sniff`]); [`decode_animation`] keeps every frame of
 //! an animated GIF; [`icon_entries`] and [`decode_icon_entry`] pick one image of an icon.
 //!
@@ -25,6 +26,7 @@ mod jpeg;
 mod lzw;
 mod png;
 mod tiff;
+mod webp;
 
 #[cfg(test)]
 mod tests;
@@ -50,6 +52,8 @@ pub enum Format {
     Icon,
     /// A Windows cursor (`.cur`).
     Cursor,
+    /// WebP, lossless (D519).
+    Webp,
 }
 
 /// Why a file could not be decoded.
@@ -166,6 +170,9 @@ pub fn sniff(bytes: &[u8]) -> Option<Format> {
     if bmp::is_bmp(bytes) {
         return Some(Format::Bmp);
     }
+    if webp::is_webp(bytes) {
+        return Some(Format::Webp);
+    }
     ico::kind(bytes)
 }
 
@@ -179,6 +186,7 @@ pub fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, Error> {
         Format::Tiff => tiff::decode(bytes, limits),
         Format::Bmp => bmp::decode(bytes, limits),
         Format::Icon | Format::Cursor => ico::decode_largest(bytes, limits),
+        Format::Webp => webp::decode(bytes, limits),
     }
 }
 

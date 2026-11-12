@@ -900,6 +900,16 @@ fn load_image(id: u32) -> Option<u32> {
     if path.ends_with(".xml") {
         return load_vector(&file);
     }
+    if path.ends_with(".webp") {
+        let decoded = eggos_image::decode(&read_file(&file)?, &eggos_image::Limits::DEFAULT).ok()?;
+        if decoded.width > LARGEST_IMAGE || decoded.height > LARGEST_IMAGE {
+            return None;
+        }
+        let pixels = decoded.pixels.into_iter().map(premultiplied).collect();
+        let images = &mut state().images;
+        images.push((decoded.width as usize, pixels));
+        return u32::try_from(images.len() - 1).ok();
+    }
     if !path.ends_with(".png") {
         return None;
     }
