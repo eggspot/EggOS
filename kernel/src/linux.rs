@@ -84,6 +84,7 @@ pub mod properties;
 pub mod pseudo_terminal;
 pub mod random;
 pub mod reboot;
+pub mod render_node;
 pub mod rtc_device;
 pub mod signal_frame;
 pub mod signalfd;
@@ -1470,6 +1471,9 @@ fn ioctl<P: Platform>(
         FileKind::Window(connection) => {
             window::ioctl(process, thread, connection, request, argument)
         }
+        FileKind::RenderNode(context) => {
+            render_node::ioctl(process, thread, context, request, argument)
+        }
         FileKind::Socket(socket) => {
             socket::ioctl(process, socket, request, argument).unwrap_or(Err(Errno::ENOTTY))
         }
@@ -1512,6 +1516,7 @@ fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, 
         | FileKind::PseudoTerminal(_)
         | FileKind::Pipe(_)
         | FileKind::Window(_)
+        | FileKind::RenderNode(_)
         | FileKind::AgentChannel(_)
         | FileKind::Socket(_)
         | FileKind::InetSocket(_)

@@ -691,6 +691,7 @@ fn can_be_watched(kind: &FileKind) -> bool {
         | FileKind::PseudoTerminal(_)
         | FileKind::Pipe(_)
         | FileKind::Window(_)
+        | FileKind::RenderNode(_)
         | FileKind::AgentChannel(_)
         | FileKind::Socket(_)
         | FileKind::InetSocket(_)

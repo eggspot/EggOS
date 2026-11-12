@@ -439,8 +439,10 @@ pub use gpu::GPU_DRIVER;
 mod gpu {
     use super::*;
     use crate::display::{Mode, Rect, Scanout};
+    use crate::rendering::{Renderer, ThreeDCommand};
     use eggos_drivers::virtio::gpu::{
-        CURSOR_BYTES, CURSOR_SIDE, FALLBACK_MODE, MEMORY_BYTES, Released, VirtioGpu,
+        CURSOR_BYTES, CURSOR_SIDE, FALLBACK_MODE, MEMORY_BYTES, Released, THREE_D_BYTES,
+        VirtioGpu,
     };
 
     type Gpu = VirtioGpu<AnyTransport, DmaRegion>;
@@ -451,7 +453,8 @@ mod gpu {
 
     /// The polled virtio GPU (virtio 1.2, 5.7), 2D: one framebuffer on scanout 0, installed as
     /// the kernel's display ([`crate::display`]), and the cursor, which draws the desktop's
-    /// pointer when the device has a cursor queue (D186).
+    /// pointer when the device has a cursor queue (D186). A device that takes 3D commands
+    /// also serves the rendering contexts ([`crate::rendering`], D415).
     pub static GPU_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-gpu",
         pass: ProbePass::Device,
@@ -464,6 +467,36 @@ mod gpu {
         mode: Mode,
         cursor: bool,
         events: Option<&'static DeviceEvents>,
+        three_d: bool,
+    }
+
+    impl Renderer for GpuScanout {
+        fn capset_count(&self) -> u32 {
+            self.gpu.capset_count()
+        }
+
+        fn takes_context_init(&self) -> bool {
+            self.gpu.takes_context_init()
+        }
+
+        fn command_stream(&mut self) -> &mut [u8] {
+            self.gpu.command_stream().unwrap_or_default()
+        }
+
+        fn run(
+            &mut self,
+            command: &ThreeDCommand<'_>,
+            answer: &mut [u8],
+            deadline: &mut Deadline,
+        ) -> Result<usize, &'static str> {
+            let data = self
+                .gpu
+                .run_three_d(command, &mut || deadline.keep_waiting())
+                .map_err(virtio::Error::description)?;
+            let copied = data.len().min(answer.len());
+            answer[..copied].copy_from_slice(&data[..copied]);
+            Ok(copied)
+        }
     }
 
     static GPU_EVENTS: DeviceEvents = DeviceEvents::new();
@@ -544,6 +577,13 @@ mod gpu {
             self.gpu.abandon_flush();
         }
 
+        fn renderer(&mut self) -> Option<&mut dyn Renderer> {
+            match self.three_d {
+                true => Some(self),
+                false => None,
+            }
+        }
+
         fn preferred_mode(&mut self, deadline: &mut Deadline) -> Option<Mode> {
             if !self.gpu.display_event_pending() {
                 return Some(self.gpu.display_mode());
@@ -609,6 +649,7 @@ mod gpu {
         };
         let shown = attach_framebuffer(&mut gpu, &mut deadline);
         let cursor = shown.is_ok() && attach_cursor(&mut gpu, &mut deadline);
+        let three_d = shown.is_ok() && attach_three_d(&mut gpu);
         let events = shown
             .is_ok()
             .then(|| connect_interrupt(probe, id, gpu.transport(), &GPU_EVENTS).is_ok())
@@ -622,10 +663,16 @@ mod gpu {
             mode,
             cursor,
             events,
+            three_d,
         };
         let refused = match shown {
             Ok(mode) => match crate::display::install(installed(gpu, mode)) {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    if three_d {
+                        crate::rendering::set_present();
+                    }
+                    return Ok(());
+                }
                 Err(scanout) => (scanout.gpu, "a display is already in use"),
             },
             Err(reason) => (gpu, reason),
@@ -676,6 +723,23 @@ mod gpu {
         }
     }
 
+    fn attach_three_d(gpu: &mut Gpu) -> bool {
+        if !gpu.takes_three_d() {
+            return false;
+        }
+        let Ok(memory) = DmaRegion::allocate(THREE_D_BYTES) else {
+            return false;
+        };
+        match gpu.attach_three_d(memory) {
+            Ok(()) => true,
+            Err((_, memory)) => {
+                // SAFETY: handed back by `attach_three_d`, which never gives it to the device.
+                unsafe { memory.free() };
+                false
+            }
+        }
+    }
+
     fn release(gpu: Gpu, identity: &Identity, deadline: &mut Deadline) {
         match gpu.reset(&mut || deadline.keep_waiting()) {
             Ok(Released {
@@ -683,6 +747,7 @@ mod gpu {
                 control,
                 framebuffer,
                 cursor,
+                three_d,
                 reset,
             }) => {
                 control.free_after_reset(&reset);
@@ -691,6 +756,9 @@ mod gpu {
                 }
                 if let Some(cursor) = cursor {
                     cursor.free_after_reset(&reset);
+                }
+                if let Some(three_d) = three_d {
+                    three_d.free_after_reset(&reset);
                 }
                 give_back_transport(identity, transport);
             }

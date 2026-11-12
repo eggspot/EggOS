@@ -216,6 +216,18 @@ pub const WINDOW: Status = Status {
     ..CONSOLE
 };
 
+/// `/dev/dri/renderD128`'s status (D415): a character device on [`DEVICE_FILES`].
+pub const RENDER_NODE: Status = Status {
+    device: DEVICE_FILES,
+    inode: crate::vfs::devfs::RENDER_NODE,
+    mode: S_IFCHR | 0o666,
+    represented_device: Device {
+        major: crate::vfs::devfs::RENDER_NODE_DEVICE.0,
+        minor: crate::vfs::devfs::RENDER_NODE_DEVICE.1,
+    },
+    ..CONSOLE
+};
+
 /// `/dev/agent`'s status (D136): a character device on [`DEVICE_FILES`].
 pub const AGENT: Status = Status {
     inode: crate::vfs::devfs::AGENT,
@@ -385,6 +397,7 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
         FileKind::Snapshot(snapshot) => Ok(node_status(snapshot.node)),
         FileKind::MemoryDevice(_, node) => Ok(node_status(*node)),
         FileKind::Window(_) => Ok(WINDOW),
+        FileKind::RenderNode(_) => Ok(RENDER_NODE),
         FileKind::AgentChannel(_) => Ok(AGENT),
         FileKind::MemoryFile(memory) => {
             let size = memory.size();

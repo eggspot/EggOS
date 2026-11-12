@@ -53,6 +53,8 @@ pub const PIXEL_HASH_START: u64 = 0xcbf2_9ce4_8422_2325;
 /// How long a flush polls the device before giving up.
 pub const FLUSH_TIMEOUT_MS: u64 = 1000;
 
+const RENDER_TIMEOUT_MS: u64 = 5000;
+
 /// What a display driver lends the kernel: a framebuffer shown on a display output.
 pub trait Scanout: Send {
     /// The framebuffer's mode.
@@ -122,6 +124,10 @@ pub trait Scanout: Send {
     }
     /// Gives up on a started flush the device never answered.
     fn abandon_flush(&mut self) {}
+    /// The device's 3D commands, when it takes them (D415).
+    fn renderer(&mut self) -> Option<&mut dyn crate::rendering::Renderer> {
+        None
+    }
 }
 
 /// What [`Display::start_flush`] did.
@@ -803,6 +809,23 @@ pub fn flushes() -> u64 {
 /// display.
 pub fn draw<R>(draw: impl FnOnce(&mut Framebuffer<'_>) -> R) -> Option<R> {
     DISPLAY.lock().as_mut().map(|display| display.draw(draw))
+}
+
+/// Lends `work` the display device's 3D commands (D415) once any posted flush is answered,
+/// with the deadline its commands wait until; the display's lock is held meanwhile. Refused
+/// without a display or when its device takes no 3D commands.
+pub fn with_renderer<P: Platform, R>(
+    work: impl FnOnce(&mut dyn crate::rendering::Renderer, &mut Deadline) -> R,
+) -> Result<R, &'static str> {
+    let mut display = DISPLAY.lock();
+    let display = display.as_mut().ok_or("no display")?;
+    let mut deadline = Deadline::after::<P>(RENDER_TIMEOUT_MS);
+    display.settle(&mut deadline)?;
+    let renderer = display
+        .scanout
+        .renderer()
+        .ok_or("the display's device takes no 3D commands")?;
+    Ok(work(renderer, &mut deadline))
 }
 
 /// Shows what was drawn on the display since the last flush ([`Display::flush`]); 0 without a

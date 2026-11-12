@@ -658,6 +658,7 @@ fn descriptor_target(kind: &FileKind) -> Option<Vec<u8>> {
         }
         FileKind::PseudoTerminal(end) => write!(text, "/dev/pts/{}", end.number()).ok()?,
         FileKind::Window(_) => text.bytes(b"/dev/window")?,
+        FileKind::RenderNode(_) => text.bytes(b"/dev/dri/renderD128")?,
         FileKind::AgentChannel(_) => text.bytes(b"/dev/agent")?,
         FileKind::Pipe(end) => write!(text, "pipe:[{}]", end.inode()).ok()?,
         FileKind::Socket(socket) => write!(text, "socket:[{}]", socket.inode()).ok()?,

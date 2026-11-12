@@ -127,6 +127,8 @@ pub enum FileKind {
     Snapshot(Snapshot),
     /// A client of the window server (`/dev/window`, D127).
     Window(crate::window::Connection),
+    /// A rendering context on the GPU's render node (`/dev/dri/renderD128`, D415).
+    RenderNode(Arc<crate::rendering::Context>),
     /// The agent channel's one opener (`/dev/agent`, D136).
     AgentChannel(super::agent_channel::AgentChannelEnd),
     /// An `AF_UNIX` stream socket (D138).
@@ -212,6 +214,7 @@ impl FileKind {
             | Self::PseudoTerminal(_)
             | Self::Pipe(_)
             | Self::Window(_)
+            | Self::RenderNode(_)
             | Self::AgentChannel(_)
             | Self::Socket(_)
             | Self::InetSocket(_)

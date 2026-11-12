@@ -7,6 +7,10 @@
 //! it: the spec lets a device answer an unfenced command before processing it and does not
 //! promise to process commands in order. A flush therefore sends the damaged rectangles'
 //! transfers, waits for their answers, then sends their flushes.
+//!
+//! A device that offers `VIRTIO_GPU_F_VIRGL` also takes 3D commands (D415): with memory for
+//! them ([`VirtioGpu::attach_three_d`]), [`VirtioGpu::run_three_d`] sends one, a context's
+//! command stream included, and waits for its answer.
 
 use super::queue::{Buffer, SplitQueue};
 use super::{Error, ResetDone, Transport, device_type};
@@ -15,6 +19,9 @@ use crate::dma::DmaMemory;
 
 #[cfg(test)]
 mod tests;
+pub mod three_d;
+
+use three_d::ThreeDCommand;
 
 /// Entries of the control queue the driver sets up, at most.
 pub const QUEUE_SIZE: u16 = 32;
@@ -57,6 +64,16 @@ const CONFIG_EVENTS_CLEAR_OFFSET: usize = 4;
 const EVENT_DISPLAY: u32 = 1;
 const SCANOUT_ID: u32 = 0;
 const CONFIG_NUM_SCANOUTS_OFFSET: usize = 8;
+const CONFIG_NUM_CAPSETS_OFFSET: usize = 12;
+const THREE_D_REQUEST: usize = 0;
+const THREE_D_ANSWER: usize = 256;
+const THREE_D_STREAM: usize = 8192;
+/// The bytes of command stream one [`VirtioGpu::run_three_d`] carries, at most.
+pub const COMMAND_STREAM_BYTES: usize = 256 * 1024;
+/// The DMA memory the 3D commands need ([`VirtioGpu::attach_three_d`]).
+pub const THREE_D_BYTES: usize = THREE_D_STREAM + COMMAND_STREAM_BYTES;
+/// The most bytes of capability set one answer carries.
+pub const CAPSET_ROOM: usize = THREE_D_STREAM - THREE_D_ANSWER - three_d::HEADER_BYTES;
 const FLAG_FENCE: u32 = 1;
 
 const HEADER_BYTES: usize = 24;
@@ -75,6 +92,7 @@ const _: () = assert!(TRANSFER_TO_HOST_2D_BYTES <= REQUEST_SLOT);
 const _: () = assert!(DISPLAY_INFO + DISPLAY_INFO_BYTES <= CURSOR_RING);
 const _: () = assert!(CURSOR_RING + super::queue::memory_size(CURSOR_QUEUE_SIZE) <= CURSOR_REQUEST);
 const _: () = assert!(CURSOR_REQUEST + UPDATE_CURSOR_BYTES <= MEMORY_BYTES);
+const _: () = assert!(THREE_D_REQUEST + three_d::LONGEST_REQUEST <= THREE_D_ANSWER);
 
 mod command {
     pub const GET_DISPLAY_INFO: u32 = 0x0100;
@@ -104,6 +122,8 @@ pub struct Released<T, M> {
     pub framebuffer: Option<M>,
     /// The cursor's image, if one was attached.
     pub cursor: Option<M>,
+    /// The 3D commands' memory, if it was attached.
+    pub three_d: Option<M>,
     pub reset: ResetDone,
 }
 
@@ -134,6 +154,8 @@ pub struct VirtioGpu<T: Transport, M: DmaMemory> {
     fence_id: u64,
     unanswered: bool,
     started: Option<StartedFlush>,
+    features: u64,
+    three_d: Option<M>,
 }
 
 /// A flush posted by [`VirtioGpu::start_flush`] and not yet answered (D414).
@@ -161,9 +183,11 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         if transport.device_type() != device_type::GPU {
             return Err((Error::WrongDeviceType, transport, Some(control)));
         }
-        if let Err(error) = super::initialize(&transport, 0, keep_waiting) {
-            return Err((error, transport, Some(control)));
-        }
+        let wanted = three_d::FEATURE_VIRGL | three_d::FEATURE_CONTEXT_INIT;
+        let features = match super::initialize(&transport, wanted, keep_waiting) {
+            Ok(features) => features,
+            Err(error) => return Err((error, transport, Some(control))),
+        };
         let max = transport.max_queue_size(CONTROL_QUEUE).min(QUEUE_SIZE);
         if max < 2 || transport.read_config32(CONFIG_NUM_SCANOUTS_OFFSET) == 0 {
             super::fail(&transport);
@@ -207,6 +231,8 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             fence_id: 0,
             unanswered: false,
             started: None,
+            features,
+            three_d: None,
         };
         match gpu.query_display(keep_waiting) {
             Ok(mode) => {
@@ -747,6 +773,157 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         self.started.is_some()
     }
 
+    /// Whether the device takes 3D commands (`VIRTIO_GPU_F_VIRGL`).
+    pub fn takes_three_d(&self) -> bool {
+        self.features & three_d::FEATURE_VIRGL != 0
+    }
+
+    /// Whether a context is created for one capability set (`VIRTIO_GPU_F_CONTEXT_INIT`).
+    pub fn takes_context_init(&self) -> bool {
+        self.features & three_d::FEATURE_CONTEXT_INIT != 0
+    }
+
+    /// How many capability sets the device describes ([`ThreeDCommand::CapsetInfo`]); 0 when it
+    /// takes no 3D commands.
+    pub fn capset_count(&self) -> u32 {
+        match self.takes_three_d() {
+            true => self.transport.read_config32(CONFIG_NUM_CAPSETS_OFFSET),
+            false => 0,
+        }
+    }
+
+    /// Gives the driver `memory` ([`THREE_D_BYTES`] or more) for the 3D commands, their answers
+    /// and the command streams; handed back when the device takes no 3D commands, memory is
+    /// attached already or it is too small. The device reaches it only during
+    /// [`Self::run_three_d`]; it comes back from [`Self::reset`].
+    pub fn attach_three_d(&mut self, memory: M) -> Result<(), (Error, M)> {
+        if !self.takes_three_d() || self.three_d.is_some() {
+            return Err((Error::NoThreeD, memory));
+        }
+        if memory.len() < THREE_D_BYTES {
+            return Err((Error::MemoryTooSmall, memory));
+        }
+        self.three_d = Some(memory);
+        Ok(())
+    }
+
+    /// Where the next [`ThreeDCommand::Submit`]'s command stream is written, [`COMMAND_STREAM_BYTES`]
+    /// long; `None` before [`Self::attach_three_d`].
+    pub fn command_stream(&mut self) -> Option<&mut [u8]> {
+        let memory = self.three_d.as_mut()?;
+        // SAFETY: the memory holds at least `THREE_D_BYTES` (checked when attached), owned by
+        // this driver while it lives; the device reads the stream only inside `run_three_d`,
+        // which takes `&mut self`, so never while this borrow lives.
+        Some(unsafe {
+            core::slice::from_raw_parts_mut(
+                memory.as_mut_ptr().wrapping_add(THREE_D_STREAM),
+                COMMAND_STREAM_BYTES,
+            )
+        })
+    }
+
+    /// Sends `command` on the control queue and waits for its answer, polling while
+    /// `keep_waiting` says to: a [`ThreeDCommand::Submit`] carries the first `length` bytes of
+    /// [`Self::command_stream`]. Returns the answer's data past its header (the capability
+    /// set's description or bytes; empty for the others). Refused while a flush is posted
+    /// ([`Self::start_flush`]); a device that does not answer in time is treated as in
+    /// [`Self::flush`].
+    pub fn run_three_d(
+        &mut self,
+        command: &ThreeDCommand<'_>,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<&[u8], Error> {
+        if self.unanswered {
+            return Err(Error::TimedOut);
+        }
+        if self.started.is_some() {
+            return Err(Error::QueueFull);
+        }
+        let (pointer, base) = match self.three_d.as_ref() {
+            Some(memory) => (memory.as_mut_ptr(), memory.dma_addr()),
+            None => return Err(Error::NoThreeD),
+        };
+        let stream = match *command {
+            ThreeDCommand::Submit { length, .. } => {
+                if length as usize > COMMAND_STREAM_BYTES {
+                    return Err(Error::MemoryTooSmall);
+                }
+                Some(length)
+            }
+            _ => None,
+        };
+        let capset_room = match *command {
+            ThreeDCommand::Capset { .. } => CAPSET_ROOM,
+            _ => 0,
+        };
+        let answer_bytes = three_d::answer_bytes(command, capset_room);
+        self.fence_id = self.fence_id.wrapping_add(1);
+        let mut request = [0u8; three_d::LONGEST_REQUEST];
+        let request_bytes = three_d::encode(command, self.fence_id, &mut request);
+        // SAFETY: the memory holds at least `THREE_D_BYTES`, owned by this driver; the request
+        // fits before `THREE_D_ANSWER` (asserted), and the device does not own it now, as no 3D
+        // command is in flight between calls.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                request.as_ptr(),
+                pointer.wrapping_add(THREE_D_REQUEST),
+                request_bytes,
+            );
+            pointer
+                .wrapping_add(THREE_D_ANSWER)
+                .cast::<u32>()
+                .write_volatile(0);
+        }
+        let at = |offset: usize| base.checked_add(offset as u64).ok_or(Error::MemoryTooSmall);
+        let request = Buffer {
+            addr: at(THREE_D_REQUEST)?,
+            len: request_bytes as u32,
+            device_writes: false,
+        };
+        let answer = Buffer {
+            addr: at(THREE_D_ANSWER)?,
+            len: answer_bytes as u32,
+            device_writes: true,
+        };
+        let submitted = match stream {
+            Some(length) => self.queue.submit(&[
+                request,
+                Buffer {
+                    addr: at(THREE_D_STREAM)?,
+                    len: length,
+                    device_writes: false,
+                },
+                answer,
+            ]),
+            None => self.queue.submit(&[request, answer]),
+        };
+        submitted?;
+        self.wait(1, keep_waiting)?;
+        let answered = self.three_d_word(THREE_D_ANSWER);
+        if answered != three_d::expected_answer(command) {
+            return Err(Error::CommandFailed(answered));
+        }
+        let data = THREE_D_ANSWER + three_d::HEADER_BYTES;
+        // SAFETY: the answer's data lies inside the memory (`answer_bytes` is at most
+        // `THREE_D_STREAM - THREE_D_ANSWER`), which the device has handed back with its answer;
+        // the borrow of `self` keeps the next command from overwriting it.
+        Ok(unsafe {
+            core::slice::from_raw_parts(
+                pointer.wrapping_add(data),
+                answer_bytes - three_d::HEADER_BYTES,
+            )
+        })
+    }
+
+    fn three_d_word(&self, offset: usize) -> u32 {
+        let Some(memory) = self.three_d.as_ref() else {
+            return 0;
+        };
+        let field = memory.as_mut_ptr().wrapping_add(offset).cast::<u32>();
+        // SAFETY: a 4-byte aligned field of the 3D memory, which the device has handed back.
+        u32::from_le(unsafe { field.read_volatile() })
+    }
+
     /// Resets the device and hands back the transport, the control memory and the framebuffer
     /// if one was attached, with the proof that the device no longer uses them. If the reset
     /// does not read back 0, the memory is leaked and only the transport comes back.
@@ -759,6 +936,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             control,
             scanout,
             cursor,
+            three_d,
             ..
         } = self;
         let framebuffer = scanout.map(|scanout| scanout.framebuffer);
@@ -769,12 +947,14 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
                 control,
                 framebuffer,
                 cursor,
+                three_d,
                 reset,
             }),
             Err(error) => {
                 core::mem::forget(control);
                 core::mem::forget(framebuffer);
                 core::mem::forget(cursor);
+                core::mem::forget(three_d);
                 Err((error, transport))
             }
         }

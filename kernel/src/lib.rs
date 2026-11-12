@@ -37,6 +37,7 @@ pub mod process;
 pub mod random;
 pub mod regions;
 pub mod selftest;
+pub mod rendering;
 pub mod shared_frames;
 pub mod sync;
 pub mod terminal;

@@ -55,6 +55,12 @@ impl DmaRegion {
         Ok(region)
     }
 
+    /// The physical address of its first frame, which the CPU maps it at (the device's address
+    /// may differ, [`DmaMemory::dma_addr`]).
+    pub fn physical(&self) -> u64 {
+        self.first
+    }
+
     /// Gives the frames back; `_reset` proves the device that had the region no longer reaches
     /// it.
     pub fn free_after_reset(self, _reset: &ResetDone) {

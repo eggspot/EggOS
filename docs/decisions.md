@@ -23293,3 +23293,40 @@ the license, by an explicit instruction recorded here.
   display's follow-the-host-size path reads (D287).
 - **Not yet.** The cursor queue on interrupts (pointer moves still poll, briefly), several
   flushes in flight at once, and the turned and scaled paths posting rather than waiting.
+
+## D415 virtio-gpu 3D, part 1: the virgl transport and Linux's render node (M11; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** M11's next step is 3D. What the kernel offers for it decides which user-space
+  drivers work: a device of our own would need a GL and Vulkan driver of our own on day one,
+  while the virtio GPU's 3D commands carry command streams that existing user-space drivers
+  already encode (virgl's Gallium stream for OpenGL, Venus's for Vulkan).
+- **Decision.** The kernel carries the streams and does not read them. The driver negotiates
+  `VIRTIO_GPU_F_VIRGL` and `VIRTIO_GPU_F_CONTEXT_INIT`, encodes the spec's 3D commands
+  (capability-set info and contents, context create and destroy, resource attach and detach,
+  3D resource create, backing attach and detach, unref, 3D transfers both ways, submit) in
+  `virtio/gpu/three_d.rs`, host-tested, and runs one at a time on the control queue from a DMA
+  area of its own (the request, the answer with up to 7.9 KiB of capability set, and a
+  256 KiB command stream). The kernel's `rendering` module gives each opener a context, made on
+  first use or by context init, whose buffers are 3D resources backed by DMA memory, attached
+  to the context and lent to the program's mappings; a buffer is destroyed (backing detached,
+  resource unreferenced, memory freed) when its handle is closed and no mapping holds it, and
+  leaked if the device does not answer, as a framebuffer is. Linux programs reach it through
+  `/dev/dri/renderD128` (DRM's major 226, first render minor), which answers DRM's `VERSION`
+  (`virtio_gpu`), `GET_CAP` and `GEM_CLOSE` and virtio-gpu's uAPI ioctls (map, execbuffer,
+  getparam, resource create and info, transfers, wait, get caps, context init); `mmap` at the
+  offset `VIRTGPU_MAP` gives (the handle shifted by 32) maps the backing. The device's
+  commands go through the display, which owns the GPU (`display::with_renderer` settles a
+  posted flush, D414, then lends the driver), so 2D and 3D never interleave on the queue.
+- **Why synchronous.** Each command waits for its fenced answer under the display's lock, as
+  the 2D path did before D414: waits are then always finished, an out-fence is already
+  signalled (an `eventfd` reading 1 stands for the sync file) and buffers are idle whenever a
+  call returns, which keeps part 1 small. Posting submissions and sleeping on the GPU's
+  interrupt, as D414 does for flushes, is part 2.
+- **Clean room.** The command layouts come from the virtio 1.2 specification (5.7.6) and the
+  ioctl numbers and structures from Linux's `virtgpu_drm.h` and `drm.h` user-space headers
+  (MIT-licensed UAPI descriptions of the interface, not kernel code).
+- **Not yet.** Blob resources and host-visible memory (Venus needs them for most Vulkan
+  memory), PRIME sharing with the window server (so a GL app's frames are shown without a copy
+  back), sync objects and real fences, several rings, the sysfs nodes Mesa's device enumeration
+  reads (`/sys/dev/char/226:128`), and the same render node for the Windows, macOS and Android
+  layers' graphics APIs (their D3D, Metal and GLES front ends over the same contexts, D17).

@@ -19,7 +19,8 @@
 //! the disk, read and written whole ([`crate::block::read_at`]); a mounted disk's file is
 //! listed, but reading or writing it fails. `rtc0` is the real-time clock's device, a regular
 //! file whose `ioctl`s read and set the clock and its alarm, on a machine with one
-//! ([`crate::linux::rtc_device`], D194).
+//! ([`crate::linux::rtc_device`], D194). The directory `dri` holds `renderD128`, the GPU's render node
+//! ([`crate::linux::render_node`], D415), on a machine whose GPU takes 3D commands.
 
 use super::{
     Attributes, DirectoryEntry, FileSystem, Name, Node, NodeKind, Refused, StorageError, Usage,
@@ -167,11 +168,22 @@ const RTC: u64 = 30;
 
 const KMSG: u64 = 31;
 
-const FILES: [(&[u8], u64); 25] = [
+const DRI: u64 = 32;
+
+/// `/dev/dri/renderD128`'s node: the GPU's render node (D415).
+pub const RENDER_NODE: u64 = 33;
+
+/// `/dev/dri/renderD128`'s device number: DRM's major and its first render minor.
+pub const RENDER_NODE_DEVICE: (u32, u32) = (226, 128);
+
+const RENDER_NODE_NAME: &[u8] = b"renderD128";
+
+const FILES: [(&[u8], u64); 26] = [
     (eggos_android_properties::AREA_NAME, PROPERTIES),
     (b"agent", AGENT),
     (eggos_android_log::LOG_NAME, ANDROID_LOG),
     (b"console", CONSOLE),
+    (b"dri", DRI),
     (b"fd", FD),
     (b"full", FULL),
     (b"kmsg", KMSG),
@@ -227,6 +239,7 @@ fn is_listed(node: u64) -> bool {
     match disk_of(node) {
         Some(index) => block::facts(index).present,
         None if node == RTC => crate::wall_clock::has_clock(),
+        None if node == DRI => crate::rendering::is_present(),
         None => node != AGENT || crate::agent_channel::is_present(),
     }
 }
@@ -257,7 +270,7 @@ fn link_of(node: u64) -> Option<&'static [u8]> {
 
 fn kind_of(node: u64) -> NodeKind {
     match node {
-        ROOT | SHM | PTS | SOCKETS => NodeKind::Directory,
+        ROOT | SHM | PTS | SOCKETS | DRI => NodeKind::Directory,
         PROPERTIES | ANDROID_LOG | RTC => NodeKind::Regular,
         _ if disk_of(node).is_some() => NodeKind::Regular,
         LOG_WRITER => NodeKind::Socket,
@@ -292,7 +305,7 @@ impl FileSystem for DeviceFiles {
         Attributes {
             kind: self.kind(node),
             permissions: match node {
-                ROOT | PTS | SOCKETS => 0o755,
+                ROOT | PTS | SOCKETS | DRI => 0o755,
                 SHM => 0o1777,
                 PROPERTIES | ANDROID_LOG => 0o444,
                 LOG_WRITER => 0o222,
@@ -328,6 +341,7 @@ impl FileSystem for DeviceFiles {
                 .filter(|&number| pseudo_terminal::is_listed(number))
                 .map(pseudo_terminal_node),
             SOCKETS if name == eggos_android_log::WRITER_NAME => Some(LOG_WRITER),
+            DRI if name == RENDER_NODE_NAME => Some(RENDER_NODE),
             _ => None,
         }
     }
@@ -336,6 +350,7 @@ impl FileSystem for DeviceFiles {
         match (node, pseudo_terminal_of(node)) {
             (_, Some(_)) => PTS,
             (LOG_WRITER, None) => SOCKETS,
+            (RENDER_NODE, None) => DRI,
             (_, None) => ROOT,
         }
     }
@@ -346,6 +361,9 @@ impl FileSystem for DeviceFiles {
         }
         if node == LOG_WRITER {
             return Name::new(eggos_android_log::WRITER_NAME);
+        }
+        if node == RENDER_NODE {
+            return Name::new(RENDER_NODE_NAME);
         }
         Name::new(
             FILES
@@ -413,6 +431,7 @@ impl FileSystem for DeviceFiles {
             RANDOM => Some(RANDOM_DEVICE),
             URANDOM => Some(URANDOM_DEVICE),
             KMSG => Some(KMSG_DEVICE),
+            RENDER_NODE => Some(RENDER_NODE_DEVICE),
             TTY => Some(TTY_DEVICE),
             CONSOLE => Some(CONSOLE_DEVICE),
             PTMX => Some(PTMX_DEVICE),
@@ -447,6 +466,11 @@ impl FileSystem for DeviceFiles {
                 name: Name::new(eggos_android_log::WRITER_NAME),
                 node: LOG_WRITER,
                 kind: NodeKind::Socket,
+            }),
+            DRI if position == 0 => Some(DirectoryEntry {
+                name: Name::new(RENDER_NODE_NAME),
+                node: RENDER_NODE,
+                kind: NodeKind::CharacterDevice,
             }),
             _ => None,
         }
@@ -584,6 +608,22 @@ mod tests {
         let entry = files.entry(sockets, 0).unwrap();
         assert_eq!((entry.name.as_bytes(), entry.node), (&b"logdw"[..], writer));
         assert!(files.entry(sockets, 1).is_none());
+    }
+
+    #[test]
+    fn the_render_node_is_drm_s_first_render_minor_in_dri() {
+        let files = DeviceFiles;
+        assert_eq!(files.kind(DRI), NodeKind::Directory);
+        assert_eq!(files.lookup(DRI, b"renderD128"), Some(RENDER_NODE));
+        assert_eq!(files.lookup(DRI, b"card0"), None);
+        assert_eq!(files.parent(RENDER_NODE), DRI);
+        assert_eq!(files.name(RENDER_NODE).as_bytes(), b"renderD128");
+        assert_eq!(files.kind(RENDER_NODE), NodeKind::CharacterDevice);
+        assert_eq!(files.character_device(RENDER_NODE), Some((226, 128)));
+        assert_eq!(files.attributes(RENDER_NODE).permissions, 0o666);
+        let entry = files.entry(DRI, 0).unwrap();
+        assert_eq!((entry.name.as_bytes(), entry.node), (&b"renderD128"[..], RENDER_NODE));
+        assert!(files.entry(DRI, 1).is_none());
     }
 
     #[test]

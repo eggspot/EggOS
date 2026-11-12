@@ -125,6 +125,8 @@ pub enum Error {
     FrameTooLong,
     /// The GPU has no cursor queue, or the driver has not set its cursor up.
     NoCursor,
+    /// The GPU takes no 3D commands, or the driver has no memory for them.
+    NoThreeD,
     /// A virtio-ccw channel program failed.
     Channel(crate::channel::ChannelError),
 }
@@ -162,6 +164,7 @@ impl Error {
             Error::NoHardwareAddress => "the network device does not say its hardware address",
             Error::FrameTooLong => "a frame longer than the network device's buffers",
             Error::NoCursor => "the GPU has no cursor queue, or its cursor is not set up",
+            Error::NoThreeD => "the GPU takes no 3D commands, or has no memory for them",
             Error::Channel(error) => error.description(),
         }
     }

@@ -84,6 +84,7 @@ fn usage_of(kind: &FileKind) -> (Usage, (u32, u32)) {
         FileKind::Console
         | FileKind::PseudoTerminal(_)
         | FileKind::Window(_)
+        | FileKind::RenderNode(_)
         | FileKind::AgentChannel(_)
         | FileKind::MemoryDevice(..)
         | FileKind::Regular(_)
