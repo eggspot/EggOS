@@ -24339,3 +24339,20 @@ the license, by an explicit instruction recorded here.
   Each module gives the initial frame its trampoline needs, written with
   `thread::write_initial_frame` like every other architecture's.
 - **Not yet.** Wiring both into a `Platform` implementation with the rest of its methods.
+
+## D480 RV32, part 4: user mode (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** RV32 keeps a program's registers in RV64's `Registers` layout (`hal::user`),
+  each 32-bit register in the low half of its 64-bit slot, so everything the kernel does with a
+  user context is shared between the two widths. `riscv32_enter_user` saves the kernel's
+  callee-saved registers and `tp`, keeps its stack pointer in the context and the context in
+  `sscratch`, points `stvec` at the user trap entry, clears `SPP`, sets `SPIE`, loads the
+  program's registers (`a0` last) and `sret`s. The user trap entry swaps `a0` with
+  `sscratch`, saves every register and `sepc`, takes the kernel's stack, puts the kernel's
+  `stvec` back, clears `sscratch` and returns into `run_user`, which clears the slots' high
+  halves and says why: a system call (`ecall` from U-mode, the program counter moved past it),
+  an interrupt (handed to the timer's handler), or an exception decoded from `scause` and
+  `stval`, kept for `last_exception`.
+- **Not yet.** The Linux ABI for RV32 (its system-call table is the generic one, with 64-bit
+  time calls), floating point state, the user test programs, and the `Platform` implementation
+  that ties these together.

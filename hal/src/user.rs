@@ -39,7 +39,7 @@ pub enum UserExit {
 pub struct UserContext {
     #[cfg(target_arch = "aarch64")]
     pub(crate) arch: aarch64::Registers,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
     pub(crate) arch: riscv64::Registers,
     #[cfg(target_arch = "loongarch64")]
     pub(crate) arch: loongarch64::Registers,
@@ -237,9 +237,9 @@ pub use s390x::UserRegisters;
 use powerpc64::Registers;
 #[cfg(target_arch = "powerpc64")]
 pub use powerpc64::UserRegisters;
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
 use riscv64::Registers;
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
 pub use riscv64::UserRegisters;
 #[cfg(target_arch = "x86_64")]
 use x86_64::Registers;
@@ -1318,7 +1318,7 @@ pub(crate) mod powerpc64 {
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
 pub(crate) mod riscv64 {
     /// What the user-mode trap entry saves (`exception.rs`), and what the entry to user mode
     /// needs. The entry code stores by offset: keep the layout in step with it.
@@ -1754,7 +1754,7 @@ mod tests {
             registers.pc = 0x40_2000;
             registers.sp = 0x6000;
         }
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
         {
             assert_eq!(
                 (registers.pc, registers.x[2], registers.x[10]),
@@ -1779,7 +1779,7 @@ mod tests {
         }
         context.set_registers(&registers);
         assert_eq!((context.pc(), context.stack()), (0x40_2000, 0x6000));
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
         {
             let hardwired_zero = 0;
             registers.x[0] = hardwired_zero;

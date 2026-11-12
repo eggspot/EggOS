@@ -14,6 +14,7 @@
 
 
 mod thread;
+mod user;
 
 use crate::paging::riscv32::{BOOT_MEGAPAGE, SATP_MODE_SV32};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -152,13 +153,19 @@ const INTERRUPTS_ENABLE: usize = 1 << 1;
 const TICKS_A_SECOND: u64 = 100;
 const TICKS_SHOWN: usize = 3;
 
+/// Handles interrupt `cause` (`scause`), from the kernel or from user mode: the timer's counts
+/// a tick and asks for the next.
+pub(super) fn interrupt(cause: u32) {
+    if cause & !INTERRUPT == SUPERVISOR_TIMER {
+        TICKS.fetch_add(1, Ordering::Relaxed);
+        set_timer_deadline(clock_ticks() + TIMEBASE_HZ / TICKS_A_SECOND);
+    }
+}
+
 extern "C" fn trap(frame: &mut TrapFrame) {
-    match (frame.cause & INTERRUPT != 0, frame.cause & !INTERRUPT) {
-        (true, SUPERVISOR_TIMER) => {
-            TICKS.fetch_add(1, Ordering::Relaxed);
-            set_timer_deadline(clock_ticks() + TIMEBASE_HZ / TICKS_A_SECOND);
-        }
-        _ => {
+    match frame.cause & INTERRUPT != 0 {
+        true => interrupt(frame.cause),
+        false => {
             console_write(b"EggOS riscv32: an exception the boot path does not handle\n");
             shut_down()
         }
