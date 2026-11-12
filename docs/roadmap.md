@@ -979,9 +979,10 @@ program's exception, and NMIs unblocked with an `iretq` (with the IST stacks); A
 
 Speculation mitigations (D49), each chosen per CPU at boot: the SWAPGS `lfence` (a second copy
 of the x86 entry stubs) **before a program can set its GS base or map pages near address 0**
-(M6; `mmap`'s floor, 64 KiB as Linux's `mmap_min_addr`, is in place, D53); KPTI with PCID, MDS buffer clearing and Retbleed **before x86_64
-runs anything but our own test programs on a real Intel CPU** (M13 at the latest); KPTI for
-affected Arm cores (Cortex-A75).
+(M6; `mmap`'s floor, 64 KiB as Linux's `mmap_min_addr`, is in place, D53); KPTI (code written,
+unbuilt: D502; PCIDs and 8 KiB root pairs to follow), MDS buffer clearing (D249) and Retbleed
+(D267) **before x86_64 runs anything but our own test programs on a real Intel CPU** (M13 at
+the latest); KPTI for affected Arm cores (Cortex-A75).
 
 Fault follow-ups (D65): `AT_MINSIGSTKSZ` in the auxiliary vector (Rust's std sizes its
 alternate stacks from it); `#MF` and `#XM` with their `FPE_*` codes and `trapno`, and AArch64's
