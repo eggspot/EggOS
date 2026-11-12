@@ -155,7 +155,8 @@ pub struct Buffer {
     physical: u64,
     length: u64,
     backed: bool,
-    memory: ManuallyDrop<DmaRegion>,
+    memory: Option<ManuallyDrop<DmaRegion>>,
+    window_offset: Option<u64>,
     release: fn(u32, bool) -> bool,
 }
 
@@ -183,14 +184,87 @@ impl LentFrames for Buffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
+        let released = (self.release)(self.resource, self.backed);
+        if let Some(offset) = self.window_offset
+            && released
+        {
+            give_back_window(offset, self.length);
+        }
+        let Some(memory) = self.memory.as_mut() else {
+            return;
+        };
         // SAFETY: taken once, here, as the buffer goes.
-        let memory = unsafe { ManuallyDrop::take(&mut self.memory) };
-        match (self.release)(self.resource, self.backed) {
+        let memory = unsafe { ManuallyDrop::take(memory) };
+        match released {
             // SAFETY: the device detached the backing and destroyed the resource (or never had
             // the memory), so it no longer reaches it; no process maps it, as each mapping
             // holds the buffer.
             true => unsafe { memory.free() },
             false => core::mem::forget(memory),
+        }
+    }
+}
+
+fn release_host_blob<P: Platform>(resource: u32, _backed: bool) -> bool {
+    let unmapped = send_quietly::<P>(&ThreeDCommand::UnmapBlob {
+        context: 0,
+        resource,
+    });
+    send_quietly::<P>(&ThreeDCommand::Unref { resource }) && unmapped
+}
+
+/// The device's host-visible shared memory (D440): where it is in physical memory, how long,
+/// and its free ranges.
+#[derive(Debug)]
+struct HostWindow {
+    base: u64,
+    free: Vec<(u64, u64)>,
+}
+
+static HOST_WINDOW: SpinLock<Option<HostWindow>> = SpinLock::new(None);
+
+/// Says the GPU's host-visible shared memory is `length` bytes at physical `base`, so host
+/// blobs can be mapped.
+pub fn set_host_window(base: u64, length: u64) {
+    *HOST_WINDOW.lock() = Some(HostWindow {
+        base,
+        free: alloc::vec![(0, length)],
+    });
+}
+
+/// Whether host blobs can be mapped.
+pub fn has_host_window() -> bool {
+    HOST_WINDOW.lock().is_some()
+}
+
+fn take_window(size: u64) -> Option<(u64, u64)> {
+    let mut window = HOST_WINDOW.lock();
+    let window = window.as_mut()?;
+    let at = window.free.iter().position(|&(_, length)| length >= size)?;
+    let (offset, length) = window.free[at];
+    match length == size {
+        true => {
+            window.free.remove(at);
+        }
+        false => window.free[at] = (offset + size, length - size),
+    }
+    Some((offset, window.base + offset))
+}
+
+fn give_back_window(offset: u64, size: u64) {
+    if let Some(window) = HOST_WINDOW.lock().as_mut() {
+        let at = window.free.partition_point(|&(start, _)| start < offset);
+        window.free.insert(at, (offset, size));
+        let mut index = 0;
+        while index + 1 < window.free.len() {
+            let (start, length) = window.free[index];
+            let (next, next_length) = window.free[index + 1];
+            if start + length == next {
+                window.free[index] = (start, length + next_length);
+                window.free.remove(index + 1);
+            } else {
+                index += 1;
+            }
         }
     }
 }
@@ -303,7 +377,8 @@ impl Context {
             physical,
             length: size,
             backed: true,
-            memory: ManuallyDrop::new(memory),
+            memory: Some(ManuallyDrop::new(memory)),
+            window_offset: None,
             release: release_resource::<P>,
         });
         backed?;
@@ -345,10 +420,62 @@ impl Context {
             physical,
             length: size,
             backed: false,
-            memory: ManuallyDrop::new(memory),
+            memory: Some(ManuallyDrop::new(memory)),
+            window_offset: None,
             release: release_resource::<P>,
         });
         created?;
+        let mut state = self.state.lock();
+        let handle = state.next_handle;
+        state.next_handle = handle.checked_add(1).ok_or(RenderError::NoMemory)?;
+        state.buffers.insert(handle, Arc::clone(&buffer));
+        Ok((handle, buffer))
+    }
+
+    /// A host blob (D440): runs `stream` first when it is not empty (the command that makes
+    /// the blob on the host under `blob_id`), creates the resource, and maps it in the GPU's
+    /// host-visible shared memory, which the program may then map: its handle.
+    pub fn create_host_blob<P: Platform>(
+        &self,
+        blob_id: u64,
+        size: u64,
+        flags: u32,
+        stream: &[u8],
+    ) -> Result<(u32, Arc<Buffer>), RenderError> {
+        if !has_host_window() {
+            return Err(RenderError::Invalid);
+        }
+        let size = size.max(1).checked_next_multiple_of(FRAME_SIZE).ok_or(RenderError::NoMemory)?;
+        if !stream.is_empty() {
+            self.submit::<P>(stream)?;
+        }
+        wait::<P>(false)?;
+        let resource = NEXT_RESOURCE.fetch_add(1, Ordering::Relaxed);
+        command::<P>(&ThreeDCommand::CreateHostBlob {
+            context: self.id,
+            resource,
+            flags,
+            blob_id,
+            size,
+        })?;
+        let Some((offset, physical)) = take_window(size) else {
+            send_quietly::<P>(&ThreeDCommand::Unref { resource });
+            return Err(RenderError::NoMemory);
+        };
+        let buffer = Arc::new(Buffer {
+            resource,
+            physical,
+            length: size,
+            backed: false,
+            memory: None,
+            window_offset: Some(offset),
+            release: release_host_blob::<P>,
+        });
+        command::<P>(&ThreeDCommand::MapBlob {
+            context: self.id,
+            resource,
+            offset,
+        })?;
         let mut state = self.state.lock();
         let handle = state.next_handle;
         state.next_handle = handle.checked_add(1).ok_or(RenderError::NoMemory)?;

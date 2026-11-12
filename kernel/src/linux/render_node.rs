@@ -306,7 +306,8 @@ fn parameter_value<P: Platform>(parameter: u64) -> Result<i32, Errno> {
         parameter::THREE_D_FEATURES | parameter::CAPSET_QUERY_FIX => 1,
         parameter::EXPLICIT_DEBUG_NAME => 1,
         parameter::RESOURCE_BLOB => i32::from(crate::rendering::takes_blobs::<P>()),
-        parameter::HOST_VISIBLE | parameter::CROSS_DEVICE => 0,
+        parameter::HOST_VISIBLE => i32::from(crate::rendering::has_host_window()),
+        parameter::CROSS_DEVICE => 0,
         parameter::CONTEXT_INIT => i32::from(crate::rendering::takes_context_init::<P>()),
         parameter::SUPPORTED_CAPSET_IDS => crate::rendering::capsets::<P>()
             .map_err(errno)?
@@ -345,10 +346,11 @@ fn resource_create<P: Platform>(
 }
 
 const BLOB_MEM_GUEST: u32 = 1;
+const BLOB_MEM_HOST3D: u32 = 2;
 const BLOB_FLAGS_KNOWN: u32 = 0x7;
 
-/// `VIRTGPU_RESOURCE_CREATE_BLOB`: a guest-memory blob (D439); host blobs, which need the
-/// device's shared memory, are refused with `EINVAL` until that window is mapped.
+/// `VIRTGPU_RESOURCE_CREATE_BLOB`: a guest-memory blob (D439), or a host blob made by the
+/// command stream the call carries and mapped in the GPU's host-visible memory (D440).
 fn create_blob<P: Platform>(
     process: &Process<P>,
     context: &Context,
@@ -356,13 +358,29 @@ fn create_blob<P: Platform>(
     address: u64,
 ) -> Result<u64, Errno> {
     let (memory, flags, size) = (argument.u32_at(0), argument.u32_at(4), argument.u64_at(16));
-    if memory != BLOB_MEM_GUEST || flags & !BLOB_FLAGS_KNOWN != 0 || size == 0 {
+    if flags & !BLOB_FLAGS_KNOWN != 0 || size == 0 || !crate::rendering::takes_blobs::<P>() {
         return Err(Errno::EINVAL);
     }
-    if !crate::rendering::takes_blobs::<P>() {
-        return Err(Errno::EINVAL);
-    }
-    let (handle, buffer) = context.create_guest_blob::<P>(size, flags).map_err(errno)?;
+    let made = match memory {
+        BLOB_MEM_GUEST => context.create_guest_blob::<P>(size, flags),
+        BLOB_MEM_HOST3D => {
+            let length = argument.u32_at(28) as usize;
+            if length > COMMAND_STREAM_BYTES {
+                return Err(Errno::EINVAL);
+            }
+            let mut stream = Vec::new();
+            if stream.try_reserve_exact(length).is_err() {
+                return Err(Errno::ENOMEM);
+            }
+            stream.resize(length, 0);
+            process
+                .read_user_memory(argument.u64_at(32), &mut stream)
+                .map_err(|_| Errno::EFAULT)?;
+            context.create_host_blob::<P>(argument.u64_at(40), size, flags, &stream)
+        }
+        _ => return Err(Errno::EINVAL),
+    };
+    let (handle, buffer) = made.map_err(errno)?;
     argument.set_u32(8, handle);
     argument.set_u32(12, buffer.resource());
     argument.write_back(process, address).inspect_err(|_| {

@@ -23684,3 +23684,19 @@ the license, by an explicit instruction recorded here.
   live in the device's shared memory window, which the virtio transports must map first
   (`VIRTIO_PCI_CAP_SHARED_MEMORY_CFG`), with `RESOURCE_MAP_BLOB` placing them in it; real
   fences; PRIME sharing.
+
+## D440 virtio-gpu host blobs in the device's host-visible memory (M11 part 2b; Venus's memory; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** The virtio-pci transport lists a function's shared memory regions
+  (`virtio_pci_cap64` with `cfg_type` 8; `shared_memory_regions`), and the probe of a virtio
+  GPU records region 1, the host-visible memory, as the rendering module's window
+  (`set_host_window`, its physical place in the BAR). The driver encodes a host blob's
+  `RESOURCE_CREATE_BLOB` (`BLOB_MEM_HOST3D`, a blob id, no entries), `RESOURCE_MAP_BLOB` (its
+  answer `OK_MAP_INFO`) and `RESOURCE_UNMAP_BLOB`. `Context::create_host_blob` runs the
+  command stream the call carries (which makes the blob on the host), creates the resource,
+  takes a range of the window (first fit, freed ranges joined) and maps the blob there; the
+  program maps it like any buffer, its frames the window's own. Its end unmaps and
+  unreferences it and gives the range back. `VIRTGPU_RESOURCE_CREATE_BLOB` takes both kinds
+  and `VIRTGPU_PARAM_HOST_VISIBLE` says whether the window exists.
+- **Not yet.** The map's cache type from `OK_MAP_INFO` (mappings are made as normal memory),
+  the window on virtio-mmio and virtio-ccw, real fences, PRIME sharing with the window server.

@@ -23,6 +23,40 @@ pub const ISR: u8 = 3;
 pub const DEVICE: u8 = 4;
 /// `cfg_type` of the PCI configuration access structure.
 pub const PCI: u8 = 5;
+/// `cfg_type` of a shared memory region (virtio 1.2, 4.1.4.7; D440).
+pub const SHARED_MEMORY: u8 = 8;
+
+/// A shared memory region a device offers: its id, the BAR that holds it, and where in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedMemory {
+    pub id: u8,
+    pub bar: u8,
+    pub offset: u64,
+    pub length: u64,
+}
+
+/// The shared memory regions the function at `address` lists (`virtio_pci_cap64`: the
+/// offset's and length's high words follow the capability).
+pub fn shared_memory_regions<C: ConfigSpace + ?Sized>(
+    config: &C,
+    address: Address,
+) -> impl Iterator<Item = SharedMemory> + '_ {
+    pci::capabilities(config, address)
+        .filter(|capability| capability.id == VENDOR_SPECIFIC_CAPABILITY)
+        .filter_map(move |capability| {
+            let at = u16::from(capability.offset);
+            let bar = config.read8(address, at + 4);
+            (config.read8(address, at + 3) == SHARED_MEMORY && bar <= 5).then(|| {
+                let word = |offset: u16| u64::from(config.read32(address, at + offset));
+                SharedMemory {
+                    id: config.read8(address, at + 5),
+                    bar,
+                    offset: word(16) << 32 | word(8),
+                    length: word(20) << 32 | word(12),
+                }
+            })
+        })
+}
 
 /// The PCI device ids of modern (non-transitional) virtio devices: 0x1040 plus the device type.
 pub const MODERN_DEVICE_IDS: core::ops::RangeInclusive<u16> = 0x1040..=0x107f;

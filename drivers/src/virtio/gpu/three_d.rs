@@ -12,6 +12,11 @@ pub const FEATURE_CONTEXT_INIT: u64 = 1 << 4;
 pub const FEATURE_RESOURCE_BLOB: u64 = 1 << 3;
 /// `VIRTIO_GPU_BLOB_MEM_GUEST`: a blob whose only copy is the guest memory backing it.
 pub const BLOB_MEM_GUEST: u32 = 1;
+/// `VIRTIO_GPU_BLOB_MEM_HOST3D`: a blob the host made for a context, reached through the
+/// device's host-visible shared memory once mapped (D440).
+pub const BLOB_MEM_HOST3D: u32 = 2;
+/// `VIRTIO_GPU_SHM_ID_HOST_VISIBLE`: the shared memory region host blobs are mapped in.
+pub const SHM_HOST_VISIBLE: u8 = 1;
 /// `VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE`.
 pub const BLOB_FLAG_MAPPABLE: u32 = 1;
 /// `VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE`.
@@ -33,6 +38,7 @@ const CREATE_CONTEXT_BYTES: usize = 96;
 const RESOURCE_BYTES: usize = 32;
 const CREATE_RESOURCE_BYTES: usize = 72;
 const CREATE_BLOB_BYTES: usize = 72;
+const MAP_BLOB_BYTES: usize = 40;
 const TRANSFER_BYTES: usize = 72;
 const ATTACH_BACKING_BYTES: usize = 48;
 const CAPSET_BYTES: usize = 32;
@@ -57,6 +63,8 @@ pub mod command {
     pub const TRANSFER_FROM_HOST_3D: u32 = 0x0206;
     pub const SUBMIT_3D: u32 = 0x0207;
     pub const RESOURCE_CREATE_BLOB: u32 = 0x010c;
+    pub const RESOURCE_MAP_BLOB: u32 = 0x0208;
+    pub const RESOURCE_UNMAP_BLOB: u32 = 0x0209;
 }
 
 /// The answer types a 3D command succeeds with.
@@ -64,6 +72,7 @@ pub mod answer {
     pub const OK_NODATA: u32 = 0x1100;
     pub const OK_CAPSET_INFO: u32 = 0x1102;
     pub const OK_CAPSET: u32 = 0x1103;
+    pub const OK_MAP_INFO: u32 = 0x1105;
 }
 
 /// What a 3D resource is: Gallium's texture target, format and bind flags, its size and its
@@ -135,6 +144,18 @@ pub enum ThreeDCommand<'a> {
         address: u64,
         size: u64,
     },
+    /// A blob the host made for `context` under `blob_id` (by a command stream), `size` bytes.
+    CreateHostBlob {
+        context: u32,
+        resource: u32,
+        flags: u32,
+        blob_id: u64,
+        size: u64,
+    },
+    /// Host blob `resource` mapped at `offset` in the host-visible shared memory.
+    MapBlob { context: u32, resource: u32, offset: u64 },
+    /// Host blob `resource` taken out of the shared memory.
+    UnmapBlob { context: u32, resource: u32 },
     /// Guest memory at `address` (a device address), `length` bytes, as the resource's backing.
     AttachBacking { resource: u32, address: u64, length: u32 },
     DetachBacking { resource: u32 },
@@ -274,6 +295,37 @@ pub fn encode(command: &ThreeDCommand<'_>, fence: u64, out: &mut [u8]) -> usize 
             put32(out, 64, size.min(u64::from(u32::MAX)) as u32);
             CREATE_BLOB_BYTES
         }
+        ThreeDCommand::CreateHostBlob {
+            context,
+            resource,
+            flags,
+            blob_id,
+            size,
+        } => {
+            put_header(out, command::RESOURCE_CREATE_BLOB, fence, context);
+            put32(out, 24, resource);
+            put32(out, 28, BLOB_MEM_HOST3D);
+            put32(out, 32, flags);
+            put32(out, 36, 0);
+            put64(out, 40, blob_id);
+            put64(out, 48, size);
+            CREATE_BLOB_BYTES - 16
+        }
+        ThreeDCommand::MapBlob {
+            context,
+            resource,
+            offset,
+        } => {
+            put_header(out, command::RESOURCE_MAP_BLOB, fence, context);
+            put32(out, 24, resource);
+            put64(out, 32, offset);
+            MAP_BLOB_BYTES
+        }
+        ThreeDCommand::UnmapBlob { context, resource } => {
+            put_header(out, command::RESOURCE_UNMAP_BLOB, fence, context);
+            put32(out, 24, resource);
+            RESOURCE_BYTES
+        }
         ThreeDCommand::AttachBacking {
             resource,
             address,
@@ -319,6 +371,7 @@ pub fn expected_answer(command: &ThreeDCommand<'_>) -> u32 {
     match command {
         ThreeDCommand::CapsetInfo { .. } => answer::OK_CAPSET_INFO,
         ThreeDCommand::Capset { .. } => answer::OK_CAPSET,
+        ThreeDCommand::MapBlob { .. } => answer::OK_MAP_INFO,
         _ => answer::OK_NODATA,
     }
 }
@@ -329,6 +382,7 @@ pub fn answer_bytes(command: &ThreeDCommand<'_>, capset_room: usize) -> usize {
     match command {
         ThreeDCommand::CapsetInfo { .. } => HEADER_BYTES + 16,
         ThreeDCommand::Capset { .. } => HEADER_BYTES + capset_room,
+        ThreeDCommand::MapBlob { .. } => HEADER_BYTES + 8,
         _ => HEADER_BYTES,
     }
 }
