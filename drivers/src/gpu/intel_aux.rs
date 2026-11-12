@@ -16,6 +16,7 @@ pub const EDID_ADDRESS: u32 = 0x50;
 
 const CONTROL: usize = 0x64010;
 const DATA: usize = 0x64014;
+const POWER_REQUEST: u32 = 1 << 19;
 const PORT_STRIDE: usize = 0x100;
 const SEND_BUSY: u32 = 1 << 31;
 const DONE: u32 = 1 << 30;
@@ -94,9 +95,18 @@ pub fn transfer<R: RegisterIo + ?Sized>(
         regs.write32(data + 4 * index, *word);
     }
     let size = (message.len().min(MOST_BYTES) as u32) << SIZE_SHIFT;
+    let powered = regs.read32(control) & POWER_REQUEST;
     regs.write32(
         control,
-        SEND_BUSY | DONE | TIMED_OUT | RECEIVE_ERROR | TIME_OUT_1600_US | size | SYNC_PULSES | FAST_WAKE_PULSES,
+        SEND_BUSY
+            | DONE
+            | TIMED_OUT
+            | RECEIVE_ERROR
+            | TIME_OUT_1600_US
+            | size
+            | SYNC_PULSES
+            | FAST_WAKE_PULSES
+            | powered,
     );
     let status = loop {
         let status = regs.read32(control);

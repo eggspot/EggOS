@@ -8,6 +8,7 @@ pub mod amd_discovery;
 pub mod intel;
 pub mod intel_aux;
 pub mod intel_combo_phy;
+pub mod intel_cx0;
 pub mod intel_dekel;
 pub mod intel_dmc;
 pub mod intel_hdmi;

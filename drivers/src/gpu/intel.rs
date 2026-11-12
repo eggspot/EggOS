@@ -21,10 +21,16 @@ pub fn is_display_12(device: u16) -> bool {
     DISPLAY_12_AND_13.contains(&((device >> 8) as u8))
 }
 
+/// Whether device `device` has a display-14 engine (Meteor and Arrow Lake), whose ports A and
+/// B have C10 PHYs (D527).
+pub fn is_display_14(device: u16) -> bool {
+    (device >> 8) as u8 == DISPLAY_14
+}
+
 /// Whether [`DisplayEngine::set_mode`] lights a port on device `device`: display 9's, 11's,
-/// 12's and 13's (D447, D465, D498).
+/// 12's, 13's and 14's (D447, D465, D498, D527).
 pub fn sets_modes(device: u16) -> bool {
-    is_display_9(device) || is_display_11(device) || is_display_12(device)
+    is_display_9(device) || is_display_11(device) || is_display_12(device) || is_display_14(device)
 }
 
 /// The display engine's generation, for the registers that moved between them.
@@ -33,11 +39,14 @@ enum Generation {
     Display9,
     Display11,
     Display12,
+    Display14,
 }
 
 impl Generation {
     fn of(device: u16) -> Self {
-        if is_display_12(device) {
+        if is_display_14(device) {
+            Self::Display14
+        } else if is_display_12(device) {
             Self::Display12
         } else if is_display_11(device) {
             Self::Display11
@@ -48,14 +57,14 @@ impl Generation {
 
     fn transcoder_clock_shift(self) -> u32 {
         match self {
-            Self::Display12 => TRANS_CLK_PORT_SHIFT_12,
+            Self::Display12 | Self::Display14 => TRANS_CLK_PORT_SHIFT_12,
             _ => TRANS_CLK_PORT_SHIFT,
         }
     }
 
     fn port_select(self, port: usize) -> u32 {
         match self {
-            Self::Display12 => (port as u32 + 1) << DDI_PORT_SHIFT_12,
+            Self::Display12 | Self::Display14 => (port as u32 + 1) << DDI_PORT_SHIFT_12,
             _ => (port as u32) << DDI_PORT_SHIFT,
         }
     }
@@ -69,7 +78,7 @@ impl Generation {
 
     fn pattern_register(self, port: usize, pipe: usize) -> usize {
         match self {
-            Self::Display12 => DP_TP_CTL_12 + pipe * TRANSCODER_STRIDE,
+            Self::Display12 | Self::Display14 => DP_TP_CTL_12 + pipe * TRANSCODER_STRIDE,
             _ => DP_TP_CTL + port * PORT_REGISTER_STRIDE,
         }
     }
@@ -180,7 +189,8 @@ const DPLL_CONFIGURATION_STRIDE: usize = 8;
 const DPLL_OVERRIDE: u32 = 1;
 const DPLL_HDMI_MODE: u32 = 1 << 5;
 const DDI_MODE_HDMI: u32 = 0;
-const DISPLAY_11_AND_LATER: [u8; 8] = [0x8a, 0x4e, 0x9a, 0x4c, 0x46, 0xa7, 0x4f, 0x56];
+const DISPLAY_11_AND_LATER: [u8; 9] = [0x8a, 0x4e, 0x9a, 0x4c, 0x46, 0xa7, 0x4f, 0x56, 0x7d];
+const DISPLAY_14: u8 = 0x7d;
 
 const PLANE_ENABLE: u32 = 1 << 31;
 const PLANE_FORMAT_SHIFT: u32 = 23;
@@ -446,12 +456,17 @@ impl<R: RegisterIo> DisplayEngine<R> {
             Some(_) => self.regs.read32(buffer) & TYPE_C_PHY_OWNERSHIP,
             None => 0,
         };
+        let c10 = match self.generation {
+            Generation::Display14 => super::intel_modeset::symbol_clock_khz(rate),
+            _ => None,
+        };
         let mut link = PortLink {
             regs: &self.regs,
             port,
             pattern_register: self.generation.pattern_register(port, pipe),
             lanes,
             type_c,
+            c10,
             kept,
             keep_waiting,
         };
@@ -491,6 +506,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
                 self.clock_combo_port(port, rate, keep_waiting)?
             }
             Generation::Display9 => self.clock_display_9_port(port, rate, keep_waiting)?,
+            Generation::Display14 => self.clock_c10_port(port, symbol_khz, lanes, keep_waiting)?,
         }
         let transcoder = TRANSCODER + pipe * TRANSCODER_STRIDE;
         for (index, value) in timing_registers(timing).iter().enumerate() {
@@ -635,6 +651,25 @@ impl<R: RegisterIo> DisplayEngine<R> {
         let route = 3 * port as u32;
         let routing = self.regs.read32(DPLL_CTRL2) & !(0x7 << route | 1 << (15 + port as u32));
         self.regs.write32(DPLL_CTRL2, routing | 1 << route | (pll as u32) << (route + 1));
+        Ok(())
+    }
+
+    /// Display 14's port A or B (D527): its C10 PHY brought up for the link and its PLL locked,
+    /// and the port's width set.
+    fn clock_c10_port(
+        &self,
+        port: usize,
+        link_khz: u32,
+        lanes: usize,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), ModeError> {
+        use super::intel_cx0::{Cx0Error, C10};
+        let mut phy = C10::new(&self.regs, port, keep_waiting).map_err(|_| ModeError::Unsupported)?;
+        phy.enable(link_khz, lanes).map_err(|error| match error {
+            Cx0Error::Unsupported => ModeError::Unsupported,
+            Cx0Error::Bus | Cx0Error::Timeout => ModeError::PllUnlocked,
+        })?;
+        phy.set_width(lanes);
         Ok(())
     }
 
@@ -918,6 +953,7 @@ struct PortLink<'a, R: RegisterIo> {
     pattern_register: usize,
     lanes: usize,
     type_c: Option<TypeCDrive>,
+    c10: Option<u32>,
     kept: u32,
     keep_waiting: &'a mut dyn FnMut() -> bool,
 }
@@ -954,6 +990,16 @@ impl<R: RegisterIo> crate::display_port::Link for PortLink<'_, R> {
                 type_c.alder,
             );
             self.regs.write32(buffer, DDI_BUF_ENABLE | width | self.kept);
+            return;
+        }
+        if let Some(link_khz) = self.c10 {
+            let level = super::intel_dekel::drive_level(drive.swing, drive.pre_emphasis);
+            let lanes = self.lanes;
+            let waiting = &mut *self.keep_waiting;
+            if let Ok(mut phy) = super::intel_cx0::C10::new(self.regs, self.port, waiting) {
+                let _ = phy.set_drive(level, link_khz, lanes);
+            }
+            self.regs.write32(buffer, DDI_BUF_ENABLE | width);
             return;
         }
         let level = u32::from(drive.swing) * 4 + u32::from(drive.pre_emphasis);

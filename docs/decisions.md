@@ -25226,3 +25226,26 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Thunderbolt alternate mode (its fixed-frequency PLL and AUX I/O select), lane
   reversal and legacy Type-C connectors, HDMI on Type-C, spread spectrum, the AFC start-up
   override the video BIOS may ask for, and turning the PLL off again.
+
+## D527 Intel display 14, part 1: Meteor Lake's C10 PHY on ports A and B (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's MIT-licensed i915 driver)
+
+- **Decision.** Display 14 (Meteor and Arrow Lake, device ids `0x7dxx`) is a generation of its
+  own in `intel::Generation`, with display 12's transcoder places, and lights a second screen
+  on ports A and B through their C10 PHYs (`intel_cx0`). The PHY's registers are reached over
+  a message bus per PHY lane (read, committed and uncommitted write transactions with their
+  acknowledgements, three tries, the bus reset after each as Intel does). Bringing the port up:
+  the port clock muxes (forwarded clock ungated, the DDI on the PHY's maximum pixel clock), the
+  lanes' reset (PHY ready, pipe resets, the reference clock requested and acknowledged on lane
+  0, the reset power state, ready and active states set up, the resets released), the ready
+  power state, the message bus timers, the PLL's twenty bytes for RBR, HBR, HBR2 or HBR3 from
+  Intel's 38.4 MHz tables (spread spectrum bytes cleared), its common and transmit bytes and
+  the 8b/10b custom width, the configuration committed with lane 0 as master, the transmitters
+  past the link's lanes disabled, `DDI_CLK_VALFREQ` set to the link's symbol clock, and the
+  PLL requested and acknowledged on lane 0. The port's width goes into `PORT_BUF_CTL1`. During
+  link training the drive level the sink asks for becomes a preset of swing, pre-cursor and
+  post-cursor written to each transmitter's override, with the voltage boost and termination
+  Intel uses for the rate. The AUX channel keeps its power request bit (display 14's) across
+  transfers.
+- **Not yet.** The C20 PHYs of display 14's Type-C ports (their SRAM-addressed contexts and
+  MPLLA and MPLLB), UHBR rates, spread spectrum, HDMI on C10, eDP's own rates, lane reversal,
+  and turning the PHY off.
