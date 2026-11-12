@@ -24107,3 +24107,26 @@ the license, by an explicit instruction recorded here.
   kernel mirrors the first screen on it (D464) when no DisplayPort sink took the mirror.
 - **Not yet.** HDMI 2.0's scrambling above 340 MHz, infoframes (AVI, audio), audio, deep
   colour, HDMI on display 11 and later, and the level shifter some boards put on the port.
+
+## D467 AMD's ATOM command tables run by our own interpreter (M13, D448's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** An AMD board's video BIOS carries, besides its data tables (D448), command
+  tables: byte-code for the steps that differ from board to board (pixel clocks, encoder and
+  transmitter control, chip initialisation), which a display driver runs rather than
+  reimplementing each board's wiring.
+- **Decision.** `amd_atom_interpreter` runs them, from the layout AMD publishes for ATOM
+  images: the ROM header's master command and data tables, each table's size, workspace and
+  parameter-space bytes, then its code. Opcodes 1 to 134: move, and, or, xor, add, subtract,
+  multiply and divide (16- and 32-bit, into the quotient and remainder slots), both shift
+  forms, compare and test into the equal and above flags, the seven jumps, switch with its
+  cases, clear and mask, delays, `CALL_TABLE` on the parameters past the caller's, the
+  register block, data block and scratch base, and the no-ops; operands are registers,
+  parameters, workspace slots and its special slots, scratch, constants in the image,
+  immediates, and PLL and memory-controller registers, each read and written at the dword,
+  word or byte the attribute byte names, keeping the rest of a register. The board is an
+  `AtomCard` trait, so tables run on the host against fakes in tests. Limits stop a runaway
+  table (a million steps) and deep calls (16). Only memory-mapped access is taken: a table
+  that selects an I/O port stops. The AMD probe lists how many command tables the BIOS has.
+- **Not yet.** Running a table on the hardware (the DCN display path, D468, is the first
+  user), the I/O-port access modes, and the indirect PLL and memory-controller access a
+  real card gives (the card's own registers).

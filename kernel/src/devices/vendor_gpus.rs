@@ -10,6 +10,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use eggos_drivers::gpu::amd_atom::AtomBios;
+use eggos_drivers::gpu::amd_atom_interpreter::Interpreter;
 use eggos_drivers::gpu::nvidia_bios::NvidiaBios;
 use eggos_hal::PhysicalRange;
 
@@ -24,6 +25,8 @@ const ROM_BYTES: usize = 128 << 10;
 static SUMMARY: SpinLock<String> = SpinLock::new(String::new());
 
 /// AMD's GPUs (PCI vendor 1002h), ahead of the display class's other drivers.
+const ATOM_COMMAND_TABLES: usize = 81;
+
 pub static AMD_DISPLAY_DRIVER: DriverDescriptor = DriverDescriptor {
     name: "amd-display",
     pass: ProbePass::Device,
@@ -119,6 +122,12 @@ fn probe_amd_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeErr
     }
     for path in bios.paths.iter().flatten() {
         let _ = write!(line, " {}", path.connector.name());
+    }
+    if let Some(interpreter) = Interpreter::new(&image) {
+        let tables = (0..ATOM_COMMAND_TABLES)
+            .filter(|&table| interpreter.has_table(table))
+            .count();
+        let _ = write!(line, " {tables} command tables");
     }
     line.push('\n');
     SUMMARY.lock().push_str(&line);

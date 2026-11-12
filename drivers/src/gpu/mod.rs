@@ -1,6 +1,7 @@
 //! Vendors' graphics engines (M13): Intel's display engine first ([`intel`], D268).
 
 pub mod amd_atom;
+pub mod amd_atom_interpreter;
 pub mod intel;
 pub mod intel_aux;
 pub mod intel_combo_phy;
