@@ -11,6 +11,7 @@ extern crate alloc;
 pub mod channel;
 pub mod desktop;
 pub mod display;
+pub mod display_port;
 pub mod edid;
 pub mod dma;
 pub mod ethernet;

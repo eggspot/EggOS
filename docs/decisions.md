@@ -23773,3 +23773,21 @@ the license, by an explicit instruction recorded here.
   sink's voltage swing and pre-emphasis requests), the port's PLL for the chosen rate, the
   transcoder's timings from the EDID and the pipe's source size: a mode the firmware did not
   set, and a second screen. HDMI's EDID over GMBUS with its TMDS PLL after that.
+
+## D446 Intel mode setting, part 2: DisplayPort link training (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `drivers::display_port::train` is VESA's link training over one `Link` (the
+  source port's patterns, drive and pauses, and the sink's DPCD): the rate and lane count
+  written, training pattern 1 with scrambling off until every lane's clock recovers (raising
+  the drive to the highest level any lane asks, at most five tries at one level), then pattern
+  2 until every lane is equalised and symbol-locked and the lanes are aligned, then the
+  pattern turned off. It is host-tested against a fake sink that needs a given swing, and one
+  whose clock never recovers. The Intel display engine trains a port with it
+  (`train_port`): `DDI_BUF_CTL` enabled for the lane count and the drive level, `DP_TP_CTL`
+  sending the pattern, the DPCD through the port's AUX channel (native writes added).
+- **Known gaps (to check on hardware).** The drive's buffer-translation index and the
+  `DP_TP_CTL` pattern codes are the Skylake-era layout, unverified on later displays; the
+  pauses spin on the deadline rather than timing microseconds.
+- **Next (part 3).** The port's PLL for the trained rate, the transcoder's timings and the
+  pipe's source size from the EDID's preferred mode, and the plane on the new pipe: a mode the
+  firmware did not set, and a second screen.

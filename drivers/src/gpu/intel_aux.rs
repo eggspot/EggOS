@@ -26,6 +26,7 @@ const SIZE_SHIFT: u32 = 20;
 const SIZE_MASK: u32 = 0x1f;
 const SYNC_PULSES: u32 = 31 << 5;
 const FAST_WAKE_PULSES: u32 = 17;
+const NATIVE_WRITE: u8 = 0x8;
 const NATIVE_READ: u8 = 0x9;
 const I2C_WRITE: u8 = 0x0;
 const I2C_READ: u8 = 0x1;
@@ -143,6 +144,30 @@ pub fn read_dpcd<R: RegisterIo + ?Sized>(
                 out[..length].copy_from_slice(&reply[1..1 + length]);
                 return Ok(());
             }
+        }
+    }
+    Err(AuxError::Deferred)
+}
+
+/// Writes `bytes` (at most [`MOST_READ`]) to the sink's DPCD at `address`.
+pub fn write_dpcd<R: RegisterIo + ?Sized>(
+    regs: &R,
+    port: usize,
+    address: u32,
+    bytes: &[u8],
+    keep_waiting: &mut dyn FnMut() -> bool,
+) -> Result<(), AuxError> {
+    let length = bytes.len().min(MOST_READ);
+    let mut message = [0u8; 4 + MOST_READ];
+    message[..4].copy_from_slice(&header(NATIVE_WRITE, address, length));
+    message[4..4 + length].copy_from_slice(&bytes[..length]);
+    for _ in 0..MOST_TRIES {
+        let mut reply = [0u8; MOST_BYTES];
+        transfer(regs, port, &message[..4 + length], &mut reply, keep_waiting)?;
+        match reply[0] >> 4 & 0x3 {
+            REPLY_DEFER => continue,
+            REPLY_NACK => return Err(AuxError::Refused),
+            _ => return Ok(()),
         }
     }
     Err(AuxError::Deferred)

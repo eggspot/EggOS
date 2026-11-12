@@ -30,6 +30,17 @@ const CUR_CTL: usize = 0x70080;
 const CUR_BASE: usize = 0x70084;
 const CUR_POS: usize = 0x70088;
 const GTT_FLUSH: usize = 0x101008;
+const DDI_BUF_CTL: usize = 0x64000;
+const DP_TP_CTL: usize = 0x64040;
+const PORT_REGISTER_STRIDE: usize = 0x100;
+const DDI_BUF_ENABLE: u32 = 1 << 31;
+const DDI_PORT_WIDTH_SHIFT: u32 = 1;
+const DDI_BUF_SWING_SHIFT: u32 = 24;
+const DP_TP_ENABLE: u32 = 1 << 31;
+const DP_TP_PATTERN_SHIFT: u32 = 8;
+const DP_TP_PATTERN_1: u32 = 0;
+const DP_TP_PATTERN_2: u32 = 1;
+const DP_TP_NORMAL: u32 = 3;
 const MASTER_INTERRUPT: usize = 0x44200;
 const MASTER_ENABLE: u32 = 1 << 31;
 const MASTER_PIPE_SHIFT: u32 = 16;
@@ -247,6 +258,27 @@ impl<R: RegisterIo> DisplayEngine<R> {
         (link, edid)
     }
 
+    /// Trains the DisplayPort link on digital port `port` (D446): `lanes` lanes at link rate code
+    /// `rate`, the port's training patterns and drive set through its `DP_TP_CTL` and
+    /// `DDI_BUF_CTL`, the sink's side through its AUX channel. The drive it settled on.
+    pub fn train_port(
+        &self,
+        port: usize,
+        lanes: usize,
+        rate: u8,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<crate::display_port::Drive, crate::display_port::TrainingError> {
+        let mut link = PortLink {
+            regs: &self.regs,
+            port,
+            lanes,
+            keep_waiting,
+        };
+        let buffer = DDI_BUF_CTL + port * PORT_REGISTER_STRIDE;
+        self.regs.write32(buffer, DDI_BUF_ENABLE | ((lanes.clamp(1, 4) as u32 - 1) << DDI_PORT_WIDTH_SHIFT));
+        crate::display_port::train(&mut link, lanes, rate)
+    }
+
     /// Loads the display microcontroller's firmware (D444): its program into the DMC's program
     /// memory, word by word, then the register writes that start it.
     pub fn load_dmc(&self, dmc: &super::intel_dmc::Dmc<'_>) {
@@ -380,5 +412,52 @@ mod tests {
         assert_eq!(gtt_span(3 << GTT_SIZE_SHIFT), 4 << 30);
         assert!(is_supported(0x9a49));
         assert!(!is_supported(0x1234));
+    }
+}
+
+struct PortLink<'a, R: RegisterIo> {
+    regs: &'a R,
+    port: usize,
+    lanes: usize,
+    keep_waiting: &'a mut dyn FnMut() -> bool,
+}
+
+impl<R: RegisterIo> crate::display_port::Link for PortLink<'_, R> {
+    fn read(&mut self, address: u32, out: &mut [u8]) -> bool {
+        super::intel_aux::read_dpcd(self.regs, self.port, address, out, self.keep_waiting).is_ok()
+    }
+
+    fn write(&mut self, address: u32, bytes: &[u8]) -> bool {
+        super::intel_aux::write_dpcd(self.regs, self.port, address, bytes, self.keep_waiting).is_ok()
+    }
+
+    fn send_pattern(&mut self, pattern: u8) {
+        let code = match pattern {
+            1 => DP_TP_PATTERN_1,
+            2 => DP_TP_PATTERN_2,
+            _ => DP_TP_NORMAL,
+        };
+        self.regs.write32(
+            DP_TP_CTL + self.port * PORT_REGISTER_STRIDE,
+            DP_TP_ENABLE | code << DP_TP_PATTERN_SHIFT,
+        );
+    }
+
+    fn set_drive(&mut self, drive: crate::display_port::Drive) {
+        let level = u32::from(drive.swing) * 4 + u32::from(drive.pre_emphasis);
+        let width = (self.lanes.clamp(1, 4) as u32 - 1) << DDI_PORT_WIDTH_SHIFT;
+        self.regs.write32(
+            DDI_BUF_CTL + self.port * PORT_REGISTER_STRIDE,
+            DDI_BUF_ENABLE | width | level << DDI_BUF_SWING_SHIFT,
+        );
+    }
+
+    fn pause(&mut self, microseconds: u32) {
+        for _ in 0..microseconds {
+            if !(self.keep_waiting)() {
+                break;
+            }
+            core::hint::spin_loop();
+        }
     }
 }
