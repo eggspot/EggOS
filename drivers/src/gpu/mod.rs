@@ -2,6 +2,7 @@
 
 pub mod amd_atom;
 pub mod amd_atom_interpreter;
+pub mod amd_discovery;
 pub mod intel;
 pub mod intel_aux;
 pub mod intel_combo_phy;

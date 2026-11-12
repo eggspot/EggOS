@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 use eggos_drivers::gpu::amd_atom::AtomBios;
 use eggos_drivers::gpu::amd_atom_interpreter::Interpreter;
+use eggos_drivers::gpu::amd_discovery::{OFFSET_FROM_TOP, display_block, dmcub_file_name};
 use eggos_drivers::gpu::nvidia_bios::NvidiaBios;
 use eggos_hal::PhysicalRange;
 
@@ -78,6 +79,23 @@ pub fn summary() -> String {
     SUMMARY.lock().clone()
 }
 
+fn read_discovery(probe: &mut dyn Probe, aperture: PhysicalRange) -> Option<Vec<u8>> {
+    if aperture.len() < OFFSET_FROM_TOP {
+        return None;
+    }
+    let region = PhysicalRange::from_start_length(aperture.end - OFFSET_FROM_TOP, OFFSET_FROM_TOP);
+    let start = probe.map_window(region).ok()?;
+    let mut binary = Vec::new();
+    binary.try_reserve_exact(OFFSET_FROM_TOP as usize).ok()?;
+    for offset in 0..OFFSET_FROM_TOP as usize {
+        // SAFETY: `map_window` mapped the aperture's top `OFFSET_FROM_TOP` bytes as device
+        // memory for good; video memory there is the firmware's discovery binary, which only
+        // this probe reads.
+        binary.push(unsafe { core::ptr::read_volatile((start + offset) as *const u8) });
+    }
+    Some(binary)
+}
+
 fn read_rom(probe: &mut dyn Probe, address: eggos_drivers::pci::Address) -> Result<Vec<u8>, ProbeError> {
     let config = probe.pci_config().ok_or(ProbeError::Refused("no PCI configuration space"))?;
     let rom = config.read32(address, EXPANSION_ROM);
@@ -128,6 +146,14 @@ fn probe_amd_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeErr
             .filter(|&table| interpreter.has_table(table))
             .count();
         let _ = write!(line, " {tables} command tables");
+    }
+    match read_discovery(probe, node.regions[0]).as_deref().and_then(display_block) {
+        Some(display) => {
+            let (major, minor, revision) = display.version;
+            let firmware = dmcub_file_name(display.version);
+            let _ = write!(line, " dcn {major}.{minor}.{revision} needs {firmware}");
+        }
+        None => line.push_str(" no IP discovery in the aperture"),
     }
     line.push('\n');
     SUMMARY.lock().push_str(&line);

@@ -24130,3 +24130,23 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Running a table on the hardware (the DCN display path, D468, is the first
   user), the I/O-port access modes, and the indirect PLL and memory-controller access a
   real card gives (the card's own registers).
+
+## D468 AMD's IP discovery and the DMCUB firmware file (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** Since Navi an AMD GPU's display engine (DCN) differs by version in its
+  register places, and its microcontroller (DMCUB) must run firmware before the engine is
+  driven; both start from what the chip says about itself.
+- **Decision.** `amd_discovery` reads the IP discovery binary AMD's published `discovery.h`
+  lays out: its signature, the binary header's table list, the IP discovery table's dies
+  (with 32- or 64-bit bases), and each die's blocks with their hardware id, instance,
+  version and register bases; the display block (hardware id 271) is picked out. It also
+  reads a DMCUB firmware file: the common header (IP version, firmware version, the array's
+  offset) and the DMCUB header (instruction and data bytes), the instructions without the
+  security processor's 256-byte header and footer. The AMD probe reads the last 64 KiB of the
+  BAR 0 aperture, where the binary sits when the aperture spans video memory (resizable BAR),
+  and lists the DCN version and the firmware file it needs, by the name the component store
+  mirrors (`dcn_3_0_1_dmcub.bin`), as `display-firmware` (D265) carries.
+- **Not yet.** Reading the binary when the aperture is smaller than video memory (through the
+  memory index registers), loading DMCUB (its region windows and reset), and driving DCN's
+  pipes (HUBP, DPP, OPP, OTG) at the register bases found: the roadmap's DCN item stays open
+  until the per-version register places are written from AMD's published register headers.
